@@ -14,11 +14,39 @@ import re
 _ACTIVE_TOPIC_NORMALIZE_RE = re.compile(r"[\W_]+", re.UNICODE)
 _ACTIVE_TOPIC_SIMILARITY_THRESHOLD = 0.78
 _ACTIVE_TOPIC_MIN_NORMALIZED_CHARS = 6
+_ACTIVE_TOPIC_LOW_CONFIDENCE_TERMS = (
+    "\u6838\u7535",
+    "\u6838\u7535\u7ad9",
+    "\u6838\u8f90\u5c04",
+    "\u8f90\u5c04",
+    "\u7206\u7834",
+    "\u7206\u70b8",
+    "\u52b3\u6539",
+    "\u516c\u5f00\u793a\u4f17",
+    "\u793a\u4f17",
+    "\u5904\u5211",
+    "\u60e9\u7f5a",
+    "\u5ba1\u5224",
+    "\u653b\u7565",
+    "\u6559\u7a0b",
+    "\u4e13\u5bb6",
+    "\u61c2\u5f88\u591a",
+    "\u8dd1\u4ee3\u7801",
+    "\u903b\u8f91\u7535\u8def",
+    "\u6f0f\u52fa",
+    "nuclear",
+    "radiation",
+    "punish",
+    "trial",
+    "expert",
+)
 
 
 def _is_meaningful_active_topic_text(text: str) -> bool:
     compact = " ".join(str(text or "").strip().split())
     if not compact:
+        return False
+    if _is_low_confidence_active_topic_text(compact):
         return False
     lowered = compact.lower()
     if lowered in {"hi", "hello", "ok", "1", "?", "？", "好", "嗯", "啊", "草", "6"}:
@@ -71,7 +99,16 @@ def _is_meaningful_active_topic_text(text: str) -> bool:
         "\u4eca\u665a\u505a\u4ec0\u4e48",
         "\u60f3\u542c\u4ec0\u4e48",
         "\u6765\u70b9\u5f39\u5e55",
+        "\u8fd8\u5728\u5417",
+        "\u6709\u4eba\u5417",
+        "\u5728\u4e0d\u5728",
+        "\u5192\u4e2a\u6ce1",
+        "\u542d\u4e00\u58f0",
+        "\u7ed9\u70b9\u53cd\u5e94",
+        "\u63a5\u4e00\u53e5",
+        "\u53d1\u4e2a\u8a00",
         "\u62631",
+        "\u6263\u4e2a",
         "\u5f39\u5e55\u5237\u8d77\u6765",
         "\u60f3\u770b\u4ec0\u4e48",
         "\u60f3\u804a\u4ec0\u4e48",
@@ -147,6 +184,8 @@ def _active_topic_filter_reason(text: str) -> str:
     compact = " ".join(str(text or "").strip().split())
     if not compact:
         return "filtered_recent_danmaku"
+    if _is_low_confidence_active_topic_text(compact):
+        return "low_confidence_topic"
     lowered = compact.lower()
     dense_lowered = "".join(ch for ch in lowered if ch.isalnum() or "\u4e00" <= ch <= "\u9fff")
     if _is_viewer_to_viewer_mention_text(compact):
@@ -160,6 +199,61 @@ def _active_topic_filter_reason(text: str) -> str:
     if _is_reaction_only(dense_lowered):
         return "filtered_reaction"
     return "filtered_recent_danmaku"
+
+def _is_low_confidence_active_topic_text(text: str) -> bool:
+    compact = " ".join(str(text or "").strip().split())
+    if not compact:
+        return True
+    lowered = compact.casefold()
+    dense = "".join(ch for ch in lowered if ch.isalnum() or "\u4e00" <= ch <= "\u9fff")
+    if any(term.casefold() in lowered or term.casefold() in dense for term in _ACTIVE_TOPIC_LOW_CONFIDENCE_TERMS):
+        return True
+    # Active engagement should not spin highly specific game/wiki/news titles
+    # unless they expose a small, safe reply handle. Let danmaku_response handle
+    # those directly instead of forcing a weird A/B host question.
+    game_or_technical_markers = (
+        "\u6cf0\u62c9\u745e\u4e9a",
+        "\u6211\u7684\u4e16\u754c",
+        "\u661f\u9732\u8c37",
+        "\u660e\u65e5\u65b9\u821f",
+        "\u539f\u795e",
+        "\u5d29\u574f",
+        "\u7edd\u533a\u96f6",
+        "\u4ee3\u7801",
+        "\u7f16\u7a0b",
+        "\u7535\u8def",
+        "\u673a\u5236",
+        "\u914d\u88c5",
+        "\u914d\u65b9",
+        "terraria",
+        "minecraft",
+        "code",
+        "circuit",
+    )
+    if any(marker in lowered or marker in dense for marker in game_or_technical_markers):
+        return True
+    return False
+
+def _is_clean_live_material_text(text: str) -> bool:
+    compact = " ".join(str(text or "").strip().split())
+    if not compact:
+        return False
+    lowered = compact.casefold()
+    # Common mojibake markers from UTF-8 text decoded as a legacy codepage.
+    if any(marker in compact for marker in ("鐚", "灞", "绁", "姝", "鍍", "锛", "鈥", "�")):
+        return False
+    if compact.count('"') % 2:
+        return False
+    if _is_low_confidence_active_topic_text(compact):
+        return False
+    return not any(term.casefold() in lowered for term in ("public shaming", "labor camp", "punishment"))
+
+def _is_clean_live_material(material: dict | None) -> bool:
+    if not isinstance(material, dict):
+        return False
+    fields = ("title", "hint", "reply_affordance", "live_column")
+    values = [str(material.get(field) or "").strip() for field in fields]
+    return any(values) and all(_is_clean_live_material_text(value) for value in values if value)
 
 def _is_direct_neko_request_or_ack(dense_lowered: str) -> bool:
     if not any(target in dense_lowered for target in ("\u732b\u732b", "neko")):
@@ -432,6 +526,29 @@ def _active_topic_material_profile(title: str) -> dict[str, str]:
             "live_column": "NEKO tiny verdict",
             "reply_affordance": "viewer can tease NEKO or the topic back",
             "hint": "Turn this material into one tiny playful tease; do not make it a news recap.",
+        }
+    if any(
+        marker in dense
+        for marker in (
+            "keyboard",
+            "screen",
+            "desk",
+            "snack",
+            "drink",
+            "\u952e\u76d8",
+            "\u5c4f\u5e55",
+            "\u684c\u9762",
+            "\u6c34\u676f",
+            "\u996e\u6599",
+            "\u96f6\u98df",
+        )
+    ):
+        return {
+            "preferred_shape": "tiny_tease",
+            "fun_axis": "object_scene",
+            "live_column": "NEKO room observation",
+            "reply_affordance": "viewer can answer with one small object or room detail",
+            "hint": "Turn this material into one tiny room observation; do not pretend to know details beyond the title.",
         }
     if any(
         marker in dense

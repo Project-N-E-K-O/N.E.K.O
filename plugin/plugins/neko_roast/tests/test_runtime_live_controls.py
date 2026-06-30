@@ -2035,7 +2035,7 @@ async def test_active_engagement_ignores_non_output_danmaku_as_topic_material(ru
         return {
             "success": True,
             "videos": [
-                {"title": "neutral topic after skipped danmaku", "bvid": "BV_AFTER_SKIPPED"},
+                {"title": "room mood after skipped danmaku", "bvid": "BV_AFTER_SKIPPED"},
             ],
         }
 
@@ -2068,7 +2068,7 @@ async def test_active_engagement_labels_filtered_recent_danmaku_skip_reason(runt
         return {
             "success": True,
             "videos": [
-                {"title": "neutral topic after filtered danmaku", "bvid": "BV_AFTER_FILTERED"},
+                {"title": "room mood after filtered danmaku", "bvid": "BV_AFTER_FILTERED"},
             ],
         }
 
@@ -2100,7 +2100,7 @@ async def test_active_engagement_labels_reaction_topic_skip_reason(runtime: Roas
         return {
             "success": True,
             "videos": [
-                {"title": "neutral topic after reaction", "bvid": "BV_AFTER_REACTION"},
+                {"title": "room mood after reaction", "bvid": "BV_AFTER_REACTION"},
             ],
         }
 
@@ -2132,7 +2132,7 @@ async def test_active_engagement_labels_runtime_feedback_topic_skip_reason(runti
         return {
             "success": True,
             "videos": [
-                {"title": "neutral topic after runtime feedback", "bvid": "BV_AFTER_RUNTIME_FEEDBACK"},
+                {"title": "room mood after runtime feedback", "bvid": "BV_AFTER_RUNTIME_FEEDBACK"},
             ],
         }
 
@@ -2166,7 +2166,7 @@ async def test_active_engagement_does_not_label_non_danmaku_skips_as_danmaku_top
         return {
             "success": True,
             "videos": [
-                {"title": "neutral topic after skipped active beat", "bvid": "BV_AFTER_ACTIVE_SKIP"},
+                {"title": "room mood after skipped active beat", "bvid": "BV_AFTER_ACTIVE_SKIP"},
             ],
         }
 
@@ -2194,7 +2194,7 @@ async def test_active_engagement_ignores_tiny_recent_danmaku_as_topic_material(r
         return {
             "success": True,
             "videos": [
-                {"title": "useful trending fallback", "bvid": "BV_USEFUL"},
+                {"title": "useful desk snack choice", "bvid": "BV_USEFUL"},
             ],
         }
 
@@ -2211,7 +2211,7 @@ async def test_active_engagement_ignores_tiny_recent_danmaku_as_topic_material(r
     topic = await runtime._select_active_engagement_topic()
 
     assert topic["source"] == "bili_trending"
-    assert topic["title"] == "useful trending fallback"
+    assert topic["title"] == "useful desk snack choice"
 
 
 @pytest.mark.asyncio
@@ -3151,7 +3151,7 @@ async def test_active_engagement_ignores_tiny_trending_titles_as_topic_material(
             "success": True,
             "videos": [
                 {"title": "ok", "bvid": "BV_TINY"},
-                {"title": "useful concrete trending fallback", "bvid": "BV_USEFUL"},
+                {"title": "useful desk snack choice", "bvid": "BV_USEFUL"},
             ],
         }
 
@@ -3161,7 +3161,7 @@ async def test_active_engagement_ignores_tiny_trending_titles_as_topic_material(
 
     assert topic["source"] == "bili_trending"
     assert topic["key"] == "bili:BV_USEFUL"
-    assert topic["title"] == "useful concrete trending fallback"
+    assert topic["title"] == "useful desk snack choice"
 
 
 @pytest.mark.asyncio
@@ -3426,6 +3426,39 @@ async def test_active_engagement_ignores_chinese_generic_host_prompt_topics(runt
 
 
 @pytest.mark.asyncio
+async def test_active_engagement_ignores_presence_check_host_bait_topics(runtime: RoastRuntime) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "还在吗吱一声给点反应", "bvid": "BV_PRESENCE_CHECK_CN"},
+                {"title": "猫猫深夜桌面物件投票", "bvid": "BV_USEFUL_PRESENCE_FILTER"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="在不在冒个泡接一句",
+                source="live_danmaku",
+            ),
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_USEFUL_PRESENCE_FILTER"
+    assert topic["title"] == "猫猫深夜桌面物件投票"
+
+
+@pytest.mark.asyncio
 async def test_active_engagement_ignores_spaced_chinese_generic_host_prompt_topics(runtime: RoastRuntime) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
@@ -3497,7 +3530,7 @@ async def test_active_engagement_uses_fallback_instead_of_repeating_recent_singl
         return {
             "success": True,
             "videos": [
-                {"title": "单一直播话题", "bvid": "BV_ONLY"},
+                {"title": "late night room mood choice", "bvid": "BV_ONLY"},
             ],
         }
 
@@ -3766,6 +3799,13 @@ def test_proactive_material_avoids_generic_host_bait(runtime: RoastRuntime) -> N
         "\u60f3\u804a\u4ec0\u4e48",
         "\u6ca1\u4eba\u8bf4\u8bdd",
         "\u51b7\u573a",
+        "\u61c2\u5f88\u591a",
+        "\u4e13\u5bb6",
+        "\u653b\u7565",
+        "\u6559\u7a0b",
+        "expert",
+        "guide",
+        "tutorial",
     )
     materials = [*runtime._active_engagement_fallback_topic_candidates(), *runtime._idle_hosting_beat_candidates()]
 

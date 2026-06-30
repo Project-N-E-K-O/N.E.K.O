@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-import re
 import time
 from collections import deque
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -28,8 +26,10 @@ from ..stores.credential_store import CredentialStore
 from ..stores.viewer_store import ViewerStore
 from .contracts import InteractionResult, PipelineStep, RoastConfig, ViewerEvent, ViewerProfile, parse_room_id
 from .event_bus import EventBus
-from . import active_topic_rules
-from .live_content import active_engagement_fallback_topic_candidates, idle_hosting_beat_candidates
+from . import active_topic_rules, live_status as live_status_rules, recent_context
+from .active_topic_selector import ActiveTopicSelector
+from .live_hosting_director import LiveHostingDirector
+from .live_content import active_engagement_fallback_topic_candidates
 from .instructions import (
     NEKO_ROAST_CONTEXT_INSTRUCTIONS,
     NEKO_ROAST_DEVELOPER_ANNOUNCEMENT,
@@ -41,89 +41,6 @@ from .module_registry import ModuleRegistry
 from .permission_gate import PermissionGate
 from .pipeline import RoastPipeline
 from .safety_guard import SafetyGuard
-
-
-_SPENT_OUTPUT_ASCII_WORD_RE = re.compile(r"[a-z0-9]+")
-_SPENT_OUTPUT_FAMILY_TOKENS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("surprise", ("surprise", "惊喜", "小惊喜")),
-    ("reward", ("reward", "present", "gift", "snack", "小鱼干", "鱼干", "奖励", "礼物")),
-    ("program_plan", ("plan", "program", "segment", "企划", "节目", "环节", "计划")),
-    (
-        "audience_prompt",
-        (
-            "chat",
-            "danmaku",
-            "viewer",
-            "audience",
-            "drop a 1",
-            "type 1",
-            "say hi",
-            "anyone here",
-            "still here",
-            "大家",
-            "你们",
-            "观众",
-            "弹幕",
-            "互动",
-            "接话",
-            "发言",
-            "发弹幕",
-            "发个1",
-            "扣1",
-            "想听",
-            "想看",
-            "聊点",
-            "聊什么",
-            "说点",
-            "来一句",
-            "扣个",
-            "扣个1",
-            "打个1",
-            "打个分",
-            "打个标签",
-            "吱一声",
-            "冒个泡",
-            "举个爪",
-            "给点反应",
-            "给猫猫一点反应",
-            "还在吗",
-            "有人吗",
-            "有人在吗",
-            "在不在",
-        ),
-    ),
-    ("host_self_test", ("host score", "主播力", "正经主播", "主持", "像主播")),
-    ("short_callback", ("one word", "password", "一个字", "一个词", "三字", "暗号", "打分")),
-    ("choice_vote", ("either_or", "a/b", "choice", "二选一", "选一个", "还是")),
-    ("room_mood", ("room mood", "气氛", "温度", "猫窝", "小电台", "晴天", "小雨")),
-    ("object_scene", ("desk", "screen", "keyboard", "桌面", "水杯", "零食", "屏幕", "键盘")),
-    ("tease", ("tease", "吐槽", "别笑", "被自己")),
-    ("micro_challenge", ("challenge", "task", "三秒", "挑战", "任务", "姿势")),
-    ("quiet_room", ("quiet", "idle", "冷场", "安静", "没人说话", "没弹幕")),
-)
-
-
-def _normalize_spent_output_family_text(value: str) -> str:
-    return "".join(str(value or "").casefold().split())
-
-
-def _spent_output_ascii_words(value: str) -> set[str]:
-    return set(_SPENT_OUTPUT_ASCII_WORD_RE.findall(str(value or "").casefold()))
-
-
-def _spent_output_family_token_matches(
-    *,
-    normalized_output: str,
-    ascii_words: set[str],
-    token: str,
-) -> bool:
-    token_text = str(token or "").strip()
-    normalized_token = _normalize_spent_output_family_text(token_text)
-    if not normalized_token:
-        return False
-    if token_text.isascii() and token_text.replace(" ", "").isalnum() and " " not in token_text:
-        return normalized_token in ascii_words
-    return normalized_token in normalized_output
 
 
 class RoastRuntime:
@@ -198,6 +115,8 @@ class RoastRuntime:
         self._active_engagement_recent_topic_skip_reason: str = ""
         self._active_engagement_shape_guard_reason: str = ""
         self._active_engagement_shape_index: int = 0
+        self.live_hosting_director = LiveHostingDirector(self)
+        self.active_topic_selector = ActiveTopicSelector(self)
         self._config_lock: asyncio.Lock | None = None
 
         self.bili_live_ingest = BiliLiveIngestModule()
@@ -618,251 +537,52 @@ class RoastRuntime:
         return await self.pipeline.handle_event(event)
 
     async def trigger_idle_hosting(self) -> InteractionResult:
-        live_connection = self.live_connection_snapshot()
-        live_status = self.live_status_summary(live_connection)
-        health_rows = self.runtime_health_rows()
-        live_state = self.live_state_summary(live_status, health_rows)
-        event = self._idle_hosting_event(live_state)
-
-        if self.config.live_mode != "solo_stream":
-            return self._record_idle_hosting_skip(event, "idle_hosting.not_solo_stream")
-        state = str(live_state.get("state") or "")
-        if state == "paused":
-            return self._record_idle_hosting_skip(event, "idle_hosting.paused")
-        if state == "blocked":
-            return self._record_idle_hosting_skip(event, "idle_hosting.blocked")
-        if state != "idle":
-            return self._record_idle_hosting_skip(event, "idle_hosting.not_idle")
-        if not bool(live_state.get("idle_hosting_candidate")):
-            return self._record_idle_hosting_skip(event, "idle_hosting.not_candidate")
-        return await self.pipeline.handle_event(event)
+        return await self.live_hosting_director.trigger_idle_hosting()
 
     async def maybe_trigger_idle_hosting(self) -> InteractionResult | None:
-        if self._idle_hosting_consecutive_failures >= self._IDLE_HOSTING_FAILURE_LIMIT:
-            return None
-        now = float(self._idle_hosting_now())
-        if now - self._idle_hosting_last_attempt_at < self._idle_hosting_min_interval_seconds():
-            return None
-        live_connection = self.live_connection_snapshot()
-        live_status = self.live_status_summary(live_connection)
-        health_rows = self.runtime_health_rows()
-        live_state = self.live_state_summary(live_status, health_rows)
-        if not bool(live_state.get("idle_hosting_candidate")):
-            return None
-
-        self._idle_hosting_last_attempt_at = now
-        result = await self.trigger_idle_hosting()
-        if result.status == "failed":
-            self._idle_hosting_consecutive_failures += 1
-            if self._idle_hosting_consecutive_failures >= self._IDLE_HOSTING_FAILURE_LIMIT:
-                self.audit.record("idle_hosting_auto_disabled", "idle hosting disabled after repeated failures", level="warning")
-        elif result.status in {"dry_run", "pushed"}:
-            self._idle_hosting_consecutive_failures = 0
-        return result
+        return await self.live_hosting_director.maybe_trigger_idle_hosting()
 
     def _idle_hosting_event(self, live_state: dict[str, Any]) -> ViewerEvent:
-        host_beat = self._next_idle_hosting_beat()
-        return ViewerEvent(
-            uid="__neko_idle__",
-            nickname="NEKO",
-            danmaku_text="",
-            source="idle_hosting",
-            live_mode=self.config.live_mode,
-            raw={
-                "trigger": "manual_idle_hosting",
-                "live_state": dict(live_state),
-                "host_beat": host_beat,
-            },
-        )
+        return self.live_hosting_director.idle_hosting_event(live_state)
 
     def _next_idle_hosting_beat(self) -> dict[str, Any]:
-        candidates = self._idle_hosting_beat_candidates()
-        fallback = candidates[0]
-        chosen = fallback
-        chosen_offset: int | None = None
-        preferred_stage = self._idle_hosting_preferred_stage()
-        ordered_candidates = self._idle_hosting_stage_ordered_candidates(candidates, preferred_stage)
-        recent_spent_families = self._recent_spent_output_families()
-        for offset, candidate in enumerate(ordered_candidates):
-            key = str(candidate.get("key") or "").strip()
-            axis = str(candidate.get("fun_axis") or "").strip()
-            title = str(candidate.get("title") or "").strip()
-            family = self._host_material_family(candidate)
-            reply_affordance = str(candidate.get("reply_affordance") or "").strip()
-            if (
-                key
-                and key not in self._idle_hosting_recent_beat_keys
-                and axis
-                and axis not in self._idle_hosting_recent_beat_axes
-                and family
-                and family not in self._recent_host_material_families
-                and family not in recent_spent_families
-                and (
-                    not reply_affordance
-                    or reply_affordance not in self._idle_hosting_recent_reply_affordances
-                )
-                and not self._is_similar_idle_hosting_beat_title(title)
-            ):
-                chosen = candidate
-                chosen_offset = offset
-                break
-        else:
-            for offset, candidate in enumerate(ordered_candidates):
-                key = str(candidate.get("key") or "").strip()
-                title = str(candidate.get("title") or "").strip()
-                family = self._host_material_family(candidate)
-                if (
-                    key
-                    and key not in self._idle_hosting_recent_beat_keys
-                    and family
-                    and family not in self._recent_host_material_families
-                    and family not in recent_spent_families
-                    and not self._is_similar_idle_hosting_beat_title(title)
-                ):
-                    chosen = candidate
-                    chosen_offset = offset
-                    break
-            else:
-                for offset, candidate in enumerate(ordered_candidates):
-                    key = str(candidate.get("key") or "").strip()
-                    if key and key not in self._idle_hosting_recent_beat_keys:
-                        chosen = candidate
-                        chosen_offset = offset
-                        break
-        if chosen_offset is None:
-            self._idle_hosting_beat_index = (self._idle_hosting_beat_index + 1) % len(candidates)
-        else:
-            self._idle_hosting_beat_index = (self._idle_hosting_beat_index + chosen_offset + 1) % len(candidates)
-        key = str(chosen.get("key") or fallback["key"]).strip()
-        axis = str(chosen.get("fun_axis") or "").strip()
-        title = str(chosen.get("title") or "").strip()
-        family = self._host_material_family(chosen)
-        reply_affordance = str(chosen.get("reply_affordance") or "").strip()
-        self._idle_hosting_recent_beat_keys.append(key)
-        if axis:
-            self._idle_hosting_recent_beat_axes.append(axis)
-        if title:
-            self._idle_hosting_recent_beat_titles.append(title)
-        if family:
-            self._recent_host_material_families.append(family)
-        if reply_affordance:
-            self._idle_hosting_recent_reply_affordances.append(reply_affordance)
-        payload = dict(chosen)
-        if family:
-            payload["family"] = family
-        payload["idle_stage"] = self._idle_hosting_material_stage(payload)
-        return payload
+        return self.live_hosting_director.next_idle_hosting_beat()
 
     @staticmethod
     def _idle_hosting_beat_candidates() -> list[dict[str, Any]]:
-        return idle_hosting_beat_candidates()
+        return LiveHostingDirector.idle_hosting_beat_candidates()
 
     def _idle_hosting_preferred_stage(self) -> str:
-        streak = self._recent_actual_route_streak_since_viewer_activity("idle_hosting")
-        if streak <= 0:
-            return "settle"
-        if streak == 1:
-            return "column"
-        return "callback"
+        return self.live_hosting_director.idle_hosting_preferred_stage()
 
     def _idle_hosting_stage_ordered_candidates(
         self,
         candidates: list[dict[str, Any]],
         preferred_stage: str,
     ) -> list[dict[str, Any]]:
-        if not candidates:
-            return []
-        rotated = [candidates[(self._idle_hosting_beat_index + offset) % len(candidates)] for offset in range(len(candidates))]
-        preferred = [candidate for candidate in rotated if self._idle_hosting_material_stage(candidate) == preferred_stage]
-        rest = [candidate for candidate in rotated if candidate not in preferred]
-        return [*preferred, *rest]
+        return self.live_hosting_director.idle_hosting_stage_ordered_candidates(candidates, preferred_stage)
 
     @staticmethod
     def _idle_hosting_material_stage(material: dict[str, Any] | None) -> str:
-        if not isinstance(material, dict):
-            return "settle"
-        explicit = str(material.get("idle_stage") or "").strip()
-        if explicit:
-            return explicit
-        shape = str(material.get("shape") or "").strip()
-        axis = str(material.get("fun_axis") or "").strip()
-        if shape in {"one_word_call", "micro_challenge"} or axis in {"viewer_callback", "micro_challenge"}:
-            return "callback"
-        if shape in {"tiny_choice", "light_tease"} or axis in {"choice", "tease"}:
-            return "column"
-        return "settle"
+        return LiveHostingDirector.idle_hosting_material_stage(material)
 
     def _is_similar_idle_hosting_beat_title(self, title: str) -> bool:
-        return bool(title) and active_topic_rules._is_similar_active_topic_title(
-            title,
-            self._idle_hosting_recent_beat_titles,
-        )
+        return self.live_hosting_director.is_similar_idle_hosting_beat_title(title)
 
     def _record_idle_hosting_skip(self, event: ViewerEvent, reason: str) -> InteractionResult:
-        result = InteractionResult(
-            accepted=False,
-            status="skipped",
-            event=event,
-            reason=reason,
-            steps=[PipelineStep("idle_hosting_gate", "skipped", reason)],
-        )
-        self.audit.record("idle_hosting_skipped", reason, level="info", detail={"mode": self.config.live_mode})
-        self.record_result(result)
-        return result
+        return self.live_hosting_director.record_idle_hosting_skip(event, reason)
 
     async def trigger_warmup_hosting(self) -> InteractionResult:
-        live_connection = self.live_connection_snapshot()
-        live_status = self.live_status_summary(live_connection)
-        health_rows = self.runtime_health_rows()
-        live_state = self.live_state_summary(live_status, health_rows)
-        event = self._warmup_hosting_event(live_state)
-
-        if self.config.live_mode != "solo_stream":
-            return self._record_warmup_hosting_skip(event, "warmup_hosting.not_solo_stream")
-        state = str(live_state.get("state") or "")
-        if state == "paused":
-            return self._record_warmup_hosting_skip(event, "warmup_hosting.paused")
-        if state == "blocked":
-            return self._record_warmup_hosting_skip(event, "warmup_hosting.blocked")
-        if state != "warmup":
-            return self._record_warmup_hosting_skip(event, "warmup_hosting.not_warmup")
-        if not bool(live_state.get("warmup_hosting_candidate")):
-            return self._record_warmup_hosting_skip(event, "warmup_hosting.not_candidate")
-        return await self.pipeline.handle_event(event)
+        return await self.live_hosting_director.trigger_warmup_hosting()
 
     async def maybe_trigger_warmup_hosting(self) -> InteractionResult | None:
-        live_connection = self.live_connection_snapshot()
-        live_status = self.live_status_summary(live_connection)
-        health_rows = self.runtime_health_rows()
-        live_state = self.live_state_summary(live_status, health_rows)
-        if not bool(live_state.get("warmup_hosting_candidate")):
-            return None
-        return await self.trigger_warmup_hosting()
+        return await self.live_hosting_director.maybe_trigger_warmup_hosting()
 
     def _warmup_hosting_event(self, live_state: dict[str, Any]) -> ViewerEvent:
-        return ViewerEvent(
-            uid="__neko_warmup__",
-            nickname="NEKO",
-            danmaku_text="",
-            source="warmup_hosting",
-            live_mode=self.config.live_mode,
-            raw={
-                "trigger": "auto_warmup_hosting",
-                "live_state": dict(live_state),
-            },
-        )
+        return self.live_hosting_director.warmup_hosting_event(live_state)
 
     def _record_warmup_hosting_skip(self, event: ViewerEvent, reason: str) -> InteractionResult:
-        result = InteractionResult(
-            accepted=False,
-            status="skipped",
-            event=event,
-            reason=reason,
-            steps=[PipelineStep("warmup_hosting_gate", "skipped", reason)],
-        )
-        self.audit.record("warmup_hosting_skipped", reason, level="info", detail={"mode": self.config.live_mode})
-        self.record_result(result)
-        return result
+        return self.live_hosting_director.record_warmup_hosting_skip(event, reason)
 
     async def trigger_active_engagement(self) -> InteractionResult:
         live_connection = self.live_connection_snapshot()
@@ -921,101 +641,7 @@ class RoastRuntime:
         )
 
     async def _select_active_engagement_topic(self) -> dict[str, Any]:
-        candidates = await self._active_engagement_topic_candidates()
-        fallback_candidates = self._active_engagement_fallback_topic_candidates()
-        fallback = fallback_candidates[0]
-        shape = self._next_active_engagement_shape()
-        chosen = fallback
-        exhausted_cached_topics = bool(candidates)
-        candidate = self._choose_active_engagement_candidate(candidates, avoid_recent_fun_axis=True, avoid_recent_family=True)
-        if candidate is None:
-            candidate = self._choose_active_engagement_candidate(candidates, avoid_recent_fun_axis=False, avoid_recent_family=True)
-        if candidate is None:
-            candidate = self._choose_active_engagement_candidate(candidates, avoid_recent_fun_axis=True, avoid_recent_family=False)
-        if candidate is not None:
-            chosen = candidate
-            exhausted_cached_topics = False
-        if exhausted_cached_topics:
-            self._active_engagement_topic_cache = []
-            self._active_engagement_topic_cache_at = 0.0
-            refreshed_candidates = await self._active_engagement_topic_candidates()
-            candidate = self._choose_active_engagement_candidate(refreshed_candidates, avoid_recent_fun_axis=True, avoid_recent_family=True)
-            if candidate is None:
-                candidate = self._choose_active_engagement_candidate(refreshed_candidates, avoid_recent_fun_axis=False, avoid_recent_family=True)
-            if candidate is None:
-                candidate = self._choose_active_engagement_candidate(refreshed_candidates, avoid_recent_fun_axis=True, avoid_recent_family=False)
-            if candidate is not None:
-                chosen = candidate
-                exhausted_cached_topics = False
-        if exhausted_cached_topics:
-            chosen = (
-                self._choose_active_engagement_candidate(fallback_candidates, avoid_recent_fun_axis=True, avoid_recent_family=True)
-                or self._choose_active_engagement_candidate(fallback_candidates, avoid_recent_fun_axis=False, avoid_recent_family=True)
-                or self._choose_active_engagement_candidate(fallback_candidates, avoid_recent_fun_axis=True, avoid_recent_family=False)
-                or self._choose_active_engagement_candidate(
-                    fallback_candidates,
-                    avoid_recent_fun_axis=False,
-                    avoid_recent_family=False,
-                    allow_similar_title=True,
-                )
-                or fallback
-            )
-        elif chosen is fallback:
-            chosen = (
-                self._choose_active_engagement_candidate(fallback_candidates, avoid_recent_fun_axis=True, avoid_recent_family=True)
-                or self._choose_active_engagement_candidate(fallback_candidates, avoid_recent_fun_axis=False, avoid_recent_family=True)
-                or self._choose_active_engagement_candidate(fallback_candidates, avoid_recent_fun_axis=True, avoid_recent_family=False)
-                or self._choose_active_engagement_candidate(
-                    fallback_candidates,
-                    avoid_recent_fun_axis=False,
-                    avoid_recent_family=False,
-                    allow_similar_title=True,
-                )
-                or fallback
-            )
-        preferred_shape = str(chosen.get("preferred_shape") or shape).strip() or shape
-        shape = self._active_engagement_guarded_shape(preferred_shape)
-        key = str(chosen.get("key") or chosen.get("title") or fallback["key"]).strip()
-        self._active_engagement_recent_topic_keys.append(key)
-        title = str(chosen.get("title") or fallback["title"]).strip()
-        if title:
-            self._active_engagement_recent_topic_titles.append(title)
-        intent = self._active_engagement_intent_text(shape)
-        hint = str(chosen.get("hint") or fallback["hint"]).strip()
-        if shape != preferred_shape:
-            hint = self._active_engagement_hint_text(shape)
-        topic = {
-            "source": str(chosen.get("source") or "fallback"),
-            "shape": shape,
-            "key": key,
-            "title": title,
-            "family": self._host_material_family(chosen),
-            "fun_axis": str(chosen.get("fun_axis") or "").strip() or self._active_engagement_fun_axis_text(shape),
-            "hook": self._active_engagement_hook_text(shape, title),
-            "pattern": self._active_engagement_pattern_text(shape),
-            "intent": intent,
-            "live_column": str(chosen.get("live_column") or "").strip(),
-            "topic_pack": self._active_engagement_topic_pack(chosen),
-            "reply_affordance": str(chosen.get("reply_affordance") or "").strip()
-            or self._active_engagement_reply_affordance_text(shape),
-            "hint": hint,
-        }
-        self._active_engagement_recent_topic_sources.append(str(topic["source"]))
-        if topic["fun_axis"]:
-            self._active_engagement_recent_fun_axes.append(str(topic["fun_axis"]))
-        if topic["family"]:
-            self._recent_host_material_families.append(str(topic["family"]))
-        self._active_engagement_recent_shapes.append(shape)
-        self._active_engagement_recent_intents.append(intent)
-        if topic["reply_affordance"]:
-            self._active_engagement_recent_reply_affordances.append(str(topic["reply_affordance"]))
-        skip_reason = str(self._active_engagement_recent_topic_skip_reason or "").strip()
-        if skip_reason:
-            topic["recent_topic_skip_reason"] = skip_reason
-        shape_guard_reason = str(self._active_engagement_shape_guard_reason or "").strip()
-        if shape_guard_reason:
-            topic["shape_guard_reason"] = shape_guard_reason
-        return topic
+        return await self.active_topic_selector.select_topic()
 
     def _choose_active_engagement_candidate(
         self,
@@ -1025,42 +651,12 @@ class RoastRuntime:
         avoid_recent_family: bool,
         allow_similar_title: bool = False,
     ) -> dict[str, Any] | None:
-        recent_spent_families = self._recent_spent_output_families() if avoid_recent_family else set()
-        for candidate in candidates:
-            key = str(candidate.get("key") or candidate.get("title") or "").strip()
-            if not key or key in self._active_engagement_recent_topic_keys:
-                continue
-            title = str(candidate.get("title") or "").strip()
-            if (
-                not allow_similar_title
-                and title
-                and self._is_similar_active_topic_title(title, self._active_engagement_recent_topic_titles)
-            ):
-                if not self._active_engagement_recent_topic_skip_reason:
-                    self._active_engagement_recent_topic_skip_reason = "similar_topic_title"
-                continue
-            axis = str(candidate.get("fun_axis") or "").strip()
-            if avoid_recent_fun_axis and axis and axis in self._active_engagement_recent_fun_axes:
-                continue
-            reply_affordance = str(candidate.get("reply_affordance") or "").strip()
-            if (
-                avoid_recent_fun_axis
-                and reply_affordance
-                and reply_affordance in self._active_engagement_recent_reply_affordances
-            ):
-                continue
-            family = self._host_material_family(candidate)
-            if avoid_recent_family and family:
-                if family in self._recent_host_material_families:
-                    if not self._active_engagement_recent_topic_skip_reason:
-                        self._active_engagement_recent_topic_skip_reason = "recent_host_family"
-                    continue
-                if family in recent_spent_families:
-                    if not self._active_engagement_recent_topic_skip_reason:
-                        self._active_engagement_recent_topic_skip_reason = "recent_spent_output_family"
-                    continue
-            return candidate
-        return None
+        return self.active_topic_selector.choose_candidate(
+            candidates,
+            avoid_recent_fun_axis=avoid_recent_fun_axis,
+            avoid_recent_family=avoid_recent_family,
+            allow_similar_title=allow_similar_title,
+        )
 
     @staticmethod
     def _active_engagement_fallback_topic_candidates() -> list[dict[str, Any]]:
@@ -1068,156 +664,16 @@ class RoastRuntime:
 
     @staticmethod
     def _active_engagement_topic_pack(material: dict[str, Any] | None) -> str:
-        if not isinstance(material, dict):
-            return ""
-        explicit = str(material.get("topic_pack") or "").strip()
-        if explicit:
-            return explicit
-        live_column = str(material.get("live_column") or "").lower()
-        family = active_topic_rules._host_material_family(material)
-        combined = " ".join(
-            str(material.get(field) or "").lower()
-            for field in ("key", "title", "fun_axis", "preferred_shape", "shape", "reply_affordance")
-        )
-        if family in {"tease", "host_self_test"} or any(marker in live_column for marker in ("verdict", "court", "award", "score")):
-            return "neko_verdict"
-        if family == "short_callback" or any(marker in live_column for marker in ("callback", "password", "command")):
-            return "viewer_callback"
-        if family == "choice_vote" or any(marker in live_column for marker in ("poll", "vote", "choice", "button")):
-            return "micro_poll"
-        if family == "micro_challenge" or any(marker in live_column for marker in ("challenge", "mission")):
-            return "micro_challenge"
-        if family == "object_scene" or any(marker in live_column for marker in ("observation", "patrol", "detective")):
-            return "room_observation"
-        if family == "room_mood" or any(marker in live_column for marker in ("radio", "weather", "thermometer", "filter", "mood")):
-            return "room_mood"
-        if "stance" in combined:
-            return "neko_stance"
-        return family or "general"
+        return ActiveTopicSelector.topic_pack(material)
 
     async def _active_engagement_topic_candidates(self) -> list[dict[str, Any]]:
-        recent = self._recent_danmaku_topic_candidates()
-        trending = await self._bili_trending_topic_candidates()
-        return [*recent, *trending]
+        return await self.active_topic_selector.topic_candidates()
 
     async def _bili_trending_topic_candidates(self) -> list[dict[str, Any]]:
-        now = time.monotonic()
-        if self._active_engagement_topic_cache and now - self._active_engagement_topic_cache_at < 600.0:
-            return list(self._active_engagement_topic_cache)
-        fetcher = self._active_engagement_topic_fetcher
-        if fetcher is None:
-            try:
-                from utils.web_scraper import fetch_bilibili_trending
-
-                fetcher = fetch_bilibili_trending
-            except Exception:
-                fetcher = None
-        if not callable(fetcher):
-            return []
-        try:
-            try:
-                payload = await asyncio.wait_for(fetcher(limit=6), timeout=2.0)
-            except TypeError:
-                payload = await asyncio.wait_for(fetcher(), timeout=2.0)
-        except Exception:
-            return []
-        videos = []
-        if isinstance(payload, dict):
-            videos = payload.get("videos") or payload.get("video") or payload.get("items") or []
-        if not isinstance(videos, list):
-            return []
-        candidates: list[dict[str, Any]] = []
-        for item in videos:
-            if not isinstance(item, dict):
-                continue
-            title = str(item.get("title") or "").strip()
-            if not title:
-                continue
-            if not self._is_meaningful_active_topic_text(title):
-                continue
-            key = str(item.get("bvid") or item.get("id") or title).strip()
-            compact_title = self._compact_context_text(title, limit=40)
-            profile = self._active_topic_material_profile(compact_title)
-            candidate = {
-                "source": "bili_trending",
-                "key": f"bili:{key}",
-                "title": compact_title,
-                "hint": "Use this Bilibili topic as material for one playful live-room line; do not read it like news.",
-            }
-            if profile:
-                candidate.update(profile)
-            candidates.append(candidate)
-            if len(candidates) >= 6:
-                break
-        self._active_engagement_topic_cache = candidates
-        self._active_engagement_topic_cache_at = now
-        return list(candidates)
+        return await self.active_topic_selector.bili_trending_topic_candidates()
 
     def _recent_danmaku_topic_candidates(self) -> list[dict[str, Any]]:
-        self._active_engagement_recent_topic_skip_reason = ""
-        if self._has_active_engagement_streak(self._active_engagement_recent_topic_sources, "recent_danmaku", 2):
-            self._active_engagement_recent_topic_skip_reason = "recent_danmaku_source_streak"
-            return []
-        recent_items: list[tuple[str, str]] = []
-        for result in reversed(self.recent_results):
-            if not isinstance(result, dict):
-                continue
-            event = result.get("event") if isinstance(result.get("event"), dict) else {}
-            if str(event.get("source") or "") != "live_danmaku":
-                continue
-            if str(result.get("status") or "") not in {"pushed", "dry_run"}:
-                if not self._active_engagement_recent_topic_skip_reason:
-                    self._active_engagement_recent_topic_skip_reason = "non_output_danmaku"
-                continue
-            route = self._route_from_result(result)
-            if route == "avatar_roast":
-                if not self._active_engagement_recent_topic_skip_reason:
-                    self._active_engagement_recent_topic_skip_reason = "avatar_roast_context"
-                continue
-            age = self._iso_age_sec(result.get("created_at"))
-            if age is not None and age > self._ACTIVE_ENGAGEMENT_RECENT_DANMAKU_TOPIC_MAX_AGE_SECONDS:
-                if not self._active_engagement_recent_topic_skip_reason:
-                    self._active_engagement_recent_topic_skip_reason = "stale_recent_danmaku"
-                continue
-            text = str(event.get("danmaku_text") or "").strip()
-            if not text:
-                continue
-            if self._is_viewer_to_viewer_mention_text(text):
-                if not self._active_engagement_recent_topic_skip_reason:
-                    self._active_engagement_recent_topic_skip_reason = "viewer_to_viewer_mention"
-                continue
-            if not self._is_meaningful_active_topic_text(text):
-                if not self._active_engagement_recent_topic_skip_reason:
-                    self._active_engagement_recent_topic_skip_reason = (
-                        self._active_topic_filter_reason(text) or "filtered_recent_danmaku"
-                    )
-                continue
-            compact = self._compact_context_text(text, limit=40)
-            uid = str(event.get("uid") or "").strip()
-            recent_items.append((uid, compact))
-            if len(recent_items) >= 6:
-                break
-        speaker_ids = {uid for uid, _ in recent_items if uid}
-        if len(recent_items) >= 3 and len(speaker_ids) == 1:
-            self._active_engagement_recent_topic_skip_reason = "single_viewer_flood"
-            return []
-        candidates: list[dict[str, Any]] = []
-        for _uid, compact in recent_items[:3]:
-            profile = self._active_topic_material_profile(compact)
-            candidate = {
-                "source": "recent_danmaku",
-                "key": f"danmaku:{compact}",
-                "title": compact,
-                "hint": "Extend this recent danmaku into one small live-room hook without pretending a new viewer spoke.",
-            }
-            if profile:
-                candidate.update(profile)
-            candidates.append(candidate)
-            if len(candidates) >= 3:
-                break
-        if candidates:
-            self._active_engagement_recent_topic_skip_reason = ""
-        return candidates
+        return self.active_topic_selector.recent_danmaku_topic_candidates()
 
     @staticmethod
     def _is_meaningful_active_topic_text(text: str) -> bool:
@@ -1248,27 +704,10 @@ class RoastRuntime:
         return active_topic_rules._is_live_test_or_runtime_feedback(dense_lowered)
 
     def _next_active_engagement_shape(self) -> str:
-        shapes = ["either_or", "light_stance", "tiny_tease", "small_challenge"]
-        shape = shapes[self._active_engagement_shape_index % len(shapes)]
-        self._active_engagement_shape_index += 1
-        return shape
+        return self.active_topic_selector.next_shape()
 
     def _active_engagement_guarded_shape(self, shape: str) -> str:
-        self._active_engagement_shape_guard_reason = ""
-        shapes = ["either_or", "light_stance", "tiny_tease", "small_challenge"]
-        normalized = shape if shape in shapes else shapes[0]
-        if not self._has_active_engagement_streak(self._active_engagement_recent_shapes, normalized, 2):
-            return normalized
-        self._active_engagement_shape_guard_reason = "recent_shape_streak"
-        for candidate in shapes:
-            if candidate != normalized and not self._has_active_engagement_streak(
-                self._active_engagement_recent_shapes, candidate, 1
-            ):
-                return candidate
-        for candidate in shapes:
-            if candidate != normalized:
-                return candidate
-        return normalized
+        return self.active_topic_selector.guarded_shape(shape)
 
     @staticmethod
     def _has_active_engagement_streak(values: deque[str], value: str, count: int) -> bool:
@@ -1331,34 +770,13 @@ class RoastRuntime:
         return result
 
     def _start_idle_hosting_loop(self) -> None:
-        task = self._idle_hosting_task
-        if task is not None and not task.done():
-            return
-        self._idle_hosting_task = asyncio.create_task(self._idle_hosting_loop())
+        self.live_hosting_director.start_loop()
 
     async def _stop_idle_hosting_loop(self) -> None:
-        task = self._idle_hosting_task
-        self._idle_hosting_task = None
-        if task is None or task.done():
-            return
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        await self.live_hosting_director.stop_loop()
 
     async def _idle_hosting_loop(self) -> None:
-        while True:
-            await self._idle_hosting_sleep(self._IDLE_HOSTING_CHECK_INTERVAL_SECONDS)
-            try:
-                await self.maybe_trigger_warmup_hosting()
-                await self.maybe_trigger_active_engagement()
-                await self.maybe_trigger_idle_hosting()
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                message = f"idle_hosting_loop_failed: {type(exc).__name__}"
-                self.audit.record("idle_hosting_loop_failed", message, level="warning")
+        await self.live_hosting_director.idle_hosting_loop()
 
     async def dashboard_state(self) -> dict[str, Any]:
         profiles = await self.viewer_store.recent_profiles(self.config.recent_limit)
@@ -1398,69 +816,13 @@ class RoastRuntime:
 
     def live_status_summary(self, live_connection: dict[str, Any] | None = None) -> dict[str, Any]:
         connection = live_connection or self.live_connection_snapshot()
-        room_id = int(self.config.live_room_id or connection.get("room_id") or 0)
-        connected = bool(connection.get("connected"))
-        safety_status = self.safety_guard.status()
-        cooldown_remaining = round(float(self.safety_guard.output_cooldown_remaining()), 1)
-        output_channel = self.dispatcher.output_channel_status()
-        output_channel_ready = bool(output_channel.get("ready"))
-        output_channel_reason = str(output_channel.get("reason") or "")
-        output_channel_detail = str(output_channel.get("detail") or "")
-
-        summary = "ready_to_stream"
-        reason = "ready"
-        can_output = True
-
-        if room_id <= 0:
-            summary = "cannot_stream"
-            reason = "room_not_configured"
-            can_output = False
-        elif not self.config.live_enabled:
-            summary = "cannot_stream"
-            reason = "live_disabled"
-            can_output = False
-        elif not connected:
-            summary = "cannot_stream"
-            reason = "live_ingest_disconnected"
-            can_output = False
-        elif safety_status == "paused":
-            summary = "temporarily_not_speaking"
-            reason = "manual_paused"
-            can_output = False
-        elif safety_status == "tripped":
-            summary = "cannot_stream"
-            reason = "safety_tripped"
-            can_output = False
-        elif safety_status == "degraded":
-            summary = "temporarily_not_speaking"
-            reason = "safety_degraded"
-            can_output = False
-        elif self.config.dry_run:
-            summary = "test_only"
-            reason = "dry_run"
-            can_output = False
-        elif not output_channel_ready:
-            summary = "cannot_stream"
-            reason = output_channel_reason or "output_channel_unavailable"
-            can_output = False
-        elif cooldown_remaining > 0:
-            summary = "temporarily_not_speaking"
-            reason = "cooldown"
-            can_output = False
-
-        return {
-            "summary": summary,
-            "reason": reason,
-            "can_output": can_output,
-            "room_id": room_id,
-            "connected": connected,
-            "dry_run": bool(self.config.dry_run),
-            "safety_status": safety_status,
-            "cooldown_remaining": cooldown_remaining,
-            "output_channel_ready": output_channel_ready,
-            "output_channel_reason": output_channel_reason,
-            "output_channel_detail": output_channel_detail,
-        }
+        return live_status_rules.live_status_summary(
+            config=self.config,
+            live_connection=connection,
+            safety_status=self.safety_guard.status(),
+            cooldown_remaining=round(float(self.safety_guard.output_cooldown_remaining()), 1),
+            output_channel=self.dispatcher.output_channel_status(),
+        )
 
     def live_state_summary(
         self,
@@ -1469,99 +831,30 @@ class RoastRuntime:
     ) -> dict[str, Any]:
         status = live_status or self.live_status_summary()
         rows = health_rows if health_rows is not None else self.runtime_health_rows()
-        safety_status = str(status.get("safety_status") or self.safety_guard.status())
-        mode_role = "solo_host" if self.config.live_mode == "solo_stream" else "companion"
         engaged_threshold, idle_threshold = self._live_state_threshold_seconds()
-
-        state = "engaged"
-        reason = "recent_activity"
-        last_viewer_activity_age_sec = self._last_viewer_activity_age_sec(rows)
-        last_output_age_sec = self._last_output_age_sec(rows)
-        warmup_observed = self._has_recent_response_module("warmup_hosting")
-        warmup_elapsed = self._solo_warmup_elapsed_seconds()
-        warmup_timeout = (
-            warmup_elapsed is not None
-            and warmup_elapsed >= self._solo_warmup_timeout_seconds()
+        return live_status_rules.live_state_summary(
+            config=self.config,
+            live_status=status,
+            health_rows=rows,
+            recent_results=self.recent_results,
+            warmup_observed=self._has_recent_response_module("warmup_hosting"),
+            warmup_elapsed=self._solo_warmup_elapsed_seconds(),
+            engaged_threshold=engaged_threshold,
+            idle_threshold=idle_threshold,
+            warmup_timeout_seconds=self._solo_warmup_timeout_seconds(),
+            iso_age_fn=self._iso_age_sec,
         )
-
-        if status.get("summary") == "cannot_stream" or safety_status in {"tripped", "degraded", "disconnected"}:
-            state = "blocked"
-            reason = "blocked_by_live_status"
-        elif safety_status == "paused":
-            state = "paused"
-            reason = "manual_paused"
-        elif (
-            last_viewer_activity_age_sec is None
-            and self.config.live_mode == "solo_stream"
-            and not warmup_observed
-            and not warmup_timeout
-        ):
-            state = "warmup"
-            reason = "solo_stream_warmup"
-        elif last_viewer_activity_age_sec is None or last_viewer_activity_age_sec > idle_threshold:
-            state = "idle"
-            reason = "no_recent_activity"
-        elif last_viewer_activity_age_sec > engaged_threshold:
-            state = "quiet"
-            reason = "quiet_activity_gap"
-
-        idle_hosting_candidate = (
-            self.config.live_mode == "solo_stream"
-            and state == "idle"
-            and status.get("summary") in {"ready_to_stream", "test_only"}
-            and float(status.get("cooldown_remaining") or 0.0) <= 0.0
-        )
-        warmup_hosting_candidate = (
-            self.config.live_mode == "solo_stream"
-            and state == "warmup"
-            and status.get("summary") in {"ready_to_stream", "test_only"}
-            and float(status.get("cooldown_remaining") or 0.0) <= 0.0
-        )
-
-        return {
-            "state": state,
-            "reason": reason,
-            "mode": self.config.live_mode,
-            "mode_role": mode_role,
-            "warmup_hosting_candidate": warmup_hosting_candidate,
-            "idle_hosting_candidate": idle_hosting_candidate,
-            "last_activity_age_sec": last_viewer_activity_age_sec,
-            "last_viewer_activity_age_sec": last_viewer_activity_age_sec,
-            "last_output_age_sec": last_output_age_sec,
-            "engaged_threshold_seconds": float(engaged_threshold),
-            "idle_threshold_seconds": float(idle_threshold),
-            "warmup_elapsed_sec": warmup_elapsed,
-            "warmup_timeout_seconds": self._solo_warmup_timeout_seconds(),
-        }
 
     def idle_hosting_status(self, live_state: dict[str, Any] | None = None) -> dict[str, Any]:
         state = live_state or self.live_state_summary()
-        now = float(self._idle_hosting_now())
-        min_interval = self._idle_hosting_min_interval_seconds()
-        elapsed = max(0.0, now - float(self._idle_hosting_last_attempt_at or 0.0))
-        cooldown_remaining = 0.0
-        if self._idle_hosting_last_attempt_at > 0:
-            cooldown_remaining = round(max(0.0, min_interval - elapsed), 1)
-
-        candidate = bool(state.get("idle_hosting_candidate"))
-        auto_disabled = self._idle_hosting_consecutive_failures >= self._IDLE_HOSTING_FAILURE_LIMIT
-        eligible = candidate and cooldown_remaining <= 0.0 and not auto_disabled
-        reason = "eligible"
-        if auto_disabled:
-            reason = "auto_disabled"
-        elif not candidate:
-            reason = "not_candidate"
-        elif cooldown_remaining > 0.0:
-            reason = "minimum_interval"
-
-        return {
-            "eligible": eligible,
-            "reason": reason,
-            "candidate": candidate,
-            "cooldown_remaining": cooldown_remaining,
-            "min_interval_seconds": float(min_interval),
-            "consecutive_failures": int(self._idle_hosting_consecutive_failures),
-        }
+        return live_status_rules.idle_hosting_status(
+            live_state=state,
+            now=float(self._idle_hosting_now()),
+            last_attempt_at=float(self._idle_hosting_last_attempt_at or 0.0),
+            min_interval_seconds=self._idle_hosting_min_interval_seconds(),
+            consecutive_failures=int(self._idle_hosting_consecutive_failures),
+            failure_limit=self._IDLE_HOSTING_FAILURE_LIMIT,
+        )
 
     def active_engagement_status(
         self,
@@ -1570,67 +863,24 @@ class RoastRuntime:
     ) -> dict[str, Any]:
         status = live_status or self.live_status_summary()
         state = live_state or self.live_state_summary(status)
-        state_name = str(state.get("state") or "")
-        idle_takeover_candidate = state_name == "idle" and self._recent_actual_route_streak_since_viewer_activity(
-            "idle_hosting"
-        ) >= self._IDLE_HOSTING_STREAK_FOR_ACTIVE_TAKEOVER
-        candidate = (
-            self.config.live_mode == "solo_stream"
-            and (state_name == "quiet" or idle_takeover_candidate)
-            and status.get("summary") in {"ready_to_stream", "test_only"}
-            and float(status.get("cooldown_remaining") or 0.0) <= 0.0
+        idle_takeover_streak = self._recent_actual_route_streak_since_viewer_activity("idle_hosting")
+        return live_status_rules.active_engagement_status(
+            config=self.config,
+            live_status=status,
+            live_state=state,
+            now=float(self._active_engagement_now()),
+            last_attempt_at=float(self._active_engagement_last_attempt_at or 0.0),
+            min_interval_seconds=self._active_engagement_min_interval_seconds(),
+            recent_danmaku_output_age=self._recent_live_danmaku_output_age_sec(),
+            recent_danmaku_wait_seconds=self._active_engagement_after_danmaku_interval_seconds(),
+            idle_hosting_wait_remaining=self._idle_hosting_wait_remaining_for_quiet_state(state),
+            idle_grace_seconds=self._active_engagement_idle_grace_seconds(),
+            idle_takeover_streak=(
+                idle_takeover_streak
+                if idle_takeover_streak >= self._IDLE_HOSTING_STREAK_FOR_ACTIVE_TAKEOVER
+                else 0
+            ),
         )
-        now = float(self._active_engagement_now())
-        min_interval = self._active_engagement_min_interval_seconds()
-        elapsed = max(0.0, now - float(self._active_engagement_last_attempt_at or 0.0))
-        cooldown_remaining = 0.0
-        if self._active_engagement_last_attempt_at > 0:
-            cooldown_remaining = round(max(0.0, min_interval - elapsed), 1)
-        minimum_interval_remaining = cooldown_remaining
-        recent_danmaku_output_age = self._recent_live_danmaku_output_age_sec()
-        recent_danmaku_wait = self._active_engagement_after_danmaku_interval_seconds()
-        recent_danmaku_cooldown = 0.0
-        if recent_danmaku_output_age is not None:
-            recent_danmaku_cooldown = round(max(0.0, recent_danmaku_wait - recent_danmaku_output_age), 1)
-        idle_hosting_wait_remaining = self._idle_hosting_wait_remaining_for_quiet_state(state)
-        eligible = bool(candidate)
-        reason = "eligible"
-        if self.config.live_mode != "solo_stream":
-            reason = "not_solo_stream"
-        elif state_name in {"paused", "blocked"}:
-            reason = state_name
-        elif state_name not in {"quiet", "idle"}:
-            reason = "not_quiet"
-        elif state_name == "idle" and not idle_takeover_candidate:
-            reason = "not_quiet"
-        elif status.get("summary") not in {"ready_to_stream", "test_only"}:
-            reason = str(status.get("reason") or "live_status_not_ready")
-        elif float(status.get("cooldown_remaining") or 0.0) > 0.0:
-            reason = "cooldown"
-        elif cooldown_remaining > 0.0:
-            reason = "minimum_interval"
-            eligible = False
-        elif recent_danmaku_cooldown > 0.0:
-            reason = "recent_danmaku_output"
-            cooldown_remaining = recent_danmaku_cooldown
-            eligible = False
-        elif idle_hosting_wait_remaining is not None and idle_hosting_wait_remaining <= self._active_engagement_idle_grace_seconds():
-            reason = "approaching_idle_hosting"
-            cooldown_remaining = idle_hosting_wait_remaining
-            eligible = False
-        elif idle_takeover_candidate:
-            reason = "idle_hosting_streak"
-        return {
-            "candidate": bool(candidate),
-            "eligible": eligible,
-            "reason": reason,
-            "cooldown_remaining": cooldown_remaining,
-            "minimum_interval_remaining": minimum_interval_remaining,
-            "recent_danmaku_cooldown_remaining": recent_danmaku_cooldown,
-            "idle_hosting_wait_remaining": idle_hosting_wait_remaining,
-            "minimum_interval_seconds": float(min_interval),
-            "min_interval_seconds": float(min_interval),
-        }
 
     def live_director_status(
         self,
@@ -1643,63 +893,13 @@ class RoastRuntime:
         state = live_state or self.live_state_summary(status)
         idle_status = idle_hosting_status or self.idle_hosting_status(state)
         active_status = active_engagement_status or self.active_engagement_status(status, state)
-        mode = str(state.get("mode") or self.config.live_mode)
-        state_name = str(state.get("state") or "")
-
-        next_auto_action = "none"
-        eligible = False
-        reason = "waiting_for_viewer"
-        cooldown_remaining = 0.0
-        min_interval_seconds = 0.0
-
-        if mode != "solo_stream":
-            reason = "companion_mode"
-        elif state_name == "paused":
-            reason = "paused"
-        elif state_name == "blocked":
-            reason = "blocked"
-        elif state_name == "warmup":
-            next_auto_action = "warmup_hosting"
-            eligible = bool(state.get("warmup_hosting_candidate"))
-            reason = "solo_warmup" if eligible else "warmup_hosting_not_ready"
-        elif state_name == "quiet":
-            if str(active_status.get("reason") or "") == "approaching_idle_hosting":
-                next_auto_action = "idle_hosting"
-                eligible = False
-                reason = "approaching_idle_hosting"
-                cooldown_remaining = float(active_status.get("idle_hosting_wait_remaining") or 0.0)
-                min_interval_seconds = float(idle_status.get("min_interval_seconds") or 0.0)
-            else:
-                next_auto_action = "active_engagement"
-                eligible = bool(active_status.get("eligible"))
-                reason = "solo_quiet" if eligible else str(active_status.get("reason") or "active_engagement_not_ready")
-                cooldown_remaining = float(active_status.get("cooldown_remaining") or 0.0)
-                min_interval_seconds = float(active_status.get("min_interval_seconds") or 0.0)
-        elif state_name == "idle":
-            if str(active_status.get("reason") or "") == "idle_hosting_streak":
-                next_auto_action = "active_engagement"
-                eligible = bool(active_status.get("eligible"))
-                reason = "idle_hosting_streak" if eligible else str(active_status.get("reason") or "active_engagement_not_ready")
-                cooldown_remaining = float(active_status.get("cooldown_remaining") or 0.0)
-                min_interval_seconds = float(active_status.get("min_interval_seconds") or 0.0)
-            else:
-                next_auto_action = "idle_hosting"
-                eligible = bool(idle_status.get("eligible"))
-                reason = "solo_idle" if eligible else str(idle_status.get("reason") or "idle_hosting_not_ready")
-                cooldown_remaining = float(idle_status.get("cooldown_remaining") or 0.0)
-                min_interval_seconds = float(idle_status.get("min_interval_seconds") or 0.0)
-        elif state_name == "engaged":
-            reason = "recent_activity"
-
-        return {
-            "next_auto_action": next_auto_action,
-            "eligible": eligible,
-            "reason": reason,
-            "cooldown_remaining": round(max(0.0, cooldown_remaining), 1),
-            "min_interval_seconds": float(min_interval_seconds),
-            "mode": mode,
-            "live_state": state_name,
-        }
+        return live_status_rules.live_director_status(
+            config=self.config,
+            live_status=status,
+            live_state=state,
+            idle_hosting_status=idle_status,
+            active_engagement_status=active_status,
+        )
 
     def solo_test_readiness(
         self,
@@ -1711,73 +911,14 @@ class RoastRuntime:
         status = live_status or self.live_status_summary()
         state = live_state or self.live_state_summary(status)
         director = live_director_status or self.live_director_status(status, state)
-        mode = str(state.get("mode") or self.config.live_mode)
-        status_summary = str(status.get("summary") or "")
-        is_solo = mode == "solo_stream"
-        live_ready = status_summary in {"ready_to_stream", "test_only"}
-        ready = bool(is_solo and live_ready)
-        if not is_solo:
-            summary = "not_solo_stream"
-        elif not live_ready:
-            summary = "live_not_ready"
-        elif bool(status.get("dry_run")):
-            summary = "ready_for_test"
-        else:
-            summary = "ready_for_live_test"
-
-        blocked_status = "ready" if ready else "blocked"
-        warmup_observed = self._has_recent_response_module("warmup_hosting")
-        items = [
-            {
-                "id": "preflight",
-                "status": "ready" if live_ready else "blocked",
-                "reason": str(status.get("reason") or ""),
-            },
-            {
-                "id": "test_isolation",
-                "status": "warning" if int(profile_count or 0) > 0 else blocked_status,
-                "reason": "viewer_profiles_present" if int(profile_count or 0) > 0 else ("clean" if ready else summary),
-            },
-            {
-                "id": "warmup_hosting",
-                "status": "observed" if warmup_observed else blocked_status,
-                "reason": "observed" if warmup_observed else ("available" if ready else summary),
-            },
-            {
-                "id": "avatar_roast",
-                "status": blocked_status,
-                "reason": "available" if ready else summary,
-            },
-            {
-                "id": "danmaku_response",
-                "status": blocked_status,
-                "reason": "available" if ready else summary,
-            },
-            {
-                "id": "active_engagement",
-                "status": blocked_status,
-                "reason": str(director.get("reason") or "available") if ready else summary,
-            },
-            {
-                "id": "idle_hosting",
-                "status": blocked_status,
-                "reason": "available" if ready else summary,
-            },
-            {
-                "id": "pacing_control",
-                "status": blocked_status,
-                "reason": str(getattr(self.config, "activity_level", "standard")),
-            },
-        ]
-        return {
-            "ready": ready,
-            "summary": summary,
-            "mode": mode,
-            "dry_run": bool(status.get("dry_run")),
-            "profile_count": int(profile_count or 0),
-            "next_auto_action": str(director.get("next_auto_action") or "none"),
-            "items": items,
-        }
+        return live_status_rules.solo_test_readiness(
+            config=self.config,
+            live_status=status,
+            live_state=state,
+            live_director_status=director,
+            profile_count=profile_count,
+            warmup_observed=self._has_recent_response_module("warmup_hosting"),
+        )
 
     def _has_recent_response_module(self, module_id: str) -> bool:
         target = str(module_id)
@@ -1809,49 +950,25 @@ class RoastRuntime:
         return streak
 
     def _active_engagement_min_interval_seconds(self) -> float:
-        return {
-            "quiet": 300.0,
-            "active": 45.0,
-            "standard": 60.0,
-        }.get(str(getattr(self.config, "activity_level", "standard")), 60.0)
+        return live_status_rules.active_engagement_min_interval_seconds(self.config)
 
     def _active_engagement_after_danmaku_interval_seconds(self) -> float:
-        return {
-            "quiet": 210.0,
-            "active": 30.0,
-            "standard": 45.0,
-        }.get(
-            str(getattr(self.config, "activity_level", "standard")),
-            45.0,
-        )
+        return live_status_rules.active_engagement_after_danmaku_interval_seconds(self.config)
 
     def _active_engagement_idle_grace_seconds(self) -> float:
-        return {
-            "quiet": 45.0,
-            "active": 15.0,
-            "standard": float(self._ACTIVE_ENGAGEMENT_IDLE_GRACE_SECONDS),
-        }.get(str(getattr(self.config, "activity_level", "standard")), float(self._ACTIVE_ENGAGEMENT_IDLE_GRACE_SECONDS))
+        return live_status_rules.active_engagement_idle_grace_seconds(
+            self.config,
+            float(self._ACTIVE_ENGAGEMENT_IDLE_GRACE_SECONDS),
+        )
 
     def _idle_hosting_wait_remaining_for_quiet_state(self, live_state: dict[str, Any]) -> float | None:
-        if str(live_state.get("state") or "") != "quiet":
-            return None
-        viewer_age = live_state.get("last_viewer_activity_age_sec")
-        if viewer_age is None:
-            return None
-        try:
-            age = float(viewer_age)
-        except (TypeError, ValueError):
-            return None
-        idle_threshold = float(live_state.get("idle_threshold_seconds") or self._live_state_threshold_seconds()[1])
-        remaining = round(max(0.0, idle_threshold - age), 1)
-        return remaining
+        return live_status_rules.idle_hosting_wait_remaining_for_quiet_state(
+            live_state,
+            idle_threshold_fallback=self._live_state_threshold_seconds()[1],
+        )
 
     def _idle_hosting_min_interval_seconds(self) -> float:
-        return {
-            "quiet": 180.0,
-            "active": 45.0,
-            "standard": 90.0,
-        }.get(str(getattr(self.config, "activity_level", "standard")), 90.0)
+        return live_status_rules.idle_hosting_min_interval_seconds(self.config)
 
     def _solo_warmup_elapsed_seconds(self) -> float | None:
         if self._live_listener_started_at <= 0:
@@ -1859,20 +976,16 @@ class RoastRuntime:
         return max(0.0, float(self._live_state_now()) - float(self._live_listener_started_at))
 
     def _solo_warmup_timeout_seconds(self) -> float:
-        return {
-            "quiet": 90.0,
-            "active": 30.0,
-            "standard": float(self._SOLO_WARMUP_TIMEOUT_SECONDS),
-        }.get(str(getattr(self.config, "activity_level", "standard")), float(self._SOLO_WARMUP_TIMEOUT_SECONDS))
+        return live_status_rules.solo_warmup_timeout_seconds(
+            self.config,
+            float(self._SOLO_WARMUP_TIMEOUT_SECONDS),
+        )
 
     def _live_state_threshold_seconds(self) -> tuple[float, float]:
-        return {
-            "quiet": (90.0, 300.0),
-            "active": (30.0, 90.0),
-            "standard": (float(self._LIVE_STATE_ENGAGED_SECONDS), float(self._LIVE_STATE_IDLE_SECONDS)),
-        }.get(
-            str(getattr(self.config, "activity_level", "standard")),
-            (float(self._LIVE_STATE_ENGAGED_SECONDS), float(self._LIVE_STATE_IDLE_SECONDS)),
+        return live_status_rules.live_state_threshold_seconds(
+            self.config,
+            float(self._LIVE_STATE_ENGAGED_SECONDS),
+            float(self._LIVE_STATE_IDLE_SECONDS),
         )
 
     def speech_explanation(
@@ -1882,68 +995,12 @@ class RoastRuntime:
     ) -> dict[str, Any]:
         status = live_status or self.live_status_summary()
         state = live_state or self.live_state_summary(status)
-        latest = self.recent_results[-1] if self.recent_results else {}
-        latest_status = str(latest.get("status") or "") if isinstance(latest, dict) else ""
-        latest_reason = str(latest.get("reason") or "") if isinstance(latest, dict) else ""
-        latest_age = self._iso_age_sec(latest.get("created_at")) if isinstance(latest, dict) else None
-        latest_latency = latest.get("response_latency_ms") if isinstance(latest, dict) else None
-        latest_event = latest.get("event") if isinstance(latest, dict) else {}
-        latest_source = str(latest_event.get("source") or "") if isinstance(latest_event, dict) else ""
-
-        status_summary = str(status.get("summary") or "cannot_stream")
-        status_reason = str(status.get("reason") or "room_not_configured")
-        state_name = str(state.get("state") or "")
-        state_reason = str(state.get("reason") or "")
-
-        summary = "ready"
-        reason = "ready"
-        if status_summary == "cannot_stream":
-            summary = "cannot_stream"
-            reason = status_reason
-        elif status_summary == "test_only":
-            summary = "test_only"
-            reason = status_reason
-        elif status_summary == "temporarily_not_speaking":
-            summary = "temporarily_not_speaking"
-            reason = status_reason
-        elif bool(state.get("warmup_hosting_candidate")):
-            summary = "waiting_for_activity"
-            reason = "solo_stream_warmup"
-        elif bool(state.get("idle_hosting_candidate")):
-            summary = "waiting_for_activity"
-            reason = "idle_hosting_candidate"
-        elif state_name in {"warmup", "quiet", "idle"}:
-            summary = "waiting_for_activity"
-            reason = state_reason or state_name
-        elif latest_status == "pushed":
-            summary = "recently_spoke"
-            reason = "recent_output"
-        elif latest_status == "skipped":
-            summary = "recently_skipped"
-            reason = "recently_skipped"
-        elif latest_status == "failed":
-            summary = "failed"
-            reason = "failed"
-        elif latest_status == "dry_run":
-            summary = "test_only"
-            reason = latest_reason or "dispatcher.dry_run"
-
-        return {
-            "summary": summary,
-            "reason": reason,
-            "live_status_summary": status_summary,
-            "live_status_reason": status_reason,
-            "live_state": state_name,
-            "live_state_reason": state_reason,
-            "cooldown_remaining": round(float(status.get("cooldown_remaining") or 0.0), 1),
-            "warmup_hosting_candidate": bool(state.get("warmup_hosting_candidate")),
-            "idle_hosting_candidate": bool(state.get("idle_hosting_candidate")),
-            "last_result_status": latest_status,
-            "last_result_reason": latest_reason,
-            "last_result_source": latest_source,
-            "last_result_age_sec": latest_age,
-            "last_result_latency_ms": latest_latency,
-        }
+        return live_status_rules.speech_explanation(
+            live_status=status,
+            live_state=state,
+            latest_result=self.recent_results[-1] if self.recent_results else None,
+            iso_age_fn=self._iso_age_sec,
+        )
 
     def recent_interaction_context(self, *, limit: int = 3) -> list[str]:
         lines: list[str] = []
@@ -2040,43 +1097,11 @@ class RoastRuntime:
 
     @staticmethod
     def _spent_output_text(result: dict[str, Any]) -> str:
-        if str(result.get("status") or "") != "pushed":
-            return ""
-        output = str(result.get("output") or "").strip()
-        if not output:
-            return ""
-        synthetic_prefixes = (
-            "queued_to_neko(",
-            "dry_run(",
-            "skipped_to_neko(",
-            "instructions_queued(",
-            "instructions_restored(",
-            "developer_instructions_queued(",
-            "developer_instructions_restored(",
-            "developer_mode_announced(",
-        )
-        if output.startswith(synthetic_prefixes):
-            return ""
-        return output
+        return recent_context.spent_output_text(result)
 
     @staticmethod
     def _spent_output_families(output: str) -> list[str]:
-        normalized = _normalize_spent_output_family_text(output)
-        if not normalized:
-            return []
-        ascii_words = _spent_output_ascii_words(output)
-        families: list[str] = []
-        for family, tokens in _SPENT_OUTPUT_FAMILY_TOKENS:
-            if any(
-                _spent_output_family_token_matches(
-                    normalized_output=normalized,
-                    ascii_words=ascii_words,
-                    token=token,
-                )
-                for token in tokens
-            ):
-                families.append(family)
-        return families
+        return recent_context.spent_output_families(output)
 
     def _recent_spent_output_families(self, *, limit: int = 12) -> set[str]:
         families: set[str] = set()
@@ -2099,165 +1124,39 @@ class RoastRuntime:
 
     @staticmethod
     def _compact_context_text(value: str, *, limit: int = 80) -> str:
-        text = " ".join(str(value).split())
-        if len(text) <= limit:
-            return text
-        return text[: max(0, limit - 3)].rstrip() + "..."
+        return recent_context.compact_context_text(value, limit=limit)
 
     @staticmethod
     def _route_from_result(result: dict[str, Any]) -> str:
-        response_module = str(result.get("response_module") or "")
-        if response_module:
-            return response_module
-        event = result.get("event") if isinstance(result.get("event"), dict) else {}
-        source = str(event.get("source") or "")
-        event_type = str(event.get("event_type") or "").strip().lower()
-        signal_route = RoastRuntime._signal_route_for_event_type(event_type)
-        if signal_route:
-            return signal_route
-        if source in {"idle_hosting", "active_engagement", "warmup_hosting"}:
-            return source
-        steps = result.get("steps") if isinstance(result.get("steps"), list) else []
-        for step in reversed(steps):
-            if not isinstance(step, dict):
-                continue
-            step_id = str(step.get("id") or "")
-            if step_id in {
-                "danmaku_response",
-                "avatar_roast",
-                "idle_hosting",
-                "active_engagement",
-                "warmup_hosting",
-                "gift_signal",
-                "super_chat_signal",
-            }:
-                return step_id
-        return source or "unknown"
+        return recent_context.route_from_result(result)
 
     @staticmethod
     def _signal_route_for_event_type(event_type: str) -> str:
-        normalized = str(event_type or "").strip().lower()
-        if normalized in {"gift", "guard"}:
-            return "gift_signal"
-        if normalized in {"super_chat", "sc"}:
-            return "super_chat_signal"
-        return ""
+        return recent_context.signal_route_for_event_type(event_type)
 
     @staticmethod
     def _event_signal_from_result(result: dict[str, Any]) -> str:
-        event = result.get("event") if isinstance(result.get("event"), dict) else {}
-        source = str(event.get("source") or "")
-        if source != "live_danmaku":
-            return source or "unknown"
-        event_type = str(event.get("event_type") or "").strip().lower()
-        if event_type in {"gift", "guard"}:
-            return "gift_signal"
-        if event_type in {"super_chat", "sc"}:
-            return "super_chat_signal"
-        text = str(event.get("danmaku_text") or "").strip().lower()
-        if any(token in text for token in ("粉丝团灯牌", "赠送", "送出", "礼物", "gift")):
-            return "gift_signal"
-        if any(token in text for token in ("super chat", "superchat", "醒目留言", "sc")):
-            return "super_chat_signal"
-        return "danmaku_signal"
+        return recent_context.event_signal_from_result(result)
 
     def _recent_live_danmaku_output_age_sec(self) -> float | None:
-        for result in reversed(self.recent_results):
-            if not isinstance(result, dict):
-                continue
-            if str(result.get("status") or "") not in {"pushed", "dry_run"}:
-                continue
-            event = result.get("event") if isinstance(result.get("event"), dict) else {}
-            if str(event.get("source") or "") != "live_danmaku":
-                continue
-            route = self._route_from_result(result)
-            if route not in {"avatar_roast", "danmaku_response", "live_danmaku"}:
-                continue
-            age = self._iso_age_sec(result.get("created_at"))
-            if age is not None:
-                return float(age)
-        return None
+        return live_status_rules.recent_live_danmaku_output_age_sec(self.recent_results, self._iso_age_sec)
 
     def _last_viewer_activity_age_sec(self, rows: list[dict[str, Any]]) -> float | None:
-        ages: list[float] = []
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            if row.get("id") not in {"live_ingest", "event_bus", "selection"}:
-                continue
-            outcome = str(row.get("last_outcome") or "").strip()
-            if outcome not in {"danmaku", "live_danmaku"}:
-                continue
-            age = row.get("age_sec")
-            if age is None:
-                continue
-            try:
-                ages.append(float(age))
-            except (TypeError, ValueError):
-                continue
-        recent_age = self._recent_live_danmaku_event_age_sec()
-        if recent_age is not None:
-            ages.append(float(recent_age))
-        return min(ages) if ages else None
+        return live_status_rules.last_viewer_activity_age_sec(rows, self.recent_results, self._iso_age_sec)
 
     def _last_output_age_sec(self, rows: list[dict[str, Any]]) -> float | None:
-        ages: list[float] = []
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            if row.get("id") not in {"pipeline", "dispatcher"}:
-                continue
-            age = row.get("age_sec")
-            if age is None:
-                continue
-            try:
-                ages.append(float(age))
-            except (TypeError, ValueError):
-                continue
-        for result in reversed(self.recent_results):
-            if not isinstance(result, dict):
-                continue
-            if str(result.get("status") or "") not in {"pushed", "dry_run"}:
-                continue
-            age = self._iso_age_sec(result.get("created_at"))
-            if age is not None:
-                ages.append(float(age))
-                break
-        return min(ages) if ages else None
+        return live_status_rules.last_output_age_sec(rows, self.recent_results, self._iso_age_sec)
 
     def _recent_live_danmaku_event_age_sec(self) -> float | None:
-        for result in reversed(self.recent_results):
-            if not isinstance(result, dict):
-                continue
-            event = result.get("event") if isinstance(result.get("event"), dict) else {}
-            if str(event.get("source") or "") != "live_danmaku":
-                continue
-            age = self._iso_age_sec(result.get("created_at"))
-            if age is not None:
-                return float(age)
-        return None
+        return live_status_rules.recent_live_danmaku_event_age_sec(self.recent_results, self._iso_age_sec)
 
     @staticmethod
     def _age_sec(timestamp: Any) -> float | None:
-        try:
-            value = float(timestamp)
-        except (TypeError, ValueError):
-            return None
-        if value <= 0:
-            return None
-        return round(max(0.0, time.time() - value), 1)
+        return live_status_rules.age_sec(timestamp)
 
     @staticmethod
     def _iso_age_sec(value: Any) -> float | None:
-        if not value:
-            return None
-        try:
-            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        except ValueError:
-            return None
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return round(max(0.0, (datetime.now(timezone.utc) - parsed).total_seconds()), 1)
+        return live_status_rules.iso_age_sec(value)
 
     @staticmethod
     def _status_from_outcome(outcome: str) -> str:
