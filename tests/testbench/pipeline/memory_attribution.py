@@ -24,7 +24,7 @@ Two backends
 Discipline
 ----------
 Read only — never writes memory JSON (blueprint §1.3 "Tier C 归因是分析, 不写回").
-"""
+"""  # noqa: DOCSTRING_CJK
 from __future__ import annotations
 
 import re
@@ -108,7 +108,7 @@ def _overlap(sa: set[str], sb: set[str]) -> float:
     turn dominates the union. This is exactly the "short distillation of a long
     source" shape Tier C is trying to surface, so dashed edges actually appear
     for real characters (user report: 一条虚线都看不到). Deterministic.
-    """
+    """  # noqa: DOCSTRING_CJK
     if not sa or not sb:
         return 0.0
     inter = len(sa & sb)

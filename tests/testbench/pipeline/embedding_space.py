@@ -25,7 +25,7 @@ that into a "import an already-embedded character" prompt.
 Discipline: read only, soft errors (a bad file → warning + partial result),
 lazy-imports ``memory.embeddings`` pure helpers only (never the runtime
 ``EmbeddingService`` — blueprint §1.3).
-"""
+"""  # noqa: DOCSTRING_CJK
 from __future__ import annotations
 
 import hashlib
@@ -441,7 +441,7 @@ def build_space_view(character: str, *, reducer: str = "pca") -> dict[str, Any]:
     is ``pca`` (default, always available) or ``umap`` (P28.4, only when
     ``umap-learn`` is installed); an unavailable/failed UMAP quietly falls back
     to PCA, reported via ``meta.reducer_used`` / ``meta.umap_available``.
-    """
+    """  # noqa: DOCSTRING_CJK
     space = _build_space(character)
     matrix = space["_matrix"]
     ids = space["_ids"]
@@ -538,7 +538,7 @@ def build_bridges(
     ``space`` may be a pre-built :func:`_build_space` result (P29 overview
     aggregates several views — injecting it avoids re-reading + re-decoding the
     whole corpus once per view). Defaults to building it fresh.
-    """
+    """  # noqa: DOCSTRING_CJK
     space = space if space is not None else _build_space(character)
     matrix = space["_matrix"]
     by_id = space["_by_id"]
@@ -622,7 +622,7 @@ def build_duplicates(
     (``N²`` similarity is never fully materialized).
 
     ``space`` may be a pre-built :func:`_build_space` result (P29 reuse).
-    """
+    """  # noqa: DOCSTRING_CJK
     space = space if space is not None else _build_space(character)
     matrix = space["_matrix"]
     ids = space["_ids"]
@@ -710,7 +710,7 @@ def build_matrix(
 
     Returns ``order`` (display-order ids) + ``cells`` (NxN, same order) +
     per-id ``labels``/``types``/``entities`` + ``truncated`` (subset clipped).
-    """
+    """  # noqa: DOCSTRING_CJK
     space = _build_space(character)
     matrix = space["_matrix"]
     all_ids = space["_ids"]
@@ -940,7 +940,7 @@ async def build_cluster_labels(session, character: str) -> dict[str, Any]:
     ``memory.llm`` wire-stamp discipline. On any failure (LLM error / no model /
     unparsable reply) it degrades to ``method="medoid"`` with the medoid labels —
     never raises, never 500s the click.
-    """
+    """  # noqa: DOCSTRING_CJK
     data = build_clusters(character)
     clusters = data["clusters"]
     warnings = list(data["warnings"])

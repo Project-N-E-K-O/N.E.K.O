@@ -38,7 +38,7 @@ Environment isolation mirrors p37_embedding_space_smoke.py.
 Usage::
 
     .venv\\Scripts\\python.exe tests/testbench/smoke/p39_memory_overview_smoke.py
-"""
+"""  # noqa: DOCSTRING_CJK
 from __future__ import annotations
 
 import io

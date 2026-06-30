@@ -36,7 +36,7 @@ Environment isolation mirrors p32_memory_lineage_smoke.py.
 Usage::
 
     .venv\\Scripts\\python.exe tests/testbench/smoke/p37_embedding_space_smoke.py
-"""
+"""  # noqa: DOCSTRING_CJK
 from __future__ import annotations
 
 import io

@@ -30,7 +30,7 @@ Gating (blueprint §4.3): a character with 0 embedded entries still gets a full,
 honest payload — structural findings (D/F/H/L0 contradiction) run regardless;
 vector findings (A/B2/C/E.split/G) are marked unavailable with guidance rather
 than silently returning empty.
-"""
+"""  # noqa: DOCSTRING_CJK
 from __future__ import annotations
 
 import asyncio
@@ -728,7 +728,7 @@ def _confidence(
 
     ``level`` ∈ high/medium/low; ``notes`` is a list of stable codes the UI maps
     to a sentence ("没有向量 → A/C/E.split/G 不可用", etc.).
-    """
+    """  # noqa: DOCSTRING_CJK
     notes: list[str] = []
     ratio = (embedded / total) if total else 0.0
     if not has_emb:

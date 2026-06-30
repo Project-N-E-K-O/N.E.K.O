@@ -1068,7 +1068,7 @@ def _resolve_archive_character_name(
     ``当前猫娘`` -> the single key when unambiguous. Raises 422 when the
     archive has no usable character or when it is ambiguous and no name was
     given.
-    """
+    """  # noqa: DOCSTRING_CJK
     catgirls = raw.get("猫娘")
     catgirls = catgirls if isinstance(catgirls, dict) else {}
     names = [str(k) for k in catgirls.keys()]

@@ -418,7 +418,7 @@ async def get_embedding_space(reducer: str = "pca") -> dict[str, Any]:
     (``meta`` health counts drive the UI's "no vectors" empty state).
 
     Declared before ``/{kind}`` so the static path wins route resolution.
-    """
+    """  # noqa: DOCSTRING_CJK
     session = _require_session()
     character = _require_character(session)
     # CPU-bound (PCA/UMAP/numpy over up to thousands of vectors). Run off the
@@ -429,7 +429,7 @@ async def get_embedding_space(reducer: str = "pca") -> dict[str, Any]:
 
 @router.get("/embedding/neighbors")
 async def get_embedding_neighbors(id: str, k: int = 10) -> dict[str, Any]:
-    """P28.1 — cosine top-k nearest memories for one entry (③最近邻)."""
+    """P28.1 — cosine top-k nearest memories for one entry (③最近邻)."""  # noqa: DOCSTRING_CJK
     session = _require_session()
     character = _require_character(session)
     return await asyncio.to_thread(build_neighbors, character, id, k=k)
@@ -441,7 +441,7 @@ async def get_embedding_bridges(top_k: int = 3) -> dict[str, Any]:
 
     Per reflection: semantic-nearest facts (cosine) vs declared
     ``source_fact_ids``. Read-only.
-    """
+    """  # noqa: DOCSTRING_CJK
     session = _require_session()
     character = _require_character(session)
     return await asyncio.to_thread(build_bridges, character, top_k=top_k)
@@ -449,7 +449,7 @@ async def get_embedding_bridges(top_k: int = 3) -> dict[str, Any]:
 
 @router.get("/embedding/duplicates")
 async def get_embedding_duplicates(threshold: float = 0.95) -> dict[str, Any]:
-    """P28.2 — 近重复对 (④): cosine ≥ threshold 的条目两两 (跨类型)。Read-only."""
+    """P28.2 — 近重复对 (④): cosine ≥ threshold 的条目两两 (跨类型)。Read-only."""  # noqa: DOCSTRING_CJK
     session = _require_session()
     character = _require_character(session)
     return await asyncio.to_thread(build_duplicates, character, threshold=threshold)
@@ -462,7 +462,7 @@ async def get_embedding_matrix(ids: str = "") -> dict[str, Any]:
     ``ids`` is a comma-separated subset (empty → whole primary space, clipped
     to MATRIX_MAX_N). Returns an NxN cosine matrix reordered by seriation.
     Read-only.
-    """
+    """  # noqa: DOCSTRING_CJK
     session = _require_session()
     character = _require_character(session)
     id_list = [s for s in ids.split(",") if s] if ids else None
@@ -478,7 +478,7 @@ async def post_enable_umap() -> dict[str, Any]:
     server stays responsive during the (possibly minutes-long) install.
     Always returns ``{ok, installed, reducer_available, log}`` — never 500s
     on a failed install; the UI shows ``log`` and stays on PCA.
-    """
+    """  # noqa: DOCSTRING_CJK
     return await asyncio.to_thread(install_umap)
 
 
@@ -501,7 +501,7 @@ async def post_embedding_cluster_labels() -> dict[str, Any]:
 
     Runs under ``session_operation`` (stamps ``memory.llm`` wire + calls the
     memory model). Degrades to medoid labels on any LLM failure — never 500s.
-    """
+    """  # noqa: DOCSTRING_CJK
     store = get_session_store()
     try:
         async with store.session_operation("memory.embedding.cluster_label") as session:
@@ -518,7 +518,7 @@ async def get_memory_overview() -> dict[str, Any]:
     Aggregates the P27 lineage snapshot and the P28 embedding space **once each**
     into a dashboard payload. Read-only; CPU-bound (it reuses the vector views),
     so it runs off the event loop (P28.5 阻塞教训).
-    """
+    """  # noqa: DOCSTRING_CJK
     session = _require_session()
     character = _require_character(session)
     return await asyncio.to_thread(build_overview, character)
@@ -528,7 +528,7 @@ async def get_memory_overview() -> dict[str, Any]:
 async def post_memory_overview_ai_report() -> dict[str, Any]:
     """P29.2 — LLM 健康体检报告 (按需). Runs under ``session_operation`` (stamps
     ``memory.llm`` wire). Degrades to ``method='unavailable'`` + actionable
-    reason on any LLM/config failure — never 500s."""
+    reason on any LLM/config failure — never 500s."""  # noqa: DOCSTRING_CJK
     store = get_session_store()
     try:
         async with store.session_operation("memory.overview.ai_report") as session:
@@ -541,7 +541,7 @@ async def post_memory_overview_ai_report() -> dict[str, Any]:
 @router.post("/overview/contradictions")
 async def post_memory_overview_contradictions() -> dict[str, Any]:
     """P29.2 — L2 矛盾 NLI 裁决 (按需, 对 L1 候选). Runs under ``session_operation``
-    (stamps ``memory.llm`` wire). Degrades to candidates-only on failure."""
+    (stamps ``memory.llm`` wire). Degrades to candidates-only on failure."""  # noqa: DOCSTRING_CJK
     store = get_session_store()
     try:
         async with store.session_operation("memory.overview.contradictions") as session:
