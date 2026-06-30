@@ -1127,7 +1127,9 @@
                         // Ensure Live2D manager is initialised
                         if (!window.live2dManager) {
                             console.log('[Model] Live2D 管理器未初始化，等待初始化完成');
-                            if (typeof initLive2DModel === 'function') {
+                            if (temporaryConfig && typeof window.Live2DManager === 'function') {
+                                window.live2dManager = new window.Live2DManager();
+                            } else if (typeof initLive2DModel === 'function') {
                                 await initLive2DModel();
                             }
                         }

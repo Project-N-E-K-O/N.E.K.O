@@ -743,6 +743,91 @@ class UniversalTutorialManager {
         return null;
     }
 
+    getAvatarFloatingBootHelper() {
+        return window.NekoAvatarFloatingBoot || null;
+    }
+
+    isDirectAvatarFloatingTutorialBoot(round) {
+        const helper = this.getAvatarFloatingBootHelper();
+        if (!helper) {
+            return false;
+        }
+        const normalizedRound = normalizeOptionalAvatarFloatingGuideRound(round);
+        const predictedRound = typeof helper.getPredictedRound === 'function'
+            ? normalizeOptionalAvatarFloatingGuideRound(helper.getPredictedRound())
+            : null;
+        const canBootDirect = typeof helper.shouldBootIntoTutorial === 'function'
+            ? helper.shouldBootIntoTutorial()
+            : !!predictedRound;
+        const skippedUserModel = typeof helper.wasUserModelBootSkipped === 'function'
+            && helper.wasUserModelBootSkipped();
+        return !!normalizedRound && ((canBootDirect && predictedRound === normalizedRound) || skippedUserModel);
+    }
+
+    claimDirectAvatarFloatingTutorialBoot(round, source) {
+        if (!window.NekoAvatarFloatingBoot || typeof window.NekoAvatarFloatingBoot.claimDirectTutorialBoot !== 'function') {
+            return false;
+        }
+        return window.NekoAvatarFloatingBoot.claimDirectTutorialBoot(round, source || 'avatar-floating-guide-start');
+    }
+
+    releaseDirectAvatarFloatingTutorialBoot(reason) {
+        if (window.NekoAvatarFloatingBoot && typeof window.NekoAvatarFloatingBoot.releaseDirectTutorialBoot === 'function') {
+            window.NekoAvatarFloatingBoot.releaseDirectTutorialBoot(reason || 'avatar-floating-guide-release');
+        }
+    }
+
+    async recoverUserModelAfterDirectTutorialBootFailure(reason) {
+        if (window.NekoAvatarFloatingBoot && typeof window.NekoAvatarFloatingBoot.recoverUserModelBoot === 'function') {
+            try {
+                return await window.NekoAvatarFloatingBoot.recoverUserModelBoot(reason || 'direct-tutorial-boot-failed');
+            } catch (error) {
+                console.warn('[Tutorial] direct tutorial boot 恢复用户模型失败:', reason || 'unknown', error);
+            }
+        }
+        if (typeof window.showCurrentModel === 'function') {
+            try {
+                await window.showCurrentModel();
+                return true;
+            } catch (error) {
+                console.warn('[Tutorial] showCurrentModel 恢复用户模型失败:', reason || 'unknown', error);
+            }
+        }
+        return false;
+    }
+
+    waitForTutorialModelHostReady(maxWaitTime = 12000) {
+        const hasHost = () => !!(
+            document.body
+            && document.getElementById('live2d-container')
+            && document.getElementById('live2d-canvas')
+        );
+        if (hasHost()) {
+            return Promise.resolve(true);
+        }
+        return new Promise((resolve) => {
+            let resolved = false;
+            const done = (result) => {
+                if (resolved) {
+                    return;
+                }
+                resolved = true;
+                clearTimeout(timer);
+                clearInterval(poller);
+                resolve(result);
+            };
+            const poller = setInterval(() => {
+                if (hasHost()) {
+                    done(true);
+                }
+            }, 50);
+            const timer = setTimeout(() => {
+                console.warn(`[Tutorial] 等待教程模型容器超时（${maxWaitTime / 1000}秒）`);
+                done(false);
+            }, maxWaitTime);
+        });
+    }
+
     async maybeStartAvatarFloatingGuideAutoRound(delayMs = 1200) {
         if (this.currentPage !== 'home' || this.isTutorialRunning || window.isInTutorial) {
             return false;
@@ -1389,6 +1474,7 @@ class UniversalTutorialManager {
                         page: this.currentPage,
                         reason: 'prompt-flow-active',
                     });
+                    this.recoverUserModelAfterDirectTutorialBootFailure('home-auto-start-suppressed');
                     this.dispatchStartupGreetingRelease('home-auto-start-suppressed');
                     return;
                 }
@@ -1397,11 +1483,13 @@ class UniversalTutorialManager {
                     const round = this.getHomeAvatarFloatingGuideStartRound();
                     if (!round) {
                         console.warn('[Tutorial] 首页每日教程 round 未注册，跳过启动');
+                        this.recoverUserModelAfterDirectTutorialBootFailure('no-home-avatar-floating-round');
                         this.dispatchStartupGreetingRelease('no-home-avatar-floating-round');
                         return;
                     }
                     this.startAvatarFloatingGuideRound(round, { source }).then((result) => {
                         if (result === false) {
+                            this.recoverUserModelAfterDirectTutorialBootFailure('avatar-floating-round-start-skipped');
                             this.dispatchStartupGreetingRelease('avatar-floating-round-start-skipped', { day: round });
                         }
                     }).catch(error => {
@@ -2966,7 +3054,12 @@ class UniversalTutorialManager {
             }
 
             if (this.currentPage === 'home') {
-                await this.waitForFloatingButtons();
+                const round = this.getHomeAvatarFloatingGuideStartRound();
+                if (round && this.isDirectAvatarFloatingTutorialBoot(round)) {
+                    await this.waitForTutorialModelHostReady();
+                } else {
+                    await this.waitForFloatingButtons();
+                }
                 this.startTutorialWhenI18nReady(delayMs);
                 return true;
             }
@@ -3003,9 +3096,18 @@ class UniversalTutorialManager {
         if (this.currentPage !== 'home') {
             throw new Error('avatar_floating_guide_requires_home');
         }
-        const buttonsReady = await this.waitForFloatingButtons();
-        if (!buttonsReady) {
-            throw new Error('floating_buttons_not_ready');
+        const directTutorialBoot = this.isDirectAvatarFloatingTutorialBoot(round);
+        if (directTutorialBoot) {
+            const hostReady = await this.waitForTutorialModelHostReady();
+            if (!hostReady) {
+                await this.recoverUserModelAfterDirectTutorialBootFailure('tutorial-model-host-not-ready');
+                throw new Error('tutorial_model_host_not_ready');
+            }
+        } else {
+            const buttonsReady = await this.waitForFloatingButtons();
+            if (!buttonsReady) {
+                throw new Error('floating_buttons_not_ready');
+            }
         }
 
         this._isDestroyed = false;
@@ -3035,13 +3137,18 @@ class UniversalTutorialManager {
         this.syncYuiGuideCompactChatFixedLayout(true, 'avatar-floating-guide-start');
         this._tutorialModelPrefix = 'live2d';
         this.emitTutorialStarted('home', source);
+        if (directTutorialBoot) {
+            this.claimDirectAvatarFloatingTutorialBoot(round, source);
+        }
 
         try {
             const director = this.ensureYuiGuideDirector();
             if (!director || typeof director.playAvatarFloatingRound !== 'function') {
                 throw new Error('avatar_floating_director_unavailable');
             }
-            await this.playAvatarFloatingRoundPrelude(round, source, director);
+            await this.playAvatarFloatingRoundPrelude(round, source, director, {
+                skipSourceModelFade: directTutorialBoot
+            });
             const completed = await director.playAvatarFloatingRound(round, {
                 source,
                 surfaceReady: true,
@@ -3060,10 +3167,17 @@ class UniversalTutorialManager {
             return completed;
         } catch (error) {
             console.error('[Tutorial] 悬浮窗教程启动失败:', error);
+            if (directTutorialBoot) {
+                await this.recoverUserModelAfterDirectTutorialBootFailure('avatar-floating-start-failed');
+            }
             if (!this._tutorialEndHandled) {
                 await this.requestTutorialDestroy('destroy');
             }
             throw error;
+        } finally {
+            if (directTutorialBoot) {
+                this.releaseDirectAvatarFloatingTutorialBoot('avatar-floating-start-finished');
+            }
         }
     }
 
@@ -3081,7 +3195,7 @@ class UniversalTutorialManager {
         }
     }
 
-    async playAvatarFloatingRoundPrelude(round, source, director) {
+    async playAvatarFloatingRoundPrelude(round, source, director, options = {}) {
         const controller = this.ensureTutorialRoundPreludeController();
         if (!controller || typeof controller.play !== 'function') {
             throw new Error('tutorial_round_prelude_controller_unavailable');
@@ -3089,7 +3203,8 @@ class UniversalTutorialManager {
         return controller.play(round, {
             source: source,
             director: director || null,
-            deferRevealPrepared: true
+            deferRevealPrepared: true,
+            skipSourceModelFade: options && options.skipSourceModelFade === true
         });
     }
 
@@ -3112,6 +3227,20 @@ class UniversalTutorialManager {
 
         const storageKey = this.getStorageKey();
         const hasSeen = localStorage.getItem(storageKey);
+        if (this.currentPage === 'home') {
+            const directBootRound = this.getHomeAvatarFloatingGuideStartRound();
+            if (directBootRound && this.isDirectAvatarFloatingTutorialBoot(directBootRound)) {
+                const directBootState = loadAvatarFloatingGuideState();
+                if (directBootState.manualResetRound === directBootRound) {
+                    this.pendingTutorialStartSource = 'manual_reset';
+                }
+                if (!hasSeen) {
+                    this.setHomeTutorialPending(true);
+                }
+                this.startTutorialWhenI18nReady(1500);
+                return;
+            }
+        }
 
         if (!hasSeen && this.currentPage === 'home') {
             // 新手教程即将启动：先置 pending，让选人格门控在「模型加载/首句演出尚未上锁」这段窗口里

@@ -461,6 +461,15 @@
         await window.__nekoStorageLocationStartupBarrier;
     }
 
+    if (window.NekoAvatarFloatingBoot && typeof window.NekoAvatarFloatingBoot.shouldSkipUserModelBoot === 'function'
+        && window.NekoAvatarFloatingBoot.shouldSkipUserModelBoot()) {
+        if (typeof window.NekoAvatarFloatingBoot.markUserModelBootSkipped === 'function') {
+            window.NekoAvatarFloatingBoot.markUserModelBootSkipped('mmd-init');
+        }
+        console.log('[MMD Init] 新手教程启动预测命中，跳过用户 MMD 模型加载');
+        return;
+    }
+
     // 等待页面配置加载完成
     if (window.pageConfigReady && typeof window.pageConfigReady.then === 'function') {
         await window.pageConfigReady;
