@@ -11170,9 +11170,14 @@ function toggleMasterSection() {
         clearTimeout(content._masterProfileHideTimer);
         content._masterProfileHideTimer = null;
     }
+    if (content._masterProfileHideContent) {
+        content.removeEventListener('transitionend', content._masterProfileHideContent);
+        content._masterProfileHideContent = null;
+    }
 
     if (isOpening) {
         content.style.display = 'block';
+        content.style.setProperty('--master-profile-viewport-left', `${content.getBoundingClientRect().left}px`);
         content.getBoundingClientRect();
         content.classList.add('open');
         header.classList.add('open');
@@ -11195,9 +11200,13 @@ function toggleMasterSection() {
             clearTimeout(content._masterProfileHideTimer);
             content._masterProfileHideTimer = null;
         }
+        if (content._masterProfileHideContent === hideContent) {
+            content._masterProfileHideContent = null;
+        }
     };
 
     content.addEventListener('transitionend', hideContent);
+    content._masterProfileHideContent = hideContent;
     content._masterProfileHideTimer = setTimeout(hideContent, 280);
 }
 
