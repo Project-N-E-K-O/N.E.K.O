@@ -674,6 +674,7 @@
     },
     "chat": {
         "title": "Bater papo",
+        "topicHint": "{{author}} parece ter algo sobre o que quer conversar…",
         "viewerTitle": "Bate-papo (modo visualizador)",
         "tooltip": "Área de bate-papo",
         "textInputPlaceholder": "Pressione Enter para enviar, Shift+Enter para nova linha",
@@ -1574,6 +1575,17 @@
             "mimo": "MiMo (Xiaomi)",
             "vllm_omni": "vLLM-Omni (Clone Local)"
         },
+        "sourcePreset": "Predefinido",
+        "sourceClone": "Clonado",
+        "sourceDesign": "Gerado por descrição",
+        "providerLocal": "CosyVoice local",
+        "providerFree": "Grátis",
+        "providerFreeApi": "API grátis",
+        "providerUnknown": "Outro",
+        "nativeVoice": {
+            "qingchunshaonv": "Garota jovem",
+            "wenrounansheng": "Voz masculina suave"
+        },
         "selectFile": "Selecione o arquivo de áudio local (8 segundos recomendados, máximo de 20 segundos, formato wav/mp3)",
         "customPrefix": "Prefixo personalizado (obrigatório, usado para distinguir vozes diferentes)",
         "customPrefixNote": "Máximo de 10 caracteres, números e letras em inglês apenas",
@@ -1937,8 +1949,8 @@
         "gender": "Gênero",
         "nickname": "Apelido",
         "apiKeySettings": "Chave de API",
-        "masterProfile": "Perfil Mestre (Exclusivo): O nome do perfil é obrigatório, outros são opcionais e podem ser excluídos.",
-        "masterProfileTitle": "Perfil do mestre",
+        "masterProfile": "Meu perfil (único): o nome do perfil é obrigatório; o restante é opcional e pode ser excluído.",
+        "masterProfileTitle": "Meu perfil",
         "profileName": "Nome do perfil",
         "profileNameMaxHint": "Máximo de 60 caracteres",
         "profileNameTooLong": "O nome do perfil é muito longo",
@@ -2026,7 +2038,7 @@
         "aiAssistApiMissing": "A API de assistência ainda não está configurada. Por favor, configure-a em \"Configurações de chave de API\" primeiro.",
         "confirmNewCatgirl": "Confirme o novo NEKO",
         "saveChanges": "Salvar alterações",
-        "saveMaster": "Salvar perfil mestre",
+        "saveMaster": "Salvar meu perfil",
         "addMasterField": "Adicionar campo",
         "manageLive2D": "Clique para gerenciar o modelo Live2D",
         "idleMotionHint": "Ao salvar, a animação selecionada será definida como animação ociosa",
@@ -2034,7 +2046,7 @@
         "rename": "Renomear",
         "cancel": "Cancelar",
         "addMasterFieldPrompt": "Por favor insira o nome do novo campo (nome da chave)",
-        "addMasterFieldTitle": "Adicionar campo mestre",
+        "addMasterFieldTitle": "Adicionar campo do meu perfil",
         "fieldExists": "Este campo já existe",
         "profileNameRequired": "O nome do perfil é obrigatório",
         "profileNameRenameOnlyHint": "Use o botão Renomear para alterar o nome do perfil",
@@ -2092,10 +2104,10 @@
         "gsvDiagTimeout": "Tempo limite do GPT-SoVITS server excedido (>3s)",
         "loadFailed": "Falha ao carregar dados de caracteres",
         "renameError": "Falha ao renomear: {{error}}",
-        "renameMasterTitle": "Renomear mestre",
+        "renameMasterTitle": "Renomear meu perfil",
         "renameSuccess": "Renomeação bem-sucedida",
         "autoSaveError": "Falha ao salvar as configurações",
-        "saveMasterError": "Falha ao salvar as configurações principais",
+        "saveMasterError": "Falha ao salvar meu perfil",
         "autoSaved": "Configurações salvas automaticamente",
         "autoSaveFailed": "Falha no salvamento automático. Salve manualmente antes de fechar",
         "unsavedNewCatgirlDraftDetected": "Detectado um novo rascunho NEKO não salvo. Salve ou cancele antes de sincronizar a atualização",
@@ -2123,7 +2135,7 @@
         "generatingCard": "Gerando cartão de personagem...",
         "settings": "Configurações",
         "renamePrompt": "Insira um novo nome de perfil",
-        "renameMasterPrompt": "Insira um novo nome de perfil mestre",
+        "renameMasterPrompt": "Insira um novo nome de perfil",
         "renameTitle": "Renomear",
         "tempSaveFailed": "Falha ao salvar temporariamente: {{error}}",
         "newCatgirlSuccess": "Novo NEKO criado com sucesso",
@@ -2152,7 +2164,7 @@
         "cardAuthorReadonly": "O autor é somente leitura para esta origem",
         "cardAuthorUpdated": "Autor atualizado",
         "cardAuthorUpdateFailed": "Falha ao atualizar autor: {{error}}",
-        "saveMasterSuccess": "Perfil do mestre salvo com sucesso",
+        "saveMasterSuccess": "Meu perfil foi salvo com sucesso",
         "editCardFace": "Editar rosto do cartão",
         "cardFaceModelSettings": "Configurações do modelo do cartão",
         "cardMakerPopupBlocked": "A página do criador de cartões não pôde ser aberta automaticamente. Permita pop-ups e tente novamente, ou clique na área do cartão para abri-la manualmente."
@@ -3192,8 +3204,8 @@
         },
         "chara_manager": {
             "step1": {
-                "title": "👤 Perfil Mestre",
-                "desc": "Este é o seu perfil mestre. O nome do perfil é obrigatório, outras informações são opcionais. Isso afeta a forma como o seu Neko se dirige a você."
+                "title": "👤 Meu perfil",
+                "desc": "Este é o seu perfil. O nome do perfil é obrigatório; as outras informações são opcionais. Isso afeta como Neko se dirige a você."
             },
             "step2": {
                 "title": "📝 Definir nome do perfil",

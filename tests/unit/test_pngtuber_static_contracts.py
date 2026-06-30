@@ -465,7 +465,7 @@ def test_pngtuber_animation_loops_throttle_overlay_position_updates():
     assert "const minIntervalMs = 120;" in helper_block
     assert "timestamp - this.lastOverlayPositionUpdateAt < minIntervalMs" in helper_block
     assert "this.updateLockIconPosition();" in helper_block
-    assert "this.updateFloatingButtonsPosition();" in helper_block
+    assert "this.updateFloatingButtonsPosition();" not in helper_block
     assert "applyAnimationTransform(timestamp = performance.now())" in helper_block
     assert "if (this.lastAnimationTransformAt === timestamp) return;" in helper_block
     assert "this.lastAnimationTransformAt = timestamp;" in helper_block

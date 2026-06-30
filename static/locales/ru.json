@@ -674,6 +674,7 @@
     },
     "chat": {
         "title": "Чат",
+        "topicHint": "Кажется, {{author}} хочет о чём-то поговорить…",
         "viewerTitle": "Чат (Режим просмотра)",
         "tooltip": "Область чата",
         "textInputPlaceholder": "Нажмите Enter для отправки, Shift+Enter для новой строки",
@@ -1574,6 +1575,17 @@
             "mimo": "MiMo (Xiaomi)",
             "vllm_omni": "vLLM-Omni (Локальный клон)"
         },
+        "sourcePreset": "Пресет",
+        "sourceClone": "Клон",
+        "sourceDesign": "Генерация по описанию",
+        "providerLocal": "Локальный CosyVoice",
+        "providerFree": "Бесплатно",
+        "providerFreeApi": "Бесплатный API",
+        "providerUnknown": "Другое",
+        "nativeVoice": {
+            "qingchunshaonv": "Юная девушка",
+            "wenrounansheng": "Мягкий мужской голос"
+        },
         "selectFile": "Выберите локальный аудиофайл (рекомендуется 15 секунд, макс. 30 секунд, формат wav/mp3)",
         "customPrefix": "Пользовательский префикс (Обязательно, для различения голосов)",
         "customPrefixNote": "Максимум 10 символов, только цифры и латинские буквы",
@@ -1937,8 +1949,8 @@
         "gender": "Пол",
         "nickname": "Прозвище",
         "apiKeySettings": "API Key",
-        "masterProfile": "Профиль хозяина (Уникальный): Имя профиля обязательно, остальное необязательно.",
-        "masterProfileTitle": "Профиль хозяина",
+        "masterProfile": "Мой профиль (уникальный): имя профиля обязательно, остальное необязательно и может быть удалено.",
+        "masterProfileTitle": "Мой профиль",
         "profileName": "Имя профиля",
         "profileNameMaxHint": "Макс. 60 символов",
         "profileNameTooLong": "Имя профиля слишком длинное",
@@ -2026,7 +2038,7 @@
         "aiAssistApiMissing": "API помощника ещё не настроен. Сначала настройте его в «Настройках API Key».",
         "confirmNewCatgirl": "Подтвердить нового NEKO",
         "saveChanges": "Сохранить изменения",
-        "saveMaster": "Сохранить профиль хозяина",
+        "saveMaster": "Сохранить мой профиль",
         "addMasterField": "Добавить поле",
         "manageLive2D": "Нажмите для управления моделью Live2D",
         "idleMotionHint": "При сохранении выбранное движение будет установлено как ожидающее",
@@ -2034,7 +2046,7 @@
         "rename": "Переименовать",
         "cancel": "Отмена",
         "addMasterFieldPrompt": "Введите имя нового поля",
-        "addMasterFieldTitle": "Добавить поле хозяина",
+        "addMasterFieldTitle": "Добавить поле моего профиля",
         "fieldExists": "Это поле уже существует",
         "profileNameRequired": "Имя профиля обязательно",
         "profileNameRenameOnlyHint": "Изменяйте имя профиля через кнопку «Переименовать»",
@@ -2092,10 +2104,10 @@
         "gsvDiagTimeout": "Тайм-аут ответа GPT-SoVITS server (>3 с)",
         "loadFailed": "Ошибка загрузки данных персонажа",
         "renameError": "Ошибка переименования: {{error}}",
-        "renameMasterTitle": "Переименовать хозяина",
+        "renameMasterTitle": "Переименовать мой профиль",
         "renameSuccess": "Переименование выполнено",
         "autoSaveError": "Ошибка сохранения настроек",
-        "saveMasterError": "Ошибка сохранения настроек хозяина",
+        "saveMasterError": "Не удалось сохранить мой профиль",
         "autoSaved": "Настройки автосохранены",
         "autoSaveFailed": "Автосохранение не удалось, сохраните вручную перед закрытием",
         "unsavedNewCatgirlDraftDetected": "Обнаружен несохранённый черновик нового NEKO. Перед синхронным обновлением сохраните его или отмените",
@@ -2123,7 +2135,7 @@
         "generatingCard": "Создание карточки персонажа...",
         "settings": "Настройки",
         "renamePrompt": "Введите новое имя карточки",
-        "renameMasterPrompt": "Введите новое имя профиля хозяина",
+        "renameMasterPrompt": "Введите новое имя профиля",
         "renameTitle": "Переименовать",
         "tempSaveFailed": "Ошибка временного сохранения: {{error}}",
         "newCatgirlSuccess": "Новый NEKO успешно создан",
@@ -2152,7 +2164,7 @@
         "cardAuthorReadonly": "Автор недоступен для редактирования у этого источника",
         "cardAuthorUpdated": "Автор обновлён",
         "cardAuthorUpdateFailed": "Не удалось обновить автора: {{error}}",
-        "saveMasterSuccess": "Профиль хозяина сохранён",
+        "saveMasterSuccess": "Мой профиль сохранен",
         "editCardFace": "Редактировать обложку",
         "cardFaceModelSettings": "Настройки модели карточки",
         "cardMakerPopupBlocked": "Не удалось автоматически открыть страницу редактора обложки. Разрешите всплывающие окна в браузере и повторите попытку, либо щёлкните область обложки, чтобы открыть её вручную."
@@ -3192,8 +3204,8 @@
         },
         "chara_manager": {
             "step1": {
-                "title": "👤 Master Profile",
-                "desc": "This is your master profile. Profile name is required, other info is optional. This affects how your Neko addresses you."
+                "title": "👤 Мой профиль",
+                "desc": "Это ваш профиль. Имя профиля обязательно, остальная информация необязательна. Это влияет на то, как Neko обращается к вам."
             },
             "step2": {
                 "title": "📝 Set Profile Name",

@@ -4272,7 +4272,10 @@ class ConfigManager:
                 elif provider == 'follow_summary':
                     config[model_key] = config.get('SUMMARY_MODEL', '')
                 elif provider in ('follow_core', 'follow_assist'):
+                    uses_fixed_free_assist_model = provider == 'follow_assist' and assist_api_value == 'free'
                     if (
+                        not uses_fixed_free_assist_model
+                        and
                         prefix not in ('gameMain', 'gameSummary', 'omni', 'tts')
                         and isinstance(cfg_model, str)
                         and cfg_model.strip()

@@ -1880,8 +1880,9 @@ Live2DManager.prototype.setupUnloadCleanup = function () {
 Live2DManager.prototype.destroy = function () {
     console.log('[Live2D] 正在销毁 Live2DManager 实例...');
 
-    // 首先清理所有事件监听器
+    // 首先清理所有事件监听器与自适应帧率守护
     this.cleanupEventListeners();
+    this._stopIdleFpsGovernor();
 
     // 销毁当前模型
     if (this.currentModel) {

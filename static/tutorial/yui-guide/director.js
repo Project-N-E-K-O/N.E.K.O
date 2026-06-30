@@ -4120,12 +4120,41 @@
             return anchor && this.isElementVisible(anchor) ? anchor : null;
         }
 
+        getDay5CharacterSettingsPersistenceTarget(sceneId) {
+            if (sceneId === 'day5_character_settings' || sceneId === 'day5_character_panic') {
+                return this.getDay4SettingsButtonSpotlightTarget()
+                    || this.getDay5CharacterSettingsButtonTarget();
+            }
+            if (sceneId === 'day5_memory_entry' || sceneId === 'day5_wrap') {
+                return null;
+            }
+            return undefined;
+        }
+
         getDay2CharacterSettingsPersistenceTarget(sceneId) {
             if (sceneId === 'day2_personalization_detail') {
                 return this.getDay5CharacterSettingsButtonTarget()
                     || this.getSettingsMenuElement('character');
             }
             return undefined;
+        }
+
+        applyAvatarFloatingPersistenceOverride(highlightConfig, sceneId) {
+            if (!highlightConfig) {
+                return highlightConfig;
+            }
+            const persistentTargetGetters = [
+                this.getDay2CharacterSettingsPersistenceTarget,
+                this.getDay4SettingsButtonPersistenceTarget,
+                this.getDay5CharacterSettingsPersistenceTarget
+            ];
+            persistentTargetGetters.forEach((getPersistentTarget) => {
+                const persistentTarget = getPersistentTarget.call(this, sceneId);
+                if (typeof persistentTarget !== 'undefined') {
+                    highlightConfig.persistent = persistentTarget;
+                }
+            });
+            return highlightConfig;
         }
 
         refreshSettingsPeekSpotlights(settingsButton) {
@@ -5788,6 +5817,107 @@
             return null;
         }
 
+        setAvatarFloatingToolbarVisible(visible, reason) {
+            const shouldShow = visible !== false;
+            window.nekoYuiGuideFloatingToolbarSuppressed = !shouldShow;
+            if (document && document.body && document.body.classList) {
+                document.body.classList.toggle('yui-guide-floating-toolbar-suppressed', !shouldShow);
+            }
+            window.dispatchEvent(new CustomEvent('neko:yui-guide-floating-toolbar-suppression-change', {
+                detail: {
+                    suppressed: !shouldShow,
+                    reason: reason || ''
+                }
+            }));
+            if (shouldShow) {
+                return;
+            }
+
+            this.forceHideAvatarFloatingGuideManagedSurfaces();
+        }
+
+        shouldShowAvatarFloatingToolbarForScene(scene) {
+            const normalizedScene = scene || {};
+            const sceneId = typeof normalizedScene.id === 'string'
+                ? normalizedScene.id
+                : '';
+            const day4SettingsSceneIds = [
+                'day4_chat_settings',
+                'day4_model_behavior',
+                'day4_gaze_follow',
+                'day4_privacy_mode'
+            ];
+            const day2SettingsSceneIds = [
+                'day2_personalization_space',
+                'day2_personalization_detail',
+                'day2_proactive_chat'
+            ];
+            const day5SettingsSceneIds = [
+                'day5_character_settings',
+                'day5_character_panic',
+                'day5_memory_entry'
+            ];
+            if (
+                day2SettingsSceneIds.includes(sceneId)
+                || day4SettingsSceneIds.includes(sceneId)
+                || day5SettingsSceneIds.includes(sceneId)
+            ) {
+                return true;
+            }
+
+            const topLevelTargets = [
+                '#${p}-floating-buttons',
+                '#${p}-btn-mic',
+                '#${p}-btn-screen',
+                '#${p}-btn-agent',
+                '#${p}-btn-settings',
+                '#${p}-btn-goodbye',
+                '#${p}-btn-return',
+                '#${p}-lock-icon',
+                'floating-buttons'
+            ];
+            const settingsPanelTargets = [
+                '#${p}-menu-character',
+                '#${p}-menu-memory',
+                '#${p}-toggle-proactive-chat'
+            ];
+            const targetFields = [
+                normalizedScene.target,
+                normalizedScene.secondary,
+                normalizedScene.cursorTarget,
+                normalizedScene.persistent
+            ].filter((value) => typeof value === 'string');
+            if (targetFields.some((target) => topLevelTargets.includes(target))) {
+                return true;
+            }
+            if (targetFields.some((target) => settingsPanelTargets.includes(target))) {
+                return true;
+            }
+
+            const operation = typeof normalizedScene.operation === 'string'
+                ? normalizedScene.operation
+                : '';
+            return !!(
+                operation === 'day1-intro-basic-voice-showcase'
+                || operation === 'day2-open-settings-personalization'
+                || operation === 'day2-settings-detail'
+                || operation.indexOf('day1-managed-scene:') === 0
+                || operation.indexOf('show-settings-menu:') === 0
+                || operation.indexOf('show-settings-sidepanel:') === 0
+                || operation.indexOf('show-agent-sidepanel:') === 0
+                || operation === 'day6-plugin-open-agent-panel-flow'
+                || operation === 'day6-plugin-open-management-panel-flow'
+                || operation === 'day6-plugin-sidepanel-flow'
+            );
+        }
+
+        syncAvatarFloatingToolbarForScene(scene, reason) {
+            this.setAvatarFloatingToolbarVisible(
+                this.shouldShowAvatarFloatingToolbarForScene(scene),
+                reason || (scene && scene.id) || 'scene'
+            );
+        }
+
         isAvatarFloatingInputIntroScene(scene) {
             const sceneId = scene && typeof scene.id === 'string' ? scene.id : '';
             return !!(
@@ -5919,6 +6049,31 @@
             return hidden;
         }
 
+        positionAvatarFloatingSidePanelNow(panel) {
+            const targetPanel = panel || null;
+            const anchor = targetPanel && targetPanel._anchorElement ? targetPanel._anchorElement : null;
+            const popupUi = window.AvatarPopupUI || null;
+            if (!targetPanel || !anchor || !popupUi || typeof popupUi.positionSidePanel !== 'function') {
+                return false;
+            }
+
+            try {
+                popupUi.positionSidePanel(targetPanel, anchor);
+                return true;
+            } catch (error) {
+                console.warn('[YuiGuide] positionAvatarFloatingSidePanelNow 失败:', error);
+                return false;
+            }
+        }
+
+        refreshAvatarFloatingSettingsPanelLayout(panel) {
+            const popupPositioned = this.positionManagedPanelNow('settings');
+            const sidePanelPositioned = panel && this.isElementVisible(panel)
+                ? this.positionAvatarFloatingSidePanelNow(panel)
+                : false;
+            return popupPositioned || sidePanelPositioned;
+        }
+
         forceHideAvatarFloatingGuideManagedSurfaces() {
             this.forceHideManagedPanel('settings');
             this.forceHideManagedPanel('agent');
@@ -5947,6 +6102,9 @@
                 return false;
             }
             const targetAnchor = anchor || panel._anchorElement || null;
+            if (targetAnchor) {
+                this.refreshAvatarFloatingSettingsPanelLayout(panel);
+            }
             this.collapseAvatarFloatingSidePanelsExcept(panel);
             if (typeof panel._expand === 'function') {
                 if (panel._hoverCollapseTimer) {
@@ -5976,12 +6134,17 @@
             if (!opened || this.isStopping()) {
                 return null;
             }
+            this.positionManagedPanelNow('settings');
             const panel = await this.waitForElement(() => this.getAvatarFloatingSidePanel(type), 1200);
             if (!panel) {
                 return null;
             }
             this.sidebarPauseController.trackPanel(panel);
-            return (await this.expandAvatarFloatingSidePanel(panel, panel._anchorElement || null)) ? panel : null;
+            const expanded = await this.expandAvatarFloatingSidePanel(panel, panel._anchorElement || null);
+            if (expanded) {
+                this.refreshAvatarFloatingSettingsPanelLayout(panel);
+            }
+            return expanded ? panel : null;
         }
 
         async ensureAvatarFloatingAgentSidePanel(toggleId) {
@@ -7063,6 +7226,20 @@
             return null;
         }
 
+        async applyAvatarFloatingSettledCleanupHighlight(scene) {
+            const normalizedScene = scene || {};
+            const highlightConfig = {
+                key: (normalizedScene.id || 'scene') + '-settled',
+                persistent: await this.resolveAvatarFloatingPersistent(normalizedScene, {
+                    fallbackToChatWindow: false
+                }),
+                primary: await this.resolveAvatarFloatingTarget(normalizedScene, 'primary'),
+                secondary: await this.resolveAvatarFloatingTarget(normalizedScene, 'secondary')
+            };
+            this.applyAvatarFloatingPersistenceOverride(highlightConfig, normalizedScene.id);
+            this.applyGuideHighlights(highlightConfig);
+        }
+
         applyAvatarFloatingSceneSpotlightVariant(scene, target) {
             const variant = scene && typeof scene.spotlightVariant === 'string'
                 ? scene.spotlightVariant.trim()
@@ -7101,12 +7278,18 @@
                 if (window.AgentHUD && typeof window.AgentHUD.showAgentTaskHUD === 'function') {
                     window.AgentHUD.showAgentTaskHUD();
                     this.avatarFloatingGuideTemporaryHudShown = true;
+                    if (typeof window.AgentHUD.expandAgentTaskHUD === 'function') {
+                        window.AgentHUD.expandAgentTaskHUD();
+                    }
                 } else if (window.AgentHUD && typeof window.AgentHUD.createAgentTaskHUD === 'function') {
                     const hud = window.AgentHUD.createAgentTaskHUD();
                     if (hud) {
                         hud.style.display = 'flex';
                         hud.style.opacity = '1';
                         this.avatarFloatingGuideTemporaryHudShown = true;
+                        if (typeof window.AgentHUD.expandAgentTaskHUD === 'function') {
+                            window.AgentHUD.expandAgentTaskHUD();
+                        }
                     }
                 }
                 await this.waitForElement(() => {
@@ -7191,6 +7374,10 @@
         async runDay6PluginOpenManagementPanelFlow(scene) {
             const sceneId = scene && scene.id ? scene.id : 'day6_plugin_side_panel';
             const guardFailed = () => this.isStopping();
+            const agentPanelOpened = await this.openAgentPanel();
+            if (!agentPanelOpened || guardFailed()) {
+                return false;
+            }
             const refreshUserPluginHighlight = (target) => {
                 if (!target || guardFailed()) {
                     return false;
@@ -11998,6 +12185,7 @@
             this.clearGuidePresentation();
             this.forceHideAvatarFloatingGuideManagedSurfaces();
             this.hideTemporaryAvatarFloatingGuideHud('destroy');
+            this.setAvatarFloatingToolbarVisible(true, 'destroy');
             this.closeManagedPanels().catch((error) => {
                 console.warn('[YuiGuide] 销毁时关闭首页面板失败:', error);
             });

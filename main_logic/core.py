@@ -7964,6 +7964,39 @@ class LLMSessionManager:
                 for cb in active_callbacks:
                     resolve_callback_delivery_ack(cb, delivered)
 
+            # Deep-topic teaser: now committed to opening (passed both re-gates
+            # and the preempt check), surface the frontend-only "she has a topic
+            # she'd like to bring up" bubble just before the opener streams. One
+            # bubble per batch even if several topic hooks coalesced. Failure to
+            # send is non-fatal — the opener still goes out. If the opener then
+            # fails before any committed output (API error / no-output), the
+            # teaser is retracted below so it can't dangle as an orphan.
+            topic_hint_sent = False
+            if any(
+                isinstance(cb, dict) and cb.get("channel") == "topic_hook"
+                for cb in active_callbacks
+            ):
+                topic_hint_sent = await self.send_topic_hint(turn_id=proactive_sid)
+                # send_topic_hint awaits a WS write — a NEW yield point past the
+                # last preempt check. If the user grabbed the turn during that
+                # await, abort before prompt_ephemeral (whose output would be
+                # SID-dropped yet could still ack as committed and leave the
+                # teaser/history as if the opener landed): retract the teaser and
+                # requeue, mirroring the preempt handling above.
+                async with self.lock:
+                    preempted_after_hint = (
+                        self.state.is_proactive_preempted()
+                        or self.current_speech_id != proactive_sid
+                    )
+                if preempted_after_hint:
+                    logger.info("[%s] trigger_agent_callbacks: preempted during topic hint send, aborting before prompt", self.lanlan_name)
+                    if topic_hint_sent:
+                        await self.send_cancel_topic_hint(turn_id=proactive_sid)
+                    self.pending_agent_callbacks.extend(active_callbacks)
+                    callbacks_snapshot[:] = []
+                    self.proactive_manager.release_inflight_noop()
+                    return False
+
             _sid_token = _proactive_expected_sid.set(proactive_sid)
             # Text-mode playback boundary for the pacing manager: no frontend
             # audio signal arrives for text delivery, so bracket prompt_ephemeral
@@ -7992,6 +8025,10 @@ class LLMSessionManager:
                         )
                         delivered = True
                     else:
+                        # Opener errored before any committed output — retract the
+                        # teaser so the frontend doesn't keep an orphan bubble.
+                        if topic_hint_sent:
+                            await self.send_cancel_topic_hint(turn_id=proactive_sid)
                         raise
             finally:
                 _proactive_expected_sid.reset(_sid_token)
@@ -8017,6 +8054,11 @@ class LLMSessionManager:
                 return True
             else:
                 _resolve_text_delivery_ack(False)
+                # No committed output — retract the teaser so it can't dangle
+                # while the callback is requeued for a later retry (which will
+                # send its own fresh teaser).
+                if topic_hint_sent:
+                    await self.send_cancel_topic_hint(turn_id=proactive_sid)
                 self.pending_agent_callbacks.extend(active_callbacks)
                 return False
 
@@ -10152,6 +10194,59 @@ class LLMSessionManager:
         except Exception as e:
             logger.error(f"💥 WS Send Status Error: {e}")
     
+    async def send_topic_hint(self, *, turn_id: Optional[str] = None) -> bool:
+        """Show a frontend-only teaser bubble right before she opens a deep-topic hook.
+
+        Deliberately does NOT touch ``sync_message_queue`` / chat memory — the
+        teaser is pure frontend display (rendered by react-neko-chat's dedicated
+        topic-hint component) and must never enter the chat-LLM context, the
+        same isolation as :meth:`passthrough_to_chat_bubble`. The frontend
+        renders the localized copy itself; we only hand it the character name.
+        """
+        if not (
+            self.websocket
+            and hasattr(self.websocket, 'client_state')
+            and self.websocket.client_state == self.websocket.client_state.CONNECTED
+        ):
+            return False
+        try:
+            await self.websocket.send_json({
+                "type": "topic_hint",
+                "author": self.lanlan_name,
+                "turn_id": str(turn_id or ''),
+            })
+            return True
+        except WebSocketDisconnect:
+            return False
+        except Exception as e:
+            logger.warning("[%s] send_topic_hint failed: %s", self.lanlan_name, e)
+            return False
+
+    async def send_cancel_topic_hint(self, *, turn_id: Optional[str] = None) -> bool:
+        """Retract a previously sent topic-hint teaser (matched by ``turn_id``).
+
+        Used when the opener fails before any committed output, so the frontend
+        removes the dangling teaser instead of leaving an orphan bubble. Like
+        :meth:`send_topic_hint`, this stays off ``sync_message_queue`` entirely.
+        """
+        if not (
+            self.websocket
+            and hasattr(self.websocket, 'client_state')
+            and self.websocket.client_state == self.websocket.client_state.CONNECTED
+        ):
+            return False
+        try:
+            await self.websocket.send_json({
+                "type": "cancel_topic_hint",
+                "turn_id": str(turn_id or ''),
+            })
+            return True
+        except WebSocketDisconnect:
+            return False
+        except Exception as e:
+            logger.warning("[%s] send_cancel_topic_hint failed: %s", self.lanlan_name, e)
+            return False
+
     async def send_session_preparing(self, input_mode: str): # 通知前端session正在准备（静默期）
         try:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
