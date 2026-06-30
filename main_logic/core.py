@@ -60,7 +60,7 @@ from main_logic.proactive_delivery import (
     ProactiveDeliveryManager,
     resolve_callback_delivery_ack,
 )
-from plugin.plugins.neko_roast.core.live_reply_policy import (
+from main_logic.neko_live_reply_policy import (
     ACTIVE_FALLBACK_REPLIES as _NEKO_LIVE_ACTIVE_FALLBACK_REPLIES,
     BLAND_FALLBACK_REPLIES as _NEKO_LIVE_BLAND_FALLBACK_REPLIES,
     DEFAULT_FALLBACK_REPLIES as _NEKO_LIVE_DEFAULT_FALLBACK_REPLIES,
