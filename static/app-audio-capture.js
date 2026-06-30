@@ -1547,8 +1547,9 @@
             // 非线性轨道：thumb 位置走 0..SPEAKER_SLIDER_TRACK_MAX（千分比精度），
             // 经膝点映射成 0-200% 音量，使常规的 0-100% 占满轨道前 3/4、100% 落在锚点处。
             var SPEAKER_SLIDER_TRACK_MAX = 1000;
+            // Matches Chromium/Electron's native range thumb; the anchor tick is cosmetic.
             var SPEAKER_SLIDER_THUMB_SIZE = 16;
-            var SPEAKER_VOLUME_SNAP_RADIUS = 18;
+            var SPEAKER_VOLUME_SNAP_RADIUS = 1;
             var SPEAKER_VOLUME_NORMAL_COLOR = '#4f8cff';
             var SPEAKER_VOLUME_BOOST_COLOR = '#ff9f43';
 
@@ -1563,6 +1564,8 @@
                 ));
             }
             var speakerVolumeAnchorTrackPos = speakerTrackPosFromVolume(C.DEFAULT_SPEAKER_VOLUME);
+            var speakerSliderPointerActive = false;
+            var speakerSliderHadPointerInput = false;
             function speakerThumbAlignedLeft(trackPos) {
                 var ratio = trackPos / SPEAKER_SLIDER_TRACK_MAX;
                 var halfThumb = SPEAKER_SLIDER_THUMB_SIZE / 2;
@@ -1570,9 +1573,17 @@
                 return 'calc(' + (ratio * 100) + '% + ' + thumbOffsetPx.toFixed(2) + 'px)';
             }
             function snapSpeakerTrackPos(pos) {
-                return Math.abs(pos - speakerVolumeAnchorTrackPos) <= SPEAKER_VOLUME_SNAP_RADIUS
+                return Math.abs(speakerVolumeFromTrackPos(pos) - C.DEFAULT_SPEAKER_VOLUME) <= SPEAKER_VOLUME_SNAP_RADIUS
                     ? speakerVolumeAnchorTrackPos
                     : pos;
+            }
+            function applySpeakerTrackPos(trackPos) {
+                var newVol = speakerVolumeFromTrackPos(trackPos);
+                S.speakerVolume = newVol;
+                applySpeakerVolumeVisual(newVol);
+                if (S.speakerGainNode) {
+                    S.speakerGainNode.gain.setTargetAtTime(newVol / 100, S.speakerGainNode.context.currentTime, 0.05);
+                }
             }
 
             var speakerSlider = document.createElement('input');
@@ -1593,21 +1604,38 @@
             }
             applySpeakerVolumeVisual(S.speakerVolume);
 
+            speakerSlider.addEventListener('pointerdown', function () {
+                speakerSliderPointerActive = true;
+                speakerSliderHadPointerInput = true;
+            });
+            speakerSlider.addEventListener('pointerup', function () {
+                speakerSliderPointerActive = false;
+            });
+            speakerSlider.addEventListener('pointercancel', function () {
+                speakerSliderPointerActive = false;
+            });
             speakerSlider.addEventListener('input', function (e) {
                 var trackPos = parseInt(e.target.value, 10);
                 if (isNaN(trackPos)) return;
-                var snappedTrackPos = snapSpeakerTrackPos(trackPos);
-                if (snappedTrackPos !== trackPos) {
-                    speakerSlider.value = String(snappedTrackPos);
+                if (speakerSliderPointerActive) {
+                    var snappedTrackPos = snapSpeakerTrackPos(trackPos);
+                    if (snappedTrackPos !== trackPos) {
+                        trackPos = snappedTrackPos;
+                        speakerSlider.value = String(snappedTrackPos);
+                    }
                 }
-                var newVol = speakerVolumeFromTrackPos(snappedTrackPos);
-                S.speakerVolume = newVol;
-                applySpeakerVolumeVisual(newVol);
-                if (S.speakerGainNode) {
-                    S.speakerGainNode.gain.setTargetAtTime(newVol / 100, S.speakerGainNode.context.currentTime, 0.05);
-                }
+                applySpeakerTrackPos(trackPos);
             });
-            speakerSlider.addEventListener('change', function () {
+            speakerSlider.addEventListener('change', function (e) {
+                var trackPos = parseInt(e.target.value, 10);
+                if (!isNaN(trackPos) && speakerSliderHadPointerInput) {
+                    var snappedTrackPos = snapSpeakerTrackPos(trackPos);
+                    if (snappedTrackPos !== trackPos) {
+                        speakerSlider.value = String(snappedTrackPos);
+                        applySpeakerTrackPos(snappedTrackPos);
+                    }
+                }
+                speakerSliderHadPointerInput = false;
                 if (typeof window.saveSpeakerVolumeSetting === 'function') window.saveSpeakerVolumeSetting();
             });
 
