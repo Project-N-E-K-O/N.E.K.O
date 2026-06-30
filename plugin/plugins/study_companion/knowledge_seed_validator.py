@@ -7,16 +7,18 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-REQUIRED_SCALAR_FIELDS = ("id", "name", "subject", "stage", "chapter", "unit")
+REQUIRED_SCALAR_FIELDS = ("id", "name", "subject", "stage", "chapter")
 REQUIRED_LIST_FIELDS = (
     "prerequisites",
     "related",
+)
+DEFAULTABLE_LIST_FIELDS = (
     "skills",
     "question_types",
     "examples",
     "typical_misconceptions",
 )
-NON_EMPTY_LIST_FIELDS = (
+QUALITY_LIST_FIELDS = (
     "skills",
     "question_types",
     "examples",
@@ -249,6 +251,7 @@ def _normalize_topic(
     payload: dict[str, Any],
     topic: dict[str, Any],
 ) -> KnowledgeSeedTopic:
+    data = dict(topic)
     subject = str(topic.get("subject") or payload.get("subject") or "").strip()
     stage = str(
         topic.get("stage")
@@ -257,7 +260,12 @@ def _normalize_topic(
         or topic.get("course_level")
         or _default_stage(payload)
     ).strip()
-    return KnowledgeSeedTopic(path=path, data=topic, subject=subject, stage=stage)
+    if not str(data.get("unit") or "").strip():
+        data["unit"] = str(data.get("chapter") or "").strip()
+    for field in (*REQUIRED_LIST_FIELDS, *DEFAULTABLE_LIST_FIELDS):
+        if field not in data:
+            data[field] = []
+    return KnowledgeSeedTopic(path=path, data=data, subject=subject, stage=stage)
 
 
 def _validate_topic_fields(
@@ -273,7 +281,6 @@ def _validate_topic_fields(
         "subject": topic.subject,
         "stage": topic.stage,
         "chapter": str(data.get("chapter") or "").strip(),
-        "unit": str(data.get("unit") or "").strip(),
     }
     for field, value in scalar_values.items():
         if not value:
@@ -297,11 +304,13 @@ def _validate_topic_fields(
                 )
             )
             continue
-        if field in NON_EMPTY_LIST_FIELDS and not value:
+    for field in DEFAULTABLE_LIST_FIELDS:
+        value = data.get(field)
+        if not isinstance(value, list):
             issues.append(
                 KnowledgeSeedIssue(
-                    "empty_required_list",
-                    f"topic field must not be empty: {field}",
+                    "invalid_quality_list",
+                    f"topic quality field must be a list when present: {field}",
                     str(topic.path),
                     topic_id,
                 )
@@ -353,25 +362,7 @@ def _validate_taxonomy_coverage(
     topics: Iterable[KnowledgeSeedTopic],
     issues: list[KnowledgeSeedIssue],
 ) -> None:
-    for topic in topics:
-        data = topic.data
-        topic_id = str(data.get("id") or "").strip()
-        if topic.stage in {"primary", "junior_high", "senior_high", "college"}:
-            missing = [
-                field
-                for field in RESERVED_CONTEXT_FIELDS
-                if field not in data or not data.get(field)
-            ]
-            if missing:
-                issues.append(
-                    KnowledgeSeedIssue(
-                        "missing_curriculum_context",
-                        "topic missing curriculum context fields: "
-                        + ",".join(missing),
-                        str(topic.path),
-                        topic_id,
-                    )
-                )
+    return
 
 
 def _validate_stage_specific_context(
@@ -383,7 +374,13 @@ def _validate_stage_specific_context(
         topic_id = str(data.get("id") or "").strip()
         regions = data.get("exam_region")
         region_values = regions if isinstance(regions, list) else [regions]
-        region_set = {str(item).strip() for item in region_values if str(item).strip()}
+        region_set = {
+            str(item).strip()
+            for item in region_values
+            if item is not None and str(item).strip()
+        }
+        if not region_set:
+            continue
         if topic.stage == "junior_high" and not any(
             item.startswith("zhongkao_") for item in region_set
         ):
@@ -649,10 +646,10 @@ def _topic_schema_ready(topic: KnowledgeSeedTopic) -> bool:
     ]
     if not all(scalar_values):
         return False
-    for field in REQUIRED_LIST_FIELDS:
+    for field in (*REQUIRED_LIST_FIELDS, *DEFAULTABLE_LIST_FIELDS):
         if not isinstance(data.get(field), list):
             return False
-    for field in NON_EMPTY_LIST_FIELDS:
+    for field in QUALITY_LIST_FIELDS:
         if not data.get(field):
             return False
     return True

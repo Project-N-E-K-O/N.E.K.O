@@ -39,6 +39,11 @@ class _LearningContext(dict[str, Any]):
 
 
 class _TutorContextSupportMixin:
+    def _invalidate_knowledge_guidance_cache(self) -> None:
+        cache = getattr(self, "_knowledge_guidance_topics_cache", None)
+        if isinstance(cache, dict):
+            cache.clear()
+
     async def _build_knowledge_guidance_context(
         self,
         operation: str,

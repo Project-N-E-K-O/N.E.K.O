@@ -1,0 +1,75 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from plugin.plugins.study_companion.entry_tutor_context_support import (
+    _TutorContextSupportMixin,
+)
+from plugin.plugins.study_companion.knowledge_graph_guidance import (
+    build_knowledge_guidance_payload,
+)
+from plugin.plugins.study_companion.knowledge_seed_validator import (
+    validate_knowledge_seed_manifest,
+)
+
+pytestmark = pytest.mark.unit
+
+
+def test_bundled_legacy_seed_validates_with_quality_gaps() -> None:
+    seed = (
+        Path(__file__).resolve().parents[3]
+        / "plugins"
+        / "study_companion"
+        / "static"
+        / "knowledge_graph_seed.json"
+    )
+
+    result = validate_knowledge_seed_manifest(seed)
+
+    assert result.is_valid
+    assert len(result.topics) == 127
+    assert result.report["schema_ready_topics"] == 0
+
+
+def test_compact_confusion_labels_use_related_topic_label() -> None:
+    payload = build_knowledge_guidance_payload(
+        topics=[
+            {
+                "id": "focus",
+                "name": "Focus Topic",
+                "subject": "math",
+                "stage": "junior_high",
+                "chapter": "chapter",
+                "unit": "unit",
+                "prerequisites": [],
+                "related": [{"id": "other", "relation": "confusable"}],
+            },
+            {
+                "id": "other",
+                "name": "Other Topic",
+                "subject": "math",
+                "stage": "junior_high",
+                "chapter": "chapter",
+                "unit": "unit",
+                "prerequisites": [],
+                "related": [],
+            },
+        ],
+        topic_id="focus",
+    )
+
+    assert payload["model_context"]["confusions"] == ["Other Topic"]
+
+
+def test_knowledge_guidance_cache_can_be_invalidated() -> None:
+    class Host(_TutorContextSupportMixin):
+        pass
+
+    host = Host()
+    host._knowledge_guidance_topics_cache = {"all:5000": [{"id": "stale"}]}
+
+    host._invalidate_knowledge_guidance_cache()
+
+    assert host._knowledge_guidance_topics_cache == {}

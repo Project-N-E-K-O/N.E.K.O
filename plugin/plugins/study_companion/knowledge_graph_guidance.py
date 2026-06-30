@@ -3,6 +3,14 @@ from __future__ import annotations
 from collections import deque
 from typing import Any
 
+from ._graph_utils import (
+    dedupe_edges as _dedupe_edges,
+    normalized_relation as _normalized_relation,
+    text as _text,
+    topic_id as _topic_id,
+    topic_label as _topic_label,
+)
+
 
 APPLICATION_RELATIONS = {"application", "procedure_step", "extends", "supports"}
 CONFUSION_RELATIONS = {"confusable"}
@@ -91,20 +99,6 @@ RELATION_GROUP_TITLES = {
 RELATION_GROUP_ORDER = tuple(RELATION_GROUP_TITLES)
 
 
-def _text(value: Any) -> str:
-    return str(value or "").strip()
-
-
-def _topic_id(topic: dict[str, Any]) -> str:
-    return _text(topic.get("id") or topic.get("topic_id"))
-
-
-def _topic_label(topic: dict[str, Any] | None, fallback: str = "") -> str:
-    if not topic:
-        return fallback
-    return _text(topic.get("name") or topic.get("label") or _topic_id(topic) or fallback)
-
-
 def _topic_aliases(topic: dict[str, Any]) -> list[str]:
     value = topic.get("aliases")
     if not isinstance(value, list):
@@ -116,17 +110,6 @@ def _ref_id(value: Any) -> str:
     if isinstance(value, dict):
         return _text(value.get("id") or value.get("topic_id"))
     return _text(value)
-
-
-def _normalized_relation(relation: Any) -> str:
-    normalized = _text(relation)
-    if normalized == "supports":
-        return "prerequisite"
-    if normalized == "next":
-        return "extends"
-    if normalized == "nearby":
-        return "co_occurs"
-    return normalized
 
 
 def _edge_relation(field: str, value: Any) -> str:
@@ -443,22 +426,6 @@ def _learning_path_for_topic(
     return path
 
 
-def _dedupe_edges(edges: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    seen: set[tuple[str, str, str]] = set()
-    unique: list[dict[str, Any]] = []
-    for edge in edges:
-        key = (
-            _text(edge.get("from")),
-            _text(edge.get("to")),
-            _text(edge.get("relation")),
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(edge)
-    return unique
-
-
 def _sort_edges(edges: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(
         _dedupe_edges(edges),
@@ -712,36 +679,30 @@ def build_knowledge_guidance_payload(
 ) -> dict[str, Any]:
     topic_items = list(topics or [])
     from .knowledge_graph_index import (  # lazy import avoids a module import cycle
+        KnowledgeGraphIndex,
         SubgraphBudget,
         build_relevant_subgraph,
         compress_subgraph_payload,
     )
+    graph_index = KnowledgeGraphIndex(topic_items)
 
     subgraph_budget = SubgraphBudget(
         focus_topics=max(1, min(3, int(match_limit or 3))),
         max_depth=max(1, min(2, int(max_depth or 2))),
     )
     relevant_subgraph = build_relevant_subgraph(
-        topic_items,
+        graph_index,
         topic_id=topic_id,
         query=query,
         budget=subgraph_budget,
     )
     model_context = compress_subgraph_payload(relevant_subgraph, mode="guidance")
-    by_id = {_topic_id(topic): topic for topic in topic_items if _topic_id(topic)}
-    edges = build_topic_edges(topic_items)
-    incoming: dict[str, list[dict[str, Any]]] = {}
-    outgoing: dict[str, list[dict[str, Any]]] = {}
-    for edge in edges:
-        incoming.setdefault(_text(edge.get("to")), []).append(edge)
-        outgoing.setdefault(_text(edge.get("from")), []).append(edge)
+    by_id = graph_index.by_id
+    edges = graph_index.edges
+    incoming = graph_index.incoming_edges
+    outgoing = graph_index.outgoing_edges
 
-    matches = match_topics(
-        topic_items,
-        topic_id=topic_id,
-        query=query,
-        limit=match_limit,
-    )
+    matches = graph_index.match(topic_id=topic_id, query=query, limit=match_limit)
     selected_id = _text(matches[0]["id"]) if matches else _text(topic_id)
     selected_topic = by_id.get(selected_id)
     if not selected_topic:

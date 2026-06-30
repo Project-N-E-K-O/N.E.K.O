@@ -1,8 +1,16 @@
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
+from ._graph_utils import (
+    dedupe_edges as _dedupe_edges,
+    normalized_relation,
+    text as _text,
+    topic_id as _topic_id,
+    topic_label as _topic_label,
+)
 from .knowledge_graph_guidance import build_topic_edges, match_topics
 
 
@@ -18,20 +26,6 @@ RELATION_SCORE = {relation: index for index, relation in enumerate(CORE_RELATION
 PRIORITY_SCORE = {"core": 0, "useful": 1, "optional": 2}
 
 
-def _text(value: Any) -> str:
-    return str(value or "").strip()
-
-
-def _topic_id(topic: dict[str, Any]) -> str:
-    return _text(topic.get("id") or topic.get("topic_id"))
-
-
-def _topic_label(topic: dict[str, Any] | None, fallback: str = "") -> str:
-    if not topic:
-        return fallback
-    return _text(topic.get("name") or topic.get("label") or _topic_id(topic) or fallback)
-
-
 def _string_list(value: Any, *, limit: int = 6) -> list[str]:
     if not isinstance(value, list):
         return []
@@ -43,14 +37,7 @@ def _aliases(topic: dict[str, Any]) -> list[str]:
 
 
 def _edge_relation(edge: dict[str, Any]) -> str:
-    relation = _text(edge.get("relation"))
-    if relation == "supports":
-        return "prerequisite"
-    if relation == "next":
-        return "extends"
-    if relation == "nearby":
-        return "co_occurs"
-    return relation
+    return normalized_relation(edge.get("relation"))
 
 
 def _edge_confidence(edge: dict[str, Any]) -> float:
@@ -180,20 +167,6 @@ class KnowledgeGraphIndex:
         return [*self.incoming_edges.get(key, []), *self.outgoing_edges.get(key, [])]
 
 
-def _dedupe_edges(edges: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-    seen: set[tuple[str, str, str]] = set()
-    unique: list[dict[str, Any]] = []
-    for edge in edges:
-        key = (_text(edge.get("from")), _text(edge.get("to")), _edge_relation(edge))
-        if not key[0] or not key[1] or key in seen:
-            continue
-        seen.add(key)
-        payload = dict(edge)
-        payload["relation"] = _edge_relation(payload)
-        unique.append(payload)
-    return unique
-
-
 def _collect_candidate_edges(
     index: KnowledgeGraphIndex,
     *,
@@ -201,11 +174,11 @@ def _collect_candidate_edges(
     query: str,
     budget: SubgraphBudget,
 ) -> list[dict[str, Any]]:
-    queue: list[tuple[str, int]] = [(topic_id, 0) for topic_id in focus_ids]
+    queue: deque[tuple[str, int]] = deque((topic_id, 0) for topic_id in focus_ids)
     visited: set[str] = set(focus_ids)
     edges: list[dict[str, Any]] = []
     while queue:
-        current_id, depth = queue.pop(0)
+        current_id, depth = queue.popleft()
         if depth >= max(1, budget.max_depth):
             continue
         current_edges = sorted(
@@ -313,7 +286,7 @@ def _labels_for_edges(edges: Iterable[dict[str, Any]], *, relation: str) -> list
     seen: set[str] = set()
     for edge in edges:
         label = _text(edge.get("from_label"))
-        if relation in {"application", "procedure_step", "extends", "co_occurs"}:
+        if relation in {"application", "procedure_step", "confusable", "extends", "co_occurs"}:
             label = _text(edge.get("to_label")) or label
         if label and label not in seen:
             seen.add(label)
@@ -367,4 +340,3 @@ def compress_subgraph_payload(
             "raw_seed_included": False,
         },
     }
-

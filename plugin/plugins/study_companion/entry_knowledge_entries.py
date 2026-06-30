@@ -160,6 +160,11 @@ class _KnowledgeEntriesMixin:
                         "source": "seed",
                     }
                 )
+                invalidate_guidance_cache = getattr(
+                    self, "_invalidate_knowledge_guidance_cache", None
+                )
+                if callable(invalidate_guidance_cache):
+                    invalidate_guidance_cache()
                 self._knowledge_tracker.quality.add_evidence(
                     candidate_key,
                     KnowledgeEvidenceType.USER_CONFIRMED.value,
