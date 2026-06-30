@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 
@@ -178,6 +179,20 @@ def test_model_manager_pngtuber_upload_supports_project_file_without_removing_fo
     assert "uploadPNGTuberFiles(Array.from(e.target.files));" in script
     assert "menu.addEventListener('keydown', handlePNGTuberUploadChoiceKeydown);" in script
     assert "menu.addEventListener('focusout', handlePNGTuberUploadChoiceFocusout);" in script
+    assert "let pngtuberUploadChoiceOpeningPicker = false;" in script
+    assert "if (pngtuberUploadChoiceOpeningPicker) return;" in script
+    assert "menu.parentNode.removeChild(menu);" in script
+    assert "pngtuberUploadChoiceMenu.remove();" not in script
+    choice_item_block = script[
+        script.index("function createPNGTuberUploadChoiceItem"):
+        script.index("function showPNGTuberUploadChoice")
+    ]
+    assert re.search(
+        r"try\s*\{\s*onSelect\(\);\s*\}\s*finally\s*\{\s*setTimeout\(\(\)\s*=>\s*\{\s*"
+        r"pngtuberUploadChoiceOpeningPicker\s*=\s*false;\s*closePNGTuberUploadChoice\(\);\s*"
+        r"\},\s*0\);\s*\}",
+        choice_item_block,
+    )
     assert "event.key === 'Escape'" in script
     assert "window.t('live2d.pngtuberImportProjectFile')" in script
     assert "window.t('live2d.pngtuberImportFolder')" in script

@@ -14,6 +14,7 @@
     var CHOICE_PROMPT_REVEAL_MIN_DELAY_MS = 700;
     var CHOICE_PROMPT_REVEAL_MAX_DELAY_MS = 1400;
     var CHOICE_PROMPT_REVEAL_SPEECH_RATIO = 0.18;
+    var TTS_REQUEST_MAX_WAIT_MS = 12000;
     var activeSession = null;
     var pendingStartDay = '';
     var pendingGuideEndStateDay = '';
@@ -668,7 +669,7 @@
         });
     }
 
-    function speakViaProjectTts(text, voiceKey) {
+    function speakViaProjectTts(text, voiceKey, signal) {
         var line = String(text || '').trim();
         if (!line) return Promise.resolve(false);
         var sessionId = activeSession && activeSession.sessionId ? activeSession.sessionId : '';
@@ -687,29 +688,59 @@
             }
         };
         return getLocalMutationHeaders().then(function (headers) {
-            return fetch(ICEBREAKER_API_BASE + '/speak', {
+            var requestOptions = {
                 method: 'POST',
                 headers: headers,
                 credentials: 'same-origin',
                 body: JSON.stringify(body)
-            });
+            };
+            if (signal) requestOptions.signal = signal;
+            return fetch(ICEBREAKER_API_BASE + '/speak', requestOptions);
         }).then(function (response) {
             if (!response.ok) throw new Error('HTTP ' + response.status);
             return response.json();
         }).then(function (data) {
             return !!(data && data.ok);
         }).catch(function (error) {
+            if (error && error.name === 'AbortError') return false;
             console.warn('[NewUserIcebreaker] project TTS failed:', error);
             return false;
         });
     }
 
-    function speakLine(text, voiceKey) {
-        return speakViaProjectTts(text, voiceKey).then(function () {
-            return new Promise(function (resolve) {
-                window.setTimeout(resolve, estimateSpeechDurationMs(text));
-            });
+    function waitForTtsRequest(text, voiceKey) {
+        return new Promise(function (resolve) {
+            var settled = false;
+            var controller = typeof AbortController === 'function' ? new AbortController() : null;
+            var timeoutId = window.setTimeout(function () {
+                if (controller) controller.abort();
+                finish();
+            }, TTS_REQUEST_MAX_WAIT_MS);
+            function finish() {
+                if (settled) return;
+                settled = true;
+                window.clearTimeout(timeoutId);
+                resolve();
+            }
+            try {
+                Promise.resolve(
+                    speakViaProjectTts(text, voiceKey, controller ? controller.signal : undefined)
+                ).then(finish).catch(function () {
+                    finish();
+                });
+            } catch (error) {
+                console.warn('[NewUserIcebreaker] project TTS failed:', error);
+                finish();
+            }
         });
+    }
+
+    function speakLine(text, voiceKey) {
+        var speechDurationPromise = new Promise(function (resolve) {
+            window.setTimeout(resolve, estimateSpeechDurationMs(text));
+        });
+        var ttsRequestPromise = waitForTtsRequest(text, voiceKey);
+        return Promise.all([speechDurationPromise, ttsRequestPromise]).then(function () {});
     }
 
     function applyAssistantTextEmotion(text) {

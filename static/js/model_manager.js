@@ -9068,12 +9068,16 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // 上传模型功能
     let pngtuberUploadChoiceMenu = null;
+    let pngtuberUploadChoiceOpeningPicker = false;
 
     function closePNGTuberUploadChoice() {
-        if (pngtuberUploadChoiceMenu) {
-            pngtuberUploadChoiceMenu.remove();
+        const menu = pngtuberUploadChoiceMenu;
+        if (menu) {
             pngtuberUploadChoiceMenu = null;
             document.removeEventListener('mousedown', handlePNGTuberUploadChoiceOutsideClick, true);
+            if (menu.parentNode) {
+                menu.parentNode.removeChild(menu);
+            }
         }
     }
 
@@ -9094,6 +9098,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     function handlePNGTuberUploadChoiceFocusout(event) {
         const nextTarget = event.relatedTarget;
         if (!pngtuberUploadChoiceMenu) return;
+        if (pngtuberUploadChoiceOpeningPicker) return;
         if (nextTarget && (pngtuberUploadChoiceMenu.contains(nextTarget) || uploadBtn.contains(nextTarget))) return;
         closePNGTuberUploadChoice();
     }
@@ -9105,8 +9110,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         item.tabIndex = 0;
         item.innerHTML = `<span class="dropdown-item-text" data-text="${label}">${label}</span>`;
         const select = () => {
-            closePNGTuberUploadChoice();
-            onSelect();
+            pngtuberUploadChoiceOpeningPicker = true;
+            try {
+                onSelect();
+            } finally {
+                setTimeout(() => {
+                    pngtuberUploadChoiceOpeningPicker = false;
+                    closePNGTuberUploadChoice();
+                }, 0);
+            }
         };
         item.addEventListener('click', select);
         item.addEventListener('keydown', (event) => {

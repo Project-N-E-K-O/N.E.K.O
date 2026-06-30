@@ -4662,6 +4662,7 @@ function CompactChatApp({
     event.preventDefault();
     event.stopPropagation();
 
+    setCompactInputToolWheelHoveredIndexState(null);
     const visualDirectionMultiplier = getCompactToolWheelVisualDirectionMultiplier(compactInputToolWheelLayout);
     const direction: 1 | -1 = normalizedDelta * visualDirectionMultiplier > 0 ? 1 : -1;
     rotateCompactInputToolWheelSteps(direction, 1, { forceFast: true });
@@ -4671,6 +4672,7 @@ function CompactChatApp({
     recordCompactInputToolWheelPointerPosition,
     rotateCompactInputToolWheelSteps,
     routeCompactToolWheelScrollToHistory,
+    setCompactInputToolWheelHoveredIndexState,
   ]);
 
   const getCompactToolWheelBoundedDragPoint = useCallback((clientX: number, clientY: number): CompactToolWheelDragPoint => {
