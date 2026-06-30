@@ -705,8 +705,15 @@ def test_electron_shortcut_bridges_are_blocked_during_tutorial():
 
     for action in ("toggleVoiceSession", "toggleScreenShare", "triggerScreenshot"):
         block = common_ui.split(f"window.{action} = function", 1)[1].split("};", 1)[0]
-        assert f"blockNekoShortcutDuringTutorial('{action}')" in block
+        guard = f"if (blockNekoShortcutDuringTutorial('{action}')) return;"
+        assert guard in block
+        if action == "triggerScreenshot":
+            assert block.index(guard) < block.index("screenshotButton.click()")
+        else:
+            assert block.index(guard) < block.index("window.dispatchEvent(event)")
 
     mute_block = audio_capture.split("window.toggleMicMute = function", 1)[1].split("window.setMicMuted", 1)[0]
     assert "window.isNekoShortcutBlockedByTutorial" in mute_block
     assert "blocked - tutorial active" in mute_block
+    assert "return S.isMicMuted;" in mute_block
+    assert mute_block.index("return S.isMicMuted;") < mute_block.index("S.isMicMuted = !S.isMicMuted;")
