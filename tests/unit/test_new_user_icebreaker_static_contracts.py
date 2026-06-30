@@ -134,6 +134,36 @@ def test_day5_icebreaker_non_source_locales_are_translated_not_copied():
     assert_icebreaker_non_source_locales_are_translated_not_copied("day5")
 
 
+def test_day5_icebreaker_fallbacks_stay_on_tail_topic():
+    tail_terms = {
+        "en": "tail",
+        "es": "cola",
+        "ja": "しっぽ",
+        "ko": "꼬리",
+        "pt": "cauda",
+        "ru": "хвост",
+        "zh-CN": "尾巴",
+        "zh-TW": "尾巴",
+    }
+    stale_note_terms = {
+        "en": ("note",),
+        "es": ("nota",),
+        "ja": ("メモ",),
+        "ko": ("쪽지",),
+        "pt": ("nota", "notinha"),
+        "ru": ("записк",),
+        "zh-CN": ("纸条",),
+        "zh-TW": ("紙條",),
+    }
+
+    for locale, tail_term in tail_terms.items():
+        data = json.loads((LOCALES_DIR / f"{locale}.json").read_text(encoding="utf-8"))
+        fallback_text = f"{data['day5.fallback.redirect']} {data['day5.fallback.release']}"
+        assert tail_term.lower() in fallback_text.lower(), locale
+        for stale_term in stale_note_terms[locale]:
+            assert stale_term.lower() not in fallback_text.lower(), f"{locale}:{stale_term}"
+
+
 def test_day6_icebreaker_non_source_locales_are_translated_not_copied():
     assert_icebreaker_non_source_locales_are_translated_not_copied("day6")
 
@@ -520,23 +550,29 @@ def test_icebreaker_project_tts_uses_local_mutation_headers():
 
 def test_icebreaker_speak_line_waits_for_estimated_speech_duration():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+    tts_wait_block = runtime.split("function waitForTtsRequest(text, voiceKey)", 1)[1].split(
+        "function speakLine(text, voiceKey)",
+        1,
+    )[0]
     speak_line_block = runtime.split("function speakLine(text, voiceKey)", 1)[1].split(
         "function applyAssistantTextEmotion(text)",
         1,
     )[0]
 
-    tts_fire_and_forget = "Promise.resolve(speakViaProjectTts(text, voiceKey)).catch(function () {});"
+    assert "var TTS_REQUEST_MAX_WAIT_MS = 12000;" in runtime
+    assert "var timeoutId = window.setTimeout(finish, TTS_REQUEST_MAX_WAIT_MS);" in tts_wait_block
+    assert "Promise.resolve(speakViaProjectTts(text, voiceKey)).then(finish).catch(function () {" in tts_wait_block
     assert "var speechDurationPromise = new Promise(function (resolve) {" in speak_line_block
     assert "window.setTimeout(resolve, estimateSpeechDurationMs(text));" in speak_line_block
-    assert tts_fire_and_forget in speak_line_block
-    assert "return speechDurationPromise;" in speak_line_block
+    assert "var ttsRequestPromise = waitForTtsRequest(text, voiceKey);" in speak_line_block
+    assert "return Promise.all([speechDurationPromise, ttsRequestPromise]).then(function () {});" in speak_line_block
     assert "return speakViaProjectTts(text, voiceKey).then(function () {" not in speak_line_block
     assert "if (ok) return;" not in speak_line_block
     assert speak_line_block.index("var speechDurationPromise = new Promise") < speak_line_block.index(
-        tts_fire_and_forget
+        "var ttsRequestPromise = waitForTtsRequest(text, voiceKey);"
     )
-    assert speak_line_block.index(tts_fire_and_forget) < speak_line_block.index(
-        "return speechDurationPromise;"
+    assert speak_line_block.index("var ttsRequestPromise = waitForTtsRequest(text, voiceKey);") < speak_line_block.index(
+        "return Promise.all([speechDurationPromise, ttsRequestPromise]).then(function () {});"
     )
 
 
@@ -592,7 +628,8 @@ def test_icebreaker_handoff_waits_for_context_append_before_route_end():
     assert "var session = activeSession;" in handoff_block
     assert "return appendChatMessage('assistant', text" in handoff_block
     assert "function speakViaProjectTts(text, voiceKey)" in runtime
-    assert "Promise.resolve(speakViaProjectTts(text, voiceKey)).catch(function () {});" in runtime
+    assert "function waitForTtsRequest(text, voiceKey)" in runtime
+    assert "return Promise.all([speechDurationPromise, ttsRequestPromise]).then(function () {});" in runtime
     assert "var handoffSpeechPromise = Promise.resolve(false);" in handoff_block
     assert "handoffSpeechPromise = speakLine(text, option.handoffVoiceKey || '');" in handoff_block
     assert "return endIcebreakerRoute(session, 'icebreaker_handoff');" in handoff_block

@@ -14,6 +14,7 @@
     var CHOICE_PROMPT_REVEAL_MIN_DELAY_MS = 700;
     var CHOICE_PROMPT_REVEAL_MAX_DELAY_MS = 1400;
     var CHOICE_PROMPT_REVEAL_SPEECH_RATIO = 0.18;
+    var TTS_REQUEST_MAX_WAIT_MS = 12000;
     var activeSession = null;
     var pendingStartDay = '';
     var pendingGuideEndStateDay = '';
@@ -704,17 +705,33 @@
         });
     }
 
+    function waitForTtsRequest(text, voiceKey) {
+        return new Promise(function (resolve) {
+            var settled = false;
+            var timeoutId = window.setTimeout(finish, TTS_REQUEST_MAX_WAIT_MS);
+            function finish() {
+                if (settled) return;
+                settled = true;
+                window.clearTimeout(timeoutId);
+                resolve();
+            }
+            try {
+                Promise.resolve(speakViaProjectTts(text, voiceKey)).then(finish).catch(function () {
+                    finish();
+                });
+            } catch (error) {
+                console.warn('[NewUserIcebreaker] project TTS failed:', error);
+                finish();
+            }
+        });
+    }
+
     function speakLine(text, voiceKey) {
         var speechDurationPromise = new Promise(function (resolve) {
             window.setTimeout(resolve, estimateSpeechDurationMs(text));
         });
-        // Keep completion capped by the local speech estimate even if /speak stalls.
-        try {
-            Promise.resolve(speakViaProjectTts(text, voiceKey)).catch(function () {});
-        } catch (error) {
-            console.warn('[NewUserIcebreaker] project TTS failed:', error);
-        }
-        return speechDurationPromise;
+        var ttsRequestPromise = waitForTtsRequest(text, voiceKey);
+        return Promise.all([speechDurationPromise, ttsRequestPromise]).then(function () {});
     }
 
     function applyAssistantTextEmotion(text) {
