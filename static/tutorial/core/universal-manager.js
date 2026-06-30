@@ -777,7 +777,41 @@ class UniversalTutorialManager {
         }
     }
 
+    beginDirectAvatarFloatingTutorialLoading(reason) {
+        if (window.NekoAvatarFloatingBoot && typeof window.NekoAvatarFloatingBoot.beginDirectTutorialLoading === 'function') {
+            window.NekoAvatarFloatingBoot.beginDirectTutorialLoading(reason || 'startup-direct-tutorial-predicted');
+        }
+    }
+
+    clearDirectAvatarFloatingTutorialLoading(reason) {
+        if (window.NekoAvatarFloatingBoot && typeof window.NekoAvatarFloatingBoot.clearDirectTutorialLoading === 'function') {
+            window.NekoAvatarFloatingBoot.clearDirectTutorialLoading(reason || 'avatar-floating-yui-ready');
+        }
+    }
+
+    dispatchAvatarFloatingTutorialInputRestored(reason = 'tutorial-avatar-restored') {
+        const detail = {
+            action: 'yui_guide_tutorial_input_restored',
+            reason,
+            page: this.getYuiGuidePageKey(),
+            runtimePage: this.currentPage,
+            timestamp: Date.now()
+        };
+        try {
+            window.dispatchEvent(new CustomEvent('neko:yui-guide:tutorial-input-restored', { detail }));
+        } catch (_) {}
+        try {
+            if (
+                window.nekoTutorialOverlay
+                && typeof window.nekoTutorialOverlay.relayToPet === 'function'
+            ) {
+                window.nekoTutorialOverlay.relayToPet(detail);
+            }
+        } catch (_) {}
+    }
+
     async recoverUserModelAfterDirectTutorialBootFailure(reason) {
+        this.clearDirectAvatarFloatingTutorialLoading(reason || 'direct-tutorial-boot-failed');
         if (window.NekoAvatarFloatingBoot && typeof window.NekoAvatarFloatingBoot.recoverUserModelBoot === 'function') {
             try {
                 return await window.NekoAvatarFloatingBoot.recoverUserModelBoot(reason || 'direct-tutorial-boot-failed');
@@ -2840,8 +2874,9 @@ class UniversalTutorialManager {
             const pointerKey = elementId.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
             const hasSnapshotPointerEvents = snapshot.pointerEvents
                 && Object.prototype.hasOwnProperty.call(snapshot.pointerEvents, pointerKey);
-            if (hasSnapshotPointerEvents) {
-                element.style.pointerEvents = snapshot.pointerEvents[pointerKey] || '';
+            const snapshotPointerEvents = hasSnapshotPointerEvents ? snapshot.pointerEvents[pointerKey] : null;
+            if (hasSnapshotPointerEvents && snapshotPointerEvents) {
+                element.style.pointerEvents = snapshotPointerEvents;
                 return;
             }
             if (activePrefix === 'live2d' || activePrefix === 'pngtuber') {
@@ -3149,6 +3184,9 @@ class UniversalTutorialManager {
             await this.playAvatarFloatingRoundPrelude(round, source, director, {
                 skipSourceModelFade: directTutorialBoot
             });
+            if (directTutorialBoot) {
+                this.clearDirectAvatarFloatingTutorialLoading('avatar-floating-yui-ready');
+            }
             const completed = await director.playAvatarFloatingRound(round, {
                 source,
                 surfaceReady: true,
@@ -3168,6 +3206,7 @@ class UniversalTutorialManager {
         } catch (error) {
             console.error('[Tutorial] 悬浮窗教程启动失败:', error);
             if (directTutorialBoot) {
+                this.clearDirectAvatarFloatingTutorialLoading('avatar-floating-start-failed');
                 await this.recoverUserModelAfterDirectTutorialBootFailure('avatar-floating-start-failed');
             }
             if (!this._tutorialEndHandled) {
@@ -3237,6 +3276,7 @@ class UniversalTutorialManager {
                 if (!hasSeen) {
                     this.setHomeTutorialPending(true);
                 }
+                this.beginDirectAvatarFloatingTutorialLoading('startup-direct-tutorial-predicted');
                 this.startTutorialWhenI18nReady(1500);
                 return;
             }
@@ -3741,6 +3781,9 @@ class UniversalTutorialManager {
             .then(() => this.restoreAvatarFloatingModelInteractionState('tutorial-avatar-restored'))
             .catch(error => {
                 console.warn('[Tutorial] 拆除引导时恢复头像失败:', error);
+            })
+            .finally(() => {
+                this.dispatchAvatarFloatingTutorialInputRestored('tutorial-avatar-restored');
             })
             .finally(() => {
                 this._tutorialModelPrefix = null;

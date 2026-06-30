@@ -3,6 +3,9 @@
 
     const AVATAR_FLOATING_GUIDE_STORAGE_KEY = 'neko_avatar_floating_guide_v1';
     const HOME_TUTORIAL_KEYS = ['neko_tutorial_home_yui_v1', 'neko_tutorial_home'];
+    const PC_OVERLAY_RUN_ID_STORAGE_KEY = 'yuiGuidePcOverlayRunId';
+    const PC_OVERLAY_SEQUENCE_STORAGE_KEY = 'yuiGuidePcOverlaySequence';
+    const PC_OVERLAY_LOADING_ICON = '/static/icons/emotion_model_icon.png';
     const ROUND_COUNT = 7;
 
     const state = {
@@ -10,8 +13,11 @@
         userModelBootSkipped: false,
         directTutorialBootClaimed: false,
         predictionSuppressed: false,
+        loadingActive: false,
         claimReason: ''
     };
+    let overlayRunId = '';
+    let overlaySequence = 0;
 
     function getTodayLocalDate() {
         const now = new Date();
@@ -144,12 +150,128 @@
         state.claimReason = reason || '';
     }
 
+    function createPcOverlayRunId() {
+        return 'yui-guide-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+    }
+
+    function ensurePcOverlayRunId() {
+        if (overlayRunId) {
+            return overlayRunId;
+        }
+        try {
+            const stored = window.sessionStorage && window.sessionStorage.getItem(PC_OVERLAY_RUN_ID_STORAGE_KEY);
+            overlayRunId = stored || createPcOverlayRunId();
+            if (window.sessionStorage) {
+                window.sessionStorage.setItem(PC_OVERLAY_RUN_ID_STORAGE_KEY, overlayRunId);
+            }
+        } catch (_) {
+            overlayRunId = createPcOverlayRunId();
+        }
+        return overlayRunId;
+    }
+
+    function nextPcOverlaySequence() {
+        try {
+            const stored = window.sessionStorage && Number(window.sessionStorage.getItem(PC_OVERLAY_SEQUENCE_STORAGE_KEY));
+            if (Number.isFinite(stored) && stored > overlaySequence) {
+                overlaySequence = stored;
+            }
+        } catch (_) {}
+        overlaySequence += 1;
+        try {
+            if (window.sessionStorage) {
+                window.sessionStorage.setItem(PC_OVERLAY_SEQUENCE_STORAGE_KEY, String(overlaySequence));
+            }
+        } catch (_) {}
+        return overlaySequence;
+    }
+
+    function getPcLoadingOverlayBridge() {
+        return window.nekoTutorialLoadingOverlay
+            && typeof window.nekoTutorialLoadingOverlay === 'object'
+            ? window.nekoTutorialLoadingOverlay
+            : null;
+    }
+
+    function beginDirectTutorialLoading(reason) {
+        const bridge = getPcLoadingOverlayBridge();
+        if (!bridge || typeof bridge.begin !== 'function' || typeof bridge.update !== 'function') {
+            return false;
+        }
+        const tutorialRunId = ensurePcOverlayRunId();
+        const sequence = nextPcOverlaySequence();
+        state.loadingActive = true;
+        try {
+            const beginResult = bridge.begin({ tutorialRunId, reason: reason || 'direct-tutorial-loading' });
+            if (beginResult && typeof beginResult.catch === 'function') {
+                beginResult.catch(() => {
+                    state.loadingActive = false;
+                });
+            }
+            const updateResult = bridge.update({
+                tutorialRunId,
+                sequence,
+                payload: {
+                    loading: {
+                        visible: true,
+                        reason: reason || 'direct-tutorial-loading',
+                        emotionIconUrl: PC_OVERLAY_LOADING_ICON
+                    }
+                }
+            });
+            if (updateResult && typeof updateResult.catch === 'function') {
+                updateResult.catch(() => {
+                    state.loadingActive = false;
+                });
+            }
+            return true;
+        } catch (_) {
+            state.loadingActive = false;
+            return false;
+        }
+    }
+
+    function clearDirectTutorialLoading(reason) {
+        const bridge = getPcLoadingOverlayBridge();
+        if (!state.loadingActive && !overlayRunId) {
+            return false;
+        }
+        state.loadingActive = false;
+        if (!bridge) {
+            return false;
+        }
+        const tutorialRunId = ensurePcOverlayRunId();
+        const sequence = nextPcOverlaySequence();
+        try {
+            if (typeof bridge.update === 'function') {
+                const updateResult = bridge.update({
+                    tutorialRunId,
+                    sequence,
+                    payload: { loading: null, reason: reason || 'direct-tutorial-loading-clear' }
+                });
+                if (updateResult && typeof updateResult.catch === 'function') {
+                    updateResult.catch(() => {});
+                }
+            }
+        } catch (_) {}
+        try {
+            if (typeof bridge.clear === 'function') {
+                const clearResult = bridge.clear({ tutorialRunId, reason: reason || 'direct-tutorial-loading-clear' });
+                if (clearResult && typeof clearResult.catch === 'function') {
+                    clearResult.catch(() => {});
+                }
+            }
+        } catch (_) {}
+        return true;
+    }
+
     async function recoverUserModelBoot(reason) {
         const shouldRecover = state.userModelBootSkipped || state.directTutorialBootClaimed;
         if (!shouldRecover) {
             return false;
         }
         state.predictionSuppressed = true;
+        clearDirectTutorialLoading(reason || 'recover-user-model');
         releaseDirectTutorialBoot(reason || 'recover-user-model');
         if (typeof window.showCurrentModel === 'function') {
             await window.showCurrentModel();
@@ -179,6 +301,8 @@
         markUserModelBootSkipped,
         claimDirectTutorialBoot,
         releaseDirectTutorialBoot,
+        beginDirectTutorialLoading,
+        clearDirectTutorialLoading,
         recoverUserModelBoot,
         wasUserModelBootSkipped() {
             return state.userModelBootSkipped === true;
