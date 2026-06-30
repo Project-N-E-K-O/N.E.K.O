@@ -669,7 +669,7 @@
         });
     }
 
-    function speakViaProjectTts(text, voiceKey) {
+    function speakViaProjectTts(text, voiceKey, signal) {
         var line = String(text || '').trim();
         if (!line) return Promise.resolve(false);
         var sessionId = activeSession && activeSession.sessionId ? activeSession.sessionId : '';
@@ -688,18 +688,21 @@
             }
         };
         return getLocalMutationHeaders().then(function (headers) {
-            return fetch(ICEBREAKER_API_BASE + '/speak', {
+            var requestOptions = {
                 method: 'POST',
                 headers: headers,
                 credentials: 'same-origin',
                 body: JSON.stringify(body)
-            });
+            };
+            if (signal) requestOptions.signal = signal;
+            return fetch(ICEBREAKER_API_BASE + '/speak', requestOptions);
         }).then(function (response) {
             if (!response.ok) throw new Error('HTTP ' + response.status);
             return response.json();
         }).then(function (data) {
             return !!(data && data.ok);
         }).catch(function (error) {
+            if (error && error.name === 'AbortError') return false;
             console.warn('[NewUserIcebreaker] project TTS failed:', error);
             return false;
         });
@@ -708,7 +711,11 @@
     function waitForTtsRequest(text, voiceKey) {
         return new Promise(function (resolve) {
             var settled = false;
-            var timeoutId = window.setTimeout(finish, TTS_REQUEST_MAX_WAIT_MS);
+            var controller = typeof AbortController === 'function' ? new AbortController() : null;
+            var timeoutId = window.setTimeout(function () {
+                if (controller) controller.abort();
+                finish();
+            }, TTS_REQUEST_MAX_WAIT_MS);
             function finish() {
                 if (settled) return;
                 settled = true;
@@ -716,7 +723,9 @@
                 resolve();
             }
             try {
-                Promise.resolve(speakViaProjectTts(text, voiceKey)).then(finish).catch(function () {
+                Promise.resolve(
+                    speakViaProjectTts(text, voiceKey, controller ? controller.signal : undefined)
+                ).then(finish).catch(function () {
                     finish();
                 });
             } catch (error) {
