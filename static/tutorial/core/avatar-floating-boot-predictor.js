@@ -287,14 +287,13 @@
         const modelType = String(window.lanlan_config && window.lanlan_config.model_type || 'live2d').toLowerCase();
         const subType = String(window.lanlan_config && window.lanlan_config.live3d_sub_type || '').toLowerCase();
         try {
-            if (modelType === 'live3d' && subType === 'mmd') {
+            const isMmdModel = modelType === 'live3d' && subType === 'mmd';
+            if (isMmdModel) {
                 if (typeof window.initMMDModel === 'function') {
                     await window.initMMDModel();
                     return true;
                 }
-                return false;
-            }
-            if ((modelType === 'vrm' || modelType === 'live3d') && typeof window.initVRMModel === 'function') {
+            } else if ((modelType === 'vrm' || modelType === 'live3d') && typeof window.initVRMModel === 'function') {
                 await window.initVRMModel();
                 return true;
             }

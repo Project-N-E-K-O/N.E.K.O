@@ -1932,10 +1932,13 @@ def test_avatar_floating_direct_boot_does_not_wait_for_user_floating_buttons():
     assert "await window.showCurrentModel();" in recovery_block
     assert recovery_block.index("await window.initLive2DModel();") < recovery_block.index("await window.showCurrentModel();")
     assert "await window.initMMDModel();" in recovery_block
-    assert "return false;" in recovery_block.split("await window.initMMDModel();", 1)[1].split(
-        "if ((modelType === 'vrm' || modelType === 'live3d')",
+    assert "const isMmdModel = modelType === 'live3d' && subType === 'mmd';" in recovery_block
+    mmd_branch = recovery_block.split("if (isMmdModel) {", 1)[1].split(
+        "} else if ((modelType === 'vrm' || modelType === 'live3d')",
         1,
     )[0]
+    assert "return false;" not in mmd_branch
+    assert recovery_block.index("if (isMmdModel) {") < recovery_block.index("await window.showCurrentModel();")
 
 
 def test_tutorial_lifecycle_modules_export_reusable_controllers():
