@@ -223,12 +223,13 @@ result = await self.plugins.require_enabled("dependency_plugin")
 
 ## PluginStore（永続ストレージ）
 
-```python
-from plugin.sdk.plugin import PluginStore
+`self.store` 経由でアクセスします（ホストがプラグイン構築時に事前生成して注入するため、自分でインスタンス化する必要はありません）。
 
-store = PluginStore(self.ctx)
-await store.set("key", {"count": 42})
-value = await store.get("key")  # → {"count": 42}
+`PluginStore` のすべてのメソッドは `Result` を返すため、`unwrap_or(...)` で展開してください。
+
+```python
+unwrap_or(await self.store.set("key", {"count": 42}), None)
+value = unwrap_or(await self.store.get("key"), None)  # → {"count": 42}
 ```
 
 ---
@@ -238,18 +239,20 @@ value = await store.get("key")  # → {"count": 42}
 `self.memory` 経由でアクセスします。
 
 ```python
-result = await self.memory.search("keyword")
-result = await self.memory.store("key", "value")
+result = await self.memory.query("default", "keyword")  # バケット内を検索
+result = await self.memory.get("default", limit=20)      # バケット内の最近のレコードを一覧取得
 ```
 
 ---
 
 ## SystemInfo
 
-`self.system_info` 経由でアクセスします。
+`self.system_info` 経由でアクセスします。これらのメソッドはいずれも `Result` を返すため、`unwrap_or(...)` で展開してください。
 
 ```python
-info = await self.system_info.get()
+config = unwrap_or(await self.system_info.get_system_config(), {})
+settings = unwrap_or(await self.system_info.get_server_settings(), {})
+python_env = unwrap_or(await self.system_info.get_python_env(), {})
 ```
 
 ---

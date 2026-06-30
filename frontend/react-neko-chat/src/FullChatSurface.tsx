@@ -2142,8 +2142,6 @@ export default function FullChatSurface({
 
     const gap = 16;
     let frameId: number | null = null;
-    let trackingFrameId: number | null = null;
-    let disposed = false;
 
     const getDesktopPlacementSpace = (shellRect: DOMRect) => {
       const layout = (window as typeof window & {
@@ -2229,17 +2227,16 @@ export default function FullChatSurface({
       });
     };
 
-    const trackPlacement = () => {
-      if (disposed) return;
-      updatePlacement();
-      trackingFrameId = window.requestAnimationFrame(trackPlacement);
-    };
-
     schedulePlacementUpdate();
-    trackingFrameId = window.requestAnimationFrame(trackPlacement);
 
     const visualViewport = window.visualViewport;
     window.addEventListener('resize', schedulePlacementUpdate);
+    // Surface/desktop layout moves (avatar drag, window move, work-area change)
+    // have no element-level signal a ResizeObserver could catch, so listen for
+    // the host's layout-change events instead of polling every frame. Mirrors the
+    // event-driven compact placement effect in App.tsx (CompactChatApp).
+    window.addEventListener('neko:compact-surface-layout-change', schedulePlacementUpdate);
+    window.addEventListener('neko:desktop-compact-layout-change', schedulePlacementUpdate);
     visualViewport?.addEventListener('resize', schedulePlacementUpdate);
     visualViewport?.addEventListener('scroll', schedulePlacementUpdate);
 
@@ -2253,14 +2250,12 @@ export default function FullChatSurface({
     }
 
     return () => {
-      disposed = true;
       if (frameId !== null) {
         window.cancelAnimationFrame(frameId);
       }
-      if (trackingFrameId !== null) {
-        window.cancelAnimationFrame(trackingFrameId);
-      }
       window.removeEventListener('resize', schedulePlacementUpdate);
+      window.removeEventListener('neko:compact-surface-layout-change', schedulePlacementUpdate);
+      window.removeEventListener('neko:desktop-compact-layout-change', schedulePlacementUpdate);
       visualViewport?.removeEventListener('resize', schedulePlacementUpdate);
       visualViewport?.removeEventListener('scroll', schedulePlacementUpdate);
       observer?.disconnect();

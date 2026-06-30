@@ -149,12 +149,20 @@ dep = await self.plugins.require_enabled("required_plugin")
 
 ### Event bus
 
-```python
-# Publish an event via the bus
-self.bus.emit("my_event", {"key": "value"})
+`self.bus` is a read-only view (`SdkBusContext`) exposing five namespace snapshots: `messages`, `events`, `lifecycle`, `conversations`, and `memory`, each with a `.get(...)`. It has **no** `emit()` or `on()` method — the bus is only for reading namespace snapshots, not for publishing events directly.
 
-# Subscribe to events (typically in startup)
-self.bus.on("some_event", self._handle_event)
+```python
+# Read the latest snapshot of a namespace
+events = self.bus.events.get()
+
+# Subscribe to changes: call get() to obtain the list, then watch() for a watcher.
+# watcher.subscribe(on=...) is a decorator; the handler receives an SdkBusDelta.
+watcher = self.bus.events.get().watch(self.ctx)
+
+@watcher.subscribe(on="some_event")
+def _handle_event(delta):
+    # delta.added / delta.removed / delta.current
+    ...
 ```
 
 ---

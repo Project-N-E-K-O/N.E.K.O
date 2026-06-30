@@ -81,8 +81,11 @@ from .workers.vllm_omni import (
     vllm_omni_tts_worker,
     VLLM_OMNI_DEFAULT_BASE_URL,
     VLLM_OMNI_DEFAULT_MODEL,
+    _vllm_omni_normalize_ws_endpoint,
     _vllm_omni_is_selected,
     _vllm_omni_resolve,
+    _vllm_omni_clone_is_selected,
+    _vllm_omni_clone_resolve,
 )
 from .workers.mimo import (
     mimo_tts_worker,
@@ -161,6 +164,8 @@ __all__ = [
     "_get_elevenlabs_options", "_elevenlabs_ws_base_url", "_gsv_should_drop_chunk",
     # provider registry adapters
     "_vllm_omni_is_selected", "_vllm_omni_resolve",
+    "_vllm_omni_clone_is_selected", "_vllm_omni_clone_resolve",
+    "_vllm_omni_normalize_ws_endpoint",
     "_gptsovits_is_selected", "_gptsovits_resolve",
     "_minimax_clone_is_selected", "_minimax_clone_resolve",
     "_elevenlabs_clone_is_selected", "_elevenlabs_clone_resolve",
@@ -413,7 +418,9 @@ _tts_providers.register(_tts_providers.TTSProvider(
     key='vllm_omni',
     kind='local',
     priority=20,
-    capabilities=frozenset({'preset'}),  # vLLM-Omni = 选预制音色 id，不克隆
+    # vLLM-Omni = 选预制音色 id（preset）+ 内联参考音频克隆（clone）。两种选中机制
+    # 合并在 _vllm_omni_is_selected/_vllm_omni_resolve 里分流（对偶 MiMo 的单条目双机制）。
+    capabilities=frozenset({'preset', 'clone'}),
     is_selected=_vllm_omni_is_selected,
     resolve=_vllm_omni_resolve,
     default_url=VLLM_OMNI_DEFAULT_BASE_URL,

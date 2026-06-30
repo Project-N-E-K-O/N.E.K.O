@@ -271,9 +271,9 @@ async def unregister_on_shutdown():
 Bind it to your plugin lifecycle hooks:
 
 ```python
-from plugin.sdk.plugin import NekoPluginBase, plugin
+from plugin.sdk.plugin import NekoPluginBase, neko_plugin
 
-@plugin
+@neko_plugin
 class WeatherPlugin(NekoPluginBase):
     async def on_start(self):
         # Register asynchronously so plugin startup doesn't block on it.

@@ -1,6 +1,6 @@
 # 三服务器设计
 
-## 主服务器（`main_server.py`，端口 48911）
+## 主服务器（`app/main_server.py`，端口 48911）
 
 主服务器是一个 FastAPI 应用，作为所有交互的用户侧入口。
 
@@ -9,20 +9,20 @@
 1. **加载配置** —— 加载 `config_manager`，初始化角色数据
 2. **创建会话** —— 为每个已定义的角色创建 `LLMSessionManager`
 3. **挂载静态文件** —— 挂载 `/static`、`/user_live2d`、`/user_vrm`、`/workshop`
-4. **注册路由** —— 引入全部 10 个 API 路由
+4. **注册路由** —— 引入全部 26 个 API 路由
 5. **事件处理器** —— 初始化 Steamworks、启动 ZeroMQ 桥、预加载音频模块、检测语言
 6. **启动 Uvicorn** —— 绑定 `127.0.0.1:48911`
 
 ### 处理内容
 
-- 所有 REST API 端点（10 个路由）
+- 所有 REST API 端点（26 个路由）
 - 用于实时聊天的 WebSocket 连接（`/ws/{lanlan_name}`）
 - TTS 合成（线程工作器）
 - 音频重采样（24kHz -> 48kHz，通过 soxr）
 - 静态文件服务（模型、CSS、JS、多语言文件）
 - HTML 页面渲染（Jinja2 模板）
 
-## 记忆服务器（`memory_server.py`，端口 48912）
+## 记忆服务器（`app/memory_server.py`，端口 48912）
 
 记忆服务器管理持久化的对话历史和语义召回。
 
@@ -43,9 +43,9 @@
 - **压缩**：定期摘要旧对话以节省上下文窗口空间
 - **审阅**：允许用户浏览和修正已存储的记忆
 
-## 智能体服务器（`agent_server.py`，端口 48915）
+## 智能体服务器（`app/agent_server.py`，端口 48915 和 48916）
 
-智能体服务器处理由对话上下文触发的后台任务执行。
+智能体服务器处理由对话上下文触发的后台任务执行。同一个进程在端口 48915 上托管工具服务器（Tool Server），并在端口 48916 上托管内嵌的用户插件服务器（user-plugin server）。
 
 ### ZeroMQ 地址映射
 
@@ -58,10 +58,10 @@
 ### 任务执行流水线
 
 1. 主服务器通过 ZeroMQ 发布任务
-2. 智能体服务器接收并创建任务计划（`planner.py`）
+2. 智能体服务器接收任务并创建任务计划（`task_executor.py`，由 `DirectTaskExecutor` 类承担，已合并原 Analyzer 与 Planner 两个角色）
 3. 动作通过适配器执行：
    - **MCP Client** —— Model Context Protocol 工具调用
    - **Computer Use** —— 截图分析、鼠标/键盘操作
    - **Browser Use** —— 网页浏览自动化
-4. 结果经过分析（`analyzer.py`）和去重（`deduper.py`）
+4. 结果由同一个 `DirectTaskExecutor`（`task_executor.py`）进行分析并去重（`deduper.py`）
 5. 最终结果通过 ZeroMQ 流式返回（`task_result`、`proactive_message`）

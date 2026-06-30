@@ -16,6 +16,7 @@
     var CHOICE_PROMPT_REVEAL_SPEECH_RATIO = 0.18;
     var activeSession = null;
     var pendingStartDay = '';
+    var pendingGuideEndStateDay = '';
     var scriptPromise = null;
     var localePromises = Object.create(null);
     var icebreakerSortKeySeq = 0;
@@ -62,7 +63,7 @@
     }
 
     function isPeriodActive() {
-        return !!activeSession;
+        return !!(activeSession || pendingStartDay || pendingGuideEndStateDay);
     }
 
     function fetchJson(url) {
@@ -154,6 +155,26 @@
         if (pendingStartDay === dayKey) {
             pendingStartDay = '';
         }
+    }
+
+    function clearPendingGuideEndStateDay(dayKey) {
+        if (pendingGuideEndStateDay === dayKey) {
+            pendingGuideEndStateDay = '';
+        }
+    }
+
+    function markPendingStartFromEndState(endState) {
+        var dayKey = String(endState && endState.day || '');
+        if (dayKey) pendingGuideEndStateDay = dayKey;
+        return dayKey;
+    }
+
+    function dispatchIcebreakerEnded(reason) {
+        try {
+            window.dispatchEvent(new CustomEvent('neko:new-user-icebreaker-ended', {
+                detail: { reason: reason || 'complete' }
+            }));
+        } catch (_) {}
     }
 
     function endIcebreakerRoute(session, reason) {
@@ -546,31 +567,61 @@
         });
     }
 
-    function finalizeIcebreakerAssistantSubtitle(text) {
-        var line = String(text || '').trim();
+    // Also defined in app-interpage.js for the standalone chat bridge path.
+    function getIcebreakerMessageText(message) {
+        var blocks = message && Array.isArray(message.blocks) ? message.blocks : [];
+        for (var i = 0; i < blocks.length; i++) {
+            if (blocks[i] && blocks[i].type === 'text') {
+                var text = String(blocks[i].text || '').trim();
+                if (text) return text;
+            }
+        }
+        return '';
+    }
+
+    function syncIcebreakerAssistantCompactCaption(role, message) {
+        if (role !== 'assistant') return;
+        var line = getIcebreakerMessageText(message);
         if (!line) return;
+        var turnId = String((message && (message.turnId || message.id)) || makeMessageId('icebreaker-turn'));
+        var detail = {
+            turnId: turnId,
+            segmentId: turnId + ':icebreaker',
+            text: line,
+            source: SOURCE
+        };
         try {
-            var bridge = window.subtitleBridge;
-            if (!bridge || typeof bridge.finalizeTurnWithTranslation !== 'function') {
-                return;
-            }
-            if (typeof bridge.beginTurn === 'function') {
-                bridge.beginTurn({ latch: false });
-            }
-            var result = bridge.finalizeTurnWithTranslation(line);
-            if (result && typeof result.catch === 'function') {
-                result.catch(function (error) {
-                    console.warn('[NewUserIcebreaker] subtitle translation failed:', error);
-                });
-            }
+            window.dispatchEvent(new CustomEvent('neko-assistant-turn-start', {
+                detail: {
+                    turnId: turnId,
+                    source: SOURCE
+                }
+            }));
+            window.dispatchEvent(new CustomEvent('neko-compact-caption-update', {
+                detail: detail
+            }));
         } catch (error) {
-            console.warn('[NewUserIcebreaker] subtitle translation failed:', error);
+            console.warn('[NewUserIcebreaker] compact caption sync failed:', error);
         }
     }
 
-    function syncIcebreakerAssistantSubtitle(role, contextOk, text) {
-        if (role !== 'assistant' || contextOk !== true) return;
-        finalizeIcebreakerAssistantSubtitle(text);
+    function waitForIcebreakerChatHostMounted(host) {
+        return new Promise(function (resolve) {
+            var attempts = 0;
+            function checkMounted() {
+                var isMounted = false;
+                try {
+                    isMounted = !!(host && typeof host.isMounted === 'function' && host.isMounted());
+                } catch (_) {}
+                if (isMounted || attempts >= 100) {
+                    window.setTimeout(resolve, 0);
+                    return;
+                }
+                attempts += 1;
+                window.setTimeout(checkMounted, 50);
+            }
+            checkMounted();
+        });
     }
 
     function appendChatMessage(role, text, meta) {
@@ -591,19 +642,25 @@
             icebreaker: Object.assign({ source: SOURCE }, meta || {})
         };
         broadcastIcebreakerAppendMessage(message);
-        return appendLlmContext(role, messageText, meta || {}).then(function (contextOk) {
+        return appendLlmContext(role, messageText, meta || {}).then(function () {
             if (!shouldRenderIcebreakerOnLocalChatHost()) {
-                syncIcebreakerAssistantSubtitle(role, contextOk, messageText);
+                // The standalone /chat page applies both append and compact caption sync
+                // from the broadcast receiver in app-interpage.js.
                 return message;
             }
+            var chatHost = null;
             return waitForChatHost(30000).then(function (host) {
+                chatHost = host;
                 if (typeof host.openWindow === 'function') {
                     host.openWindow();
                 }
                 return host.appendMessage(message);
             }).then(function (result) {
-                syncIcebreakerAssistantSubtitle(role, contextOk, messageText);
-                return result;
+                if (!result) return result;
+                return waitForIcebreakerChatHostMounted(chatHost).then(function () {
+                    syncIcebreakerAssistantCompactCaption(role, message);
+                    return result;
+                });
             });
         }).catch(function (error) {
             console.warn('[NewUserIcebreaker] append message failed:', error);
@@ -648,8 +705,7 @@
     }
 
     function speakLine(text, voiceKey) {
-        speakViaProjectTts(text, voiceKey).then(function (ok) {
-            if (ok) return;
+        return speakViaProjectTts(text, voiceKey).then(function () {
             return new Promise(function (resolve) {
                 window.setTimeout(resolve, estimateSpeechDurationMs(text));
             });
@@ -803,6 +859,7 @@
         var day = session.day;
         var nodeId = session.nodeId;
         var sessionId = session.sessionId;
+        var handoffSpeechPromise = Promise.resolve(false);
         applyAssistantTextEmotion(text);
         clearChoicePrompt();
         return appendChatMessage('assistant', text, {
@@ -811,14 +868,7 @@
             voiceKey: option.handoffVoiceKey || '',
             handoff: true
         }).then(function () {
-            speakLine(text, option.handoffVoiceKey || '');
-            markDay(day, {
-                started: true,
-                completed: true,
-                completedAt: Date.now(),
-                sessionId: sessionId,
-                nodeId: nodeId
-            });
+            handoffSpeechPromise = speakLine(text, option.handoffVoiceKey || '');
             // 关 route 前 await 本 session 全部未决池写入（中间+收尾）：严格后端 route 一关就
             // 拒收，迟到的写入会丢。绝大多数早已 resolve，Promise.all 实际几乎立即完成。
             var pendingWrites = (session.pendingChoiceWrites || []).map(function (p) {
@@ -828,9 +878,19 @@
                 return endIcebreakerRoute(session, 'icebreaker_handoff');
             });
         }).then(function () {
+            return Promise.resolve(handoffSpeechPromise).catch(function () {});
+        }).then(function () {
+            markDay(day, {
+                started: true,
+                completed: true,
+                completedAt: Date.now(),
+                sessionId: sessionId,
+                nodeId: nodeId
+            });
             if (activeSession === session) {
                 activeSession = null;
             }
+            dispatchIcebreakerEnded('handoff');
             return true;
         });
     }
@@ -945,20 +1005,27 @@
                 voiceKey: voiceKey || '',
                 fallback: isRelease ? 'release' : 'redirect'
             }).then(function () {
-                speakLine(fallbackText, voiceKey || '');
+                var fallbackSpeechPromise = speakLine(fallbackText, voiceKey || '');
                 if (isRelease) {
-                    markDay(day, {
-                        started: true,
-                        completed: true,
-                        completedAt: Date.now(),
-                        sessionId: sessionId,
-                        nodeId: nodeId,
-                        releasedByFreeText: true
+                    var routeEndPromise = endIcebreakerRoute(session, 'icebreaker_free_text_release');
+                    return Promise.all([
+                        Promise.resolve(routeEndPromise),
+                        Promise.resolve(fallbackSpeechPromise).catch(function () {})
+                    ]).then(function () {
+                        markDay(day, {
+                            started: true,
+                            completed: true,
+                            completedAt: Date.now(),
+                            sessionId: sessionId,
+                            nodeId: nodeId,
+                            releasedByFreeText: true
+                        });
+                        if (activeSession === session) {
+                            activeSession = null;
+                        }
+                        dispatchIcebreakerEnded('free_text_release');
+                        return true;
                     });
-                    endIcebreakerRoute(session, 'icebreaker_free_text_release');
-                    if (activeSession === session) {
-                        activeSession = null;
-                    }
                 } else if (activeSession === session) {
                     var currentNode = session.dayConfig && session.dayConfig.nodes
                         ? session.dayConfig.nodes[nodeId]
@@ -1055,6 +1122,7 @@
             return startIcebreakerRoute(nextSession).then(function (started) {
                 if (!started) return false;
                 activeSession = nextSession;
+                clearPendingGuideEndStateDay(dayKey);
                 markDay(dayKey, {
                     started: true,
                     completed: false,
@@ -1143,8 +1211,19 @@
     function handleGuideEndEvent(event) {
         var detail = event && event.detail ? event.detail : {};
         var eventType = event && event.type ? String(event.type) : '';
+        var endState = resolveLatestEndState(detail, eventType);
+        var pendingDay = markPendingStartFromEndState(endState);
         window.setTimeout(function () {
-            startFromEndStateWhenTutorialIdle(resolveLatestEndState(detail, eventType));
+            startFromEndStateWhenTutorialIdle(endState).then(function (started) {
+                if (!started) {
+                    clearPendingGuideEndStateDay(pendingDay);
+                    dispatchIcebreakerEnded('start_failed');
+                }
+            }).catch(function (error) {
+                console.warn('[NewUserIcebreaker] deferred start failed:', error);
+                clearPendingGuideEndStateDay(pendingDay);
+                dispatchIcebreakerEnded('start_failed');
+            });
         }, 500);
     }
 
