@@ -577,11 +577,19 @@ class MMDInteraction {
             // 模型中心（相对于 canvas 左上角的像素），再偏移 canvas 在窗口中的位置
             const modelCenterX = (modelMinX + modelMaxX) / 2 + canvasRect.left;
             const modelCenterY = (modelMinY + modelMaxY) / 2 + canvasRect.top;
+            const dragPointer = this._lastPanDragPointerScreen;
+            const hasDragPointer = dragPointer
+                && Number.isFinite(dragPointer.x)
+                && Number.isFinite(dragPointer.y);
+            const pointerOffset = this._panDragModelCenterOffset || { x: 0, y: 0 };
+            this._lastPanDragPointerScreen = null;
+            this._panDragModelCenterOffset = null;
 
             const windowWidth = window.innerWidth;
             const windowHeight = window.innerHeight;
-            if (modelCenterX >= 0 && modelCenterX < windowWidth &&
-                modelCenterY >= 0 && modelCenterY < windowHeight) {
+            const modelCenterInsideWindow = modelCenterX >= 0 && modelCenterX < windowWidth &&
+                modelCenterY >= 0 && modelCenterY < windowHeight;
+            if (!hasDragPointer && modelCenterInsideWindow) {
                 return false;
             }
 
@@ -617,14 +625,20 @@ class MMDInteraction {
 
             const modelScreenX = currentScreenX + modelCenterX;
             const modelScreenY = currentScreenY + modelCenterY;
-            const dragPointer = this._lastPanDragPointerScreen;
-            const hasDragPointer = dragPointer
-                && Number.isFinite(dragPointer.x)
-                && Number.isFinite(dragPointer.y);
-            const switchScreenX = hasDragPointer ? dragPointer.x : modelScreenX;
-            const switchScreenY = hasDragPointer ? dragPointer.y : modelScreenY;
+            const pointerWindowX = hasDragPointer ? dragPointer.x - currentScreenX : null;
+            const pointerWindowY = hasDragPointer ? dragPointer.y - currentScreenY : null;
+            const pointerOutsideCurrentWindow = hasDragPointer && !(
+                pointerWindowX >= 0 && pointerWindowX < windowWidth &&
+                pointerWindowY >= 0 && pointerWindowY < windowHeight
+            );
+            if (hasDragPointer && !pointerOutsideCurrentWindow && modelCenterInsideWindow) {
+                return false;
+            }
+            const useDragPointerForSwitch = hasDragPointer && pointerOutsideCurrentWindow;
+            const switchScreenX = useDragPointerForSwitch ? dragPointer.x : modelScreenX;
+            const switchScreenY = useDragPointerForSwitch ? dragPointer.y : modelScreenY;
 
-            // 4. 查找包含拖拽释放点的目标显示器；无拖拽点时回退到模型中心。
+            // 4. 优先使用跨出当前窗口的释放点；否则回退到模型中心，保留旧的宽模型边缘拖拽行为。
             let targetDisplay = null;
             for (const display of displays) {
                 const dx = Number.isFinite(display.screenX) ? display.screenX
@@ -659,11 +673,10 @@ class MMDInteraction {
             console.log('[MMD] 屏幕切换成功:', result);
 
             // 5. 将模型在世界坐标中偏移，使拖拽抓取点落到释放鼠标的位置。
-            const pointerOffset = this._panDragModelCenterOffset || { x: 0, y: 0 };
-            const desiredModelCenterX = hasDragPointer
+            const desiredModelCenterX = useDragPointerForSwitch
                 ? switchScreenX - targetDisplay.screenX + (Number(pointerOffset.x) || 0)
                 : modelScreenX - targetDisplay.screenX;
-            const desiredModelCenterY = hasDragPointer
+            const desiredModelCenterY = useDragPointerForSwitch
                 ? switchScreenY - targetDisplay.screenY + (Number(pointerOffset.y) || 0)
                 : modelScreenY - targetDisplay.screenY;
             const deltaPxX = desiredModelCenterX - modelCenterX;
@@ -688,10 +701,10 @@ class MMDInteraction {
             await new Promise(resolve => requestAnimationFrame(resolve));
             await new Promise(resolve => requestAnimationFrame(resolve));
 
-            const snapped = hasDragPointer
+            const snapped = useDragPointerForSwitch
                 ? false
                 : await this._snapModelIntoScreen({ animate: true });
-            if (hasDragPointer || !snapped) {
+            if (useDragPointerForSwitch || !snapped) {
                 await this._savePositionAfterInteraction();
             }
             if (window.NekoAvatarMultiScreenDragHint &&

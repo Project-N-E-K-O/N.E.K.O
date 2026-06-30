@@ -138,15 +138,19 @@ function createInteractionContext(sourceFile, exportExpression = '') {
     return window;
 }
 
-function createSceneLike() {
+function createSceneLike(options = {}) {
+    const minX = options.minX ?? 2550;
+    const maxX = options.maxX ?? 2590;
+    const minY = options.minY ?? 700;
+    const maxY = options.maxY ?? 740;
     return {
         position: new FakeVector3(0, 0, 0),
         quaternion: { clone: () => ({}) },
         scale: { x: 1, y: 1, z: 1 },
         rotation: { x: 0, y: 0, z: 0 },
         _box: {
-            min: new FakeVector3(ndcFromScreenX(2550, 2560), ndcFromScreenY(700, 1440), 0),
-            max: new FakeVector3(ndcFromScreenX(2590, 2560), ndcFromScreenY(740, 1440), 0)
+            min: new FakeVector3(ndcFromScreenX(minX, 2560), ndcFromScreenY(minY, 1440), 0),
+            max: new FakeVector3(ndcFromScreenX(maxX, 2560), ndcFromScreenY(maxY, 1440), 0)
         },
         updateMatrixWorld() {}
     };
@@ -229,6 +233,49 @@ test('VRM display switch uses the released drag pointer as the cross-screen targ
     assert.deepEqual(screenBridge.calls[0], { screenX: 3200, screenY: 720 });
     assert.ok(scene.position.x > -8, 'model should not be compensated back to the target display edge');
     assert.equal(snapCalls, 0, 'pointer-anchored cross-display drag should not run a second snap animation');
+    assert.equal(interaction._lastPanDragPointerScreen, null, 'display switch should consume the cached drag pointer');
+});
+
+test('VRM display switch uses the released pointer even when the model center is still in the source window', async () => {
+    const window = createInteractionContext('vrm-interaction.js');
+    const scene = createSceneLike({ minX: 2500, maxX: 2530 });
+    const screenBridge = createScreenBridge();
+    window.electronScreen = screenBridge.bridge;
+    const interaction = new window.VRMInteraction({
+        currentModel: { scene, vrm: { scene }, url: '/vrm/yui.vrm' },
+        camera: createCamera(),
+        renderer: createRenderer(),
+        core: { saveUserPreferences: async () => true }
+    });
+    interaction._lastPanDragPointerScreen = { x: 3200, y: 720 };
+    interaction._panDragModelCenterOffset = { x: 0, y: 0 };
+    interaction._snapModelIntoScreen = async () => false;
+    interaction._savePositionAfterInteraction = async () => {};
+
+    await interaction._checkAndSwitchDisplay();
+
+    assert.deepEqual(screenBridge.calls[0], { screenX: 3200, screenY: 720 });
+});
+
+test('VRM display switch falls back to the model center when the release pointer remains on the source display', async () => {
+    const window = createInteractionContext('vrm-interaction.js');
+    const scene = createSceneLike();
+    const screenBridge = createScreenBridge();
+    window.electronScreen = screenBridge.bridge;
+    const interaction = new window.VRMInteraction({
+        currentModel: { scene, vrm: { scene }, url: '/vrm/yui.vrm' },
+        camera: createCamera(),
+        renderer: createRenderer(),
+        core: { saveUserPreferences: async () => true }
+    });
+    interaction._lastPanDragPointerScreen = { x: 2500, y: 720 };
+    interaction._panDragModelCenterOffset = { x: 0, y: 0 };
+    interaction._snapModelIntoScreen = async () => false;
+    interaction._savePositionAfterInteraction = async () => {};
+
+    await interaction._checkAndSwitchDisplay();
+
+    assert.deepEqual(screenBridge.calls[0], { screenX: 2570, screenY: 720 });
 });
 
 test('MMD display switch uses the released drag pointer as the cross-screen target', async () => {
@@ -256,4 +303,47 @@ test('MMD display switch uses the released drag pointer as the cross-screen targ
     assert.deepEqual(screenBridge.calls[0], { screenX: 3200, screenY: 720 });
     assert.ok(mesh.position.x > -8, 'model should not be compensated back to the target display edge');
     assert.equal(snapCalls, 0, 'pointer-anchored cross-display drag should not run a second snap animation');
+    assert.equal(interaction._lastPanDragPointerScreen, null, 'display switch should consume the cached drag pointer');
+});
+
+test('MMD display switch uses the released pointer even when the model center is still in the source window', async () => {
+    const window = createInteractionContext('mmd-interaction.js', 'window.MMDInteraction = MMDInteraction;');
+    const mesh = createSceneLike({ minX: 2500, maxX: 2530 });
+    const screenBridge = createScreenBridge();
+    window.electronScreen = screenBridge.bridge;
+    const interaction = new window.MMDInteraction({
+        currentModel: { mesh, url: '/mmd/yui.pmx' },
+        camera: createCamera(),
+        renderer: createRenderer(),
+        core: { saveUserPreferences: async () => true }
+    });
+    interaction._lastPanDragPointerScreen = { x: 3200, y: 720 };
+    interaction._panDragModelCenterOffset = { x: 0, y: 0 };
+    interaction._snapModelIntoScreen = async () => false;
+    interaction._savePositionAfterInteraction = async () => {};
+
+    await interaction._checkAndSwitchDisplay();
+
+    assert.deepEqual(screenBridge.calls[0], { screenX: 3200, screenY: 720 });
+});
+
+test('MMD display switch falls back to the model center when the release pointer remains on the source display', async () => {
+    const window = createInteractionContext('mmd-interaction.js', 'window.MMDInteraction = MMDInteraction;');
+    const mesh = createSceneLike();
+    const screenBridge = createScreenBridge();
+    window.electronScreen = screenBridge.bridge;
+    const interaction = new window.MMDInteraction({
+        currentModel: { mesh, url: '/mmd/yui.pmx' },
+        camera: createCamera(),
+        renderer: createRenderer(),
+        core: { saveUserPreferences: async () => true }
+    });
+    interaction._lastPanDragPointerScreen = { x: 2500, y: 720 };
+    interaction._panDragModelCenterOffset = { x: 0, y: 0 };
+    interaction._snapModelIntoScreen = async () => false;
+    interaction._savePositionAfterInteraction = async () => {};
+
+    await interaction._checkAndSwitchDisplay();
+
+    assert.deepEqual(screenBridge.calls[0], { screenX: 2570, screenY: 720 });
 });
