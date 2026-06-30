@@ -316,6 +316,165 @@ test('SettingsTourFlow owns linear day four gaze follow scene body', async () =>
     ]);
 });
 
+test('SettingsTourFlow refreshes visible day five character panel before panic narration', async () => {
+    const calls = [];
+    const characterSettingsPanel = { id: 'character-settings-panel' };
+    const characterSettingsButton = { id: 'character-settings-button' };
+    const director = {
+        sceneRunId: 17,
+        destroyed: false,
+        angryExitTriggered: false,
+        currentStep: 'day5-panic',
+        overlay: {
+            clearActionSpotlight() {
+                calls.push(['clear-action']);
+            },
+            clearPersistentSpotlight() {
+                calls.push(['clear-persistent']);
+            }
+        },
+        prepareNarration(scene) {
+            calls.push(['prepare', scene.id]);
+            return { text: 'line', voiceKey: 'voice', canHandleSceneButtons: false, actionWaitPromise: null };
+        },
+        getCharacterSettingsSidePanel() {
+            calls.push(['get-panel']);
+            return characterSettingsPanel;
+        },
+        isElementVisible(panel) {
+            calls.push(['visible', panel.id]);
+            return true;
+        },
+        ensureAvatarFloatingSettingsSidePanel(panelId) {
+            calls.push(['ensure-panel', panelId]);
+            return Promise.resolve(characterSettingsPanel);
+        },
+        getDay5CharacterSettingsButtonTarget() {
+            calls.push(['get-button']);
+            return characterSettingsButton;
+        },
+        refreshAvatarFloatingSettingsPanelLayout(panel) {
+            calls.push(['refresh-layout', panel.id]);
+        },
+        applyGuideHighlights(config) {
+            calls.push(['highlight', config.key, config.primary.id, config.persistent.id]);
+        },
+        moveCursorToElement(element, durationMs, options) {
+            const normalizedOptions = options || {};
+            calls.push(['move', element.id, durationMs, normalizedOptions.exactDuration]);
+            return Promise.resolve(true);
+        },
+        enableInterrupts(step) {
+            calls.push(['interrupts', step]);
+        },
+        createNarrationPromise(scene, text, voiceKey) {
+            calls.push(['narration', scene.id, text, voiceKey]);
+            return Promise.resolve();
+        },
+        getAvatarFloatingNarrationDurationMs(voiceKey, text) {
+            calls.push(['duration', voiceKey, text]);
+            return 900;
+        },
+        getElementRect(target) {
+            calls.push(['rect', target.id]);
+            return { left: 10, top: 20, width: 100, height: 200 };
+        },
+        runSettingsPeekPanicPerformance(options) {
+            calls.push(['panic', options.targetRect.width, options.totalDurationMs, options.runId]);
+            return Promise.resolve();
+        },
+        isStopping() {
+            return false;
+        },
+        collapseCharacterSettingsSidePanel() {
+            calls.push(['collapse-character']);
+        },
+        finalizeScene(sceneRunId, options) {
+            calls.push(['finalize', sceneRunId, options.index, options.total]);
+            return Promise.resolve(true);
+        }
+    };
+    const flow = new SettingsTourFlow(director);
+
+    const result = await flow.play({ id: 'day5_character_panic' }, {
+        sceneRunId: 17,
+        index: 2,
+        total: 4
+    });
+
+    assert.equal(result, true);
+    assert.deepEqual(calls, [
+        ['prepare', 'day5_character_panic'],
+        ['get-panel'],
+        ['visible', 'character-settings-panel'],
+        ['get-button'],
+        ['refresh-layout', 'character-settings-panel'],
+        ['highlight', 'day5_character_panic-character-settings-panel', 'character-settings-panel', 'character-settings-button'],
+        ['move', 'character-settings-panel', 0, true],
+        ['interrupts', 'day5-panic'],
+        ['narration', 'day5_character_panic', 'line', 'voice'],
+        ['duration', 'voice', 'line'],
+        ['rect', 'character-settings-panel'],
+        ['panic', 100, 900, 17],
+        ['clear-action'],
+        ['clear-persistent'],
+        ['collapse-character'],
+        ['finalize', 17, 2, 4]
+    ]);
+    assert.equal(calls.some((call) => call[0] === 'ensure-panel'), false);
+});
+
+test('SettingsTourFlow stops day five panic scene after stale async panel ensure', async () => {
+    const calls = [];
+    const characterSettingsPanel = { id: 'character-settings-panel' };
+    const director = {
+        sceneRunId: 17,
+        destroyed: false,
+        angryExitTriggered: false,
+        currentStep: 'day5-panic',
+        prepareNarration(scene) {
+            calls.push(['prepare', scene.id]);
+            return { text: 'line', voiceKey: 'voice', canHandleSceneButtons: false, actionWaitPromise: null };
+        },
+        getCharacterSettingsSidePanel() {
+            calls.push(['get-panel']);
+            return null;
+        },
+        ensureAvatarFloatingSettingsSidePanel(panelId) {
+            calls.push(['ensure-panel', panelId]);
+            this.sceneRunId = 18;
+            return Promise.resolve(characterSettingsPanel);
+        },
+        getDay5CharacterSettingsButtonTarget() {
+            calls.push(['get-button']);
+            return { id: 'character-settings-button' };
+        },
+        refreshAvatarFloatingSettingsPanelLayout(panel) {
+            calls.push(['refresh-layout', panel && panel.id]);
+        },
+        applyGuideHighlights(config) {
+            calls.push(['highlight', config.key]);
+        },
+        isStopping() {
+            return false;
+        }
+    };
+    const flow = new SettingsTourFlow(director);
+
+    const result = await flow.play({ id: 'day5_character_panic' }, {
+        sceneRunId: 17,
+        index: 2,
+        total: 4
+    });
+
+    assert.equal(result, false);
+    assert.deepEqual(calls, [
+        ['prepare', 'day5_character_panic'],
+        ['get-panel'],
+        ['ensure-panel', 'character-settings']
+    ]);
+});
+
 test('SettingsTourFlow delegates narration and finalize to the director', async () => {
     const calls = [];
     const director = {

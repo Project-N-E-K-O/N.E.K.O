@@ -6161,6 +6161,17 @@ describe('App', () => {
     );
   });
 
+  it('shows compact tool wheel tooltips from pointer hover or keyboard-visible focus only', () => {
+    const tooltipVisibilityRule = compactChatStyles.match(
+      /\.compact-input-tool-fan\[data-compact-input-tool-fan-open="true"\]\[data-compact-input-tool-fan-interactive="true"\][^{]+>\s*\.compact-input-tool-tooltip\s*\{/s,
+    )?.[0] ?? '';
+
+    expect(tooltipVisibilityRule).toContain('[data-compact-tool-pointer-hovered="true"]');
+    expect(tooltipVisibilityRule).toContain(':focus-visible');
+    expect(tooltipVisibilityRule).not.toContain(':focus-within');
+    expect(compactChatStyles).not.toMatch(/:focus-within\s*>\s*\.compact-input-tool-tooltip/);
+  });
+
   it('retargets compact tool hover to the visual button under the pointer after wheel rotation', async () => {
     render(
       <App

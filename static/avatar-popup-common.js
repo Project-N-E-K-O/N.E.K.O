@@ -273,13 +273,13 @@
         const currentTop = toNumber(popup.style.top, 0);
         let nextTop = currentTop;
         if (popupRect.bottom > screenHeight - bottomMargin) {
-            nextTop -= (popupRect.bottom - (screenHeight - bottomMargin));
+            nextTop -= toLocalCssPx(popupRect.bottom - (screenHeight - bottomMargin), sidePanelScale);
         }
         popup.style.top = `${nextTop}px`;
 
         popupRect = popup.getBoundingClientRect();
         if (popupRect.top < topMargin) {
-            popup.style.top = `${toNumber(popup.style.top, 0) + (topMargin - popupRect.top)}px`;
+            popup.style.top = `${toNumber(popup.style.top, 0) + toLocalCssPx(topMargin - popupRect.top, sidePanelScale)}px`;
         }
 
         return { opensLeft };

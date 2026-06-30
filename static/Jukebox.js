@@ -133,6 +133,32 @@ window.Jukebox = {
     dragOffset: { x: 0, y: 0 }
   },
 
+  positionTooltip: function(target, tooltip) {
+    if (!target || !tooltip) return;
+
+    const rect = target.getBoundingClientRect();
+    const viewportWidth = document.documentElement.clientWidth || window.innerWidth || 0;
+    const viewportHeight = document.documentElement.clientHeight || window.innerHeight || 0;
+    const edgePadding = 8;
+    const gap = 6;
+    const tooltipWidth = tooltip.offsetWidth;
+    const tooltipHeight = tooltip.offsetHeight;
+    let left = rect.left + rect.width / 2 - tooltipWidth / 2;
+    let top = rect.bottom + gap;
+
+    if (top + tooltipHeight + edgePadding > viewportHeight) {
+      top = rect.top - tooltipHeight - gap;
+    }
+
+    const maxLeft = Math.max(edgePadding, viewportWidth - tooltipWidth - edgePadding);
+    const maxTop = Math.max(edgePadding, viewportHeight - tooltipHeight - edgePadding);
+    left = Math.min(Math.max(edgePadding, left), maxLeft);
+    top = Math.min(Math.max(edgePadding, top), maxTop);
+
+    tooltip.style.left = Math.round(left) + 'px';
+    tooltip.style.top = Math.round(top) + 'px';
+  },
+
   showTooltip: function(element, text) {
     Jukebox.hideTooltip();
     Jukebox.State.tooltipTarget = element;
@@ -151,9 +177,7 @@ window.Jukebox = {
       const tooltip = Jukebox.State.tooltipElement;
       tooltip.textContent = tooltipText;
       
-      const rect = element.getBoundingClientRect();
-      tooltip.style.left = rect.left + rect.width / 2 - tooltip.offsetWidth / 2 + 'px';
-      tooltip.style.top = rect.bottom + 6 + 'px';
+      Jukebox.positionTooltip(element, tooltip);
       
       requestAnimationFrame(() => {
         tooltip.classList.add('visible');
@@ -188,9 +212,7 @@ window.Jukebox = {
     const provider = Jukebox.State.tooltipTextProvider;
     const tooltipText = typeof provider === 'function' ? provider() : provider;
     Jukebox.State.tooltipElement.textContent = tooltipText || '';
-    const rect = target.getBoundingClientRect();
-    Jukebox.State.tooltipElement.style.left = rect.left + rect.width / 2 - Jukebox.State.tooltipElement.offsetWidth / 2 + 'px';
-    Jukebox.State.tooltipElement.style.top = rect.bottom + 6 + 'px';
+    Jukebox.positionTooltip(target, Jukebox.State.tooltipElement);
   },
 
   getStorageKey: function(name) {
@@ -6063,18 +6085,24 @@ window.Jukebox = {
         display: flex;
         align-items: center;
         gap: 12px;
+        flex: 1 1 auto;
+        min-width: 0;
+        overflow: hidden;
       }
       
       .jukebox-header-buttons {
         display: flex;
         gap: 10px;
         align-items: center;
+        flex: 0 0 auto;
       }
       
       .jukebox-header h3 {
         margin: 0;
         font-size: 20px;
         font-weight: 600;
+        flex: 0 0 auto;
+        white-space: nowrap;
       }
 
       .jukebox-status-text {
@@ -6083,6 +6111,14 @@ window.Jukebox = {
         background: ${Jukebox.Config.status.bg};
         padding: 3px 10px;
         border-radius: 12px;
+        box-sizing: border-box;
+        display: block;
+        flex: 1 1 auto;
+        min-width: 0;
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
 
       .jukebox-calibration-section {
@@ -6208,10 +6244,15 @@ window.Jukebox = {
         margin: 0 20px 12px;
         font-size: 12.5px;
         line-height: 1.6;
+        box-sizing: border-box;
+        max-width: calc(100% - 40px);
+        overflow-wrap: anywhere;
       }
 
       .jukebox-notice-item {
         padding: 2px 0;
+        min-width: 0;
+        overflow-wrap: anywhere;
       }
 
       .jukebox-settings {
@@ -6825,7 +6866,11 @@ window.Jukebox = {
         font-size: 12px;
         pointer-events: none;
         z-index: 100030;
-        white-space: nowrap;
+        box-sizing: border-box;
+        max-width: calc(100vw - 16px);
+        overflow-wrap: anywhere;
+        text-align: center;
+        white-space: normal;
         opacity: 0;
         transition: opacity 0.15s ease;
       }
