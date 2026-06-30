@@ -148,3 +148,60 @@ test('pointer edge release intent ignores movement away from the edge', async ()
     assert.equal(result, false);
     assert.equal(document.getElementById('avatar-multiscreen-drag-hint'), null);
 });
+
+test('pointer edge release intent ignores releases outside adjacent display span', async () => {
+    const { window, document } = createContext({
+        displays: [
+            twoDisplays[0],
+            { id: 2, screenX: 1000, screenY: 600, width: 900, height: 800 }
+        ]
+    });
+
+    const pointer = {
+        startScreenX: 820,
+        startScreenY: 100,
+        screenX: 998,
+        screenY: 100
+    };
+    const first = await window.NekoAvatarMultiScreenDragHint.recordPointerEdgeRelease('mmd', pointer);
+    const second = await window.NekoAvatarMultiScreenDragHint.recordPointerEdgeRelease('mmd', pointer);
+
+    assert.equal(first, false);
+    assert.equal(second, false);
+    assert.equal(document.getElementById('avatar-multiscreen-drag-hint'), null);
+});
+
+test('pointer edge release intent keeps secondary edge candidates at corners', async () => {
+    const { window, document } = createContext({ displays: twoDisplays });
+    const pointer = {
+        startScreenX: 900,
+        startScreenY: 600,
+        screenX: 998,
+        screenY: 799
+    };
+
+    const first = await window.NekoAvatarMultiScreenDragHint.recordPointerEdgeRelease('vrm', pointer);
+    const second = await window.NekoAvatarMultiScreenDragHint.recordPointerEdgeRelease('vrm', pointer);
+
+    assert.equal(first, false);
+    assert.equal(second, true);
+    assert.ok(document.getElementById('avatar-multiscreen-drag-hint'));
+});
+
+test('pointer edge release intent skips a miss already recorded during the same drag', async () => {
+    const { window, document } = createContext({ displays: twoDisplays });
+    const startedAt = Date.now();
+
+    const existingMiss = await window.NekoAvatarMultiScreenDragHint.recordDisplaySwitchMiss('vrm');
+    const edgeMiss = await window.NekoAvatarMultiScreenDragHint.recordPointerEdgeRelease('vrm', {
+        startedAt,
+        startScreenX: 820,
+        startScreenY: 400,
+        screenX: 998,
+        screenY: 400
+    });
+
+    assert.equal(existingMiss, false);
+    assert.equal(edgeMiss, false);
+    assert.equal(document.getElementById('avatar-multiscreen-drag-hint'), null);
+});

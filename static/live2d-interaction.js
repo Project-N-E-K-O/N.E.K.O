@@ -314,6 +314,7 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
         if (!helper || typeof helper.recordPointerEdgeRelease !== 'function') return false;
         if (!dragHintStartPointer || !dragHintLastPointer) return false;
         return await helper.recordPointerEdgeRelease('live2d', {
+            startedAt: dragHintStartPointer.startedAt,
             startScreenX: dragHintStartPointer.screenX,
             startScreenY: dragHintStartPointer.screenY,
             screenX: dragHintLastPointer.screenX,
@@ -375,6 +376,9 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
         clickStartX = globalPos.x;
         clickStartY = globalPos.y;
         dragHintStartPointer = captureDragHintPointer(originalEvent);
+        if (dragHintStartPointer) {
+            dragHintStartPointer.startedAt = Date.now();
+        }
         dragHintLastPointer = dragHintStartPointer;
         hasMoved = false;
         this._touchSetPointerSeq = (this._touchSetPointerSeq || 0) + 1;
