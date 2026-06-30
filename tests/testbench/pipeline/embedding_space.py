@@ -28,7 +28,9 @@ lazy-imports ``memory.embeddings`` pure helpers only (never the runtime
 """  # noqa: DOCSTRING_CJK
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import threading
 from typing import Any
 
 from tests.testbench.pipeline.memory_lineage import (
@@ -332,6 +334,10 @@ def _reduce_2d(matrix, reducer: str) -> tuple[list[list[float]], str]:
 # repeated page visits but invalidates the moment the memory corpus changes.
 _COORDS_CACHE: "dict[str, tuple[list[list[float]], str]]" = {}
 _COORDS_CACHE_MAX = 32
+# build_space_view runs under asyncio.to_thread, so concurrent requests share
+# this dict from multiple threads. Guard the check-then-set + FIFO eviction so
+# a race can't corrupt the dict or skip the wrong key during eviction.
+_COORDS_CACHE_LOCK = threading.Lock()
 
 
 def _corpus_hash(ids: list[str], matrix) -> str:
@@ -450,15 +456,21 @@ def build_space_view(character: str, *, reducer: str = "pca") -> dict[str, Any]:
     want = "umap" if str(reducer).lower() == "umap" else "pca"
     if matrix is not None:
         cache_key = f"{character}|{space['health']['primary_dim']}|{_corpus_hash(ids, matrix)}|{want}"
-        cached = _COORDS_CACHE.get(cache_key)
+        with _COORDS_CACHE_LOCK:
+            cached = _COORDS_CACHE.get(cache_key)
         if cached is not None:
             coords, reducer_used = cached
         else:
+            # Compute OUTSIDE the lock so concurrent reductions don't serialize
+            # (a redundant double-compute on a simultaneous first-miss is rare
+            # and harmless); only the dict mutation needs to be atomic.
             coords, reducer_used = _reduce_2d(matrix, want)
-            if len(_COORDS_CACHE) >= _COORDS_CACHE_MAX:
-                # crude FIFO eviction to bound memory
-                _COORDS_CACHE.pop(next(iter(_COORDS_CACHE)), None)
-            _COORDS_CACHE[cache_key] = (coords, reducer_used)
+            with _COORDS_CACHE_LOCK:
+                if (len(_COORDS_CACHE) >= _COORDS_CACHE_MAX
+                        and cache_key not in _COORDS_CACHE):
+                    # crude FIFO eviction to bound memory
+                    _COORDS_CACHE.pop(next(iter(_COORDS_CACHE)), None)
+                _COORDS_CACHE[cache_key] = (coords, reducer_used)
     else:
         coords, reducer_used = [], "pca"
 
@@ -941,7 +953,10 @@ async def build_cluster_labels(session, character: str) -> dict[str, Any]:
     unparsable reply) it degrades to ``method="medoid"`` with the medoid labels —
     never raises, never 500s the click.
     """  # noqa: DOCSTRING_CJK
-    data = build_clusters(character)
+    # build_clusters() is sync HDBSCAN/numpy work; offload it so this async
+    # endpoint doesn't block the event loop before its first await (same
+    # to_thread discipline as GET /embedding/clusters).
+    data = await asyncio.to_thread(build_clusters, character)
     clusters = data["clusters"]
     warnings = list(data["warnings"])
 

@@ -158,9 +158,13 @@ async def _llm_refine(
 ) -> list[tuple[float, dict[str, Any]]]:
     """Ask the memory model which shortlisted turns are real sources.
 
-    Returns a (possibly empty) list of ``(confidence, turn)``. Empty means the
-    model judged none of the shortlist to be a source — an honest answer we
-    preserve. Stamps the wire BEFORE invoking (R2).
+    Returns a list of ``(confidence, turn)``. A *valid empty* list (the model
+    replied with a parseable ``[]``) means "none of the shortlist is a source"
+    — an honest answer we preserve as ``method="llm"``. But an **empty or
+    unparseable** reply (no content, or not a JSON array) is a failure, not an
+    honest "no": we raise so the caller degrades to text similarity *visibly*
+    via the ``llm_fallback`` signal, instead of silently reporting an LLM
+    success with zero edges. Stamps the wire BEFORE invoking (R2).
     """
     lines = []
     for i, (_score, t) in enumerate(shortlist):
@@ -202,21 +206,28 @@ async def _llm_refine(
     except Exception:  # noqa: BLE001
         pass
 
-    parsed = robust_json_loads(raw) if raw else []
+    if not raw.strip():
+        raise AttributionError(
+            "LLMUnparsable", "LLM 精判返回了空回复 (无内容).", status=502)
+    parsed = robust_json_loads(raw)
+    if not isinstance(parsed, list):
+        preview = raw.strip().replace("\n", " ")[:120]
+        raise AttributionError(
+            "LLMUnparsable",
+            f"LLM 精判回复不是预期的 JSON 数组, 无法解析: {preview!r}", status=502)
     selected: list[tuple[float, dict[str, Any]]] = []
-    if isinstance(parsed, list):
-        for item in parsed:
-            if not isinstance(item, dict):
-                continue
-            idx = item.get("index")
-            if not isinstance(idx, int) or idx < 0 or idx >= len(shortlist):
-                continue
-            conf = item.get("confidence")
-            try:
-                conf = float(conf)
-            except (TypeError, ValueError):
-                conf = shortlist[idx][0]
-            selected.append((max(0.0, min(1.0, conf)), shortlist[idx][1]))
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        idx = item.get("index")
+        if not isinstance(idx, int) or idx < 0 or idx >= len(shortlist):
+            continue
+        conf = item.get("confidence")
+        try:
+            conf = float(conf)
+        except (TypeError, ValueError):
+            conf = shortlist[idx][0]
+        selected.append((max(0.0, min(1.0, conf)), shortlist[idx][1]))
     return selected
 
 
@@ -260,7 +271,9 @@ async def attribute_node(
         raise AttributionError(
             "EmptyTarget", "目标记忆没有可用于比对的文本.", status=409)
 
-    corpus = load_conversation_corpus(character, limit_rows=None)
+    # Cap at the DB layer instead of loading the whole table then slicing: the
+    # text-similarity scan never looks past _MAX_TURNS_SCANNED turns anyway.
+    corpus = load_conversation_corpus(character, limit_rows=_MAX_TURNS_SCANNED)
     warnings.extend(corpus.get("warnings") or [])
     turns = [
         t for t in (corpus.get("turns") or [])
@@ -367,7 +380,9 @@ def attribute_all_text(
     snap = build_lineage_snapshot(character, node_budget=10 ** 9)
     targets = [n for n in snap["nodes"] if n.get("type") in _TARGET_TYPES]
 
-    corpus = load_conversation_corpus(character, limit_rows=None)
+    # Cap at the DB layer instead of loading the whole table then slicing: the
+    # text-similarity scan never looks past _MAX_TURNS_SCANNED turns anyway.
+    corpus = load_conversation_corpus(character, limit_rows=_MAX_TURNS_SCANNED)
     warnings.extend(corpus.get("warnings") or [])
     turns = [
         t for t in (corpus.get("turns") or [])

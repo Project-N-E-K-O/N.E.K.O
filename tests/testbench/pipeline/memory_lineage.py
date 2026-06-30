@@ -138,10 +138,14 @@ def build_lineage_snapshot(
     corrections = _read_json(
         mem / "persona_corrections.json", expect=list, warnings=file_warnings)
 
-    corpus = load_conversation_corpus(
-        character,
-        limit_rows=conversation_limit if conversation_limit else None,
-    )
+    # When no explicit conversation_limit is given, fall back to
+    # load_conversation_corpus's built-in 5000-row default rather than passing
+    # None (which would disable the cap and read the entire table into memory).
+    if conversation_limit:
+        corpus = load_conversation_corpus(
+            character, limit_rows=conversation_limit)
+    else:
+        corpus = load_conversation_corpus(character)
 
     nodes: list[dict[str, Any]] = []
     edges: list[dict[str, Any]] = []

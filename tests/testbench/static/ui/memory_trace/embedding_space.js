@@ -309,6 +309,10 @@ export function mountEmbeddingSpacePage(host, ctx) {
     const qs = `?id=${encodeURIComponent(id)}&k=10`;
     const res = await api.get('/api/memory/embedding/neighbors' + qs,
       { expectedStatuses: [404, 409] });
+    // Guard against an out-of-order response: if the user clicked another point
+    // (or cleared the selection) while this request was in flight, its result
+    // no longer belongs to the current selection — drop it.
+    if (state.selectedId !== id) return;
     state.neighborsLoading = false;
     state.neighbors = res.ok ? res.data : { found: false, neighbors: [] };
     drawScatter();
@@ -755,7 +759,11 @@ export function mountEmbeddingSpacePage(host, ctx) {
       if (state.view === null) fitView();
       drawScatter();
     });
-    if (typeof ResizeObserver === 'function' && !resizeObs) {
+    // Re-bind the observer to the freshly mounted wrap. renderScatterMain runs
+    // on every re-render, discarding the previous canvas/wrap — keeping the old
+    // observer bound to a detached node would silently miss future resizes.
+    if (typeof ResizeObserver === 'function') {
+      if (resizeObs) { try { resizeObs.disconnect(); } catch { /* ignore */ } }
       resizeObs = new ResizeObserver(() => { drawScatter(); });
       try { resizeObs.observe(wrap); } catch { /* ignore */ }
     }
@@ -864,7 +872,9 @@ export function mountEmbeddingSpacePage(host, ctx) {
     const schedule = typeof requestAnimationFrame === 'function'
       ? requestAnimationFrame : (fn) => setTimeout(fn, 0);
     schedule(() => { drawMatrix(); });
-    if (typeof ResizeObserver === 'function' && !mresizeObs) {
+    // Re-bind to the freshly mounted wrap each render (see renderScatterMain).
+    if (typeof ResizeObserver === 'function') {
+      if (mresizeObs) { try { mresizeObs.disconnect(); } catch { /* ignore */ } }
       mresizeObs = new ResizeObserver(() => { drawMatrix(); });
       try { mresizeObs.observe(wrap); } catch { /* ignore */ }
     }

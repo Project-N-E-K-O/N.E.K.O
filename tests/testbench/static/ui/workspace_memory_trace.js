@@ -138,6 +138,11 @@ function mountLineagePage(host, ctx) {
   // first-paint auto-fit). Reset every renderAll.
   let graphEl = null;
 
+  // Monotonic token so a slow /api/memory/lineage response from a previous
+  // session/character can't overwrite newer state. Bumped on every reload start
+  // and on session change / teardown; a stale response (seq mismatch) is dropped.
+  let reloadSeq = 0;
+
   // Run after the next paint so the freshly mounted SVG has real dimensions
   // (getBoundingClientRect) before we fit/animate. jsdom has no rAF.
   const scheduleFit = (fn) => {
@@ -147,6 +152,7 @@ function mountLineagePage(host, ctx) {
   };
 
   async function reload() {
+    const seq = ++reloadSeq;
     const session = store.session;
     if (!session) {
       state.phase = 'no_session';
@@ -157,6 +163,7 @@ function mountLineagePage(host, ctx) {
     renderAll();
     const res = await api.get('/api/memory/lineage',
       { expectedStatuses: [404, 409] });
+    if (seq !== reloadSeq) return;  // a newer reload superseded this one
     if (res.ok) {
       state.snapshot = res.data;
       state.phase = 'ready';
@@ -532,6 +539,7 @@ function mountLineagePage(host, ctx) {
   reload();
 
   return () => {
+    reloadSeq++;  // invalidate any in-flight reload so it can't write post-teardown
     try { offSession(); } catch { /* ignore */ }
     try { offActive(); } catch { /* ignore */ }
   };

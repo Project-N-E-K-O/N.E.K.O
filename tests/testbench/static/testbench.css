@@ -6320,7 +6320,7 @@ button.is-dirty {
 .mtrace-node-type { fill: var(--text-tertiary); font-size: 10px; }
 .mtrace-node-label { fill: var(--text-primary); font-size: 12px; }
 .mtrace-node-status { fill: var(--text-tertiary); font-size: 9.5px; }
-.mtrace-node--fact .mtrace-node-box { stroke-left: 3px solid var(--ok); }
+.mtrace-node--fact .mtrace-node-box { stroke: var(--ok); }
 .mtrace-node--fact .mtrace-node-type { fill: var(--ok); }
 .mtrace-node--reflection .mtrace-node-type { fill: var(--link); }
 .mtrace-node--persona_entry .mtrace-node-type { fill: var(--accent); }

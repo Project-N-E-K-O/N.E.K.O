@@ -107,9 +107,16 @@ def _coerce_content(raw: Any) -> str:
         return str(raw)
 
 
-def _recent_msg_id(role: str, content: str) -> str:
-    """Stable id for a recent.json turn (no native id on disk; hash content)."""
-    digest = hashlib.sha256(f"{role}\x00{content}".encode("utf-8")).hexdigest()
+def _recent_msg_id(role: str, content: str, ordinal: int) -> str:
+    """Stable id for a recent.json turn (no native id on disk; hash content).
+
+    ``ordinal`` is the turn's position in recent.json. It is part of the hash so
+    that repeated identical turns (e.g. several short "ok" replies) get distinct
+    ids — otherwise the lineage graph's ``_add_node`` would de-duplicate them,
+    dropping real turns and mis-pointing reverse attribution at a single copy.
+    """
+    raw = f"{ordinal}\x00{role}\x00{content}"
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
     return f"msg:{digest[:12]}"
 
 
@@ -163,7 +170,7 @@ def load_recent_turns(character: str) -> tuple[list[dict[str, Any]], list[str]]:
         )
         return turns, warnings
 
-    for entry in data:
+    for ordinal, entry in enumerate(data):
         if not isinstance(entry, dict):
             continue
         raw_type = entry.get("type")
@@ -174,7 +181,7 @@ def load_recent_turns(character: str) -> tuple[list[dict[str, Any]], list[str]]:
         if not content.strip():
             continue
         turns.append({
-            "id": _recent_msg_id(role, content),
+            "id": _recent_msg_id(role, content, ordinal),
             "ts": None,
             "session_id": None,
             "role": role,

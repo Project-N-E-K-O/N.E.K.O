@@ -404,7 +404,9 @@ async def attribute_memory_lineage_all() -> dict[str, Any]:
     """
     session = _require_session()
     character = _require_character(session)
-    return attribute_all_text(character)
+    # attribute_all_text() is sync, O(facts × turns) text-similarity work;
+    # offload it so this route doesn't block the event loop.
+    return await asyncio.to_thread(attribute_all_text, character)
 
 
 @router.get("/embedding/space")

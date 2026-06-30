@@ -46,12 +46,21 @@ export function mountOverviewPage(host, ctx) {
     ctx.goTo(drill.page, drill.opts || {});
   };
 
+  // Per-flow monotonic tokens so a slow response from a previous session can't
+  // overwrite newer state (session switch / teardown bumps these). Each async
+  // flow drops its result if its token was superseded while it was in flight.
+  let overviewSeq = 0;
+  let aiSeq = 0;
+  let contraSeq = 0;
+
   async function reload() {
+    const seq = ++overviewSeq;
     if (!store.session) { state.phase = 'no_session'; renderAll(); return; }
     state.phase = 'loading';
     state.aiReport = null; state.contra = null;
     renderAll();
     const res = await api.get('/api/memory/overview', { expectedStatuses: [404, 409] });
+    if (seq !== overviewSeq) return;  // superseded by a newer reload
     if (res.ok) {
       state.data = res.data;
       state.phase = 'ready';
@@ -68,9 +77,11 @@ export function mountOverviewPage(host, ctx) {
 
   async function runAiReport() {
     if (state.aiLoading) return;
+    const seq = ++aiSeq;
     state.aiLoading = true; renderAll();
     const res = await api.post('/api/memory/overview/ai_report', {},
       { expectedStatuses: [404, 409] });
+    if (seq !== aiSeq) return;  // session changed / superseded while in flight
     state.aiLoading = false;
     if (res.ok) {
       state.aiReport = res.data;
@@ -83,9 +94,11 @@ export function mountOverviewPage(host, ctx) {
 
   async function runContradictions() {
     if (state.contraLoading) return;
+    const seq = ++contraSeq;
     state.contraLoading = true; renderAll();
     const res = await api.post('/api/memory/overview/contradictions', {},
       { expectedStatuses: [404, 409] });
+    if (seq !== contraSeq) return;  // session changed / superseded while in flight
     state.contraLoading = false;
     if (res.ok) {
       state.contra = res.data;
@@ -309,6 +322,9 @@ export function mountOverviewPage(host, ctx) {
 
   // ── subscriptions ──
   const offSession = on('session:change', () => {
+    // Invalidate any in-flight AI/contradiction request so a slow response from
+    // the previous session can't write onto the new one (reload bumps its own).
+    aiSeq++; contraSeq++;
     state.aiReport = null; state.contra = null; state.showInfo = false;
     reload();
   });
@@ -320,6 +336,7 @@ export function mountOverviewPage(host, ctx) {
   reload();
 
   return () => {
+    overviewSeq++; aiSeq++; contraSeq++;  // drop any in-flight writes post-teardown
     try { offSession(); } catch { /* ignore */ }
     try { offActive(); } catch { /* ignore */ }
   };

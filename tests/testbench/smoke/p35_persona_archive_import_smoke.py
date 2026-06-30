@@ -299,6 +299,63 @@ def check_b4_errors(client) -> list[str]:
     return errors
 
 
+# ── B5 hardening guards (size cap on real bytes + unsafe name) ───────
+
+
+def check_b5_guards(client) -> list[str]:
+    """Streaming size cap counts *decompressed* bytes; unsafe names are rejected.
+
+    Guards two review fixes:
+      * the 500 MiB cap no longer trusts the (forgeable) ``info.file_size`` —
+        it sums actual extracted bytes while streaming. We shrink the limit and
+        feed real oversized content to prove the cap bites on real bytes.
+      * a character name that is unsafe as a path component (here ``../evil``)
+        is rejected before any sandbox write, not used to build a path.
+    """
+    errors: list[str] = []
+    import tests.testbench.routers.persona_router as pr
+    orig_limit = pr._MAX_ARCHIVE_UNCOMPRESSED_BYTES
+    try:
+        # (a) oversized decompressed content -> 400 ArchiveTooLarge.
+        pr._MAX_ARCHIVE_UNCOMPRESSED_BYTES = 2048
+        _delete_session(client)
+        _create_session(client, "b5_size")
+        big_text = "主人" * 4000  # well over 2 KiB once UTF-8 encoded
+        chars = _characters_json(["X"])
+        zip_bytes = _build_zip({
+            "characters.json": json.dumps(chars, ensure_ascii=False),
+            "memory/X/facts.json": json.dumps(
+                [{"id": "f", "text": big_text, "hash": "", "entity": "neko",
+                  "tags": [], "created_at": "2026-04-18T00:00:00"}],
+                ensure_ascii=False),
+        })
+        r = _import(client, zip_bytes)
+        _check(r.status_code == 400, "B5.size_status", f"{r.status_code} {r.text[:160]}")
+        _check((r.json().get("detail") or {}).get("error_type") == "ArchiveTooLarge",
+               "B5.size_type", r.text[:160])
+        pr._MAX_ARCHIVE_UNCOMPRESSED_BYTES = orig_limit
+
+        # (b) unsafe character name (path component) -> 422 UnsafeCharacterName.
+        _delete_session(client)
+        _create_session(client, "b5_name")
+        evil_chars = _characters_json(["../evil"])
+        zip_bytes = _build_zip({
+            "characters.json": json.dumps(evil_chars, ensure_ascii=False),
+        })
+        r = _import(client, zip_bytes)
+        _check(r.status_code == 422, "B5.name_status", f"{r.status_code} {r.text[:160]}")
+        _check((r.json().get("detail") or {}).get("error_type") == "UnsafeCharacterName",
+               "B5.name_type", r.text[:160])
+    except _AssertFail as exc:
+        errors.append(str(exc))
+    except Exception as exc:  # noqa: BLE001
+        import traceback
+        errors.append(f"[B5.crash] {type(exc).__name__}: {exc}\n{traceback.format_exc()}")
+    finally:
+        pr._MAX_ARCHIVE_UNCOMPRESSED_BYTES = orig_limit
+    return errors
+
+
 def _report(title: str, errors: list[str]) -> int:
     print("")
     print(f"* {title}")
@@ -327,6 +384,8 @@ def main() -> int:
     total += _report("B2 — nested wrapper folder resolution", check_b2_nested(client))
     total += _report("B3 — ambiguous archive + disambiguation", check_b3_ambiguous(client))
     total += _report("B4 — error mapping", check_b4_errors(client))
+    total += _report("B5 — hardening (real-byte size cap + unsafe name)",
+                     check_b5_guards(client))
 
     _delete_session(client)
 

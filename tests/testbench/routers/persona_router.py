@@ -63,6 +63,7 @@ from utils.config_manager import get_config_manager
 
 from tests.testbench.logger import python_logger
 from tests.testbench.persona_config import PersonaConfig
+from tests.testbench.pipeline.atomic_io import atomic_write_json as _atomic_write_json
 from tests.testbench.pipeline.snapshot_store import capture_safe as _snapshot_capture
 from tests.testbench.presets import PRESETS_ROOT
 from tests.testbench.session_store import (
@@ -796,8 +797,9 @@ def _copytree_safe_with_normalization(src: Path, dst: Path) -> list[str]:
             with facts_path.open("r", encoding="utf-8") as fp:
                 data = json.load(fp)
             _normalize_preset_facts(data)
-            with facts_path.open("w", encoding="utf-8") as fp:
-                json.dump(data, fp, ensure_ascii=False, indent=2)
+            # Crash-safe write (tmp + fsync + os.replace); a hard-kill mid-write
+            # must not leave facts.json half-overwritten (§3A F1 convention).
+            _atomic_write_json(facts_path, data)
         except (OSError, json.JSONDecodeError) as exc:
             python_logger().warning(
                 "persona_router: normalize facts.json in %s failed: %s",
@@ -978,6 +980,8 @@ async def import_builtin_preset(preset_id: str) -> dict[str, Any]:
 _MAX_ARCHIVE_BYTES = 200 * 1024 * 1024
 #: Total uncompressed byte ceiling across all members (zip-bomb guard).
 _MAX_ARCHIVE_UNCOMPRESSED_BYTES = 500 * 1024 * 1024
+#: Stream-copy chunk for zip extraction (also the size-guard granularity).
+_ZIP_COPY_CHUNK = 1 << 16  # 64 KiB
 
 
 class _ImportArchiveRequest(BaseModel):
@@ -1011,13 +1015,14 @@ def _safe_extract_zip(data: bytes, dest: Path) -> None:
     dest_resolved = dest.resolve()
     total = 0
     with zf:
-        bad = zf.testzip()
-        if bad is not None:
-            raise HTTPException(
-                status_code=400,
-                detail={"error_type": "InvalidArchive",
-                        "message": f"压缩包内文件损坏: {bad}"},
-            )
+        # NOTE: we deliberately do NOT trust ``info.file_size`` for the size
+        # guard — it is attacker-controllable ZIP metadata (a crafted entry can
+        # claim file_size=0 while its compressed payload decompresses to GBs).
+        # We also drop the upfront ``zf.testzip()`` (it decompresses every member
+        # before any guard runs — a free zip-bomb amplifier). Instead we count
+        # *actual* decompressed bytes while streaming, aborting the moment the
+        # running total crosses the limit. CRC corruption still surfaces:
+        # zipfile verifies each member's CRC as ``ZipExtFile`` reaches EOF.
         for info in zf.infolist():
             if info.is_dir():
                 continue
@@ -1028,16 +1033,27 @@ def _safe_extract_zip(data: bytes, dest: Path) -> None:
                     detail={"error_type": "UnsafeArchive",
                             "message": f"压缩包包含越界路径 (zip-slip): {info.filename!r}"},
                 )
-            total += info.file_size
-            if total > _MAX_ARCHIVE_UNCOMPRESSED_BYTES:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                with zf.open(info) as src, target.open("wb") as out:
+                    while True:
+                        chunk = src.read(_ZIP_COPY_CHUNK)
+                        if not chunk:
+                            break
+                        total += len(chunk)
+                        if total > _MAX_ARCHIVE_UNCOMPRESSED_BYTES:
+                            raise HTTPException(
+                                status_code=400,
+                                detail={"error_type": "ArchiveTooLarge",
+                                        "message": "压缩包解压后体积超过上限 (500 MiB)."},
+                            )
+                        out.write(chunk)
+            except zipfile.BadZipFile as exc:
                 raise HTTPException(
                     status_code=400,
-                    detail={"error_type": "ArchiveTooLarge",
-                            "message": "压缩包解压后体积超过上限 (500 MiB)."},
-                )
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with zf.open(info) as src, target.open("wb") as out:
-                shutil.copyfileobj(src, out)
+                    detail={"error_type": "InvalidArchive",
+                            "message": f"压缩包内文件损坏: {info.filename!r} ({exc})"},
+                ) from exc
 
 
 def _find_shallowest(root: Path, filename: str) -> Path | None:
@@ -1057,6 +1073,27 @@ def _read_json_file(path: Path) -> dict[str, Any] | None:
     except (OSError, json.JSONDecodeError):
         return None
     return data if isinstance(data, dict) else None
+
+
+def _assert_safe_character_name(name: str) -> str:
+    """Reject a character name that is unsafe as a single path component.
+
+    This is NOT content filtering (the project never sanitizes user *content*):
+    ``name`` is used verbatim to build sandbox filesystem paths
+    (``sandbox/memory/<name>/``), so a value containing a path separator,
+    ``..``, an absolute-path marker, or NUL could escape the sandbox. We reject
+    those structurally and leave the name otherwise untouched.
+    """
+    n = str(name or "").strip()
+    if (not n or n in (".", "..")
+            or "/" in n or "\\" in n or "\x00" in n
+            or os.path.isabs(n)):
+        raise HTTPException(
+            status_code=422,
+            detail={"error_type": "UnsafeCharacterName",
+                    "message": f"角色名 {name!r} 含有非法路径字符, 无法用作目录名."},
+        )
+    return n
 
 
 def _resolve_archive_character_name(
@@ -1120,8 +1157,12 @@ def _resolve_archive_memory_dir(
     for c in candidates:
         if c.is_dir():
             return c
-    for d in extract_root.rglob(character_name):
-        if d.is_dir() and any((d / f).exists() for f in _KNOWN_MEMORY_FILES):
+    # rglob("*") + literal name compare — NOT rglob(character_name), whose
+    # argument is a glob *pattern*: a name with metacharacters (``*?[]``) would
+    # match unintended directories.
+    for d in extract_root.rglob("*"):
+        if (d.is_dir() and d.name == character_name
+                and any((d / f).exists() for f in _KNOWN_MEMORY_FILES)):
             return d
     return None
 
@@ -1194,8 +1235,9 @@ async def import_from_archive(body: _ImportArchiveRequest) -> dict[str, Any]:
             )
         meta_path = _find_shallowest(extract_dir, "meta.json")
         meta = _read_json_file(meta_path) if meta_path else None
-        character_name = _resolve_archive_character_name(
-            raw, (body.character_name or "").strip() or None, meta)
+        character_name = _assert_safe_character_name(
+            _resolve_archive_character_name(
+                raw, (body.character_name or "").strip() or None, meta))
         entry = _extract_catgirl_entry(raw, character_name)
         if entry is None:
             raise HTTPException(

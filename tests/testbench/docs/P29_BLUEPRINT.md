@@ -109,7 +109,7 @@
 - **重复簇**: `clusters` 中 `size ≥ R` 且成员近重复占比高、同 type 的簇 (= 反复写入同一主题)。
 - **冗余代价**: `近重复簇/对`估算的"可去重条数" = 参与近重复的条目数 − 其代表(去重后)数; 给"约 N 条冗余, 占 X%"。
 - **高相似待审候选**: `cos ∈ [SUSPECT_LOW, DUP_THRESHOLD)` 且**同实体** (优先同 type) 的对 —— 疑似冲突/可合并, 待人工或 LLM 判。
-- **晋升�in斗比率** (诊断三道工序): `被反思引用的 fact 数 / facts 总数` (抽收率)、`reflections / facts`、`晋升 persona / reflections` (晋升率); 任一环比率异常低 → 该工序在掉链。
+- **晋升漏斗比率** (诊断三道工序): `被反思引用的 fact 数 / facts 总数` (抽收率)、`reflections / facts`、`晋升 persona / reflections` (晋升率); 任一环比率异常低 → 该工序在掉链。
 - **晋升保真度漂移**: 对每条 `source=="reflection"` 的 persona, 取其 `source_id` 反思, **二者都在主向量空间**时算 cosine; `< FIDELITY_DRIFT` 者计入"晋升后语义偏离"。(纯用现成向量, 无 LLM)
 - **未解决矛盾**: `persona_corrections` 中 `old_text` 仍出现在当前 persona 文本里的条数 (= 纠正未生效/旧说法仍在); 反之 `new_text` 已落地 = 已解决。
 - **抽取产出率**: `facts 总数 / 对话回合数` (有 `time_indexed.db` 时); 过低=抽取近乎停摆, 过高=可能过度抽取噪声。

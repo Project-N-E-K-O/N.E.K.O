@@ -231,6 +231,64 @@ def check_a2_llm(client) -> list[str]:
     return errors
 
 
+# ── A5 LLM unparsable reply -> VISIBLE fallback (not silent) ─────────
+
+
+def check_a5_llm_fallback(client) -> list[str]:
+    """An unparsable LLM reply must degrade *visibly* via ``llm_fallback``.
+
+    Regression guard for the "silent llm success" bug: when the model returns
+    prose (or anything that isn't a JSON array), attribution must fall back to
+    text similarity AND emit a structured ``llm_fallback`` reason — never report
+    ``method="llm"`` with zero edges and no signal. A *valid* empty ``[]`` is the
+    one honest "no sources" answer that stays ``method="llm"`` with no fallback.
+    """
+    errors: list[str] = []
+    import tests.testbench.pipeline.memory_attribution as attr_mod
+    orig_llm = attr_mod._llm_for_memory
+    try:
+        # (a) unparsable prose reply -> method=text + structured fallback.
+        attr_mod._llm_for_memory = lambda session, *, temperature=0.0: _FakeLLM(
+            "我觉得这条记忆没有明确来源呢")
+        _delete_session(client)
+        _create_session(client, "a5_unparsable")
+        _seed()
+        r = client.post("/api/memory/lineage/attribute",
+                        json={"node_id": "fact_x", "use_llm": True})
+        _check(r.status_code == 200, "A5.status", f"{r.status_code} {r.text[:200]}")
+        data = r.json()
+        _check(data["method"] == "text", "A5.method_text", str(data.get("method")))
+        fb = data.get("llm_fallback")
+        _check(isinstance(fb, dict), "A5.fallback_present", f"{fb!r}")
+        _check(fb.get("requested") == "llm" and fb.get("used") == "text",
+               "A5.fallback_shape", f"{fb!r}")
+        _check(bool((fb.get("reason") or "").strip()), "A5.fallback_reason",
+               f"{fb!r}")
+        # the degrade reason is also surfaced in warnings (non-silent).
+        _check(any("回退" in str(w) for w in (data.get("warnings") or [])),
+               "A5.warning_surfaced", f"{data.get('warnings')}")
+
+        # (b) a VALID empty [] is an honest "no sources" -> stays method=llm.
+        attr_mod._llm_for_memory = lambda session, *, temperature=0.0: _FakeLLM("[]")
+        r = client.post("/api/memory/lineage/attribute",
+                        json={"node_id": "fact_x", "use_llm": True})
+        _check(r.status_code == 200, "A5.empty_status", f"{r.status_code}")
+        data = r.json()
+        _check(data["method"] == "llm", "A5.empty_method_llm", str(data.get("method")))
+        _check(data.get("llm_fallback") is None, "A5.empty_no_fallback",
+               f"{data.get('llm_fallback')!r}")
+        _check(len(data.get("edges") or []) == 0, "A5.empty_no_edges",
+               f"{data.get('edges')}")
+    except _AssertFail as exc:
+        errors.append(str(exc))
+    except Exception as exc:  # noqa: BLE001
+        import traceback
+        errors.append(f"[A5.crash] {type(exc).__name__}: {exc}\n{traceback.format_exc()}")
+    finally:
+        attr_mod._llm_for_memory = orig_llm
+    return errors
+
+
 # ── A4 batch attribute_all (one-click) ───────────────────────────────
 
 
@@ -361,6 +419,8 @@ def main() -> int:
     total = 0
     total += _report("A1 — text similarity path", check_a1_text(client))
     total += _report("A2 — LLM precision path (stamp + heuristic)", check_a2_llm(client))
+    total += _report("A5 — LLM unparsable -> visible fallback (not silent)",
+                     check_a5_llm_fallback(client))
     total += _report("A4 — batch attribute_all (one-click)", check_a4_attribute_all(client))
     total += _report("A3 — error mapping", check_a3_errors(client))
 

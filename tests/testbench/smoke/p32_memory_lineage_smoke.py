@@ -395,6 +395,42 @@ def check_l7_llm_fallback(client) -> list[str]:
     return errors
 
 
+def check_l8_recent_dedup(client) -> list[str]:
+    """L8 — repeated identical recent.json turns are NOT collapsed.
+
+    Regression guard for the ``_recent_msg_id`` ordinal fix: two byte-identical
+    turns (same role + content) must yield two distinct message nodes, not one,
+    so real conversation history isn't silently dropped by graph de-duplication.
+    """
+    errors: list[str] = []
+    try:
+        _delete_session(client)
+        _create_session(client, "l8_dedup")
+        _seed_structural_memory()
+        mem = _mem_dir()
+        _write_json(mem / "recent.json", [
+            {"type": "human", "data": {"content": "嗯"}},
+            {"type": "human", "data": {"content": "嗯"}},
+            {"type": "ai", "data": {"content": "好的喵"}},
+        ])
+        r = client.get("/api/memory/lineage")
+        _check(r.status_code == 200, "L8.status", f"{r.status_code} {r.text[:200]}")
+        snap = r.json()
+        msg_nodes = [n for n in snap["nodes"] if n["type"] == "message"]
+        dup = [n for n in msg_nodes
+               if (n.get("meta") or {}).get("content") == "嗯"]
+        _check(len(dup) == 2, "L8.two_distinct_dups",
+               f"expected 2 message nodes for the repeated '嗯', got {len(dup)}")
+        ids = {n["id"] for n in dup}
+        _check(len(ids) == 2, "L8.distinct_ids", f"ids={ids}")
+    except _AssertFail as exc:
+        errors.append(str(exc))
+    except Exception as exc:  # noqa: BLE001
+        import traceback
+        errors.append(f"[L8.crash] {type(exc).__name__}: {exc}\n{traceback.format_exc()}")
+    return errors
+
+
 # ── Orchestration ───────────────────────────────────────────────────────
 
 
@@ -436,6 +472,8 @@ def main() -> int:
                      check_l5_error_mapping(client))
     total += _report("L7 — Tier C LLM fallback is surfaced, not silent",
                      check_l7_llm_fallback(client))
+    total += _report("L8 — repeated recent turns not collapsed (ordinal id)",
+                     check_l8_recent_dedup(client))
 
     _delete_session(client)
 
