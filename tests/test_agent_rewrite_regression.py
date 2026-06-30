@@ -1959,7 +1959,15 @@ def test_avatar_floating_direct_boot_does_not_wait_for_user_floating_buttons():
     assert recovery_block.index("await window.initLive2DModel();") < recovery_block.rindex("await window.showCurrentModel();")
     assert "await window.initMMDModel();" in recovery_block
     assert "await window.autoInitMMDOnMainPage();" in recovery_block
+    assert "const isPngtuberModel = modelType === 'pngtuber';" in recovery_block
+    assert "await window.loadPNGTuberAvatar(window.lanlan_config && window.lanlan_config.pngtuber || {});" in recovery_block
+    assert recovery_block.index("if (isPngtuberModel) {") < recovery_block.index("await window.initLive2DModel();")
     assert "const isMmdModel = modelType === 'live3d' && subType === 'mmd';" in recovery_block
+    pngtuber_branch = recovery_block.split("if (isPngtuberModel) {", 1)[1].split(
+        "const isMmdModel = modelType === 'live3d' && subType === 'mmd';",
+        1,
+    )[0]
+    assert "await window.initLive2DModel();" not in pngtuber_branch
     mmd_branch = recovery_block.split("if (isMmdModel) {", 1)[1].split(
         "} else if ((modelType === 'vrm' || modelType === 'live3d')",
         1,
@@ -1969,7 +1977,9 @@ def test_avatar_floating_direct_boot_does_not_wait_for_user_floating_buttons():
         "await window.showCurrentModel();",
         1,
     )[0]
-    assert recovery_block.index("if (isMmdModel) {") < recovery_block.index("await window.showCurrentModel();")
+    assert mmd_branch.index("if (typeof window.initMMDModel === 'function')") < mmd_branch.index(
+        "await window.showCurrentModel();"
+    )
 
 
 def test_tutorial_lifecycle_modules_export_reusable_controllers():

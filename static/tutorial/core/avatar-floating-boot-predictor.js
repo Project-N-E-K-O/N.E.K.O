@@ -328,6 +328,21 @@
         const modelType = String(window.lanlan_config && window.lanlan_config.model_type || 'live2d').toLowerCase();
         const subType = String(window.lanlan_config && window.lanlan_config.live3d_sub_type || '').toLowerCase();
         try {
+            const isPngtuberModel = modelType === 'pngtuber';
+            if (isPngtuberModel) {
+                if (typeof window.loadPNGTuberAvatar === 'function') {
+                    await window.loadPNGTuberAvatar(window.lanlan_config && window.lanlan_config.pngtuber || {});
+                    if (window.pngtuberManager && typeof window.pngtuberManager.show === 'function') {
+                        window.pngtuberManager.show();
+                    }
+                    return true;
+                }
+                if (typeof window.showCurrentModel === 'function') {
+                    await window.showCurrentModel();
+                    return true;
+                }
+                return false;
+            }
             const isMmdModel = modelType === 'live3d' && subType === 'mmd';
             if (isMmdModel) {
                 if (typeof window.autoInitMMDOnMainPage === 'function') {
