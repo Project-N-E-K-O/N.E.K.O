@@ -14,8 +14,10 @@ TUTORIAL_STYLES_PATH = Path(__file__).resolve().parents[2] / "static" / "css/tut
 ROUND_PRELUDE_CONTROLLER_PATH = (
     Path(__file__).resolve().parents[2] / "static" / "tutorial/core/round-prelude-controller.js"
 )
+YUI_GUIDE_COMMON_PATH = Path(__file__).resolve().parents[2] / "static" / "tutorial/yui-guide/common.js"
 COMMON_UI_PATH = Path(__file__).resolve().parents[2] / "static" / "common_ui.js"
 APP_AUDIO_CAPTURE_PATH = Path(__file__).resolve().parents[2] / "static" / "app-audio-capture.js"
+CHAT_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "chat.html"
 
 
 def _read_manager() -> str:
@@ -42,12 +44,20 @@ def _read_round_prelude() -> str:
     return ROUND_PRELUDE_CONTROLLER_PATH.read_text(encoding="utf-8")
 
 
+def _read_yui_guide_common() -> str:
+    return YUI_GUIDE_COMMON_PATH.read_text(encoding="utf-8")
+
+
 def _read_common_ui() -> str:
     return COMMON_UI_PATH.read_text(encoding="utf-8")
 
 
 def _read_app_audio_capture() -> str:
     return APP_AUDIO_CAPTURE_PATH.read_text(encoding="utf-8")
+
+
+def _read_chat_template() -> str:
+    return CHAT_TEMPLATE_PATH.read_text(encoding="utf-8")
 
 
 def test_universal_tutorial_manager_excludes_legacy_driver_tutorial_system():
@@ -694,14 +704,19 @@ def test_avatar_floating_guide_lifecycle_toggles_compact_chat_fixed_layout_class
 
 
 def test_electron_shortcut_bridges_are_blocked_during_tutorial():
+    yui_guide_common = _read_yui_guide_common()
     common_ui = _read_common_ui()
     audio_capture = _read_app_audio_capture()
+    chat_template = _read_chat_template()
 
-    assert "window.isNekoShortcutBlockedByTutorial = function ()" in common_ui
-    assert "window.isInTutorial === true" in common_ui
-    assert "yui-guide-standalone-input-shield-active" in common_ui
-    assert "yui-guide-chat-buttons-disabled" in common_ui
-    assert "yui-guide-compact-chat-fixed" in common_ui
+    assert "root.isNekoShortcutBlockedByTutorial = function ()" in yui_guide_common
+    assert "host.isInTutorial === true" in yui_guide_common
+    assert "yui-guide-standalone-input-shield-active" in yui_guide_common
+    assert "yui-guide-chat-buttons-disabled" in yui_guide_common
+    assert "yui-guide-compact-chat-fixed" in yui_guide_common
+    assert "isNekoShortcutBlockedByTutorial," in yui_guide_common
+    assert "/static/tutorial/yui-guide/common.js" in chat_template
+    assert '<script src="/static/common_ui.js' not in chat_template
 
     for action in ("toggleVoiceSession", "toggleScreenShare", "triggerScreenshot"):
         block = common_ui.split(f"window.{action} = function", 1)[1].split("};", 1)[0]
@@ -718,9 +733,6 @@ def test_electron_shortcut_bridges_are_blocked_during_tutorial():
     )[0]
     assert "window.isNekoShortcutBlockedByTutorial" in mic_guard_block
     assert "window.isInTutorial === true" in mic_guard_block
-    assert "yui-guide-standalone-input-shield-active" in mic_guard_block
-    assert "yui-guide-chat-buttons-disabled" in mic_guard_block
-    assert "yui-guide-compact-chat-fixed" in mic_guard_block
 
     mute_block = audio_capture.split("window.toggleMicMute = function", 1)[1].split("window.setMicMuted", 1)[0]
     assert "isTutorialShortcutBlockedForMicMute()" in mute_block
