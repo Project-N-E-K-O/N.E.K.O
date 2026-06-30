@@ -692,6 +692,7 @@
                 });
                 stopActiveLipSync();
                 S.isPlaying = false;
+                S.assistantTurnSettledId = normalizedTurnId;
                 dispatchAssistantSpeechEnd(normalizedTurnId);
                 return true;
             }

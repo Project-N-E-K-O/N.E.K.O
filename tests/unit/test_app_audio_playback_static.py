@@ -21,5 +21,6 @@ def test_playback_gate_opens_when_audio_drains_before_turn_completion():
     mismatch_block = source[mismatch_start:drained_guard_start]
 
     assert "isAssistantTurnPlaybackDrained(normalizedTurnId)" in mismatch_block
+    assert "S.assistantTurnSettledId = normalizedTurnId" in mismatch_block
     assert "dispatchAssistantSpeechEnd(normalizedTurnId)" in mismatch_block
     assert "return true" in mismatch_block
