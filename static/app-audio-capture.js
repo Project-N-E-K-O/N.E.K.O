@@ -1547,6 +1547,8 @@
             // 非线性轨道：thumb 位置走 0..SPEAKER_SLIDER_TRACK_MAX（千分比精度），
             // 经膝点映射成 0-200% 音量，使常规的 0-100% 占满轨道前 3/4、100% 落在锚点处。
             var SPEAKER_SLIDER_TRACK_MAX = 1000;
+            var SPEAKER_SLIDER_THUMB_SIZE = 16;
+            var SPEAKER_VOLUME_SNAP_RADIUS = 18;
             var SPEAKER_VOLUME_NORMAL_COLOR = '#4f8cff';
             var SPEAKER_VOLUME_BOOST_COLOR = '#ff9f43';
 
@@ -1560,6 +1562,18 @@
                     pos / SPEAKER_SLIDER_TRACK_MAX, C.DEFAULT_SPEAKER_VOLUME, C.MAX_SPEAKER_VOLUME, C.SPEAKER_VOLUME_KNEE_RATIO
                 ));
             }
+            var speakerVolumeAnchorTrackPos = speakerTrackPosFromVolume(C.DEFAULT_SPEAKER_VOLUME);
+            function speakerThumbAlignedLeft(trackPos) {
+                var ratio = trackPos / SPEAKER_SLIDER_TRACK_MAX;
+                var halfThumb = SPEAKER_SLIDER_THUMB_SIZE / 2;
+                var thumbOffsetPx = halfThumb * (1 - 2 * ratio);
+                return 'calc(' + (ratio * 100) + '% + ' + thumbOffsetPx.toFixed(2) + 'px)';
+            }
+            function snapSpeakerTrackPos(pos) {
+                return Math.abs(pos - speakerVolumeAnchorTrackPos) <= SPEAKER_VOLUME_SNAP_RADIUS
+                    ? speakerVolumeAnchorTrackPos
+                    : pos;
+            }
 
             var speakerSlider = document.createElement('input');
             speakerSlider.type = 'range';
@@ -1568,7 +1582,7 @@
             speakerSlider.max = String(SPEAKER_SLIDER_TRACK_MAX);
             speakerSlider.step = '1';
             speakerSlider.value = String(speakerTrackPosFromVolume(S.speakerVolume));
-            Object.assign(speakerSlider.style, { width: '100%', height: '6px', borderRadius: '3px', cursor: 'pointer', accentColor: SPEAKER_VOLUME_NORMAL_COLOR });
+            Object.assign(speakerSlider.style, { width: '100%', height: '6px', borderRadius: '3px', cursor: 'pointer', accentColor: SPEAKER_VOLUME_NORMAL_COLOR, position: 'relative', zIndex: '2', margin: '0' });
 
             // 超过标准音量（>100%）时数值与轨道染暖色，把增强区从常规区里区分出来
             function applySpeakerVolumeVisual(vol) {
@@ -1580,7 +1594,13 @@
             applySpeakerVolumeVisual(S.speakerVolume);
 
             speakerSlider.addEventListener('input', function (e) {
-                var newVol = speakerVolumeFromTrackPos(parseInt(e.target.value, 10));
+                var trackPos = parseInt(e.target.value, 10);
+                if (isNaN(trackPos)) return;
+                var snappedTrackPos = snapSpeakerTrackPos(trackPos);
+                if (snappedTrackPos !== trackPos) {
+                    speakerSlider.value = String(snappedTrackPos);
+                }
+                var newVol = speakerVolumeFromTrackPos(snappedTrackPos);
                 S.speakerVolume = newVol;
                 applySpeakerVolumeVisual(newVol);
                 if (S.speakerGainNode) {
@@ -1593,12 +1613,12 @@
 
             // 用相对定位容器在轨道 75% 处画一条 100% 标准锚点，告诉用户「这条线以上是增强」
             var speakerSliderWrap = document.createElement('div');
-            Object.assign(speakerSliderWrap.style, { position: 'relative', width: '100%' });
+            Object.assign(speakerSliderWrap.style, { position: 'relative', width: '100%', height: '18px', display: 'flex', alignItems: 'center' });
             var speakerAnchorTick = document.createElement('div');
             Object.assign(speakerAnchorTick.style, {
-                position: 'absolute', left: (C.SPEAKER_VOLUME_KNEE_RATIO * 100) + '%', top: '50%',
-                width: '2px', height: '12px', transform: 'translate(-50%, -50%)',
-                backgroundColor: 'var(--neko-popup-text-sub)', opacity: '0.55', borderRadius: '1px', pointerEvents: 'none'
+                position: 'absolute', left: speakerThumbAlignedLeft(speakerVolumeAnchorTrackPos), top: '0', bottom: '0',
+                width: '2px', transform: 'translateX(-50%)',
+                backgroundColor: 'var(--neko-popup-text-sub)', opacity: '0.28', borderRadius: '1px', pointerEvents: 'none', zIndex: '0'
             });
             speakerSliderWrap.appendChild(speakerSlider);
             speakerSliderWrap.appendChild(speakerAnchorTick);
