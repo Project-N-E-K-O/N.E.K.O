@@ -115,7 +115,7 @@ def _response_module_hint(request: InteractionRequest) -> str:
     source = str(request.event.source or "")
     if source in {"warmup_hosting", "idle_hosting", "active_engagement"}:
         return source
-    if source == "live_danmaku":
+    if source in {"live_danmaku", "manual_live_simulation"}:
         if request.allow_avatar_image:
             return "avatar_roast"
         return "danmaku_response"

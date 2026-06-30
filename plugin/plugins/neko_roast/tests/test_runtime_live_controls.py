@@ -197,6 +197,15 @@ async def test_clear_viewer_profiles_requires_developer_mode(runtime: RoastRunti
 
 
 @pytest.mark.asyncio
+async def test_handle_manual_event_requires_developer_mode(runtime: RoastRuntime) -> None:
+    runtime.config.developer_tools_enabled = False
+    runtime.config.live_enabled = True
+
+    with pytest.raises(PermissionError):
+        await runtime.handle_manual_event(uid="1001", nickname="viewer", danmaku_text="hello")
+
+
+@pytest.mark.asyncio
 async def test_update_config_restarts_listener_when_room_changes(runtime: RoastRuntime) -> None:
     runtime.config.live_room_id = 100
     runtime.config.live_enabled = True

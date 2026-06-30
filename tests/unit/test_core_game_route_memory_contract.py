@@ -2842,6 +2842,20 @@ async def test_proactive_complete_without_content_clears_buffered_neko_live_repl
 
 
 @pytest.mark.unit
+def test_reset_proactive_gate_clears_buffered_neko_live_reply():
+    mgr = _make_manager()
+    mgr._neko_live_reply_output_buffer = {
+        "text_parts": ["stale live reply"],
+        "metadata": {"plugin": "neko_roast", "live_reply_contract": "short_tts_line"},
+        "turn_id": "old-live-turn",
+    }
+
+    core_module.LLMSessionManager._reset_proactive_gate(mgr)
+
+    assert mgr._neko_live_reply_output_buffer is None
+
+
+@pytest.mark.unit
 def test_sid_cached_proactive_live_reply_metadata_is_bounded():
     mgr = _make_manager()
     metadata = {

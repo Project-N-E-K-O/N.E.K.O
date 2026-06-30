@@ -933,6 +933,18 @@ def test_permission_gate_requires_developer_tools_for_sandbox():
     assert gate.allows_source("developer_sandbox") == (True, "")
 
 
+def test_permission_gate_requires_developer_tools_for_manual_live_simulation():
+    gate = PermissionGate(RoastConfig(live_enabled=True, developer_tools_enabled=False))
+
+    assert gate.allows_source("manual_live_simulation") == (False, "developer tools are disabled")
+
+    gate.update(RoastConfig(live_enabled=False, developer_tools_enabled=True))
+    assert gate.allows_source("manual_live_simulation") == (False, "live roast is disabled")
+
+    gate.update(RoastConfig(live_enabled=True, developer_tools_enabled=True))
+    assert gate.allows_source("manual_live_simulation") == (True, "")
+
+
 @pytest.mark.asyncio
 async def test_dispatcher_respects_non_deliverable_request():
     class Plugin:
@@ -1043,8 +1055,62 @@ async def test_dispatcher_marks_live_requests_with_short_reply_contract():
     await NekoDispatcher(plugin).push_roast(request)
 
     assert plugin.metadata["live_reply_contract"] == "short_tts_line"
-    assert plugin.metadata["max_reply_chars"] == 28
+    assert plugin.metadata["max_reply_chars"] == 32
     assert plugin.metadata["response_module_hint"] == "avatar_roast"
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_marks_manual_live_simulation_like_live_danmaku():
+    class Plugin:
+        def __init__(self):
+            self.metadata = None
+
+        def push_message(self, **kwargs):
+            self.metadata = kwargs["metadata"]
+
+    plugin = Plugin()
+    request = InteractionRequest(
+        event=ViewerEvent(uid="42", nickname="viewer", source="manual_live_simulation", live_mode="solo_stream"),
+        identity=ViewerIdentity(uid="42", nickname="viewer"),
+        profile=ViewerProfile(uid="42", nickname="viewer"),
+        prompt_text="reply",
+        live_mode="solo_stream",
+        strength="normal",
+        allow_avatar_image=True,
+    )
+
+    await NekoDispatcher(plugin).push_roast(request)
+
+    assert plugin.metadata["live_reply_contract"] == "short_tts_line"
+    assert plugin.metadata["max_reply_chars"] == 32
+    assert plugin.metadata["response_module_hint"] == "avatar_roast"
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_marks_text_only_manual_live_simulation_as_danmaku_response():
+    class Plugin:
+        def __init__(self):
+            self.metadata = None
+
+        def push_message(self, **kwargs):
+            self.metadata = kwargs["metadata"]
+
+    plugin = Plugin()
+    request = InteractionRequest(
+        event=ViewerEvent(uid="42", nickname="viewer", source="manual_live_simulation", live_mode="solo_stream"),
+        identity=ViewerIdentity(uid="42", nickname="viewer"),
+        profile=ViewerProfile(uid="42", nickname="viewer"),
+        prompt_text="reply",
+        live_mode="solo_stream",
+        strength="normal",
+        allow_avatar_image=False,
+    )
+
+    await NekoDispatcher(plugin).push_roast(request)
+
+    assert plugin.metadata["live_reply_contract"] == "short_tts_line"
+    assert plugin.metadata["max_reply_chars"] == 28
+    assert plugin.metadata["response_module_hint"] == "danmaku_response"
 
 
 @pytest.mark.asyncio

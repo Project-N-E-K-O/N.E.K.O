@@ -8257,6 +8257,10 @@ class LLMSessionManager:
                     ),
                 )
                 live_reply_metadata = _merge_live_reply_metadata_from_callbacks(voice_snapshot)
+                proactive_sid = str(getattr(self, "current_speech_id", "") or "")
+                if not proactive_sid:
+                    logger.warning("[%s] trigger_agent_callbacks: missing voice proactive sid", self.lanlan_name)
+                    return False
                 self._remember_proactive_live_reply_metadata(proactive_sid, live_reply_metadata)
                 delivered_ids = {
                     cb.get("_callback_delivery_id")
@@ -9435,6 +9439,7 @@ class LLMSessionManager:
         manager are NOT dropped: they're moved into pending_agent_callbacks,
         which persists across teardown and is redelivered by the reconnect /
         next-turn path. Only the gate/single-flight state is cleared."""
+        self._neko_live_reply_output_buffer = None
         self._voice_playback_active = False
         self._voice_playback_started_ts = 0.0
         # end_session may run against a partially constructed manager (e.g.

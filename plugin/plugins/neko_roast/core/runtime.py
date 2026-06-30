@@ -525,6 +525,7 @@ class RoastRuntime:
             raise PermissionError("developer mode is disabled")
 
     async def handle_manual_event(self, **kwargs: Any) -> InteractionResult:
+        self._require_developer_mode()
         event = ViewerEvent(
             uid=str(kwargs.get("uid") or "").strip(),
             nickname=str(kwargs.get("nickname") or "").strip(),

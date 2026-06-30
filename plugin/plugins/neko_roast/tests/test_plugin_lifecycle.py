@@ -82,6 +82,50 @@ async def test_config_change_without_runtime_stays_pending():
 
 
 @pytest.mark.asyncio
+async def test_clear_sandbox_data_requires_developer_mode():
+    class Runtime:
+        def __init__(self) -> None:
+            self.config = SimpleNamespace(developer_tools_enabled=False)
+            self.clear_calls = 0
+
+        def clear_sandbox_data(self) -> dict:
+            self.clear_calls += 1
+            return {"cleared": 1}
+
+    plugin = NekoRoastPlugin(SimpleNamespace(logger=None))
+    runtime = Runtime()
+    plugin.runtime = runtime
+
+    result = await plugin.clear_sandbox_data()
+
+    assert result.is_err() is True
+    assert "developer mode is disabled" in str(result.err())
+    assert runtime.clear_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_clear_sandbox_data_runs_when_developer_mode_enabled():
+    class Runtime:
+        def __init__(self) -> None:
+            self.config = SimpleNamespace(developer_tools_enabled=True)
+            self.clear_calls = 0
+
+        def clear_sandbox_data(self) -> dict:
+            self.clear_calls += 1
+            return {"cleared": 1}
+
+    plugin = NekoRoastPlugin(SimpleNamespace(logger=None))
+    runtime = Runtime()
+    plugin.runtime = runtime
+
+    result = await plugin.clear_sandbox_data()
+
+    assert result.is_ok() is True
+    assert result.value == {"cleared": {"cleared": 1}}
+    assert runtime.clear_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_command_loop_start_restarts_idle_hosting_loop():
     class Runtime:
         def __init__(self) -> None:
