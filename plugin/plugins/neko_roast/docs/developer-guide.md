@@ -46,7 +46,9 @@ neko_roast/
 ├─ __init__.py            插件入口（NekoRoastPlugin）+ @ui.action / @plugin_entry 动作
 ├─ core/                  骨架：pipeline / safety_guard / runtime / contracts / event_bus /
 │                         module_registry / permission_gate / instructions，以及 NEKO Live
-│                         的 live_reply_policy / recent_context / live_status /
+│                         的 live_reply_policy / live_reply_contracts /
+│                         live_reply_fallbacks / live_reply_shape /
+│                         live_reply_instructions / recent_context / live_status /
 │                         live_timing / live_state / live_director_state /
 │                         solo_readiness / active_topic_selector / live_hosting_director，以及
 │                         active_topic_filters / active_topic_materials /

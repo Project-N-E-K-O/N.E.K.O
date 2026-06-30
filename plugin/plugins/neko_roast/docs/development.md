@@ -33,7 +33,11 @@
 | 模块 | 职责 | 不应做什么 |
 |---|---|---|
 | `core/runtime.py` | 装配模块、配置/凭据生命周期、action 入口、dashboard 聚合、直播连接控制 | 不写直播台词策略、不直接选择主动营业话题、不承载状态机细则 |
-| `core/live_reply_policy.py` | NEKO Live 最终回复合约、字数上限、质量 fallback、最近回复 negative examples | 不连接直播间、不读写观众档案 |
+| `core/live_reply_policy.py` | NEKO Live 最终回复策略兼容门面，保留旧 import 路径 | 不新增策略实现 |
+| `core/live_reply_contracts.py` | 回复 metadata、route 字数上限、module 合约常量 | 不做文本质量判断 |
+| `core/live_reply_fallbacks.py` | 怪话/空泛/漂移检测和质量 fallback 文案 | 不拼 prompt instruction |
+| `core/live_reply_shape.py` | 最终输出句子裁剪、长度裁剪、dangling choice 修剪 | 不决定 route metadata |
+| `core/live_reply_instructions.py` | NEKO Live 输出合约 prompt、最近回复 negative examples、callback metadata 合并 | 不改最终输出文本 |
 | `core/recent_context.py` | recent result 路由、已输出文本提取、spent-output family、上下文压缩 | 不决定是否开口 |
 | `core/live_status.py` | NEKO Live 状态计算兼容门面，保留旧 import 路径 | 不新增状态实现 |
 | `core/live_timing.py` | activity level 间隔、时间年龄、最近弹幕/输出年龄计算 | 不决定是否开口 |
@@ -48,7 +52,7 @@
 | `core/active_engagement_shapes.py` | active engagement shape 的 hook / pattern / hint / affordance 文案 | 不选择 topic，不读取素材池 |
 | `core/live_content.py` | idle host beat 和 active fallback topic 素材池 | 不做选择、不读 runtime 状态 |
 
-新增直播表现能力时优先判断属于哪一层：输出合约进 `live_reply_policy`，时间和年龄计算进 `live_timing`，状态摘要进 `live_state`，自动导演 eligibility 进 `live_director_state`，独播测试诊断进 `solo_readiness`，主动营业素材选择进 `active_topic_selector`，冷场/开场调度进 `live_hosting_director`，文本过滤进 `active_topic_filters`，素材画像和去重进 `active_topic_materials`，shape 文案进 `active_engagement_shapes`，素材进 `live_content`。只有跨模块装配、配置、action 或 dashboard 聚合才进入 `runtime.py`。
+新增直播表现能力时优先判断属于哪一层：回复 metadata 和 route 合约进 `live_reply_contracts`，质量 fallback 进 `live_reply_fallbacks`，最终文本修剪进 `live_reply_shape`，prompt 合约说明进 `live_reply_instructions`，时间和年龄计算进 `live_timing`，状态摘要进 `live_state`，自动导演 eligibility 进 `live_director_state`，独播测试诊断进 `solo_readiness`，主动营业素材选择进 `active_topic_selector`，冷场/开场调度进 `live_hosting_director`，文本过滤进 `active_topic_filters`，素材画像和去重进 `active_topic_materials`，shape 文案进 `active_engagement_shapes`，素材进 `live_content`。只有跨模块装配、配置、action 或 dashboard 聚合才进入 `runtime.py`。
 
 主要链路（直播弹幕路径）：
 
