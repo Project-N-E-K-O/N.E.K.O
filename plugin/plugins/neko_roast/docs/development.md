@@ -38,10 +38,13 @@
 | `core/live_status.py` | Live Status、Live State、Idle/Active eligibility、Live Director 状态、Solo Test Readiness、Speech Explanation | 不触发 pipeline，不选择素材 |
 | `core/active_topic_selector.py` | 主动营业 topic 选择、近期弹幕/公开素材/fallback 组合、shape guard、topic family / affordance 轮转 | 不直接调用 dispatcher，不绕过 safety guard |
 | `core/live_hosting_director.py` | warmup hosting、idle hosting、host beat 轮转、自动调度 loop | 不生成最终台词，不处理普通弹幕 |
-| `core/active_topic_rules.py` | 主动话题过滤、material profile、viewer mention、shape 文案等纯规则 | 不持有 runtime 状态 |
+| `core/active_topic_rules.py` | 主动营业纯规则兼容门面，保留旧 import 路径 | 不新增策略实现 |
+| `core/active_topic_filters.py` | 主动话题文本过滤、低置信度材料拦截、viewer mention / reaction 判断 | 不持有 runtime 状态 |
+| `core/active_topic_materials.py` | material profile、host material family、近期标题相似度和 streak 判断 | 不生成 prompt 文案 |
+| `core/active_engagement_shapes.py` | active engagement shape 的 hook / pattern / hint / affordance 文案 | 不选择 topic，不读取素材池 |
 | `core/live_content.py` | idle host beat 和 active fallback topic 素材池 | 不做选择、不读 runtime 状态 |
 
-新增直播表现能力时优先判断属于哪一层：输出合约进 `live_reply_policy`，状态判断进 `live_status`，主动营业素材选择进 `active_topic_selector`，冷场/开场调度进 `live_hosting_director`，纯过滤规则进 `active_topic_rules`，素材进 `live_content`。只有跨模块装配、配置、action 或 dashboard 聚合才进入 `runtime.py`。
+新增直播表现能力时优先判断属于哪一层：输出合约进 `live_reply_policy`，状态判断进 `live_status`，主动营业素材选择进 `active_topic_selector`，冷场/开场调度进 `live_hosting_director`，文本过滤进 `active_topic_filters`，素材画像和去重进 `active_topic_materials`，shape 文案进 `active_engagement_shapes`，素材进 `live_content`。只有跨模块装配、配置、action 或 dashboard 聚合才进入 `runtime.py`。
 
 主要链路（直播弹幕路径）：
 
