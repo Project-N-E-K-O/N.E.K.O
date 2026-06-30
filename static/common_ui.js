@@ -1154,10 +1154,6 @@ if (chatContentWrapper) {
 // ========== Electron 全局快捷键接口 ==========
 // 以下接口供 Electron 主进程通过 IPC 调用，用于全局快捷键功能
 
-/**
- * 切换语音会话状态（开始/结束）
- * Electron 调用此接口来触发语音按钮的切换
- */
 window.isNekoShortcutBlockedByTutorial = function () {
     const body = document.body;
     const root = document.documentElement;
@@ -1183,6 +1179,10 @@ function blockNekoShortcutDuringTutorial(actionName) {
     return true;
 }
 
+/**
+ * 切换语音会话状态（开始/结束）
+ * Electron 调用此接口来触发语音按钮的切换
+ */
 window.toggleVoiceSession = function () {
     if (blockNekoShortcutDuringTutorial('toggleVoiceSession')) return;
     // 获取浮动按钮的当前状态（Live2D / VRM / MMD）
