@@ -35,7 +35,7 @@ test('startup greeting waits for an explicit release instead of firing on websoc
     )[0];
     assert.match(sendBlock, /if \(S\._startupGreetingReleasePending\) \{\s*return;\s*\}/);
     assert.ok(
-        sendBlock.indexOf('if (S._startupGreetingReleasePending)') < sendBlock.indexOf('if (_consumeGreetingCheckForNewUserIcebreaker())'),
+        sendBlock.indexOf('if (S._startupGreetingReleasePending)') < sendBlock.indexOf('if (_deferGreetingCheckForNewUserIcebreaker())'),
         'model-ready sends must wait for the startup greeting release gate before icebreaker or send checks'
     );
 
@@ -62,7 +62,7 @@ test('startup greeting waits for an explicit release instead of firing on websoc
     assert.match(consumeBlock, /delete window\.__NEKO_STARTUP_GREETING_RELEASED__/);
 
     const releaseBlock = appWebsocketSource.split('function releaseStartupGreetingCheck(reason)')[1].split(
-        'function _consumeGreetingCheckForNewUserIcebreaker()',
+        'function _deferGreetingCheckForNewUserIcebreaker()',
         1,
     )[0];
     assert.match(releaseBlock, /clearTimeout\(S\._startupGreetingReleaseFallbackTimer\)/);
@@ -80,6 +80,41 @@ test('startup greeting waits for an explicit release instead of firing on websoc
         1,
     )[0];
     assert.match(listenerBlock, /if \(detail\.released === false\) \{\s*return;\s*\}/);
+});
+
+test('startup greeting is deferred until new-user icebreaker ends', () => {
+    assert.match(appWebsocketSource, /function isNewUserIcebreakerActiveForGreeting\(\)/);
+    assert.match(appWebsocketSource, /function _deferGreetingCheckForNewUserIcebreaker\(\)/);
+    assert.doesNotMatch(appWebsocketSource, /function _consumeGreetingCheckForNewUserIcebreaker\(\)/);
+
+    const blockingBlock = appWebsocketSource.split('function isNewUserIcebreakerBlockingGreeting(reason)')[1].split(
+        'function normalizeAssistantTurnId(turnId)',
+        1,
+    )[0];
+    assert.match(blockingBlock, /return isNewUserIcebreakerActiveForGreeting\(\);/);
+    assert.doesNotMatch(blockingBlock, /isTutorialReleaseGreetingReason/);
+
+    const deferBlock = appWebsocketSource.split('function _deferGreetingCheckForNewUserIcebreaker()')[1].split(
+        'function _sendGreetingCheckIfReady()',
+        1,
+    )[0];
+    assert.match(deferBlock, /if \(!isNewUserIcebreakerBlockingGreeting\(S\._greetingCheckReason\)\) return false;/);
+    assert.match(deferBlock, /_scheduleGreetingCheckRetry\(\);/);
+    assert.doesNotMatch(deferBlock, /S\._greetingCheckPending = false;/);
+    assert.doesNotMatch(deferBlock, /S\._greetingCheckReason = '';/);
+    assert.doesNotMatch(deferBlock, /_resetGreetingCheckRetry\(true\);/);
+
+    const sendBlock = appWebsocketSource.split('function _sendGreetingCheckIfReady()')[1].split(
+        'function _onModelReady()',
+        1,
+    )[0];
+    assert.match(sendBlock, /if \(_deferGreetingCheckForNewUserIcebreaker\(\)\) \{\s*return;\s*\}/);
+
+    const icebreakerEndListener = appWebsocketSource.split("window.addEventListener('neko:new-user-icebreaker-ended'")[1].split(
+        "window.addEventListener(STARTUP_GREETING_RELEASE_EVENT",
+        1,
+    )[0];
+    assert.match(icebreakerEndListener, /_sendGreetingCheckIfReady\(\);/);
 });
 
 test('tutorial manager releases startup greeting after tutorial decisions and endings', () => {

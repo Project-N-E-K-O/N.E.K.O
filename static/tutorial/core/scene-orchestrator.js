@@ -255,6 +255,9 @@
             const previousSceneId = director.currentSceneId;
             director.currentSceneId = scene.id;
             director.currentStep = director.getAvatarFloatingInterruptStep(scene);
+            if (typeof director.syncAvatarFloatingToolbarForScene === 'function') {
+                director.syncAvatarFloatingToolbarForScene(scene, scene.id || 'scene');
+            }
             const isFirstDailyScene = index === 0;
             const preserveExternalizedChatGuideTarget = !!(
                 director.shouldPreserveExternalizedChatCursor(previousSceneId, scene)
@@ -538,19 +541,14 @@
                 });
                 primaryTarget = await director.resolveAvatarFloatingTarget(scene, 'primary');
                 secondaryTarget = await director.resolveAvatarFloatingTarget(scene, 'secondary');
-                const day2CharacterSettingsPersistentTarget = director.getDay2CharacterSettingsPersistenceTarget(scene.id);
-                const day4SettingsPersistentTarget = director.getDay4SettingsButtonPersistenceTarget(scene.id);
                 const highlightConfig = {
                     key: scene.id,
                     persistent: shouldShowSceneSpotlight ? persistentTarget : null,
                     primary: shouldShowSceneSpotlight ? primaryTarget : null,
                     secondary: shouldShowSceneSpotlight ? secondaryTarget : null
                 };
-                if (typeof day2CharacterSettingsPersistentTarget !== 'undefined') {
-                    highlightConfig.persistent = day2CharacterSettingsPersistentTarget;
-                }
-                if (typeof day4SettingsPersistentTarget !== 'undefined') {
-                    highlightConfig.persistent = day4SettingsPersistentTarget;
+                if (typeof director.applyAvatarFloatingPersistenceOverride === 'function') {
+                    director.applyAvatarFloatingPersistenceOverride(highlightConfig, scene.id);
                 }
                 director.applyAvatarFloatingSceneSpotlightVariant(scene, primaryTarget);
                 director.applyGuideHighlights(highlightConfig);
@@ -668,19 +666,14 @@
                     result: sceneRunId === director.sceneRunId && !director.isStopping()
                 };
             }
-            const day2CharacterSettingsPersistentTarget = director.getDay2CharacterSettingsPersistenceTarget(scene.id);
-            const day4SettingsPersistentTarget = director.getDay4SettingsButtonPersistenceTarget(scene.id);
             const highlightConfig = {
                 key: scene.id,
                 persistent: persistentTarget,
                 primary: primaryTarget,
                 secondary: secondaryTarget
             };
-            if (typeof day2CharacterSettingsPersistentTarget !== 'undefined') {
-                highlightConfig.persistent = day2CharacterSettingsPersistentTarget;
-            }
-            if (typeof day4SettingsPersistentTarget !== 'undefined') {
-                highlightConfig.persistent = day4SettingsPersistentTarget;
+            if (typeof director.applyAvatarFloatingPersistenceOverride === 'function') {
+                director.applyAvatarFloatingPersistenceOverride(highlightConfig, scene.id);
             }
             director.applyAvatarFloatingSceneSpotlightVariant(scene, primaryTarget);
             director.applyGuideHighlights(highlightConfig);
@@ -751,23 +744,9 @@
 
         async applySettledCleanupHighlight(scene) {
             const director = this.director;
-            const day2CharacterSettingsPersistentTarget = director.getDay2CharacterSettingsPersistenceTarget(scene.id);
-            const day4SettingsPersistentTarget = director.getDay4SettingsButtonPersistenceTarget(scene.id);
-            const highlightConfig = {
-                key: scene.id + '-settled',
-                persistent: await director.resolveAvatarFloatingPersistent(scene, {
-                    fallbackToChatWindow: false
-                }),
-                primary: await director.resolveAvatarFloatingTarget(scene, 'primary'),
-                secondary: await director.resolveAvatarFloatingTarget(scene, 'secondary')
-            };
-            if (typeof day2CharacterSettingsPersistentTarget !== 'undefined') {
-                highlightConfig.persistent = day2CharacterSettingsPersistentTarget;
+            if (typeof director.applyAvatarFloatingSettledCleanupHighlight === 'function') {
+                await director.applyAvatarFloatingSettledCleanupHighlight(scene);
             }
-            if (typeof day4SettingsPersistentTarget !== 'undefined') {
-                highlightConfig.persistent = day4SettingsPersistentTarget;
-            }
-            director.applyGuideHighlights(highlightConfig);
         }
 
         async finishGenericScene(scene, index, total, context, narration, playback) {
@@ -951,6 +930,9 @@
                     director.overlay.clearPersistentSpotlight();
                     director.overlay.clearActionSpotlight();
                     director.cursor.hide();
+                    if (typeof director.setAvatarFloatingToolbarVisible === 'function') {
+                        director.setAvatarFloatingToolbarVisible(true, 'round-complete');
+                    }
                     if (!director.destroyed) {
                         director.setTutorialTakingOver(false);
                     }

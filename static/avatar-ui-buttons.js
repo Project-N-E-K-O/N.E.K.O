@@ -9,6 +9,17 @@
 // 浮动按钮入场动画（错位级联滑入 + 淡入；从上往下）。
 // 退场不做动画 —— 直接 display:none，因为浏览器在 microtask 拦截前已 commit
 // display:none 到下一帧渲染流程，可靠的退场需要改大量调用点，权衡之下放弃。
+function isNekoYuiGuideFloatingToolbarSuppressed() {
+    return !!(
+        typeof window !== 'undefined'
+        && window.nekoYuiGuideFloatingToolbarSuppressed === true
+    );
+}
+
+if (typeof window !== 'undefined') {
+    window.isNekoYuiGuideFloatingToolbarSuppressed = isNekoYuiGuideFloatingToolbarSuppressed;
+}
+
 function _ensureFloatingButtonsAnimationStyles() {
     if (document.getElementById('neko-floating-buttons-animation-styles')) return;
     const style = document.createElement('style');
@@ -5692,11 +5703,17 @@ const AvatarButtonMixin = {
 
             // 创建包装器
             const btnWrapper = document.createElement('div');
-            btnWrapper.style.position = 'relative';
-            btnWrapper.style.display = 'flex';
-            btnWrapper.style.alignItems = 'center';
-            btnWrapper.style.gap = '8px';
-            btnWrapper.style.pointerEvents = 'auto';
+            Object.assign(btnWrapper.style, {
+                position: 'relative',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                pointerEvents: 'auto',
+                height: '48px',
+                minHeight: '48px',
+                flex: '0 0 48px',
+                boxSizing: 'border-box'
+            });
 
             const stopWrapperEvent = (e) => { e.stopPropagation(); };
             ['pointerdown', 'pointermove', 'pointerup', 'mousedown', 'mousemove', 'mouseup', 'touchstart', 'touchmove', 'touchend'].forEach(evt => {

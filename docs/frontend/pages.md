@@ -15,6 +15,7 @@ Pages are rendered with Jinja2 on the server side. Templates are located in the 
 | `/live2d_parameter_editor` | `live2d_parameter_editor.html` | Live2D model parameter fine-tuning |
 | `/live2d_emotion_manager` | `live2d_emotion_manager.html` | Live2D emotion mapping |
 | `/vrm_emotion_manager` | `vrm_emotion_manager.html` | VRM emotion mapping |
+| `/mmd_emotion_manager` | `mmd_emotion_manager.html` | MMD emotion (morph) mapping |
 | `/voice_clone` | `voice_clone.html` | Voice cloning interface |
 | `/memory_browser` | `memory_browser.html` | Memory browsing and editing |
 
@@ -34,4 +35,7 @@ Dark mode is managed by `static/theme-manager.js`:
 | `/static` | `static/` | JS, CSS, images, locales |
 | `/user_live2d` | User documents | User-imported Live2D models |
 | `/user_vrm` | User documents | User-imported VRM models |
+| `/user_mmd` | user data | User-imported MMD models (PMX/PMD) |
+| `/user_mmd/animation` | user data | User-imported VMD animations |
+| `/user_pngtuber` | user data | User-imported PNGTuber packages |
 | `/workshop` | Steam Workshop | Workshop-subscribed models |

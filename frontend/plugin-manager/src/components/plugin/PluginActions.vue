@@ -72,6 +72,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { usePluginStore } from '@/stores/plugin'
 import { resolveLocalizedText } from '@/utils/i18nLabel'
 import { openExternalUrl } from '@/utils/openExternal'
+import { formatHttpError } from '@/utils/request'
 
 interface Props {
   pluginId: string
@@ -105,6 +106,17 @@ const uiDisabled = computed(() => {
 const uiActionLabel = computed(() =>
   resolveLocalizedText(uiAction.value?.label, locale.value, t('plugins.ui.open')),
 )
+
+function showActionError(error: any, fallbackMessage: string) {
+  const status = error?.response?.status
+  if (error?.request && !error?.response) {
+    return
+  }
+  if (typeof status === 'number' && ![401, 403, 404].includes(status)) {
+    return
+  }
+  ElMessage.error(formatHttpError(error) || fallbackMessage)
+}
 
 async function handleOpenUi() {
   if (!uiAction.value || uiDisabled.value) {
@@ -179,7 +191,7 @@ async function handleStart() {
     await pluginStore.start(props.pluginId)
     ElMessage.success(t('messages.pluginStarted'))
   } catch (error: any) {
-    ElMessage.error(error.message || t('messages.startFailed'))
+    showActionError(error, t('messages.startFailed'))
   } finally {
     loading.value = false
   }
@@ -195,7 +207,7 @@ async function handleStop() {
     ElMessage.success(t('messages.pluginStopped'))
   } catch (error: any) {
     if (error !== 'cancel') {
-      ElMessage.error(error.message || t('messages.stopFailed'))
+      showActionError(error, t('messages.stopFailed'))
     }
   } finally {
     loading.value = false
@@ -212,7 +224,7 @@ async function handleReload() {
     ElMessage.success(t('messages.pluginReloaded'))
   } catch (error: any) {
     if (error !== 'cancel') {
-      ElMessage.error(error.message || t('messages.reloadFailed'))
+      showActionError(error, t('messages.reloadFailed'))
     }
   } finally {
     loading.value = false
@@ -229,7 +241,7 @@ async function handleDisableExt() {
     ElMessage.success(t('messages.extensionDisabled'))
   } catch (error: any) {
     if (error !== 'cancel') {
-      ElMessage.error(error.message || t('messages.disableExtFailed'))
+      showActionError(error, t('messages.disableExtFailed'))
     }
   } finally {
     loading.value = false
@@ -242,7 +254,7 @@ async function handleEnableExt() {
     await pluginStore.enableExt(props.pluginId)
     ElMessage.success(t('messages.extensionEnabled'))
   } catch (error: any) {
-    ElMessage.error(error.message || t('messages.enableExtFailed'))
+    showActionError(error, t('messages.enableExtFailed'))
   } finally {
     loading.value = false
   }

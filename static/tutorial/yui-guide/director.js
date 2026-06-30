@@ -4120,12 +4120,41 @@
             return anchor && this.isElementVisible(anchor) ? anchor : null;
         }
 
+        getDay5CharacterSettingsPersistenceTarget(sceneId) {
+            if (sceneId === 'day5_character_settings' || sceneId === 'day5_character_panic') {
+                return this.getDay4SettingsButtonSpotlightTarget()
+                    || this.getDay5CharacterSettingsButtonTarget();
+            }
+            if (sceneId === 'day5_memory_entry' || sceneId === 'day5_wrap') {
+                return null;
+            }
+            return undefined;
+        }
+
         getDay2CharacterSettingsPersistenceTarget(sceneId) {
             if (sceneId === 'day2_personalization_detail') {
                 return this.getDay5CharacterSettingsButtonTarget()
                     || this.getSettingsMenuElement('character');
             }
             return undefined;
+        }
+
+        applyAvatarFloatingPersistenceOverride(highlightConfig, sceneId) {
+            if (!highlightConfig) {
+                return highlightConfig;
+            }
+            const persistentTargetGetters = [
+                this.getDay2CharacterSettingsPersistenceTarget,
+                this.getDay4SettingsButtonPersistenceTarget,
+                this.getDay5CharacterSettingsPersistenceTarget
+            ];
+            persistentTargetGetters.forEach((getPersistentTarget) => {
+                const persistentTarget = getPersistentTarget.call(this, sceneId);
+                if (typeof persistentTarget !== 'undefined') {
+                    highlightConfig.persistent = persistentTarget;
+                }
+            });
+            return highlightConfig;
         }
 
         refreshSettingsPeekSpotlights(settingsButton) {
@@ -5788,6 +5817,107 @@
             return null;
         }
 
+        setAvatarFloatingToolbarVisible(visible, reason) {
+            const shouldShow = visible !== false;
+            window.nekoYuiGuideFloatingToolbarSuppressed = !shouldShow;
+            if (document && document.body && document.body.classList) {
+                document.body.classList.toggle('yui-guide-floating-toolbar-suppressed', !shouldShow);
+            }
+            window.dispatchEvent(new CustomEvent('neko:yui-guide-floating-toolbar-suppression-change', {
+                detail: {
+                    suppressed: !shouldShow,
+                    reason: reason || ''
+                }
+            }));
+            if (shouldShow) {
+                return;
+            }
+
+            this.forceHideAvatarFloatingGuideManagedSurfaces();
+        }
+
+        shouldShowAvatarFloatingToolbarForScene(scene) {
+            const normalizedScene = scene || {};
+            const sceneId = typeof normalizedScene.id === 'string'
+                ? normalizedScene.id
+                : '';
+            const day4SettingsSceneIds = [
+                'day4_chat_settings',
+                'day4_model_behavior',
+                'day4_gaze_follow',
+                'day4_privacy_mode'
+            ];
+            const day2SettingsSceneIds = [
+                'day2_personalization_space',
+                'day2_personalization_detail',
+                'day2_proactive_chat'
+            ];
+            const day5SettingsSceneIds = [
+                'day5_character_settings',
+                'day5_character_panic',
+                'day5_memory_entry'
+            ];
+            if (
+                day2SettingsSceneIds.includes(sceneId)
+                || day4SettingsSceneIds.includes(sceneId)
+                || day5SettingsSceneIds.includes(sceneId)
+            ) {
+                return true;
+            }
+
+            const topLevelTargets = [
+                '#${p}-floating-buttons',
+                '#${p}-btn-mic',
+                '#${p}-btn-screen',
+                '#${p}-btn-agent',
+                '#${p}-btn-settings',
+                '#${p}-btn-goodbye',
+                '#${p}-btn-return',
+                '#${p}-lock-icon',
+                'floating-buttons'
+            ];
+            const settingsPanelTargets = [
+                '#${p}-menu-character',
+                '#${p}-menu-memory',
+                '#${p}-toggle-proactive-chat'
+            ];
+            const targetFields = [
+                normalizedScene.target,
+                normalizedScene.secondary,
+                normalizedScene.cursorTarget,
+                normalizedScene.persistent
+            ].filter((value) => typeof value === 'string');
+            if (targetFields.some((target) => topLevelTargets.includes(target))) {
+                return true;
+            }
+            if (targetFields.some((target) => settingsPanelTargets.includes(target))) {
+                return true;
+            }
+
+            const operation = typeof normalizedScene.operation === 'string'
+                ? normalizedScene.operation
+                : '';
+            return !!(
+                operation === 'day1-intro-basic-voice-showcase'
+                || operation === 'day2-open-settings-personalization'
+                || operation === 'day2-settings-detail'
+                || operation.indexOf('day1-managed-scene:') === 0
+                || operation.indexOf('show-settings-menu:') === 0
+                || operation.indexOf('show-settings-sidepanel:') === 0
+                || operation.indexOf('show-agent-sidepanel:') === 0
+                || operation === 'day6-plugin-open-agent-panel-flow'
+                || operation === 'day6-plugin-open-management-panel-flow'
+                || operation === 'day6-plugin-sidepanel-flow'
+            );
+        }
+
+        syncAvatarFloatingToolbarForScene(scene, reason) {
+            this.setAvatarFloatingToolbarVisible(
+                this.shouldShowAvatarFloatingToolbarForScene(scene),
+                reason || (scene && scene.id) || 'scene'
+            );
+        }
+
         isAvatarFloatingInputIntroScene(scene) {
             const sceneId = scene && typeof scene.id === 'string' ? scene.id : '';
             return !!(
@@ -5919,6 +6049,31 @@
             return hidden;
         }
 
+        positionAvatarFloatingSidePanelNow(panel) {
+            const targetPanel = panel || null;
+            const anchor = targetPanel && targetPanel._anchorElement ? targetPanel._anchorElement : null;
+            const popupUi = window.AvatarPopupUI || null;
+            if (!targetPanel || !anchor || !popupUi || typeof popupUi.positionSidePanel !== 'function') {
+                return false;
+            }
+
+            try {
+                popupUi.positionSidePanel(targetPanel, anchor);
+                return true;
+            } catch (error) {
+                console.warn('[YuiGuide] positionAvatarFloatingSidePanelNow 失败:', error);
+                return false;
+            }
+        }
+
+        refreshAvatarFloatingSettingsPanelLayout(panel) {
+            const popupPositioned = this.positionManagedPanelNow('settings');
+            const sidePanelPositioned = panel && this.isElementVisible(panel)
+                ? this.positionAvatarFloatingSidePanelNow(panel)
+                : false;
+            return popupPositioned || sidePanelPositioned;
+        }
+
         forceHideAvatarFloatingGuideManagedSurfaces() {
             this.forceHideManagedPanel('settings');
             this.forceHideManagedPanel('agent');
@@ -5947,6 +6102,9 @@
                 return false;
             }
             const targetAnchor = anchor || panel._anchorElement || null;
+            if (targetAnchor) {
+                this.refreshAvatarFloatingSettingsPanelLayout(panel);
+            }
             this.collapseAvatarFloatingSidePanelsExcept(panel);
             if (typeof panel._expand === 'function') {
                 if (panel._hoverCollapseTimer) {
@@ -5976,12 +6134,17 @@
             if (!opened || this.isStopping()) {
                 return null;
             }
+            this.positionManagedPanelNow('settings');
             const panel = await this.waitForElement(() => this.getAvatarFloatingSidePanel(type), 1200);
             if (!panel) {
                 return null;
             }
             this.sidebarPauseController.trackPanel(panel);
-            return (await this.expandAvatarFloatingSidePanel(panel, panel._anchorElement || null)) ? panel : null;
+            const expanded = await this.expandAvatarFloatingSidePanel(panel, panel._anchorElement || null);
+            if (expanded) {
+                this.refreshAvatarFloatingSettingsPanelLayout(panel);
+            }
+            return expanded ? panel : null;
         }
 
         async ensureAvatarFloatingAgentSidePanel(toggleId) {
@@ -7063,6 +7226,20 @@
             return null;
         }
 
+        async applyAvatarFloatingSettledCleanupHighlight(scene) {
+            const normalizedScene = scene || {};
+            const highlightConfig = {
+                key: (normalizedScene.id || 'scene') + '-settled',
+                persistent: await this.resolveAvatarFloatingPersistent(normalizedScene, {
+                    fallbackToChatWindow: false
+                }),
+                primary: await this.resolveAvatarFloatingTarget(normalizedScene, 'primary'),
+                secondary: await this.resolveAvatarFloatingTarget(normalizedScene, 'secondary')
+            };
+            this.applyAvatarFloatingPersistenceOverride(highlightConfig, normalizedScene.id);
+            this.applyGuideHighlights(highlightConfig);
+        }
+
         applyAvatarFloatingSceneSpotlightVariant(scene, target) {
             const variant = scene && typeof scene.spotlightVariant === 'string'
                 ? scene.spotlightVariant.trim()
@@ -7101,12 +7278,18 @@
                 if (window.AgentHUD && typeof window.AgentHUD.showAgentTaskHUD === 'function') {
                     window.AgentHUD.showAgentTaskHUD();
                     this.avatarFloatingGuideTemporaryHudShown = true;
+                    if (typeof window.AgentHUD.expandAgentTaskHUD === 'function') {
+                        window.AgentHUD.expandAgentTaskHUD();
+                    }
                 } else if (window.AgentHUD && typeof window.AgentHUD.createAgentTaskHUD === 'function') {
                     const hud = window.AgentHUD.createAgentTaskHUD();
                     if (hud) {
                         hud.style.display = 'flex';
                         hud.style.opacity = '1';
                         this.avatarFloatingGuideTemporaryHudShown = true;
+                        if (typeof window.AgentHUD.expandAgentTaskHUD === 'function') {
+                            window.AgentHUD.expandAgentTaskHUD();
+                        }
                     }
                 }
                 await this.waitForElement(() => {
@@ -7191,6 +7374,32 @@
         async runDay6PluginOpenManagementPanelFlow(scene) {
             const sceneId = scene && scene.id ? scene.id : 'day6_plugin_side_panel';
             const guardFailed = () => this.isStopping();
+            const agentPanelOpened = await this.openAgentPanel();
+            if (!agentPanelOpened || guardFailed()) {
+                return false;
+            }
+            const refreshUserPluginHighlight = (target) => {
+                if (!target || guardFailed()) {
+                    return false;
+                }
+                this.applyGuideHighlights({
+                    key: sceneId + '-user-plugin',
+                    primary: target
+                });
+                return true;
+            };
+            const refreshManagementHighlight = (button) => {
+                if (!button || guardFailed()) {
+                    return null;
+                }
+                this.clearVirtualSpotlight('plugin-management-entry');
+                const spotlightTarget = this.createPluginManagementEntrySpotlight(button) || button;
+                this.applyGuideHighlights({
+                    key: sceneId + '-management-panel',
+                    primary: spotlightTarget
+                });
+                return spotlightTarget;
+            };
             const userPluginToggle = await this.waitForElement(() => {
                 const toggle = this.getAgentToggleElement('agent-user-plugin');
                 return this.getElementRect(toggle) ? toggle : null;
@@ -7198,14 +7407,41 @@
             if (!userPluginToggle || guardFailed()) {
                 return false;
             }
-            this.applyGuideHighlights({
-                key: sceneId + '-user-plugin',
-                primary: userPluginToggle
-            });
-            if (!(await this.moveCursorToElement(userPluginToggle, DAY6_PLUGIN_SIDE_PANEL_CURSOR_MOVE_MS, {
-                exactDuration: true
-            })) || guardFailed()) {
+            if (!(await this.waitForStableElementRect(userPluginToggle, 760)) || guardFailed()) {
                 return false;
+            }
+            if (!refreshUserPluginHighlight(userPluginToggle)) {
+                return false;
+            }
+            if (!(await this.moveCursorToTrackedElement(
+                userPluginToggle,
+                DAY6_PLUGIN_SIDE_PANEL_CURSOR_MOVE_MS,
+                {
+                    exactDuration: true,
+                    recheckDelayMs: 120,
+                    settleDelayMs: 40
+                }
+            )) || guardFailed()) {
+                return false;
+            }
+            if (!refreshUserPluginHighlight(userPluginToggle)) {
+                return false;
+            }
+            if (!this.isCursorAlignedWithElement(userPluginToggle, 5)) {
+                if (!(await this.moveCursorToTrackedElement(
+                    userPluginToggle,
+                    220,
+                    {
+                        exactDuration: true,
+                        recheckDelayMs: 60,
+                        settleDelayMs: 20
+                    }
+                )) || guardFailed()) {
+                    return false;
+                }
+                if (!refreshUserPluginHighlight(userPluginToggle)) {
+                    return false;
+                }
             }
             const sidePanelShown = await this.runActionWithCursorClickExact(
                 DAY6_PLUGIN_SIDE_PANEL_CLICK_VISIBLE_MS,
@@ -7223,15 +7459,40 @@
             if (!managementButton || guardFailed()) {
                 return false;
             }
-            const managementSpotlightTarget = this.createPluginManagementEntrySpotlight(managementButton) || managementButton;
-            this.applyGuideHighlights({
-                key: sceneId + '-management-panel',
-                primary: managementSpotlightTarget
-            });
-            if (!(await this.moveCursorToElement(managementButton, DAY6_PLUGIN_SIDE_PANEL_CURSOR_MOVE_MS, {
-                exactDuration: true
-            })) || guardFailed()) {
+            if (!(await this.waitForStableElementRect(managementButton, 760)) || guardFailed()) {
                 return false;
+            }
+            let managementSpotlightTarget = refreshManagementHighlight(managementButton);
+            if (!managementSpotlightTarget || guardFailed()) {
+                return false;
+            }
+            if (!(await this.moveCursorToTrackedElement(
+                managementButton,
+                DAY6_PLUGIN_SIDE_PANEL_CURSOR_MOVE_MS,
+                {
+                    exactDuration: true,
+                    recheckDelayMs: 120,
+                    settleDelayMs: 40
+                }
+            )) || guardFailed()) {
+                return false;
+            }
+            managementSpotlightTarget = refreshManagementHighlight(managementButton);
+            if (!managementSpotlightTarget || guardFailed()) {
+                return false;
+            }
+            if (!this.isCursorAlignedWithElement(managementButton, 5)) {
+                if (!(await this.realignCursorToAgentSidePanelAction(
+                    'agent-user-plugin',
+                    'management-panel',
+                    220
+                )) || guardFailed()) {
+                    return false;
+                }
+                managementSpotlightTarget = refreshManagementHighlight(managementButton);
+                if (!managementSpotlightTarget || guardFailed()) {
+                    return false;
+                }
             }
             const managementOpenResult = await this.runActionWithCursorClickExact(
                 DAY6_PLUGIN_SIDE_PANEL_CLICK_VISIBLE_MS,
@@ -7664,6 +7925,14 @@
             }
 
             if (sceneId === 'day1_takeover_return_control') {
+                const keyboardToggle = this.getAgentToggleElement('agent-keyboard');
+                const keyboardRect = this.getElementRect(keyboardToggle);
+                if (keyboardRect) {
+                    return {
+                        x: keyboardRect.left + keyboardRect.width / 2,
+                        y: keyboardRect.top + keyboardRect.height / 2
+                    };
+                }
                 const keyboardControlAnchor = this.getAvatarFloatingSceneCursorAnchor('day1_takeover_capture_cursor');
                 if (keyboardControlAnchor) {
                     return keyboardControlAnchor;
@@ -9200,8 +9469,13 @@
             const normalizedOptions = options || {};
             this.setHomePcCursorOutputSuppressedForExternalizedChat(false);
             const totalDurationMs = Number.isFinite(durationMs) ? durationMs : DEFAULT_CURSOR_DURATION_MS;
-            const firstLegMs = Math.max(180, Math.round(totalDurationMs * 0.7));
-            const secondLegMs = Math.max(140, totalDurationMs - firstLegMs);
+            const exactDuration = normalizedOptions.exactDuration === true;
+            const firstLegMs = exactDuration
+                ? Math.max(0, Math.round(totalDurationMs * 0.7))
+                : Math.max(180, Math.round(totalDurationMs * 0.7));
+            const secondLegMs = exactDuration
+                ? Math.max(0, totalDurationMs - firstLegMs)
+                : Math.max(140, totalDurationMs - firstLegMs);
             const recheckDelayMs = Number.isFinite(normalizedOptions.recheckDelayMs)
                 ? normalizedOptions.recheckDelayMs
                 : 320;
@@ -9216,6 +9490,7 @@
             while (!this.isStopping()) {
                 const movedToInitialPoint = await this.cursor.moveToPoint(initialPoint.x, initialPoint.y, {
                     durationMs: firstLegMs,
+                    exactDuration: exactDuration,
                     pauseCheck: () => this.scenePausedForResistance,
                     cancelCheck: () => this.isStopping()
                 });
@@ -9257,6 +9532,7 @@
             while (!this.isStopping()) {
                 const movedToFinalPoint = await this.cursor.moveToPoint(finalPoint.x, finalPoint.y, {
                     durationMs: secondLegMs,
+                    exactDuration: exactDuration,
                     pauseCheck: () => this.scenePausedForResistance,
                     cancelCheck: () => this.isStopping()
                 });
@@ -9634,23 +9910,91 @@
             if (!keyboardToggle || guardFailed()) {
                 return false;
             }
-            const keyboardToggleSpotlight = createToggleSpotlightTarget('takeover-keyboard-toggle', keyboardToggle);
-            this.addRetainedExtraSpotlight(keyboardToggleSpotlight);
+            let keyboardToggleSpotlight = null;
+            const isKeyboardToggleSpotlight = (candidate) => {
+                return !!(
+                    candidate === keyboardToggleSpotlight
+                    || (
+                        candidate
+                        && typeof candidate.getAttribute === 'function'
+                        && candidate.getAttribute('data-yui-guide-virtual-spotlight') === 'takeover-keyboard-toggle'
+                    )
+                );
+            };
+            const refreshKeyboardToggleSpotlight = (options) => {
+                const normalizedOptions = options || {};
+                const refreshedSpotlight = createToggleSpotlightTarget('takeover-keyboard-toggle', keyboardToggle);
+                if (!refreshedSpotlight || guardFailed()) {
+                    return null;
+                }
+                this.replaceRetainedExtraSpotlight(isKeyboardToggleSpotlight, refreshedSpotlight);
+                if (normalizedOptions.activate === true) {
+                    this.overlay.activateSpotlight(refreshedSpotlight);
+                }
+                keyboardToggleSpotlight = refreshedSpotlight;
+                return refreshedSpotlight;
+            };
+            await this.waitForStableElementRect(keyboardToggle, scaleSceneMs(320, 160, 760));
+            keyboardToggleSpotlight = refreshKeyboardToggleSpotlight({ activate: true });
+            if (!keyboardToggleSpotlight || guardFailed()) {
+                return false;
+            }
             this.removeRetainedExtraSpotlight(agentMasterSpotlight);
 
-            const enabledKeyboardControl = await this.performHighlightedApiClick({
-                target: keyboardToggleSpotlight,
-                durationMs: scaleSceneMs(520, 320, 950),
-                runId: runId,
-                action: async () => {
+            this.applyGuideHighlights({
+                primary: keyboardToggleSpotlight
+            });
+            const movedToKeyboardToggle = await this.moveCursorToTrackedElement(
+                keyboardToggle,
+                scaleSceneMs(520, 320, 950),
+                {
+                    recheckDelayMs: scaleSceneMs(180, 80, 420),
+                    settleDelayMs: scaleSceneMs(80, 40, 180)
+                }
+            );
+            if (!movedToKeyboardToggle || guardFailed()) {
+                return false;
+            }
+
+            keyboardToggleSpotlight = refreshKeyboardToggleSpotlight();
+            if (!keyboardToggleSpotlight || guardFailed()) {
+                return false;
+            }
+            if (!this.isCursorAlignedWithElement(keyboardToggle, 5)) {
+                const realignedToKeyboardToggle = await this.moveCursorToTrackedElement(
+                    keyboardToggle,
+                    scaleSceneMs(220, 120, 420),
+                    {
+                        recheckDelayMs: scaleSceneMs(80, 40, 180),
+                        settleDelayMs: scaleSceneMs(40, 20, 120)
+                    }
+                );
+                if (!realignedToKeyboardToggle || guardFailed()) {
+                    return false;
+                }
+                keyboardToggleSpotlight = refreshKeyboardToggleSpotlight();
+                if (!keyboardToggleSpotlight || guardFailed()) {
+                    return false;
+                }
+            }
+
+            const enabledKeyboardControl = await this.runActionWithCursorClick(
+                DEFAULT_CURSOR_CLICK_VISIBLE_MS,
+                async () => {
                     const enabled = await this.setAgentFlagEnabled('computer_use_enabled', true);
                     if (!enabled) {
                         return false;
                     }
                     return !!(await this.waitForAgentToggleState('agent-keyboard', true, 1800));
                 }
-            });
+            );
             if (!enabledKeyboardControl || guardFailed()) {
+                return false;
+            }
+
+            await this.waitForStableElementRect(keyboardToggle, scaleSceneMs(320, 160, 760));
+            keyboardToggleSpotlight = refreshKeyboardToggleSpotlight();
+            if (!keyboardToggleSpotlight || guardFailed()) {
                 return false;
             }
             this.rememberAvatarFloatingSceneCursorAnchor('day1_takeover_capture_cursor', keyboardToggleSpotlight);
@@ -11841,6 +12185,7 @@
             this.clearGuidePresentation();
             this.forceHideAvatarFloatingGuideManagedSurfaces();
             this.hideTemporaryAvatarFloatingGuideHud('destroy');
+            this.setAvatarFloatingToolbarVisible(true, 'destroy');
             this.closeManagedPanels().catch((error) => {
                 console.warn('[YuiGuide] 销毁时关闭首页面板失败:', error);
             });

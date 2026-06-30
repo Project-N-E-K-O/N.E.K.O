@@ -18,6 +18,7 @@ import MessageList from './MessageList';
 import { ACTIVE_AVATAR_TOOLS_STORAGE_KEY } from './avatarTools';
 import { getChatCompanionEmptyStateFallback, getChatEmptyStateFallback } from './chat-copy';
 import { parseChatMessage, type CompactChatState } from './message-schema';
+import compactChatStyles from './styles.css?raw';
 
 describe('App', () => {
   const COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY = 'neko.reactChatWindow.compactExportHistoryOpen';
@@ -147,6 +148,44 @@ describe('App', () => {
       removeEventListener: vi.fn(),
       dispatchEvent: vi.fn(),
     }));
+  };
+
+  type DesktopCompactLayoutForTest = {
+    windowBounds: { x: number; y: number; width: number; height: number };
+    workArea: { x: number; y: number; width: number; height: number };
+  };
+
+  const installDesktopCompactLayout = (
+    layout: DesktopCompactLayoutForTest,
+    viewport: { width: number; height: number },
+  ) => {
+    const originalMatchMedia = window.matchMedia;
+    const originalInnerWidth = window.innerWidth;
+    const originalInnerHeight = window.innerHeight;
+    const desktopWindow = window as typeof window & {
+      __nekoDesktopCompactLayout?: DesktopCompactLayoutForTest | null;
+    };
+    const originalDesktopLayout = desktopWindow.__nekoDesktopCompactLayout;
+
+    mockMobileMatchMedia(false);
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: viewport.width });
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: viewport.height });
+    desktopWindow.__nekoDesktopCompactLayout = layout;
+
+    return {
+      setLayout(nextLayout: DesktopCompactLayoutForTest) {
+        desktopWindow.__nekoDesktopCompactLayout = nextLayout;
+      },
+      get layout() {
+        return desktopWindow.__nekoDesktopCompactLayout;
+      },
+      restore() {
+        desktopWindow.__nekoDesktopCompactLayout = originalDesktopLayout;
+        window.matchMedia = originalMatchMedia;
+        Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalInnerWidth });
+        Object.defineProperty(window, 'innerHeight', { configurable: true, value: originalInnerHeight });
+      },
+    };
   };
 
   const renderInputApp = (
@@ -655,7 +694,7 @@ describe('App', () => {
     window.localStorage.removeItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY);
     window.localStorage.setItem(COMPACT_HISTORY_DEFAULT_EXPERIMENT_KEY, 'closed');
     const telemetry = vi.fn(() => true);
-    (window as unknown as { appTelemetry?: { event: (n: string, f?: Record<string, unknown>) => boolean } }).appTelemetry = { event: telemetry };
+    (window as unknown as { appTelemetry?: { counter: (n: string, v?: number, d?: Record<string, unknown>) => boolean } }).appTelemetry = { counter: telemetry };
     // 只让 sessionStorage.getItem 抛（隐私浏览器/webview），localStorage 仍可读 cohort——
     // 二者共享 Storage.prototype，按 this 区分。
     const realGetItem = Storage.prototype.getItem;
@@ -673,7 +712,7 @@ describe('App', () => {
         window.dispatchEvent(new Event('neko:tutorial-completed'));
       });
       // sessionStorage 去重读失败不能吞掉曝光：有 variant 的用户仍要发出 experiment_exposure。
-      expect(telemetry).toHaveBeenCalledWith('experiment_exposure', expect.objectContaining({
+      expect(telemetry).toHaveBeenCalledWith('experiment_exposure', 1, expect.objectContaining({
         experiment: 'compact_history_default',
         variant: 'closed',
       }));
@@ -822,7 +861,7 @@ describe('App', () => {
     expect(container.querySelector('.compact-meme-overlay img')).toHaveAttribute('src', '/api/meme/proxy-image?url=t1');
   });
 
-  it('renders a close button on the meme overlay and hides the overlay when clicked', () => {
+  it('renders the meme overlay close button after the image loads and hides the overlay when clicked', async () => {
     window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
     const meme = parseChatMessage({
       id: 'meme-closeme', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1,
@@ -831,12 +870,16 @@ describe('App', () => {
     const { container } = render(
       <App chatSurfaceMode="compact" compactChatState="input" messages={[meme]} />,
     );
+    const img = container.querySelector('.compact-meme-overlay img');
+    expect(img).toHaveAttribute('src', '/api/meme/proxy-image?url=close');
+    expect(container.querySelector('.compact-meme-overlay-close')).toBeNull();
+
+    fireEvent.load(img as Element);
+    await waitFor(() => expect(container.querySelector('.compact-meme-overlay-close')).not.toBeNull());
     const closeButton = container.querySelector('.compact-meme-overlay-close');
-    expect(closeButton).not.toBeNull();
     // ⚠️ host 只把带 data-compact-hit-region 的子元素登记成 native 可交互区；漏了它 Electron
     // pass-through 窗口里点击会穿到桌面（见 app-react-chat-window.js collectCompactCompositeGeometryItems）。
     expect(closeButton).toHaveAttribute('data-compact-hit-region', 'true');
-    expect(container.querySelector('.compact-meme-overlay img')).toHaveAttribute('src', '/api/meme/proxy-image?url=close');
 
     fireEvent.click(closeButton as Element);
     expect(container.querySelector('.compact-meme-overlay')).toBeNull();
@@ -860,9 +903,11 @@ describe('App', () => {
 
       const img = container.querySelector('.compact-meme-overlay img');
       expect(img).not.toBeNull();
+      expect(container.querySelector('.compact-meme-overlay-close')).toBeNull();
       fireEvent.load(img as Element);
       expect(geometryRefreshes.length).toBe(0);
       await waitFor(() => expect(geometryRefreshes.length).toBeGreaterThan(0));
+      expect(container.querySelector('.compact-meme-overlay-close')).not.toBeNull();
       geometryRefreshes.length = 0;
 
       fireEvent.click(container.querySelector('.compact-meme-overlay-close') as Element);
@@ -870,6 +915,69 @@ describe('App', () => {
       expect(container.querySelector('.compact-meme-overlay')).toBeNull();
     } finally {
       window.removeEventListener('neko:compact-interaction-geometry-refresh', handleGeometryRefresh);
+    }
+  });
+
+  it('renders the meme overlay close button after the image fails to load', async () => {
+    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
+    const meme = parseChatMessage({
+      id: 'meme-error-geometry', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1,
+      blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=error', alt: 'lol' }], status: 'sent',
+    });
+    const geometryRefreshes: Event[] = [];
+    const handleGeometryRefresh = (event: Event) => geometryRefreshes.push(event);
+    window.addEventListener('neko:compact-interaction-geometry-refresh', handleGeometryRefresh);
+    try {
+      const { container } = render(
+        <App chatSurfaceMode="compact" compactChatState="input" messages={[meme]} />,
+      );
+      await waitFor(() => expect(geometryRefreshes.length).toBeGreaterThan(0));
+      geometryRefreshes.length = 0;
+
+      const img = container.querySelector('.compact-meme-overlay img');
+      expect(img).not.toBeNull();
+      expect(container.querySelector('.compact-meme-overlay-close')).toBeNull();
+      fireEvent.error(img as Element);
+      expect(geometryRefreshes.length).toBe(0);
+      await waitFor(() => expect(geometryRefreshes.length).toBeGreaterThan(0));
+      expect(container.querySelector('.compact-meme-overlay-close')).not.toBeNull();
+    } finally {
+      window.removeEventListener('neko:compact-interaction-geometry-refresh', handleGeometryRefresh);
+    }
+  });
+
+  it('does not reuse a loaded meme overlay close button after history remounts the same image', async () => {
+    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
+    const meme = parseChatMessage({
+      id: 'meme-history-remount', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1,
+      blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=history-remount', alt: 'lol' }], status: 'sent',
+    });
+    vi.useFakeTimers();
+    try {
+      const { container } = render(
+        <App chatSurfaceMode="compact" compactChatState="input" messages={[meme]} />,
+      );
+
+      const firstImage = container.querySelector('.compact-meme-overlay img');
+      fireEvent.load(firstImage as Element);
+      expect(container.querySelector('.compact-meme-overlay-close')).not.toBeNull();
+
+      fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle')!);
+      expect(container.querySelector('.compact-meme-overlay')).toBeNull();
+
+      fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle')!);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS);
+      });
+
+      const remountedImage = container.querySelector('.compact-meme-overlay img');
+      expect(remountedImage).toHaveAttribute('src', '/api/meme/proxy-image?url=history-remount');
+      expect(container.querySelector('.compact-meme-overlay-close')).toBeNull();
+
+      fireEvent.load(remountedImage as Element);
+      expect(container.querySelector('.compact-meme-overlay-close')).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
     }
   });
 
@@ -882,6 +990,9 @@ describe('App', () => {
     const { container, rerender } = render(
       <App chatSurfaceMode="compact" compactChatState="input" messages={[memeA]} />,
     );
+    const memeAImage = container.querySelector('.compact-meme-overlay img');
+    fireEvent.load(memeAImage as Element);
+    expect(container.querySelector('.compact-meme-overlay-close')).not.toBeNull();
     fireEvent.click(container.querySelector('.compact-meme-overlay-close') as Element);
     expect(container.querySelector('.compact-meme-overlay')).toBeNull();
 
@@ -4621,6 +4732,119 @@ describe('App', () => {
     }
   });
 
+  it('uses viewport-fit compact tool wheel layout on desktop when the surface is near the taskbar', () => {
+    const desktopLayout = installDesktopCompactLayout({
+      windowBounds: { x: 0, y: 470, width: 700, height: 330 },
+      workArea: { x: 0, y: 0, width: 1000, height: 800 },
+    }, { width: 700, height: 330 });
+
+    try {
+      const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
+      const fan = container.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+      vi.spyOn(fan, 'getBoundingClientRect').mockReturnValue({
+        left: 373,
+        top: 165,
+        right: 605,
+        bottom: 397,
+        width: 232,
+        height: 232,
+        x: 373,
+        y: 165,
+        toJSON: () => ({}),
+      });
+
+      const actionButton = container.querySelector('.compact-input-tool-toggle') as HTMLButtonElement;
+      expect(actionButton).not.toBeNull();
+      fireEvent.click(actionButton);
+
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+      expect(fan).toHaveAttribute('data-compact-tool-wheel-layout', 'viewport-fit');
+    } finally {
+      desktopLayout.restore();
+    }
+  });
+
+  it('uses viewport-fit from desktop screen bottom distance before the compact carrier expands', async () => {
+    const desktopLayout = installDesktopCompactLayout({
+      windowBounds: { x: 100, y: 720, width: 430, height: 56 },
+      workArea: { x: 0, y: 0, width: 1000, height: 800 },
+    }, { width: 430, height: 56 });
+
+    try {
+      const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
+      const fan = container.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+      vi.spyOn(fan, 'getBoundingClientRect').mockImplementation(() => {
+        const expanded = (desktopLayout.layout?.windowBounds?.height ?? 0) > 100;
+        const left = expanded ? 373 : 303;
+        const top = expanded ? 165 : 0;
+        return {
+          left,
+          top,
+          right: left + 232,
+          bottom: top + 232,
+          width: 232,
+          height: 232,
+          x: left,
+          y: top,
+          toJSON: () => ({}),
+        } as DOMRect;
+      });
+
+      const actionButton = container.querySelector('.compact-input-tool-toggle') as HTMLButtonElement;
+      expect(actionButton).not.toBeNull();
+      fireEvent.click(actionButton);
+      expect(fan).toHaveAttribute('data-compact-tool-wheel-layout', 'viewport-fit');
+
+      desktopLayout.setLayout({
+        windowBounds: { x: 0, y: 470, width: 700, height: 330 },
+        workArea: { x: 0, y: 0, width: 1000, height: 800 },
+      });
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko:desktop-compact-layout-change', {
+          detail: desktopLayout.layout,
+        }));
+      });
+
+      await waitFor(() => {
+        expect(fan).toHaveAttribute('data-compact-tool-wheel-layout', 'viewport-fit');
+      });
+    } finally {
+      desktopLayout.restore();
+    }
+  });
+
+  it('keeps the default compact tool wheel layout when the desktop bottom reverse arc would clip at a side edge', () => {
+    const desktopLayout = installDesktopCompactLayout({
+      windowBounds: { x: 0, y: 720, width: 430, height: 56 },
+      workArea: { x: 0, y: 0, width: 140, height: 800 },
+    }, { width: 430, height: 56 });
+
+    try {
+      const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
+      const fan = container.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+      vi.spyOn(fan, 'getBoundingClientRect').mockReturnValue({
+        left: 10,
+        top: 0,
+        right: 242,
+        bottom: 232,
+        width: 232,
+        height: 232,
+        x: 10,
+        y: 0,
+        toJSON: () => ({}),
+      });
+
+      const actionButton = container.querySelector('.compact-input-tool-toggle') as HTMLButtonElement;
+      expect(actionButton).not.toBeNull();
+      fireEvent.click(actionButton);
+
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+      expect(fan).toHaveAttribute('data-compact-tool-wheel-layout', 'default');
+    } finally {
+      desktopLayout.restore();
+    }
+  });
+
   it('uses the visual viewport when checking compact tool wheel clipping on mobile', () => {
     const originalMatchMedia = window.matchMedia;
     const originalInnerWidth = window.innerWidth;
@@ -5833,6 +6057,119 @@ describe('App', () => {
     } finally {
       fanRectSpy.mockRestore();
     }
+  });
+
+  it('keeps compact tool wheel rotation visually consistent in viewport-fit layout', () => {
+    const desktopLayout = installDesktopCompactLayout({
+      windowBounds: { x: 100, y: 720, width: 430, height: 56 },
+      workArea: { x: 0, y: 0, width: 1000, height: 800 },
+    }, { width: 430, height: 56 });
+
+    try {
+      render(
+        <App
+          chatSurfaceMode="compact"
+          compactChatState="input"
+        />,
+      );
+
+      const actionButton = document.body.querySelector('.compact-input-tool-toggle') as HTMLButtonElement;
+      expect(actionButton).not.toBeNull();
+      const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+      const fanRectSpy = mockCompactToolFanRect(fan);
+      fireEvent.click(actionButton);
+
+      try {
+        expect(fan).toHaveAttribute('data-compact-tool-wheel-layout', 'viewport-fit');
+        expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
+
+        fireEvent.wheel(fan, { deltaY: 80 });
+
+        expect(fan.querySelector('.compact-input-tool-item-screenshot')).toHaveAttribute('data-compact-tool-wheel-slot', '1');
+        expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-galgame');
+      } finally {
+        fanRectSpy.mockRestore();
+      }
+    } finally {
+      desktopLayout.restore();
+    }
+  });
+
+  it('uses visual charge direction in viewport-fit compact tool wheel layout', () => {
+    const desktopLayout = installDesktopCompactLayout({
+      windowBounds: { x: 100, y: 720, width: 430, height: 56 },
+      workArea: { x: 0, y: 0, width: 1000, height: 800 },
+    }, { width: 430, height: 56 });
+
+    try {
+      render(
+        <App
+          chatSurfaceMode="compact"
+          compactChatState="input"
+        />,
+      );
+
+      const actionButton = document.body.querySelector('.compact-input-tool-toggle') as HTMLButtonElement;
+      expect(actionButton).not.toBeNull();
+      const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+      const fanRectSpy = mockCompactToolFanRect(fan);
+      fireEvent.click(actionButton);
+
+      try {
+        expect(fan).toHaveAttribute('data-compact-tool-wheel-layout', 'viewport-fit');
+        fireEvent.pointerDown(fan, {
+          pointerId: 86,
+          ...compactToolWheelPoint(0),
+          button: 0,
+          buttons: 1,
+          pointerType: 'mouse',
+        });
+        for (let index = 1; index <= 28; index += 1) {
+          fireEvent.pointerMove(fan, {
+            pointerId: 86,
+            ...compactToolWheelPoint(index * 0.7),
+            buttons: 1,
+            pointerType: 'mouse',
+          });
+        }
+
+        expect(fan).toHaveAttribute('data-compact-tool-wheel-charge-active', 'true');
+        expect(fan).toHaveAttribute('data-compact-tool-wheel-charge-direction', 'forward');
+        fireEvent.pointerUp(fan, {
+          pointerId: 86,
+          ...compactToolWheelPoint(28 * 0.7),
+          buttons: 0,
+          pointerType: 'mouse',
+        });
+      } finally {
+        fanRectSpy.mockRestore();
+      }
+    } finally {
+      desktopLayout.restore();
+    }
+  });
+
+  it('keeps viewport-fit hidden compact tool wheel slots on the reversed arc', () => {
+    expect(compactChatStyles).toMatch(
+      /\[data-compact-tool-wheel-layout="viewport-fit"\]\s+\.compact-input-tool-item\[data-compact-tool-wheel-slot="hidden-backward"\][\s\S]*?\{\s*transform:[^}]*-230deg/s,
+    );
+    expect(compactChatStyles).toMatch(
+      /\[data-compact-tool-wheel-layout="viewport-fit"\]\s+\.compact-input-tool-item\[data-compact-tool-wheel-slot="hidden-forward"\][\s\S]*?\{\s*transform:[^}]*-50deg/s,
+    );
+    expect(compactChatStyles).toMatch(
+      /\[data-compact-tool-wheel-layout="viewport-fit"\]\s+\.compact-input-tool-item\[data-compact-tool-wheel-slot="hidden"[\s\S]*?transition: none;/s,
+    );
+  });
+
+  it('shows compact tool wheel tooltips from pointer hover or keyboard-visible focus only', () => {
+    const tooltipVisibilityRule = compactChatStyles.match(
+      /\.compact-input-tool-fan\[data-compact-input-tool-fan-open="true"\]\[data-compact-input-tool-fan-interactive="true"\][^{]+>\s*\.compact-input-tool-tooltip\s*\{/s,
+    )?.[0] ?? '';
+
+    expect(tooltipVisibilityRule).toContain('[data-compact-tool-pointer-hovered="true"]');
+    expect(tooltipVisibilityRule).toContain(':focus-visible');
+    expect(tooltipVisibilityRule).not.toContain(':focus-within');
+    expect(compactChatStyles).not.toMatch(/:focus-within\s*>\s*\.compact-input-tool-tooltip/);
   });
 
   it('retargets compact tool hover to the visual button under the pointer after wheel rotation', async () => {
