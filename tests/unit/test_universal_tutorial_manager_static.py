@@ -712,8 +712,18 @@ def test_electron_shortcut_bridges_are_blocked_during_tutorial():
         else:
             assert block.index(guard) < block.index("window.dispatchEvent(event)")
 
+    mic_guard_block = audio_capture.split("function isTutorialShortcutBlockedForMicMute()", 1)[1].split(
+        "window.toggleMicMute = function",
+        1,
+    )[0]
+    assert "window.isNekoShortcutBlockedByTutorial" in mic_guard_block
+    assert "window.isInTutorial === true" in mic_guard_block
+    assert "yui-guide-standalone-input-shield-active" in mic_guard_block
+    assert "yui-guide-chat-buttons-disabled" in mic_guard_block
+    assert "yui-guide-compact-chat-fixed" in mic_guard_block
+
     mute_block = audio_capture.split("window.toggleMicMute = function", 1)[1].split("window.setMicMuted", 1)[0]
-    assert "window.isNekoShortcutBlockedByTutorial" in mute_block
+    assert "isTutorialShortcutBlockedForMicMute()" in mute_block
     assert "blocked - tutorial active" in mute_block
     assert "return S.isMicMuted;" in mute_block
     assert mute_block.index("return S.isMicMuted;") < mute_block.index("S.isMicMuted = !S.isMicMuted;")
