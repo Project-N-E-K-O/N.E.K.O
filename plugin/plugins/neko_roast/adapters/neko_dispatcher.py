@@ -11,9 +11,9 @@ from typing import Any
 from urllib.parse import urlparse
 
 from ..core.contracts import InteractionRequest
+from ..core.live_reply_policy import build_reply_metadata, max_reply_chars_for_module
 
 _AVATAR_INLINE_BUDGET_BYTES = 120 * 1024
-_MAX_LIVE_REPLY_CHARS = 28
 
 
 def _normalize_avatar_for_neko_vision(data: bytes, mime: str) -> tuple[bytes, str]:
@@ -122,6 +122,10 @@ def _response_module_hint(request: InteractionRequest) -> str:
     if source == "developer_sandbox":
         return "developer_sandbox"
     return source or "unknown"
+
+
+def _max_live_reply_chars(request: InteractionRequest) -> int:
+    return max_reply_chars_for_module(_response_module_hint(request))
 
 
 class NekoDispatcher:
@@ -285,24 +289,23 @@ class NekoDispatcher:
         image_part_bytes = len(parts[1]["data"]) if len(parts) > 1 else 0
         target_lanlan = _resolve_target_lanlan(self.plugin, request)
         if request.dry_run:
+            max_reply_chars = _max_live_reply_chars(request)
             # Safe test mode: the whole pipeline has run, but nothing is delivered to NEKO.
             return (
                 f"dry_run(target={target_lanlan or 'none'}, ai_behavior=respond, "
                 f"visibility=none, image_part_bytes={image_part_bytes}, text_len={len(text)}, "
-                f"reply_contract=short_tts_line, max_reply_chars={_MAX_LIVE_REPLY_CHARS}, "
+                f"reply_contract=short_tts_line, max_reply_chars={max_reply_chars}, "
                 f"response_module_hint={_response_module_hint(request)})"
             )
         if request.event.source == "developer_sandbox" and not target_lanlan:
             raise ValueError("missing_target_lanlan: 当前界面猫猫不可用，无法发送模拟弹幕。")
-        metadata = {
-            "plugin": "neko_roast",
-            "uid": identity.uid,
-            "live_mode": request.live_mode,
-            "demo": is_demo_event,
-            "live_reply_contract": "short_tts_line",
-            "max_reply_chars": _MAX_LIVE_REPLY_CHARS,
-            "response_module_hint": _response_module_hint(request),
-        }
+        response_module_hint = _response_module_hint(request)
+        metadata = build_reply_metadata(
+            uid=identity.uid,
+            live_mode=request.live_mode,
+            demo=is_demo_event,
+            response_module_hint=response_module_hint,
+        )
         if target_lanlan:
             metadata["target_lanlan"] = target_lanlan
         result = self.plugin.push_message(

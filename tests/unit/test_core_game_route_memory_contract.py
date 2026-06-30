@@ -1634,7 +1634,7 @@ async def test_send_lanlan_response_shapes_neko_live_reply_to_first_sentence():
     metadata = {
         "plugin": "neko_roast",
         "live_reply_contract": "short_tts_line",
-        "response_module_hint": "idle_hosting",
+        "response_module_hint": "danmaku_response",
         "max_reply_chars": 24,
     }
 
@@ -1652,6 +1652,31 @@ async def test_send_lanlan_response_shapes_neko_live_reply_to_first_sentence():
     assert saved["neko_live_reply_output_chars"] == len("第一句刚好很短！")
     assert saved["neko_live_reply_original_chars"] == len("第一句刚好很短！第二句不该播出来。")
     assert metadata.get("neko_live_reply_shaped") is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_lanlan_response_allows_two_sentence_neko_live_host_beat():
+    mgr = _make_manager()
+    metadata = {
+        "plugin": "neko_roast",
+        "live_reply_contract": "short_tts_line",
+        "response_module_hint": "active_engagement",
+        "max_reply_chars": 72,
+    }
+
+    await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "猫猫巡逻到桌角！小鱼干影子正在值班。第三句不该播出来。",
+        metadata=metadata,
+    )
+
+    message = mgr.sync_message_queue.messages[0]["data"]
+    saved = message["metadata"]
+    assert message["text"] == "猫猫巡逻到桌角！小鱼干影子正在值班。"
+    assert saved["neko_live_reply_shaped"] is True
+    assert saved["neko_live_reply_shape_reason"] == "first_sentences"
+    assert saved["neko_live_reply_output_chars"] == len("猫猫巡逻到桌角！小鱼干影子正在值班。")
 
 
 @pytest.mark.unit
@@ -1682,6 +1707,396 @@ async def test_send_lanlan_response_clips_long_neko_live_reply_without_sentence_
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_send_lanlan_response_trims_dangling_neko_live_choice():
+    mgr = _make_manager()
+    metadata = {
+        "plugin": "neko_roast",
+        "live_reply_contract": "short_tts_line",
+        "response_module_hint": "active_engagement",
+        "max_reply_chars": 72,
+    }
+
+    await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "猫窝今天选晴天，还是小雨的自",
+        metadata=metadata,
+    )
+
+    message = mgr.sync_message_queue.messages[0]["data"]
+    saved = message["metadata"]
+    assert message["text"] == "猫窝今天选晴天"
+    assert saved["neko_live_reply_shaped"] is True
+    assert saved["neko_live_reply_shape_reason"] == "dangling_choice"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_lanlan_response_quality_fallback_for_low_confidence_live_host_topic():
+    mgr = _make_manager()
+    metadata = {
+        "plugin": "neko_roast",
+        "live_reply_contract": "short_tts_line",
+        "response_module_hint": "active_engagement",
+        "max_reply_chars": 28,
+    }
+
+    await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "看这个核电站攻略，你是打算练习当漏勺喵",
+        metadata=metadata,
+    )
+
+    message = mgr.sync_message_queue.messages[0]["data"]
+    saved = message["metadata"]
+    assert message["text"] in core_module._NEKO_LIVE_ACTIVE_FALLBACK_REPLIES
+    assert saved["neko_live_reply_shaped"] is True
+    assert saved["neko_live_reply_shape_reason"] == "quality_fallback"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_lanlan_response_quality_fallback_for_forbidden_live_output():
+    mgr = _make_manager()
+    metadata = {
+        "plugin": "neko_roast",
+        "live_reply_contract": "short_tts_line",
+        "response_module_hint": "danmaku_response",
+        "max_reply_chars": 28,
+    }
+
+    await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "这种人太坏了喵，直接公开示众惩罚一下",
+        metadata=metadata,
+    )
+
+    message = mgr.sync_message_queue.messages[0]["data"]
+    saved = message["metadata"]
+    assert message["text"] in core_module._NEKO_LIVE_DEFAULT_FALLBACK_REPLIES
+    assert "公开示众" not in message["text"]
+    assert "惩罚" not in message["text"]
+    assert saved["neko_live_reply_shaped"] is True
+    assert saved["neko_live_reply_shape_reason"] == "quality_fallback"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_lanlan_response_fallback_for_public_shaming_dangling_choice():
+    mgr = _make_manager()
+    metadata = {
+        "plugin": "neko_roast",
+        "live_reply_contract": "short_tts_line",
+        "response_module_hint": "active_engagement",
+        "max_reply_chars": 28,
+    }
+
+    await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "这种人太坏了喵，你是觉得该把他公开示众，还是直接送去劳动改造",
+        metadata=metadata,
+    )
+
+    message = mgr.sync_message_queue.messages[0]["data"]
+    saved = message["metadata"]
+    assert message["text"] in core_module._NEKO_LIVE_ACTIVE_FALLBACK_REPLIES
+    assert "公开示众" not in message["text"]
+    assert "劳动改造" not in message["text"]
+    assert saved["neko_live_reply_shaped"] is True
+    assert saved["neko_live_reply_shape_reason"] == "max_reply_chars+dangling_choice+quality_fallback"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_lanlan_response_fallback_for_game_technical_dangling_choice():
+    mgr = _make_manager()
+    metadata = {
+        "plugin": "neko_roast",
+        "live_reply_contract": "short_tts_line",
+        "response_module_hint": "active_engagement",
+        "max_reply_chars": 28,
+    }
+
+    await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "泰拉瑞亚里造电脑，你是选跑代码的逻辑电路，还是选打怪的自",
+        metadata=metadata,
+    )
+
+    message = mgr.sync_message_queue.messages[0]["data"]
+    saved = message["metadata"]
+    assert message["text"] in core_module._NEKO_LIVE_ACTIVE_FALLBACK_REPLIES
+    assert "泰拉瑞亚" not in message["text"]
+    assert "逻辑电路" not in message["text"]
+    assert saved["neko_live_reply_shaped"] is True
+    assert saved["neko_live_reply_shape_reason"] == "dangling_choice+quality_fallback"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_lanlan_response_fallback_for_opaque_technical_danmaku_reply():
+    mgr = _make_manager()
+    metadata = {
+        "plugin": "neko_roast",
+        "live_reply_contract": "short_tts_line",
+        "response_module_hint": "danmaku_response",
+        "max_reply_chars": 28,
+    }
+
+    await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "看这个核电站攻略，你是打算跑去那里练习当漏勺喵？",
+        metadata=metadata,
+    )
+
+    message = mgr.sync_message_queue.messages[0]["data"]
+    saved = message["metadata"]
+    assert message["text"] in core_module._NEKO_LIVE_DEFAULT_FALLBACK_REPLIES
+    assert "核电站" not in message["text"]
+    assert "攻略" not in message["text"]
+    assert saved["neko_live_reply_shaped"] is True
+    assert saved["neko_live_reply_shape_reason"] == "quality_fallback"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_lanlan_response_keeps_clear_surface_technical_reaction():
+    mgr = _make_manager()
+    metadata = {
+        "plugin": "neko_roast",
+        "live_reply_contract": "short_tts_line",
+        "response_module_hint": "danmaku_response",
+        "max_reply_chars": 28,
+    }
+
+    await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "这段代码先别急，猫爪会打结。",
+        metadata=metadata,
+    )
+
+    message = mgr.sync_message_queue.messages[0]["data"]
+    saved = message["metadata"]
+    assert message["text"] == "这段代码先别急，猫爪会打结。"
+    assert saved["neko_live_reply_shaped"] is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_lanlan_response_quality_fallback_for_host_audience_prompt():
+    mgr = _make_manager()
+    metadata = {
+        "plugin": "neko_roast",
+        "live_reply_contract": "short_tts_line",
+        "response_module_hint": "idle_hosting",
+        "max_reply_chars": 28,
+    }
+
+    await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "还在的观众吱一声，给猫猫一点反应",
+        metadata=metadata,
+    )
+
+    message = mgr.sync_message_queue.messages[0]["data"]
+    saved = message["metadata"]
+    assert message["text"] in core_module._NEKO_LIVE_HOST_FALLBACK_REPLIES
+    assert "吱一声" not in message["text"]
+    assert "给猫猫一点反应" not in message["text"]
+    assert saved["neko_live_reply_shaped"] is True
+    assert saved["neko_live_reply_shape_reason"] == "quality_fallback"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_lanlan_response_does_not_fallback_ordinary_danmaku_response_with_you():
+    mgr = _make_manager()
+    metadata = {
+        "plugin": "neko_roast",
+        "live_reply_contract": "short_tts_line",
+        "response_module_hint": "danmaku_response",
+        "max_reply_chars": 28,
+    }
+
+    await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "你们这个说法有点东西喵",
+        metadata=metadata,
+    )
+
+    message = mgr.sync_message_queue.messages[0]["data"]
+    saved = message["metadata"]
+    assert message["text"] in core_module._NEKO_LIVE_BLAND_FALLBACK_REPLIES
+    assert "有点东西" not in message["text"]
+    assert saved["neko_live_reply_shaped"] is True
+    assert saved["neko_live_reply_shape_reason"] == "quality_fallback"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_lanlan_response_quality_fallback_for_bland_danmaku_reply():
+    mgr = _make_manager()
+    metadata = {
+        "plugin": "neko_roast",
+        "live_reply_contract": "short_tts_line",
+        "response_module_hint": "danmaku_response",
+        "max_reply_chars": 28,
+    }
+
+    await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "那家伙确实很有梗，连完结了都能让大家讨论这么久喵!",
+        metadata=metadata,
+    )
+
+    message = mgr.sync_message_queue.messages[0]["data"]
+    saved = message["metadata"]
+    assert message["text"] in core_module._NEKO_LIVE_BLAND_FALLBACK_REPLIES
+    assert "很有梗" not in message["text"]
+    assert "讨论这么久" not in message["text"]
+    assert saved["neko_live_reply_shaped"] is True
+    assert saved["neko_live_reply_shape_reason"] == "quality_fallback"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_lanlan_response_quality_fallback_for_empty_agreement_reply():
+    mgr = _make_manager()
+    metadata = {
+        "plugin": "neko_roast",
+        "live_reply_contract": "short_tts_line",
+        "response_module_hint": "danmaku_response",
+        "max_reply_chars": 28,
+    }
+
+    await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "方块km，别怀疑啦，就是你想的那样喵!",
+        metadata=metadata,
+    )
+
+    message = mgr.sync_message_queue.messages[0]["data"]
+    saved = message["metadata"]
+    assert message["text"] in core_module._NEKO_LIVE_BLAND_FALLBACK_REPLIES
+    assert "别怀疑" not in message["text"]
+    assert "就是你想的那样" not in message["text"]
+    assert saved["neko_live_reply_shaped"] is True
+    assert saved["neko_live_reply_shape_reason"] == "quality_fallback"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_lanlan_response_does_not_fallback_host_line_with_plain_you_all():
+    mgr = _make_manager()
+    metadata = {
+        "plugin": "neko_roast",
+        "live_reply_contract": "short_tts_line",
+        "response_module_hint": "idle_hosting",
+        "max_reply_chars": 28,
+    }
+
+    await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "你们这个角度有点意思喵",
+        metadata=metadata,
+    )
+
+    message = mgr.sync_message_queue.messages[0]["data"]
+    saved = message["metadata"]
+    assert message["text"] == "你们这个角度有点意思喵"
+    assert saved["neko_live_reply_shaped"] is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_lanlan_response_does_not_fallback_natural_host_line_with_plain_everyone():
+    mgr = _make_manager()
+    metadata = {
+        "plugin": "neko_roast",
+        "live_reply_contract": "short_tts_line",
+        "response_module_hint": "idle_hosting",
+        "max_reply_chars": 28,
+    }
+
+    await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "大家别急，猫猫打个比方，这局像开盲盒。",
+        metadata=metadata,
+    )
+
+    message = mgr.sync_message_queue.messages[0]["data"]
+    saved = message["metadata"]
+    assert message["text"] == "大家别急，猫猫打个比方，这局像开盲盒。"
+    assert saved["neko_live_reply_shaped"] is False
+
+
+@pytest.mark.unit
+def test_neko_live_quality_fallback_is_stable_but_not_single_phrase():
+    metadata = {
+        "plugin": "neko_roast",
+        "live_reply_contract": "short_tts_line",
+        "response_module_hint": "active_engagement",
+        "max_reply_chars": 28,
+    }
+    first = "看这个攻略，你是打算练习当漏勺喵"
+    second = "这个教程听起来像把代码塞进纸箱喵"
+    examples = (
+        first,
+        second,
+        "这段代码漏洞你要公开示众吗",
+        "看这个核电站攻略，你是打算练习当漏勺喵",
+        "泰拉瑞亚里造电脑，你是选跑代码的逻辑电路，还是选打怪的自",
+    )
+
+    first_reply = core_module._safe_neko_live_fallback_reply(first, metadata)
+    second_reply = core_module._safe_neko_live_fallback_reply(second, metadata)
+    generated_replies = {
+        core_module._safe_neko_live_fallback_reply(example, metadata)
+        for example in examples
+    }
+
+    assert first_reply == core_module._safe_neko_live_fallback_reply(first, metadata)
+    assert first_reply in core_module._NEKO_LIVE_ACTIVE_FALLBACK_REPLIES
+    assert second_reply in core_module._NEKO_LIVE_ACTIVE_FALLBACK_REPLIES
+    assert len(generated_replies) > 1
+
+
+@pytest.mark.unit
+def test_neko_live_quality_fallback_replies_sound_like_live_lines_not_system_messages():
+    fallback_replies = (
+        *core_module._NEKO_LIVE_ACTIVE_FALLBACK_REPLIES,
+        *core_module._NEKO_LIVE_HOST_FALLBACK_REPLIES,
+        *core_module._NEKO_LIVE_DEFAULT_FALLBACK_REPLIES,
+    )
+    systemish_fragments = (
+        "收短",
+        "跳过",
+        "带过",
+        "换个说法",
+        "换个角度",
+        "这题",
+        "系统",
+        "错误",
+        "兜底",
+        "没看见",
+        "无视",
+        "不理",
+    )
+
+    assert fallback_replies
+    assert len(core_module._NEKO_LIVE_ACTIVE_FALLBACK_REPLIES) >= 8
+    assert len(core_module._NEKO_LIVE_HOST_FALLBACK_REPLIES) >= 8
+    assert len(core_module._NEKO_LIVE_DEFAULT_FALLBACK_REPLIES) >= 6
+    assert len(core_module._NEKO_LIVE_BLAND_FALLBACK_REPLIES) >= 6
+    assert all(len(reply) <= 12 for reply in fallback_replies)
+    assert not any(
+        fragment in reply
+        for reply in fallback_replies
+        for fragment in systemish_fragments
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_mirror_assistant_speech_queues_shaped_neko_live_reply_for_tts():
     mgr = _make_manager()
     delattr(mgr, "send_lanlan_response")
@@ -1696,7 +2111,7 @@ async def test_mirror_assistant_speech_queues_shaped_neko_live_reply_for_tts():
 
     result = await core_module.LLMSessionManager.mirror_assistant_speech(
         mgr,
-        "第一句刚好很短！第二句不该进入语音。",
+        "第一句刚好很短！第二句现在可以进入语音。",
         metadata=metadata,
         mirror_text=True,
         emit_turn_end_after=False,
@@ -1705,11 +2120,10 @@ async def test_mirror_assistant_speech_queues_shaped_neko_live_reply_for_tts():
     message = mgr.sync_message_queue.messages[0]["data"]
     assert result["ok"] is True
     assert result["audio_queued"] is True
-    assert message["text"] == "第一句刚好很短！"
-    assert mgr.tts_request_queue.messages[0][1] == "第一句刚好很短！"
-    assert result["metadata"]["neko_live_reply_shaped"] is True
-    assert result["metadata"]["neko_live_reply_shape_reason"] == "first_sentence"
-    assert message["metadata"]["neko_live_reply_shaped"] is True
+    assert message["text"] == "第一句刚好很短！第二句现在可以进入语音。"
+    assert mgr.tts_request_queue.messages[0][1] == "第一句刚好很短！第二句现在可以进入语音。"
+    assert result["metadata"]["neko_live_reply_shaped"] is False
+    assert message["metadata"]["neko_live_reply_shaped"] is False
     assert metadata.get("neko_live_reply_shaped") is None
 
 

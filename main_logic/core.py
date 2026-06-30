@@ -60,6 +60,18 @@ from main_logic.proactive_delivery import (
     ProactiveDeliveryManager,
     resolve_callback_delivery_ack,
 )
+from plugin.plugins.neko_roast.core.live_reply_policy import (
+    ACTIVE_FALLBACK_REPLIES as _NEKO_LIVE_ACTIVE_FALLBACK_REPLIES,
+    BLAND_FALLBACK_REPLIES as _NEKO_LIVE_BLAND_FALLBACK_REPLIES,
+    DEFAULT_FALLBACK_REPLIES as _NEKO_LIVE_DEFAULT_FALLBACK_REPLIES,
+    HOST_FALLBACK_REPLIES as _NEKO_LIVE_HOST_FALLBACK_REPLIES,
+    coerce_recent_reply_values as _coerce_recent_live_reply_values,
+    is_live_reply_metadata as _is_neko_live_reply_metadata,
+    merge_metadata_from_callbacks as _merge_live_reply_metadata_from_callbacks,
+    render_contract_instruction as _render_live_reply_contract_instruction,
+    safe_fallback_reply as _safe_neko_live_fallback_reply,
+    shape_reply_text as _shape_neko_live_reply_text,
+)
 from main_logic.agent_event_bus import (
     dispatch_text_user_message,
     dispatch_user_utterance,
@@ -205,8 +217,11 @@ _NEKO_LIVE_REPEAT_SINGLE_ANCHOR_GROUPS = frozenset({0, 1, 2, 4, 5, 7, 11})
 _NEKO_LIVE_REPEAT_CONTEXTUAL_ANCHOR_GROUPS = frozenset({6, 7, 8, 9, 10})
 _NEKO_LIVE_REPLY_CONTEXTUAL_ANCHOR_NGRAM_THRESHOLD = 0.25
 _NEKO_LIVE_AUDIENCE_PROMPT_TOKENS = (
+    "大家",
+    "你们",
     "发言",
     "接话",
+    "接一句",
     "互动",
     "想听",
     "想看",
@@ -214,7 +229,9 @@ _NEKO_LIVE_AUDIENCE_PROMPT_TOKENS = (
     "聊什么",
     "说点",
     "来一句",
+    "来点弹幕",
     "发弹幕",
+    "弹幕刷",
     "发个1",
     "扣1",
     "扣个",
@@ -237,14 +254,13 @@ _NEKO_LIVE_AUDIENCE_PROMPT_TOKENS = (
     "anyone here",
     "still here",
 )
+_NEKO_LIVE_HOST_AUDIENCE_PROMPT_TOKENS = tuple(
+    token for token in _NEKO_LIVE_AUDIENCE_PROMPT_TOKENS if token not in {"大家", "你们"}
+)
 
 
 def _normalize_voice_echo_text(text: str) -> str:
     return _VOICE_ECHO_NORMALIZE_RE.sub("", str(text or "").casefold())
-
-
-def _is_neko_live_reply_metadata(metadata: Mapping[str, Any] | None) -> bool:
-    return isinstance(metadata, Mapping) and metadata.get("live_reply_contract") == "short_tts_line"
 
 
 def _looks_like_repeated_neko_live_reply(current: str, previous: str) -> bool:
@@ -331,8 +347,8 @@ def _looks_like_repeated_audience_prompt(current: str, previous: str) -> bool:
     if not current_norm or not previous_norm:
         return False
     return (
-        _neko_live_audience_prompt_signal_count(current_norm) >= 1
-        and _neko_live_audience_prompt_signal_count(previous_norm) >= 1
+        _neko_live_host_prompt_signal_count(current_norm) >= 1
+        and _neko_live_host_prompt_signal_count(previous_norm) >= 1
     )
 
 
@@ -340,6 +356,14 @@ def _neko_live_audience_prompt_signal_count(normalized_text: str) -> int:
     return sum(
         1
         for token in _NEKO_LIVE_AUDIENCE_PROMPT_TOKENS
+        if _normalize_voice_echo_text(token) in normalized_text
+    )
+
+
+def _neko_live_host_prompt_signal_count(normalized_text: str) -> int:
+    return sum(
+        1
+        for token in _NEKO_LIVE_HOST_AUDIENCE_PROMPT_TOKENS
         if _normalize_voice_echo_text(token) in normalized_text
     )
 
@@ -484,234 +508,6 @@ def _render_callback_inner_item(
         label = _loc(RESULT_PARSER_PHRASES["detail_result"], lang)
         line += f"\n{label}{detail}"
     return line
-
-
-_NEKO_LIVE_REPLY_TARGET_CHARS = 14
-_NEKO_LIVE_REPLY_ROUTE_CEILINGS = {
-    "avatar_roast": 32,
-    "danmaku_response": 28,
-    "warmup_hosting": 24,
-    "idle_hosting": 24,
-    "active_engagement": 28,
-}
-_NEKO_LIVE_REPLY_ROUTE_NOTES = {
-    "avatar_roast": (
-        "For avatar_roast: connect the viewer's first message with the avatar/name, "
-        "but keep it as one sharp first-appearance line."
-    ),
-    "danmaku_response": (
-        "For danmaku_response: answer only the current danmaku; do not mention avatar, "
-        "ID, first appearance, or previous replies."
-    ),
-    "warmup_hosting": (
-        "For warmup_hosting: say one small opening line, not a segment intro."
-    ),
-    "idle_hosting": (
-        "For idle_hosting: say one small hosting beat, not a survey or a long monologue."
-    ),
-    "active_engagement": (
-        "For active_engagement: offer one concrete reply hook; do not say generic phrases "
-        "like everyone interact or tell me what you want."
-    ),
-}
-
-
-def _coerce_live_reply_limit(value: Any) -> int | None:
-    try:
-        limit = int(value)
-    except (TypeError, ValueError):
-        return None
-    if limit <= 0:
-        return None
-    return min(limit, 80)
-
-
-def _neko_live_reply_limit_from_metadata(metadata: Mapping[str, Any] | None) -> int | None:
-    if not _is_neko_live_reply_metadata(metadata):
-        return None
-    module = str((metadata or {}).get("response_module_hint") or "").strip()
-    metadata_limit = _coerce_live_reply_limit((metadata or {}).get("max_reply_chars"))
-    module_limit = _NEKO_LIVE_REPLY_ROUTE_CEILINGS.get(module)
-    candidates = [value for value in (metadata_limit, module_limit) if value]
-    return min(candidates) if candidates else None
-
-
-def _first_neko_live_sentence(text: str) -> tuple[str, bool]:
-    cleaned = " ".join(str(text or "").replace("\r", "\n").split())
-    if not cleaned:
-        return "", False
-    for index, char in enumerate(cleaned):
-        if char in "。！？!?":
-            first = cleaned[: index + 1].strip()
-            return first, first != cleaned
-    return cleaned, False
-
-
-def _shape_neko_live_reply_text(text: str, metadata: dict | None) -> tuple[str, dict | None]:
-    outgoing_metadata = dict(metadata) if isinstance(metadata, dict) else metadata
-    if not _is_neko_live_reply_metadata(outgoing_metadata):
-        return text, outgoing_metadata
-    if outgoing_metadata.get("neko_live_reply_shaped") is True:
-        return str(text or "").strip(), outgoing_metadata
-    limit = _neko_live_reply_limit_from_metadata(outgoing_metadata)
-    if not limit:
-        return text, outgoing_metadata
-
-    raw = str(text or "")
-    original = raw.strip()
-    first_sentence, clipped_sentence = _first_neko_live_sentence(original)
-    shaped = first_sentence or original
-    clipped_length = False
-    if len(shaped) > limit:
-        shaped = shaped[:limit].rstrip(" ，,、；;：:")
-        clipped_length = True
-    shaped = shaped.strip()
-
-    if shaped and shaped != original:
-        outgoing_metadata["neko_live_reply_shaped"] = True
-        outgoing_metadata["neko_live_reply_original_chars"] = len(original)
-        outgoing_metadata["neko_live_reply_output_chars"] = len(shaped)
-        reasons = []
-        if clipped_sentence:
-            reasons.append("first_sentence")
-        if clipped_length:
-            reasons.append("max_reply_chars")
-        outgoing_metadata["neko_live_reply_shape_reason"] = "+".join(reasons) or "short_tts_line"
-        return shaped, outgoing_metadata
-    if outgoing_metadata is not None:
-        outgoing_metadata["neko_live_reply_shaped"] = False
-        outgoing_metadata["neko_live_reply_output_chars"] = len(original)
-    return raw, outgoing_metadata
-
-
-def _coerce_recent_live_reply_values(recent_live_replies: Any) -> list[str]:
-    if not recent_live_replies:
-        return []
-    if isinstance(recent_live_replies, Mapping):
-        source = recent_live_replies.values()
-    else:
-        try:
-            source = list(recent_live_replies)
-        except TypeError:
-            source = [recent_live_replies]
-    values: list[str] = []
-    for reply in source:
-        text = str(reply or "").strip()
-        if text:
-            values.append(text)
-    return values
-
-
-def _render_live_recent_reply_avoidance(recent_live_replies: list[str] | None) -> list[str]:
-    recent_reply_values = _coerce_recent_live_reply_values(recent_live_replies)
-    if not recent_reply_values:
-        return []
-    lines = [
-        "- Recent NEKO Live outputs below are negative examples; do not continue or paraphrase them.",
-    ]
-    for reply in recent_reply_values[-_NEKO_LIVE_RECENT_REPLY_AVOIDANCE_SIZE:]:
-        text = str(reply or "").strip().replace("\n", " ")
-        if not text:
-            continue
-        if len(text) > 48:
-            text = text[:48].rstrip() + "..."
-        lines.append(f"  - Avoid repeating: {text}")
-    if len(lines) == 1:
-        return []
-    lines.append("- Answer the current live event from a fresh angle even if the topic is similar.")
-    return lines
-
-
-def _render_live_reply_contract_instruction(
-    callbacks: list[dict],
-    *,
-    recent_live_replies: list[str] | None = None,
-) -> str:
-    """Render host-side constraints for NEKO Live short TTS callbacks."""
-    modules: list[str] = []
-    absolute_limit: int | None = None
-
-    for cb in callbacks:
-        metadata = cb.get("metadata")
-        if not isinstance(metadata, Mapping):
-            continue
-        if metadata.get("live_reply_contract") != "short_tts_line":
-            continue
-
-        module = str(metadata.get("response_module_hint") or "").strip()
-        if module and module not in modules:
-            modules.append(module)
-
-        metadata_limit = _coerce_live_reply_limit(metadata.get("max_reply_chars"))
-        module_limit = _NEKO_LIVE_REPLY_ROUTE_CEILINGS.get(module)
-        limit_candidates = [value for value in (metadata_limit, module_limit) if value]
-        if limit_candidates:
-            callback_limit = min(limit_candidates)
-            absolute_limit = callback_limit if absolute_limit is None else min(absolute_limit, callback_limit)
-
-    if not modules and absolute_limit is None:
-        return ""
-
-    if absolute_limit is None:
-        absolute_limit = _NEKO_LIVE_REPLY_TARGET_CHARS
-    target_limit = min(_NEKO_LIVE_REPLY_TARGET_CHARS, absolute_limit)
-    module_notes = [
-        _NEKO_LIVE_REPLY_ROUTE_NOTES[module]
-        for module in modules
-        if module in _NEKO_LIVE_REPLY_ROUTE_NOTES
-    ]
-
-    lines = [
-        "",
-        "NEKO Live short output contract:",
-        f"- Target at most {target_limit} Chinese characters; absolute ceiling {absolute_limit}.",
-        "- Output exactly one sentence, one breath, no paragraph.",
-        "- Do not continue, summarize, or imitate the previous NEKO reply.",
-        "- Treat previous NEKO Live outputs as forbidden material, not conversation context to resume.",
-        "- If the draft sounds like the previous NEKO reply, change the angle before output.",
-        "- Do not reuse the previous reply's opening words, sentence rhythm, punchline, or host beat.",
-        "- If a draft has two ideas, keep only the sharper one.",
-        "- Do not use host-script openings such as special plan, next let's, everyone look, or tell me what you want.",
-    ]
-    lines.extend(_render_live_recent_reply_avoidance(recent_live_replies))
-    lines.extend(f"- {note}" for note in module_notes)
-    return "\n".join(lines)
-
-
-def _merge_live_reply_metadata_from_callbacks(callbacks: list[dict]) -> dict[str, Any] | None:
-    """Carry NEKO Live short-reply metadata into generated callback output."""
-    merged: dict[str, Any] | None = None
-    modules: list[str] = []
-    absolute_limit: int | None = None
-
-    for cb in callbacks:
-        metadata = cb.get("metadata")
-        if not isinstance(metadata, Mapping):
-            continue
-        if metadata.get("live_reply_contract") != "short_tts_line":
-            continue
-        if merged is None:
-            merged = dict(metadata)
-
-        module = str(metadata.get("response_module_hint") or "").strip()
-        if module and module not in modules:
-            modules.append(module)
-
-        metadata_limit = _coerce_live_reply_limit(metadata.get("max_reply_chars"))
-        module_limit = _NEKO_LIVE_REPLY_ROUTE_CEILINGS.get(module)
-        limit_candidates = [value for value in (metadata_limit, module_limit) if value]
-        if limit_candidates:
-            callback_limit = min(limit_candidates)
-            absolute_limit = callback_limit if absolute_limit is None else min(absolute_limit, callback_limit)
-
-    if merged is None:
-        return None
-
-    if modules:
-        merged["response_module_hint"] = modules[0] if len(modules) == 1 else "mixed"
-    if absolute_limit is not None:
-        merged["max_reply_chars"] = absolute_limit
-    return merged
 
 
 def _build_callback_instruction(
@@ -4708,6 +4504,10 @@ class LLMSessionManager:
         }
         if outgoing_metadata:
             message["metadata"] = outgoing_metadata
+        if is_first_chunk and _is_neko_live_reply_metadata(outgoing_metadata):
+            shape_reason = outgoing_metadata.get("neko_live_reply_shape_reason")
+            if shape_reason:
+                logger.info("[%s] send_lanlan_response shape_reason=%s", self.lanlan_name, shape_reason)
 
         # 无论 WS 发送成功与否，始终将消息写入 sync_message_queue 和 message_cache，
         # 确保 cross_server 历史组装不因 WS 断连而丢失 assistant 内容。

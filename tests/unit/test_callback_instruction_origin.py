@@ -547,6 +547,10 @@ def test_neko_live_short_reply_contract_is_rendered_from_callback_metadata():
     assert "Do not continue, summarize, or imitate the previous NEKO reply." in out
     assert "If the draft sounds like the previous NEKO reply, change the angle before output." in out
     assert "Do not reuse the previous reply's opening words, sentence rhythm, punchline, or host beat." in out
+    assert "Do not invent a punishment, public-shaming, trial, labor-camp, report, or moral judgment bit." in out
+    assert "Forbidden words: 公开示众, 劳改, 审判, 处刑, 惩罚." in out
+    assert "Do not force technical, game-specific, guide, tutorial, or news material into an unclear expert question." in out
+    assert "Never end with an unfinished choice such as 还是, 或者, or or." in out
     assert "answer only the current danmaku" in out
     assert "first appearance" in out
 
@@ -657,6 +661,8 @@ def test_neko_live_recent_output_negative_examples_keep_last_twelve_only():
     assert "oldest line should fall out" not in out
     assert "Avoid repeating: second live line" in out
     assert "Avoid repeating: thirteenth live line" in out
+    assert "For active_engagement: offer one concrete reply hook" in out
+    assert "make only a small surface reaction instead of inventing an expert A/B question" in out
 
 
 def test_neko_live_repeat_detector_catches_chinese_host_beat_family():
@@ -711,7 +717,7 @@ def test_neko_live_repeat_detector_does_not_treat_example_phrase_as_audience_pro
     assert not _looks_like_recent_neko_live_reply_repeat("大家别急，猫猫打个比方，这局像开盲盒。", recent)
 
 
-def test_neko_live_host_routes_get_tighter_reply_ceiling_than_metadata_limit():
+def test_neko_live_host_routes_allow_expanded_reply_ceiling_from_metadata():
     out = _build(
         [
             {
@@ -732,9 +738,10 @@ def test_neko_live_host_routes_get_tighter_reply_ceiling_than_metadata_limit():
         ],
     )
 
-    assert "absolute ceiling 24" in out
-    assert "one small hosting beat" in out
-    assert "not a survey or a long monologue" in out
+    assert "absolute ceiling 40" in out
+    assert "Host modules may use one or two short sentences" in out
+    assert "tiny two-sentence aside" in out
+    assert "not a full monologue or survey" in out
 
 
 def test_non_neko_callbacks_do_not_get_live_reply_contract():
