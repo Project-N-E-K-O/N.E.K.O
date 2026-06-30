@@ -21,12 +21,11 @@ def test_playback_gate_opens_when_audio_drains_before_turn_completion():
     mismatch_block = source[mismatch_start:drained_guard_start]
 
     assert "isAssistantTurnPlaybackDrained(normalizedTurnId)" in mismatch_block
-    assert "S.assistantTurnSettledId = normalizedTurnId" in mismatch_block
-    assert "dispatchAssistantSpeechEnd(normalizedTurnId)" in mismatch_block
+    assert "finalizeAssistantSpeechTurn(normalizedTurnId, S.assistantTurnCompletionSource)" in mismatch_block
     assert "return true" in mismatch_block
 
 
-def test_late_turn_completion_does_not_reschedule_already_settled_turn():
+def test_late_turn_completion_cleans_already_settled_turn_bookkeeping():
     source = _source()
     settled_guard_start = source.index(
         "if (normalizedTurnId && S.assistantTurnSettledId === normalizedTurnId)"
@@ -38,5 +37,18 @@ def test_late_turn_completion_does_not_reschedule_already_settled_turn():
     settled_guard_block = source[settled_guard_start:mismatch_start]
 
     assert "maybeFinalizeAssistantSpeech:skip_already_settled" in settled_guard_block
+    assert "clearAssistantTurnCompletion()" in settled_guard_block
     assert "return true" in settled_guard_block
     assert "scheduleProactiveChat" not in settled_guard_block
+
+
+def test_finalize_assistant_speech_turn_clears_completion_and_reschedules():
+    source = _source()
+    helper_start = source.index("function finalizeAssistantSpeechTurn(normalizedTurnId, completionSource)")
+    maybe_start = source.index("function maybeFinalizeAssistantSpeech(turnId)", helper_start)
+    helper_block = source[helper_start:maybe_start]
+
+    assert "dispatchAssistantSpeechEnd(normalizedTurnId)" in helper_block
+    assert "clearAssistantTurnCompletion()" in helper_block
+    assert "S.assistantTurnSettledId = normalizedTurnId" in helper_block
+    assert "scheduleProactiveChatAfterAssistantSpeech(completionSource)" in helper_block

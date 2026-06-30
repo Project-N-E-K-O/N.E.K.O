@@ -682,6 +682,28 @@
         }
     }
 
+    function scheduleProactiveChatAfterAssistantSpeech(completionSource) {
+        if (completionSource !== 'turn_end_agent_callback' && S.isRecording && S.proactiveChatEnabled) {
+            if (typeof window.scheduleProactiveChat === 'function') {
+                console.log('[ProactiveChat] AI 音频播放完成，重新调度计时器');
+                window.scheduleProactiveChat();
+            }
+        }
+    }
+
+    function finalizeAssistantSpeechTurn(normalizedTurnId, completionSource) {
+        stopActiveLipSync();
+        S.isPlaying = false;
+        dispatchAssistantSpeechEnd(normalizedTurnId);
+        clearAssistantTurnCompletion();
+        S.assistantTurnSettledId = normalizedTurnId;
+        logAudioLifecycle('maybeFinalizeAssistantSpeech:completed', {
+            requestedTurnId: normalizedTurnId,
+            completionSource: completionSource
+        });
+        scheduleProactiveChatAfterAssistantSpeech(completionSource);
+    }
+
     function maybeFinalizeAssistantSpeech(turnId) {
         var normalizedTurnId = normalizeAssistantTurnId(
             turnId || S.assistantSpeechActiveTurnId || S.assistantTurnCompletedId
@@ -693,6 +715,9 @@
             logAudioLifecycle('maybeFinalizeAssistantSpeech:skip_already_settled', {
                 requestedTurnId: normalizedTurnId
             });
+            if (S.assistantTurnCompletedId === normalizedTurnId) {
+                clearAssistantTurnCompletion();
+            }
             return true;
         }
         if (!normalizedTurnId || S.assistantTurnCompletedId !== normalizedTurnId) {
@@ -709,10 +734,7 @@
                 logAudioLifecycle('maybeFinalizeAssistantSpeech:playback_drained_before_completion', {
                     requestedTurnId: normalizedTurnId
                 });
-                stopActiveLipSync();
-                S.isPlaying = false;
-                S.assistantTurnSettledId = normalizedTurnId;
-                dispatchAssistantSpeechEnd(normalizedTurnId);
+                finalizeAssistantSpeechTurn(normalizedTurnId, S.assistantTurnCompletionSource);
                 return true;
             }
             return false;
@@ -724,27 +746,8 @@
             return false;
         }
 
-        stopActiveLipSync();
-        S.isPlaying = false;
-        dispatchAssistantSpeechEnd(normalizedTurnId);
         var completionSource = S.assistantTurnCompletionSource;
-        clearAssistantTurnCompletion();
-        // 这一轮已干净收尾。clearAssistantTurnCompletion 刚把 completedId 清成 null，
-        // 但 assistantTurnId 仍指向本轮（要等下条用户消息才清），若不标记 settled，
-        // isAssistantTextResponseInFlight 会一直把"已说完的轮"误判成在路上 → 切语音
-        // 干等 15s。这里在清空之后再标 settled，记下"turnId 这轮已收尾"。
-        S.assistantTurnSettledId = normalizedTurnId;
-        logAudioLifecycle('maybeFinalizeAssistantSpeech:completed', {
-            requestedTurnId: normalizedTurnId,
-            completionSource: completionSource
-        });
-
-        if (completionSource !== 'turn_end_agent_callback' && S.isRecording && S.proactiveChatEnabled) {
-            if (typeof window.scheduleProactiveChat === 'function') {
-                console.log('[ProactiveChat] AI 音频播放完成，重新调度计时器');
-                window.scheduleProactiveChat();
-            }
-        }
+        finalizeAssistantSpeechTurn(normalizedTurnId, completionSource);
         return true;
     }
 
