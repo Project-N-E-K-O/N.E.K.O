@@ -1515,7 +1515,7 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     )[0]
     assert "this.startTutorial();" in launch_block
     assert "this.shouldStartHomeAvatarFloatingGuideRound()" in launch_block
-    assert "const round = this.getHomeAvatarFloatingGuideStartRound();" in launch_block
+    assert "const round = this.getHomeAvatarFloatingGuideLaunchRound();" in launch_block
     assert "this.startAvatarFloatingGuideRound(round, { source })" in launch_block
     assert "shouldStartHomeAvatarFloatingGuideRound() {" in tutorial_source
     assert "getHomeAvatarFloatingGuideStartRound(options = {})" in tutorial_source
@@ -1525,8 +1525,8 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
         1,
     )[0]
     assert "this.currentPage === 'home'" in start_tutorial_block
-    assert "const round = this.getHomeAvatarFloatingGuideStartRound();" in start_tutorial_block
-    assert start_tutorial_block.index("const round = this.getHomeAvatarFloatingGuideStartRound();") < start_tutorial_block.index(
+    assert "const round = this.getHomeAvatarFloatingGuideLaunchRound();" in start_tutorial_block
+    assert start_tutorial_block.index("const round = this.getHomeAvatarFloatingGuideLaunchRound();") < start_tutorial_block.index(
         "if (!round) {"
     )
     assert start_tutorial_block.index("if (!round) {") < start_tutorial_block.index(
@@ -1794,6 +1794,7 @@ def test_avatar_floating_tutorial_boot_predictor_contract():
     assert "shouldBootIntoTutorial" in predictor_source
     assert "shouldSkipUserModelBoot" in predictor_source
     assert "getPredictedRound" in predictor_source
+    assert "getSkippedUserModelBootRound" in predictor_source
     assert "markUserModelBootSkipped" in predictor_source
     assert "claimDirectTutorialBoot" in predictor_source
     assert "releaseDirectTutorialBoot" in predictor_source
@@ -1835,7 +1836,7 @@ def test_avatar_floating_direct_tutorial_boot_uses_manager_recheck_and_user_mode
 
     assert "isDirectAvatarFloatingTutorialBoot(round)" in tutorial_source
     assert "claimDirectAvatarFloatingTutorialBoot(round, source)" in tutorial_source
-    assert "releaseDirectAvatarFloatingTutorialBoot(reason)" in tutorial_source
+    assert "releaseDirectAvatarFloatingTutorialBoot(reason, options)" in tutorial_source
     assert "recoverUserModelAfterDirectTutorialBootFailure(reason)" in tutorial_source
     assert "waitForTutorialModelHostReady(maxWaitTime = 12000)" in tutorial_source
     assert "window.NekoAvatarFloatingBoot" in tutorial_source
@@ -1843,6 +1844,7 @@ def test_avatar_floating_direct_tutorial_boot_uses_manager_recheck_and_user_mode
     assert "window.NekoAvatarFloatingBoot.releaseDirectTutorialBoot" in tutorial_source
     assert "window.NekoAvatarFloatingBoot.recoverUserModelBoot" in tutorial_source
     assert "window.NekoAvatarFloatingBoot.clearDirectTutorialLoading" in tutorial_source
+    assert "getDirectAvatarFloatingTutorialBootRound()" in tutorial_source
 
     start_round_block = tutorial_source.split("async startAvatarFloatingGuideRound(day, options = {})", 1)[1].split(
         "async playAvatarFloatingRoundPrelude",
@@ -1856,7 +1858,16 @@ def test_avatar_floating_direct_tutorial_boot_uses_manager_recheck_and_user_mode
     assert "skipSourceModelFade: directTutorialBoot" in start_round_block
     assert "this.clearDirectAvatarFloatingTutorialLoading('avatar-floating-yui-ready');" in start_round_block
     assert "await this.recoverUserModelAfterDirectTutorialBootFailure('avatar-floating-start-failed')" in start_round_block
-    assert "this.releaseDirectAvatarFloatingTutorialBoot('avatar-floating-start-finished');" in start_round_block
+    assert "this.releaseDirectAvatarFloatingTutorialBoot('avatar-floating-before-teardown', {" in start_round_block
+    assert "keepUserModelBootSkipped: true" in start_round_block
+    assert "suppressPrediction: true" in start_round_block
+    assert start_round_block.index("this.releaseDirectAvatarFloatingTutorialBoot('avatar-floating-before-teardown', {") < start_round_block.index(
+        "await this.requestTutorialDestroy(endReason);"
+    )
+    assert start_round_block.index("this.releaseDirectAvatarFloatingTutorialBoot('avatar-floating-before-teardown', {") < start_round_block.index(
+        "await this.requestTutorialDestroy('destroy');"
+    )
+    assert "this.releaseDirectAvatarFloatingTutorialBoot('avatar-floating-start-finished');" not in start_round_block
 
     teardown_block = tutorial_source.split("_teardownTutorialUI() {", 1)[1].split(
         "async waitForTutorialTeardownSettled",
@@ -1893,18 +1904,38 @@ def test_avatar_floating_direct_boot_does_not_wait_for_user_floating_buttons():
         "function releaseDirectTutorialBoot",
         1,
     )[0]
+    direct_boot_gate_block = tutorial_source.split("isDirectAvatarFloatingTutorialBoot(round)", 1)[1].split(
+        "claimDirectAvatarFloatingTutorialBoot(round, source)",
+        1,
+    )[0]
+    recovery_block = predictor_source.split("async function recoverUserModelBoot(reason)", 1)[1].split(
+        "window.NekoAvatarFloatingBoot = {",
+        1,
+    )[0]
 
-    assert "const directBootRound = this.getHomeAvatarFloatingGuideStartRound();" in check_block
+    assert "const directBootRound = this.getDirectAvatarFloatingTutorialBootRound();" in check_block
     assert "this.isDirectAvatarFloatingTutorialBoot(directBootRound)" in check_block
+    assert "const round = this.getHomeAvatarFloatingGuideLaunchRound();" in check_block
     assert "this.beginDirectAvatarFloatingTutorialLoading('startup-direct-tutorial-predicted');" in check_block
     assert "this.pendingTutorialStartSource = 'manual_reset';" in check_block
     assert "this.startTutorialWhenI18nReady(1500);" in check_block
     assert check_block.index("this.isDirectAvatarFloatingTutorialBoot(directBootRound)") < check_block.index(
         "this.waitForFloatingButtons().then((found)"
     )
+    assert "predictedRound === normalizedRound" in direct_boot_gate_block
+    assert "skippedUserModel && predictedRound === normalizedRound" in direct_boot_gate_block
+    assert "getSkippedUserModelBootRound" in direct_boot_gate_block
     assert "beginDirectTutorialLoading" not in should_skip_block
     assert "beginDirectTutorialLoading" not in mark_skipped_block
     assert "beginDirectTutorialLoading" not in claim_block
+    assert "state.predictionSuppressed = false;" not in mark_skipped_block
+    assert "await window.showCurrentModel();" in recovery_block
+    assert recovery_block.index("await window.initLive2DModel();") < recovery_block.index("await window.showCurrentModel();")
+    assert "await window.initMMDModel();" in recovery_block
+    assert "return false;" in recovery_block.split("await window.initMMDModel();", 1)[1].split(
+        "if ((modelType === 'vrm' || modelType === 'live3d')",
+        1,
+    )[0]
 
 
 def test_tutorial_lifecycle_modules_export_reusable_controllers():

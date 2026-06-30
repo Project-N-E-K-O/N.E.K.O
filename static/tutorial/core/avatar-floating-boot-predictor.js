@@ -10,6 +10,7 @@
 
     const state = {
         predictedRound: null,
+        userModelBootSkippedRound: null,
         userModelBootSkipped: false,
         directTutorialBootClaimed: false,
         predictionSuppressed: false,
@@ -130,7 +131,7 @@
 
     function markUserModelBootSkipped(reason) {
         state.userModelBootSkipped = true;
-        state.predictionSuppressed = false;
+        state.userModelBootSkippedRound = state.predictedRound || getPredictedRound();
         state.claimReason = reason || state.claimReason || 'user-model-boot-skipped';
         return true;
     }
@@ -144,9 +145,16 @@
         return state.directTutorialBootClaimed;
     }
 
-    function releaseDirectTutorialBoot(reason) {
+    function releaseDirectTutorialBoot(reason, options) {
+        const keepUserModelBootSkipped = options && options.keepUserModelBootSkipped === true;
+        if (options && options.suppressPrediction === true) {
+            state.predictionSuppressed = true;
+        }
         state.directTutorialBootClaimed = false;
-        state.userModelBootSkipped = false;
+        if (!keepUserModelBootSkipped) {
+            state.userModelBootSkipped = false;
+            state.userModelBootSkippedRound = null;
+        }
         state.claimReason = reason || '';
     }
 
@@ -272,32 +280,45 @@
         }
         state.predictionSuppressed = true;
         clearDirectTutorialLoading(reason || 'recover-user-model');
-        releaseDirectTutorialBoot(reason || 'recover-user-model');
-        if (typeof window.showCurrentModel === 'function') {
-            await window.showCurrentModel();
-            return true;
-        }
+        releaseDirectTutorialBoot(reason || 'recover-user-model', {
+            keepUserModelBootSkipped: true,
+            suppressPrediction: true
+        });
         const modelType = String(window.lanlan_config && window.lanlan_config.model_type || 'live2d').toLowerCase();
         const subType = String(window.lanlan_config && window.lanlan_config.live3d_sub_type || '').toLowerCase();
-        if ((modelType === 'live3d' && subType === 'mmd') && typeof window.initMMDModel === 'function') {
-            await window.initMMDModel();
-            return true;
+        try {
+            if (modelType === 'live3d' && subType === 'mmd') {
+                if (typeof window.initMMDModel === 'function') {
+                    await window.initMMDModel();
+                    return true;
+                }
+                return false;
+            }
+            if ((modelType === 'vrm' || modelType === 'live3d') && typeof window.initVRMModel === 'function') {
+                await window.initVRMModel();
+                return true;
+            }
+            if (typeof window.initLive2DModel === 'function') {
+                await window.initLive2DModel();
+                return true;
+            }
+            if (typeof window.showCurrentModel === 'function') {
+                await window.showCurrentModel();
+                return true;
+            }
+            return false;
+        } finally {
+            releaseDirectTutorialBoot(reason || 'recover-user-model');
         }
-        if ((modelType === 'vrm' || modelType === 'live3d') && typeof window.initVRMModel === 'function') {
-            await window.initVRMModel();
-            return true;
-        }
-        if (typeof window.initLive2DModel === 'function') {
-            await window.initLive2DModel();
-            return true;
-        }
-        return false;
     }
 
     window.NekoAvatarFloatingBoot = {
         shouldBootIntoTutorial,
         shouldSkipUserModelBoot,
         getPredictedRound,
+        getSkippedUserModelBootRound() {
+            return state.userModelBootSkippedRound;
+        },
         markUserModelBootSkipped,
         claimDirectTutorialBoot,
         releaseDirectTutorialBoot,
