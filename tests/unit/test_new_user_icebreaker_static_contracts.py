@@ -549,6 +549,9 @@ def test_icebreaker_assistant_lines_show_fake_thinking_dots_before_text():
     assert "dispatchThinking(false, source);" in loading_runtime
     assert "assistantLoading.showAssistantFakeLoading({" in runtime
     assert "return appendChatMessage('assistant', text, meta);" in assistant_append_block
+    assert "}).then(function (message) {" in assistant_append_block
+    assert "if (targetSession && activeSession !== targetSession) return null;" in assistant_append_block
+    assert "return message;" in assistant_append_block
     assert "appendChatMessage('user', label" in runtime
     assert "appendAssistantChatMessage(text, {" in deliver_node_block
     assert "appendAssistantChatMessage(text, {" in handoff_block
@@ -1019,6 +1022,9 @@ def test_icebreaker_free_text_llm_flow_uses_session_snapshot_after_async_append(
     assert "return speakLine(releaseText, releaseVoiceKey);" in runtime
     assert "}).catch(function () {}).then(function () {" in runtime
     assert "didAppendRelease" in runtime
+    assert "var releaseAppend = releaseText ? appendAssistantChatMessage(releaseText, {" in runtime
+    assert "}) : Promise.resolve(activeSession === session);" in runtime
+    assert "if (!didAppendRelease || activeSession !== session) return false;" in runtime
     assert runtime.index("return speakLine(releaseText, releaseVoiceKey);") < runtime.index(
         "dispatchIcebreakerEnded('free_text_release');"
     )

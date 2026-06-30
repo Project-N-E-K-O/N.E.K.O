@@ -669,6 +669,9 @@
         return showIcebreakerAssistantFakeLoading(targetSession).then(function () {
             if (targetSession && activeSession !== targetSession) return null;
             return appendChatMessage('assistant', text, meta);
+        }).then(function (message) {
+            if (targetSession && activeSession !== targetSession) return null;
+            return message;
         });
     }
 
@@ -1248,19 +1251,21 @@
                 requestId: info.requestId || ''
             }, session).then(function (message) {
                 if (!didAppendChatMessage(message)) return false;
+                return true;
+            }) : Promise.resolve(activeSession === session);
+            return releaseAppend.then(function (didAppendRelease) {
+                if (!didAppendRelease || activeSession !== session) return false;
                 session.releasedByFreeText = true;
                 setFreeTextDerailStreak(session, nodeId, 0);
                 clearChoicePrompt();
+                clearFreeTextRuntimeStateForSession(session);
                 return Promise.resolve().then(function () {
+                    if (!releaseText) return null;
                     return speakLine(releaseText, releaseVoiceKey);
                 }).catch(function () {}).then(function () {
-                    return true;
+                    if (activeSession !== session) return false;
+                    return endIcebreakerRoute(session, 'icebreaker_free_text_release');
                 });
-            }) : Promise.resolve(null);
-            return releaseAppend.then(function (didAppendRelease) {
-                if (!didAppendRelease) return false;
-                clearFreeTextRuntimeStateForSession(session);
-                return endIcebreakerRoute(session, 'icebreaker_free_text_release');
             }).then(function (completed) {
                 if (!completed) return false;
                 markDay(day, {
