@@ -1158,7 +1158,33 @@ if (chatContentWrapper) {
  * 切换语音会话状态（开始/结束）
  * Electron 调用此接口来触发语音按钮的切换
  */
+window.isNekoShortcutBlockedByTutorial = function () {
+    const body = document.body;
+    const root = document.documentElement;
+    const hasClass = function (node, className) {
+        return !!(node && node.classList && node.classList.contains(className));
+    };
+    return window.isInTutorial === true
+        || hasClass(body, 'yui-guide-home-ui-suppressed')
+        || hasClass(body, 'yui-guide-input-shield-active')
+        || hasClass(body, 'yui-guide-standalone-input-shield-active')
+        || hasClass(body, 'yui-guide-chat-buttons-disabled')
+        || hasClass(body, 'yui-guide-compact-chat-fixed')
+        || hasClass(root, 'yui-guide-plugin-dashboard-running')
+        || hasClass(body, 'yui-guide-plugin-dashboard-running');
+};
+
+function blockNekoShortcutDuringTutorial(actionName) {
+    if (typeof window.isNekoShortcutBlockedByTutorial !== 'function'
+        || !window.isNekoShortcutBlockedByTutorial()) {
+        return false;
+    }
+    console.log('[Electron Shortcut] ' + actionName + ': blocked - tutorial active');
+    return true;
+}
+
 window.toggleVoiceSession = function () {
+    if (blockNekoShortcutDuringTutorial('toggleVoiceSession')) return;
     // 获取浮动按钮的当前状态（Live2D / VRM / MMD）
     const micButton = window.live2dManager?._floatingButtons?.mic?.button
         || window.vrmManager?._floatingButtons?.mic?.button
@@ -1179,6 +1205,7 @@ window.toggleVoiceSession = function () {
  * Electron 调用此接口来触发屏幕分享按钮的切换
  */
 window.toggleScreenShare = function () {
+    if (blockNekoShortcutDuringTutorial('toggleScreenShare')) return;
     // 获取浮动按钮的当前状态（Live2D / VRM / MMD）
     const screenBtn = window.live2dManager?._floatingButtons?.screen?.button
         || window.vrmManager?._floatingButtons?.screen?.button
@@ -1213,6 +1240,7 @@ window.toggleScreenShare = function () {
  * Electron 调用此接口来触发截图按钮点击
  */
 window.triggerScreenshot = function () {
+    if (blockNekoShortcutDuringTutorial('triggerScreenshot')) return;
     // 语音会话中禁止截图（文本框处于禁用态时意味着用户处于语音会话中）
     if (window.isRecording) {
         console.log('[Electron Shortcut] triggerScreenshot: blocked - in voice session');

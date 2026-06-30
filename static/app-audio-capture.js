@@ -1364,6 +1364,11 @@
     window.stopGameVoiceSttGate = stopGameVoiceSttGate;
 
     window.toggleMicMute = function(showToast = true) {
+        if (typeof window.isNekoShortcutBlockedByTutorial === 'function'
+            && window.isNekoShortcutBlockedByTutorial()) {
+            console.log('[Electron Shortcut] toggleMicMute: blocked - tutorial active');
+            return S.isMicMuted;
+        }
         S.isMicMuted = !S.isMicMuted;
         if (S.isMicMuted) {
             stopSilenceDetection();
