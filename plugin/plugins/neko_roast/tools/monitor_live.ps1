@@ -49,6 +49,10 @@ Key fields:
                     True when the latest send_lanlan_response text line repeats or remixes a recent live reply in the backend log window.
   log_reply_suppressed
                     True when backend log shows host-side repeat suppression, useful when plugin result says pushed but NEKO stays silent.
+  log_reply_shape_reason
+                    Latest host-side NEKO Live output shaping reason, such as quality_fallback or dangling_choice.
+  log_reply_quality_fallback_count / log_reply_dangling_choice_count
+                    Counts within the inspected backend log tail; values >=3 mean fallback is frequent, not just a one-off rescue.
   avatar_repeat_count
                     How many recent avatar_roast results were seen for avatar_repeat_uid.
   recent_*          Recent route counts for avatar_roast, danmaku_response, warmup_hosting, idle_hosting, and active_engagement.
@@ -224,6 +228,18 @@ function Get-IsoAgeSeconds {
         return ([datetimeoffset]::UtcNow - $timestamp.ToUniversalTime()).TotalSeconds
     } catch {
         return $null
+    }
+}
+
+function To-IntOrDefault {
+    param(
+        [object]$Value,
+        [int]$DefaultValue
+    )
+    try {
+        return [int]$Value
+    } catch {
+        return $DefaultValue
     }
 }
 
@@ -843,6 +859,9 @@ function Get-BackendLogSignals {
         GenericHostPrompt = "-"
         ReplyRepeat = "-"
         ReplySuppressed = "-"
+        ReplyShapeReason = "-"
+        ReplyQualityFallbackCount = "0"
+        ReplyDanglingChoiceCount = "0"
     }
     if (-not $Path) {
         return [pscustomobject]$signals
@@ -851,7 +870,8 @@ function Get-BackendLogSignals {
         return [pscustomobject]$signals
     }
     try {
-        $text = (Get-Content -LiteralPath $Path -Tail $TailLines -Encoding UTF8 -ErrorAction Stop) -join "`n"
+        $logLines = @(Get-Content -LiteralPath $Path -Tail $TailLines -Encoding UTF8 -ErrorAction Stop)
+        $text = $logLines -join "`n"
     } catch {
         return [pscustomobject]$signals
     }
@@ -861,9 +881,16 @@ function Get-BackendLogSignals {
     } else {
         $signals.Watchdog = "False"
     }
-    if ($text -match "(?i)warthunder") {
+    $contaminationLines = @(
+        $logLines | Where-Object {
+            $_ -match "(?i)(warthunder|proactive\s+bridge\s+output|proactive.*queued)" -and
+            $_ -notmatch "(?i)(plugin=neko_roast|proactive_message enqueued callback)"
+        }
+    )
+    $contaminationText = $contaminationLines -join "`n"
+    if ($contaminationText -match "(?i)warthunder") {
         $signals.Contamination = "warthunder"
-    } elseif ($text -match "(?i)(proactive\s+bridge\s+output|proactive.*queued)") {
+    } elseif ($contaminationText -match "(?i)(proactive\s+bridge\s+output|proactive.*queued)") {
         $signals.Contamination = "proactive"
     } else {
         $signals.Contamination = "none"
@@ -910,6 +937,23 @@ function Get-BackendLogSignals {
     $signals.ReplySuppressed = "False"
     if ($text -match "(?i)(NEKO Live repeated reply suppressed|neko_live_reply_suppressed\s*[=:]\s*repeat)") {
         $signals.ReplySuppressed = "True"
+    }
+    $shapeReasonMatches = [regex]::Matches($text, "(?im)send_lanlan_response[^\r\n]*(?:shape_reason|neko_live_reply_shape_reason)\s*[=:]\s*([A-Za-z0-9_+\-]+)")
+    if ($shapeReasonMatches.Count -gt 0) {
+        $signals.ReplyShapeReason = "$($shapeReasonMatches[$shapeReasonMatches.Count - 1].Groups[1].Value)"
+        $qualityFallbackCount = 0
+        $danglingChoiceCount = 0
+        foreach ($match in $shapeReasonMatches) {
+            $reason = "$($match.Groups[1].Value)"
+            if ($reason -match "(^|\+)quality_fallback($|\+)") {
+                $qualityFallbackCount += 1
+            }
+            if ($reason -match "(^|\+)dangling_choice($|\+)") {
+                $danglingChoiceCount += 1
+            }
+        }
+        $signals.ReplyQualityFallbackCount = "$qualityFallbackCount"
+        $signals.ReplyDanglingChoiceCount = "$danglingChoiceCount"
     }
     return [pscustomobject]$signals
 }
@@ -1510,7 +1554,8 @@ function Write-Snapshot {
         if (-not $backendLogAvailable) {
             $alerts += "backend_log_missing"
         }
-        if ("$testIsolationStatus" -in @("warning", "blocked")) {
+        $testIsolationHasProfiles = ($profileCount -gt 0 -or "$testIsolationReason" -eq "viewer_profiles_present")
+        if ("$testIsolationStatus" -in @("warning", "blocked") -and $testIsolationHasProfiles) {
             $alerts += "test_isolation"
         }
     }
@@ -1556,6 +1601,18 @@ function Write-Snapshot {
     }
     if ("$($logSignals.ReplySuppressed)" -eq "True") {
         $alerts += "reply_suppressed"
+    }
+    if ("$($logSignals.ReplyShapeReason)" -match "(^|\+)quality_fallback($|\+)") {
+        $alerts += "reply_quality_fallback"
+    }
+    if ("$($logSignals.ReplyShapeReason)" -match "(^|\+)dangling_choice($|\+)") {
+        $alerts += "reply_dangling_choice"
+    }
+    if ((To-IntOrDefault $logSignals.ReplyQualityFallbackCount 0) -ge 3) {
+        $alerts += "reply_quality_fallback_many"
+    }
+    if ((To-IntOrDefault $logSignals.ReplyDanglingChoiceCount 0) -ge 3) {
+        $alerts += "reply_dangling_choice_many"
     }
     if ($avatarRepeatUid -ne "-") {
         $alerts += "avatar_repeat"
@@ -1838,6 +1895,9 @@ function Write-Snapshot {
         "log_generic_host_prompt=$($logSignals.GenericHostPrompt)",
         "log_reply_repeat=$($logSignals.ReplyRepeat)",
         "log_reply_suppressed=$($logSignals.ReplySuppressed)",
+        "log_reply_shape_reason=$($logSignals.ReplyShapeReason)",
+        "log_reply_quality_fallback_count=$($logSignals.ReplyQualityFallbackCount)",
+        "log_reply_dangling_choice_count=$($logSignals.ReplyDanglingChoiceCount)",
         "alerts=$alertText",
         "solo_test_hint=$soloTestHint",
         "solo_test_focus=$soloTestFocus"

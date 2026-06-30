@@ -21,7 +21,12 @@ def _powershell() -> str | None:
     return shutil.which("pwsh") or shutil.which("powershell")
 
 
-def _run_monitor(tmp_path: Path, context: dict, *extra_args: str) -> subprocess.CompletedProcess[str]:
+def _run_monitor(
+    tmp_path: Path,
+    context: dict,
+    *extra_args: str,
+    use_default_backend_log: bool = False,
+) -> subprocess.CompletedProcess[str]:
     shell = _powershell()
     if shell is None:
         pytest.skip("PowerShell is not available")
@@ -29,6 +34,11 @@ def _run_monitor(tmp_path: Path, context: dict, *extra_args: str) -> subprocess.
     root = Path(__file__).resolve().parents[1]
     context_path = tmp_path / "context.json"
     context_path.write_text(json.dumps(context), encoding="utf-8")
+    args = list(extra_args)
+    if "-BackendLogPath" not in args and not use_default_backend_log:
+        backend_log_path = tmp_path / "backend.log"
+        backend_log_path.write_text("", encoding="utf-8")
+        args.extend(["-BackendLogPath", str(backend_log_path)])
 
     return subprocess.run(
         [
@@ -41,7 +51,7 @@ def _run_monitor(tmp_path: Path, context: dict, *extra_args: str) -> subprocess.
             "-Once",
             "-ContextJsonPath",
             str(context_path),
-            *extra_args,
+            *args,
         ],
         cwd=root,
         text=True,
@@ -274,6 +284,34 @@ def test_monitor_live_script_alerts_when_real_output_test_is_not_isolated(tmp_pa
     alerts_match = re.search(r"\balerts=([^\s]+)", completed.stdout)
     assert alerts_match is not None
     assert "test_isolation" in alerts_match.group(1).split(",")
+
+
+def test_monitor_live_script_does_not_alert_test_isolation_when_profiles_are_clean(tmp_path: Path) -> None:
+    context = _context_with_latest_route_and_signal()
+    context["state"]["live_connection"] = {"state": "disconnected", "connected": False}
+    context["state"]["live_status"] = {"summary": "cannot_stream", "reason": "live_ingest_disconnected"}
+    context["state"]["recent_profiles"] = []
+    context["state"]["solo_test_readiness"] = {
+        "summary": "live_not_ready",
+        "profile_count": 0,
+        "items": [
+            {"id": "preflight", "status": "blocked", "reason": "live_not_ready"},
+            {"id": "test_isolation", "status": "blocked", "reason": "live_not_ready"},
+        ],
+    }
+
+    completed = _run_monitor(tmp_path, context, "-ExpectRealOutput")
+
+    assert completed.returncode == 0, completed.stderr
+    assert "profile_count=0" in completed.stdout
+    assert "test_isolation=blocked" in completed.stdout
+    assert "test_isolation_reason=live_not_ready" in completed.stdout
+    alerts_match = re.search(r"\balerts=([^\s]+)", completed.stdout)
+    assert alerts_match is not None
+    alerts = alerts_match.group(1).split(",")
+    assert "live_disconnected" in alerts
+    assert "live_not_ready" in alerts
+    assert "test_isolation" not in alerts
 
 
 def test_monitor_live_script_alerts_when_active_topic_lacks_reply_hook(tmp_path: Path) -> None:
@@ -2024,6 +2062,27 @@ def test_monitor_live_script_reports_backend_log_watchdog_and_contamination(tmp_
     assert "solo_test_focus=test_isolation" in completed.stdout
 
 
+def test_monitor_live_script_does_not_flag_neko_roast_proactive_as_contamination(tmp_path: Path) -> None:
+    log_path = tmp_path / "backend.log"
+    log_path.write_text(
+        "\n".join(
+            [
+                "[EventBus] proactive_message enqueued callback (passive); next user turn will carry it",
+                "proactive bridge forwarded: plugin=neko_roast event=proactive_message",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    completed = _run_monitor(tmp_path, _context_with_latest_route_and_signal(), "-BackendLogPath", str(log_path))
+
+    assert completed.returncode == 0, completed.stderr
+    assert "log_contamination=none" in completed.stdout
+    alerts_match = re.search(r"\balerts=([^\s]+)", completed.stdout)
+    assert alerts_match is not None
+    assert "contamination_proactive" not in alerts_match.group(1).split(",")
+
+
 def test_monitor_live_script_reports_backend_log_presence_check_as_generic_host_prompt(tmp_path: Path) -> None:
     log_path = tmp_path / "backend.log"
     log_path.write_text(
@@ -2045,13 +2104,69 @@ def test_monitor_live_script_reports_backend_log_presence_check_as_generic_host_
     assert "generic_host_prompt" in alerts_match.group(1).split(",")
 
 
+def test_monitor_live_script_reports_backend_log_reply_shape_reason(tmp_path: Path) -> None:
+    log_path = tmp_path / "backend.log"
+    log_path.write_text(
+        "\n".join(
+            [
+                "[neko] send_lanlan_response len=8",
+                "[neko] send_lanlan_response shape_reason=quality_fallback+dangling_choice",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    completed = _run_monitor(tmp_path, _context_with_latest_route_and_signal(), "-BackendLogPath", str(log_path))
+
+    assert completed.returncode == 0, completed.stderr
+    assert "log_reply_shape_reason=quality_fallback+dangling_choice" in completed.stdout
+    assert "log_reply_quality_fallback_count=1" in completed.stdout
+    assert "log_reply_dangling_choice_count=1" in completed.stdout
+    alerts_match = re.search(r"\balerts=([^\s]+)", completed.stdout)
+    assert alerts_match is not None
+    alerts = alerts_match.group(1).split(",")
+    assert "reply_quality_fallback" in alerts
+    assert "reply_dangling_choice" in alerts
+
+
+def test_monitor_live_script_reports_frequent_backend_log_reply_shape_reasons(tmp_path: Path) -> None:
+    log_path = tmp_path / "backend.log"
+    log_path.write_text(
+        "\n".join(
+            [
+                "[neko] send_lanlan_response shape_reason=quality_fallback",
+                "[neko] send_lanlan_response shape_reason=dangling_choice+quality_fallback",
+                "[neko] send_lanlan_response shape_reason=quality_fallback",
+                "[neko] send_lanlan_response shape_reason=dangling_choice",
+                "[neko] send_lanlan_response shape_reason=dangling_choice",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    completed = _run_monitor(tmp_path, _context_with_latest_route_and_signal(), "-BackendLogPath", str(log_path))
+
+    assert completed.returncode == 0, completed.stderr
+    assert "log_reply_quality_fallback_count=3" in completed.stdout
+    assert "log_reply_dangling_choice_count=3" in completed.stdout
+    alerts_match = re.search(r"\balerts=([^\s]+)", completed.stdout)
+    assert alerts_match is not None
+    alerts = alerts_match.group(1).split(",")
+    assert "reply_quality_fallback_many" in alerts
+    assert "reply_dangling_choice_many" in alerts
+
+
 def test_monitor_live_script_auto_detects_default_backend_log(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     default_log = root / ".codex-backend-live-test.log"
     default_log.unlink(missing_ok=True)
     default_log.write_text("[voice] voice playback gate watchdog timeout\n", encoding="utf-8")
     try:
-        completed = _run_monitor(tmp_path, _context_with_latest_route_and_signal())
+        completed = _run_monitor(
+            tmp_path,
+            _context_with_latest_route_and_signal(),
+            use_default_backend_log=True,
+        )
     finally:
         default_log.unlink(missing_ok=True)
 
