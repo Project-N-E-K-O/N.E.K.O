@@ -1363,9 +1363,29 @@
     window.startGameVoiceSttGate = startGameVoiceSttGate;
     window.stopGameVoiceSttGate = stopGameVoiceSttGate;
 
+    function isTutorialShortcutBlockedForMicMute() {
+        if (typeof window.isNekoShortcutBlockedByTutorial === 'function') {
+            return window.isNekoShortcutBlockedByTutorial();
+        }
+
+        const body = document.body;
+        const root = document.documentElement;
+        const hasClass = function (node, className) {
+            return !!(node && node.classList && node.classList.contains(className));
+        };
+
+        return window.isInTutorial === true
+            || hasClass(body, 'yui-guide-home-ui-suppressed')
+            || hasClass(body, 'yui-guide-input-shield-active')
+            || hasClass(body, 'yui-guide-standalone-input-shield-active')
+            || hasClass(body, 'yui-guide-chat-buttons-disabled')
+            || hasClass(body, 'yui-guide-compact-chat-fixed')
+            || hasClass(root, 'yui-guide-plugin-dashboard-running')
+            || hasClass(body, 'yui-guide-plugin-dashboard-running');
+    }
+
     window.toggleMicMute = function(showToast = true) {
-        if (typeof window.isNekoShortcutBlockedByTutorial === 'function'
-            && window.isNekoShortcutBlockedByTutorial()) {
+        if (isTutorialShortcutBlockedForMicMute()) {
             console.log('[Electron Shortcut] toggleMicMute: blocked - tutorial active');
             return S.isMicMuted;
         }
