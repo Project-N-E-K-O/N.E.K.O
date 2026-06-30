@@ -1363,7 +1363,18 @@
     window.startGameVoiceSttGate = startGameVoiceSttGate;
     window.stopGameVoiceSttGate = stopGameVoiceSttGate;
 
+    function isTutorialShortcutBlockedForMicMute() {
+        if (typeof window.isNekoShortcutBlockedByTutorial === 'function') {
+            return window.isNekoShortcutBlockedByTutorial();
+        }
+        return window.isInTutorial === true;
+    }
+
     window.toggleMicMute = function(showToast = true) {
+        if (isTutorialShortcutBlockedForMicMute()) {
+            console.log('[Electron Shortcut] toggleMicMute: blocked - tutorial active');
+            return S.isMicMuted;
+        }
         S.isMicMuted = !S.isMicMuted;
         if (S.isMicMuted) {
             stopSilenceDetection();
