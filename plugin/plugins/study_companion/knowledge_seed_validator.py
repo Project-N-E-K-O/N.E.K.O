@@ -362,6 +362,8 @@ def _validate_taxonomy_coverage(
     topics: Iterable[KnowledgeSeedTopic],
     issues: list[KnowledgeSeedIssue],
 ) -> None:
+    # TODO: Re-enable hard taxonomy coverage validation once the bundled legacy seed
+    # has complete curriculum context; current gaps are reported as quality metrics.
     return
 
 

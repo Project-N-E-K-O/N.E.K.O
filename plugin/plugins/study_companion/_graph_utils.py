@@ -15,13 +15,21 @@ def text(value: Any) -> str:
 
 
 def topic_id(topic: dict[str, Any]) -> str:
-    return text(topic.get("id") or topic.get("topic_id"))
+    for candidate in (topic.get("id"), topic.get("topic_id")):
+        value = text(candidate)
+        if value:
+            return value
+    return ""
 
 
 def topic_label(topic: dict[str, Any] | None, fallback: str = "") -> str:
     if not topic:
-        return fallback
-    return text(topic.get("name") or topic.get("label") or topic_id(topic) or fallback)
+        return text(fallback)
+    for candidate in (topic.get("name"), topic.get("label"), topic_id(topic), fallback):
+        value = text(candidate)
+        if value:
+            return value
+    return ""
 
 
 def normalized_relation(relation: Any) -> str:

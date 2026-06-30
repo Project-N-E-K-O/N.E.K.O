@@ -7,6 +7,7 @@ import pytest
 from plugin.plugins.study_companion.entry_tutor_context_support import (
     _TutorContextSupportMixin,
 )
+from plugin.plugins.study_companion._graph_utils import topic_id, topic_label
 from plugin.plugins.study_companion.knowledge_graph_guidance import (
     build_knowledge_guidance_payload,
 )
@@ -61,6 +62,18 @@ def test_compact_confusion_labels_use_related_topic_label() -> None:
     )
 
     assert payload["model_context"]["confusions"] == ["Other Topic"]
+
+
+def test_graph_topic_helpers_skip_blank_candidates() -> None:
+    assert topic_id({"id": "   ", "topic_id": "fallback_id"}) == "fallback_id"
+    assert (
+        topic_label(
+            {"name": "   ", "label": "", "topic_id": "topic_key"},
+            fallback="Fallback Label",
+        )
+        == "topic_key"
+    )
+    assert topic_label(None, fallback="  Fallback Label  ") == "Fallback Label"
 
 
 def test_knowledge_guidance_cache_can_be_invalidated() -> None:
