@@ -311,6 +311,9 @@ def test_layered_pngtuber_draw_order_uses_imported_effective_z_index():
     assert "layer.zindex" in helper_block
     assert "this.fallbackLayerDrawZIndex(layer, layerState)" in helper_block
     assert "fallbackLayerDrawZIndex(layer, layerState = null)" in helper_block
+    assert "_fallbackLayersBySpriteIdSource !== layers" in helper_block
+    assert "const layersBySpriteId = this._fallbackLayersBySpriteId;" in helper_block
+    assert "const layersBySpriteId = new Map();" not in helper_block
     assert "currentState.z_as_relative ?? current.z_as_relative" in helper_block
     assert "this.compareLayerDrawOrder(a, b)" in draw_block
     assert "this.compareLayerDrawOrder(a, b)" in debug_block

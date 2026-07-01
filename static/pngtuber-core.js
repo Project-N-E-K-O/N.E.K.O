@@ -103,6 +103,8 @@
             this.config = normalizeConfig({});
             this.layeredMetadata = null;
             this.layeredImages = new Map();
+            this._fallbackLayersBySpriteId = new Map();
+            this._fallbackLayersBySpriteIdSource = null;
             this.layeredBlinking = false;
             this.layeredAssetVisibility = new Map();
             this.layeredAssetActionActive = false;
@@ -503,6 +505,8 @@
             this.detachLayeredPlayEvent();
             this.layeredMetadata = null;
             this.layeredImages = new Map();
+            this._fallbackLayersBySpriteId = new Map();
+            this._fallbackLayersBySpriteIdSource = null;
             this.layeredStateIndex = 0;
             this.layeredAssetVisibility = new Map();
             this.layeredAssetActionActive = false;
@@ -540,6 +544,8 @@
                 console.warn('[PNGTuber] layered adapter disabled, falling back to image mode:', error);
                 this.layeredMetadata = null;
                 this.layeredImages = new Map();
+                this._fallbackLayersBySpriteId = new Map();
+                this._fallbackLayersBySpriteIdSource = null;
                 return false;
             }
         }
@@ -816,13 +822,17 @@
         }
 
         fallbackLayerDrawZIndex(layer, layerState = null) {
-            const layers = Array.isArray(this.layeredMetadata?.layers) ? this.layeredMetadata.layers : [];
-            const layersBySpriteId = new Map();
-            layers.forEach((candidate) => {
-                if (candidate && candidate.sprite_id !== undefined && candidate.sprite_id !== null) {
-                    layersBySpriteId.set(String(candidate.sprite_id), candidate);
-                }
-            });
+            const layers = Array.isArray(this.layeredMetadata?.layers) ? this.layeredMetadata.layers : null;
+            if (this._fallbackLayersBySpriteIdSource !== layers) {
+                this._fallbackLayersBySpriteId = new Map();
+                this._fallbackLayersBySpriteIdSource = layers;
+                (layers || []).forEach((candidate) => {
+                    if (candidate && candidate.sprite_id !== undefined && candidate.sprite_id !== null) {
+                        this._fallbackLayersBySpriteId.set(String(candidate.sprite_id), candidate);
+                    }
+                });
+            }
+            const layersBySpriteId = this._fallbackLayersBySpriteId;
             let total = 0;
             let current = layer;
             let currentState = layerState || this.layerStateForCurrentIndex(current);
