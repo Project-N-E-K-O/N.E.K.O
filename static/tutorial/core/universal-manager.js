@@ -3218,6 +3218,11 @@ class UniversalTutorialManager {
                 surfaceReady: true,
                 revealPrepared: () => this.revealTutorialLive2dPrepared()
             });
+            if (directTutorialBoot) {
+                this.releaseDirectAvatarFloatingTutorialBoot('avatar-floating-before-teardown', {
+                    suppressPrediction: true
+                });
+            }
             if (!this._tutorialEndHandled) {
                 const endReason = completed
                     ? 'complete'
@@ -3226,11 +3231,6 @@ class UniversalTutorialManager {
                         || this.lifecycleStateStore.getEndRawReason()
                         || 'destroy'
                     );
-                if (directTutorialBoot) {
-                    this.releaseDirectAvatarFloatingTutorialBoot('avatar-floating-before-teardown', {
-                        suppressPrediction: true
-                    });
-                }
                 await this.requestTutorialDestroy(endReason);
             }
             return completed;

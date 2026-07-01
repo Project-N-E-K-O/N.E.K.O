@@ -1889,6 +1889,9 @@ def test_avatar_floating_direct_tutorial_boot_uses_manager_recheck_and_user_mode
     assert "keepUserModelBootSkipped: true" in start_round_block
     assert "suppressPrediction: true" in start_round_block
     assert start_round_block.index("this.releaseDirectAvatarFloatingTutorialBoot('avatar-floating-before-teardown', {") < start_round_block.index(
+        "if (!this._tutorialEndHandled) {"
+    )
+    assert start_round_block.index("this.releaseDirectAvatarFloatingTutorialBoot('avatar-floating-before-teardown', {") < start_round_block.index(
         "await this.requestTutorialDestroy(endReason);"
     )
     assert start_round_block.index("this.releaseDirectAvatarFloatingTutorialBoot('avatar-floating-before-teardown', {") < start_round_block.index(
