@@ -66,6 +66,10 @@ from .ocr_chrome_noise import (
     looks_like_temperature_status_line as _looks_like_temperature_status_line,
     looks_like_window_title_line as _looks_like_window_title_line,
 )
+from .dialogue_library import (
+    DialogueLibraryMatch as _DialogueLibraryMatch,
+    match_dialogue_library_for_target as _match_dialogue_library_for_target,
+)
 from .aihong_state import (
     AIHONG_CHOICES_REGION_PRESET as _AIHONG_CHOICES_REGION_PRESET,
     AIHONG_DIALOGUE_CAPTURE_PROFILE_PRESET as _AIHONG_DIALOGUE_CAPTURE_PROFILE_PRESET,
@@ -537,6 +541,29 @@ class TextMixin:
         return content_text, cleaned_text
 
 
+    def _dialogue_library_match_for_cleaned_text(
+        self, cleaned_text: str
+    ) -> _DialogueLibraryMatch | None:
+        target = self._attached_window
+        process_name = (
+            str(target.process_name or "")
+            if target is not None
+            else str(self._runtime.effective_process_name or self._runtime.process_name or "")
+        )
+        normalized_title = (
+            str(target.normalized_title or "")
+            if target is not None
+            else _normalize_window_title(
+                str(self._runtime.effective_window_title or self._runtime.window_title or "")
+            )
+        )
+        return _match_dialogue_library_for_target(
+            cleaned_text,
+            process_name=process_name,
+            normalized_title=normalized_title,
+        )
+
+
     def _emit_line_from_ocr_text(
         self,
         raw_text: str,
@@ -561,6 +588,10 @@ class TextMixin:
             cleaned_text,
             rapidocr_active=rapidocr_active,
         )
+        dialogue_library_match = self._dialogue_library_match_for_cleaned_text(cleaned_text)
+        if dialogue_library_match is not None:
+            cleaned_text = dialogue_library_match.canonical_text()
+            text_source = "dialogue_library"
         speaker, text = OcrReaderBridgeWriter._split_speaker_text(cleaned_text)
         had_pending_visual_scene = bool(self._pending_visual_scene_hash)
         if self._pending_visual_scene_hash:
@@ -596,6 +627,8 @@ class TextMixin:
             if repeat_threshold is None
             else repeat_threshold
         )
+        if dialogue_library_match is not None:
+            effective_repeat_threshold = 1
         if tracker.stable_text and int(effective_repeat_threshold or 1) > 1:
             cleaned_key = _ocr_stability_key(cleaned_text)
             stable_key = tracker.stable_text_key or _ocr_stability_key(tracker.stable_text)
