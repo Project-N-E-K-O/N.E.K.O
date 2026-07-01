@@ -918,8 +918,15 @@ function injectStyle() {
       text-align: center;
       overflow-wrap: anywhere;
       pointer-events: none;
-      transform: translateX(-50%);
+      opacity: 0;
+      transform: translate(-50%, -6px);
+      transition: opacity 180ms ease, transform 220ms ease;
       backdrop-filter: blur(10px) saturate(1.08);
+    }
+
+    #${ROOT_ID} .yui-guide-plugin-control-banner.is-visible {
+      opacity: 1;
+      transform: translate(-50%, 0);
     }
 
     #${ROOT_ID} .yui-guide-plugin-control-banner[hidden] {
@@ -1188,6 +1195,7 @@ function injectStyle() {
     }
 
     @media (prefers-reduced-motion: reduce) {
+      #${ROOT_ID} .yui-guide-plugin-control-banner,
       #${ROOT_ID} .yui-guide-plugin-spotlight,
       #${ROOT_ID} .yui-guide-plugin-spotlight-sweep::before,
       #${ROOT_ID} .yui-guide-plugin-pointer {

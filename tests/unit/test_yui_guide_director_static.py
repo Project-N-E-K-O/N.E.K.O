@@ -292,6 +292,8 @@ def test_avatar_floating_guides_hide_real_cursor_during_takeover_and_show_banner
     )
     assert "DEFAULT_RESISTANCE_CURSOR_REVEAL_MS" not in plugin_runtime_source
     assert "yui-guide-control-banner" in guide_css
+    assert ".yui-guide-control-banner.is-visible" in guide_css
+    assert "transform: translate(-50%, 0);" in guide_css
     assert "yui-guide-control-banner" in overlay_source
     assert "CONTROL_BANNER_TEXT_KEY = 'tutorial.yuiGuide.controlBanner'" in overlay_source
     assert "syncControlBanner()" in overlay_source
@@ -300,6 +302,8 @@ def test_avatar_floating_guides_hide_real_cursor_during_takeover_and_show_banner
     assert "this.renderedControlBannerText === text" in overlay_source
     assert "this.renderedControlBannerVisible === isVisible" in overlay_source
     assert "yui-guide-plugin-control-banner" in plugin_runtime_source
+    assert ".yui-guide-plugin-control-banner.is-visible" in plugin_runtime_source
+    assert "transform: translate(-50%, 0);" in plugin_runtime_source
     assert "CONTROL_BANNER_TEXT_KEY = 'tutorial.yuiGuide.controlBanner'" in plugin_runtime_source
     assert "syncControlBanner(active?: boolean)" in plugin_runtime_source
     assert "renderedControlBannerText" in plugin_runtime_source

@@ -165,8 +165,15 @@ body.yui-guide-return-petal-fade #mmd-canvas {
   text-align: center;
   overflow-wrap: anywhere;
   pointer-events: none;
-  transform: translateX(-50%);
+  opacity: 0;
+  transform: translate(-50%, -6px);
+  transition: opacity 180ms var(--yui-guide-ease), transform 220ms var(--yui-guide-ease);
   backdrop-filter: blur(10px) saturate(1.08);
+}
+
+.yui-guide-control-banner.is-visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
 }
 
 .yui-guide-control-banner[hidden] {
