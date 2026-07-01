@@ -166,3 +166,36 @@ def test_prepare_layers_keeps_sprite_visible_in_non_default_expression_state():
     assert layers[0]["state"]["visible"] is False
     assert layers[0]["states"][1]["visible"] is True
     assert layers[0]["states"][1]["effective_z_index"] == 3
+
+
+def test_bounds_include_layers_visible_only_in_non_default_state(tmp_path):
+    layers = _prepare_layers({
+        "sprites_array": [
+            {
+                "sprite_id": 1,
+                "sprite_name": "body",
+                "img": _png_bytes(),
+                "states": [
+                    {"visible": True, "folder": False, "z_index": 0, "position": [0, 0], "offset": [0, 0]},
+                    {"visible": True, "folder": False, "z_index": 0, "position": [0, 0], "offset": [0, 0]},
+                ],
+            },
+            {
+                "sprite_id": 2,
+                "sprite_name": "expression",
+                "img": _png_bytes(),
+                "states": [
+                    {"visible": False, "folder": False, "z_index": 1, "position": [0, 0], "offset": [0, 0]},
+                    {"visible": True, "folder": False, "z_index": 1, "position": [100, 0], "offset": [0, 0]},
+                ],
+            },
+        ]
+    })
+
+    _, _, width, _ = _bounds_for_layers(layers)
+    metadata = _metadata({}, tmp_path / "model.pngRemix", tmp_path, [], layers, _bounds_for_layers(layers))
+    expression = next(layer for layer in metadata["layers"] if layer["name"] == "expression")
+    visible_expression_state = expression["states"][1]
+
+    assert width >= 101
+    assert 0 <= visible_expression_state["x"] <= metadata["canvas"]["width"] - visible_expression_state["frame_width"]

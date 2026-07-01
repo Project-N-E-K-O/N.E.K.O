@@ -458,10 +458,28 @@ def _prepare_layers(remix_data: dict) -> list[dict]:
 
 def _bounds_for_layers(layers: list[dict]) -> tuple[int, int, int, int]:
     bounded_layers = [layer for layer in layers if not layer.get("inactive_asset_ancestor")] or layers
-    min_x = min(layer["x"] for layer in bounded_layers)
-    min_y = min(layer["y"] for layer in bounded_layers)
-    max_x = max(layer["x"] + layer.get("frame_width", layer["image"].width) for layer in bounded_layers)
-    max_y = max(layer["y"] + layer.get("frame_height", layer["image"].height) for layer in bounded_layers)
+    rectangles = []
+    for layer in bounded_layers:
+        layer_has_visible_state = False
+        for state in layer.get("states") or []:
+            if state.get("folder") or state.get("visible", True) is False or state.get("ancestor_visible") is False:
+                continue
+            frame_width, frame_height = _frame_size(layer["image"], state)
+            x = float(state.get("center_x", 0)) - frame_width / 2
+            y = float(state.get("center_y", 0)) - frame_height / 2
+            rectangles.append((x, y, x + frame_width, y + frame_height))
+            layer_has_visible_state = True
+        if not layer_has_visible_state:
+            rectangles.append((
+                layer["x"],
+                layer["y"],
+                layer["x"] + layer.get("frame_width", layer["image"].width),
+                layer["y"] + layer.get("frame_height", layer["image"].height),
+            ))
+    min_x = min(x1 for x1, _, _, _ in rectangles)
+    min_y = min(y1 for _, y1, _, _ in rectangles)
+    max_x = max(x2 for _, _, x2, _ in rectangles)
+    max_y = max(y2 for _, _, _, y2 in rectangles)
     return (
         int(round(min_x)),
         int(round(min_y)),
