@@ -4,7 +4,7 @@ import App, {
   COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS,
   COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS,
   COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC,
-  getCompactToolWheelReboundVolume,
+  getCompactToolWheelReboundVisualIntensity,
   playCompactToolWheelDetentSound,
   playCompactToolWheelReboundSound,
   resetCompactToolWheelDetentAudioForTests,
@@ -6550,16 +6550,16 @@ describe('App', () => {
   });
 
   it('scales compact tool wheel rebound volume by residual drag distance', () => {
-    expect(getCompactToolWheelReboundVolume(0)).toBeNull();
-    expect(getCompactToolWheelReboundVolume(0.199)).toBeNull();
-    expect(getCompactToolWheelReboundVolume(0.2)).toBe(0.38);
-    expect(getCompactToolWheelReboundVolume(-0.36)).toBe(0.38);
-    expect(getCompactToolWheelReboundVolume(0.399)).toBe(0.38);
-    expect(getCompactToolWheelReboundVolume(0.4)).toBe(0.6);
-    expect(getCompactToolWheelReboundVolume(-0.62)).toBe(0.6);
-    expect(getCompactToolWheelReboundVolume(0.699)).toBe(0.6);
-    expect(getCompactToolWheelReboundVolume(0.7)).toBe(0.85);
-    expect(getCompactToolWheelReboundVolume(-0.9)).toBe(0.85);
+    expect(getCompactToolWheelReboundVisualIntensity(0)).toBeNull();
+    expect(getCompactToolWheelReboundVisualIntensity(0.199)).toBeNull();
+    expect(getCompactToolWheelReboundVisualIntensity(0.2)).toBe(0.38);
+    expect(getCompactToolWheelReboundVisualIntensity(-0.36)).toBe(0.38);
+    expect(getCompactToolWheelReboundVisualIntensity(0.399)).toBe(0.38);
+    expect(getCompactToolWheelReboundVisualIntensity(0.4)).toBe(0.6);
+    expect(getCompactToolWheelReboundVisualIntensity(-0.62)).toBe(0.6);
+    expect(getCompactToolWheelReboundVisualIntensity(0.699)).toBe(0.6);
+    expect(getCompactToolWheelReboundVisualIntensity(0.7)).toBe(0.85);
+    expect(getCompactToolWheelReboundVisualIntensity(-0.9)).toBe(0.85);
   });
 
   it('rotates compact input tools from a guide request', async () => {
@@ -6850,6 +6850,7 @@ describe('App', () => {
       expect(fan).toHaveAttribute('data-compact-tool-wheel-charge-direction', 'forward');
       const beforeReleaseCenter = fan.querySelector('[data-compact-tool-wheel-slot="0"]')?.className;
       expect(beforeReleaseCenter).toBeTruthy();
+      const playSfxCallsBeforeRelease = playSfx.mock.calls.length;
       fireEvent.pointerUp(fan, {
         pointerId: 22,
         ...pointOnWheel(24 * 0.7),
@@ -6874,16 +6875,20 @@ describe('App', () => {
       expect(fan).toHaveAttribute('data-compact-tool-wheel-charge-release-offset', '0');
       expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')?.className).toBe(beforeReleaseCenter);
       expect(Math.abs(Number.parseFloat(fan.style.getPropertyValue('--compact-tool-wheel-drag-angle')))).toBeGreaterThan(4);
-      expect(playSfx.mock.calls.some(([request]) => (
+      const releasePlaySfxCalls = playSfx.mock.calls.slice(playSfxCallsBeforeRelease);
+      expect(releasePlaySfxCalls.length).toBeGreaterThan(0);
+      expect(releasePlaySfxCalls.every(([request]) => (
         typeof request === 'object'
         && request !== null
         && 'src' in request
-        && request.src === COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC
-      ))).toBe(false);
+        && request.src === COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS[0]
+      ))).toBe(true);
+      const playSfxCallsAfterRelease = playSfx.mock.calls.length;
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(120);
       });
+      expect(playSfx).toHaveBeenCalledTimes(playSfxCallsAfterRelease);
       expect(fan.style.getPropertyValue('--compact-tool-wheel-drag-angle')).toBe('0deg');
     } finally {
       restoreFanRect();
