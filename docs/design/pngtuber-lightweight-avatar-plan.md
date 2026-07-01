@@ -18,7 +18,7 @@ PNGTuber 是现有 avatar 体系下的轻量渲染模式，在角色配置中通
 | --- | --- | --- |
 | 原生 `model.json` 图片包 | `simple_package` | 直接加载，支持 idle/talking/drag/click 与轻量情绪图。 |
 | PNGTuber-Plus `.save` | `pngtuber_plus_save` | 转换为 `layered_canvas_v1`，metadata `adapter_version: 2`；支持 costume、hotkey、toggle、说话/眨眼、多帧、Plus 节点树、矩形 clip 和近似物理。 |
-| PNGTubeRemix `.pngRemix` | `pngtube_remix_pngremix` | 解析 Godot Variant 并转换为 `layered_canvas_v1`，metadata `adapter_version: 2`；支持 state/hotkey、emotion mapping、sprite sheet、Remix `physics_v2` 和可用 mesh deformation。 |
+| PNGTubeRemix `.pngRemix` | `pngtube_remix_pngremix` | 解析 Godot Variant 并转换为 `layered_canvas_v1`，metadata `adapter_version: 2`；支持 state/hotkey、emotion mapping、sprite sheet、父级继承 `z_index` 图层排序、Remix `physics_v2` 和可用 mesh deformation。 |
 | veadotube `.veadomini/.veado` | `veadotube` | 识别但拒绝，等待真实样本适配。 |
 | 只有图片无工程文件 | `image_pair_candidate` | 拒绝，提示使用双图导入或补 `model.json`。 |
 
@@ -174,6 +174,7 @@ Remix 由 `source_format: "pngtube_remix_pngremix"` 显式启用。它不走 Plu
 - 5 个未命名 state 使用 neutral、happy、sad、angry、surprised 的兜底顺序。
 - `stateFrameInfo()` 驱动 metadata 可表达的 sprite sheet。
 - `stateHasRemixPhysics()`、`layeredPhysicsTransform()`、`physics_v2` 支持 follow mouse、drag、rotation、stretch、animate-to-mouse sheet 等近似行为。
+- Remix 子图层的有效 `z_index` 需要沿父链累加后写入 layer 和 `states[]`，避免后发、辫子、饰品等子层使用局部 z 值导致扁平 canvas 排序错层。
 - 当存在真实 vertices / triangles / UVs 时，`runtime_features.mesh_deformation` 为 true，`drawLayerMesh()` 启用 affine mesh triangle 绘制。
 - 缺少真实几何时保留 `mesh_metadata: true`、`mesh_runtime: false`，并在 `unsupported_features` 中说明原因。
 
@@ -270,6 +271,7 @@ metadata.pngtube-remix.json
 - `raw_hotkeys`
 - `settings`
 - `raw_settings`
+- 每个 layer 与 `states[]` 中用于运行时排序的有效 `z_index`，该值已经包含父级链上的 `z_index`。
 
 失败规则：
 
@@ -403,7 +405,7 @@ python -m py_compile main_routers\pngtuber_importers\godot_variant.py main_route
 2. 导入 PNGTuber Plus `.save`，确认生成并显示角色。
 3. Plus 模型确认 costume hotkey、toggle、说话/眨眼、多帧 sprite sheet、父子 transform、矩形 clip 行为稳定。
 4. Plus 包含多个 `.save` 且无法唯一选择时，确认返回 `400` 和候选 `warnings`。
-5. 导入 PNGTubeRemix `.pngRemix`，确认生成 `model.json`、`idle.png`、`talking.png`、`source.pngRemix`、`metadata.pngtube-remix.json`。
+5. 导入 PNGTubeRemix `.pngRemix`，确认生成 `model.json`、`idle.png`、`talking.png`、`source.pngRemix`、`metadata.pngtube-remix.json`，并确认头发/饰品等子图层保留父级继承后的 z-order。
 6. 多 state Remix 包确认 hotkey/state 和 `window.applyEmotion('happy')` 映射。
 7. 播放 TTS，确认 mouth flap 与 One Bounce 不回归。
 8. 检查 `window.pngtuberManager.getDebugState()` 中的 `sourceFormat`、`runtimeFeatures`、`meshRuntime`、`physicsVersion`。
