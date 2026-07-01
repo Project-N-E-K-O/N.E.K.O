@@ -2915,9 +2915,10 @@
             }
         }
 
-        setTutorialTakingOver(active) {
+        setTutorialTakingOver(active, options) {
             const isActive = active === true;
-            if (isActive) {
+            const shouldSyncCursor = !(options && options.syncSystemCursor === false);
+            if (isActive && shouldSyncCursor) {
                 this.syncSystemCursorHidden(true, 'taking_over_started');
             }
             this.setAvatarFloatingGuideTutorialMode(isActive);

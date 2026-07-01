@@ -234,7 +234,9 @@
                 ? lastPointerPoint
                 : null;
 
-            call(this.callbacks, 'setTutorialTakingOver', null, true);
+            call(this.callbacks, 'setTutorialTakingOver', null, true, {
+                syncSystemCursor: false
+            });
             if (this.overlay && typeof this.overlay.setAngry === 'function') {
                 this.overlay.setAngry(true);
             }
@@ -613,7 +615,9 @@
                 ? lastPointerPoint
                 : null;
 
-            director.setTutorialTakingOver(true);
+            director.setTutorialTakingOver(true, {
+                syncSystemCursor: false
+            });
             if (director.overlay && typeof director.overlay.setAngry === 'function') {
                 director.overlay.setAngry(true);
             }

@@ -313,10 +313,12 @@ def test_avatar_floating_guides_hide_real_cursor_during_takeover_and_show_banner
     assert "style.cursor = '';" in taking_over_block
     assert "this.syncControlBanner();" in taking_over_block
 
-    director_takeover_block = director_source.split("        setTutorialTakingOver(active) {", 1)[1].split(
+    director_takeover_block = director_source.split("        setTutorialTakingOver(active, options) {", 1)[1].split(
         "        getAvatarStandInCue(day, sceneId) {",
         1,
     )[0]
+    assert "const shouldSyncCursor = !(options && options.syncSystemCursor === false);" in director_takeover_block
+    assert "if (isActive && shouldSyncCursor) {" in director_takeover_block
     assert "this.syncSystemCursorHidden(true, 'taking_over_started');" in director_takeover_block
 
     resistance_block = director_source.split("        prepareResistanceCursorReveal() {", 1)[1].split(
@@ -375,6 +377,9 @@ def test_avatar_floating_guides_hide_real_cursor_during_takeover_and_show_banner
     assert "shouldRestoreHiddenCursorAfterResistance = call(" in resistance_source
     assert "call(this.callbacks, 'syncSystemCursorHidden', null, true, 'interrupt_resist_light_done');" in resistance_source
     assert "this.syncSystemCursorHidden(false, 'interrupt_angry_exit');" in resistance_source
+    assert "call(this.callbacks, 'setTutorialTakingOver', null, true, {" in resistance_source
+    assert "director.setTutorialTakingOver(true, {" in resistance_source
+    assert "syncSystemCursor: false" in resistance_source
     assert "this.syncSystemCursorHidden(false, 'destroy');" in director_source
     assert "syncSystemCursorHidden: optional callback" in resistance_source
 
