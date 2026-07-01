@@ -4121,6 +4121,9 @@
         if (!normalizedSource) return false;
         if (normalizedSource !== 'new_user_icebreaker') return false;
         if (!state.choicePrompt || state.choicePrompt.source !== normalizedSource) return false;
+        if (window.console && typeof window.console.debug === 'function') {
+            window.console.debug('[NewUserIcebreaker] clearChoicePromptBySource:', normalizedSource, reason || '');
+        }
         state.choicePrompt = null;
         if (choicePromptRevealTimer) {
             window.clearTimeout(choicePromptRevealTimer);

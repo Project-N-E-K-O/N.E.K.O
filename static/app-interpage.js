@@ -2443,6 +2443,10 @@
                 if (isDuplicateMessage(data.action, data.timestamp)) return true;
                 clearYuiGuideChatMessages();
                 return true;
+            case 'yui_guide_set_chat_input_locked':
+                if (isDuplicateMessage(data.action, data.timestamp)) return true;
+                applyYuiGuideChatInputLocked(data.locked === true, data.reason || '');
+                return true;
             case 'tutorial_chat_identity_override':
                 if (isDuplicateMessage(data.action, data.timestamp)) return true;
                 applyTutorialChatIdentityOverride(data);

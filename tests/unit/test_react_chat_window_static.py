@@ -1371,6 +1371,7 @@ def test_icebreaker_reset_clears_prompt_by_source_without_session_match():
     )[0]
     assert "if (normalizedSource !== 'new_user_icebreaker') return false;" in reset_block
     assert "state.choicePrompt.source !== normalizedSource" in reset_block
+    assert "clearChoicePromptBySource:', normalizedSource, reason || ''" in reset_block
     assert "state.choicePrompt = null;" in reset_block
     assert "invalidatePendingGalgameRequest();" in reset_block
 
@@ -1389,8 +1390,15 @@ def test_externalized_tutorial_chat_ready_replays_input_lock():
     bridge_bus = (Path(__file__).resolve().parents[2] / "static" / "tutorial" / "core" / "bridge-command-bus.js").read_text(
         encoding="utf-8"
     )
+    interpage = (Path(__file__).resolve().parents[2] / "static" / "app-interpage.js").read_text(encoding="utf-8")
 
     assert "yui_guide_set_chat_input_locked: true" in bridge_bus
+    bridge_replay_block = interpage.split("function handleYuiGuideChatBridgeData(data)", 1)[1].split(
+        "function drainPendingYuiGuideChatBridgeQueue",
+        1,
+    )[0]
+    assert "case 'yui_guide_set_chat_input_locked':" in bridge_replay_block
+    assert "applyYuiGuideChatInputLocked(data.locked === true, data.reason || '')" in bridge_replay_block
     ready_block = takeover.split("onExternalChatReady()", 1)[1].split(
         "destroy()",
         1,
