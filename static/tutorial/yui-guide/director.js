@@ -551,7 +551,7 @@
     const DAY6_PLUGIN_SIDE_PANEL_CLICK_VISIBLE_MS = 480;
     const DAY6_PLUGIN_SIDE_PANEL_ACTION_TIMEOUT_MS = 1200;
     const DAY6_PLUGIN_SIDE_PANEL_DASHBOARD_WAIT_MS = 900;
-    const DAY6_PLUGIN_DASHBOARD_DONE_GRACE_MS = 0;
+    const DAY6_PLUGIN_DASHBOARD_DONE_GRACE_MS = 120;
     const INTRO_GREETING_REPLY_TEXT = '微风、阳光，还有刚刚好出现的你。初次见面，我是林悠怡，未来的日子请多关照喵！我把关于这里的一切都写进新手指南里啦！就当作是我们相遇的第一份小礼物，请查收吧！';
     const INTRO_GREETING_REPLY_TEXT_KEY = 'tutorial.yuiGuide.lines.introGreetingReply';
     const TAKEOVER_PLUGIN_DASHBOARD_TEXT = '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼！';
@@ -7593,20 +7593,29 @@
         async runDay6PluginDashboardHandoffFlow(scene, narrationStartedAt) {
             const guardFailed = () => this.isStopping();
             const previewState = this.day6PluginDashboardPreview || {};
+            const homeCursorPosition = this.overlay && typeof this.overlay.getCursorPosition === 'function'
+                ? this.overlay.getCursorPosition()
+                : null;
             const pluginDashboardWindow = (
                 previewState.pluginDashboardWindow
                 && !previewState.pluginDashboardWindow.closed
             )
                 ? previewState.pluginDashboardWindow
                 : await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 1800);
-            if (!pluginDashboardWindow || pluginDashboardWindow.closed || guardFailed()) {
-                return true;
+            if (!pluginDashboardWindow || pluginDashboardWindow.closed) {
+                const cleanupCompleted = await this.cleanupDay6PluginDashboardPostNarration(
+                    previewState,
+                    homeCursorPosition,
+                    this.sceneRunId
+                );
+                this.day6PluginDashboardPreview = null;
+                return cleanupCompleted && !guardFailed();
+            }
+            if (guardFailed()) {
+                return false;
             }
             this.pluginDashboardWindowCreatedByGuide = previewState.pluginDashboardWindowCreatedByGuide !== false;
 
-            const homeCursorPosition = this.overlay && typeof this.overlay.getCursorPosition === 'function'
-                ? this.overlay.getCursorPosition()
-                : null;
             this.hideHomeCursorForExternalizedChat();
 
             const voiceKey = scene && scene.voiceKey ? scene.voiceKey : '';

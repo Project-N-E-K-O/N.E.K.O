@@ -127,7 +127,7 @@ def test_day6_plugin_dashboard_handoff_closes_at_narration_boundary():
     assert "const DAY6_PLUGIN_SIDE_PANEL_CURSOR_MOVE_MS = 1120;" in source
     assert "const DAY6_PLUGIN_SIDE_PANEL_CURSOR_START_DELAY_MS = 500;" in source
     assert "const DAY6_PLUGIN_SIDE_PANEL_CLICK_VISIBLE_MS = 480;" in source
-    assert "const DAY6_PLUGIN_DASHBOARD_DONE_GRACE_MS = 0;" in source
+    assert "const DAY6_PLUGIN_DASHBOARD_DONE_GRACE_MS = 120;" in source
     assert "finishPluginDashboardHandoff(reason) {" in source
 
     boundary_block = source.split(
@@ -164,6 +164,16 @@ def test_day6_plugin_dashboard_handoff_closes_at_narration_boundary():
     assert "this.finishPluginDashboardHandoff('plugin_dashboard_done_grace_timeout');" in boundary_block
     assert "return await Promise.race([performancePromise, boundaryPromise]);" in boundary_block
 
+    missing_window_block = dashboard_block.split(
+        "if (!pluginDashboardWindow || pluginDashboardWindow.closed) {",
+        1,
+    )[1].split(
+        "if (guardFailed()) {",
+        1,
+    )[0]
+    assert "const cleanupCompleted = await this.cleanupDay6PluginDashboardPostNarration(" in missing_window_block
+    assert "this.day6PluginDashboardPreview = null;" in missing_window_block
+    assert "return cleanupCompleted && !guardFailed();" in missing_window_block
     assert "this.waitForPluginDashboardPerformanceUntilNarrationBoundary(pluginDashboardWindow" in dashboard_block
     assert "const cleanupCompleted = await this.cleanupDay6PluginDashboardPostNarration(" in dashboard_block
     assert "if (!cleanupCompleted || guardFailed()) {" in dashboard_block
