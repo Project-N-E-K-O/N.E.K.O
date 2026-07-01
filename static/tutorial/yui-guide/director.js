@@ -6136,14 +6136,20 @@
             const shouldContinue = options && typeof options.shouldContinue === 'function'
                 ? options.shouldContinue
                 : null;
+            const skipOpenSettingsPanel = !!(options && options.skipOpenSettingsPanel);
             if (shouldContinue && !shouldContinue()) {
                 return null;
             }
-            const opened = await this.openSettingsPanel();
-            if (!opened || this.isStopping()) {
+            if (!skipOpenSettingsPanel) {
+                const opened = await this.openSettingsPanel();
+                if (!opened) {
+                    return null;
+                }
+                this.positionManagedPanelNow('settings');
+            }
+            if (this.isStopping()) {
                 return null;
             }
-            this.positionManagedPanelNow('settings');
             const panel = await this.waitForElement(() => this.getAvatarFloatingSidePanel(type), 1200);
             if (!panel) {
                 return null;

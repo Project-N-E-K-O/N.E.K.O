@@ -89,6 +89,7 @@
                     target: 'settings-sidepanel:animation-settings',
                     cursorAction: 'tour',
                     operation: 'show-settings-sidepanel:animation-settings',
+                    deferSettingsSidePanelUntilCursorClick: true,
                     afterSceneDelayMs: 0
                 },
                 {
@@ -109,6 +110,7 @@
                     target: 'settings-sidepanel:animation-settings',
                     cursorAction: 'tour',
                     operation: 'show-settings-sidepanel:animation-settings',
+                    deferSettingsSidePanelUntilCursorClick: true,
                     afterSceneDelayMs: 0
                 },
                 {

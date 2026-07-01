@@ -2090,6 +2090,9 @@ test('director registers settings side panels as pause tokens', () => {
     assert.match(sidebarControllerBlock, /data-yui-guide-sidebar-paused/);
     assert.match(constructorBlock, /this\.sidebarPauseController = new SidebarPauseController\(\{/);
     assert.match(constructorBlock, /this\.pauseCoordinator\.registerPauseToken\('sidebar',\s*this\.sidebarPauseController\.getPauseToken\(\)\);/);
+    assert.match(ensureSettingsBlock, /const skipOpenSettingsPanel = !!\(options && options\.skipOpenSettingsPanel\);/);
+    assert.match(ensureSettingsBlock, /if \(!skipOpenSettingsPanel\) \{[\s\S]*const opened = await this\.openSettingsPanel\(\);/);
+    assert.match(ensureSettingsBlock, /if \(!opened\) \{[\s\S]*return null;[\s\S]*if \(this\.isStopping\(\)\) \{[\s\S]*return null;/);
     assert.match(ensureSettingsBlock, /this\.sidebarPauseController\.trackPanel\(panel\);/);
     assert.match(
         ensureSettingsBlock,
