@@ -307,6 +307,21 @@ class MMDInteraction {
         return true;
     }
 
+    async _waitForDisplaySwitchLayoutSettle() {
+        const nextFrame = () => new Promise(resolve => {
+            if (typeof requestAnimationFrame === 'function') {
+                requestAnimationFrame(resolve);
+            } else {
+                setTimeout(resolve, 0);
+            }
+        });
+
+        await nextFrame();
+        await nextFrame();
+        await new Promise(resolve => setTimeout(resolve, 140));
+        await nextFrame();
+    }
+
     // ═══════════════════ 锁定控制 ═══════════════════
 
     setLocked(locked) {
@@ -774,9 +789,8 @@ class MMDInteraction {
                 ? switchScreenY - targetDisplay.screenY + (Number(pointerOffset.y) || 0)
                 : modelScreenY - targetDisplay.screenY;
 
-            // 6. 等待新窗口尺寸生效，再执行回弹与保存
-            await new Promise(resolve => requestAnimationFrame(resolve));
-            await new Promise(resolve => requestAnimationFrame(resolve));
+            // 6. 等待 display-change 的延迟 resize 生效，再执行回弹与保存
+            await this._waitForDisplaySwitchLayoutSettle();
             this._moveModelCenterToWindowPoint(desiredModelCenterX, desiredModelCenterY);
 
             const snapped = useDragPointerForSwitch
