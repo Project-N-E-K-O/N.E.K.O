@@ -1071,10 +1071,24 @@
     window.analyzeEmotion = mod.analyzeEmotion;
 
     /**
-     * Apply an emotion to the Live2D model.
+     * Apply an emotion to the active avatar runtime.
      * @param {string} emotion
      */
     mod.applyEmotion = function applyEmotion(emotion) {
+        var modelType = String(window.lanlan_config && window.lanlan_config.model_type || '').toLowerCase();
+        if (modelType === 'pngtuber') {
+            if (window.pngtuberManager && typeof window.pngtuberManager.setEmotion === 'function') {
+                var pngtuberApplied = window.pngtuberManager.setEmotion(emotion);
+                if (pngtuberApplied) return;
+                var debugState = typeof window.pngtuberManager.getDebugState === 'function'
+                    ? window.pngtuberManager.getDebugState()
+                    : null;
+                console.warn('[PNGTuber] emotion unavailable:', emotion, debugState);
+                return;
+            }
+            console.warn('[PNGTuber] emotion runtime unavailable');
+            return;
+        }
         if (window.LanLan1 && window.LanLan1.setEmotion) {
             console.log('\u8C03\u7528window.LanLan1.setEmotion:', emotion);
             window.LanLan1.setEmotion(emotion);

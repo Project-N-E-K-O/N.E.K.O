@@ -1,12 +1,25 @@
+import json
 from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PNGTUBER_CORE_PATH = PROJECT_ROOT / "static" / "pngtuber-core.js"
+APP_BUTTONS_PATH = PROJECT_ROOT / "static" / "app-buttons.js"
 APP_AUDIO_PLAYBACK_PATH = PROJECT_ROOT / "static" / "app-audio-playback.js"
 APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app-interpage.js"
 APP_UI_PATH = PROJECT_ROOT / "static" / "app-ui.js"
 INDEX_CSS_PATH = PROJECT_ROOT / "static" / "css" / "index.css"
+SAMPLE_PNGTUBER_CONFIG_PATH = PROJECT_ROOT / "static" / "pngtuber-test" / "sample-pngtuber-model" / "character-config.static.json"
+PNGTUBER_FRONTEND_DOCS = [
+    PROJECT_ROOT / "docs" / "frontend" / "pngtuber.md",
+    PROJECT_ROOT / "docs" / "zh-CN" / "frontend" / "pngtuber.md",
+    PROJECT_ROOT / "docs" / "ja" / "frontend" / "pngtuber.md",
+]
+PNGTUBER_API_DOCS = [
+    PROJECT_ROOT / "docs" / "api" / "rest" / "pngtuber.md",
+    PROJECT_ROOT / "docs" / "zh-CN" / "api" / "rest" / "pngtuber.md",
+    PROJECT_ROOT / "docs" / "ja" / "api" / "rest" / "pngtuber.md",
+]
 
 
 def test_pngtuber_mobile_web_detection_uses_canonical_width_predicate():
@@ -213,7 +226,93 @@ def test_layered_pngtuber_motion_requires_explicit_runtime_feature_flags():
     assert "const layerMotionEnabled = this.layeredRuntimeFeatureEnabled('layer_motion');" in draw_block
     assert "layerMotionEnabled ? this.motionValue(layerState.xAmp, layerState.xFrq" in draw_block
     assert "layerMotionEnabled ? this.motionValue(layerState.yAmp, layerState.yFrq" in draw_block
-    assert "layerMotionEnabled ? this.motionValue(layerState.wiggle_amp, layerState.wiggle_freq || layerState.rot_frq" in draw_block
+    assert "const wiggleDegrees = layerMotionEnabled" in draw_block
+    assert "this.motionValue(layerState.wiggle_amp, layerState.wiggle_freq || layerState.rot_frq" in draw_block
+    assert ": 0;" in draw_block
+
+
+def test_pngtuber_plus_costume_hotkeys_and_toggles_are_runtime_features():
+    source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
+    constructor_block = source[
+        source.index("constructor(containerId = 'pngtuber-container')"):
+        source.index("        ensureContainer()")
+    ]
+    hotkey_block = source[
+        source.index("        handleLayeredHotkey(event)"):
+        source.index("        async setupLayeredAdapter()")
+    ]
+    toggle_helpers_block = source[
+        source.index("        layeredToggleEntries()"):
+        source.index("        handleLayeredHotkey(event)")
+    ]
+    render_block = source[
+        source.index("shouldRenderLayer(layer, stateName)"):
+        source.index("        layerStateForCurrentIndex(layer)")
+    ]
+    setup_block = source[
+        source.index("async setupLayeredAdapter()"):
+        source.index("        hasBlinkLayers()")
+    ]
+    debug_block = source[
+        source.index("getDebugState()"):
+        source.index("        setSpeaking(isSpeaking)")
+    ]
+
+    assert "this.layeredToggleVisibility = new Map();" in constructor_block
+    assert "this.layeredLayerById = new Map();" in constructor_block
+    assert "const toggles = this.layeredToggleEntries();" in source
+    assert "hotkeys.length === 0 && toggles.length === 0" in source
+    assert "this.initializeLayeredToggleState(layers);" in setup_block
+    assert "this.hotkeyMatchesEvent(hotkey, event)" in hotkey_block
+    assert "const hasToggleMatch = this.layeredToggleEntriesForEvent(event).length > 0;" in hotkey_block
+    assert hotkey_block.index("this.setLayeredStateIndex(Number(matched.state_index) || 0") < hotkey_block.index("this.toggleLayeredVisibilityForEvent(event)")
+    assert "this.layeredToggleVisibility.set(key, current === false);" in toggle_helpers_block
+    assert "this.layerToggleAncestors(layer).some((id) => this.layeredToggleVisibility.get(id) === false)" in toggle_helpers_block
+    assert "if (!this.isLayerToggleVisible(layer)) return false;" in render_block
+    assert "if (this.hasHiddenLayeredToggleAncestor(layer)) return false;" in render_block
+    assert "layeredToggles: Object.fromEntries(this.layeredToggleVisibility || new Map())" in debug_block
+
+
+def test_pngtuber_plus_transform_stack_clip_and_bounce_are_runtime_features():
+    source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
+    state_block = source[
+        source.index("        setLayeredStateIndex(index, options = {})"):
+        source.index("        playLayeredAnimation(target, options = {})")
+    ]
+    plus_branch_block = source[
+        source.index("        isLayeredPlusModel()"):
+        source.index("        layeredRuntimeFeatureEnabled(featureName)")
+    ]
+    physics_block = source[
+        source.index("        plusLayerPhysicsTransform(layer, layerState"):
+        source.index("        currentLayerMesh(layer, layerState)")
+    ]
+    draw_block = source[
+        source.index("        drawPlusLayerTree(ctx, layers"):
+        source.index("        drawLayeredState(stateName = this.state || 'idle'")
+    ]
+    layered_draw_block = source[
+        source.index("        drawLayeredState(stateName = this.state || 'idle'"):
+        source.index("        showTransientImage(src)")
+    ]
+    hop_block = source[
+        source.index("        startCostumeChangeHopAnimation()"):
+        source.index("        stopTalkingHopAnimation()")
+    ]
+
+    assert "this.layeredRuntimeFeatureEnabled('costume_change_bounce')" in state_block
+    assert "this.startCostumeChangeHopAnimation();" in state_block
+    assert "this.layeredMetadata?.source_format === 'pngtuber_plus_save'" in plus_branch_block
+    assert "`plus:${this.layeredPhysicsKey(layer)}`" in physics_block
+    assert "Math.sin(tick * (Number(layerState.xFrq) || 0))" in physics_block
+    assert "state.rotation += deltaRotation * 0.25;" in physics_block
+    assert "state.scaleX += ((1 - yvel) - state.scaleX) * 0.5;" in physics_block
+    assert "plusLayerTransform(layer, layerState, drawFrame, isRoot = false)" in source
+    assert "layerState.local_position || layer.local_position || layerState.position" in source
+    assert "this.layeredRuntimeFeatureEnabled('clip_children_rect')" in draw_block
+    assert "ctx.rect(transform.drawX, transform.drawY, drawFrame.dw, drawFrame.dh);" in draw_block
+    assert "return this.drawPlusLayerTree(ctx, layers, stateName, timestamp);" in layered_draw_block
+    assert "elapsed >= this.talkingHopPeriodMs" in hop_block
 
 
 def test_layered_pngtuber_keeps_stable_breathing_without_raw_layer_motion():
@@ -370,6 +469,164 @@ def test_pngtuber_debug_state_exposes_lip_sync_timer():
     ]
 
     assert "lipSyncFrame: !!this.lipSyncFrame" in debug_block
+    assert "const metadataCapabilities = Object.assign({}, this.layeredMetadata?.capabilities || {});" in debug_block
+    assert "const runtimeFeatures = Object.assign({}, this.layeredMetadata?.runtime_features || {});" in debug_block
+    assert "sourceFormat: this.layeredMetadata?.source_format || this.config.source_format || null" in debug_block
+    assert "adapterVersion: Number(this.layeredMetadata?.adapter_version || 1)" in debug_block
+    assert "metadataCapabilities" in debug_block
+    assert "runtimeFeatures" in debug_block
+    assert "enabledRuntimeFeatures" in debug_block
+    assert "unsupportedFeatures" in debug_block
+    assert "meshMetadata: metadataCapabilities.mesh_metadata === true || metadataCapabilities.mesh === true" in debug_block
+    assert "meshRuntime: metadataCapabilities.mesh_runtime === true || runtimeFeatures.mesh_deformation === true" in debug_block
+    assert "meshLayers" in debug_block
+    assert "physicsVersion: runtimeFeatures.physics_v2 === true ? 2 : 1" in debug_block
+    assert "currentEmotion: this.currentEmotion" in debug_block
+    assert "emotionImage: this.emotionImage || null" in debug_block
+    assert "emotionSupported" in debug_block
+    assert "emotionTimer: !!this.emotionTimer" in debug_block
+
+
+def test_pngtuber_layered_runtime_exposes_mesh_deformation_and_physics_v2():
+    source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
+
+    assert "const REMIX_MESH_DEFORM_STRENGTH = 0.28;" in source
+    assert "layerMeshRuntimeEnabled(layer, layerState)" in source
+    assert "drawAffineMeshTriangle(ctx, img, source, dest)" in source
+    assert "drawLayerMesh(ctx, img, layer, layerState, frame, physics)" in source
+    assert "this.layeredRuntimeFeatureEnabled('mesh_deformation')" in source
+    assert "this.layeredRuntimeFeatureEnabled('physics_v2')" in source
+    assert "this.remixValue(layerState, 'tip_point', null)" in source
+    assert "this.remixNumber(layerState, 'mesh_phys_x', 0)" in source
+    assert "this.remixNumber(layerState, 'mesh_phys_y', 0)" in source
+    assert "this.remixBool(layerState, 'drag_snap')" in source
+    assert "this.remixNumber(layerState, 'chain_softness', 75)" in source
+    assert "const drewMesh = this.drawLayerMesh(ctx, img, layer, layerState, drawFrame, physics);" in source
+
+
+def test_pngtuber_lightweight_emotion_runtime_contract():
+    source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
+    constructor_block = source[
+        source.index("constructor(containerId = 'pngtuber-container')"):
+        source.index("        ensureContainer()")
+    ]
+    state_block = source[
+        source.index("stateToSrc(state)"):
+        source.index("        setState(state", source.index("stateToSrc(state)"))
+    ]
+    set_emotion_block = source[
+        source.index("setEmotion(emotion"):
+        source.index("        setState(state", source.index("setEmotion(emotion"))
+    ]
+    load_block = source[
+        source.index("async load(config)"):
+        source.index("        stateToSrc(state)")
+    ]
+
+    assert "const EMOTION_IMAGE_KEYS" in source
+    assert "const CLEAR_EMOTIONS = new Set(['neutral', 'idle', 'default', 'none', 'clear', '']);" in source
+    assert "const DEFAULT_EMOTION_DURATION_MS = 5000;" in source
+    assert "this.currentEmotion = null;" in constructor_block
+    assert "this.emotionImage = '';" in constructor_block
+    assert "this.emotionTimer = null;" in constructor_block
+    assert "this.clearEmotion({ render: false });" in load_block
+    assert "if (options.render !== false && this.isLayeredActive())" in source
+    assert "} else if (options.render !== false) {" in source
+    assert "hasIndependentTalkingImage()" in state_block
+    assert "return this.config.talking_image || this.emotionImage || this.config.idle_image || DEFAULT_PLACEHOLDER;" in state_block
+    assert "if (state === 'idle') return this.emotionImage || this.config.idle_image || DEFAULT_PLACEHOLDER;" in state_block
+    assert "return this.config[emotionKey] || this.config.idle_image || DEFAULT_PLACEHOLDER;" in state_block
+    assert "clearEmotion(options = {})" in source
+    assert "setLayeredEmotion(emotionName, options = {})" in source
+    assert "layeredEmotionTarget(emotionName)" in source
+    assert "layeredEmotionSupported()" in source
+    assert "const fallbackOrder = { happy: 1, sad: 2, angry: 3, surprised: 4 };" in source
+    assert "if (fallbackIndex !== undefined && this.getLayeredStateCount() >= 5) return fallbackIndex;" in source
+    assert "return this.getLayeredStateCount() >= 5;" in source
+    assert "setEmotion(emotion, options = {})" in source
+    assert "if (CLEAR_EMOTIONS.has(emotionName))" in set_emotion_block
+    assert "if (this.isLayeredActive()) return this.setLayeredEmotion(emotionName, options);" in set_emotion_block
+    assert "this.setLayeredStateIndex(0, { source: 'emotion-clear' });" in source
+    assert "return this.setLayeredStateIndex(stateIndex, { source: 'emotion' });" in source
+    assert "if (!nextImage) return false;" in set_emotion_block
+    assert "this.currentEmotion = emotionName;" in set_emotion_block
+    assert "this.emotionImage = nextImage;" in set_emotion_block
+    assert "options.durationMs === undefined ? DEFAULT_EMOTION_DURATION_MS : durationMs" in set_emotion_block
+    assert "this.setState(nextState, { restartLayeredAnimation: false });" in set_emotion_block
+
+
+def test_apply_emotion_prefers_pngtuber_runtime_when_active():
+    source = APP_BUTTONS_PATH.read_text(encoding="utf-8")
+    apply_block = source[
+        source.index("mod.applyEmotion = function applyEmotion(emotion)"):
+        source.index("    window.applyEmotion = mod.applyEmotion;")
+    ]
+
+    assert "var modelType = String(window.lanlan_config && window.lanlan_config.model_type || '').toLowerCase();" in apply_block
+    assert "modelType === 'pngtuber'" in apply_block
+    assert "window.pngtuberManager.setEmotion(emotion)" in apply_block
+    assert "if (pngtuberApplied) return;" in apply_block
+    assert "[PNGTuber] emotion unavailable:" in apply_block
+    assert "window.pngtuberManager.getDebugState()" in apply_block
+    assert "[PNGTuber] emotion runtime unavailable" in apply_block
+    assert apply_block.index("if (modelType === 'pngtuber')") < apply_block.index("window.LanLan1.setEmotion(emotion);")
+    assert "return;" in apply_block
+    assert "window.LanLan1.setEmotion(emotion);" in apply_block
+
+
+def test_sample_pngtuber_config_has_four_emotion_images():
+    payload = json.loads(SAMPLE_PNGTUBER_CONFIG_PATH.read_text(encoding="utf-8"))
+    pngtuber = payload["pngtuber"]
+
+    for key in ("happy_image", "sad_image", "angry_image", "surprised_image"):
+        assert pngtuber[key].startswith("/static/pngtuber-test/sample-pngtuber-model/")
+
+
+def test_pngtuber_docs_include_capability_matrix_failures_and_acceptance_checks():
+    required_formats = [
+        'source_format: "simple_package"',
+        'source_format: "pngtuber_plus_save"',
+        'source_format: "pngtube_remix_pngremix"',
+        'source_format: "veadotube"',
+        'source_format: "image_pair_candidate"',
+        ".save",
+        ".pngRemix",
+        ".veadomini",
+        ".veado",
+        "meshRuntime",
+        "window.applyEmotion('happy')",
+        "node --check static\\pngtuber-core.js",
+        "node --check static\\app-buttons.js",
+        "tests\\unit\\test_pngtuber_static_contracts.py",
+        "tests\\unit\\test_card_maker_static_contracts.py",
+        "tests\\unit\\test_pngtuber_router_delete.py",
+        "tests\\unit\\test_model_manager_window_features.py",
+    ]
+
+    for doc_path in PNGTUBER_FRONTEND_DOCS + PNGTUBER_API_DOCS:
+        source = doc_path.read_text(encoding="utf-8")
+        for marker in required_formats:
+            assert marker in source, f"{marker} missing from {doc_path}"
+
+    frontend_text = "\n".join(path.read_text(encoding="utf-8") for path in PNGTUBER_FRONTEND_DOCS)
+    api_text = "\n".join(path.read_text(encoding="utf-8") for path in PNGTUBER_API_DOCS)
+
+    assert "Capability matrix" in frontend_text
+    assert "能力表" in frontend_text
+    assert "機能マトリクス" in frontend_text
+    assert "Failure prompts" in frontend_text
+    assert "失败提示" in frontend_text
+    assert "失敗時の表示" in frontend_text
+    assert "Acceptance checklist" in frontend_text
+    assert "验收清单" in frontend_text
+    assert "受け入れチェック" in frontend_text
+
+    assert "Capability and failure matrix" in api_text
+    assert "能力与失败矩阵" in api_text
+    assert "機能と失敗マトリクス" in api_text
+    assert "Acceptance checks" in api_text
+    assert "验收检查" in api_text
+    assert "受け入れチェック" in api_text
 
 
 def test_pngtuber_talking_hop_moves_whole_avatar_while_speaking():
