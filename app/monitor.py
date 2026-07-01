@@ -492,6 +492,7 @@ async def cleanup_disconnected_clients():
 
 if __name__ == "__main__":
     # 在打包环境中，直接传递 app 对象而不是字符串
-    # Bind to loopback only — the monitor server is consumed locally; exposing
-    # it on 0.0.0.0 would let any reachable host introspect Live2D/control state.
-    uvicorn.run(app, host="127.0.0.1", port=MONITOR_SERVER_PORT, reload=False)
+    # The monitor server is a read-only status receiver designed to be
+    # reachable by external clients. Keep binding to 0.0.0.0 to preserve
+    # its intended use; hardening (e.g. token auth) should be additive.
+    uvicorn.run(app, host="0.0.0.0", port=MONITOR_SERVER_PORT, reload=False)
