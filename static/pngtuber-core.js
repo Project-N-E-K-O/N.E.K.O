@@ -104,6 +104,8 @@
             this.layeredMetadata = null;
             this.layeredImages = new Map();
             this.layeredBlinking = false;
+            this.layeredAssetVisibility = new Map();
+            this.layeredAssetActionActive = false;
             this.layeredBlinkTimer = null;
             this.layeredBlinkEndTimer = null;
             this.layeredStateIndex = 0;
@@ -313,8 +315,7 @@
 
         attachLayeredHotkeys() {
             if (this._layeredHotkeysAttached || !this.isLayeredActive()) return;
-            const hotkeys = Array.isArray(this.layeredMetadata.hotkeys) ? this.layeredMetadata.hotkeys : [];
-            if (hotkeys.length === 0) return;
+            if (this.getLayeredStateCount() <= 1 && !this.hasLayeredAssetActions()) return;
             window.addEventListener('keydown', this._boundLayeredHotkey, true);
             this._layeredHotkeysAttached = true;
         }
@@ -412,13 +413,61 @@
             });
         }
 
-        hotkeyMatchesEvent(hotkey, event) {
-            const keycode = Number(hotkey.keycode || 0);
-            if (keycode && event.keyCode !== keycode && event.which !== keycode) return false;
-            if (!!hotkey.ctrl !== !!event.ctrlKey) return false;
-            if (!!hotkey.shift !== !!event.shiftKey) return false;
-            if (!!hotkey.alt !== !!event.altKey) return false;
-            if (!!hotkey.meta !== !!event.metaKey) return false;
+        isLayeredCycleHotkey(event) {
+            return !!(
+                event
+                && event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey
+                && (event.key === '1' || event.code === 'Digit1' || event.keyCode === 49)
+            );
+        }
+
+        cycleLayeredState() {
+            if (!this.isLayeredActive() || this.getLayeredStateCount() <= 1) return false;
+            const stateCount = this.getLayeredStateCount();
+            return this.setLayeredStateIndex((this.layeredStateIndex + 1) % stateCount, { source: 'alt-one-cycle-hotkey' });
+        }
+
+        isLayeredAssetActionHotkey(event) {
+            return !!(
+                event
+                && event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey
+                && (event.key === '2' || event.code === 'Digit2' || event.keyCode === 50)
+            );
+        }
+
+        hasLayeredAssetActions() {
+            return Array.isArray(this.layeredMetadata?.asset_actions) && this.layeredMetadata.asset_actions.length > 0;
+        }
+
+        primaryLayeredAssetAction() {
+            if (!this.hasLayeredAssetActions()) return null;
+            return this.layeredMetadata.asset_actions.find((action) => {
+                return Array.isArray(action.show_sprite_ids) && action.show_sprite_ids.length > 0;
+            }) || this.layeredMetadata.asset_actions[0];
+        }
+
+        togglePrimaryLayeredAssetAction() {
+            if (!this.isLayeredActive()) return false;
+            const action = this.primaryLayeredAssetAction();
+            if (!action) return false;
+            this.layeredAssetActionActive = !this.layeredAssetActionActive;
+            this.layeredAssetVisibility.clear();
+            if (this.layeredAssetActionActive) {
+                (action.show_sprite_ids || []).forEach((spriteId) => {
+                    this.layeredAssetVisibility.set(String(spriteId), true);
+                });
+                (action.hide_sprite_ids || []).forEach((spriteId) => {
+                    this.layeredAssetVisibility.set(String(spriteId), false);
+                });
+            }
+            this.drawLayeredState();
+            window.dispatchEvent(new CustomEvent('pngtuber-layered-asset-action-changed', {
+                detail: {
+                    active: this.layeredAssetActionActive,
+                    action: action.key || action.label || '',
+                    source: 'alt-two-asset-hotkey'
+                }
+            }));
             return true;
         }
 
@@ -433,12 +482,18 @@
             )) {
                 return;
             }
-            const hotkeys = Array.isArray(this.layeredMetadata.hotkeys) ? this.layeredMetadata.hotkeys : [];
-            const matched = hotkeys.find((hotkey) => this.hotkeyMatchesEvent(hotkey, event));
-            if (!matched) return;
-            event.preventDefault();
-            event.stopPropagation();
-            this.setLayeredStateIndex(Number(matched.state_index) || 0, { source: 'hotkey' });
+            if (this.isLayeredCycleHotkey(event)) {
+                event.preventDefault();
+                event.stopPropagation();
+                this.cycleLayeredState();
+                return;
+            }
+            if (this.isLayeredAssetActionHotkey(event)) {
+                event.preventDefault();
+                event.stopPropagation();
+                this.togglePrimaryLayeredAssetAction();
+                return;
+            }
         }
 
         async setupLayeredAdapter() {
@@ -448,6 +503,8 @@
             this.layeredMetadata = null;
             this.layeredImages = new Map();
             this.layeredStateIndex = 0;
+            this.layeredAssetVisibility = new Map();
+            this.layeredAssetActionActive = false;
             if (!this.isLayeredConfigured()) return false;
             try {
                 const response = await fetch(this.config.layered_metadata, { cache: 'no-cache' });
@@ -520,7 +577,9 @@
         }
 
         shouldRenderLayer(layer, stateName) {
-            if (layer.inactive_asset_ancestor) return false;
+            const assetVisibility = this.layeredAssetVisibility.get(String(layer.sprite_id));
+            if (assetVisibility === false) return false;
+            if (layer.inactive_asset_ancestor && assetVisibility !== true) return false;
             const mode = stateName === 'talking' ? 'talking' : 'idle';
             const layerState = this.layerStateForCurrentIndex(layer);
             if (layerState.folder) return false;
@@ -740,6 +799,55 @@
             return Math.sin(elapsedSeconds * Math.PI * 2 * hz + phase) * amp;
         }
 
+        layerDrawZIndex(layer, layerState = null) {
+            layerState = layerState || this.layerStateForCurrentIndex(layer);
+            const raw = layerState.effective_z_index ?? layer.effective_zindex;
+            const value = Number(raw);
+            if (Number.isFinite(value)) return value;
+            return this.fallbackLayerDrawZIndex(layer, layerState);
+        }
+
+        layerLocalZIndex(layer, layerState = null) {
+            layerState = layerState || this.layerStateForCurrentIndex(layer);
+            const value = Number(layerState.z_index ?? layer.zindex ?? 0);
+            return Number.isFinite(value) ? value : 0;
+        }
+
+        fallbackLayerDrawZIndex(layer, layerState = null) {
+            const layers = Array.isArray(this.layeredMetadata?.layers) ? this.layeredMetadata.layers : [];
+            const layersBySpriteId = new Map();
+            layers.forEach((candidate) => {
+                if (candidate && candidate.sprite_id !== undefined && candidate.sprite_id !== null) {
+                    layersBySpriteId.set(String(candidate.sprite_id), candidate);
+                }
+            });
+            let total = 0;
+            let current = layer;
+            let currentState = layerState || this.layerStateForCurrentIndex(current);
+            const visited = new Set();
+            while (current) {
+                const spriteId = current.sprite_id;
+                const visitKey = spriteId !== undefined && spriteId !== null ? String(spriteId) : `order:${current.order}`;
+                if (visited.has(visitKey)) break;
+                visited.add(visitKey);
+                total += this.layerLocalZIndex(current, currentState);
+                const zAsRelative = currentState.z_as_relative ?? current.z_as_relative;
+                if (zAsRelative === false) break;
+                const parentId = current.parent_id;
+                if (parentId === undefined || parentId === null) break;
+                current = layersBySpriteId.get(String(parentId));
+                currentState = current ? this.layerStateForCurrentIndex(current) : null;
+            }
+            return total;
+        }
+
+        compareLayerDrawOrder(a, b) {
+            const aState = this.layerStateForCurrentIndex(a);
+            const bState = this.layerStateForCurrentIndex(b);
+            return (this.layerDrawZIndex(a, aState) - this.layerDrawZIndex(b, bState))
+                || (Number(a.order || 0) - Number(b.order || 0));
+        }
+
         drawLayeredState(stateName = this.state || 'idle', timestamp = performance.now()) {
             if (!this.isLayeredActive() || !this.canvasElement) return false;
             const canvas = this.canvasElement;
@@ -750,12 +858,7 @@
             const layerMotionEnabled = this.layeredRuntimeFeatureEnabled('layer_motion');
             layers
                 .filter((layer) => this.shouldRenderLayer(layer, stateName))
-                .sort((a, b) => {
-                    const aState = this.layerStateForCurrentIndex(a);
-                    const bState = this.layerStateForCurrentIndex(b);
-                    return (Number(aState.z_index ?? a.zindex ?? 0) - Number(bState.z_index ?? b.zindex ?? 0))
-                        || (Number(a.order || 0) - Number(b.order || 0));
-                })
+                .sort((a, b) => this.compareLayerDrawOrder(a, b))
                 .forEach((layer) => {
                     const img = this.layeredImages.get(layer._imageIndex);
                     if (!img) return;
@@ -1617,12 +1720,7 @@
             const layers = Array.isArray(this.layeredMetadata.layers) ? this.layeredMetadata.layers : [];
             return layers
                 .filter((layer) => this.shouldRenderLayer(layer, stateName))
-                .sort((a, b) => {
-                    const aState = this.layerStateForCurrentIndex(a);
-                    const bState = this.layerStateForCurrentIndex(b);
-                    return (Number(aState.z_index ?? a.zindex ?? 0) - Number(bState.z_index ?? b.zindex ?? 0))
-                        || (Number(a.order || 0) - Number(b.order || 0));
-                })
+                .sort((a, b) => this.compareLayerDrawOrder(a, b))
                 .map((layer) => {
                     const layerState = this.layerStateForCurrentIndex(layer);
                     const img = this.layeredImages.get(layer._imageIndex);
