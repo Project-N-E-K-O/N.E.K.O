@@ -165,6 +165,19 @@ const metricsLoading = ref(false)
 const globalMetrics = ref<GlobalMetrics | null>(null)
 let metricsTimer: number | null = null
 
+function isGoodbyeResourceSuspendingOrSuspended() {
+  if (typeof window === 'undefined') return false
+  try {
+    const helper = (window as any).isNekoGoodbyeResourceSuspendingOrSuspended
+    if (typeof helper === 'function' && helper()) return true
+    if ((window as any).goodbyeResourceSuspended === true) return true
+    if ((window as any).__nekoGoodbyeResourceSuspendPending === true) return true
+    return window.localStorage.getItem('neko-goodbye-resource-suspended') === 'true'
+  } catch {
+    return false
+  }
+}
+
 // ── Computed stats ────────────────────────────────────────────────────
 
 const totalPlugins = computed(() => pluginStore.plugins.length)
@@ -402,8 +415,13 @@ function handleStartTutorial() {
 }
 
 function startAutoRefresh() {
+  if (isGoodbyeResourceSuspendingOrSuspended()) return
   stopAutoRefresh()
   metricsTimer = window.setInterval(() => {
+    if (isGoodbyeResourceSuspendingOrSuspended()) {
+      stopAutoRefresh()
+      return
+    }
     fetchGlobalMetrics()
   }, METRICS_REFRESH_INTERVAL)
 }
@@ -415,6 +433,15 @@ function stopAutoRefresh() {
   }
 }
 
+function handleGoodbyeResourceState(event: Event) {
+  const detail = (event as CustomEvent).detail || {}
+  if (detail.suspended || detail.pending || isGoodbyeResourceSuspendingOrSuspended()) {
+    stopAutoRefresh()
+  } else {
+    startAutoRefresh()
+  }
+}
+
 onMounted(async () => {
   await Promise.all([
     pluginStore.fetchPlugins(),
@@ -422,10 +449,12 @@ onMounted(async () => {
     fetchServerInfo(),
     fetchGlobalMetrics(),
   ])
+  window.addEventListener('neko:goodbye-resource-suspend-state', handleGoodbyeResourceState)
   startAutoRefresh()
 })
 
 onUnmounted(() => {
+  window.removeEventListener('neko:goodbye-resource-suspend-state', handleGoodbyeResourceState)
   stopAutoRefresh()
 })
 </script>
