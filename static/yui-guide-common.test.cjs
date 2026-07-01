@@ -1523,7 +1523,10 @@ test('settings tour flow owns migrated settings tour concrete scene bodies', () 
     assert.match(flowChatBlock, /return this\.playPanelTourScene\(scene,\s*context,\s*this\.getPanelTourSchema\(scene\)\);/);
     assert.match(flowModelBlock, /return this\.playPanelTourScene\(scene,\s*context,\s*this\.getPanelTourSchema\(scene\)\);/);
     assert.match(flowPanelTourBlock, /const narration = this\.prepareNarration\(scene\);/);
-    assert.match(flowPanelTourBlock, /this\.createNarrationPromise\(scene,\s*narration\)/);
+    assert.match(
+        flowPanelTourBlock,
+        /this\.createNarrationPromise\(scene,\s*narration,\s*\{[\s\S]*minDurationMs:\s*normalizedSchema\.panelMinDurationMs[\s\S]*\}\)/
+    );
     assert.match(day4ChatSettingsSceneBlock, /deferSettingsSidePanelUntilCursorClick:\s*true/);
     assert.match(prepareSceneBlock, /const deferSettingsSidePanelUntilCursorClick = !!\(/);
     assert.match(
@@ -2062,7 +2065,7 @@ test('director registers settings side panels as pause tokens', () => {
         '            this.cursorAnchorStore = new CursorAnchorStore();',
         1
     )[0];
-    const ensureSettingsBlock = directorSource.split('        async ensureAvatarFloatingSettingsSidePanel(type) {')[1].split(
+    const ensureSettingsBlock = directorSource.split('        async ensureAvatarFloatingSettingsSidePanel(type, options) {')[1].split(
         '        async ensureAvatarFloatingAgentSidePanel(toggleId) {',
         1
     )[0];
