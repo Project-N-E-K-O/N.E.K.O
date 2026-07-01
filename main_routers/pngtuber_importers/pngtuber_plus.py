@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import io
 import ast
 import json
@@ -13,7 +14,7 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 
 
 VECTOR_RE = re.compile(r"Vector2\(\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\)")
@@ -196,6 +197,38 @@ def _blink_config_from_plus_settings(settings: dict) -> dict:
     }
 
 
+def _path_is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _asset_roots(package_dir: Path, asset_dir: Path | None = None) -> list[Path]:
+    package_root = package_dir.resolve()
+    roots = []
+    if asset_dir is not None:
+        asset_root = asset_dir.resolve()
+        if _path_is_within(asset_root, package_root):
+            roots.append(asset_root)
+    roots.append(package_root)
+    deduped = []
+    seen = set()
+    for root in roots:
+        if root not in seen:
+            deduped.append(root)
+            seen.add(root)
+    return deduped
+
+
+def _allowed_asset_path(candidate: Path, roots: list[Path]) -> Path | None:
+    resolved = candidate.resolve()
+    if any(_path_is_within(resolved, root) for root in roots):
+        return resolved
+    return None
+
+
 def _resolve_external_path(package_dir: Path, raw_path: str, asset_dir: Path | None = None) -> Path | None:
     if not raw_path:
         return None
@@ -203,29 +236,44 @@ def _resolve_external_path(package_dir: Path, raw_path: str, asset_dir: Path | N
     filename = normalized.split("/")[-1]
     if not filename:
         return None
-    roots = [asset_dir, package_dir] if asset_dir and asset_dir.resolve() != package_dir.resolve() else [package_dir]
+    roots = _asset_roots(package_dir, asset_dir)
     for root in roots:
         direct = root / normalized
-        if direct.exists():
-            return direct
+        allowed_direct = _allowed_asset_path(direct, roots)
+        if allowed_direct and allowed_direct.exists():
+            return allowed_direct
         basename_match = root / filename
-        if basename_match.exists():
-            return basename_match
+        allowed_basename = _allowed_asset_path(basename_match, roots)
+        if allowed_basename and allowed_basename.exists():
+            return allowed_basename
     matches = []
     for root in roots:
         matches.extend(sorted(root.rglob(filename)))
-    return matches[0] if matches else None
+    for match in matches:
+        allowed_match = _allowed_asset_path(match, roots)
+        if allowed_match and allowed_match.exists():
+            return allowed_match
+    return None
 
 
 def _load_layer_image(package_dir: Path, layer_data: dict, asset_dir: Path | None = None) -> Image.Image | None:
     image_data = layer_data.get("imageData")
     if isinstance(image_data, str) and image_data.strip():
-        raw = base64.b64decode(image_data)
-        return Image.open(io.BytesIO(raw)).convert("RGBA")
+        payload = image_data.strip()
+        if payload.lower().startswith("data:") and "," in payload:
+            payload = payload.split(",", 1)[1].strip()
+        try:
+            raw = base64.b64decode(payload, validate=True)
+            return Image.open(io.BytesIO(raw)).convert("RGBA")
+        except (binascii.Error, OSError, UnidentifiedImageError, ValueError):
+            return None
 
     external_path = _resolve_external_path(package_dir, str(layer_data.get("path") or ""), asset_dir)
     if external_path and external_path.exists():
-        return Image.open(external_path).convert("RGBA")
+        try:
+            return Image.open(external_path).convert("RGBA")
+        except (OSError, UnidentifiedImageError, ValueError):
+            return None
     return None
 
 

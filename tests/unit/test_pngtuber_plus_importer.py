@@ -239,6 +239,72 @@ def test_pngtuber_plus_import_resolves_nested_save_relative_assets(tmp_path):
     assert idle.getpixel((4, 4)) == (0, 255, 0, 255)
 
 
+def test_pngtuber_plus_import_rejects_external_paths_outside_package(tmp_path):
+    outside = tmp_path.parent / f"{tmp_path.name}_outside.png"
+    _solid((10, 10), (0, 255, 0, 255)).save(outside)
+    save_data = {
+        "0": {
+            "type": "sprite",
+            "identification": 1,
+            "parentId": None,
+            "pos": "Vector2(0, 0)",
+            "offset": "Vector2(0, 0)",
+            "zindex": 0,
+            "imageData": _png_data_url(_solid((10, 10), (255, 0, 0, 255))),
+        },
+        "1": {
+            "type": "sprite",
+            "identification": 2,
+            "parentId": None,
+            "pos": "Vector2(0, 0)",
+            "offset": "Vector2(0, 0)",
+            "zindex": 1,
+            "path": f"../{outside.name}",
+        },
+    }
+    save_file = tmp_path / "avatar.save"
+    save_file.write_text(json.dumps(save_data), encoding="utf-8")
+
+    import_pngtuber_plus_save(tmp_path, save_file, "fallback")
+
+    metadata = json.loads((tmp_path / "metadata.pngtuber-plus.json").read_text(encoding="utf-8"))
+    assert [layer["identification"] for layer in metadata["layers"]] == ["1"]
+    idle = Image.open(tmp_path / "idle.png").convert("RGBA")
+    assert idle.getpixel((5, 5)) == (255, 0, 0, 255)
+
+
+def test_pngtuber_plus_import_skips_bad_image_data_and_accepts_data_urls(tmp_path):
+    save_data = {
+        "0": {
+            "type": "sprite",
+            "identification": 1,
+            "parentId": None,
+            "pos": "Vector2(0, 0)",
+            "offset": "Vector2(0, 0)",
+            "zindex": 0,
+            "imageData": "data:image/png;base64,not-valid-image-data",
+        },
+        "1": {
+            "type": "sprite",
+            "identification": 2,
+            "parentId": None,
+            "pos": "Vector2(0, 0)",
+            "offset": "Vector2(0, 0)",
+            "zindex": 1,
+            "imageData": f"data:image/png;base64,{_png_data_url(_solid((10, 10), (0, 0, 255, 255)))}",
+        },
+    }
+    save_file = tmp_path / "avatar.save"
+    save_file.write_text(json.dumps(save_data), encoding="utf-8")
+
+    import_pngtuber_plus_save(tmp_path, save_file, "fallback")
+
+    metadata = json.loads((tmp_path / "metadata.pngtuber-plus.json").read_text(encoding="utf-8"))
+    assert [layer["identification"] for layer in metadata["layers"]] == ["2"]
+    idle = Image.open(tmp_path / "idle.png").convert("RGBA")
+    assert idle.getpixel((5, 5)) == (0, 0, 255, 255)
+
+
 def test_pngtuber_plus_import_sanitizes_non_finite_numbers(tmp_path):
     save_data = {
         "0": {
