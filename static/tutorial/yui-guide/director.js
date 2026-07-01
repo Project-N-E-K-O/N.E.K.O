@@ -6779,6 +6779,9 @@
             }
             const shouldClearCursor = !!(options && options.clearCursor === true);
             const shouldPreservePcOverlayCursor = !!(options && options.preservePcOverlayCursor === true);
+            if (shouldClearCursor && shouldPreservePcOverlayCursor) {
+                this.setHomePcCursorOutputSuppressedForExternalizedChat(false);
+            }
             if (
                 shouldClearCursor
                 && shouldPreservePcOverlayCursor
@@ -6792,7 +6795,6 @@
                     && Number.isFinite(currentCursorPoint.x)
                     && Number.isFinite(currentCursorPoint.y)
                 ) {
-                    this.setHomePcCursorOutputSuppressedForExternalizedChat(false);
                     this.overlay.syncCursorPosition(currentCursorPoint.x, currentCursorPoint.y, true);
                 }
             }
@@ -7490,12 +7492,14 @@
                     settleDelayMs: 40
                 }
             );
-            const sidePanelShownPromise = this.ensureAvatarFloatingAgentSidePanel('user-plugin');
             const movedToUserPlugin = await userPluginMovePromise;
             if (!movedToUserPlugin || guardFailed()) {
                 return false;
             }
-            const sidePanelShown = await sidePanelShownPromise;
+            const sidePanelShown = await this.runActionWithCursorClickExact(
+                scaleSceneMs(DAY6_PLUGIN_SIDE_PANEL_CLICK_VISIBLE_MS, 360, 900),
+                () => this.ensureAvatarFloatingAgentSidePanel('user-plugin')
+            );
             if (!sidePanelShown || guardFailed()) {
                 return false;
             }
@@ -7626,39 +7630,42 @@
                 elapsedNarrationMs
             }).catch(() => false);
 
-            this.scheduleDay6PluginDashboardPostNarrationCleanup(
+            const cleanupCompleted = await this.cleanupDay6PluginDashboardPostNarration(
                 previewState,
                 homeCursorPosition,
                 this.sceneRunId
             );
             this.day6PluginDashboardPreview = null;
-            if (guardFailed()) {
+            if (!cleanupCompleted || guardFailed()) {
                 return false;
             }
             return true;
         }
 
-        scheduleDay6PluginDashboardPostNarrationCleanup(previewState, homeCursorPosition, sceneRunId) {
+        async cleanupDay6PluginDashboardPostNarration(previewState, homeCursorPosition, sceneRunId) {
             const normalizedPreviewState = previewState || {};
-            (async () => {
-                try {
-                    await this.closePluginDashboardWindowIfCreatedByGuide('Day 6 插件管理预览完成');
-                    this.collapseAgentSidePanel('agent-user-plugin');
-                    this.clearVirtualSpotlight('plugin-management-entry');
-                    this.stopHoverElement(normalizedPreviewState.userPluginToggle || null);
-                    await this.closeAgentPanel().catch(() => {});
-                    await this.waitForHomeMainUIReady(3600);
-                    if (
-                        homeCursorPosition
-                        && this.sceneRunId === sceneRunId
-                        && !this.isStopping()
-                    ) {
-                        this.cursor.showAt(homeCursorPosition.x, homeCursorPosition.y);
-                    }
-                } catch (error) {
-                    console.warn('[YuiGuide] Day 6 插件管理后台收尾失败:', error);
+            try {
+                await this.closePluginDashboardWindowIfCreatedByGuide('Day 6 插件管理预览完成');
+                this.collapseAgentSidePanel('agent-user-plugin');
+                this.clearVirtualSpotlight('plugin-management-entry');
+                this.stopHoverElement(normalizedPreviewState.userPluginToggle || null);
+                await this.closeAgentPanel().catch(() => {});
+                const homeReady = await this.waitForHomeMainUIReady(3600);
+                if (!homeReady) {
+                    return false;
                 }
-            })();
+                if (
+                    homeCursorPosition
+                    && this.sceneRunId === sceneRunId
+                    && !this.isStopping()
+                ) {
+                    this.cursor.showAt(homeCursorPosition.x, homeCursorPosition.y);
+                }
+                return true;
+            } catch (error) {
+                console.warn('[YuiGuide] Day 6 插件管理后台收尾失败:', error);
+                return false;
+            }
         }
 
         async runDay6PluginSidePanelFlow(scene, narrationStartedAt) {

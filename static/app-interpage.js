@@ -4650,6 +4650,8 @@
                     allowCreateRun: !(normalizedOptions.allowCreatePcOverlayRun === false),
                     skipBegin: normalizedOptions.skipPcOverlayBegin === true
                 });
+            } else if (isYuiGuidePcCursorOnlyMode()) {
+                yuiGuidePcOverlayCursor = null;
             }
             hideYuiGuideChatCursorElement();
             yuiGuideChatCursorPoint = null;

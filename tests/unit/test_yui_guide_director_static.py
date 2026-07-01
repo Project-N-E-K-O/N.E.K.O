@@ -141,7 +141,14 @@ def test_day6_plugin_dashboard_handoff_closes_at_narration_boundary():
         "        async runDay6PluginDashboardHandoffFlow(scene, narrationStartedAt) {",
         1,
     )[1].split(
-        "        scheduleDay6PluginDashboardPostNarrationCleanup(previewState, homeCursorPosition, sceneRunId) {",
+        "        async cleanupDay6PluginDashboardPostNarration(previewState, homeCursorPosition, sceneRunId) {",
+        1,
+    )[0]
+    dashboard_cleanup_block = source.split(
+        "        async cleanupDay6PluginDashboardPostNarration(previewState, homeCursorPosition, sceneRunId) {",
+        1,
+    )[1].split(
+        "        async runDay6PluginSidePanelFlow(scene, narrationStartedAt) {",
         1,
     )[0]
     side_panel_block = source.split(
@@ -158,10 +165,15 @@ def test_day6_plugin_dashboard_handoff_closes_at_narration_boundary():
     assert "return await Promise.race([performancePromise, boundaryPromise]);" in boundary_block
 
     assert "this.waitForPluginDashboardPerformanceUntilNarrationBoundary(pluginDashboardWindow" in dashboard_block
-    assert "this.scheduleDay6PluginDashboardPostNarrationCleanup(" in dashboard_block
+    assert "const cleanupCompleted = await this.cleanupDay6PluginDashboardPostNarration(" in dashboard_block
+    assert "if (!cleanupCompleted || guardFailed()) {" in dashboard_block
+    assert "scheduleDay6PluginDashboardPostNarrationCleanup(" not in source
     assert "await this.closePluginDashboardWindowIfCreatedByGuide('Day 6 插件管理预览完成');" not in dashboard_block
     assert "await this.closeAgentPanel().catch(() => {});" not in dashboard_block
     assert "await this.waitForHomeMainUIReady(3600);" not in dashboard_block
+    assert "await this.closePluginDashboardWindowIfCreatedByGuide('Day 6 插件管理预览完成');" in dashboard_cleanup_block
+    assert "await this.closeAgentPanel().catch(() => {});" in dashboard_cleanup_block
+    assert "const homeReady = await this.waitForHomeMainUIReady(3600);" in dashboard_cleanup_block
     assert "this.waitForPluginDashboardPerformanceUntilNarrationBoundary(pluginDashboardWindow" in side_panel_block
     assert "await this.waitForPluginDashboardPerformance(pluginDashboardWindow" not in dashboard_block
     assert "await this.waitForPluginDashboardPerformance(pluginDashboardWindow" not in side_panel_block
@@ -225,8 +237,14 @@ def test_day6_agent_status_cursor_moves_to_cat_paw_and_clicks_during_line():
         management_block.index("await this.waitForSceneDelay(DAY6_PLUGIN_SIDE_PANEL_CURSOR_START_DELAY_MS)")
         < management_block.index("const userPluginMovePromise = this.moveCursorToTrackedElement(")
     )
-    assert "const sidePanelShownPromise = this.ensureAvatarFloatingAgentSidePanel('user-plugin');" in management_block
-    assert "const sidePanelShown = await sidePanelShownPromise;" in management_block
+    assert "const sidePanelShownPromise = this.ensureAvatarFloatingAgentSidePanel('user-plugin');" not in management_block
+    assert "const movedToUserPlugin = await userPluginMovePromise;" in management_block
+    assert "const sidePanelShown = await this.runActionWithCursorClickExact(" in management_block
+    assert "() => this.ensureAvatarFloatingAgentSidePanel('user-plugin')" in management_block
+    assert (
+        management_block.index("const movedToUserPlugin = await userPluginMovePromise;")
+        < management_block.index("const sidePanelShown = await this.runActionWithCursorClickExact(")
+    )
     assert "this.applyGuideHighlights({" in management_block
     assert "key: sceneId + '-clear-user-plugin'," in management_block
     assert "primary: null" in management_block
@@ -292,6 +310,36 @@ def test_avatar_floating_guides_delegate_real_cursor_visibility_to_pc():
     assert "this.syncSystemCursorHidden(false, 'interrupt_angry_exit');" in resistance_source
     assert "this.syncSystemCursorHidden(false, 'destroy');" in director_source
     assert "syncSystemCursorHidden: optional callback" in resistance_source
+
+
+def test_externalized_chat_clear_preserves_pc_cursor_without_stale_cache():
+    director_source = _read_director()
+    app_interpage_source = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
+
+    clear_target_block = director_source.split(
+        "        clearExternalizedChatGuideTarget(options) {",
+        1,
+    )[1].split(
+        "        createAvatarFloatingUnionTarget(key, elements, options) {",
+        1,
+    )[0]
+    cursor_clear_block = app_interpage_source.split(
+        "    function applyYuiGuideChatCursor(kind, options) {",
+        1,
+    )[1].split(
+        "        if (isYuiGuidePcCursorOnlyMode()) {",
+        1,
+    )[0]
+
+    assert "if (shouldClearCursor && shouldPreservePcOverlayCursor) {" in clear_target_block
+    assert "this.setHomePcCursorOutputSuppressedForExternalizedChat(false);" in clear_target_block
+    assert (
+        clear_target_block.index("this.setHomePcCursorOutputSuppressedForExternalizedChat(false);")
+        < clear_target_block.index("this.overlay.syncCursorPosition(currentCursorPoint.x, currentCursorPoint.y, true);")
+    )
+    assert "preservePcOverlayCursor: shouldPreservePcOverlayCursor" in clear_target_block
+    assert "else if (isYuiGuidePcCursorOnlyMode()) {" in cursor_clear_block
+    assert "yuiGuidePcOverlayCursor = null;" in cursor_clear_block
 
 
 def test_day1_intro_activation_copy_matches_auto_advance_behavior():
