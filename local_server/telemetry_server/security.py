@@ -30,12 +30,12 @@ from collections import defaultdict
 from threading import Lock
 
 # ---------------------------------------------------------------------------
-# The HMAC secret is sourced from the environment. There is no hardcoded
-# default: if the variable is unset the value is None and signature
-# verification is refused downstream, forcing operators to provision a secret
-# instead of silently relying on a publicly-known one.
+# ★ 与客户端 token_tracker.py 中的 _TELEMETRY_HMAC_SECRET 保持一致。
+# 这是防君子不防小人的软签名：密钥必然内嵌在分发的客户端里、无法对抗逆向，
+# 仅用于挡掉顺手的伪造与脏数据。因此保留与客户端匹配的硬编码默认值（开箱即用），
+# 同时允许运维用环境变量 NEKO_TELEMETRY_HMAC_SECRET 覆盖以轮换密钥。
 # ---------------------------------------------------------------------------
-DEFAULT_HMAC_SECRET = os.environ.get("NEKO_TELEMETRY_HMAC_SECRET")
+DEFAULT_HMAC_SECRET = os.environ.get("NEKO_TELEMETRY_HMAC_SECRET") or "neko-v1-a3f8b2c1d4e5f6789012345678abcdef"
 
 
 def compute_signature(payload_json: str, timestamp: float, secret: str = DEFAULT_HMAC_SECRET) -> str:

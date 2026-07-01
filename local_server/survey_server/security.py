@@ -33,14 +33,13 @@ from collections import defaultdict
 from threading import Lock
 
 # ---------------------------------------------------------------------------
-# The HMAC secret is sourced from the environment. There is no hardcoded
-# default: if the variable is unset the value is None and signature
-# verification is refused downstream, forcing operators to provision a secret
-# instead of silently relying on a publicly-known one. Kept intentionally
-# distinct from the telemetry secret so a leaked key on one channel cannot
-# forge submissions on the other.
+# ★ 与客户端 utils/survey_client.py 中的 _SURVEY_HMAC_SECRET 保持一致。
+# 这是防君子不防小人的软签名：密钥必然内嵌在分发的客户端里、无法对抗逆向，
+# 仅用于挡掉顺手的伪造与脏数据。因此保留与客户端匹配的硬编码默认值（开箱即用），
+# 同时允许运维用环境变量 NEKO_SURVEY_HMAC_SECRET 覆盖以轮换密钥。
+# 与 telemetry 的密钥故意不同：两条上报通道互不背书。
 # ---------------------------------------------------------------------------
-DEFAULT_HMAC_SECRET = os.environ.get("NEKO_SURVEY_HMAC_SECRET")
+DEFAULT_HMAC_SECRET = os.environ.get("NEKO_SURVEY_HMAC_SECRET") or "neko-survey-v1-7d2e9c4b8a1f60533e7a2b9c8d4f1e06"
 
 
 def compute_signature(payload_json: str, timestamp: float, secret: str = DEFAULT_HMAC_SECRET) -> str:
