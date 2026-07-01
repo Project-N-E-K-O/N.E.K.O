@@ -12,7 +12,7 @@
     'use strict';
 
     const SETTINGS_TOUR_SCENE_METHODS = Object.freeze({
-        day2_personalization_detail: 'playDay2PersonalizationDetailScene',
+        day3_personalization_detail: 'playDay3PersonalizationDetailScene',
         day4_chat_settings: 'playDay4ChatSettingsScene',
         day4_model_behavior: 'playDay4ModelBehaviorScene',
         day4_gaze_follow: 'playDay4GazeFollowScene',
@@ -92,7 +92,7 @@
             );
         }
 
-        async playDay2PersonalizationDetailScene(scene, context) {
+        async playDay3PersonalizationDetailScene(scene, context) {
             const director = this.director;
             const normalizedContext = context || {};
             const sceneRunId = normalizedContext.sceneRunId;

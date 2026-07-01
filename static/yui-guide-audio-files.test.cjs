@@ -100,18 +100,18 @@ test('avatar floating narration duration does not estimate tutorial audio from t
     assert.doesNotMatch(methodMatch[1], /estimateSpeechDurationMs/);
 });
 
-test('day2 proactive chat uses its own recorded line instead of the detail narration', () => {
+test('day3 proactive chat uses its own recorded line instead of the detail narration after day swap', () => {
     const guides = loadGuides();
-    const day2Scenes = guides[2].round.scenes;
-    const proactiveScene = day2Scenes.find(scene => scene.id === 'day2_proactive_chat');
+    const day3Scenes = guides[3].round.scenes;
+    const proactiveScene = day3Scenes.find(scene => scene.id === 'day3_proactive_chat');
 
-    assert.equal(proactiveScene.voiceKey, 'takeover_settings_peek_detail_part_2');
+    assert.equal(proactiveScene.voiceKey, 'avatar_floating_day3_proactive_chat');
 });
 
-test('day2 voice-used intro has recorded audio files for supported locales', () => {
+test('day3 voice-used intro has recorded audio files for supported locales after day swap', () => {
     const guides = loadGuides();
     const audioFilesByKey = mergeAudioFilesByKey(guides);
-    const files = audioFilesByKey.avatar_floating_day2_intro_voice_used || {};
+    const files = audioFilesByKey.avatar_floating_day3_intro_voice_used || {};
     const missing = [];
 
     for (const locale of supportedRecordedLocales) {
@@ -189,7 +189,7 @@ test('day1 takeover capture delegates keyboard-control sequence through timeline
     assert.equal(scene.interruptible, undefined);
 });
 
-test('day2 round scenes use timeline playback after proactive chat closes settings panel from timeline', () => {
+test('day2 round scenes use the interaction tools flow after day swap', () => {
     const guides = loadGuides();
     const day2Scenes = guides[2].round.scenes;
     const timelineSceneIds = day2Scenes
@@ -197,18 +197,18 @@ test('day2 round scenes use timeline playback after proactive chat closes settin
         .map(scene => scene.id);
 
     assert.equal(timelineSceneIds.length, 7);
-    assert.equal(timelineSceneIds[0], 'day2_intro_context');
-    assert.equal(timelineSceneIds[1], 'day2_personalization_space');
-    assert.equal(timelineSceneIds[2], 'day2_personalization_detail');
-    assert.equal(timelineSceneIds[3], 'day2_proactive_chat');
-    assert.equal(timelineSceneIds[4], 'day2_wrap_intro');
-    assert.equal(timelineSceneIds[5], 'day2_wrap_companion');
-    assert.equal(timelineSceneIds[6], 'day2_wrap');
+    assert.equal(timelineSceneIds[0], 'day2_tool_toggle_intro');
+    assert.equal(timelineSceneIds[1], 'day2_avatar_tools');
+    assert.equal(timelineSceneIds[2], 'day2_avatar_tools_props');
+    assert.equal(timelineSceneIds[3], 'day2_galgame_entry');
+    assert.equal(timelineSceneIds[4], 'day2_galgame_choices');
+    assert.equal(timelineSceneIds[5], 'day2_wrap');
+    assert.equal(timelineSceneIds[6], 'day2_wrap_ready');
 });
 
-test('day2 personalization detail delegates narration and panel tour to SettingsTourFlow from timeline', () => {
+test('day3 personalization detail delegates narration and panel tour to SettingsTourFlow from timeline after day swap', () => {
     const guides = loadGuides();
-    const scene = guides[2].round.scenes.find(item => item.id === 'day2_personalization_detail');
+    const scene = guides[3].round.scenes.find(item => item.id === 'day3_personalization_detail');
 
     assert.equal(scene.timelinePlayback, true);
     assert.equal(scene.timelineAudio, false);
@@ -220,9 +220,9 @@ test('day2 personalization detail delegates narration and panel tour to Settings
     assert.equal(scene.timeline[0].blocking, true);
 });
 
-test('day2 proactive chat closes settings panel only after narration ends from timeline', () => {
+test('day3 proactive chat closes settings panel only after narration ends from timeline after day swap', () => {
     const guides = loadGuides();
-    const scene = guides[2].round.scenes.find(item => item.id === 'day2_proactive_chat');
+    const scene = guides[3].round.scenes.find(item => item.id === 'day3_proactive_chat');
     const closeCommand = scene.timeline.find(event => event.command === 'settingsPanel.close');
 
     assert.equal(scene.timelinePlayback, true);
@@ -233,7 +233,7 @@ test('day2 proactive chat closes settings panel only after narration ends from t
     assert.equal(closeCommand.blocking, true);
 });
 
-test('day3 round scenes use timeline playback after galgame wheel rotation has a dedicated command', () => {
+test('day3 round scenes use the personalization voice flow after day swap', () => {
     const guides = loadGuides();
     const day3Scenes = guides[3].round.scenes;
     const timelineSceneIds = day3Scenes
@@ -241,13 +241,13 @@ test('day3 round scenes use timeline playback after galgame wheel rotation has a
         .map(scene => scene.id);
 
     assert.equal(timelineSceneIds.length, 7);
-    assert.equal(timelineSceneIds[0], 'day3_tool_toggle_intro');
-    assert.equal(timelineSceneIds[1], 'day3_avatar_tools');
-    assert.equal(timelineSceneIds[2], 'day3_avatar_tools_props');
-    assert.equal(timelineSceneIds[3], 'day3_galgame_entry');
-    assert.equal(timelineSceneIds[4], 'day3_galgame_choices');
-    assert.equal(timelineSceneIds[5], 'day3_wrap');
-    assert.equal(timelineSceneIds[6], 'day3_wrap_ready');
+    assert.equal(timelineSceneIds[0], 'day3_intro_context');
+    assert.equal(timelineSceneIds[1], 'day3_personalization_space');
+    assert.equal(timelineSceneIds[2], 'day3_personalization_detail');
+    assert.equal(timelineSceneIds[3], 'day3_proactive_chat');
+    assert.equal(timelineSceneIds[4], 'day3_wrap_intro');
+    assert.equal(timelineSceneIds[5], 'day3_wrap_companion');
+    assert.equal(timelineSceneIds[6], 'day3_wrap');
 });
 
 test('day4 round scenes use timeline playback after settings tours delegate to SettingsTourFlow', () => {

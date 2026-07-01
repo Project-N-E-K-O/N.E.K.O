@@ -849,6 +849,9 @@
             const finalReason = tutorialReason || reason || 'skip';
             director.setGuideChatInputLocked(false, 'avatar-floating-guide-' + finalReason);
             director.notifyPluginDashboardTerminationRequested(finalReason);
+            if (typeof director.recordAvatarFloatingGuideRoundEndForTermination === 'function') {
+                director.recordAvatarFloatingGuideRoundEndForTermination(finalReason);
+            }
             director.closePluginDashboardWindowIfCreatedByGuide('终止请求').catch((error) => {
                 console.warn('[YuiGuide] 终止请求时关闭插件面板失败:', error);
             });

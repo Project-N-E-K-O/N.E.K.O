@@ -1666,8 +1666,8 @@ test('director delegates avatar floating scene operations through OperationRegis
     assert.match(operationRegistryBlock, /this\.operationHandlers = \[\];/);
     assert.match(operationRegistryBlock, /registerOperation\(matcher,\s*handler\) \{/);
     assert.match(operationRegistryBlock, /registerBuiltInOperations\(\) \{/);
-    assert.match(operationRegistryBlock, /this\.registerOperation\('day2-open-settings-personalization',\s*\(\) => this\.runDay2OpenSettingsPersonalization\(\)\);/);
-    assert.match(operationRegistryBlock, /this\.registerOperation\('day2-settings-detail',\s*\(\) => this\.runDay2SettingsDetail\(\)\);/);
+    assert.match(operationRegistryBlock, /this\.registerOperation\('day3-open-settings-personalization',\s*\(\) => this\.runDay3OpenSettingsPersonalization\(\)\);/);
+    assert.match(operationRegistryBlock, /this\.registerOperation\('day3-settings-detail',\s*\(\) => this\.runDay3SettingsDetail\(\)\);/);
     assert.match(operationRegistryBlock, /this\.registerOperation\('day4-animation-distance-showcase'/);
     assert.match(operationRegistryBlock, /this\.registerOperation\('day1-managed-scene:takeover_capture_cursor'/);
     assert.match(operationRegistryBlock, /this\.registerOperation\(\{ prefix: 'day1-managed-scene-settled:' \},\s*\(\) => true\);/);
@@ -1691,8 +1691,8 @@ test('director delegates avatar floating scene operations through OperationRegis
     assert.match(operationRegistryBlock, /this\.registerOperation\('open-avatar-tool-menu'/);
     assert.match(operationRegistryBlock, /this\.registerOperation\('show-avatar-tools-then-hide-after-narration'/);
     assert.match(operationRegistryBlock, /this\.registerOperation\('toggle-avatar-tool-after-narration'/);
-    assert.match(operationRegistryBlock, /async runDay2OpenSettingsPersonalization\(\) \{/);
-    assert.match(operationRegistryBlock, /async runDay2SettingsDetail\(\) \{/);
+    assert.match(operationRegistryBlock, /async runDay3OpenSettingsPersonalization\(\) \{/);
+    assert.match(operationRegistryBlock, /async runDay3SettingsDetail\(\) \{/);
     assert.match(operationRegistryBlock, /async runDay4AnimationDistanceShowcase\(scene,\s*narrationStartedAt\) \{/);
     assert.match(operationRegistryBlock, /async runDay1TakeoverCaptureCursor\(scene\) \{/);
     assert.match(operationRegistryBlock, /captureDay1TakeoverAgentSwitches/);
@@ -1726,10 +1726,10 @@ test('director delegates avatar floating scene operations through OperationRegis
     assert.match(operationRegistryBlock, /return true;\s*\}\s*\}\s*return \{/);
 });
 
-test('day3 Galgame guide drag follows the compact tool wheel arc and holds the target', () => {
+test('day2 Galgame guide drag follows the compact tool wheel arc and holds the target after day swap', () => {
     const source = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/director.js'), 'utf8');
     const overlaySource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/overlay.js'), 'utf8');
-    const day3GuideSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/days/day3-interaction-guide.js'), 'utf8');
+    const day2GuideSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/days/day2-screen-voice-guide.js'), 'utf8');
     const appInterpageSource = fs.readFileSync(path.join(repoRoot, 'static', 'app-interpage.js'), 'utf8');
     const sceneOrchestratorSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/scene-orchestrator.js'), 'utf8');
     const operationRegistrySource = fs.readFileSync(
@@ -1772,8 +1772,8 @@ test('day3 Galgame guide drag follows the compact tool wheel arc and holds the t
         '            } else {',
         1
     )[0];
-    const day3ChoicesBlock = day3GuideSource.split("id: 'day3_galgame_choices'")[1].split(
-        "id: 'day3_wrap'",
+    const day2ChoicesBlock = day2GuideSource.split("id: 'day2_galgame_choices'")[1].split(
+        "id: 'day2_wrap'",
         1
     )[0];
 
@@ -1843,12 +1843,12 @@ test('day3 Galgame guide drag follows the compact tool wheel arc and holds the t
         [...block.matchAll(/rotateCompactToolWheelForGuide\(dragRotateDirection,\s*1,\s*rotateReason\)/g)].length,
         2
     );
-    assert.match(day3ChoicesBlock, /target:\s*'chat-galgame'/);
-    assert.match(day3ChoicesBlock, /cursorTarget:\s*'chat-galgame'/);
-    assert.match(day3ChoicesBlock, /cursorAction:\s*'hold'/);
-    assert.match(day3ChoicesBlock, /cursorHoldFreezePoint:\s*true/);
-    assert.match(day3ChoicesBlock, /cursorHoldSettleMs:\s*260/);
-    assert.doesNotMatch(day3ChoicesBlock, /operation:/);
+    assert.match(day2ChoicesBlock, /target:\s*'chat-galgame'/);
+    assert.match(day2ChoicesBlock, /cursorTarget:\s*'chat-galgame'/);
+    assert.match(day2ChoicesBlock, /cursorAction:\s*'hold'/);
+    assert.match(day2ChoicesBlock, /cursorHoldFreezePoint:\s*true/);
+    assert.match(day2ChoicesBlock, /cursorHoldSettleMs:\s*260/);
+    assert.doesNotMatch(day2ChoicesBlock, /operation:/);
     assert.match(appInterpageSource, /freezePoint:\s*message\.freezePoint === true/);
     assert.match(appInterpageSource, /freezePoint:\s*event\.data\.freezePoint === true/);
     assert.match(appInterpageSource, /var freezePoint = normalizedOptions\.freezePoint === true;/);
@@ -1859,17 +1859,17 @@ test('day3 Galgame guide drag follows the compact tool wheel arc and holds the t
     assert.doesNotMatch(operationRegistrySource, /tour-mini-game-choice-buttons/);
 });
 
-test('day3 avatar tool props cleanup waits for the real narration promise', () => {
+test('day2 avatar tool props cleanup waits for the real narration promise after day swap', () => {
     const operationRegistrySource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/operation-registry.js'), 'utf8');
     const sceneOrchestratorSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/scene-orchestrator.js'), 'utf8');
-    const day3GuideSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/days/day3-interaction-guide.js'), 'utf8');
+    const day2GuideSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/days/day2-screen-voice-guide.js'), 'utf8');
     const avatarToolsMatch = operationRegistrySource.match(
         /        async runShowAvatarToolsThenHideAfterNarration\(scene, primaryTarget, narrationStartedAt, narrationPromise\) \{([\s\S]*?)\n        async runToggleAvatarToolAfterNarration/
     );
     assert.ok(avatarToolsMatch, 'expected Avatar tools operation to accept the narration promise');
     const avatarToolsBlock = avatarToolsMatch[1];
-    const avatarToolsPropsBlock = day3GuideSource.split("id: 'day3_avatar_tools_props'")[1].split(
-        "id: 'day3_galgame_entry'",
+    const avatarToolsPropsBlock = day2GuideSource.split("id: 'day2_avatar_tools_props'")[1].split(
+        "id: 'day2_galgame_entry'",
         1
     )[0];
     const sceneOperationBlock = sceneOrchestratorSource.split(
@@ -2170,6 +2170,7 @@ test('director routes termination requests through TutorialTerminationRouter', (
     assert.match(routerBlock, /async handlePluginDashboardSkipRequest\(data\) \{/);
     assert.doesNotMatch(routerBlock, /director\.beginTerminationVisualCleanup\(\);/);
     assert.doesNotMatch(routerBlock, /requestAvatarFloatingGuideCooperativeEnd\(finalReason\)/);
+    assert.match(routerBlock, /director\.recordAvatarFloatingGuideRoundEndForTermination\(finalReason\);/);
     assert.match(routerBlock, /typeof director\.tutorialManager\.requestTutorialEnd === 'function'/);
     assert.match(routerBlock, /return director\.tutorialManager\.requestTutorialEnd\(finalReason\);/);
     assert.match(routerBlock, /return director\.tutorialManager\.requestTutorialDestroy\(finalReason\);/);
@@ -2186,6 +2187,70 @@ test('director routes termination requests through TutorialTerminationRouter', (
     assert.doesNotMatch(requestTerminationBlock, /beginTerminationVisualCleanup/);
     assert.doesNotMatch(skipBlock, /recordExperienceMetric\('skip'/);
     assert.doesNotMatch(pluginSkipBlock, /forwardPluginDashboardSkipRequestToButton/);
+});
+
+test('termination router lets Day1 skip record the guide end marker for voice branch timing', () => {
+    const { TutorialTerminationRouter } = require('./tutorial/visual/resistance-controllers.js');
+    const calls = [];
+    const director = {
+        destroyed: false,
+        terminationRequested: false,
+        clearPendingGuideMessageAction() {
+            calls.push('clear-action');
+        },
+        setGuideChatInputLocked(locked, reason) {
+            calls.push(['input', locked, reason]);
+        },
+        notifyPluginDashboardTerminationRequested(reason) {
+            calls.push(['plugin-terminate', reason]);
+        },
+        recordAvatarFloatingGuideRoundEndForTermination(reason) {
+            calls.push(['round-end-for-termination', reason]);
+        },
+        closePluginDashboardWindowIfCreatedByGuide() {
+            calls.push('close-plugin');
+            return Promise.resolve();
+        },
+        cancelActiveNarration() {
+            calls.push('cancel-narration');
+        },
+        resumeCurrentSceneAfterResistance() {
+            calls.push('resume-scene');
+        },
+        tutorialManager: {
+            requestTutorialEnd(reason) {
+                calls.push(['manager-end', reason]);
+                return 'ended';
+            }
+        }
+    };
+    const router = new TutorialTerminationRouter(director);
+
+    const result = router.requestTermination('skip', 'skip');
+
+    assert.equal(result, 'ended');
+    assert.deepEqual(calls, [
+        'clear-action',
+        ['input', false, 'avatar-floating-guide-skip'],
+        ['plugin-terminate', 'skip'],
+        ['round-end-for-termination', 'skip'],
+        'close-plugin',
+        'cancel-narration',
+        'resume-scene',
+        ['manager-end', 'skip']
+    ]);
+});
+
+test('universal manager records Day1 usage end marker when tutorial skip bypasses director router', () => {
+    const managerSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/universal-manager.js'), 'utf8');
+    const tutorialEndBlock = managerSource.split('    onTutorialEnd() {')[1].split(
+        '        // 标记用户已看过该页面的引导',
+        1
+    )[0];
+
+    assert.match(managerSource, /const AVATAR_FLOATING_GUIDE_USAGE_STORAGE_KEY = 'neko_avatar_floating_guide_usage_v1';/);
+    assert.match(managerSource, /function recordAvatarFloatingGuideUsageRoundEnd\(day\) \{/);
+    assert.match(tutorialEndBlock, /if \(avatarFloatingEndState\.day === 1\) \{\s*recordAvatarFloatingGuideUsageRoundEnd\(1\);/);
 });
 
 test('tutorial skip button reuses the manager tutorial end lifecycle', () => {

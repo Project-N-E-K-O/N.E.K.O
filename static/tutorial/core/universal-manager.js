@@ -28,6 +28,7 @@ const HOME_TUTORIAL_RESET_EVENT = 'neko:home-tutorial-reset';
 const HOME_TUTORIAL_RESET_STORAGE_EVENT_KEY = 'neko_home_tutorial_reset_event';
 const HOME_TUTORIAL_RESET_CHANNEL = 'neko_tutorial_events';
 const AVATAR_FLOATING_GUIDE_STORAGE_KEY = 'neko_avatar_floating_guide_v1';
+const AVATAR_FLOATING_GUIDE_USAGE_STORAGE_KEY = 'neko_avatar_floating_guide_usage_v1';
 const AVATAR_FLOATING_GUIDE_ROUND_COUNT = 7;
 const YUI_GUIDE_CHAT_BRIDGE_QUEUE_KEY = 'neko_yui_guide_chat_bridge_queue_v1';
 const STARTUP_GREETING_RELEASE_EVENT = 'neko:startup-greeting-release';
@@ -156,6 +157,30 @@ function recordAvatarFloatingGuideEndState(day, outcome, rawReason, source) {
     };
     window.avatarFloatingGuideEndState = endState;
     return endState;
+}
+
+function recordAvatarFloatingGuideUsageRoundEnd(day) {
+    const normalizedDay = normalizeOptionalAvatarFloatingGuideRound(day);
+    if (!normalizedDay) {
+        return;
+    }
+    let state = {};
+    try {
+        const raw = localStorage.getItem(AVATAR_FLOATING_GUIDE_USAGE_STORAGE_KEY);
+        state = raw ? JSON.parse(raw) : {};
+    } catch (error) {
+        console.warn('[Tutorial] 悬浮窗教程使用状态读取失败，使用空状态:', error);
+        state = {};
+    }
+    if (!state || typeof state !== 'object' || Array.isArray(state)) {
+        state = {};
+    }
+    state['day' + normalizedDay + 'EndedAt'] = Date.now();
+    try {
+        localStorage.setItem(AVATAR_FLOATING_GUIDE_USAGE_STORAGE_KEY, JSON.stringify(state));
+    } catch (error) {
+        console.warn('[Tutorial] 悬浮窗教程使用状态写入失败:', error);
+    }
 }
 
 function parseAvatarFloatingGuideDate(value) {
@@ -3611,6 +3636,9 @@ class UniversalTutorialManager {
             );
         }
         if (avatarFloatingEndState && (endMeta.reason === 'complete' || endMeta.reason === 'skip')) {
+            if (avatarFloatingEndState.day === 1) {
+                recordAvatarFloatingGuideUsageRoundEnd(1);
+            }
             const avatarFloatingEndEventName = endMeta.reason === 'skip'
                 ? 'neko:avatar-floating-guide-skip'
                 : 'neko:avatar-floating-guide-complete';

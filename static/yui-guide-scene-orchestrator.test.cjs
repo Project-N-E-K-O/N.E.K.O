@@ -730,24 +730,24 @@ test('SceneOrchestrator owns round setup, scene loop, metrics and cleanup', asyn
     };
     const orchestrator = new SceneOrchestrator(director);
 
-    const completed = await orchestrator.playRound(3, { source: 'test' });
+    const completed = await orchestrator.playRound(2, { source: 'test' });
 
     assert.equal(completed, true);
     assert.deepEqual(calls, [
-        ['config', 3],
-        ['metric', 'avatar_floating_round_start', 3],
+        ['config', 2],
+        ['metric', 'avatar_floating_round_start', 2],
         'bubble:hide',
-        ['surface', 3],
-        ['input', true, 'avatar-floating-guide-day3'],
-        ['wheel', 0, 'avatar-floating-guide-day3-entry-reset'],
+        ['surface', 2],
+        ['input', true, 'avatar-floating-guide-day2'],
+        ['wheel', 0, 'avatar-floating-guide-day2-entry-reset'],
         'spotlight:persistent',
-        ['lookAt', 'avatar_floating_day3_complete'],
-        ['scene', 'a', 3, 0, 2],
-        ['scene', 'b', 3, 1, 2],
-        ['metric', 'avatar_floating_round_complete', 3],
+        ['lookAt', 'avatar_floating_day2_complete'],
+        ['scene', 'a', 2, 0, 2],
+        ['scene', 'b', 2, 1, 2],
+        ['metric', 'avatar_floating_round_complete', 2],
         'interrupts:disable',
         ['standIn:clear', true, true],
-        ['input', false, 'avatar-floating-guide-day3-complete'],
+        ['input', false, 'avatar-floating-guide-day2-complete'],
         ['panels:close', true],
         'spotlight:virtual',
         'spotlight:extra',
@@ -757,6 +757,75 @@ test('SceneOrchestrator owns round setup, scene loop, metrics and cleanup', asyn
         'spotlight:action',
         'cursor:hide',
         ['takeover', false]
+    ]);
+});
+
+test('SceneOrchestrator records Day1 end only after Day1 round completes', async () => {
+    const { SceneOrchestrator } = require('./tutorial/core/scene-orchestrator.js');
+    const calls = [];
+    const director = {
+        destroyed: false,
+        day1RoundWakeupCompleted: false,
+        getAvatarFloatingRoundConfig(round) {
+            calls.push(['config', round]);
+            return { scenes: [{ id: 'day1_capsule_drag_hint' }] };
+        },
+        recordExperienceMetric(name, payload) {
+            calls.push(['metric', name, payload.round]);
+        },
+        overlay: {
+            hideBubble() {},
+            clearPersistentSpotlight() {},
+            clearActionSpotlight() {}
+        },
+        ensureAvatarFloatingGuideSurfaceReady() {
+            return Promise.resolve();
+        },
+        setGuideChatInputLocked() {},
+        isHomeChatExternalized() {
+            return false;
+        },
+        ensurePersistentGhostCursorLookAtPerformance() {
+            return Promise.resolve(null);
+        },
+        stopPersistentGhostCursorLookAtPerformance() {
+            return Promise.resolve();
+        },
+        isStopping() {
+            return false;
+        },
+        playAvatarFloatingScene(scene, round) {
+            calls.push(['scene', scene.id, round]);
+            return Promise.resolve(true);
+        },
+        recordAvatarFloatingGuideRoundEnd(round) {
+            calls.push(['round-end', round]);
+        },
+        disableInterrupts() {},
+        clearAvatarStandIn() {},
+        closeAvatarFloatingGuidePanels() {
+            return Promise.resolve();
+        },
+        clearAllVirtualSpotlights() {},
+        clearAllExtraSpotlights() {},
+        clearSpotlightGeometryHints() {},
+        clearSpotlightVariantHints() {},
+        cursor: {
+            hide() {}
+        },
+        setTutorialTakingOver() {}
+    };
+    const orchestrator = new SceneOrchestrator(director);
+
+    const completed = await orchestrator.playRound(1, { source: 'test' });
+
+    assert.equal(completed, true);
+    assert.deepEqual(calls, [
+        ['config', 1],
+        ['metric', 'avatar_floating_round_start', 1],
+        ['scene', 'day1_capsule_drag_hint', 1],
+        ['metric', 'avatar_floating_round_complete', 1],
+        ['round-end', 1]
     ]);
 });
 
@@ -840,7 +909,7 @@ test('SceneOrchestrator waits for angry exit presentation before round cleanup',
     };
     const orchestrator = new SceneOrchestrator(director);
 
-    const roundPromise = orchestrator.playRound(3, { source: 'test' });
+    const roundPromise = orchestrator.playRound(2, { source: 'test' });
     await Promise.resolve();
     await Promise.resolve();
 
@@ -1071,9 +1140,9 @@ test('SceneOrchestrator schedules avatar stand-ins after scene surface preparati
     const orchestrator = new SceneOrchestrator(director);
 
     const result = await orchestrator.prepareGenericSceneSurface({
-        id: 'day3_avatar_tools'
+        id: 'day2_avatar_tools'
     }, {
-        day: 3,
+        day: 2,
         sceneRunId: 21,
         isFirstDailyScene: false,
         preserveExternalizedChatGuideTarget: true
@@ -1081,8 +1150,8 @@ test('SceneOrchestrator schedules avatar stand-ins after scene surface preparati
 
     assert.equal(result, true);
     assert.deepEqual(calls, [
-        ['prepare', 'day3_avatar_tools', true],
-        ['standIn:schedule', 'day3_avatar_tools', 3, 21]
+        ['prepare', 'day2_avatar_tools', true],
+        ['standIn:schedule', 'day2_avatar_tools', 2, 21]
     ]);
 });
 

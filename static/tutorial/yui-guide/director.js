@@ -457,6 +457,18 @@
         writeAvatarFloatingGuideUsageState(patch);
     }
 
+    function recordAvatarFloatingGuideRoundEnd(round) {
+        const normalizedRound = Number(round);
+        if (!Number.isFinite(normalizedRound) || normalizedRound <= 0) {
+            return;
+        }
+        const day = Math.floor(normalizedRound);
+        const endedAt = Date.now();
+        const patch = {};
+        patch['day' + day + 'EndedAt'] = endedAt;
+        writeAvatarFloatingGuideUsageState(patch);
+    }
+
     function markAvatarFloatingGuideUsage(key) {
         const normalizedKey = typeof key === 'string' ? key.trim() : '';
         if (!normalizedKey) {
@@ -506,6 +518,28 @@
         return !!(day === 1 && nextRoundStartedAt && voiceUsedAt < nextRoundStartedAt);
     }
 
+    function hasAvatarFloatingGuideVoiceUsedAfterDay1EndBeforeRoundStart(round) {
+        const normalizedRound = Number(round);
+        if (!Number.isFinite(normalizedRound) || normalizedRound <= 0) {
+            return false;
+        }
+        const state = readAvatarFloatingGuideUsageState();
+        if (!state || !state.voiceUsed) {
+            return false;
+        }
+        const voiceUsedAt = normalizeAvatarFloatingGuideUsageTimestamp(state.voiceUsedAt);
+        const day1EndedAt = normalizeAvatarFloatingGuideUsageTimestamp(state.day1EndedAt);
+        const day = Math.floor(normalizedRound);
+        const roundStartedAt = normalizeAvatarFloatingGuideUsageTimestamp(state['day' + day + 'StartedAt']);
+        return !!(
+            voiceUsedAt
+            && day1EndedAt
+            && roundStartedAt
+            && voiceUsedAt >= day1EndedAt
+            && voiceUsedAt < roundStartedAt
+        );
+    }
+
     if (!window.__avatarFloatingGuideUsageListenersInstalled) {
         window.__avatarFloatingGuideUsageListenersInstalled = true;
         window.addEventListener('live2d-mic-toggle', function (event) {
@@ -531,6 +565,9 @@
             }
             if (target.closest('[id$="-toggle-proactive-chat"]')) {
                 markAvatarFloatingGuideUsage('proactiveChatOpened');
+            }
+            if (target.closest('#micButton')) {
+                markAvatarFloatingGuideUsage('voiceUsed');
             }
         }, true);
     }
@@ -943,18 +980,21 @@
     });
 
     const GUIDE_AUDIO_DURATIONS_BY_KEY = Object.freeze({
-        avatar_floating_day2_intro: Object.freeze({ zh: 12000, ja: 18286, en: 14968, ko: 17580, ru: 16196 }),
-        avatar_floating_day2_intro_voice_used: Object.freeze({ zh: 20208, ja: 21682, en: 19931, ko: 25992, ru: 19566 }),
-        avatar_floating_day2_wrap: Object.freeze({ zh: 8500, ja: 9874, en: 8882, ko: 9535, ru: 8934 }),
-        avatar_floating_day2_wrap_companion: Object.freeze({ zh: 7920, ja: 10893, en: 10371, ko: 9404, ru: 9639 }),
-        avatar_floating_day2_wrap_intro: Object.freeze({ zh: 2840, ja: 2534, en: 2664, ko: 2482, ru: 2664 }),
-        avatar_floating_day3_avatar_tools_intro: Object.freeze({ zh: 4400, ja: 5904, en: 4336, ko: 6060, ru: 5120 }),
-        avatar_floating_day3_avatar_tools_props: Object.freeze({ zh: 13320, ja: 14655, en: 14681, ko: 14420, ru: 14942 }),
-        avatar_floating_day3_galgame_choices: Object.freeze({ zh: 9800, ja: 12382, en: 9639, ko: 11755, ru: 12931 }),
-        avatar_floating_day3_galgame_intro: Object.freeze({ zh: 6640, ja: 9117, en: 7262, ko: 8803, ru: 7393 }),
-        avatar_floating_day3_intro: Object.freeze({ zh: 12960, ja: 17711, en: 14054, ko: 17241, ru: 16535 }),
-        avatar_floating_day3_wrap_intro: Object.freeze({ zh: 5700, ja: 6531, en: 5877, ko: 7210, ru: 6896 }),
-        avatar_floating_day3_wrap_ready: Object.freeze({ zh: 5840, ja: 7993, en: 6374, ko: 7366, ru: 7210 }),
+        avatar_floating_day2_avatar_tools_intro: Object.freeze({ zh: 4400, ja: 5904, en: 4336, ko: 6060, ru: 5120 }),
+        avatar_floating_day2_avatar_tools_props: Object.freeze({ zh: 13320, ja: 14655, en: 14681, ko: 14420, ru: 14942 }),
+        avatar_floating_day2_galgame_choices: Object.freeze({ zh: 9800, ja: 12382, en: 9639, ko: 11755, ru: 12931 }),
+        avatar_floating_day2_galgame_intro: Object.freeze({ zh: 6640, ja: 9117, en: 7262, ko: 8803, ru: 7393 }),
+        avatar_floating_day2_intro: Object.freeze({ zh: 12960, ja: 17711, en: 14054, ko: 17241, ru: 16535 }),
+        avatar_floating_day2_wrap_intro: Object.freeze({ zh: 5700, ja: 6531, en: 5877, ko: 7210, ru: 6896 }),
+        avatar_floating_day2_wrap_ready: Object.freeze({ zh: 5840, ja: 7993, en: 6374, ko: 7366, ru: 7210 }),
+        avatar_floating_day3_intro: Object.freeze({ zh: 12768, ja: 17371, en: 14602, ko: 17711, ru: 15125 }),
+        avatar_floating_day3_intro_voice_used: Object.freeze({ zh: 18336, ja: 22544, en: 20114, ko: 25260, ru: 20637 }),
+        avatar_floating_day3_personalization_detail: Object.freeze({ zh: 9540, ja: 11337, en: 12042, ko: 11206, ru: 10240 }),
+        avatar_floating_day3_personalization_space: Object.freeze({ zh: 7680, ja: 8882, en: 10841, ko: 10240, ru: 11729 }),
+        avatar_floating_day3_proactive_chat: Object.freeze({ zh: 6800, ja: 8829, en: 9169, ko: 9352, ru: 8098 }),
+        avatar_floating_day3_wrap: Object.freeze({ zh: 8500, ja: 9874, en: 8882, ko: 9535, ru: 8934 }),
+        avatar_floating_day3_wrap_companion: Object.freeze({ zh: 7920, ja: 10893, en: 10371, ko: 9404, ru: 9639 }),
+        avatar_floating_day3_wrap_intro: Object.freeze({ zh: 2840, ja: 2534, en: 2664, ko: 2482, ru: 2664 }),
         avatar_floating_day4_chat_settings: Object.freeze({ zh: 11880, ja: 13636, en: 12382, ko: 14472, ru: 12016 }),
         avatar_floating_day4_gaze_follow: Object.freeze({ zh: 9780, ja: 13401, en: 9352, ko: 10971, ru: 10762 }),
         avatar_floating_day4_intro: Object.freeze({ zh: 8380, ja: 9456, en: 7497, ko: 9822, ru: 8699 }),
@@ -3494,25 +3534,29 @@
         }
 
         resolveAvatarFloatingSceneText(scene) {
-            if (scene && scene.id === 'day2_intro_context') {
-                const voiceUsedAfterDay1Start = hasAvatarFloatingGuideVoiceUsedAfterRoundStart(1);
-                return voiceUsedAfterDay1Start
-                    ? this.resolveGuideCopy('tutorial.avatarFloating.day2.introVoiceUsed', scene.text || '')
-                    : this.resolveGuideCopy(scene.textKey || 'tutorial.avatarFloating.day2.intro', scene.text || '');
+            if (scene && scene.id === 'day3_intro_context') {
+                const voiceUsedAfterDay1End = hasAvatarFloatingGuideVoiceUsedAfterDay1EndBeforeRoundStart(3);
+                return voiceUsedAfterDay1End
+                    ? this.resolveGuideCopy('tutorial.avatarFloating.day3.introVoiceUsed', scene.text || '')
+                    : this.resolveGuideCopy(scene.textKey || 'tutorial.avatarFloating.day3.intro', scene.text || '');
             }
             return this.resolveGuideCopy(scene.textKey || '', scene.text || '');
         }
 
         resolveAvatarFloatingSceneVoiceKey(scene) {
-            if (scene && scene.id === 'day2_intro_context' && hasAvatarFloatingGuideVoiceUsedAfterRoundStart(1)) {
-                return 'avatar_floating_day2_intro_voice_used';
+            if (
+                scene
+                && scene.id === 'day3_intro_context'
+                && hasAvatarFloatingGuideVoiceUsedAfterDay1EndBeforeRoundStart(3)
+            ) {
+                return 'avatar_floating_day3_intro_voice_used';
             }
             return scene && typeof scene.voiceKey === 'string' ? scene.voiceKey : '';
         }
 
         resolveAvatarFloatingSceneEmotion(scene) {
-            if (scene && scene.id === 'day2_intro_context') {
-                return hasAvatarFloatingGuideVoiceUsedAfterRoundStart(1) ? 'happy' : 'sad';
+            if (scene && scene.id === 'day3_intro_context') {
+                return hasAvatarFloatingGuideVoiceUsedAfterDay1EndBeforeRoundStart(3) ? 'happy' : 'sad';
             }
             return scene && typeof scene.emotion === 'string' ? scene.emotion : '';
         }
@@ -4136,8 +4180,8 @@
             return undefined;
         }
 
-        getDay2CharacterSettingsPersistenceTarget(sceneId) {
-            if (sceneId === 'day2_personalization_detail') {
+        getDay3CharacterSettingsPersistenceTarget(sceneId) {
+            if (sceneId === 'day3_personalization_detail') {
                 return this.getDay5CharacterSettingsButtonTarget()
                     || this.getSettingsMenuElement('character');
             }
@@ -4149,7 +4193,7 @@
                 return highlightConfig;
             }
             const persistentTargetGetters = [
-                this.getDay2CharacterSettingsPersistenceTarget,
+                this.getDay3CharacterSettingsPersistenceTarget,
                 this.getDay4SettingsButtonPersistenceTarget,
                 this.getDay5CharacterSettingsPersistenceTarget
             ];
@@ -5875,10 +5919,10 @@
                 'day4_gaze_follow',
                 'day4_privacy_mode'
             ];
-            const day2SettingsSceneIds = [
-                'day2_personalization_space',
-                'day2_personalization_detail',
-                'day2_proactive_chat'
+            const day3SettingsSceneIds = [
+                'day3_personalization_space',
+                'day3_personalization_detail',
+                'day3_proactive_chat'
             ];
             const day5SettingsSceneIds = [
                 'day5_character_settings',
@@ -5886,7 +5930,7 @@
                 'day5_memory_entry'
             ];
             if (
-                day2SettingsSceneIds.includes(sceneId)
+                day3SettingsSceneIds.includes(sceneId)
                 || day4SettingsSceneIds.includes(sceneId)
                 || day5SettingsSceneIds.includes(sceneId)
             ) {
@@ -5927,8 +5971,8 @@
                 : '';
             return !!(
                 operation === 'day1-intro-basic-voice-showcase'
-                || operation === 'day2-open-settings-personalization'
-                || operation === 'day2-settings-detail'
+                || operation === 'day3-open-settings-personalization'
+                || operation === 'day3-settings-detail'
                 || operation.indexOf('day1-managed-scene:') === 0
                 || operation.indexOf('show-settings-menu:') === 0
                 || operation.indexOf('show-settings-sidepanel:') === 0
@@ -5949,8 +5993,8 @@
         isAvatarFloatingInputIntroScene(scene) {
             const sceneId = scene && typeof scene.id === 'string' ? scene.id : '';
             return !!(
-                sceneId === 'day2_intro_context'
-                || sceneId === 'day3_tool_toggle_intro'
+                sceneId === 'day2_tool_toggle_intro'
+                || sceneId === 'day3_intro_context'
                 || sceneId === 'day4_intro_companion'
                 || sceneId === 'day5_character_settings'
                 || sceneId === 'day6_intro_agent'
@@ -6547,7 +6591,7 @@
         }
 
         getExternalizedChatCursorEffect(scene) {
-            if (scene && scene.id === 'day3_avatar_tools') {
+            if (scene && scene.id === 'day2_avatar_tools') {
                 return 'move';
             }
             const action = scene && typeof scene.cursorAction === 'string'
@@ -6569,7 +6613,7 @@
         }
 
         getExternalizedChatCursorMoveDurationMs(scene, fallbackMs) {
-            if (scene && typeof scene.id === 'string' && scene.id.indexOf('day3_') === 0) {
+            if (this.isDay2InteractionSceneId(scene && scene.id)) {
                 return 0;
             }
             if (scene && Number.isFinite(scene.cursorMoveDurationMs)) {
@@ -6659,33 +6703,42 @@
             return true;
         }
 
-        isDay3AvatarToolsSceneId(sceneId) {
+        isDay2AvatarToolsSceneId(sceneId) {
             return !!(
                 typeof sceneId === 'string'
                 && (
-                    sceneId === 'day3_avatar_tools'
-                    || sceneId.indexOf('day3_avatar_tools_') === 0
+                    sceneId === 'day2_avatar_tools'
+                    || sceneId.indexOf('day2_avatar_tools_') === 0
                 )
             );
         }
 
-        isDay3GalgameSceneId(sceneId) {
+        isDay2GalgameSceneId(sceneId) {
             return !!(
                 typeof sceneId === 'string'
                 && (
-                    sceneId === 'day3_galgame_games'
-                    || sceneId.indexOf('day3_galgame_') === 0
+                    sceneId === 'day2_galgame_games'
+                    || sceneId.indexOf('day2_galgame_') === 0
                 )
             );
         }
 
-        isDay3WrapSceneId(sceneId) {
+        isDay2WrapSceneId(sceneId) {
             return !!(
                 typeof sceneId === 'string'
                 && (
-                    sceneId === 'day3_wrap'
-                    || sceneId.indexOf('day3_wrap_') === 0
+                    sceneId === 'day2_wrap'
+                    || sceneId.indexOf('day2_wrap_') === 0
                 )
+            );
+        }
+
+        isDay2InteractionSceneId(sceneId) {
+            return !!(
+                sceneId === 'day2_tool_toggle_intro'
+                || this.isDay2AvatarToolsSceneId(sceneId)
+                || this.isDay2GalgameSceneId(sceneId)
+                || this.isDay2WrapSceneId(sceneId)
             );
         }
 
@@ -6717,24 +6770,24 @@
                     && nextSceneId === 'day1_takeover_return_control'
                 )
                 || (
-                    previousSceneId === 'day3_tool_toggle_intro'
-                    && this.isDay3AvatarToolsSceneId(nextSceneId)
+                    previousSceneId === 'day2_tool_toggle_intro'
+                    && this.isDay2AvatarToolsSceneId(nextSceneId)
                 )
                 || (
-                    this.isDay3AvatarToolsSceneId(previousSceneId)
-                    && this.isDay3AvatarToolsSceneId(nextSceneId)
+                    this.isDay2AvatarToolsSceneId(previousSceneId)
+                    && this.isDay2AvatarToolsSceneId(nextSceneId)
                 )
                 || (
-                    this.isDay3AvatarToolsSceneId(previousSceneId)
-                    && this.isDay3GalgameSceneId(nextSceneId)
+                    this.isDay2AvatarToolsSceneId(previousSceneId)
+                    && this.isDay2GalgameSceneId(nextSceneId)
                 )
                 || (
-                    this.isDay3GalgameSceneId(previousSceneId)
-                    && this.isDay3GalgameSceneId(nextSceneId)
+                    this.isDay2GalgameSceneId(previousSceneId)
+                    && this.isDay2GalgameSceneId(nextSceneId)
                 )
                 || (
-                    this.isDay3WrapSceneId(previousSceneId)
-                    && this.isDay3WrapSceneId(nextSceneId)
+                    this.isDay2WrapSceneId(previousSceneId)
+                    && this.isDay2WrapSceneId(nextSceneId)
                 )
             );
         }
@@ -7100,7 +7153,7 @@
             if (this.isHomeChatExternalized()) {
                 this.setExternalizedChatCursorEffect('galgame', 'move');
                 await this.waitForExternalizedChatCursorMove(
-                    scene && scene.id || 'day3_galgame_entry',
+                    scene && scene.id || 'day2_galgame_entry',
                     1800
                 );
                 if (this.isStopping()) {
@@ -7130,7 +7183,7 @@
                     effectDurationMs: DEFAULT_CURSOR_CLICK_VISIBLE_MS
                 });
                 await this.waitForExternalizedChatCursorMove(
-                    scene && scene.id || 'day3_galgame_entry',
+                    scene && scene.id || 'day2_galgame_entry',
                     DEFAULT_CURSOR_CLICK_VISIBLE_MS + 500
                 );
                 return true;
@@ -7389,7 +7442,7 @@
             ) {
                 this.setCompactToolFanOpen(true, 'avatar-floating-guide-prepare-tool-fan');
             }
-            if (operation === 'day2-settings-detail') {
+            if (operation === 'day3-settings-detail') {
                 await this.closeAgentPanel().catch(() => {});
                 await this.openSettingsPanel();
             }
@@ -8022,7 +8075,7 @@
                     return previousScreenAnchor;
                 }
                 explicitStartTargets.push(this.resolveAvatarFloatingSelector('#${p}-btn-screen'));
-            } else if (sceneId === 'day3_avatar_tools') {
+            } else if (sceneId === 'day2_avatar_tools') {
                 explicitStartTargets.push(this.resolveAvatarFloatingSelector('chat-tool-toggle'));
             }
 
@@ -8163,7 +8216,7 @@
                 return false;
             }
             const cursorKind = this.getExternalizedChatCursorTargetKind(scene);
-            const useHomeOwnedClick = sceneId.indexOf('day3_') === 0;
+            const useHomeOwnedClick = this.isDay2InteractionSceneId(sceneId);
             const externalizedClickStarted = !useHomeOwnedClick && !!(
                 cursorKind
                 && this.setExternalizedChatCursorEffect(cursorKind, 'click', {
@@ -8338,6 +8391,10 @@
         async playAvatarFloatingRound(round, options) {
             recordAvatarFloatingGuideRoundStart(round);
             return this.sceneOrchestrator.playRound(round, options);
+        }
+
+        recordAvatarFloatingGuideRoundEnd(round) {
+            recordAvatarFloatingGuideRoundEnd(round);
         }
 
         disableInterrupts() {
@@ -12230,6 +12287,12 @@
                 return promise.catch(() => {});
             }
             return Promise.resolve();
+        }
+
+        recordAvatarFloatingGuideRoundEndForTermination(reason) {
+            if (getAvatarFloatingGuideActiveRound() === 1) {
+                recordAvatarFloatingGuideRoundEnd(1);
+            }
         }
 
         requestTermination(reason, tutorialReason) {

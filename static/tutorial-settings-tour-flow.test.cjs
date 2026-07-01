@@ -6,7 +6,7 @@ const { SettingsTourFlow } = require('./tutorial/core/settings-tour-flow.js');
 test('SettingsTourFlow resolves every settings tour scene id', async () => {
     const flow = new SettingsTourFlow({});
 
-    assert.equal(flow.canHandle({ id: 'day2_personalization_detail' }), true);
+    assert.equal(flow.canHandle({ id: 'day3_personalization_detail' }), true);
     assert.equal(flow.canHandle({ id: 'day4_chat_settings' }), true);
     assert.equal(flow.canHandle({ id: 'day4_model_behavior' }), true);
     assert.equal(flow.canHandle({ id: 'day4_gaze_follow' }), true);
@@ -50,7 +50,7 @@ test('SettingsTourFlow exposes declarative schemas for day four panel tours', ()
     assert.equal(flow.getPanelTourSchema({ id: 'day5_character_settings' }), null);
 });
 
-test('SettingsTourFlow owns day two personalization detail scene body', async () => {
+test('SettingsTourFlow owns day three personalization detail scene body after day swap', async () => {
     const calls = [];
     const characterSettingsButton = { id: 'character-settings-button' };
     const characterSettingsPanel = { id: 'character-settings-panel' };
@@ -59,7 +59,7 @@ test('SettingsTourFlow owns day two personalization detail scene body', async ()
         destroyed: false,
         angryExitTriggered: false,
         scenePausedForResistance: false,
-        currentStep: 'day2-personalization',
+        currentStep: 'day3-personalization',
         overlay: {
             clearActionSpotlight() {
                 calls.push(['clear-action']);
@@ -129,24 +129,24 @@ test('SettingsTourFlow owns day two personalization detail scene body', async ()
     };
     const flow = new SettingsTourFlow(director);
 
-    const result = await flow.play({ id: 'day2_personalization_detail' }, {
+    const result = await flow.play({ id: 'day3_personalization_detail' }, {
         sceneRunId: 11,
-        previousSceneId: 'day2_personalization_space',
+        previousSceneId: 'day3_personalization_space',
         index: 2,
         total: 5
     });
 
     assert.equal(result, true);
     assert.deepEqual(calls, [
-        ['prepare', 'day2_personalization_detail'],
-        ['interrupts', 'day2-personalization'],
-        ['narration', 'day2_personalization_detail', 'line', 'voice'],
+        ['prepare', 'day3_personalization_detail'],
+        ['interrupts', 'day3-personalization'],
+        ['narration', 'day3_personalization_detail', 'line', 'voice'],
         ['open-settings'],
-        ['highlight', 'day2_personalization_detail-character-settings-button', 'character-settings-button', 'character-settings-button'],
+        ['highlight', 'day3_personalization_detail-character-settings-button', 'character-settings-button', 'character-settings-button'],
         ['move', 'character-settings-button', 620],
         ['click', 420],
         ['ensure-panel', 'character-settings'],
-        ['highlight', 'day2_personalization_detail-character-settings-panel', 'character-settings-panel', undefined],
+        ['highlight', 'day3_personalization_detail-character-settings-panel', 'character-settings-panel', undefined],
         ['move', 'character-settings-panel', 620],
         ['ellipse', 60, 120, 36, 72, 5600],
         ['collapse-character'],
@@ -260,7 +260,7 @@ test('SettingsTourFlow reuses day four animation panel from its anchor cursor cl
     ]);
 });
 
-test('SettingsTourFlow stops day two panel tour if skip happens while opening side panel', async () => {
+test('SettingsTourFlow stops day three panel tour if skip happens while opening side panel after day swap', async () => {
     const calls = [];
     let stopping = false;
     const characterSettingsButton = { id: 'character-settings-button' };
@@ -270,7 +270,7 @@ test('SettingsTourFlow stops day two panel tour if skip happens while opening si
         destroyed: false,
         angryExitTriggered: false,
         scenePausedForResistance: false,
-        currentStep: 'day2-personalization',
+        currentStep: 'day3-personalization',
         overlay: {
             clearActionSpotlight() {
                 calls.push(['clear-action']);
@@ -341,20 +341,20 @@ test('SettingsTourFlow stops day two panel tour if skip happens while opening si
     };
     const flow = new SettingsTourFlow(director);
 
-    const result = await flow.play({ id: 'day2_personalization_detail' }, {
+    const result = await flow.play({ id: 'day3_personalization_detail' }, {
         sceneRunId: 11,
-        previousSceneId: 'day2_personalization_space',
+        previousSceneId: 'day3_personalization_space',
         index: 2,
         total: 5
     });
 
     assert.equal(result, false);
     assert.deepEqual(calls, [
-        ['prepare', 'day2_personalization_detail'],
-        ['interrupts', 'day2-personalization'],
-        ['narration', 'day2_personalization_detail', 'line', 'voice'],
+        ['prepare', 'day3_personalization_detail'],
+        ['interrupts', 'day3-personalization'],
+        ['narration', 'day3_personalization_detail', 'line', 'voice'],
         ['open-settings'],
-        ['highlight', 'day2_personalization_detail-character-settings-button', 'character-settings-button'],
+        ['highlight', 'day3_personalization_detail-character-settings-button', 'character-settings-button'],
         ['move', 'character-settings-button', 620],
         ['click', 420],
         ['ensure-panel', 'character-settings']
