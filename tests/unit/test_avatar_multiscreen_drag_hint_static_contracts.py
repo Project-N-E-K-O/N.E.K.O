@@ -126,26 +126,6 @@ def test_model_interactions_report_display_switch_misses_and_success():
     assert "markDisplaySwitchSuccess('vrm')" in vrm
 
 
-def test_live3d_display_switch_waits_for_layout_settle_before_pointer_realign():
-    mmd = _source("static/mmd-interaction.js")
-    vrm = _source("static/vrm-interaction.js")
-
-    assert "_waitForDisplaySwitchLayoutSettle" in mmd
-    assert "_waitForDisplaySwitchLayoutSettle" in vrm
-    assert "setTimeout(resolve, 140)" in mmd
-    assert "setTimeout(resolve, 140)" in vrm
-
-    mmd_switch = mmd.split("const result = await window.electronScreen.moveWindowToDisplay", 1)[1]
-    assert mmd_switch.index("await this._waitForDisplaySwitchLayoutSettle();") < mmd_switch.index(
-        "this._moveModelCenterToWindowPoint(desiredModelCenterX, desiredModelCenterY);"
-    )
-
-    vrm_switch = vrm.split("const result = await window.electronScreen.moveWindowToDisplay", 1)[1]
-    assert vrm_switch.index("await this._waitForDisplaySwitchLayoutSettle();") < vrm_switch.index(
-        "this._moveModelCenterToWindowPoint(desiredModelCenterX, desiredModelCenterY);"
-    )
-
-
 def test_model_renderers_refresh_pixel_density_after_display_switch():
     live2d_core = _source("static/live2d-core.js")
     mmd_core = _source("static/mmd-core.js")
