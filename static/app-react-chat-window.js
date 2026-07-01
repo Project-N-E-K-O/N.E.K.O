@@ -3543,6 +3543,7 @@
         for (var i = msgs.length - 1; i >= 0 && collected.length < GALGAME_HISTORY_LIMIT; i--) {
             var m = msgs[i];
             if (!m) continue;
+            if (isYuiGuideChatMessage(m)) continue;
             if (m.role !== 'assistant' && m.role !== 'user') continue;
             var text = '';
             if (Array.isArray(m.blocks)) {
@@ -4113,6 +4114,21 @@
 
     function setIcebreakerChoicePrompt(payload) {
         setNewUserIcebreakerPrompt(payload);
+    }
+
+    function clearChoicePromptBySource(source, reason) {
+        var normalizedSource = String(source || '');
+        if (!normalizedSource) return false;
+        if (normalizedSource !== 'new_user_icebreaker') return false;
+        if (!state.choicePrompt || state.choicePrompt.source !== normalizedSource) return false;
+        state.choicePrompt = null;
+        if (choicePromptRevealTimer) {
+            window.clearTimeout(choicePromptRevealTimer);
+            choicePromptRevealTimer = null;
+        }
+        invalidatePendingGalgameRequest();
+        renderWindow();
+        return true;
     }
 
     function clearIcebreakerChoicePrompt(sessionId) {
@@ -6670,6 +6686,10 @@
             setGalgameModeTemporarilyDisabled(false);
         });
 
+        window.addEventListener('neko:new-user-icebreaker-reset', function () {
+            clearChoicePromptBySource('new_user_icebreaker', 'new-user-icebreaker-reset');
+        });
+
         // Refresh option list whenever an assistant turn finishes streaming.
         window.addEventListener('neko-assistant-turn-end', function () {
             if (!state.galgameModeEnabled) return;
@@ -7070,6 +7090,7 @@
         setMiniGameInvitePrompt: setMiniGameInvitePrompt,
         setIcebreakerChoicePrompt: setIcebreakerChoicePrompt,
         setChoicePrompt: setChoicePrompt,
+        clearChoicePromptBySource: clearChoicePromptBySource,
         setNewUserIcebreakerPrompt: setNewUserIcebreakerPrompt,
         clearIcebreakerChoicePrompt: clearIcebreakerChoicePrompt,
         // unified resolved handler：accept 兼 launch / decline / suppress 都通过

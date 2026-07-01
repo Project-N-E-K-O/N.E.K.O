@@ -932,19 +932,24 @@ def test_icebreaker_uses_broadcast_channel_for_desktop_chat_window():
     assert "case 'icebreaker_append_chat_message'" in interpage
     assert "case 'icebreaker_set_choice_prompt'" in interpage
     assert "case 'icebreaker_clear_choice_prompt'" in interpage
+    assert "case 'icebreaker_clear_choice_prompt_source'" in interpage
     assert "appendIcebreakerChatMessage(data.message)" in interpage
     assert "setIcebreakerChoicePromptFromBroadcast(data.prompt)" in interpage
     assert "clearIcebreakerChoicePromptFromBroadcast(data.sessionId)" in interpage
+    assert "clearIcebreakerChoicePromptSourceFromBroadcast(data.source, data.reason)" in interpage
     icebreaker_flush_block = interpage.split("function flushPendingIcebreakerBridgeActions()", 1)[1].split(
         "function appendIcebreakerChatMessage",
         1,
     )[0]
     assert "shouldOpenHost = true" in icebreaker_flush_block
     assert "host.openWindow()" in icebreaker_flush_block
+    assert "action.source === 'new_user_icebreaker'" in icebreaker_flush_block
     assert "case 'icebreaker_choice_selected'" in interpage
     assert "postIcebreakerBridgeEvent('icebreaker_choice_selected'" in interpage
     assert "case 'icebreaker_free_text_submitted'" in interpage
     assert "postIcebreakerBridgeEvent('icebreaker_free_text_submitted'" in interpage
+    assert "action: 'icebreaker_clear_choice_prompt_source'" in runtime
+    assert "window.addEventListener('neko:new-user-icebreaker-reset'" in runtime
     assert "nekoBroadcastChannel.postMessage(message)" in interpage
     assert "postInterpageMessage(message)" not in interpage
 
@@ -961,6 +966,30 @@ def test_icebreaker_desktop_bridge_has_storage_fallback():
     assert "postIcebreakerBridgeEvent" in interpage
     assert "handleIcebreakerStorageBridgeEvent" in interpage
     assert "yuiGuideInterpageResources.addEventListener(window, 'storage', handleIcebreakerStorageBridgeEvent)" in interpage
+
+
+def test_icebreaker_source_clear_bridge_cannot_clear_non_icebreaker_prompt():
+    interpage = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
+
+    source_clear_block = interpage.split("function clearIcebreakerChoicePromptSourceFromBroadcast(source, reason)", 1)[1].split(
+        "function getIcebreakerMessageText",
+        1,
+    )[0]
+
+    assert "String(source || '') !== 'new_user_icebreaker'" in source_clear_block
+    assert "mini_game_invite" not in source_clear_block
+
+
+def test_icebreaker_page_exit_clears_choice_prompt_before_route_end():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+
+    page_exit_block = runtime.split("function endIcebreakerRouteOnPageExit(reason)", 1)[1].split(
+        "var body = {",
+        1,
+    )[0]
+
+    assert "clearChoicePrompt();" in page_exit_block
+    assert page_exit_block.index("clearChoicePrompt();") < page_exit_block.index("session.routeEnded = true;")
 
 
 def test_yui_guide_chat_bridge_has_storage_queue_fallback():
