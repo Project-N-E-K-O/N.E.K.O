@@ -12127,7 +12127,7 @@
             return this.resistanceController.handleInterrupt(event);
         }
 
-        noteUserCursorRevealAttempt(distance, now) {
+        noteUserCursorRevealSuppressionAttempt(distance, now) {
             if (
                 this.userCursorRevealSuppressed
                 || !Number.isFinite(distance)

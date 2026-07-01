@@ -295,6 +295,10 @@ def test_avatar_floating_guides_hide_real_cursor_during_takeover_and_show_banner
     assert "yui-guide-control-banner" in overlay_source
     assert "CONTROL_BANNER_TEXT_KEY = 'tutorial.yuiGuide.controlBanner'" in overlay_source
     assert "syncControlBanner()" in overlay_source
+    assert "renderedControlBannerText" in overlay_source
+    assert "renderedControlBannerVisible" in overlay_source
+    assert "this.renderedControlBannerText === text" in overlay_source
+    assert "this.renderedControlBannerVisible === isVisible" in overlay_source
     assert "yui-guide-plugin-control-banner" in plugin_runtime_source
     assert "CONTROL_BANNER_TEXT_KEY = 'tutorial.yuiGuide.controlBanner'" in plugin_runtime_source
     assert "syncControlBanner(active?: boolean)" in plugin_runtime_source
@@ -338,6 +342,12 @@ def test_avatar_floating_guides_hide_real_cursor_during_takeover_and_show_banner
     assert "prepareResistanceCursorReveal" not in director_source
     assert "restoreHiddenCursorAfterResistance" not in director_source
     assert "this.syncSystemCursorHidden(true, 'resistance_cursor_reveal_suppressed');" in resistance_block
+    assert "noteUserCursorRevealSuppressionAttempt" in director_source
+    assert "noteUserCursorRevealAttempt" not in director_source
+    assert "noteUserCursorRevealSuppressionAttempt" in resistance_source
+    assert "noteUserCursorRevealAttempt" not in resistance_source
+    assert "noteUserCursorRevealSuppressionAttempt" in plugin_runtime_source
+    assert "noteUserCursorRevealAttempt" not in plugin_runtime_source
 
     reveal_block = director_source.split("        suppressUserCursorReveal() {", 1)[1].split(
         "        clearUserCursorRevealSuppression(resetCursor) {",

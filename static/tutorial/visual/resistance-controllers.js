@@ -418,7 +418,7 @@
                     const initialDx = sampleDx === null ? 0 : sampleDx;
                     const initialDy = sampleDy === null ? 0 : sampleDy;
                     const initialDistance = Math.hypot(initialDx, initialDy);
-                    director.noteUserCursorRevealAttempt(initialDistance, now);
+                    director.noteUserCursorRevealSuppressionAttempt(initialDistance, now);
                     director.playCursorResistanceToUserMotion(x, y, initialDistance, initialDx, initialDy);
                 }
                 director.interruptQualifyingMoveStreak = 0;
@@ -440,7 +440,7 @@
                 speed: speed
             };
 
-            director.noteUserCursorRevealAttempt(distance, now);
+            director.noteUserCursorRevealSuppressionAttempt(distance, now);
             director.playCursorResistanceToUserMotion(x, y, distance, dx, dy);
 
             if (

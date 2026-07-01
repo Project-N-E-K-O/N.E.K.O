@@ -2781,7 +2781,7 @@ class PluginDashboardGuideRuntime {
     const acceleration = (speed - previousSpeed) / dt
 
     this.lastPointerPoint = { x, y, t: now, speed }
-    this.noteUserCursorRevealAttempt(distance, now)
+    this.noteUserCursorRevealSuppressionAttempt(distance, now)
     this.maybePlayPassiveResistance(x, y, distance, speed, now)
 
     if (
@@ -2846,7 +2846,7 @@ class PluginDashboardGuideRuntime {
     void this.playLightResistance(x, y)
   }
 
-  noteUserCursorRevealAttempt(distance: number, now: number) {
+  noteUserCursorRevealSuppressionAttempt(distance: number, now: number) {
     if (
       this.userCursorRevealSuppressed
       || !Number.isFinite(distance)

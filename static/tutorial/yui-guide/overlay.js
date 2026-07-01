@@ -514,6 +514,8 @@
             this.root = null;
             this.stage = null;
             this.controlBanner = null;
+            this.renderedControlBannerText = '';
+            this.renderedControlBannerVisible = null;
             this.interactionShield = null;
             this.tutorialInputShieldActive = false;
             this.takingOverActive = false;
@@ -921,9 +923,24 @@
             }
 
             const isVisible = this.takingOverActive === true;
-            this.controlBanner.textContent = resolveControlBannerText();
+            const text = resolveControlBannerText();
+
+            if (
+                this.renderedControlBannerText === text
+                && this.renderedControlBannerVisible === isVisible
+                && this.controlBanner.hidden === !isVisible
+                && this.controlBanner.classList.contains('is-visible') === isVisible
+            ) {
+                return;
+            }
+
+            if (this.renderedControlBannerText !== text) {
+                this.controlBanner.textContent = text;
+                this.renderedControlBannerText = text;
+            }
             this.controlBanner.hidden = !isVisible;
             this.controlBanner.classList.toggle('is-visible', isVisible);
+            this.renderedControlBannerVisible = isVisible;
         }
 
         isSkipControlEventTarget(target) {
@@ -2035,6 +2052,8 @@
             this.root = null;
             this.stage = null;
             this.controlBanner = null;
+            this.renderedControlBannerText = '';
+            this.renderedControlBannerVisible = null;
             this.interactionShield = null;
             this.tutorialInputShieldActive = false;
             this.takingOverActive = false;
