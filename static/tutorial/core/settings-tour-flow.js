@@ -232,7 +232,7 @@
                         cursorMoveDurationMs: normalizedSchema.cursorMoveDurationMs
                     }, anchorButton, null, previousSceneId, {
                         onClickStart: () => {
-                            openedPanelPromise = director.ensureAvatarFloatingSettingsSidePanel(panelId);
+                            openedPanelPromise = this.ensurePanelForScene(panelId, sceneRunId, scene);
                         }
                     });
                 } else {
@@ -265,9 +265,15 @@
             }
 
             const openedPanel = openedPanelPromise ? await openedPanelPromise : null;
+            if (this.isSceneStale(sceneRunId)) {
+                return false;
+            }
             const touredPanel = openedPanel
-                || await director.ensureAvatarFloatingSettingsSidePanel(panelId)
+                || await this.ensurePanelForScene(panelId, sceneRunId, scene)
                 || sidePanel;
+            if (this.isSceneStale(sceneRunId)) {
+                return false;
+            }
             await this.tourPanel(scene, sceneRunId, touredPanel, narrationPromise, {
                 key: scene.id + '-' + normalizedSchema.panelHighlightSuffix,
                 persistent: settingsButton || null,
@@ -550,6 +556,22 @@
             return sceneRunId !== director.sceneRunId || director.isStopping();
         }
 
+        shouldGuardPanelFlow(scene) {
+            const sceneId = scene && typeof scene.id === 'string' ? scene.id : '';
+            return sceneId.indexOf('day4_') === 0;
+        }
+
+        async ensurePanelForScene(panelId, sceneRunId, scene) {
+            const director = this.director;
+            if (this.isSceneStale(sceneRunId)) {
+                return null;
+            }
+            const options = this.shouldGuardPanelFlow(scene)
+                ? { shouldContinue: () => !this.isSceneStale(sceneRunId) }
+                : undefined;
+            return director.ensureAvatarFloatingSettingsSidePanel(panelId, options);
+        }
+
         async finalizeNarration(sceneRunId, narration, context) {
             const normalizedNarration = narration || {};
             const normalizedContext = context || {};
@@ -577,6 +599,7 @@
                     await director.moveCursorToElement(panel, normalizedOptions.cursorMoveDurationMs);
                 }
                 await this.runPanelNarrationEllipse(sceneRunId, panel, narrationPromise, {
+                    scene,
                     durationMs: normalizedOptions.ellipseDurationMs,
                     minDurationMs: normalizedOptions.minDurationMs
                 });
@@ -615,15 +638,24 @@
                 ? Math.max(0, normalizedOptions.minDurationMs)
                 : 0;
             let narrationDone = false;
+            const shouldGuardDelay = this.shouldGuardPanelFlow(normalizedOptions.scene);
+            const isPanelFlowStale = () => sceneRunId !== director.sceneRunId || director.isStopping();
+            const waitForSceneDelay = (delayMs) => {
+                if (typeof director.waitForSceneDelay === 'function') {
+                    const delayOptions = shouldGuardDelay
+                        ? { shouldContinue: () => !isPanelFlowStale() }
+                        : undefined;
+                    return director.waitForSceneDelay(delayMs, delayOptions);
+                }
+                return new Promise((resolve) => {
+                    const timerApi = typeof window !== 'undefined' && window.setTimeout
+                        ? window
+                        : globalThis;
+                    timerApi.setTimeout(resolve, delayMs);
+                });
+            };
             const minimumDisplayPromise = minDurationMs > 0
-                ? (typeof director.waitForSceneDelay === 'function'
-                    ? director.waitForSceneDelay(minDurationMs)
-                    : new Promise((resolve) => {
-                        const timerApi = typeof window !== 'undefined' && window.setTimeout
-                            ? window
-                            : globalThis;
-                        timerApi.setTimeout(resolve, minDurationMs);
-                    }))
+                ? waitForSceneDelay(minDurationMs)
                 : Promise.resolve();
             const guardedNarrationPromise = Promise.all([
                 resolvedNarrationPromise,
@@ -637,28 +669,26 @@
                 if (narrationDone || director.isStopping()) {
                     return;
                 }
-                const delayPromise = typeof director.waitForSceneDelay === 'function'
-                    ? director.waitForSceneDelay(ellipseYieldMs)
-                    : new Promise((resolve) => {
-                        const timerApi = typeof window !== 'undefined' && window.setTimeout
-                            ? window
-                            : globalThis;
-                        timerApi.setTimeout(resolve, ellipseYieldMs);
-                    });
+                const delayPromise = waitForSceneDelay(ellipseYieldMs);
                 await Promise.race([narrationSettledPromise, delayPromise]);
             };
             const ellipsePromise = (async () => {
                 if (typeof director.setHomePcCursorOutputSuppressedForExternalizedChat === 'function') {
                     director.setHomePcCursorOutputSuppressedForExternalizedChat(false);
                 }
-                while (sceneRunId === director.sceneRunId && !narrationDone && !director.isStopping()) {
+                while (!isPanelFlowStale() && !narrationDone) {
                     const moved = await director.cursor.runPauseAwareEllipse(
                         centerX,
                         centerY,
                         radiusX,
                         radiusY,
                         durationMs,
-                        () => narrationDone || director.destroyed || director.angryExitTriggered,
+                        () => (
+                            narrationDone
+                            || director.destroyed
+                            || director.angryExitTriggered
+                            || (shouldGuardDelay && isPanelFlowStale())
+                        ),
                         () => director.scenePausedForResistance,
                         () => director.isStopping()
                     );
@@ -672,6 +702,14 @@
                     await waitForEllipseYield();
                 }
             })();
+            if (shouldGuardDelay) {
+                const ellipseResultPromise = ellipsePromise.then(() => {
+                    return isPanelFlowStale() ? false : guardedNarrationPromise;
+                });
+                await Promise.race([guardedNarrationPromise, ellipseResultPromise]);
+                await ellipsePromise;
+                return;
+            }
             await Promise.all([guardedNarrationPromise, ellipsePromise]);
         }
     }

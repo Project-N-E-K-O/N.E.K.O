@@ -696,3 +696,186 @@ test('SettingsTourFlow keeps panel ellipse alive for configured minimum duration
 
     assert.deepEqual(delays, [900]);
 });
+
+test('SettingsTourFlow stops day four panel tour when opened panel resolves stale', async () => {
+    const calls = [];
+    let resolvePanel;
+    const settingsButton = { id: 'settings-button' };
+    const animationButton = { id: 'animation-settings-button' };
+    const animationPanel = { id: 'animation-settings-panel' };
+    const director = {
+        sceneRunId: 14,
+        currentStep: 'day4-model',
+        destroyed: false,
+        angryExitTriggered: false,
+        scenePausedForResistance: false,
+        prepareNarration() {
+            return { text: 'line', voiceKey: 'voice' };
+        },
+        getDay4SettingsButtonSpotlightTarget() {
+            return settingsButton;
+        },
+        getAvatarFloatingSidePanel() {
+            return Object.assign(animationPanel, { _anchorElement: animationButton });
+        },
+        collapseAvatarFloatingSidePanelsExcept() {},
+        applyGuideHighlights(config) {
+            calls.push(['highlight', config.key]);
+        },
+        enableInterrupts() {},
+        createNarrationPromise() {
+            return Promise.resolve();
+        },
+        waitForSceneDelay() {
+            return Promise.resolve(true);
+        },
+        isStopping() {
+            return false;
+        },
+        moveAvatarFloatingCursor(cursorScene, anchorButton, secondaryTarget, previousSceneId, options) {
+            options.onClickStart();
+            return Promise.resolve(true);
+        },
+        ensureAvatarFloatingSettingsSidePanel(panelId, options) {
+            calls.push(['ensure', panelId, !!(options && options.shouldContinue)]);
+            return new Promise((resolve) => {
+                resolvePanel = () => {
+                    this.sceneRunId = 15;
+                    resolve(animationPanel);
+                };
+            });
+        }
+    };
+    const flow = new SettingsTourFlow(director);
+
+    const resultPromise = flow.play({ id: 'day4_model_behavior' }, { sceneRunId: 14 });
+    await Promise.resolve();
+    resolvePanel();
+    const result = await resultPromise;
+
+    assert.equal(result, false);
+    assert.deepEqual(calls, [
+        ['highlight', 'day4_model_behavior-animation-settings-button'],
+        ['ensure', 'animation-settings', true]
+    ]);
+});
+
+test('SettingsTourFlow passes scene guard to day four minimum panel tour delay', async () => {
+    const guards = [];
+    const panel = {
+        getBoundingClientRect() {
+            return { left: 10, top: 20, width: 100, height: 200 };
+        }
+    };
+    const director = {
+        sceneRunId: 4,
+        destroyed: false,
+        angryExitTriggered: false,
+        scenePausedForResistance: false,
+        isStopping() {
+            return false;
+        },
+        getElementRect(target) {
+            return target.getBoundingClientRect();
+        },
+        waitForSceneDelay(durationMs, options) {
+            guards.push(options && options.shouldContinue);
+            this.sceneRunId = 5;
+            return Promise.resolve(false);
+        },
+        cursor: {
+            runPauseAwareEllipse() {
+                return Promise.resolve(false);
+            }
+        }
+    };
+    const flow = new SettingsTourFlow(director);
+
+    await flow.runPanelNarrationEllipse(4, panel, Promise.resolve(), {
+        scene: { id: 'day4_chat_settings' },
+        durationMs: 1200,
+        minDurationMs: 900
+    });
+
+    assert.equal(typeof guards[0], 'function');
+    assert.equal(guards[0](), false);
+});
+
+test('SettingsTourFlow stops day four panel tour when narration is still pending but scene becomes stale', async () => {
+    const panel = {
+        getBoundingClientRect() {
+            return { left: 10, top: 20, width: 100, height: 200 };
+        }
+    };
+    const director = {
+        sceneRunId: 4,
+        destroyed: false,
+        angryExitTriggered: false,
+        scenePausedForResistance: false,
+        isStopping() {
+            return false;
+        },
+        getElementRect(target) {
+            return target.getBoundingClientRect();
+        },
+        waitForSceneDelay(durationMs, options) {
+            return Promise.resolve(!(options && options.shouldContinue && !options.shouldContinue()));
+        },
+        cursor: {
+            runPauseAwareEllipse() {
+                director.sceneRunId = 5;
+                return Promise.resolve(false);
+            }
+        }
+    };
+    const flow = new SettingsTourFlow(director);
+    const pendingNarration = new Promise(() => {});
+
+    await flow.runPanelNarrationEllipse(4, panel, pendingNarration, {
+        scene: { id: 'day4_chat_settings' },
+        durationMs: 1200,
+        minDurationMs: 900
+    });
+
+    assert.equal(director.sceneRunId, 5);
+});
+
+test('SettingsTourFlow does not pass scene guard to non-day-four panel tour delay', async () => {
+    const optionsSeen = [];
+    const panel = {
+        getBoundingClientRect() {
+            return { left: 10, top: 20, width: 100, height: 200 };
+        }
+    };
+    const director = {
+        sceneRunId: 4,
+        destroyed: false,
+        angryExitTriggered: false,
+        scenePausedForResistance: false,
+        isStopping() {
+            return false;
+        },
+        getElementRect(target) {
+            return target.getBoundingClientRect();
+        },
+        waitForSceneDelay(durationMs, options) {
+            optionsSeen.push(options);
+            this.sceneRunId = 5;
+            return Promise.resolve(false);
+        },
+        cursor: {
+            runPauseAwareEllipse() {
+                return Promise.resolve(false);
+            }
+        }
+    };
+    const flow = new SettingsTourFlow(director);
+
+    await flow.runPanelNarrationEllipse(4, panel, Promise.resolve(), {
+        scene: { id: 'day5_character_settings' },
+        durationMs: 1200,
+        minDurationMs: 900
+    });
+
+    assert.equal(optionsSeen[0], undefined);
+});

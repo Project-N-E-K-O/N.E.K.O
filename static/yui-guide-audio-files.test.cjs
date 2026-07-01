@@ -266,6 +266,15 @@ test('day4 round scenes use timeline playback after settings tours delegate to S
     assert.equal(timelineSceneIds[5], 'day4_model_lock');
     assert.equal(timelineSceneIds[6], 'day4_return_home');
     assert.equal(timelineSceneIds[7], 'day4_wrap');
+
+    const wrapScene = day4Scenes.find(scene => scene.id === 'day4_wrap');
+    const wrapMove = wrapScene.timeline.find(event => event.command === 'cursor.move');
+    const wrapHold = wrapScene.timeline.find(event => event.command === 'cursor.hold');
+    assert.equal(wrapMove.target, 'chat-capsule-input');
+    assert.equal(wrapMove.freezePoint, true);
+    assert.equal(wrapHold.target, 'chat-capsule-input');
+    assert.equal(wrapHold.freezePoint, true);
+    assert.equal(wrapHold.at > wrapMove.at, true);
 });
 
 test('day4 migrated settings scenes delegate narration and panel tour to SettingsTourFlow from timeline', () => {
