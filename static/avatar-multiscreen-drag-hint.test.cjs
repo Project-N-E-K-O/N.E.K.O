@@ -59,9 +59,10 @@ function createDocument() {
     return document;
 }
 
-function createContext({ displays }) {
+function createContext({ displays, getCurrentDisplay } = {}) {
     const document = createDocument();
     const storage = new Map();
+    const currentDisplayGetter = getCurrentDisplay || (async () => displays[0]);
     const window = {
         innerWidth: 1000,
         innerHeight: 800,
@@ -78,7 +79,7 @@ function createContext({ displays }) {
                 return displays;
             },
             async getCurrentDisplay() {
-                return displays[0];
+                return currentDisplayGetter();
             },
             async moveWindowToDisplay() {}
         }
@@ -152,6 +153,49 @@ test('pointer edge approach ignores edges without an adjacent display', async ()
 
     assert.equal(result, false);
     assert.equal(document.getElementById('avatar-multiscreen-drag-hint'), null);
+});
+
+test('pointer edge approach coalesces in-flight checks to the latest pointer', async () => {
+    let resolveDisplay;
+    const displayReady = new Promise(resolve => {
+        resolveDisplay = resolve;
+    });
+    let currentDisplayCalls = 0;
+    const { window, document } = createContext({
+        displays: twoDisplays,
+        async getCurrentDisplay() {
+            currentDisplayCalls += 1;
+            await displayReady;
+            return twoDisplays[0];
+        }
+    });
+
+    const first = window.NekoAvatarMultiScreenDragHint.recordPointerEdgeApproach('vrm', {
+        startScreenX: 100,
+        startScreenY: 400,
+        screenX: 180,
+        screenY: 400
+    });
+    const stale = await window.NekoAvatarMultiScreenDragHint.recordPointerEdgeApproach('vrm', {
+        startScreenX: 120,
+        startScreenY: 400,
+        screenX: 240,
+        screenY: 400
+    });
+    const latest = await window.NekoAvatarMultiScreenDragHint.recordPointerEdgeApproach('vrm', {
+        startScreenX: 620,
+        startScreenY: 400,
+        screenX: 860,
+        screenY: 400
+    });
+
+    assert.equal(stale, false);
+    assert.equal(latest, false);
+    resolveDisplay();
+
+    assert.equal(await first, true);
+    assert.equal(currentDisplayCalls, 2);
+    assert.ok(document.getElementById('avatar-multiscreen-drag-hint'));
 });
 
 test('pointer edge release intent ignores edge drags without an adjacent display', async () => {

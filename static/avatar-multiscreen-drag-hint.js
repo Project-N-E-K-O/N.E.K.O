@@ -18,6 +18,8 @@
     let isPromptVisible = false;
     let missRecordQueue = Promise.resolve();
     let approachRecordQueue = Promise.resolve();
+    let approachRecordPending = false;
+    let latestApproachRecord = null;
     let lastDisplaySwitchMissCall = null;
 
     function now() {
@@ -446,9 +448,35 @@
         }
     }
 
+    async function drainPointerEdgeApproaches(initialRecord) {
+        let currentRecord = initialRecord;
+        try {
+            while (currentRecord) {
+                const shown = await recordPointerEdgeApproachNow(
+                    currentRecord.source,
+                    currentRecord.pointer
+                );
+                if (shown) {
+                    latestApproachRecord = null;
+                    return true;
+                }
+                currentRecord = latestApproachRecord;
+                latestApproachRecord = null;
+            }
+            return false;
+        } finally {
+            approachRecordPending = false;
+        }
+    }
+
     async function recordPointerEdgeApproach(source, pointer) {
+        if (approachRecordPending) {
+            latestApproachRecord = { source, pointer };
+            return false;
+        }
+        approachRecordPending = true;
         const nextRecord = approachRecordQueue.then(function () {
-            return recordPointerEdgeApproachNow(source, pointer);
+            return drainPointerEdgeApproaches({ source, pointer });
         });
         approachRecordQueue = nextRecord.catch(function () {});
         return nextRecord;
