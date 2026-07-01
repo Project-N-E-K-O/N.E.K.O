@@ -2692,9 +2692,8 @@
             this.pointerDownHandler = this.onPointerDown.bind(this);
             this.resistanceCursorTimer = null;
             this.userCursorRevealMoveCount = 0;
-            this.userCursorRevealed = false;
+            this.userCursorRevealSuppressed = false;
             this.lastUserCursorRevealMoveAt = 0;
-            this.restoreHiddenCursorAfterResistance = false;
             this.pageHideHandler = this.onPageHide.bind(this);
             this.tutorialEndHandler = this.onTutorialEndEvent.bind(this);
             this.externalChatReadyHandler = this.onExternalChatReady.bind(this);
@@ -9281,7 +9280,7 @@
             });
 
             try {
-                this.revealUserCursor();
+                this.suppressUserCursorReveal();
                 this.overlay.activateSpotlight(target);
                 this.cursor.wobble();
                 const targetRect = this.getElementRect(target) || this.getElementRect(managementButton);
@@ -11047,7 +11046,7 @@
             this.clearSceneTimers();
             this.disableInterrupts();
             this.cancelActiveNarration();
-            this.clearUserCursorReveal(true);
+            this.clearUserCursorRevealSuppression(true);
             this.manualPluginDashboardOpenAllowed = false;
             this.manualPluginDashboardOpenTarget = null;
             this.manualPluginDashboardOpenUserClicked = false;
@@ -12130,7 +12129,7 @@
 
         noteUserCursorRevealAttempt(distance, now) {
             if (
-                this.userCursorRevealed
+                this.userCursorRevealSuppressed
                 || !Number.isFinite(distance)
                 || distance < DEFAULT_USER_CURSOR_REVEAL_DISTANCE
                 || !document.body.classList.contains('yui-taking-over')
@@ -12145,11 +12144,11 @@
             this.lastUserCursorRevealMoveAt = now;
             this.userCursorRevealMoveCount += 1;
             if (this.userCursorRevealMoveCount >= DEFAULT_USER_CURSOR_REVEAL_MOVES) {
-                this.revealUserCursor();
+                this.suppressUserCursorReveal();
             }
         }
 
-        revealUserCursor() {
+        suppressUserCursorReveal() {
             if (this.destroyed || !document.body) {
                 return;
             }
@@ -12159,8 +12158,7 @@
                 this.resistanceCursorTimer = null;
             }
 
-            this.userCursorRevealed = true;
-            this.restoreHiddenCursorAfterResistance = false;
+            this.userCursorRevealSuppressed = true;
             document.documentElement.style.cursor = '';
             document.body.style.cursor = '';
             document.documentElement.classList.remove('yui-user-cursor-revealed');
@@ -12170,16 +12168,15 @@
             this.syncSystemCursorHidden(true, 'user_cursor_reveal_suppressed');
         }
 
-        clearUserCursorReveal(resetCursor) {
+        clearUserCursorRevealSuppression(resetCursor) {
             if (this.resistanceCursorTimer) {
                 window.clearTimeout(this.resistanceCursorTimer);
                 this.resistanceCursorTimer = null;
             }
 
-            this.userCursorRevealed = false;
+            this.userCursorRevealSuppressed = false;
             this.userCursorRevealMoveCount = 0;
             this.lastUserCursorRevealMoveAt = 0;
-            this.restoreHiddenCursorAfterResistance = false;
 
             if (document.body) {
                 document.documentElement.classList.remove('yui-user-cursor-revealed');
@@ -12196,17 +12193,16 @@
             }
         }
 
-        prepareResistanceCursorReveal() {
-            if (this.userCursorRevealed) {
-                this.revealUserCursor();
-                return false;
+        suppressResistanceCursorReveal() {
+            if (this.userCursorRevealSuppressed) {
+                this.suppressUserCursorReveal();
+                return;
             }
 
             if (this.resistanceCursorTimer) {
                 window.clearTimeout(this.resistanceCursorTimer);
                 this.resistanceCursorTimer = null;
             }
-            this.restoreHiddenCursorAfterResistance = false;
             document.documentElement.style.cursor = '';
             document.body.style.cursor = '';
             document.documentElement.classList.remove('yui-user-cursor-revealed');
@@ -12214,7 +12210,6 @@
             document.body.classList.remove('yui-user-cursor-revealed');
             document.body.classList.remove('yui-resistance-cursor-reveal');
             this.syncSystemCursorHidden(true, 'resistance_cursor_reveal_suppressed');
-            return false;
         }
 
         syncSystemCursorHidden(hidden, reason = 'tutorial') {
@@ -12295,7 +12290,7 @@
             if (this.page === 'home') {
                 document.body.classList.remove('yui-guide-home-ui-suppressed');
             }
-            this.clearUserCursorReveal(true);
+            this.clearUserCursorRevealSuppression(true);
             this.manualPluginDashboardOpenAllowed = false;
             this.manualPluginDashboardOpenTarget = null;
             this.manualPluginDashboardOpenUserClicked = false;

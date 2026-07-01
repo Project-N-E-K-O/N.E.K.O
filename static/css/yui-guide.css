@@ -935,6 +935,7 @@ body.yui-taking-over #react-chat-window-root .composer-input:focus-visible {
   box-shadow: none !important;
 }
 
+/* Double .yui-taking-over to out-specificity earlier cursor:auto !important rules. */
 body.yui-taking-over.yui-taking-over,
 body.yui-taking-over.yui-taking-over *,
 body.yui-taking-over .yui-guide-overlay,

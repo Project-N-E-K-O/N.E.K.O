@@ -275,6 +275,7 @@ def test_avatar_floating_guides_hide_real_cursor_during_takeover_and_show_banner
         Path(__file__).resolve().parents[2] / "static" / "tutorial/visual/resistance-controllers.js"
     ).read_text(encoding="utf-8")
 
+    assert "Double .yui-taking-over to out-specificity earlier cursor:auto !important rules." in guide_css
     assert "body.yui-taking-over.yui-taking-over," in guide_css
     assert re.search(
         r"body\.yui-taking-over\.yui-taking-over,[\s\S]*?body\.yui-taking-over \[data-yui-cursor-hidden=\"true\"\][\s\S]*?body\.yui-taking-over #neko-tutorial-skip-btn[\s\S]*?cursor\s*:\s*none\s*!important",
@@ -283,6 +284,7 @@ def test_avatar_floating_guides_hide_real_cursor_during_takeover_and_show_banner
     assert "body.yui-taking-over.yui-resistance-cursor-reveal" not in guide_css
     assert "body.yui-taking-over.yui-user-cursor-revealed" not in guide_css
 
+    assert "Double .yui-taking-over to out-specificity earlier cursor:auto !important rules." in plugin_runtime_source
     assert "html.yui-taking-over.yui-taking-over," in plugin_runtime_source
     assert re.search(
         r"html\.yui-taking-over\.yui-taking-over,[\s\S]*?html\.yui-taking-over \[data-yui-cursor-hidden=\"true\"\][\s\S]*?body\.yui-guide-plugin-dashboard-running\.yui-taking-over button[\s\S]*?cursor\s*:\s*none\s*!important",
@@ -321,40 +323,46 @@ def test_avatar_floating_guides_hide_real_cursor_during_takeover_and_show_banner
     assert "if (isActive && shouldSyncCursor) {" in director_takeover_block
     assert "this.syncSystemCursorHidden(true, 'taking_over_started');" in director_takeover_block
 
-    resistance_block = director_source.split("        prepareResistanceCursorReveal() {", 1)[1].split(
+    resistance_block = director_source.split("        suppressResistanceCursorReveal() {", 1)[1].split(
         "        playLightResistance(x, y, options) {",
         1,
     )[0]
     assert "style.cursor = 'none';" not in resistance_block
     assert "classList.add('yui-resistance-cursor-reveal')" not in resistance_block
-    assert "return false;" in resistance_block
+    assert "return false;" not in resistance_block
     assert "return true;" not in resistance_block
-    assert "this.restoreHiddenCursorAfterResistance = false;" in resistance_block
+    assert "prepareResistanceCursorReveal" not in director_source
+    assert "restoreHiddenCursorAfterResistance" not in director_source
     assert "this.syncSystemCursorHidden(true, 'resistance_cursor_reveal_suppressed');" in resistance_block
 
-    reveal_block = director_source.split("        revealUserCursor() {", 1)[1].split(
-        "        clearUserCursorReveal(resetCursor) {",
+    reveal_block = director_source.split("        suppressUserCursorReveal() {", 1)[1].split(
+        "        clearUserCursorRevealSuppression(resetCursor) {",
         1,
     )[0]
     assert "classList.add('yui-user-cursor-revealed')" not in reveal_block
     assert "classList.add('yui-resistance-cursor-reveal')" not in reveal_block
     assert "this.syncSystemCursorHidden(false, 'user_cursor_revealed');" not in reveal_block
     assert "this.syncSystemCursorHidden(true, 'user_cursor_reveal_suppressed');" in reveal_block
+    assert "revealUserCursor()" not in director_source
+    assert "userCursorRevealed" not in director_source
 
-    plugin_reveal_block = plugin_runtime_source.split("  revealUserCursor() {", 1)[1].split(
-        "  clearUserCursorReveal() {",
+    plugin_reveal_block = plugin_runtime_source.split("  suppressUserCursorReveal() {", 1)[1].split(
+        "  clearUserCursorRevealSuppression() {",
         1,
     )[0]
     assert "classList.add('yui-user-cursor-revealed')" not in plugin_reveal_block
     assert "classList.add('yui-resistance-cursor-reveal')" not in plugin_reveal_block
     assert "classList.remove('yui-resistance-cursor-reveal')" in plugin_reveal_block
 
-    plugin_resistance_reveal_block = plugin_runtime_source.split("  revealRealCursorTemporarily() {", 1)[1].split(
+    plugin_resistance_reveal_block = plugin_runtime_source.split("  suppressResistanceCursorReveal() {", 1)[1].split(
         "  async playLightResistance(x: number, y: number) {",
         1,
     )[0]
     assert "classList.add('yui-resistance-cursor-reveal')" not in plugin_resistance_reveal_block
     assert "window.setTimeout" not in plugin_resistance_reveal_block
+    assert "revealUserCursor()" not in plugin_runtime_source
+    assert "revealRealCursorTemporarily" not in plugin_runtime_source
+    assert "userCursorRevealed" not in plugin_runtime_source
 
     assert "syncPcSystemCursorHidden(hidden, reason = 'tutorial')" in manager_source
     assert "syncPcSystemCursorHidden(hidden === true, reason);" in manager_source
@@ -370,12 +378,11 @@ def test_avatar_floating_guides_hide_real_cursor_during_takeover_and_show_banner
     assert "syncSystemCursorHidden', null, false, 'interrupt_resist_light')" not in resistance_source
     assert "this.syncSystemCursorHidden(true, 'interrupt_resist_light');" in resistance_source
     assert "call(this.callbacks, 'syncSystemCursorHidden', null, true, 'interrupt_resist_light');" in resistance_source
-    assert "let shouldRestoreHiddenCursorAfterResistance = false;" in resistance_source
-    assert "shouldRestoreHiddenCursorAfterResistance = director.prepareResistanceCursorReveal(normalizedOptions);" in resistance_source
-    assert "if (shouldRestoreHiddenCursorAfterResistance) {" in resistance_source
-    assert "this.syncSystemCursorHidden(true, 'interrupt_resist_light_done');" in resistance_source
-    assert "shouldRestoreHiddenCursorAfterResistance = call(" in resistance_source
-    assert "call(this.callbacks, 'syncSystemCursorHidden', null, true, 'interrupt_resist_light_done');" in resistance_source
+    assert "call(this.callbacks, 'suppressResistanceCursorReveal', null, normalizedOptions);" in resistance_source
+    assert "director.suppressResistanceCursorReveal(normalizedOptions);" in resistance_source
+    assert "shouldRestoreHiddenCursorAfterResistance" not in resistance_source
+    assert "prepareResistanceCursorReveal" not in resistance_source
+    assert "interrupt_resist_light_done" not in resistance_source
     assert "this.syncSystemCursorHidden(false, 'interrupt_angry_exit');" in resistance_source
     assert "call(this.callbacks, 'setTutorialTakingOver', null, true, {" in resistance_source
     assert "director.setTutorialTakingOver(true, {" in resistance_source

@@ -102,16 +102,10 @@
             const performance = resistanceStep.performance || {};
             const resistanceMessage = this.getResistanceMessage(performance);
             const presentationSnapshot = call(this.callbacks, 'capturePresentationSnapshot', null);
-            let shouldRestoreHiddenCursorAfterResistance = false;
 
             if (!normalizedOptions.suppressCursorReveal) {
                 call(this.callbacks, 'syncSystemCursorHidden', null, true, 'interrupt_resist_light');
-                shouldRestoreHiddenCursorAfterResistance = call(
-                    this.callbacks,
-                    'prepareResistanceCursorReveal',
-                    false,
-                    normalizedOptions
-                ) === true;
+                call(this.callbacks, 'suppressResistanceCursorReveal', null, normalizedOptions);
             }
 
             call(this.callbacks, 'pauseCurrentSceneForResistance', null);
@@ -168,9 +162,6 @@
                 call(this.callbacks, 'resumeCurrentSceneAfterResistance', null);
                 if (this.isStopping()) {
                     return;
-                }
-                if (shouldRestoreHiddenCursorAfterResistance) {
-                    call(this.callbacks, 'syncSystemCursorHidden', null, true, 'interrupt_resist_light_done');
                 }
 
                 const didRestorePresentationSnapshot = call(
@@ -506,11 +497,10 @@
             const performance = resistanceStep.performance || {};
             const resistanceMessage = this.getResistanceMessage(performance);
             const presentationSnapshot = director.captureCurrentGuidePresentationSnapshot();
-            let shouldRestoreHiddenCursorAfterResistance = false;
 
             if (!normalizedOptions.suppressCursorReveal) {
                 this.syncSystemCursorHidden(true, 'interrupt_resist_light');
-                shouldRestoreHiddenCursorAfterResistance = director.prepareResistanceCursorReveal(normalizedOptions);
+                director.suppressResistanceCursorReveal(normalizedOptions);
             }
 
             director.pauseCurrentSceneForResistance();
@@ -556,9 +546,6 @@
                 director.resumeCurrentSceneAfterResistance();
                 if (this.isStopping()) {
                     return;
-                }
-                if (shouldRestoreHiddenCursorAfterResistance) {
-                    this.syncSystemCursorHidden(true, 'interrupt_resist_light_done');
                 }
 
                 const didRestorePresentationSnapshot = director.restoreGuidePresentationSnapshot(presentationSnapshot);

@@ -857,6 +857,7 @@ function injectStyle() {
       cursor: auto !important;
     }
 
+    /* Double .yui-taking-over to out-specificity earlier cursor:auto !important rules. */
     html.yui-taking-over.yui-taking-over,
     html.yui-taking-over.yui-taking-over *,
     body.yui-taking-over.yui-taking-over,
@@ -1227,7 +1228,7 @@ class PluginDashboardGuideRuntime {
   scriptedMotionInterruptWindowStartedAt = 0
   resistanceCursorTimer: number | null = null
   userCursorRevealMoveCount = 0
-  userCursorRevealed = false
+  userCursorRevealSuppressed = false
   lastUserCursorRevealMoveAt = 0
   narrationResumeTimer: number | null = null
   scenePauseResolvers: Array<() => void> = []
@@ -2227,7 +2228,7 @@ class PluginDashboardGuideRuntime {
       this.cursorClickResetTimer = null
     }
     this.pointer?.classList.remove('is-pressed')
-    if (!this.userCursorRevealed) {
+    if (!this.userCursorRevealSuppressed) {
       document.documentElement.classList.remove('yui-user-cursor-revealed')
       document.body.classList.remove('yui-user-cursor-revealed')
     }
@@ -2830,7 +2831,7 @@ class PluginDashboardGuideRuntime {
 
   noteUserCursorRevealAttempt(distance: number, now: number) {
     if (
-      this.userCursorRevealed
+      this.userCursorRevealSuppressed
       || !Number.isFinite(distance)
       || distance < DEFAULT_USER_CURSOR_REVEAL_DISTANCE
       || !document.body.classList.contains('yui-taking-over')
@@ -2845,28 +2846,28 @@ class PluginDashboardGuideRuntime {
     this.lastUserCursorRevealMoveAt = now
     this.userCursorRevealMoveCount += 1
     if (this.userCursorRevealMoveCount >= DEFAULT_USER_CURSOR_REVEAL_MOVES) {
-      this.revealUserCursor()
+      this.suppressUserCursorReveal()
     }
   }
 
-  revealUserCursor() {
+  suppressUserCursorReveal() {
     if (this.resistanceCursorTimer !== null) {
       window.clearTimeout(this.resistanceCursorTimer)
       this.resistanceCursorTimer = null
     }
-    this.userCursorRevealed = true
+    this.userCursorRevealSuppressed = true
     document.documentElement.classList.remove('yui-user-cursor-revealed')
     document.body.classList.remove('yui-user-cursor-revealed')
     document.documentElement.classList.remove('yui-resistance-cursor-reveal')
     document.body.classList.remove('yui-resistance-cursor-reveal')
   }
 
-  clearUserCursorReveal() {
+  clearUserCursorRevealSuppression() {
     if (this.resistanceCursorTimer !== null) {
       window.clearTimeout(this.resistanceCursorTimer)
       this.resistanceCursorTimer = null
     }
-    this.userCursorRevealed = false
+    this.userCursorRevealSuppressed = false
     this.userCursorRevealMoveCount = 0
     this.lastUserCursorRevealMoveAt = 0
     document.documentElement.classList.remove('yui-user-cursor-revealed')
@@ -2875,9 +2876,9 @@ class PluginDashboardGuideRuntime {
     document.body.classList.remove('yui-resistance-cursor-reveal')
   }
 
-  revealRealCursorTemporarily() {
-    if (this.userCursorRevealed) {
-      this.revealUserCursor()
+  suppressResistanceCursorReveal() {
+    if (this.userCursorRevealSuppressed) {
+      this.suppressUserCursorReveal()
       return
     }
     if (this.resistanceCursorTimer !== null) {
@@ -2900,7 +2901,7 @@ class PluginDashboardGuideRuntime {
 
     this.pauseCurrentSceneForResistance()
     this.interruptNarrationForResistance()
-    this.revealRealCursorTemporarily()
+    this.suppressResistanceCursorReveal()
 
     const voiceIndex = Math.min(RESISTANCE_VOICE_KEYS.length - 1, Math.max(0, this.interruptCount - 1))
     const line = RESISTANCE_LINES[voiceIndex] || RESISTANCE_LINES[0]
@@ -3036,7 +3037,7 @@ class PluginDashboardGuideRuntime {
       window.clearTimeout(this.resistanceCursorTimer)
       this.resistanceCursorTimer = null
     }
-    this.userCursorRevealed = false
+    this.userCursorRevealSuppressed = false
     this.userCursorRevealMoveCount = 0
     this.lastUserCursorRevealMoveAt = 0
     this.resetCursorVisualState()
