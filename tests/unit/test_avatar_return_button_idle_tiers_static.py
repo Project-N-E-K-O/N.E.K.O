@@ -1902,6 +1902,16 @@ def test_sleeping_cat_tiers_schedule_soft_random_sound_once_per_interval():
     assert "if (!isNekoIdleCatAudioEnabled()) {" in source
     assert "_stopNekoIdleSoundAudio(state);" in source
     assert "_stopNekoIdleSleepSound();" in source
+    assert "function _getActiveNekoIdleReturnTier()" in source
+    active_tier_block = _source_slice_between(
+        source,
+        "function _getActiveNekoIdleReturnTier()",
+        "let _nekoIdleThoughtBubblePopPreloadImage = null;",
+        "active return tier lookup block",
+    )
+    assert "_forEachNekoIdleReturnButton((button) => {" in active_tier_block
+    assert "button.getAttribute('data-neko-idle-tier')" in active_tier_block
+    assert "_readNekoAutoGoodbyeVisualTier()" in active_tier_block
     sleep_sync_block = _source_slice_between(
         source,
         "function _syncNekoIdleSleepSoundForTier(tier)",
@@ -1965,6 +1975,15 @@ def test_cat1_voice_sounds_are_limited_to_non_drag_and_drag_states():
     assert "_syncNekoIdleCat1AmbientSoundForTier(detail.tier)" in source
     assert "_stopNekoIdleCat1AmbientSound()" in source
     assert "_syncNekoIdleCat1AmbientSoundForTier(_getActiveNekoIdleReturnTier())" in source
+    assert "function _stopNekoIdleCat1ActionSounds()" in source
+    action_sound_stop_block = _source_slice_between(
+        source,
+        "function _stopNekoIdleCat1ActionSounds()",
+        "let _nekoIdleThoughtBubblePopPreloadImage = null;",
+        "cat1 action sound stop block",
+    )
+    assert "_stopNekoIdleSoundAudio(button.__nekoIdleCat1EatActionState);" in action_sound_stop_block
+    assert "_stopNekoIdleSoundAudio(button.__nekoIdleCat1PlayActionState);" in action_sound_stop_block
     assert "neko:idle-cat-audio-setting-changed" not in source
     ambient_sync_block = _source_slice_between(
         source,
