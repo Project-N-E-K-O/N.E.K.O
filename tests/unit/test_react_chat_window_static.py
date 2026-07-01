@@ -8,6 +8,7 @@ APP_BUTTONS_PATH = Path(__file__).resolve().parents[2] / "static" / "app-buttons
 APP_CHAT_EXPORT_PATH = Path(__file__).resolve().parents[2] / "static" / "app-chat-export.js"
 APP_INTERPAGE_PATH = Path(__file__).resolve().parents[2] / "static" / "app-interpage.js"
 AVATAR_UI_POPUP_PATH = Path(__file__).resolve().parents[2] / "static" / "avatar-ui-popup.js"
+AVATAR_POPUP_COMMON_PATH = Path(__file__).resolve().parents[2] / "static" / "avatar-popup-common.js"
 MUSIC_UI_PATH = Path(__file__).resolve().parents[2] / "static" / "music_ui.js"
 MUSIC_UI_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css" / "music_ui.css"
 STATIC_INDEX_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css" / "index.css"
@@ -1909,6 +1910,29 @@ def test_avatar_tool_cursor_overlays_stay_above_model_side_menus():
 
     assert avatar_cursor_layer > max_model_menu_layer
     assert hammer_cursor_layer > max_model_menu_layer
+
+
+def test_avatar_popup_positioning_uses_niri_physical_crop_coordinates_only_when_available():
+    source = AVATAR_POPUP_COMMON_PATH.read_text(encoding="utf-8")
+    position_popup_block = source.split("function positionPopup(popup, options = {})", 1)[1].split(
+        "function getButtonZone",
+        1,
+    )[0]
+    position_sidepanel_block = source.split("function positionSidePanel(container, anchor, options = {})", 1)[1].split(
+        "window.AvatarPopupUI =",
+        1,
+    )[0]
+
+    assert "function getNiriPetPhysicalCropPlacementApi()" in source
+    assert "window.__nekoNiriPetPhysicalCrop" in source
+    assert "typeof api.isActive !== 'function' || !api.isActive()" in source
+    assert "toPlacementRect(popup.getBoundingClientRect(), niriCropApi)" in position_popup_block
+    assert "const screenWidth = niriViewport ? niriViewport.width : window.innerWidth;" in position_popup_block
+    assert "const goLeft = isNiriPetPhysicalCrop" in position_sidepanel_block
+    assert "? false" in position_sidepanel_block
+    assert "const popupRect = toPlacementRect" in position_sidepanel_block
+    assert "if (isNiriPetPhysicalCrop) {" in position_sidepanel_block
+    assert "return;" in position_sidepanel_block
 
 
 def test_compact_history_closing_bubbles_disable_pointer_events():
