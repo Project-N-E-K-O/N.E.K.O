@@ -30,11 +30,8 @@ import { getChatCompanionEmptyStateFallback, getChatEmptyStateFallback } from '.
 import { i18n } from './i18n';
 import { useFocusGlow } from './useFocusGlow';
 import {
-  COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC,
-  getCompactToolWheelReboundVisualIntensity,
   playCompactToolWheelDetentSound,
-  playCompactToolWheelReboundSound,
-  preloadCompactToolWheelSounds,
+  useCompactToolWheelAudioPreload,
 } from './compactToolWheelAudio';
 import {
   type ChatMessage,
@@ -119,7 +116,6 @@ const COMPACT_INPUT_TOOL_WHEEL_DETENT_RESISTANCE_START_RATIO = 0.68;
 const COMPACT_INPUT_TOOL_WHEEL_DETENT_HOLD_RATIO = 0.86;
 const COMPACT_INPUT_TOOL_WHEEL_DETENT_BREAK_RATIO = 1.16;
 const COMPACT_TOOL_WHEEL_DRAG_ANGLE_STEP_DEG = 30.82;
-const COMPACT_TOOL_WHEEL_AUDIO_PRELOAD_RETRY_DELAYS_MS = [120, 300, 700, 1500] as const;
 const COMPACT_INPUT_TOOL_FAN_ORIGIN_CLOSE_SIZE = 48;
 const COMPACT_INPUT_TOOL_FAN_INTERACTIVE_DELAY_MS = 220;
 const COMPACT_SURFACE_RESIZE_MIN_WIDTH = 430;
@@ -826,31 +822,6 @@ function playAvatarToolSound(soundPath: string) {
   } catch {
     // Ignore autoplay or unsupported-audio failures; the interaction itself should continue.
   }
-}
-
-function useCompactToolWheelAudioPreload() {
-  useEffect(() => {
-    let retryTimer: number | null = null;
-    let retryIndex = 0;
-    let cancelled = false;
-
-    const tryPreload = () => {
-      if (cancelled) return;
-      if (preloadCompactToolWheelSounds()) return;
-      if (retryIndex >= COMPACT_TOOL_WHEEL_AUDIO_PRELOAD_RETRY_DELAYS_MS.length) return;
-      const delayMs = COMPACT_TOOL_WHEEL_AUDIO_PRELOAD_RETRY_DELAYS_MS[retryIndex];
-      retryIndex += 1;
-      retryTimer = window.setTimeout(tryPreload, delayMs);
-    };
-
-    tryPreload();
-    return () => {
-      cancelled = true;
-      if (retryTimer !== null) {
-        window.clearTimeout(retryTimer);
-      }
-    };
-  }, []);
 }
 
 function supportsDesktopFinePointer(): boolean {
@@ -2619,13 +2590,9 @@ export default function FullChatSurface({
         compactInputToolWheelSuppressClickRef.current = false;
       }, 0);
     }
-    const reboundVisualIntensity = getCompactToolWheelReboundVisualIntensity(pointerState.dragOffsetRatio);
     compactInputToolWheelPointerRef.current = null;
     setCompactInputToolWheelDragActive(false);
     setCompactInputToolWheelDragOffsetRatio(0);
-    if (reboundVisualIntensity !== null) {
-      playCompactToolWheelReboundSound(COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC, reboundVisualIntensity);
-    }
   }, []);
 
   useEffect(() => {

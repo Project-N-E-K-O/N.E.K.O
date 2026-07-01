@@ -25,6 +25,7 @@ import {
   playCompactToolWheelReboundSound,
   preloadCompactToolWheelSounds,
   resetCompactToolWheelDetentAudioForTests,
+  useCompactToolWheelAudioPreload,
 } from './compactToolWheelAudio';
 import { useFocusGlow } from './useFocusGlow';
 import CompactExportHistoryPanel, {
@@ -199,7 +200,6 @@ const compactInputToolWheelViewportFitVisibleSlots = [
 ] as const;
 const COMPACT_TOOL_WHEEL_CHARGE_RELEASE_REBOUND_OVERSHOOT_RATIO = 0.18;
 const COMPACT_TOOL_WHEEL_CHARGE_RELEASE_REBOUND_VISUAL_MS = 120;
-const COMPACT_TOOL_WHEEL_AUDIO_PRELOAD_RETRY_DELAYS_MS = [120, 300, 700, 1500] as const;
 const COMPACT_TOOL_WHEEL_DEFAULT_DRAG_ANGLE_STEP_DEG = Math.abs(
   compactInputToolWheelDefaultVisibleSlots[2].angleDeg - compactInputToolWheelDefaultVisibleSlots[3].angleDeg,
 );
@@ -1220,31 +1220,6 @@ function playAvatarToolSound(soundPath: string) {
   } catch {
     // Ignore autoplay or unsupported-audio failures; the interaction itself should continue.
   }
-}
-
-function useCompactToolWheelAudioPreload() {
-  useEffect(() => {
-    let retryTimer: number | null = null;
-    let retryIndex = 0;
-    let cancelled = false;
-
-    const tryPreload = () => {
-      if (cancelled) return;
-      if (preloadCompactToolWheelSounds()) return;
-      if (retryIndex >= COMPACT_TOOL_WHEEL_AUDIO_PRELOAD_RETRY_DELAYS_MS.length) return;
-      const delayMs = COMPACT_TOOL_WHEEL_AUDIO_PRELOAD_RETRY_DELAYS_MS[retryIndex];
-      retryIndex += 1;
-      retryTimer = window.setTimeout(tryPreload, delayMs);
-    };
-
-    tryPreload();
-    return () => {
-      cancelled = true;
-      if (retryTimer !== null) {
-        window.clearTimeout(retryTimer);
-      }
-    };
-  }, []);
 }
 
 function supportsDesktopFinePointer(): boolean {
@@ -4459,9 +4434,6 @@ function CompactChatApp({
     const chargeProgressRatio = getCompactToolWheelChargeProgressRatio(chargeSteps);
     clearCompactInputToolWheelChargeReleaseTimer();
     if (releaseSteps <= 0) {
-      if (reboundVisualIntensity !== null) {
-        playCompactToolWheelReboundSound(COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC, reboundVisualIntensity);
-      }
       return;
     }
 

@@ -6549,7 +6549,7 @@ describe('App', () => {
     expect(playSfx).not.toHaveBeenCalled();
   });
 
-  it('scales compact tool wheel rebound volume by residual drag distance', () => {
+  it('scales compact tool wheel rebound visual intensity by residual drag distance', () => {
     expect(getCompactToolWheelReboundVisualIntensity(0)).toBeNull();
     expect(getCompactToolWheelReboundVisualIntensity(0.199)).toBeNull();
     expect(getCompactToolWheelReboundVisualIntensity(0.2)).toBe(0.38);

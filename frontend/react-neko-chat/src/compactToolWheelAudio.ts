@@ -1,3 +1,5 @@
+import { useEffect } from 'react';
+
 export const COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS = [
   '/static/sounds/compact-tool-wheel/wheel-prompt.mp3',
 ] as const;
@@ -7,6 +9,8 @@ export const COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC = '';
 export const COMPACT_TOOL_WHEEL_PRELOAD_SOUND_SRCS = [
   ...COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS,
 ] as const;
+
+const COMPACT_TOOL_WHEEL_AUDIO_PRELOAD_RETRY_DELAYS_MS = [120, 300, 700, 1500] as const;
 
 export const COMPACT_TOOL_WHEEL_REBOUND_VISUAL_SOFT_INTENSITY = 0.38;
 export const COMPACT_TOOL_WHEEL_REBOUND_VISUAL_STRONG_INTENSITY = 0.85;
@@ -68,6 +72,31 @@ export function preloadCompactToolWheelSounds(): boolean {
   return getCompactToolWheelAudioSystem() !== null;
 }
 
+export function useCompactToolWheelAudioPreload() {
+  useEffect(() => {
+    let retryTimer: number | null = null;
+    let retryIndex = 0;
+    let cancelled = false;
+
+    const tryPreload = () => {
+      if (cancelled) return;
+      if (preloadCompactToolWheelSounds()) return;
+      if (retryIndex >= COMPACT_TOOL_WHEEL_AUDIO_PRELOAD_RETRY_DELAYS_MS.length) return;
+      const delayMs = COMPACT_TOOL_WHEEL_AUDIO_PRELOAD_RETRY_DELAYS_MS[retryIndex];
+      retryIndex += 1;
+      retryTimer = window.setTimeout(tryPreload, delayMs);
+    };
+
+    tryPreload();
+    return () => {
+      cancelled = true;
+      if (retryTimer !== null) {
+        window.clearTimeout(retryTimer);
+      }
+    };
+  }, []);
+}
+
 export function resetCompactToolWheelDetentAudioForTests() {
   compactToolWheelAudioSystem = undefined;
 }
@@ -106,14 +135,15 @@ export function getCompactToolWheelReboundVolume(offsetRatio: number): number | 
 
 export function playCompactToolWheelReboundSound(
   soundSrc = COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC,
-  volume = COMPACT_TOOL_WHEEL_REBOUND_VISUAL_STRONG_INTENSITY,
+  intensity = COMPACT_TOOL_WHEEL_REBOUND_VISUAL_STRONG_INTENSITY,
 ) {
   const src = soundSrc.trim();
   if (!src) return;
   const audioSystem = getCompactToolWheelAudioSystem();
   if (!audioSystem) return;
   try {
-    void audioSystem.playSfx({ src, preload: 'auto' }, { volume });
+    // The current callers pass visual rebound intensity; if rebound audio is restored, reuse it as legacy volume.
+    void audioSystem.playSfx({ src, preload: 'auto' }, { volume: intensity });
   } catch {
     // Optional UI SFX must never block wheel interaction.
   }
