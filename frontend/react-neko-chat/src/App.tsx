@@ -140,7 +140,7 @@ const COMPACT_INPUT_TOOL_WHEEL_CHARGE_START_TURNS = 3;
 const COMPACT_INPUT_TOOL_WHEEL_CHARGE_ACTIVE_TURNS = 15;
 const COMPACT_INPUT_TOOL_WHEEL_CHARGE_START_STEPS = COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT * COMPACT_INPUT_TOOL_WHEEL_CHARGE_START_TURNS;
 const COMPACT_INPUT_TOOL_WHEEL_CHARGE_MAX_STEPS = COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT * COMPACT_INPUT_TOOL_WHEEL_CHARGE_ACTIVE_TURNS;
-const COMPACT_INPUT_TOOL_WHEEL_CHARGE_RELEASE_MIN_STEP_MS = 16;
+const COMPACT_INPUT_TOOL_WHEEL_CHARGE_RELEASE_MIN_STEP_MS = 25;
 const COMPACT_INPUT_TOOL_WHEEL_CHARGE_RELEASE_MID_STEP_MS = 42;
 const COMPACT_INPUT_TOOL_WHEEL_CHARGE_RELEASE_MAX_STEP_MS = 125;
 const COMPACT_INPUT_TOOL_WHEEL_CHARGE_RELEASE_LOW_CHARGE_MIN_STEP_MS = 24;
@@ -176,15 +176,11 @@ const compactInputToolWheelViewportFitVisibleSlots = [
   { angleDeg: -80, scale: 0.86 },
 ] as const;
 export const COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS = [
-  '/static/sounds/compact-tool-wheel/gear-detent-1.mp3',
-  '/static/sounds/compact-tool-wheel/gear-detent-2.mp3',
-  '/static/sounds/compact-tool-wheel/gear-detent-3.mp3',
-  '/static/sounds/compact-tool-wheel/gear-detent-4.mp3',
+  '/static/sounds/compact-tool-wheel/wheel-prompt.mp3',
 ] as const;
-export const COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC = '/static/sounds/compact-tool-wheel/gear-rebound.mp3';
+export const COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC = '';
 const COMPACT_TOOL_WHEEL_PRELOAD_SOUND_SRCS = [
   ...COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS,
-  COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC,
 ] as const;
 const COMPACT_TOOL_WHEEL_REBOUND_SOUND_MIN_RATIO = 0.2;
 const COMPACT_TOOL_WHEEL_REBOUND_SOUND_MEDIUM_RATIO = 0.4;
@@ -1246,7 +1242,7 @@ function getCompactToolWheelAudioSystem(): NekoGameAudioSystemInstance | null {
       config: {
         audioMix: {
           sfx: {
-            baseVolume: 0.5,
+            baseVolume: 0.24,
             maxVolume: 1,
           },
         },

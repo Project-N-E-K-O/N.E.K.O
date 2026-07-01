@@ -113,15 +113,11 @@ const COMPACT_INPUT_TOOL_WHEEL_DETENT_HOLD_RATIO = 0.86;
 const COMPACT_INPUT_TOOL_WHEEL_DETENT_BREAK_RATIO = 1.16;
 const COMPACT_TOOL_WHEEL_DRAG_ANGLE_STEP_DEG = 30.82;
 const COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS = [
-  '/static/sounds/compact-tool-wheel/gear-detent-1.mp3',
-  '/static/sounds/compact-tool-wheel/gear-detent-2.mp3',
-  '/static/sounds/compact-tool-wheel/gear-detent-3.mp3',
-  '/static/sounds/compact-tool-wheel/gear-detent-4.mp3',
+  '/static/sounds/compact-tool-wheel/wheel-prompt.mp3',
 ] as const;
-const COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC = '/static/sounds/compact-tool-wheel/gear-rebound.mp3';
+const COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC = '';
 const COMPACT_TOOL_WHEEL_PRELOAD_SOUND_SRCS = [
   ...COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS,
-  COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC,
 ] as const;
 const COMPACT_TOOL_WHEEL_REBOUND_SOUND_MIN_RATIO = 0.2;
 const COMPACT_TOOL_WHEEL_REBOUND_SOUND_MEDIUM_RATIO = 0.4;
@@ -867,7 +863,7 @@ function getCompactToolWheelAudioSystem(): NekoGameAudioSystemInstance | null {
       config: {
         audioMix: {
           sfx: {
-            baseVolume: 0.5,
+            baseVolume: 0.24,
             maxVolume: 1,
           },
         },

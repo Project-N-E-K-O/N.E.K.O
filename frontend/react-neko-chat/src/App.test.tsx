@@ -6365,10 +6365,7 @@ describe('App', () => {
 
     expect(GameAudioSystem).toHaveBeenCalledTimes(1);
     expect(preloadSfx).toHaveBeenCalledTimes(1);
-    expect(preloadSfx).toHaveBeenCalledWith([
-      ...COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS,
-      COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC,
-    ]);
+    expect(preloadSfx).toHaveBeenCalledWith(COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS);
     expect(playSfx).toHaveBeenCalledTimes(2);
     expect(playSfx).toHaveBeenNthCalledWith(1, {
       src: '/static/sfx/tool-detent-a.ogg',
@@ -6424,10 +6421,7 @@ describe('App', () => {
       expect(GameAudioSystem).toHaveBeenCalledTimes(1);
     });
     expect(preloadSfx).toHaveBeenCalledTimes(1);
-    expect(preloadSfx).toHaveBeenCalledWith([
-      ...COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS,
-      COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC,
-    ]);
+    expect(preloadSfx).toHaveBeenCalledWith(COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS);
     expect(playSfx).not.toHaveBeenCalled();
     const fan = document.body.querySelector<HTMLElement>('.compact-input-tool-fan');
     expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
@@ -6459,10 +6453,7 @@ describe('App', () => {
       });
 
       expect(GameAudioSystem).toHaveBeenCalledTimes(1);
-      expect(preloadSfx).toHaveBeenCalledWith([
-        ...COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS,
-        COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC,
-      ]);
+      expect(preloadSfx).toHaveBeenCalledWith(COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS);
       expect(playSfx).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
@@ -6494,27 +6485,21 @@ describe('App', () => {
       );
 
       expect(GameAudioSystem).toHaveBeenCalledTimes(1);
-      expect(firstPreloadSfx).toHaveBeenCalledWith([
-        ...COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS,
-        COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC,
-      ]);
+      expect(firstPreloadSfx).toHaveBeenCalledWith(COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS);
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(130);
       });
 
       expect(GameAudioSystem).toHaveBeenCalledTimes(2);
-      expect(secondPreloadSfx).toHaveBeenCalledWith([
-        ...COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS,
-        COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC,
-      ]);
+      expect(secondPreloadSfx).toHaveBeenCalledWith(COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS);
       expect(playSfx).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it('randomly selects one of the configured compact tool wheel detent sounds', () => {
+  it('uses the configured compact tool wheel prompt sound', () => {
     const playSfx = vi.fn();
     const GameAudioSystem = vi.fn().mockImplementation(() => ({ playSfx }));
     (window as Window & {
@@ -6522,47 +6507,31 @@ describe('App', () => {
         GameAudioSystem: new () => { playSfx: typeof playSfx };
       };
     }).NekoGameSystem = { GameAudioSystem };
-    const randomSpy = vi.spyOn(Math, 'random')
-      .mockReturnValueOnce(0)
-      .mockReturnValueOnce(0.26)
-      .mockReturnValueOnce(0.51)
-      .mockReturnValueOnce(0.99);
 
-    try {
-      playCompactToolWheelDetentSound();
-      playCompactToolWheelDetentSound();
-      playCompactToolWheelDetentSound();
-      playCompactToolWheelDetentSound();
-    } finally {
-      randomSpy.mockRestore();
-    }
+    playCompactToolWheelDetentSound();
 
     expect(COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS).toEqual([
-      '/static/sounds/compact-tool-wheel/gear-detent-1.mp3',
-      '/static/sounds/compact-tool-wheel/gear-detent-2.mp3',
-      '/static/sounds/compact-tool-wheel/gear-detent-3.mp3',
-      '/static/sounds/compact-tool-wheel/gear-detent-4.mp3',
+      '/static/sounds/compact-tool-wheel/wheel-prompt.mp3',
     ]);
-    expect(playSfx).toHaveBeenCalledTimes(4);
+    expect(GameAudioSystem).toHaveBeenCalledWith({
+      config: {
+        audioMix: {
+          sfx: {
+            baseVolume: 0.24,
+            maxVolume: 1,
+          },
+        },
+        sfx: {},
+      },
+    });
+    expect(playSfx).toHaveBeenCalledTimes(1);
     expect(playSfx).toHaveBeenNthCalledWith(1, {
       src: COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS[0],
       preload: 'auto',
     });
-    expect(playSfx).toHaveBeenNthCalledWith(2, {
-      src: COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS[1],
-      preload: 'auto',
-    });
-    expect(playSfx).toHaveBeenNthCalledWith(3, {
-      src: COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS[2],
-      preload: 'auto',
-    });
-    expect(playSfx).toHaveBeenNthCalledWith(4, {
-      src: COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS[3],
-      preload: 'auto',
-    });
   });
 
-  it('plays the compact tool wheel rebound sound separately from detents', () => {
+  it('keeps compact tool wheel rebound audio disabled', () => {
     const playSfx = vi.fn();
     const preloadSfx = vi.fn();
     const GameAudioSystem = vi.fn().mockImplementation(() => ({ playSfx, preloadSfx }));
@@ -6574,18 +6543,10 @@ describe('App', () => {
 
     playCompactToolWheelReboundSound();
 
-    expect(preloadSfx).toHaveBeenCalledWith([
-      ...COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS,
-      COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC,
-    ]);
-    expect(playSfx).toHaveBeenCalledTimes(1);
-    expect(playSfx).toHaveBeenCalledWith(
-      {
-        src: COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC,
-        preload: 'auto',
-      },
-      { volume: 0.85 },
-    );
+    expect(COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC).toBe('');
+    expect(GameAudioSystem).not.toHaveBeenCalled();
+    expect(preloadSfx).not.toHaveBeenCalled();
+    expect(playSfx).not.toHaveBeenCalled();
   });
 
   it('scales compact tool wheel rebound volume by residual drag distance', () => {
@@ -6918,7 +6879,7 @@ describe('App', () => {
         && request !== null
         && 'src' in request
         && request.src === COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC
-      ))).toBe(true);
+      ))).toBe(false);
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(120);
