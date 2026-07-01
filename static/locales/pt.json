@@ -2573,6 +2573,8 @@
             "focusCognitionTooltip": "Quando ativado, ela se concentra e pensa mais profundamente quando você desabafa ou pergunta algo complexo; desativado desliga a concentração.",
             "autoCat": "Modo gato automático",
             "autoCatTooltip": "Vira um gatinho automaticamente após um tempo de inatividade",
+            "catAudio": "Sons de gatinho",
+            "catAudioTooltip": "Liga ou desliga os sons da forma de gatinho depois que você pede para ela sair. Requer o modo gato automático.",
             "proactiveChat": "Bate-papo proativo",
             "proactiveVision": "Modo Privacidade",
             "proactiveVisionTooltip": "Desativado: Neko ajusta seu nível de atividade e modo de conversa conforme o título da janela ativa, e pode incorporar o conteúdo da tela ao iniciar uma conversa.\nAtivado: Neko não pode olhar sua tela por conta própria nem saber o que você está fazendo. Você ainda pode enviar capturas de tela manualmente.",

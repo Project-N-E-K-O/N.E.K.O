@@ -128,8 +128,10 @@
         .master-profile-content {
             position: absolute;
             left: 0;
-            right: 0;
+            right: auto;
             top: 100%;
+            width: max(100%, 50vw);
+            max-width: calc(100vw - var(--master-profile-viewport-left, 0px) - 20px);
             margin-top: 4px;
             padding: 10px 12px;
             background: #f0f8ff;
@@ -137,6 +139,33 @@
             border-radius: 16px;
             z-index: 20;
             box-shadow: 0 8px 24px rgba(64, 197, 241, 0.15);
+            opacity: 0;
+            transform: translateY(-8px) scaleX(0.92);
+            transform-origin: top left;
+            clip-path: inset(0 100% 0 0 round 16px);
+            pointer-events: none;
+            will-change: opacity, transform, clip-path;
+            transition:
+                opacity 0.18s ease,
+                transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1),
+                clip-path 0.24s cubic-bezier(0.2, 0.8, 0.2, 1);
+        }
+        .master-profile-content.open {
+            opacity: 1;
+            transform: translateY(0) scaleX(1);
+            clip-path: inset(0 0 0 0 round 16px);
+            pointer-events: auto;
+        }
+        @media (max-width: 900px) {
+            .master-profile-content {
+                width: 100%;
+                max-width: 100%;
+            }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .master-profile-content {
+                transition: none;
+            }
         }
         .master-profile-content .field-row-wrapper {
             display: flex;

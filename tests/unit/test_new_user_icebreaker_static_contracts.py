@@ -134,6 +134,121 @@ def test_day5_icebreaker_non_source_locales_are_translated_not_copied():
     assert_icebreaker_non_source_locales_are_translated_not_copied("day5")
 
 
+def test_rewritten_icebreaker_fallbacks_stay_on_day_topics():
+    topic_terms = {
+        "day2": {
+            "en": "flavor",
+            "es": "sabor",
+            "ja": "味",
+            "ko": "맛",
+            "pt": "sabor",
+            "ru": "вкус",
+            "zh-CN": "口味",
+            "zh-TW": "口味",
+        },
+        "day3": {
+            "en": "sunlight",
+            "es": "sol",
+            "ja": "日なた",
+            "ko": "햇살",
+            "pt": "sol",
+            "ru": "солнце",
+            "zh-CN": "阳光",
+            "zh-TW": "陽光",
+        },
+        "day5": {
+            "en": "tail",
+            "es": "cola",
+            "ja": "しっぽ",
+            "ko": "꼬리",
+            "pt": "cauda",
+            "ru": "хвост",
+            "zh-CN": "尾巴",
+            "zh-TW": "尾巴",
+        },
+        "day6": {
+            "en": "ears",
+            "es": "orejas",
+            "ja": "耳",
+            "ko": "귀",
+            "pt": "orelhas",
+            "ru": "ушки",
+            "zh-CN": "耳朵",
+            "zh-TW": "耳朵",
+        },
+        "day7": {
+            "en": "week",
+            "es": "semana",
+            "ja": "一週間",
+            "ko": "일주일",
+            "pt": "semana",
+            "ru": "недели",
+            "zh-CN": "星期",
+            "zh-TW": "星期",
+        },
+    }
+    stale_terms = {
+        "day2": {
+            "en": ("window",),
+            "es": ("ventana",),
+            "ja": ("窓",),
+            "ko": ("창가",),
+            "pt": ("janela",),
+            "ru": ("окн",),
+            "zh-CN": ("窗",),
+            "zh-TW": ("窗",),
+        },
+        "day3": {
+            "en": ("cake",),
+            "es": ("pastel",),
+            "ja": ("ケーキ",),
+            "ko": ("케이크",),
+            "pt": ("bolo",),
+            "ru": ("торт",),
+            "zh-CN": ("蛋糕",),
+            "zh-TW": ("蛋糕",),
+        },
+        "day5": {
+            "en": ("note",),
+            "es": ("nota",),
+            "ja": ("メモ",),
+            "ko": ("쪽지",),
+            "pt": ("nota", "notinha"),
+            "ru": ("записк",),
+            "zh-CN": ("纸条",),
+            "zh-TW": ("紙條",),
+        },
+        "day6": {
+            "en": ("habit", "ritual"),
+            "es": ("hábito", "ritual"),
+            "ja": ("習慣", "合図"),
+            "ko": ("습관", "신호"),
+            "pt": ("hábito", "ritual"),
+            "ru": ("привыч", "ритуал"),
+            "zh-CN": ("习惯", "仪式"),
+            "zh-TW": ("習慣", "儀式"),
+        },
+        "day7": {
+            "en": ("ribbon",),
+            "es": ("cinta",),
+            "ja": ("リボン",),
+            "ko": ("리본",),
+            "pt": ("fita",),
+            "ru": ("ленточ",),
+            "zh-CN": ("丝带",),
+            "zh-TW": ("絲帶",),
+        },
+    }
+
+    for day_prefix, locale_terms in topic_terms.items():
+        for locale, topic_term in locale_terms.items():
+            data = json.loads((LOCALES_DIR / f"{locale}.json").read_text(encoding="utf-8"))
+            fallback_text = f"{data[f'{day_prefix}.fallback.redirect']} {data[f'{day_prefix}.fallback.release']}"
+            assert topic_term.lower() in fallback_text.lower(), f"{locale}:{day_prefix}"
+            for stale_term in stale_terms[day_prefix][locale]:
+                assert stale_term.lower() not in fallback_text.lower(), f"{locale}:{day_prefix}:{stale_term}"
+
+
 def test_day6_icebreaker_non_source_locales_are_translated_not_copied():
     assert_icebreaker_non_source_locales_are_translated_not_copied("day6")
 
@@ -508,26 +623,46 @@ def test_icebreaker_assistant_message_does_not_auto_open_subtitle_translation_pa
 
 def test_icebreaker_project_tts_uses_local_mutation_headers():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
-    speak_block = runtime.split("function speakViaProjectTts(text, voiceKey)", 1)[1].split(
+    speak_block = runtime.split("function speakViaProjectTts(text, voiceKey, signal)", 1)[1].split(
         "function speakLine(text, voiceKey)",
         1,
     )[0]
 
     assert "getLocalMutationHeaders().then(function (headers)" in speak_block
     assert "headers: headers" in speak_block
+    assert "if (signal) requestOptions.signal = signal;" in speak_block
+    assert "if (error && error.name === 'AbortError') return false;" in speak_block
     assert "headers: { 'Content-Type': 'application/json' }" not in speak_block
 
 
 def test_icebreaker_speak_line_waits_for_estimated_speech_duration():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+    tts_wait_block = runtime.split("function waitForTtsRequest(text, voiceKey)", 1)[1].split(
+        "function speakLine(text, voiceKey)",
+        1,
+    )[0]
     speak_line_block = runtime.split("function speakLine(text, voiceKey)", 1)[1].split(
         "function applyAssistantTextEmotion(text)",
         1,
     )[0]
 
-    assert "return speakViaProjectTts(text, voiceKey).then(function () {" in speak_line_block
+    assert "var TTS_REQUEST_MAX_WAIT_MS = 12000;" in runtime
+    assert "var controller = typeof AbortController === 'function' ? new AbortController() : null;" in tts_wait_block
+    assert "if (controller) controller.abort();" in tts_wait_block
+    assert "var timeoutId = window.setTimeout(function () {" in tts_wait_block
+    assert "speakViaProjectTts(text, voiceKey, controller ? controller.signal : undefined)" in tts_wait_block
+    assert "var speechDurationPromise = new Promise(function (resolve) {" in speak_line_block
     assert "window.setTimeout(resolve, estimateSpeechDurationMs(text));" in speak_line_block
+    assert "var ttsRequestPromise = waitForTtsRequest(text, voiceKey);" in speak_line_block
+    assert "return Promise.all([speechDurationPromise, ttsRequestPromise]).then(function () {});" in speak_line_block
+    assert "return speakViaProjectTts(text, voiceKey).then(function () {" not in speak_line_block
     assert "if (ok) return;" not in speak_line_block
+    assert speak_line_block.index("var speechDurationPromise = new Promise") < speak_line_block.index(
+        "var ttsRequestPromise = waitForTtsRequest(text, voiceKey);"
+    )
+    assert speak_line_block.index("var ttsRequestPromise = waitForTtsRequest(text, voiceKey);") < speak_line_block.index(
+        "return Promise.all([speechDurationPromise, ttsRequestPromise]).then(function () {});"
+    )
 
 
 def test_icebreaker_choice_submission_is_mutexed_and_restores_prompt_on_failure():
@@ -581,7 +716,9 @@ def test_icebreaker_handoff_waits_for_context_append_before_route_end():
 
     assert "var session = activeSession;" in handoff_block
     assert "return appendChatMessage('assistant', text" in handoff_block
-    assert "return speakViaProjectTts(text, voiceKey)" in runtime
+    assert "function speakViaProjectTts(text, voiceKey, signal)" in runtime
+    assert "function waitForTtsRequest(text, voiceKey)" in runtime
+    assert "return Promise.all([speechDurationPromise, ttsRequestPromise]).then(function () {});" in runtime
     assert "var handoffSpeechPromise = Promise.resolve(false);" in handoff_block
     assert "handoffSpeechPromise = speakLine(text, option.handoffVoiceKey || '');" in handoff_block
     assert "return endIcebreakerRoute(session, 'icebreaker_handoff');" in handoff_block
