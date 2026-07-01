@@ -203,6 +203,9 @@ const _NEKO_IDLE_TIER_CAT1 = 'cat1';
 const _NEKO_IDLE_TIER_CAT2 = 'cat2';
 const _NEKO_IDLE_TIER_CAT3 = 'cat3';
 const _NEKO_IDLE_RETURN_BUTTON_SELECTOR = '#live2d-btn-return, #vrm-btn-return, #mmd-btn-return, #pngtuber-btn-return';
+const _NEKO_GOODBYE_IDLE_APPEARANCE_CAT = 'cat';
+const _NEKO_GOODBYE_IDLE_APPEARANCE_BALL = 'ball';
+const _NEKO_GOODBYE_IDLE_APPEARANCE_ATTR = 'data-neko-goodbye-idle-appearance';
 const _NEKO_IDLE_RETURN_TRANSITION_MS = 820;
 const _NEKO_IDLE_RETURN_GIF_DURATION_FALLBACK_MS = 900;
 const _NEKO_IDLE_RETURN_GIF_DURATION_CACHE = new Map();
@@ -419,6 +422,40 @@ function _normalizeNekoIdleReturnTier(tier) {
         return tier;
     }
     return _NEKO_IDLE_TIER_CAT1;
+}
+
+function _normalizeNekoGoodbyeIdleAppearance(mode) {
+    return mode === _NEKO_GOODBYE_IDLE_APPEARANCE_BALL
+        ? _NEKO_GOODBYE_IDLE_APPEARANCE_BALL
+        : _NEKO_GOODBYE_IDLE_APPEARANCE_CAT;
+}
+
+function _getNekoGoodbyeIdleAppearance() {
+    try {
+        if (typeof window.getNekoGoodbyeIdleAppearance === 'function') {
+            return _normalizeNekoGoodbyeIdleAppearance(window.getNekoGoodbyeIdleAppearance());
+        }
+    } catch (_) {}
+    return _normalizeNekoGoodbyeIdleAppearance(window.__nekoGoodbyeIdleAppearance);
+}
+
+function _setNekoGoodbyeIdleAppearanceForButton(button, mode) {
+    if (!button) return;
+    const appearance = _normalizeNekoGoodbyeIdleAppearance(mode);
+    button.setAttribute(_NEKO_GOODBYE_IDLE_APPEARANCE_ATTR, appearance);
+    const container = button.closest('[id$="-return-button-container"]');
+    if (container) {
+        container.setAttribute(_NEKO_GOODBYE_IDLE_APPEARANCE_ATTR, appearance);
+    }
+}
+
+function _isNekoGoodbyeIdleBallButton(button) {
+    if (!button) return false;
+    const container = button.closest('[id$="-return-button-container"]');
+    const raw = (container && container.getAttribute(_NEKO_GOODBYE_IDLE_APPEARANCE_ATTR)) ||
+        button.getAttribute(_NEKO_GOODBYE_IDLE_APPEARANCE_ATTR) ||
+        _getNekoGoodbyeIdleAppearance();
+    return _normalizeNekoGoodbyeIdleAppearance(raw) === _NEKO_GOODBYE_IDLE_APPEARANCE_BALL;
 }
 
 function _isNekoNativeReturnBallDragDisabled() {
@@ -1516,6 +1553,13 @@ function _playNekoIdleCat1RapidDragSound(tier) {
 function _fadeOutNekoIdleCat1DragSound() {
     _fadeOutNekoIdleSoundAudio(_nekoIdleCat1DragSoundState, _NEKO_IDLE_CAT1_DRAG_SOUND_FADE_OUT_MS);
     _fadeOutNekoIdleSoundAudio(_nekoIdleCat1RapidDragSoundState, _NEKO_IDLE_CAT1_DRAG_SOUND_FADE_OUT_MS);
+}
+
+function _stopNekoGoodbyeIdleBallCatSounds() {
+    _syncNekoIdleSleepSoundForTier(_NEKO_IDLE_TIER_NONE);
+    _stopNekoIdleCat1AmbientSound();
+    _stopNekoIdleSoundAudio(_nekoIdleCat1DragSoundState);
+    _stopNekoIdleSoundAudio(_nekoIdleCat1RapidDragSoundState);
 }
 
 function _syncNekoIdleCat1CompactMirrorReaction(button, container, assetUrl, reason) {
@@ -5190,6 +5234,22 @@ function _finishNekoIdleHoverArtAfterPlayback(art, tier) {
 function _applyNekoIdleReturnPresentation(button, tier) {
     if (!button) return;
     const normalizedTier = _normalizeNekoIdleReturnTier(tier);
+    if (_isNekoGoodbyeIdleBallButton(button)) {
+        _setNekoGoodbyeIdleAppearanceForButton(button, _NEKO_GOODBYE_IDLE_APPEARANCE_BALL);
+        button.setAttribute('data-neko-idle-tier', _NEKO_IDLE_TIER_NONE);
+        _clearNekoIdleThoughtBubble(button);
+        _stopNekoGoodbyeIdleBallCatSounds();
+        _cancelNekoIdleCat1EatAction(button, { restoreArt: false });
+        _cancelNekoIdleCat1PlayAction(button, { restoreArt: false });
+        _cancelNekoIdleCat1Journey(button);
+        const container = button.closest('[id$="-return-button-container"]');
+        if (container) {
+            container.setAttribute('data-neko-idle-tier', _NEKO_IDLE_TIER_NONE);
+            _clearNekoIdleCat1EdgePeekForTierExit(container);
+        }
+        return;
+    }
+    _setNekoGoodbyeIdleAppearanceForButton(button, _NEKO_GOODBYE_IDLE_APPEARANCE_CAT);
     if (button.__nekoIdleThoughtBubbleTier && button.__nekoIdleThoughtBubbleTier !== normalizedTier) {
         _clearNekoIdleThoughtBubble(button);
     }
@@ -5274,9 +5334,26 @@ function _ensureNekoIdleReturnPresentationBridge() {
         if (!detail || detail.type !== 'visual-tier') {
             return;
         }
+        if (_getNekoGoodbyeIdleAppearance() === _NEKO_GOODBYE_IDLE_APPEARANCE_BALL) {
+            _stopNekoGoodbyeIdleBallCatSounds();
+            _syncAllNekoIdleReturnButtons(detail.tier);
+            return;
+        }
         _syncNekoIdleSleepSoundForTier(detail.tier);
         _syncNekoIdleCat1AmbientSoundForTier(detail.tier);
         _syncAllNekoIdleReturnButtons(detail.tier);
+    });
+
+    window.addEventListener('neko:goodbye-idle-appearance', (event) => {
+        const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
+        const appearance = _normalizeNekoGoodbyeIdleAppearance(detail && detail.mode);
+        document.querySelectorAll(_NEKO_IDLE_RETURN_BUTTON_SELECTOR).forEach((button) => {
+            _setNekoGoodbyeIdleAppearanceForButton(button, appearance);
+        });
+        if (appearance === _NEKO_GOODBYE_IDLE_APPEARANCE_BALL) {
+            _stopNekoGoodbyeIdleBallCatSounds();
+        }
+        _syncAllNekoIdleReturnButtons(_readNekoAutoGoodbyeVisualTier());
     });
 
     window.addEventListener('resize', () => {
@@ -5457,6 +5534,11 @@ function _ensureNekoIdleReturnPresentationBridge() {
     });
 
     const currentTier = _readNekoAutoGoodbyeVisualTier();
+    if (_getNekoGoodbyeIdleAppearance() === _NEKO_GOODBYE_IDLE_APPEARANCE_BALL) {
+        _stopNekoGoodbyeIdleBallCatSounds();
+        _syncAllNekoIdleReturnButtons(currentTier);
+        return;
+    }
     _syncNekoIdleSleepSoundForTier(currentTier);
     _syncNekoIdleCat1AmbientSoundForTier(currentTier);
 }
@@ -5960,7 +6042,10 @@ const AvatarButtonMixin = {
                 const dispatchReturnEvent = () => {
                     window.dispatchEvent(event);
                 };
-                if (typeof window.playNekoModelCatTransition === 'function') {
+                if (
+                    typeof window.playNekoModelCatTransition === 'function' &&
+                    !_isNekoGoodbyeIdleBallButton(returnBtn)
+                ) {
                     window.playNekoModelCatTransition({
                         direction: 'cat-to-model',
                         anchorRect: rect,
