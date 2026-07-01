@@ -203,9 +203,17 @@ class CompressedRecentHistoryManager:
 
     async def _areset_history_file(self, file_path, lanlan_name, reason):
         try:
+            await asyncio.to_thread(
+                assert_cloudsave_writable,
+                self._config_manager,
+                operation="reset",
+                target=f"memory/{lanlan_name}/recent.json",
+            )
             await asyncio.to_thread(os.makedirs, os.path.dirname(file_path), exist_ok=True)
             await atomic_write_json_async(file_path, [], indent=2, ensure_ascii=False)
             logger.warning(f"[RecentHistory] {lanlan_name} 的历史记录文件无效（{reason}），已重置为空列表: {file_path}")
+        except MaintenanceModeError:
+            raise
         except Exception as reset_error:
             logger.error(f"[RecentHistory] 重置 {lanlan_name} 的历史记录文件失败: {reset_error}", exc_info=True)
 

@@ -292,6 +292,9 @@ class TopicHookPool:
         self._materials: dict[str, list[dict[str, Any]]] = {}
         self._tasks: dict[str, asyncio.Task] = {}
         self._trigger_tasks: dict[str, asyncio.Task] = {}
+        # Strong references to fire-and-forget background tasks so they are
+        # not garbage-collected before completion.
+        self._bg_tasks: set[asyncio.Task] = set()
         self._used_topics: dict[str, list[dict[str, Any]]] = defaultdict(list)
         self._used_topics_lock = threading.RLock()
         self._used_topics_write_lock = threading.Lock()
@@ -1025,7 +1028,9 @@ class TopicHookPool:
         except RuntimeError:
             self._persist_used_topics()
             return
-        loop.create_task(asyncio.to_thread(self._persist_used_topics))
+        task = loop.create_task(asyncio.to_thread(self._persist_used_topics))
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
 
     def _load_used_topics(self) -> None:
         path = self._used_topics_path

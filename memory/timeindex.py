@@ -521,6 +521,9 @@ class TimeIndexedMemory:
         try:
             # 转义 FTS5 特殊字符
             safe_query = normalized_query.replace('"', '""')
+            # Wrap as an FTS5 phrase query so multi-word input matches the
+            # whole phrase rather than each token independently.
+            fts_query = f'"{safe_query}"'
             with self.engines[lanlan_name].connect() as conn:
                 result = conn.execute(
                     text(
@@ -529,7 +532,7 @@ class TimeIndexedMemory:
                         f'WHERE {self.FACTS_FTS_TABLE} MATCH :query '
                         f"ORDER BY score LIMIT :limit"
                     ),
-                    {"query": safe_query, "limit": limit}
+                    {"query": fts_query, "limit": limit}
                 )
                 return [(row[0], row[1]) for row in result.fetchall()]
         except Exception as e:

@@ -35,6 +35,7 @@ gate), this cleanup removes the LLM paths outright and keeps only the disk IO.
 If this ever truly needs reviving, follow the evidence/reflection paradigm —
 do not resurrect the old code.
 """
+import copy
 import json
 
 from config import CHARACTER_RESERVED_FIELDS
@@ -53,6 +54,10 @@ class ImportantSettingsManager:
     def load_settings(self):
         # It is important to update the settings with the latest character on-disk files
         _, _, master_basic_config, lanlan_basic_config, name_mapping, _, _, setting_store, _ = self._config_manager.get_character_data()
+        # Deep copy the shared config_manager dictionary so that popping
+        # reserved fields below never mutates the original object held by
+        # config_manager.
+        lanlan_basic_config = copy.deepcopy(lanlan_basic_config)
         self.settings_file = setting_store
         self.master_basic_config = master_basic_config
         self.lanlan_basic_config = lanlan_basic_config

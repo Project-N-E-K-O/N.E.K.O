@@ -8,8 +8,11 @@ services:
     volumes:
       - ./data:/app/data
     environment:
-      # ★ 必须修改：管理端鉴权 token（用于 dashboard / 导出 / 查询）
-      - TELEMETRY_ADMIN_TOKEN=changeme
+      # ★ Must override: admin auth token (used for dashboard / export / queries).
+      # Set TELEMETRY_ADMIN_TOKEN in your .env file (or shell environment) before
+      # running docker-compose; otherwise the container falls back to a clearly
+      # invalid placeholder and the admin API must not be considered secure.
+      - TELEMETRY_ADMIN_TOKEN=${TELEMETRY_ADMIN_TOKEN:-please-change-me}
       # 可选：启用 /docs Swagger 页面
       # - TELEMETRY_ENABLE_DOCS=1
     restart: unless-stopped
