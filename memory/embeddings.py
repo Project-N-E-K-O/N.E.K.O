@@ -1415,8 +1415,20 @@ class EmbeddingService:
         # 已经可感(4 核 → 2 线程 = 50%,与前端渲染 / LLM 客户端 / TTS 抢核)。
         # ≤4 核降到单线程,把余下的核留给交互路径;>4 核维持「一半核心」的老
         # 策略——大核机吞吐优先,头部余量仍然够。
-        cpu = os.cpu_count() or 2
-        sess_opts.intra_op_num_threads = 1 if cpu <= 4 else max(1, cpu // 2)
+        #
+        # 「小核机」阈值按*物理*核判,不用 os.cpu_count():4 核 + 超线程的 CPU
+        # (i3/i5 常见)逻辑核报 8,按逻辑核判会漏掉这类机器走 >4 分支给 4 线程
+        # ——而这恰是要压占用的目标硬件。psutil 已是本模块依赖(detect_total_ram_gb),
+        # 物理核拿不到(平台不支持 / 无 psutil)再退回逻辑核。>4 分支仍按逻辑核
+        # 折半,与本改动前的行为逐字一致,不动大核机。
+        logical = os.cpu_count() or 2
+        try:
+            import psutil
+            physical = psutil.cpu_count(logical=False)
+        except Exception:  # noqa: BLE001 — 无 psutil / 平台不支持 → 退回逻辑核
+            physical = None
+        cores = physical or logical
+        sess_opts.intra_op_num_threads = 1 if cores <= 4 else max(1, logical // 2)
         sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         # Arena 默认 True(BFCArena 只涨不还):一次性大分配后 RSS 永久
         # 钉在高水位,把瞬时尖峰变成永久占用。我们的输入有 _INFER_BATCH_MAX_TOKENS
