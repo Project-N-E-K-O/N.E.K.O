@@ -1125,7 +1125,12 @@ def test_icebreaker_free_text_uses_llm_interpreter_before_static_fallback():
     assert "action === 'release'" in runtime
     assert "var releaseText = decision.reply || getText(localeData, fallback.releaseKey);" in runtime
     assert "var releaseText = getText(localeData, fallback.releaseKey) || decision.reply;" not in runtime
-    assert "topicState: FREE_TEXT_TOPIC_ON_TOPIC" in runtime
+    fallback_block = runtime.split("function fallbackFreeTextInterpretation(snapshot)", 1)[1].split(
+        "function setChoicePrompt(node, localeData, revealDelayMs)",
+        1,
+    )[0]
+    assert "topicState: FREE_TEXT_TOPIC_SOFT_DERAIL" in fallback_block
+    assert "topicState: FREE_TEXT_TOPIC_ON_TOPIC" not in fallback_block
     assert "neko:icebreaker-free-text-submitted" in runtime
 
 

@@ -946,7 +946,7 @@
             action: 'respond_and_keep_options',
             choice: '',
             reply: getText(localeData, fallback.redirectKey),
-            topicState: FREE_TEXT_TOPIC_ON_TOPIC
+            topicState: FREE_TEXT_TOPIC_SOFT_DERAIL
         };
     }
 
