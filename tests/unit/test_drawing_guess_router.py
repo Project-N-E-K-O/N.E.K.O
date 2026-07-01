@@ -4,6 +4,7 @@ import pytest
 
 from main_routers import drawing_guess_router as dgr
 from main_routers import game_router
+from utils.game_route_state import _game_route_states, _route_state_key
 
 
 class _FakeRequest:
@@ -17,8 +18,10 @@ class _FakeRequest:
 @pytest.fixture(autouse=True)
 def _clear_sessions():
     dgr._drawing_guess_sessions.clear()
+    _game_route_states.clear()
     yield
     dgr._drawing_guess_sessions.clear()
+    _game_route_states.clear()
 
 
 def _load_drawing_guess_context_payload(raw: str) -> dict:
@@ -769,6 +772,71 @@ async def test_missing_client_round_token_is_stale_when_session_has_token():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_round_start_syncs_client_round_token_to_active_route_state():
+    route_state = {
+        "game_route_active": True,
+        "session_id": "dg-route-token-sync",
+        "last_state": {},
+    }
+    _game_route_states[_route_state_key("YUI", "drawing_guess")] = route_state
+
+    result = await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-route-token-sync",
+        "i18n_language": "en",
+        "client_round_token": "round-2",
+    }))
+
+    assert result["ok"] is True
+    assert result["state"]["client_round_token"] == "round-2"
+    assert route_state["client_round_token"] == "round-2"
+    assert route_state["last_state"]["client_round_token"] == "round-2"
+    assert route_state["last_state"]["phase"] == "ai_drawing"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_external_transcript_uses_active_session_token_when_route_state_is_stale(monkeypatch):
+    await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-external-stale-route-token",
+        "i18n_language": "en",
+        "client_round_token": "new-token",
+    }))
+    session = dgr._drawing_guess_sessions["YUI:dg-external-stale-route-token"]
+    session["phase"] = "user_drawing"
+    session["user_word_id"] = "banana"
+
+    async def fake_persona_line(**kwargs):
+        assert kwargs["event"] == "drawing_chat"
+        return "Keep sketching that shape."
+
+    monkeypatch.setattr(dgr, "_generate_persona_chat_line", fake_persona_line)
+
+    result = await dgr.handle_external_drawing_guess_transcript(
+        "YUI",
+        "dg-external-stale-route-token",
+        "still drawing",
+        route_state={
+            "last_state": {
+                "phase": "user_drawing",
+                "i18n_language": "en",
+                "client_round_token": "old-token",
+            },
+            "client_round_token": "old-token",
+        },
+        request_id="voice-stale-route-token",
+        kind="user-text",
+    )
+
+    assert result["ok"] is True
+    assert result["kind"] == "chat"
+    assert result["message"] == "Keep sketching that shape."
+    assert session["phase"] == "user_drawing"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_ai_draw_rejects_concurrent_session_request():
     await dgr.drawing_guess_round_start(_FakeRequest({
         "lanlan_name": "YUI",
@@ -819,6 +887,35 @@ async def test_timeout_rejects_concurrent_session_request():
     assert result["reason"] == "session_busy"
     assert result["state"]["phase"] == "user_guessing"
     assert session["phase"] == "user_guessing"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_choose_word_rejects_concurrent_session_request():
+    start = await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-choice-busy",
+        "i18n_language": "en",
+        "debug_start_phase": "word_picking",
+    }))
+    session = dgr._drawing_guess_sessions["YUI:dg-choice-busy"]
+    lock = dgr._get_session_lock(session)
+    await lock.acquire()
+    try:
+        result = await dgr.drawing_guess_choose_word(_FakeRequest({
+            "lanlan_name": "YUI",
+            "session_id": "dg-choice-busy",
+            "i18n_language": "en",
+            "word_id": start["user_draw_options"][0]["id"],
+        }))
+    finally:
+        lock.release()
+
+    assert result["ok"] is False
+    assert result["reason"] == "session_busy"
+    assert result["state"]["phase"] == "word_picking"
+    assert session.get("user_word_id") is None
+    assert session["phase"] == "word_picking"
 
 
 @pytest.mark.unit

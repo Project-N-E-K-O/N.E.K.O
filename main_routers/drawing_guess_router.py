@@ -27,6 +27,7 @@ from xml.sax.saxutils import quoteattr
 from fastapi import APIRouter, Request
 
 from config.prompts.prompts_drawing_guess import DRAWING_GUESS_WORD_DATA
+from utils.game_route_state import _get_active_game_route_state
 from utils.logger_config import get_module_logger
 
 
@@ -1031,6 +1032,7 @@ def _public_word_cycle_state(session: dict[str, Any]) -> dict[str, Any]:
 def _public_round_state(session: dict[str, Any], locale: str) -> dict[str, Any]:
     return {
         "round_id": session.get("round_id"),
+        "client_round_token": session.get("client_round_token"),
         "phase": session.get("phase"),
         "scores": _score_payload(session),
         "timers": {
@@ -1047,6 +1049,20 @@ def _public_round_state(session: dict[str, Any], locale: str) -> dict[str, Any]:
             else None
         ),
     }
+
+
+def _sync_active_route_state(session: dict[str, Any], locale: str) -> None:
+    lanlan_name = str(session.get("lanlan_name") or "")
+    session_id = str(session.get("session_id") or "")
+    state = _get_active_game_route_state(lanlan_name, "drawing_guess") if lanlan_name else None
+    if not isinstance(state, dict):
+        return
+    if session_id and str(state.get("session_id") or "") != session_id:
+        return
+    state["last_state"] = _public_round_state(session, locale)
+    state["client_round_token"] = session.get("client_round_token")
+    state["i18n_language"] = locale
+    state["last_activity"] = time.time()
 
 
 def _ensure_user_word_options(session: dict[str, Any]) -> list[str]:
@@ -2926,6 +2942,7 @@ async def drawing_guess_round_start(request: Request):
         "word_cycle": word_cycle,
     }
     _drawing_guess_sessions[session_key] = session
+    _sync_active_route_state(session, locale)
     response = {"ok": True, "state": _public_round_state(session, locale)}
     if initial_phase == "word_picking":
         response.update({
@@ -3242,6 +3259,7 @@ async def handle_external_drawing_guess_transcript(
 ) -> dict[str, Any]:
     state = route_state if isinstance(route_state, dict) else {}
     last_state = state.get("last_state") if isinstance(state.get("last_state"), dict) else {}
+    session = _drawing_guess_sessions.get(_session_key(lanlan_name, session_id))
     data: dict[str, Any] = {
         "lanlan_name": lanlan_name,
         "session_id": session_id,
@@ -3252,7 +3270,11 @@ async def handle_external_drawing_guess_transcript(
         "i18n_language": state.get("i18n_language") or last_state.get("i18n_language") or "",
         "memory_consent": state.get("memory_consent") or last_state.get("memory_consent") or "none",
     }
-    round_token = last_state.get("client_round_token") or state.get("client_round_token")
+    round_token = (
+        session.get("client_round_token")
+        if isinstance(session, dict) and session.get("client_round_token") is not None
+        else last_state.get("client_round_token") or state.get("client_round_token")
+    )
     if round_token is not None:
         data["client_round_token"] = round_token
     phase = str(last_state.get("phase") or state.get("phase") or "")
@@ -3269,6 +3291,21 @@ async def drawing_guess_choose_word(request: Request):
     if error:
         return {"ok": False, "reason": error}
     locale = _normalize_locale(data.get("i18n_language") or session.get("locale"))
+    lock, busy = await _acquire_session_lock(session, locale)
+    if busy is not None:
+        return busy
+    try:
+        return _drawing_guess_choose_word_locked(data, session, locale)
+    finally:
+        if lock is not None:
+            lock.release()
+
+
+def _drawing_guess_choose_word_locked(
+    data: dict[str, Any],
+    session: dict[str, Any],
+    locale: str,
+) -> dict[str, Any]:
     if session.get("phase") != "word_picking":
         return {"ok": False, "reason": "not_word_picking", "state": _public_round_state(session, locale)}
 
@@ -3287,6 +3324,7 @@ async def drawing_guess_choose_word(request: Request):
     _exclude_word_id_from_cycle(cycle_state, word_id)
     session["word_cycle"] = cycle_state
     session["phase"] = "user_drawing"
+    _sync_active_route_state(session, locale)
     answer = _WORD_BY_ID[word_id]
     return {
         "ok": True,

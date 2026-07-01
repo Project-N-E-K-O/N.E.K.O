@@ -236,6 +236,35 @@ def test_declared_under_limit_but_streamed_body_over_limit_rejected():
     assert sent[0]["status"] == 413
 
 
+def test_streaming_overflow_is_not_swallowed_by_broad_exception_handler():
+    mw = _make(max_bytes=64)
+    scope = _http_scope([(b"content-type", b"application/json")])
+    messages = [{"type": "http.request", "body": b"x" * 65, "more_body": False}]
+
+    async def downstream(_scope, receive, send):
+        try:
+            await receive()
+        except Exception:
+            await send({"type": "http.response.start", "status": 400, "headers": []})
+            await send({"type": "http.response.body", "body": b"swallowed"})
+
+    mw.app = downstream
+    sent = []
+
+    async def receive():
+        if messages:
+            return messages.pop(0)
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        sent.append(message)
+
+    _run(mw(scope, receive, send))
+
+    assert sent[0]["type"] == "http.response.start"
+    assert sent[0]["status"] == 413
+
+
 def test_malformed_content_length_passes_through():
     mw = _make(max_bytes=64)
     scope = _http_scope([(b"content-length", b"not-a-number"), (b"content-type", b"application/json")])

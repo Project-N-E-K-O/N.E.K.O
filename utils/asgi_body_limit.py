@@ -84,7 +84,7 @@ _TRUSTED_MULTIPART_UPLOAD_PATTERNS = (
 )
 
 
-class _InboundBodyTooLarge(Exception):
+class _InboundBodyTooLarge(BaseException):
     """Internal control flow for streamed body overflow."""
 
     def __init__(self, max_body_bytes: int):
