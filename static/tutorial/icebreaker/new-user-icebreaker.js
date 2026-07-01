@@ -199,6 +199,7 @@
     function endIcebreakerRouteOnPageExit(reason) {
         var session = activeSession;
         if (!session || session.routeEnded || !session.sessionId) return;
+        clearChoicePrompt();
         session.routeEnded = true;
         clearFreeTextRuntimeStateForSession(session);
         var body = {
@@ -454,6 +455,14 @@
         broadcastIcebreaker(null, {
             action: 'icebreaker_clear_choice_prompt',
             sessionId: sessionId
+        });
+    }
+
+    function broadcastIcebreakerClearChoicePromptSource(source, reason) {
+        broadcastIcebreaker(null, {
+            action: 'icebreaker_clear_choice_prompt_source',
+            source: source || SOURCE,
+            reason: reason || 'icebreaker_source_reset'
         });
     }
 
@@ -1644,6 +1653,9 @@
     });
     window.addEventListener('neko:icebreaker-free-text-submitted', function (event) {
         handleFreeText(event && event.detail);
+    });
+    window.addEventListener('neko:new-user-icebreaker-reset', function () {
+        broadcastIcebreakerClearChoicePromptSource(SOURCE, 'new-user-icebreaker-reset');
     });
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', bootstrapFromRecentEndState, { once: true });

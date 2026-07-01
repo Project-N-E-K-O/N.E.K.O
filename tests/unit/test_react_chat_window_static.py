@@ -1408,6 +1408,64 @@ def test_icebreaker_choice_prompt_reveal_delay_hides_buttons_not_state():
     assert "if (state.choicePrompt && state.choicePrompt.source === 'new_user_icebreaker') return;" in galgame_fetch_block
 
 
+def test_galgame_history_excludes_tutorial_guide_messages():
+    react_host = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    history_block = react_host.split("function getRecentGalgameMessageHistory()", 1)[1].split(
+        "function pickAcceptLanguage",
+        1,
+    )[0]
+
+    assert "if (isYuiGuideChatMessage(m)) continue;" in history_block
+    assert "if (!m) continue;" in history_block
+    assert history_block.index("if (!m) continue;") < history_block.index("if (isYuiGuideChatMessage(m)) continue;")
+
+
+def test_icebreaker_reset_clears_prompt_by_source_without_session_match():
+    react_host = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    assert "function clearChoicePromptBySource(source, reason)" in react_host
+    reset_block = react_host.split("function clearChoicePromptBySource(source, reason)", 1)[1].split(
+        "function clearIcebreakerChoicePrompt",
+        1,
+    )[0]
+    assert "if (normalizedSource !== 'new_user_icebreaker') return false;" in reset_block
+    assert "state.choicePrompt.source !== normalizedSource" in reset_block
+    assert "clearChoicePromptBySource:', normalizedSource, reason || ''" in reset_block
+    assert "state.choicePrompt = null;" in reset_block
+    assert "invalidatePendingGalgameRequest();" in reset_block
+
+    listeners_block = react_host.split("function bindBridgeEvents()", 1)[1].split(
+        "function init()",
+        1,
+    )[0]
+    assert "window.addEventListener('neko:new-user-icebreaker-reset'" in listeners_block
+    assert "clearChoicePromptBySource('new_user_icebreaker', 'new-user-icebreaker-reset')" in listeners_block
+
+
+def test_externalized_tutorial_chat_ready_replays_input_lock():
+    takeover = (Path(__file__).resolve().parents[2] / "static" / "tutorial" / "core" / "interaction-takeover.js").read_text(
+        encoding="utf-8"
+    )
+    bridge_bus = (Path(__file__).resolve().parents[2] / "static" / "tutorial" / "core" / "bridge-command-bus.js").read_text(
+        encoding="utf-8"
+    )
+    interpage = (Path(__file__).resolve().parents[2] / "static" / "app-interpage.js").read_text(encoding="utf-8")
+
+    assert "yui_guide_set_chat_input_locked: true" in bridge_bus
+    bridge_replay_block = interpage.split("function handleYuiGuideChatBridgeData(data)", 1)[1].split(
+        "function drainPendingYuiGuideChatBridgeQueue",
+        1,
+    )[0]
+    assert "case 'yui_guide_set_chat_input_locked':" in bridge_replay_block
+    assert "applyYuiGuideChatInputLocked(data.locked === true, data.reason || '')" in bridge_replay_block
+    ready_block = takeover.split("onExternalChatReady()", 1)[1].split(
+        "destroy()",
+        1,
+    )[0]
+    assert "this.setExternalizedChatInputLocked(true, 'external-chat-ready')" in ready_block
+
+
 def test_new_user_icebreaker_choice_listener_posts_context():
     script = (Path(__file__).resolve().parents[2] / "static" / "icebreaker/new-user-icebreaker.js").read_text(encoding="utf-8")
     choice_block = script.split("function completeFromChoice(detail)", 1)[1].split(

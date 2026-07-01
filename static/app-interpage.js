@@ -2445,6 +2445,10 @@
                 if (isDuplicateMessage(data.action, data.timestamp)) return true;
                 clearYuiGuideChatMessages();
                 return true;
+            case 'yui_guide_set_chat_input_locked':
+                if (isDuplicateMessage(data.action, data.timestamp)) return true;
+                applyYuiGuideChatInputLocked(data.locked === true, data.reason || '');
+                return true;
             case 'tutorial_chat_identity_override':
                 if (isDuplicateMessage(data.action, data.timestamp)) return true;
                 applyTutorialChatIdentityOverride(data);
@@ -2544,6 +2548,10 @@
                     shouldOpenHost = true;
                 } else if (action.type === 'clear_prompt' && action.sessionId && typeof host.clearIcebreakerChoicePrompt === 'function') {
                     host.clearIcebreakerChoicePrompt(action.sessionId);
+                } else if (action.type === 'clear_prompt_source'
+                        && action.source === 'new_user_icebreaker'
+                        && typeof host.clearChoicePromptBySource === 'function') {
+                    host.clearChoicePromptBySource(action.source, action.reason || 'icebreaker-bridge');
                 }
             } catch (error) {
                 console.warn('[NewUserIcebreaker] Failed to apply bridge action:', action.type, error);
@@ -2571,6 +2579,16 @@
     function clearIcebreakerChoicePromptFromBroadcast(sessionId) {
         if (!isStandaloneChatPage()) return;
         queueIcebreakerBridgeAction({ type: 'clear_prompt', sessionId: String(sessionId || '') });
+    }
+
+    function clearIcebreakerChoicePromptSourceFromBroadcast(source, reason) {
+        if (!isStandaloneChatPage()) return;
+        if (String(source || '') !== 'new_user_icebreaker') return;
+        queueIcebreakerBridgeAction({
+            type: 'clear_prompt_source',
+            source: String(source || ''),
+            reason: String(reason || '')
+        });
     }
 
     // Also defined in new-user-icebreaker.js for the local chat host path.
@@ -2633,6 +2651,7 @@
         return action === 'icebreaker_append_chat_message'
             || action === 'icebreaker_set_choice_prompt'
             || action === 'icebreaker_clear_choice_prompt'
+            || action === 'icebreaker_clear_choice_prompt_source'
             || action === 'icebreaker_choice_selected'
             || action === 'icebreaker_free_text_submitted';
     }
@@ -2658,6 +2677,10 @@
             case 'icebreaker_clear_choice_prompt':
                 if (isDuplicateMessage(data.action, data.timestamp)) return true;
                 clearIcebreakerChoicePromptFromBroadcast(data.sessionId);
+                return true;
+            case 'icebreaker_clear_choice_prompt_source':
+                if (isDuplicateMessage(data.action, data.timestamp)) return true;
+                clearIcebreakerChoicePromptSourceFromBroadcast(data.source, data.reason);
                 return true;
             case 'icebreaker_choice_selected':
                 if (isDuplicateMessage(data.action, data.timestamp)) return true;

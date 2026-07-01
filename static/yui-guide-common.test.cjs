@@ -683,6 +683,8 @@ test('app interpage sends external chat pet reports through the command bus', ()
     assert.match(source, /bus\.postToPet\(action,\s*payload,\s*options \|\| \{\}\)/);
     assert.match(bridgeDataBlock, /case 'tutorial_chat_identity_override':/);
     assert.match(bridgeDataBlock, /applyTutorialChatIdentityOverride\(data\)/);
+    assert.match(bridgeDataBlock, /case 'yui_guide_set_chat_input_locked':/);
+    assert.match(bridgeDataBlock, /applyYuiGuideChatInputLocked\(data\.locked === true,\s*data\.reason \|\| ''\)/);
     assert.match(requestIdentityBlock, /postYuiGuideMessageToChat\([\s\S]*'tutorial_chat_identity_override'/);
     assert.doesNotMatch(requestIdentityBlock, /nekoBroadcastChannel\.postMessage\(Object\.assign\(\{\s*action: 'tutorial_chat_identity_override'/);
     assert.match(requestAvatarBlock, /postYuiGuideMessageToChat\('avatar_updated'/);
