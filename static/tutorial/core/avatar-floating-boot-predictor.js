@@ -94,14 +94,14 @@
         if (guideState.manualResetRound) {
             return guideState.manualResetRound;
         }
+        if (guideState.lastAutoShownDate === getTodayLocalDate()) {
+            return null;
+        }
         if (guideState.pendingRound && !completed.has(guideState.pendingRound) && !skipped.has(guideState.pendingRound)) {
             return guideState.pendingRound;
         }
         if (!completed.has(1) && !skipped.has(1)) {
             return 1;
-        }
-        if (guideState.lastAutoShownDate === getTodayLocalDate()) {
-            return null;
         }
 
         const maxDueRound = Math.min(ROUND_COUNT, getDateDeltaDays(guideState.firstSeenDate, getTodayLocalDate()) + 1);

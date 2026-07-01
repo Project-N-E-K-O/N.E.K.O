@@ -1818,6 +1818,16 @@ def test_avatar_floating_tutorial_boot_predictor_contract():
     )[0]
     assert "if (!isTutorialBootAvailable()) {" in should_skip_block
     assert "return false;" in should_skip_block.split("if (!isTutorialBootAvailable()) {", 1)[1].split("}", 1)[0]
+    compute_block = predictor_source.split("function computePredictedRound()", 1)[1].split(
+        "function getPredictedRound()",
+        1,
+    )[0]
+    assert compute_block.index("if (guideState.manualResetRound)") < compute_block.index(
+        "if (guideState.lastAutoShownDate === getTodayLocalDate())"
+    )
+    assert compute_block.index("if (guideState.lastAutoShownDate === getTodayLocalDate())") < compute_block.index(
+        "if (guideState.pendingRound"
+    )
 
 
 def test_avatar_model_initializers_skip_user_model_when_tutorial_boot_is_predicted():
