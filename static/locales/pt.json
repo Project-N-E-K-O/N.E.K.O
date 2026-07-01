@@ -2573,7 +2573,7 @@
             "focusCognitionTooltip": "Quando ativado, ela se concentra e pensa mais profundamente quando você desabafa ou pergunta algo complexo; desativado desliga a concentração.",
             "autoCat": "Modo gato automático",
             "autoCatTooltip": "Vira um gatinho automaticamente após um tempo de inatividade",
-            "catAudio": "Volume gatinho",
+            "catAudio": "Sons de gatinho",
             "catAudioTooltip": "Liga ou desliga os sons da forma de gatinho depois que você pede para ela sair. Requer o modo gato automático.",
             "proactiveChat": "Bate-papo proativo",
             "proactiveVision": "Modo Privacidade",

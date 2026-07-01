@@ -1,3 +1,4 @@
+import json
 import re
 from pathlib import Path
 
@@ -8,6 +9,7 @@ APP_BUTTONS_PATH = Path(__file__).resolve().parents[2] / "static" / "app-buttons
 APP_CHAT_EXPORT_PATH = Path(__file__).resolve().parents[2] / "static" / "app-chat-export.js"
 APP_INTERPAGE_PATH = Path(__file__).resolve().parents[2] / "static" / "app-interpage.js"
 AVATAR_UI_POPUP_PATH = Path(__file__).resolve().parents[2] / "static" / "avatar-ui-popup.js"
+STATIC_LOCALES_DIR = Path(__file__).resolve().parents[2] / "static" / "locales"
 MUSIC_UI_PATH = Path(__file__).resolve().parents[2] / "static" / "music_ui.js"
 MUSIC_UI_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css" / "music_ui.css"
 STATIC_INDEX_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css" / "index.css"
@@ -96,6 +98,21 @@ def test_chat_settings_cat_audio_toggle_is_under_auto_cat_and_dependent():
         1,
     )[0]
     assert "window.nekoIdleCatAudio.setEnabled(isChecked)" in cat_audio_change_block
+
+    en_locale = json.loads((STATIC_LOCALES_DIR / "en.json").read_text(encoding="utf-8"))
+    ja_locale = json.loads((STATIC_LOCALES_DIR / "ja.json").read_text(encoding="utf-8"))
+    ko_locale = json.loads((STATIC_LOCALES_DIR / "ko.json").read_text(encoding="utf-8"))
+    ru_locale = json.loads((STATIC_LOCALES_DIR / "ru.json").read_text(encoding="utf-8"))
+    zh_cn_locale = json.loads((STATIC_LOCALES_DIR / "zh-CN.json").read_text(encoding="utf-8"))
+    zh_tw_locale = json.loads((STATIC_LOCALES_DIR / "zh-TW.json").read_text(encoding="utf-8"))
+
+    assert en_locale["settings"]["toggles"]["catAudio"] == "Cat Audio"
+    assert "Volume" not in en_locale["settings"]["toggles"]["catAudio"]
+    assert "音量" not in ja_locale["settings"]["toggles"]["catAudio"]
+    assert "볼륨" not in ko_locale["settings"]["toggles"]["catAudio"]
+    assert "Громкость" not in ru_locale["settings"]["toggles"]["catAudio"]
+    assert zh_cn_locale["settings"]["toggles"]["catAudio"] == "猫猫音效"
+    assert zh_tw_locale["settings"]["toggles"]["catAudio"] == "貓貓音效"
 
 
 def test_index_game_window_state_pauses_hidden_avatar_rendering():

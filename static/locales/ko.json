@@ -2573,7 +2573,7 @@
             "focusCognitionTooltip": "켜면 당신이 마음을 털어놓거나 복잡한 주제일 때 더 집중해 깊이 생각합니다. 끄면 집중 모드에 들어가지 않습니다.",
             "autoCat": "자동 고양이 전환",
             "autoCatTooltip": "일정 시간 활동이 없으면 자동으로 새끼 고양이가 됩니다",
-            "catAudio": "고양이 볼륨",
+            "catAudio": "고양이 소리",
             "catAudioTooltip": "잠시 떠나 달라고 한 뒤 고양이 형태의 소리를 켜거나 끕니다. 자동 고양이 전환이 필요합니다.",
             "proactiveChat": "사전 예방적 채팅",
             "proactiveVision": "프라이버시 모드",

@@ -379,17 +379,21 @@ const _nekoIdleCat1RapidDragSoundState = {
     fadeFrame: 0,
     fadeToken: 0
 };
+let _nekoIdleCatAudioEnabledMemory = true;
 
 function isNekoIdleCatAudioEnabled() {
     try {
-        return window.localStorage.getItem(_NEKO_IDLE_CAT_AUDIO_ENABLED_STORAGE_KEY) !== 'false';
+        const enabled = window.localStorage.getItem(_NEKO_IDLE_CAT_AUDIO_ENABLED_STORAGE_KEY) !== 'false';
+        _nekoIdleCatAudioEnabledMemory = enabled;
+        return enabled;
     } catch (_) {
-        return true;
+        return _nekoIdleCatAudioEnabledMemory;
     }
 }
 
 function setNekoIdleCatAudioEnabled(enabled) {
     const next = enabled !== false;
+    _nekoIdleCatAudioEnabledMemory = next;
     try {
         window.localStorage.setItem(_NEKO_IDLE_CAT_AUDIO_ENABLED_STORAGE_KEY, next ? 'true' : 'false');
     } catch (_) {}

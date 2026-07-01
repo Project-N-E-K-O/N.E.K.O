@@ -1896,8 +1896,18 @@ def test_sleeping_cat_tiers_schedule_soft_random_sound_once_per_interval():
     assert "window.nekoIdleCatAudio = Object.freeze({" in source
     assert "isEnabled: isNekoIdleCatAudioEnabled," in source
     assert "setEnabled: setNekoIdleCatAudioEnabled," in source
+    assert "let _nekoIdleCatAudioEnabledMemory = true;" in source
     assert "_NEKO_IDLE_SLEEP_SOUND_INTERVAL_MS = 5 * 60 * 1000" in source
     assert "_NEKO_IDLE_SLEEP_SOUND_VOLUME = 0.06" in source
+    cat_audio_setting_block = _source_slice_between(
+        source,
+        "function isNekoIdleCatAudioEnabled()",
+        "function _getActiveNekoIdleReturnTier()",
+        "cat audio setting block",
+    )
+    assert "_nekoIdleCatAudioEnabledMemory = enabled;" in cat_audio_setting_block
+    assert "return _nekoIdleCatAudioEnabledMemory;" in cat_audio_setting_block
+    assert "_nekoIdleCatAudioEnabledMemory = next;" in cat_audio_setting_block
     assert "function _playNekoIdleSound(state, src, volume)" in source
     assert "if (!isNekoIdleCatAudioEnabled()) {" in source
     assert "_stopNekoIdleSoundAudio(state);" in source

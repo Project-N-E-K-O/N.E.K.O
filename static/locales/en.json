@@ -2573,7 +2573,7 @@
             "focusCognitionTooltip": "When on, she focuses and thinks more deeply when you open up or ask something complex; off disables Focus entirely.",
             "autoCat": "Auto Cat Mode",
             "autoCatTooltip": "Turn into a kitten automatically after a while of inactivity",
-            "catAudio": "Cat Volume",
+            "catAudio": "Cat Audio",
             "catAudioTooltip": "Toggle kitten-form sounds after you ask her to leave. Requires Auto Cat Mode.",
             "proactiveChat": "Proactive Chat",
             "proactiveVision": "Privacy Mode",
