@@ -493,6 +493,9 @@
                 if (Number.isFinite(scene.cursorWobbleDurationMs)) {
                     externalizedCursorOptions.effectDurationMs = Math.max(0, Math.floor(scene.cursorWobbleDurationMs));
                 }
+                if (scene.freezeCursorAfterMove === true) {
+                    externalizedCursorOptions.freezePoint = true;
+                }
                 const shouldPreferExternalizedPrimaryKind = !!(
                     scene
                     && typeof scene.cursorAction === 'string'

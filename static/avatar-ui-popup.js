@@ -583,11 +583,15 @@ function createChatSettingsSidePanel(manager, prefix, popup) {
         { id: 'avatar-reaction-bubble', label: window.t ? window.t('settings.toggles.avatarReactionBubble') : '表情气泡', labelKey: 'settings.toggles.avatarReactionBubble', storageKey: 'avatarReactionBubbleEnabled', alwaysTinted: true },
         { id: 'focus-cognition', label: window.t ? window.t('settings.toggles.focusCognition') : '凝神模式', labelKey: 'settings.toggles.focusCognition', tooltipKey: 'settings.toggles.focusCognitionTooltip', storageKey: 'focusCognitionEnabled', alwaysTinted: true },
         { id: 'auto-cat', label: window.t ? window.t('settings.toggles.autoCat') : '自动变猫', labelKey: 'settings.toggles.autoCat', tooltipKey: 'settings.toggles.autoCatTooltip', alwaysTinted: true },
+        { id: 'cat-audio', label: window.t ? window.t('settings.toggles.catAudio') : '猫猫音效', labelKey: 'settings.toggles.catAudio', tooltipKey: 'settings.toggles.catAudioTooltip', alwaysTinted: true, dependsOnToggleId: 'auto-cat' },
     ];
 
     chatToggles.forEach(toggle => {
         const toggleItem = manager._createSettingsToggleItem(toggle);
         container.appendChild(toggleItem);
+        if (typeof toggleItem._nekoUpdateSettingsToggleStyle === 'function') {
+            toggleItem._nekoUpdateSettingsToggleStyle();
+        }
     });
 
     // 字数限制滑动条
@@ -2151,6 +2155,8 @@ function createSettingsToggleItem(manager, prefix, toggle) {
         checkbox.checked = window.live2dFullscreenTrackingEnabled;
     } else if (toggle.id === 'auto-cat' && window.nekoAutoGoodbye && typeof window.nekoAutoGoodbye.isAutoCatEnabled === 'function') {
         checkbox.checked = window.nekoAutoGoodbye.isAutoCatEnabled();
+    } else if (toggle.id === 'cat-audio' && window.nekoIdleCatAudio && typeof window.nekoIdleCatAudio.isEnabled === 'function') {
+        checkbox.checked = window.nekoIdleCatAudio.isEnabled();
     }
 
     const indicator = document.createElement('div');
@@ -2191,19 +2197,39 @@ function createSettingsToggleItem(manager, prefix, toggle) {
     label.style.lineHeight = '1';
     label.style.height = '20px';
 
+    const updateDependentToggleState = () => {
+        if (!toggle.dependsOnToggleId) {
+            return true;
+        }
+        const dependencyId = `${prefix}-${toggle.dependsOnToggleId}`;
+        const parent = toggleItem.parentElement;
+        const dependencyCheckbox = (parent && parent.querySelector(`#${dependencyId}`)) ||
+            document.getElementById(dependencyId);
+        const dependencyChecked = !!(dependencyCheckbox && dependencyCheckbox.checked && !dependencyCheckbox.disabled);
+        checkbox.disabled = !dependencyChecked;
+        toggleItem.setAttribute('aria-disabled', dependencyChecked ? 'false' : 'true');
+        toggleItem.setAttribute('tabIndex', dependencyChecked ? '0' : '-1');
+        toggleItem.style.opacity = dependencyChecked ? '1' : '0.5';
+        const cursor = dependencyChecked ? 'pointer' : 'default';
+        [toggleItem, indicator, label].forEach(el => { el.style.cursor = cursor; });
+        return dependencyChecked;
+    };
+
     const updateStyle = () => {
+        const enabledByDependency = updateDependentToggleState();
         const isChecked = checkbox.checked;
         const hovered = toggleItem.matches(':hover');
         toggleItem.setAttribute('aria-checked', isChecked ? 'true' : 'false');
         indicator.setAttribute('aria-checked', isChecked ? 'true' : 'false');
         updateIndicatorStyle(isChecked);
-        toggleItem.style.background = hovered
+        toggleItem.style.background = enabledByDependency && hovered
             ? (isChecked
                 ? 'var(--neko-popup-selected-hover, rgba(68,183,254,0.15))'
                 : 'var(--neko-popup-hover-subtle, rgba(68,183,254,0.08))')
             : 'transparent';
     };
 
+    toggleItem._nekoUpdateSettingsToggleStyle = updateStyle;
     updateStyle();
 
     toggleItem.appendChild(checkbox);
@@ -2305,7 +2331,22 @@ function createSettingsToggleItem(manager, prefix, toggle) {
             if (window.nekoAutoGoodbye && typeof window.nekoAutoGoodbye.setAutoCatEnabled === 'function') {
                 window.nekoAutoGoodbye.setAutoCatEnabled(isChecked);
             }
+        } else if (toggle.id === 'cat-audio') {
+            if (window.nekoIdleCatAudio && typeof window.nekoIdleCatAudio.setEnabled === 'function') {
+                window.nekoIdleCatAudio.setEnabled(isChecked);
+            }
         }
+    };
+
+    const refreshDependentToggles = () => {
+        const parent = toggleItem.parentElement;
+        if (!parent) return;
+        parent.querySelectorAll(`.${prefix}-toggle-item`).forEach((candidate) => {
+            if (!candidate || candidate === toggleItem) return;
+            if (typeof candidate._nekoUpdateSettingsToggleStyle === 'function') {
+                candidate._nekoUpdateSettingsToggleStyle();
+            }
+        });
     };
 
     const performToggle = () => {
@@ -2326,6 +2367,7 @@ function createSettingsToggleItem(manager, prefix, toggle) {
         const newChecked = !checkbox.checked;
         checkbox.checked = newChecked;
         handleToggleChange(newChecked);
+        refreshDependentToggles();
         checkbox.dispatchEvent(new Event('change', { bubbles: true }));
 
         setTimeout(() => {

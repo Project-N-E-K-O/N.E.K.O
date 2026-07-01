@@ -683,6 +683,8 @@ test('app interpage sends external chat pet reports through the command bus', ()
     assert.match(source, /bus\.postToPet\(action,\s*payload,\s*options \|\| \{\}\)/);
     assert.match(bridgeDataBlock, /case 'tutorial_chat_identity_override':/);
     assert.match(bridgeDataBlock, /applyTutorialChatIdentityOverride\(data\)/);
+    assert.match(bridgeDataBlock, /case 'yui_guide_set_chat_input_locked':/);
+    assert.match(bridgeDataBlock, /applyYuiGuideChatInputLocked\(data\.locked === true,\s*data\.reason \|\| ''\)/);
     assert.match(requestIdentityBlock, /postYuiGuideMessageToChat\([\s\S]*'tutorial_chat_identity_override'/);
     assert.doesNotMatch(requestIdentityBlock, /nekoBroadcastChannel\.postMessage\(Object\.assign\(\{\s*action: 'tutorial_chat_identity_override'/);
     assert.match(requestAvatarBlock, /postYuiGuideMessageToChat\('avatar_updated'/);
@@ -1523,7 +1525,10 @@ test('settings tour flow owns migrated settings tour concrete scene bodies', () 
     assert.match(flowChatBlock, /return this\.playPanelTourScene\(scene,\s*context,\s*this\.getPanelTourSchema\(scene\)\);/);
     assert.match(flowModelBlock, /return this\.playPanelTourScene\(scene,\s*context,\s*this\.getPanelTourSchema\(scene\)\);/);
     assert.match(flowPanelTourBlock, /const narration = this\.prepareNarration\(scene\);/);
-    assert.match(flowPanelTourBlock, /this\.createNarrationPromise\(scene,\s*narration\)/);
+    assert.match(
+        flowPanelTourBlock,
+        /this\.createNarrationPromise\(scene,\s*narration,\s*\{[\s\S]*minDurationMs:\s*normalizedSchema\.panelMinDurationMs[\s\S]*\}\)/
+    );
     assert.match(day4ChatSettingsSceneBlock, /deferSettingsSidePanelUntilCursorClick:\s*true/);
     assert.match(prepareSceneBlock, /const deferSettingsSidePanelUntilCursorClick = !!\(/);
     assert.match(
@@ -2062,7 +2067,7 @@ test('director registers settings side panels as pause tokens', () => {
         '            this.cursorAnchorStore = new CursorAnchorStore();',
         1
     )[0];
-    const ensureSettingsBlock = directorSource.split('        async ensureAvatarFloatingSettingsSidePanel(type) {')[1].split(
+    const ensureSettingsBlock = directorSource.split('        async ensureAvatarFloatingSettingsSidePanel(type, options) {')[1].split(
         '        async ensureAvatarFloatingAgentSidePanel(toggleId) {',
         1
     )[0];
@@ -2086,6 +2091,10 @@ test('director registers settings side panels as pause tokens', () => {
     assert.match(constructorBlock, /this\.sidebarPauseController = new SidebarPauseController\(\{/);
     assert.match(constructorBlock, /this\.pauseCoordinator\.registerPauseToken\('sidebar',\s*this\.sidebarPauseController\.getPauseToken\(\)\);/);
     assert.match(ensureSettingsBlock, /this\.sidebarPauseController\.trackPanel\(panel\);/);
+    assert.match(
+        ensureSettingsBlock,
+        /this\.sidebarPauseController\.trackPanel\(panel\);[\s\S]*this\.refreshAvatarFloatingSettingsPanelLayout\(panel\);[\s\S]*if \(shouldContinue && !shouldContinue\(\)\) \{[\s\S]*return null;[\s\S]*const expanded = await this\.expandAvatarFloatingSidePanel/
+    );
     assert.match(ensureCharacterBlock, /this\.sidebarPauseController\.trackPanel\(sidePanel\);/);
     assert.match(collapseCharacterBlock, /this\.sidebarPauseController\.trackPanel\(sidePanel\);/);
 });

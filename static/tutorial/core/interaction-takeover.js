@@ -494,6 +494,7 @@
             }
 
             this.setExternalizedChatButtonsDisabled(true);
+            this.setExternalizedChatInputLocked(true, 'external-chat-ready');
             if (
                 this.document.body
                 && this.document.body.classList.contains('yui-guide-compact-chat-fixed')

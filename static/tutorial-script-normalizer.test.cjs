@@ -99,6 +99,26 @@ test('normalizeTutorialScene maps hold scenes to explicit cursor hold without mo
     assert.equal(scene.timeline.some((event) => event.command === 'operation.run'), false);
 });
 
+test('normalizeTutorialScene can freeze cursor after a move scene', () => {
+    const scene = normalizeTutorialScene({
+        id: 'day4_wrap',
+        voiceKey: 'avatar_floating_day4_wrap',
+        target: 'chat-input',
+        cursorAction: 'move',
+        freezeCursorAfterMove: true,
+        preserveExternalizedChatGuideTarget: true,
+        operation: 'cleanup'
+    });
+
+    const move = scene.timeline.find((event) => event.command === 'cursor.move');
+    const operation = scene.timeline.find((event) => event.command === 'operation.run');
+
+    assert.equal(move.target, 'chat-input');
+    assert.equal(move.freezePoint, true);
+    assert.equal(operation.preserveExternalizedChatGuideTarget, true);
+    assert.equal(scene.timeline.some((event) => event.command === 'cursor.hold'), false);
+});
+
 test('normalizeTutorialScene maps day3 galgame wheel rotation to a dedicated timeline command', () => {
     const scene = normalizeTutorialScene({
         id: 'day3_galgame_entry',

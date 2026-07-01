@@ -28,9 +28,11 @@ test('SettingsTourFlow exposes declarative schemas for day four panel tours', ()
         anchorHighlightSuffix: 'chat-settings-button',
         panelHighlightSuffix: 'chat-settings-panel',
         cursorMoveDurationMs: 620,
+        panelEllipseDurationMs: 4200,
+        panelMinDurationMs: 4200,
         openWithSettingsCursor: true,
         settingsCursorIdSuffix: '_settings_button',
-        settingsCursorMoveDurationMs: 760,
+        settingsCursorMoveDurationMs: 560,
         openFailureMessage: '[YuiGuide] 第4天对话设置打开设置面板失败:'
     });
     assert.deepEqual(flow.getPanelTourSchema({ id: 'day4_model_behavior' }), {
@@ -40,7 +42,10 @@ test('SettingsTourFlow exposes declarative schemas for day four panel tours', ()
         anchorHighlightSuffix: 'animation-settings-button',
         panelHighlightSuffix: 'animation-settings-panel',
         cursorMoveDurationMs: 620,
-        collapseBeforeAnchorHighlight: true
+        collapseBeforeAnchorHighlight: true,
+        openWithAnchorCursor: true,
+        panelEllipseDurationMs: 3200,
+        panelMinDurationMs: 3200
     });
     assert.equal(flow.getPanelTourSchema({ id: 'day5_character_settings' }), null);
 });
@@ -148,6 +153,110 @@ test('SettingsTourFlow owns day two personalization detail scene body', async ()
         ['clear-action'],
         ['clear-persistent'],
         ['finalize', 11, true, 'wait', 2, 5]
+    ]);
+});
+
+test('SettingsTourFlow reuses day four animation panel from its anchor cursor click', async () => {
+    const calls = [];
+    const settingsButton = { id: 'settings-button' };
+    const animationButton = { id: 'animation-settings-button' };
+    const animationPanel = {
+        id: 'animation-settings-panel',
+        _anchorElement: animationButton,
+        getBoundingClientRect() {
+            return { left: 20, top: 40, width: 160, height: 120 };
+        }
+    };
+    const director = {
+        sceneRunId: 14,
+        destroyed: false,
+        angryExitTriggered: false,
+        scenePausedForResistance: false,
+        currentStep: 'day4-model',
+        prepareNarration(scene) {
+            calls.push(['prepare', scene.id]);
+            return { text: 'line', voiceKey: 'voice', canHandleSceneButtons: true, actionWaitPromise: 'wait' };
+        },
+        getDay4SettingsButtonSpotlightTarget() {
+            return settingsButton;
+        },
+        getAvatarFloatingSidePanel(panelId) {
+            calls.push(['get-panel', panelId]);
+            return panelId === 'animation-settings' ? animationPanel : null;
+        },
+        collapseAvatarFloatingSidePanelsExcept(panel) {
+            calls.push(['collapse-except', panel]);
+        },
+        applyGuideHighlights(config) {
+            calls.push(['highlight', config.key, config.primary.id, config.persistent && config.persistent.id]);
+        },
+        enableInterrupts(step) {
+            calls.push(['interrupts', step]);
+        },
+        createNarrationPromise(scene, text, voiceKey, options) {
+            calls.push(['narration', scene.id, text, voiceKey, options && options.minDurationMs]);
+            return Promise.resolve();
+        },
+        waitForSceneDelay(durationMs) {
+            calls.push(['delay', durationMs]);
+            return Promise.resolve(true);
+        },
+        isStopping() {
+            return false;
+        },
+        moveAvatarFloatingCursor(cursorScene, anchorButton, secondaryTarget, previousSceneId, options) {
+            calls.push([
+                'cursor-click-anchor',
+                cursorScene.id,
+                cursorScene.cursorAction,
+                cursorScene.cursorMoveDurationMs,
+                anchorButton.id,
+                previousSceneId
+            ]);
+            options.onClickStart();
+            return Promise.resolve(true);
+        },
+        ensureAvatarFloatingSettingsSidePanel(panelId) {
+            calls.push(['ensure-panel', panelId]);
+            return Promise.resolve(animationPanel);
+        },
+        getElementRect(target) {
+            return target.getBoundingClientRect();
+        },
+        cursor: {
+            runPauseAwareEllipse(centerX, centerY, radiusX, radiusY, durationMs) {
+                calls.push(['ellipse', centerX, centerY, radiusX, radiusY, durationMs]);
+                return Promise.resolve(false);
+            }
+        },
+        finalizeScene(sceneRunId, options) {
+            calls.push(['finalize', sceneRunId, options.canHandleSceneButtons, options.actionWaitPromise, options.index, options.total]);
+            return Promise.resolve(true);
+        }
+    };
+    const flow = new SettingsTourFlow(director);
+
+    const result = await flow.play({ id: 'day4_model_behavior' }, {
+        sceneRunId: 14,
+        previousSceneId: 'day4_chat_settings',
+        index: 2,
+        total: 8
+    });
+
+    assert.equal(result, true);
+    assert.deepEqual(calls, [
+        ['prepare', 'day4_model_behavior'],
+        ['get-panel', 'animation-settings'],
+        ['collapse-except', null],
+        ['highlight', 'day4_model_behavior-animation-settings-button', 'animation-settings-button', 'settings-button'],
+        ['interrupts', 'day4-model'],
+        ['narration', 'day4_model_behavior', 'line', 'voice', 3200],
+        ['delay', 220],
+        ['cursor-click-anchor', 'day4_model_behavior_anchor_button', 'click', 620, 'animation-settings-button', 'day4_chat_settings'],
+        ['highlight', 'day4_model_behavior-animation-settings-panel', 'animation-settings-panel', 'settings-button'],
+        ['delay', 3200],
+        ['ellipse', 100, 100, 51.2, 60, 3200],
+        ['finalize', 14, true, 'wait', 2, 8]
     ]);
 });
 
@@ -547,4 +656,230 @@ test('SettingsTourFlow runs pause-aware panel ellipse until narration settles', 
 
     assert.deepEqual(calls, [[60, 120, 36, 72, 1200]]);
     assert.equal(resumeWaits, 1);
+});
+
+test('SettingsTourFlow keeps panel ellipse alive for configured minimum duration', async () => {
+    const delays = [];
+    const panel = {
+        getBoundingClientRect() {
+            return { left: 10, top: 20, width: 100, height: 200 };
+        }
+    };
+    const director = {
+        sceneRunId: 4,
+        destroyed: false,
+        angryExitTriggered: false,
+        scenePausedForResistance: false,
+        isStopping() {
+            return false;
+        },
+        getElementRect(target) {
+            return target.getBoundingClientRect();
+        },
+        waitForSceneDelay(durationMs) {
+            delays.push(durationMs);
+            return Promise.resolve(true);
+        },
+        cursor: {
+            runPauseAwareEllipse() {
+                return Promise.resolve(false);
+            }
+        }
+    };
+    const flow = new SettingsTourFlow(director);
+
+    await flow.runPanelNarrationEllipse(4, panel, Promise.resolve(), {
+        durationMs: 1200,
+        minDurationMs: 900
+    });
+
+    assert.deepEqual(delays, [900]);
+});
+
+test('SettingsTourFlow stops day four panel tour when anchor click makes scene stale', async () => {
+    const calls = [];
+    const settingsButton = { id: 'settings-button' };
+    const animationButton = { id: 'animation-settings-button' };
+    const animationPanel = {
+        id: 'animation-settings-panel',
+        _anchorElement: animationButton,
+        getBoundingClientRect() {
+            return { left: 20, top: 40, width: 160, height: 120 };
+        }
+    };
+    const director = {
+        sceneRunId: 14,
+        currentStep: 'day4-model',
+        destroyed: false,
+        angryExitTriggered: false,
+        scenePausedForResistance: false,
+        prepareNarration() {
+            return { text: 'line', voiceKey: 'voice' };
+        },
+        getDay4SettingsButtonSpotlightTarget() {
+            return settingsButton;
+        },
+        getAvatarFloatingSidePanel() {
+            return animationPanel;
+        },
+        collapseAvatarFloatingSidePanelsExcept() {},
+        applyGuideHighlights(config) {
+            calls.push(['highlight', config.key]);
+        },
+        enableInterrupts() {},
+        createNarrationPromise() {
+            return Promise.resolve();
+        },
+        waitForSceneDelay() {
+            return Promise.resolve(true);
+        },
+        isStopping() {
+            return false;
+        },
+        moveAvatarFloatingCursor(cursorScene, anchorButton, secondaryTarget, previousSceneId, options) {
+            options.onClickStart();
+            this.sceneRunId = 15;
+            return Promise.resolve(true);
+        },
+        ensureAvatarFloatingSettingsSidePanel(panelId, options) {
+            calls.push(['ensure', panelId, !!(options && options.shouldContinue)]);
+            return Promise.resolve(animationPanel);
+        },
+        getElementRect(target) {
+            return target.getBoundingClientRect();
+        },
+        cursor: {
+            runPauseAwareEllipse() {
+                return Promise.resolve(false);
+            }
+        }
+    };
+    const flow = new SettingsTourFlow(director);
+
+    const result = await flow.play({ id: 'day4_model_behavior' }, { sceneRunId: 14 });
+
+    assert.equal(result, false);
+    assert.deepEqual(calls, [
+        ['highlight', 'day4_model_behavior-animation-settings-button']
+    ]);
+});
+
+test('SettingsTourFlow passes scene guard to day four minimum panel tour delay', async () => {
+    const guards = [];
+    const panel = {
+        getBoundingClientRect() {
+            return { left: 10, top: 20, width: 100, height: 200 };
+        }
+    };
+    const director = {
+        sceneRunId: 4,
+        destroyed: false,
+        angryExitTriggered: false,
+        scenePausedForResistance: false,
+        isStopping() {
+            return false;
+        },
+        getElementRect(target) {
+            return target.getBoundingClientRect();
+        },
+        waitForSceneDelay(durationMs, options) {
+            guards.push(options && options.shouldContinue);
+            this.sceneRunId = 5;
+            return Promise.resolve(false);
+        },
+        cursor: {
+            runPauseAwareEllipse() {
+                return Promise.resolve(false);
+            }
+        }
+    };
+    const flow = new SettingsTourFlow(director);
+
+    await flow.runPanelNarrationEllipse(4, panel, Promise.resolve(), {
+        scene: { id: 'day4_chat_settings' },
+        durationMs: 1200,
+        minDurationMs: 900
+    });
+
+    assert.equal(typeof guards[0], 'function');
+    assert.equal(guards[0](), false);
+});
+
+test('SettingsTourFlow stops day four panel tour when narration is still pending but scene becomes stale', async () => {
+    const panel = {
+        getBoundingClientRect() {
+            return { left: 10, top: 20, width: 100, height: 200 };
+        }
+    };
+    const director = {
+        sceneRunId: 4,
+        destroyed: false,
+        angryExitTriggered: false,
+        scenePausedForResistance: false,
+        isStopping() {
+            return false;
+        },
+        getElementRect(target) {
+            return target.getBoundingClientRect();
+        },
+        waitForSceneDelay(durationMs, options) {
+            return Promise.resolve(!(options && options.shouldContinue && !options.shouldContinue()));
+        },
+        cursor: {
+            runPauseAwareEllipse() {
+                director.sceneRunId = 5;
+                return Promise.resolve(false);
+            }
+        }
+    };
+    const flow = new SettingsTourFlow(director);
+    const pendingNarration = new Promise(() => {});
+
+    await flow.runPanelNarrationEllipse(4, panel, pendingNarration, {
+        scene: { id: 'day4_chat_settings' },
+        durationMs: 1200,
+        minDurationMs: 900
+    });
+
+    assert.equal(director.sceneRunId, 5);
+});
+
+test('SettingsTourFlow does not pass scene guard to non-day-four panel tour delay', async () => {
+    const optionsSeen = [];
+    const panel = {
+        getBoundingClientRect() {
+            return { left: 10, top: 20, width: 100, height: 200 };
+        }
+    };
+    const director = {
+        sceneRunId: 4,
+        destroyed: false,
+        angryExitTriggered: false,
+        scenePausedForResistance: false,
+        isStopping() {
+            return false;
+        },
+        getElementRect(target) {
+            return target.getBoundingClientRect();
+        },
+        waitForSceneDelay(durationMs, options) {
+            optionsSeen.push(options);
+            this.sceneRunId = 5;
+            return Promise.resolve(false);
+        },
+        cursor: {
+            runPauseAwareEllipse() {
+                return Promise.resolve(false);
+            }
+        }
+    };
+    const flow = new SettingsTourFlow(director);
+
+    await flow.runPanelNarrationEllipse(4, panel, Promise.resolve(), {
+        scene: { id: 'day5_character_settings' },
+        durationMs: 1200,
+        minDurationMs: 900
+    });
+
+    assert.equal(optionsSeen[0], undefined);
 });

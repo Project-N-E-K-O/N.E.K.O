@@ -139,7 +139,7 @@
                 pushIfCommand(timeline, settleHoldEvent);
             }
         } else if (cursorAction && cursorAction !== 'none') {
-            pushIfCommand(timeline, {
+            const moveEvent = {
                 id: sceneId + ':cursor-move',
                 at: cursorStartMs,
                 command: 'cursor.move',
@@ -147,7 +147,11 @@
                 target: cursorTarget,
                 secondary: typeof scene.secondary === 'string' ? scene.secondary : '',
                 durationMs: cursorMoveDurationMs
-            });
+            };
+            if (scene.freezeCursorAfterMove === true) {
+                moveEvent.freezePoint = true;
+            }
+            pushIfCommand(timeline, moveEvent);
             if (cursorAction === 'click') {
                 const clickEvent = {
                     id: sceneId + ':cursor-click',
@@ -157,14 +161,18 @@
                     effectDurationMs: numberOrDefault(scene.cursorClickDurationMs, 420)
                 };
                 if (scene.operation && !isGalgameWheelRotationOperation(scene)) {
-                    clickEvent.blocking = true;
-                    clickEvent.onStart = [{
+                    const operationEvent = {
                         id: sceneId + ':operation',
                         command: 'operation.run',
                         operation: scene.operation,
                         trigger: 'onClickStart',
                         blocking: true
-                    }];
+                    };
+                    if (scene.preserveExternalizedChatGuideTarget === true) {
+                        operationEvent.preserveExternalizedChatGuideTarget = true;
+                    }
+                    clickEvent.blocking = true;
+                    clickEvent.onStart = [operationEvent];
                 }
                 pushIfCommand(timeline, clickEvent);
             } else if (cursorAction === 'wobble' || cursorAction === 'tour') {
@@ -187,14 +195,18 @@
                 blocking: true
             });
         } else if (scene.operation && cursorAction !== 'click') {
-            pushIfCommand(timeline, {
+            const operationEvent = {
                 id: sceneId + ':operation',
                 at: cursorAction === 'click' ? cursorFollowupMs : cursorFollowupMs,
                 command: 'operation.run',
                 operation: scene.operation,
                 trigger: cursorAction === 'click' ? 'onClickStart' : 'afterCursorMove',
                 blocking: true
-            });
+            };
+            if (scene.preserveExternalizedChatGuideTarget === true) {
+                operationEvent.preserveExternalizedChatGuideTarget = true;
+            }
+            pushIfCommand(timeline, operationEvent);
         }
 
         if (scene.petalTransition === true) {

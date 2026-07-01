@@ -5218,8 +5218,11 @@
             });
         }
 
-        async waitForSceneDelay(delayMs) {
+        async waitForSceneDelay(delayMs, options) {
             const totalMs = Number.isFinite(delayMs) ? Math.max(0, delayMs) : 0;
+            const shouldContinue = options && typeof options.shouldContinue === 'function'
+                ? options.shouldContinue
+                : null;
             if (totalMs <= 0) {
                 return true;
             }
@@ -5228,7 +5231,7 @@
             let lastTickAt = Date.now();
 
             while (remainingMs > 0) {
-                if (this.isStopping()) {
+                if (this.isStopping() || (shouldContinue && !shouldContinue())) {
                     return false;
                 }
 
@@ -5240,7 +5243,7 @@
 
                 const sliceMs = Math.min(remainingMs, 80);
                 await wait(sliceMs);
-                if (this.isStopping()) {
+                if (this.isStopping() || (shouldContinue && !shouldContinue())) {
                     return false;
                 }
 
@@ -6129,7 +6132,13 @@
             }, 1400));
         }
 
-        async ensureAvatarFloatingSettingsSidePanel(type) {
+        async ensureAvatarFloatingSettingsSidePanel(type, options) {
+            const shouldContinue = options && typeof options.shouldContinue === 'function'
+                ? options.shouldContinue
+                : null;
+            if (shouldContinue && !shouldContinue()) {
+                return null;
+            }
             const opened = await this.openSettingsPanel();
             if (!opened || this.isStopping()) {
                 return null;
@@ -6140,11 +6149,16 @@
                 return null;
             }
             this.sidebarPauseController.trackPanel(panel);
-            const expanded = await this.expandAvatarFloatingSidePanel(panel, panel._anchorElement || null);
-            if (expanded) {
-                this.refreshAvatarFloatingSettingsPanelLayout(panel);
+            this.refreshAvatarFloatingSettingsPanelLayout(panel);
+            if (shouldContinue && !shouldContinue()) {
+                return null;
             }
-            return expanded ? panel : null;
+            const expanded = await this.expandAvatarFloatingSidePanel(panel, panel._anchorElement || null);
+            if (!expanded || (shouldContinue && !shouldContinue())) {
+                return null;
+            }
+            this.refreshAvatarFloatingSettingsPanelLayout(panel);
+            return panel;
         }
 
         async ensureAvatarFloatingAgentSidePanel(toggleId) {
