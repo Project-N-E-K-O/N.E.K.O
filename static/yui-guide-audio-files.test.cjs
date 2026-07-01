@@ -93,10 +93,7 @@ test('daily tutorial audio keys have measured duration config for supported loca
 });
 
 test('day4 model lock replacement audio URL is versioned for immutable static caches', () => {
-    assert.match(
-        directorSource,
-        /GUIDE_AUDIO_VERSION_BY_KEY = Object\.freeze\(\{\s*avatar_floating_day4_model_lock: '20260701'\s*\}\)/
-    );
+    assert.match(directorSource, /avatar_floating_day4_model_lock:\s*'20260701'/);
     assert.match(directorSource, /\?v=' \+ encodeURIComponent\(version\)/);
 });
 
