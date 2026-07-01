@@ -542,11 +542,16 @@
     const DEFAULT_SCENE_SETTLE_MS = 260;
     const DEFAULT_CURSOR_DURATION_MS = 520;
     const DEFAULT_CURSOR_CLICK_VISIBLE_MS = 420;
-    const DAY6_PLUGIN_SIDE_PANEL_CURSOR_MOVE_MS = 420;
-    const DAY6_PLUGIN_SIDE_PANEL_CLICK_VISIBLE_MS = 320;
+    const DAY6_PLUGIN_AGENT_PANEL_CURSOR_MOVE_MS = 2800;
+    const DAY6_PLUGIN_AGENT_PANEL_CURSOR_START_DELAY_MS = 500;
+    const DAY6_PLUGIN_AGENT_PANEL_CLICK_VISIBLE_MS = 620;
+    const DAY6_PLUGIN_CAT_PAW_CURSOR_OFFSET_Y = 8;
+    const DAY6_PLUGIN_SIDE_PANEL_CURSOR_MOVE_MS = 1120;
+    const DAY6_PLUGIN_SIDE_PANEL_CURSOR_START_DELAY_MS = 500;
+    const DAY6_PLUGIN_SIDE_PANEL_CLICK_VISIBLE_MS = 480;
     const DAY6_PLUGIN_SIDE_PANEL_ACTION_TIMEOUT_MS = 1200;
     const DAY6_PLUGIN_SIDE_PANEL_DASHBOARD_WAIT_MS = 900;
-    const DAY6_PLUGIN_DASHBOARD_DONE_GRACE_MS = 900;
+    const DAY6_PLUGIN_DASHBOARD_DONE_GRACE_MS = 0;
     const INTRO_GREETING_REPLY_TEXT = '微风、阳光，还有刚刚好出现的你。初次见面，我是林悠怡，未来的日子请多关照喵！我把关于这里的一切都写进新手指南里啦！就当作是我们相遇的第一份小礼物，请查收吧！';
     const INTRO_GREETING_REPLY_TEXT_KEY = 'tutorial.yuiGuide.lines.introGreetingReply';
     const TAKEOVER_PLUGIN_DASHBOARD_TEXT = '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼！';
@@ -5836,6 +5841,26 @@
             this.forceHideAvatarFloatingGuideManagedSurfaces();
         }
 
+        revealAvatarFloatingToolbarForGuideInteraction(reason) {
+            this.setAvatarFloatingToolbarVisible(true, reason || 'guide-interaction');
+            const toolbar = this.getAvatarFloatingBaseTarget('floating-buttons');
+            if (!toolbar || !toolbar.style) {
+                return false;
+            }
+            if (toolbar.dataset && toolbar.dataset.yuiGuideForcedHidden === 'true') {
+                delete toolbar.dataset.yuiGuideForcedHidden;
+            }
+            toolbar.style.removeProperty('display');
+            toolbar.style.removeProperty('visibility');
+            toolbar.style.removeProperty('opacity');
+            toolbar.style.removeProperty('pointer-events');
+            toolbar.style.setProperty('display', 'flex', 'important');
+            toolbar.style.setProperty('visibility', 'visible', 'important');
+            toolbar.style.setProperty('opacity', '1', 'important');
+            toolbar.style.setProperty('pointer-events', 'auto', 'important');
+            return true;
+        }
+
         shouldShowAvatarFloatingToolbarForScene(scene) {
             const normalizedScene = scene || {};
             const sceneId = typeof normalizedScene.id === 'string'
@@ -6753,6 +6778,24 @@
                 return;
             }
             const shouldClearCursor = !!(options && options.clearCursor === true);
+            const shouldPreservePcOverlayCursor = !!(options && options.preservePcOverlayCursor === true);
+            if (
+                shouldClearCursor
+                && shouldPreservePcOverlayCursor
+                && this.overlay
+                && typeof this.overlay.getCursorPosition === 'function'
+                && typeof this.overlay.syncCursorPosition === 'function'
+            ) {
+                const currentCursorPoint = this.overlay.getCursorPosition();
+                if (
+                    currentCursorPoint
+                    && Number.isFinite(currentCursorPoint.x)
+                    && Number.isFinite(currentCursorPoint.y)
+                ) {
+                    this.setHomePcCursorOutputSuppressedForExternalizedChat(false);
+                    this.overlay.syncCursorPosition(currentCursorPoint.x, currentCursorPoint.y, true);
+                }
+            }
             if (typeof this.interactionTakeover.setExternalizedChatSpotlight === 'function') {
                 this.interactionTakeover.setExternalizedChatSpotlight('');
             }
@@ -6760,8 +6803,12 @@
                 shouldClearCursor
                 && typeof this.interactionTakeover.setExternalizedChatCursor === 'function'
             ) {
-                this.interactionTakeover.setExternalizedChatCursor('');
-                this.setHomePcCursorOutputSuppressedForExternalizedChat(false);
+                this.interactionTakeover.setExternalizedChatCursor('', {
+                    preservePcOverlayCursor: shouldPreservePcOverlayCursor
+                });
+                if (!shouldPreservePcOverlayCursor) {
+                    this.setHomePcCursorOutputSuppressedForExternalizedChat(false);
+                }
             }
         }
 
@@ -7339,10 +7386,15 @@
 
         async runDay6PluginOpenAgentPanelFlow(scene) {
             const sceneId = scene && scene.id ? scene.id : 'day6_agent_status_master';
+            const scaleSceneMs = this.createSceneScaler(scene && scene.voiceKey);
             const guardFailed = () => this.isStopping();
-            const catPawButton = this.getFloatingButtonShell(this.getFallbackFloatingButton('agent'))
-                || this.getFallbackFloatingButton('agent')
-                || this.queryDocumentSelector(this.expandSelector(TAKEOVER_CAPTURE_SELECTORS.catPaw));
+            this.revealAvatarFloatingToolbarForGuideInteraction(sceneId);
+            const catPawButton = await this.waitForVisibleTarget([
+                () => this.getFloatingButtonShell(this.getFallbackFloatingButton('agent')),
+                () => this.getFallbackFloatingButton('agent'),
+                () => this.getFloatingButtonShell(this.queryDocumentSelector(this.expandSelector(TAKEOVER_CAPTURE_SELECTORS.catPaw))),
+                () => this.queryDocumentSelector(this.expandSelector(TAKEOVER_CAPTURE_SELECTORS.catPaw))
+            ], 2200);
             if (!catPawButton || guardFailed()) {
                 return false;
             }
@@ -7355,11 +7407,23 @@
                 key: sceneId + '-cat-paw',
                 primary: catPawButton
             });
-            if (!(await this.moveCursorToElement(catPawButton, 760)) || guardFailed()) {
+            if (!(await this.waitForSceneDelay(DAY6_PLUGIN_AGENT_PANEL_CURSOR_START_DELAY_MS)) || guardFailed()) {
                 return false;
             }
-            const opened = await this.runActionWithCursorClick(
-                DEFAULT_CURSOR_CLICK_VISIBLE_MS,
+            await this.moveAvatarFloatingCursor(Object.assign({}, scene || {}, {
+                id: sceneId,
+                cursorAction: 'move',
+                cursorMoveDurationMs: scaleSceneMs(DAY6_PLUGIN_AGENT_PANEL_CURSOR_MOVE_MS, 2100, 5200)
+            }), catPawButton, null, null, {
+                targetPointOffset: { y: DAY6_PLUGIN_CAT_PAW_CURSOR_OFFSET_Y },
+                clampTargetPointToRect: true,
+                targetPointClampInsetPx: 4
+            });
+            if (guardFailed()) {
+                return false;
+            }
+            const opened = await this.runActionWithCursorClickExact(
+                scaleSceneMs(DAY6_PLUGIN_AGENT_PANEL_CLICK_VISIBLE_MS, 480, 1200),
                 () => this.openAgentPanel()
             );
             if (!opened || guardFailed()) {
@@ -7373,6 +7437,7 @@
 
         async runDay6PluginOpenManagementPanelFlow(scene) {
             const sceneId = scene && scene.id ? scene.id : 'day6_plugin_side_panel';
+            const scaleSceneMs = this.createSceneScaler(scene && scene.voiceKey);
             const guardFailed = () => this.isStopping();
             const agentPanelOpened = await this.openAgentPanel();
             if (!agentPanelOpened || guardFailed()) {
@@ -7413,40 +7478,24 @@
             if (!refreshUserPluginHighlight(userPluginToggle)) {
                 return false;
             }
-            if (!(await this.moveCursorToTrackedElement(
+            if (!(await this.waitForSceneDelay(DAY6_PLUGIN_SIDE_PANEL_CURSOR_START_DELAY_MS)) || guardFailed()) {
+                return false;
+            }
+            const userPluginMovePromise = this.moveCursorToTrackedElement(
                 userPluginToggle,
-                DAY6_PLUGIN_SIDE_PANEL_CURSOR_MOVE_MS,
+                scaleSceneMs(DAY6_PLUGIN_SIDE_PANEL_CURSOR_MOVE_MS, 840, 2100),
                 {
                     exactDuration: true,
                     recheckDelayMs: 120,
                     settleDelayMs: 40
                 }
-            )) || guardFailed()) {
-                return false;
-            }
-            if (!refreshUserPluginHighlight(userPluginToggle)) {
-                return false;
-            }
-            if (!this.isCursorAlignedWithElement(userPluginToggle, 5)) {
-                if (!(await this.moveCursorToTrackedElement(
-                    userPluginToggle,
-                    220,
-                    {
-                        exactDuration: true,
-                        recheckDelayMs: 60,
-                        settleDelayMs: 20
-                    }
-                )) || guardFailed()) {
-                    return false;
-                }
-                if (!refreshUserPluginHighlight(userPluginToggle)) {
-                    return false;
-                }
-            }
-            const sidePanelShown = await this.runActionWithCursorClickExact(
-                DAY6_PLUGIN_SIDE_PANEL_CLICK_VISIBLE_MS,
-                () => this.ensureAvatarFloatingAgentSidePanel('user-plugin')
             );
+            const sidePanelShownPromise = this.ensureAvatarFloatingAgentSidePanel('user-plugin');
+            const movedToUserPlugin = await userPluginMovePromise;
+            if (!movedToUserPlugin || guardFailed()) {
+                return false;
+            }
+            const sidePanelShown = await sidePanelShownPromise;
             if (!sidePanelShown || guardFailed()) {
                 return false;
             }
@@ -7462,13 +7511,17 @@
             if (!(await this.waitForStableElementRect(managementButton, 760)) || guardFailed()) {
                 return false;
             }
+            this.applyGuideHighlights({
+                key: sceneId + '-clear-user-plugin',
+                primary: null
+            });
             let managementSpotlightTarget = refreshManagementHighlight(managementButton);
             if (!managementSpotlightTarget || guardFailed()) {
                 return false;
             }
             if (!(await this.moveCursorToTrackedElement(
                 managementButton,
-                DAY6_PLUGIN_SIDE_PANEL_CURSOR_MOVE_MS,
+                scaleSceneMs(DAY6_PLUGIN_SIDE_PANEL_CURSOR_MOVE_MS, 840, 2100),
                 {
                     exactDuration: true,
                     recheckDelayMs: 120,
@@ -7495,7 +7548,7 @@
                 }
             }
             const managementOpenResult = await this.runActionWithCursorClickExact(
-                DAY6_PLUGIN_SIDE_PANEL_CLICK_VISIBLE_MS,
+                scaleSceneMs(DAY6_PLUGIN_SIDE_PANEL_CLICK_VISIBLE_MS, 360, 900),
                 async () => {
                     const existingPluginDashboardWindow = await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 120);
                     const hadPluginDashboard = !!(existingPluginDashboardWindow && !existingPluginDashboardWindow.closed);
@@ -7573,20 +7626,39 @@
                 elapsedNarrationMs
             }).catch(() => false);
 
-            await this.closePluginDashboardWindowIfCreatedByGuide('Day 6 插件管理预览完成');
-            this.collapseAgentSidePanel('agent-user-plugin');
-            this.clearVirtualSpotlight('plugin-management-entry');
-            this.stopHoverElement(previewState.userPluginToggle || null);
-            await this.closeAgentPanel().catch(() => {});
-            const homeReady = await this.waitForHomeMainUIReady(3600);
-            if (homeCursorPosition) {
-                this.cursor.showAt(homeCursorPosition.x, homeCursorPosition.y);
-            }
+            this.scheduleDay6PluginDashboardPostNarrationCleanup(
+                previewState,
+                homeCursorPosition,
+                this.sceneRunId
+            );
             this.day6PluginDashboardPreview = null;
-            if (!homeReady || guardFailed()) {
+            if (guardFailed()) {
                 return false;
             }
             return true;
+        }
+
+        scheduleDay6PluginDashboardPostNarrationCleanup(previewState, homeCursorPosition, sceneRunId) {
+            const normalizedPreviewState = previewState || {};
+            (async () => {
+                try {
+                    await this.closePluginDashboardWindowIfCreatedByGuide('Day 6 插件管理预览完成');
+                    this.collapseAgentSidePanel('agent-user-plugin');
+                    this.clearVirtualSpotlight('plugin-management-entry');
+                    this.stopHoverElement(normalizedPreviewState.userPluginToggle || null);
+                    await this.closeAgentPanel().catch(() => {});
+                    await this.waitForHomeMainUIReady(3600);
+                    if (
+                        homeCursorPosition
+                        && this.sceneRunId === sceneRunId
+                        && !this.isStopping()
+                    ) {
+                        this.cursor.showAt(homeCursorPosition.x, homeCursorPosition.y);
+                    }
+                } catch (error) {
+                    console.warn('[YuiGuide] Day 6 插件管理后台收尾失败:', error);
+                }
+            })();
         }
 
         async runDay6PluginSidePanelFlow(scene, narrationStartedAt) {
@@ -8019,7 +8091,8 @@
                 }
                 const moved = await this.moveCursorToElement(
                     uniqueTargets[index],
-                    index === 0 ? (configuredFirstMoveMs || 760) : 520
+                    index === 0 ? (configuredFirstMoveMs || 760) : 520,
+                    normalizedOptions
                 );
                 if (!moved) {
                     continue;
@@ -9384,6 +9457,34 @@
             }
         }
 
+        resolveCursorPointFromRect(rect, options) {
+            if (!rect) {
+                return null;
+            }
+            const normalizedOptions = options || {};
+            const point = {
+                x: rect.left + (rect.width / 2),
+                y: rect.top + (rect.height / 2)
+            };
+            const offset = normalizedOptions.targetPointOffset || normalizedOptions.pointOffset || null;
+            if (offset) {
+                if (Number.isFinite(offset.x)) {
+                    point.x += offset.x;
+                }
+                if (Number.isFinite(offset.y)) {
+                    point.y += offset.y;
+                }
+            }
+            if (normalizedOptions.clampTargetPointToRect === true) {
+                const inset = Number.isFinite(normalizedOptions.targetPointClampInsetPx)
+                    ? Math.max(0, normalizedOptions.targetPointClampInsetPx)
+                    : 0;
+                point.x = clamp(point.x, rect.left + inset, rect.right - inset);
+                point.y = clamp(point.y, rect.top + inset, rect.bottom - inset);
+            }
+            return point;
+        }
+
         async moveCursorToElement(element, durationMs, options) {
             const normalizedOptions = options || {};
             this.setHomePcCursorOutputSuppressedForExternalizedChat(false);
@@ -9394,14 +9495,29 @@
                     return false;
                 }
 
-                const moved = await this.cursor.moveToRect(rect, {
+                const usesAdjustedPoint = !!(
+                    normalizedOptions.targetPointOffset
+                    || normalizedOptions.pointOffset
+                    || normalizedOptions.clampTargetPointToRect === true
+                );
+                const point = usesAdjustedPoint
+                    ? this.resolveCursorPointFromRect(rect, normalizedOptions)
+                    : null;
+                const moveOptions = {
                     durationMs: Number.isFinite(durationMs) ? durationMs : DEFAULT_CURSOR_DURATION_MS,
                     exactDuration: normalizedOptions.exactDuration === true,
                     pauseCheck: () => this.scenePausedForResistance,
                     cancelCheck: () => this.isStopping()
-                });
+                };
+                const moved = point
+                    ? await this.cursor.moveToPoint(point.x, point.y, moveOptions)
+                    : await this.cursor.moveToRect(rect, moveOptions);
                 if (moved) {
-                    this.rememberAvatarFloatingSceneCursorAnchor(this.currentSceneId, element);
+                    if (point) {
+                        this.rememberAvatarFloatingSceneCursorAnchorPoint(this.currentSceneId, point);
+                    } else {
+                        this.rememberAvatarFloatingSceneCursorAnchor(this.currentSceneId, element);
+                    }
                     return true;
                 }
                 if (this.isCursorTransientMotionActive()) {
@@ -9416,7 +9532,8 @@
             return false;
         }
 
-        async resolveElementCenterPoint(element, timeoutMs) {
+        async resolveElementCenterPoint(element, timeoutMs, options) {
+            const normalizedOptions = options || {};
             const normalizedTimeoutMs = Number.isFinite(timeoutMs) ? timeoutMs : 800;
             const startedAt = Date.now();
             let pausedAt = 0;
@@ -9443,11 +9560,9 @@
 
                 const rect = this.getElementRect(element);
                 if (rect) {
-                    return {
-                        x: rect.left + (rect.width / 2),
-                        y: rect.top + (rect.height / 2),
+                    return Object.assign(this.resolveCursorPointFromRect(rect, normalizedOptions), {
                         rect: rect
-                    };
+                    });
                 }
 
                 await this.waitForSceneDelay(80);
@@ -9458,11 +9573,9 @@
                 return null;
             }
 
-            return {
-                x: finalRect.left + (finalRect.width / 2),
-                y: finalRect.top + (finalRect.height / 2),
+            return Object.assign(this.resolveCursorPointFromRect(finalRect, normalizedOptions), {
                 rect: finalRect
-            };
+            });
         }
 
         async moveCursorToTrackedElement(element, durationMs, options) {
@@ -9483,7 +9596,7 @@
                 ? normalizedOptions.settleDelayMs
                 : 0;
 
-            const initialPoint = await this.resolveElementCenterPoint(element, 420);
+            const initialPoint = await this.resolveElementCenterPoint(element, 420, normalizedOptions);
             if (!initialPoint) {
                 return false;
             }
@@ -9524,7 +9637,7 @@
                 return false;
             }
 
-            const finalPoint = await this.resolveElementCenterPoint(element, 420);
+            const finalPoint = await this.resolveElementCenterPoint(element, 420, normalizedOptions);
             if (!finalPoint) {
                 return false;
             }

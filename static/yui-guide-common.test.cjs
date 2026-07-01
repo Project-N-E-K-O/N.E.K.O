@@ -13,6 +13,7 @@ const scriptNormalizer = require('./tutorial/core/script-normalizer.js');
 const timelineEngine = require('./tutorial/core/timeline-engine.js');
 const visualRuntime = require('./tutorial/core/visual-runtime.js');
 const ghostCursorController = require('./tutorial/visual/ghost-cursor-controller.js');
+const overlayRenderer = require('./tutorial/visual/overlay-renderer.js');
 const common = require('./tutorial/yui-guide/common.js');
 const repoRoot = path.resolve(__dirname, '..');
 const dayGuideFiles = [
@@ -43,6 +44,41 @@ test('common guide helpers freeze config, register guides, and create locale aud
         ko: 'line.mp3',
         ru: 'line.mp3'
     });
+});
+
+test('PC overlay state keeps cursor payload during click effect spotlight refreshes', () => {
+    let now = 1000;
+    const store = overlayRenderer.createPcOverlayCompleteStateStore({
+        now: () => now,
+        defaultCursorClickVisibleMs: 420
+    });
+
+    const clickPayload = store.applyPatch({
+        cursor: {
+            visible: true,
+            x: 100,
+            y: 120,
+            durationMs: 0,
+            effect: 'click'
+        }
+    });
+    assert.equal(clickPayload.cursor.effect, 'click');
+
+    now += 120;
+    const spotlightDuringClickPayload = store.applyPatch({
+        spotlights: [{ id: 'primary-0', kind: 'primary', shape: 'circle', x: 10, y: 20, width: 30, height: 30 }]
+    });
+    assert.equal(spotlightDuringClickPayload.cursor.effect, 'click');
+    assert.equal(spotlightDuringClickPayload.cursor.x, 100);
+    assert.equal(spotlightDuringClickPayload.cursor.y, 120);
+
+    now += 500;
+    const spotlightAfterClickPayload = store.applyPatch({
+        spotlights: [{ id: 'primary-0', kind: 'primary', shape: 'circle', x: 12, y: 22, width: 30, height: 30 }]
+    });
+    assert.equal(spotlightAfterClickPayload.cursor.effect, undefined);
+    assert.equal(spotlightAfterClickPayload.cursor.x, 100);
+    assert.equal(spotlightAfterClickPayload.cursor.y, 120);
 });
 
 test('common helper relays PC system cursor visibility and logs relay failures', () => {
@@ -2727,4 +2763,47 @@ test('skip controller uses scoped resources with a fallback cleanup path', () =>
     assert.match(source, /createScopedTutorialResources/);
     assert.match(source, /this\.currentResources\.destroy\(\)/);
     assert.match(source, /button\.removeEventListener\('pointerdown', handleSkipRequest\)/);
+});
+
+test('day6 chat cursor handoff clears external ownership without hiding the PC cursor', () => {
+    const day6Source = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/days/day6-agent-guide.js'), 'utf8');
+    const sceneOrchestratorSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/scene-orchestrator.js'), 'utf8');
+    const takeoverSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/interaction-takeover.js'), 'utf8');
+    const directorSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/director.js'), 'utf8');
+    const appInterpageSource = fs.readFileSync(path.join(repoRoot, 'static', 'app-interpage.js'), 'utf8');
+
+    const day6StatusSceneBlock = day6Source.split("id: 'day6_agent_status_master'")[1].split(
+        "id: 'day6_plugin_side_panel'",
+        1
+    )[0];
+    const takeoverCursorBlock = takeoverSource.split('        setExternalizedChatCursor(kind, options) {')[1].split(
+        '        setExternalizedChatAvatarToolMenuOpen',
+        1
+    )[0];
+    const directorClearBlock = directorSource.split('        clearExternalizedChatGuideTarget(options) {')[1].split(
+        '        createAvatarFloatingUnionTarget',
+        1
+    )[0];
+    const chatCursorMessageBlock = appInterpageSource.split("case 'yui_guide_set_chat_cursor': {")[1].split(
+        'applyYuiGuideChatCursor(cursorKind, cursorOptions);',
+        1
+    )[0];
+    const chatCursorClearBlock = appInterpageSource.split('        if (!kind) {')[1].split(
+        '            hideYuiGuideChatCursorElement();',
+        1
+    )[0];
+    const earlyCursorHandoffIndex = sceneOrchestratorSource.indexOf('director.clearExternalizedChatGuideTarget({\n                    clearCursor: true');
+    const sceneExtraCleanupIndex = sceneOrchestratorSource.indexOf('director.clearSceneExtraSpotlights();');
+
+    assert.match(day6StatusSceneBlock, /clearExternalizedChatCursorOnEnter:\s*true/);
+    assert.ok(earlyCursorHandoffIndex >= 0);
+    assert.ok(sceneExtraCleanupIndex > earlyCursorHandoffIndex);
+    assert.match(sceneOrchestratorSource, /shouldClearExternalizedChatCursor[\s\S]*director\.clearExternalizedChatGuideTarget\(\{\s*clearCursor:\s*true,\s*preservePcOverlayCursor:\s*true\s*\}\);/);
+    assert.match(sceneOrchestratorSource, /!shouldClearExternalizedChatCursor[\s\S]*director\.clearExternalizedChatGuideTarget\(\{[\s\S]*clearCursor:\s*shouldClearExternalizedChatCursor[\s\S]*preservePcOverlayCursor:\s*shouldClearExternalizedChatCursor/);
+    assert.match(takeoverCursorBlock, /preservePcOverlayCursor:\s*!!\(options && options\.preservePcOverlayCursor === true\)/);
+    assert.match(directorClearBlock, /const shouldPreservePcOverlayCursor = !!\(options && options\.preservePcOverlayCursor === true\)/);
+    assert.match(directorClearBlock, /const currentCursorPoint = this\.overlay\.getCursorPosition\(\)/);
+    assert.match(directorClearBlock, /this\.overlay\.syncCursorPosition\(currentCursorPoint\.x, currentCursorPoint\.y, true\)/);
+    assert.match(chatCursorMessageBlock, /preservePcOverlayCursor:\s*message\.preservePcOverlayCursor === true/);
+    assert.match(chatCursorClearBlock, /isYuiGuidePcCursorOnlyMode\(\) && normalizedOptions\.preservePcOverlayCursor !== true/);
 });

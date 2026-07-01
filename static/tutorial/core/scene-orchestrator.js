@@ -272,8 +272,22 @@
                 director.cursor.cancel();
                 director.cursorAnchorStore.clear();
             }
+            const shouldClearExternalizedChatCursor = !!(
+                scene && scene.clearExternalizedChatCursorOnEnter === true
+            );
             director.clearSceneTimers();
             director.overlay.setAngry(false);
+            if (
+                shouldClearExternalizedChatCursor
+                && director.isHomeChatExternalized()
+                && !preserveExternalizedChatGuideTarget
+                && !preserveIntroExternalizedChatGuideTarget
+            ) {
+                director.clearExternalizedChatGuideTarget({
+                    clearCursor: true,
+                    preservePcOverlayCursor: true
+                });
+            }
             director.clearSceneExtraSpotlights();
             director.clearAllVirtualSpotlights();
             director.clearSpotlightGeometryHints();
@@ -282,8 +296,12 @@
                 director.isHomeChatExternalized()
                 && !preserveExternalizedChatGuideTarget
                 && !preserveIntroExternalizedChatGuideTarget
+                && !shouldClearExternalizedChatCursor
             ) {
-                director.clearExternalizedChatGuideTarget();
+                director.clearExternalizedChatGuideTarget({
+                    clearCursor: shouldClearExternalizedChatCursor,
+                    preservePcOverlayCursor: shouldClearExternalizedChatCursor
+                });
             }
             this.applyFirstDailySceneIntroCursorPrelude(scene, {
                 isFirstDailyScene,
@@ -542,7 +560,7 @@
                 primaryTarget = await director.resolveAvatarFloatingTarget(scene, 'primary');
                 secondaryTarget = await director.resolveAvatarFloatingTarget(scene, 'secondary');
                 const highlightConfig = {
-                    key: scene.id,
+                    key: scene.spotlightKey || scene.id,
                     persistent: shouldShowSceneSpotlight ? persistentTarget : null,
                     primary: shouldShowSceneSpotlight ? primaryTarget : null,
                     secondary: shouldShowSceneSpotlight ? secondaryTarget : null
@@ -667,7 +685,7 @@
                 };
             }
             const highlightConfig = {
-                key: scene.id,
+                key: scene.spotlightKey || scene.id,
                 persistent: persistentTarget,
                 primary: primaryTarget,
                 secondary: secondaryTarget

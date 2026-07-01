@@ -372,14 +372,15 @@ test('day6 plugin dashboard handoff runs through timeline operation after narrat
     assert.equal(operationCommand.at, 1);
     assert.equal(operationCommand.operation, 'day6-plugin-dashboard-handoff-flow');
     assert.equal(operationCommand.blocking, true);
+    assert.equal(scene.afterSceneDelayMs, 0);
 });
 
-test('day6 task HUD keeps cleanupBefore and real HUD preparation on the timeline path', () => {
+test('day6 task HUD starts without blocking cleanup and keeps real HUD preparation on the timeline path', () => {
     const guides = loadGuides();
     const scene = guides[6].round.scenes.find(item => item.id === 'day6_agent_task_hud');
 
     assert.equal(scene.timelinePlayback, true);
-    assert.equal(scene.cleanupBefore, true);
+    assert.notEqual(scene.cleanupBefore, true);
     assert.equal(scene.operation, 'show-task-hud');
     assert.equal(scene.target, '#agent-task-hud');
     assert.equal(scene.cursorAction, 'move');
