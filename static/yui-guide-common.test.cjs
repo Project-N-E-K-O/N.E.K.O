@@ -2089,6 +2089,10 @@ test('director registers settings side panels as pause tokens', () => {
     assert.match(constructorBlock, /this\.sidebarPauseController = new SidebarPauseController\(\{/);
     assert.match(constructorBlock, /this\.pauseCoordinator\.registerPauseToken\('sidebar',\s*this\.sidebarPauseController\.getPauseToken\(\)\);/);
     assert.match(ensureSettingsBlock, /this\.sidebarPauseController\.trackPanel\(panel\);/);
+    assert.match(
+        ensureSettingsBlock,
+        /this\.sidebarPauseController\.trackPanel\(panel\);[\s\S]*this\.refreshAvatarFloatingSettingsPanelLayout\(panel\);[\s\S]*if \(shouldContinue && !shouldContinue\(\)\) \{[\s\S]*return null;[\s\S]*const expanded = await this\.expandAvatarFloatingSidePanel/
+    );
     assert.match(ensureCharacterBlock, /this\.sidebarPauseController\.trackPanel\(sidePanel\);/);
     assert.match(collapseCharacterBlock, /this\.sidebarPauseController\.trackPanel\(sidePanel\);/);
 });

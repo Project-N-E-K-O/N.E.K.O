@@ -6140,22 +6140,24 @@
                 return null;
             }
             const opened = await this.openSettingsPanel();
-            if (!opened || this.isStopping() || (shouldContinue && !shouldContinue())) {
+            if (!opened || this.isStopping()) {
                 return null;
             }
             this.positionManagedPanelNow('settings');
             const panel = await this.waitForElement(() => this.getAvatarFloatingSidePanel(type), 1200);
-            if (!panel || (shouldContinue && !shouldContinue())) {
+            if (!panel) {
                 return null;
             }
             this.sidebarPauseController.trackPanel(panel);
+            this.refreshAvatarFloatingSettingsPanelLayout(panel);
+            if (shouldContinue && !shouldContinue()) {
+                return null;
+            }
             const expanded = await this.expandAvatarFloatingSidePanel(panel, panel._anchorElement || null);
             if (!expanded || (shouldContinue && !shouldContinue())) {
                 return null;
             }
-            if (expanded) {
-                this.refreshAvatarFloatingSettingsPanelLayout(panel);
-            }
+            this.refreshAvatarFloatingSettingsPanelLayout(panel);
             return panel;
         }
 

@@ -232,7 +232,7 @@
                         cursorMoveDurationMs: normalizedSchema.cursorMoveDurationMs
                     }, anchorButton, null, previousSceneId, {
                         onClickStart: () => {
-                            openedPanelPromise = this.ensurePanelForScene(panelId, sceneRunId, scene);
+                            openedPanelPromise = Promise.resolve(sidePanel);
                         }
                     });
                 } else {

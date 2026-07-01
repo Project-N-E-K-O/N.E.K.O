@@ -156,7 +156,7 @@ test('SettingsTourFlow owns day two personalization detail scene body', async ()
     ]);
 });
 
-test('SettingsTourFlow opens day four animation panel from its anchor cursor click', async () => {
+test('SettingsTourFlow reuses day four animation panel from its anchor cursor click', async () => {
     const calls = [];
     const settingsButton = { id: 'settings-button' };
     const animationButton = { id: 'animation-settings-button' };
@@ -253,7 +253,6 @@ test('SettingsTourFlow opens day four animation panel from its anchor cursor cli
         ['narration', 'day4_model_behavior', 'line', 'voice', 3200],
         ['delay', 220],
         ['cursor-click-anchor', 'day4_model_behavior_anchor_button', 'click', 620, 'animation-settings-button', 'day4_chat_settings'],
-        ['ensure-panel', 'animation-settings'],
         ['highlight', 'day4_model_behavior-animation-settings-panel', 'animation-settings-panel', 'settings-button'],
         ['delay', 3200],
         ['ellipse', 100, 100, 51.2, 60, 3200],
@@ -697,12 +696,17 @@ test('SettingsTourFlow keeps panel ellipse alive for configured minimum duration
     assert.deepEqual(delays, [900]);
 });
 
-test('SettingsTourFlow stops day four panel tour when opened panel resolves stale', async () => {
+test('SettingsTourFlow stops day four panel tour when anchor click makes scene stale', async () => {
     const calls = [];
-    let resolvePanel;
     const settingsButton = { id: 'settings-button' };
     const animationButton = { id: 'animation-settings-button' };
-    const animationPanel = { id: 'animation-settings-panel' };
+    const animationPanel = {
+        id: 'animation-settings-panel',
+        _anchorElement: animationButton,
+        getBoundingClientRect() {
+            return { left: 20, top: 40, width: 160, height: 120 };
+        }
+    };
     const director = {
         sceneRunId: 14,
         currentStep: 'day4-model',
@@ -716,7 +720,7 @@ test('SettingsTourFlow stops day four panel tour when opened panel resolves stal
             return settingsButton;
         },
         getAvatarFloatingSidePanel() {
-            return Object.assign(animationPanel, { _anchorElement: animationButton });
+            return animationPanel;
         },
         collapseAvatarFloatingSidePanelsExcept() {},
         applyGuideHighlights(config) {
@@ -734,29 +738,29 @@ test('SettingsTourFlow stops day four panel tour when opened panel resolves stal
         },
         moveAvatarFloatingCursor(cursorScene, anchorButton, secondaryTarget, previousSceneId, options) {
             options.onClickStart();
+            this.sceneRunId = 15;
             return Promise.resolve(true);
         },
         ensureAvatarFloatingSettingsSidePanel(panelId, options) {
             calls.push(['ensure', panelId, !!(options && options.shouldContinue)]);
-            return new Promise((resolve) => {
-                resolvePanel = () => {
-                    this.sceneRunId = 15;
-                    resolve(animationPanel);
-                };
-            });
+            return Promise.resolve(animationPanel);
+        },
+        getElementRect(target) {
+            return target.getBoundingClientRect();
+        },
+        cursor: {
+            runPauseAwareEllipse() {
+                return Promise.resolve(false);
+            }
         }
     };
     const flow = new SettingsTourFlow(director);
 
-    const resultPromise = flow.play({ id: 'day4_model_behavior' }, { sceneRunId: 14 });
-    await Promise.resolve();
-    resolvePanel();
-    const result = await resultPromise;
+    const result = await flow.play({ id: 'day4_model_behavior' }, { sceneRunId: 14 });
 
     assert.equal(result, false);
     assert.deepEqual(calls, [
-        ['highlight', 'day4_model_behavior-animation-settings-button'],
-        ['ensure', 'animation-settings', true]
+        ['highlight', 'day4_model_behavior-animation-settings-button']
     ]);
 });
 
