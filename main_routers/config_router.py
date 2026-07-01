@@ -714,6 +714,9 @@ async def get_core_config_api():
         if not _assist_api_provider:
             _assist_api_provider = 'free' if _core_api_provider == 'free' else 'qwen'
         _fallback_providers = {_core_api_provider, _assist_api_provider}
+        _doubao_tts_shared_key = ''
+        if str(core_cfg.get('ttsModelProvider') or '').strip() == 'doubao_tts':
+            _doubao_tts_shared_key = core_cfg.get('ttsModelApiKey', '')
 
         def _fb(provider: str) -> str:
             """Fall back to coreApiKey only when the provider matches the user-selected coreApi/assistApi."""
@@ -734,7 +737,7 @@ async def get_core_config_api():
             "assistApiKeyKimiCode": core_cfg.get('assistApiKeyKimiCode', '') or _fb('kimi_code'),
             "assistApiKeyDeepseek": core_cfg.get('assistApiKeyDeepseek', '') or _fb('deepseek'),
             "assistApiKeyDoubao": core_cfg.get('assistApiKeyDoubao', '') or _fb('doubao'),
-            "assistApiKeyDoubaoTts": core_cfg.get('assistApiKeyDoubaoTts', '') or core_cfg.get('ttsModelApiKey', ''),
+            "assistApiKeyDoubaoTts": core_cfg.get('assistApiKeyDoubaoTts', '') or _doubao_tts_shared_key,
             # MiniMax / MiMo 是 assist-only TTS provider，coreApiKey 不保证兼容；
             # 不 fallback，以免把无效 key 塞进 TTS 凭证槽位导致 401。
             "assistApiKeyMinimax": core_cfg.get('assistApiKeyMinimax', ''),
@@ -943,13 +946,11 @@ async def update_core_config(request: Request):
         if _incoming_tts_provider and _incoming_tts_provider != 'gptsovits':
             core_cfg['gptsovitsEnabled'] = False
         if _incoming_tts_provider == 'doubao_tts':
-            tts_key = str(core_cfg.get('ttsModelApiKey') or '').strip()
-            doubao_key = (
-                str(core_cfg.get('assistApiKeyDoubaoTts') or '').strip()
-                or str(core_cfg.get('assistApiKeyDoubao') or '').strip()
-            )
-            if not tts_key and doubao_key and '***' not in doubao_key:
+            doubao_key = str(core_cfg.get('assistApiKeyDoubaoTts') or '').strip()
+            if doubao_key and '***' not in doubao_key:
                 core_cfg['ttsModelApiKey'] = doubao_key
+            else:
+                core_cfg['ttsModelApiKey'] = ''
         if 'ttsVoiceId' in data:
             core_cfg['ttsVoiceId'] = data['ttsVoiceId']
 

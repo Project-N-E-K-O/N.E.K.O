@@ -31,6 +31,31 @@ def test_extract_doubao_audio_bytes_from_ndjson_chunks():
 
 
 @pytest.mark.unit
+def test_extract_doubao_audio_bytes_from_nested_data_audio():
+    audio = b"RIFF....nested"
+    body = {
+        "code": 0,
+        "data": {
+            "audio": base64.b64encode(audio).decode("ascii"),
+        },
+    }
+
+    assert extract_doubao_audio_bytes(body) == audio
+
+
+@pytest.mark.unit
+def test_extract_doubao_audio_bytes_from_adjacent_json_chunks():
+    first = b"RIFF...."
+    second = b"chunk"
+    body = "".join([
+        json.dumps({"code": 0, "data": base64.b64encode(first).decode("ascii")}),
+        json.dumps({"code": 0, "data": base64.b64encode(second).decode("ascii")}),
+    ])
+
+    assert extract_doubao_audio_bytes(body) == first + second
+
+
+@pytest.mark.unit
 def test_extract_doubao_audio_bytes_raises_on_error_code():
     with pytest.raises(DoubaoTtsError, match="requested resource not granted"):
         extract_doubao_audio_bytes({"code": 403, "message": "requested resource not granted"})
@@ -78,7 +103,8 @@ def test_get_tts_worker_routes_explicit_doubao_tts(monkeypatch):
             }
 
         def get_tts_api_key(self, provider):
-            pytest.fail(f"raw ttsModelApiKey should be used first, got {provider}")
+            assert provider == "doubao_tts"
+            return "doubao-key"
 
     monkeypatch.setattr(tts_client, "get_config_manager", lambda: _CM())
 
@@ -133,6 +159,63 @@ def test_get_tts_worker_routes_doubao_clone_before_mimo_default(monkeypatch):
         lambda voice_id: {
             "provider": "doubao_tts",
             "source": "clone",
+            "doubao_base_url": "https://openspeech-clone.bytedance.com",
+            "doubao_resource_id": "seed-icl-2.0-clone",
+        },
+    )
+
+    worker, api_key, provider_key = tts_client.get_tts_worker(
+        core_api_type="qwen",
+        has_custom_voice=True,
+        voice_id="S_xeC2CDp72",
+    )
+
+    assert isinstance(worker, partial)
+    assert worker.func is tts_client.doubao_tts_worker
+    assert worker.keywords["base_url"] == "https://openspeech-clone.bytedance.com"
+    assert worker.keywords["resource_id"] == "seed-icl-2.0-clone"
+    assert worker.keywords["configured_voice"] == "S_xeC2CDp72"
+    assert api_key == "doubao-key"
+    assert provider_key == "doubao_tts"
+
+
+@pytest.mark.unit
+def test_get_tts_worker_doubao_clone_ignores_foreign_shared_tts_key(monkeypatch):
+    class _CM:
+        def get_core_config(self):
+            return {
+                "assistApi": "mimo",
+                "OPENROUTER_URL": "https://api.xiaomimimo.com/v1",
+                "TTS_PROVIDER": "",
+                "ttsProvider": "",
+                "GPTSOVITS_ENABLED": False,
+            }
+
+        def load_json_config(self, filename, default):
+            assert filename == "core_config.json"
+            return {
+                "ttsModelProvider": "vllm_omni",
+                "ttsModelUrl": "http://localhost:8091",
+                "ttsModelId": "Qwen3-TTS",
+                "ttsVoiceId": "Puck",
+                "ttsModelApiKey": "sk-vllm-should-not-leak",
+                "assistApiKeyDoubaoTts": "doubao-speech-key",
+            }
+
+        def get_model_api_config(self, model_type):
+            return {"is_custom": False}
+
+        def get_tts_api_key(self, provider):
+            assert provider == "doubao_tts"
+            return "doubao-speech-key"
+
+    monkeypatch.setattr(tts_client, "get_config_manager", lambda: _CM())
+    monkeypatch.setattr(
+        tts_client,
+        "_get_voice_meta",
+        lambda voice_id: {
+            "provider": "doubao_tts",
+            "source": "clone",
             "doubao_base_url": "https://openspeech.bytedance.com",
             "doubao_resource_id": "seed-icl-2.0",
         },
@@ -146,10 +229,7 @@ def test_get_tts_worker_routes_doubao_clone_before_mimo_default(monkeypatch):
 
     assert isinstance(worker, partial)
     assert worker.func is tts_client.doubao_tts_worker
-    assert worker.keywords["base_url"] == "https://openspeech.bytedance.com"
-    assert worker.keywords["resource_id"] == "seed-icl-2.0"
-    assert worker.keywords["configured_voice"] == "S_xeC2CDp72"
-    assert api_key == "doubao-key"
+    assert api_key == "doubao-speech-key"
     assert provider_key == "doubao_tts"
 
 
@@ -193,6 +273,33 @@ async def test_doubao_voice_clone_client_posts_openspeech_payload(monkeypatch):
     assert sent["body"]["speaker_id"] == "S_console1234"
     assert sent["body"]["audio"]["format"] == "wav"
     assert base64.b64decode(sent["body"]["audio"]["data"]) == b"wav-bytes"
+
+
+@pytest.mark.unit
+async def test_doubao_voice_clone_client_requires_returned_voice_id(monkeypatch):
+    class _Transport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"code": 0, "data": {}})
+
+    original_async_client = httpx.AsyncClient
+
+    def patched_client(*args, **kwargs):
+        kwargs["transport"] = _Transport()
+        return original_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", patched_client)
+
+    client = DoubaoVoiceCloneClient(
+        api_key="doubao-key",
+        base_url="https://openspeech.bytedance.com",
+        resource_id="seed-icl-2.0",
+    )
+    with pytest.raises(DoubaoTtsError, match="未返回音色 ID"):
+        await client.clone_voice(
+            io.BytesIO(b"wav-bytes"),
+            speaker_id="S_console1234",
+            display_name="薄绿",
+        )
 
 
 @pytest.mark.unit

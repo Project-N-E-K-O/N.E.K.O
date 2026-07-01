@@ -4677,13 +4677,11 @@ async def get_voice_preview(
                 }, status_code=400)
             doubao_base_url = (
                 (voice_data or {}).get('doubao_base_url')
-                or preview_core_config.get('ttsModelUrl')
                 or DOUBAO_TTS_DEFAULT_BASE_URL
             )
             doubao_resource_id = (
                 (voice_data or {}).get('doubao_resource_id')
-                or preview_core_config.get('ttsModelId')
-                or DOUBAO_TTS_DEFAULT_RESOURCE_ID
+                or DOUBAO_VOICE_CLONE_RESOURCE_ID
             )
             try:
                 async with httpx.AsyncClient(timeout=60) as client:

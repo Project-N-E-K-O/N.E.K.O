@@ -2678,7 +2678,8 @@ class ConfigManager:
         - minimax:   ASSIST_API_KEY_MINIMAX → MINIMAX_API_KEY fallback
         - minimax_intl: ASSIST_API_KEY_MINIMAX_INTL → MINIMAX_INTL_API_KEY fallback
         - mimo: ASSIST_API_KEY_MIMO
-        - doubao_tts: ttsModelApiKey, then the dedicated Doubao Speech keybook entry
+        - doubao_tts: ttsModelApiKey only when the active TTS provider is doubao_tts,
+          then the dedicated Doubao Speech keybook entry
         """
         if provider == 'cosyvoice':
             core_config = self.get_core_config()
@@ -2728,17 +2729,15 @@ class ConfigManager:
                 raw_core_config = self.load_json_config('core_config.json', {})
             except Exception:
                 raw_core_config = {}
-            key = (raw_core_config.get('ttsModelApiKey') or '').strip()
-            if '***' in key:
-                return None
+            key = ''
+            if str(raw_core_config.get('ttsModelProvider') or '').strip() == 'doubao_tts':
+                key = (raw_core_config.get('ttsModelApiKey') or '').strip()
+                if '***' in key:
+                    key = ''
             if not key:
                 key = (raw_core_config.get('assistApiKeyDoubaoTts') or '').strip()
                 if '***' in key:
-                    return None
-            if not key:
-                key = (raw_core_config.get('assistApiKeyDoubao') or '').strip()
-                if '***' in key:
-                    return None
+                    key = ''
             return key or None
         return None
 

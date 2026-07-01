@@ -94,7 +94,6 @@ def doubao_tts_worker(
             })
             raise RuntimeError("Doubao TTS voice id is not configured")
 
-        headers = doubao_api_headers(audio_api_key, resource)
         client = httpx.AsyncClient(
             timeout=httpx.Timeout(connect=10, read=60, write=10, pool=10),
             limits=httpx.Limits(max_connections=4, max_keepalive_connections=2),
@@ -102,6 +101,7 @@ def doubao_tts_worker(
 
         async def synthesize(text: str, speech_id: str) -> None:
             payload = build_doubao_tts_payload(text, voice, context_texts=context)
+            headers = doubao_api_headers(audio_api_key, resource)
             resampler = soxr.ResampleStream(24000, 48000, 1, dtype="float32")
             try:
                 resp = await client.post(api_url, headers=headers, json=payload)
@@ -150,18 +150,21 @@ def _doubao_resolve(ctx):
     except Exception:
         raw = {}
     vm = ctx.voice_meta or {}
-    api_key = (raw.get("ttsModelApiKey") or "").strip()
+    api_key = (ctx.cm.get_tts_api_key("doubao_tts") or "").strip()
     if "***" in api_key:
         api_key = ""
-    if not api_key:
-        api_key = (ctx.cm.get_tts_api_key("doubao_tts") or "").strip()
     if not api_key:
         logger.warning("豆包 TTS 已选中但 API Key 缺失，改用 dummy TTS worker")
         return dummy_tts_worker, None, None
 
-    base_url = (vm.get("doubao_base_url") or raw.get("ttsModelUrl") or DOUBAO_TTS_DEFAULT_BASE_URL)
-    resource_id = (vm.get("doubao_resource_id") or raw.get("ttsModelId") or DOUBAO_TTS_DEFAULT_RESOURCE_ID)
-    configured_voice = ctx.voice_id if _doubao_voice_meta_is_clone(vm) else (raw.get("ttsVoiceId") or "")
+    if _doubao_voice_meta_is_clone(vm):
+        base_url = vm.get("doubao_base_url") or DOUBAO_TTS_DEFAULT_BASE_URL
+        resource_id = vm.get("doubao_resource_id") or DOUBAO_TTS_DEFAULT_RESOURCE_ID
+        configured_voice = ctx.voice_id
+    else:
+        base_url = raw.get("ttsModelUrl") or DOUBAO_TTS_DEFAULT_BASE_URL
+        resource_id = raw.get("ttsModelId") or DOUBAO_TTS_DEFAULT_RESOURCE_ID
+        configured_voice = raw.get("ttsVoiceId") or ""
     worker = partial(
         doubao_tts_worker,
         base_url=base_url,

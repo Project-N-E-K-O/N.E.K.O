@@ -96,7 +96,7 @@ def _decode_audio_b64(value: object) -> bytes:
     if not isinstance(value, str) or not value.strip():
         return b""
     try:
-        return base64.b64decode(value.strip())
+        return base64.b64decode(value.strip(), validate=True)
     except (binascii.Error, ValueError):
         return b""
 
@@ -112,7 +112,8 @@ def _extract_from_json_obj(obj: object) -> bytes:
         raise DoubaoTtsError(f"豆包 TTS 返回错误: {message}")
     chunks: list[bytes] = []
     for key in ("data", "audio", "audio_data"):
-        chunk = _decode_audio_b64(obj.get(key))
+        value = obj.get(key)
+        chunk = _extract_from_json_obj(value) if isinstance(value, dict) else _decode_audio_b64(value)
         if chunk:
             chunks.append(chunk)
     nested = obj.get("result") or obj.get("response")
@@ -120,6 +121,30 @@ def _extract_from_json_obj(obj: object) -> bytes:
         nested_audio = _extract_from_json_obj(nested)
         if nested_audio:
             chunks.append(nested_audio)
+    return b"".join(chunks)
+
+
+def _extract_from_text_fragment(fragment: str) -> bytes:
+    decoder = json.JSONDecoder()
+    chunks: list[bytes] = []
+    idx = 0
+    parsed_json = False
+    while idx < len(fragment):
+        while idx < len(fragment) and fragment[idx].isspace():
+            idx += 1
+        if idx >= len(fragment):
+            break
+        try:
+            obj, end = decoder.raw_decode(fragment, idx)
+        except json.JSONDecodeError:
+            if parsed_json:
+                break
+            return _decode_audio_b64(fragment[idx:].strip())
+        parsed_json = True
+        chunk = _extract_from_json_obj(obj)
+        if chunk:
+            chunks.append(chunk)
+        idx = end
     return b"".join(chunks)
 
 
@@ -134,12 +159,7 @@ def extract_doubao_audio_bytes(raw: bytes | str | dict[str, Any]) -> bytes:
             continue
         if line.startswith("data:"):
             line = line[5:].strip()
-        try:
-            obj = json.loads(line)
-        except json.JSONDecodeError:
-            chunk = _decode_audio_b64(line)
-        else:
-            chunk = _extract_from_json_obj(obj)
+        chunk = _extract_from_text_fragment(line)
         if chunk:
             chunks.append(chunk)
     return b"".join(chunks)
@@ -202,6 +222,11 @@ class DoubaoVoiceCloneClient:
             message = data.get("message") or data.get("msg") or data
             raise DoubaoTtsError(f"豆包声音复刻失败: {message}")
         result = data.get("data")
+        voice_id = ""
         if isinstance(result, dict):
-            return str(result.get("speaker_id") or result.get("voice_id") or speaker_id)
-        return str(data.get("speaker_id") or data.get("voice_id") or speaker_id)
+            voice_id = str(result.get("speaker_id") or result.get("voice_id") or "").strip()
+        if not voice_id:
+            voice_id = str(data.get("speaker_id") or data.get("voice_id") or "").strip()
+        if not voice_id:
+            raise DoubaoTtsError("豆包声音复刻成功但未返回音色 ID")
+        return voice_id
