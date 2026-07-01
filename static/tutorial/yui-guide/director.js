@@ -609,6 +609,9 @@
     const DAY1_HOME_GUIDE = getYuiGuideDailyGuide(1) || {};
     const GUIDE_AUDIO_FILES_BY_KEY = Object.freeze(collectGuideAudioFilesByKey());
     const GUIDE_AUDIO_FILE_OVERRIDES_BY_KEY = Object.freeze(Object.assign({}, DAY1_HOME_GUIDE.audioFileOverridesByKey || {}));
+    const GUIDE_AUDIO_VERSION_BY_KEY = Object.freeze({
+        avatar_floating_day4_model_lock: '20260701'
+    });
 
     function guideAudioSrc(key) {
         const files = key
@@ -624,7 +627,9 @@
         const hasLocaleFile = Object.prototype.hasOwnProperty.call(files, locale);
         const fileName = hasLocaleFile ? files[locale] : (files.en || '');
         const fileLocale = hasLocaleFile ? locale : 'en';
-        return fileName ? (GUIDE_AUDIO_BASE_URL + fileLocale + '/' + encodeURIComponent(fileName)) : '';
+        const version = GUIDE_AUDIO_VERSION_BY_KEY[key] || '';
+        const versionQuery = version ? ('?v=' + encodeURIComponent(version)) : '';
+        return fileName ? (GUIDE_AUDIO_BASE_URL + fileLocale + '/' + encodeURIComponent(fileName) + versionQuery) : '';
     }
 
     function shouldGuideAudioDriveMouth(voiceKey) {

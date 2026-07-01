@@ -92,6 +92,14 @@ test('daily tutorial audio keys have measured duration config for supported loca
     assert.match(directorSource, /day1_history_handle:\s*Object\.freeze\(\{\s*zh:\s*5580,/);
 });
 
+test('day4 model lock replacement audio URL is versioned for immutable static caches', () => {
+    assert.match(
+        directorSource,
+        /GUIDE_AUDIO_VERSION_BY_KEY = Object\.freeze\(\{\s*avatar_floating_day4_model_lock: '20260701'\s*\}\)/
+    );
+    assert.match(directorSource, /\?v=' \+ encodeURIComponent\(version\)/);
+});
+
 test('avatar floating narration duration does not estimate tutorial audio from text', () => {
     const methodMatch = directorSource.match(/getAvatarFloatingNarrationDurationMs\(voiceKey, text\)\s*\{([\s\S]*?)\n\s*\}/);
 
