@@ -264,6 +264,8 @@ def test_pngtuber_plus_costume_hotkeys_and_toggles_are_runtime_features():
     assert "hotkeys.length === 0 && toggles.length === 0" in source
     assert "this.initializeLayeredToggleState(layers);" in setup_block
     assert "this.hotkeyMatchesEvent(hotkey, event)" in hotkey_block
+    assert "const hotkeyLabel = String(hotkey.key || '').trim().toLowerCase();" in source
+    assert "hotkeyLabel.split('+').pop().trim()" in source
     assert "const hasToggleMatch = this.layeredToggleEntriesForEvent(event).length > 0;" in hotkey_block
     assert hotkey_block.index("this.setLayeredStateIndex(Number(matched.state_index) || 0") < hotkey_block.index("this.toggleLayeredVisibilityForEvent(event)")
     assert "this.layeredToggleVisibility.set(key, current === false);" in toggle_helpers_block
@@ -314,6 +316,18 @@ def test_pngtuber_plus_transform_stack_clip_and_bounce_are_runtime_features():
     assert "ctx.rect(transform.drawX, transform.drawY, drawFrame.dw, drawFrame.dh);" in draw_block
     assert "return this.drawPlusLayerTree(ctx, layers, stateName, timestamp);" in layered_draw_block
     assert "elapsed >= this.talkingHopPeriodMs" in hop_block
+
+
+def test_layered_pointer_tracking_scans_all_states():
+    source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
+    pointer_block = source[
+        source.index("        hasLayeredPointerTracking()"):
+        source.index("        stateFrameInfo(layer, layerState")
+    ]
+
+    assert "const states = Array.isArray(layer.states) ? layer.states : [];" in pointer_block
+    assert "states.some((state) => this.stateHasPointerTracking(state))" in pointer_block
+    assert "this.stateHasPointerTracking(layer.state || {})" in pointer_block
 
 
 def test_layered_pngtuber_keeps_stable_breathing_without_raw_layer_motion():

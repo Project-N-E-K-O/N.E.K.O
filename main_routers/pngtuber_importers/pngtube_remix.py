@@ -214,6 +214,7 @@ def _json_safe_state(state: dict) -> dict:
         "dragSpeed",
         "stretchAmount",
         "shared_movement",
+        "updated_follow_movement",
         "rLimitMin",
         "rLimitMax",
         "should_rot_speed",
@@ -453,6 +454,7 @@ def _with_updated_follow_fields(sprite: dict, state: dict) -> dict:
         return {}
     migrated = dict(state)
     if sprite.get("updated_follow_movement", False):
+        migrated["updated_follow_movement"] = True
         return migrated
     look_x = migrated.get("look_at_mouse_pos", 0.0)
     look_y = migrated.get("look_at_mouse_pos_y", 0.0)
@@ -660,7 +662,8 @@ def _effective_z_index_for_state(sprite: dict, sprite_by_id: dict, state_index: 
     visited.add(sprite_id)
     state = _state_for(sprite, state_index)
     z_index = _float(state.get("z_index"), 0.0)
-    parent = sprite_by_id.get(sprite.get("parent_id"))
+    parent_id = sprite.get("parent_id")
+    parent = sprite_by_id.get(parent_id) if parent_id is not None else None
     if isinstance(parent, dict):
         z_index += _effective_z_index_for_state(parent, sprite_by_id, state_index, visited)
     return z_index
@@ -690,7 +693,8 @@ def _parent_chain_for_sprite(sprite: dict, sprite_by_id: dict, state_index: int)
             "flip_sprite_h": bool(state.get("flip_sprite_h")),
             "flip_sprite_v": bool(state.get("flip_sprite_v")),
         })
-        current = sprite_by_id.get(current.get("parent_id"))
+        parent_id = current.get("parent_id")
+        current = sprite_by_id.get(parent_id) if parent_id is not None else None
     return chain
 
 
@@ -706,7 +710,7 @@ def _state_positions_for_sprite(sprite: dict, sprite_by_id: dict) -> list[dict]:
         state_by_id = {
             item.get("sprite_id"): _state_for(item, index)
             for item in sprite_by_id.values()
-            if isinstance(item, dict)
+            if isinstance(item, dict) and item.get("sprite_id") is not None
         }
         center_x, center_y = _absolute_position(sprite, state, state_by_id, sprite_by_id, {}, set())
         effective_should_talk, effective_open_mouth = _effective_toggle_for_state(
@@ -747,7 +751,11 @@ def _prepare_layers(remix_data: dict) -> list[dict]:
         for item in remix_data.get("image_manager_data", [])
         if isinstance(item, dict) and item.get("id") is not None
     }
-    sprite_by_id = {sprite.get("sprite_id"): sprite for sprite in sprites if isinstance(sprite, dict)}
+    sprite_by_id = {
+        sprite.get("sprite_id"): sprite
+        for sprite in sprites
+        if isinstance(sprite, dict) and sprite.get("sprite_id") is not None
+    }
     layers = []
     for order, sprite in enumerate(sprites):
         if not isinstance(sprite, dict):
@@ -763,7 +771,7 @@ def _prepare_layers(remix_data: dict) -> list[dict]:
         render_state_by_id = {
             item.get("sprite_id"): _state_for(item, visible_state_index)
             for item in sprites
-            if isinstance(item, dict)
+            if isinstance(item, dict) and item.get("sprite_id") is not None
         }
         scale_x, scale_y = _vec(render_state.get("scale"), (1.0, 1.0))
         if render_state.get("flip_sprite_h") or sprite.get("flipped_h"):
@@ -935,8 +943,14 @@ def _normalized_hotkeys(input_array) -> list[dict]:
     return hotkeys
 
 
-def _state_count_for_layers(layers: list[dict]) -> int:
-    return max((len(layer.get("states") or []) for layer in layers), default=1)
+def _state_count_for_layers(layers: list[dict], input_array=None, settings: dict | None = None) -> int:
+    counts = [len(layer.get("states") or []) for layer in layers]
+    if isinstance(input_array, list):
+        counts.append(len(input_array))
+    settings_states = settings.get("states") if isinstance(settings, dict) else None
+    if isinstance(settings_states, list):
+        counts.append(len(settings_states))
+    return max(counts, default=1)
 
 
 def _state_name_from_input(item, index: int) -> str:
@@ -946,6 +960,12 @@ def _state_name_from_input(item, index: int) -> str:
     props = item.get("properties")
     if isinstance(props, dict):
         sources.append(props)
+    hot_key = item.get("hot_key")
+    if isinstance(hot_key, dict):
+        sources.append(hot_key)
+        hot_key_props = hot_key.get("properties")
+        if isinstance(hot_key_props, dict):
+            sources.append(hot_key_props)
     for source in sources:
         for key in ("state_name", "name", "label", "title", "button_text", "text"):
             value = source.get(key)
@@ -1117,7 +1137,7 @@ def _metadata(remix_data: dict, remix_file: Path, package_dir: Path, warnings: l
     has_mesh_runtime = _has_mesh_runtime(layers)
     has_physics = _has_physics_layers(layers)
     unsupported_features = _unsupported_features(layers, has_mesh_metadata, has_mesh_runtime)
-    state_count = _state_count_for_layers(layers)
+    state_count = _state_count_for_layers(layers, input_array, settings if isinstance(settings, dict) else {})
     hotkeys = _normalized_hotkeys(input_array)
     state_catalog = _state_catalog(input_array, settings if isinstance(settings, dict) else {}, hotkeys, state_count)
     return {

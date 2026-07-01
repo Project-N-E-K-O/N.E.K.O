@@ -3212,11 +3212,18 @@ document.addEventListener('DOMContentLoaded', async () => {
             type: 'pngtuber',
             pngtuber: pngtuberConfig,
         };
-        if (!window.loadPNGTuberAvatar) {
-            throw new Error('PNGTuber runtime not loaded');
+        try {
+            if (!window.loadPNGTuberAvatar) {
+                throw new Error('PNGTuber runtime not loaded');
+            }
+            await window.loadPNGTuberAvatar(pngtuberConfig);
+            await loadPNGTuberPreviewControls(pngtuberConfig);
+        } catch (error) {
+            const errMsg = error?.message || String(error);
+            console.error('[ModelManager] PNGTuber preview failed:', error);
+            showStatus(t('live2d.pngtuberLoadFailed', `PNGTuber 模型加载失败: ${errMsg}`, { error: errMsg }), 5000);
+            return false;
         }
-        await window.loadPNGTuberAvatar(pngtuberConfig);
-        await loadPNGTuberPreviewControls(pngtuberConfig);
         if (live2dContainer) live2dContainer.style.display = 'none';
         if (vrmContainer) {
             vrmContainer.classList.add('hidden');

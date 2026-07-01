@@ -562,7 +562,10 @@
             if (!!hotkey.alt !== !!event.altKey) return false;
             if (!!hotkey.meta !== !!event.metaKey) return false;
             const key = this.normalizedLayeredEventKey(event);
-            const hotkeyKey = String(hotkey.key || '').trim().toLowerCase();
+            const hotkeyLabel = String(hotkey.key || '').trim().toLowerCase();
+            const hotkeyKey = hotkeyLabel.includes('+')
+                ? hotkeyLabel.split('+').pop().trim()
+                : hotkeyLabel;
             const hotkeyCode = String(hotkey.code || '').trim().toLowerCase();
             if (hotkeyKey && key !== hotkeyKey) return false;
             if (!hotkeyKey && hotkeyCode && String(event.code || '').trim().toLowerCase() !== hotkeyCode) return false;
@@ -1027,7 +1030,11 @@
 
         hasLayeredPointerTracking() {
             if (!this.layeredMetadata || !Array.isArray(this.layeredMetadata.layers)) return false;
-            return this.layeredMetadata.layers.some((layer) => this.stateHasPointerTracking(this.layerStateForCurrentIndex(layer)));
+            return this.layeredMetadata.layers.some((layer) => {
+                const states = Array.isArray(layer.states) ? layer.states : [];
+                if (states.some((state) => this.stateHasPointerTracking(state))) return true;
+                return this.stateHasPointerTracking(layer.state || {});
+            });
         }
 
         stateFrameInfo(layer, layerState, img, timestamp = performance.now(), overrideFrame = null) {

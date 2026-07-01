@@ -213,6 +213,98 @@ def test_pngtuber_plus_import_maps_costume_ancestors_hotkeys_and_toggles(tmp_pat
     assert costume_two["states"][1]["visible"] is True
 
 
+def test_pngtuber_plus_import_resolves_nested_save_relative_assets(tmp_path):
+    root_assets = tmp_path / "assets"
+    nested_assets = tmp_path / "avatar" / "assets"
+    root_assets.mkdir()
+    nested_assets.mkdir(parents=True)
+    _solid((8, 8), (255, 0, 0, 255)).save(root_assets / "layer.png")
+    _solid((8, 8), (0, 255, 0, 255)).save(nested_assets / "layer.png")
+    save_data = {
+        "0": {
+            "type": "sprite",
+            "identification": 1,
+            "parentId": None,
+            "pos": "Vector2(0, 0)",
+            "offset": "Vector2(0, 0)",
+            "path": "assets/layer.png",
+        }
+    }
+    (tmp_path / "avatar" / "avatar.save").write_text(json.dumps(save_data), encoding="utf-8")
+
+    result = import_pngtuber_package(tmp_path, "avatar")
+
+    assert result.source_format == "pngtuber_plus_save"
+    idle = Image.open(tmp_path / "idle.png").convert("RGBA")
+    assert idle.getpixel((4, 4)) == (0, 255, 0, 255)
+
+
+def test_pngtuber_plus_import_sanitizes_non_finite_numbers(tmp_path):
+    save_data = {
+        "0": {
+            "type": "sprite",
+            "identification": 1,
+            "parentId": None,
+            "pos": "Vector2(0, 0)",
+            "offset": "Vector2(0, 0)",
+            "rotDrag": "Infinity",
+            "stretchAmount": "NaN",
+            "imageData": _png_data_url(_solid((10, 10), (255, 0, 0, 255))),
+        }
+    }
+    save_file = tmp_path / "avatar.save"
+    save_file.write_text(json.dumps(save_data), encoding="utf-8")
+
+    import_pngtuber_plus_save(tmp_path, save_file, "fallback")
+
+    metadata = json.loads((tmp_path / "metadata.pngtuber-plus.json").read_text(encoding="utf-8"))
+    state = metadata["layers"][0]["state"]
+    assert state["rdragStr"] == 0.0
+    assert state["stretchAmount"] == 0.0
+
+
+def test_pngtuber_plus_composite_inherits_parent_talk_visibility(tmp_path):
+    save_data = {
+        "0": {
+            "type": "sprite",
+            "identification": 1,
+            "parentId": None,
+            "pos": "Vector2(0, 0)",
+            "offset": "Vector2(0, 0)",
+            "zindex": -1,
+            "showTalk": 0,
+            "imageData": _png_data_url(_solid((30, 30), (0, 0, 255, 255))),
+        },
+        "1": {
+            "type": "sprite",
+            "identification": 2,
+            "parentId": None,
+            "pos": "Vector2(0, 0)",
+            "offset": "Vector2(0, 0)",
+            "zindex": 0,
+            "showTalk": 1,
+            "imageData": _png_data_url(_solid((20, 20), (255, 0, 0, 255))),
+        },
+        "2": {
+            "type": "sprite",
+            "identification": 3,
+            "parentId": 2,
+            "pos": "Vector2(0, 0)",
+            "offset": "Vector2(0, 0)",
+            "zindex": 1,
+            "showTalk": 0,
+            "imageData": _png_data_url(_solid((10, 10), (0, 255, 0, 255))),
+        },
+    }
+    save_file = tmp_path / "avatar.save"
+    save_file.write_text(json.dumps(save_data), encoding="utf-8")
+
+    import_pngtuber_plus_save(tmp_path, save_file, "fallback")
+
+    talking = Image.open(tmp_path / "talking.png").convert("RGBA")
+    assert talking.getpixel((15, 15)) == (0, 0, 255, 255)
+
+
 def test_pngtuber_plus_import_prefers_unique_root_save_matching_upload_name(tmp_path):
     save_data = {
         "0": {

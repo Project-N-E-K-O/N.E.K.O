@@ -7,6 +7,7 @@ import base64
 import io
 import ast
 import json
+import math
 import re
 import shutil
 from dataclasses import dataclass
@@ -72,9 +73,10 @@ def _to_int(value, default: int = 0) -> int:
 
 def _to_float(value, default: float = 0.0) -> float:
     try:
-        return float(value)
+        parsed = float(value)
     except (TypeError, ValueError):
         return default
+    return parsed if math.isfinite(parsed) else default
 
 
 def _to_optional_id(value) -> str:
@@ -103,8 +105,12 @@ def _normalize_costume_layers(value) -> list[int]:
     return normalized
 
 
-def _load_plus_settings(package_dir: Path) -> dict:
-    candidates = [package_dir / "settings.pngtp", *sorted(package_dir.rglob("settings.pngtp"))]
+def _load_plus_settings(package_dir: Path, asset_dir: Path | None = None) -> dict:
+    roots = [asset_dir, package_dir] if asset_dir and asset_dir.resolve() != package_dir.resolve() else [package_dir]
+    candidates = []
+    for root in roots:
+        candidates.append(root / "settings.pngtp")
+        candidates.extend(sorted(root.rglob("settings.pngtp")))
     seen = set()
     for candidate in candidates:
         resolved = candidate.resolve()
@@ -190,27 +196,34 @@ def _blink_config_from_plus_settings(settings: dict) -> dict:
     }
 
 
-def _resolve_external_path(package_dir: Path, raw_path: str) -> Path | None:
+def _resolve_external_path(package_dir: Path, raw_path: str, asset_dir: Path | None = None) -> Path | None:
     if not raw_path:
         return None
     normalized = raw_path.replace("\\", "/")
     filename = normalized.split("/")[-1]
     if not filename:
         return None
-    direct = package_dir / filename
-    if direct.exists():
-        return direct
-    matches = sorted(package_dir.rglob(filename))
+    roots = [asset_dir, package_dir] if asset_dir and asset_dir.resolve() != package_dir.resolve() else [package_dir]
+    for root in roots:
+        direct = root / normalized
+        if direct.exists():
+            return direct
+        basename_match = root / filename
+        if basename_match.exists():
+            return basename_match
+    matches = []
+    for root in roots:
+        matches.extend(sorted(root.rglob(filename)))
     return matches[0] if matches else None
 
 
-def _load_layer_image(package_dir: Path, layer_data: dict) -> Image.Image | None:
+def _load_layer_image(package_dir: Path, layer_data: dict, asset_dir: Path | None = None) -> Image.Image | None:
     image_data = layer_data.get("imageData")
     if isinstance(image_data, str) and image_data.strip():
         raw = base64.b64decode(image_data)
         return Image.open(io.BytesIO(raw)).convert("RGBA")
 
-    external_path = _resolve_external_path(package_dir, str(layer_data.get("path") or ""))
+    external_path = _resolve_external_path(package_dir, str(layer_data.get("path") or ""), asset_dir)
     if external_path and external_path.exists():
         return Image.open(external_path).convert("RGBA")
     return None
@@ -229,8 +242,8 @@ def _draw_position(center: tuple[float, float], offset: tuple[float, float], fra
     return center[0] + offset[0] - frame_size[0] / 2, center[1] + offset[1] - frame_size[1] / 2
 
 
-def _raw_layer_from_save_key(package_dir: Path, key: str, value: dict) -> dict | None:
-    image = _load_layer_image(package_dir, value)
+def _raw_layer_from_save_key(package_dir: Path, key: str, value: dict, asset_dir: Path | None = None) -> dict | None:
+    image = _load_layer_image(package_dir, value, asset_dir)
     if image is None:
         return None
     frames = max(1, _to_int(value.get("frames"), 1))
@@ -264,12 +277,12 @@ def _raw_layer_from_save_key(package_dir: Path, key: str, value: dict) -> dict |
     }
 
 
-def _build_layers(package_dir: Path, save_data: dict) -> list[PlusLayer]:
+def _build_layers(package_dir: Path, save_data: dict, asset_dir: Path | None = None) -> list[PlusLayer]:
     raw_layers = []
     for key, value in save_data.items():
         if not str(key).isdigit() or not isinstance(value, dict):
             continue
-        raw_layer = _raw_layer_from_save_key(package_dir, str(key), value)
+        raw_layer = _raw_layer_from_save_key(package_dir, str(key), value, asset_dir)
         if raw_layer is not None:
             raw_layers.append(raw_layer)
 
@@ -366,6 +379,16 @@ def _costume_visible(layer: PlusLayer, state_index: int, by_identification: dict
     return True
 
 
+def _included_for_state_with_ancestors(layer: PlusLayer, state: str, by_identification: dict[str, PlusLayer]) -> bool:
+    if not _included_for_state(layer, state):
+        return False
+    for parent_id in _parent_chain(layer, by_identification):
+        parent = by_identification.get(parent_id)
+        if parent and not _included_for_state(parent, state):
+            return False
+    return True
+
+
 def _bounds_for_layers(layers: list[PlusLayer]) -> tuple[int, int, int, int]:
     bounds = []
     for layer in layers:
@@ -383,7 +406,8 @@ def _compose_state(layers: list[PlusLayer], state: str, out_path: Path, bounds: 
     included = [
         layer
         for layer in layers
-        if _costume_visible(layer, 0, by_identification) and _included_for_state(layer, state)
+        if _costume_visible(layer, 0, by_identification)
+        and _included_for_state_with_ancestors(layer, state, by_identification)
     ]
     if not included:
         raise ValueError(f"PNGTuber Plus .save has no visible {state} layers")
@@ -565,7 +589,7 @@ def _metadata_for(package_dir: Path, layers: list[PlusLayer], save_file: Path, w
     has_motion = _has_motion_layers(layers)
     has_physics = _has_physics_layers(layers)
     has_sprite_sheets = _has_sprite_sheet_layers(layers)
-    settings = _load_plus_settings(package_dir)
+    settings = _load_plus_settings(package_dir, save_file.parent)
     plus_settings = _normalized_plus_settings(settings)
     hotkeys = _normalized_costume_hotkeys(settings)
     toggles = _toggle_map(layers)
@@ -619,7 +643,7 @@ def import_pngtuber_plus_save(package_dir: Path, save_file: Path, fallback_model
     if not isinstance(save_data, dict):
         raise ValueError("PNGTuber Plus .save is not a valid JSON object")
 
-    layers = _build_layers(package_dir, save_data)
+    layers = _build_layers(package_dir, save_data, save_file.parent)
     if not layers:
         raise ValueError("PNGTuber Plus .save did not contain decodable layers")
 

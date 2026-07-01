@@ -301,6 +301,61 @@ def test_pngtube_remix_metadata_maps_five_state_packages_to_emotion_fallbacks(tm
     assert metadata["emotion_mappings"]["surprised"]["state_index"] == 4
 
 
+def test_pngtube_remix_metadata_counts_global_states_and_nested_hotkey_labels(tmp_path):
+    image = Image.new("RGBA", (16, 16), (255, 0, 0, 255))
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    remix_data = {
+        "sprites_array": [
+            {
+                "sprite_id": 1,
+                "sprite_name": "single state layer",
+                "img": buffer.getvalue(),
+                "states": [
+                    {"visible": True, "position": (8, 8), "scale": (1, 1)}
+                ],
+            }
+        ],
+        "image_manager_data": [],
+        "settings_dict": {"states": [{}, {}, {"name": "Angry"}]},
+        "input_array": [
+            {
+                "hot_key": {
+                    "properties": {
+                        "keycode": 49,
+                        "physical_keycode": 49,
+                        "ctrl_pressed": True,
+                        "state_name": "Happy",
+                    }
+                }
+            },
+            {},
+            {},
+            {
+                "hot_key": {
+                    "properties": {
+                        "keycode": 52,
+                        "physical_keycode": 52,
+                        "label": "Surprised",
+                    }
+                }
+            },
+        ],
+    }
+
+    layers = pngtube_remix._prepare_layers(remix_data)
+    bounds = pngtube_remix._bounds_for_layers(layers)
+    metadata = pngtube_remix._metadata(remix_data, Path("global-states.pngRemix"), tmp_path, [], layers, bounds)
+
+    assert metadata["state_count"] == 4
+    assert metadata["state_catalog"][0]["name"] == "Happy"
+    assert metadata["state_catalog"][2]["name"] == "Angry"
+    assert metadata["state_catalog"][3]["name"] == "Surprised"
+    assert metadata["emotion_mappings"]["happy"]["state_index"] == 0
+    assert metadata["emotion_mappings"]["angry"]["state_index"] == 2
+    assert metadata["emotion_mappings"]["surprised"]["state_index"] == 3
+
+
 def test_pngtube_remix_keeps_layers_visible_only_in_non_default_states(tmp_path):
     def png_bytes(color):
         image = Image.new("RGBA", (8, 8), color)
@@ -401,6 +456,38 @@ def test_pngtube_remix_child_layers_inherit_parent_z_index(tmp_path):
     assert metadata_by_name["braid"]["states"][0]["z_index"] == -1
 
 
+def test_pngtube_remix_root_layers_do_not_inherit_anonymous_z_index(tmp_path):
+    def png_bytes(color):
+        image = Image.new("RGBA", (8, 8), color)
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        return buffer.getvalue()
+
+    remix_data = {
+        "sprites_array": [
+            {
+                "sprite_name": "anonymous",
+                "img": png_bytes((0, 0, 255, 255)),
+                "states": [{"visible": True, "position": (4, 4), "scale": (1, 1), "z_index": 50}],
+            },
+            {
+                "sprite_id": "root",
+                "sprite_name": "root",
+                "img": png_bytes((255, 0, 0, 255)),
+                "states": [{"visible": True, "position": (4, 4), "scale": (1, 1), "z_index": 1}],
+            },
+        ],
+        "image_manager_data": [],
+        "settings_dict": {"states": [{}]},
+        "input_array": [],
+    }
+
+    layers = pngtube_remix._prepare_layers(remix_data)
+    by_name = {layer["name"]: layer for layer in layers}
+
+    assert by_name["root"]["zindex"] == 1
+
+
 def test_local_orange_yukiri_fixture_exposes_state_emotion_mapping(tmp_path):
     remix_files = sorted(PROJECT_ROOT.glob("*251004.pngRemix"))
     if not remix_files:
@@ -457,3 +544,4 @@ def test_pngtube_remix_importer_keeps_updated_follow_fields():
 
     assert migrated["pos_x_min"] == -2
     assert migrated["pos_x_max"] == 4
+    assert migrated["updated_follow_movement"] is True

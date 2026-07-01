@@ -117,6 +117,9 @@ def test_model_manager_pngtuber_character_config_fallback_loads_preview():
     assert "if (!pngtuberConfig || !pngtuberConfig.idle_image) return false;" in preview_block
     assert "await window.loadPNGTuberAvatar(pngtuberConfig);" in preview_block
     assert "throw new Error('PNGTuber runtime not loaded');" in preview_block
+    assert "catch (error)" in preview_block
+    assert "PNGTuber 模型加载失败" in preview_block
+    assert "return false;" in preview_block
     assert "if (preferredConfig) {" in select_block
     assert "return await previewPNGTuberConfig(preferredConfig" in select_block
     assert "if (preferredConfig) return false;" not in select_block
