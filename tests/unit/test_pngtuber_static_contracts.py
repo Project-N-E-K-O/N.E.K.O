@@ -268,6 +268,7 @@ def test_pngtuber_plus_costume_hotkeys_and_toggles_are_runtime_features():
     assert hotkey_block.index("this.setLayeredStateIndex(Number(matched.state_index) || 0") < hotkey_block.index("this.toggleLayeredVisibilityForEvent(event)")
     assert "this.layeredToggleVisibility.set(key, current === false);" in toggle_helpers_block
     assert "this.layerToggleAncestors(layer).some((id) => this.layeredToggleVisibility.get(id) === false)" in toggle_helpers_block
+    assert "if (layerState.folder) return false;" in render_block
     assert "if (!this.isLayerToggleVisible(layer)) return false;" in render_block
     assert "if (this.hasHiddenLayeredToggleAncestor(layer)) return false;" in render_block
     assert "layeredToggles: Object.fromEntries(this.layeredToggleVisibility || new Map())" in debug_block

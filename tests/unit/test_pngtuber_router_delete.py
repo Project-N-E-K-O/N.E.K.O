@@ -301,6 +301,106 @@ def test_pngtube_remix_metadata_maps_five_state_packages_to_emotion_fallbacks(tm
     assert metadata["emotion_mappings"]["surprised"]["state_index"] == 4
 
 
+def test_pngtube_remix_keeps_layers_visible_only_in_non_default_states(tmp_path):
+    def png_bytes(color):
+        image = Image.new("RGBA", (8, 8), color)
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        return buffer.getvalue()
+
+    remix_data = {
+        "sprites_array": [
+            {
+                "sprite_id": 1,
+                "sprite_name": "base",
+                "img": png_bytes((255, 0, 0, 255)),
+                "states": [
+                    {"visible": True, "position": (4, 4), "scale": (1, 1), "z_index": 0},
+                    {"visible": True, "position": (4, 4), "scale": (1, 1), "z_index": 0},
+                ],
+            },
+            {
+                "sprite_id": 2,
+                "sprite_name": "expression-only",
+                "img": png_bytes((0, 255, 0, 255)),
+                "states": [
+                    {"visible": False, "position": (20, 4), "scale": (1, 1), "z_index": 10},
+                    {"visible": True, "position": (20, 4), "scale": (1, 1), "z_index": 10},
+                ],
+            },
+        ],
+        "image_manager_data": [],
+        "settings_dict": {"states": [{}, {}]},
+        "input_array": [],
+    }
+
+    layers = pngtube_remix._prepare_layers(remix_data)
+    expression_layer = next(layer for layer in layers if layer["name"] == "expression-only")
+
+    assert {layer["name"] for layer in layers} == {"base", "expression-only"}
+    assert expression_layer["state"]["visible"] is False
+    assert pngtube_remix._layer_visible_for_state(expression_layer, "idle") is False
+
+    bounds = pngtube_remix._bounds_for_layers(layers)
+    metadata = pngtube_remix._metadata(remix_data, Path("expression.pngRemix"), tmp_path, [], layers, bounds)
+    metadata_layer = next(layer for layer in metadata["layers"] if layer["name"] == "expression-only")
+    states = {state["state_index"]: state for state in metadata_layer["states"]}
+    assert states[0]["visible"] is False
+    assert states[1]["visible"] is True
+    assert states[0]["folder"] is not True
+    assert states[1]["folder"] is not True
+
+
+def test_pngtube_remix_child_layers_inherit_parent_z_index(tmp_path):
+    def png_bytes(color):
+        image = Image.new("RGBA", (8, 8), color)
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        return buffer.getvalue()
+
+    remix_data = {
+        "sprites_array": [
+            {
+                "sprite_id": "face",
+                "sprite_name": "face",
+                "img": png_bytes((255, 220, 220, 255)),
+                "states": [{"visible": True, "position": (4, 4), "scale": (1, 1), "z_index": 0}],
+            },
+            {
+                "sprite_id": "back-hair",
+                "sprite_name": "back-hair",
+                "img": png_bytes((0, 0, 255, 255)),
+                "states": [{"visible": True, "position": (4, 4), "scale": (1, 1), "z_index": -1}],
+            },
+            {
+                "sprite_id": "braid",
+                "sprite_name": "braid",
+                "parent_id": "back-hair",
+                "img": png_bytes((0, 255, 255, 255)),
+                "states": [{"visible": True, "position": (4, 4), "scale": (1, 1), "z_index": 0}],
+            },
+        ],
+        "image_manager_data": [],
+        "settings_dict": {"states": [{}]},
+        "input_array": [],
+    }
+
+    layers = pngtube_remix._prepare_layers(remix_data)
+    by_name = {layer["name"]: layer for layer in layers}
+    assert by_name["back-hair"]["zindex"] == -1
+    assert by_name["braid"]["zindex"] == -1
+    assert [layer["name"] for layer in sorted(layers, key=lambda item: (item["zindex"], item["order"]))] == [
+        "back-hair",
+        "braid",
+        "face",
+    ]
+
+    bounds = pngtube_remix._bounds_for_layers(layers)
+    metadata = pngtube_remix._metadata(remix_data, Path("relative-z.pngRemix"), tmp_path, [], layers, bounds)
+    metadata_by_name = {layer["name"]: layer for layer in metadata["layers"]}
+    assert metadata_by_name["braid"]["states"][0]["z_index"] == -1
+
+
 def test_local_orange_yukiri_fixture_exposes_state_emotion_mapping(tmp_path):
     remix_files = sorted(PROJECT_ROOT.glob("*251004.pngRemix"))
     if not remix_files:

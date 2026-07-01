@@ -166,10 +166,24 @@ def _layer_visible_base(sprite: dict, state: dict) -> bool:
     return True
 
 
+def _first_visible_state_index(sprite: dict) -> int | None:
+    states = sprite.get("states") or [{}]
+    if not isinstance(states, list):
+        states = [{}]
+    for index, state in enumerate(states):
+        if not isinstance(state, dict):
+            continue
+        if _layer_visible_base(sprite, _with_updated_follow_fields(sprite, state)):
+            return index
+    return None
+
+
 def _layer_visible_for_state(layer: dict, mode: str, blink: bool = False) -> bool:
     if layer.get("inactive_asset_ancestor"):
         return False
     state = layer.get("state") or {}
+    if state.get("visible", True) is False:
+        return False
     if state.get("ancestor_visible") is False or layer.get("ancestor_visible") is False:
         return False
     should_talk = bool(state.get("effective_should_talk", state.get("should_talk", False)))
@@ -635,6 +649,23 @@ def _frame_size(image: Image.Image, state: dict) -> tuple[int, int]:
     return max(1, image.width // hframes), max(1, image.height // rows)
 
 
+def _effective_z_index_for_state(sprite: dict, sprite_by_id: dict, state_index: int, visited: set | None = None) -> float:
+    if visited is None:
+        visited = set()
+    if not isinstance(sprite, dict):
+        return 0.0
+    sprite_id = sprite.get("sprite_id")
+    if sprite_id in visited:
+        return 0.0
+    visited.add(sprite_id)
+    state = _state_for(sprite, state_index)
+    z_index = _float(state.get("z_index"), 0.0)
+    parent = sprite_by_id.get(sprite.get("parent_id"))
+    if isinstance(parent, dict):
+        z_index += _effective_z_index_for_state(parent, sprite_by_id, state_index, visited)
+    return z_index
+
+
 def _parent_chain_for_sprite(sprite: dict, sprite_by_id: dict, state_index: int) -> list[dict]:
     chain = []
     current = sprite
@@ -684,8 +715,10 @@ def _state_positions_for_sprite(sprite: dict, sprite_by_id: dict) -> list[dict]:
         effective_should_blink, effective_open_eyes = _effective_toggle_for_state(
             sprite, state, sprite_by_id, index, "should_blink", "open_eyes", True
         )
+        safe_state = _json_safe_state(state)
+        safe_state["z_index"] = _effective_z_index_for_state(sprite, sprite_by_id, index)
         records.append({
-            **_json_safe_state(state),
+            **safe_state,
             "state_index": index,
             "ancestor_visible": not _has_hidden_ancestor_for_state(sprite, sprite_by_id, index),
             "effective_should_talk": effective_should_talk,
@@ -715,26 +748,31 @@ def _prepare_layers(remix_data: dict) -> list[dict]:
         if isinstance(item, dict) and item.get("id") is not None
     }
     sprite_by_id = {sprite.get("sprite_id"): sprite for sprite in sprites if isinstance(sprite, dict)}
-    state_by_id = {sprite.get("sprite_id"): _state_for(sprite, 0) for sprite in sprites if isinstance(sprite, dict)}
-    position_cache: dict = {}
     layers = []
     for order, sprite in enumerate(sprites):
         if not isinstance(sprite, dict):
             continue
-        state = _with_updated_follow_fields(sprite, _state_for(sprite, 0))
-        if not _layer_visible_base(sprite, state):
+        visible_state_index = _first_visible_state_index(sprite)
+        if visible_state_index is None:
             continue
         image = _image_from_sprite(sprite, image_map)
         if image is None:
             continue
-        scale_x, scale_y = _vec(state.get("scale"), (1.0, 1.0))
-        if state.get("flip_sprite_h") or sprite.get("flipped_h"):
+        state = _with_updated_follow_fields(sprite, _state_for(sprite, 0))
+        render_state = _with_updated_follow_fields(sprite, _state_for(sprite, visible_state_index))
+        render_state_by_id = {
+            item.get("sprite_id"): _state_for(item, visible_state_index)
+            for item in sprites
+            if isinstance(item, dict)
+        }
+        scale_x, scale_y = _vec(render_state.get("scale"), (1.0, 1.0))
+        if render_state.get("flip_sprite_h") or sprite.get("flipped_h"):
             image = ImageOps.mirror(image)
-        if state.get("flip_sprite_v") or sprite.get("flipped_v"):
+        if render_state.get("flip_sprite_v") or sprite.get("flipped_v"):
             image = ImageOps.flip(image)
         if scale_x != 1.0 or scale_y != 1.0:
             image = image.resize((max(1, round(image.width * abs(scale_x))), max(1, round(image.height * abs(scale_y)))), Image.Resampling.LANCZOS)
-        center_x, center_y = _absolute_position(sprite, state, state_by_id, sprite_by_id, position_cache, set())
+        center_x, center_y = _absolute_position(sprite, render_state, render_state_by_id, sprite_by_id, {}, set())
         ancestor_visible = not _has_hidden_ancestor_for_state(sprite, sprite_by_id, 0)
         effective_should_talk, effective_open_mouth = _effective_toggle_for_state(
             sprite, state, sprite_by_id, 0, "should_talk", "open_mouth", False
@@ -750,15 +788,14 @@ def _prepare_layers(remix_data: dict) -> list[dict]:
             "effective_should_blink": effective_should_blink,
             "effective_open_eyes": effective_open_eyes,
         }
-        mesh = _extract_mesh_geometry(sprite, state)
-        frame_width, frame_height = _frame_size(image, state)
+        frame_width, frame_height = _frame_size(image, render_state)
         layers.append({
             "order": order,
             "name": sprite.get("sprite_name") or "",
             "sprite_id": sprite.get("sprite_id"),
             "parent_id": sprite.get("parent_id"),
             "sprite_type": sprite.get("sprite_type"),
-            "zindex": float(state.get("z_index", 0) or 0),
+            "zindex": _effective_z_index_for_state(sprite, sprite_by_id, visible_state_index),
             "inactive_asset_ancestor": _has_inactive_asset_ancestor(sprite, sprite_by_id),
             "x": center_x - frame_width / 2,
             "y": center_y - frame_height / 2,
@@ -769,7 +806,7 @@ def _prepare_layers(remix_data: dict) -> list[dict]:
             "ancestor_visible": ancestor_visible,
             "states": _state_positions_for_sprite(sprite, sprite_by_id),
             "parent_chain": _parent_chain_for_sprite(sprite, sprite_by_id, 0),
-            "mesh": mesh,
+            "mesh": _extract_mesh_geometry(sprite, render_state),
         })
     if not layers:
         raise PNGTubeRemixConversionError("PNGTubeRemix model has no visible PNG layers")
