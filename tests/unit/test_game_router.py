@@ -223,6 +223,86 @@ async def test_icebreaker_is_rejected_from_game_route_end(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_route_start_pushes_window_event_to_window_owner(monkeypatch):
+    owner_mgr = _FakeGameRouteManager()
+    game_mgr = _FakeGameRouteManager()
+    pushed = []
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {
+        "Owner": owner_mgr,
+        "Debug": game_mgr,
+    })
+
+    async def fake_push(mgr, **kwargs):
+        pushed.append((mgr, kwargs))
+
+    monkeypatch.setattr(game_router, "_push_game_window_state_change", fake_push)
+
+    with reset_game_route_state():
+        result = await game_router.game_route_start(
+            "drawing_guess",
+            _FakeRequest({
+                "lanlan_name": "Debug",
+                "window_lanlan_name": "Owner",
+                "session_id": "debug-switch",
+            }),
+        )
+
+    assert result["ok"] is True
+    assert result["state"]["lanlan_name"] == "Debug"
+    assert result["state"]["window_lanlan_name"] == "Owner"
+    assert pushed == [(
+        owner_mgr,
+        {
+            "action": "opened",
+            "lanlan_name": "Owner",
+            "game_type": "drawing_guess",
+            "session_id": "debug-switch",
+        },
+    )]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_route_end_can_suppress_window_and_status_for_debug_switch(monkeypatch):
+    owner_mgr = _FakeGameRouteManager()
+    game_mgr = _FakeGameRouteManager()
+    pushed = []
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {
+        "Owner": owner_mgr,
+        "Debug": game_mgr,
+    })
+
+    async def fake_push(mgr, **kwargs):
+        pushed.append((mgr, kwargs))
+
+    monkeypatch.setattr(game_router, "_push_game_window_state_change", fake_push)
+
+    with reset_game_route_state():
+        state = game_router._activate_game_route("drawing_guess", "debug-switch", "Debug")
+        state["window_lanlan_name"] = "Owner"
+        state["game_memory_archive_enabled"] = False
+        result = await game_router.game_route_end(
+            "drawing_guess",
+            _FakeRequest({
+                "lanlan_name": "Debug",
+                "window_lanlan_name": "Owner",
+                "session_id": "debug-switch",
+                "reason": "drawing_guess_debug_character_switch",
+                "suppressWindowStateChange": True,
+                "suppressRouteEndStatus": True,
+                "postgameProactive": False,
+            }),
+        )
+
+    assert result["ok"] is True
+    assert result["route_closed"] is True
+    assert pushed == []
+    assert game_mgr.statuses == []
+    assert state["game_route_active"] is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_game_debug_log_ingest_and_query():
     enable_result = await game_router.game_log_enable(
         _FakeRequest({
@@ -4093,6 +4173,55 @@ async def test_route_external_audio_activates_game_stt_gate(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_drawing_guess_screen_route_requests_canvas_context(monkeypatch):
+    with reset_game_route_state():
+        mgr = _FakeGameRouteManager()
+        monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+        state = game_router._activate_game_route("drawing_guess", "draw_1", "Lan")
+
+        handled = await game_router.route_external_stream_message(
+            "Lan",
+            {
+                "input_type": "screen",
+                "request_id": "screen-1",
+                "data": "data:image/jpeg;base64,raw-main-window-frame",
+            },
+        )
+
+        assert handled is True
+        assert mgr.statuses == []
+        assert "last_canvas_image_data_url" not in state
+        assert [output["type"] for output in state["pending_outputs"]] == ["game_canvas_context_request"]
+        assert state["pending_outputs"][0]["source"] == "external_media_hijacked_by_game"
+        assert state["pending_outputs"][0]["request_id"] == "screen-1"
+        assert state["pending_outputs"][0]["meta"] == {
+            "input_type": "screen",
+            "game_type": "drawing_guess",
+        }
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_non_drawing_route_screen_media_is_skipped(monkeypatch):
+    with reset_game_route_state():
+        mgr = _FakeGameRouteManager()
+        monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+        game_router._activate_game_route("soccer", "match_1", "Lan")
+
+        handled = await game_router.route_external_stream_message(
+            "Lan",
+            {"input_type": "screen", "request_id": "screen-1"},
+        )
+
+        assert handled is True
+        assert len(mgr.statuses) == 1
+        status = json.loads(mgr.statuses[0])
+        assert status["code"] == "GAME_ROUTE_MEDIA_SKIPPED"
+        assert status["details"] == {"input_type": "screen", "game_type": "soccer"}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_route_external_voice_transcript_to_game_llm(monkeypatch):
     mgr = _FakeGameRouteManager()
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
@@ -4145,6 +4274,72 @@ async def test_route_external_voice_transcript_to_game_llm(monkeypatch):
     assert state["pending_outputs"][1]["meta"]["hasUserSpeech"] is True
     assert "skipOrdinaryMemory" not in state["pending_outputs"][1]["meta"]
     assert state["pending_outputs"][1]["meta"]["voiceAlreadyHandled"] is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_drawing_guess_voice_transcript_stays_out_of_home_chat(monkeypatch):
+    from main_routers import drawing_guess_router
+
+    with reset_game_route_state():
+        mgr = _FakeGameRouteManager()
+        monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+        state = game_router._activate_game_route("drawing_guess", "draw_1", "Lan")
+
+        async def fake_handle_drawing_guess_transcript(
+            lanlan_name,
+            session_id,
+            text,
+            *,
+            route_state=None,
+            request_id=None,
+            source="external_voice_route",
+            kind="user-voice",
+        ):
+            assert lanlan_name == "Lan"
+            assert session_id == "draw_1"
+            assert text == "hint please"
+            assert route_state is state
+            assert request_id == "voice-draw-1"
+            assert source == "external_voice_route"
+            assert kind == "user-voice"
+            return {"line": "game window reply", "control": {}, "llm_source": {"provider": "fake"}}
+
+        monkeypatch.setattr(
+            drawing_guess_router,
+            "handle_external_drawing_guess_transcript",
+            fake_handle_drawing_guess_transcript,
+        )
+
+        handled = await game_router.route_external_voice_transcript(
+            "Lan",
+            "hint please",
+            request_id="voice-draw-1",
+            game_type="drawing_guess",
+            session_id="draw_1",
+        )
+
+        assert handled is True
+        assert state["game_external_voice_route_active"] is True
+        assert state["game_input_mode"] == "voice"
+        assert mgr.mirrored == [("hint please", {
+            "metadata": {
+                "source": "external_voice_route",
+                "kind": "drawing_guess",
+                "session_id": "draw_1",
+                "mirror": {
+                    "kind": "drawing_guess",
+                    "session_id": "draw_1",
+                    "event": {"memory_enabled": False},
+                },
+            },
+            "request_id": "voice-draw-1",
+            "input_type": "mirror_voice_transcript",
+            "send_to_frontend": False,
+        })]
+        assert [output["type"] for output in state["pending_outputs"]] == ["game_external_input", "game_llm_result"]
+        assert state["pending_outputs"][0]["meta"]["inputText"] == "hint please"
+        assert state["pending_outputs"][1]["result"]["line"] == "game window reply"
 
 
 @pytest.mark.unit
@@ -4580,6 +4775,7 @@ async def test_project_speak_uses_manager_project_tts(monkeypatch):
         "mirror_text": True,
         "emit_turn_end_after": True,
         "interrupt_audio": False,
+        "suppress_primary_audio": False,
     })]
 
 
@@ -4613,6 +4809,7 @@ async def test_project_speak_can_skip_text_mirror_for_frontend_arbiter(monkeypat
         "mirror_text": False,
         "emit_turn_end_after": False,
         "interrupt_audio": False,
+        "suppress_primary_audio": False,
     })]
 
 
@@ -4647,6 +4844,40 @@ async def test_project_speak_forwards_interrupt_audio(monkeypatch):
         "mirror_text": False,
         "emit_turn_end_after": False,
         "interrupt_audio": True,
+        "suppress_primary_audio": False,
+    })]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_project_speak_can_suppress_primary_audio_for_game_window(monkeypatch):
+    mgr = _FakeGameRouteManager()
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+    monkeypatch.setattr(game_router, "_get_current_character_info", lambda: {"lanlan_name": "Lan"})
+
+    result = await game_router.game_project_speak(
+        "drawing_guess",
+        _FakeRequest({
+            "line": "game window only",
+            "session_id": "drawing-1",
+            "request_id": "req-game-audio",
+            "suppress_primary_audio": True,
+        }),
+    )
+
+    assert result["ok"] is True
+    assert mgr.spoken == [("game window only", {
+        "metadata": {
+            "source": "game_route",
+            "kind": "drawing_guess",
+            "session_id": "drawing-1",
+            "mirror": {"kind": "drawing_guess", "session_id": "drawing-1", "event": {}},
+        },
+        "request_id": "req-game-audio",
+        "mirror_text": True,
+        "emit_turn_end_after": True,
+        "interrupt_audio": False,
+        "suppress_primary_audio": True,
     })]
 
 

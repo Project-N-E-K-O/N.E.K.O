@@ -48,9 +48,10 @@ _SSML_TAG_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 
+from config import CHARACTER_RESERVED_FIELDS
 from config.prompts.prompts_minigame_common import PREGAME_CONTEXT_INPUT_WATERMARK
 from config.prompts.prompts_soccer import (
     SOCCER_SYSTEM_PROMPT as _SOCCER_SYSTEM_PROMPT,
@@ -300,6 +301,10 @@ async def game_log_ingest(request: Request):
 # key = f"{lanlan_name}:{game_type}:{session_id}"
 # value = { session: OmniOfflineClient, reply_chunks: list, last_activity: float, lock: asyncio.Lock }
 _game_sessions: Dict[str, dict] = {}
+_GAME_SPEECH_TAP_KEY = "game_route_speech"
+_game_speech_subscribers: Dict[tuple[str, str, str], set[WebSocket]] = {}
+_game_speech_subscribers_lock = asyncio.Lock()
+_GAME_SPEECH_WS_ROUTE_CHECK_SECONDS = 20.0
 
 # 超时清理：30 分钟无活动自动销毁
 _SESSION_TIMEOUT_SECONDS = 30 * 60
@@ -387,6 +392,79 @@ async def _push_game_window_state_change(
             "game_window_state_change WS push failed (action=%s, game=%s, lanlan=%s): %s",
             action, game_type, lanlan_name, exc,
         )
+
+
+def _game_speech_subscriber_key(lanlan_name: str, game_type: str, session_id: str) -> tuple[str, str, str]:
+    return (str(lanlan_name or ""), str(game_type or ""), str(session_id or ""))
+
+
+def _active_game_speech_subscriber_key(lanlan_name: str) -> tuple[str, str, str] | None:
+    state = _get_active_game_route_state(lanlan_name)
+    if not state:
+        return None
+    return _game_speech_subscriber_key(
+        str(state.get("lanlan_name") or lanlan_name or ""),
+        str(state.get("game_type") or ""),
+        str(state.get("session_id") or ""),
+    )
+
+
+async def _drop_game_speech_subscriber(key: tuple[str, str, str], websocket: WebSocket) -> None:
+    async with _game_speech_subscribers_lock:
+        subscribers = _game_speech_subscribers.get(key)
+        if subscribers is not None:
+            subscribers.discard(websocket)
+            if not subscribers:
+                _game_speech_subscribers.pop(key, None)
+        target_lanlan = key[0]
+        has_same_lanlan_subscribers = any(
+            sub_key[0] == target_lanlan and bool(subscribers_for_key)
+            for sub_key, subscribers_for_key in _game_speech_subscribers.items()
+        )
+        if not has_same_lanlan_subscribers:
+            mgr = get_session_manager().get(key[0])
+            remove_tap = getattr(mgr, "remove_speech_tap", None) if mgr else None
+            if callable(remove_tap):
+                remove_tap(_GAME_SPEECH_TAP_KEY)
+
+
+async def _broadcast_game_speech(lanlan_name: str, audio: bytes, speech_id: str | None) -> bool:
+    if not audio:
+        return False
+    active_key = _active_game_speech_subscriber_key(lanlan_name)
+    if not active_key:
+        return False
+    async with _game_speech_subscribers_lock:
+        subscribers = list(_game_speech_subscribers.get(active_key) or [])
+    if not subscribers:
+        return False
+
+    delivered = False
+    stale: list[WebSocket] = []
+    header = {"type": "audio_chunk", "speech_id": speech_id}
+    for websocket in subscribers:
+        try:
+            await websocket.send_json(header)
+            await websocket.send_bytes(audio)
+            delivered = True
+        except Exception:
+            stale.append(websocket)
+    for websocket in stale:
+        await _drop_game_speech_subscriber(active_key, websocket)
+    return delivered
+
+
+def _ensure_game_speech_tap(lanlan_name: str) -> bool:
+    mgr = get_session_manager().get(lanlan_name)
+    add_tap = getattr(mgr, "add_speech_tap", None) if mgr else None
+    if not callable(add_tap):
+        return False
+
+    async def _tap(audio: bytes, speech_id: str | None, *, _lanlan_name: str = lanlan_name) -> bool:
+        return await _broadcast_game_speech(_lanlan_name, audio, speech_id)
+
+    add_tap(_GAME_SPEECH_TAP_KEY, _tap)
+    return True
 
 
 _DEFAULT_SOCCER_GAME_MEMORY_ENABLED = False
@@ -1935,6 +2013,94 @@ def _resolve_game_prompt_language(
         return "en"
 
 
+_GAME_CHARACTER_PROFILE_MAX_CHARS = 3600
+_GAME_CHARACTER_PROFILE_FIELD_MAX_CHARS = 900
+
+
+def _normalize_game_character_profile_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        parts = []
+        for item in value:
+            if isinstance(item, (dict, list, tuple, set)):
+                continue
+            text = str(item).strip()
+            if text:
+                parts.append(text)
+        return "、".join(parts)
+    if isinstance(value, (dict, tuple, set)):
+        return ""
+    return str(value).strip()
+
+
+def _replace_game_character_profile_placeholders(
+    text: str,
+    *,
+    lanlan_name: str,
+    master_name: str,
+) -> str:
+    return (
+        text.replace("{LANLAN_NAME}", lanlan_name)
+        .replace("{MASTER_NAME}", master_name)
+        .replace("{{char}}", lanlan_name)
+        .replace("{{user}}", master_name)
+    )
+
+
+def _ordered_game_character_profile_keys(character_payload: dict[str, Any]) -> list[str]:
+    ordered: list[str] = []
+    reserved = character_payload.get("_reserved")
+    field_order = character_payload.get("_field_order")
+    if not isinstance(field_order, list):
+        field_order = reserved.get("field_order") if isinstance(reserved, dict) else None
+    if isinstance(field_order, list):
+        for raw_key in field_order:
+            key = str(raw_key or "").strip()
+            if key and key in character_payload and key not in ordered:
+                ordered.append(key)
+    for key in character_payload:
+        if key not in ordered:
+            ordered.append(key)
+    return ordered
+
+
+def _format_game_character_profile_prompt(
+    character_payload: Any,
+    *,
+    lanlan_name: str,
+    master_name: str,
+) -> str:
+    if not isinstance(character_payload, dict):
+        return ""
+
+    reserved_fields = set(CHARACTER_RESERVED_FIELDS) | {"档案名", "_reserved"}
+    lines: list[str] = []
+    total_chars = 0
+    for key in _ordered_game_character_profile_keys(character_payload):
+        if key in reserved_fields:
+            continue
+        value = _normalize_game_character_profile_value(character_payload.get(key))
+        if not value:
+            continue
+        value = _replace_game_character_profile_placeholders(
+            value,
+            lanlan_name=lanlan_name,
+            master_name=master_name,
+        )
+        value = re.sub(r"\s+", " ", value).strip()
+        if len(value) > _GAME_CHARACTER_PROFILE_FIELD_MAX_CHARS:
+            value = value[:_GAME_CHARACTER_PROFILE_FIELD_MAX_CHARS].rstrip() + "..."
+        line = f"- {key}: {value}"
+        if total_chars + len(line) > _GAME_CHARACTER_PROFILE_MAX_CHARS:
+            break
+        lines.append(line)
+        total_chars += len(line) + 1
+    return "\n".join(lines)
+
+
 def _get_character_info(lanlan_name: str | None = None) -> Dict[str, Any]:
     """Get the specified character's info from shared_state; uses the current character when unspecified."""
     try:
@@ -1949,16 +2115,38 @@ def _get_character_info(lanlan_name: str | None = None) -> Dict[str, Any]:
             if lanlan_name:
                 info.setdefault("lanlan_name", str(lanlan_name or "").strip())
             info.setdefault("user_language", _resolve_game_prompt_language(info.get("lanlan_name")))
+            info.setdefault("character_profile_prompt", "")
             return info
         raise
     characters = config_manager.load_characters()
-    current_name = str(lanlan_name or characters.get('当前猫娘', '') or '').strip()
+    (
+        resolved_master_name,
+        resolved_current_name,
+        _master_basic_config,
+        lanlan_basic_config,
+        _name_mapping,
+        lanlan_prompt_map,
+        _time_store,
+        _setting_store,
+        _recent_log,
+    ) = config_manager.get_character_data()
+    requested_name = str(lanlan_name or "").strip()
+    configured_name = str(characters.get('当前猫娘') or resolved_current_name or '').strip()
+    known_names = set(lanlan_prompt_map.keys()) if isinstance(lanlan_prompt_map, dict) else set()
+    if requested_name and (not known_names or requested_name in known_names):
+        current_name = requested_name
+    elif configured_name and (not known_names or configured_name in known_names):
+        current_name = configured_name
+    elif requested_name:
+        current_name = requested_name
+    else:
+        current_name = configured_name
 
     master_data = characters.get('主人', {})
     # 显式 str 归一化：'档案名' 来自用户编辑的角色配置 JSON，可能是 None / 数字
     # / 其他非字符串。下面 .replace 的第二个参数必须是 str，且 master_name 还会
     # 直接进入返回 dict 给下游消费，统一在源头收口。
-    master_name = str(master_data.get('档案名', '玩家') or '玩家')
+    master_name = str(resolved_master_name or master_data.get('档案名', '玩家') or '玩家')
 
     # 获取角色人格 prompt
     # Why: lanlan_prompt_map 存的是带 {LANLAN_NAME} / {MASTER_NAME} 占位符的原始
@@ -1967,10 +2155,19 @@ def _get_character_info(lanlan_name: str | None = None) -> Dict[str, Any]:
     # / quick_lines / pregame context AI 拼出来的 prompt 会含字面占位符，触发
     # llm_prompt_leak_check 警告并污染人设。
     # 模板本身也用 str() 兜底：极端情况下 lanlan_prompt_map 里的值可能是 None。
-    _, _, _, _, _, lanlan_prompt_map, _, _, _ = config_manager.get_character_data()
     lanlan_prompt = str(lanlan_prompt_map.get(current_name, '') or '') \
         .replace('{LANLAN_NAME}', current_name) \
         .replace('{MASTER_NAME}', master_name)
+    character_payload = (
+        lanlan_basic_config.get(current_name, {})
+        if isinstance(lanlan_basic_config, dict)
+        else {}
+    )
+    character_profile_prompt = _format_game_character_profile_prompt(
+        character_payload,
+        lanlan_name=current_name,
+        master_name=master_name,
+    )
 
     # 获取小游戏主模型配置；默认跟随文本对话模型，用户可在 API 设置中独立覆盖。
     conversation_config = config_manager.get_model_api_config('game_main')
@@ -1979,6 +2176,7 @@ def _get_character_info(lanlan_name: str | None = None) -> Dict[str, Any]:
         'lanlan_name': current_name,
         'master_name': master_name,
         'lanlan_prompt': lanlan_prompt,
+        'character_profile_prompt': character_profile_prompt,
         'model': conversation_config.get('model', ''),
         'base_url': conversation_config.get('base_url', ''),
         'api_type': conversation_config.get('api_type', ''),
@@ -2377,6 +2575,7 @@ def _build_route_state(
         "game_type": game_type,
         "session_id": session_id,
         "lanlan_name": lanlan_name,
+        "window_lanlan_name": lanlan_name,
         "before_game_external_mode": before_mode,
         "before_game_external_active": before_active,
         "game_route_active": True,
@@ -2440,6 +2639,19 @@ def _build_route_state(
         "page_visible": True,
         "visibility_state": "visible",
     }
+
+
+def _resolve_window_lanlan_name(data: dict, default_lanlan_name: str) -> str:
+    for key in (
+        "window_lanlan_name",
+        "windowLanlanName",
+        "route_owner_lanlan_name",
+        "routeOwnerLanlanName",
+    ):
+        raw = data.get(key)
+        if str(raw or "").strip():
+            return _resolve_lanlan_name(raw) or default_lanlan_name
+    return default_lanlan_name
 
 
 def _activate_game_route(
@@ -4503,6 +4715,8 @@ async def _finalize_game_route_state(
     reason: str,
     close_game_session: bool = False,
     close_debug_log: bool = True,
+    notify_window: bool = True,
+    notify_status: bool = True,
 ) -> dict:
     """Run the game route exit flow once, including archive submission.
 
@@ -4538,6 +4752,14 @@ async def _finalize_game_route_state(
         state["_exit_defer_debug_log_close"] = True
         if "_exit_close_debug_log_request" not in state:
             state["_exit_close_debug_log_request"] = False
+    if notify_window:
+        state.setdefault("_exit_suppress_window_state_change", False)
+    else:
+        state["_exit_suppress_window_state_change"] = True
+    if notify_status:
+        state.setdefault("_exit_suppress_status", False)
+    else:
+        state["_exit_suppress_status"] = True
 
     existing_task = state.get("_exit_task")
     if existing_task:
@@ -4610,16 +4832,19 @@ async def _finalize_game_route_state_inner(
     state["heartbeat_enabled"] = False
     lanlan_name = str(state.get("lanlan_name") or "")
     mgr = get_session_manager().get(lanlan_name) if lanlan_name else None
+    window_lanlan_name = str(state.get("window_lanlan_name") or lanlan_name or "")
+    window_mgr = get_session_manager().get(window_lanlan_name) if window_lanlan_name else mgr
     # 推 closed 事件让前端还原 chat.html 折叠态 + 显回 pet 容器。所有 finalize
     # 路径（/route/end / heartbeat sweep / supersede）都走本 inner，与 active
     # flag 翻 false 同源，不会出现"已结束但 UI 仍锁着收缩态"的孤岛。
-    await _push_game_window_state_change(
-        mgr,
-        action="closed",
-        lanlan_name=lanlan_name,
-        game_type=str(state.get("game_type") or ""),
-        session_id=str(state.get("session_id") or ""),
-    )
+    if not state.get("_exit_suppress_window_state_change"):
+        await _push_game_window_state_change(
+            window_mgr,
+            action="closed",
+            lanlan_name=window_lanlan_name or lanlan_name,
+            game_type=str(state.get("game_type") or ""),
+            session_id=str(state.get("session_id") or ""),
+        )
     # Release the SessionManager-level takeover so ordinary chat handlers come
     # back online; chat LLM may produce auto-replies again, but the player has
     # exited the game so that's the desired behavior.
@@ -4628,7 +4853,7 @@ async def _finalize_game_route_state_inner(
         mgr._takeover_input_dispatcher = None
     realtime_restore = {"attempted": False, "ok": True, "reason": "takeover_released"}
     state["realtime_restore"] = realtime_restore
-    if mgr and hasattr(mgr, "send_status"):
+    if mgr and hasattr(mgr, "send_status") and not state.get("_exit_suppress_status"):
         try:
             await mgr.send_status(json.dumps({
                 "code": "GAME_ROUTE_ENDED",
@@ -6742,6 +6967,7 @@ async def game_route_start(game_type: str, request: Request):
     _absorb_request_language(data, lanlan_name)
 
     session_id = str(data.get("session_id") or "default")
+    window_lanlan_name = _resolve_window_lanlan_name(data, lanlan_name)
     # 同一角色同一时刻只允许一个 active 游戏路由：启动新路由前先结束所有其它仍活跃的
     # 路由（同 game_type 旧 session、不同 game_type、未来跨游戏并存均覆盖）。否则
     # is_game_route_active(lanlan_name) / _get_active_game_route_state(lanlan_name)
@@ -6821,6 +7047,7 @@ async def game_route_start(game_type: str, request: Request):
                 lanlan_name,
                 data.get("game_last_full_dialogue_count"),
             )
+            state["window_lanlan_name"] = window_lanlan_name
             # Take over the SessionManager: ordinary chat LLM output handlers must
             # stay silent during the game, and any voice transcript that reaches
             # the SessionManager must be redirected into route_external_voice_transcript.
@@ -6858,7 +7085,7 @@ async def game_route_start(game_type: str, request: Request):
     # 让前端 UI 卡死收缩态再无 closed 抵消。recheck state 自身的 active 标志 +
     # session_id 双重匹配（防 state 字典里同 (lanlan,game_type) key 已被新一轮
     # supersede 替换为新 state）。
-    mgr_for_ws = get_session_manager().get(lanlan_name)
+    mgr_for_ws = get_session_manager().get(window_lanlan_name)
     if (
         state.get("game_route_active")
         and str(state.get("session_id") or "") == session_id
@@ -6866,7 +7093,7 @@ async def game_route_start(game_type: str, request: Request):
         await _push_game_window_state_change(
             mgr_for_ws,
             action="opened",
-            lanlan_name=lanlan_name,
+            lanlan_name=window_lanlan_name,
             game_type=game_type,
             session_id=session_id,
         )
@@ -6954,6 +7181,57 @@ async def game_route_start(game_type: str, request: Request):
     return {"ok": True, "state": _public_route_state(state)}
 
 
+@router.websocket("/{game_type}/speech/ws")
+async def game_route_speech_ws(game_type: str, websocket: WebSocket):
+    """Lightweight game-page audio receiver.
+
+    This channel only mirrors synthesized assistant audio to the game window. It
+    deliberately does not become ``mgr.websocket`` and therefore cannot steal the
+    main chat/voice websocket for the same character.
+    """
+    lanlan_name = _resolve_lanlan_name(websocket.query_params.get("lanlan_name"))
+    session_id = str(websocket.query_params.get("session_id") or "")
+    if not lanlan_name or not session_id:
+        await websocket.close(code=1008)
+        return
+
+    state = _get_active_game_route_state(lanlan_name, game_type)
+    if not state or str(state.get("session_id") or "") != session_id:
+        await websocket.close(code=1008)
+        return
+
+    await websocket.accept()
+    key = _game_speech_subscriber_key(lanlan_name, game_type, session_id)
+    async with _game_speech_subscribers_lock:
+        _game_speech_subscribers.setdefault(key, set()).add(websocket)
+    tap_ready = _ensure_game_speech_tap(lanlan_name)
+    try:
+        await websocket.send_json({
+            "type": "speech_tap_ready",
+            "ok": bool(tap_ready),
+            "game_type": game_type,
+            "session_id": session_id,
+        })
+        while True:
+            try:
+                await asyncio.wait_for(
+                    websocket.receive_text(),
+                    timeout=_GAME_SPEECH_WS_ROUTE_CHECK_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                pass
+            active_state = _get_active_game_route_state(lanlan_name, game_type)
+            if not active_state or str(active_state.get("session_id") or "") != session_id:
+                await websocket.close(code=1000)
+                break
+    except WebSocketDisconnect:
+        pass
+    except Exception as exc:
+        logger.debug("game speech websocket closed: lanlan=%s game=%s session=%s err=%s", lanlan_name, game_type, session_id, exc)
+    finally:
+        await _drop_game_speech_subscriber(key, websocket)
+
+
 @router.get("/{game_type}/route/state")
 async def game_route_state(game_type: str, lanlan_name: str = ""):
     resolved = _resolve_lanlan_name(lanlan_name)
@@ -6983,6 +7261,17 @@ async def game_route_any_active(lanlan_name: str = ""):
     }
 
 
+def _store_route_canvas_context(state: dict, data: dict, game_type: str) -> None:
+    if game_type != "drawing_guess":
+        return
+    if data.get("canvas_context_clear"):
+        state.pop("_last_canvas_image_data_url", None)
+        return
+    image_data_url = str(data.get("canvas_image_data_url") or "")
+    if image_data_url.startswith("data:image/") and len(image_data_url) <= 1_800_000:
+        state["_last_canvas_image_data_url"] = image_data_url
+
+
 @router.post("/{game_type}/route/drain")
 async def game_route_drain(game_type: str, request: Request):
     """Drain backend outputs caused by hijacked main-window input for the game page."""
@@ -7000,7 +7289,12 @@ async def game_route_drain(game_type: str, request: Request):
     if session_id and session_id != str(state.get("session_id") or ""):
         return {"ok": True, "outputs": [], "state": _public_route_state(state)}
 
+    _update_route_start_state_from_payload(state, data)
     _update_game_memory_enabled_from_payload(state, data, game_type=game_type)
+    current_state = data.get("currentState")
+    if isinstance(current_state, dict):
+        state["last_state"] = current_state
+    _store_route_canvas_context(state, data, game_type)
     outputs = list(state.get("pending_outputs") or [])
     state["pending_outputs"] = []
     return {"ok": True, "outputs": outputs, "state": _public_route_state(state)}
@@ -7035,6 +7329,7 @@ async def game_route_voice_transcript(game_type: str, request: Request):
         state["last_state"] = current_state
     _update_route_start_state_from_payload(state, data)
     _update_game_memory_enabled_from_payload(state, data, game_type=game_type)
+    _store_route_canvas_context(state, data, game_type)
 
     handled = await route_external_voice_transcript(
         lanlan_name,
@@ -7074,6 +7369,7 @@ async def game_route_heartbeat(game_type: str, request: Request):
     current_state = data.get("currentState")
     if isinstance(current_state, dict):
         state["last_state"] = current_state
+    _store_route_canvas_context(state, data, game_type)
 
     heartbeat_timeout = _route_heartbeat_timeout_seconds(state)
     return {
@@ -7107,6 +7403,7 @@ async def _speak_game_line_via_project_tts(
     mirror_text: bool = True,
     emit_turn_end: bool = True,
     interrupt_audio: bool = False,
+    suppress_primary_audio: bool = False,
     event: dict | None = None,
 ) -> Dict[str, Any]:
     speak = getattr(mgr, "mirror_assistant_speech", None)
@@ -7127,6 +7424,7 @@ async def _speak_game_line_via_project_tts(
             mirror_text=mirror_text,
             emit_turn_end_after=emit_turn_end,
             interrupt_audio=interrupt_audio,
+            suppress_primary_audio=suppress_primary_audio,
         )
     except Exception as exc:
         return {
@@ -7313,6 +7611,7 @@ async def game_project_speak(game_type: str, request: Request):
         return {"ok": False, "reason": "no_session_manager", "lanlan_name": lanlan_name}
 
     interrupt_audio = _coerce_payload_bool(data.get("interrupt_audio")) is True
+    suppress_primary_audio = _coerce_payload_bool(data.get("suppress_primary_audio")) is True
     session_id = str(data.get("session_id") or "")
     state = _get_active_game_route_state(lanlan_name, game_type)
     if not state:
@@ -7353,6 +7652,7 @@ async def game_project_speak(game_type: str, request: Request):
             "request_id": str(data.get("request_id") or ""),
             "line_length": len(line),
             "interrupt_audio": interrupt_audio,
+            "suppress_primary_audio": suppress_primary_audio,
             "mirror_text": data.get("mirror_text", True) is not False,
             "emit_turn_end": data.get("emit_turn_end", True) is not False,
             "event_kind": data.get("event", {}).get("kind") if isinstance(data.get("event"), dict) else "",
@@ -7368,6 +7668,7 @@ async def game_project_speak(game_type: str, request: Request):
         mirror_text=data.get("mirror_text", True) is not False,
         emit_turn_end=data.get("emit_turn_end", True) is not False,
         interrupt_audio=interrupt_audio,
+        suppress_primary_audio=suppress_primary_audio,
         event=_attach_game_memory_flag_to_event(
             data.get("event") if isinstance(data.get("event"), dict) else {},
             state,
@@ -7393,6 +7694,7 @@ async def game_project_speak(game_type: str, request: Request):
             "speech_id": result.get("speech_id"),
             "turn_end_emitted": result.get("turn_end_emitted"),
             "interrupt_audio": result.get("interrupt_audio"),
+            "suppress_primary_audio": result.get("suppress_primary_audio"),
             "error_type": result.get("error_type"),
             "error": result.get("error"),
             "tts_pipeline": result.get("tts_pipeline"),
@@ -7582,6 +7884,7 @@ async def _route_external_transcript_to_game(
         mode,
         {"request_id": request_id or ""},
     )
+    mirror_user_to_frontend = kind == "user-voice" and game_type != "drawing_guess"
     if mgr and hasattr(mgr, "mirror_user_input"):
         await mgr.mirror_user_input(
             text,
@@ -7597,7 +7900,7 @@ async def _route_external_transcript_to_game(
                 if kind == "user-voice"
                 else MIRROR_USER_TEXT_INPUT_TYPE
             ),
-            send_to_frontend=kind == "user-voice",
+            send_to_frontend=mirror_user_to_frontend,
         )
     if mgr and hasattr(mgr, "send_user_activity"):
         try:
@@ -7640,12 +7943,30 @@ async def _route_external_transcript_to_game(
         },
     })
     llm_started_at = time.time()
-    result = await _run_game_chat(game_type, session_id, event)
+    if game_type == "drawing_guess":
+        try:
+            from .drawing_guess_router import handle_external_drawing_guess_transcript
+
+            result = await handle_external_drawing_guess_transcript(
+                lanlan_name,
+                session_id,
+                text,
+                route_state=state,
+                request_id=request_id,
+                source=source,
+                kind=kind,
+            )
+        except Exception as exc:
+            logger.warning("drawing_guess external transcript handling failed: %s", exc)
+            result = {"ok": False, "error": "drawing_guess_external_transcript_failed"}
+    else:
+        result = await _run_game_chat(game_type, session_id, event)
     result_ts = time.time()
+    assistant_line = str(result.get("line") or result.get("message") or "").strip()
     _append_game_dialog(state, {
         "type": "assistant",
         "source": "game_llm",
-        "line": result.get("line", ""),
+        "line": assistant_line,
         "control": result.get("control", {}),
         "request_id": request_id or "",
     })
@@ -7679,8 +8000,7 @@ async def _route_external_transcript_to_game(
     }
     _append_game_output(state, output)
 
-    line = str(result.get("line") or "").strip()
-    if not line and mgr and hasattr(mgr, "send_status"):
+    if not assistant_line and mgr and hasattr(mgr, "send_status"):
         await mgr.send_status(json.dumps({
             "code": "GAME_ROUTE_LLM_FAILED",
             "details": {"source": source, "error": result.get("error", "empty_line")},
@@ -7859,6 +8179,23 @@ async def route_external_stream_message(lanlan_name: str, message: dict) -> bool
         return True
 
     if input_type in {"screen", "camera"}:
+        if game_type == "drawing_guess":
+            _store_route_canvas_context(state, message, game_type)
+            now = time.time()
+            last_request_at = float(state.get("_last_canvas_context_request_at") or 0)
+            if now - last_request_at >= 0.75:
+                state["_last_canvas_context_request_at"] = now
+                _append_game_output(state, {
+                    "type": "game_canvas_context_request",
+                    "source": "external_media_hijacked_by_game",
+                    "request_id": request_id or "",
+                    "ts": now,
+                    "meta": {
+                        "input_type": input_type,
+                        "game_type": game_type,
+                    },
+                })
+            return True
         if mgr and hasattr(mgr, "send_status"):
             await mgr.send_status(json.dumps({
                 "code": "GAME_ROUTE_MEDIA_SKIPPED",
@@ -8101,6 +8438,12 @@ async def _complete_game_end_from_payload(
     _absorb_request_language(data, lanlan_name)
     exit_reason = str(data.get("reason") or default_reason)
     postgame_options = _normalize_postgame_options(data.get("postgameProactive"), reason=exit_reason)
+    suppress_window_state_change = _coerce_payload_bool(
+        data.get("suppressWindowStateChange", data.get("suppress_window_state_change"))
+    ) is True
+    suppress_route_end_status = _coerce_payload_bool(
+        data.get("suppressRouteEndStatus", data.get("suppress_route_end_status"))
+    ) is True
     state = _get_active_game_route_state(lanlan_name, game_type) if lanlan_name else None
     _append_game_session_debug_log(
         game_type,
@@ -8119,6 +8462,10 @@ async def _complete_game_end_from_payload(
     archive_memory = None
     postgame_result = None
     if state and str(state.get("session_id") or "") == session_id:
+        state["window_lanlan_name"] = _resolve_window_lanlan_name(
+            data,
+            str(state.get("window_lanlan_name") or lanlan_name),
+        )
         score_session_mode = _normalize_badminton_mode(state.get("mode")) if _is_badminton_game_type(game_type) else ""
         _update_route_start_state_from_payload(state, data, exiting=True)
         current_state = data.get("currentState")
@@ -8151,6 +8498,8 @@ async def _complete_game_end_from_payload(
                         reason=exit_reason,
                         close_game_session=True,
                         close_debug_log=False,
+                        notify_window=not suppress_window_state_change,
+                        notify_status=not suppress_route_end_status,
                     )
             archive = finalized["archive"]
             archive_memory = finalized["archive_memory"]

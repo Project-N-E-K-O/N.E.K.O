@@ -86,6 +86,9 @@ class _FakeConnectedWebSocket:
     async def send_json(self, payload):
         self.sent.append(payload)
 
+    async def send_bytes(self, payload):
+        self.sent.append(payload)
+
 
 class _FakeActivityTracker:
     def __init__(self):
@@ -156,6 +159,11 @@ def _make_manager():
     mgr._pending_ai_voice_echo_text = ""
     mgr._pending_ai_voice_echo_chunks = deque()
     mgr._confirmed_ai_voice_echo_audio_speech_ids = set()
+    mgr._speech_taps = {}
+    mgr._speech_primary_suppressed_ids = set()
+    mgr._speech_output_total = 0
+    mgr._last_speech_output_time = 0.0
+    mgr._last_speech_output_bytes = 0
     mgr.tts_ready = False
     mgr.tts_thread = None
     mgr.tts_request_queue = _FakeQueue()
@@ -304,6 +312,55 @@ async def test_mirror_assistant_speech_interrupt_audio_triggers_existing_interru
     assert result["interrupt_audio"] is True
     assert mgr.user_activity == ["old-speech"]
     assert mgr.audio_resampler.cleared is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_mirror_assistant_speech_can_suppress_primary_audio_for_game_tap():
+    mgr = _make_manager()
+    mgr.tts_thread = _FakeAliveThread()
+    mgr.tts_ready = True
+
+    result = await core_module.LLMSessionManager.mirror_assistant_speech(
+        mgr,
+        "game-only voice",
+        metadata=_soccer_mirror_meta({"kind": "drawing_guess"}),
+        request_id="req-game-only",
+        mirror_text=False,
+        emit_turn_end_after=False,
+        suppress_primary_audio=True,
+    )
+
+    assert result["ok"] is True
+    assert result["suppress_primary_audio"] is True
+    speech_id = result["speech_id"]
+    assert speech_id in mgr._speech_primary_suppressed_ids
+    assert mgr.tts_request_queue.messages[0] == (speech_id, "game-only voice")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_speech_suppressed_primary_audio_still_delivers_taps():
+    mgr = _make_manager()
+    mgr.websocket = _FakeConnectedWebSocket()
+    mgr._speech_primary_suppressed_ids.add("game-turn")
+    tapped = []
+
+    async def tap(audio, speech_id):
+        tapped.append((audio, speech_id))
+        return True
+
+    core_module.LLMSessionManager.add_speech_tap(mgr, "game", tap)
+
+    delivered = await core_module.LLMSessionManager.send_speech(
+        mgr,
+        b"audio-bytes",
+        speech_id="game-turn",
+    )
+
+    assert delivered is True
+    assert mgr.websocket.sent == []
+    assert tapped == [(b"audio-bytes", "game-turn")]
 
 
 @pytest.mark.unit

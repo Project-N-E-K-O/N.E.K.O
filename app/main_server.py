@@ -1732,6 +1732,7 @@ from main_routers.websocket_router import router as websocket_router # noqa
 from main_routers.workshop_router import router as workshop_router # noqa
 from main_routers.cookies_login_router import router as cookies_login_router # noqa
 from main_routers.game_router import router as game_router # noqa
+from main_routers.drawing_guess_router import router as drawing_guess_router # noqa
 from main_routers.debug_router import router as debug_router, start_watchdog as _start_debug_health_watchdog # noqa
 from main_routers.shared_state import init_shared_state, set_steamworks_initializer # noqa
 
@@ -1866,6 +1867,7 @@ app.include_router(music_router)
 app.include_router(galgame_router)
 app.include_router(icebreaker_router)
 app.include_router(game_router)
+app.include_router(drawing_guess_router)
 app.include_router(card_assist_router)
 app.include_router(capture_router)
 app.include_router(cookies_login_router) # Cookies登录相关路由，放在最后以避免与其他API路由冲突
