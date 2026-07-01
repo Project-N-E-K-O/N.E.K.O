@@ -121,6 +121,39 @@ test('pointer edge release intent shows the drag hint after repeated attempts', 
     assert.ok(document.getElementById('avatar-multiscreen-drag-hint'));
 });
 
+test('pointer edge approach shows the drag hint immediately on adjacent edge', async () => {
+    const { window, document } = createContext({ displays: twoDisplays });
+
+    const result = await window.NekoAvatarMultiScreenDragHint.recordPointerEdgeApproach('vrm', {
+        startScreenX: 620,
+        startScreenY: 400,
+        screenX: 860,
+        screenY: 400
+    });
+
+    assert.equal(result, true);
+    assert.ok(document.getElementById('avatar-multiscreen-drag-hint'));
+});
+
+test('pointer edge approach ignores edges without an adjacent display', async () => {
+    const { window, document } = createContext({
+        displays: [
+            twoDisplays[0],
+            { id: 2, screenX: 1000, screenY: 600, width: 900, height: 800 }
+        ]
+    });
+
+    const result = await window.NekoAvatarMultiScreenDragHint.recordPointerEdgeApproach('mmd', {
+        startScreenX: 620,
+        startScreenY: 100,
+        screenX: 860,
+        screenY: 100
+    });
+
+    assert.equal(result, false);
+    assert.equal(document.getElementById('avatar-multiscreen-drag-hint'), null);
+});
+
 test('pointer edge release intent ignores edge drags without an adjacent display', async () => {
     const { window, document } = createContext({ displays: [twoDisplays[0]] });
 

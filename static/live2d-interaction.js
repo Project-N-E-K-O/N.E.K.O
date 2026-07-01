@@ -298,6 +298,7 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
     let clickStartY = 0;
     let dragHintStartPointer = null;
     let dragHintLastPointer = null;
+    let dragHintApproachShown = false;
     let hasMoved = false;
     const CLICK_THRESHOLD_DISTANCE = 10; // 移动距离阈值（像素）
     const CLICK_THRESHOLD_TIME = 300; // 时间阈值（毫秒）
@@ -320,6 +321,21 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
             screenX: dragHintLastPointer.screenX,
             screenY: dragHintLastPointer.screenY
         });
+    };
+
+    const recordDragHintPointerEdgeApproach = async () => {
+        const helper = window.NekoAvatarMultiScreenDragHint;
+        if (!helper || typeof helper.recordPointerEdgeApproach !== 'function') return false;
+        if (dragHintApproachShown || !dragHintStartPointer || !dragHintLastPointer) return false;
+        const shown = await helper.recordPointerEdgeApproach('live2d', {
+            startedAt: dragHintStartPointer.startedAt,
+            startScreenX: dragHintStartPointer.screenX,
+            startScreenY: dragHintStartPointer.screenY,
+            screenX: dragHintLastPointer.screenX,
+            screenY: dragHintLastPointer.screenY
+        });
+        if (shown) dragHintApproachShown = true;
+        return shown;
     };
 
     // 使用 avatar-ui-drag.js 中的共享工具函数（按钮 pointer-events 管理）
@@ -380,6 +396,7 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
             dragHintStartPointer.startedAt = Date.now();
         }
         dragHintLastPointer = dragHintStartPointer;
+        dragHintApproachShown = false;
         hasMoved = false;
         this._touchSetPointerSeq = (this._touchSetPointerSeq || 0) + 1;
         this._lastTouchPointer = { x: clickStartX, y: clickStartY, time: clickStartTime, seq: this._touchSetPointerSeq };
@@ -482,6 +499,7 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
             const x = event.clientX;
             const y = event.clientY;
             dragHintLastPointer = captureDragHintPointer(event) || dragHintLastPointer;
+            void recordDragHintPointerEdgeApproach();
 
             // 检测是否移动超过阈值
             const moveDistance = Math.sqrt(

@@ -31,7 +31,8 @@ def test_multiscreen_drag_hint_counts_display_switch_misses_only_on_multiple_dis
     assert "function recordDisplaySwitchMiss(source)" in source
     assert "if (!(await hasMultipleDisplays())) return false;" in source
     assert "state.recentMissCount >= REQUIRED_MISSES" in source
-    assert "hasDisplaySwitchBridge() && !displaySwitched && isModelCenterOutsideCurrentWindow(model)" in source
+    assert "async function isModelCenterOnAnotherDisplay(model)" in source
+    assert "if (!displaySwitched && await isModelCenterOnAnotherDisplay(model))" in source
 
 
 def test_multiscreen_drag_hint_serializes_display_switch_miss_updates():
@@ -48,14 +49,16 @@ def test_multiscreen_drag_hint_serializes_display_switch_miss_updates():
 def test_multiscreen_drag_hint_records_pointer_edge_release_intent():
     source = _source("static/avatar-multiscreen-drag-hint.js")
 
-    assert "const EDGE_RELEASE_THRESHOLD_PX = 36;" in source
+    assert "const EDGE_RELEASE_THRESHOLD_PX = 180;" in source
     assert "const MIN_EDGE_DRAG_DISTANCE_PX = 48;" in source
     assert "function getPointerEdgeIntents(pointer, currentDisplay)" in source
     assert "function hasAdjacentDisplayForEdge(displays, currentDisplay, edge, pointer)" in source
+    assert "async function recordPointerEdgeApproach(source, pointer)" in source
     assert "async function recordPointerEdgeRelease(source, pointer)" in source
     assert "edges.some(edge => hasAdjacentDisplayForEdge(displays, currentDisplay, edge, pointer))" in source
     assert "wasDisplaySwitchMissRecordedSince(source, startedAt)" in source
     assert "window.electronScreen.getCurrentDisplay" in source
+    assert "recordPointerEdgeApproach," in source
     assert "recordPointerEdgeRelease," in source
 
 
@@ -99,10 +102,13 @@ def test_model_interactions_report_display_switch_misses_and_success():
     assert "_checkAndSwitchDisplay" in helper
     assert "recordDisplaySwitchMiss('live2d')" in helper
     assert "recordDisplaySwitchMiss('live2d')" not in live2d
+    assert "recordPointerEdgeApproach('live2d'" in live2d
     assert "recordPointerEdgeRelease('live2d'" in live2d
     assert "recordEdgeBounce('live2d')" not in live2d
     assert "markDisplaySwitchSuccess('live2d')" in live2d
     assert "recordDisplaySwitchMiss('mmd')" in mmd
+    assert "void this._recordDragHintPointerEdgeApproach('mmd');" in mmd
+    assert "if (!targetDisplay) {\n                return false;\n            }" in mmd
     mmd_release = mmd.split("if (!displaySwitched) {", 1)[1].split("// 鼠标离开", 1)[0]
     assert mmd_release.index("if (wasPanDrag) {") < mmd_release.index(
         "await this._recordDragHintPointerEdgeRelease('mmd');"
@@ -110,6 +116,8 @@ def test_model_interactions_report_display_switch_misses_and_success():
     assert "recordEdgeBounce('mmd')" not in mmd
     assert "markDisplaySwitchSuccess('mmd')" in mmd
     assert "recordDisplaySwitchMiss('vrm')" in vrm
+    assert "void this._recordDragHintPointerEdgeApproach('vrm');" in vrm
+    assert "if (!targetDisplay) {\n                return false;\n            }" in vrm
     vrm_release = vrm.split("if (!displaySwitched) {", 1)[1].split("// 5. 鼠标进入", 1)[0]
     assert vrm_release.index("if (wasPanDrag) {") < vrm_release.index(
         "await this._recordDragHintPointerEdgeRelease('vrm');"
