@@ -53,9 +53,10 @@ def _state_for(sprite: dict, index: int = 0) -> dict:
 
 def _float_value(value, default: float = 0.0) -> float:
     try:
-        return float(value)
+        parsed = float(value)
     except (TypeError, ValueError):
         return default
+    return parsed if math.isfinite(parsed) else default
 
 
 def _z_as_relative(sprite: dict, state: dict) -> bool:
@@ -189,10 +190,16 @@ def _layer_visible_base(sprite: dict, state: dict) -> bool:
     return True
 
 
+def _sprite_has_asset_action(sprite: dict) -> bool:
+    if isinstance(sprite.get("saved_event"), dict):
+        return True
+    return any(isinstance(event, dict) for event in (sprite.get("saved_disappear") or []))
+
+
 def _sprite_has_visible_state(sprite: dict, sprite_by_id: dict) -> bool:
     states = sprite.get("states") or []
     if not isinstance(states, list) or not states:
-        return _layer_visible_base(sprite, {})
+        return _layer_visible_base(sprite, {}) or _sprite_has_asset_action(sprite)
     for index, state in enumerate(states):
         if not isinstance(state, dict):
             continue
@@ -201,7 +208,7 @@ def _sprite_has_visible_state(sprite: dict, sprite_by_id: dict) -> bool:
         if _has_hidden_ancestor_for_state(sprite, sprite_by_id, index):
             continue
         return True
-    return False
+    return _sprite_has_asset_action(sprite)
 
 
 def _layer_visible_for_state(layer: dict, mode: str, blink: bool = False) -> bool:
@@ -271,6 +278,9 @@ def _json_safe_state(state: dict) -> dict:
         "effective_open_eyes",
     ):
         value = state.get(key)
+        if key in ("z_index", "effective_z_index") and value is not None:
+            allowed[key] = round(_float_value(value), 3)
+            continue
         if isinstance(value, (str, int, float, bool, list, tuple)) or value is None:
             allowed[key] = value
     return allowed
@@ -431,7 +441,7 @@ def _prepare_layers(remix_data: dict) -> list[dict]:
             "sprite_id": sprite.get("sprite_id"),
             "parent_id": sprite.get("parent_id"),
             "sprite_type": sprite.get("sprite_type"),
-            "zindex": float(state.get("z_index", 0) or 0),
+            "zindex": _float_value(state.get("z_index")),
             "effective_zindex": effective_z_index,
             "inactive_asset_ancestor": _has_inactive_asset_ancestor(sprite, sprite_by_id),
             "x": center_x - frame_width / 2,
@@ -457,7 +467,10 @@ def _prepare_layers(remix_data: dict) -> list[dict]:
 
 
 def _bounds_for_layers(layers: list[dict]) -> tuple[int, int, int, int]:
-    bounded_layers = [layer for layer in layers if not layer.get("inactive_asset_ancestor")] or layers
+    bounded_layers = [
+        layer for layer in layers
+        if not layer.get("inactive_asset_ancestor") or (layer.get("asset_events") or {}).get("show")
+    ] or layers
     rectangles = []
     for layer in bounded_layers:
         layer_has_visible_state = False

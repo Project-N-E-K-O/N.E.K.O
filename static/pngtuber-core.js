@@ -461,6 +461,7 @@
                 });
             }
             this.drawLayeredState();
+            this.restartLayeredAnimationLoop();
             window.dispatchEvent(new CustomEvent('pngtuber-layered-asset-action-changed', {
                 detail: {
                     active: this.layeredAssetActionActive,
@@ -578,14 +579,15 @@
 
         shouldRenderLayer(layer, stateName) {
             const assetVisibility = this.layeredAssetVisibility.get(String(layer.sprite_id));
+            const assetForcedVisible = assetVisibility === true;
             if (assetVisibility === false) return false;
-            if (layer.inactive_asset_ancestor && assetVisibility !== true) return false;
+            if (layer.inactive_asset_ancestor && !assetForcedVisible) return false;
             const mode = stateName === 'talking' ? 'talking' : 'idle';
             const layerState = this.layerStateForCurrentIndex(layer);
             if (layerState.folder) return false;
-            if (layerState.visible === false) return false;
-            if (layerState.ancestor_visible === false) return false;
-            if (layerState.ancestor_visible === undefined && layer.ancestor_visible === false) return false;
+            if (layerState.visible === false && !assetForcedVisible) return false;
+            if (layerState.ancestor_visible === false && !assetForcedVisible) return false;
+            if (layerState.ancestor_visible === undefined && layer.ancestor_visible === false && !assetForcedVisible) return false;
             const showTalk = Number(layer.showTalk || 0);
             if (showTalk !== 0) {
                 if (mode === 'idle' && showTalk !== 1) return false;

@@ -281,10 +281,13 @@ def test_layered_pngtuber_alt_two_toggles_imported_asset_action():
     assert "event.key === '2' || event.code === 'Digit2' || event.keyCode === 50" in asset_hotkey_block
     assert "this.layeredAssetVisibility.set(String(spriteId), true);" in asset_toggle_block
     assert "this.layeredAssetVisibility.set(String(spriteId), false);" in asset_toggle_block
+    assert "this.restartLayeredAnimationLoop();" in asset_toggle_block
     assert "source: 'alt-two-asset-hotkey'" in asset_toggle_block
     assert "const assetVisibility = this.layeredAssetVisibility.get(String(layer.sprite_id));" in render_block
+    assert "const assetForcedVisible = assetVisibility === true;" in render_block
     assert "if (assetVisibility === false) return false;" in render_block
-    assert "if (layer.inactive_asset_ancestor && assetVisibility !== true) return false;" in render_block
+    assert "if (layer.inactive_asset_ancestor && !assetForcedVisible) return false;" in render_block
+    assert "if (layerState.visible === false && !assetForcedVisible) return false;" in render_block
 
 
 def test_layered_pngtuber_draw_order_uses_imported_effective_z_index():

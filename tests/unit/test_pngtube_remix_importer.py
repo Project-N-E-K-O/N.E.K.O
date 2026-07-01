@@ -5,6 +5,7 @@ from PIL import Image
 from main_routers.pngtuber_importers.pngtube_remix import (
     _asset_actions,
     _bounds_for_layers,
+    _float_value,
     _metadata,
     _prepare_layers,
     _state_positions_for_sprite,
@@ -122,6 +123,13 @@ def test_asset_actions_preserve_pngtube_remix_show_and_hide_events():
     ]
 
 
+def test_float_value_rejects_non_finite_numbers():
+    assert _float_value(float("nan"), 7.0) == 7.0
+    assert _float_value(float("inf"), 7.0) == 7.0
+    assert _float_value("-inf", 7.0) == 7.0
+    assert _float_value("3.5") == 3.5
+
+
 def test_state_positions_include_parent_relative_z_index():
     parent = {
         "sprite_id": 1,
@@ -199,3 +207,39 @@ def test_bounds_include_layers_visible_only_in_non_default_state(tmp_path):
 
     assert width >= 101
     assert 0 <= visible_expression_state["x"] <= metadata["canvas"]["width"] - visible_expression_state["frame_width"]
+
+
+def test_asset_action_layers_are_exported_and_included_in_bounds(tmp_path):
+    f6 = 4194337
+    layers = _prepare_layers({
+        "sprites_array": [
+            {
+                "sprite_id": 1,
+                "sprite_name": "body",
+                "img": _png_bytes(),
+                "states": [
+                    {"visible": True, "folder": False, "z_index": 0, "position": [0, 0], "offset": [0, 0]},
+                ],
+            },
+            {
+                "sprite_id": 2,
+                "sprite_name": "action_prop",
+                "is_asset": True,
+                "was_active_before": False,
+                "saved_event": _key_event(f6),
+                "img": _png_bytes(),
+                "states": [
+                    {"visible": False, "folder": False, "z_index": 1, "position": [100, 0], "offset": [0, 0]},
+                ],
+            },
+        ]
+    })
+
+    _, _, width, _ = _bounds_for_layers(layers)
+    metadata = _metadata({}, tmp_path / "model.pngRemix", tmp_path, [], layers, _bounds_for_layers(layers))
+    action_prop = next(layer for layer in metadata["layers"] if layer["name"] == "action_prop")
+
+    assert width >= 101
+    assert metadata["asset_actions"][0]["show_sprite_ids"] == [2]
+    assert action_prop["inactive_asset_ancestor"] is True
+    assert 0 <= action_prop["x"] <= metadata["canvas"]["width"] - action_prop["width"]
