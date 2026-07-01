@@ -192,6 +192,29 @@
             this.isLocked = false;
             this._lockIconElement = null;
             this._lockIconImages = null;
+            this._mouseTrackingEnabled = window.mouseTrackingEnabled !== false;
+        }
+
+        setMouseTrackingEnabled(enabled) {
+            this._mouseTrackingEnabled = enabled !== false;
+            window.mouseTrackingEnabled = this._mouseTrackingEnabled;
+            if (this._mouseTrackingEnabled) {
+                this.attachLayeredPointerTracking();
+            } else {
+                this.detachLayeredPointerTracking();
+                this.resetLayeredPointerTracking();
+                if (this.isLayeredActive()) {
+                    this.startLayeredAnimationLoop({ preserveTimeline: true });
+                }
+            }
+        }
+
+        isMouseTrackingEnabled() {
+            return this._mouseTrackingEnabled !== false;
+        }
+
+        resetLayeredPointerTracking() {
+            this.layeredPointer = { x: 0, y: 0, targetX: 0, targetY: 0, active: false, at: 0, lastTime: 0 };
         }
 
         ensureContainer() {
@@ -378,7 +401,7 @@
         }
 
         attachLayeredPointerTracking() {
-            if (this._layeredPointerAttached || !this.isLayeredActive() || !this.hasLayeredPointerTracking()) return;
+            if (this._layeredPointerAttached || !this.isMouseTrackingEnabled() || !this.isLayeredActive() || !this.hasLayeredPointerTracking()) return;
             const eventName = window.PointerEvent ? 'pointermove' : 'mousemove';
             window.addEventListener(eventName, this._boundLayeredPointerMove, { passive: true });
             this._layeredPointerAttached = true;
@@ -393,6 +416,7 @@
         }
 
         handleLayeredPointerMove(event) {
+            if (!this.isMouseTrackingEnabled()) return;
             if (!this.isLayeredActive() || !this.canvasElement || typeof this.canvasElement.getBoundingClientRect !== 'function') return;
             const rect = this.canvasElement.getBoundingClientRect();
             if (!rect.width || !rect.height) return;
@@ -1261,6 +1285,13 @@
 
         updateLayeredPointer(timestamp = performance.now(), delay = 0.1) {
             const pointer = this.layeredPointer || { x: 0, y: 0, targetX: 0, targetY: 0, active: false, at: 0, lastTime: 0 };
+            if (!this.isMouseTrackingEnabled()) {
+                pointer.targetX = 0;
+                pointer.targetY = 0;
+                pointer.clientX = undefined;
+                pointer.clientY = undefined;
+                pointer.active = false;
+            }
             const lastTime = Number(pointer.lastTime) || timestamp;
             const dt = Math.max(0.001, Math.min(0.05, (timestamp - lastTime) / 1000 || 1 / 60));
             pointer.lastTime = timestamp;
@@ -1363,6 +1394,7 @@
         }
 
         layeredPointerNeedsFrame(timestamp = performance.now()) {
+            if (!this.isMouseTrackingEnabled()) return false;
             if (!this.hasLayeredPointerTracking()) return false;
             const pointer = this.layeredPointer || {};
             const age = Math.max(0, (timestamp - (Number(pointer.at) || timestamp)) / 1000);
@@ -3275,10 +3307,16 @@
                     { id: 'voice-clone', label: '声音克隆', labelKey: 'settings.menu.voiceClone', icon: '/static/icons/voice_clone_icon.png', action: 'navigate', url: '/voice_clone' }
                 ],
                 onMouseTrackingToggle: function(enabled) {
-                    window.mouseTrackingEnabled = enabled;
+                    if (typeof this.setMouseTrackingEnabled === 'function') {
+                        this.setMouseTrackingEnabled(enabled);
+                    } else {
+                        window.mouseTrackingEnabled = enabled;
+                    }
                 },
                 getMouseTrackingState: function() {
-                    return window.mouseTrackingEnabled !== false;
+                    return typeof this.isMouseTrackingEnabled === 'function'
+                        ? this.isMouseTrackingEnabled()
+                        : window.mouseTrackingEnabled !== false;
                 }
             });
         }
