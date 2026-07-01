@@ -298,6 +298,10 @@ def test_avatar_floating_guides_hide_real_cursor_during_takeover_and_show_banner
     assert "yui-guide-plugin-control-banner" in plugin_runtime_source
     assert "CONTROL_BANNER_TEXT_KEY = 'tutorial.yuiGuide.controlBanner'" in plugin_runtime_source
     assert "syncControlBanner(active?: boolean)" in plugin_runtime_source
+    assert "renderedControlBannerText" in plugin_runtime_source
+    assert "renderedControlBannerVisible" in plugin_runtime_source
+    assert "this.renderedControlBannerText === text" in plugin_runtime_source
+    assert "this.renderedControlBannerVisible === isVisible" in plugin_runtime_source
 
     for locale_name in ["en", "ja", "ko", "zh-CN", "zh-TW", "ru", "pt", "es"]:
         locale = _read_static_locale(locale_name)

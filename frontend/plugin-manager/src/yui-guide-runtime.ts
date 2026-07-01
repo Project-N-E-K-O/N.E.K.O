@@ -1207,6 +1207,8 @@ class PluginDashboardGuideRuntime {
   backdropCutout: SVGRectElement | null = null
   interactionShield: HTMLDivElement | null = null
   controlBanner: HTMLDivElement | null = null
+  renderedControlBannerText = ''
+  renderedControlBannerVisible: boolean | null = null
   spotlight: HTMLDivElement | null = null
   pointer: HTMLDivElement | null = null
   cursorPosition: { x: number; y: number } | null = null
@@ -1456,9 +1458,24 @@ class PluginDashboardGuideRuntime {
           || document.body.classList.contains('yui-taking-over')
         )
       : active === true
-    this.controlBanner.textContent = resolveControlBannerText()
+    const text = resolveControlBannerText()
+
+    if (
+      this.renderedControlBannerText === text
+      && this.renderedControlBannerVisible === isVisible
+      && this.controlBanner.hidden === !isVisible
+      && this.controlBanner.classList.contains('is-visible') === isVisible
+    ) {
+      return
+    }
+
+    if (this.renderedControlBannerText !== text) {
+      this.controlBanner.textContent = text
+      this.renderedControlBannerText = text
+    }
     this.controlBanner.hidden = !isVisible
     this.controlBanner.classList.toggle('is-visible', isVisible)
+    this.renderedControlBannerVisible = isVisible
   }
 
   hasDesktopTutorialSkipBridge() {
@@ -3080,6 +3097,8 @@ class PluginDashboardGuideRuntime {
     this.backdropCutout = null
     this.interactionShield = null
     this.controlBanner = null
+    this.renderedControlBannerText = ''
+    this.renderedControlBannerVisible = null
     this.spotlight = null
     this.pointer = null
     this.cursorPosition = null
