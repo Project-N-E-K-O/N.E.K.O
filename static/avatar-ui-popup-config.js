@@ -160,6 +160,7 @@ const _mmdPopupConfig = {
         width: 'max-content'
     },
     onMouseTrackingToggle: function(enabled) {
+        window.mouseTrackingEnabled = enabled;
         if (this.cursorFollow) {
             this.cursorFollow.setEnabled(enabled);
         }

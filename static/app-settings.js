@@ -47,6 +47,15 @@
         return S.renderQuality || 'medium';
     }
 
+    function syncMouseTrackingRuntimeManagers() {
+        const enabled = window.mouseTrackingEnabled !== false;
+        [window.live2dManager, window.vrmManager, window.pngtuberManager].forEach((manager) => {
+            if (manager && typeof manager.setMouseTrackingEnabled === 'function') {
+                manager.setMouseTrackingEnabled(enabled);
+            }
+        });
+    }
+
     /**
      * 获取对话相关设置（仅包含需要同步到服务器的设置）
      * 注意：不包含 renderQuality、targetFrameRate、mouseTrackingEnabled 等性能/外观设置
@@ -499,6 +508,7 @@
                 } else {
                     window.mouseTrackingEnabled = true;
                 }
+                syncMouseTrackingRuntimeManagers();
 
                 // 跟踪模式设置
                 if (typeof settings.live2dFullscreenTrackingEnabled === 'boolean') {
@@ -566,6 +576,7 @@
                 console.log('未找到保存的设置，使用默认值');
                 window.cursorFollowPerformanceLevel = U.mapRenderQualityToFollowPerf(S.renderQuality);
                 window.mouseTrackingEnabled = true;
+                syncMouseTrackingRuntimeManagers();
                 window.live2dFullscreenTrackingEnabled = false;
                 window.humanoidLocalTrackingEnabled = false;
                 window.lockedHoverFadeEnabled = true;
@@ -587,6 +598,7 @@
             window.textGuardMaxLength = 300;
             window.cursorFollowPerformanceLevel = U.mapRenderQualityToFollowPerf(S.renderQuality);
             window.mouseTrackingEnabled = true;
+            syncMouseTrackingRuntimeManagers();
             window.live2dFullscreenTrackingEnabled = false;
             window.humanoidLocalTrackingEnabled = false;
             window.lockedHoverFadeEnabled = true;

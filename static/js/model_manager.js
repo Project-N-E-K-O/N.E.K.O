@@ -2097,7 +2097,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     const pngtuberStatePreviewSelect = document.getElementById('pngtuber-state-preview-select');
     const pngtuberStatePreviewSelectBtn = document.getElementById('pngtuber-state-preview-select-btn');
     const pngtuberStatePreviewDropdown = document.getElementById('pngtuber-state-preview-dropdown');
-    let pngtuberTalkPreviewTimer = null;
     const vrmFileUpload = document.getElementById('vrm-file-upload');
     const motionFileUpload = document.getElementById('motion-file-upload');
     const expressionFileUpload = document.getElementById('expression-file-upload');
@@ -2778,22 +2777,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         statusEl.textContent = isEnabled ? t('common.on', 'ON') : t('common.off', 'OFF');
     }
 
-    function updatePNGTuberTalkPreviewButtonText() {
-        if (!pngtuberTalkPreviewBtn) return;
-        const label = t('live2d.pngtuberTalkPreview', '测试说话');
-        pngtuberTalkPreviewBtn.setAttribute('data-i18n-title', 'live2d.pngtuberTalkPreview');
-        pngtuberTalkPreviewBtn.setAttribute('data-i18n-aria', 'live2d.pngtuberTalkPreview');
-        pngtuberTalkPreviewBtn.title = label;
-        pngtuberTalkPreviewBtn.setAttribute('aria-label', label);
-        const textSpan = pngtuberTalkPreviewBtn.querySelector('[data-i18n="live2d.pngtuberTalkPreview"]')
-            || pngtuberTalkPreviewBtn.querySelector('span');
-        if (textSpan) {
-            textSpan.setAttribute('data-i18n', 'live2d.pngtuberTalkPreview');
-            textSpan.textContent = label;
-            textSpan.setAttribute('data-text', label);
-        }
-    }
-
     function refreshLocalizedInteractiveTexts() {
         updateMotionPlayButtonIcon();
         updateExpressionPlayButtonLabel();
@@ -2801,7 +2784,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         updateVRMExpressionPlayButtonIcon();
         updateMMDAnimationPlayButtonIcon();
         updateMMDModelSelectButtonText();
-        updatePNGTuberTalkPreviewButtonText();
         updateMmdOutlineStatusText();
     }
 
@@ -3216,13 +3198,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         dispatchModelManagerChange(modelSelect, { suppress: true });
     }
 
+    let pngtuberTalkPreviewTimer = null;
+
     async function previewPNGTuberConfig(pngtuberConfig, modelInfo = {}, options = {}) {
         if (!pngtuberConfig || !pngtuberConfig.idle_image) return false;
         const modelName = modelInfo.name || pngtuberConfig.name || pngtuberConfig.folder || pngtuberConfig.model_folder || '';
-        // 不在此处写 window._modelManagerCurrentAvatarType：该旗标由 switchModelDisplay() 单独维护
-        // （函数入口无条件置为当前真实 model type），保证它恒等于 currentModelType。本函数的所有
-        // 调用方都已先经过 switchModelDisplay('pngtuber')，单写入者纪律可避免旗标在非 pngtuber 页面
-        // 被误置而导致 live2d-init 静默跳过 Live2D/VRM 初始化。
         currentLive3dSubType = '';
         currentModelInfo = {
             name: modelInfo.label || modelName || t('live2d.pngtuber', 'PNGTuber'),
@@ -3232,13 +3212,18 @@ document.addEventListener('DOMContentLoaded', async () => {
             type: 'pngtuber',
             pngtuber: pngtuberConfig,
         };
-
-        if (window.loadPNGTuberAvatar) {
+        try {
+            if (!window.loadPNGTuberAvatar) {
+                throw new Error('PNGTuber runtime not loaded');
+            }
             await window.loadPNGTuberAvatar(pngtuberConfig);
-        } else {
-            throw new Error('PNGTuber runtime not loaded');
+            await loadPNGTuberPreviewControls(pngtuberConfig);
+        } catch (error) {
+            const errMsg = error?.message || String(error);
+            console.error('[ModelManager] PNGTuber preview failed:', error);
+            showStatus(t('live2d.pngtuberLoadFailed', `PNGTuber 模型加载失败: ${errMsg}`, { error: errMsg }), 5000);
+            return false;
         }
-        await loadPNGTuberPreviewControls(pngtuberConfig);
         if (live2dContainer) live2dContainer.style.display = 'none';
         if (vrmContainer) {
             vrmContainer.classList.add('hidden');
@@ -3252,15 +3237,15 @@ document.addEventListener('DOMContentLoaded', async () => {
             pngtuberContainer.classList.remove('hidden');
             pngtuberContainer.style.display = 'block';
         }
-        showStatus(`已加载PNGTuber模型: ${currentModelInfo.name}`, 2000);
-
+        if (options.statusMessage) {
+            showStatus(options.statusMessage, options.statusDuration || 2000);
+        }
         if (options.markDirty) {
             window.hasUnsavedChanges = true;
             if (savePositionBtn) {
                 savePositionBtn.disabled = false;
             }
             markModelChangedForCardFacePrompt();
-            console.log('已标记为未保存更改（PNGTuber模型切换），请点击 保存设置 持久化到角色配置。');
         }
         return true;
     }
@@ -3282,9 +3267,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             folder: selectedOption.getAttribute('data-folder') || modelName,
             path: selectedOption.getAttribute('data-url') || '',
             url: selectedOption.getAttribute('data-url') || '',
-        }, options);
+        }, Object.assign({
+            statusMessage: `已加载PNGTuber模型: ${selectedOption.textContent || modelName}`,
+            statusDuration: 2000
+        }, options));
     }
-
     function findPNGTuberOptionByConfig(pngtuberConfig) {
         if (!modelSelect || !pngtuberConfig) return null;
         const idleImage = String(pngtuberConfig.idle_image || '');
@@ -3362,7 +3349,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     folder: preferredConfig.folder || preferredConfig.model_folder || '',
                     path: preferredConfig.idle_image || '',
                     url: preferredConfig.idle_image || '',
-                }, { markDirty: false });
+                }, { markDirty: false, statusMessage: '已加载角色 PNGTuber 模型' });
             }
             selectedOption = Array.from(modelSelect.options).find(option =>
                 option.dataset.modelType === 'pngtuber' && option.value
@@ -4862,7 +4849,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (pngtuberTalkPreviewBtn) {
             pngtuberTalkPreviewBtn.disabled = false;
             pngtuberTalkPreviewBtn.classList.remove('active');
-            updatePNGTuberTalkPreviewButtonText();
         }
         if (pngtuberStatePreviewSelect) {
             pngtuberStatePreviewSelect.innerHTML = `<option value="">${t('live2d.pngtuberStatePreview', '状态预览')}</option>`;
@@ -4958,10 +4944,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (currentModelType !== 'pngtuber' || !pngtuberPreviewGroup) return;
         pngtuberPreviewGroup.style.display = 'flex';
         if (pngtuberBasicPreviewSection) pngtuberBasicPreviewSection.style.display = 'flex';
-        if (pngtuberTalkPreviewBtn) {
-            pngtuberTalkPreviewBtn.disabled = false;
-            updatePNGTuberTalkPreviewButtonText();
-        }
+        if (pngtuberTalkPreviewBtn) pngtuberTalkPreviewBtn.disabled = false;
 
         const metadata = await fetchPNGTuberLayeredMetadata(pngtuberConfig || {});
         if (currentModelType !== 'pngtuber') return;
@@ -9598,8 +9581,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     });
 
-    async function uploadPNGTuberFiles(files) {
-        if (!files || files.length === 0) return;
+    async function uploadPNGTuberFiles(fileList, inputElement = null) {
+        const files = Array.from(fileList || []);
+        if (files.length === 0) return;
 
         uploadStatus.textContent = '正在上传PNGTuber模型...';
         uploadStatus.style.color = '#4f8cff';
@@ -9645,28 +9629,19 @@ document.addEventListener('DOMContentLoaded', async () => {
             setTimeout(() => { uploadStatus.textContent = ''; }, 5000);
         } finally {
             uploadBtn.disabled = false;
+            if (inputElement) inputElement.value = '';
         }
     }
 
     if (pngtuberModelUpload) {
         pngtuberModelUpload.addEventListener('change', async (e) => {
-            if (e.target.files.length === 0) return;
-            try {
-                await uploadPNGTuberFiles(Array.from(e.target.files));
-            } finally {
-                pngtuberModelUpload.value = '';
-            }
+            await uploadPNGTuberFiles(e.target.files, pngtuberModelUpload);
         });
     }
 
     if (pngtuberPackageUpload) {
         pngtuberPackageUpload.addEventListener('change', async (e) => {
-            if (e.target.files.length === 0) return;
-            try {
-                await uploadPNGTuberFiles(Array.from(e.target.files));
-            } finally {
-                pngtuberPackageUpload.value = '';
-            }
+            await uploadPNGTuberFiles(e.target.files, pngtuberPackageUpload);
         });
     }
 
@@ -10655,7 +10630,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                         folder: pngtuberConfig.folder || pngtuberConfig.model_folder || '',
                         path: pngtuberConfig.idle_image,
                         url: pngtuberConfig.idle_image,
-                    }, { markDirty: false });
+                    }, {
+                        statusMessage: `已加载角色 ${lanlanName} 的 PNGTuber 模型`,
+                        statusDuration: 2000
+                    });
                 }
                 showStatus(`已加载角色 ${lanlanName} 的 PNGTuber 模型`, 2000);
                 return;

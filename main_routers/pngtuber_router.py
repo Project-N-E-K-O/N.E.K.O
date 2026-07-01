@@ -195,7 +195,12 @@ async def upload_pngtuber_model(files: list[UploadFile] = File(...)):
     model_name_seed = upload_root or ""
     if not model_name_seed:
         model_file = next((f for p, f in by_path.items() if stripped_paths[p] == PurePosixPath("model.json")), None)
-        model_name_seed = Path(model_file.filename or "pngtuber_model").stem if model_file else "pngtuber_model"
+        if model_file:
+            model_name_seed = Path(model_file.filename or "pngtuber_model").stem
+        elif len(upload_paths) == 1:
+            model_name_seed = Path(upload_paths[0].name or "pngtuber_model").stem
+        else:
+            model_name_seed = "pngtuber_model"
     model_dir_name = _slugify_name(model_name_seed)
 
     target_dir = config_mgr.pngtuber_dir / model_dir_name
