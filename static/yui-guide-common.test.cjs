@@ -1352,7 +1352,7 @@ test('director routes resistance interrupts through ResistanceController boundar
         1
     )[0];
     const handleInterruptBlock = directorSource.split('        handleInterrupt(event) {')[1].split(
-        '        noteUserCursorRevealAttempt(distance, now) {',
+        '        noteUserCursorRevealSuppressionAttempt(distance, now) {',
         1
     )[0];
     const destroyBlock = directorSource.split('        destroy() {\n            if (this.destroyed) {')[1].split(

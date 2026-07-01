@@ -3372,6 +3372,7 @@
                 "ready": "準備中",
                 "homeProgress": "ホームガイド {{current}}/{{total}}"
             },
+            "controlBanner": "猫娘がマウスを操作中",
             "buttons": {
                 "skipChat": "今は話さない",
                 "sayHello": "こんにちは"

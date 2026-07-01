@@ -3372,6 +3372,7 @@
                 "ready": "準備開始",
                 "homeProgress": "主頁引導 {{current}}/{{total}}"
             },
+            "controlBanner": "滑鼠正在由貓娘控制",
             "buttons": {
                 "skipChat": "暫時不聊天",
                 "sayHello": "你好"

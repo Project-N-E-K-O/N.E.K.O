@@ -139,6 +139,57 @@ body.yui-guide-return-petal-fade #mmd-canvas {
   height: 100%;
 }
 
+.yui-guide-control-banner {
+  position: fixed;
+  top: max(14px, env(safe-area-inset-top));
+  left: 50%;
+  z-index: 42;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  max-width: min(520px, calc(100vw - 180px));
+  min-height: 34px;
+  box-sizing: border-box;
+  padding: 7px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  background: rgba(19, 28, 40, 0.9);
+  box-shadow:
+    0 12px 32px rgba(12, 18, 26, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  color: #fff8ef;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.3;
+  text-align: center;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(-50%, -6px);
+  transition: opacity 180ms var(--yui-guide-ease), transform 220ms var(--yui-guide-ease);
+  backdrop-filter: blur(10px) saturate(1.08);
+}
+
+.yui-guide-control-banner.is-visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.yui-guide-control-banner[hidden] {
+  display: none !important;
+}
+
+.yui-guide-control-banner::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: #38d6bb;
+  box-shadow: 0 0 0 4px rgba(56, 214, 187, 0.18);
+}
+
 .yui-guide-interaction-shield {
   position: fixed;
   inset: 0;
@@ -825,18 +876,6 @@ body.yui-taking-over [tabindex]:not([tabindex="-1"]) {
   cursor: auto !important;
 }
 
-body.yui-taking-over.yui-resistance-cursor-reveal,
-body.yui-taking-over.yui-resistance-cursor-reveal * {
-  cursor: auto !important;
-}
-
-html.yui-user-cursor-revealed,
-html.yui-user-cursor-revealed *,
-body.yui-taking-over.yui-user-cursor-revealed,
-body.yui-taking-over.yui-user-cursor-revealed * {
-  cursor: auto !important;
-}
-
 body.yui-taking-over #neko-tutorial-skip-btn:focus-visible {
   outline: 2px solid #fff !important;
   outline-offset: 3px;
@@ -901,6 +940,41 @@ body.yui-taking-over #react-chat-window-root .composer-input:focus,
 body.yui-taking-over #react-chat-window-root .composer-input:focus-visible {
   outline: none !important;
   box-shadow: none !important;
+}
+
+/* Double .yui-taking-over to out-specificity earlier cursor:auto !important rules. */
+body.yui-taking-over.yui-taking-over,
+body.yui-taking-over.yui-taking-over *,
+body.yui-taking-over .yui-guide-overlay,
+body.yui-taking-over .yui-guide-stage,
+body.yui-taking-over .yui-guide-backdrop,
+body.yui-taking-over .yui-guide-backdrop *,
+body.yui-taking-over .yui-guide-spotlight-frame,
+body.yui-taking-over .yui-guide-bubble,
+body.yui-taking-over .yui-guide-preview,
+body.yui-taking-over .yui-guide-preview-card,
+body.yui-taking-over [data-yui-cursor-hidden="true"],
+body.yui-taking-over #neko-tutorial-skip-btn,
+body.yui-taking-over #neko-tutorial-skip-btn *,
+body.yui-taking-over [data-yui-skip-control],
+body.yui-taking-over [data-yui-emergency-exit],
+body.yui-taking-over button,
+body.yui-taking-over a[href],
+body.yui-taking-over input,
+body.yui-taking-over select,
+body.yui-taking-over textarea,
+body.yui-taking-over summary,
+body.yui-taking-over [role="button"],
+body.yui-taking-over [role="link"],
+body.yui-taking-over [tabindex]:not([tabindex="-1"]),
+body.yui-taking-over #live2d-container,
+body.yui-taking-over #live2d-canvas,
+body.yui-taking-over #vrm-container,
+body.yui-taking-over #vrm-canvas,
+body.yui-taking-over #mmd-container,
+body.yui-taking-over #mmd-canvas,
+body.yui-taking-over #react-chat-window-drag-handle {
+  cursor: none !important;
 }
 
 @keyframes yui-guide-preview-float {
@@ -984,6 +1058,7 @@ body.yui-taking-over #react-chat-window-root .composer-input:focus-visible {
   .yui-guide-backdrop,
   .yui-guide-backdrop-cutout,
   .yui-guide-spotlight-frame,
+  .yui-guide-control-banner,
   .yui-guide-bubble,
   .yui-guide-preview,
   .yui-guide-preview-card,
@@ -996,6 +1071,12 @@ body.yui-taking-over #react-chat-window-root .composer-input:focus-visible {
 }
 
 @media (max-width: 768px) {
+  .yui-guide-control-banner {
+    top: max(56px, calc(env(safe-area-inset-top) + 56px));
+    max-width: calc(100vw - 28px);
+    font-size: 12px;
+  }
+
   .yui-guide-bubble {
     width: min(320px, calc(100vw - 24px));
     padding: 13px 14px 15px;
