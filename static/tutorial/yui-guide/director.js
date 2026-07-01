@@ -959,7 +959,7 @@
         avatar_floating_day4_gaze_follow: Object.freeze({ zh: 9780, ja: 13401, en: 9352, ko: 10971, ru: 10762 }),
         avatar_floating_day4_intro: Object.freeze({ zh: 8380, ja: 9456, en: 7497, ko: 9822, ru: 8699 }),
         avatar_floating_day4_model_behavior: Object.freeze({ zh: 13600, ja: 15752, en: 16144, ko: 14785, ru: 14524 }),
-        avatar_floating_day4_model_lock: Object.freeze({ zh: 11544, ja: 14968, en: 13296, ko: 14602, ru: 11598 }),
+        avatar_floating_day4_model_lock: Object.freeze({ zh: 18480, ja: 24137, en: 23771, ko: 26305, ru: 21473 }),
         avatar_floating_day4_privacy_mode: Object.freeze({ zh: 14880, ja: 15386, en: 14263, ko: 14472, ru: 16091 }),
         avatar_floating_day4_return_home: Object.freeze({ zh: 10940, ja: 14472, en: 13949, ko: 13819, ru: 13479 }),
         avatar_floating_day4_wrap: Object.freeze({ zh: 13940, ja: 17606, en: 16326, ko: 19670, ru: 18495 }),
