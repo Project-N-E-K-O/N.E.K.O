@@ -7980,15 +7980,6 @@
             });
 	        }
 
-        async playDay2PersonalizationDetailScene(scene, sceneRunId, previousSceneId, index, total) {
-            return this.settingsTourFlow.playDay2PersonalizationDetailScene(scene, {
-                sceneRunId,
-                previousSceneId,
-                index,
-                total
-            });
-        }
-
         async playDay5CharacterPanicScene(scene, sceneRunId, previousSceneId, index, total) {
             return this.settingsTourFlow.playDay5CharacterPanicScene(scene, {
                 sceneRunId,

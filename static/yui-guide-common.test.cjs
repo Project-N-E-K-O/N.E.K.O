@@ -1437,10 +1437,6 @@ test('settings tour flow owns migrated settings tour concrete scene bodies', () 
         path.join(repoRoot, 'static', 'tutorial/yui-guide/days/day4-companion-guide.js'),
         'utf8'
     );
-    const day2Block = source.split('        async playDay2PersonalizationDetailScene')[1].split(
-        '        async playDay5CharacterPanicScene',
-        1
-    )[0];
     const prepareSceneBlock = source.split('        async prepareAvatarFloatingScene(scene, options) {')[1].split(
         '        async runDay6PluginOpenAgentPanelFlow',
         1
@@ -1474,14 +1470,14 @@ test('settings tour flow owns migrated settings tour concrete scene bodies', () 
         1
     )[0];
     const characterSettingsBlock = source.split('        async playDay5CharacterSettingsScene')[1].split(
-        '        async playDay2PersonalizationDetailScene',
+        '        async playDay5CharacterPanicScene',
         1
     )[0];
     const panicBlock = source.split('        async playDay5CharacterPanicScene')[1].split(
         '        async runAvatarFloatingSceneOperation',
         1
     )[0];
-    const flowDay2Block = settingsTourFlowSource.split('        async playDay2PersonalizationDetailScene')[1].split(
+    const flowDay3Block = settingsTourFlowSource.split('        async playDay3PersonalizationDetailScene')[1].split(
         '        async playDay4ChatSettingsScene',
         1
     )[0];
@@ -1523,7 +1519,9 @@ test('settings tour flow owns migrated settings tour concrete scene bodies', () 
     )[0];
 
     assert.match(source, /this\.settingsTourFlow = new TutorialSettingsTourFlow\.SettingsTourFlow\(this\);/);
-    assert.match(day2Block, /return this\.settingsTourFlow\.playDay2PersonalizationDetailScene\(scene,\s*\{/);
+    assert.doesNotMatch(source, /playDay2PersonalizationDetailScene/);
+    assert.doesNotMatch(settingsTourFlowSource, /playDay2PersonalizationDetailScene/);
+    assert.match(settingsTourFlowSource, /day3_personalization_detail:\s*'playDay3PersonalizationDetailScene'/);
     assert.match(chatBlock, /return this\.settingsTourFlow\.playDay4ChatSettingsScene\(scene,\s*\{/);
     assert.match(modelBlock, /return this\.settingsTourFlow\.playDay4ModelBehaviorScene\(scene,\s*\{/);
     assert.match(gazeBlock, /return this\.settingsTourFlow\.playDay4GazeFollowScene\(scene,\s*\{/);
@@ -1579,7 +1577,7 @@ test('settings tour flow owns migrated settings tour concrete scene bodies', () 
     assert.match(flowPanelTourBlock, /this\.tourPanel\(scene,\s*sceneRunId,\s*touredPanel,\s*narrationPromise/);
     assert.match(flowPanelTourBlock, /return this\.finalizeNarration\(sceneRunId,\s*narration,\s*normalizedContext\);/);
     for (const block of [
-        flowDay2Block,
+        flowDay3Block,
         flowGazeBlock,
         flowPrivacyBlock,
         flowCharacterSettingsBlock,
