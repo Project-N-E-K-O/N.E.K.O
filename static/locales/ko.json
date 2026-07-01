@@ -3372,6 +3372,7 @@
                 "ready": "준비 중",
                 "homeProgress": "홈 가이드 {{current}}/{{total}}"
             },
+            "controlBanner": "고양이 소녀가 마우스를 제어 중입니다",
             "buttons": {
                 "skipChat": "지금은 대화 안 할래",
                 "sayHello": "안녕"

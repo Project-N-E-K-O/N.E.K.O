@@ -3372,6 +3372,7 @@
                 "ready": "Preparando",
                 "homeProgress": "Guía de inicio {{current}}/{{total}}"
             },
+            "controlBanner": "La chica gato está controlando el mouse",
             "buttons": {
                 "skipChat": "Ahora no",
                 "sayHello": "Hola"

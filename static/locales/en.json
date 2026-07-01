@@ -3372,6 +3372,7 @@
                 "ready": "Getting Started",
                 "homeProgress": "Home Guide {{current}}/{{total}}"
             },
+            "controlBanner": "The catgirl is controlling the mouse",
             "buttons": {
                 "skipChat": "Not now",
                 "sayHello": "Hello"

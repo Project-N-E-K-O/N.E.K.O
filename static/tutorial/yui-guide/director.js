@@ -2917,6 +2917,9 @@
 
         setTutorialTakingOver(active) {
             const isActive = active === true;
+            if (isActive) {
+                this.syncSystemCursorHidden(true, 'taking_over_started');
+            }
             this.setAvatarFloatingGuideTutorialMode(isActive);
             const featureController = window.NekoHomeTutorialFeatureController;
             if (
@@ -12159,11 +12162,11 @@
             this.restoreHiddenCursorAfterResistance = false;
             document.documentElement.style.cursor = '';
             document.body.style.cursor = '';
-            document.documentElement.classList.add('yui-user-cursor-revealed');
-            document.documentElement.classList.add('yui-resistance-cursor-reveal');
-            document.body.classList.add('yui-user-cursor-revealed');
-            document.body.classList.add('yui-resistance-cursor-reveal');
-            this.syncSystemCursorHidden(false, 'user_cursor_revealed');
+            document.documentElement.classList.remove('yui-user-cursor-revealed');
+            document.documentElement.classList.remove('yui-resistance-cursor-reveal');
+            document.body.classList.remove('yui-user-cursor-revealed');
+            document.body.classList.remove('yui-resistance-cursor-reveal');
+            this.syncSystemCursorHidden(true, 'user_cursor_reveal_suppressed');
         }
 
         clearUserCursorReveal(resetCursor) {
@@ -12200,17 +12203,17 @@
 
             if (this.resistanceCursorTimer) {
                 window.clearTimeout(this.resistanceCursorTimer);
+                this.resistanceCursorTimer = null;
             }
             this.restoreHiddenCursorAfterResistance = false;
             document.documentElement.style.cursor = '';
             document.body.style.cursor = '';
-            document.body.classList.add('yui-resistance-cursor-reveal');
-            this.resistanceCursorTimer = window.setTimeout(() => {
-                this.resistanceCursorTimer = null;
-                document.body.classList.remove('yui-resistance-cursor-reveal');
-                this.restoreHiddenCursorAfterResistance = false;
-            }, 3000);
-            return true;
+            document.documentElement.classList.remove('yui-user-cursor-revealed');
+            document.documentElement.classList.remove('yui-resistance-cursor-reveal');
+            document.body.classList.remove('yui-user-cursor-revealed');
+            document.body.classList.remove('yui-resistance-cursor-reveal');
+            this.syncSystemCursorHidden(true, 'resistance_cursor_reveal_suppressed');
+            return false;
         }
 
         syncSystemCursorHidden(hidden, reason = 'tutorial') {

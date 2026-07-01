@@ -44,7 +44,7 @@
             this.overlay = normalizedOptions.overlay || null;
             this.cursor = normalizedOptions.cursor || null;
             // syncSystemCursorHidden: optional callback for PC builds that need
-            // to reveal the real cursor during resistance and angry-exit scenes.
+            // to keep the real cursor hidden during takeover and resistance.
             this.callbacks = normalizedOptions.callbacks || {};
             this.resistanceVoiceKeys = Array.isArray(normalizedOptions.resistanceVoiceKeys)
                 && normalizedOptions.resistanceVoiceKeys.length
@@ -105,7 +105,7 @@
             let shouldRestoreHiddenCursorAfterResistance = false;
 
             if (!normalizedOptions.suppressCursorReveal) {
-                call(this.callbacks, 'syncSystemCursorHidden', null, false, 'interrupt_resist_light');
+                call(this.callbacks, 'syncSystemCursorHidden', null, true, 'interrupt_resist_light');
                 shouldRestoreHiddenCursorAfterResistance = call(
                     this.callbacks,
                     'prepareResistanceCursorReveal',
@@ -507,7 +507,7 @@
             let shouldRestoreHiddenCursorAfterResistance = false;
 
             if (!normalizedOptions.suppressCursorReveal) {
-                this.syncSystemCursorHidden(false, 'interrupt_resist_light');
+                this.syncSystemCursorHidden(true, 'interrupt_resist_light');
                 shouldRestoreHiddenCursorAfterResistance = director.prepareResistanceCursorReveal(normalizedOptions);
             }
 
