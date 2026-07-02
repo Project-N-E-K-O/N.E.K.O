@@ -214,7 +214,8 @@ def test_score_draft_topic_words_ranked_first(tmp_path):
 
 
 def test_split_fg_bg_bg_full_fg_ttl_filtered():
-    """_split_fg_bg：BG = 整窗不过滤（IDF 语境全保留）；FG = 仅 TTL 内的末尾几条。"""
+    """_split_fg_bg: BG = whole window, unfiltered (full IDF context preserved);
+    FG = only the trailing entries that are within the TTL."""
     now = 1_000_000.0
     window = [
         {"ts": now - 5000.0, "ngrams": ["old1", "x"], "is_proactive": False},   # 远超 TTL
@@ -228,7 +229,7 @@ def test_split_fg_bg_bg_full_fg_ttl_filtered():
 
 
 def test_split_fg_bg_all_stale_yields_empty_fg():
-    """全部过期 → FG 空（bm25_score 会命中 not fg_docs 返回 0），BG 仍在。"""
+    """All entries stale -> FG empty (bm25_score hits `not fg_docs` -> 0); BG still present."""
     now = 1_000_000.0
     window = [
         {"ts": now - 5000.0, "ngrams": ["old1"], "is_proactive": False},
@@ -240,8 +241,9 @@ def test_split_fg_bg_all_stale_yields_empty_fg():
 
 
 def test_score_draft_idle_frozen_window_ages_out(tmp_path):
-    """连续 5 条同话题冻结 FG：TTL 内打高分（触发 regen/drop），空闲超 TTL 后归 0
-    放行——正是空闲死锁的解除点。"""
+    """Five same-topic entries freeze the FG: scores high within the TTL (would
+    trigger regen/drop); after idling past the TTL the score drops to 0 and the
+    draft passes -- the exact release point of the idle deadlock."""
     s = _build_store(tmp_path)
     name = "Neko"
     base = 1_000_000.0
@@ -258,8 +260,9 @@ def test_score_draft_idle_frozen_window_ages_out(tmp_path):
 
 
 def test_score_draft_bg_idf_survives_after_fg_ttl(tmp_path):
-    """FG 过 TTL 只影响 TF，不砍 BG：一条 TTL 内的新条目 + 一批已过期条目，稀有
-    topic 词仍靠「全量 BG」的 IDF 得分（若 BG 也被 TTL 裁则语境丢失）。"""
+    """FG aging past the TTL only affects TF, not BG: one within-TTL entry plus a
+    batch of long-expired ones -- a rare topic word still scores via the full-BG
+    IDF (if BG were TTL-trimmed too, that context would be lost)."""
     s = _build_store(tmp_path)
     name = "Neko"
     base = 1_000_000.0
@@ -295,7 +298,8 @@ def test_top_recent_topics_returns_topic_words(tmp_path):
 
 
 def test_top_recent_topics_stale_fg_returns_empty(tmp_path):
-    """FG 全过 TTL → 没有"最近聊过"的话题可提示 → 返回空（与 score_draft 对偶）。"""
+    """FG fully past the TTL -> no "recently discussed" topics to hint -> returns
+    empty (dual to score_draft)."""
     s = _build_store(tmp_path)
     name = "Neko"
     base = 1_000_000.0
