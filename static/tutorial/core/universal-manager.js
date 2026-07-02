@@ -1315,6 +1315,15 @@ class UniversalTutorialManager {
         }
     }
 
+    syncPcTutorialLifecycleStarted(reason = 'tutorial-started') {
+        if (
+            window.YuiGuideCommon
+            && typeof window.YuiGuideCommon.syncPcTutorialLifecycleStarted === 'function'
+        ) {
+            window.YuiGuideCommon.syncPcTutorialLifecycleStarted(reason);
+        }
+    }
+
     syncYuiGuideCompactChatFixedLayout(fixed, reason = 'tutorial') {
         const normalizedReason = typeof reason === 'string' && reason.trim()
             ? reason.trim()
@@ -3473,6 +3482,7 @@ class UniversalTutorialManager {
 
     emitTutorialStarted(page = this.currentPage, source = this.currentTutorialStartSource) {
         this.clearStartupGreetingRelease('tutorial-started');
+        this.syncPcTutorialLifecycleStarted('tutorial-started');
         this.syncPcSystemCursorHidden(true, 'tutorial-started');
         window.dispatchEvent(new CustomEvent('neko:tutorial-started', {
             detail: {

@@ -977,6 +977,13 @@ body.yui-taking-over #react-chat-window-drag-handle {
   cursor: none !important;
 }
 
+body.yui-taking-over.yui-user-cursor-revealed,
+body.yui-taking-over.yui-user-cursor-revealed *,
+body.yui-taking-over.yui-resistance-cursor-reveal,
+body.yui-taking-over.yui-resistance-cursor-reveal * {
+  cursor: auto !important;
+}
+
 @keyframes yui-guide-preview-float {
   0% {
     opacity: 0;

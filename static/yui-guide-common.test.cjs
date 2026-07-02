@@ -196,6 +196,134 @@ test('common helper relays PC system cursor visibility and logs relay failures',
     ]);
 });
 
+test('common helper relays temporary PC system cursor reveal duration', () => {
+    const chatRelays = [];
+    const petRelays = [];
+    const channelMessages = [];
+    const storage = new Map([['yuiGuidePcOverlayRunId', 'run-cursor']]);
+    const localStorage = {
+        getItem(key) {
+            return storage.get(key) || null;
+        }
+    };
+
+    common.syncPcSystemCursorTemporaryReveal(2000, 'interrupt_resist_light', {
+        localStorage,
+        nekoTutorialOverlay: {
+            relayToChat(message) {
+                chatRelays.push(message);
+            },
+            relayToPet(message) {
+                petRelays.push(message);
+            }
+        },
+        channel: {
+            postMessage(message) {
+                channelMessages.push(message);
+            }
+        }
+    });
+
+    assert.equal(chatRelays.length, 1);
+    assert.deepEqual(chatRelays[0], petRelays[0]);
+    assert.deepEqual(chatRelays[0], channelMessages[0]);
+    assert.equal(chatRelays[0].action, 'yui_guide_system_cursor_temporary_reveal');
+    assert.equal(chatRelays[0].durationMs, 2000);
+    assert.equal(chatRelays[0].tutorialRunId, 'run-cursor');
+    assert.equal(chatRelays[0].reason, 'interrupt_resist_light');
+    assert.equal(typeof chatRelays[0].timestamp, 'number');
+});
+
+test('common helper relays PC tutorial lifecycle start before cursor visibility', () => {
+    const chatRelays = [];
+    const petRelays = [];
+    const channelMessages = [];
+    const storage = new Map([['yuiGuidePcOverlayRunId', 'run-cursor']]);
+    const localStorage = {
+        getItem(key) {
+            return storage.get(key) || null;
+        }
+    };
+
+    common.syncPcTutorialLifecycleStarted('tutorial-started', {
+        localStorage,
+        nekoTutorialOverlay: {
+            relayToChat(message) {
+                chatRelays.push(message);
+            },
+            relayToPet(message) {
+                petRelays.push(message);
+            }
+        },
+        channel: {
+            postMessage(message) {
+                channelMessages.push(message);
+            }
+        }
+    });
+
+    assert.equal(chatRelays.length, 1);
+    assert.equal(petRelays.length, 1);
+    assert.equal(channelMessages.length, 1);
+    assert.deepEqual(chatRelays[0], petRelays[0]);
+    assert.deepEqual(chatRelays[0], channelMessages[0]);
+    assert.equal(chatRelays[0].action, 'yui_guide_tutorial_lifecycle_started');
+    assert.equal(chatRelays[0].tutorialRunId, 'run-cursor');
+    assert.equal(chatRelays[0].reason, 'tutorial-started');
+    assert.equal(typeof chatRelays[0].timestamp, 'number');
+});
+
+test('common helper creates a PC overlay run id before tutorial lifecycle start', () => {
+    const chatRelays = [];
+    const storage = new Map();
+    const localStorage = {
+        getItem(key) {
+            return storage.get(key) || null;
+        },
+        setItem(key, value) {
+            storage.set(key, String(value));
+        }
+    };
+
+    common.syncPcTutorialLifecycleStarted('tutorial-started', {
+        localStorage,
+        nekoTutorialOverlay: {
+            relayToChat(message) {
+                chatRelays.push(message);
+            }
+        }
+    });
+    common.syncPcSystemCursorHidden(true, 'tutorial-started', {
+        localStorage,
+        nekoTutorialOverlay: {
+            relayToChat(message) {
+                chatRelays.push(message);
+            }
+        }
+    });
+
+    assert.equal(chatRelays.length, 2);
+    assert.match(chatRelays[0].tutorialRunId, /^yui-guide-/);
+    assert.equal(chatRelays[1].tutorialRunId, chatRelays[0].tutorialRunId);
+    assert.equal(localStorage.getItem('yuiGuidePcOverlayRunId'), chatRelays[0].tutorialRunId);
+});
+
+test('tutorial start activates PC lifecycle before hiding the system cursor', () => {
+    const managerSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/universal-manager.js'), 'utf8');
+    const emitBlock = managerSource.split('    emitTutorialStarted(page = this.currentPage, source = this.currentTutorialStartSource) {')[1].split(
+        '    logPromptFlow',
+        1
+    )[0];
+
+    assert.match(emitBlock, /this\.syncPcTutorialLifecycleStarted\('tutorial-started'\);/);
+    assert.match(emitBlock, /this\.syncPcSystemCursorHidden\(true, 'tutorial-started'\);/);
+    assert.ok(
+        emitBlock.indexOf("this.syncPcTutorialLifecycleStarted('tutorial-started');")
+            < emitBlock.indexOf("this.syncPcSystemCursorHidden(true, 'tutorial-started');"),
+        'PC tutorial lifecycle start must be relayed before the system cursor hide request'
+    );
+});
+
 test('guide helpers are exported from a standalone module and re-exported by common', () => {
     const helpersSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/guide-helpers.js'), 'utf8');
     const commonSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/common.js'), 'utf8');
@@ -1328,6 +1456,7 @@ test('director exposes phase one guard and timing helpers for complex sequences'
 test('director routes resistance interrupts through ResistanceController boundary', () => {
     const source = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/director.js'), 'utf8');
     const resistanceSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/visual/resistance-controllers.js'), 'utf8');
+    const cssSource = fs.readFileSync(path.join(repoRoot, 'static', 'css/yui-guide.css'), 'utf8');
     const resetSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/avatar/floating-guide-reset.js'), 'utf8');
     const directorSource = source.split('    class YuiGuideDirector {')[1];
     const constructorBlock = directorSource.split(
@@ -1381,6 +1510,12 @@ test('director routes resistance interrupts through ResistanceController boundar
     assert.match(resistanceControllerBlock, /director\.abortAsAngryExit\('pointer_interrupt'\);/);
     assert.match(resistanceControllerBlock, /director\.playLightResistance\(x,\s*y,\s*\{/);
     assert.match(resistanceControllerBlock, /this\.lightResistanceActive = true;/);
+    assert.match(resistanceControllerBlock, /director\.revealSystemCursorTemporarily\(2000,\s*'interrupt_resist_light'\);/);
+    assert.match(directorSource, /revealSystemCursorTemporarily\(durationMs = 2000,\s*reason = 'tutorial-temporary-reveal'\)/);
+    assert.match(directorSource, /classList\.add\('yui-user-cursor-revealed',\s*'yui-resistance-cursor-reveal'\)/);
+    assert.match(directorSource, /window\.setTimeout\(\(\) => \{[\s\S]*?this\.suppressResistanceCursorReveal\(\);[\s\S]*?\},\s*normalizedDurationMs\)/);
+    assert.match(cssSource, /body\.yui-taking-over\.yui-user-cursor-revealed/);
+    assert.match(cssSource, /cursor:\s*auto !important/);
     assert.match(resistanceControllerBlock, /director\.pauseCurrentSceneForResistance\(\);/);
     assert.match(resistanceControllerBlock, /director\.interruptNarrationForResistance\(\);/);
     assert.match(resistanceControllerBlock, /director\.runInterruptResistPerformance\(\{/);

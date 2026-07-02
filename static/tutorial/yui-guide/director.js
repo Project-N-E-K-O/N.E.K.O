@@ -12274,6 +12274,28 @@
             }
         }
 
+        revealSystemCursorTemporarily(durationMs = 2000, reason = 'tutorial-temporary-reveal') {
+            const normalizedDurationMs = Math.min(10000, Math.max(0, Math.floor(Number(durationMs) || 0)));
+            if (this.resistanceCursorTimer) {
+                window.clearTimeout(this.resistanceCursorTimer);
+                this.resistanceCursorTimer = null;
+            }
+            if (document.body) {
+                document.documentElement.classList.add('yui-user-cursor-revealed', 'yui-resistance-cursor-reveal');
+                document.body.classList.add('yui-user-cursor-revealed', 'yui-resistance-cursor-reveal');
+            }
+            if (
+                window.YuiGuideCommon
+                && typeof window.YuiGuideCommon.syncPcSystemCursorTemporaryReveal === 'function'
+            ) {
+                window.YuiGuideCommon.syncPcSystemCursorTemporaryReveal(normalizedDurationMs, reason);
+            }
+            this.resistanceCursorTimer = window.setTimeout(() => {
+                this.resistanceCursorTimer = null;
+                this.suppressResistanceCursorReveal();
+            }, normalizedDurationMs);
+        }
+
         playLightResistance(x, y, options) {
             return this.resistanceController.playLightResistance(x, y, options);
         }
