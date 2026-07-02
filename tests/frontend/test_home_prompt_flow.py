@@ -8442,6 +8442,8 @@ def test_avatar_floating_interrupt_count_reveals_real_cursor_for_three_seconds(
     )
 
     assert len(result["lightInterrupts"]) == 1
+    assert result["lightInterrupts"][0]["options"]["forceSystemCursorReveal"] is True
+    assert result["lightInterrupts"][0]["options"]["suppressCursorReveal"] is True
     assert result["beforeTimer"][-1] == {"hidden": False, "reason": "interrupt_count_reveal"}
     assert result["timerDelay"] == 3000
     assert result["cursorVisibility"][-1] == {

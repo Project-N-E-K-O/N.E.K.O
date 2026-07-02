@@ -1380,6 +1380,7 @@ test('director routes resistance interrupts through ResistanceController boundar
     assert.match(resistanceControllerBlock, /director\.interruptCount \+= 1;/);
     assert.match(resistanceControllerBlock, /director\.abortAsAngryExit\('pointer_interrupt'\);/);
     assert.match(resistanceControllerBlock, /director\.playLightResistance\(x,\s*y,\s*\{/);
+    assert.match(resistanceControllerBlock, /director\.playLightResistance\(x,\s*y,\s*\{[\s\S]*?suppressCursorReveal:\s*true,[\s\S]*?forceSystemCursorReveal:\s*true/);
     assert.match(resistanceControllerBlock, /this\.lightResistanceActive = true;/);
     assert.match(resistanceControllerBlock, /director\.pauseCurrentSceneForResistance\(\);/);
     assert.match(resistanceControllerBlock, /director\.interruptNarrationForResistance\(\);/);
