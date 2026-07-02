@@ -15,6 +15,7 @@
 
 
 import asyncio
+import functools
 import json
 import re
 import time
@@ -29,7 +30,10 @@ from utils.llm_client import (
     strip_thinking_segments,
     create_chat_llm,
     create_chat_llm_async,
+    set_dialog_slop_lang,
+    reset_dialog_slop_lang,
 )
+from utils.slop_filter import resolve_dialog_slop_lang
 from openai import APIConnectionError, AuthenticationError, InternalServerError, RateLimitError
 from utils.frontend_utils import calculate_text_similarity
 from utils.tokenize import count_tokens, truncate_to_tokens
@@ -535,6 +539,56 @@ def _should_use_genai_sdk(model: str, base_url: str | None) -> bool:
         return _ensure_genai()
     return bool(_GENAI_AVAILABLE)
 
+
+def _with_dialog_slop(method):
+    """Decorator for the offline dialog entry-point coroutines
+    (``stream_text`` / ``prompt_ephemeral``). For the duration of the wrapped
+    turn it arms the ``_dialog_slop_lang`` context var (when the user's master
+    switch is on and the turn's language has a rule set), so the LLM sees AI
+    clichés in its own history rewritten — then resets it in ``finally``.
+
+    Wrapping a plain coroutine (not the inner async generators) keeps the
+    set/reset deterministic: an early ``break`` out of the streaming loop, an
+    exception, or a normal return all unwind through ``finally`` in the same
+    async context, so the context var can never leak past the turn."""
+    @functools.wraps(method)
+    async def _wrapper(self, *args, **kwargs):
+        try:
+            lang = resolve_dialog_slop_lang(getattr(self, "_user_language_provider", None))
+        except Exception:
+            lang = None
+        # Always set a token (even to None) and reset in finally: this turn must
+        # see exactly ``lang``. If slop is disabled / unavailable, the wrapped
+        # call has to see None — not a stale ``_dialog_slop_lang`` that was
+        # copied into this task's context at creation time (e.g. a proactive
+        # prompt_ephemeral spawned mid-turn). Setting None overrides inheritance.
+        token = set_dialog_slop_lang(lang)
+        try:
+            return await method(self, *args, **kwargs)
+        finally:
+            reset_dialog_slop_lang(token)
+    return _wrapper
+
+
+def _slop_reduced_for_genai(messages):
+    """Apply dialog slop reduction to a COPY of ``messages`` for the native
+    Gemini (``genai`` SDK) path, which builds its ``contents`` outside
+    ``ChatOpenAI._params`` / ``ChatAnthropic._build_payload`` and so would
+    otherwise bypass the rewrite. Reads the per-turn ``_dialog_slop_lang`` armed
+    by ``_with_dialog_slop``; no-op when unset. Returns a defensive copy, never
+    mutating the tool-loop's working list (= ``_conversation_history``). Never
+    raises — falls back to the originals on any error."""
+    try:
+        from utils.llm_client import peek_dialog_slop_lang
+        lang = peek_dialog_slop_lang()
+        if not lang:
+            return messages
+        from utils.slop_filter import apply_slop_reduction
+        return apply_slop_reduction(messages, lang)
+    except Exception:
+        return messages
+
+
 class OmniOfflineClient:
     """
     A client for text-based chat that mimics the interface of OmniRealtimeClient.
@@ -600,9 +654,15 @@ class OmniOfflineClient:
         tool_definitions: Optional[List[ToolDefinition]] = None,
         max_tool_iterations: int = 3,
         enable_long_response_summary: bool = False,
+        user_language_provider: Optional[Callable[[], Optional[str]]] = None,
     ):
         # Use base_url directly without conversion
         self.base_url = base_url
+        # Lazy resolver for the live user language (short code resolution happens
+        # in ``resolve_dialog_slop_lang``). A callback rather than a snapshot so a
+        # mid-session language switch is always reflected without re-creating the
+        # client. ``None`` → slop reduction is skipped for this client.
+        self._user_language_provider = user_language_provider
         self.api_key = api_key if api_key and api_key != '' else None
         self.model = model
         self.vision_model = vision_model  # Store vision model for temporary switching
@@ -1281,7 +1341,7 @@ class OmniOfflineClient:
             gen_config_kw["tools"] = tools_payload
 
         for tool_iter in range(self.max_tool_iterations):
-            system_instruction, contents = _genai_messages_to_contents(messages)
+            system_instruction, contents = _genai_messages_to_contents(_slop_reduced_for_genai(messages))
             cfg_kw = dict(gen_config_kw)
             if system_instruction:
                 cfg_kw["system_instruction"] = system_instruction
@@ -1528,7 +1588,7 @@ class OmniOfflineClient:
         # 接管。若在这里 try/except 成 warning，就把真实失败伪装成"空回复"，弱模型
         # 超限后反而可能重回静音态，与本兜底目标冲突。
         final_cfg_kw = {k: v for k, v in gen_config_kw.items() if k != "tools"}
-        final_system_instruction, final_contents = _genai_messages_to_contents(messages)
+        final_system_instruction, final_contents = _genai_messages_to_contents(_slop_reduced_for_genai(messages))
         if final_system_instruction:
             final_cfg_kw["system_instruction"] = final_system_instruction
         final_config = types.GenerateContentConfig(**final_cfg_kw)
@@ -1942,6 +2002,7 @@ class OmniOfflineClient:
             overrides["max_completion_tokens"] = base_max_tokens + FOCUS_THINKING_EXTRA_TOKENS
         return overrides
 
+    @_with_dialog_slop
     async def stream_text(
         self,
         text: str,
@@ -3335,6 +3396,7 @@ class OmniOfflineClient:
         if instructions and instructions.strip():
             self._conversation_history.append(HumanMessage(content=instructions))
     
+    @_with_dialog_slop
     async def prompt_ephemeral(
         self,
         instruction: str,

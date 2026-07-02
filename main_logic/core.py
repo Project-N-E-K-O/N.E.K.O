@@ -6255,6 +6255,9 @@ class LLMSessionManager:
                         max_response_length=guard_max_length,
                         lanlan_name=self.lanlan_name,
                         master_name=self.master_name,
+                        # Live resolver so a mid-session language switch is
+                        # reflected in slop reduction without re-creating the client.
+                        user_language_provider=lambda: self.user_language,
                         on_tool_call=self._on_tool_call,
                         tool_definitions=_initial_tool_defs,
                         # 长回复 summary 必须有"真的会发声的 TTS"才有意义：summary
@@ -6744,6 +6747,8 @@ class LLMSessionManager:
                     max_response_length=guard_max_length,
                     lanlan_name=self.lanlan_name,
                     master_name=self.master_name,
+                    # 与上方对偶：实时解析 user_language，热切换跨语言也能正确选规则集。
+                    user_language_provider=lambda: self.user_language,
                     on_tool_call=self._on_tool_call,
                     tool_definitions=_pending_tool_defs,
                     # 与上方对偶：长回复 summary 必须有"真的会发声的 TTS"才有意义

@@ -36,6 +36,7 @@
         'focusModeEnabled',
         'focusCognitionEnabled',
         'avatarReactionBubbleEnabled',
+        'slopFilterEnabled',
         'proactiveChatInterval',
         'proactiveVisionInterval',
         'textGuardMaxLength',
@@ -66,6 +67,7 @@
             focusModeEnabled: S.focusModeEnabled,
             focusCognitionEnabled: S.focusCognitionEnabled,
             avatarReactionBubbleEnabled: S.avatarReactionBubbleEnabled,
+            slopFilterEnabled: S.slopFilterEnabled,
             proactiveChatInterval: S.proactiveChatInterval,
             proactiveVisionInterval: S.proactiveVisionInterval,
             subtitleEnabled: S.subtitleEnabled,
@@ -94,6 +96,13 @@
         ) {
             S.userLanguage = settings.userLanguage;
             changed = true;
+        }
+        // saveSettings() builds currentSlopFilter from window.slopFilterEnabled ?? S,
+        // so a cross-window storage sync that only touched S would let a later save in
+        // this tab revert the switch from a stale window value. Mirror it here.
+        // (The other shared bool keys carry the same latent gap — pre-existing.)
+        if (Object.prototype.hasOwnProperty.call(settings, 'slopFilterEnabled')) {
+            window.slopFilterEnabled = S.slopFilterEnabled;
         }
         if (changed && S.renderQuality) {
             window.cursorFollowPerformanceLevel = U.mapRenderQualityToFollowPerf(S.renderQuality);
@@ -313,6 +322,9 @@
         const currentAvatarReactionBubble = typeof window.avatarReactionBubbleEnabled !== 'undefined'
             ? window.avatarReactionBubbleEnabled
             : S.avatarReactionBubbleEnabled;
+        const currentSlopFilter = typeof window.slopFilterEnabled !== 'undefined'
+            ? window.slopFilterEnabled
+            : S.slopFilterEnabled;
         const currentTextGuardMaxLength = typeof window.textGuardMaxLength !== 'undefined'
             ? window.textGuardMaxLength
             : S.textGuardMaxLength;
@@ -361,6 +373,7 @@
             focusModeEnabled: currentFocus,
             focusCognitionEnabled: currentFocusCognition,
             avatarReactionBubbleEnabled: currentAvatarReactionBubble,
+            slopFilterEnabled: currentSlopFilter,
             proactiveChatInterval: currentProactiveChatInterval,
             proactiveVisionInterval: currentProactiveVisionInterval,
             textGuardMaxLength: currentTextGuardMaxLength,
@@ -389,6 +402,7 @@
         S.focusModeEnabled = currentFocus;
         S.focusCognitionEnabled = currentFocusCognition;
         S.avatarReactionBubbleEnabled = currentAvatarReactionBubble;
+        S.slopFilterEnabled = currentSlopFilter;
         S.proactiveChatInterval = currentProactiveChatInterval;
         S.proactiveVisionInterval = currentProactiveVisionInterval;
         S.textGuardMaxLength = currentTextGuardMaxLength;
@@ -481,6 +495,7 @@
                 S.focusModeEnabled = settings.focusModeEnabled ?? false;
                 S.focusCognitionEnabled = settings.focusCognitionEnabled ?? true;
                 S.avatarReactionBubbleEnabled = settings.avatarReactionBubbleEnabled ?? true;
+                S.slopFilterEnabled = settings.slopFilterEnabled ?? true;
                 S.proactiveChatInterval = settings.proactiveChatInterval ?? C.DEFAULT_PROACTIVE_CHAT_INTERVAL;
                 S.proactiveVisionInterval = settings.proactiveVisionInterval ?? C.DEFAULT_PROACTIVE_VISION_INTERVAL;
                 // 回复 token 上限（默认 300 tiktoken tokens；0 = 无限制）
@@ -599,6 +614,8 @@
         // 关、reload 时若没触发 merge，window 会是 undefined 让弹窗误显示为开。这里在
         // 每次 loadSettings 末尾从 S 权威镜像一次兜住该时序漏洞。
         window.focusCognitionEnabled = S.focusCognitionEnabled;
+        // 同理：降低 AI 味开关也镜像到 window，避免设置弹窗在 reload 后误显示为开。
+        window.slopFilterEnabled = S.slopFilterEnabled;
 
         // 加载字幕设置（统一从 subtitle-shared store 读取）
         const subtitleStore = window.nekoSubtitleShared;
@@ -668,6 +685,7 @@
                     window.focusModeEnabled = S.focusModeEnabled;
                     window.focusCognitionEnabled = S.focusCognitionEnabled;
                     window.avatarReactionBubbleEnabled = S.avatarReactionBubbleEnabled;
+                    window.slopFilterEnabled = S.slopFilterEnabled;
                     window.proactiveChatInterval = S.proactiveChatInterval;
                     window.proactiveVisionInterval = S.proactiveVisionInterval;
                     window.textGuardMaxLength = S.textGuardMaxLength;
