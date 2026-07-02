@@ -9,6 +9,7 @@ APP_BUTTONS_PATH = Path(__file__).resolve().parents[2] / "static" / "app-buttons
 APP_CHAT_EXPORT_PATH = Path(__file__).resolve().parents[2] / "static" / "app-chat-export.js"
 APP_INTERPAGE_PATH = Path(__file__).resolve().parents[2] / "static" / "app-interpage.js"
 AVATAR_UI_POPUP_PATH = Path(__file__).resolve().parents[2] / "static" / "avatar-ui-popup.js"
+AVATAR_POPUP_COMMON_PATH = Path(__file__).resolve().parents[2] / "static" / "avatar-popup-common.js"
 STATIC_LOCALES_DIR = Path(__file__).resolve().parents[2] / "static" / "locales"
 MUSIC_UI_PATH = Path(__file__).resolve().parents[2] / "static" / "music_ui.js"
 MUSIC_UI_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css" / "music_ui.css"
@@ -2053,6 +2054,66 @@ def test_avatar_tool_cursor_overlays_stay_above_model_side_menus():
 
     assert avatar_cursor_layer > max_model_menu_layer
     assert hammer_cursor_layer > max_model_menu_layer
+
+
+def test_avatar_popup_actions_have_stable_input_region_markers():
+    source = AVATAR_UI_POPUP_PATH.read_text(encoding="utf-8")
+
+    assert "function markAvatarPopupActionElement(el, type)" in source
+    assert "function setAvatarPopupActionDebugMetadata(el, item, source)" in source
+    assert "data-neko-avatar-popup-action" in source
+    assert "data-neko-avatar-popup-item-id" in source
+    assert "data-neko-avatar-popup-url" in source
+    assert "function dispatchAvatarPopupLifecycleEvent(eventName, buttonId, popup, prefix)" in source
+    assert "function dispatchAvatarPopupNavigateEvent(item, finalUrl, windowName, source)" in source
+    assert "neko-avatar-popup-opening" in source
+    assert "neko-avatar-popup-opened" in source
+    assert "neko-avatar-popup-closing" in source
+    assert "neko-avatar-popup-closed" in source
+    assert "neko-avatar-popup-navigate" in source
+    assert "markAvatarPopupActionElement(btn, 'settings-menu');" in source
+    assert "setAvatarPopupActionDebugMetadata(btn, config, 'settings-button');" in source
+    assert "markAvatarPopupActionElement(menuItem, 'sidepanel-menu');" in source
+    assert "setAvatarPopupActionDebugMetadata(menuItem, item, 'sidepanel-menu');" in source
+    assert "markAvatarPopupActionElement(linkItem, 'settings-link');" in source
+    assert "markAvatarPopupActionElement(toggleItem, 'settings-toggle');" in source
+    assert "markAvatarPopupActionElement(menuItem, isSubmenuItem ? 'settings-submenu' : 'settings-menu');" in source
+    assert "setAvatarPopupActionDebugMetadata(menuItem, item, isSubmenuItem ? 'settings-submenu' : 'settings-menu');" in source
+
+
+def test_avatar_popup_positioning_uses_niri_physical_crop_coordinates_only_when_available():
+    source = AVATAR_POPUP_COMMON_PATH.read_text(encoding="utf-8")
+    position_popup_block = source.split("function positionPopup(popup, options = {})", 1)[1].split(
+        "function getButtonZone",
+        1,
+    )[0]
+    position_sidepanel_block = source.split("function positionSidePanel(container, anchor, options = {})", 1)[1].split(
+        "window.AvatarPopupUI =",
+        1,
+    )[0]
+
+    assert "function getNiriPetPhysicalCropPlacementApi()" in source
+    assert "window.__nekoNiriPetPhysicalCrop" in source
+    assert "return api.isActive() ? api : null;" in source
+    assert "const placementApi = niriViewport ? niriCropApi : null;" in position_popup_block
+    assert "toPlacementRect(popup.getBoundingClientRect(), placementApi)" in position_popup_block
+    assert "const screenWidth = niriViewport ? niriViewport.width : window.innerWidth;" in position_popup_block
+    assert "try {\n            const state = api.getState();" in source
+    assert "try {\n            const virtualRect = api.toVirtualRect({" in source
+    assert "catch (_) {\n            return normalized;" in source
+    assert "container.dataset.niriPhysicalCropPositioned = 'true';" in position_sidepanel_block
+    assert (
+        "const goLeft = isNiriPetPhysicalCrop\n"
+        "            ? false\n"
+        "            : (popup ? (popup.dataset.opensLeft === 'true' || !popup.dataset.opensLeft) : true);"
+    ) in position_sidepanel_block
+    assert "const popupRect = toPlacementRect" in position_sidepanel_block
+    assert "placementApi)" in position_sidepanel_block
+    niri_early_return_block = position_sidepanel_block.split("if (isNiriPetPhysicalCrop) {", 1)[1].split("}", 1)[0]
+    assert "return;" in niri_early_return_block
+
+    ui_source = AVATAR_UI_POPUP_PATH.read_text(encoding="utf-8")
+    assert "container.dataset.niriPhysicalCropPositioned === 'true' && hasPositionStyles" in ui_source
 
 
 def test_compact_history_closing_bubbles_disable_pointer_events():
