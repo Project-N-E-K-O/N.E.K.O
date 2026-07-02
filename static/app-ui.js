@@ -115,6 +115,7 @@
         if (type === 'live2d') return window.live2dManager;
         if (type === 'vrm') return window.vrmManager;
         if (type === 'mmd') return window.mmdManager;
+        if (type === 'pngtuber') return window.pngtuberManager;
         return null;
     }
 
@@ -127,11 +128,16 @@
         if (type === 'vrm' || type === 'mmd') {
             return !!manager._animationFrameId;
         }
+        if (type === 'pngtuber') {
+            const container = manager.container || document.getElementById('pngtuber-container');
+            return !!(container && container.style.display !== 'none' &&
+                !(container.classList && container.classList.contains('hidden')));
+        }
         return false;
     }
 
     function pauseModelRenderingForGoodbye(snapshot) {
-        ['live2d', 'vrm', 'mmd'].forEach((type) => {
+        ['live2d', 'vrm', 'mmd', 'pngtuber'].forEach((type) => {
             const manager = getModelManagerByType(type);
             if (!manager || typeof manager.pauseRendering !== 'function') return;
             if (!isModelRenderingActive(type, manager)) return;
@@ -146,7 +152,7 @@
 
     function resumeModelRenderingFromGoodbye(snapshot) {
         if (!snapshot || !snapshot.pausedByCat) return;
-        ['live2d', 'vrm', 'mmd'].forEach((type) => {
+        ['live2d', 'vrm', 'mmd', 'pngtuber'].forEach((type) => {
             if (!snapshot.pausedByCat[type]) return;
             const manager = getModelManagerByType(type);
             if (!manager || typeof manager.resumeRendering !== 'function') return;
@@ -228,7 +234,7 @@
             pending: true,
             suspended: false,
             activeModelType,
-            pausedByCat: { live2d: false, vrm: false, mmd: false },
+            pausedByCat: { live2d: false, vrm: false, mmd: false, pngtuber: false },
             subtitleWindowWasVisible: wasSubtitleVisibleBeforeGoodbyeSnapshot(),
             agentHudWasVisible: isAgentHudVisible(),
             subtitleWindowHiddenByCat: false,

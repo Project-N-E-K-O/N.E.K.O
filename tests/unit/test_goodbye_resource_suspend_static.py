@@ -10,6 +10,7 @@ APP_AGENT_PATH = REPO_ROOT / "static" / "app-agent.js"
 APP_UI_PATH = REPO_ROOT / "static" / "app-ui.js"
 APP_WEBSOCKET_PATH = REPO_ROOT / "static" / "app-websocket.js"
 COMMON_UI_HUD_PATH = REPO_ROOT / "static" / "common-ui-hud.js"
+PNGTUBER_PATH = REPO_ROOT / "static" / "pngtuber-core.js"
 PLUGIN_DASHBOARD_PATH = REPO_ROOT / "frontend" / "plugin-manager" / "src" / "views" / "Dashboard.vue"
 PLUGIN_METRICS_VIEW_PATH = REPO_ROOT / "frontend" / "plugin-manager" / "src" / "views" / "Metrics.vue"
 PLUGIN_METRICS_PATH = REPO_ROOT / "frontend" / "plugin-manager" / "src" / "stores" / "metrics.ts"
@@ -28,6 +29,11 @@ def _js_function_block(source: str, function_name: str) -> str:
 def _js_assignment_function_block(source: str, name: str) -> str:
     marker = f"{name} = function"
     return _js_block_from_marker(source, marker, name)
+
+
+def _js_method_block(source: str, method_name: str) -> str:
+    marker = f"        {method_name}("
+    return _js_block_from_marker(source, marker, method_name)
 
 
 def _js_block_from_marker(source: str, marker: str, description: str) -> str:
@@ -112,7 +118,7 @@ def test_goodbye_resource_suspend_waits_for_cat_transition_and_uses_token_snapsh
     assert "const token = ++goodbyeResourceSuspendToken;" in begin_suspend
     assert "pending: true" in begin_suspend
     assert "suspended: false" in begin_suspend
-    assert "pausedByCat: { live2d: false, vrm: false, mmd: false }" in begin_suspend
+    assert "pausedByCat: { live2d: false, vrm: false, mmd: false, pngtuber: false }" in begin_suspend
     assert "subtitleWindowWasVisible: wasSubtitleVisibleBeforeGoodbyeSnapshot()" in begin_suspend
     assert "agentHudWasVisible: isAgentHudVisible()" in begin_suspend
 
@@ -132,21 +138,61 @@ def test_goodbye_resource_suspend_pauses_only_active_render_loops_and_restores_o
     is_rendering = _js_function_block(source, "isModelRenderingActive")
     pause_rendering = _js_function_block(source, "pauseModelRenderingForGoodbye")
     resume_rendering = _js_function_block(source, "resumeModelRenderingFromGoodbye")
+    get_manager = _js_function_block(source, "getModelManagerByType")
 
     assert "if (type === 'live2d')" in is_rendering
     assert "ticker && ticker.started !== false" in is_rendering
     assert "if (type === 'vrm' || type === 'mmd')" in is_rendering
     assert "return !!manager._animationFrameId;" in is_rendering
+    assert "if (type === 'pngtuber')" in is_rendering
+    assert "document.getElementById('pngtuber-container')" in is_rendering
+    assert "container.style.display !== 'none'" in is_rendering
 
-    assert "['live2d', 'vrm', 'mmd'].forEach" in pause_rendering
+    assert "if (type === 'pngtuber') return window.pngtuberManager;" in get_manager
+    assert "['live2d', 'vrm', 'mmd', 'pngtuber'].forEach" in pause_rendering
     assert "typeof manager.pauseRendering !== 'function'" in pause_rendering
     assert "if (!isModelRenderingActive(type, manager)) return;" in pause_rendering
     assert "manager.pauseRendering();" in pause_rendering
     assert "snapshot.pausedByCat[type] = true;" in pause_rendering
 
-    assert "['live2d', 'vrm', 'mmd'].forEach" in resume_rendering
+    assert "['live2d', 'vrm', 'mmd', 'pngtuber'].forEach" in resume_rendering
     assert "if (!snapshot.pausedByCat[type]) return;" in resume_rendering
     assert "manager.resumeRendering();" in resume_rendering
+
+
+@pytest.mark.unit
+def test_goodbye_resource_suspend_pauses_pngtuber_animation_loops():
+    source = _read(PNGTUBER_PATH)
+    pause_rendering = _js_method_block(source, "pauseRendering")
+    resume_rendering = _js_method_block(source, "resumeRendering")
+
+    assert "this._renderingPaused = false;" in source
+    assert "this._renderingPaused = true;" in pause_rendering
+    assert "this.clearLayeredTimers();" in pause_rendering
+    assert "clearTimeout(this.speakingMouthTimer);" in pause_rendering
+    assert "clearTimeout(this.returnIdleTimer);" in pause_rendering
+    assert "clearTimeout(this.clickTimer);" in pause_rendering
+    assert "cancelAnimationFrame(this.lipSyncFrame);" in pause_rendering
+    assert "this.stopTalkingHopAnimation();" in pause_rendering
+    assert "this.stopSpeakingBounceAnimation();" in pause_rendering
+
+    assert "if (!this._renderingPaused) return;" in resume_rendering
+    assert "this._renderingPaused = false;" in resume_rendering
+    assert "this.startLayeredAnimationLoop({ preserveTimeline: true });" in resume_rendering
+    assert "this.startSpeakingMouthAnimation();" in resume_rendering
+
+    for method_name in (
+        "playLayeredAnimation",
+        "startLayeredAnimationLoop",
+        "startLayeredBreathingLoop",
+        "startSpeakingBounceAnimation",
+        "startTalkingHopAnimation",
+        "startLipSync",
+        "scheduleSpeakingMouthFrame",
+        "startSpeakingMouthAnimation",
+        "setSpeaking",
+    ):
+        assert "this._renderingPaused" in _js_method_block(source, method_name)
 
 
 @pytest.mark.unit
