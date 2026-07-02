@@ -519,11 +519,19 @@ class TimeIndexedMemory:
             # query 上抛 syntax error。
             return []
         try:
-            # 转义 FTS5 特殊字符
-            safe_query = normalized_query.replace('"', '""')
-            # Wrap as an FTS5 phrase query so multi-word input matches the
-            # whole phrase rather than each token independently.
-            fts_query = f'"{safe_query}"'
+            # Sanitize FTS5 special syntax characters to prevent
+            # OperationalError, without wrapping as a phrase query. With the
+            # unicode61 tokenizer (CJK characters indexed individually),
+            # unquoted queries get token-level AND semantics — the desired
+            # behavior for similar-fact matching in facts.py. Phrase wrapping
+            # would require ordered adjacency and cause recall regression.
+            safe_query = (
+                normalized_query
+                .replace('"', ' ')
+                .replace('*', ' ')
+                .replace('(', ' ')
+                .replace(')', ' ')
+            )
             with self.engines[lanlan_name].connect() as conn:
                 result = conn.execute(
                     text(
@@ -532,7 +540,7 @@ class TimeIndexedMemory:
                         f'WHERE {self.FACTS_FTS_TABLE} MATCH :query '
                         f"ORDER BY score LIMIT :limit"
                     ),
-                    {"query": fts_query, "limit": limit}
+                    {"query": safe_query, "limit": limit}
                 )
                 return [(row[0], row[1]) for row in result.fetchall()]
         except Exception as e:

@@ -160,7 +160,9 @@ async def websocket_endpoint(websocket: WebSocket):
     # rejected before accept. Unset env var => no auth (backward compatible).
     if _EXPECTED_TOKEN:
         token = websocket.query_params.get("token", "")
-        if not hmac.compare_digest(token, _EXPECTED_TOKEN):
+        # Guard against non-ASCII tokens: hmac.compare_digest raises TypeError
+        # on non-ASCII str, which would crash before the clean 4401 rejection.
+        if not token.isascii() or not _EXPECTED_TOKEN.isascii() or not hmac.compare_digest(token, _EXPECTED_TOKEN):
             await websocket.close(code=4401, reason="Unauthorized")
             return
     await websocket.accept()
