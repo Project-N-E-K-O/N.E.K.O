@@ -6,7 +6,8 @@ import pytest
 
 from config import CHARACTER_RESERVED_FIELDS
 
-characters_router_module = importlib.import_module('main_routers.characters_router')
+characters_router_module = importlib.import_module('main_routers.characters_router.live2d_models')
+characters_crud_module = importlib.import_module('main_routers.characters_router.crud')
 from main_routers.config_router import _get_live3d_sub_type
 from utils.config_manager import delete_reserved, flatten_reserved, get_reserved, migrate_catgirl_reserved, set_reserved
 
@@ -102,7 +103,7 @@ async def _call_update(monkeypatch, payload, characters=None):
         return None
 
     monkeypatch.setattr(characters_router_module, 'get_config_manager', lambda: config_manager)
-    monkeypatch.setattr(characters_router_module, 'get_initialize_character_data', lambda: _noop_initialize)
+    monkeypatch.setattr(characters_crud_module, 'get_initialize_character_data', lambda: _noop_initialize)
     monkeypatch.setattr(characters_router_module, 'get_init_one_catgirl', lambda: _noop_init_one)
 
     response = await characters_router_module.update_catgirl_l2d(
@@ -417,7 +418,7 @@ def test_flatten_catgirl_for_response_preserves_numeric_field_creation_order():
         '1': '数字字段',
     }
 
-    flattened = characters_router_module._flatten_catgirl_for_response(catgirl)
+    flattened = characters_crud_module._flatten_catgirl_for_response(catgirl)
 
     assert get_reserved(flattened, 'field_order') == ['喵喵喵', '1']
     assert '_reserved' not in catgirl
@@ -432,7 +433,7 @@ def test_sync_catgirl_field_order_honors_top_level_payload():
         '_field_order': ['喵喵喵', '1'],
     }
 
-    characters_router_module._sync_catgirl_field_order(catgirl)
+    characters_crud_module._sync_catgirl_field_order(catgirl)
 
     assert get_reserved(catgirl, 'field_order') == ['喵喵喵', '1']
 

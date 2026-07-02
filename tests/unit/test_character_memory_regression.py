@@ -96,7 +96,7 @@ class _FakeTranslationService:
 
 @pytest.mark.unit
 def test_character_router_profile_name_validation_maps_dot_error_codes():
-    router_module = reload_module("main_routers.characters_router")
+    router_module = reload_module("main_routers.characters_router.crud")
 
     assert "点号" in router_module._validate_profile_name(".")
     assert "点号" in router_module._validate_profile_name("foo.")
@@ -272,7 +272,7 @@ async def test_character_management_and_recent_save_regression():
                 remove_one_catgirl=_noop_any,
             )
 
-            characters_router_module = reload_module("main_routers.characters_router")
+            characters_router_module = reload_module("main_routers.characters_router.crud")
             memory_router_module = reload_module("main_routers.memory_router")
             initial_name = next(iter(cm.load_characters().get("猫娘", {}).keys()))
 
@@ -286,7 +286,7 @@ async def test_character_management_and_recent_save_regression():
             fake_client.__aexit__.return_value = False
             fake_client.post.return_value = fake_response
 
-            with patch("main_routers.characters_router.httpx.AsyncClient", return_value=fake_client):
+            with patch("main_routers.characters_router.notify.httpx.AsyncClient", return_value=fake_client):
                 add_result = await characters_router_module.add_catgirl(
                     _DummyRequest({"档案名": "测试角色"})
                 )
@@ -316,7 +316,7 @@ async def test_character_management_and_recent_save_regression():
             assert switch_back_result["success"] is True
             assert cm.load_characters()["当前猫娘"] == initial_name
 
-            with patch("main_routers.characters_router.httpx.AsyncClient", return_value=fake_client):
+            with patch("main_routers.characters_router.notify.httpx.AsyncClient", return_value=fake_client):
                 delete_result = await characters_router_module.delete_catgirl("测试角色")
             assert delete_result["success"] is True
             assert "测试角色" not in cm.load_characters().get("猫娘", {})
@@ -351,7 +351,7 @@ async def test_add_catgirl_rejects_unsafe_dot_profile_name():
                 remove_one_catgirl=_noop_any,
             )
 
-            characters_router_module = reload_module("main_routers.characters_router")
+            characters_router_module = reload_module("main_routers.characters_router.crud")
             response = await characters_router_module.add_catgirl(_DummyRequest({"档案名": "."}))
 
             assert response.status_code == 400
@@ -364,7 +364,7 @@ async def test_add_catgirl_rejects_unsafe_dot_profile_name():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_body_delete_rejects_non_object_json_payload():
-    characters_router_module = reload_module("main_routers.characters_router")
+    characters_router_module = reload_module("main_routers.characters_router.crud")
 
     response = await characters_router_module.delete_catgirl_by_body(_DummyRequest(["."]))
 
@@ -410,7 +410,7 @@ async def test_body_delete_rescues_unsafe_dot_character_without_touching_memory_
             sentinel.parent.mkdir(parents=True, exist_ok=True)
             sentinel.write_text("keep", encoding="utf-8")
 
-            characters_router_module = reload_module("main_routers.characters_router")
+            characters_router_module = reload_module("main_routers.characters_router.crud")
             mock_notify_reload = AsyncMock(return_value=True)
             with (
                 patch.object(characters_router_module, "notify_memory_server_reload", mock_notify_reload),
@@ -453,7 +453,7 @@ async def test_character_read_endpoints_disable_caching():
                 remove_one_catgirl=_noop_any,
             )
 
-            characters_router_module = reload_module("main_routers.characters_router")
+            characters_router_module = reload_module("main_routers.characters_router.crud")
 
             characters_response = await characters_router_module.get_characters(
                 _DummyGetRequest(headers={"Accept-Language": "zh-CN"})
@@ -506,7 +506,7 @@ async def test_get_characters_preserves_profile_names_when_translating_display_f
                 remove_one_catgirl=_noop_any,
             )
 
-            characters_router_module = reload_module("main_routers.characters_router")
+            characters_router_module = reload_module("main_routers.characters_router.crud")
             response = await characters_router_module.get_characters(
                 _DummyGetRequest(headers={"Accept-Language": "en-US"})
             )
@@ -547,7 +547,7 @@ async def test_rename_catgirl_moves_runtime_and_legacy_memory_storage(monkeypatc
                 remove_one_catgirl=_noop_any,
             )
 
-            characters_router_module = reload_module("main_routers.characters_router")
+            characters_router_module = reload_module("main_routers.characters_router.crud")
             memory_router_module = reload_module("main_routers.memory_router")
 
             fake_response = type(
@@ -560,7 +560,7 @@ async def test_rename_catgirl_moves_runtime_and_legacy_memory_storage(monkeypatc
             fake_client.__aexit__.return_value = False
             fake_client.post.return_value = fake_response
 
-            with patch("main_routers.characters_router.httpx.AsyncClient", return_value=fake_client):
+            with patch("main_routers.characters_router.notify.httpx.AsyncClient", return_value=fake_client):
                 add_result = await characters_router_module.add_catgirl(
                     _DummyRequest({"档案名": "旧角色"})
                 )
@@ -589,7 +589,7 @@ async def test_rename_catgirl_moves_runtime_and_legacy_memory_storage(monkeypatc
                 encoding="utf-8",
             )
 
-            with patch("main_routers.characters_router.httpx.AsyncClient", return_value=fake_client):
+            with patch("main_routers.characters_router.notify.httpx.AsyncClient", return_value=fake_client):
                 rename_result = await characters_router_module.rename_catgirl(
                     "旧角色",
                     _DummyRequest({"new_name": "新角色"}),
@@ -665,7 +665,7 @@ async def test_rename_master_adds_hidden_ai_context_and_master_save_preserves_it
                 remove_one_catgirl=_noop_any,
             )
 
-            characters_router_module = reload_module("main_routers.characters_router")
+            characters_router_module = reload_module("main_routers.characters_router.crud")
             old_master_name = cm.load_characters()["主人"]["档案名"]
             current_catgirl = cm.load_characters()["当前猫娘"]
 
@@ -791,7 +791,7 @@ async def test_update_master_body_rename_fallback_repairs_legacy_path_name(monke
                 remove_one_catgirl=_noop_any,
             )
 
-            characters_router_module = reload_module("main_routers.characters_router")
+            characters_router_module = reload_module("main_routers.characters_router.crud")
             legacy_characters = cm.load_characters()
             legacy_characters["主人"]["档案名"] = "旧/主人"
             legacy_characters["主人"]["昵称"] = "旧昵称"
@@ -849,7 +849,7 @@ async def test_rename_catgirl_rolls_back_memory_and_suppresses_switch_notice_on_
                 remove_one_catgirl=_noop_any,
             )
 
-            characters_router_module = reload_module("main_routers.characters_router")
+            characters_router_module = reload_module("main_routers.characters_router.crud")
 
             fake_response = type(
                 "Resp",
@@ -861,7 +861,7 @@ async def test_rename_catgirl_rolls_back_memory_and_suppresses_switch_notice_on_
             fake_client.__aexit__.return_value = False
             fake_client.post.return_value = fake_response
 
-            with patch("main_routers.characters_router.httpx.AsyncClient", return_value=fake_client):
+            with patch("main_routers.characters_router.notify.httpx.AsyncClient", return_value=fake_client):
                 add_result = await characters_router_module.add_catgirl(
                     _DummyRequest({"档案名": "旧角色"})
                 )
@@ -898,7 +898,7 @@ async def test_rename_catgirl_rolls_back_memory_and_suppresses_switch_notice_on_
                     bypass_write_fence=bypass_write_fence,
                 )
 
-            with patch("main_routers.characters_router.httpx.AsyncClient", return_value=fake_client), patch.object(
+            with patch("main_routers.characters_router.notify.httpx.AsyncClient", return_value=fake_client), patch.object(
                 cm,
                 "save_characters",
                 side_effect=_fail_primary_save,
@@ -955,7 +955,7 @@ async def test_rename_catgirl_returns_503_and_keeps_disk_unchanged_when_memory_r
                 remove_one_catgirl=_noop_any,
             )
 
-            characters_router_module = reload_module("main_routers.characters_router")
+            characters_router_module = reload_module("main_routers.characters_router.crud")
 
             fake_response = type(
                 "Resp",
@@ -967,7 +967,7 @@ async def test_rename_catgirl_returns_503_and_keeps_disk_unchanged_when_memory_r
             fake_client.__aexit__.return_value = False
             fake_client.post.return_value = fake_response
 
-            with patch("main_routers.characters_router.httpx.AsyncClient", return_value=fake_client):
+            with patch("main_routers.characters_router.notify.httpx.AsyncClient", return_value=fake_client):
                 add_result = await characters_router_module.add_catgirl(
                     _DummyRequest({"档案名": "旧角色"})
                 )
@@ -1045,7 +1045,7 @@ async def test_rename_catgirl_maintenance_error_preserves_original_exception_typ
                 remove_one_catgirl=_noop_any,
             )
 
-            characters_router_module = reload_module("main_routers.characters_router")
+            characters_router_module = reload_module("main_routers.characters_router.crud")
             characters = cm.load_characters()
             characters.setdefault("猫娘", {})["维护重命名角色"] = {"昵称": "维护重命名角色"}
             cm.save_characters(characters, bypass_write_fence=True)
@@ -1116,7 +1116,7 @@ async def test_deleted_workshop_character_is_not_restored_by_startup_sync():
                 remove_one_catgirl=_noop_any,
             )
 
-            characters_router_module = reload_module("main_routers.characters_router")
+            characters_router_module = reload_module("main_routers.characters_router.crud")
             workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
 
             characters = cm.load_characters()
@@ -1134,7 +1134,7 @@ async def test_deleted_workshop_character_is_not_restored_by_startup_sync():
             fake_client.__aexit__.return_value = False
             fake_client.post.return_value = fake_response
 
-            with patch("main_routers.characters_router.httpx.AsyncClient", return_value=fake_client):
+            with patch("main_routers.characters_router.notify.httpx.AsyncClient", return_value=fake_client):
                 delete_result = await characters_router_module.delete_catgirl("工坊角色")
             assert delete_result["success"] is True
             assert "工坊角色" not in cm.load_characters().get("猫娘", {})
@@ -1196,7 +1196,7 @@ async def test_delete_catgirl_skips_tombstone_state_when_cloudsave_local_state_i
                 remove_one_catgirl=_noop_any,
             )
 
-            characters_router_module = reload_module("main_routers.characters_router")
+            characters_router_module = reload_module("main_routers.characters_router.crud")
             workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
             importlib.import_module('main_routers.workshop_router.meta')._session_deleted_names.clear()
             characters = cm.load_characters()
@@ -1217,7 +1217,7 @@ async def test_delete_catgirl_skips_tombstone_state_when_cloudsave_local_state_i
 
             monkeypatch.setenv(CLOUDSAVE_DISABLED_ENV, "local_state_unavailable")
             with (
-                patch("main_routers.characters_router.httpx.AsyncClient", return_value=fake_client),
+                patch("main_routers.characters_router.notify.httpx.AsyncClient", return_value=fake_client),
                 patch.object(
                     cm,
                     "load_character_tombstones_state",
@@ -2667,7 +2667,7 @@ async def test_delete_catgirl_returns_error_when_memory_cleanup_fails():
                 remove_one_catgirl=_noop_any,
             )
 
-            characters_router_module = reload_module("main_routers.characters_router")
+            characters_router_module = reload_module("main_routers.characters_router.crud")
 
             characters = cm.load_characters()
             characters.setdefault("猫娘", {})["删除失败角色"] = {"昵称": "删除失败角色"}
@@ -2684,9 +2684,9 @@ async def test_delete_catgirl_returns_error_when_memory_cleanup_fails():
             fake_client.post.return_value = fake_response
 
             with (
-                patch("main_routers.characters_router.httpx.AsyncClient", return_value=fake_client),
+                patch("main_routers.characters_router.notify.httpx.AsyncClient", return_value=fake_client),
                 patch(
-                    "main_routers.characters_router.delete_character_memory_storage",
+                    "main_routers.characters_router.crud.delete_character_memory_storage",
                     side_effect=OSError("time_indexed.db is locked"),
                 ),
             ):
@@ -2726,7 +2726,7 @@ async def test_delete_catgirl_returns_503_when_memory_handle_release_fails_befor
                 remove_one_catgirl=_noop_any,
             )
 
-            characters_router_module = reload_module("main_routers.characters_router")
+            characters_router_module = reload_module("main_routers.characters_router.crud")
             characters = cm.load_characters()
             characters.setdefault("猫娘", {})["删除句柄失败角色"] = {"昵称": "删除句柄失败角色"}
             cm.save_characters(characters, bypass_write_fence=True)
@@ -2775,7 +2775,7 @@ async def test_delete_catgirl_rolls_back_tombstone_and_memory_when_persist_failu
                 remove_one_catgirl=_noop_any,
             )
 
-            characters_router_module = reload_module("main_routers.characters_router")
+            characters_router_module = reload_module("main_routers.characters_router.crud")
 
             characters = cm.load_characters()
             characters.setdefault("猫娘", {})["删除回滚角色"] = {"昵称": "删除回滚角色"}
@@ -2809,7 +2809,7 @@ async def test_delete_catgirl_rolls_back_tombstone_and_memory_when_persist_failu
                     bypass_write_fence=bypass_write_fence,
                 )
 
-            with patch("main_routers.characters_router.httpx.AsyncClient", return_value=fake_client), patch.object(
+            with patch("main_routers.characters_router.notify.httpx.AsyncClient", return_value=fake_client), patch.object(
                 cm,
                 "save_characters",
                 side_effect=_fail_primary_save,
@@ -2853,7 +2853,7 @@ async def test_delete_catgirl_rolls_back_when_notify_reload_returns_false():
                 remove_one_catgirl=_noop_any,
             )
 
-            characters_router_module = reload_module("main_routers.characters_router")
+            characters_router_module = reload_module("main_routers.characters_router.crud")
             characters = cm.load_characters()
             characters.setdefault("猫娘", {})["删除重载失败角色"] = {"昵称": "删除重载失败角色"}
             cm.save_characters(characters, bypass_write_fence=True)
@@ -2916,7 +2916,7 @@ async def test_delete_catgirl_maintenance_error_preserves_original_exception_typ
                 remove_one_catgirl=_noop_any,
             )
 
-            characters_router_module = reload_module("main_routers.characters_router")
+            characters_router_module = reload_module("main_routers.characters_router.crud")
             characters = cm.load_characters()
             characters.setdefault("猫娘", {})["维护删除角色"] = {"昵称": "维护删除角色"}
             cm.save_characters(characters, bypass_write_fence=True)
@@ -2983,15 +2983,15 @@ def test_resolve_live2d_model_binding_keeps_manual_external_url_without_catalog_
                 remove_one_catgirl=_noop_any,
             )
 
-            characters_router_module = reload_module("main_routers.characters_router")
+            characters_router_module = reload_module("main_routers.characters_router.crud")
 
             with patch.object(
-                characters_router_module,
+                importlib.import_module('main_routers.characters_router.live2d_models'),
                 "find_models",
                 side_effect=AssertionError("manual_external should skip local model lookup"),
             ):
                 model_ref = "https://example.com/live2d/neko/neko.model3.json"
-                model_path, source_id, source = characters_router_module._resolve_live2d_model_binding(model_ref)
+                model_path, source_id, source = importlib.import_module('main_routers.characters_router.live2d_models')._resolve_live2d_model_binding(model_ref)
 
             assert model_path == model_ref
             assert source == "manual_external"
@@ -3031,7 +3031,7 @@ async def test_update_catgirl_l2d_marks_builtin_live2d_as_builtin():
                 remove_one_catgirl=_noop_any,
             )
 
-            characters_router_module = reload_module("main_routers.characters_router")
+            characters_router_module = reload_module("main_routers.characters_router.crud")
             characters = cm.load_characters()
             characters["当前猫娘"] = "测试内置模型"
             characters["猫娘"]["测试内置模型"] = json.loads(
@@ -3040,7 +3040,7 @@ async def test_update_catgirl_l2d_marks_builtin_live2d_as_builtin():
             cm.save_characters(characters, bypass_write_fence=True)
 
             with patch.object(
-                characters_router_module,
+                importlib.import_module('main_routers.characters_router.live2d_models'),
                 "find_models",
                 return_value=[
                     {
@@ -3050,7 +3050,7 @@ async def test_update_catgirl_l2d_marks_builtin_live2d_as_builtin():
                     }
                 ],
             ):
-                response = await characters_router_module.update_catgirl_l2d(
+                response = await importlib.import_module('main_routers.characters_router.live2d_models').update_catgirl_l2d(
                     "测试内置模型",
                     _DummyRequest({"live2d": "mao_pro", "model_type": "live2d"}),
                 )
@@ -3091,7 +3091,7 @@ async def test_character_rollback_reports_notify_reload_false_as_failure():
                 remove_one_catgirl=_noop_any,
             )
 
-            characters_router_module = reload_module("main_routers.characters_router")
+            characters_router_module = reload_module("main_routers.characters_router.crud")
             characters_snapshot = cm.load_characters()
 
             with patch.object(

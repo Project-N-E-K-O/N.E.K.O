@@ -7,7 +7,9 @@ import pytest
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
 import main_logic.core as core_module
-import main_routers.characters_router as characters_router
+import main_routers.characters_router.voice_preview as characters_router
+import main_routers.characters_router.voice_providers as characters_voice_providers
+import main_routers.characters_router.crud as characters_crud
 from main_logic.core import LLMSessionManager
 from utils.config_manager import ConfigManager
 from utils.native_voice_registry import (
@@ -148,7 +150,7 @@ def test_validate_keeps_free_native_voice_on_lanlan_app_route():
 def test_new_catgirl_default_voice_id_keeps_legacy_fallback(monkeypatch):
     monkeypatch.setattr("utils.api_config_loader.get_free_voices", lambda: {})
 
-    assert characters_router._get_new_catgirl_default_voice_id() == "voice-tone-PGLiyZt65w"
+    assert characters_crud._get_new_catgirl_default_voice_id() == "voice-tone-PGLiyZt65w"
 
 
 def test_new_catgirl_default_voice_id_prefers_configured_presets(monkeypatch):
@@ -156,13 +158,13 @@ def test_new_catgirl_default_voice_id_prefers_configured_presets(monkeypatch):
         "utils.api_config_loader.get_free_voices",
         lambda: {"cuteGirl": "", "other": "voice-other"},
     )
-    assert characters_router._get_new_catgirl_default_voice_id() == "voice-other"
+    assert characters_crud._get_new_catgirl_default_voice_id() == "voice-other"
 
     monkeypatch.setattr(
         "utils.api_config_loader.get_free_voices",
         lambda: {"cuteGirl": "voice-custom", "other": "voice-other"},
     )
-    assert characters_router._get_new_catgirl_default_voice_id() == "voice-custom"
+    assert characters_crud._get_new_catgirl_default_voice_id() == "voice-custom"
 
 
 def test_native_preview_provider_respects_custom_voice_collision():
@@ -573,14 +575,14 @@ def test_vllm_tts_url_is_not_treated_as_local_voice_clone_server():
     }
 
     assert (
-        characters_router._is_local_voice_clone_tts_config(
+        characters_voice_providers._is_local_voice_clone_tts_config(
             tts_config,
             {"ttsModelProvider": "vllm_omni"},
         )
         is False
     )
     assert (
-        characters_router._is_local_voice_clone_tts_config(
+        characters_voice_providers._is_local_voice_clone_tts_config(
             tts_config,
             {"ttsModelProvider": "cosyvoice"},
         )
@@ -594,9 +596,9 @@ def test_local_voice_clone_uses_tts_url_fallback_for_registration():
         "url": "ws://localhost:8091/v1/audio/speech/stream",
     }
 
-    assert characters_router._is_local_voice_clone_tts_config(tts_config, {}) is True
+    assert characters_voice_providers._is_local_voice_clone_tts_config(tts_config, {}) is True
     assert (
-        characters_router._local_voice_clone_tts_base_url(tts_config, {})
+        characters_voice_providers._local_voice_clone_tts_base_url(tts_config, {})
         == "ws://localhost:8091/v1/audio/speech/stream"
     )
 
@@ -605,8 +607,8 @@ def test_local_voice_clone_uses_core_tts_url_fallback_for_registration():
     tts_config = {"is_custom": True}
     core_config = {"ttsModelUrl": "ws://localhost:8092/v1"}
 
-    assert characters_router._is_local_voice_clone_tts_config(tts_config, core_config) is True
-    assert characters_router._local_voice_clone_tts_base_url(tts_config, core_config) == "ws://localhost:8092/v1"
+    assert characters_voice_providers._is_local_voice_clone_tts_config(tts_config, core_config) is True
+    assert characters_voice_providers._local_voice_clone_tts_base_url(tts_config, core_config) == "ws://localhost:8092/v1"
 
 
 def test_has_custom_tts_ignores_disabled_gptsovits_placeholder():
