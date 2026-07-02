@@ -191,7 +191,7 @@ def _safe_psutil_extras(channel: str = "watchdog") -> dict[str, Any]:
     # Windows: num_handles; POSIX: num_fds. psutil 在错误平台抛 AttributeError。
     try:
         out["num_handles"] = proc.num_handles()
-    except (AttributeError, Exception):
+    except Exception:
         try:
             out["num_handles"] = proc.num_fds()
         except Exception:
@@ -575,12 +575,14 @@ async def debug_health(deep: bool = False) -> dict[str, Any]:
     Passes ``channel="endpoint"`` for an independent psutil cpu_percent
     baseline that does not disturb the watchdog's 5-min window."""
     current = _collect_snapshot(include_deep=deep, channel="endpoint")
+    # Resolve log path once instead of calling _resolve_log_path() twice
+    _log_path = _resolve_log_path()
     return {
         "current": current,
         "ring": list(_HEALTH_RING),
         "ring_capacity": _HEALTH_RING.maxlen,
         "watchdog_interval_sec": _WATCHDOG_INTERVAL_SECONDS,
-        "log_path": str(_resolve_log_path()) if _resolve_log_path() else None,
+        "log_path": str(_log_path) if _log_path else None,
     }
 
 

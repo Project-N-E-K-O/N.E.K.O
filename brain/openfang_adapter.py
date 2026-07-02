@@ -774,7 +774,9 @@ class OpenFangAdapter:
             f'[default_model]\n'
             f'provider = "{provider}"\n'
             f'model = "{model}"\n'
-            f'api_key = "{api_key}"\n'
+            # Do NOT persist the plaintext api_key to disk. OpenFang reads the
+            # key from the environment variable declared by api_key_env below.
+            f'# api_key is read from environment variable {api_key_env or "OPENAI_API_KEY"}\n'
         )
         if api_key_env:
             dm_block += f'api_key_env = "{api_key_env}"\n'
@@ -803,8 +805,14 @@ class OpenFangAdapter:
             content = content.rstrip() + "\n\n" + pu_block
 
         # --- Set env vars for this process (may be inherited by children) ---
-        os.environ["OPENAI_API_KEY"] = api_key
-        os.environ["NEKO_OPENFANG_KEY"] = api_key
+        # Expose the key under the provider-specific env var so OpenFang can
+        # read it from the environment instead of from a plaintext field in
+        # config.toml (e.g. ANTHROPIC_API_KEY, GEMINI_API_KEY, etc.).
+        # Only set the provider-specific var — don't unconditionally write
+        # OPENAI_API_KEY, which would pollute/clobber it for non-OpenAI
+        # providers.
+        if api_key_env:
+            os.environ[api_key_env] = api_key
 
         with open(config_path, "w", encoding="utf-8") as f:
             f.write(content)

@@ -35,6 +35,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import gzip
+import hmac
 import io
 import json
 import logging
@@ -85,7 +86,18 @@ app = FastAPI(
     docs_url="/docs" if os.getenv("TELEMETRY_ENABLE_DOCS") == "1" else None,
     redoc_url=None,
 )
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["POST", "GET"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        origin.strip()
+        for origin in os.environ.get(
+            "NEKO_TELEMETRY_CORS_ORIGINS", "http://localhost,http://127.0.0.1"
+        ).split(",")
+        if origin.strip()
+    ],
+    allow_methods=["POST", "GET"],
+    allow_headers=["*"],
+)
 
 
 def _decompress_if_gzip(body_bytes: bytes, content_encoding: str) -> bytes:
@@ -132,7 +144,11 @@ def require_admin(request: Request):
     if not ADMIN_TOKEN:
         raise HTTPException(503, "Admin API not configured (set TELEMETRY_ADMIN_TOKEN env var on server)")
     token = _extract_token(request)
-    if not token or token != ADMIN_TOKEN:
+    # Constant-time comparison: the admin endpoint exposes device_id / steam_user_id,
+    # and a plain != leaks byte-by-byte match progress to a timing side channel.
+    # compare_digest eliminates that. Guard non-ASCII first: compare_digest raises
+    # TypeError on non-ASCII str, otherwise ?token=é turns a 401 into a 500.
+    if not token or not token.isascii() or not ADMIN_TOKEN.isascii() or not hmac.compare_digest(token, ADMIN_TOKEN):
         raise HTTPException(401, "Invalid admin token")
 
 

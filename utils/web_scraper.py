@@ -2761,11 +2761,11 @@ async def fetch_twitter_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
         if not ct0:
             logger.warning("Twitter Cookie 中缺少核心字段 ct0，极大可能触发风控拦截")
         
-        # 官方 Web 客户端通用固化的 Bearer Token
-        bearer_token = os.environ.get("TWITTER_BEARER_TOKEN", "")
+        # Official Web client Bearer Token — read from env, no hardcoded fallback
+        bearer_token = os.environ.get("TWITTER_BEARER_TOKEN")
         if not bearer_token:
-            logger.warning("Falling back to hardcoded Web client Bearer Token, consider configuring TWITTER_BEARER_TOKEN")
-            bearer_token = 'AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIyU2%2FGoa3FmBNYDPz%2FzGz%2F2Rnc%2F2bGBDH%2Fc'
+            logger.warning("TWITTER_BEARER_TOKEN not configured, falling back to web scraping")
+            return await _fetch_twitter_personal_web_scraping(limit=limit, cookies=twitter_cookies)
         
         # 切换到更稳定、包含完整推文文本的 v1.1 接口
         url = f"https://api.twitter.com/1.1/statuses/home_timeline.json?tweet_mode=extended&count={limit}"

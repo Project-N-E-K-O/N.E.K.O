@@ -76,7 +76,18 @@ app = FastAPI(
     docs_url="/docs" if os.getenv("SURVEY_ENABLE_DOCS") == "1" else None,
     redoc_url=None,
 )
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["POST", "GET"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        origin.strip()
+        for origin in os.environ.get(
+            "NEKO_SURVEY_CORS_ORIGINS", "http://localhost,http://127.0.0.1"
+        ).split(",")
+        if origin.strip()
+    ],
+    allow_methods=["POST", "GET"],
+    allow_headers=["*"],
+)
 
 
 def _decompress_if_gzip(body_bytes: bytes, content_encoding: str) -> bytes:

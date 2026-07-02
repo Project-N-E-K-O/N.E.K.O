@@ -177,7 +177,7 @@ class Worker(BaseModule):
                 )
                 self.reflections.append(reflection)
                 generator_message += f"REFLECTION: You may use this reflection on the previous action and overall trajectory:\n{reflection}\n"
-                print("REFLECTION:", reflection)
+                logger.debug("REFLECTION: %s", reflection)
 
         # Add finalized message to conversation
         generator_message += f"\nCurrent Text Buffer = [{','.join(agent.notes)}]\n"
@@ -193,7 +193,7 @@ class Worker(BaseModule):
         plan, plan_thoughts = split_thinking_response(full_plan)
         # NOTE: currently dropping thinking tokens from context
         self.worker_history.append(plan)
-        print("FULL PLAN:\n", full_plan)
+        logger.debug("FULL PLAN:\n%s", full_plan)
         self.generator_agent.add_message(plan, role="assistant")
 
         # Use the grounding agent to convert agent_action("desc") into agent_action([x, y])

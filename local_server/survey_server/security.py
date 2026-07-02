@@ -27,19 +27,25 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import os
 import time
 from collections import defaultdict
 from threading import Lock
 
 # ---------------------------------------------------------------------------
-# ★ 与客户端 utils/survey_client.py 中的 _SURVEY_HMAC_SECRET 保持一致
-# 与 telemetry 的密钥**故意不同**：两条上报通道互不背书。
+# ★ 与客户端 utils/survey_client.py 中的 _SURVEY_HMAC_SECRET 保持一致。
+# 这是防君子不防小人的软签名：密钥必然内嵌在分发的客户端里、无法对抗逆向，
+# 仅用于挡掉顺手的伪造与脏数据。因此保留与客户端匹配的硬编码默认值（开箱即用），
+# 同时允许运维用环境变量 NEKO_SURVEY_HMAC_SECRET 覆盖以轮换密钥。
+# 与 telemetry 的密钥故意不同：两条上报通道互不背书。
 # ---------------------------------------------------------------------------
-DEFAULT_HMAC_SECRET = "neko-survey-v1-7d2e9c4b8a1f60533e7a2b9c8d4f1e06"
+DEFAULT_HMAC_SECRET = os.environ.get("NEKO_SURVEY_HMAC_SECRET") or "neko-survey-v1-7d2e9c4b8a1f60533e7a2b9c8d4f1e06"
 
 
 def compute_signature(payload_json: str, timestamp: float, secret: str = DEFAULT_HMAC_SECRET) -> str:
     """Compute HMAC-SHA256(secret, f"{timestamp}|{sha256(payload_json)}")."""
+    if not secret:
+        raise ValueError("HMAC secret is not configured (set NEKO_SURVEY_HMAC_SECRET)")
     body_hash = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
     message = f"{timestamp}|{body_hash}"
     return hmac.new(
@@ -56,9 +62,14 @@ def verify_signature(
     secret: str = DEFAULT_HMAC_SECRET,
 ) -> bool:
     """Verify the signature (constant-time comparison, guards against timing attacks)."""
-    # hmac.compare_digest 对含非 ASCII 的 str 直接抛 TypeError；伪造请求塞个非 ASCII
-    # signature 就会把 verify 崩成 500 而非干净 403。签名恒为十六进制摘要（纯 ASCII），
-    # 非 ASCII 必然非法，先挡掉。
+    # Refuse verification when no secret is configured — fail closed so a
+    # misconfigured deployment rejects unsigned traffic rather than accepting it.
+    if not secret:
+        return False
+    # hmac.compare_digest raises TypeError on str containing non-ASCII; a forged
+    # request with a non-ASCII signature would crash verify into a 500 instead of
+    # a clean 403. The signature is always a hex digest (pure ASCII), so any
+    # non-ASCII value is necessarily invalid — reject it early.
     if not isinstance(signature, str) or not signature.isascii():
         return False
     expected = compute_signature(payload_json, timestamp, secret)
