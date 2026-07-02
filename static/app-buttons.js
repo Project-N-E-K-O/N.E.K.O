@@ -37,14 +37,20 @@
     }
 
     function getVoiceStartErrorMessage(error) {
-        var fallback = (typeof window.safeT === 'function')
-            ? window.safeT('app.sessionFailed', 'Session启动失败')
-            : 'Session启动失败';
+        var fallbackKey = 'app.sessionFailed';
+        var defaultFallback = 'Session启动失败';
         function usableText(value) {
             if (typeof value !== 'string') return '';
             var text = value.trim();
             if (!text || text === '[object Module]' || text === '[object Object]') return '';
             return value;
+        }
+        var fallback = defaultFallback;
+        if (typeof window.t === 'function') {
+            var translatedFallback = usableText(window.t(fallbackKey, defaultFallback));
+            if (translatedFallback && translatedFallback.trim() !== fallbackKey) {
+                fallback = translatedFallback;
+            }
         }
 
         var message = usableText(error && error.message);

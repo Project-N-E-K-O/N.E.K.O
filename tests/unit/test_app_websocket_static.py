@@ -206,6 +206,15 @@ def test_session_ended_by_server_stops_assistant_text_output():
     assert "window.currentGeminiMessage = null;" in helper_block
     assert "window.currentTurnGeminiBubbles = [];" in helper_block
 
+    rollback_helper = source.split("function clearPendingRollbackForRequest(requestId)", 1)[1].split(
+        "function isNewUserIcebreakerMirrorTurnEnd(response)",
+        1,
+    )[0]
+    assert "window.reactChatWindowHost.clearPendingRollbackDraft(requestId);" in rollback_helper
+    assert "window._lastSubmittedRequestId === requestId" in rollback_helper
+    assert "window._lastSubmittedText = '';" in rollback_helper
+    assert "window._lastSubmittedRequestId = '';" in rollback_helper
+
     session_ended_block = source.split("// -------- session_ended_by_server --------", 1)[1].split(
         "// -------- reload_page --------",
         1,
@@ -247,6 +256,18 @@ def test_session_ended_by_server_stops_assistant_text_output():
     )[0]
     assert "S.suppressAssistantStreamUntilNextSession = false;" in session_started_block
 
+    agent_callback_turn_end_block = source.split("// -------- system turn end (agent_callback", 1)[1].split(
+        "// -------- system turn end --------",
+        1,
+    )[0]
+    assert "if (S.suppressAssistantStreamUntilNextSession)" in agent_callback_turn_end_block
+    assert agent_callback_turn_end_block.index("if (S.suppressAssistantStreamUntilNextSession)") < agent_callback_turn_end_block.index(
+        "flushRealisticBufferOnTurnEnd();"
+    )
+    assert agent_callback_turn_end_block.index("clearPendingRollbackForRequest(response.request_id);") < agent_callback_turn_end_block.index(
+        "clearPendingAssistantTurnStart();"
+    )
+
     turn_end_block = source.split("// -------- system turn end --------", 1)[1].split(
         "// AI turn_end 后只 reschedule",
         1,
@@ -254,6 +275,9 @@ def test_session_ended_by_server_stops_assistant_text_output():
     assert "if (S.suppressAssistantStreamUntilNextSession)" in turn_end_block
     assert turn_end_block.index("if (S.suppressAssistantStreamUntilNextSession)") < turn_end_block.index(
         "flushRealisticBufferOnTurnEnd();"
+    )
+    assert turn_end_block.index("clearPendingRollbackForRequest(response.request_id);") < turn_end_block.index(
+        "clearPendingAssistantTurnStart();"
     )
 
 

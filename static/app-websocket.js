@@ -769,6 +769,16 @@
         S.pendingTextTurnSubmitAt = 0;
     }
 
+    function clearPendingRollbackForRequest(requestId) {
+        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.clearPendingRollbackDraft === 'function') {
+            window.reactChatWindowHost.clearPendingRollbackDraft(requestId);
+        }
+        if (requestId && window._lastSubmittedRequestId === requestId) {
+            window._lastSubmittedText = '';
+            window._lastSubmittedRequestId = '';
+        }
+    }
+
     function isNewUserIcebreakerMirrorTurnEnd(response) {
         var meta = response && response.meta;
         if (!meta || typeof meta !== 'object') return false;
@@ -2664,17 +2674,12 @@
                 } else if (response.type === 'system' && response.data === 'turn end agent_callback') {
                     if (S.suppressAssistantStreamUntilNextSession) {
                         console.log('[App] discard assistant turn_end after session ended by server');
+                        clearPendingRollbackForRequest(response.request_id);
                         clearPendingAssistantTurnStart();
                         return;
                     }
-                    if (window.reactChatWindowHost && typeof window.reactChatWindowHost.clearPendingRollbackDraft === 'function') {
-                        window.reactChatWindowHost.clearPendingRollbackDraft(response.request_id);
-                    }
-                    if (response.request_id && window._lastSubmittedRequestId === response.request_id) {
-                        window._lastSubmittedText = '';
-                        window._lastSubmittedRequestId = '';
-                    }
-                    console.log('[WS] turn end (agent_callback) — skipping proactive chat schedule');
+                    clearPendingRollbackForRequest(response.request_id);
+                    console.log('[WS] turn end (agent_callback) - skipping proactive chat schedule');
                     logAssistantLifecycle('ws:turn_end_agent_callback:received');
                     try {
                         flushRealisticBufferOnTurnEnd();
@@ -2708,16 +2713,11 @@
                 } else if (response.type === 'system' && response.data === 'turn end') {
                     if (S.suppressAssistantStreamUntilNextSession) {
                         console.log('[App] discard assistant turn_end after session ended by server');
+                        clearPendingRollbackForRequest(response.request_id);
                         clearPendingAssistantTurnStart();
                         return;
                     }
-                    if (window.reactChatWindowHost && typeof window.reactChatWindowHost.clearPendingRollbackDraft === 'function') {
-                        window.reactChatWindowHost.clearPendingRollbackDraft(response.request_id);
-                    }
-                    if (response.request_id && window._lastSubmittedRequestId === response.request_id) {
-                        window._lastSubmittedText = '';
-                        window._lastSubmittedRequestId = '';
-                    }
+                    clearPendingRollbackForRequest(response.request_id);
                     console.log(window.t('console.turnEndReceived'));
                     logAssistantLifecycle('ws:turn_end:received');
                     // Flush remaining buffer

@@ -335,7 +335,9 @@ def test_voice_preparing_toast_ignores_module_object_messages():
     normalizer = _js_function_block(source, "normalizeVoiceToastMessage")
     toast = _js_function_block(source, "showVoicePreparingToast")
 
-    assert "window.safeT('app.voiceSystemPreparing'" in normalizer
+    assert "fallbackKey = 'app.voiceSystemPreparing'" in normalizer
+    assert "window.safeT('app.voiceSystemPreparing'" not in normalizer
+    assert "translatedFallback.trim() !== fallbackKey" in normalizer
     assert "text === '[object Module]'" in normalizer
     assert "text === '[object Object]'" in normalizer
     assert "window.translateStatusMessage(message)" in normalizer
@@ -351,7 +353,9 @@ def test_outer_voice_start_failure_uses_sanitized_toast_message():
     assert len(catch_split) == 2, "missing outer catch in mic button start flow"
     failure = catch_split[1]
 
-    assert "window.safeT('app.sessionFailed'" in normalizer
+    assert "fallbackKey = 'app.sessionFailed'" in normalizer
+    assert "window.safeT('app.sessionFailed'" not in normalizer
+    assert "translatedFallback.trim() !== fallbackKey" in normalizer
     assert "text === '[object Module]'" in normalizer
     assert "text === '[object Object]'" in normalizer
     assert "window.translateStatusMessage(error)" in normalizer

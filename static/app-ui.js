@@ -417,15 +417,21 @@
     // ================================================================
 
     function normalizeVoiceToastMessage(message) {
-        var fallback = (typeof window.safeT === 'function')
-            ? window.safeT('app.voiceSystemPreparing', '语音系统准备中...')
-            : '语音系统准备中...';
+        var fallbackKey = 'app.voiceSystemPreparing';
+        var defaultFallback = '语音系统准备中...';
 
         function usableText(value) {
             if (typeof value !== 'string') return '';
             var text = value.trim();
             if (!text || text === '[object Module]' || text === '[object Object]') return '';
             return value;
+        }
+        var fallback = defaultFallback;
+        if (typeof window.t === 'function') {
+            var translatedFallback = usableText(window.t(fallbackKey, defaultFallback));
+            if (translatedFallback && translatedFallback.trim() !== fallbackKey) {
+                fallback = translatedFallback;
+            }
         }
 
         var directText = usableText(message);
