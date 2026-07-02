@@ -595,7 +595,7 @@ def test_icebreaker_assistant_messages_update_compact_caption_like_normal_chat()
     assert "window.dispatchEvent(new CustomEvent('neko-assistant-turn-end'" not in interpage_compact_block
     interpage_subtitle_block = interpage_runtime.split(
         "function finalizeIcebreakerAssistantSubtitleTranslation(message)", 1
-    )[1].split("function isIcebreakerBridgeAction", 1)[0]
+    )[1].split("function waitForIcebreakerChatHostMounted(host)", 1)[0]
     assert "if (!isStandaloneChatPage() || !message || message.role !== 'assistant') return;" in interpage_subtitle_block
     assert "window.subtitleBridge" in interpage_subtitle_block
     assert "bridge.beginTurn({ latch: false });" in interpage_subtitle_block
