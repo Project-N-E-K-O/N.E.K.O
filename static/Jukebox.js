@@ -1424,7 +1424,7 @@ window.Jukebox = {
                     <label class="sam-checkbox sam-item-checkbox">
                       <input type="checkbox" class="sam-song-select" data-id="${id}" ${this.selectedSongs?.has(id) ? 'checked' : ''} onchange="Jukebox.SongActionManager.toggleSongSelect('${id}', this.checked)">
                     </label>
-                    <span class="sam-item-name" contenteditable="true" data-neko-marquee data-tooltip="${Jukebox.escapeHtml(song.name)}"
+                    <span class="sam-item-name" contenteditable="true" data-neko-marquee data-tooltip="${Jukebox.escapeAttr(song.name)}"
                           onblur="Jukebox.SongActionManager.updateSongName('${id}', this.innerText)"
                           onkeydown="if(event.key==='Enter'){this.blur();event.preventDefault();}">${Jukebox.escapeHtml(song.name)}</span>
                     <div class="sam-item-actions">
@@ -1439,7 +1439,7 @@ window.Jukebox = {
                       <button class="sam-delete-btn" onclick="Jukebox.SongActionManager.confirmDeleteSong('${id}')" data-tooltip="${window.t('Jukebox.delete', '删除')}" aria-label="${window.t('Jukebox.delete', '删除')}">🗑</button>
                     </div>
                   </div>
-                  <div class="sam-item-artist" contenteditable="true" data-neko-marquee data-tooltip="${Jukebox.escapeHtml(song.artist || window.t('Jukebox.unknown', '未知'))}"
+                  <div class="sam-item-artist" contenteditable="true" data-neko-marquee data-tooltip="${Jukebox.escapeAttr(song.artist || window.t('Jukebox.unknown', '未知'))}"
                        onblur="Jukebox.SongActionManager.updateSongArtist('${id}', this.innerText)"
                        onkeydown="if(event.key==='Enter'){this.blur();event.preventDefault();}">${Jukebox.escapeHtml(song.artist || window.t('Jukebox.unknown', '未知'))}
                   </div>
@@ -1454,7 +1454,7 @@ window.Jukebox = {
                         : `${window.t('Jukebox.clickSetDefault', '点击设为默认')}\n${window.t('Jukebox.format', '格式')}: ${format.toUpperCase()}`;
                       return `<span class="sam-binding-tag sam-action-tag sam-action-tag-${format.toLowerCase()} ${isDefault ? 'sam-action-tag-default' : ''}"
                                    data-neko-marquee
-                                   data-tooltip="${Jukebox.escapeHtml(titleText)}"
+                                   data-tooltip="${Jukebox.escapeAttr(titleText)}"
                                    onclick="Jukebox.SongActionManager.setDefaultAction('${id}', '${actionId}')"
                                    >
                         ${isDefault ? '★ ' : ''}${Jukebox.escapeHtml(action.name)}
@@ -1501,7 +1501,7 @@ window.Jukebox = {
                       <input type="checkbox" class="sam-action-select" data-id="${id}" ${this.selectedActions?.has(id) ? 'checked' : ''} onchange="Jukebox.SongActionManager.toggleActionSelect('${id}', this.checked)">
                     </label>
                     <span class="sam-format-dot" style="background-color: ${formatColor};"></span>
-                    <span class="sam-item-name" contenteditable="true" data-neko-marquee data-tooltip="${Jukebox.escapeHtml(action.name)}"
+                    <span class="sam-item-name" contenteditable="true" data-neko-marquee data-tooltip="${Jukebox.escapeAttr(action.name)}"
                           onblur="Jukebox.SongActionManager.updateActionName('${id}', this.innerText)"
                           onkeydown="if(event.key==='Enter'){this.blur();event.preventDefault();}">${Jukebox.escapeHtml(action.name)}</span>
                     <div class="sam-item-actions">
@@ -1520,7 +1520,7 @@ window.Jukebox = {
                   <div class="sam-item-bindings">
                     ${this.getActionBindings(id).filter(songId => this.shouldShowSong(this.data.songs[songId])).map(songId => {
                       const song = this.data.songs[songId];
-                      return song ? `<span class="sam-binding-tag" data-neko-marquee data-tooltip="${Jukebox.escapeHtml(song.name)}">${Jukebox.escapeHtml(song.name)}</span>` : '';
+                      return song ? `<span class="sam-binding-tag" data-neko-marquee data-tooltip="${Jukebox.escapeAttr(song.name)}">${Jukebox.escapeHtml(song.name)}</span>` : '';
                     }).join('')}
                   </div>
                 </div>
@@ -1568,7 +1568,7 @@ window.Jukebox = {
                       <input type="checkbox" ${isSelected ? 'checked' : ''} onchange="Jukebox.SongActionManager.toggleBindingSongSelect('${id}', this.checked)">
                     </label>
                     <span class="sam-binding-item-index">${songIndex}</span>
-                    <span class="sam-binding-item-name" data-neko-marquee data-tooltip="${Jukebox.escapeHtml(song.name)}">${Jukebox.escapeHtml(song.name)}</span>
+                    <span class="sam-binding-item-name" data-neko-marquee data-tooltip="${Jukebox.escapeAttr(song.name)}">${Jukebox.escapeHtml(song.name)}</span>
                   </div>
                   <div class="sam-binding-item-tags">
                     ${boundActions.map(actionId => {
@@ -1584,7 +1584,7 @@ window.Jukebox = {
                       return action ? `
                         <span class="sam-binding-tag-small sam-action-tag-small sam-action-tag-small-${format.toLowerCase()} ${isActionSelected ? 'sam-tag-selected' : ''} ${isDefault ? 'sam-action-tag-small-default' : ''}"
                               onclick="Jukebox.SongActionManager.setDefaultAction('${id}', '${actionId}')"
-                              data-tooltip="${Jukebox.escapeHtml(titleText)}">
+                              data-tooltip="${Jukebox.escapeAttr(titleText)}">
                           <span class="sam-format-dot" style="background-color: ${formatColor};"></span>
                           <span class="sam-binding-tag-label" data-neko-marquee>${isDefault ? '★ ' : ''}${Jukebox.escapeHtml(action.name)}</span>
                           <button class="sam-unbind-btn" onclick="event.stopPropagation(); Jukebox.SongActionManager.unbindSongFromAction('${id}', '${actionId}');" data-tooltip="${window.t('Jukebox.unbind', '解除绑定')}" aria-label="${window.t('Jukebox.unbind', '解除绑定')}">×</button>
@@ -1620,7 +1620,7 @@ window.Jukebox = {
                     </label>
                     <span class="sam-binding-item-index">${actionIndex}</span>
                     <span class="sam-format-dot" style="background-color: ${formatColor};"></span>
-                    <span class="sam-binding-item-name" data-neko-marquee data-tooltip="${Jukebox.escapeHtml(action.name)}">${Jukebox.escapeHtml(action.name)}</span>
+                    <span class="sam-binding-item-name" data-neko-marquee data-tooltip="${Jukebox.escapeAttr(action.name)}">${Jukebox.escapeHtml(action.name)}</span>
                   </div>
                   <div class="sam-binding-item-tags">
                     ${boundSongs.filter(songId => this.shouldShowSong(this.data.songs[songId])).map(songId => {
@@ -1629,7 +1629,7 @@ window.Jukebox = {
                       const offset = this.data.bindings[songId]?.[id]?.offset || 0;
                       const titleText = `${window.t('Jukebox.offset', '偏移')}: ${offset}${window.t('Jukebox.frame', '帧')}`;
                       return song ? `
-                        <span class="sam-binding-tag-small ${isSongSelected ? 'sam-tag-selected' : ''}" data-tooltip="${Jukebox.escapeHtml(titleText)}">
+                        <span class="sam-binding-tag-small ${isSongSelected ? 'sam-tag-selected' : ''}" data-tooltip="${Jukebox.escapeAttr(titleText)}">
                           <span class="sam-binding-tag-label" data-neko-marquee>${Jukebox.escapeHtml(song.name)}</span>
                           <button class="sam-unbind-btn" onclick="Jukebox.SongActionManager.unbindSongFromAction('${songId}', '${id}'); event.stopPropagation();" data-tooltip="${window.t('Jukebox.unbind', '解除绑定')}" aria-label="${window.t('Jukebox.unbind', '解除绑定')}">×</button>
                         </span>` : '';
@@ -7323,8 +7323,8 @@ window.Jukebox = {
     tr.draggable = Jukebox.isSongSortUnlocked();
     tr.innerHTML = `
       <td class="song-index"><span class="song-index-number">${index + 1}</span></td>
-      <td class="song-name" data-neko-marquee data-tooltip="${Jukebox.escapeHtml(song.name)}">${Jukebox.escapeHtml(song.name)}</td>
-      <td class="song-artist" data-neko-marquee data-tooltip="${Jukebox.escapeHtml(song.artist)}">${Jukebox.escapeHtml(song.artist)}</td>
+      <td class="song-name" data-neko-marquee data-tooltip="${Jukebox.escapeAttr(song.name)}">${Jukebox.escapeHtml(song.name)}</td>
+      <td class="song-artist" data-neko-marquee data-tooltip="${Jukebox.escapeAttr(song.artist)}">${Jukebox.escapeHtml(song.artist)}</td>
       <td class="song-action">
         <button class="play-btn" data-song-id="${Jukebox.escapeHtml(song.id)}" data-tooltip="${window.t('Jukebox.play', '播放')}">
           <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
@@ -8597,6 +8597,10 @@ window.Jukebox = {
     return div.innerHTML;
   },
 
+  escapeAttr: function(text) {
+    return Jukebox.escapeHtml(text).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  },
+
   /**
    * 语言切换后刷新 Jukebox UI 文本
    * 独立窗口模式直接重载页面；嵌入模式逐一更新 DOM 元素
@@ -8617,14 +8621,27 @@ window.Jukebox = {
     if (h3) h3.textContent = window.t('Jukebox.title', '点歌台');
     var settingsBtn = c.querySelector('.jukebox-settings');
     if (settingsBtn) {
-      settingsBtn.title = window.t('Jukebox.manager', '点歌台管理与导入');
+      settingsBtn.dataset.tooltip = window.t('Jukebox.manager', '点歌台管理与导入');
+      settingsBtn.removeAttribute('title');
+      settingsBtn.setAttribute('aria-label', settingsBtn.dataset.tooltip);
+      Jukebox.refreshTooltip(settingsBtn);
       var settingsLabel = settingsBtn.querySelector('.jukebox-settings-label');
       if (settingsLabel) settingsLabel.textContent = window.t('Jukebox.settingsShort', '管理/导入');
     }
     var minBtn = c.querySelector('.jukebox-minimize');
-    if (minBtn) minBtn.title = window.t('Jukebox.minimize', '最小化');
+    if (minBtn) {
+      minBtn.dataset.tooltip = window.t('Jukebox.minimize', '最小化');
+      minBtn.removeAttribute('title');
+      minBtn.setAttribute('aria-label', minBtn.dataset.tooltip);
+      Jukebox.refreshTooltip(minBtn);
+    }
     var closeBtn = c.querySelector('.jukebox-close');
-    if (closeBtn) closeBtn.title = window.t('Jukebox.close', '关闭');
+    if (closeBtn) {
+      closeBtn.dataset.tooltip = window.t('Jukebox.close', '关闭');
+      closeBtn.removeAttribute('title');
+      closeBtn.setAttribute('aria-label', closeBtn.dataset.tooltip);
+      Jukebox.refreshTooltip(closeBtn);
+    }
 
     // --- Calibration ---
     var calToggle = c.querySelector('#jukebox-calibration-toggle');
@@ -8697,7 +8714,12 @@ window.Jukebox = {
           if (tabKeys[i]) tab.textContent = window.t(tabKeys[i], tabDefaults[i]);
         });
         var samCloseBtn = panel.querySelector('.sam-close-btn');
-        if (samCloseBtn) samCloseBtn.title = window.t('Jukebox.close', '关闭');
+        if (samCloseBtn) {
+          samCloseBtn.dataset.tooltip = window.t('Jukebox.close', '关闭');
+          samCloseBtn.removeAttribute('title');
+          samCloseBtn.setAttribute('aria-label', samCloseBtn.dataset.tooltip);
+          Jukebox.refreshTooltip(samCloseBtn);
+        }
         // Re-render active tab content
         Jukebox.SongActionManager.render();
       }
