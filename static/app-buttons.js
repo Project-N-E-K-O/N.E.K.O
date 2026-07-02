@@ -36,6 +36,33 @@
         rejecter(error);
     }
 
+    function getVoiceStartErrorMessage(error) {
+        var fallback = (typeof window.safeT === 'function')
+            ? window.safeT('app.sessionFailed', 'Session启动失败')
+            : 'Session启动失败';
+        function usableText(value) {
+            if (typeof value !== 'string') return '';
+            var text = value.trim();
+            if (!text || text === '[object Module]' || text === '[object Object]') return '';
+            return value;
+        }
+
+        var message = usableText(error && error.message);
+        if (message) return message;
+        message = usableText(typeof error === 'string' ? error : '');
+        if (message) return message;
+
+        if (error && typeof error === 'object' && typeof window.translateStatusMessage === 'function') {
+            message = usableText(window.translateStatusMessage(error));
+            if (message) return message;
+        }
+
+        if (error !== undefined && error !== null) {
+            console.warn('[VoiceStart] Non-string error message ignored:', error);
+        }
+        return fallback;
+    }
+
     function isHomeTutorialInteractionLocked() {
         try {
             return typeof window.isNekoHomeTutorialInteractionLocked === 'function'
@@ -2113,6 +2140,7 @@
                 S.isSwitchingMode = false;
 
             } catch (error) {
+                var voiceStartErrorMessage = getVoiceStartErrorMessage(error);
                 var isVoiceStartCancelled = !!(error && error.voiceStartCancelled);
                 var preserveGoodbyeUi = isVoiceStartCancelled
                     && typeof window.isNekoGoodbyeModeActive === 'function'
@@ -2137,7 +2165,7 @@
                 }
 
                 if (error && error.voiceConfigSwitchTimedOut) {
-                    window.showVoicePreparingToast(error.message);
+                    window.showVoicePreparingToast(voiceStartErrorMessage);
                 } else {
                     window.hideVoicePreparingToast();
                 }
@@ -2173,9 +2201,9 @@
                 if (preserveGoodbyeUi) {
                     window.showStatusToast('', 0);
                 } else if (error && error.voiceConfigSwitchTimedOut) {
-                    window.showStatusToast(error.message, 5000);
+                    window.showStatusToast(voiceStartErrorMessage, 5000);
                 } else {
-                    window.showStatusToast(window.t ? window.t('app.startFailed', { error: error.message }) : '\u542F\u52A8\u5931\u8D25: ' + error.message, 5000);
+                    window.showStatusToast(window.t ? window.t('app.startFailed', { error: voiceStartErrorMessage }) : '\u542F\u52A8\u5931\u8D25: ' + voiceStartErrorMessage, 5000);
                 }
 
                 screenButton.classList.remove('active');

@@ -187,6 +187,63 @@ def test_goodbye_blocks_stale_audio_session_started():
     assert "return;" in stale_audio_guard
 
 
+def test_session_ended_by_server_stops_assistant_text_output():
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    helper_block = source.split("function stopAssistantTextOutputOnSessionEnd(source)", 1)[1].split(
+        "window.addEventListener('neko-assistant-turn-start'",
+        1,
+    )[0]
+    assert "S.suppressAssistantStreamUntilNextSession = true;" in helper_block
+    assert "window._realisticGeminiVersion = (window._realisticGeminiVersion || 0) + 1;" in helper_block
+    assert "window._realisticGeminiQueue = [];" in helper_block
+    assert "window._realisticGeminiBuffer = '';" in helper_block
+    assert "window._geminiTurnFullText = '';" in helper_block
+    assert "window._isProcessingRealisticQueue = false;" in helper_block
+    assert "window._realisticProcessingOwner = null;" in helper_block
+    assert "window.setReactMessageStatus(bubble, 'assistant', 'sent');" in helper_block
+    assert "window._clearPendingHostMessagesByIds(currentBubbleIds);" in helper_block
+    assert "window.currentGeminiMessage = null;" in helper_block
+    assert "window.currentTurnGeminiBubbles = [];" in helper_block
+
+    session_ended_block = source.split("// -------- session_ended_by_server --------", 1)[1].split(
+        "// -------- reload_page --------",
+        1,
+    )[0]
+    assert "stopAssistantTextOutputOnSessionEnd('session_ended_by_server');" in session_ended_block
+    assert session_ended_block.index("stopAssistantTextOutputOnSessionEnd('session_ended_by_server');") < session_ended_block.index(
+        "clearAssistantLifecycleOnDisconnect('session_ended_by_server');"
+    )
+
+    gemini_block = source.split("// -------- gemini_response --------", 1)[1].split(
+        "// -------- response_discarded --------",
+        1,
+    )[0]
+    assert "if (S.suppressAssistantStreamUntilNextSession)" in gemini_block
+    assert gemini_block.index("if (S.suppressAssistantStreamUntilNextSession)") < gemini_block.index(
+        "window.appendMessage(response.text, 'gemini', isNewMessage)"
+    )
+    assert "return;" in gemini_block.split("if (S.suppressAssistantStreamUntilNextSession)", 1)[1].split(
+        "var isNewMessage",
+        1,
+    )[0]
+
+    session_started_block = source.split("// -------- session_started --------", 1)[1].split(
+        "// -------- session_failed --------",
+        1,
+    )[0]
+    assert "S.suppressAssistantStreamUntilNextSession = false;" in session_started_block
+
+    turn_end_block = source.split("// -------- system turn end --------", 1)[1].split(
+        "// AI turn_end 后只 reschedule",
+        1,
+    )[0]
+    assert "if (S.suppressAssistantStreamUntilNextSession)" in turn_end_block
+    assert turn_end_block.index("if (S.suppressAssistantStreamUntilNextSession)") < turn_end_block.index(
+        "flushRealisticBufferOnTurnEnd();"
+    )
+
+
 def test_ws_open_resyncs_goodbye_state_and_defers_regular_greeting_until_release():
     source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
 

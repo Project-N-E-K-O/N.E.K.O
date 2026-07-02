@@ -1131,6 +1131,47 @@
         });
     }
 
+    function stopAssistantTextOutputOnSessionEnd(source) {
+        S.suppressAssistantStreamUntilNextSession = true;
+        window._realisticGeminiVersion = (window._realisticGeminiVersion || 0) + 1;
+        window._realisticGeminiQueue = [];
+        window._realisticGeminiBuffer = '';
+        window._geminiTurnFullText = '';
+        window._pendingMusicCommand = '';
+        window._structuredGeminiStreaming = false;
+        window._isProcessingRealisticQueue = false;
+        window._realisticProcessingOwner = null;
+        window._geminiTurnEndSealed = true;
+
+        var currentBubbles = Array.isArray(window.currentTurnGeminiBubbles)
+            ? window.currentTurnGeminiBubbles.slice()
+            : [];
+        if (currentBubbles.length === 0 && window.currentGeminiMessage) {
+            currentBubbles = [window.currentGeminiMessage];
+        }
+        var currentBubbleIds = [];
+        currentBubbles.forEach(function (bubble) {
+            if (bubble && bubble.dataset && bubble.dataset.reactChatMessageId) {
+                currentBubbleIds.push(bubble.dataset.reactChatMessageId);
+            }
+            if (typeof window.setReactMessageStatus === 'function') {
+                try {
+                    window.setReactMessageStatus(bubble, 'assistant', 'sent');
+                } catch (_) {}
+            }
+        });
+        if (currentBubbleIds.length > 0 && typeof window._clearPendingHostMessagesByIds === 'function') {
+            window._clearPendingHostMessagesByIds(currentBubbleIds);
+        }
+
+        window.currentGeminiMessage = null;
+        window.currentTurnGeminiBubbles = [];
+        window.realisticGeminiCurrentTurnId = null;
+        logAssistantLifecycle('stopAssistantTextOutputOnSessionEnd', {
+            source: source || 'session_end'
+        });
+    }
+
     window.addEventListener('neko-assistant-turn-start', clearPendingUserActivityCancel);
     window.addEventListener('neko-assistant-speech-start', clearPendingUserActivityCancel);
     window.addEventListener('neko-assistant-speech-cancel', clearPendingUserActivityCancel);
@@ -1548,6 +1589,10 @@
 
                 // -------- gemini_response --------
                 if (response.type === 'gemini_response') {
+                    if (S.suppressAssistantStreamUntilNextSession) {
+                        console.log('[App] discard assistant chunk after session ended by server');
+                        return;
+                    }
                     var isNewMessage = response.isNewMessage || false;
                     if (response.metadata && response.metadata.game_route) {
                         var gameMeta = response.metadata.game_route;
@@ -2610,6 +2655,11 @@
 
                 // -------- system turn end (agent_callback — no proactive chat) --------
                 } else if (response.type === 'system' && response.data === 'turn end agent_callback') {
+                    if (S.suppressAssistantStreamUntilNextSession) {
+                        console.log('[App] discard assistant turn_end after session ended by server');
+                        clearPendingAssistantTurnStart();
+                        return;
+                    }
                     if (window.reactChatWindowHost && typeof window.reactChatWindowHost.clearPendingRollbackDraft === 'function') {
                         window.reactChatWindowHost.clearPendingRollbackDraft(response.request_id);
                     }
@@ -2649,6 +2699,11 @@
 
                 // -------- system turn end --------
                 } else if (response.type === 'system' && response.data === 'turn end') {
+                    if (S.suppressAssistantStreamUntilNextSession) {
+                        console.log('[App] discard assistant turn_end after session ended by server');
+                        clearPendingAssistantTurnStart();
+                        return;
+                    }
                     if (window.reactChatWindowHost && typeof window.reactChatWindowHost.clearPendingRollbackDraft === 'function') {
                         window.reactChatWindowHost.clearPendingRollbackDraft(response.request_id);
                     }
@@ -2758,6 +2813,7 @@
                         return;
                     }
                     console.log(window.t('console.sessionStartedReceived'), response.input_mode);
+                    S.suppressAssistantStreamUntilNextSession = false;
                     S.isTextSessionActive = response.input_mode === 'text';
                     S.voiceChatActive = response.input_mode !== 'text';
                     S.voiceStartPending = false;
@@ -2880,6 +2936,7 @@
                     S.isTextSessionActive = false;
                     S.voiceChatActive = false;
                     S.voiceStartPending = false;
+                    stopAssistantTextOutputOnSessionEnd('session_ended_by_server');
                     clearAssistantLifecycleOnDisconnect('session_ended_by_server');
 
                     if (S.sessionStartedRejecter) {
