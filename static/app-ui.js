@@ -1475,6 +1475,13 @@
         });
     }
 
+    function keepAvatarRootContainerPassthrough(container) {
+        if (!container || !container.id || !container.style) return false;
+        if (container.id !== 'live2d-container' && container.id !== 'pngtuber-container') return false;
+        container.style.setProperty('pointer-events', 'none', 'important');
+        return true;
+    }
+
     function restoreLive2DDisplaySurface(reason) {
         const preserveAvatarCornerPeekOpacity = window.nekoYuiGuideAvatarCornerPeekActive === true;
         const preserveYuiGuidePreparing = shouldPreserveYuiGuideLive2DPreparing();
@@ -1504,7 +1511,7 @@
             } else if (!preserveAvatarCornerPeekOpacity) {
                 live2dContainer.style.removeProperty('opacity');
             }
-            live2dContainer.style.removeProperty('pointer-events');
+            keepAvatarRootContainerPassthrough(live2dContainer);
         }
 
         const live2dCanvas = document.getElementById('live2d-canvas');
@@ -2966,7 +2973,9 @@
         container.style.opacity = hasReturnRect ? '0' : '1';
         container.style.transform = hasReturnRect ? getModelCatTransitionScaleTransform() : 'none';
         if (options.clearPointerEvents) {
-            container.style.removeProperty('pointer-events');
+            if (!keepAvatarRootContainerPassthrough(container)) {
+                container.style.removeProperty('pointer-events');
+            }
         }
         return true;
     }
