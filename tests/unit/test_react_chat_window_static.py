@@ -1,3 +1,4 @@
+import json
 import re
 from pathlib import Path
 
@@ -9,6 +10,7 @@ APP_CHAT_EXPORT_PATH = Path(__file__).resolve().parents[2] / "static" / "app-cha
 APP_INTERPAGE_PATH = Path(__file__).resolve().parents[2] / "static" / "app-interpage.js"
 AVATAR_UI_POPUP_PATH = Path(__file__).resolve().parents[2] / "static" / "avatar-ui-popup.js"
 AVATAR_POPUP_COMMON_PATH = Path(__file__).resolve().parents[2] / "static" / "avatar-popup-common.js"
+STATIC_LOCALES_DIR = Path(__file__).resolve().parents[2] / "static" / "locales"
 MUSIC_UI_PATH = Path(__file__).resolve().parents[2] / "static" / "music_ui.js"
 MUSIC_UI_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css" / "music_ui.css"
 STATIC_INDEX_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css" / "index.css"
@@ -54,6 +56,64 @@ def assert_no_layout_transition(block: str) -> None:
     transition_section = block.split("transition:", 1)[1].split(";", 1)[0] if "transition:" in block else ""
     for prop in ("width", "height", "max-height", "min-height", "padding", "margin", "top", "right", "bottom", "left"):
         assert prop not in transition_section
+
+
+def test_chat_settings_cat_audio_toggle_is_under_auto_cat_and_dependent():
+    source = AVATAR_UI_POPUP_PATH.read_text(encoding="utf-8")
+    chat_settings_block = source.split("const chatToggles = [", 1)[1].split("];", 1)[0]
+
+    assert "id: 'auto-cat'" in chat_settings_block
+    assert "id: 'cat-audio'" in chat_settings_block
+    assert chat_settings_block.index("id: 'auto-cat'") < chat_settings_block.index("id: 'cat-audio'")
+    assert "labelKey: 'settings.toggles.catAudio'" in chat_settings_block
+    assert "dependsOnToggleId: 'auto-cat'" in chat_settings_block
+    assert "neko:auto-cat-setting-changed" not in source
+
+    cat_audio_init_block = source.split("} else if (toggle.id === 'cat-audio'", 1)[1].split(
+        "const indicator = document.createElement('div');",
+        1,
+    )[0]
+    assert "window.nekoIdleCatAudio.isEnabled()" in cat_audio_init_block
+
+    dependency_block = source.split("const updateDependentToggleState = () => {", 1)[1].split(
+        "const updateStyle = () => {",
+        1,
+    )[0]
+    assert "toggle.dependsOnToggleId" in dependency_block
+    assert "const parent = toggleItem.parentElement;" in dependency_block
+    assert "parent.querySelector(`#${dependencyId}`)" in dependency_block
+    assert "document.getElementById(dependencyId)" in dependency_block
+    assert "checkbox.disabled = !dependencyChecked;" in dependency_block
+    assert "aria-disabled" in dependency_block
+    assert "toggleItem.setAttribute('tabIndex', dependencyChecked ? '0' : '-1');" in dependency_block
+    assert "toggleItem.style.opacity = dependencyChecked ? '1' : '0.5';" in dependency_block
+    assert "const cursor = dependencyChecked ? 'pointer' : 'default';" in dependency_block
+    assert "[toggleItem, indicator, label].forEach(el => { el.style.cursor = cursor; });" in dependency_block
+    assert "if (typeof toggleItem._nekoUpdateSettingsToggleStyle === 'function')" in source
+    assert "toggleItem._nekoUpdateSettingsToggleStyle();" in source
+    assert "const refreshDependentToggles = () => {" in source
+    assert "candidate._nekoUpdateSettingsToggleStyle();" in source
+
+    cat_audio_change_block = source.split("} else if (toggle.id === 'cat-audio')", 1)[1].split(
+        "}",
+        1,
+    )[0]
+    assert "window.nekoIdleCatAudio.setEnabled(isChecked)" in cat_audio_change_block
+
+    en_locale = json.loads((STATIC_LOCALES_DIR / "en.json").read_text(encoding="utf-8"))
+    ja_locale = json.loads((STATIC_LOCALES_DIR / "ja.json").read_text(encoding="utf-8"))
+    ko_locale = json.loads((STATIC_LOCALES_DIR / "ko.json").read_text(encoding="utf-8"))
+    ru_locale = json.loads((STATIC_LOCALES_DIR / "ru.json").read_text(encoding="utf-8"))
+    zh_cn_locale = json.loads((STATIC_LOCALES_DIR / "zh-CN.json").read_text(encoding="utf-8"))
+    zh_tw_locale = json.loads((STATIC_LOCALES_DIR / "zh-TW.json").read_text(encoding="utf-8"))
+
+    assert en_locale["settings"]["toggles"]["catAudio"] == "Cat Audio"
+    assert "Volume" not in en_locale["settings"]["toggles"]["catAudio"]
+    assert "音量" not in ja_locale["settings"]["toggles"]["catAudio"]
+    assert "볼륨" not in ko_locale["settings"]["toggles"]["catAudio"]
+    assert "Громкость" not in ru_locale["settings"]["toggles"]["catAudio"]
+    assert zh_cn_locale["settings"]["toggles"]["catAudio"] == "猫猫音效"
+    assert zh_tw_locale["settings"]["toggles"]["catAudio"] == "貓貓音效"
 
 
 def test_index_game_window_state_pauses_hidden_avatar_rendering():
@@ -1349,6 +1409,64 @@ def test_icebreaker_choice_prompt_reveal_delay_hides_buttons_not_state():
     assert "if (state.choicePrompt && state.choicePrompt.source === 'new_user_icebreaker') return;" in galgame_fetch_block
 
 
+def test_galgame_history_excludes_tutorial_guide_messages():
+    react_host = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    history_block = react_host.split("function getRecentGalgameMessageHistory()", 1)[1].split(
+        "function pickAcceptLanguage",
+        1,
+    )[0]
+
+    assert "if (isYuiGuideChatMessage(m)) continue;" in history_block
+    assert "if (!m) continue;" in history_block
+    assert history_block.index("if (!m) continue;") < history_block.index("if (isYuiGuideChatMessage(m)) continue;")
+
+
+def test_icebreaker_reset_clears_prompt_by_source_without_session_match():
+    react_host = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    assert "function clearChoicePromptBySource(source, reason)" in react_host
+    reset_block = react_host.split("function clearChoicePromptBySource(source, reason)", 1)[1].split(
+        "function clearIcebreakerChoicePrompt",
+        1,
+    )[0]
+    assert "if (normalizedSource !== 'new_user_icebreaker') return false;" in reset_block
+    assert "state.choicePrompt.source !== normalizedSource" in reset_block
+    assert "clearChoicePromptBySource:', normalizedSource, reason || ''" in reset_block
+    assert "state.choicePrompt = null;" in reset_block
+    assert "invalidatePendingGalgameRequest();" in reset_block
+
+    listeners_block = react_host.split("function bindBridgeEvents()", 1)[1].split(
+        "function init()",
+        1,
+    )[0]
+    assert "window.addEventListener('neko:new-user-icebreaker-reset'" in listeners_block
+    assert "clearChoicePromptBySource('new_user_icebreaker', 'new-user-icebreaker-reset')" in listeners_block
+
+
+def test_externalized_tutorial_chat_ready_replays_input_lock():
+    takeover = (Path(__file__).resolve().parents[2] / "static" / "tutorial" / "core" / "interaction-takeover.js").read_text(
+        encoding="utf-8"
+    )
+    bridge_bus = (Path(__file__).resolve().parents[2] / "static" / "tutorial" / "core" / "bridge-command-bus.js").read_text(
+        encoding="utf-8"
+    )
+    interpage = (Path(__file__).resolve().parents[2] / "static" / "app-interpage.js").read_text(encoding="utf-8")
+
+    assert "yui_guide_set_chat_input_locked: true" in bridge_bus
+    bridge_replay_block = interpage.split("function handleYuiGuideChatBridgeData(data)", 1)[1].split(
+        "function drainPendingYuiGuideChatBridgeQueue",
+        1,
+    )[0]
+    assert "case 'yui_guide_set_chat_input_locked':" in bridge_replay_block
+    assert "applyYuiGuideChatInputLocked(data.locked === true, data.reason || '')" in bridge_replay_block
+    ready_block = takeover.split("onExternalChatReady()", 1)[1].split(
+        "destroy()",
+        1,
+    )[0]
+    assert "this.setExternalizedChatInputLocked(true, 'external-chat-ready')" in ready_block
+
+
 def test_new_user_icebreaker_choice_listener_posts_context():
     script = (Path(__file__).resolve().parents[2] / "static" / "icebreaker/new-user-icebreaker.js").read_text(encoding="utf-8")
     choice_block = script.split("function completeFromChoice(detail)", 1)[1].split(
@@ -1611,6 +1729,32 @@ def test_desktop_compact_layout_change_resets_anchor_only_when_base_surface_chan
     assert "var layout = event && event.detail ? event.detail : window.__nekoDesktopCompactLayout;" in listener_block
     assert "handleDesktopCompactLayoutChange(layout || null);" in listener_block
     assert "compactSurfaceAnchorSnapshot = '';" not in listener_block
+
+
+def test_compact_surface_tracking_stops_idle_raf_but_keeps_active_sessions():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    tracking_block = script.split("function scheduleCompactMinimizeBallTracking()", 1)[1].split(
+        "function revealPendingCompactSurfaceOpen",
+        1,
+    )[0]
+    drag_start_block = script.split("function startDrag(clientX, clientY, options)", 1)[1].split(
+        "function updateDrag",
+        1,
+    )[0]
+
+    assert "var COMPACT_SURFACE_IDLE_SETTLE_FRAME_COUNT = 3;" in script
+    assert "var compactSurfaceTrackingSettleFramesRemaining = 0;" in script
+    assert "function isCompactSurfaceTrackingActive()" in script
+    assert "(dragState && dragState.compactSurface)" in script
+    assert "compactSurfaceDesktopDragActive" in script
+    assert "compactSurfaceResizeSession" in script
+    assert "compactSurfaceDesktopResizeActive" in script
+    assert "compactSurfaceTrackingSettleFramesRemaining = COMPACT_SURFACE_IDLE_SETTLE_FRAME_COUNT;" in tracking_block
+    assert "if (!trackingActive && compactSurfaceTrackingSettleFramesRemaining <= 0) {\n                return;\n            }" in tracking_block
+    assert "compactMinimizeBallFrame = window.requestAnimationFrame(loop);" in tracking_block
+    assert "COMPACT_SURFACE_IDLE_SYNC_INTERVAL_MS" not in script
+    assert "if (compactSurface) {\n            scheduleCompactMinimizeBallTracking();\n        }" in drag_start_block
 
 
 def test_electron_compact_chat_retires_full_surface_chrome():

@@ -119,6 +119,31 @@
         return null;
     }
 
+    function isNekoShortcutBlockedByTutorial(options) {
+        const normalizedOptions = options || {};
+        const host = normalizedOptions.window || root || {};
+        const doc = normalizedOptions.document || host.document;
+        const body = doc && doc.body;
+        const rootElement = doc && doc.documentElement;
+        const hasClass = function (node, className) {
+            return !!(node && node.classList && node.classList.contains(className));
+        };
+        return host.isInTutorial === true
+            || hasClass(body, 'yui-guide-home-ui-suppressed')
+            || hasClass(body, 'yui-guide-input-shield-active')
+            || hasClass(body, 'yui-guide-standalone-input-shield-active')
+            || hasClass(body, 'yui-guide-chat-buttons-disabled')
+            || hasClass(body, 'yui-guide-compact-chat-fixed')
+            || hasClass(rootElement, 'yui-guide-plugin-dashboard-running')
+            || hasClass(body, 'yui-guide-plugin-dashboard-running');
+    }
+
+    if (root && typeof root.isNekoShortcutBlockedByTutorial !== 'function') {
+        root.isNekoShortcutBlockedByTutorial = function () {
+            return isNekoShortcutBlockedByTutorial({ window: root });
+        };
+    }
+
     const tutorialGuideHelpersApi = loadTutorialGuideHelpersApi();
     const tutorialScopedResourcesApi = loadTutorialScopedResourcesApi();
     const tutorialBridgeCommandBusApi = loadTutorialBridgeCommandBusApi();
@@ -316,6 +341,7 @@
         normalizeTutorialScene,
         createTutorialTimelineEngine,
         createTutorialVisualRuntime,
+        isNekoShortcutBlockedByTutorial,
         syncPcSystemCursorHidden
     };
 });

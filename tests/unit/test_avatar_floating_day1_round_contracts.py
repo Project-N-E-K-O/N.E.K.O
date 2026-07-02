@@ -37,23 +37,23 @@ EXPECTED_DAY1_SCENES = [
 ]
 
 EXPECTED_DAY2_SCENES = [
-    "day2_intro_context",
-    "day2_personalization_space",
-    "day2_personalization_detail",
-    "day2_proactive_chat",
-    "day2_wrap_intro",
-    "day2_wrap_companion",
+    "day2_tool_toggle_intro",
+    "day2_avatar_tools",
+    "day2_avatar_tools_props",
+    "day2_galgame_entry",
+    "day2_galgame_choices",
     "day2_wrap",
+    "day2_wrap_ready",
 ]
 
 EXPECTED_DAY3_SCENES = [
-    "day3_tool_toggle_intro",
-    "day3_avatar_tools",
-    "day3_avatar_tools_props",
-    "day3_galgame_entry",
-    "day3_galgame_choices",
+    "day3_intro_context",
+    "day3_personalization_space",
+    "day3_personalization_detail",
+    "day3_proactive_chat",
+    "day3_wrap_intro",
+    "day3_wrap_companion",
     "day3_wrap",
-    "day3_wrap_ready",
 ]
 
 
@@ -152,63 +152,28 @@ def test_steps_registry_registers_global_resistance_steps_for_all_rounds():
     assert "if (!steps[id]) {" in source
 
 
-def test_day2_round_keeps_intro_text_and_moves_personalization_after_it():
+def test_day2_round_targets_compact_tool_flow_after_day_swap():
     source = DAY2_GUIDE_PATH.read_text(encoding="utf-8")
     round_block = source.split("round: {", 1)[1]
-    detail_block = round_block.split("id: 'day2_personalization_detail'", 1)[1].split(
-        "id: 'day2_proactive_chat'",
+    intro_block = round_block.split("id: 'day2_tool_toggle_intro'", 1)[1].split(
+        "id: 'day2_avatar_tools'",
         1,
     )[0]
-    wrap_intro_block = round_block.split("id: 'day2_wrap_intro'", 1)[1].split(
-        "id: 'day2_wrap_companion'",
+    avatar_tools_block = round_block.split("id: 'day2_avatar_tools'", 1)[1].split(
+        "id: 'day2_avatar_tools_props'",
         1,
     )[0]
-    wrap_companion_block = round_block.split("id: 'day2_wrap_companion'", 1)[1].split(
-        "id: 'day2_wrap'",
+    avatar_tools_props_block = round_block.split("id: 'day2_avatar_tools_props'", 1)[1].split(
+        "id: 'day2_galgame_entry'",
         1,
     )[0]
-    wrap_block = round_block.split("id: 'day2_wrap'", 1)[1]
 
     for scene_id in EXPECTED_DAY2_SCENES:
         assert f"id: '{scene_id}'" in round_block
     assert_scene_order(round_block, EXPECTED_DAY2_SCENES)
-    assert "昨天你一直在噼里啪啦打字，我还没听过你说话呢。" in round_block
-    assert "voiceKey: 'avatar_floating_day2_intro'" in round_block
-    assert "id: 'day2_screen_entry'" not in round_block
-    assert "id: 'day2_screen_entry_invite'" not in round_block
-    assert "cursorAction: 'wobble'" not in round_block
-    assert "target: '#${p}-menu-character'" in detail_block
-    assert "cursorAction: 'click'" in detail_block
-    assert "target: '#${p}-popup-settings'" not in detail_block
-    assert "target: 'chat-input'" in wrap_intro_block
-    assert "target: 'chat-input'" in wrap_companion_block
-    assert "target: 'chat-input'" in wrap_block
-
-
-def test_day3_round_targets_new_compact_tool_flow():
-    if not DAY3_GUIDE_PATH.exists():
-        pytest.skip("Day 3 guide is not shipped in this PR")
-    source = DAY3_GUIDE_PATH.read_text(encoding="utf-8")
-    round_block = source.split("round: {", 1)[1]
-    intro_block = round_block.split("id: 'day3_tool_toggle_intro'", 1)[1].split(
-        "id: 'day3_avatar_tools'",
-        1,
-    )[0]
-    avatar_tools_block = round_block.split("id: 'day3_avatar_tools'", 1)[1].split(
-        "id: 'day3_avatar_tools_props'",
-        1,
-    )[0]
-    avatar_tools_props_block = round_block.split("id: 'day3_avatar_tools_props'", 1)[1].split(
-        "id: 'day3_galgame_entry'",
-        1,
-    )[0]
-
-    for scene_id in EXPECTED_DAY3_SCENES:
-        assert f"id: '{scene_id}'" in round_block
-    assert_scene_order(round_block, EXPECTED_DAY3_SCENES)
-    assert "day3_avatar_tools_more" not in round_block
+    assert "day2_avatar_tools_more" not in round_block
     assert "avatarToolsMore" not in round_block
-    assert "avatar_floating_day3_avatar_tools_more" not in round_block
+    assert "avatar_floating_day2_avatar_tools_more" not in round_block
     assert "show-galgame-in-compact-tool-fan" not in round_block
     assert "cursorAction: 'wobble'" not in round_block
     assert "target: 'chat-capsule-input'" in intro_block
@@ -226,8 +191,43 @@ def test_day3_round_targets_new_compact_tool_flow():
     assert "target: 'chat-tool-toggle'" in round_block
     assert "target: 'chat-avatar-tools'" in round_block
     assert "target: 'chat-galgame'" in round_block
-    assert "day3_chat_tools" not in round_block
-    assert "day3_galgame_games" not in round_block
+    assert "day2_chat_tools" not in round_block
+    assert "day2_galgame_games" not in round_block
+
+
+def test_day3_round_keeps_intro_text_and_moves_personalization_after_day_swap():
+    if not DAY3_GUIDE_PATH.exists():
+        pytest.skip("Day 3 guide is not shipped in this PR")
+    source = DAY3_GUIDE_PATH.read_text(encoding="utf-8")
+    round_block = source.split("round: {", 1)[1]
+    detail_block = round_block.split("id: 'day3_personalization_detail'", 1)[1].split(
+        "id: 'day3_proactive_chat'",
+        1,
+    )[0]
+    wrap_intro_block = round_block.split("id: 'day3_wrap_intro'", 1)[1].split(
+        "id: 'day3_wrap_companion'",
+        1,
+    )[0]
+    wrap_companion_block = round_block.split("id: 'day3_wrap_companion'", 1)[1].split(
+        "id: 'day3_wrap'",
+        1,
+    )[0]
+    wrap_block = round_block.split("id: 'day3_wrap'", 1)[1]
+
+    for scene_id in EXPECTED_DAY3_SCENES:
+        assert f"id: '{scene_id}'" in round_block
+    assert_scene_order(round_block, EXPECTED_DAY3_SCENES)
+    assert "前两天你一直在噼里啪啦打字，我还没听过你说话呢。" in round_block
+    assert "voiceKey: 'avatar_floating_day3_intro'" in round_block
+    assert "id: 'day3_screen_entry'" not in round_block
+    assert "id: 'day3_screen_entry_invite'" not in round_block
+    assert "cursorAction: 'wobble'" not in round_block
+    assert "target: '#${p}-menu-character'" in detail_block
+    assert "cursorAction: 'click'" in detail_block
+    assert "target: '#${p}-popup-settings'" not in detail_block
+    assert "target: 'chat-input'" in wrap_intro_block
+    assert "target: 'chat-input'" in wrap_companion_block
+    assert "target: 'chat-input'" in wrap_block
 
 
 def test_day4_round_wrap_returns_to_capsule_input_like_day2_wrap():
@@ -865,8 +865,8 @@ def test_day1_intro_greeting_performance_operation_does_not_play_narration():
 
 def test_daily_intro_avatar_motion_presets_are_fixed_per_day():
     guide_specs = [
-        (DAY2_GUIDE_PATH, "day2_intro_context", "day2_personalization_space", "bottom-rise", None),
-        (DAY3_GUIDE_PATH, "day3_tool_toggle_intro", "day3_avatar_tools", "corner-peek", "bottom-left"),
+        (DAY2_GUIDE_PATH, "day2_tool_toggle_intro", "day2_avatar_tools", "corner-peek", "bottom-left"),
+        (DAY3_GUIDE_PATH, "day3_intro_context", "day3_personalization_space", "bottom-rise", None),
         (DAY4_GUIDE_PATH, "day4_intro_companion", "day4_chat_settings", "soft-approach", None),
         (DAY6_GUIDE_PATH, "day6_intro_agent", "day6_agent_status_master", "corner-peek", "bottom-right"),
         (DAY7_GUIDE_PATH, "day7_memory_review", "day7_memory_control", "bottom-rise-slow", None),
@@ -900,10 +900,10 @@ def test_daily_intro_avatar_motion_presets_are_fixed_per_day():
         assert "{ at: 0, command: 'operation.run', operation: 'daily-intro-avatar-performance', blocking: false }" in scene_block
 
 
-def test_day2_intro_bottom_rise_uses_slow_half_body_motion():
-    source = DAY2_GUIDE_PATH.read_text(encoding="utf-8")
-    scene_block = source.split("id: 'day2_intro_context'", 1)[1].split(
-        "id: 'day2_personalization_space'",
+def test_day3_intro_bottom_rise_uses_slow_half_body_motion_after_day_swap():
+    source = DAY3_GUIDE_PATH.read_text(encoding="utf-8")
+    scene_block = source.split("id: 'day3_intro_context'", 1)[1].split(
+        "id: 'day3_personalization_space'",
         1,
     )[0]
 
@@ -928,7 +928,7 @@ def test_day5_first_scene_runs_fixed_intro_avatar_motion_without_blocking_settin
 
 def test_peek_intro_avatar_motions_explicitly_restore_to_half_body():
     guide_specs = [
-        (DAY3_GUIDE_PATH, "day3_tool_toggle_intro", "day3_avatar_tools"),
+        (DAY2_GUIDE_PATH, "day2_tool_toggle_intro", "day2_avatar_tools"),
         (DAY5_GUIDE_PATH, "day5_character_settings", "day5_character_panic"),
         (DAY6_GUIDE_PATH, "day6_intro_agent", "day6_agent_status_master"),
     ]
@@ -944,7 +944,7 @@ def test_peek_intro_avatar_motions_explicitly_restore_to_half_body():
 
 def test_peek_intro_avatar_motions_keep_floating_buttons_attached_only_for_intro():
     guide_specs = [
-        (DAY3_GUIDE_PATH, "day3_tool_toggle_intro", "day3_avatar_tools"),
+        (DAY2_GUIDE_PATH, "day2_tool_toggle_intro", "day2_avatar_tools"),
         (DAY5_GUIDE_PATH, "day5_character_settings", "day5_character_panic"),
         (DAY6_GUIDE_PATH, "day6_intro_agent", "day6_agent_status_master"),
     ]
@@ -962,20 +962,20 @@ def test_peek_intro_avatar_motions_keep_floating_buttons_attached_only_for_intro
 
 
 def test_corner_intro_avatar_motions_rotate_floating_buttons_with_model_when_model_rotates():
-    day3_source = DAY3_GUIDE_PATH.read_text(encoding="utf-8")
+    day2_source = DAY2_GUIDE_PATH.read_text(encoding="utf-8")
     day5_source = DAY5_GUIDE_PATH.read_text(encoding="utf-8")
     day6_source = DAY6_GUIDE_PATH.read_text(encoding="utf-8")
     director_source = DIRECTOR_PATH.read_text(encoding="utf-8")
 
-    day3_block = day3_source.split("id: 'day3_tool_toggle_intro'", 1)[1].split(
-        "id: 'day3_avatar_tools'",
+    day2_block = day2_source.split("id: 'day2_tool_toggle_intro'", 1)[1].split(
+        "id: 'day2_avatar_tools'",
         1,
     )[0]
     day6_block = day6_source.split("id: 'day6_intro_agent'", 1)[1].split(
         "id: 'day6_agent_status_master'",
         1,
     )[0]
-    assert "rotateFloatingButtons: true" in day3_block
+    assert "rotateFloatingButtons: true" in day2_block
     assert "rotateFloatingButtons: true" in day6_block
 
     assert "rotateFloatingButtons: true" not in day5_source

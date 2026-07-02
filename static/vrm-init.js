@@ -414,6 +414,14 @@ async function initVRMModel() {
         if (window.__nekoStorageLocationStartupBarrier && typeof window.__nekoStorageLocationStartupBarrier.then === 'function') {
             await window.__nekoStorageLocationStartupBarrier;
         }
+        if (window.NekoAvatarFloatingBoot && typeof window.NekoAvatarFloatingBoot.shouldSkipUserModelBoot === 'function'
+            && window.NekoAvatarFloatingBoot.shouldSkipUserModelBoot()) {
+            if (typeof window.NekoAvatarFloatingBoot.markUserModelBootSkipped === 'function') {
+                window.NekoAvatarFloatingBoot.markUserModelBootSkipped('vrm-init');
+            }
+            console.log('[VRM Init] 新手教程启动预测命中，跳过用户 VRM 模型加载');
+            return;
+        }
         // 1. 等待配置加载完成
         if (window.pageConfigReady && typeof window.pageConfigReady.then === 'function') {
             await window.pageConfigReady;
@@ -624,6 +632,8 @@ async function initVRMModel() {
         window._isVRMLoading = false;
     }
 }
+
+window.initVRMModel = initVRMModel;
 
 // ── 主页面 VRM 待机动作轮换 ──────────────────────────────
 // 策略：优先在动画一轮播完（loop 事件）时切换，避免动作中途跳变；

@@ -50,10 +50,10 @@ test('OperationRegistry built-ins are registered declaratively', async () => {
 
     assert.ok(Array.isArray(registry.operationHandlers));
     assert.ok(registry.operationHandlers.length > 10);
-    assert.equal(await registry.run({ operation: 'day2-open-settings-personalization' }), 'settings-opened');
+    assert.equal(await registry.run({ operation: 'day3-open-settings-personalization' }), 'settings-opened');
     assert.equal(await registry.run({ operation: 'cleanup' }), true);
     assert.equal(await registry.run({ operation: 'day1-managed-scene-settled:done' }), true);
-    assert.equal(await registry.run({ id: 'day3_galgame_games' }), true);
+    assert.equal(await registry.run({ id: 'day2_galgame_games' }), true);
 });
 
 test('OperationRegistry routes daily intro greeting to generic performance only', async () => {

@@ -45,6 +45,273 @@
     let nekoModelCatTransitionToken = 0;
     let nekoModelCatTransitionActive = null;
     let nekoModelCatRevealPlaybackToken = 0;
+    const GOODBYE_RESOURCE_SUSPEND_STORAGE_KEY = 'neko-goodbye-resource-suspended';
+    let goodbyeResourceSuspendToken = 0;
+
+    function getGoodbyeResourceSnapshot() {
+        return S && S.goodbyeResourceSuspendSnapshot ? S.goodbyeResourceSuspendSnapshot : null;
+    }
+
+    function publishGoodbyeResourceState(snapshot, source) {
+        const suspended = !!(snapshot && snapshot.suspended);
+        const pending = !!(snapshot && snapshot.pending);
+        if (S) {
+            S.goodbyeResourceSuspended = suspended;
+            S.goodbyeResourceSuspendPending = pending;
+            S.goodbyeResourceSuspendSnapshot = snapshot || null;
+        }
+        window.goodbyeResourceSuspended = suspended;
+        window.__nekoGoodbyeResourceSuspendPending = pending;
+        window.__nekoGoodbyeResourceSuspendSnapshot = snapshot || null;
+        try {
+            localStorage.setItem(GOODBYE_RESOURCE_SUSPEND_STORAGE_KEY, suspended ? 'true' : 'false');
+        } catch (_) { /* ignore */ }
+        window.dispatchEvent(new CustomEvent('neko:goodbye-resource-suspend-state', {
+            detail: {
+                suspended,
+                pending,
+                source: source || 'goodbye-resource',
+                token: snapshot ? snapshot.token : goodbyeResourceSuspendToken,
+                activeModelType: snapshot ? snapshot.activeModelType : ''
+            }
+        }));
+    }
+
+    publishGoodbyeResourceState(null, 'goodbye-resource-boot');
+
+    window.isNekoGoodbyeResourceSuspended = function () {
+        return !!(S && S.goodbyeResourceSuspended);
+    };
+
+    window.isNekoGoodbyeResourceSuspendingOrSuspended = function () {
+        return !!(S && (S.goodbyeResourceSuspended || S.goodbyeResourceSuspendPending));
+    };
+
+    function isVisibleElement(el) {
+        if (!el) return false;
+        if (el.classList && el.classList.contains('hidden')) return false;
+        if (el.style && el.style.display === 'none') return false;
+        try {
+            const style = window.getComputedStyle ? window.getComputedStyle(el) : null;
+            if (style && (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0')) {
+                return false;
+            }
+        } catch (_) { /* ignore */ }
+        return true;
+    }
+
+    function isElementVisibleById(id) {
+        return isVisibleElement(document.getElementById(id));
+    }
+
+    function getActiveGoodbyeModelType(fallbackType) {
+        if (fallbackType) return fallbackType;
+        if (isElementVisibleById('mmd-container')) return 'mmd';
+        if (isElementVisibleById('vrm-container')) return 'vrm';
+        const configured = (window.lanlan_config?.model_type || '').toLowerCase();
+        if (configured === 'pngtuber' && isElementVisibleById('pngtuber-container')) return 'pngtuber';
+        return 'live2d';
+    }
+
+    function getModelManagerByType(type) {
+        if (type === 'live2d') return window.live2dManager;
+        if (type === 'vrm') return window.vrmManager;
+        if (type === 'mmd') return window.mmdManager;
+        if (type === 'pngtuber') return window.pngtuberManager;
+        return null;
+    }
+
+    function isModelRenderingActive(type, manager) {
+        if (!manager) return false;
+        if (type === 'live2d') {
+            const ticker = manager.pixi_app && manager.pixi_app.ticker;
+            return !!(ticker && ticker.started !== false);
+        }
+        if (type === 'vrm' || type === 'mmd') {
+            return !!manager._animationFrameId;
+        }
+        if (type === 'pngtuber') {
+            const container = manager.container || document.getElementById('pngtuber-container');
+            return !!(container && container.style.display !== 'none' &&
+                !(container.classList && container.classList.contains('hidden')));
+        }
+        return false;
+    }
+
+    function pauseModelRenderingForGoodbye(snapshot) {
+        const activeModelType = snapshot && snapshot.activeModelType;
+        ['live2d', 'vrm', 'mmd', 'pngtuber'].forEach((type) => {
+            const manager = getModelManagerByType(type);
+            if (!manager || typeof manager.pauseRendering !== 'function') return;
+            if (activeModelType !== type && !isModelRenderingActive(type, manager)) return;
+            try {
+                manager.pauseRendering();
+                snapshot.pausedByCat[type] = true;
+            } catch (error) {
+                console.warn('[GoodbyeResource] pauseRendering failed:', type, error);
+            }
+        });
+    }
+
+    function resumeModelRenderingFromGoodbye(snapshot) {
+        if (!snapshot || !snapshot.pausedByCat) return;
+        ['live2d', 'vrm', 'mmd', 'pngtuber'].forEach((type) => {
+            if (!snapshot.pausedByCat[type]) return;
+            const manager = getModelManagerByType(type);
+            if (!manager || typeof manager.resumeRendering !== 'function') return;
+            try {
+                manager.resumeRendering();
+            } catch (error) {
+                console.warn('[GoodbyeResource] resumeRendering failed:', type, error);
+            }
+        });
+    }
+
+    function isSubtitleDisplayVisible() {
+        return isVisibleElement(document.getElementById('subtitle-display'));
+    }
+
+    function wasSubtitleVisibleBeforeGoodbyeSnapshot() {
+        try {
+            if (window.subtitleBridge && typeof window.subtitleBridge.wasVisibleBeforeGoodbye === 'function' &&
+                window.subtitleBridge.wasVisibleBeforeGoodbye()) {
+                return true;
+            }
+        } catch (_) { /* ignore */ }
+        return isSubtitleDisplayVisible();
+    }
+
+    function isAgentHudVisible() {
+        const hud = document.getElementById('agent-task-hud');
+        return !!(hud && hud.style.display !== 'none' && hud.style.opacity !== '0');
+    }
+
+    function hideSubtitleSettingsDomForGoodbye() {
+        const panel = document.getElementById('subtitle-settings-panel');
+        if (panel) {
+            panel.classList.add('hidden');
+            panel.style.opacity = '0';
+        }
+        const settingsBtn = document.getElementById('subtitle-settings-btn');
+        if (settingsBtn) {
+            settingsBtn.setAttribute('aria-expanded', 'false');
+        }
+    }
+
+    function hideGoodbyeAuxiliaryWindows(snapshot) {
+        try {
+            if (window.subtitleBridge && typeof window.subtitleBridge.suspendForGoodbye === 'function') {
+                window.subtitleBridge.suspendForGoodbye({ source: 'goodbye-resource-suspend' });
+            }
+        } catch (error) {
+            console.warn('[GoodbyeResource] subtitle suspend failed:', error);
+        }
+        hideSubtitleSettingsDomForGoodbye();
+        try {
+            if (window.nekoSubtitleWindow && typeof window.nekoSubtitleWindow.hide === 'function') {
+                window.nekoSubtitleWindow.hide();
+            }
+        } catch (_) { /* ignore */ }
+        try {
+            if (window.AgentHUD && typeof window.AgentHUD.hideAgentTaskHUD === 'function') {
+                window.AgentHUD.hideAgentTaskHUD();
+            }
+            if (typeof window.stopAgentTaskPolling === 'function') {
+                window.stopAgentTaskPolling({ source: 'goodbye-resource-suspend' });
+            }
+            if (window.nekoAgentHud && typeof window.nekoAgentHud.hide === 'function') {
+                window.nekoAgentHud.hide();
+            }
+        } catch (error) {
+            console.warn('[GoodbyeResource] Agent HUD suspend failed:', error);
+        }
+        snapshot.subtitleWindowHiddenByCat = true;
+        snapshot.agentHudHiddenByCat = true;
+    }
+
+    function beginGoodbyeResourceSuspend(options = {}) {
+        const token = ++goodbyeResourceSuspendToken;
+        const activeModelType = getActiveGoodbyeModelType(options.activeModelType);
+        const snapshot = {
+            token,
+            pending: true,
+            suspended: false,
+            activeModelType,
+            pausedByCat: { live2d: false, vrm: false, mmd: false, pngtuber: false },
+            subtitleWindowWasVisible: wasSubtitleVisibleBeforeGoodbyeSnapshot(),
+            agentHudWasVisible: isAgentHudVisible(),
+            subtitleWindowHiddenByCat: false,
+            agentHudHiddenByCat: false
+        };
+        publishGoodbyeResourceState(snapshot, 'goodbye-resource-pending');
+        return token;
+    }
+
+    function completeGoodbyeResourceSuspend(token) {
+        const snapshot = getGoodbyeResourceSnapshot();
+        if (!snapshot || snapshot.token !== token) return;
+        if (typeof window.isNekoGoodbyeModeActive === 'function' && !window.isNekoGoodbyeModeActive()) {
+            publishGoodbyeResourceState(null, 'goodbye-resource-stale');
+            return;
+        }
+        snapshot.pending = false;
+        snapshot.suspended = true;
+        publishGoodbyeResourceState(snapshot, 'goodbye-resource-suspended');
+        hideGoodbyeAuxiliaryWindows(snapshot);
+        pauseModelRenderingForGoodbye(snapshot);
+        publishGoodbyeResourceState(snapshot, 'goodbye-resource-paused');
+    }
+
+    function restoreGoodbyeResourceSuspend(reason) {
+        goodbyeResourceSuspendToken += 1;
+        const snapshot = getGoodbyeResourceSnapshot();
+        if (!snapshot) {
+            publishGoodbyeResourceState(null, reason || 'goodbye-resource-restore-empty');
+            return;
+        }
+        resumeModelRenderingFromGoodbye(snapshot);
+        publishGoodbyeResourceState(null, reason || 'goodbye-resource-restoring');
+        try {
+            if (window.subtitleBridge && typeof window.subtitleBridge.restoreAfterGoodbye === 'function') {
+                window.subtitleBridge.restoreAfterGoodbye({
+                    source: reason || 'goodbye-resource-restore',
+                    restoreWindow: true
+                });
+            }
+        } catch (error) {
+            console.warn('[GoodbyeResource] subtitle restore failed:', error);
+        }
+        if (snapshot.subtitleWindowWasVisible) {
+            try {
+                if (window.nekoSubtitleWindow && typeof window.nekoSubtitleWindow.show === 'function') {
+                    window.nekoSubtitleWindow.show();
+                }
+            } catch (_) { /* ignore */ }
+        }
+        if (snapshot.agentHudWasVisible) {
+            try {
+                if (window.AgentHUD && typeof window.AgentHUD.showAgentTaskHUD === 'function') {
+                    window.AgentHUD.showAgentTaskHUD();
+                }
+                if (typeof window.checkAndToggleTaskHUD === 'function') {
+                    window.checkAndToggleTaskHUD();
+                }
+                if (window.nekoAgentHud && typeof window.nekoAgentHud.show === 'function') {
+                    window.nekoAgentHud.show();
+                }
+            } catch (error) {
+                console.warn('[GoodbyeResource] Agent HUD restore failed:', error);
+            }
+        }
+    }
+
+    mod.restoreGoodbyeResourceSuspend = restoreGoodbyeResourceSuspend;
+    mod.completeGoodbyeResourceSuspend = completeGoodbyeResourceSuspend;
+    window.addEventListener('neko:goodbye-state-cleared', (event) => {
+        const detail = event && event.detail ? event.detail : {};
+        const reason = detail.reason || 'goodbye-state-cleared';
+        restoreGoodbyeResourceSuspend(reason);
+    });
 
     // ================================================================
     //  1. Status toast  (app.js lines 86-145)
@@ -4509,6 +4776,12 @@
                 pngtuberContainer.style.display !== 'none' &&
                 !pngtuberContainer.classList.contains('hidden');
             console.log('[App] 判断当前模型类型 - isVrmActive:', isVrmActive, 'isMmdActive:', isMmdActive);
+            const activeGoodbyeModelType = isMmdActive
+                ? 'mmd'
+                : (isVrmActive ? 'vrm' : (isPngtuberActive ? 'pngtuber' : 'live2d'));
+            const goodbyeResourceToken = beginGoodbyeResourceSuspend({
+                activeModelType: activeGoodbyeModelType
+            });
 
             // VRM 也先仅禁用交互
             const vrmCanvas = document.getElementById('vrm-canvas');
@@ -4594,6 +4867,7 @@
                     pngtuberContainer.style.setProperty('visibility', 'hidden', 'important');
                     pngtuberContainer.style.setProperty('display', 'none', 'important');
                 }
+                completeGoodbyeResourceSuspend(goodbyeResourceToken);
             }, NEKO_MODEL_CAT_TRANSITION_DURATION_MS);
 
             // 隐藏所有浮动按钮和锁按钮
@@ -4904,7 +5178,6 @@
                 window._goodbyeHideTimerId = null;
                 console.log('[App] handleReturnClick: 已取消 goodbye 延迟隐藏定时器');
             }
-
             // 同步 window 中的设置值到状态
             if (typeof window.focusModeEnabled !== 'undefined') {
                 S.focusModeEnabled = window.focusModeEnabled;
@@ -4938,6 +5211,7 @@
 
             console.log('[App] 标志清除后 - live2dManager._goodbyeClicked:', window.live2dManager?._goodbyeClicked);
             console.log('[App] 标志清除后 - vrmManager._goodbyeClicked:', window.vrmManager?._goodbyeClicked);
+            restoreGoodbyeResourceSuspend('return-click');
 
             // 隐藏"请她回来"按钮
             const live2dReturnButtonContainer = document.getElementById('live2d-return-button-container');
