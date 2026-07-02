@@ -361,6 +361,7 @@
             10000,
             Math.max(0, Math.floor(Number(durationMs) || 0))
         );
+        syncPcSystemCursorHidden(false, reason, options);
         relayPcTutorialMessage({
             action: 'yui_guide_system_cursor_temporary_reveal',
             durationMs: normalizedDurationMs,

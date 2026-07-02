@@ -224,14 +224,19 @@ test('common helper relays temporary PC system cursor reveal duration', () => {
         }
     });
 
-    assert.equal(chatRelays.length, 1);
+    assert.equal(chatRelays.length, 2);
     assert.deepEqual(chatRelays[0], petRelays[0]);
     assert.deepEqual(chatRelays[0], channelMessages[0]);
-    assert.equal(chatRelays[0].action, 'yui_guide_system_cursor_temporary_reveal');
-    assert.equal(chatRelays[0].durationMs, 2000);
+    assert.equal(chatRelays[0].action, 'yui_guide_system_cursor_visibility');
+    assert.equal(chatRelays[0].hidden, false);
     assert.equal(chatRelays[0].tutorialRunId, 'run-cursor');
     assert.equal(chatRelays[0].reason, 'interrupt_resist_light');
     assert.equal(typeof chatRelays[0].timestamp, 'number');
+    assert.equal(chatRelays[1].action, 'yui_guide_system_cursor_temporary_reveal');
+    assert.equal(chatRelays[1].durationMs, 2000);
+    assert.equal(chatRelays[1].tutorialRunId, 'run-cursor');
+    assert.equal(chatRelays[1].reason, 'interrupt_resist_light');
+    assert.equal(typeof chatRelays[1].timestamp, 'number');
 });
 
 test('common helper relays PC tutorial lifecycle start before cursor visibility', () => {
@@ -1457,6 +1462,7 @@ test('director routes resistance interrupts through ResistanceController boundar
     const source = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/director.js'), 'utf8');
     const resistanceSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/visual/resistance-controllers.js'), 'utf8');
     const cssSource = fs.readFileSync(path.join(repoRoot, 'static', 'css/yui-guide.css'), 'utf8');
+    const pluginRuntimeSource = fs.readFileSync(path.join(repoRoot, 'frontend', 'plugin-manager/src/yui-guide-runtime.ts'), 'utf8');
     const resetSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/avatar/floating-guide-reset.js'), 'utf8');
     const directorSource = source.split('    class YuiGuideDirector {')[1];
     const constructorBlock = directorSource.split(
@@ -1511,10 +1517,30 @@ test('director routes resistance interrupts through ResistanceController boundar
     assert.match(resistanceControllerBlock, /director\.playLightResistance\(x,\s*y,\s*\{/);
     assert.match(resistanceControllerBlock, /this\.lightResistanceActive = true;/);
     assert.match(resistanceControllerBlock, /director\.revealSystemCursorTemporarily\(2000,\s*'interrupt_resist_light'\);/);
+    assert.match(resistanceControllerBlock, /normalizedOptions\.forceSystemCursorReveal/);
     assert.match(directorSource, /revealSystemCursorTemporarily\(durationMs = 2000,\s*reason = 'tutorial-temporary-reveal'\)/);
     assert.match(directorSource, /classList\.add\('yui-user-cursor-revealed',\s*'yui-resistance-cursor-reveal'\)/);
+    assert.match(directorSource, /syncPcSystemCursorTemporaryReveal\(normalizedDurationMs,\s*reason\)/);
     assert.match(directorSource, /window\.setTimeout\(\(\) => \{[\s\S]*?this\.suppressResistanceCursorReveal\(\);[\s\S]*?\},\s*normalizedDurationMs\)/);
+    assert.match(directorSource, /notifyPluginDashboardSystemCursorTemporaryReveal\(durationMs,\s*reason\) \{/);
+    assert.match(directorSource, /type: PLUGIN_DASHBOARD_SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT/);
+    assert.match(directorSource, /dispatchDesktopPluginDashboardSystemCursorTemporaryReveal\(payload\);/);
+    assert.match(directorSource, /new CustomEvent\(DESKTOP_PLUGIN_DASHBOARD_SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT/);
+    assert.match(directorSource, /handlePluginDashboardInterruptRequest[\s\S]*?this\.notifyPluginDashboardSystemCursorTemporaryReveal\(2000,\s*'interrupt_resist_light'\);[\s\S]*?await this\.playLightResistance\(x,\s*y,\s*\{[\s\S]*?suppressCursorReveal: true,[\s\S]*?forceSystemCursorReveal: true/);
+    assert.match(directorSource, /handlePluginDashboardInterruptRequest[\s\S]*?await this\.playLightResistance\(x,\s*y,\s*\{[\s\S]*?suppressCursorReveal: true,[\s\S]*?forceSystemCursorReveal: true/);
+    assert.match(pluginRuntimeSource, /const SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT = 'neko:yui-guide:plugin-dashboard:system-cursor-temporary-reveal'/);
+    assert.match(pluginRuntimeSource, /const DESKTOP_SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT = 'neko:yui-guide:desktop-system-cursor-temporary-reveal'/);
+    assert.match(pluginRuntimeSource, /revealSystemCursorTemporarily\(durationMs = 2000\) \{/);
+    assert.match(pluginRuntimeSource, /html\.yui-guide-plugin-dashboard-running\.yui-taking-over\.yui-resistance-cursor-reveal/);
+    assert.match(pluginRuntimeSource, /handleSystemCursorTemporaryRevealData\(data: unknown\) \{/);
+    assert.match(pluginRuntimeSource, /if \(!sessionId \|\| !this\.isCurrentRun\(sessionId\)\) \{/);
+    assert.match(pluginRuntimeSource, /handleDesktopSystemCursorTemporaryRevealEvent\(event: Event\) \{/);
+    assert.match(pluginRuntimeSource, /data\.type === SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT[\s\S]*?runtime\.handleSystemCursorTemporaryRevealData\(data\)/);
+    assert.match(pluginRuntimeSource, /window\.addEventListener\(DESKTOP_SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT,\s*handleDesktopSystemCursorTemporaryRevealEvent,\s*true\)/);
+    assert.match(pluginRuntimeSource, /window\.removeEventListener\(DESKTOP_SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT,\s*handleDesktopSystemCursorTemporaryRevealEvent,\s*true\)/);
     assert.match(cssSource, /body\.yui-taking-over\.yui-user-cursor-revealed/);
+    assert.match(cssSource, /body\.yui-taking-over\.yui-user-cursor-revealed #live2d-canvas/);
+    assert.match(cssSource, /body\.yui-taking-over\.yui-resistance-cursor-reveal #react-chat-window-drag-handle/);
     assert.match(cssSource, /cursor:\s*auto !important/);
     assert.match(resistanceControllerBlock, /director\.pauseCurrentSceneForResistance\(\);/);
     assert.match(resistanceControllerBlock, /director\.interruptNarrationForResistance\(\);/);

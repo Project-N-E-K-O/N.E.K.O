@@ -618,8 +618,10 @@
     const PLUGIN_DASHBOARD_NARRATION_FINISHED_EVENT = 'neko:yui-guide:plugin-dashboard:narration-finished';
     const PLUGIN_DASHBOARD_INTERRUPT_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-request';
     const PLUGIN_DASHBOARD_INTERRUPT_ACK_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-ack';
+    const PLUGIN_DASHBOARD_SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT = 'neko:yui-guide:plugin-dashboard:system-cursor-temporary-reveal';
     const DESKTOP_PLUGIN_DASHBOARD_INTERRUPT_ACK_EVENT = 'neko:yui-guide:desktop-interrupt-ack';
     const DESKTOP_PLUGIN_DASHBOARD_NARRATION_FINISHED_EVENT = 'neko:yui-guide:desktop-narration-finished';
+    const DESKTOP_PLUGIN_DASHBOARD_SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT = 'neko:yui-guide:desktop-system-cursor-temporary-reveal';
     const DESKTOP_PLUGIN_DASHBOARD_SKIP_REQUEST_EVENT = 'neko:yui-guide:desktop-skip-request';
     const PLUGIN_DASHBOARD_SKIP_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:skip-request';
     const DEFAULT_TUTORIAL_MODEL_MANAGER_LANLAN_NAME = 'ATLS';
@@ -10945,6 +10947,16 @@
             }
         }
 
+        dispatchDesktopPluginDashboardSystemCursorTemporaryReveal(payload) {
+            try {
+                window.dispatchEvent(new CustomEvent(DESKTOP_PLUGIN_DASHBOARD_SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT, {
+                    detail: payload && typeof payload === 'object' ? payload : {}
+                }));
+            } catch (error) {
+                console.warn('[YuiGuide] 发送桌面插件面板真实鼠标临时显示失败:', error);
+            }
+        }
+
         notifyPluginDashboardNarrationFinished() {
             const handoff = this.pluginDashboardHandoff;
             if (!handoff || !handoff.sessionId) {
@@ -10966,6 +10978,34 @@
                 windowRef.postMessage(payload, handoff.targetOrigin || this.getPluginDashboardExpectedOrigin());
             } catch (error) {
                 console.warn('[YuiGuide] 向插件面板发送 narration finished 失败:', error);
+            }
+        }
+
+        notifyPluginDashboardSystemCursorTemporaryReveal(durationMs, reason) {
+            const handoff = this.pluginDashboardHandoff;
+            if (!handoff || !handoff.sessionId) {
+                return false;
+            }
+
+            const payload = {
+                type: PLUGIN_DASHBOARD_SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT,
+                sessionId: handoff.sessionId,
+                durationMs: Math.min(10000, Math.max(0, Math.floor(Number(durationMs) || 0))),
+                reason: typeof reason === 'string' && reason.trim() ? reason.trim() : 'tutorial-temporary-reveal'
+            };
+            this.dispatchDesktopPluginDashboardSystemCursorTemporaryReveal(payload);
+
+            const windowRef = handoff && handoff.windowRef ? handoff.windowRef : null;
+            if (!windowRef || windowRef.closed) {
+                return true;
+            }
+
+            try {
+                windowRef.postMessage(payload, handoff.targetOrigin || this.getPluginDashboardExpectedOrigin());
+                return true;
+            } catch (error) {
+                console.warn('[YuiGuide] 向插件面板发送真实鼠标临时显示失败:', error);
+                return false;
             }
         }
 
@@ -12568,8 +12608,10 @@
 
             if (kind === 'interrupt_resist_light' && x !== null && y !== null) {
                 try {
+                    this.notifyPluginDashboardSystemCursorTemporaryReveal(2000, 'interrupt_resist_light');
                     await this.playLightResistance(x, y, {
-                        suppressCursorReveal: true
+                        suppressCursorReveal: true,
+                        forceSystemCursorReveal: true
                     });
                 } catch (error) {
                     console.warn('[YuiGuide] 执行插件面板轻微抵抗失败:', error);
