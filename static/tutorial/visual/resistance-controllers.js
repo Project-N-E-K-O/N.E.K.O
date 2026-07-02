@@ -16,6 +16,7 @@
         'interrupt_resist_light_3'
     ]);
     const DEFAULT_INTERRUPT_DISTANCE = 56;
+    const DEFAULT_CURSOR_RESISTANCE_DISTANCE = 30;
     const DEFAULT_INTERRUPT_ACCELERATION_THRESHOLD = 0.16;
     const DEFAULT_INTERRUPT_QUALIFYING_MOVE_STREAK = 3;
     const DEFAULT_RESISTANCE_LINES = Object.freeze([
@@ -114,6 +115,7 @@
             if (this.overlay && typeof this.overlay.hideBubble === 'function') {
                 this.overlay.hideBubble();
             }
+            call(this.overlay, 'emphasizeControlBanner', null);
 
             call(this.callbacks, 'appendGuideChatMessage', null, resistanceMessage.message, {
                 textKey: resistanceMessage.textKey,
@@ -419,7 +421,9 @@
                     const initialDy = sampleDy === null ? 0 : sampleDy;
                     const initialDistance = Math.hypot(initialDx, initialDy);
                     director.noteUserCursorRevealSuppressionAttempt(initialDistance, now);
-                    director.playCursorResistanceToUserMotion(x, y, initialDistance, initialDx, initialDy);
+                    if (initialDistance > DEFAULT_CURSOR_RESISTANCE_DISTANCE) {
+                        director.playCursorResistanceToUserMotion(x, y, initialDistance, initialDx, initialDy);
+                    }
                 }
                 director.interruptQualifyingMoveStreak = 0;
                 return;
@@ -441,7 +445,9 @@
             };
 
             director.noteUserCursorRevealSuppressionAttempt(distance, now);
-            director.playCursorResistanceToUserMotion(x, y, distance, dx, dy);
+            if (distance > DEFAULT_CURSOR_RESISTANCE_DISTANCE) {
+                director.playCursorResistanceToUserMotion(x, y, distance, dx, dy);
+            }
 
             if (
                 distance < DEFAULT_INTERRUPT_DISTANCE
@@ -472,10 +478,14 @@
                 return;
             }
 
+            if (typeof director.revealRealCursorForInterruptCount === 'function') {
+                director.revealRealCursorForInterruptCount();
+            }
             director.lastPointerPoint = null;
             director.playLightResistance(x, y, {
                 motionDx: dx,
-                motionDy: dy
+                motionDy: dy,
+                suppressCursorReveal: true
             });
         }
 
@@ -510,6 +520,9 @@
 
             if (director.overlay && typeof director.overlay.hideBubble === 'function') {
                 director.overlay.hideBubble();
+            }
+            if (director.overlay && typeof director.overlay.emphasizeControlBanner === 'function') {
+                director.overlay.emphasizeControlBanner();
             }
 
             director.appendGuideChatMessage(resistanceMessage.message, {

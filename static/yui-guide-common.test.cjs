@@ -320,10 +320,10 @@ test('tutorial start activates PC lifecycle before hiding the system cursor', ()
         1
     )[0];
 
-    assert.match(emitBlock, /this\.syncPcTutorialLifecycleStarted\('tutorial-started'\);/);
+    assert.match(emitBlock, /this\.relayYuiGuideTutorialLifecycleStarted\(page,\s*source\);/);
     assert.match(emitBlock, /this\.syncPcSystemCursorHidden\(true, 'tutorial-started'\);/);
     assert.ok(
-        emitBlock.indexOf("this.syncPcTutorialLifecycleStarted('tutorial-started');")
+        emitBlock.indexOf('this.relayYuiGuideTutorialLifecycleStarted(page, source);')
             < emitBlock.indexOf("this.syncPcSystemCursorHidden(true, 'tutorial-started');"),
         'PC tutorial lifecycle start must be relayed before the system cursor hide request'
     );
@@ -2469,7 +2469,13 @@ test('tutorial skip button reuses the manager tutorial end lifecycle', () => {
     assert.match(managerSource, /vrmCanvas: readPointerEvents\('vrm-canvas'\)/);
     assert.match(managerSource, /mmdCanvas: readPointerEvents\('mmd-canvas'\)/);
     assert.match(avatarInteractionRestoreBlock, /const hasSnapshotPointerEvents = snapshot\.pointerEvents/);
-    assert.match(avatarInteractionRestoreBlock, /element\.style\.pointerEvents = snapshot\.pointerEvents\[pointerKey\] \|\| '';/);
+    assert.match(avatarInteractionRestoreBlock, /const snapshotPointerEvents = hasSnapshotPointerEvents \? snapshot\.pointerEvents\[pointerKey\] : null;/);
+    assert.match(avatarInteractionRestoreBlock, /function restoreAvatarPointerEvents\(element, elementId, snapshotPointerEvents, hasSnapshotPointerEvents\)/);
+    assert.match(avatarInteractionRestoreBlock, /const isActiveAvatarContainer = elementId === `\$\{activePrefix\}-container`;/);
+    assert.match(avatarInteractionRestoreBlock, /if \(isActiveAvatarContainer && \(activePrefix === 'live2d' \|\| activePrefix === 'pngtuber'\)\) \{[\s\S]*?element\.style\.setProperty\('pointer-events', 'none', 'important'\);[\s\S]*?return;/);
+    assert.match(avatarInteractionRestoreBlock, /element\.style\.pointerEvents = snapshotPointerEvents;/);
+    assert.match(avatarInteractionRestoreBlock, /restoreAvatarPointerEvents\(element, elementId, snapshotPointerEvents, hasSnapshotPointerEvents\);/);
+    assert.doesNotMatch(avatarInteractionRestoreBlock, /element\.style\.pointerEvents = snapshot\.pointerEvents\[pointerKey\] \|\| '';/);
     assert.match(avatarInteractionRestoreBlock, /activePrefix === 'live2d' \|\| activePrefix === 'pngtuber'/);
     assert.match(managerSource, /modelType === 'live3d'/);
     assert.match(managerSource, /live3d_sub_type/);

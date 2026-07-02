@@ -278,7 +278,11 @@ def test_avatar_floating_guides_hide_real_cursor_during_takeover_and_show_banner
     assert "Double .yui-taking-over to out-specificity earlier cursor:auto !important rules." in guide_css
     assert "body.yui-taking-over.yui-taking-over," in guide_css
     assert re.search(
-        r"body\.yui-taking-over\.yui-taking-over,[\s\S]*?body\.yui-taking-over \[data-yui-cursor-hidden=\"true\"\][\s\S]*?body\.yui-taking-over #neko-tutorial-skip-btn[\s\S]*?cursor\s*:\s*none\s*!important",
+        r"body\.yui-taking-over\.yui-taking-over,[\s\S]*?body\.yui-taking-over \[data-yui-cursor-hidden=\"true\"\][\s\S]*?cursor\s*:\s*none\s*!important",
+        guide_css,
+    )
+    assert re.search(
+        r"body\.yui-taking-over\.yui-taking-over #neko-tutorial-skip-btn,[\s\S]*?body\.yui-taking-over\.yui-taking-over \[data-yui-emergency-exit\] \*[\s\S]*?cursor\s*:\s*auto\s*!important",
         guide_css,
     )
     assert "body.yui-taking-over.yui-resistance-cursor-reveal" not in guide_css
@@ -293,23 +297,43 @@ def test_avatar_floating_guides_hide_real_cursor_during_takeover_and_show_banner
     assert "DEFAULT_RESISTANCE_CURSOR_REVEAL_MS" not in plugin_runtime_source
     assert "yui-guide-control-banner" in guide_css
     assert ".yui-guide-control-banner.is-visible" in guide_css
+    assert ".yui-guide-control-banner.is-interrupt-emphasis" in guide_css
     assert "transform: translate(-50%, 0);" in guide_css
+    assert "translate(-50%, -50%) scale(3)" in guide_css
+    assert "--yui-guide-control-banner-emphasis-ease: cubic-bezier(0.16, 1, 0.3, 1)" in guide_css
+    assert "top 420ms var(--yui-guide-control-banner-emphasis-ease)" in guide_css
     assert "yui-guide-control-banner" in overlay_source
     assert "CONTROL_BANNER_TEXT_KEY = 'tutorial.yuiGuide.controlBanner'" in overlay_source
     assert "syncControlBanner()" in overlay_source
+    assert "emphasizeControlBanner(durationMs = CONTROL_BANNER_INTERRUPT_EMPHASIS_MS)" in overlay_source
+    assert "CONTROL_BANNER_INTERRUPT_EMPHASIS_MS = 2000" in overlay_source
+    assert "controlBannerEmphasisActive" in overlay_source
+    assert "this.controlBanner.classList.toggle('is-interrupt-emphasis', isEmphasized);" in overlay_source
     assert "renderedControlBannerText" in overlay_source
     assert "renderedControlBannerVisible" in overlay_source
+    assert "renderedControlBannerEmphasis" in overlay_source
     assert "this.renderedControlBannerText === text" in overlay_source
     assert "this.renderedControlBannerVisible === isVisible" in overlay_source
+    assert "this.renderedControlBannerEmphasis === isEmphasized" in overlay_source
     assert "yui-guide-plugin-control-banner" in plugin_runtime_source
     assert ".yui-guide-plugin-control-banner.is-visible" in plugin_runtime_source
+    assert ".yui-guide-plugin-control-banner.is-interrupt-emphasis" in plugin_runtime_source
     assert "transform: translate(-50%, 0);" in plugin_runtime_source
+    assert "translate(-50%, -50%) scale(3)" in plugin_runtime_source
+    assert "--yui-guide-plugin-control-banner-emphasis-ease: cubic-bezier(0.16, 1, 0.3, 1)" in plugin_runtime_source
+    assert "top 420ms var(--yui-guide-plugin-control-banner-emphasis-ease)" in plugin_runtime_source
     assert "CONTROL_BANNER_TEXT_KEY = 'tutorial.yuiGuide.controlBanner'" in plugin_runtime_source
+    assert "CONTROL_BANNER_INTERRUPT_EMPHASIS_MS = 2000" in plugin_runtime_source
     assert "syncControlBanner(active?: boolean)" in plugin_runtime_source
+    assert "emphasizeControlBanner(durationMs = CONTROL_BANNER_INTERRUPT_EMPHASIS_MS)" in plugin_runtime_source
+    assert "controlBannerEmphasisActive" in plugin_runtime_source
+    assert "this.controlBanner.classList.toggle('is-interrupt-emphasis', isEmphasized)" in plugin_runtime_source
     assert "renderedControlBannerText" in plugin_runtime_source
     assert "renderedControlBannerVisible" in plugin_runtime_source
+    assert "renderedControlBannerEmphasis" in plugin_runtime_source
     assert "this.renderedControlBannerText === text" in plugin_runtime_source
     assert "this.renderedControlBannerVisible === isVisible" in plugin_runtime_source
+    assert "this.renderedControlBannerEmphasis === isEmphasized" in plugin_runtime_source
 
     for locale_name in ["en", "ja", "ko", "zh-CN", "zh-TW", "ru", "pt", "es"]:
         locale = _read_static_locale(locale_name)
@@ -388,6 +412,33 @@ def test_avatar_floating_guides_hide_real_cursor_during_takeover_and_show_banner
     assert "action: 'yui_guide_system_cursor_visibility'" in common_source
     assert "action: 'yui_guide_system_cursor_visibility'" not in manager_source
     assert "action: 'yui_guide_system_cursor_visibility'" not in director_source
+    assert "ensurePcTutorialGlobalOverlayStarted(reason = 'tutorial-started')" in manager_source
+    assert "const overlay = window.nekoTutorialOverlay;" in manager_source
+    assert "overlay.begin({" in manager_source
+    assert "relayYuiGuideTutorialLifecycleStarted(page, source);" in manager_source
+    assert "action: 'yui_guide_tutorial_lifecycle_started'" in manager_source
+    assert "window.nekoTutorialOverlay.relayToChat(startedMessage);" in manager_source
+    assert "window.nekoTutorialOverlay.relayToPet(startedMessage);" in manager_source
+    lifecycle_started_block = manager_source.split(
+        "    relayYuiGuideTutorialLifecycleStarted(page, source) {",
+        1,
+    )[1].split(
+        "    syncYuiGuideCompactChatFixedLayout",
+        1,
+    )[0]
+    assert lifecycle_started_block.index(
+        "this.ensurePcTutorialGlobalOverlayStarted('tutorial-lifecycle-started')"
+    ) < lifecycle_started_block.index("const startedMessage = {")
+    emit_started_block = manager_source.split(
+        "    emitTutorialStarted(page = this.currentPage, source = this.currentTutorialStartSource) {",
+        1,
+    )[1].split(
+        "    showSkipButton() {",
+        1,
+    )[0]
+    assert emit_started_block.index("relayYuiGuideTutorialLifecycleStarted(page, source);") < emit_started_block.index(
+        "this.syncPcSystemCursorHidden(true, 'tutorial-started');"
+    )
     assert "this.syncPcSystemCursorHidden(true, 'tutorial-started');" in manager_source
     assert "this.syncPcSystemCursorHidden(false, rawReason);" in manager_source
     assert "syncSystemCursorHidden(hidden, reason = 'tutorial')" in director_source
@@ -396,6 +447,8 @@ def test_avatar_floating_guides_hide_real_cursor_during_takeover_and_show_banner
     assert "syncSystemCursorHidden', null, false, 'interrupt_resist_light')" not in resistance_source
     assert "this.syncSystemCursorHidden(true, 'interrupt_resist_light');" in resistance_source
     assert "call(this.callbacks, 'syncSystemCursorHidden', null, true, 'interrupt_resist_light');" in resistance_source
+    assert "director.overlay.emphasizeControlBanner();" in resistance_source
+    assert "call(this.overlay, 'emphasizeControlBanner', null);" in resistance_source
     assert "call(this.callbacks, 'suppressResistanceCursorReveal', null, normalizedOptions);" in resistance_source
     assert "director.suppressResistanceCursorReveal(normalizedOptions);" in resistance_source
     assert "shouldRestoreHiddenCursorAfterResistance" not in resistance_source
@@ -405,6 +458,7 @@ def test_avatar_floating_guides_hide_real_cursor_during_takeover_and_show_banner
     assert "call(this.callbacks, 'setTutorialTakingOver', null, true, {" in resistance_source
     assert "director.setTutorialTakingOver(true, {" in resistance_source
     assert "syncSystemCursor: false" in resistance_source
+    assert "this.emphasizeControlBanner()" in plugin_runtime_source
     assert "this.syncSystemCursorHidden(false, 'destroy');" in director_source
     assert "syncSystemCursorHidden: optional callback" in resistance_source
 

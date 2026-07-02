@@ -18,6 +18,16 @@ YUI_GUIDE_COMMON_PATH = Path(__file__).resolve().parents[2] / "static" / "tutori
 COMMON_UI_PATH = Path(__file__).resolve().parents[2] / "static" / "common_ui.js"
 APP_AUDIO_CAPTURE_PATH = Path(__file__).resolve().parents[2] / "static" / "app-audio-capture.js"
 CHAT_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "chat.html"
+APP_PROMPT_PATH = Path(__file__).resolve().parents[2] / "static" / "tutorial/core/app-prompt.js"
+AVATAR_FLOATING_BOOT_PREDICTOR_PATH = (
+    Path(__file__).resolve().parents[2] / "static" / "tutorial/core/avatar-floating-boot-predictor.js"
+)
+FLOATING_GUIDE_RESET_PATH = (
+    Path(__file__).resolve().parents[2] / "static" / "tutorial/avatar/floating-guide-reset.js"
+)
+CHARACTER_PERSONALITY_ONBOARDING_PATH = (
+    Path(__file__).resolve().parents[2] / "static" / "js/character_personality_onboarding.js"
+)
 
 
 def _read_manager() -> str:
@@ -60,6 +70,22 @@ def _read_chat_template() -> str:
     return CHAT_TEMPLATE_PATH.read_text(encoding="utf-8")
 
 
+def _read_app_prompt() -> str:
+    return APP_PROMPT_PATH.read_text(encoding="utf-8")
+
+
+def _read_avatar_floating_boot_predictor() -> str:
+    return AVATAR_FLOATING_BOOT_PREDICTOR_PATH.read_text(encoding="utf-8")
+
+
+def _read_floating_guide_reset() -> str:
+    return FLOATING_GUIDE_RESET_PATH.read_text(encoding="utf-8")
+
+
+def _read_character_personality_onboarding() -> str:
+    return CHARACTER_PERSONALITY_ONBOARDING_PATH.read_text(encoding="utf-8")
+
+
 def test_universal_tutorial_manager_excludes_legacy_driver_tutorial_system():
     source = _read_manager()
 
@@ -81,6 +107,18 @@ def test_universal_tutorial_manager_excludes_legacy_driver_tutorial_system():
         "neko-tutorial-driver",
     ):
         assert obsolete not in source
+
+
+def test_home_tutorial_runtime_no_longer_uses_legacy_home_storage_key():
+    for source in (
+        _read_manager(),
+        _read_app_prompt(),
+        _read_avatar_floating_boot_predictor(),
+        _read_floating_guide_reset(),
+        _read_character_personality_onboarding(),
+    ):
+        assert "'neko_tutorial_home'" not in source
+        assert '"neko_tutorial_home"' not in source
 
 
 def test_non_home_page_tutorials_are_restored_in_separate_driver_runtime():
@@ -397,9 +435,24 @@ def test_universal_tutorial_manager_resets_and_delays_startup_greeting_release()
         1,
     )[0]
     assert "this.clearStartupGreetingRelease('tutorial-started');" in emit_block
+    assert "this.relayYuiGuideTutorialLifecycleStarted(page, source);" in emit_block
     assert emit_block.index("this.clearStartupGreetingRelease('tutorial-started');") < emit_block.index(
+        "this.relayYuiGuideTutorialLifecycleStarted(page, source);"
+    )
+    assert emit_block.index("this.relayYuiGuideTutorialLifecycleStarted(page, source);") < emit_block.index(
         "window.dispatchEvent(new CustomEvent('neko:tutorial-started'"
     )
+    lifecycle_started_block = source.split(
+        "    relayYuiGuideTutorialLifecycleStarted(page, source) {",
+        1,
+    )[1].split(
+        "    syncYuiGuideCompactChatFixedLayout",
+        1,
+    )[0]
+    assert "this.ensurePcTutorialGlobalOverlayStarted('tutorial-lifecycle-started')" in lifecycle_started_block
+    assert lifecycle_started_block.index(
+        "this.ensurePcTutorialGlobalOverlayStarted('tutorial-lifecycle-started')"
+    ) < lifecycle_started_block.index("const startedMessage = {")
 
     end_block = source.split("    onTutorialEnd() {", 1)[1].split(
         "    restoreYuiGuideChatInputState",

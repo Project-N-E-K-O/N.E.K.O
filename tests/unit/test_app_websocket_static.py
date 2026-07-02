@@ -149,6 +149,29 @@ def test_greeting_check_defers_until_new_user_icebreaker_ends():
     assert "function isHomeTutorialLockedForGreeting()" not in source
 
 
+def test_new_user_icebreaker_mirror_turn_end_skips_regular_subtitle_finalize():
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    assert "function isNewUserIcebreakerMirrorTurnEnd(response)" in source
+    helper_block = source.split("function isNewUserIcebreakerMirrorTurnEnd(response)", 1)[1].split(
+        "// turn-end / turn end agent_callback",
+        1,
+    )[0]
+    assert "meta.source === 'new_user_icebreaker'" in helper_block
+    assert "meta.kind === 'new_user_icebreaker'" in helper_block
+    assert "event.source === 'new_user_icebreaker'" in helper_block
+
+    turn_end_block = source.split("// -------- system turn end --------", 1)[1].split(
+        "// AI turn_end 后只 reschedule",
+        1,
+    )[0]
+    assert "flushRealisticBufferOnTurnEnd();" in turn_end_block
+    assert "emitAssistantLifecycleEvent('neko-assistant-turn-end'" in turn_end_block
+    assert "clearPendingAssistantTurnStart();" in turn_end_block
+    assert "if (!isNewUserIcebreakerMirrorTurnEnd(response)) {" in turn_end_block
+    assert "finalizeAssistantTurn(assistantTurnId);" in turn_end_block
+
+
 def test_goodbye_blocks_stale_audio_session_started():
     source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
 
