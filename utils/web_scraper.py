@@ -2764,8 +2764,8 @@ async def fetch_twitter_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
         # Official Web client Bearer Token — read from env, no hardcoded fallback
         bearer_token = os.environ.get("TWITTER_BEARER_TOKEN")
         if not bearer_token:
-            logger.warning("TWITTER_BEARER_TOKEN not configured, skipping Twitter API fetch")
-            return {'success': False, 'error': '未配置 TWITTER_BEARER_TOKEN 环境变量'}
+            logger.warning("TWITTER_BEARER_TOKEN not configured, falling back to web scraping")
+            return await _fetch_twitter_personal_web_scraping(limit=limit, cookies=twitter_cookies)
         
         # 切换到更稳定、包含完整推文文本的 v1.1 接口
         url = f"https://api.twitter.com/1.1/statuses/home_timeline.json?tweet_mode=extended&count={limit}"

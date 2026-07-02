@@ -161,8 +161,10 @@ async def websocket_endpoint(websocket: WebSocket):
     if _EXPECTED_TOKEN:
         token = websocket.query_params.get("token", "")
         # Guard against non-ASCII tokens: hmac.compare_digest raises TypeError
-        # on non-ASCII str, which would crash before the clean 4401 rejection.
+        # on non-ASCII str. Accept the connection first so the WebSocket
+        # upgrade completes, then send the close frame with the intended code.
         if not token.isascii() or not _EXPECTED_TOKEN.isascii() or not hmac.compare_digest(token, _EXPECTED_TOKEN):
+            await websocket.accept()
             await websocket.close(code=4401, reason="Unauthorized")
             return
     await websocket.accept()

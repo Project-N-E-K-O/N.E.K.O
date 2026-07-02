@@ -88,9 +88,13 @@ app = FastAPI(
 )
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.environ.get(
-        "NEKO_TELEMETRY_CORS_ORIGINS", "http://localhost,http://127.0.0.1"
-    ).split(","),
+    allow_origins=[
+        origin.strip()
+        for origin in os.environ.get(
+            "NEKO_TELEMETRY_CORS_ORIGINS", "http://localhost,http://127.0.0.1"
+        ).split(",")
+        if origin.strip()
+    ],
     allow_methods=["POST", "GET"],
     allow_headers=["*"],
 )
@@ -144,7 +148,7 @@ def require_admin(request: Request):
     # and a plain != leaks byte-by-byte match progress to a timing side channel.
     # compare_digest eliminates that. Guard non-ASCII first: compare_digest raises
     # TypeError on non-ASCII str, otherwise ?token=é turns a 401 into a 500.
-    if not token or not token.isascii() or not hmac.compare_digest(token, ADMIN_TOKEN):
+    if not token or not token.isascii() or not ADMIN_TOKEN.isascii() or not hmac.compare_digest(token, ADMIN_TOKEN):
         raise HTTPException(401, "Invalid admin token")
 
 
@@ -408,7 +412,7 @@ async def on_startup():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="N.E.K.O Telemetry Server")
-    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8099)
     parser.add_argument("--db", default=None)
     parser.add_argument("--admin-token", default=None, help="Admin API token")

@@ -520,17 +520,19 @@ class TimeIndexedMemory:
             return []
         try:
             # Sanitize FTS5 special syntax characters to prevent
-            # OperationalError, without wrapping as a phrase query. With the
-            # unicode61 tokenizer (CJK characters indexed individually),
-            # unquoted queries get token-level AND semantics — the desired
-            # behavior for similar-fact matching in facts.py. Phrase wrapping
-            # would require ordered adjacency and cause recall regression.
+            # OperationalError. With the unicode61 tokenizer (CJK characters
+            # indexed individually), unquoted queries get token-level AND
+            # semantics — the desired behavior for similar-fact matching
+            # in facts.py. Phrase wrapping would require ordered adjacency
+            # and cause recall regression.
             safe_query = (
                 normalized_query
                 .replace('"', ' ')
                 .replace('*', ' ')
                 .replace('(', ' ')
                 .replace(')', ' ')
+                .replace('-', ' ')
+                .replace(':', ' ')
             )
             with self.engines[lanlan_name].connect() as conn:
                 result = conn.execute(

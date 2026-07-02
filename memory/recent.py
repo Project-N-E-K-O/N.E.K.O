@@ -315,7 +315,8 @@ class CompressedRecentHistoryManager:
         except Exception as e:
             logger.error(f"获取角色配置失败: {e}")
 
-        assert_cloudsave_writable(
+        await asyncio.to_thread(
+            assert_cloudsave_writable,
             self._config_manager,
             operation="save",
             target=f"memory/{lanlan_name}/recent.json",
@@ -777,7 +778,8 @@ class CompressedRecentHistoryManager:
             # 自包含落盘：本方法现在由后台 task / 回调调用（update_history 之外），
             # 不能再依赖 update_history 的后续落盘。
             try:
-                assert_cloudsave_writable(
+                await asyncio.to_thread(
+                    assert_cloudsave_writable,
                     self._config_manager, operation="save",
                     target=f"memory/{lanlan_name}/recent.json",
                 )
@@ -814,7 +816,8 @@ class CompressedRecentHistoryManager:
         new_history = [memo] + current[cutoff_idx + 1:]
         self.user_histories[lanlan_name] = new_history
         try:
-            assert_cloudsave_writable(
+            await asyncio.to_thread(
+                assert_cloudsave_writable,
                 self._config_manager, operation="save",
                 target=f"memory/{lanlan_name}/recent.json",
             )
@@ -1175,7 +1178,8 @@ class CompressedRecentHistoryManager:
 
                 # 更新 + 落盘
                 self.user_histories[lanlan_name] = new_history
-                assert_cloudsave_writable(
+                await asyncio.to_thread(
+                    assert_cloudsave_writable,
                     self._config_manager,
                     operation="save",
                     target=f"memory/{lanlan_name}/recent.json",

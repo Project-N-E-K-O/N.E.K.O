@@ -78,9 +78,13 @@ app = FastAPI(
 )
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.environ.get(
-        "NEKO_SURVEY_CORS_ORIGINS", "http://localhost,http://127.0.0.1"
-    ).split(","),
+    allow_origins=[
+        origin.strip()
+        for origin in os.environ.get(
+            "NEKO_SURVEY_CORS_ORIGINS", "http://localhost,http://127.0.0.1"
+        ).split(",")
+        if origin.strip()
+    ],
     allow_methods=["POST", "GET"],
     allow_headers=["*"],
 )
@@ -338,7 +342,7 @@ async def on_startup():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="N.E.K.O Survey Server")
-    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8100)
     parser.add_argument("--db", default=None)
     parser.add_argument("--admin-token", default=None, help="Admin API token")
