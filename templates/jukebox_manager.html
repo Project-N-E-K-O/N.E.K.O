@@ -92,12 +92,40 @@
         }
 
         body .jukebox-sam-panel .sam-header {
+            display: grid !important;
+            grid-template-columns: auto minmax(0, 1fr) auto !important;
+            align-items: center !important;
+            gap: 8px !important;
             cursor: grab !important;
+            overflow: visible !important;
+        }
+
+        body .jukebox-sam-panel .sam-tabs {
+            min-width: 0 !important;
+            overflow: hidden !important;
+        }
+
+        body .jukebox-sam-panel .sam-tab {
+            min-width: 0 !important;
+            overflow: hidden !important;
+            text-overflow: ellipsis !important;
+            white-space: nowrap !important;
+        }
+
+        body .jukebox-sam-panel .sam-close-btn {
+            width: 36px !important;
+            height: 36px !important;
+            min-width: 36px !important;
+            box-sizing: border-box !important;
         }
 
         body .jukebox-sam-panel .sam-title,
         body .jukebox-sam-panel .sam-drag-fill {
             cursor: grab !important;
+        }
+
+        body .jukebox-sam-panel .sam-drag-fill {
+            display: none !important;
         }
 
         body .jukebox-sam-panel .sam-header:active,
@@ -232,9 +260,30 @@
                 '}',
                 'body .jukebox-sam-panel .sam-header {',
                 '  -webkit-app-region: drag !important;',
-                '  padding: 15px 15px 10px !important;',
+                '  display: grid !important;',
+                '  grid-template-columns: auto minmax(0, 1fr) auto !important;',
+                '  align-items: center !important;',
+                '  gap: 8px !important;',
+                '  padding: 12px 12px 10px 16px !important;',
+                '  overflow: visible !important;',
                 '  cursor: grab !important;',
                 '  touch-action: none !important;',
+                '}',
+                'body .jukebox-sam-panel .sam-tabs {',
+                '  min-width: 0 !important;',
+                '  overflow: hidden !important;',
+                '}',
+                'body .jukebox-sam-panel .sam-tab {',
+                '  min-width: 0 !important;',
+                '  overflow: hidden !important;',
+                '  text-overflow: ellipsis !important;',
+                '  white-space: nowrap !important;',
+                '}',
+                'body .jukebox-sam-panel .sam-close-btn {',
+                '  width: 36px !important;',
+                '  height: 36px !important;',
+                '  min-width: 36px !important;',
+                '  box-sizing: border-box !important;',
                 '}',
                 'body .jukebox-sam-panel .sam-header:active,',
                 'body.sam-panel-dragging .jukebox-sam-panel .sam-header {',
@@ -244,6 +293,9 @@
                 'body .jukebox-sam-panel .sam-drag-fill {',
                 '  -webkit-app-region: drag !important;',
                 '  cursor: grab !important;',
+                '}',
+                'body .jukebox-sam-panel .sam-drag-fill {',
+                '  display: none !important;',
                 '}',
                 'body .jukebox-sam-panel button,',
                 'body .jukebox-sam-panel input,',
