@@ -803,7 +803,7 @@ def test_home_prompt_later_locally_suppresses_repeat_before_autostart_prompt(
 
 
 @pytest.mark.frontend
-def test_completed_home_tutorial_server_state_marks_all_home_storage_keys_seen(
+def test_completed_home_tutorial_server_state_marks_versioned_home_storage_key_seen(
     mock_page: Page,
 ):
     _bootstrap_tutorial_prompt_page(
@@ -813,9 +813,7 @@ def test_completed_home_tutorial_server_state_marks_all_home_storage_keys_seen(
                 currentPage: 'home',
                 isTutorialRunning: false,
                 getStorageKeysForPage: function(page) {
-                    return page === 'home'
-                        ? ['neko_tutorial_home_yui_v1', 'neko_tutorial_home']
-                        : [];
+                    return page === 'home' ? ['neko_tutorial_home_yui_v1'] : [];
                 },
                 hasSeenTutorial: function() {
                     return false;
@@ -865,17 +863,15 @@ def test_completed_home_tutorial_server_state_marks_all_home_storage_keys_seen(
         """
         () => ({
             preferred: localStorage.getItem('neko_tutorial_home_yui_v1'),
-            legacy: localStorage.getItem('neko_tutorial_home'),
         })
         """
     ) == {
         "preferred": "true",
-        "legacy": "true",
     }
 
 
 @pytest.mark.frontend
-def test_legacy_home_tutorial_storage_key_counts_as_seen(
+def test_legacy_home_tutorial_storage_key_is_ignored(
     mock_page: Page,
 ):
     _bootstrap_tutorial_prompt_page(
@@ -888,9 +884,7 @@ def test_legacy_home_tutorial_storage_key_counts_as_seen(
                 currentPage: 'home',
                 isTutorialRunning: false,
                 getStorageKeysForPage: function(page) {
-                    return page === 'home'
-                        ? ['neko_tutorial_home_yui_v1', 'neko_tutorial_home']
-                        : [];
+                    return page === 'home' ? ['neko_tutorial_home_yui_v1'] : [];
                 },
                 getStorageKey: function() {
                     return 'neko_tutorial_home_yui_v1';
@@ -922,7 +916,7 @@ def test_legacy_home_tutorial_storage_key_counts_as_seen(
                     ok: true,
                     should_prompt: true,
                     prompt_reason: 'idle_timeout',
-                    prompt_token: 'legacy-seen-token',
+                    prompt_token: 'legacy-ignored-token',
                     state: {
                         status: 'observing',
                         never_remind: false,
@@ -937,8 +931,8 @@ def test_legacy_home_tutorial_storage_key_counts_as_seen(
 
     mock_page.wait_for_function("() => window.__heartbeatBodies.length > 0")
 
-    assert mock_page.evaluate("() => window.__heartbeatBodies[0].home_tutorial_completed") is True
-    expect(mock_page.locator(".modal-overlay")).to_have_count(0)
+    assert mock_page.evaluate("() => window.__heartbeatBodies[0].home_tutorial_completed") is False
+    expect(mock_page.locator(".modal-overlay")).to_be_visible()
 
 
 @pytest.mark.frontend
@@ -1329,7 +1323,6 @@ def test_home_tutorial_skip_persists_completion_state(
         () => ({
             completedBodies: window.__tutorialCompletedBodies.slice(),
             preferredSeen: window.localStorage.getItem('neko_tutorial_home_yui_v1'),
-            legacySeen: window.localStorage.getItem('neko_tutorial_home'),
         })
         """
     )
@@ -1337,7 +1330,6 @@ def test_home_tutorial_skip_persists_completion_state(
     assert result["completedBodies"][0]["source"] == "manual"
     assert result["completedBodies"][0]["tutorial_run_token"] == "skip-run-token"
     assert result["preferredSeen"] == "true"
-    assert result["legacySeen"] == "true"
 
 
 @pytest.mark.frontend
@@ -1394,7 +1386,7 @@ def test_home_tutorial_reset_refreshes_stale_csrf_token_once(mock_page: Page):
     mock_page.evaluate(
         """
         async () => {
-            localStorage.setItem('neko_tutorial_home', 'true');
+            localStorage.setItem('neko_tutorial_home_yui_v1', 'true');
             await resetTutorialForPage('home');
         }
         """
@@ -1406,8 +1398,8 @@ def test_home_tutorial_reset_refreshes_stale_csrf_token_once(mock_page: Page):
             pageConfigFetchCount: window.__pageConfigFetchCount,
             resetTokens: window.__resetTokens.slice(),
             resetBodies: window.__resetBodies.slice(),
-            homeSeen: localStorage.getItem('neko_tutorial_home'),
-            manualIntent: localStorage.getItem('neko_tutorial_home_manual_intent'),
+            versionedSeen: localStorage.getItem('neko_tutorial_home_yui_v1'),
+            manualIntent: localStorage.getItem('neko_tutorial_home_yui_v1_manual_intent'),
         })
         """
     )
@@ -1416,7 +1408,7 @@ def test_home_tutorial_reset_refreshes_stale_csrf_token_once(mock_page: Page):
     assert result["resetTokens"] == ["stale-token", "fresh-token"]
     assert result["resetBodies"][0]["reason"] == "manual_home_tutorial_reset"
     assert result["resetBodies"][1]["reason"] == "manual_home_tutorial_reset"
-    assert result["homeSeen"] is None
+    assert result["versionedSeen"] is None
     assert result["manualIntent"] == "true"
 
 
@@ -1455,7 +1447,6 @@ def test_home_tutorial_reset_without_manager_clears_versioned_home_key(mock_page
         async () => {
             window.universalTutorialManager = null;
             localStorage.setItem('neko_tutorial_home_yui_v1', 'true');
-            localStorage.setItem('neko_tutorial_home', 'true');
             await resetTutorialForPage('home');
         }
         """
@@ -1465,14 +1456,12 @@ def test_home_tutorial_reset_without_manager_clears_versioned_home_key(mock_page
         """
         () => ({
             versionedSeen: localStorage.getItem('neko_tutorial_home_yui_v1'),
-            legacySeen: localStorage.getItem('neko_tutorial_home'),
-            manualIntent: localStorage.getItem('neko_tutorial_home_manual_intent'),
+            manualIntent: localStorage.getItem('neko_tutorial_home_yui_v1_manual_intent'),
         })
         """
     )
 
     assert result["versionedSeen"] is None
-    assert result["legacySeen"] is None
     assert result["manualIntent"] == "true"
 
 
@@ -1514,7 +1503,6 @@ def test_home_tutorial_reset_still_clears_state_without_custom_event(mock_page: 
         """
         async () => {
             localStorage.setItem('neko_tutorial_home_yui_v1', 'true');
-            localStorage.setItem('neko_tutorial_home', 'true');
             await resetTutorialForPage('home');
         }
         """
@@ -1524,14 +1512,12 @@ def test_home_tutorial_reset_still_clears_state_without_custom_event(mock_page: 
         """
         () => ({
             versionedSeen: localStorage.getItem('neko_tutorial_home_yui_v1'),
-            legacySeen: localStorage.getItem('neko_tutorial_home'),
-            manualIntent: localStorage.getItem('neko_tutorial_home_manual_intent'),
+            manualIntent: localStorage.getItem('neko_tutorial_home_yui_v1_manual_intent'),
         })
         """
     )
 
     assert result["versionedSeen"] is None
-    assert result["legacySeen"] is None
     assert result["manualIntent"] == "true"
 
 
@@ -1580,10 +1566,7 @@ def test_home_tutorial_reset_event_prevents_stale_completion_heartbeat(mock_page
 
     mock_page.wait_for_function(
         """
-        () => (
-            localStorage.getItem('neko_tutorial_home_yui_v1') === 'true'
-            || localStorage.getItem('neko_tutorial_home') === 'true'
-        )
+        () => localStorage.getItem('neko_tutorial_home_yui_v1') === 'true'
         """,
         timeout=5000,
     )
@@ -1605,13 +1588,13 @@ def test_home_tutorial_reset_event_prevents_stale_completion_heartbeat(mock_page
     result = mock_page.evaluate(
         """
         () => ({
-            homeSeen: localStorage.getItem('neko_tutorial_home'),
+            versionedSeen: localStorage.getItem('neko_tutorial_home_yui_v1'),
             latestHeartbeat: window.__heartbeatBodies[window.__heartbeatBodies.length - 1],
         })
         """
     )
 
-    assert result["homeSeen"] is None
+    assert result["versionedSeen"] is None
     assert result["latestHeartbeat"]["home_tutorial_completed"] is False
     assert result["latestHeartbeat"]["manual_home_tutorial_viewed"] is False
 
@@ -1697,7 +1680,6 @@ def test_home_tutorial_reset_event_re_resets_after_inflight_completed_heartbeat(
             staleHeartbeat: window.__heartbeatBodies[0],
             resetBodies: window.__resetBodies.slice(),
             versionedSeen: localStorage.getItem('neko_tutorial_home_yui_v1'),
-            legacySeen: localStorage.getItem('neko_tutorial_home'),
             suppressAutoStart: window.appTutorialPrompt.shouldSuppressAutomaticHomeTutorialStart(),
         })
         """
@@ -1707,7 +1689,6 @@ def test_home_tutorial_reset_event_re_resets_after_inflight_completed_heartbeat(
     assert result["staleHeartbeat"]["manual_home_tutorial_viewed"] is True
     assert result["resetBodies"][0]["reason"] == "manual_home_tutorial_reset"
     assert result["versionedSeen"] is None
-    assert result["legacySeen"] is None
     assert result["suppressAutoStart"] is False
 
 
@@ -1840,7 +1821,6 @@ def test_home_tutorial_reset_event_re_resets_after_inflight_completion_lifecycle
             completedBodies: window.__completedBodies.slice(),
             resetBodies: window.__resetBodies.slice(),
             versionedSeen: localStorage.getItem('neko_tutorial_home_yui_v1'),
-            legacySeen: localStorage.getItem('neko_tutorial_home'),
             suppressAutoStart: window.appTutorialPrompt.shouldSuppressAutomaticHomeTutorialStart(),
         })
         """
@@ -1849,7 +1829,6 @@ def test_home_tutorial_reset_event_re_resets_after_inflight_completion_lifecycle
     assert result["completedBodies"][0]["tutorial_run_token"] == "tutorial-run-token"
     assert result["resetBodies"][0]["reason"] == "manual_home_tutorial_reset"
     assert result["versionedSeen"] is None
-    assert result["legacySeen"] is None
     assert result["suppressAutoStart"] is False
 
 
@@ -1955,7 +1934,6 @@ def test_home_tutorial_reset_event_re_resets_after_inflight_started_lifecycle(mo
             startedBodies: window.__startedBodies.slice(),
             resetBodies: window.__resetBodies.slice(),
             versionedSeen: localStorage.getItem('neko_tutorial_home_yui_v1'),
-            legacySeen: localStorage.getItem('neko_tutorial_home'),
             suppressAutoStart: window.appTutorialPrompt.shouldSuppressAutomaticHomeTutorialStart(),
         })
         """
@@ -1964,7 +1942,6 @@ def test_home_tutorial_reset_event_re_resets_after_inflight_started_lifecycle(mo
     assert result["startedBodies"][0]["source"] == "manual"
     assert result["resetBodies"][0]["reason"] == "manual_home_tutorial_reset"
     assert result["versionedSeen"] is None
-    assert result["legacySeen"] is None
     assert result["suppressAutoStart"] is False
 
 
@@ -2035,13 +2012,11 @@ def test_home_tutorial_reset_event_ignores_stale_initial_state_response(mock_pag
         """
         () => ({
             versionedSeen: localStorage.getItem('neko_tutorial_home_yui_v1'),
-            legacySeen: localStorage.getItem('neko_tutorial_home'),
             suppressAutoStart: window.appTutorialPrompt.shouldSuppressAutomaticHomeTutorialStart(),
         })
         """
     ) == {
         "versionedSeen": None,
-        "legacySeen": None,
         "suppressAutoStart": False,
     }
 
@@ -2333,7 +2308,7 @@ def test_cross_window_home_tutorial_reset_event_prevents_stale_completion_heartb
     )
 
     mock_page.wait_for_function(
-        "() => localStorage.getItem('neko_tutorial_home') === 'true'",
+        "() => localStorage.getItem('neko_tutorial_home_yui_v1') === 'true'",
         timeout=5000,
     )
     mock_page.evaluate(
@@ -2359,13 +2334,13 @@ def test_cross_window_home_tutorial_reset_event_prevents_stale_completion_heartb
     result = mock_page.evaluate(
         """
         () => ({
-            homeSeen: localStorage.getItem('neko_tutorial_home'),
+            versionedSeen: localStorage.getItem('neko_tutorial_home_yui_v1'),
             latestHeartbeat: window.__heartbeatBodies[window.__heartbeatBodies.length - 1],
         })
         """
     )
 
-    assert result["homeSeen"] is None
+    assert result["versionedSeen"] is None
     assert result["latestHeartbeat"]["home_tutorial_completed"] is False
     assert result["latestHeartbeat"]["manual_home_tutorial_viewed"] is False
 
@@ -2405,7 +2380,6 @@ def test_all_tutorial_reset_without_manager_clears_versioned_home_key(mock_page:
         async () => {
             window.universalTutorialManager = null;
             localStorage.setItem('neko_tutorial_home_yui_v1', 'true');
-            localStorage.setItem('neko_tutorial_home', 'true');
             localStorage.setItem('neko_tutorial_model_manager_mmd', 'true');
             await resetAllTutorials();
         }
@@ -2416,15 +2390,13 @@ def test_all_tutorial_reset_without_manager_clears_versioned_home_key(mock_page:
         """
         () => ({
             versionedSeen: localStorage.getItem('neko_tutorial_home_yui_v1'),
-            legacySeen: localStorage.getItem('neko_tutorial_home'),
             modelManagerMmdSeen: localStorage.getItem('neko_tutorial_model_manager_mmd'),
-            manualIntent: localStorage.getItem('neko_tutorial_home_manual_intent'),
+            manualIntent: localStorage.getItem('neko_tutorial_home_yui_v1_manual_intent'),
         })
         """
     )
 
     assert result["versionedSeen"] is None
-    assert result["legacySeen"] is None
     assert result["modelManagerMmdSeen"] is None
     assert result["manualIntent"] == "true"
 
@@ -2465,7 +2437,6 @@ def test_home_tutorial_reset_with_manager_clears_versioned_home_key(mock_page: P
             await initUniversalTutorialManager();
             window.universalTutorialManager.getYuiGuideVersionedPageKey = () => null;
             localStorage.setItem('neko_tutorial_home_yui_v1', 'true');
-            localStorage.setItem('neko_tutorial_home', 'true');
             await resetTutorialForPage('home');
         }
         """
@@ -2475,14 +2446,12 @@ def test_home_tutorial_reset_with_manager_clears_versioned_home_key(mock_page: P
         """
         () => ({
             versionedSeen: localStorage.getItem('neko_tutorial_home_yui_v1'),
-            legacySeen: localStorage.getItem('neko_tutorial_home'),
-            manualIntent: localStorage.getItem('neko_tutorial_home_manual_intent'),
+            manualIntent: localStorage.getItem('neko_tutorial_home_yui_v1_manual_intent'),
         })
         """
     )
 
     assert result["versionedSeen"] is None
-    assert result["legacySeen"] is None
     assert result["manualIntent"] == "true"
 
 
@@ -8050,7 +8019,7 @@ def test_plugin_dashboard_light_resistance_keeps_cursor_reaction(
 
 
 @pytest.mark.frontend
-def test_avatar_floating_cursor_reacts_to_every_real_mouse_move(
+def test_avatar_floating_cursor_reaction_waits_for_meaningful_real_mouse_move(
     mock_page: Page,
 ):
     _bootstrap_page(
@@ -8089,9 +8058,18 @@ def test_avatar_floating_cursor_reacts_to_every_real_mouse_move(
                 director.handleInterrupt({
                     isTrusted: true,
                     type: 'mousemove',
-                    clientX: 102,
+                    clientX: 124,
                     clientY: 100,
-                    movementX: 2,
+                    movementX: 24,
+                    movementY: 0,
+                });
+                window.__now = 1032;
+                director.handleInterrupt({
+                    isTrusted: true,
+                    type: 'mousemove',
+                    clientX: 155,
+                    clientY: 100,
+                    movementX: 31,
                     movementY: 0,
                 });
                 return reactions;
@@ -8103,7 +8081,7 @@ def test_avatar_floating_cursor_reacts_to_every_real_mouse_move(
     )
 
     assert len(result) == 1
-    assert result[0]["options"]["motionDx"] == 2
+    assert result[0]["options"]["motionDx"] == 31
     assert result[0]["options"]["motionDy"] == 0
     assert result[0]["options"]["scale"] >= 0.4
     assert result[0]["options"]["outDurationMs"] >= 140
@@ -8261,6 +8239,7 @@ def test_avatar_floating_distance_below_new_threshold_does_not_trigger_light_res
             try {
                 const director = window.createYuiGuideDirector({ page: 'home' });
                 const lightInterrupts = [];
+                document.body.classList.add('yui-taking-over');
                 director.platformCapabilities = { windowBoundsSource: 'electron-window-bounds' };
                 director.currentSceneId = 'test_scene';
                 director.currentStep = {
@@ -8373,6 +8352,103 @@ def test_avatar_floating_distance_threshold_triggers_light_resistance_without_sp
     assert len(result["lightInterrupts"]) == 1
     assert result["interruptCount"] == 1
     assert result["streak"] == 0
+
+
+@pytest.mark.frontend
+def test_avatar_floating_interrupt_count_reveals_real_cursor_for_three_seconds(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const originalNow = Date.now;
+            const originalSetTimeout = window.setTimeout;
+            const originalClearTimeout = window.clearTimeout;
+            window.__now = 1000;
+            Date.now = () => window.__now;
+            const timers = [];
+            const clearedTimers = [];
+            window.setTimeout = (callback, delay) => {
+                const timer = { callback, delay };
+                timers.push(timer);
+                return timer;
+            };
+            window.clearTimeout = (timer) => {
+                clearedTimers.push(timer);
+            };
+            try {
+                const cursorVisibility = [];
+                window.YuiGuideCommon = {
+                    syncPcSystemCursorHidden: (hidden, reason) => {
+                        cursorVisibility.push({ hidden, reason });
+                    },
+                };
+                const director = window.createYuiGuideDirector({ page: 'home' });
+                const lightInterrupts = [];
+                document.body.classList.add('yui-taking-over');
+                director.platformCapabilities = { windowBoundsSource: 'electron-window-bounds' };
+                director.currentSceneId = 'test_scene';
+                director.currentStep = {
+                    performance: {},
+                    interrupts: { threshold: 3, throttleMs: 0 },
+                };
+                director.interruptsEnabled = true;
+                director.cursor.hasPosition = () => true;
+                director.cursor.hasVisiblePosition = () => true;
+                director.cursor.reactToUserMotion = () => {};
+                director.playLightResistance = (x, y, options) => {
+                    lightInterrupts.push({ x, y, options });
+                };
+
+                director.lastPointerPoint = { x: 100, y: 100, t: 1000, speed: 0.04 };
+                [
+                    { t: 2000, x: 164 },
+                    { t: 3000, x: 228 },
+                    { t: 4000, x: 292 },
+                ].forEach((sample) => {
+                    window.__now = sample.t;
+                    director.handleInterrupt({
+                        isTrusted: true,
+                        type: 'mousemove',
+                        clientX: sample.x,
+                        clientY: 100,
+                        movementX: 64,
+                        movementY: 0,
+                    });
+                });
+                const beforeTimer = cursorVisibility.slice();
+                timers[0].callback();
+                return {
+                    lightInterrupts,
+                    cursorVisibility,
+                    beforeTimer,
+                    timerDelay: timers[0] && timers[0].delay,
+                    clearedTimers: clearedTimers.length,
+                };
+            } finally {
+                Date.now = originalNow;
+                window.setTimeout = originalSetTimeout;
+                window.clearTimeout = originalClearTimeout;
+                delete window.YuiGuideCommon;
+            }
+        }
+        """
+    )
+
+    assert len(result["lightInterrupts"]) == 1
+    assert result["beforeTimer"][-1] == {"hidden": False, "reason": "interrupt_count_reveal"}
+    assert result["timerDelay"] == 3000
+    assert result["cursorVisibility"][-1] == {
+        "hidden": True,
+        "reason": "interrupt_count_reveal_timeout",
+    }
+    assert result["clearedTimers"] == 0
 
 
 @pytest.mark.frontend

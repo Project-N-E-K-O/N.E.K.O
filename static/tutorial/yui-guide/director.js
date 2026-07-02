@@ -575,6 +575,7 @@
     const DEFAULT_USER_CURSOR_REVEAL_DISTANCE = 14;
     const DEFAULT_USER_CURSOR_REVEAL_INTERVAL_MS = 160;
     const DEFAULT_USER_CURSOR_REVEAL_MOVES = 2;
+    const DEFAULT_INTERRUPT_COUNT_CURSOR_REVEAL_MS = 3000;
     const DEFAULT_STEP_DELAY_MS = 120;
     const DEFAULT_SCENE_SETTLE_MS = 260;
     const DEFAULT_CURSOR_DURATION_MS = 520;
@@ -12212,6 +12213,7 @@
             }
 
             this.userCursorRevealSuppressed = true;
+            this.clearInterruptCountCursorReveal(false);
             document.documentElement.style.cursor = '';
             document.body.style.cursor = '';
             document.documentElement.classList.remove('yui-user-cursor-revealed');
@@ -12230,6 +12232,7 @@
             this.userCursorRevealSuppressed = false;
             this.userCursorRevealMoveCount = 0;
             this.lastUserCursorRevealMoveAt = 0;
+            this.clearInterruptCountCursorReveal(false);
 
             if (document.body) {
                 document.documentElement.classList.remove('yui-user-cursor-revealed');
@@ -12256,6 +12259,7 @@
                 window.clearTimeout(this.resistanceCursorTimer);
                 this.resistanceCursorTimer = null;
             }
+            this.clearInterruptCountCursorReveal(false);
             document.documentElement.style.cursor = '';
             document.body.style.cursor = '';
             document.documentElement.classList.remove('yui-user-cursor-revealed');
@@ -12263,6 +12267,48 @@
             document.body.classList.remove('yui-user-cursor-revealed');
             document.body.classList.remove('yui-resistance-cursor-reveal');
             this.syncSystemCursorHidden(true, 'resistance_cursor_reveal_suppressed');
+        }
+
+        clearInterruptCountCursorReveal(resetCursor) {
+            if (this.resistanceCursorTimer) {
+                window.clearTimeout(this.resistanceCursorTimer);
+                this.resistanceCursorTimer = null;
+            }
+            if (document.body) {
+                document.documentElement.classList.remove('yui-interrupt-count-cursor-revealed');
+                document.body.classList.remove('yui-interrupt-count-cursor-revealed');
+            }
+            if (resetCursor) {
+                document.documentElement.style.cursor = '';
+                if (document.body) {
+                    document.body.style.cursor = '';
+                }
+            }
+        }
+
+        revealRealCursorForInterruptCount(durationMs = DEFAULT_INTERRUPT_COUNT_CURSOR_REVEAL_MS) {
+            if (this.destroyed || !document.body) {
+                return;
+            }
+            this.clearInterruptCountCursorReveal(false);
+            document.documentElement.style.cursor = '';
+            document.body.style.cursor = '';
+            document.documentElement.classList.add('yui-interrupt-count-cursor-revealed');
+            document.body.classList.add('yui-interrupt-count-cursor-revealed');
+            this.syncSystemCursorHidden(false, 'interrupt_count_reveal');
+            this.resistanceCursorTimer = window.setTimeout(() => {
+                this.resistanceCursorTimer = null;
+                this.clearInterruptCountCursorReveal(true);
+                if (
+                    this.destroyed
+                    || this.angryExitTriggered
+                    || !document.body
+                    || !document.body.classList.contains('yui-taking-over')
+                ) {
+                    return;
+                }
+                this.syncSystemCursorHidden(true, 'interrupt_count_reveal_timeout');
+            }, Math.max(0, Math.floor(Number(durationMs) || 0)));
         }
 
         syncSystemCursorHidden(hidden, reason = 'tutorial') {
@@ -12311,6 +12357,7 @@
 
             this.destroyed = true;
             this.terminationRequested = true;
+            this.clearInterruptCountCursorReveal(true);
             this.syncSystemCursorHidden(false, 'destroy');
             this.setHomePcCursorOutputSuppressedForExternalizedChat(false);
             this.restoreDay1TakeoverAgentSwitches('destroy').catch((error) => {
