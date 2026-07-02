@@ -163,6 +163,31 @@ test('common helper relays PC system cursor visibility and logs relay failures',
     ]);
     assert.equal(warnings.length, 0);
 
+    common.syncPcSystemCursorHidden(false, 'interrupt_resist_light', {
+        localStorage,
+        nekoTutorialOverlay: {
+            relayToChat(message) {
+                chatRelays.push(message);
+            },
+            relayToPet(message) {
+                petRelays.push(message);
+            }
+        },
+        channel: {
+            postMessage(message) {
+                channelMessages.push(message);
+            }
+        },
+        temporaryReveal: true,
+        durationMs: 2000,
+        console: consoleApi
+    });
+
+    assert.equal(chatRelays[2].action, 'yui_guide_system_cursor_temporary_reveal');
+    assert.equal(chatRelays[2].hidden, false);
+    assert.equal(chatRelays[2].reason, 'interrupt_resist_light');
+    assert.equal(chatRelays[2].durationMs, 2000);
+
     const relayError = new Error('relay failed');
     const petError = new Error('pet failed');
     const channelError = new Error('channel failed');
@@ -1380,7 +1405,9 @@ test('director routes resistance interrupts through ResistanceController boundar
     assert.match(resistanceControllerBlock, /director\.interruptCount \+= 1;/);
     assert.match(resistanceControllerBlock, /director\.abortAsAngryExit\('pointer_interrupt'\);/);
     assert.match(resistanceControllerBlock, /director\.playLightResistance\(x,\s*y,\s*\{/);
-    assert.match(resistanceControllerBlock, /director\.playLightResistance\(x,\s*y,\s*\{[\s\S]*?suppressCursorReveal:\s*true,[\s\S]*?forceSystemCursorReveal:\s*true/);
+    assert.match(resistanceControllerBlock, /suppressCursorReveal:\s*true/);
+    assert.match(resistanceControllerBlock, /forceSystemCursorReveal:\s*true/);
+    assert.match(resistanceControllerBlock, /normalizedOptions\.forceSystemCursorReveal[\s\S]*director\.revealSystemCursorTemporarily\(2000,\s*'interrupt_resist_light'\)/);
     assert.match(resistanceControllerBlock, /this\.lightResistanceActive = true;/);
     assert.match(resistanceControllerBlock, /director\.pauseCurrentSceneForResistance\(\);/);
     assert.match(resistanceControllerBlock, /director\.interruptNarrationForResistance\(\);/);

@@ -513,6 +513,12 @@
                 this.syncSystemCursorHidden(true, 'interrupt_resist_light');
                 director.suppressResistanceCursorReveal(normalizedOptions);
             }
+            if (
+                normalizedOptions.forceSystemCursorReveal
+                && typeof director.revealSystemCursorTemporarily === 'function'
+            ) {
+                director.revealSystemCursorTemporarily(2000, 'interrupt_resist_light');
+            }
 
             director.pauseCurrentSceneForResistance();
             director.interruptNarrationForResistance();

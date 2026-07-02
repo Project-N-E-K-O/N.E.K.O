@@ -409,7 +409,10 @@ def test_avatar_floating_guides_hide_real_cursor_during_takeover_and_show_banner
     assert "syncPcSystemCursorHidden(hidden, reason = 'tutorial')" in manager_source
     assert "syncPcSystemCursorHidden(hidden === true, reason);" in manager_source
     assert "function syncPcSystemCursorHidden(hidden, reason = 'tutorial', options)" in common_source
-    assert "action: 'yui_guide_system_cursor_visibility'" in common_source
+    assert "'yui_guide_system_cursor_visibility'" in common_source
+    assert "'yui_guide_system_cursor_temporary_reveal'" in common_source
+    assert "temporaryReveal: true" in director_source
+    assert "durationMs: durationMs" in director_source
     assert "action: 'yui_guide_system_cursor_visibility'" not in manager_source
     assert "action: 'yui_guide_system_cursor_visibility'" not in director_source
     assert "ensurePcTutorialGlobalOverlayStarted(reason = 'tutorial-started')" in manager_source

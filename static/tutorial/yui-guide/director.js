@@ -12322,6 +12322,18 @@
             }
         }
 
+        revealSystemCursorTemporarily(durationMs = 2000, reason = 'tutorial-temporary-reveal') {
+            if (
+                window.YuiGuideCommon
+                && typeof window.YuiGuideCommon.syncPcSystemCursorHidden === 'function'
+            ) {
+                window.YuiGuideCommon.syncPcSystemCursorHidden(false, reason, {
+                    temporaryReveal: true,
+                    durationMs: durationMs
+                });
+            }
+        }
+
         playLightResistance(x, y, options) {
             return this.resistanceController.playLightResistance(x, y, options);
         }

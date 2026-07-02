@@ -292,13 +292,19 @@
                 ? (storage.getItem('yuiGuidePcOverlayRunId') || '')
                 : '';
         } catch (_) {}
+        const temporaryReveal = normalizedOptions.temporaryReveal === true;
         const message = {
-            action: 'yui_guide_system_cursor_visibility',
+            action: temporaryReveal
+                ? 'yui_guide_system_cursor_temporary_reveal'
+                : 'yui_guide_system_cursor_visibility',
             hidden: hidden === true,
             tutorialRunId: tutorialRunId,
             reason: reason,
             timestamp: Date.now()
         };
+        if (temporaryReveal) {
+            message.durationMs = Math.max(0, Math.floor(Number(normalizedOptions.durationMs) || 0));
+        }
         const overlay = normalizedOptions.nekoTutorialOverlay || host.nekoTutorialOverlay;
         try {
             if (overlay && typeof overlay.relayToChat === 'function') {
