@@ -508,9 +508,11 @@
             const resistanceMessage = this.getResistanceMessage(performance);
             const presentationSnapshot = director.captureCurrentGuidePresentationSnapshot();
 
-            if (!normalizedOptions.suppressCursorReveal) {
-                this.syncSystemCursorHidden(true, 'interrupt_resist_light');
+            if (normalizedOptions.forceSystemCursorReveal) {
+                director.revealSystemCursorTemporarily(2000, 'interrupt_resist_light');
+            } else if (!normalizedOptions.suppressCursorReveal) {
                 director.suppressResistanceCursorReveal(normalizedOptions);
+                director.revealSystemCursorTemporarily(2000, 'interrupt_resist_light');
             }
 
             director.pauseCurrentSceneForResistance();
