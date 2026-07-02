@@ -534,6 +534,14 @@ class TimeIndexedMemory:
                 .replace('-', ' ')
                 .replace(':', ' ')
             )
+            # Wrap each token in double quotes so FTS5 boolean keywords
+            # (AND, OR, NOT) are treated as literal search terms instead
+            # of operators. With unicode61, single-character CJK tokens
+            # behave identically quoted or unquoted.
+            tokens = [f'"{t}"' for t in safe_query.split() if t.strip()]
+            if not tokens:
+                return []
+            fts_query = ' '.join(tokens)
             with self.engines[lanlan_name].connect() as conn:
                 result = conn.execute(
                     text(
@@ -542,7 +550,7 @@ class TimeIndexedMemory:
                         f'WHERE {self.FACTS_FTS_TABLE} MATCH :query '
                         f"ORDER BY score LIMIT :limit"
                     ),
-                    {"query": safe_query, "limit": limit}
+                    {"query": fts_query, "limit": limit}
                 )
                 return [(row[0], row[1]) for row in result.fetchall()]
         except Exception as e:

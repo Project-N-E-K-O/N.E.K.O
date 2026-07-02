@@ -805,10 +805,12 @@ class OpenFangAdapter:
             content = content.rstrip() + "\n\n" + pu_block
 
         # --- Set env vars for this process (may be inherited by children) ---
-        os.environ["OPENAI_API_KEY"] = api_key
         # Expose the key under the provider-specific env var so OpenFang can
         # read it from the environment instead of from a plaintext field in
         # config.toml (e.g. ANTHROPIC_API_KEY, GEMINI_API_KEY, etc.).
+        # Only set the provider-specific var — don't unconditionally write
+        # OPENAI_API_KEY, which would pollute/clobber it for non-OpenAI
+        # providers.
         if api_key_env:
             os.environ[api_key_env] = api_key
 
