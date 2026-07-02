@@ -188,6 +188,23 @@ def test_jukebox_manager_standalone_uses_native_drag_regions():
 
 
 @pytest.mark.frontend
+def test_jukebox_manager_tooltips_have_standalone_styles_and_binding():
+    """
+    Regression guard: the standalone manager window injects only
+    SongActionManager styles, so its custom tooltip CSS must live there too.
+    Otherwise data-tooltip elements bind mouse events but render invisible or
+    unstyled in Electron.
+    """
+    assert ".jukebox-tooltip {" in JUKEBOX_SCRIPT
+    assert ".jukebox-tooltip.visible" in JUKEBOX_SCRIPT
+    assert "z-index: 100030;" in JUKEBOX_SCRIPT
+    assert "Jukebox.bindTextTooltips(panel);" in JUKEBOX_SCRIPT
+    assert "this.bindButtonTooltips(panel);" in JUKEBOX_SCRIPT
+    assert 'data-tooltip="${Jukebox.escapeHtml(song.name)}"' in JUKEBOX_SCRIPT
+    assert 'data-tooltip="${Jukebox.escapeHtml(action.name)}"' in JUKEBOX_SCRIPT
+
+
+@pytest.mark.frontend
 def test_jukebox_web_manager_drag_starts_only_from_header(mock_page: Page):
     setup_song_manager_page(
         mock_page,
