@@ -228,6 +228,19 @@ def test_session_ended_by_server_stops_assistant_text_output():
         1,
     )[0]
 
+    discard_block = source.split("// -------- response_discarded --------", 1)[1].split(
+        "// -------- summary_response --------",
+        1,
+    )[0]
+    assert "if (S.suppressAssistantStreamUntilNextSession)" in discard_block
+    assert discard_block.index("if (S.suppressAssistantStreamUntilNextSession)") < discard_block.index(
+        "// Fallback: clear trailing gemini bubbles not tracked"
+    )
+    assert "return;" in discard_block.split("if (S.suppressAssistantStreamUntilNextSession)", 1)[1].split(
+        "emitAssistantSpeechCancel('response_discarded');",
+        1,
+    )[0]
+
     session_started_block = source.split("// -------- session_started --------", 1)[1].split(
         "// -------- session_failed --------",
         1,

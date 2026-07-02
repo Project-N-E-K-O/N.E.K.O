@@ -1660,6 +1660,13 @@
                 } else if (response.type === 'response_discarded') {
                     clearPendingUserActivityCancel();
                     window.invalidatePendingMusicSearch();
+                    if (S.suppressAssistantStreamUntilNextSession) {
+                        logAssistantLifecycle('response_discarded_suppressed_after_session_end', {
+                            reason: response.reason,
+                            willRetry: !!response.will_retry
+                        });
+                        return;
+                    }
                     emitAssistantSpeechCancel('response_discarded');
                     S.assistantTurnId = null;
                     window._nekoAssistantTurnId = null;
