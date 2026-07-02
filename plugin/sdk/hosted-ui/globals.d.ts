@@ -1,12 +1,78 @@
-declare const h: (type: any, props: any, ...children: any[]) => any
-declare const Fragment: any
-declare const useState: <T>(initialValue: T | (() => T)) => [T, (next: T | ((previous: T) => T)) => T]
-declare const useReducer: <S, A>(reducer: (state: S, action: A) => S, initialArg: S, init?: (value: S) => S) => [S, (action: A) => void]
-declare const useEffect: (effect: () => void | (() => void), deps?: any[]) => void
-declare const useLayoutEffect: (effect: () => void | (() => void), deps?: any[]) => void
-declare const useMemo: <T>(factory: () => T, deps?: any[]) => T
-declare const useCallback: <T extends (...args: any[]) => any>(callback: T, deps?: any[]) => T
-declare const useRef: <T>(initialValue: T) => { current: T }
-declare const useDebounce: <T>(value: T, delay?: number) => T
-declare const useDebouncedState: <T>(initialValue: T, delay?: number) => [T, (next: T | ((previous: T) => T)) => T, T]
-declare const useAsync: <T>(loader: () => Promise<T> | T, deps?: any[]) => { loading: boolean; error: any; data: T | undefined; reload: () => any }
+import type * as HostedUi from './index'
+
+declare global {
+  type Tone = HostedUi.Tone
+  const h: typeof HostedUi.h
+  const Fragment: typeof HostedUi.Fragment
+  const useState: typeof HostedUi.useState
+  const useReducer: typeof HostedUi.useReducer
+  const useEffect: typeof HostedUi.useEffect
+  const useLayoutEffect: typeof HostedUi.useLayoutEffect
+  const useMemo: typeof HostedUi.useMemo
+  const useCallback: typeof HostedUi.useCallback
+  const useRef: typeof HostedUi.useRef
+  const useLocalState: typeof HostedUi.useLocalState
+  const useDebounce: typeof HostedUi.useDebounce
+  const useDebouncedState: typeof HostedUi.useDebouncedState
+  const useAsync: typeof HostedUi.useAsync
+  const Page: typeof HostedUi.Page
+  const Card: typeof HostedUi.Card
+  const Section: typeof HostedUi.Section
+  const Heading: typeof HostedUi.Heading
+  const Stack: typeof HostedUi.Stack
+  const Grid: typeof HostedUi.Grid
+  const Text: typeof HostedUi.Text
+  const Button: typeof HostedUi.Button
+  const ButtonGroup: typeof HostedUi.ButtonGroup
+  const StatusBadge: typeof HostedUi.StatusBadge
+  const StatCard: typeof HostedUi.StatCard
+  const KeyValue: typeof HostedUi.KeyValue
+  const DataTable: typeof HostedUi.DataTable
+  const Divider: typeof HostedUi.Divider
+  const Toolbar: typeof HostedUi.Toolbar
+  const ToolbarGroup: typeof HostedUi.ToolbarGroup
+  const Alert: typeof HostedUi.Alert
+  const EmptyState: typeof HostedUi.EmptyState
+  const ErrorBoundary: typeof HostedUi.ErrorBoundary
+  const Modal: typeof HostedUi.Modal
+  const ConfirmDialog: typeof HostedUi.ConfirmDialog
+  const List: typeof HostedUi.List
+  const Progress: typeof HostedUi.Progress
+  const JsonView: typeof HostedUi.JsonView
+  const Field: typeof HostedUi.Field
+  const Input: typeof HostedUi.Input
+  const PasswordInput: typeof HostedUi.PasswordInput
+  const NumberInput: typeof HostedUi.NumberInput
+  const Slider: typeof HostedUi.Slider
+  const Select: typeof HostedUi.Select
+  const RadioGroup: typeof HostedUi.RadioGroup
+  const SegmentedControl: typeof HostedUi.SegmentedControl
+  const Textarea: typeof HostedUi.Textarea
+  const Switch: typeof HostedUi.Switch
+  const Checkbox: typeof HostedUi.Checkbox
+  const CheckboxGroup: typeof HostedUi.CheckboxGroup
+  const Accordion: typeof HostedUi.Accordion
+  const Markdown: typeof HostedUi.Markdown
+  const ImageUpload: typeof HostedUi.ImageUpload
+  const ImagePreview: typeof HostedUi.ImagePreview
+  const Gallery: typeof HostedUi.Gallery
+  const FileDownload: typeof HostedUi.FileDownload
+  const Form: typeof HostedUi.Form
+  const ActionButton: typeof HostedUi.ActionButton
+  const RefreshButton: typeof HostedUi.RefreshButton
+  const ActionForm: typeof HostedUi.ActionForm
+  const AsyncBlock: typeof HostedUi.AsyncBlock
+  const InlineError: typeof HostedUi.InlineError
+  const CodeBlock: typeof HostedUi.CodeBlock
+  const Tip: typeof HostedUi.Tip
+  const Warning: typeof HostedUi.Warning
+  const Steps: typeof HostedUi.Steps
+  const Step: typeof HostedUi.Step
+  const Tabs: typeof HostedUi.Tabs
+  const useI18n: typeof HostedUi.useI18n
+  const useForm: typeof HostedUi.useForm
+  const useToast: typeof HostedUi.useToast
+  const useConfirm: typeof HostedUi.useConfirm
+}
+
+export {}

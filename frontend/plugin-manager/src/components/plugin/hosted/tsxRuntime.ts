@@ -66,6 +66,7 @@ function compileHostedTsx(source: string, dependencies: HostedTsxDependency[] = 
 function buildPayload(options: BuildHostedTsxDocumentOptions) {
   return {
     plugin: options.context?.plugin || { id: options.pluginId },
+    host: { origin: window.location.origin },
     surface: options.surface,
     state: (options.context?.state && typeof options.context.state === 'object') ? options.context.state : {},
     stateSchema: options.context?.state_schema || null,
@@ -104,10 +105,16 @@ ${escapeScriptContent(uiKit.runtime)}
     if (!window.NekoUiKit.api || typeof window.NekoUiKit.api.call !== 'function' || typeof window.NekoUiKit.api.refresh !== 'function') {
       throw new Error('N.E.K.O UI Kit failed to initialize the hosted API bridge.');
     }
+    function __hostedTargetOrigin() {
+      const host = __NEKO_PAYLOAD && typeof __NEKO_PAYLOAD.host === 'object' ? __NEKO_PAYLOAD.host : {};
+      const origin = typeof host.origin === 'string' ? host.origin.trim() : '';
+      return origin || window.location.origin;
+    }
     function __normalizeHostedPayload(context) {
       const next = context && typeof context === 'object' ? context : {};
       return {
         plugin: next.plugin || __NEKO_PAYLOAD.plugin,
+        host: next.host || __NEKO_PAYLOAD.host,
         surface: next.surface || __NEKO_PAYLOAD.surface,
         state: next.state && typeof next.state === 'object' ? next.state : {},
         stateSchema: next.state_schema || next.stateSchema || null,
@@ -122,6 +129,7 @@ ${escapeScriptContent(uiKit.runtime)}
     function __hostedProps() {
       return {
         plugin: __NEKO_PAYLOAD.plugin,
+        host: __NEKO_PAYLOAD.host,
         surface: __NEKO_PAYLOAD.surface,
         state: __NEKO_PAYLOAD.state,
         stateSchema: __NEKO_PAYLOAD.stateSchema,
@@ -148,16 +156,16 @@ ${escapeScriptContent(uiKit.runtime)}
       } catch (_) {}
       const root = document.getElementById('root');
       if (root) window.NekoUiKit.render(window.NekoUiKit.h('div', { className: 'neko-error', role: 'alert' },
-        window.NekoUiKit.h('strong', null, '插件界面渲染失败'),
-        window.NekoUiKit.h('pre', null, message),
-        window.NekoUiKit.h('div', { className: 'neko-error-actions' },
-          window.NekoUiKit.h('button', { className: 'neko-button', type: 'button', onClick: () => window.__NekoRenderHostedSurface && window.__NekoRenderHostedSurface() }, '重新渲染'),
-          window.NekoUiKit.h('button', { className: 'neko-button', type: 'button', onClick: () => navigator.clipboard && navigator.clipboard.writeText(message).catch(() => {}) }, '复制错误'),
-          window.NekoUiKit.h('button', { className: 'neko-button', type: 'button', onClick: () => parent.postMessage({ type: 'neko-hosted-surface-open-logs', payload: meta }, '*') }, '查看日志')
-        ),
-        window.NekoUiKit.h('div', { className: 'neko-error-meta' }, JSON.stringify(meta))
-      ), root);
-      parent.postMessage({ type: 'neko-hosted-surface-error', payload: { message, fatal: true, scope: 'surface.render', details: meta } }, '*');
+          window.NekoUiKit.h('strong', null, '插件界面渲染失败'),
+          window.NekoUiKit.h('pre', null, message),
+          window.NekoUiKit.h('div', { className: 'neko-error-actions' },
+            window.NekoUiKit.h('button', { className: 'neko-button', type: 'button', onClick: () => window.__NekoRenderHostedSurface && window.__NekoRenderHostedSurface() }, '重新渲染'),
+            window.NekoUiKit.h('button', { className: 'neko-button', type: 'button', onClick: () => navigator.clipboard && navigator.clipboard.writeText(message).catch(() => {}) }, '复制错误'),
+            window.NekoUiKit.h('button', { className: 'neko-button', type: 'button', onClick: () => parent.postMessage({ type: 'neko-hosted-surface-open-logs', payload: meta }, __hostedTargetOrigin()) }, '查看日志')
+          ),
+          window.NekoUiKit.h('div', { className: 'neko-error-meta' }, JSON.stringify(meta))
+        ), root);
+      parent.postMessage({ type: 'neko-hosted-surface-error', payload: { message, fatal: true, scope: 'surface.render', details: meta } }, __hostedTargetOrigin());
     }
     window.__NekoRefreshHostedPayload = function(context) {
       __NEKO_PAYLOAD = __normalizeHostedPayload(context);

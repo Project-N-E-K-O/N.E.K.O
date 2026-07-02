@@ -1545,6 +1545,56 @@
         "modelInUse": "Em uso",
         "pngtuberTalkPreview": "Testar fala",
         "pngtuberStatePreview": "Prévia de estado",
+        "pngtuberDiagnostics": {
+            "title": "Diagnóstico PNGTuber",
+            "refresh": "Atualizar",
+            "copyJson": "Copiar JSON",
+            "unknown": "desconhecido",
+            "unknownError": "erro desconhecido",
+            "modelNotLoaded": "O modelo PNGTuber ainda não foi carregado",
+            "copySuccess": "JSON de diagnóstico PNGTuber copiado",
+            "copyFailed": "Falha ao copiar o JSON de diagnóstico",
+            "status": {
+                "ok": "OK",
+                "unloaded": "Não carregado",
+                "fallback": "Fallback",
+                "partial": "Parcialmente carregado",
+                "image": "Imagem",
+                "layered": "Em camadas"
+            },
+            "rows": {
+                "mode": "Modo",
+                "adapter": "Adaptador",
+                "metadata": "Metadados",
+                "metadataCheck": "Verificação de metadados",
+                "format": "Formato",
+                "layers": "Camadas",
+                "layerAssets": "Recursos de camada",
+                "missing": "Ausentes",
+                "canvas": "Canvas",
+                "roles": "Funções",
+                "mouthEye": "Boca/olhos",
+                "state": "Estado",
+                "fallback": "Fallback",
+                "error": "Erro"
+            },
+            "values": {
+                "ok": "OK",
+                "failedWithError": "Falhou: {{error}}",
+                "modePlan": "{{mode}} / planejado {{planned}}",
+                "layers": "{{loaded}}/{{total}} em execução / {{metadata}} em metadados",
+                "layerAssets": "{{checked}}/{{total}} verificados, ausentes {{missing}}, inválidos {{invalid}}, ignorados {{skipped}}",
+                "mouth": "boca",
+                "eye": "olho",
+                "speaking": "falando"
+            },
+            "fallbackReasons": {
+                "metadataFetchFailed": "falha ao buscar metadados: {{error}}",
+                "layeredModeFallback": "modo em camadas planejado, mas o modo em execução é {{mode}}",
+                "layerImagesFailed": "uma ou mais imagens de camada falharam ao carregar",
+                "emptyLayerRefs": "uma ou mais referências de imagem de camada estão vazias"
+            }
+        },
         "pngtuberImportProjectFile": "Importar arquivo de projeto",
         "pngtuberImportFolder": "Importar pasta"
     },

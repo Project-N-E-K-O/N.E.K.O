@@ -1,0 +1,32 @@
+{
+  "id": "generate_talking",
+  "name": "Generate Talking Variant",
+  "stage": "state_variant_generation",
+  "status": "ready",
+  "description": "Create a first talking-state image from the canonical transparent base. The initial implementation is a deterministic local mouth patch and can be replaced by a ComfyUI local-edit workflow later.",
+  "tags": ["talking", "variant", "mouth", "local_patch"],
+  "engine": "plugin",
+  "depends_on": ["remove_background"],
+  "inputs": [
+    {
+      "id": "idle_rgba",
+      "type": "image",
+      "required": true,
+      "role": "native_base_image"
+    }
+  ],
+  "outputs": [
+    {
+      "id": "talking_image",
+      "type": "image",
+      "role": "state_variant_talking"
+    }
+  ],
+  "quality_gates": [
+    "state_same_size",
+    "state_alpha_present",
+    "state_bbox_center_delta",
+    "state_bbox_size_delta"
+  ],
+  "next": ["package_native"]
+}

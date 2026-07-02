@@ -1545,6 +1545,56 @@
         "modelInUse": "使用中",
         "pngtuberTalkPreview": "発話をテスト",
         "pngtuberStatePreview": "状態プレビュー",
+        "pngtuberDiagnostics": {
+            "title": "PNGTuber診断",
+            "refresh": "更新",
+            "copyJson": "JSONをコピー",
+            "unknown": "不明",
+            "unknownError": "不明なエラー",
+            "modelNotLoaded": "PNGTuberモデルはまだ読み込まれていません",
+            "copySuccess": "PNGTuber診断JSONをコピーしました",
+            "copyFailed": "診断JSONのコピーに失敗しました",
+            "status": {
+                "ok": "OK",
+                "unloaded": "未読み込み",
+                "fallback": "フォールバック",
+                "partial": "一部読み込み済み",
+                "image": "画像",
+                "layered": "レイヤー"
+            },
+            "rows": {
+                "mode": "モード",
+                "adapter": "アダプター",
+                "metadata": "メタデータ",
+                "metadataCheck": "メタデータ確認",
+                "format": "形式",
+                "layers": "レイヤー",
+                "layerAssets": "レイヤー素材",
+                "missing": "不足",
+                "canvas": "キャンバス",
+                "roles": "役割",
+                "mouthEye": "口/目",
+                "state": "状態",
+                "fallback": "フォールバック",
+                "error": "エラー"
+            },
+            "values": {
+                "ok": "OK",
+                "failedWithError": "失敗: {{error}}",
+                "modePlan": "{{mode}} / 予定 {{planned}}",
+                "layers": "{{loaded}}/{{total}} 実行時 / {{metadata}} メタデータ",
+                "layerAssets": "{{checked}}/{{total}} 確認済み、不足 {{missing}}、無効 {{invalid}}、スキップ {{skipped}}",
+                "mouth": "口",
+                "eye": "目",
+                "speaking": "発話中"
+            },
+            "fallbackReasons": {
+                "metadataFetchFailed": "メタデータの取得に失敗しました: {{error}}",
+                "layeredModeFallback": "レイヤーモード予定でしたが、実行時モードは {{mode}} です",
+                "layerImagesFailed": "1つ以上のレイヤー画像を読み込めませんでした",
+                "emptyLayerRefs": "1つ以上のレイヤー画像参照が空です"
+            }
+        },
         "pngtuberImportProjectFile": "プロジェクトファイルをインポート",
         "pngtuberImportFolder": "フォルダーをインポート"
     },

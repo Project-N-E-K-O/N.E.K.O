@@ -1,0 +1,37 @@
+{
+  "id": "see_through_layers",
+  "name": "See-through Layers",
+  "stage": "layer_decomposition",
+  "status": "planned",
+  "description": "Decompose the selected character into semantic transparent layers for advanced PNGTuber canvas composition.",
+  "tags": ["see_through", "layers", "psd", "advanced"],
+  "engine": "comfyui",
+  "graph_template": "see_through_layers.prompt.json",
+  "depends_on": ["remove_background"],
+  "inputs": [
+    {
+      "id": "idle_rgba",
+      "type": "image",
+      "required": true
+    }
+  ],
+  "outputs": [
+    {
+      "id": "layers",
+      "type": "image_layers",
+      "role": "layered_canvas"
+    },
+    {
+      "id": "psd",
+      "type": "file",
+      "role": "debug_psd"
+    }
+  ],
+  "quality_gates": [
+    "layer_count_reasonable",
+    "face_layer_present",
+    "eye_mouth_layers_present",
+    "no_major_holes"
+  ],
+  "next": ["package_native"]
+}

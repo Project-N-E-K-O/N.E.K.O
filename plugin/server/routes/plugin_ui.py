@@ -21,7 +21,7 @@ import mimetypes
 import re
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 
@@ -39,6 +39,7 @@ _I18N_LOCALE_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_\-]{0,15}$")
 # and only change when the plugin author edits a translation file, so we keep
 # the parsed bytes in process memory and revalidate via mtime on each hit.
 _I18N_BUNDLE_CACHE: dict[Path, tuple[float, bytes]] = {}
+_HOSTED_UI_ARTIFACT_DIRS = ("artifacts", "local_artifacts")
 
 
 class HostedUiActionRequest(BaseModel):
@@ -46,6 +47,7 @@ class HostedUiActionRequest(BaseModel):
     kind: str = "panel"
     surface_id: str = "main"
     locale: str | None = None
+    timeout_ms: float | None = None
 
 
 async def _get_plugin_static_dir(plugin_id: str) -> Path | None:
@@ -357,7 +359,53 @@ async def plugin_hosted_ui_action(plugin_id: str, action_id: str, request: Hoste
             kind=request.kind,
             surface_id=request.surface_id,
             locale=request.locale,
+            timeout_seconds=(request.timeout_ms / 1000.0) if request.timeout_ms is not None else None,
         )
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
     return JSONResponse(result)
+
+
+@router.get("/plugin/{plugin_id}/hosted-ui/artifact")
+async def plugin_hosted_ui_artifact(
+    plugin_id: str,
+    file_path: str = Query(alias="path"),
+) -> FileResponse:
+    """Serve a plugin-owned generated artifact for hosted surfaces.
+
+    The route is intentionally narrow: callers pass an absolute or relative path,
+    but the resolved file must stay inside the plugin directory that owns the UI.
+    This supports generated previews/downloads without exposing arbitrary local
+    filesystem reads to Hosted TSX panels.
+    """
+    if not file_path:
+        raise HTTPException(status_code=400, detail="Missing artifact path")
+    try:
+        plugin_meta = await plugin_ui_query_service.get_plugin_meta(plugin_id)
+    except ServerDomainError as error:
+        raise_http_from_domain(error, logger=logger)
+    if plugin_meta is None:
+        raise HTTPException(status_code=404, detail=f"Plugin '{plugin_id}' not found")
+    config_path_obj = plugin_meta.get("config_path")
+    if not isinstance(config_path_obj, str) or not config_path_obj:
+        raise HTTPException(status_code=404, detail=f"Plugin '{plugin_id}' has no config_path")
+    try:
+        plugin_dir = Path(config_path_obj).parent.resolve()
+        candidate = Path(file_path)
+        target_file = candidate.resolve() if candidate.is_absolute() else (plugin_dir / candidate).resolve()
+        target_file.relative_to(plugin_dir)
+        allowed_roots = [(plugin_dir / artifact_dir).resolve() for artifact_dir in _HOSTED_UI_ARTIFACT_DIRS]
+        if not any(target_file == root or target_file.is_relative_to(root) for root in allowed_roots):
+            raise HTTPException(status_code=403, detail="Access denied: artifact outside allowed artifact directories")
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Access denied: artifact outside plugin directory")
+    except OSError:
+        raise HTTPException(status_code=404, detail="Artifact path is not readable")
+    if not target_file.is_file():
+        raise HTTPException(status_code=404, detail=f"Artifact not found: {file_path}")
+    return FileResponse(
+        str(target_file),
+        media_type=_get_mime_type(target_file),
+        filename=target_file.name,
+        headers={"Cache-Control": "no-store"},
+    )

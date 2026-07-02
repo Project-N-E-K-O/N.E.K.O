@@ -1545,6 +1545,56 @@
         "modelInUse": "使用中",
         "pngtuberTalkPreview": "測試說話",
         "pngtuberStatePreview": "狀態預覽",
+        "pngtuberDiagnostics": {
+            "title": "PNGTuber 診斷",
+            "refresh": "刷新",
+            "copyJson": "複製 JSON",
+            "unknown": "未知",
+            "unknownError": "未知錯誤",
+            "modelNotLoaded": "PNGTuber 模型尚未載入",
+            "copySuccess": "PNGTuber 診斷 JSON 已複製",
+            "copyFailed": "複製診斷 JSON 失敗",
+            "status": {
+                "ok": "OK",
+                "unloaded": "未載入",
+                "fallback": "回退",
+                "partial": "部分載入",
+                "image": "圖片",
+                "layered": "分層"
+            },
+            "rows": {
+                "mode": "模式",
+                "adapter": "適配器",
+                "metadata": "元資料",
+                "metadataCheck": "元資料檢查",
+                "format": "格式",
+                "layers": "圖層",
+                "layerAssets": "圖層資源",
+                "missing": "缺失",
+                "canvas": "畫布",
+                "roles": "角色",
+                "mouthEye": "嘴/眼",
+                "state": "狀態",
+                "fallback": "回退",
+                "error": "錯誤"
+            },
+            "values": {
+                "ok": "OK",
+                "failedWithError": "失敗: {{error}}",
+                "modePlan": "{{mode}} / 計畫 {{planned}}",
+                "layers": "{{loaded}}/{{total}} 執行階段 / {{metadata}} 元資料",
+                "layerAssets": "已檢查 {{checked}}/{{total}}，缺失 {{missing}}，無效 {{invalid}}，略過 {{skipped}}",
+                "mouth": "嘴",
+                "eye": "眼",
+                "speaking": "說話中"
+            },
+            "fallbackReasons": {
+                "metadataFetchFailed": "元資料取得失敗: {{error}}",
+                "layeredModeFallback": "計畫使用分層模式，但執行模式是 {{mode}}",
+                "layerImagesFailed": "一個或多個圖層圖片載入失敗",
+                "emptyLayerRefs": "一個或多個圖層圖片引用為空"
+            }
+        },
         "pngtuberImportProjectFile": "導入工程檔案",
         "pngtuberImportFolder": "導入資料夾"
     },

@@ -1545,6 +1545,56 @@
         "modelInUse": "使用中",
         "pngtuberTalkPreview": "测试说话",
         "pngtuberStatePreview": "状态预览",
+        "pngtuberDiagnostics": {
+            "title": "PNGTuber 诊断",
+            "refresh": "刷新",
+            "copyJson": "复制 JSON",
+            "unknown": "未知",
+            "unknownError": "未知错误",
+            "modelNotLoaded": "PNGTuber 模型尚未加载",
+            "copySuccess": "PNGTuber 诊断 JSON 已复制",
+            "copyFailed": "复制诊断 JSON 失败",
+            "status": {
+                "ok": "OK",
+                "unloaded": "未加载",
+                "fallback": "回退",
+                "partial": "部分加载",
+                "image": "图片",
+                "layered": "分层"
+            },
+            "rows": {
+                "mode": "模式",
+                "adapter": "适配器",
+                "metadata": "元数据",
+                "metadataCheck": "元数据检查",
+                "format": "格式",
+                "layers": "图层",
+                "layerAssets": "图层资源",
+                "missing": "缺失",
+                "canvas": "画布",
+                "roles": "角色",
+                "mouthEye": "嘴/眼",
+                "state": "状态",
+                "fallback": "回退",
+                "error": "错误"
+            },
+            "values": {
+                "ok": "OK",
+                "failedWithError": "失败: {{error}}",
+                "modePlan": "{{mode}} / 计划 {{planned}}",
+                "layers": "{{loaded}}/{{total}} 运行时 / {{metadata}} 元数据",
+                "layerAssets": "已检查 {{checked}}/{{total}}，缺失 {{missing}}，无效 {{invalid}}，跳过 {{skipped}}",
+                "mouth": "嘴",
+                "eye": "眼",
+                "speaking": "说话中"
+            },
+            "fallbackReasons": {
+                "metadataFetchFailed": "元数据获取失败: {{error}}",
+                "layeredModeFallback": "计划使用分层模式，但运行时模式是 {{mode}}",
+                "layerImagesFailed": "一个或多个图层图片加载失败",
+                "emptyLayerRefs": "一个或多个图层图片引用为空"
+            }
+        },
         "pngtuberImportProjectFile": "导入工程文件",
         "pngtuberImportFolder": "导入文件夹"
     },

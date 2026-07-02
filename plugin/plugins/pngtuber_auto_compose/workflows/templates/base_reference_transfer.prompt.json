@@ -1,0 +1,153 @@
+{
+  "1": {
+    "class_type": "CheckpointLoaderSimple",
+    "inputs": {
+      "ckpt_name": "waiIllustriousSDXL_v170.safetensors"
+    }
+  },
+  "2": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "__REFERENCE_IMAGE__"
+    }
+  },
+  "3": {
+    "class_type": "LoadRembgByBiRefNetModel",
+    "inputs": {
+      "model": "General.safetensors",
+      "device": "AUTO",
+      "use_weight": false,
+      "dtype": "float32"
+    }
+  },
+  "4": {
+    "class_type": "RembgByBiRefNetAdvanced",
+    "inputs": {
+      "model": ["3", 0],
+      "images": ["2", 0],
+      "width": 1536,
+      "height": 1536,
+      "upscale_method": "bilinear",
+      "blur_size": 90,
+      "blur_size_two": 6,
+      "fill_color": false,
+      "color": 0,
+      "mask_threshold": 0.0
+    }
+  },
+  "5": {
+    "class_type": "SplitImageWithAlpha",
+    "inputs": {
+      "image": ["4", 0]
+    }
+  },
+  "6": {
+    "class_type": "PrepImageForClipVision",
+    "inputs": {
+      "image": ["5", 0],
+      "interpolation": "LANCZOS",
+      "crop_position": "pad",
+      "sharpening": 0.0
+    }
+  },
+  "7": {
+    "class_type": "IPAdapterUnifiedLoader",
+    "inputs": {
+      "model": ["1", 0],
+      "preset": "PLUS (high strength)"
+    }
+  },
+  "8": {
+    "class_type": "IPAdapterAdvanced",
+    "inputs": {
+      "model": ["7", 0],
+      "ipadapter": ["7", 1],
+      "image": ["6", 0],
+      "weight": 0.64,
+      "weight_type": "composition",
+      "combine_embeds": "concat",
+      "start_at": 0.0,
+      "end_at": 0.8,
+      "embeds_scaling": "V only"
+    }
+  },
+  "9": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": ["1", 1],
+      "text": "__POSITIVE_PROMPT__"
+    }
+  },
+  "10": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": ["1", 1],
+      "text": "__NEGATIVE_PROMPT__"
+    }
+  },
+  "11": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "__POSE_IMAGE__"
+    }
+  },
+  "12": {
+    "class_type": "ControlNetLoader",
+    "inputs": {
+      "control_net_name": "illustrious-xl-openpose_s6000.safetensors"
+    }
+  },
+  "13": {
+    "class_type": "ControlNetApplyAdvanced",
+    "inputs": {
+      "positive": ["9", 0],
+      "negative": ["10", 0],
+      "control_net": ["12", 0],
+      "image": ["11", 0],
+      "strength": 0.83,
+      "start_percent": 0.0,
+      "end_percent": 0.85,
+      "vae": ["1", 2]
+    }
+  },
+  "14": {
+    "class_type": "EmptyLatentImage",
+    "inputs": {
+      "width": "__WIDTH__",
+      "height": "__HEIGHT__",
+      "batch_size": "__BATCH_SIZE__"
+    }
+  },
+  "15": {
+    "class_type": "KSamplerAdvanced",
+    "inputs": {
+      "model": ["8", 0],
+      "add_noise": "enable",
+      "noise_seed": "__SEED__",
+      "steps": 30,
+      "cfg": 5.5,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "positive": ["13", 0],
+      "negative": ["13", 1],
+      "latent_image": ["14", 0],
+      "start_at_step": 0,
+      "end_at_step": 10000,
+      "return_with_leftover_noise": "disable"
+    }
+  },
+  "16": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": ["15", 0],
+      "vae": ["1", 2]
+    }
+  },
+  "17": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": ["16", 0],
+      "filename_prefix": "__FILENAME_PREFIX__"
+    }
+  }
+}

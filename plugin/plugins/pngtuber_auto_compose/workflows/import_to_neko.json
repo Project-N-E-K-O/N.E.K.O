@@ -1,0 +1,29 @@
+{
+  "id": "import_to_neko",
+  "name": "Import to N.E.K.O",
+  "stage": "installation",
+  "status": "ready",
+  "description": "Install the built simple PNGTuber package into the N.E.K.O user PNGTuber model directory.",
+  "tags": ["import", "neko", "pngtuber", "install"],
+  "engine": "plugin",
+  "depends_on": ["package_native"],
+  "inputs": [
+    {
+      "id": "package_dir",
+      "type": "directory",
+      "required": true,
+      "role": "import_package"
+    }
+  ],
+  "outputs": [
+    {
+      "id": "installed_model",
+      "type": "json",
+      "role": "installed_model"
+    }
+  ],
+  "quality_gates": [
+    "installed_model"
+  ],
+  "next": []
+}

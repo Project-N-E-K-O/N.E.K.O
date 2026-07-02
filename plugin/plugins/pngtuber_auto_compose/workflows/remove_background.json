@@ -1,0 +1,37 @@
+{
+  "id": "remove_background",
+  "name": "Remove Background",
+  "stage": "matting",
+  "status": "ready",
+  "description": "Remove the background from a selected character candidate with BiRefNet/RMBG and preserve an RGBA idle base image.",
+  "tags": ["matting", "birefnet", "rgba", "idle"],
+  "engine": "comfyui",
+  "graph_template": "remove_background.prompt.json",
+  "depends_on": ["base_reference_transfer", "standard_pose_character"],
+  "inputs": [
+    {
+      "id": "source_image",
+      "type": "image",
+      "required": true,
+      "description": "Selected base candidate image."
+    }
+  ],
+  "outputs": [
+    {
+      "id": "idle_rgba",
+      "type": "image",
+      "role": "idle_image"
+    },
+    {
+      "id": "character_mask",
+      "type": "mask",
+      "role": "qa_mask"
+    }
+  ],
+  "quality_gates": [
+    "alpha_present",
+    "no_background_residue",
+    "full_character_bbox"
+  ],
+  "next": ["generate_talking", "qwen_expression_patch", "package_native"]
+}

@@ -1,0 +1,43 @@
+{
+  "id": "package_native",
+  "name": "Package Native PNGTuber",
+  "stage": "packaging",
+  "status": "ready",
+  "description": "Assemble the canonical idle image and optional talking variant into an importable N.E.K.O simple PNGTuber package.",
+  "tags": ["package", "neko", "pngtuber"],
+  "engine": "plugin",
+  "depends_on": ["remove_background", "generate_talking"],
+  "inputs": [
+    {
+      "id": "idle_rgba",
+      "type": "image",
+      "required": true
+    },
+    {
+      "id": "variants",
+      "type": "image_batch",
+      "required": false
+    },
+    {
+      "id": "layers",
+      "type": "image_layers",
+      "required": false
+    }
+  ],
+  "outputs": [
+    {
+      "id": "package_dir",
+      "type": "directory",
+      "role": "import_package"
+    }
+  ],
+  "quality_gates": [
+    "model_json_valid",
+    "idle_image_exists",
+    "talking_image_exists",
+    "state_same_size",
+    "state_bbox_center_delta",
+    "package_size_within_limit"
+  ],
+  "next": ["import_to_neko"]
+}

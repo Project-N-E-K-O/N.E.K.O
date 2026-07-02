@@ -1545,6 +1545,56 @@
         "modelInUse": "Используется",
         "pngtuberTalkPreview": "Проверить речь",
         "pngtuberStatePreview": "Предпросмотр состояния",
+        "pngtuberDiagnostics": {
+            "title": "Диагностика PNGTuber",
+            "refresh": "Обновить",
+            "copyJson": "Копировать JSON",
+            "unknown": "неизвестно",
+            "unknownError": "неизвестная ошибка",
+            "modelNotLoaded": "Модель PNGTuber ещё не загружена",
+            "copySuccess": "JSON диагностики PNGTuber скопирован",
+            "copyFailed": "Не удалось скопировать JSON диагностики",
+            "status": {
+                "ok": "OK",
+                "unloaded": "Не загружено",
+                "fallback": "Резервный режим",
+                "partial": "Загружено частично",
+                "image": "Изображение",
+                "layered": "Слои"
+            },
+            "rows": {
+                "mode": "Режим",
+                "adapter": "Адаптер",
+                "metadata": "Метаданные",
+                "metadataCheck": "Проверка метаданных",
+                "format": "Формат",
+                "layers": "Слои",
+                "layerAssets": "Ресурсы слоёв",
+                "missing": "Отсутствует",
+                "canvas": "Холст",
+                "roles": "Роли",
+                "mouthEye": "Рот/глаза",
+                "state": "Состояние",
+                "fallback": "Резервный режим",
+                "error": "Ошибка"
+            },
+            "values": {
+                "ok": "OK",
+                "failedWithError": "Ошибка: {{error}}",
+                "modePlan": "{{mode}} / запланировано {{planned}}",
+                "layers": "{{loaded}}/{{total}} в рантайме / {{metadata}} в метаданных",
+                "layerAssets": "{{checked}}/{{total}} проверено, отсутствует {{missing}}, неверно {{invalid}}, пропущено {{skipped}}",
+                "mouth": "рот",
+                "eye": "глаза",
+                "speaking": "говорит"
+            },
+            "fallbackReasons": {
+                "metadataFetchFailed": "не удалось получить метаданные: {{error}}",
+                "layeredModeFallback": "планировался режим слоёв, но текущий режим выполнения: {{mode}}",
+                "layerImagesFailed": "одно или несколько изображений слоёв не загрузились",
+                "emptyLayerRefs": "одна или несколько ссылок на изображения слоёв пустые"
+            }
+        },
         "pngtuberImportProjectFile": "Импорт файла проекта",
         "pngtuberImportFolder": "Импорт папки"
     },

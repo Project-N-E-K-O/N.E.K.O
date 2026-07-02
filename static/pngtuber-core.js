@@ -110,6 +110,7 @@
             this.layeredStateReturnTimer = null;
             this.layeredAnimationFrame = null;
             this.layeredAnimationStart = 0;
+            this.lastLayeredError = '';
             this.layeredBreathingFrame = null;
             this.layeredBreathingStart = 0;
             this._boundLayeredHotkey = (event) => this.handleLayeredHotkey(event);
@@ -448,6 +449,7 @@
             this.layeredMetadata = null;
             this.layeredImages = new Map();
             this.layeredStateIndex = 0;
+            this.lastLayeredError = '';
             if (!this.isLayeredConfigured()) return false;
             try {
                 const response = await fetch(this.config.layered_metadata, { cache: 'no-cache' });
@@ -480,6 +482,7 @@
                 return true;
             } catch (error) {
                 console.warn('[PNGTuber] layered adapter disabled, falling back to image mode:', error);
+                this.lastLayeredError = error && error.message ? error.message : String(error || 'layered adapter failed');
                 this.layeredMetadata = null;
                 this.layeredImages = new Map();
                 return false;
@@ -1666,16 +1669,25 @@
             const imageRect = image && typeof image.getBoundingClientRect === 'function'
                 ? image.getBoundingClientRect()
                 : null;
+            const layeredConfigured = this.isLayeredConfigured();
+            const layeredActive = this.isLayeredActive();
             return {
                 active: !!(container && container.style.display !== 'none' && !container.classList.contains('hidden')),
                 modelType: (window.lanlan_config?.model_type || '').toLowerCase() || null,
+                mode: layeredActive ? 'layered' : (this.config.idle_image ? 'image' : 'unloaded'),
+                plannedMode: layeredConfigured ? 'layered' : 'image',
+                adapter: this.config.adapter || '',
+                metadataUrl: this.config.layered_metadata || '',
+                lastError: layeredConfigured && !layeredActive ? this.lastLayeredError : '',
                 state: this.state,
+                currentState: this.state,
                 isSpeaking: !!this.isSpeaking,
                 speakingMouthOpen: !!this.speakingMouthOpen,
-                layered: this.isLayeredActive(),
-                layeredConfigured: this.isLayeredConfigured(),
+                layered: layeredActive,
+                layeredConfigured,
                 layeredStateIndex: this.layeredStateIndex,
                 layerCount: layers.length,
+                loadedLayerImages: this.layeredImages ? this.layeredImages.size : 0,
                 renderedIdleLayerCount: this.renderedLayerCountForState('idle'),
                 renderedTalkingLayerCount: this.renderedLayerCountForState('talking'),
                 renderedLayers: this.renderedLayerDebugInfo(this.state || 'idle'),
@@ -2140,8 +2152,16 @@
         return window.pngtuberManager.playLayeredAnimation(target, options);
     }
 
+    function getPNGTuberDebugState() {
+        if (!window.pngtuberManager || typeof window.pngtuberManager.getDebugState !== 'function') {
+            return { mode: 'unloaded', lastError: 'PNGTuber manager not initialized' };
+        }
+        return window.pngtuberManager.getDebugState();
+    }
+
     window.PNGTuberManager = PNGTuberManager;
     window.hideOtherAvatarRuntimesForPNGTuber = hideOtherAvatarRuntimesForPNGTuber;
     window.loadPNGTuberAvatar = loadPNGTuberAvatar;
     window.playPNGTuberAnimation = playPNGTuberAnimation;
+    window.getPNGTuberDebugState = getPNGTuberDebugState;
 })();

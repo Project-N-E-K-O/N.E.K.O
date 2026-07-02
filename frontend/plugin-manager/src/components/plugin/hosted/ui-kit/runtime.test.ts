@@ -558,6 +558,7 @@ describe('hosted ui runtime', () => {
       const settled = vi.fn()
       promise.then(settled, settled)
       expect(requestMessage?.type).toBe('neko-hosted-surface-request')
+      expect(requestMessage?.timeoutMs).toBe(80000)
 
       await vi.advanceTimersByTimeAsync(30000)
       await flushMicrotasks()
@@ -700,5 +701,104 @@ describe('hosted ui runtime', () => {
     fireEvent.keyDown(window, { key: 'Escape' })
     await flushMicrotasks()
     expect(document.querySelector('.neko-modal')).toBeNull()
+  })
+
+  it('supports Gradio-parity controls', async () => {
+    let selectedLayer: any = null
+
+    function App() {
+      const [parts, setParts] = ui.useState(['Hair'])
+      const [method, setMethod] = ui.useState('anime_face')
+      const [feather, setFeather] = ui.useState(2)
+      const [image, setImage] = ui.useState('data:image/png;base64,ZmFrZQ==')
+      return ui.h('section', null,
+        ui.h(ui.CheckboxGroup, {
+          value: parts,
+          options: [{ value: 'Hair', label: 'Hair' }, { value: 'Body', label: 'Body' }],
+          onChange: setParts,
+        }),
+        ui.h(ui.RadioGroup, {
+          value: method,
+          options: [{ value: 'anime_face', label: 'AnimeFace' }, { value: 'color', label: 'Color' }],
+          onChange: setMethod,
+        }),
+        ui.h(ui.SegmentedControl, {
+          value: method,
+          options: ['anime_face', 'color'],
+          onChange: setMethod,
+        }),
+        ui.h(ui.Slider, { value: feather, min: 0, max: 8, onChange: setFeather }),
+        ui.h(ui.PasswordInput, { value: 'secret', onChange: () => undefined }),
+        ui.h(ui.ImageUpload, { value: image, onChange: setImage }),
+        ui.h(ui.ImagePreview, { src: image, label: 'Preview' }),
+        ui.h(ui.Gallery, {
+          items: [{ name: 'Layer', preview_data_url: image }],
+          onSelect: (item: any) => { selectedLayer = item },
+        }),
+        ui.h('output', { id: 'state', 'data-parts': parts.join(','), 'data-method': method, 'data-feather': feather }, image),
+      )
+    }
+
+    ui.render(ui.h(App, null), root)
+
+    fireEvent.click(Array.from(root.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')).find((input) => input.value === 'Body')!)
+    await flushMicrotasks()
+    expect(root.querySelector('#state')?.getAttribute('data-parts')).toBe('Hair,Body')
+
+    fireEvent.click(Array.from(root.querySelectorAll<HTMLInputElement>('input[type="radio"]')).find((input) => input.value === 'color')!)
+    await flushMicrotasks()
+    expect(root.querySelector('#state')?.getAttribute('data-method')).toBe('color')
+
+    const slider = root.querySelector<HTMLInputElement>('input[type="range"]')!
+    slider.value = '5'
+    fireEvent.input(slider)
+    await flushMicrotasks()
+    expect(root.querySelector('#state')?.getAttribute('data-feather')).toBe('5')
+
+    expect(root.querySelector('.neko-image-preview img')?.getAttribute('src')).toContain('data:image/png;base64')
+    fireEvent.click(root.querySelector('.neko-gallery-item')!)
+    expect(selectedLayer?.name).toBe('Layer')
+  })
+
+  it('routes hosted downloads through the parent window', () => {
+    const messages: any[] = []
+    Object.defineProperty(window, 'parent', {
+      value: {
+        postMessage(message: any) {
+          messages.push(message)
+        },
+      },
+      configurable: true,
+    })
+    window.__NEKO_PAYLOAD.host = { origin: 'http://127.0.0.1:48911' }
+
+    ui.render(ui.h(ui.FileDownload, { href: '/plugin/demo/hosted-ui/artifact?path=x.zip', label: 'Download' }), root)
+    fireEvent.click(root.querySelector('button')!)
+
+    expect(messages).toEqual([{
+      type: 'neko-hosted-surface-open-external',
+      payload: { url: 'http://127.0.0.1:48911/plugin/demo/hosted-ui/artifact?path=x.zip' },
+    }])
+  })
+
+  it('routes local hosted download paths through the parent window', () => {
+    const messages: any[] = []
+    Object.defineProperty(window, 'parent', {
+      value: {
+        postMessage(message: any) {
+          messages.push(message)
+        },
+      },
+      configurable: true,
+    })
+    window.__NEKO_PAYLOAD.host = { origin: 'http://127.0.0.1:48911' }
+
+    ui.render(ui.h(ui.FileDownload, { path: '/tmp/neko/package', label: 'Open folder' }), root)
+    fireEvent.click(root.querySelector('button')!)
+
+    expect(messages).toEqual([{
+      type: 'neko-hosted-surface-open-path',
+      payload: { path: '/tmp/neko/package' },
+    }])
   })
 })

@@ -3489,9 +3489,10 @@
     // 延迟 hook：live2dManager 可能还没创建
     if (window.live2dManager) _hookLive2dModelLoaded();
     else window.addEventListener('DOMContentLoaded', function () { setTimeout(_hookLive2dModelLoaded, 500); });
-    // VRM / MMD
+    // VRM / MMD / PNGTuber
     window.addEventListener('vrm-model-loaded', _onModelReady);
     window.addEventListener('mmd-model-loaded', _onModelReady);
+    window.addEventListener('pngtuber-model-loaded', _onModelReady);
 
     // i18next 'languageChanged' → 重新把 i18n 真值同步到后端 mgr.user_language。
     // 关键场景：socket open 早于 i18next bootstrap 完成时，首次 greeting_check

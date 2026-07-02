@@ -1,0 +1,46 @@
+[plugin]
+id = "pngtuber_auto_compose"
+name = "PNGTuber Auto Compose"
+description = "Automatically prepares PNGTuber composition jobs from reference images, with ComfyUI orchestration hooks and N.E.K.O package output."
+short_description = "Auto-compose PNGTuber assets from reference images."
+keywords = ["pngtuber", "avatar", "compose", "comfyui", "image", "model", "vtuber"]
+version = "0.1.0"
+type = "plugin"
+entry = "plugin.plugins.pngtuber_auto_compose:PNGTuberAutoComposePlugin"
+
+[plugin.author]
+name = "N.E.K.O Team"
+
+[plugin.sdk]
+recommended = ">=0.1.0,<0.2.0"
+supported = ">=0.1.0,<0.3.0"
+
+[plugin.store]
+enabled = true
+
+[plugin.ui]
+enabled = true
+
+[[plugin.ui.panel]]
+id = "main"
+title = "PNGTuber Auto Compose"
+entry = "ui/panel.tsx"
+context = "dashboard"
+permissions = ["state:read", "config:read", "action:call"]
+
+[[plugin.ui.guide]]
+id = "quickstart"
+title = "Quickstart"
+entry = "docs/quickstart.md"
+context = "dashboard"
+permissions = ["state:read"]
+
+[plugin_runtime]
+enabled = true
+auto_start = false
+
+[pngtuber_auto_compose]
+comfyui_url = "https://u433367-7821753e648a.bjb1.seetacloud.com:8443"
+default_mode = "four_state"
+max_image_bytes = 15728640
+keep_completed_jobs = 20

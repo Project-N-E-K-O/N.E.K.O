@@ -60,7 +60,7 @@ import { useI18n } from 'vue-i18n'
 import { Document, Loading, WarningFilled } from '@element-plus/icons-vue'
 import { callPluginHostedSurfaceAction, getPluginHostedSurfaceContext, getPluginHostedSurfaceSource } from '@/api/plugins'
 import { buildHostedTsxDocument } from '@/components/plugin/hosted/tsxRuntime'
-import { openExternalUrl } from '@/utils/openExternal'
+import { openExternalUrl, openLocalPath } from '@/utils/openExternal'
 import type { PluginUiSurface } from '@/types/api'
 
 const props = withDefaults(defineProps<{
@@ -96,6 +96,7 @@ type HostedBridgeError = {
 }
 
 const frameStyle = computed(() => ({
+  height: props.height,
   minHeight: props.height,
 }))
 
@@ -464,6 +465,11 @@ function handleMessage(event: MessageEvent) {
     if (url) openExternalUrl(url)
     return
   }
+  if (data && typeof data === 'object' && data.type === 'neko-hosted-surface-open-path') {
+    const path = typeof data.payload?.path === 'string' ? data.payload.path : ''
+    if (path) openLocalPath(path)
+    return
+  }
   if (data && typeof data === 'object' && data.type === 'neko-hosted-surface-request') {
     handleHostedRequest(data)
     return
@@ -493,10 +499,12 @@ async function handleHostedRequest(data: any) {
     if (method === 'call') {
       const actionId = String(data.payload?.actionId || '')
       const args = data.payload?.args && typeof data.payload.args === 'object' ? data.payload.args : {}
+      const timeoutMs = Number(data.timeoutMs)
       const result = await callPluginHostedSurfaceAction(props.pluginId, actionId, args, {
         kind: props.surface.kind,
         id: props.surface.id,
         locale: String(locale.value),
+        timeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : undefined,
       })
       respond({ ok: true, result })
       return
@@ -556,12 +564,14 @@ watch(
 
 .hosted-surface-frame__iframe {
   width: 100%;
+  height: 100%;
   min-height: inherit;
   border: none;
   display: block;
 }
 
 .hosted-surface-frame__placeholder {
+  height: 100%;
   min-height: inherit;
   display: flex;
   flex-direction: column;

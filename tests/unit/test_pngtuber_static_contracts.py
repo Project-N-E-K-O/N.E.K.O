@@ -7,6 +7,7 @@ APP_AUDIO_PLAYBACK_PATH = PROJECT_ROOT / "static" / "app-audio-playback.js"
 APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app-interpage.js"
 APP_UI_PATH = PROJECT_ROOT / "static" / "app-ui.js"
 INDEX_CSS_PATH = PROJECT_ROOT / "static" / "css" / "index.css"
+MODEL_MANAGER_JS = PROJECT_ROOT / "static" / "js" / "model_manager.js"
 
 
 def test_pngtuber_mobile_web_detection_uses_canonical_width_predicate():
@@ -97,6 +98,45 @@ def test_pngtuber_model_manager_preview_centering_does_not_mutate_saved_offsets(
     assert "this.config.offset_y = 0" not in source
     assert "this.config.mobile_offset_x = 0" not in source
     assert "this.config.mobile_offset_y = 0" not in source
+
+
+def test_pngtuber_runtime_exposes_debug_state_for_diagnostics():
+    source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
+    debug_block = source[
+        source.index("getDebugState()"):
+        source.index("        setSpeaking(isSpeaking)")
+    ]
+    export_block = source[
+        source.index("function getPNGTuberDebugState()"):
+        source.index("    window.PNGTuberManager = PNGTuberManager;")
+    ]
+
+    assert "mode: layeredActive ? 'layered' : (this.config.idle_image ? 'image' : 'unloaded')" in debug_block
+    assert "plannedMode: layeredConfigured ? 'layered' : 'image'" in debug_block
+    assert "adapter: this.config.adapter || ''" in debug_block
+    assert "metadataUrl: this.config.layered_metadata || ''" in debug_block
+    assert "loadedLayerImages: this.layeredImages ? this.layeredImages.size : 0" in debug_block
+    assert "window.getPNGTuberDebugState = getPNGTuberDebugState;" in source
+    assert "PNGTuber manager not initialized" in export_block
+
+
+def test_pngtuber_diagnostics_infers_remix_format_and_layer_roles():
+    source = MODEL_MANAGER_JS.read_text(encoding="utf-8")
+    role_block = source[
+        source.index("function inferPNGTuberLayerRole(layer)"):
+        source.index("function getPNGTuberDiagnosticsSnapshot")
+    ]
+    snapshot_block = source[
+        source.index("function getPNGTuberDiagnosticsSnapshot"):
+        source.index("function setPNGTuberDiagnosticsStatus")
+    ]
+
+    assert "item.effective_should_talk ?? item.should_talk" in role_block
+    assert "return 'mouth';" in role_block
+    assert "item.effective_should_blink ?? item.should_blink" in role_block
+    assert "return 'eye';" in role_block
+    assert "metadata.format || metadata.source_format || metadata.source_type" in snapshot_block
+    assert "const role = inferPNGTuberLayerRole(layer);" in snapshot_block
 
 
 def test_pngtuber_container_pointer_events_stay_passthrough_on_restore_paths():
