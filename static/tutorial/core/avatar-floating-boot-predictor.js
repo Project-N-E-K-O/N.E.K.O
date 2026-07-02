@@ -6,6 +6,7 @@
     const PC_OVERLAY_RUN_ID_STORAGE_KEY = 'yuiGuidePcOverlayRunId';
     const PC_OVERLAY_SEQUENCE_STORAGE_KEY = 'yuiGuidePcOverlaySequence';
     const PC_OVERLAY_LOADING_ICON = '/static/icons/emotion_model_icon.png';
+    const PC_OVERLAY_LOADING_DISPLAY_SCOPE = 'primary';
     const ROUND_COUNT = 7;
 
     const state = {
@@ -254,7 +255,11 @@
         const sequence = nextPcOverlaySequence();
         state.loadingActive = true;
         try {
-            const beginResult = bridge.begin({ tutorialRunId, reason: reason || 'direct-tutorial-loading' });
+            const beginResult = bridge.begin({
+                tutorialRunId,
+                reason: reason || 'direct-tutorial-loading',
+                displayScope: PC_OVERLAY_LOADING_DISPLAY_SCOPE
+            });
             if (beginResult && typeof beginResult.catch === 'function') {
                 beginResult.catch(() => {
                     state.loadingActive = false;
@@ -263,10 +268,12 @@
             const updateResult = bridge.update({
                 tutorialRunId,
                 sequence,
+                displayScope: PC_OVERLAY_LOADING_DISPLAY_SCOPE,
                 payload: {
                     loading: {
                         visible: true,
                         reason: reason || 'direct-tutorial-loading',
+                        displayScope: PC_OVERLAY_LOADING_DISPLAY_SCOPE,
                         emotionIconUrl: PC_OVERLAY_LOADING_ICON
                     }
                 }
@@ -299,7 +306,12 @@
                 const updateResult = bridge.update({
                     tutorialRunId,
                     sequence,
-                    payload: { loading: null, reason: reason || 'direct-tutorial-loading-clear' }
+                    displayScope: PC_OVERLAY_LOADING_DISPLAY_SCOPE,
+                    payload: {
+                        loading: null,
+                        reason: reason || 'direct-tutorial-loading-clear',
+                        displayScope: PC_OVERLAY_LOADING_DISPLAY_SCOPE
+                    }
                 });
                 if (updateResult && typeof updateResult.catch === 'function') {
                     updateResult.catch(() => {});
@@ -308,7 +320,11 @@
         } catch (_) {}
         try {
             if (typeof bridge.clear === 'function') {
-                const clearResult = bridge.clear({ tutorialRunId, reason: reason || 'direct-tutorial-loading-clear' });
+                const clearResult = bridge.clear({
+                    tutorialRunId,
+                    reason: reason || 'direct-tutorial-loading-clear',
+                    displayScope: PC_OVERLAY_LOADING_DISPLAY_SCOPE
+                });
                 if (clearResult && typeof clearResult.catch === 'function') {
                     clearResult.catch(() => {});
                 }
