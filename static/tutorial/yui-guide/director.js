@@ -12298,10 +12298,12 @@
             this.syncSystemCursorHidden(false, 'interrupt_count_reveal');
             this.resistanceCursorTimer = window.setTimeout(() => {
                 this.resistanceCursorTimer = null;
+                if (this.angryExitTriggered) {
+                    return;
+                }
                 this.clearInterruptCountCursorReveal(true);
                 if (
                     this.destroyed
-                    || this.angryExitTriggered
                     || !document.body
                     || !document.body.classList.contains('yui-taking-over')
                 ) {

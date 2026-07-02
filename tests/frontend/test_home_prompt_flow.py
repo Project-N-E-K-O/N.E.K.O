@@ -8452,6 +8452,65 @@ def test_avatar_floating_interrupt_count_reveals_real_cursor_for_three_seconds(
 
 
 @pytest.mark.frontend
+def test_avatar_floating_interrupt_cursor_reveal_survives_angry_exit_timeout(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const originalSetTimeout = window.setTimeout;
+            const originalClearTimeout = window.clearTimeout;
+            const timers = [];
+            window.setTimeout = (callback, delay) => {
+                const timer = { callback, delay };
+                timers.push(timer);
+                return timer;
+            };
+            window.clearTimeout = () => {};
+            try {
+                const cursorVisibility = [];
+                window.YuiGuideCommon = {
+                    syncPcSystemCursorHidden: (hidden, reason) => {
+                        cursorVisibility.push({ hidden, reason });
+                    },
+                };
+                const director = window.createYuiGuideDirector({ page: 'home' });
+                document.body.classList.add('yui-taking-over');
+
+                director.revealRealCursorForInterruptCount();
+                director.angryExitTriggered = true;
+                timers[0].callback();
+
+                return {
+                    htmlClassRetained: document.documentElement.classList.contains('yui-interrupt-count-cursor-revealed'),
+                    bodyClassRetained: document.body.classList.contains('yui-interrupt-count-cursor-revealed'),
+                    cursorVisibility,
+                    timerDelay: timers[0] && timers[0].delay,
+                };
+            } finally {
+                window.setTimeout = originalSetTimeout;
+                window.clearTimeout = originalClearTimeout;
+                delete window.YuiGuideCommon;
+            }
+        }
+        """
+    )
+
+    assert result["timerDelay"] == 3000
+    assert result["htmlClassRetained"] is True
+    assert result["bodyClassRetained"] is True
+    assert result["cursorVisibility"] == [
+        {"hidden": False, "reason": "interrupt_count_reveal"},
+    ]
+
+
+@pytest.mark.frontend
 def test_avatar_floating_acceleration_threshold_triggers_light_resistance_without_distance(
     mock_page: Page,
 ):
