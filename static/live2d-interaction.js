@@ -47,7 +47,7 @@ function getLive2DNiriPetPhysicalCropApi() {
     const api = typeof window !== 'undefined' ? window.__nekoNiriPetPhysicalCrop : null;
     if (!api || typeof api !== 'object') return null;
     try {
-        if (typeof api.isActive !== 'function' || !api.isActive()) return null;
+        if (typeof api.isActive === 'function' && !api.isActive()) return null;
     } catch (_) {
         return null;
     }

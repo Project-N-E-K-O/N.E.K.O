@@ -59,7 +59,7 @@ def test_live2d_niri_physical_crop_mouse_tracking_splits_virtual_and_local_coord
     source = _live2d_source()
 
     assert "function getLive2DNiriPetPointerCoordinates(event)" in source
-    assert "typeof api.isActive !== 'function' || !api.isActive()" in source
+    assert "typeof api.isActive === 'function' && !api.isActive()" in source
     assert "typeof api.getEventCoordinates === 'function'" in source
     assert "const pointerCoords = getLive2DNiriPetPointerCoordinates(event);" in source
     assert "const pointer = pointerCoords.virtual;" in source
