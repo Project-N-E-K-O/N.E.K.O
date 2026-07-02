@@ -51,6 +51,38 @@ def _state_for(sprite: dict, index: int = 0) -> dict:
     return {}
 
 
+def _float_value(value, default: float = 0.0) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if math.isfinite(parsed) else default
+
+
+def _z_as_relative(sprite: dict, state: dict) -> bool:
+    raw = state.get("z_as_relative")
+    if raw is None:
+        raw = sprite.get("z_as_relative")
+    return raw is not False
+
+
+def _effective_z_index(sprite: dict, state_index: int, sprite_by_id: dict) -> float:
+    total = 0.0
+    current = sprite
+    visited = set()
+    while isinstance(current, dict):
+        sprite_id = current.get("sprite_id")
+        if sprite_id in visited:
+            break
+        visited.add(sprite_id)
+        state = _state_for(current, state_index)
+        total += _float_value(state.get("z_index"))
+        if not _z_as_relative(current, state):
+            break
+        current = sprite_by_id.get(current.get("parent_id"))
+    return total
+
+
 def _image_from_sprite(sprite: dict, image_map: dict[int, dict]) -> Image.Image | None:
     raw = sprite.get("img")
     if isinstance(raw, str):
@@ -158,6 +190,27 @@ def _layer_visible_base(sprite: dict, state: dict) -> bool:
     return True
 
 
+def _sprite_has_asset_action(sprite: dict) -> bool:
+    if isinstance(sprite.get("saved_event"), dict):
+        return True
+    return any(isinstance(event, dict) for event in (sprite.get("saved_disappear") or []))
+
+
+def _sprite_has_visible_state(sprite: dict, sprite_by_id: dict) -> bool:
+    states = sprite.get("states") or []
+    if not isinstance(states, list) or not states:
+        return _layer_visible_base(sprite, {}) or _sprite_has_asset_action(sprite)
+    for index, state in enumerate(states):
+        if not isinstance(state, dict):
+            continue
+        if not _layer_visible_base(sprite, state):
+            continue
+        if _has_hidden_ancestor_for_state(sprite, sprite_by_id, index):
+            continue
+        return True
+    return _sprite_has_asset_action(sprite)
+
+
 def _layer_visible_for_state(layer: dict, mode: str, blink: bool = False) -> bool:
     if layer.get("inactive_asset_ancestor"):
         return False
@@ -199,6 +252,8 @@ def _json_safe_state(state: dict) -> dict:
         "rotation",
         "rot_frq",
         "z_index",
+        "z_as_relative",
+        "effective_z_index",
         "flip_sprite_h",
         "flip_sprite_v",
         "should_talk",
@@ -223,6 +278,9 @@ def _json_safe_state(state: dict) -> dict:
         "effective_open_eyes",
     ):
         value = state.get(key)
+        if key in ("z_index", "effective_z_index") and value is not None:
+            allowed[key] = round(_float_value(value), 3)
+            continue
         if isinstance(value, (str, int, float, bool, list, tuple)) or value is None:
             allowed[key] = value
     return allowed
@@ -275,6 +333,8 @@ def _parent_chain_for_sprite(sprite: dict, sprite_by_id: dict, state_index: int)
             "parent_id": current.get("parent_id"),
             "folder": bool(state.get("folder")),
             "visible": state.get("visible", True) is not False,
+            "z_index": round(_float_value(state.get("z_index")), 3),
+            "effective_z_index": round(_effective_z_index(current, state_index, sprite_by_id), 3),
             "position": _json_safe_vec(state.get("position")),
             "offset": _json_safe_vec(state.get("offset")),
             "scale": [round(scale_x, 3), round(scale_y, 3)],
@@ -314,6 +374,7 @@ def _state_positions_for_sprite(sprite: dict, sprite_by_id: dict) -> list[dict]:
             "effective_open_mouth": effective_open_mouth,
             "effective_should_blink": effective_should_blink,
             "effective_open_eyes": effective_open_eyes,
+            "effective_z_index": round(_effective_z_index(sprite, index, sprite_by_id), 3),
             "center_x": round(center_x, 3),
             "center_y": round(center_y, 3),
             "parent_chain": _parent_chain_for_sprite(sprite, sprite_by_id, index),
@@ -343,7 +404,7 @@ def _prepare_layers(remix_data: dict) -> list[dict]:
         if not isinstance(sprite, dict):
             continue
         state = _state_for(sprite, 0)
-        if not _layer_visible_base(sprite, state):
+        if not _sprite_has_visible_state(sprite, sprite_by_id):
             continue
         image = _image_from_sprite(sprite, image_map)
         if image is None:
@@ -363,6 +424,7 @@ def _prepare_layers(remix_data: dict) -> list[dict]:
         effective_should_blink, effective_open_eyes = _effective_toggle_for_state(
             sprite, state, sprite_by_id, 0, "should_blink", "open_eyes", True
         )
+        effective_z_index = _effective_z_index(sprite, 0, sprite_by_id)
         layer_state = {
             **state,
             "ancestor_visible": ancestor_visible,
@@ -370,6 +432,7 @@ def _prepare_layers(remix_data: dict) -> list[dict]:
             "effective_open_mouth": effective_open_mouth,
             "effective_should_blink": effective_should_blink,
             "effective_open_eyes": effective_open_eyes,
+            "effective_z_index": effective_z_index,
         }
         frame_width, frame_height = _frame_size(image, state)
         layers.append({
@@ -378,7 +441,8 @@ def _prepare_layers(remix_data: dict) -> list[dict]:
             "sprite_id": sprite.get("sprite_id"),
             "parent_id": sprite.get("parent_id"),
             "sprite_type": sprite.get("sprite_type"),
-            "zindex": float(state.get("z_index", 0) or 0),
+            "zindex": _float_value(state.get("z_index")),
+            "effective_zindex": effective_z_index,
             "inactive_asset_ancestor": _has_inactive_asset_ancestor(sprite, sprite_by_id),
             "x": center_x - frame_width / 2,
             "y": center_y - frame_height / 2,
@@ -389,6 +453,13 @@ def _prepare_layers(remix_data: dict) -> list[dict]:
             "ancestor_visible": ancestor_visible,
             "states": _state_positions_for_sprite(sprite, sprite_by_id),
             "parent_chain": _parent_chain_for_sprite(sprite, sprite_by_id, 0),
+            "asset_events": {
+                "show": sprite.get("saved_event") if isinstance(sprite.get("saved_event"), dict) else None,
+                "hide": [
+                    event for event in (sprite.get("saved_disappear") or [])
+                    if isinstance(event, dict)
+                ],
+            },
         })
     if not layers:
         raise PNGTubeRemixConversionError("PNGTubeRemix model has no visible PNG layers")
@@ -396,16 +467,47 @@ def _prepare_layers(remix_data: dict) -> list[dict]:
 
 
 def _bounds_for_layers(layers: list[dict]) -> tuple[int, int, int, int]:
-    bounded_layers = [layer for layer in layers if not layer.get("inactive_asset_ancestor")] or layers
-    min_x = min(layer["x"] for layer in bounded_layers)
-    min_y = min(layer["y"] for layer in bounded_layers)
-    max_x = max(layer["x"] + layer.get("frame_width", layer["image"].width) for layer in bounded_layers)
-    max_y = max(layer["y"] + layer.get("frame_height", layer["image"].height) for layer in bounded_layers)
+    bounded_layers = [
+        layer for layer in layers
+        if not layer.get("inactive_asset_ancestor") or (layer.get("asset_events") or {}).get("show")
+    ] or layers
+    rectangles = []
+    for layer in bounded_layers:
+        layer_has_visible_state = False
+        for state in layer.get("states") or []:
+            if state.get("folder") or state.get("visible", True) is False or state.get("ancestor_visible") is False:
+                continue
+            frame_width, frame_height = _frame_size(layer["image"], state)
+            x = float(state.get("center_x", 0)) - frame_width / 2
+            y = float(state.get("center_y", 0)) - frame_height / 2
+            rectangles.append((x, y, x + frame_width, y + frame_height))
+            layer_has_visible_state = True
+        if not layer_has_visible_state:
+            rectangles.append((
+                layer["x"],
+                layer["y"],
+                layer["x"] + layer.get("frame_width", layer["image"].width),
+                layer["y"] + layer.get("frame_height", layer["image"].height),
+            ))
+    min_x = min(x1 for x1, _, _, _ in rectangles)
+    min_y = min(y1 for _, y1, _, _ in rectangles)
+    max_x = max(x2 for _, _, x2, _ in rectangles)
+    max_y = max(y2 for _, _, _, y2 in rectangles)
     return (
         int(round(min_x)),
         int(round(min_y)),
         max(1, int(round(max_x - min_x))),
         max(1, int(round(max_y - min_y))),
+    )
+
+
+def _layer_draw_z_index(layer: dict) -> float:
+    state = layer.get("state") or {}
+    return _float_value(
+        state.get(
+            "effective_z_index",
+            layer.get("effective_zindex", state.get("z_index", layer.get("zindex", 0))),
+        )
     )
 
 
@@ -415,7 +517,7 @@ def _compose(layers: list[dict], mode: str, out_path: Path, bounds: tuple[int, i
         raise PNGTubeRemixConversionError(f"PNGTubeRemix model has no visible {mode} layers")
     min_x, min_y, width, height = bounds
     canvas = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-    for layer in sorted(included, key=lambda item: (item["zindex"], item["order"])):
+    for layer in sorted(included, key=lambda item: (_layer_draw_z_index(item), item["order"])):
         state = layer.get("state") or {}
         frame_width, frame_height = layer.get("frame_width", layer["image"].width), layer.get("frame_height", layer["image"].height)
         hframes, _, frame = _frame_grid(state)
@@ -457,6 +559,7 @@ def _export_layer_assets(package_dir: Path, layers: list[dict], bounds: tuple[in
             "ancestor_visible": bool(layer.get("ancestor_visible", True)),
             "order": layer["order"],
             "zindex": layer["zindex"],
+            "effective_zindex": round(_float_value(layer.get("effective_zindex", layer["zindex"])), 3),
             "x": round(layer["x"] - min_x, 3),
             "y": round(layer["y"] - min_y, 3),
             "width": layer.get("frame_width", layer["image"].width),
@@ -469,8 +572,16 @@ def _export_layer_assets(package_dir: Path, layers: list[dict], bounds: tuple[in
             "parent_chain": layer.get("parent_chain") or [],
             "state": _json_safe_state(layer.get("state") or {}),
             "states": state_records,
+            "asset_events": layer.get("asset_events") or {},
         })
     return exported
+
+
+def _event_properties(event) -> dict:
+    if not isinstance(event, dict):
+        return {}
+    props = event.get("properties")
+    return props if isinstance(props, dict) else {}
 
 
 def _hotkey_label(props: dict) -> str:
@@ -486,9 +597,77 @@ def _hotkey_label(props: dict) -> str:
     keycode = int(props.get("keycode") or props.get("physical_keycode") or 0)
     if 48 <= keycode <= 57 or 65 <= keycode <= 90:
         parts.append(chr(keycode))
+    elif 4194332 <= keycode <= 4194343:
+        parts.append(f"F{keycode - 4194331}")
     elif keycode:
         parts.append(str(keycode))
     return "+".join(parts)
+
+
+def _input_event_summary(event) -> dict:
+    props = _event_properties(event)
+    keycode = int(props.get("keycode") or props.get("physical_keycode") or 0)
+    return {
+        "key": _hotkey_label(props),
+        "keycode": keycode,
+        "ctrl": bool(props.get("ctrl_pressed")),
+        "shift": bool(props.get("shift_pressed")),
+        "alt": bool(props.get("alt_pressed")),
+        "meta": bool(props.get("meta_pressed")),
+    }
+
+
+def _event_signature(event) -> tuple[int, bool, bool, bool, bool] | None:
+    summary = _input_event_summary(event)
+    if not summary["keycode"]:
+        return None
+    return (
+        int(summary["keycode"]),
+        bool(summary["ctrl"]),
+        bool(summary["shift"]),
+        bool(summary["alt"]),
+        bool(summary["meta"]),
+    )
+
+
+def _asset_actions(layers: list[dict]) -> list[dict]:
+    actions: dict[tuple[int, bool, bool, bool, bool], dict] = {}
+    ordered_signatures: list[tuple[int, bool, bool, bool, bool]] = []
+
+    def action_for(event) -> dict | None:
+        signature = _event_signature(event)
+        if signature is None:
+            return None
+        if signature not in actions:
+            actions[signature] = {
+                **_input_event_summary(event),
+                "show_sprite_ids": [],
+                "hide_sprite_ids": [],
+            }
+            ordered_signatures.append(signature)
+        return actions[signature]
+
+    for layer in layers:
+        sprite_id = layer.get("sprite_id")
+        if sprite_id is None:
+            continue
+        events = layer.get("asset_events") or {}
+        show_action = action_for(events.get("show"))
+        if show_action is not None:
+            show_action["show_sprite_ids"].append(sprite_id)
+        for event in events.get("hide") or []:
+            hide_action = action_for(event)
+            if hide_action is not None:
+                hide_action["hide_sprite_ids"].append(sprite_id)
+
+    return [
+        {
+            **actions[signature],
+            "show_sprite_ids": list(dict.fromkeys(actions[signature]["show_sprite_ids"])),
+            "hide_sprite_ids": list(dict.fromkeys(actions[signature]["hide_sprite_ids"])),
+        }
+        for signature in ordered_signatures
+    ]
 
 
 def _normalized_hotkeys(input_array) -> list[dict]:
@@ -498,10 +677,14 @@ def _normalized_hotkeys(input_array) -> list[dict]:
     for index, item in enumerate(input_array):
         if not isinstance(item, dict):
             continue
-        props = item.get("properties") if isinstance(item.get("properties"), dict) else item
+        event = item.get("hot_key") if isinstance(item.get("hot_key"), dict) else item
+        props = _event_properties(event)
+        if not props:
+            props = item.get("properties") if isinstance(item.get("properties"), dict) else item
         keycode = int(props.get("keycode") or props.get("physical_keycode") or 0)
         hotkeys.append({
             "state_index": index,
+            "state_name": item.get("state_name") or item.get("name") or "",
             "key": _hotkey_label(props),
             "keycode": keycode,
             "ctrl": bool(props.get("ctrl_pressed")),
@@ -558,7 +741,7 @@ def _metadata(remix_data: dict, remix_file: Path, package_dir: Path, warnings: l
         "capabilities": {
             "speech_layers": True,
             "blink_layers": True,
-            "hotkeys": bool(input_array),
+            "hotkeys": False,
             "motion_layers": _has_motion_layers(layers),
             "physics": _has_physics_layers(layers),
             "mesh": False,
@@ -566,8 +749,10 @@ def _metadata(remix_data: dict, remix_file: Path, package_dir: Path, warnings: l
         "canvas": {"width": width, "height": height},
         "blink": {"enabled": True, "interval_min_ms": 2800, "interval_max_ms": 5200, "duration_ms": 140},
         "state_count": max((len(layer.get("states") or []) for layer in layers), default=1),
-        "hotkeys": _normalized_hotkeys(input_array),
+        "hotkeys": [],
+        "state_hotkeys": _normalized_hotkeys(input_array),
         "raw_hotkeys": input_array if isinstance(input_array, list) else [],
+        "asset_actions": _asset_actions(layers),
         "settings": settings if isinstance(settings, dict) else {},
         "layers": exported_layers,
         "sprite_count": len(sprites) if isinstance(sprites, list) else 0,
@@ -589,7 +774,7 @@ def import_pngtube_remix_model(package_dir: Path, remix_file: Path, fallback_mod
         shutil.copy2(remix_file, source_copy)
 
     warnings = [
-        "PNGTubeRemix project was imported through layered_canvas_v1. Speech and blink layers are supported first; hotkeys, physics and mesh are preserved as metadata for later runtime support."
+        "PNGTubeRemix project was imported through layered_canvas_v1. Speech, blink layers, states, and asset actions are supported; source state hotkeys are preserved as metadata but are not bound at runtime."
     ]
     metadata = _metadata(remix_data, remix_file, package_dir, warnings, layers, bounds)
     with (package_dir / "metadata.pngtube-remix.json").open("w", encoding="utf-8") as f:
@@ -619,6 +804,6 @@ def import_pngtube_remix_model(package_dir: Path, remix_file: Path, fallback_mod
         "source_format": "pngtube_remix_pngremix",
         "model_name": model_name,
         "model_json": model_json,
-        "message": "PNGTubeRemix model imported with layered adapter v1. Speech and blink layers are enabled; hotkeys, physics and mesh are preserved for future support.",
+        "message": "PNGTubeRemix model imported with layered adapter v1. Speech, blink layers, states, and asset actions are enabled; source state hotkeys are preserved as metadata only.",
         "warnings": warnings,
     }
