@@ -3,31 +3,33 @@ from __future__ import annotations
 from contextlib import contextmanager
 
 from main_routers import game_router
+from main_routers.game_router import badminton_scores as gr_scores
+from main_routers.game_router import runtime as gr_runtime
 
 
 @contextmanager
 def reset_game_route_state():
-    sessions_snapshot = dict(game_router._game_sessions)
-    routes_snapshot = dict(game_router._game_route_states)
-    badminton_score_sessions_snapshot = dict(game_router._badminton_recent_score_sessions)
-    game_router._game_sessions.clear()
-    game_router._game_route_states.clear()
-    game_router._badminton_recent_score_sessions.clear()
+    sessions_snapshot = dict(gr_runtime._game_sessions)
+    routes_snapshot = dict(gr_runtime._game_route_states)
+    badminton_score_sessions_snapshot = dict(gr_scores._badminton_recent_score_sessions)
+    gr_runtime._game_sessions.clear()
+    gr_runtime._game_route_states.clear()
+    gr_scores._badminton_recent_score_sessions.clear()
     try:
         yield
     finally:
-        game_router._game_sessions.clear()
-        game_router._game_sessions.update(sessions_snapshot)
-        game_router._game_route_states.clear()
-        game_router._game_route_states.update(routes_snapshot)
-        game_router._badminton_recent_score_sessions.clear()
-        game_router._badminton_recent_score_sessions.update(badminton_score_sessions_snapshot)
+        gr_runtime._game_sessions.clear()
+        gr_runtime._game_sessions.update(sessions_snapshot)
+        gr_runtime._game_route_states.clear()
+        gr_runtime._game_route_states.update(routes_snapshot)
+        gr_scores._badminton_recent_score_sessions.clear()
+        gr_scores._badminton_recent_score_sessions.update(badminton_score_sessions_snapshot)
 
 
 def mark_game_started(state, elapsed_ms=12_000):
     state["game_started"] = True
     state["game_started_elapsed_ms"] = elapsed_ms
-    state["game_started_at"] = game_router.time.time() - (elapsed_ms / 1000.0)
+    state["game_started_at"] = gr_runtime.time.time() - (elapsed_ms / 1000.0)
     return state
 
 

@@ -340,7 +340,7 @@ async def unsubscribe_workshop_item(request: Request):
         release_warnings: list[str] = []
         if candidate_names:
             try:
-                from .characters_router import release_memory_server_character
+                from ..characters_router import release_memory_server_character
             except Exception as exc:
                 logger.error(
                     f"取消订阅前置 release: 无法 import release_memory_server_character: {exc}"
@@ -412,12 +412,12 @@ async def unsubscribe_workshop_item(request: Request):
 
         if candidate_names:
             try:
-                from .characters_router import (
+                from ..characters_router import (
                     _build_character_tombstones_state,
                     notify_memory_server_reload,
                 )
                 from utils.character_memory import delete_character_memory_storage
-                from .shared_state import get_remove_one_catgirl
+                from ..shared_state import get_remove_one_catgirl
             except Exception as exc:
                 logger.error(
                     f"取消订阅同步清理: 无法 import 生命周期工具: {exc}"

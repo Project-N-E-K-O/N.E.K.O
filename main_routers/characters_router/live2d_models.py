@@ -326,7 +326,7 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
 
                 # 同时获取工坊模型列表，确保能找到工坊模型
                 try:
-                    from .workshop_router import get_subscribed_workshop_items
+                    from ..workshop_router import get_subscribed_workshop_items
                     workshop_result = await get_subscribed_workshop_items()
                     if isinstance(workshop_result, dict) and workshop_result.get('success', False):
                         for item in workshop_result.get('items', []):
