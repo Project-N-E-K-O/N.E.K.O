@@ -6,7 +6,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from main_routers import system_router as system_router_module
+from main_routers.system_router import screenshot as system_router_module
+from main_routers.system_router import _shared as system_router_shared
 from main_routers.shared_state import init_shared_state
 
 
@@ -16,7 +17,7 @@ INTERACTIVE_SCREENSHOT_ENDPOINT = "/api/screenshot/interactive"
 
 @pytest.fixture(autouse=True)
 def _reset_shared_state_after_test(monkeypatch):
-    monkeypatch.setattr(system_router_module, "AUTOSTART_CSRF_TOKEN", "test-csrf-token")
+    monkeypatch.setattr(system_router_shared, "AUTOSTART_CSRF_TOKEN", "test-csrf-token")
     yield
     init_shared_state(
         role_state={},

@@ -14,7 +14,8 @@ from utils.tutorial_prompt_state import (
     load_tutorial_prompt_state,
 )
 
-system_router_module = importlib.import_module("main_routers.system_router")
+system_router_module = importlib.import_module("main_routers.system_router.prompt_flows")
+from config import AUTOSTART_CSRF_TOKEN
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -51,7 +52,7 @@ def tutorial_prompt_client(tmp_path, monkeypatch):
         # does not send Origin by default, so set both for the entire session.
         client.headers.update({
             "Origin": "http://testserver",
-            "X-CSRF-Token": system_router_module.AUTOSTART_CSRF_TOKEN,
+            "X-CSRF-Token": AUTOSTART_CSRF_TOKEN,
         })
         yield client, config
 

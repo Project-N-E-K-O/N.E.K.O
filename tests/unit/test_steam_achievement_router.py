@@ -4,7 +4,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from main_routers import system_router as system_router_module
+from main_routers.system_router import steam as system_router_module
+from main_routers.system_router import _shared as system_router_shared
 
 
 class _FakeUserStats:
@@ -49,7 +50,7 @@ def client(monkeypatch: pytest.MonkeyPatch):
     async def _sleep_noop(_delay: float) -> None:
         return None
 
-    monkeypatch.setattr(system_router_module, "AUTOSTART_CSRF_TOKEN", "test-csrf-token")
+    monkeypatch.setattr(system_router_shared, "AUTOSTART_CSRF_TOKEN", "test-csrf-token")
     monkeypatch.setattr(system_router_module.asyncio, "sleep", _sleep_noop)
 
     app = FastAPI()

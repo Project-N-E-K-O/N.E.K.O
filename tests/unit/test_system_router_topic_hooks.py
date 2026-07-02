@@ -1,7 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-import main_routers.system_router as system_router
+import main_routers.system_router.proactive_chat_flow as system_router
 from main_routers.system_router import (
     _open_threads_for_activity_state,
     _render_followup_topic_hooks,

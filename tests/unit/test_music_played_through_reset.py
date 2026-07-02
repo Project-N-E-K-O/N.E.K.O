@@ -15,7 +15,9 @@ import pytest
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
-from main_routers import system_router as sr
+from main_routers.system_router import proactive_history as sr
+from main_routers.system_router import proactive_sources as sr_sources
+from main_routers.system_router import proactive_parsing as sr_parsing
 
 
 LL = "测试娘"
@@ -85,8 +87,8 @@ def test_compute_source_weights_recovers_after_reset(monkeypatch):
     sr._record_proactive_chat(LL, "歌3", "music")
 
     candidates = ["web", "music", "meme", "reminiscence"]
-    weights_before = sr._compute_source_weights(LL, candidates)
-    suppressed_before = sr._filter_sources_by_weight(weights_before)
+    weights_before = sr_sources._compute_source_weights(LL, candidates)
+    suppressed_before = sr_sources._filter_sources_by_weight(weights_before)
     assert "music" in suppressed_before, (
         f"连续 3 次 music 分享后，music 应该被权重剔除，实际权重: {weights_before}"
     )
@@ -95,8 +97,8 @@ def test_compute_source_weights_recovers_after_reset(monkeypatch):
     cleared = sr._clear_channel_from_proactive_history(LL, "music")
     assert cleared == 3
 
-    weights_after = sr._compute_source_weights(LL, candidates)
-    suppressed_after = sr._filter_sources_by_weight(weights_after)
+    weights_after = sr_sources._compute_source_weights(LL, candidates)
+    suppressed_after = sr_sources._filter_sources_by_weight(weights_after)
     assert "music" not in suppressed_after, (
         f"完整播放重置后，music 不应再被剔除，实际权重: {weights_after}"
     )
@@ -118,23 +120,23 @@ def test_reset_is_counter_zero_not_throttle_off(monkeypatch):
     for i in range(3):
         sr._record_proactive_chat(LL, f"first-{i}", "music")
         fake_t[0] += 1.0
-    assert "music" in sr._filter_sources_by_weight(
-        sr._compute_source_weights(LL, candidates)
+    assert "music" in sr_sources._filter_sources_by_weight(
+        sr_sources._compute_source_weights(LL, candidates)
     )
 
     # 用户听完最后一首 → 复位
     fake_t[0] += 0.5
     sr._clear_channel_from_proactive_history(LL, "music")
-    assert "music" not in sr._filter_sources_by_weight(
-        sr._compute_source_weights(LL, candidates)
+    assert "music" not in sr_sources._filter_sources_by_weight(
+        sr_sources._compute_source_weights(LL, candidates)
     ), "复位后立刻应当回到均匀"
 
     # 第二轮：再连推 3 首 → 应当从 0 重新累加，再次被剔除
     for i in range(3):
         fake_t[0] += 1.0
         sr._record_proactive_chat(LL, f"second-{i}", "music")
-    suppressed = sr._filter_sources_by_weight(
-        sr._compute_source_weights(LL, candidates)
+    suppressed = sr_sources._filter_sources_by_weight(
+        sr_sources._compute_source_weights(LL, candidates)
     )
     assert "music" in suppressed, (
         "复位不能等同于永久关闭 throttle —— 第二轮再连推 3 首必须重新触达阈值"

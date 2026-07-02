@@ -4,12 +4,14 @@ from collections import deque
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
-from main_routers import system_router as sr
+from main_routers.system_router import proactive_history as sr
+from main_routers.system_router import proactive_sources as sr_sources
+from main_routers.system_router import proactive_parsing as sr_parsing
 from config.prompts.prompts_proactive import get_proactive_format_sections
 
 
 def test_parse_unified_phase1_marks_explicit_music_and_meme_pass():
-    parsed = sr._parse_unified_phase1_result(
+    parsed = sr_parsing._parse_unified_phase1_result(
         """
 [MUSIC] PASS
 [MEME] [PASS]
@@ -23,7 +25,7 @@ def test_parse_unified_phase1_marks_explicit_music_and_meme_pass():
 
 
 def test_parse_unified_phase1_keyword_is_not_pass():
-    parsed = sr._parse_unified_phase1_result(
+    parsed = sr_parsing._parse_unified_phase1_result(
         """
 [MUSIC]
 关键词：passion fruit
@@ -39,7 +41,7 @@ def test_parse_unified_phase1_keyword_is_not_pass():
 
 
 def test_parse_unified_phase1_pass_word_inside_keyword_is_not_pass():
-    parsed = sr._parse_unified_phase1_result(
+    parsed = sr_parsing._parse_unified_phase1_result(
         """
 [MUSIC]
 keyword: pass the dutchie
@@ -55,7 +57,7 @@ keyword: pass template
 
 
 def test_parse_unified_phase1_keyword_plus_pass_template_line_is_not_pass():
-    parsed = sr._parse_unified_phase1_result(
+    parsed = sr_parsing._parse_unified_phase1_result(
         """
 [MUSIC]
 keyword: pass the dutchie
@@ -68,7 +70,7 @@ keyword: pass the dutchie
 
 
 def test_strip_proactive_screen_tag_leak_removes_screen_source_label():
-    cleaned, tag = sr._strip_proactive_screen_tag_leak(
+    cleaned, tag = sr_parsing._strip_proactive_screen_tag_leak(
         "[Screen]\n看这满屏的符咒，是在给那画中仙重塑筋骨？"
     )
 
@@ -79,7 +81,7 @@ def test_strip_proactive_screen_tag_leak_removes_screen_source_label():
 
 def test_strip_proactive_screen_tag_leak_is_case_insensitive():
     for raw in ("[SCREEN]", "[screen]", "[ScReEn]", "[Vision]", "[window]"):
-        cleaned, tag = sr._strip_proactive_screen_tag_leak(f"{raw} 你好呀")
+        cleaned, tag = sr_parsing._strip_proactive_screen_tag_leak(f"{raw} 你好呀")
         assert cleaned == "你好呀"
         assert tag == "CHAT"
 
@@ -87,14 +89,14 @@ def test_strip_proactive_screen_tag_leak_is_case_insensitive():
 def test_strip_proactive_screen_tag_leak_recovers_combined_legal_tag():
     # [Screen][CHAT] 组合：剥掉泄漏标签后采用紧随其后的真实来源标签，
     # 避免 [CHAT] 字面作为正文漏给 TTS。
-    cleaned, tag = sr._strip_proactive_screen_tag_leak("[Screen][WEB]\n看这个链接")
+    cleaned, tag = sr_parsing._strip_proactive_screen_tag_leak("[Screen][WEB]\n看这个链接")
 
     assert cleaned == "看这个链接"
     assert tag == "WEB"
 
 
 def test_strip_proactive_screen_tag_leak_preserves_legal_source_tags():
-    cleaned, tag = sr._strip_proactive_screen_tag_leak("[CHAT]\n你好呀")
+    cleaned, tag = sr_parsing._strip_proactive_screen_tag_leak("[CHAT]\n你好呀")
 
     assert cleaned == "[CHAT]\n你好呀"
     assert tag == ""
@@ -102,7 +104,7 @@ def test_strip_proactive_screen_tag_leak_preserves_legal_source_tags():
 
 def test_strip_proactive_screen_tag_leak_ignores_unknown_bracket_tags():
     # 未知 / 非屏幕泄漏标签保守放行，留给调用方既有的无 tag 处理逻辑。
-    cleaned, tag = sr._strip_proactive_screen_tag_leak("[Foo] 这不是来源标签")
+    cleaned, tag = sr_parsing._strip_proactive_screen_tag_leak("[Foo] 这不是来源标签")
 
     assert cleaned == "[Foo] 这不是来源标签"
     assert tag == ""
