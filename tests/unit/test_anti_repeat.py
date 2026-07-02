@@ -270,18 +270,28 @@ def test_score_draft_bg_idf_survives_after_fg_ttl(tmp_path):
     for i in range(20):  # 20 条早已过期、且不含老虎 → 只贡献 IDF 背景
         s.record_output(name, bg_marker + f"片段{i}{i}{i}", now=base - 100_000.0 + i)
     s.record_output(name, LONG_TIGER, now=base)  # 唯一 TTL 内条目：聊老虎
-    total, terms = s.score_draft(name, LONG_TIGER + "（再想）", now=base + 1)
+    draft = LONG_TIGER + "（再想）"
+    total, terms = s.score_draft(name, draft, now=base + 1)
     assert total > 0
     assert "老虎" in terms or any("虎" in t for t in terms)
+    # 判别性断言（Greptile P2）：total>0 还不够——BG 只剩 1 条时老虎 IDF≈0.29 仍为正。
+    # 真实(全量 21 条 BG)得分必须严格高于「BG 也被 TTL 裁成只剩那条新鲜文档」的假想
+    # 得分（后者把稀有 topic 词的 DF 抬到 1/1、IDF 从 ~2.69 塌到 ~0.29）。这才真正
+    # 锁住"BG 不按 TTL 裁、IDF 语境完整保留"，防止未来误改成 BG 也 TTL 过滤。
+    draft_ngrams = _ngrams(draft)
+    fg_only = [_ngrams(LONG_TIGER)]  # 若 BG 也被 TTL 裁，就只剩这一条新鲜文档
+    total_if_bg_trimmed, _ = bm25_score(draft_ngrams, fg_only, fg_only)
+    assert total > total_if_bg_trimmed
 
 
 # ── 4. top_recent_topics ──────────────────────────────────────
 
 
 def test_top_recent_topics_returns_topic_words(tmp_path):
-    """BG 大窗 + FG 几条聚焦 topic → top_recent_topics 提取的 ngram 全部来自
-    FG（不是 BG filler）。同 ``test_score_draft_topic_words_ranked_first`` 的
-    断言策略——避开 hash-randomization 引起的 tie-break flakiness。"""
+    """Large BG window + a few FG entries focused on one topic → every ngram
+    top_recent_topics returns comes from the FG (not the BG filler). Same assertion
+    strategy as ``test_score_draft_topic_words_ranked_first`` — avoids the
+    hash-randomization tie-break flakiness."""
     s = _build_store(tmp_path)
     name = "Neko"
     bg_marker = "今天去了号地方看到新奇的东西编号事物让印象深刻时间过得很快"
