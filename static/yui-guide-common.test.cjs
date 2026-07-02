@@ -2309,11 +2309,11 @@ test('tutorial skip button reuses the manager tutorial end lifecycle', () => {
     assert.match(managerSource, /mmdCanvas: readPointerEvents\('mmd-canvas'\)/);
     assert.match(avatarInteractionRestoreBlock, /const hasSnapshotPointerEvents = snapshot\.pointerEvents/);
     assert.match(avatarInteractionRestoreBlock, /const snapshotPointerEvents = hasSnapshotPointerEvents \? snapshot\.pointerEvents\[pointerKey\] : null;/);
-    assert.match(avatarInteractionRestoreBlock, /function restoreAvatarPointerEvents\(element, elementId, activeLocked, snapshotPointerEvents, hasSnapshotPointerEvents, activePrefix\)/);
+    assert.match(avatarInteractionRestoreBlock, /function restoreAvatarPointerEvents\(element, elementId, snapshotPointerEvents, hasSnapshotPointerEvents\)/);
     assert.match(avatarInteractionRestoreBlock, /const isActiveAvatarContainer = elementId === `\$\{activePrefix\}-container`;/);
-    assert.match(avatarInteractionRestoreBlock, /if \(isActiveAvatarContainer && \(activePrefix === 'live2d' \|\| activePrefix === 'pngtuber'\)\) \{[\s\S]*?element\.style\.pointerEvents = 'none';[\s\S]*?return;/);
+    assert.match(avatarInteractionRestoreBlock, /if \(isActiveAvatarContainer && \(activePrefix === 'live2d' \|\| activePrefix === 'pngtuber'\)\) \{[\s\S]*?element\.style\.setProperty\('pointer-events', 'none', 'important'\);[\s\S]*?return;/);
     assert.match(avatarInteractionRestoreBlock, /element\.style\.pointerEvents = snapshotPointerEvents;/);
-    assert.match(avatarInteractionRestoreBlock, /restoreAvatarPointerEvents\(element, elementId, activeLocked, snapshotPointerEvents, hasSnapshotPointerEvents, activePrefix\);/);
+    assert.match(avatarInteractionRestoreBlock, /restoreAvatarPointerEvents\(element, elementId, snapshotPointerEvents, hasSnapshotPointerEvents\);/);
     assert.doesNotMatch(avatarInteractionRestoreBlock, /element\.style\.pointerEvents = snapshot\.pointerEvents\[pointerKey\] \|\| '';/);
     assert.match(avatarInteractionRestoreBlock, /activePrefix === 'live2d' \|\| activePrefix === 'pngtuber'/);
     assert.match(managerSource, /modelType === 'live3d'/);

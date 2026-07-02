@@ -1437,15 +1437,15 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     assert "mmdCanvas: readPointerEvents('mmd-canvas')" in tutorial_source
     assert "const hasSnapshotPointerEvents = snapshot.pointerEvents" in avatar_interaction_restore_block
     assert "const snapshotPointerEvents = hasSnapshotPointerEvents ? snapshot.pointerEvents[pointerKey] : null;" in avatar_interaction_restore_block
-    assert "function restoreAvatarPointerEvents(element, elementId, activeLocked, snapshotPointerEvents, hasSnapshotPointerEvents, activePrefix)" in avatar_interaction_restore_block
+    assert "function restoreAvatarPointerEvents(element, elementId, snapshotPointerEvents, hasSnapshotPointerEvents)" in avatar_interaction_restore_block
     assert "if (hasSnapshotPointerEvents && snapshotPointerEvents) {" in avatar_interaction_restore_block
     assert "element.style.pointerEvents = snapshotPointerEvents;" in avatar_interaction_restore_block
     assert "element.style.pointerEvents = snapshot.pointerEvents[pointerKey] || '';" not in avatar_interaction_restore_block
     assert "activePrefix === 'live2d' || activePrefix === 'pngtuber'" in avatar_interaction_restore_block
     assert "const isActiveAvatarContainer = elementId === `${activePrefix}-container`;" in avatar_interaction_restore_block
     assert "if (isActiveAvatarContainer && (activePrefix === 'live2d' || activePrefix === 'pngtuber')) {" in avatar_interaction_restore_block
-    assert "element.style.pointerEvents = 'none';" in avatar_interaction_restore_block
-    assert "restoreAvatarPointerEvents(element, elementId, activeLocked, snapshotPointerEvents, hasSnapshotPointerEvents, activePrefix);" in avatar_interaction_restore_block
+    assert "element.style.setProperty('pointer-events', 'none', 'important');" in avatar_interaction_restore_block
+    assert "restoreAvatarPointerEvents(element, elementId, snapshotPointerEvents, hasSnapshotPointerEvents);" in avatar_interaction_restore_block
     assert "element.style.removeProperty('pointer-events');" in avatar_interaction_restore_block
     assert "element.style.pointerEvents = activeLocked ? 'none' : 'auto';" in avatar_interaction_restore_block
     assert avatar_interaction_restore_block.index("const isActiveAvatarContainer = elementId === `${activePrefix}-container`;") < avatar_interaction_restore_block.index("if (hasSnapshotPointerEvents && snapshotPointerEvents) {")

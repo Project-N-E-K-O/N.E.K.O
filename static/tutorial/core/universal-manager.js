@@ -2919,10 +2919,10 @@ class UniversalTutorialManager {
 
         const activePrefix = this.getActiveAvatarFloatingModelPrefix();
         const activeLocked = snapshot[activePrefix] === true;
-        function restoreAvatarPointerEvents(element, elementId, activeLocked, snapshotPointerEvents, hasSnapshotPointerEvents, activePrefix) {
+        function restoreAvatarPointerEvents(element, elementId, snapshotPointerEvents, hasSnapshotPointerEvents) {
             const isActiveAvatarContainer = elementId === `${activePrefix}-container`;
             if (isActiveAvatarContainer && (activePrefix === 'live2d' || activePrefix === 'pngtuber')) {
-                element.style.pointerEvents = 'none';
+                element.style.setProperty('pointer-events', 'none', 'important');
                 return;
             }
             if (hasSnapshotPointerEvents && snapshotPointerEvents) {
@@ -2941,7 +2941,7 @@ class UniversalTutorialManager {
             const hasSnapshotPointerEvents = snapshot.pointerEvents
                 && Object.prototype.hasOwnProperty.call(snapshot.pointerEvents, pointerKey);
             const snapshotPointerEvents = hasSnapshotPointerEvents ? snapshot.pointerEvents[pointerKey] : null;
-            restoreAvatarPointerEvents(element, elementId, activeLocked, snapshotPointerEvents, hasSnapshotPointerEvents, activePrefix);
+            restoreAvatarPointerEvents(element, elementId, snapshotPointerEvents, hasSnapshotPointerEvents);
         });
         if (reason === 'tutorial-avatar-restored') {
             this._avatarFloatingModelLockSnapshot = null;
