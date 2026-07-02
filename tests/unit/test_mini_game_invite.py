@@ -95,7 +95,7 @@ def _stub_persistent_counter(monkeypatch):
     """单测不初始化 shared_state.config_manager，真路径 ``_proactive_chat_totals_path``
     会 RuntimeError。把 load / increment / mark-ever-delivered 都替换成纯内存版
     本，断言能直接读 / 写 ``sr_history._proactive_chat_totals[lanlan]`` 与
-    ``sr_history._invite_ever_delivered[lanlan]`` 来 setup / verify。"""
+    ``sr_history._invite_ever_delivered[lanlan]`` 来 setup / verify。"""  # noqa: DOCSTRING_CJK
     async def _noop_load():
         sr_history._proactive_chat_totals_loaded = True
 

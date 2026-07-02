@@ -30,11 +30,12 @@ from utils.llm_client import AIMessage, HumanMessage
 
 
 def _gr_patch_all(monkeypatch, name, value, raising=True):
-    """拆包后等价于拆分前对单模块 setattr：同一对象打到所有持有该绑定的子模块。
+    """Patch the same object onto every submodule that holds the binding.
 
-    game_router 拆为包后，helper 的 from-import 快照散布在多个子模块的
-    globals 里；拆分前测试 patch 单一模块命名空间即可全局生效，这里保持
-    同一语义。"""
+    Restores pre-split semantics: with monolithic game_router a single
+    setattr hit the one namespace all flows resolved against; after the
+    package split, from-import snapshots live in several submodules'
+    globals, so patch them all with the same object."""
     from main_routers.game_router import (
         _shared, char_info, logs, memory_policy, game_context, pregame,
         visible_events, balance, badminton_scores, archive, runtime,
