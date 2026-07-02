@@ -77,6 +77,8 @@
         }));
     }
 
+    publishGoodbyeResourceState(null, 'goodbye-resource-boot');
+
     window.isNekoGoodbyeResourceSuspended = function () {
         return !!(S && S.goodbyeResourceSuspended);
     };
@@ -137,10 +139,11 @@
     }
 
     function pauseModelRenderingForGoodbye(snapshot) {
+        const activeModelType = snapshot && snapshot.activeModelType;
         ['live2d', 'vrm', 'mmd', 'pngtuber'].forEach((type) => {
             const manager = getModelManagerByType(type);
             if (!manager || typeof manager.pauseRendering !== 'function') return;
-            if (!isModelRenderingActive(type, manager)) return;
+            if (activeModelType !== type && !isModelRenderingActive(type, manager)) return;
             try {
                 manager.pauseRendering();
                 snapshot.pausedByCat[type] = true;

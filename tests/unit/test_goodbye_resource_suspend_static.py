@@ -105,6 +105,7 @@ def test_goodbye_resource_suspend_waits_for_cat_transition_and_uses_token_snapsh
     assert "window.__nekoGoodbyeResourceSuspendPending = pending;" in source
     assert "window.isNekoGoodbyeResourceSuspendingOrSuspended = function ()" in source
     assert "localStorage.setItem(GOODBYE_RESOURCE_SUSPEND_STORAGE_KEY, suspended ? 'true' : 'false')" in source
+    assert "publishGoodbyeResourceState(null, 'goodbye-resource-boot');" in source
     assert "window.addEventListener('neko:goodbye-state-cleared'" in source
     assert "restoreGoodbyeResourceSuspend(reason);" in source
 
@@ -149,9 +150,10 @@ def test_goodbye_resource_suspend_pauses_only_active_render_loops_and_restores_o
     assert "container.style.display !== 'none'" in is_rendering
 
     assert "if (type === 'pngtuber') return window.pngtuberManager;" in get_manager
+    assert "const activeModelType = snapshot && snapshot.activeModelType;" in pause_rendering
+    assert "if (activeModelType !== type && !isModelRenderingActive(type, manager)) return;" in pause_rendering
     assert "['live2d', 'vrm', 'mmd', 'pngtuber'].forEach" in pause_rendering
     assert "typeof manager.pauseRendering !== 'function'" in pause_rendering
-    assert "if (!isModelRenderingActive(type, manager)) return;" in pause_rendering
     assert "manager.pauseRendering();" in pause_rendering
     assert "snapshot.pausedByCat[type] = true;" in pause_rendering
 
@@ -280,6 +282,10 @@ def test_goodbye_agent_hud_and_websocket_ui_timers_are_suppressed_without_stoppi
         assert "(window as any).__nekoGoodbyeResourceSuspendPending === true" in view_source
         assert "window.addEventListener('neko:goodbye-resource-suspend-state', handleGoodbyeResourceState)" in view_source
         assert "window.removeEventListener('neko:goodbye-resource-suspend-state', handleGoodbyeResourceState)" in view_source
+        assert "function handleGoodbyeResourceStorage(event: StorageEvent)" in view_source
+        assert "window.addEventListener('storage', handleGoodbyeResourceStorage)" in view_source
+        assert "window.removeEventListener('storage', handleGoodbyeResourceStorage)" in view_source
+        assert "event.key !== GOODBYE_RESOURCE_SUSPEND_STORAGE_KEY" in view_source
         assert "if (isGoodbyeResourceSuspendingOrSuspended()) return" in view_source
         assert "stopAutoRefresh()" in view_source
 
