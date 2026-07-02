@@ -2,6 +2,7 @@ from pathlib import Path
 
 
 APP_WEBSOCKET_PATH = Path(__file__).resolve().parents[2] / "static" / "app-websocket.js"
+APP_STATE_PATH = Path(__file__).resolve().parents[2] / "static" / "app-state.js"
 
 
 def test_response_discarded_visible_in_react_chat():
@@ -189,7 +190,9 @@ def test_goodbye_blocks_stale_audio_session_started():
 
 def test_session_ended_by_server_stops_assistant_text_output():
     source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+    app_state = APP_STATE_PATH.read_text(encoding="utf-8")
 
+    assert "suppressAssistantStreamUntilNextSession: false," in app_state
     helper_block = source.split("function stopAssistantTextOutputOnSessionEnd(source)", 1)[1].split(
         "window.addEventListener('neko-assistant-turn-start'",
         1,
