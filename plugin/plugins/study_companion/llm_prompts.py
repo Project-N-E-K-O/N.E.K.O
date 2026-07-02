@@ -170,6 +170,18 @@ def build_concept_explain_messages(
     context = context if isinstance(context, dict) else {}
     source = str(context.get("source") or "manual").strip() or "manual"
     selected_mode = normalize_mode(context.get("mode") or mode)
+    guidance = context.get("knowledge_guidance")
+    guidance_block = ""
+    if isinstance(guidance, dict) and guidance:
+        prompt_guidance = (
+            guidance.get("model_context")
+            if isinstance(guidance.get("model_context"), dict)
+            else guidance
+        )
+        guidance_block = (
+            "\n\nKnowledge graph guidance:\n"
+            f"{_context_json_for_prompt(LLM_OPERATION_CONCEPT_EXPLAIN, {'knowledge_guidance': prompt_guidance})}"
+        )
     return [
         {
             "role": "system",
@@ -184,7 +196,7 @@ def build_concept_explain_messages(
                 language=language,
                 source=source,
                 mode=selected_mode,
-                text=text.strip(),
+                text=f"{text.strip()}{guidance_block}",
             ),
         },
     ]

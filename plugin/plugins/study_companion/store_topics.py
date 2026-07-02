@@ -9,18 +9,52 @@ from .store_common import (
 )
 
 
-def load_knowledge_seed(self, path: Path | str | None = None) -> int:
+def load_knowledge_seed(
+    self, path: Path | str | None = None, _visited: set[str] | None = None
+) -> int:
     seed_path = Path(path) if path is not None else self.knowledge_seed_json_path
     if seed_path is None or not seed_path.is_file():
         return 0
+    visited = _visited if _visited is not None else set()
+    try:
+        normalized_seed_path = str(seed_path.resolve())
+    except OSError:
+        normalized_seed_path = str(seed_path.absolute())
+    if normalized_seed_path in visited:
+        return 0
+    visited.add(normalized_seed_path)
     try:
         payload = json.loads(seed_path.read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError) as exc:
         self._log_warning("study knowledge seed load failed: {}", exc)
         return 0
+    seed_files = payload.get("files") if isinstance(payload, dict) else None
+    if isinstance(seed_files, list):
+        count = 0
+        for item in seed_files:
+            if isinstance(item, dict):
+                raw_path = item.get("path") or item.get("file")
+            else:
+                raw_path = item
+            child_name = str(raw_path or "").strip()
+            if not child_name:
+                continue
+            child_path = Path(child_name)
+            if not child_path.is_absolute():
+                child_path = seed_path.parent / child_path
+            count += self.load_knowledge_seed(child_path, visited)
+        return count
     topics = payload.get("topics") if isinstance(payload, dict) else None
     if not isinstance(topics, list):
         return 0
+    default_subject = str(payload.get("subject") or "math")
+    default_stage = str(
+        payload.get("stage")
+        or payload.get("grade_level")
+        or payload.get("education_level")
+        or payload.get("course_level")
+        or ""
+    ).strip()
     count = 0
     with self._lock:
         for item in topics:
@@ -28,23 +62,48 @@ def load_knowledge_seed(self, path: Path | str | None = None) -> int:
                 continue
             topic_id = str(item.get("id") or "").strip()
             name = str(item.get("name") or "").strip()
-            if not topic_id or not name:
+            subject = str(item.get("subject") or default_subject).strip()
+            chapter = str(item.get("chapter") or item.get("unit") or "general").strip()
+            unit = str(
+                item.get("unit")
+                or item.get("section")
+                or item.get("module")
+                or chapter
+            ).strip()
+            stage = str(
+                item.get("stage")
+                or item.get("grade_level")
+                or item.get("education_level")
+                or item.get("course_level")
+                or default_stage
+            ).strip()
+            missing_fields = [
+                field
+                for field, value in (
+                    ("id", topic_id),
+                    ("name", name),
+                    ("subject", subject),
+                    ("chapter", chapter),
+                    ("stage", stage),
+                    ("unit", unit),
+                )
+                if not value
+            ]
+            if missing_fields:
+                self._log_warning(
+                    "study knowledge seed skipped incomplete topic: id={} missing={}",
+                    topic_id or "<missing>",
+                    ",".join(missing_fields),
+                )
                 continue
             self.upsert_topic(
                 {
                     "id": topic_id,
                     "name": name,
-                    "subject": str(
-                        item.get("subject") or payload.get("subject") or "math"
-                    ),
-                    "chapter": str(item.get("chapter") or ""),
-                    "stage": str(
-                        item.get("stage")
-                        or item.get("grade_level")
-                        or item.get("education_level")
-                        or item.get("course_level")
-                        or ""
-                    ).strip(),
+                    "subject": subject,
+                    "chapter": chapter,
+                    "stage": stage,
+                    "unit": unit,
                     "depth": safe_int(item.get("depth"), 1),
                     "difficulty": safe_float(item.get("difficulty"), 0.5),
                     "prerequisites": item.get("prerequisites")
@@ -55,6 +114,23 @@ def load_knowledge_seed(self, path: Path | str | None = None) -> int:
                     else [],
                     "typical_misconceptions": item.get("typical_misconceptions")
                     if isinstance(item.get("typical_misconceptions"), list)
+                    else [],
+                    "skills": item.get("skills")
+                    if isinstance(item.get("skills"), list)
+                    else [],
+                    "question_types": item.get("question_types")
+                    if isinstance(item.get("question_types"), list)
+                    else [],
+                    "examples": (
+                        item.get("examples")
+                        if isinstance(item.get("examples"), list)
+                        else item.get("typical_examples")
+                        if isinstance(item.get("typical_examples"), list)
+                        else []
+                    ),
+                    "course_family": str(item.get("course_family") or "").strip(),
+                    "aliases": item.get("aliases")
+                    if isinstance(item.get("aliases"), list)
                     else [],
                     "source": "seed",
                 },
@@ -74,20 +150,55 @@ def upsert_topic(self, topic: dict[str, Any], *, commit: bool = True) -> None:
         self._require_conn().execute(
             """
             INSERT INTO topics (
-                id, name, subject, chapter, stage, depth, difficulty,
-                prerequisites, related, typical_misconceptions, source, updated_at
+                id, name, subject, chapter, stage, unit, depth, difficulty,
+                prerequisites, related, typical_misconceptions, skills,
+                question_types, examples, course_family, aliases, source, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             ON CONFLICT(id) DO UPDATE SET
                 name = CASE WHEN topics.source = 'seed' THEN topics.name ELSE excluded.name END,
                 subject = CASE WHEN topics.source = 'seed' THEN topics.subject ELSE excluded.subject END,
                 chapter = CASE WHEN topics.source = 'seed' THEN topics.chapter ELSE excluded.chapter END,
-                stage = CASE WHEN topics.source = 'seed' THEN topics.stage ELSE excluded.stage END,
+                stage = CASE
+                    WHEN topics.source = 'seed' AND topics.stage = '' AND excluded.stage != '' THEN excluded.stage
+                    WHEN topics.source = 'seed' THEN topics.stage
+                    ELSE excluded.stage
+                END,
+                unit = CASE
+                    WHEN topics.source = 'seed' AND (topics.unit = '' OR topics.unit = topics.chapter) AND excluded.unit != '' THEN excluded.unit
+                    WHEN topics.source = 'seed' THEN topics.unit
+                    ELSE excluded.unit
+                END,
                 depth = CASE WHEN topics.source = 'seed' THEN topics.depth ELSE excluded.depth END,
                 difficulty = CASE WHEN topics.source = 'seed' THEN topics.difficulty ELSE excluded.difficulty END,
                 prerequisites = CASE WHEN topics.source = 'seed' THEN topics.prerequisites ELSE excluded.prerequisites END,
                 related = CASE WHEN topics.source = 'seed' THEN topics.related ELSE excluded.related END,
                 typical_misconceptions = CASE WHEN topics.source = 'seed' THEN topics.typical_misconceptions ELSE excluded.typical_misconceptions END,
+                skills = CASE
+                    WHEN topics.source = 'seed' AND topics.skills = '[]' AND excluded.skills != '[]' THEN excluded.skills
+                    WHEN topics.source = 'seed' THEN topics.skills
+                    ELSE excluded.skills
+                END,
+                question_types = CASE
+                    WHEN topics.source = 'seed' AND topics.question_types = '[]' AND excluded.question_types != '[]' THEN excluded.question_types
+                    WHEN topics.source = 'seed' THEN topics.question_types
+                    ELSE excluded.question_types
+                END,
+                examples = CASE
+                    WHEN topics.source = 'seed' AND topics.examples = '[]' AND excluded.examples != '[]' THEN excluded.examples
+                    WHEN topics.source = 'seed' THEN topics.examples
+                    ELSE excluded.examples
+                END,
+                course_family = CASE
+                    WHEN topics.source = 'seed' AND topics.course_family = '' AND excluded.course_family != '' THEN excluded.course_family
+                    WHEN topics.source = 'seed' THEN topics.course_family
+                    ELSE excluded.course_family
+                END,
+                aliases = CASE
+                    WHEN topics.source = 'seed' AND topics.aliases = '[]' AND excluded.aliases != '[]' THEN excluded.aliases
+                    WHEN topics.source = 'seed' THEN topics.aliases
+                    ELSE excluded.aliases
+                END,
                 source = CASE WHEN topics.source = 'seed' THEN topics.source ELSE excluded.source END,
                 updated_at = datetime('now')
             """,
@@ -103,6 +214,7 @@ def upsert_topic(self, topic: dict[str, Any], *, commit: bool = True) -> None:
                     or topic.get("course_level")
                     or ""
                 ).strip(),
+                str(topic.get("unit") or topic.get("chapter") or ""),
                 safe_int(topic.get("depth"), 1),
                 safe_float(topic.get("difficulty"), 0.5),
                 self._json_dumps(
@@ -119,6 +231,21 @@ def upsert_topic(self, topic: dict[str, Any], *, commit: bool = True) -> None:
                     topic.get("typical_misconceptions")
                     if isinstance(topic.get("typical_misconceptions"), list)
                     else []
+                ),
+                self._json_dumps(
+                    topic.get("skills") if isinstance(topic.get("skills"), list) else []
+                ),
+                self._json_dumps(
+                    topic.get("question_types")
+                    if isinstance(topic.get("question_types"), list)
+                    else []
+                ),
+                self._json_dumps(
+                    topic.get("examples") if isinstance(topic.get("examples"), list) else []
+                ),
+                str(topic.get("course_family") or "").strip(),
+                self._json_dumps(
+                    topic.get("aliases") if isinstance(topic.get("aliases"), list) else []
                 ),
                 str(topic.get("source") or "runtime"),
             ),
@@ -145,11 +272,15 @@ def ensure_topic(
             "subject": subject or "math",
             "chapter": chapter or "runtime",
             "stage": "",
+            "unit": chapter or "runtime",
             "depth": 2,
             "difficulty": difficulty,
             "prerequisites": [],
             "related": [],
             "typical_misconceptions": [],
+            "skills": [],
+            "question_types": [],
+            "examples": [],
             "source": "runtime",
         }
     )
