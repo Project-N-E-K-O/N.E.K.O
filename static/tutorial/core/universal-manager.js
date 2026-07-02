@@ -2919,13 +2919,12 @@ class UniversalTutorialManager {
 
         const activePrefix = this.getActiveAvatarFloatingModelPrefix();
         const activeLocked = snapshot[activePrefix] === true;
-        [`${activePrefix}-canvas`, `${activePrefix}-container`].forEach(elementId => {
-            const element = document.getElementById(elementId);
-            if (!element) return;
-            const pointerKey = elementId.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
-            const hasSnapshotPointerEvents = snapshot.pointerEvents
-                && Object.prototype.hasOwnProperty.call(snapshot.pointerEvents, pointerKey);
-            const snapshotPointerEvents = hasSnapshotPointerEvents ? snapshot.pointerEvents[pointerKey] : null;
+        function restoreAvatarPointerEvents(element, elementId, activeLocked, snapshotPointerEvents, hasSnapshotPointerEvents, activePrefix) {
+            const isActiveAvatarContainer = elementId === `${activePrefix}-container`;
+            if (isActiveAvatarContainer && (activePrefix === 'live2d' || activePrefix === 'pngtuber')) {
+                element.style.pointerEvents = 'none';
+                return;
+            }
             if (hasSnapshotPointerEvents && snapshotPointerEvents) {
                 element.style.pointerEvents = snapshotPointerEvents;
                 return;
@@ -2934,6 +2933,15 @@ class UniversalTutorialManager {
                 element.style.removeProperty('pointer-events');
                 element.style.pointerEvents = activeLocked ? 'none' : 'auto';
             }
+        }
+        [`${activePrefix}-canvas`, `${activePrefix}-container`].forEach(elementId => {
+            const element = document.getElementById(elementId);
+            if (!element) return;
+            const pointerKey = elementId.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+            const hasSnapshotPointerEvents = snapshot.pointerEvents
+                && Object.prototype.hasOwnProperty.call(snapshot.pointerEvents, pointerKey);
+            const snapshotPointerEvents = hasSnapshotPointerEvents ? snapshot.pointerEvents[pointerKey] : null;
+            restoreAvatarPointerEvents(element, elementId, activeLocked, snapshotPointerEvents, hasSnapshotPointerEvents, activePrefix);
         });
         if (reason === 'tutorial-avatar-restored') {
             this._avatarFloatingModelLockSnapshot = null;
