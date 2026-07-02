@@ -1538,6 +1538,9 @@ test('director routes resistance interrupts through ResistanceController boundar
     assert.match(pluginRuntimeSource, /data\.type === SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT[\s\S]*?runtime\.handleSystemCursorTemporaryRevealData\(data\)/);
     assert.match(pluginRuntimeSource, /window\.addEventListener\(DESKTOP_SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT,\s*handleDesktopSystemCursorTemporaryRevealEvent,\s*true\)/);
     assert.match(pluginRuntimeSource, /window\.removeEventListener\(DESKTOP_SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT,\s*handleDesktopSystemCursorTemporaryRevealEvent,\s*true\)/);
+    assert.match(pluginRuntimeSource, /window\.addEventListener\('pagehide',\s*handleRuntimePageHide,\s*true\)/);
+    assert.match(pluginRuntimeSource, /window\.removeEventListener\('pagehide',\s*handleRuntimePageHide,\s*true\)/);
+    assert.doesNotMatch(pluginRuntimeSource, /const originalRuntimeCleanup = runtime\.cleanup\.bind\(runtime\)/);
     assert.match(cssSource, /body\.yui-taking-over\.yui-user-cursor-revealed/);
     assert.match(cssSource, /body\.yui-taking-over\.yui-user-cursor-revealed #live2d-canvas/);
     assert.match(cssSource, /body\.yui-taking-over\.yui-resistance-cursor-reveal #react-chat-window-drag-handle/);

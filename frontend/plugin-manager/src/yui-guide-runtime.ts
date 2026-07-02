@@ -3998,16 +3998,16 @@ export function initPluginDashboardYuiGuideRuntime() {
     window.removeEventListener(DESKTOP_NARRATION_FINISHED_EVENT, handleDesktopNarrationFinishedEvent, true)
     window.removeEventListener(DESKTOP_SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT, handleDesktopSystemCursorTemporaryRevealEvent, true)
     window.removeEventListener('message', handleRuntimeMessage)
+    window.removeEventListener('pagehide', handleRuntimePageHide, true)
     pluginDashboardRuntimeInitialized = false
   }
-  const originalRuntimeCleanup = runtime.cleanup.bind(runtime)
-  runtime.cleanup = () => {
+  const handleRuntimePageHide = () => {
     cleanupRuntimeListeners()
-    originalRuntimeCleanup()
   }
 
   window.addEventListener(DESKTOP_INTERRUPT_ACK_EVENT, handleDesktopInterruptAckEvent, true)
   window.addEventListener(DESKTOP_NARRATION_FINISHED_EVENT, handleDesktopNarrationFinishedEvent, true)
   window.addEventListener(DESKTOP_SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT, handleDesktopSystemCursorTemporaryRevealEvent, true)
   window.addEventListener('message', handleRuntimeMessage)
+  window.addEventListener('pagehide', handleRuntimePageHide, true)
 }
