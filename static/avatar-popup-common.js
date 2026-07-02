@@ -237,13 +237,17 @@
     function toPlacementRect(rect, api) {
         const normalized = makePlacementRect(rect);
         if (!normalized || !api || typeof api.toVirtualRect !== 'function') return normalized;
-        const virtualRect = api.toVirtualRect({
-            x: normalized.left,
-            y: normalized.top,
-            width: normalized.width,
-            height: normalized.height
-        });
-        return makePlacementRect(virtualRect) || normalized;
+        try {
+            const virtualRect = api.toVirtualRect({
+                x: normalized.left,
+                y: normalized.top,
+                width: normalized.width,
+                height: normalized.height
+            });
+            return makePlacementRect(virtualRect) || normalized;
+        } catch (_) {
+            return normalized;
+        }
     }
 
     function formatSidePanelTransform(container, motion = 'none') {

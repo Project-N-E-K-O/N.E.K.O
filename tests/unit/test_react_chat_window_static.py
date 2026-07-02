@@ -2099,6 +2099,8 @@ def test_avatar_popup_positioning_uses_niri_physical_crop_coordinates_only_when_
     assert "toPlacementRect(popup.getBoundingClientRect(), placementApi)" in position_popup_block
     assert "const screenWidth = niriViewport ? niriViewport.width : window.innerWidth;" in position_popup_block
     assert "try {\n            const state = api.getState();" in source
+    assert "try {\n            const virtualRect = api.toVirtualRect({" in source
+    assert "catch (_) {\n            return normalized;" in source
     assert "container.dataset.niriPhysicalCropPositioned = 'true';" in position_sidepanel_block
     assert (
         "const goLeft = isNiriPetPhysicalCrop\n"
