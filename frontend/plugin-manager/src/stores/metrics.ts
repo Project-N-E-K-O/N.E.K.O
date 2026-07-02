@@ -19,8 +19,24 @@ export const useMetricsStore = defineStore('metrics', () => {
   // 请求超时自动清理（防止请求堆积）
   const REQUEST_TIMEOUT = 15000 // 15秒
 
+  function isGoodbyeResourceSuspendingOrSuspended() {
+    if (typeof window === 'undefined') return false
+    try {
+      const helper = (window as any).isNekoGoodbyeResourceSuspendingOrSuspended
+      if (typeof helper === 'function' && helper()) return true
+      if ((window as any).goodbyeResourceSuspended === true) return true
+      if ((window as any).__nekoGoodbyeResourceSuspendPending === true) return true
+      return window.localStorage.getItem('neko-goodbye-resource-suspended') === 'true'
+    } catch {
+      return false
+    }
+  }
+
   // 操作
   async function fetchAllMetrics() {
+    if (isGoodbyeResourceSuspendingOrSuspended()) {
+      return { metrics: allMetrics.value }
+    }
     // 如果已有请求正在进行，直接返回该请求的结果（防止请求堆积）
     if (pendingFetchAll) {
       return pendingFetchAll
@@ -71,6 +87,9 @@ export const useMetricsStore = defineStore('metrics', () => {
   async function fetchPluginMetrics(pluginId: string) {
     if (!pluginId) {
       console.warn('[Metrics] fetchPluginMetrics called with empty pluginId')
+      return
+    }
+    if (isGoodbyeResourceSuspendingOrSuspended()) {
       return
     }
     
@@ -127,6 +146,9 @@ export const useMetricsStore = defineStore('metrics', () => {
     pluginId: string,
     params?: { limit?: number; start_time?: string; end_time?: string }
   ) {
+    if (isGoodbyeResourceSuspendingOrSuspended()) {
+      return
+    }
     try {
       const response = await getPluginMetricsHistory(pluginId, params)
       metricsHistory.value[pluginId] = response.history || []
@@ -158,4 +180,3 @@ export const useMetricsStore = defineStore('metrics', () => {
     getHistory
   }
 })
-

@@ -39,6 +39,20 @@ function isStandaloneAgentHudPage() {
     }
 }
 
+function isAgentHudSuppressedByGoodbye() {
+    if (isStandaloneAgentHudPage()) return false;
+    try {
+        if (typeof window.isNekoGoodbyeResourceSuspendingOrSuspended === 'function' &&
+            window.isNekoGoodbyeResourceSuspendingOrSuspended()) {
+            return true;
+        }
+        if (typeof window.isNekoGoodbyeModeActive === 'function' && window.isNekoGoodbyeModeActive()) {
+            return true;
+        }
+    } catch (_) { /* ignore */ }
+    return false;
+}
+
 function setAgentHudDraggingState(active) {
     try {
         if (document.body) {
@@ -771,6 +785,10 @@ window.AgentHUD._setupCollapseFunctionality = function (emptyState, collapseButt
 // 显示任务 HUD
 window.AgentHUD.showAgentTaskHUD = function () {
     console.log('[AgentHUD][TimeoutTrace] showAgentTaskHUD called. Current timeout ID:', this._hideTimeout);
+    if (isAgentHudSuppressedByGoodbye()) {
+        this.hideAgentTaskHUD();
+        return;
+    }
     
     // 清除任何正在进行的隐藏动画定时器，防止闪现后立刻消失
     if (this._hideTimeout) {
@@ -864,6 +882,14 @@ window.AgentHUD.hideAgentTaskHUD = function () {
 window.AgentHUD.updateAgentTaskHUD = function (tasksData) {
     // Cache latest snapshot so deferred re-render won't use stale closure data.
     this._latestTasksData = tasksData;
+    if (isAgentHudSuppressedByGoodbye()) {
+        if (this._updateRafId) {
+            cancelAnimationFrame(this._updateRafId);
+            this._updateRafId = null;
+        }
+        this.hideAgentTaskHUD();
+        return;
+    }
 
     // RAF throttle: coalesce rapid-fire WebSocket updates into a single frame
     if (this._updateRafId) return;
@@ -937,6 +963,10 @@ window.AgentHUD._markTasksCancelledLocally = function (taskIds, status) {
 
 // Internal: actual HUD update logic (called via RAF throttle)
 window.AgentHUD._doUpdateAgentTaskHUD = function () {
+    if (isAgentHudSuppressedByGoodbye()) {
+        this.hideAgentTaskHUD();
+        return;
+    }
     const tasksData = this._latestTasksData;
     if (!tasksData) return;
 

@@ -54,6 +54,19 @@
     function screenshotButton()   { return $id('screenshotButton'); }
     function chatContainer()      { return $id('chatContainer'); }
 
+    function isGoodbyeUiSuppressed() {
+        try {
+            if (typeof window.isNekoGoodbyeResourceSuspendingOrSuspended === 'function' &&
+                window.isNekoGoodbyeResourceSuspendingOrSuspended()) {
+                return true;
+            }
+            if (typeof window.isNekoGoodbyeModeActive === 'function' && window.isNekoGoodbyeModeActive()) {
+                return true;
+            }
+        } catch (_) { }
+        return false;
+    }
+
     async function releaseVoiceCaptureResources() {
         if (S.stream && typeof S.stream.getTracks === 'function') {
             S.stream.getTracks().forEach(function (track) {
@@ -1346,7 +1359,7 @@
                             running_count: tasks.filter(function (t) { return t.status === 'running'; }).length,
                             queued_count: tasks.filter(function (t) { return t.status === 'queued'; }).length,
                         });
-                        if (hasRunning && !window._agentTaskTimeUpdateInterval) {
+                        if (hasRunning && !window._agentTaskTimeUpdateInterval && !isGoodbyeUiSuppressed()) {
                             window._agentTaskTimeUpdateInterval = setInterval(function () {
                                 if (typeof window.updateTaskRunningTimes === 'function') window.updateTaskRunningTimes();
                             }, 1000);
@@ -2278,7 +2291,7 @@
                     try {
                         var masterOn = !!flags.agent_enabled;
                         var anyChildOn = !!(flags.computer_use_enabled || flags.browser_use_enabled || flags.user_plugin_enabled || flags.openclaw_enabled || flags.openfang_enabled);
-                        if (masterOn && anyChildOn && typeof window.startAgentTaskPolling === 'function') {
+                        if (masterOn && anyChildOn && typeof window.startAgentTaskPolling === 'function' && !isGoodbyeUiSuppressed()) {
                             window.startAgentTaskPolling();
                         }
                         var curName2 = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
@@ -2394,7 +2407,7 @@
                             if (typeof window.AgentHUD.showAgentTaskHUD === 'function') {
                                 window.AgentHUD.showAgentTaskHUD();
                             }
-                            if (hasRunning2 && !window._agentTaskTimeUpdateInterval) {
+                            if (hasRunning2 && !window._agentTaskTimeUpdateInterval && !isGoodbyeUiSuppressed()) {
                                 window._agentTaskTimeUpdateInterval = setInterval(function () {
                                     if (typeof window.updateTaskRunningTimes === 'function') window.updateTaskRunningTimes();
                                 }, 1000);
