@@ -217,6 +217,7 @@ const DEFAULT_SPOTLIGHT_PADDING = 6
 const BACKDROP_CUTOUT_INSET = 4
 const CONTROL_BANNER_TEXT_KEY = 'tutorial.yuiGuide.controlBanner'
 const CONTROL_BANNER_FALLBACK_TEXT = 'The catgirl is controlling the mouse'
+const CONTROL_BANNER_INTERRUPT_EMPHASIS_MS = 2000
 let currentGuideAudio: HTMLAudioElement | null = null
 let currentGuideAudioTimer: number | null = null
 let currentGuideSpeechStop: (() => void) | null = null
@@ -920,13 +921,28 @@ function injectStyle() {
       pointer-events: none;
       opacity: 0;
       transform: translate(-50%, -6px);
-      transition: opacity 180ms ease, transform 220ms ease;
+      --yui-guide-plugin-control-banner-emphasis-ease: cubic-bezier(0.16, 1, 0.3, 1);
+      transition:
+        opacity 180ms ease,
+        top 420ms var(--yui-guide-plugin-control-banner-emphasis-ease),
+        max-width 420ms var(--yui-guide-plugin-control-banner-emphasis-ease),
+        padding 420ms var(--yui-guide-plugin-control-banner-emphasis-ease),
+        font-size 420ms var(--yui-guide-plugin-control-banner-emphasis-ease),
+        transform 420ms var(--yui-guide-plugin-control-banner-emphasis-ease);
       backdrop-filter: blur(10px) saturate(1.08);
     }
 
     #${ROOT_ID} .yui-guide-plugin-control-banner.is-visible {
       opacity: 1;
       transform: translate(-50%, 0);
+    }
+
+    #${ROOT_ID} .yui-guide-plugin-control-banner.is-interrupt-emphasis {
+      top: 50%;
+      max-width: min(720px, calc(100vw - 40px));
+      padding: 16px 26px;
+      font-size: 17px;
+      transform: translate(-50%, -50%) scale(3);
     }
 
     #${ROOT_ID} .yui-guide-plugin-control-banner[hidden] {
@@ -1215,8 +1231,11 @@ class PluginDashboardGuideRuntime {
   backdropCutout: SVGRectElement | null = null
   interactionShield: HTMLDivElement | null = null
   controlBanner: HTMLDivElement | null = null
+  controlBannerEmphasisTimer: number | null = null
+  controlBannerEmphasisActive = false
   renderedControlBannerText = ''
   renderedControlBannerVisible: boolean | null = null
+  renderedControlBannerEmphasis: boolean | null = null
   spotlight: HTMLDivElement | null = null
   pointer: HTMLDivElement | null = null
   cursorPosition: { x: number; y: number } | null = null
@@ -1466,13 +1485,16 @@ class PluginDashboardGuideRuntime {
           || document.body.classList.contains('yui-taking-over')
         )
       : active === true
+    const isEmphasized = isVisible && this.controlBannerEmphasisActive === true
     const text = resolveControlBannerText()
 
     if (
       this.renderedControlBannerText === text
       && this.renderedControlBannerVisible === isVisible
+      && this.renderedControlBannerEmphasis === isEmphasized
       && this.controlBanner.hidden === !isVisible
       && this.controlBanner.classList.contains('is-visible') === isVisible
+      && this.controlBanner.classList.contains('is-interrupt-emphasis') === isEmphasized
     ) {
       return
     }
@@ -1483,7 +1505,30 @@ class PluginDashboardGuideRuntime {
     }
     this.controlBanner.hidden = !isVisible
     this.controlBanner.classList.toggle('is-visible', isVisible)
+    this.controlBanner.classList.toggle('is-interrupt-emphasis', isEmphasized)
     this.renderedControlBannerVisible = isVisible
+    this.renderedControlBannerEmphasis = isEmphasized
+  }
+
+  emphasizeControlBanner(durationMs = CONTROL_BANNER_INTERRUPT_EMPHASIS_MS) {
+    if (
+      !document.documentElement.classList.contains('yui-taking-over')
+      && !document.body.classList.contains('yui-taking-over')
+    ) {
+      return
+    }
+    this.ensureRoot()
+    if (this.controlBannerEmphasisTimer !== null) {
+      window.clearTimeout(this.controlBannerEmphasisTimer)
+      this.controlBannerEmphasisTimer = null
+    }
+    this.controlBannerEmphasisActive = true
+    this.syncControlBanner(true)
+    this.controlBannerEmphasisTimer = window.setTimeout(() => {
+      this.controlBannerEmphasisTimer = null
+      this.controlBannerEmphasisActive = false
+      this.syncControlBanner()
+    }, Math.max(0, Math.round(Number(durationMs) || CONTROL_BANNER_INTERRUPT_EMPHASIS_MS)))
   }
 
   hasDesktopTutorialSkipBridge() {
@@ -2927,6 +2972,7 @@ class PluginDashboardGuideRuntime {
     this.pauseCurrentSceneForResistance()
     this.interruptNarrationForResistance()
     this.suppressResistanceCursorReveal()
+    this.emphasizeControlBanner()
 
     const voiceIndex = Math.min(RESISTANCE_VOICE_KEYS.length - 1, Math.max(0, this.interruptCount - 1))
     const line = RESISTANCE_LINES[voiceIndex] || RESISTANCE_LINES[0]
@@ -3105,8 +3151,14 @@ class PluginDashboardGuideRuntime {
     this.backdropCutout = null
     this.interactionShield = null
     this.controlBanner = null
+    if (this.controlBannerEmphasisTimer !== null) {
+      window.clearTimeout(this.controlBannerEmphasisTimer)
+      this.controlBannerEmphasisTimer = null
+    }
+    this.controlBannerEmphasisActive = false
     this.renderedControlBannerText = ''
     this.renderedControlBannerVisible = null
+    this.renderedControlBannerEmphasis = null
     this.spotlight = null
     this.pointer = null
     this.cursorPosition = null

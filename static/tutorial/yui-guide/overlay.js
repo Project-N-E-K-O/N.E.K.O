@@ -13,6 +13,7 @@
     const PC_OVERLAY_SEQUENCE_STORAGE_KEY = 'yuiGuidePcOverlaySequence';
     const CONTROL_BANNER_TEXT_KEY = 'tutorial.yuiGuide.controlBanner';
     const CONTROL_BANNER_FALLBACK_TEXT = 'The catgirl is controlling the mouse';
+    const CONTROL_BANNER_INTERRUPT_EMPHASIS_MS = 2000;
     const OverlayRendererApi = window.TutorialOverlayRendererApi || {};
     const OverlayCursorStateStore = OverlayRendererApi.OverlayCursorStateStore
         || (window.TutorialOverlayRenderer && window.TutorialOverlayRenderer.OverlayCursorStateStore);
@@ -514,8 +515,11 @@
             this.root = null;
             this.stage = null;
             this.controlBanner = null;
+            this.controlBannerEmphasisTimer = null;
+            this.controlBannerEmphasisActive = false;
             this.renderedControlBannerText = '';
             this.renderedControlBannerVisible = null;
+            this.renderedControlBannerEmphasis = null;
             this.interactionShield = null;
             this.tutorialInputShieldActive = false;
             this.takingOverActive = false;
@@ -923,13 +927,16 @@
             }
 
             const isVisible = this.takingOverActive === true;
+            const isEmphasized = isVisible && this.controlBannerEmphasisActive === true;
             const text = resolveControlBannerText();
 
             if (
                 this.renderedControlBannerText === text
                 && this.renderedControlBannerVisible === isVisible
+                && this.renderedControlBannerEmphasis === isEmphasized
                 && this.controlBanner.hidden === !isVisible
                 && this.controlBanner.classList.contains('is-visible') === isVisible
+                && this.controlBanner.classList.contains('is-interrupt-emphasis') === isEmphasized
             ) {
                 return;
             }
@@ -940,7 +947,27 @@
             }
             this.controlBanner.hidden = !isVisible;
             this.controlBanner.classList.toggle('is-visible', isVisible);
+            this.controlBanner.classList.toggle('is-interrupt-emphasis', isEmphasized);
             this.renderedControlBannerVisible = isVisible;
+            this.renderedControlBannerEmphasis = isEmphasized;
+        }
+
+        emphasizeControlBanner(durationMs = CONTROL_BANNER_INTERRUPT_EMPHASIS_MS) {
+            if (!this.takingOverActive) {
+                return;
+            }
+            this.ensureRoot();
+            if (this.controlBannerEmphasisTimer) {
+                window.clearTimeout(this.controlBannerEmphasisTimer);
+                this.controlBannerEmphasisTimer = null;
+            }
+            this.controlBannerEmphasisActive = true;
+            this.syncControlBanner();
+            this.controlBannerEmphasisTimer = window.setTimeout(() => {
+                this.controlBannerEmphasisTimer = null;
+                this.controlBannerEmphasisActive = false;
+                this.syncControlBanner();
+            }, Math.max(0, Math.round(Number(durationMs) || CONTROL_BANNER_INTERRUPT_EMPHASIS_MS)));
         }
 
         isSkipControlEventTarget(target) {
@@ -1373,6 +1400,13 @@
         setTakingOver(active) {
             this.ensureRoot();
             this.takingOverActive = active === true;
+            if (!this.takingOverActive) {
+                if (this.controlBannerEmphasisTimer) {
+                    window.clearTimeout(this.controlBannerEmphasisTimer);
+                    this.controlBannerEmphasisTimer = null;
+                }
+                this.controlBannerEmphasisActive = false;
+            }
             this.document.body.classList.toggle('yui-taking-over', this.takingOverActive);
             this.root.classList.toggle('is-taking-over', this.takingOverActive);
             this.syncControlBanner();
@@ -2052,8 +2086,14 @@
             this.root = null;
             this.stage = null;
             this.controlBanner = null;
+            if (this.controlBannerEmphasisTimer) {
+                window.clearTimeout(this.controlBannerEmphasisTimer);
+                this.controlBannerEmphasisTimer = null;
+            }
+            this.controlBannerEmphasisActive = false;
             this.renderedControlBannerText = '';
             this.renderedControlBannerVisible = null;
+            this.renderedControlBannerEmphasis = null;
             this.interactionShield = null;
             this.tutorialInputShieldActive = false;
             this.takingOverActive = false;

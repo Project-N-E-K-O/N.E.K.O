@@ -2,7 +2,7 @@
     'use strict';
 
     const AVATAR_FLOATING_GUIDE_STORAGE_KEY = 'neko_avatar_floating_guide_v1';
-    const HOME_TUTORIAL_KEYS = ['neko_tutorial_home_yui_v1', 'neko_tutorial_home'];
+    const HOME_TUTORIAL_KEYS = ['neko_tutorial_home_yui_v1'];
     const PC_OVERLAY_RUN_ID_STORAGE_KEY = 'yuiGuidePcOverlayRunId';
     const PC_OVERLAY_SEQUENCE_STORAGE_KEY = 'yuiGuidePcOverlaySequence';
     const PC_OVERLAY_LOADING_ICON = '/static/icons/emotion_model_icon.png';
