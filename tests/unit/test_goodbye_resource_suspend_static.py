@@ -99,6 +99,8 @@ def test_goodbye_resource_suspend_waits_for_cat_transition_and_uses_token_snapsh
     assert "window.__nekoGoodbyeResourceSuspendPending = pending;" in source
     assert "window.isNekoGoodbyeResourceSuspendingOrSuspended = function ()" in source
     assert "localStorage.setItem(GOODBYE_RESOURCE_SUSPEND_STORAGE_KEY, suspended ? 'true' : 'false')" in source
+    assert "window.addEventListener('neko:goodbye-state-cleared'" in source
+    assert "restoreGoodbyeResourceSuspend(reason);" in source
 
     goodbye_handler_start = source.index("window.addEventListener('live2d-goodbye-click'")
     token_start = source.index("const goodbyeResourceToken = beginGoodbyeResourceSuspend", goodbye_handler_start)
@@ -220,10 +222,12 @@ def test_goodbye_agent_hud_and_websocket_ui_timers_are_suppressed_without_stoppi
     assert "!isGoodbyeUiSuppressed()" in websocket_source
     assert "window._agentTaskTimeUpdateInterval = setInterval" in websocket_source
 
-    assert "function isGoodbyeResourceSuspended()" in metrics_source
+    assert "function isGoodbyeResourceSuspendingOrSuspended()" in metrics_source
+    assert "isNekoGoodbyeResourceSuspendingOrSuspended" in metrics_source
     assert "(window as any).goodbyeResourceSuspended === true" in metrics_source
+    assert "(window as any).__nekoGoodbyeResourceSuspendPending === true" in metrics_source
     assert "window.localStorage.getItem('neko-goodbye-resource-suspended') === 'true'" in metrics_source
-    assert "if (isGoodbyeResourceSuspended())" in metrics_source
+    assert "if (isGoodbyeResourceSuspendingOrSuspended())" in metrics_source
 
     for view_source in (dashboard_source, metrics_view_source):
         assert "function isGoodbyeResourceSuspendingOrSuspended()" in view_source

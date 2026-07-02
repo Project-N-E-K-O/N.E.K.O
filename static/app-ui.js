@@ -298,6 +298,11 @@
 
     mod.restoreGoodbyeResourceSuspend = restoreGoodbyeResourceSuspend;
     mod.completeGoodbyeResourceSuspend = completeGoodbyeResourceSuspend;
+    window.addEventListener('neko:goodbye-state-cleared', (event) => {
+        const detail = event && event.detail ? event.detail : {};
+        const reason = detail.reason || 'goodbye-state-cleared';
+        restoreGoodbyeResourceSuspend(reason);
+    });
 
     // ================================================================
     //  1. Status toast  (app.js lines 86-145)
