@@ -485,8 +485,8 @@
             director.playLightResistance(x, y, {
                 motionDx: dx,
                 motionDy: dy,
-                suppressCursorReveal: true,
-                forceSystemCursorReveal: true
+                forceSystemCursorReveal: true,
+                suppressCursorReveal: true
             });
         }
 

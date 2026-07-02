@@ -8412,6 +8412,9 @@ def test_avatar_floating_interrupt_count_reveals_real_cursor_for_three_seconds(
                 director.cursor.reactToUserMotion = () => {};
                 director.playLightResistance = (x, y, options) => {
                     lightInterrupts.push({ x, y, options });
+                    if (options && options.forceSystemCursorReveal) {
+                        director.revealSystemCursorTemporarily(2000, 'interrupt_resist_light');
+                    }
                 };
 
                 director.lastPointerPoint = { x: 100, y: 100, t: 1000, speed: 0.04 };
