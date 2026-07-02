@@ -1932,7 +1932,7 @@ class UniversalTutorialManager {
             if (!deferRevealPrepared) {
                 live2dContainer.style.removeProperty('opacity');
             }
-            live2dContainer.style.removeProperty('pointer-events');
+            live2dContainer.style.setProperty('pointer-events', 'none', 'important');
         }
         const live2dCanvas = document.getElementById('live2d-canvas');
         if (live2dCanvas) {
@@ -2380,7 +2380,7 @@ class UniversalTutorialManager {
             } else {
                 live2dContainer.style.setProperty('opacity', '1', 'important');
             }
-            live2dContainer.style.removeProperty('pointer-events');
+            live2dContainer.style.setProperty('pointer-events', 'none', 'important');
         }
 
         const live2dCanvas = document.getElementById('live2d-canvas');

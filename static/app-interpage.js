@@ -1113,7 +1113,7 @@
                         live2dContainer2.classList.remove('hidden');
                         live2dContainer2.style.display = 'block';
                         live2dContainer2.style.visibility = 'visible';
-                        live2dContainer2.style.removeProperty('pointer-events');
+                        live2dContainer2.style.setProperty('pointer-events', 'none', 'important');
                     }
                     var live2dCanvas2 = document.getElementById('live2d-canvas');
                     if (live2dCanvas2) {
@@ -1176,7 +1176,7 @@
                                 if (!deferRevealPrepared) {
                                     live2dContainer2.style.removeProperty('opacity');
                                 }
-                                live2dContainer2.style.removeProperty('pointer-events');
+                                live2dContainer2.style.setProperty('pointer-events', 'none', 'important');
                             }
                             if (live2dCanvas2) {
                                 live2dCanvas2.style.display = 'block';
