@@ -1117,7 +1117,7 @@ async def test_deleted_workshop_character_is_not_restored_by_startup_sync():
             )
 
             characters_router_module = reload_module("main_routers.characters_router")
-            workshop_router_module = reload_module("main_routers.workshop_router")
+            workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
 
             characters = cm.load_characters()
             initial_name = next(iter(characters.get("猫娘", {})))
@@ -1197,8 +1197,8 @@ async def test_delete_catgirl_skips_tombstone_state_when_cloudsave_local_state_i
             )
 
             characters_router_module = reload_module("main_routers.characters_router")
-            workshop_router_module = reload_module("main_routers.workshop_router")
-            workshop_router_module._session_deleted_names.clear()
+            workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
+            importlib.import_module('main_routers.workshop_router.meta')._session_deleted_names.clear()
             characters = cm.load_characters()
             initial_name = next(iter(characters.get("猫娘", {})))
             characters["猫娘"]["禁用云存档删除角色"] = {"昵称": "禁用云存档删除角色"}
@@ -1269,7 +1269,7 @@ async def test_delete_catgirl_skips_tombstone_state_when_cloudsave_local_state_i
             assert sync_result["skipped"] >= 1
             current_characters = cm.load_characters()
             assert "禁用云存档删除角色" not in current_characters.get("猫娘", {})
-            workshop_router_module._session_deleted_names.clear()
+            importlib.import_module('main_routers.workshop_router.meta')._session_deleted_names.clear()
 
 
 @pytest.mark.unit
@@ -1298,7 +1298,7 @@ async def test_manual_workshop_character_sync_restores_deleted_character_and_cle
                 remove_one_catgirl=_noop_any,
             )
 
-            workshop_router_module = reload_module("main_routers.workshop_router")
+            workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
 
             deleted_name = "手动恢复工坊角色"
             cm.save_character_tombstones_state({
@@ -1382,7 +1382,7 @@ async def test_manual_workshop_character_sync_clears_tombstone_for_existing_char
                 remove_one_catgirl=_noop_any,
             )
 
-            workshop_router_module = reload_module("main_routers.workshop_router")
+            workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
 
             restored_name = "已存在但有墓碑角色"
             characters = cm.load_characters()
@@ -1471,7 +1471,7 @@ async def test_manual_workshop_character_sync_clears_tombstone_for_avatar_only_b
                 remove_one_catgirl=_noop_any,
             )
 
-            workshop_router_module = reload_module("main_routers.workshop_router")
+            workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
 
             restored_name = "仅头像绑定角色"
             characters = cm.load_characters()
@@ -1556,7 +1556,7 @@ async def test_manual_workshop_character_sync_keeps_tombstone_for_nonmatching_ex
                 remove_one_catgirl=_noop_any,
             )
 
-            workshop_router_module = reload_module("main_routers.workshop_router")
+            workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
 
             restored_name = "同名本地角色"
             characters = cm.load_characters()
@@ -1633,7 +1633,7 @@ async def test_manual_workshop_character_sync_defers_tombstone_cleanup_after_suc
                 remove_one_catgirl=_noop_any,
             )
 
-            workshop_router_module = reload_module("main_routers.workshop_router")
+            workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
 
             restored_name = "延后清理墓碑角色"
             characters = cm.load_characters()
@@ -1708,7 +1708,7 @@ async def test_manual_workshop_character_sync_defers_tombstone_cleanup_after_suc
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_sync_single_workshop_character_card_treats_restored_existing_as_success():
-    workshop_router_module = reload_module("main_routers.workshop_router")
+    workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
     sync_result = {
         "added": 0,
         "backfilled_faces": 0,
@@ -1814,7 +1814,7 @@ async def test_sync_single_workshop_character_card_uses_error_status_codes(
     expected_status,
     expected_code,
 ):
-    workshop_router_module = reload_module("main_routers.workshop_router")
+    workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
 
     with patch.object(
         workshop_router_module,
@@ -1833,7 +1833,7 @@ async def test_sync_single_workshop_character_card_uses_error_status_codes(
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_batch_workshop_character_sync_reports_subscription_unavailable():
-    workshop_router_module = reload_module("main_routers.workshop_router")
+    workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
     sync_result = {
         "added": 0,
         "backfilled_faces": 0,
@@ -1861,7 +1861,7 @@ async def test_batch_workshop_character_sync_reports_subscription_unavailable():
 async def test_batch_workshop_character_sync_reports_internal_failure_as_500():
     # 后端异常被标记为 WORKSHOP_SYNC_FAILED 时，批量入口也要回 500，
     # 不能伪装成 success 的“同步完成”。
-    workshop_router_module = reload_module("main_routers.workshop_router")
+    workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
     sync_result = {
         "added": 0,
         "backfilled_faces": 0,
@@ -1910,7 +1910,7 @@ async def test_sync_workshop_character_cards_skips_save_when_maintenance_fence_t
                 remove_one_catgirl=_noop_any,
             )
 
-            workshop_router_module = reload_module("main_routers.workshop_router")
+            workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
 
             installed_folder = Path(td) / "mock_workshop_maintenance_item"
             installed_folder.mkdir(parents=True, exist_ok=True)
@@ -1980,7 +1980,7 @@ async def test_sync_workshop_character_cards_preserves_persona_override_written_
                 remove_one_catgirl=_noop_any,
             )
 
-            workshop_router_module = reload_module("main_routers.workshop_router")
+            workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
 
             installed_folder = Path(td) / "mock_workshop_persona_race_item"
             installed_folder.mkdir(parents=True, exist_ok=True)
@@ -2062,7 +2062,7 @@ async def test_sync_workshop_character_cards_does_not_write_orphan_face_when_pen
                 remove_one_catgirl=_noop_any,
             )
 
-            workshop_router_module = reload_module("main_routers.workshop_router")
+            workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
 
             installed_folder = Path(td) / "mock_workshop_orphan_face_item"
             installed_folder.mkdir(parents=True, exist_ok=True)
@@ -2143,7 +2143,7 @@ async def test_sync_workshop_character_cards_aborts_when_latest_catgirl_map_is_m
                 remove_one_catgirl=_noop_any,
             )
 
-            workshop_router_module = reload_module("main_routers.workshop_router")
+            workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
 
             installed_folder = Path(td) / "mock_workshop_bad_latest_characters"
             installed_folder.mkdir(parents=True, exist_ok=True)
@@ -2209,7 +2209,7 @@ async def test_sync_workshop_character_cards_skips_face_writes_when_maintenance_
                 remove_one_catgirl=_noop_any,
             )
 
-            workshop_router_module = reload_module("main_routers.workshop_router")
+            workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
 
             installed_folder = Path(td) / "mock_workshop_face_fence_item"
             installed_folder.mkdir(parents=True, exist_ok=True)
@@ -2279,7 +2279,7 @@ async def test_sync_workshop_character_cards_counts_errors_when_new_face_backfil
                 remove_one_catgirl=_noop_any,
             )
 
-            workshop_router_module = reload_module("main_routers.workshop_router")
+            workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
 
             installed_folder = Path(td) / "mock_workshop_face_error_item"
             installed_folder.mkdir(parents=True, exist_ok=True)
@@ -2340,7 +2340,7 @@ async def test_sync_workshop_character_cards_counts_errors_when_existing_face_ba
                 remove_one_catgirl=_noop_any,
             )
 
-            workshop_router_module = reload_module("main_routers.workshop_router")
+            workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
 
             characters = cm.load_characters()
             characters.setdefault("猫娘", {})["已有工坊角色"] = {
@@ -2413,7 +2413,7 @@ async def test_sync_workshop_character_cards_uses_character_specific_preview_in_
                 remove_one_catgirl=_noop_any,
             )
 
-            workshop_router_module = reload_module("main_routers.workshop_router")
+            workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
 
             installed_folder = Path(td) / "mock_workshop_multi_card_item"
             installed_folder.mkdir(parents=True, exist_ok=True)
@@ -2488,7 +2488,7 @@ async def test_sync_workshop_character_cards_persists_character_origin_metadata(
                 remove_one_catgirl=_noop_any,
             )
 
-            workshop_router_module = reload_module("main_routers.workshop_router")
+            workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
 
             installed_folder = Path(td) / "mock_workshop_origin_item"
             installed_folder.mkdir(parents=True, exist_ok=True)
@@ -2598,7 +2598,7 @@ async def test_sync_workshop_character_cards_persists_live3d_workshop_origin_met
                 remove_one_catgirl=_noop_any,
             )
 
-            workshop_router_module = reload_module("main_routers.workshop_router")
+            workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
 
             installed_folder = Path(td) / "mock_workshop_live3d_item"
             installed_folder.mkdir(parents=True, exist_ok=True)
