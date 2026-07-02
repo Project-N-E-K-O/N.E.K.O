@@ -212,18 +212,26 @@
 
     function getNiriPetPhysicalCropPlacementApi() {
         const api = window.__nekoNiriPetPhysicalCrop;
-        if (!api || typeof api.isActive !== 'function' || !api.isActive()) return null;
-        return api;
+        if (!api || typeof api.isActive !== 'function') return null;
+        try {
+            return api.isActive() ? api : null;
+        } catch (_) {
+            return null;
+        }
     }
 
     function getNiriPetPhysicalCropViewport(api) {
         if (!api || typeof api.getState !== 'function') return null;
-        const state = api.getState();
-        const bounds = state && state.virtualBounds;
-        const width = Number(bounds && bounds.width);
-        const height = Number(bounds && bounds.height);
-        if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null;
-        return { width, height };
+        try {
+            const state = api.getState();
+            const bounds = state && state.virtualBounds;
+            const width = Number(bounds && bounds.width);
+            const height = Number(bounds && bounds.height);
+            if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null;
+            return { width, height };
+        } catch (_) {
+            return null;
+        }
     }
 
     function toPlacementRect(rect, api) {
@@ -274,6 +282,7 @@
         const effectiveSidePanelWidth = sidePanelWidth * sidePanelScale;
         const niriCropApi = getNiriPetPhysicalCropPlacementApi();
         const niriViewport = getNiriPetPhysicalCropViewport(niriCropApi);
+        const placementApi = niriViewport ? niriCropApi : null;
 
         const triggerIcon = document.querySelector(`.${triggerPrefix}${buttonId}`);
         const screenWidth = niriViewport ? niriViewport.width : window.innerWidth;
@@ -286,7 +295,7 @@
         void popup.offsetHeight; // 强制 reflow，确保测量基于默认位置
 
         // Horizontal overflow handling.
-        let popupRect = toPlacementRect(popup.getBoundingClientRect(), niriCropApi);
+        let popupRect = toPlacementRect(popup.getBoundingClientRect(), placementApi);
         // 考虑侧面板宽度：如果 popup + gap + 侧面板一起会溢出右边缘，提前选择向左弹出
         // sidePanelWidth 是纯面板宽度（不含 gap），gap 在此处统一添加
         const effectiveRight = effectiveSidePanelWidth > 0
@@ -321,7 +330,7 @@
         popup.dataset.opensLeft = String(opensLeft);
 
         // Vertical overflow handling.
-        popupRect = toPlacementRect(popup.getBoundingClientRect(), niriCropApi);
+        popupRect = toPlacementRect(popup.getBoundingClientRect(), placementApi);
         const currentTop = toNumber(popup.style.top, 0);
         let nextTop = currentTop;
         if (popupRect.bottom > screenHeight - bottomMargin) {
@@ -329,7 +338,7 @@
         }
         popup.style.top = `${nextTop}px`;
 
-        popupRect = toPlacementRect(popup.getBoundingClientRect(), niriCropApi);
+        popupRect = toPlacementRect(popup.getBoundingClientRect(), placementApi);
         if (popupRect.top < topMargin) {
             popup.style.top = `${toNumber(popup.style.top, 0) + toLocalCssPx(topMargin - popupRect.top, sidePanelScale)}px`;
         }
@@ -424,7 +433,8 @@
         const screenWidth = window.innerWidth;
         const niriCropApi = getNiriPetPhysicalCropPlacementApi();
         const niriViewport = getNiriPetPhysicalCropViewport(niriCropApi);
-        const isNiriPetPhysicalCrop = !!niriViewport;
+        const placementApi = niriViewport ? niriCropApi : null;
+        const isNiriPetPhysicalCrop = !!placementApi;
         const isMobile = !isNiriPetPhysicalCrop && (typeof window.isMobileWidth === 'function' ? window.isMobileWidth() : (screenWidth <= 768));
         const goDown = isMobile;
         container.dataset.goDown = String(goDown);
@@ -437,10 +447,11 @@
             ? false
             : (popup ? (popup.dataset.opensLeft === 'true' || !popup.dataset.opensLeft) : true);
         container.dataset.goLeft = String(goLeft);
+        container.dataset.niriPhysicalCropPositioned = 'false';
 
         // ── Step 2：基于 popup 实际位置定位（取代基于 button zone 定位） ──
-        const popupRect = toPlacementRect(popup ? popup.getBoundingClientRect() : anchor.getBoundingClientRect(), niriCropApi);
-        const anchorRect = toPlacementRect(anchor.getBoundingClientRect(), niriCropApi);
+        const popupRect = toPlacementRect(popup ? popup.getBoundingClientRect() : anchor.getBoundingClientRect(), placementApi);
+        const anchorRect = toPlacementRect(anchor.getBoundingClientRect(), placementApi);
         const screenW = niriViewport ? niriViewport.width : window.innerWidth;
         const screenH = niriViewport ? niriViewport.height : window.innerHeight;
         const panelW = container.offsetWidth * panelScale;
@@ -513,6 +524,7 @@
         }
 
         if (isNiriPetPhysicalCrop) {
+            container.dataset.niriPhysicalCropPositioned = 'true';
             return;
         }
 

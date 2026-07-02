@@ -1523,6 +1523,10 @@ function createSidePanelContainer(manager, prefix, options = {}) {
         if (window.AvatarPopupUI && typeof window.AvatarPopupUI.positionSidePanel === 'function') {
             window.AvatarPopupUI.positionSidePanel(container, anchor);
         }
+        const hasPositionStyles = !!(container.style.left || container.style.right || container.style.top);
+        if (container.dataset.niriPhysicalCropPositioned === 'true' && hasPositionStyles) {
+            return true;
+        }
 
         const rect = container.getBoundingClientRect();
         const horizontalGap = rect
@@ -1544,7 +1548,7 @@ function createSidePanelContainer(manager, prefix, options = {}) {
             && rect.left < window.innerWidth
             && rect.top < window.innerHeight
             && nearAnchor
-            && (container.style.left || container.style.right || container.style.top)
+            && hasPositionStyles
         ) {
             return true;
         }

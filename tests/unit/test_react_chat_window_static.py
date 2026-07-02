@@ -2094,14 +2094,24 @@ def test_avatar_popup_positioning_uses_niri_physical_crop_coordinates_only_when_
 
     assert "function getNiriPetPhysicalCropPlacementApi()" in source
     assert "window.__nekoNiriPetPhysicalCrop" in source
-    assert "typeof api.isActive !== 'function' || !api.isActive()" in source
-    assert "toPlacementRect(popup.getBoundingClientRect(), niriCropApi)" in position_popup_block
+    assert "return api.isActive() ? api : null;" in source
+    assert "const placementApi = niriViewport ? niriCropApi : null;" in position_popup_block
+    assert "toPlacementRect(popup.getBoundingClientRect(), placementApi)" in position_popup_block
     assert "const screenWidth = niriViewport ? niriViewport.width : window.innerWidth;" in position_popup_block
-    assert "const goLeft = isNiriPetPhysicalCrop" in position_sidepanel_block
-    assert "? false" in position_sidepanel_block
+    assert "try {\n            const state = api.getState();" in source
+    assert "container.dataset.niriPhysicalCropPositioned = 'true';" in position_sidepanel_block
+    assert (
+        "const goLeft = isNiriPetPhysicalCrop\n"
+        "            ? false\n"
+        "            : (popup ? (popup.dataset.opensLeft === 'true' || !popup.dataset.opensLeft) : true);"
+    ) in position_sidepanel_block
     assert "const popupRect = toPlacementRect" in position_sidepanel_block
-    assert "if (isNiriPetPhysicalCrop) {" in position_sidepanel_block
-    assert "return;" in position_sidepanel_block
+    assert "placementApi)" in position_sidepanel_block
+    niri_early_return_block = position_sidepanel_block.split("if (isNiriPetPhysicalCrop) {", 1)[1].split("}", 1)[0]
+    assert "return;" in niri_early_return_block
+
+    ui_source = AVATAR_UI_POPUP_PATH.read_text(encoding="utf-8")
+    assert "container.dataset.niriPhysicalCropPositioned === 'true' && hasPositionStyles" in ui_source
 
 
 def test_compact_history_closing_bubbles_disable_pointer_events():
