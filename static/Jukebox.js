@@ -1300,7 +1300,10 @@ window.Jukebox = {
             <button class="sam-tab" data-tab="bindings">${window.t('Jukebox.bindings', '歌曲绑定')}</button>
           </div>
           <span class="sam-drag-fill sam-drag-fill-right" aria-hidden="true"></span>
-          <button class="sam-close-btn" onclick="Jukebox.SongActionManager.hide()" title="${window.t('Jukebox.close', '关闭')}">×</button>
+          <button class="sam-close-btn"
+                  onclick="Jukebox.SongActionManager.hide()"
+                  data-tooltip="${Jukebox.escapeAttr(window.t('Jukebox.close', '关闭'))}"
+                  aria-label="${Jukebox.escapeAttr(window.t('Jukebox.close', '关闭'))}">×</button>
         </div>
         <div class="sam-content">
           <div class="sam-panel songs-panel active"></div>
@@ -1351,10 +1354,14 @@ window.Jukebox = {
           this.renderTab(tabName);
         });
       });
+      this.bindButtonTooltips(panel);
     },
 
     bindButtonTooltips(panel) {
       if (!panel) return;
+      panel.querySelectorAll('.sam-close-btn').forEach((button) => {
+        Jukebox.setupTooltipOnce(button, () => button.dataset.tooltip || window.t('Jukebox.close', '关闭'));
+      });
       panel.querySelectorAll('.sam-visibility-btn').forEach((button) => {
         Jukebox.setupTooltipOnce(button, () => button.dataset.tooltip || button.getAttribute('aria-label') || '');
       });
@@ -1430,13 +1437,13 @@ window.Jukebox = {
                     <div class="sam-item-actions">
                       <button class="sam-visibility-btn ${song.visible === false ? 'hidden' : ''}"
                               onclick="Jukebox.SongActionManager.toggleSongVisibility('${id}')"
-                              data-tooltip="${song.visible === false ? window.t('Jukebox.show', '显示') : window.t('Jukebox.hide', '隐藏')}"
-                              aria-label="${song.visible === false ? window.t('Jukebox.show', '显示') : window.t('Jukebox.hide', '隐藏')}">
+                              data-tooltip="${Jukebox.escapeAttr(song.visible === false ? window.t('Jukebox.show', '显示') : window.t('Jukebox.hide', '隐藏'))}"
+                              aria-label="${Jukebox.escapeAttr(song.visible === false ? window.t('Jukebox.show', '显示') : window.t('Jukebox.hide', '隐藏'))}">
                         ${song.visible === false
                           ? '<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/><line x1="3" y1="3" x2="21" y2="21" stroke="currentColor" stroke-width="2"/></svg>'
                           : '<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>'}
                       </button>
-                      <button class="sam-delete-btn" onclick="Jukebox.SongActionManager.confirmDeleteSong('${id}')" data-tooltip="${window.t('Jukebox.delete', '删除')}" aria-label="${window.t('Jukebox.delete', '删除')}">🗑</button>
+                      <button class="sam-delete-btn" onclick="Jukebox.SongActionManager.confirmDeleteSong('${id}')" data-tooltip="${Jukebox.escapeAttr(window.t('Jukebox.delete', '删除'))}" aria-label="${Jukebox.escapeAttr(window.t('Jukebox.delete', '删除'))}">🗑</button>
                     </div>
                   </div>
                   <div class="sam-item-artist" contenteditable="true" data-neko-marquee data-tooltip="${Jukebox.escapeAttr(song.artist || window.t('Jukebox.unknown', '未知'))}"
@@ -1508,13 +1515,13 @@ window.Jukebox = {
                       ${action.missing ? `<span class="sam-missing-badge">${window.t('Jukebox.missing', '缺失')}</span>` : ''}
                       <button class="sam-visibility-btn ${action.visible === false ? 'hidden' : ''}"
                               onclick="Jukebox.SongActionManager.toggleActionVisibility('${id}')"
-                              data-tooltip="${action.visible === false ? window.t('Jukebox.show', '显示') : window.t('Jukebox.hide', '隐藏')}"
-                              aria-label="${action.visible === false ? window.t('Jukebox.show', '显示') : window.t('Jukebox.hide', '隐藏')}">
+                              data-tooltip="${Jukebox.escapeAttr(action.visible === false ? window.t('Jukebox.show', '显示') : window.t('Jukebox.hide', '隐藏'))}"
+                              aria-label="${Jukebox.escapeAttr(action.visible === false ? window.t('Jukebox.show', '显示') : window.t('Jukebox.hide', '隐藏'))}">
                         ${action.visible === false
                           ? '<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/><line x1="3" y1="3" x2="21" y2="21" stroke="currentColor" stroke-width="2"/></svg>'
                           : '<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>'}
                       </button>
-                      <button class="sam-delete-btn" onclick="Jukebox.SongActionManager.confirmDeleteAction('${id}')" data-tooltip="${window.t('Jukebox.delete', '删除')}" aria-label="${window.t('Jukebox.delete', '删除')}">🗑</button>
+                      <button class="sam-delete-btn" onclick="Jukebox.SongActionManager.confirmDeleteAction('${id}')" data-tooltip="${Jukebox.escapeAttr(window.t('Jukebox.delete', '删除'))}" aria-label="${Jukebox.escapeAttr(window.t('Jukebox.delete', '删除'))}">🗑</button>
                     </div>
                   </div>
                   <div class="sam-item-bindings">
@@ -1587,10 +1594,10 @@ window.Jukebox = {
                               data-tooltip="${Jukebox.escapeAttr(titleText)}">
                           <span class="sam-format-dot" style="background-color: ${formatColor};"></span>
                           <span class="sam-binding-tag-label" data-neko-marquee>${isDefault ? '★ ' : ''}${Jukebox.escapeHtml(action.name)}</span>
-                          <button class="sam-unbind-btn" onclick="event.stopPropagation(); Jukebox.SongActionManager.unbindSongFromAction('${id}', '${actionId}');" data-tooltip="${window.t('Jukebox.unbind', '解除绑定')}" aria-label="${window.t('Jukebox.unbind', '解除绑定')}">×</button>
+                          <button class="sam-unbind-btn" onclick="event.stopPropagation(); Jukebox.SongActionManager.unbindSongFromAction('${id}', '${actionId}');" data-tooltip="${Jukebox.escapeAttr(window.t('Jukebox.unbind', '解除绑定'))}" aria-label="${Jukebox.escapeAttr(window.t('Jukebox.unbind', '解除绑定'))}">×</button>
                         </span>` : '';
                     }).join('')}
-                    <button class="sam-add-binding-btn" onclick="Jukebox.SongActionManager.showAddBindingInput(this, '${id}', 'song')" data-tooltip="${window.t('Jukebox.addActionBinding', '手动添加动画绑定')}" aria-label="${window.t('Jukebox.addActionBinding', '手动添加动画绑定')}">+</button>
+                    <button class="sam-add-binding-btn" onclick="Jukebox.SongActionManager.showAddBindingInput(this, '${id}', 'song')" data-tooltip="${Jukebox.escapeAttr(window.t('Jukebox.addActionBinding', '手动添加动画绑定'))}" aria-label="${Jukebox.escapeAttr(window.t('Jukebox.addActionBinding', '手动添加动画绑定'))}">+</button>
                   </div>
                 </div>
               `}).join('')}
@@ -1631,10 +1638,10 @@ window.Jukebox = {
                       return song ? `
                         <span class="sam-binding-tag-small ${isSongSelected ? 'sam-tag-selected' : ''}" data-tooltip="${Jukebox.escapeAttr(titleText)}">
                           <span class="sam-binding-tag-label" data-neko-marquee>${Jukebox.escapeHtml(song.name)}</span>
-                          <button class="sam-unbind-btn" onclick="Jukebox.SongActionManager.unbindSongFromAction('${songId}', '${id}'); event.stopPropagation();" data-tooltip="${window.t('Jukebox.unbind', '解除绑定')}" aria-label="${window.t('Jukebox.unbind', '解除绑定')}">×</button>
+                          <button class="sam-unbind-btn" onclick="Jukebox.SongActionManager.unbindSongFromAction('${songId}', '${id}'); event.stopPropagation();" data-tooltip="${Jukebox.escapeAttr(window.t('Jukebox.unbind', '解除绑定'))}" aria-label="${Jukebox.escapeAttr(window.t('Jukebox.unbind', '解除绑定'))}">×</button>
                         </span>` : '';
                     }).join('')}
-                    <button class="sam-add-binding-btn" onclick="Jukebox.SongActionManager.showAddBindingInput(this, '${id}', 'action')" data-tooltip="${window.t('Jukebox.addSongBinding', '手动添加歌曲绑定')}" aria-label="${window.t('Jukebox.addSongBinding', '手动添加歌曲绑定')}">+</button>
+                    <button class="sam-add-binding-btn" onclick="Jukebox.SongActionManager.showAddBindingInput(this, '${id}', 'action')" data-tooltip="${Jukebox.escapeAttr(window.t('Jukebox.addSongBinding', '手动添加歌曲绑定'))}" aria-label="${Jukebox.escapeAttr(window.t('Jukebox.addSongBinding', '手动添加歌曲绑定'))}">+</button>
                   </div>
                 </div>
               `}).join('')}
@@ -2996,8 +3003,8 @@ window.Jukebox = {
       inputWrapper.className = 'sam-add-binding-input-wrapper';
       inputWrapper.innerHTML = `
         <input type="text" class="sam-add-binding-input" placeholder="${window.t('Jukebox.inputIndexOrName', '输入序号或名称')}">
-        <button class="sam-add-binding-confirm" data-tooltip="${window.t('Jukebox.confirm', '确认')}" aria-label="${window.t('Jukebox.confirm', '确认')}">✓</button>
-        <button class="sam-add-binding-cancel" data-tooltip="${window.t('Jukebox.cancel', '取消')}" aria-label="${window.t('Jukebox.cancel', '取消')}">✕</button>
+        <button class="sam-add-binding-confirm" data-tooltip="${Jukebox.escapeAttr(window.t('Jukebox.confirm', '确认'))}" aria-label="${Jukebox.escapeAttr(window.t('Jukebox.confirm', '确认'))}">✓</button>
+        <button class="sam-add-binding-cancel" data-tooltip="${Jukebox.escapeAttr(window.t('Jukebox.cancel', '取消'))}" aria-label="${Jukebox.escapeAttr(window.t('Jukebox.cancel', '取消'))}">✕</button>
       `;
 
       // 替换按钮为输入框
@@ -5109,7 +5116,7 @@ window.Jukebox = {
           max-width: min(280px, calc(100vw - 16px));
           overflow-wrap: anywhere;
           text-align: center;
-          white-space: normal;
+          white-space: pre-line;
           opacity: 0;
           transform: translateY(2px);
           transition: opacity 0.15s ease, transform 0.15s ease;
@@ -5555,12 +5562,12 @@ window.Jukebox = {
         </div>
         <div class="jukebox-header-drag-fill" aria-hidden="true"></div>
         <div class="jukebox-header-buttons">
-          <button class="jukebox-settings" onclick="Jukebox.SongActionManager.toggle()" data-tooltip="${window.t('Jukebox.manager', '点歌台管理与导入')}" aria-label="${window.t('Jukebox.manager', '点歌台管理与导入')}">
+          <button class="jukebox-settings" onclick="Jukebox.SongActionManager.toggle()" data-tooltip="${Jukebox.escapeAttr(window.t('Jukebox.manager', '点歌台管理与导入'))}" aria-label="${Jukebox.escapeAttr(window.t('Jukebox.manager', '点歌台管理与导入'))}">
             <span class="jukebox-settings-icon" aria-hidden="true">⚙</span>
             <span class="jukebox-settings-label">${window.t('Jukebox.settingsShort', '管理/导入')}</span>
           </button>
-          <button class="jukebox-minimize" onclick="Jukebox_hide()" data-tooltip="${window.t('Jukebox.minimize', '最小化')}" aria-label="${window.t('Jukebox.minimize', '最小化')}">−</button>
-          <button class="jukebox-close" onclick="Jukebox_close()" data-tooltip="${window.t('Jukebox.close', '关闭')}" aria-label="${window.t('Jukebox.close', '关闭')}">×</button>
+          <button class="jukebox-minimize" onclick="Jukebox_hide()" data-tooltip="${Jukebox.escapeAttr(window.t('Jukebox.minimize', '最小化'))}" aria-label="${Jukebox.escapeAttr(window.t('Jukebox.minimize', '最小化'))}">−</button>
+          <button class="jukebox-close" onclick="Jukebox_close()" data-tooltip="${Jukebox.escapeAttr(window.t('Jukebox.close', '关闭'))}" aria-label="${Jukebox.escapeAttr(window.t('Jukebox.close', '关闭'))}">×</button>
         </div>
       </div>
       <div class="jukebox-resize-handle" data-dir="n"></div>
@@ -5609,7 +5616,7 @@ window.Jukebox = {
               <th class="jukebox-sequence-th">
                 <div class="jukebox-sequence-header">
                   <span>${window.t('Jukebox.sequence', '序号')}</span>
-          <button type="button" class="jukebox-sort-lock-btn" onclick="Jukebox.toggleSongSortLock(event)" data-tooltip="${window.t('Jukebox.songSortLockTooltipLocked', '歌曲排序已锁定：防止误拖，点击解锁后可拖动歌曲调整顺序')}" aria-label="${window.t('Jukebox.unlockSongSort', '解锁歌曲排序')}" aria-pressed="false">
+          <button type="button" class="jukebox-sort-lock-btn" onclick="Jukebox.toggleSongSortLock(event)" data-tooltip="${Jukebox.escapeAttr(window.t('Jukebox.songSortLockTooltipLocked', '歌曲排序已锁定：防止误拖，点击解锁后可拖动歌曲调整顺序'))}" aria-label="${Jukebox.escapeAttr(window.t('Jukebox.unlockSongSort', '解锁歌曲排序'))}" aria-pressed="false">
                     ${Jukebox.getSongSortLockIcon()}
                   </button>
                 </div>
@@ -5639,7 +5646,7 @@ window.Jukebox = {
             <button type="button" class="play-btn jukebox-transport-btn" id="jukebox-control-prev" onclick="Jukebox.playAdjacentSong(-1)" aria-label="${window.t('Jukebox.previousSong', '上一首')}">
               <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M6 6h2v12H6V6zm3 6 9 6V6l-9 6z"/></svg>
             </button>
-            <button type="button" class="play-btn jukebox-transport-btn jukebox-play-pause-btn" id="jukebox-control-play-pause" onclick="Jukebox.toggleGlobalPlayPause()" data-tooltip="${window.t('Jukebox.play', '播放')}" aria-label="${window.t('Jukebox.play', '播放')}">
+            <button type="button" class="play-btn jukebox-transport-btn jukebox-play-pause-btn" id="jukebox-control-play-pause" onclick="Jukebox.toggleGlobalPlayPause()" data-tooltip="${Jukebox.escapeAttr(window.t('Jukebox.play', '播放'))}" aria-label="${Jukebox.escapeAttr(window.t('Jukebox.play', '播放'))}">
               <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
             </button>
             <button type="button" class="play-btn jukebox-transport-btn" id="jukebox-control-next" onclick="Jukebox.playAdjacentSong(1)" aria-label="${window.t('Jukebox.nextSong', '下一首')}">
@@ -7126,7 +7133,7 @@ window.Jukebox = {
         max-width: min(280px, calc(100vw - 16px));
         overflow-wrap: anywhere;
         text-align: center;
-        white-space: normal;
+        white-space: pre-line;
         opacity: 0;
         transform: translateY(2px);
         transition: opacity 0.15s ease, transform 0.15s ease;
@@ -7326,7 +7333,7 @@ window.Jukebox = {
       <td class="song-name" data-neko-marquee data-tooltip="${Jukebox.escapeAttr(song.name)}">${Jukebox.escapeHtml(song.name)}</td>
       <td class="song-artist" data-neko-marquee data-tooltip="${Jukebox.escapeAttr(song.artist)}">${Jukebox.escapeHtml(song.artist)}</td>
       <td class="song-action">
-        <button class="play-btn" data-song-id="${Jukebox.escapeHtml(song.id)}" data-tooltip="${window.t('Jukebox.play', '播放')}">
+        <button class="play-btn" data-song-id="${Jukebox.escapeAttr(song.id)}" data-tooltip="${Jukebox.escapeAttr(window.t('Jukebox.play', '播放'))}">
           <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
         </button>
       </td>
