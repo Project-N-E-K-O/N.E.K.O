@@ -1030,9 +1030,9 @@ function getTtsProviderMeta(pk) {
             model_field: 'ttsModelId',
             voice_field: 'ttsVoiceId',
             api_key_field: 'ttsModelApiKey',
-            probe_kind: 'none',
-            probe_sub_type: '',
-            probe_ws_path: '',
+            probe_kind: p.probe_kind || 'none',
+            probe_sub_type: p.probe_sub_type || '',
+            probe_ws_path: p.probe_ws_path || '',
             _synthesized: true,
         };
     }
@@ -1061,7 +1061,7 @@ function getProviderType(providerKey, fallback = 'openai_compatible') {
     const providerType = String(profile.provider_type || profile.providerType || fallback || 'openai_compatible')
         .trim()
         .toLowerCase();
-    return ['openai_compatible', 'anthropic', 'websocket'].includes(providerType)
+    return ['openai_compatible', 'anthropic', 'websocket', 'tts'].includes(providerType)
         ? providerType
         : 'openai_compatible';
 }
@@ -1558,11 +1558,8 @@ async function loadApiProviders() {
                     assistSelect.innerHTML = ''; // 清空现有选项
                     const assistList = Array.isArray(data.assist_api_providers) ? data.assist_api_providers : [];
                     assistList.forEach(provider => {
-                        // 修复 PR #1764 review 第三轮 #1：vllm_omni 是 TTS-only provider，
-                        // 不应出现在主 assistApiSelect 下拉框（否则被选作辅助 API 时
-                        // ConfigManager 会把 TTS WebSocket URL 复制到 OpenAI-compatible 配置，
-                        // summary/correction/agent 等 LLM 调用会打到错误的 endpoint）
-                        if (provider.key === 'vllm_omni') return;
+                        const ttsMeta = getTtsProviderMeta(provider.key);
+                        if (ttsMeta && ttsMeta.tts_dropdown_only) return;
 
                         // 如果是大陆用户，过滤掉受限的服务商
                         if (isProviderRestricted(provider.key)) {
@@ -2558,7 +2555,10 @@ async function save_button_down(e) {
     Object.keys(allBookKeys).forEach(pk => {
         const field = (_apiKeyRegistry[pk] || {}).config_field;
         if (field) {
-            bookPayload[field] = allBookKeys[pk];
+            const value = allBookKeys[pk];
+            if (!Object.prototype.hasOwnProperty.call(bookPayload, field) || value || !bookPayload[field]) {
+                bookPayload[field] = value;
+            }
         }
     });
 
@@ -2583,8 +2583,8 @@ async function save_button_down(e) {
     };
     if (gptsovitsEnabled) {
         payload.ttsProvider = 'gptsovits';
-    } else if (selectedTtsProvider === 'mimo') {
-        payload.ttsProvider = 'mimo';
+    } else if (selectedTtsProvider === 'mimo' || selectedTtsProvider === 'doubao_tts') {
+        payload.ttsProvider = selectedTtsProvider;
     } else if (_loadedGptSovitsState !== 'none') {
         payload.ttsProvider = '';
     } else if (selectedTtsProvider) {
@@ -3372,7 +3372,7 @@ function buildConnectivityCacheId(scope, providerKey, key, url) {
     return key || url || '';
 }
 
-function buildCustomConnectivityCacheId(providerType, subType, url, key, model) {
+function buildCustomConnectivityCacheId(providerType, subType, url, key, model, voiceId = '') {
     return [
         'custom',
         providerType || 'openai_compatible',
@@ -3380,6 +3380,7 @@ function buildCustomConnectivityCacheId(providerType, subType, url, key, model) 
         url || '',
         key || '',
         model || '',
+        voiceId || '',
     ].join('|');
 }
 
@@ -3584,6 +3585,13 @@ const ConnectivityManager = {
                 result.subType = _spProbe.probe_sub_type || '';
                 result.key = keyInput ? getRealKey(keyInput) : '';
                 result.model = getResolvedCustomModelId(mt, provider);
+                } else if (_spProbe.probe_kind === 'http_tts') {
+                    result.url = urlInput ? urlInput.value.trim() : '';
+                    result.providerType = 'tts';
+                    result.subType = _spProbe.probe_sub_type || provider;
+                    result.key = keyInput ? getRealKey(keyInput) : '';
+                    result.model = getResolvedCustomModelId(mt, provider);
+                    result.voiceId = document.getElementById('ttsVoiceId')?.value?.trim() || '';
                 } else {
                     // 非 ws 的可编辑端点（结构兜底 / 未来 http 探测的 provider）：当 custom
                     // 处理——用户填的 URL/Key/Model，不绑定内置 provider profile。
@@ -3619,7 +3627,8 @@ const ConnectivityManager = {
                         result.subType,
                         result.url,
                         result.key,
-                        result.model
+                        result.model,
+                        result.voiceId || ''
                     );
                 }
             }
@@ -3685,7 +3694,7 @@ const ConnectivityManager = {
      * @returns {Promise<{success: boolean, error?: string, error_code?: string}>}
      */
     async testKey(params) {
-        const { provider_key, provider_scope, url, api_key: apiKey, model, provider_type: providerType, sub_type: subType, is_free: isFree, cache_id: cacheId } = params;
+        const { provider_key, provider_scope, url, api_key: apiKey, model, voice_id: voiceId, provider_type: providerType, sub_type: subType, is_free: isFree, cache_id: cacheId } = params;
         console.log('[ConnectivityManager] testKey called:', {
             provider_key: provider_key || '(custom)',
             provider_scope: provider_scope || '(none)',
@@ -3738,6 +3747,9 @@ const ConnectivityManager = {
                     // 让后端走 _test_vllm_omni_ws_handshake 而非 _test_websocket。
                     if (subType) {
                         body.sub_type = subType;
+                    }
+                    if (voiceId) {
+                        body.voice_id = voiceId;
                     }
                     body.is_free = !!isFree;
                 }
@@ -3884,6 +3896,7 @@ const ConnectivityManager = {
                     keyConfigs[customCacheId] = {
                         provider_key: customResult.providerKey, provider_scope: customResult.providerScope,
                         url: customResult.url, api_key: customResult.key || '', model: model,
+                        voice_id: customResult.voiceId || '',
                         provider_type: customResult.providerType, sub_type: customResult.subType || '', is_free: isFree
                     };
                 }
@@ -4036,6 +4049,7 @@ const ConnectivityManager = {
                     keyConfigs[cacheId] = {
                         provider_key: customResult.providerKey, provider_scope: customResult.providerScope,
                         url: customResult.url, api_key: customResult.key || '', model: model,
+                        voice_id: customResult.voiceId || '',
                         provider_type: customResult.providerType, sub_type: customResult.subType || '', is_free: isFree
                     };
                 }
@@ -4215,7 +4229,12 @@ function initConnectivityLights() {
                 ConnectivityManager.syncErrorDisplaysForKey(resolved.cacheId);
                 const result = await ConnectivityManager.testKey({
                     provider_key: resolved.providerKey, provider_scope: resolved.providerScope,
-                    url: resolved.url, api_key: resolved.key, provider_type: resolved.providerType, is_free: isFree,
+                    url: resolved.url, api_key: resolved.key,
+                    model: resolved.model || '',
+                    voice_id: resolved.voiceId || '',
+                    provider_type: resolved.providerType,
+                    sub_type: resolved.subType || '',
+                    is_free: isFree,
                     cache_id: resolved.cacheId
                 });
                 if (result.cancelled) {
@@ -4270,7 +4289,12 @@ function initConnectivityLights() {
                 ConnectivityManager.syncErrorDisplaysForKey(resolved.cacheId);
                 const result = await ConnectivityManager.testKey({
                     provider_key: resolved.providerKey, provider_scope: resolved.providerScope,
-                    url: resolved.url, api_key: resolved.key, provider_type: resolved.providerType, is_free: isFree,
+                    url: resolved.url, api_key: resolved.key,
+                    model: resolved.model || '',
+                    voice_id: resolved.voiceId || '',
+                    provider_type: resolved.providerType,
+                    sub_type: resolved.subType || '',
+                    is_free: isFree,
                     cache_id: resolved.cacheId
                 });
                 if (result.cancelled) {
