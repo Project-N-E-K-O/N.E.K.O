@@ -1912,6 +1912,31 @@ def test_avatar_tool_cursor_overlays_stay_above_model_side_menus():
     assert hammer_cursor_layer > max_model_menu_layer
 
 
+def test_avatar_popup_actions_have_stable_input_region_markers():
+    source = AVATAR_UI_POPUP_PATH.read_text(encoding="utf-8")
+
+    assert "function markAvatarPopupActionElement(el, type)" in source
+    assert "function setAvatarPopupActionDebugMetadata(el, item, source)" in source
+    assert "data-neko-avatar-popup-action" in source
+    assert "data-neko-avatar-popup-item-id" in source
+    assert "data-neko-avatar-popup-url" in source
+    assert "function dispatchAvatarPopupLifecycleEvent(eventName, buttonId, popup, prefix)" in source
+    assert "function dispatchAvatarPopupNavigateEvent(item, finalUrl, windowName, source)" in source
+    assert "neko-avatar-popup-opening" in source
+    assert "neko-avatar-popup-opened" in source
+    assert "neko-avatar-popup-closing" in source
+    assert "neko-avatar-popup-closed" in source
+    assert "neko-avatar-popup-navigate" in source
+    assert "markAvatarPopupActionElement(btn, 'settings-menu');" in source
+    assert "setAvatarPopupActionDebugMetadata(btn, config, 'settings-button');" in source
+    assert "markAvatarPopupActionElement(menuItem, 'sidepanel-menu');" in source
+    assert "setAvatarPopupActionDebugMetadata(menuItem, item, 'sidepanel-menu');" in source
+    assert "markAvatarPopupActionElement(linkItem, 'settings-link');" in source
+    assert "markAvatarPopupActionElement(toggleItem, 'settings-toggle');" in source
+    assert "markAvatarPopupActionElement(menuItem, isSubmenuItem ? 'settings-submenu' : 'settings-menu');" in source
+    assert "setAvatarPopupActionDebugMetadata(menuItem, item, isSubmenuItem ? 'settings-submenu' : 'settings-menu');" in source
+
+
 def test_avatar_popup_positioning_uses_niri_physical_crop_coordinates_only_when_available():
     source = AVATAR_POPUP_COMMON_PATH.read_text(encoding="utf-8")
     position_popup_block = source.split("function positionPopup(popup, options = {})", 1)[1].split(
