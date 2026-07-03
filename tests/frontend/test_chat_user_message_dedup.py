@@ -732,7 +732,7 @@ def test_compact_history_drop_sends_only_dropped_image_and_restores_pending_atta
             const dropped = makeDataUrl('#cc3355');
             window.appButtons.addScreenshotToList(existing, null, {
                 alt: 'Existing pending',
-                source: 'user'
+                source: 'user-image'
             });
             const before = window.appButtons.getPendingComposerAttachments();
 

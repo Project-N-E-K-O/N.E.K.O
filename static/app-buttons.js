@@ -757,7 +757,7 @@
 
     function getPendingAttachmentInputType(item) {
         var source = item && item.dataset ? String(item.dataset.source || '') : '';
-        if (source === 'user-image' || source === 'clipboard-image' || source === 'compact-history' || source === 'user') {
+        if (source === 'user-image' || source === 'clipboard-image' || source === 'compact-history') {
             return 'user_image';
         }
         return U.isMobile() ? 'camera' : 'screen';
