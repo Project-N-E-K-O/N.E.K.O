@@ -29,7 +29,7 @@ const VOICE_CLONE_PROVIDER_KEY_FIELDS = Object.freeze([
     ['minimax_intl', 'assistApiKeyMinimaxIntl'],
     ['elevenlabs', 'assistApiKeyElevenlabs'],
     ['mimo', 'assistApiKeyMimo'],
-    ['doubao_tts', 'ttsModelApiKey'],
+    ['doubao_tts', 'assistApiKeyDoubaoTts'],
 ]);
 const voiceCloneProviderRestrictionState = {
     loaded: false,
@@ -487,13 +487,17 @@ function getActiveMimoKeyField(cfg) {
     return tokenPlanActive ? VOICE_CLONE_MIMO_TOKEN_PLAN_KEY_FIELD : 'assistApiKeyMimo';
 }
 
+function cfgHasDoubaoTtsKey(cfg) {
+    return !!(cfg && cfg.assistApiKeyDoubaoTts);
+}
+
 function cfgHasCloneProviderKey(cfg, provider) {
     if (!cfg || typeof cfg !== 'object') return false;
     if (provider === 'mimo') {
         return !!cfg[getActiveMimoKeyField(cfg)];
     }
     if (provider === 'doubao_tts') {
-        return !!(cfg.ttsModelApiKey || cfg.assistApiKeyDoubaoTts || cfg.assistApiKeyDoubao);
+        return cfgHasDoubaoTtsKey(cfg);
     }
     const fieldName = getVoiceCloneProviderKeyField(provider);
     return !!(fieldName && cfg[fieldName]);
@@ -933,7 +937,7 @@ function updateVoiceCloneProviderNoticeText(noticeDiv, provider) {
         'elevenlabs': '请先在 API 设置中填写 ElevenLabs API Key',
         'mimo': '请先在 API 设置中填写 MiMo API Key',
         'vllm_omni': '本地 vLLM-Omni 服务，无需 API Key',
-        'doubao_tts': '请先在 API 设置的 TTS 模型配置中填写豆包语音 API Key',
+        'doubao_tts': 'Please save a Doubao Speech API Key in API Settings.',
     };
     const i18nKey = keyMap[provider] || 'voice.alibabaApiRequired';
     span.setAttribute('data-i18n', i18nKey);

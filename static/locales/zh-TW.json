@@ -1562,7 +1562,7 @@
         "mimoApiRequired": "此功能需要 MiMo 模型，請在 API 密鑰設置頁中保存 MiMo API Key",
         "mimoDirectLinkUnsupported": "MiMo 暫不支持直鏈克隆，請改用本地文件上傳",
         "directLinkUnsupported": "當前服務商暫不支持直鏈克隆，請改用本地文件上傳",
-        "doubaoTtsApiRequired": "此功能需要豆包語音 API Key，請在 API 設定的 TTS 模型配置中填寫",
+        "doubaoTtsApiRequired": "此功能需要豆包語音 API Key，請在 API Key 管理中保存",
         "vllmOmniNotice": "本地 vLLM-Omni 服務，無需 API Key，請確保已配置本地服務地址",
         "vllmRefTextLabel": "參考音頻原文（vLLM-Omni 克隆必填，須與音頻內容嚴格對應）",
         "vllmRefTextHint": "逐字輸入參考音頻裡說的話，文本與音頻不符會導致克隆音質下降",

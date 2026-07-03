@@ -13,7 +13,7 @@ VOICE_CLONE_API_PROVIDERS_RESPONSE = {
         "minimax_intl": {"config_field": "assistApiKeyMinimaxIntl", "restricted": True},
         "elevenlabs": {"config_field": "assistApiKeyElevenlabs", "restricted": True},
         "mimo": {"config_field": "assistApiKeyMimo", "restricted": False},
-        "doubao_tts": {"config_field": "ttsModelApiKey", "restricted": False},
+        "doubao_tts": {"config_field": "assistApiKeyDoubaoTts", "restricted": False},
     },
 }
 
@@ -185,7 +185,7 @@ def test_doubao_tts_keybook_key_counts_as_clone_api_key(mock_page: Page, running
             ttsProvider: '',
             ttsModelProvider: '',
             ttsModelApiKey: '',
-            assistApiKeyDoubaoTts: 'ark-speech-key',
+            assistApiKeyDoubaoTts: 'doubao-speech-key',
             assistApiKeyDoubao: ''
         }, 'doubao_tts')"""
     )

@@ -1562,7 +1562,7 @@
         "mimoApiRequired": "この機能には MiMo モデルが必要です。API キー設定ページで MiMo API キーを保存してください",
         "mimoDirectLinkUnsupported": "MiMo は直リンククローンに未対応です。ローカルファイルのアップロードをご利用ください",
         "directLinkUnsupported": "選択中のプロバイダーは直リンククローンに未対応です。ローカルファイルをアップロードしてください",
-        "doubaoTtsApiRequired": "この機能にはDoubao音声APIキーが必要です。TTSモデル設定に入力してください",
+        "doubaoTtsApiRequired": "この機能にはDoubao音声APIキーが必要です。API Key設定に保存してください",
         "vllmOmniNotice": "ローカル vLLM-Omni サービス — APIキー不要；ローカルサービスURLが設定されていることを確認してください",
         "vllmRefTextLabel": "参考音声の書き起こし（vLLM-Omni クローンでは必須、音声内容と厳密に一致させること）",
         "vllmRefTextHint": "参考音声で話されている内容をそのまま入力してください。テキストと音声が合わないとクローン品質が低下します",

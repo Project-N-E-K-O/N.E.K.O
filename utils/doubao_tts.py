@@ -62,6 +62,14 @@ def doubao_api_headers(api_key: str, resource_id: str) -> dict[str, str]:
     }
 
 
+def doubao_voice_clone_headers(api_key: str) -> dict[str, str]:
+    return {
+        "Content-Type": "application/json",
+        "X-Api-Key": api_key,
+        "X-Api-Request-Id": str(uuid.uuid4()),
+    }
+
+
 def build_doubao_tts_payload(
     text: str,
     speaker: str,
@@ -175,6 +183,8 @@ class DoubaoVoiceCloneClient:
     ):
         self.api_key = api_key
         self.base_url = doubao_normalize_base_url(base_url)
+        # Kept for call-site compatibility; the voice-clone endpoint does not
+        # accept X-Api-Resource-Id. That header belongs to TTS synthesis.
         self.resource_id = resource_id
 
     async def clone_voice(
@@ -195,7 +205,7 @@ class DoubaoVoiceCloneClient:
             },
             "display_name": display_name or speaker_id,
         }
-        headers = doubao_api_headers(self.api_key, self.resource_id)
+        headers = doubao_voice_clone_headers(self.api_key)
         try:
             async with httpx.AsyncClient(timeout=60) as client:
                 resp = await client.post(

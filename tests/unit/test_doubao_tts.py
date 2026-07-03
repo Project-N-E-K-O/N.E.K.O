@@ -269,7 +269,7 @@ async def test_doubao_voice_clone_client_posts_openspeech_payload(monkeypatch):
     sent = requests[0]
     assert sent["url"] == "https://openspeech.bytedance.com/api/v3/tts/voice_clone"
     assert sent["headers"]["x-api-key"] == "doubao-key"
-    assert sent["headers"]["x-api-resource-id"] == "seed-icl-2.0"
+    assert "x-api-resource-id" not in sent["headers"]
     assert sent["body"]["speaker_id"] == "S_console1234"
     assert sent["body"]["audio"]["format"] == "wav"
     assert base64.b64decode(sent["body"]["audio"]["data"]) == b"wav-bytes"
@@ -305,15 +305,21 @@ async def test_doubao_voice_clone_client_requires_returned_voice_id(monkeypatch)
 @pytest.mark.unit
 def test_doubao_tts_frontend_and_config_are_wired():
     config = json.loads(Path("config/api_providers.json").read_text(encoding="utf-8"))
-    assert config["assist_api_providers"]["doubao_tts"]["tts_default_model"] == "seed-icl-2.0"
+    doubao_profile = config["assist_api_providers"]["doubao_tts"]
+    assert doubao_profile["tts_default_model"] == "seed-icl-2.0"
+    assert doubao_profile["tts_config_visible"] is False
 
     settings_js = Path("static/js/api_key_settings.js").read_text(encoding="utf-8")
     voice_clone_js = Path("static/js/voice_clone.js").read_text(encoding="utf-8")
-    assert "selectedTtsProvider === 'doubao_tts'" in settings_js
-    assert "probe_kind='http_tts'" in Path("main_logic/tts_client/__init__.py").read_text(encoding="utf-8")
-    assert "doubao_tts" in settings_js
+    assert "isTtsProviderVisibleInModelConfig" in settings_js
+    assert "selectedTtsProvider === 'doubao_tts'" not in settings_js
+    registry_py = Path("main_logic/tts_client/__init__.py").read_text(encoding="utf-8")
+    assert "probe_kind='http_tts'" in registry_py
+    assert "tts_config_visible=False" in registry_py
     assert "doubao_tts: 'doubao_tts'" in voice_clone_js
+    assert "['doubao_tts', 'assistApiKeyDoubaoTts']" in voice_clone_js
     assert DOUBAO_VOICE_CLONE_RESOURCE_ID == "seed-icl-2.0"
+    assert "capabilities=frozenset({'clone'})" in registry_py
     assert "isDoubaoSpeakerId" in voice_clone_js
     assert "doubaoSpeakerIdRequired" in voice_clone_js
     router_py = Path("main_routers/characters_router.py").read_text(encoding="utf-8")

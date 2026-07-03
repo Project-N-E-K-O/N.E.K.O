@@ -1562,7 +1562,7 @@
         "mimoApiRequired": "Esta función requiere un modelo MiMo. Guarde su clave API de MiMo en la página de configuración de claves API.",
         "mimoDirectLinkUnsupported": "MiMo no admite la clonación por enlace directo; suba un archivo local en su lugar.",
         "directLinkUnsupported": "El proveedor seleccionado no admite la clonación por enlace directo; suba un archivo local.",
-        "doubaoTtsApiRequired": "Esta función requiere una API Key de Doubao Speech. Rellénela en la configuración del modelo TTS.",
+        "doubaoTtsApiRequired": "Esta función requiere una API Key de Doubao Speech. Guárdela en la configuración de API Key.",
         "vllmOmniNotice": "Servicio local vLLM-Omni — no se necesita API Key; asegúrese de configurar la URL del servicio local",
         "vllmRefTextLabel": "Transcripción del audio de referencia (obligatorio para clonar con vLLM-Omni; debe coincidir exactamente con el audio)",
         "vllmRefTextHint": "Escriba exactamente lo que se dice en el audio de referencia; un texto incorrecto degradará la calidad del clon",

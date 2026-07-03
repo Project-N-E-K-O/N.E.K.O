@@ -226,6 +226,7 @@
       "agent_model": "",
       "tts_default_model": "seed-icl-2.0",
       "tts_default_voice": "",
+      "tts_config_visible": false,
       "probe_kind": "http_tts",
       "probe_sub_type": "doubao_tts"
     },

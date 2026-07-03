@@ -505,7 +505,7 @@ _tts_providers.register(_tts_providers.TTSProvider(
     key='doubao_tts',
     kind='hosted',
     priority=65,
-    capabilities=frozenset({'preset', 'clone'}),
+    capabilities=frozenset({'clone'}),
     is_selected=_doubao_is_selected,
     resolve=_doubao_resolve,
     default_url='https://openspeech.bytedance.com',
@@ -515,4 +515,5 @@ _tts_providers.register(_tts_providers.TTSProvider(
     probe_kind='http_tts',
     probe_sub_type='doubao_tts',
     tts_dropdown_only=True,
+    tts_config_visible=False,
 ))

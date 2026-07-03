@@ -1051,6 +1051,21 @@ function isProviderFlagEnabled(value) {
     return value === true || value === 1 || value === 'true' || value === '1';
 }
 
+function isProviderFlagDisabled(value) {
+    return value === false || value === 0 || value === 'false' || value === '0';
+}
+
+function isTtsProviderVisibleInModelConfig(providerKey, meta = null) {
+    const profile = getProviderInfo(providerKey);
+    if (isProviderFlagDisabled(profile.tts_config_visible) || isProviderFlagDisabled(profile.ttsConfigVisible)) {
+        return false;
+    }
+    if (meta && (isProviderFlagDisabled(meta.tts_config_visible) || isProviderFlagDisabled(meta.ttsConfigVisible))) {
+        return false;
+    }
+    return true;
+}
+
 function isFixedModelProvider(providerKey) {
     const profile = getProviderInfo(providerKey);
     return isProviderFlagEnabled(profile.fixed_model) || isProviderFlagEnabled(profile.fixedModel);
@@ -1172,6 +1187,7 @@ function populateModelProviderDropdowns() {
             // 成员由后端 tts_provider_registry 驱动；注册表元数据缺失时 getTtsProviderMeta
             // 用结构信号兜底，前端始终不硬编码 provider key。
             const _spFilter = getTtsProviderMeta(pk);
+            if (mt === 'tts' && !isTtsProviderVisibleInModelConfig(pk, _spFilter)) return;
             if (_spFilter && _spFilter.tts_dropdown_only && mt !== 'tts') return;
             const pInfo = _assistApiProviders[pk];
             const opt = document.createElement('option');
@@ -1194,6 +1210,7 @@ function populateModelProviderDropdowns() {
                 if (_assistApiProviders[pk]) return; // 已在上面的循环里加过
                 const meta = _ttsProviders[pk];
                 if (!meta) return;
+                if (!isTtsProviderVisibleInModelConfig(pk, meta)) return;
                 const opt = document.createElement('option');
                 opt.value = pk;
                 const translationKey = `api.assistProviderNames.${pk}`;
@@ -2583,7 +2600,7 @@ async function save_button_down(e) {
     };
     if (gptsovitsEnabled) {
         payload.ttsProvider = 'gptsovits';
-    } else if (selectedTtsProvider === 'mimo' || selectedTtsProvider === 'doubao_tts') {
+    } else if (selectedTtsProvider === 'mimo') {
         payload.ttsProvider = selectedTtsProvider;
     } else if (_loadedGptSovitsState !== 'none') {
         payload.ttsProvider = '';

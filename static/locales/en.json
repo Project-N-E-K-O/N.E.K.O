@@ -1562,7 +1562,7 @@
         "mimoApiRequired": "This feature requires a MiMo model. Please save your MiMo API Key on the API key settings page.",
         "mimoDirectLinkUnsupported": "MiMo does not support direct-link cloning; please upload a local file instead.",
         "directLinkUnsupported": "The selected provider does not support direct-link cloning; please upload a local file instead.",
-        "doubaoTtsApiRequired": "This feature requires a Doubao Speech API Key. Please fill it in the TTS model settings.",
+        "doubaoTtsApiRequired": "This feature requires a Doubao Speech API Key. Please save it in API Key settings.",
         "vllmOmniNotice": "Local vLLM-Omni service — no API Key needed; ensure the local service URL is configured",
         "vllmRefTextLabel": "Reference audio transcript (required for vLLM-Omni clone; must match the audio exactly)",
         "vllmRefTextHint": "Type exactly what is spoken in the reference audio; mismatched text degrades clone quality",

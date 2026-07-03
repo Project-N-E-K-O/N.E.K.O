@@ -5702,7 +5702,7 @@ async def voice_clone(
                 'code': 'DOUBAO_TTS_API_KEY_MISSING',
                 'message': '未配置豆包语音 API Key，请先在设置中填写'
             }, status_code=400)
-        base_url = (core_config.get('ttsModelUrl') or DOUBAO_TTS_DEFAULT_BASE_URL).strip()
+        base_url = DOUBAO_TTS_DEFAULT_BASE_URL
         storage_key = f'{DOUBAO_VOICE_STORAGE_KEY}{api_key[-8:]}'
         provider_label = '豆包语音'
 
@@ -5880,11 +5880,7 @@ async def voice_clone(
                     'code': 'DOUBAO_SPEAKER_ID_REQUIRED',
                     'message': str(exc),
                 }, status_code=400)
-            resource_id = (
-                core_config.get('doubaoVoiceCloneResourceId')
-                or core_config.get('ttsVoiceCloneResourceId')
-                or DOUBAO_VOICE_CLONE_RESOURCE_ID
-            ).strip()
+            resource_id = DOUBAO_TTS_DEFAULT_RESOURCE_ID
             client = DoubaoVoiceCloneClient(
                 api_key=api_key,
                 base_url=base_url,
