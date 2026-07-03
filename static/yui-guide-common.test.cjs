@@ -1407,7 +1407,7 @@ test('director routes resistance interrupts through ResistanceController boundar
     assert.match(resistanceControllerBlock, /director\.playLightResistance\(x,\s*y,\s*\{/);
     assert.match(resistanceControllerBlock, /suppressCursorReveal:\s*true/);
     assert.match(resistanceControllerBlock, /forceSystemCursorReveal:\s*true/);
-    assert.match(resistanceControllerBlock, /normalizedOptions\.forceSystemCursorReveal[\s\S]*director\.revealSystemCursorTemporarily\(2000,\s*'interrupt_resist_light'\)/);
+    assert.match(resistanceControllerBlock, /\(normalizedOptions\.forceSystemCursorReveal \|\| normalizedOptions\.suppressCursorReveal\)[\s\S]*director\.revealSystemCursorTemporarily\(2000,\s*'interrupt_resist_light'\)/);
     assert.match(resistanceControllerBlock, /this\.lightResistanceActive = true;/);
     assert.match(resistanceControllerBlock, /director\.pauseCurrentSceneForResistance\(\);/);
     assert.match(resistanceControllerBlock, /director\.interruptNarrationForResistance\(\);/);

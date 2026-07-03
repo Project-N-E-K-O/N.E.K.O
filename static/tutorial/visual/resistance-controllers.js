@@ -514,7 +514,7 @@
                 director.suppressResistanceCursorReveal(normalizedOptions);
             }
             if (
-                normalizedOptions.forceSystemCursorReveal
+                (normalizedOptions.forceSystemCursorReveal || normalizedOptions.suppressCursorReveal)
                 && typeof director.revealSystemCursorTemporarily === 'function'
             ) {
                 director.revealSystemCursorTemporarily(2000, 'interrupt_resist_light');

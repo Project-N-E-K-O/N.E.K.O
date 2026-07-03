@@ -8019,6 +8019,85 @@ def test_plugin_dashboard_light_resistance_keeps_cursor_reaction(
 
 
 @pytest.mark.frontend
+def test_plugin_dashboard_light_resistance_temporarily_reveals_system_cursor(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const previousCommon = window.YuiGuideCommon;
+            const temporaryReveals = [];
+            window.YuiGuideCommon = {
+                syncPcSystemCursorHidden: (hidden, reason, options) => {
+                    if (options && options.temporaryReveal) {
+                        temporaryReveals.push({ hidden, reason, durationMs: options.durationMs });
+                    }
+                },
+            };
+            try {
+                const director = window.createYuiGuideDirector({ page: 'home' });
+                const calls = [];
+                director.dispatchDesktopPluginDashboardInterruptAck = (payload) => {
+                    calls.push({ type: 'ack', payload });
+                };
+                director.getStep = (stepId) => {
+                    if (stepId === 'interrupt_resist_light') {
+                        return {
+                            performance: {
+                                bubbleText: 'Stop pulling me',
+                                voiceKey: 'interrupt_resist_light_1',
+                            },
+                        };
+                    }
+                    return null;
+                };
+                director.resolvePerformanceBubbleText = (performance) => performance && performance.bubbleText || '';
+                director.resolvePerformanceResistanceVoices = () => [];
+                director.captureCurrentGuidePresentationSnapshot = () => null;
+                director.pauseCurrentSceneForResistance = () => {};
+                director.resumeCurrentSceneAfterResistance = () => {};
+                director.interruptNarrationForResistance = () => {};
+                director.appendGuideChatMessage = () => {};
+                director.applyGuideEmotion = () => {};
+                director.voiceQueue.speak = async () => null;
+                director.runInterruptResistPerformance = async () => null;
+                director.cursor.resistTo = async () => null;
+
+                await director.handlePluginDashboardInterruptRequest(null, {
+                    windowRef: null,
+                    targetOrigin: window.location.origin,
+                }, {
+                    requestId: 'interrupt-request-1',
+                    sessionId: 'session-1',
+                    detail: {
+                        kind: 'interrupt_resist_light',
+                        x: 160,
+                        y: 100,
+                    },
+                });
+                return { calls, temporaryReveals };
+            } finally {
+                window.YuiGuideCommon = previousCommon;
+            }
+        }
+        """
+    )
+
+    assert result["temporaryReveals"] == [{
+        "hidden": False,
+        "reason": "interrupt_resist_light",
+        "durationMs": 2000,
+    }]
+    assert any(call["type"] == "ack" for call in result["calls"])
+
+
+@pytest.mark.frontend
 def test_avatar_floating_cursor_reaction_waits_for_meaningful_real_mouse_move(
     mock_page: Page,
 ):
