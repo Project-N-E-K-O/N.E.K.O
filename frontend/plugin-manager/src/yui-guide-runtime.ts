@@ -13,8 +13,10 @@ const TERMINATE_EVENT = 'neko:yui-guide:plugin-dashboard:terminate'
 const NARRATION_FINISHED_EVENT = 'neko:yui-guide:plugin-dashboard:narration-finished'
 const INTERRUPT_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-request'
 const INTERRUPT_ACK_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-ack'
+const SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT = 'neko:yui-guide:plugin-dashboard:system-cursor-temporary-reveal'
 const DESKTOP_INTERRUPT_ACK_EVENT = 'neko:yui-guide:desktop-interrupt-ack'
 const DESKTOP_NARRATION_FINISHED_EVENT = 'neko:yui-guide:desktop-narration-finished'
+const DESKTOP_SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT = 'neko:yui-guide:desktop-system-cursor-temporary-reveal'
 const SKIP_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:skip-request'
 const HANDOFF_STORAGE_KEY = 'neko_yui_guide_handoff_token'
 const HANDOFF_TOKEN_VERSION = 1
@@ -884,6 +886,17 @@ function injectStyle() {
     body.yui-guide-plugin-dashboard-running.yui-taking-over [role="link"],
     body.yui-guide-plugin-dashboard-running.yui-taking-over [tabindex]:not([tabindex="-1"]) {
       cursor: none !important;
+    }
+
+    html.yui-guide-plugin-dashboard-running.yui-taking-over.yui-user-cursor-revealed,
+    html.yui-guide-plugin-dashboard-running.yui-taking-over.yui-user-cursor-revealed *,
+    html.yui-guide-plugin-dashboard-running.yui-taking-over.yui-resistance-cursor-reveal,
+    html.yui-guide-plugin-dashboard-running.yui-taking-over.yui-resistance-cursor-reveal *,
+    body.yui-guide-plugin-dashboard-running.yui-taking-over.yui-user-cursor-revealed,
+    body.yui-guide-plugin-dashboard-running.yui-taking-over.yui-user-cursor-revealed *,
+    body.yui-guide-plugin-dashboard-running.yui-taking-over.yui-resistance-cursor-reveal,
+    body.yui-guide-plugin-dashboard-running.yui-taking-over.yui-resistance-cursor-reveal * {
+      cursor: auto !important;
     }
 
     #${ROOT_ID} {
@@ -1758,6 +1771,23 @@ class PluginDashboardGuideRuntime {
     if (sessionId) {
       this.markHomeNarrationFinished(sessionId)
     }
+  }
+
+  handleSystemCursorTemporaryRevealData(data: unknown) {
+    const detail = data && typeof data === 'object' ? data as { sessionId?: unknown, durationMs?: unknown } : null
+    if (!detail) {
+      return
+    }
+    const sessionId = typeof detail?.sessionId === 'string' ? detail.sessionId : ''
+    if (!sessionId || !this.isCurrentRun(sessionId)) {
+      return
+    }
+    const durationMs = Number.isFinite(detail?.durationMs) ? Number(detail.durationMs) : undefined
+    this.revealSystemCursorTemporarily(durationMs)
+  }
+
+  handleDesktopSystemCursorTemporaryRevealEvent(event: Event) {
+    this.handleSystemCursorTemporaryRevealData((event as CustomEvent).detail)
   }
 
   async requestHomeInterruptPlayback(
@@ -2961,6 +2991,20 @@ class PluginDashboardGuideRuntime {
     document.body.classList.remove('yui-resistance-cursor-reveal')
   }
 
+  revealSystemCursorTemporarily(durationMs = 2000) {
+    const normalizedDurationMs = Math.min(10000, Math.max(0, Math.floor(Number(durationMs) || 0)))
+    if (this.resistanceCursorTimer !== null) {
+      window.clearTimeout(this.resistanceCursorTimer)
+      this.resistanceCursorTimer = null
+    }
+    document.documentElement.classList.add('yui-user-cursor-revealed', 'yui-resistance-cursor-reveal')
+    document.body.classList.add('yui-user-cursor-revealed', 'yui-resistance-cursor-reveal')
+    this.resistanceCursorTimer = window.setTimeout(() => {
+      this.resistanceCursorTimer = null
+      this.suppressResistanceCursorReveal()
+    }, normalizedDurationMs)
+  }
+
   async playLightResistance(x: number, y: number) {
     if (this.scenePausedForResistance || this.angryExitTriggered) {
       return
@@ -3878,6 +3922,9 @@ export function initPluginDashboardYuiGuideRuntime() {
   const handleDesktopNarrationFinishedEvent = (event: Event) => {
     runtime.handleDesktopNarrationFinishedEvent(event)
   }
+  const handleDesktopSystemCursorTemporaryRevealEvent = (event: Event) => {
+    runtime.handleDesktopSystemCursorTemporaryRevealEvent(event)
+  }
 
   const handleRuntimeMessage = (event: MessageEvent) => {
     const data = event.data
@@ -3905,6 +3952,11 @@ export function initPluginDashboardYuiGuideRuntime() {
       if (sessionId) {
         runtime.markHomeNarrationFinished(sessionId)
       }
+      return
+    }
+
+    if (data.type === SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT && isAllowedOpenerEvent(event)) {
+      runtime.handleSystemCursorTemporaryRevealData(data)
       return
     }
 
@@ -3944,16 +3996,18 @@ export function initPluginDashboardYuiGuideRuntime() {
   const cleanupRuntimeListeners = () => {
     window.removeEventListener(DESKTOP_INTERRUPT_ACK_EVENT, handleDesktopInterruptAckEvent, true)
     window.removeEventListener(DESKTOP_NARRATION_FINISHED_EVENT, handleDesktopNarrationFinishedEvent, true)
+    window.removeEventListener(DESKTOP_SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT, handleDesktopSystemCursorTemporaryRevealEvent, true)
     window.removeEventListener('message', handleRuntimeMessage)
+    window.removeEventListener('pagehide', handleRuntimePageHide, true)
     pluginDashboardRuntimeInitialized = false
   }
-  const originalRuntimeCleanup = runtime.cleanup.bind(runtime)
-  runtime.cleanup = () => {
+  const handleRuntimePageHide = () => {
     cleanupRuntimeListeners()
-    originalRuntimeCleanup()
   }
 
   window.addEventListener(DESKTOP_INTERRUPT_ACK_EVENT, handleDesktopInterruptAckEvent, true)
   window.addEventListener(DESKTOP_NARRATION_FINISHED_EVENT, handleDesktopNarrationFinishedEvent, true)
+  window.addEventListener(DESKTOP_SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT, handleDesktopSystemCursorTemporaryRevealEvent, true)
   window.addEventListener('message', handleRuntimeMessage)
+  window.addEventListener('pagehide', handleRuntimePageHide, true)
 }

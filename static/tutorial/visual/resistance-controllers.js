@@ -510,13 +510,9 @@
             const presentationSnapshot = director.captureCurrentGuidePresentationSnapshot();
 
             if (!normalizedOptions.suppressCursorReveal) {
-                this.syncSystemCursorHidden(true, 'interrupt_resist_light');
                 director.suppressResistanceCursorReveal(normalizedOptions);
             }
-            if (
-                (normalizedOptions.forceSystemCursorReveal || normalizedOptions.suppressCursorReveal)
-                && typeof director.revealSystemCursorTemporarily === 'function'
-            ) {
+            if (typeof director.revealSystemCursorTemporarily === 'function') {
                 director.revealSystemCursorTemporarily(2000, 'interrupt_resist_light');
             }
 

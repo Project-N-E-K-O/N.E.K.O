@@ -1203,6 +1203,34 @@ body.yui-taking-over.yui-taking-over.yui-interrupt-count-cursor-revealed * {
   cursor: auto !important;
 }
 
+body.yui-taking-over.yui-user-cursor-revealed,
+body.yui-taking-over.yui-user-cursor-revealed *,
+body.yui-taking-over.yui-resistance-cursor-reveal,
+body.yui-taking-over.yui-resistance-cursor-reveal * {
+  cursor: auto !important;
+}
+
+body.yui-taking-over.yui-user-cursor-revealed #neko-tutorial-skip-btn,
+body.yui-taking-over.yui-user-cursor-revealed #neko-tutorial-skip-btn *,
+body.yui-taking-over.yui-user-cursor-revealed #live2d-container,
+body.yui-taking-over.yui-user-cursor-revealed #live2d-canvas,
+body.yui-taking-over.yui-user-cursor-revealed #vrm-container,
+body.yui-taking-over.yui-user-cursor-revealed #vrm-canvas,
+body.yui-taking-over.yui-user-cursor-revealed #mmd-container,
+body.yui-taking-over.yui-user-cursor-revealed #mmd-canvas,
+body.yui-taking-over.yui-user-cursor-revealed #react-chat-window-drag-handle,
+body.yui-taking-over.yui-resistance-cursor-reveal #neko-tutorial-skip-btn,
+body.yui-taking-over.yui-resistance-cursor-reveal #neko-tutorial-skip-btn *,
+body.yui-taking-over.yui-resistance-cursor-reveal #live2d-container,
+body.yui-taking-over.yui-resistance-cursor-reveal #live2d-canvas,
+body.yui-taking-over.yui-resistance-cursor-reveal #vrm-container,
+body.yui-taking-over.yui-resistance-cursor-reveal #vrm-canvas,
+body.yui-taking-over.yui-resistance-cursor-reveal #mmd-container,
+body.yui-taking-over.yui-resistance-cursor-reveal #mmd-canvas,
+body.yui-taking-over.yui-resistance-cursor-reveal #react-chat-window-drag-handle {
+  cursor: auto !important;
+}
+
 @keyframes yui-guide-preview-float {
   0% {
     opacity: 0;
