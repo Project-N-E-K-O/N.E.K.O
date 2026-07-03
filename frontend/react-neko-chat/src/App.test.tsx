@@ -1223,6 +1223,56 @@ describe('App', () => {
     }
   });
 
+  it('refreshes compact interaction geometry when compact history closes, unmounts, and reopens', async () => {
+    const message = parseChatMessage({
+      id: 'assistant-history-geometry-refresh',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'text', text: 'History geometry should stay fresh.' }],
+      status: 'sent',
+    });
+    const geometryRefreshes: Event[] = [];
+    const handleGeometryRefresh = (event: Event) => geometryRefreshes.push(event);
+    window.addEventListener('neko:compact-interaction-geometry-refresh', handleGeometryRefresh);
+    vi.useFakeTimers();
+    let unmount: (() => void) | null = null;
+    try {
+      const rendered = render(
+        <App chatSurfaceMode="compact" compactChatState="input" messages={[message]} />,
+      );
+      const { container } = rendered;
+      unmount = rendered.unmount;
+      expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
+      geometryRefreshes.length = 0;
+
+      await act(async () => {
+        fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle')!);
+      });
+      expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-visibility', 'closing');
+      expect(geometryRefreshes.length).toBeGreaterThan(0);
+      const closeRefreshCount = geometryRefreshes.length;
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS);
+      });
+      expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
+      expect(geometryRefreshes.length).toBeGreaterThan(closeRefreshCount);
+      const unmountRefreshCount = geometryRefreshes.length;
+
+      await act(async () => {
+        fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle')!);
+      });
+      expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-visibility', 'open');
+      expect(geometryRefreshes.length).toBeGreaterThan(unmountRefreshCount);
+    } finally {
+      unmount?.();
+      vi.useRealTimers();
+      window.removeEventListener('neko:compact-interaction-geometry-refresh', handleGeometryRefresh);
+    }
+  });
+
   it('opens and closes compact history from a guide request', async () => {
     const { container, rerender } = render(
       <App chatSurfaceMode="compact" compactChatState="input" />,
@@ -2692,6 +2742,91 @@ describe('App', () => {
         });
       });
     } finally {
+      desktopWindow.__nekoDesktopCompactLayout = originalDesktopLayout;
+    }
+  });
+
+  it('syncs compact choice surface vars immediately from desktop layout events', async () => {
+    const desktopWindow = window as typeof window & { __nekoDesktopCompactLayout?: unknown };
+    const originalDesktopLayout = desktopWindow.__nekoDesktopCompactLayout;
+    let unmount: (() => void) | null = null;
+    let restoreShellRect: (() => void) | null = null;
+
+    try {
+      const rendered = render(
+        <App
+          chatSurfaceMode="compact"
+          galgameModeEnabled
+          galgameOptions={[
+            { label: 'A', text: 'Option A' },
+            { label: 'B', text: 'Option B' },
+          ]}
+        />,
+      );
+      const { container } = rendered;
+      unmount = rendered.unmount;
+
+      const shell = container.querySelector('.compact-chat-surface-shell');
+      const choiceLayer = document.body.querySelector<HTMLElement>('body > .compact-chat-choice-anchor');
+      expect(shell).not.toBeNull();
+      expect(choiceLayer).not.toBeNull();
+
+      const originalShellRect = shell!.getBoundingClientRect;
+      restoreShellRect = () => {
+        Object.defineProperty(shell!, 'getBoundingClientRect', {
+          configurable: true,
+          value: originalShellRect,
+        });
+      };
+      Object.defineProperty(shell!, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({
+          x: 0,
+          y: 0,
+          top: 72,
+          left: 18,
+          right: 448,
+          bottom: 154,
+          width: 430,
+          height: 82,
+          toJSON: () => ({}),
+        }),
+      });
+
+      const nextLayout = {
+        compactChoicePlacement: 'below',
+        surface: {
+          left: 120,
+          top: 260,
+          width: 388,
+          height: 64,
+        },
+        windowBounds: { x: 200, y: 100, width: 900, height: 700 },
+        workArea: { x: 0, y: 0, width: 1440, height: 900 },
+      };
+      desktopWindow.__nekoDesktopCompactLayout = nextLayout;
+
+      window.dispatchEvent(new CustomEvent('neko:desktop-compact-layout-change', {
+        detail: nextLayout,
+      }));
+
+      expect(choiceLayer).toHaveStyle({
+        '--compact-choice-surface-left': '120px',
+        '--compact-choice-surface-top': '260px',
+        '--compact-choice-surface-width': '388px',
+        '--compact-choice-surface-height': '64px',
+      });
+      await waitFor(() => {
+        expect(choiceLayer).toHaveStyle({
+          '--compact-choice-surface-left': '120px',
+          '--compact-choice-surface-top': '260px',
+          '--compact-choice-surface-width': '388px',
+          '--compact-choice-surface-height': '64px',
+        });
+      });
+    } finally {
+      restoreShellRect?.();
+      unmount?.();
       desktopWindow.__nekoDesktopCompactLayout = originalDesktopLayout;
     }
   });
@@ -8797,6 +8932,7 @@ describe('App', () => {
   });
 
   it('expands the desktop hammer overlay on avatar range hover before clicking', async () => {
+    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
     const onAvatarToolStateChange = vi.fn();
     const live2dContainer = document.createElement('div');
     live2dContainer.id = 'live2d-container';
@@ -8833,20 +8969,25 @@ describe('App', () => {
       });
 
       onAvatarToolStateChange.mockClear();
+      vi.useFakeTimers();
       fireEvent.pointerDown(window, { button: 0, clientX: 150, clientY: 150 });
       fireEvent.pointerMove(window, { clientX: 20, clientY: 20 });
 
-      await waitFor(() => {
-        expect(queryHammerCursorCompactImage()).toBeNull();
-        expect(document.body.querySelector('.hammer-cursor-overlay')).not.toHaveClass('is-compact');
-        expect(onAvatarToolStateChange).toHaveBeenCalledWith(expect.objectContaining({
-          active: true,
-          toolId: 'hammer',
-          imageKind: 'icon',
-          withinAvatarRange: false,
-        }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(220);
       });
+
+      expect(queryHammerCursorCompactImage()).toBeNull();
+      expect(document.body.querySelector('.hammer-cursor-overlay')).not.toHaveClass('is-compact');
+      expect(onAvatarToolStateChange).toHaveBeenCalledWith(expect.objectContaining({
+        active: true,
+        toolId: 'hammer',
+        imageKind: 'icon',
+        withinAvatarRange: false,
+      }));
     } finally {
+      vi.useRealTimers();
+      window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'true');
       restoreLive2dManager();
       live2dContainer.remove();
     }
