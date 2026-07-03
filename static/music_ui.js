@@ -1292,11 +1292,7 @@
                         accumulatedPlaySeconds += (cur - lastPlayPosition);
                     }
                     const playedMs = accumulatedPlaySeconds * 1000;
-                    if (playedMs > 0 && playedMs < SKIP_CONFIG.skipThresholdMs) {
-                        recordMusicSkip();
-                    } else if (playedMs >= SKIP_CONFIG.skipThresholdMs) {
-                        resetSkipCounter();
-                    }
+                    recordMusicCloseFeedback(playedMs);
                     accumulatedPlaySeconds = 0;
                     lastPlayPosition = 0;
                     destroyMusicPlayer(true, true, true);
@@ -1510,7 +1506,8 @@
 
     // --- 音乐秒关检测 & 自动冷却 ---
     const SKIP_CONFIG = {
-        skipThresholdMs: 10000,              // < 10 秒关闭 = 视为"秒关"
+        skipThresholdMs: 15000,              // < 15 秒关闭 = 视为"秒关"
+        hardSkipThresholdMs: 3000,           // ≤ 3 秒关闭（含未起播 0 秒）= "秒叉"，单次即触发冷却
         consecutiveSkipsToTrigger: 2,        // 连续秒关 2 次触发冷却
         cooldownDurationMs: 20 * 60 * 1000   // 冷却 20 分钟
     };
@@ -1578,6 +1575,21 @@
             console.log('[Music UI] 用户正常收听，重置秒关计数');
         }
         consecutiveSkipCount = 0;
+    }
+
+    // 用户关闭播放器时按本次实际播放时长结算反馈，三档：
+    //   ≤ hardSkipThresholdMs（含未起播 0 秒，即一弹出来就叉掉）→ 最强拒绝信号，单次即进冷却
+    //   < skipThresholdMs                                      → 秒关，累计 consecutiveSkipsToTrigger 次进冷却
+    //   >= skipThresholdMs                                     → 正常收听，重置秒关计数
+    function recordMusicCloseFeedback(playedMs) {
+        if (playedMs <= SKIP_CONFIG.hardSkipThresholdMs) {
+            console.log('[Music UI] 秒叉（≤' + (SKIP_CONFIG.hardSkipThresholdMs / 1000) + 's，含未起播），立即冷却');
+            enterMusicCooldown();
+        } else if (playedMs < SKIP_CONFIG.skipThresholdMs) {
+            recordMusicSkip();
+        } else {
+            resetSkipCounter();
+        }
     }
 
     // 完整播放是用户对"音乐分享"通道最强的正向反馈：让后端把
@@ -2253,11 +2265,7 @@
                         accumulatedPlaySeconds += (cur - lastPlayPosition);
                     }
                     const playedMs = accumulatedPlaySeconds * 1000;
-                    if (playedMs > 0 && playedMs < SKIP_CONFIG.skipThresholdMs) {
-                        recordMusicSkip();
-                    } else if (playedMs >= SKIP_CONFIG.skipThresholdMs) {
-                        resetSkipCounter();
-                    }
+                    recordMusicCloseFeedback(playedMs);
                     accumulatedPlaySeconds = 0;
                     lastPlayPosition = 0;
                     destroyMusicPlayer(true, true, true);
