@@ -30,13 +30,13 @@
     const byId = (id) => document.getElementById(id);
     const getEls = (...ids) => ids.map(id => byId(id)).filter(Boolean);
     const el = () => ({
-        master: getEls('live2d-agent-master', 'vrm-agent-master', 'mmd-agent-master'),
-        keyboard: getEls('live2d-agent-keyboard', 'vrm-agent-keyboard', 'mmd-agent-keyboard'),
-        browser: getEls('live2d-agent-browser', 'vrm-agent-browser', 'mmd-agent-browser'),
-        userPlugin: getEls('live2d-agent-user-plugin', 'vrm-agent-user-plugin', 'mmd-agent-user-plugin'),
-        openfang: getEls('live2d-agent-openfang', 'vrm-agent-openfang', 'mmd-agent-openfang'),
-        openclaw: getEls('live2d-agent-openclaw', 'vrm-agent-openclaw', 'mmd-agent-openclaw'),
-        status: getEls('live2d-agent-status', 'vrm-agent-status', 'mmd-agent-status'),
+        master: getEls('live2d-agent-master', 'vrm-agent-master', 'mmd-agent-master', 'pngtuber-agent-master'),
+        keyboard: getEls('live2d-agent-keyboard', 'vrm-agent-keyboard', 'mmd-agent-keyboard', 'pngtuber-agent-keyboard'),
+        browser: getEls('live2d-agent-browser', 'vrm-agent-browser', 'mmd-agent-browser', 'pngtuber-agent-browser'),
+        userPlugin: getEls('live2d-agent-user-plugin', 'vrm-agent-user-plugin', 'mmd-agent-user-plugin', 'pngtuber-agent-user-plugin'),
+        openfang: getEls('live2d-agent-openfang', 'vrm-agent-openfang', 'mmd-agent-openfang', 'pngtuber-agent-openfang'),
+        openclaw: getEls('live2d-agent-openclaw', 'vrm-agent-openclaw', 'mmd-agent-openclaw', 'pngtuber-agent-openclaw'),
+        status: getEls('live2d-agent-status', 'vrm-agent-status', 'mmd-agent-status', 'pngtuber-agent-status'),
     });
     const sync = (cbs) => {
         if (!cbs) return;
