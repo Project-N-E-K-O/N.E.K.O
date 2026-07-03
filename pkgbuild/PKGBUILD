@@ -10,7 +10,7 @@ license=('Apache-2.0')
 depends=()
 makedepends=()
 source=("$pkgname-$pkgver.tar.gz::https://github.com/Project-N-E-K-O/N.E.K.O/releases/download/v$pkgver/N.E.K.O_$pkgver_linux.tar.gz")
-sha256sums=('SKIP')
+sha256sums=('sha256:769b99970c13248129fd625c22e65b442fa6829ced2599347a8c7242a0fb6257')
 
 package() {
   cd "$srcdir"
