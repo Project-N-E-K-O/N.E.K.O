@@ -990,6 +990,43 @@
         showIdleCat1CompactMirror(detail);
     }
 
+    function getIdleCat1PlayYarnReleaseTargetRect(detail) {
+        if (!detail || typeof detail !== 'object') return null;
+        var target = normalizeCompactDesktopRect(detail.targetRect);
+        if (target || isElectronChatWindow()) return target;
+        var screenTarget = normalizeCompactDesktopRect(detail.targetScreenRect);
+        if (!screenTarget) return null;
+        var screenX = Number.isFinite(Number(window.screenX)) ? Number(window.screenX) : Number(window.screenLeft);
+        var screenY = Number.isFinite(Number(window.screenY)) ? Number(window.screenY) : Number(window.screenTop);
+        if (!Number.isFinite(screenX) || !Number.isFinite(screenY)) return null;
+        return normalizeCompactDesktopRect({
+            left: screenTarget.left - screenX,
+            top: screenTarget.top - screenY,
+            width: screenTarget.width,
+            height: screenTarget.height
+        });
+    }
+
+    function applyIdleCat1PlayYarnRelease(detail) {
+        if (!detail || !detail.releaseDrag) return;
+        if (dragState) {
+            stopDrag({ suppressClick: true });
+        }
+        if (isElectronChatWindow()) return;
+        var shell = getShell();
+        if (!shell || !shell.classList || !shell.classList.contains('is-minimized')) return;
+        var target = getIdleCat1PlayYarnReleaseTargetRect(detail);
+        if (!target) return;
+        var shellRect = shell.getBoundingClientRect();
+        var width = shellRect && shellRect.width > 0 ? shellRect.width : MINIMIZED_SIZE;
+        var height = shellRect && shellRect.height > 0 ? shellRect.height : MINIMIZED_SIZE;
+        applyPosition(
+            target.left + target.width / 2 - width / 2,
+            target.top + target.height / 2 - height / 2
+        );
+        syncCompactInteractionGeometry();
+    }
+
     function handleIdleCat1PlayYarnVisibility(event) {
         var detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
         var hidden = !!(detail && detail.hidden);
@@ -1003,10 +1040,17 @@
                 syncCompactInteractionGeometry();
             }
         }
+        if (!hidden) {
+            applyIdleCat1PlayYarnRelease(detail);
+        }
         var bridge = window.nekoChatWindow;
         if (bridge && typeof bridge.setCompactChatBallTemporarilyHidden === 'function') {
             try {
-                bridge.setCompactChatBallTemporarilyHidden(hidden);
+                bridge.setCompactChatBallTemporarilyHidden(hidden, {
+                    releaseDrag: !!(detail && detail.releaseDrag),
+                    targetScreenRect: detail && detail.targetScreenRect ? detail.targetScreenRect : null,
+                    releaseReason: detail && detail.releaseReason ? detail.releaseReason : ''
+                });
             } catch (_) {}
         }
     }
