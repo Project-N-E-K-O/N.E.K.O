@@ -41,7 +41,7 @@ EOF
 [Desktop Entry]
 Type=Application
 Name=Project N.E.K.O
-Comment="N.E.K.O., a digital life that yearns to understand, connect, and grow with us."
+Comment=N.E.K.O., a digital life that yearns to understand, connect, and grow with us.
 Exec=n.e.k.o
 Icon=neko-bin
 Categories=Utility; 
