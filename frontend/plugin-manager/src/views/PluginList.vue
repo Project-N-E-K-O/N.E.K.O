@@ -361,6 +361,7 @@ import type {
   GroupChoiceDescriptor,
   LayoutChoiceDescriptor,
 } from '@/composables/workbenchDescriptors'
+import { getMarketUrl } from '@/api/market'
 import { reloadAllPlugins, deletePlugin } from '@/api/plugins'
 import { uploadAndInstallPlugin, buildPluginCli, downloadPluginPackage } from '@/api/pluginCli'
 import { usePluginListContextActions, type ResolvedPluginListAction } from '@/composables/usePluginListContextActions'
@@ -662,11 +663,9 @@ function closeDangerDialog() {
 
 async function loadMarketEntry() {
   try {
-    const res = await fetch('/market/status')
-    if (!res.ok) return
-    const data = await res.json()
-    if (!data.market_url) return
-    marketUrl.value = data.market_url
+    const url = await getMarketUrl()
+    if (!url) return
+    marketUrl.value = url
     loadMarketAuthStatus().catch(() => {})
   } catch {
     // Market is optional; keep the local plugin list usable if it is absent.
@@ -1065,9 +1064,7 @@ watch(packagePanelVisible, (visible) => {
 
 onMounted(async () => {
   window.addEventListener(TUTORIAL_ACTION_EVENT, handleTutorialAction)
-  const marketEntryPromise = loadMarketEntry()
-  await handleRefresh()
-  await marketEntryPromise
+  await Promise.all([loadMarketEntry(), handleRefresh()])
 })
 
 onUnmounted(() => {
