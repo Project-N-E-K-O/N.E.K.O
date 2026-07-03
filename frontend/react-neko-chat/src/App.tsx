@@ -3285,11 +3285,52 @@ function CompactChatApp({
     const gap = 16;
     let frameId: number | null = null;
 
-    const syncChoiceLayerSurfaceVars = (shellRect: DOMRect, layerNode: HTMLElement) => {
-      layerNode.style.setProperty('--compact-choice-surface-left', `${shellRect.left}px`);
-      layerNode.style.setProperty('--compact-choice-surface-top', `${shellRect.top}px`);
-      layerNode.style.setProperty('--compact-choice-surface-width', `${Math.max(1, shellRect.width)}px`);
-      layerNode.style.setProperty('--compact-choice-surface-height', `${Math.max(1, shellRect.height)}px`);
+    const syncChoiceLayerSurfaceVars = (
+      surfaceRect: { left: number; top: number; width: number; height: number },
+      layerNode: HTMLElement,
+    ) => {
+      layerNode.style.setProperty('--compact-choice-surface-left', `${surfaceRect.left}px`);
+      layerNode.style.setProperty('--compact-choice-surface-top', `${surfaceRect.top}px`);
+      layerNode.style.setProperty('--compact-choice-surface-width', `${Math.max(1, surfaceRect.width)}px`);
+      layerNode.style.setProperty('--compact-choice-surface-height', `${Math.max(1, surfaceRect.height)}px`);
+    };
+
+    const getDesktopCompactLayout = (event?: Event) => {
+      const eventDetail = event instanceof CustomEvent ? event.detail : null;
+      if (eventDetail && typeof eventDetail === 'object') {
+        return eventDetail as DesktopCompactChoicePlacementLayout;
+      }
+      return (window as typeof window & {
+        __nekoDesktopCompactLayout?: DesktopCompactChoicePlacementLayout | null;
+      }).__nekoDesktopCompactLayout;
+    };
+
+    const getDesktopLayoutSurfaceRect = (layout?: DesktopCompactChoicePlacementLayout | null) => {
+      const surface = layout?.surface;
+      const left = Number(surface?.left);
+      const top = Number(surface?.top);
+      const width = Number(surface?.width);
+      const height = Number(surface?.height);
+      if (
+        !Number.isFinite(left)
+        || !Number.isFinite(top)
+        || !Number.isFinite(width)
+        || !Number.isFinite(height)
+        || width <= 0
+        || height <= 0
+      ) {
+        return null;
+      }
+      return { left, top, width, height };
+    };
+
+    const syncChoiceLayerSurfaceVarsFromDesktopLayout = (event?: Event) => {
+      const nextLayerNode = compactChoiceLayerRef.current;
+      if (!nextLayerNode) return false;
+      const surfaceRect = getDesktopLayoutSurfaceRect(getDesktopCompactLayout(event));
+      if (!surfaceRect) return false;
+      syncChoiceLayerSurfaceVars(surfaceRect, nextLayerNode);
+      return true;
     };
 
     const getDesktopPlacementSpace = (shellRect: DOMRect) => {
@@ -3384,12 +3425,17 @@ function CompactChatApp({
       });
     };
 
+    syncChoiceLayerSurfaceVarsFromDesktopLayout();
     schedulePlacementUpdate();
 
     const visualViewport = window.visualViewport;
+    const handleDesktopCompactLayoutChange = (event: Event) => {
+      syncChoiceLayerSurfaceVarsFromDesktopLayout(event);
+      schedulePlacementUpdate();
+    };
     window.addEventListener('resize', schedulePlacementUpdate);
     window.addEventListener('neko:compact-surface-layout-change', schedulePlacementUpdate);
-    window.addEventListener('neko:desktop-compact-layout-change', schedulePlacementUpdate);
+    window.addEventListener('neko:desktop-compact-layout-change', handleDesktopCompactLayoutChange);
     visualViewport?.addEventListener('resize', schedulePlacementUpdate);
     visualViewport?.addEventListener('scroll', schedulePlacementUpdate);
 
@@ -3408,7 +3454,7 @@ function CompactChatApp({
       }
       window.removeEventListener('resize', schedulePlacementUpdate);
       window.removeEventListener('neko:compact-surface-layout-change', schedulePlacementUpdate);
-      window.removeEventListener('neko:desktop-compact-layout-change', schedulePlacementUpdate);
+      window.removeEventListener('neko:desktop-compact-layout-change', handleDesktopCompactLayoutChange);
       visualViewport?.removeEventListener('resize', schedulePlacementUpdate);
       visualViewport?.removeEventListener('scroll', schedulePlacementUpdate);
       observer?.disconnect();

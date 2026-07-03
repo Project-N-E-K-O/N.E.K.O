@@ -2696,6 +2696,70 @@ describe('App', () => {
     }
   });
 
+  it('syncs compact choice surface vars immediately from desktop layout events', () => {
+    const desktopWindow = window as typeof window & { __nekoDesktopCompactLayout?: unknown };
+    const originalDesktopLayout = desktopWindow.__nekoDesktopCompactLayout;
+
+    try {
+      const { container } = render(
+        <App
+          chatSurfaceMode="compact"
+          galgameModeEnabled
+          galgameOptions={[
+            { label: 'A', text: 'Option A' },
+            { label: 'B', text: 'Option B' },
+          ]}
+        />,
+      );
+
+      const shell = container.querySelector('.compact-chat-surface-shell');
+      const choiceLayer = document.body.querySelector<HTMLElement>('body > .compact-chat-choice-anchor');
+      expect(shell).not.toBeNull();
+      expect(choiceLayer).not.toBeNull();
+
+      Object.defineProperty(shell!, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({
+          x: 0,
+          y: 0,
+          top: 72,
+          left: 18,
+          right: 448,
+          bottom: 154,
+          width: 430,
+          height: 82,
+          toJSON: () => ({}),
+        }),
+      });
+
+      const nextLayout = {
+        compactChoicePlacement: 'below',
+        surface: {
+          left: 120,
+          top: 260,
+          width: 388,
+          height: 64,
+        },
+        windowBounds: { x: 200, y: 100, width: 900, height: 700 },
+        workArea: { x: 0, y: 0, width: 1440, height: 900 },
+      };
+      desktopWindow.__nekoDesktopCompactLayout = nextLayout;
+
+      window.dispatchEvent(new CustomEvent('neko:desktop-compact-layout-change', {
+        detail: nextLayout,
+      }));
+
+      expect(choiceLayer).toHaveStyle({
+        '--compact-choice-surface-left': '120px',
+        '--compact-choice-surface-top': '260px',
+        '--compact-choice-surface-width': '388px',
+        '--compact-choice-surface-height': '64px',
+      });
+    } finally {
+      desktopWindow.__nekoDesktopCompactLayout = originalDesktopLayout;
+    }
+  });
+
   it('repositions compact galgame options when the compact surface moves after opening', async () => {
     const originalInnerHeight = window.innerHeight;
     Object.defineProperty(window, 'innerHeight', {
