@@ -582,3 +582,38 @@ def test_pngtuber_animation_loops_throttle_overlay_position_updates():
     assert "this.updateLockIconPosition();" not in breathing_loop_block
     assert "this.updateLockIconPosition();" not in bounce_loop_block
     assert "this.updateLockIconPosition();" not in hop_loop_block
+
+
+def test_pngtuber_floating_controls_auto_hide_like_live2d_without_touching_other_models():
+    source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
+    setup_block = source[
+        source.index("PNGTuberManager.prototype.setupFloatingButtons = function()"):
+        source.index("            window.dispatchEvent(new CustomEvent('live2d-floating-buttons-ready'));")
+    ]
+    lock_block = source[
+        source.index("        updateLockIconPosition()"):
+        source.index("        async resolveCurrentLanlanName()")
+    ]
+
+    assert "this._pngtuberFloatingControlsVisible = true;" in setup_block
+    assert "const hideFloatingControls = () => {" in setup_block
+    assert "const showFloatingControls = () => {" in setup_block
+    assert "const startHideTimer = (delay = 1000) => {" in setup_block
+    assert "if (window.isInTutorial === true) return;" in setup_block
+    assert "buttonsContainer.addEventListener('mouseenter', markControlsHover);" in setup_block
+    assert "buttonsContainer.addEventListener('mouseleave', unmarkControlsHover);" in setup_block
+    assert "lockIcon.addEventListener('mouseenter', markControlsHover);" in setup_block
+    assert "lockIcon.addEventListener('mouseleave', unmarkControlsHover);" in setup_block
+    assert "window.addEventListener('pointermove', handlePointerMove, { passive: true });" in setup_block
+    assert "window.addEventListener('focus', handleWindowFocus);" in setup_block
+    assert "window.addEventListener('blur', handleWindowBlur);" in setup_block
+    assert "document.addEventListener('mouseenter', handleDocumentMouseEnter, true);" in setup_block
+    assert "document.addEventListener('mouseleave', handleDocumentMouseLeave, true);" in setup_block
+    assert "this.image.addEventListener('pointerenter', handleImagePointerEnter);" in setup_block
+    assert "this.image.addEventListener('pointerleave', handleImagePointerLeave);" in setup_block
+    assert "this.image.addEventListener('mouseover', handleImagePointerEnter);" in setup_block
+    assert "this._lastPngtuberPointerX = null;" in setup_block
+    assert "this._pngtuberFloatingControlsVisible === false" in lock_block
+    assert "'live2d-lock-icon'" not in setup_block
+    assert "'vrm-lock-icon'" not in setup_block
+    assert "'mmd-lock-icon'" not in setup_block

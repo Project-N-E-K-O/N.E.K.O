@@ -157,6 +157,11 @@
             this.isLocked = false;
             this._lockIconElement = null;
             this._lockIconImages = null;
+            this._pngtuberFloatingControlsVisible = true;
+            this._pngtuberControlsHover = false;
+            this._pngtuberHideButtonsTimer = null;
+            this._lastPngtuberPointerX = null;
+            this._lastPngtuberPointerY = null;
         }
 
         ensureContainer() {
@@ -1056,7 +1061,10 @@
                 this.container.classList.remove('locked-hover-fade');
             }
             if (updateFloatingButtons && this._floatingButtonsContainer) {
-                this._floatingButtonsContainer.style.display = this.isLocked || isYuiGuideFloatingToolbarSuppressed() ? 'none' : 'flex';
+                const shouldHideButtons = this.isLocked
+                    || isYuiGuideFloatingToolbarSuppressed()
+                    || this._pngtuberFloatingControlsVisible === false;
+                this._floatingButtonsContainer.style.display = shouldHideButtons ? 'none' : 'flex';
             }
             if (typeof this.updateLockIconPosition === 'function') {
                 this.updateLockIconPosition();
@@ -1321,6 +1329,12 @@
             const rect = image ? image.getBoundingClientRect() : null;
             if (!rect || rect.width <= 0 || rect.height <= 0) {
                 if (!window.isInTutorial) lockIcon.style.display = 'none';
+                return;
+            }
+            if (this._pngtuberFloatingControlsVisible === false) {
+                lockIcon.style.display = 'none';
+                lockIcon.style.visibility = 'hidden';
+                lockIcon.style.opacity = '0';
                 return;
             }
             const lockGap = 28;
@@ -1968,6 +1982,8 @@
             const prefix = this._avatarPrefix || 'pngtuber';
             this._floatingButtons = this._floatingButtons || {};
             this._buttonConfigs = this.getDefaultButtonConfigs();
+            this._pngtuberFloatingControlsVisible = true;
+            this._pngtuberControlsHover = false;
 
             this.updateFloatingButtonsPosition = () => {
                 if (isYuiGuideFloatingToolbarSuppressed()) {
@@ -1982,6 +1998,11 @@
                     return;
                 }
                 if (this.isLocked) {
+                    buttonsContainer.style.display = 'none';
+                    this.updateLockIconPosition();
+                    return;
+                }
+                if (this._pngtuberFloatingControlsVisible === false) {
                     buttonsContainer.style.display = 'none';
                     this.updateLockIconPosition();
                     return;
@@ -2026,6 +2047,122 @@
                 buttonsContainer.style.opacity = '1';
             };
             const applyResponsiveFloatingLayout = this.updateFloatingButtonsPosition;
+            const pointInRect = (x, y, rect, expand = 0) => {
+                if (!rect || !Number.isFinite(x) || !Number.isFinite(y)) return false;
+                return x >= rect.left - expand && x <= rect.right + expand
+                    && y >= rect.top - expand && y <= rect.bottom + expand;
+            };
+            const getImageRect = () => {
+                const image = this.image || (this.ensureContainer() && this.image);
+                if (!image) return null;
+                const rect = image.getBoundingClientRect();
+                if (!rect || rect.width <= 0 || rect.height <= 0) return null;
+                return rect;
+            };
+            const hasOpenPngtuberOverlay = () => {
+                const popupUi = window.AvatarPopupUI || null;
+                if (popupUi && typeof popupUi.hasVisibleOverlay === 'function' && popupUi.hasVisibleOverlay('pngtuber')) {
+                    return true;
+                }
+                return Array.from(document.querySelectorAll('[id^="pngtuber-popup-"], [data-neko-sidepanel]')).some((el) => {
+                    const style = window.getComputedStyle ? window.getComputedStyle(el) : el.style;
+                    return style && style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || 1) > 0;
+                });
+            };
+            const shouldKeepFloatingControlsVisible = () => {
+                if (this._pngtuberControlsHover || hasOpenPngtuberOverlay()) return true;
+                const x = this._lastPngtuberPointerX;
+                const y = this._lastPngtuberPointerY;
+                if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
+                const imageRect = getImageRect();
+                if (pointInRect(x, y, imageRect, 24)) return true;
+                const lockIcon = this._lockIconElement || document.getElementById('pngtuber-lock-icon');
+                if (lockIcon && lockIcon.style.display !== 'none' && pointInRect(x, y, lockIcon.getBoundingClientRect(), 8)) return true;
+                if (buttonsContainer && buttonsContainer.style.display !== 'none' && pointInRect(x, y, buttonsContainer.getBoundingClientRect(), 8)) return true;
+                return false;
+            };
+            const clearHideTimer = () => {
+                if (this._pngtuberHideButtonsTimer) {
+                    clearTimeout(this._pngtuberHideButtonsTimer);
+                    this._pngtuberHideButtonsTimer = null;
+                }
+            };
+            const hideFloatingControls = () => {
+                this._pngtuberFloatingControlsVisible = false;
+                buttonsContainer.style.display = 'none';
+                const lockIcon = this._lockIconElement || document.getElementById('pngtuber-lock-icon');
+                if (lockIcon) {
+                    lockIcon.style.display = 'none';
+                    lockIcon.style.visibility = 'hidden';
+                    lockIcon.style.opacity = '0';
+                }
+            };
+            const showFloatingControls = () => {
+                this._pngtuberFloatingControlsVisible = true;
+                clearHideTimer();
+                applyResponsiveFloatingLayout();
+                this.updateLockIconPosition();
+            };
+            const startHideTimer = (delay = 1000) => {
+                if (window.isInTutorial === true) return;
+                if (this._pngtuberHideButtonsTimer) return;
+                this._pngtuberHideButtonsTimer = setTimeout(() => {
+                    this._pngtuberHideButtonsTimer = null;
+                    if (window.isInTutorial === true || shouldKeepFloatingControlsVisible()) {
+                        startHideTimer(delay);
+                        return;
+                    }
+                    hideFloatingControls();
+                }, delay);
+            };
+            const markControlsHover = () => {
+                this._pngtuberControlsHover = true;
+                showFloatingControls();
+            };
+            const unmarkControlsHover = () => {
+                this._pngtuberControlsHover = false;
+                startHideTimer();
+            };
+            const bindLockHoverHandlers = () => {
+                const lockIcon = this._lockIconElement || document.getElementById('pngtuber-lock-icon');
+                if (!lockIcon || lockIcon._pngtuberFloatingAutoHideBound) return;
+                lockIcon._pngtuberFloatingAutoHideBound = true;
+                lockIcon.addEventListener('mouseenter', markControlsHover);
+                lockIcon.addEventListener('mouseleave', unmarkControlsHover);
+            };
+            const handlePointerMove = (event) => {
+                this._lastPngtuberPointerX = event.clientX;
+                this._lastPngtuberPointerY = event.clientY;
+                if (shouldKeepFloatingControlsVisible()) {
+                    showFloatingControls();
+                } else {
+                    startHideTimer();
+                }
+            };
+            const handleImagePointerEnter = () => showFloatingControls();
+            const handleImagePointerLeave = () => startHideTimer();
+            const clearPointerAndHideSoon = () => {
+                this._lastPngtuberPointerX = null;
+                this._lastPngtuberPointerY = null;
+                this._pngtuberControlsHover = false;
+                startHideTimer(250);
+            };
+            const handleWindowFocus = () => {
+                if (shouldKeepFloatingControlsVisible()) {
+                    showFloatingControls();
+                }
+            };
+            const handleWindowBlur = () => clearPointerAndHideSoon();
+            const handleDocumentMouseEnter = (event) => {
+                if (event && Number.isFinite(event.clientX) && Number.isFinite(event.clientY)) {
+                    handlePointerMove(event);
+                    return;
+                }
+                if (shouldKeepFloatingControlsVisible()) {
+                    showFloatingControls();
+                }
+            };
+            const handleDocumentMouseLeave = () => clearPointerAndHideSoon();
 
             const buttonConfigs = this._buttonConfigs;
             buttonConfigs.forEach((config) => {
@@ -2148,8 +2285,28 @@
             window.addEventListener('neko:yui-guide-floating-toolbar-suppression-change', scheduleLayout);
             if (this.image) {
                 this.image.addEventListener('load', scheduleLayout);
+                this.image.addEventListener('pointerenter', handleImagePointerEnter);
+                this.image.addEventListener('pointerleave', handleImagePointerLeave);
+                this.image.addEventListener('mouseover', handleImagePointerEnter);
                 this._uiWindowHandlers.push({ event: 'load', handler: scheduleLayout, target: this.image });
+                this._uiWindowHandlers.push({ event: 'pointerenter', handler: handleImagePointerEnter, target: this.image });
+                this._uiWindowHandlers.push({ event: 'pointerleave', handler: handleImagePointerLeave, target: this.image });
+                this._uiWindowHandlers.push({ event: 'mouseover', handler: handleImagePointerEnter, target: this.image });
             }
+            buttonsContainer.addEventListener('mouseenter', markControlsHover);
+            buttonsContainer.addEventListener('mouseleave', unmarkControlsHover);
+            window.addEventListener('pointermove', handlePointerMove, { passive: true });
+            window.addEventListener('focus', handleWindowFocus);
+            window.addEventListener('blur', handleWindowBlur);
+            document.addEventListener('mouseenter', handleDocumentMouseEnter, true);
+            document.addEventListener('mouseleave', handleDocumentMouseLeave, true);
+            this._uiWindowHandlers.push({ event: 'pointermove', handler: handlePointerMove, target: window, options: { passive: true } });
+            this._uiWindowHandlers.push({ event: 'focus', handler: handleWindowFocus, target: window });
+            this._uiWindowHandlers.push({ event: 'blur', handler: handleWindowBlur, target: window });
+            this._uiWindowHandlers.push({ event: 'mouseenter', handler: handleDocumentMouseEnter, target: document, options: true });
+            this._uiWindowHandlers.push({ event: 'mouseleave', handler: handleDocumentMouseLeave, target: document, options: true });
+            bindLockHoverHandlers();
+            setTimeout(bindLockHoverHandlers, 0);
 
             setTimeout(applyResponsiveFloatingLayout, 0);
             setTimeout(applyResponsiveFloatingLayout, 120);
