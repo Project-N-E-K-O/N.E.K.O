@@ -1737,6 +1737,7 @@ function CompactChatApp({
   const [compactExportPreviewOpen, setCompactExportPreviewOpen] = useState(false);
   const [compactExportSelectedIds, setCompactExportSelectedIds] = useState<Set<string>>(() => new Set());
   const [compactExportAutoScrollToBottom, setCompactExportAutoScrollToBottom] = useState(true);
+  const compactExportHistoryGeometryStateRef = useRef<{ mounted: boolean; open: boolean } | null>(null);
   // 折叠进行中：点最小化时置 true → 蓝条（历史区开关）淡出（#2）+ 胶囊右→左擦除收走。mode 切到
   // minimized 后由下方 useEffect 复位。展开进行中：minimized→compact 时置 true → 胶囊左→右展开 reveal。
   // 这两个擦除/reveal 类必须由 React state 写进 className（而非 host/preload 用 classList 加）—— 否则
@@ -2128,6 +2129,26 @@ function CompactChatApp({
       compactExportHistoryUnmountTimerRef.current = null;
     }, COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS);
   }, [clearCompactExportHistoryUnmountTimer, messages]);
+
+  useEffect(() => {
+    if (!isCompactSurface) {
+      compactExportHistoryGeometryStateRef.current = null;
+      return;
+    }
+    const previous = compactExportHistoryGeometryStateRef.current;
+    compactExportHistoryGeometryStateRef.current = {
+      mounted: compactExportHistoryMounted,
+      open: compactExportHistoryOpen,
+    };
+    if (!previous) return;
+    if (
+      previous.mounted === compactExportHistoryMounted
+      && previous.open === compactExportHistoryOpen
+    ) {
+      return;
+    }
+    window.dispatchEvent(new CustomEvent('neko:compact-interaction-geometry-refresh'));
+  }, [compactExportHistoryMounted, compactExportHistoryOpen, isCompactSurface]);
 
   useEffect(() => {
     const request = compactHistoryOpenRequest;
