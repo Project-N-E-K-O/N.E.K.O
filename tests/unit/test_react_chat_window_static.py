@@ -1145,7 +1145,8 @@ def test_desktop_compact_choice_placement_uses_surface_anchor_without_frame_poll
     assert "const shellNode = compactInputShellRef.current;" in placement_effect
     assert "const nextShellNode = compactInputShellRef.current;" in placement_effect
     assert "appShellRef.current" not in placement_effect
-    assert "window.addEventListener('neko:desktop-compact-layout-change', schedulePlacementUpdate);" in placement_effect
+    assert "window.addEventListener('neko:desktop-compact-layout-change', handleDesktopCompactLayoutChange);" in placement_effect
+    assert "schedulePlacementUpdateWithDesktopLayout(layout);" in placement_effect
     assert "requestAnimationFrame(trackPlacement)" not in placement_effect
     assert "const trackPlacement = () =>" not in placement_effect
 

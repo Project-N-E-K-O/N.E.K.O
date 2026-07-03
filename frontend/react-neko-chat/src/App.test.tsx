@@ -2746,7 +2746,7 @@ describe('App', () => {
     }
   });
 
-  it('syncs compact choice surface vars immediately from desktop layout events', () => {
+  it('syncs compact choice surface vars immediately from desktop layout events', async () => {
     const desktopWindow = window as typeof window & { __nekoDesktopCompactLayout?: unknown };
     const originalDesktopLayout = desktopWindow.__nekoDesktopCompactLayout;
 
@@ -2804,6 +2804,14 @@ describe('App', () => {
         '--compact-choice-surface-top': '260px',
         '--compact-choice-surface-width': '388px',
         '--compact-choice-surface-height': '64px',
+      });
+      await waitFor(() => {
+        expect(choiceLayer).toHaveStyle({
+          '--compact-choice-surface-left': '120px',
+          '--compact-choice-surface-top': '260px',
+          '--compact-choice-surface-width': '388px',
+          '--compact-choice-surface-height': '64px',
+        });
       });
     } finally {
       desktopWindow.__nekoDesktopCompactLayout = originalDesktopLayout;
