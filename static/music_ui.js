@@ -1573,7 +1573,8 @@
     // 用户关闭播放器时结算「秒关」反馈。判定用「从首次起播到关闭」的墙钟时长：
     //   startedAt == 0（压根没起播过——autoplay 被拦 / 加载失败 / 关得太早）→ 这次分享没有
     //     效送达用户，不构成喜恶信号，既不冷却也不计秒关，直接返回
-    //   墙钟不受 seek / pause / 进度条拖动污染，比按 currentTime 差值估算的播放秒数可靠
+    //   墙钟按真实经过时间算，不受 seek / 进度条拖动污染，比按 currentTime 差值估算可靠
+    //   （pause 期间也计入：用户主动暂停代表有意互动、非秒拒，久停后关按正常收听处理不冷却）
     //   ≤ hardSkipThresholdMs → 起播后一下就叉，最强拒绝信号，单次即进冷却
     //   < skipThresholdMs      → 秒关，累计 consecutiveSkipsToTrigger 次进冷却
     //   >= skipThresholdMs     → 正常收听，重置秒关计数
