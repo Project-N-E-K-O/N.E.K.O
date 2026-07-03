@@ -599,6 +599,8 @@ def test_pngtuber_floating_controls_auto_hide_like_live2d_without_touching_other
     assert "const hideFloatingControls = () => {" in setup_block
     assert "const showFloatingControls = () => {" in setup_block
     assert "const startHideTimer = (delay = 1000) => {" in setup_block
+    assert "const schedulePointerEvaluation = () => {" in setup_block
+    assert "this._pngtuberPointerEvaluateFrame = requestAnimationFrame(() => {" in setup_block
     assert "if (window.isInTutorial === true) return;" in setup_block
     assert "buttonsContainer.addEventListener('mouseenter', markControlsHover);" in setup_block
     assert "buttonsContainer.addEventListener('mouseleave', unmarkControlsHover);" in setup_block
@@ -613,6 +615,14 @@ def test_pngtuber_floating_controls_auto_hide_like_live2d_without_touching_other
     assert "this.image.addEventListener('pointerleave', handleImagePointerLeave);" in setup_block
     assert "this.image.addEventListener('mouseover', handleImagePointerEnter);" in setup_block
     assert "this._lastPngtuberPointerX = null;" in setup_block
+    handle_pointer_block = setup_block[
+        setup_block.index("const handlePointerMove = (event) => {"):
+        setup_block.index("const handleImagePointerEnter = () => showFloatingControls();")
+    ]
+    assert "schedulePointerEvaluation();" in handle_pointer_block
+    assert "shouldKeepFloatingControlsVisible()" not in handle_pointer_block
+    assert "showFloatingControls();" not in handle_pointer_block
+    assert "startHideTimer();" not in handle_pointer_block
     assert "this._pngtuberFloatingControlsVisible === false" in lock_block
     assert "'live2d-lock-icon'" not in setup_block
     assert "'vrm-lock-icon'" not in setup_block

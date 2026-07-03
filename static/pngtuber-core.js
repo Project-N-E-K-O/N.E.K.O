@@ -160,6 +160,7 @@
             this._pngtuberFloatingControlsVisible = true;
             this._pngtuberControlsHover = false;
             this._pngtuberHideButtonsTimer = null;
+            this._pngtuberPointerEvaluateFrame = null;
             this._lastPngtuberPointerX = null;
             this._lastPngtuberPointerY = null;
         }
@@ -1909,6 +1910,14 @@
                 clearTimeout(this.clickTimer);
                 this.clickTimer = null;
             }
+            if (this._pngtuberHideButtonsTimer) {
+                clearTimeout(this._pngtuberHideButtonsTimer);
+                this._pngtuberHideButtonsTimer = null;
+            }
+            if (this._pngtuberPointerEvaluateFrame) {
+                cancelAnimationFrame(this._pngtuberPointerEvaluateFrame);
+                this._pngtuberPointerEvaluateFrame = null;
+            }
             if (typeof this.cleanupFloatingButtons === 'function') {
                 this.cleanupFloatingButtons();
             }
@@ -1982,6 +1991,14 @@
             const prefix = this._avatarPrefix || 'pngtuber';
             this._floatingButtons = this._floatingButtons || {};
             this._buttonConfigs = this.getDefaultButtonConfigs();
+            if (this._pngtuberHideButtonsTimer) {
+                clearTimeout(this._pngtuberHideButtonsTimer);
+                this._pngtuberHideButtonsTimer = null;
+            }
+            if (this._pngtuberPointerEvaluateFrame) {
+                cancelAnimationFrame(this._pngtuberPointerEvaluateFrame);
+                this._pngtuberPointerEvaluateFrame = null;
+            }
             this._pngtuberFloatingControlsVisible = true;
             this._pngtuberControlsHover = false;
 
@@ -2123,6 +2140,20 @@
                 this._pngtuberControlsHover = false;
                 startHideTimer();
             };
+            const evaluatePointerForFloatingControls = () => {
+                if (shouldKeepFloatingControlsVisible()) {
+                    showFloatingControls();
+                } else {
+                    startHideTimer();
+                }
+            };
+            const schedulePointerEvaluation = () => {
+                if (this._pngtuberPointerEvaluateFrame) return;
+                this._pngtuberPointerEvaluateFrame = requestAnimationFrame(() => {
+                    this._pngtuberPointerEvaluateFrame = null;
+                    evaluatePointerForFloatingControls();
+                });
+            };
             const bindLockHoverHandlers = () => {
                 const lockIcon = this._lockIconElement || document.getElementById('pngtuber-lock-icon');
                 if (!lockIcon || lockIcon._pngtuberFloatingAutoHideBound) return;
@@ -2133,11 +2164,7 @@
             const handlePointerMove = (event) => {
                 this._lastPngtuberPointerX = event.clientX;
                 this._lastPngtuberPointerY = event.clientY;
-                if (shouldKeepFloatingControlsVisible()) {
-                    showFloatingControls();
-                } else {
-                    startHideTimer();
-                }
+                schedulePointerEvaluation();
             };
             const handleImagePointerEnter = () => showFloatingControls();
             const handleImagePointerLeave = () => startHideTimer();
