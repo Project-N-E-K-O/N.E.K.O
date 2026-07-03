@@ -660,6 +660,19 @@ function closeDangerDialog() {
   pendingDangerPlugin.value = null
 }
 
+async function loadMarketEntry() {
+  try {
+    const res = await fetch('/market/status')
+    if (!res.ok) return
+    const data = await res.json()
+    if (!data.market_url) return
+    marketUrl.value = data.market_url
+    loadMarketAuthStatus().catch(() => {})
+  } catch {
+    // Market is optional; keep the local plugin list usable if it is absent.
+  }
+}
+
 function openDangerDialog(
   action: ResolvedPluginListAction,
   plugin: PluginMeta & { status?: string; enabled?: boolean; autoStart?: boolean },
@@ -1052,20 +1065,9 @@ watch(packagePanelVisible, (visible) => {
 
 onMounted(async () => {
   window.addEventListener(TUTORIAL_ACTION_EVENT, handleTutorialAction)
+  const marketEntryPromise = loadMarketEntry()
   await handleRefresh()
-  // 获取 Market URL（用于显示"获取新插件"入口）
-  try {
-    const res = await fetch('/market/status')
-    if (res.ok) {
-      const data = await res.json()
-      if (data.market_url) {
-        marketUrl.value = data.market_url
-        loadMarketAuthStatus().catch(() => {})
-      }
-    }
-  } catch {
-    // 静默失败
-  }
+  await marketEntryPromise
 })
 
 onUnmounted(() => {
@@ -1162,9 +1164,9 @@ onUnmounted(() => {
 
 .workbench-header {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
   gap: 10px;
 }
 
@@ -1625,7 +1627,8 @@ onUnmounted(() => {
   gap: 8px;
   align-items: center;
   flex-wrap: wrap;
-  justify-content: flex-end;
+  justify-content: flex-start;
+  width: 100%;
   flex: 0 1 auto;
   min-width: 0;
 }
