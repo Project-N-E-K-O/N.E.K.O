@@ -13,8 +13,10 @@ const TERMINATE_EVENT = 'neko:yui-guide:plugin-dashboard:terminate'
 const NARRATION_FINISHED_EVENT = 'neko:yui-guide:plugin-dashboard:narration-finished'
 const INTERRUPT_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-request'
 const INTERRUPT_ACK_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-ack'
+const SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT = 'neko:yui-guide:plugin-dashboard:system-cursor-temporary-reveal'
 const DESKTOP_INTERRUPT_ACK_EVENT = 'neko:yui-guide:desktop-interrupt-ack'
 const DESKTOP_NARRATION_FINISHED_EVENT = 'neko:yui-guide:desktop-narration-finished'
+const DESKTOP_SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT = 'neko:yui-guide:desktop-system-cursor-temporary-reveal'
 const SKIP_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:skip-request'
 const HANDOFF_STORAGE_KEY = 'neko_yui_guide_handoff_token'
 const HANDOFF_TOKEN_VERSION = 1
@@ -217,6 +219,7 @@ const DEFAULT_SPOTLIGHT_PADDING = 6
 const BACKDROP_CUTOUT_INSET = 4
 const CONTROL_BANNER_TEXT_KEY = 'tutorial.yuiGuide.controlBanner'
 const CONTROL_BANNER_FALLBACK_TEXT = 'The catgirl is controlling the mouse'
+const CONTROL_BANNER_INTERRUPT_EMPHASIS_MS = 2000
 let currentGuideAudio: HTMLAudioElement | null = null
 let currentGuideAudioTimer: number | null = null
 let currentGuideSpeechStop: (() => void) | null = null
@@ -885,6 +888,17 @@ function injectStyle() {
       cursor: none !important;
     }
 
+    html.yui-guide-plugin-dashboard-running.yui-taking-over.yui-user-cursor-revealed,
+    html.yui-guide-plugin-dashboard-running.yui-taking-over.yui-user-cursor-revealed *,
+    html.yui-guide-plugin-dashboard-running.yui-taking-over.yui-resistance-cursor-reveal,
+    html.yui-guide-plugin-dashboard-running.yui-taking-over.yui-resistance-cursor-reveal *,
+    body.yui-guide-plugin-dashboard-running.yui-taking-over.yui-user-cursor-revealed,
+    body.yui-guide-plugin-dashboard-running.yui-taking-over.yui-user-cursor-revealed *,
+    body.yui-guide-plugin-dashboard-running.yui-taking-over.yui-resistance-cursor-reveal,
+    body.yui-guide-plugin-dashboard-running.yui-taking-over.yui-resistance-cursor-reveal * {
+      cursor: auto !important;
+    }
+
     #${ROOT_ID} {
       position: fixed;
       inset: 0;
@@ -920,13 +934,28 @@ function injectStyle() {
       pointer-events: none;
       opacity: 0;
       transform: translate(-50%, -6px);
-      transition: opacity 180ms ease, transform 220ms ease;
+      --yui-guide-plugin-control-banner-emphasis-ease: cubic-bezier(0.16, 1, 0.3, 1);
+      transition:
+        opacity 180ms ease,
+        top 420ms var(--yui-guide-plugin-control-banner-emphasis-ease),
+        max-width 420ms var(--yui-guide-plugin-control-banner-emphasis-ease),
+        padding 420ms var(--yui-guide-plugin-control-banner-emphasis-ease),
+        font-size 420ms var(--yui-guide-plugin-control-banner-emphasis-ease),
+        transform 420ms var(--yui-guide-plugin-control-banner-emphasis-ease);
       backdrop-filter: blur(10px) saturate(1.08);
     }
 
     #${ROOT_ID} .yui-guide-plugin-control-banner.is-visible {
       opacity: 1;
       transform: translate(-50%, 0);
+    }
+
+    #${ROOT_ID} .yui-guide-plugin-control-banner.is-interrupt-emphasis {
+      top: 50%;
+      max-width: min(720px, calc(100vw - 40px));
+      padding: 16px 26px;
+      font-size: 17px;
+      transform: translate(-50%, -50%) scale(3);
     }
 
     #${ROOT_ID} .yui-guide-plugin-control-banner[hidden] {
@@ -1215,8 +1244,11 @@ class PluginDashboardGuideRuntime {
   backdropCutout: SVGRectElement | null = null
   interactionShield: HTMLDivElement | null = null
   controlBanner: HTMLDivElement | null = null
+  controlBannerEmphasisTimer: number | null = null
+  controlBannerEmphasisActive = false
   renderedControlBannerText = ''
   renderedControlBannerVisible: boolean | null = null
+  renderedControlBannerEmphasis: boolean | null = null
   spotlight: HTMLDivElement | null = null
   pointer: HTMLDivElement | null = null
   cursorPosition: { x: number; y: number } | null = null
@@ -1466,13 +1498,16 @@ class PluginDashboardGuideRuntime {
           || document.body.classList.contains('yui-taking-over')
         )
       : active === true
+    const isEmphasized = isVisible && this.controlBannerEmphasisActive === true
     const text = resolveControlBannerText()
 
     if (
       this.renderedControlBannerText === text
       && this.renderedControlBannerVisible === isVisible
+      && this.renderedControlBannerEmphasis === isEmphasized
       && this.controlBanner.hidden === !isVisible
       && this.controlBanner.classList.contains('is-visible') === isVisible
+      && this.controlBanner.classList.contains('is-interrupt-emphasis') === isEmphasized
     ) {
       return
     }
@@ -1483,7 +1518,30 @@ class PluginDashboardGuideRuntime {
     }
     this.controlBanner.hidden = !isVisible
     this.controlBanner.classList.toggle('is-visible', isVisible)
+    this.controlBanner.classList.toggle('is-interrupt-emphasis', isEmphasized)
     this.renderedControlBannerVisible = isVisible
+    this.renderedControlBannerEmphasis = isEmphasized
+  }
+
+  emphasizeControlBanner(durationMs = CONTROL_BANNER_INTERRUPT_EMPHASIS_MS) {
+    if (
+      !document.documentElement.classList.contains('yui-taking-over')
+      && !document.body.classList.contains('yui-taking-over')
+    ) {
+      return
+    }
+    this.ensureRoot()
+    if (this.controlBannerEmphasisTimer !== null) {
+      window.clearTimeout(this.controlBannerEmphasisTimer)
+      this.controlBannerEmphasisTimer = null
+    }
+    this.controlBannerEmphasisActive = true
+    this.syncControlBanner(true)
+    this.controlBannerEmphasisTimer = window.setTimeout(() => {
+      this.controlBannerEmphasisTimer = null
+      this.controlBannerEmphasisActive = false
+      this.syncControlBanner()
+    }, Math.max(0, Math.round(Number(durationMs) || CONTROL_BANNER_INTERRUPT_EMPHASIS_MS)))
   }
 
   hasDesktopTutorialSkipBridge() {
@@ -1713,6 +1771,23 @@ class PluginDashboardGuideRuntime {
     if (sessionId) {
       this.markHomeNarrationFinished(sessionId)
     }
+  }
+
+  handleSystemCursorTemporaryRevealData(data: unknown) {
+    const detail = data && typeof data === 'object' ? data as { sessionId?: unknown, durationMs?: unknown } : null
+    if (!detail) {
+      return
+    }
+    const sessionId = typeof detail?.sessionId === 'string' ? detail.sessionId : ''
+    if (!sessionId || !this.isCurrentRun(sessionId)) {
+      return
+    }
+    const durationMs = Number.isFinite(detail?.durationMs) ? Number(detail.durationMs) : undefined
+    this.revealSystemCursorTemporarily(durationMs)
+  }
+
+  handleDesktopSystemCursorTemporaryRevealEvent(event: Event) {
+    this.handleSystemCursorTemporaryRevealData((event as CustomEvent).detail)
   }
 
   async requestHomeInterruptPlayback(
@@ -2916,6 +2991,20 @@ class PluginDashboardGuideRuntime {
     document.body.classList.remove('yui-resistance-cursor-reveal')
   }
 
+  revealSystemCursorTemporarily(durationMs = 2000) {
+    const normalizedDurationMs = Math.min(10000, Math.max(0, Math.floor(Number(durationMs) || 0)))
+    if (this.resistanceCursorTimer !== null) {
+      window.clearTimeout(this.resistanceCursorTimer)
+      this.resistanceCursorTimer = null
+    }
+    document.documentElement.classList.add('yui-user-cursor-revealed', 'yui-resistance-cursor-reveal')
+    document.body.classList.add('yui-user-cursor-revealed', 'yui-resistance-cursor-reveal')
+    this.resistanceCursorTimer = window.setTimeout(() => {
+      this.resistanceCursorTimer = null
+      this.suppressResistanceCursorReveal()
+    }, normalizedDurationMs)
+  }
+
   async playLightResistance(x: number, y: number) {
     if (this.scenePausedForResistance || this.angryExitTriggered) {
       return
@@ -2927,6 +3016,7 @@ class PluginDashboardGuideRuntime {
     this.pauseCurrentSceneForResistance()
     this.interruptNarrationForResistance()
     this.suppressResistanceCursorReveal()
+    this.emphasizeControlBanner()
 
     const voiceIndex = Math.min(RESISTANCE_VOICE_KEYS.length - 1, Math.max(0, this.interruptCount - 1))
     const line = RESISTANCE_LINES[voiceIndex] || RESISTANCE_LINES[0]
@@ -3105,8 +3195,14 @@ class PluginDashboardGuideRuntime {
     this.backdropCutout = null
     this.interactionShield = null
     this.controlBanner = null
+    if (this.controlBannerEmphasisTimer !== null) {
+      window.clearTimeout(this.controlBannerEmphasisTimer)
+      this.controlBannerEmphasisTimer = null
+    }
+    this.controlBannerEmphasisActive = false
     this.renderedControlBannerText = ''
     this.renderedControlBannerVisible = null
+    this.renderedControlBannerEmphasis = null
     this.spotlight = null
     this.pointer = null
     this.cursorPosition = null
@@ -3826,6 +3922,9 @@ export function initPluginDashboardYuiGuideRuntime() {
   const handleDesktopNarrationFinishedEvent = (event: Event) => {
     runtime.handleDesktopNarrationFinishedEvent(event)
   }
+  const handleDesktopSystemCursorTemporaryRevealEvent = (event: Event) => {
+    runtime.handleDesktopSystemCursorTemporaryRevealEvent(event)
+  }
 
   const handleRuntimeMessage = (event: MessageEvent) => {
     const data = event.data
@@ -3853,6 +3952,11 @@ export function initPluginDashboardYuiGuideRuntime() {
       if (sessionId) {
         runtime.markHomeNarrationFinished(sessionId)
       }
+      return
+    }
+
+    if (data.type === SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT && isAllowedOpenerEvent(event)) {
+      runtime.handleSystemCursorTemporaryRevealData(data)
       return
     }
 
@@ -3892,16 +3996,18 @@ export function initPluginDashboardYuiGuideRuntime() {
   const cleanupRuntimeListeners = () => {
     window.removeEventListener(DESKTOP_INTERRUPT_ACK_EVENT, handleDesktopInterruptAckEvent, true)
     window.removeEventListener(DESKTOP_NARRATION_FINISHED_EVENT, handleDesktopNarrationFinishedEvent, true)
+    window.removeEventListener(DESKTOP_SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT, handleDesktopSystemCursorTemporaryRevealEvent, true)
     window.removeEventListener('message', handleRuntimeMessage)
+    window.removeEventListener('pagehide', handleRuntimePageHide, true)
     pluginDashboardRuntimeInitialized = false
   }
-  const originalRuntimeCleanup = runtime.cleanup.bind(runtime)
-  runtime.cleanup = () => {
+  const handleRuntimePageHide = () => {
     cleanupRuntimeListeners()
-    originalRuntimeCleanup()
   }
 
   window.addEventListener(DESKTOP_INTERRUPT_ACK_EVENT, handleDesktopInterruptAckEvent, true)
   window.addEventListener(DESKTOP_NARRATION_FINISHED_EVENT, handleDesktopNarrationFinishedEvent, true)
+  window.addEventListener(DESKTOP_SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT, handleDesktopSystemCursorTemporaryRevealEvent, true)
   window.addEventListener('message', handleRuntimeMessage)
+  window.addEventListener('pagehide', handleRuntimePageHide, true)
 }

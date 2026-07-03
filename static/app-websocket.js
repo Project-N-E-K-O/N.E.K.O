@@ -769,6 +769,16 @@
         S.pendingTextTurnSubmitAt = 0;
     }
 
+    function isNewUserIcebreakerMirrorTurnEnd(response) {
+        var meta = response && response.meta;
+        if (!meta || typeof meta !== 'object') return false;
+        if (meta.source === 'new_user_icebreaker' || meta.kind === 'new_user_icebreaker') {
+            return true;
+        }
+        var event = meta.event;
+        return !!(event && typeof event === 'object' && event.source === 'new_user_icebreaker');
+    }
+
     // turn-end / turn end agent_callback 两条路径共用的 realistic/structured
     // buffer 收尾：标 bubble 为 sent、设 _geminiTurnEndSealed 让 adapter 在
     // 后续 chunk 来时新建气泡而非追加到封口气泡（封口气泡的 React
@@ -2673,7 +2683,14 @@
 
                     // Emotion analysis & subtitle on turn completion —— 与
                     // agent_callback 路径共用 finalizeAssistantTurn；正常轮启用 music。
-                    finalizeAssistantTurn(assistantTurnId);
+                    //
+                    // 破冰 mirror TTS 的 turn_end 只表示语音播报链路结束；破冰文案
+                    // 已在 icebreaker runtime 用 subtitleBridge 精确 finalize。这里
+                    // 若再走普通聊天 finalizeAssistantTurn，会用 Gemini buffer /
+                    // 当前聊天气泡的旧文本二次翻译，覆盖破冰字幕。
+                    if (!isNewUserIcebreakerMirrorTurnEnd(response)) {
+                        finalizeAssistantTurn(assistantTurnId);
+                    }
 
                     // AI turn_end 后只 reschedule，不 reset backoff。
                     // 理由：turn_end 无法区分"用户发话引发的 turn"和"proactive 自己引发的 turn"，

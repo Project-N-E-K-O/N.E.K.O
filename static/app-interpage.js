@@ -1113,7 +1113,7 @@
                         live2dContainer2.classList.remove('hidden');
                         live2dContainer2.style.display = 'block';
                         live2dContainer2.style.visibility = 'visible';
-                        live2dContainer2.style.removeProperty('pointer-events');
+                        live2dContainer2.style.setProperty('pointer-events', 'none', 'important');
                     }
                     var live2dCanvas2 = document.getElementById('live2d-canvas');
                     if (live2dCanvas2) {
@@ -1176,7 +1176,7 @@
                                 if (!deferRevealPrepared) {
                                     live2dContainer2.style.removeProperty('opacity');
                                 }
-                                live2dContainer2.style.removeProperty('pointer-events');
+                                live2dContainer2.style.setProperty('pointer-events', 'none', 'important');
                             }
                             if (live2dCanvas2) {
                                 live2dCanvas2.style.display = 'block';
@@ -2538,6 +2538,7 @@
                         if (!result) return result;
                         return waitForIcebreakerChatHostMounted(host).then(function () {
                             syncIcebreakerAssistantCompactCaption(action.message);
+                            finalizeIcebreakerAssistantSubtitleTranslation(action.message);
                             return result;
                         });
                     }).catch(function (error) {
@@ -2625,6 +2626,29 @@
             }));
         } catch (error) {
             console.warn('[NewUserIcebreaker] compact caption sync failed:', error);
+        }
+    }
+
+    function finalizeIcebreakerAssistantSubtitleTranslation(message) {
+        if (!isStandaloneChatPage() || !message || message.role !== 'assistant') return;
+        var line = getIcebreakerMessageText(message);
+        if (!line) return;
+        try {
+            var bridge = window.subtitleBridge;
+            if (!bridge || typeof bridge.finalizeTurnWithTranslation !== 'function') {
+                return;
+            }
+            if (typeof bridge.beginTurn === 'function') {
+                bridge.beginTurn({ latch: false });
+            }
+            var result = bridge.finalizeTurnWithTranslation(line);
+            if (result && typeof result.catch === 'function') {
+                result.catch(function (error) {
+                    console.warn('[NewUserIcebreaker] subtitle translation failed:', error);
+                });
+            }
+        } catch (error) {
+            console.warn('[NewUserIcebreaker] subtitle translation failed:', error);
         }
     }
 

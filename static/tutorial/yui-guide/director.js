@@ -575,6 +575,7 @@
     const DEFAULT_USER_CURSOR_REVEAL_DISTANCE = 14;
     const DEFAULT_USER_CURSOR_REVEAL_INTERVAL_MS = 160;
     const DEFAULT_USER_CURSOR_REVEAL_MOVES = 2;
+    const DEFAULT_INTERRUPT_COUNT_CURSOR_REVEAL_MS = 3000;
     const DEFAULT_STEP_DELAY_MS = 120;
     const DEFAULT_SCENE_SETTLE_MS = 260;
     const DEFAULT_CURSOR_DURATION_MS = 520;
@@ -618,8 +619,10 @@
     const PLUGIN_DASHBOARD_NARRATION_FINISHED_EVENT = 'neko:yui-guide:plugin-dashboard:narration-finished';
     const PLUGIN_DASHBOARD_INTERRUPT_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-request';
     const PLUGIN_DASHBOARD_INTERRUPT_ACK_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-ack';
+    const PLUGIN_DASHBOARD_SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT = 'neko:yui-guide:plugin-dashboard:system-cursor-temporary-reveal';
     const DESKTOP_PLUGIN_DASHBOARD_INTERRUPT_ACK_EVENT = 'neko:yui-guide:desktop-interrupt-ack';
     const DESKTOP_PLUGIN_DASHBOARD_NARRATION_FINISHED_EVENT = 'neko:yui-guide:desktop-narration-finished';
+    const DESKTOP_PLUGIN_DASHBOARD_SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT = 'neko:yui-guide:desktop-system-cursor-temporary-reveal';
     const DESKTOP_PLUGIN_DASHBOARD_SKIP_REQUEST_EVENT = 'neko:yui-guide:desktop-skip-request';
     const PLUGIN_DASHBOARD_SKIP_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:skip-request';
     const DEFAULT_TUTORIAL_MODEL_MANAGER_LANLAN_NAME = 'ATLS';
@@ -10945,6 +10948,16 @@
             }
         }
 
+        dispatchDesktopPluginDashboardSystemCursorTemporaryReveal(payload) {
+            try {
+                window.dispatchEvent(new CustomEvent(DESKTOP_PLUGIN_DASHBOARD_SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT, {
+                    detail: payload && typeof payload === 'object' ? payload : {}
+                }));
+            } catch (error) {
+                console.warn('[YuiGuide] 发送桌面插件面板真实鼠标临时显示失败:', error);
+            }
+        }
+
         notifyPluginDashboardNarrationFinished() {
             const handoff = this.pluginDashboardHandoff;
             if (!handoff || !handoff.sessionId) {
@@ -10966,6 +10979,34 @@
                 windowRef.postMessage(payload, handoff.targetOrigin || this.getPluginDashboardExpectedOrigin());
             } catch (error) {
                 console.warn('[YuiGuide] 向插件面板发送 narration finished 失败:', error);
+            }
+        }
+
+        notifyPluginDashboardSystemCursorTemporaryReveal(durationMs, reason) {
+            const handoff = this.pluginDashboardHandoff;
+            if (!handoff || !handoff.sessionId) {
+                return false;
+            }
+
+            const payload = {
+                type: PLUGIN_DASHBOARD_SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT,
+                sessionId: handoff.sessionId,
+                durationMs: Math.min(10000, Math.max(0, Math.floor(Number(durationMs) || 0))),
+                reason: typeof reason === 'string' && reason.trim() ? reason.trim() : 'tutorial-temporary-reveal'
+            };
+            this.dispatchDesktopPluginDashboardSystemCursorTemporaryReveal(payload);
+
+            const windowRef = handoff && handoff.windowRef ? handoff.windowRef : null;
+            if (!windowRef || windowRef.closed) {
+                return true;
+            }
+
+            try {
+                windowRef.postMessage(payload, handoff.targetOrigin || this.getPluginDashboardExpectedOrigin());
+                return true;
+            } catch (error) {
+                console.warn('[YuiGuide] 向插件面板发送真实鼠标临时显示失败:', error);
+                return false;
             }
         }
 
@@ -12212,6 +12253,7 @@
             }
 
             this.userCursorRevealSuppressed = true;
+            this.clearInterruptCountCursorReveal(false);
             document.documentElement.style.cursor = '';
             document.body.style.cursor = '';
             document.documentElement.classList.remove('yui-user-cursor-revealed');
@@ -12230,6 +12272,7 @@
             this.userCursorRevealSuppressed = false;
             this.userCursorRevealMoveCount = 0;
             this.lastUserCursorRevealMoveAt = 0;
+            this.clearInterruptCountCursorReveal(false);
 
             if (document.body) {
                 document.documentElement.classList.remove('yui-user-cursor-revealed');
@@ -12256,6 +12299,7 @@
                 window.clearTimeout(this.resistanceCursorTimer);
                 this.resistanceCursorTimer = null;
             }
+            this.clearInterruptCountCursorReveal(false);
             document.documentElement.style.cursor = '';
             document.body.style.cursor = '';
             document.documentElement.classList.remove('yui-user-cursor-revealed');
@@ -12265,6 +12309,50 @@
             this.syncSystemCursorHidden(true, 'resistance_cursor_reveal_suppressed');
         }
 
+        clearInterruptCountCursorReveal(resetCursor) {
+            if (this.resistanceCursorTimer) {
+                window.clearTimeout(this.resistanceCursorTimer);
+                this.resistanceCursorTimer = null;
+            }
+            if (document.body) {
+                document.documentElement.classList.remove('yui-interrupt-count-cursor-revealed');
+                document.body.classList.remove('yui-interrupt-count-cursor-revealed');
+            }
+            if (resetCursor) {
+                document.documentElement.style.cursor = '';
+                if (document.body) {
+                    document.body.style.cursor = '';
+                }
+            }
+        }
+
+        revealRealCursorForInterruptCount(durationMs = DEFAULT_INTERRUPT_COUNT_CURSOR_REVEAL_MS) {
+            if (this.destroyed || !document.body) {
+                return;
+            }
+            this.clearInterruptCountCursorReveal(false);
+            document.documentElement.style.cursor = '';
+            document.body.style.cursor = '';
+            document.documentElement.classList.add('yui-interrupt-count-cursor-revealed');
+            document.body.classList.add('yui-interrupt-count-cursor-revealed');
+            this.syncSystemCursorHidden(false, 'interrupt_count_reveal');
+            this.resistanceCursorTimer = window.setTimeout(() => {
+                this.resistanceCursorTimer = null;
+                if (this.angryExitTriggered) {
+                    return;
+                }
+                this.clearInterruptCountCursorReveal(true);
+                if (
+                    this.destroyed
+                    || !document.body
+                    || !document.body.classList.contains('yui-taking-over')
+                ) {
+                    return;
+                }
+                this.syncSystemCursorHidden(true, 'interrupt_count_reveal_timeout');
+            }, Math.max(0, Math.floor(Number(durationMs) || 0)));
+        }
+
         syncSystemCursorHidden(hidden, reason = 'tutorial') {
             if (
                 window.YuiGuideCommon
@@ -12272,6 +12360,28 @@
             ) {
                 window.YuiGuideCommon.syncPcSystemCursorHidden(hidden === true, reason);
             }
+        }
+
+        revealSystemCursorTemporarily(durationMs = 2000, reason = 'tutorial-temporary-reveal') {
+            const normalizedDurationMs = Math.min(10000, Math.max(0, Math.floor(Number(durationMs) || 0)));
+            if (this.resistanceCursorTimer) {
+                window.clearTimeout(this.resistanceCursorTimer);
+                this.resistanceCursorTimer = null;
+            }
+            if (document.body) {
+                document.documentElement.classList.add('yui-user-cursor-revealed', 'yui-resistance-cursor-reveal');
+                document.body.classList.add('yui-user-cursor-revealed', 'yui-resistance-cursor-reveal');
+            }
+            if (
+                window.YuiGuideCommon
+                && typeof window.YuiGuideCommon.syncPcSystemCursorTemporaryReveal === 'function'
+            ) {
+                window.YuiGuideCommon.syncPcSystemCursorTemporaryReveal(normalizedDurationMs, reason);
+            }
+            this.resistanceCursorTimer = window.setTimeout(() => {
+                this.resistanceCursorTimer = null;
+                this.suppressResistanceCursorReveal();
+            }, normalizedDurationMs);
         }
 
         playLightResistance(x, y, options) {
@@ -12311,6 +12421,7 @@
 
             this.destroyed = true;
             this.terminationRequested = true;
+            this.clearInterruptCountCursorReveal(true);
             this.syncSystemCursorHidden(false, 'destroy');
             this.setHomePcCursorOutputSuppressedForExternalizedChat(false);
             this.restoreDay1TakeoverAgentSwitches('destroy').catch((error) => {
@@ -12546,8 +12657,10 @@
 
             if (kind === 'interrupt_resist_light' && x !== null && y !== null) {
                 try {
+                    this.notifyPluginDashboardSystemCursorTemporaryReveal(2000, 'interrupt_resist_light');
                     await this.playLightResistance(x, y, {
-                        suppressCursorReveal: true
+                        suppressCursorReveal: true,
+                        forceSystemCursorReveal: true
                     });
                 } catch (error) {
                     console.warn('[YuiGuide] 执行插件面板轻微抵抗失败:', error);
