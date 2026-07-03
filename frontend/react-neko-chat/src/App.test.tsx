@@ -2749,9 +2749,11 @@ describe('App', () => {
   it('syncs compact choice surface vars immediately from desktop layout events', async () => {
     const desktopWindow = window as typeof window & { __nekoDesktopCompactLayout?: unknown };
     const originalDesktopLayout = desktopWindow.__nekoDesktopCompactLayout;
+    let unmount: (() => void) | null = null;
+    let restoreShellRect: (() => void) | null = null;
 
     try {
-      const { container } = render(
+      const rendered = render(
         <App
           chatSurfaceMode="compact"
           galgameModeEnabled
@@ -2761,12 +2763,21 @@ describe('App', () => {
           ]}
         />,
       );
+      const { container } = rendered;
+      unmount = rendered.unmount;
 
       const shell = container.querySelector('.compact-chat-surface-shell');
       const choiceLayer = document.body.querySelector<HTMLElement>('body > .compact-chat-choice-anchor');
       expect(shell).not.toBeNull();
       expect(choiceLayer).not.toBeNull();
 
+      const originalShellRect = shell!.getBoundingClientRect;
+      restoreShellRect = () => {
+        Object.defineProperty(shell!, 'getBoundingClientRect', {
+          configurable: true,
+          value: originalShellRect,
+        });
+      };
       Object.defineProperty(shell!, 'getBoundingClientRect', {
         configurable: true,
         value: () => ({
@@ -2814,6 +2825,8 @@ describe('App', () => {
         });
       });
     } finally {
+      restoreShellRect?.();
+      unmount?.();
       desktopWindow.__nekoDesktopCompactLayout = originalDesktopLayout;
     }
   });
@@ -8974,6 +8987,7 @@ describe('App', () => {
       }));
     } finally {
       vi.useRealTimers();
+      window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'true');
       restoreLive2dManager();
       live2dContainer.remove();
     }
