@@ -2436,6 +2436,41 @@ def test_chat_image_file_drop_uses_import_pipeline_and_blocks_browser_navigation
     assert "mod.importImageFilesToPendingList(files, { logPrefix: '[拖放图片]' });" in drop_block
 
 
+def test_chat_composer_user_images_use_text_attachment_input_type():
+    script = APP_BUTTONS_PATH.read_text(encoding="utf-8")
+
+    helper_block = script.split("function getPendingAttachmentInputType(item)", 1)[1].split(
+        "mod.syncPendingComposerAttachments",
+        1,
+    )[0]
+    assert "source === 'user-image'" in helper_block
+    assert "source === 'clipboard-image'" in helper_block
+    assert "source === 'compact-history'" in helper_block
+    assert "return 'user_image';" in helper_block
+    assert "return U.isMobile() ? 'camera' : 'screen';" in helper_block
+
+    import_block = script.split(
+        "mod.importImageFileToPendingList = function importImageFileToPendingList(file)",
+        1,
+    )[1].split(
+        "mod.importImageFilesToPendingList = function importImageFilesToPendingList(files, options)",
+        1,
+    )[0]
+    paste_block = script.split("document.addEventListener('paste'", 1)[1].split(
+        "document.addEventListener('dragover'",
+        1,
+    )[0]
+    send_block = script.split("// Send screenshots first", 1)[1].split(
+        "if (!isReactWindowSource)",
+        1,
+    )[0]
+
+    assert "mod.addScreenshotToList(dataUrl, null, { source: 'user-image' });" in import_block
+    assert "mod.addScreenshotToList(dataUrl, null, { source: 'clipboard-image' });" in paste_block
+    assert "input_type: getPendingAttachmentInputType(screenshotItems[i])" in send_block
+    assert "input_type: U.isMobile() ? 'camera' : 'screen'" not in send_block
+
+
 def test_text_mode_screenshot_payload_only_tags_paired_text_turn():
     script = APP_BUTTONS_PATH.read_text(encoding="utf-8")
 

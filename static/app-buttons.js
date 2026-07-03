@@ -755,6 +755,14 @@
         }).filter(Boolean);
     };
 
+    function getPendingAttachmentInputType(item) {
+        var source = item && item.dataset ? String(item.dataset.source || '') : '';
+        if (source === 'user-image' || source === 'clipboard-image' || source === 'compact-history' || source === 'user') {
+            return 'user_image';
+        }
+        return U.isMobile() ? 'camera' : 'screen';
+    }
+
     mod.syncPendingComposerAttachments = function syncPendingComposerAttachments() {
         if (window.reactChatWindowHost && typeof window.reactChatWindowHost.setComposerAttachments === 'function') {
             window.reactChatWindowHost.setComposerAttachments(mod.getPendingComposerAttachments());
@@ -807,7 +815,7 @@
 
         return mod.normalizeImageBlobForPendingList(file)
             .then(function (dataUrl) {
-                mod.addScreenshotToList(dataUrl);
+                mod.addScreenshotToList(dataUrl, null, { source: 'user-image' });
                 return dataUrl;
             });
     };
@@ -2751,7 +2759,7 @@
                                 var msg = {
                                     action: 'stream_data',
                                     data: img.src,
-                                    input_type: U.isMobile() ? 'camera' : 'screen'
+                                    input_type: getPendingAttachmentInputType(screenshotItems[i])
                                 };
                                 if (text) {
                                     msg.request_id = requestId;
@@ -3616,7 +3624,7 @@
                     if (!blob) continue;
                     mod.normalizeImageBlobForPendingList(blob)
                         .then(function (dataUrl) {
-                            mod.addScreenshotToList(dataUrl);
+                            mod.addScreenshotToList(dataUrl, null, { source: 'clipboard-image' });
                             window.showStatusToast(
                                 window.t ? window.t('app.screenshotAdded') : '\u622A\u56FE\u5DF2\u6DFB\u52A0\uFF0C\u70B9\u51FB\u53D1\u9001\u4E00\u8D77\u53D1\u9001',
                                 3000
