@@ -27,16 +27,13 @@ package() {
   # 3. 创建启动脚本（命令执行层面的别名）并解决相对路径问题
   mkdir -p "$pkgdir/usr/bin"
   
-  # 主脚本：用户输入 neko 时执行
+  # 主脚本：用户输入 n.e.k.o 时执行
   cat > "$pkgdir/usr/bin/n.e.k.o" << 'EOF'
 #!/bin/sh
 cd /usr/lib/neko
 exec ./n.e.k.o "$@"
 EOF
-  chmod +x "$pkgdir/usr/bin/neko"
-
-  # 兼容原名称 n.e.k.o（软链接到同一个启动脚本）
-  ln -s "neko" "$pkgdir/usr/bin/n.e.k.o"
+  chmod +x "$pkgdir/usr/bin/n.e.k.o"
 
   # 4. 创建 .desktop 菜单项
   mkdir -p "$pkgdir/usr/share/applications"
@@ -44,10 +41,11 @@ EOF
 [Desktop Entry]
 Type=Application
 Name=Project N.E.K.O
-Comment=(PRESERVED, NOT CORFIRMED)
+Comment="N.E.K.O., a digital life that yearns to understand, connect, and grow with us."
 Exec=n.e.k.o
 Icon=neko-bin
-Categories=Utility; # 分类暂时分到 Utility，后面再看
+Categories=Utility; 
+# 分类暂时分到 Utility，后面再看
 Terminal=false
 StartupNotify=true
 EOF
