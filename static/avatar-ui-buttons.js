@@ -266,6 +266,7 @@ const _NEKO_IDLE_DESKTOP_COMPACT_SURFACE_RECT_STALE_MS = 10 * 1000;
 const _NEKO_IDLE_RETURN_DRAG_PENDING_CLASS = 'is-drag-action-pending';
 const _NEKO_IDLE_RETURN_DRAG_ACTION_CLASS = 'is-drag-action';
 const _NEKO_IDLE_CAT1_PLAY_FINISHING_ATTR = 'data-neko-cat1-play-finishing';
+const _NEKO_IDLE_CAT1_PLAY_YARN_RELEASE_SIZE_PX = 51;
 const _NEKO_IDLE_CAT1_RAPID_DRAG_ASSET_URL = '/static/assets/neko-idle/cat-idle-cat-move-5.gif';
 const _NEKO_IDLE_CAT1_RAPID_DRAG_SOUND_URL = '/static/assets/neko-idle/cat1-voice-funny.mp3';
 const _NEKO_IDLE_CAT1_RAPID_DRAG_REACTION_MS = 5000;
@@ -1033,7 +1034,7 @@ function _getNekoIdleCat1PlayYarnReleasePayload(button, state, reason) {
         : null;
     if (!rect || rect.width <= 0 || rect.height <= 0) return payload;
 
-    const ballSize = 58;
+    const ballSize = _NEKO_IDLE_CAT1_PLAY_YARN_RELEASE_SIZE_PX;
     const gap = 12;
     const facingRight = state && typeof state.releaseFacingRight === 'boolean'
         ? state.releaseFacingRight

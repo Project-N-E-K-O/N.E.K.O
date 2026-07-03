@@ -992,19 +992,20 @@
 
     function getIdleCat1PlayYarnReleaseTargetRect(detail) {
         if (!detail || typeof detail !== 'object') return null;
-        var target = normalizeCompactDesktopRect(detail.targetRect);
-        if (target || isElectronChatWindow()) return target;
         var screenTarget = normalizeCompactDesktopRect(detail.targetScreenRect);
-        if (!screenTarget) return null;
-        var screenX = Number.isFinite(Number(window.screenX)) ? Number(window.screenX) : Number(window.screenLeft);
-        var screenY = Number.isFinite(Number(window.screenY)) ? Number(window.screenY) : Number(window.screenTop);
-        if (!Number.isFinite(screenX) || !Number.isFinite(screenY)) return null;
-        return normalizeCompactDesktopRect({
-            left: screenTarget.left - screenX,
-            top: screenTarget.top - screenY,
-            width: screenTarget.width,
-            height: screenTarget.height
-        });
+        if (screenTarget && !isElectronChatWindow()) {
+            var screenX = Number.isFinite(Number(window.screenX)) ? Number(window.screenX) : Number(window.screenLeft);
+            var screenY = Number.isFinite(Number(window.screenY)) ? Number(window.screenY) : Number(window.screenTop);
+            if (Number.isFinite(screenX) && Number.isFinite(screenY)) {
+                return normalizeCompactDesktopRect({
+                    left: screenTarget.left - screenX,
+                    top: screenTarget.top - screenY,
+                    width: screenTarget.width,
+                    height: screenTarget.height
+                });
+            }
+        }
+        return normalizeCompactDesktopRect(detail.targetRect);
     }
 
     function applyIdleCat1PlayYarnRelease(detail) {
