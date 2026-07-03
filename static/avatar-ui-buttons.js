@@ -265,6 +265,8 @@ const _NEKO_IDLE_DESKTOP_CHAT_RECT_STALE_MS = 2500;
 const _NEKO_IDLE_DESKTOP_COMPACT_SURFACE_RECT_STALE_MS = 10 * 1000;
 const _NEKO_IDLE_RETURN_DRAG_PENDING_CLASS = 'is-drag-action-pending';
 const _NEKO_IDLE_RETURN_DRAG_ACTION_CLASS = 'is-drag-action';
+const _NEKO_IDLE_RETURN_DRAG_LONG_PRESS_MS = 280;
+const _NEKO_IDLE_RETURN_LONG_PRESS_PENDING_ATTR = 'data-neko-return-long-press-pending';
 const _NEKO_IDLE_CAT1_PLAY_FINISHING_ATTR = 'data-neko-cat1-play-finishing';
 const _NEKO_IDLE_CAT1_RAPID_DRAG_ASSET_URL = '/static/assets/neko-idle/cat-idle-cat-move-5.gif';
 const _NEKO_IDLE_CAT1_RAPID_DRAG_SOUND_URL = '/static/assets/neko-idle/cat1-voice-funny.mp3';
@@ -5572,6 +5574,9 @@ const AvatarButtonMixin = {
             }
 
             if (this._returnButtonDragHandlers) {
+                if (typeof this._returnButtonDragHandlers.cancelPendingLongPress === 'function') {
+                    this._returnButtonDragHandlers.cancelPendingLongPress();
+                }
                 document.removeEventListener('mousemove', this._returnButtonDragHandlers.mouseMove);
                 document.removeEventListener('mouseup', this._returnButtonDragHandlers.mouseUp);
                 document.removeEventListener('touchmove', this._returnButtonDragHandlers.touchMove);
@@ -5999,6 +6004,9 @@ const AvatarButtonMixin = {
                 }
                 if (
                     returnButtonContainer.getAttribute('data-dragging') === 'true' ||
+                    returnButtonContainer.getAttribute('data-dragging') === 'pending' ||
+                    returnButtonContainer.getAttribute(_NEKO_IDLE_RETURN_LONG_PRESS_PENDING_ATTR) === 'true' ||
+                    returnButtonContainer.getAttribute('data-neko-return-click-suppressed') === 'true' ||
                     returnButtonContainer.getAttribute('data-neko-model-cat-transitioning') === 'cat-to-model' ||
                     (typeof window.isNekoModelCatTransitionActive === 'function' && window.isNekoModelCatTransitionActive())
                 ) {
@@ -6108,12 +6116,226 @@ const AvatarButtonMixin = {
             let dragSafetyTimer = 0;
             let dragSafetyToken = 0;
             let dragPointerType = '';
+            let dragLongPressTimer = 0;
+            let dragLongPressPending = false;
+            let dragLongPressMovedPastClickThreshold = false;
+            let pendingDragPointerType = '';
+            let pendingDragStartX = 0, pendingDragStartY = 0, pendingDragLatestX = 0, pendingDragLatestY = 0;
+            let pendingDragStartVirtualX = 0, pendingDragStartVirtualY = 0;
+            let pendingDragLatestVirtualX = 0, pendingDragLatestVirtualY = 0;
+            let pendingDragSourceEvent = null;
             let dragStartX = 0, dragStartY = 0, containerStartX = 0, containerStartY = 0;
+            let dragStartVirtualX = 0, dragStartVirtualY = 0;
+            let dragGrabOffsetX = 0, dragGrabOffsetY = 0;
+            let dragCursorPollFrame = 0;
+            let dragCursorPollInFlight = false;
+            let dragCursorPollStopped = true;
+            let dragCursorPollToken = 0;
+
+            const getDragCropState = () => {
+                try {
+                    const cropApi = window.__nekoNiriPetPhysicalCrop;
+                    return cropApi && typeof cropApi.getState === 'function'
+                        ? cropApi.getState()
+                        : null;
+                } catch (_) {
+                    return null;
+                }
+            };
+
+            const getDragCropOffset = () => {
+                const state = getDragCropState();
+                let offsetX = Number(state && state.offsetX);
+                let offsetY = Number(state && state.offsetY);
+                if (!Number.isFinite(offsetX) || !Number.isFinite(offsetY)) {
+                    try {
+                        const rootStyle = document.documentElement && document.documentElement.style;
+                        offsetX = Number.parseFloat(rootStyle && rootStyle.getPropertyValue('--neko-niri-pet-crop-offset-x'));
+                        offsetY = Number.parseFloat(rootStyle && rootStyle.getPropertyValue('--neko-niri-pet-crop-offset-y'));
+                    } catch (_) {}
+                }
+                return {
+                    x: Number.isFinite(offsetX) ? offsetX : 0,
+                    y: Number.isFinite(offsetY) ? offsetY : 0
+                };
+            };
+
+            const getDragVirtualOrigin = () => {
+                const state = getDragCropState();
+                const virtualBounds = state && state.virtualBounds ? state.virtualBounds : null;
+                const x = Number(virtualBounds && virtualBounds.x);
+                const y = Number(virtualBounds && virtualBounds.y);
+                return {
+                    x: Number.isFinite(x) ? x : 0,
+                    y: Number.isFinite(y) ? y : 0
+                };
+            };
+
+            const isDragNiriCropCoordinateActive = () => {
+                const state = getDragCropState();
+                if (state && state.enabled) return true;
+                try {
+                    return !!(document.documentElement &&
+                        document.documentElement.classList.contains('neko-niri-pet-physical-crop'));
+                } catch (_) {
+                    return false;
+                }
+            };
+
+            const getDragPoint = (sourceEvent, fallbackX, fallbackY) => {
+                const offset = getDragCropOffset();
+                let localX = Number(fallbackX);
+                let localY = Number(fallbackY);
+                let virtualX = Number.isFinite(localX) ? localX + offset.x : NaN;
+                let virtualY = Number.isFinite(localY) ? localY + offset.y : NaN;
+                try {
+                    const cropApi = window.__nekoNiriPetPhysicalCrop;
+                    const coords = cropApi && sourceEvent && typeof cropApi.getEventCoordinates === 'function'
+                        ? cropApi.getEventCoordinates(sourceEvent)
+                        : null;
+                    const nextLocalX = Number(coords && coords.local && coords.local.x);
+                    const nextLocalY = Number(coords && coords.local && coords.local.y);
+                    const nextVirtualX = Number(coords && coords.virtual && coords.virtual.x);
+                    const nextVirtualY = Number(coords && coords.virtual && coords.virtual.y);
+                    if (Number.isFinite(nextLocalX) && Number.isFinite(nextLocalY)) {
+                        localX = nextLocalX;
+                        localY = nextLocalY;
+                    }
+                    if (Number.isFinite(nextVirtualX) && Number.isFinite(nextVirtualY)) {
+                        virtualX = nextVirtualX;
+                        virtualY = nextVirtualY;
+                    }
+                } catch (_) {}
+                if ((!Number.isFinite(virtualX) || !Number.isFinite(virtualY)) &&
+                    Number.isFinite(localX) && Number.isFinite(localY)) {
+                    virtualX = localX + offset.x;
+                    virtualY = localY + offset.y;
+                }
+                if ((!Number.isFinite(localX) || !Number.isFinite(localY)) &&
+                    Number.isFinite(virtualX) && Number.isFinite(virtualY)) {
+                    localX = virtualX - offset.x;
+                    localY = virtualY - offset.y;
+                }
+                return {
+                    x: localX,
+                    y: localY,
+                    localX: localX,
+                    localY: localY,
+                    virtualX: virtualX,
+                    virtualY: virtualY,
+                    offsetX: offset.x,
+                    offsetY: offset.y
+                };
+            };
+
+            const getDragContainerVirtualRect = () => {
+                const rect = container.getBoundingClientRect && container.getBoundingClientRect();
+                const offset = getDragCropOffset();
+                if (!rect) {
+                    const left = Number.parseFloat(container.style.left);
+                    const top = Number.parseFloat(container.style.top);
+                    return {
+                        left: Number.isFinite(left) ? left : 0,
+                        top: Number.isFinite(top) ? top : 0,
+                        width: container.offsetWidth || 64,
+                        height: container.offsetHeight || 64
+                    };
+                }
+                return {
+                    left: Number(rect.left) + offset.x,
+                    top: Number(rect.top) + offset.y,
+                    width: Number(rect.width) || container.offsetWidth || 64,
+                    height: Number(rect.height) || container.offsetHeight || 64
+                };
+            };
+
+            const getDragScreenPointFromVirtualPoint = (virtualX, virtualY, sourceEvent = null, fallbackX = virtualX, fallbackY = virtualY) => {
+                if (!isDragNiriCropCoordinateActive()) {
+                    return {
+                        x: sourceEvent && Number.isFinite(sourceEvent.screenX) ? sourceEvent.screenX : Number(fallbackX),
+                        y: sourceEvent && Number.isFinite(sourceEvent.screenY) ? sourceEvent.screenY : Number(fallbackY)
+                    };
+                }
+                const origin = getDragVirtualOrigin();
+                return {
+                    x: Number(virtualX) + origin.x,
+                    y: Number(virtualY) + origin.y
+                };
+            };
+
+            const getDragPointFromScreenPoint = (screenPoint) => {
+                if (!screenPoint || !isDragNiriCropCoordinateActive()) return null;
+                const screenX = Number(screenPoint.x);
+                const screenY = Number(screenPoint.y);
+                if (!Number.isFinite(screenX) || !Number.isFinite(screenY)) return null;
+                const origin = getDragVirtualOrigin();
+                const offset = getDragCropOffset();
+                const virtualX = screenX - origin.x;
+                const virtualY = screenY - origin.y;
+                return buildDragPointSnapshot(
+                    virtualX - offset.x,
+                    virtualY - offset.y,
+                    virtualX,
+                    virtualY
+                );
+            };
+
+            const canPollNiriDragCursor = () => {
+                return !!(isDragNiriCropCoordinateActive() &&
+                    window.electronScreen &&
+                    typeof window.electronScreen.getCursorPoint === 'function');
+            };
+
+            const stopDragCursorPolling = () => {
+                dragCursorPollStopped = true;
+                dragCursorPollInFlight = false;
+                dragCursorPollToken += 1;
+                if (dragCursorPollFrame) {
+                    cancelAnimationFrame(dragCursorPollFrame);
+                    dragCursorPollFrame = 0;
+                }
+            };
 
             const clearDragSafetyTimer = () => {
                 if (!dragSafetyTimer) return;
                 clearTimeout(dragSafetyTimer);
                 dragSafetyTimer = 0;
+            };
+
+            const clearDragLongPressTimer = () => {
+                if (!dragLongPressTimer) return;
+                clearTimeout(dragLongPressTimer);
+                dragLongPressTimer = 0;
+            };
+
+            const setReturnClickSuppressed = (suppressed) => {
+                if (suppressed) {
+                    container.setAttribute('data-neko-return-click-suppressed', 'true');
+                } else {
+                    container.removeAttribute('data-neko-return-click-suppressed');
+                }
+            };
+
+            const setReturnLongPressPending = (pending) => {
+                if (pending) {
+                    container.setAttribute(_NEKO_IDLE_RETURN_LONG_PRESS_PENDING_ATTR, 'true');
+                } else {
+                    container.removeAttribute(_NEKO_IDLE_RETURN_LONG_PRESS_PENDING_ATTR);
+                }
+            };
+
+            const clearPendingLongPressDrag = () => {
+                clearDragLongPressTimer();
+                dragLongPressPending = false;
+                dragLongPressMovedPastClickThreshold = false;
+                pendingDragPointerType = '';
+                pendingDragSourceEvent = null;
+                setReturnLongPressPending(false);
+                if (!isDragging) {
+                    container.setAttribute('data-dragging', 'false');
+                    container.style.cursor = 'grab';
+                    setReturnClickSuppressed(false);
+                }
             };
 
             const finishDragState = (moved, safetyToken) => {
@@ -6145,6 +6367,7 @@ const AvatarButtonMixin = {
                         dragCancelled: true
                     });
                 }
+                setTimeout(() => setReturnClickSuppressed(false), 120);
             };
 
             const resetDragStateAfterMissingEnd = (safetyToken) => {
@@ -6159,7 +6382,9 @@ const AvatarButtonMixin = {
             };
 
             const cancelDragState = () => {
+                clearPendingLongPressDrag();
                 clearDragSafetyTimer();
+                stopDragCursorPolling();
                 if (!isDragging) return;
                 const safetyToken = dragSafetyToken;
                 isDragging = false;
@@ -6169,18 +6394,115 @@ const AvatarButtonMixin = {
                 finishDragState(false, safetyToken);
             };
 
-            const handleStart = (clientX, clientY, pointerType = 'mouse') => {
+            const buildDragPointSnapshot = (localX, localY, virtualX, virtualY) => ({
+                x: localX,
+                y: localY,
+                localX: localX,
+                localY: localY,
+                virtualX: virtualX,
+                virtualY: virtualY
+            });
+
+            const isUsableDragPoint = (point) => {
+                return !!(point &&
+                    Number.isFinite(point.localX) &&
+                    Number.isFinite(point.localY) &&
+                    Number.isFinite(point.virtualX) &&
+                    Number.isFinite(point.virtualY));
+            };
+
+            const handleMove = (clientX, clientY, sourceEvent = null, movePoint = null) => {
+                if (!isDragging) return;
+                const point = movePoint || getDragPoint(sourceEvent, clientX, clientY);
+                if (!isUsableDragPoint(point)) return;
+                const deltaX = point.virtualX - dragStartVirtualX;
+                const deltaY = point.virtualY - dragStartVirtualY;
+                const w = container.offsetWidth || 64;
+                const h = container.offsetHeight || 64;
+                const nextLeft = Math.max(0, Math.min(point.virtualX - dragGrabOffsetX, window.innerWidth - w));
+                const nextTop = Math.max(0, Math.min(point.virtualY - dragGrabOffsetY, window.innerHeight - h));
+                const screenPoint = getDragScreenPointFromVirtualPoint(nextLeft + w / 2, nextTop + h / 2, sourceEvent, clientX, clientY);
+                if (Math.abs(deltaX) > 5 || Math.abs(deltaY) > 5) {
+                    container.setAttribute('data-dragging', 'true');
+                    if (!dragActiveDispatched) {
+                        dragActiveDispatched = true;
+                        _dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-active');
+                    }
+                    _dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-motion', {
+                        clientX: point.localX,
+                        clientY: point.localY,
+                        screenX: Number.isFinite(screenPoint.x) ? screenPoint.x : (sourceEvent && Number.isFinite(sourceEvent.screenX) ? sourceEvent.screenX : clientX),
+                        screenY: Number.isFinite(screenPoint.y) ? screenPoint.y : (sourceEvent && Number.isFinite(sourceEvent.screenY) ? sourceEvent.screenY : clientY),
+                        deltaX: deltaX,
+                        deltaY: deltaY,
+                        timestamp: Date.now()
+                    });
+                }
+                container.style.left = `${nextLeft}px`;
+                container.style.top = `${nextTop}px`;
+            };
+
+            const scheduleDragCursorPollFrame = () => {
+                if (dragCursorPollStopped || dragCursorPollFrame || !isDragging) return;
+                const pollToken = dragCursorPollToken;
+                dragCursorPollFrame = requestAnimationFrame(() => {
+                    dragCursorPollFrame = 0;
+                    if (pollToken !== dragCursorPollToken ||
+                        dragCursorPollStopped || !isDragging || !canPollNiriDragCursor()) {
+                        if (!isDragging) stopDragCursorPolling();
+                        return;
+                    }
+                    if (!dragCursorPollInFlight) {
+                        dragCursorPollInFlight = true;
+                        Promise.resolve()
+                            .then(() => window.electronScreen.getCursorPoint())
+                            .then((screenPoint) => {
+                                dragCursorPollInFlight = false;
+                                if (pollToken !== dragCursorPollToken || dragCursorPollStopped || !isDragging) return;
+                                const point = getDragPointFromScreenPoint(screenPoint);
+                                if (isUsableDragPoint(point)) {
+                                    handleMove(point.localX, point.localY, null, point);
+                                }
+                                scheduleDragCursorPollFrame();
+                            })
+                            .catch(() => {
+                                dragCursorPollInFlight = false;
+                                if (pollToken !== dragCursorPollToken) return;
+                                scheduleDragCursorPollFrame();
+                            });
+                    }
+                    scheduleDragCursorPollFrame();
+                });
+            };
+
+            const startDragCursorPolling = () => {
+                if (!canPollNiriDragCursor()) return;
+                dragCursorPollToken += 1;
+                dragCursorPollStopped = false;
+                scheduleDragCursorPollFrame();
+            };
+
+            const handleStart = (clientX, clientY, pointerType = 'mouse', sourceEvent = null, startPoint = null) => {
                 clearDragSafetyTimer();
+                stopDragCursorPolling();
+                setReturnLongPressPending(false);
+                setReturnClickSuppressed(true);
+                const point = startPoint || getDragPoint(sourceEvent, clientX, clientY);
+                if (!isUsableDragPoint(point)) return;
                 _restoreNekoIdleCat1EdgePeekBeforeDrag(container);
                 _dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-start');
                 isDragging = true;
                 dragActiveDispatched = false;
                 dragPointerType = pointerType;
-                dragStartX = clientX;
-                dragStartY = clientY;
-                const rect = container.getBoundingClientRect();
+                dragStartX = point.localX;
+                dragStartY = point.localY;
+                dragStartVirtualX = point.virtualX;
+                dragStartVirtualY = point.virtualY;
+                const rect = getDragContainerVirtualRect();
                 containerStartX = rect.left;
                 containerStartY = rect.top;
+                dragGrabOffsetX = point.virtualX - rect.left;
+                dragGrabOffsetY = point.virtualY - rect.top;
                 container.style.transform = 'none';
                 container.style.right = '';
                 container.style.bottom = '';
@@ -6194,36 +6516,95 @@ const AvatarButtonMixin = {
                     dragSafetyTimer = 0;
                     resetDragStateAfterMissingEnd(safetyToken);
                 }, 5000);
+                startDragCursorPolling();
             };
 
-            const handleMove = (clientX, clientY, sourceEvent = null) => {
-                if (!isDragging) return;
-                const deltaX = clientX - dragStartX;
-                const deltaY = clientY - dragStartY;
-                if (Math.abs(deltaX) > 5 || Math.abs(deltaY) > 5) {
-                    container.setAttribute('data-dragging', 'true');
-                    if (!dragActiveDispatched) {
-                        dragActiveDispatched = true;
-                        _dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-active');
-                    }
-                    _dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-motion', {
-                        clientX: clientX,
-                        clientY: clientY,
-                        screenX: sourceEvent && Number.isFinite(sourceEvent.screenX) ? sourceEvent.screenX : clientX,
-                        screenY: sourceEvent && Number.isFinite(sourceEvent.screenY) ? sourceEvent.screenY : clientY,
-                        deltaX: deltaX,
-                        deltaY: deltaY,
-                        timestamp: Date.now()
-                    });
+            const scheduleLongPressDrag = (clientX, clientY, pointerType = 'mouse', sourceEvent = null) => {
+                clearPendingLongPressDrag();
+                const point = getDragPoint(sourceEvent, clientX, clientY);
+                if (!isUsableDragPoint(point)) return;
+                const screenPoint = getDragScreenPointFromVirtualPoint(point.virtualX, point.virtualY, sourceEvent, clientX, clientY);
+                dragLongPressPending = true;
+                pendingDragPointerType = pointerType;
+                pendingDragStartX = point.localX;
+                pendingDragStartY = point.localY;
+                pendingDragLatestX = point.localX;
+                pendingDragLatestY = point.localY;
+                pendingDragStartVirtualX = point.virtualX;
+                pendingDragStartVirtualY = point.virtualY;
+                pendingDragLatestVirtualX = point.virtualX;
+                pendingDragLatestVirtualY = point.virtualY;
+                pendingDragSourceEvent = sourceEvent;
+                dragLongPressMovedPastClickThreshold = false;
+                setReturnLongPressPending(true);
+                container.style.cursor = 'grabbing';
+                _dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-pending', {
+                    clientX: point.localX,
+                    clientY: point.localY,
+                    screenX: Number.isFinite(screenPoint.x) ? screenPoint.x : (sourceEvent && Number.isFinite(sourceEvent.screenX) ? sourceEvent.screenX : clientX),
+                    screenY: Number.isFinite(screenPoint.y) ? screenPoint.y : (sourceEvent && Number.isFinite(sourceEvent.screenY) ? sourceEvent.screenY : clientY),
+                    timestamp: Date.now()
+                });
+                dragLongPressTimer = setTimeout(() => {
+                    dragLongPressTimer = 0;
+                    if (!dragLongPressPending) return;
+                    const startX = pendingDragStartX;
+                    const startY = pendingDragStartY;
+                    const latestX = pendingDragLatestX;
+                    const latestY = pendingDragLatestY;
+                    const startVirtualX = pendingDragStartVirtualX;
+                    const startVirtualY = pendingDragStartVirtualY;
+                    const latestVirtualX = pendingDragLatestVirtualX;
+                    const latestVirtualY = pendingDragLatestVirtualY;
+                    const latestSourceEvent = pendingDragSourceEvent;
+                    const activePointerType = pendingDragPointerType || pointerType;
+                    dragLongPressPending = false;
+                    pendingDragPointerType = '';
+                    pendingDragSourceEvent = null;
+                    handleStart(
+                        startX,
+                        startY,
+                        activePointerType,
+                        latestSourceEvent,
+                        buildDragPointSnapshot(startX, startY, startVirtualX, startVirtualY)
+                    );
+                    handleMove(
+                        latestX,
+                        latestY,
+                        latestSourceEvent,
+                        buildDragPointSnapshot(latestX, latestY, latestVirtualX, latestVirtualY)
+                    );
+                }, _NEKO_IDLE_RETURN_DRAG_LONG_PRESS_MS);
+            };
+
+            const updatePendingLongPressDrag = (clientX, clientY, sourceEvent = null) => {
+                if (!dragLongPressPending) return false;
+                const point = getDragPoint(sourceEvent, clientX, clientY);
+                if (!isUsableDragPoint(point)) return true;
+                pendingDragLatestX = point.localX;
+                pendingDragLatestY = point.localY;
+                pendingDragLatestVirtualX = point.virtualX;
+                pendingDragLatestVirtualY = point.virtualY;
+                pendingDragSourceEvent = sourceEvent;
+                if (Math.abs(point.virtualX - pendingDragStartVirtualX) > 5 ||
+                    Math.abs(point.virtualY - pendingDragStartVirtualY) > 5) {
+                    dragLongPressMovedPastClickThreshold = true;
                 }
-                const w = container.offsetWidth || 64;
-                const h = container.offsetHeight || 64;
-                container.style.left = `${Math.max(0, Math.min(containerStartX + deltaX, window.innerWidth - w))}px`;
-                container.style.top = `${Math.max(0, Math.min(containerStartY + deltaY, window.innerHeight - h))}px`;
+                return true;
             };
 
             const handleEnd = () => {
+                if (dragLongPressPending) {
+                    const suppressClick = dragLongPressMovedPastClickThreshold;
+                    clearPendingLongPressDrag();
+                    if (suppressClick) {
+                        setReturnClickSuppressed(true);
+                        setTimeout(() => setReturnClickSuppressed(false), 160);
+                    }
+                    return;
+                }
                 clearDragSafetyTimer();
+                stopDragCursorPolling();
                 if (isDragging) {
                     const safetyToken = dragSafetyToken;
                     const moved = container.getAttribute('data-dragging') === 'true';
@@ -6250,23 +6631,35 @@ const AvatarButtonMixin = {
                 }
                 if (container.contains(e.target)) {
                     e.preventDefault();
-                    handleStart(e.clientX, e.clientY);
+                    e.stopImmediatePropagation();
+                    const point = getDragPoint(e, e.clientX, e.clientY);
+                    scheduleLongPressDrag(point.x, point.y, 'mouse', e);
                 }
             });
 
             this._returnButtonDragHandlers = {
+                cancelPendingLongPress: clearPendingLongPressDrag,
                 mouseMove: (e) => {
+                    const point = getDragPoint(e, e.clientX, e.clientY);
+                    if (updatePendingLongPressDrag(point.x, point.y, e)) return;
                     if (isDragging && dragPointerType === 'mouse' && e.buttons === 0) {
                         handleEnd();
                         return;
                     }
-                    handleMove(e.clientX, e.clientY, e);
+                    handleMove(point.x, point.y, e);
                 },
                 mouseUp: handleEnd,
                 touchMove: (e) => {
+                    if (dragLongPressPending && e.touches && e.touches[0]) {
+                        e.preventDefault();
+                        const point = getDragPoint(e.touches[0], e.touches[0].clientX, e.touches[0].clientY);
+                        updatePendingLongPressDrag(point.x, point.y, e.touches[0]);
+                        return;
+                    }
                     if (isDragging && e.touches && e.touches[0]) {
                         e.preventDefault();
-                        handleMove(e.touches[0].clientX, e.touches[0].clientY, e.touches[0]);
+                        const point = getDragPoint(e.touches[0], e.touches[0].clientX, e.touches[0].clientY);
+                        handleMove(point.x, point.y, e.touches[0]);
                     }
                 },
                 touchEnd: handleEnd,
@@ -6286,7 +6679,8 @@ const AvatarButtonMixin = {
                     return;
                 }
                 if (container.contains(e.target) && e.touches && e.touches[0]) {
-                    handleStart(e.touches[0].clientX, e.touches[0].clientY, 'touch');
+                    const point = getDragPoint(e.touches[0], e.touches[0].clientX, e.touches[0].clientY);
+                    scheduleLongPressDrag(point.x, point.y, 'touch', e.touches[0]);
                 }
             }, { passive: false });
             document.addEventListener('touchmove', this._returnButtonDragHandlers.touchMove, { passive: false });
@@ -6598,6 +6992,9 @@ const AvatarButtonMixin = {
             }
 
             if (this._returnButtonDragHandlers) {
+                if (typeof this._returnButtonDragHandlers.cancelPendingLongPress === 'function') {
+                    this._returnButtonDragHandlers.cancelPendingLongPress();
+                }
                 document.removeEventListener('mousemove', this._returnButtonDragHandlers.mouseMove);
                 document.removeEventListener('mouseup', this._returnButtonDragHandlers.mouseUp);
                 document.removeEventListener('touchmove', this._returnButtonDragHandlers.touchMove);
