@@ -485,6 +485,7 @@
             director.playLightResistance(x, y, {
                 motionDx: dx,
                 motionDy: dy,
+                forceSystemCursorReveal: true,
                 suppressCursorReveal: true
             });
         }
@@ -508,10 +509,10 @@
             const resistanceMessage = this.getResistanceMessage(performance);
             const presentationSnapshot = director.captureCurrentGuidePresentationSnapshot();
 
-            if (normalizedOptions.forceSystemCursorReveal) {
-                director.revealSystemCursorTemporarily(2000, 'interrupt_resist_light');
-            } else if (!normalizedOptions.suppressCursorReveal) {
+            if (!normalizedOptions.suppressCursorReveal) {
                 director.suppressResistanceCursorReveal(normalizedOptions);
+            }
+            if (typeof director.revealSystemCursorTemporarily === 'function') {
                 director.revealSystemCursorTemporarily(2000, 'interrupt_resist_light');
             }
 

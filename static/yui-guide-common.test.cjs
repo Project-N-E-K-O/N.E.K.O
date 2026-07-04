@@ -1517,9 +1517,12 @@ test('director routes resistance interrupts through ResistanceController boundar
     assert.match(resistanceControllerBlock, /director\.interruptCount \+= 1;/);
     assert.match(resistanceControllerBlock, /director\.abortAsAngryExit\('pointer_interrupt'\);/);
     assert.match(resistanceControllerBlock, /director\.playLightResistance\(x,\s*y,\s*\{/);
+    assert.match(resistanceControllerBlock, /suppressCursorReveal:\s*true/);
+    assert.match(resistanceControllerBlock, /forceSystemCursorReveal:\s*true/);
+    assert.match(resistanceControllerBlock, /if \(!normalizedOptions\.suppressCursorReveal\) \{[\s\S]*?director\.suppressResistanceCursorReveal\(normalizedOptions\);[\s\S]*?if \(typeof director\.revealSystemCursorTemporarily === 'function'\) \{[\s\S]*?director\.revealSystemCursorTemporarily\(2000,\s*'interrupt_resist_light'\)/);
     assert.match(resistanceControllerBlock, /this\.lightResistanceActive = true;/);
     assert.match(resistanceControllerBlock, /director\.revealSystemCursorTemporarily\(2000,\s*'interrupt_resist_light'\);/);
-    assert.match(resistanceControllerBlock, /normalizedOptions\.forceSystemCursorReveal/);
+    assert.doesNotMatch(resistanceControllerBlock, /normalizedOptions\.forceSystemCursorReveal[\s\S]*?director\.revealSystemCursorTemporarily/);
     assert.match(directorSource, /revealSystemCursorTemporarily\(durationMs = 2000,\s*reason = 'tutorial-temporary-reveal'\)/);
     assert.match(directorSource, /classList\.add\('yui-user-cursor-revealed',\s*'yui-resistance-cursor-reveal'\)/);
     assert.match(directorSource, /syncPcSystemCursorTemporaryReveal\(normalizedDurationMs,\s*reason\)/);

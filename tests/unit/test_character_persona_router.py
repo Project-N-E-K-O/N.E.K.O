@@ -718,6 +718,72 @@ async def test_clear_character_persona_selection_closes_original_session_when_re
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_update_catgirl_voice_id_ends_active_session_without_reload_page():
+    with TemporaryDirectory() as td:
+        config_manager = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(config_manager)
+
+        async def _noop(*args, **kwargs):
+            return None
+
+        current_name = config_manager.load_characters()["当前猫娘"]
+        characters = config_manager.load_characters()
+        characters["猫娘"][current_name].setdefault("_reserved", {})["voice_id"] = "old-voice"
+        config_manager.save_characters(characters)
+
+        current_session = SimpleNamespace(
+            is_active=True,
+            websocket=object(),
+            session=object(),
+            end_session=AsyncMock(),
+            send_session_ended_by_server=AsyncMock(),
+            reset_session_start_circuit=Mock(),
+        )
+        role_state = {
+            current_name: SimpleNamespace(session_manager=current_session),
+        }
+        init_one_catgirl = AsyncMock()
+
+        with patch("utils.config_manager._config_manager", config_manager), patch.object(
+            config_manager,
+            "validate_voice_id",
+            return_value=True,
+        ), patch.object(
+            config_manager,
+            "voice_id_to_storage_value",
+            side_effect=lambda voice_id: voice_id,
+        ):
+            init_shared_state(
+                role_state=role_state,
+                steamworks=None,
+                templates=None,
+                config_manager=config_manager,
+                logger=None,
+                initialize_character_data=_noop,
+                switch_current_catgirl_fast=_noop,
+                init_one_catgirl=init_one_catgirl,
+                remove_one_catgirl=_noop,
+            )
+
+            router_module = importlib.reload(importlib.import_module("main_routers.characters_router"))
+            with patch.object(router_module, "send_reload_page_notice", AsyncMock(return_value=True)) as reload_notice:
+                result = await router_module.update_catgirl_voice_id(
+                    current_name,
+                    _DummyRequest({"voice_id": "new-voice"}),
+                )
+
+        assert result == {"success": True, "session_restarted": True, "voice_id_changed": True}
+        reload_notice.assert_not_awaited()
+        current_session.send_session_ended_by_server.assert_awaited_once_with()
+        current_session.end_session.assert_awaited_once_with(by_server=True)
+        current_session.reset_session_start_circuit.assert_called_once_with()
+        init_one_catgirl.assert_awaited_once_with(current_name, is_new=False)
+        saved_characters = config_manager.load_characters()
+        assert saved_characters["猫娘"][current_name]["_reserved"]["voice_id"] == "new-voice"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_update_catgirl_profile_fields_refreshes_active_context():
     with TemporaryDirectory() as td:
         config_manager = _make_config_manager(Path(td))

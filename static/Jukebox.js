@@ -5672,10 +5672,10 @@ window.Jukebox = {
           <div class="jukebox-volume-wrapper">
             <button class="jukebox-speaker-btn" id="jukebox-speaker-btn" aria-label="${Jukebox.escapeAttr(window.t('Jukebox.mute', '静音'))}">
               <svg class="speaker-icon" viewBox="0 0 24 24" width="20" height="20">
-                <path fill="${Jukebox.Config.volume.iconColor}" d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
+                <path fill="currentColor" d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
               </svg>
               <svg class="speaker-muted-icon" viewBox="0 0 24 24" width="20" height="20" style="display:none;">
-                <path fill="${Jukebox.Config.volume.iconColor}" d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/>
+                <path fill="currentColor" d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/>
               </svg>
             </button>
             <div class="jukebox-volume-popup">
@@ -7158,6 +7158,466 @@ window.Jukebox = {
       .jukebox-tooltip.visible {
         opacity: 1;
         transform: translateY(0);
+      }
+
+      [data-theme="dark"] {
+        --neko-jukebox-bg: #101722;
+      }
+
+      html[data-theme="dark"].neko-jukebox-standalone-host,
+      html[data-theme="dark"].neko-jukebox-standalone-host body.neko-jukebox-standalone-page,
+      html[data-theme="dark"] body.neko-jukebox-standalone-page {
+        background: var(--neko-jukebox-bg) !important;
+      }
+
+      [data-theme="dark"] .jukebox-container {
+        background: linear-gradient(160deg, rgba(18, 25, 36, 0.96), rgba(26, 38, 52, 0.94));
+        color: #e6edf3;
+        border-color: rgba(124, 218, 244, 0.24);
+        box-shadow: 0 20px 54px rgba(2, 8, 23, 0.54), 0 4px 18px rgba(0, 0, 0, 0.28);
+      }
+
+      [data-theme="dark"] .jukebox-header {
+        border-bottom-color: rgba(124, 218, 244, 0.16);
+      }
+
+      [data-theme="dark"] .jukebox-header h3 {
+        color: #f8fafc;
+      }
+
+      [data-theme="dark"] .jukebox-status-text {
+        color: #9bdcf5;
+        background: rgba(14, 165, 233, 0.12);
+      }
+
+      [data-theme="dark"] .jukebox-notice {
+        color: #cbd5e1;
+        background: rgba(15, 23, 42, 0.54);
+        border-color: rgba(124, 218, 244, 0.18);
+      }
+
+      [data-theme="dark"] .jukebox-settings,
+      [data-theme="dark"] .jukebox-minimize,
+      [data-theme="dark"] .jukebox-sort-lock-btn,
+      [data-theme="dark"] .jukebox-speaker-btn,
+      [data-theme="dark"] .play-btn.jukebox-mode-btn {
+        color: #b7e8f8;
+        background: linear-gradient(160deg, rgba(30, 41, 59, 0.9), rgba(15, 23, 42, 0.82));
+        border-color: rgba(124, 218, 244, 0.22);
+        box-shadow: 0 4px 12px rgba(2, 8, 23, 0.26);
+      }
+
+      [data-theme="dark"] .jukebox-settings:hover,
+      [data-theme="dark"] .jukebox-minimize:hover,
+      [data-theme="dark"] .jukebox-sort-lock-btn:hover,
+      [data-theme="dark"] .jukebox-sort-lock-btn.unlocked,
+      [data-theme="dark"] .jukebox-speaker-btn:hover,
+      [data-theme="dark"] .play-btn.jukebox-mode-btn:hover {
+        color: #f8fafc;
+        background: linear-gradient(135deg, rgba(14, 165, 233, 0.28), rgba(244, 114, 182, 0.18));
+        border-color: rgba(124, 218, 244, 0.36);
+        box-shadow: 0 6px 16px rgba(14, 165, 233, 0.16);
+      }
+
+      [data-theme="dark"] .jukebox-close {
+        color: #fca5a5;
+        background: rgba(30, 41, 59, 0.82);
+        border-color: rgba(248, 113, 113, 0.2);
+      }
+
+      [data-theme="dark"] .jukebox-close:hover {
+        color: #fff1f2;
+        background: rgba(220, 38, 38, 0.22);
+        border-color: rgba(248, 113, 113, 0.34);
+      }
+
+      [data-theme="dark"] .play-btn.jukebox-mode-btn.active {
+        color: #ffffff;
+        background: linear-gradient(135deg, rgba(14, 165, 233, 0.88), rgba(244, 114, 182, 0.62));
+        border-color: rgba(125, 211, 252, 0.48);
+        box-shadow: 0 8px 20px rgba(14, 165, 233, 0.24);
+      }
+
+      [data-theme="dark"] .play-btn.jukebox-mode-btn.active:hover {
+        background: linear-gradient(135deg, rgba(56, 189, 248, 0.92), rgba(251, 113, 133, 0.68));
+      }
+
+      [data-theme="dark"] .speaker-icon,
+      [data-theme="dark"] .speaker-muted-icon {
+        filter: none;
+      }
+
+      [data-theme="dark"] .jukebox-table {
+        background: rgba(15, 23, 42, 0.48);
+        border-color: rgba(124, 218, 244, 0.18);
+        box-shadow: 0 10px 28px rgba(2, 8, 23, 0.28);
+      }
+
+      [data-theme="dark"] .jukebox-table thead {
+        background: rgba(30, 41, 59, 0.66);
+      }
+
+      [data-theme="dark"] .jukebox-table th {
+        color: #c8e7f5;
+      }
+
+      [data-theme="dark"] .jukebox-table th:not(:last-child) {
+        background-image: linear-gradient(
+          to bottom,
+          transparent 18%,
+          rgba(124, 218, 244, 0.16) 18%,
+          rgba(124, 218, 244, 0.16) 82%,
+          transparent 82%
+        );
+      }
+
+      [data-theme="dark"] .jukebox-table td {
+        border-bottom-color: rgba(124, 218, 244, 0.12);
+      }
+
+      [data-theme="dark"] .jukebox-table td:not(:last-child) {
+        background-image: linear-gradient(
+          to bottom,
+          transparent 20%,
+          rgba(124, 218, 244, 0.1) 20%,
+          rgba(124, 218, 244, 0.1) 80%,
+          transparent 80%
+        );
+      }
+
+      [data-theme="dark"] .jukebox-table td.song-name {
+        color: #f1f5f9;
+      }
+
+      [data-theme="dark"] .jukebox-table td.song-artist,
+      [data-theme="dark"] .jukebox-container .loading {
+        color: #9bdcf5;
+      }
+
+      [data-theme="dark"] .jukebox-table tbody tr:hover {
+        background: rgba(30, 41, 59, 0.78);
+      }
+
+      [data-theme="dark"] .jukebox-table tbody tr.jukebox-row-dragging {
+        background: rgba(14, 165, 233, 0.16);
+      }
+
+      [data-theme="dark"] .jukebox-table tbody tr.jukebox-row-drop-before td {
+        box-shadow: inset 0 2px 0 rgba(125, 211, 252, 0.9);
+      }
+
+      [data-theme="dark"] .jukebox-table tbody tr.jukebox-row-drop-after td {
+        box-shadow: inset 0 -2px 0 rgba(125, 211, 252, 0.9);
+      }
+
+      [data-theme="dark"] .jukebox-controls-row {
+        color: #cbd5e1;
+        background: rgba(15, 23, 42, 0.58);
+        border: 1px solid rgba(124, 218, 244, 0.14);
+      }
+
+      [data-theme="dark"] .jukebox-control-divider {
+        background: rgba(124, 218, 244, 0.18);
+      }
+
+      [data-theme="dark"] .jukebox-progress {
+        color: #b8c7d9;
+      }
+
+      [data-theme="dark"] #jukebox-progress-slider {
+        background: rgba(148, 163, 184, 0.22);
+      }
+
+      [data-theme="dark"] #jukebox-progress-slider::-webkit-slider-thumb,
+      [data-theme="dark"] #jukebox-volume-slider::-webkit-slider-thumb {
+        background: #38bdf8;
+      }
+
+      [data-theme="dark"] #jukebox-progress-slider.seekable::-webkit-slider-thumb,
+      [data-theme="dark"] #jukebox-volume-slider::-webkit-slider-thumb:hover {
+        background: #7dd3fc;
+      }
+
+      [data-theme="dark"] #jukebox-progress-slider::-moz-range-thumb,
+      [data-theme="dark"] #jukebox-volume-slider::-moz-range-thumb {
+        background: #38bdf8;
+      }
+
+      [data-theme="dark"] #jukebox-progress-slider.seekable::-moz-range-thumb,
+      [data-theme="dark"] #jukebox-volume-slider::-moz-range-thumb:hover {
+        background: #7dd3fc;
+      }
+
+      [data-theme="dark"] .jukebox-volume-popup {
+        background: rgba(15, 23, 42, 0.96);
+        border: 1px solid rgba(124, 218, 244, 0.18);
+        box-shadow: 0 14px 34px rgba(2, 8, 23, 0.46);
+      }
+
+      [data-theme="dark"] .jukebox-volume-track {
+        background: rgba(148, 163, 184, 0.28);
+      }
+
+      [data-theme="dark"] #jukebox-volume-value,
+      [data-theme="dark"] .jukebox-volume-input {
+        color: #dcebf5;
+      }
+
+      [data-theme="dark"] .jukebox-volume-value-editable:hover {
+        background: rgba(14, 165, 233, 0.16);
+      }
+
+      [data-theme="dark"] .jukebox-volume-input {
+        background: rgba(30, 41, 59, 0.9);
+        border-color: rgba(124, 218, 244, 0.28);
+      }
+
+      [data-theme="dark"] .jukebox-volume-input:focus {
+        background: rgba(15, 23, 42, 0.96);
+        border-color: #38bdf8;
+      }
+
+      [data-theme="dark"] .jukebox-calibration-toggle {
+        color: #f8fafc;
+        background: linear-gradient(135deg, #0ea5e9, #38bdf8);
+      }
+
+      [data-theme="dark"] .jukebox-calibration-panel {
+        background: rgba(15, 23, 42, 0.66);
+        border: 1px solid rgba(124, 218, 244, 0.14);
+      }
+
+      [data-theme="dark"] .jukebox-calibration-title,
+      [data-theme="dark"] .jukebox-calibration-value {
+        color: #f8fafc;
+      }
+
+      [data-theme="dark"] .jukebox-calibration-fps {
+        color: #94a3b8;
+      }
+
+      [data-theme="dark"] .jukebox-calibration-close,
+      [data-theme="dark"] .jukebox-calibration-btn {
+        color: #dbeafe;
+        background: rgba(30, 41, 59, 0.9);
+        border-color: rgba(124, 218, 244, 0.2);
+      }
+
+      [data-theme="dark"] .jukebox-calibration-close:hover,
+      [data-theme="dark"] .jukebox-calibration-btn:hover {
+        color: #f8fafc;
+        background: rgba(14, 165, 233, 0.2);
+        border-color: rgba(124, 218, 244, 0.36);
+      }
+
+      [data-theme="dark"] .jukebox-tooltip,
+      [data-theme="dark"] .sam-danger-tooltip {
+        color: #e6edf3;
+        background: linear-gradient(160deg, rgba(15, 23, 42, 0.96), rgba(30, 41, 59, 0.92));
+        border-color: rgba(124, 218, 244, 0.2);
+        box-shadow: 0 12px 30px rgba(2, 8, 23, 0.42);
+      }
+
+      /* Keep this SongActionManager dark palette in sync with templates/jukebox_manager.html. */
+      [data-theme="dark"] .jukebox-sam-panel {
+        color: #e6edf3;
+        background: linear-gradient(160deg, rgba(18, 25, 36, 0.97), rgba(26, 38, 52, 0.94));
+        border-color: rgba(124, 218, 244, 0.24);
+        box-shadow: 0 20px 54px rgba(2, 8, 23, 0.54), 0 4px 18px rgba(0, 0, 0, 0.28);
+      }
+
+      [data-theme="dark"] .sam-header {
+        border-bottom-color: rgba(124, 218, 244, 0.16);
+      }
+
+      [data-theme="dark"] .sam-title,
+      [data-theme="dark"] .sam-import-header h4,
+      [data-theme="dark"] .sam-item-name,
+      [data-theme="dark"] .sam-binding-item-name,
+      [data-theme="dark"] .sam-danger-modal h3 {
+        color: #f8fafc;
+      }
+
+      [data-theme="dark"] .sam-close-btn,
+      [data-theme="dark"] .sam-tab,
+      [data-theme="dark"] .sam-btn,
+      [data-theme="dark"] .sam-add-binding-btn,
+      [data-theme="dark"] .sam-visibility-btn {
+        color: #b7e8f8;
+        background: linear-gradient(160deg, rgba(30, 41, 59, 0.9), rgba(15, 23, 42, 0.82));
+        border-color: rgba(124, 218, 244, 0.22);
+      }
+
+      [data-theme="dark"] .sam-close-btn:hover,
+      [data-theme="dark"] .sam-tab:hover,
+      [data-theme="dark"] .sam-btn:hover,
+      [data-theme="dark"] .sam-add-binding-btn:hover,
+      [data-theme="dark"] .sam-visibility-btn:hover {
+        color: #f8fafc;
+        background: linear-gradient(135deg, rgba(14, 165, 233, 0.28), rgba(244, 114, 182, 0.18));
+        border-color: rgba(124, 218, 244, 0.36);
+      }
+
+      [data-theme="dark"] .sam-tab.active {
+        color: #ffffff;
+        background: linear-gradient(135deg, rgba(14, 165, 233, 0.88), rgba(244, 114, 182, 0.62));
+        box-shadow: 0 8px 20px rgba(14, 165, 233, 0.22);
+      }
+
+      [data-theme="dark"] .sam-file-drop-zone,
+      [data-theme="dark"] .sam-bindings-list {
+        border-color: rgba(124, 218, 244, 0.22);
+      }
+
+      [data-theme="dark"] .sam-file-drop-zone:hover,
+      [data-theme="dark"] .sam-file-drop-zone.drag-over,
+      [data-theme="dark"] .sam-bindings-list.drag-over {
+        background: rgba(14, 165, 233, 0.12);
+        border-color: rgba(125, 211, 252, 0.48);
+      }
+
+      [data-theme="dark"] .sam-drop-hint,
+      [data-theme="dark"] .sam-empty,
+      [data-theme="dark"] .sam-import-hint,
+      [data-theme="dark"] .sam-unified-hint,
+      [data-theme="dark"] .sam-danger-modal-detail {
+        color: #94a3b8;
+        background: rgba(15, 23, 42, 0.58);
+        border-color: rgba(124, 218, 244, 0.18);
+      }
+
+      [data-theme="dark"] .sam-item,
+      [data-theme="dark"] .sam-binding-item {
+        background: rgba(15, 23, 42, 0.58);
+        border-color: rgba(124, 218, 244, 0.16);
+        box-shadow: 0 8px 20px rgba(2, 8, 23, 0.24);
+      }
+
+      [data-theme="dark"] .sam-item:hover,
+      [data-theme="dark"] .sam-binding-item:hover,
+      [data-theme="dark"] .sam-add-hint:hover,
+      [data-theme="dark"] .sam-import-item:hover,
+      [data-theme="dark"] .sam-item-name:hover,
+      [data-theme="dark"] .sam-item-artist:hover {
+        background: rgba(30, 41, 59, 0.78);
+      }
+
+      [data-theme="dark"] .sam-item-name:focus,
+      [data-theme="dark"] .sam-item-artist:focus {
+        background: rgba(14, 165, 233, 0.16);
+      }
+
+      [data-theme="dark"] .sam-item-artist,
+      [data-theme="dark"] .sam-import-item-name,
+      [data-theme="dark"] .sam-checkbox,
+      [data-theme="dark"] .sam-bindings-section h4,
+      [data-theme="dark"] .sam-item-format,
+      [data-theme="dark"] .sam-binding-item-index {
+        color: #b8c7d9;
+      }
+
+      [data-theme="dark"] .sam-item-format,
+      [data-theme="dark"] .sam-binding-item-index,
+      [data-theme="dark"] .sam-binding-tag,
+      [data-theme="dark"] .sam-binding-count {
+        background: rgba(30, 41, 59, 0.76);
+        border-color: rgba(124, 218, 244, 0.18);
+      }
+
+      [data-theme="dark"] .sam-binding-tag {
+        color: #b7e8f8;
+      }
+
+      [data-theme="dark"] .sam-binding-count {
+        color: #f8fafc;
+      }
+
+      [data-theme="dark"] .sam-binding-item-tags {
+        border-top-color: rgba(124, 218, 244, 0.14);
+      }
+
+      [data-theme="dark"] .sam-add-binding-input,
+      [data-theme="dark"] .jukebox-sam-panel input:not([type="checkbox"]):not([type="file"]),
+      [data-theme="dark"] .jukebox-sam-panel textarea,
+      [data-theme="dark"] .jukebox-sam-panel select {
+        color: #e6edf3;
+        background: rgba(15, 23, 42, 0.78);
+        border-color: rgba(124, 218, 244, 0.24);
+      }
+
+      [data-theme="dark"] .sam-add-binding-input:focus,
+      [data-theme="dark"] .jukebox-sam-panel input:not([type="checkbox"]):not([type="file"]):focus,
+      [data-theme="dark"] .jukebox-sam-panel textarea:focus,
+      [data-theme="dark"] .jukebox-sam-panel select:focus {
+        border-color: #38bdf8;
+        box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.18);
+      }
+
+      [data-theme="dark"] .jukebox-sam-panel input[type="checkbox"] {
+        accent-color: #38bdf8;
+      }
+
+      [data-theme="dark"] .sam-import-container {
+        background: rgba(15, 23, 42, 0.52);
+        border-color: rgba(124, 218, 244, 0.18);
+      }
+
+      [data-theme="dark"] .sam-import-header,
+      [data-theme="dark"] .sam-list-header,
+      [data-theme="dark"] .sam-footer,
+      [data-theme="dark"] .sam-import-footer {
+        background: rgba(15, 23, 42, 0.62);
+        border-color: rgba(124, 218, 244, 0.14);
+      }
+
+      [data-theme="dark"] .sam-selection-info,
+      [data-theme="dark"] .sam-footer,
+      [data-theme="dark"] .sam-danger-modal p,
+      [data-theme="dark"] .sam-danger-modal-detail {
+        color: #b8c7d9;
+      }
+
+      [data-theme="dark"] .sam-item-selected {
+        background: rgba(14, 165, 233, 0.18) !important;
+        border-left-color: #38bdf8;
+      }
+
+      [data-theme="dark"] .sam-visibility-btn.hidden {
+        color: #f9a8d4;
+        background: rgba(244, 114, 182, 0.14);
+        border-color: rgba(244, 114, 182, 0.28);
+      }
+
+      [data-theme="dark"] .sam-delete-btn,
+      [data-theme="dark"] .sam-btn-danger,
+      [data-theme="dark"] .sam-danger-modal-confirm {
+        color: #fca5a5;
+        background: rgba(220, 38, 38, 0.14);
+        border-color: rgba(248, 113, 113, 0.28);
+      }
+
+      [data-theme="dark"] .sam-delete-btn:hover,
+      [data-theme="dark"] .sam-btn-danger:hover,
+      [data-theme="dark"] .sam-danger-modal-confirm:hover {
+        color: #fff1f2;
+        background: rgba(220, 38, 38, 0.24);
+      }
+
+      [data-theme="dark"] .sam-danger-modal-backdrop {
+        background: rgba(2, 8, 23, 0.68);
+      }
+
+      [data-theme="dark"] .sam-danger-modal {
+        color: #e6edf3;
+        background: linear-gradient(160deg, rgba(15, 23, 42, 0.98), rgba(30, 41, 59, 0.94));
+        border-color: rgba(124, 218, 244, 0.22);
+        box-shadow: 0 20px 54px rgba(2, 8, 23, 0.58);
+      }
+
+      [data-theme="dark"] .sam-danger-modal-cancel {
+        color: #dbeafe;
+        background: rgba(30, 41, 59, 0.92);
+        border-color: rgba(124, 218, 244, 0.2);
       }
     `;
     

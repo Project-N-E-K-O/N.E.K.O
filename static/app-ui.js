@@ -416,6 +416,44 @@
     //  2. Voice toasts & prominent notice  (app.js lines 3674-3999)
     // ================================================================
 
+    function normalizeVoiceToastMessage(message) {
+        var fallbackKey = 'app.voiceSystemPreparing';
+        var defaultFallback = '语音系统准备中...';
+
+        function usableText(value) {
+            if (typeof value !== 'string') return '';
+            var text = value.trim();
+            if (!text || text === '[object Module]' || text === '[object Object]') return '';
+            return value;
+        }
+        var fallback = defaultFallback;
+        if (typeof window.t === 'function') {
+            var translatedFallback = usableText(window.t(fallbackKey, defaultFallback));
+            if (translatedFallback && translatedFallback.trim() !== fallbackKey) {
+                fallback = translatedFallback;
+            }
+        }
+
+        var directText = usableText(message);
+        if (directText) return directText;
+
+        if (message && typeof message === 'object') {
+            if (typeof window.translateStatusMessage === 'function') {
+                var translated = usableText(window.translateStatusMessage(message));
+                if (translated) return translated;
+            }
+            var nestedText = usableText(message.message);
+            if (nestedText) return nestedText;
+            var codeText = usableText(message.code);
+            if (codeText) return codeText;
+            console.warn('[VoiceToast] Non-string message ignored:', message);
+        } else if (message !== undefined && message !== null) {
+            console.warn('[VoiceToast] Unusable message ignored:', message);
+        }
+
+        return fallback;
+    }
+
     // --- showVoicePreparingToast ---
     function showVoicePreparingToast(message) {
         // 检查是否已存在提示框，避免重复创建
@@ -485,7 +523,7 @@
         var spinner = document.createElement('div');
         spinner.style.cssText = 'width:20px;height:20px;border:3px solid rgba(255,255,255,0.3);border-top-color:white;border-radius:50%;animation:spin 1s linear infinite;';
         var msgSpan = document.createElement('span');
-        msgSpan.textContent = message;
+        msgSpan.textContent = normalizeVoiceToastMessage(message);
         toast.appendChild(spinner);
         toast.appendChild(msgSpan);
 
