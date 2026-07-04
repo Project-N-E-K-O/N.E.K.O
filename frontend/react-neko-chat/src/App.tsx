@@ -7441,7 +7441,7 @@ function CompactChatApp({
                     data-compact-drag-surface="true"
                     data-compact-chat-state={effectiveCompactChatState}
                     data-compact-geometry-part={effectiveCompactChatState === 'input' ? 'inputBody' : 'capsuleBody'}
-                    data-compact-geometry-hit-scope={(effectiveCompactChatState === 'input' || compactToolToggleVisible) ? 'children' : undefined}
+                    data-compact-geometry-hit-scope={!composerHidden ? 'children' : undefined}
                     data-compact-tool-toggle-visible={compactToolToggleVisible ? 'true' : 'false'}
                     onPointerDown={beginCompactToolOriginDrag}
                     onPointerMove={updateCompactToolOriginDrag}

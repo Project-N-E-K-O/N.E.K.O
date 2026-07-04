@@ -1562,10 +1562,7 @@ def test_compact_input_geometry_preserves_drag_surface_native_region():
     assert "hitRect: null" in shell_block
     assert "nativeRect: null" in shell_block
 
-    assert (
-        "data-compact-geometry-hit-scope={(effectiveCompactChatState === 'input' || compactToolToggleVisible) ? 'children' : undefined}"
-        in app_source
-    )
+    assert "data-compact-geometry-hit-scope={!composerHidden ? 'children' : undefined}" in app_source
     assert "if (!isCompactSurface || composerHidden)" in app_source
     assert "if (!isCompactSurface || effectiveCompactChatState !== 'input')" not in app_source
     assert 'data-compact-hit-region-id="input:text"' in app_source

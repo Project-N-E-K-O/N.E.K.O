@@ -6308,8 +6308,8 @@ const AvatarButtonMixin = {
                     const left = Number.parseFloat(container.style.left);
                     const top = Number.parseFloat(container.style.top);
                     return {
-                        left: Number.isFinite(left) ? left : 0,
-                        top: Number.isFinite(top) ? top : 0,
+                        left: (Number.isFinite(left) ? left : 0) + offset.x,
+                        top: (Number.isFinite(top) ? top : 0) + offset.y,
                         width: container.offsetWidth || 64,
                         height: container.offsetHeight || 64
                     };
@@ -6492,9 +6492,12 @@ const AvatarButtonMixin = {
                 const deltaY = point.virtualY - dragStartVirtualY;
                 const w = container.offsetWidth || 64;
                 const h = container.offsetHeight || 64;
-                const nextLeft = Math.max(0, Math.min(point.virtualX - dragGrabOffsetX, window.innerWidth - w));
-                const nextTop = Math.max(0, Math.min(point.virtualY - dragGrabOffsetY, window.innerHeight - h));
-                const screenPoint = getDragScreenPointFromVirtualPoint(nextLeft + w / 2, nextTop + h / 2, sourceEvent, clientX, clientY);
+                const offset = isDragNiriCropCoordinateActive() ? getDragCropOffset() : { x: 0, y: 0 };
+                const nextVirtualLeft = Math.max(offset.x, Math.min(point.virtualX - dragGrabOffsetX, offset.x + window.innerWidth - w));
+                const nextVirtualTop = Math.max(offset.y, Math.min(point.virtualY - dragGrabOffsetY, offset.y + window.innerHeight - h));
+                const nextLeft = nextVirtualLeft - offset.x;
+                const nextTop = nextVirtualTop - offset.y;
+                const screenPoint = getDragScreenPointFromVirtualPoint(nextVirtualLeft + w / 2, nextVirtualTop + h / 2, sourceEvent, clientX, clientY);
                 if (Math.abs(deltaX) > 5 || Math.abs(deltaY) > 5) {
                     container.setAttribute('data-dragging', 'true');
                     if (!dragActiveDispatched) {

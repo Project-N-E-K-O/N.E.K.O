@@ -3849,7 +3849,7 @@
                 return true;
             }
         } catch (_) {}
-        return typeof cropApi.isActive === 'function' || typeof cropApi.getState === 'function';
+        return false;
     }
 
     function cleanupMultiWindowReturnBallDrag() {
@@ -3893,6 +3893,8 @@
             restoreSavedReturnBallStyle(state.container, state);
             resetReturnBallTemporaryStyle(state.container);
             state.container.setAttribute('data-dragging', 'false');
+            state.container.removeAttribute(RETURN_BALL_LONG_PRESS_PENDING_ATTR);
+            state.container.removeAttribute('data-neko-return-click-suppressed');
         }
         delete document.body.dataset.nekoBallDrag;
         multiWindowReturnBallDragState = null;

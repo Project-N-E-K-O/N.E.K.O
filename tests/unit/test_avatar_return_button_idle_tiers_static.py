@@ -908,6 +908,14 @@ def test_desktop_return_ball_drag_lifecycle_waits_for_restored_viewport_before_r
     assert "isNativeReturnBallDragDisabled() || !window.nekoPetDrag" in source
     assert "function isNiriPhysicalCropReturnBallDragActive()" in source
     assert "window.__nekoNiriPetPhysicalCrop" in source
+    niri_active_block = _source_slice_between(
+        source,
+        "function isNiriPhysicalCropReturnBallDragActive()",
+        "function cleanupMultiWindowReturnBallDrag()",
+        "niri return-ball crop active check",
+    )
+    assert "return typeof cropApi.isActive === 'function' || typeof cropApi.getState === 'function';" not in niri_active_block
+    assert "document.documentElement.classList.contains('neko-niri-pet-physical-crop')" in niri_active_block
     assert "const dragStarted = window.nekoPetDrag.start(screenX, screenY)" in source
     assert "if (dragStarted === false)" in source
     assert "state.niriPhysicalCropDrag = isNiriPhysicalCropReturnBallDragActive();" in source
@@ -919,6 +927,14 @@ def test_desktop_return_ball_drag_lifecycle_waits_for_restored_viewport_before_r
     assert "scheduleIdleReturnBallDesktopDragState(container, screenRect);" in source
     assert "scheduleIdleReturnBallDesktopBridge('return-ball-dragging', container);" in source
     assert "scheduleIdleReturnBallDesktopBridge(reason, container);" in source
+    cleanup_block = _source_slice_between(
+        source,
+        "function cleanupMultiWindowReturnBallDrag()",
+        "function ensureMultiWindowReturnBallDrag(container)",
+        "native return-ball drag cleanup",
+    )
+    assert "state.container.removeAttribute(RETURN_BALL_LONG_PRESS_PENDING_ATTR);" in cleanup_block
+    assert "state.container.removeAttribute('data-neko-return-click-suppressed');" in cleanup_block
     _assert_source_order(
         source,
         "manual return-ball drag publishes desktop state",
@@ -1650,6 +1666,11 @@ def test_cat1_rapid_drag_reaction_is_same_drag_motion_only():
     )
     _assert_source_contains(
         local_drag_setup,
+        "left: (Number.isFinite(left) ? left : 0) + offset.x",
+        "return button drag setup",
+    )
+    _assert_source_contains(
+        local_drag_setup,
         "left: Number(rect.left) + offset.x",
         "return button drag setup",
     )
@@ -1669,8 +1690,10 @@ def test_cat1_rapid_drag_reaction_is_same_drag_motion_only():
         "local return-ball drag motion emits client and screen coordinates",
         "const point = movePoint || getDragPoint(sourceEvent, clientX, clientY);",
         "const deltaX = point.virtualX - dragStartVirtualX;",
-        "const nextLeft = Math.max(0, Math.min(point.virtualX - dragGrabOffsetX, window.innerWidth - w));",
-        "const screenPoint = getDragScreenPointFromVirtualPoint(nextLeft + w / 2, nextTop + h / 2, sourceEvent, clientX, clientY);",
+        "const offset = isDragNiriCropCoordinateActive() ? getDragCropOffset() : { x: 0, y: 0 };",
+        "const nextVirtualLeft = Math.max(offset.x, Math.min(point.virtualX - dragGrabOffsetX, offset.x + window.innerWidth - w));",
+        "const nextLeft = nextVirtualLeft - offset.x;",
+        "const screenPoint = getDragScreenPointFromVirtualPoint(nextVirtualLeft + w / 2, nextVirtualTop + h / 2, sourceEvent, clientX, clientY);",
         "clientX: point.localX,",
         "clientY: point.localY,",
         "screenX: Number.isFinite(screenPoint.x)",
@@ -2467,6 +2490,7 @@ def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():
         "const getDragPoint = (sourceEvent, fallbackX, fallbackY) => {",
         "cropApi.getEventCoordinates(sourceEvent)",
         "const getDragContainerVirtualRect = () => {",
+        "left: (Number.isFinite(left) ? left : 0) + offset.x",
         "left: Number(rect.left) + offset.x",
         "const getDragScreenPointFromVirtualPoint = (virtualX, virtualY, sourceEvent = null, fallbackX = virtualX, fallbackY = virtualY) => {",
         "const getDragPointFromScreenPoint = (screenPoint) => {",
