@@ -1609,6 +1609,30 @@ function openCustomTouchAreaWindow(options = {}) {
         }
     }
 
+    async function drainTouchSetSaveBeforePreviewReload() {
+        let shouldFlushQueuedSave = !!autoSaveTimeout
+        if (shouldFlushQueuedSave) {
+            clearTimeout(autoSaveTimeout)
+            autoSaveTimeout = null
+        }
+
+        const saveAvailable = await waitForActiveTouchSetSave()
+        if (!saveAvailable) return false
+        if (autoSaveTimeout) {
+            clearTimeout(autoSaveTimeout)
+            autoSaveTimeout = null
+            shouldFlushQueuedSave = true
+        }
+        if (!shouldFlushQueuedSave) return true
+
+        isSaving = true
+        try {
+            return await saveTouchSetToServer()
+        } finally {
+            isSaving = false
+        }
+    }
+
     saveButton.onclick = async function() {
         if (saveButton.disabled) return
         const rect = selectionToNormalizedRect()
@@ -1657,8 +1681,11 @@ function openCustomTouchAreaWindow(options = {}) {
             animationFrameId = null
         }
         const shouldReloadSourceModel = previewLoadStarted
+        const canReloadSourceModel = shouldReloadSourceModel
+            ? await drainTouchSetSaveBeforePreviewReload()
+            : true
         destroyPreviewModel()
-        if (shouldReloadSourceModel && typeof window.reloadCurrentLive2DModelInModelManager === 'function') {
+        if (shouldReloadSourceModel && canReloadSourceModel && typeof window.reloadCurrentLive2DModelInModelManager === 'function') {
             const reloadPromise = window.reloadCurrentLive2DModelInModelManager({
                 reason: 'custom-touch-area-preview-close'
             })
