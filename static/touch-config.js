@@ -311,6 +311,8 @@ async function InitializationTouchSet(characterJson) {
     window.live2dManager.setupHitAreaInteraction(model)
 }
 
+const TOUCH_SET_SAVE_TIMEOUT_MS = 10000
+
 async function saveTouchSetToServer() {
     const modelName = window.live2dManager?.modelName;
     const lanlanName = new URLSearchParams(window.location.search).get('lanlan_name') || window.lanlan_config?.lanlan_name;
@@ -322,12 +324,18 @@ async function saveTouchSetToServer() {
     
     const touchSetData = syncCurrentTouchSetConfigToManager();
     
+    const saveController = typeof AbortController !== 'undefined' ? new AbortController() : null
+    const saveTimeout = saveController
+        ? setTimeout(() => saveController.abort(), TOUCH_SET_SAVE_TIMEOUT_MS)
+        : null
+
     try {
         const response = await fetch(`/api/characters/catgirl/${encodeURIComponent(lanlanName)}/touch_set`, {
             method: 'PATCH',
             headers: {
                 'Content-Type': 'application/json'
             },
+            ...(saveController ? { signal: saveController.signal } : {}),
             body: JSON.stringify({
                 model_name: modelName,
                 touch_set: touchSetData
@@ -347,6 +355,8 @@ async function saveTouchSetToServer() {
     } catch (error) {
         console.error('[TouchSet] 保存请求失败:', error);
         return false;
+    } finally {
+        if (saveTimeout) clearTimeout(saveTimeout)
     }
 }
 
@@ -754,7 +764,6 @@ function openCustomTouchAreaWindow(options = {}) {
     content.appendChild(status)
 
     let saveBeforeCloseInProgress = false
-    let touchSetSaveFlushedBeforeClose = false
     const closeFloatingWindow = floatingWindow.close.bind(floatingWindow)
     floatingWindow.close = function(cleanup) {
         if (saveBeforeCloseInProgress) {
@@ -1564,9 +1573,15 @@ function openCustomTouchAreaWindow(options = {}) {
     })
 
     async function waitForActiveTouchSetSave() {
+        const startedAt = Date.now()
         while (isSaving) {
+            if (Date.now() - startedAt >= TOUCH_SET_SAVE_TIMEOUT_MS) {
+                console.error('[TouchSet] Waiting for active save timed out')
+                return false
+            }
             await new Promise(resolve => setTimeout(resolve, 50))
         }
+        return true
     }
 
     async function flushTouchSetSaveBeforePreviewClose() {
@@ -1575,7 +1590,8 @@ function openCustomTouchAreaWindow(options = {}) {
             autoSaveTimeout = null
         }
 
-        await waitForActiveTouchSetSave()
+        const saveAvailable = await waitForActiveTouchSetSave()
+        if (!saveAvailable) return false
         if (autoSaveTimeout) {
             clearTimeout(autoSaveTimeout)
             autoSaveTimeout = null
@@ -1585,7 +1601,6 @@ function openCustomTouchAreaWindow(options = {}) {
         try {
             const success = await saveTouchSetToServer()
             if (success) {
-                touchSetSaveFlushedBeforeClose = true
                 showSaveIndicator()
             }
             return success
@@ -1628,7 +1643,6 @@ function openCustomTouchAreaWindow(options = {}) {
                     : '保存失败!'
                 return
             }
-            touchSetSaveFlushedBeforeClose = true
         } finally {
             saveBeforeCloseInProgress = false
             saveButton.disabled = false
@@ -1643,12 +1657,8 @@ function openCustomTouchAreaWindow(options = {}) {
             animationFrameId = null
         }
         const shouldReloadSourceModel = previewLoadStarted
-        let canReloadSourceModel = true
-        if (shouldReloadSourceModel && !touchSetSaveFlushedBeforeClose) {
-            canReloadSourceModel = await flushTouchSetSaveBeforePreviewClose()
-        }
         destroyPreviewModel()
-        if (shouldReloadSourceModel && canReloadSourceModel && typeof window.reloadCurrentLive2DModelInModelManager === 'function') {
+        if (shouldReloadSourceModel && typeof window.reloadCurrentLive2DModelInModelManager === 'function') {
             const reloadPromise = window.reloadCurrentLive2DModelInModelManager({
                 reason: 'custom-touch-area-preview-close'
             })
