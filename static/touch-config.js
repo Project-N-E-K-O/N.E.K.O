@@ -753,6 +753,18 @@ function openCustomTouchAreaWindow(options = {}) {
     status.setAttribute('aria-live', 'polite')
     content.appendChild(status)
 
+    let saveBeforeCloseInProgress = false
+    const closeFloatingWindow = floatingWindow.close.bind(floatingWindow)
+    floatingWindow.close = function(cleanup) {
+        if (saveBeforeCloseInProgress) {
+            status.textContent = window.t
+                ? window.t('live2d.savingSettings', '正在保存设置...')
+                : '正在保存设置...'
+            return
+        }
+        closeFloatingWindow(cleanup)
+    }
+
     const buttons = document.createElement('div')
     buttons.className = 'hitarea-buttons touch-custom-buttons'
 
@@ -1493,11 +1505,9 @@ function openCustomTouchAreaWindow(options = {}) {
     })
 
     async function waitForActiveTouchSetSave() {
-        const startTime = Date.now()
-        while (isSaving && Date.now() - startTime < 3000) {
+        while (isSaving) {
             await new Promise(resolve => setTimeout(resolve, 50))
         }
-        return !isSaving
     }
 
     async function flushTouchSetSaveBeforePreviewClose() {
@@ -1506,8 +1516,11 @@ function openCustomTouchAreaWindow(options = {}) {
             autoSaveTimeout = null
         }
 
-        const saveSlotAvailable = await waitForActiveTouchSetSave()
-        if (!saveSlotAvailable) return false
+        await waitForActiveTouchSetSave()
+        if (autoSaveTimeout) {
+            clearTimeout(autoSaveTimeout)
+            autoSaveTimeout = null
+        }
 
         isSaving = true
         try {
@@ -1543,13 +1556,20 @@ function openCustomTouchAreaWindow(options = {}) {
             })
         }
         saveButton.disabled = true
-        const saveSuccess = await flushTouchSetSaveBeforePreviewClose()
-        saveButton.disabled = false
-        if (!saveSuccess) {
-            status.textContent = window.t
-                ? window.t('live2d.saveFailedGeneral', '保存失败!')
-                : '保存失败!'
-            return
+        cancelButton.disabled = true
+        saveBeforeCloseInProgress = true
+        try {
+            const saveSuccess = await flushTouchSetSaveBeforePreviewClose()
+            if (!saveSuccess) {
+                status.textContent = window.t
+                    ? window.t('live2d.saveFailedGeneral', '保存失败!')
+                    : '保存失败!'
+                return
+            }
+        } finally {
+            saveBeforeCloseInProgress = false
+            saveButton.disabled = false
+            cancelButton.disabled = false
         }
         floatingWindow.close()
     }
