@@ -3456,7 +3456,7 @@ function CompactChatApp({
         updatePlacement(desktopLayoutOverride);
       });
     };
-    const schedulePlacementUpdateWithDesktopLayout = (layout: DesktopCompactChoicePlacementLayout | null) => {
+    const schedulePlacementUpdateWithDesktopLayout = (layout?: DesktopCompactChoicePlacementLayout | null) => {
       scheduledDesktopLayoutOverride = layout;
       schedulePlacementUpdate();
     };
