@@ -1437,11 +1437,16 @@ function openCustomTouchAreaWindow(options = {}) {
     }
 
     function drawPreviewFrame() {
+        const selectionBeforeLayout = !drawing && selectionRect ? selectionToNormalizedRect() : null
         const previewSizeChanged = resizePreviewRenderer()
         if (previewModelReady && (!previewModelFitted || previewSizeChanged)) {
             previewModelFitted = fitPreviewModelToWrap()
         }
         const metrics = updatePreviewMetrics()
+        if (selectionBeforeLayout && metrics.modelRect) {
+            selectionRect = normalizedRectToPreviewRect(selectionBeforeLayout, metrics.modelRect)
+            applyBoxRect(selectionBox, selectionRect)
+        }
         const dpr = window.devicePixelRatio || 1
         const targetWidth = Math.max(1, Math.round(metrics.wrapWidth * dpr))
         const targetHeight = Math.max(1, Math.round(metrics.wrapHeight * dpr))
