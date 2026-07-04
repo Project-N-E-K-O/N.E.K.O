@@ -18,6 +18,9 @@ STATIC_DARK_MODE_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "cs
 STATIC_INDEX_JS_PATH = Path(__file__).resolve().parents[2] / "static" / "js" / "index.js"
 REACT_CHAT_STYLES_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "styles.css"
 REACT_CHAT_APP_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "App.tsx"
+REACT_CHAT_AVATAR_TOOL_MANAGER_PATH = (
+    Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "AvatarToolItemManager.tsx"
+)
 REACT_CHAT_FULL_SURFACE_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "FullChatSurface.tsx"
 REACT_CHAT_MESSAGE_SCHEMA_PATH = (
     Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "message-schema.ts"
@@ -596,8 +599,12 @@ def test_home_tutorial_host_wires_avatar_tool_requests():
     assert "setCompactToolFanOpen: setCompactToolFanOpen" in script
     assert "rotateCompactToolWheel: rotateCompactToolWheel" in script
     assert "setCompactToolWheelIndex: setCompactToolWheelIndex" in script
-    assert "avatarToolMenuOpenRequest" in script
-    assert "compactToolFanOpenRequest" in script
+    build_render_block = script.split("function buildRenderProps()", 1)[1].split(
+        "function showToast",
+        1,
+    )[0]
+    assert "avatarToolMenuOpenRequest: state.viewProps.avatarToolMenuOpenRequest || null" in build_render_block
+    assert "compactToolFanOpenRequest: state.viewProps.compactToolFanOpenRequest || null" in build_render_block
     assert "compactToolWheelRotateRequest" in script
     assert "compactToolWheelIndexRequest" in script
 
@@ -1554,13 +1561,44 @@ def test_compact_input_geometry_preserves_drag_surface_native_region():
     assert "hitRect: null" in shell_block
     assert "nativeRect: null" in shell_block
 
-    assert "data-compact-geometry-hit-scope={effectiveCompactChatState === 'input' ? 'children' : undefined}" in app_source
+    assert (
+        "data-compact-geometry-hit-scope={(effectiveCompactChatState === 'input' || compactToolToggleVisible) ? 'children' : undefined}"
+        in app_source
+    )
+    assert "if (!isCompactSurface || composerHidden)" in app_source
+    assert "if (!isCompactSurface || effectiveCompactChatState !== 'input')" not in app_source
     assert 'data-compact-hit-region-id="input:text"' in app_source
     assert 'data-compact-hit-region-kind="input-text"' in app_source
     assert 'data-compact-hit-region-id="input:minimize"' in app_source
     assert 'data-compact-hit-region-kind="input-minimize"' in app_source
     assert 'data-compact-hit-region-id="input:tool-toggle"' in app_source
     assert 'data-compact-hit-region-kind="input-tool-toggle"' in app_source
+
+
+def test_compact_avatar_tool_manager_uses_desktop_work_area_for_carrier_layout():
+    manager_source = REACT_CHAT_AVATAR_TOOL_MANAGER_PATH.read_text(encoding="utf-8")
+    styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
+
+    assert "__nekoDesktopCompactLayout" in manager_source
+    assert "workAreaX - windowX" in manager_source
+    assert "workAreaY - windowY" in manager_source
+    assert "viewport.compactDesktop" in manager_source
+    assert "getDesktopCompactDialogSize(viewport)" in manager_source
+    assert "neko:desktop-compact-layout-change" in manager_source
+    assert "'--avatar-tool-manager-width'" in manager_source
+    assert "'--avatar-tool-manager-height'" in manager_source
+    assert "is-desktop-compact-layout" in manager_source
+
+    desktop_compact_block = css_block(
+        styles,
+        ".avatar-tool-manager-dialog.is-desktop-compact-layout",
+        ".avatar-tool-manager-dialog.is-dragging",
+    )
+    assert "width: var(--avatar-tool-manager-width, 380px);" in desktop_compact_block
+    assert "height: var(--avatar-tool-manager-height, 600px);" in desktop_compact_block
+    assert "max-height: var(--avatar-tool-manager-max-height, 600px);" in desktop_compact_block
+    assert "100vw" not in desktop_compact_block
+    assert "85vh" not in desktop_compact_block
 
 
 def test_compact_surface_drag_uses_declared_surface_and_no_drag_exclusions():

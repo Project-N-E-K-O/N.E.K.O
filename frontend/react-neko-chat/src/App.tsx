@@ -4215,6 +4215,14 @@ function CompactChatApp({
 
   const openCompactInputToolFan = useCallback((intent: 'click' | 'hover', options?: { ignoreDisabled?: boolean }) => {
     if ((!options?.ignoreDisabled && composerDisabled) || compactInputHasPayload) return false;
+    if (compactInputToolFanOpenRef.current) {
+      clearCompactInputToolFanCloseTimer();
+      if (compactInputToolFanOpenIntentRef.current !== 'click') {
+        compactInputToolFanOpenIntentRef.current = intent;
+      }
+      updateCompactInputToolFanPosition();
+      return true;
+    }
     // 展开时延续上次轮盘中心索引（compactInputToolWheelIndex 是组件级 state，会话内常驻）：
     // hover 抖动重入或重新打开都不主动把用户刚滚到的位置弹回默认位。复位只随页面刷新/组件
     // 重挂发生（useState 初值为环位 0）。取舍脉络：#1697 曾在此「每次展开复位 index=0」，
@@ -4246,7 +4254,7 @@ function CompactChatApp({
   ]);
 
   const shouldOpenCompactToolFanOnHover = useCallback((pointerType: string) => {
-    return pointerType === 'mouse';
+    return pointerType === 'mouse' || pointerType === '';
   }, []);
 
   const isCompactInputToolPointerInToggleHoverRegion = useCallback((clientX: number, clientY: number, relatedTarget?: EventTarget | null) => {
@@ -4902,7 +4910,7 @@ function CompactChatApp({
   ]);
 
   useEffect(() => {
-    if (!isCompactSurface || effectiveCompactChatState !== 'input') {
+    if (!isCompactSurface || composerHidden) {
       resetCompactInputToolFanHoverBlock();
       return;
     }
@@ -4950,8 +4958,8 @@ function CompactChatApp({
   }, [
     clearCompactInputToolFanCloseTimer,
     compactInputHasPayload,
+    composerHidden,
     composerDisabled,
-    effectiveCompactChatState,
     isCompactInputToolPointerInHoverRegion,
     isCompactInputToolPointerInToggleHoverRegion,
     isCompactSurface,
@@ -5675,7 +5683,9 @@ function CompactChatApp({
     lastCompactToolFanOpenRequestIdRef.current = request.id;
     if (request.open) {
       lastCompactToolFanOpenRequestIdRef.current = request.id;
-      const opened = openCompactInputToolFan('click', { ignoreDisabled: true });
+      const requestReason = typeof request.reason === 'string' ? request.reason : '';
+      const requestIntent = requestReason.startsWith('desktop-compact-tool-toggle') ? 'hover' : 'click';
+      const opened = openCompactInputToolFan(requestIntent, { ignoreDisabled: true });
       if (!opened) return;
       return;
     }
@@ -7348,7 +7358,7 @@ function CompactChatApp({
                     data-compact-drag-surface="true"
                     data-compact-chat-state={effectiveCompactChatState}
                     data-compact-geometry-part={effectiveCompactChatState === 'input' ? 'inputBody' : 'capsuleBody'}
-                    data-compact-geometry-hit-scope={effectiveCompactChatState === 'input' ? 'children' : undefined}
+                    data-compact-geometry-hit-scope={(effectiveCompactChatState === 'input' || compactToolToggleVisible) ? 'children' : undefined}
                     data-compact-tool-toggle-visible={compactToolToggleVisible ? 'true' : 'false'}
                     onPointerDown={beginCompactToolOriginDrag}
                     onPointerMove={updateCompactToolOriginDrag}
@@ -7398,6 +7408,9 @@ function CompactChatApp({
                         <button
                           className="compact-chat-capsule-button"
                           type="button"
+                          data-compact-hit-region="true"
+                          data-compact-hit-region-id="capsule:text"
+                          data-compact-hit-region-kind="capsule-text"
                           disabled={compactCapsuleEntryLocked}
                           onClick={() => {
                             if (composerHidden) return;

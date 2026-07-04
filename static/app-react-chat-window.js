@@ -2615,6 +2615,8 @@
             onChoiceSelect: handleChoiceSelect,
             onCompactChatStateChange: handleCompactChatStateChange,
             onCompactMinimizeRequest: handleCompactMinimizeRequest,
+            avatarToolMenuOpenRequest: state.viewProps.avatarToolMenuOpenRequest || null,
+            compactToolFanOpenRequest: state.viewProps.compactToolFanOpenRequest || null,
             compactToolWheelRotateRequest: state.viewProps.compactToolWheelRotateRequest || null,
             compactToolWheelIndexRequest: state.viewProps.compactToolWheelIndexRequest || null,
             compactHistoryOpenRequest: state.viewProps.compactHistoryOpenRequest || null
