@@ -158,11 +158,35 @@
             };
         }
 
+        clearSuppressedTimelineSpotlight(scene) {
+            const director = this.director;
+            if (!scene || scene.spotlight !== false || !director) {
+                return false;
+            }
+
+            if (director.overlay && typeof director.overlay.clearActionSpotlight === 'function') {
+                director.overlay.clearActionSpotlight();
+            }
+            if (director.overlay && typeof director.overlay.clearPersistentSpotlight === 'function') {
+                director.overlay.clearPersistentSpotlight();
+            }
+            if (typeof director.clearExternalizedChatSpotlightOnly === 'function') {
+                director.clearExternalizedChatSpotlightOnly();
+            } else if (
+                director.interactionTakeover
+                && typeof director.interactionTakeover.setExternalizedChatSpotlight === 'function'
+            ) {
+                director.interactionTakeover.setExternalizedChatSpotlight('');
+            }
+            return true;
+        }
+
         async playTimelineScene(scene, day, index, total, context) {
             const surfaceReady = await this.prepareGenericSceneSurface(scene, context);
             if (!surfaceReady) {
                 return false;
             }
+            this.clearSuppressedTimelineSpotlight(scene);
             const timelineScene = this.normalizeSceneToTimeline(scene);
             if (!timelineScene) {
                 return false;
@@ -455,6 +479,12 @@
                 ? director.getExternalizedChatTargetKind(scene.persistent, scene)
                 : '';
             const shouldShowSceneSpotlight = scene.spotlight !== false;
+            const sceneSpotlightVariant = scene && typeof scene.spotlightVariant === 'string'
+                ? scene.spotlightVariant.trim()
+                : '';
+            const externalizedSpotlightOptions = {
+                variant: sceneSpotlightVariant
+            };
             let persistentTarget = null;
             let primaryTarget = null;
             let secondaryTarget = null;
@@ -462,7 +492,10 @@
                 if (typeof director.clearHomeSpotlightsForExternalizedChat === 'function') {
                     director.clearHomeSpotlightsForExternalizedChat();
                 }
-                director.interactionTakeover.setExternalizedChatSpotlight(introExternalizedChatSpotlightKind);
+                director.interactionTakeover.setExternalizedChatSpotlight(
+                    introExternalizedChatSpotlightKind,
+                    externalizedSpotlightOptions
+                );
                 if (typeof director.setHomePcCursorOutputSuppressedForExternalizedChat === 'function') {
                     director.setHomePcCursorOutputSuppressedForExternalizedChat(true);
                 }
@@ -499,7 +532,8 @@
                     && scene.operation === 'rotate-galgame-tool-into-center'
                 );
                 const externalizedCursorOptions = {
-                    effect: director.getExternalizedChatCursorEffect(scene)
+                    effect: director.getExternalizedChatCursorEffect(scene),
+                    spotlightVariant: sceneSpotlightVariant
                 };
                 if (scene && scene.cursorAction === 'click') {
                     externalizedCursorOptions.effect = 'move';
@@ -539,7 +573,10 @@
                         if (typeof director.clearHomeSpotlightsForExternalizedChat === 'function') {
                             director.clearHomeSpotlightsForExternalizedChat();
                         }
-                        director.interactionTakeover.setExternalizedChatSpotlight(externalizedSpotlightKind);
+                        director.interactionTakeover.setExternalizedChatSpotlight(
+                            externalizedSpotlightKind,
+                            externalizedSpotlightOptions
+                        );
                     }
                 } else {
                     director.clearExternalizedChatSpotlightOnly();

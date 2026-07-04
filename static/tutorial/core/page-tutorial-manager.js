@@ -94,6 +94,8 @@
             this._refreshTimers = [];
             this._modelManagerModeListenerAttached = false;
             this._modelManagerBootstrapTimer = null;
+            this._skipSafeAreaCleanup = null;
+            this._skipSafeAreaController = null;
         }
 
         static detectPage() {
@@ -876,8 +878,55 @@
             this.scheduleRefreshes([80, 220, 500]);
         }
 
+        ensureSkipSafeAreaController() {
+            if (!this._skipSafeAreaController
+                && window.TutorialSkipController
+                && typeof window.TutorialSkipController.createController === 'function') {
+                this._skipSafeAreaController = window.TutorialSkipController.createController({
+                    document,
+                    buttonId: 'neko-page-tutorial-skip-btn'
+                });
+            }
+            return this._skipSafeAreaController;
+        }
+
+        applySkipSafeAreaVariables() {
+            try {
+                const controller = this.ensureSkipSafeAreaController();
+                if (controller && typeof controller.applySafeAreaVariables === 'function') {
+                    controller.applySafeAreaVariables();
+                } else if (window.TutorialSkipController
+                    && typeof window.TutorialSkipController.applySafeAreaVariables === 'function') {
+                    window.TutorialSkipController.applySafeAreaVariables({ document, buttonId: 'neko-page-tutorial-skip-btn' });
+                }
+            } catch (error) {
+                console.warn('[PageTutorial] skip safe area refresh failed:', error);
+            }
+        }
+
+        clearSkipSafeAreaRefreshHooks() {
+            if (typeof this._skipSafeAreaCleanup === 'function') {
+                this._skipSafeAreaCleanup();
+            }
+            this._skipSafeAreaCleanup = null;
+        }
+
+        installSkipSafeAreaRefreshHooks() {
+            this.clearSkipSafeAreaRefreshHooks();
+            const refresh = () => this.applySkipSafeAreaVariables();
+            const timers = [0, 80, 240, 600].map((delay) => window.setTimeout(refresh, delay));
+            window.addEventListener('neko:niri-pet-physical-crop-state-applied', refresh);
+            window.addEventListener('resize', refresh);
+            this._skipSafeAreaCleanup = () => {
+                timers.forEach((timer) => window.clearTimeout(timer));
+                window.removeEventListener('neko:niri-pet-physical-crop-state-applied', refresh);
+                window.removeEventListener('resize', refresh);
+            };
+        }
+
         showSkipButton() {
             this.hideSkipButton();
+            this.installSkipSafeAreaRefreshHooks();
             const button = document.createElement('button');
             button.type = 'button';
             button.id = 'neko-page-tutorial-skip-btn';
@@ -891,13 +940,27 @@
                     this.handleTutorialEnd('skip');
                 }
             });
-            document.body.appendChild(button);
+            const controller = this.ensureSkipSafeAreaController();
+            const host = controller && typeof controller.getButtonHost === 'function'
+                ? controller.getButtonHost()
+                : document.body;
+            if (host && typeof host.appendChild === 'function') {
+                host.appendChild(button);
+            } else {
+                document.body.appendChild(button);
+            }
             this.skipButton = button;
+            this.applySkipSafeAreaVariables();
         }
 
         hideSkipButton() {
+            this.clearSkipSafeAreaRefreshHooks();
             if (this.skipButton && this.skipButton.parentNode) {
                 this.skipButton.parentNode.removeChild(this.skipButton);
+            }
+            if (this._skipSafeAreaController
+                && typeof this._skipSafeAreaController.removeEmptyFixedPortal === 'function') {
+                this._skipSafeAreaController.removeEmptyFixedPortal();
             }
             this.skipButton = null;
         }

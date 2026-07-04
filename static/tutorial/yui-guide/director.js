@@ -4714,21 +4714,203 @@
             }
         }
 
+        normalizeNiriPetPhysicalCropBounds(bounds) {
+            if (!bounds || typeof bounds !== 'object') {
+                return null;
+            }
+
+            const x = Number(bounds.x);
+            const y = Number(bounds.y);
+            const width = Number(bounds.width);
+            const height = Number(bounds.height);
+            if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+                return null;
+            }
+
+            return {
+                x: Math.round(x),
+                y: Math.round(y),
+                width: Math.max(1, Math.round(width)),
+                height: Math.max(1, Math.round(height))
+            };
+        }
+
+        normalizeNiriPetPhysicalCropPoint(point) {
+            if (!point || typeof point !== 'object') {
+                return null;
+            }
+
+            const x = Number(point.x);
+            const y = Number(point.y);
+            return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
+        }
+
+        getNiriPetPhysicalCropApi() {
+            try {
+                const api = typeof window !== 'undefined' ? window.__nekoNiriPetPhysicalCrop : null;
+                if (!api || typeof api !== 'object') {
+                    return null;
+                }
+                if (typeof api.isActive === 'function' && !api.isActive()) {
+                    return null;
+                }
+                return api;
+            } catch (_) {
+                return null;
+            }
+        }
+
+        areNiriPetPhysicalCropBoundsEquivalent(first, second) {
+            return !!(first && second
+                && Math.abs(Number(first.x || 0) - Number(second.x || 0)) <= 1
+                && Math.abs(Number(first.y || 0) - Number(second.y || 0)) <= 1
+                && Math.abs(Number(first.width || 0) - Number(second.width || 0)) <= 1
+                && Math.abs(Number(first.height || 0) - Number(second.height || 0)) <= 1);
+        }
+
+        hasNiriPetPhysicalCropVirtualizedMetrics(metrics) {
+            if (!metrics || metrics.niriPetPhysicalCrop !== true) {
+                return false;
+            }
+            if (metrics.niriPetPhysicalCropMetricsVirtualized === true) {
+                return true;
+            }
+            const screenBounds = this.normalizeNiriPetPhysicalCropBounds(metrics.contentBounds || metrics.bounds);
+            const virtualBounds = this.normalizeNiriPetPhysicalCropBounds(metrics.niriPetPhysicalCropVirtualBounds);
+            return this.areNiriPetPhysicalCropBoundsEquivalent(screenBounds, virtualBounds);
+        }
+
+        getNiriPetPhysicalCropState(metrics) {
+            if (metrics && metrics.niriPetPhysicalCrop === true) {
+                const cropBounds = this.normalizeNiriPetPhysicalCropBounds(
+                    metrics.niriPetPhysicalCropBounds || metrics.contentBounds || metrics.bounds
+                );
+                const virtualBounds = this.normalizeNiriPetPhysicalCropBounds(metrics.niriPetPhysicalCropVirtualBounds);
+                const offsetX = Number(metrics.niriPetPhysicalCropOffsetX);
+                const offsetY = Number(metrics.niriPetPhysicalCropOffsetY);
+                return cropBounds ? {
+                    cropBounds,
+                    virtualBounds,
+                    offsetX: Number.isFinite(offsetX) ? Math.round(offsetX) : 0,
+                    offsetY: Number.isFinite(offsetY) ? Math.round(offsetY) : 0,
+                    metricsVirtualized: this.hasNiriPetPhysicalCropVirtualizedMetrics(metrics)
+                } : null;
+            }
+
+            try {
+                const api = typeof window !== 'undefined' ? window.__nekoNiriPetPhysicalCrop : null;
+                if (!api || typeof api !== 'object') {
+                    return null;
+                }
+                if (typeof api.isActive === 'function' && !api.isActive()) {
+                    return null;
+                }
+                const state = typeof api.getState === 'function' ? api.getState() : null;
+                const cropBounds = this.normalizeNiriPetPhysicalCropBounds(state && state.cropBounds);
+                const virtualBounds = this.normalizeNiriPetPhysicalCropBounds(state && state.virtualBounds);
+                if (!cropBounds) {
+                    return null;
+                }
+                let offsetX = Number(state && state.offsetX);
+                let offsetY = Number(state && state.offsetY);
+                if (!Number.isFinite(offsetX) && virtualBounds) {
+                    offsetX = cropBounds.x - virtualBounds.x;
+                }
+                if (!Number.isFinite(offsetY) && virtualBounds) {
+                    offsetY = cropBounds.y - virtualBounds.y;
+                }
+                return {
+                    cropBounds,
+                    virtualBounds,
+                    offsetX: Number.isFinite(offsetX) ? Math.round(offsetX) : 0,
+                    offsetY: Number.isFinite(offsetY) ? Math.round(offsetY) : 0
+                };
+            } catch (_) {
+                return null;
+            }
+        }
+
+        toNiriPetPhysicalCropVirtualPoint(point) {
+            const api = this.getNiriPetPhysicalCropApi();
+            if (!api || typeof api.toVirtualPoint !== 'function') {
+                return null;
+            }
+            try {
+                return this.normalizeNiriPetPhysicalCropPoint(api.toVirtualPoint(point));
+            } catch (_) {
+                return null;
+            }
+        }
+
+        toNiriPetPhysicalCropLocalPoint(point) {
+            const api = this.getNiriPetPhysicalCropApi();
+            if (!api || typeof api.toLocalPoint !== 'function') {
+                return null;
+            }
+            try {
+                return this.normalizeNiriPetPhysicalCropPoint(api.toLocalPoint(point));
+            } catch (_) {
+                return null;
+            }
+        }
+
+        toNiriPetPhysicalCropVirtualPointWithState(point, cropState) {
+            if (cropState && cropState.metricsVirtualized) {
+                return {
+                    x: Number(point && point.x || 0),
+                    y: Number(point && point.y || 0)
+                };
+            }
+            return this.toNiriPetPhysicalCropVirtualPoint(point) || {
+                x: Number(point && point.x || 0) + Number(cropState && cropState.offsetX || 0),
+                y: Number(point && point.y || 0) + Number(cropState && cropState.offsetY || 0)
+            };
+        }
+
+        toNiriPetPhysicalCropLocalPointWithState(point, cropState) {
+            if (cropState && cropState.metricsVirtualized) {
+                return {
+                    x: Number(point && point.x || 0),
+                    y: Number(point && point.y || 0)
+                };
+            }
+            return this.toNiriPetPhysicalCropLocalPoint(point) || {
+                x: Number(point && point.x || 0) - Number(cropState && cropState.offsetX || 0),
+                y: Number(point && point.y || 0) - Number(cropState && cropState.offsetY || 0)
+            };
+        }
+
+        getGuideWindowMetricsSync() {
+            try {
+                const host = window.nekoTutorialOverlay;
+                return host && typeof host.getWindowMetricsSync === 'function'
+                    ? host.getWindowMetricsSync()
+                    : null;
+            } catch (_) {
+                return null;
+            }
+        }
+
         screenPointToLocalPoint(point) {
             if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) {
                 return null;
             }
 
-            let bounds = null;
-            try {
-                const host = window.nekoTutorialOverlay;
-                const metrics = host && typeof host.getWindowMetricsSync === 'function'
-                    ? host.getWindowMetricsSync()
-                    : null;
-                bounds = metrics && (metrics.bounds || metrics.contentBounds);
-            } catch (_) {
-                bounds = null;
+            const metrics = this.getGuideWindowMetricsSync();
+            const cropState = this.getNiriPetPhysicalCropState(metrics);
+            if (cropState && cropState.cropBounds) {
+                const screenBounds = cropState.virtualBounds || cropState.cropBounds;
+                const virtualPoint = {
+                    x: point.x - Number(screenBounds.x || 0),
+                    y: point.y - Number(screenBounds.y || 0)
+                };
+                const localPoint = this.toNiriPetPhysicalCropLocalPointWithState(virtualPoint, cropState);
+                return {
+                    x: localPoint.x,
+                    y: localPoint.y
+                };
             }
+            let bounds = metrics && (metrics.contentBounds || metrics.bounds);
             if (!bounds) {
                 bounds = {
                     x: Number.isFinite(window.screenX) ? window.screenX : 0,
@@ -4750,16 +4932,17 @@
                 return null;
             }
 
-            let bounds = null;
-            try {
-                const host = window.nekoTutorialOverlay;
-                const metrics = host && typeof host.getWindowMetricsSync === 'function'
-                    ? host.getWindowMetricsSync()
-                    : null;
-                bounds = metrics && (metrics.bounds || metrics.contentBounds);
-            } catch (_) {
-                bounds = null;
+            const metrics = this.getGuideWindowMetricsSync();
+            const cropState = this.getNiriPetPhysicalCropState(metrics);
+            if (cropState && cropState.cropBounds) {
+                const screenBounds = cropState.virtualBounds || cropState.cropBounds;
+                const virtualPoint = this.toNiriPetPhysicalCropVirtualPointWithState(point, cropState);
+                return {
+                    x: Number(screenBounds.x || 0) + virtualPoint.x,
+                    y: Number(screenBounds.y || 0) + virtualPoint.y
+                };
             }
+            let bounds = metrics && (metrics.contentBounds || metrics.bounds);
             if (!bounds) {
                 bounds = {
                     x: Number.isFinite(window.screenX) ? window.screenX : 0,
@@ -6695,7 +6878,12 @@
             }
             if (typeof this.interactionTakeover.setExternalizedChatSpotlight === 'function') {
                 this.clearHomeSpotlightsForExternalizedChat();
-                this.interactionTakeover.setExternalizedChatSpotlight(normalizedKind);
+                const spotlightVariant = options && typeof options.spotlightVariant === 'string'
+                    ? options.spotlightVariant.trim()
+                    : '';
+                this.interactionTakeover.setExternalizedChatSpotlight(normalizedKind, {
+                    variant: spotlightVariant
+                });
             }
             this.setHomePcCursorOutputSuppressedForExternalizedChat(true);
             const effect = options && typeof options.effect === 'string' ? options.effect : 'wobble';
@@ -7056,8 +7244,13 @@
             }
             const normalizedOptions = options || {};
             const total = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 3;
+            const spotlightVariant = typeof normalizedOptions.spotlightVariant === 'string'
+                ? normalizedOptions.spotlightVariant.trim()
+                : '';
             this.clearHomeSpotlightsForExternalizedChat();
-            this.interactionTakeover.setExternalizedChatSpotlight(normalizedKind);
+            this.interactionTakeover.setExternalizedChatSpotlight(normalizedKind, {
+                variant: spotlightVariant
+            });
             this.setHomePcCursorOutputSuppressedForExternalizedChat(true);
             this.hideHomeCursorForExternalizedChat();
             for (let index = 0; index < total; index += 1) {
