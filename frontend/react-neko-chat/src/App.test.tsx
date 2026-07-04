@@ -9020,8 +9020,17 @@ describe('App', () => {
       });
 
       onAvatarToolStateChange.mockClear();
-      fireEvent.pointerDown(window, { button: 0, clientX: 150, clientY: 150 });
-      fireEvent.pointerMove(window, { clientX: 20, clientY: 20 });
+      vi.useFakeTimers();
+      try {
+        fireEvent.pointerDown(window, { button: 0, clientX: 150, clientY: 150 });
+        fireEvent.pointerMove(window, { clientX: 20, clientY: 20 });
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(16);
+          await vi.advanceTimersByTimeAsync(220);
+        });
+      } finally {
+        vi.useRealTimers();
+      }
 
       await waitFor(() => {
         expect(queryHammerCursorCompactImage()).toBeNull();
