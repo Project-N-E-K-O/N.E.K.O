@@ -754,6 +754,7 @@ function openCustomTouchAreaWindow(options = {}) {
     content.appendChild(status)
 
     let saveBeforeCloseInProgress = false
+    let touchSetSaveFlushedBeforeClose = false
     const closeFloatingWindow = floatingWindow.close.bind(floatingWindow)
     floatingWindow.close = function(cleanup) {
         if (saveBeforeCloseInProgress) {
@@ -1578,7 +1579,10 @@ function openCustomTouchAreaWindow(options = {}) {
         isSaving = true
         try {
             const success = await saveTouchSetToServer()
-            if (success) showSaveIndicator()
+            if (success) {
+                touchSetSaveFlushedBeforeClose = true
+                showSaveIndicator()
+            }
             return success
         } finally {
             isSaving = false
@@ -1619,6 +1623,7 @@ function openCustomTouchAreaWindow(options = {}) {
                     : '保存失败!'
                 return
             }
+            touchSetSaveFlushedBeforeClose = true
         } finally {
             saveBeforeCloseInProgress = false
             saveButton.disabled = false
@@ -1627,14 +1632,18 @@ function openCustomTouchAreaWindow(options = {}) {
         floatingWindow.close()
     }
 
-    floatingWindow.onClose = function() {
+    floatingWindow.onClose = async function() {
         if (animationFrameId) {
             cancelAnimationFrame(animationFrameId)
             animationFrameId = null
         }
         const shouldReloadSourceModel = previewLoadStarted
+        let canReloadSourceModel = true
+        if (shouldReloadSourceModel && !touchSetSaveFlushedBeforeClose) {
+            canReloadSourceModel = await flushTouchSetSaveBeforePreviewClose()
+        }
         destroyPreviewModel()
-        if (shouldReloadSourceModel && typeof window.reloadCurrentLive2DModelInModelManager === 'function') {
+        if (shouldReloadSourceModel && canReloadSourceModel && typeof window.reloadCurrentLive2DModelInModelManager === 'function') {
             const reloadPromise = window.reloadCurrentLive2DModelInModelManager({
                 reason: 'custom-touch-area-preview-close'
             })
