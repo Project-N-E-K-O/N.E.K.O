@@ -842,6 +842,58 @@ function openCustomTouchAreaWindow(options = {}) {
             || window.PIXI?.live2d?.cubism4?.Live2DModel
     }
 
+    function getCoreParameterId(coreModel, index) {
+        if (!coreModel || !Number.isInteger(index) || index < 0) return null
+        try {
+            const id = coreModel._parameterIds?.[index]
+                ?? coreModel._model?.parameters?.ids?.[index]
+                ?? coreModel.model?.parameters?.ids?.[index]
+                ?? coreModel.parameters?.ids?.[index]
+            if (id) return String(id)
+        } catch (_) {}
+        try {
+            if (typeof coreModel.getParameterId === 'function') {
+                const id = coreModel.getParameterId(index)
+                if (id) return String(id)
+            }
+        } catch (_) {}
+        return null
+    }
+
+    function copyCurrentModelParametersToPreview() {
+        const sourceCoreModel = model?.internalModel?.coreModel
+        const previewCoreModel = previewModel?.internalModel?.coreModel
+        if (!sourceCoreModel || !previewCoreModel) return
+
+        const sourceCount = typeof sourceCoreModel.getParameterCount === 'function'
+            ? Number(sourceCoreModel.getParameterCount())
+            : 0
+        const previewCount = typeof previewCoreModel.getParameterCount === 'function'
+            ? Number(previewCoreModel.getParameterCount())
+            : 0
+        if (!Number.isFinite(sourceCount) || sourceCount <= 0) return
+
+        for (let index = 0; index < sourceCount; index += 1) {
+            const paramId = getCoreParameterId(sourceCoreModel, index)
+            if (paramId && /(?:opacity|visibility)/i.test(paramId)) continue
+
+            let targetIndex = -1
+            if (paramId && typeof previewCoreModel.getParameterIndex === 'function') {
+                try {
+                    targetIndex = previewCoreModel.getParameterIndex(paramId)
+                } catch (_) {}
+            }
+            if (targetIndex < 0 && index < previewCount) targetIndex = index
+            if (targetIndex < 0) continue
+
+            try {
+                const value = Number(sourceCoreModel.getParameterValueByIndex(index))
+                if (!Number.isFinite(value)) continue
+                previewCoreModel.setParameterValueByIndex(targetIndex, value)
+            } catch (_) {}
+        }
+    }
+
     function resizePreviewRenderer() {
         if (!previewApp?.renderer) return false
         const size = getPreviewWrapSize()
@@ -927,6 +979,7 @@ function openCustomTouchAreaWindow(options = {}) {
 
         previewModel = loadedModel
         previewApp.stage.addChild(previewModel)
+        copyCurrentModelParametersToPreview()
         previewModelReady = true
         previewLive2dCanvas.classList.add('is-ready')
         resizePreviewRenderer()
