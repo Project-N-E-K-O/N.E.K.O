@@ -684,8 +684,7 @@ function createTouchAreaConfigItem(hitArea, options) {
 function openCustomTouchAreaWindow(options = {}) {
     const manager = window.live2dManager
     const model = manager?.getCurrentModel?.()
-    const sourceCanvas = manager?.pixi_app?.view || manager?.pixi_app?.renderer?.view || document.getElementById('live2d-canvas')
-    if (!manager || !model || !sourceCanvas) {
+    if (!manager || !model) {
         createTouchConfigFloatingWindow({ content: touchAnimText('previewUnavailable', '当前无法打开自定义区域预览') })
         return
     }
@@ -720,6 +719,10 @@ function openCustomTouchAreaWindow(options = {}) {
 
     const previewWrap = document.createElement('div')
     previewWrap.className = 'touch-custom-preview-wrap'
+
+    const previewLive2dCanvas = document.createElement('canvas')
+    previewLive2dCanvas.className = 'touch-custom-live2d-canvas'
+    previewWrap.appendChild(previewLive2dCanvas)
 
     const previewCanvas = document.createElement('canvas')
     previewCanvas.className = 'touch-custom-preview-canvas'
@@ -787,6 +790,13 @@ function openCustomTouchAreaWindow(options = {}) {
     }
     let initialSelectionApplied = false
     let previewBaseBounds = null
+    let previewApp = null
+    let previewModel = null
+    let previewModelReady = false
+    let previewDisposed = false
+    let previewLoadStarted = false
+    let previewModelFitted = false
+    let previewRendererSize = { width: 0, height: 0 }
     const MIN_SELECTION_SIZE = 10
     const RESIZE_HIT_PADDING = 10
     const HOVER_LABEL_OFFSET_X = 16
@@ -795,17 +805,154 @@ function openCustomTouchAreaWindow(options = {}) {
     const previewBaseAreaRecords = getCustomTouchAreaRecordsFromSet(options.touchSet || {})
         .filter(record => record.area.id !== editingArea?.id)
 
-    function getSourceCssSize() {
-        const screen = manager.pixi_app?.renderer?.screen
-        const width = Number(screen?.width) || sourceCanvas.clientWidth || window.innerWidth || sourceCanvas.width
-        const height = Number(screen?.height) || sourceCanvas.clientHeight || window.innerHeight || sourceCanvas.height
-        return { width: Math.max(1, width), height: Math.max(1, height) }
+    function getPreviewWrapSize() {
+        return {
+            width: Math.max(1, previewWrap.clientWidth || previewWrap.offsetWidth || 1),
+            height: Math.max(1, previewWrap.clientHeight || previewWrap.offsetHeight || 1)
+        }
+    }
+
+    function getPreviewModelPath() {
+        const candidates = [
+            manager?._lastLoadedModelPath,
+            manager?.lastLoadedModelPath,
+            model?.internalModel?.settings?.url,
+            model?.internalModel?.settings?.json?.url,
+            model?.internalModel?.settings?.json?.Url,
+            model?.url
+        ]
+        return candidates.find(candidate => typeof candidate === 'string' && candidate.trim())
+    }
+
+    function getPreviewLive2DModelClass() {
+        return window.Live2DModel
+            || window.PIXI?.live2d?.Live2DModel
+            || window.PIXI?.live2d?.cubism4?.Live2DModel
+    }
+
+    function resizePreviewRenderer() {
+        if (!previewApp?.renderer) return false
+        const size = getPreviewWrapSize()
+        if (previewRendererSize.width === size.width && previewRendererSize.height === size.height) return false
+
+        previewRendererSize = size
+        try {
+            previewApp.renderer.resize(size.width, size.height)
+        } catch (_) {}
+        previewBaseBounds = null
+        previewModelFitted = false
+        return true
+    }
+
+    function fitPreviewModelToWrap() {
+        if (!previewModel || !previewApp?.renderer) return false
+        const size = getPreviewWrapSize()
+
+        try {
+            previewModel.x = 0
+            previewModel.y = 0
+            if (previewModel.scale && typeof previewModel.scale.set === 'function') {
+                previewModel.scale.set(1, 1)
+            } else if (previewModel.scale) {
+                previewModel.scale.x = 1
+                previewModel.scale.y = 1
+            }
+            previewApp.renderer.render(previewApp.stage)
+        } catch (_) {}
+
+        const bounds = normalizePixiBoundsRect(previewModel.getBounds?.())
+        if (!bounds || bounds.width <= 0 || bounds.height <= 0) return false
+
+        const paddedWidth = bounds.width * 1.18
+        const paddedHeight = bounds.height * 1.18
+        const scale = Math.min(size.width / paddedWidth, size.height / paddedHeight)
+        if (!Number.isFinite(scale) || scale <= 0) return false
+
+        if (previewModel.scale && typeof previewModel.scale.set === 'function') {
+            previewModel.scale.set(scale, scale)
+        } else if (previewModel.scale) {
+            previewModel.scale.x = scale
+            previewModel.scale.y = scale
+        }
+        previewModel.x = (size.width - bounds.width * scale) / 2 - bounds.left * scale
+        previewModel.y = (size.height - bounds.height * scale) / 2 - bounds.top * scale
+        previewBaseBounds = null
+
+        try {
+            previewApp.renderer.render(previewApp.stage)
+        } catch (_) {}
+        return true
+    }
+
+    async function loadPreviewModel() {
+        const modelPath = getPreviewModelPath()
+        const PixiApplication = window.PIXI?.Application
+        const Live2DModelClass = getPreviewLive2DModelClass()
+        if (!modelPath || !PixiApplication || !Live2DModelClass) {
+            throw new Error('Live2D preview dependencies are unavailable')
+        }
+
+        const size = getPreviewWrapSize()
+        previewApp = new PixiApplication({
+            view: previewLive2dCanvas,
+            width: size.width,
+            height: size.height,
+            transparent: true,
+            backgroundAlpha: 0,
+            autoDensity: true,
+            resolution: window.devicePixelRatio || 1
+        })
+        previewRendererSize = size
+        previewLoadStarted = true
+
+        const loadedModel = await Live2DModelClass.from(modelPath, { autoFocus: false })
+        if (previewDisposed) {
+            try {
+                loadedModel?.destroy?.({ children: true, texture: false, baseTexture: false })
+            } catch (_) {}
+            return
+        }
+
+        previewModel = loadedModel
+        previewApp.stage.addChild(previewModel)
+        previewModelReady = true
+        previewLive2dCanvas.classList.add('is-ready')
+        resizePreviewRenderer()
+        previewModelFitted = fitPreviewModelToWrap()
+    }
+
+    function destroyPreviewModel() {
+        previewDisposed = true
+        previewModelReady = false
+        previewModelFitted = false
+        previewBaseBounds = null
+        previewLive2dCanvas.classList.remove('is-ready')
+
+        const modelToDestroy = previewModel
+        const appToDestroy = previewApp
+        previewModel = null
+        previewApp = null
+
+        try {
+            if (modelToDestroy?.parent) modelToDestroy.parent.removeChild(modelToDestroy)
+        } catch (_) {}
+        try {
+            modelToDestroy?.destroy?.({ children: true, texture: false, baseTexture: false })
+        } catch (_) {}
+        try {
+            appToDestroy?.destroy?.(false, { children: true, texture: false, baseTexture: false })
+        } catch (_) {
+            try {
+                appToDestroy?.destroy?.(false)
+            } catch (_) {}
+        }
     }
 
     function getPreviewBaseBounds() {
         if (previewBaseBounds) return previewBaseBounds
+        if (!previewModelReady || !previewModel) return null
         try {
-            const bounds = normalizePixiBoundsRect(model.getBounds())
+            const bounds = normalizePixiBoundsRect(previewModel.getBounds?.())
             if (!bounds) return null
             previewBaseBounds = {
                 left: bounds.left,
@@ -824,44 +971,14 @@ function openCustomTouchAreaWindow(options = {}) {
     function updatePreviewMetrics() {
         const wrapWidth = previewWrap.clientWidth || 1
         const wrapHeight = previewWrap.clientHeight || 1
-        const sourceSize = getSourceCssSize()
         const bounds = getPreviewBaseBounds()
-        const previewAspect = wrapWidth / wrapHeight
-        const padding = bounds ? Math.max(bounds.width, bounds.height) * 0.18 : 0
-        let cropWidth = bounds ? bounds.width + padding * 2 : sourceSize.width
-        let cropHeight = bounds ? bounds.height + padding * 2 : sourceSize.height
-        if (cropWidth / cropHeight < previewAspect) {
-            cropWidth = cropHeight * previewAspect
-        } else {
-            cropHeight = cropWidth / previewAspect
-        }
-        const centerX = bounds ? bounds.left + bounds.width / 2 : sourceSize.width / 2
-        const centerY = bounds ? bounds.top + bounds.height / 2 : sourceSize.height / 2
-        const cropLeft = centerX - cropWidth / 2
-        const cropTop = centerY - cropHeight / 2
-        const scale = Math.min(wrapWidth / cropWidth, wrapHeight / cropHeight)
-        const drawWidth = cropWidth * scale
-        const drawHeight = cropHeight * scale
-        const offsetX = (wrapWidth - drawWidth) / 2
-        const offsetY = (wrapHeight - drawHeight) / 2
         const modelRect = bounds ? {
-            x: offsetX + (bounds.left - cropLeft) * scale,
-            y: offsetY + (bounds.top - cropTop) * scale,
-            width: bounds.width * scale,
-            height: bounds.height * scale
+            x: bounds.left,
+            y: bounds.top,
+            width: bounds.width,
+            height: bounds.height
         } : null
         previewMetrics = {
-            sourceWidth: sourceSize.width,
-            sourceHeight: sourceSize.height,
-            cropLeft,
-            cropTop,
-            cropWidth,
-            cropHeight,
-            scale,
-            drawWidth,
-            drawHeight,
-            offsetX,
-            offsetY,
             wrapWidth,
             wrapHeight,
             modelRect
@@ -1254,6 +1371,10 @@ function openCustomTouchAreaWindow(options = {}) {
     }
 
     function drawPreviewFrame() {
+        const previewSizeChanged = resizePreviewRenderer()
+        if (previewModelReady && (!previewModelFitted || previewSizeChanged)) {
+            previewModelFitted = fitPreviewModelToWrap()
+        }
         const metrics = updatePreviewMetrics()
         const dpr = window.devicePixelRatio || 1
         const targetWidth = Math.max(1, Math.round(metrics.wrapWidth * dpr))
@@ -1266,29 +1387,6 @@ function openCustomTouchAreaWindow(options = {}) {
         if (ctx) {
             ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
             ctx.clearRect(0, 0, metrics.wrapWidth, metrics.wrapHeight)
-            try {
-                const sourceScaleX = sourceCanvas.width / metrics.sourceWidth
-                const sourceScaleY = sourceCanvas.height / metrics.sourceHeight
-                const sx = Math.max(0, metrics.cropLeft)
-                const sy = Math.max(0, metrics.cropTop)
-                const ex = Math.min(metrics.sourceWidth, metrics.cropLeft + metrics.cropWidth)
-                const ey = Math.min(metrics.sourceHeight, metrics.cropTop + metrics.cropHeight)
-                const sw = Math.max(0, ex - sx)
-                const sh = Math.max(0, ey - sy)
-                if (sw > 0 && sh > 0) {
-                    ctx.drawImage(
-                        sourceCanvas,
-                        sx * sourceScaleX,
-                        sy * sourceScaleY,
-                        sw * sourceScaleX,
-                        sh * sourceScaleY,
-                        metrics.offsetX + (sx - metrics.cropLeft) * metrics.scale,
-                        metrics.offsetY + (sy - metrics.cropTop) * metrics.scale,
-                        sw * metrics.scale,
-                        sh * metrics.scale
-                    )
-                }
-            } catch (_) {}
         }
 
         const modelPreviewRect = getModelPreviewRect()
@@ -1394,7 +1492,35 @@ function openCustomTouchAreaWindow(options = {}) {
         hideHoverLabel()
     })
 
-    saveButton.onclick = function() {
+    async function waitForActiveTouchSetSave() {
+        const startTime = Date.now()
+        while (isSaving && Date.now() - startTime < 3000) {
+            await new Promise(resolve => setTimeout(resolve, 50))
+        }
+        return !isSaving
+    }
+
+    async function flushTouchSetSaveBeforePreviewClose() {
+        if (autoSaveTimeout) {
+            clearTimeout(autoSaveTimeout)
+            autoSaveTimeout = null
+        }
+
+        const saveSlotAvailable = await waitForActiveTouchSetSave()
+        if (!saveSlotAvailable) return false
+
+        isSaving = true
+        try {
+            const success = await saveTouchSetToServer()
+            if (success) showSaveIndicator()
+            return success
+        } finally {
+            isSaving = false
+        }
+    }
+
+    saveButton.onclick = async function() {
+        if (saveButton.disabled) return
         const rect = selectionToNormalizedRect()
         if (!rect) {
             status.textContent = touchAnimText('selectAreaFirst', '请先框选一个有效区域')
@@ -1416,6 +1542,15 @@ function openCustomTouchAreaWindow(options = {}) {
                 rect
             })
         }
+        saveButton.disabled = true
+        const saveSuccess = await flushTouchSetSaveBeforePreviewClose()
+        saveButton.disabled = false
+        if (!saveSuccess) {
+            status.textContent = window.t
+                ? window.t('live2d.saveFailedGeneral', '保存失败!')
+                : '保存失败!'
+            return
+        }
         floatingWindow.close()
     }
 
@@ -1424,9 +1559,26 @@ function openCustomTouchAreaWindow(options = {}) {
             cancelAnimationFrame(animationFrameId)
             animationFrameId = null
         }
+        const shouldReloadSourceModel = previewLoadStarted
+        destroyPreviewModel()
+        if (shouldReloadSourceModel && typeof window.reloadCurrentLive2DModelInModelManager === 'function') {
+            const reloadPromise = window.reloadCurrentLive2DModelInModelManager({
+                reason: 'custom-touch-area-preview-close'
+            })
+            if (reloadPromise && typeof reloadPromise.catch === 'function') {
+                reloadPromise.catch(error => {
+                    console.warn('[TouchConfig] Failed to reload model manager Live2D model:', error)
+                })
+            }
+        }
     }
 
-    requestAnimationFrame(drawPreviewFrame)
+    loadPreviewModel().catch(error => {
+        if (previewDisposed) return
+        console.warn('[TouchConfig] Failed to load custom touch area preview model:', error)
+        status.textContent = touchAnimText('previewUnavailable', '当前无法打开自定义区域预览')
+    })
+    animationFrameId = requestAnimationFrame(drawPreviewFrame)
 }
 
 function closeAllMultiselects(e){
