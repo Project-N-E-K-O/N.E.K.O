@@ -787,6 +787,7 @@ function openCustomTouchAreaWindow(options = {}) {
     }
     let initialSelectionApplied = false
     let previewBaseBounds = null
+    let previewScreenshotCanvas = null
     const MIN_SELECTION_SIZE = 10
     const RESIZE_HIT_PADDING = 10
     const HOVER_LABEL_OFFSET_X = 16
@@ -794,6 +795,49 @@ function openCustomTouchAreaWindow(options = {}) {
     const HOVER_LABEL_DAMPING = 0.22
     const previewBaseAreaRecords = getCustomTouchAreaRecordsFromSet(options.touchSet || {})
         .filter(record => record.area.id !== editingArea?.id)
+
+    function renderSourceOnceForPreviewScreenshot() {
+        const app = manager?.pixi_app
+        const renderer = app?.renderer
+        const stage = app?.stage
+        if (!renderer || !stage || typeof renderer.render !== 'function') return
+
+        try {
+            renderer.render(stage)
+        } catch (_) {}
+    }
+
+    function capturePreviewScreenshotCanvas() {
+        const frameSource = manager?.pixi_app?.renderer?.view || manager?.pixi_app?.view || sourceCanvas
+        const fallbackWidth = sourceCanvas?.width || previewWrap.clientWidth || 1
+        const fallbackHeight = sourceCanvas?.height || previewWrap.clientHeight || 1
+        if (!frameSource || frameSource.width <= 0 || frameSource.height <= 0) {
+            const fallback = document.createElement('canvas')
+            fallback.width = Math.max(1, fallbackWidth)
+            fallback.height = Math.max(1, fallbackHeight)
+            return fallback
+        }
+
+        renderSourceOnceForPreviewScreenshot()
+
+        const screenshot = document.createElement('canvas')
+        screenshot.width = frameSource.width
+        screenshot.height = frameSource.height
+        const screenshotCtx = screenshot.getContext('2d')
+        if (!screenshotCtx) return screenshot
+
+        try {
+            screenshotCtx.drawImage(frameSource, 0, 0)
+        } catch (_) {}
+        return screenshot
+    }
+
+    function getPreviewScreenshotCanvas() {
+        if (!previewScreenshotCanvas) {
+            previewScreenshotCanvas = capturePreviewScreenshotCanvas()
+        }
+        return previewScreenshotCanvas
+    }
 
     function getSourceCssSize() {
         const screen = manager.pixi_app?.renderer?.screen
@@ -1255,6 +1299,7 @@ function openCustomTouchAreaWindow(options = {}) {
 
     function drawPreviewFrame() {
         const metrics = updatePreviewMetrics()
+        const frameSourceCanvas = getPreviewScreenshotCanvas()
         const dpr = window.devicePixelRatio || 1
         const targetWidth = Math.max(1, Math.round(metrics.wrapWidth * dpr))
         const targetHeight = Math.max(1, Math.round(metrics.wrapHeight * dpr))
@@ -1267,8 +1312,8 @@ function openCustomTouchAreaWindow(options = {}) {
             ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
             ctx.clearRect(0, 0, metrics.wrapWidth, metrics.wrapHeight)
             try {
-                const sourceScaleX = sourceCanvas.width / metrics.sourceWidth
-                const sourceScaleY = sourceCanvas.height / metrics.sourceHeight
+                const sourceScaleX = frameSourceCanvas.width / metrics.sourceWidth
+                const sourceScaleY = frameSourceCanvas.height / metrics.sourceHeight
                 const sx = Math.max(0, metrics.cropLeft)
                 const sy = Math.max(0, metrics.cropTop)
                 const ex = Math.min(metrics.sourceWidth, metrics.cropLeft + metrics.cropWidth)
@@ -1277,7 +1322,7 @@ function openCustomTouchAreaWindow(options = {}) {
                 const sh = Math.max(0, ey - sy)
                 if (sw > 0 && sh > 0) {
                     ctx.drawImage(
-                        sourceCanvas,
+                        frameSourceCanvas,
                         sx * sourceScaleX,
                         sy * sourceScaleY,
                         sw * sourceScaleX,
@@ -1424,9 +1469,10 @@ function openCustomTouchAreaWindow(options = {}) {
             cancelAnimationFrame(animationFrameId)
             animationFrameId = null
         }
+        previewScreenshotCanvas = null
     }
 
-    requestAnimationFrame(drawPreviewFrame)
+    animationFrameId = requestAnimationFrame(drawPreviewFrame)
 }
 
 function closeAllMultiselects(e){
