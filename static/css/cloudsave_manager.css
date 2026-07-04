@@ -154,6 +154,12 @@ body .container-header {
     opacity: 0.9;
 }
 
+.container-header .close-page-btn:focus-visible {
+    outline: 2px solid rgba(255, 255, 255, 0.85);
+    outline-offset: 2px;
+    box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.18);
+}
+
 .container-content {
     padding: 24px 32px;
     background: #e3f4ff;
