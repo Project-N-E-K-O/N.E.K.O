@@ -7164,6 +7164,8 @@ window.Jukebox = {
         --neko-jukebox-bg: #101722;
       }
 
+      html[data-theme="dark"].neko-jukebox-standalone-host,
+      html[data-theme="dark"].neko-jukebox-standalone-host body.neko-jukebox-standalone-page,
       html[data-theme="dark"] body.neko-jukebox-standalone-page {
         background: var(--neko-jukebox-bg) !important;
       }
@@ -7416,6 +7418,7 @@ window.Jukebox = {
         box-shadow: 0 12px 30px rgba(2, 8, 23, 0.42);
       }
 
+      /* Keep this SongActionManager dark palette in sync with templates/jukebox_manager.html. */
       [data-theme="dark"] .jukebox-sam-panel {
         color: #e6edf3;
         background: linear-gradient(160deg, rgba(18, 25, 36, 0.97), rgba(26, 38, 52, 0.94));
