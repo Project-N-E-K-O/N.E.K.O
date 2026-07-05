@@ -344,6 +344,18 @@ def test_proactive_reason_codes_have_stage_mapping():
 
 
 @pytest.mark.unit
+def test_proactive_phase2_abort_reasons_stay_specific():
+    import inspect
+    import main_routers.system_router as system_router
+
+    src = inspect.getsource(system_router.proactive_chat)
+    assert "abort_reason_code" in src
+    assert "PROACTIVE_REASON_DELIVERY_PREEMPTED" in src
+    assert "PROACTIVE_REASON_PASS_MODEL_PASS" in src
+    assert "final_abort_reason_code = abort_reason_code or PROACTIVE_REASON_PASS_GENERATION_EMPTY" in src
+
+
+@pytest.mark.unit
 def test_proactive_chat_concurrent_rejection_returns_http_409():
     """``proactive_chat`` handler 因 ``try_start_proactive`` 拒绝时必须返回
     HTTP 409，且 response body 是 ``{"success": False, "error": <str>}``——

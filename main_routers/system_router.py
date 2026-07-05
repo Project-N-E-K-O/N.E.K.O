@@ -7181,13 +7181,26 @@ async def proactive_chat(request: Request):
         full_text = ""
         pipe_count = 0
         aborted = False
+        abort_reason_code: str | None = None
         # 滚动尾部缓冲区：保留最近 5 个字符以检测跨 chunk 的 "[PASS]"（长度 6）
         pass_probe = ""
         _PASS_PROBE_LEN = 5  # len("[PASS]") - 1
 
+        def _abort(reason_code: str) -> None:
+            nonlocal aborted, abort_reason_code
+            aborted = True
+            # User takeover is the most important telemetry signal. If a later
+            # cleanup path also notices empty/invalid output, keep the takeover
+            # reason so the final pass is classified as delivery preemption.
+            if (
+                abort_reason_code is None
+                or reason_code == PROACTIVE_REASON_DELIVERY_PREEMPTED
+            ):
+                abort_reason_code = reason_code
+
         async def _emit_safe(text: str) -> bool:
             """Send to TTS after passing the fence/length checks. Returns True when we should abort."""
-            nonlocal pipe_count, full_text, aborted
+            nonlocal pipe_count, full_text
             if not text:
                 return False
             # 状态机 preempt check：O(1) 读 sticky flag + sid 比较。用户抢占
@@ -7198,20 +7211,20 @@ async def proactive_chat(request: Request):
             # 再一次性 feed。否则重复文本会在 guard 命中前已经被用户听到。
             if mgr.state.is_proactive_preempted(proactive_sid):
                 print(f"[{lanlan_name}] Phase 2 检测到用户接管（state 抢占），abort")
-                aborted = True
+                _abort(PROACTIVE_REASON_DELIVERY_PREEMPTED)
                 return True
             for ch in text:
                 if ch in ('|', '｜'):
                     pipe_count += 1
                     if pipe_count >= 2:
                         print(f"[{lanlan_name}] Phase 2 fence 触发 (pipe_count={pipe_count})，abort")
-                        aborted = True
+                        _abort(PROACTIVE_REASON_PASS_GENERATION_EMPTY)
                         return True
             # sync count_tokens — see PHASE2_OUTPUT_MAX_TOKENS docstring
             n_tokens = count_tokens(full_text + text)
             if n_tokens > PHASE2_OUTPUT_MAX_TOKENS:
                 print(f"[{lanlan_name}] Phase 2 长度超限 ({n_tokens} > {PHASE2_OUTPUT_MAX_TOKENS} tokens)，abort")
-                aborted = True
+                _abort(PROACTIVE_REASON_PASS_GENERATION_EMPTY)
                 return True
             full_text += text
             return False
@@ -7238,7 +7251,7 @@ async def proactive_chat(request: Request):
                         # 用户抢占立刻跳出；_emit_safe 里还有一次保险。
                         if mgr.state.is_proactive_preempted(proactive_sid):
                             print(f"[{lanlan_name}] Phase 2 astream chunk 前检测到抢占，abort")
-                            aborted = True
+                            _abort(PROACTIVE_REASON_DELIVERY_PREEMPTED)
                             break
                         content = chunk.content if hasattr(chunk, 'content') else ''
                         if _p2_strip is not None and content:
@@ -7279,7 +7292,7 @@ async def proactive_chat(request: Request):
                             if (source_tag == 'PASS' or '[PASS]' in cleaned.upper()
                                     or _text_is_pass_sentinel(cleaned)):
                                 print(f"[{lanlan_name}] Phase 2 流式检测到 PASS，abort")
-                                aborted = True
+                                _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
                                 break
                             
                             # 缓冲中剩余的文本经由 pass_probe 逻辑输出
@@ -7287,7 +7300,7 @@ async def proactive_chat(request: Request):
                                 combined = pass_probe + cleaned
                                 if '[PASS]' in combined.upper():
                                     print(f"[{lanlan_name}] Phase 2 流式检测到 [PASS]，abort")
-                                    aborted = True
+                                    _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
                                     break
                                 safe_text = combined[:-_PASS_PROBE_LEN] if len(combined) > _PASS_PROBE_LEN else ''
                                 pass_probe = combined[-_PASS_PROBE_LEN:] if len(combined) >= _PASS_PROBE_LEN else combined
@@ -7299,7 +7312,7 @@ async def proactive_chat(request: Request):
                         combined = pass_probe + content
                         if '[PASS]' in combined.upper():
                             print(f"[{lanlan_name}] Phase 2 流式检测到内嵌 [PASS]，abort")
-                            aborted = True
+                            _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
                             break
                         # 将本次 chunk 的尾部保留到 pass_probe，可安全输出的部分为去掉尾部的前段
                         safe_text = combined[:-_PASS_PROBE_LEN] if len(combined) > _PASS_PROBE_LEN else ''
@@ -7310,12 +7323,12 @@ async def proactive_chat(request: Request):
         
         except (asyncio.TimeoutError, Exception) as e:
             logger.warning(f"[{lanlan_name}] Phase 2 流式调用异常: {type(e).__name__}: {e}")
-            aborted = True
+            _abort(PROACTIVE_REASON_PASS_GENERATION_EMPTY)
         
         # --- 流结束后：flush pass_probe 残留 ---
         if pass_probe and not aborted:
             if '[PASS]' in pass_probe.upper():
-                aborted = True
+                _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
             else:
                 await _emit_safe(pass_probe)
         pass_probe = ""
@@ -7350,7 +7363,7 @@ async def proactive_chat(request: Request):
             # 同样补整段哨兵判定，裸 PASS 与 [PASS] 一视同仁 abort。
             if (source_tag == 'PASS' or '[PASS]' in cleaned.upper()
                     or _text_is_pass_sentinel(cleaned)):
-                aborted = True
+                _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
             elif cleaned.strip():
                 await _emit_safe(cleaned)
         
@@ -7369,7 +7382,7 @@ async def proactive_chat(request: Request):
             # 照常生效）；仍无 tag / [PASS] / 空 → 才判格式泄漏 drop。preempt 时放弃。
             print(f"[{lanlan_name}] Phase 2 输出无合法来源标签，尝试格式自救 regen")
             if mgr.state.is_proactive_preempted(proactive_sid):
-                aborted = True
+                _abort(PROACTIVE_REASON_DELIVERY_PREEMPTED)
             else:
                 _fix_human_text = f"{render_format_fix_instruction(proactive_lang, master_name_current)}\n\n{human_text}"
                 if phase2_use_vision:
@@ -7415,7 +7428,14 @@ async def proactive_chat(request: Request):
                     print(f"[{lanlan_name}] Phase 2 格式自救成功 tag={source_tag}")
                 else:
                     print(f"[{lanlan_name}] Phase 2 格式自救仍无合法 tag，drop")
-                    aborted = True
+                    if (
+                        _fix_tag == "PASS"
+                        or "[PASS]" in _fc.upper()
+                        or _text_is_pass_sentinel(_fc)
+                    ):
+                        _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
+                    else:
+                        _abort(PROACTIVE_REASON_PASS_GENERATION_EMPTY)
 
         # --- 结果处理 ---
         # buffer 是流前 ~80 字符的原始累积（含 [TAG]\n 前缀和正文头部），
@@ -7424,6 +7444,7 @@ async def proactive_chat(request: Request):
         # 调试只需要 tag + 实际投递文本即可。
         print(f"\n[PROACTIVE-DEBUG] Phase 2 STREAM output (aborted={aborted}, tag={source_tag}): {full_text[:300]}\n")
         if aborted or not full_text.strip():
+            final_abort_reason_code = abort_reason_code or PROACTIVE_REASON_PASS_GENERATION_EMPTY
             # 只有当用户没接管时才调 handle_new_message 清 TTS —— 否则会把
             # 用户正常回复的 TTS 也清掉（PR #862 修的 bug）。状态机的
             # is_proactive_preempted 是权威信号，sid 比较作为最后一道兜底。
@@ -7435,7 +7456,7 @@ async def proactive_chat(request: Request):
             return await _end_proactive(JSONResponse({
                 "success": True,
                 "action": "pass",
-                "reason_code": PROACTIVE_REASON_PASS_GENERATION_EMPTY,
+                "reason_code": final_abort_reason_code,
                 "message": "Phase 2 流式输出被拦截或为空"
             }))
         
