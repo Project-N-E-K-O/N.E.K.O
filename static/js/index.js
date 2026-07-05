@@ -150,7 +150,15 @@ async function loadPageConfig() {
                 if (typeof window.hideOtherAvatarRuntimesForPNGTuber === 'function') {
                     window.hideOtherAvatarRuntimesForPNGTuber();
                 }
-                if (typeof window.loadPNGTuberAvatar === 'function') {
+                const shouldSkipPngtuberBoot = window.NekoAvatarFloatingBoot
+                    && typeof window.NekoAvatarFloatingBoot.shouldSkipUserModelBoot === 'function'
+                    && window.NekoAvatarFloatingBoot.shouldSkipUserModelBoot();
+                if (shouldSkipPngtuberBoot) {
+                    if (typeof window.NekoAvatarFloatingBoot.markUserModelBootSkipped === 'function') {
+                        window.NekoAvatarFloatingBoot.markUserModelBootSkipped('pngtuber-init');
+                    }
+                    console.log('[主页] 新手教程启动预测命中，跳过用户 PNGTuber 模型加载');
+                } else if (typeof window.loadPNGTuberAvatar === 'function') {
                     window.loadPNGTuberAvatar(lanlan_config.pngtuber || { idle_image: modelPath });
                 }
             } else if (modelType === 'live3d' || modelType === 'vrm') {

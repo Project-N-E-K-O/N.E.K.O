@@ -7111,8 +7111,9 @@ class LLMSessionManager:
         visual context — the conversation model otherwise sees only the proactive
         text and can't tell what was on screen. Passing None clears any previously
         staged screenshot, so a new proactive round always discards the prior
-        cache (and may fill a fresh one). The session enforces a 2-min TTL on the
-        staged screenshot at injection time. Staging happens inside the sid-guard
+        cache (and may fill a fresh one). The session enforces a short TTL
+        (``_PROACTIVE_SCREENSHOT_TTL_SECONDS``) on the staged screenshot at
+        injection time. Staging happens inside the sid-guard
         below, so a user takeover (sid change → early return) never stages a
         screenshot for an undelivered turn.
 
@@ -7161,8 +7162,9 @@ class LLMSessionManager:
                 # （仅暂存，不作为图片写进历史），下一条用户 text 回复经 stream_text
                 # 时会把它作为前导视觉背景注入——否则对话模型只看到搭话文本，回复
                 # 时完全不知道刚才评论的屏幕长什么样。新一轮主动搭话产生即覆盖/清掉
-                # 旧缓存（没拿到截图的轮次传 None 清），session 侧再用 2 分钟 TTL
-                # 兜底过期。set_* 在 sid 校验之后，用户接管（sid 变→早 return）时
+                # 旧缓存（没拿到截图的轮次传 None 清），session 侧再用短 TTL
+                # （_PROACTIVE_SCREENSHOT_TTL_SECONDS）兜底过期。set_* 在 sid 校验之
+                # 后，用户接管（sid 变→早 return）时
                 # 绝不会为未投递的轮次暂存截图。
                 if hasattr(self.session, "set_proactive_screenshot"):
                     self.session.set_proactive_screenshot(vision_screenshot_b64)

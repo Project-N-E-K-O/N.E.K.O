@@ -235,16 +235,21 @@ function createHeadAnchoredCornerPeekSession(position) {
 }
 
 test('returns fixed Live2D corner peek cues without image resources', () => {
-    assert.equal(standIn.getCue(2, 'day2_intro_context'), null);
+    assert.equal(standIn.getCue(2, 'day2_tool_toggle_intro'), null);
     assert.equal(
-        standIn.getCue(3, 'day3_avatar_tools'),
+        standIn.getCue(2, 'day2_avatar_tools'),
         null,
-        'day3_avatar_tools stays disabled because it sits too close to the opening motion'
+        'day2_avatar_tools stays disabled because it sits too close to the opening motion'
     );
-    assert.deepEqual(standIn.getCue(3, 'day3_galgame_entry'), {
+    assert.deepEqual(standIn.getCue(2, 'day2_galgame_entry'), {
         delay: 900,
         duration: 5000,
         position: 'top-right'
+    });
+    assert.deepEqual(standIn.getCue(3, 'day3_proactive_chat'), {
+        delay: 900,
+        duration: 5000,
+        position: 'top-left'
     });
     assert.deepEqual(standIn.getCue(4, 'day4_privacy_mode'), {
         delay: 900,
@@ -283,13 +288,13 @@ test('exports all fixed day two through seven cue positions', () => {
 });
 
 test('does not schedule Live2D corner peek on final wrap-adjacent scenes', () => {
-    assert.equal(standIn.getCue(2, 'day2_intro_context'), null);
+    assert.equal(standIn.getCue(2, 'day2_tool_toggle_intro'), null);
     assert.equal(
-        standIn.getCue(3, 'day3_avatar_tools'),
+        standIn.getCue(2, 'day2_avatar_tools'),
         null,
-        'day3_avatar_tools intentionally remains outside the legacy stand-in cue table'
+        'day2_avatar_tools intentionally remains outside the legacy stand-in cue table'
     );
-    assert.equal(standIn.getCue(3, 'day3_galgame_choices'), null);
+    assert.equal(standIn.getCue(2, 'day2_galgame_choices'), null);
     assert.equal(standIn.getCue(4, 'day4_return_home'), null);
     assert.equal(standIn.getCue(5, 'day5_character_settings'), null);
     assert.equal(standIn.getCue(5, 'day5_memory_entry'), null);

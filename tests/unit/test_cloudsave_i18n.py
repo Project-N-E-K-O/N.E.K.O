@@ -53,7 +53,8 @@ def test_cloudsave_templates_use_i18n_keys():
     assert 'data-i18n="cloudsave.headerTitle"' in cloudsave_template
     assert 'data-i18n="cloudsave.subtitle"' in cloudsave_template
     assert 'data-i18n="cloudsave.refresh"' in cloudsave_template
-    assert 'data-i18n="cloudsave.backToCharacterManager"' in cloudsave_template
+    assert 'data-i18n-title="cloudsave.backToCharacterManager"' in cloudsave_template
+    assert 'data-i18n-aria="cloudsave.backToCharacterManager"' in cloudsave_template
     assert 'id="cloudsave-provider-status"' in cloudsave_template
     assert 'data-i18n="cloudsave.loadingSummary"' in cloudsave_template
     assert 'id="cloudsave-current-character"' in cloudsave_template

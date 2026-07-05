@@ -537,6 +537,7 @@
     touch-action: none;
 }
 
+.touch-custom-live2d-canvas,
 .touch-custom-preview-canvas {
     position: absolute;
     inset: 0;
@@ -545,9 +546,23 @@
     pointer-events: none;
 }
 
+.touch-custom-live2d-canvas {
+    z-index: 1;
+    opacity: 0;
+}
+
+.touch-custom-live2d-canvas.is-ready {
+    opacity: 1;
+}
+
+.touch-custom-preview-canvas {
+    z-index: 2;
+}
+
 .touch-custom-model-bounds {
     position: absolute;
     display: none;
+    z-index: 3;
     border: 1px dashed rgba(64, 197, 241, 0.65);
     pointer-events: none;
     box-sizing: border-box;
@@ -556,6 +571,7 @@
 .touch-custom-selection {
     position: absolute;
     display: none;
+    z-index: 4;
     border: 2px solid var(--color-n-main);
     background: rgba(64, 197, 241, 0.07);
     box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.7) inset;

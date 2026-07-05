@@ -272,8 +272,22 @@
                 director.cursor.cancel();
                 director.cursorAnchorStore.clear();
             }
+            const shouldClearExternalizedChatCursor = !!(
+                scene && scene.clearExternalizedChatCursorOnEnter === true
+            );
             director.clearSceneTimers();
             director.overlay.setAngry(false);
+            if (
+                shouldClearExternalizedChatCursor
+                && director.isHomeChatExternalized()
+                && !preserveExternalizedChatGuideTarget
+                && !preserveIntroExternalizedChatGuideTarget
+            ) {
+                director.clearExternalizedChatGuideTarget({
+                    clearCursor: true,
+                    preservePcOverlayCursor: true
+                });
+            }
             director.clearSceneExtraSpotlights();
             director.clearAllVirtualSpotlights();
             director.clearSpotlightGeometryHints();
@@ -282,8 +296,12 @@
                 director.isHomeChatExternalized()
                 && !preserveExternalizedChatGuideTarget
                 && !preserveIntroExternalizedChatGuideTarget
+                && !shouldClearExternalizedChatCursor
             ) {
-                director.clearExternalizedChatGuideTarget();
+                director.clearExternalizedChatGuideTarget({
+                    clearCursor: shouldClearExternalizedChatCursor,
+                    preservePcOverlayCursor: shouldClearExternalizedChatCursor
+                });
             }
             this.applyFirstDailySceneIntroCursorPrelude(scene, {
                 isFirstDailyScene,
@@ -477,7 +495,7 @@
             } else if (externalizedSceneTargetKind) {
                 const shouldSkipExternalizedSceneCursor = !!(
                     scene
-                    && scene.id === 'day3_galgame_entry'
+                    && scene.id === 'day2_galgame_entry'
                     && scene.operation === 'rotate-galgame-tool-into-center'
                 );
                 const externalizedCursorOptions = {
@@ -492,6 +510,9 @@
                 }
                 if (Number.isFinite(scene.cursorWobbleDurationMs)) {
                     externalizedCursorOptions.effectDurationMs = Math.max(0, Math.floor(scene.cursorWobbleDurationMs));
+                }
+                if (scene.freezeCursorAfterMove === true) {
+                    externalizedCursorOptions.freezePoint = true;
                 }
                 const shouldPreferExternalizedPrimaryKind = !!(
                     scene
@@ -542,7 +563,7 @@
                 primaryTarget = await director.resolveAvatarFloatingTarget(scene, 'primary');
                 secondaryTarget = await director.resolveAvatarFloatingTarget(scene, 'secondary');
                 const highlightConfig = {
-                    key: scene.id,
+                    key: scene.spotlightKey || scene.id,
                     persistent: shouldShowSceneSpotlight ? persistentTarget : null,
                     primary: shouldShowSceneSpotlight ? primaryTarget : null,
                     secondary: shouldShowSceneSpotlight ? secondaryTarget : null
@@ -667,7 +688,7 @@
                 };
             }
             const highlightConfig = {
-                key: scene.id,
+                key: scene.spotlightKey || scene.id,
                 persistent: persistentTarget,
                 primary: primaryTarget,
                 secondary: secondaryTarget
@@ -835,13 +856,13 @@
                 await director.ensureAvatarFloatingGuideSurfaceReady(round);
             }
             director.setGuideChatInputLocked(true, 'avatar-floating-guide-day' + roundNumber);
-            if (roundNumber === 3) {
-                director.setCompactToolWheelIndexForGuide(0, 'avatar-floating-guide-day3-entry-reset');
+            if (roundNumber === 2) {
+                director.setCompactToolWheelIndexForGuide(0, 'avatar-floating-guide-day2-entry-reset');
             }
             if (isDay1Round) {
                 director.overlay.clearPersistentSpotlight();
                 director.overlay.clearActionSpotlight();
-            } else if (roundNumber === 3) {
+            } else if (roundNumber === 2) {
                 if (director.isHomeChatExternalized()) {
                     if (
                         director.interactionTakeover
@@ -908,6 +929,12 @@
                         round: roundNumber,
                         durationMs: Math.max(0, Date.now() - startedAt)
                     });
+                    if (
+                        isDay1Round
+                        && typeof director.recordAvatarFloatingGuideRoundEnd === 'function'
+                    ) {
+                        director.recordAvatarFloatingGuideRoundEnd(roundNumber);
+                    }
                     return !director.isStopping();
                 } finally {
                     if (

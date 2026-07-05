@@ -11164,10 +11164,50 @@ function toggleMasterSection() {
     const content = document.getElementById('master-profile-content');
     const header = document.getElementById('master-profile-header');
     if (!content || !header) return;
-    const isHidden = content.style.display === 'none';
-    content.style.display = isHidden ? 'block' : 'none';
-    header.classList.toggle('open', isHidden);
-    header.setAttribute('aria-expanded', isHidden ? 'true' : 'false');
+    const isOpening = !content.classList.contains('open');
+
+    if (content._masterProfileHideTimer) {
+        clearTimeout(content._masterProfileHideTimer);
+        content._masterProfileHideTimer = null;
+    }
+    if (content._masterProfileHideContent) {
+        content.removeEventListener('transitionend', content._masterProfileHideContent);
+        content._masterProfileHideContent = null;
+    }
+
+    if (isOpening) {
+        content.style.display = 'block';
+        content.style.setProperty('--master-profile-viewport-left', `${content.getBoundingClientRect().left}px`);
+        content.getBoundingClientRect();
+        content.classList.add('open');
+        header.classList.add('open');
+        header.setAttribute('aria-expanded', 'true');
+        return;
+    }
+
+    content.classList.remove('open');
+    header.classList.remove('open');
+    header.setAttribute('aria-expanded', 'false');
+
+    const hideContent = function (event) {
+        if (event && event.target !== content) return;
+        if (event && event.propertyName !== 'clip-path') return;
+        if (!content.classList.contains('open')) {
+            content.style.display = 'none';
+        }
+        content.removeEventListener('transitionend', hideContent);
+        if (content._masterProfileHideTimer) {
+            clearTimeout(content._masterProfileHideTimer);
+            content._masterProfileHideTimer = null;
+        }
+        if (content._masterProfileHideContent === hideContent) {
+            content._masterProfileHideContent = null;
+        }
+    };
+
+    content.addEventListener('transitionend', hideContent);
+    content._masterProfileHideContent = hideContent;
+    content._masterProfileHideTimer = setTimeout(hideContent, 280);
 }
 
 // ===================== 隐藏猫娘 =====================

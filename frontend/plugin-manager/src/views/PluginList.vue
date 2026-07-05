@@ -361,6 +361,7 @@ import type {
   GroupChoiceDescriptor,
   LayoutChoiceDescriptor,
 } from '@/composables/workbenchDescriptors'
+import { getMarketUrl } from '@/api/market'
 import { reloadAllPlugins, deletePlugin } from '@/api/plugins'
 import { uploadAndInstallPlugin, buildPluginCli, downloadPluginPackage } from '@/api/pluginCli'
 import { usePluginListContextActions, type ResolvedPluginListAction } from '@/composables/usePluginListContextActions'
@@ -658,6 +659,17 @@ function closeDangerDialog() {
   dangerDialogVisible.value = false
   pendingDangerAction.value = null
   pendingDangerPlugin.value = null
+}
+
+async function loadMarketEntry() {
+  try {
+    const url = await getMarketUrl()
+    if (!url) return
+    marketUrl.value = url
+    loadMarketAuthStatus().catch(() => {})
+  } catch {
+    // Market is optional; keep the local plugin list usable if it is absent.
+  }
 }
 
 function openDangerDialog(
@@ -1052,20 +1064,7 @@ watch(packagePanelVisible, (visible) => {
 
 onMounted(async () => {
   window.addEventListener(TUTORIAL_ACTION_EVENT, handleTutorialAction)
-  await handleRefresh()
-  // 获取 Market URL（用于显示"获取新插件"入口）
-  try {
-    const res = await fetch('/market/status')
-    if (res.ok) {
-      const data = await res.json()
-      if (data.market_url) {
-        marketUrl.value = data.market_url
-        loadMarketAuthStatus().catch(() => {})
-      }
-    }
-  } catch {
-    // 静默失败
-  }
+  await Promise.all([loadMarketEntry(), handleRefresh()])
 })
 
 onUnmounted(() => {
@@ -1162,9 +1161,9 @@ onUnmounted(() => {
 
 .workbench-header {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
   gap: 10px;
 }
 
@@ -1625,7 +1624,8 @@ onUnmounted(() => {
   gap: 8px;
   align-items: center;
   flex-wrap: wrap;
-  justify-content: flex-end;
+  justify-content: flex-start;
+  width: 100%;
   flex: 0 1 auto;
   min-width: 0;
 }

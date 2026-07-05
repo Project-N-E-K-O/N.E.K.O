@@ -7,6 +7,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 RUNTIME_PATH = ROOT / "static" / "tutorial" / "icebreaker" / "new-user-icebreaker.js"
+ICEBREAKER_ASSISTANT_LOADING_PATH = ROOT / "static" / "tutorial" / "icebreaker" / "assistant-loading.js"
+ICEBREAKER_FREE_TEXT_RUNTIME_PATH = ROOT / "static" / "tutorial" / "icebreaker" / "free-text-runtime.js"
 SCRIPTS_PATH = ROOT / "static" / "tutorial" / "icebreaker" / "icebreaker_scripts.json"
 LOCALE_PATH = ROOT / "static" / "tutorial" / "icebreaker" / "locales" / "zh-CN.json"
 LOCALES_DIR = ROOT / "static" / "tutorial" / "icebreaker" / "locales"
@@ -20,6 +22,8 @@ INDEX_TEMPLATE_PATH = ROOT / "templates" / "index.html"
 WEBSOCKET_ROUTER_PATH = ROOT / "main_routers" / "websocket_router.py"
 GAME_ROUTER_PATH = ROOT / "main_routers" / "game_router.py"
 ICEBREAKER_ROUTER_PATH = ROOT / "main_routers" / "icebreaker_router.py"
+ICEBREAKER_PROMPTS_PATH = ROOT / "config" / "prompts" / "prompts_icebreaker.py"
+ICEBREAKER_FREE_TEXT_UTILS_PATH = ROOT / "utils" / "icebreaker_free_text.py"
 LIVE2D_CORE_PATH = ROOT / "static" / "live2d-core.js"
 SUBTITLE_PATH = ROOT / "static" / "subtitle.js"
 
@@ -132,6 +136,121 @@ def test_day4_icebreaker_non_source_locales_are_translated_not_copied():
 
 def test_day5_icebreaker_non_source_locales_are_translated_not_copied():
     assert_icebreaker_non_source_locales_are_translated_not_copied("day5")
+
+
+def test_rewritten_icebreaker_fallbacks_stay_on_day_topics():
+    topic_terms = {
+        "day2": {
+            "en": "flavor",
+            "es": "sabor",
+            "ja": "味",
+            "ko": "맛",
+            "pt": "sabor",
+            "ru": "вкус",
+            "zh-CN": "口味",
+            "zh-TW": "口味",
+        },
+        "day3": {
+            "en": "sunlight",
+            "es": "sol",
+            "ja": "日なた",
+            "ko": "햇살",
+            "pt": "sol",
+            "ru": "солнце",
+            "zh-CN": "阳光",
+            "zh-TW": "陽光",
+        },
+        "day5": {
+            "en": "tail",
+            "es": "cola",
+            "ja": "しっぽ",
+            "ko": "꼬리",
+            "pt": "cauda",
+            "ru": "хвост",
+            "zh-CN": "尾巴",
+            "zh-TW": "尾巴",
+        },
+        "day6": {
+            "en": "ears",
+            "es": "orejas",
+            "ja": "耳",
+            "ko": "귀",
+            "pt": "orelhas",
+            "ru": "ушки",
+            "zh-CN": "耳朵",
+            "zh-TW": "耳朵",
+        },
+        "day7": {
+            "en": "week",
+            "es": "semana",
+            "ja": "一週間",
+            "ko": "일주일",
+            "pt": "semana",
+            "ru": "недели",
+            "zh-CN": "星期",
+            "zh-TW": "星期",
+        },
+    }
+    stale_terms = {
+        "day2": {
+            "en": ("window",),
+            "es": ("ventana",),
+            "ja": ("窓",),
+            "ko": ("창가",),
+            "pt": ("janela",),
+            "ru": ("окн",),
+            "zh-CN": ("窗",),
+            "zh-TW": ("窗",),
+        },
+        "day3": {
+            "en": ("cake",),
+            "es": ("pastel",),
+            "ja": ("ケーキ",),
+            "ko": ("케이크",),
+            "pt": ("bolo",),
+            "ru": ("торт",),
+            "zh-CN": ("蛋糕",),
+            "zh-TW": ("蛋糕",),
+        },
+        "day5": {
+            "en": ("note",),
+            "es": ("nota",),
+            "ja": ("メモ",),
+            "ko": ("쪽지",),
+            "pt": ("nota", "notinha"),
+            "ru": ("записк",),
+            "zh-CN": ("纸条",),
+            "zh-TW": ("紙條",),
+        },
+        "day6": {
+            "en": ("habit", "ritual"),
+            "es": ("hábito", "ritual"),
+            "ja": ("習慣", "合図"),
+            "ko": ("습관", "신호"),
+            "pt": ("hábito", "ritual"),
+            "ru": ("привыч", "ритуал"),
+            "zh-CN": ("习惯", "仪式"),
+            "zh-TW": ("習慣", "儀式"),
+        },
+        "day7": {
+            "en": ("ribbon",),
+            "es": ("cinta",),
+            "ja": ("リボン",),
+            "ko": ("리본",),
+            "pt": ("fita",),
+            "ru": ("ленточ",),
+            "zh-CN": ("丝带",),
+            "zh-TW": ("絲帶",),
+        },
+    }
+
+    for day_prefix, locale_terms in topic_terms.items():
+        for locale, topic_term in locale_terms.items():
+            data = json.loads((LOCALES_DIR / f"{locale}.json").read_text(encoding="utf-8"))
+            fallback_text = f"{data[f'{day_prefix}.fallback.redirect']} {data[f'{day_prefix}.fallback.release']}"
+            assert topic_term.lower() in fallback_text.lower(), f"{locale}:{day_prefix}"
+            for stale_term in stale_terms[day_prefix][locale]:
+                assert stale_term.lower() not in fallback_text.lower(), f"{locale}:{day_prefix}:{stale_term}"
 
 
 def test_day6_icebreaker_non_source_locales_are_translated_not_copied():
@@ -285,7 +404,15 @@ def test_icebreaker_runtime_wires_choice_prompt_and_project_tts():
     assert "baseAvatarUrl: baseAvatarUrl" in chat_host
     assert "window.addEventListener('chat-avatar-preview-updated', refreshAssistantAvatarUrls)" in chat_host
     assert "window.addEventListener('chat-avatar-preview-cleared', refreshAssistantAvatarUrls)" in chat_host
+    assert "/static/tutorial/icebreaker/assistant-loading.js" in index_html
+    assert "/static/tutorial/icebreaker/free-text-runtime.js" in index_html
     assert "/static/tutorial/icebreaker/new-user-icebreaker.js" in index_html
+    assert index_html.index("/static/tutorial/icebreaker/assistant-loading.js") < index_html.index(
+        "/static/tutorial/icebreaker/new-user-icebreaker.js"
+    )
+    assert index_html.index("/static/tutorial/icebreaker/free-text-runtime.js") < index_html.index(
+        "/static/tutorial/icebreaker/new-user-icebreaker.js"
+    )
 
 
 def test_icebreaker_context_append_does_not_touch_shared_websocket_router():
@@ -426,9 +553,10 @@ def test_icebreaker_assistant_messages_update_compact_caption_like_normal_chat()
     interpage_runtime = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
 
     assert "function syncIcebreakerAssistantCompactCaption(role, message)" in runtime
+    assert "function finalizeIcebreakerAssistantSubtitleTranslation(role, message)" in runtime
     assert "function waitForIcebreakerChatHostMounted(host)" in runtime
     sync_block = runtime.split("function syncIcebreakerAssistantCompactCaption(role, message)", 1)[1].split(
-        "function appendChatMessage(role, text, meta)",
+        "function finalizeIcebreakerAssistantSubtitleTranslation(role, message)",
         1,
     )[0]
     assert "if (role !== 'assistant') return;" in sync_block
@@ -441,26 +569,49 @@ def test_icebreaker_assistant_messages_update_compact_caption_like_normal_chat()
     assert "openSubtitleTranslationForIcebreakerAssistantMessage()" not in sync_block
     assert "setSubtitleEnabled(true" not in sync_block
     assert "setTranslateEnabled(true" not in sync_block
-    assert "subtitleBridge" not in sync_block
-    assert "finalizeTurnWithTranslation" not in sync_block
+
+    subtitle_block = runtime.split("function finalizeIcebreakerAssistantSubtitleTranslation(role, message)", 1)[1].split(
+        "function waitForIcebreakerChatHostMounted(host)",
+        1,
+    )[0]
+    assert "if (role !== 'assistant') return;" in subtitle_block
+    assert "window.subtitleBridge" in subtitle_block
+    assert "bridge.beginTurn({ latch: false });" in subtitle_block
+    assert "bridge.finalizeTurnWithTranslation(line)" in subtitle_block
+    assert "console.warn('[NewUserIcebreaker] subtitle translation failed:'" in subtitle_block
+    assert "setSubtitleEnabled(true" not in subtitle_block
+    assert "setTranslateEnabled(true" not in subtitle_block
 
     assert "function syncIcebreakerAssistantCompactCaption(message)" in interpage_runtime
+    assert "function finalizeIcebreakerAssistantSubtitleTranslation(message)" in interpage_runtime
     assert "function waitForIcebreakerChatHostMounted(host)" in interpage_runtime
     interpage_compact_block = interpage_runtime.split(
         "function syncIcebreakerAssistantCompactCaption(message)", 1
-    )[1].split("function isIcebreakerBridgeAction", 1)[0]
+    )[1].split("function finalizeIcebreakerAssistantSubtitleTranslation(message)", 1)[0]
     assert "if (!isStandaloneChatPage() || !message || message.role !== 'assistant') return;" in interpage_compact_block
     assert "window.dispatchEvent(new CustomEvent('neko-assistant-turn-start'" in interpage_compact_block
     assert "window.dispatchEvent(new CustomEvent('neko-compact-caption-update'" in interpage_compact_block
     assert "window.dispatchEvent(new CustomEvent('neko-assistant-speech-unavailable'" not in interpage_compact_block
     assert "window.dispatchEvent(new CustomEvent('neko-assistant-turn-end'" not in interpage_compact_block
+    interpage_subtitle_block = interpage_runtime.split(
+        "function finalizeIcebreakerAssistantSubtitleTranslation(message)", 1
+    )[1].split("function waitForIcebreakerChatHostMounted(host)", 1)[0]
+    assert "if (!isStandaloneChatPage() || !message || message.role !== 'assistant') return;" in interpage_subtitle_block
+    assert "window.subtitleBridge" in interpage_subtitle_block
+    assert "bridge.beginTurn({ latch: false });" in interpage_subtitle_block
+    assert "bridge.finalizeTurnWithTranslation(line)" in interpage_subtitle_block
+    assert "setSubtitleEnabled(true" not in interpage_subtitle_block
+    assert "setTranslateEnabled(true" not in interpage_subtitle_block
     assert "return Promise.resolve(host.appendMessage(action.message)).then(function (result) {" in interpage_runtime
     assert "return waitForIcebreakerChatHostMounted(host).then(function () {" in interpage_runtime
     assert "syncIcebreakerAssistantCompactCaption(action.message);" in interpage_runtime
+    assert "finalizeIcebreakerAssistantSubtitleTranslation(action.message);" in interpage_runtime
     assert interpage_runtime.index("return Promise.resolve(host.appendMessage(action.message)).then(function (result) {") < interpage_runtime.index(
         "return waitForIcebreakerChatHostMounted(host).then(function () {"
     ) < interpage_runtime.index(
         "syncIcebreakerAssistantCompactCaption(action.message);"
+    ) < interpage_runtime.index(
+        "finalizeIcebreakerAssistantSubtitleTranslation(action.message);"
     )
     assert "icebreaker_assistant_subtitle" not in runtime
     assert "icebreaker_assistant_subtitle" not in interpage_runtime
@@ -481,53 +632,122 @@ def test_icebreaker_assistant_message_does_not_auto_open_subtitle_translation_pa
     assert "setSubtitleEnabled(true" not in start_block
     assert "setTranslateEnabled(true" not in start_block
 
-    sync_block = runtime.split("function syncIcebreakerAssistantCompactCaption(role, message)", 1)[1].split(
+    sync_block = runtime.split("function finalizeIcebreakerAssistantSubtitleTranslation(role, message)", 1)[1].split(
         "function appendChatMessage(role, text, meta)",
         1,
     )[0]
     assert "if (role !== 'assistant') return;" in sync_block
     assert "setSubtitleEnabled(true" not in sync_block
     assert "setTranslateEnabled(true" not in sync_block
-    assert "subtitleBridge" not in sync_block
-    assert "finalizeTurnWithTranslation" not in sync_block
+    assert "bridge.finalizeTurnWithTranslation(line)" in sync_block
 
     append_message_block = runtime.split("function appendChatMessage(role, text, meta)", 1)[1].split(
         "function speakViaProjectTts",
         1,
     )[0]
     assert "return appendLlmContext(role, messageText, meta || {}).then(function () {" in append_message_block
+    standalone_branch = append_message_block.split("if (!shouldRenderIcebreakerOnLocalChatHost()) {", 1)[1].split(
+        "var chatHost = null;",
+        1,
+    )[0]
+    assert "finalizeIcebreakerAssistantSubtitleTranslation(role, message);" in standalone_branch
+    assert "syncIcebreakerAssistantCompactCaption(role, message);" not in standalone_branch
     assert "return host.appendMessage(message);" in append_message_block
     assert "return waitForIcebreakerChatHostMounted(chatHost).then(function () {" in append_message_block
     assert "syncIcebreakerAssistantCompactCaption(role, message);" in append_message_block
+    assert "finalizeIcebreakerAssistantSubtitleTranslation(role, message);" in append_message_block
     assert append_message_block.index("return host.appendMessage(message);") < append_message_block.index(
         "return waitForIcebreakerChatHostMounted(chatHost).then(function () {"
     ) < append_message_block.rindex(
         "syncIcebreakerAssistantCompactCaption(role, message);"
+    ) < append_message_block.rindex(
+        "finalizeIcebreakerAssistantSubtitleTranslation(role, message);"
     )
+
+
+def test_icebreaker_assistant_lines_show_fake_thinking_dots_before_text():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+    loading_runtime = ICEBREAKER_ASSISTANT_LOADING_PATH.read_text(encoding="utf-8")
+    assistant_append_block = runtime.split("function appendAssistantChatMessage(text, meta, session)", 1)[1].split(
+        "function appendChatMessage(role, text, meta)",
+        1,
+    )[0]
+    deliver_node_block = runtime.split("function deliverNode(nodeId)", 1)[1].split(
+        "function completeWithHandoff(option)",
+        1,
+    )[0]
+    handoff_block = runtime.split("function completeWithHandoff(option)", 1)[1].split(
+        "function advanceWithChoice(session, option, choice, label, choiceNodeId)",
+        1,
+    )[0]
+    free_text_block = runtime.split("function applyFreeTextInterpretation(session, interpretation, snapshot)", 1)[1].split(
+        "function handleFreeText(detail)",
+        1,
+    )[0]
+
+    assert "var DEFAULT_FAKE_LOADING_MS = 1100;" in loading_runtime
+    assert "new CustomEvent('neko-focus-thinking'" in loading_runtime
+    assert "detail: { active: active === true, source: String(source || '') }" in loading_runtime
+    assert "function waitMs(ms)" in loading_runtime
+    assert "waitMs(durationMs)" in loading_runtime
+    assert "host.openWindow();" in loading_runtime
+    assert "return waitForMounted(host).then(function () {" in loading_runtime
+    assert "dispatchThinking(true, source);" in loading_runtime
+    assert "dispatchThinking(false, source);" in loading_runtime
+    assert "assistantLoading.showAssistantFakeLoading({" in runtime
+    assert "return appendChatMessage('assistant', text, meta);" in assistant_append_block
+    assert "}).then(function (message) {" in assistant_append_block
+    assert "if (targetSession && activeSession !== targetSession) return null;" in assistant_append_block
+    assert "return message;" in assistant_append_block
+    assert "appendChatMessage('user', label" in runtime
+    assert "appendAssistantChatMessage(text, {" in deliver_node_block
+    assert "appendAssistantChatMessage(text, {" in handoff_block
+    assert "appendAssistantChatMessage(releaseText, {" in free_text_block
+    assert "appendAssistantChatMessage(replyText, {" in free_text_block
 
 
 def test_icebreaker_project_tts_uses_local_mutation_headers():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
-    speak_block = runtime.split("function speakViaProjectTts(text, voiceKey)", 1)[1].split(
+    speak_block = runtime.split("function speakViaProjectTts(text, voiceKey, signal)", 1)[1].split(
         "function speakLine(text, voiceKey)",
         1,
     )[0]
 
     assert "getLocalMutationHeaders().then(function (headers)" in speak_block
     assert "headers: headers" in speak_block
+    assert "if (signal) requestOptions.signal = signal;" in speak_block
+    assert "if (error && error.name === 'AbortError') return false;" in speak_block
     assert "headers: { 'Content-Type': 'application/json' }" not in speak_block
 
 
 def test_icebreaker_speak_line_waits_for_estimated_speech_duration():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+    tts_wait_block = runtime.split("function waitForTtsRequest(text, voiceKey)", 1)[1].split(
+        "function speakLine(text, voiceKey)",
+        1,
+    )[0]
     speak_line_block = runtime.split("function speakLine(text, voiceKey)", 1)[1].split(
         "function applyAssistantTextEmotion(text)",
         1,
     )[0]
 
-    assert "return speakViaProjectTts(text, voiceKey).then(function () {" in speak_line_block
+    assert "var TTS_REQUEST_MAX_WAIT_MS = 12000;" in runtime
+    assert "var controller = typeof AbortController === 'function' ? new AbortController() : null;" in tts_wait_block
+    assert "if (controller) controller.abort();" in tts_wait_block
+    assert "var timeoutId = window.setTimeout(function () {" in tts_wait_block
+    assert "speakViaProjectTts(text, voiceKey, controller ? controller.signal : undefined)" in tts_wait_block
+    assert "var speechDurationPromise = new Promise(function (resolve) {" in speak_line_block
     assert "window.setTimeout(resolve, estimateSpeechDurationMs(text));" in speak_line_block
+    assert "var ttsRequestPromise = waitForTtsRequest(text, voiceKey);" in speak_line_block
+    assert "return Promise.all([speechDurationPromise, ttsRequestPromise]).then(function () {});" in speak_line_block
+    assert "return speakViaProjectTts(text, voiceKey).then(function () {" not in speak_line_block
     assert "if (ok) return;" not in speak_line_block
+    assert speak_line_block.index("var speechDurationPromise = new Promise") < speak_line_block.index(
+        "var ttsRequestPromise = waitForTtsRequest(text, voiceKey);"
+    )
+    assert speak_line_block.index("var ttsRequestPromise = waitForTtsRequest(text, voiceKey);") < speak_line_block.index(
+        "return Promise.all([speechDurationPromise, ttsRequestPromise]).then(function () {});"
+    )
 
 
 def test_icebreaker_choice_submission_is_mutexed_and_restores_prompt_on_failure():
@@ -536,16 +756,23 @@ def test_icebreaker_choice_submission_is_mutexed_and_restores_prompt_on_failure(
         "function handleFreeText(detail)",
         1,
     )[0]
+    advance_choice_block = runtime.split("function advanceWithChoice(session, option, choice, label, choiceNodeId)", 1)[1].split(
+        "function handleChoice(detail)",
+        1,
+    )[0]
 
-    assert "if (session.choiceInFlight) return;" in handle_choice_block
+    assert "if (session.choiceInFlight || session.freeTextInFlight) return;" in handle_choice_block
     assert "session.choiceInFlight = true;" in handle_choice_block
     assert "clearChoicePrompt();" in handle_choice_block
     assert handle_choice_block.index("session.choiceInFlight = true;") < handle_choice_block.index("clearChoicePrompt();")
     assert handle_choice_block.index("clearChoicePrompt();") < handle_choice_block.index("appendChatMessage('user', label")
     assert "if (!message)" in handle_choice_block
     assert "if (activeSession !== session)" in handle_choice_block
-    assert handle_choice_block.index("if (activeSession !== session)") < handle_choice_block.index("return deliverNode(option.next);")
-    assert handle_choice_block.index("if (activeSession !== session)") < handle_choice_block.index("completeWithHandoff(option);")
+    assert "return advanceWithChoice(session, option, choice, label, choiceNodeId);" in handle_choice_block
+    assert "if (!session || activeSession !== session || !option) return Promise.resolve(null);" in advance_choice_block
+    assert "return deliverNode(option.next);" in advance_choice_block
+    assert "return completeWithHandoff(option);" in advance_choice_block
+    assert "return Promise.resolve(false);" in advance_choice_block
     assert "session.choiceInFlight = false;" in handle_choice_block
     assert "setChoicePrompt(node, session.localeData);" in handle_choice_block
 
@@ -560,15 +787,26 @@ def test_icebreaker_reveals_next_choice_prompt_after_assistant_line_delay():
     assert "var CHOICE_PROMPT_REVEAL_MIN_DELAY_MS = 700;" in runtime
     assert "function computeChoicePromptRevealDelay(text)" in runtime
     assert "var session = activeSession;" in deliver_node_block
+    assert "if (!activeSession) return Promise.resolve(false);" in deliver_node_block
+    assert "var previousNodeId = session.nodeId;" in deliver_node_block
     assert "var localeData = session.localeData;" in deliver_node_block
+    assert "if (!node) return Promise.resolve(false);" in deliver_node_block
     assert "if (activeSession !== session || session.nodeId !== nodeId) return false;" in deliver_node_block
+    assert "session.nodeId = previousNodeId;" in deliver_node_block
+    append_failure_block = deliver_node_block.split("if (!didAppendChatMessage(message)) {", 1)[1].split(
+        "markDay(session.day",
+        1,
+    )[0]
+    assert append_failure_block.index("session.nodeId = previousNodeId;") < append_failure_block.index("return false;")
     # 揭示延迟改为「只扣视觉」：choicePrompt 立刻下发（绑定输入路由），延迟值随
     # revealDelayMs 交给 chat host 按 revealAt 延后露出按钮。deliverNode 不再用
     # promise 把 setChoicePrompt 整体往后拖，避免间隙内输入落到普通聊天。
     assert "waitBeforeChoicePromptReveal" not in runtime
-    assert "return setChoicePrompt(node, localeData, computeChoicePromptRevealDelay(text));" in deliver_node_block
+    choice_prompt_call = "setChoicePrompt(node, localeData, computeChoicePromptRevealDelay(text))"
+    assert choice_prompt_call in deliver_node_block
+    assert "return true;" in deliver_node_block
     assert deliver_node_block.index("speakLine(text, node.voiceKey || '');") < deliver_node_block.index(
-        "return setChoicePrompt(node, localeData, computeChoicePromptRevealDelay(text));"
+        choice_prompt_call
     )
 
 
@@ -580,12 +818,18 @@ def test_icebreaker_handoff_waits_for_context_append_before_route_end():
     )[0]
 
     assert "var session = activeSession;" in handoff_block
-    assert "return appendChatMessage('assistant', text" in handoff_block
-    assert "return speakViaProjectTts(text, voiceKey)" in runtime
+    assert "function speakViaProjectTts(text, voiceKey, signal)" in runtime
+    assert "function waitForTtsRequest(text, voiceKey)" in runtime
+    assert "return Promise.all([speechDurationPromise, ttsRequestPromise]).then(function () {});" in runtime
     assert "var handoffSpeechPromise = Promise.resolve(false);" in handoff_block
     assert "handoffSpeechPromise = speakLine(text, option.handoffVoiceKey || '');" in handoff_block
+    assert "return appendAssistantChatMessage(text" in handoff_block
+    assert "if (!didAppendChatMessage(message)) return false;" in handoff_block
     assert "return endIcebreakerRoute(session, 'icebreaker_handoff');" in handoff_block
-    assert handoff_block.index("return appendChatMessage('assistant', text") < handoff_block.index(
+    assert "return Promise.resolve(handoffSpeechPromise).catch(function () {}).then(function () {" in handoff_block
+    assert "}).then(function (completed) {" in handoff_block
+    assert "if (!completed) return false;" in handoff_block
+    assert handoff_block.index("return appendAssistantChatMessage(text") < handoff_block.index(
         "return endIcebreakerRoute(session, 'icebreaker_handoff');"
     )
     assert handoff_block.index("handoffSpeechPromise = speakLine") < handoff_block.index(
@@ -597,6 +841,9 @@ def test_icebreaker_handoff_waits_for_context_append_before_route_end():
     assert handoff_block.index("return Promise.resolve(handoffSpeechPromise)") < handoff_block.index(
         "completed: true"
     )
+    assert handoff_block.index("return Promise.resolve(handoffSpeechPromise)") < handoff_block.rindex(
+        "if (!completed) return false;"
+    ) < handoff_block.index("completed: true")
     assert handoff_block.index("completed: true") < handoff_block.index("dispatchIcebreakerEnded('handoff');")
     assert "if (activeSession === session) {" in handoff_block
     assert handoff_block.index("return endIcebreakerRoute(session, 'icebreaker_handoff');") < handoff_block.index(
@@ -795,19 +1042,24 @@ def test_icebreaker_uses_broadcast_channel_for_desktop_chat_window():
     assert "case 'icebreaker_append_chat_message'" in interpage
     assert "case 'icebreaker_set_choice_prompt'" in interpage
     assert "case 'icebreaker_clear_choice_prompt'" in interpage
+    assert "case 'icebreaker_clear_choice_prompt_source'" in interpage
     assert "appendIcebreakerChatMessage(data.message)" in interpage
     assert "setIcebreakerChoicePromptFromBroadcast(data.prompt)" in interpage
     assert "clearIcebreakerChoicePromptFromBroadcast(data.sessionId)" in interpage
+    assert "clearIcebreakerChoicePromptSourceFromBroadcast(data.source, data.reason)" in interpage
     icebreaker_flush_block = interpage.split("function flushPendingIcebreakerBridgeActions()", 1)[1].split(
         "function appendIcebreakerChatMessage",
         1,
     )[0]
     assert "shouldOpenHost = true" in icebreaker_flush_block
     assert "host.openWindow()" in icebreaker_flush_block
+    assert "action.source === 'new_user_icebreaker'" in icebreaker_flush_block
     assert "case 'icebreaker_choice_selected'" in interpage
     assert "postIcebreakerBridgeEvent('icebreaker_choice_selected'" in interpage
     assert "case 'icebreaker_free_text_submitted'" in interpage
     assert "postIcebreakerBridgeEvent('icebreaker_free_text_submitted'" in interpage
+    assert "action: 'icebreaker_clear_choice_prompt_source'" in runtime
+    assert "window.addEventListener('neko:new-user-icebreaker-reset'" in runtime
     assert "nekoBroadcastChannel.postMessage(message)" in interpage
     assert "postInterpageMessage(message)" not in interpage
 
@@ -824,6 +1076,30 @@ def test_icebreaker_desktop_bridge_has_storage_fallback():
     assert "postIcebreakerBridgeEvent" in interpage
     assert "handleIcebreakerStorageBridgeEvent" in interpage
     assert "yuiGuideInterpageResources.addEventListener(window, 'storage', handleIcebreakerStorageBridgeEvent)" in interpage
+
+
+def test_icebreaker_source_clear_bridge_cannot_clear_non_icebreaker_prompt():
+    interpage = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
+
+    source_clear_block = interpage.split("function clearIcebreakerChoicePromptSourceFromBroadcast(source, reason)", 1)[1].split(
+        "function getIcebreakerMessageText",
+        1,
+    )[0]
+
+    assert "String(source || '') !== 'new_user_icebreaker'" in source_clear_block
+    assert "mini_game_invite" not in source_clear_block
+
+
+def test_icebreaker_page_exit_clears_choice_prompt_before_route_end():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+
+    page_exit_block = runtime.split("function endIcebreakerRouteOnPageExit(reason)", 1)[1].split(
+        "var body = {",
+        1,
+    )[0]
+
+    assert "clearChoicePrompt();" in page_exit_block
+    assert page_exit_block.index("clearChoicePrompt();") < page_exit_block.index("session.routeEnded = true;")
 
 
 def test_yui_guide_chat_bridge_has_storage_queue_fallback():
@@ -869,65 +1145,124 @@ def test_yui_guide_native_relay_uses_defined_chat_helpers():
     assert "setYuiGuideCompactToolWheelIndex(" not in relay_block
 
 
-def test_icebreaker_free_text_uses_fallback_instead_of_llm():
-    scripts = json.loads(SCRIPTS_PATH.read_text(encoding="utf-8"))
-    locale = json.loads(LOCALE_PATH.read_text(encoding="utf-8"))
+def test_icebreaker_free_text_uses_llm_interpreter_before_static_fallback():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
-
-    fallback = scripts["days"]["1"]["fallback"]
-    assert locale[fallback["redirectKey"]]
-    assert locale[fallback["releaseKey"]]
-    assert fallback["redirectVoiceKey"]
-    assert fallback["releaseVoiceKey"]
+    free_text_runtime = ICEBREAKER_FREE_TEXT_RUNTIME_PATH.read_text(encoding="utf-8")
 
     assert "handleFreeText" in runtime
-    assert "offTopicCount" in runtime
-    assert "fallback.redirectKey" in runtime
-    assert "fallback.releaseKey" in runtime
+    assert "interpretFreeTextWithLlm" in runtime
+    assert "FREE_TEXT_HISTORY_LIMIT" in free_text_runtime
+    assert "TOPIC_ON_TOPIC" in free_text_runtime
+    assert "TOPIC_SOFT_DERAIL" in free_text_runtime
+    assert "TOPIC_HARD_EXIT" in free_text_runtime
+    assert "freeTextRuntimeStateByKey" in free_text_runtime
+    assert "function createRuntimeStateStore()" in free_text_runtime
+    assert "clearForSession: clearForSession" in free_text_runtime
+    assert "getRecentTurns: getRecentTurns" in free_text_runtime
+    assert "recordTurn: recordTurn" in free_text_runtime
+    assert "getDerailStreak: getDerailStreak" in free_text_runtime
+    assert "setDerailStreak: setDerailStreak" in free_text_runtime
+    assert "freeTextRuntime.createRuntimeStateStore()" in runtime
+    assert "clearFreeTextRuntimeStateForSession(session)" in runtime
+    assert "getRecentFreeTextTurns(session, nodeId)" in runtime
+    assert "recordFreeTextTurn(session, {" in runtime
+    assert "getFreeTextDerailStreak(session, nodeId)" in runtime
+    assert "setFreeTextDerailStreak(session, nodeId, 0)" in runtime
+    assert "free_text_derail_streak: getFreeTextDerailStreak(session, bodyNodeId)" in runtime
+    assert "recent_free_text_turns: getRecentFreeTextTurns(session, bodyNodeId)" in runtime
+    assert "session.freeTextTurns" not in runtime
+    assert "session.freeTextDerailStreak" not in runtime
+    assert "freeTextRuntimeStateByKey" not in runtime
+    assert "postIcebreakerJson('/free-text/interpret', body)" in runtime
+    assert "data && (data.reason || data.error_code)" in runtime
+    assert "throw makeIcebreakerApiError(" in runtime
+    assert "data.skipped === 'stale_session'" in runtime
+    assert "isIcebreakerRouteInactiveError(error)" in runtime
+    assert "applyFreeTextInterpretation" in runtime
+    assert "action === 'choose'" in runtime
+    assert "decision.topicState === FREE_TEXT_TOPIC_SOFT_DERAIL" in runtime
+    assert "getFreeTextDerailStreak(session, nodeId) >= 1" in runtime
+    assert "'respond_and_keep_options'" in runtime
+    assert "action === 'release'" in runtime
+    assert "var releaseText = decision.reply || getText(localeData, fallback.releaseKey);" in runtime
+    assert "var releaseText = getText(localeData, fallback.releaseKey) || decision.reply;" not in runtime
+    fallback_block = runtime.split("function fallbackFreeTextInterpretation(snapshot)", 1)[1].split(
+        "function setChoicePrompt(node, localeData, revealDelayMs)",
+        1,
+    )[0]
+    assert "topicState: FREE_TEXT_TOPIC_SOFT_DERAIL" in fallback_block
+    assert "topicState: FREE_TEXT_TOPIC_ON_TOPIC" not in fallback_block
     assert "neko:icebreaker-free-text-submitted" in runtime
 
 
-def test_icebreaker_free_text_fallback_uses_session_snapshot_after_async_append():
+def test_icebreaker_free_text_llm_flow_uses_session_snapshot_after_async_append():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
     free_text_block = runtime.split("function handleFreeText(detail)", 1)[1].split(
         "function canStartFromEndState",
         1,
     )[0]
-    continuation_block = free_text_block.split("}).then(function () {", 1)[1]
+    continuation_block = free_text_block.split("}).then(function (message) {", 1)[1]
 
     assert "var session = activeSession;" in free_text_block
     assert "var day = session.day;" in free_text_block
     assert "var nodeId = session.nodeId;" in free_text_block
     assert "var sessionId = session.sessionId;" in free_text_block
     assert "var localeData = session.localeData;" in free_text_block
-    assert "getText(localeData, fallbackKey)" in continuation_block
+    assert "if (!message)" in continuation_block
+    assert "if (activeSession !== session) {" in continuation_block
+    assert "return null;" in continuation_block
+    assert "return interpretFreeTextWithLlm(session, text, {" in continuation_block
     assert "day: day" in continuation_block
     assert "nodeId: nodeId" in continuation_block
     assert "sessionId: sessionId" in continuation_block
-    assert "var currentNode = session.dayConfig && session.dayConfig.nodes" in continuation_block
-    # fallback 同 deliverNode：立刻下发带 revealDelayMs 的 choicePrompt 绑定路由，
-    # 不再用 waitBeforeChoicePromptReveal 整体延后调用。
-    assert "setChoicePrompt(currentNode, localeData, computeChoicePromptRevealDelay(fallbackText))" in continuation_block
-    assert "var fallbackSpeechPromise = speakLine(fallbackText, voiceKey || '');" in continuation_block
-    assert "var routeEndPromise = endIcebreakerRoute(session, 'icebreaker_free_text_release');" in continuation_block
-    assert "Promise.resolve(routeEndPromise)" in continuation_block
-    assert "Promise.resolve(fallbackSpeechPromise).catch(function () {})" in continuation_block
-    assert continuation_block.index("Promise.resolve(routeEndPromise)") < continuation_block.index(
+    assert "localeData: localeData" in continuation_block
+    assert "return applyFreeTextInterpretation(session, interpretation, {" in continuation_block
+    assert "setChoicePrompt(currentNode, localeData, computeChoicePromptRevealDelay(replyText))" in runtime
+    assert "if (result === false) {" in runtime
+    assert "setChoicePrompt(currentNode, localeData);" in runtime
+    assert "dispatchIcebreakerEnded('free_text_release');" in runtime
+    assert "return Promise.resolve().then(function () {" in runtime
+    assert "return speakLine(releaseText, releaseVoiceKey);" in runtime
+    assert "}).catch(function () {}).then(function () {" in runtime
+    assert "didAppendRelease" in runtime
+    assert "var releaseAppend = releaseText ? appendAssistantChatMessage(releaseText, {" in runtime
+    assert "}) : Promise.resolve(activeSession === session);" in runtime
+    assert "if (!didAppendRelease || activeSession !== session) return false;" in runtime
+    assert runtime.index("return speakLine(releaseText, releaseVoiceKey);") < runtime.index(
         "dispatchIcebreakerEnded('free_text_release');"
     )
-    assert continuation_block.index("Promise.resolve(fallbackSpeechPromise)") < continuation_block.index(
-        "dispatchIcebreakerEnded('free_text_release');"
-    )
-    assert continuation_block.index("Promise.resolve(fallbackSpeechPromise)") < continuation_block.index(
-        "completed: true"
-    )
-    assert continuation_block.index("completed: true") < continuation_block.index(
-        "dispatchIcebreakerEnded('free_text_release');"
-    )
+    assert "Number(session.offTopicCount || 0) >= 1" not in free_text_block
+    assert "fallback.redirectKey" not in free_text_block
     assert "activeSession.localeData" not in continuation_block
     assert "activeSession.day" not in continuation_block
     assert "activeSession.nodeId" not in continuation_block
     assert "activeSession.sessionId" not in continuation_block
+
+
+def test_icebreaker_free_text_interpreter_router_has_prompt_watermark_and_limited_actions():
+    icebreaker_router = ICEBREAKER_ROUTER_PATH.read_text(encoding="utf-8")
+    prompts = ICEBREAKER_PROMPTS_PATH.read_text(encoding="utf-8")
+    free_text_utils = ICEBREAKER_FREE_TEXT_UTILS_PATH.read_text(encoding="utf-8")
+
+    assert '@router.post("/free-text/interpret")' in icebreaker_router
+    assert "create_chat_llm_async" in icebreaker_router
+    assert "build_icebreaker_free_text_prompts" in icebreaker_router
+    assert "parse_icebreaker_free_text_decision" in icebreaker_router
+    assert "SystemMessage(content=system_prompt)" in icebreaker_router
+    assert "HumanMessage(content=user_prompt)" in icebreaker_router
+    assert "# noqa: LLM_INPUT_BUDGET" not in icebreaker_router
+    assert "ICEBREAKER_FREE_TEXT_WATERMARK" in prompts
+    assert "ICEBREAKER_FREE_TEXT_WATERMARK" in free_text_utils
+    assert "======以上为新用户破冰插话解释器系统提示======" in prompts
+    assert "[:800]" not in prompts
+    assert "[:200]" not in free_text_utils
+    assert "[:ICEBREAKER_FREE_TEXT_HISTORY_TEXT_LENGTH]" not in free_text_utils
+    assert "ICEBREAKER_FREE_TEXT_ACTIONS = {" in free_text_utils
+    assert '"choose"' in free_text_utils
+    assert '"respond_and_keep_options"' in free_text_utils
+    assert '"release"' in free_text_utils
+    assert "clean_icebreaker_interpreter_reply" in free_text_utils
+    assert "route_not_active" in icebreaker_router
 
 
 def test_icebreaker_start_dedupes_pending_tutorial_end_triggers():

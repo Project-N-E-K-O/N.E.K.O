@@ -74,13 +74,19 @@ def test_cat1_play_action_module_is_independent_from_eat_action():
     assert "art.setAttribute(_NEKO_IDLE_CAT1_PLAY_FINISHING_ATTR, 'true');" in finish_play_block
     assert "art.removeAttribute(_NEKO_IDLE_CAT1_PLAY_FINISHING_ATTR);" in source
     assert "_setNekoIdleCat1PlayYarnHidden(state, true);" in play_block
-    assert "_setNekoIdleCat1PlayYarnHidden(state, false);" in source
+    assert "_getNekoIdleCat1PlayYarnReleasePayload(button, state" in source
+    assert "_setNekoIdleCat1PlayYarnHidden(" in source
+    assert "_NEKO_IDLE_CAT1_PLAY_YARN_RELEASE_SIZE_PX = 51" in source
     assert "data-neko-cat1-play-hidden" in source
     assert "idle_cat1_play_yarn_visibility" in source
+    assert "targetScreenRect" in source
     assert "idle_cat1_play_yarn_visibility" in interpage_source
     assert "dispatchIdleCat1PlayYarnVisibility(event.data)" in interpage_source
     assert "neko:idle-cat1-play-yarn-visibility" in chat_source
-    assert "setCompactChatBallTemporarilyHidden(hidden)" in chat_source
+    assert "setCompactChatBallTemporarilyHidden(hidden, {" in chat_source
+    assert "releaseDrag: !!(detail && detail.releaseDrag)" in chat_source
+    assert "targetScreenRect: detail && detail.targetScreenRect" in chat_source
+    assert "applyIdleCat1PlayYarnRelease(detail)" in chat_source
     assert "showCompactChatBall(" not in chat_source
     assert "hideCompactChatBall(" not in chat_source
 

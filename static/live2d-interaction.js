@@ -296,9 +296,47 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
     let clickStartTime = 0;
     let clickStartX = 0;
     let clickStartY = 0;
+    let dragHintStartPointer = null;
+    let dragHintLastPointer = null;
+    let dragHintApproachShown = false;
     let hasMoved = false;
     const CLICK_THRESHOLD_DISTANCE = 10; // 移动距离阈值（像素）
     const CLICK_THRESHOLD_TIME = 300; // 时间阈值（毫秒）
+
+    const captureDragHintPointer = (event) => {
+        const screenX = Number(event?.screenX);
+        const screenY = Number(event?.screenY);
+        if (!Number.isFinite(screenX) || !Number.isFinite(screenY)) return null;
+        return { screenX, screenY };
+    };
+
+    const recordDragHintPointerEdgeRelease = async () => {
+        const helper = window.NekoAvatarMultiScreenDragHint;
+        if (!helper || typeof helper.recordPointerEdgeRelease !== 'function') return false;
+        if (!dragHintStartPointer || !dragHintLastPointer) return false;
+        return await helper.recordPointerEdgeRelease('live2d', {
+            startedAt: dragHintStartPointer.startedAt,
+            startScreenX: dragHintStartPointer.screenX,
+            startScreenY: dragHintStartPointer.screenY,
+            screenX: dragHintLastPointer.screenX,
+            screenY: dragHintLastPointer.screenY
+        });
+    };
+
+    const recordDragHintPointerEdgeApproach = async () => {
+        const helper = window.NekoAvatarMultiScreenDragHint;
+        if (!helper || typeof helper.recordPointerEdgeApproach !== 'function') return false;
+        if (dragHintApproachShown || !dragHintStartPointer || !dragHintLastPointer) return false;
+        const shown = await helper.recordPointerEdgeApproach('live2d', {
+            startedAt: dragHintStartPointer.startedAt,
+            startScreenX: dragHintStartPointer.screenX,
+            startScreenY: dragHintStartPointer.screenY,
+            screenX: dragHintLastPointer.screenX,
+            screenY: dragHintLastPointer.screenY
+        });
+        if (shown) dragHintApproachShown = true;
+        return shown;
+    };
 
     // 使用 avatar-ui-drag.js 中的共享工具函数（按钮 pointer-events 管理）
     const disableButtonPointerEvents = () => {
@@ -353,6 +391,12 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
         clickStartTime = Date.now();
         clickStartX = globalPos.x;
         clickStartY = globalPos.y;
+        dragHintStartPointer = captureDragHintPointer(originalEvent);
+        if (dragHintStartPointer) {
+            dragHintStartPointer.startedAt = Date.now();
+        }
+        dragHintLastPointer = dragHintStartPointer;
+        dragHintApproachShown = false;
         hasMoved = false;
         this._touchSetPointerSeq = (this._touchSetPointerSeq || 0) + 1;
         this._lastTouchPointer = { x: clickStartX, y: clickStartY, time: clickStartTime, seq: this._touchSetPointerSeq };
@@ -368,11 +412,12 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
         disableButtonPointerEvents();
     });
 
-    const onDragEnd = async () => {
+    const onDragEnd = async (event) => {
         if (this._isDraggingModel) {
             this._isDraggingModel = false;
             document.getElementById('live2d-canvas').style.cursor = '';
             restoreButtonPointerEvents();
+            dragHintLastPointer = captureDragHintPointer(event) || dragHintLastPointer;
 
             if (!this._isModelReadyForInteraction) return;
 
@@ -412,15 +457,13 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
 
             // 如果没有发生屏幕切换，检测并执行自动吸附
             if (!displaySwitched) {
+                await recordDragHintPointerEdgeRelease();
                 // 执行自动吸附检测和动画
                 const snapped = await this._checkAndPerformSnap(model);
 
                 // 如果没有执行吸附，则正常保存位置
                 if (!snapped) {
                     await this._savePositionAfterInteraction();
-                } else if (window.NekoAvatarMultiScreenDragHint &&
-                    typeof window.NekoAvatarMultiScreenDragHint.recordEdgeBounce === 'function') {
-                    window.NekoAvatarMultiScreenDragHint.recordEdgeBounce('live2d');
                 }
                 // 如果执行了吸附，_checkAndPerformSnap 内部会保存位置
             }
@@ -455,6 +498,8 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
             // 这里假设 canvas 是全屏覆盖的
             const x = event.clientX;
             const y = event.clientY;
+            dragHintLastPointer = captureDragHintPointer(event) || dragHintLastPointer;
+            void recordDragHintPointerEdgeApproach();
 
             // 检测是否移动超过阈值
             const moveDistance = Math.sqrt(

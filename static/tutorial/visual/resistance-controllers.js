@@ -16,6 +16,7 @@
         'interrupt_resist_light_3'
     ]);
     const DEFAULT_INTERRUPT_DISTANCE = 56;
+    const DEFAULT_CURSOR_RESISTANCE_DISTANCE = 30;
     const DEFAULT_INTERRUPT_ACCELERATION_THRESHOLD = 0.16;
     const DEFAULT_INTERRUPT_QUALIFYING_MOVE_STREAK = 3;
     const DEFAULT_RESISTANCE_LINES = Object.freeze([
@@ -44,7 +45,7 @@
             this.overlay = normalizedOptions.overlay || null;
             this.cursor = normalizedOptions.cursor || null;
             // syncSystemCursorHidden: optional callback for PC builds that need
-            // to reveal the real cursor during resistance and angry-exit scenes.
+            // to keep the real cursor hidden during takeover and resistance.
             this.callbacks = normalizedOptions.callbacks || {};
             this.resistanceVoiceKeys = Array.isArray(normalizedOptions.resistanceVoiceKeys)
                 && normalizedOptions.resistanceVoiceKeys.length
@@ -102,16 +103,10 @@
             const performance = resistanceStep.performance || {};
             const resistanceMessage = this.getResistanceMessage(performance);
             const presentationSnapshot = call(this.callbacks, 'capturePresentationSnapshot', null);
-            let shouldRestoreHiddenCursorAfterResistance = false;
 
             if (!normalizedOptions.suppressCursorReveal) {
-                call(this.callbacks, 'syncSystemCursorHidden', null, false, 'interrupt_resist_light');
-                shouldRestoreHiddenCursorAfterResistance = call(
-                    this.callbacks,
-                    'prepareResistanceCursorReveal',
-                    false,
-                    normalizedOptions
-                ) === true;
+                call(this.callbacks, 'syncSystemCursorHidden', null, true, 'interrupt_resist_light');
+                call(this.callbacks, 'suppressResistanceCursorReveal', null, normalizedOptions);
             }
 
             call(this.callbacks, 'pauseCurrentSceneForResistance', null);
@@ -120,6 +115,7 @@
             if (this.overlay && typeof this.overlay.hideBubble === 'function') {
                 this.overlay.hideBubble();
             }
+            call(this.overlay, 'emphasizeControlBanner', null);
 
             call(this.callbacks, 'appendGuideChatMessage', null, resistanceMessage.message, {
                 textKey: resistanceMessage.textKey,
@@ -168,9 +164,6 @@
                 call(this.callbacks, 'resumeCurrentSceneAfterResistance', null);
                 if (this.isStopping()) {
                     return;
-                }
-                if (shouldRestoreHiddenCursorAfterResistance) {
-                    call(this.callbacks, 'syncSystemCursorHidden', null, true, 'interrupt_resist_light_done');
                 }
 
                 const didRestorePresentationSnapshot = call(
@@ -234,7 +227,9 @@
                 ? lastPointerPoint
                 : null;
 
-            call(this.callbacks, 'setTutorialTakingOver', null, true);
+            call(this.callbacks, 'setTutorialTakingOver', null, true, {
+                syncSystemCursor: false
+            });
             if (this.overlay && typeof this.overlay.setAngry === 'function') {
                 this.overlay.setAngry(true);
             }
@@ -425,8 +420,10 @@
                     const initialDx = sampleDx === null ? 0 : sampleDx;
                     const initialDy = sampleDy === null ? 0 : sampleDy;
                     const initialDistance = Math.hypot(initialDx, initialDy);
-                    director.noteUserCursorRevealAttempt(initialDistance, now);
-                    director.playCursorResistanceToUserMotion(x, y, initialDistance, initialDx, initialDy);
+                    director.noteUserCursorRevealSuppressionAttempt(initialDistance, now);
+                    if (initialDistance > DEFAULT_CURSOR_RESISTANCE_DISTANCE) {
+                        director.playCursorResistanceToUserMotion(x, y, initialDistance, initialDx, initialDy);
+                    }
                 }
                 director.interruptQualifyingMoveStreak = 0;
                 return;
@@ -447,8 +444,10 @@
                 speed: speed
             };
 
-            director.noteUserCursorRevealAttempt(distance, now);
-            director.playCursorResistanceToUserMotion(x, y, distance, dx, dy);
+            director.noteUserCursorRevealSuppressionAttempt(distance, now);
+            if (distance > DEFAULT_CURSOR_RESISTANCE_DISTANCE) {
+                director.playCursorResistanceToUserMotion(x, y, distance, dx, dy);
+            }
 
             if (
                 distance < DEFAULT_INTERRUPT_DISTANCE
@@ -479,10 +478,15 @@
                 return;
             }
 
+            if (typeof director.revealRealCursorForInterruptCount === 'function') {
+                director.revealRealCursorForInterruptCount();
+            }
             director.lastPointerPoint = null;
             director.playLightResistance(x, y, {
                 motionDx: dx,
-                motionDy: dy
+                motionDy: dy,
+                forceSystemCursorReveal: true,
+                suppressCursorReveal: true
             });
         }
 
@@ -504,11 +508,12 @@
             const performance = resistanceStep.performance || {};
             const resistanceMessage = this.getResistanceMessage(performance);
             const presentationSnapshot = director.captureCurrentGuidePresentationSnapshot();
-            let shouldRestoreHiddenCursorAfterResistance = false;
 
             if (!normalizedOptions.suppressCursorReveal) {
-                this.syncSystemCursorHidden(false, 'interrupt_resist_light');
-                shouldRestoreHiddenCursorAfterResistance = director.prepareResistanceCursorReveal(normalizedOptions);
+                director.suppressResistanceCursorReveal(normalizedOptions);
+            }
+            if (typeof director.revealSystemCursorTemporarily === 'function') {
+                director.revealSystemCursorTemporarily(2000, 'interrupt_resist_light');
             }
 
             director.pauseCurrentSceneForResistance();
@@ -516,6 +521,9 @@
 
             if (director.overlay && typeof director.overlay.hideBubble === 'function') {
                 director.overlay.hideBubble();
+            }
+            if (director.overlay && typeof director.overlay.emphasizeControlBanner === 'function') {
+                director.overlay.emphasizeControlBanner();
             }
 
             director.appendGuideChatMessage(resistanceMessage.message, {
@@ -554,9 +562,6 @@
                 director.resumeCurrentSceneAfterResistance();
                 if (this.isStopping()) {
                     return;
-                }
-                if (shouldRestoreHiddenCursorAfterResistance) {
-                    this.syncSystemCursorHidden(true, 'interrupt_resist_light_done');
                 }
 
                 const didRestorePresentationSnapshot = director.restoreGuidePresentationSnapshot(presentationSnapshot);
@@ -613,7 +618,9 @@
                 ? lastPointerPoint
                 : null;
 
-            director.setTutorialTakingOver(true);
+            director.setTutorialTakingOver(true, {
+                syncSystemCursor: false
+            });
             if (director.overlay && typeof director.overlay.setAngry === 'function') {
                 director.overlay.setAngry(true);
             }
@@ -849,6 +856,9 @@
             const finalReason = tutorialReason || reason || 'skip';
             director.setGuideChatInputLocked(false, 'avatar-floating-guide-' + finalReason);
             director.notifyPluginDashboardTerminationRequested(finalReason);
+            if (typeof director.recordAvatarFloatingGuideRoundEndForTermination === 'function') {
+                director.recordAvatarFloatingGuideRoundEndForTermination(finalReason);
+            }
             director.closePluginDashboardWindowIfCreatedByGuide('终止请求').catch((error) => {
                 console.warn('[YuiGuide] 终止请求时关闭插件面板失败:', error);
             });

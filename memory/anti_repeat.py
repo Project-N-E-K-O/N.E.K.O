@@ -26,9 +26,14 @@ SequenceMatcher similarity only catches "exact repeats" and is useless against
 
 We use BM25:
 - background corpus = the most recent ``ANTI_REPEAT_BG_WINDOW`` AI outputs, each
-  stored as an ngram set
+  stored as an ngram set (count-capped only — never time-filtered, so IDF context
+  survives idle periods intact)
 - foreground query = the most recent ``ANTI_REPEAT_FG_WINDOW`` entries (a subset of
-  the background, the trailing slice)
+  the background, the trailing slice) that are ALSO within
+  ``ANTI_REPEAT_FG_TTL_SECONDS``. TF/repetition is a recency signal, so a window
+  left idle past the TTL empties and scoring returns 0 — this is what stops the
+  proactive "idle deadlock" (frozen FG re-scoring the same high value every cycle
+  because drop paths never advance the corpus)
 - new draft score = Σ BM25(term, fg) over the draft's ngrams
 - key property: frequent common words ("今天/觉得/哈哈/嗯") have high DF → low IDF →
   contribute almost nothing; topic words ("老虎/纳米机器/那个 bug") have low DF →
@@ -71,6 +76,7 @@ from config import (
     ANTI_REPEAT_BG_WINDOW,
     ANTI_REPEAT_BM25_B,
     ANTI_REPEAT_BM25_K1,
+    ANTI_REPEAT_FG_TTL_SECONDS,
     ANTI_REPEAT_FG_WINDOW,
     ANTI_REPEAT_INJECT_TOP_K,
     ANTI_REPEAT_MIN_DRAFT_TOKENS,
@@ -369,12 +375,48 @@ class AntiRepeatCorpus:
             self._cache[name] = window
             self._save_unlocked(name)
 
+    @staticmethod
+    def _split_fg_bg(
+        window: List[Dict[str, Any]],
+        fg_window: int,
+        now: Optional[float],
+    ) -> Tuple[List[List[str]], List[List[str]]]:
+        """Build ``(fg_docs, bg_docs)`` from a loaded window.
+
+        - **BG** = the entire count-capped window, unfiltered → DF/IDF (word
+          frequency background). Never time-filtered, so IDF context is preserved
+          in full regardless of idle time.
+        - **FG** = the trailing ``fg_window`` entries, but ONLY those staged within
+          ``ANTI_REPEAT_FG_TTL_SECONDS`` of ``now``. TF / repetition is a recency
+          signal: stale entries fall out so an idle-frozen window stops scoring.
+
+        This is the deadlock fix: proactive fires only while the user is idle, and
+        every drop path skips ``record_output`` (only a successful delivery / a real
+        user reply appends), so during idle the trailing FG stays frozen on the last
+        few same-topic lines and re-scores identically every cycle → permanent drop.
+        Aging the FG out (BG untouched) makes ``bm25_score`` return 0 once nothing
+        recent remains, which is also semantically correct — a topic last touched
+        >TTL ago is not "back-to-back repetition".
+        """
+        bg_docs = [e["ngrams"] for e in window]
+        ref = float(now if now is not None else _now())
+        fresh = [
+            e for e in window
+            if ref - float(e.get("ts", 0.0)) <= ANTI_REPEAT_FG_TTL_SECONDS
+        ]
+        if fg_window > 0 and len(fresh) > fg_window:
+            fg_docs = [e["ngrams"] for e in fresh[-fg_window:]]
+        else:
+            fg_docs = [e["ngrams"] for e in fresh]
+        return fg_docs, bg_docs
+
     def score_draft(
         self,
         name: str,
         draft_text: str,
         *,
         fg_window: int = ANTI_REPEAT_FG_WINDOW,
+        now: Optional[float] = None,
     ) -> Tuple[float, Dict[str, float]]:
         """BM25-score a draft (vs the most recent ``fg_window`` AI outputs).
 
@@ -383,6 +425,10 @@ class AntiRepeatCorpus:
         - The "first N - fg" slice of the BG corpus is not read — it only contributes
           DF and doesn't directly participate in scoring; but DF is still computed
           over the whole BG window, giving "long-unseen" unique terms a higher IDF
+        - FG only counts entries within ``ANTI_REPEAT_FG_TTL_SECONDS`` (see
+          ``_split_fg_bg``); when the whole trailing window has aged out (idle) the
+          score falls to 0 and the draft passes — the anti-repeat deadlock fix
+        - ``now`` overrides the clock (tests); production passes None → wall clock
         - Empty name → normalized to ``_DEFAULT_KEY`` (aligned with record_output)
         """
         if not draft_text or not draft_text.strip():
@@ -393,12 +439,7 @@ class AntiRepeatCorpus:
             return 0.0, {}
         with self._get_lock(name):
             window = self._load_unlocked(name)
-            # 前景：靠后那段；背景：整个 BG 窗（含 FG）
-            if fg_window > 0 and len(window) > fg_window:
-                fg_docs = [e["ngrams"] for e in window[-fg_window:]]
-            else:
-                fg_docs = [e["ngrams"] for e in window]
-            bg_docs = [e["ngrams"] for e in window]
+            fg_docs, bg_docs = self._split_fg_bg(window, fg_window, now)
         if not fg_docs:
             return 0.0, {}
         return bm25_score(draft_ngrams, fg_docs, bg_docs)
@@ -409,6 +450,7 @@ class AntiRepeatCorpus:
         *,
         k: int = ANTI_REPEAT_INJECT_TOP_K,
         fg_window: int = ANTI_REPEAT_FG_WINDOW,
+        now: Optional[float] = None,
     ) -> List[str]:
         """Return the K highest BM25-ranked ngrams within the most recent fg_window entries.
 
@@ -421,7 +463,10 @@ class AntiRepeatCorpus:
         Implementation: treat the FG window itself as a draft and compute its BM25
         self-score.
 
-        Empty names normalize to ``_DEFAULT_KEY``, aligned with record_output / score_draft.
+        FG honors ``ANTI_REPEAT_FG_TTL_SECONDS`` (see ``_split_fg_bg``): when the
+        recent window has aged out there are no "recent topics" to warn about, so an
+        empty list is returned. Empty names normalize to ``_DEFAULT_KEY``, aligned
+        with record_output / score_draft.
         """
         if k <= 0:
             return []
@@ -430,11 +475,9 @@ class AntiRepeatCorpus:
             window = self._load_unlocked(name)
             if not window:
                 return []
-            if fg_window > 0 and len(window) > fg_window:
-                fg_docs = [e["ngrams"] for e in window[-fg_window:]]
-            else:
-                fg_docs = [e["ngrams"] for e in window]
-            bg_docs = [e["ngrams"] for e in window]
+            fg_docs, bg_docs = self._split_fg_bg(window, fg_window, now)
+        if not fg_docs:
+            return []
         # 把 fg 窗里所有 ngram 拼成一个"伪 draft"
         synthetic_draft: List[str] = []
         for doc in fg_docs:

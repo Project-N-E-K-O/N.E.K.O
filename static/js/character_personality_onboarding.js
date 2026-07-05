@@ -372,8 +372,7 @@
             }
 
             try {
-                return localStorage.getItem('neko_tutorial_home_yui_v1') === 'true'
-                    || localStorage.getItem('neko_tutorial_home') === 'true';
+                return localStorage.getItem('neko_tutorial_home_yui_v1') === 'true';
             } catch (_) {
                 return false;
             }

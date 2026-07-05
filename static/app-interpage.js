@@ -1113,7 +1113,7 @@
                         live2dContainer2.classList.remove('hidden');
                         live2dContainer2.style.display = 'block';
                         live2dContainer2.style.visibility = 'visible';
-                        live2dContainer2.style.removeProperty('pointer-events');
+                        live2dContainer2.style.setProperty('pointer-events', 'none', 'important');
                     }
                     var live2dCanvas2 = document.getElementById('live2d-canvas');
                     if (live2dCanvas2) {
@@ -1127,7 +1127,9 @@
                         // Ensure Live2D manager is initialised
                         if (!window.live2dManager) {
                             console.log('[Model] Live2D 管理器未初始化，等待初始化完成');
-                            if (typeof initLive2DModel === 'function') {
+                            if (temporaryConfig && typeof window.Live2DManager === 'function') {
+                                window.live2dManager = new window.Live2DManager();
+                            } else if (typeof initLive2DModel === 'function') {
                                 await initLive2DModel();
                             }
                         }
@@ -1174,7 +1176,7 @@
                                 if (!deferRevealPrepared) {
                                     live2dContainer2.style.removeProperty('opacity');
                                 }
-                                live2dContainer2.style.removeProperty('pointer-events');
+                                live2dContainer2.style.setProperty('pointer-events', 'none', 'important');
                             }
                             if (live2dCanvas2) {
                                 live2dCanvas2.style.display = 'block';
@@ -2443,6 +2445,10 @@
                 if (isDuplicateMessage(data.action, data.timestamp)) return true;
                 clearYuiGuideChatMessages();
                 return true;
+            case 'yui_guide_set_chat_input_locked':
+                if (isDuplicateMessage(data.action, data.timestamp)) return true;
+                applyYuiGuideChatInputLocked(data.locked === true, data.reason || '');
+                return true;
             case 'tutorial_chat_identity_override':
                 if (isDuplicateMessage(data.action, data.timestamp)) return true;
                 applyTutorialChatIdentityOverride(data);
@@ -2532,6 +2538,7 @@
                         if (!result) return result;
                         return waitForIcebreakerChatHostMounted(host).then(function () {
                             syncIcebreakerAssistantCompactCaption(action.message);
+                            finalizeIcebreakerAssistantSubtitleTranslation(action.message);
                             return result;
                         });
                     }).catch(function (error) {
@@ -2542,6 +2549,10 @@
                     shouldOpenHost = true;
                 } else if (action.type === 'clear_prompt' && action.sessionId && typeof host.clearIcebreakerChoicePrompt === 'function') {
                     host.clearIcebreakerChoicePrompt(action.sessionId);
+                } else if (action.type === 'clear_prompt_source'
+                        && action.source === 'new_user_icebreaker'
+                        && typeof host.clearChoicePromptBySource === 'function') {
+                    host.clearChoicePromptBySource(action.source, action.reason || 'icebreaker-bridge');
                 }
             } catch (error) {
                 console.warn('[NewUserIcebreaker] Failed to apply bridge action:', action.type, error);
@@ -2569,6 +2580,16 @@
     function clearIcebreakerChoicePromptFromBroadcast(sessionId) {
         if (!isStandaloneChatPage()) return;
         queueIcebreakerBridgeAction({ type: 'clear_prompt', sessionId: String(sessionId || '') });
+    }
+
+    function clearIcebreakerChoicePromptSourceFromBroadcast(source, reason) {
+        if (!isStandaloneChatPage()) return;
+        if (String(source || '') !== 'new_user_icebreaker') return;
+        queueIcebreakerBridgeAction({
+            type: 'clear_prompt_source',
+            source: String(source || ''),
+            reason: String(reason || '')
+        });
     }
 
     // Also defined in new-user-icebreaker.js for the local chat host path.
@@ -2608,6 +2629,29 @@
         }
     }
 
+    function finalizeIcebreakerAssistantSubtitleTranslation(message) {
+        if (!isStandaloneChatPage() || !message || message.role !== 'assistant') return;
+        var line = getIcebreakerMessageText(message);
+        if (!line) return;
+        try {
+            var bridge = window.subtitleBridge;
+            if (!bridge || typeof bridge.finalizeTurnWithTranslation !== 'function') {
+                return;
+            }
+            if (typeof bridge.beginTurn === 'function') {
+                bridge.beginTurn({ latch: false });
+            }
+            var result = bridge.finalizeTurnWithTranslation(line);
+            if (result && typeof result.catch === 'function') {
+                result.catch(function (error) {
+                    console.warn('[NewUserIcebreaker] subtitle translation failed:', error);
+                });
+            }
+        } catch (error) {
+            console.warn('[NewUserIcebreaker] subtitle translation failed:', error);
+        }
+    }
+
     function waitForIcebreakerChatHostMounted(host) {
         return new Promise(function (resolve) {
             var attempts = 0;
@@ -2631,6 +2675,7 @@
         return action === 'icebreaker_append_chat_message'
             || action === 'icebreaker_set_choice_prompt'
             || action === 'icebreaker_clear_choice_prompt'
+            || action === 'icebreaker_clear_choice_prompt_source'
             || action === 'icebreaker_choice_selected'
             || action === 'icebreaker_free_text_submitted';
     }
@@ -2656,6 +2701,10 @@
             case 'icebreaker_clear_choice_prompt':
                 if (isDuplicateMessage(data.action, data.timestamp)) return true;
                 clearIcebreakerChoicePromptFromBroadcast(data.sessionId);
+                return true;
+            case 'icebreaker_clear_choice_prompt_source':
+                if (isDuplicateMessage(data.action, data.timestamp)) return true;
+                clearIcebreakerChoicePromptSourceFromBroadcast(data.source, data.reason);
                 return true;
             case 'icebreaker_choice_selected':
                 if (isDuplicateMessage(data.action, data.timestamp)) return true;
@@ -2908,6 +2957,7 @@
                         ? message.targetIndex
                         : 0,
                     freezePoint: message.freezePoint === true,
+                    preservePcOverlayCursor: message.preservePcOverlayCursor === true,
                     pcOverlayRunId: getYuiGuidePcOverlayRunIdFromMessage(message),
                     timestamp: getYuiGuideBridgeMessageTimestamp(message)
                 };
@@ -4641,7 +4691,7 @@
             yuiGuideChatCursorRequestToken = yuiGuideChatCursorRequestToken + 1;
         }
         if (!kind) {
-            if (isYuiGuidePcCursorOnlyMode()) {
+            if (isYuiGuidePcCursorOnlyMode() && normalizedOptions.preservePcOverlayCursor !== true) {
                 sendYuiGuidePcOverlayPatch({
                     cursor: { visible: false }
                 }, false, {
@@ -4649,6 +4699,8 @@
                     allowCreateRun: !(normalizedOptions.allowCreatePcOverlayRun === false),
                     skipBegin: normalizedOptions.skipPcOverlayBegin === true
                 });
+            } else if (isYuiGuidePcCursorOnlyMode()) {
+                yuiGuidePcOverlayCursor = null;
             }
             hideYuiGuideChatCursorElement();
             yuiGuideChatCursorPoint = null;

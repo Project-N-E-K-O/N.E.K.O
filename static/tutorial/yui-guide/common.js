@@ -119,6 +119,31 @@
         return null;
     }
 
+    function isNekoShortcutBlockedByTutorial(options) {
+        const normalizedOptions = options || {};
+        const host = normalizedOptions.window || root || {};
+        const doc = normalizedOptions.document || host.document;
+        const body = doc && doc.body;
+        const rootElement = doc && doc.documentElement;
+        const hasClass = function (node, className) {
+            return !!(node && node.classList && node.classList.contains(className));
+        };
+        return host.isInTutorial === true
+            || hasClass(body, 'yui-guide-home-ui-suppressed')
+            || hasClass(body, 'yui-guide-input-shield-active')
+            || hasClass(body, 'yui-guide-standalone-input-shield-active')
+            || hasClass(body, 'yui-guide-chat-buttons-disabled')
+            || hasClass(body, 'yui-guide-compact-chat-fixed')
+            || hasClass(rootElement, 'yui-guide-plugin-dashboard-running')
+            || hasClass(body, 'yui-guide-plugin-dashboard-running');
+    }
+
+    if (root && typeof root.isNekoShortcutBlockedByTutorial !== 'function') {
+        root.isNekoShortcutBlockedByTutorial = function () {
+            return isNekoShortcutBlockedByTutorial({ window: root });
+        };
+    }
+
     const tutorialGuideHelpersApi = loadTutorialGuideHelpersApi();
     const tutorialScopedResourcesApi = loadTutorialScopedResourcesApi();
     const tutorialBridgeCommandBusApi = loadTutorialBridgeCommandBusApi();
@@ -249,30 +274,39 @@
         throw new Error('TutorialVisualRuntime is required before tutorial/yui-guide/common.js');
     }
 
-    function syncPcSystemCursorHidden(hidden, reason = 'tutorial', options) {
+    function createPcTutorialRunId() {
+        return 'yui-guide-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+    }
+
+    function readPcTutorialRunId(options, ensure) {
+        const normalizedOptions = options || {};
+        const host = normalizedOptions.window || root || {};
+        try {
+            const storage = normalizedOptions.localStorage || host.localStorage;
+            const storedRunId = storage
+                ? (storage.getItem('yuiGuidePcOverlayRunId') || '')
+                : '';
+            if (storedRunId || ensure !== true || !storage || typeof storage.setItem !== 'function') {
+                return storedRunId;
+            }
+            const nextRunId = createPcTutorialRunId();
+            storage.setItem('yuiGuidePcOverlayRunId', nextRunId);
+            return nextRunId;
+        } catch (_) {
+            return '';
+        }
+    }
+
+    function relayPcTutorialMessage(message, options, failureLabel) {
         const normalizedOptions = options || {};
         const host = normalizedOptions.window || root || {};
         const logger = normalizedOptions.console || host.console || (root && root.console);
         const warnRelayFailure = (target, error) => {
             try {
                 if (logger && typeof logger.warn === 'function') {
-                    logger.warn('[YuiGuide] 同步 PC 系统鼠标状态失败:', target, error);
+                    logger.warn(failureLabel || '[YuiGuide] 同步 PC 教程消息失败:', target, error);
                 }
             } catch (_) {}
-        };
-        let tutorialRunId = '';
-        try {
-            const storage = normalizedOptions.localStorage || host.localStorage;
-            tutorialRunId = storage
-                ? (storage.getItem('yuiGuidePcOverlayRunId') || '')
-                : '';
-        } catch (_) {}
-        const message = {
-            action: 'yui_guide_system_cursor_visibility',
-            hidden: hidden === true,
-            tutorialRunId: tutorialRunId,
-            reason: reason,
-            timestamp: Date.now()
         };
         const overlay = normalizedOptions.nekoTutorialOverlay || host.nekoTutorialOverlay;
         try {
@@ -303,6 +337,40 @@
         }
     }
 
+    function syncPcTutorialLifecycleStarted(reason = 'tutorial-started', options) {
+        relayPcTutorialMessage({
+            action: 'yui_guide_tutorial_lifecycle_started',
+            tutorialRunId: readPcTutorialRunId(options, true),
+            reason: reason,
+            timestamp: Date.now()
+        }, options, '[YuiGuide] 同步 PC 教程生命周期开始失败:');
+    }
+
+    function syncPcSystemCursorHidden(hidden, reason = 'tutorial', options) {
+        relayPcTutorialMessage({
+            action: 'yui_guide_system_cursor_visibility',
+            hidden: hidden === true,
+            tutorialRunId: readPcTutorialRunId(options, hidden === true),
+            reason: reason,
+            timestamp: Date.now()
+        }, options, '[YuiGuide] 同步 PC 系统鼠标状态失败:');
+    }
+
+    function syncPcSystemCursorTemporaryReveal(durationMs = 2000, reason = 'tutorial-temporary-reveal', options) {
+        const normalizedDurationMs = Math.min(
+            10000,
+            Math.max(0, Math.floor(Number(durationMs) || 0))
+        );
+        syncPcSystemCursorHidden(false, reason, options);
+        relayPcTutorialMessage({
+            action: 'yui_guide_system_cursor_temporary_reveal',
+            durationMs: normalizedDurationMs,
+            tutorialRunId: readPcTutorialRunId(options, false),
+            reason: reason,
+            timestamp: Date.now()
+        }, options, '[YuiGuide] 同步 PC 系统鼠标临时显示失败:');
+    }
+
     return {
         deepFreeze,
         registerGuide,
@@ -316,6 +384,9 @@
         normalizeTutorialScene,
         createTutorialTimelineEngine,
         createTutorialVisualRuntime,
-        syncPcSystemCursorHidden
+        isNekoShortcutBlockedByTutorial,
+        syncPcTutorialLifecycleStarted,
+        syncPcSystemCursorHidden,
+        syncPcSystemCursorTemporaryReveal
     };
 });
