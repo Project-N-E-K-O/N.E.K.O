@@ -4,7 +4,7 @@ import App, {
   COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS,
   COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS,
   COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC,
-  getCompactToolWheelReboundVolume,
+  getCompactToolWheelReboundVisualIntensity,
   playCompactToolWheelDetentSound,
   playCompactToolWheelReboundSound,
   resetCompactToolWheelDetentAudioForTests,
@@ -1220,6 +1220,56 @@ describe('App', () => {
       expect(container.querySelector('[data-compact-export-history-message-id="assistant-history-after-close"]')).not.toBeNull();
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  it('refreshes compact interaction geometry when compact history closes, unmounts, and reopens', async () => {
+    const message = parseChatMessage({
+      id: 'assistant-history-geometry-refresh',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'text', text: 'History geometry should stay fresh.' }],
+      status: 'sent',
+    });
+    const geometryRefreshes: Event[] = [];
+    const handleGeometryRefresh = (event: Event) => geometryRefreshes.push(event);
+    window.addEventListener('neko:compact-interaction-geometry-refresh', handleGeometryRefresh);
+    vi.useFakeTimers();
+    let unmount: (() => void) | null = null;
+    try {
+      const rendered = render(
+        <App chatSurfaceMode="compact" compactChatState="input" messages={[message]} />,
+      );
+      const { container } = rendered;
+      unmount = rendered.unmount;
+      expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
+      geometryRefreshes.length = 0;
+
+      await act(async () => {
+        fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle')!);
+      });
+      expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-visibility', 'closing');
+      expect(geometryRefreshes.length).toBeGreaterThan(0);
+      const closeRefreshCount = geometryRefreshes.length;
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS);
+      });
+      expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
+      expect(geometryRefreshes.length).toBeGreaterThan(closeRefreshCount);
+      const unmountRefreshCount = geometryRefreshes.length;
+
+      await act(async () => {
+        fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle')!);
+      });
+      expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-visibility', 'open');
+      expect(geometryRefreshes.length).toBeGreaterThan(unmountRefreshCount);
+    } finally {
+      unmount?.();
+      vi.useRealTimers();
+      window.removeEventListener('neko:compact-interaction-geometry-refresh', handleGeometryRefresh);
     }
   });
 
@@ -2692,6 +2742,91 @@ describe('App', () => {
         });
       });
     } finally {
+      desktopWindow.__nekoDesktopCompactLayout = originalDesktopLayout;
+    }
+  });
+
+  it('syncs compact choice surface vars immediately from desktop layout events', async () => {
+    const desktopWindow = window as typeof window & { __nekoDesktopCompactLayout?: unknown };
+    const originalDesktopLayout = desktopWindow.__nekoDesktopCompactLayout;
+    let unmount: (() => void) | null = null;
+    let restoreShellRect: (() => void) | null = null;
+
+    try {
+      const rendered = render(
+        <App
+          chatSurfaceMode="compact"
+          galgameModeEnabled
+          galgameOptions={[
+            { label: 'A', text: 'Option A' },
+            { label: 'B', text: 'Option B' },
+          ]}
+        />,
+      );
+      const { container } = rendered;
+      unmount = rendered.unmount;
+
+      const shell = container.querySelector('.compact-chat-surface-shell');
+      const choiceLayer = document.body.querySelector<HTMLElement>('body > .compact-chat-choice-anchor');
+      expect(shell).not.toBeNull();
+      expect(choiceLayer).not.toBeNull();
+
+      const originalShellRect = shell!.getBoundingClientRect;
+      restoreShellRect = () => {
+        Object.defineProperty(shell!, 'getBoundingClientRect', {
+          configurable: true,
+          value: originalShellRect,
+        });
+      };
+      Object.defineProperty(shell!, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({
+          x: 0,
+          y: 0,
+          top: 72,
+          left: 18,
+          right: 448,
+          bottom: 154,
+          width: 430,
+          height: 82,
+          toJSON: () => ({}),
+        }),
+      });
+
+      const nextLayout = {
+        compactChoicePlacement: 'below',
+        surface: {
+          left: 120,
+          top: 260,
+          width: 388,
+          height: 64,
+        },
+        windowBounds: { x: 200, y: 100, width: 900, height: 700 },
+        workArea: { x: 0, y: 0, width: 1440, height: 900 },
+      };
+      desktopWindow.__nekoDesktopCompactLayout = nextLayout;
+
+      window.dispatchEvent(new CustomEvent('neko:desktop-compact-layout-change', {
+        detail: nextLayout,
+      }));
+
+      expect(choiceLayer).toHaveStyle({
+        '--compact-choice-surface-left': '120px',
+        '--compact-choice-surface-top': '260px',
+        '--compact-choice-surface-width': '388px',
+        '--compact-choice-surface-height': '64px',
+      });
+      await waitFor(() => {
+        expect(choiceLayer).toHaveStyle({
+          '--compact-choice-surface-left': '120px',
+          '--compact-choice-surface-top': '260px',
+          '--compact-choice-surface-width': '388px',
+          '--compact-choice-surface-height': '64px',
+        });
+      });
+    } finally {
+      restoreShellRect?.();
+      unmount?.();
       desktopWindow.__nekoDesktopCompactLayout = originalDesktopLayout;
     }
   });
@@ -6365,10 +6500,7 @@ describe('App', () => {
 
     expect(GameAudioSystem).toHaveBeenCalledTimes(1);
     expect(preloadSfx).toHaveBeenCalledTimes(1);
-    expect(preloadSfx).toHaveBeenCalledWith([
-      ...COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS,
-      COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC,
-    ]);
+    expect(preloadSfx).toHaveBeenCalledWith(COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS);
     expect(playSfx).toHaveBeenCalledTimes(2);
     expect(playSfx).toHaveBeenNthCalledWith(1, {
       src: '/static/sfx/tool-detent-a.ogg',
@@ -6424,10 +6556,7 @@ describe('App', () => {
       expect(GameAudioSystem).toHaveBeenCalledTimes(1);
     });
     expect(preloadSfx).toHaveBeenCalledTimes(1);
-    expect(preloadSfx).toHaveBeenCalledWith([
-      ...COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS,
-      COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC,
-    ]);
+    expect(preloadSfx).toHaveBeenCalledWith(COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS);
     expect(playSfx).not.toHaveBeenCalled();
     const fan = document.body.querySelector<HTMLElement>('.compact-input-tool-fan');
     expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
@@ -6459,10 +6588,7 @@ describe('App', () => {
       });
 
       expect(GameAudioSystem).toHaveBeenCalledTimes(1);
-      expect(preloadSfx).toHaveBeenCalledWith([
-        ...COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS,
-        COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC,
-      ]);
+      expect(preloadSfx).toHaveBeenCalledWith(COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS);
       expect(playSfx).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
@@ -6494,27 +6620,21 @@ describe('App', () => {
       );
 
       expect(GameAudioSystem).toHaveBeenCalledTimes(1);
-      expect(firstPreloadSfx).toHaveBeenCalledWith([
-        ...COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS,
-        COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC,
-      ]);
+      expect(firstPreloadSfx).toHaveBeenCalledWith(COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS);
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(130);
       });
 
       expect(GameAudioSystem).toHaveBeenCalledTimes(2);
-      expect(secondPreloadSfx).toHaveBeenCalledWith([
-        ...COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS,
-        COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC,
-      ]);
+      expect(secondPreloadSfx).toHaveBeenCalledWith(COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS);
       expect(playSfx).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it('randomly selects one of the configured compact tool wheel detent sounds', () => {
+  it('uses the configured compact tool wheel prompt sound', () => {
     const playSfx = vi.fn();
     const GameAudioSystem = vi.fn().mockImplementation(() => ({ playSfx }));
     (window as Window & {
@@ -6522,47 +6642,31 @@ describe('App', () => {
         GameAudioSystem: new () => { playSfx: typeof playSfx };
       };
     }).NekoGameSystem = { GameAudioSystem };
-    const randomSpy = vi.spyOn(Math, 'random')
-      .mockReturnValueOnce(0)
-      .mockReturnValueOnce(0.26)
-      .mockReturnValueOnce(0.51)
-      .mockReturnValueOnce(0.99);
 
-    try {
-      playCompactToolWheelDetentSound();
-      playCompactToolWheelDetentSound();
-      playCompactToolWheelDetentSound();
-      playCompactToolWheelDetentSound();
-    } finally {
-      randomSpy.mockRestore();
-    }
+    playCompactToolWheelDetentSound();
 
     expect(COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS).toEqual([
-      '/static/sounds/compact-tool-wheel/gear-detent-1.mp3',
-      '/static/sounds/compact-tool-wheel/gear-detent-2.mp3',
-      '/static/sounds/compact-tool-wheel/gear-detent-3.mp3',
-      '/static/sounds/compact-tool-wheel/gear-detent-4.mp3',
+      '/static/sounds/compact-tool-wheel/wheel-prompt.mp3',
     ]);
-    expect(playSfx).toHaveBeenCalledTimes(4);
+    expect(GameAudioSystem).toHaveBeenCalledWith({
+      config: {
+        audioMix: {
+          sfx: {
+            baseVolume: 0.24,
+            maxVolume: 1,
+          },
+        },
+        sfx: {},
+      },
+    });
+    expect(playSfx).toHaveBeenCalledTimes(1);
     expect(playSfx).toHaveBeenNthCalledWith(1, {
       src: COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS[0],
       preload: 'auto',
     });
-    expect(playSfx).toHaveBeenNthCalledWith(2, {
-      src: COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS[1],
-      preload: 'auto',
-    });
-    expect(playSfx).toHaveBeenNthCalledWith(3, {
-      src: COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS[2],
-      preload: 'auto',
-    });
-    expect(playSfx).toHaveBeenNthCalledWith(4, {
-      src: COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS[3],
-      preload: 'auto',
-    });
   });
 
-  it('plays the compact tool wheel rebound sound separately from detents', () => {
+  it('keeps compact tool wheel rebound audio disabled', () => {
     const playSfx = vi.fn();
     const preloadSfx = vi.fn();
     const GameAudioSystem = vi.fn().mockImplementation(() => ({ playSfx, preloadSfx }));
@@ -6574,31 +6678,23 @@ describe('App', () => {
 
     playCompactToolWheelReboundSound();
 
-    expect(preloadSfx).toHaveBeenCalledWith([
-      ...COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS,
-      COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC,
-    ]);
-    expect(playSfx).toHaveBeenCalledTimes(1);
-    expect(playSfx).toHaveBeenCalledWith(
-      {
-        src: COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC,
-        preload: 'auto',
-      },
-      { volume: 0.85 },
-    );
+    expect(COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC).toBe('');
+    expect(GameAudioSystem).not.toHaveBeenCalled();
+    expect(preloadSfx).not.toHaveBeenCalled();
+    expect(playSfx).not.toHaveBeenCalled();
   });
 
-  it('scales compact tool wheel rebound volume by residual drag distance', () => {
-    expect(getCompactToolWheelReboundVolume(0)).toBeNull();
-    expect(getCompactToolWheelReboundVolume(0.199)).toBeNull();
-    expect(getCompactToolWheelReboundVolume(0.2)).toBe(0.38);
-    expect(getCompactToolWheelReboundVolume(-0.36)).toBe(0.38);
-    expect(getCompactToolWheelReboundVolume(0.399)).toBe(0.38);
-    expect(getCompactToolWheelReboundVolume(0.4)).toBe(0.6);
-    expect(getCompactToolWheelReboundVolume(-0.62)).toBe(0.6);
-    expect(getCompactToolWheelReboundVolume(0.699)).toBe(0.6);
-    expect(getCompactToolWheelReboundVolume(0.7)).toBe(0.85);
-    expect(getCompactToolWheelReboundVolume(-0.9)).toBe(0.85);
+  it('scales compact tool wheel rebound visual intensity by residual drag distance', () => {
+    expect(getCompactToolWheelReboundVisualIntensity(0)).toBeNull();
+    expect(getCompactToolWheelReboundVisualIntensity(0.199)).toBeNull();
+    expect(getCompactToolWheelReboundVisualIntensity(0.2)).toBe(0.38);
+    expect(getCompactToolWheelReboundVisualIntensity(-0.36)).toBe(0.38);
+    expect(getCompactToolWheelReboundVisualIntensity(0.399)).toBe(0.38);
+    expect(getCompactToolWheelReboundVisualIntensity(0.4)).toBe(0.6);
+    expect(getCompactToolWheelReboundVisualIntensity(-0.62)).toBe(0.6);
+    expect(getCompactToolWheelReboundVisualIntensity(0.699)).toBe(0.6);
+    expect(getCompactToolWheelReboundVisualIntensity(0.7)).toBe(0.85);
+    expect(getCompactToolWheelReboundVisualIntensity(-0.9)).toBe(0.85);
   });
 
   it('rotates compact input tools from a guide request', async () => {
@@ -6889,6 +6985,7 @@ describe('App', () => {
       expect(fan).toHaveAttribute('data-compact-tool-wheel-charge-direction', 'forward');
       const beforeReleaseCenter = fan.querySelector('[data-compact-tool-wheel-slot="0"]')?.className;
       expect(beforeReleaseCenter).toBeTruthy();
+      const playSfxCallsBeforeRelease = playSfx.mock.calls.length;
       fireEvent.pointerUp(fan, {
         pointerId: 22,
         ...pointOnWheel(24 * 0.7),
@@ -6913,16 +7010,20 @@ describe('App', () => {
       expect(fan).toHaveAttribute('data-compact-tool-wheel-charge-release-offset', '0');
       expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')?.className).toBe(beforeReleaseCenter);
       expect(Math.abs(Number.parseFloat(fan.style.getPropertyValue('--compact-tool-wheel-drag-angle')))).toBeGreaterThan(4);
-      expect(playSfx.mock.calls.some(([request]) => (
+      const releasePlaySfxCalls = playSfx.mock.calls.slice(playSfxCallsBeforeRelease);
+      expect(releasePlaySfxCalls.length).toBeGreaterThan(0);
+      expect(releasePlaySfxCalls.every(([request]) => (
         typeof request === 'object'
         && request !== null
         && 'src' in request
-        && request.src === COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC
+        && request.src === COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS[0]
       ))).toBe(true);
+      const playSfxCallsAfterRelease = playSfx.mock.calls.length;
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(120);
       });
+      expect(playSfx).toHaveBeenCalledTimes(playSfxCallsAfterRelease);
       expect(fan.style.getPropertyValue('--compact-tool-wheel-drag-angle')).toBe('0deg');
     } finally {
       restoreFanRect();
@@ -8831,6 +8932,7 @@ describe('App', () => {
   });
 
   it('expands the desktop hammer overlay on avatar range hover before clicking', async () => {
+    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
     const onAvatarToolStateChange = vi.fn();
     const live2dContainer = document.createElement('div');
     live2dContainer.id = 'live2d-container';
@@ -8867,20 +8969,25 @@ describe('App', () => {
       });
 
       onAvatarToolStateChange.mockClear();
+      vi.useFakeTimers();
       fireEvent.pointerDown(window, { button: 0, clientX: 150, clientY: 150 });
       fireEvent.pointerMove(window, { clientX: 20, clientY: 20 });
 
-      await waitFor(() => {
-        expect(queryHammerCursorCompactImage()).toBeNull();
-        expect(document.body.querySelector('.hammer-cursor-overlay')).not.toHaveClass('is-compact');
-        expect(onAvatarToolStateChange).toHaveBeenCalledWith(expect.objectContaining({
-          active: true,
-          toolId: 'hammer',
-          imageKind: 'icon',
-          withinAvatarRange: false,
-        }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(220);
       });
+
+      expect(queryHammerCursorCompactImage()).toBeNull();
+      expect(document.body.querySelector('.hammer-cursor-overlay')).not.toHaveClass('is-compact');
+      expect(onAvatarToolStateChange).toHaveBeenCalledWith(expect.objectContaining({
+        active: true,
+        toolId: 'hammer',
+        imageKind: 'icon',
+        withinAvatarRange: false,
+      }));
     } finally {
+      vi.useRealTimers();
+      window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'true');
       restoreLive2dManager();
       live2dContainer.remove();
     }

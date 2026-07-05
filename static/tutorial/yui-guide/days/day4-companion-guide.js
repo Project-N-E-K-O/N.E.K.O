@@ -89,6 +89,7 @@
                     target: 'settings-sidepanel:animation-settings',
                     cursorAction: 'tour',
                     operation: 'show-settings-sidepanel:animation-settings',
+                    deferSettingsSidePanelUntilCursorClick: true,
                     afterSceneDelayMs: 0
                 },
                 {
@@ -109,6 +110,7 @@
                     target: 'settings-sidepanel:animation-settings',
                     cursorAction: 'tour',
                     operation: 'show-settings-sidepanel:animation-settings',
+                    deferSettingsSidePanelUntilCursorClick: true,
                     afterSceneDelayMs: 0
                 },
                 {
@@ -137,7 +139,7 @@
                     timelinePlayback: true,
                     textKey: 'tutorial.avatarFloating.day4.modelLock',
                     voiceKey: 'avatar_floating_day4_model_lock',
-                    text: '总是不小心触碰到、把我点歪吗？那就快把我牢牢固定在当前的位置吧！开启锁定后，我就哪儿也不去，乖乖在原地陪着你~',
+                    text: '总是不小心触碰到、把我点歪吗？那就快把我牢牢固定在当前的位置吧！开启锁定后，我就哪儿也不去，乖乖在原地陪着你~解锁后把鼠标移动到我身上，滚动滚轮就能把我放大缩小，长按还能给我换个位置。',
                     emotion: 'happy',
                     target: '#${p}-lock-icon',
                     cursorAction: 'move',

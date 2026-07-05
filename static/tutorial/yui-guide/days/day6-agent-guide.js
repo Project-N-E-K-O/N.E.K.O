@@ -66,6 +66,7 @@
                     voiceKey: 'avatar_floating_day6_status_master',
                     text: '快跟我老实交代，这两天你有没有点开它试用一下呀？',
                     emotion: 'neutral',
+                    clearExternalizedChatCursorOnEnter: true,
                     operation: 'day6-plugin-open-agent-panel-flow'
                 },
                 {
@@ -80,6 +81,7 @@
                     voiceKey: 'avatar_floating_day6_plugin_side_panel',
                     text: '除了之前介绍的功能，这里还有超多好玩的插件呢。',
                     emotion: 'happy',
+                    preserveExternalizedChatGuideTarget: true,
                     operation: 'day6-plugin-open-management-panel-flow',
                     afterSceneDelayMs: 0
                 },
@@ -95,7 +97,8 @@
                     voiceKey: 'avatar_floating_day6_plugin_dashboard',
                     text: '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼！',
                     emotion: 'happy',
-                    operation: 'day6-plugin-dashboard-handoff-flow'
+                    operation: 'day6-plugin-dashboard-handoff-flow',
+                    afterSceneDelayMs: 0
                 },
                 {
                     id: 'day6_agent_task_hud',
@@ -106,7 +109,6 @@
                     emotion: 'happy',
                     target: '#agent-task-hud',
                     cursorAction: 'move',
-                    cleanupBefore: true,
                     operation: 'show-task-hud'
                 },
                 {
@@ -117,7 +119,9 @@
                     text: '你要是计划有变，随时都可以戳一下让我停下来。嘿嘿，今天也是打起精神努力打工挣小鱼干的一天呢，冲呀！',
                     emotion: 'happy',
                     target: '#agent-task-hud',
-                    cursorAction: 'move'
+                    cursorAction: 'move',
+                    spotlightKey: 'day6_agent_task_hud',
+                    preserveExternalizedChatGuideTarget: true
                 },
                 {
                     id: 'day6_wrap_cleanup',
@@ -127,7 +131,7 @@
                     text: '呼……把这些繁琐的界面都收起来，这样就不会打扰到你啦。',
                     emotion: 'happy',
                     target: 'chat-input',
-                    cursorAction: 'move',
+                    cursorAction: 'hold',
                     preserveExternalizedChatGuideTarget: true,
                     operation: 'cleanup'
                 },

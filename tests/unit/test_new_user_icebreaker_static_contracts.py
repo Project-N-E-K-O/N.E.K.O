@@ -553,9 +553,10 @@ def test_icebreaker_assistant_messages_update_compact_caption_like_normal_chat()
     interpage_runtime = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
 
     assert "function syncIcebreakerAssistantCompactCaption(role, message)" in runtime
+    assert "function finalizeIcebreakerAssistantSubtitleTranslation(role, message)" in runtime
     assert "function waitForIcebreakerChatHostMounted(host)" in runtime
     sync_block = runtime.split("function syncIcebreakerAssistantCompactCaption(role, message)", 1)[1].split(
-        "function appendChatMessage(role, text, meta)",
+        "function finalizeIcebreakerAssistantSubtitleTranslation(role, message)",
         1,
     )[0]
     assert "if (role !== 'assistant') return;" in sync_block
@@ -568,26 +569,49 @@ def test_icebreaker_assistant_messages_update_compact_caption_like_normal_chat()
     assert "openSubtitleTranslationForIcebreakerAssistantMessage()" not in sync_block
     assert "setSubtitleEnabled(true" not in sync_block
     assert "setTranslateEnabled(true" not in sync_block
-    assert "subtitleBridge" not in sync_block
-    assert "finalizeTurnWithTranslation" not in sync_block
+
+    subtitle_block = runtime.split("function finalizeIcebreakerAssistantSubtitleTranslation(role, message)", 1)[1].split(
+        "function waitForIcebreakerChatHostMounted(host)",
+        1,
+    )[0]
+    assert "if (role !== 'assistant') return;" in subtitle_block
+    assert "window.subtitleBridge" in subtitle_block
+    assert "bridge.beginTurn({ latch: false });" in subtitle_block
+    assert "bridge.finalizeTurnWithTranslation(line)" in subtitle_block
+    assert "console.warn('[NewUserIcebreaker] subtitle translation failed:'" in subtitle_block
+    assert "setSubtitleEnabled(true" not in subtitle_block
+    assert "setTranslateEnabled(true" not in subtitle_block
 
     assert "function syncIcebreakerAssistantCompactCaption(message)" in interpage_runtime
+    assert "function finalizeIcebreakerAssistantSubtitleTranslation(message)" in interpage_runtime
     assert "function waitForIcebreakerChatHostMounted(host)" in interpage_runtime
     interpage_compact_block = interpage_runtime.split(
         "function syncIcebreakerAssistantCompactCaption(message)", 1
-    )[1].split("function isIcebreakerBridgeAction", 1)[0]
+    )[1].split("function finalizeIcebreakerAssistantSubtitleTranslation(message)", 1)[0]
     assert "if (!isStandaloneChatPage() || !message || message.role !== 'assistant') return;" in interpage_compact_block
     assert "window.dispatchEvent(new CustomEvent('neko-assistant-turn-start'" in interpage_compact_block
     assert "window.dispatchEvent(new CustomEvent('neko-compact-caption-update'" in interpage_compact_block
     assert "window.dispatchEvent(new CustomEvent('neko-assistant-speech-unavailable'" not in interpage_compact_block
     assert "window.dispatchEvent(new CustomEvent('neko-assistant-turn-end'" not in interpage_compact_block
+    interpage_subtitle_block = interpage_runtime.split(
+        "function finalizeIcebreakerAssistantSubtitleTranslation(message)", 1
+    )[1].split("function waitForIcebreakerChatHostMounted(host)", 1)[0]
+    assert "if (!isStandaloneChatPage() || !message || message.role !== 'assistant') return;" in interpage_subtitle_block
+    assert "window.subtitleBridge" in interpage_subtitle_block
+    assert "bridge.beginTurn({ latch: false });" in interpage_subtitle_block
+    assert "bridge.finalizeTurnWithTranslation(line)" in interpage_subtitle_block
+    assert "setSubtitleEnabled(true" not in interpage_subtitle_block
+    assert "setTranslateEnabled(true" not in interpage_subtitle_block
     assert "return Promise.resolve(host.appendMessage(action.message)).then(function (result) {" in interpage_runtime
     assert "return waitForIcebreakerChatHostMounted(host).then(function () {" in interpage_runtime
     assert "syncIcebreakerAssistantCompactCaption(action.message);" in interpage_runtime
+    assert "finalizeIcebreakerAssistantSubtitleTranslation(action.message);" in interpage_runtime
     assert interpage_runtime.index("return Promise.resolve(host.appendMessage(action.message)).then(function (result) {") < interpage_runtime.index(
         "return waitForIcebreakerChatHostMounted(host).then(function () {"
     ) < interpage_runtime.index(
         "syncIcebreakerAssistantCompactCaption(action.message);"
+    ) < interpage_runtime.index(
+        "finalizeIcebreakerAssistantSubtitleTranslation(action.message);"
     )
     assert "icebreaker_assistant_subtitle" not in runtime
     assert "icebreaker_assistant_subtitle" not in interpage_runtime
@@ -608,28 +632,36 @@ def test_icebreaker_assistant_message_does_not_auto_open_subtitle_translation_pa
     assert "setSubtitleEnabled(true" not in start_block
     assert "setTranslateEnabled(true" not in start_block
 
-    sync_block = runtime.split("function syncIcebreakerAssistantCompactCaption(role, message)", 1)[1].split(
+    sync_block = runtime.split("function finalizeIcebreakerAssistantSubtitleTranslation(role, message)", 1)[1].split(
         "function appendChatMessage(role, text, meta)",
         1,
     )[0]
     assert "if (role !== 'assistant') return;" in sync_block
     assert "setSubtitleEnabled(true" not in sync_block
     assert "setTranslateEnabled(true" not in sync_block
-    assert "subtitleBridge" not in sync_block
-    assert "finalizeTurnWithTranslation" not in sync_block
+    assert "bridge.finalizeTurnWithTranslation(line)" in sync_block
 
     append_message_block = runtime.split("function appendChatMessage(role, text, meta)", 1)[1].split(
         "function speakViaProjectTts",
         1,
     )[0]
     assert "return appendLlmContext(role, messageText, meta || {}).then(function () {" in append_message_block
+    standalone_branch = append_message_block.split("if (!shouldRenderIcebreakerOnLocalChatHost()) {", 1)[1].split(
+        "var chatHost = null;",
+        1,
+    )[0]
+    assert "finalizeIcebreakerAssistantSubtitleTranslation(role, message);" in standalone_branch
+    assert "syncIcebreakerAssistantCompactCaption(role, message);" not in standalone_branch
     assert "return host.appendMessage(message);" in append_message_block
     assert "return waitForIcebreakerChatHostMounted(chatHost).then(function () {" in append_message_block
     assert "syncIcebreakerAssistantCompactCaption(role, message);" in append_message_block
+    assert "finalizeIcebreakerAssistantSubtitleTranslation(role, message);" in append_message_block
     assert append_message_block.index("return host.appendMessage(message);") < append_message_block.index(
         "return waitForIcebreakerChatHostMounted(chatHost).then(function () {"
     ) < append_message_block.rindex(
         "syncIcebreakerAssistantCompactCaption(role, message);"
+    ) < append_message_block.rindex(
+        "finalizeIcebreakerAssistantSubtitleTranslation(role, message);"
     )
 
 

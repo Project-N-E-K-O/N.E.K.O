@@ -11,6 +11,9 @@
     const DEFAULT_CURSOR_CLICK_VISIBLE_MS = 420;
     const SMOOTH_CURSOR_SHOW_DURATION_MS = 560;
     const PC_OVERLAY_SEQUENCE_STORAGE_KEY = 'yuiGuidePcOverlaySequence';
+    const CONTROL_BANNER_TEXT_KEY = 'tutorial.yuiGuide.controlBanner';
+    const CONTROL_BANNER_FALLBACK_TEXT = 'The catgirl is controlling the mouse';
+    const CONTROL_BANNER_INTERRUPT_EMPHASIS_MS = 2000;
     const OverlayRendererApi = window.TutorialOverlayRendererApi || {};
     const OverlayCursorStateStore = OverlayRendererApi.OverlayCursorStateStore
         || (window.TutorialOverlayRenderer && window.TutorialOverlayRenderer.OverlayCursorStateStore);
@@ -52,6 +55,29 @@
         } catch (_) {
             return false;
         }
+    }
+
+    function resolveControlBannerText() {
+        if (typeof window.t === 'function') {
+            try {
+                const translated = window.t(CONTROL_BANNER_TEXT_KEY);
+                if (typeof translated === 'string' && translated.trim() && translated !== CONTROL_BANNER_TEXT_KEY) {
+                    return translated;
+                }
+            } catch (_) {}
+        }
+
+        return CONTROL_BANNER_FALLBACK_TEXT;
+    }
+
+    function createControlBannerElement() {
+        const banner = createElement('div', 'yui-guide-control-banner');
+        banner.hidden = true;
+        banner.setAttribute('role', 'status');
+        banner.setAttribute('aria-live', 'polite');
+        banner.setAttribute('data-yui-cursor-hidden', 'true');
+        banner.textContent = resolveControlBannerText();
+        return banner;
     }
 
     function createPcOverlayBridge(doc) {
@@ -488,6 +514,12 @@
             this.document = doc || document;
             this.root = null;
             this.stage = null;
+            this.controlBanner = null;
+            this.controlBannerEmphasisTimer = null;
+            this.controlBannerEmphasisActive = false;
+            this.renderedControlBannerText = '';
+            this.renderedControlBannerVisible = null;
+            this.renderedControlBannerEmphasis = null;
             this.interactionShield = null;
             this.tutorialInputShieldActive = false;
             this.takingOverActive = false;
@@ -802,6 +834,8 @@
                 preview.appendChild(previewTitle);
                 preview.appendChild(previewList);
 
+                const controlBanner = createControlBannerElement();
+
                 stage.appendChild(backdrop);
                 stage.appendChild(interactionShield);
                 stage.appendChild(persistentSpotlightFrame);
@@ -809,10 +843,12 @@
                 stage.appendChild(secondaryActionSpotlightFrame);
                 stage.appendChild(bubble);
                 stage.appendChild(preview);
+                stage.appendChild(controlBanner);
                 root.appendChild(stage);
                 this.document.body.appendChild(root);
 
                 this.stage = stage;
+                this.controlBanner = controlBanner;
                 this.interactionShield = interactionShield;
                 this.backdrop = backdrop;
                 this.backdropMask = mask;
@@ -835,6 +871,11 @@
                 this.extraSpotlightEntries = extraSpotlightEntries;
             } else {
                 this.stage = root.querySelector('.yui-guide-stage');
+                this.controlBanner = root.querySelector('.yui-guide-control-banner');
+                if (!this.controlBanner && this.stage) {
+                    this.controlBanner = createControlBannerElement();
+                    this.stage.appendChild(this.controlBanner);
+                }
                 this.interactionShield = root.querySelector('.yui-guide-interaction-shield');
                 this.backdrop = root.querySelector('.yui-guide-backdrop');
                 this.backdropMask = root.querySelector('mask#' + BACKDROP_MASK_ID);
@@ -875,8 +916,58 @@
             }
 
             this.root = root;
+            this.syncControlBanner();
             this.installInteractionShieldBlocker();
             return root;
+        }
+
+        syncControlBanner() {
+            if (!this.controlBanner) {
+                return;
+            }
+
+            const isVisible = this.takingOverActive === true;
+            const isEmphasized = isVisible && this.controlBannerEmphasisActive === true;
+            const text = resolveControlBannerText();
+
+            if (
+                this.renderedControlBannerText === text
+                && this.renderedControlBannerVisible === isVisible
+                && this.renderedControlBannerEmphasis === isEmphasized
+                && this.controlBanner.hidden === !isVisible
+                && this.controlBanner.classList.contains('is-visible') === isVisible
+                && this.controlBanner.classList.contains('is-interrupt-emphasis') === isEmphasized
+            ) {
+                return;
+            }
+
+            if (this.renderedControlBannerText !== text) {
+                this.controlBanner.textContent = text;
+                this.renderedControlBannerText = text;
+            }
+            this.controlBanner.hidden = !isVisible;
+            this.controlBanner.classList.toggle('is-visible', isVisible);
+            this.controlBanner.classList.toggle('is-interrupt-emphasis', isEmphasized);
+            this.renderedControlBannerVisible = isVisible;
+            this.renderedControlBannerEmphasis = isEmphasized;
+        }
+
+        emphasizeControlBanner(durationMs = CONTROL_BANNER_INTERRUPT_EMPHASIS_MS) {
+            if (!this.takingOverActive) {
+                return;
+            }
+            this.ensureRoot();
+            if (this.controlBannerEmphasisTimer) {
+                window.clearTimeout(this.controlBannerEmphasisTimer);
+                this.controlBannerEmphasisTimer = null;
+            }
+            this.controlBannerEmphasisActive = true;
+            this.syncControlBanner();
+            this.controlBannerEmphasisTimer = window.setTimeout(() => {
+                this.controlBannerEmphasisTimer = null;
+                this.controlBannerEmphasisActive = false;
+                this.syncControlBanner();
+            }, Math.max(0, Math.round(Number(durationMs) || CONTROL_BANNER_INTERRUPT_EMPHASIS_MS)));
         }
 
         isSkipControlEventTarget(target) {
@@ -1309,8 +1400,16 @@
         setTakingOver(active) {
             this.ensureRoot();
             this.takingOverActive = active === true;
+            if (!this.takingOverActive) {
+                if (this.controlBannerEmphasisTimer) {
+                    window.clearTimeout(this.controlBannerEmphasisTimer);
+                    this.controlBannerEmphasisTimer = null;
+                }
+                this.controlBannerEmphasisActive = false;
+            }
             this.document.body.classList.toggle('yui-taking-over', this.takingOverActive);
             this.root.classList.toggle('is-taking-over', this.takingOverActive);
+            this.syncControlBanner();
             this.syncInteractionShield();
             this.document.documentElement.style.cursor = '';
             this.document.body.style.cursor = '';
@@ -1986,6 +2085,15 @@
             }
             this.root = null;
             this.stage = null;
+            this.controlBanner = null;
+            if (this.controlBannerEmphasisTimer) {
+                window.clearTimeout(this.controlBannerEmphasisTimer);
+                this.controlBannerEmphasisTimer = null;
+            }
+            this.controlBannerEmphasisActive = false;
+            this.renderedControlBannerText = '';
+            this.renderedControlBannerVisible = null;
+            this.renderedControlBannerEmphasis = null;
             this.interactionShield = null;
             this.tutorialInputShieldActive = false;
             this.takingOverActive = false;

@@ -6,7 +6,7 @@ const { SettingsTourFlow } = require('./tutorial/core/settings-tour-flow.js');
 test('SettingsTourFlow resolves every settings tour scene id', async () => {
     const flow = new SettingsTourFlow({});
 
-    assert.equal(flow.canHandle({ id: 'day2_personalization_detail' }), true);
+    assert.equal(flow.canHandle({ id: 'day3_personalization_detail' }), true);
     assert.equal(flow.canHandle({ id: 'day4_chat_settings' }), true);
     assert.equal(flow.canHandle({ id: 'day4_model_behavior' }), true);
     assert.equal(flow.canHandle({ id: 'day4_gaze_follow' }), true);
@@ -50,7 +50,7 @@ test('SettingsTourFlow exposes declarative schemas for day four panel tours', ()
     assert.equal(flow.getPanelTourSchema({ id: 'day5_character_settings' }), null);
 });
 
-test('SettingsTourFlow owns day two personalization detail scene body', async () => {
+test('SettingsTourFlow owns day three personalization detail scene body after day swap', async () => {
     const calls = [];
     const characterSettingsButton = { id: 'character-settings-button' };
     const characterSettingsPanel = { id: 'character-settings-panel' };
@@ -59,7 +59,7 @@ test('SettingsTourFlow owns day two personalization detail scene body', async ()
         destroyed: false,
         angryExitTriggered: false,
         scenePausedForResistance: false,
-        currentStep: 'day2-personalization',
+        currentStep: 'day3-personalization',
         overlay: {
             clearActionSpotlight() {
                 calls.push(['clear-action']);
@@ -129,24 +129,24 @@ test('SettingsTourFlow owns day two personalization detail scene body', async ()
     };
     const flow = new SettingsTourFlow(director);
 
-    const result = await flow.play({ id: 'day2_personalization_detail' }, {
+    const result = await flow.play({ id: 'day3_personalization_detail' }, {
         sceneRunId: 11,
-        previousSceneId: 'day2_personalization_space',
+        previousSceneId: 'day3_personalization_space',
         index: 2,
         total: 5
     });
 
     assert.equal(result, true);
     assert.deepEqual(calls, [
-        ['prepare', 'day2_personalization_detail'],
-        ['interrupts', 'day2-personalization'],
-        ['narration', 'day2_personalization_detail', 'line', 'voice'],
+        ['prepare', 'day3_personalization_detail'],
+        ['interrupts', 'day3-personalization'],
+        ['narration', 'day3_personalization_detail', 'line', 'voice'],
         ['open-settings'],
-        ['highlight', 'day2_personalization_detail-character-settings-button', 'character-settings-button', 'character-settings-button'],
+        ['highlight', 'day3_personalization_detail-character-settings-button', 'character-settings-button', 'character-settings-button'],
         ['move', 'character-settings-button', 620],
         ['click', 420],
         ['ensure-panel', 'character-settings'],
-        ['highlight', 'day2_personalization_detail-character-settings-panel', 'character-settings-panel', undefined],
+        ['highlight', 'day3_personalization_detail-character-settings-panel', 'character-settings-panel', undefined],
         ['move', 'character-settings-panel', 620],
         ['ellipse', 60, 120, 36, 72, 5600],
         ['collapse-character'],
@@ -213,7 +213,9 @@ test('SettingsTourFlow reuses day four animation panel from its anchor cursor cl
                 anchorButton.id,
                 previousSceneId
             ]);
-            options.onClickStart();
+            if (options && typeof options.onClickStart === 'function') {
+                options.onClickStart();
+            }
             return Promise.resolve(true);
         },
         ensureAvatarFloatingSettingsSidePanel(panelId) {
@@ -253,6 +255,7 @@ test('SettingsTourFlow reuses day four animation panel from its anchor cursor cl
         ['narration', 'day4_model_behavior', 'line', 'voice', 3200],
         ['delay', 220],
         ['cursor-click-anchor', 'day4_model_behavior_anchor_button', 'click', 620, 'animation-settings-button', 'day4_chat_settings'],
+        ['ensure-panel', 'animation-settings'],
         ['highlight', 'day4_model_behavior-animation-settings-panel', 'animation-settings-panel', 'settings-button'],
         ['delay', 3200],
         ['ellipse', 100, 100, 51.2, 60, 3200],
@@ -260,7 +263,7 @@ test('SettingsTourFlow reuses day four animation panel from its anchor cursor cl
     ]);
 });
 
-test('SettingsTourFlow stops day two panel tour if skip happens while opening side panel', async () => {
+test('SettingsTourFlow stops day three panel tour if skip happens while opening side panel after day swap', async () => {
     const calls = [];
     let stopping = false;
     const characterSettingsButton = { id: 'character-settings-button' };
@@ -270,7 +273,7 @@ test('SettingsTourFlow stops day two panel tour if skip happens while opening si
         destroyed: false,
         angryExitTriggered: false,
         scenePausedForResistance: false,
-        currentStep: 'day2-personalization',
+        currentStep: 'day3-personalization',
         overlay: {
             clearActionSpotlight() {
                 calls.push(['clear-action']);
@@ -341,20 +344,20 @@ test('SettingsTourFlow stops day two panel tour if skip happens while opening si
     };
     const flow = new SettingsTourFlow(director);
 
-    const result = await flow.play({ id: 'day2_personalization_detail' }, {
+    const result = await flow.play({ id: 'day3_personalization_detail' }, {
         sceneRunId: 11,
-        previousSceneId: 'day2_personalization_space',
+        previousSceneId: 'day3_personalization_space',
         index: 2,
         total: 5
     });
 
     assert.equal(result, false);
     assert.deepEqual(calls, [
-        ['prepare', 'day2_personalization_detail'],
-        ['interrupts', 'day2-personalization'],
-        ['narration', 'day2_personalization_detail', 'line', 'voice'],
+        ['prepare', 'day3_personalization_detail'],
+        ['interrupts', 'day3-personalization'],
+        ['narration', 'day3_personalization_detail', 'line', 'voice'],
         ['open-settings'],
-        ['highlight', 'day2_personalization_detail-character-settings-button', 'character-settings-button'],
+        ['highlight', 'day3_personalization_detail-character-settings-button', 'character-settings-button'],
         ['move', 'character-settings-button', 620],
         ['click', 420],
         ['ensure-panel', 'character-settings']
@@ -363,7 +366,12 @@ test('SettingsTourFlow stops day two panel tour if skip happens while opening si
 
 test('SettingsTourFlow owns linear day four gaze follow scene body', async () => {
     const calls = [];
-    const mouseTrackingToggle = { id: 'mouse-tracking-toggle' };
+    const mouseTrackingToggle = {
+        id: 'mouse-tracking-toggle',
+        click() {
+            calls.push(['target-click', 'mouse-tracking-toggle']);
+        }
+    };
     const settingsButton = { id: 'settings-button' };
     const director = {
         sceneRunId: 5,
@@ -399,6 +407,11 @@ test('SettingsTourFlow owns linear day four gaze follow scene body', async () =>
             calls.push(['move', element.id, durationMs]);
             return Promise.resolve(true);
         },
+        runActionWithCursorClick(durationMs, action) {
+            calls.push(['cursor-click', durationMs]);
+            action();
+            return Promise.resolve(true);
+        },
         finalizeScene(sceneRunId, options) {
             calls.push(['finalize', sceneRunId, options.index, options.total]);
             return Promise.resolve(true);
@@ -421,8 +434,415 @@ test('SettingsTourFlow owns linear day four gaze follow scene body', async () =>
         ['narration', 'day4_gaze_follow', 'line', 'voice'],
         ['delay', 220],
         ['move', 'mouse-tracking-toggle', 620],
+        ['cursor-click', 420],
+        ['target-click', 'mouse-tracking-toggle'],
+        ['delay', 1800],
         ['finalize', 5, 3, 8]
     ]);
+});
+
+test('SettingsTourFlow does not toggle off enabled day four gaze follow', async () => {
+    const calls = [];
+    const mouseTrackingToggle = {
+        id: 'mouse-tracking-toggle',
+        checked: true,
+        click() {
+            calls.push(['target-click', 'mouse-tracking-toggle']);
+        }
+    };
+    const settingsButton = { id: 'settings-button' };
+    const director = {
+        sceneRunId: 5,
+        currentStep: 'day4-gaze',
+        prepareNarration(scene) {
+            calls.push(['prepare', scene.id]);
+            return { text: 'line', voiceKey: 'voice', canHandleSceneButtons: false, actionWaitPromise: null };
+        },
+        getDay4SettingsButtonSpotlightTarget() {
+            return settingsButton;
+        },
+        getDay4MouseTrackingTarget() {
+            return mouseTrackingToggle;
+        },
+        applyGuideHighlights(config) {
+            calls.push(['highlight', config.key, config.primary.id, config.persistent.id]);
+        },
+        enableInterrupts(step) {
+            calls.push(['interrupts', step]);
+        },
+        createNarrationPromise(scene, text, voiceKey) {
+            calls.push(['narration', scene.id, text, voiceKey]);
+            return Promise.resolve();
+        },
+        waitForSceneDelay(delayMs) {
+            calls.push(['delay', delayMs]);
+            return Promise.resolve(true);
+        },
+        isStopping() {
+            return false;
+        },
+        moveCursorToElement(element, durationMs) {
+            calls.push(['move', element.id, durationMs]);
+            return Promise.resolve(true);
+        },
+        runActionWithCursorClick(durationMs, action) {
+            calls.push(['cursor-click', durationMs]);
+            action();
+            return Promise.resolve(true);
+        },
+        finalizeScene(sceneRunId, options) {
+            calls.push(['finalize', sceneRunId, options.index, options.total]);
+            return Promise.resolve(true);
+        }
+    };
+    const flow = new SettingsTourFlow(director);
+
+    const result = await flow.play({ id: 'day4_gaze_follow' }, {
+        sceneRunId: 5,
+        previousSceneId: 'day4_model_behavior',
+        index: 3,
+        total: 8
+    });
+
+    assert.equal(result, true);
+    assert.deepEqual(calls, [
+        ['prepare', 'day4_gaze_follow'],
+        ['highlight', 'day4_gaze_follow-mouse-tracking-toggle', 'mouse-tracking-toggle', 'settings-button'],
+        ['interrupts', 'day4-gaze'],
+        ['narration', 'day4_gaze_follow', 'line', 'voice'],
+        ['delay', 220],
+        ['move', 'mouse-tracking-toggle', 620],
+        ['cursor-click', 420],
+        ['delay', 1800],
+        ['finalize', 5, 3, 8]
+    ]);
+});
+
+test('SettingsTourFlow reads nested mouse tracking checkbox before stale wrapper state', async () => {
+    const calls = [];
+    const checkbox = { checked: false };
+    const mouseTrackingToggle = {
+        id: 'mouse-tracking-toggle',
+        getAttribute(name) {
+            return name === 'aria-checked' ? 'true' : null;
+        },
+        querySelector(selector) {
+            if (selector === 'input[type="checkbox"]') {
+                return checkbox;
+            }
+            return null;
+        },
+        click() {
+            checkbox.checked = true;
+            calls.push(['target-click', 'mouse-tracking-toggle']);
+        }
+    };
+    const settingsButton = { id: 'settings-button' };
+    const director = {
+        sceneRunId: 5,
+        currentStep: 'day4-gaze',
+        prepareNarration(scene) {
+            calls.push(['prepare', scene.id]);
+            return { text: 'line', voiceKey: 'voice', canHandleSceneButtons: false, actionWaitPromise: null };
+        },
+        getDay4SettingsButtonSpotlightTarget() {
+            return settingsButton;
+        },
+        getDay4MouseTrackingTarget() {
+            return mouseTrackingToggle;
+        },
+        applyGuideHighlights(config) {
+            calls.push(['highlight', config.key, config.primary.id, config.persistent.id]);
+        },
+        enableInterrupts(step) {
+            calls.push(['interrupts', step]);
+        },
+        createNarrationPromise(scene, text, voiceKey) {
+            calls.push(['narration', scene.id, text, voiceKey]);
+            return Promise.resolve();
+        },
+        waitForSceneDelay(delayMs) {
+            calls.push(['delay', delayMs]);
+            return Promise.resolve(true);
+        },
+        isStopping() {
+            return false;
+        },
+        moveCursorToElement(element, durationMs) {
+            calls.push(['move', element.id, durationMs]);
+            return Promise.resolve(true);
+        },
+        runActionWithCursorClick(durationMs, action) {
+            calls.push(['cursor-click', durationMs]);
+            action();
+            return Promise.resolve(true);
+        },
+        finalizeScene(sceneRunId, options) {
+            calls.push(['finalize', sceneRunId, options.index, options.total]);
+            return Promise.resolve(true);
+        }
+    };
+    const flow = new SettingsTourFlow(director);
+
+    const result = await flow.play({ id: 'day4_gaze_follow' }, {
+        sceneRunId: 5,
+        previousSceneId: 'day4_model_behavior',
+        index: 3,
+        total: 8
+    });
+
+    assert.equal(result, true);
+    assert.equal(checkbox.checked, true);
+    assert.deepEqual(calls, [
+        ['prepare', 'day4_gaze_follow'],
+        ['highlight', 'day4_gaze_follow-mouse-tracking-toggle', 'mouse-tracking-toggle', 'settings-button'],
+        ['interrupts', 'day4-gaze'],
+        ['narration', 'day4_gaze_follow', 'line', 'voice'],
+        ['delay', 220],
+        ['move', 'mouse-tracking-toggle', 620],
+        ['cursor-click', 420],
+        ['target-click', 'mouse-tracking-toggle'],
+        ['delay', 1800],
+        ['finalize', 5, 3, 8]
+    ]);
+});
+
+test('SettingsTourFlow hides day four privacy panels before and after closing settings', async () => {
+    const calls = [];
+    const settingsButton = { id: 'settings-button' };
+    const privacyButton = { id: 'privacy-toggle' };
+    const director = {
+        sceneRunId: 6,
+        currentStep: 'day4-privacy',
+        prepareNarration(scene) {
+            calls.push(['prepare', scene.id]);
+            return { text: 'line', voiceKey: 'voice', canHandleSceneButtons: false, actionWaitPromise: null };
+        },
+        getDay4SettingsButtonSpotlightTarget() {
+            return settingsButton;
+        },
+        getDay4PrivacyModeButtonTarget() {
+            return privacyButton;
+        },
+        collapseAvatarFloatingSidePanelsExcept(panel) {
+            calls.push(['collapse-except', panel]);
+        },
+        applyGuideHighlights(config) {
+            calls.push(['highlight', config.key, config.primary.id, config.persistent.id]);
+        },
+        enableInterrupts(step) {
+            calls.push(['interrupts', step]);
+        },
+        createNarrationPromise(scene, text, voiceKey) {
+            calls.push(['narration', scene.id, text, voiceKey]);
+            return Promise.resolve();
+        },
+        waitForSceneDelay(delayMs) {
+            calls.push(['delay', delayMs]);
+            return Promise.resolve(true);
+        },
+        isStopping() {
+            return false;
+        },
+        moveCursorToElement(element, durationMs) {
+            calls.push(['move', element.id, durationMs]);
+            return Promise.resolve(true);
+        },
+        closeSettingsPanel() {
+            calls.push(['close-settings']);
+            return Promise.resolve(true);
+        },
+        forceHideManagedPanel(panelId) {
+            calls.push(['force-hide', panelId]);
+        },
+        finalizeScene(sceneRunId, options) {
+            calls.push(['finalize', sceneRunId, options.index, options.total]);
+            return Promise.resolve(true);
+        }
+    };
+    const flow = new SettingsTourFlow(director);
+
+    const result = await flow.play({ id: 'day4_privacy_mode' }, {
+        sceneRunId: 6,
+        previousSceneId: 'day4_gaze_follow',
+        index: 4,
+        total: 8
+    });
+
+    assert.equal(result, true);
+    assert.deepEqual(calls, [
+        ['prepare', 'day4_privacy_mode'],
+        ['collapse-except', null],
+        ['highlight', 'day4_privacy_mode-privacy-mode-button', 'privacy-toggle', 'settings-button'],
+        ['interrupts', 'day4-privacy'],
+        ['narration', 'day4_privacy_mode', 'line', 'voice'],
+        ['delay', 220],
+        ['move', 'privacy-toggle', 620],
+        ['force-hide', 'settings'],
+        ['collapse-except', null],
+        ['close-settings'],
+        ['force-hide', 'settings'],
+        ['collapse-except', null],
+        ['finalize', 6, 4, 8]
+    ]);
+});
+
+test('SettingsTourFlow does not hide newer panel when day four privacy close becomes stale', async () => {
+    const calls = [];
+    const settingsButton = { id: 'settings-button' };
+    const privacyButton = { id: 'privacy-toggle' };
+    const director = {
+        sceneRunId: 6,
+        currentStep: 'day4-privacy',
+        prepareNarration(scene) {
+            calls.push(['prepare', scene.id]);
+            return { text: 'line', voiceKey: 'voice', canHandleSceneButtons: false, actionWaitPromise: null };
+        },
+        getDay4SettingsButtonSpotlightTarget() {
+            return settingsButton;
+        },
+        getDay4PrivacyModeButtonTarget() {
+            return privacyButton;
+        },
+        collapseAvatarFloatingSidePanelsExcept(panel) {
+            calls.push(['collapse-except', panel]);
+        },
+        applyGuideHighlights(config) {
+            calls.push(['highlight', config.key, config.primary.id, config.persistent.id]);
+        },
+        enableInterrupts(step) {
+            calls.push(['interrupts', step]);
+        },
+        createNarrationPromise(scene, text, voiceKey) {
+            calls.push(['narration', scene.id, text, voiceKey]);
+            return Promise.resolve();
+        },
+        waitForSceneDelay(delayMs) {
+            calls.push(['delay', delayMs]);
+            return Promise.resolve(true);
+        },
+        isStopping() {
+            return false;
+        },
+        moveCursorToElement(element, durationMs) {
+            calls.push(['move', element.id, durationMs]);
+            return Promise.resolve(true);
+        },
+        closeSettingsPanel() {
+            calls.push(['close-settings']);
+            this.sceneRunId = 7;
+            return Promise.resolve(true);
+        },
+        forceHideManagedPanel(panelId) {
+            calls.push(['force-hide', panelId]);
+        },
+        finalizeScene(sceneRunId, options) {
+            calls.push(['finalize', sceneRunId, options.index, options.total]);
+            return Promise.resolve(true);
+        }
+    };
+    const flow = new SettingsTourFlow(director);
+
+    const result = await flow.play({ id: 'day4_privacy_mode' }, {
+        sceneRunId: 6,
+        previousSceneId: 'day4_gaze_follow',
+        index: 4,
+        total: 8
+    });
+
+    assert.equal(result, false);
+    assert.deepEqual(calls, [
+        ['prepare', 'day4_privacy_mode'],
+        ['collapse-except', null],
+        ['highlight', 'day4_privacy_mode-privacy-mode-button', 'privacy-toggle', 'settings-button'],
+        ['interrupts', 'day4-privacy'],
+        ['narration', 'day4_privacy_mode', 'line', 'voice'],
+        ['delay', 220],
+        ['move', 'privacy-toggle', 620],
+        ['force-hide', 'settings'],
+        ['collapse-except', null],
+        ['close-settings']
+    ]);
+});
+
+test('SettingsTourFlow continues day four privacy cleanup when hide helpers throw', async () => {
+    const calls = [];
+    const warnings = [];
+    const originalWarn = console.warn;
+    console.warn = (...args) => {
+        warnings.push(args);
+    };
+    const settingsButton = { id: 'settings-button' };
+    const privacyButton = { id: 'privacy-toggle' };
+    const director = {
+        sceneRunId: 6,
+        currentStep: 'day4-privacy',
+        prepareNarration(scene) {
+            calls.push(['prepare', scene.id]);
+            return { text: 'line', voiceKey: 'voice', canHandleSceneButtons: false, actionWaitPromise: null };
+        },
+        getDay4SettingsButtonSpotlightTarget() {
+            return settingsButton;
+        },
+        getDay4PrivacyModeButtonTarget() {
+            return privacyButton;
+        },
+        collapseAvatarFloatingSidePanelsExcept(panel) {
+            calls.push(['collapse-except', panel]);
+            if (calls.filter((call) => call[0] === 'collapse-except').length > 1) {
+                throw new Error('collapse failed');
+            }
+        },
+        applyGuideHighlights(config) {
+            calls.push(['highlight', config.key, config.primary.id, config.persistent.id]);
+        },
+        enableInterrupts(step) {
+            calls.push(['interrupts', step]);
+        },
+        createNarrationPromise(scene, text, voiceKey) {
+            calls.push(['narration', scene.id, text, voiceKey]);
+            return Promise.resolve();
+        },
+        waitForSceneDelay(delayMs) {
+            calls.push(['delay', delayMs]);
+            return Promise.resolve(true);
+        },
+        isStopping() {
+            return false;
+        },
+        moveCursorToElement(element, durationMs) {
+            calls.push(['move', element.id, durationMs]);
+            return Promise.resolve(true);
+        },
+        closeSettingsPanel() {
+            calls.push(['close-settings']);
+            return Promise.resolve(true);
+        },
+        forceHideManagedPanel(panelId) {
+            calls.push(['force-hide', panelId]);
+            throw new Error('hide failed');
+        },
+        finalizeScene(sceneRunId, options) {
+            calls.push(['finalize', sceneRunId, options.index, options.total]);
+            return Promise.resolve(true);
+        }
+    };
+    const flow = new SettingsTourFlow(director);
+
+    try {
+        const result = await flow.play({ id: 'day4_privacy_mode' }, {
+            sceneRunId: 6,
+            previousSceneId: 'day4_gaze_follow',
+            index: 4,
+            total: 8
+        });
+
+        assert.equal(result, true);
+        assert.equal(warnings.length, 4);
+        assert.equal(calls.at(-1)[0], 'finalize');
+    } finally {
+        console.warn = originalWarn;
+    }
 });
 
 test('SettingsTourFlow refreshes visible day five character panel before panic narration', async () => {
@@ -737,12 +1157,14 @@ test('SettingsTourFlow stops day four panel tour when anchor click makes scene s
             return false;
         },
         moveAvatarFloatingCursor(cursorScene, anchorButton, secondaryTarget, previousSceneId, options) {
-            options.onClickStart();
+            if (options && typeof options.onClickStart === 'function') {
+                options.onClickStart();
+            }
             this.sceneRunId = 15;
             return Promise.resolve(true);
         },
         ensureAvatarFloatingSettingsSidePanel(panelId, options) {
-            calls.push(['ensure', panelId, !!(options && options.shouldContinue)]);
+            calls.push(['ensure', panelId, !!(options && options.shouldContinue), !!(options && options.skipOpenSettingsPanel)]);
             return Promise.resolve(animationPanel);
         },
         getElementRect(target) {
@@ -760,7 +1182,8 @@ test('SettingsTourFlow stops day four panel tour when anchor click makes scene s
 
     assert.equal(result, false);
     assert.deepEqual(calls, [
-        ['highlight', 'day4_model_behavior-animation-settings-button']
+        ['highlight', 'day4_model_behavior-animation-settings-button'],
+        ['ensure', 'animation-settings', true, true]
     ]);
 });
 

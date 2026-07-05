@@ -21,7 +21,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from config import ANTI_REPEAT_BG_WINDOW
+from config import ANTI_REPEAT_BG_WINDOW, ANTI_REPEAT_FG_TTL_SECONDS
 from config.prompts.prompts_directives import (
     RECENT_TOPIC_HINT_PROMPT_BLOCK,
     PROACTIVE_REGEN_AVOID_INSTRUCTION,
@@ -64,8 +64,8 @@ def test_record_output_records_normal_text(tmp_path):
     s = _build_store(tmp_path)
     name = "Neko"
     s.record_output(name, LONG_TIGER, is_proactive=True, now=1000.0)
-    # 走一次 score_draft 验证已入库
-    total, _ = s.score_draft(name, LONG_TIGER)
+    # 走一次 score_draft 验证已入库（同一 now，落在 FG TTL 内）
+    total, _ = s.score_draft(name, LONG_TIGER, now=1000.0)
     assert total > 0
 
 
@@ -167,10 +167,10 @@ def test_score_draft_repeating_topic_scores_high(tmp_path):
     name = "Neko"
     for i in range(5):
         s.record_output(name, LONG_TIGER + f"（第{i}次）", now=float(i))
-    # 同 topic 的新 draft
-    total_same, terms_same = s.score_draft(name, LONG_TIGER + "（新一次）")
+    # 同 topic 的新 draft（now=5 落在 FG TTL 内，5 条都算前景）
+    total_same, terms_same = s.score_draft(name, LONG_TIGER + "（新一次）", now=5.0)
     # 完全换 topic 的 draft
-    total_diff, _ = s.score_draft(name, LONG_FRUIT)
+    total_diff, _ = s.score_draft(name, LONG_FRUIT, now=5.0)
     assert total_same > total_diff
     assert "老虎" in terms_same or any("虎" in t for t in terms_same)
 
@@ -193,7 +193,7 @@ def test_score_draft_topic_words_ranked_first(tmp_path):
     for i in range(20, 25):
         s.record_output(name, LONG_TIGER + f"（第{i}次想到）", now=float(i))
     _total, terms = s.score_draft(
-        name, "我又想起了老虎，那只森林里的老虎依然让我难忘"
+        name, "我又想起了老虎，那只森林里的老虎依然让我难忘", now=25.0
     )
     assert terms
     # top 5 ngram 全部应来自 LONG_TIGER；不该有来自 BG filler 的字符组合
@@ -204,13 +204,94 @@ def test_score_draft_topic_words_ranked_first(tmp_path):
         )
 
 
+# ── 3b. FG TTL / 空闲死锁修复 ─────────────────────────────────
+#
+# 生产事故：主动搭话在用户空闲时才触发，而所有 drop 路径都不写 corpus、只有
+# 成功投递 / 真实用户回复才写。空闲期 FG 窗被最近几条同话题（如屏幕解说）冻结，
+# 每轮打出同样的超高 BM25 → regen 后仍超 DROP → 永远 drop → 永远无法搭话
+# （日志 "proactive BM25 regen still over drop"）。修法：FG 只计入 TTL 内的
+# 条目（TF/复读是近因信号），BG 不设 TTL（保住 IDF 语境）。
+
+
+def test_split_fg_bg_bg_full_fg_ttl_filtered():
+    """_split_fg_bg: BG = whole window, unfiltered (full IDF context preserved);
+    FG = only the trailing entries that are within the TTL."""
+    now = 1_000_000.0
+    window = [
+        {"ts": now - 5000.0, "ngrams": ["old1", "x"], "is_proactive": False},   # 远超 TTL
+        {"ts": now - 4000.0, "ngrams": ["old2", "x"], "is_proactive": False},   # 远超 TTL
+        {"ts": now - 100.0, "ngrams": ["fresh1", "x"], "is_proactive": True},   # TTL 内
+        {"ts": now - 10.0, "ngrams": ["fresh2", "x"], "is_proactive": True},    # TTL 内
+    ]
+    fg_docs, bg_docs = AntiRepeatCorpus._split_fg_bg(window, fg_window=5, now=now)
+    assert len(bg_docs) == 4                                   # BG 不按时间裁
+    assert fg_docs == [["fresh1", "x"], ["fresh2", "x"]]       # FG 只留 TTL 内
+
+
+def test_split_fg_bg_all_stale_yields_empty_fg():
+    """All entries stale -> FG empty (bm25_score hits `not fg_docs` -> 0); BG still present."""
+    now = 1_000_000.0
+    window = [
+        {"ts": now - 5000.0, "ngrams": ["old1"], "is_proactive": False},
+        {"ts": now - 4000.0, "ngrams": ["old2"], "is_proactive": False},
+    ]
+    fg_docs, bg_docs = AntiRepeatCorpus._split_fg_bg(window, fg_window=5, now=now)
+    assert bg_docs == [["old1"], ["old2"]]
+    assert fg_docs == []
+
+
+def test_score_draft_idle_frozen_window_ages_out(tmp_path):
+    """Five same-topic entries freeze the FG: scores high within the TTL (would
+    trigger regen/drop); after idling past the TTL the score drops to 0 and the
+    draft passes -- the exact release point of the idle deadlock."""
+    s = _build_store(tmp_path)
+    name = "Neko"
+    base = 1_000_000.0
+    for i in range(5):
+        s.record_output(name, LONG_TIGER + f"（第{i}次）", now=base + i)
+    draft = LONG_TIGER + "（又想到了）"
+    total_fresh, _ = s.score_draft(name, draft, now=base + 5)
+    assert total_fresh > 0
+    total_stale, terms_stale = s.score_draft(
+        name, draft, now=base + ANTI_REPEAT_FG_TTL_SECONDS + 60
+    )
+    assert total_stale == 0.0
+    assert terms_stale == {}
+
+
+def test_score_draft_bg_idf_survives_after_fg_ttl(tmp_path):
+    """FG aging past the TTL only affects TF, not BG: one within-TTL entry plus a
+    batch of long-expired ones -- a rare topic word still scores via the full-BG
+    IDF (if BG were TTL-trimmed too, that context would be lost)."""
+    s = _build_store(tmp_path)
+    name = "Neko"
+    base = 1_000_000.0
+    bg_marker = "今天去了号地方看到新奇的东西编号事物让印象深刻感觉时间过得很快"
+    for i in range(20):  # 20 条早已过期、且不含老虎 → 只贡献 IDF 背景
+        s.record_output(name, bg_marker + f"片段{i}{i}{i}", now=base - 100_000.0 + i)
+    s.record_output(name, LONG_TIGER, now=base)  # 唯一 TTL 内条目：聊老虎
+    draft = LONG_TIGER + "（再想）"
+    total, terms = s.score_draft(name, draft, now=base + 1)
+    assert total > 0
+    assert "老虎" in terms or any("虎" in t for t in terms)
+    # 判别性断言（Greptile P2）：total>0 还不够——BG 只剩 1 条时老虎 IDF≈0.29 仍为正。
+    # 真实(全量 21 条 BG)得分必须严格高于「BG 也被 TTL 裁成只剩那条新鲜文档」的假想
+    # 得分（后者把稀有 topic 词的 DF 抬到 1/1、IDF 从 ~2.69 塌到 ~0.29）。这才真正
+    # 锁住"BG 不按 TTL 裁、IDF 语境完整保留"，防止未来误改成 BG 也 TTL 过滤。
+    draft_ngrams = _ngrams(draft)
+    fg_only = [_ngrams(LONG_TIGER)]  # 若 BG 也被 TTL 裁，就只剩这一条新鲜文档
+    total_if_bg_trimmed, _ = bm25_score(draft_ngrams, fg_only, fg_only)
+    assert total > total_if_bg_trimmed
+
+
 # ── 4. top_recent_topics ──────────────────────────────────────
 
 
 def test_top_recent_topics_returns_topic_words(tmp_path):
-    """BG 大窗 + FG 几条聚焦 topic → top_recent_topics 提取的 ngram 全部来自
-    FG（不是 BG filler）。同 ``test_score_draft_topic_words_ranked_first`` 的
-    断言策略——避开 hash-randomization 引起的 tie-break flakiness。"""
+    """Large BG window + a few FG entries focused on one topic → every ngram
+    top_recent_topics returns comes from the FG (not the BG filler). Same assertion
+    strategy as ``test_score_draft_topic_words_ranked_first`` — avoids the
+    hash-randomization tie-break flakiness."""
     s = _build_store(tmp_path)
     name = "Neko"
     bg_marker = "今天去了号地方看到新奇的东西编号事物让印象深刻时间过得很快"
@@ -218,12 +299,26 @@ def test_top_recent_topics_returns_topic_words(tmp_path):
         s.record_output(name, bg_marker + f"片段{i}{i}{i}", now=float(i))
     for i in range(20, 25):
         s.record_output(name, LONG_TIGER + f"（第{i}次）", now=float(i))
-    topics = s.top_recent_topics(name, k=6)
+    topics = s.top_recent_topics(name, k=6, now=25.0)
     assert topics
     for t in topics:
         assert t in LONG_TIGER, (
             f"top topic {t!r} leaked from BG filler; topics={topics}"
         )
+
+
+def test_top_recent_topics_stale_fg_returns_empty(tmp_path):
+    """FG fully past the TTL -> no "recently discussed" topics to hint -> returns
+    empty (dual to score_draft)."""
+    s = _build_store(tmp_path)
+    name = "Neko"
+    base = 1_000_000.0
+    for i in range(5):
+        s.record_output(name, LONG_TIGER + f"（第{i}次）", now=base + i)
+    assert s.top_recent_topics(name, now=base + 5)  # 新鲜时有 topic
+    assert s.top_recent_topics(
+        name, now=base + ANTI_REPEAT_FG_TTL_SECONDS + 60
+    ) == []
 
 
 def test_top_recent_topics_empty_corpus(tmp_path):
@@ -245,7 +340,7 @@ def test_round_trip_from_disk(tmp_path):
     s1 = _build_store(tmp_path)
     s1.record_output(name, LONG_TIGER, now=1.0)
     s2 = _build_store(tmp_path)
-    total, _ = s2.score_draft(name, LONG_TIGER)
+    total, _ = s2.score_draft(name, LONG_TIGER, now=1.0)
     assert total > 0
 
 

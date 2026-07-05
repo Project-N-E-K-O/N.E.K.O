@@ -112,7 +112,7 @@
                 id: sceneId + ':spotlight',
                 at: 0,
                 command: 'spotlight.show',
-                key: sceneId,
+                key: scene.spotlightKey || sceneId,
                 target: typeof scene.target === 'string' ? scene.target : '',
                 persistent: typeof scene.persistent === 'string' ? scene.persistent : '',
                 secondary: typeof scene.secondary === 'string' ? scene.secondary : ''

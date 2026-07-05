@@ -641,6 +641,29 @@
         }
     }
 
+    function finalizeIcebreakerAssistantSubtitleTranslation(role, message) {
+        if (role !== 'assistant') return;
+        var line = getIcebreakerMessageText(message);
+        if (!line) return;
+        try {
+            var bridge = window.subtitleBridge;
+            if (!bridge || typeof bridge.finalizeTurnWithTranslation !== 'function') {
+                return;
+            }
+            if (typeof bridge.beginTurn === 'function') {
+                bridge.beginTurn({ latch: false });
+            }
+            var result = bridge.finalizeTurnWithTranslation(line);
+            if (result && typeof result.catch === 'function') {
+                result.catch(function (error) {
+                    console.warn('[NewUserIcebreaker] subtitle translation failed:', error);
+                });
+            }
+        } catch (error) {
+            console.warn('[NewUserIcebreaker] subtitle translation failed:', error);
+        }
+    }
+
     function waitForIcebreakerChatHostMounted(host) {
         return new Promise(function (resolve) {
             var attempts = 0;
@@ -709,8 +732,10 @@
         broadcastIcebreakerAppendMessage(message);
         return appendLlmContext(role, messageText, meta || {}).then(function () {
             if (!shouldRenderIcebreakerOnLocalChatHost()) {
-                // The standalone /chat page applies both append and compact caption sync
-                // from the broadcast receiver in app-interpage.js.
+                // In desktop multi-window mode the standalone /chat page renders the
+                // bubble/caption, but the pet page remains the subtitle translation
+                // owner. Finalize here so the translation panel is populated.
+                finalizeIcebreakerAssistantSubtitleTranslation(role, message);
                 return message;
             }
             var chatHost = null;
@@ -724,6 +749,7 @@
                 if (!result) return result;
                 return waitForIcebreakerChatHostMounted(chatHost).then(function () {
                     syncIcebreakerAssistantCompactCaption(role, message);
+                    finalizeIcebreakerAssistantSubtitleTranslation(role, message);
                     return result;
                 });
             });

@@ -376,7 +376,8 @@
                 targetIndex: options && Number.isFinite(options.targetIndex)
                     ? Math.max(0, Math.floor(options.targetIndex))
                     : 0,
-                freezePoint: !!(options && options.freezePoint === true)
+                freezePoint: !!(options && options.freezePoint === true),
+                preservePcOverlayCursor: !!(options && options.preservePcOverlayCursor === true)
             };
             if (options && Number.isFinite(options.durationMs)) {
                 message.durationMs = Math.max(0, Math.floor(options.durationMs));
