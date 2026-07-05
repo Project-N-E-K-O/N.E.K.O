@@ -304,5 +304,8 @@ def test_goodbye_agent_hud_and_websocket_ui_timers_are_suppressed_without_stoppi
 def test_standalone_agent_hud_page_keeps_root_background_transparent():
     template = _read(AGENTHUD_TEMPLATE_PATH)
 
+    assert '<html lang="en" class="agent-hud-standalone-page">' in template
+    assert "html.agent-hud-standalone-page," in template
+    assert "body.agent-hud-standalone-page:not(.lanlan-pet-mode)" in template
     assert "background: transparent !important;" in template
     assert "background: #1a1a2e;" not in template
