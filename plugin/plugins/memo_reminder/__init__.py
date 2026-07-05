@@ -163,8 +163,9 @@ class MemoReminderPlugin(NekoPluginBase):
         if not isinstance(data, list):
             return []
         return [
-            self._strip_legacy_deferred_fields(r) if isinstance(r, dict) else r
+            self._strip_legacy_deferred_fields(r)
             for r in data
+            if isinstance(r, dict)
         ]
 
     def _save_reminders_unlocked(self, reminders: List[Dict[str, Any]]) -> None:
@@ -675,12 +676,9 @@ class MemoReminderPlugin(NekoPluginBase):
     def _bind_task_sync(self, reminder_id: str, agent_task_id: str) -> bool:
         with self._reminders_lock:
             reminders = self._load_reminders_unlocked()
-            for idx, r in enumerate(reminders):
+            for r in reminders:
                 if r.get("id") == reminder_id:
-                    cleaned = self._strip_legacy_deferred_fields(r)
-                    if cleaned != r:
-                        reminders[idx] = cleaned
-                        self._save_reminders_unlocked(reminders)
+                    self._save_reminders_unlocked(reminders)
                     self.logger.info(
                         "Ignored legacy bind_task agent_task_id={} for reminder={}",
                         agent_task_id,

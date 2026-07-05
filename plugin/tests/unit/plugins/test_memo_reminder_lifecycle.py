@@ -180,6 +180,38 @@ def test_repeating_due_reminder_reschedules_and_strips_legacy_deferred_fields() 
 
 
 @pytest.mark.plugin_unit
+def test_load_reminders_drops_non_dict_dirty_records() -> None:
+    plugin = _plugin()
+    future = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
+    plugin.store.data[_STORE_KEY] = [
+        "bad-record",
+        None,
+        42,
+        {
+            "id": "valid123456",
+            "message": "喝水",
+            "trigger_at": future,
+            "created_at": future,
+            "repeat": "once",
+            "agent_task_id": "task-1",
+            "callback_pending": True,
+        },
+    ]
+
+    reminders = plugin._load_reminders()
+
+    assert reminders == [
+        {
+            "id": "valid123456",
+            "message": "喝水",
+            "trigger_at": future,
+            "created_at": future,
+            "repeat": "once",
+        }
+    ]
+
+
+@pytest.mark.plugin_unit
 @pytest.mark.asyncio
 async def test_bind_task_is_kept_as_compatibility_noop() -> None:
     plugin = _plugin()
@@ -191,6 +223,11 @@ async def test_bind_task_is_kept_as_compatibility_noop() -> None:
             "trigger_at": future,
             "created_at": future,
             "repeat": "once",
+            "agent_task_id": "old-task",
+            "deferred_bind_pending": True,
+            "callback_pending": True,
+            "callback_error": "old failure",
+            "callback_retry_count": 2,
         }
     ])
 
