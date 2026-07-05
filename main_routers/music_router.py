@@ -119,18 +119,26 @@ def _ensure_pyncm() -> bool:
 
 def _sync_pyncm_session_cookies(session, cookies: dict[str, str]) -> bool:
     """Sync NetEase cookies into the current pyncm_async session across API versions."""
-    cookie_jar = getattr(session, "cookies", None)
-    cookie_setter = getattr(cookie_jar, "set", None)
-    if not callable(cookie_setter):
-        client = getattr(session, "client", None)
-        cookie_jar = getattr(client, "cookies", None)
+    cookie_setters = []
+    seen_cookie_jars = set()
+    for cookie_jar in (
+        getattr(session, "cookies", None),
+        getattr(getattr(session, "client", None), "cookies", None),
+    ):
+        if cookie_jar is None or id(cookie_jar) in seen_cookie_jars:
+            continue
         cookie_setter = getattr(cookie_jar, "set", None)
-        if not callable(cookie_setter):
-            logger.warning("[音乐播放] pyncm_async Session 不支持 Cookie 注入，已跳过登录态同步")
-            return False
+        if callable(cookie_setter):
+            cookie_setters.append(cookie_setter)
+            seen_cookie_jars.add(id(cookie_jar))
+
+    if not cookie_setters:
+        logger.warning("[音乐播放] pyncm_async Session 不支持 Cookie 注入，已跳过登录态同步")
+        return False
 
     for key, value in cookies.items():
-        cookie_setter(key, value)
+        for cookie_setter in cookie_setters:
+            cookie_setter(key, value)
     return True
 
 # ==================== 音乐代理缓存 ====================
