@@ -28,6 +28,14 @@ def test_sync_pyncm_session_cookies_supports_legacy_client_cookie_jar():
     assert legacy_client.cookies.values == {"MUSIC_U": "token"}
 
 
+def test_sync_pyncm_session_cookies_falls_back_when_session_cookies_is_not_mutable():
+    legacy_client = SimpleNamespace(cookies=CookieRecorder())
+    session = SimpleNamespace(cookies=object(), client=legacy_client)
+
+    assert music_router._sync_pyncm_session_cookies(session, {"MUSIC_U": "token"}) is True
+    assert legacy_client.cookies.values == {"MUSIC_U": "token"}
+
+
 @pytest.mark.asyncio
 async def test_play_netease_music_syncs_cookies_without_session_client(monkeypatch):
     session = SimpleNamespace(cookies=CookieRecorder())
