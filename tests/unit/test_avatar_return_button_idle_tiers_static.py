@@ -482,7 +482,7 @@ def test_goodbye_idle_breathing_ball_shape_contract_is_present():
     assert "animation: nekoGoodbyeIdleBallBreathing 2000ms ease-in-out infinite;" in ball_button_block
     assert "display: block !important;" in ball_art_block
     assert "object-fit: contain;" in ball_art_block
-    assert '[data-neko-goodbye-idle-appearance="ball"] > .neko-idle-return-btn::before' in css_source
+    assert '[data-neko-goodbye-idle-appearance="ball"] > .neko-idle-return-btn::before' not in css_source
     assert '[data-neko-goodbye-idle-appearance="ball"] > .neko-idle-return-btn::after' in css_source
 
 
