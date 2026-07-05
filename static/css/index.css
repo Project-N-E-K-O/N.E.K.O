@@ -618,17 +618,6 @@ body.neko-game-active [id$="-lock-icon"] {
     animation: nekoGoodbyeIdleBallBreathing 2000ms ease-in-out infinite;
 }
 
-.neko-idle-return-button-container[data-neko-goodbye-idle-appearance="ball"] > .neko-idle-return-btn::before {
-    content: "";
-    position: absolute;
-    inset: 8%;
-    border: 1px solid rgba(135, 202, 255, 0.42);
-    border-radius: inherit;
-    box-shadow: inset 0 0 12px rgba(84, 176, 255, 0.2);
-    pointer-events: none;
-    z-index: 2;
-}
-
 .neko-idle-return-button-container[data-neko-goodbye-idle-appearance="ball"] > .neko-idle-return-btn::after {
     content: "";
     position: absolute;
