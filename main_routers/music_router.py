@@ -116,6 +116,23 @@ def _ensure_pyncm() -> bool:
         logger.error("[Music] pyncm_async unavailable, netease VIP playback disabled: %s", _pyncm_err)
     return _PYNCM_AVAILABLE
 
+
+def _sync_pyncm_session_cookies(session, cookies: dict[str, str]) -> bool:
+    """Sync NetEase cookies into the current pyncm_async session across API versions."""
+    cookie_jar = getattr(session, "cookies", None)
+    if cookie_jar is None:
+        client = getattr(session, "client", None)
+        cookie_jar = getattr(client, "cookies", None)
+
+    cookie_setter = getattr(cookie_jar, "set", None)
+    if not callable(cookie_setter):
+        logger.warning("[音乐播放] pyncm_async Session 不支持 Cookie 注入，已跳过登录态同步")
+        return False
+
+    for key, value in cookies.items():
+        cookie_setter(key, value)
+    return True
+
 # ==================== 音乐代理缓存 ====================
 # 仅缓存小文件（<10MB），大文件流式传输
 MUSIC_PROXY_CACHE = TTLCache(
@@ -391,9 +408,7 @@ async def play_netease_music(song_id: str):
         cookies = await asyncio.to_thread(load_cookies_from_file, 'netease')
         if cookies:
             session = pyncm_async.GetCurrentSession()
-            # 兼容性处理：pyncm_async 内部使用 httpx，直接注入 cookiejar
-            for k, v in cookies.items():
-                session.client.cookies.set(k, v)
+            _sync_pyncm_session_cookies(session, cookies)
 
         # 获取真实播放地址 (IDs 接受列表)
         # 默认获取 standard 标准音质，VIP 账户通常可获得更多 Token 授权
