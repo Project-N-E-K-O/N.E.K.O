@@ -356,6 +356,17 @@ def test_proactive_phase2_abort_reasons_stay_specific():
 
 
 @pytest.mark.unit
+def test_end_proactive_rewrites_body_after_reason_stage_fallback():
+    import inspect
+    import main_routers.system_router as system_router
+
+    src = inspect.getsource(system_router.proactive_chat)
+    assert "body = _ensure_proactive_reason_code(body)" in src
+    assert "body.setdefault('next_schedule_fixed_mode', _next_schedule_fixed_mode)" in src
+    assert "if 'next_schedule_fixed_mode' in body:\n                return resp" not in src
+
+
+@pytest.mark.unit
 def test_proactive_chat_concurrent_rejection_returns_http_409():
     """``proactive_chat`` handler 因 ``try_start_proactive`` 拒绝时必须返回
     HTTP 409，且 response body 是 ``{"success": False, "error": <str>}``——

@@ -90,6 +90,7 @@ _PROACTIVE_LLM_RETRY_ERROR_TYPES = (
 
 PROACTIVE_REASON_CHAT_DELIVERED = "CHAT_DELIVERED"
 PROACTIVE_REASON_PASS_BUSY = "PASS_BUSY"
+PROACTIVE_REASON_PASS_ACTIVITY_BUSY = "PASS_ACTIVITY_BUSY"
 PROACTIVE_REASON_PASS_DISABLED = "PASS_DISABLED"
 PROACTIVE_REASON_PASS_ROUTE_ACTIVE = "PASS_ROUTE_ACTIVE"
 PROACTIVE_REASON_PASS_PRIVACY = "PASS_PRIVACY"
@@ -120,6 +121,7 @@ PROACTIVE_STAGE_UNKNOWN = "unknown"
 _PROACTIVE_REASON_STAGE: dict[str, str] = {
     PROACTIVE_REASON_CHAT_DELIVERED: PROACTIVE_STAGE_DELIVERY,
     PROACTIVE_REASON_PASS_BUSY: PROACTIVE_STAGE_ENTRY_GUARD,
+    PROACTIVE_REASON_PASS_ACTIVITY_BUSY: PROACTIVE_STAGE_ACTIVITY_GATE,
     PROACTIVE_REASON_PASS_DISABLED: PROACTIVE_STAGE_ENTRY_GUARD,
     PROACTIVE_REASON_PASS_ROUTE_ACTIVE: PROACTIVE_STAGE_ENTRY_GUARD,
     PROACTIVE_REASON_PASS_PRIVACY: PROACTIVE_STAGE_ACTIVITY_GATE,
@@ -5436,9 +5438,7 @@ async def proactive_chat(request: Request):
                     )
                 except Exception as _focus_err:
                     logger.debug("[%s] focus idle cooldown failed: %s", lanlan_name, _focus_err)
-            if 'next_schedule_fixed_mode' in body:
-                return resp
-            body['next_schedule_fixed_mode'] = _next_schedule_fixed_mode
+            body.setdefault('next_schedule_fixed_mode', _next_schedule_fixed_mode)
             return JSONResponse(body, status_code=resp.status_code)
 
         def _proactive_preempted_json(where: str) -> dict:
@@ -7121,8 +7121,7 @@ async def proactive_chat(request: Request):
             return await _end_proactive(JSONResponse({
                 "success": True,
                 "action": "pass",
-                "reason_code": PROACTIVE_REASON_PASS_BUSY,
-                "stage": PROACTIVE_STAGE_ACTIVITY_GATE,
+                "reason_code": PROACTIVE_REASON_PASS_ACTIVITY_BUSY,
                 "message": "主动搭话条件未满足（用户近期活跃或语音会话正在进行）"
             }))
 
