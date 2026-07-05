@@ -13,6 +13,11 @@ class CookieRecorder:
         self.values[key] = value
 
 
+class FailingCookieRecorder:
+    def set(self, key, value):
+        raise RuntimeError("detached jar")
+
+
 def test_sync_pyncm_session_cookies_uses_modern_session_cookie_jar():
     session = SimpleNamespace(cookies=CookieRecorder())
 
@@ -46,6 +51,17 @@ def test_sync_pyncm_session_cookies_writes_all_mutable_cookie_jars():
 
     assert music_router._sync_pyncm_session_cookies(session, {"MUSIC_U": "token"}) is True
     assert session_cookies.values == {"MUSIC_U": "token"}
+    assert client_cookies.values == {"MUSIC_U": "token"}
+
+
+def test_sync_pyncm_session_cookies_continues_after_setter_failure():
+    client_cookies = CookieRecorder()
+    session = SimpleNamespace(
+        cookies=FailingCookieRecorder(),
+        client=SimpleNamespace(cookies=client_cookies),
+    )
+
+    assert music_router._sync_pyncm_session_cookies(session, {"MUSIC_U": "token"}) is True
     assert client_cookies.values == {"MUSIC_U": "token"}
 
 

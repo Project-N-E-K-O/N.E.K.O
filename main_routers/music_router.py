@@ -136,10 +136,19 @@ def _sync_pyncm_session_cookies(session, cookies: dict[str, str]) -> bool:
         logger.warning("[音乐播放] pyncm_async Session 不支持 Cookie 注入，已跳过登录态同步")
         return False
 
-    for key, value in cookies.items():
-        for cookie_setter in cookie_setters:
-            cookie_setter(key, value)
-    return True
+    synced = False
+    for cookie_setter in cookie_setters:
+        try:
+            for key, value in cookies.items():
+                cookie_setter(key, value)
+        except Exception as exc:
+            logger.warning("[音乐播放] pyncm_async Cookie 注入失败，尝试下一个 CookieJar: %s", exc)
+            continue
+        synced = True
+
+    if not synced:
+        logger.warning("[音乐播放] pyncm_async Session 不支持 Cookie 注入，已跳过登录态同步")
+    return synced
 
 # ==================== 音乐代理缓存 ====================
 # 仅缓存小文件（<10MB），大文件流式传输
