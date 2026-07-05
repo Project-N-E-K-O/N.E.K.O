@@ -296,9 +296,6 @@
                 if (typeof window.checkAndToggleTaskHUD === 'function') {
                     window.checkAndToggleTaskHUD();
                 }
-                if (window.nekoAgentHud && typeof window.nekoAgentHud.show === 'function') {
-                    window.nekoAgentHud.show();
-                }
             } catch (error) {
                 console.warn('[GoodbyeResource] Agent HUD restore failed:', error);
             }
