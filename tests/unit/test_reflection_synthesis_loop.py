@@ -291,6 +291,18 @@ def test_proactive_reason_code_body_helpers_preserve_shape():
     assert error_body["reason_code"] == system_router.PROACTIVE_REASON_ERROR_TIMEOUT
     assert error_body["stage"] == system_router.PROACTIVE_STAGE_RUNTIME_ERROR
 
+    source_error_body = system_router._proactive_pass_body(
+        system_router.PROACTIVE_REASON_ERROR_SOURCE_FETCH_FAILED,
+        success=False,
+        error="all source fetches failed",
+    )
+    assert source_error_body["success"] is False
+    assert source_error_body["action"] == "pass"
+    assert source_error_body["reason_code"] == (
+        system_router.PROACTIVE_REASON_ERROR_SOURCE_FETCH_FAILED
+    )
+    assert source_error_body["stage"] == system_router.PROACTIVE_STAGE_SOURCE_SELECTION
+
     old_pass_body = {"success": True, "action": "pass", "message": "legacy"}
     assert system_router._ensure_proactive_reason_code(old_pass_body) == {
         "success": True,

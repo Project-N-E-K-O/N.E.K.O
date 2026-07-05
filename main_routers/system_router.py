@@ -104,6 +104,7 @@ PROACTIVE_REASON_DELIVERY_FAILED = "DELIVERY_FAILED"
 PROACTIVE_REASON_ERROR_TIMEOUT = "ERROR_TIMEOUT"
 PROACTIVE_REASON_ERROR_INTERNAL = "ERROR_INTERNAL"
 PROACTIVE_REASON_ERROR_CHARACTER_NOT_FOUND = "ERROR_CHARACTER_NOT_FOUND"
+PROACTIVE_REASON_ERROR_SOURCE_FETCH_FAILED = "ERROR_SOURCE_FETCH_FAILED"
 PROACTIVE_REASON_PASS_UNSPECIFIED = "PASS_UNSPECIFIED"
 
 PROACTIVE_STAGE_ENTRY_GUARD = "entry_guard"
@@ -133,6 +134,7 @@ _PROACTIVE_REASON_STAGE: dict[str, str] = {
     PROACTIVE_REASON_ERROR_TIMEOUT: PROACTIVE_STAGE_RUNTIME_ERROR,
     PROACTIVE_REASON_ERROR_INTERNAL: PROACTIVE_STAGE_RUNTIME_ERROR,
     PROACTIVE_REASON_ERROR_CHARACTER_NOT_FOUND: PROACTIVE_STAGE_ENTRY_GUARD,
+    PROACTIVE_REASON_ERROR_SOURCE_FETCH_FAILED: PROACTIVE_STAGE_SOURCE_SELECTION,
     PROACTIVE_REASON_PASS_UNSPECIFIED: PROACTIVE_STAGE_UNKNOWN,
 }
 
@@ -6108,12 +6110,14 @@ async def proactive_chat(request: Request):
             # + 无 vision），sources 必定为空但不应当 pass —— 让 Phase 2 拿对话
             # 历史 + state_section 跑 text-only [CHAT] 跟进。
             if not _has_unfinished_thread:
-                return await _end_proactive(JSONResponse({
-                    "success": False,
-                    "error": "所有信息源获取失败",
-                    "action": "pass",
-                    "reason_code": PROACTIVE_REASON_PASS_SOURCE_EMPTY,
-                }, status_code=500))
+                return await _end_proactive(JSONResponse(
+                    _proactive_pass_body(
+                        PROACTIVE_REASON_ERROR_SOURCE_FETCH_FAILED,
+                        success=False,
+                        error="所有信息源获取失败",
+                    ),
+                    status_code=500,
+                ))
             print(f"[{lanlan_name}] sources 为空但有未收尾话题，进入 text-only 跟进路径")
 
         # Phase 1 preempt check：信息源并行 fetch 完，正式进入 LLM 前先瞄一眼
