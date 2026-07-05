@@ -1804,7 +1804,7 @@ class UniversalTutorialManager {
                 </div>
                 <div class="neko-day1-systray-content">
                     <h2 id="neko-day1-systray-intro-title">${escape({ key: 'tutorial.systray.location.title', fallback: '📍 托盘图标位置' })}</h2>
-                    <p>${escape({ key: 'tutorial.systray.location.desc', fallback: 'N.E.K.O 的图标会出现在屏幕右下角的系统托盘里，点击一下就能找到它。' })}</p>
+                    <p>${escape({ key: 'tutorial.systray.location.desc', fallback: 'N.E.K.O 的图标会出现在屏幕右下角的系统托盘里，点击一下就能找到它。鼠标右击就能打开neko菜单面板啦。' })}</p>
                     <p class="neko-day1-systray-note">${escape({ key: 'tutorial.systray.location.note', fallback: '如果看不到，可以先展开托盘的小箭头，查看全部图标。' })}</p>
                     <div class="neko-day1-systray-actions">
                         <button class="neko-day1-systray-primary" type="button">${this.safeEscapeHtml(t('common.ok', '知道了'))}</button>

@@ -16,6 +16,11 @@ const zhCnLocaleSource = fs.readFileSync(
   path.join(repoRoot, 'static', 'locales/zh-CN.json'),
   'utf8'
 );
+const localeCodes = ['en', 'es', 'ja', 'ko', 'pt', 'ru', 'zh-CN', 'zh-TW'];
+const localeSources = Object.fromEntries(localeCodes.map((code) => [
+  code,
+  fs.readFileSync(path.join(repoRoot, 'static', `locales/${code}.json`), 'utf8')
+]));
 
 function getMethodBlock(source, methodName) {
   const start = source.indexOf(`\n    ${methodName}(`);
@@ -66,5 +71,15 @@ test('Day1 system tray intro modal uses the existing systray copy and image reso
 
   const zhCn = JSON.parse(zhCnLocaleSource);
   assert.equal(zhCn.tutorial.systray.location.title, '📍 托盘图标位置');
+  assert.equal(
+    zhCn.tutorial.systray.location.desc,
+    'N.E.K.O 的图标会出现在屏幕右下角的系统托盘里，点击一下就能找到它。鼠标右击就能打开neko菜单面板啦。'
+  );
   assert.equal(zhCn.tutorial.systray.location.alt, '系统托盘位置示意图');
+
+  for (const [code, source] of Object.entries(localeSources)) {
+    const locale = JSON.parse(source);
+    assert.equal(typeof locale.tutorial.systray.location.desc, 'string', `${code} systray location desc`);
+    assert.ok(locale.tutorial.systray.location.desc.trim(), `${code} systray location desc should not be empty`);
+  }
 });
