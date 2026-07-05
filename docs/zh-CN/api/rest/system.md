@@ -70,6 +70,13 @@
 }
 ```
 
+**响应：** 主动搭话成功投递时 `action` 为 `chat`，本轮跳过时为 `pass`。
+主动搭话的 `pass` / `chat` / error 响应会包含稳定的机器字段 `reason_code`，
+例如 `CHAT_DELIVERED`、`PASS_BUSY`、`PASS_SOURCE_EMPTY`、`PASS_DUPLICATE`、
+`DELIVERY_PREEMPTED` 或 `ERROR_TIMEOUT`。响应也会包含 `stage`，表示粗粒度流程阶段，
+例如 `entry_guard`、`activity_gate`、`source_selection`、`model_decision`、
+`generation`、`dedup`、`delivery` 或 `runtime_error`。
+
 ::: info
 主动消息有频率限制：每个角色每小时最多 10 条。
 :::
