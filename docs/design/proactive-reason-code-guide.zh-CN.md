@@ -75,6 +75,7 @@ v1 响应体会包含 `stage`。目前它由 `reason_code` 默认映射生成，
 | `CHAT_DELIVERED` | `chat` | `delivery` | 本轮主动搭话已经成功投递。 | 检查 `source_mode`、`source_tag`、`source_links`、`turn_id` 是否符合预期。 |
 | `PASS_BUSY` | `pass` 或 409 error | `entry_guard` | 当前 AI 正在响应、已有 proactive 在跑，或语音 guard 拒绝。 | 检查 session state、`try_start_proactive`、`can_start_proactive`、语音会话状态。 |
 | `PASS_ACTIVITY_BUSY` | `pass` | `activity_gate` | 用户近期活跃、语音会话进行中，或 session 活动状态不适合在本轮主动搭话。 | 检查用户活跃状态、`prepare_proactive_delivery`、WebSocket/session 可用性。 |
+| `PASS_DELIVERY_BUSY` | `pass` | `delivery` | 投递准备阶段拒绝提交本轮主动搭话，例如 mini-game invite 已决定要发但 delivery guard 未放行。 | 检查 `prepare_proactive_delivery`、当前 speech id、投递前 session 状态。 |
 | `PASS_DISABLED` | `pass` | `entry_guard` | 主动搭话被静默模式或等价开关禁用。 | 检查角色是否处于 goodbye silent 或主动搭话相关开关。 |
 | `PASS_ROUTE_ACTIVE` | `pass` | `entry_guard` | 游戏路由正在接管交互，普通主动搭话跳过。 | 检查 `game_router.is_game_route_active` 和游戏会话状态。 |
 | `PASS_PRIVACY` | `pass` | `activity_gate` | 用户处于隐私/关闭倾向状态，主动搭话不得继续读取或打扰。 | 检查 activity snapshot 的 `propensity`、privacy mode、当前前台应用分类。 |

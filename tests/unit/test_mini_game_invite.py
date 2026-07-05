@@ -637,7 +637,7 @@ async def test_maybe_deliver_pass_when_prepare_refuses(monkeypatch):
     )
     assert out is not None
     assert out["action"] == "pass"
-    assert out["reason_code"] == sr.PROACTIVE_REASON_PASS_BUSY
+    assert out["reason_code"] == sr.PROACTIVE_REASON_PASS_DELIVERY_BUSY
     assert out["stage"] == sr.PROACTIVE_STAGE_DELIVERY
     mgr.finish_proactive_delivery.assert_not_awaited()
     assert LANLAN not in sr._mini_game_invite_state
