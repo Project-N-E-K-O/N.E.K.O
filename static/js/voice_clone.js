@@ -1020,8 +1020,8 @@ function updatePrefixFieldForProvider(provider) {
 
     if (isDoubaoTtsProvider(provider)) {
         prefixInput.removeAttribute('maxlength');
-        setI18nText(prefixLabel, 'voice.doubaoSpeakerIdLabel', '豆包 Speaker ID（S_ 开头，必填）');
-        setI18nText(prefixHint, 'voice.doubaoSpeakerIdNote', '填写要注册或更新的豆包声音复刻 2.0 Speaker ID，例如 S_xeC2CDp72');
+        setI18nText(prefixLabel, 'voice.doubaoSpeakerIdLabel', '豆包 Speaker ID（覆盖已有 S_ 音色，必填）');
+        setI18nText(prefixHint, 'voice.doubaoSpeakerIdNote', '请先前往豆包语音控制台克隆音色并获取 S_ 开头 Speaker ID；此处会覆盖更新该已有音色，不会创建新的豆包音色 ID，例如 S_xeC2CDp72');
         setI18nPlaceholder(prefixInput, 'voice.doubaoSpeakerIdPlaceholder', '例如：S_xeC2CDp72');
         return;
     }
