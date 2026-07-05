@@ -73,7 +73,8 @@ v1 响应体会包含 `stage`。目前它由 `reason_code` 默认映射生成，
 | reason_code | action/error | 建议 stage | 含义 | 优先检查 |
 |---|---|---|---|---|
 | `CHAT_DELIVERED` | `chat` | `delivery` | 本轮主动搭话已经成功投递。 | 检查 `source_mode`、`source_tag`、`source_links`、`turn_id` 是否符合预期。 |
-| `PASS_BUSY` | `pass` 或 409 error | `entry_guard` / `delivery` | 当前 AI 正在响应、已有 proactive 在跑、语音 guard 拒绝，或 mini-game prepare 阶段拒绝。 | 检查 session state、`try_start_proactive`、`can_start_proactive`、语音会话状态。 |
+| `PASS_BUSY` | `pass` 或 409 error | `entry_guard` | 当前 AI 正在响应、已有 proactive 在跑，或语音 guard 拒绝。 | 检查 session state、`try_start_proactive`、`can_start_proactive`、语音会话状态。 |
+| `PASS_ACTIVITY_BUSY` | `pass` | `activity_gate` | 用户近期活跃、语音会话进行中，或 session 活动状态不适合在本轮主动搭话。 | 检查用户活跃状态、`prepare_proactive_delivery`、WebSocket/session 可用性。 |
 | `PASS_DISABLED` | `pass` | `entry_guard` | 主动搭话被静默模式或等价开关禁用。 | 检查角色是否处于 goodbye silent 或主动搭话相关开关。 |
 | `PASS_ROUTE_ACTIVE` | `pass` | `entry_guard` | 游戏路由正在接管交互，普通主动搭话跳过。 | 检查 `game_router.is_game_route_active` 和游戏会话状态。 |
 | `PASS_PRIVACY` | `pass` | `activity_gate` | 用户处于隐私/关闭倾向状态，主动搭话不得继续读取或打扰。 | 检查 activity snapshot 的 `propensity`、privacy mode、当前前台应用分类。 |
@@ -88,6 +89,7 @@ v1 响应体会包含 `stage`。目前它由 `reason_code` 默认映射生成，
 | `ERROR_TIMEOUT` | error | `runtime_error` | `/api/proactive_chat` 外层处理超时。 | 检查模型响应时间、stream timeout、网络和 provider 状态。 |
 | `ERROR_INTERNAL` | error | `runtime_error` | 内部异常或模型配置异常。 | 检查 server traceback、模型配置、依赖服务。 |
 | `ERROR_CHARACTER_NOT_FOUND` | error | `entry_guard` | 请求中的角色不存在或 session manager 找不到角色。 | 检查 `lanlan_name`、角色配置、session 初始化。 |
+| `ERROR_SOURCE_FETCH_FAILED` | error 或 `pass` | `source_selection` | 已启用的信息源全部获取失败。它表示后端/外部来源故障，不等同于正常没有素材。 | 检查 web/music/meme/vision 获取异常、网络、依赖服务和 source fetch 日志。 |
 | `PASS_UNSPECIFIED` | `pass` | unknown | 兼容兜底码。旧分支缺少明确 code 时由 helper 补上。 | 新增或重构分支时应替换为更具体的 code。 |
 
 ## 当前 v1 落地状态
