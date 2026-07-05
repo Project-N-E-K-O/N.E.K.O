@@ -18,7 +18,8 @@
     var CHAT_SURFACE_MODE_STORAGE_KEY = 'neko.reactChatWindow.chatSurfaceMode';
     var GALGAME_HISTORY_LIMIT = 6;
     var EVENT_PREFIX = 'react-chat-window:';
-    var CHAT_MINIMIZED_BALL_ICON_SRC = '/static/assets/neko-idle/chat-minimized-yarn-ball.png';
+    var CHAT_MINIMIZED_BALL_ICON_SRC = '/static/assets/neko-idle/chat-minimized-yarn-ball-116.png';
+    var CHAT_MINIMIZED_BALL_ICON_SRCSET = '/static/assets/neko-idle/chat-minimized-yarn-ball-116.png 1x, /static/assets/neko-idle/chat-minimized-yarn-ball-232.png 2x';
     // Frozen legacy `full` keeps its era's minimized orb — the glowing "breathing
     // light" ball (old icon + box-shadow pulse from full-chat-minimize.css) —
     // instead of the active compact yarn ball. Strictly gated on the restorable
@@ -393,6 +394,10 @@
     var mobileExpandClickGuard = null;
     var mobileExpandVisualGuardTimer = 0;
     var compactMinimizeBallFrame = 0;
+    // surface 锚点跟踪：拖拽/缩放会话每帧同步保证跟手；静止时只做短暂 settle，
+    // 后续由 layout/avatar/resize/geometry 事件重新唤醒，避免 compact 打开后长期空转。
+    var COMPACT_SURFACE_IDLE_SETTLE_FRAME_COUNT = 3;
+    var compactSurfaceTrackingSettleFramesRemaining = 0;
     var compactSurfaceAnchorSnapshot = '';
     var compactDesktopSurfaceAnchorSnapshot = '';
     var compactInteractionGeometrySnapshot = '';
@@ -464,6 +469,7 @@
             compactSurfaceAnchorLocked = false;
             compactSurfaceAnchorSnapshot = '';
         }
+        // 桌面侧布局变化（窗口移动/跨屏等）：立即唤醒短 settle，避免静止态停帧后漏掉新 anchor。
         scheduleCompactMinimizeBallTracking();
     }
 
@@ -984,6 +990,44 @@
         showIdleCat1CompactMirror(detail);
     }
 
+    function getIdleCat1PlayYarnReleaseTargetRect(detail) {
+        if (!detail || typeof detail !== 'object') return null;
+        var screenTarget = normalizeCompactDesktopRect(detail.targetScreenRect);
+        if (screenTarget && !isElectronChatWindow()) {
+            var screenX = Number.isFinite(Number(window.screenX)) ? Number(window.screenX) : Number(window.screenLeft);
+            var screenY = Number.isFinite(Number(window.screenY)) ? Number(window.screenY) : Number(window.screenTop);
+            if (Number.isFinite(screenX) && Number.isFinite(screenY)) {
+                return normalizeCompactDesktopRect({
+                    left: screenTarget.left - screenX,
+                    top: screenTarget.top - screenY,
+                    width: screenTarget.width,
+                    height: screenTarget.height
+                });
+            }
+        }
+        return normalizeCompactDesktopRect(detail.targetRect);
+    }
+
+    function applyIdleCat1PlayYarnRelease(detail) {
+        if (!detail || !detail.releaseDrag) return;
+        if (dragState) {
+            stopDrag({ suppressClick: true });
+        }
+        if (isElectronChatWindow()) return;
+        var shell = getShell();
+        if (!shell || !shell.classList || !shell.classList.contains('is-minimized')) return;
+        var target = getIdleCat1PlayYarnReleaseTargetRect(detail);
+        if (!target) return;
+        var shellRect = shell.getBoundingClientRect();
+        var width = shellRect && shellRect.width > 0 ? shellRect.width : MINIMIZED_SIZE;
+        var height = shellRect && shellRect.height > 0 ? shellRect.height : MINIMIZED_SIZE;
+        applyPosition(
+            target.left + target.width / 2 - width / 2,
+            target.top + target.height / 2 - height / 2
+        );
+        syncCompactInteractionGeometry();
+    }
+
     function handleIdleCat1PlayYarnVisibility(event) {
         var detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
         var hidden = !!(detail && detail.hidden);
@@ -997,10 +1041,17 @@
                 syncCompactInteractionGeometry();
             }
         }
+        if (!hidden) {
+            applyIdleCat1PlayYarnRelease(detail);
+        }
         var bridge = window.nekoChatWindow;
         if (bridge && typeof bridge.setCompactChatBallTemporarilyHidden === 'function') {
             try {
-                bridge.setCompactChatBallTemporarilyHidden(hidden);
+                bridge.setCompactChatBallTemporarilyHidden(hidden, {
+                    releaseDrag: !!(detail && detail.releaseDrag),
+                    targetScreenRect: detail && detail.targetScreenRect ? detail.targetScreenRect : null,
+                    releaseReason: detail && detail.releaseReason ? detail.releaseReason : ''
+                });
             } catch (_) {}
         }
     }
@@ -1764,7 +1815,7 @@
                 if (style && Number(style.opacity) <= 0.01) return null;
                 var rect = normalizeCompactDomRect(child.getBoundingClientRect());
                 if (!rect) return null;
-                var clippedRect = kind === 'musicPlayer'
+                var clippedRect = kind === 'musicPlayer' || kind === 'meme'
                     ? rect
                     : (parentRect ? intersectCompactRects(rect, parentRect) : rect);
                 if (!clippedRect) return null;
@@ -2034,8 +2085,18 @@
             window.cancelAnimationFrame(compactMinimizeBallFrame);
             compactMinimizeBallFrame = 0;
         }
+        compactSurfaceTrackingSettleFramesRemaining = 0;
         compactSurfacePendingModelOpen = false;
         clearCompactSurfaceAnchor();
+    }
+
+    function isCompactSurfaceTrackingActive() {
+        return !!(
+            (dragState && dragState.compactSurface) ||
+            compactSurfaceDesktopDragActive ||
+            compactSurfaceResizeSession ||
+            compactSurfaceDesktopResizeActive
+        );
     }
 
     function scheduleCompactMinimizeBallTracking() {
@@ -2043,6 +2104,7 @@
             stopCompactMinimizeBallTracking();
             return;
         }
+        compactSurfaceTrackingSettleFramesRemaining = COMPACT_SURFACE_IDLE_SETTLE_FRAME_COUNT;
         if (compactMinimizeBallFrame) {
             return;
         }
@@ -2053,8 +2115,17 @@
                 stopCompactMinimizeBallTracking();
                 return;
             }
+            var trackingActive = isCompactSurfaceTrackingActive();
+            if (!trackingActive && compactSurfaceTrackingSettleFramesRemaining <= 0) {
+                return;
+            }
             syncCompactSurfaceAnchor();
             syncCompactInteractionGeometry();
+            if (trackingActive) {
+                compactSurfaceTrackingSettleFramesRemaining = COMPACT_SURFACE_IDLE_SETTLE_FRAME_COUNT;
+            } else {
+                compactSurfaceTrackingSettleFramesRemaining -= 1;
+            }
             compactMinimizeBallFrame = window.requestAnimationFrame(loop);
         };
 
@@ -3517,6 +3588,7 @@
         for (var i = msgs.length - 1; i >= 0 && collected.length < GALGAME_HISTORY_LIMIT; i--) {
             var m = msgs[i];
             if (!m) continue;
+            if (isYuiGuideChatMessage(m)) continue;
             if (m.role !== 'assistant' && m.role !== 'user') continue;
             var text = '';
             if (Array.isArray(m.blocks)) {
@@ -4087,6 +4159,24 @@
 
     function setIcebreakerChoicePrompt(payload) {
         setNewUserIcebreakerPrompt(payload);
+    }
+
+    function clearChoicePromptBySource(source, reason) {
+        var normalizedSource = String(source || '');
+        if (!normalizedSource) return false;
+        if (normalizedSource !== 'new_user_icebreaker') return false;
+        if (!state.choicePrompt || state.choicePrompt.source !== normalizedSource) return false;
+        if (window.console && typeof window.console.debug === 'function') {
+            window.console.debug('[NewUserIcebreaker] clearChoicePromptBySource:', normalizedSource, reason || '');
+        }
+        state.choicePrompt = null;
+        if (choicePromptRevealTimer) {
+            window.clearTimeout(choicePromptRevealTimer);
+            choicePromptRevealTimer = null;
+        }
+        invalidatePendingGalgameRequest();
+        renderWindow();
+        return true;
     }
 
     function clearIcebreakerChoicePrompt(sessionId) {
@@ -5447,6 +5537,7 @@
             ballIcon.src = legacyFull
                 ? CHAT_MINIMIZED_BALL_LEGACY_FULL_ICON_SRC
                 : CHAT_MINIMIZED_BALL_ICON_SRC;
+            ballIcon.srcset = legacyFull ? '' : CHAT_MINIMIZED_BALL_ICON_SRCSET;
         }
         var shell = getShell();
         if (shell) {
@@ -5463,9 +5554,11 @@
         if (!icon) {
             icon = document.createElement('img');
             icon.className = 'react-chat-minimized-icon';
-            icon.src = isLegacyFullMinimizedBall()
+            var legacyFullIcon = isLegacyFullMinimizedBall();
+            icon.src = legacyFullIcon
                 ? CHAT_MINIMIZED_BALL_LEGACY_FULL_ICON_SRC
                 : CHAT_MINIMIZED_BALL_ICON_SRC;
+            icon.srcset = legacyFullIcon ? '' : CHAT_MINIMIZED_BALL_ICON_SRCSET;
             icon.alt = '';
             icon.draggable = false;
             var handle = getHeader();
@@ -6206,6 +6299,9 @@
 
         shell.classList.add('is-dragging');
         document.body.classList.add('react-chat-window-dragging');
+        if (compactSurface) {
+            scheduleCompactMinimizeBallTracking();
+        }
     }
 
     function updateDrag(clientX, clientY) {
@@ -6638,6 +6734,10 @@
             setGalgameModeTemporarilyDisabled(false);
         });
 
+        window.addEventListener('neko:new-user-icebreaker-reset', function () {
+            clearChoicePromptBySource('new_user_icebreaker', 'new-user-icebreaker-reset');
+        });
+
         // Refresh option list whenever an assistant turn finishes streaming.
         window.addEventListener('neko-assistant-turn-end', function () {
             if (!state.galgameModeEnabled) return;
@@ -7038,6 +7138,7 @@
         setMiniGameInvitePrompt: setMiniGameInvitePrompt,
         setIcebreakerChoicePrompt: setIcebreakerChoicePrompt,
         setChoicePrompt: setChoicePrompt,
+        clearChoicePromptBySource: clearChoicePromptBySource,
         setNewUserIcebreakerPrompt: setNewUserIcebreakerPrompt,
         clearIcebreakerChoicePrompt: clearIcebreakerChoicePrompt,
         // unified resolved handler：accept 兼 launch / decline / suppress 都通过

@@ -7,7 +7,7 @@ N.E.K.O. 支持 VRM（Virtual Reality Model）格式，使用 Three.js 和 `@pix
 ## 模型管理
 
 - 通过 `/api/model/vrm/upload` 上传 VRM 文件（最大 200MB）
-- 通过 `/api/model/vrm/animation/upload` 单独上传动画
+- 通过 `/api/model/vrm/upload_animation` 单独上传动画
 - 通过 `/vrm_emotion_manager` 配置情感映射
 
 ## 灯光配置
@@ -16,12 +16,12 @@ VRM 模型使用可配置的灯光系统：
 
 | 灯光 | 默认值 | 范围 | 描述 |
 |------|--------|------|------|
-| Ambient | 0.4 | 0 - 1.0 | HemisphereLight 强度 |
-| Main | 1.2 | 0 - 2.5 | 主方向光 |
-| Fill | 0.5 | 0 - 1.0 | 辅助补光 |
-| Rim | 0.8 | 0 - 1.5 | 边缘/轮廓光 |
-| Top | 0.3 | 0 - 1.0 | 顶部光 |
-| Bottom | 0.15 | 0 - 0.5 | 底部光 |
+| Ambient | 0.83 | 0 - 1.0 | HemisphereLight 强度 |
+| Main | 1.91 | 0 - 2.5 | 主方向光 |
+| Fill | 0.0 | 0 - 1.0 | 辅助补光（默认禁用） |
+| Rim | 0.0 | 0 - 1.5 | 边缘/轮廓光（默认禁用，由 MToon 内建处理） |
+| Top | 0.0 | 0 - 1.0 | 顶部光（默认禁用） |
+| Bottom | 0.0 | 0 - 0.5 | 底部光（默认禁用） |
 
 通过 `PUT /api/characters/catgirl/{name}/lighting` 进行配置。
 
@@ -30,7 +30,7 @@ VRM 模型使用可配置的灯光系统：
 | 模块 | 用途 |
 |------|------|
 | `vrm-ui-buttons.js` | VRM 专用控制按钮 |
-| `vrm-ui-popup.js` | VRM 弹出对话框 |
+| `avatar-ui-popup.js` | 共享弹出对话框逻辑（MMD/VRM/Live2D） |
 
 ## 已知问题与修复
 

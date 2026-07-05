@@ -12,6 +12,7 @@ const STANDALONE_HUD_POSITION = Object.freeze({
     right: 'auto',
     transform: 'none'
 });
+const AGENT_TASK_HUD_COLLAPSED_KEY = 'agent-task-hud-collapsed-v2';
 
 function appendPluginDashboardOpenerOrigin(url) {
     const target = new URL(url, document.baseURI || window.location.href);
@@ -36,6 +37,20 @@ function isStandaloneAgentHudPage() {
     } catch (_) {
         return false;
     }
+}
+
+function isAgentHudSuppressedByGoodbye() {
+    if (isStandaloneAgentHudPage()) return false;
+    try {
+        if (typeof window.isNekoGoodbyeResourceSuspendingOrSuspended === 'function' &&
+            window.isNekoGoodbyeResourceSuspendingOrSuspended()) {
+            return true;
+        }
+        if (typeof window.isNekoGoodbyeModeActive === 'function' && window.isNekoGoodbyeModeActive()) {
+            return true;
+        }
+    } catch (_) { /* ignore */ }
+    return false;
 }
 
 function setAgentHudDraggingState(active) {
@@ -655,7 +670,6 @@ window.AgentHUD.createAgentTaskHUD = function () {
     });
 
     // 整体折叠逻辑 (key v2: reset stale collapsed state)
-    const hudCollapsedKey = 'agent-task-hud-collapsed-v2';
     const applyHudCollapsed = (collapsed) => {
         if (!collapsed && hud.style.display !== 'none') {
             // Check edge collision for smooth unfolding direction towards the left
@@ -713,15 +727,21 @@ window.AgentHUD.createAgentTaskHUD = function () {
 
     // Default: expanded
     let hudCollapsed = false;
-    try { hudCollapsed = localStorage.getItem(hudCollapsedKey) === 'true'; } catch (_) { }
+    try { hudCollapsed = localStorage.getItem(AGENT_TASK_HUD_COLLAPSED_KEY) === 'true'; } catch (_) { }
     applyHudCollapsed(hudCollapsed);
 
     minimizeBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         hudCollapsed = !hudCollapsed;
         applyHudCollapsed(hudCollapsed);
-        try { localStorage.setItem(hudCollapsedKey, String(hudCollapsed)); } catch (_) { }
+        try { localStorage.setItem(AGENT_TASK_HUD_COLLAPSED_KEY, String(hudCollapsed)); } catch (_) { }
     });
+
+    hud._setAgentTaskHudCollapsed = (collapsed) => {
+        hudCollapsed = collapsed === true;
+        applyHudCollapsed(hudCollapsed);
+        try { localStorage.setItem(AGENT_TASK_HUD_COLLAPSED_KEY, String(hudCollapsed)); } catch (_) { }
+    };
 
     // 空状态提示
     const emptyState = document.createElement('div');
@@ -765,6 +785,10 @@ window.AgentHUD._setupCollapseFunctionality = function (emptyState, collapseButt
 // 显示任务 HUD
 window.AgentHUD.showAgentTaskHUD = function () {
     console.log('[AgentHUD][TimeoutTrace] showAgentTaskHUD called. Current timeout ID:', this._hideTimeout);
+    if (isAgentHudSuppressedByGoodbye()) {
+        this.hideAgentTaskHUD();
+        return;
+    }
     
     // 清除任何正在进行的隐藏动画定时器，防止闪现后立刻消失
     if (this._hideTimeout) {
@@ -802,6 +826,17 @@ window.AgentHUD.showAgentTaskHUD = function () {
 };
 
 // 隐藏任务 HUD
+window.AgentHUD.expandAgentTaskHUD = function () {
+    const hud = document.getElementById('agent-task-hud');
+    if (!hud) return false;
+    if (typeof hud._setAgentTaskHudCollapsed === 'function') {
+        hud._setAgentTaskHudCollapsed(false);
+        return true;
+    }
+    try { localStorage.setItem(AGENT_TASK_HUD_COLLAPSED_KEY, 'false'); } catch (_) {}
+    return false;
+};
+
 window.AgentHUD.hideAgentTaskHUD = function () {
     const hud = document.getElementById('agent-task-hud');
     if (!hud) {
@@ -847,6 +882,14 @@ window.AgentHUD.hideAgentTaskHUD = function () {
 window.AgentHUD.updateAgentTaskHUD = function (tasksData) {
     // Cache latest snapshot so deferred re-render won't use stale closure data.
     this._latestTasksData = tasksData;
+    if (isAgentHudSuppressedByGoodbye()) {
+        if (this._updateRafId) {
+            cancelAnimationFrame(this._updateRafId);
+            this._updateRafId = null;
+        }
+        this.hideAgentTaskHUD();
+        return;
+    }
 
     // RAF throttle: coalesce rapid-fire WebSocket updates into a single frame
     if (this._updateRafId) return;
@@ -920,6 +963,10 @@ window.AgentHUD._markTasksCancelledLocally = function (taskIds, status) {
 
 // Internal: actual HUD update logic (called via RAF throttle)
 window.AgentHUD._doUpdateAgentTaskHUD = function () {
+    if (isAgentHudSuppressedByGoodbye()) {
+        this.hideAgentTaskHUD();
+        return;
+    }
     const tasksData = this._latestTasksData;
     if (!tasksData) return;
 

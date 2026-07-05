@@ -1113,7 +1113,7 @@
                         live2dContainer2.classList.remove('hidden');
                         live2dContainer2.style.display = 'block';
                         live2dContainer2.style.visibility = 'visible';
-                        live2dContainer2.style.removeProperty('pointer-events');
+                        live2dContainer2.style.setProperty('pointer-events', 'none', 'important');
                     }
                     var live2dCanvas2 = document.getElementById('live2d-canvas');
                     if (live2dCanvas2) {
@@ -1127,7 +1127,9 @@
                         // Ensure Live2D manager is initialised
                         if (!window.live2dManager) {
                             console.log('[Model] Live2D 管理器未初始化，等待初始化完成');
-                            if (typeof initLive2DModel === 'function') {
+                            if (temporaryConfig && typeof window.Live2DManager === 'function') {
+                                window.live2dManager = new window.Live2DManager();
+                            } else if (typeof initLive2DModel === 'function') {
                                 await initLive2DModel();
                             }
                         }
@@ -1174,7 +1176,7 @@
                                 if (!deferRevealPrepared) {
                                     live2dContainer2.style.removeProperty('opacity');
                                 }
-                                live2dContainer2.style.removeProperty('pointer-events');
+                                live2dContainer2.style.setProperty('pointer-events', 'none', 'important');
                             }
                             if (live2dCanvas2) {
                                 live2dCanvas2.style.display = 'block';
@@ -1641,13 +1643,16 @@
                 '#live2d-return-button-container, #vrm-return-button-container, #mmd-return-button-container, #pngtuber-return-button-container'
             ).forEach(function (el) {
                 if (!el.dataset.nekoPreHideDisplay) {
+                    var isFloatingButtons = !!(el.id && /-floating-buttons$/.test(el.id));
                     var computedDisplay = '';
                     try {
                         computedDisplay = window.getComputedStyle(el).display || '';
                     } catch (_) {}
-                    el.dataset.nekoPreHideDisplay = computedDisplay && computedDisplay !== 'none'
-                        ? computedDisplay
-                        : (el.style.display || 'none');
+                    el.dataset.nekoPreHideDisplay = isFloatingButtons && !el.style.display && computedDisplay === 'none'
+                        ? 'flex'
+                        : (computedDisplay && computedDisplay !== 'none'
+                            ? computedDisplay
+                            : (el.style.display || 'none'));
                 }
                 el.style.display = 'none';
             });
@@ -1879,7 +1884,7 @@
                         el.style.visibility = 'hidden';
                         hiddenFloatingButtonEls.push(el);
                     }
-                    el.style.display = restoreDisplay;
+                    el.style.display = isFloatingButtons ? 'flex' : restoreDisplay;
                 }
                 delete el.dataset.nekoPreHideDisplay;
             });
@@ -2440,6 +2445,10 @@
                 if (isDuplicateMessage(data.action, data.timestamp)) return true;
                 clearYuiGuideChatMessages();
                 return true;
+            case 'yui_guide_set_chat_input_locked':
+                if (isDuplicateMessage(data.action, data.timestamp)) return true;
+                applyYuiGuideChatInputLocked(data.locked === true, data.reason || '');
+                return true;
             case 'tutorial_chat_identity_override':
                 if (isDuplicateMessage(data.action, data.timestamp)) return true;
                 applyTutorialChatIdentityOverride(data);
@@ -2524,13 +2533,26 @@
         batch.forEach(function (action) {
             try {
                 if (action.type === 'append' && action.message) {
-                    host.appendMessage(action.message);
                     shouldOpenHost = true;
+                    return Promise.resolve(host.appendMessage(action.message)).then(function (result) {
+                        if (!result) return result;
+                        return waitForIcebreakerChatHostMounted(host).then(function () {
+                            syncIcebreakerAssistantCompactCaption(action.message);
+                            finalizeIcebreakerAssistantSubtitleTranslation(action.message);
+                            return result;
+                        });
+                    }).catch(function (error) {
+                        console.warn('[NewUserIcebreaker] Failed to append bridge message:', error);
+                    });
                 } else if (action.type === 'set_prompt' && action.prompt && typeof host.setIcebreakerChoicePrompt === 'function') {
                     host.setIcebreakerChoicePrompt(action.prompt);
                     shouldOpenHost = true;
                 } else if (action.type === 'clear_prompt' && action.sessionId && typeof host.clearIcebreakerChoicePrompt === 'function') {
                     host.clearIcebreakerChoicePrompt(action.sessionId);
+                } else if (action.type === 'clear_prompt_source'
+                        && action.source === 'new_user_icebreaker'
+                        && typeof host.clearChoicePromptBySource === 'function') {
+                    host.clearChoicePromptBySource(action.source, action.reason || 'icebreaker-bridge');
                 }
             } catch (error) {
                 console.warn('[NewUserIcebreaker] Failed to apply bridge action:', action.type, error);
@@ -2560,10 +2582,100 @@
         queueIcebreakerBridgeAction({ type: 'clear_prompt', sessionId: String(sessionId || '') });
     }
 
+    function clearIcebreakerChoicePromptSourceFromBroadcast(source, reason) {
+        if (!isStandaloneChatPage()) return;
+        if (String(source || '') !== 'new_user_icebreaker') return;
+        queueIcebreakerBridgeAction({
+            type: 'clear_prompt_source',
+            source: String(source || ''),
+            reason: String(reason || '')
+        });
+    }
+
+    // Also defined in new-user-icebreaker.js for the local chat host path.
+    function getIcebreakerMessageText(message) {
+        var blocks = message && Array.isArray(message.blocks) ? message.blocks : [];
+        for (var i = 0; i < blocks.length; i++) {
+            if (blocks[i] && blocks[i].type === 'text') {
+                var text = String(blocks[i].text || '').trim();
+                if (text) return text;
+            }
+        }
+        return '';
+    }
+
+    function syncIcebreakerAssistantCompactCaption(message) {
+        if (!isStandaloneChatPage() || !message || message.role !== 'assistant') return;
+        var line = getIcebreakerMessageText(message);
+        if (!line) return;
+        var turnId = String(message.turnId || message.id || ('icebreaker-turn-' + Date.now()));
+        try {
+            window.dispatchEvent(new CustomEvent('neko-assistant-turn-start', {
+                detail: {
+                    turnId: turnId,
+                    source: 'new_user_icebreaker'
+                }
+            }));
+            window.dispatchEvent(new CustomEvent('neko-compact-caption-update', {
+                detail: {
+                    turnId: turnId,
+                    segmentId: turnId + ':icebreaker',
+                    text: line,
+                    source: 'new_user_icebreaker'
+                }
+            }));
+        } catch (error) {
+            console.warn('[NewUserIcebreaker] compact caption sync failed:', error);
+        }
+    }
+
+    function finalizeIcebreakerAssistantSubtitleTranslation(message) {
+        if (!isStandaloneChatPage() || !message || message.role !== 'assistant') return;
+        var line = getIcebreakerMessageText(message);
+        if (!line) return;
+        try {
+            var bridge = window.subtitleBridge;
+            if (!bridge || typeof bridge.finalizeTurnWithTranslation !== 'function') {
+                return;
+            }
+            if (typeof bridge.beginTurn === 'function') {
+                bridge.beginTurn({ latch: false });
+            }
+            var result = bridge.finalizeTurnWithTranslation(line);
+            if (result && typeof result.catch === 'function') {
+                result.catch(function (error) {
+                    console.warn('[NewUserIcebreaker] subtitle translation failed:', error);
+                });
+            }
+        } catch (error) {
+            console.warn('[NewUserIcebreaker] subtitle translation failed:', error);
+        }
+    }
+
+    function waitForIcebreakerChatHostMounted(host) {
+        return new Promise(function (resolve) {
+            var attempts = 0;
+            function checkMounted() {
+                var isMounted = false;
+                try {
+                    isMounted = !!(host && typeof host.isMounted === 'function' && host.isMounted());
+                } catch (_) {}
+                if (isMounted || attempts >= 100) {
+                    yuiGuideInterpageResources.setTimeout(resolve, 0);
+                    return;
+                }
+                attempts += 1;
+                yuiGuideInterpageResources.setTimeout(checkMounted, 50);
+            }
+            checkMounted();
+        });
+    }
+
     function isIcebreakerBridgeAction(action) {
         return action === 'icebreaker_append_chat_message'
             || action === 'icebreaker_set_choice_prompt'
             || action === 'icebreaker_clear_choice_prompt'
+            || action === 'icebreaker_clear_choice_prompt_source'
             || action === 'icebreaker_choice_selected'
             || action === 'icebreaker_free_text_submitted';
     }
@@ -2589,6 +2701,10 @@
             case 'icebreaker_clear_choice_prompt':
                 if (isDuplicateMessage(data.action, data.timestamp)) return true;
                 clearIcebreakerChoicePromptFromBroadcast(data.sessionId);
+                return true;
+            case 'icebreaker_clear_choice_prompt_source':
+                if (isDuplicateMessage(data.action, data.timestamp)) return true;
+                clearIcebreakerChoicePromptSourceFromBroadcast(data.source, data.reason);
                 return true;
             case 'icebreaker_choice_selected':
                 if (isDuplicateMessage(data.action, data.timestamp)) return true;
@@ -2841,6 +2957,7 @@
                         ? message.targetIndex
                         : 0,
                     freezePoint: message.freezePoint === true,
+                    preservePcOverlayCursor: message.preservePcOverlayCursor === true,
                     pcOverlayRunId: getYuiGuidePcOverlayRunIdFromMessage(message),
                     timestamp: getYuiGuideBridgeMessageTimestamp(message)
                 };
@@ -4153,7 +4270,7 @@
         };
         if (patch && Object.prototype.hasOwnProperty.call(patch, 'cursor')) {
             payload.cursor = patch.cursor || null;
-        } else {
+        } else if (yuiGuidePcOverlayCursor) {
             payload.cursor = yuiGuidePcOverlayCursor;
         }
         var runId = resolveYuiGuidePcOverlayRunIdForSend(
@@ -4574,7 +4691,7 @@
             yuiGuideChatCursorRequestToken = yuiGuideChatCursorRequestToken + 1;
         }
         if (!kind) {
-            if (isYuiGuidePcCursorOnlyMode()) {
+            if (isYuiGuidePcCursorOnlyMode() && normalizedOptions.preservePcOverlayCursor !== true) {
                 sendYuiGuidePcOverlayPatch({
                     cursor: { visible: false }
                 }, false, {
@@ -4582,6 +4699,8 @@
                     allowCreateRun: !(normalizedOptions.allowCreatePcOverlayRun === false),
                     skipBegin: normalizedOptions.skipPcOverlayBegin === true
                 });
+            } else if (isYuiGuidePcCursorOnlyMode()) {
+                yuiGuidePcOverlayCursor = null;
             }
             hideYuiGuideChatCursorElement();
             yuiGuideChatCursorPoint = null;

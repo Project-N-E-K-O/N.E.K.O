@@ -803,7 +803,7 @@ def test_home_prompt_later_locally_suppresses_repeat_before_autostart_prompt(
 
 
 @pytest.mark.frontend
-def test_completed_home_tutorial_server_state_marks_all_home_storage_keys_seen(
+def test_completed_home_tutorial_server_state_marks_versioned_home_storage_key_seen(
     mock_page: Page,
 ):
     _bootstrap_tutorial_prompt_page(
@@ -813,9 +813,7 @@ def test_completed_home_tutorial_server_state_marks_all_home_storage_keys_seen(
                 currentPage: 'home',
                 isTutorialRunning: false,
                 getStorageKeysForPage: function(page) {
-                    return page === 'home'
-                        ? ['neko_tutorial_home_yui_v1', 'neko_tutorial_home']
-                        : [];
+                    return page === 'home' ? ['neko_tutorial_home_yui_v1'] : [];
                 },
                 hasSeenTutorial: function() {
                     return false;
@@ -865,17 +863,15 @@ def test_completed_home_tutorial_server_state_marks_all_home_storage_keys_seen(
         """
         () => ({
             preferred: localStorage.getItem('neko_tutorial_home_yui_v1'),
-            legacy: localStorage.getItem('neko_tutorial_home'),
         })
         """
     ) == {
         "preferred": "true",
-        "legacy": "true",
     }
 
 
 @pytest.mark.frontend
-def test_legacy_home_tutorial_storage_key_counts_as_seen(
+def test_legacy_home_tutorial_storage_key_is_ignored(
     mock_page: Page,
 ):
     _bootstrap_tutorial_prompt_page(
@@ -888,9 +884,7 @@ def test_legacy_home_tutorial_storage_key_counts_as_seen(
                 currentPage: 'home',
                 isTutorialRunning: false,
                 getStorageKeysForPage: function(page) {
-                    return page === 'home'
-                        ? ['neko_tutorial_home_yui_v1', 'neko_tutorial_home']
-                        : [];
+                    return page === 'home' ? ['neko_tutorial_home_yui_v1'] : [];
                 },
                 getStorageKey: function() {
                     return 'neko_tutorial_home_yui_v1';
@@ -922,7 +916,7 @@ def test_legacy_home_tutorial_storage_key_counts_as_seen(
                     ok: true,
                     should_prompt: true,
                     prompt_reason: 'idle_timeout',
-                    prompt_token: 'legacy-seen-token',
+                    prompt_token: 'legacy-ignored-token',
                     state: {
                         status: 'observing',
                         never_remind: false,
@@ -937,8 +931,8 @@ def test_legacy_home_tutorial_storage_key_counts_as_seen(
 
     mock_page.wait_for_function("() => window.__heartbeatBodies.length > 0")
 
-    assert mock_page.evaluate("() => window.__heartbeatBodies[0].home_tutorial_completed") is True
-    expect(mock_page.locator(".modal-overlay")).to_have_count(0)
+    assert mock_page.evaluate("() => window.__heartbeatBodies[0].home_tutorial_completed") is False
+    expect(mock_page.locator(".modal-overlay")).to_be_visible()
 
 
 @pytest.mark.frontend
@@ -1329,7 +1323,6 @@ def test_home_tutorial_skip_persists_completion_state(
         () => ({
             completedBodies: window.__tutorialCompletedBodies.slice(),
             preferredSeen: window.localStorage.getItem('neko_tutorial_home_yui_v1'),
-            legacySeen: window.localStorage.getItem('neko_tutorial_home'),
         })
         """
     )
@@ -1337,7 +1330,6 @@ def test_home_tutorial_skip_persists_completion_state(
     assert result["completedBodies"][0]["source"] == "manual"
     assert result["completedBodies"][0]["tutorial_run_token"] == "skip-run-token"
     assert result["preferredSeen"] == "true"
-    assert result["legacySeen"] == "true"
 
 
 @pytest.mark.frontend
@@ -1394,7 +1386,7 @@ def test_home_tutorial_reset_refreshes_stale_csrf_token_once(mock_page: Page):
     mock_page.evaluate(
         """
         async () => {
-            localStorage.setItem('neko_tutorial_home', 'true');
+            localStorage.setItem('neko_tutorial_home_yui_v1', 'true');
             await resetTutorialForPage('home');
         }
         """
@@ -1406,8 +1398,8 @@ def test_home_tutorial_reset_refreshes_stale_csrf_token_once(mock_page: Page):
             pageConfigFetchCount: window.__pageConfigFetchCount,
             resetTokens: window.__resetTokens.slice(),
             resetBodies: window.__resetBodies.slice(),
-            homeSeen: localStorage.getItem('neko_tutorial_home'),
-            manualIntent: localStorage.getItem('neko_tutorial_home_manual_intent'),
+            versionedSeen: localStorage.getItem('neko_tutorial_home_yui_v1'),
+            manualIntent: localStorage.getItem('neko_tutorial_home_yui_v1_manual_intent'),
         })
         """
     )
@@ -1416,7 +1408,7 @@ def test_home_tutorial_reset_refreshes_stale_csrf_token_once(mock_page: Page):
     assert result["resetTokens"] == ["stale-token", "fresh-token"]
     assert result["resetBodies"][0]["reason"] == "manual_home_tutorial_reset"
     assert result["resetBodies"][1]["reason"] == "manual_home_tutorial_reset"
-    assert result["homeSeen"] is None
+    assert result["versionedSeen"] is None
     assert result["manualIntent"] == "true"
 
 
@@ -1455,7 +1447,6 @@ def test_home_tutorial_reset_without_manager_clears_versioned_home_key(mock_page
         async () => {
             window.universalTutorialManager = null;
             localStorage.setItem('neko_tutorial_home_yui_v1', 'true');
-            localStorage.setItem('neko_tutorial_home', 'true');
             await resetTutorialForPage('home');
         }
         """
@@ -1465,14 +1456,12 @@ def test_home_tutorial_reset_without_manager_clears_versioned_home_key(mock_page
         """
         () => ({
             versionedSeen: localStorage.getItem('neko_tutorial_home_yui_v1'),
-            legacySeen: localStorage.getItem('neko_tutorial_home'),
-            manualIntent: localStorage.getItem('neko_tutorial_home_manual_intent'),
+            manualIntent: localStorage.getItem('neko_tutorial_home_yui_v1_manual_intent'),
         })
         """
     )
 
     assert result["versionedSeen"] is None
-    assert result["legacySeen"] is None
     assert result["manualIntent"] == "true"
 
 
@@ -1514,7 +1503,6 @@ def test_home_tutorial_reset_still_clears_state_without_custom_event(mock_page: 
         """
         async () => {
             localStorage.setItem('neko_tutorial_home_yui_v1', 'true');
-            localStorage.setItem('neko_tutorial_home', 'true');
             await resetTutorialForPage('home');
         }
         """
@@ -1524,14 +1512,12 @@ def test_home_tutorial_reset_still_clears_state_without_custom_event(mock_page: 
         """
         () => ({
             versionedSeen: localStorage.getItem('neko_tutorial_home_yui_v1'),
-            legacySeen: localStorage.getItem('neko_tutorial_home'),
-            manualIntent: localStorage.getItem('neko_tutorial_home_manual_intent'),
+            manualIntent: localStorage.getItem('neko_tutorial_home_yui_v1_manual_intent'),
         })
         """
     )
 
     assert result["versionedSeen"] is None
-    assert result["legacySeen"] is None
     assert result["manualIntent"] == "true"
 
 
@@ -1580,10 +1566,7 @@ def test_home_tutorial_reset_event_prevents_stale_completion_heartbeat(mock_page
 
     mock_page.wait_for_function(
         """
-        () => (
-            localStorage.getItem('neko_tutorial_home_yui_v1') === 'true'
-            || localStorage.getItem('neko_tutorial_home') === 'true'
-        )
+        () => localStorage.getItem('neko_tutorial_home_yui_v1') === 'true'
         """,
         timeout=5000,
     )
@@ -1605,13 +1588,13 @@ def test_home_tutorial_reset_event_prevents_stale_completion_heartbeat(mock_page
     result = mock_page.evaluate(
         """
         () => ({
-            homeSeen: localStorage.getItem('neko_tutorial_home'),
+            versionedSeen: localStorage.getItem('neko_tutorial_home_yui_v1'),
             latestHeartbeat: window.__heartbeatBodies[window.__heartbeatBodies.length - 1],
         })
         """
     )
 
-    assert result["homeSeen"] is None
+    assert result["versionedSeen"] is None
     assert result["latestHeartbeat"]["home_tutorial_completed"] is False
     assert result["latestHeartbeat"]["manual_home_tutorial_viewed"] is False
 
@@ -1697,7 +1680,6 @@ def test_home_tutorial_reset_event_re_resets_after_inflight_completed_heartbeat(
             staleHeartbeat: window.__heartbeatBodies[0],
             resetBodies: window.__resetBodies.slice(),
             versionedSeen: localStorage.getItem('neko_tutorial_home_yui_v1'),
-            legacySeen: localStorage.getItem('neko_tutorial_home'),
             suppressAutoStart: window.appTutorialPrompt.shouldSuppressAutomaticHomeTutorialStart(),
         })
         """
@@ -1707,7 +1689,6 @@ def test_home_tutorial_reset_event_re_resets_after_inflight_completed_heartbeat(
     assert result["staleHeartbeat"]["manual_home_tutorial_viewed"] is True
     assert result["resetBodies"][0]["reason"] == "manual_home_tutorial_reset"
     assert result["versionedSeen"] is None
-    assert result["legacySeen"] is None
     assert result["suppressAutoStart"] is False
 
 
@@ -1840,7 +1821,6 @@ def test_home_tutorial_reset_event_re_resets_after_inflight_completion_lifecycle
             completedBodies: window.__completedBodies.slice(),
             resetBodies: window.__resetBodies.slice(),
             versionedSeen: localStorage.getItem('neko_tutorial_home_yui_v1'),
-            legacySeen: localStorage.getItem('neko_tutorial_home'),
             suppressAutoStart: window.appTutorialPrompt.shouldSuppressAutomaticHomeTutorialStart(),
         })
         """
@@ -1849,7 +1829,6 @@ def test_home_tutorial_reset_event_re_resets_after_inflight_completion_lifecycle
     assert result["completedBodies"][0]["tutorial_run_token"] == "tutorial-run-token"
     assert result["resetBodies"][0]["reason"] == "manual_home_tutorial_reset"
     assert result["versionedSeen"] is None
-    assert result["legacySeen"] is None
     assert result["suppressAutoStart"] is False
 
 
@@ -1955,7 +1934,6 @@ def test_home_tutorial_reset_event_re_resets_after_inflight_started_lifecycle(mo
             startedBodies: window.__startedBodies.slice(),
             resetBodies: window.__resetBodies.slice(),
             versionedSeen: localStorage.getItem('neko_tutorial_home_yui_v1'),
-            legacySeen: localStorage.getItem('neko_tutorial_home'),
             suppressAutoStart: window.appTutorialPrompt.shouldSuppressAutomaticHomeTutorialStart(),
         })
         """
@@ -1964,7 +1942,6 @@ def test_home_tutorial_reset_event_re_resets_after_inflight_started_lifecycle(mo
     assert result["startedBodies"][0]["source"] == "manual"
     assert result["resetBodies"][0]["reason"] == "manual_home_tutorial_reset"
     assert result["versionedSeen"] is None
-    assert result["legacySeen"] is None
     assert result["suppressAutoStart"] is False
 
 
@@ -2035,13 +2012,11 @@ def test_home_tutorial_reset_event_ignores_stale_initial_state_response(mock_pag
         """
         () => ({
             versionedSeen: localStorage.getItem('neko_tutorial_home_yui_v1'),
-            legacySeen: localStorage.getItem('neko_tutorial_home'),
             suppressAutoStart: window.appTutorialPrompt.shouldSuppressAutomaticHomeTutorialStart(),
         })
         """
     ) == {
         "versionedSeen": None,
-        "legacySeen": None,
         "suppressAutoStart": False,
     }
 
@@ -2333,7 +2308,7 @@ def test_cross_window_home_tutorial_reset_event_prevents_stale_completion_heartb
     )
 
     mock_page.wait_for_function(
-        "() => localStorage.getItem('neko_tutorial_home') === 'true'",
+        "() => localStorage.getItem('neko_tutorial_home_yui_v1') === 'true'",
         timeout=5000,
     )
     mock_page.evaluate(
@@ -2359,13 +2334,13 @@ def test_cross_window_home_tutorial_reset_event_prevents_stale_completion_heartb
     result = mock_page.evaluate(
         """
         () => ({
-            homeSeen: localStorage.getItem('neko_tutorial_home'),
+            versionedSeen: localStorage.getItem('neko_tutorial_home_yui_v1'),
             latestHeartbeat: window.__heartbeatBodies[window.__heartbeatBodies.length - 1],
         })
         """
     )
 
-    assert result["homeSeen"] is None
+    assert result["versionedSeen"] is None
     assert result["latestHeartbeat"]["home_tutorial_completed"] is False
     assert result["latestHeartbeat"]["manual_home_tutorial_viewed"] is False
 
@@ -2405,7 +2380,6 @@ def test_all_tutorial_reset_without_manager_clears_versioned_home_key(mock_page:
         async () => {
             window.universalTutorialManager = null;
             localStorage.setItem('neko_tutorial_home_yui_v1', 'true');
-            localStorage.setItem('neko_tutorial_home', 'true');
             localStorage.setItem('neko_tutorial_model_manager_mmd', 'true');
             await resetAllTutorials();
         }
@@ -2416,15 +2390,13 @@ def test_all_tutorial_reset_without_manager_clears_versioned_home_key(mock_page:
         """
         () => ({
             versionedSeen: localStorage.getItem('neko_tutorial_home_yui_v1'),
-            legacySeen: localStorage.getItem('neko_tutorial_home'),
             modelManagerMmdSeen: localStorage.getItem('neko_tutorial_model_manager_mmd'),
-            manualIntent: localStorage.getItem('neko_tutorial_home_manual_intent'),
+            manualIntent: localStorage.getItem('neko_tutorial_home_yui_v1_manual_intent'),
         })
         """
     )
 
     assert result["versionedSeen"] is None
-    assert result["legacySeen"] is None
     assert result["modelManagerMmdSeen"] is None
     assert result["manualIntent"] == "true"
 
@@ -2465,7 +2437,6 @@ def test_home_tutorial_reset_with_manager_clears_versioned_home_key(mock_page: P
             await initUniversalTutorialManager();
             window.universalTutorialManager.getYuiGuideVersionedPageKey = () => null;
             localStorage.setItem('neko_tutorial_home_yui_v1', 'true');
-            localStorage.setItem('neko_tutorial_home', 'true');
             await resetTutorialForPage('home');
         }
         """
@@ -2475,14 +2446,12 @@ def test_home_tutorial_reset_with_manager_clears_versioned_home_key(mock_page: P
         """
         () => ({
             versionedSeen: localStorage.getItem('neko_tutorial_home_yui_v1'),
-            legacySeen: localStorage.getItem('neko_tutorial_home'),
-            manualIntent: localStorage.getItem('neko_tutorial_home_manual_intent'),
+            manualIntent: localStorage.getItem('neko_tutorial_home_yui_v1_manual_intent'),
         })
         """
     )
 
     assert result["versionedSeen"] is None
-    assert result["legacySeen"] is None
     assert result["manualIntent"] == "true"
 
 
@@ -3300,7 +3269,12 @@ def test_day6_status_and_plugin_lines_run_split_plugin_dashboard_flow(mock_page:
         async () => {
             const director = window.createYuiGuideDirector({ page: 'home' });
             const calls = [];
-            director.waitForSceneDelay = async () => true;
+            director.waitForSceneDelay = async (durationMs) => {
+                if (durationMs === 500) {
+                    calls.push({ type: 'wait', durationMs });
+                }
+                return true;
+            };
             const dashboardWindow = { closed: false };
             director.setSpotlightGeometryHint = (element, options) => {
                 calls.push({
@@ -3341,13 +3315,47 @@ def test_day6_status_and_plugin_lines_run_split_plugin_dashboard_flow(mock_page:
                     id: element && element.id,
                     durationMs,
                     exactDuration: !!(options && options.exactDuration),
+                    offsetY: options && options.targetPointOffset && options.targetPointOffset.y,
+                    clamp: !!(options && options.clampTargetPointToRect),
+                    inset: options && options.targetPointClampInsetPx,
                 });
                 return true;
             };
+            director.moveCursorToTrackedElement = async (element, durationMs, options) => {
+                calls.push({
+                    type: 'trackedMove',
+                    id: element && element.id,
+                    durationMs,
+                    exactDuration: !!(options && options.exactDuration),
+                    recheckDelayMs: options && options.recheckDelayMs,
+                    settleDelayMs: options && options.settleDelayMs,
+                });
+                return true;
+            };
+            director.waitForStableElementRect = async (element, timeoutMs) => {
+                calls.push({
+                    type: 'stableRect',
+                    id: element && element.id,
+                    timeoutMs,
+                });
+                return element;
+            };
+            director.isCursorAlignedWithElement = () => true;
             director.cursor = {
                 hasPosition: () => true,
+                hasVisiblePosition: () => true,
                 showAt: () => {},
                 moveToRect: async () => true,
+                moveToPoint: async (x, y, options) => {
+                    calls.push({
+                        type: 'pointMove',
+                        x: Math.round(x),
+                        y: Math.round(y),
+                        durationMs: options && options.durationMs,
+                        exactDuration: !!(options && options.exactDuration),
+                    });
+                    return true;
+                },
                 click: (visibleMs) => calls.push({ type: 'click', visibleMs }),
                 wobble: () => calls.push({ type: 'wobble' }),
                 cancel: () => {},
@@ -3449,23 +3457,53 @@ def test_day6_status_and_plugin_lines_run_split_plugin_dashboard_flow(mock_page:
     assert result["calls"] == [
         {"type": "geometry", "id": "live2d-btn-agent", "geometry": "circle", "padding": 4},
         {"type": "highlight", "key": "day6_agent_status_master-cat-paw", "primaryId": "live2d-btn-agent", "persistentId": None},
-        {"type": "move", "id": "live2d-btn-agent", "durationMs": 760, "exactDuration": False},
-        {"type": "click", "visibleMs": 420},
+        {"type": "wait", "durationMs": 500},
+        {
+            "type": "move",
+            "id": "live2d-btn-agent",
+            "durationMs": 2800,
+            "exactDuration": False,
+            "offsetY": 8,
+            "clamp": True,
+            "inset": 4,
+        },
+        {"type": "click", "visibleMs": 620},
         {"type": "api:openAgentPanel"},
+        {"type": "api:openAgentPanel"},
+        {"type": "stableRect", "id": "live2d-toggle-agent-user-plugin", "timeoutMs": 760},
         {
             "type": "highlight",
             "key": "day6_plugin_side_panel-user-plugin",
             "primaryId": "live2d-toggle-agent-user-plugin",
             "persistentId": None,
         },
-        {"type": "move", "id": "live2d-toggle-agent-user-plugin", "durationMs": 420, "exactDuration": True},
-        {"type": "click", "visibleMs": 320},
+        {"type": "wait", "durationMs": 500},
+        {
+            "type": "trackedMove",
+            "id": "live2d-toggle-agent-user-plugin",
+            "durationMs": 1120,
+            "exactDuration": True,
+            "recheckDelayMs": 120,
+            "settleDelayMs": 40,
+        },
         {"type": "api:ensureAgentSidePanel", "toggleId": "user-plugin"},
         {
             "type": "api:ensureActionVisible",
             "toggleId": "agent-user-plugin",
             "actionId": "management-panel",
         },
+        {
+            "type": "stableRect",
+            "id": "neko-sidepanel-action-agent-user-plugin-management-panel",
+            "timeoutMs": 760,
+        },
+        {
+            "type": "highlight",
+            "key": "day6_plugin_side_panel-clear-user-plugin",
+            "primaryId": None,
+            "persistentId": None,
+        },
+        {"type": "ui:clearVirtualSpotlight", "key": "plugin-management-entry"},
         {"type": "virtualSpotlight", "key": "plugin-management-entry", "padding": "0", "width": 216, "height": 64},
         {
             "type": "highlight",
@@ -3474,12 +3512,22 @@ def test_day6_status_and_plugin_lines_run_split_plugin_dashboard_flow(mock_page:
             "persistentId": None,
         },
         {
-            "type": "move",
+            "type": "trackedMove",
             "id": "neko-sidepanel-action-agent-user-plugin-management-panel",
-            "durationMs": 420,
+            "durationMs": 1120,
             "exactDuration": True,
+            "recheckDelayMs": 120,
+            "settleDelayMs": 40,
         },
-        {"type": "click", "visibleMs": 320},
+        {"type": "ui:clearVirtualSpotlight", "key": "plugin-management-entry"},
+        {"type": "virtualSpotlight", "key": "plugin-management-entry", "padding": "0", "width": 216, "height": 64},
+        {
+            "type": "highlight",
+            "key": "day6_plugin_side_panel-management-panel",
+            "primaryId": "",
+            "persistentId": None,
+        },
+        {"type": "click", "visibleMs": 480},
         {"type": "api:waitForOpenedWindow", "windowName": "plugin_dashboard", "timeoutMs": 120},
         {
             "type": "api:clickAgentSidePanelAction",
@@ -3508,6 +3556,276 @@ def test_day6_status_and_plugin_lines_run_split_plugin_dashboard_flow(mock_page:
         {"type": "api:waitForHomeMainUIReady", "timeoutMs": 3600},
         {"type": "cursor:showAt", "x": 321, "y": 234},
     ]
+
+
+@pytest.mark.frontend
+def test_day6_plugin_side_panel_does_not_clear_externalized_chat_target_when_entering_from_cat_paw_scene(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js", "tutorial/yui-guide/days/day6-agent-guide.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const events = [];
+            const sidePanelScene = window.YuiGuideDailyGuides[6].round.scenes.find(
+                (candidate) => candidate.id === 'day6_plugin_side_panel'
+            );
+            director.currentSceneId = 'day6_agent_status_master';
+            director.isHomeChatExternalized = () => true;
+            director.clearExternalizedChatGuideTarget = (options) => {
+                events.push({
+                    type: 'clear-external',
+                    clearCursor: !!(options && options.clearCursor),
+                    preservePcOverlayCursor: !!(options && options.preservePcOverlayCursor),
+                });
+            };
+            director.sceneOrchestrator.canPlayTimelineScene = () => false;
+            director.sceneOrchestrator.playGenericScene = async () => {
+                events.push({ type: 'play-generic' });
+                return true;
+            };
+
+            const played = await director.playAvatarFloatingScene(sidePanelScene, 6, 2, 8);
+            return { played, events };
+        }
+        """
+    )
+
+    assert result == {
+        "played": True,
+        "events": [{"type": "play-generic"}],
+    }
+
+
+@pytest.mark.frontend
+def test_day6_status_reveals_hidden_cat_paw_before_cursor_move(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            document.body.innerHTML = `
+                <div id="live2d-floating-buttons" style="display:none; position:fixed; left:20px; top:30px; width:60px; height:300px;">
+                    <button id="live2d-btn-agent" style="position:absolute; left:0; top:0; width:44px; height:44px;"></button>
+                </div>
+                <section id="live2d-popup-agent" style="display:none; opacity:0; position:absolute; left:90px; top:28px; width:320px; height:440px;"></section>
+            `;
+        """,
+        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const calls = [];
+            director.waitForSceneDelay = async () => true;
+            director.prepareDay6AgentPanelCursorFromCapsule = async () => {
+                calls.push({ type: 'unexpected:fromCapsule' });
+                return false;
+            };
+            director.moveCursorToElement = async (element, durationMs, options) => {
+                calls.push({
+                    type: 'move',
+                    id: element && element.id,
+                    durationMs,
+                    offsetY: options && options.targetPointOffset && options.targetPointOffset.y,
+                    clamp: !!(options && options.clampTargetPointToRect),
+                    inset: options && options.targetPointClampInsetPx,
+                });
+                return true;
+            };
+            director.cursor.click = (visibleMs) => calls.push({ type: 'click', visibleMs });
+            director.openAgentPanel = async () => {
+                calls.push({ type: 'api:openAgentPanel' });
+                return true;
+            };
+
+            const opened = await director.runDay6PluginOpenAgentPanelFlow({
+                id: 'day6_agent_status_master',
+                voiceKey: 'avatar_floating_day6_status_master',
+            });
+            const toolbar = document.getElementById('live2d-floating-buttons');
+            return {
+                opened,
+                toolbarDisplay: toolbar ? window.getComputedStyle(toolbar).display : '',
+                calls,
+            };
+        }
+        """
+    )
+
+    assert result == {
+        "opened": True,
+        "toolbarDisplay": "flex",
+        "calls": [
+            {
+                "type": "move",
+                "id": "live2d-btn-agent",
+                "durationMs": 2800,
+                "offsetY": 8,
+                "clamp": True,
+                "inset": 4,
+            },
+            {"type": "click", "visibleMs": 620},
+            {"type": "api:openAgentPanel"},
+        ],
+    }
+
+
+@pytest.mark.frontend
+def test_day6_status_opens_cat_paw_without_capsule_cursor_start(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            document.body.innerHTML = `
+                <button id="live2d-btn-agent" style="position:absolute; left:20px; top:30px; width:44px; height:44px;"></button>
+                <section id="live2d-popup-agent" style="display:none; opacity:0; position:absolute; left:90px; top:28px; width:320px; height:440px;"></section>
+            `;
+        """,
+        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const calls = [];
+            director.waitForSceneDelay = async () => true;
+            director.prepareDay6AgentPanelCursorFromCapsule = async () => {
+                calls.push({ type: 'unexpected:fromCapsule' });
+                return false;
+            };
+            director.moveCursorToElement = async (element, durationMs, options) => {
+                calls.push({
+                    type: 'move',
+                    id: element && element.id,
+                    durationMs,
+                    offsetY: options && options.targetPointOffset && options.targetPointOffset.y,
+                    clamp: !!(options && options.clampTargetPointToRect),
+                    inset: options && options.targetPointClampInsetPx,
+                });
+                return true;
+            };
+            director.cursor.click = (visibleMs) => calls.push({ type: 'click', visibleMs });
+            director.openAgentPanel = async () => {
+                calls.push({ type: 'api:openAgentPanel' });
+                return true;
+            };
+
+            const opened = await director.runDay6PluginOpenAgentPanelFlow({
+                id: 'day6_agent_status_master',
+                voiceKey: 'avatar_floating_day6_status_master',
+            });
+            return { opened, calls };
+        }
+        """
+    )
+
+    assert result == {
+        "opened": True,
+        "calls": [
+            {
+                "type": "move",
+                "id": "live2d-btn-agent",
+                "durationMs": 2800,
+                "offsetY": 8,
+                "clamp": True,
+                "inset": 4,
+            },
+            {"type": "click", "visibleMs": 620},
+            {"type": "api:openAgentPanel"},
+        ],
+    }
+
+
+@pytest.mark.frontend
+def test_day6_move_cursor_to_element_supports_target_point_offset(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            document.body.innerHTML = `
+                <button id="live2d-btn-agent" style="position:absolute; left:20px; top:30px; width:44px; height:44px;"></button>
+            `;
+        """,
+        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const calls = [];
+            const button = document.getElementById('live2d-btn-agent');
+            director.cursor = {
+                moveToPoint: async (x, y, options) => {
+                    calls.push({
+                        type: 'pointMove',
+                        x: Math.round(x),
+                        y: Math.round(y),
+                        durationMs: options && options.durationMs,
+                    });
+                    return true;
+                },
+                cancel: () => {},
+            };
+
+            const moved = await director.moveCursorToElement(button, 2800, {
+                targetPointOffset: { y: 8 },
+                clampTargetPointToRect: true,
+                targetPointClampInsetPx: 4,
+            });
+            return { moved, calls };
+        }
+        """
+    )
+
+    assert result == {
+        "moved": True,
+        "calls": [
+            {"type": "pointMove", "x": 42, "y": 60, "durationMs": 2800},
+        ],
+    }
+
+@pytest.mark.frontend
+def test_day6_wrap_cleanup_holds_cursor_to_avoid_resistance_move_overlap(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+        """,
+        script_names=(
+            "tutorial/yui-guide/overlay.js",
+            "tutorial/yui-guide/director.js",
+            "tutorial/yui-guide/days/day6-agent-guide.js",
+        ),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const scene = window.YuiGuideDailyGuides[6].round.scenes.find(
+                (candidate) => candidate.id === 'day6_wrap_cleanup'
+            );
+            return {
+                cursorAction: scene && scene.cursorAction,
+                target: scene && scene.target,
+                operation: scene && scene.operation,
+            };
+        }
+        """
+    )
+
+    assert result == {
+        "cursorAction": "hold",
+        "target": "chat-input",
+        "operation": "cleanup",
+    }
 
 
 @pytest.mark.frontend
@@ -3641,7 +3959,7 @@ def test_day6_task_hud_only_moves_cursor_to_hud_without_post_line_tour(mock_page
 
 
 @pytest.mark.frontend
-def test_day6_task_hud_control_only_moves_cursor_to_hud(mock_page: Page):
+def test_day6_task_hud_control_moves_cursor_to_hud_with_reused_spotlight(mock_page: Page):
     _bootstrap_page(
         mock_page,
         setup_js="""
@@ -3715,17 +4033,191 @@ def test_day6_task_hud_control_only_moves_cursor_to_hud(mock_page: Page):
 
     assert {
         "type": "highlight",
-        "key": "day6_agent_task_hud_control",
+        "key": "day6_agent_task_hud",
         "primaryId": "agent-task-hud",
     } in result
-    assert any(
-        call["type"] == "move"
-        and call["id"] == "agent-task-hud"
-        for call in result
-    )
+    assert [
+        call for call in result
+        if call["type"] == "move"
+    ] == [{
+        "type": "move",
+        "id": "agent-task-hud",
+        "durationMs": 760,
+    }]
     assert not any(call["type"] == "ellipse" for call in result)
     assert {"type": "wobble"} not in result
     assert {"type": "click"} not in result
+
+
+@pytest.mark.frontend
+def test_day6_task_hud_control_reuses_hud_spotlight_key_while_moving_cursor_to_hud(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            document.body.innerHTML = `
+                <section
+                    id="agent-task-hud"
+                    style="position:absolute; left:120px; top:90px; width:260px; height:140px;"
+                ></section>
+            `;
+        """,
+        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js", "tutorial/yui-guide/days/day6-agent-guide.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const calls = [];
+            const scenes = window.YuiGuideDailyGuides[6].round.scenes;
+            const hudScene = scenes.find((candidate) => candidate.id === 'day6_agent_task_hud');
+            const controlScene = scenes.find((candidate) => candidate.id === 'day6_agent_task_hud_control');
+            director.waitForSceneDelay = async () => true;
+            director.prepareAvatarFloatingScene = async () => {};
+            director.appendGuideChatMessage = () => {};
+            director.applyGuideEmotion = () => {};
+            director.enableInterrupts = () => {};
+            director.runAvatarFloatingSceneOperation = async (playedScene) => {
+                calls.push({ type: 'operation', id: playedScene.id, operation: playedScene.operation || '' });
+                return true;
+            };
+            director.applyGuideHighlights = (config) => {
+                calls.push({
+                    type: 'highlight',
+                    key: config.key || '',
+                    primaryId: config.primary && config.primary.id,
+                });
+            };
+            director.moveCursorToElement = async (element, durationMs) => {
+                calls.push({
+                    type: 'move',
+                    sceneId: director.currentSceneId,
+                    id: element && element.id,
+                    durationMs,
+                });
+                return true;
+            };
+            director.speakGuideLine = async () => {};
+            director.cursor = {
+                hasPosition: () => true,
+                hasVisiblePosition: () => true,
+                showAt: (x, y) => calls.push({ type: 'showAt', x, y }),
+                click: () => calls.push({ type: 'click' }),
+                wobble: () => calls.push({ type: 'wobble' }),
+                cancel: () => {},
+                hide: () => calls.push({ type: 'hide' }),
+            };
+
+            await director.playAvatarFloatingScene(hudScene, 6, 4, 8);
+            await director.playAvatarFloatingScene(controlScene, 6, 5, 8);
+            return calls;
+        }
+        """
+    )
+
+    assert [
+        call for call in result
+        if call["type"] == "highlight"
+    ] == [
+        {"type": "highlight", "key": "day6_agent_task_hud", "primaryId": "agent-task-hud"},
+        {"type": "highlight", "key": "day6_agent_task_hud", "primaryId": "agent-task-hud"},
+    ]
+    assert [
+        call for call in result
+        if call["type"] == "move"
+    ] == [
+        {
+            "type": "move",
+            "sceneId": "day6_agent_task_hud",
+            "id": "agent-task-hud",
+            "durationMs": 760,
+        },
+        {
+            "type": "move",
+            "sceneId": "day6_agent_task_hud_control",
+            "id": "agent-task-hud",
+            "durationMs": 760,
+        },
+    ]
+
+
+@pytest.mark.frontend
+def test_day6_task_hud_control_preserves_externalized_chat_target_from_hud_scene(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js", "tutorial/yui-guide/days/day6-agent-guide.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const scenes = window.YuiGuideDailyGuides[6].round.scenes;
+            const controlScene = scenes.find((candidate) => candidate.id === 'day6_agent_task_hud_control');
+            return {
+                id: controlScene && controlScene.id,
+                target: controlScene && controlScene.target,
+                cursorAction: controlScene && controlScene.cursorAction,
+                spotlightKey: controlScene && controlScene.spotlightKey,
+                preserveExternalizedChatGuideTarget: !!(
+                    controlScene && controlScene.preserveExternalizedChatGuideTarget === true
+                ),
+            };
+        }
+        """
+    )
+
+    assert result == {
+        "id": "day6_agent_task_hud_control",
+        "target": "#agent-task-hud",
+        "cursorAction": "move",
+        "spotlightKey": "day6_agent_task_hud",
+        "preserveExternalizedChatGuideTarget": True,
+    }
+
+
+@pytest.mark.frontend
+def test_day6_task_hud_control_does_not_clear_externalized_chat_target_when_entering_from_hud(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js", "tutorial/yui-guide/days/day6-agent-guide.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const events = [];
+            const controlScene = window.YuiGuideDailyGuides[6].round.scenes.find(
+                (candidate) => candidate.id === 'day6_agent_task_hud_control'
+            );
+            director.currentSceneId = 'day6_agent_task_hud';
+            director.isHomeChatExternalized = () => true;
+            director.clearExternalizedChatGuideTarget = (options) => {
+                events.push({
+                    type: 'clear-external',
+                    clearCursor: !!(options && options.clearCursor),
+                    preservePcOverlayCursor: !!(options && options.preservePcOverlayCursor),
+                });
+            };
+            director.sceneOrchestrator.canPlayTimelineScene = () => false;
+            director.sceneOrchestrator.playGenericScene = async () => {
+                events.push({ type: 'play-generic' });
+                return true;
+            };
+
+            const played = await director.playAvatarFloatingScene(controlScene, 6, 5, 8);
+            return { played, events };
+        }
+        """
+    )
+
+    assert result == {
+        "played": True,
+        "events": [{"type": "play-generic"}],
+    }
 
 
 @pytest.mark.frontend
@@ -7523,11 +8015,90 @@ def test_plugin_dashboard_light_resistance_keeps_cursor_reaction(
     )
 
     resist_call = next(call for call in result if call["type"] == "resist")
-    assert resist_call["options"] == {"suppressCursorReveal": True}
+    assert resist_call["options"] == {
+        "suppressCursorReveal": True,
+        "forceSystemCursorReveal": True,
+    }
 
 
 @pytest.mark.frontend
-def test_avatar_floating_cursor_reacts_to_every_real_mouse_move(
+def test_plugin_dashboard_light_resistance_temporarily_reveals_system_cursor(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const previousCommon = window.YuiGuideCommon;
+            const temporaryReveals = [];
+            window.YuiGuideCommon = {
+                syncPcSystemCursorTemporaryReveal: (durationMs, reason) => {
+                    temporaryReveals.push({ reason, durationMs });
+                },
+            };
+            try {
+                const director = window.createYuiGuideDirector({ page: 'home' });
+                const calls = [];
+                director.dispatchDesktopPluginDashboardInterruptAck = (payload) => {
+                    calls.push({ type: 'ack', payload });
+                };
+                director.getStep = (stepId) => {
+                    if (stepId === 'interrupt_resist_light') {
+                        return {
+                            performance: {
+                                bubbleText: 'Stop pulling me',
+                                voiceKey: 'interrupt_resist_light_1',
+                            },
+                        };
+                    }
+                    return null;
+                };
+                director.resolvePerformanceBubbleText = (performance) => performance && performance.bubbleText || '';
+                director.resolvePerformanceResistanceVoices = () => [];
+                director.captureCurrentGuidePresentationSnapshot = () => null;
+                director.pauseCurrentSceneForResistance = () => {};
+                director.resumeCurrentSceneAfterResistance = () => {};
+                director.interruptNarrationForResistance = () => {};
+                director.appendGuideChatMessage = () => {};
+                director.applyGuideEmotion = () => {};
+                director.voiceQueue.speak = async () => null;
+                director.runInterruptResistPerformance = async () => null;
+                director.cursor.resistTo = async () => null;
+
+                await director.handlePluginDashboardInterruptRequest(null, {
+                    windowRef: null,
+                    targetOrigin: window.location.origin,
+                }, {
+                    requestId: 'interrupt-request-1',
+                    sessionId: 'session-1',
+                    detail: {
+                        kind: 'interrupt_resist_light',
+                        x: 160,
+                        y: 100,
+                    },
+                });
+                return { calls, temporaryReveals };
+            } finally {
+                window.YuiGuideCommon = previousCommon;
+            }
+        }
+        """
+    )
+
+    assert result["temporaryReveals"] == [{
+        "reason": "interrupt_resist_light",
+        "durationMs": 2000,
+    }]
+    assert any(call["type"] == "ack" for call in result["calls"])
+
+
+@pytest.mark.frontend
+def test_avatar_floating_cursor_reaction_waits_for_meaningful_real_mouse_move(
     mock_page: Page,
 ):
     _bootstrap_page(
@@ -7566,9 +8137,18 @@ def test_avatar_floating_cursor_reacts_to_every_real_mouse_move(
                 director.handleInterrupt({
                     isTrusted: true,
                     type: 'mousemove',
-                    clientX: 102,
+                    clientX: 124,
                     clientY: 100,
-                    movementX: 2,
+                    movementX: 24,
+                    movementY: 0,
+                });
+                window.__now = 1032;
+                director.handleInterrupt({
+                    isTrusted: true,
+                    type: 'mousemove',
+                    clientX: 155,
+                    clientY: 100,
+                    movementX: 31,
                     movementY: 0,
                 });
                 return reactions;
@@ -7580,7 +8160,7 @@ def test_avatar_floating_cursor_reacts_to_every_real_mouse_move(
     )
 
     assert len(result) == 1
-    assert result[0]["options"]["motionDx"] == 2
+    assert result[0]["options"]["motionDx"] == 31
     assert result[0]["options"]["motionDy"] == 0
     assert result[0]["options"]["scale"] >= 0.4
     assert result[0]["options"]["outDurationMs"] >= 140
@@ -7738,6 +8318,7 @@ def test_avatar_floating_distance_below_new_threshold_does_not_trigger_light_res
             try {
                 const director = window.createYuiGuideDirector({ page: 'home' });
                 const lightInterrupts = [];
+                document.body.classList.add('yui-taking-over');
                 director.platformCapabilities = { windowBoundsSource: 'electron-window-bounds' };
                 director.currentSceneId = 'test_scene';
                 director.currentStep = {
@@ -7749,6 +8330,9 @@ def test_avatar_floating_distance_below_new_threshold_does_not_trigger_light_res
                 director.cursor.reactToUserMotion = () => {};
                 director.playLightResistance = (x, y, options) => {
                     lightInterrupts.push({ x, y, options });
+                    if (options && options.forceSystemCursorReveal) {
+                        director.revealSystemCursorTemporarily(2000, 'interrupt_resist_light');
+                    }
                 };
 
                 director.lastPointerPoint = { x: 100, y: 100, t: 1000, speed: 0.04 };
@@ -7850,6 +8434,178 @@ def test_avatar_floating_distance_threshold_triggers_light_resistance_without_sp
     assert len(result["lightInterrupts"]) == 1
     assert result["interruptCount"] == 1
     assert result["streak"] == 0
+
+
+@pytest.mark.frontend
+def test_avatar_floating_interrupt_count_reveals_real_cursor_for_three_seconds(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const originalNow = Date.now;
+            const originalSetTimeout = window.setTimeout;
+            const originalClearTimeout = window.clearTimeout;
+            window.__now = 1000;
+            Date.now = () => window.__now;
+            const timers = [];
+            const clearedTimers = [];
+            window.setTimeout = (callback, delay) => {
+                const timer = { callback, delay };
+                timers.push(timer);
+                return timer;
+            };
+            window.clearTimeout = (timer) => {
+                clearedTimers.push(timer);
+            };
+            try {
+                const cursorVisibility = [];
+                const temporaryReveals = [];
+                window.YuiGuideCommon = {
+                    syncPcSystemCursorHidden: (hidden, reason) => {
+                        cursorVisibility.push({ hidden, reason });
+                    },
+                    syncPcSystemCursorTemporaryReveal: (durationMs, reason) => {
+                        temporaryReveals.push({ reason, durationMs });
+                    },
+                };
+                const director = window.createYuiGuideDirector({ page: 'home' });
+                const lightInterrupts = [];
+                document.body.classList.add('yui-taking-over');
+                director.platformCapabilities = { windowBoundsSource: 'electron-window-bounds' };
+                director.currentSceneId = 'test_scene';
+                director.currentStep = {
+                    performance: {},
+                    interrupts: { threshold: 3, throttleMs: 0 },
+                };
+                director.interruptsEnabled = true;
+                director.cursor.hasPosition = () => true;
+                director.cursor.hasVisiblePosition = () => true;
+                director.cursor.reactToUserMotion = () => {};
+                director.playLightResistance = (x, y, options) => {
+                    lightInterrupts.push({ x, y, options });
+                    if (options && options.forceSystemCursorReveal) {
+                        director.revealSystemCursorTemporarily(2000, 'interrupt_resist_light');
+                    }
+                };
+
+                director.lastPointerPoint = { x: 100, y: 100, t: 1000, speed: 0.04 };
+                [
+                    { t: 2000, x: 164 },
+                    { t: 3000, x: 228 },
+                    { t: 4000, x: 292 },
+                ].forEach((sample) => {
+                    window.__now = sample.t;
+                    director.handleInterrupt({
+                        isTrusted: true,
+                        type: 'mousemove',
+                        clientX: sample.x,
+                        clientY: 100,
+                        movementX: 64,
+                        movementY: 0,
+                    });
+                });
+                const beforeTimer = cursorVisibility.slice();
+                const activeTimer = timers[timers.length - 1];
+                activeTimer.callback();
+                return {
+                    lightInterrupts,
+                    cursorVisibility,
+                    temporaryReveals,
+                    beforeTimer,
+                    timerDelays: timers.map((timer) => timer.delay),
+                    clearedTimers: clearedTimers.length,
+                };
+            } finally {
+                Date.now = originalNow;
+                window.setTimeout = originalSetTimeout;
+                window.clearTimeout = originalClearTimeout;
+                delete window.YuiGuideCommon;
+            }
+        }
+        """
+    )
+
+    assert len(result["lightInterrupts"]) == 1
+    assert result["lightInterrupts"][0]["options"]["forceSystemCursorReveal"] is True
+    assert result["lightInterrupts"][0]["options"]["suppressCursorReveal"] is True
+    expected_temporary_reveals = [{
+        "reason": "interrupt_resist_light",
+        "durationMs": 2000,
+    }]
+    assert result["temporaryReveals"] == expected_temporary_reveals
+    assert result["beforeTimer"][-1] == {"hidden": False, "reason": "interrupt_count_reveal"}
+    assert result["timerDelays"] == [3000, 2000]
+    assert result["cursorVisibility"][-1] == {
+        "hidden": True,
+        "reason": "user_cursor_reveal_suppressed",
+    }
+    assert result["clearedTimers"] == 1
+
+
+@pytest.mark.frontend
+def test_avatar_floating_interrupt_cursor_reveal_survives_angry_exit_timeout(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const originalSetTimeout = window.setTimeout;
+            const originalClearTimeout = window.clearTimeout;
+            const timers = [];
+            window.setTimeout = (callback, delay) => {
+                const timer = { callback, delay };
+                timers.push(timer);
+                return timer;
+            };
+            window.clearTimeout = () => {};
+            try {
+                const cursorVisibility = [];
+                window.YuiGuideCommon = {
+                    syncPcSystemCursorHidden: (hidden, reason) => {
+                        cursorVisibility.push({ hidden, reason });
+                    },
+                };
+                const director = window.createYuiGuideDirector({ page: 'home' });
+                document.body.classList.add('yui-taking-over');
+
+                director.revealRealCursorForInterruptCount();
+                director.angryExitTriggered = true;
+                timers[0].callback();
+
+                return {
+                    htmlClassRetained: document.documentElement.classList.contains('yui-interrupt-count-cursor-revealed'),
+                    bodyClassRetained: document.body.classList.contains('yui-interrupt-count-cursor-revealed'),
+                    cursorVisibility,
+                    timerDelay: timers[0] && timers[0].delay,
+                };
+            } finally {
+                window.setTimeout = originalSetTimeout;
+                window.clearTimeout = originalClearTimeout;
+                delete window.YuiGuideCommon;
+            }
+        }
+        """
+    )
+
+    assert result["timerDelay"] == 3000
+    assert result["htmlClassRetained"] is True
+    assert result["bodyClassRetained"] is True
+    assert result["cursorVisibility"] == [
+        {"hidden": False, "reason": "interrupt_count_reveal"},
+    ]
 
 
 @pytest.mark.frontend
@@ -8907,7 +9663,7 @@ def test_day6_day7_wrap_highlights_capsule_input_and_keeps_cursor_there(
 
 
 @pytest.mark.frontend
-def test_day6_wrap_cleanup_moves_to_capsule_once_and_final_wrap_holds_cursor(mock_page: Page):
+def test_day6_wrap_cleanup_and_final_wrap_hold_cursor_after_hud(mock_page: Page):
     _bootstrap_page(
         mock_page,
         setup_js="""
@@ -8977,18 +9733,10 @@ def test_day6_wrap_cleanup_moves_to_capsule_once_and_final_wrap_holds_cursor(moc
         """
     )
 
-    assert [
+    assert not [
         event for event in result
         if event["type"] == "move"
-    ] == [{
-        "type": "move",
-        "id": "compact-chat-input",
-        "item": "input",
-        "x": 320,
-        "y": 280,
-        "durationMs": 760,
-        "sceneId": "day6_wrap_cleanup",
-    }]
+    ]
     assert {
         "type": "highlight",
         "key": "day6_wrap",
@@ -9057,7 +9805,7 @@ def test_day6_wrap_cleanup_externalized_keeps_input_cursor_target_during_cleanup
     assert [event for event in result if event["type"] == "cursor"] == [{
         "type": "cursor",
         "kind": "input",
-        "effect": "move",
+        "effect": "",
     }]
     assert not [
         event for event in result

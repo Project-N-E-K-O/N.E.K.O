@@ -457,6 +457,18 @@
         writeAvatarFloatingGuideUsageState(patch);
     }
 
+    function recordAvatarFloatingGuideRoundEnd(round) {
+        const normalizedRound = Number(round);
+        if (!Number.isFinite(normalizedRound) || normalizedRound <= 0) {
+            return;
+        }
+        const day = Math.floor(normalizedRound);
+        const endedAt = Date.now();
+        const patch = {};
+        patch['day' + day + 'EndedAt'] = endedAt;
+        writeAvatarFloatingGuideUsageState(patch);
+    }
+
     function markAvatarFloatingGuideUsage(key) {
         const normalizedKey = typeof key === 'string' ? key.trim() : '';
         if (!normalizedKey) {
@@ -506,6 +518,28 @@
         return !!(day === 1 && nextRoundStartedAt && voiceUsedAt < nextRoundStartedAt);
     }
 
+    function hasAvatarFloatingGuideVoiceUsedAfterDay1EndBeforeRoundStart(round) {
+        const normalizedRound = Number(round);
+        if (!Number.isFinite(normalizedRound) || normalizedRound <= 0) {
+            return false;
+        }
+        const state = readAvatarFloatingGuideUsageState();
+        if (!state || !state.voiceUsed) {
+            return false;
+        }
+        const voiceUsedAt = normalizeAvatarFloatingGuideUsageTimestamp(state.voiceUsedAt);
+        const day1EndedAt = normalizeAvatarFloatingGuideUsageTimestamp(state.day1EndedAt);
+        const day = Math.floor(normalizedRound);
+        const roundStartedAt = normalizeAvatarFloatingGuideUsageTimestamp(state['day' + day + 'StartedAt']);
+        return !!(
+            voiceUsedAt
+            && day1EndedAt
+            && roundStartedAt
+            && voiceUsedAt >= day1EndedAt
+            && voiceUsedAt < roundStartedAt
+        );
+    }
+
     if (!window.__avatarFloatingGuideUsageListenersInstalled) {
         window.__avatarFloatingGuideUsageListenersInstalled = true;
         window.addEventListener('live2d-mic-toggle', function (event) {
@@ -532,21 +566,30 @@
             if (target.closest('[id$="-toggle-proactive-chat"]')) {
                 markAvatarFloatingGuideUsage('proactiveChatOpened');
             }
+            if (target.closest('#micButton')) {
+                markAvatarFloatingGuideUsage('voiceUsed');
+            }
         }, true);
     }
 
     const DEFAULT_USER_CURSOR_REVEAL_DISTANCE = 14;
     const DEFAULT_USER_CURSOR_REVEAL_INTERVAL_MS = 160;
     const DEFAULT_USER_CURSOR_REVEAL_MOVES = 2;
+    const DEFAULT_INTERRUPT_COUNT_CURSOR_REVEAL_MS = 3000;
     const DEFAULT_STEP_DELAY_MS = 120;
     const DEFAULT_SCENE_SETTLE_MS = 260;
     const DEFAULT_CURSOR_DURATION_MS = 520;
     const DEFAULT_CURSOR_CLICK_VISIBLE_MS = 420;
-    const DAY6_PLUGIN_SIDE_PANEL_CURSOR_MOVE_MS = 420;
-    const DAY6_PLUGIN_SIDE_PANEL_CLICK_VISIBLE_MS = 320;
+    const DAY6_PLUGIN_AGENT_PANEL_CURSOR_MOVE_MS = 2800;
+    const DAY6_PLUGIN_AGENT_PANEL_CURSOR_START_DELAY_MS = 500;
+    const DAY6_PLUGIN_AGENT_PANEL_CLICK_VISIBLE_MS = 620;
+    const DAY6_PLUGIN_CAT_PAW_CURSOR_OFFSET_Y = 8;
+    const DAY6_PLUGIN_SIDE_PANEL_CURSOR_MOVE_MS = 1120;
+    const DAY6_PLUGIN_SIDE_PANEL_CURSOR_START_DELAY_MS = 500;
+    const DAY6_PLUGIN_SIDE_PANEL_CLICK_VISIBLE_MS = 480;
     const DAY6_PLUGIN_SIDE_PANEL_ACTION_TIMEOUT_MS = 1200;
     const DAY6_PLUGIN_SIDE_PANEL_DASHBOARD_WAIT_MS = 900;
-    const DAY6_PLUGIN_DASHBOARD_DONE_GRACE_MS = 900;
+    const DAY6_PLUGIN_DASHBOARD_DONE_GRACE_MS = 120;
     const INTRO_GREETING_REPLY_TEXT = '微风、阳光，还有刚刚好出现的你。初次见面，我是林悠怡，未来的日子请多关照喵！我把关于这里的一切都写进新手指南里啦！就当作是我们相遇的第一份小礼物，请查收吧！';
     const INTRO_GREETING_REPLY_TEXT_KEY = 'tutorial.yuiGuide.lines.introGreetingReply';
     const TAKEOVER_PLUGIN_DASHBOARD_TEXT = '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼！';
@@ -576,8 +619,10 @@
     const PLUGIN_DASHBOARD_NARRATION_FINISHED_EVENT = 'neko:yui-guide:plugin-dashboard:narration-finished';
     const PLUGIN_DASHBOARD_INTERRUPT_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-request';
     const PLUGIN_DASHBOARD_INTERRUPT_ACK_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-ack';
+    const PLUGIN_DASHBOARD_SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT = 'neko:yui-guide:plugin-dashboard:system-cursor-temporary-reveal';
     const DESKTOP_PLUGIN_DASHBOARD_INTERRUPT_ACK_EVENT = 'neko:yui-guide:desktop-interrupt-ack';
     const DESKTOP_PLUGIN_DASHBOARD_NARRATION_FINISHED_EVENT = 'neko:yui-guide:desktop-narration-finished';
+    const DESKTOP_PLUGIN_DASHBOARD_SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT = 'neko:yui-guide:desktop-system-cursor-temporary-reveal';
     const DESKTOP_PLUGIN_DASHBOARD_SKIP_REQUEST_EVENT = 'neko:yui-guide:desktop-skip-request';
     const PLUGIN_DASHBOARD_SKIP_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:skip-request';
     const DEFAULT_TUTORIAL_MODEL_MANAGER_LANLAN_NAME = 'ATLS';
@@ -604,6 +649,9 @@
     const DAY1_HOME_GUIDE = getYuiGuideDailyGuide(1) || {};
     const GUIDE_AUDIO_FILES_BY_KEY = Object.freeze(collectGuideAudioFilesByKey());
     const GUIDE_AUDIO_FILE_OVERRIDES_BY_KEY = Object.freeze(Object.assign({}, DAY1_HOME_GUIDE.audioFileOverridesByKey || {}));
+    const GUIDE_AUDIO_VERSION_BY_KEY = Object.freeze({
+        avatar_floating_day4_model_lock: '20260701'
+    });
 
     function guideAudioSrc(key) {
         const files = key
@@ -619,7 +667,9 @@
         const hasLocaleFile = Object.prototype.hasOwnProperty.call(files, locale);
         const fileName = hasLocaleFile ? files[locale] : (files.en || '');
         const fileLocale = hasLocaleFile ? locale : 'en';
-        return fileName ? (GUIDE_AUDIO_BASE_URL + fileLocale + '/' + encodeURIComponent(fileName)) : '';
+        const version = GUIDE_AUDIO_VERSION_BY_KEY[key] || '';
+        const versionQuery = version ? ('?v=' + encodeURIComponent(version)) : '';
+        return fileName ? (GUIDE_AUDIO_BASE_URL + fileLocale + '/' + encodeURIComponent(fileName) + versionQuery) : '';
     }
 
     function shouldGuideAudioDriveMouth(voiceKey) {
@@ -938,23 +988,26 @@
     });
 
     const GUIDE_AUDIO_DURATIONS_BY_KEY = Object.freeze({
-        avatar_floating_day2_intro: Object.freeze({ zh: 12000, ja: 18286, en: 14968, ko: 17580, ru: 16196 }),
-        avatar_floating_day2_intro_voice_used: Object.freeze({ zh: 20208, ja: 21682, en: 19931, ko: 25992, ru: 19566 }),
-        avatar_floating_day2_wrap: Object.freeze({ zh: 8500, ja: 9874, en: 8882, ko: 9535, ru: 8934 }),
-        avatar_floating_day2_wrap_companion: Object.freeze({ zh: 7920, ja: 10893, en: 10371, ko: 9404, ru: 9639 }),
-        avatar_floating_day2_wrap_intro: Object.freeze({ zh: 2840, ja: 2534, en: 2664, ko: 2482, ru: 2664 }),
-        avatar_floating_day3_avatar_tools_intro: Object.freeze({ zh: 4400, ja: 5904, en: 4336, ko: 6060, ru: 5120 }),
-        avatar_floating_day3_avatar_tools_props: Object.freeze({ zh: 13320, ja: 14655, en: 14681, ko: 14420, ru: 14942 }),
-        avatar_floating_day3_galgame_choices: Object.freeze({ zh: 9800, ja: 12382, en: 9639, ko: 11755, ru: 12931 }),
-        avatar_floating_day3_galgame_intro: Object.freeze({ zh: 6640, ja: 9117, en: 7262, ko: 8803, ru: 7393 }),
-        avatar_floating_day3_intro: Object.freeze({ zh: 12960, ja: 17711, en: 14054, ko: 17241, ru: 16535 }),
-        avatar_floating_day3_wrap_intro: Object.freeze({ zh: 5700, ja: 6531, en: 5877, ko: 7210, ru: 6896 }),
-        avatar_floating_day3_wrap_ready: Object.freeze({ zh: 5840, ja: 7993, en: 6374, ko: 7366, ru: 7210 }),
+        avatar_floating_day2_avatar_tools_intro: Object.freeze({ zh: 4400, ja: 5904, en: 4336, ko: 6060, ru: 5120 }),
+        avatar_floating_day2_avatar_tools_props: Object.freeze({ zh: 13320, ja: 14655, en: 14681, ko: 14420, ru: 14942 }),
+        avatar_floating_day2_galgame_choices: Object.freeze({ zh: 9800, ja: 12382, en: 9639, ko: 11755, ru: 12931 }),
+        avatar_floating_day2_galgame_intro: Object.freeze({ zh: 6640, ja: 9117, en: 7262, ko: 8803, ru: 7393 }),
+        avatar_floating_day2_intro: Object.freeze({ zh: 12960, ja: 17711, en: 14054, ko: 17241, ru: 16535 }),
+        avatar_floating_day2_wrap_intro: Object.freeze({ zh: 5700, ja: 6531, en: 5877, ko: 7210, ru: 6896 }),
+        avatar_floating_day2_wrap_ready: Object.freeze({ zh: 5840, ja: 7993, en: 6374, ko: 7366, ru: 7210 }),
+        avatar_floating_day3_intro: Object.freeze({ zh: 12768, ja: 17371, en: 14602, ko: 17711, ru: 15125 }),
+        avatar_floating_day3_intro_voice_used: Object.freeze({ zh: 18336, ja: 22544, en: 20114, ko: 25260, ru: 20637 }),
+        avatar_floating_day3_personalization_detail: Object.freeze({ zh: 9540, ja: 11337, en: 12042, ko: 11206, ru: 10240 }),
+        avatar_floating_day3_personalization_space: Object.freeze({ zh: 7680, ja: 8882, en: 10841, ko: 10240, ru: 11729 }),
+        avatar_floating_day3_proactive_chat: Object.freeze({ zh: 6800, ja: 8829, en: 9169, ko: 9352, ru: 8098 }),
+        avatar_floating_day3_wrap: Object.freeze({ zh: 8500, ja: 9874, en: 8882, ko: 9535, ru: 8934 }),
+        avatar_floating_day3_wrap_companion: Object.freeze({ zh: 7920, ja: 10893, en: 10371, ko: 9404, ru: 9639 }),
+        avatar_floating_day3_wrap_intro: Object.freeze({ zh: 2840, ja: 2534, en: 2664, ko: 2482, ru: 2664 }),
         avatar_floating_day4_chat_settings: Object.freeze({ zh: 11880, ja: 13636, en: 12382, ko: 14472, ru: 12016 }),
         avatar_floating_day4_gaze_follow: Object.freeze({ zh: 9780, ja: 13401, en: 9352, ko: 10971, ru: 10762 }),
         avatar_floating_day4_intro: Object.freeze({ zh: 8380, ja: 9456, en: 7497, ko: 9822, ru: 8699 }),
         avatar_floating_day4_model_behavior: Object.freeze({ zh: 13600, ja: 15752, en: 16144, ko: 14785, ru: 14524 }),
-        avatar_floating_day4_model_lock: Object.freeze({ zh: 11544, ja: 14968, en: 13296, ko: 14602, ru: 11598 }),
+        avatar_floating_day4_model_lock: Object.freeze({ zh: 18480, ja: 24137, en: 23771, ko: 26305, ru: 21473 }),
         avatar_floating_day4_privacy_mode: Object.freeze({ zh: 14880, ja: 15386, en: 14263, ko: 14472, ru: 16091 }),
         avatar_floating_day4_return_home: Object.freeze({ zh: 10940, ja: 14472, en: 13949, ko: 13819, ru: 13479 }),
         avatar_floating_day4_wrap: Object.freeze({ zh: 13940, ja: 17606, en: 16326, ko: 19670, ru: 18495 }),
@@ -2687,9 +2740,8 @@
             this.pointerDownHandler = this.onPointerDown.bind(this);
             this.resistanceCursorTimer = null;
             this.userCursorRevealMoveCount = 0;
-            this.userCursorRevealed = false;
+            this.userCursorRevealSuppressed = false;
             this.lastUserCursorRevealMoveAt = 0;
-            this.restoreHiddenCursorAfterResistance = false;
             this.pageHideHandler = this.onPageHide.bind(this);
             this.tutorialEndHandler = this.onTutorialEndEvent.bind(this);
             this.externalChatReadyHandler = this.onExternalChatReady.bind(this);
@@ -2910,8 +2962,12 @@
             }
         }
 
-        setTutorialTakingOver(active) {
+        setTutorialTakingOver(active, options) {
             const isActive = active === true;
+            const shouldSyncCursor = !(options && options.syncSystemCursor === false);
+            if (isActive && shouldSyncCursor) {
+                this.syncSystemCursorHidden(true, 'taking_over_started');
+            }
             this.setAvatarFloatingGuideTutorialMode(isActive);
             const featureController = window.NekoHomeTutorialFeatureController;
             if (
@@ -3489,25 +3545,29 @@
         }
 
         resolveAvatarFloatingSceneText(scene) {
-            if (scene && scene.id === 'day2_intro_context') {
-                const voiceUsedAfterDay1Start = hasAvatarFloatingGuideVoiceUsedAfterRoundStart(1);
-                return voiceUsedAfterDay1Start
-                    ? this.resolveGuideCopy('tutorial.avatarFloating.day2.introVoiceUsed', scene.text || '')
-                    : this.resolveGuideCopy(scene.textKey || 'tutorial.avatarFloating.day2.intro', scene.text || '');
+            if (scene && scene.id === 'day3_intro_context') {
+                const voiceUsedAfterDay1End = hasAvatarFloatingGuideVoiceUsedAfterDay1EndBeforeRoundStart(3);
+                return voiceUsedAfterDay1End
+                    ? this.resolveGuideCopy('tutorial.avatarFloating.day3.introVoiceUsed', scene.text || '')
+                    : this.resolveGuideCopy(scene.textKey || 'tutorial.avatarFloating.day3.intro', scene.text || '');
             }
             return this.resolveGuideCopy(scene.textKey || '', scene.text || '');
         }
 
         resolveAvatarFloatingSceneVoiceKey(scene) {
-            if (scene && scene.id === 'day2_intro_context' && hasAvatarFloatingGuideVoiceUsedAfterRoundStart(1)) {
-                return 'avatar_floating_day2_intro_voice_used';
+            if (
+                scene
+                && scene.id === 'day3_intro_context'
+                && hasAvatarFloatingGuideVoiceUsedAfterDay1EndBeforeRoundStart(3)
+            ) {
+                return 'avatar_floating_day3_intro_voice_used';
             }
             return scene && typeof scene.voiceKey === 'string' ? scene.voiceKey : '';
         }
 
         resolveAvatarFloatingSceneEmotion(scene) {
-            if (scene && scene.id === 'day2_intro_context') {
-                return hasAvatarFloatingGuideVoiceUsedAfterRoundStart(1) ? 'happy' : 'sad';
+            if (scene && scene.id === 'day3_intro_context') {
+                return hasAvatarFloatingGuideVoiceUsedAfterDay1EndBeforeRoundStart(3) ? 'happy' : 'sad';
             }
             return scene && typeof scene.emotion === 'string' ? scene.emotion : '';
         }
@@ -4120,12 +4180,41 @@
             return anchor && this.isElementVisible(anchor) ? anchor : null;
         }
 
-        getDay2CharacterSettingsPersistenceTarget(sceneId) {
-            if (sceneId === 'day2_personalization_detail') {
+        getDay5CharacterSettingsPersistenceTarget(sceneId) {
+            if (sceneId === 'day5_character_settings' || sceneId === 'day5_character_panic') {
+                return this.getDay4SettingsButtonSpotlightTarget()
+                    || this.getDay5CharacterSettingsButtonTarget();
+            }
+            if (sceneId === 'day5_memory_entry' || sceneId === 'day5_wrap') {
+                return null;
+            }
+            return undefined;
+        }
+
+        getDay3CharacterSettingsPersistenceTarget(sceneId) {
+            if (sceneId === 'day3_personalization_detail') {
                 return this.getDay5CharacterSettingsButtonTarget()
                     || this.getSettingsMenuElement('character');
             }
             return undefined;
+        }
+
+        applyAvatarFloatingPersistenceOverride(highlightConfig, sceneId) {
+            if (!highlightConfig) {
+                return highlightConfig;
+            }
+            const persistentTargetGetters = [
+                this.getDay3CharacterSettingsPersistenceTarget,
+                this.getDay4SettingsButtonPersistenceTarget,
+                this.getDay5CharacterSettingsPersistenceTarget
+            ];
+            persistentTargetGetters.forEach((getPersistentTarget) => {
+                const persistentTarget = getPersistentTarget.call(this, sceneId);
+                if (typeof persistentTarget !== 'undefined') {
+                    highlightConfig.persistent = persistentTarget;
+                }
+            });
+            return highlightConfig;
         }
 
         refreshSettingsPeekSpotlights(settingsButton) {
@@ -5189,8 +5278,11 @@
             });
         }
 
-        async waitForSceneDelay(delayMs) {
+        async waitForSceneDelay(delayMs, options) {
             const totalMs = Number.isFinite(delayMs) ? Math.max(0, delayMs) : 0;
+            const shouldContinue = options && typeof options.shouldContinue === 'function'
+                ? options.shouldContinue
+                : null;
             if (totalMs <= 0) {
                 return true;
             }
@@ -5199,7 +5291,7 @@
             let lastTickAt = Date.now();
 
             while (remainingMs > 0) {
-                if (this.isStopping()) {
+                if (this.isStopping() || (shouldContinue && !shouldContinue())) {
                     return false;
                 }
 
@@ -5211,7 +5303,7 @@
 
                 const sliceMs = Math.min(remainingMs, 80);
                 await wait(sliceMs);
-                if (this.isStopping()) {
+                if (this.isStopping() || (shouldContinue && !shouldContinue())) {
                     return false;
                 }
 
@@ -5788,11 +5880,132 @@
             return null;
         }
 
+        setAvatarFloatingToolbarVisible(visible, reason) {
+            const shouldShow = visible !== false;
+            window.nekoYuiGuideFloatingToolbarSuppressed = !shouldShow;
+            if (document && document.body && document.body.classList) {
+                document.body.classList.toggle('yui-guide-floating-toolbar-suppressed', !shouldShow);
+            }
+            window.dispatchEvent(new CustomEvent('neko:yui-guide-floating-toolbar-suppression-change', {
+                detail: {
+                    suppressed: !shouldShow,
+                    reason: reason || ''
+                }
+            }));
+            if (shouldShow) {
+                return;
+            }
+
+            this.forceHideAvatarFloatingGuideManagedSurfaces();
+        }
+
+        revealAvatarFloatingToolbarForGuideInteraction(reason) {
+            this.setAvatarFloatingToolbarVisible(true, reason || 'guide-interaction');
+            const toolbar = this.getAvatarFloatingBaseTarget('floating-buttons');
+            if (!toolbar || !toolbar.style) {
+                return false;
+            }
+            if (toolbar.dataset && toolbar.dataset.yuiGuideForcedHidden === 'true') {
+                delete toolbar.dataset.yuiGuideForcedHidden;
+            }
+            toolbar.style.removeProperty('display');
+            toolbar.style.removeProperty('visibility');
+            toolbar.style.removeProperty('opacity');
+            toolbar.style.removeProperty('pointer-events');
+            toolbar.style.setProperty('display', 'flex', 'important');
+            toolbar.style.setProperty('visibility', 'visible', 'important');
+            toolbar.style.setProperty('opacity', '1', 'important');
+            toolbar.style.setProperty('pointer-events', 'auto', 'important');
+            return true;
+        }
+
+        shouldShowAvatarFloatingToolbarForScene(scene) {
+            const normalizedScene = scene || {};
+            const sceneId = typeof normalizedScene.id === 'string'
+                ? normalizedScene.id
+                : '';
+            const day4SettingsSceneIds = [
+                'day4_chat_settings',
+                'day4_model_behavior',
+                'day4_gaze_follow',
+                'day4_privacy_mode'
+            ];
+            const day3SettingsSceneIds = [
+                'day3_personalization_space',
+                'day3_personalization_detail',
+                'day3_proactive_chat'
+            ];
+            const day5SettingsSceneIds = [
+                'day5_character_settings',
+                'day5_character_panic',
+                'day5_memory_entry'
+            ];
+            if (
+                day3SettingsSceneIds.includes(sceneId)
+                || day4SettingsSceneIds.includes(sceneId)
+                || day5SettingsSceneIds.includes(sceneId)
+            ) {
+                return true;
+            }
+
+            const topLevelTargets = [
+                '#${p}-floating-buttons',
+                '#${p}-btn-mic',
+                '#${p}-btn-screen',
+                '#${p}-btn-agent',
+                '#${p}-btn-settings',
+                '#${p}-btn-goodbye',
+                '#${p}-btn-return',
+                '#${p}-lock-icon',
+                'floating-buttons'
+            ];
+            const settingsPanelTargets = [
+                '#${p}-menu-character',
+                '#${p}-menu-memory',
+                '#${p}-toggle-proactive-chat'
+            ];
+            const targetFields = [
+                normalizedScene.target,
+                normalizedScene.secondary,
+                normalizedScene.cursorTarget,
+                normalizedScene.persistent
+            ].filter((value) => typeof value === 'string');
+            if (targetFields.some((target) => topLevelTargets.includes(target))) {
+                return true;
+            }
+            if (targetFields.some((target) => settingsPanelTargets.includes(target))) {
+                return true;
+            }
+
+            const operation = typeof normalizedScene.operation === 'string'
+                ? normalizedScene.operation
+                : '';
+            return !!(
+                operation === 'day1-intro-basic-voice-showcase'
+                || operation === 'day3-open-settings-personalization'
+                || operation === 'day3-settings-detail'
+                || operation.indexOf('day1-managed-scene:') === 0
+                || operation.indexOf('show-settings-menu:') === 0
+                || operation.indexOf('show-settings-sidepanel:') === 0
+                || operation.indexOf('show-agent-sidepanel:') === 0
+                || operation === 'day6-plugin-open-agent-panel-flow'
+                || operation === 'day6-plugin-open-management-panel-flow'
+                || operation === 'day6-plugin-sidepanel-flow'
+            );
+        }
+
+        syncAvatarFloatingToolbarForScene(scene, reason) {
+            this.setAvatarFloatingToolbarVisible(
+                this.shouldShowAvatarFloatingToolbarForScene(scene),
+                reason || (scene && scene.id) || 'scene'
+            );
+        }
+
         isAvatarFloatingInputIntroScene(scene) {
             const sceneId = scene && typeof scene.id === 'string' ? scene.id : '';
             return !!(
-                sceneId === 'day2_intro_context'
-                || sceneId === 'day3_tool_toggle_intro'
+                sceneId === 'day2_tool_toggle_intro'
+                || sceneId === 'day3_intro_context'
                 || sceneId === 'day4_intro_companion'
                 || sceneId === 'day5_character_settings'
                 || sceneId === 'day6_intro_agent'
@@ -5919,6 +6132,31 @@
             return hidden;
         }
 
+        positionAvatarFloatingSidePanelNow(panel) {
+            const targetPanel = panel || null;
+            const anchor = targetPanel && targetPanel._anchorElement ? targetPanel._anchorElement : null;
+            const popupUi = window.AvatarPopupUI || null;
+            if (!targetPanel || !anchor || !popupUi || typeof popupUi.positionSidePanel !== 'function') {
+                return false;
+            }
+
+            try {
+                popupUi.positionSidePanel(targetPanel, anchor);
+                return true;
+            } catch (error) {
+                console.warn('[YuiGuide] positionAvatarFloatingSidePanelNow 失败:', error);
+                return false;
+            }
+        }
+
+        refreshAvatarFloatingSettingsPanelLayout(panel) {
+            const popupPositioned = this.positionManagedPanelNow('settings');
+            const sidePanelPositioned = panel && this.isElementVisible(panel)
+                ? this.positionAvatarFloatingSidePanelNow(panel)
+                : false;
+            return popupPositioned || sidePanelPositioned;
+        }
+
         forceHideAvatarFloatingGuideManagedSurfaces() {
             this.forceHideManagedPanel('settings');
             this.forceHideManagedPanel('agent');
@@ -5947,6 +6185,9 @@
                 return false;
             }
             const targetAnchor = anchor || panel._anchorElement || null;
+            if (targetAnchor) {
+                this.refreshAvatarFloatingSettingsPanelLayout(panel);
+            }
             this.collapseAvatarFloatingSidePanelsExcept(panel);
             if (typeof panel._expand === 'function') {
                 if (panel._hoverCollapseTimer) {
@@ -5971,9 +6212,22 @@
             }, 1400));
         }
 
-        async ensureAvatarFloatingSettingsSidePanel(type) {
-            const opened = await this.openSettingsPanel();
-            if (!opened || this.isStopping()) {
+        async ensureAvatarFloatingSettingsSidePanel(type, options) {
+            const shouldContinue = options && typeof options.shouldContinue === 'function'
+                ? options.shouldContinue
+                : null;
+            const skipOpenSettingsPanel = !!(options && options.skipOpenSettingsPanel);
+            if (shouldContinue && !shouldContinue()) {
+                return null;
+            }
+            if (!skipOpenSettingsPanel) {
+                const opened = await this.openSettingsPanel();
+                if (!opened) {
+                    return null;
+                }
+                this.positionManagedPanelNow('settings');
+            }
+            if (this.isStopping()) {
                 return null;
             }
             const panel = await this.waitForElement(() => this.getAvatarFloatingSidePanel(type), 1200);
@@ -5981,7 +6235,16 @@
                 return null;
             }
             this.sidebarPauseController.trackPanel(panel);
-            return (await this.expandAvatarFloatingSidePanel(panel, panel._anchorElement || null)) ? panel : null;
+            this.refreshAvatarFloatingSettingsPanelLayout(panel);
+            if (shouldContinue && !shouldContinue()) {
+                return null;
+            }
+            const expanded = await this.expandAvatarFloatingSidePanel(panel, panel._anchorElement || null);
+            if (!expanded || (shouldContinue && !shouldContinue())) {
+                return null;
+            }
+            this.refreshAvatarFloatingSettingsPanelLayout(panel);
+            return panel;
         }
 
         async ensureAvatarFloatingAgentSidePanel(toggleId) {
@@ -6345,7 +6608,7 @@
         }
 
         getExternalizedChatCursorEffect(scene) {
-            if (scene && scene.id === 'day3_avatar_tools') {
+            if (scene && scene.id === 'day2_avatar_tools') {
                 return 'move';
             }
             const action = scene && typeof scene.cursorAction === 'string'
@@ -6367,7 +6630,7 @@
         }
 
         getExternalizedChatCursorMoveDurationMs(scene, fallbackMs) {
-            if (scene && typeof scene.id === 'string' && scene.id.indexOf('day3_') === 0) {
+            if (this.isDay2InteractionSceneId(scene && scene.id)) {
                 return 0;
             }
             if (scene && Number.isFinite(scene.cursorMoveDurationMs)) {
@@ -6457,33 +6720,42 @@
             return true;
         }
 
-        isDay3AvatarToolsSceneId(sceneId) {
+        isDay2AvatarToolsSceneId(sceneId) {
             return !!(
                 typeof sceneId === 'string'
                 && (
-                    sceneId === 'day3_avatar_tools'
-                    || sceneId.indexOf('day3_avatar_tools_') === 0
+                    sceneId === 'day2_avatar_tools'
+                    || sceneId.indexOf('day2_avatar_tools_') === 0
                 )
             );
         }
 
-        isDay3GalgameSceneId(sceneId) {
+        isDay2GalgameSceneId(sceneId) {
             return !!(
                 typeof sceneId === 'string'
                 && (
-                    sceneId === 'day3_galgame_games'
-                    || sceneId.indexOf('day3_galgame_') === 0
+                    sceneId === 'day2_galgame_games'
+                    || sceneId.indexOf('day2_galgame_') === 0
                 )
             );
         }
 
-        isDay3WrapSceneId(sceneId) {
+        isDay2WrapSceneId(sceneId) {
             return !!(
                 typeof sceneId === 'string'
                 && (
-                    sceneId === 'day3_wrap'
-                    || sceneId.indexOf('day3_wrap_') === 0
+                    sceneId === 'day2_wrap'
+                    || sceneId.indexOf('day2_wrap_') === 0
                 )
+            );
+        }
+
+        isDay2InteractionSceneId(sceneId) {
+            return !!(
+                sceneId === 'day2_tool_toggle_intro'
+                || this.isDay2AvatarToolsSceneId(sceneId)
+                || this.isDay2GalgameSceneId(sceneId)
+                || this.isDay2WrapSceneId(sceneId)
             );
         }
 
@@ -6515,24 +6787,24 @@
                     && nextSceneId === 'day1_takeover_return_control'
                 )
                 || (
-                    previousSceneId === 'day3_tool_toggle_intro'
-                    && this.isDay3AvatarToolsSceneId(nextSceneId)
+                    previousSceneId === 'day2_tool_toggle_intro'
+                    && this.isDay2AvatarToolsSceneId(nextSceneId)
                 )
                 || (
-                    this.isDay3AvatarToolsSceneId(previousSceneId)
-                    && this.isDay3AvatarToolsSceneId(nextSceneId)
+                    this.isDay2AvatarToolsSceneId(previousSceneId)
+                    && this.isDay2AvatarToolsSceneId(nextSceneId)
                 )
                 || (
-                    this.isDay3AvatarToolsSceneId(previousSceneId)
-                    && this.isDay3GalgameSceneId(nextSceneId)
+                    this.isDay2AvatarToolsSceneId(previousSceneId)
+                    && this.isDay2GalgameSceneId(nextSceneId)
                 )
                 || (
-                    this.isDay3GalgameSceneId(previousSceneId)
-                    && this.isDay3GalgameSceneId(nextSceneId)
+                    this.isDay2GalgameSceneId(previousSceneId)
+                    && this.isDay2GalgameSceneId(nextSceneId)
                 )
                 || (
-                    this.isDay3WrapSceneId(previousSceneId)
-                    && this.isDay3WrapSceneId(nextSceneId)
+                    this.isDay2WrapSceneId(previousSceneId)
+                    && this.isDay2WrapSceneId(nextSceneId)
                 )
             );
         }
@@ -6590,6 +6862,26 @@
                 return;
             }
             const shouldClearCursor = !!(options && options.clearCursor === true);
+            const shouldPreservePcOverlayCursor = !!(options && options.preservePcOverlayCursor === true);
+            if (shouldClearCursor && shouldPreservePcOverlayCursor) {
+                this.setHomePcCursorOutputSuppressedForExternalizedChat(false);
+            }
+            if (
+                shouldClearCursor
+                && shouldPreservePcOverlayCursor
+                && this.overlay
+                && typeof this.overlay.getCursorPosition === 'function'
+                && typeof this.overlay.syncCursorPosition === 'function'
+            ) {
+                const currentCursorPoint = this.overlay.getCursorPosition();
+                if (
+                    currentCursorPoint
+                    && Number.isFinite(currentCursorPoint.x)
+                    && Number.isFinite(currentCursorPoint.y)
+                ) {
+                    this.overlay.syncCursorPosition(currentCursorPoint.x, currentCursorPoint.y, true);
+                }
+            }
             if (typeof this.interactionTakeover.setExternalizedChatSpotlight === 'function') {
                 this.interactionTakeover.setExternalizedChatSpotlight('');
             }
@@ -6597,8 +6889,12 @@
                 shouldClearCursor
                 && typeof this.interactionTakeover.setExternalizedChatCursor === 'function'
             ) {
-                this.interactionTakeover.setExternalizedChatCursor('');
-                this.setHomePcCursorOutputSuppressedForExternalizedChat(false);
+                this.interactionTakeover.setExternalizedChatCursor('', {
+                    preservePcOverlayCursor: shouldPreservePcOverlayCursor
+                });
+                if (!shouldPreservePcOverlayCursor) {
+                    this.setHomePcCursorOutputSuppressedForExternalizedChat(false);
+                }
             }
         }
 
@@ -6874,7 +7170,7 @@
             if (this.isHomeChatExternalized()) {
                 this.setExternalizedChatCursorEffect('galgame', 'move');
                 await this.waitForExternalizedChatCursorMove(
-                    scene && scene.id || 'day3_galgame_entry',
+                    scene && scene.id || 'day2_galgame_entry',
                     1800
                 );
                 if (this.isStopping()) {
@@ -6904,7 +7200,7 @@
                     effectDurationMs: DEFAULT_CURSOR_CLICK_VISIBLE_MS
                 });
                 await this.waitForExternalizedChatCursorMove(
-                    scene && scene.id || 'day3_galgame_entry',
+                    scene && scene.id || 'day2_galgame_entry',
                     DEFAULT_CURSOR_CLICK_VISIBLE_MS + 500
                 );
                 return true;
@@ -7063,6 +7359,20 @@
             return null;
         }
 
+        async applyAvatarFloatingSettledCleanupHighlight(scene) {
+            const normalizedScene = scene || {};
+            const highlightConfig = {
+                key: (normalizedScene.id || 'scene') + '-settled',
+                persistent: await this.resolveAvatarFloatingPersistent(normalizedScene, {
+                    fallbackToChatWindow: false
+                }),
+                primary: await this.resolveAvatarFloatingTarget(normalizedScene, 'primary'),
+                secondary: await this.resolveAvatarFloatingTarget(normalizedScene, 'secondary')
+            };
+            this.applyAvatarFloatingPersistenceOverride(highlightConfig, normalizedScene.id);
+            this.applyGuideHighlights(highlightConfig);
+        }
+
         applyAvatarFloatingSceneSpotlightVariant(scene, target) {
             const variant = scene && typeof scene.spotlightVariant === 'string'
                 ? scene.spotlightVariant.trim()
@@ -7101,12 +7411,18 @@
                 if (window.AgentHUD && typeof window.AgentHUD.showAgentTaskHUD === 'function') {
                     window.AgentHUD.showAgentTaskHUD();
                     this.avatarFloatingGuideTemporaryHudShown = true;
+                    if (typeof window.AgentHUD.expandAgentTaskHUD === 'function') {
+                        window.AgentHUD.expandAgentTaskHUD();
+                    }
                 } else if (window.AgentHUD && typeof window.AgentHUD.createAgentTaskHUD === 'function') {
                     const hud = window.AgentHUD.createAgentTaskHUD();
                     if (hud) {
                         hud.style.display = 'flex';
                         hud.style.opacity = '1';
                         this.avatarFloatingGuideTemporaryHudShown = true;
+                        if (typeof window.AgentHUD.expandAgentTaskHUD === 'function') {
+                            window.AgentHUD.expandAgentTaskHUD();
+                        }
                     }
                 }
                 await this.waitForElement(() => {
@@ -7143,7 +7459,7 @@
             ) {
                 this.setCompactToolFanOpen(true, 'avatar-floating-guide-prepare-tool-fan');
             }
-            if (operation === 'day2-settings-detail') {
+            if (operation === 'day3-settings-detail') {
                 await this.closeAgentPanel().catch(() => {});
                 await this.openSettingsPanel();
             }
@@ -7156,10 +7472,15 @@
 
         async runDay6PluginOpenAgentPanelFlow(scene) {
             const sceneId = scene && scene.id ? scene.id : 'day6_agent_status_master';
+            const scaleSceneMs = this.createSceneScaler(scene && scene.voiceKey);
             const guardFailed = () => this.isStopping();
-            const catPawButton = this.getFloatingButtonShell(this.getFallbackFloatingButton('agent'))
-                || this.getFallbackFloatingButton('agent')
-                || this.queryDocumentSelector(this.expandSelector(TAKEOVER_CAPTURE_SELECTORS.catPaw));
+            this.revealAvatarFloatingToolbarForGuideInteraction(sceneId);
+            const catPawButton = await this.waitForVisibleTarget([
+                () => this.getFloatingButtonShell(this.getFallbackFloatingButton('agent')),
+                () => this.getFallbackFloatingButton('agent'),
+                () => this.getFloatingButtonShell(this.queryDocumentSelector(this.expandSelector(TAKEOVER_CAPTURE_SELECTORS.catPaw))),
+                () => this.queryDocumentSelector(this.expandSelector(TAKEOVER_CAPTURE_SELECTORS.catPaw))
+            ], 2200);
             if (!catPawButton || guardFailed()) {
                 return false;
             }
@@ -7172,11 +7493,23 @@
                 key: sceneId + '-cat-paw',
                 primary: catPawButton
             });
-            if (!(await this.moveCursorToElement(catPawButton, 760)) || guardFailed()) {
+            if (!(await this.waitForSceneDelay(DAY6_PLUGIN_AGENT_PANEL_CURSOR_START_DELAY_MS)) || guardFailed()) {
                 return false;
             }
-            const opened = await this.runActionWithCursorClick(
-                DEFAULT_CURSOR_CLICK_VISIBLE_MS,
+            await this.moveAvatarFloatingCursor(Object.assign({}, scene || {}, {
+                id: sceneId,
+                cursorAction: 'move',
+                cursorMoveDurationMs: scaleSceneMs(DAY6_PLUGIN_AGENT_PANEL_CURSOR_MOVE_MS, 2100, 5200)
+            }), catPawButton, null, null, {
+                targetPointOffset: { y: DAY6_PLUGIN_CAT_PAW_CURSOR_OFFSET_Y },
+                clampTargetPointToRect: true,
+                targetPointClampInsetPx: 4
+            });
+            if (guardFailed()) {
+                return false;
+            }
+            const opened = await this.runActionWithCursorClickExact(
+                scaleSceneMs(DAY6_PLUGIN_AGENT_PANEL_CLICK_VISIBLE_MS, 480, 1200),
                 () => this.openAgentPanel()
             );
             if (!opened || guardFailed()) {
@@ -7190,7 +7523,34 @@
 
         async runDay6PluginOpenManagementPanelFlow(scene) {
             const sceneId = scene && scene.id ? scene.id : 'day6_plugin_side_panel';
+            const scaleSceneMs = this.createSceneScaler(scene && scene.voiceKey);
             const guardFailed = () => this.isStopping();
+            const agentPanelOpened = await this.openAgentPanel();
+            if (!agentPanelOpened || guardFailed()) {
+                return false;
+            }
+            const refreshUserPluginHighlight = (target) => {
+                if (!target || guardFailed()) {
+                    return false;
+                }
+                this.applyGuideHighlights({
+                    key: sceneId + '-user-plugin',
+                    primary: target
+                });
+                return true;
+            };
+            const refreshManagementHighlight = (button) => {
+                if (!button || guardFailed()) {
+                    return null;
+                }
+                this.clearVirtualSpotlight('plugin-management-entry');
+                const spotlightTarget = this.createPluginManagementEntrySpotlight(button) || button;
+                this.applyGuideHighlights({
+                    key: sceneId + '-management-panel',
+                    primary: spotlightTarget
+                });
+                return spotlightTarget;
+            };
             const userPluginToggle = await this.waitForElement(() => {
                 const toggle = this.getAgentToggleElement('agent-user-plugin');
                 return this.getElementRect(toggle) ? toggle : null;
@@ -7198,17 +7558,30 @@
             if (!userPluginToggle || guardFailed()) {
                 return false;
             }
-            this.applyGuideHighlights({
-                key: sceneId + '-user-plugin',
-                primary: userPluginToggle
-            });
-            if (!(await this.moveCursorToElement(userPluginToggle, DAY6_PLUGIN_SIDE_PANEL_CURSOR_MOVE_MS, {
-                exactDuration: true
-            })) || guardFailed()) {
+            if (!(await this.waitForStableElementRect(userPluginToggle, 760)) || guardFailed()) {
+                return false;
+            }
+            if (!refreshUserPluginHighlight(userPluginToggle)) {
+                return false;
+            }
+            if (!(await this.waitForSceneDelay(DAY6_PLUGIN_SIDE_PANEL_CURSOR_START_DELAY_MS)) || guardFailed()) {
+                return false;
+            }
+            const userPluginMovePromise = this.moveCursorToTrackedElement(
+                userPluginToggle,
+                scaleSceneMs(DAY6_PLUGIN_SIDE_PANEL_CURSOR_MOVE_MS, 840, 2100),
+                {
+                    exactDuration: true,
+                    recheckDelayMs: 120,
+                    settleDelayMs: 40
+                }
+            );
+            const movedToUserPlugin = await userPluginMovePromise;
+            if (!movedToUserPlugin || guardFailed()) {
                 return false;
             }
             const sidePanelShown = await this.runActionWithCursorClickExact(
-                DAY6_PLUGIN_SIDE_PANEL_CLICK_VISIBLE_MS,
+                scaleSceneMs(DAY6_PLUGIN_SIDE_PANEL_CLICK_VISIBLE_MS, 360, 900),
                 () => this.ensureAvatarFloatingAgentSidePanel('user-plugin')
             );
             if (!sidePanelShown || guardFailed()) {
@@ -7223,18 +7596,47 @@
             if (!managementButton || guardFailed()) {
                 return false;
             }
-            const managementSpotlightTarget = this.createPluginManagementEntrySpotlight(managementButton) || managementButton;
-            this.applyGuideHighlights({
-                key: sceneId + '-management-panel',
-                primary: managementSpotlightTarget
-            });
-            if (!(await this.moveCursorToElement(managementButton, DAY6_PLUGIN_SIDE_PANEL_CURSOR_MOVE_MS, {
-                exactDuration: true
-            })) || guardFailed()) {
+            if (!(await this.waitForStableElementRect(managementButton, 760)) || guardFailed()) {
                 return false;
             }
+            this.applyGuideHighlights({
+                key: sceneId + '-clear-user-plugin',
+                primary: null
+            });
+            let managementSpotlightTarget = refreshManagementHighlight(managementButton);
+            if (!managementSpotlightTarget || guardFailed()) {
+                return false;
+            }
+            if (!(await this.moveCursorToTrackedElement(
+                managementButton,
+                scaleSceneMs(DAY6_PLUGIN_SIDE_PANEL_CURSOR_MOVE_MS, 840, 2100),
+                {
+                    exactDuration: true,
+                    recheckDelayMs: 120,
+                    settleDelayMs: 40
+                }
+            )) || guardFailed()) {
+                return false;
+            }
+            managementSpotlightTarget = refreshManagementHighlight(managementButton);
+            if (!managementSpotlightTarget || guardFailed()) {
+                return false;
+            }
+            if (!this.isCursorAlignedWithElement(managementButton, 5)) {
+                if (!(await this.realignCursorToAgentSidePanelAction(
+                    'agent-user-plugin',
+                    'management-panel',
+                    220
+                )) || guardFailed()) {
+                    return false;
+                }
+                managementSpotlightTarget = refreshManagementHighlight(managementButton);
+                if (!managementSpotlightTarget || guardFailed()) {
+                    return false;
+                }
+            }
             const managementOpenResult = await this.runActionWithCursorClickExact(
-                DAY6_PLUGIN_SIDE_PANEL_CLICK_VISIBLE_MS,
+                scaleSceneMs(DAY6_PLUGIN_SIDE_PANEL_CLICK_VISIBLE_MS, 360, 900),
                 async () => {
                     const existingPluginDashboardWindow = await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 120);
                     const hadPluginDashboard = !!(existingPluginDashboardWindow && !existingPluginDashboardWindow.closed);
@@ -7275,20 +7677,29 @@
         async runDay6PluginDashboardHandoffFlow(scene, narrationStartedAt) {
             const guardFailed = () => this.isStopping();
             const previewState = this.day6PluginDashboardPreview || {};
+            const homeCursorPosition = this.overlay && typeof this.overlay.getCursorPosition === 'function'
+                ? this.overlay.getCursorPosition()
+                : null;
             const pluginDashboardWindow = (
                 previewState.pluginDashboardWindow
                 && !previewState.pluginDashboardWindow.closed
             )
                 ? previewState.pluginDashboardWindow
                 : await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 1800);
-            if (!pluginDashboardWindow || pluginDashboardWindow.closed || guardFailed()) {
-                return true;
+            if (!pluginDashboardWindow || pluginDashboardWindow.closed) {
+                const cleanupCompleted = await this.cleanupDay6PluginDashboardPostNarration(
+                    previewState,
+                    homeCursorPosition,
+                    this.sceneRunId
+                );
+                this.day6PluginDashboardPreview = null;
+                return cleanupCompleted && !guardFailed();
+            }
+            if (guardFailed()) {
+                return false;
             }
             this.pluginDashboardWindowCreatedByGuide = previewState.pluginDashboardWindowCreatedByGuide !== false;
 
-            const homeCursorPosition = this.overlay && typeof this.overlay.getCursorPosition === 'function'
-                ? this.overlay.getCursorPosition()
-                : null;
             this.hideHomeCursorForExternalizedChat();
 
             const voiceKey = scene && scene.voiceKey ? scene.voiceKey : '';
@@ -7312,20 +7723,42 @@
                 elapsedNarrationMs
             }).catch(() => false);
 
-            await this.closePluginDashboardWindowIfCreatedByGuide('Day 6 插件管理预览完成');
-            this.collapseAgentSidePanel('agent-user-plugin');
-            this.clearVirtualSpotlight('plugin-management-entry');
-            this.stopHoverElement(previewState.userPluginToggle || null);
-            await this.closeAgentPanel().catch(() => {});
-            const homeReady = await this.waitForHomeMainUIReady(3600);
-            if (homeCursorPosition) {
-                this.cursor.showAt(homeCursorPosition.x, homeCursorPosition.y);
-            }
+            const cleanupCompleted = await this.cleanupDay6PluginDashboardPostNarration(
+                previewState,
+                homeCursorPosition,
+                this.sceneRunId
+            );
             this.day6PluginDashboardPreview = null;
-            if (!homeReady || guardFailed()) {
+            if (!cleanupCompleted || guardFailed()) {
                 return false;
             }
             return true;
+        }
+
+        async cleanupDay6PluginDashboardPostNarration(previewState, homeCursorPosition, sceneRunId) {
+            const normalizedPreviewState = previewState || {};
+            try {
+                await this.closePluginDashboardWindowIfCreatedByGuide('Day 6 插件管理预览完成');
+                this.collapseAgentSidePanel('agent-user-plugin');
+                this.clearVirtualSpotlight('plugin-management-entry');
+                this.stopHoverElement(normalizedPreviewState.userPluginToggle || null);
+                await this.closeAgentPanel().catch(() => {});
+                const homeReady = await this.waitForHomeMainUIReady(3600);
+                if (!homeReady) {
+                    return false;
+                }
+                if (
+                    homeCursorPosition
+                    && this.sceneRunId === sceneRunId
+                    && !this.isStopping()
+                ) {
+                    this.cursor.showAt(homeCursorPosition.x, homeCursorPosition.y);
+                }
+                return true;
+            } catch (error) {
+                console.warn('[YuiGuide] Day 6 插件管理后台收尾失败:', error);
+                return false;
+            }
         }
 
         async runDay6PluginSidePanelFlow(scene, narrationStartedAt) {
@@ -7564,15 +7997,6 @@
             });
 	        }
 
-        async playDay2PersonalizationDetailScene(scene, sceneRunId, previousSceneId, index, total) {
-            return this.settingsTourFlow.playDay2PersonalizationDetailScene(scene, {
-                sceneRunId,
-                previousSceneId,
-                index,
-                total
-            });
-        }
-
         async playDay5CharacterPanicScene(scene, sceneRunId, previousSceneId, index, total) {
             return this.settingsTourFlow.playDay5CharacterPanicScene(scene, {
                 sceneRunId,
@@ -7659,11 +8083,19 @@
                     return previousScreenAnchor;
                 }
                 explicitStartTargets.push(this.resolveAvatarFloatingSelector('#${p}-btn-screen'));
-            } else if (sceneId === 'day3_avatar_tools') {
+            } else if (sceneId === 'day2_avatar_tools') {
                 explicitStartTargets.push(this.resolveAvatarFloatingSelector('chat-tool-toggle'));
             }
 
             if (sceneId === 'day1_takeover_return_control') {
+                const keyboardToggle = this.getAgentToggleElement('agent-keyboard');
+                const keyboardRect = this.getElementRect(keyboardToggle);
+                if (keyboardRect) {
+                    return {
+                        x: keyboardRect.left + keyboardRect.width / 2,
+                        y: keyboardRect.top + keyboardRect.height / 2
+                    };
+                }
                 const keyboardControlAnchor = this.getAvatarFloatingSceneCursorAnchor('day1_takeover_capture_cursor');
                 if (keyboardControlAnchor) {
                     return keyboardControlAnchor;
@@ -7750,7 +8182,8 @@
                 }
                 const moved = await this.moveCursorToElement(
                     uniqueTargets[index],
-                    index === 0 ? (configuredFirstMoveMs || 760) : 520
+                    index === 0 ? (configuredFirstMoveMs || 760) : 520,
+                    normalizedOptions
                 );
                 if (!moved) {
                     continue;
@@ -7791,7 +8224,7 @@
                 return false;
             }
             const cursorKind = this.getExternalizedChatCursorTargetKind(scene);
-            const useHomeOwnedClick = sceneId.indexOf('day3_') === 0;
+            const useHomeOwnedClick = this.isDay2InteractionSceneId(sceneId);
             const externalizedClickStarted = !useHomeOwnedClick && !!(
                 cursorKind
                 && this.setExternalizedChatCursorEffect(cursorKind, 'click', {
@@ -7966,6 +8399,10 @@
         async playAvatarFloatingRound(round, options) {
             recordAvatarFloatingGuideRoundStart(round);
             return this.sceneOrchestrator.playRound(round, options);
+        }
+
+        recordAvatarFloatingGuideRoundEnd(round) {
+            recordAvatarFloatingGuideRoundEnd(round);
         }
 
         disableInterrupts() {
@@ -8899,7 +9336,7 @@
             });
 
             try {
-                this.revealUserCursor();
+                this.suppressUserCursorReveal();
                 this.overlay.activateSpotlight(target);
                 this.cursor.wobble();
                 const targetRect = this.getElementRect(target) || this.getElementRect(managementButton);
@@ -9115,6 +9552,34 @@
             }
         }
 
+        resolveCursorPointFromRect(rect, options) {
+            if (!rect) {
+                return null;
+            }
+            const normalizedOptions = options || {};
+            const point = {
+                x: rect.left + (rect.width / 2),
+                y: rect.top + (rect.height / 2)
+            };
+            const offset = normalizedOptions.targetPointOffset || normalizedOptions.pointOffset || null;
+            if (offset) {
+                if (Number.isFinite(offset.x)) {
+                    point.x += offset.x;
+                }
+                if (Number.isFinite(offset.y)) {
+                    point.y += offset.y;
+                }
+            }
+            if (normalizedOptions.clampTargetPointToRect === true) {
+                const inset = Number.isFinite(normalizedOptions.targetPointClampInsetPx)
+                    ? Math.max(0, normalizedOptions.targetPointClampInsetPx)
+                    : 0;
+                point.x = clamp(point.x, rect.left + inset, rect.right - inset);
+                point.y = clamp(point.y, rect.top + inset, rect.bottom - inset);
+            }
+            return point;
+        }
+
         async moveCursorToElement(element, durationMs, options) {
             const normalizedOptions = options || {};
             this.setHomePcCursorOutputSuppressedForExternalizedChat(false);
@@ -9125,14 +9590,29 @@
                     return false;
                 }
 
-                const moved = await this.cursor.moveToRect(rect, {
+                const usesAdjustedPoint = !!(
+                    normalizedOptions.targetPointOffset
+                    || normalizedOptions.pointOffset
+                    || normalizedOptions.clampTargetPointToRect === true
+                );
+                const point = usesAdjustedPoint
+                    ? this.resolveCursorPointFromRect(rect, normalizedOptions)
+                    : null;
+                const moveOptions = {
                     durationMs: Number.isFinite(durationMs) ? durationMs : DEFAULT_CURSOR_DURATION_MS,
                     exactDuration: normalizedOptions.exactDuration === true,
                     pauseCheck: () => this.scenePausedForResistance,
                     cancelCheck: () => this.isStopping()
-                });
+                };
+                const moved = point
+                    ? await this.cursor.moveToPoint(point.x, point.y, moveOptions)
+                    : await this.cursor.moveToRect(rect, moveOptions);
                 if (moved) {
-                    this.rememberAvatarFloatingSceneCursorAnchor(this.currentSceneId, element);
+                    if (point) {
+                        this.rememberAvatarFloatingSceneCursorAnchorPoint(this.currentSceneId, point);
+                    } else {
+                        this.rememberAvatarFloatingSceneCursorAnchor(this.currentSceneId, element);
+                    }
                     return true;
                 }
                 if (this.isCursorTransientMotionActive()) {
@@ -9147,7 +9627,8 @@
             return false;
         }
 
-        async resolveElementCenterPoint(element, timeoutMs) {
+        async resolveElementCenterPoint(element, timeoutMs, options) {
+            const normalizedOptions = options || {};
             const normalizedTimeoutMs = Number.isFinite(timeoutMs) ? timeoutMs : 800;
             const startedAt = Date.now();
             let pausedAt = 0;
@@ -9174,11 +9655,9 @@
 
                 const rect = this.getElementRect(element);
                 if (rect) {
-                    return {
-                        x: rect.left + (rect.width / 2),
-                        y: rect.top + (rect.height / 2),
+                    return Object.assign(this.resolveCursorPointFromRect(rect, normalizedOptions), {
                         rect: rect
-                    };
+                    });
                 }
 
                 await this.waitForSceneDelay(80);
@@ -9189,19 +9668,22 @@
                 return null;
             }
 
-            return {
-                x: finalRect.left + (finalRect.width / 2),
-                y: finalRect.top + (finalRect.height / 2),
+            return Object.assign(this.resolveCursorPointFromRect(finalRect, normalizedOptions), {
                 rect: finalRect
-            };
+            });
         }
 
         async moveCursorToTrackedElement(element, durationMs, options) {
             const normalizedOptions = options || {};
             this.setHomePcCursorOutputSuppressedForExternalizedChat(false);
             const totalDurationMs = Number.isFinite(durationMs) ? durationMs : DEFAULT_CURSOR_DURATION_MS;
-            const firstLegMs = Math.max(180, Math.round(totalDurationMs * 0.7));
-            const secondLegMs = Math.max(140, totalDurationMs - firstLegMs);
+            const exactDuration = normalizedOptions.exactDuration === true;
+            const firstLegMs = exactDuration
+                ? Math.max(0, Math.round(totalDurationMs * 0.7))
+                : Math.max(180, Math.round(totalDurationMs * 0.7));
+            const secondLegMs = exactDuration
+                ? Math.max(0, totalDurationMs - firstLegMs)
+                : Math.max(140, totalDurationMs - firstLegMs);
             const recheckDelayMs = Number.isFinite(normalizedOptions.recheckDelayMs)
                 ? normalizedOptions.recheckDelayMs
                 : 320;
@@ -9209,13 +9691,14 @@
                 ? normalizedOptions.settleDelayMs
                 : 0;
 
-            const initialPoint = await this.resolveElementCenterPoint(element, 420);
+            const initialPoint = await this.resolveElementCenterPoint(element, 420, normalizedOptions);
             if (!initialPoint) {
                 return false;
             }
             while (!this.isStopping()) {
                 const movedToInitialPoint = await this.cursor.moveToPoint(initialPoint.x, initialPoint.y, {
                     durationMs: firstLegMs,
+                    exactDuration: exactDuration,
                     pauseCheck: () => this.scenePausedForResistance,
                     cancelCheck: () => this.isStopping()
                 });
@@ -9249,7 +9732,7 @@
                 return false;
             }
 
-            const finalPoint = await this.resolveElementCenterPoint(element, 420);
+            const finalPoint = await this.resolveElementCenterPoint(element, 420, normalizedOptions);
             if (!finalPoint) {
                 return false;
             }
@@ -9257,6 +9740,7 @@
             while (!this.isStopping()) {
                 const movedToFinalPoint = await this.cursor.moveToPoint(finalPoint.x, finalPoint.y, {
                     durationMs: secondLegMs,
+                    exactDuration: exactDuration,
                     pauseCheck: () => this.scenePausedForResistance,
                     cancelCheck: () => this.isStopping()
                 });
@@ -9634,23 +10118,91 @@
             if (!keyboardToggle || guardFailed()) {
                 return false;
             }
-            const keyboardToggleSpotlight = createToggleSpotlightTarget('takeover-keyboard-toggle', keyboardToggle);
-            this.addRetainedExtraSpotlight(keyboardToggleSpotlight);
+            let keyboardToggleSpotlight = null;
+            const isKeyboardToggleSpotlight = (candidate) => {
+                return !!(
+                    candidate === keyboardToggleSpotlight
+                    || (
+                        candidate
+                        && typeof candidate.getAttribute === 'function'
+                        && candidate.getAttribute('data-yui-guide-virtual-spotlight') === 'takeover-keyboard-toggle'
+                    )
+                );
+            };
+            const refreshKeyboardToggleSpotlight = (options) => {
+                const normalizedOptions = options || {};
+                const refreshedSpotlight = createToggleSpotlightTarget('takeover-keyboard-toggle', keyboardToggle);
+                if (!refreshedSpotlight || guardFailed()) {
+                    return null;
+                }
+                this.replaceRetainedExtraSpotlight(isKeyboardToggleSpotlight, refreshedSpotlight);
+                if (normalizedOptions.activate === true) {
+                    this.overlay.activateSpotlight(refreshedSpotlight);
+                }
+                keyboardToggleSpotlight = refreshedSpotlight;
+                return refreshedSpotlight;
+            };
+            await this.waitForStableElementRect(keyboardToggle, scaleSceneMs(320, 160, 760));
+            keyboardToggleSpotlight = refreshKeyboardToggleSpotlight({ activate: true });
+            if (!keyboardToggleSpotlight || guardFailed()) {
+                return false;
+            }
             this.removeRetainedExtraSpotlight(agentMasterSpotlight);
 
-            const enabledKeyboardControl = await this.performHighlightedApiClick({
-                target: keyboardToggleSpotlight,
-                durationMs: scaleSceneMs(520, 320, 950),
-                runId: runId,
-                action: async () => {
+            this.applyGuideHighlights({
+                primary: keyboardToggleSpotlight
+            });
+            const movedToKeyboardToggle = await this.moveCursorToTrackedElement(
+                keyboardToggle,
+                scaleSceneMs(520, 320, 950),
+                {
+                    recheckDelayMs: scaleSceneMs(180, 80, 420),
+                    settleDelayMs: scaleSceneMs(80, 40, 180)
+                }
+            );
+            if (!movedToKeyboardToggle || guardFailed()) {
+                return false;
+            }
+
+            keyboardToggleSpotlight = refreshKeyboardToggleSpotlight();
+            if (!keyboardToggleSpotlight || guardFailed()) {
+                return false;
+            }
+            if (!this.isCursorAlignedWithElement(keyboardToggle, 5)) {
+                const realignedToKeyboardToggle = await this.moveCursorToTrackedElement(
+                    keyboardToggle,
+                    scaleSceneMs(220, 120, 420),
+                    {
+                        recheckDelayMs: scaleSceneMs(80, 40, 180),
+                        settleDelayMs: scaleSceneMs(40, 20, 120)
+                    }
+                );
+                if (!realignedToKeyboardToggle || guardFailed()) {
+                    return false;
+                }
+                keyboardToggleSpotlight = refreshKeyboardToggleSpotlight();
+                if (!keyboardToggleSpotlight || guardFailed()) {
+                    return false;
+                }
+            }
+
+            const enabledKeyboardControl = await this.runActionWithCursorClick(
+                DEFAULT_CURSOR_CLICK_VISIBLE_MS,
+                async () => {
                     const enabled = await this.setAgentFlagEnabled('computer_use_enabled', true);
                     if (!enabled) {
                         return false;
                     }
                     return !!(await this.waitForAgentToggleState('agent-keyboard', true, 1800));
                 }
-            });
+            );
             if (!enabledKeyboardControl || guardFailed()) {
+                return false;
+            }
+
+            await this.waitForStableElementRect(keyboardToggle, scaleSceneMs(320, 160, 760));
+            keyboardToggleSpotlight = refreshKeyboardToggleSpotlight();
+            if (!keyboardToggleSpotlight || guardFailed()) {
                 return false;
             }
             this.rememberAvatarFloatingSceneCursorAnchor('day1_takeover_capture_cursor', keyboardToggleSpotlight);
@@ -10396,6 +10948,16 @@
             }
         }
 
+        dispatchDesktopPluginDashboardSystemCursorTemporaryReveal(payload) {
+            try {
+                window.dispatchEvent(new CustomEvent(DESKTOP_PLUGIN_DASHBOARD_SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT, {
+                    detail: payload && typeof payload === 'object' ? payload : {}
+                }));
+            } catch (error) {
+                console.warn('[YuiGuide] 发送桌面插件面板真实鼠标临时显示失败:', error);
+            }
+        }
+
         notifyPluginDashboardNarrationFinished() {
             const handoff = this.pluginDashboardHandoff;
             if (!handoff || !handoff.sessionId) {
@@ -10417,6 +10979,34 @@
                 windowRef.postMessage(payload, handoff.targetOrigin || this.getPluginDashboardExpectedOrigin());
             } catch (error) {
                 console.warn('[YuiGuide] 向插件面板发送 narration finished 失败:', error);
+            }
+        }
+
+        notifyPluginDashboardSystemCursorTemporaryReveal(durationMs, reason) {
+            const handoff = this.pluginDashboardHandoff;
+            if (!handoff || !handoff.sessionId) {
+                return false;
+            }
+
+            const payload = {
+                type: PLUGIN_DASHBOARD_SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT,
+                sessionId: handoff.sessionId,
+                durationMs: Math.min(10000, Math.max(0, Math.floor(Number(durationMs) || 0))),
+                reason: typeof reason === 'string' && reason.trim() ? reason.trim() : 'tutorial-temporary-reveal'
+            };
+            this.dispatchDesktopPluginDashboardSystemCursorTemporaryReveal(payload);
+
+            const windowRef = handoff && handoff.windowRef ? handoff.windowRef : null;
+            if (!windowRef || windowRef.closed) {
+                return true;
+            }
+
+            try {
+                windowRef.postMessage(payload, handoff.targetOrigin || this.getPluginDashboardExpectedOrigin());
+                return true;
+            } catch (error) {
+                console.warn('[YuiGuide] 向插件面板发送真实鼠标临时显示失败:', error);
+                return false;
             }
         }
 
@@ -10550,7 +11140,7 @@
             this.clearSceneTimers();
             this.disableInterrupts();
             this.cancelActiveNarration();
-            this.clearUserCursorReveal(true);
+            this.clearUserCursorRevealSuppression(true);
             this.manualPluginDashboardOpenAllowed = false;
             this.manualPluginDashboardOpenTarget = null;
             this.manualPluginDashboardOpenUserClicked = false;
@@ -11631,9 +12221,9 @@
             return this.resistanceController.handleInterrupt(event);
         }
 
-        noteUserCursorRevealAttempt(distance, now) {
+        noteUserCursorRevealSuppressionAttempt(distance, now) {
             if (
-                this.userCursorRevealed
+                this.userCursorRevealSuppressed
                 || !Number.isFinite(distance)
                 || distance < DEFAULT_USER_CURSOR_REVEAL_DISTANCE
                 || !document.body.classList.contains('yui-taking-over')
@@ -11648,11 +12238,11 @@
             this.lastUserCursorRevealMoveAt = now;
             this.userCursorRevealMoveCount += 1;
             if (this.userCursorRevealMoveCount >= DEFAULT_USER_CURSOR_REVEAL_MOVES) {
-                this.revealUserCursor();
+                this.suppressUserCursorReveal();
             }
         }
 
-        revealUserCursor() {
+        suppressUserCursorReveal() {
             if (this.destroyed || !document.body) {
                 return;
             }
@@ -11662,27 +12252,27 @@
                 this.resistanceCursorTimer = null;
             }
 
-            this.userCursorRevealed = true;
-            this.restoreHiddenCursorAfterResistance = false;
+            this.userCursorRevealSuppressed = true;
+            this.clearInterruptCountCursorReveal(false);
             document.documentElement.style.cursor = '';
             document.body.style.cursor = '';
-            document.documentElement.classList.add('yui-user-cursor-revealed');
-            document.documentElement.classList.add('yui-resistance-cursor-reveal');
-            document.body.classList.add('yui-user-cursor-revealed');
-            document.body.classList.add('yui-resistance-cursor-reveal');
-            this.syncSystemCursorHidden(false, 'user_cursor_revealed');
+            document.documentElement.classList.remove('yui-user-cursor-revealed');
+            document.documentElement.classList.remove('yui-resistance-cursor-reveal');
+            document.body.classList.remove('yui-user-cursor-revealed');
+            document.body.classList.remove('yui-resistance-cursor-reveal');
+            this.syncSystemCursorHidden(true, 'user_cursor_reveal_suppressed');
         }
 
-        clearUserCursorReveal(resetCursor) {
+        clearUserCursorRevealSuppression(resetCursor) {
             if (this.resistanceCursorTimer) {
                 window.clearTimeout(this.resistanceCursorTimer);
                 this.resistanceCursorTimer = null;
             }
 
-            this.userCursorRevealed = false;
+            this.userCursorRevealSuppressed = false;
             this.userCursorRevealMoveCount = 0;
             this.lastUserCursorRevealMoveAt = 0;
-            this.restoreHiddenCursorAfterResistance = false;
+            this.clearInterruptCountCursorReveal(false);
 
             if (document.body) {
                 document.documentElement.classList.remove('yui-user-cursor-revealed');
@@ -11699,25 +12289,68 @@
             }
         }
 
-        prepareResistanceCursorReveal() {
-            if (this.userCursorRevealed) {
-                this.revealUserCursor();
-                return false;
+        suppressResistanceCursorReveal() {
+            if (this.userCursorRevealSuppressed) {
+                this.suppressUserCursorReveal();
+                return;
             }
 
             if (this.resistanceCursorTimer) {
                 window.clearTimeout(this.resistanceCursorTimer);
+                this.resistanceCursorTimer = null;
             }
-            this.restoreHiddenCursorAfterResistance = false;
+            this.clearInterruptCountCursorReveal(false);
             document.documentElement.style.cursor = '';
             document.body.style.cursor = '';
-            document.body.classList.add('yui-resistance-cursor-reveal');
+            document.documentElement.classList.remove('yui-user-cursor-revealed');
+            document.documentElement.classList.remove('yui-resistance-cursor-reveal');
+            document.body.classList.remove('yui-user-cursor-revealed');
+            document.body.classList.remove('yui-resistance-cursor-reveal');
+            this.syncSystemCursorHidden(true, 'resistance_cursor_reveal_suppressed');
+        }
+
+        clearInterruptCountCursorReveal(resetCursor) {
+            if (this.resistanceCursorTimer) {
+                window.clearTimeout(this.resistanceCursorTimer);
+                this.resistanceCursorTimer = null;
+            }
+            if (document.body) {
+                document.documentElement.classList.remove('yui-interrupt-count-cursor-revealed');
+                document.body.classList.remove('yui-interrupt-count-cursor-revealed');
+            }
+            if (resetCursor) {
+                document.documentElement.style.cursor = '';
+                if (document.body) {
+                    document.body.style.cursor = '';
+                }
+            }
+        }
+
+        revealRealCursorForInterruptCount(durationMs = DEFAULT_INTERRUPT_COUNT_CURSOR_REVEAL_MS) {
+            if (this.destroyed || !document.body) {
+                return;
+            }
+            this.clearInterruptCountCursorReveal(false);
+            document.documentElement.style.cursor = '';
+            document.body.style.cursor = '';
+            document.documentElement.classList.add('yui-interrupt-count-cursor-revealed');
+            document.body.classList.add('yui-interrupt-count-cursor-revealed');
+            this.syncSystemCursorHidden(false, 'interrupt_count_reveal');
             this.resistanceCursorTimer = window.setTimeout(() => {
                 this.resistanceCursorTimer = null;
-                document.body.classList.remove('yui-resistance-cursor-reveal');
-                this.restoreHiddenCursorAfterResistance = false;
-            }, 3000);
-            return true;
+                if (this.angryExitTriggered) {
+                    return;
+                }
+                this.clearInterruptCountCursorReveal(true);
+                if (
+                    this.destroyed
+                    || !document.body
+                    || !document.body.classList.contains('yui-taking-over')
+                ) {
+                    return;
+                }
+                this.syncSystemCursorHidden(true, 'interrupt_count_reveal_timeout');
+            }, Math.max(0, Math.floor(Number(durationMs) || 0)));
         }
 
         syncSystemCursorHidden(hidden, reason = 'tutorial') {
@@ -11727,6 +12360,28 @@
             ) {
                 window.YuiGuideCommon.syncPcSystemCursorHidden(hidden === true, reason);
             }
+        }
+
+        revealSystemCursorTemporarily(durationMs = 2000, reason = 'tutorial-temporary-reveal') {
+            const normalizedDurationMs = Math.min(10000, Math.max(0, Math.floor(Number(durationMs) || 0)));
+            if (this.resistanceCursorTimer) {
+                window.clearTimeout(this.resistanceCursorTimer);
+                this.resistanceCursorTimer = null;
+            }
+            if (document.body) {
+                document.documentElement.classList.add('yui-user-cursor-revealed', 'yui-resistance-cursor-reveal');
+                document.body.classList.add('yui-user-cursor-revealed', 'yui-resistance-cursor-reveal');
+            }
+            if (
+                window.YuiGuideCommon
+                && typeof window.YuiGuideCommon.syncPcSystemCursorTemporaryReveal === 'function'
+            ) {
+                window.YuiGuideCommon.syncPcSystemCursorTemporaryReveal(normalizedDurationMs, reason);
+            }
+            this.resistanceCursorTimer = window.setTimeout(() => {
+                this.resistanceCursorTimer = null;
+                this.suppressResistanceCursorReveal();
+            }, normalizedDurationMs);
         }
 
         playLightResistance(x, y, options) {
@@ -11745,6 +12400,12 @@
             return Promise.resolve();
         }
 
+        recordAvatarFloatingGuideRoundEndForTermination(reason) {
+            if (getAvatarFloatingGuideActiveRound() === 1) {
+                recordAvatarFloatingGuideRoundEnd(1);
+            }
+        }
+
         requestTermination(reason, tutorialReason) {
             return this.terminationRouter.requestTermination(reason, tutorialReason);
         }
@@ -11760,6 +12421,7 @@
 
             this.destroyed = true;
             this.terminationRequested = true;
+            this.clearInterruptCountCursorReveal(true);
             this.syncSystemCursorHidden(false, 'destroy');
             this.setHomePcCursorOutputSuppressedForExternalizedChat(false);
             this.restoreDay1TakeoverAgentSwitches('destroy').catch((error) => {
@@ -11798,7 +12460,7 @@
             if (this.page === 'home') {
                 document.body.classList.remove('yui-guide-home-ui-suppressed');
             }
-            this.clearUserCursorReveal(true);
+            this.clearUserCursorRevealSuppression(true);
             this.manualPluginDashboardOpenAllowed = false;
             this.manualPluginDashboardOpenTarget = null;
             this.manualPluginDashboardOpenUserClicked = false;
@@ -11841,6 +12503,7 @@
             this.clearGuidePresentation();
             this.forceHideAvatarFloatingGuideManagedSurfaces();
             this.hideTemporaryAvatarFloatingGuideHud('destroy');
+            this.setAvatarFloatingToolbarVisible(true, 'destroy');
             this.closeManagedPanels().catch((error) => {
                 console.warn('[YuiGuide] 销毁时关闭首页面板失败:', error);
             });
@@ -11994,8 +12657,10 @@
 
             if (kind === 'interrupt_resist_light' && x !== null && y !== null) {
                 try {
+                    this.notifyPluginDashboardSystemCursorTemporaryReveal(2000, 'interrupt_resist_light');
                     await this.playLightResistance(x, y, {
-                        suppressCursorReveal: true
+                        suppressCursorReveal: true,
+                        forceSystemCursorReveal: true
                     });
                 } catch (error) {
                     console.warn('[YuiGuide] 执行插件面板轻微抵抗失败:', error);

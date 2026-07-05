@@ -556,7 +556,6 @@ def test_onboarding_waits_for_home_tutorial_storage_completion_even_if_prompt_st
         """
         () => {
             window.localStorage.setItem('neko_tutorial_home_yui_v1', 'true');
-            window.localStorage.setItem('neko_tutorial_home', 'true');
             window.dispatchEvent(new CustomEvent('neko:tutorial-skipped', {
                 detail: { page: 'home', source: 'auto' }
             }));
@@ -769,6 +768,205 @@ def test_onboarding_does_not_open_while_home_tutorial_start_is_locked(mock_page:
         () => {
             window.__homeTutorialLocked = false;
             window.dispatchEvent(new CustomEvent('neko:tutorial-skipped', {
+                detail: { page: 'home', source: 'auto' }
+            }));
+        }
+        """
+    )
+    expect(mock_page.locator("[data-testid='character-personality-overlay']")).to_be_visible()
+
+
+@pytest.mark.frontend
+def test_onboarding_does_not_open_while_home_tutorial_is_pending(mock_page: Page):
+    """The pre-lock pending window (cold-start model / first-line intro load) must also
+    hold back persona onboarding so it cannot race ahead of the home tutorial; persona
+    keeps waiting even when the 15s settle timeout fires first."""
+    _bootstrap_page(mock_page)
+    mock_page.evaluate(
+        """
+        () => {
+            const realSetTimeout = window.setTimeout.bind(window);
+            window.setTimeout = (callback, delay, ...args) => {
+                if (delay === 15000) {
+                    return realSetTimeout(callback, 20, ...args);
+                }
+                return realSetTimeout(callback, delay, ...args);
+            };
+            window.universalTutorialManager.isTutorialRunning = false;
+            window.isNekoHomeTutorialPending = true;
+            window.__tutorialPromptStatePayload = {
+                status: 'completed',
+                deferred_until: 0,
+                never_remind: false,
+                home_tutorial_completed: true,
+                manual_home_tutorial_viewed: true,
+                user_cohort: 'existing',
+            };
+        }
+        """
+    )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static" / "js" / "character_personality_onboarding.js"))
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.CharacterPersonalityOnboarding.bootstrap();
+        }
+        """
+    )
+
+    mock_page.wait_for_timeout(120)
+    expect(mock_page.locator("[data-testid='character-personality-overlay']")).to_have_count(0)
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.isNekoHomeTutorialPending = false;
+            window.dispatchEvent(new CustomEvent('neko:tutorial-skipped', {
+                detail: { page: 'home', source: 'auto' }
+            }));
+        }
+        """
+    )
+    expect(mock_page.locator("[data-testid='character-personality-overlay']")).to_be_visible()
+
+
+@pytest.mark.frontend
+def test_onboarding_opens_when_pending_home_tutorial_aborts_via_startup_release(mock_page: Page):
+    """Deadlock safety: when a pending home tutorial aborts (never starts, so there is no
+    tutorial-completed/skipped event and the backend stays new-user 'observing' which never
+    settles), persona onboarding is released by the tutorial's startup-greeting-release
+    (released:true) event instead of being blocked forever."""
+    _bootstrap_page(mock_page)
+    mock_page.evaluate(
+        """
+        () => {
+            const realSetTimeout = window.setTimeout.bind(window);
+            window.setTimeout = (callback, delay, ...args) => {
+                if (delay === 15000) {
+                    return realSetTimeout(callback, 20, ...args);
+                }
+                return realSetTimeout(callback, delay, ...args);
+            };
+            window.universalTutorialManager.isTutorialRunning = false;
+            window.isNekoHomeTutorialPending = true;
+            window.__tutorialPromptStatePayload = {
+                status: 'observing',
+                deferred_until: 0,
+                never_remind: false,
+                user_cohort: 'new',
+            };
+        }
+        """
+    )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static" / "js" / "character_personality_onboarding.js"))
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.CharacterPersonalityOnboarding.bootstrap();
+        }
+        """
+    )
+
+    mock_page.wait_for_timeout(120)
+    expect(mock_page.locator("[data-testid='character-personality-overlay']")).to_have_count(0)
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.isNekoHomeTutorialPending = false;
+            window.dispatchEvent(new CustomEvent('neko:startup-greeting-release', {
+                detail: { released: true, page: 'home', reason: 'floating-buttons-not-found' }
+            }));
+        }
+        """
+    )
+    expect(mock_page.locator("[data-testid='character-personality-overlay']")).to_be_visible()
+
+
+@pytest.mark.frontend
+def test_settings_reselect_does_not_hang_after_tutorial_release_when_unlocked(mock_page: Page):
+    """Greptile P1 / deadlock safety: openFromSettings must NOT reset the persistent
+    _tutorialFlowAborted flag when no tutorial is locked. After a startup-greeting-release
+    (released:true) latched the abort with the backend stuck at new-user 'observing' (which never
+    settles and yields no further release), a reset would make waitForTutorialFlowToSettle poll
+    forever and the settings reselect would hang. Keeping the abort lets it open immediately."""
+    _bootstrap_page(mock_page)
+    mock_page.evaluate(
+        """
+        () => {
+            window.universalTutorialManager.isTutorialRunning = false;
+            window.__tutorialPromptStatePayload = {
+                status: 'observing',
+                deferred_until: 0,
+                never_remind: false,
+                user_cohort: 'new',
+            };
+        }
+        """
+    )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static" / "js" / "character_personality_onboarding.js"))
+
+    mock_page.evaluate(
+        """
+        () => {
+            // 教程在选人格 settle 之前夭折：abort 标志被监听置位，且当前无任何教程锁。
+            window.dispatchEvent(new CustomEvent('neko:startup-greeting-release', {
+                detail: { released: true, page: 'home', reason: 'floating-buttons-not-found' }
+            }));
+            window.CharacterPersonalityOnboarding.openFromSettings('小天');
+        }
+        """
+    )
+
+    expect(mock_page.locator("[data-testid='character-personality-overlay']")).to_be_visible()
+
+
+@pytest.mark.frontend
+def test_settings_reselect_waits_for_running_home_tutorial(mock_page: Page):
+    """Codex P2 counterpart: when a tutorial IS locked/running at settings-reselect time, the stale
+    abort flag must be cleared so the reselect waits instead of appearing over the running tutorial."""
+    _bootstrap_page(mock_page)
+    mock_page.evaluate(
+        """
+        () => {
+            window.universalTutorialManager.isTutorialRunning = true;
+            window.__tutorialPromptStatePayload = {
+                status: 'started',
+                deferred_until: 0,
+                never_remind: false,
+                user_cohort: 'new',
+            };
+        }
+        """
+    )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static" / "js" / "character_personality_onboarding.js"))
+
+    mock_page.evaluate(
+        """
+        () => {
+            // 先前教程曾结束并置位过 abort，但现在又有教程在运行。
+            window.CharacterPersonalityOnboarding._tutorialFlowAborted = true;
+            window.CharacterPersonalityOnboarding.openFromSettings('小天');
+        }
+        """
+    )
+
+    mock_page.wait_for_timeout(150)
+    expect(mock_page.locator("[data-testid='character-personality-overlay']")).to_have_count(0)
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.universalTutorialManager.isTutorialRunning = false;
+            window.__tutorialPromptStatePayload = {
+                status: 'completed',
+                deferred_until: 0,
+                never_remind: false,
+                user_cohort: 'new',
+            };
+            window.dispatchEvent(new CustomEvent('neko:tutorial-completed', {
                 detail: { page: 'home', source: 'auto' }
             }));
         }

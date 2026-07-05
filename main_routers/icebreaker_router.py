@@ -18,7 +18,21 @@ from typing import Any, Dict
 
 from fastapi import APIRouter, Request
 
+from config import (
+    ICEBREAKER_FREE_TEXT_ASSISTANT_LINE_MAX_TOKENS,
+    ICEBREAKER_FREE_TEXT_INTERPRETER_TIMEOUT_SECONDS,
+    ICEBREAKER_FREE_TEXT_OUTPUT_MAX_TOKENS,
+    ICEBREAKER_FREE_TEXT_USER_TEXT_MAX_TOKENS,
+)
+from config.prompts.prompts_icebreaker import build_icebreaker_free_text_prompts
 from main_logic.mirror_meta import build_mirror_meta
+from utils.icebreaker_free_text import (
+    normalize_icebreaker_free_text_derail_streak,
+    normalize_icebreaker_free_text_options,
+    normalize_icebreaker_recent_free_text_turns,
+    parse_icebreaker_free_text_decision,
+    trim_icebreaker_token_text,
+)
 from utils.icebreaker_route_state import (
     _get_active_icebreaker_route_state,
     _get_icebreaker_route_lock,
@@ -28,7 +42,9 @@ from utils.icebreaker_route_state import (
     touch_icebreaker_route,
 )
 from utils.language_utils import is_supported_language_code, normalize_language_code
+from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm_async
 from utils.logger_config import get_module_logger
+from utils.token_tracker import set_call_type
 from utils.tutorial_choices_state import record_tutorial_choice
 
 from .shared_state import get_config_manager, get_session_manager
@@ -388,6 +404,108 @@ async def icebreaker_context(request: Request):
         "memory_cached": memory_cached,
     }
     return result
+
+
+@router.post("/free-text/interpret")
+async def icebreaker_free_text_interpret(request: Request):
+    try:
+        data = await request.json()
+    except Exception:
+        return {"ok": False, "reason": "invalid_body"}
+    if not isinstance(data, dict):
+        return {"ok": False, "reason": "invalid_body"}
+
+    validation_error = _validate_icebreaker_local_mutation(request, data)
+    if validation_error is not None:
+        return validation_error
+
+    lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
+    if not lanlan_name:
+        return {"ok": False, "reason": "missing_lanlan_name"}
+
+    user_text = str(data.get("user_text") or "").strip()
+    if not user_text:
+        return {"ok": False, "reason": "missing_user_text"}
+    requested_session_id = str(data.get("session_id") or "")
+    if not requested_session_id:
+        return {"ok": False, "reason": "missing_session_id", "lanlan_name": lanlan_name}
+    state = _get_active_icebreaker_route_state(lanlan_name)
+    if not state:
+        return {
+            "ok": False,
+            "reason": "route_not_active",
+            "lanlan_name": lanlan_name,
+            "source": ICEBREAKER_SOURCE,
+            "method": "free_text_interpreter",
+        }
+    stale_response = _stale_icebreaker_session_response(
+        state,
+        requested_session_id,
+        lanlan_name=lanlan_name,
+        method="free_text_interpreter",
+    )
+    if stale_response:
+        return stale_response
+
+    _absorb_request_language(data, lanlan_name)
+
+    options = normalize_icebreaker_free_text_options(data.get("options"))
+    if not options:
+        return {"ok": False, "reason": "missing_options", "lanlan_name": lanlan_name}
+
+    try:
+        api_config = get_config_manager().get_model_api_config("emotion")
+    except Exception as exc:
+        logger.warning("icebreaker free-text: failed to read emotion API config: %s", exc)
+        return {"ok": False, "reason": "llm_api_not_configured", "error": str(exc)}
+    model = (api_config or {}).get("model")
+    if not model:
+        return {"ok": False, "reason": "llm_api_not_configured", "error": "emotion model not set"}
+
+    llm = None
+    try:
+        llm = await create_chat_llm_async(
+            model,
+            (api_config or {}).get("base_url"),
+            (api_config or {}).get("api_key"),
+            provider_type=(api_config or {}).get("provider_type"),
+            timeout=ICEBREAKER_FREE_TEXT_INTERPRETER_TIMEOUT_SECONDS,
+            max_retries=1,
+            max_completion_tokens=ICEBREAKER_FREE_TEXT_OUTPUT_MAX_TOKENS,
+        )
+        prompt_data = dict(data)
+        prompt_data["assistant_line"] = trim_icebreaker_token_text(
+            data.get("assistant_line"),
+            ICEBREAKER_FREE_TEXT_ASSISTANT_LINE_MAX_TOKENS,
+        )
+        prompt_data["user_text"] = trim_icebreaker_token_text(
+            data.get("user_text"),
+            ICEBREAKER_FREE_TEXT_USER_TEXT_MAX_TOKENS,
+        )
+        system_prompt, user_prompt = build_icebreaker_free_text_prompts(
+            prompt_data,
+            options,
+            recent_turns=normalize_icebreaker_recent_free_text_turns(data.get("recent_free_text_turns")),
+            derail_streak=normalize_icebreaker_free_text_derail_streak(data.get("free_text_derail_streak")),
+        )
+        set_call_type("icebreaker")
+        response = await llm.ainvoke([
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=user_prompt),
+        ])
+        decision = parse_icebreaker_free_text_decision(getattr(response, "content", ""))
+    except Exception as exc:
+        logger.warning("icebreaker free-text interpreter failed for %s: %s", lanlan_name, exc, exc_info=True)
+        return {"ok": False, "reason": "free_text_interpreter_failed", "error": str(exc)}
+    finally:
+        if llm is not None:
+            try:
+                await llm.aclose()
+            except Exception:
+                logger.debug("icebreaker free-text llm close failed", exc_info=True)
+
+    touch_icebreaker_route(state)
+    return {"ok": True, **decision}
 
 
 @router.post("/choice")

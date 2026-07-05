@@ -158,7 +158,7 @@ def test_jukebox_manager_standalone_uses_native_drag_regions():
     # The panel must stay no-drag so frameless resize edges and scroll areas are not claimed by HTCAPTION.
     assert re.search(r"\.jukebox-sam-panel\s*\{[\s\S]*?-webkit-app-region:\s*no-drag\s*!important", MANAGER_TEMPLATE)
     assert re.search(r"\.jukebox-sam-panel\s*\{[\s\S]*?padding:\s*0;", JUKEBOX_SCRIPT)
-    assert re.search(r"\.sam-header\s*\{[\s\S]*?padding:\s*15px 15px 10px;", JUKEBOX_SCRIPT)
+    assert re.search(r"\.sam-header\s*\{[\s\S]*?padding:\s*12px 12px 10px 16px;", JUKEBOX_SCRIPT)
     # The header must remain the drag region; whitespace is relaxed for CSS formatting tools.
     assert re.search(r"\.jukebox-sam-panel\s+\.sam-header\s*\{[\s\S]*?-webkit-app-region:\s*drag\s*!important", MANAGER_TEMPLATE)
     assert ".sam-drag-fill" in JUKEBOX_SCRIPT
@@ -168,7 +168,7 @@ def test_jukebox_manager_standalone_uses_native_drag_regions():
     assert re.search(r"body\s+\.jukebox-sam-panel\s*\{[\s\S]*?padding:\s*0\s*!important", MANAGER_TEMPLATE)
     assert re.search(r"body\s+\.jukebox-sam-panel\s+\.sam-header\s*\{[\s\S]*?cursor:\s*grab\s*!important", MANAGER_TEMPLATE)
     assert "padding: 0 !important;" in MANAGER_TEMPLATE
-    assert "padding: 15px 15px 10px !important;" in MANAGER_TEMPLATE
+    assert "padding: 12px 12px 10px 16px !important;" in MANAGER_TEMPLATE
     assert "document.head.appendChild(standaloneStyle)" in MANAGER_TEMPLATE
     assert "neko-jukebox-manager-bridge-drag" in MANAGER_TEMPLATE
     assert "function _selectManagerDragBridge()" in MANAGER_TEMPLATE
@@ -185,6 +185,32 @@ def test_jukebox_manager_standalone_uses_native_drag_regions():
     for source in (MANAGER_TEMPLATE, JUKEBOX_STANDALONE_SCRIPT, JUKEBOX_SCRIPT):
         assert "_bindManagerStandaloneDrag" not in source
         assert "neko-jukebox-manager-standalone-dragging" not in source
+
+
+@pytest.mark.frontend
+def test_jukebox_manager_tooltips_have_standalone_styles_and_binding():
+    """
+    Regression guard: the standalone manager window injects only
+    SongActionManager styles, so its custom tooltip CSS must live there too.
+    Otherwise data-tooltip elements bind mouse events but render invisible or
+    unstyled in Electron.
+    """
+    assert ".jukebox-tooltip {" in JUKEBOX_SCRIPT
+    assert ".jukebox-tooltip.visible" in JUKEBOX_SCRIPT
+    assert "z-index: 100030;" in JUKEBOX_SCRIPT
+    assert "Jukebox.bindTextTooltips(panel);" in JUKEBOX_SCRIPT
+    assert "this.bindButtonTooltips(panel);" in JUKEBOX_SCRIPT
+    assert 'data-tooltip="${Jukebox.escapeAttr(song.name)}"' in JUKEBOX_SCRIPT
+    assert 'data-tooltip="${Jukebox.escapeAttr(action.name)}"' in JUKEBOX_SCRIPT
+    assert "escapeAttr: function(text)" in JUKEBOX_SCRIPT
+    assert "settingsBtn.dataset.tooltip = window.t('Jukebox.manager'" in JUKEBOX_SCRIPT
+    assert "minBtn.dataset.tooltip = window.t('Jukebox.minimize'" in JUKEBOX_SCRIPT
+    assert "closeBtn.dataset.tooltip = window.t('Jukebox.close'" in JUKEBOX_SCRIPT
+    assert "samCloseBtn.dataset.tooltip = window.t('Jukebox.close'" in JUKEBOX_SCRIPT
+    assert "settingsBtn.title = window.t('Jukebox.manager'" not in JUKEBOX_SCRIPT
+    assert "minBtn.title = window.t('Jukebox.minimize'" not in JUKEBOX_SCRIPT
+    assert "closeBtn.title = window.t('Jukebox.close'" not in JUKEBOX_SCRIPT
+    assert "samCloseBtn.title = window.t('Jukebox.close'" not in JUKEBOX_SCRIPT
 
 
 @pytest.mark.frontend

@@ -13,6 +13,7 @@ const scriptNormalizer = require('./tutorial/core/script-normalizer.js');
 const timelineEngine = require('./tutorial/core/timeline-engine.js');
 const visualRuntime = require('./tutorial/core/visual-runtime.js');
 const ghostCursorController = require('./tutorial/visual/ghost-cursor-controller.js');
+const overlayRenderer = require('./tutorial/visual/overlay-renderer.js');
 const common = require('./tutorial/yui-guide/common.js');
 const repoRoot = path.resolve(__dirname, '..');
 const dayGuideFiles = [
@@ -43,6 +44,41 @@ test('common guide helpers freeze config, register guides, and create locale aud
         ko: 'line.mp3',
         ru: 'line.mp3'
     });
+});
+
+test('PC overlay state keeps cursor payload during click effect spotlight refreshes', () => {
+    let now = 1000;
+    const store = overlayRenderer.createPcOverlayCompleteStateStore({
+        now: () => now,
+        defaultCursorClickVisibleMs: 420
+    });
+
+    const clickPayload = store.applyPatch({
+        cursor: {
+            visible: true,
+            x: 100,
+            y: 120,
+            durationMs: 0,
+            effect: 'click'
+        }
+    });
+    assert.equal(clickPayload.cursor.effect, 'click');
+
+    now += 120;
+    const spotlightDuringClickPayload = store.applyPatch({
+        spotlights: [{ id: 'primary-0', kind: 'primary', shape: 'circle', x: 10, y: 20, width: 30, height: 30 }]
+    });
+    assert.equal(spotlightDuringClickPayload.cursor.effect, 'click');
+    assert.equal(spotlightDuringClickPayload.cursor.x, 100);
+    assert.equal(spotlightDuringClickPayload.cursor.y, 120);
+
+    now += 500;
+    const spotlightAfterClickPayload = store.applyPatch({
+        spotlights: [{ id: 'primary-0', kind: 'primary', shape: 'circle', x: 12, y: 22, width: 30, height: 30 }]
+    });
+    assert.equal(spotlightAfterClickPayload.cursor.effect, undefined);
+    assert.equal(spotlightAfterClickPayload.cursor.x, 100);
+    assert.equal(spotlightAfterClickPayload.cursor.y, 120);
 });
 
 test('common helper relays PC system cursor visibility and logs relay failures', () => {
@@ -158,6 +194,139 @@ test('common helper relays PC system cursor visibility and logs relay failures',
         petError,
         channelError
     ]);
+});
+
+test('common helper relays temporary PC system cursor reveal duration', () => {
+    const chatRelays = [];
+    const petRelays = [];
+    const channelMessages = [];
+    const storage = new Map([['yuiGuidePcOverlayRunId', 'run-cursor']]);
+    const localStorage = {
+        getItem(key) {
+            return storage.get(key) || null;
+        }
+    };
+
+    common.syncPcSystemCursorTemporaryReveal(2000, 'interrupt_resist_light', {
+        localStorage,
+        nekoTutorialOverlay: {
+            relayToChat(message) {
+                chatRelays.push(message);
+            },
+            relayToPet(message) {
+                petRelays.push(message);
+            }
+        },
+        channel: {
+            postMessage(message) {
+                channelMessages.push(message);
+            }
+        }
+    });
+
+    assert.equal(chatRelays.length, 2);
+    assert.deepEqual(chatRelays[0], petRelays[0]);
+    assert.deepEqual(chatRelays[0], channelMessages[0]);
+    assert.equal(chatRelays[0].action, 'yui_guide_system_cursor_visibility');
+    assert.equal(chatRelays[0].hidden, false);
+    assert.equal(chatRelays[0].tutorialRunId, 'run-cursor');
+    assert.equal(chatRelays[0].reason, 'interrupt_resist_light');
+    assert.equal(typeof chatRelays[0].timestamp, 'number');
+    assert.equal(chatRelays[1].action, 'yui_guide_system_cursor_temporary_reveal');
+    assert.equal(chatRelays[1].durationMs, 2000);
+    assert.equal(chatRelays[1].tutorialRunId, 'run-cursor');
+    assert.equal(chatRelays[1].reason, 'interrupt_resist_light');
+    assert.equal(typeof chatRelays[1].timestamp, 'number');
+});
+
+test('common helper relays PC tutorial lifecycle start before cursor visibility', () => {
+    const chatRelays = [];
+    const petRelays = [];
+    const channelMessages = [];
+    const storage = new Map([['yuiGuidePcOverlayRunId', 'run-cursor']]);
+    const localStorage = {
+        getItem(key) {
+            return storage.get(key) || null;
+        }
+    };
+
+    common.syncPcTutorialLifecycleStarted('tutorial-started', {
+        localStorage,
+        nekoTutorialOverlay: {
+            relayToChat(message) {
+                chatRelays.push(message);
+            },
+            relayToPet(message) {
+                petRelays.push(message);
+            }
+        },
+        channel: {
+            postMessage(message) {
+                channelMessages.push(message);
+            }
+        }
+    });
+
+    assert.equal(chatRelays.length, 1);
+    assert.equal(petRelays.length, 1);
+    assert.equal(channelMessages.length, 1);
+    assert.deepEqual(chatRelays[0], petRelays[0]);
+    assert.deepEqual(chatRelays[0], channelMessages[0]);
+    assert.equal(chatRelays[0].action, 'yui_guide_tutorial_lifecycle_started');
+    assert.equal(chatRelays[0].tutorialRunId, 'run-cursor');
+    assert.equal(chatRelays[0].reason, 'tutorial-started');
+    assert.equal(typeof chatRelays[0].timestamp, 'number');
+});
+
+test('common helper creates a PC overlay run id before tutorial lifecycle start', () => {
+    const chatRelays = [];
+    const storage = new Map();
+    const localStorage = {
+        getItem(key) {
+            return storage.get(key) || null;
+        },
+        setItem(key, value) {
+            storage.set(key, String(value));
+        }
+    };
+
+    common.syncPcTutorialLifecycleStarted('tutorial-started', {
+        localStorage,
+        nekoTutorialOverlay: {
+            relayToChat(message) {
+                chatRelays.push(message);
+            }
+        }
+    });
+    common.syncPcSystemCursorHidden(true, 'tutorial-started', {
+        localStorage,
+        nekoTutorialOverlay: {
+            relayToChat(message) {
+                chatRelays.push(message);
+            }
+        }
+    });
+
+    assert.equal(chatRelays.length, 2);
+    assert.match(chatRelays[0].tutorialRunId, /^yui-guide-/);
+    assert.equal(chatRelays[1].tutorialRunId, chatRelays[0].tutorialRunId);
+    assert.equal(localStorage.getItem('yuiGuidePcOverlayRunId'), chatRelays[0].tutorialRunId);
+});
+
+test('tutorial start activates PC lifecycle before hiding the system cursor', () => {
+    const managerSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/universal-manager.js'), 'utf8');
+    const emitBlock = managerSource.split('    emitTutorialStarted(page = this.currentPage, source = this.currentTutorialStartSource) {')[1].split(
+        '    logPromptFlow',
+        1
+    )[0];
+
+    assert.match(emitBlock, /this\.relayYuiGuideTutorialLifecycleStarted\(page,\s*source\);/);
+    assert.match(emitBlock, /this\.syncPcSystemCursorHidden\(true, 'tutorial-started'\);/);
+    assert.ok(
+        emitBlock.indexOf('this.relayYuiGuideTutorialLifecycleStarted(page, source);')
+            < emitBlock.indexOf("this.syncPcSystemCursorHidden(true, 'tutorial-started');"),
+        'PC tutorial lifecycle start must be relayed before the system cursor hide request'
+    );
 });
 
 test('guide helpers are exported from a standalone module and re-exported by common', () => {
@@ -683,6 +852,8 @@ test('app interpage sends external chat pet reports through the command bus', ()
     assert.match(source, /bus\.postToPet\(action,\s*payload,\s*options \|\| \{\}\)/);
     assert.match(bridgeDataBlock, /case 'tutorial_chat_identity_override':/);
     assert.match(bridgeDataBlock, /applyTutorialChatIdentityOverride\(data\)/);
+    assert.match(bridgeDataBlock, /case 'yui_guide_set_chat_input_locked':/);
+    assert.match(bridgeDataBlock, /applyYuiGuideChatInputLocked\(data\.locked === true,\s*data\.reason \|\| ''\)/);
     assert.match(requestIdentityBlock, /postYuiGuideMessageToChat\([\s\S]*'tutorial_chat_identity_override'/);
     assert.doesNotMatch(requestIdentityBlock, /nekoBroadcastChannel\.postMessage\(Object\.assign\(\{\s*action: 'tutorial_chat_identity_override'/);
     assert.match(requestAvatarBlock, /postYuiGuideMessageToChat\('avatar_updated'/);
@@ -1290,6 +1461,8 @@ test('director exposes phase one guard and timing helpers for complex sequences'
 test('director routes resistance interrupts through ResistanceController boundary', () => {
     const source = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/director.js'), 'utf8');
     const resistanceSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/visual/resistance-controllers.js'), 'utf8');
+    const cssSource = fs.readFileSync(path.join(repoRoot, 'static', 'css/yui-guide.css'), 'utf8');
+    const pluginRuntimeSource = fs.readFileSync(path.join(repoRoot, 'frontend', 'plugin-manager/src/yui-guide-runtime.ts'), 'utf8');
     const resetSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/avatar/floating-guide-reset.js'), 'utf8');
     const directorSource = source.split('    class YuiGuideDirector {')[1];
     const constructorBlock = directorSource.split(
@@ -1314,7 +1487,7 @@ test('director routes resistance interrupts through ResistanceController boundar
         1
     )[0];
     const handleInterruptBlock = directorSource.split('        handleInterrupt(event) {')[1].split(
-        '        noteUserCursorRevealAttempt(distance, now) {',
+        '        noteUserCursorRevealSuppressionAttempt(distance, now) {',
         1
     )[0];
     const destroyBlock = directorSource.split('        destroy() {\n            if (this.destroyed) {')[1].split(
@@ -1342,7 +1515,39 @@ test('director routes resistance interrupts through ResistanceController boundar
     assert.match(resistanceControllerBlock, /director\.interruptCount \+= 1;/);
     assert.match(resistanceControllerBlock, /director\.abortAsAngryExit\('pointer_interrupt'\);/);
     assert.match(resistanceControllerBlock, /director\.playLightResistance\(x,\s*y,\s*\{/);
+    assert.match(resistanceControllerBlock, /suppressCursorReveal:\s*true/);
+    assert.match(resistanceControllerBlock, /forceSystemCursorReveal:\s*true/);
+    assert.match(resistanceControllerBlock, /if \(!normalizedOptions\.suppressCursorReveal\) \{[\s\S]*?director\.suppressResistanceCursorReveal\(normalizedOptions\);[\s\S]*?if \(typeof director\.revealSystemCursorTemporarily === 'function'\) \{[\s\S]*?director\.revealSystemCursorTemporarily\(2000,\s*'interrupt_resist_light'\)/);
     assert.match(resistanceControllerBlock, /this\.lightResistanceActive = true;/);
+    assert.match(resistanceControllerBlock, /director\.revealSystemCursorTemporarily\(2000,\s*'interrupt_resist_light'\);/);
+    assert.doesNotMatch(resistanceControllerBlock, /normalizedOptions\.forceSystemCursorReveal[\s\S]*?director\.revealSystemCursorTemporarily/);
+    assert.match(directorSource, /revealSystemCursorTemporarily\(durationMs = 2000,\s*reason = 'tutorial-temporary-reveal'\)/);
+    assert.match(directorSource, /classList\.add\('yui-user-cursor-revealed',\s*'yui-resistance-cursor-reveal'\)/);
+    assert.match(directorSource, /syncPcSystemCursorTemporaryReveal\(normalizedDurationMs,\s*reason\)/);
+    assert.match(directorSource, /window\.setTimeout\(\(\) => \{[\s\S]*?this\.suppressResistanceCursorReveal\(\);[\s\S]*?\},\s*normalizedDurationMs\)/);
+    assert.match(directorSource, /notifyPluginDashboardSystemCursorTemporaryReveal\(durationMs,\s*reason\) \{/);
+    assert.match(directorSource, /type: PLUGIN_DASHBOARD_SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT/);
+    assert.match(directorSource, /dispatchDesktopPluginDashboardSystemCursorTemporaryReveal\(payload\);/);
+    assert.match(directorSource, /new CustomEvent\(DESKTOP_PLUGIN_DASHBOARD_SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT/);
+    assert.match(directorSource, /handlePluginDashboardInterruptRequest[\s\S]*?this\.notifyPluginDashboardSystemCursorTemporaryReveal\(2000,\s*'interrupt_resist_light'\);[\s\S]*?await this\.playLightResistance\(x,\s*y,\s*\{[\s\S]*?suppressCursorReveal: true,[\s\S]*?forceSystemCursorReveal: true/);
+    assert.match(directorSource, /handlePluginDashboardInterruptRequest[\s\S]*?await this\.playLightResistance\(x,\s*y,\s*\{[\s\S]*?suppressCursorReveal: true,[\s\S]*?forceSystemCursorReveal: true/);
+    assert.match(pluginRuntimeSource, /const SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT = 'neko:yui-guide:plugin-dashboard:system-cursor-temporary-reveal'/);
+    assert.match(pluginRuntimeSource, /const DESKTOP_SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT = 'neko:yui-guide:desktop-system-cursor-temporary-reveal'/);
+    assert.match(pluginRuntimeSource, /revealSystemCursorTemporarily\(durationMs = 2000\) \{/);
+    assert.match(pluginRuntimeSource, /html\.yui-guide-plugin-dashboard-running\.yui-taking-over\.yui-resistance-cursor-reveal/);
+    assert.match(pluginRuntimeSource, /handleSystemCursorTemporaryRevealData\(data: unknown\) \{/);
+    assert.match(pluginRuntimeSource, /if \(!sessionId \|\| !this\.isCurrentRun\(sessionId\)\) \{/);
+    assert.match(pluginRuntimeSource, /handleDesktopSystemCursorTemporaryRevealEvent\(event: Event\) \{/);
+    assert.match(pluginRuntimeSource, /data\.type === SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT[\s\S]*?runtime\.handleSystemCursorTemporaryRevealData\(data\)/);
+    assert.match(pluginRuntimeSource, /window\.addEventListener\(DESKTOP_SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT,\s*handleDesktopSystemCursorTemporaryRevealEvent,\s*true\)/);
+    assert.match(pluginRuntimeSource, /window\.removeEventListener\(DESKTOP_SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT,\s*handleDesktopSystemCursorTemporaryRevealEvent,\s*true\)/);
+    assert.match(pluginRuntimeSource, /window\.addEventListener\('pagehide',\s*handleRuntimePageHide,\s*true\)/);
+    assert.match(pluginRuntimeSource, /window\.removeEventListener\('pagehide',\s*handleRuntimePageHide,\s*true\)/);
+    assert.doesNotMatch(pluginRuntimeSource, /const originalRuntimeCleanup = runtime\.cleanup\.bind\(runtime\)/);
+    assert.match(cssSource, /body\.yui-taking-over\.yui-user-cursor-revealed/);
+    assert.match(cssSource, /body\.yui-taking-over\.yui-user-cursor-revealed #live2d-canvas/);
+    assert.match(cssSource, /body\.yui-taking-over\.yui-resistance-cursor-reveal #react-chat-window-drag-handle/);
+    assert.match(cssSource, /cursor:\s*auto !important/);
     assert.match(resistanceControllerBlock, /director\.pauseCurrentSceneForResistance\(\);/);
     assert.match(resistanceControllerBlock, /director\.interruptNarrationForResistance\(\);/);
     assert.match(resistanceControllerBlock, /director\.runInterruptResistPerformance\(\{/);
@@ -1399,10 +1604,6 @@ test('settings tour flow owns migrated settings tour concrete scene bodies', () 
         path.join(repoRoot, 'static', 'tutorial/yui-guide/days/day4-companion-guide.js'),
         'utf8'
     );
-    const day2Block = source.split('        async playDay2PersonalizationDetailScene')[1].split(
-        '        async playDay5CharacterPanicScene',
-        1
-    )[0];
     const prepareSceneBlock = source.split('        async prepareAvatarFloatingScene(scene, options) {')[1].split(
         '        async runDay6PluginOpenAgentPanelFlow',
         1
@@ -1436,14 +1637,14 @@ test('settings tour flow owns migrated settings tour concrete scene bodies', () 
         1
     )[0];
     const characterSettingsBlock = source.split('        async playDay5CharacterSettingsScene')[1].split(
-        '        async playDay2PersonalizationDetailScene',
+        '        async playDay5CharacterPanicScene',
         1
     )[0];
     const panicBlock = source.split('        async playDay5CharacterPanicScene')[1].split(
         '        async runAvatarFloatingSceneOperation',
         1
     )[0];
-    const flowDay2Block = settingsTourFlowSource.split('        async playDay2PersonalizationDetailScene')[1].split(
+    const flowDay3Block = settingsTourFlowSource.split('        async playDay3PersonalizationDetailScene')[1].split(
         '        async playDay4ChatSettingsScene',
         1
     )[0];
@@ -1485,7 +1686,9 @@ test('settings tour flow owns migrated settings tour concrete scene bodies', () 
     )[0];
 
     assert.match(source, /this\.settingsTourFlow = new TutorialSettingsTourFlow\.SettingsTourFlow\(this\);/);
-    assert.match(day2Block, /return this\.settingsTourFlow\.playDay2PersonalizationDetailScene\(scene,\s*\{/);
+    assert.doesNotMatch(source, /playDay2PersonalizationDetailScene/);
+    assert.doesNotMatch(settingsTourFlowSource, /playDay2PersonalizationDetailScene/);
+    assert.match(settingsTourFlowSource, /day3_personalization_detail:\s*'playDay3PersonalizationDetailScene'/);
     assert.match(chatBlock, /return this\.settingsTourFlow\.playDay4ChatSettingsScene\(scene,\s*\{/);
     assert.match(modelBlock, /return this\.settingsTourFlow\.playDay4ModelBehaviorScene\(scene,\s*\{/);
     assert.match(gazeBlock, /return this\.settingsTourFlow\.playDay4GazeFollowScene\(scene,\s*\{/);
@@ -1523,7 +1726,10 @@ test('settings tour flow owns migrated settings tour concrete scene bodies', () 
     assert.match(flowChatBlock, /return this\.playPanelTourScene\(scene,\s*context,\s*this\.getPanelTourSchema\(scene\)\);/);
     assert.match(flowModelBlock, /return this\.playPanelTourScene\(scene,\s*context,\s*this\.getPanelTourSchema\(scene\)\);/);
     assert.match(flowPanelTourBlock, /const narration = this\.prepareNarration\(scene\);/);
-    assert.match(flowPanelTourBlock, /this\.createNarrationPromise\(scene,\s*narration\)/);
+    assert.match(
+        flowPanelTourBlock,
+        /this\.createNarrationPromise\(scene,\s*narration,\s*\{[\s\S]*minDurationMs:\s*normalizedSchema\.panelMinDurationMs[\s\S]*\}\)/
+    );
     assert.match(day4ChatSettingsSceneBlock, /deferSettingsSidePanelUntilCursorClick:\s*true/);
     assert.match(prepareSceneBlock, /const deferSettingsSidePanelUntilCursorClick = !!\(/);
     assert.match(
@@ -1538,7 +1744,7 @@ test('settings tour flow owns migrated settings tour concrete scene bodies', () 
     assert.match(flowPanelTourBlock, /this\.tourPanel\(scene,\s*sceneRunId,\s*touredPanel,\s*narrationPromise/);
     assert.match(flowPanelTourBlock, /return this\.finalizeNarration\(sceneRunId,\s*narration,\s*normalizedContext\);/);
     for (const block of [
-        flowDay2Block,
+        flowDay3Block,
         flowGazeBlock,
         flowPrivacyBlock,
         flowCharacterSettingsBlock,
@@ -1625,8 +1831,8 @@ test('director delegates avatar floating scene operations through OperationRegis
     assert.match(operationRegistryBlock, /this\.operationHandlers = \[\];/);
     assert.match(operationRegistryBlock, /registerOperation\(matcher,\s*handler\) \{/);
     assert.match(operationRegistryBlock, /registerBuiltInOperations\(\) \{/);
-    assert.match(operationRegistryBlock, /this\.registerOperation\('day2-open-settings-personalization',\s*\(\) => this\.runDay2OpenSettingsPersonalization\(\)\);/);
-    assert.match(operationRegistryBlock, /this\.registerOperation\('day2-settings-detail',\s*\(\) => this\.runDay2SettingsDetail\(\)\);/);
+    assert.match(operationRegistryBlock, /this\.registerOperation\('day3-open-settings-personalization',\s*\(\) => this\.runDay3OpenSettingsPersonalization\(\)\);/);
+    assert.match(operationRegistryBlock, /this\.registerOperation\('day3-settings-detail',\s*\(\) => this\.runDay3SettingsDetail\(\)\);/);
     assert.match(operationRegistryBlock, /this\.registerOperation\('day4-animation-distance-showcase'/);
     assert.match(operationRegistryBlock, /this\.registerOperation\('day1-managed-scene:takeover_capture_cursor'/);
     assert.match(operationRegistryBlock, /this\.registerOperation\(\{ prefix: 'day1-managed-scene-settled:' \},\s*\(\) => true\);/);
@@ -1650,8 +1856,8 @@ test('director delegates avatar floating scene operations through OperationRegis
     assert.match(operationRegistryBlock, /this\.registerOperation\('open-avatar-tool-menu'/);
     assert.match(operationRegistryBlock, /this\.registerOperation\('show-avatar-tools-then-hide-after-narration'/);
     assert.match(operationRegistryBlock, /this\.registerOperation\('toggle-avatar-tool-after-narration'/);
-    assert.match(operationRegistryBlock, /async runDay2OpenSettingsPersonalization\(\) \{/);
-    assert.match(operationRegistryBlock, /async runDay2SettingsDetail\(\) \{/);
+    assert.match(operationRegistryBlock, /async runDay3OpenSettingsPersonalization\(\) \{/);
+    assert.match(operationRegistryBlock, /async runDay3SettingsDetail\(\) \{/);
     assert.match(operationRegistryBlock, /async runDay4AnimationDistanceShowcase\(scene,\s*narrationStartedAt\) \{/);
     assert.match(operationRegistryBlock, /async runDay1TakeoverCaptureCursor\(scene\) \{/);
     assert.match(operationRegistryBlock, /captureDay1TakeoverAgentSwitches/);
@@ -1685,10 +1891,10 @@ test('director delegates avatar floating scene operations through OperationRegis
     assert.match(operationRegistryBlock, /return true;\s*\}\s*\}\s*return \{/);
 });
 
-test('day3 Galgame guide drag follows the compact tool wheel arc and holds the target', () => {
+test('day2 Galgame guide drag follows the compact tool wheel arc and holds the target after day swap', () => {
     const source = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/director.js'), 'utf8');
     const overlaySource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/overlay.js'), 'utf8');
-    const day3GuideSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/days/day3-interaction-guide.js'), 'utf8');
+    const day2GuideSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/days/day2-screen-voice-guide.js'), 'utf8');
     const appInterpageSource = fs.readFileSync(path.join(repoRoot, 'static', 'app-interpage.js'), 'utf8');
     const sceneOrchestratorSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/scene-orchestrator.js'), 'utf8');
     const operationRegistrySource = fs.readFileSync(
@@ -1731,8 +1937,8 @@ test('day3 Galgame guide drag follows the compact tool wheel arc and holds the t
         '            } else {',
         1
     )[0];
-    const day3ChoicesBlock = day3GuideSource.split("id: 'day3_galgame_choices'")[1].split(
-        "id: 'day3_wrap'",
+    const day2ChoicesBlock = day2GuideSource.split("id: 'day2_galgame_choices'")[1].split(
+        "id: 'day2_wrap'",
         1
     )[0];
 
@@ -1802,12 +2008,12 @@ test('day3 Galgame guide drag follows the compact tool wheel arc and holds the t
         [...block.matchAll(/rotateCompactToolWheelForGuide\(dragRotateDirection,\s*1,\s*rotateReason\)/g)].length,
         2
     );
-    assert.match(day3ChoicesBlock, /target:\s*'chat-galgame'/);
-    assert.match(day3ChoicesBlock, /cursorTarget:\s*'chat-galgame'/);
-    assert.match(day3ChoicesBlock, /cursorAction:\s*'hold'/);
-    assert.match(day3ChoicesBlock, /cursorHoldFreezePoint:\s*true/);
-    assert.match(day3ChoicesBlock, /cursorHoldSettleMs:\s*260/);
-    assert.doesNotMatch(day3ChoicesBlock, /operation:/);
+    assert.match(day2ChoicesBlock, /target:\s*'chat-galgame'/);
+    assert.match(day2ChoicesBlock, /cursorTarget:\s*'chat-galgame'/);
+    assert.match(day2ChoicesBlock, /cursorAction:\s*'hold'/);
+    assert.match(day2ChoicesBlock, /cursorHoldFreezePoint:\s*true/);
+    assert.match(day2ChoicesBlock, /cursorHoldSettleMs:\s*260/);
+    assert.doesNotMatch(day2ChoicesBlock, /operation:/);
     assert.match(appInterpageSource, /freezePoint:\s*message\.freezePoint === true/);
     assert.match(appInterpageSource, /freezePoint:\s*event\.data\.freezePoint === true/);
     assert.match(appInterpageSource, /var freezePoint = normalizedOptions\.freezePoint === true;/);
@@ -1818,17 +2024,17 @@ test('day3 Galgame guide drag follows the compact tool wheel arc and holds the t
     assert.doesNotMatch(operationRegistrySource, /tour-mini-game-choice-buttons/);
 });
 
-test('day3 avatar tool props cleanup waits for the real narration promise', () => {
+test('day2 avatar tool props cleanup waits for the real narration promise after day swap', () => {
     const operationRegistrySource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/operation-registry.js'), 'utf8');
     const sceneOrchestratorSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/scene-orchestrator.js'), 'utf8');
-    const day3GuideSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/days/day3-interaction-guide.js'), 'utf8');
+    const day2GuideSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/days/day2-screen-voice-guide.js'), 'utf8');
     const avatarToolsMatch = operationRegistrySource.match(
         /        async runShowAvatarToolsThenHideAfterNarration\(scene, primaryTarget, narrationStartedAt, narrationPromise\) \{([\s\S]*?)\n        async runToggleAvatarToolAfterNarration/
     );
     assert.ok(avatarToolsMatch, 'expected Avatar tools operation to accept the narration promise');
     const avatarToolsBlock = avatarToolsMatch[1];
-    const avatarToolsPropsBlock = day3GuideSource.split("id: 'day3_avatar_tools_props'")[1].split(
-        "id: 'day3_galgame_entry'",
+    const avatarToolsPropsBlock = day2GuideSource.split("id: 'day2_avatar_tools_props'")[1].split(
+        "id: 'day2_galgame_entry'",
         1
     )[0];
     const sceneOperationBlock = sceneOrchestratorSource.split(
@@ -2062,7 +2268,7 @@ test('director registers settings side panels as pause tokens', () => {
         '            this.cursorAnchorStore = new CursorAnchorStore();',
         1
     )[0];
-    const ensureSettingsBlock = directorSource.split('        async ensureAvatarFloatingSettingsSidePanel(type) {')[1].split(
+    const ensureSettingsBlock = directorSource.split('        async ensureAvatarFloatingSettingsSidePanel(type, options) {')[1].split(
         '        async ensureAvatarFloatingAgentSidePanel(toggleId) {',
         1
     )[0];
@@ -2085,7 +2291,14 @@ test('director registers settings side panels as pause tokens', () => {
     assert.match(sidebarControllerBlock, /data-yui-guide-sidebar-paused/);
     assert.match(constructorBlock, /this\.sidebarPauseController = new SidebarPauseController\(\{/);
     assert.match(constructorBlock, /this\.pauseCoordinator\.registerPauseToken\('sidebar',\s*this\.sidebarPauseController\.getPauseToken\(\)\);/);
+    assert.match(ensureSettingsBlock, /const skipOpenSettingsPanel = !!\(options && options\.skipOpenSettingsPanel\);/);
+    assert.match(ensureSettingsBlock, /if \(!skipOpenSettingsPanel\) \{[\s\S]*const opened = await this\.openSettingsPanel\(\);/);
+    assert.match(ensureSettingsBlock, /if \(!opened\) \{[\s\S]*return null;[\s\S]*if \(this\.isStopping\(\)\) \{[\s\S]*return null;/);
     assert.match(ensureSettingsBlock, /this\.sidebarPauseController\.trackPanel\(panel\);/);
+    assert.match(
+        ensureSettingsBlock,
+        /this\.sidebarPauseController\.trackPanel\(panel\);[\s\S]*this\.refreshAvatarFloatingSettingsPanelLayout\(panel\);[\s\S]*if \(shouldContinue && !shouldContinue\(\)\) \{[\s\S]*return null;[\s\S]*const expanded = await this\.expandAvatarFloatingSidePanel/
+    );
     assert.match(ensureCharacterBlock, /this\.sidebarPauseController\.trackPanel\(sidePanel\);/);
     assert.match(collapseCharacterBlock, /this\.sidebarPauseController\.trackPanel\(sidePanel\);/);
 });
@@ -2125,6 +2338,7 @@ test('director routes termination requests through TutorialTerminationRouter', (
     assert.match(routerBlock, /async handlePluginDashboardSkipRequest\(data\) \{/);
     assert.doesNotMatch(routerBlock, /director\.beginTerminationVisualCleanup\(\);/);
     assert.doesNotMatch(routerBlock, /requestAvatarFloatingGuideCooperativeEnd\(finalReason\)/);
+    assert.match(routerBlock, /director\.recordAvatarFloatingGuideRoundEndForTermination\(finalReason\);/);
     assert.match(routerBlock, /typeof director\.tutorialManager\.requestTutorialEnd === 'function'/);
     assert.match(routerBlock, /return director\.tutorialManager\.requestTutorialEnd\(finalReason\);/);
     assert.match(routerBlock, /return director\.tutorialManager\.requestTutorialDestroy\(finalReason\);/);
@@ -2141,6 +2355,70 @@ test('director routes termination requests through TutorialTerminationRouter', (
     assert.doesNotMatch(requestTerminationBlock, /beginTerminationVisualCleanup/);
     assert.doesNotMatch(skipBlock, /recordExperienceMetric\('skip'/);
     assert.doesNotMatch(pluginSkipBlock, /forwardPluginDashboardSkipRequestToButton/);
+});
+
+test('termination router lets Day1 skip record the guide end marker for voice branch timing', () => {
+    const { TutorialTerminationRouter } = require('./tutorial/visual/resistance-controllers.js');
+    const calls = [];
+    const director = {
+        destroyed: false,
+        terminationRequested: false,
+        clearPendingGuideMessageAction() {
+            calls.push('clear-action');
+        },
+        setGuideChatInputLocked(locked, reason) {
+            calls.push(['input', locked, reason]);
+        },
+        notifyPluginDashboardTerminationRequested(reason) {
+            calls.push(['plugin-terminate', reason]);
+        },
+        recordAvatarFloatingGuideRoundEndForTermination(reason) {
+            calls.push(['round-end-for-termination', reason]);
+        },
+        closePluginDashboardWindowIfCreatedByGuide() {
+            calls.push('close-plugin');
+            return Promise.resolve();
+        },
+        cancelActiveNarration() {
+            calls.push('cancel-narration');
+        },
+        resumeCurrentSceneAfterResistance() {
+            calls.push('resume-scene');
+        },
+        tutorialManager: {
+            requestTutorialEnd(reason) {
+                calls.push(['manager-end', reason]);
+                return 'ended';
+            }
+        }
+    };
+    const router = new TutorialTerminationRouter(director);
+
+    const result = router.requestTermination('skip', 'skip');
+
+    assert.equal(result, 'ended');
+    assert.deepEqual(calls, [
+        'clear-action',
+        ['input', false, 'avatar-floating-guide-skip'],
+        ['plugin-terminate', 'skip'],
+        ['round-end-for-termination', 'skip'],
+        'close-plugin',
+        'cancel-narration',
+        'resume-scene',
+        ['manager-end', 'skip']
+    ]);
+});
+
+test('universal manager records Day1 usage end marker when tutorial skip bypasses director router', () => {
+    const managerSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/universal-manager.js'), 'utf8');
+    const tutorialEndBlock = managerSource.split('    onTutorialEnd() {')[1].split(
+        '        // 标记用户已看过该页面的引导',
+        1
+    )[0];
+
+    assert.match(managerSource, /const AVATAR_FLOATING_GUIDE_USAGE_STORAGE_KEY = 'neko_avatar_floating_guide_usage_v1';/);
+    assert.match(managerSource, /function recordAvatarFloatingGuideUsageRoundEnd\(day\) \{/);
+    assert.match(tutorialEndBlock, /if \(avatarFloatingEndState\.day === 1\) \{\s*recordAvatarFloatingGuideUsageRoundEnd\(1\);/);
 });
 
 test('tutorial skip button reuses the manager tutorial end lifecycle', () => {
@@ -2197,7 +2475,13 @@ test('tutorial skip button reuses the manager tutorial end lifecycle', () => {
     assert.match(managerSource, /vrmCanvas: readPointerEvents\('vrm-canvas'\)/);
     assert.match(managerSource, /mmdCanvas: readPointerEvents\('mmd-canvas'\)/);
     assert.match(avatarInteractionRestoreBlock, /const hasSnapshotPointerEvents = snapshot\.pointerEvents/);
-    assert.match(avatarInteractionRestoreBlock, /element\.style\.pointerEvents = snapshot\.pointerEvents\[pointerKey\] \|\| '';/);
+    assert.match(avatarInteractionRestoreBlock, /const snapshotPointerEvents = hasSnapshotPointerEvents \? snapshot\.pointerEvents\[pointerKey\] : null;/);
+    assert.match(avatarInteractionRestoreBlock, /function restoreAvatarPointerEvents\(element, elementId, snapshotPointerEvents, hasSnapshotPointerEvents\)/);
+    assert.match(avatarInteractionRestoreBlock, /const isActiveAvatarContainer = elementId === `\$\{activePrefix\}-container`;/);
+    assert.match(avatarInteractionRestoreBlock, /if \(isActiveAvatarContainer && \(activePrefix === 'live2d' \|\| activePrefix === 'pngtuber'\)\) \{[\s\S]*?element\.style\.setProperty\('pointer-events', 'none', 'important'\);[\s\S]*?return;/);
+    assert.match(avatarInteractionRestoreBlock, /element\.style\.pointerEvents = snapshotPointerEvents;/);
+    assert.match(avatarInteractionRestoreBlock, /restoreAvatarPointerEvents\(element, elementId, snapshotPointerEvents, hasSnapshotPointerEvents\);/);
+    assert.doesNotMatch(avatarInteractionRestoreBlock, /element\.style\.pointerEvents = snapshot\.pointerEvents\[pointerKey\] \|\| '';/);
     assert.match(avatarInteractionRestoreBlock, /activePrefix === 'live2d' \|\| activePrefix === 'pngtuber'/);
     assert.match(managerSource, /modelType === 'live3d'/);
     assert.match(managerSource, /live3d_sub_type/);
@@ -2252,23 +2536,72 @@ test('return petal transition cancels immediately when tutorial is skipped', () 
     assert.doesNotMatch(executeBlock, /await finishTransition\(transition\);/);
 });
 
-test('avatar floating auto-start rechecks pending state before delayed launch', () => {
+test('avatar floating auto-start rechecks current due round before delayed launch', () => {
     const managerSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/universal-manager.js'), 'utf8');
     const maybeAutoBlock = managerSource.split('    async maybeStartAvatarFloatingGuideAutoRound(delayMs = 1200) {')[1].split(
         '    ensureTutorialSkipController() {',
         1
     )[0];
-    const pendingCheckMatch = managerSource.match(
-        /    isAvatarFloatingGuideRoundPendingAutoStart\(day\) \{([\s\S]*?)\n    \}\n\n    async maybeStartAvatarFloatingGuideAutoRound/
-    );
-    assert.ok(pendingCheckMatch, 'expected manager to expose stale auto-start pending guard');
-    const pendingCheckBlock = pendingCheckMatch[1];
+    const pendingCheckBlock = managerSource.split(
+        '    isAvatarFloatingGuideRoundPendingAutoStart(day) {'
+    )[1].split(
+        '    isAvatarFloatingGuideRoundRegistered(day) {',
+        1
+    )[0];
+    assert.ok(pendingCheckBlock, 'expected manager to expose stale auto-start pending guard');
 
-    assert.match(maybeAutoBlock, /if \(!this\.isAvatarFloatingGuideRoundPendingAutoStart\(round\)\) \{\s*return;\s*\}/);
+    assert.match(maybeAutoBlock, /if \(!this\.isAvatarFloatingGuideRoundPendingAutoStart\(round\)\) \{[\s\S]*?return;\s*\}/);
     assert.match(pendingCheckBlock, /const state = loadAvatarFloatingGuideState\(\);/);
-    assert.match(pendingCheckBlock, /state\.pendingRound !== round && state\.manualResetRound !== round/);
+    assert.match(pendingCheckBlock, /if \(state\.manualResetRound\) \{[\s\S]*?return state\.manualResetRound === round;[\s\S]*?\}/);
+    assert.match(pendingCheckBlock, /return this\.getNextAvatarFloatingGuideAutoRound\(\) === round;/);
     assert.match(pendingCheckBlock, /state\.completedRounds\.includes\(round\)/);
     assert.match(pendingCheckBlock, /state\.skippedRounds\.includes\(round\)/);
+    assert.doesNotMatch(pendingCheckBlock, /state\.pendingRound\s*\|\|/);
+    assert.doesNotMatch(pendingCheckBlock, /state\.pendingRound === round/);
+    assert.doesNotMatch(pendingCheckBlock, /state\.lastAutoShownRound === round/);
+    assert.doesNotMatch(pendingCheckBlock, /state\.lastAutoShownDate === today/);
+});
+
+test('avatar floating auto-start reserves the round before long playback can be refreshed', () => {
+    const managerSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/universal-manager.js'), 'utf8');
+    const startRoundBlock = managerSource.split('    async startAvatarFloatingGuideRound(day, options = {}) {')[1].split(
+        '    async waitForTutorialTeardownSettled(reason = ',
+        1
+    )[0];
+    const autoReservationIndex = startRoundBlock.indexOf("if (source === 'auto')");
+    const setCurrentIndex = startRoundBlock.indexOf('this.setAvatarFloatingGuideCurrentRound(round);');
+
+    assert.notEqual(autoReservationIndex, -1, 'auto round starts should reserve same-day playback before long narration');
+    assert.notEqual(setCurrentIndex, -1, 'round starts should still persist current round state');
+    assert.ok(autoReservationIndex < setCurrentIndex, 'auto reservation should be written before pending/current round state');
+    assert.match(startRoundBlock, /if \(source === 'auto'\) \{[\s\S]*?this\.markAvatarFloatingGuideRoundAutoShown\(round\);[\s\S]*?\}/);
+});
+
+test('avatar floating auto due calculation ignores runtime pending round after refresh', () => {
+    const managerSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/universal-manager.js'), 'utf8');
+    const nextAutoBlock = managerSource.split('    getNextAvatarFloatingGuideAutoRound() {')[1].split(
+        '    getHomeAvatarFloatingGuideStartRound(options = {}) {',
+        1
+    )[0];
+
+    assert.match(nextAutoBlock, /const pendingManualRound = state\.manualResetRound;/);
+    assert.doesNotMatch(nextAutoBlock, /state\.pendingRound\s*\|\|\s*state\.manualResetRound/);
+    assert.ok(
+        nextAutoBlock.indexOf('if (pendingManualRound)') < nextAutoBlock.indexOf('if (state.lastAutoShownDate === today)'),
+        'manual resets should still override same-day auto reservation'
+    );
+});
+
+test('avatar floating auto start does not mark auto-shown again after playback settles', () => {
+    const managerSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/universal-manager.js'), 'utf8');
+    const maybeAutoBlock = managerSource.split('    async maybeStartAvatarFloatingGuideAutoRound(delayMs = 1200) {')[1].split(
+        '    ensureTutorialSkipController() {',
+        1
+    )[0];
+
+    assert.match(maybeAutoBlock, /this\.startAvatarFloatingGuideRound\(round, \{ source: 'auto' \}\)\.then\(\(result\) => \{/);
+    assert.match(maybeAutoBlock, /if \(result === false\) \{[\s\S]*?avatar-floating-round-start-skipped/);
+    assert.doesNotMatch(maybeAutoBlock, /markAvatarFloatingGuideRoundAutoShown\(round\)/);
 });
 
 test('tutorial destroy requests share the PC global overlay cleanup path', () => {
@@ -2678,4 +3011,47 @@ test('skip controller uses scoped resources with a fallback cleanup path', () =>
     assert.match(source, /createScopedTutorialResources/);
     assert.match(source, /this\.currentResources\.destroy\(\)/);
     assert.match(source, /button\.removeEventListener\('pointerdown', handleSkipRequest\)/);
+});
+
+test('day6 chat cursor handoff clears external ownership without hiding the PC cursor', () => {
+    const day6Source = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/days/day6-agent-guide.js'), 'utf8');
+    const sceneOrchestratorSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/scene-orchestrator.js'), 'utf8');
+    const takeoverSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/interaction-takeover.js'), 'utf8');
+    const directorSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/director.js'), 'utf8');
+    const appInterpageSource = fs.readFileSync(path.join(repoRoot, 'static', 'app-interpage.js'), 'utf8');
+
+    const day6StatusSceneBlock = day6Source.split("id: 'day6_agent_status_master'")[1].split(
+        "id: 'day6_plugin_side_panel'",
+        1
+    )[0];
+    const takeoverCursorBlock = takeoverSource.split('        setExternalizedChatCursor(kind, options) {')[1].split(
+        '        setExternalizedChatAvatarToolMenuOpen',
+        1
+    )[0];
+    const directorClearBlock = directorSource.split('        clearExternalizedChatGuideTarget(options) {')[1].split(
+        '        createAvatarFloatingUnionTarget',
+        1
+    )[0];
+    const chatCursorMessageBlock = appInterpageSource.split("case 'yui_guide_set_chat_cursor': {")[1].split(
+        'applyYuiGuideChatCursor(cursorKind, cursorOptions);',
+        1
+    )[0];
+    const chatCursorClearBlock = appInterpageSource.split('        if (!kind) {')[1].split(
+        '            hideYuiGuideChatCursorElement();',
+        1
+    )[0];
+    const earlyCursorHandoffIndex = sceneOrchestratorSource.indexOf('director.clearExternalizedChatGuideTarget({\n                    clearCursor: true');
+    const sceneExtraCleanupIndex = sceneOrchestratorSource.indexOf('director.clearSceneExtraSpotlights();');
+
+    assert.match(day6StatusSceneBlock, /clearExternalizedChatCursorOnEnter:\s*true/);
+    assert.ok(earlyCursorHandoffIndex >= 0);
+    assert.ok(sceneExtraCleanupIndex > earlyCursorHandoffIndex);
+    assert.match(sceneOrchestratorSource, /shouldClearExternalizedChatCursor[\s\S]*director\.clearExternalizedChatGuideTarget\(\{\s*clearCursor:\s*true,\s*preservePcOverlayCursor:\s*true\s*\}\);/);
+    assert.match(sceneOrchestratorSource, /!shouldClearExternalizedChatCursor[\s\S]*director\.clearExternalizedChatGuideTarget\(\{[\s\S]*clearCursor:\s*shouldClearExternalizedChatCursor[\s\S]*preservePcOverlayCursor:\s*shouldClearExternalizedChatCursor/);
+    assert.match(takeoverCursorBlock, /preservePcOverlayCursor:\s*!!\(options && options\.preservePcOverlayCursor === true\)/);
+    assert.match(directorClearBlock, /const shouldPreservePcOverlayCursor = !!\(options && options\.preservePcOverlayCursor === true\)/);
+    assert.match(directorClearBlock, /const currentCursorPoint = this\.overlay\.getCursorPosition\(\)/);
+    assert.match(directorClearBlock, /this\.overlay\.syncCursorPosition\(currentCursorPoint\.x, currentCursorPoint\.y, true\)/);
+    assert.match(chatCursorMessageBlock, /preservePcOverlayCursor:\s*message\.preservePcOverlayCursor === true/);
+    assert.match(chatCursorClearBlock, /isYuiGuidePcCursorOnlyMode\(\) && normalizedOptions\.preservePcOverlayCursor !== true/);
 });

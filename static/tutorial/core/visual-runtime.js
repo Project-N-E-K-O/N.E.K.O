@@ -315,7 +315,8 @@
                 const cursorKind = director.getExternalizedChatCursorTargetKind(cursorScene);
                 if (cursorKind) {
                     director.setExternalizedChatCursorEffect(cursorKind, 'move', {
-                        durationMs
+                        durationMs,
+                        freezePoint: event.freezePoint === true
                     });
                     const waitMs = durationMs > 0 ? durationMs + 500 : undefined;
                     return await director.waitForExternalizedChatCursorMove(cursorScene.id || '', waitMs);
@@ -506,6 +507,9 @@
             const legacyScene = Object.assign({}, getLegacyScene(context), {
                 operation: event.operation || (getLegacyScene(context).operation || '')
             });
+            if (event.preserveExternalizedChatGuideTarget === true) {
+                legacyScene.preserveExternalizedChatGuideTarget = true;
+            }
             if (
                 event.trigger === 'afterCursorMove'
                 && typeof director.isHomeChatExternalized === 'function'
@@ -567,6 +571,14 @@
                 return false;
             }
             const legacyScene = getLegacyScene(context);
+            if (
+                legacyScene
+                && typeof legacyScene.id === 'string'
+                && legacyScene.id.indexOf('day4_') === 0
+                && typeof director.clearExternalizedChatGuideTarget === 'function'
+            ) {
+                director.clearExternalizedChatGuideTarget({ clearCursor: true });
+            }
             return await director.settingsTourFlow.play(legacyScene, {
                 sceneRunId: context ? context.sceneRunId : undefined,
                 previousSceneId: context ? context.previousSceneId : undefined,

@@ -493,10 +493,30 @@ def test_pngtuber_return_restores_pointer_events():
         source.index("const live2dContainerPngtuber = document.getElementById('live2d-container');")
     ]
 
-    assert "prepareModelReturnContainer(pngtuberContainer, consumeModelReturnEnterRect(), { clearPointerEvents: true });" in branch
+    assert "prepareModelReturnContainer(pngtuberContainer, modelReturnEnterRect, { clearPointerEvents: true });" in branch
     assert "pngtuberContainer.style.setProperty('pointer-events', 'none', 'important');" in branch
+    assert "pngtuberContainer.querySelectorAll('.pngtuber-image').forEach((pngtuberImage) => {" in branch
+    assert "pngtuberImage.style.removeProperty('transition');" in branch
+    assert "pngtuberImage.style.removeProperty('opacity');" in branch
+    assert "pngtuberImage.style.setProperty('visibility', 'visible', 'important');" in branch
     assert "pngtuberImage.style.setProperty('pointer-events', 'auto', 'important');" in branch
     assert "pngtuberContainer.style.setProperty('pointer-events', 'auto', 'important');" not in branch
+
+
+def test_pngtuber_return_replays_model_enter_animation_after_preparing_container():
+    source = APP_UI_PATH.read_text(encoding="utf-8")
+    branch = source[
+        source.index("} else if (effectiveModelType === 'pngtuber') {"):
+        source.index("const live2dContainerPngtuber = document.getElementById('live2d-container');")
+    ]
+
+    assert "const modelReturnEnterRect = pngtuberContainer ? consumeModelReturnEnterRect() : null;" in branch
+    assert branch.count("consumeModelReturnEnterRect()") == 1
+    assert branch.index("await window.loadPNGTuberAvatar(pngtuberConfig);") < branch.index("const modelReturnEnterRect = pngtuberContainer ? consumeModelReturnEnterRect() : null;")
+    assert "prepareModelReturnContainer(pngtuberContainer, modelReturnEnterRect, { clearPointerEvents: true });" in branch
+    assert "if (modelReturnEnterRect) {" in branch
+    assert "playModelReturnEnter(pngtuberContainer, modelReturnEnterRect);" in branch
+    assert branch.index("prepareModelReturnContainer(pngtuberContainer, modelReturnEnterRect, { clearPointerEvents: true });") < branch.index("playModelReturnEnter(pngtuberContainer, modelReturnEnterRect);")
 
 
 def test_return_button_idle_tier_styles_are_present():
@@ -1968,9 +1988,43 @@ def test_sleeping_cat_tiers_schedule_soft_random_sound_once_per_interval():
     source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
 
     assert "Dev-only short interval for CAT2/CAT3 sleep sounds and their thought bubble." not in source
+    assert "window.nekoIdleCatAudio = Object.freeze({" in source
+    assert "isEnabled: isNekoIdleCatAudioEnabled," in source
+    assert "setEnabled: setNekoIdleCatAudioEnabled," in source
+    assert "let _nekoIdleCatAudioEnabledMemory = true;" in source
     assert "_NEKO_IDLE_SLEEP_SOUND_INTERVAL_MS = 5 * 60 * 1000" in source
     assert "_NEKO_IDLE_SLEEP_SOUND_VOLUME = 0.06" in source
+    cat_audio_setting_block = _source_slice_between(
+        source,
+        "function isNekoIdleCatAudioEnabled()",
+        "function _getActiveNekoIdleReturnTier()",
+        "cat audio setting block",
+    )
+    assert "_nekoIdleCatAudioEnabledMemory = enabled;" in cat_audio_setting_block
+    assert "return _nekoIdleCatAudioEnabledMemory;" in cat_audio_setting_block
+    assert "_nekoIdleCatAudioEnabledMemory = next;" in cat_audio_setting_block
     assert "function _playNekoIdleSound(state, src, volume)" in source
+    assert "if (!isNekoIdleCatAudioEnabled()) {" in source
+    assert "_stopNekoIdleSoundAudio(state);" in source
+    assert "_stopNekoIdleSleepSound();" in source
+    assert "function _getActiveNekoIdleReturnTier()" in source
+    active_tier_block = _source_slice_between(
+        source,
+        "function _getActiveNekoIdleReturnTier()",
+        "let _nekoIdleThoughtBubblePopPreloadImage = null;",
+        "active return tier lookup block",
+    )
+    assert "_forEachNekoIdleReturnButton((button) => {" in active_tier_block
+    assert "button.getAttribute('data-neko-idle-tier')" in active_tier_block
+    assert "_readNekoAutoGoodbyeVisualTier()" in active_tier_block
+    sleep_sync_block = _source_slice_between(
+        source,
+        "function _syncNekoIdleSleepSoundForTier(tier)",
+        "function _clearNekoIdleCat1AmbientSoundTimer()",
+        "sleep sound sync block",
+    )
+    assert "if (!isNekoIdleCatAudioEnabled()) {" in sleep_sync_block
+    assert "_stopNekoIdleSleepSound();" in sleep_sync_block
     assert "[_NEKO_IDLE_TIER_CAT2]" in source
     assert "[_NEKO_IDLE_TIER_CAT3]" in source
     assert "srcs: Object.freeze([" in source
@@ -2025,6 +2079,25 @@ def test_cat1_voice_sounds_are_limited_to_non_drag_and_drag_states():
     assert "_normalizeNekoIdleReturnTier(tier) !== _NEKO_IDLE_TIER_CAT1" in source
     assert "_syncNekoIdleCat1AmbientSoundForTier(detail.tier)" in source
     assert "_stopNekoIdleCat1AmbientSound()" in source
+    assert "_syncNekoIdleCat1AmbientSoundForTier(_getActiveNekoIdleReturnTier())" in source
+    assert "function _stopNekoIdleCat1ActionSounds()" in source
+    action_sound_stop_block = _source_slice_between(
+        source,
+        "function _stopNekoIdleCat1ActionSounds()",
+        "let _nekoIdleThoughtBubblePopPreloadImage = null;",
+        "cat1 action sound stop block",
+    )
+    assert "_stopNekoIdleSoundAudio(button.__nekoIdleCat1EatActionState);" in action_sound_stop_block
+    assert "_stopNekoIdleSoundAudio(button.__nekoIdleCat1PlayActionState);" in action_sound_stop_block
+    assert "neko:idle-cat-audio-setting-changed" not in source
+    ambient_sync_block = _source_slice_between(
+        source,
+        "function _syncNekoIdleCat1AmbientSoundForTier(tier)",
+        "function _playNekoIdleCat1DragSound(tier)",
+        "cat1 ambient sync block",
+    )
+    assert "if (!isNekoIdleCatAudioEnabled()) {" in ambient_sync_block
+    assert "_stopNekoIdleCat1AmbientSound();" in ambient_sync_block
 
     rapid_drag_sound_block = _source_slice_between(
         source,

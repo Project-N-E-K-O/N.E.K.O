@@ -14,11 +14,11 @@ All Python commands must go through `uv`:
 
 ```bash
 # ✅ Correct
-uv run python main_server.py
+uv run python app/main_server.py
 uv run pytest tests/
 
 # ❌ Wrong
-python main_server.py
+python app/main_server.py
 pytest tests/
 ```
 

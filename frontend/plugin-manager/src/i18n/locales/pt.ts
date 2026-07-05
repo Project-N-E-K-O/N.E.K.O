@@ -645,6 +645,7 @@ export default {
         skipChat: 'Agora não',
         sayHello: 'Olá',
       },
+      controlBanner: 'A garota-gato está controlando o mouse',
       lines: {
         introActivationHint: 'Espera um pouquinho, já vou começar a falar, nya~!',
         introGreetingReply:  "Uma brisa suave, sol quentinho e você aparecendo bem na hora certa. Prazer em te conhecer! Eu sou Lin Youyi; cuida bem de mim daqui pra frente, miau~! Escrevi tudo sobre este lugar neste guia de iniciante. Pense nele como nosso primeiro presentinho por termos nos conhecido, aceita, por favor!",

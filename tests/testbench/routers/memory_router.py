@@ -39,6 +39,7 @@ Prerequisites (returned as HTTP 4xx when unmet):
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -57,6 +58,27 @@ from tests.testbench.chat_messages import (
 )
 from tests.testbench.logger import python_logger
 from tests.testbench.pipeline import memory_runner
+from tests.testbench.pipeline.memory_attribution import (
+    AttributionError,
+    attribute_all_text,
+    attribute_node,
+)
+from tests.testbench.pipeline.embedding_space import (
+    build_bridges,
+    build_cluster_labels,
+    build_clusters,
+    build_duplicates,
+    build_matrix,
+    build_neighbors,
+    build_space_view,
+    install_umap,
+)
+from tests.testbench.pipeline.memory_lineage import build_lineage_snapshot
+from tests.testbench.pipeline.memory_overview import (
+    build_ai_report,
+    build_overview,
+    judge_contradictions,
+)
 from tests.testbench.pipeline.snapshot_store import capture_safe as _snapshot_capture
 from tests.testbench.session_store import (
     SessionConflictError,
@@ -291,6 +313,244 @@ async def list_memory_previews() -> dict[str, Any]:
         "ttl_seconds": memory_runner.MEMORY_PREVIEW_TTL_SECONDS,
         "previews": memory_runner.list_previews(session),
     }
+
+
+@router.get("/lineage")
+async def get_memory_lineage() -> dict[str, Any]:
+    """Return the read-only memory lineage snapshot for the active character.
+
+    P27.1 — the single aggregation chokepoint behind the memory trace
+    workspace. Pure read: no session lock (safe to run alongside chat.send),
+    no disk writes, and ``time_indexed.db`` is opened read-only with its
+    handle released before returning (see
+    :mod:`tests.testbench.pipeline.conversation_corpus`).
+
+    Declared **before** the dynamic ``/{kind}`` route so the static path wins
+    route resolution (otherwise ``lineage`` is mis-parsed as a memory kind).
+
+    Errors mirror the rest of this router: 404 when there is no active
+    session, 409 ``NoCharacterSelected`` when the session has no character.
+    A character with no memory files yet returns an empty-but-valid snapshot
+    (``nodes: []``) rather than an error — the UI renders an empty canvas.
+    """
+    session = _require_session()
+    character = _require_character(session)
+    return build_lineage_snapshot(character)
+
+
+class LineageAttributePayload(BaseModel):
+    """Body for ``POST /api/memory/lineage/attribute`` (P27.3 Tier C).
+
+    ``node_id`` is the fact / reflection / persona-entry node the tester wants
+    to reverse-attribute to conversation turns. ``use_llm`` opts into the
+    memory-model precision pass (default off = free text similarity).
+    """
+
+    node_id: str
+    use_llm: bool = False
+    top_k: int = 6
+
+
+@router.post("/lineage/attribute")
+async def attribute_memory_lineage(
+    body: LineageAttributePayload,
+) -> dict[str, Any]:
+    """Tier C reverse attribution for one memory node (heuristic, dashed).
+
+    Read-only: never writes memory JSON (blueprint §1.3). The text-similarity
+    path takes no session lock; the ``use_llm`` path runs under
+    ``session_operation`` because it stamps ``session.last_llm_wire`` and calls
+    the memory model (serialize with other memory ops). All results are
+    ``confidence="heuristic"`` edges the UI draws dashed — never solid Tier A.
+
+    Errors: 404 no session / unknown node, 409 NoCharacterSelected /
+    NotAttributable / EmptyTarget, 422 missing node_id.
+    """
+    store = get_session_store()
+    try:
+        if body.use_llm:
+            async with store.session_operation("memory.lineage.attribute") as session:
+                character = _require_character(session)
+                return await attribute_node(
+                    session, character, body.node_id,
+                    use_llm=True, top_k=body.top_k,
+                )
+        session = _require_session()
+        character = _require_character(session)
+        return await attribute_node(
+            session, character, body.node_id,
+            use_llm=False, top_k=body.top_k,
+        )
+    except AttributionError as exc:
+        raise HTTPException(
+            status_code=exc.status,
+            detail={"error_type": exc.code, "message": exc.message},
+        ) from exc
+    except SessionConflictError as exc:
+        raise _wrap_conflict(exc) from exc
+
+
+@router.post("/lineage/attribute_all")
+async def attribute_memory_lineage_all() -> dict[str, Any]:
+    """One-click Tier C: text-similarity reverse-attribution for ALL nodes.
+
+    Runs the deterministic text-similarity pass over every fact / reflection /
+    persona entry at once so the graph shows its (heuristic, dashed) provenance
+    by default instead of forcing the tester to click each node. Read-only (no
+    LLM, no session lock, no disk writes) — every edge is ``heuristic``, never
+    drawn solid.
+
+    Errors: 404 no active session, 409 NoCharacterSelected.
+    """
+    session = _require_session()
+    character = _require_character(session)
+    # attribute_all_text() is sync, O(facts × turns) text-similarity work;
+    # offload it so this route doesn't block the event loop.
+    return await asyncio.to_thread(attribute_all_text, character)
+
+
+@router.get("/embedding/space")
+async def get_embedding_space(reducer: str = "pca") -> dict[str, Any]:
+    """P28.1 — embedding 向量空间 2D 散点 + 体检 (①+②).
+
+    Read-only: reads the active character's facts/reflections/persona vectors
+    from disk and returns ``{points, meta}`` (PCA 2D coords + health counts).
+    No model load, no writes. 404 no session / 409 NoCharacterSelected. A
+    character with no embedded vectors returns an empty-but-described payload
+    (``meta`` health counts drive the UI's "no vectors" empty state).
+
+    Declared before ``/{kind}`` so the static path wins route resolution.
+    """  # noqa: DOCSTRING_CJK
+    session = _require_session()
+    character = _require_character(session)
+    # CPU-bound (PCA/UMAP/numpy over up to thousands of vectors). Run off the
+    # event loop so a slow reduction can't freeze every other HTTP request
+    # (other sub-pages / workspaces would otherwise all hang on "加载中").
+    return await asyncio.to_thread(build_space_view, character, reducer=reducer)
+
+
+@router.get("/embedding/neighbors")
+async def get_embedding_neighbors(id: str, k: int = 10) -> dict[str, Any]:
+    """P28.1 — cosine top-k nearest memories for one entry (③最近邻)."""  # noqa: DOCSTRING_CJK
+    session = _require_session()
+    character = _require_character(session)
+    return await asyncio.to_thread(build_neighbors, character, id, k=k)
+
+
+@router.get("/embedding/bridges")
+async def get_embedding_bridges(top_k: int = 3) -> dict[str, Any]:
+    """P28.1 — 语义源 vs 结构源 (⑥, 与 P27 联动).
+
+    Per reflection: semantic-nearest facts (cosine) vs declared
+    ``source_fact_ids``. Read-only.
+    """  # noqa: DOCSTRING_CJK
+    session = _require_session()
+    character = _require_character(session)
+    return await asyncio.to_thread(build_bridges, character, top_k=top_k)
+
+
+@router.get("/embedding/duplicates")
+async def get_embedding_duplicates(threshold: float = 0.95) -> dict[str, Any]:
+    """P28.2 — 近重复对 (④): cosine ≥ threshold 的条目两两 (跨类型)。Read-only."""  # noqa: DOCSTRING_CJK
+    session = _require_session()
+    character = _require_character(session)
+    return await asyncio.to_thread(build_duplicates, character, threshold=threshold)
+
+
+@router.get("/embedding/matrix")
+async def get_embedding_matrix(ids: str = "") -> dict[str, Any]:
+    """P28.3 — 相似度矩阵 (⑤, 子集下钻).
+
+    ``ids`` is a comma-separated subset (empty → whole primary space, clipped
+    to MATRIX_MAX_N). Returns an NxN cosine matrix reordered by seriation.
+    Read-only.
+    """  # noqa: DOCSTRING_CJK
+    session = _require_session()
+    character = _require_character(session)
+    id_list = [s for s in ids.split(",") if s] if ids else None
+    return await asyncio.to_thread(build_matrix, character, ids=id_list)
+
+
+@router.post("/embedding/enable_umap")
+async def post_enable_umap() -> dict[str, Any]:
+    """P28.4 — on-demand online install of ``umap-learn`` (降维升级).
+
+    Environment-level capability toggle (not character-specific), so it does
+    NOT require a session. Runs ``pip install`` off the event loop so the
+    server stays responsive during the (possibly minutes-long) install.
+    Always returns ``{ok, installed, reducer_available, log}`` — never 500s
+    on a failed install; the UI shows ``log`` and stays on PCA.
+    """  # noqa: DOCSTRING_CJK
+    return await asyncio.to_thread(install_umap)
+
+
+@router.get("/embedding/clusters")
+async def get_embedding_clusters() -> dict[str, Any]:
+    """P28.5 — auto-cluster the scatter (no LLM).
+
+    Clusters the primary vector space in its original high-dim cosine geometry
+    (HDBSCAN preferred, numpy connected-components fallback) and returns per-point
+    cluster ids + per-cluster medoid summaries. Read-only, deterministic.
+    """
+    session = _require_session()
+    character = _require_character(session)
+    return await asyncio.to_thread(build_clusters, character)
+
+
+@router.post("/embedding/cluster_labels")
+async def post_embedding_cluster_labels() -> dict[str, Any]:
+    """P28.5 — LLM-name each cluster (按需精炼簇标签).
+
+    Runs under ``session_operation`` (stamps ``memory.llm`` wire + calls the
+    memory model). Degrades to medoid labels on any LLM failure — never 500s.
+    """  # noqa: DOCSTRING_CJK
+    store = get_session_store()
+    try:
+        async with store.session_operation("memory.embedding.cluster_label") as session:
+            character = _require_character(session)
+            return await build_cluster_labels(session, character)
+    except SessionConflictError as exc:
+        raise _wrap_conflict(exc) from exc
+
+
+@router.get("/overview")
+async def get_memory_overview() -> dict[str, Any]:
+    """P29.1 — read-only 记忆系统概况 (cards + findings + 需关注项 + 结论可信度).
+
+    Aggregates the P27 lineage snapshot and the P28 embedding space **once each**
+    into a dashboard payload. Read-only; CPU-bound (it reuses the vector views),
+    so it runs off the event loop (P28.5 阻塞教训).
+    """  # noqa: DOCSTRING_CJK
+    session = _require_session()
+    character = _require_character(session)
+    return await asyncio.to_thread(build_overview, character)
+
+
+@router.post("/overview/ai_report")
+async def post_memory_overview_ai_report() -> dict[str, Any]:
+    """P29.2 — LLM 健康体检报告 (按需). Runs under ``session_operation`` (stamps
+    ``memory.llm`` wire). Degrades to ``method='unavailable'`` + actionable
+    reason on any LLM/config failure — never 500s."""  # noqa: DOCSTRING_CJK
+    store = get_session_store()
+    try:
+        async with store.session_operation("memory.overview.ai_report") as session:
+            character = _require_character(session)
+            return await build_ai_report(session, character)
+    except SessionConflictError as exc:
+        raise _wrap_conflict(exc) from exc
+
+
+@router.post("/overview/contradictions")
+async def post_memory_overview_contradictions() -> dict[str, Any]:
+    """P29.2 — L2 矛盾 NLI 裁决 (按需, 对 L1 候选). Runs under ``session_operation``
+    (stamps ``memory.llm`` wire). Degrades to candidates-only on failure."""  # noqa: DOCSTRING_CJK
+    store = get_session_store()
+    try:
+        async with store.session_operation("memory.overview.contradictions") as session:
+            character = _require_character(session)
+            return await judge_contradictions(session, character)
+    except SessionConflictError as exc:
+        raise _wrap_conflict(exc) from exc
 
 
 @router.get("/{kind}")

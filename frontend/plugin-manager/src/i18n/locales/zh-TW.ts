@@ -645,6 +645,7 @@ export default {
         skipChat: '暫時不聊天',
         sayHello: '你好',
       },
+      controlBanner: '滑鼠正在由貓娘控制',
       lines: {
         introActivationHint: '稍等一下，我馬上開始說話啦～',
         introGreetingReply:  "微風、陽光，還有剛剛好出現的你。初次見面，我是林悠怡，未來的日子請多關照喵！我把關於這裡的一切都寫進新手指南裡啦！就當作是我們相遇的第一份小禮物，請查收吧！",

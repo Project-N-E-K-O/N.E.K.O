@@ -1,6 +1,6 @@
 # WebSocket Message Types
 
-All messages are JSON text frames.
+Messages are JSON text frames, except for audio payloads. For audio, the server sends an `audio_chunk` JSON header frame followed by a separate raw binary frame carrying the PCM bytes (see the `audio_chunk` section below).
 
 ## Client → Server
 
@@ -73,27 +73,32 @@ Keep-alive heartbeat.
 
 ## Server → Client
 
-### `text`
+### `gemini_response`
 
 Streamed text response from the LLM.
 
 ```json
 {
-  "type": "text",
-  "text": "Hi there! How can I help you?"
+  "type": "gemini_response",
+  "text": "Hi there! How can I help you?",
+  "isNewMessage": true,
+  "turn_id": "<turn id>",
+  "request_id": "<request id>"
 }
 ```
 
-### `audio`
+### `audio_chunk`
 
-Audio response (TTS output or direct LLM audio).
+Audio response (TTS output or direct LLM audio). The server first sends this JSON header frame, then sends the raw PCM audio bytes as a separate binary WebSocket frame (not embedded as base64). The `speech_id` identifies this turn's speech so the client can match it for barge-in.
 
 ```json
 {
-  "type": "audio",
-  "audio_data": "<base64 encoded PCM 48kHz>"
+  "type": "audio_chunk",
+  "speech_id": "<speech id for this turn>"
 }
 ```
+
+This is followed by a binary frame (raw PCM bytes); after receiving the header above, the client reads the next binary frame to decode and play the audio.
 
 ### `status`
 

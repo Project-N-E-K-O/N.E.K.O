@@ -3,7 +3,7 @@
 ![Logo](assets/neko_logo_new.jpg)
 
 [English](docs/README_en.md) | [日本語](docs/README_ja.md) | [Русский](docs/README_ru.md)
-# Project N.E.K.O. :kissing_cat: <br>**听见你的心情，看见你的世界，<br>陪你发现更多喜欢。**
+# N.E.K.O. 猫娘计划 :kissing_cat: <br>**听见你的心情，看见你的世界，<br>陪你发现更多喜欢。**
 
 > **N.E.K.O.** = **N**etworked **E**motional **K**nowledging **O**rganism (网络型情感知性生命体)
 >
@@ -469,9 +469,25 @@ curl -k https://localhost:48912
 
 **环境要求**：Python 3.11（不支持其他版本）、[uv](https://docs.astral.sh/uv/) 包管理器、Node.js（>=20.19）
 
+> [!IMPORTANT]
+> ### ⚡⚡ 强烈建议:用「部分克隆」拉取本仓库! ⚡⚡
+> **本仓库历史体积较大(`.git` 约 390 MB)**,因为历史里沉淀了大量旧版二进制资源(VRM 模型、MMD、贴图、音频、原生库等)。普通 `git clone` 会把这些**早已废弃的历史版本全部下载**,又慢又占空间。
+>
+> 👉 **请改用下面的「部分克隆」命令**,只按需下载真正用到的文件,**首次克隆体积大幅缩小、速度大幅提升**,且**完全不影响**后续开发与提交:
+>
+> ```bash
+> # ✅【推荐】部分克隆:历史 blob 用到才下载
+> git clone --filter=blob:none https://github.com/Project-N-E-K-O/N.E.K.O.git
+>
+> # ⚡【更快】只要最新代码、不需要历史时,再加 --depth 1
+> git clone --depth 1 --filter=blob:none https://github.com/Project-N-E-K-O/N.E.K.O.git
+> ```
+>
+> ⚠️ 仍可使用完整 `git clone`,但会下载全部历史,**不推荐**新参与者这样做。
+
 ```bash
-# 1. 克隆项目
-git clone https://github.com/Project-N-E-K-O/N.E.K.O.git
+# 1. 克隆项目（⚡ 强烈推荐用上方「部分克隆」命令；如确需完整历史，去掉 --filter 即可）
+git clone --filter=blob:none https://github.com/Project-N-E-K-O/N.E.K.O.git
 cd N.E.K.O
 
 # 2. 安装 Python 依赖

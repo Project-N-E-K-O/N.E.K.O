@@ -645,6 +645,7 @@ export default {
         skipChat: '지금은 대화 안 할래',
         sayHello: '안녕',
       },
+      controlBanner: '고양이 소녀가 마우스를 제어 중입니다',
       lines: {
         introActivationHint: '잠깐만 기다려줘냥, 곧 말하기 시작할게냥~!',
         introGreetingReply:  "선선한 바람, 따스한 햇살, 그리고 딱 맞춰 나타난 당신. 처음 뵙겠습니다, 저는 임유이예요! 앞으로 잘 부탁한다냥~! 여기에 대한 모든 걸 초보자 가이드에 적어뒀어요! 우리가 만난 첫 번째 작은 선물이라고 생각하고 확인해 보셔요!",

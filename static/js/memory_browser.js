@@ -75,6 +75,134 @@
         }
     }
 
+    function getTutorialResetNoticeTitle() {
+        const titleEl = document.querySelector('.tutorial-section .file-list-title');
+        const domTitle = titleEl ? String(titleEl.textContent || '').trim() : '';
+        return translate('memory.tutorialReset', domTitle || 'Tutorial');
+    }
+
+    let activeTutorialResetNotice = null;
+
+    function showTutorialResetNotice(message, options) {
+        const config = options && typeof options === 'object' ? options : {};
+        const title = config.title || getTutorialResetNoticeTitle();
+        const okText = config.okText || translate('common.ok', 'OK');
+        const variant = config.variant === 'error' ? 'error' : 'success';
+        if (activeTutorialResetNotice) {
+            activeTutorialResetNotice.dispose(false);
+        }
+
+        return new Promise(function (resolve) {
+            const backdrop = document.createElement('div');
+            backdrop.className = 'tutorial-reset-notice-backdrop';
+
+            const card = document.createElement('div');
+            card.className = 'tutorial-reset-notice-card';
+            card.setAttribute('role', 'dialog');
+            card.setAttribute('aria-modal', 'true');
+            card.setAttribute('aria-labelledby', 'tutorial-reset-notice-title');
+            card.setAttribute('aria-describedby', 'tutorial-reset-notice-message');
+            card.dataset.variant = variant;
+
+            const header = document.createElement('div');
+            header.className = 'tutorial-reset-notice-header';
+
+            const mark = document.createElement('span');
+            mark.className = 'tutorial-reset-notice-mark';
+            mark.setAttribute('aria-hidden', 'true');
+
+            const titleEl = document.createElement('h3');
+            titleEl.className = 'tutorial-reset-notice-title';
+            titleEl.id = 'tutorial-reset-notice-title';
+            titleEl.textContent = title;
+
+            header.appendChild(mark);
+            header.appendChild(titleEl);
+
+            const body = document.createElement('div');
+            body.className = 'tutorial-reset-notice-body';
+
+            const messageEl = document.createElement('p');
+            messageEl.className = 'tutorial-reset-notice-message';
+            messageEl.id = 'tutorial-reset-notice-message';
+            messageEl.textContent = String(message || '');
+            body.appendChild(messageEl);
+
+            const actions = document.createElement('div');
+            actions.className = 'tutorial-reset-notice-actions';
+
+            const okButton = document.createElement('button');
+            okButton.type = 'button';
+            okButton.className = 'tutorial-reset-notice-ok';
+            okButton.textContent = okText;
+            actions.appendChild(okButton);
+
+            card.appendChild(header);
+            card.appendChild(body);
+            card.appendChild(actions);
+            backdrop.appendChild(card);
+
+            let closed = false;
+            let cleaned = false;
+            let settled = false;
+
+            function cleanup() {
+                if (cleaned) return;
+                cleaned = true;
+                document.removeEventListener('keydown', onKeydown);
+                if (backdrop.parentNode) {
+                    backdrop.parentNode.removeChild(backdrop);
+                }
+                if (activeTutorialResetNotice && activeTutorialResetNotice.backdrop === backdrop) {
+                    activeTutorialResetNotice = null;
+                }
+            }
+
+            function settle(result) {
+                if (settled) return;
+                settled = true;
+                resolve(result);
+            }
+
+            function close() {
+                if (closed) return;
+                closed = true;
+                backdrop.classList.add('is-closing');
+                window.setTimeout(function () {
+                    cleanup();
+                    settle(true);
+                }, 160);
+            }
+
+            function dispose(result) {
+                if (cleaned) return;
+                closed = true;
+                cleanup();
+                settle(result);
+            }
+
+            function onKeydown(event) {
+                if (event.key === 'Escape' || event.key === 'Enter') {
+                    event.preventDefault();
+                    close();
+                }
+            }
+
+            okButton.addEventListener('click', close);
+            backdrop.addEventListener('click', function (event) {
+                if (event.target === backdrop) {
+                    close();
+                }
+            });
+            document.addEventListener('keydown', onKeydown);
+            document.body.appendChild(backdrop);
+            activeTutorialResetNotice = { backdrop, dispose };
+            window.setTimeout(function () {
+                okButton.focus();
+            }, 0);
+        });
+    }
+
     function syncMemoryChatPanelHeight() {
         const main = document.querySelector('.main');
         const sidebar = document.querySelector('.left-column');
@@ -498,6 +626,13 @@
         return response.json();
     }
 
+    async function resetHomeTutorialPromptState(reason) {
+        if (window.universalTutorialManager && typeof window.universalTutorialManager.resetHomeTutorialPromptState === 'function') {
+            return window.universalTutorialManager.resetHomeTutorialPromptState(reason);
+        }
+        return resetHomeTutorialPromptStateViaApi(reason);
+    }
+
     async function resetSelectedTutorial() {
         const selection = resolveSelectedTutorialReset();
         if (selection.type === 'home-day') {
@@ -514,6 +649,7 @@
                     source: 'memory_browser_reset_select',
                 });
             }
+            await resetHomeTutorialPromptState('memory_browser_home_day_reset');
             return;
         }
         if (selection.type === 'home-all') {
@@ -526,12 +662,8 @@
                     source: 'memory_browser_reset_home_all',
                 });
             }
-            if (window.universalTutorialManager && typeof window.universalTutorialManager.resetHomeTutorialPromptState === 'function') {
-                await window.universalTutorialManager.resetHomeTutorialPromptState('memory_browser_home_all_reset');
-            } else {
-                await resetHomeTutorialPromptStateViaApi('memory_browser_home_all_reset');
-            }
-            alert(getTutorialHomeAllResetSuccessMessage());
+            await resetHomeTutorialPromptState('memory_browser_home_all_reset');
+            await showTutorialResetNotice(getTutorialHomeAllResetSuccessMessage());
             return;
         }
         if (selection.type === 'page' && typeof window.resetTutorialForPage === 'function') {
@@ -2055,5 +2187,6 @@
     }
 
     window.resetSelectedTutorial = resetSelectedTutorial;
+    window.showTutorialResetNotice = showTutorialResetNotice;
 
 })();

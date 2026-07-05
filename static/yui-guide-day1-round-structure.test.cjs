@@ -23,6 +23,24 @@ function getSceneBlock(source, sceneId) {
   return source.slice(start, end + '\n                }'.length);
 }
 
+function getBalancedBlockFrom(source, startIndex) {
+  const openBraceIndex = source.indexOf('{', startIndex);
+  assert.notStrictEqual(openBraceIndex, -1, 'expected block opening brace');
+  let depth = 0;
+  for (let index = openBraceIndex; index < source.length; index += 1) {
+    const character = source[index];
+    if (character === '{') {
+      depth += 1;
+    } else if (character === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        return source.slice(startIndex, index + 1);
+      }
+    }
+  }
+  assert.fail('expected balanced block closing brace');
+}
+
 test('Day1 activation stays timeline-owned while greeting uses the generic scene path', () => {
   const operationRegistryBlock = operationRegistrySource.match(/registerBuiltInOperations\(\)\s*\{([\s\S]*?)\n\s*\}\n\s*\n\s*resolveTargetEntry/);
   assert.ok(operationRegistryBlock, 'expected to find built-in operation registrations');
@@ -149,12 +167,36 @@ test('Day1 takeover capture click is owned by the embedded takeover sequence', (
   assert.doesNotMatch(sceneBlock, /cursorAction:\s*'click'/);
 });
 
-test('Day1 takeover capture leaves the next cursor start on the keyboard control toggle', () => {
+test('Day1 takeover capture resamples the keyboard control target before click and anchor persistence', () => {
   const sequenceMatch = directorSource.match(/async runTakeoverKeyboardControlSequence\(step, performance, runId\)\s*\{([\s\S]*?)\n\s*\}\n\s*async runPluginDashboardLaunchSequence/);
   assert.ok(sequenceMatch, 'expected to find runTakeoverKeyboardControlSequence');
   const sequenceBody = sequenceMatch[1];
-  assert.match(sequenceBody, /const keyboardToggleSpotlight = createToggleSpotlightTarget\('takeover-keyboard-toggle', keyboardToggle\);/);
+  assert.match(sequenceBody, /const refreshKeyboardToggleSpotlight = \(options\) => \{/);
+  assert.match(sequenceBody, /createToggleSpotlightTarget\('takeover-keyboard-toggle', keyboardToggle\)/);
+  assert.match(sequenceBody, /this\.replaceRetainedExtraSpotlight\(isKeyboardToggleSpotlight, refreshedSpotlight\);/);
+  assert.match(sequenceBody, /if \(normalizedOptions\.activate === true\) \{\s*this\.overlay\.activateSpotlight\(refreshedSpotlight\);/);
+  assert.match(sequenceBody, /keyboardToggleSpotlight = refreshKeyboardToggleSpotlight\(\{ activate: true \}\);/);
+  assert.match(sequenceBody, /await this\.waitForStableElementRect\(keyboardToggle,/);
+  assert.match(sequenceBody, /this\.moveCursorToTrackedElement\(\s*keyboardToggle,/);
+  assert.match(sequenceBody, /if \(!this\.isCursorAlignedWithElement\(keyboardToggle, 5\)\) \{/);
+  assert.match(sequenceBody, /keyboardToggleSpotlight = refreshKeyboardToggleSpotlight\(\);[\s\S]*const enabledKeyboardControl = await this\.runActionWithCursorClick/);
+  assert.match(sequenceBody, /this\.runActionWithCursorClick\([\s\S]*this\.setAgentFlagEnabled\('computer_use_enabled', true\)/);
   assert.match(sequenceBody, /this\.rememberAvatarFloatingSceneCursorAnchor\('day1_takeover_capture_cursor', keyboardToggleSpotlight\);/);
+});
+
+test('Day1 return control cursor start prefers the current keyboard toggle geometry', () => {
+  const resolverMatch = directorSource.match(/resolveAvatarFloatingCursorStartPoint\(scene, targets, previousSceneId\)\s*\{([\s\S]*?)\n\s*\}\n\s*async moveAvatarFloatingCursor/);
+  assert.ok(resolverMatch, 'expected to find resolveAvatarFloatingCursorStartPoint');
+  const resolverBody = resolverMatch[1];
+  const returnControlIndex = resolverBody.indexOf("if (sceneId === 'day1_takeover_return_control') {");
+  assert.notStrictEqual(returnControlIndex, -1, 'expected day1_takeover_return_control cursor start branch');
+  const returnControlBlock = getBalancedBlockFrom(resolverBody, returnControlIndex);
+  assert.match(returnControlBlock, /const keyboardToggle = this\.getAgentToggleElement\('agent-keyboard'\);/);
+  assert.match(returnControlBlock, /const keyboardRect = this\.getElementRect\(keyboardToggle\);/);
+  assert.ok(
+    returnControlBlock.indexOf('keyboardRect') < returnControlBlock.indexOf("getAvatarFloatingSceneCursorAnchor('day1_takeover_capture_cursor')"),
+    'expected current keyboard toggle geometry to be sampled before falling back to the saved anchor'
+  );
 });
 
 test('Day1 return control highlights the capsule input and keeps the petal cue', () => {

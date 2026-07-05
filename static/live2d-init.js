@@ -51,6 +51,10 @@ function _nekoAwaitWithTimeout(thenable, ms) {
 // 仅对"本应显示 Live2D"的会话自愈；pngtuber/vrm/mmd 的空 cubism4Model 是正常态。
 function _nekoShouldSelfHealLive2D() {
     try {
+        if (window.NekoAvatarFloatingBoot && typeof window.NekoAvatarFloatingBoot.shouldSkipUserModelBoot === 'function'
+            && window.NekoAvatarFloatingBoot.shouldSkipUserModelBoot()) {
+            return false;
+        }
         if (window.location && String(window.location.pathname || '').includes('model_manager')) return false;
         const mt = (window.lanlan_config && window.lanlan_config.model_type || '').toLowerCase();
         const sub = (window.lanlan_config && window.lanlan_config.live3d_sub_type || '').toLowerCase();
@@ -410,6 +414,8 @@ async function initLive2DModel() {
     }
 }
 
+window.initLive2DModel = initLive2DModel;
+
 // 自动初始化函数（延迟执行，等待 cubism4Model 设置）
 async function _initLive2DModelInner() {
     const _preInitModelPath = (typeof cubism4Model !== 'undefined' ? cubism4Model : (window.cubism4Model || ''));
@@ -424,6 +430,15 @@ async function _initLive2DModelInner() {
             console.warn('[Live2D Init] 存储位置哨兵被拒绝，中止本次 Live2D 初始化');
             return;
         }
+    }
+
+    if (window.NekoAvatarFloatingBoot && typeof window.NekoAvatarFloatingBoot.shouldSkipUserModelBoot === 'function'
+        && window.NekoAvatarFloatingBoot.shouldSkipUserModelBoot()) {
+        if (typeof window.NekoAvatarFloatingBoot.markUserModelBootSkipped === 'function') {
+            window.NekoAvatarFloatingBoot.markUserModelBootSkipped('live2d-init');
+        }
+        console.log('[Live2D Init] 新手教程启动预测命中，跳过用户 Live2D 模型加载');
+        return;
     }
 
     // 检查是否在 VRM/MMD 模式下，如果是则跳过 Live2D 初始化
@@ -465,7 +480,11 @@ async function _initLive2DModelInner() {
     const targetModelPath = (typeof cubism4Model !== 'undefined' ? cubism4Model : (window.cubism4Model || ''));
 
     // 如果当前为 Live3D+MMD 模式，跳过 Live2D 初始化
+    const modelManagerAvatarType = window.location.pathname.includes('model_manager')
+        ? String(window._modelManagerCurrentAvatarType || '').toLowerCase()
+        : '';
     if (
+        modelManagerAvatarType === 'pngtuber' ||
         (window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber' ||
         ((window.lanlan_config?.model_type || '').toLowerCase() === 'live3d' &&
         (window.lanlan_config?.live3d_sub_type || '').toLowerCase() === 'mmd')

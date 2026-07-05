@@ -30,6 +30,7 @@
             this.beginAvatarOverride = normalizedOptions.beginAvatarOverride || noop;
             this.revealPrepared = normalizedOptions.revealPrepared || noop;
             this.ensureVisible = normalizedOptions.ensureVisible || noop;
+            this.waitForAvatarReady = normalizedOptions.waitForAvatarReady || noop;
             this.sleep = normalizedOptions.sleep || noop;
             this.beginTakingOver = normalizedOptions.beginTakingOver || noop;
             this.setLifecycleActive = normalizedOptions.setLifecycleActive || noop;
@@ -49,9 +50,11 @@
                 : this.defaultDelayMs;
             const sceneId = 'avatar_floating_day' + day;
             const deferRevealPrepared = normalizedOptions.deferRevealPrepared === true;
+            const skipSourceModelFade = normalizedOptions.skipSourceModelFade === true;
 
             await toPromise(() => this.beginAvatarOverride({
-                deferRevealPrepared
+                deferRevealPrepared,
+                skipSourceModelFade
             })).catch((error) => {
                 this.warn('[Tutorial] 悬浮窗教程临时切换 YUI 失败，中止教程:', error);
                 return toPromise(() => this.revealPrepared()).then(() => {
@@ -69,6 +72,11 @@
                 return toPromise(() => this.revealPrepared()).then(() => {
                     throw error;
                 });
+            });
+            await toPromise(() => this.waitForAvatarReady(sceneId, {
+                deferRevealPrepared
+            })).catch((error) => {
+                this.warn('[Tutorial] 等待 YUI 模型视觉就绪失败，继续启动教程:', error);
             });
 
             await toPromise(() => this.sleep(delayMs));

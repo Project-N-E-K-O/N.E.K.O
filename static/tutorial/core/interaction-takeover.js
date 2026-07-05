@@ -376,7 +376,8 @@
                 targetIndex: options && Number.isFinite(options.targetIndex)
                     ? Math.max(0, Math.floor(options.targetIndex))
                     : 0,
-                freezePoint: !!(options && options.freezePoint === true)
+                freezePoint: !!(options && options.freezePoint === true),
+                preservePcOverlayCursor: !!(options && options.preservePcOverlayCursor === true)
             };
             if (options && Number.isFinite(options.durationMs)) {
                 message.durationMs = Math.max(0, Math.floor(options.durationMs));
@@ -494,6 +495,7 @@
             }
 
             this.setExternalizedChatButtonsDisabled(true);
+            this.setExternalizedChatInputLocked(true, 'external-chat-ready');
             if (
                 this.document.body
                 && this.document.body.classList.contains('yui-guide-compact-chat-fixed')
