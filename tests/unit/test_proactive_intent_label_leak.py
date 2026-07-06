@@ -67,6 +67,25 @@ def test_registry_skips_single_common_word_enums() -> None:
         assert common.casefold() not in labels, f"common word wrongly denied: {common!r}"
 
 
+def test_common_word_exclusions_cover_all_single_token_enums() -> None:
+    # Contract: every single-token ActivityState/Propensity enum must be in the
+    # exclusion set, else it would be denied and could scrub a legit English
+    # reply opening with the word. This pins the exclusion set to stay complete
+    # as the enums evolve — a new one-word state fails here instead of silently
+    # stripping speech.
+    from typing import get_args
+
+    from config.prompts.prompts_activity import _ACTIVITY_ENUM_COMMON_WORDS
+    from main_logic.activity.snapshot import ActivityState, Propensity
+
+    single_token = [
+        e for e in (*get_args(ActivityState), *get_args(Propensity))
+        if '_' not in e and ' ' not in e
+    ]
+    missing = [e for e in single_token if e not in _ACTIVITY_ENUM_COMMON_WORDS]
+    assert not missing, f"single-word enums missing from exclusion set: {missing}"
+
+
 def test_registry_skips_colonless_sentence_bullets() -> None:
     # The hushed 2nd bullet is a full sentence with no "<label>：" shape; it must
     # NOT become a denylist entry (would be an over-broad, sentence-long label).
