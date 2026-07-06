@@ -927,11 +927,7 @@
         showSkipButton() {
             this.hideSkipButton();
             let skipHandled = false;
-            const handleSkipRequest = (event) => {
-                if (skipHandled) {
-                    return;
-                }
-                skipHandled = true;
+            const absorbSkipEvent = (event) => {
                 if (event && typeof event.preventDefault === 'function') {
                     event.preventDefault();
                 }
@@ -941,12 +937,29 @@
                 if (event && typeof event.stopPropagation === 'function') {
                     event.stopPropagation();
                 }
+            };
+            const completeSkipRequest = () => {
                 this.endReason = 'skip';
                 if (this.driver && typeof this.driver.destroy === 'function') {
                     this.driver.destroy();
                 } else {
                     this.handleTutorialEnd('skip');
                 }
+            };
+            const handleSkipPress = (event) => {
+                absorbSkipEvent(event);
+            };
+            const handleSkipRequest = (event, delayMs = 0) => {
+                absorbSkipEvent(event);
+                if (skipHandled) {
+                    return;
+                }
+                skipHandled = true;
+                if (delayMs > 0) {
+                    window.setTimeout(completeSkipRequest, delayMs);
+                    return;
+                }
+                completeSkipRequest();
             };
             this.installSkipSafeAreaRefreshHooks();
             const button = document.createElement('button');
@@ -956,9 +969,11 @@
             button.style.setProperty('pointer-events', 'auto', 'important');
             button.style.setProperty('z-index', '2147483647', 'important');
             button.textContent = this.t('tutorial.buttons.skip', '跳过');
-            button.addEventListener('pointerdown', handleSkipRequest);
-            button.addEventListener('mousedown', handleSkipRequest);
-            button.addEventListener('touchstart', handleSkipRequest, { passive: false });
+            button.addEventListener('pointerdown', handleSkipPress);
+            button.addEventListener('mousedown', handleSkipPress);
+            button.addEventListener('touchstart', handleSkipPress, { passive: false });
+            button.addEventListener('pointerup', (event) => handleSkipRequest(event, 80));
+            button.addEventListener('touchend', (event) => handleSkipRequest(event, 80), { passive: false });
             button.addEventListener('click', handleSkipRequest);
             const controller = this.ensureSkipSafeAreaController();
             const host = controller && typeof controller.getButtonHost === 'function'

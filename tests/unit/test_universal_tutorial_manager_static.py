@@ -241,17 +241,24 @@ def test_page_tutorial_skip_button_restores_pointer_events_inside_fixed_portal()
     )[0]
 
     assert "let skipHandled = false;" in show_block
-    assert "if (skipHandled) {" in show_block
-    assert "skipHandled = true;" in show_block
-    assert "const handleSkipRequest = (event) => {" in show_block
+    assert "const absorbSkipEvent = (event) => {" in show_block
     assert "event.preventDefault();" in show_block
     assert "event.stopImmediatePropagation();" in show_block
     assert "event.stopPropagation();" in show_block
+    assert "const completeSkipRequest = () => {" in show_block
+    assert "const handleSkipPress = (event) => {" in show_block
+    assert "const handleSkipRequest = (event, delayMs = 0) => {" in show_block
+    assert "if (skipHandled) {" in show_block
+    assert "skipHandled = true;" in show_block
+    assert "window.setTimeout(completeSkipRequest, delayMs);" in show_block
     assert "const controller = this.ensureSkipSafeAreaController();" in show_block
     assert "const host = controller && typeof controller.getButtonHost === 'function'" in show_block
     assert "button.className = 'neko-page-tutorial-skip-btn';" in show_block
-    for event_name in ("pointerdown", "mousedown", "touchstart", "click"):
-        assert f"button.addEventListener('{event_name}', handleSkipRequest" in show_block
+    for event_name in ("pointerdown", "mousedown", "touchstart"):
+        assert f"button.addEventListener('{event_name}', handleSkipPress" in show_block
+    assert "button.addEventListener('pointerup', (event) => handleSkipRequest(event, 80));" in show_block
+    assert "button.addEventListener('touchend', (event) => handleSkipRequest(event, 80), { passive: false });" in show_block
+    assert "button.addEventListener('click', handleSkipRequest);" in show_block
     assert "button.style.setProperty('pointer-events', 'auto', 'important');" in show_block
     assert "button.style.setProperty('z-index', '2147483647', 'important');" in show_block
     assert "this._skipSafeAreaController.hide();" in hide_block
