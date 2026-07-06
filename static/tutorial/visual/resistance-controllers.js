@@ -618,7 +618,12 @@
             director.disableInterrupts();
             director.cancelActiveNarration();
             director.beginGuideInterruptPresentation();
-            // 修改原因：生气退出会脱离教程接管态，必须先恢复真实鼠标，避免退出台词播放时系统鼠标仍被隐藏。
+            // 修改原因：生气退出会脱离教程接管态，必须先取消轻对抗的临时显示 timer；
+            // 否则 timer 到期后会重新发送隐藏真实鼠标，覆盖退出台词期间的显示要求。
+            if (director.resistanceCursorTimer) {
+                window.clearTimeout(director.resistanceCursorTimer);
+                director.resistanceCursorTimer = null;
+            }
             this.syncSystemCursorHidden(false, 'interrupt_angry_exit');
 
             const angryStep = director.getStep('interrupt_angry_exit') || {};

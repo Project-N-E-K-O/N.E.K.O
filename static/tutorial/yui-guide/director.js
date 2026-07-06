@@ -1168,6 +1168,9 @@
 
     class YuiGuideVoiceQueue {
         constructor() {
+            // 修改原因：speak() 启动前有短暂等待窗口；用停止代号识别等待期间发生的 cancel/stop，
+            // 避免旧轻对抗语音在生气退出后重新起播。
+            this.stopGeneration = 0;
             this.currentUtterance = null;
             this.currentFallbackTimer = null;
             this.currentFinish = null;
@@ -1186,6 +1189,8 @@
         }
 
         stop() {
+            // 修改原因：stop() 不只停止当前播放，也要让正在 48ms 启动等待中的 speak() 失效。
+            this.stopGeneration += 1;
             const finish = this.currentFinish;
             this.stopGuideMouthMotion();
 
@@ -1948,7 +1953,13 @@
                 return;
             }
             this.stop();
+            // 修改原因：cancelActiveNarration()/angry exit 可能发生在 stop() 后的启动缓冲期；
+            // 等待结束后必须确认没有新的 stop()，否则旧语音会在取消后重新开始播放。
+            const stopGenerationAtStart = this.stopGeneration;
             await wait(48);
+            if (this.stopGeneration !== stopGenerationAtStart) {
+                return;
+            }
 
             const minimumDurationMs = Number.isFinite(normalizedOptions.minDurationMs)
                 ? normalizedOptions.minDurationMs

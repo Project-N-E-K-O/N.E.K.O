@@ -8729,6 +8729,147 @@ def test_avatar_floating_interrupt_cursor_reveal_survives_angry_exit_timeout(
 
 
 @pytest.mark.frontend
+def test_avatar_floating_angry_exit_clears_temporary_system_cursor_reveal_timer(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const originalSetTimeout = window.setTimeout;
+            const originalClearTimeout = window.clearTimeout;
+            const timers = [];
+            const clearedTimers = [];
+            window.setTimeout = (callback, delay) => {
+                const timer = { callback, delay };
+                timers.push(timer);
+                return timer;
+            };
+            window.clearTimeout = (timer) => {
+                clearedTimers.push(timer);
+            };
+            try {
+                const cursorVisibility = [];
+                window.YuiGuideCommon = {
+                    syncPcSystemCursorHidden: (hidden, reason) => {
+                        cursorVisibility.push({ hidden, reason });
+                    },
+                    syncPcSystemCursorTemporaryReveal: (durationMs, reason) => {
+                        cursorVisibility.push({ temporaryReveal: durationMs, reason });
+                    },
+                };
+                const director = window.createYuiGuideDirector({ page: 'home' });
+                document.body.classList.add('yui-taking-over');
+                director.currentSceneId = 'test_scene';
+                director.interruptCount = 3;
+                director.recordExperienceMetric = () => {};
+                director.clearSceneTimers = () => {};
+                director.disableInterrupts = () => {};
+                director.cancelActiveNarration = () => {};
+                director.beginGuideInterruptPresentation = () => {};
+                director.getStep = () => ({ performance: {} });
+                director.resolvePerformanceBubbleText = () => '';
+                director.getGuideVoiceDurationMs = () => 0;
+                director.setTutorialTakingOver = () => {};
+                director.overlay = {
+                    setAngry: () => {},
+                    hidePluginPreview: () => {},
+                    hideBubble: () => {},
+                };
+                director.appendGuideChatMessage = () => {};
+                director.applyGuideEmotion = () => {};
+                director.runAngryExitPerformance = async () => null;
+                director.speakGuideLine = async () => null;
+                director.notifyPluginDashboardNarrationFinished = () => {};
+                director.requestTermination = () => {};
+
+                director.revealSystemCursorTemporarily(2000, 'interrupt_resist_light');
+                await director.abortAsAngryExit('pointer_interrupt');
+
+                return {
+                    timerCount: timers.length,
+                    clearedTimerCount: clearedTimers.length,
+                    cursorVisibility,
+                    hasResistanceClass: document.body.classList.contains('yui-resistance-cursor-reveal'),
+                };
+            } finally {
+                window.setTimeout = originalSetTimeout;
+                window.clearTimeout = originalClearTimeout;
+                delete window.YuiGuideCommon;
+            }
+        }
+        """
+    )
+
+    assert result["timerCount"] == 1
+    assert result["clearedTimerCount"] == 1
+    assert result["cursorVisibility"] == [
+        {"temporaryReveal": 2000, "reason": "interrupt_resist_light"},
+        {"hidden": False, "reason": "interrupt_angry_exit"},
+    ]
+    assert result["hasResistanceClass"] is True
+
+
+@pytest.mark.frontend
+def test_voice_queue_speak_stays_cancelled_when_stopped_during_start_delay(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const originalSetTimeout = window.setTimeout;
+            const originalClearTimeout = window.clearTimeout;
+            const timers = [];
+            const clearedTimers = [];
+            window.setTimeout = (callback, delay) => {
+                const timer = { callback, delay };
+                timers.push(timer);
+                return timer;
+            };
+            window.clearTimeout = (timer) => {
+                clearedTimers.push(timer);
+            };
+            try {
+                const director = window.createYuiGuideDirector({ page: 'home' });
+                director.voiceQueue.resolveGuideAudioSrc = () => '';
+
+                const speakPromise = director.voiceQueue.speak('hello', {
+                    minDurationMs: 1200,
+                });
+                director.voiceQueue.stop();
+                timers[0].callback();
+                await speakPromise;
+
+                return {
+                    timerDelays: timers.map((timer) => timer.delay),
+                    clearedTimerCount: clearedTimers.length,
+                    currentFinishActive: typeof director.voiceQueue.currentFinish === 'function',
+                };
+            } finally {
+                window.setTimeout = originalSetTimeout;
+                window.clearTimeout = originalClearTimeout;
+            }
+        }
+        """
+    )
+
+    assert result["timerDelays"] == [48]
+    assert result["clearedTimerCount"] == 0
+    assert result["currentFinishActive"] is False
+
+
+@pytest.mark.frontend
 def test_avatar_floating_acceleration_threshold_triggers_light_resistance_without_distance(
     mock_page: Page,
 ):
