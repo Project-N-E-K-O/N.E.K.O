@@ -246,6 +246,22 @@ def test_home_page_opens_plugin_dashboard_through_backend_redirect_for_handoff()
     assert "var PLUGIN_DASHBOARD_REDIRECT_URL = 'http://127.0.0.1:48916/ui';" not in hud_source
 
 
+def test_plugin_dashboard_reuse_refresh_targets_redirected_origin_and_opener():
+    hud_source = Path("static/common-ui-hud.js").read_text(encoding="utf-8")
+    plugin_list_source = Path("frontend/plugin-manager/src/views/PluginList.vue").read_text(encoding="utf-8")
+
+    assert "DEFAULT_PLUGIN_DASHBOARD_MESSAGE_ORIGIN = 'http://127.0.0.1:48916'" in hud_source
+    assert "getPluginDashboardMessageOrigins(redirectUrl)" in hud_source
+    assert "postPluginDashboardReuseRefresh(existingWindow, reuseRefreshPayload, absoluteUrl)" in hud_source
+    assert "existingWindow.postMessage(reuseRefreshPayload, new URL(absoluteUrl).origin)" not in hud_source
+
+    assert "PLUGIN_DASHBOARD_OPENER_ORIGIN_QUERY_PARAM = 'yui_opener_origin'" in plugin_list_source
+    assert "isLoopbackPluginDashboardReuseOrigin(openerOrigin)" in plugin_list_source
+    assert "isTrustedPluginDashboardReuseOrigin(event.origin)" in plugin_list_source
+    assert "else if (!pluginStore.pluginsLoaded)" in plugin_list_source
+    assert "if (event.origin !== window.location.origin) return" not in plugin_list_source
+
+
 def test_standalone_agent_hud_show_hide_keeps_origin_position():
     hud_source = Path("static/common-ui-hud.js").read_text(encoding="utf-8")
     show_match = re.search(

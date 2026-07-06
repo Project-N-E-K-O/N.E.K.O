@@ -6,6 +6,7 @@
 window.AgentHUD = window.AgentHUD || {};
 
 var PLUGIN_DASHBOARD_REDIRECT_URL = '/api/agent/user_plugin/dashboard';
+var DEFAULT_PLUGIN_DASHBOARD_MESSAGE_ORIGIN = 'http://127.0.0.1:48916';
 const STANDALONE_HUD_POSITION = Object.freeze({
     top: '0',
     left: '0',
@@ -29,6 +30,40 @@ function getPluginDashboardRedirectUrl() {
 function appendCacheBuster(url) {
     var separator = typeof url === 'string' && url.indexOf('?') >= 0 ? '&' : '?';
     return `${url}${separator}v=${Date.now()}`;
+}
+
+function getPluginDashboardMessageOrigins(redirectUrl) {
+    const origins = [];
+    const seenOrigins = Object.create(null);
+    const addOrigin = (value, baseUrl) => {
+        if (!value) return;
+        try {
+            const origin = new URL(String(value), baseUrl || window.location.href).origin;
+            if (!seenOrigins[origin]) {
+                seenOrigins[origin] = true;
+                origins.push(origin);
+            }
+        } catch (_) {}
+    };
+
+    addOrigin(redirectUrl, window.location.href);
+    try {
+        if (window.YuiGuidePageHandoff && typeof window.YuiGuidePageHandoff.getPluginDashboardExpectedOrigin === 'function') {
+            addOrigin(window.YuiGuidePageHandoff.getPluginDashboardExpectedOrigin(), window.location.href);
+        }
+    } catch (_) {}
+    try { addOrigin(window.YUI_GUIDE_PLUGIN_DASHBOARD_ORIGIN, window.location.href); } catch (_) {}
+    try { addOrigin(window.NEKO_USER_PLUGIN_BASE, window.location.href); } catch (_) {}
+    addOrigin(DEFAULT_PLUGIN_DASHBOARD_MESSAGE_ORIGIN, window.location.href);
+    return origins;
+}
+
+function postPluginDashboardReuseRefresh(targetWindow, payload, redirectUrl) {
+    getPluginDashboardMessageOrigins(redirectUrl).forEach((messageOrigin) => {
+        try {
+            targetWindow.postMessage(payload, messageOrigin);
+        } catch (_) {}
+    });
 }
 
 function isStandaloneAgentHudPage() {
@@ -429,6 +464,7 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                         const reuseRefreshPayload = {
                             type: 'neko-plugin-dashboard-reuse',
                             action: 'refresh-plugin-list',
+                            openerOrigin: window.location.origin,
                             timestamp: Date.now()
                         };
                         try {
@@ -437,9 +473,7 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                                 JSON.stringify(reuseRefreshPayload)
                             );
                         } catch (_) {}
-                        try {
-                            existingWindow.postMessage(reuseRefreshPayload, new URL(absoluteUrl).origin);
-                        } catch (_) {}
+                        postPluginDashboardReuseRefresh(existingWindow, reuseRefreshPayload, absoluteUrl);
                     }
                     openedWindow = existingWindow;
                 } else if (typeof window.openOrFocusWindow === 'function') {

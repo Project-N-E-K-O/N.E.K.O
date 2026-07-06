@@ -452,6 +452,7 @@ let metricsRefreshTimer: number | null = null
 let initialLoadPromise: Promise<void> | null = null
 let lastDashboardReuseRefreshTimestamp = 0
 const PLUGIN_DASHBOARD_REUSE_REFRESH_KEY = 'neko-plugin-dashboard-reuse-refresh-v1'
+const PLUGIN_DASHBOARD_OPENER_ORIGIN_QUERY_PARAM = 'yui_opener_origin'
 
 // Show-source-detail mirrors the Metrics toggle pattern. Turning it on
 // also kicks off a best-effort fetch of the Market's latest versions so
@@ -581,10 +582,11 @@ async function handleInitialLoad() {
 async function runInitialLoad() {
   let warningMessage = ''
   try {
+    // First open recognizes the registry; later reuse only backfills a missing list before status refresh.
     if (!pluginStore.registrySynced) {
       const syncResult = await pluginStore.syncRegistryAndFetch()
       warningMessage = syncResult.warningMessage || ''
-    } else {
+    } else if (!pluginStore.pluginsLoaded) {
       await pluginStore.fetchPlugins()
     }
     await pluginStore.fetchPluginStatus()
@@ -597,10 +599,53 @@ async function runInitialLoad() {
 }
 
 function handlePluginDashboardReuseMessage(event: MessageEvent) {
-  if (event.origin !== window.location.origin) return
+  if (!isTrustedPluginDashboardReuseOrigin(event.origin)) return
   const data = event.data
   if (!isPluginDashboardReuseRefresh(data)) return
   requestPluginDataRefreshAfterDashboardReuse(data)
+}
+
+function normalizePluginDashboardReuseOrigin(value: string | null | undefined) {
+  const rawValue = String(value || '').trim()
+  if (!rawValue) return ''
+  try {
+    return new URL(rawValue).origin
+  } catch {
+    return ''
+  }
+}
+
+function isLoopbackPluginDashboardReuseOrigin(origin: string) {
+  try {
+    const url = new URL(origin)
+    const hostname = url.hostname.toLowerCase()
+    return (
+      (url.protocol === 'http:' || url.protocol === 'https:')
+      && (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1')
+    )
+  } catch {
+    return false
+  }
+}
+
+function getPluginDashboardReuseAllowedOrigins() {
+  const origins = new Set<string>([window.location.origin])
+  try {
+    const params = new URLSearchParams(window.location.search || '')
+    const openerOrigin = normalizePluginDashboardReuseOrigin(params.get(PLUGIN_DASHBOARD_OPENER_ORIGIN_QUERY_PARAM))
+    if (openerOrigin && isLoopbackPluginDashboardReuseOrigin(openerOrigin)) {
+      origins.add(openerOrigin)
+    }
+  } catch {
+    // Keep same-origin message handling when query parsing is unavailable.
+  }
+  return origins
+}
+
+const pluginDashboardReuseAllowedOrigins = getPluginDashboardReuseAllowedOrigins()
+
+function isTrustedPluginDashboardReuseOrigin(origin: string) {
+  return pluginDashboardReuseAllowedOrigins.has(origin)
 }
 
 function handlePluginDashboardReuseStorage(event: StorageEvent) {
