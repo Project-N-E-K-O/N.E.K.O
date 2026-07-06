@@ -101,12 +101,21 @@ class AudioJitterBuffer:
         self._steady_buffer_bytes = steady_buffer_bytes
         self.buffer = bytearray()
         self.started = False
+        self._discarding = False
+
+    def begin_interrupt(self):
+        self._discarding = True
+
+    def end_interrupt(self):
+        self._discarding = False
 
     def reset(self):
         self.buffer.clear()
         self.started = False
 
     def append(self, audio_bytes):
+        if self._discarding:
+            return
         if not audio_bytes:
             return
         self.buffer.extend(audio_bytes)
@@ -119,6 +128,8 @@ class AudioJitterBuffer:
             self._flush()
 
     def flush(self):
+        if self._discarding:
+            return
         self._flush()
 
     def _flush(self):
