@@ -758,6 +758,16 @@
             window.appAudioCapture.loadNoiseReductionSetting();
         }
 
+        // 加载本地轮次检测设置
+        if (typeof window.appAudioCapture !== 'undefined' && window.appAudioCapture.loadLocalTurnDetectionSetting) {
+            window.appAudioCapture.loadLocalTurnDetectionSetting();
+        }
+
+        // 加载 Smart Turn 语义断句子开关
+        if (typeof window.appAudioCapture !== 'undefined' && window.appAudioCapture.loadSmartTurnSetting) {
+            window.appAudioCapture.loadSmartTurnSetting();
+        }
+
         // 加载扬声器音量设置
         if (typeof window.appAudioPlayback !== 'undefined' && window.appAudioPlayback.loadSpeakerVolumeSetting) {
             window.appAudioPlayback.loadSpeakerVolumeSetting();

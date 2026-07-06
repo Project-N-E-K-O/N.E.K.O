@@ -902,7 +902,11 @@
         "volumeWaiting": "En espera",
         "volumeHintWaiting": "El micrófono está escuchando, puede hablar",
         "noiseReduction": "Reducción de ruido",
-        "noiseReductionHint": "Reducción de ruido RNNoise AI para una voz más clara"
+        "noiseReductionHint": "Reducción de ruido RNNoise AI para una voz más clara",
+        "localTurnDetection": "Detección local de turnos",
+        "localTurnDetectionHint": "Detecta el fin de turno localmente; se aplica en la próxima sesión de voz",
+        "smartTurn": "Smart Turn (fin de turno)",
+        "smartTurnHint": "Off = VAD puro confirma en cualquier pausa; requiere detección local de turnos"
     },
     "speaker": {
         "volumeLabel": "Volumen del altavoz",
@@ -2568,6 +2572,10 @@
         "toggles": {
             "allowInterrupt": "Permitir interrupción",
             "mergeMessages": "Fusionar mensajes",
+            "localTurnDetection": "Detección local de turnos",
+            "localTurnDetectionTooltip": "Detecta el fin de turno en el dispositivo para respuestas más ágiles. Cambiarlo reconecta la sesión de voz actual.",
+            "smartTurn": "Smart Turn (fin de turno)",
+            "smartTurnTooltip": "On = en una pausa decide si realmente terminaste (no te corta); off = Silero VAD puro confirma en cualquier pausa. Conmutable en llamada; requiere detección local de turnos.",
             "avatarReactionBubble": "Burbuja de expresión",
             "focusCognition": "Modo concentración",
             "focusCognitionTooltip": "Cuando está activado, se concentra y piensa más a fondo cuando te abres o preguntas algo complejo; desactivado desactiva la concentración por completo.",

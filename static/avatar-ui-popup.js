@@ -2206,6 +2206,10 @@ function createSettingsToggleItem(manager, prefix, toggle) {
         checkbox.checked = window.avatarReactionBubbleEnabled;
     } else if (toggle.id === 'focus-cognition' && typeof window.focusCognitionEnabled !== 'undefined') {
         checkbox.checked = window.focusCognitionEnabled;
+    } else if (toggle.id === 'local-turn-detection') {
+        checkbox.checked = !!(window.appState && window.appState.localTurnDetectionEnabled);
+    } else if (toggle.id === 'smart-turn') {
+        checkbox.checked = !window.appState || window.appState.smartTurnEnabled !== false;
     } else if (toggle.id === 'proactive-chat' && typeof window.proactiveChatEnabled !== 'undefined') {
         checkbox.checked = window.proactiveChatEnabled;
     } else if (toggle.id === 'proactive-vision' && typeof window.proactiveVisionEnabled !== 'undefined') {
@@ -2334,6 +2338,16 @@ function createSettingsToggleItem(manager, prefix, toggle) {
             window.focusCognitionEnabled = isChecked;
             if (typeof window.saveNEKOSettings === 'function') {
                 window.saveNEKOSettings();
+            }
+        } else if (toggle.id === 'local-turn-detection') {
+            if (window.appState) window.appState.localTurnDetectionEnabled = isChecked;
+            if (window.appAudioCapture && typeof window.appAudioCapture.saveLocalTurnDetectionSetting === 'function') {
+                window.appAudioCapture.saveLocalTurnDetectionSetting();
+            }
+        } else if (toggle.id === 'smart-turn') {
+            if (window.appState) window.appState.smartTurnEnabled = isChecked;
+            if (window.appAudioCapture && typeof window.appAudioCapture.saveSmartTurnSetting === 'function') {
+                window.appAudioCapture.saveSmartTurnSetting();
             }
         } else if (toggle.id === 'proactive-chat') {
             window.proactiveChatEnabled = isChecked;

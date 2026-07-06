@@ -641,6 +641,54 @@
         } catch (e) { }
     }
 
+    // ==================== 本地轮次检测开关 ====================
+
+    function saveLocalTurnDetectionSetting() {
+        try {
+            localStorage.setItem('neko_local_turn_detection', S.localTurnDetectionEnabled ? '1' : '0');
+        } catch (e) { }
+        try {
+            fetch('/api/config/conversation-settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ localTurnDetectionEnabled: S.localTurnDetectionEnabled })
+            });
+        } catch (e) { }
+    }
+
+    function loadLocalTurnDetectionSetting() {
+        try {
+            var saved = localStorage.getItem('neko_local_turn_detection');
+            if (saved !== null) {
+                S.localTurnDetectionEnabled = saved === '1';
+            }
+        } catch (e) { }
+    }
+
+    // ==================== Smart Turn 语义断句子开关 ====================
+
+    function saveSmartTurnSetting() {
+        try {
+            localStorage.setItem('neko_smart_turn', S.smartTurnEnabled ? '1' : '0');
+        } catch (e) { }
+        try {
+            fetch('/api/config/conversation-settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ smartTurnEnabled: S.smartTurnEnabled })
+            });
+        } catch (e) { }
+    }
+
+    function loadSmartTurnSetting() {
+        try {
+            var saved = localStorage.getItem('neko_smart_turn');
+            if (saved !== null) {
+                S.smartTurnEnabled = saved === '1';
+            }
+        } catch (e) { }
+    }
+
     // 格式化增益显示（带正负号）
     function formatGainDisplay(db) {
         if (db > 0) {
@@ -1445,6 +1493,10 @@
     mod.loadMicGainSetting = loadMicGainSetting;
     mod.loadNoiseReductionSetting = loadNoiseReductionSetting;
     mod.saveNoiseReductionSetting = saveNoiseReductionSetting;
+    mod.loadLocalTurnDetectionSetting = loadLocalTurnDetectionSetting;
+    mod.saveLocalTurnDetectionSetting = saveLocalTurnDetectionSetting;
+    mod.loadSmartTurnSetting = loadSmartTurnSetting;
+    mod.saveSmartTurnSetting = saveSmartTurnSetting;
     mod.formatGainDisplay = formatGainDisplay;
     mod.startSilenceDetection = startSilenceDetection;
     mod.stopSilenceDetection = stopSilenceDetection;
@@ -1770,10 +1822,6 @@
             Object.assign(nrHint.style, { fontSize: '11px', color: 'var(--neko-popup-text-sub)', marginTop: '6px' });
             nrContainer.appendChild(nrHint);
             leftColumn.appendChild(nrContainer);
-
-            var sep1b = document.createElement('div');
-            Object.assign(sep1b.style, { height: '1px', backgroundColor: 'var(--neko-popup-separator)', margin: '8px 0' });
-            leftColumn.appendChild(sep1b);
 
             // ===== 左栏 2. 麦克风增益 =====
             var gainContainer = document.createElement('div');
