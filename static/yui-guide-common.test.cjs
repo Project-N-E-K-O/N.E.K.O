@@ -240,6 +240,33 @@ test('common helper relays temporary PC system cursor reveal duration', () => {
     assert.equal(typeof chatRelays[1].timestamp, 'number');
 });
 
+test('common helper relays angry exit reveal after temporary PC cursor reveal', () => {
+    const chatRelays = [];
+    const storage = new Map([['yuiGuidePcOverlayRunId', 'run-cursor']]);
+    const relayOptions = {
+        localStorage: {
+            getItem(key) {
+                return storage.get(key) || null;
+            }
+        },
+        nekoTutorialOverlay: {
+            relayToChat(message) {
+                chatRelays.push(message);
+            }
+        }
+    };
+
+    common.syncPcSystemCursorTemporaryReveal(2000, 'interrupt_resist_light', relayOptions);
+    common.syncPcSystemCursorHidden(false, 'interrupt_angry_exit', relayOptions);
+
+    assert.deepEqual(chatRelays.map((message) => [message.action, message.hidden, message.reason]), [
+        ['yui_guide_system_cursor_visibility', false, 'interrupt_resist_light'],
+        ['yui_guide_system_cursor_temporary_reveal', undefined, 'interrupt_resist_light'],
+        ['yui_guide_system_cursor_visibility', false, 'interrupt_angry_exit']
+    ]);
+    assert.equal(chatRelays[2].tutorialRunId, 'run-cursor');
+});
+
 test('common helper relays PC tutorial lifecycle start before cursor visibility', () => {
     const chatRelays = [];
     const petRelays = [];
@@ -1466,6 +1493,18 @@ test('director routes resistance interrupts through ResistanceController boundar
     const cssSource = fs.readFileSync(path.join(repoRoot, 'static', 'css/yui-guide.css'), 'utf8');
     const pluginRuntimeSource = fs.readFileSync(path.join(repoRoot, 'frontend', 'plugin-manager/src/yui-guide-runtime.ts'), 'utf8');
     const resetSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/avatar/floating-guide-reset.js'), 'utf8');
+    const voiceQueueSource = source.split('    class YuiGuideVoiceQueue {')[1].split(
+        '    class YuiGuideEmotionBridge {',
+        1
+    )[0];
+    const audioContextPlaybackBlock = voiceQueueSource.split('        async playPreviewAudioThroughContext(')[1].split(
+        '        resolveGuideAudioSrc(',
+        1
+    )[0];
+    const speakBlock = voiceQueueSource.split('        async speak(text, options) {')[1].split(
+        '        capturePlaybackSnapshot() {',
+        1
+    )[0];
     const directorSource = source.split('    class YuiGuideDirector {')[1];
     const constructorBlock = directorSource.split(
         '            this.keydownHandler = this.onKeyDown.bind(this);',
@@ -1513,17 +1552,28 @@ test('director routes resistance interrupts through ResistanceController boundar
     assert.match(resistanceControllerBlock, /playLightResistance\(x,\s*y,\s*options\) \{/);
     assert.match(resistanceControllerBlock, /abortAsAngryExit\(source\) \{/);
     assert.match(resistanceControllerBlock, /destroy\(\) \{/);
+    assert.match(resistanceControllerBlock, /shouldAllowPausedLightResistanceInterrupt[\s\S]*director\.scenePausedForResistance[\s\S]*this\.lightResistanceActive/);
+    assert.match(resistanceControllerBlock, /director\.scenePausedForResistance && !shouldAllowPausedLightResistanceInterrupt/);
     assert.match(resistanceControllerBlock, /director\.interruptQualifyingMoveStreak \+= 1;/);
     assert.match(resistanceControllerBlock, /director\.interruptCount \+= 1;/);
     assert.match(resistanceControllerBlock, /director\.abortAsAngryExit\('pointer_interrupt'\);/);
     assert.match(resistanceControllerBlock, /director\.playLightResistance\(x,\s*y,\s*\{/);
+    assert.match(resistanceControllerBlock, /if \(director\.resistanceCursorTimer\) \{[\s\S]*?window\.clearTimeout\(director\.resistanceCursorTimer\);[\s\S]*?director\.resistanceCursorTimer = null;/);
+    assert.doesNotMatch(resistanceControllerBlock, /director\.revealRealCursorForInterruptCount\(\);/);
     assert.match(resistanceControllerBlock, /suppressCursorReveal:\s*true/);
     assert.match(resistanceControllerBlock, /forceSystemCursorReveal:\s*true/);
-    assert.match(resistanceControllerBlock, /if \(!normalizedOptions\.suppressCursorReveal\) \{[\s\S]*?director\.suppressResistanceCursorReveal\(normalizedOptions\);[\s\S]*?if \(typeof director\.revealSystemCursorTemporarily === 'function'\) \{[\s\S]*?director\.revealSystemCursorTemporarily\(2000,\s*'interrupt_resist_light'\)/);
+    assert.match(resistanceControllerBlock, /const cursorRevealAlreadyRequested = typeof director\.revealSystemCursorTemporarily === 'function';[\s\S]*?director\.revealSystemCursorTemporarily\(2000,\s*'interrupt_resist_light'\);[\s\S]*?cursorRevealAlreadyRequested:\s*cursorRevealAlreadyRequested/);
+    assert.match(resistanceControllerBlock, /if \(!normalizedOptions\.suppressCursorReveal\) \{[\s\S]*?director\.suppressResistanceCursorReveal\(normalizedOptions\);/);
+    assert.match(resistanceControllerBlock, /!normalizedOptions\.cursorRevealAlreadyRequested[\s\S]*?typeof director\.revealSystemCursorTemporarily === 'function'[\s\S]*?director\.revealSystemCursorTemporarily\(2000,\s*'interrupt_resist_light'\)/);
     assert.match(resistanceControllerBlock, /this\.lightResistanceActive = true;/);
     assert.match(resistanceControllerBlock, /director\.revealSystemCursorTemporarily\(2000,\s*'interrupt_resist_light'\);/);
     assert.doesNotMatch(resistanceControllerBlock, /normalizedOptions\.forceSystemCursorReveal[\s\S]*?director\.revealSystemCursorTemporarily/);
     assert.match(directorSource, /revealSystemCursorTemporarily\(durationMs = 2000,\s*reason = 'tutorial-temporary-reveal'\)/);
+    assert.match(voiceQueueSource, /this\.stopGeneration = 0;/);
+    assert.match(voiceQueueSource, /stop\(\) \{[\s\S]*?this\.stopGeneration \+= 1;/);
+    assert.match(speakBlock, /const stopGenerationAtStart = this\.stopGeneration;[\s\S]*?await wait\(48\);[\s\S]*?if \(this\.stopGeneration !== stopGenerationAtStart\) \{[\s\S]*?return;/);
+    assert.match(speakBlock, /catch \(error\) \{[\s\S]*?AudioContext 教程语音播放失败[\s\S]*?\}[\s\S]*?if \(this\.stopGeneration !== stopGenerationAtStart\) \{[\s\S]*?return;/);
+    assert.match(audioContextPlaybackBlock, /const stopGenerationAtStart = this\.stopGeneration;[\s\S]*?decodeGuideAudioBuffer[\s\S]*?if \(this\.stopGeneration !== stopGenerationAtStart\) \{[\s\S]*?return true;/);
     assert.match(directorSource, /classList\.add\('yui-user-cursor-revealed',\s*'yui-resistance-cursor-reveal'\)/);
     assert.match(directorSource, /syncPcSystemCursorTemporaryReveal\(normalizedDurationMs,\s*reason\)/);
     assert.match(directorSource, /window\.setTimeout\(\(\) => \{[\s\S]*?this\.suppressResistanceCursorReveal\(\);[\s\S]*?\},\s*normalizedDurationMs\)/);
@@ -1556,6 +1606,7 @@ test('director routes resistance interrupts through ResistanceController boundar
     assert.match(resistanceControllerBlock, /director\.runAngryExitPerformance\(\{/);
     assert.match(resistanceControllerBlock, /const angryExitNarrationDurationMs = director\.getGuideVoiceDurationMs\(/);
     assert.match(resistanceControllerBlock, /minDurationMs:\s*Number\.isFinite\(angryExitNarrationDurationMs\)/);
+    assert.match(resistanceControllerBlock, /this\.syncSystemCursorHidden\(false,\s*'interrupt_angry_exit'\);/);
     assert.match(resistanceControllerBlock, /director\.requestTermination\(source \|\| 'angry_exit', 'angry_exit'\);/);
     assert.match(pointerDownBlock, /this\.resistanceController\.recordPointerDown\(event\);/);
     assert.match(handleInterruptBlock, /return this\.resistanceController\.handleInterrupt\(event\);/);

@@ -3034,7 +3034,7 @@
         "systray": {
             "location": {
                 "title": "Tray icon location",
-                "desc": "The N.E.K.O icon appears in the system tray at the bottom-right of your screen. Click it to find N.E.K.O.",
+                "desc": "The N.E.K.O icon appears in the system tray at the bottom-right of your screen. Click it to find N.E.K.O. Right-click it to open the N.E.K.O menu panel.",
                 "note": "If you don't see it, expand the tray arrow to show hidden icons.",
                 "alt": "System tray location example"
             },

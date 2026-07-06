@@ -1168,6 +1168,9 @@
 
     class YuiGuideVoiceQueue {
         constructor() {
+            // 修改原因：speak() 启动前有短暂等待窗口；用停止代号识别等待期间发生的 cancel/stop，
+            // 避免旧轻对抗语音在生气退出后重新起播。
+            this.stopGeneration = 0;
             this.currentUtterance = null;
             this.currentFallbackTimer = null;
             this.currentFinish = null;
@@ -1186,6 +1189,8 @@
         }
 
         stop() {
+            // 修改原因：stop() 不只停止当前播放，也要让正在 48ms 启动等待中的 speak() 失效。
+            this.stopGeneration += 1;
             const finish = this.currentFinish;
             this.stopGuideMouthMotion();
 
@@ -1814,6 +1819,9 @@
             if (!context) {
                 return false;
             }
+            // 修改原因：stop()/angry exit 可能发生在音频上下文恢复、拉取或解码期间；
+            // 真正启动 buffer source 前必须再次确认同一代次，避免已取消的旧语音重新起播。
+            const stopGenerationAtStart = this.stopGeneration;
 
             await resumeKnownAudioContexts();
             if (context.state === 'suspended' && typeof context.resume === 'function') {
@@ -1830,6 +1838,9 @@
             const audioBuffer = await this.decodeGuideAudioBuffer(context, arrayBuffer);
             const startOffsetMs = Number.isFinite(startAtMs) ? Math.max(0, startAtMs) : 0;
             const startOffsetSeconds = Math.max(0, startOffsetMs / 1000);
+            if (this.stopGeneration !== stopGenerationAtStart) {
+                return true;
+            }
 
             return new Promise((resolve, reject) => {
                 let settled = false;
@@ -1948,7 +1959,13 @@
                 return;
             }
             this.stop();
+            // 修改原因：cancelActiveNarration()/angry exit 可能发生在 stop() 后的启动缓冲期；
+            // 等待结束后必须确认没有新的 stop()，否则旧语音会在取消后重新开始播放。
+            const stopGenerationAtStart = this.stopGeneration;
             await wait(48);
+            if (this.stopGeneration !== stopGenerationAtStart) {
+                return;
+            }
 
             const minimumDurationMs = Number.isFinite(normalizedOptions.minDurationMs)
                 ? normalizedOptions.minDurationMs
@@ -1975,6 +1992,9 @@
                     }
                 } catch (error) {
                     console.warn('[YuiGuide] AudioContext 教程语音播放失败，尝试 HTMLAudio:', normalizedOptions.voiceKey, error);
+                }
+                if (this.stopGeneration !== stopGenerationAtStart) {
+                    return;
                 }
 
                 try {

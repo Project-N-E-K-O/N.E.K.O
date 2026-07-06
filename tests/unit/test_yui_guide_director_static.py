@@ -449,6 +449,7 @@ def test_avatar_floating_guides_hide_real_cursor_during_takeover_and_show_banner
     assert "syncSystemCursorHidden(false, 'interrupt_resist_light')" not in resistance_source
     assert "syncSystemCursorHidden', null, false, 'interrupt_resist_light')" not in resistance_source
     assert "director.revealSystemCursorTemporarily(2000, 'interrupt_resist_light');" in resistance_source
+    assert "director.revealRealCursorForInterruptCount();" not in resistance_source
     assert "syncSystemCursorHidden(true, 'interrupt_resist_light')" not in resistance_source
     assert "director.overlay.emphasizeControlBanner();" in resistance_source
     assert "call(this.overlay, 'emphasizeControlBanner', null);" in resistance_source
