@@ -2521,8 +2521,6 @@
     const MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_SIZE = 160;
     const RETURN_BALL_DRAG_RECOVERY_POLL_MS = 250;
     const RETURN_BALL_DRAG_STALE_RECOVERY_MS = 12000;
-    const RETURN_BALL_LONG_PRESS_DRAG_MS = 280;
-    const RETURN_BALL_LONG_PRESS_PENDING_ATTR = 'data-neko-return-long-press-pending';
     const MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_FALLBACK_MS = 220;
     const MULTI_WINDOW_RETURN_BALL_DRAG_RESTORE_FALLBACK_MS = 600;
     const MULTI_WINDOW_RETURN_BALL_REVEAL_FALLBACK_MS = 600;
@@ -3877,10 +3875,6 @@
         window.removeEventListener('blur', state.handleWindowBlur);
         window.removeEventListener('pagehide', state.handlePageHide);
         document.removeEventListener('visibilitychange', state.handleVisibilityChange);
-        if (state.pendingLongPressTimer) {
-            clearTimeout(state.pendingLongPressTimer);
-            state.pendingLongPressTimer = null;
-        }
         if (state.suppressDomClickTimer) {
             clearTimeout(state.suppressDomClickTimer);
             state.suppressDomClickTimer = null;
@@ -3890,7 +3884,6 @@
             restoreSavedReturnBallStyle(state.container, state);
             resetReturnBallTemporaryStyle(state.container);
             state.container.setAttribute('data-dragging', 'false');
-            state.container.removeAttribute(RETURN_BALL_LONG_PRESS_PENDING_ATTR);
             state.container.removeAttribute('data-neko-return-click-suppressed');
         }
         delete document.body.dataset.nekoBallDrag;
@@ -3944,16 +3937,6 @@
             dragSessionToken: 0,
             dragRecoveryTimer: null,
             lastPointerEventAt: 0,
-            pendingLongPress: false,
-            pendingLongPressTimer: null,
-            pendingStartScreenX: 0,
-            pendingStartScreenY: 0,
-            pendingLatestScreenX: 0,
-            pendingLatestScreenY: 0,
-            pendingLatestSourcePoint: null,
-            pendingPointerType: '',
-            pendingMovedPastClickThreshold: false,
-            cancelNoMoveClick: false,
             suppressDomClickTimer: null,
             handleClick: null,
             handleMouseDown: null,
@@ -4132,36 +4115,6 @@
             });
         }
 
-        function clearPendingLongPressDrag() {
-            if (state.pendingLongPressTimer) {
-                clearTimeout(state.pendingLongPressTimer);
-                state.pendingLongPressTimer = null;
-            }
-            container.removeAttribute(RETURN_BALL_LONG_PRESS_PENDING_ATTR);
-            state.pendingLongPress = false;
-            state.pendingPointerType = '';
-            state.pendingLatestSourcePoint = null;
-            state.pendingMovedPastClickThreshold = false;
-            if (!state.isDragging) {
-                container.setAttribute('data-dragging', 'false');
-            }
-        }
-
-        function updatePendingLongPressDrag(screenX, screenY, sourcePoint) {
-            if (!state.pendingLongPress) return false;
-            state.pendingLatestScreenX = screenX;
-            state.pendingLatestScreenY = screenY;
-            state.pendingLatestSourcePoint = sourcePoint || null;
-            if (
-                Math.abs(screenX - state.pendingStartScreenX) > CLICK_THRESHOLD ||
-                Math.abs(screenY - state.pendingStartScreenY) > CLICK_THRESHOLD
-            ) {
-                state.pendingMovedPastClickThreshold = true;
-            }
-            markDragPointerActivity();
-            return true;
-        }
-
         function scheduleReturnBallDragRecoveryCheck() {
             clearReturnBallDragRecoveryTimer(state);
             if (!state.isDragging) return;
@@ -4315,14 +4268,13 @@
             return bounds;
         }
 
-        function beginDrag(screenX, screenY, event, options = {}) {
+        function beginDrag(screenX, screenY, event) {
             clearMultiWindowReturnBallDeferredWork(state);
             state.dragSessionToken += 1;
             const dragToken = state.dragSessionToken;
 
             const dragStarted = window.nekoPetDrag.start(screenX, screenY);
             if (dragStarted === false) {
-                state.cancelNoMoveClick = false;
                 container.setAttribute('data-dragging', 'false');
                 setReturnBallDomClickSuppressed(false);
                 return;
@@ -4343,7 +4295,6 @@
             state.releaseScreenY = screenY;
             state.savedWindowW = window.innerWidth;
             state.savedWindowH = window.innerHeight;
-            state.cancelNoMoveClick = options.cancelNoMoveClick === true;
             state.niriPhysicalCropDrag = isNiriPhysicalCropReturnBallDragActive();
             markDragPointerActivity();
 
@@ -4424,40 +4375,6 @@
             }
         }
 
-        function scheduleLongPressDrag(screenX, screenY, event, pointerType = 'mouse') {
-            clearPendingLongPressDrag();
-            state.pendingLongPress = true;
-            state.pendingPointerType = pointerType;
-            state.pendingStartScreenX = screenX;
-            state.pendingStartScreenY = screenY;
-            state.pendingLatestScreenX = screenX;
-            state.pendingLatestScreenY = screenY;
-            state.pendingLatestSourcePoint = event || null;
-            state.pendingMovedPastClickThreshold = false;
-            markDragPointerActivity();
-            setReturnBallDomClickSuppressed(true, RETURN_BALL_LONG_PRESS_DRAG_MS + 180);
-            container.setAttribute(RETURN_BALL_LONG_PRESS_PENDING_ATTR, 'true');
-            state.pendingLongPressTimer = setTimeout(() => {
-                state.pendingLongPressTimer = null;
-                if (!state.pendingLongPress) return;
-                const startX = state.pendingStartScreenX;
-                const startY = state.pendingStartScreenY;
-                const latestX = state.pendingLatestScreenX;
-                const latestY = state.pendingLatestScreenY;
-                const latestSourcePoint = state.pendingLatestSourcePoint;
-                state.pendingLongPress = false;
-                state.pendingPointerType = '';
-                state.pendingLatestSourcePoint = null;
-                container.removeAttribute(RETURN_BALL_LONG_PRESS_PENDING_ATTR);
-                setReturnBallDomClickSuppressed(true, 1200);
-                beginDrag(startX, startY, latestSourcePoint || event, { cancelNoMoveClick: true });
-                if (state.isDragging) {
-                    container.setAttribute('data-dragging', 'pending');
-                    updateDrag(latestX, latestY, latestSourcePoint);
-                }
-            }, RETURN_BALL_LONG_PRESS_DRAG_MS);
-        }
-
         function sendReturnBallNativeDragMove(screenX, screenY) {
             if (!state.niriPhysicalCropDrag ||
                 !window.nekoPetDrag ||
@@ -4521,8 +4438,7 @@
 
             const options = arguments[2] && typeof arguments[2] === 'object' ? arguments[2] : {};
             const suppressClick = options.suppressClick === true;
-            const suppressNoMoveClick = suppressClick || state.cancelNoMoveClick === true;
-            state.cancelNoMoveClick = false;
+            const suppressNoMoveClick = suppressClick;
             state.isDragging = false;
             state.releaseScreenX = screenX;
             state.releaseScreenY = screenY;
@@ -4702,74 +4618,36 @@
                 return;
             }
             if (isThoughtBubbleEventTarget(event)) return;
-            scheduleLongPressDrag(event.screenX, event.screenY, event, 'mouse');
-            event.preventDefault();
-            event.stopImmediatePropagation();
+            beginDrag(event.screenX, event.screenY, event);
         };
         state.handleMouseMove = (event) => {
-            if (updatePendingLongPressDrag(event.screenX, event.screenY, event)) return;
             if (finishDragIfMouseButtonReleased(event, 'mousemove-buttons-released')) return;
             updateDrag(event.screenX, event.screenY, event);
         };
         state.handleMouseUp = (event) => {
-            if (state.pendingLongPress) {
-                const shouldDispatchClick = state.pendingMovedPastClickThreshold !== true;
-                clearPendingLongPressDrag();
-                if (shouldDispatchClick) {
-                    setReturnBallDomClickSuppressed(true, 500);
-                    dispatchReturnBallClick();
-                } else {
-                    setReturnBallDomClickSuppressed(true, 160);
-                }
-                event.preventDefault();
-                event.stopImmediatePropagation();
-                return;
-            }
             void finishDrag(event.screenX, event.screenY);
         };
         state.handlePointerMove = (event) => {
-            if (event && event.pointerType === 'mouse' && updatePendingLongPressDrag(event.screenX, event.screenY, event)) return;
             if (finishDragIfMouseButtonReleased(event, 'pointermove-buttons-released')) return;
             if (event && event.pointerType === 'mouse') {
                 updateDrag(event.screenX, event.screenY, event);
             }
         };
         state.handlePointerUp = (event) => {
-            if (event && event.pointerType === 'mouse' && state.pendingLongPress) {
-                const shouldDispatchClick = state.pendingMovedPastClickThreshold !== true;
-                clearPendingLongPressDrag();
-                if (shouldDispatchClick) {
-                    setReturnBallDomClickSuppressed(true, 500);
-                    dispatchReturnBallClick();
-                } else {
-                    setReturnBallDomClickSuppressed(true, 160);
-                }
-                event.preventDefault();
-                event.stopImmediatePropagation();
-                return;
-            }
             void finishDrag(event.screenX, event.screenY);
         };
         state.handlePointerCancel = () => {
-            clearPendingLongPressDrag();
             cancelActiveDrag('pointercancel');
         };
         state.handleTouchStart = (event) => {
             if (isThoughtBubbleEventTarget(event)) return;
             const point = getTouchScreenPoint(event.touches[0]);
             if (!point) return;
-            scheduleLongPressDrag(point.x, point.y, event, 'touch');
             event.preventDefault();
             event.stopImmediatePropagation();
+            beginDrag(point.x, point.y, event);
         };
         state.handleTouchMove = (event) => {
-            if (state.pendingLongPress) {
-                const pendingPoint = getTouchScreenPoint(event.touches[0]);
-                if (!pendingPoint) return;
-                event.preventDefault();
-                updatePendingLongPressDrag(pendingPoint.x, pendingPoint.y, event.touches[0]);
-                return;
-            }
             if (!state.isDragging) return;
             const point = getTouchScreenPoint(event.touches[0]);
             if (!point) return;
@@ -4778,53 +4656,33 @@
         };
         state.handleTouchEnd = (event) => {
             const point = getTouchScreenPoint(event.changedTouches && event.changedTouches[0]);
-            if (state.pendingLongPress) {
-                const shouldDispatchClick = state.pendingMovedPastClickThreshold !== true;
-                clearPendingLongPressDrag();
-                if (shouldDispatchClick) {
-                    setReturnBallDomClickSuppressed(true, 500);
-                    dispatchReturnBallClick();
-                } else {
-                    setReturnBallDomClickSuppressed(true, 160);
-                }
-                event.preventDefault();
-                event.stopImmediatePropagation();
-                return;
-            }
             void finishDrag(
                 point ? point.x : state.releaseScreenX,
                 point ? point.y : state.releaseScreenY
             );
         };
         state.handleWindowBlur = () => {
-            if (state.pendingLongPress) {
-                clearPendingLongPressDrag();
-                cancelActiveDrag('window-blur-pending');
-                return;
-            }
             if (!state.isDragging) return;
             // Native return-ball dragging may legitimately blur the Pet window when
             // the companion chat layer has focus; stale recovery handles lost release.
             scheduleReturnBallDragRecoveryCheck();
         };
         state.handlePageHide = () => {
-            clearPendingLongPressDrag();
             cancelActiveDrag('pagehide');
         };
         state.handleVisibilityChange = () => {
             if (document.hidden) {
-                clearPendingLongPressDrag();
                 cancelActiveDrag('visibility-hidden');
             }
         };
         state.handleClick = (event) => {
             const isSuppressed = container.getAttribute('data-neko-return-click-suppressed') === 'true';
-            const isLongPressPending = container.getAttribute(RETURN_BALL_LONG_PRESS_PENDING_ATTR) === 'true';
-            const isNativeDragPending = container.getAttribute('data-dragging') === 'pending';
-            if (!isSuppressed && !isLongPressPending && !isNativeDragPending) return;
+            const isNativeDragActive = container.getAttribute('data-dragging') === 'true' ||
+                container.getAttribute('data-dragging') === 'pending';
+            if (!isSuppressed && !isNativeDragActive) return;
             event.preventDefault();
             event.stopImmediatePropagation();
-            if (!isLongPressPending && !isNativeDragPending) {
+            if (!isNativeDragActive) {
                 setReturnBallDomClickSuppressed(false);
             }
         };
