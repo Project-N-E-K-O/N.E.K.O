@@ -4643,6 +4643,8 @@
             if (isThoughtBubbleEventTarget(event)) return;
             const point = getTouchScreenPoint(event.touches[0]);
             if (!point) return;
+            event.preventDefault();
+            event.stopImmediatePropagation();
             beginDrag(point.x, point.y, event);
         };
         state.handleTouchMove = (event) => {

@@ -2072,6 +2072,23 @@ def test_idle_thought_bubble_is_sound_triggered_with_fade():
         "beginDrag(event.screenX, event.screenY, event);",
     )
     assert "state.handleTouchStart = (event) => {\n            if (isThoughtBubbleEventTarget(event)) return;" in app_ui_source
+    native_touch_drag_block = _source_slice_between(
+        app_ui_source,
+        "state.handleTouchStart = (event) => {",
+        "state.handleTouchMove = (event) => {",
+        "desktop native return-ball touch drag start",
+    )
+    _assert_source_order(
+        native_touch_drag_block,
+        "desktop native return-ball touch drag blocks default gestures before drag",
+        "state.handleTouchStart = (event) => {",
+        "if (isThoughtBubbleEventTarget(event)) return;",
+        "const point = getTouchScreenPoint(event.touches[0]);",
+        "if (!point) return;",
+        "event.preventDefault();",
+        "event.stopImmediatePropagation();",
+        "beginDrag(point.x, point.y, event);",
+    )
 
     bubble_bg_block = _extract_css_block(css_source, ".neko-idle-thought-bubble-bg")
     assert "position: absolute;" in bubble_bg_block
