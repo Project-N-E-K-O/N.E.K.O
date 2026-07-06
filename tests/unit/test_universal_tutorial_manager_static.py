@@ -261,6 +261,7 @@ def test_page_tutorial_skip_button_restores_pointer_events_inside_fixed_portal()
     assert "button.addEventListener('click', handleSkipRequest);" in show_block
     assert "button.style.setProperty('pointer-events', 'auto', 'important');" in show_block
     assert "button.style.setProperty('z-index', '2147483647', 'important');" in show_block
+    assert "button.style.touchAction = 'manipulation';" in show_block
     assert "this._skipSafeAreaController.hide();" in hide_block
 
 

@@ -968,6 +968,7 @@
             button.className = 'neko-page-tutorial-skip-btn';
             button.style.setProperty('pointer-events', 'auto', 'important');
             button.style.setProperty('z-index', '2147483647', 'important');
+            button.style.touchAction = 'manipulation';
             button.textContent = this.t('tutorial.buttons.skip', '跳过');
             button.addEventListener('pointerdown', handleSkipPress);
             button.addEventListener('mousedown', handleSkipPress);
