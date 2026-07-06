@@ -179,11 +179,21 @@ function clampAgentHudViewportPosition(left, top, width, height) {
     };
 }
 
+function getAgentHudPixelCoordinate(value, fallback) {
+    const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+    const numeric = parseFloat(normalized);
+    if (normalized.endsWith('px') && Number.isFinite(numeric)) {
+        return numeric;
+    }
+    const safeFallback = Number(fallback);
+    return Number.isFinite(safeFallback) ? safeFallback : 0;
+}
+
 function clampAgentHudElementToViewport(hud, options = {}) {
     if (!hud) return null;
     const rect = hud.getBoundingClientRect();
-    const currentLeft = Number.isFinite(parseFloat(hud.style.left)) ? parseFloat(hud.style.left) : rect.left;
-    const currentTop = Number.isFinite(parseFloat(hud.style.top)) ? parseFloat(hud.style.top) : rect.top;
+    const currentLeft = getAgentHudPixelCoordinate(hud.style.left, rect.left);
+    const currentTop = getAgentHudPixelCoordinate(hud.style.top, rect.top);
     const clamped = clampAgentHudViewportPosition(currentLeft, currentTop, rect.width, rect.height);
     hud.style.left = clamped.left + 'px';
     hud.style.top = clamped.top + 'px';

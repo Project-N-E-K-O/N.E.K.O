@@ -276,6 +276,16 @@ def test_standalone_agent_hud_show_hide_keeps_origin_position():
     assert "translateY(-50%) translateX(20px)" in hide_body
 
 
+def test_agent_hud_viewport_clamp_uses_layout_for_non_pixel_positions():
+    hud_source = Path("static/common-ui-hud.js").read_text(encoding="utf-8")
+
+    assert "function getAgentHudPixelCoordinate(value, fallback)" in hud_source
+    assert "normalized.endsWith('px') && Number.isFinite(numeric)" in hud_source
+    assert "const currentLeft = getAgentHudPixelCoordinate(hud.style.left, rect.left);" in hud_source
+    assert "const currentTop = getAgentHudPixelCoordinate(hud.style.top, rect.top);" in hud_source
+    assert "Number.isFinite(parseFloat(hud.style.top))" not in hud_source
+
+
 def test_agent_server_expected_event_driven_endpoints_exist():
     paths = _route_paths_from_decorators("app/agent_server.py", "app")
     for expected in {
