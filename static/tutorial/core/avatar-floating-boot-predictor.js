@@ -4,9 +4,6 @@
     const AVATAR_FLOATING_GUIDE_STORAGE_KEY = 'neko_avatar_floating_guide_v1';
     const HOME_TUTORIAL_KEYS = ['neko_tutorial_home_yui_v1'];
     const PC_OVERLAY_RUN_ID_STORAGE_KEY = 'yuiGuidePcOverlayRunId';
-    const PC_OVERLAY_SEQUENCE_STORAGE_KEY = 'yuiGuidePcOverlaySequence';
-    const PC_OVERLAY_LOADING_ICON = '/static/icons/emotion_model_icon.png';
-    const PC_OVERLAY_LOADING_DISPLAY_SCOPE = 'primary';
     const ROUND_COUNT = 7;
 
     const state = {
@@ -15,11 +12,9 @@
         userModelBootSkipped: false,
         directTutorialBootClaimed: false,
         predictionSuppressed: false,
-        loadingActive: false,
         claimReason: ''
     };
     let overlayRunId = '';
-    let overlaySequence = 0;
 
     function getTodayLocalDate() {
         const now = new Date();
@@ -195,151 +190,12 @@
         return overlayRunId;
     }
 
-    function nextPcOverlaySequence() {
-        try {
-            const stored = window.sessionStorage && Number(window.sessionStorage.getItem(PC_OVERLAY_SEQUENCE_STORAGE_KEY));
-            if (Number.isFinite(stored) && stored > overlaySequence) {
-                overlaySequence = stored;
-            }
-        } catch (_) {}
-        overlaySequence += 1;
-        try {
-            if (window.sessionStorage) {
-                window.sessionStorage.setItem(PC_OVERLAY_SEQUENCE_STORAGE_KEY, String(overlaySequence));
-            }
-        } catch (_) {}
-        return overlaySequence;
-    }
-
-    function isPcLoadingOverlayBridge(bridge) {
-        return !!(
-            bridge
-            && typeof bridge === 'object'
-            && typeof bridge.begin === 'function'
-            && typeof bridge.update === 'function'
-            && typeof bridge.clear === 'function'
-        );
-    }
-
-    function getPcLoadingOverlayBridge() {
-        if (isPcLoadingOverlayBridge(window.nekoTutorialLoadingOverlay)) {
-            return window.nekoTutorialLoadingOverlay;
-        }
-        if (window.nekoTutorialOverlay && isPcLoadingOverlayBridge(window.nekoTutorialOverlay.loadingOverlay)) {
-            return window.nekoTutorialOverlay.loadingOverlay;
-        }
-        if (isPcLoadingOverlayBridge(window.nekoTutorialOverlay)) {
-            return window.nekoTutorialOverlay;
-        }
-        if (
-            window.nekoTutorialOverlay
-            && typeof window.nekoTutorialOverlay.beginLoading === 'function'
-            && typeof window.nekoTutorialOverlay.updateLoading === 'function'
-            && typeof window.nekoTutorialOverlay.clearLoading === 'function'
-        ) {
-            return {
-                begin: payload => window.nekoTutorialOverlay.beginLoading(payload),
-                update: payload => window.nekoTutorialOverlay.updateLoading(payload),
-                clear: payload => window.nekoTutorialOverlay.clearLoading(payload)
-            };
-        }
-        return null;
-    }
-
-    function beginDirectTutorialLoading(reason) {
-        const bridge = getPcLoadingOverlayBridge();
-        if (!bridge || typeof bridge.begin !== 'function' || typeof bridge.update !== 'function') {
-            return false;
-        }
-        const tutorialRunId = ensurePcOverlayRunId();
-        const sequence = nextPcOverlaySequence();
-        state.loadingActive = true;
-        try {
-            const beginResult = bridge.begin({
-                tutorialRunId,
-                reason: reason || 'direct-tutorial-loading',
-                displayScope: PC_OVERLAY_LOADING_DISPLAY_SCOPE
-            });
-            if (beginResult && typeof beginResult.catch === 'function') {
-                beginResult.catch(() => {
-                    state.loadingActive = false;
-                });
-            }
-            const updateResult = bridge.update({
-                tutorialRunId,
-                sequence,
-                displayScope: PC_OVERLAY_LOADING_DISPLAY_SCOPE,
-                payload: {
-                    loading: {
-                        visible: true,
-                        reason: reason || 'direct-tutorial-loading',
-                        displayScope: PC_OVERLAY_LOADING_DISPLAY_SCOPE,
-                        emotionIconUrl: PC_OVERLAY_LOADING_ICON
-                    }
-                }
-            });
-            if (updateResult && typeof updateResult.catch === 'function') {
-                updateResult.catch(() => {
-                    state.loadingActive = false;
-                });
-            }
-            return true;
-        } catch (_) {
-            state.loadingActive = false;
-            return false;
-        }
-    }
-
-    function clearDirectTutorialLoading(reason) {
-        const bridge = getPcLoadingOverlayBridge();
-        if (!state.loadingActive && !overlayRunId) {
-            return false;
-        }
-        state.loadingActive = false;
-        if (!bridge) {
-            return false;
-        }
-        const tutorialRunId = ensurePcOverlayRunId();
-        const sequence = nextPcOverlaySequence();
-        try {
-            if (typeof bridge.update === 'function') {
-                const updateResult = bridge.update({
-                    tutorialRunId,
-                    sequence,
-                    displayScope: PC_OVERLAY_LOADING_DISPLAY_SCOPE,
-                    payload: {
-                        loading: null,
-                        reason: reason || 'direct-tutorial-loading-clear',
-                        displayScope: PC_OVERLAY_LOADING_DISPLAY_SCOPE
-                    }
-                });
-                if (updateResult && typeof updateResult.catch === 'function') {
-                    updateResult.catch(() => {});
-                }
-            }
-        } catch (_) {}
-        try {
-            if (typeof bridge.clear === 'function') {
-                const clearResult = bridge.clear({
-                    tutorialRunId,
-                    reason: reason || 'direct-tutorial-loading-clear',
-                    displayScope: PC_OVERLAY_LOADING_DISPLAY_SCOPE
-                });
-                if (clearResult && typeof clearResult.catch === 'function') {
-                    clearResult.catch(() => {});
-                }
-            }
-        } catch (_) {}
-        return true;
-    }
-
     async function recoverUserModelBoot(reason) {
         const shouldRecover = state.userModelBootSkipped || state.directTutorialBootClaimed;
         if (!shouldRecover) {
             return false;
         }
         state.predictionSuppressed = true;
-        clearDirectTutorialLoading(reason || 'recover-user-model');
         releaseDirectTutorialBoot(reason || 'recover-user-model', {
             keepUserModelBootSkipped: true,
             suppressPrediction: true
@@ -406,8 +262,6 @@
         markUserModelBootSkipped,
         claimDirectTutorialBoot,
         releaseDirectTutorialBoot,
-        beginDirectTutorialLoading,
-        clearDirectTutorialLoading,
         recoverUserModelBoot,
         wasUserModelBootSkipped() {
             return state.userModelBootSkipped === true;

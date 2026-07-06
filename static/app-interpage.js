@@ -170,6 +170,14 @@
             || action === 'yui_guide_set_compact_tool_wheel_index';
     }
 
+    function isHighVolumeBroadcastChannelAction(action) {
+        return action === 'idle_return_ball_state'
+            || action === 'idle_chat_minimized_state'
+            || action === 'idle_chat_compact_surface_state'
+            || action === 'idle_cat1_compact_mirror_state'
+            || action === 'idle_chat_pair_move_bounds';
+    }
+
     function isMainUIHiddenByModelManager() {
         return window[MAIN_UI_HIDDEN_BY_MODEL_MANAGER_KEY] === true;
     }
@@ -3158,7 +3166,9 @@
                     return;
                 }
 
-                console.log('[BroadcastChannel] 收到消息:', event.data.action);
+                if (!isHighVolumeBroadcastChannelAction(message.action)) {
+                    console.log('[BroadcastChannel] 收到消息:', message.action);
+                }
 
                 switch (event.data.action) {
                     case 'reload_model':

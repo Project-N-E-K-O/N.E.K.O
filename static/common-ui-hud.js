@@ -158,6 +158,63 @@ let cachedDisplayHUD = {
     height: window.innerHeight
 };
 
+function getAgentHudViewportBounds() {
+    return {
+        left: 0,
+        top: 0,
+        width: Math.max(1, Math.round(Number(window.innerWidth) || 1)),
+        height: Math.max(1, Math.round(Number(window.innerHeight) || 1))
+    };
+}
+
+function clampAgentHudViewportPosition(left, top, width, height) {
+    const viewport = getAgentHudViewportBounds();
+    const safeWidth = Math.max(1, Number(width) || 1);
+    const safeHeight = Math.max(1, Number(height) || 1);
+    const maxLeft = Math.max(viewport.left, viewport.left + viewport.width - safeWidth);
+    const maxTop = Math.max(viewport.top, viewport.top + viewport.height - safeHeight);
+    return {
+        left: Math.max(viewport.left, Math.min(Number(left) || 0, maxLeft)),
+        top: Math.max(viewport.top, Math.min(Number(top) || 0, maxTop))
+    };
+}
+
+function getAgentHudPixelCoordinate(value, fallback) {
+    const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+    const numeric = parseFloat(normalized);
+    if (normalized.endsWith('px') && Number.isFinite(numeric)) {
+        return numeric;
+    }
+    const safeFallback = Number(fallback);
+    return Number.isFinite(safeFallback) ? safeFallback : 0;
+}
+
+function clampAgentHudElementToViewport(hud, options = {}) {
+    if (!hud) return null;
+    const rect = hud.getBoundingClientRect();
+    const currentLeft = getAgentHudPixelCoordinate(hud.style.left, rect.left);
+    const currentTop = getAgentHudPixelCoordinate(hud.style.top, rect.top);
+    const clamped = clampAgentHudViewportPosition(currentLeft, currentTop, rect.width, rect.height);
+    hud.style.left = clamped.left + 'px';
+    hud.style.top = clamped.top + 'px';
+    hud.style.right = 'auto';
+    hud.style.transform = 'none';
+
+    if (options.persist) {
+        try {
+            localStorage.setItem('agent-task-hud-position', JSON.stringify({
+                left: hud.style.left,
+                top: hud.style.top,
+                right: hud.style.right,
+                transform: hud.style.transform
+            }));
+        } catch (error) {
+            console.warn('Failed to save position to localStorage:', error);
+        }
+    }
+    return clamped;
+}
+
 // 更新显示器边界信息
 async function updateDisplayBounds(centerX, centerY) {
     if (!window.electronScreen || !window.electronScreen.getAllDisplays) {
@@ -459,9 +516,6 @@ window.AgentHUD.createAgentTaskHUD = function () {
         this._cleanupDragging();
         this._cleanupDragging = null;
     }
-
-    // 初始化显示器边界缓存
-    updateDisplayBounds();
 
     const hud = document.createElement('div');
     hud.id = 'agent-task-hud';
@@ -820,6 +874,7 @@ window.AgentHUD.showAgentTaskHUD = function () {
         } catch (e) {
             hud.style.transform = 'translateY(-50%) translateX(0)';
         }
+        clampAgentHudElementToViewport(hud, { persist: true });
     } else {
         hud.style.transform = 'translateY(-50%) translateX(0)';
     }
@@ -1670,43 +1725,9 @@ window.AgentHUD._setupDragging = function (hud) {
         // 恢复视觉状态
         resetDragVisualState();
 
-        // 最终位置校准（多屏幕支持）
+        // DOM HUD 使用 viewport 坐标；不要混用 Electron screen 坐标。
         requestAnimationFrame(() => {
-            const rect = hud.getBoundingClientRect();
-
-            // 使用缓存的屏幕边界进行限制
-            if (!cachedDisplayHUD) {
-                console.warn('cachedDisplayHUD not initialized, skipping bounds check');
-                return;
-            }
-            const displayLeft = cachedDisplayHUD.x;
-            const displayTop = cachedDisplayHUD.y;
-            const displayRight = cachedDisplayHUD.x + cachedDisplayHUD.width;
-            const displayBottom = cachedDisplayHUD.y + cachedDisplayHUD.height;
-
-            // 确保位置在当前屏幕内
-            let finalLeft = parseFloat(hud.style.left) || 0;
-            let finalTop = parseFloat(hud.style.top) || 0;
-
-            finalLeft = Math.max(displayLeft, Math.min(finalLeft, displayRight - rect.width));
-            finalTop = Math.max(displayTop, Math.min(finalTop, displayBottom - rect.height));
-
-            hud.style.left = finalLeft + 'px';
-            hud.style.top = finalTop + 'px';
-
-            // 保存位置到localStorage
-            const position = {
-                left: hud.style.left,
-                top: hud.style.top,
-                right: hud.style.right,
-                transform: hud.style.transform
-            };
-
-            try {
-                localStorage.setItem('agent-task-hud-position', JSON.stringify(position));
-            } catch (error) {
-                console.warn('Failed to save position to localStorage:', error);
-            }
+            clampAgentHudElementToViewport(hud, { persist: true });
         });
 
         e.preventDefault();
@@ -1776,43 +1797,9 @@ window.AgentHUD._setupDragging = function (hud) {
         // 恢复视觉状态
         resetDragVisualState();
 
-        // 最终位置校准（多屏幕支持）
+        // DOM HUD 使用 viewport 坐标；不要混用 Electron screen 坐标。
         requestAnimationFrame(() => {
-            const rect = hud.getBoundingClientRect();
-
-            // 使用缓存的屏幕边界进行限制
-            if (!cachedDisplayHUD) {
-                console.warn('cachedDisplayHUD not initialized, skipping bounds check');
-                return;
-            }
-            const displayLeft = cachedDisplayHUD.x;
-            const displayTop = cachedDisplayHUD.y;
-            const displayRight = cachedDisplayHUD.x + cachedDisplayHUD.width;
-            const displayBottom = cachedDisplayHUD.y + cachedDisplayHUD.height;
-
-            // 确保位置在当前屏幕内
-            let finalLeft = parseFloat(hud.style.left) || 0;
-            let finalTop = parseFloat(hud.style.top) || 0;
-
-            finalLeft = Math.max(displayLeft, Math.min(finalLeft, displayRight - rect.width));
-            finalTop = Math.max(displayTop, Math.min(finalTop, displayBottom - rect.height));
-
-            hud.style.left = finalLeft + 'px';
-            hud.style.top = finalTop + 'px';
-
-            // 保存位置到localStorage
-            const position = {
-                left: hud.style.left,
-                top: hud.style.top,
-                right: hud.style.right,
-                transform: hud.style.transform
-            };
-
-            try {
-                localStorage.setItem('agent-task-hud-position', JSON.stringify(position));
-            } catch (error) {
-                console.warn('Failed to save position to localStorage:', error);
-            }
+            clampAgentHudElementToViewport(hud, { persist: true });
         });
 
         e.preventDefault();
@@ -1827,54 +1814,16 @@ window.AgentHUD._setupDragging = function (hud) {
     window.addEventListener('pointercancel', cancelDragState, true);
 
     // 窗口大小变化时重新校准位置（多屏幕支持）
-    const handleResize = async () => {
+    const handleResize = () => {
         if (isDragging || touchDragging) return;
-
-        // 更新屏幕信息
-        const rect = hud.getBoundingClientRect();
-        const centerX = rect.left + rect.width / 2;
-        const centerY = rect.top + rect.height / 2;
-        await updateDisplayBounds(centerX, centerY);
 
         requestAnimationFrame(() => {
             const rect = hud.getBoundingClientRect();
+            const viewport = getAgentHudViewportBounds();
 
-            // 使用缓存的屏幕边界进行限制
-            if (!cachedDisplayHUD) {
-                console.warn('cachedDisplayHUD not initialized, skipping bounds check');
-                return;
-            }
-            const displayLeft = cachedDisplayHUD.x;
-            const displayTop = cachedDisplayHUD.y;
-            const displayRight = cachedDisplayHUD.x + cachedDisplayHUD.width;
-            const displayBottom = cachedDisplayHUD.y + cachedDisplayHUD.height;
-
-            // 如果HUD超出当前屏幕，调整到可见位置
-            if (rect.left < displayLeft || rect.top < displayTop ||
-                rect.right > displayRight || rect.bottom > displayBottom) {
-
-                let newLeft = parseFloat(hud.style.left) || 0;
-                let newTop = parseFloat(hud.style.top) || 0;
-
-                newLeft = Math.max(displayLeft, Math.min(newLeft, displayRight - rect.width));
-                newTop = Math.max(displayTop, Math.min(newTop, displayBottom - rect.height));
-
-                hud.style.left = newLeft + 'px';
-                hud.style.top = newTop + 'px';
-
-                // 更新保存的位置
-                const position = {
-                    left: hud.style.left,
-                    top: hud.style.top,
-                    right: hud.style.right,
-                    transform: hud.style.transform
-                };
-
-                try {
-                    localStorage.setItem('agent-task-hud-position', JSON.stringify(position));
-                } catch (error) {
-                    console.warn('Failed to save position to localStorage:', error);
-                }
+            if (rect.left < viewport.left || rect.top < viewport.top ||
+                rect.right > viewport.left + viewport.width || rect.bottom > viewport.top + viewport.height) {
+                clampAgentHudElementToViewport(hud, { persist: true });
             }
         });
     };

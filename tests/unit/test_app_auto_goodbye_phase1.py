@@ -878,7 +878,10 @@ def test_app_interpage_relays_idle_chat_minimized_state_to_pet_window():
     assert "case 'idle_chat_minimized_state':" in source
     assert "function dispatchIdleChatMinimizedState(detail)" in source
     assert "new CustomEvent('neko:idle-chat-minimized-state'" in source
-    assert "nekoBroadcastChannel.postMessage(Object.assign({" in source
+    assert "postInterpageMessage(Object.assign({" in source
+    assert "function isHighVolumeBroadcastChannelAction(action)" in source
+    assert "action === 'idle_chat_minimized_state'" in source
+    assert "if (!isHighVolumeBroadcastChannelAction(message.action))" in source
 
 
 def test_app_interpage_relays_idle_chat_pair_move_bounds_to_chat_window():

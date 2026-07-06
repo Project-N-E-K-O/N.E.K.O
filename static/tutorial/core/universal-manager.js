@@ -827,18 +827,6 @@ class UniversalTutorialManager {
         }
     }
 
-    beginDirectAvatarFloatingTutorialLoading(reason) {
-        if (window.NekoAvatarFloatingBoot && typeof window.NekoAvatarFloatingBoot.beginDirectTutorialLoading === 'function') {
-            window.NekoAvatarFloatingBoot.beginDirectTutorialLoading(reason || 'startup-direct-tutorial-predicted');
-        }
-    }
-
-    clearDirectAvatarFloatingTutorialLoading(reason) {
-        if (window.NekoAvatarFloatingBoot && typeof window.NekoAvatarFloatingBoot.clearDirectTutorialLoading === 'function') {
-            window.NekoAvatarFloatingBoot.clearDirectTutorialLoading(reason || 'avatar-floating-yui-ready');
-        }
-    }
-
     dispatchAvatarFloatingTutorialInputRestored(reason = 'tutorial-avatar-restored') {
         const detail = {
             action: 'yui_guide_tutorial_input_restored',
@@ -861,7 +849,6 @@ class UniversalTutorialManager {
     }
 
     async recoverUserModelAfterDirectTutorialBootFailure(reason) {
-        this.clearDirectAvatarFloatingTutorialLoading(reason || 'direct-tutorial-boot-failed');
         if (window.NekoAvatarFloatingBoot && typeof window.NekoAvatarFloatingBoot.recoverUserModelBoot === 'function') {
             try {
                 return await window.NekoAvatarFloatingBoot.recoverUserModelBoot(reason || 'direct-tutorial-boot-failed');
@@ -1793,6 +1780,7 @@ class UniversalTutorialManager {
         overlay.setAttribute('aria-modal', 'true');
         overlay.setAttribute('aria-labelledby', 'neko-day1-systray-intro-title');
 
+        // 修改原因：托盘示意图已迁移到教程静态资源目录，保持弹窗资源归属一致。
         overlay.innerHTML = `
             <div class="neko-day1-systray-card">
                 <button class="neko-day1-systray-close" type="button" aria-label="${this.safeEscapeHtml(t('common.close', '关闭'))}">×</button>
@@ -1800,7 +1788,7 @@ class UniversalTutorialManager {
                     <div class="neko-day1-systray-media">
                         <div class="neko-day1-systray-location-copy">
                             <h2 id="neko-day1-systray-intro-title">${escape({ key: 'tutorial.systray.location.title', fallback: '📍 托盘图标位置' })}</h2>
-                            <p>${escape({ key: 'tutorial.systray.location.desc', fallback: 'N.E.K.O 的图标会出现在屏幕右下角的系统托盘里，点击一下就能找到它。' })}</p>
+                            <p>${escape({ key: 'tutorial.systray.location.desc', fallback: 'N.E.K.O 的图标会出现在屏幕右下角的系统托盘里，点击一下就能找到它。鼠标右击就能打开neko菜单面板啦。' })}</p>
                             <p class="neko-day1-systray-note">${escape({ key: 'tutorial.systray.location.note', fallback: '如果看不到，可以先展开托盘的小箭头，查看全部图标。' })}</p>
                         </div>
                         <img
@@ -3436,9 +3424,6 @@ class UniversalTutorialManager {
             await this.playAvatarFloatingRoundPrelude(round, source, director, {
                 skipSourceModelFade: directTutorialBoot
             });
-            if (directTutorialBoot) {
-                this.clearDirectAvatarFloatingTutorialLoading('avatar-floating-yui-ready');
-            }
             const completed = await director.playAvatarFloatingRound(round, {
                 source,
                 surfaceReady: true,
@@ -3463,7 +3448,6 @@ class UniversalTutorialManager {
         } catch (error) {
             console.error('[Tutorial] 悬浮窗教程启动失败:', error);
             if (directTutorialBoot) {
-                this.clearDirectAvatarFloatingTutorialLoading('avatar-floating-start-failed');
                 this.releaseDirectAvatarFloatingTutorialBoot('avatar-floating-before-teardown', {
                     keepUserModelBootSkipped: true,
                     suppressPrediction: true
@@ -3535,7 +3519,6 @@ class UniversalTutorialManager {
                 if (!hasSeen) {
                     this.setHomeTutorialPending(true);
                 }
-                this.beginDirectAvatarFloatingTutorialLoading('startup-direct-tutorial-predicted');
                 this.startTutorialWhenI18nReady(1500);
                 return;
             }
