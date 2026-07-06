@@ -50,14 +50,21 @@ def test_registry_covers_latin_labels() -> None:
 
 
 def test_registry_covers_activity_state_enums() -> None:
-    # The activity-state section historically rendered bare English state
-    # enums (focused_work / restricted_screen_only) that weak models echoed
-    # as the reply's first line. The denylist must strip both the raw enum
-    # and its English label as a last resort.
+    # Multi-token activity enums / labels are leak-prone and safe to deny: an
+    # underscore key or multi-word label never occurs as natural speech.
     labels = get_proactive_intent_leak_labels()
-    for lab in ('focused_work', 'gaming', 'idle', 'chatting',
+    for lab in ('focused_work', 'restricted_screen_only', 'casual_browsing',
                 'focused work', 'casual browsing'):
         assert lab.casefold() in labels, f"registry missing activity enum {lab!r}"
+
+
+def test_registry_skips_single_common_word_enums() -> None:
+    # Single common words (idle / gaming / open) are deliberately NOT denied —
+    # they can legitimately open an English reply and _strip matches whole
+    # first lines, so denying them would scrub real speech (greptile P2 #2173).
+    labels = get_proactive_intent_leak_labels()
+    for common in ('idle', 'gaming', 'open', 'away', 'chatting'):
+        assert common.casefold() not in labels, f"common word wrongly denied: {common!r}"
 
 
 def test_registry_skips_colonless_sentence_bullets() -> None:
