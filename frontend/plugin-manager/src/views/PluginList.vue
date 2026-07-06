@@ -450,6 +450,8 @@ const loading = computed(() => pluginStore.loading)
 const showMetrics = ref(false)
 let metricsRefreshTimer: number | null = null
 let initialLoadPromise: Promise<void> | null = null
+let lastDashboardReuseRefreshTimestamp = 0
+const PLUGIN_DASHBOARD_REUSE_REFRESH_KEY = 'neko-plugin-dashboard-reuse-refresh-v1'
 
 // Show-source-detail mirrors the Metrics toggle pattern. Turning it on
 // also kicks off a best-effort fetch of the Market's latest versions so
@@ -597,7 +599,46 @@ async function runInitialLoad() {
 function handlePluginDashboardReuseMessage(event: MessageEvent) {
   if (event.origin !== window.location.origin) return
   const data = event.data
-  if (!data || data.type !== 'neko-plugin-dashboard-reuse' || data.action !== 'refresh-plugin-list') return
+  if (!isPluginDashboardReuseRefresh(data)) return
+  requestPluginDataRefreshAfterDashboardReuse(data)
+}
+
+function handlePluginDashboardReuseStorage(event: StorageEvent) {
+  if (event.key !== PLUGIN_DASHBOARD_REUSE_REFRESH_KEY || !event.newValue) return
+  try {
+    const data = JSON.parse(event.newValue)
+    if (isPluginDashboardReuseRefresh(data)) {
+      requestPluginDataRefreshAfterDashboardReuse(data)
+    }
+  } catch {
+    // Ignore malformed refresh hints from older windows.
+  }
+}
+
+function consumePendingPluginDashboardReuseRefresh() {
+  try {
+    const raw = window.localStorage.getItem(PLUGIN_DASHBOARD_REUSE_REFRESH_KEY)
+    if (!raw) return
+    const data = JSON.parse(raw)
+    window.localStorage.removeItem(PLUGIN_DASHBOARD_REUSE_REFRESH_KEY)
+    if (isPluginDashboardReuseRefresh(data)) {
+      requestPluginDataRefreshAfterDashboardReuse(data)
+    }
+  } catch {
+    // Storage can be unavailable in restricted environments; the direct message path still works.
+  }
+}
+
+function isPluginDashboardReuseRefresh(data: unknown): data is { timestamp?: number } {
+  if (!data || typeof data !== 'object') return false
+  const payload = data as { type?: unknown; action?: unknown }
+  return payload.type === 'neko-plugin-dashboard-reuse' && payload.action === 'refresh-plugin-list'
+}
+
+function requestPluginDataRefreshAfterDashboardReuse(data: { timestamp?: number }) {
+  const timestamp = Number.isFinite(data.timestamp) ? Number(data.timestamp) : 0
+  if (timestamp && timestamp === lastDashboardReuseRefreshTimestamp) return
+  lastDashboardReuseRefreshTimestamp = timestamp
   handleInitialLoad().catch((error) => {
     console.warn('Failed to refresh plugin data after dashboard reuse:', error)
   })
@@ -1105,12 +1146,15 @@ watch(packagePanelVisible, (visible) => {
 onMounted(async () => {
   window.addEventListener(TUTORIAL_ACTION_EVENT, handleTutorialAction)
   window.addEventListener('message', handlePluginDashboardReuseMessage)
+  window.addEventListener('storage', handlePluginDashboardReuseStorage)
+  consumePendingPluginDashboardReuseRefresh()
   await Promise.all([loadMarketEntry(), handleInitialLoad()])
 })
 
 onUnmounted(() => {
   window.removeEventListener(TUTORIAL_ACTION_EVENT, handleTutorialAction)
   window.removeEventListener('message', handlePluginDashboardReuseMessage)
+  window.removeEventListener('storage', handlePluginDashboardReuseStorage)
   closePluginContextMenu()
   closeDangerDialog()
   stopMetricsAutoRefresh()

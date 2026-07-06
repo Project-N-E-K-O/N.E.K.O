@@ -426,12 +426,19 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                     }
                     existingWindow.focus();
                     if (!actionConfig.forceReloadOnReuse && actionConfig.windowName === 'neko_plugin_dashboard') {
+                        const reuseRefreshPayload = {
+                            type: 'neko-plugin-dashboard-reuse',
+                            action: 'refresh-plugin-list',
+                            timestamp: Date.now()
+                        };
                         try {
-                            existingWindow.postMessage({
-                                type: 'neko-plugin-dashboard-reuse',
-                                action: 'refresh-plugin-list',
-                                timestamp: Date.now()
-                            }, new URL(absoluteUrl).origin);
+                            window.localStorage.setItem(
+                                'neko-plugin-dashboard-reuse-refresh-v1',
+                                JSON.stringify(reuseRefreshPayload)
+                            );
+                        } catch (_) {}
+                        try {
+                            existingWindow.postMessage(reuseRefreshPayload, new URL(absoluteUrl).origin);
                         } catch (_) {}
                     }
                     openedWindow = existingWindow;

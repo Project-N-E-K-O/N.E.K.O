@@ -140,7 +140,7 @@ export const usePluginStore = defineStore('plugin', () => {
 
     try {
       const response = await refreshPluginsRegistry()
-      registryRefreshed = true
+      registryRefreshed = response.success !== false
       if (response.success === false) {
         const firstFailure = response.failed[0]
         if (firstFailure) {
