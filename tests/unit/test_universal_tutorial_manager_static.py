@@ -229,6 +229,34 @@ def test_page_tutorial_manager_honors_mobile_viewport_bailout():
     )
 
 
+def test_page_tutorial_skip_button_restores_pointer_events_inside_fixed_portal():
+    page_source = _read_page_manager()
+    show_block = page_source.split("        showSkipButton() {", 1)[1].split(
+        "        hideSkipButton() {",
+        1,
+    )[0]
+    hide_block = page_source.split("        hideSkipButton() {", 1)[1].split(
+        "        handleTutorialEnd",
+        1,
+    )[0]
+
+    assert "let skipHandled = false;" in show_block
+    assert "if (skipHandled) {" in show_block
+    assert "skipHandled = true;" in show_block
+    assert "const handleSkipRequest = (event) => {" in show_block
+    assert "event.preventDefault();" in show_block
+    assert "event.stopImmediatePropagation();" in show_block
+    assert "event.stopPropagation();" in show_block
+    assert "const controller = this.ensureSkipSafeAreaController();" in show_block
+    assert "const host = controller && typeof controller.getButtonHost === 'function'" in show_block
+    assert "button.className = 'neko-page-tutorial-skip-btn';" in show_block
+    for event_name in ("pointerdown", "mousedown", "touchstart", "click"):
+        assert f"button.addEventListener('{event_name}', handleSkipRequest" in show_block
+    assert "button.style.setProperty('pointer-events', 'auto', 'important');" in show_block
+    assert "button.style.setProperty('z-index', '2147483647', 'important');" in show_block
+    assert "this._skipSafeAreaController.hide();" in hide_block
+
+
 def test_page_tutorial_manager_waits_for_api_settings_loading_overlay():
     page_source = _read_page_manager()
 

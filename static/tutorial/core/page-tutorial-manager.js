@@ -926,20 +926,40 @@
 
         showSkipButton() {
             this.hideSkipButton();
-            this.installSkipSafeAreaRefreshHooks();
-            const button = document.createElement('button');
-            button.type = 'button';
-            button.id = 'neko-page-tutorial-skip-btn';
-            button.className = 'neko-page-tutorial-skip-btn';
-            button.textContent = this.t('tutorial.buttons.skip', '跳过');
-            button.addEventListener('click', () => {
+            let skipHandled = false;
+            const handleSkipRequest = (event) => {
+                if (skipHandled) {
+                    return;
+                }
+                skipHandled = true;
+                if (event && typeof event.preventDefault === 'function') {
+                    event.preventDefault();
+                }
+                if (event && typeof event.stopImmediatePropagation === 'function') {
+                    event.stopImmediatePropagation();
+                }
+                if (event && typeof event.stopPropagation === 'function') {
+                    event.stopPropagation();
+                }
                 this.endReason = 'skip';
                 if (this.driver && typeof this.driver.destroy === 'function') {
                     this.driver.destroy();
                 } else {
                     this.handleTutorialEnd('skip');
                 }
-            });
+            };
+            this.installSkipSafeAreaRefreshHooks();
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.id = 'neko-page-tutorial-skip-btn';
+            button.className = 'neko-page-tutorial-skip-btn';
+            button.style.setProperty('pointer-events', 'auto', 'important');
+            button.style.setProperty('z-index', '2147483647', 'important');
+            button.textContent = this.t('tutorial.buttons.skip', '跳过');
+            button.addEventListener('pointerdown', handleSkipRequest);
+            button.addEventListener('mousedown', handleSkipRequest);
+            button.addEventListener('touchstart', handleSkipRequest, { passive: false });
+            button.addEventListener('click', handleSkipRequest);
             const controller = this.ensureSkipSafeAreaController();
             const host = controller && typeof controller.getButtonHost === 'function'
                 ? controller.getButtonHost()
@@ -955,6 +975,9 @@
 
         hideSkipButton() {
             this.clearSkipSafeAreaRefreshHooks();
+            if (this._skipSafeAreaController && typeof this._skipSafeAreaController.hide === 'function') {
+                this._skipSafeAreaController.hide();
+            }
             if (this.skipButton && this.skipButton.parentNode) {
                 this.skipButton.parentNode.removeChild(this.skipButton);
             }
