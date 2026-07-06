@@ -3034,7 +3034,7 @@
         "systray": {
             "location": {
                 "title": "Ubicación del icono de bandeja",
-                "desc": "El ícono N.E.K.O aparece en la bandeja del sistema en la parte inferior derecha de la pantalla. Haz clic en él para encontrar N.E.K.O. Haz clic derecho para abrir el panel del menú de N.E.K.O.",
+                "desc": "El ícono N.E.K.O aparece en la bandeja del sistema en la parte inferior derecha de la pantalla. Haz clic en él para encontrar N.E.K.O.",
                 "note": "Si no lo ve, expanda la flecha de la bandeja para mostrar los íconos ocultos.",
                 "alt": "Ejemplo de ubicación de la bandeja del sistema"
             },
