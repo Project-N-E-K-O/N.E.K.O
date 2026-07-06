@@ -10,6 +10,7 @@ APP_AGENT_PATH = REPO_ROOT / "static" / "app-agent.js"
 APP_UI_PATH = REPO_ROOT / "static" / "app-ui.js"
 APP_WEBSOCKET_PATH = REPO_ROOT / "static" / "app-websocket.js"
 COMMON_UI_HUD_PATH = REPO_ROOT / "static" / "common-ui-hud.js"
+AGENTHUD_TEMPLATE_PATH = REPO_ROOT / "templates" / "agenthud.html"
 PNGTUBER_PATH = REPO_ROOT / "static" / "pngtuber-core.js"
 PLUGIN_DASHBOARD_PATH = REPO_ROOT / "frontend" / "plugin-manager" / "src" / "views" / "Dashboard.vue"
 PLUGIN_METRICS_VIEW_PATH = REPO_ROOT / "frontend" / "plugin-manager" / "src" / "views" / "Metrics.vue"
@@ -131,6 +132,9 @@ def test_goodbye_resource_suspend_waits_for_cat_transition_and_uses_token_snapsh
     assert "goodbyeResourceSuspendToken += 1;" in restore_suspend
     assert restore_suspend.index("resumeModelRenderingFromGoodbye(snapshot);") < restore_suspend.index("publishGoodbyeResourceState(null, reason || 'goodbye-resource-restoring');")
     assert "restoreWindow: true" in restore_suspend
+    assert "window.AgentHUD.showAgentTaskHUD();" in restore_suspend
+    assert "window.checkAndToggleTaskHUD();" in restore_suspend
+    assert "window.nekoAgentHud.show();" not in restore_suspend
 
 
 @pytest.mark.unit
@@ -294,3 +298,14 @@ def test_goodbye_agent_hud_and_websocket_ui_timers_are_suppressed_without_stoppi
     assert "stop_plugin" not in hud_source
     assert "stop_plugin" not in websocket_source
     assert "stop_plugin" not in metrics_source
+
+
+@pytest.mark.unit
+def test_standalone_agent_hud_page_keeps_root_background_transparent():
+    template = _read(AGENTHUD_TEMPLATE_PATH)
+
+    assert '<html lang="en" class="agent-hud-standalone-page">' in template
+    assert "html.agent-hud-standalone-page," in template
+    assert "body.agent-hud-standalone-page:not(.lanlan-pet-mode)" in template
+    assert "background: transparent !important;" in template
+    assert "background: #1a1a2e;" not in template
