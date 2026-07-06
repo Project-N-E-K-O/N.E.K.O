@@ -2345,6 +2345,22 @@ VECTORS_MODEL_PROFILE_ID = "local-text-retrieval-v1"  # anonymous profile id + l
 VECTORS_WARMUP_DELAY_SECONDS = 30
 
 
+# ── Local voice turn detection: Silero VAD + Smart Turn v3 ───────────
+# Default off because this changes turn-boundary behavior. When enabled, the
+# realtime client loads the local ONNX models first and only then disables
+# provider-side VAD by switching to MANUAL. Any missing asset/runtime issue
+# falls back to server VAD.
+VAD_LOCAL_TURN_ENABLED = _read_bool_env("VAD_LOCAL_TURN_ENABLED", False)
+VAD_SMART_TURN_ENABLED = _read_bool_env("VAD_SMART_TURN_ENABLED", True)
+VAD_MIN_RAM_GB = 2.0
+VAD_ONSET_PROB = 0.5
+VAD_OFFSET_PROB = 0.35
+VAD_SPEECH_MIN_MS = 200
+VAD_SILENCE_MS = 300
+SMART_TURN_THRESHOLD = 0.5
+VAD_HARD_COMMIT_SILENCE_MS = 2500
+
+
 # Provider 相关配置已统一迁移至 config.providers, 此处仅 re-export 保持向后兼容
 from config.providers import (  # noqa: E402, F401
     EXTRA_BODY_OPENAI,
@@ -2627,4 +2643,13 @@ __all__ = [
     'VECTORS_MIN_RAM_GB',
     'VECTORS_MODEL_PROFILE_ID',
     'VECTORS_WARMUP_DELAY_SECONDS',
+    'VAD_LOCAL_TURN_ENABLED',
+    'VAD_SMART_TURN_ENABLED',
+    'VAD_MIN_RAM_GB',
+    'VAD_ONSET_PROB',
+    'VAD_OFFSET_PROB',
+    'VAD_SPEECH_MIN_MS',
+    'VAD_SILENCE_MS',
+    'SMART_TURN_THRESHOLD',
+    'VAD_HARD_COMMIT_SILENCE_MS',
 ]

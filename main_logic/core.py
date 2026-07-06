@@ -76,6 +76,26 @@ from config import (
     HIDE_DIRTY_VOICE_TRANSCRIPTS,
     ANTI_REPEAT_EXEMPT_SOURCE_TAGS,
 )
+
+
+def _vad_local_turn_enabled() -> bool:
+    """Live-read the local turn detector master switch."""
+    try:
+        from config import VAD_LOCAL_TURN_ENABLED
+        return bool(VAD_LOCAL_TURN_ENABLED)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _vad_smart_turn_enabled() -> bool:
+    """Live-read whether Smart Turn semantic endpointing is enabled."""
+    try:
+        from config import VAD_SMART_TURN_ENABLED
+        return bool(VAD_SMART_TURN_ENABLED)
+    except Exception:  # noqa: BLE001
+        return True
+
+
 # FOCUS_MODE_ENABLED is read live with a function-local ``from config import
 # FOCUS_MODE_ENABLED`` at each gate (re-imported per call → picks up a runtime
 # toggle / test monkeypatch), consistent with how the SM/scorer read the other
@@ -6293,6 +6313,10 @@ class LLMSessionManager:
                         on_tool_call=self._on_tool_call,
                         tool_definitions=_initial_tool_defs,
                         livestream_mode=self._is_livestream_active(),
+                        local_turn_detection=(await aload_global_conversation_settings()).get(
+                            'localTurnDetectionEnabled', _vad_local_turn_enabled()),
+                        smart_turn_enabled=(await aload_global_conversation_settings()).get(
+                            'smartTurnEnabled', _vad_smart_turn_enabled()),
                     )
                     # Apply user's noise reduction preference to the AudioProcessor
                     nr_enabled = (await aload_global_conversation_settings()).get('noiseReductionEnabled', True)
@@ -6781,6 +6805,10 @@ class LLMSessionManager:
                     on_tool_call=self._on_tool_call,
                     tool_definitions=_pending_tool_defs,
                     livestream_mode=self._is_livestream_active(),
+                    local_turn_detection=(await aload_global_conversation_settings()).get(
+                        'localTurnDetectionEnabled', _vad_local_turn_enabled()),
+                    smart_turn_enabled=(await aload_global_conversation_settings()).get(
+                        'smartTurnEnabled', _vad_smart_turn_enabled()),
                 )
                 # Apply user's noise reduction preference to the AudioProcessor
                 nr_enabled = (await aload_global_conversation_settings()).get('noiseReductionEnabled', True)

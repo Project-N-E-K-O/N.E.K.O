@@ -12,6 +12,12 @@ tests/test_inputs/
 *.log
 /logs/
 /data/
+!/data/
+/data/*
+!/data/vad_models/
+!/data/vad_models/silero_vad.onnx
+!/data/vad_models/smart_turn_v3.onnx
+!/data/vad_models/whisper_mel_80.npy
 debug_audio/*
 # Binaries (but keep our committed Windows tools listed explicitly if needed)
 *.exe
