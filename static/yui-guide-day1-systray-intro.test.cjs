@@ -40,6 +40,14 @@ function getMethodBlock(source, methodName) {
   assert.fail(`expected ${methodName} closing brace`);
 }
 
+function getCssRuleBlock(source, selector) {
+  const start = source.indexOf(`${selector} {`);
+  assert.notEqual(start, -1, `expected ${selector} CSS rule`);
+  const end = source.indexOf('\n}', start);
+  assert.notEqual(end, -1, `expected ${selector} CSS rule closing brace`);
+  return source.slice(start, end + 2);
+}
+
 test('Day1 tutorial end schedules the system tray intro for complete, skip and angry exit paths', () => {
   const onTutorialEndBlock = getMethodBlock(universalManagerSource, 'onTutorialEnd');
 
@@ -98,6 +106,10 @@ test('Day1 system tray intro modal combines the tray location and menu guidance'
   );
   assert.match(yuiGuideCssSource, /\.neko-day1-systray-location-copy/);
   assert.match(yuiGuideCssSource, /\.neko-day1-systray-menu-panel/);
+  assert.doesNotMatch(
+    getCssRuleBlock(yuiGuideCssSource, '.neko-day1-systray-media img'),
+    /box-shadow/
+  );
   assert.match(yuiGuideCssSource, /@media \(max-width: 620px\)/);
   assert.match(launcherSpecSource, /add_data\('static\/assets', 'static\/assets'\)/);
 
