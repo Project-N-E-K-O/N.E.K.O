@@ -39,7 +39,8 @@
         idle_chat_minimized_state: true,
         idle_chat_compact_surface_state: true,
         idle_cat1_compact_mirror_state: true,
-        idle_chat_pair_move_bounds: true
+        idle_chat_pair_move_bounds: true,
+        idle_cat1_play_yarn_visibility: true
     };
     var _lastCrossWindowIdleActivityAt = 0;
     var yuiGuideTargetGeometryRegistry = null;

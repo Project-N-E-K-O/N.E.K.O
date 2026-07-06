@@ -330,6 +330,7 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                     icon: '⚙',
                     url: getPluginDashboardRedirectUrl,
                     windowName: 'neko_plugin_dashboard',
+                    cacheBustOnOpen: true,
                     forceReloadOnReuse: false
                 }
                 : {
@@ -339,6 +340,7 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                     icon: '📘',
                     url: '/api/agent/openclaw/guide',
                     windowName: 'neko_openclaw_guide',
+                    cacheBustOnOpen: true,
                     forceReloadOnReuse: true
                 };
             const existingActionButton = document.getElementById(`neko-sidepanel-action-${toggle.id}-${actionConfig.actionId}`);
@@ -405,7 +407,8 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                     ? actionConfig.url()
                     : actionConfig.url;
                 const absoluteUrl = new URL(rawUrl, document.baseURI || window.location.href).toString();
-                const targetUrl = actionConfig.forceReloadOnReuse
+                const shouldCacheBustOnOpen = actionConfig.cacheBustOnOpen !== false;
+                const targetUrl = shouldCacheBustOnOpen
                     ? appendCacheBuster(absoluteUrl)
                     : absoluteUrl;
                 const existingWindow = window._openedWindows && window._openedWindows[actionConfig.windowName];
