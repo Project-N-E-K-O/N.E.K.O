@@ -85,6 +85,7 @@ test('Day1 system tray intro modal combines the tray location and menu guidance'
   assert.match(universalManagerSource, /tutorial\.systray\.hotkey/);
   assert.match(universalManagerSource, /tutorial\.systray\.exit/);
   assert.match(universalManagerSource, /\/static\/assets\/tutorial\/systray\/stray_intro\.png/);
+  assert.doesNotMatch(universalManagerSource, /neko菜单面板/);
   assert.doesNotMatch(universalManagerSource, /\/static\/icons\/be75ec4fbd08bf74adfeb2c19e323b3b\.png/);
   assert.doesNotMatch(universalManagerSource, /\/static\/icons\/489d10e622b89904a6441a3df869eff7\.png/);
   assert.match(universalManagerSource, /neko-day1-systray-intro-modal/);
@@ -127,7 +128,7 @@ test('Day1 system tray intro modal combines the tray location and menu guidance'
   assert.equal(zhCn.tutorial.systray.location.title, '📍 托盘图标位置');
   assert.equal(
     zhCn.tutorial.systray.location.desc,
-    'N.E.K.O 的图标会出现在屏幕右下角的系统托盘里，点击一下就能找到它。鼠标右击就能打开neko菜单面板啦。'
+    'N.E.K.O 的图标会出现在屏幕右下角的系统托盘里，点击一下就能找到它。'
   );
   assert.equal(zhCn.tutorial.systray.location.alt, '系统托盘位置示意图');
   assert.equal(zhCn.tutorial.systray.menu.title, '📋 托盘菜单');
@@ -138,5 +139,7 @@ test('Day1 system tray intro modal combines the tray location and menu guidance'
     const locale = JSON.parse(source);
     assert.equal(typeof locale.tutorial.systray.location.desc, 'string', `${code} systray location desc`);
     assert.ok(locale.tutorial.systray.location.desc.trim(), `${code} systray location desc should not be empty`);
+    assert.doesNotMatch(locale.tutorial.systray.location.desc, /right-click|clic derecho|右クリック|오른쪽 버튼|botão direito|правой кнопкой|鼠标右击|滑鼠右鍵/i);
+    assert.doesNotMatch(locale.tutorial.systray.location.desc, /menu panel|panel del menú|メニューパネル|메뉴 패널|painel do menu|панель меню|菜单面板|選單面板/i);
   }
 });
