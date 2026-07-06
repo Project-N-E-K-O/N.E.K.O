@@ -57,9 +57,16 @@ def _validate_market_origin(origin: str) -> str:
     if parsed.path not in ("", "/") or parsed.params or parsed.query or parsed.fragment:
         raise ValueError(f"NEKO_MARKET_ORIGINS entries must be origins only: {origin!r}")
     hostname = (parsed.hostname or "").lower()
-    if parsed.scheme == "http" and hostname not in {"localhost", "127.0.0.1", "::1"}:
+    http_allowed_hosts = {
+        "localhost",
+        "127.0.0.1",
+        "::1",
+        "market.project-neko.cn",
+        "marketplace.project-neko.cn",
+    }
+    if parsed.scheme == "http" and hostname not in http_allowed_hosts:
         raise ValueError(
-            "NEKO_MARKET_ORIGINS only allows http for localhost; "
+            "NEKO_MARKET_ORIGINS only allows http for localhost or official Project N.E.K.O Market hosts; "
             f"use https for trusted remote origins: {origin!r}"
         )
     return f"{parsed.scheme}://{parsed.netloc}"
@@ -242,9 +249,9 @@ PROCESS_TERMINATE_TIMEOUT = _get_float_env("NEKO_PROCESS_TERMINATE_TIMEOUT", 0.5
 # ========== 插件市场配置 ==========
 
 # Auth 平台 URL。桌面端 OAuth 登录只对接 Auth/Hydra，不再走 Market。
-# Env: NEKO_AUTH_URL, default="http://localhost:4444"（本地 Hydra public）
+# Env: NEKO_AUTH_URL, default="https://auth.project-neko.cn"
 NEKO_AUTH_URL = _validate_http_url(
-    os.getenv("NEKO_AUTH_URL", "http://localhost:4444"),
+    os.getenv("NEKO_AUTH_URL", "https://auth.project-neko.cn"),
     name="NEKO_AUTH_URL",
     allow_empty=True,
 )
@@ -254,10 +261,13 @@ NEKO_AUTH_URL = _validate_http_url(
 NEKO_AUTH_CLIENT_ID = os.getenv("NEKO_AUTH_CLIENT_ID", "neko-desktop").strip() or "neko-desktop"
 
 # 插件市场 API URL。配置后插件管理面板会显示"插件市场"入口。
-# Env: NEKO_MARKET_API_URL, default="http://localhost:8000"（本地开发默认值）
-# 兼容旧 Env: NEKO_MARKET_URL；生产应优先使用 NEKO_MARKET_API_URL。
+# Env: NEKO_MARKET_API_URL, default="http://market.project-neko.cn"
+# 兼容旧 Env: NEKO_MARKET_URL；本地开发可用环境变量覆盖。
 MARKET_API_URL = _validate_http_url(
-    os.getenv("NEKO_MARKET_API_URL", os.getenv("NEKO_MARKET_URL", "http://localhost:8000")),
+    os.getenv(
+        "NEKO_MARKET_API_URL",
+        os.getenv("NEKO_MARKET_URL", "http://market.project-neko.cn"),
+    ),
     name="NEKO_MARKET_API_URL",
     allow_empty=True,
 )
@@ -283,11 +293,17 @@ else:
 
 # 允许的 Market CORS 来源（逗号分隔）。
 # 用于允许 Market 前端跨域调用本地 /market/* 端点。
-# Env: NEKO_MARKET_ORIGINS, default="" (空则仅允许 localhost)
+# Env: NEKO_MARKET_ORIGINS, default=Project N.E.K.O Market public origins
 # 此配置会影响 CORS 安全策略，仅应配置受信任的 Market 前端域名。
+_default_market_origins = (
+    "http://market.project-neko.cn,"
+    "https://market.project-neko.cn,"
+    "http://marketplace.project-neko.cn,"
+    "https://marketplace.project-neko.cn"
+)
 MARKET_ORIGINS = [
     _validate_market_origin(o)
-    for o in os.getenv("NEKO_MARKET_ORIGINS", "").split(",")
+    for o in os.getenv("NEKO_MARKET_ORIGINS", _default_market_origins).split(",")
     if o.strip()
 ]
 
