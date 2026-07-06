@@ -163,7 +163,7 @@ export const usePluginStore = defineStore('plugin', () => {
     }
 
     await fetchPlugins(true)
-    registrySynced.value = true
+    registrySynced.value = registryRefreshed
     return {
       registryRefreshed,
       warningMessage,

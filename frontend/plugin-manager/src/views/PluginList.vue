@@ -449,6 +449,7 @@ const {
 const loading = computed(() => pluginStore.loading)
 const showMetrics = ref(false)
 let metricsRefreshTimer: number | null = null
+let initialLoadPromise: Promise<void> | null = null
 
 // Show-source-detail mirrors the Metrics toggle pattern. Turning it on
 // also kicks off a best-effort fetch of the Market's latest versions so
@@ -564,12 +565,24 @@ async function handleRefresh() {
 }
 
 async function handleInitialLoad() {
+  if (initialLoadPromise) {
+    return initialLoadPromise
+  }
+  initialLoadPromise = runInitialLoad()
+  try {
+    await initialLoadPromise
+  } finally {
+    initialLoadPromise = null
+  }
+}
+
+async function runInitialLoad() {
   let warningMessage = ''
   try {
     if (!pluginStore.registrySynced) {
       const syncResult = await pluginStore.syncRegistryAndFetch()
       warningMessage = syncResult.warningMessage || ''
-    } else if (!pluginStore.pluginsLoaded) {
+    } else {
       await pluginStore.fetchPlugins()
     }
     await pluginStore.fetchPluginStatus()
@@ -579,6 +592,15 @@ async function handleInitialLoad() {
   if (warningMessage) {
     ElMessage.warning(warningMessage)
   }
+}
+
+function handlePluginDashboardReuseMessage(event: MessageEvent) {
+  if (event.origin !== window.location.origin) return
+  const data = event.data
+  if (!data || data.type !== 'neko-plugin-dashboard-reuse' || data.action !== 'refresh-plugin-list') return
+  handleInitialLoad().catch((error) => {
+    console.warn('Failed to refresh plugin data after dashboard reuse:', error)
+  })
 }
 
 async function toggleMetrics() {
@@ -1082,11 +1104,13 @@ watch(packagePanelVisible, (visible) => {
 
 onMounted(async () => {
   window.addEventListener(TUTORIAL_ACTION_EVENT, handleTutorialAction)
+  window.addEventListener('message', handlePluginDashboardReuseMessage)
   await Promise.all([loadMarketEntry(), handleInitialLoad()])
 })
 
 onUnmounted(() => {
   window.removeEventListener(TUTORIAL_ACTION_EVENT, handleTutorialAction)
+  window.removeEventListener('message', handlePluginDashboardReuseMessage)
   closePluginContextMenu()
   closeDangerDialog()
   stopMetricsAutoRefresh()
