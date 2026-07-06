@@ -29,6 +29,8 @@ export const usePluginStore = defineStore('plugin', () => {
   const selectedPluginId = ref<string | null>(null)
   const loading = ref(false)
   const error = ref<string | null>(null)
+  const pluginsLoaded = ref(false)
+  const registrySynced = ref(false)
   
   // 防止请求堆积：正在进行的请求
   let pendingFetchPlugins: Promise<void> | null = null
@@ -115,6 +117,7 @@ export const usePluginStore = defineStore('plugin', () => {
         // 忽略过期响应，防止旧数据覆盖新数据
         if (seq !== fetchPluginsSeq) return
         plugins.value = response.plugins || []
+        pluginsLoaded.value = true
       } catch (err: any) {
         if (seq !== fetchPluginsSeq) return
         error.value = err.message || '获取插件列表失败'
@@ -160,6 +163,7 @@ export const usePluginStore = defineStore('plugin', () => {
     }
 
     await fetchPlugins(true)
+    registrySynced.value = true
     return {
       registryRefreshed,
       warningMessage,
@@ -278,6 +282,8 @@ export const usePluginStore = defineStore('plugin', () => {
     pluginsWithStatus,
     normalPlugins,
     extensions,
+    pluginsLoaded,
+    registrySynced,
     loading,
     error,
     // 操作

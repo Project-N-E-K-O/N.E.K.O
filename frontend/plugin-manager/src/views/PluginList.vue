@@ -563,6 +563,24 @@ async function handleRefresh() {
   }
 }
 
+async function handleInitialLoad() {
+  let warningMessage = ''
+  try {
+    if (!pluginStore.registrySynced) {
+      const syncResult = await pluginStore.syncRegistryAndFetch()
+      warningMessage = syncResult.warningMessage || ''
+    } else if (!pluginStore.pluginsLoaded) {
+      await pluginStore.fetchPlugins()
+    }
+    await pluginStore.fetchPluginStatus()
+  } catch (error) {
+    console.warn('Failed to load plugin data:', error)
+  }
+  if (warningMessage) {
+    ElMessage.warning(warningMessage)
+  }
+}
+
 async function toggleMetrics() {
   if (!showMetrics.value) {
     showMetrics.value = true
@@ -1064,7 +1082,7 @@ watch(packagePanelVisible, (visible) => {
 
 onMounted(async () => {
   window.addEventListener(TUTORIAL_ACTION_EVENT, handleTutorialAction)
-  await Promise.all([loadMarketEntry(), handleRefresh()])
+  await Promise.all([loadMarketEntry(), handleInitialLoad()])
 })
 
 onUnmounted(() => {

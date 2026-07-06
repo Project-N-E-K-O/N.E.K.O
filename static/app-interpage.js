@@ -33,6 +33,14 @@
     // =====================================================================
     var _processedMsgKeys = {};
     var CROSS_WINDOW_IDLE_ACTIVITY_MIN_INTERVAL_MS = 250;
+    var BROADCAST_CHANNEL_QUIET_ACTIONS = {
+        idle_activity: true,
+        idle_return_ball_state: true,
+        idle_chat_minimized_state: true,
+        idle_chat_compact_surface_state: true,
+        idle_cat1_compact_mirror_state: true,
+        idle_chat_pair_move_bounds: true
+    };
     var _lastCrossWindowIdleActivityAt = 0;
     var yuiGuideTargetGeometryRegistry = null;
     var yuiGuideBridgeCommandBus = null;
@@ -154,6 +162,13 @@
         _processedMsgKeys[key] = true;
         setTimeout(function () { delete _processedMsgKeys[key]; }, 5000);
         return false;
+    }
+
+    function shouldLogBroadcastChannelMessage(action) {
+        if (window.NEKO_DEBUG_BROADCAST_CHANNEL === true) {
+            return true;
+        }
+        return !Object.prototype.hasOwnProperty.call(BROADCAST_CHANNEL_QUIET_ACTIONS, action);
     }
 
     function shouldBypassYuiGuideMessageDedup(action, message) {
@@ -3145,7 +3160,9 @@
                     !shouldBypassYuiGuideMessageDedup(message.action, message)
                     && isDuplicateMessage(message.action, message.timestamp)
                 ) {
-                    console.log('[BroadcastChannel] 跳过重复消息:', message.action);
+                    if (shouldLogBroadcastChannelMessage(message.action)) {
+                        console.log('[BroadcastChannel] 跳过重复消息:', message.action);
+                    }
                     return;
                 }
 
@@ -3158,7 +3175,9 @@
                     return;
                 }
 
-                console.log('[BroadcastChannel] 收到消息:', event.data.action);
+                if (shouldLogBroadcastChannelMessage(message.action)) {
+                    console.log('[BroadcastChannel] 收到消息:', message.action);
+                }
 
                 switch (event.data.action) {
                     case 'reload_model':

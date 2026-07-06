@@ -330,7 +330,7 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                     icon: '⚙',
                     url: getPluginDashboardRedirectUrl,
                     windowName: 'neko_plugin_dashboard',
-                    forceReloadOnReuse: true
+                    forceReloadOnReuse: false
                 }
                 : {
                     actionId: 'openclaw-guide',
@@ -410,11 +410,13 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                     : absoluteUrl;
                 const existingWindow = window._openedWindows && window._openedWindows[actionConfig.windowName];
                 let openedWindow = null;
-                if (actionConfig.forceReloadOnReuse && existingWindow && !existingWindow.closed) {
-                    try {
-                        existingWindow.location.replace(targetUrl);
-                    } catch (_) {
-                        existingWindow.location.href = targetUrl;
+                if (existingWindow && !existingWindow.closed) {
+                    if (actionConfig.forceReloadOnReuse) {
+                        try {
+                            existingWindow.location.replace(targetUrl);
+                        } catch (_) {
+                            existingWindow.location.href = targetUrl;
+                        }
                     }
                     if (typeof window.requestOpenedWindowRestore === 'function') {
                         window.requestOpenedWindowRestore(existingWindow);
