@@ -307,7 +307,7 @@ export function usePluginListContextActions() {
       }
       case 'delete':
         await deletePlugin(plugin.id)
-        await pluginStore.fetchPlugins(true)
+        await pluginStore.syncRegistryAndFetch()
         await pluginStore.fetchPluginStatus()
         ElMessage.success(t('messages.pluginDeleted'))
         return

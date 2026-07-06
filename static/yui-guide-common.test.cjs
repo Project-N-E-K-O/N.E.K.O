@@ -2732,7 +2732,7 @@ test('external chat ignores stale guide commands after lifecycle ended', () => {
         1
     )[0];
     const broadcastStaleGuardBlock = appInterpageSource.split('nekoBroadcastChannel.onmessage = async function (event) {')[1].split(
-        '                console.log(\'[BroadcastChannel] 收到消息:\', event.data.action);',
+        '                switch (event.data.action) {',
         1
     )[0];
 
