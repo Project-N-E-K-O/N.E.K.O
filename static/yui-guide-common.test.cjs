@@ -662,6 +662,7 @@ test('target geometry registry and chat window adapter expose phase two boundari
     const capsule = registry.resolve('chat-capsule-input');
     assert.equal(capsule.externalKind, 'capsule-input');
     assert.equal(capsule.fallbackGroup, 'chat-input');
+    assert.ok(capsule.localSelectors.length > 0, 'localSelectors must be non-empty');
     assert.ok(capsule.localSelectors[0].includes('capsuleBody'));
     assert.ok(capsule.localSelectors.some((selector) => selector.includes('capsuleBody')));
     assert.equal(registry.getExternalKind('chat-galgame'), 'galgame');
@@ -2674,7 +2675,8 @@ test('PC global overlay cleanup notifies external chat windows to stop overlay r
     const lifecycleMessageBlock = clearOverlayBlock.split('const lifecycleEndedMessage = {')[1].split('};', 1)[0];
     assert.match(lifecycleMessageBlock, /tutorialRunId:\s*tutorialRunId/);
     assert.match(appInterpageSource, /if \(message\.tutorialRunId && message\.action !== 'yui_guide_tutorial_lifecycle_ended'\) \{/);
-    assert.match(appInterpageSource, /var bounds = metrics\.contentBounds \|\| metrics\.bounds \|\| \{ x: 0, y: 0 \};/);
+    assert.match(appInterpageSource, /function getYuiGuideScreenCoordinateBounds\(metrics\) \{/);
+    assert.match(appInterpageSource, /return metrics && \(metrics\.bounds \|\| metrics\.contentBounds\) \|\| \{ x: 0, y: 0 \};/);
     assert.match(externalCleanupBlock, /yuiGuidePcOverlayActive = false;/);
     assert.match(externalCleanupBlock, /yuiGuidePcOverlayReady = false;/);
     assert.match(externalCleanupBlock, /var endedRunId = typeof tutorialRunId === 'string' && tutorialRunId/);

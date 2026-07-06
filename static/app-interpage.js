@@ -4604,10 +4604,7 @@
     }
 
     function shouldAlignYuiGuideChatSpotlightToCapsuleText(kind, variant) {
-        if (kind === 'input' && variant === 'plain-capsule') {
-            return true;
-        }
-        return false;
+        return kind === 'input' && variant === 'plain-capsule';
     }
 
     var YUI_GUIDE_CHAT_CAPSULE_TEXT_ALIGNMENT_RATIO = 0.6;
