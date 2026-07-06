@@ -197,14 +197,20 @@
         }
 
         shouldManageCurrentPage() {
-            // Honor the same mobile bailout as the homepage tutorial: at mobile
-            // widths initUniversalTutorialManager() deliberately disables tutorials
-            // to avoid masks / interaction takeovers, so page tutorials must not
-            // re-enable the Driver overlay there. Gating here covers every start
-            // path (auto-init, reset/manual intent, model-manager mode listener),
-            // since checkAndStartTutorial() and startTutorial() both funnel through it.
-            if (window.innerWidth <= 768) return false;
-            return SUPPORTED_PAGES.includes(this.currentPage);
+            if (!SUPPORTED_PAGES.includes(this.currentPage)) return false;
+
+            // Honor the same mobile bailout as the homepage tutorial, but keep
+            // desktop popup pages usable. Voice clone is intentionally opened in
+            // a 700px desktop popup, which otherwise looks like mobile width here.
+            if (window.innerWidth <= 768 && !this.shouldAllowCompactDesktopTutorial()) return false;
+            return true;
+        }
+
+        shouldAllowCompactDesktopTutorial() {
+            if (this.currentPage !== 'voice_clone') return false;
+            const viewportWidth = Number(window.innerWidth || 0);
+            const screenWidth = Number(window.screen && window.screen.width || 0);
+            return viewportWidth >= 640 && screenWidth > 768;
         }
 
         waitForDriver() {
@@ -653,14 +659,14 @@
         getVoiceCloneSteps() {
             return [
                 {
-                    element: '#provider-notice, .alibaba-api-notice',
+                    element: '#provider-notice, .alibaba-api-notice, #voiceProvider-dropdown-trigger, #voiceProvider',
                     popover: {
                         title: this.t('tutorial.voice_clone.step1.title', '重要提示'),
                         description: this.t('tutorial.voice_clone.step1.desc', '语音克隆功能需要对应的 API 或本地语音服务，请先确认 API 设置可用。')
                     }
                 },
                 {
-                    element: '#refLanguage',
+                    element: '#refLanguage-dropdown-trigger, #refLanguage',
                     popover: {
                         title: this.t('tutorial.voice_clone.step2.title', '选择参考音频语言'),
                         description: this.t('tutorial.voice_clone.step2.desc', '选择您上传的音频文件的语言。这帮助系统更准确地识别和克隆声音特征。')

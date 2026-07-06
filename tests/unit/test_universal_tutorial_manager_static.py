@@ -165,7 +165,7 @@ def test_non_home_page_tutorials_are_restored_in_separate_driver_runtime():
     assert "window.resetPageTutorialStorage = resetPageTutorialStorage;" in page_source
     assert "if (path === '/' || path === '/index.html' || path === '/chat')" in page_source
     assert "return 'home';" in page_source
-    assert "return SUPPORTED_PAGES.includes(this.currentPage);" in page_source
+    assert "if (!SUPPORTED_PAGES.includes(this.currentPage)) return false;" in page_source
     assert "const DriverClass = window.driver;" in page_source
     assert "this.driver = new DriverClass({" in page_source
     assert "getModelManagerSteps()" in page_source
@@ -225,8 +225,35 @@ def test_page_tutorial_manager_honors_mobile_viewport_bailout():
     # and startTutorial() funnel through this method.
     assert "window.innerWidth <= 768" in manage_block
     assert manage_block.index("window.innerWidth <= 768") < manage_block.index(
-        "return SUPPORTED_PAGES.includes(this.currentPage);"
+        "return true;"
     )
+    assert "!this.shouldAllowCompactDesktopTutorial()" in manage_block
+
+
+def test_page_tutorial_manager_allows_voice_clone_desktop_popup_width():
+    page_source = _read_page_manager()
+
+    compact_block = page_source.split("        shouldAllowCompactDesktopTutorial() {", 1)[1].split(
+        "        }",
+        1,
+    )[0]
+
+    assert "this.currentPage !== 'voice_clone'" in compact_block
+    assert "viewportWidth >= 640" in compact_block
+    assert "screenWidth > 768" in compact_block
+
+
+def test_voice_clone_tutorial_targets_visible_dropdown_triggers():
+    page_source = _read_page_manager()
+
+    voice_clone_block = page_source.split("        getVoiceCloneSteps() {", 1)[1].split(
+        "        getSteamWorkshopSteps() {",
+        1,
+    )[0]
+
+    assert "#voiceProvider-dropdown-trigger" in voice_clone_block
+    assert "#refLanguage-dropdown-trigger" in voice_clone_block
+    assert voice_clone_block.index("#refLanguage-dropdown-trigger") < voice_clone_block.index("#refLanguage'")
 
 
 def test_page_tutorial_skip_button_restores_pointer_events_inside_fixed_portal():
