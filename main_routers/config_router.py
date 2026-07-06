@@ -41,7 +41,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from .shared_state import ensure_steamworks, get_config_manager, get_session_manager, get_initialize_character_data
-from .characters_router import get_current_live2d_model
+from .characters_router import get_current_live2d_model, send_reload_page_notice
 from utils.file_utils import atomic_write_json_async, read_json_async
 from utils.preferences import aload_user_preferences, update_model_preferences, validate_model_preferences, move_model_to_top, aload_global_conversation_settings, save_global_conversation_settings, aload_ui_language_override, GLOBAL_CONVERSATION_KEY
 from utils.cloudsave_runtime import MaintenanceModeError
@@ -79,6 +79,52 @@ def _apply_noise_reduction_to_active_sessions(enabled: bool):
                 ap.set_enabled(enabled)
     except Exception as e:
         logger.warning(f"Failed to apply noise reduction to active sessions: {e}")
+
+
+def _apply_smart_turn_to_active_sessions(enabled: bool):
+    """Hot-switch the Smart Turn semantic endpointing sub-switch."""
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+    try:
+        session_manager = get_session_manager()
+        for _name, mgr in session_manager.items():
+            if not mgr.is_active or mgr.session is None:
+                continue
+            if not isinstance(mgr.session, OmniRealtimeClient):
+                continue
+            mgr.session._smart_turn_enabled = bool(enabled)
+            detector = getattr(mgr.session, '_turn_detector', None)
+            if detector is not None:
+                detector.smart_turn_enabled = bool(enabled)
+                logger.info("🔀 会话 %s Smart Turn 断句已热切换 → %s", _name, enabled)
+    except Exception as e:
+        logger.warning(f"Failed to apply smart turn toggle to active sessions: {e}")
+
+
+async def _restart_active_voice_sessions_for_local_turn(enabled: bool):
+    """Restart active realtime sessions when local turn detection changes."""
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+    try:
+        session_manager = get_session_manager()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"本地轮次重连：获取 session_manager 失败: {e}")
+        return
+
+    for _name, mgr in session_manager.items():
+        try:
+            if not mgr.is_active or mgr.session is None:
+                continue
+            if not isinstance(mgr.session, OmniRealtimeClient):
+                continue
+            if bool(getattr(mgr.session, '_local_turn_active', False)) == bool(enabled):
+                continue
+            await send_reload_page_notice(mgr, "轮次检测设置已更新，页面即将刷新")
+            await mgr.end_session(by_server=True)
+            reset_circuit = getattr(mgr, "reset_session_start_circuit", None)
+            if callable(reset_circuit):
+                reset_circuit()
+            logger.info(f"✅ 本地轮次设置变更，已重连语音会话 {_name}")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"⚠️ 本地轮次重连会话 {_name} 失败: {e}")
 
 
 # --- proxy mode helpers ---
@@ -521,6 +567,12 @@ async def save_conversation_settings(request: Request):
 
         if 'noiseReductionEnabled' in data:
             _apply_noise_reduction_to_active_sessions(data['noiseReductionEnabled'])
+
+        if isinstance(data.get('localTurnDetectionEnabled'), bool):
+            await _restart_active_voice_sessions_for_local_turn(data['localTurnDetectionEnabled'])
+
+        if isinstance(data.get('smartTurnEnabled'), bool):
+            _apply_smart_turn_to_active_sessions(data['smartTurnEnabled'])
 
         return {"success": True, "message": "对话设置已保存"}
     except MaintenanceModeError:

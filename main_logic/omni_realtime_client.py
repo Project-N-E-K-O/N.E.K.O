@@ -15,6 +15,7 @@
 
 
 import asyncio
+import os
 import uuid
 import websockets
 import json
@@ -43,6 +44,7 @@ from config import (
 )
 from utils.config_manager import get_config_manager
 from utils.audio_processor import AudioProcessor
+from utils.vad_model import TurnSignal
 from utils.file_utils import atomic_write_json
 from utils.frontend_utils import calculate_text_similarity
 from utils.gemini_tts_voices import normalize_gemini_tts_voice
@@ -265,6 +267,8 @@ class OmniRealtimeClient:
         on_tool_call: Optional[OnToolCallCallback] = None,
         tool_definitions: Optional[List[ToolDefinition]] = None,
         livestream_mode: bool = False,
+        local_turn_detection: bool = False,
+        smart_turn_enabled: bool = True,
     ):
         self.base_url = base_url
         self.api_key = api_key
@@ -534,6 +538,116 @@ class OmniRealtimeClient:
         # succeeded — proactive handler and wrongly re-enqueue its cb.
         self._proactive_inject_awaiting_outcome = False
 
+        # ── Local turn detection (Silero VAD + Smart Turn v3) ──────────
+        # Opt-in only. The detector is constructed here but ONNX sessions are
+        # loaded in connect() off-thread; only after Silero loads do we switch
+        # provider turn_detection to MANUAL. Missing assets / low RAM / runtime
+        # errors therefore degrade to the existing server VAD path.
+        self._local_turn_requested = bool(local_turn_detection)
+        self._smart_turn_enabled = bool(smart_turn_enabled)
+        self._turn_detector = None
+        self._local_turn_active = False
+        self._turn_eval_inflight = False
+        if self._local_turn_requested:
+            try:
+                self._turn_detector = self._build_turn_detector()
+            except Exception as e:  # noqa: BLE001
+                logger.warning("⚠️ local turn detector build failed (%s); staying on server VAD", e)
+                self._turn_detector = None
+                self._local_turn_requested = False
+
+    def _build_turn_detector(self):
+        """Construct, but do not load, the local turn detector from config."""
+        from utils.vad_model import build_local_turn_detector
+        try:
+            from config import (
+                VAD_MIN_RAM_GB,
+                VAD_ONSET_PROB,
+                VAD_OFFSET_PROB,
+                VAD_SPEECH_MIN_MS,
+                VAD_SILENCE_MS,
+                SMART_TURN_THRESHOLD,
+                VAD_HARD_COMMIT_SILENCE_MS,
+            )
+        except ImportError:
+            VAD_MIN_RAM_GB, VAD_ONSET_PROB, VAD_OFFSET_PROB = 2.0, 0.5, 0.35
+            VAD_SPEECH_MIN_MS, VAD_SILENCE_MS = 200, 1200
+            SMART_TURN_THRESHOLD, VAD_HARD_COMMIT_SILENCE_MS = 0.65, 2500
+
+        app_docs_model_dir = None
+        try:
+            app_docs_model_dir = os.path.join(str(_config_manager.app_docs_dir), "vad_models")
+        except Exception:  # noqa: BLE001
+            pass
+
+        return build_local_turn_detector(
+            app_docs_model_dir=app_docs_model_dir,
+            enabled=True,
+            min_ram_gb=VAD_MIN_RAM_GB,
+            onset_prob=VAD_ONSET_PROB,
+            offset_prob=VAD_OFFSET_PROB,
+            speech_min_ms=VAD_SPEECH_MIN_MS,
+            silence_ms=VAD_SILENCE_MS,
+            smart_turn_threshold=SMART_TURN_THRESHOLD,
+            hard_commit_silence_ms=VAD_HARD_COMMIT_SILENCE_MS,
+            smart_turn_enabled=self._smart_turn_enabled,
+            smart_turn_threads=max(1, (os.cpu_count() or 2) // 2),
+        )
+
+    async def _activate_local_turn_if_available(self) -> None:
+        """Load local turn models off-thread; on success switch to MANUAL."""
+        if not self._local_turn_requested or self._turn_detector is None:
+            return
+
+        det = self._turn_detector
+        ok_silero, ok_smart = await asyncio.gather(
+            asyncio.to_thread(det.silero.load),
+            asyncio.to_thread(det.smart_turn.load),
+        )
+        if ok_silero:
+            self.turn_detection_mode = TurnDetectionMode.MANUAL
+            self._local_turn_active = True
+            if not ok_smart:
+                det.smart_turn_enabled = False
+            det.reset()
+            mode = "Silero + Smart Turn v3" if det.smart_turn_enabled else "纯 Silero VAD（Smart Turn 关）"
+            logger.info("✅ 本地轮次检测已启用 (MANUAL): %s", mode)
+        else:
+            self._local_turn_active = False
+            logger.warning(
+                "⚠️ 本地轮次门控模型 Silero 不可用 (%s)，回退服务端 VAD",
+                det.silero.disable_reason(),
+            )
+
+    async def _evaluate_and_commit_turn(self, snapshot, activity_seq: int) -> None:
+        """Run Smart Turn off-loop and commit if no newer speech arrived."""
+        try:
+            det = self._turn_detector
+            if det is None:
+                return
+            loop = asyncio.get_running_loop()
+            probability = await loop.run_in_executor(None, det.smart_turn.predict_endpoint, snapshot)
+            complete = det.on_endpoint_result(probability)
+            logger.info(
+                "local turn Smart Turn result: probability=%s threshold=%.2f complete=%s activity_seq=%s current_seq=%s",
+                "none" if probability is None else f"{probability:.3f}",
+                getattr(det, "smart_turn_threshold", 0.0),
+                complete,
+                activity_seq,
+                getattr(det, "activity_seq", None),
+            )
+            if (
+                complete
+                and det.activity_seq == activity_seq
+                and not self._is_responding
+                and not self._fatal_error_occurred
+            ):
+                await self.signal_user_activity_end()
+        except Exception as e:  # noqa: BLE001
+            logger.error("local turn eval failed: %s", e)
+        finally:
+            self._turn_eval_inflight = False
+
     def _fire_task(self, coro):
         """Create a background task with GC protection."""
         task = asyncio.create_task(coro)
@@ -799,6 +913,10 @@ class OmniRealtimeClient:
         # new session's first tool calls look like a burst. Cleared before the
         # provider branch so it covers both Gemini and the WS providers.
         self._recent_tool_call_times = []
+
+        # Resolve local turn detection before the per-provider is_manual branch
+        # builds session config. On failure this leaves server VAD unchanged.
+        await self._activate_local_turn_if_available()
 
         # Gemini uses google-genai SDK, not raw WebSocket
         if self._is_gemini:
@@ -1370,9 +1488,30 @@ class OmniRealtimeClient:
         if self._proactive_injecting:
             return
 
+        # Local turn detection drive (16kHz user audio, MANUAL mode).
+        if self._local_turn_active and self._turn_detector is not None:
+            det = self._turn_detector
+            signal = det.feed(audio_chunk)
+            if not self._is_responding:
+                if signal is TurnSignal.CANDIDATE_END:
+                    if det.smart_turn_enabled:
+                        if not self._turn_eval_inflight:
+                            self._turn_eval_inflight = True
+                            snapshot = det.take_endpoint_audio()
+                            seq = det.activity_seq
+                            self._fire_task(self._evaluate_and_commit_turn(snapshot, seq))
+                    else:
+                        det.commit()
+                        await self.signal_user_activity_end()
+                elif signal is TurnSignal.FORCE_END:
+                    det.commit()
+                    await self.signal_user_activity_end()
+
         # 静音清 buffer：有 RNNoise 以 RNNoise 为准，否则 VAD + 连续本地静音（见 _should_clear_audio_buffer_on_silence）
         if self._should_clear_audio_buffer_on_silence(current_time, use_rnnoise_path):
             self._silence_reset_pending = False
+            if self._turn_detector is not None:
+                self._turn_detector.reset()
             await self.clear_audio_buffer()
 
         # Gemini uses different API (16kHz, no uplink resample needed)
