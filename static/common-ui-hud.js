@@ -507,9 +507,6 @@ window.AgentHUD.createAgentTaskHUD = function () {
         this._cleanupDragging = null;
     }
 
-    // 初始化显示器边界缓存
-    updateDisplayBounds();
-
     const hud = document.createElement('div');
     hud.id = 'agent-task-hud';
 
@@ -1807,14 +1804,8 @@ window.AgentHUD._setupDragging = function (hud) {
     window.addEventListener('pointercancel', cancelDragState, true);
 
     // 窗口大小变化时重新校准位置（多屏幕支持）
-    const handleResize = async () => {
+    const handleResize = () => {
         if (isDragging || touchDragging) return;
-
-        // 更新屏幕信息
-        const rect = hud.getBoundingClientRect();
-        const centerX = rect.left + rect.width / 2;
-        const centerY = rect.top + rect.height / 2;
-        await updateDisplayBounds(centerX, centerY);
 
         requestAnimationFrame(() => {
             const rect = hud.getBoundingClientRect();
