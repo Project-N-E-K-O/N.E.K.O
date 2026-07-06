@@ -1026,6 +1026,16 @@ def _market_token_expires_soon(token_data: dict[str, Any]) -> bool:
         return True
 
 
+def _market_token_is_expired(token_data: dict[str, Any]) -> bool:
+    expires_at = token_data.get("expires_at")
+    if expires_at is None:
+        return False
+    try:
+        return float(expires_at) <= time.time()
+    except (TypeError, ValueError):
+        return True
+
+
 def _oauth_token_provenance_matches(token_data: dict[str, Any]) -> bool:
     if token_data.get("auth_url") != _normalized_base_url(NEKO_AUTH_URL):
         return False
@@ -1111,7 +1121,11 @@ async def _ensure_valid_oauth_token() -> dict[str, Any] | None:
             refreshed = await _refresh_oauth_token(current)
         except HTTPException as exc:
             logger.info("Auth token refresh failed: {}", exc.detail)
-            _unlink_if_exists(_OAUTH_TOKEN_FILE)
+            if exc.status_code == 401:
+                _unlink_if_exists(_OAUTH_TOKEN_FILE)
+                return None
+            if not _market_token_is_expired(current):
+                return current
             return None
 
         _write_private_json(_OAUTH_TOKEN_FILE, refreshed)
@@ -1241,7 +1255,9 @@ async def _refresh_oauth_token(token_data: dict[str, Any]) -> dict[str, Any]:
             payload = res.json()
     except httpx.HTTPStatusError as exc:
         logger.warning("Auth refresh rejected: {}", exc.response.text)
-        raise HTTPException(status_code=401, detail="Auth refresh token 已失效") from exc
+        if exc.response.status_code in {400, 401, 403}:
+            raise HTTPException(status_code=401, detail="Auth refresh token 已失效") from exc
+        raise HTTPException(status_code=502, detail="无法连接 Auth OAuth 服务") from exc
     except httpx.HTTPError as exc:
         logger.warning("Auth refresh failed: {}", exc)
         raise HTTPException(status_code=502, detail="无法连接 Auth OAuth 服务") from exc
