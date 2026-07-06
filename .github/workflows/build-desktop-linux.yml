@@ -264,6 +264,9 @@ jobs:
           if [ -d "data/embedding_models" ]; then
             NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=data/embedding_models=data/embedding_models"
           fi
+          if [ -d "data/vad_models" ]; then
+            NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=data/vad_models=data/vad_models"
+          fi
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=static=static"
           # 应用内 OpenClaw 引导文档 + 图片，由 agent_router 经 /api/agent/openclaw/guide/* 提供；
           # 是纯数据目录，--include-package 不带，漏了引导页内容/图片打包后 404。
