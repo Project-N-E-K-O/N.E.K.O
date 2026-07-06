@@ -861,9 +861,11 @@ async def market_oauth_complete(
     token_payload = await _exchange_oauth_code(code, code_verifier, redirect_uri)
     user = await _fetch_market_user(token_payload.get("access_token"))
     if user is None:
+        _clear_oauth_session()
         raise HTTPException(status_code=401, detail="Market 未接受当前 Auth token")
     subject = _extract_subject(user)
     if not subject:
+        _clear_oauth_session()
         raise HTTPException(status_code=502, detail="Market 用户信息缺少 subject")
     expires_in = int(token_payload.get("expires_in") or 3600)
     now = time.time()
@@ -886,8 +888,7 @@ async def market_oauth_complete(
         "updated_at": now,
     }
     _write_private_json(_OAUTH_TOKEN_FILE, stored)
-    _unlink_if_exists(_OAUTH_PENDING_FILE)
-    _unlink_if_exists(_OAUTH_CALLBACK_FILE)
+    _clear_oauth_session()
 
     return MarketOAuthCompleteResponse(
         completed=True,
@@ -1174,6 +1175,11 @@ def _unlink_if_exists(path: Path) -> None:
         pass
     except OSError as exc:
         logger.warning("Failed to remove {}: {}", path, exc)
+
+
+def _clear_oauth_session() -> None:
+    _unlink_if_exists(_OAUTH_PENDING_FILE)
+    _unlink_if_exists(_OAUTH_CALLBACK_FILE)
 
 
 async def _exchange_oauth_code(

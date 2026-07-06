@@ -912,6 +912,68 @@ async def test_oauth_status_rejects_market_user_without_subject(
 
 
 @pytest.mark.asyncio
+async def test_oauth_complete_clears_session_when_market_rejects_token(
+    bridge_e2e_env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    monkeypatch.setattr(market_bridge_module, "NEKO_AUTH_URL", "https://auth.test")
+    monkeypatch.setattr(market_bridge_module, "MARKET_API_URL", "https://market.test")
+
+    async def exchange_oauth_code(
+        code: str,
+        code_verifier: str,
+        redirect_uri: str,
+    ) -> dict[str, Any]:
+        return {
+            "access_token": "complete-access-token",
+            "refresh_token": "complete-refresh-token",
+            "token_type": "bearer",
+            "scope": "openid email profile offline",
+            "expires_in": 3600,
+        }
+
+    async def fetch_market_user(access_token: Any) -> dict[str, Any] | None:
+        return None
+
+    monkeypatch.setattr(market_bridge_module, "_exchange_oauth_code", exchange_oauth_code)
+    monkeypatch.setattr(market_bridge_module, "_fetch_market_user", fetch_market_user)
+
+    pending_file: Path = bridge_e2e_env["oauth_pending_file"]
+    callback_file: Path = bridge_e2e_env["oauth_callback_file"]
+    token_file: Path = bridge_e2e_env["oauth_token_file"]
+    pending_file.write_text(
+        json.dumps(
+            {
+                "state": "state-1",
+                "code_verifier": "verifier-1",
+                "redirect_uri": "http://127.0.0.1:48916/market/oauth/callback",
+                "expires_at": time.time() + 60,
+            }
+        ),
+        encoding="utf-8",
+    )
+    callback_file.write_text(
+        json.dumps({"state": "state-1", "code": "code-1"}),
+        encoding="utf-8",
+    )
+
+    client: AsyncClient = bridge_e2e_env["client"]
+    token: str = bridge_e2e_env["token"]
+    resp = await client.post(
+        "/market/oauth/complete",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert resp.status_code == 401
+    assert resp.json()["detail"] == "Market 未接受当前 Auth token"
+    assert not pending_file.exists()
+    assert not callback_file.exists()
+    assert not token_file.exists()
+
+
+@pytest.mark.asyncio
 async def test_oauth_complete_rejects_market_user_without_subject(
     bridge_e2e_env: dict[str, Any],
     monkeypatch: pytest.MonkeyPatch,
@@ -968,6 +1030,8 @@ async def test_oauth_complete_rejects_market_user_without_subject(
 
     assert resp.status_code == 502
     assert resp.json()["detail"] == "Market 用户信息缺少 subject"
+    assert not pending_file.exists()
+    assert not callback_file.exists()
     assert not token_file.exists()
 
 
