@@ -63,7 +63,7 @@ export default {
     logoutSuccess: 'Вы вышли из Market',
     searchPlaceholder: 'Поиск плагинов...',
     notConfigured: 'Маркет не настроен',
-    configHint: 'Установите переменную окружения NEKO_MARKET_URL',
+    configHint: 'Установите переменную окружения NEKO_MARKET_API_URL',
     noResults: 'Плагины не найдены',
     loadFailed: 'Не удалось загрузить маркет плагинов. Повторите попытку.',
     retry: 'Повторить',

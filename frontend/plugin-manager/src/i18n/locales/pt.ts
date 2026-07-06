@@ -63,7 +63,7 @@ export default {
     logoutSuccess: 'Sessão do Market encerrada',
     searchPlaceholder: 'Buscar plugins...',
     notConfigured: 'Mercado não configurado',
-    configHint: 'Defina a variável de ambiente NEKO_MARKET_URL',
+    configHint: 'Defina a variável de ambiente NEKO_MARKET_API_URL',
     noResults: 'Nenhum plugin encontrado',
     loadFailed: 'Falha ao carregar o mercado de plugins. Tente novamente.',
     retry: 'Tentar novamente',

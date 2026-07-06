@@ -63,7 +63,7 @@ export default {
     logoutSuccess: 'Market からログアウトしました',
     searchPlaceholder: 'プラグインを検索...',
     notConfigured: 'プラグインマーケットが未設定',
-    configHint: '環境変数 NEKO_MARKET_URL を設定してください',
+    configHint: '環境変数 NEKO_MARKET_API_URL を設定してください',
     noResults: 'プラグインが見つかりません',
     loadFailed: 'プラグインマーケットの読み込みに失敗しました。再試行してください。',
     retry: '再試行',

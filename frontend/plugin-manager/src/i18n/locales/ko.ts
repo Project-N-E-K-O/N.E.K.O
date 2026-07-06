@@ -63,7 +63,7 @@ export default {
     logoutSuccess: 'Market에서 로그아웃했습니다',
     searchPlaceholder: '플러그인 검색...',
     notConfigured: '플러그인 마켓이 설정되지 않음',
-    configHint: '환경 변수 NEKO_MARKET_URL을 설정하세요',
+    configHint: '환경 변수 NEKO_MARKET_API_URL을 설정하세요',
     noResults: '플러그인을 찾을 수 없습니다',
     loadFailed: '플러그인 마켓을 불러오지 못했습니다. 다시 시도하세요.',
     retry: '다시 시도',

@@ -600,7 +600,8 @@ async def test_authenticated_market_install_reports_usage(
                 **kwargs,
             )
 
-    monkeypatch.setattr(market_bridge_module, "MARKET_URL", "https://market.test")
+    monkeypatch.setattr(market_bridge_module, "MARKET_API_URL", "https://market.test")
+    monkeypatch.setattr(market_bridge_module, "NEKO_AUTH_URL", "https://auth.test")
     monkeypatch.setattr(
         market_bridge_module.httpx,
         "AsyncClient",
@@ -613,7 +614,13 @@ async def test_authenticated_market_install_reports_usage(
             {
                 "access_token": "market-access-token",
                 "expires_at": time.time() + 3600,
-                "market_url": "https://market.test",
+                "auth_url": "https://auth.test",
+                "issuer": "https://auth.test/",
+                "subject": "test-subject",
+                "client_id": "neko-desktop",
+                "scope": "openid email profile offline",
+                "refresh_generation": 0,
+                "market_api_url": "https://market.test",
             }
         ),
         encoding="utf-8",
@@ -707,7 +714,7 @@ async def test_oauth_status_clears_expired_market_token(
     assert resp.status_code == 200
     body = resp.json()
     assert body["authenticated"] is False
-    assert body["expires_at"] == expired_at
+    assert body["expires_at"] is None
     assert not token_file.exists()
 
 

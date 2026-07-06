@@ -241,18 +241,33 @@ PROCESS_TERMINATE_TIMEOUT = _get_float_env("NEKO_PROCESS_TERMINATE_TIMEOUT", 0.5
 
 # ========== 插件市场配置 ==========
 
-# 插件市场 API URL。配置后插件管理面板会显示"插件市场"入口。
-# Env: NEKO_MARKET_URL, default="http://localhost:8000"（本地开发默认值）
-# 生产部署时通过环境变量覆盖为线上 Market 地址；设为空字符串则隐藏市场入口。
-MARKET_URL = _validate_http_url(
-    os.getenv("NEKO_MARKET_URL", "http://localhost:8000"),
-    name="NEKO_MARKET_URL",
+# Auth 平台 URL。桌面端 OAuth 登录只对接 Auth/Hydra，不再走 Market。
+# Env: NEKO_AUTH_URL, default="http://localhost:4444"（本地 Hydra public）
+NEKO_AUTH_URL = _validate_http_url(
+    os.getenv("NEKO_AUTH_URL", "http://localhost:4444"),
+    name="NEKO_AUTH_URL",
     allow_empty=True,
 )
 
+# 桌面端 OAuth public client id。必须是无 client secret 的 public client。
+# Env: NEKO_AUTH_CLIENT_ID, default="neko-desktop"
+NEKO_AUTH_CLIENT_ID = os.getenv("NEKO_AUTH_CLIENT_ID", "neko-desktop").strip() or "neko-desktop"
+
+# 插件市场 API URL。配置后插件管理面板会显示"插件市场"入口。
+# Env: NEKO_MARKET_API_URL, default="http://localhost:8000"（本地开发默认值）
+# 兼容旧 Env: NEKO_MARKET_URL；生产应优先使用 NEKO_MARKET_API_URL。
+MARKET_API_URL = _validate_http_url(
+    os.getenv("NEKO_MARKET_API_URL", os.getenv("NEKO_MARKET_URL", "http://localhost:8000")),
+    name="NEKO_MARKET_API_URL",
+    allow_empty=True,
+)
+
+# Backward-compatible alias for older imports. Do not use this as an auth URL.
+MARKET_URL = MARKET_API_URL
+
 # 插件市场 Web URL。插件管理器打开详情页时使用这个地址，而 API 请求仍走
-# MARKET_URL + /api/v1。本地开发默认前端 Vite 端口 5173；生产未显式配置时
-# 默认与 MARKET_URL 同源。
+# MARKET_API_URL + /api/v1。本地开发默认前端 Vite 端口 5173；生产未显式配置时
+# 默认与 MARKET_API_URL 同源。
 # Env: NEKO_MARKET_WEB_URL
 _market_web_url_env = os.getenv("NEKO_MARKET_WEB_URL")
 if _market_web_url_env is not None:
@@ -261,10 +276,10 @@ if _market_web_url_env is not None:
         name="NEKO_MARKET_WEB_URL",
         allow_empty=True,
     )
-elif MARKET_URL.rstrip("/") in {"http://localhost:8000", "http://127.0.0.1:8000"}:
+elif MARKET_API_URL.rstrip("/") in {"http://localhost:8000", "http://127.0.0.1:8000"}:
     MARKET_WEB_URL = "http://localhost:5173"
 else:
-    MARKET_WEB_URL = MARKET_URL
+    MARKET_WEB_URL = MARKET_API_URL
 
 # 允许的 Market CORS 来源（逗号分隔）。
 # 用于允许 Market 前端跨域调用本地 /market/* 端点。
@@ -603,7 +618,8 @@ def validate_config() -> None:
     if PROCESS_TERMINATE_TIMEOUT > 60:
         raise ValueError("PROCESS_TERMINATE_TIMEOUT is unreasonably large (max: 60s)")
 
-    _validate_http_url(MARKET_URL, name="MARKET_URL", allow_empty=True)
+    _validate_http_url(NEKO_AUTH_URL, name="NEKO_AUTH_URL", allow_empty=True)
+    _validate_http_url(MARKET_API_URL, name="MARKET_API_URL", allow_empty=True)
     _validate_http_url(MARKET_WEB_URL, name="MARKET_WEB_URL", allow_empty=True)
     for origin in MARKET_ORIGINS:
         _validate_market_origin(origin)
@@ -638,6 +654,9 @@ __all__ = [
     "USER_PLUGIN_PACKAGES_ROOT",
     "PLUGIN_CONFIG_ROOT",
     "PLUGIN_CONFIG_ROOTS",
+    "NEKO_AUTH_URL",
+    "NEKO_AUTH_CLIENT_ID",
+    "MARKET_API_URL",
     "MARKET_URL",
     "MARKET_WEB_URL",
     "MARKET_ORIGINS",
@@ -729,6 +748,9 @@ PUBLIC_SYSTEM_CONFIG_KEYS = (
     "USER_PLUGIN_PACKAGES_ROOT",
     "PLUGIN_CONFIG_ROOT",
     "PLUGIN_CONFIG_ROOTS",
+    "NEKO_AUTH_URL",
+    "NEKO_AUTH_CLIENT_ID",
+    "MARKET_API_URL",
     "MARKET_URL",
     "MARKET_WEB_URL",
     "EVENT_QUEUE_MAX",

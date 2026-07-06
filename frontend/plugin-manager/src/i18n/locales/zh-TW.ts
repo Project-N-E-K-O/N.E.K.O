@@ -63,7 +63,7 @@ export default {
     logoutSuccess: '已退出 Market 登入',
     searchPlaceholder: '搜尋外掛...',
     notConfigured: '外掛市集未設定',
-    configHint: '請在環境變數中設定 NEKO_MARKET_URL',
+    configHint: '請在環境變數中設定 NEKO_MARKET_API_URL',
     noResults: '找不到外掛',
     loadFailed: '外掛市集載入失敗，請稍後再試',
     retry: '重試',
