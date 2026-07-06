@@ -685,9 +685,12 @@ def test_pc_overlay_screen_coordinates_use_niri_virtual_origin_and_crop_safe_are
     assert "top: max(14px, env(safe-area-inset-top));" not in yui_skip_rule
     assert "top: max(14px, env(safe-area-inset-top));" not in tutorial_skip_rule
     assert "top: 18px;" not in page_skip_rule
-    assert "metrics.bounds || metrics.contentBounds" not in overlay_source
-    assert "metrics.bounds || metrics.contentBounds" not in interpage_source
-    assert "bounds = metrics && (metrics.bounds || metrics.contentBounds);" not in director_source
+    assert "const getScreenCoordinateBounds = (metrics) => (" in overlay_source
+    assert "const bounds = getScreenCoordinateBounds(metrics);" in overlay_source
+    assert "function getYuiGuideScreenCoordinateBounds(metrics)" in interpage_source
+    assert "var bounds = getYuiGuideScreenCoordinateBounds(metrics);" in interpage_source
+    assert "getGuideScreenCoordinateBounds(metrics)" in director_source
+    assert "let bounds = this.getGuideScreenCoordinateBounds(metrics);" in director_source
     assert "- topInset" not in interpage_source
     assert "- topInset" not in overlay_source
     assert "usesNiriPetPhysicalCrop" not in director_source

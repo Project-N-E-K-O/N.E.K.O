@@ -1257,18 +1257,23 @@ def test_externalized_chat_input_spotlight_uses_pc_overlay_rounded_rect_radius()
 def test_externalized_chat_input_spotlight_uses_global_overlay_only():
     script = (Path(__file__).resolve().parents[2] / "static" / "app-interpage.js").read_text(encoding="utf-8")
 
-    update_block = script.split("function updateYuiGuideChatSpotlight(kind)", 1)[1].split(
-        "function applyYuiGuideChatSpotlight(kind)",
+    update_block = script.split("function updateYuiGuideChatSpotlight(kind, pcOverlayRunId)", 1)[1].split(
+        "function applyYuiGuideChatSpotlight(kind, options)",
         1,
     )[0]
 
-    assert "if (isYuiGuidePcOverlayAvailable()) {" in update_block
+    assert "var pcOverlayAvailable = isYuiGuidePcOverlayAvailable();" in update_block
+    assert "if (pcOverlayAvailable) {" in update_block
+    assert "var sourceRectInfo = rect ? getYuiGuideChatSpotlightSourceRect(kind, yuiGuideChatSpotlightVariant, rect) : null;" in update_block
+    assert "var sourceRect = sourceRectInfo ? sourceRectInfo.rect : rect;" in update_block
+    assert "toYuiGuideScreenRect({" in update_block
+    assert "}, kind, yuiGuideChatSpotlightVariant)" in update_block
     assert "kind !== 'input' && isYuiGuidePcOverlayAvailable()" not in update_block
     assert "hideYuiGuideChatSpotlightElement" not in script
     assert "hideYuiGuideChatSpotlightElements" not in script
     assert "is-plain-capsule" not in update_block
+    assert "getYuiGuideChatSpotlightElement(!pcOverlayAvailable)" in update_block
     assert "renderYuiGuideChatSpotlight(" not in update_block
-    assert "getYuiGuideChatSpotlightElement(" not in script
     assert "function renderYuiGuideChatSpotlight" not in script
 
 
@@ -1506,14 +1511,15 @@ def test_interpage_bundle_uses_static_asset_version_on_home_and_chat():
 def test_externalized_chat_input_spotlight_retries_after_message_layout():
     script = (Path(__file__).resolve().parents[2] / "static" / "app-interpage.js").read_text(encoding="utf-8")
 
-    retry_block = script.split("function scheduleYuiGuideChatInputSpotlightRetry()", 1)[1].split(
-        "function updateYuiGuideChatSpotlight(kind)",
+    retry_block = script.split("function scheduleYuiGuideChatInputSpotlightRetry(kind, pcOverlayRunId)", 1)[1].split(
+        "function updateYuiGuideChatSpotlight(kind, pcOverlayRunId)",
         1,
     )[0]
 
-    assert "if (yuiGuideChatSpotlightKind !== 'input')" in retry_block
-    assert "updateYuiGuideChatSpotlight('input');" in retry_block
-    assert "scheduleYuiGuideChatInputSpotlightRetry();" in script
+    assert "if (!isYuiGuideChatInputSpotlightKind(retryKind))" in retry_block
+    assert "if (yuiGuideChatSpotlightKind === retryKind)" in retry_block
+    assert "updateYuiGuideChatSpotlight(retryKind, retryRunId);" in retry_block
+    assert "scheduleYuiGuideChatInputSpotlightRetry(normalizedKind, pcOverlayRunId);" in script
 
 
 def test_compact_tutorial_guide_preview_scrolls_without_ellipsis():

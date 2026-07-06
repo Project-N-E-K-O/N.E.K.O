@@ -4081,10 +4081,7 @@
     }
 
     function getYuiGuidePcOverlayRunIdFromMessage(message) {
-        var runId = message && typeof message.tutorialRunId === 'string'
-            ? message.tutorialRunId
-            : '';
-        return rememberYuiGuidePcOverlayRunId(runId);
+        return resolveCanonicalYuiGuideBridgeRunId(message);
     }
 
     function isYuiGuideLifecycleScopedAction(action) {
@@ -4207,6 +4204,10 @@
                 y: Number.isFinite(window.screenY) ? window.screenY : 0
             }
         };
+    }
+
+    function getYuiGuideScreenCoordinateBounds(metrics) {
+        return metrics && (metrics.bounds || metrics.contentBounds) || { x: 0, y: 0 };
     }
 
     function normalizeYuiGuideNiriPetPhysicalCropBounds(bounds) {
@@ -4432,7 +4433,7 @@
                 cropState
             );
         }
-        var bounds = metrics.contentBounds || metrics.bounds || { x: 0, y: 0 };
+        var bounds = getYuiGuideScreenCoordinateBounds(metrics);
         var viewport = shouldApplyYuiGuideVisualViewportOffset(metrics) ? (window.visualViewport || null) : null;
         var offsetLeft = viewport && Number.isFinite(Number(viewport.offsetLeft)) ? Number(viewport.offsetLeft) : 0;
         var offsetTop = viewport && Number.isFinite(Number(viewport.offsetTop)) ? Number(viewport.offsetTop) : 0;
@@ -4602,6 +4603,15 @@
         return entry && entry.shape ? entry.shape : 'rounded-rect';
     }
 
+    function shouldAlignYuiGuideChatSpotlightToCapsuleText(kind, variant) {
+        if (kind === 'input' && variant === 'plain-capsule') {
+            return true;
+        }
+        return false;
+    }
+
+    var YUI_GUIDE_CHAT_CAPSULE_TEXT_ALIGNMENT_RATIO = 0.6;
+
     function getYuiGuideChatSpotlightTarget(kind) {
         if (!kind || typeof document === 'undefined') {
             return null;
@@ -4639,6 +4649,44 @@
         }
 
         return null;
+    }
+
+    function getYuiGuideChatCapsuleTextAnchor() {
+        var anchor = getYuiGuideChatVisibleElement('#react-chat-window-root [data-compact-hit-region-id="capsule:text"]')
+            || getYuiGuideChatVisibleElement('#react-chat-window-root .compact-chat-capsule-button');
+        if (!anchor || typeof anchor.getBoundingClientRect !== 'function') {
+            return null;
+        }
+        var rect = anchor.getBoundingClientRect();
+        if (!rect || rect.width <= 0 || rect.height <= 0) {
+            return null;
+        }
+        return {
+            element: anchor,
+            rect: rect
+        };
+    }
+
+    function getYuiGuideChatSpotlightSourceRect(kind, variant, rect) {
+        var sourceRect = {
+            left: rect.left,
+            top: rect.top,
+            width: rect.width,
+            height: rect.height
+        };
+        if (shouldAlignYuiGuideChatSpotlightToCapsuleText(kind, variant)) {
+            var anchor = getYuiGuideChatCapsuleTextAnchor();
+            var anchorRect = anchor && anchor.rect;
+            if (
+                anchorRect
+                && anchorRect.left > rect.left
+                && anchorRect.left < rect.left + rect.width
+            ) {
+                var anchorOffsetX = anchorRect.left - rect.left;
+                sourceRect.left = rect.left + anchorOffsetX * YUI_GUIDE_CHAT_CAPSULE_TEXT_ALIGNMENT_RATIO;
+            }
+        }
+        return { rect: sourceRect };
     }
 
     function getYuiGuideChatVisibleElement(selector, root) {
@@ -5137,8 +5185,10 @@
         var rect = target && typeof target.getBoundingClientRect === 'function'
             ? target.getBoundingClientRect()
             : null;
+        var sourceRectInfo = rect ? getYuiGuideChatSpotlightSourceRect(kind, yuiGuideChatSpotlightVariant, rect) : null;
+        var sourceRect = sourceRectInfo ? sourceRectInfo.rect : rect;
 
-        if (!rect || rect.width <= 0 || rect.height <= 0) {
+        if (!sourceRect || sourceRect.width <= 0 || sourceRect.height <= 0) {
             if (pcOverlayAvailable) {
                 if (
                     kind
@@ -5161,13 +5211,13 @@
         }
 
         var padding = kind === 'window' ? 10 : 8;
-        var radius = kind === 'window' ? 26 : Math.min(34, Math.max(18, Math.round((rect.height + padding * 2) / 2)));
+        var radius = kind === 'window' ? 26 : Math.min(34, Math.max(18, Math.round((sourceRect.height + padding * 2) / 2)));
         if (pcOverlayAvailable) {
             var pcRects = [toYuiGuideScreenRect({
-                left: rect.left - padding,
-                top: rect.top - padding,
-                width: rect.width + padding * 2,
-                height: rect.height + padding * 2
+                left: sourceRect.left - padding,
+                top: sourceRect.top - padding,
+                width: sourceRect.width + padding * 2,
+                height: sourceRect.height + padding * 2
             }, kind, yuiGuideChatSpotlightVariant)].filter(Boolean);
             rememberYuiGuideChatPcSpotlightRects(kind, pcRects, yuiGuideChatSpotlightVariant);
             sendYuiGuidePcOverlayPatch({ spotlights: pcRects }, false, patchOptions);
@@ -5184,10 +5234,10 @@
         spotlight.classList.remove('is-window', 'is-input');
         spotlight.classList.add(kind === 'window' ? 'is-window' : 'is-input');
         spotlight.classList.add('is-visible');
-        spotlight.style.left = Math.round(rect.left - padding) + 'px';
-        spotlight.style.top = Math.round(rect.top - padding) + 'px';
-        spotlight.style.width = Math.round(rect.width + padding * 2) + 'px';
-        spotlight.style.height = Math.round(rect.height + padding * 2) + 'px';
+        spotlight.style.left = Math.round(sourceRect.left - padding) + 'px';
+        spotlight.style.top = Math.round(sourceRect.top - padding) + 'px';
+        spotlight.style.width = Math.round(sourceRect.width + padding * 2) + 'px';
+        spotlight.style.height = Math.round(sourceRect.height + padding * 2) + 'px';
         spotlight.style.borderRadius = radius + 'px';
     }
 

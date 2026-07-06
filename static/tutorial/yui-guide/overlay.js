@@ -212,6 +212,9 @@
                 zoomFactor: 1
             };
         };
+        const getScreenCoordinateBounds = (metrics) => (
+            metrics && (metrics.bounds || metrics.contentBounds) || { x: 0, y: 0 }
+        );
 
         const normalizeNiriPetPhysicalCropBounds = (bounds) => {
             if (!bounds || typeof bounds !== 'object') {
@@ -417,7 +420,7 @@
                     cropState
                 );
             }
-            const bounds = metrics.contentBounds || metrics.bounds || { x: 0, y: 0 };
+            const bounds = getScreenCoordinateBounds(metrics);
             const viewport = shouldApplyVisualViewportOffset(metrics) ? (window.visualViewport || null) : null;
             const offsetLeft = viewport && Number.isFinite(Number(viewport.offsetLeft)) ? Number(viewport.offsetLeft) : 0;
             const offsetTop = viewport && Number.isFinite(Number(viewport.offsetTop)) ? Number(viewport.offsetTop) : 0;
