@@ -827,18 +827,6 @@ class UniversalTutorialManager {
         }
     }
 
-    beginDirectAvatarFloatingTutorialLoading(reason) {
-        if (window.NekoAvatarFloatingBoot && typeof window.NekoAvatarFloatingBoot.beginDirectTutorialLoading === 'function') {
-            window.NekoAvatarFloatingBoot.beginDirectTutorialLoading(reason || 'startup-direct-tutorial-predicted');
-        }
-    }
-
-    clearDirectAvatarFloatingTutorialLoading(reason) {
-        if (window.NekoAvatarFloatingBoot && typeof window.NekoAvatarFloatingBoot.clearDirectTutorialLoading === 'function') {
-            window.NekoAvatarFloatingBoot.clearDirectTutorialLoading(reason || 'avatar-floating-yui-ready');
-        }
-    }
-
     dispatchAvatarFloatingTutorialInputRestored(reason = 'tutorial-avatar-restored') {
         const detail = {
             action: 'yui_guide_tutorial_input_restored',
@@ -861,7 +849,6 @@ class UniversalTutorialManager {
     }
 
     async recoverUserModelAfterDirectTutorialBootFailure(reason) {
-        this.clearDirectAvatarFloatingTutorialLoading(reason || 'direct-tutorial-boot-failed');
         if (window.NekoAvatarFloatingBoot && typeof window.NekoAvatarFloatingBoot.recoverUserModelBoot === 'function') {
             try {
                 return await window.NekoAvatarFloatingBoot.recoverUserModelBoot(reason || 'direct-tutorial-boot-failed');
@@ -3410,9 +3397,6 @@ class UniversalTutorialManager {
             await this.playAvatarFloatingRoundPrelude(round, source, director, {
                 skipSourceModelFade: directTutorialBoot
             });
-            if (directTutorialBoot) {
-                this.clearDirectAvatarFloatingTutorialLoading('avatar-floating-yui-ready');
-            }
             const completed = await director.playAvatarFloatingRound(round, {
                 source,
                 surfaceReady: true,
@@ -3437,7 +3421,6 @@ class UniversalTutorialManager {
         } catch (error) {
             console.error('[Tutorial] 悬浮窗教程启动失败:', error);
             if (directTutorialBoot) {
-                this.clearDirectAvatarFloatingTutorialLoading('avatar-floating-start-failed');
                 this.releaseDirectAvatarFloatingTutorialBoot('avatar-floating-before-teardown', {
                     keepUserModelBootSkipped: true,
                     suppressPrediction: true
@@ -3509,7 +3492,6 @@ class UniversalTutorialManager {
                 if (!hasSeen) {
                     this.setHomeTutorialPending(true);
                 }
-                this.beginDirectAvatarFloatingTutorialLoading('startup-direct-tutorial-predicted');
                 this.startTutorialWhenI18nReady(1500);
                 return;
             }

@@ -1805,15 +1805,14 @@ def test_avatar_floating_tutorial_boot_predictor_contract():
     assert "markUserModelBootSkipped" in predictor_source
     assert "claimDirectTutorialBoot" in predictor_source
     assert "releaseDirectTutorialBoot" in predictor_source
-    assert "beginDirectTutorialLoading" in predictor_source
-    assert "clearDirectTutorialLoading" in predictor_source
-    assert "window.nekoTutorialLoadingOverlay" in predictor_source
-    assert "function isPcLoadingOverlayBridge(bridge)" in predictor_source
-    assert "window.nekoTutorialOverlay.loadingOverlay" in predictor_source
-    assert "isPcLoadingOverlayBridge(window.nekoTutorialOverlay)" in predictor_source
-    assert "window.nekoTutorialOverlay.beginLoading" in predictor_source
     assert "yuiGuidePcOverlayRunId" in predictor_source
-    assert "emotion_model_icon.png" in predictor_source
+    assert "beginDirectTutorialLoading" not in predictor_source
+    assert "clearDirectTutorialLoading" not in predictor_source
+    assert "window.nekoTutorialLoadingOverlay" not in predictor_source
+    assert "function isPcLoadingOverlayBridge(bridge)" not in predictor_source
+    assert "window.nekoTutorialOverlay.loadingOverlay" not in predictor_source
+    assert "window.nekoTutorialOverlay.beginLoading" not in predictor_source
+    assert "emotion_model_icon.png" not in predictor_source
     assert "function isTutorialBootAvailable()" in predictor_source
     assert "window.innerWidth <= 768" in predictor_source
     assert "window.innerWidth <= 768" in manager_source
@@ -1886,7 +1885,7 @@ def test_avatar_floating_direct_tutorial_boot_uses_manager_recheck_and_user_mode
     assert "window.NekoAvatarFloatingBoot.claimDirectTutorialBoot" in tutorial_source
     assert "window.NekoAvatarFloatingBoot.releaseDirectTutorialBoot" in tutorial_source
     assert "window.NekoAvatarFloatingBoot.recoverUserModelBoot" in tutorial_source
-    assert "window.NekoAvatarFloatingBoot.clearDirectTutorialLoading" in tutorial_source
+    assert "window.NekoAvatarFloatingBoot.clearDirectTutorialLoading" not in tutorial_source
     assert "getDirectAvatarFloatingTutorialBootRound()" in tutorial_source
 
     start_round_block = tutorial_source.split("async startAvatarFloatingGuideRound(day, options = {})", 1)[1].split(
@@ -1899,7 +1898,7 @@ def test_avatar_floating_direct_tutorial_boot_uses_manager_recheck_and_user_mode
     assert "await this.waitForFloatingButtons()" in start_round_block
     assert "this.claimDirectAvatarFloatingTutorialBoot(round, source);" in start_round_block
     assert "skipSourceModelFade: directTutorialBoot" in start_round_block
-    assert "this.clearDirectAvatarFloatingTutorialLoading('avatar-floating-yui-ready');" in start_round_block
+    assert "clearDirectAvatarFloatingTutorialLoading" not in start_round_block
     assert "await this.recoverUserModelAfterDirectTutorialBootFailure('avatar-floating-start-failed')" in start_round_block
     assert "this.releaseDirectAvatarFloatingTutorialBoot('avatar-floating-before-teardown', {" in start_round_block
     assert "keepUserModelBootSkipped: true" in start_round_block
@@ -1962,7 +1961,8 @@ def test_avatar_floating_direct_boot_does_not_wait_for_user_floating_buttons():
     assert "const directBootRound = this.getDirectAvatarFloatingTutorialBootRound();" in check_block
     assert "this.isDirectAvatarFloatingTutorialBoot(directBootRound)" in check_block
     assert "const round = this.getHomeAvatarFloatingGuideLaunchRound();" in check_block
-    assert "this.beginDirectAvatarFloatingTutorialLoading('startup-direct-tutorial-predicted');" in check_block
+    assert "beginDirectAvatarFloatingTutorialLoading" not in tutorial_source
+    assert "clearDirectAvatarFloatingTutorialLoading" not in tutorial_source
     assert "this.pendingTutorialStartSource = 'manual_reset';" in check_block
     assert "this.startTutorialWhenI18nReady(1500);" in check_block
     assert check_block.index("this.isDirectAvatarFloatingTutorialBoot(directBootRound)") < check_block.index(

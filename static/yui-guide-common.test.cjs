@@ -1517,9 +1517,12 @@ test('director routes resistance interrupts through ResistanceController boundar
     assert.match(resistanceControllerBlock, /director\.interruptCount \+= 1;/);
     assert.match(resistanceControllerBlock, /director\.abortAsAngryExit\('pointer_interrupt'\);/);
     assert.match(resistanceControllerBlock, /director\.playLightResistance\(x,\s*y,\s*\{/);
+    assert.doesNotMatch(resistanceControllerBlock, /director\.revealRealCursorForInterruptCount\(\);/);
     assert.match(resistanceControllerBlock, /suppressCursorReveal:\s*true/);
     assert.match(resistanceControllerBlock, /forceSystemCursorReveal:\s*true/);
-    assert.match(resistanceControllerBlock, /if \(!normalizedOptions\.suppressCursorReveal\) \{[\s\S]*?director\.suppressResistanceCursorReveal\(normalizedOptions\);[\s\S]*?if \(typeof director\.revealSystemCursorTemporarily === 'function'\) \{[\s\S]*?director\.revealSystemCursorTemporarily\(2000,\s*'interrupt_resist_light'\)/);
+    assert.match(resistanceControllerBlock, /const cursorRevealAlreadyRequested = typeof director\.revealSystemCursorTemporarily === 'function';[\s\S]*?director\.revealSystemCursorTemporarily\(2000,\s*'interrupt_resist_light'\);[\s\S]*?cursorRevealAlreadyRequested:\s*cursorRevealAlreadyRequested/);
+    assert.match(resistanceControllerBlock, /if \(!normalizedOptions\.suppressCursorReveal\) \{[\s\S]*?director\.suppressResistanceCursorReveal\(normalizedOptions\);/);
+    assert.match(resistanceControllerBlock, /!normalizedOptions\.cursorRevealAlreadyRequested[\s\S]*?typeof director\.revealSystemCursorTemporarily === 'function'[\s\S]*?director\.revealSystemCursorTemporarily\(2000,\s*'interrupt_resist_light'\)/);
     assert.match(resistanceControllerBlock, /this\.lightResistanceActive = true;/);
     assert.match(resistanceControllerBlock, /director\.revealSystemCursorTemporarily\(2000,\s*'interrupt_resist_light'\);/);
     assert.doesNotMatch(resistanceControllerBlock, /normalizedOptions\.forceSystemCursorReveal[\s\S]*?director\.revealSystemCursorTemporarily/);
@@ -1556,6 +1559,7 @@ test('director routes resistance interrupts through ResistanceController boundar
     assert.match(resistanceControllerBlock, /director\.runAngryExitPerformance\(\{/);
     assert.match(resistanceControllerBlock, /const angryExitNarrationDurationMs = director\.getGuideVoiceDurationMs\(/);
     assert.match(resistanceControllerBlock, /minDurationMs:\s*Number\.isFinite\(angryExitNarrationDurationMs\)/);
+    assert.match(resistanceControllerBlock, /this\.syncSystemCursorHidden\(false,\s*'interrupt_angry_exit'\);/);
     assert.match(resistanceControllerBlock, /director\.requestTermination\(source \|\| 'angry_exit', 'angry_exit'\);/);
     assert.match(pointerDownBlock, /this\.resistanceController\.recordPointerDown\(event\);/);
     assert.match(handleInterruptBlock, /return this\.resistanceController\.handleInterrupt\(event\);/);

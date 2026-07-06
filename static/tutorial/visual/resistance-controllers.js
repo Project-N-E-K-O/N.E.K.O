@@ -207,6 +207,7 @@
             call(this.callbacks, 'disableInterrupts', null);
             call(this.callbacks, 'cancelActiveNarration', null);
             call(this.callbacks, 'beginGuideInterruptPresentation', null);
+            // 修改原因：生气退出会脱离教程接管态，必须先恢复真实鼠标，避免退出台词播放时系统鼠标仍被隐藏。
             call(this.callbacks, 'syncSystemCursorHidden', null, false, 'interrupt_angry_exit');
 
             const angryStep = call(this.callbacks, 'getStep', null, 'interrupt_angry_exit') || {};
@@ -478,15 +479,19 @@
                 return;
             }
 
-            if (typeof director.revealRealCursorForInterruptCount === 'function') {
-                director.revealRealCursorForInterruptCount();
+            // 修改原因：轻对抗计数成立时先刷新 2 秒真实鼠标显示；
+            // 即使上一段台词演出还在 active 保护内，第二次触发也不能只剩第一次显示的尾巴。
+            const cursorRevealAlreadyRequested = typeof director.revealSystemCursorTemporarily === 'function';
+            if (cursorRevealAlreadyRequested) {
+                director.revealSystemCursorTemporarily(2000, 'interrupt_resist_light');
             }
             director.lastPointerPoint = null;
             director.playLightResistance(x, y, {
                 motionDx: dx,
                 motionDy: dy,
                 forceSystemCursorReveal: true,
-                suppressCursorReveal: true
+                suppressCursorReveal: true,
+                cursorRevealAlreadyRequested: cursorRevealAlreadyRequested
             });
         }
 
@@ -512,7 +517,12 @@
             if (!normalizedOptions.suppressCursorReveal) {
                 director.suppressResistanceCursorReveal(normalizedOptions);
             }
-            if (typeof director.revealSystemCursorTemporarily === 'function') {
+            // 修改原因：正常进入轻对抗演出时仍由这里兜底显示真实鼠标；
+            // 已在触发点刷新过的场景跳过，避免同一次轻对抗重复发送两次 PC 临时显示事件。
+            if (
+                !normalizedOptions.cursorRevealAlreadyRequested
+                && typeof director.revealSystemCursorTemporarily === 'function'
+            ) {
                 director.revealSystemCursorTemporarily(2000, 'interrupt_resist_light');
             }
 
@@ -601,6 +611,7 @@
             director.disableInterrupts();
             director.cancelActiveNarration();
             director.beginGuideInterruptPresentation();
+            // 修改原因：生气退出会脱离教程接管态，必须先恢复真实鼠标，避免退出台词播放时系统鼠标仍被隐藏。
             this.syncSystemCursorHidden(false, 'interrupt_angry_exit');
 
             const angryStep = director.getStep('interrupt_angry_exit') || {};
