@@ -551,9 +551,14 @@ async function refreshPluginListData(mode: PluginListRefreshMode) {
       const syncResult = await pluginStore.syncRegistryAndFetch()
       warningMessage = syncResult.warningMessage || ''
     } else if (mode === 'initial-open') {
-      const syncResult = await pluginStore.ensurePluginListRegistrySynced()
-      warningMessage = syncResult?.warningMessage || ''
-      if (!syncResult) {
+      try {
+        const syncResult = await pluginStore.ensurePluginListRegistrySynced()
+        warningMessage = syncResult?.warningMessage || ''
+        if (!syncResult) {
+          await pluginStore.fetchPlugins()
+        }
+      } catch (syncError) {
+        console.warn('Failed to sync plugin registry on first plugin list open:', syncError)
         await pluginStore.fetchPlugins()
       }
     } else {
