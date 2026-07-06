@@ -12,6 +12,10 @@ const yuiGuideCssSource = fs.readFileSync(
   path.join(repoRoot, 'static', 'css/yui-guide.css'),
   'utf8'
 );
+const i18nBootstrapSource = fs.readFileSync(
+  path.join(repoRoot, 'static', 'i18n-i18next.js'),
+  'utf8'
+);
 const zhCnLocaleSource = fs.readFileSync(
   path.join(repoRoot, 'static', 'locales/zh-CN.json'),
   'utf8'
@@ -76,6 +80,7 @@ test('Day1 system tray intro modal uses the existing systray copy and image reso
     'N.E.K.O 的图标会出现在屏幕右下角的系统托盘里，点击一下就能找到它。鼠标右击就能打开neko菜单面板啦。'
   );
   assert.equal(zhCn.tutorial.systray.location.alt, '系统托盘位置示意图');
+  assert.match(i18nBootstrapSource, /LOCALE_VERSION = '2026-07-06-day1-systray-intro-i18n'/);
 
   for (const [code, source] of Object.entries(localeSources)) {
     const locale = JSON.parse(source);

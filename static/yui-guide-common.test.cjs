@@ -1470,6 +1470,14 @@ test('director routes resistance interrupts through ResistanceController boundar
         '    class YuiGuideEmotionBridge {',
         1
     )[0];
+    const audioContextPlaybackBlock = voiceQueueSource.split('        async playPreviewAudioThroughContext(')[1].split(
+        '        resolveGuideAudioSrc(',
+        1
+    )[0];
+    const speakBlock = voiceQueueSource.split('        async speak(text, options) {')[1].split(
+        '        capturePlaybackSnapshot() {',
+        1
+    )[0];
     const directorSource = source.split('    class YuiGuideDirector {')[1];
     const constructorBlock = directorSource.split(
         '            this.keydownHandler = this.onKeyDown.bind(this);',
@@ -1536,7 +1544,9 @@ test('director routes resistance interrupts through ResistanceController boundar
     assert.match(directorSource, /revealSystemCursorTemporarily\(durationMs = 2000,\s*reason = 'tutorial-temporary-reveal'\)/);
     assert.match(voiceQueueSource, /this\.stopGeneration = 0;/);
     assert.match(voiceQueueSource, /stop\(\) \{[\s\S]*?this\.stopGeneration \+= 1;/);
-    assert.match(voiceQueueSource, /const stopGenerationAtStart = this\.stopGeneration;[\s\S]*?await wait\(48\);[\s\S]*?if \(this\.stopGeneration !== stopGenerationAtStart\) \{[\s\S]*?return;/);
+    assert.match(speakBlock, /const stopGenerationAtStart = this\.stopGeneration;[\s\S]*?await wait\(48\);[\s\S]*?if \(this\.stopGeneration !== stopGenerationAtStart\) \{[\s\S]*?return;/);
+    assert.match(speakBlock, /catch \(error\) \{[\s\S]*?AudioContext 教程语音播放失败[\s\S]*?\}[\s\S]*?if \(this\.stopGeneration !== stopGenerationAtStart\) \{[\s\S]*?return;/);
+    assert.match(audioContextPlaybackBlock, /const stopGenerationAtStart = this\.stopGeneration;[\s\S]*?decodeGuideAudioBuffer[\s\S]*?if \(this\.stopGeneration !== stopGenerationAtStart\) \{[\s\S]*?return true;/);
     assert.match(directorSource, /classList\.add\('yui-user-cursor-revealed',\s*'yui-resistance-cursor-reveal'\)/);
     assert.match(directorSource, /syncPcSystemCursorTemporaryReveal\(normalizedDurationMs,\s*reason\)/);
     assert.match(directorSource, /window\.setTimeout\(\(\) => \{[\s\S]*?this\.suppressResistanceCursorReveal\(\);[\s\S]*?\},\s*normalizedDurationMs\)/);

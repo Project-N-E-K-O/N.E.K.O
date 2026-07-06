@@ -1819,6 +1819,9 @@
             if (!context) {
                 return false;
             }
+            // 修改原因：stop()/angry exit 可能发生在音频上下文恢复、拉取或解码期间；
+            // 真正启动 buffer source 前必须再次确认同一代次，避免已取消的旧语音重新起播。
+            const stopGenerationAtStart = this.stopGeneration;
 
             await resumeKnownAudioContexts();
             if (context.state === 'suspended' && typeof context.resume === 'function') {
@@ -1835,6 +1838,9 @@
             const audioBuffer = await this.decodeGuideAudioBuffer(context, arrayBuffer);
             const startOffsetMs = Number.isFinite(startAtMs) ? Math.max(0, startAtMs) : 0;
             const startOffsetSeconds = Math.max(0, startOffsetMs / 1000);
+            if (this.stopGeneration !== stopGenerationAtStart) {
+                return true;
+            }
 
             return new Promise((resolve, reject) => {
                 let settled = false;
@@ -1986,6 +1992,9 @@
                     }
                 } catch (error) {
                     console.warn('[YuiGuide] AudioContext 教程语音播放失败，尝试 HTMLAudio:', normalizedOptions.voiceKey, error);
+                }
+                if (this.stopGeneration !== stopGenerationAtStart) {
+                    return;
                 }
 
                 try {
