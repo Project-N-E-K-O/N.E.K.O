@@ -1186,7 +1186,7 @@ test('interpage consumes common tutorial geometry before chat bridge scripts run
     assert.match(appInterpageSource, /getYuiGuideChatTargetShape\(kind\)/);
     assert.match(appInterpageSource, /getYuiGuideChatTargetShape\(kind\) === 'circle'/);
     assert.match(appInterpageSource, /function shouldAlignYuiGuideChatSpotlightToCapsuleText\(kind, variant\)/);
-    assert.match(appInterpageSource, /kind === 'input' && variant === 'plain-capsule'[\s\S]*return true;/);
+    assert.match(appInterpageSource, /function shouldAlignYuiGuideChatSpotlightToCapsuleText\(kind, variant\) \{\s*return kind === 'input' && variant === 'plain-capsule';\s*\}/);
     assert.match(appInterpageSource, /function getYuiGuideChatSpotlightSourceRect\(kind, variant, rect\)/);
     assert.match(appInterpageSource, /anchorOffsetX \* YUI_GUIDE_CHAT_CAPSULE_TEXT_ALIGNMENT_RATIO/);
     assert.match(appInterpageSource, /return \{ rect: sourceRect \};/);

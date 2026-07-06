@@ -251,7 +251,7 @@ test('Day1 return control cursor moves to the capsule primary target before the 
   assert.match(directorSource, /'chat-capsule-input': 'capsule-input'/);
   assert.match(targetGeometryRegistrySource, /'chat-capsule-input': Object\.freeze\(\{[\s\S]*externalKind: 'capsule-input'[\s\S]*data-compact-geometry-part="capsuleBody"/);
   assert.match(appInterpageSource, /getYuiGuideChatTargetRegistryEntryByExternalKind\(kind\)[\s\S]*entry\.localSelectors\.some/);
-  assert.match(appInterpageSource, /function shouldAlignYuiGuideChatSpotlightToCapsuleText\(kind, variant\)[\s\S]*kind === 'input' && variant === 'plain-capsule'[\s\S]*return true;/);
+  assert.match(appInterpageSource, /function shouldAlignYuiGuideChatSpotlightToCapsuleText\(kind, variant\) \{\s*return kind === 'input' && variant === 'plain-capsule';\s*\}/);
   assert.match(appInterpageSource, /function getYuiGuideChatSpotlightSourceRect\(kind, variant, rect\)[\s\S]*anchorOffsetX \* YUI_GUIDE_CHAT_CAPSULE_TEXT_ALIGNMENT_RATIO[\s\S]*return \{ rect: sourceRect \};/);
   assert.match(appInterpageSource, /function updateYuiGuideChatSpotlight\(kind,\s*pcOverlayRunId\) \{[\s\S]*var pcOverlayAvailable = isYuiGuidePcOverlayAvailable\(\);/);
   assert.match(appInterpageSource, /function updateYuiGuideChatSpotlight\(kind,\s*pcOverlayRunId\) \{[\s\S]*var sourceRectInfo = rect \? getYuiGuideChatSpotlightSourceRect\(kind, yuiGuideChatSpotlightVariant, rect\) : null;[\s\S]*sendYuiGuidePcOverlayPatch\(\{ spotlights: pcRects \}, false, patchOptions\);/);
