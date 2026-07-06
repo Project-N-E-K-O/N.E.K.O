@@ -265,8 +265,6 @@ const _NEKO_IDLE_DESKTOP_CHAT_RECT_STALE_MS = 2500;
 const _NEKO_IDLE_DESKTOP_COMPACT_SURFACE_RECT_STALE_MS = 10 * 1000;
 const _NEKO_IDLE_RETURN_DRAG_PENDING_CLASS = 'is-drag-action-pending';
 const _NEKO_IDLE_RETURN_DRAG_ACTION_CLASS = 'is-drag-action';
-const _NEKO_IDLE_RETURN_DRAG_LONG_PRESS_MS = 280;
-const _NEKO_IDLE_RETURN_LONG_PRESS_PENDING_ATTR = 'data-neko-return-long-press-pending';
 const _NEKO_IDLE_CAT1_PLAY_FINISHING_ATTR = 'data-neko-cat1-play-finishing';
 const _NEKO_IDLE_CAT1_PLAY_YARN_RELEASE_SIZE_PX = 51;
 const _NEKO_IDLE_CAT1_RAPID_DRAG_ASSET_URL = '/static/assets/neko-idle/cat-idle-cat-move-5.gif';
@@ -5647,9 +5645,6 @@ const AvatarButtonMixin = {
             }
 
             if (this._returnButtonDragHandlers) {
-                if (typeof this._returnButtonDragHandlers.cancelPendingLongPress === 'function') {
-                    this._returnButtonDragHandlers.cancelPendingLongPress();
-                }
                 document.removeEventListener('mousemove', this._returnButtonDragHandlers.mouseMove);
                 document.removeEventListener('mouseup', this._returnButtonDragHandlers.mouseUp);
                 document.removeEventListener('touchmove', this._returnButtonDragHandlers.touchMove);
@@ -6078,7 +6073,6 @@ const AvatarButtonMixin = {
                 if (
                     returnButtonContainer.getAttribute('data-dragging') === 'true' ||
                     returnButtonContainer.getAttribute('data-dragging') === 'pending' ||
-                    returnButtonContainer.getAttribute(_NEKO_IDLE_RETURN_LONG_PRESS_PENDING_ATTR) === 'true' ||
                     returnButtonContainer.getAttribute('data-neko-return-click-suppressed') === 'true' ||
                     returnButtonContainer.getAttribute('data-neko-model-cat-transitioning') === 'cat-to-model' ||
                     (typeof window.isNekoModelCatTransitionActive === 'function' && window.isNekoModelCatTransitionActive())
@@ -6189,14 +6183,6 @@ const AvatarButtonMixin = {
             let dragSafetyTimer = 0;
             let dragSafetyToken = 0;
             let dragPointerType = '';
-            let dragLongPressTimer = 0;
-            let dragLongPressPending = false;
-            let dragLongPressMovedPastClickThreshold = false;
-            let pendingDragPointerType = '';
-            let pendingDragStartX = 0, pendingDragStartY = 0, pendingDragLatestX = 0, pendingDragLatestY = 0;
-            let pendingDragStartVirtualX = 0, pendingDragStartVirtualY = 0;
-            let pendingDragLatestVirtualX = 0, pendingDragLatestVirtualY = 0;
-            let pendingDragSourceEvent = null;
             let dragStartX = 0, dragStartY = 0, containerStartX = 0, containerStartY = 0;
             let dragStartVirtualX = 0, dragStartVirtualY = 0;
             let dragGrabOffsetX = 0, dragGrabOffsetY = 0;
@@ -6375,39 +6361,11 @@ const AvatarButtonMixin = {
                 dragSafetyTimer = 0;
             };
 
-            const clearDragLongPressTimer = () => {
-                if (!dragLongPressTimer) return;
-                clearTimeout(dragLongPressTimer);
-                dragLongPressTimer = 0;
-            };
-
             const setReturnClickSuppressed = (suppressed) => {
                 if (suppressed) {
                     container.setAttribute('data-neko-return-click-suppressed', 'true');
                 } else {
                     container.removeAttribute('data-neko-return-click-suppressed');
-                }
-            };
-
-            const setReturnLongPressPending = (pending) => {
-                if (pending) {
-                    container.setAttribute(_NEKO_IDLE_RETURN_LONG_PRESS_PENDING_ATTR, 'true');
-                } else {
-                    container.removeAttribute(_NEKO_IDLE_RETURN_LONG_PRESS_PENDING_ATTR);
-                }
-            };
-
-            const clearPendingLongPressDrag = () => {
-                clearDragLongPressTimer();
-                dragLongPressPending = false;
-                dragLongPressMovedPastClickThreshold = false;
-                pendingDragPointerType = '';
-                pendingDragSourceEvent = null;
-                setReturnLongPressPending(false);
-                if (!isDragging) {
-                    container.setAttribute('data-dragging', 'false');
-                    container.style.cursor = 'grab';
-                    setReturnClickSuppressed(false);
                 }
             };
 
@@ -6455,7 +6413,6 @@ const AvatarButtonMixin = {
             };
 
             const cancelDragState = () => {
-                clearPendingLongPressDrag();
                 clearDragSafetyTimer();
                 stopDragCursorPolling();
                 if (!isDragging) return;
@@ -6561,7 +6518,6 @@ const AvatarButtonMixin = {
             const handleStart = (clientX, clientY, pointerType = 'mouse', sourceEvent = null, startPoint = null) => {
                 clearDragSafetyTimer();
                 stopDragCursorPolling();
-                setReturnLongPressPending(false);
                 setReturnClickSuppressed(true);
                 const point = startPoint || getDragPoint(sourceEvent, clientX, clientY);
                 if (!isUsableDragPoint(point)) return;
@@ -6595,90 +6551,7 @@ const AvatarButtonMixin = {
                 startDragCursorPolling();
             };
 
-            const scheduleLongPressDrag = (clientX, clientY, pointerType = 'mouse', sourceEvent = null) => {
-                clearPendingLongPressDrag();
-                const point = getDragPoint(sourceEvent, clientX, clientY);
-                if (!isUsableDragPoint(point)) return;
-                const screenPoint = getDragScreenPointFromVirtualPoint(point.virtualX, point.virtualY, sourceEvent, clientX, clientY);
-                dragLongPressPending = true;
-                pendingDragPointerType = pointerType;
-                pendingDragStartX = point.localX;
-                pendingDragStartY = point.localY;
-                pendingDragLatestX = point.localX;
-                pendingDragLatestY = point.localY;
-                pendingDragStartVirtualX = point.virtualX;
-                pendingDragStartVirtualY = point.virtualY;
-                pendingDragLatestVirtualX = point.virtualX;
-                pendingDragLatestVirtualY = point.virtualY;
-                pendingDragSourceEvent = sourceEvent;
-                dragLongPressMovedPastClickThreshold = false;
-                setReturnLongPressPending(true);
-                container.style.cursor = 'grabbing';
-                _dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-pending', {
-                    clientX: point.localX,
-                    clientY: point.localY,
-                    screenX: Number.isFinite(screenPoint.x) ? screenPoint.x : (sourceEvent && Number.isFinite(sourceEvent.screenX) ? sourceEvent.screenX : clientX),
-                    screenY: Number.isFinite(screenPoint.y) ? screenPoint.y : (sourceEvent && Number.isFinite(sourceEvent.screenY) ? sourceEvent.screenY : clientY),
-                    timestamp: Date.now()
-                });
-                dragLongPressTimer = setTimeout(() => {
-                    dragLongPressTimer = 0;
-                    if (!dragLongPressPending) return;
-                    const startX = pendingDragStartX;
-                    const startY = pendingDragStartY;
-                    const latestX = pendingDragLatestX;
-                    const latestY = pendingDragLatestY;
-                    const startVirtualX = pendingDragStartVirtualX;
-                    const startVirtualY = pendingDragStartVirtualY;
-                    const latestVirtualX = pendingDragLatestVirtualX;
-                    const latestVirtualY = pendingDragLatestVirtualY;
-                    const latestSourceEvent = pendingDragSourceEvent;
-                    const activePointerType = pendingDragPointerType || pointerType;
-                    dragLongPressPending = false;
-                    pendingDragPointerType = '';
-                    pendingDragSourceEvent = null;
-                    handleStart(
-                        startX,
-                        startY,
-                        activePointerType,
-                        latestSourceEvent,
-                        buildDragPointSnapshot(startX, startY, startVirtualX, startVirtualY)
-                    );
-                    handleMove(
-                        latestX,
-                        latestY,
-                        latestSourceEvent,
-                        buildDragPointSnapshot(latestX, latestY, latestVirtualX, latestVirtualY)
-                    );
-                }, _NEKO_IDLE_RETURN_DRAG_LONG_PRESS_MS);
-            };
-
-            const updatePendingLongPressDrag = (clientX, clientY, sourceEvent = null) => {
-                if (!dragLongPressPending) return false;
-                const point = getDragPoint(sourceEvent, clientX, clientY);
-                if (!isUsableDragPoint(point)) return true;
-                pendingDragLatestX = point.localX;
-                pendingDragLatestY = point.localY;
-                pendingDragLatestVirtualX = point.virtualX;
-                pendingDragLatestVirtualY = point.virtualY;
-                pendingDragSourceEvent = sourceEvent;
-                if (Math.abs(point.virtualX - pendingDragStartVirtualX) > 5 ||
-                    Math.abs(point.virtualY - pendingDragStartVirtualY) > 5) {
-                    dragLongPressMovedPastClickThreshold = true;
-                }
-                return true;
-            };
-
             const handleEnd = () => {
-                if (dragLongPressPending) {
-                    const suppressClick = dragLongPressMovedPastClickThreshold;
-                    clearPendingLongPressDrag();
-                    if (suppressClick) {
-                        setReturnClickSuppressed(true);
-                        setTimeout(() => setReturnClickSuppressed(false), 160);
-                    }
-                    return;
-                }
                 clearDragSafetyTimer();
                 stopDragCursorPolling();
                 if (isDragging) {
@@ -6709,15 +6582,13 @@ const AvatarButtonMixin = {
                     e.preventDefault();
                     e.stopImmediatePropagation();
                     const point = getDragPoint(e, e.clientX, e.clientY);
-                    scheduleLongPressDrag(point.x, point.y, 'mouse', e);
+                    handleStart(point.x, point.y, 'mouse', e, point);
                 }
             });
 
             this._returnButtonDragHandlers = {
-                cancelPendingLongPress: clearPendingLongPressDrag,
                 mouseMove: (e) => {
                     const point = getDragPoint(e, e.clientX, e.clientY);
-                    if (updatePendingLongPressDrag(point.x, point.y, e)) return;
                     if (isDragging && dragPointerType === 'mouse' && e.buttons === 0) {
                         handleEnd();
                         return;
@@ -6726,12 +6597,6 @@ const AvatarButtonMixin = {
                 },
                 mouseUp: handleEnd,
                 touchMove: (e) => {
-                    if (dragLongPressPending && e.touches && e.touches[0]) {
-                        e.preventDefault();
-                        const point = getDragPoint(e.touches[0], e.touches[0].clientX, e.touches[0].clientY);
-                        updatePendingLongPressDrag(point.x, point.y, e.touches[0]);
-                        return;
-                    }
                     if (isDragging && e.touches && e.touches[0]) {
                         e.preventDefault();
                         const point = getDragPoint(e.touches[0], e.touches[0].clientX, e.touches[0].clientY);
@@ -6756,7 +6621,7 @@ const AvatarButtonMixin = {
                 }
                 if (container.contains(e.target) && e.touches && e.touches[0]) {
                     const point = getDragPoint(e.touches[0], e.touches[0].clientX, e.touches[0].clientY);
-                    scheduleLongPressDrag(point.x, point.y, 'touch', e.touches[0]);
+                    handleStart(point.x, point.y, 'touch', e.touches[0], point);
                 }
             }, { passive: false });
             document.addEventListener('touchmove', this._returnButtonDragHandlers.touchMove, { passive: false });
@@ -7068,9 +6933,6 @@ const AvatarButtonMixin = {
             }
 
             if (this._returnButtonDragHandlers) {
-                if (typeof this._returnButtonDragHandlers.cancelPendingLongPress === 'function') {
-                    this._returnButtonDragHandlers.cancelPendingLongPress();
-                }
                 document.removeEventListener('mousemove', this._returnButtonDragHandlers.mouseMove);
                 document.removeEventListener('mouseup', this._returnButtonDragHandlers.mouseUp);
                 document.removeEventListener('touchmove', this._returnButtonDragHandlers.touchMove);
