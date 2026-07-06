@@ -902,7 +902,11 @@
         "volumeWaiting": "待機中",
         "volumeHintWaiting": "マイクが入力を待っています、話してください",
         "noiseReduction": "ノイズリダクション",
-        "noiseReductionHint": "RNNoise AI ノイズリダクションで音声をクリアに"
+        "noiseReductionHint": "RNNoise AI ノイズリダクションで音声をクリアに",
+        "localTurnDetection": "ローカルターン検出",
+        "localTurnDetectionHint": "会話のターンをローカルで判定。次回の音声セッションから有効",
+        "smartTurn": "Smart Turn 区切り判定",
+        "smartTurnHint": "オフ=純粋VAD、停止で即確定。先にローカルターン検出をオンに"
     },
     "speaker": {
         "volumeLabel": "スピーカー音量",
@@ -2568,6 +2572,10 @@
         "toggles": {
             "allowInterrupt": "割り込み許可",
             "mergeMessages": "メッセージ結合",
+            "localTurnDetection": "ローカルターン検出",
+            "localTurnDetectionTooltip": "発話の終わりを端末側で判定し、より自然な応答に。切り替えると現在の音声セッションを再接続します。",
+            "smartTurn": "Smart Turn 区切り判定",
+            "smartTurnTooltip": "オン=停止時に本当に話し終えたか判定（割り込みません）。オフ=純粋Silero VADで停止即確定。通話中に切替可、ローカルターン検出が必要。",
             "avatarReactionBubble": "表情バブル",
             "focusCognition": "集中モード",
             "focusCognitionTooltip": "オンにすると、あなたが弱音を吐いたり複雑な話題のときに集中して深く考えます。オフにすると集中モードに入りません。",

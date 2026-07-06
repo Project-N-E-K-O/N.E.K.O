@@ -902,7 +902,11 @@
         "volumeWaiting": "대기 중",
         "volumeHintWaiting": "마이크가 입력을 대기 중입니다. 말씀해 주세요.",
         "noiseReduction": "노이즈 리덕션",
-        "noiseReductionHint": "RNNoise AI 노이즈 리덕션으로 더 선명한 음성"
+        "noiseReductionHint": "RNNoise AI 노이즈 리덕션으로 더 선명한 음성",
+        "localTurnDetection": "로컬 턴 감지",
+        "localTurnDetectionHint": "대화 턴을 로컬에서 감지; 다음 음성 세션부터 적용",
+        "smartTurn": "Smart Turn 턴 종료 판정",
+        "smartTurnHint": "끔=순수 VAD, 멈추면 즉시 확정. 로컬 턴 감지 먼저 켜기"
     },
     "speaker": {
         "volumeLabel": "스피커 볼륨",
@@ -2568,6 +2572,10 @@
         "toggles": {
             "allowInterrupt": "인터럽트 허용",
             "mergeMessages": "메시지 병합",
+            "localTurnDetection": "로컬 턴 감지",
+            "localTurnDetectionTooltip": "발화 종료를 기기에서 판단해 더 자연스러운 응답을 만듭니다. 전환하면 현재 음성 세션을 재연결합니다.",
+            "smartTurn": "Smart Turn 턴 종료 판정",
+            "smartTurnTooltip": "켬=멈출 때 정말 끝났는지 판단(끊지 않음); 끔=순수 Silero VAD, 멈추면 즉시 확정. 통화 중 전환 가능, 로컬 턴 감지 필요.",
             "avatarReactionBubble": "표정 말풍선",
             "focusCognition": "집중 모드",
             "focusCognitionTooltip": "켜면 당신이 마음을 털어놓거나 복잡한 주제일 때 더 집중해 깊이 생각합니다. 끄면 집중 모드에 들어가지 않습니다.",

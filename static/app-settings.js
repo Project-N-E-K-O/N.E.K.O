@@ -39,6 +39,8 @@
         'proactiveChatInterval',
         'proactiveVisionInterval',
         'textGuardMaxLength',
+        'localTurnDetectionEnabled',
+        'smartTurnEnabled',
         'renderQuality',
         'targetFrameRate'
     ];
@@ -69,7 +71,9 @@
             proactiveChatInterval: S.proactiveChatInterval,
             proactiveVisionInterval: S.proactiveVisionInterval,
             subtitleEnabled: S.subtitleEnabled,
-            textGuardMaxLength: S.textGuardMaxLength
+            textGuardMaxLength: S.textGuardMaxLength,
+            localTurnDetectionEnabled: S.localTurnDetectionEnabled,
+            smartTurnEnabled: S.smartTurnEnabled
         };
         // 只有在 S 上存在 userLanguage 属性时才包含（含 null，支持显式清除语义）
         if ('userLanguage' in S) {
@@ -99,6 +103,13 @@
             window.cursorFollowPerformanceLevel = U.mapRenderQualityToFollowPerf(S.renderQuality);
         }
         return changed;
+    }
+
+    function persistTurnDetectionStorage() {
+        try {
+            localStorage.setItem('neko_local_turn_detection', S.localTurnDetectionEnabled ? '1' : '0');
+            localStorage.setItem('neko_smart_turn', S.smartTurnEnabled ? '1' : '0');
+        } catch (_) { }
     }
 
     function isManualScreenShareActive() {
@@ -316,6 +327,8 @@
         const currentTextGuardMaxLength = typeof window.textGuardMaxLength !== 'undefined'
             ? window.textGuardMaxLength
             : S.textGuardMaxLength;
+        const currentLocalTurnDetection = !!S.localTurnDetectionEnabled;
+        const currentSmartTurn = S.smartTurnEnabled !== false;
         const currentRenderQuality = typeof window.renderQuality !== 'undefined'
             ? window.renderQuality
             : S.renderQuality;
@@ -371,6 +384,8 @@
             humanoidLocalTrackingEnabled: currentHumanoidLocalTracking,
             lockedHoverFadeEnabled: currentLockedHoverFade,
             subtitleEnabled: currentSubtitleEnabled,
+            localTurnDetectionEnabled: currentLocalTurnDetection,
+            smartTurnEnabled: currentSmartTurn,
             userLanguage: currentUserLanguage
         };
         localStorage.setItem('project_neko_settings', JSON.stringify(settings));
@@ -392,6 +407,9 @@
         S.proactiveChatInterval = currentProactiveChatInterval;
         S.proactiveVisionInterval = currentProactiveVisionInterval;
         S.textGuardMaxLength = currentTextGuardMaxLength;
+        S.localTurnDetectionEnabled = currentLocalTurnDetection;
+        S.smartTurnEnabled = currentSmartTurn;
+        persistTurnDetectionStorage();
         S.renderQuality = currentRenderQuality;
         S.targetFrameRate = currentTargetFrameRate;
         stopVisionAfterPrivacyEnabled();
@@ -650,6 +668,12 @@
                     if (serverSettings.userLanguage !== undefined && window.subtitleBridge) {
                         window.subtitleBridge.setUserLanguage(serverSettings.userLanguage);
                     }
+                    if (
+                        Object.prototype.hasOwnProperty.call(serverSettings, 'localTurnDetectionEnabled') ||
+                        Object.prototype.hasOwnProperty.call(serverSettings, 'smartTurnEnabled')
+                    ) {
+                        persistTurnDetectionStorage();
+                    }
                 }
 
                 if (hasUpdate) {
@@ -756,6 +780,16 @@
         // 加载降噪设置
         if (typeof window.appAudioCapture !== 'undefined' && window.appAudioCapture.loadNoiseReductionSetting) {
             window.appAudioCapture.loadNoiseReductionSetting();
+        }
+
+        // 加载本地轮次检测设置
+        if (typeof window.appAudioCapture !== 'undefined' && window.appAudioCapture.loadLocalTurnDetectionSetting) {
+            window.appAudioCapture.loadLocalTurnDetectionSetting();
+        }
+
+        // 加载 Smart Turn 语义断句子开关
+        if (typeof window.appAudioCapture !== 'undefined' && window.appAudioCapture.loadSmartTurnSetting) {
+            window.appAudioCapture.loadSmartTurnSetting();
         }
 
         // 加载扬声器音量设置

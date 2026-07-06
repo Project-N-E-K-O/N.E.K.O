@@ -902,7 +902,11 @@
         "volumeWaiting": "Waiting",
         "volumeHintWaiting": "Mic is listening, go ahead and speak",
         "noiseReduction": "Noise Reduction",
-        "noiseReductionHint": "RNNoise AI noise reduction for clearer voice"
+        "noiseReductionHint": "RNNoise AI noise reduction for clearer voice",
+        "localTurnDetection": "Local Turn Detection",
+        "localTurnDetectionHint": "Detect end-of-turn locally; applies to the next voice session",
+        "smartTurn": "Smart Turn endpointing",
+        "smartTurnHint": "Off = pure VAD commits on any pause; needs local turn detection on"
     },
     "speaker": {
         "volumeLabel": "Speaker Volume",
@@ -2568,6 +2572,10 @@
         "toggles": {
             "allowInterrupt": "Allow Interrupt",
             "mergeMessages": "Merge Messages",
+            "localTurnDetection": "Local Turn Detection",
+            "localTurnDetectionTooltip": "Decide end-of-turn on-device for snappier, less interruptive replies. Toggling reconnects the current voice session.",
+            "smartTurn": "Smart Turn endpointing",
+            "smartTurnTooltip": "On = at a pause, decide whether you really finished (won't cut you off); off = pure Silero VAD commits on any pause. Hot-switchable mid-call; requires local turn detection.",
             "avatarReactionBubble": "Expression Bubble",
             "focusCognition": "Focus Mode",
             "focusCognitionTooltip": "When on, she focuses and thinks more deeply when you open up or ask something complex; off disables Focus entirely.",

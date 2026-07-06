@@ -902,7 +902,11 @@
         "volumeWaiting": "等待声音",
         "volumeHintWaiting": "麦克风正在监听，请说话",
         "noiseReduction": "降噪",
-        "noiseReductionHint": "RNNoise AI 降噪，让语音更清晰"
+        "noiseReductionHint": "RNNoise AI 降噪，让语音更清晰",
+        "localTurnDetection": "本地轮次检测",
+        "localTurnDetectionHint": "本地判断说话轮次（不抢话/不打断），下次语音会话生效",
+        "smartTurn": "Smart Turn 语义断句",
+        "smartTurnHint": "关=纯 VAD 停顿即提交；需先开本地轮次检测"
     },
     "speaker": {
         "volumeLabel": "扬声器音量",
@@ -2568,6 +2572,10 @@
         "toggles": {
             "allowInterrupt": "允许打断",
             "mergeMessages": "合并消息",
+            "localTurnDetection": "本地轮次检测",
+            "localTurnDetectionTooltip": "本地判断你说完没（更准地接话、不打断）。切换会重连当前语音会话。",
+            "smartTurn": "Smart Turn 语义断句",
+            "smartTurnTooltip": "开=停顿时判断你是否真说完（不打断你）；关=纯 Silero VAD，停顿即提交。通话中可热切换，需先开本地轮次检测。",
             "avatarReactionBubble": "表情气泡",
             "focusCognition": "凝神模式",
             "focusCognitionTooltip": "开启后，遇到你倾诉脆弱或复杂的话题时她会更专注地深入思考；关闭则不再进入凝神。",

@@ -82,6 +82,8 @@
         selectedMicrophoneId: null,
         microphoneGainDb: 0,
         noiseReductionEnabled: true,
+        localTurnDetectionEnabled: false,
+        smartTurnEnabled: true,
         micVolumeAnimationId: null,
         silenceDetectionTimer: null,
         hasSoundDetected: false,
