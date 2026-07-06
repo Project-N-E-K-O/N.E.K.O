@@ -22,7 +22,7 @@ import time
 import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Literal
+from typing import Any, Awaitable, Callable, Iterable, Literal
 from urllib.parse import urlparse, urlencode
 
 import httpx
@@ -70,9 +70,11 @@ _ONE_TIME_CODE_TTL_SECONDS = 5 * 60
 # OAuth 登录状态存储在本机用户目录，仅供本地插件面板使用。
 _OAUTH_CLIENT_ID = NEKO_AUTH_CLIENT_ID
 _OAUTH_SCOPE = "openid email profile offline"
+_OAUTH_SCOPE_ALIASES = {"offline": "offline_access"}
 _OAUTH_REDIRECT_PATH = "/market/oauth/callback"
 _OAUTH_SESSION_TTL_SECONDS = 5 * 60
 _OAUTH_EXPIRE_SKEW_SECONDS = 60
+_MARKET_USER_STATUS_TTL_SECONDS = 60
 _NEKO_STATE_DIR = Path.home() / ".neko"
 _OAUTH_PENDING_FILE = _NEKO_STATE_DIR / "market_oauth_pending.json"
 _OAUTH_CALLBACK_FILE = _NEKO_STATE_DIR / "oauth_callback.json"
@@ -776,6 +778,15 @@ async def market_oauth_status(
             market_web_url=MARKET_WEB_URL,
         )
 
+    cached_user = _fresh_cached_market_user(token_data)
+    if cached_user is not None:
+        return MarketOAuthStatusResponse(
+            authenticated=True,
+            user=cached_user,
+            expires_at=token_data.get("expires_at"),
+            market_web_url=MARKET_WEB_URL,
+        )
+
     user = await _fetch_market_user(token_data.get("access_token"))
     if user is None:
         return MarketOAuthStatusResponse(
@@ -783,9 +794,17 @@ async def market_oauth_status(
             expires_at=token_data.get("expires_at"),
             market_web_url=MARKET_WEB_URL,
         )
+    subject = _extract_subject(user)
+    if not subject:
+        return MarketOAuthStatusResponse(
+            authenticated=False,
+            expires_at=token_data.get("expires_at"),
+            market_web_url=MARKET_WEB_URL,
+        )
     token_data["user"] = user
-    token_data["subject"] = _extract_subject(user)
+    token_data["subject"] = subject
     token_data["market_api_url_last_verified"] = _normalized_base_url(MARKET_API_URL)
+    token_data["market_user_verified_at"] = time.time()
     token_data["updated_at"] = time.time()
     _write_private_json(_OAUTH_TOKEN_FILE, token_data)
 
@@ -843,6 +862,9 @@ async def market_oauth_complete(
     user = await _fetch_market_user(token_payload.get("access_token"))
     if user is None:
         raise HTTPException(status_code=401, detail="Market 未接受当前 Auth token")
+    subject = _extract_subject(user)
+    if not subject:
+        raise HTTPException(status_code=502, detail="Market 用户信息缺少 subject")
     expires_in = int(token_payload.get("expires_in") or 3600)
     now = time.time()
     stored = {
@@ -853,11 +875,12 @@ async def market_oauth_complete(
         "expires_at": now + expires_in,
         "auth_url": _normalized_base_url(NEKO_AUTH_URL),
         "issuer": _auth_issuer(),
-        "subject": _extract_subject(user),
+        "subject": subject,
         "client_id": _OAUTH_CLIENT_ID,
         "refresh_generation": 0,
         "market_api_url": _normalized_base_url(MARKET_API_URL),
         "market_api_url_last_verified": _normalized_base_url(MARKET_API_URL),
+        "market_user_verified_at": now,
         "user": user,
         "created_at": now,
         "updated_at": now,
@@ -1016,9 +1039,32 @@ def _oauth_token_provenance_matches(token_data: dict[str, Any]) -> bool:
     except (TypeError, ValueError):
         return False
 
-    granted = set(str(token_data.get("scope") or "").split())
-    required = set(_OAUTH_SCOPE.split())
+    granted = _normalize_oauth_scopes(str(token_data.get("scope") or "").split())
+    required = _normalize_oauth_scopes(_OAUTH_SCOPE.split())
     return required.issubset(granted)
+
+
+def _normalize_oauth_scopes(scopes: Iterable[str]) -> set[str]:
+    return {
+        _OAUTH_SCOPE_ALIASES.get(scope.strip(), scope.strip())
+        for scope in scopes
+        if scope.strip()
+    }
+
+
+def _fresh_cached_market_user(token_data: dict[str, Any]) -> dict[str, Any] | None:
+    user = token_data.get("user")
+    if not isinstance(user, dict):
+        return None
+    if token_data.get("market_api_url_last_verified") != _normalized_base_url(MARKET_API_URL):
+        return None
+    try:
+        verified_at = float(token_data.get("market_user_verified_at"))
+    except (TypeError, ValueError):
+        return None
+    if verified_at <= time.time() - _MARKET_USER_STATUS_TTL_SECONDS:
+        return None
+    return user
 
 
 def _extract_subject(user: dict[str, Any] | None) -> str | None:
@@ -1215,6 +1261,7 @@ async def _refresh_oauth_token(token_data: dict[str, Any]) -> dict[str, Any]:
             "refreshed_at": now,
         }
     )
+    refreshed.pop("market_user_verified_at", None)
     return refreshed
 
 
@@ -1223,28 +1270,25 @@ async def _revoke_oauth_token_best_effort(token_data: dict[str, Any]) -> None:
         ("refresh_token", token_data.get("refresh_token")),
         ("access_token", token_data.get("access_token")),
     ]
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
-            for token_type_hint, token_value in tokens:
-                if not isinstance(token_value, str) or not token_value:
-                    continue
-                try:
-                    await client.post(
-                        f"{NEKO_AUTH_URL.rstrip('/')}/oauth2/revoke",
-                        data={
-                            "token": token_value,
-                            "token_type_hint": token_type_hint,
-                            "client_id": _OAUTH_CLIENT_ID,
-                        },
-                        headers={
-                            "accept": "application/json",
-                            "content-type": "application/x-www-form-urlencoded",
-                        },
-                    )
-                except httpx.HTTPError as exc:
-                    logger.debug("Auth token revoke failed for {}: {}", token_type_hint, exc)
-    except httpx.HTTPError as exc:
-        logger.debug("Auth revoke client failed: {}", exc)
+    async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
+        for token_type_hint, token_value in tokens:
+            if not isinstance(token_value, str) or not token_value:
+                continue
+            try:
+                await client.post(
+                    f"{NEKO_AUTH_URL.rstrip('/')}/oauth2/revoke",
+                    data={
+                        "token": token_value,
+                        "token_type_hint": token_type_hint,
+                        "client_id": _OAUTH_CLIENT_ID,
+                    },
+                    headers={
+                        "accept": "application/json",
+                        "content-type": "application/x-www-form-urlencoded",
+                    },
+                )
+            except httpx.HTTPError as exc:
+                logger.debug("Auth token revoke failed for {}: {}", token_type_hint, exc)
 
 
 async def _fetch_market_user(access_token: Any) -> dict[str, Any] | None:
