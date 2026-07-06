@@ -1780,12 +1780,14 @@ class UniversalTutorialManager {
         overlay.setAttribute('aria-modal', 'true');
         overlay.setAttribute('aria-labelledby', 'neko-day1-systray-intro-title');
 
+        // 修改原因：托盘示意图在本分支更新过内容，必须使用新的指纹文件名；
+        // 否则浏览器/CDN 可能继续缓存旧 URL，导致新文案搭配旧图片。
         overlay.innerHTML = `
             <div class="neko-day1-systray-card">
                 <button class="neko-day1-systray-close" type="button" aria-label="${this.safeEscapeHtml(t('common.close', '关闭'))}">×</button>
                 <div class="neko-day1-systray-media">
                     <img
-                        src="/static/icons/489d10e622b89904a6441a3df869eff7.png"
+                        src="/static/icons/be75ec4fbd08bf74adfeb2c19e323b3b.png"
                         alt="${escape({ key: 'tutorial.systray.location.alt', fallback: '系统托盘位置示意图' })}"
                     >
                 </div>

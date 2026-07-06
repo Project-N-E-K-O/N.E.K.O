@@ -618,8 +618,8 @@
             director.disableInterrupts();
             director.cancelActiveNarration();
             director.beginGuideInterruptPresentation();
-            // 修改原因：生气退出会脱离教程接管态，必须先取消轻对抗的临时显示 timer；
-            // 否则 timer 到期后会重新发送隐藏真实鼠标，覆盖退出台词期间的显示要求。
+            // 修改原因：生气退出会脱离教程接管态，必须先取消页面侧轻对抗临时显示 timer；
+            // 随后的 interrupt_angry_exit 可见性消息也是 PC 侧清理临时显示 timer 的跨端契约。
             if (director.resistanceCursorTimer) {
                 window.clearTimeout(director.resistanceCursorTimer);
                 director.resistanceCursorTimer = null;

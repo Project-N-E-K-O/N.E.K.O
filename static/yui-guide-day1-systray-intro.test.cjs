@@ -67,7 +67,8 @@ test('Day1 system tray intro modal uses the existing systray copy and image reso
   assert.match(universalManagerSource, /showDay1SystrayIntroModal\(endMeta, avatarFloatingEndState\)/);
   assert.match(universalManagerSource, /tutorial\.systray\.location\.title/);
   assert.doesNotMatch(universalManagerSource, /tutorial\.systray\.menu\./);
-  assert.match(universalManagerSource, /\/static\/icons\/489d10e622b89904a6441a3df869eff7\.png/);
+  assert.match(universalManagerSource, /\/static\/icons\/be75ec4fbd08bf74adfeb2c19e323b3b\.png/);
+  assert.doesNotMatch(universalManagerSource, /\/static\/icons\/489d10e622b89904a6441a3df869eff7\.png/);
   assert.match(universalManagerSource, /neko-day1-systray-intro-modal/);
 
   assert.match(yuiGuideCssSource, /\.neko-day1-systray-intro-modal/);

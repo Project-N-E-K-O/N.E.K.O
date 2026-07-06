@@ -240,6 +240,33 @@ test('common helper relays temporary PC system cursor reveal duration', () => {
     assert.equal(typeof chatRelays[1].timestamp, 'number');
 });
 
+test('common helper relays angry exit reveal after temporary PC cursor reveal', () => {
+    const chatRelays = [];
+    const storage = new Map([['yuiGuidePcOverlayRunId', 'run-cursor']]);
+    const relayOptions = {
+        localStorage: {
+            getItem(key) {
+                return storage.get(key) || null;
+            }
+        },
+        nekoTutorialOverlay: {
+            relayToChat(message) {
+                chatRelays.push(message);
+            }
+        }
+    };
+
+    common.syncPcSystemCursorTemporaryReveal(2000, 'interrupt_resist_light', relayOptions);
+    common.syncPcSystemCursorHidden(false, 'interrupt_angry_exit', relayOptions);
+
+    assert.deepEqual(chatRelays.map((message) => [message.action, message.hidden, message.reason]), [
+        ['yui_guide_system_cursor_visibility', false, 'interrupt_resist_light'],
+        ['yui_guide_system_cursor_temporary_reveal', undefined, 'interrupt_resist_light'],
+        ['yui_guide_system_cursor_visibility', false, 'interrupt_angry_exit']
+    ]);
+    assert.equal(chatRelays[2].tutorialRunId, 'run-cursor');
+});
+
 test('common helper relays PC tutorial lifecycle start before cursor visibility', () => {
     const chatRelays = [];
     const petRelays = [];
