@@ -149,8 +149,11 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                 receive_task.cancel()
                 try:
                     await receive_task
-                except (asyncio.CancelledError, Exception):
+                except asyncio.CancelledError:
+                    # Expected during interrupt teardown.
                     pass
+                except Exception as exc:
+                    logger.debug("ElevenLabs interrupted receive task cleanup failed: %s", exc)
                 receive_task = None
             if ws is not None:
                 if send_final_empty and not text_done_sent:
@@ -175,8 +178,11 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                 receive_task.cancel()
                 try:
                     await receive_task
-                except (asyncio.CancelledError, Exception):
+                except asyncio.CancelledError:
+                    # Expected when closing an active receive loop.
                     pass
+                except Exception as exc:
+                    logger.debug("ElevenLabs receive task cleanup failed: %s", exc)
             receive_task = None
 
         async def _open_ws(speech_id: str) -> None:

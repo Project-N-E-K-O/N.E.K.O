@@ -186,14 +186,17 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                             receive_task.cancel()
                             try:
                                 await receive_task
-                            except (asyncio.CancelledError, Exception):
+                            except asyncio.CancelledError:
+                                # Expected during interrupt teardown.
                                 pass
+                            except Exception as e:
+                                logger.debug(f"xAI TTS interrupted receive task cleanup failed: {e}")
                             receive_task = None
                         if ws:
                             try:
                                 await asyncio.wait_for(ws.close(), timeout=0.5)
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"xAI TTS interrupted websocket close failed: {e}")
                             ws = None
                     finally:
                         current_speech_id = None

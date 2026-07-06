@@ -336,14 +336,17 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                             receive_task.cancel()
                             try:
                                 await receive_task
-                            except (asyncio.CancelledError, Exception):
+                            except asyncio.CancelledError:
+                                # Expected during interrupt teardown.
                                 pass
+                            except Exception as e:
+                                logger.debug(f"Step TTS interrupted receive task cleanup failed: {e}")
                             receive_task = None
                         if ws:
                             try:
                                 await ws.close()
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"Step TTS interrupted websocket close failed: {e}")
                             ws = None
                     finally:
                         session_id = None
