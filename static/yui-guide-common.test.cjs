@@ -1513,6 +1513,8 @@ test('director routes resistance interrupts through ResistanceController boundar
     assert.match(resistanceControllerBlock, /playLightResistance\(x,\s*y,\s*options\) \{/);
     assert.match(resistanceControllerBlock, /abortAsAngryExit\(source\) \{/);
     assert.match(resistanceControllerBlock, /destroy\(\) \{/);
+    assert.match(resistanceControllerBlock, /shouldAllowPausedLightResistanceInterrupt[\s\S]*director\.scenePausedForResistance[\s\S]*this\.lightResistanceActive/);
+    assert.match(resistanceControllerBlock, /director\.scenePausedForResistance && !shouldAllowPausedLightResistanceInterrupt/);
     assert.match(resistanceControllerBlock, /director\.interruptQualifyingMoveStreak \+= 1;/);
     assert.match(resistanceControllerBlock, /director\.interruptCount \+= 1;/);
     assert.match(resistanceControllerBlock, /director\.abortAsAngryExit\('pointer_interrupt'\);/);

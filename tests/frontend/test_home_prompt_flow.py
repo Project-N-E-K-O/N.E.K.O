@@ -8617,6 +8617,7 @@ def test_avatar_floating_second_light_resistance_refreshes_cursor_while_first_li
                 director.revealSystemCursorTemporarily(2000, 'interrupt_resist_light');
                 director.interruptCount = 1;
                 director.resistanceController.lightResistanceActive = true;
+                director.scenePausedForResistance = true;
 
                 const playQualifyingGroup = () => {
                     director.lastPointerPoint = { x: 100, y: 100, t: window.__now, speed: 0.04 };
@@ -8641,6 +8642,7 @@ def test_avatar_floating_second_light_resistance_refreshes_cursor_while_first_li
 
                 return {
                     activeDuringSecond: director.resistanceController.lightResistanceActive,
+                    pausedDuringSecond: director.scenePausedForResistance,
                     interruptCount: director.interruptCount,
                     temporaryReveals,
                     timerDelays: timers.map((timer) => timer.delay),
@@ -8657,6 +8659,7 @@ def test_avatar_floating_second_light_resistance_refreshes_cursor_while_first_li
     )
 
     assert result["activeDuringSecond"] is True
+    assert result["pausedDuringSecond"] is True
     assert result["interruptCount"] == 2
     assert result["temporaryReveals"] == [
         {"reason": "interrupt_resist_light", "durationMs": 2000},

@@ -351,10 +351,17 @@
 
         handleInterrupt(event) {
             const director = this.director;
+            // 修改原因：轻对抗台词播放期间会把 scenePausedForResistance 置 true，
+            // 但用户此时连续拖动仍是同一次对抗链路的一部分；只允许该状态继续累计和刷新真实鼠标，
+            // 其他暂停场景仍保持拦截，避免污染普通教程演出。
+            const shouldAllowPausedLightResistanceInterrupt = (
+                director.scenePausedForResistance
+                && this.lightResistanceActive
+            );
             if (
                 director.destroyed
                 || director.angryExitTriggered
-                || director.scenePausedForResistance
+                || (director.scenePausedForResistance && !shouldAllowPausedLightResistanceInterrupt)
                 || !director.interruptsEnabled
                 || !event
                 || event.isTrusted === false
