@@ -6430,7 +6430,11 @@ const AvatarButtonMixin = {
                         dragCancelled: true
                     });
                 }
-                setTimeout(() => setReturnClickSuppressed(false), 120);
+                if (moved) {
+                    setTimeout(() => setReturnClickSuppressed(false), 120);
+                } else {
+                    setReturnClickSuppressed(false);
+                }
             };
 
             const resetDragStateAfterMissingEnd = (safetyToken) => {
@@ -6593,9 +6597,13 @@ const AvatarButtonMixin = {
                     dragActiveDispatched = false;
                     dragPointerType = '';
                     container.style.cursor = 'grab';
-                    setTimeout(() => {
+                    if (moved) {
+                        setTimeout(() => {
+                            finishDragState(moved, safetyToken);
+                        }, 10);
+                    } else {
                         finishDragState(moved, safetyToken);
-                    }, 10);
+                    }
                 }
             };
 

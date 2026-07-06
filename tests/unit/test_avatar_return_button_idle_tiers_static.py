@@ -2589,6 +2589,11 @@ def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():
         "finishDragState(moved, safetyToken);",
         "return button drag end handler",
     )
+    _assert_source_contains(
+        handle_end,
+        "if (moved) {\n                        setTimeout(() => {\n                            finishDragState(moved, safetyToken);\n                        }, 10);\n                    } else {\n                        finishDragState(moved, safetyToken);\n                    }",
+        "no-move return click clears pending state before browser click",
+    )
     _assert_source_order(
         handle_end,
         "return button drag end handler",
@@ -2610,6 +2615,17 @@ def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():
         "if (isDragging && dragPointerType === 'mouse' && e.buttons === 0) {",
         "handleEnd();",
         "handleMove(point.x, point.y, e);",
+    )
+    finish_drag_state_block = _source_slice_between(
+        drag_setup,
+        "const finishDragState = (moved, safetyToken) => {",
+        "const resetDragStateAfterMissingEnd = (safetyToken) => {",
+        "return button drag finish state",
+    )
+    _assert_source_contains(
+        finish_drag_state_block,
+        "if (moved) {\n                    setTimeout(() => setReturnClickSuppressed(false), 120);\n                } else {\n                    setReturnClickSuppressed(false);\n                }",
+        "drag suppresses click briefly while no-move click is restored immediately",
     )
 
     sync_block = _source_slice_between(
