@@ -285,8 +285,8 @@ def test_avatar_floating_guides_hide_real_cursor_during_takeover_and_show_banner
         r"body\.yui-taking-over\.yui-taking-over #neko-tutorial-skip-btn,[\s\S]*?body\.yui-taking-over\.yui-taking-over \[data-yui-emergency-exit\] \*[\s\S]*?cursor\s*:\s*auto\s*!important",
         guide_css,
     )
-    assert "body.yui-taking-over.yui-resistance-cursor-reveal" not in guide_css
-    assert "body.yui-taking-over.yui-user-cursor-revealed" not in guide_css
+    assert "body.yui-taking-over.yui-resistance-cursor-reveal" in guide_css
+    assert "body.yui-taking-over.yui-user-cursor-revealed" in guide_css
 
     assert "Double .yui-taking-over to out-specificity earlier cursor:auto !important rules." in plugin_runtime_source
     assert "html.yui-taking-over.yui-taking-over," in plugin_runtime_source
@@ -401,7 +401,7 @@ def test_avatar_floating_guides_hide_real_cursor_during_takeover_and_show_banner
         1,
     )[0]
     assert "classList.add('yui-resistance-cursor-reveal')" not in plugin_resistance_reveal_block
-    assert "window.setTimeout" not in plugin_resistance_reveal_block
+    assert "window.setTimeout" in plugin_resistance_reveal_block
     assert "revealUserCursor()" not in plugin_runtime_source
     assert "revealRealCursorTemporarily" not in plugin_runtime_source
     assert "userCursorRevealed" not in plugin_runtime_source
@@ -409,7 +409,10 @@ def test_avatar_floating_guides_hide_real_cursor_during_takeover_and_show_banner
     assert "syncPcSystemCursorHidden(hidden, reason = 'tutorial')" in manager_source
     assert "syncPcSystemCursorHidden(hidden === true, reason);" in manager_source
     assert "function syncPcSystemCursorHidden(hidden, reason = 'tutorial', options)" in common_source
-    assert "action: 'yui_guide_system_cursor_visibility'" in common_source
+    assert "function syncPcSystemCursorTemporaryReveal(durationMs = 2000, reason = 'tutorial-temporary-reveal', options)" in common_source
+    assert "'yui_guide_system_cursor_visibility'" in common_source
+    assert "'yui_guide_system_cursor_temporary_reveal'" in common_source
+    assert "syncPcSystemCursorTemporaryReveal(normalizedDurationMs, reason)" in director_source
     assert "action: 'yui_guide_system_cursor_visibility'" not in manager_source
     assert "action: 'yui_guide_system_cursor_visibility'" not in director_source
     assert "ensurePcTutorialGlobalOverlayStarted(reason = 'tutorial-started')" in manager_source
@@ -445,8 +448,8 @@ def test_avatar_floating_guides_hide_real_cursor_during_takeover_and_show_banner
     assert "syncPcSystemCursorHidden(hidden === true, reason);" in director_source
     assert "syncSystemCursorHidden(false, 'interrupt_resist_light')" not in resistance_source
     assert "syncSystemCursorHidden', null, false, 'interrupt_resist_light')" not in resistance_source
-    assert "this.syncSystemCursorHidden(true, 'interrupt_resist_light');" in resistance_source
-    assert "call(this.callbacks, 'syncSystemCursorHidden', null, true, 'interrupt_resist_light');" in resistance_source
+    assert "director.revealSystemCursorTemporarily(2000, 'interrupt_resist_light');" in resistance_source
+    assert "syncSystemCursorHidden(true, 'interrupt_resist_light')" not in resistance_source
     assert "director.overlay.emphasizeControlBanner();" in resistance_source
     assert "call(this.overlay, 'emphasizeControlBanner', null);" in resistance_source
     assert "call(this.callbacks, 'suppressResistanceCursorReveal', null, normalizedOptions);" in resistance_source

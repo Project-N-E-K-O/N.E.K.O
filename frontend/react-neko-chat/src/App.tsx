@@ -1737,6 +1737,7 @@ function CompactChatApp({
   const [compactExportPreviewOpen, setCompactExportPreviewOpen] = useState(false);
   const [compactExportSelectedIds, setCompactExportSelectedIds] = useState<Set<string>>(() => new Set());
   const [compactExportAutoScrollToBottom, setCompactExportAutoScrollToBottom] = useState(true);
+  const compactExportHistoryGeometryStateRef = useRef<{ mounted: boolean; open: boolean } | null>(null);
   // 折叠进行中：点最小化时置 true → 蓝条（历史区开关）淡出（#2）+ 胶囊右→左擦除收走。mode 切到
   // minimized 后由下方 useEffect 复位。展开进行中：minimized→compact 时置 true → 胶囊左→右展开 reveal。
   // 这两个擦除/reveal 类必须由 React state 写进 className（而非 host/preload 用 classList 加）—— 否则
@@ -2128,6 +2129,26 @@ function CompactChatApp({
       compactExportHistoryUnmountTimerRef.current = null;
     }, COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS);
   }, [clearCompactExportHistoryUnmountTimer, messages]);
+
+  useEffect(() => {
+    if (!isCompactSurface) {
+      compactExportHistoryGeometryStateRef.current = null;
+      return;
+    }
+    const previous = compactExportHistoryGeometryStateRef.current;
+    compactExportHistoryGeometryStateRef.current = {
+      mounted: compactExportHistoryMounted,
+      open: compactExportHistoryOpen,
+    };
+    if (!previous) return;
+    if (
+      previous.mounted === compactExportHistoryMounted
+      && previous.open === compactExportHistoryOpen
+    ) {
+      return;
+    }
+    window.dispatchEvent(new CustomEvent('neko:compact-interaction-geometry-refresh'));
+  }, [compactExportHistoryMounted, compactExportHistoryOpen, isCompactSurface]);
 
   useEffect(() => {
     const request = compactHistoryOpenRequest;
@@ -3285,14 +3306,62 @@ function CompactChatApp({
     const gap = 16;
     let frameId: number | null = null;
 
-    const syncChoiceLayerSurfaceVars = (shellRect: DOMRect, layerNode: HTMLElement) => {
-      layerNode.style.setProperty('--compact-choice-surface-left', `${shellRect.left}px`);
-      layerNode.style.setProperty('--compact-choice-surface-top', `${shellRect.top}px`);
-      layerNode.style.setProperty('--compact-choice-surface-width', `${Math.max(1, shellRect.width)}px`);
-      layerNode.style.setProperty('--compact-choice-surface-height', `${Math.max(1, shellRect.height)}px`);
+    const syncChoiceLayerSurfaceVars = (
+      surfaceRect: { left: number; top: number; width: number; height: number },
+      layerNode: HTMLElement,
+    ) => {
+      layerNode.style.setProperty('--compact-choice-surface-left', `${surfaceRect.left}px`);
+      layerNode.style.setProperty('--compact-choice-surface-top', `${surfaceRect.top}px`);
+      layerNode.style.setProperty('--compact-choice-surface-width', `${Math.max(1, surfaceRect.width)}px`);
+      layerNode.style.setProperty('--compact-choice-surface-height', `${Math.max(1, surfaceRect.height)}px`);
     };
 
-    const getDesktopPlacementSpace = (shellRect: DOMRect) => {
+    const getDesktopCompactLayout = (event?: Event) => {
+      const eventDetail = event instanceof CustomEvent ? event.detail : null;
+      if (eventDetail && typeof eventDetail === 'object') {
+        return eventDetail as DesktopCompactChoicePlacementLayout;
+      }
+      return (window as typeof window & {
+        __nekoDesktopCompactLayout?: DesktopCompactChoicePlacementLayout | null;
+      }).__nekoDesktopCompactLayout;
+    };
+
+    const getDesktopLayoutSurfaceRect = (layout?: DesktopCompactChoicePlacementLayout | null) => {
+      const surface = layout?.surface;
+      const left = Number(surface?.left);
+      const top = Number(surface?.top);
+      const width = Number(surface?.width);
+      const height = Number(surface?.height);
+      if (
+        !Number.isFinite(left)
+        || !Number.isFinite(top)
+        || !Number.isFinite(width)
+        || !Number.isFinite(height)
+        || width <= 0
+        || height <= 0
+      ) {
+        return null;
+      }
+      return {
+        left,
+        top,
+        right: left + width,
+        bottom: top + height,
+        width,
+        height,
+      };
+    };
+
+    const syncChoiceLayerSurfaceVarsFromDesktopLayout = (layout?: DesktopCompactChoicePlacementLayout | null) => {
+      const nextLayerNode = compactChoiceLayerRef.current;
+      if (!nextLayerNode) return false;
+      const surfaceRect = getDesktopLayoutSurfaceRect(layout ?? getDesktopCompactLayout());
+      if (!surfaceRect) return false;
+      syncChoiceLayerSurfaceVars(surfaceRect, nextLayerNode);
+      return true;
+    };
+
+    const getDesktopPlacementSpace = (surfaceRect: { top: number; height: number }) => {
       const layout = (window as typeof window & {
         __nekoDesktopCompactLayout?: DesktopCompactChoicePlacementLayout | null;
       }).__nekoDesktopCompactLayout;
@@ -3312,13 +3381,13 @@ function CompactChatApp({
 
       const layoutSurfaceTop = Number(layout?.surface?.top);
       const layoutSurfaceHeight = Number(layout?.surface?.height);
-      const measuredTop = Number.isFinite(shellRect.top) ? shellRect.top : layoutSurfaceTop;
-      const measuredHeight = Number.isFinite(shellRect.height) && shellRect.height > 0
-        ? shellRect.height
+      const measuredTop = Number.isFinite(surfaceRect.top) ? surfaceRect.top : layoutSurfaceTop;
+      const measuredHeight = Number.isFinite(surfaceRect.height) && surfaceRect.height > 0
+        ? surfaceRect.height
         : layoutSurfaceHeight;
       const surfaceScreenTop = windowY + (Number.isFinite(measuredTop) ? measuredTop : 0);
       const surfaceScreenBottom = surfaceScreenTop
-        + (Number.isFinite(measuredHeight) && measuredHeight > 0 ? measuredHeight : Math.max(1, shellRect.height));
+        + (Number.isFinite(measuredHeight) && measuredHeight > 0 ? measuredHeight : Math.max(1, surfaceRect.height));
       const workAreaBottom = workAreaY + workAreaHeight;
       return {
         availableAbove: Math.max(0, surfaceScreenTop - workAreaY),
@@ -3326,16 +3395,17 @@ function CompactChatApp({
       };
     };
 
-    const updatePlacement = () => {
+    const updatePlacement = (desktopLayoutOverride?: DesktopCompactChoicePlacementLayout | null) => {
       const nextShellNode = compactInputShellRef.current;
       const nextLayerNode = compactChoiceLayerRef.current;
       if (!nextShellNode || !nextLayerNode) return;
 
-      const desktopForcedPlacement = ((window as typeof window & {
-        __nekoDesktopCompactLayout?: DesktopCompactChoicePlacementLayout | null;
-      }).__nekoDesktopCompactLayout?.compactChoicePlacement);
+      const desktopLayout = desktopLayoutOverride ?? getDesktopCompactLayout();
+      const desktopForcedPlacement = desktopLayout?.compactChoicePlacement;
       const shellRect = nextShellNode.getBoundingClientRect();
-      syncChoiceLayerSurfaceVars(shellRect, nextLayerNode);
+      const desktopLayoutSurfaceRect = getDesktopLayoutSurfaceRect(desktopLayout);
+      const surfaceRect = desktopLayoutSurfaceRect ?? shellRect;
+      syncChoiceLayerSurfaceVars(surfaceRect, nextLayerNode);
       if (desktopForcedPlacement === 'above' || desktopForcedPlacement === 'below') {
         setCompactChoiceLayerPlacement(current => (current === desktopForcedPlacement ? current : desktopForcedPlacement));
         return;
@@ -3343,9 +3413,9 @@ function CompactChatApp({
       const layerRect = nextLayerNode.getBoundingClientRect();
       const layerHeight = Math.max(layerRect.height, nextLayerNode.scrollHeight);
       const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
-      const desktopSpace = getDesktopPlacementSpace(shellRect);
-      const availableBelow = desktopSpace?.availableBelow ?? Math.max(0, viewportHeight - shellRect.bottom);
-      const availableAbove = desktopSpace?.availableAbove ?? Math.max(0, shellRect.top);
+      const desktopSpace = getDesktopPlacementSpace(surfaceRect);
+      const availableBelow = desktopSpace?.availableBelow ?? Math.max(0, viewportHeight - surfaceRect.bottom);
+      const availableAbove = desktopSpace?.availableAbove ?? Math.max(0, surfaceRect.top);
       const requiredSpace = layerHeight + gap;
       const nextPlacement = availableBelow >= requiredSpace
         ? 'below'
@@ -3374,22 +3444,35 @@ function CompactChatApp({
       });
     };
 
+    let scheduledDesktopLayoutOverride: DesktopCompactChoicePlacementLayout | null | undefined;
     const schedulePlacementUpdate = () => {
       if (frameId !== null) {
         window.cancelAnimationFrame(frameId);
       }
       frameId = window.requestAnimationFrame(() => {
         frameId = null;
-        updatePlacement();
+        const desktopLayoutOverride = scheduledDesktopLayoutOverride;
+        scheduledDesktopLayoutOverride = undefined;
+        updatePlacement(desktopLayoutOverride);
       });
     };
+    const schedulePlacementUpdateWithDesktopLayout = (layout?: DesktopCompactChoicePlacementLayout | null) => {
+      scheduledDesktopLayoutOverride = layout;
+      schedulePlacementUpdate();
+    };
 
+    syncChoiceLayerSurfaceVarsFromDesktopLayout();
     schedulePlacementUpdate();
 
     const visualViewport = window.visualViewport;
+    const handleDesktopCompactLayoutChange = (event: Event) => {
+      const layout = getDesktopCompactLayout(event);
+      syncChoiceLayerSurfaceVarsFromDesktopLayout(layout);
+      schedulePlacementUpdateWithDesktopLayout(layout);
+    };
     window.addEventListener('resize', schedulePlacementUpdate);
     window.addEventListener('neko:compact-surface-layout-change', schedulePlacementUpdate);
-    window.addEventListener('neko:desktop-compact-layout-change', schedulePlacementUpdate);
+    window.addEventListener('neko:desktop-compact-layout-change', handleDesktopCompactLayoutChange);
     visualViewport?.addEventListener('resize', schedulePlacementUpdate);
     visualViewport?.addEventListener('scroll', schedulePlacementUpdate);
 
@@ -3408,7 +3491,7 @@ function CompactChatApp({
       }
       window.removeEventListener('resize', schedulePlacementUpdate);
       window.removeEventListener('neko:compact-surface-layout-change', schedulePlacementUpdate);
-      window.removeEventListener('neko:desktop-compact-layout-change', schedulePlacementUpdate);
+      window.removeEventListener('neko:desktop-compact-layout-change', handleDesktopCompactLayoutChange);
       visualViewport?.removeEventListener('resize', schedulePlacementUpdate);
       visualViewport?.removeEventListener('scroll', schedulePlacementUpdate);
       observer?.disconnect();
@@ -4215,6 +4298,14 @@ function CompactChatApp({
 
   const openCompactInputToolFan = useCallback((intent: 'click' | 'hover', options?: { ignoreDisabled?: boolean }) => {
     if ((!options?.ignoreDisabled && composerDisabled) || compactInputHasPayload) return false;
+    if (compactInputToolFanOpenRef.current) {
+      clearCompactInputToolFanCloseTimer();
+      if (compactInputToolFanOpenIntentRef.current !== 'click') {
+        compactInputToolFanOpenIntentRef.current = intent;
+      }
+      updateCompactInputToolFanPosition();
+      return true;
+    }
     // 展开时延续上次轮盘中心索引（compactInputToolWheelIndex 是组件级 state，会话内常驻）：
     // hover 抖动重入或重新打开都不主动把用户刚滚到的位置弹回默认位。复位只随页面刷新/组件
     // 重挂发生（useState 初值为环位 0）。取舍脉络：#1697 曾在此「每次展开复位 index=0」，
@@ -4246,7 +4337,7 @@ function CompactChatApp({
   ]);
 
   const shouldOpenCompactToolFanOnHover = useCallback((pointerType: string) => {
-    return pointerType === 'mouse';
+    return pointerType === 'mouse' || pointerType === '';
   }, []);
 
   const isCompactInputToolPointerInToggleHoverRegion = useCallback((clientX: number, clientY: number, relatedTarget?: EventTarget | null) => {
@@ -4902,7 +4993,7 @@ function CompactChatApp({
   ]);
 
   useEffect(() => {
-    if (!isCompactSurface || effectiveCompactChatState !== 'input') {
+    if (!isCompactSurface || composerHidden) {
       resetCompactInputToolFanHoverBlock();
       return;
     }
@@ -4950,8 +5041,8 @@ function CompactChatApp({
   }, [
     clearCompactInputToolFanCloseTimer,
     compactInputHasPayload,
+    composerHidden,
     composerDisabled,
-    effectiveCompactChatState,
     isCompactInputToolPointerInHoverRegion,
     isCompactInputToolPointerInToggleHoverRegion,
     isCompactSurface,
@@ -5675,7 +5766,9 @@ function CompactChatApp({
     lastCompactToolFanOpenRequestIdRef.current = request.id;
     if (request.open) {
       lastCompactToolFanOpenRequestIdRef.current = request.id;
-      const opened = openCompactInputToolFan('click', { ignoreDisabled: true });
+      const requestReason = typeof request.reason === 'string' ? request.reason : '';
+      const requestIntent = requestReason.startsWith('desktop-compact-tool-toggle') ? 'hover' : 'click';
+      const opened = openCompactInputToolFan(requestIntent, { ignoreDisabled: true });
       if (!opened) return;
       return;
     }
@@ -7348,7 +7441,7 @@ function CompactChatApp({
                     data-compact-drag-surface="true"
                     data-compact-chat-state={effectiveCompactChatState}
                     data-compact-geometry-part={effectiveCompactChatState === 'input' ? 'inputBody' : 'capsuleBody'}
-                    data-compact-geometry-hit-scope={effectiveCompactChatState === 'input' ? 'children' : undefined}
+                    data-compact-geometry-hit-scope={!composerHidden ? 'children' : undefined}
                     data-compact-tool-toggle-visible={compactToolToggleVisible ? 'true' : 'false'}
                     onPointerDown={beginCompactToolOriginDrag}
                     onPointerMove={updateCompactToolOriginDrag}
@@ -7398,6 +7491,9 @@ function CompactChatApp({
                         <button
                           className="compact-chat-capsule-button"
                           type="button"
+                          data-compact-hit-region="true"
+                          data-compact-hit-region-id="capsule:text"
+                          data-compact-hit-region-kind="capsule-text"
                           disabled={compactCapsuleEntryLocked}
                           onClick={() => {
                             if (composerHidden) return;

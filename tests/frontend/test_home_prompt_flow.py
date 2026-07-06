@@ -8015,7 +8015,86 @@ def test_plugin_dashboard_light_resistance_keeps_cursor_reaction(
     )
 
     resist_call = next(call for call in result if call["type"] == "resist")
-    assert resist_call["options"] == {"suppressCursorReveal": True}
+    assert resist_call["options"] == {
+        "suppressCursorReveal": True,
+        "forceSystemCursorReveal": True,
+    }
+
+
+@pytest.mark.frontend
+def test_plugin_dashboard_light_resistance_temporarily_reveals_system_cursor(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const previousCommon = window.YuiGuideCommon;
+            const temporaryReveals = [];
+            window.YuiGuideCommon = {
+                syncPcSystemCursorTemporaryReveal: (durationMs, reason) => {
+                    temporaryReveals.push({ reason, durationMs });
+                },
+            };
+            try {
+                const director = window.createYuiGuideDirector({ page: 'home' });
+                const calls = [];
+                director.dispatchDesktopPluginDashboardInterruptAck = (payload) => {
+                    calls.push({ type: 'ack', payload });
+                };
+                director.getStep = (stepId) => {
+                    if (stepId === 'interrupt_resist_light') {
+                        return {
+                            performance: {
+                                bubbleText: 'Stop pulling me',
+                                voiceKey: 'interrupt_resist_light_1',
+                            },
+                        };
+                    }
+                    return null;
+                };
+                director.resolvePerformanceBubbleText = (performance) => performance && performance.bubbleText || '';
+                director.resolvePerformanceResistanceVoices = () => [];
+                director.captureCurrentGuidePresentationSnapshot = () => null;
+                director.pauseCurrentSceneForResistance = () => {};
+                director.resumeCurrentSceneAfterResistance = () => {};
+                director.interruptNarrationForResistance = () => {};
+                director.appendGuideChatMessage = () => {};
+                director.applyGuideEmotion = () => {};
+                director.voiceQueue.speak = async () => null;
+                director.runInterruptResistPerformance = async () => null;
+                director.cursor.resistTo = async () => null;
+
+                await director.handlePluginDashboardInterruptRequest(null, {
+                    windowRef: null,
+                    targetOrigin: window.location.origin,
+                }, {
+                    requestId: 'interrupt-request-1',
+                    sessionId: 'session-1',
+                    detail: {
+                        kind: 'interrupt_resist_light',
+                        x: 160,
+                        y: 100,
+                    },
+                });
+                return { calls, temporaryReveals };
+            } finally {
+                window.YuiGuideCommon = previousCommon;
+            }
+        }
+        """
+    )
+
+    assert result["temporaryReveals"] == [{
+        "reason": "interrupt_resist_light",
+        "durationMs": 2000,
+    }]
+    assert any(call["type"] == "ack" for call in result["calls"])
 
 
 @pytest.mark.frontend
@@ -8251,6 +8330,9 @@ def test_avatar_floating_distance_below_new_threshold_does_not_trigger_light_res
                 director.cursor.reactToUserMotion = () => {};
                 director.playLightResistance = (x, y, options) => {
                     lightInterrupts.push({ x, y, options });
+                    if (options && options.forceSystemCursorReveal) {
+                        director.revealSystemCursorTemporarily(2000, 'interrupt_resist_light');
+                    }
                 };
 
                 director.lastPointerPoint = { x: 100, y: 100, t: 1000, speed: 0.04 };
@@ -8384,9 +8466,13 @@ def test_avatar_floating_interrupt_count_reveals_real_cursor_for_three_seconds(
             };
             try {
                 const cursorVisibility = [];
+                const temporaryReveals = [];
                 window.YuiGuideCommon = {
                     syncPcSystemCursorHidden: (hidden, reason) => {
                         cursorVisibility.push({ hidden, reason });
+                    },
+                    syncPcSystemCursorTemporaryReveal: (durationMs, reason) => {
+                        temporaryReveals.push({ reason, durationMs });
                     },
                 };
                 const director = window.createYuiGuideDirector({ page: 'home' });
@@ -8404,6 +8490,9 @@ def test_avatar_floating_interrupt_count_reveals_real_cursor_for_three_seconds(
                 director.cursor.reactToUserMotion = () => {};
                 director.playLightResistance = (x, y, options) => {
                     lightInterrupts.push({ x, y, options });
+                    if (options && options.forceSystemCursorReveal) {
+                        director.revealSystemCursorTemporarily(2000, 'interrupt_resist_light');
+                    }
                 };
 
                 director.lastPointerPoint = { x: 100, y: 100, t: 1000, speed: 0.04 };
@@ -8423,12 +8512,14 @@ def test_avatar_floating_interrupt_count_reveals_real_cursor_for_three_seconds(
                     });
                 });
                 const beforeTimer = cursorVisibility.slice();
-                timers[0].callback();
+                const activeTimer = timers[timers.length - 1];
+                activeTimer.callback();
                 return {
                     lightInterrupts,
                     cursorVisibility,
+                    temporaryReveals,
                     beforeTimer,
-                    timerDelay: timers[0] && timers[0].delay,
+                    timerDelays: timers.map((timer) => timer.delay),
                     clearedTimers: clearedTimers.length,
                 };
             } finally {
@@ -8442,13 +8533,20 @@ def test_avatar_floating_interrupt_count_reveals_real_cursor_for_three_seconds(
     )
 
     assert len(result["lightInterrupts"]) == 1
+    assert result["lightInterrupts"][0]["options"]["forceSystemCursorReveal"] is True
+    assert result["lightInterrupts"][0]["options"]["suppressCursorReveal"] is True
+    expected_temporary_reveals = [{
+        "reason": "interrupt_resist_light",
+        "durationMs": 2000,
+    }]
+    assert result["temporaryReveals"] == expected_temporary_reveals
     assert result["beforeTimer"][-1] == {"hidden": False, "reason": "interrupt_count_reveal"}
-    assert result["timerDelay"] == 3000
+    assert result["timerDelays"] == [3000, 2000]
     assert result["cursorVisibility"][-1] == {
         "hidden": True,
-        "reason": "interrupt_count_reveal_timeout",
+        "reason": "user_cursor_reveal_suppressed",
     }
-    assert result["clearedTimers"] == 0
+    assert result["clearedTimers"] == 1
 
 
 @pytest.mark.frontend

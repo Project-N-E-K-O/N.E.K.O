@@ -17,6 +17,14 @@
   --yui-guide-ease: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
+html.neko-niri-pet-physical-crop .yui-guide-overlay {
+  transform: translate(
+    calc(var(--neko-niri-pet-crop-offset-x, 0) * 1px),
+    calc(var(--neko-niri-pet-crop-offset-y, 0) * 1px)
+  );
+  transform-origin: 0 0;
+}
+
 .yui-guide-overlay.is-interaction-shield-enabled,
 .yui-guide-overlay.is-interaction-shield-enabled .yui-guide-stage {
   pointer-events: auto;
@@ -38,7 +46,8 @@ html.dark .yui-guide-overlay {
 
 #neko-tutorial-skip-btn {
   position: fixed;
-  top: max(14px, env(safe-area-inset-top));
+  --neko-tutorial-crop-safe-area-top: max(var(--neko-tutorial-safe-area-top, 0px), calc(var(--neko-niri-pet-crop-offset-y, 0) * 1px));
+  top: calc(max(14px, env(safe-area-inset-top)) + var(--neko-tutorial-crop-safe-area-top));
   right: max(18px, env(safe-area-inset-right));
   z-index: 2147483647;
   width: auto;

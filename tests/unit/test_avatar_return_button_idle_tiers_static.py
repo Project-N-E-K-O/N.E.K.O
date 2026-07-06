@@ -717,8 +717,8 @@ def test_cat1_edge_peek_only_applies_after_drag_release():
 
     drag_start_block = _source_slice_between(
         source,
-        "const handleStart = (clientX, clientY, pointerType = 'mouse') => {",
-        "const handleMove = (clientX, clientY, sourceEvent = null) => {",
+        "const handleStart = (clientX, clientY, pointerType = 'mouse', sourceEvent = null, startPoint = null) => {",
+        "const scheduleLongPressDrag = (clientX, clientY, pointerType = 'mouse', sourceEvent = null) => {",
         "return button drag start",
     )
     _assert_source_order(
@@ -799,7 +799,7 @@ def test_cat1_edge_peek_only_applies_after_drag_release():
 
     native_begin_block = _source_slice_between(
         app_ui_source,
-        "function beginDrag(screenX, screenY, event)",
+        "function beginDrag(screenX, screenY, event, options = {})",
         "function updateDrag(screenX, screenY, sourcePoint = null)",
         "native return-ball drag start",
     )
@@ -888,6 +888,7 @@ def test_desktop_return_ball_drag_lifecycle_waits_for_restored_viewport_before_r
     assert "MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_FALLBACK_MS = 220" in source
     assert "MULTI_WINDOW_RETURN_BALL_DRAG_RESTORE_FALLBACK_MS = 600" in source
     assert "MULTI_WINDOW_RETURN_BALL_REVEAL_FALLBACK_MS = 600" in source
+    assert "RETURN_BALL_LONG_PRESS_DRAG_MS = 280" in source
     assert "continueOnFallback" in source
     assert "waitForViewportSize timed out; continuing best-effort cleanup" in source
     assert "keeping return-ball hidden until viewport is restored" in source
@@ -905,20 +906,174 @@ def test_desktop_return_ball_drag_lifecycle_waits_for_restored_viewport_before_r
     assert "await revealReturnBallDragWindow()" not in source
     assert "function isNativeReturnBallDragDisabled()" in source
     assert "isNativeReturnBallDragDisabled() || !window.nekoPetDrag" in source
+    assert "function isNiriPhysicalCropReturnBallDragActive()" in source
+    assert "window.__nekoNiriPetPhysicalCrop" in source
+    niri_active_block = _source_slice_between(
+        source,
+        "function isNiriPhysicalCropReturnBallDragActive()",
+        "function cleanupMultiWindowReturnBallDrag()",
+        "niri return-ball crop active check",
+    )
+    assert "return typeof cropApi.isActive === 'function' || typeof cropApi.getState === 'function';" not in niri_active_block
+    assert "document.documentElement.classList.contains('neko-niri-pet-physical-crop')" in niri_active_block
     assert "const dragStarted = window.nekoPetDrag.start(screenX, screenY)" in source
     assert "if (dragStarted === false)" in source
+    assert "state.niriPhysicalCropDrag = isNiriPhysicalCropReturnBallDragActive();" in source
+    assert "function sendReturnBallNativeDragMove(screenX, screenY)" in source
+    assert "typeof window.nekoPetDrag.move !== 'function'" in source
+    assert "window.nekoPetDrag.move(screenX, screenY);" in source
+    assert "function syncIdleReturnBallDesktopStateFromManualMove(detail)" in source
+    assert "reason.startsWith('return-ball-drag-')" in source
+    assert "scheduleIdleReturnBallDesktopDragState(container, screenRect);" in source
+    assert "scheduleIdleReturnBallDesktopBridge('return-ball-dragging', container);" in source
+    assert "scheduleIdleReturnBallDesktopBridge(reason, container);" in source
+    cleanup_block = _source_slice_between(
+        source,
+        "function cleanupMultiWindowReturnBallDrag()",
+        "function ensureMultiWindowReturnBallDrag(container)",
+        "native return-ball drag cleanup",
+    )
+    assert "state.container.removeAttribute(RETURN_BALL_LONG_PRESS_PENDING_ATTR);" in cleanup_block
+    assert "state.container.removeAttribute('data-neko-return-click-suppressed');" in cleanup_block
+    _assert_source_order(
+        source,
+        "manual return-ball drag publishes desktop state",
+        "function syncIdleReturnBallDesktopStateFromManualMove(detail)",
+        "if (reason === 'return-ball-drag-motion')",
+        "scheduleIdleReturnBallDesktopDragState(container, screenRect);",
+        "scheduleIdleReturnBallDesktopBridge('return-ball-dragging', container);",
+        "window.addEventListener('neko:return-ball-manual-move', (event) => {",
+        "syncIdleReturnBallDesktopStateFromManualMove(event && event.detail);",
+    )
 
-    begin_index = source.index("function beginDrag(screenX, screenY, event)")
+    begin_index = source.index("function beginDrag(screenX, screenY, event, options = {})")
     native_start_index = source.index("const dragStarted = window.nekoPetDrag.start(screenX, screenY)", begin_index)
     dispatch_start_index = source.index("reason: 'return-ball-drag-start'", begin_index)
     drag_style_index = source.index("document.body.dataset.nekoBallDrag = '1'", begin_index)
 
     assert begin_index < native_start_index < dispatch_start_index < drag_style_index
+    begin_block = _source_slice_between(
+        source,
+        "function beginDrag(screenX, screenY, event, options = {})",
+        "function scheduleLongPressDrag(screenX, screenY, event, pointerType = 'mouse')",
+        "native return-ball drag start",
+    )
+    niri_begin_block = _source_slice_between(
+        begin_block,
+        "if (state.niriPhysicalCropDrag) {",
+        "} else {",
+        "niri native return-ball drag start branch",
+    )
+    assert "container.style.opacity = '0';" not in niri_begin_block
+    assert "container.style.left = `${centeredLeft}px`;" not in niri_begin_block
+    assert "waitForViewportSize(" not in niri_begin_block
+
+    long_press_block = _source_slice_between(
+        source,
+        "function scheduleLongPressDrag(screenX, screenY, event, pointerType = 'mouse')",
+        "function updateDrag(screenX, screenY, sourcePoint = null)",
+        "native return-ball long press drag scheduler",
+    )
+    _assert_source_order(
+        long_press_block,
+        "native return-ball delays native drag until long press threshold",
+        "setReturnBallDomClickSuppressed(true, RETURN_BALL_LONG_PRESS_DRAG_MS + 180);",
+        "container.setAttribute(RETURN_BALL_LONG_PRESS_PENDING_ATTR, 'true');",
+        "state.pendingLongPressTimer = setTimeout(() => {",
+        "const startX = state.pendingStartScreenX;",
+        "container.removeAttribute(RETURN_BALL_LONG_PRESS_PENDING_ATTR);",
+        "setReturnBallDomClickSuppressed(true, 1200);",
+        "beginDrag(startX, startY, latestSourcePoint || event, { cancelNoMoveClick: true });",
+        "if (state.isDragging) {\n                    container.setAttribute('data-dragging', 'pending');",
+        "updateDrag(latestX, latestY, latestSourcePoint);",
+    )
+    assert "beginDrag(screenX, screenY, event, { cancelNoMoveClick: false });" not in long_press_block
+    update_drag_block = _source_slice_between(
+        source,
+        "function updateDrag(screenX, screenY, sourcePoint = null)",
+        "async function finishDrag(screenX, screenY)",
+        "native return-ball drag move",
+    )
+    _assert_source_order(
+        update_drag_block,
+        "niri native return-ball forwards live renderer cursor before motion side effects",
+        "state.releaseScreenX = screenX;",
+        "state.releaseScreenY = screenY;",
+        "sendReturnBallNativeDragMove(screenX, screenY);",
+        "const dx = screenX - state.startScreenX;",
+    )
+    mouse_move_block = _source_slice_between(
+        source,
+        "state.handleMouseMove = (event) => {",
+        "state.handleMouseUp = (event) => {",
+        "native return-ball mousemove handler",
+    )
+    _assert_source_order(
+        mouse_move_block,
+        "native pending long press ignores early zero-buttons recovery",
+        "if (updatePendingLongPressDrag(event.screenX, event.screenY, event)) return;",
+        "if (finishDragIfMouseButtonReleased(event, 'mousemove-buttons-released')) return;",
+    )
+    mouse_up_block = _source_slice_between(
+        source,
+        "state.handleMouseUp = (event) => {",
+        "state.handlePointerMove = (event) => {",
+        "native return-ball mouseup handler",
+    )
+    _assert_source_order(
+        mouse_up_block,
+        "native short press dispatches return click on release before native drag starts",
+        "if (state.pendingLongPress) {",
+        "const shouldDispatchClick = state.pendingMovedPastClickThreshold !== true;",
+        "clearPendingLongPressDrag();",
+        "if (shouldDispatchClick) {",
+        "setReturnBallDomClickSuppressed(true, 500);",
+        "dispatchReturnBallClick();",
+        "} else {",
+        "setReturnBallDomClickSuppressed(true, 160);",
+        "event.preventDefault();",
+        "event.stopImmediatePropagation();",
+        "void finishDrag(event.screenX, event.screenY);",
+    )
+    click_guard_block = _source_slice_between(
+        source,
+        "state.handleClick = (event) => {",
+        "container.addEventListener('mousedown', state.handleMouseDown, true);",
+        "native return-ball click guard",
+    )
+    _assert_source_order(
+        click_guard_block,
+        "native return-ball blocks DOM clicks while long press is pending",
+        "const isSuppressed = container.getAttribute('data-neko-return-click-suppressed') === 'true';",
+        "const isLongPressPending = container.getAttribute(RETURN_BALL_LONG_PRESS_PENDING_ATTR) === 'true';",
+        "const isNativeDragPending = container.getAttribute('data-dragging') === 'pending';",
+        "if (!isSuppressed && !isLongPressPending && !isNativeDragPending) return;",
+        "event.preventDefault();",
+        "event.stopImmediatePropagation();",
+        "if (!isLongPressPending && !isNativeDragPending) {",
+        "setReturnBallDomClickSuppressed(false);",
+    )
 
     finish_index = source.index("async function finishDrag(screenX, screenY)")
     no_move_start = source.index("if (!state.hasMoved) {", finish_index)
     no_move_end = source.index("const finalBounds = await resolveFinalWindowBounds", no_move_start)
     no_move_block = source[no_move_start:no_move_end]
+    finish_block = _source_slice_between(
+        source,
+        "async function finishDrag(screenX, screenY)",
+        "function isThoughtBubbleEventTarget(event) {",
+        "native return-ball drag finish",
+    )
+    hide_guard_block = _source_slice_between(
+        finish_block,
+        "if (!state.niriPhysicalCropDrag) {",
+        "if (!state.hasMoved) {",
+        "niri native return-ball drag finish hide guard",
+    )
+    assert "container.style.opacity = '0';" in hide_guard_block
+    assert "container.style.visibility = 'hidden';" in hide_guard_block
+    assert "if (state.niriPhysicalCropDrag) {\n                    completeNoMoveDrag();" in finish_block
+    assert "if (state.niriPhysicalCropDrag) {\n                completeMovedDrag();" in finish_block
 
     _assert_source_order(
         no_move_block,
@@ -931,7 +1086,7 @@ def test_desktop_return_ball_drag_lifecycle_waits_for_restored_viewport_before_r
     assert "reason: 'return-ball-drag-cancel'" not in no_move_block
     suppress_click_block = _source_slice_between(
         no_move_block,
-        "if (suppressClick) {",
+        "if (suppressNoMoveClick) {",
         "} else {",
         "no-move suppressed return-ball drag branch",
     )
@@ -971,8 +1126,16 @@ def test_desktop_return_ball_drag_recovers_when_mouse_release_is_lost():
     window_blur_start = source.index("state.handleWindowBlur = () => {")
     window_blur_end = source.index("};", window_blur_start)
     window_blur_block = source[window_blur_start:window_blur_end]
-    assert "cancelActiveDrag(" not in window_blur_block
-    assert "scheduleReturnBallDragRecoveryCheck();" in window_blur_block
+    _assert_source_order(
+        window_blur_block,
+        "pending native return-ball blur cancels while active drag still uses recovery",
+        "if (state.pendingLongPress) {",
+        "clearPendingLongPressDrag();",
+        "cancelActiveDrag('window-blur-pending');",
+        "return;",
+        "if (!state.isDragging) return;",
+        "scheduleReturnBallDragRecoveryCheck();",
+    )
     assert "cancelActiveDrag('visibility-hidden')" in source
     assert "cancelActiveDrag('pagehide')" in source
     assert "cancelActiveDrag('pointercancel')" in source
@@ -982,8 +1145,8 @@ def test_desktop_return_ball_drag_recovers_when_mouse_release_is_lost():
     assert "document.addEventListener('pointercancel', state.handlePointerCancel, true)" in source
     assert "window.addEventListener('blur', state.handleWindowBlur)" in source
     assert "document.addEventListener('visibilitychange', state.handleVisibilityChange)" in source
-    assert "suppressClick ? 'return-ball-drag-cancel' : 'return-ball-drag-click'" in source
-    assert "if (suppressClick)" in source
+    assert "suppressNoMoveClick ? 'return-ball-drag-cancel' : 'return-ball-drag-click'" in source
+    assert "const suppressClick = options.suppressClick === true;" in source
     assert "dragCancelled: true" in source
     assert "movedDistancePx: 0" in source
     assert "dispatchReturnBallClick();" in source
@@ -1076,6 +1239,7 @@ def test_idle_thought_bubble_hides_during_pending_long_press():
 
     assert "_NEKO_IDLE_RETURN_DRAG_PENDING_CLASS = 'is-drag-action-pending'" in source
     assert "function _setNekoIdleReturnDragPendingClasses(button, active)" in source
+    assert "_NEKO_IDLE_RETURN_LONG_PRESS_PENDING_ATTR = 'data-neko-return-long-press-pending'" in source
     assert "_setNekoIdleReturnDragPendingClasses(button, true);" in source
     assert "_setNekoIdleReturnDragPendingClasses(button, false);" in source
 
@@ -1129,6 +1293,7 @@ def test_idle_thought_bubble_hides_during_pending_long_press():
         "return button drag cancel handler",
     )
     assert ".neko-idle-return-btn.is-drag-action-pending .neko-idle-thought-bubble" in css_source
+    assert '.neko-idle-return-button-container[data-neko-return-long-press-pending="true"] .neko-idle-thought-bubble' in css_source
 
 
 def test_return_button_drag_randomizes_asset_once_per_drag_action():
@@ -1201,7 +1366,7 @@ def test_local_return_button_drag_safety_timer_does_not_end_active_drag():
     safety_block = _source_slice_between(
         source,
         "const resetDragStateAfterMissingEnd = (safetyToken) => {",
-        "const handleStart = (clientX, clientY, pointerType = 'mouse') => {",
+        "const handleStart = (clientX, clientY, pointerType = 'mouse', sourceEvent = null, startPoint = null) => {",
         "local return-ball drag safety timer",
     )
     _assert_source_order(
@@ -1241,10 +1406,11 @@ def test_local_return_button_drag_recovers_lost_release_without_active_timeout()
     _assert_source_order(
         mouse_move_block,
         "local return-ball lost mouseup recovery",
+        "const point = getDragPoint(e, e.clientX, e.clientY);",
+        "if (updatePendingLongPressDrag(point.x, point.y, e)) return;",
         "if (isDragging && dragPointerType === 'mouse' && e.buttons === 0) {",
         "handleEnd();",
-        "return;",
-        "handleMove(e.clientX, e.clientY, e);",
+        "handleMove(point.x, point.y, e);",
     )
     _assert_source_order(
         drag_setup,
@@ -1475,29 +1641,105 @@ def test_cat1_rapid_drag_reaction_is_same_drag_motion_only():
     )
     _assert_source_contains(
         local_drag_setup,
-        "const handleMove = (clientX, clientY, sourceEvent = null) => {",
+        "const handleMove = (clientX, clientY, sourceEvent = null, movePoint = null) => {",
         "return button drag setup",
     )
-    _assert_source_order(
+    _assert_source_contains(
         local_drag_setup,
+        "const getDragPoint = (sourceEvent, fallbackX, fallbackY) => {",
+        "return button drag setup",
+    )
+    _assert_source_contains(
+        local_drag_setup,
+        "const isUsableDragPoint = (point) => {",
+        "return button drag setup",
+    )
+    _assert_source_contains(
+        local_drag_setup,
+        "cropApi.getEventCoordinates(sourceEvent)",
+        "return button drag setup",
+    )
+    _assert_source_contains(
+        local_drag_setup,
+        "const getDragContainerVirtualRect = () => {",
+        "return button drag setup",
+    )
+    _assert_source_contains(
+        local_drag_setup,
+        "left: (Number.isFinite(left) ? left : 0) + offset.x",
+        "return button drag setup",
+    )
+    _assert_source_contains(
+        local_drag_setup,
+        "left: Number(rect.left) + offset.x",
+        "return button drag setup",
+    )
+    _assert_source_contains(
+        local_drag_setup,
+        "const getDragScreenPointFromVirtualPoint = (virtualX, virtualY, sourceEvent = null, fallbackX = virtualX, fallbackY = virtualY) => {",
+        "return button drag setup",
+    )
+    handle_move_block = _source_slice_between(
+        local_drag_setup,
+        "const handleMove = (clientX, clientY, sourceEvent = null, movePoint = null) => {",
+        "const scheduleDragCursorPollFrame = () => {",
+        "return button drag move handler",
+    )
+    _assert_source_order(
+        handle_move_block,
         "local return-ball drag motion emits client and screen coordinates",
-        "clientX: clientX,",
-        "clientY: clientY,",
-        "screenX: sourceEvent && Number.isFinite(sourceEvent.screenX) ? sourceEvent.screenX : clientX,",
-        "screenY: sourceEvent && Number.isFinite(sourceEvent.screenY) ? sourceEvent.screenY : clientY,",
+        "const point = movePoint || getDragPoint(sourceEvent, clientX, clientY);",
+        "const deltaX = point.virtualX - dragStartVirtualX;",
+        "const offset = isDragNiriCropCoordinateActive() ? getDragCropOffset() : { x: 0, y: 0 };",
+        "const nextVirtualLeft = Math.max(offset.x, Math.min(point.virtualX - dragGrabOffsetX, offset.x + window.innerWidth - w));",
+        "const nextLeft = nextVirtualLeft - offset.x;",
+        "const screenPoint = getDragScreenPointFromVirtualPoint(nextVirtualLeft + w / 2, nextVirtualTop + h / 2, sourceEvent, clientX, clientY);",
+        "clientX: point.localX,",
+        "clientY: point.localY,",
+        "screenX: Number.isFinite(screenPoint.x)",
+        "screenY: Number.isFinite(screenPoint.y)",
         "deltaX: deltaX,",
         "deltaY: deltaY,",
         "timestamp: Date.now()",
     )
     _assert_source_contains(
         local_drag_setup,
-        "handleMove(e.clientX, e.clientY, e);",
+        "handleMove(point.x, point.y, e);",
         "return button drag setup",
     )
     _assert_source_contains(
         local_drag_setup,
-        "handleMove(e.touches[0].clientX, e.touches[0].clientY, e.touches[0]);",
+        "handleMove(point.x, point.y, e.touches[0]);",
         "return button drag setup",
+    )
+    _assert_source_contains(
+        local_drag_setup,
+        "const getDragPointFromScreenPoint = (screenPoint) => {",
+        "return button drag setup",
+    )
+    _assert_source_contains(
+        local_drag_setup,
+        "const canPollNiriDragCursor = () => {",
+        "return button drag setup",
+    )
+    _assert_source_contains(
+        local_drag_setup,
+        "typeof window.electronScreen.getCursorPoint === 'function'",
+        "return button drag setup",
+    )
+    cursor_poll_block = _source_slice_between(
+        local_drag_setup,
+        "const scheduleDragCursorPollFrame = () => {",
+        "const startDragCursorPolling = () => {",
+        "return button niri cursor poll",
+    )
+    _assert_source_order(
+        cursor_poll_block,
+        "niri return-ball cursor polling converts screen cursor into virtual drag motion",
+        "window.electronScreen.getCursorPoint()",
+        "const point = getDragPointFromScreenPoint(screenPoint);",
+        "if (isUsableDragPoint(point)) {",
+        "handleMove(point.localX, point.localY, null, point);",
     )
 
     native_drag_motion_block = _source_slice_between(
@@ -1832,7 +2074,7 @@ def test_idle_thought_bubble_is_sound_triggered_with_fade():
         "return !!(bubble && bubble.closest('.neko-idle-return-btn.is-thought-bubble-active'));",
         "state.handleMouseDown = (event) => {",
         "if (isThoughtBubbleEventTarget(event)) return;",
-        "beginDrag(event.screenX, event.screenY, event);",
+        "scheduleLongPressDrag(event.screenX, event.screenY, event, 'mouse');",
     )
     assert "state.handleTouchStart = (event) => {\n            if (isThoughtBubbleEventTarget(event)) return;" in app_ui_source
 
@@ -2197,6 +2439,7 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     assert 'restoreArt: !resumeCat1Walking' not in source
     assert "'neko:return-ball-manual-move'" in source
     assert "'neko:return-ball-manual-move'" in app_ui_source
+    assert "'return-ball-drag-pending'" in source
     assert "detail.reason === 'return-ball-drag-start'" in source
     assert "resetArt: false" in source
     assert "'return-ball-drag-start'" in app_ui_source
@@ -2212,6 +2455,12 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
 def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():
     source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
 
+    assert "_NEKO_IDLE_RETURN_DRAG_LONG_PRESS_MS = 280" in source
+    assert "_NEKO_IDLE_RETURN_LONG_PRESS_PENDING_ATTR = 'data-neko-return-long-press-pending'" in source
+    assert "returnButtonContainer.getAttribute('data-neko-return-click-suppressed') === 'true'" in source
+    assert "returnButtonContainer.getAttribute(_NEKO_IDLE_RETURN_LONG_PRESS_PENDING_ATTR) === 'true'" in source
+    assert "returnButtonContainer.getAttribute('data-dragging') === 'pending'" in source
+
     drag_setup = _source_slice_between(
         source,
         "ManagerPrototype._setupReturnButtonDrag = function(container) {",
@@ -2220,8 +2469,8 @@ def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():
     )
     handle_start = _source_slice_between(
         source,
-        "const handleStart = (clientX, clientY, pointerType = 'mouse') => {",
-        "const handleMove = (clientX, clientY, sourceEvent = null) => {",
+        "const handleStart = (clientX, clientY, pointerType = 'mouse', sourceEvent = null, startPoint = null) => {",
+        "const scheduleLongPressDrag = (clientX, clientY, pointerType = 'mouse', sourceEvent = null) => {",
         "return button drag start handler",
     )
     handle_end = _source_slice_between(
@@ -2234,7 +2483,24 @@ def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():
     for expected in (
         "let dragSafetyTimer = 0;",
         "let dragSafetyToken = 0;",
+        "let dragLongPressTimer = 0;",
+        "let pendingDragStartVirtualX = 0, pendingDragStartVirtualY = 0;",
+        "let dragStartVirtualX = 0, dragStartVirtualY = 0;",
+        "let dragCursorPollFrame = 0;",
+        "const getDragPoint = (sourceEvent, fallbackX, fallbackY) => {",
+        "cropApi.getEventCoordinates(sourceEvent)",
+        "const getDragContainerVirtualRect = () => {",
+        "left: (Number.isFinite(left) ? left : 0) + offset.x",
+        "left: Number(rect.left) + offset.x",
+        "const getDragScreenPointFromVirtualPoint = (virtualX, virtualY, sourceEvent = null, fallbackX = virtualX, fallbackY = virtualY) => {",
+        "const getDragPointFromScreenPoint = (screenPoint) => {",
+        "const canPollNiriDragCursor = () => {",
+        "typeof window.electronScreen.getCursorPoint === 'function'",
+        "const stopDragCursorPolling = () => {",
+        "const isUsableDragPoint = (point) => {",
         "const clearDragSafetyTimer = () => {",
+        "const clearDragLongPressTimer = () => {",
+        "const clearPendingLongPressDrag = () => {",
         "const resetDragStateAfterMissingEnd = (safetyToken) => {",
         "if (dragSafetyToken !== safetyToken || !isDragging) return;",
         "const finishDragState = (moved, safetyToken) => {",
@@ -2249,6 +2515,53 @@ def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():
         "const finishDragState = (moved, safetyToken) => {",
         "const resetDragStateAfterMissingEnd = (safetyToken) => {",
         "finishDragState(moved, safetyToken);",
+    )
+    long_press_setup = _source_slice_between(
+        drag_setup,
+        "const scheduleLongPressDrag = (clientX, clientY, pointerType = 'mouse', sourceEvent = null) => {",
+        "const updatePendingLongPressDrag = (clientX, clientY, sourceEvent = null) => {",
+        "return button long press scheduler",
+    )
+    _assert_source_order(
+        long_press_setup,
+        "return button long press scheduler starts drag after threshold",
+        "setReturnLongPressPending(true);",
+        "_dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-pending'",
+        "dragLongPressTimer = setTimeout(() => {",
+        "buildDragPointSnapshot(startX, startY, startVirtualX, startVirtualY)",
+        "handleMove(",
+        "buildDragPointSnapshot(latestX, latestY, latestVirtualX, latestVirtualY)",
+        "}, _NEKO_IDLE_RETURN_DRAG_LONG_PRESS_MS);",
+    )
+    assert "container.setAttribute('data-dragging', 'pending');" not in long_press_setup
+    mouse_down_block = _source_slice_between(
+        source,
+        "container.addEventListener('mousedown', (e) => {",
+        "this._returnButtonDragHandlers = {",
+        "local return-ball mousedown handler",
+    )
+    mouse_down_contains_block = _source_slice_between(
+        mouse_down_block,
+        "if (container.contains(e.target)) {",
+        "scheduleLongPressDrag(point.x, point.y, 'mouse', e);",
+        "local return-ball mousedown target branch",
+    )
+    _assert_source_order(
+        mouse_down_contains_block,
+        "local return-ball mousedown keeps long press decision local",
+        "if (container.contains(e.target)) {",
+        "e.preventDefault();",
+        "e.stopImmediatePropagation();",
+    )
+    _assert_source_contains(
+        mouse_down_block,
+        "e.stopImmediatePropagation();\n                    const point = getDragPoint(e, e.clientX, e.clientY);\n                    scheduleLongPressDrag(point.x, point.y, 'mouse', e);",
+        "local return-ball mousedown handler",
+    )
+    _assert_source_contains(
+        drag_setup,
+        "const updatePendingLongPressDrag = (clientX, clientY, sourceEvent = null) => {",
+        "return button drag setup",
     )
     _assert_source_contains(
         handle_start,
@@ -2267,10 +2580,14 @@ def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():
         handle_start,
         "return button drag start handler",
         "clearDragSafetyTimer();",
+        "stopDragCursorPolling();",
+        "setReturnLongPressPending(false);",
         "container.setAttribute('data-dragging', 'pending')",
         "dragSafetyTimer = setTimeout(() => {",
+        "startDragCursorPolling();",
     )
     _assert_source_contains(handle_end, "clearDragSafetyTimer();", "return button drag end handler")
+    _assert_source_contains(handle_end, "stopDragCursorPolling();", "return button drag end handler")
     _assert_source_contains(handle_end, "const safetyToken = dragSafetyToken;", "return button drag end handler")
     _assert_source_contains(
         handle_end,
@@ -2284,6 +2601,19 @@ def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():
         "if (isDragging) {",
         "const safetyToken = dragSafetyToken;",
         "finishDragState(moved, safetyToken);",
+    )
+    mouse_move_block = _source_slice_between(
+        source,
+        "mouseMove: (e) => {",
+        "mouseUp: handleEnd,",
+        "local return-ball mousemove handler",
+    )
+    _assert_source_order(
+        mouse_move_block,
+        "local pending long press ignores early zero-buttons recovery",
+        "const point = getDragPoint(e, e.clientX, e.clientY);",
+        "if (updatePendingLongPressDrag(point.x, point.y, e)) return;",
+        "if (isDragging && dragPointerType === 'mouse' && e.buttons === 0) {",
     )
 
     sync_block = _source_slice_between(

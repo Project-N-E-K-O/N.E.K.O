@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const vm = require('node:vm');
 
 const guideHelpers = require('./tutorial/core/guide-helpers.js');
 const scopedResources = require('./tutorial/core/scoped-resources.js');
@@ -1377,12 +1378,13 @@ test('externalized chat spotlight ownership stops home overlay spotlight trackin
     assert.match(clearSpotlightBlock, /this\.spotlightState\.clearAll\(\);/);
     assert.match(clearSpotlightBlock, /if \(this\.isPcOverlayActive\(\) && !preservePcOverlaySpotlights\) \{/);
     assert.match(helperBlock, /this\.overlay\.clearSpotlight\(\{\s*preservePcOverlaySpotlights: true\s*\}\);/);
-    assert.match(setTargetBlock, /this\.clearHomeSpotlightsForExternalizedChat\(\);\s*this\.interactionTakeover\.setExternalizedChatSpotlight\(normalizedKind\);/);
-    assert.match(sceneOrchestratorSource, /clearHomeSpotlightsForExternalizedChat\(\);[\s\S]*setExternalizedChatSpotlight\(introExternalizedChatSpotlightKind\)/);
-    assert.match(sceneOrchestratorSource, /clearHomeSpotlightsForExternalizedChat\(\);[\s\S]*setExternalizedChatSpotlight\(externalizedSpotlightKind\)/);
-    assert.match(visualRuntimeSource, /clearHomeSpotlightsForExternalizedChat\(\);[\s\S]*setExternalizedChatSpotlight\(normalizedIntroKind\)/);
-    assert.match(visualRuntimeSource, /clearHomeSpotlightsForExternalizedChat\(\);[\s\S]*setExternalizedChatSpotlight\(externalizedSpotlightKind\)/);
-    assert.match(settingsTourSource, /clearHomeSpotlightsForExternalizedChat\(\);[\s\S]*setExternalizedChatSpotlight\(introExternalizedChatSpotlightKind\)/);
+    assert.match(setTargetBlock, /const spotlightVariant = options && typeof options\.spotlightVariant === 'string'/);
+    assert.match(setTargetBlock, /this\.clearHomeSpotlightsForExternalizedChat\(\);[\s\S]*setExternalizedChatSpotlight\(normalizedKind,\s*\{[\s\S]*variant: spotlightVariant/);
+    assert.match(sceneOrchestratorSource, /clearHomeSpotlightsForExternalizedChat\(\);[\s\S]*setExternalizedChatSpotlight\(\s*introExternalizedChatSpotlightKind,\s*externalizedSpotlightOptions/);
+    assert.match(sceneOrchestratorSource, /clearHomeSpotlightsForExternalizedChat\(\);[\s\S]*setExternalizedChatSpotlight\(\s*externalizedSpotlightKind,\s*externalizedSpotlightOptions/);
+    assert.match(visualRuntimeSource, /clearHomeSpotlightsForExternalizedChat\(\);[\s\S]*setExternalizedChatSpotlight\(\s*normalizedIntroKind,\s*externalizedSpotlightOptions/);
+    assert.match(visualRuntimeSource, /clearHomeSpotlightsForExternalizedChat\(\);[\s\S]*setExternalizedChatSpotlight\(\s*externalizedSpotlightKind,\s*externalizedSpotlightOptions/);
+    assert.match(settingsTourSource, /clearHomeSpotlightsForExternalizedChat\(\);[\s\S]*setExternalizedChatSpotlight\(\s*introExternalizedChatSpotlightKind,\s*\{[\s\S]*variant: spotlightVariant/);
     assert.match(operationRegistrySource, /clearHomeSpotlightsForExternalizedChat\(\);[\s\S]*setExternalizedChatSpotlight\(/);
     assert.match(chatAdapterSource, /const beforeExternalizedSpotlight = typeof normalizedOptions\.beforeExternalizedSpotlight === 'function'/);
     assert.match(chatAdapterSource, /function getExternalizedRunMeta\(\) \{/);
@@ -1515,9 +1517,12 @@ test('director routes resistance interrupts through ResistanceController boundar
     assert.match(resistanceControllerBlock, /director\.interruptCount \+= 1;/);
     assert.match(resistanceControllerBlock, /director\.abortAsAngryExit\('pointer_interrupt'\);/);
     assert.match(resistanceControllerBlock, /director\.playLightResistance\(x,\s*y,\s*\{/);
+    assert.match(resistanceControllerBlock, /suppressCursorReveal:\s*true/);
+    assert.match(resistanceControllerBlock, /forceSystemCursorReveal:\s*true/);
+    assert.match(resistanceControllerBlock, /if \(!normalizedOptions\.suppressCursorReveal\) \{[\s\S]*?director\.suppressResistanceCursorReveal\(normalizedOptions\);[\s\S]*?if \(typeof director\.revealSystemCursorTemporarily === 'function'\) \{[\s\S]*?director\.revealSystemCursorTemporarily\(2000,\s*'interrupt_resist_light'\)/);
     assert.match(resistanceControllerBlock, /this\.lightResistanceActive = true;/);
     assert.match(resistanceControllerBlock, /director\.revealSystemCursorTemporarily\(2000,\s*'interrupt_resist_light'\);/);
-    assert.match(resistanceControllerBlock, /normalizedOptions\.forceSystemCursorReveal/);
+    assert.doesNotMatch(resistanceControllerBlock, /normalizedOptions\.forceSystemCursorReveal[\s\S]*?director\.revealSystemCursorTemporarily/);
     assert.match(directorSource, /revealSystemCursorTemporarily\(durationMs = 2000,\s*reason = 'tutorial-temporary-reveal'\)/);
     assert.match(directorSource, /classList\.add\('yui-user-cursor-revealed',\s*'yui-resistance-cursor-reveal'\)/);
     assert.match(directorSource, /syncPcSystemCursorTemporaryReveal\(normalizedDurationMs,\s*reason\)/);
@@ -3008,6 +3013,183 @@ test('skip controller uses scoped resources with a fallback cleanup path', () =>
     assert.match(source, /createScopedTutorialResources/);
     assert.match(source, /this\.currentResources\.destroy\(\)/);
     assert.match(source, /button\.removeEventListener\('pointerdown', handleSkipRequest\)/);
+    assert.match(source, /applySafeAreaVariables: function \(options\)/);
+    assert.match(source, /portalId = normalizedOptions\.portalId \|\| 'neko-tutorial-fixed-ui-root'/);
+    assert.match(source, /document\.documentElement\.appendChild\(portal\)/);
+    assert.match(source, /--neko-tutorial-visible-safe-area-top/);
+    assert.match(source, /getNiriPetVisibleTopSafeInset\(\)/);
+    assert.match(source, /getNiriFixedUiMinimumTopInset\(\)/);
+    assert.match(source, /hasNiriFixedUiEvidence\(metrics\)/);
+});
+
+test('skip controller treats niri crop evidence as a top work-area safe inset', () => {
+    const source = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/skip-controller.js'), 'utf8');
+
+    function createController(metrics, screenOverrides = {}) {
+        const rootStyle = {
+            values: new Map(),
+            getPropertyValue(name) {
+                return this.values.get(name) || '';
+            },
+            setProperty(name, value) {
+                this.values.set(name, value);
+            }
+        };
+        const document = {
+            documentElement: { style: rootStyle },
+            getElementById() { return null; },
+            createElement() {
+                return {
+                    style: {},
+                    setAttribute() {},
+                    removeAttribute() {},
+                    addEventListener() {},
+                    removeEventListener() {},
+                    remove() {}
+                };
+            },
+            head: { appendChild() {} },
+            body: { appendChild() {} }
+        };
+        const context = {
+            window: {
+                screen: Object.assign({ availTop: 46 }, screenOverrides.screen || {}),
+                screenY: Object.prototype.hasOwnProperty.call(screenOverrides, 'screenY')
+                    ? screenOverrides.screenY
+                    : 46,
+                getComputedStyle() {
+                    return { getPropertyValue: () => '' };
+                },
+                addEventListener() {},
+                removeEventListener() {},
+                setTimeout(callback) {
+                    if (typeof callback === 'function') callback();
+                    return 1;
+                },
+                clearTimeout() {}
+            },
+            document,
+            console
+        };
+        if (metrics) {
+            context.window.nekoTutorialOverlay = {
+                getWindowMetricsSync() {
+                    return metrics;
+                }
+            };
+        }
+        vm.runInNewContext(source, context);
+        return context.window.TutorialSkipController.createController({ document });
+    }
+
+    const cropController = createController({
+        niriPetPhysicalCrop: true,
+        niriPetPhysicalCropBounds: { x: 0, y: 46, width: 1920, height: 1034 },
+        niriPetPhysicalCropVirtualBounds: { x: 0, y: 0, width: 1920, height: 1080 }
+    });
+    const cropUnderWorkAreaController = createController({
+        niriPetPhysicalCrop: true,
+        niriPetPhysicalCropBounds: { x: 0, y: 46, width: 1920, height: 1034 },
+        niriPetPhysicalCropVirtualBounds: { x: 0, y: 0, width: 1920, height: 1080 },
+        desktopWorkAreaTopInset: 14
+    });
+    const workAreaController = createController({
+        desktopWorkAreaTopInset: 46
+    });
+    const niriRenderedLowerController = createController({
+        niriPetPhysicalCrop: true,
+        niriPetPhysicalCropBounds: { x: 0, y: 46, width: 1920, height: 1034 },
+        niriPetPhysicalCropVirtualBounds: { x: 0, y: 0, width: 1920, height: 1080 },
+        desktopWorkAreaTopInset: 14,
+        niriWindowTopInset: 84,
+        niriPetPhysicalCropVisibleTopInset: 84
+    });
+    const niriHeightReservedController = createController({}, {
+        screen: { availTop: 0, height: 1066, availHeight: 1027 },
+        screenY: 1
+    });
+    const niriRuntimeFallbackController = createController({
+        niriWaylandRuntime: true
+    }, {
+        screen: { availTop: 0, height: 1066, availHeight: 1066 },
+        screenY: 72
+    });
+    const plainController = createController(null);
+
+    assert.equal(cropController.getNiriPetPhysicalCropTopInset(), 46);
+    assert.equal(cropUnderWorkAreaController.getNiriPetPhysicalCropTopInset(), 60);
+    assert.equal(workAreaController.getNiriPetPhysicalCropTopInset(), 46);
+    assert.equal(cropController.getNiriPetVisibleTopSafeInset(), 46);
+    assert.equal(cropUnderWorkAreaController.getNiriPetVisibleTopSafeInset(), 46);
+    assert.equal(workAreaController.getNiriPetVisibleTopSafeInset(), 46);
+    assert.equal(niriRenderedLowerController.getNiriPetPhysicalCropTopInset(), 60);
+    assert.equal(niriRenderedLowerController.getNiriPetVisibleTopSafeInset(), 84);
+    assert.equal(niriHeightReservedController.getNiriPetVisibleTopSafeInset(), 39);
+    assert.equal(niriRuntimeFallbackController.getNiriPetPhysicalCropTopInset(), 0);
+    assert.equal(niriRuntimeFallbackController.getNiriPetVisibleTopSafeInset(), 40);
+    assert.equal(plainController.getNiriPetPhysicalCropTopInset(), 0);
+    assert.equal(plainController.getNiriPetVisibleTopSafeInset(), 0);
+});
+
+test('tutorial css preserves niri crop compensation for DOM overlays and skip button', () => {
+    const yuiGuideCss = fs.readFileSync(path.join(repoRoot, 'static', 'css', 'yui-guide.css'), 'utf8');
+    const tutorialStylesCss = fs.readFileSync(path.join(repoRoot, 'static', 'css', 'tutorial-styles.css'), 'utf8');
+    const indexCss = fs.readFileSync(path.join(repoRoot, 'static', 'css', 'index.css'), 'utf8');
+    const getRuleBody = (source, selector) => {
+        const selectorIndex = source.indexOf(selector);
+        assert.notEqual(selectorIndex, -1, `missing CSS rule for ${selector}`);
+        const blockStart = source.indexOf('{', selectorIndex);
+        const blockEnd = source.indexOf('}', blockStart);
+        assert.notEqual(blockStart, -1, `missing CSS rule body start for ${selector}`);
+        assert.notEqual(blockEnd, -1, `missing CSS rule body end for ${selector}`);
+        return source.slice(blockStart + 1, blockEnd);
+    };
+    const yuiSkipRule = getRuleBody(yuiGuideCss, '#neko-tutorial-skip-btn');
+    const tutorialSkipRule = getRuleBody(tutorialStylesCss, '#neko-tutorial-skip-btn');
+    const pageSkipRule = getRuleBody(tutorialStylesCss, '.neko-page-tutorial-skip-btn');
+    const statusToastRule = getRuleBody(indexCss, '#status-toast');
+
+    assert.match(yuiGuideCss, /html\.neko-niri-pet-physical-crop \.yui-guide-overlay \{/);
+    assert.match(yuiGuideCss, /calc\(var\(--neko-niri-pet-crop-offset-x, 0\) \* 1px\)/);
+    assert.match(yuiGuideCss, /calc\(var\(--neko-niri-pet-crop-offset-y, 0\) \* 1px\)/);
+    assert.match(yuiGuideCss, /transform-origin: 0 0;/);
+    assert.match(
+        yuiSkipRule,
+        /--neko-tutorial-crop-safe-area-top: max\(var\(--neko-tutorial-safe-area-top, 0px\), calc\(var\(--neko-niri-pet-crop-offset-y, 0\) \* 1px\)\);/
+    );
+    assert.match(
+        yuiSkipRule,
+        /top: calc\(max\(14px, env\(safe-area-inset-top\)\) \+ var\(--neko-tutorial-crop-safe-area-top\)\);/
+    );
+    assert.match(
+        tutorialSkipRule,
+        /--neko-tutorial-crop-safe-area-top: max\(var\(--neko-tutorial-safe-area-top, 0px\), calc\(var\(--neko-niri-pet-crop-offset-y, 0\) \* 1px\)\);/
+    );
+    assert.match(
+        tutorialSkipRule,
+        /top: calc\(max\(14px, env\(safe-area-inset-top\)\) \+ var\(--neko-tutorial-crop-safe-area-top\)\);/
+    );
+    assert.match(
+        pageSkipRule,
+        /--neko-tutorial-crop-safe-area-top: max\(var\(--neko-tutorial-safe-area-top, 0px\), calc\(var\(--neko-niri-pet-crop-offset-y, 0\) \* 1px\)\);/
+    );
+    assert.match(
+        pageSkipRule,
+        /top: calc\(max\(18px, env\(safe-area-inset-top\)\) \+ var\(--neko-tutorial-crop-safe-area-top\)\);/
+    );
+    assert.match(
+        statusToastRule,
+        /--neko-status-toast-crop-safe-area-top: calc\(var\(--neko-niri-pet-crop-offset-y, 0\) \* 1px\);/
+    );
+    assert.match(
+        statusToastRule,
+        /top: calc\(20px \+ var\(--neko-status-toast-crop-safe-area-top\)\);/
+    );
+    assert.doesNotMatch(yuiSkipRule, /top: max\(14px, env\(safe-area-inset-top\)\);/);
+    assert.doesNotMatch(tutorialSkipRule, /top: max\(14px, env\(safe-area-inset-top\)\);/);
+    assert.doesNotMatch(pageSkipRule, /top: 18px;/);
+    assert.doesNotMatch(statusToastRule, /top: 20px;/);
+    assert.match(indexCss, /top: calc\(10px \+ var\(--neko-status-toast-crop-safe-area-top\)\);/);
 });
 
 test('day6 chat cursor handoff clears external ownership without hiding the PC cursor', () => {

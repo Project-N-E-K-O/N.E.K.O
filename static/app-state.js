@@ -108,6 +108,7 @@
         voiceChatActive: false,
         voiceStartPending: false,
         isTextSessionActive: false,
+        suppressAssistantStreamUntilNextSession: false,
         isSwitchingMode: false,
         sessionStartedResolver: null,
         sessionStartedRejecter: null,

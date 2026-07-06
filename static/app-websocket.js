@@ -769,6 +769,16 @@
         S.pendingTextTurnSubmitAt = 0;
     }
 
+    function clearPendingRollbackForRequest(requestId) {
+        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.clearPendingRollbackDraft === 'function') {
+            window.reactChatWindowHost.clearPendingRollbackDraft(requestId);
+        }
+        if (requestId && window._lastSubmittedRequestId === requestId) {
+            window._lastSubmittedText = '';
+            window._lastSubmittedRequestId = '';
+        }
+    }
+
     function isNewUserIcebreakerMirrorTurnEnd(response) {
         var meta = response && response.meta;
         if (!meta || typeof meta !== 'object') return false;
@@ -1128,6 +1138,47 @@
         S.pendingAudioChunkMetaQueue = [];
         logAssistantLifecycle('clearAssistantLifecycleOnDisconnect', {
             source: source || 'socket_close'
+        });
+    }
+
+    function stopAssistantTextOutputOnSessionEnd(source) {
+        S.suppressAssistantStreamUntilNextSession = true;
+        window._realisticGeminiVersion = (window._realisticGeminiVersion || 0) + 1;
+        window._realisticGeminiQueue = [];
+        window._realisticGeminiBuffer = '';
+        window._geminiTurnFullText = '';
+        window._pendingMusicCommand = '';
+        window._structuredGeminiStreaming = false;
+        window._isProcessingRealisticQueue = false;
+        window._realisticProcessingOwner = null;
+        window._geminiTurnEndSealed = true;
+
+        var currentBubbles = Array.isArray(window.currentTurnGeminiBubbles)
+            ? window.currentTurnGeminiBubbles.slice()
+            : [];
+        if (currentBubbles.length === 0 && window.currentGeminiMessage) {
+            currentBubbles = [window.currentGeminiMessage];
+        }
+        var currentBubbleIds = [];
+        currentBubbles.forEach(function (bubble) {
+            if (bubble && bubble.dataset && bubble.dataset.reactChatMessageId) {
+                currentBubbleIds.push(bubble.dataset.reactChatMessageId);
+            }
+            if (typeof window.setReactMessageStatus === 'function') {
+                try {
+                    window.setReactMessageStatus(bubble, 'assistant', 'sent');
+                } catch (_) {}
+            }
+        });
+        if (currentBubbleIds.length > 0 && typeof window._clearPendingHostMessagesByIds === 'function') {
+            window._clearPendingHostMessagesByIds(currentBubbleIds);
+        }
+
+        window.currentGeminiMessage = null;
+        window.currentTurnGeminiBubbles = [];
+        window.realisticGeminiCurrentTurnId = null;
+        logAssistantLifecycle('stopAssistantTextOutputOnSessionEnd', {
+            source: source || 'session_end'
         });
     }
 
@@ -1548,6 +1599,10 @@
 
                 // -------- gemini_response --------
                 if (response.type === 'gemini_response') {
+                    if (S.suppressAssistantStreamUntilNextSession) {
+                        console.log('[App] discard assistant chunk after session ended by server');
+                        return;
+                    }
                     var isNewMessage = response.isNewMessage || false;
                     if (response.metadata && response.metadata.game_route) {
                         var gameMeta = response.metadata.game_route;
@@ -1615,6 +1670,13 @@
                 } else if (response.type === 'response_discarded') {
                     clearPendingUserActivityCancel();
                     window.invalidatePendingMusicSearch();
+                    if (S.suppressAssistantStreamUntilNextSession) {
+                        logAssistantLifecycle('response_discarded_suppressed_after_session_end', {
+                            reason: response.reason,
+                            willRetry: !!response.will_retry
+                        });
+                        return;
+                    }
                     emitAssistantSpeechCancel('response_discarded');
                     S.assistantTurnId = null;
                     window._nekoAssistantTurnId = null;
@@ -2610,14 +2672,14 @@
 
                 // -------- system turn end (agent_callback — no proactive chat) --------
                 } else if (response.type === 'system' && response.data === 'turn end agent_callback') {
-                    if (window.reactChatWindowHost && typeof window.reactChatWindowHost.clearPendingRollbackDraft === 'function') {
-                        window.reactChatWindowHost.clearPendingRollbackDraft(response.request_id);
+                    if (S.suppressAssistantStreamUntilNextSession) {
+                        console.log('[App] discard assistant turn_end after session ended by server');
+                        clearPendingRollbackForRequest(response.request_id);
+                        clearPendingAssistantTurnStart();
+                        return;
                     }
-                    if (response.request_id && window._lastSubmittedRequestId === response.request_id) {
-                        window._lastSubmittedText = '';
-                        window._lastSubmittedRequestId = '';
-                    }
-                    console.log('[WS] turn end (agent_callback) — skipping proactive chat schedule');
+                    clearPendingRollbackForRequest(response.request_id);
+                    console.log('[WS] turn end (agent_callback) - skipping proactive chat schedule');
                     logAssistantLifecycle('ws:turn_end_agent_callback:received');
                     try {
                         flushRealisticBufferOnTurnEnd();
@@ -2649,13 +2711,13 @@
 
                 // -------- system turn end --------
                 } else if (response.type === 'system' && response.data === 'turn end') {
-                    if (window.reactChatWindowHost && typeof window.reactChatWindowHost.clearPendingRollbackDraft === 'function') {
-                        window.reactChatWindowHost.clearPendingRollbackDraft(response.request_id);
+                    if (S.suppressAssistantStreamUntilNextSession) {
+                        console.log('[App] discard assistant turn_end after session ended by server');
+                        clearPendingRollbackForRequest(response.request_id);
+                        clearPendingAssistantTurnStart();
+                        return;
                     }
-                    if (response.request_id && window._lastSubmittedRequestId === response.request_id) {
-                        window._lastSubmittedText = '';
-                        window._lastSubmittedRequestId = '';
-                    }
+                    clearPendingRollbackForRequest(response.request_id);
                     console.log(window.t('console.turnEndReceived'));
                     logAssistantLifecycle('ws:turn_end:received');
                     // Flush remaining buffer
@@ -2758,6 +2820,7 @@
                         return;
                     }
                     console.log(window.t('console.sessionStartedReceived'), response.input_mode);
+                    S.suppressAssistantStreamUntilNextSession = false;
                     S.isTextSessionActive = response.input_mode === 'text';
                     S.voiceChatActive = response.input_mode !== 'text';
                     S.voiceStartPending = false;
@@ -2880,6 +2943,7 @@
                     S.isTextSessionActive = false;
                     S.voiceChatActive = false;
                     S.voiceStartPending = false;
+                    stopAssistantTextOutputOnSessionEnd('session_ended_by_server');
                     clearAssistantLifecycleOnDisconnect('session_ended_by_server');
 
                     if (S.sessionStartedRejecter) {

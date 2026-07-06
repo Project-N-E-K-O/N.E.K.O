@@ -8194,7 +8194,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 
     // 加载模型的函数
-    async function loadModel(modelName, modelInfo, steam_id) {
+    async function loadModel(modelName, modelInfo, steam_id, options = {}) {
         if (!modelName || !modelInfo) return;
 
         // 确保获取正确的steam_id，优先使用传入的，然后从modelInfo中获取
@@ -8268,7 +8268,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             // 5. Load preferences
             const preferences = await window.live2dManager.loadUserPreferences();
-            const modelPreferences = preferences.find(p => p && p.model_path === modelInfo.path) || null;
+            const storedModelPreferences = preferences.find(p => p && p.model_path === modelInfo.path) || null;
+            const preferenceOverride = options.preferencesOverride && typeof options.preferencesOverride === 'object'
+                ? options.preferencesOverride
+                : null;
+            const modelPreferences = preferenceOverride
+                ? { ...(storedModelPreferences || {}), ...preferenceOverride }
+                : storedModelPreferences;
 
             // 6. Load model FROM THE MODIFIED OBJECT
             await window.live2dManager.loadModel(modelConfig, {
@@ -8354,13 +8360,55 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             // 恢复 Live2D 待机动作（如果之前保存过）
             restoreLive2DIdleAnimation();
+            return true;
 
         } catch (error) {
             showStatus(t('live2d.modelLoadFailed', `加载模型 ${modelName} 失败`, { model: modelName }));
             console.error(error);
             setControlsDisabled(false);
+            return false;
         }
     }
+
+    function createLive2DModelRuntimePreferenceOverride(currentModel) {
+        if (!currentModel || currentModel.destroyed || !currentModelInfo || !currentModelInfo.path) return null;
+
+        const posX = Number(currentModel.x);
+        const posY = Number(currentModel.y);
+        const scaleX = Number(currentModel.scale?.x);
+        const scaleY = Number(currentModel.scale?.y);
+        if (![posX, posY, scaleX, scaleY].every(Number.isFinite)) return null;
+
+        const rendererScreen = window.live2dManager?.pixi_app?.renderer?.screen;
+        const viewportWidth = Number(rendererScreen?.width) || window.innerWidth || document.documentElement.clientWidth || 0;
+        const viewportHeight = Number(rendererScreen?.height) || window.innerHeight || document.documentElement.clientHeight || 0;
+        const preferenceOverride = {
+            model_path: currentModelInfo.path,
+            position: { x: posX, y: posY },
+            scale: { x: scaleX, y: scaleY }
+        };
+        if (Number.isFinite(viewportWidth) && Number.isFinite(viewportHeight) && viewportWidth > 0 && viewportHeight > 0) {
+            preferenceOverride.viewport = {
+                width: viewportWidth,
+                height: viewportHeight
+            };
+        }
+        return preferenceOverride;
+    }
+
+    window.reloadCurrentLive2DModelInModelManager = async function(options = {}) {
+        if (currentModelType !== 'live2d' || !currentModelInfo || !window.live2dManager) return false;
+
+        const currentModel = typeof window.live2dManager.getCurrentModel === 'function'
+            ? window.live2dManager.getCurrentModel()
+            : window.live2dManager.currentModel;
+        const preferencesOverride = options.preserveRuntimeTransform === false
+            ? null
+            : createLive2DModelRuntimePreferenceOverride(currentModel);
+        const steamId = currentModelInfo.item_id;
+
+        return await loadModel(currentModelInfo.name, currentModelInfo, steamId, { preferencesOverride });
+    };
 
     playMotionBtn.addEventListener('click', () => {
         if (!live2dModel) {

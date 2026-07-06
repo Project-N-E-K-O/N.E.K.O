@@ -330,6 +330,42 @@ def test_outer_voice_start_failure_clears_pending_flags_before_composer_restore(
     assert failure.index("S.voiceChatActive = false;") < failure.index(sync_call)
 
 
+def test_voice_preparing_toast_ignores_module_object_messages():
+    source = _read(APP_UI_PATH)
+    normalizer = _js_function_block(source, "normalizeVoiceToastMessage")
+    toast = _js_function_block(source, "showVoicePreparingToast")
+
+    assert "fallbackKey = 'app.voiceSystemPreparing'" in normalizer
+    assert "window.safeT('app.voiceSystemPreparing'" not in normalizer
+    assert "translatedFallback.trim() !== fallbackKey" in normalizer
+    assert "text === '[object Module]'" in normalizer
+    assert "text === '[object Object]'" in normalizer
+    assert "window.translateStatusMessage(message)" in normalizer
+    assert "msgSpan.textContent = normalizeVoiceToastMessage(message);" in toast
+    assert "msgSpan.textContent = message;" not in toast
+
+
+def test_outer_voice_start_failure_uses_sanitized_toast_message():
+    source = _read(APP_BUTTONS_PATH)
+    normalizer = _js_function_block(source, "getVoiceStartErrorMessage")
+    start_flow = _mic_button_start_flow(source)
+    catch_split = start_flow.split("} catch (error) {", 1)
+    assert len(catch_split) == 2, "missing outer catch in mic button start flow"
+    failure = catch_split[1]
+
+    assert "fallbackKey = 'app.sessionFailed'" in normalizer
+    assert "window.safeT('app.sessionFailed'" not in normalizer
+    assert "translatedFallback.trim() !== fallbackKey" in normalizer
+    assert "text === '[object Module]'" in normalizer
+    assert "text === '[object Object]'" in normalizer
+    assert "window.translateStatusMessage(error)" in normalizer
+    assert "var voiceStartErrorMessage = getVoiceStartErrorMessage(error);" in failure
+    assert "window.showVoicePreparingToast(voiceStartErrorMessage);" in failure
+    assert "window.showStatusToast(voiceStartErrorMessage, 5000);" in failure
+    assert "window.showVoicePreparingToast(error.message)" not in failure
+    assert "window.showStatusToast(error.message, 5000)" not in failure
+
+
 def test_floating_mic_stale_active_state_reenters_main_voice_start_lifecycle():
     source = _read(APP_UI_PATH)
     listeners = _js_function_block(source, "initFloatingButtonListeners")
