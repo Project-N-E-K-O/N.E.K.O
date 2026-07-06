@@ -1284,6 +1284,20 @@ def get_proactive_intent_leak_labels() -> frozenset[str]:
         if label:
             labels.add(label)
 
+    # Activity state / propensity enum literals + their English labels.
+    # The activity-state section historically rendered the bare English
+    # enum keys (state line / scores line), and weak models echo them as
+    # the reply's first line. Deny the raw enums and their English labels
+    # so a leaked state word is stripped as a last resort. English only on
+    # purpose: the leak is always the English literal, and adding localized
+    # labels (e.g. "空闲" / "idle") risks scrubbing a legitimate reply that
+    # happens to open with such a common word.
+    for state_key, en_label in ACTIVITY_STATE_LABELS['en'].items():
+        labels.add(state_key)
+        labels.add(en_label)
+    for prop_key in ACTIVITY_PROPENSITY_DIRECTIVES['en']:
+        labels.add(prop_key)
+
     return frozenset(label.casefold() for label in labels if label)
 
 

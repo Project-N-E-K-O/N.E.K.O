@@ -49,6 +49,17 @@ def test_registry_covers_latin_labels() -> None:
         assert lab.casefold() in labels, f"registry missing {lab!r}"
 
 
+def test_registry_covers_activity_state_enums() -> None:
+    # The activity-state section historically rendered bare English state
+    # enums (focused_work / restricted_screen_only) that weak models echoed
+    # as the reply's first line. The denylist must strip both the raw enum
+    # and its English label as a last resort.
+    labels = get_proactive_intent_leak_labels()
+    for lab in ('focused_work', 'gaming', 'idle', 'chatting',
+                'focused work', 'casual browsing'):
+        assert lab.casefold() in labels, f"registry missing activity enum {lab!r}"
+
+
 def test_registry_skips_colonless_sentence_bullets() -> None:
     # The hushed 2nd bullet is a full sentence with no "<label>：" shape; it must
     # NOT become a denylist entry (would be an over-broad, sentence-long label).
