@@ -1616,6 +1616,20 @@ def test_cat1_rapid_drag_reaction_is_same_drag_motion_only():
     )
     _assert_source_contains(
         local_drag_setup,
+        "if (!isDragNiriCropCoordinateActive()) {\n                    const localX = Number(fallbackX);",
+        "return button drag setup",
+    )
+    _assert_source_order(
+        local_drag_setup,
+        "plain return-button drag does not read niri crop coordinates",
+        "const getDragPoint = (sourceEvent, fallbackX, fallbackY) => {",
+        "if (!isDragNiriCropCoordinateActive()) {",
+        "offsetX: 0,",
+        "const offset = getDragCropOffset();",
+        "cropApi.getEventCoordinates(sourceEvent)",
+    )
+    _assert_source_contains(
+        local_drag_setup,
         "const isUsableDragPoint = (point) => {",
         "return button drag setup",
     )
@@ -1628,6 +1642,22 @@ def test_cat1_rapid_drag_reaction_is_same_drag_motion_only():
         local_drag_setup,
         "const getDragContainerVirtualRect = () => {",
         "return button drag setup",
+    )
+    drag_container_rect_block = _source_slice_between(
+        local_drag_setup,
+        "const getDragContainerVirtualRect = () => {",
+        "const getDragScreenPointFromVirtualPoint = (virtualX, virtualY, sourceEvent = null, fallbackX = virtualX, fallbackY = virtualY) => {",
+        "return button drag container rect",
+    )
+    _assert_source_order(
+        drag_container_rect_block,
+        "plain return-button drag container rect does not include niri crop offset",
+        "const getDragContainerVirtualRect = () => {",
+        "if (!isDragNiriCropCoordinateActive()) {",
+        "left: Number.isFinite(left) ? left : 0,",
+        "left: Number(rect.left),",
+        "const offset = getDragCropOffset();",
+        "left: Number(rect.left) + offset.x",
     )
     _assert_source_contains(
         local_drag_setup,
@@ -2469,6 +2499,32 @@ def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():
         "_dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-end'",
     ):
         _assert_source_contains(drag_setup, expected, "return button drag setup")
+    _assert_source_order(
+        drag_setup,
+        "plain return-button drag bypasses niri crop point conversion",
+        "const getDragPoint = (sourceEvent, fallbackX, fallbackY) => {",
+        "if (!isDragNiriCropCoordinateActive()) {",
+        "virtualX: localX,",
+        "offsetX: 0,",
+        "const offset = getDragCropOffset();",
+        "cropApi.getEventCoordinates(sourceEvent)",
+    )
+    drag_container_rect_block = _source_slice_between(
+        drag_setup,
+        "const getDragContainerVirtualRect = () => {",
+        "const getDragScreenPointFromVirtualPoint = (virtualX, virtualY, sourceEvent = null, fallbackX = virtualX, fallbackY = virtualY) => {",
+        "return button drag container rect",
+    )
+    _assert_source_order(
+        drag_container_rect_block,
+        "plain return-button drag bypasses niri crop container offset",
+        "const getDragContainerVirtualRect = () => {",
+        "if (!isDragNiriCropCoordinateActive()) {",
+        "left: Number.isFinite(left) ? left : 0,",
+        "left: Number(rect.left),",
+        "const offset = getDragCropOffset();",
+        "left: Number(rect.left) + offset.x",
+    )
     _assert_source_order(
         drag_setup,
         "return button drag setup helpers",

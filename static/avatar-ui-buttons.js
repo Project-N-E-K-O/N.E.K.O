@@ -6242,6 +6242,20 @@ const AvatarButtonMixin = {
             };
 
             const getDragPoint = (sourceEvent, fallbackX, fallbackY) => {
+                if (!isDragNiriCropCoordinateActive()) {
+                    const localX = Number(fallbackX);
+                    const localY = Number(fallbackY);
+                    return {
+                        x: localX,
+                        y: localY,
+                        localX: localX,
+                        localY: localY,
+                        virtualX: localX,
+                        virtualY: localY,
+                        offsetX: 0,
+                        offsetY: 0
+                    };
+                }
                 const offset = getDragCropOffset();
                 let localX = Number(fallbackX);
                 let localY = Number(fallbackY);
@@ -6289,6 +6303,24 @@ const AvatarButtonMixin = {
 
             const getDragContainerVirtualRect = () => {
                 const rect = container.getBoundingClientRect && container.getBoundingClientRect();
+                if (!isDragNiriCropCoordinateActive()) {
+                    if (!rect) {
+                        const left = Number.parseFloat(container.style.left);
+                        const top = Number.parseFloat(container.style.top);
+                        return {
+                            left: Number.isFinite(left) ? left : 0,
+                            top: Number.isFinite(top) ? top : 0,
+                            width: container.offsetWidth || 64,
+                            height: container.offsetHeight || 64
+                        };
+                    }
+                    return {
+                        left: Number(rect.left),
+                        top: Number(rect.top),
+                        width: Number(rect.width) || container.offsetWidth || 64,
+                        height: Number(rect.height) || container.offsetHeight || 64
+                    };
+                }
                 const offset = getDragCropOffset();
                 if (!rect) {
                     const left = Number.parseFloat(container.style.left);
