@@ -328,6 +328,23 @@ def test_model_cat_transition_contract_is_present():
         "restoreReturnBallAfterBlockedModelViewport(event);",
         "return;",
     )
+    assert "window._goodbyeResetClickTimerId = setTimeout(() => {" in source
+    assert "const goodbyeStillActive = !!(" in source
+    assert "跳过过期的 resetSessionButton.click()" in source
+    return_handler_after_viewport_guard_block = return_handler_full_block[
+        pre_return_guard_start:
+    ]
+    _assert_source_order(
+        return_handler_after_viewport_guard_block,
+        "return handler cancels stale goodbye reset after viewport is ready",
+        "const preReturnViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel();",
+        "if (!preReturnViewportReady.ready) {",
+        "restoreReturnBallAfterBlockedModelViewport(event);",
+        "return;",
+        "if (window._goodbyeResetClickTimerId) {",
+        "clearTimeout(window._goodbyeResetClickTimerId);",
+        "window._goodbyeResetClickTimerId = null;",
+    )
     assert return_handler_full_block.index("const preReturnViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel();") < return_handler_full_block.index("window.live2dManager._goodbyeClicked = false;")
     restore_block = source[
         source.index("function restoreReturnBallAfterBlockedModelViewport(event)"):
