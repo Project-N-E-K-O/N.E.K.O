@@ -8,7 +8,7 @@ assets still passes.
 import os
 import asyncio
 import time
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
 import pytest
@@ -429,6 +429,21 @@ async def test_stream_audio_force_end_invalidates_inflight_eval():
     assert client._turn_eval_inflight is False
     assert client._pending_turn_eval is None
     assert client._turn_eval_generation == 4
+
+
+@pytest.mark.asyncio
+async def test_stream_audio_defers_silence_clear_while_turn_eval_pending():
+    client, det = _client_with_fake_detector()
+    client._turn_eval_inflight = True
+    client.clear_audio_buffer = AsyncMock()
+    client._should_clear_audio_buffer_on_silence = MagicMock(return_value=True)
+    det.next_signal = TurnSignal.NONE
+
+    await client.stream_audio(np.zeros(512, np.int16).tobytes())
+
+    client._should_clear_audio_buffer_on_silence.assert_not_called()
+    client.clear_audio_buffer.assert_not_awaited()
+    assert det.reset_calls == 0
 
 
 @pytest.mark.asyncio

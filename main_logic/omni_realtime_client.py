@@ -1549,7 +1549,15 @@ class OmniRealtimeClient:
                     await self.signal_user_activity_end()
 
         # 静音清 buffer：有 RNNoise 以 RNNoise 为准，否则 VAD + 连续本地静音（见 _should_clear_audio_buffer_on_silence）
-        if self._should_clear_audio_buffer_on_silence(current_time, use_rnnoise_path):
+        local_turn_commit_pending = (
+            self._local_turn_active
+            and self._turn_detector is not None
+            and (self._turn_eval_inflight or self._pending_turn_eval is not None)
+        )
+        if (
+            not local_turn_commit_pending
+            and self._should_clear_audio_buffer_on_silence(current_time, use_rnnoise_path)
+        ):
             self._silence_reset_pending = False
             if self._turn_detector is not None and not self._turn_eval_inflight:
                 self._turn_detector.reset()
