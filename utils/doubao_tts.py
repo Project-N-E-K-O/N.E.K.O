@@ -192,8 +192,10 @@ class DoubaoVoiceCloneClient:
         audio_buffer: io.BytesIO,
         *,
         speaker_id: str,
+        custom_speaker_id: str | None = None,
         display_name: str | None = None,
         audio_format: str = "wav",
+        allow_requested_id_fallback: bool = False,
     ) -> str:
         audio_buffer.seek(0)
         audio_b64 = base64.b64encode(audio_buffer.read()).decode("ascii")
@@ -205,6 +207,10 @@ class DoubaoVoiceCloneClient:
             },
             "display_name": display_name or speaker_id,
         }
+        requested_voice_id = str(custom_speaker_id or speaker_id or "").strip()
+        if custom_speaker_id:
+            payload["custom_speaker_id"] = custom_speaker_id
+            payload["display_name"] = display_name or custom_speaker_id
         headers = doubao_voice_clone_headers(self.api_key)
         try:
             async with httpx.AsyncClient(timeout=60) as client:
@@ -237,6 +243,8 @@ class DoubaoVoiceCloneClient:
             voice_id = str(result.get("speaker_id") or result.get("voice_id") or "").strip()
         if not voice_id:
             voice_id = str(data.get("speaker_id") or data.get("voice_id") or "").strip()
+        if not voice_id and allow_requested_id_fallback:
+            voice_id = requested_voice_id
         if not voice_id:
             raise DoubaoTtsError("豆包声音复刻成功但未返回音色 ID")
         return voice_id

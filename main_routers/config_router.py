@@ -1072,10 +1072,11 @@ async def get_api_providers_config():
             get_assist_api_providers_for_frontend,
         )
 
-        full_config = get_config()
-        # 使用缓存加载配置（性能更好，配置更新后需要重启服务）
-        core_providers = get_core_api_providers_for_frontend()
-        assist_providers = get_assist_api_providers_for_frontend()
+        full_config = get_config(force_reload=True)
+        # API settings is an admin/config surface; prefer current provider metadata
+        # over stale in-process cache so label/keybook changes show up immediately.
+        core_providers = get_core_api_providers_for_frontend(force_reload=True)
+        assist_providers = get_assist_api_providers_for_frontend(force_reload=True)
 
         # TTS provider 的前端驱动元数据：单一源来自 utils.tts_provider_registry，
         # 避免前端把「哪些 provider 只进 TTS 下拉 / 端点可编辑 / 支持哪些声音来源 /
@@ -1096,6 +1097,7 @@ async def get_api_providers_config():
             "api_key_registry": full_config.get("api_key_registry", {}),
             "assist_api_providers_full": full_config.get("assist_api_providers", {}),
             "core_api_providers_full": full_config.get("core_api_providers", {}),
+            "keybook_api_providers_full": full_config.get("keybook_api_providers", {}),
             "tts_providers": tts_providers,
         }
     except Exception as e:

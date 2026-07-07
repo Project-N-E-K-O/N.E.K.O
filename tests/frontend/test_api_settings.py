@@ -743,18 +743,15 @@ def test_explicit_mimo_tts_provider_is_saved_for_runtime_routing(mock_page: Page
 
 
 @pytest.mark.frontend
-def test_doubao_tts_provider_is_hidden_from_tts_model_config(mock_page: Page, running_server: str):
+def test_doubao_tts_is_keybook_only_and_hidden_from_tts_config(mock_page: Page, running_server: str):
     mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
     mock_page.goto(f"{running_server}/api_key")
     expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
-    mock_page.wait_for_selector("#ttsModelProvider", state="attached", timeout=10000)
-    expect(mock_page.locator("#ttsModelProvider option[value='doubao_tts']")).to_have_count(0)
-    expect(mock_page.locator("#keyBookInput_doubao_tts")).to_be_attached(timeout=10000)
+    mock_page.wait_for_selector("#keyBookInput_doubao_tts", state="attached", timeout=10000)
 
-    values = mock_page.evaluate("""
-        () => Array.from(document.getElementById('ttsModelProvider').options).map(option => option.value)
-    """)
-    assert "doubao_tts" not in values
+    assert mock_page.locator("#assistApiSelect option[value='doubao_tts']").count() == 0
+    assert mock_page.locator("#ttsModelProvider option[value='doubao_tts']").count() == 0
+    expect(mock_page.locator("#assistApiSelect option[value='doubao']")).to_be_attached()
 
 
 @pytest.mark.frontend
@@ -764,6 +761,8 @@ def test_doubao_tts_keybook_saves_independent_speech_key(mock_page: Page, runnin
     expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
     mock_page.wait_for_selector("#keyBookInput_doubao_tts", state="attached", timeout=10000)
     expect(mock_page.locator("label[data-i18n='api.keyBook.doubao_tts']")).not_to_have_text("api.keyBook.doubao_tts")
+    assert mock_page.locator("#assistApiSelect option[value='doubao_tts']").count() == 0
+    expect(mock_page.locator("#assistApiSelect option[value='doubao']")).to_be_attached()
 
     payload = mock_page.evaluate("""
         async () => {
@@ -786,46 +785,6 @@ def test_doubao_tts_keybook_saves_independent_speech_key(mock_page: Page, runnin
     """)
 
     assert payload["assistApiKeyDoubaoTts"] == "doubao-speech-key"
-
-
-@pytest.mark.frontend
-def test_doubao_tts_hidden_tts_config_does_not_save_tts_provider(mock_page: Page, running_server: str):
-    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
-    mock_page.goto(f"{running_server}/api_key")
-    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
-    mock_page.wait_for_selector("#ttsModelProvider", state="attached", timeout=10000)
-
-    payload = mock_page.evaluate("""
-        async () => {
-            document.getElementById('enableCustomApi').checked = true;
-            toggleCustomApi();
-
-            const provider = document.getElementById('ttsModelProvider');
-            provider.value = 'custom';
-            provider.dispatchEvent(new Event('change', { bubbles: true }));
-
-            document.getElementById('ttsModelUrl').value = 'https://openspeech.bytedance.com';
-            document.getElementById('ttsModelId').value = 'seed-icl-2.0';
-            document.getElementById('ttsModelApiKey').value = 'doubao-speech-key';
-            document.getElementById('ttsVoiceId').value = 'S_test';
-
-            window.__capturedSavePayload = null;
-            window.saveApiKey = async (params) => {
-                window.__capturedSavePayload = JSON.parse(JSON.stringify(params));
-            };
-
-            const currentApiKeyDiv = document.getElementById('current-api-key');
-            if (currentApiKeyDiv) {
-                currentApiKeyDiv.dataset.hasKey = 'false';
-            }
-
-            await save_button_down({ preventDefault() {} });
-            return window.__capturedSavePayload;
-        }
-    """)
-
-    assert payload["ttsModelProvider"] == "custom"
-    assert payload["ttsProvider"] == ""
 
 
 @pytest.mark.frontend

@@ -465,8 +465,8 @@ function isDoubaoTtsProvider(provider) {
     return provider === 'doubao_tts';
 }
 
-function isDoubaoSpeakerId(value) {
-    return /^S_[A-Za-z0-9]+$/.test(String(value || '').trim());
+function isDoubaoCustomSpeakerId(value) {
+    return /^custom_[A-Za-z0-9_]{3,}$/.test(String(value || '').trim());
 }
 
 function getVoiceCloneProviderKeyField(provider) {
@@ -937,7 +937,7 @@ function updateVoiceCloneProviderNoticeText(noticeDiv, provider) {
         'elevenlabs': '请先在 API 设置中填写 ElevenLabs API Key',
         'mimo': '请先在 API 设置中填写 MiMo API Key',
         'vllm_omni': '本地 vLLM-Omni 服务，无需 API Key',
-        'doubao_tts': 'Please save a Doubao Speech API Key in API Settings.',
+        'doubao_tts': 'Please save a Doubao Speech (Volcengine) API Key in the API Key Book.',
     };
     const i18nKey = keyMap[provider] || 'voice.alibabaApiRequired';
     span.setAttribute('data-i18n', i18nKey);
@@ -1008,8 +1008,9 @@ function updatePrefixFieldForProvider(provider) {
     const prefixInput = document.getElementById('prefix');
     if (!prefixInput) return;
     const row = prefixInput.closest('.field-row');
+    const registerText = document.querySelector('.register-voice-btn .register-text');
     const prefixLabel = document.getElementById('prefixLabel')
-        || (row ? row.querySelector('label[data-i18n="voice.customPrefix"], label[data-i18n="voice.doubaoSpeakerIdLabel"]') : null);
+        || (row ? row.querySelector('label[data-i18n="voice.customPrefix"], label[data-i18n="voice.doubaoCustomSpeakerIdLabel"]') : null);
     let prefixHint = document.getElementById('prefixHint');
     if (!prefixHint && row) {
         prefixHint = document.createElement('label');
@@ -1020,15 +1021,17 @@ function updatePrefixFieldForProvider(provider) {
 
     if (isDoubaoTtsProvider(provider)) {
         prefixInput.removeAttribute('maxlength');
-        setI18nText(prefixLabel, 'voice.doubaoSpeakerIdLabel', '豆包 Speaker ID（覆盖已有 S_ 音色，必填）');
-        setI18nText(prefixHint, 'voice.doubaoSpeakerIdNote', '请先前往豆包语音控制台克隆音色并获取 S_ 开头 Speaker ID；此处会覆盖更新该已有音色，不会创建新的豆包音色 ID，例如 S_xeC2CDp72');
-        setI18nPlaceholder(prefixInput, 'voice.doubaoSpeakerIdPlaceholder', '例如：S_xeC2CDp72');
+        setI18nText(prefixLabel, 'voice.doubaoCustomSpeakerIdLabel', 'Doubao Custom Speaker ID (custom_ required)');
+        setI18nText(prefixHint, 'voice.doubaoCustomSpeakerIdNote', 'Create or retrain a custom speaker through the Doubao Voice Clone V3 API. The saved voice_id is synthesized with seed-icl-2.0, e.g. custom_zh_phae_volca');
+        setI18nPlaceholder(prefixInput, 'voice.doubaoCustomSpeakerIdPlaceholder', 'e.g. custom_zh_phae_volca');
+        setI18nText(registerText, 'voice.doubaoCreateCustom', 'Create/Train Custom Speaker');
         return;
     }
 
     setI18nText(prefixLabel, 'voice.customPrefix', '自定义前缀（必填，用于区分音色）');
     setI18nText(prefixHint, 'voice.customPrefixNote', '不超过10个字符，只支持数字和英文字母');
     setI18nPlaceholder(prefixInput, 'voice.voiceIdPlaceholder', '不超过10个字符，只支持数字和英文字母');
+    setI18nText(registerText, 'voice.register', 'Register Voice');
 }
 
 function guessAudioMimeType(filename) {
@@ -1549,13 +1552,14 @@ async function registerVoice() {
     applyVoiceCloneProviderRestrictions(providerSelect);
     const provider = (providerSelect || {}).value || 'cosyvoice';
     const prefix = normalizePrefixInputForProvider();
-    const requireDoubaoSpeakerId = () => {
-        if (provider !== 'doubao_tts' || isDoubaoSpeakerId(prefix)) {
+    const validateDoubaoSpeakerId = () => {
+        if (provider !== 'doubao_tts') {
             return false;
         }
+        if (isDoubaoCustomSpeakerId(prefix)) return false;
         resultDiv.textContent = window.t
-            ? window.t('voice.doubaoSpeakerIdRequired')
-            : '豆包声音复刻需要填写火山控制台分配的 S_ 开头音色 ID';
+            ? window.t('voice.doubaoCustomSpeakerIdRequired')
+            : '豆包声音复刻需要填写 custom_ 开头的 Custom Speaker ID';
         resultDiv.className = 'result error';
         return true;
     };
@@ -1574,7 +1578,7 @@ async function registerVoice() {
             resultDiv.className = 'result error';
             return;
         }
-        if (requireDoubaoSpeakerId()) {
+        if (validateDoubaoSpeakerId()) {
             return;
         }
         // vLLM-Omni 必须填写参考音频原文
@@ -1607,7 +1611,7 @@ async function registerVoice() {
             resultDiv.className = 'result error';
             return;
         }
-        if (requireDoubaoSpeakerId()) {
+        if (validateDoubaoSpeakerId()) {
             return;
         }
         // 验证URL格式

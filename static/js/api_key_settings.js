@@ -12,6 +12,8 @@ let _isLoadingSavedConfig = false;
 let _apiKeyRegistry = {};
 // 辅助API服务商完整信息（从后端加载）
 let _assistApiProviders = {};
+// 仅用于 API 管理簿 / 专用模型配置的 provider，不进入辅助 API 下拉
+let _keyBookApiProviders = {};
 // 核心API服务商完整信息（从后端加载）
 let _coreApiProviders = {};
 // 特异 TTS provider（vllm_omni 等）前端驱动元数据，key→meta；来自后端
@@ -996,7 +998,7 @@ function appendModelProviderOption(selectEl, value, i18nKey, fallbackText) {
  * 但没有任何 LLM 模型字段」这个结构信号兜底，避免在前端再 re-hardcode 具体 provider key。
  */
 function isStructuralTtsOnlyProvider(pk) {
-    const p = _assistApiProviders[pk];
+    const p = _assistApiProviders[pk] || _keyBookApiProviders[pk];
     if (!p || typeof p !== 'object') return false;
     if (!p.tts_default_model && !p.tts_default_voice) return false;
     // 任意 LLM 模型字段（conversation_model / summary_model / ...）非空 → 不是纯 TTS。
@@ -1018,7 +1020,7 @@ function getTtsProviderMeta(pk) {
     const meta = _ttsProviders[pk];
     if (meta) return meta;
     if (isStructuralTtsOnlyProvider(pk)) {
-        const p = _assistApiProviders[pk] || {};
+        const p = _assistApiProviders[pk] || _keyBookApiProviders[pk] || {};
         return {
             key: pk,
             tts_dropdown_only: true,
@@ -1044,7 +1046,7 @@ function getTtsProviderMeta(pk) {
  */
 function getProviderInfo(providerKey) {
     if (!providerKey) return {};
-    return _assistApiProviders[providerKey] || _coreApiProviders[providerKey] || {};
+    return _assistApiProviders[providerKey] || _keyBookApiProviders[providerKey] || _coreApiProviders[providerKey] || {};
 }
 
 function isProviderFlagEnabled(value) {
@@ -1350,7 +1352,7 @@ function onCustomModelProviderChange(modelType) {
                 const coreBookKey = syncKeyFromBook(coreProviderKey);
                 setKeyReadonly(keyInput, coreBookKey);
             } else {
-                const pInfo = _assistApiProviders[sourceProviderKey] || _coreApiProviders[sourceProviderKey] || {};
+                const pInfo = getProviderInfo(sourceProviderKey);
                 if (urlInput) {
                     urlInput.value = getEffectiveAssistUrl(sourceProviderKey, pInfo) || getProviderCoreUrl(sourceProviderKey, pInfo);
                     urlInput.setAttribute('readonly', 'readonly');
@@ -1370,7 +1372,7 @@ function onCustomModelProviderChange(modelType) {
         // tts_provider_registry 的 editable_endpoint 驱动（缺失时 getTtsProviderMeta
         // 结构信号兜底）；预填默认值优先取 api_providers.json，缺失时回退注册表 default_*。
         const _spMeta = getTtsProviderMeta(provider);
-        const pInfo = _assistApiProviders[provider] || {};
+        const pInfo = getProviderInfo(provider);
         if (urlInput) {
             // 切换到该 provider 时：
             // - 若 URL 为空，或当前 URL 是从其他 provider 自动填充的 readonly 值（用户没主动编辑过），
@@ -1405,7 +1407,7 @@ function onCustomModelProviderChange(modelType) {
         setKeyEditable(keyInput);
     } else {
         // Specific provider
-        const pInfo = _assistApiProviders[provider] || _coreApiProviders[provider] || {};
+        const pInfo = getProviderInfo(provider);
         const fixedModelApplied = applyFixedModelProviderUi(modelType, provider);
         if (modelIdInput && !fixedModelApplied) modelIdInput.removeAttribute('readonly');
         if (modelType === 'omni') {
@@ -1497,7 +1499,7 @@ function removeKeyBookLink(input) {
 
 async function loadApiProviders() {
     try {
-        const response = await fetch('/api/config/api_providers');
+        const response = await fetch('/api/config/api_providers', { cache: 'no-store' });
         if (response.ok) {
             const data = await response.json();
             if (data.success) {
@@ -1505,6 +1507,7 @@ async function loadApiProviders() {
                 _apiKeyRegistry = data.api_key_registry || {};
                 _coreApiProviders = data.core_api_providers_full || {};
                 _assistApiProviders = data.assist_api_providers_full || {};
+                _keyBookApiProviders = data.keybook_api_providers_full || {};
 
                 // TTS provider 元数据（后端 tts_provider_registry → ui_metadata）：
                 // 列表转成 key→meta 映射，供下拉过滤 / 字段解锁 / 探测 / 来源能力复用。
@@ -1528,7 +1531,7 @@ async function loadApiProviders() {
                 }
                 // Build registry from providers if not provided
                 if (Object.keys(_apiKeyRegistry).length === 0) {
-                    const allProviders = { ..._coreApiProviders, ..._assistApiProviders };
+                    const allProviders = { ..._coreApiProviders, ..._assistApiProviders, ..._keyBookApiProviders };
                     Object.keys(allProviders).forEach(pk => {
                         if (pk === 'free') return;
                         // Backend expects camelCase: assistApiKey + PascalCased provider key
@@ -2707,7 +2710,7 @@ function refreshAutoResolvedModelUrlsForSave(params) {
             return getProviderCoreUrl(providerKey, _coreApiProviders[providerKey] || {});
         }
 
-        const assistProfile = _assistApiProviders[providerKey] || _coreApiProviders[providerKey] || {};
+        const assistProfile = getProviderInfo(providerKey);
         const useTokenPlan = providerMode === 'follow_assist';
         return getEffectiveAssistUrl(providerKey, assistProfile, { useTokenPlan }) || getProviderCoreUrl(providerKey, assistProfile);
     };
@@ -3627,7 +3630,7 @@ const ConnectivityManager = {
                     result.providerKey = provider;
                     result.providerScope = 'core';
                 } else {
-                    const pInfo = _assistApiProviders[provider] || _coreApiProviders[provider] || {};
+                    const pInfo = getProviderInfo(provider);
                     result.url = getEffectiveAssistUrl(provider, pInfo, { useTokenPlan: false }) || getProviderCoreUrl(provider, pInfo);
                     result.providerType = getProviderType(provider);
                     result.providerKey = provider;
