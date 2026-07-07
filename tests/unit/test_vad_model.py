@@ -7,6 +7,7 @@ assets still passes.
 """
 import os
 import asyncio
+import base64
 import time
 from unittest.mock import AsyncMock, MagicMock
 
@@ -269,11 +270,13 @@ class _FakeDetector:
         self.committed = False
         self.reset_calls = 0
         self.fed = 0
+        self.fed_lengths = []
         self.result_calls = 0
         self.snapshots = 0
 
     def feed(self, pcm16_bytes):
         self.fed += 1
+        self.fed_lengths.append(len(pcm16_bytes))
         return self.next_signal
 
     def take_endpoint_audio(self):
@@ -334,6 +337,19 @@ async def test_stream_audio_candidate_end_commits():
     assert det.fed == 1
     assert commits, "CANDIDATE_END + complete Smart Turn must commit the turn"
     assert client._turn_eval_inflight is False                     # guard cleared
+
+
+@pytest.mark.asyncio
+async def test_stream_audio_downsamples_desktop_chunk_before_local_detector():
+    client, det = _client_with_fake_detector()
+    client._audio_processor = None
+    client.send_event = AsyncMock()
+
+    await client.stream_audio(np.zeros(480, np.int16).tobytes())
+
+    assert det.fed_lengths == [320]
+    append_event = client.send_event.await_args.args[0]
+    assert len(base64.b64decode(append_event["audio"])) == 320
 
 
 @pytest.mark.asyncio

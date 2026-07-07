@@ -816,6 +816,17 @@ class OmniRealtimeClient:
             return b''
         return (out * 32768.0).clip(-32768, 32767).astype(np.int16).tobytes()
 
+    @staticmethod
+    def _downsample_desktop_input(pcm48_bytes: bytes) -> bytes:
+        """Downsample 48kHz desktop PCM16 audio to the internal 16kHz PCM16 format."""
+        if not pcm48_bytes:
+            return pcm48_bytes
+        samples = np.frombuffer(pcm48_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+        out = soxr.resample(samples, 48000, 16000, quality='HQ')
+        if len(out) == 0:
+            return b''
+        return (out * 32768.0).clip(-32768, 32767).astype(np.int16).tobytes()
+
     async def process_audio_chunk_async(self, audio_chunk: bytes) -> bytes:
         """
         Asynchronously process audio chunk using RNNoise in a separate thread.
@@ -1474,12 +1485,16 @@ class OmniRealtimeClient:
         
         
         use_rnnoise_path = is_48khz and self._audio_processor is not None
-        # Apply RNNoise noise reduction only for 48kHz input (PC)
+        # Normalize desktop 48kHz input before VAD/local-turn/provider paths.
         if use_rnnoise_path:
             # Use async wrapper to avoid blocking main loop
             audio_chunk = await self.process_audio_chunk_async(audio_chunk)
             
             # Skip if RNNoise is buffering (returns empty)
+            if len(audio_chunk) == 0:
+                return
+        elif is_48khz:
+            audio_chunk = self._downsample_desktop_input(audio_chunk)
             if len(audio_chunk) == 0:
                 return
         
