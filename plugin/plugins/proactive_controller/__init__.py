@@ -15,7 +15,7 @@ API 形态：
 * ``command(action, ...)``   — 单一聚合入口，方便"发消息式"调用
 
 默认行为：首次启动且 ``user_preferences.json`` 中没有 ``proactiveChatEnabled``
-字段时，自动套用 ``off`` 预设（默认关闭所有主动搭话）；已有用户偏好则原样保留。
+字段时，自动套用 ``normal`` 预设（默认开启主动搭话）；已有用户偏好则原样保留。
 """
 
 from __future__ import annotations
@@ -97,9 +97,9 @@ class ProactiveControllerPlugin(NekoPluginBase):
                 raw_timeout, self._api_timeout,
             )
 
-        default_mode = str(section.get("default_mode_on_first_run", "off")).strip()
+        default_mode = str(section.get("default_mode_on_first_run", "normal")).strip()
         if default_mode not in _VALID_MODES:
-            default_mode = "off"
+            default_mode = "normal"
 
         # 首次运行判定：以 user_preferences.json 中是否已有 proactiveChatEnabled
         # 为准——存在即视为用户已经配置过，原样保留；缺失才套用 default。
@@ -124,8 +124,8 @@ class ProactiveControllerPlugin(NekoPluginBase):
         id="set_mode",
         name="切换主动搭话模式",
         description=(
-            "套用一组主动搭话预设。可选模式：'off'（全关，默认首次启动值）、"
-            "'normal'（推荐配置，所有源开启，间隔 15s/10s）、'focus'（低打扰，"
+            "套用一组主动搭话预设。可选模式：'off'（全关）、"
+            "'normal'（推荐配置，默认首次启动值，所有源开启，间隔 15s/10s）、'focus'（低打扰，"
             "仅留搭话和个人动态，间隔 60s）、'frequent'（高频，全开，间隔 5s）。"
             " 注意：预设不会改变 proactiveVisionEnabled（隐私模式）—— 那是用户绝对控制权。"
         ),
