@@ -16,8 +16,49 @@ function isNekoYuiGuideFloatingToolbarSuppressed() {
     );
 }
 
+const NEKO_YUI_GUIDE_LOCK_SPOTLIGHT_DEFAULT_BOTTOM_PX = 112;
+
+function isNekoYuiGuideLockSpotlightSafeAreaActive() {
+    return !!(
+        typeof window !== 'undefined'
+        && window.nekoYuiGuideLockSpotlightSafeAreaActive === true
+    );
+}
+
+function getNekoYuiGuideLockSpotlightBottomPx() {
+    if (typeof window === 'undefined') {
+        return NEKO_YUI_GUIDE_LOCK_SPOTLIGHT_DEFAULT_BOTTOM_PX;
+    }
+    const configured = Number(window.nekoYuiGuideLockSpotlightSafeAreaBottomPx);
+    return Number.isFinite(configured) && configured >= 0
+        ? configured
+        : NEKO_YUI_GUIDE_LOCK_SPOTLIGHT_DEFAULT_BOTTOM_PX;
+}
+
+function getNekoYuiGuideLockIconMaxTop(defaultMaxTop, iconSize) {
+    const fallbackMaxTop = Number(defaultMaxTop);
+    const normalizedDefault = Number.isFinite(fallbackMaxTop) ? fallbackMaxTop : 0;
+    if (!isNekoYuiGuideLockSpotlightSafeAreaActive() || typeof window === 'undefined') {
+        return normalizedDefault;
+    }
+    const viewportHeight = Number(window.innerHeight);
+    if (!Number.isFinite(viewportHeight) || viewportHeight <= 0) {
+        return normalizedDefault;
+    }
+    const normalizedIconSize = Number.isFinite(Number(iconSize)) && Number(iconSize) > 0
+        ? Number(iconSize)
+        : 40;
+    const safeMaxTop = Math.max(
+        0,
+        viewportHeight - normalizedIconSize - getNekoYuiGuideLockSpotlightBottomPx()
+    );
+    return Math.min(normalizedDefault, safeMaxTop);
+}
+
 if (typeof window !== 'undefined') {
     window.isNekoYuiGuideFloatingToolbarSuppressed = isNekoYuiGuideFloatingToolbarSuppressed;
+    window.isNekoYuiGuideLockSpotlightSafeAreaActive = isNekoYuiGuideLockSpotlightSafeAreaActive;
+    window.getNekoYuiGuideLockIconMaxTop = getNekoYuiGuideLockIconMaxTop;
 }
 
 function _ensureFloatingButtonsAnimationStyles() {
@@ -6934,6 +6975,7 @@ const AvatarButtonMixin = {
                 cancelAnimationFrame(this._uiUpdateLoopId);
                 this._uiUpdateLoopId = null;
             }
+            this._updateFloatingButtonsPositionNow = null;
 
             // 摘除浮动按钮 / 锁图标 ticker —— 下方会删掉它们的 DOM，但 _removeFloatingButtonsElement
             // 只调 el.remove() 不会摘 ticker；与 setupFloatingButtonsBase 同病：不在此处摘除，旧 ticker 会

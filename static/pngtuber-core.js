@@ -1265,8 +1265,12 @@
             const lockVerticalGap = 80;
             const targetX = rect.right * 0.7 + rect.left * 0.3 + lockGap;
             const targetY = rect.top * 0.3 + rect.bottom * 0.7 + lockVerticalGap;
+            const defaultMaxTop = window.innerHeight - 40;
+            const maxTop = typeof window.getNekoYuiGuideLockIconMaxTop === 'function'
+                ? window.getNekoYuiGuideLockIconMaxTop(defaultMaxTop, 40)
+                : defaultMaxTop;
             lockIcon.style.left = `${Math.max(0, Math.min(targetX, window.innerWidth - 40))}px`;
-            lockIcon.style.top = `${Math.max(0, Math.min(targetY, window.innerHeight - 40))}px`;
+            lockIcon.style.top = `${Math.max(0, Math.min(targetY, maxTop))}px`;
             lockIcon.style.display = 'block';
             lockIcon.style.visibility = 'visible';
 

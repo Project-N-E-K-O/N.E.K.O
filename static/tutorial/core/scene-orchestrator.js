@@ -282,6 +282,9 @@
             if (typeof director.syncAvatarFloatingToolbarForScene === 'function') {
                 director.syncAvatarFloatingToolbarForScene(scene, scene.id || 'scene');
             }
+            if (typeof director.syncDay4LockSpotlightSafeAreaForScene === 'function') {
+                director.syncDay4LockSpotlightSafeAreaForScene(scene);
+            }
             const isFirstDailyScene = index === 0;
             const preserveExternalizedChatGuideTarget = !!(
                 director.shouldPreserveExternalizedChatCursor(previousSceneId, scene)
@@ -991,6 +994,9 @@
                     director.clearAllExtraSpotlights();
                     director.clearSpotlightGeometryHints();
                     director.clearSpotlightVariantHints();
+                    if (typeof director.setDay4LockSpotlightSafeAreaActive === 'function') {
+                        director.setDay4LockSpotlightSafeAreaActive(false, 'round-complete');
+                    }
                     director.overlay.clearPersistentSpotlight();
                     director.overlay.clearActionSpotlight();
                     director.cursor.hide();

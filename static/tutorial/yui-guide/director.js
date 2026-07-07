@@ -760,6 +760,8 @@
         return Math.max(min, Math.min(max, value));
     }
 
+    const DAY4_LOCK_SPOTLIGHT_SAFE_BOTTOM_PX = 112;
+
     const HOME_TUTORIAL_PLATFORM_PROFILES = Object.freeze({
         windows: Object.freeze({
             supportsExternalChat: true,
@@ -2734,6 +2736,7 @@
             this.avatarFloatingGuideSuppressionActive = false;
             this.avatarFloatingGuideTutorialModeActive = false;
             this.avatarFloatingGuidePreviousIsInTutorial = false;
+            this.day4LockSpotlightSafeAreaActive = false;
             this.avatarStandInShowTimer = null;
             this.avatarStandInHideTimer = null;
             this.avatarStandInPerformanceHandle = null;
@@ -4143,6 +4146,77 @@
             return target && this.isElementVisible(target) ? target : null;
         }
 
+        setDay4LockSpotlightSafeAreaActive(active, reason) {
+            const shouldActivate = active === true;
+            this.day4LockSpotlightSafeAreaActive = shouldActivate;
+            try {
+                window.nekoYuiGuideLockSpotlightSafeAreaActive = shouldActivate;
+                if (shouldActivate) {
+                    window.nekoYuiGuideLockSpotlightSafeAreaBottomPx = DAY4_LOCK_SPOTLIGHT_SAFE_BOTTOM_PX;
+                } else {
+                    delete window.nekoYuiGuideLockSpotlightSafeAreaBottomPx;
+                }
+            } catch (error) {
+                console.warn('[YuiGuide] 同步 Day4 锁按钮安全区状态失败:', reason || 'scene', error);
+            }
+            this.refreshAvatarFloatingLockIconPosition();
+            return shouldActivate;
+        }
+
+        syncDay4LockSpotlightSafeAreaForScene(scene) {
+            const sceneId = scene && typeof scene.id === 'string' ? scene.id : '';
+            return this.setDay4LockSpotlightSafeAreaActive(sceneId === 'day4_model_lock', sceneId || 'scene');
+        }
+
+        refreshAvatarFloatingLockIconPosition() {
+            [
+                window.live2dManager,
+                window.vrmManager,
+                window.mmdManager,
+                window.pngtuberManager
+            ].forEach((manager) => {
+                if (!manager) {
+                    return;
+                }
+                [
+                    '_updateFloatingButtonsPositionNow',
+                    'updateFloatingButtonsPosition',
+                    'updateLockIconPosition',
+                    '_floatingButtonsTicker'
+                ].forEach((methodName) => {
+                    if (typeof manager[methodName] !== 'function') {
+                        return;
+                    }
+                    try {
+                        manager[methodName]();
+                    } catch (_) {}
+                });
+            });
+        }
+
+        adjustDay4LockSpotlightTarget(lockIcon) {
+            if (!lockIcon || this.day4LockSpotlightSafeAreaActive !== true) {
+                return false;
+            }
+            const rect = this.getElementRect(lockIcon);
+            if (!rect || rect.height <= 0 || !Number.isFinite(rect.top)) {
+                return false;
+            }
+            const fallbackMaxTop = Math.max(0, window.innerHeight - rect.height);
+            const maxTop = typeof window.getNekoYuiGuideLockIconMaxTop === 'function'
+                ? window.getNekoYuiGuideLockIconMaxTop(fallbackMaxTop, rect.height)
+                : Math.max(0, window.innerHeight - rect.height - DAY4_LOCK_SPOTLIGHT_SAFE_BOTTOM_PX);
+            if (!Number.isFinite(maxTop) || rect.top <= maxTop) {
+                return false;
+            }
+            const currentTop = Number.parseFloat(lockIcon.style.top);
+            if (!Number.isFinite(currentTop)) {
+                return false;
+            }
+            lockIcon.style.top = Math.max(0, currentTop - (rect.top - maxTop)) + 'px';
+            return true;
+        }
+
         getAvatarFloatingLockIconElement() {
             const prefixes = [];
             const addPrefix = (value) => {
@@ -4165,6 +4239,7 @@
         }
 
         getDay4LockButtonSpotlightTarget() {
+            this.setDay4LockSpotlightSafeAreaActive(true, 'day4_model_lock');
             const lockIcon = this.getAvatarFloatingLockIconElement();
             if (!lockIcon) {
                 return null;
@@ -4172,6 +4247,7 @@
             lockIcon.style.setProperty('display', 'block', 'important');
             lockIcon.style.setProperty('visibility', 'visible', 'important');
             lockIcon.style.setProperty('opacity', '1', 'important');
+            this.adjustDay4LockSpotlightTarget(lockIcon);
             return this.getFloatingButtonShell(lockIcon) || lockIcon;
         }
 
@@ -11384,6 +11460,7 @@
             this.clearGuideChatStreamTimers();
             this.clearGuideChatMessages();
             this.clearQueuedGuideChatBridgeMessages();
+            this.setDay4LockSpotlightSafeAreaActive(false, 'termination-cleanup');
             if (this.overlay && typeof this.overlay.setSpotlightSuppressed === 'function') {
                 this.overlay.setSpotlightSuppressed(true);
             }
