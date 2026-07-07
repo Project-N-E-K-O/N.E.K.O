@@ -189,6 +189,42 @@ def test_memory_browser_page_load(mock_page: Page, running_server: str, seed_mem
 
 
 @pytest.mark.frontend
+def test_memory_browser_tutorial_cascader_dark_mode_uses_readable_text(
+    mock_page: Page,
+    running_server: str,
+    seed_memory_file,
+):
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+    mock_page.add_init_script("window.localStorage.setItem('neko-dark-mode', 'true')")
+
+    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.wait_for_selector(".tutorial-cascader-trigger", timeout=10000)
+    mock_page.locator(".tutorial-cascader-trigger").click()
+
+    colors = mock_page.evaluate(
+        """
+        () => {
+            const trigger = document.querySelector('.tutorial-cascader-trigger');
+            const option = document.querySelector('.tutorial-cascader-option[data-tutorial-page="home"]');
+            return {
+                theme: document.documentElement.getAttribute('data-theme'),
+                triggerColor: getComputedStyle(trigger).color,
+                optionColor: getComputedStyle(option).color,
+                optionBackground: getComputedStyle(option).backgroundColor,
+            };
+        }
+        """
+    )
+
+    assert colors == {
+        "theme": "dark",
+        "triggerColor": "rgb(15, 95, 122)",
+        "optionColor": "rgb(15, 95, 122)",
+        "optionBackground": "rgba(0, 0, 0, 0)",
+    }
+
+
+@pytest.mark.frontend
 def test_memory_browser_current_personality_reset_requests_home_reselect(
     mock_page: Page,
     running_server: str,
