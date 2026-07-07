@@ -14,6 +14,7 @@ test('day4 model lock spotlight uses a scene-scoped lock icon safe area', () => 
 
     assert.match(directorSource, /const DAY4_LOCK_SPOTLIGHT_SAFE_BOTTOM_PX = 112;/);
     assert.match(directorSource, /syncDay4LockSpotlightSafeAreaForScene\(scene\) \{[\s\S]*sceneId === 'day4_model_lock'/);
+    assert.match(directorSource, /if \(this\.day4LockSpotlightSafeAreaActive === shouldActivate\) \{[\s\S]*return shouldActivate;/);
     assert.match(directorSource, /getDay4LockButtonSpotlightTarget\(\) \{[\s\S]*setDay4LockSpotlightSafeAreaActive\(true, 'day4_model_lock'\)[\s\S]*adjustDay4LockSpotlightTarget\(lockIcon\)/);
     assert.match(directorSource, /setDay4LockSpotlightSafeAreaActive\(false, 'termination-cleanup'\)/);
     assert.match(orchestratorSource, /syncDay4LockSpotlightSafeAreaForScene\(scene\)/);

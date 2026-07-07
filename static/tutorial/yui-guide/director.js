@@ -4148,6 +4148,9 @@
 
         setDay4LockSpotlightSafeAreaActive(active, reason) {
             const shouldActivate = active === true;
+            if (this.day4LockSpotlightSafeAreaActive === shouldActivate) {
+                return shouldActivate;
+            }
             this.day4LockSpotlightSafeAreaActive = shouldActivate;
             try {
                 window.nekoYuiGuideLockSpotlightSafeAreaActive = shouldActivate;
