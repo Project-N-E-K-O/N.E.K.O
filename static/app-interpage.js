@@ -156,6 +156,11 @@
         return false;
     }
 
+    function getYuiGuideBridgeMessageTimestamp(message) {
+        var timestamp = Number(message && message.timestamp);
+        return Number.isFinite(timestamp) && timestamp > 0 ? timestamp : Date.now();
+    }
+
     function shouldBypassYuiGuideMessageDedup(action, message) {
         return (message && message.bypassDedup === true)
             || action === 'yui_guide_set_chat_spotlight'

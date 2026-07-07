@@ -885,13 +885,18 @@ def test_icebreaker_defers_while_home_tutorial_is_active():
 
     assert "function isIcebreakerBlockerVisible(el)" in runtime
     assert "function hasVisibleTutorialBlocker(selectors)" in runtime
+    assert "function isDay1SystrayIntroBlockingIcebreaker()" in runtime
     assert "function isTutorialBlockingIcebreaker()" in runtime
     assert "window.isInTutorial" in runtime
     assert "manager.isTutorialRunning" in runtime
     assert "manager._teardownPromise" in runtime
+    assert "neko-day1-systray-intro-open" in runtime
+    assert "#neko-day1-systray-intro-modal" in runtime
+    assert ".neko-day1-systray-intro-modal" in runtime
     assert "startFromEndStateWhenTutorialIdle" in runtime
     assert "TUTORIAL_IDLE_RETRY_MS" in runtime
     assert "if (isTutorialBlockingIcebreaker())" in runtime
+    assert "window.addEventListener('neko:day1-systray-intro-closed'" in runtime
     assert "return false;" in runtime
     assert "getEndStateTriggerDeadline(endState)" in runtime
     assert "retryCount >= TUTORIAL_IDLE_MAX_RETRIES" not in runtime
@@ -921,11 +926,26 @@ def test_icebreaker_tutorial_end_events_start_from_explicit_event_state():
     assert "startFromEndState(resolveLatestEndState(detail, eventType))" not in body
     assert "var endState = resolveLatestEndState(detail, eventType);" in body
     assert "var pendingDay = markPendingStartFromEndState(endState);" in body
-    assert "startFromEndStateWhenTutorialIdle(endState)" in body
-    assert "clearPendingGuideEndStateDay(pendingDay)" in body
-    assert ".catch(function (error)" in body
-    assert "console.warn('[NewUserIcebreaker] deferred start failed:', error);" in body
-    assert "dispatchIcebreakerEnded('start_failed')" in body
+    assert "attemptStartFromGuideEndState(endState, pendingDay)" in body
+
+
+def test_day1_systray_intro_close_releases_icebreaker_and_desktop_passthrough():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+    manager = UNIVERSAL_TUTORIAL_MANAGER_PATH.read_text(encoding="utf-8")
+
+    assert "pendingGuideEndState = endState;" in runtime
+    assert "attemptStartFromGuideEndState(pendingGuideEndState" in runtime
+    assert "window.addEventListener('neko:day1-systray-intro-closed'" in runtime
+    assert "window.dispatchEvent(new CustomEvent('neko:day1-systray-intro-closed'" in manager
+    assert "document.body.classList.remove('neko-day1-systray-intro-open')" in manager
+
+
+def test_yui_guide_bridge_timestamp_helper_exists_for_cursor_relay():
+    interpage = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
+
+    assert "function getYuiGuideBridgeMessageTimestamp(message)" in interpage
+    assert "timestamp: getYuiGuideBridgeMessageTimestamp(message)" in interpage
+    assert "getYuiGuideBridgeMessageTimestamp is not defined" not in interpage
 
 
 def test_icebreaker_does_not_bootstrap_from_persisted_end_state_on_cold_start():
