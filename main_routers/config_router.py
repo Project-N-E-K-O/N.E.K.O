@@ -115,7 +115,14 @@ async def _restart_active_voice_sessions_for_local_turn(enabled: bool):
                 continue
             if not isinstance(mgr.session, OmniRealtimeClient):
                 continue
-            if bool(getattr(mgr.session, '_local_turn_active', False)) == bool(enabled):
+            current_requested = bool(
+                getattr(
+                    mgr.session,
+                    '_local_turn_requested',
+                    getattr(mgr.session, '_local_turn_active', False),
+                )
+            )
+            if current_requested == bool(enabled):
                 continue
             await send_reload_page_notice(mgr, "轮次检测设置已更新，页面即将刷新")
             await mgr.end_session(by_server=True)

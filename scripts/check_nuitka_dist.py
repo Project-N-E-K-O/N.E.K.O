@@ -64,6 +64,9 @@ _REQUIRED_ASSETS: tuple[tuple[str, str | None], ...] = (
     ("templates", None),
     ("assets", None),
     ("data/browser_use_prompts", None),
+    ("data/vad_models/silero_vad.onnx", None),
+    ("data/vad_models/smart_turn_v3.onnx", None),
+    ("data/vad_models/whisper_mel_80.npy", None),
     ("frontend/plugin-manager/dist", "index.html"),
     ("plugin/plugins", None),
     # 应用内 OpenClaw 引导文档 + 图片，agent_router 经 /api/agent/openclaw/guide/* 提供；纯数据目录。

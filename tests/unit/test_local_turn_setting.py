@@ -5,8 +5,13 @@ Verifies the new key survives the whitelist filter AND the bool-type validation
 in save/load_global_conversation_settings — the exact gate the frontend toggle's
 POST /api/config/conversation-settings body must pass to reach core.py.
 """
-from unittest.mock import MagicMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
+import main_routers.config_router as config_router
+from main_logic.omni_realtime_client import OmniRealtimeClient
 import utils.preferences as preferences
 
 
@@ -57,3 +62,36 @@ def test_local_turn_setting_coexists_with_noise_reduction(tmp_path, monkeypatch)
     s = preferences.load_global_conversation_settings()
     assert s.get("noiseReductionEnabled") is False   # not clobbered by the second save
     assert s.get("localTurnDetectionEnabled") is True
+
+
+@pytest.mark.asyncio
+async def test_local_turn_restart_uses_requested_state_for_silero_fallback(monkeypatch):
+    session = OmniRealtimeClient(
+        base_url="wss://example.test/realtime",
+        api_key="sk-test",
+        model="qwen-omni-turbo",
+        api_type="qwen",
+        local_turn_detection=False,
+    )
+    session._local_turn_requested = True
+    session._local_turn_active = False
+
+    mgr = SimpleNamespace(
+        is_active=True,
+        session=session,
+        end_session=AsyncMock(),
+        reset_session_start_circuit=MagicMock(),
+    )
+    notice = AsyncMock()
+    monkeypatch.setattr(config_router, "get_session_manager", lambda: {"main": mgr})
+    monkeypatch.setattr(config_router, "send_reload_page_notice", notice)
+
+    await config_router._restart_active_voice_sessions_for_local_turn(True)
+    notice.assert_not_awaited()
+    mgr.end_session.assert_not_awaited()
+    mgr.reset_session_start_circuit.assert_not_called()
+
+    await config_router._restart_active_voice_sessions_for_local_turn(False)
+    notice.assert_awaited_once()
+    mgr.end_session.assert_awaited_once_with(by_server=True)
+    mgr.reset_session_start_circuit.assert_called_once()

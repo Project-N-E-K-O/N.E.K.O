@@ -643,50 +643,105 @@
 
     // ==================== 本地轮次检测开关 ====================
 
-    function saveLocalTurnDetectionSetting() {
+    var conversationSettingsLoadPromise = null;
+
+    async function postConversationSetting(payload) {
         try {
-            localStorage.setItem('neko_local_turn_detection', S.localTurnDetectionEnabled ? '1' : '0');
-        } catch (e) { }
-        try {
-            fetch('/api/config/conversation-settings', {
+            var response = await fetch('/api/config/conversation-settings', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ localTurnDetectionEnabled: S.localTurnDetectionEnabled })
+                body: JSON.stringify(payload)
             });
+            var data = {};
+            try {
+                data = await response.json();
+            } catch (e) { }
+            return response.ok && (!data || data.success !== false);
+        } catch (e) {
+            console.warn('保存对话设置失败:', e);
+            return false;
+        }
+    }
+
+    async function loadConversationSettingsFromServer() {
+        if (!conversationSettingsLoadPromise) {
+            conversationSettingsLoadPromise = (async function () {
+                try {
+                    var response = await fetch('/api/config/conversation-settings');
+                    var data = await response.json();
+                    if (response.ok && data && data.success !== false && data.settings) {
+                        return data.settings;
+                    }
+                } catch (e) {
+                    console.warn('加载对话设置失败:', e);
+                }
+                return null;
+            })().finally(function () {
+                conversationSettingsLoadPromise = null;
+            });
+        }
+        return conversationSettingsLoadPromise;
+    }
+
+    function mirrorBooleanSetting(key, value) {
+        try {
+            localStorage.setItem(key, value ? '1' : '0');
         } catch (e) { }
     }
 
-    function loadLocalTurnDetectionSetting() {
+    function loadBooleanSettingFromStorage(key, assignValue) {
         try {
-            var saved = localStorage.getItem('neko_local_turn_detection');
+            var saved = localStorage.getItem(key);
             if (saved !== null) {
-                S.localTurnDetectionEnabled = saved === '1';
+                assignValue(saved === '1');
+                return true;
             }
         } catch (e) { }
+        return false;
+    }
+
+    async function saveLocalTurnDetectionSetting() {
+        var desired = !!S.localTurnDetectionEnabled;
+        var saved = await postConversationSetting({ localTurnDetectionEnabled: desired });
+        if (saved) {
+            mirrorBooleanSetting('neko_local_turn_detection', desired);
+        }
+        return saved;
+    }
+
+    async function loadLocalTurnDetectionSetting() {
+        var settings = await loadConversationSettingsFromServer();
+        if (settings && typeof settings.localTurnDetectionEnabled === 'boolean') {
+            S.localTurnDetectionEnabled = settings.localTurnDetectionEnabled;
+            mirrorBooleanSetting('neko_local_turn_detection', S.localTurnDetectionEnabled);
+            return true;
+        }
+        return loadBooleanSettingFromStorage('neko_local_turn_detection', function (value) {
+            S.localTurnDetectionEnabled = value;
+        });
     }
 
     // ==================== Smart Turn 语义断句子开关 ====================
 
-    function saveSmartTurnSetting() {
-        try {
-            localStorage.setItem('neko_smart_turn', S.smartTurnEnabled ? '1' : '0');
-        } catch (e) { }
-        try {
-            fetch('/api/config/conversation-settings', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ smartTurnEnabled: S.smartTurnEnabled })
-            });
-        } catch (e) { }
+    async function saveSmartTurnSetting() {
+        var desired = !!S.smartTurnEnabled;
+        var saved = await postConversationSetting({ smartTurnEnabled: desired });
+        if (saved) {
+            mirrorBooleanSetting('neko_smart_turn', desired);
+        }
+        return saved;
     }
 
-    function loadSmartTurnSetting() {
-        try {
-            var saved = localStorage.getItem('neko_smart_turn');
-            if (saved !== null) {
-                S.smartTurnEnabled = saved === '1';
-            }
-        } catch (e) { }
+    async function loadSmartTurnSetting() {
+        var settings = await loadConversationSettingsFromServer();
+        if (settings && typeof settings.smartTurnEnabled === 'boolean') {
+            S.smartTurnEnabled = settings.smartTurnEnabled;
+            mirrorBooleanSetting('neko_smart_turn', S.smartTurnEnabled);
+            return true;
+        }
+        return loadBooleanSettingFromStorage('neko_smart_turn', function (value) {
+            S.smartTurnEnabled = value;
+        });
     }
 
     // 格式化增益显示（带正负号）

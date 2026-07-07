@@ -548,6 +548,8 @@ class OmniRealtimeClient:
         self._turn_detector = None
         self._local_turn_active = False
         self._turn_eval_inflight = False
+        self._turn_eval_generation = 0
+        self._pending_turn_eval = None
         if self._local_turn_requested:
             try:
                 self._turn_detector = self._build_turn_detector()
@@ -619,14 +621,41 @@ class OmniRealtimeClient:
                 det.silero.disable_reason(),
             )
 
-    async def _evaluate_and_commit_turn(self, snapshot, activity_seq: int) -> None:
+    def _start_turn_eval(self, snapshot, activity_seq: int) -> None:
+        """Start one Smart Turn evaluation and tag it with the current session generation."""
+        self._turn_eval_inflight = True
+        self._turn_eval_generation += 1
+        generation = self._turn_eval_generation
+        self._fire_task(self._evaluate_and_commit_turn(snapshot, activity_seq, generation))
+
+    async def _evaluate_and_commit_turn(self, snapshot, activity_seq: int, generation: int | None = None) -> None:
         """Run Smart Turn off-loop and commit if no newer speech arrived."""
+        pending_eval = None
+        committed = False
         try:
             det = self._turn_detector
             if det is None:
                 return
             loop = asyncio.get_running_loop()
             probability = await loop.run_in_executor(None, det.smart_turn.predict_endpoint, snapshot)
+
+            if generation is not None and generation != self._turn_eval_generation:
+                logger.info(
+                    "local turn Smart Turn stale result ignored: generation=%s current_generation=%s",
+                    generation,
+                    self._turn_eval_generation,
+                )
+                return
+
+            if det.activity_seq != activity_seq or self._fatal_error_occurred:
+                logger.info(
+                    "local turn Smart Turn stale result ignored: activity_seq=%s current_seq=%s fatal=%s",
+                    activity_seq,
+                    getattr(det, "activity_seq", None),
+                    self._fatal_error_occurred,
+                )
+                return
+
             complete = det.on_endpoint_result(probability)
             logger.info(
                 "local turn Smart Turn result: probability=%s threshold=%.2f complete=%s activity_seq=%s current_seq=%s",
@@ -643,10 +672,18 @@ class OmniRealtimeClient:
                 and not self._fatal_error_occurred
             ):
                 await self.signal_user_activity_end()
+                committed = True
         except Exception as e:  # noqa: BLE001
             logger.error("local turn eval failed: %s", e)
         finally:
-            self._turn_eval_inflight = False
+            if generation is None or generation == self._turn_eval_generation:
+                self._turn_eval_inflight = False
+                if not committed:
+                    pending_eval = self._pending_turn_eval
+                self._pending_turn_eval = None
+            if pending_eval is not None and not self._fatal_error_occurred:
+                snapshot_next, seq_next = pending_eval
+                self._start_turn_eval(snapshot_next, seq_next)
 
     def _fire_task(self, coro):
         """Create a background task with GC protection."""
@@ -1495,22 +1532,26 @@ class OmniRealtimeClient:
             if not self._is_responding:
                 if signal is TurnSignal.CANDIDATE_END:
                     if det.smart_turn_enabled:
+                        snapshot = det.take_endpoint_audio()
+                        seq = det.activity_seq
                         if not self._turn_eval_inflight:
-                            self._turn_eval_inflight = True
-                            snapshot = det.take_endpoint_audio()
-                            seq = det.activity_seq
-                            self._fire_task(self._evaluate_and_commit_turn(snapshot, seq))
+                            self._start_turn_eval(snapshot, seq)
+                        else:
+                            self._pending_turn_eval = (snapshot, seq)
                     else:
                         det.commit()
                         await self.signal_user_activity_end()
                 elif signal is TurnSignal.FORCE_END:
+                    self._turn_eval_generation += 1
+                    self._turn_eval_inflight = False
+                    self._pending_turn_eval = None
                     det.commit()
                     await self.signal_user_activity_end()
 
         # 静音清 buffer：有 RNNoise 以 RNNoise 为准，否则 VAD + 连续本地静音（见 _should_clear_audio_buffer_on_silence）
         if self._should_clear_audio_buffer_on_silence(current_time, use_rnnoise_path):
             self._silence_reset_pending = False
-            if self._turn_detector is not None:
+            if self._turn_detector is not None and not self._turn_eval_inflight:
                 self._turn_detector.reset()
             await self.clear_audio_buffer()
 
@@ -3048,6 +3089,10 @@ class OmniRealtimeClient:
 
     async def close(self) -> None:
         """Close the WebSocket connection."""
+        self._turn_eval_generation += 1
+        self._turn_eval_inflight = False
+        self._pending_turn_eval = None
+
         # 取消静默检测任务
         if self._silence_check_task:
             self._silence_check_task.cancel()

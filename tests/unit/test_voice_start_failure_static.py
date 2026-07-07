@@ -10,6 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 APP_AUDIO_CAPTURE_PATH = PROJECT_ROOT / "static" / "app-audio-capture.js"
 APP_BUTTONS_PATH = PROJECT_ROOT / "static" / "app-buttons.js"
 APP_UI_PATH = PROJECT_ROOT / "static" / "app-ui.js"
+AVATAR_UI_POPUP_PATH = PROJECT_ROOT / "static" / "avatar-ui-popup.js"
 
 
 def _read(path: Path) -> str:
@@ -19,6 +20,9 @@ def _read(path: Path) -> str:
 def _js_function_block(source: str, function_name: str) -> str:
     marker = f"function {function_name}("
     start = source.find(marker)
+    if start < 0:
+        marker = f"async function {function_name}("
+        start = source.find(marker)
     if start < 0:
         raise AssertionError(f"missing JS function {function_name}")
     brace = source.find("{", start)
@@ -364,6 +368,47 @@ def test_outer_voice_start_failure_uses_sanitized_toast_message():
     assert "window.showStatusToast(voiceStartErrorMessage, 5000);" in failure
     assert "window.showVoicePreparingToast(error.message)" not in failure
     assert "window.showStatusToast(error.message, 5000)" not in failure
+
+
+def test_local_turn_toggles_persist_only_after_server_ack():
+    source = _read(APP_AUDIO_CAPTURE_PATH)
+    post = _js_function_block(source, "postConversationSetting")
+    save_local = _js_function_block(source, "saveLocalTurnDetectionSetting")
+    save_smart = _js_function_block(source, "saveSmartTurnSetting")
+    popup_source = _read(AVATAR_UI_POPUP_PATH)
+
+    assert "var response = await fetch('/api/config/conversation-settings'" in post
+    assert "return response.ok && (!data || data.success !== false);" in post
+
+    assert "var saved = await postConversationSetting({ localTurnDetectionEnabled: desired });" in save_local
+    assert "mirrorBooleanSetting('neko_local_turn_detection', desired);" in save_local
+    assert save_local.index("var saved = await postConversationSetting") < save_local.index("mirrorBooleanSetting")
+    assert "localStorage.setItem('neko_local_turn_detection'" not in save_local
+
+    assert "var saved = await postConversationSetting({ smartTurnEnabled: desired });" in save_smart
+    assert "mirrorBooleanSetting('neko_smart_turn', desired);" in save_smart
+    assert save_smart.index("var saved = await postConversationSetting") < save_smart.index("mirrorBooleanSetting")
+    assert "localStorage.setItem('neko_smart_turn'" not in save_smart
+
+    assert "saved === false" in popup_source
+    assert "window.appState.localTurnDetectionEnabled = !isChecked;" in popup_source
+    assert "window.appState.smartTurnEnabled = !isChecked;" in popup_source
+
+
+def test_local_turn_toggles_hydrate_from_server_before_local_storage():
+    source = _read(APP_AUDIO_CAPTURE_PATH)
+    load_settings = _js_function_block(source, "loadConversationSettingsFromServer")
+    load_local = _js_function_block(source, "loadLocalTurnDetectionSetting")
+    load_smart = _js_function_block(source, "loadSmartTurnSetting")
+
+    assert "fetch('/api/config/conversation-settings')" in load_settings
+    assert "data.settings" in load_settings
+    assert "var settings = await loadConversationSettingsFromServer();" in load_local
+    assert "typeof settings.localTurnDetectionEnabled === 'boolean'" in load_local
+    assert load_local.index("loadConversationSettingsFromServer") < load_local.index("loadBooleanSettingFromStorage")
+    assert "var settings = await loadConversationSettingsFromServer();" in load_smart
+    assert "typeof settings.smartTurnEnabled === 'boolean'" in load_smart
+    assert load_smart.index("loadConversationSettingsFromServer") < load_smart.index("loadBooleanSettingFromStorage")
 
 
 def test_floating_mic_stale_active_state_reenters_main_voice_start_lifecycle():

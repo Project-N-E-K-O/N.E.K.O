@@ -7,6 +7,7 @@ assets still passes.
 """
 import os
 import asyncio
+import time
 from unittest.mock import AsyncMock
 
 import numpy as np
@@ -245,35 +246,46 @@ def test_models_load_idempotent():
 
 
 class _FakeSmartTurn2:
-    def __init__(self, prob):
-        self.prob = prob
+    def __init__(self, prob, *, delay_s=0.0):
+        self.probs = list(prob) if isinstance(prob, (list, tuple)) else [prob]
+        self.delay_s = delay_s
+        self.calls = 0
 
     def predict_endpoint(self, audio):
-        return self.prob
+        self.calls += 1
+        if self.delay_s:
+            time.sleep(self.delay_s)
+        index = min(self.calls - 1, len(self.probs) - 1)
+        return self.probs[index]
 
 
 class _FakeDetector:
-    def __init__(self, prob=0.9, smart_turn_enabled=True):
-        self.smart_turn = _FakeSmartTurn2(prob)
+    def __init__(self, prob=0.9, smart_turn_enabled=True, *, delay_s=0.0):
+        self.smart_turn = _FakeSmartTurn2(prob, delay_s=delay_s)
         self.smart_turn_enabled = smart_turn_enabled
+        self.smart_turn_threshold = 0.5
         self.next_signal = TurnSignal.NONE
         self._seq = 5
         self.committed = False
         self.reset_calls = 0
         self.fed = 0
+        self.result_calls = 0
+        self.snapshots = 0
 
     def feed(self, pcm16_bytes):
         self.fed += 1
         return self.next_signal
 
     def take_endpoint_audio(self):
-        return np.zeros(16000, np.float32)
+        self.snapshots += 1
+        return np.full(16000, self.snapshots, np.float32)
 
     @property
     def activity_seq(self):
         return self._seq
 
     def on_endpoint_result(self, p):
+        self.result_calls += 1
         return p is None or p >= 0.5
 
     def commit(self):
@@ -283,12 +295,12 @@ class _FakeDetector:
         self.reset_calls += 1
 
 
-def _client_with_fake_detector(prob=0.9, smart_turn_enabled=True):
+def _client_with_fake_detector(prob=0.9, smart_turn_enabled=True, *, delay_s=0.0):
     client = OmniRealtimeClient(
         base_url="wss://example.test/realtime", api_key="sk-test",
         model="qwen-omni-turbo", api_type="qwen", local_turn_detection=False,
     )
-    det = _FakeDetector(prob=prob, smart_turn_enabled=smart_turn_enabled)
+    det = _FakeDetector(prob=prob, smart_turn_enabled=smart_turn_enabled, delay_s=delay_s)
     client._turn_detector = det
     client._local_turn_active = True
     client.turn_detection_mode = TurnDetectionMode.MANUAL
@@ -336,6 +348,63 @@ async def test_stream_audio_candidate_end_incomplete_no_commit():
 
 
 @pytest.mark.asyncio
+async def test_smart_turn_stale_result_does_not_mutate_detector():
+    client, det = _client_with_fake_detector(prob=0.9)
+    client.signal_user_activity_end = AsyncMock()
+    det._seq += 1
+
+    await client._evaluate_and_commit_turn(np.zeros(16000, np.float32), activity_seq=5, generation=0)
+
+    assert det.result_calls == 0
+    client.signal_user_activity_end.assert_not_called()
+    assert client._turn_eval_inflight is False
+
+
+@pytest.mark.asyncio
+async def test_stream_audio_queues_latest_candidate_while_eval_inflight():
+    client, det = _client_with_fake_detector(prob=[0.1, 0.9], delay_s=0.05)
+    commits = []
+    client.signal_user_activity_end = AsyncMock(side_effect=lambda: commits.append(1))
+    det.next_signal = TurnSignal.CANDIDATE_END
+
+    await client.stream_audio(np.zeros(512, np.int16).tobytes())
+    assert client._turn_eval_inflight is True
+    await client.stream_audio(np.zeros(512, np.int16).tobytes())
+
+    for _ in range(30):
+        await asyncio.sleep(0.01)
+        if commits:
+            break
+
+    assert det.smart_turn.calls == 2
+    assert det.snapshots == 2
+    assert commits, "latest queued CANDIDATE_END should run after the in-flight eval"
+    assert client._turn_eval_inflight is False
+    assert client._pending_turn_eval is None
+
+
+@pytest.mark.asyncio
+async def test_stream_audio_drops_pending_candidate_after_complete_eval():
+    client, det = _client_with_fake_detector(prob=0.9, delay_s=0.05)
+    commits = []
+    client.signal_user_activity_end = AsyncMock(side_effect=lambda: commits.append(1))
+    det.next_signal = TurnSignal.CANDIDATE_END
+
+    await client.stream_audio(np.zeros(512, np.int16).tobytes())
+    await client.stream_audio(np.zeros(512, np.int16).tobytes())
+
+    for _ in range(30):
+        await asyncio.sleep(0.01)
+        if commits:
+            break
+
+    assert det.smart_turn.calls == 1
+    assert commits == [1]
+    assert client._turn_eval_inflight is False
+    assert client._pending_turn_eval is None
+
+
+@pytest.mark.asyncio
 async def test_stream_audio_force_end_commits_sync():
     client, det = _client_with_fake_detector()
     client.signal_user_activity_end = AsyncMock()
@@ -343,6 +412,23 @@ async def test_stream_audio_force_end_commits_sync():
     await client.stream_audio(np.zeros(512, np.int16).tobytes())
     assert det.committed is True                                   # FORCE_END commits synchronously
     client.signal_user_activity_end.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_stream_audio_force_end_invalidates_inflight_eval():
+    client, det = _client_with_fake_detector()
+    client.signal_user_activity_end = AsyncMock()
+    client._turn_eval_inflight = True
+    client._turn_eval_generation = 3
+    client._pending_turn_eval = (np.zeros(16000, np.float32), det.activity_seq)
+    det.next_signal = TurnSignal.FORCE_END
+
+    await client.stream_audio(np.zeros(512, np.int16).tobytes())
+
+    assert det.committed is True
+    assert client._turn_eval_inflight is False
+    assert client._pending_turn_eval is None
+    assert client._turn_eval_generation == 4
 
 
 @pytest.mark.asyncio

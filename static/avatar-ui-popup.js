@@ -2342,12 +2342,24 @@ function createSettingsToggleItem(manager, prefix, toggle) {
         } else if (toggle.id === 'local-turn-detection') {
             if (window.appState) window.appState.localTurnDetectionEnabled = isChecked;
             if (window.appAudioCapture && typeof window.appAudioCapture.saveLocalTurnDetectionSetting === 'function') {
-                window.appAudioCapture.saveLocalTurnDetectionSetting();
+                Promise.resolve(window.appAudioCapture.saveLocalTurnDetectionSetting()).then((saved) => {
+                    if (saved === false) {
+                        if (window.appState) window.appState.localTurnDetectionEnabled = !isChecked;
+                        checkbox.checked = !isChecked;
+                        updateIndicatorStyle(!isChecked);
+                    }
+                });
             }
         } else if (toggle.id === 'smart-turn') {
             if (window.appState) window.appState.smartTurnEnabled = isChecked;
             if (window.appAudioCapture && typeof window.appAudioCapture.saveSmartTurnSetting === 'function') {
-                window.appAudioCapture.saveSmartTurnSetting();
+                Promise.resolve(window.appAudioCapture.saveSmartTurnSetting()).then((saved) => {
+                    if (saved === false) {
+                        if (window.appState) window.appState.smartTurnEnabled = !isChecked;
+                        checkbox.checked = !isChecked;
+                        updateIndicatorStyle(!isChecked);
+                    }
+                });
             }
         } else if (toggle.id === 'proactive-chat') {
             window.proactiveChatEnabled = isChecked;
