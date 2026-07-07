@@ -387,6 +387,11 @@ def _collect_snapshot(include_deep: bool = False, channel: str = "watchdog") -> 
     snap["is_responding"] = _safe_is_responding_map()
     snap["ack_waiters"] = _safe_ack_waiters_size()
     snap["proactive_history"] = _safe_proactive_history_size()
+    try:
+        from main_logic.game_mode_resource_protection import protector
+        snap["game_mode_beta"] = protector.snapshot()
+    except Exception as exc:
+        snap["game_mode_beta"] = {"error": str(exc)[:160]}
     if include_deep:
         # Deep 字段——~50 ms 阻塞但有 30 min 间隔，长跑曲线仍能画时序。
         snap["gc_object_top"] = _safe_gc_object_top()

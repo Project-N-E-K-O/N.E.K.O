@@ -2575,12 +2575,26 @@
             "chatIntervalBase": "Minimum Interval",
             "visionInterval": "Perception Interval"
         },
+        "gameModeBeta": {
+            "enabledNotice": "Game Mode Beta is on. When resource usage stays high, NEKO will switch to cat form to reduce usage; some plugin and vision/OCR features may load more slowly the first time.",
+            "autoSwitchNotice": "{metric} usage stayed high, so NEKO switched to cat form to reduce resource usage.",
+            "disabledNotice": "Game Mode Beta is off. NEKO has returned to the normal resource policy.",
+            "toggleFailed": "Failed to switch Game Mode. Please try again later.",
+            "memoryMetric": "memory",
+            "resourceMetric": "resource",
+            "statusOn": "On",
+            "statusOff": "Off",
+            "statusOnly": "{status}",
+            "statusWithReason": "{status} · Last: {metric} {percent} / {duration}"
+        },
         "toggles": {
             "allowInterrupt": "Allow Interrupt",
             "mergeMessages": "Merge Messages",
             "avatarReactionBubble": "Expression Bubble",
             "focusCognition": "Focus Mode",
             "focusCognitionTooltip": "When on, she focuses and thinks more deeply when you open up or ask something complex; off disables Focus entirely.",
+            "gameModeBeta": "Game Mode Beta",
+            "gameModeBetaTooltip": "Monitors system CPU, memory, and GPU pressure; when usage stays high, NEKO switches to cat form to reduce resource use.",
             "autoCat": "Auto Cat Mode",
             "autoCatTooltip": "Turn into a kitten automatically after a while of inactivity",
             "proactiveChat": "Proactive Chat",

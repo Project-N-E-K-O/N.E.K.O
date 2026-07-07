@@ -2581,6 +2581,8 @@
             "avatarReactionBubble": "表情バブル",
             "focusCognition": "集中モード",
             "focusCognitionTooltip": "オンにすると、あなたが弱音を吐いたり複雑な話題のときに集中して深く考えます。オフにすると集中モードに入りません。",
+            "gameModeBeta": "ゲームモード Beta",
+            "gameModeBetaTooltip": "システム全体の CPU、メモリ、GPU 負荷を監視し、高負荷が続くとリソース消費を抑えるため猫形態に切り替えます。",
             "autoCat": "自動ねこ化",
             "autoCatTooltip": "しばらく操作がないと自動的に子猫になります",
             "proactiveChat": "自発的会話",

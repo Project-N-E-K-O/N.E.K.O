@@ -1597,6 +1597,15 @@
                     console.log(window.t('console.catgirlSwitchedReceived'), response);
                 }
 
+                if (response.type === 'game_mode_auto_switch') {
+                    try {
+                        window.dispatchEvent(new CustomEvent('neko:game-mode-beta-auto-switch', {
+                            detail: response,
+                        }));
+                    } catch (_) {}
+                    return;
+                }
+
                 // -------- gemini_response --------
                 if (response.type === 'gemini_response') {
                     if (S.suppressAssistantStreamUntilNextSession) {

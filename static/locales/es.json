@@ -2581,6 +2581,8 @@
             "avatarReactionBubble": "Burbuja de expresión",
             "focusCognition": "Modo concentración",
             "focusCognitionTooltip": "Cuando está activado, se concentra y piensa más a fondo cuando te abres o preguntas algo complejo; desactivado desactiva la concentración por completo.",
+            "gameModeBeta": "Modo juego Beta",
+            "gameModeBetaTooltip": "Supervisa la presión de CPU, memoria y GPU del sistema; si el uso se mantiene alto, NEKO cambia a forma de gato para reducir recursos.",
             "autoCat": "Modo gato automático",
             "autoCatTooltip": "Se convierte en gatito automáticamente tras un rato de inactividad",
             "proactiveChat": "Chat proactivo",

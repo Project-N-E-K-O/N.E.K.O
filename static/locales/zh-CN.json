@@ -2575,12 +2575,26 @@
             "chatIntervalBase": "最低间隔",
             "visionInterval": "感知间隔"
         },
+        "gameModeBeta": {
+            "enabledNotice": "游戏模式 Beta（测试版）已开启。资源占用持续较高时，NEKO 会自动切换到猫猫形态以降低占用；部分插件、视觉/OCR 功能首次使用可能加载较慢。",
+            "autoSwitchNotice": "检测到 {metric} 占用持续较高，已切换到猫猫形态以降低资源占用。",
+            "disabledNotice": "游戏模式 Beta（测试版）已关闭。NEKO 已恢复普通资源策略。",
+            "toggleFailed": "游戏模式切换失败，请稍后重试。",
+            "memoryMetric": "内存",
+            "resourceMetric": "资源",
+            "statusOn": "开启",
+            "statusOff": "关闭",
+            "statusOnly": "{status}",
+            "statusWithReason": "{status} · 最近：{metric} {percent} / {duration}"
+        },
         "toggles": {
             "allowInterrupt": "允许打断",
             "mergeMessages": "合并消息",
             "avatarReactionBubble": "表情气泡",
             "focusCognition": "凝神模式",
             "focusCognitionTooltip": "开启后，遇到你倾诉脆弱或复杂的话题时她会更专注地深入思考；关闭则不再进入凝神。",
+            "gameModeBeta": "游戏模式 Beta（测试版）",
+            "gameModeBetaTooltip": "开启后持续监测整机 CPU、内存和 GPU 压力；资源占用持续较高时自动切换到猫猫形态。",
             "autoCat": "自动变猫",
             "autoCatTooltip": "一段时间无互动后自动变成小猫",
             "proactiveChat": "主动搭话",

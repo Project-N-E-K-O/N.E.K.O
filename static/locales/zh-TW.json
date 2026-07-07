@@ -2581,6 +2581,8 @@
             "avatarReactionBubble": "表情氣泡",
             "focusCognition": "凝神模式",
             "focusCognitionTooltip": "開啟後，遇到你傾訴脆弱或複雜的話題時她會更專注地深入思考；關閉則不再進入凝神。",
+            "gameModeBeta": "遊戲模式 Beta（測試版）",
+            "gameModeBetaTooltip": "開啟後持續監測整機 CPU、記憶體和 GPU 壓力；資源占用持續較高時自動切換到貓貓形態。",
             "autoCat": "自動變貓",
             "autoCatTooltip": "一段時間無互動後自動變成小貓",
             "proactiveChat": "主動搭話",
