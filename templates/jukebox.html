@@ -318,12 +318,13 @@
                     try {
                         if (window.Jukebox && typeof window.Jukebox.hide === 'function') {
                             window.Jukebox.hide();
+                            return;
                         }
                     } catch (error) {
                         console.warn('[Jukebox] 最小化降级隐藏前清理失败:', error);
-                    } finally {
-                        if (typeof window.close === 'function') window.close();
                     }
+
+                    if (typeof window.close === 'function') window.close();
                 };
                 window.Jukebox_updateVolume = window.Jukebox.updateVolume;
                 window.Jukebox_logVolumeChange = window.Jukebox.logVolumeChange;

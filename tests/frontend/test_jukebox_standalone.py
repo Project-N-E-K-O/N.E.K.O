@@ -78,6 +78,9 @@ def test_jukebox_hide_keeps_reusable_window_alive():
 
     assert "window.nekoJukeboxWindow.hide()" in hide_body
     assert "window.nekoJukeboxWindow.close()" not in hide_body
+    assert "} finally {" not in hide_body
+    assert "window.Jukebox.hide()" in hide_body
+    assert hide_body.rfind("window.close()") > hide_body.rfind("window.Jukebox.hide()")
 
 
 def test_jukebox_header_buttons_are_outside_native_drag_region():
