@@ -135,7 +135,24 @@ Live2DManager.prototype.recordInitialParameters = function() {
         
         // 结束可折叠日志组
         if (_verbose) console.groupEnd();
-        this.appearanceBaselineParameters = { ...this.initialParameters };
+        this.appearanceBaselineParameters = {};
+        if (typeof this._resolveModelParameterKey === 'function' && typeof this._isRuntimeManagedAppearanceParam === 'function') {
+            for (const [paramId, value] of Object.entries(this.initialParameters)) {
+                if (typeof value !== 'number' || !Number.isFinite(value)) continue;
+
+                const resolved = this._resolveModelParameterKey(coreModel, paramId);
+                if (!resolved) continue;
+
+                const resolvedParamId = resolved.resolvedId;
+                if (this._isRuntimeManagedAppearanceParam(paramId, resolvedParamId, coreModel)) {
+                    continue;
+                }
+
+                this.appearanceBaselineParameters[paramId] = value;
+                this.appearanceBaselineParameters[resolvedParamId] = value;
+                this.appearanceBaselineParameters[`param_${resolved.idx}`] = value;
+            }
+        }
         
         console.log(`[Live2D] 已记录${Object.keys(this.initialParameters).length}个初始参数 (跳过${paramCount - Object.keys(this.initialParameters).length}个位置/嘴巴参数)，${Object.keys(this.motionBaselineParameters).length}个motion基线`);
     } catch (error) {

@@ -209,10 +209,12 @@ Live2DManager.prototype._resolveModelParameterKey = function(coreModel, paramId)
     if (!coreModel || paramId === undefined || paramId === null) return null;
 
     const key = String(paramId);
+    const isIndexKey = /^(?:param_)?\d+$/.test(key);
     let idx = -1;
     let resolvedId = key;
+    let hasResolvedId = !isIndexKey;
 
-    if (/^(?:param_)?\d+$/.test(key)) {
+    if (isIndexKey) {
         const parsedIndex = parseInt(key.replace(/^param_/, ''), 10);
         const parameterCount = typeof coreModel.getParameterCount === 'function'
             ? coreModel.getParameterCount()
@@ -222,7 +224,10 @@ Live2DManager.prototype._resolveModelParameterKey = function(coreModel, paramId)
             try {
                 if (typeof coreModel.getParameterId === 'function') {
                     const id = coreModel.getParameterId(idx);
-                    if (id) resolvedId = id;
+                    if (id) {
+                        resolvedId = id;
+                        hasResolvedId = true;
+                    }
                 }
             } catch (_) {}
         }
@@ -232,14 +237,23 @@ Live2DManager.prototype._resolveModelParameterKey = function(coreModel, paramId)
         } catch (_) {}
     }
 
-    return idx >= 0 ? { idx, resolvedId } : null;
+    if (idx >= 0 && isIndexKey && !hasResolvedId) {
+        resolvedId = `param_${idx}`;
+    }
+
+    return idx >= 0 ? { idx, resolvedId, hasResolvedId, isIndexKey } : null;
 };
 
 Live2DManager.prototype._isRuntimeManagedAppearanceParam = function(paramId, resolvedParamId, coreModel) {
-    const ids = [paramId, resolvedParamId].filter(Boolean);
+    const ids = [paramId, resolvedParamId].filter(Boolean).map(id => String(id));
     if (ids.length === 0) return true;
 
-    const lipSyncParams = Array.isArray(window.LIPSYNC_PARAMS)
+    const hasNamedParamId = ids.some(id => !/^(?:param_)?\d+$/.test(id));
+    if (!hasNamedParamId) {
+        return true;
+    }
+
+    const lipSyncParams = typeof window !== 'undefined' && Array.isArray(window.LIPSYNC_PARAMS)
         ? window.LIPSYNC_PARAMS
         : ['ParamMouthOpenY', 'ParamMouthForm', 'ParamMouthOpen', 'ParamA', 'ParamI', 'ParamU', 'ParamE', 'ParamO'];
     const runtimeParamIds = new Set([
@@ -280,27 +294,33 @@ Live2DManager.prototype.mergeAppearanceBaselineParameters = function(model, para
     }
 
     const coreModel = model.internalModel.coreModel;
-    if (!this.appearanceBaselineParameters || Object.keys(this.appearanceBaselineParameters).length === 0) {
-        this.appearanceBaselineParameters = { ...this.initialParameters };
-    }
-
-    for (const paramId in parameters) {
-        if (!Object.prototype.hasOwnProperty.call(parameters, paramId)) continue;
-
-        const value = parameters[paramId];
-        if (typeof value !== 'number' || !Number.isFinite(value)) continue;
+    const mergeAppearanceParam = (paramId, value) => {
+        if (typeof value !== 'number' || !Number.isFinite(value)) return;
 
         const resolved = this._resolveModelParameterKey(coreModel, paramId);
-        if (!resolved) continue;
+        if (!resolved) return;
 
         const resolvedParamId = resolved.resolvedId;
         if (this._isRuntimeManagedAppearanceParam(paramId, resolvedParamId, coreModel)) {
-            continue;
+            return;
         }
 
         this.appearanceBaselineParameters[paramId] = value;
         this.appearanceBaselineParameters[resolvedParamId] = value;
         this.appearanceBaselineParameters[`param_${resolved.idx}`] = value;
+    };
+
+    if (!this.appearanceBaselineParameters || Object.keys(this.appearanceBaselineParameters).length === 0) {
+        this.appearanceBaselineParameters = {};
+        for (const paramId in this.initialParameters) {
+            if (!Object.prototype.hasOwnProperty.call(this.initialParameters, paramId)) continue;
+            mergeAppearanceParam(paramId, this.initialParameters[paramId]);
+        }
+    }
+
+    for (const paramId in parameters) {
+        if (!Object.prototype.hasOwnProperty.call(parameters, paramId)) continue;
+        mergeAppearanceParam(paramId, parameters[paramId]);
     }
 };
 
