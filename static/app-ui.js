@@ -5288,26 +5288,30 @@
             }
 
             // 触发原有的离开逻辑
+            const runGoodbyeResetClickIfActive = (reason) => {
+                const goodbyeStillActive = !!(
+                    (window.live2dManager && window.live2dManager._goodbyeClicked) ||
+                    (window.vrmManager && window.vrmManager._goodbyeClicked) ||
+                    (window.mmdManager && window.mmdManager._goodbyeClicked)
+                );
+                if (!goodbyeStillActive) {
+                    console.log('[App] 跳过过期的 resetSessionButton.click()：当前已不在 goodbye 状态', reason || '');
+                    return false;
+                }
+                console.log('[App] 触发 resetSessionButton.click()，当前 goodbyeClicked 状态:', window.live2dManager ? window.live2dManager._goodbyeClicked : 'undefined', 'reason:', reason || 'delayed-goodbye-reset');
+                // 语音启动会把侧栏离开按钮置为 disabled；程序化 click 需要先恢复，
+                // 后续最终按钮状态仍交给 reset handler 统一收口。
+                resetSessionButton.disabled = false;
+                resetSessionButton.click();
+                return true;
+            };
             if (resetSessionButton) {
                 if (window._goodbyeResetClickTimerId) {
                     clearTimeout(window._goodbyeResetClickTimerId);
                 }
                 window._goodbyeResetClickTimerId = setTimeout(() => {
                     window._goodbyeResetClickTimerId = null;
-                    const goodbyeStillActive = !!(
-                        (window.live2dManager && window.live2dManager._goodbyeClicked) ||
-                        (window.vrmManager && window.vrmManager._goodbyeClicked) ||
-                        (window.mmdManager && window.mmdManager._goodbyeClicked)
-                    );
-                    if (!goodbyeStillActive) {
-                        console.log('[App] 跳过过期的 resetSessionButton.click()：当前已不在 goodbye 状态');
-                        return;
-                    }
-                    console.log('[App] 触发 resetSessionButton.click()，当前 goodbyeClicked 状态:', window.live2dManager ? window.live2dManager._goodbyeClicked : 'undefined');
-                    // 语音启动会把侧栏离开按钮置为 disabled；程序化 click 需要先恢复，
-                    // 后续最终按钮状态仍交给 reset handler 统一收口。
-                    resetSessionButton.disabled = false;
-                    resetSessionButton.click();
+                    runGoodbyeResetClickIfActive('delayed-goodbye-reset');
                 }, 10);
             } else {
                 console.error('[App] resetSessionButton 未找到！');
@@ -5335,15 +5339,19 @@
                 console.log('[App] 模型正在切换为猫形态，忽略本次请她回来事件');
                 return;
             }
+            const hadPendingGoodbyeReset = !!window._goodbyeResetClickTimerId;
+            if (hadPendingGoodbyeReset) {
+                clearTimeout(window._goodbyeResetClickTimerId);
+                window._goodbyeResetClickTimerId = null;
+            }
             const preReturnViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel();
             if (!preReturnViewportReady.ready) {
                 console.warn('[App] 请她回来已暂缓：Pet viewport 仍处于猫形态小窗口，保留 return 状态');
                 restoreReturnBallAfterBlockedModelViewport(event);
+                if (hadPendingGoodbyeReset) {
+                    runGoodbyeResetClickIfActive('return-viewport-blocked');
+                }
                 return;
-            }
-            if (window._goodbyeResetClickTimerId) {
-                clearTimeout(window._goodbyeResetClickTimerId);
-                window._goodbyeResetClickTimerId = null;
             }
             const isReturningToPngtuber = (window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber';
             if (multiWindowReturnBallDragState) {
