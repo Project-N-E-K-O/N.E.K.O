@@ -189,9 +189,11 @@
     var header = container.querySelector('.jukebox-header');
     if (header) {
       setAppRegion(header, useRendererNativeDrag ? 'no-drag' : 'drag');
+      header.style.cursor = 'grab';
     }
     container.querySelectorAll('.jukebox-header-left, .jukebox-header-drag-fill').forEach(function(el) {
       setAppRegion(el, useRendererNativeDrag ? 'no-drag' : 'drag');
+      el.style.cursor = 'grab';
     });
     container.querySelectorAll('.jukebox-header-buttons, .jukebox-header-buttons *').forEach(function(el) {
       setAppRegion(el, 'no-drag');

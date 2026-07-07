@@ -120,6 +120,8 @@ window.Jukebox = {
     container: null,
     styleElement: null,
     observer: null,
+    closeListenerButton: null,
+    closeListenerHandler: null,
     songElements: {},
     tooltipElement: null,
     tooltipTimeout: null,
@@ -293,10 +295,15 @@ window.Jukebox = {
 
     const rect = container.getBoundingClientRect();
     if (!rect || rect.width <= 0 || rect.height <= 0) return;
+    const computedStyle = window.getComputedStyle(container);
+    const contentWidth = parseFloat(computedStyle.width);
+    const contentHeight = parseFloat(computedStyle.height);
+    const width = Number.isFinite(contentWidth) && contentWidth > 0 ? contentWidth : rect.width;
+    const height = Number.isFinite(contentHeight) && contentHeight > 0 ? contentHeight : rect.height;
 
     Jukebox.setStoredJson('windowSize', {
-      width: Math.round(rect.width),
-      height: Math.round(rect.height)
+      width: Math.round(width),
+      height: Math.round(height)
     });
   },
 
@@ -5262,9 +5269,11 @@ window.Jukebox = {
     window.Jukebox_logVolumeChange = Jukebox.logVolumeChange;
     window.Jukebox_togglePause = Jukebox.togglePause;
 
-    // 独立窗口模式和懒加载模式不需要绑定旧 DOM 按钮。
-    if (!window.__NEKO_JUKEBOX_STANDALONE__ && !window.__NEKO_JUKEBOX_LAZY_LOADER__) {
-      Jukebox.setupButton();
+    // 独立窗口模式不需要绑定旧 DOM；懒加载模式只跳过按钮绑定，仍保留聊天最小化清理监听。
+    if (!window.__NEKO_JUKEBOX_STANDALONE__) {
+      if (!window.__NEKO_JUKEBOX_LAZY_LOADER__) {
+        Jukebox.setupButton();
+      }
       Jukebox.setupCloseListener();
     }
   },
@@ -5295,22 +5304,31 @@ window.Jukebox = {
   
   setupCloseListener: function(retries = 0) {
     const MAX_RETRIES = 20;
-    if (Jukebox.State.observer) return;
+    if (Jukebox.State.observer && Jukebox.State.closeListenerButton) return;
 
     const toggleChatBtn = document.getElementById('toggle-chat-btn');
     if (toggleChatBtn) {
-      toggleChatBtn.addEventListener('click', () => {
-        // 仅在聊天框即将最小化时销毁（展开时不需要）
-        const chatContainer = document.getElementById('chat-container');
-        const isCurrentlyMinimized = chatContainer &&
-          (chatContainer.classList.contains('minimized') || chatContainer.classList.contains('mobile-collapsed'));
-        if (isCurrentlyMinimized) {
-          // 当前已最小化 → 即将展开，不销毁
-          return;
+      if (!Jukebox.State.closeListenerHandler) {
+        Jukebox.State.closeListenerHandler = () => {
+          // 仅在聊天框即将最小化时销毁（展开时不需要）
+          const chatContainer = document.getElementById('chat-container');
+          const isCurrentlyMinimized = chatContainer &&
+            (chatContainer.classList.contains('minimized') || chatContainer.classList.contains('mobile-collapsed'));
+          if (isCurrentlyMinimized) {
+            // 当前已最小化 → 即将展开，不销毁
+            return;
+          }
+          console.log('[Jukebox]', window.t('Jukebox.minimizeDetected', '检测到对话框最小化，销毁点歌台'));
+          Jukebox.destroy();
+        };
+      }
+      if (Jukebox.State.closeListenerButton !== toggleChatBtn) {
+        if (Jukebox.State.closeListenerButton && Jukebox.State.closeListenerHandler) {
+          Jukebox.State.closeListenerButton.removeEventListener('click', Jukebox.State.closeListenerHandler);
         }
-        console.log('[Jukebox]', window.t('Jukebox.minimizeDetected', '检测到对话框最小化，销毁点歌台'));
-        Jukebox.destroy();
-      });
+        toggleChatBtn.addEventListener('click', Jukebox.State.closeListenerHandler);
+        Jukebox.State.closeListenerButton = toggleChatBtn;
+      }
       console.log('[Jukebox]', window.t('Jukebox.minimizeListenerSet', '最小化按钮监听器已设置'));
     } else {
       if (retries >= MAX_RETRIES) {
@@ -5322,26 +5340,40 @@ window.Jukebox = {
       return;
     }
     
-    const observer = new MutationObserver((mutations) => {
-      mutations.forEach((mutation) => {
-        if (mutation.type === 'childList') {
-          const removedNodes = Array.from(mutation.removedNodes);
-          const jukeboxRemoved = removedNodes.some(node => 
-            node === Jukebox.State.container
-          );
-          
-          if (jukeboxRemoved) {
-            console.log('[Jukebox]', window.t('Jukebox.removedDetected', '检测到点歌台被移除'));
-            Jukebox.State.isOpen = false;
+    if (!Jukebox.State.observer) {
+      const observer = new MutationObserver((mutations) => {
+        mutations.forEach((mutation) => {
+          if (mutation.type === 'childList') {
+            const removedNodes = Array.from(mutation.removedNodes);
+            const jukeboxRemoved = removedNodes.some(node =>
+              node === Jukebox.State.container
+            );
+
+            if (jukeboxRemoved) {
+              console.log('[Jukebox]', window.t('Jukebox.removedDetected', '检测到点歌台被移除'));
+              Jukebox.State.isOpen = false;
+            }
           }
-        }
+        });
       });
-    });
-    
-    observer.observe(document.body, { childList: true, subtree: true });
-    Jukebox.State.observer = observer;
-    
+
+      observer.observe(document.body, { childList: true, subtree: true });
+      Jukebox.State.observer = observer;
+    }
+
     console.log('[Jukebox]', window.t('Jukebox.closeListenerSet', '关闭监听器已设置'));
+  },
+
+  cleanupCloseListener: function() {
+    if (Jukebox.State.closeListenerButton && Jukebox.State.closeListenerHandler) {
+      Jukebox.State.closeListenerButton.removeEventListener('click', Jukebox.State.closeListenerHandler);
+    }
+    Jukebox.State.closeListenerButton = null;
+    Jukebox.State.closeListenerHandler = null;
+    if (Jukebox.State.observer) {
+      Jukebox.State.observer.disconnect();
+      Jukebox.State.observer = null;
+    }
   },
   
   toggle: function() {
@@ -5364,6 +5396,9 @@ window.Jukebox = {
     if (Jukebox.State.isOpen) return;
     
     Jukebox.buildUI();
+    if (!window.__NEKO_JUKEBOX_STANDALONE__) {
+      Jukebox.setupCloseListener();
+    }
     
     requestAnimationFrame(() => {
       setTimeout(() => {
@@ -5492,10 +5527,6 @@ window.Jukebox = {
       }
     } catch (_) {}
 
-    if (window.__JukeboxLocaleChangeHandler) {
-      window.removeEventListener('localechange', window.__JukeboxLocaleChangeHandler);
-      window.__JukeboxLocaleChangeHandler = null;
-    }
   },
 
   notifyFullClose: function(reason) {
@@ -9297,6 +9328,9 @@ window.Jukebox = {
 // i18n-i18next.js 会通过 storage 事件检测其他窗口的语言变更并调用 changeLanguage，
 // changeLanguage 触发 languageChanged → localechange 自定义事件。
 // 此处监听 localechange，在 Jukebox 已打开时自动刷新 UI 文本。
+if (window.__JukeboxLocaleChangeHandler) {
+  window.removeEventListener('localechange', window.__JukeboxLocaleChangeHandler);
+}
 window.__JukeboxLocaleChangeHandler = function() {
   const Jukebox = window.Jukebox;
   if (Jukebox && Jukebox.State && (Jukebox.State.isOpen || Jukebox.State.isHidden)) {

@@ -1,7 +1,232 @@
 (function() {
   'use strict';
 
+  function ensureNativeJukeboxFacade() {
+    if (window.Jukebox) return;
+
+    var facade = {
+      __nativeBridgeFacade: true,
+      State: {
+        currentSong: null,
+        isPlaying: false,
+        isVMDPlaying: false,
+        isPaused: false,
+        savedIdleAnimationUrl: null,
+        playRequestId: 0
+      },
+
+      toggle: function() {
+        if (typeof window.__nekoJukeboxToggle === 'function') {
+          window.__nekoJukeboxToggle();
+        }
+      },
+
+      getPlayer: function() {
+        return null;
+      },
+
+      getModelType: function() {
+        var config = window.lanlan_config || {};
+        var modelType = config.model_type || 'live2d';
+        if (modelType === 'live3d') {
+          var subType = String(config.live3d_sub_type || '').toLowerCase();
+          return subType === 'vrm' ? 'vrm' : 'mmd';
+        }
+        return modelType;
+      },
+
+      playVMD: async function(vmdPath) {
+        if (!vmdPath) return;
+        if (!window.mmdManager || !window.mmdManager.animationModule) {
+          console.warn('[Jukebox]', translate('Jukebox.vmdNotInit', 'MMD Manager 未初始化，跳过动画'));
+          return;
+        }
+
+        var state = facade.State;
+        state.playRequestId += 1;
+        var playRequestId = state.playRequestId;
+
+        try {
+          if (!state.savedIdleAnimationUrl && window.mmdManager.currentAnimationUrl) {
+            state.savedIdleAnimationUrl = window.mmdManager.currentAnimationUrl;
+          }
+          facade.stopVMD(true);
+          if (typeof window.mmdManager.loadAnimation === 'function') {
+            await window.mmdManager.loadAnimation(vmdPath);
+          }
+          if (playRequestId !== state.playRequestId) return;
+          if (typeof window.mmdManager.playAnimation === 'function') {
+            window.mmdManager.playAnimation('dance');
+          } else if (window.mmdManager.animationModule && typeof window.mmdManager.animationModule.play === 'function') {
+            window.mmdManager.animationModule.play();
+          }
+          state.isVMDPlaying = true;
+          state.isPaused = false;
+          state.isPlaying = true;
+        } catch (error) {
+          console.error('[Jukebox]', translate('Jukebox.vmdPlayFailed', 'VMD 播放失败'), error);
+        }
+      },
+
+      playVRMA: async function(vrmaPath) {
+        if (!vrmaPath) return;
+        if (!window.vrmManager || typeof window.vrmManager.playVRMAAnimation !== 'function') {
+          console.warn('[Jukebox] VRM Manager 未初始化，跳过动画');
+          return;
+        }
+
+        var state = facade.State;
+        state.playRequestId += 1;
+        var playRequestId = state.playRequestId;
+
+        try {
+          facade.stopVMD(true);
+          await window.vrmManager.playVRMAAnimation(vrmaPath, {
+            loop: false,
+            fadeInDuration: 0.5,
+            fadeOutDuration: 0.5
+          });
+          if (playRequestId !== state.playRequestId) return;
+          state.isVMDPlaying = true;
+          state.isPaused = false;
+          state.isPlaying = true;
+        } catch (error) {
+          console.error('[Jukebox] VRMA 播放失败:', error);
+        }
+      },
+
+      stopVMD: function(skipIdleRestore) {
+        var state = facade.State;
+        if (!state.isVMDPlaying) return;
+
+        var modelType = facade.getModelType();
+        if (modelType === 'vrm') {
+          if (window.vrmManager && typeof window.vrmManager.stopVRMAAnimation === 'function') {
+            window.vrmManager.stopVRMAAnimation();
+          }
+        } else if (window.mmdManager && window.mmdManager.animationModule &&
+            typeof window.mmdManager.animationModule.stop === 'function') {
+          window.mmdManager.animationModule.stop();
+        }
+
+        state.isVMDPlaying = false;
+        state.isPaused = false;
+        state.isPlaying = false;
+
+        if (!skipIdleRestore) {
+          facade.restoreIdleAnimation();
+        }
+      },
+
+      restoreIdleAnimation: async function() {
+        var state = facade.State;
+        state.playRequestId += 1;
+        var restoreRequestId = state.playRequestId;
+        var modelType = facade.getModelType();
+
+        if (modelType === 'vrm' && window.vrmManager && typeof window.vrmManager.playVRMAAnimation === 'function') {
+          try {
+            var vrmIdleList = window.lanlan_config && window.lanlan_config.vrmIdleAnimations;
+            var vrmIdleUrl = Array.isArray(vrmIdleList) && vrmIdleList.length > 0 ? vrmIdleList[0] : null;
+            if (!vrmIdleUrl) {
+              vrmIdleUrl = window.lanlan_config && window.lanlan_config.vrmIdleAnimation;
+            }
+            await window.vrmManager.playVRMAAnimation(vrmIdleUrl || '/static/vrm/animation/wait03.vrma', {
+              loop: true,
+              isIdle: true
+            });
+          } catch (error) {
+            console.warn('[Jukebox] VRM 待机动画恢复失败:', error);
+          }
+          return;
+        }
+
+        if (!window.mmdManager) return;
+
+        var idleUrl = state.savedIdleAnimationUrl;
+        if (idleUrl && idleUrl.indexOf('/jukebox/song_') >= 0) {
+          idleUrl = null;
+        }
+        if (!idleUrl) {
+          facade._resetToNoneMode();
+          return;
+        }
+
+        try {
+          if (typeof window.mmdManager.loadAnimation === 'function') {
+            await window.mmdManager.loadAnimation(idleUrl);
+          }
+          if (restoreRequestId !== state.playRequestId) return;
+          if (typeof window.mmdManager.playAnimation === 'function') {
+            window.mmdManager.playAnimation('idle');
+          }
+        } catch (error) {
+          console.warn('[Jukebox]', translate('Jukebox.idleRestoreFailed', '恢复待机动画失败'), error);
+          if (restoreRequestId !== state.playRequestId) return;
+          facade._resetToNoneMode();
+        }
+      },
+
+      _resetToNoneMode: function() {
+        if (!window.mmdManager) return;
+        var mesh = window.mmdManager.currentModel && window.mmdManager.currentModel.mesh;
+        if (mesh && mesh.skeleton && typeof mesh.skeleton.pose === 'function') {
+          mesh.skeleton.pose();
+        }
+        if (window.mmdManager.cursorFollow && typeof window.mmdManager.cursorFollow.setAnimationMode === 'function') {
+          window.mmdManager.cursorFollow.setAnimationMode('none');
+        }
+      },
+
+      togglePause: function() {
+        var state = facade.State;
+        if (!state.currentSong && !state.isVMDPlaying) return;
+
+        var modelType = facade.getModelType();
+        if (state.isPaused) {
+          if (modelType === 'vrm') {
+            var resumeVrmAnim = window.vrmManager &&
+              (window.vrmManager.animationModule || window.vrmManager.animation);
+            if (resumeVrmAnim && resumeVrmAnim.currentAction) {
+              resumeVrmAnim.currentAction.paused = false;
+            }
+          } else if (window.mmdManager && window.mmdManager.animationModule) {
+            if (typeof window.mmdManager.animationModule.play === 'function') {
+              window.mmdManager.animationModule.play();
+            }
+            if (window.mmdManager.cursorFollow && typeof window.mmdManager.cursorFollow.setAnimationMode === 'function') {
+              window.mmdManager.cursorFollow.setAnimationMode('dance');
+            }
+          }
+          state.isPaused = false;
+          state.isPlaying = true;
+        } else if (state.isPlaying || state.isVMDPlaying) {
+          if (modelType === 'vrm') {
+            var pauseVrmAnim = window.vrmManager &&
+              (window.vrmManager.animationModule || window.vrmManager.animation);
+            if (pauseVrmAnim && pauseVrmAnim.currentAction) {
+              pauseVrmAnim.currentAction.paused = true;
+            }
+          } else if (window.mmdManager && window.mmdManager.animationModule) {
+            if (typeof window.mmdManager.animationModule.pause === 'function') {
+              window.mmdManager.animationModule.pause();
+            }
+            if (window.mmdManager.cursorFollow && typeof window.mmdManager.cursorFollow.setAnimationMode === 'function') {
+              window.mmdManager.cursorFollow.setAnimationMode('idle');
+            }
+          }
+          state.isPaused = true;
+          state.isPlaying = false;
+        }
+      }
+    };
+
+    window.Jukebox = facade;
+    window.Jukebox_togglePause = facade.togglePause;
+  }
+
   if (typeof window.__nekoJukeboxToggle === 'function') {
+    ensureNativeJukeboxFacade();
     return;
   }
 
@@ -256,6 +481,18 @@
 
   function finalizeUnload() {
     unloadTimer = null;
+    var jukebox = window.Jukebox;
+    if (jukebox && typeof jukebox.cleanupCloseListener === 'function') {
+      try {
+        jukebox.cleanupCloseListener();
+      } catch (_) {}
+    }
+    if (window.__JukeboxLocaleChangeHandler) {
+      try {
+        window.removeEventListener('localechange', window.__JukeboxLocaleChangeHandler);
+      } catch (_) {}
+      window.__JukeboxLocaleChangeHandler = null;
+    }
     [
       'Jukebox',
       'Jukebox_playSong',
