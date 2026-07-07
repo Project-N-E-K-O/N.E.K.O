@@ -3879,6 +3879,8 @@
         "minimize": "Minimize",
         "close": "Close",
         "loading": "Loading...",
+        "initializing": "Initializing jukebox...",
+        "initializeFailed": "Failed to initialize jukebox",
         "ready": "Ready",
         "playing": "Now Playing: {{name}} - {{artist}}",
         "error": "Error: {{message}}",

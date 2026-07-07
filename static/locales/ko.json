@@ -3879,6 +3879,8 @@
         "minimize": "최소화",
         "close": "닫기",
         "loading": "로드 중...",
+        "initializing": "주크박스를 초기화하는 중...",
+        "initializeFailed": "주크박스 초기화에 실패했습니다",
         "ready": "준비 완료",
         "playing": "재생 중: {{name}} - {{artist}}",
         "error": "오류: {{message}}",

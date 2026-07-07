@@ -5262,8 +5262,8 @@ window.Jukebox = {
     window.Jukebox_logVolumeChange = Jukebox.logVolumeChange;
     window.Jukebox_togglePause = Jukebox.togglePause;
 
-    // 独立窗口模式：不需要绑定按钮和监听聊天框关闭
-    if (!window.__NEKO_JUKEBOX_STANDALONE__) {
+    // 独立窗口模式和懒加载模式不需要绑定旧 DOM 按钮。
+    if (!window.__NEKO_JUKEBOX_STANDALONE__ && !window.__NEKO_JUKEBOX_LAZY_LOADER__) {
       Jukebox.setupButton();
       Jukebox.setupCloseListener();
     }
@@ -5360,6 +5360,7 @@ window.Jukebox = {
   },
   
   open: function() {
+    const Jukebox = window.Jukebox || this;
     if (Jukebox.State.isOpen) return;
     
     Jukebox.buildUI();
@@ -5443,9 +5444,71 @@ window.Jukebox = {
     
     console.log('[Jukebox] 点歌台已显示');
   },
+
+  destroyPlayer: function() {
+    const player = Jukebox.State.player;
+    if (player) {
+      try {
+        if (typeof player.pause === 'function') player.pause();
+      } catch (_) {}
+      try {
+        if (typeof player.seek === 'function') player.seek(0);
+      } catch (_) {}
+      try {
+        if (player.list && typeof player.list.clear === 'function') player.list.clear();
+      } catch (_) {}
+      try {
+        if (typeof player.destroy === 'function') player.destroy();
+      } catch (error) {
+        console.warn('[Jukebox] APlayer 销毁失败:', error);
+      }
+    }
+
+    Jukebox.State.player = null;
+    Jukebox.State.boundPlayer = null;
+    Jukebox.State.audioElement = null;
+  },
+
+  prepareForUnload: function() {
+    Jukebox.stopProgressUpdate();
+    Jukebox.destroyPlayer();
+    Jukebox.hideTooltip();
+
+    if (Jukebox.State.marqueeRaf) {
+      cancelAnimationFrame(Jukebox.State.marqueeRaf);
+      Jukebox.State.marqueeRaf = null;
+    }
+    if (Jukebox.State.marqueeItems) {
+      Jukebox.State.marqueeItems.clear();
+    }
+
+    Jukebox.stopConfigPolling();
+
+    try {
+      if (Jukebox._broadcastChannel) {
+        Jukebox._broadcastChannel.onmessage = null;
+        Jukebox._broadcastChannel.close();
+        Jukebox._broadcastChannel = null;
+      }
+    } catch (_) {}
+
+    if (window.__JukeboxLocaleChangeHandler) {
+      window.removeEventListener('localechange', window.__JukeboxLocaleChangeHandler);
+      window.__JukeboxLocaleChangeHandler = null;
+    }
+  },
+
+  notifyFullClose: function(reason) {
+    try {
+      window.dispatchEvent(new CustomEvent('neko:jukebox-full-close', {
+        detail: { reason: reason || 'close' }
+      }));
+    } catch (_) {}
+  },
   
   close: function() {
     Jukebox.stopPlayback();
+    Jukebox.prepareForUnload();
     
     // 销毁管理器面板（移除 DOM 节点 + 清理拖拽监听）
     Jukebox.SongActionManager.destroy();
@@ -5506,10 +5569,12 @@ window.Jukebox = {
     }
     
     console.log('[Jukebox] 点歌台已关闭');
+    Jukebox.notifyFullClose('close');
   },
   
   destroy: function() {
     Jukebox.stopPlayback();
+    Jukebox.prepareForUnload();
     
     Jukebox.SongActionManager.destroy();
     
@@ -5556,6 +5621,7 @@ window.Jukebox = {
     Jukebox.State.songElements = {}; // 清空元素映射
 
     console.log('[Jukebox] 点歌台已销毁');
+    Jukebox.notifyFullClose('destroy');
   },
   
   buildUI: function() {
@@ -7649,6 +7715,7 @@ window.Jukebox = {
   },
 
   checkConfigUpdates: async function() {
+    const Jukebox = window.Jukebox || this;
     if (!Jukebox.State.isOpen || Jukebox.State.configPollInFlight) return;
 
     Jukebox.State.configPollInFlight = true;
@@ -7678,6 +7745,7 @@ window.Jukebox = {
   },
   
   loadSongs: async function() {
+    const Jukebox = window.Jukebox || this;
     try {
       // 从后端API加载配置
       const response = await fetch('/api/jukebox/config');
@@ -8462,6 +8530,7 @@ window.Jukebox = {
   },
 
   restoreIdleAnimation: async function() {
+    const Jukebox = window.Jukebox || this;
     // 独立窗口模式：Pet 侧在 stopVMD 时自动恢复，此处无需操作
     if (window.__NEKO_JUKEBOX_STANDALONE__) return;
 
@@ -8716,6 +8785,7 @@ window.Jukebox = {
   },
   
   initPlayer: function() {
+    const Jukebox = window.Jukebox || this;
     if (window.music_ui && window.music_ui.getMusicPlayerInstance) {
       const existingPlayer = window.music_ui.getMusicPlayerInstance();
       if (existingPlayer) {
@@ -8734,7 +8804,7 @@ window.Jukebox = {
     
     if (typeof APlayer === 'undefined') {
       console.warn('[Jukebox] APlayer 未加载，等待加载...');
-      setTimeout(Jukebox.initPlayer, 500);
+      setTimeout(() => Jukebox.initPlayer(), 500);
       return;
     }
     
@@ -9227,8 +9297,10 @@ window.Jukebox = {
 // i18n-i18next.js 会通过 storage 事件检测其他窗口的语言变更并调用 changeLanguage，
 // changeLanguage 触发 languageChanged → localechange 自定义事件。
 // 此处监听 localechange，在 Jukebox 已打开时自动刷新 UI 文本。
-window.addEventListener('localechange', function() {
-  if (Jukebox.State.isOpen || Jukebox.State.isHidden) {
+window.__JukeboxLocaleChangeHandler = function() {
+  const Jukebox = window.Jukebox;
+  if (Jukebox && Jukebox.State && (Jukebox.State.isOpen || Jukebox.State.isHidden)) {
     Jukebox.refreshLocale();
   }
-});
+};
+window.addEventListener('localechange', window.__JukeboxLocaleChangeHandler);

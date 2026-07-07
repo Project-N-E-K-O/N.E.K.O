@@ -3879,6 +3879,8 @@
         "minimize": "最小化",
         "close": "閉じる",
         "loading": "読み込み中...",
+        "initializing": "ジュークボックスを初期化中...",
+        "initializeFailed": "ジュークボックスの初期化に失敗しました",
         "ready": "準備完了",
         "playing": "再生中: {{name}} - {{artist}}",
         "error": "エラー: {{message}}",

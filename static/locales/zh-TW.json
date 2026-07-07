@@ -3879,6 +3879,8 @@
         "minimize": "最小化",
         "close": "關閉",
         "loading": "載入中...",
+        "initializing": "正在初始化點歌台...",
+        "initializeFailed": "點歌台初始化失敗",
         "ready": "準備就緒",
         "playing": "正在播放: {{name}} - {{artist}}",
         "error": "錯誤: {{message}}",

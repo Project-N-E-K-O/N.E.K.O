@@ -3879,6 +3879,8 @@
         "minimize": "Minimizar",
         "close": "Cerca",
         "loading": "Cargando...",
+        "initializing": "Inicializando la rocola...",
+        "initializeFailed": "No se pudo inicializar la rocola",
         "ready": "Listo",
         "playing": "Reproduciendo ahora: {{name}} - {{artist}}",
         "error": "Error: {{message}}",
