@@ -42,7 +42,8 @@ def test_full_live2d_reset_prefers_saved_appearance_baseline():
     source = LIVE2D_EMOTION_PATH.read_text(encoding="utf-8")
 
     assert "this._isRuntimeManagedAppearanceParam(paramId, resolvedParamId, coreModel)" in source
-    assert "? [this.appearanceBaselineParameters, this.savedModelParameters, this.motionBaselineParameters, this.initialParameters]" in source
+    assert "? [this.appearanceBaselineParameters, this.motionBaselineParameters, this.initialParameters]" in source
+    assert "? [this.appearanceBaselineParameters, this.savedModelParameters, this.motionBaselineParameters" not in source
     assert "const resetValue = baseline.found ? baseline.value : initialValue;" in source
     assert "coreModel.setParameterValueByIndex(paramIndex, resetValue);" in source
     assert "coreModel.setParameterValueById(paramId, resetValue);" in source
@@ -163,6 +164,76 @@ def test_live2d_appearance_baseline_skips_unresolved_numeric_keys():
         );
 
         assert.deepStrictEqual(Object.keys(manager.appearanceBaselineParameters), []);
+        """
+    )
+
+    result = _run_node_harness(script)
+    assert result.returncode == 0, result.stderr
+
+
+def test_live2d_reset_ignores_unfiltered_saved_runtime_baseline():
+    script = textwrap.dedent(
+        f"""
+        const assert = require('node:assert');
+        const fs = require('node:fs');
+        const vm = require('node:vm');
+
+        const context = {{
+          console: {{
+            log() {{}},
+            warn() {{}},
+            error() {{}},
+            groupCollapsed() {{}},
+            groupEnd() {{}},
+          }},
+          window: {{ LIPSYNC_PARAMS: ['ParamMouthOpenY', 'ParamMouthForm'] }},
+          Live2DManager: function Live2DManager() {{}},
+          setTimeout,
+          clearTimeout,
+          setInterval,
+          clearInterval,
+        }};
+        context.global = context;
+        context.window.Live2DManager = context.Live2DManager;
+
+        vm.createContext(context);
+        vm.runInContext(fs.readFileSync({json.dumps(str(LIVE2D_MODEL_PATH))}, 'utf8'), context);
+        vm.runInContext(fs.readFileSync({json.dumps(str(LIVE2D_EMOTION_PATH))}, 'utf8'), context);
+
+        const ids = ['ParamAllColor1', 'ParamBodyAngleX'];
+        const values = [0, 0];
+        const coreModel = {{
+          getParameterCount() {{ return ids.length; }},
+          getParameterId(index) {{ return ids[index]; }},
+          getParameterIndex(id) {{ return ids.indexOf(id); }},
+          getParameterValueByIndex(index) {{ return values[index]; }},
+          setParameterValueByIndex(index, value) {{ values[index] = value; }},
+          setParameterValueById(id, value) {{ values[ids.indexOf(id)] = value; }},
+        }};
+
+        const manager = new context.Live2DManager();
+        manager.currentModel = {{ internalModel: {{ coreModel }} }};
+        manager.initialParameters = {{
+          ParamAllColor1: 0,
+          ParamBodyAngleX: 0,
+        }};
+        manager.motionBaselineParameters = {{
+          ParamBodyAngleX: 0,
+          param_1: 0,
+        }};
+        manager.appearanceBaselineParameters = {{
+          ParamAllColor1: 1,
+          param_0: 1,
+        }};
+        manager.savedModelParameters = {{
+          ParamBodyAngleX: 30,
+          param_1: 30,
+        }};
+
+        manager._resetParametersToInitialState({{ preserveExpression: false }});
+
+        assert.strictEqual(values[0], 1);
+        assert.strictEqual(values[1], 0);
         """
     )
 

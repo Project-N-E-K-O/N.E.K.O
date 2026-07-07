@@ -387,7 +387,7 @@ Live2DManager.prototype._trackActiveMotionParametersFromFile = async function(mo
 Live2DManager.prototype._findRecordedParameterBaseline = function(paramId, coreModel, options = {}) {
     const includeSavedParameters = options.includeSavedParameters === true;
     const baselineSources = includeSavedParameters
-        ? [this.appearanceBaselineParameters, this.savedModelParameters, this.motionBaselineParameters, this.initialParameters]
+        ? [this.appearanceBaselineParameters, this.motionBaselineParameters, this.initialParameters]
         : [this.motionBaselineParameters, this.initialParameters];
 
     for (const source of baselineSources) {
