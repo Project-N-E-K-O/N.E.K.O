@@ -940,6 +940,42 @@ def test_day1_systray_intro_close_releases_icebreaker_and_desktop_passthrough():
     assert "document.body.classList.remove('neko-day1-systray-intro-open')" in manager
 
 
+def test_icebreaker_keeps_pending_start_while_day1_systray_intro_is_open():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+    match = re.search(
+        r"function startFromEndStateWhenTutorialIdle\(endState\) \{(?P<body>.*?)\n    \}",
+        runtime,
+        re.DOTALL,
+    )
+
+    assert match is not None
+    body = match.group("body")
+    assert "if (isTutorialBlockingIcebreaker())" in body
+    assert (
+        "!isDay1SystrayIntroBlockingIcebreaker() && Date.now() >= getEndStateTriggerDeadline(endState)"
+        in body
+    )
+    assert body.index("!isDay1SystrayIntroBlockingIcebreaker()") < body.index(
+        "window.setTimeout(resolve, TUTORIAL_IDLE_RETRY_MS)"
+    )
+
+
+def test_icebreaker_deferred_start_promise_cleanup_has_no_unreachable_rejection_handler():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+    match = re.search(
+        r"function attemptStartFromGuideEndState\(endState, pendingDay\) \{(?P<body>.*?)\n    \}",
+        runtime,
+        re.DOTALL,
+    )
+
+    assert match is not None
+    body = match.group("body")
+    assert "}).catch(function (error) {" in body
+    assert "}).then(function (started) {" in body
+    assert "}, function (error) {" not in body
+    assert "throw error;" not in body
+
+
 def test_yui_guide_bridge_timestamp_helper_exists_for_cursor_relay():
     interpage = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
 

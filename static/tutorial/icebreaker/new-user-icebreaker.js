@@ -1610,7 +1610,8 @@
     function startFromEndStateWhenTutorialIdle(endState) {
         if (!endState) return Promise.resolve(false);
         if (isTutorialBlockingIcebreaker()) {
-            if (Date.now() >= getEndStateTriggerDeadline(endState)) return Promise.resolve(false);
+            // The Day 1 systray intro is a user-controlled modal; keep the guide end state until it closes.
+            if (!isDay1SystrayIntroBlockingIcebreaker() && Date.now() >= getEndStateTriggerDeadline(endState)) return Promise.resolve(false);
             return new Promise(function (resolve) {
                 window.setTimeout(resolve, TUTORIAL_IDLE_RETRY_MS);
             }).then(function () {
@@ -1641,9 +1642,6 @@
         }).then(function (started) {
             pendingGuideEndStartPromise = null;
             return started;
-        }, function (error) {
-            pendingGuideEndStartPromise = null;
-            throw error;
         });
         return pendingGuideEndStartPromise;
     }
