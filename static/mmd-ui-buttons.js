@@ -826,7 +826,8 @@ MMDManager.prototype._startUIUpdateLoop = function() {
                             ? window.getNekoYuiGuideLockIconMaxTop(defaultMaxLockY, actualLockIconSize)
                             : defaultMaxLockY;
                         const boundedLockX = Math.max(0, Math.min(lockTargetX, maxLockX));
-                        const boundedLockY = Math.max(20, Math.min(lockTargetY, maxLockY));
+                        const minLockY = Math.min(20, maxLockY);
+                        const boundedLockY = Math.max(minLockY, Math.min(lockTargetY, maxLockY));
 
                         const rawLockLeft = parseFloat(lockIcon.style.left);
                         if (Number.isNaN(rawLockLeft)) {
