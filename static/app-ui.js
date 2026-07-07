@@ -5344,6 +5344,11 @@
                 clearTimeout(window._goodbyeResetClickTimerId);
                 window._goodbyeResetClickTimerId = null;
             }
+            if (window._goodbyeHideTimerId) {
+                clearTimeout(window._goodbyeHideTimerId);
+                window._goodbyeHideTimerId = null;
+                console.log('[App] handleReturnClick: 已取消 goodbye 延迟隐藏定时器');
+            }
             const preReturnViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel();
             if (!preReturnViewportReady.ready) {
                 console.warn('[App] 请她回来已暂缓：Pet viewport 仍处于猫形态小窗口，保留 return 状态');
@@ -5357,13 +5362,6 @@
             if (multiWindowReturnBallDragState) {
                 multiWindowReturnBallDragState.dragSessionToken += 1;
                 clearMultiWindowReturnBallDeferredWork(multiWindowReturnBallDragState);
-            }
-
-            // 取消延迟隐藏定时器
-            if (window._goodbyeHideTimerId) {
-                clearTimeout(window._goodbyeHideTimerId);
-                window._goodbyeHideTimerId = null;
-                console.log('[App] handleReturnClick: 已取消 goodbye 延迟隐藏定时器');
             }
             // 同步 window 中的设置值到状态
             if (typeof window.focusModeEnabled !== 'undefined') {

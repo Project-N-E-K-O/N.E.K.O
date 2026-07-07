@@ -340,6 +340,9 @@ def test_model_cat_transition_contract_is_present():
         "if (hadPendingGoodbyeReset) {",
         "clearTimeout(window._goodbyeResetClickTimerId);",
         "window._goodbyeResetClickTimerId = null;",
+        "if (window._goodbyeHideTimerId) {",
+        "clearTimeout(window._goodbyeHideTimerId);",
+        "window._goodbyeHideTimerId = null;",
         "const preReturnViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel();",
     )
     return_handler_after_viewport_guard_block = return_handler_full_block[
