@@ -1529,6 +1529,15 @@ class OmniRealtimeClient:
         if self._local_turn_active and self._turn_detector is not None:
             det = self._turn_detector
             signal = det.feed(audio_chunk)
+            if signal is TurnSignal.SPEECH_START:
+                self._user_recent_activity_time = current_time
+                self._client_vad_active = True
+                self._client_vad_last_speech_time = current_time
+                self._turn_eval_generation += 1
+                self._turn_eval_inflight = False
+                self._pending_turn_eval = None
+                if self._is_responding:
+                    await self.handle_interruption()
             if not self._is_responding:
                 if signal is TurnSignal.CANDIDATE_END:
                     if det.smart_turn_enabled:

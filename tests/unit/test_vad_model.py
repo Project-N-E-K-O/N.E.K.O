@@ -447,6 +447,66 @@ async def test_stream_audio_defers_silence_clear_while_turn_eval_pending():
 
 
 @pytest.mark.asyncio
+async def test_stream_audio_speech_start_interrupts_active_response():
+    client, det = _client_with_fake_detector()
+    client._is_responding = True
+    client._turn_eval_generation = 7
+    client._turn_eval_inflight = True
+    client._pending_turn_eval = (np.zeros(16000, np.float32), det.activity_seq)
+    client.handle_interruption = AsyncMock()
+    det.next_signal = TurnSignal.SPEECH_START
+
+    await client.stream_audio(np.zeros(512, np.int16).tobytes())
+
+    client.handle_interruption.assert_awaited_once()
+    assert client._user_recent_activity_time > 0
+    assert client._client_vad_active is True
+    assert client._client_vad_last_speech_time == client._user_recent_activity_time
+    assert client._turn_eval_generation == 8
+    assert client._turn_eval_inflight is False
+    assert client._pending_turn_eval is None
+    assert det.committed is False
+
+
+@pytest.mark.asyncio
+async def test_stream_audio_speech_start_updates_activity_without_interrupt_when_idle():
+    client, det = _client_with_fake_detector()
+    client._is_responding = False
+    client.handle_interruption = AsyncMock()
+    det.next_signal = TurnSignal.SPEECH_START
+
+    await client.stream_audio(np.zeros(512, np.int16).tobytes())
+
+    client.handle_interruption.assert_not_awaited()
+    assert client._user_recent_activity_time > 0
+    assert client._client_vad_active is True
+    assert client._client_vad_last_speech_time == client._user_recent_activity_time
+    assert det.committed is False
+
+
+@pytest.mark.asyncio
+async def test_stream_audio_speech_start_invalidates_stale_eval():
+    client, det = _client_with_fake_detector(prob=0.9, delay_s=0.05)
+    client.signal_user_activity_end = AsyncMock()
+    det.next_signal = TurnSignal.CANDIDATE_END
+
+    await client.stream_audio(np.zeros(512, np.int16).tobytes())
+    assert client._turn_eval_inflight is True
+    first_generation = client._turn_eval_generation
+
+    det.next_signal = TurnSignal.SPEECH_START
+    await client.stream_audio(np.zeros(512, np.int16).tobytes())
+
+    assert client._turn_eval_generation == first_generation + 1
+    for _ in range(20):
+        await asyncio.sleep(0.01)
+
+    client.signal_user_activity_end.assert_not_awaited()
+    assert client._turn_eval_inflight is False
+    assert client._pending_turn_eval is None
+
+
+@pytest.mark.asyncio
 async def test_stream_audio_no_commit_while_responding():
     client, det = _client_with_fake_detector()
     client._is_responding = True                                   # AI mid-response → barge-in territory
