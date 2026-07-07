@@ -2657,6 +2657,8 @@
             "widgetModeTooltip": "エッジドックモードを手動で有効にすると、Live2D が画面端の 6 つのアンカーから覗けます。",
             "slopFilter": "自然な表現",
             "slopFilterTooltip": "過去の返答にある繰り返しや型にはまった言い回しを減らし、より自然に話せるようにします。",
+            "gameModeBeta": "ゲームモード Beta",
+            "gameModeBetaTooltip": "システム全体の CPU、メモリ、GPU 負荷を監視し、高負荷が続くとリソース消費を抑えるため猫形態に切り替えます。",
             "autoCat": "自動ねこ化",
             "autoCatTooltip": "しばらく操作がないと自動的に子猫になります",
             "catAudio": "猫の効果音",

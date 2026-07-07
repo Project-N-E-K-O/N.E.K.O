@@ -2657,6 +2657,8 @@
             "widgetModeTooltip": "手動開啟掛邊模式後，Live2D 可從左右與四角共六個螢幕邊緣錨點探身。",
             "slopFilter": "自然表達",
             "slopFilterTooltip": "減少歷史回覆中重複、套路化的說法，讓她表達得更自然。",
+            "gameModeBeta": "遊戲模式 Beta（測試版）",
+            "gameModeBetaTooltip": "開啟後持續監測整機 CPU、記憶體和 GPU 壓力；資源占用持續較高時自動切換到貓貓形態。",
             "autoCat": "自動變貓",
             "autoCatTooltip": "一段時間無互動後自動變成小貓",
             "catAudio": "貓貓音效",

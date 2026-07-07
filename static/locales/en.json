@@ -2647,6 +2647,18 @@
             "disabledNotice": "Edge Dock Mode Beta is off. Live2D uses normal edge snapping.",
             "toggleFailed": "Failed to switch Edge Dock Mode Beta. Please try again later."
         },
+        "gameModeBeta": {
+            "enabledNotice": "Game Mode Beta is on. When resource usage stays high, NEKO will switch to cat form to reduce usage; some plugin and vision/OCR features may load more slowly the first time.",
+            "autoSwitchNotice": "{metric} usage stayed high, so NEKO switched to cat form to reduce resource usage.",
+            "disabledNotice": "Game Mode Beta is off. NEKO has returned to the normal resource policy.",
+            "toggleFailed": "Failed to switch Game Mode. Please try again later.",
+            "memoryMetric": "memory",
+            "resourceMetric": "resource",
+            "statusOn": "On",
+            "statusOff": "Off",
+            "statusOnly": "{status}",
+            "statusWithReason": "{status} · Last: {metric} {percent} / {duration}"
+        },
         "toggles": {
             "allowInterrupt": "Allow Interrupt",
             "mergeMessages": "Merge Messages",
@@ -2657,6 +2669,8 @@
             "widgetModeTooltip": "Manually enable Edge Dock Mode to let Live2D peek from six screen-edge anchors.",
             "slopFilter": "Natural Expression",
             "slopFilterTooltip": "Reduces repetitive, formulaic wording in past replies so she expresses herself more naturally.",
+            "gameModeBeta": "Game Mode Beta",
+            "gameModeBetaTooltip": "Monitors system CPU, memory, and GPU pressure; when usage stays high, NEKO switches to cat form to reduce resource use.",
             "autoCat": "Auto Cat Mode",
             "autoCatTooltip": "Turn into a kitten automatically after a while of inactivity",
             "catAudio": "Cat Audio",

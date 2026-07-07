@@ -2657,6 +2657,8 @@
             "widgetModeTooltip": "Ative manualmente o modo de encaixe para o Live2D espiar por seis âncoras da borda.",
             "slopFilter": "Expressão natural",
             "slopFilterTooltip": "Reduz formas de dizer repetitivas e estereotipadas nas respostas anteriores para que ela se expresse com mais naturalidade.",
+            "gameModeBeta": "Modo de jogo Beta",
+            "gameModeBetaTooltip": "Monitora CPU, memória e GPU do sistema; quando o uso permanece alto, a NEKO muda para a forma de gato para reduzir recursos.",
             "autoCat": "Modo gato automático",
             "autoCatTooltip": "Vira um gatinho automaticamente após um tempo de inatividade",
             "catAudio": "Sons de gato",

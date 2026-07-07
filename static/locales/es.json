@@ -2657,6 +2657,8 @@
             "widgetModeTooltip": "Activa manualmente el modo de acoplamiento para que Live2D pueda asomarse desde seis anclajes del borde.",
             "slopFilter": "Expresión natural",
             "slopFilterTooltip": "Reduce las expresiones repetitivas y estereotipadas de las respuestas anteriores para que se exprese con más naturalidad.",
+            "gameModeBeta": "Modo juego Beta",
+            "gameModeBetaTooltip": "Supervisa la presión de CPU, memoria y GPU del sistema; si el uso se mantiene alto, NEKO cambia a forma de gato para reducir recursos.",
             "autoCat": "Modo gato automático",
             "autoCatTooltip": "Se convierte en gatito automáticamente tras un rato de inactividad",
             "catAudio": "Sonidos de gato",

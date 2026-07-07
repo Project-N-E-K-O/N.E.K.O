@@ -2657,6 +2657,8 @@
             "widgetModeTooltip": "가장자리 도킹 모드를 수동으로 켜면 Live2D가 화면 가장자리의 6개 앵커에서 내다볼 수 있습니다.",
             "slopFilter": "자연스러운 표현",
             "slopFilterTooltip": "이전 답변에서 반복되거나 틀에 박힌 표현을 줄여 더 자연스럽게 말하도록 합니다.",
+            "gameModeBeta": "게임 모드 Beta",
+            "gameModeBetaTooltip": "시스템 CPU, 메모리, GPU 부하를 감시하고 높은 사용량이 지속되면 리소스를 줄이기 위해 고양이 형태로 전환합니다.",
             "autoCat": "자동 고양이 전환",
             "autoCatTooltip": "일정 시간 활동이 없으면 자동으로 새끼 고양이가 됩니다",
             "catAudio": "고양이 효과음",
