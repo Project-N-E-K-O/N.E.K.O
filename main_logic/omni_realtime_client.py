@@ -382,6 +382,9 @@ class OmniRealtimeClient:
             if self._uplink_sample_rate != 16000
             else None
         )
+        self._desktop_downsample_resampler = soxr.ResampleStream(
+            48000, 16000, 1, dtype='float32', quality='HQ'
+        )
 
         # 静音重置事件异步队列（RNNoise 4秒静音回调用）
         self._silence_reset_pending = False
@@ -797,6 +800,12 @@ class OmniRealtimeClient:
         if self._uplink_resampler is not None:
             self._uplink_resampler.clear()
 
+    def _clear_desktop_downsample_resampler(self) -> None:
+        """Drop held 48kHz→16kHz fallback resampler samples at buffer boundaries."""
+        resampler = getattr(self, "_desktop_downsample_resampler", None)
+        if resampler is not None:
+            resampler.clear()
+
     def _resample_uplink(self, pcm16_bytes: bytes) -> bytes:
         """Upsample 16kHz PCM16 mic/cache audio to the provider's uplink rate.
 
@@ -816,13 +825,12 @@ class OmniRealtimeClient:
             return b''
         return (out * 32768.0).clip(-32768, 32767).astype(np.int16).tobytes()
 
-    @staticmethod
-    def _downsample_desktop_input(pcm48_bytes: bytes) -> bytes:
-        """Downsample 48kHz desktop PCM16 audio to the internal 16kHz PCM16 format."""
+    def _downsample_desktop_input(self, pcm48_bytes: bytes) -> bytes:
+        """Stream-downsample 48kHz desktop PCM16 audio to internal 16kHz PCM16."""
         if not pcm48_bytes:
             return pcm48_bytes
         samples = np.frombuffer(pcm48_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-        out = soxr.resample(samples, 48000, 16000, quality='HQ')
+        out = self._desktop_downsample_resampler.resample_chunk(samples)
         if len(out) == 0:
             return b''
         return (out * 32768.0).clip(-32768, 32767).astype(np.int16).tobytes()
@@ -940,12 +948,14 @@ class OmniRealtimeClient:
     async def clear_audio_buffer(self):
         """Send an input_audio_buffer.clear event to clear the server-side buffer."""
         if self._is_gemini:
+            self._clear_desktop_downsample_resampler()
             logger.debug("Gemini mode: no WebSocket input_audio_buffer.clear event")
             return
         await self.send_event({"type": "input_audio_buffer.clear"})
         # The server is discarding this buffer; drop the uplink resampler's
         # held tail too so it isn't prepended to the next utterance.
         self._clear_uplink_resampler()
+        self._clear_desktop_downsample_resampler()
         logger.debug("📤 已发送 input_audio_buffer.clear 事件")
 
     async def connect(self, instructions: str, native_audio=True) -> None:
@@ -986,6 +996,7 @@ class OmniRealtimeClient:
         # Flush uplink resampler FIR history so a previous session's tail
         # samples don't bleed into the new connection's first frames.
         self._clear_uplink_resampler()
+        self._clear_desktop_downsample_resampler()
 
         # WebSocket-based APIs (GLM, Qwen, GPT, Step, Free)
         url = f"{self.base_url}?model={self.model}" if self._model_lower != "free-model" else self.base_url
@@ -1660,11 +1671,13 @@ class OmniRealtimeClient:
                 logger.error(f"Error sending activity_end to Gemini: {e}")
                 if "closed" in str(e).lower():
                     self._fatal_error_occurred = True
+            self._clear_desktop_downsample_resampler()
             return
         await self.send_event({"type": "input_audio_buffer.commit"})
         # The committed buffer excludes the ~21ms tail soxr still holds in the
         # uplink resampler; drop it so it isn't prepended to the next turn.
         self._clear_uplink_resampler()
+        self._clear_desktop_downsample_resampler()
         await self.send_event({"type": "response.create"})
 
     async def _analyze_image_with_vision_model(self, image_b64: str) -> str:

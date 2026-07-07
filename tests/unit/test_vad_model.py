@@ -298,6 +298,19 @@ class _FakeDetector:
         self.reset_calls += 1
 
 
+class _FakeDesktopDownsampler:
+    def __init__(self):
+        self.chunks = []
+        self.clear_calls = 0
+
+    def resample_chunk(self, samples):
+        self.chunks.append(samples.copy())
+        return np.zeros(160, np.float32)
+
+    def clear(self):
+        self.clear_calls += 1
+
+
 def _client_with_fake_detector(prob=0.9, smart_turn_enabled=True, *, delay_s=0.0):
     client = OmniRealtimeClient(
         base_url="wss://example.test/realtime", api_key="sk-test",
@@ -343,10 +356,14 @@ async def test_stream_audio_candidate_end_commits():
 async def test_stream_audio_downsamples_desktop_chunk_before_local_detector():
     client, det = _client_with_fake_detector()
     client._audio_processor = None
+    downsampler = _FakeDesktopDownsampler()
+    client._desktop_downsample_resampler = downsampler
     client.send_event = AsyncMock()
 
     await client.stream_audio(np.zeros(480, np.int16).tobytes())
 
+    assert len(downsampler.chunks) == 1
+    assert len(downsampler.chunks[0]) == 480
     assert det.fed_lengths == [320]
     append_event = client.send_event.await_args.args[0]
     assert len(base64.b64decode(append_event["audio"])) == 320
