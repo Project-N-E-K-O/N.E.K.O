@@ -65,6 +65,12 @@ def test_chat_settings_cat_audio_toggle_is_under_auto_cat_and_dependent():
     source = AVATAR_UI_POPUP_PATH.read_text(encoding="utf-8")
     chat_settings_block = source.split("const chatToggles = [", 1)[1].split("];", 1)[0]
 
+    assert "id: 'local-turn-detection'" in chat_settings_block
+    assert "labelKey: 'settings.toggles.localTurnDetection'" in chat_settings_block
+    assert "id: 'smart-turn'" in chat_settings_block
+    assert "labelKey: 'settings.toggles.smartTurn'" in chat_settings_block
+    assert "dependsOnToggleId: 'local-turn-detection'" in chat_settings_block
+    assert chat_settings_block.index("id: 'local-turn-detection'") < chat_settings_block.index("id: 'smart-turn'")
     assert "id: 'auto-cat'" in chat_settings_block
     assert "id: 'cat-audio'" in chat_settings_block
     assert chat_settings_block.index("id: 'auto-cat'") < chat_settings_block.index("id: 'cat-audio'")

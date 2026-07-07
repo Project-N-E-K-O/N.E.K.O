@@ -393,6 +393,17 @@ def test_local_turn_toggles_persist_only_after_server_ack():
     assert "saved === false" in popup_source
     assert "window.appState.localTurnDetectionEnabled = !isChecked;" in popup_source
     assert "window.appState.smartTurnEnabled = !isChecked;" in popup_source
+    handle_toggle = popup_source.split("const handleToggleChange = (isChecked) => {", 1)[1]
+    local_turn_branch = handle_toggle.split("} else if (toggle.id === 'local-turn-detection') {", 1)[1].split(
+        "} else if (toggle.id === 'smart-turn') {",
+        1,
+    )[0]
+    smart_turn_branch = handle_toggle.split("} else if (toggle.id === 'smart-turn') {", 1)[1].split(
+        "} else if (toggle.id === 'proactive-chat') {",
+        1,
+    )[0]
+    assert "updateStyle();" in local_turn_branch
+    assert "updateStyle();" in smart_turn_branch
 
 
 def test_local_turn_toggles_hydrate_from_server_before_local_storage():
