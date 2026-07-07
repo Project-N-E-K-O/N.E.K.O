@@ -307,9 +307,13 @@ export function usePluginListContextActions() {
       }
       case 'delete':
         await deletePlugin(plugin.id)
-        await pluginStore.fetchPlugins(true)
-        await pluginStore.fetchPluginStatus()
         ElMessage.success(t('messages.pluginDeleted'))
+        try {
+          await pluginStore.syncRegistryAndFetch()
+          await pluginStore.fetchPluginStatus()
+        } catch (error) {
+          console.warn('Failed to refresh plugin data after delete:', error)
+        }
         return
       case 'enable_extension':
         await pluginStore.enableExt(plugin.id)

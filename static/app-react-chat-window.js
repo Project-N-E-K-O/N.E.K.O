@@ -2660,6 +2660,8 @@
             onChoiceSelect: handleChoiceSelect,
             onCompactChatStateChange: handleCompactChatStateChange,
             onCompactMinimizeRequest: handleCompactMinimizeRequest,
+            avatarToolMenuOpenRequest: state.viewProps.avatarToolMenuOpenRequest || null,
+            compactToolFanOpenRequest: state.viewProps.compactToolFanOpenRequest || null,
             compactToolWheelRotateRequest: state.viewProps.compactToolWheelRotateRequest || null,
             compactToolWheelIndexRequest: state.viewProps.compactToolWheelIndexRequest || null,
             compactHistoryOpenRequest: state.viewProps.compactHistoryOpenRequest || null
@@ -4721,6 +4723,13 @@
             if (!idleDockTriggeredMinimize || idleDockActive || !isIdleDockTierActive()) return;
             var latestShell = getShell();
             if (!latestShell) return;
+            if (isMinimizeTransitioning) {
+                var pendingSurfaceMode = pendingChatSurfaceMode;
+                var pendingSurfaceCommit = pendingMinimizedSurfaceCommit;
+                cancelActiveAnimation();
+                pendingChatSurfaceMode = pendingSurfaceMode;
+                pendingMinimizedSurfaceCommit = pendingSurfaceCommit;
+            }
             minimized = true;
             latestShell.classList.remove('is-collapsing', 'is-expanding');
             latestShell.style.transform = 'none';
@@ -4730,6 +4739,12 @@
             latestShell.style.removeProperty('bottom');
             latestShell.classList.add('is-minimized');
             syncChatSurfaceModeUI();
+            commitPendingMinimizedSurfaceMode();
+            flushPendingChatSurfaceModeIfNeeded();
+            if (!minimized || getCurrentChatSurfaceMode() !== 'minimized') {
+                clearIdleDockState();
+                return;
+            }
             finishIdleDockMinimize(latestShell);
         }, 460);
     }
@@ -5789,20 +5804,38 @@
             shell.classList.add('is-collapsing');
             void shell.offsetHeight; // 强制 reflow
 
+            var handled = false;
+            var collapseTimer = null;
+            var collapseScaleFrame = 0;
+            var collapseScaleInnerFrame = 0;
+            function cancelCollapseScaleFrames() {
+                if (collapseScaleFrame) {
+                    window.cancelAnimationFrame(collapseScaleFrame);
+                    collapseScaleFrame = 0;
+                }
+                if (collapseScaleInnerFrame) {
+                    window.cancelAnimationFrame(collapseScaleInnerFrame);
+                    collapseScaleInnerFrame = 0;
+                }
+            }
+
             // 5. 设置目标 transform，触发动画
             //    动画期间 left/top 不动，只通过动态 origin 缩放到 target。
-            requestAnimationFrame(function () {
-                requestAnimationFrame(function () {
+            collapseScaleFrame = requestAnimationFrame(function () {
+                collapseScaleFrame = 0;
+                if (handled || !shell.classList.contains('is-collapsing') || shell.classList.contains('is-minimized')) return;
+                collapseScaleInnerFrame = requestAnimationFrame(function () {
+                    collapseScaleInnerFrame = 0;
+                    if (handled || !shell.classList.contains('is-collapsing') || shell.classList.contains('is-minimized')) return;
                     shell.style.transform = 'scale(' + sx + ', ' + sy + ')';
                 });
             });
 
             // 6. 过渡结束后切换到最终的 minimized 状态
-            var handled = false;
-            var collapseTimer = null;
             var finishCollapse = function () {
                 if (handled) return;
                 handled = true;
+                cancelCollapseScaleFrames();
                 clearTimeout(collapseTimer);
                 shell.removeEventListener('transitionend', onEnd);
                 activeAnimationCleanup = null;
@@ -5837,6 +5870,7 @@
 
             // 注册清理句柄，供 closeWindow / 下次动画调用
             activeAnimationCleanup = function () {
+                cancelCollapseScaleFrames();
                 clearTimeout(collapseTimer);
                 shell.removeEventListener('transitionend', onEnd);
                 shell.classList.remove('is-collapsing');

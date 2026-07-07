@@ -16,8 +16,49 @@ function isNekoYuiGuideFloatingToolbarSuppressed() {
     );
 }
 
+const NEKO_YUI_GUIDE_LOCK_SPOTLIGHT_DEFAULT_BOTTOM_PX = 112;
+
+function isNekoYuiGuideLockSpotlightSafeAreaActive() {
+    return !!(
+        typeof window !== 'undefined'
+        && window.nekoYuiGuideLockSpotlightSafeAreaActive === true
+    );
+}
+
+function getNekoYuiGuideLockSpotlightBottomPx() {
+    if (typeof window === 'undefined') {
+        return NEKO_YUI_GUIDE_LOCK_SPOTLIGHT_DEFAULT_BOTTOM_PX;
+    }
+    const configured = Number(window.nekoYuiGuideLockSpotlightSafeAreaBottomPx);
+    return Number.isFinite(configured) && configured >= 0
+        ? configured
+        : NEKO_YUI_GUIDE_LOCK_SPOTLIGHT_DEFAULT_BOTTOM_PX;
+}
+
+function getNekoYuiGuideLockIconMaxTop(defaultMaxTop, iconSize) {
+    const fallbackMaxTop = Number(defaultMaxTop);
+    const normalizedDefault = Number.isFinite(fallbackMaxTop) ? fallbackMaxTop : 0;
+    if (!isNekoYuiGuideLockSpotlightSafeAreaActive() || typeof window === 'undefined') {
+        return normalizedDefault;
+    }
+    const viewportHeight = Number(window.innerHeight);
+    if (!Number.isFinite(viewportHeight) || viewportHeight <= 0) {
+        return normalizedDefault;
+    }
+    const normalizedIconSize = Number.isFinite(Number(iconSize)) && Number(iconSize) > 0
+        ? Number(iconSize)
+        : 40;
+    const safeMaxTop = Math.max(
+        0,
+        viewportHeight - normalizedIconSize - getNekoYuiGuideLockSpotlightBottomPx()
+    );
+    return Math.min(normalizedDefault, safeMaxTop);
+}
+
 if (typeof window !== 'undefined') {
     window.isNekoYuiGuideFloatingToolbarSuppressed = isNekoYuiGuideFloatingToolbarSuppressed;
+    window.isNekoYuiGuideLockSpotlightSafeAreaActive = isNekoYuiGuideLockSpotlightSafeAreaActive;
+    window.getNekoYuiGuideLockIconMaxTop = getNekoYuiGuideLockIconMaxTop;
 }
 
 function _ensureFloatingButtonsAnimationStyles() {
@@ -6072,6 +6113,8 @@ const AvatarButtonMixin = {
                 }
                 if (
                     returnButtonContainer.getAttribute('data-dragging') === 'true' ||
+                    returnButtonContainer.getAttribute('data-dragging') === 'pending' ||
+                    returnButtonContainer.getAttribute('data-neko-return-click-suppressed') === 'true' ||
                     returnButtonContainer.getAttribute('data-neko-model-cat-transitioning') === 'cat-to-model' ||
                     (typeof window.isNekoModelCatTransitionActive === 'function' && window.isNekoModelCatTransitionActive())
                 ) {
@@ -6182,11 +6225,221 @@ const AvatarButtonMixin = {
             let dragSafetyToken = 0;
             let dragPointerType = '';
             let dragStartX = 0, dragStartY = 0, containerStartX = 0, containerStartY = 0;
+            let dragStartVirtualX = 0, dragStartVirtualY = 0;
+            let dragGrabOffsetX = 0, dragGrabOffsetY = 0;
+            let dragCursorPollFrame = 0;
+            let dragCursorPollInFlight = false;
+            let dragCursorPollStopped = true;
+            let dragCursorPollToken = 0;
+
+            const getDragCropState = () => {
+                try {
+                    const cropApi = window.__nekoNiriPetPhysicalCrop;
+                    return cropApi && typeof cropApi.getState === 'function'
+                        ? cropApi.getState()
+                        : null;
+                } catch (_) {
+                    return null;
+                }
+            };
+
+            const getDragCropOffset = () => {
+                const state = getDragCropState();
+                let offsetX = Number(state && state.offsetX);
+                let offsetY = Number(state && state.offsetY);
+                if (!Number.isFinite(offsetX) || !Number.isFinite(offsetY)) {
+                    try {
+                        const rootStyle = document.documentElement && document.documentElement.style;
+                        offsetX = Number.parseFloat(rootStyle && rootStyle.getPropertyValue('--neko-niri-pet-crop-offset-x'));
+                        offsetY = Number.parseFloat(rootStyle && rootStyle.getPropertyValue('--neko-niri-pet-crop-offset-y'));
+                    } catch (_) {}
+                }
+                return {
+                    x: Number.isFinite(offsetX) ? offsetX : 0,
+                    y: Number.isFinite(offsetY) ? offsetY : 0
+                };
+            };
+
+            const getDragVirtualOrigin = () => {
+                const state = getDragCropState();
+                const virtualBounds = state && state.virtualBounds ? state.virtualBounds : null;
+                const x = Number(virtualBounds && virtualBounds.x);
+                const y = Number(virtualBounds && virtualBounds.y);
+                return {
+                    x: Number.isFinite(x) ? x : 0,
+                    y: Number.isFinite(y) ? y : 0
+                };
+            };
+
+            const isDragNiriCropCoordinateActive = () => {
+                const state = getDragCropState();
+                if (state && state.enabled) return true;
+                try {
+                    return !!(document.documentElement &&
+                        document.documentElement.classList.contains('neko-niri-pet-physical-crop'));
+                } catch (_) {
+                    return false;
+                }
+            };
+
+            const getDragPoint = (sourceEvent, fallbackX, fallbackY) => {
+                if (!isDragNiriCropCoordinateActive()) {
+                    const localX = Number(fallbackX);
+                    const localY = Number(fallbackY);
+                    return {
+                        x: localX,
+                        y: localY,
+                        localX: localX,
+                        localY: localY,
+                        virtualX: localX,
+                        virtualY: localY,
+                        offsetX: 0,
+                        offsetY: 0
+                    };
+                }
+                const offset = getDragCropOffset();
+                let localX = Number(fallbackX);
+                let localY = Number(fallbackY);
+                let virtualX = Number.isFinite(localX) ? localX + offset.x : NaN;
+                let virtualY = Number.isFinite(localY) ? localY + offset.y : NaN;
+                try {
+                    const cropApi = window.__nekoNiriPetPhysicalCrop;
+                    const coords = cropApi && sourceEvent && typeof cropApi.getEventCoordinates === 'function'
+                        ? cropApi.getEventCoordinates(sourceEvent)
+                        : null;
+                    const nextLocalX = Number(coords && coords.local && coords.local.x);
+                    const nextLocalY = Number(coords && coords.local && coords.local.y);
+                    const nextVirtualX = Number(coords && coords.virtual && coords.virtual.x);
+                    const nextVirtualY = Number(coords && coords.virtual && coords.virtual.y);
+                    if (Number.isFinite(nextLocalX) && Number.isFinite(nextLocalY)) {
+                        localX = nextLocalX;
+                        localY = nextLocalY;
+                    }
+                    if (Number.isFinite(nextVirtualX) && Number.isFinite(nextVirtualY)) {
+                        virtualX = nextVirtualX;
+                        virtualY = nextVirtualY;
+                    }
+                } catch (_) {}
+                if ((!Number.isFinite(virtualX) || !Number.isFinite(virtualY)) &&
+                    Number.isFinite(localX) && Number.isFinite(localY)) {
+                    virtualX = localX + offset.x;
+                    virtualY = localY + offset.y;
+                }
+                if ((!Number.isFinite(localX) || !Number.isFinite(localY)) &&
+                    Number.isFinite(virtualX) && Number.isFinite(virtualY)) {
+                    localX = virtualX - offset.x;
+                    localY = virtualY - offset.y;
+                }
+                return {
+                    x: localX,
+                    y: localY,
+                    localX: localX,
+                    localY: localY,
+                    virtualX: virtualX,
+                    virtualY: virtualY,
+                    offsetX: offset.x,
+                    offsetY: offset.y
+                };
+            };
+
+            const getDragContainerVirtualRect = () => {
+                const rect = container.getBoundingClientRect && container.getBoundingClientRect();
+                if (!isDragNiriCropCoordinateActive()) {
+                    if (!rect) {
+                        const left = Number.parseFloat(container.style.left);
+                        const top = Number.parseFloat(container.style.top);
+                        return {
+                            left: Number.isFinite(left) ? left : 0,
+                            top: Number.isFinite(top) ? top : 0,
+                            width: container.offsetWidth || 64,
+                            height: container.offsetHeight || 64
+                        };
+                    }
+                    return {
+                        left: Number(rect.left),
+                        top: Number(rect.top),
+                        width: Number(rect.width) || container.offsetWidth || 64,
+                        height: Number(rect.height) || container.offsetHeight || 64
+                    };
+                }
+                const offset = getDragCropOffset();
+                if (!rect) {
+                    const left = Number.parseFloat(container.style.left);
+                    const top = Number.parseFloat(container.style.top);
+                    return {
+                        left: (Number.isFinite(left) ? left : 0) + offset.x,
+                        top: (Number.isFinite(top) ? top : 0) + offset.y,
+                        width: container.offsetWidth || 64,
+                        height: container.offsetHeight || 64
+                    };
+                }
+                return {
+                    left: Number(rect.left) + offset.x,
+                    top: Number(rect.top) + offset.y,
+                    width: Number(rect.width) || container.offsetWidth || 64,
+                    height: Number(rect.height) || container.offsetHeight || 64
+                };
+            };
+
+            const getDragScreenPointFromVirtualPoint = (virtualX, virtualY, sourceEvent = null, fallbackX = virtualX, fallbackY = virtualY) => {
+                if (!isDragNiriCropCoordinateActive()) {
+                    return {
+                        x: sourceEvent && Number.isFinite(sourceEvent.screenX) ? sourceEvent.screenX : Number(fallbackX),
+                        y: sourceEvent && Number.isFinite(sourceEvent.screenY) ? sourceEvent.screenY : Number(fallbackY)
+                    };
+                }
+                const origin = getDragVirtualOrigin();
+                return {
+                    x: Number(virtualX) + origin.x,
+                    y: Number(virtualY) + origin.y
+                };
+            };
+
+            const getDragPointFromScreenPoint = (screenPoint) => {
+                if (!screenPoint || !isDragNiriCropCoordinateActive()) return null;
+                const screenX = Number(screenPoint.x);
+                const screenY = Number(screenPoint.y);
+                if (!Number.isFinite(screenX) || !Number.isFinite(screenY)) return null;
+                const origin = getDragVirtualOrigin();
+                const offset = getDragCropOffset();
+                const virtualX = screenX - origin.x;
+                const virtualY = screenY - origin.y;
+                return buildDragPointSnapshot(
+                    virtualX - offset.x,
+                    virtualY - offset.y,
+                    virtualX,
+                    virtualY
+                );
+            };
+
+            const canPollNiriDragCursor = () => {
+                return !!(isDragNiriCropCoordinateActive() &&
+                    window.electronScreen &&
+                    typeof window.electronScreen.getCursorPoint === 'function');
+            };
+
+            const stopDragCursorPolling = () => {
+                dragCursorPollStopped = true;
+                dragCursorPollInFlight = false;
+                dragCursorPollToken += 1;
+                if (dragCursorPollFrame) {
+                    cancelAnimationFrame(dragCursorPollFrame);
+                    dragCursorPollFrame = 0;
+                }
+            };
 
             const clearDragSafetyTimer = () => {
                 if (!dragSafetyTimer) return;
                 clearTimeout(dragSafetyTimer);
                 dragSafetyTimer = 0;
+            };
+
+            const setReturnClickSuppressed = (suppressed) => {
+                if (suppressed) {
+                    container.setAttribute('data-neko-return-click-suppressed', 'true');
+                } else {
+                    container.removeAttribute('data-neko-return-click-suppressed');
+                }
             };
 
             const finishDragState = (moved, safetyToken) => {
@@ -6218,6 +6471,11 @@ const AvatarButtonMixin = {
                         dragCancelled: true
                     });
                 }
+                if (moved) {
+                    setTimeout(() => setReturnClickSuppressed(false), 120);
+                } else {
+                    setReturnClickSuppressed(false);
+                }
             };
 
             const resetDragStateAfterMissingEnd = (safetyToken) => {
@@ -6233,6 +6491,7 @@ const AvatarButtonMixin = {
 
             const cancelDragState = () => {
                 clearDragSafetyTimer();
+                stopDragCursorPolling();
                 if (!isDragging) return;
                 const safetyToken = dragSafetyToken;
                 isDragging = false;
@@ -6242,18 +6501,117 @@ const AvatarButtonMixin = {
                 finishDragState(false, safetyToken);
             };
 
-            const handleStart = (clientX, clientY, pointerType = 'mouse') => {
+            const buildDragPointSnapshot = (localX, localY, virtualX, virtualY) => ({
+                x: localX,
+                y: localY,
+                localX: localX,
+                localY: localY,
+                virtualX: virtualX,
+                virtualY: virtualY
+            });
+
+            const isUsableDragPoint = (point) => {
+                return !!(point &&
+                    Number.isFinite(point.localX) &&
+                    Number.isFinite(point.localY) &&
+                    Number.isFinite(point.virtualX) &&
+                    Number.isFinite(point.virtualY));
+            };
+
+            const handleMove = (clientX, clientY, sourceEvent = null, movePoint = null) => {
+                if (!isDragging) return;
+                const point = movePoint || getDragPoint(sourceEvent, clientX, clientY);
+                if (!isUsableDragPoint(point)) return;
+                const deltaX = point.virtualX - dragStartVirtualX;
+                const deltaY = point.virtualY - dragStartVirtualY;
+                const w = container.offsetWidth || 64;
+                const h = container.offsetHeight || 64;
+                const offset = isDragNiriCropCoordinateActive() ? getDragCropOffset() : { x: 0, y: 0 };
+                const nextVirtualLeft = Math.max(offset.x, Math.min(point.virtualX - dragGrabOffsetX, offset.x + window.innerWidth - w));
+                const nextVirtualTop = Math.max(offset.y, Math.min(point.virtualY - dragGrabOffsetY, offset.y + window.innerHeight - h));
+                const nextLeft = nextVirtualLeft - offset.x;
+                const nextTop = nextVirtualTop - offset.y;
+                const screenPoint = getDragScreenPointFromVirtualPoint(nextVirtualLeft + w / 2, nextVirtualTop + h / 2, sourceEvent, clientX, clientY);
+                if (Math.abs(deltaX) > 5 || Math.abs(deltaY) > 5) {
+                    container.setAttribute('data-dragging', 'true');
+                    if (!dragActiveDispatched) {
+                        dragActiveDispatched = true;
+                        _dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-active');
+                    }
+                    _dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-motion', {
+                        clientX: point.localX,
+                        clientY: point.localY,
+                        screenX: Number.isFinite(screenPoint.x) ? screenPoint.x : (sourceEvent && Number.isFinite(sourceEvent.screenX) ? sourceEvent.screenX : clientX),
+                        screenY: Number.isFinite(screenPoint.y) ? screenPoint.y : (sourceEvent && Number.isFinite(sourceEvent.screenY) ? sourceEvent.screenY : clientY),
+                        deltaX: deltaX,
+                        deltaY: deltaY,
+                        timestamp: Date.now()
+                    });
+                }
+                container.style.left = `${nextLeft}px`;
+                container.style.top = `${nextTop}px`;
+            };
+
+            const scheduleDragCursorPollFrame = () => {
+                if (dragCursorPollStopped || dragCursorPollFrame || !isDragging) return;
+                const pollToken = dragCursorPollToken;
+                dragCursorPollFrame = requestAnimationFrame(() => {
+                    dragCursorPollFrame = 0;
+                    if (pollToken !== dragCursorPollToken ||
+                        dragCursorPollStopped || !isDragging || !canPollNiriDragCursor()) {
+                        if (!isDragging) stopDragCursorPolling();
+                        return;
+                    }
+                    if (!dragCursorPollInFlight) {
+                        dragCursorPollInFlight = true;
+                        Promise.resolve()
+                            .then(() => window.electronScreen.getCursorPoint())
+                            .then((screenPoint) => {
+                                dragCursorPollInFlight = false;
+                                if (pollToken !== dragCursorPollToken || dragCursorPollStopped || !isDragging) return;
+                                const point = getDragPointFromScreenPoint(screenPoint);
+                                if (isUsableDragPoint(point)) {
+                                    handleMove(point.localX, point.localY, null, point);
+                                }
+                                scheduleDragCursorPollFrame();
+                            })
+                            .catch(() => {
+                                dragCursorPollInFlight = false;
+                                if (pollToken !== dragCursorPollToken) return;
+                                scheduleDragCursorPollFrame();
+                            });
+                    }
+                    scheduleDragCursorPollFrame();
+                });
+            };
+
+            const startDragCursorPolling = () => {
+                if (!canPollNiriDragCursor()) return;
+                dragCursorPollToken += 1;
+                dragCursorPollStopped = false;
+                scheduleDragCursorPollFrame();
+            };
+
+            const handleStart = (clientX, clientY, pointerType = 'mouse', sourceEvent = null, startPoint = null) => {
                 clearDragSafetyTimer();
+                stopDragCursorPolling();
+                setReturnClickSuppressed(true);
+                const point = startPoint || getDragPoint(sourceEvent, clientX, clientY);
+                if (!isUsableDragPoint(point)) return;
                 _restoreNekoIdleCat1EdgePeekBeforeDrag(container);
                 _dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-start');
                 isDragging = true;
                 dragActiveDispatched = false;
                 dragPointerType = pointerType;
-                dragStartX = clientX;
-                dragStartY = clientY;
-                const rect = container.getBoundingClientRect();
+                dragStartX = point.localX;
+                dragStartY = point.localY;
+                dragStartVirtualX = point.virtualX;
+                dragStartVirtualY = point.virtualY;
+                const rect = getDragContainerVirtualRect();
                 containerStartX = rect.left;
                 containerStartY = rect.top;
+                dragGrabOffsetX = point.virtualX - rect.left;
+                dragGrabOffsetY = point.virtualY - rect.top;
                 container.style.transform = 'none';
                 container.style.right = '';
                 container.style.bottom = '';
@@ -6267,36 +6625,12 @@ const AvatarButtonMixin = {
                     dragSafetyTimer = 0;
                     resetDragStateAfterMissingEnd(safetyToken);
                 }, 5000);
-            };
-
-            const handleMove = (clientX, clientY, sourceEvent = null) => {
-                if (!isDragging) return;
-                const deltaX = clientX - dragStartX;
-                const deltaY = clientY - dragStartY;
-                if (Math.abs(deltaX) > 5 || Math.abs(deltaY) > 5) {
-                    container.setAttribute('data-dragging', 'true');
-                    if (!dragActiveDispatched) {
-                        dragActiveDispatched = true;
-                        _dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-active');
-                    }
-                    _dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-motion', {
-                        clientX: clientX,
-                        clientY: clientY,
-                        screenX: sourceEvent && Number.isFinite(sourceEvent.screenX) ? sourceEvent.screenX : clientX,
-                        screenY: sourceEvent && Number.isFinite(sourceEvent.screenY) ? sourceEvent.screenY : clientY,
-                        deltaX: deltaX,
-                        deltaY: deltaY,
-                        timestamp: Date.now()
-                    });
-                }
-                const w = container.offsetWidth || 64;
-                const h = container.offsetHeight || 64;
-                container.style.left = `${Math.max(0, Math.min(containerStartX + deltaX, window.innerWidth - w))}px`;
-                container.style.top = `${Math.max(0, Math.min(containerStartY + deltaY, window.innerHeight - h))}px`;
+                startDragCursorPolling();
             };
 
             const handleEnd = () => {
                 clearDragSafetyTimer();
+                stopDragCursorPolling();
                 if (isDragging) {
                     const safetyToken = dragSafetyToken;
                     const moved = container.getAttribute('data-dragging') === 'true';
@@ -6304,9 +6638,13 @@ const AvatarButtonMixin = {
                     dragActiveDispatched = false;
                     dragPointerType = '';
                     container.style.cursor = 'grab';
-                    setTimeout(() => {
+                    if (moved) {
+                        setTimeout(() => {
+                            finishDragState(moved, safetyToken);
+                        }, 10);
+                    } else {
                         finishDragState(moved, safetyToken);
-                    }, 10);
+                    }
                 }
             };
 
@@ -6323,23 +6661,27 @@ const AvatarButtonMixin = {
                 }
                 if (container.contains(e.target)) {
                     e.preventDefault();
-                    handleStart(e.clientX, e.clientY);
+                    e.stopImmediatePropagation();
+                    const point = getDragPoint(e, e.clientX, e.clientY);
+                    handleStart(point.x, point.y, 'mouse', e, point);
                 }
             });
 
             this._returnButtonDragHandlers = {
                 mouseMove: (e) => {
+                    const point = getDragPoint(e, e.clientX, e.clientY);
                     if (isDragging && dragPointerType === 'mouse' && e.buttons === 0) {
                         handleEnd();
                         return;
                     }
-                    handleMove(e.clientX, e.clientY, e);
+                    handleMove(point.x, point.y, e);
                 },
                 mouseUp: handleEnd,
                 touchMove: (e) => {
                     if (isDragging && e.touches && e.touches[0]) {
                         e.preventDefault();
-                        handleMove(e.touches[0].clientX, e.touches[0].clientY, e.touches[0]);
+                        const point = getDragPoint(e.touches[0], e.touches[0].clientX, e.touches[0].clientY);
+                        handleMove(point.x, point.y, e.touches[0]);
                     }
                 },
                 touchEnd: handleEnd,
@@ -6359,7 +6701,8 @@ const AvatarButtonMixin = {
                     return;
                 }
                 if (container.contains(e.target) && e.touches && e.touches[0]) {
-                    handleStart(e.touches[0].clientX, e.touches[0].clientY, 'touch');
+                    const point = getDragPoint(e.touches[0], e.touches[0].clientX, e.touches[0].clientY);
+                    handleStart(point.x, point.y, 'touch', e.touches[0], point);
                 }
             }, { passive: false });
             document.addEventListener('touchmove', this._returnButtonDragHandlers.touchMove, { passive: false });
@@ -6632,6 +6975,7 @@ const AvatarButtonMixin = {
                 cancelAnimationFrame(this._uiUpdateLoopId);
                 this._uiUpdateLoopId = null;
             }
+            this._updateFloatingButtonsPositionNow = null;
 
             // 摘除浮动按钮 / 锁图标 ticker —— 下方会删掉它们的 DOM，但 _removeFloatingButtonsElement
             // 只调 el.remove() 不会摘 ticker；与 setupFloatingButtonsBase 同病：不在此处摘除，旧 ticker 会

@@ -170,6 +170,14 @@
             || action === 'yui_guide_set_compact_tool_wheel_index';
     }
 
+    function isHighVolumeBroadcastChannelAction(action) {
+        return action === 'idle_return_ball_state'
+            || action === 'idle_chat_minimized_state'
+            || action === 'idle_chat_compact_surface_state'
+            || action === 'idle_cat1_compact_mirror_state'
+            || action === 'idle_chat_pair_move_bounds';
+    }
+
     function isMainUIHiddenByModelManager() {
         return window[MAIN_UI_HIDDEN_BY_MODEL_MANAGER_KEY] === true;
     }
@@ -2934,6 +2942,7 @@
                 ensureYuiGuideExternalChatExpanded();
                 var preserveSpotlightDuringResistance = message.preserveDuringResistance === true;
                 applyYuiGuideChatSpotlight(message.kind || '', {
+                    variant: typeof message.variant === 'string' ? message.variant : '',
                     preserveDuringResistance: preserveSpotlightDuringResistance,
                     pcOverlayRunId: getYuiGuidePcOverlayRunIdFromMessage(message)
                 });
@@ -3157,7 +3166,9 @@
                     return;
                 }
 
-                console.log('[BroadcastChannel] 收到消息:', event.data.action);
+                if (!isHighVolumeBroadcastChannelAction(message.action)) {
+                    console.log('[BroadcastChannel] 收到消息:', message.action);
+                }
 
                 switch (event.data.action) {
                     case 'reload_model':
@@ -3376,6 +3387,7 @@
                         var preserveSpotlightDuringResistance = event.data.preserveDuringResistance === true;
                         var spotlightRunId = getYuiGuidePcOverlayRunIdFromMessage(event.data);
                         applyYuiGuideChatSpotlight(event.data.kind || '', {
+                            variant: typeof event.data.variant === 'string' ? event.data.variant : '',
                             preserveDuringResistance: preserveSpotlightDuringResistance,
                             pcOverlayRunId: spotlightRunId
                         });
@@ -3895,8 +3907,10 @@
     var yuiGuidePcOverlaySpotlights = [];
     var yuiGuidePcOverlayCursor = null;
     var yuiGuideChatSpotlightLastPcKind = '';
+    var yuiGuideChatSpotlightLastPcVariant = '';
     var yuiGuideChatSpotlightLastPcRects = [];
     var yuiGuideChatSpotlightPcOverlayRunId = '';
+    var yuiGuideChatSpotlightVariant = '';
     var yuiGuideChatCursorRequestToken = 0;
     var yuiGuideChatCursorArcRequestToken = 0;
     var yuiGuideChatCursorPoint = null;
@@ -4077,10 +4091,7 @@
     }
 
     function getYuiGuidePcOverlayRunIdFromMessage(message) {
-        var runId = message && typeof message.tutorialRunId === 'string'
-            ? message.tutorialRunId
-            : '';
-        return rememberYuiGuidePcOverlayRunId(runId);
+        return resolveCanonicalYuiGuideBridgeRunId(message);
     }
 
     function isYuiGuideLifecycleScopedAction(action) {
@@ -4192,7 +4203,7 @@
         if (host) {
             try {
                 var metrics = host.getWindowMetricsSync();
-                if (metrics && (metrics.bounds || metrics.contentBounds)) {
+                if (metrics && (metrics.contentBounds || metrics.bounds)) {
                     return metrics;
                 }
             } catch (_) {}
@@ -4205,10 +4216,235 @@
         };
     }
 
+    function getYuiGuideScreenCoordinateBounds(metrics) {
+        return metrics && (metrics.bounds || metrics.contentBounds) || { x: 0, y: 0 };
+    }
+
+    function normalizeYuiGuideNiriPetPhysicalCropBounds(bounds) {
+        if (!bounds || typeof bounds !== 'object') {
+            return null;
+        }
+        var x = Number(bounds.x);
+        var y = Number(bounds.y);
+        var width = Number(bounds.width);
+        var height = Number(bounds.height);
+        if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+            return null;
+        }
+        return {
+            x: Math.round(x),
+            y: Math.round(y),
+            width: Math.max(1, Math.round(width)),
+            height: Math.max(1, Math.round(height))
+        };
+    }
+
+    function normalizeYuiGuideNiriPetPhysicalCropPoint(point) {
+        if (!point || typeof point !== 'object') {
+            return null;
+        }
+        var x = Number(point.x);
+        var y = Number(point.y);
+        return Number.isFinite(x) && Number.isFinite(y) ? { x: x, y: y } : null;
+    }
+
+    function normalizeYuiGuideNiriPetPhysicalCropRect(rect) {
+        if (!rect || typeof rect !== 'object') {
+            return null;
+        }
+        var x = Number(Object.prototype.hasOwnProperty.call(rect, 'x') ? rect.x : rect.left);
+        var y = Number(Object.prototype.hasOwnProperty.call(rect, 'y') ? rect.y : rect.top);
+        var width = Number(rect.width);
+        var height = Number(rect.height);
+        if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+            return null;
+        }
+        return {
+            x: x,
+            y: y,
+            width: width,
+            height: height
+        };
+    }
+
+    function getYuiGuideNiriPetPhysicalCropApi() {
+        try {
+            var api = typeof window !== 'undefined' ? window.__nekoNiriPetPhysicalCrop : null;
+            if (!api || typeof api !== 'object') {
+                return null;
+            }
+            if (typeof api.isActive === 'function' && !api.isActive()) {
+                return null;
+            }
+            return api;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function areYuiGuideNiriPetPhysicalCropBoundsEquivalent(first, second) {
+        return !!(first && second
+            && Math.abs(Number(first.x || 0) - Number(second.x || 0)) <= 1
+            && Math.abs(Number(first.y || 0) - Number(second.y || 0)) <= 1
+            && Math.abs(Number(first.width || 0) - Number(second.width || 0)) <= 1
+            && Math.abs(Number(first.height || 0) - Number(second.height || 0)) <= 1);
+    }
+
+    function hasYuiGuideNiriPetPhysicalCropVirtualizedMetrics(metrics) {
+        if (!metrics || metrics.niriPetPhysicalCrop !== true) {
+            return false;
+        }
+        if (metrics.niriPetPhysicalCropMetricsVirtualized === true) {
+            return true;
+        }
+        var screenBounds = normalizeYuiGuideNiriPetPhysicalCropBounds(metrics.contentBounds || metrics.bounds);
+        var virtualBounds = normalizeYuiGuideNiriPetPhysicalCropBounds(metrics.niriPetPhysicalCropVirtualBounds);
+        return areYuiGuideNiriPetPhysicalCropBoundsEquivalent(screenBounds, virtualBounds);
+    }
+
+    function getYuiGuideNiriPetPhysicalCropState(metrics) {
+        if (metrics && metrics.niriPetPhysicalCrop === true) {
+            var metricCropBounds = normalizeYuiGuideNiriPetPhysicalCropBounds(
+                metrics.niriPetPhysicalCropBounds || metrics.contentBounds || metrics.bounds
+            );
+            var metricVirtualBounds = normalizeYuiGuideNiriPetPhysicalCropBounds(metrics.niriPetPhysicalCropVirtualBounds);
+            var metricOffsetX = Number(metrics.niriPetPhysicalCropOffsetX);
+            var metricOffsetY = Number(metrics.niriPetPhysicalCropOffsetY);
+            return metricCropBounds ? {
+                cropBounds: metricCropBounds,
+                virtualBounds: metricVirtualBounds,
+                offsetX: Number.isFinite(metricOffsetX) ? Math.round(metricOffsetX) : 0,
+                offsetY: Number.isFinite(metricOffsetY) ? Math.round(metricOffsetY) : 0,
+                metricsVirtualized: hasYuiGuideNiriPetPhysicalCropVirtualizedMetrics(metrics)
+            } : null;
+        }
+
+        try {
+            var api = typeof window !== 'undefined' ? window.__nekoNiriPetPhysicalCrop : null;
+            if (!api || typeof api !== 'object') {
+                return null;
+            }
+            if (typeof api.isActive === 'function' && !api.isActive()) {
+                return null;
+            }
+            var state = typeof api.getState === 'function' ? api.getState() : null;
+            var cropBounds = normalizeYuiGuideNiriPetPhysicalCropBounds(state && state.cropBounds);
+            var virtualBounds = normalizeYuiGuideNiriPetPhysicalCropBounds(state && state.virtualBounds);
+            if (!cropBounds) {
+                return null;
+            }
+            var offsetX = Number(state && state.offsetX);
+            var offsetY = Number(state && state.offsetY);
+            if (!Number.isFinite(offsetX) && virtualBounds) {
+                offsetX = cropBounds.x - virtualBounds.x;
+            }
+            if (!Number.isFinite(offsetY) && virtualBounds) {
+                offsetY = cropBounds.y - virtualBounds.y;
+            }
+            return {
+                cropBounds: cropBounds,
+                virtualBounds: virtualBounds,
+                offsetX: Number.isFinite(offsetX) ? Math.round(offsetX) : 0,
+                offsetY: Number.isFinite(offsetY) ? Math.round(offsetY) : 0
+            };
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function toYuiGuideNiriPetPhysicalCropVirtualPoint(x, y) {
+        var api = getYuiGuideNiriPetPhysicalCropApi();
+        if (!api || typeof api.toVirtualPoint !== 'function') {
+            return null;
+        }
+        try {
+            return normalizeYuiGuideNiriPetPhysicalCropPoint(api.toVirtualPoint({
+                x: Number(x || 0),
+                y: Number(y || 0)
+            }));
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function toYuiGuideNiriPetPhysicalCropVirtualRect(rect) {
+        var api = getYuiGuideNiriPetPhysicalCropApi();
+        if (!api || typeof api.toVirtualRect !== 'function') {
+            return null;
+        }
+        try {
+            var virtualRect = normalizeYuiGuideNiriPetPhysicalCropRect(api.toVirtualRect({
+                x: Number(rect.left || 0),
+                y: Number(rect.top || 0),
+                width: Number(rect.width || 0),
+                height: Number(rect.height || 0)
+            }));
+            return virtualRect ? {
+                left: virtualRect.x,
+                top: virtualRect.y,
+                width: virtualRect.width,
+                height: virtualRect.height
+            } : null;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function toYuiGuideNiriPetPhysicalCropVirtualPointWithState(x, y, cropState) {
+        if (cropState && cropState.metricsVirtualized) {
+            return {
+                x: Number(x || 0),
+                y: Number(y || 0)
+            };
+        }
+        return toYuiGuideNiriPetPhysicalCropVirtualPoint(x, y) || {
+            x: Number(x || 0) + Number(cropState && cropState.offsetX || 0),
+            y: Number(y || 0) + Number(cropState && cropState.offsetY || 0)
+        };
+    }
+
+    function toYuiGuideNiriPetPhysicalCropVirtualRectWithState(rect, cropState) {
+        if (cropState && cropState.metricsVirtualized) {
+            return {
+                left: Number(rect.left || 0),
+                top: Number(rect.top || 0),
+                width: rect.width,
+                height: rect.height
+            };
+        }
+        return toYuiGuideNiriPetPhysicalCropVirtualRect(rect) || {
+            left: Number(rect.left || 0) + Number(cropState && cropState.offsetX || 0),
+            top: Number(rect.top || 0) + Number(cropState && cropState.offsetY || 0),
+            width: rect.width,
+            height: rect.height
+        };
+    }
+
+    function shouldApplyYuiGuideVisualViewportOffset(metrics) {
+        return !getYuiGuideNiriPetPhysicalCropState(metrics);
+    }
+
+    function toYuiGuideScreenVirtualPoint(x, y, cropState) {
+        var screenBounds = cropState.virtualBounds || cropState.cropBounds;
+        return {
+            x: Number(screenBounds.x || 0) + Number(x || 0),
+            y: Number(screenBounds.y || 0) + Number(y || 0)
+        };
+    }
+
     function toYuiGuideScreenPoint(x, y) {
         var metrics = getYuiGuideWindowMetrics();
-        var bounds = metrics.contentBounds || metrics.bounds || { x: 0, y: 0 };
-        var viewport = window.visualViewport || null;
+        var cropState = getYuiGuideNiriPetPhysicalCropState(metrics);
+        if (cropState && cropState.cropBounds) {
+            var virtualPoint = toYuiGuideNiriPetPhysicalCropVirtualPointWithState(x, y, cropState);
+            return toYuiGuideScreenVirtualPoint(
+                virtualPoint.x,
+                virtualPoint.y,
+                cropState
+            );
+        }
+        var bounds = getYuiGuideScreenCoordinateBounds(metrics);
+        var viewport = shouldApplyYuiGuideVisualViewportOffset(metrics) ? (window.visualViewport || null) : null;
         var offsetLeft = viewport && Number.isFinite(Number(viewport.offsetLeft)) ? Number(viewport.offsetLeft) : 0;
         var offsetTop = viewport && Number.isFinite(Number(viewport.offsetTop)) ? Number(viewport.offsetTop) : 0;
         return {
@@ -4221,9 +4457,16 @@
         if (!rect || rect.width <= 0 || rect.height <= 0) {
             return null;
         }
-        var point = toYuiGuideScreenPoint(rect.left, rect.top);
+        var metrics = getYuiGuideWindowMetrics();
+        var cropState = getYuiGuideNiriPetPhysicalCropState(metrics);
+        var cropRect = cropState && cropState.cropBounds
+            ? toYuiGuideNiriPetPhysicalCropVirtualRectWithState(rect, cropState)
+            : rect;
+        var point = cropState && cropState.cropBounds
+            ? toYuiGuideScreenVirtualPoint(cropRect.left, cropRect.top, cropState)
+            : toYuiGuideScreenPoint(rect.left, rect.top);
         var isCircle = getYuiGuideChatTargetShape(kind) === 'circle';
-        var radius = kind === 'window' ? 26 : Math.min(34, Math.max(18, Math.round((rect.height + 16) / 2)));
+        var radius = kind === 'window' ? 26 : Math.min(34, Math.max(18, Math.round((cropRect.height + 16) / 2)));
         if (isCircle) {
             radius = 999;
         }
@@ -4234,8 +4477,8 @@
             variant: variant || '',
             x: point.x,
             y: point.y,
-            width: rect.width,
-            height: rect.height,
+            width: cropRect.width,
+            height: cropRect.height,
             radius: radius
         };
     }
@@ -4370,6 +4613,12 @@
         return entry && entry.shape ? entry.shape : 'rounded-rect';
     }
 
+    function shouldAlignYuiGuideChatSpotlightToCapsuleText(kind, variant) {
+        return kind === 'input' && variant === 'plain-capsule';
+    }
+
+    var YUI_GUIDE_CHAT_CAPSULE_TEXT_ALIGNMENT_RATIO = 0.6;
+
     function getYuiGuideChatSpotlightTarget(kind) {
         if (!kind || typeof document === 'undefined') {
             return null;
@@ -4407,6 +4656,44 @@
         }
 
         return null;
+    }
+
+    function getYuiGuideChatCapsuleTextAnchor() {
+        var anchor = getYuiGuideChatVisibleElement('#react-chat-window-root [data-compact-hit-region-id="capsule:text"]')
+            || getYuiGuideChatVisibleElement('#react-chat-window-root .compact-chat-capsule-button');
+        if (!anchor || typeof anchor.getBoundingClientRect !== 'function') {
+            return null;
+        }
+        var rect = anchor.getBoundingClientRect();
+        if (!rect || rect.width <= 0 || rect.height <= 0) {
+            return null;
+        }
+        return {
+            element: anchor,
+            rect: rect
+        };
+    }
+
+    function getYuiGuideChatSpotlightSourceRect(kind, variant, rect) {
+        var sourceRect = {
+            left: rect.left,
+            top: rect.top,
+            width: rect.width,
+            height: rect.height
+        };
+        if (shouldAlignYuiGuideChatSpotlightToCapsuleText(kind, variant)) {
+            var anchor = getYuiGuideChatCapsuleTextAnchor();
+            var anchorRect = anchor && anchor.rect;
+            if (
+                anchorRect
+                && anchorRect.left > rect.left
+                && anchorRect.left < rect.left + rect.width
+            ) {
+                var anchorOffsetX = anchorRect.left - rect.left;
+                sourceRect.left = rect.left + anchorOffsetX * YUI_GUIDE_CHAT_CAPSULE_TEXT_ALIGNMENT_RATIO;
+            }
+        }
+        return { rect: sourceRect };
     }
 
     function getYuiGuideChatVisibleElement(selector, root) {
@@ -4817,8 +5104,9 @@
         yuiGuideChatSpotlightResources = createAppInterpageScopedResources();
     }
 
-    function rememberYuiGuideChatPcSpotlightRects(kind, rects) {
+    function rememberYuiGuideChatPcSpotlightRects(kind, rects, variant) {
         yuiGuideChatSpotlightLastPcKind = kind || '';
+        yuiGuideChatSpotlightLastPcVariant = typeof variant === 'string' ? variant : '';
         yuiGuideChatSpotlightLastPcRects = Array.isArray(rects)
             ? rects.map(function (rect) {
                 return Object.assign({}, rect);
@@ -4828,6 +5116,7 @@
 
     function clearYuiGuideChatPcSpotlightRects() {
         yuiGuideChatSpotlightLastPcKind = '';
+        yuiGuideChatSpotlightLastPcVariant = '';
         yuiGuideChatSpotlightLastPcRects = [];
     }
 
@@ -4844,6 +5133,7 @@
         }
         if (
             yuiGuideChatSpotlightLastPcKind === preservedKind
+            && yuiGuideChatSpotlightLastPcVariant === yuiGuideChatSpotlightVariant
             && yuiGuideChatSpotlightLastPcRects.length > 0
         ) {
             sendYuiGuidePcOverlayPatch({
@@ -4902,12 +5192,15 @@
         var rect = target && typeof target.getBoundingClientRect === 'function'
             ? target.getBoundingClientRect()
             : null;
+        var sourceRectInfo = rect ? getYuiGuideChatSpotlightSourceRect(kind, yuiGuideChatSpotlightVariant, rect) : null;
+        var sourceRect = sourceRectInfo ? sourceRectInfo.rect : rect;
 
-        if (!rect || rect.width <= 0 || rect.height <= 0) {
+        if (!sourceRect || sourceRect.width <= 0 || sourceRect.height <= 0) {
             if (pcOverlayAvailable) {
                 if (
                     kind
                     && yuiGuideChatSpotlightLastPcKind === kind
+                    && yuiGuideChatSpotlightLastPcVariant === yuiGuideChatSpotlightVariant
                     && yuiGuideChatSpotlightLastPcRects.length > 0
                 ) {
                     sendYuiGuidePcOverlayPatch({
@@ -4925,15 +5218,15 @@
         }
 
         var padding = kind === 'window' ? 10 : 8;
-        var radius = kind === 'window' ? 26 : Math.min(34, Math.max(18, Math.round((rect.height + padding * 2) / 2)));
+        var radius = kind === 'window' ? 26 : Math.min(34, Math.max(18, Math.round((sourceRect.height + padding * 2) / 2)));
         if (pcOverlayAvailable) {
             var pcRects = [toYuiGuideScreenRect({
-                left: rect.left - padding,
-                top: rect.top - padding,
-                width: rect.width + padding * 2,
-                height: rect.height + padding * 2
-            }, kind, '')].filter(Boolean);
-            rememberYuiGuideChatPcSpotlightRects(kind, pcRects);
+                left: sourceRect.left - padding,
+                top: sourceRect.top - padding,
+                width: sourceRect.width + padding * 2,
+                height: sourceRect.height + padding * 2
+            }, kind, yuiGuideChatSpotlightVariant)].filter(Boolean);
+            rememberYuiGuideChatPcSpotlightRects(kind, pcRects, yuiGuideChatSpotlightVariant);
             sendYuiGuidePcOverlayPatch({ spotlights: pcRects }, false, patchOptions);
             if (spotlight) {
                 spotlight.hidden = true;
@@ -4948,10 +5241,10 @@
         spotlight.classList.remove('is-window', 'is-input');
         spotlight.classList.add(kind === 'window' ? 'is-window' : 'is-input');
         spotlight.classList.add('is-visible');
-        spotlight.style.left = Math.round(rect.left - padding) + 'px';
-        spotlight.style.top = Math.round(rect.top - padding) + 'px';
-        spotlight.style.width = Math.round(rect.width + padding * 2) + 'px';
-        spotlight.style.height = Math.round(rect.height + padding * 2) + 'px';
+        spotlight.style.left = Math.round(sourceRect.left - padding) + 'px';
+        spotlight.style.top = Math.round(sourceRect.top - padding) + 'px';
+        spotlight.style.width = Math.round(sourceRect.width + padding * 2) + 'px';
+        spotlight.style.height = Math.round(sourceRect.height + padding * 2) + 'px';
         spotlight.style.borderRadius = radius + 'px';
     }
 
@@ -4960,6 +5253,10 @@
         var pcOverlayRunId = options && typeof options.pcOverlayRunId === 'string'
             ? options.pcOverlayRunId
             : '';
+        var hasVariantOption = options && Object.prototype.hasOwnProperty.call(options, 'variant');
+        var normalizedVariant = hasVariantOption && typeof options.variant === 'string'
+            ? options.variant.trim()
+            : (normalizedKind && normalizedKind === yuiGuideChatSpotlightKind ? yuiGuideChatSpotlightVariant : '');
         if (pcOverlayRunId) {
             yuiGuideChatSpotlightPcOverlayRunId = pcOverlayRunId;
         }
@@ -4968,6 +5265,7 @@
                 clearYuiGuideChatSpotlightTracking();
             }
             yuiGuideChatSpotlightKind = normalizedKind;
+            yuiGuideChatSpotlightVariant = normalizedVariant;
             preserveYuiGuideChatSpotlightDuringResistance(normalizedKind, pcOverlayRunId);
             scheduleYuiGuideChatInputSpotlightRetry(normalizedKind, pcOverlayRunId);
             ensureYuiGuideChatSpotlightTracking(pcOverlayRunId);
@@ -4979,6 +5277,7 @@
             && options.preserveDuringResistance === true
             && yuiGuideChatSpotlightKind
             && yuiGuideChatSpotlightLastPcKind === yuiGuideChatSpotlightKind
+            && yuiGuideChatSpotlightLastPcVariant === yuiGuideChatSpotlightVariant
             && yuiGuideChatSpotlightLastPcRects.length > 0
         ) {
             updateYuiGuideChatSpotlight(yuiGuideChatSpotlightKind, pcOverlayRunId);
@@ -4986,12 +5285,14 @@
             return;
         }
         yuiGuideChatSpotlightKind = normalizedKind;
+        yuiGuideChatSpotlightVariant = normalizedKind ? normalizedVariant : '';
         clearYuiGuideChatSpotlightTracking();
 
         if (!yuiGuideChatSpotlightKind) {
             var clearSpotlightRunId = pcOverlayRunId || yuiGuideChatSpotlightPcOverlayRunId;
             clearYuiGuideChatPcSpotlightRects();
             yuiGuideChatSpotlightPcOverlayRunId = '';
+            yuiGuideChatSpotlightVariant = '';
             sendYuiGuidePcOverlayPatch({ spotlights: [] }, false, {
                 tutorialRunId: clearSpotlightRunId,
                 allowCreateRun: !(options && options.allowCreatePcOverlayRun === false),

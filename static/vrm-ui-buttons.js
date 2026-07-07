@@ -710,9 +710,13 @@ VRMManager.prototype._startUIUpdateLoop = function() {
                         const baseLockIconSize = 32;
                         const actualLockIconSize = baseLockIconSize * scale;
                         const maxLockX = screenWidth - actualLockIconSize;
-                        const maxLockY = screenHeight - actualLockIconSize - 20;
+                        const defaultMaxLockY = screenHeight - actualLockIconSize - 20;
+                        const maxLockY = typeof window.getNekoYuiGuideLockIconMaxTop === 'function'
+                            ? window.getNekoYuiGuideLockIconMaxTop(defaultMaxLockY, actualLockIconSize)
+                            : defaultMaxLockY;
                         const boundedLockX = Math.max(0, Math.min(lockTargetX, maxLockX));
-                        const boundedLockY = Math.max(20, Math.min(lockTargetY, maxLockY));
+                        const minLockY = Math.min(20, maxLockY);
+                        const boundedLockY = Math.max(minLockY, Math.min(lockTargetY, maxLockY));
 
                         const rawLockLeft = parseFloat(lockIcon.style.left);
                         if (Number.isNaN(rawLockLeft)) {
@@ -764,6 +768,12 @@ VRMManager.prototype._startUIUpdateLoop = function() {
         }
     };
 
+    this._updateFloatingButtonsPositionNow = () => {
+        if (this._uiUpdateLoopId === null || this._uiUpdateLoopId === undefined) return;
+        cancelAnimationFrame(this._uiUpdateLoopId);
+        this._uiUpdateLoopId = 0;
+        update();
+    };
     this._uiUpdateLoopId = requestAnimationFrame(update);
 };
 

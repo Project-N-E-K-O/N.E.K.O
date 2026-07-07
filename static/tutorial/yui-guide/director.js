@@ -760,6 +760,8 @@
         return Math.max(min, Math.min(max, value));
     }
 
+    const DAY4_LOCK_SPOTLIGHT_SAFE_BOTTOM_PX = 112;
+
     const HOME_TUTORIAL_PLATFORM_PROFILES = Object.freeze({
         windows: Object.freeze({
             supportsExternalChat: true,
@@ -1168,6 +1170,9 @@
 
     class YuiGuideVoiceQueue {
         constructor() {
+            // 修改原因：speak() 启动前有短暂等待窗口；用停止代号识别等待期间发生的 cancel/stop，
+            // 避免旧轻对抗语音在生气退出后重新起播。
+            this.stopGeneration = 0;
             this.currentUtterance = null;
             this.currentFallbackTimer = null;
             this.currentFinish = null;
@@ -1186,6 +1191,8 @@
         }
 
         stop() {
+            // 修改原因：stop() 不只停止当前播放，也要让正在 48ms 启动等待中的 speak() 失效。
+            this.stopGeneration += 1;
             const finish = this.currentFinish;
             this.stopGuideMouthMotion();
 
@@ -1814,6 +1821,9 @@
             if (!context) {
                 return false;
             }
+            // 修改原因：stop()/angry exit 可能发生在音频上下文恢复、拉取或解码期间；
+            // 真正启动 buffer source 前必须再次确认同一代次，避免已取消的旧语音重新起播。
+            const stopGenerationAtStart = this.stopGeneration;
 
             await resumeKnownAudioContexts();
             if (context.state === 'suspended' && typeof context.resume === 'function') {
@@ -1830,6 +1840,9 @@
             const audioBuffer = await this.decodeGuideAudioBuffer(context, arrayBuffer);
             const startOffsetMs = Number.isFinite(startAtMs) ? Math.max(0, startAtMs) : 0;
             const startOffsetSeconds = Math.max(0, startOffsetMs / 1000);
+            if (this.stopGeneration !== stopGenerationAtStart) {
+                return true;
+            }
 
             return new Promise((resolve, reject) => {
                 let settled = false;
@@ -1948,7 +1961,13 @@
                 return;
             }
             this.stop();
+            // 修改原因：cancelActiveNarration()/angry exit 可能发生在 stop() 后的启动缓冲期；
+            // 等待结束后必须确认没有新的 stop()，否则旧语音会在取消后重新开始播放。
+            const stopGenerationAtStart = this.stopGeneration;
             await wait(48);
+            if (this.stopGeneration !== stopGenerationAtStart) {
+                return;
+            }
 
             const minimumDurationMs = Number.isFinite(normalizedOptions.minDurationMs)
                 ? normalizedOptions.minDurationMs
@@ -1975,6 +1994,9 @@
                     }
                 } catch (error) {
                     console.warn('[YuiGuide] AudioContext 教程语音播放失败，尝试 HTMLAudio:', normalizedOptions.voiceKey, error);
+                }
+                if (this.stopGeneration !== stopGenerationAtStart) {
+                    return;
                 }
 
                 try {
@@ -2714,6 +2736,7 @@
             this.avatarFloatingGuideSuppressionActive = false;
             this.avatarFloatingGuideTutorialModeActive = false;
             this.avatarFloatingGuidePreviousIsInTutorial = false;
+            this.day4LockSpotlightSafeAreaActive = false;
             this.avatarStandInShowTimer = null;
             this.avatarStandInHideTimer = null;
             this.avatarStandInPerformanceHandle = null;
@@ -4123,6 +4146,80 @@
             return target && this.isElementVisible(target) ? target : null;
         }
 
+        setDay4LockSpotlightSafeAreaActive(active, reason) {
+            const shouldActivate = active === true;
+            if (this.day4LockSpotlightSafeAreaActive === shouldActivate) {
+                return shouldActivate;
+            }
+            this.day4LockSpotlightSafeAreaActive = shouldActivate;
+            try {
+                window.nekoYuiGuideLockSpotlightSafeAreaActive = shouldActivate;
+                if (shouldActivate) {
+                    window.nekoYuiGuideLockSpotlightSafeAreaBottomPx = DAY4_LOCK_SPOTLIGHT_SAFE_BOTTOM_PX;
+                } else {
+                    delete window.nekoYuiGuideLockSpotlightSafeAreaBottomPx;
+                }
+            } catch (error) {
+                console.warn('[YuiGuide] 同步 Day4 锁按钮安全区状态失败:', reason || 'scene', error);
+            }
+            this.refreshAvatarFloatingLockIconPosition();
+            return shouldActivate;
+        }
+
+        syncDay4LockSpotlightSafeAreaForScene(scene) {
+            const sceneId = scene && typeof scene.id === 'string' ? scene.id : '';
+            return this.setDay4LockSpotlightSafeAreaActive(sceneId === 'day4_model_lock', sceneId || 'scene');
+        }
+
+        refreshAvatarFloatingLockIconPosition() {
+            [
+                window.live2dManager,
+                window.vrmManager,
+                window.mmdManager,
+                window.pngtuberManager
+            ].forEach((manager) => {
+                if (!manager) {
+                    return;
+                }
+                [
+                    '_updateFloatingButtonsPositionNow',
+                    'updateFloatingButtonsPosition',
+                    'updateLockIconPosition',
+                    '_floatingButtonsTicker'
+                ].forEach((methodName) => {
+                    if (typeof manager[methodName] !== 'function') {
+                        return;
+                    }
+                    try {
+                        manager[methodName]();
+                    } catch (_) {}
+                });
+            });
+        }
+
+        adjustDay4LockSpotlightTarget(lockIcon) {
+            if (!lockIcon || this.day4LockSpotlightSafeAreaActive !== true) {
+                return false;
+            }
+            const rect = this.getElementRect(lockIcon);
+            if (!rect || rect.height <= 0 || !Number.isFinite(rect.top)) {
+                return false;
+            }
+            const fallbackMaxTop = Math.max(0, window.innerHeight - rect.height);
+            const maxTop = typeof window.getNekoYuiGuideLockIconMaxTop === 'function'
+                ? window.getNekoYuiGuideLockIconMaxTop(fallbackMaxTop, rect.height)
+                : Math.max(0, window.innerHeight - rect.height - DAY4_LOCK_SPOTLIGHT_SAFE_BOTTOM_PX);
+            if (!Number.isFinite(maxTop) || rect.top <= maxTop) {
+                return false;
+            }
+            const currentTop = Number.parseFloat(lockIcon.style.top);
+            if (!Number.isFinite(currentTop)) {
+                return false;
+            }
+            lockIcon.style.top = Math.max(0, currentTop - (rect.top - maxTop)) + 'px';
+            return true;
+        }
+
         getAvatarFloatingLockIconElement() {
             const prefixes = [];
             const addPrefix = (value) => {
@@ -4145,6 +4242,7 @@
         }
 
         getDay4LockButtonSpotlightTarget() {
+            this.setDay4LockSpotlightSafeAreaActive(true, 'day4_model_lock');
             const lockIcon = this.getAvatarFloatingLockIconElement();
             if (!lockIcon) {
                 return null;
@@ -4152,6 +4250,7 @@
             lockIcon.style.setProperty('display', 'block', 'important');
             lockIcon.style.setProperty('visibility', 'visible', 'important');
             lockIcon.style.setProperty('opacity', '1', 'important');
+            this.adjustDay4LockSpotlightTarget(lockIcon);
             return this.getFloatingButtonShell(lockIcon) || lockIcon;
         }
 
@@ -4714,21 +4813,207 @@
             }
         }
 
+        normalizeNiriPetPhysicalCropBounds(bounds) {
+            if (!bounds || typeof bounds !== 'object') {
+                return null;
+            }
+
+            const x = Number(bounds.x);
+            const y = Number(bounds.y);
+            const width = Number(bounds.width);
+            const height = Number(bounds.height);
+            if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+                return null;
+            }
+
+            return {
+                x: Math.round(x),
+                y: Math.round(y),
+                width: Math.max(1, Math.round(width)),
+                height: Math.max(1, Math.round(height))
+            };
+        }
+
+        normalizeNiriPetPhysicalCropPoint(point) {
+            if (!point || typeof point !== 'object') {
+                return null;
+            }
+
+            const x = Number(point.x);
+            const y = Number(point.y);
+            return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
+        }
+
+        getNiriPetPhysicalCropApi() {
+            try {
+                const api = typeof window !== 'undefined' ? window.__nekoNiriPetPhysicalCrop : null;
+                if (!api || typeof api !== 'object') {
+                    return null;
+                }
+                if (typeof api.isActive === 'function' && !api.isActive()) {
+                    return null;
+                }
+                return api;
+            } catch (_) {
+                return null;
+            }
+        }
+
+        areNiriPetPhysicalCropBoundsEquivalent(first, second) {
+            return !!(first && second
+                && Math.abs(Number(first.x || 0) - Number(second.x || 0)) <= 1
+                && Math.abs(Number(first.y || 0) - Number(second.y || 0)) <= 1
+                && Math.abs(Number(first.width || 0) - Number(second.width || 0)) <= 1
+                && Math.abs(Number(first.height || 0) - Number(second.height || 0)) <= 1);
+        }
+
+        hasNiriPetPhysicalCropVirtualizedMetrics(metrics) {
+            if (!metrics || metrics.niriPetPhysicalCrop !== true) {
+                return false;
+            }
+            if (metrics.niriPetPhysicalCropMetricsVirtualized === true) {
+                return true;
+            }
+            const screenBounds = this.normalizeNiriPetPhysicalCropBounds(metrics.contentBounds || metrics.bounds);
+            const virtualBounds = this.normalizeNiriPetPhysicalCropBounds(metrics.niriPetPhysicalCropVirtualBounds);
+            return this.areNiriPetPhysicalCropBoundsEquivalent(screenBounds, virtualBounds);
+        }
+
+        getNiriPetPhysicalCropState(metrics) {
+            if (metrics && metrics.niriPetPhysicalCrop === true) {
+                const cropBounds = this.normalizeNiriPetPhysicalCropBounds(
+                    metrics.niriPetPhysicalCropBounds || metrics.contentBounds || metrics.bounds
+                );
+                const virtualBounds = this.normalizeNiriPetPhysicalCropBounds(metrics.niriPetPhysicalCropVirtualBounds);
+                const offsetX = Number(metrics.niriPetPhysicalCropOffsetX);
+                const offsetY = Number(metrics.niriPetPhysicalCropOffsetY);
+                return cropBounds ? {
+                    cropBounds,
+                    virtualBounds,
+                    offsetX: Number.isFinite(offsetX) ? Math.round(offsetX) : 0,
+                    offsetY: Number.isFinite(offsetY) ? Math.round(offsetY) : 0,
+                    metricsVirtualized: this.hasNiriPetPhysicalCropVirtualizedMetrics(metrics)
+                } : null;
+            }
+
+            try {
+                const api = typeof window !== 'undefined' ? window.__nekoNiriPetPhysicalCrop : null;
+                if (!api || typeof api !== 'object') {
+                    return null;
+                }
+                if (typeof api.isActive === 'function' && !api.isActive()) {
+                    return null;
+                }
+                const state = typeof api.getState === 'function' ? api.getState() : null;
+                const cropBounds = this.normalizeNiriPetPhysicalCropBounds(state && state.cropBounds);
+                const virtualBounds = this.normalizeNiriPetPhysicalCropBounds(state && state.virtualBounds);
+                if (!cropBounds) {
+                    return null;
+                }
+                let offsetX = Number(state && state.offsetX);
+                let offsetY = Number(state && state.offsetY);
+                if (!Number.isFinite(offsetX) && virtualBounds) {
+                    offsetX = cropBounds.x - virtualBounds.x;
+                }
+                if (!Number.isFinite(offsetY) && virtualBounds) {
+                    offsetY = cropBounds.y - virtualBounds.y;
+                }
+                return {
+                    cropBounds,
+                    virtualBounds,
+                    offsetX: Number.isFinite(offsetX) ? Math.round(offsetX) : 0,
+                    offsetY: Number.isFinite(offsetY) ? Math.round(offsetY) : 0
+                };
+            } catch (_) {
+                return null;
+            }
+        }
+
+        toNiriPetPhysicalCropVirtualPoint(point) {
+            const api = this.getNiriPetPhysicalCropApi();
+            if (!api || typeof api.toVirtualPoint !== 'function') {
+                return null;
+            }
+            try {
+                return this.normalizeNiriPetPhysicalCropPoint(api.toVirtualPoint(point));
+            } catch (_) {
+                return null;
+            }
+        }
+
+        toNiriPetPhysicalCropLocalPoint(point) {
+            const api = this.getNiriPetPhysicalCropApi();
+            if (!api || typeof api.toLocalPoint !== 'function') {
+                return null;
+            }
+            try {
+                return this.normalizeNiriPetPhysicalCropPoint(api.toLocalPoint(point));
+            } catch (_) {
+                return null;
+            }
+        }
+
+        toNiriPetPhysicalCropVirtualPointWithState(point, cropState) {
+            if (cropState && cropState.metricsVirtualized) {
+                return {
+                    x: Number(point && point.x || 0),
+                    y: Number(point && point.y || 0)
+                };
+            }
+            return this.toNiriPetPhysicalCropVirtualPoint(point) || {
+                x: Number(point && point.x || 0) + Number(cropState && cropState.offsetX || 0),
+                y: Number(point && point.y || 0) + Number(cropState && cropState.offsetY || 0)
+            };
+        }
+
+        toNiriPetPhysicalCropLocalPointWithState(point, cropState) {
+            if (cropState && cropState.metricsVirtualized) {
+                return {
+                    x: Number(point && point.x || 0),
+                    y: Number(point && point.y || 0)
+                };
+            }
+            return this.toNiriPetPhysicalCropLocalPoint(point) || {
+                x: Number(point && point.x || 0) - Number(cropState && cropState.offsetX || 0),
+                y: Number(point && point.y || 0) - Number(cropState && cropState.offsetY || 0)
+            };
+        }
+
+        getGuideWindowMetricsSync() {
+            try {
+                const host = window.nekoTutorialOverlay;
+                return host && typeof host.getWindowMetricsSync === 'function'
+                    ? host.getWindowMetricsSync()
+                    : null;
+            } catch (_) {
+                return null;
+            }
+        }
+
+        getGuideScreenCoordinateBounds(metrics) {
+            return metrics && (metrics.bounds || metrics.contentBounds) || null;
+        }
+
         screenPointToLocalPoint(point) {
             if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) {
                 return null;
             }
 
-            let bounds = null;
-            try {
-                const host = window.nekoTutorialOverlay;
-                const metrics = host && typeof host.getWindowMetricsSync === 'function'
-                    ? host.getWindowMetricsSync()
-                    : null;
-                bounds = metrics && (metrics.bounds || metrics.contentBounds);
-            } catch (_) {
-                bounds = null;
+            const metrics = this.getGuideWindowMetricsSync();
+            const cropState = this.getNiriPetPhysicalCropState(metrics);
+            if (cropState && cropState.cropBounds) {
+                const screenBounds = cropState.virtualBounds || cropState.cropBounds;
+                const virtualPoint = {
+                    x: point.x - Number(screenBounds.x || 0),
+                    y: point.y - Number(screenBounds.y || 0)
+                };
+                const localPoint = this.toNiriPetPhysicalCropLocalPointWithState(virtualPoint, cropState);
+                return {
+                    x: localPoint.x,
+                    y: localPoint.y
+                };
             }
+            let bounds = this.getGuideScreenCoordinateBounds(metrics);
             if (!bounds) {
                 bounds = {
                     x: Number.isFinite(window.screenX) ? window.screenX : 0,
@@ -4750,16 +5035,17 @@
                 return null;
             }
 
-            let bounds = null;
-            try {
-                const host = window.nekoTutorialOverlay;
-                const metrics = host && typeof host.getWindowMetricsSync === 'function'
-                    ? host.getWindowMetricsSync()
-                    : null;
-                bounds = metrics && (metrics.bounds || metrics.contentBounds);
-            } catch (_) {
-                bounds = null;
+            const metrics = this.getGuideWindowMetricsSync();
+            const cropState = this.getNiriPetPhysicalCropState(metrics);
+            if (cropState && cropState.cropBounds) {
+                const screenBounds = cropState.virtualBounds || cropState.cropBounds;
+                const virtualPoint = this.toNiriPetPhysicalCropVirtualPointWithState(point, cropState);
+                return {
+                    x: Number(screenBounds.x || 0) + virtualPoint.x,
+                    y: Number(screenBounds.y || 0) + virtualPoint.y
+                };
             }
+            let bounds = this.getGuideScreenCoordinateBounds(metrics);
             if (!bounds) {
                 bounds = {
                     x: Number.isFinite(window.screenX) ? window.screenX : 0,
@@ -6695,7 +6981,12 @@
             }
             if (typeof this.interactionTakeover.setExternalizedChatSpotlight === 'function') {
                 this.clearHomeSpotlightsForExternalizedChat();
-                this.interactionTakeover.setExternalizedChatSpotlight(normalizedKind);
+                const spotlightVariant = options && typeof options.spotlightVariant === 'string'
+                    ? options.spotlightVariant.trim()
+                    : '';
+                this.interactionTakeover.setExternalizedChatSpotlight(normalizedKind, {
+                    variant: spotlightVariant
+                });
             }
             this.setHomePcCursorOutputSuppressedForExternalizedChat(true);
             const effect = options && typeof options.effect === 'string' ? options.effect : 'wobble';
@@ -7056,8 +7347,13 @@
             }
             const normalizedOptions = options || {};
             const total = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 3;
+            const spotlightVariant = typeof normalizedOptions.spotlightVariant === 'string'
+                ? normalizedOptions.spotlightVariant.trim()
+                : '';
             this.clearHomeSpotlightsForExternalizedChat();
-            this.interactionTakeover.setExternalizedChatSpotlight(normalizedKind);
+            this.interactionTakeover.setExternalizedChatSpotlight(normalizedKind, {
+                variant: spotlightVariant
+            });
             this.setHomePcCursorOutputSuppressedForExternalizedChat(true);
             this.hideHomeCursorForExternalizedChat();
             for (let index = 0; index < total; index += 1) {
@@ -11167,6 +11463,7 @@
             this.clearGuideChatStreamTimers();
             this.clearGuideChatMessages();
             this.clearQueuedGuideChatBridgeMessages();
+            this.setDay4LockSpotlightSafeAreaActive(false, 'termination-cleanup');
             if (this.overlay && typeof this.overlay.setSpotlightSuppressed === 'function') {
                 this.overlay.setSpotlightSuppressed(true);
             }
