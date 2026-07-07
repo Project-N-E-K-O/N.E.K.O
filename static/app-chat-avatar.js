@@ -12,6 +12,8 @@
     let pendingAutoCapture = false;
     let activeCaptureToken = 0;
     let cachedPreview = null;
+    let cachedCharacterReference = null;
+    let pendingCharacterReference = null;
     let autoCaptureTimer = null;
     let lastScheduledCacheKey = '';
     // 多窗口模式：由 IPC 从 Pet 窗口注入的头像（/chat 页面无本地模型）
@@ -22,6 +24,15 @@
     let tutorialAvatarOverrideModelType = '';
 
     const STORAGE_PREFIX = 'neko_avatar:';
+    const CHARACTER_REFERENCE_CAPTURE_OPTIONS = {
+        width: 768,
+        height: 1024,
+        padding: 0.08,
+        shape: 'square',
+        background: 'transparent',
+        cropMode: 'portrait',
+        includeDataUrl: true
+    };
 
     function translateLabel(key, fallback) {
         if (typeof window.safeT === 'function') {
@@ -346,8 +357,145 @@
         );
     }
 
+    function isRasterImageDataUrl(value) {
+        return typeof value === 'string' && /^data:image\/(?:png|jpe?g|webp);/i.test(value);
+    }
+
+    function getCharacterReferenceCacheKey() {
+        return getCurrentModelCacheKey() + ':card-forge-character-reference:v1';
+    }
+
+    function rememberCharacterReferenceResult(result, cacheKey) {
+        var dataUrl = result && result.dataUrl ? result.dataUrl : '';
+        if (isRasterImageDataUrl(dataUrl)) {
+            cachedCharacterReference = {
+                cacheKey: cacheKey,
+                dataUrl: dataUrl,
+                modelType: result.modelType || getCurrentModelType(),
+                capturedAt: Date.now()
+            };
+            return dataUrl;
+        }
+        return '';
+    }
+
+    function captureCharacterReferenceViaBroadcast() {
+        return new Promise(function (resolve) {
+            var bc = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
+            if (!bc) {
+                resolve(null);
+                return;
+            }
+            var requestId = 'char_ref_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+            var finished = false;
+            var timerId = null;
+            function cleanup() {
+                bc.removeEventListener('message', onMessage);
+                if (timerId) { clearTimeout(timerId); timerId = null; }
+            }
+            function finish(result) {
+                if (finished) return;
+                finished = true;
+                cleanup();
+                resolve(result || null);
+            }
+            function onMessage(event) {
+                if (!event.data || event.data.action !== 'avatar_capture_result') return;
+                if (event.data.requestId !== requestId) return;
+                if (event.data.error) {
+                    finish(null);
+                    return;
+                }
+                finish({
+                    dataUrl: event.data.dataUrl || '',
+                    modelType: event.data.modelType || ''
+                });
+            }
+            bc.addEventListener('message', onMessage);
+            timerId = setTimeout(function () { finish(null); }, 15000);
+            bc.postMessage({
+                action: 'request_avatar_capture',
+                requestId: requestId,
+                captureMode: 'character_reference',
+                lanlan_name: (window.lanlan_config && window.lanlan_config.lanlan_name) || '',
+                timestamp: Date.now()
+            });
+        });
+    }
+
+    function captureCharacterReferenceViaIpc() {
+        return new Promise(function (resolve) {
+            var finished = false;
+            var timerId = null;
+            function cleanup() {
+                window.removeEventListener('neko:character-reference-ipc-result', onResult);
+                if (timerId) { clearTimeout(timerId); timerId = null; }
+            }
+            function finish(result) {
+                if (finished) return;
+                finished = true;
+                cleanup();
+                resolve(result || null);
+            }
+            function onResult(event) {
+                var detail = event && event.detail;
+                if (detail && detail.dataUrl) {
+                    finish({ dataUrl: detail.dataUrl, modelType: detail.modelType || '' });
+                    return;
+                }
+                finish(null);
+            }
+            window.addEventListener('neko:character-reference-ipc-result', onResult);
+            timerId = setTimeout(function () { finish(null); }, 15000);
+            try {
+                window.__nekoRequestCharacterReference();
+            } catch (_) {
+                finish(null);
+            }
+        });
+    }
+
+    function captureCharacterReferenceDataUrl() {
+        var cacheKey = getCharacterReferenceCacheKey();
+        if (
+            cachedCharacterReference &&
+            cachedCharacterReference.cacheKey === cacheKey &&
+            isRasterImageDataUrl(cachedCharacterReference.dataUrl)
+        ) {
+            return Promise.resolve(cachedCharacterReference.dataUrl);
+        }
+        if (pendingCharacterReference) return pendingCharacterReference;
+
+        pendingCharacterReference = Promise.resolve()
+            .then(function () {
+                if (window.avatarPortrait && typeof window.avatarPortrait.capture === 'function') {
+                    return window.avatarPortrait.capture(CHARACTER_REFERENCE_CAPTURE_OPTIONS);
+                }
+                if (window.__NEKO_MULTI_WINDOW__) {
+                    if (typeof window.__nekoRequestCharacterReference === 'function') {
+                        return captureCharacterReferenceViaIpc().then(function (result) {
+                            return result || captureCharacterReferenceViaBroadcast();
+                        });
+                    }
+                    return captureCharacterReferenceViaBroadcast();
+                }
+                return null;
+            })
+            .then(function (result) {
+                return rememberCharacterReferenceResult(result, cacheKey);
+            })
+            .catch(function (err) {
+                console.warn('[chat-avatar] card-forge character reference capture failed:', err);
+                return '';
+            })
+            .finally(function () {
+                pendingCharacterReference = null;
+            });
+        return pendingCharacterReference;
+    }
+
     /**
-     * 把当前头像 dataUrl 和猫娘名推送到 card-forge 后端（非关键，静默失败）。
+     * 把当前头像 dataUrl、全身角色参考图和猫娘名推送到 card-forge 后端（非关键，静默失败）。
      * 用于"奇遇铸造机" (card-forge) 前端读取当前猫娘名作为 runtime_character_hint。
      * 上游未运行 card-forge 时本接口仍存在，POST 只是空写无副作用。
      *
@@ -369,6 +517,17 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body)
         }).catch(function () { /* card-forge 未运行时静默失败 */ });
+
+        captureCharacterReferenceDataUrl().then(function (characterReferenceDataUrl) {
+            if (!characterReferenceDataUrl) return;
+            var referenceBody = { characterReferenceDataUrl: characterReferenceDataUrl };
+            if (_nekoName) referenceBody.name = _nekoName;
+            fetch('/card-forge/active-character', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(referenceBody)
+            }).catch(function () { /* card-forge 未运行时静默失败 */ });
+        });
     }
 
     function applyPreviewResult(result, cacheKey) {

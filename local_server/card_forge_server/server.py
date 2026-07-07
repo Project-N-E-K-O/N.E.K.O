@@ -3,12 +3,15 @@
 奇遇铸造机 — 本地 facts 抽取 + 故事生成服务器
 端口: 3001
 启动:
-    uv run local_server/card_forge_server/server.py
+    uv run python local_server/card_forge_server/server.py
 """
 
 import hashlib
+import asyncio
+import base64
 import json
 import logging
+import mimetypes
 import os
 import random
 import sys
@@ -17,11 +20,12 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import quote
 
 import uvicorn
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 logger = logging.getLogger("card_forge_server")
 SERVER_ROOT = Path(__file__).resolve().parent
@@ -50,8 +54,8 @@ def _resolve_cors_origins() -> list[str]:
     """
     raw = os.environ.get("NEKO_CARD_FORGE_ALLOWED_ORIGINS", "").strip()
     if not raw:
-        # 只放行本机 card-forge 前端 (5173)。不含社区服务 (:8080)——/forge/facts 返回的是
-        # 个人化本地记忆，社区 Web App 不应跨源读取；如确需放行，由
+        # 只放行本机 card-forge 前端 (5173)。/forge/facts 返回个人化本地记忆，
+        # 因此不要默认放行社区服务或其它常见本机端口；如需添加额外来源，由
         # NEKO_CARD_FORGE_ALLOWED_ORIGINS 显式加入。
         return [
             "http://127.0.0.1:5173",
@@ -118,6 +122,119 @@ async def _fetch_facts_from_url(url: str) -> Optional[list[dict[str, Any]]]:
     except Exception:
         logger.exception("forge-facts: URL fetch failed for %s", url[:80])
         return None
+
+
+def _is_avatar_data_url(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and value.startswith("data:image/")
+        and "," in value
+        and len(value) > 128
+    )
+
+
+_CARD_FACE_DATA_URL_CACHE: dict[str, Any] = {
+    "name": "",
+    "path": "",
+    "mtime": 0.0,
+    "dataUrl": "",
+}
+
+
+def _read_active_character_config_snapshot() -> dict[str, str]:
+    """Read the current character name directly from the local NEKO config."""
+    candidates: list[Path] = []
+    env_config_dir = os.environ.get("NEKO_USER_CONFIG_DIR", "").strip()
+    if env_config_dir:
+        candidates.append(Path(env_config_dir) / "characters.json")
+    candidates.extend(
+        [
+            Path.home() / "Library/Application Support/N.E.K.O/config/characters.json",
+            PROJECT_ROOT / "config" / "characters.json",
+        ]
+    )
+    for path in candidates:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        name = data.get("当前猫娘")
+        master_obj = data.get("主人")
+        master = ""
+        if isinstance(master_obj, dict):
+            master = str(master_obj.get("档案名") or master_obj.get("name") or "")
+        if isinstance(name, str) and name.strip():
+            return {"name": name.strip(), "master_name": master.strip()}
+    return {}
+
+
+def _read_card_face_data_url(name: str) -> str:
+    """Return the persisted card face as a data URL for the active character."""
+    path = _find_card_face_path(name)
+    if not path:
+        return ""
+    stat = path.stat()
+    cache_path = str(path)
+    if (
+        _CARD_FACE_DATA_URL_CACHE.get("name") == name
+        and _CARD_FACE_DATA_URL_CACHE.get("path") == cache_path
+        and float(_CARD_FACE_DATA_URL_CACHE.get("mtime") or 0.0) == stat.st_mtime
+    ):
+        return str(_CARD_FACE_DATA_URL_CACHE.get("dataUrl") or "")
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return ""
+    mime_type = mimetypes.guess_type(path.name)[0] or "image/png"
+    data_url = f"data:{mime_type};base64,{base64.b64encode(raw).decode('ascii')}"
+    _CARD_FACE_DATA_URL_CACHE.update(
+        {
+            "name": name,
+            "path": cache_path,
+            "mtime": stat.st_mtime,
+            "dataUrl": data_url,
+        }
+    )
+    return data_url
+
+
+def _card_face_dirs() -> list[Path]:
+    candidates: list[Path] = []
+    env_config_dir = os.environ.get("NEKO_USER_CONFIG_DIR", "").strip()
+    if env_config_dir:
+        candidates.append(Path(env_config_dir).parent / "card_faces")
+    candidates.extend(
+        [
+            Path.home() / "Library/Application Support/N.E.K.O/card_faces",
+            PROJECT_ROOT / "card_faces",
+        ]
+    )
+    return candidates
+
+
+def _find_card_face_path(name: str) -> Path | None:
+    if not name:
+        return None
+    suffixes = (".png", ".jpg", ".jpeg", ".webp")
+    for base_dir in _card_face_dirs():
+        for suffix in suffixes:
+            path = base_dir / f"{name}{suffix}"
+            if path.is_file():
+                return path
+    return None
+
+
+def _card_face_avatar_url(name: str) -> str:
+    path = _find_card_face_path(name)
+    if not path:
+        return ""
+    try:
+        version = str(int(path.stat().st_mtime))
+    except OSError:
+        version = str(int(time.time()))
+    return f"/forge/active-character/avatar?name={quote(name)}&v={version}"
 
 
 def _select_forge_facts_with_stats(
@@ -699,23 +816,54 @@ async def arena_forge_card_story(body: dict[str, Any]):
 
 
 @app.get("/forge/active-character")
-async def arena_active_character():
-    """返回当前 NEKO 配置/运行态的猫娘名 + 主人名，供社区 Beta 铸造前端跟随（无则空串）。
+async def arena_active_character(include_avatar: bool = False):
+    """返回当前 NEKO 配置的猫娘名、主人名与角色卡脸图（无则空串）。
 
     社区 SPA 跨源调本端点拿"当前猫娘"，再据此调 /forge/facts 抽本地记忆。
     复用 active_neko_context（与 forge-facts 同一份"当前猫娘"解析），享受同一 CORS 白名单。
     master_name 透传给云端 /api/cards/forge-beta 当故事 prompt 的主人称谓；社区前端只读，
-    不写回本地 —— 这里仅暴露 NEKO 既有的主人设定，不引入新的可识别信息。
+    不写回本地 —— 这里仅暴露 NEKO 既有的主人设定与本地角色卡脸图。
     """
-    try:
-        context = await _resolve_active_facts_context(None, None)
-        name = context.lanlan_name if context else ""
-        master = context.master_name if context else ""
-    except Exception as exc:
-        logger.warning("active-character: resolve failed: %s", type(exc).__name__)
-        name = ""
-        master = ""
-    return {"name": name or "", "master_name": master or ""}
+    config_snapshot = _read_active_character_config_snapshot()
+    name = config_snapshot.get("name", "")
+    master = config_snapshot.get("master_name", "")
+    if not name:
+        try:
+            context = await asyncio.wait_for(
+                _resolve_active_facts_context(None, None),
+                timeout=0.5,
+            )
+            name = context.lanlan_name if context else ""
+            master = context.master_name if context else ""
+        except Exception as exc:
+            logger.warning("active-character: resolve failed: %s", type(exc).__name__)
+    avatar_data_url = ""
+    avatar_url = _card_face_avatar_url(name) if name else ""
+    if name and include_avatar:
+        card_face_data_url = _read_card_face_data_url(name)
+        if _is_avatar_data_url(card_face_data_url):
+            avatar_data_url = card_face_data_url
+    return {
+        "name": name or "",
+        "master_name": master or "",
+        "avatarUrl": avatar_url,
+        "avatar_url": avatar_url,
+        "dataUrl": avatar_data_url,
+        "avatarDataUrl": avatar_data_url,
+    }
+
+
+@app.get("/forge/active-character/avatar")
+async def arena_active_character_avatar(name: str = ""):
+    """Serve the persisted card face image for the current or requested character."""
+    resolved_name = name.strip()
+    if not resolved_name:
+        resolved_name = _read_active_character_config_snapshot().get("name", "")
+    path = _find_card_face_path(resolved_name)
+    if not path:
+        return JSONResponse({"error": "card_face_not_found"}, status_code=404)
+    media_type = mimetypes.guess_type(path.name)[0] or "image/png"
+    return FileResponse(path, media_type=media_type)
 
 
 @app.get("/health")

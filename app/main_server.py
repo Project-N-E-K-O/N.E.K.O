@@ -1747,7 +1747,7 @@ async def health():
 # 奇遇铸造机 (card-forge) 前端会轮询本端点，拿到当前猫娘名作为
 # /forge/facts 的 runtime_character_hint；不要求 card-forge 后端
 # 知道 NEKO 内部状态，只通过此端点把"当前 NEKO 在前台展示的猫娘"广播给它。
-_card_forge_active_character: dict = {}  # {dataUrl, name}
+_card_forge_active_character: dict = {}  # {dataUrl, characterReferenceDataUrl, name}
 
 
 @app.post('/card-forge/active-character')
@@ -1756,6 +1756,7 @@ async def set_card_forge_active_character(payload: dict):
 
     In-payload semantics distinguish omitted fields from explicit empty values:
     - POST {"dataUrl": "x"} updates only dataUrl and keeps the stored name.
+    - POST {"characterReferenceDataUrl": "x"} updates the full-body character reference.
     - POST {"name": ""} explicitly clears the stored name.
     - POST {"dataUrl": "", "name": ""} explicitly clears both fields.
     Callers should include only meaningful fields to avoid accidental erasure.
@@ -1764,6 +1765,10 @@ async def set_card_forge_active_character(payload: dict):
         return {"ok": True}
     if 'dataUrl' in payload:
         _card_forge_active_character['dataUrl'] = str(payload.get('dataUrl') or '')
+    if 'characterReferenceDataUrl' in payload:
+        _card_forge_active_character['characterReferenceDataUrl'] = str(
+            payload.get('characterReferenceDataUrl') or ''
+        )
     if 'name' in payload:
         _card_forge_active_character['name'] = str(payload.get('name') or '')
     return {"ok": True}
@@ -1783,6 +1788,9 @@ async def get_card_forge_active_character(include_avatar: bool = False):
     }
     if include_avatar:
         payload['dataUrl'] = _card_forge_active_character.get('dataUrl', '')
+        payload['characterReferenceDataUrl'] = _card_forge_active_character.get(
+            'characterReferenceDataUrl', ''
+        )
     return JSONResponse(payload)
 
 
