@@ -174,7 +174,14 @@ class DropdownManager {
             iconAlt: config.iconAlt || config.defaultText,
             iconAltKey: config.iconAltKey || null,  // i18n key for icon alt
             onChange: config.onChange || (() => { }),
-            getText: config.getText || ((option) => option.textContent),
+            getText: config.getText || ((option) => {
+                const key = option?.dataset?.i18n;
+                if (key && window.t && typeof window.t === 'function') {
+                    const translated = window.t(key);
+                    if (translated && translated !== key) return translated;
+                }
+                return option.textContent;
+            }),
             shouldSkipOption: config.shouldSkipOption || ((option) => {
                 const value = option.value;
                 const text = option.textContent;

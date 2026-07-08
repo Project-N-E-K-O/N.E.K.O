@@ -1,7 +1,7 @@
 import asyncio
 import os
 import sys
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
@@ -19,6 +19,55 @@ async def test_starting_session_audio_does_not_enter_pending_input_data():
     await LLMSessionManager._stream_data_now(mgr, {"input_type": "audio", "data": [0] * 480})
 
     assert mgr.pending_input_data == []
+
+
+async def test_goodbye_silent_drops_live_vision_stream_before_processing():
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    mgr.lanlan_name = "Test"
+    mgr.goodbye_silent = True
+    mgr._stream_data_now = AsyncMock()
+
+    await LLMSessionManager.stream_data(
+        mgr,
+        {"input_type": "screen", "data": "data:image/jpeg;base64,abc"},
+    )
+
+    mgr._stream_data_now.assert_not_awaited()
+
+
+async def test_live_vision_stream_does_not_auto_start_session_when_inactive():
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    mgr.lanlan_name = "Test"
+    mgr.goodbye_silent = False
+    mgr.session_ready = False
+    mgr._starting_session_count = 0
+    mgr.session = None
+    mgr.is_active = False
+    mgr.input_cache_lock = asyncio.Lock()
+    mgr.start_session = AsyncMock()
+
+    await LLMSessionManager._stream_data_now(
+        mgr,
+        {"input_type": "screen", "data": "data:image/jpeg;base64,abc"},
+    )
+
+    mgr.start_session.assert_not_awaited()
+
+
+async def test_goodbye_silent_drops_live_vision_stream_in_internal_processor():
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    mgr.lanlan_name = "Test"
+    mgr.goodbye_silent = True
+    mgr.session = MagicMock()
+    mgr.session.stream_image = AsyncMock()
+    mgr.is_active = True
+
+    await LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "camera", "data": "data:image/jpeg;base64,abc"},
+    )
+
+    mgr.session.stream_image.assert_not_called()
 
 
 async def test_flush_pending_input_data_routes_audio_through_bounded_queue():

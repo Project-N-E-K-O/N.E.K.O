@@ -1355,6 +1355,7 @@
         "toggleFullscreen": "全画面切替",
         "exitFullscreen": "全画面終了",
         "modelType": "モデルタイプ",
+        "modelType3d": "3Dモデル",
         "selectLive2DModel": "Live2Dモデル選択",
         "selectVRMModel": "VRMモデル",
         "selectVRMFile": "VRMファイル選択",
@@ -3159,7 +3160,7 @@
             "mmd": {
                 "step1": {
                     "title": "🎭 MMD モデルを選択",
-                    "desc": "Live3D（MMD）モードでは、ここから使用するモデルを選択します。MMD と VRM は同じモデルリストを共有しています。"
+                    "desc": "3Dモデル（MMD）モードでは、ここから使用するモデルを選択します。MMD と VRM は同じモデルリストを共有しています。"
                 },
                 "step2": {
                     "title": "💃 VMD アニメーション",
@@ -3171,7 +3172,7 @@
                 },
                 "step4": {
                     "title": "😄 エモーション設定",
-                    "desc": "モデルを選択した後、ここからエモーション設定に入ります。Live3D では MMD と VRM がこのボタンを共有しており、Live2D の「エモーション設定」とは別のボタンです。"
+                    "desc": "モデルを選択した後、ここからエモーション設定に入ります。3Dモデルでは MMD と VRM がこのボタンを共有しており、Live2D の「エモーション設定」とは別のボタンです。"
                 }
             }
         },
@@ -3885,6 +3886,8 @@
         "minimize": "最小化",
         "close": "閉じる",
         "loading": "読み込み中...",
+        "initializing": "ジュークボックスを初期化中...",
+        "initializeFailed": "ジュークボックスの初期化に失敗しました",
         "ready": "準備完了",
         "playing": "再生中: {{name}} - {{artist}}",
         "error": "エラー: {{message}}",

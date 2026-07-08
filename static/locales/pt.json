@@ -1355,6 +1355,7 @@
         "toggleFullscreen": "Alternar tela cheia",
         "exitFullscreen": "Sair da tela cheia",
         "modelType": "Tipo de modelo",
+        "modelType3d": "Modelo 3D",
         "selectLive2DModel": "Selecione o modelo Live2D",
         "selectVRMModel": "Modelo VRM",
         "selectVRMFile": "Selecione o arquivo VRM",
@@ -3159,7 +3160,7 @@
             "mmd": {
                 "step1": {
                     "title": "🎭 Selecione o modelo MMD",
-                    "desc": "No modo Live3D (MMD), escolha seu modelo aqui. O MMD compartilha a mesma lista de modelos do VRM."
+                    "desc": "No modo Modelo 3D (MMD), escolha seu modelo aqui. O MMD compartilha a mesma lista de modelos do VRM."
                 },
                 "step2": {
                     "title": "💃 Animação VMD",
@@ -3171,7 +3172,7 @@
                 },
                 "step4": {
                     "title": "😄 Configuração de emoção",
-                    "desc": "Depois de selecionar um modelo, abra as configurações de emoção aqui. MMD e VRM compartilham este botão Live3D (não o Live2D)."
+                    "desc": "Depois de selecionar um modelo, abra as configurações de emoção aqui. MMD e VRM compartilham este botão Modelo 3D (não o Live2D)."
                 }
             }
         },
@@ -3885,6 +3886,8 @@
         "minimize": "Minimizar",
         "close": "Fechar",
         "loading": "Carregando...",
+        "initializing": "Inicializando jukebox...",
+        "initializeFailed": "Falha ao inicializar jukebox",
         "ready": "Preparar",
         "playing": "Tocando agora: {{name}} - {{artist}}",
         "error": "Erro: {{message}}",

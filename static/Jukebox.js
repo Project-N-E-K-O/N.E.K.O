@@ -120,6 +120,8 @@ window.Jukebox = {
     container: null,
     styleElement: null,
     observer: null,
+    closeListenerButton: null,
+    closeListenerHandler: null,
     songElements: {},
     tooltipElement: null,
     tooltipTimeout: null,
@@ -293,10 +295,15 @@ window.Jukebox = {
 
     const rect = container.getBoundingClientRect();
     if (!rect || rect.width <= 0 || rect.height <= 0) return;
+    const computedStyle = window.getComputedStyle(container);
+    const contentWidth = parseFloat(computedStyle.width);
+    const contentHeight = parseFloat(computedStyle.height);
+    const width = Number.isFinite(contentWidth) && contentWidth > 0 ? contentWidth : rect.width;
+    const height = Number.isFinite(contentHeight) && contentHeight > 0 ? contentHeight : rect.height;
 
     Jukebox.setStoredJson('windowSize', {
-      width: Math.round(rect.width),
-      height: Math.round(rect.height)
+      width: Math.round(width),
+      height: Math.round(height)
     });
   },
 
@@ -5262,9 +5269,11 @@ window.Jukebox = {
     window.Jukebox_logVolumeChange = Jukebox.logVolumeChange;
     window.Jukebox_togglePause = Jukebox.togglePause;
 
-    // 独立窗口模式：不需要绑定按钮和监听聊天框关闭
+    // 独立窗口模式不需要绑定旧 DOM；懒加载模式只跳过按钮绑定，仍保留聊天最小化清理监听。
     if (!window.__NEKO_JUKEBOX_STANDALONE__) {
-      Jukebox.setupButton();
+      if (!window.__NEKO_JUKEBOX_LAZY_LOADER__) {
+        Jukebox.setupButton();
+      }
       Jukebox.setupCloseListener();
     }
   },
@@ -5295,22 +5304,31 @@ window.Jukebox = {
   
   setupCloseListener: function(retries = 0) {
     const MAX_RETRIES = 20;
-    if (Jukebox.State.observer) return;
+    if (Jukebox.State.observer && Jukebox.State.closeListenerButton) return;
 
     const toggleChatBtn = document.getElementById('toggle-chat-btn');
     if (toggleChatBtn) {
-      toggleChatBtn.addEventListener('click', () => {
-        // 仅在聊天框即将最小化时销毁（展开时不需要）
-        const chatContainer = document.getElementById('chat-container');
-        const isCurrentlyMinimized = chatContainer &&
-          (chatContainer.classList.contains('minimized') || chatContainer.classList.contains('mobile-collapsed'));
-        if (isCurrentlyMinimized) {
-          // 当前已最小化 → 即将展开，不销毁
-          return;
+      if (!Jukebox.State.closeListenerHandler) {
+        Jukebox.State.closeListenerHandler = () => {
+          // 仅在聊天框即将最小化时销毁（展开时不需要）
+          const chatContainer = document.getElementById('chat-container');
+          const isCurrentlyMinimized = chatContainer &&
+            (chatContainer.classList.contains('minimized') || chatContainer.classList.contains('mobile-collapsed'));
+          if (isCurrentlyMinimized) {
+            // 当前已最小化 → 即将展开，不销毁
+            return;
+          }
+          console.log('[Jukebox]', window.t('Jukebox.minimizeDetected', '检测到对话框最小化，销毁点歌台'));
+          Jukebox.destroy();
+        };
+      }
+      if (Jukebox.State.closeListenerButton !== toggleChatBtn) {
+        if (Jukebox.State.closeListenerButton && Jukebox.State.closeListenerHandler) {
+          Jukebox.State.closeListenerButton.removeEventListener('click', Jukebox.State.closeListenerHandler);
         }
-        console.log('[Jukebox]', window.t('Jukebox.minimizeDetected', '检测到对话框最小化，销毁点歌台'));
-        Jukebox.destroy();
-      });
+        toggleChatBtn.addEventListener('click', Jukebox.State.closeListenerHandler);
+        Jukebox.State.closeListenerButton = toggleChatBtn;
+      }
       console.log('[Jukebox]', window.t('Jukebox.minimizeListenerSet', '最小化按钮监听器已设置'));
     } else {
       if (retries >= MAX_RETRIES) {
@@ -5322,26 +5340,40 @@ window.Jukebox = {
       return;
     }
     
-    const observer = new MutationObserver((mutations) => {
-      mutations.forEach((mutation) => {
-        if (mutation.type === 'childList') {
-          const removedNodes = Array.from(mutation.removedNodes);
-          const jukeboxRemoved = removedNodes.some(node => 
-            node === Jukebox.State.container
-          );
-          
-          if (jukeboxRemoved) {
-            console.log('[Jukebox]', window.t('Jukebox.removedDetected', '检测到点歌台被移除'));
-            Jukebox.State.isOpen = false;
+    if (!Jukebox.State.observer) {
+      const observer = new MutationObserver((mutations) => {
+        mutations.forEach((mutation) => {
+          if (mutation.type === 'childList') {
+            const removedNodes = Array.from(mutation.removedNodes);
+            const jukeboxRemoved = removedNodes.some(node =>
+              node === Jukebox.State.container
+            );
+
+            if (jukeboxRemoved) {
+              console.log('[Jukebox]', window.t('Jukebox.removedDetected', '检测到点歌台被移除'));
+              Jukebox.State.isOpen = false;
+            }
           }
-        }
+        });
       });
-    });
-    
-    observer.observe(document.body, { childList: true, subtree: true });
-    Jukebox.State.observer = observer;
-    
+
+      observer.observe(document.body, { childList: true, subtree: true });
+      Jukebox.State.observer = observer;
+    }
+
     console.log('[Jukebox]', window.t('Jukebox.closeListenerSet', '关闭监听器已设置'));
+  },
+
+  cleanupCloseListener: function() {
+    if (Jukebox.State.closeListenerButton && Jukebox.State.closeListenerHandler) {
+      Jukebox.State.closeListenerButton.removeEventListener('click', Jukebox.State.closeListenerHandler);
+    }
+    Jukebox.State.closeListenerButton = null;
+    Jukebox.State.closeListenerHandler = null;
+    if (Jukebox.State.observer) {
+      Jukebox.State.observer.disconnect();
+      Jukebox.State.observer = null;
+    }
   },
   
   toggle: function() {
@@ -5360,9 +5392,13 @@ window.Jukebox = {
   },
   
   open: function() {
+    const Jukebox = window.Jukebox || this;
     if (Jukebox.State.isOpen) return;
     
     Jukebox.buildUI();
+    if (!window.__NEKO_JUKEBOX_STANDALONE__) {
+      Jukebox.setupCloseListener();
+    }
     
     requestAnimationFrame(() => {
       setTimeout(() => {
@@ -5443,9 +5479,67 @@ window.Jukebox = {
     
     console.log('[Jukebox] 点歌台已显示');
   },
+
+  destroyPlayer: function() {
+    const player = Jukebox.State.player;
+    if (player) {
+      try {
+        if (typeof player.pause === 'function') player.pause();
+      } catch (_) {}
+      try {
+        if (typeof player.seek === 'function') player.seek(0);
+      } catch (_) {}
+      try {
+        if (player.list && typeof player.list.clear === 'function') player.list.clear();
+      } catch (_) {}
+      try {
+        if (typeof player.destroy === 'function') player.destroy();
+      } catch (error) {
+        console.warn('[Jukebox] APlayer 销毁失败:', error);
+      }
+    }
+
+    Jukebox.State.player = null;
+    Jukebox.State.boundPlayer = null;
+    Jukebox.State.audioElement = null;
+  },
+
+  prepareForUnload: function() {
+    Jukebox.stopProgressUpdate();
+    Jukebox.destroyPlayer();
+    Jukebox.hideTooltip();
+
+    if (Jukebox.State.marqueeRaf) {
+      cancelAnimationFrame(Jukebox.State.marqueeRaf);
+      Jukebox.State.marqueeRaf = null;
+    }
+    if (Jukebox.State.marqueeItems) {
+      Jukebox.State.marqueeItems.clear();
+    }
+
+    Jukebox.stopConfigPolling();
+
+    try {
+      if (Jukebox._broadcastChannel) {
+        Jukebox._broadcastChannel.onmessage = null;
+        Jukebox._broadcastChannel.close();
+        Jukebox._broadcastChannel = null;
+      }
+    } catch (_) {}
+
+  },
+
+  notifyFullClose: function(reason) {
+    try {
+      window.dispatchEvent(new CustomEvent('neko:jukebox-full-close', {
+        detail: { reason: reason || 'close' }
+      }));
+    } catch (_) {}
+  },
   
   close: function() {
     Jukebox.stopPlayback();
+    Jukebox.prepareForUnload();
     
     // 销毁管理器面板（移除 DOM 节点 + 清理拖拽监听）
     Jukebox.SongActionManager.destroy();
@@ -5506,10 +5600,12 @@ window.Jukebox = {
     }
     
     console.log('[Jukebox] 点歌台已关闭');
+    Jukebox.notifyFullClose('close');
   },
   
   destroy: function() {
     Jukebox.stopPlayback();
+    Jukebox.prepareForUnload();
     
     Jukebox.SongActionManager.destroy();
     
@@ -5556,6 +5652,7 @@ window.Jukebox = {
     Jukebox.State.songElements = {}; // 清空元素映射
 
     console.log('[Jukebox] 点歌台已销毁');
+    Jukebox.notifyFullClose('destroy');
   },
   
   buildUI: function() {
@@ -7649,6 +7746,7 @@ window.Jukebox = {
   },
 
   checkConfigUpdates: async function() {
+    const Jukebox = window.Jukebox || this;
     if (!Jukebox.State.isOpen || Jukebox.State.configPollInFlight) return;
 
     Jukebox.State.configPollInFlight = true;
@@ -7678,6 +7776,7 @@ window.Jukebox = {
   },
   
   loadSongs: async function() {
+    const Jukebox = window.Jukebox || this;
     try {
       // 从后端API加载配置
       const response = await fetch('/api/jukebox/config');
@@ -8462,6 +8561,7 @@ window.Jukebox = {
   },
 
   restoreIdleAnimation: async function() {
+    const Jukebox = window.Jukebox || this;
     // 独立窗口模式：Pet 侧在 stopVMD 时自动恢复，此处无需操作
     if (window.__NEKO_JUKEBOX_STANDALONE__) return;
 
@@ -8716,6 +8816,7 @@ window.Jukebox = {
   },
   
   initPlayer: function() {
+    const Jukebox = window.Jukebox || this;
     if (window.music_ui && window.music_ui.getMusicPlayerInstance) {
       const existingPlayer = window.music_ui.getMusicPlayerInstance();
       if (existingPlayer) {
@@ -8734,7 +8835,7 @@ window.Jukebox = {
     
     if (typeof APlayer === 'undefined') {
       console.warn('[Jukebox] APlayer 未加载，等待加载...');
-      setTimeout(Jukebox.initPlayer, 500);
+      setTimeout(() => Jukebox.initPlayer(), 500);
       return;
     }
     
@@ -9227,8 +9328,13 @@ window.Jukebox = {
 // i18n-i18next.js 会通过 storage 事件检测其他窗口的语言变更并调用 changeLanguage，
 // changeLanguage 触发 languageChanged → localechange 自定义事件。
 // 此处监听 localechange，在 Jukebox 已打开时自动刷新 UI 文本。
-window.addEventListener('localechange', function() {
-  if (Jukebox.State.isOpen || Jukebox.State.isHidden) {
+if (window.__JukeboxLocaleChangeHandler) {
+  window.removeEventListener('localechange', window.__JukeboxLocaleChangeHandler);
+}
+window.__JukeboxLocaleChangeHandler = function() {
+  const Jukebox = window.Jukebox;
+  if (Jukebox && Jukebox.State && (Jukebox.State.isOpen || Jukebox.State.isHidden)) {
     Jukebox.refreshLocale();
   }
-});
+};
+window.addEventListener('localechange', window.__JukeboxLocaleChangeHandler);

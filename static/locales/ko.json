@@ -1355,6 +1355,7 @@
         "toggleFullscreen": "전체 화면 전환",
         "exitFullscreen": "전체 화면 종료",
         "modelType": "모델 유형",
+        "modelType3d": "3D 모델",
         "selectLive2DModel": "Live2D 모델 선택",
         "selectVRMModel": "VRM 모델",
         "selectVRMFile": "VRM 파일 선택",
@@ -3159,7 +3160,7 @@
             "mmd": {
                 "step1": {
                     "title": "🎭 MMD 모델 선택",
-                    "desc": "Live3D(MMD) 모드에서 여기에서 사용할 모델을 선택합니다. MMD와 VRM은 동일한 모델 목록을 공유합니다."
+                    "desc": "3D 모델(MMD) 모드에서 여기에서 사용할 모델을 선택합니다. MMD와 VRM은 동일한 모델 목록을 공유합니다."
                 },
                 "step2": {
                     "title": "💃 VMD 애니메이션",
@@ -3171,7 +3172,7 @@
                 },
                 "step4": {
                     "title": "😄 감정 설정",
-                    "desc": "모델을 선택한 후 여기에서 감정 설정으로 들어갑니다. Live3D에서 MMD와 VRM은 이 버튼을 공유하며, Live2D의 '감정 설정' 버튼과는 다릅니다."
+                    "desc": "모델을 선택한 후 여기에서 감정 설정으로 들어갑니다. 3D 모델에서 MMD와 VRM은 이 버튼을 공유하며, Live2D의 '감정 설정' 버튼과는 다릅니다."
                 }
             }
         },
@@ -3885,6 +3886,8 @@
         "minimize": "최소화",
         "close": "닫기",
         "loading": "로드 중...",
+        "initializing": "주크박스를 초기화하는 중...",
+        "initializeFailed": "주크박스 초기화에 실패했습니다",
         "ready": "준비 완료",
         "playing": "재생 중: {{name}} - {{artist}}",
         "error": "오류: {{message}}",

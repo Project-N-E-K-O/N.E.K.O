@@ -117,6 +117,7 @@ _MAGIC_COMMAND_IMAGE_DROP_REQUEST_MAX = 64
 _VOICE_PROACTIVE_ACK_GRACE_S = 0.05
 _TEXT_SESSION_INPUT_TYPES = frozenset({"text", "avatar_drop_image", "user_image"})
 _IMAGE_INPUT_TYPES = frozenset({"screen", "camera", "avatar_drop_image", "user_image"})
+_LIVE_VISION_STREAM_INPUT_TYPES = frozenset({"screen", "camera"})
 _CONTEXT_APPEND_DEDUP_TTL_SECONDS = 120.0
 _CONTEXT_APPEND_DEDUP_MAX_ENTRIES = 256
 _CONTEXT_APPEND_READY_FLUSH_MAX_PASSES = 8
@@ -9384,14 +9385,23 @@ class LLMSessionManager:
         self.sync_message_queue.put({'type': 'system', 'data': 'API server disconnected'})
         await self.cleanup(expected_session=expected_session)
     
+    def _should_drop_live_vision_stream(self, input_type: str | None) -> bool:
+        """Deliberately checked at each stream boundary; callers may enter below stream_data."""
+        return input_type in _LIVE_VISION_STREAM_INPUT_TYPES and self.is_goodbye_silent()
+
     async def stream_data(self, message: dict):  # 向Core API发送Media数据
-        if message.get("input_type") == "audio":
+        input_type = message.get("input_type")
+        if self._should_drop_live_vision_stream(input_type):
+            return
+        if input_type == "audio":
             await self._enqueue_audio_stream_data(message)
             return
         await self._stream_data_now(message)
 
     async def _stream_data_now(self, message: dict):
         input_type = message.get("input_type")
+        if self._should_drop_live_vision_stream(input_type):
+            return
         # 检查session是否就绪
         async with self.input_cache_lock:
             if not self.session_ready:
@@ -9410,6 +9420,8 @@ class LLMSessionManager:
         # 在锁外检查是否需要创建新session（不要在锁内创建session，避免死锁）
         if not self.session_ready and self._starting_session_count == 0:
             if not self.session or not self.is_active:
+                if input_type in _LIVE_VISION_STREAM_INPUT_TYPES:
+                    return
                 # Memory Server 专属冷却检查
                 if self._emit_cooldown_turn_end_if_needed():
                     return
@@ -9434,6 +9446,8 @@ class LLMSessionManager:
         """Internal method: the actual stream_data processing logic"""
         data = message.get("data")
         input_type = message.get("input_type")
+        if self._should_drop_live_vision_stream(input_type):
+            return
         # 检查session是否发生致命错误（如1011错误、Response timeout）
         if self.session and isinstance(self.session, OmniRealtimeClient):
             if hasattr(self.session, '_fatal_error_occurred') and self.session._fatal_error_occurred:
@@ -9447,6 +9461,8 @@ class LLMSessionManager:
 
         # 如果 session 不存在或不活跃，检查是否可以自动重建
         if not self.session or not self.is_active:
+            if input_type in _LIVE_VISION_STREAM_INPUT_TYPES:
+                return
             # Memory Server 专属冷却检查
             if self._emit_cooldown_turn_end_if_needed():
                 return

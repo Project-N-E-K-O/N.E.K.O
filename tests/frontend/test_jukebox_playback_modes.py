@@ -7,6 +7,7 @@ from playwright.sync_api import Page
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 JUKEBOX_SCRIPT = (REPO_ROOT / "static" / "Jukebox.js").read_text(encoding="utf-8")
+JUKEBOX_LOADER_SCRIPT = (REPO_ROOT / "static" / "jukebox-loader.js").read_text(encoding="utf-8")
 JUKEBOX_TEMPLATE = (REPO_ROOT / "templates" / "jukebox.html").read_text(encoding="utf-8")
 
 HARNESS_HTML = """
@@ -122,6 +123,85 @@ def setup_jukebox_page(mock_page: Page) -> None:
     )
 
 
+@pytest.mark.frontend
+def test_jukebox_loader_native_mode_keeps_animation_facade(mock_page: Page):
+    mock_page.set_content(
+        """
+        <script>
+          window.nativeToggled = false;
+          window.__nekoJukeboxToggle = function() {
+            window.nativeToggled = true;
+          };
+          window.t = (key, fallback) => typeof fallback === 'string' ? fallback : key;
+        </script>
+        """
+    )
+    mock_page.add_script_tag(content=JUKEBOX_LOADER_SCRIPT)
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+          const calls = [];
+          window.lanlan_config = { model_type: 'live3d', live3d_sub_type: 'mmd' };
+          window.mmdManager = {
+            currentAnimationUrl: '/idle.vmd',
+            currentModel: { mesh: { skeleton: { pose: () => calls.push('pose') } } },
+            animationModule: {
+              stop: () => calls.push('stop'),
+              pause: () => calls.push('pause'),
+              play: () => calls.push('module-play')
+            },
+            cursorFollow: {
+              setAnimationMode: (mode) => calls.push('cursor:' + mode)
+            },
+            loadAnimation: async (path) => calls.push('load:' + path),
+            playAnimation: (mode) => calls.push('play:' + mode)
+          };
+
+          await window.Jukebox.playVMD('/dance.vmd');
+          window.Jukebox.togglePause();
+          window.Jukebox.togglePause();
+          window.Jukebox.stopVMD(true);
+          window.Jukebox.toggle();
+
+          return {
+            hasFacade: window.Jukebox.__nativeBridgeFacade === true,
+            nativeToggled: window.nativeToggled,
+            webLoaderToggle: !!window.__nekoJukeboxToggle.__nekoJukeboxWebLoader,
+            lazyFlag: !!window.__NEKO_JUKEBOX_LAZY_LOADER__,
+            state: {
+              isPlaying: window.Jukebox.State.isPlaying,
+              isVMDPlaying: window.Jukebox.State.isVMDPlaying,
+              isPaused: window.Jukebox.State.isPaused
+            },
+            calls
+          };
+        }
+        """
+    )
+
+    assert result == {
+        "hasFacade": True,
+        "nativeToggled": True,
+        "webLoaderToggle": False,
+        "lazyFlag": False,
+        "state": {
+            "isPlaying": False,
+            "isVMDPlaying": False,
+            "isPaused": False,
+        },
+        "calls": [
+            "load:/dance.vmd",
+            "play:dance",
+            "pause",
+            "cursor:idle",
+            "module-play",
+            "cursor:dance",
+            "stop",
+        ],
+    }
+
+
 def test_jukebox_action_column_reserves_space_for_two_buttons():
     assert ".jukebox-table col.jukebox-col-action {\n        width: 104px;" in JUKEBOX_SCRIPT
     assert ".jukebox-table td.song-action" in JUKEBOX_SCRIPT
@@ -130,7 +210,7 @@ def test_jukebox_action_column_reserves_space_for_two_buttons():
 
 def test_jukebox_sequence_column_reserves_lock_space_and_centers_numbers():
     assert ".jukebox-table col.jukebox-col-sequence {\n        width: 66px;" in JUKEBOX_SCRIPT
-    assert ".jukebox-sort-lock-btn {\n        width: 21px;" in JUKEBOX_SCRIPT
+    assert ".jukebox-sort-lock-btn {\n        width: 22px;" in JUKEBOX_SCRIPT
     assert ".jukebox-sort-lock-btn svg {\n        width: 14px;" in JUKEBOX_SCRIPT
     assert ".jukebox-table td.song-index" in JUKEBOX_SCRIPT
     assert "text-align: center;" in JUKEBOX_SCRIPT
