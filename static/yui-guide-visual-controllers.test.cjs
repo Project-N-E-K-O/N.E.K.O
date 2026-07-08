@@ -1580,13 +1580,14 @@ test('PetalTransitionController aligns every cue-triggered petal transition from
         7,
         'voice',
         'text',
-        Date.now() - 1000
+        Date.now() - 1000,
+        3000
     );
 
     assert.equal(calls[1], 'wave');
-    assert.deepEqual(calls[2], ['return', 2600]);
+    assert.deepEqual(calls[2], ['return', 3000]);
     assert.ok(
-        calls[0][1] >= 6350 && calls[0][1] <= 6450,
-        'petal cue should wait until narration duration minus the 2600ms transition window'
+        calls[0][1] >= 5950 && calls[0][1] <= 6050,
+        'petal cue should wait until narration duration minus the shared transition window'
     );
 });

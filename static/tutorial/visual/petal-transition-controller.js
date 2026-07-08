@@ -812,14 +812,17 @@
             }
         }
 
-        async playAtCue(scene, sceneRunId, voiceKey, text, narrationStartedAt) {
+        async playAtCue(scene, sceneRunId, voiceKey, text, narrationStartedAt, cueWindowMs) {
             const director = this.director;
             const petalSequencePromise = this.preloadReturnPetalSequence();
             const durationMs = director.getAvatarFloatingNarrationDurationMs(voiceKey, text);
             const reducedMotion = director.shouldReduceTutorialMotion();
-            const minimumPetalDurationMs = reducedMotion ? 900 : 2600;
+            const defaultCueWindowMs = reducedMotion ? 900 : 2600;
+            const minimumPetalDurationMs = Number.isFinite(cueWindowMs)
+                ? Math.max(1, Math.floor(cueWindowMs))
+                : defaultCueWindowMs;
             // 修改原因：所有新手教程的花瓣转场都包含挥手和模型恢复，开始点应由动画窗口反推，
-            // 避免短语种过早切换或长语种台词还没播完画面已经结束。
+            // 并复用 timeline 事件的 beforeAudioEndMs，避免派发 cue 和实际动画窗口漂移。
             const cueMs = clamp(Math.round(durationMs - minimumPetalDurationMs), 900, Math.max(900, durationMs));
             const elapsedMs = Math.max(0, Date.now() - narrationStartedAt);
             const waitMs = Math.max(0, cueMs - elapsedMs);

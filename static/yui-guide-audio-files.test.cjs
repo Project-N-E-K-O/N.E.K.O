@@ -77,13 +77,22 @@ function collectGuideAudioDurationConfig() {
     return result;
 }
 
-function readAudioDurationMs(audioPath) {
+function readAudioDurationMs(audioPath, ffprobeCommand) {
     const output = execFileSync(
-        'ffprobe',
+        ffprobeCommand,
         ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', audioPath],
         { encoding: 'utf8' }
     );
     return Math.round(Number(output.trim()) * 1000);
+}
+
+function resolveFfprobeCommand() {
+    try {
+        execFileSync('ffprobe', ['-version'], { stdio: 'ignore' });
+        return 'ffprobe';
+    } catch (_) {
+        return '';
+    }
 }
 
 test('daily tutorial round scenes have recorded audio files for supported locales', () => {
@@ -105,7 +114,13 @@ test('daily tutorial round scenes have recorded audio files for supported locale
     assert.deepEqual(missing, []);
 });
 
-test('daily tutorial audio keys have measured duration config for supported locales', () => {
+test('daily tutorial audio keys have measured duration config for supported locales', (t) => {
+    const ffprobeCommand = resolveFfprobeCommand();
+    if (!ffprobeCommand) {
+        t.skip('ffprobe unavailable; skipping measured audio duration comparison');
+        return;
+    }
+
     const guides = loadGuides();
     const audioFilesByKey = mergeAudioFilesByKey(guides);
     const durationConfigByKey = collectGuideAudioDurationConfig();
@@ -121,8 +136,12 @@ test('daily tutorial audio keys have measured duration config for supported loca
             }
 
             const audioFile = audioFilesByKey[key] && audioFilesByKey[key][locale];
+            if (!audioFile) {
+                missing.push(`${key}:${locale}:audio-file`);
+                continue;
+            }
             const audioPath = path.join(guideAudioRoot, locale, audioFile);
-            const measuredDurationMs = readAudioDurationMs(audioPath);
+            const measuredDurationMs = readAudioDurationMs(audioPath, ffprobeCommand);
             if (Math.abs(configuredDurationMs - measuredDurationMs) > 25) {
                 mismatched.push(`${key}:${locale}:configured=${configuredDurationMs}:measured=${measuredDurationMs}`);
             }

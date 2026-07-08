@@ -8338,8 +8338,8 @@
             return 0;
         }
 
-        async playAvatarFloatingPetalTransitionAtCue(scene, sceneRunId, voiceKey, text, narrationStartedAt) {
-            return this.petalTransitionController.playAtCue(scene, sceneRunId, voiceKey, text, narrationStartedAt);
+        async playAvatarFloatingPetalTransitionAtCue(scene, sceneRunId, voiceKey, text, narrationStartedAt, cueWindowMs) {
+            return this.petalTransitionController.playAtCue(scene, sceneRunId, voiceKey, text, narrationStartedAt, cueWindowMs);
         }
 
         rememberAvatarFloatingSceneCursorAnchor(sceneId, element) {
