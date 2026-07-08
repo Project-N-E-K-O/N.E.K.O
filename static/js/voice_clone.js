@@ -465,8 +465,8 @@ function isDoubaoTtsProvider(provider) {
     return provider === 'doubao_tts';
 }
 
-function isDoubaoCustomSpeakerId(value) {
-    return /^custom_[A-Za-z0-9_]{3,}$/.test(String(value || '').trim());
+function isDoubaoSpeakerId(value) {
+    return /^S_[A-Za-z0-9]+$/.test(String(value || '').trim());
 }
 
 function getVoiceCloneProviderKeyField(provider) {
@@ -1010,7 +1010,7 @@ function updatePrefixFieldForProvider(provider) {
     const row = prefixInput.closest('.field-row');
     const registerText = document.querySelector('.register-voice-btn .register-text');
     const prefixLabel = document.getElementById('prefixLabel')
-        || (row ? row.querySelector('label[data-i18n="voice.customPrefix"], label[data-i18n="voice.doubaoCustomSpeakerIdLabel"]') : null);
+        || (row ? row.querySelector('label[data-i18n="voice.customPrefix"], label[data-i18n="voice.doubaoSpeakerIdLabel"]') : null);
     let prefixHint = document.getElementById('prefixHint');
     if (!prefixHint && row) {
         prefixHint = document.createElement('label');
@@ -1021,10 +1021,10 @@ function updatePrefixFieldForProvider(provider) {
 
     if (isDoubaoTtsProvider(provider)) {
         prefixInput.removeAttribute('maxlength');
-        setI18nText(prefixLabel, 'voice.doubaoCustomSpeakerIdLabel', 'Doubao Custom Speaker ID (custom_ required)');
-        setI18nText(prefixHint, 'voice.doubaoCustomSpeakerIdNote', 'Create or retrain a custom speaker through the Doubao Voice Clone V3 API. The saved voice_id is synthesized with seed-icl-2.0, e.g. custom_zh_phae_volca');
-        setI18nPlaceholder(prefixInput, 'voice.doubaoCustomSpeakerIdPlaceholder', 'e.g. custom_zh_phae_volca');
-        setI18nText(registerText, 'voice.doubaoCreateCustom', 'Create/Train Custom Speaker');
+        setI18nText(prefixLabel, 'voice.doubaoSpeakerIdLabel', 'Doubao Speaker ID (starts with S_, required)');
+        setI18nText(prefixHint, 'voice.doubaoSpeakerIdNote', 'Paste the existing Doubao Speech Speaker ID from Volcengine exactly. It must start with S_, e.g. S_xeC2CDp72');
+        setI18nPlaceholder(prefixInput, 'voice.doubaoSpeakerIdPlaceholder', 'e.g. S_xeC2CDp72');
+        setI18nText(registerText, 'voice.register', 'Register Voice');
         return;
     }
 
@@ -1556,10 +1556,10 @@ async function registerVoice() {
         if (provider !== 'doubao_tts') {
             return false;
         }
-        if (isDoubaoCustomSpeakerId(prefix)) return false;
+        if (isDoubaoSpeakerId(prefix)) return false;
         resultDiv.textContent = window.t
-            ? window.t('voice.doubaoCustomSpeakerIdRequired')
-            : '豆包声音复刻需要填写 custom_ 开头的 Custom Speaker ID';
+            ? window.t('voice.doubaoSpeakerIdRequired')
+            : '豆包声音复刻需要填写 S_ 开头的 Speaker ID';
         resultDiv.className = 'result error';
         return true;
     };

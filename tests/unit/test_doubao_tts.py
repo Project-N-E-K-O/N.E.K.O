@@ -235,10 +235,10 @@ def test_get_tts_worker_doubao_clone_ignores_foreign_shared_tts_key(monkeypatch)
 
 
 @pytest.mark.unit
-def test_doubao_voice_clone_accepts_custom_speaker_id():
-    assert characters_router._normalize_doubao_custom_speaker_id(
-        " custom_zh_phae_volca "
-    ) == "custom_zh_phae_volca"
+def test_doubao_voice_clone_accepts_existing_speaker_id():
+    assert characters_router._normalize_doubao_voice_clone_speaker_id(
+        " S_xeC2CDp72 "
+    ) == "S_xeC2CDp72"
 
 
 @pytest.mark.unit
@@ -281,48 +281,6 @@ async def test_doubao_voice_clone_client_posts_openspeech_payload(monkeypatch):
     assert sent["body"]["speaker_id"] == "S_console1234"
     assert sent["body"]["audio"]["format"] == "wav"
     assert base64.b64decode(sent["body"]["audio"]["data"]) == b"wav-bytes"
-
-
-@pytest.mark.unit
-async def test_doubao_voice_clone_client_posts_custom_speaker_payload(monkeypatch):
-    requests = []
-
-    class _Transport(httpx.AsyncBaseTransport):
-        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
-            requests.append({
-                "url": str(request.url),
-                "headers": dict(request.headers),
-                "body": json.loads(request.content),
-            })
-            return httpx.Response(200, json={"code": 0, "data": {}})
-
-    original_async_client = httpx.AsyncClient
-
-    def patched_client(*args, **kwargs):
-        kwargs["transport"] = _Transport()
-        return original_async_client(*args, **kwargs)
-
-    monkeypatch.setattr(httpx, "AsyncClient", patched_client)
-
-    client = DoubaoVoiceCloneClient(
-        api_key="doubao-key",
-        base_url="https://openspeech.bytedance.com",
-        resource_id="seed-icl-2.0",
-    )
-    voice_id = await client.clone_voice(
-        io.BytesIO(b"wav-bytes"),
-        speaker_id="custom_speaker_id",
-        custom_speaker_id="custom_zh_phae_volca",
-        display_name="custom_zh_phae_volca",
-        allow_requested_id_fallback=True,
-    )
-
-    assert voice_id == "custom_zh_phae_volca"
-    sent = requests[0]
-    assert "x-api-resource-id" not in sent["headers"]
-    assert sent["body"]["speaker_id"] == "custom_speaker_id"
-    assert sent["body"]["custom_speaker_id"] == "custom_zh_phae_volca"
-    assert sent["body"]["display_name"] == "custom_zh_phae_volca"
 
 
 @pytest.mark.unit
@@ -371,13 +329,13 @@ def test_doubao_tts_frontend_and_config_are_wired():
     assert "keybook_api_providers_full" in settings_js
     assert "doubao_tts: 'doubao_tts'" in voice_clone_js
     assert DOUBAO_VOICE_CLONE_RESOURCE_ID == "seed-icl-2.0"
-    assert "isDoubaoCustomSpeakerId" in voice_clone_js
-    assert "doubaoCustomSpeakerIdRequired" in voice_clone_js
+    assert "isDoubaoSpeakerId" in voice_clone_js
+    assert "doubaoSpeakerIdRequired" in voice_clone_js
     assert "doubao_speaker_mode" not in voice_clone_js
     assert "cfgHasDoubaoTtsKey" in voice_clone_js
     assert "probe_kind='http_tts'" in registry_py
     assert "tts_config_visible=False" in registry_py
     assert "capabilities=frozenset({'clone'})" in registry_py
-    assert "_normalize_doubao_custom_speaker_id(prefix)" in router_py
-    assert "speaker_id='custom_speaker_id'" in router_py
+    assert "_normalize_doubao_voice_clone_speaker_id(prefix)" in router_py
+    assert "custom_speaker_id" not in router_py
     assert "resource_id = DOUBAO_TTS_DEFAULT_RESOURCE_ID" in router_py

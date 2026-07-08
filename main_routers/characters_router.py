@@ -1468,10 +1468,10 @@ def _build_minimax_request_prefix(prefix: str, provider_label: str) -> tuple[str
     return original_prefix, f"{safe_prefix}{uuid.uuid4().hex[:8]}"
 
 
-def _normalize_doubao_custom_speaker_id(value: str) -> str:
+def _normalize_doubao_voice_clone_speaker_id(value: str) -> str:
     speaker_id = str(value or '').strip()
-    if not re.fullmatch(r"custom_[A-Za-z0-9_]{3,}", speaker_id):
-        raise ValueError("豆包自定义声音复刻需要填写 custom_ 开头的 Speaker ID")
+    if not re.fullmatch(r"S_[A-Za-z0-9]+", speaker_id):
+        raise ValueError("豆包声音复刻需要填写 S_ 开头的 Speaker ID")
     return speaker_id
 
 
@@ -5881,7 +5881,7 @@ async def voice_clone(
 
         elif provider == 'doubao_tts':
             try:
-                custom_speaker_id = _normalize_doubao_custom_speaker_id(prefix)
+                speaker_id = _normalize_doubao_voice_clone_speaker_id(prefix)
             except ValueError as exc:
                 return JSONResponse({
                     'error': 'DOUBAO_SPEAKER_ID_REQUIRED',
@@ -5896,11 +5896,9 @@ async def voice_clone(
             )
             voice_id = await client.clone_voice(
                 normalized_buffer,
-                speaker_id='custom_speaker_id',
-                custom_speaker_id=custom_speaker_id,
-                display_name=custom_speaker_id,
+                speaker_id=speaker_id,
+                display_name=speaker_id,
                 audio_format='wav',
-                allow_requested_id_fallback=True,
             )
             voice_data = {
                 'voice_id': voice_id,
@@ -5909,7 +5907,6 @@ async def voice_clone(
                 'ref_language': ref_language,
                 'provider': 'doubao_tts',
                 'source': 'clone',
-                'doubao_custom_speaker_id': custom_speaker_id,
                 'doubao_base_url': base_url,
                 'doubao_resource_id': resource_id,
                 'clone_model': resource_id,

@@ -225,6 +225,14 @@ def test_doubao_tts_clone_key_check_matches_backend_routing(mock_page: Page, run
             assistApiKeyDoubaoTts: '',
             assistApiKeyDoubao: ''
         }, 'doubao_tts')"""
+    ) is False
+    assert mock_page.evaluate(
+        """() => cfgHasCloneProviderKey({
+            ttsModelProvider: '',
+            ttsModelApiKey: '',
+            assistApiKeyDoubaoTts: 'doubao-speech-key',
+            assistApiKeyDoubao: ''
+        }, 'doubao_tts')"""
     ) is True
 
 
