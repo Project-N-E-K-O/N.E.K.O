@@ -660,6 +660,32 @@
     }
     mod.buildStreamDataMessage = buildStreamDataMessage;
 
+    function getLiveVisionStreamBlockedReason(inputType) {
+        if (inputType !== 'screen' && inputType !== 'camera') {
+            return '';
+        }
+        if (typeof window.isNekoGoodbyeModeActive === 'function' && window.isNekoGoodbyeModeActive()) {
+            return 'goodbye_active';
+        }
+        if (!S.isRecording) {
+            return 'recording_stopped';
+        }
+        if (!S.voiceChatActive) {
+            return 'voice_session_inactive';
+        }
+        return '';
+    }
+    mod.getLiveVisionStreamBlockedReason = getLiveVisionStreamBlockedReason;
+
+    function canSendLiveVisionStreamFrame(inputType) {
+        if (inputType !== 'screen' && inputType !== 'camera') {
+            return true;
+        }
+        if (getLiveVisionStreamBlockedReason(inputType)) return false;
+        return true;
+    }
+    mod.canSendLiveVisionStreamFrame = canSendLiveVisionStreamFrame;
+
     // ======================== startScreenVideoStreaming ========================
     function startScreenVideoStreaming(stream, input_type) {
         // 更新最后使用时间并调度闲置检查
@@ -686,6 +712,11 @@
             }
 
             S.videoSenderInterval = setInterval(function () {
+                var blockedReason = getLiveVisionStreamBlockedReason(input_type);
+                if (blockedReason) {
+                    stopScreening();
+                    return;
+                }
                 var frame = captureCanvasFrame(video, 0.8);
                 if (frame && frame.dataUrl && S.socket && S.socket.readyState === WebSocket.OPEN) {
                     S.socket.send(JSON.stringify(buildStreamDataMessage(frame.dataUrl, input_type)));
@@ -939,16 +970,21 @@
                 console.log('[屏幕源] 进入后端 pyautogui 轮询模式');
 
                 // 立即发送第一帧
-                if (S.socket && S.socket.readyState === WebSocket.OPEN) {
+                if (canSendLiveVisionStreamFrame('screen') && S.socket && S.socket.readyState === WebSocket.OPEN) {
                     S.socket.send(JSON.stringify(buildStreamDataMessage(backendTest, 'screen')));
                 }
 
                 // 复用 videoSenderInterval，stopScreening() 可统一清理
                 S.videoSenderInterval = setInterval(async function () {
                     try {
+                        var blockedReason = getLiveVisionStreamBlockedReason('screen');
+                        if (blockedReason) {
+                            stopScreening();
+                            return;
+                        }
                         var r = await fetchBackendScreenshot();
                         var frame = r.dataUrl;
-                        if (frame && S.socket && S.socket.readyState === WebSocket.OPEN) {
+                        if (frame && canSendLiveVisionStreamFrame('screen') && S.socket && S.socket.readyState === WebSocket.OPEN) {
                             S.socket.send(JSON.stringify(buildStreamDataMessage(frame, 'screen')));
                         }
                     } catch (e) {

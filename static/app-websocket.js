@@ -2770,6 +2770,11 @@
                 } else if (response.type === 'session_preparing') {
                     console.log(window.t('console.sessionPreparingReceived'), response.input_mode);
                     if (response.input_mode !== 'text') {
+                        if (typeof window.isNekoGoodbyeModeActive === 'function'
+                                && window.isNekoGoodbyeModeActive()) {
+                            if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
+                            return;
+                        }
                         var preparingMessage = window.t ? window.t('app.voiceSystemPreparing') : '语音系统准备中，请稍候...';
                         if (typeof window.showVoicePreparingToast === 'function') window.showVoicePreparingToast(preparingMessage);
                     }
@@ -2780,6 +2785,7 @@
                             && typeof window.isNekoGoodbyeModeActive === 'function'
                             && window.isNekoGoodbyeModeActive()) {
                         console.log('[App] ignore stale audio session_started while goodbye is active');
+                        if (typeof window.stopScreening === 'function') window.stopScreening();
                         if (typeof window.cancelPendingSessionStart === 'function') {
                             window.cancelPendingSessionStart('Voice start cancelled by goodbye');
                         } else {
@@ -2943,6 +2949,7 @@
                     S.isTextSessionActive = false;
                     S.voiceChatActive = false;
                     S.voiceStartPending = false;
+                    if (typeof window.stopScreening === 'function') window.stopScreening();
                     stopAssistantTextOutputOnSessionEnd('session_ended_by_server');
                     clearAssistantLifecycleOnDisconnect('session_ended_by_server');
 
