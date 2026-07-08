@@ -1965,6 +1965,50 @@
         }
     }
 
+    function getVoiceChatComposerHiddenElectronBridge() {
+        var bridge = window.nekoElectronVoiceChatComposerHidden;
+        return bridge && typeof bridge.send === 'function' ? bridge : null;
+    }
+
+    function postVoiceChatComposerHiddenElectron(payload) {
+        var bridge = getVoiceChatComposerHiddenElectronBridge();
+        if (!bridge) return false;
+        try {
+            bridge.send(payload || {});
+            return true;
+        } catch (err) {
+            console.warn('[VoiceChat] Electron composer hidden bridge failed:', err);
+            return false;
+        }
+    }
+
+    function postVoiceChatComposerHiddenPayload(payload) {
+        postInterpageMessage(payload);
+        postVoiceChatComposerHiddenElectron(payload);
+    }
+
+    function isVoiceChatComposerHiddenMessageForCurrentLanlan(data) {
+        if (!data || !data.lanlan_name) return true;
+        var currentName = getCurrentLanlanName();
+        if (currentName) return data.lanlan_name === currentName;
+        return data.active === false;
+    }
+
+    function handleVoiceChatComposerHiddenMessage(data, via) {
+        if (!data || data.action !== 'voice_chat_active') return false;
+        if (!isVoiceChatComposerHiddenMessageForCurrentLanlan(data)) return true;
+        var vcHidden = !!data.active;
+        if (S) {
+            S.voiceChatActive = vcHidden;
+        }
+        var vcEffectiveHidden = vcHidden || (!vcHidden && shouldKeepVoiceComposerHidden());
+        if (S) {
+            S.voiceChatActive = vcEffectiveHidden;
+        }
+        applyVoiceChatComposerHidden(vcEffectiveHidden);
+        return true;
+    }
+
     function readGoodbyeChatComposerHidden() {
         try {
             if (typeof window.isNekoGoodbyeModeActive === 'function'
@@ -2225,7 +2269,7 @@
         }
         applyVoiceChatComposerHidden(effectiveHidden);
         // 同步给其它页面（chat.html ↔ index.html）
-        postInterpageMessage({
+        postVoiceChatComposerHiddenPayload({
             action: 'voice_chat_active',
             active: effectiveHidden,
             lanlan_name: getCurrentLanlanName(),
@@ -3194,17 +3238,7 @@
                     case 'voice_chat_active': {
                         // 来自另一个窗口的语音对话状态变更，同步本地 React composer 隐藏状态
                         // 校验 lanlan_name：多角色场景下避免串状态
-                        var vcCurrentName = getCurrentLanlanName();
-                        if (event.data.lanlan_name && (!vcCurrentName || event.data.lanlan_name !== vcCurrentName)) break;
-                        var vcHidden = !!event.data.active;
-                        if (S) {
-                            S.voiceChatActive = vcHidden;
-                        }
-                        var vcEffectiveHidden = vcHidden || (!vcHidden && shouldKeepVoiceComposerHidden());
-                        if (S) {
-                            S.voiceChatActive = vcEffectiveHidden;
-                        }
-                        applyVoiceChatComposerHidden(vcEffectiveHidden);
+                        handleVoiceChatComposerHiddenMessage(event.data, 'broadcast');
                         break;
                     }
                     case 'goodbye_chat_composer_hidden': {
@@ -5576,6 +5610,10 @@
         handleGoodbyeChatComposerHiddenMessage((event && event.detail) || {}, 'electron-ipc');
     });
 
+    window.addEventListener('neko:electron-voice-chat-composer-hidden', function (event) {
+        handleVoiceChatComposerHiddenMessage((event && event.detail) || {}, 'electron-ipc');
+    });
+
     window.addEventListener('message', function (event) {
         if (event.origin !== window.location.origin) {
             console.warn('[Security] 拒绝来自不同源的 idle_activity 消息:', event.origin);
@@ -5712,6 +5750,8 @@
     mod.cleanupPNGTuberOverlayUI = cleanupPNGTuberOverlayUI;
     mod.syncVoiceChatComposerHidden = syncVoiceChatComposerHidden;
     mod.shouldKeepVoiceComposerHidden = shouldKeepVoiceComposerHidden;
+    mod.postVoiceChatComposerHiddenElectron = postVoiceChatComposerHiddenElectron;
+    mod.handleVoiceChatComposerHiddenMessage = handleVoiceChatComposerHiddenMessage;
     mod.applyGoodbyeChatComposerHidden = applyGoodbyeChatComposerHidden;
     mod.postGoodbyeChatComposerHiddenElectron = postGoodbyeChatComposerHiddenElectron;
     mod.handleGoodbyeChatComposerHiddenMessage = handleGoodbyeChatComposerHiddenMessage;
