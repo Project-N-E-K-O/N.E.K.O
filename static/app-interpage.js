@@ -1929,6 +1929,8 @@
     var VOICE_CONFIG_SWITCH_STALE_MS = 45000;
     var _voiceConfigSwitchOps = {};
     var _voiceConfigSwitchWaiters = [];
+    var _pendingVoiceChatComposerHiddenByLanlan = {};
+    var VOICE_CHAT_COMPOSER_PENDING_STALE_MS = 30000;
 
     function getCurrentLanlanName() {
         try {
@@ -1987,25 +1989,73 @@
         postVoiceChatComposerHiddenElectron(payload);
     }
 
+    function getVoiceChatComposerHiddenMessageTimestamp(data) {
+        var timestamp = Number(data && data.timestamp);
+        return Number.isFinite(timestamp) ? timestamp : Date.now();
+    }
+
+    function prunePendingVoiceChatComposerHiddenMessages(now) {
+        now = now || Date.now();
+        Object.keys(_pendingVoiceChatComposerHiddenByLanlan).forEach(function (lanlanName) {
+            var data = _pendingVoiceChatComposerHiddenByLanlan[lanlanName];
+            if (!data || now - getVoiceChatComposerHiddenMessageTimestamp(data) > VOICE_CHAT_COMPOSER_PENDING_STALE_MS) {
+                delete _pendingVoiceChatComposerHiddenByLanlan[lanlanName];
+            }
+        });
+    }
+
+    function rememberPendingVoiceChatComposerHiddenMessage(data) {
+        if (!data || !data.lanlan_name) return false;
+        var lanlanName = String(data.lanlan_name);
+        var timestamp = getVoiceChatComposerHiddenMessageTimestamp(data);
+        prunePendingVoiceChatComposerHiddenMessages(timestamp);
+        var previous = _pendingVoiceChatComposerHiddenByLanlan[lanlanName];
+        if (!previous || timestamp >= getVoiceChatComposerHiddenMessageTimestamp(previous)) {
+            _pendingVoiceChatComposerHiddenByLanlan[lanlanName] = Object.assign({}, data, {
+                timestamp: timestamp
+            });
+        }
+        return true;
+    }
+
+    function applyVoiceComposerHiddenFromActive(active) {
+        var requestedHidden = !!active;
+        if (S) {
+            S.voiceChatActive = requestedHidden;
+        }
+        var effectiveHidden = requestedHidden || (!requestedHidden && shouldKeepVoiceComposerHidden());
+        if (S) {
+            S.voiceChatActive = effectiveHidden;
+        }
+        applyVoiceChatComposerHidden(effectiveHidden);
+        return effectiveHidden;
+    }
+
     function isVoiceChatComposerHiddenMessageForCurrentLanlan(data) {
         if (!data || !data.lanlan_name) return true;
         var currentName = getCurrentLanlanName();
-        if (currentName) return data.lanlan_name === currentName;
-        return data.active === false;
+        return !!currentName && data.lanlan_name === currentName;
     }
 
-    function handleVoiceChatComposerHiddenMessage(data, via) {
+    function handleVoiceChatComposerHiddenMessage(data) {
         if (!data || data.action !== 'voice_chat_active') return false;
+        if (data.lanlan_name && !getCurrentLanlanName()) {
+            rememberPendingVoiceChatComposerHiddenMessage(data);
+            return true;
+        }
         if (!isVoiceChatComposerHiddenMessageForCurrentLanlan(data)) return true;
-        var vcHidden = !!data.active;
-        if (S) {
-            S.voiceChatActive = vcHidden;
-        }
-        var vcEffectiveHidden = vcHidden || (!vcHidden && shouldKeepVoiceComposerHidden());
-        if (S) {
-            S.voiceChatActive = vcEffectiveHidden;
-        }
-        applyVoiceChatComposerHidden(vcEffectiveHidden);
+        applyVoiceComposerHiddenFromActive(data.active);
+        return true;
+    }
+
+    function consumePendingVoiceChatComposerHiddenMessage(lanlanName) {
+        var currentName = lanlanName || getCurrentLanlanName();
+        if (!currentName) return false;
+        prunePendingVoiceChatComposerHiddenMessages(Date.now());
+        var data = _pendingVoiceChatComposerHiddenByLanlan[currentName];
+        if (!data) return false;
+        delete _pendingVoiceChatComposerHiddenByLanlan[currentName];
+        applyVoiceComposerHiddenFromActive(data.active);
         return true;
     }
 
@@ -2259,15 +2309,7 @@
      * @param {boolean} hidden - true 表示收起输入栏；false 表示允许展开输入栏
      */
     function syncVoiceChatComposerHidden(hidden) {
-        var requestedHidden = !!hidden;
-        if (S) {
-            S.voiceChatActive = requestedHidden;
-        }
-        var effectiveHidden = requestedHidden || (!requestedHidden && shouldKeepVoiceComposerHidden());
-        if (S) {
-            S.voiceChatActive = effectiveHidden;
-        }
-        applyVoiceChatComposerHidden(effectiveHidden);
+        var effectiveHidden = applyVoiceComposerHiddenFromActive(hidden);
         // 同步给其它页面（chat.html ↔ index.html）
         postVoiceChatComposerHiddenPayload({
             action: 'voice_chat_active',
@@ -3238,7 +3280,7 @@
                     case 'voice_chat_active': {
                         // 来自另一个窗口的语音对话状态变更，同步本地 React composer 隐藏状态
                         // 校验 lanlan_name：多角色场景下避免串状态
-                        handleVoiceChatComposerHiddenMessage(event.data, 'broadcast');
+                        handleVoiceChatComposerHiddenMessage(event.data);
                         break;
                     }
                     case 'goodbye_chat_composer_hidden': {
@@ -5611,7 +5653,14 @@
     });
 
     window.addEventListener('neko:electron-voice-chat-composer-hidden', function (event) {
-        handleVoiceChatComposerHiddenMessage((event && event.detail) || {}, 'electron-ipc');
+        handleVoiceChatComposerHiddenMessage((event && event.detail) || {});
+    });
+
+    window.addEventListener('neko:config-injected', function (event) {
+        var detail = (event && event.detail) || {};
+        consumePendingVoiceChatComposerHiddenMessage(
+            getCurrentLanlanName() || detail.lanlan_name || ''
+        );
     });
 
     window.addEventListener('message', function (event) {
@@ -5750,8 +5799,10 @@
     mod.cleanupPNGTuberOverlayUI = cleanupPNGTuberOverlayUI;
     mod.syncVoiceChatComposerHidden = syncVoiceChatComposerHidden;
     mod.shouldKeepVoiceComposerHidden = shouldKeepVoiceComposerHidden;
+    mod.applyVoiceComposerHiddenFromActive = applyVoiceComposerHiddenFromActive;
     mod.postVoiceChatComposerHiddenElectron = postVoiceChatComposerHiddenElectron;
     mod.handleVoiceChatComposerHiddenMessage = handleVoiceChatComposerHiddenMessage;
+    mod.consumePendingVoiceChatComposerHiddenMessage = consumePendingVoiceChatComposerHiddenMessage;
     mod.applyGoodbyeChatComposerHidden = applyGoodbyeChatComposerHidden;
     mod.postGoodbyeChatComposerHiddenElectron = postGoodbyeChatComposerHiddenElectron;
     mod.handleGoodbyeChatComposerHiddenMessage = handleGoodbyeChatComposerHiddenMessage;
