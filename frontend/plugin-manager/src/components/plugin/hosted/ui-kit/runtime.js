@@ -294,7 +294,7 @@ function normalizeArtifact(input) {
     return {
       __normalizedArtifact: true,
       type,
-      view: type === 'text' ? 'preview' : 'preview',
+      view: 'preview',
       text: type === 'text' ? input : undefined,
       dataUrl: type !== 'text' && input.startsWith('data:') ? input : undefined,
       label: '',

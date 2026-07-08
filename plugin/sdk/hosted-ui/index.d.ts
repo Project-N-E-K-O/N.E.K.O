@@ -57,12 +57,12 @@ export type FormState<T extends Record<string, any>> = {
     (name: string, value: any): T
   }
   field: {
-    <K extends keyof T>(name: K): { value: T[K]; onChange: (value: T[K]) => T }
-    (name: string): { value: any; onChange: (value: any) => T }
+    <K extends keyof T>(name: K): { value: T[K]; onChange: (value: T[K]) => T; onBlur: () => FormTouched<T>; error: any; touched: boolean }
+    (name: string): { value: any; onChange: (value: any) => T; onBlur: () => FormTouched<T>; error: any; touched: boolean }
   }
   checkbox: {
-    <K extends keyof T>(name: K): { checked: boolean; onChange: (value: boolean) => T }
-    (name: string): { checked: boolean; onChange: (value: boolean) => T }
+    <K extends keyof T>(name: K): { checked: boolean; onChange: (value: boolean) => T; onBlur: () => FormTouched<T>; error: any; touched: boolean }
+    (name: string): { checked: boolean; onChange: (value: boolean) => T; onBlur: () => FormTouched<T>; error: any; touched: boolean }
   }
   reset: (next?: T | (() => T)) => T
   touched: FormTouched<T>
@@ -243,6 +243,7 @@ export function Switch(props: CommonProps & { checked?: boolean; label?: any; in
 export function Checkbox(props: CommonProps & { checked?: boolean; value?: boolean; label?: any; invalid?: boolean; error?: any; disabled?: boolean; onChange?: (value: boolean) => void }): any
 export function CheckboxGroup(props: CommonProps & { value?: any[]; options?: UiOption[]; disabled?: boolean; onChange?: (value: any[]) => void }): any
 export function Accordion(props: CommonProps & { id?: string; title?: any; label?: any; open?: boolean }): any
+/** Styled preformatted text container for markdown-like content. It does not parse Markdown into HTML. */
 export function Markdown(props: CommonProps & { source?: any; text?: any }): any
 export function ImageUpload(props: CommonProps & { value?: ArtifactLike | string; label?: any; placeholder?: any; alt?: string; accept?: string; maxBytes?: number; compact?: boolean; variant?: string; onChange?: (artifact: ArtifactLike) => void; onError?: (error: any) => void }): any
 export function AudioUpload(props: CommonProps & { value?: ArtifactLike | string; label?: any; placeholder?: any; accept?: string; maxBytes?: number; compact?: boolean; variant?: string; onChange?: (artifact: ArtifactLike) => void; onError?: (error: any) => void }): any
