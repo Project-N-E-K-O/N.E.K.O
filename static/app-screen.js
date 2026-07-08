@@ -687,10 +687,11 @@
     mod.canSendLiveVisionStreamFrame = canSendLiveVisionStreamFrame;
 
     async function stopLiveVisionStreamIfBlocked(inputType) {
-        if (!getLiveVisionStreamBlockedReason(inputType)) {
+        var blockedReason = getLiveVisionStreamBlockedReason(inputType);
+        if (!blockedReason) {
             return false;
         }
-        await stopScreenSharing(true);
+        await stopScreenSharing(blockedReason === 'goodbye_active');
         return true;
     }
     mod.stopLiveVisionStreamIfBlocked = stopLiveVisionStreamIfBlocked;

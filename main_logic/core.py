@@ -9386,6 +9386,7 @@ class LLMSessionManager:
         await self.cleanup(expected_session=expected_session)
     
     def _should_drop_live_vision_stream(self, input_type: str | None) -> bool:
+        """Deliberately checked at each stream boundary; callers may enter below stream_data."""
         return input_type in _LIVE_VISION_STREAM_INPUT_TYPES and self.is_goodbye_silent()
 
     async def stream_data(self, message: dict):  # 向Core API发送Media数据
