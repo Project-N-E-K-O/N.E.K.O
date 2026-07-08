@@ -2010,7 +2010,15 @@ window.AgentHUD.refreshHudI18n = function () {
 
     const title = document.getElementById('agent-task-hud-title');
     if (title) {
-        title.innerHTML = '<span style="color: var(--neko-popup-accent, #2a7bc4); margin-right: 8px;">⚡</span>' + titleText;
+        // 用 DOM 节点重建（图标 span + 文本节点），避免 innerHTML 拼接触发静态扫描告警；
+        // titleText 是受信任的 i18n 文案，此处仅为规避 innerHTML 用法。
+        title.textContent = '';
+        const icon = document.createElement('span');
+        icon.textContent = '⚡';
+        icon.style.color = 'var(--neko-popup-accent, #2a7bc4)';
+        icon.style.marginRight = '8px';
+        title.appendChild(icon);
+        title.appendChild(document.createTextNode(titleText));
     }
     const stats = document.getElementById('agent-task-hud-stats');
     if (stats) {
@@ -2028,16 +2036,16 @@ window.AgentHUD.refreshHudI18n = function () {
     }
 
     // 用缓存的任务快照重渲染卡片，刷新状态 / 类型 / 终止按钮等文案。
-    // 仅在 HUD 已存在且当前可见时执行：_doUpdateAgentTaskHUD 在 HUD 缺失时会创建、
+    // 仅在 HUD 已存在且当前可见时执行：updateAgentTaskHUD 在 HUD 缺失时会创建、
     // 在有活动任务且隐藏时会自动显示，纯 i18n 重译不应触发这些副作用。
     const hud = document.getElementById('agent-task-hud');
     const hudVisible = !!(hud && hud.style.display !== 'none' && hud.style.opacity !== '0');
-    if (hudVisible && this._latestTasksData && typeof this._doUpdateAgentTaskHUD === 'function') {
+    if (hudVisible && this._latestTasksData && typeof this.updateAgentTaskHUD === 'function') {
         // 卡片走差分更新：_updateTaskCard 仅在状态变化时改状态徽标，且从不更新类型标签 /
         // 卡片终止按钮 title。语言切换而任务状态不变时（例如运行中的 computer_use 任务）
         // 卡片文案会停留旧语言。差分门控是每次 WS 更新的热路径，不宜改动；因此在这条低频的
-        // 重译路径里显式清空已有卡片，交由 _doUpdateAgentTaskHUD 用当前语言重建，完整覆盖
-        // 状态 / 类型 / 终止按钮等本地化字段。
+        // 重译路径里显式清空已有卡片，再走 updateAgentTaskHUD（保留其 RAF 节流，与常规渲染
+        // 管线一致）用当前语言重建，完整覆盖状态 / 类型 / 终止按钮等本地化字段。
         const taskList = document.getElementById('agent-task-list');
         if (taskList) {
             taskList.querySelectorAll('.task-card').forEach((card) => {
@@ -2048,7 +2056,7 @@ window.AgentHUD.refreshHudI18n = function () {
                 card.remove();
             });
         }
-        try { this._doUpdateAgentTaskHUD(); } catch (_) { /* ignore */ }
+        try { this.updateAgentTaskHUD(this._latestTasksData); } catch (_) { /* ignore */ }
     }
 };
 
