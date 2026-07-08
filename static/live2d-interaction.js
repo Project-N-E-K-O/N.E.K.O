@@ -75,6 +75,7 @@ function logLive2DClickTriggerSummary(label, details = {}) {
         resolvedHitArea: details.resolvedHitArea || null,
         fallback: details.fallback || null,
         reason: details.reason || null,
+        summaryType: details.summaryType || 'trigger_result',
         emotion: details.emotion || null,
         priority: details.priority ?? null,
         durationMs: details.durationMs ?? null,
@@ -2504,7 +2505,8 @@ Live2DManager.prototype._playTouchSetWithFallback = async function(hitAreaId) {
             requestedHitArea,
             resolvedHitArea: null,
             fallback: 'random_emotion',
-            reason: 'touch_set_not_configured'
+            reason: 'touch_set_not_configured',
+            summaryType: 'routing_decision'
         });
         await this.triggerRandomEmotion();
         return false;
@@ -2528,7 +2530,8 @@ Live2DManager.prototype._playTouchSetWithFallback = async function(hitAreaId) {
         requestedHitArea,
         resolvedHitArea: useBlock,
         fallback: 'random_emotion',
-        reason: 'touch_area_has_no_animation'
+        reason: 'touch_area_has_no_animation',
+        summaryType: 'routing_decision'
     });
     await this.triggerRandomEmotion();
     return false;

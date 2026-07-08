@@ -78,22 +78,30 @@ def test_live2d_click_touch_set_logs_trigger_summary():
     assert "triggered=${triggerCount}, motions=${motionCount}, expressions=${expressionCount}" in source
     assert "requestedHitArea" in source
     assert "resolvedHitArea" in source
+    assert "summaryType" in source
     assert "motionCandidates" in source
     assert "expressionCandidates" in source
     assert "failedMotions" in source
     assert "failedExpressions" in source
     assert "await this._playTouchSetAnimation(useBlock, { requestedHitArea });" in source
     assert "fallback: 'default'" in source
+    assert "summaryType: 'routing_decision'" in source
     assert "triggerLog.motions.push({" in source
     assert "triggerLog.expressions.push({" in source
 
 
-def test_live2d_click_prefers_motion_and_uses_expression_as_fallback():
+def test_live2d_random_click_prefers_motion_and_uses_expression_as_fallback():
     source = _live2d_source()
 
     assert "// 准备表情兜底：动作不可用或播放失败时才播放" in source
     assert "// 1. 优先播放低优先级动作" in source
     assert "// 2. 动作不可用或播放失败时，再用表情兜底" in source
     assert "if (!didPlayEffect && expressionFiles.length > 0)" in source
+    assert "triggerLog.expressions.push({ emotion, file: choiceFile, fallbackFor: 'motion' });" in source
+
+
+def test_live2d_touch_set_prefers_motion_and_uses_expression_as_fallback():
+    source = _live2d_source()
+
     assert "if (triggerLog.motions.length === 0 && expressions.length > 0)" in source
     assert "fallbackFor: 'motion'" in source
