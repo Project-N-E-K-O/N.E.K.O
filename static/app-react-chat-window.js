@@ -132,6 +132,20 @@
         );
     }
 
+    function isElectronChatRuntime() {
+        var body = document.body;
+        return !!(
+            (body && body.classList.contains('neko-electron-runtime')) ||
+            window.nekoChatWindow ||
+            /Electron/i.test(navigator.userAgent || '') ||
+            (window.process && window.process.versions && window.process.versions.electron)
+        );
+    }
+
+    function isCompactOnlyElectronRuntimeChatHost() {
+        return !!(isCompactOnlyElectronChatHost() && isElectronChatRuntime());
+    }
+
     function coerceChatSurfaceModeForHost(mode) {
         var normalized = normalizeChatSurfaceMode(mode);
         // /chat 是 Electron 紧凑宿主；full 由 /chat_full 独立窗口承载，避免历史 full 状态污染透明承载窗。
@@ -1341,7 +1355,7 @@
         var metrics = getCompactSurfaceMetrics();
         var viewportWidth = window.innerWidth;
         var viewportHeight = window.innerHeight;
-        var fallbackBottomGap = isCompactOnlyElectronChatHost()
+        var fallbackBottomGap = isCompactOnlyElectronRuntimeChatHost()
             ? Math.max(COMPACT_SURFACE_VIEWPORT_PAD_BOTTOM, COMPACT_SURFACE_ELECTRON_DEFAULT_BOTTOM_GAP)
             : COMPACT_SURFACE_VIEWPORT_PAD_BOTTOM;
         var fallbackTop = Math.max(
