@@ -144,13 +144,46 @@ ${escapeScriptContent(uiKit.runtime)}
         useLocalState: window.NekoUiKit.useLocalState,
       };
     }
-    function __showHostedError(error) {
-      const message = error && error.stack ? error.stack : String(error);
-      const meta = {
+    function __hostedSurfaceMeta(extra) {
+      return {
         pluginId: __NEKO_PAYLOAD.plugin && (__NEKO_PAYLOAD.plugin.id || __NEKO_PAYLOAD.plugin.plugin_id),
         surface: __NEKO_PAYLOAD.surface && (__NEKO_PAYLOAD.surface.kind + ':' + __NEKO_PAYLOAD.surface.id),
         entry: __NEKO_PAYLOAD.surface && __NEKO_PAYLOAD.surface.entry,
+        ...(extra || {}),
       };
+    }
+    function __serializeHostedConsoleArg(arg) {
+      if (arg instanceof Error) return { name: arg.name, message: arg.message, stack: arg.stack };
+      if (arg === null || arg === undefined) return arg;
+      if (typeof arg === 'string' || typeof arg === 'number' || typeof arg === 'boolean') return arg;
+      try { return JSON.parse(JSON.stringify(arg)); } catch (_) { return String(arg); }
+    }
+    function __postHostedDiagnostic(type, payload) {
+      try {
+        parent.postMessage({ type, payload }, __hostedTargetOrigin());
+      } catch (_) {}
+    }
+    function __installHostedConsoleBridge() {
+      if (window.__NekoHostedConsoleBridgeInstalled) return;
+      window.__NekoHostedConsoleBridgeInstalled = true;
+      ['debug', 'log', 'info', 'warn', 'error'].forEach((level) => {
+        const original = console[level] && console[level].bind(console);
+        console[level] = function(...args) {
+          try {
+            __postHostedDiagnostic('neko-hosted-surface-console', {
+              level,
+              args: args.map(__serializeHostedConsoleArg),
+              surface: __hostedSurfaceMeta(),
+              timestamp: new Date().toISOString(),
+            });
+          } catch (_) {}
+          if (original) original(...args);
+        };
+      });
+    }
+    function __showHostedError(error) {
+      const message = error && error.stack ? error.stack : String(error);
+      const meta = __hostedSurfaceMeta();
       try {
         console.error('[plugin-ui] fatal surface render error', { ...meta, message, error });
       } catch (_) {}
@@ -165,7 +198,15 @@ ${escapeScriptContent(uiKit.runtime)}
           ),
           window.NekoUiKit.h('div', { className: 'neko-error-meta' }, JSON.stringify(meta))
         ), root);
-      parent.postMessage({ type: 'neko-hosted-surface-error', payload: { message, fatal: true, scope: 'surface.render', details: meta } }, __hostedTargetOrigin());
+      __postHostedDiagnostic('neko-hosted-surface-error', {
+        message,
+        fatal: true,
+        scope: 'surface.render',
+        details: meta,
+        surface: meta,
+        code: error && error.code,
+        status: error && error.status,
+      });
     }
     window.__NekoRefreshHostedPayload = function(context) {
       __NEKO_PAYLOAD = __normalizeHostedPayload(context);
@@ -175,6 +216,7 @@ ${escapeScriptContent(uiKit.runtime)}
       }
       return __NEKO_PAYLOAD;
     };
+    __installHostedConsoleBridge();
     try {
 ${escapeScriptContent(compiled)}
       if (typeof __Panel !== 'function') throw new Error('Hosted TSX must export a default function component.');

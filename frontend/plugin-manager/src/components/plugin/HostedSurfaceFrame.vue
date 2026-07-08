@@ -456,6 +456,19 @@ function handleMessage(event: MessageEvent) {
     emit('error', message)
     return
   }
+  if (data && typeof data === 'object' && data.type === 'neko-hosted-surface-console') {
+    const level = typeof data.payload?.level === 'string' ? data.payload.level : 'log'
+    const args = Array.isArray(data.payload?.args) ? data.payload.args : []
+    const consoleMethod: 'debug' | 'info' | 'warn' | 'error' | 'log' = level === 'debug' || level === 'info' || level === 'warn' || level === 'error' ? level : 'log'
+    console[consoleMethod]('[HostedSurfaceFrame] plugin UI console', {
+      pluginId: props.pluginId,
+      surface: `${props.surface.kind}:${props.surface.id}`,
+      args,
+      timestamp: data.payload?.timestamp,
+    })
+    emit('message', data)
+    return
+  }
   if (data && typeof data === 'object' && data.type === 'neko-hosted-surface-open-logs') {
     emit('openLogs')
     return
@@ -482,6 +495,7 @@ function handleMessage(event: MessageEvent) {
 async function handleHostedRequest(data: any) {
   const requestId = typeof data.requestId === 'string' ? data.requestId : ''
   const method = typeof data.method === 'string' ? data.method : ''
+  const actionId = method === 'call' ? String(data.payload?.actionId || '') : ''
   const respond = (payload: Record<string, any>) => {
     // PR #1480 review-fix 1.30: target the trusted origin instead of '*'.
     // For srcdoc iframes (opaque origin, reported as 'null'), the postMessage
@@ -497,7 +511,6 @@ async function handleHostedRequest(data: any) {
   if (!requestId) return
   try {
     if (method === 'call') {
-      const actionId = String(data.payload?.actionId || '')
       const args = data.payload?.args && typeof data.payload.args === 'object' ? data.payload.args : {}
       const timeoutMs = Number(data.timeoutMs)
       const result = await callPluginHostedSurfaceAction(props.pluginId, actionId, args, {
@@ -525,7 +538,12 @@ async function handleHostedRequest(data: any) {
       ok: false,
       error: bridgeError.message,
       code: bridgeError.code,
-      details: bridgeError.details,
+      details: {
+        surface: `${props.surface.kind}:${props.surface.id}`,
+        method,
+        actionId: actionId || undefined,
+        cause: bridgeError.details,
+      },
       status: bridgeError.status,
     })
   }

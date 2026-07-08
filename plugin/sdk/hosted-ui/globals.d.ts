@@ -6,6 +6,12 @@ declare global {
   type ArtifactView = HostedUi.ArtifactView
   type ArtifactLike = HostedUi.ArtifactLike
   type NormalizedArtifact = HostedUi.NormalizedArtifact
+  type ElementSize = HostedUi.ElementSize
+  type ClipboardState = HostedUi.ClipboardState
+  type FormErrors<T extends Record<string, any>> = HostedUi.FormErrors<T>
+  type FormTouched<T extends Record<string, any>> = HostedUi.FormTouched<T>
+  type ToastOptions = HostedUi.ToastOptions
+  type ToastApi = HostedUi.ToastApi
   const h: typeof HostedUi.h
   const Fragment: typeof HostedUi.Fragment
   const useState: typeof HostedUi.useState
@@ -15,6 +21,10 @@ declare global {
   const useMemo: typeof HostedUi.useMemo
   const useCallback: typeof HostedUi.useCallback
   const useRef: typeof HostedUi.useRef
+  const useElementSize: typeof HostedUi.useElementSize
+  const useScrollIntoView: typeof HostedUi.useScrollIntoView
+  const useScrollToBottom: typeof HostedUi.useScrollToBottom
+  const useClipboard: typeof HostedUi.useClipboard
   const useLocalState: typeof HostedUi.useLocalState
   const useDebounce: typeof HostedUi.useDebounce
   const useDebouncedState: typeof HostedUi.useDebouncedState
@@ -24,8 +34,13 @@ declare global {
   const Card: typeof HostedUi.Card
   const Section: typeof HostedUi.Section
   const Heading: typeof HostedUi.Heading
+  const Container: typeof HostedUi.Container
   const Stack: typeof HostedUi.Stack
+  const Inline: typeof HostedUi.Inline
   const Grid: typeof HostedUi.Grid
+  const Columns: typeof HostedUi.Columns
+  const Split: typeof HostedUi.Split
+  const ScrollArea: typeof HostedUi.ScrollArea
   const Text: typeof HostedUi.Text
   const Button: typeof HostedUi.Button
   const ButtonGroup: typeof HostedUi.ButtonGroup
@@ -41,6 +56,7 @@ declare global {
   const ErrorBoundary: typeof HostedUi.ErrorBoundary
   const Modal: typeof HostedUi.Modal
   const ConfirmDialog: typeof HostedUi.ConfirmDialog
+  const Tooltip: typeof HostedUi.Tooltip
   const List: typeof HostedUi.List
   const Progress: typeof HostedUi.Progress
   const JsonView: typeof HostedUi.JsonView
@@ -75,6 +91,8 @@ declare global {
   const normalizeArtifact: typeof HostedUi.normalizeArtifact
   const detectArtifactType: typeof HostedUi.detectArtifactType
   const Form: typeof HostedUi.Form
+  const FormSection: typeof HostedUi.FormSection
+  const FormActions: typeof HostedUi.FormActions
   const ActionButton: typeof HostedUi.ActionButton
   const RefreshButton: typeof HostedUi.RefreshButton
   const ActionForm: typeof HostedUi.ActionForm

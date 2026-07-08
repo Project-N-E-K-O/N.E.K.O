@@ -36,11 +36,37 @@ function createHostedBridgeError(data) {
   if (payload.status !== undefined) error.status = payload.status;
   return error;
 }
-function reportHostedRuntimeError(scope, error, details) {
+function hostedSurfaceMeta(extra) {
+  const payload = typeof window.__NEKO_PAYLOAD === 'object' && window.__NEKO_PAYLOAD ? window.__NEKO_PAYLOAD : {};
+  const plugin = payload.plugin && typeof payload.plugin === 'object' ? payload.plugin : {};
+  const surface = payload.surface && typeof payload.surface === 'object' ? payload.surface : {};
+  return {
+    pluginId: plugin.id || plugin.plugin_id || '',
+    surface: surface.kind && surface.id ? `${surface.kind}:${surface.id}` : (surface.id || ''),
+    entry: surface.entry || '',
+    ...(extra || {}),
+  };
+}
+function hostedErrorPayload(scope, error, details, fatal) {
   const message = formatErrorMessage(error);
-  try { console.error('[plugin-ui]', scope, { message, details, error }); } catch (_) {}
+  const payload = {
+    message,
+    scope: scope || 'runtime',
+    fatal: !!fatal,
+    details: details || {},
+    surface: hostedSurfaceMeta(),
+  };
+  if (error && typeof error === 'object') {
+    if (error.code !== undefined) payload.code = error.code;
+    if (error.status !== undefined) payload.status = error.status;
+  }
+  return payload;
+}
+function reportHostedRuntimeError(scope, error, details) {
+  const payload = hostedErrorPayload(scope, error, details, false);
+  try { console.error('[plugin-ui]', scope, { message: payload.message, details, error }); } catch (_) {}
   try {
-    parent.postMessage({ type: 'neko-hosted-surface-error', payload: { message, scope, details: details || {}, fatal: false } }, hostedTargetOrigin());
+    parent.postMessage({ type: 'neko-hosted-surface-error', payload }, hostedTargetOrigin());
   } catch (_) {}
 }
 function createInlineError(title, error, details) {
@@ -408,6 +434,7 @@ function unmount(vnode) {
         try { hook.cleanup(); } catch (error) { reportHostedRuntimeError('effect.cleanup', error); }
       }
     });
+    setRef(vnode.ref, null);
     unmount(vnode.instance.child);
     return;
   }
@@ -459,6 +486,7 @@ function mountComponent(parentDom, vnode, anchor) {
   currentInstance = previous;
   vnode.dom = getDom(instance.child);
   vnode.endDom = instance.child && instance.child.endDom;
+  setRef(vnode.ref, vnode.dom || null);
   return vnode;
 }
 function patchComponent(parentDom, oldVNode, newVNode, anchor) {
@@ -474,6 +502,8 @@ function patchComponent(parentDom, oldVNode, newVNode, anchor) {
   currentInstance = previous;
   newVNode.dom = getDom(instance.child);
   newVNode.endDom = instance.child && instance.child.endDom;
+  setRef(oldVNode.ref, null);
+  setRef(newVNode.ref, newVNode.dom || null);
   return newVNode;
 }
 function renderComponent(instance) {
@@ -553,8 +583,16 @@ function setProp(dom, name, oldValue, newValue) {
   if (name === 'style') {
     const oldStyle = oldValue || {};
     const newStyle = newValue || {};
-    Object.keys(oldStyle).forEach((key) => { if (!(key in newStyle)) dom.style[key] = ''; });
-    Object.keys(newStyle).forEach((key) => { dom.style[key] = newStyle[key] == null ? '' : String(newStyle[key]); });
+    Object.keys(oldStyle).forEach((key) => {
+      if (key in newStyle) return;
+      if (key.startsWith('--')) dom.style.removeProperty(key);
+      else dom.style[key] = '';
+    });
+    Object.keys(newStyle).forEach((key) => {
+      const value = newStyle[key] == null ? '' : String(newStyle[key]);
+      if (key.startsWith('--')) dom.style.setProperty(key, value);
+      else dom.style[key] = value;
+    });
     return;
   }
   if (name.startsWith('on') && typeof (oldValue || newValue) === 'function') {
@@ -635,6 +673,95 @@ function useRef(initialValue) {
   const [ref] = useState(() => ({ current: initialValue }));
   return ref;
 }
+function useElementSize(ref) {
+  const [size, setSize] = useState({ width: 0, height: 0 });
+  useLayoutEffect(() => {
+    const node = ref && ref.current;
+    if (!node) return undefined;
+    let stopped = false;
+    const update = () => {
+      if (stopped) return;
+      const rect = typeof node.getBoundingClientRect === 'function' ? node.getBoundingClientRect() : { width: node.clientWidth || 0, height: node.clientHeight || 0 };
+      const width = Number(rect.width || 0);
+      const height = Number(rect.height || 0);
+      setSize((previous) => (previous.width === width && previous.height === height ? previous : { width, height }));
+    };
+    update();
+    if (typeof ResizeObserver === 'function') {
+      const observer = new ResizeObserver(update);
+      observer.observe(node);
+      return () => {
+        stopped = true;
+        observer.disconnect();
+      };
+    }
+    window.addEventListener('resize', update);
+    return () => {
+      stopped = true;
+      window.removeEventListener('resize', update);
+    };
+  }, [ref && ref.current]);
+  return size;
+}
+function useScrollIntoView(ref, defaults) {
+  return useCallback((options) => {
+    const node = ref && ref.current;
+    if (!node || typeof node.scrollIntoView !== 'function') return;
+    node.scrollIntoView(options || defaults || { block: 'nearest', inline: 'nearest', behavior: 'smooth' });
+  }, [ref, defaults]);
+}
+function useScrollToBottom(ref, deps, options) {
+  const enabled = !options || options.enabled !== false;
+  useLayoutEffect(() => {
+    const node = ref && ref.current;
+    if (!enabled || !node) return undefined;
+    const behavior = options && options.behavior ? options.behavior : 'auto';
+    try {
+      if (typeof node.scrollTo === 'function') node.scrollTo({ top: node.scrollHeight, behavior });
+      else node.scrollTop = node.scrollHeight;
+    } catch (_) {
+      node.scrollTop = node.scrollHeight;
+    }
+    return undefined;
+  }, deps || []);
+}
+function fallbackCopyText(text) {
+  const textarea = document.createElement('textarea');
+  textarea.value = String(text ?? '');
+  textarea.setAttribute('readonly', 'true');
+  textarea.style.position = 'fixed';
+  textarea.style.left = '-9999px';
+  document.body.appendChild(textarea);
+  textarea.select();
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch (_) { ok = false; }
+  document.body.removeChild(textarea);
+  if (!ok) throw new Error('Clipboard write is unavailable');
+}
+function useClipboard() {
+  const [copied, setCopied] = useState(false);
+  const [error, setError] = useState(null);
+  const write = useCallback(async (value) => {
+    const text = String(value ?? '');
+    try {
+      setError(null);
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') await navigator.clipboard.writeText(text);
+      else fallbackCopyText(text);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1200);
+      return true;
+    } catch (caught) {
+      setError(caught);
+      reportHostedRuntimeError('clipboard.write', caught);
+      return false;
+    }
+  }, []);
+  const read = useCallback(async () => {
+    if (!navigator.clipboard || typeof navigator.clipboard.readText !== 'function') return '';
+    return navigator.clipboard.readText();
+  }, []);
+  return { write, read, copied, error };
+}
 function useMemo(factory, deps) {
   if (!currentInstance) throw new Error('useMemo must be called inside a component');
   const index = currentInstance.hookIndex++;
@@ -702,24 +829,102 @@ function useDebouncedState(initialValue, delay) {
   const [value, setValue] = useState(initialValue);
   return [value, setValue, useDebounce(value, delay)];
 }
-function useForm(initialValues) {
+function formValuesEqual(a, b) {
+  try { return JSON.stringify(a || {}) === JSON.stringify(b || {}); } catch (_) {}
+  const aKeys = Object.keys(a || {});
+  const bKeys = Object.keys(b || {});
+  if (aKeys.length !== bKeys.length) return false;
+  return aKeys.every((key) => a && b && a[key] === b[key]);
+}
+function normalizeFormErrors(result) {
+  if (!result) return {};
+  if (result === true) return {};
+  if (typeof result === 'string') return { _form: result };
+  if (Array.isArray(result)) {
+    const errors = {};
+    result.forEach((item, index) => {
+      if (!item) return;
+      if (typeof item === 'string') errors[index] = item;
+      else if (item && typeof item === 'object' && item.name) errors[item.name] = item.message || item.error || 'Invalid';
+    });
+    return errors;
+  }
+  if (typeof result === 'object') return result;
+  return {};
+}
+function useForm(initialValues, options) {
+  const opts = options && typeof options === 'object' ? options : {};
   const initialRef = useRef(null);
   if (initialRef.current === null) initialRef.current = resolveInitialValue(initialValues) || {};
   const [values, setValues] = useState(() => ({ ...initialRef.current }));
-  const setField = (name, value) => setValues((previous) => ({ ...previous, [name]: value }));
+  const [touched, setTouched] = useState({});
+  const [errors, setErrors] = useState({});
+  const [submitCount, setSubmitCount] = useState(0);
+  const dirty = !formValuesEqual(values, initialRef.current);
+  const setField = (name, value) => {
+    setTouched((previous) => ({ ...previous, [name]: true }));
+    setErrors((previous) => ({ ...previous, [name]: '' }));
+    return setValues((previous) => ({ ...previous, [name]: value }));
+  };
+  const setFieldTouched = (name, value) => setTouched((previous) => ({ ...previous, [name]: value !== false }));
+  const setError = (name, error) => setErrors((previous) => ({ ...previous, [name]: error || '' }));
+  const clearError = (name) => setErrors((previous) => ({ ...previous, [name]: '' }));
+  const collectErrors = (validator) => {
+    const validateFn = typeof validator === 'function' ? validator : opts.validate;
+    return normalizeFormErrors(validateFn ? validateFn(values) : {});
+  };
+  const validate = (validator) => {
+    const nextErrors = collectErrors(validator);
+    setErrors(nextErrors);
+    return Object.values(nextErrors).filter(Boolean).length === 0;
+  };
+  const touchAll = () => {
+    const next = {};
+    Object.keys(values || {}).forEach((key) => { next[key] = true; });
+    setTouched(next);
+    return next;
+  };
   const field = (name) => ({
     value: values[name] ?? '',
     onChange: (value) => setField(name, value),
+    onBlur: () => setFieldTouched(name, true),
+    error: errors[name],
+    touched: !!touched[name],
   });
   const checkbox = (name) => ({
     checked: !!values[name],
     onChange: (value) => setField(name, !!value),
+    onBlur: () => setFieldTouched(name, true),
+    error: errors[name],
+    touched: !!touched[name],
   });
   const reset = (nextValues) => {
     const resolved = nextValues === undefined ? initialRef.current : resolveInitialValue(nextValues);
+    initialRef.current = { ...(resolved || {}) };
+    setTouched({});
+    setErrors({});
+    setSubmitCount(0);
     return setValues({ ...(resolved || {}) });
   };
-  return { values, setValues, setField, field, checkbox, reset };
+  const handleSubmit = (onValid, onInvalid) => async (event) => {
+    if (event && typeof event.preventDefault === 'function') event.preventDefault();
+    setSubmitCount((count) => count + 1);
+    touchAll();
+    const nextErrors = collectErrors();
+    setErrors(nextErrors);
+    if (Object.values(nextErrors).filter(Boolean).length > 0) {
+      if (typeof onInvalid === 'function') return onInvalid(nextErrors, values, event);
+      return undefined;
+    }
+    if (typeof onValid === 'function') return onValid(values, event);
+    return undefined;
+  };
+  return {
+    values, setValues, setField, field, checkbox, reset,
+    touched, setTouched, setFieldTouched,
+    errors, setErrors, setError, clearError,
+    dirty, isDirty: dirty, submitCount, validate, handleSubmit,
+  };
 }
 function useAsync(loader, deps) {
   const [version, setVersion] = useState(0);
@@ -767,6 +972,25 @@ function showToast(message, options) {
   if (timeout > 0) window.setTimeout(remove, timeout);
   return remove;
 }
+function toastPromise(promise, messages, options) {
+  const labels = messages || {};
+  const opts = options || {};
+  const removeLoading = showToast(labels.loading || opts.loading || 'Loading...', { tone: opts.loadingTone || 'info', timeout: 0 });
+  return Promise.resolve(promise)
+    .then((value) => {
+      removeLoading();
+      const successMessage = typeof labels.success === 'function' ? labels.success(value) : (labels.success || opts.success);
+      if (successMessage !== false) showToast(successMessage || 'Done', { tone: opts.successTone || 'success', timeout: opts.timeout });
+      return value;
+    })
+    .catch((error) => {
+      removeLoading();
+      const errorMessage = typeof labels.error === 'function' ? labels.error(error) : (labels.error || opts.error || formatErrorMessage(error));
+      if (errorMessage !== false) showToast(errorMessage, { tone: opts.errorTone || 'danger', timeout: opts.timeout });
+      throw error;
+    });
+}
+showToast.promise = toastPromise;
 function useToast() {
   return useMemo(() => ({
     show: showToast,
@@ -774,6 +998,7 @@ function useToast() {
     success: (message, options) => showToast(message, { ...(options || {}), tone: 'success' }),
     warning: (message, options) => showToast(message, { ...(options || {}), tone: 'warning' }),
     error: (message, options) => showToast(message, { ...(options || {}), tone: 'danger' }),
+    promise: toastPromise,
   }), []);
 }
 function useConfirm() {
@@ -829,10 +1054,75 @@ function Card(props) {
   );
 }
 
+function cssSize(value, fallback) {
+  if (value === undefined || value === null || value === '') return fallback;
+  if (typeof value === 'number') return String(value) + 'px';
+  return String(value);
+}
 function Section(props) { return h('section', { className: 'neko-section ' + (props.className || '') }, props.children); }
 function Heading(props) { return h(props.as || 'h2', { className: 'neko-heading ' + (props.className || '') }, props.children); }
-function Stack(props) { return h('div', { className: 'neko-stack ' + (props.className || ''), style: { '--stack-gap': props.gap ? String(props.gap) + 'px' : undefined } }, props.children); }
-function Grid(props) { return h('div', { className: 'neko-grid ' + (props.className || ''), style: { '--grid-cols': props.cols || 2, '--grid-gap': props.gap ? String(props.gap) + 'px' : undefined } }, props.children); }
+function Container(props) {
+  return h('div', {
+    className: classNames('neko-container', props.className),
+    style: {
+      '--container-max-width': cssSize(props.maxWidth || props.width, '100%'),
+      '--container-padding': cssSize(props.padding, undefined),
+    },
+  }, props.children);
+}
+function Stack(props) { return h('div', { className: 'neko-stack ' + (props.className || ''), style: { '--stack-gap': cssSize(props.gap, undefined) } }, props.children); }
+function Inline(props) {
+  return h('div', {
+    className: classNames('neko-inline', props.className),
+    'data-wrap': props.wrap === false ? 'false' : 'true',
+    style: {
+      '--inline-gap': cssSize(props.gap, undefined),
+      '--inline-align': props.align || undefined,
+      '--inline-justify': props.justify || undefined,
+    },
+  }, props.children);
+}
+function Grid(props) { return h('div', { className: 'neko-grid ' + (props.className || ''), style: { '--grid-cols': props.cols || 2, '--grid-gap': cssSize(props.gap, undefined) } }, props.children); }
+function Columns(props) {
+  const minWidth = props.minWidth || props.minColumnWidth;
+  return h('div', {
+    className: classNames('neko-columns', (props.fluid || minWidth) && 'is-fluid', props.className),
+    style: {
+      '--columns-cols': props.cols || props.columns || 2,
+      '--columns-gap': cssSize(props.gap, undefined),
+      '--columns-min': cssSize(minWidth, undefined),
+    },
+  }, props.children);
+}
+function Split(props) {
+  return h('div', {
+    className: classNames('neko-split', props.className),
+    'data-direction': props.direction || 'horizontal',
+    style: {
+      '--split-template': props.ratio || props.template || undefined,
+      '--split-gap': cssSize(props.gap, undefined),
+      '--split-align': props.align || undefined,
+    },
+  }, props.children);
+}
+function ScrollArea(props) {
+  const scrollRef = useRef(null);
+  useScrollToBottom(scrollRef, props.autoScroll ? (props.deps || [props.children]) : [], {
+    enabled: !!props.autoScroll,
+    behavior: props.scrollBehavior || 'auto',
+  });
+  return h('div', {
+    ref: scrollRef,
+    className: classNames('neko-scroll-area', props.className),
+    'data-axis': props.axis || 'y',
+    style: {
+      '--scroll-height': cssSize(props.height, undefined),
+      '--scroll-max-height': cssSize(props.maxHeight, undefined),
+      '--scroll-min-height': cssSize(props.minHeight, undefined),
+      '--scroll-padding': cssSize(props.padding, undefined),
+    },
+  }, props.children);
+}
 function Text(props) { return h('p', { className: 'neko-text' }, props.children); }
 function Button(props) { return h('button', { className: 'neko-button ' + (props.className || ''), 'data-tone': props.tone || props.variant || 'primary', type: props.type || 'button', disabled: props.disabled, onClick: props.onClick }, props.children); }
 function ButtonGroup(props) { return h('div', { className: 'neko-button-group ' + (props.className || '') }, props.children); }
@@ -885,17 +1175,53 @@ function BoundarySlot(props) {
 }
 function InlineError(props) { return createInlineError(props.title || '错误', props.error || props.message || props.children, props.details); }
 function EmptyState(props) { return h('div', { className: 'neko-empty ' + (props.className || '') }, props.title ? h('div', { className: 'neko-empty-title' }, props.title) : null, props.description ? h('div', null, props.description) : props.children); }
+function focusFirstModalControl(node) {
+  if (!node || typeof node.querySelector !== 'function') return;
+  const selector = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
+  const target = node.querySelector('[autofocus]') || node.querySelector(selector) || node;
+  if (target && typeof target.focus === 'function') {
+    try { target.focus(); } catch (_) {}
+  }
+}
+function trapModalFocus(event, node) {
+  if (!node || event.key !== 'Tab') return;
+  const items = Array.from(node.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'))
+    .filter((item) => !item.disabled && item.getAttribute('aria-hidden') !== 'true');
+  if (items.length === 0) {
+    event.preventDefault();
+    node.focus && node.focus();
+    return;
+  }
+  const first = items[0];
+  const last = items[items.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
 function Modal(props) {
-  if (!props.open) return null;
+  const modalRef = useRef(null);
   const closeOnBackdrop = props.closeOnBackdrop !== false;
+  const closeOnEscape = props.closeOnEscape !== false;
   useEffect(() => {
-    if (!props.open || typeof props.onClose !== 'function') return undefined;
+    if (!props.open) return undefined;
+    const previousOverflow = document.body.style.overflow;
+    if (props.lockScroll !== false) document.body.style.overflow = 'hidden';
+    window.setTimeout(() => focusFirstModalControl(modalRef.current), 0);
     const onKeyDown = (event) => {
-      if (event.key === 'Escape') props.onClose();
+      if (event.key === 'Escape' && closeOnEscape && typeof props.onClose === 'function') props.onClose();
+      trapModalFocus(event, modalRef.current);
     };
     window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [props.open, props.onClose]);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      if (props.lockScroll !== false) document.body.style.overflow = previousOverflow;
+    };
+  }, [props.open, props.onClose, props.lockScroll, closeOnEscape]);
+  if (!props.open) return null;
   return h('div', {
     className: 'neko-modal-backdrop ' + (props.className || ''),
     role: 'presentation',
@@ -903,7 +1229,7 @@ function Modal(props) {
       if (closeOnBackdrop && event.target === event.currentTarget && typeof props.onClose === 'function') props.onClose();
     },
   },
-    h('div', { className: 'neko-modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': props.title || 'Dialog' },
+    h('div', { ref: modalRef, className: 'neko-modal', role: 'dialog', tabindex: '-1', 'aria-modal': 'true', 'aria-label': props.title || 'Dialog', 'data-size': props.size || 'md' },
       props.title ? h('div', { className: 'neko-modal-header' }, h('h2', { className: 'neko-modal-title' }, props.title)) : null,
       h('div', { className: 'neko-modal-body' }, props.children),
       props.footer ? h('div', { className: 'neko-modal-footer' }, props.footer) : null
@@ -942,6 +1268,17 @@ function Progress(props) {
   return h('div', { className: classNames('neko-progress', indeterminate && 'is-indeterminate', props.className) },
     h('div', { className: 'neko-progress-label' }, h('span', null, props.label || ''), indeterminate ? null : h('span', null, String(value) + '%')),
     h('div', { className: 'neko-progress-track' }, h('div', { className: 'neko-progress-bar', style: { '--progress': value + '%' } }))
+  );
+}
+function Tooltip(props) {
+  const content = props.content || props.label || props.title || '';
+  return h('span', {
+    className: classNames('neko-tooltip', props.className),
+    'data-placement': props.placement || 'top',
+    tabindex: props.tabIndex === undefined ? '0' : props.tabIndex,
+  },
+    props.children,
+    content ? h('span', { className: 'neko-tooltip-content', role: 'tooltip' }, content) : null
   );
 }
 function JsonView(props) { return CodeBlock({ children: JSON.stringify(props.data ?? props.value ?? {}, null, 2) }); }
@@ -1276,7 +1613,12 @@ function TextBlock(props) {
 }
 function LogViewer(props) {
   const text = props.text ?? props.value ?? props.children ?? '';
-  return h('pre', { className: classNames('neko-log-viewer', props.className) }, String(text));
+  const logRef = useRef(null);
+  useScrollToBottom(logRef, props.autoScroll ? (props.deps || [text]) : [], {
+    enabled: !!props.autoScroll,
+    behavior: props.scrollBehavior || 'auto',
+  });
+  return h('pre', { ref: logRef, className: classNames('neko-log-viewer', props.className) }, String(text));
 }
 function JsonEditorLite(props) {
   const initial = props.value !== undefined ? props.value : props.data;
@@ -1346,6 +1688,18 @@ function ArtifactList(props) {
   );
 }
 function Form(props) { return h('form', { className: 'neko-form ' + (props.className || ''), onSubmit: (event) => { event.preventDefault(); if (props.onSubmit) props.onSubmit(event); } }, ...(props.children || [])); }
+function FormSection(props) {
+  return h('section', { className: classNames('neko-form-section', props.className) },
+    props.title || props.description ? h('header', { className: 'neko-form-section-header' },
+      props.title ? h('h3', { className: 'neko-form-section-title' }, props.title) : null,
+      props.description ? h('p', { className: 'neko-form-section-description' }, props.description) : null
+    ) : null,
+    h('div', { className: 'neko-form-section-body' }, props.children)
+  );
+}
+function FormActions(props) {
+  return h('div', { className: classNames('neko-form-actions', props.align === 'start' && 'is-start', props.className) }, props.children);
+}
 
 function defaultValueForSchema(schema) {
   if (!schema || typeof schema !== 'object') return '';
@@ -1655,14 +2009,14 @@ function AsyncBlock(props) {
 }
 
 Object.assign(NekoUiKit, {
-  appendChild, render, h, Fragment, Page, Card, Section, Heading, Stack, Grid, Text, Button, ButtonGroup,
+  appendChild, render, h, Fragment, Page, Card, Section, Heading, Container, Stack, Inline, Grid, Columns, Split, ScrollArea, Text, Button, ButtonGroup,
   StatusBadge, StatCard, KeyValue, DataTable, Divider, Toolbar, ToolbarGroup,
-  Alert, InlineError, ErrorBoundary, EmptyState, Modal, ConfirmDialog, List, Progress, JsonView, Field, Input, PasswordInput,
+  Alert, InlineError, ErrorBoundary, EmptyState, Modal, ConfirmDialog, Tooltip, List, Progress, JsonView, Field, Input, PasswordInput,
   NumberInput, Slider, Select, RadioGroup, SegmentedControl, Textarea, Switch, Checkbox, CheckboxGroup, Accordion, Markdown,
   ImageUpload, AudioUpload, VideoUpload, ImagePreview, AudioPlayer, VideoPlayer, Gallery, FileDownload,
   TextBlock, LogViewer, JsonEditorLite, ArtifactRenderer, ArtifactCard, ArtifactList, normalizeArtifact, detectArtifactType,
-  Form, ActionForm, AsyncBlock, CodeBlock, Tip, Warning, Steps, Step, Tabs, useI18n,
-  t, api, useState, useReducer, useEffect, useLayoutEffect, useMemo, useCallback, useRef, useLocalState,
-  useDebounce, useDebouncedState, useForm, useAsync, showToast, useToast, useConfirm, ActionButton, RefreshButton,
+  Form, FormSection, FormActions, ActionForm, AsyncBlock, CodeBlock, Tip, Warning, Steps, Step, Tabs, useI18n,
+  t, api, useState, useReducer, useEffect, useLayoutEffect, useMemo, useCallback, useRef, useElementSize, useScrollIntoView,
+  useScrollToBottom, useClipboard, useLocalState, useDebounce, useDebouncedState, useForm, useAsync, showToast, useToast, useConfirm, ActionButton, RefreshButton,
 });
 Object.assign(window, NekoUiKit);
