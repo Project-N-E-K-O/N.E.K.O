@@ -308,7 +308,8 @@
 
 #neko-tutorial-skip-btn {
     position: fixed;
-    top: max(14px, env(safe-area-inset-top));
+    --neko-tutorial-crop-safe-area-top: max(var(--neko-tutorial-safe-area-top, 0px), calc(var(--neko-niri-pet-crop-offset-y, 0) * 1px));
+    top: calc(max(14px, env(safe-area-inset-top)) + var(--neko-tutorial-crop-safe-area-top));
     right: max(18px, env(safe-area-inset-right));
     z-index: 2147483647;
     width: auto;
@@ -454,7 +455,8 @@ html.dark #neko-tutorial-skip-btn:hover {
 
 .neko-page-tutorial-skip-btn {
     position: fixed;
-    top: 18px;
+    --neko-tutorial-crop-safe-area-top: max(var(--neko-tutorial-safe-area-top, 0px), calc(var(--neko-niri-pet-crop-offset-y, 0) * 1px));
+    top: calc(max(18px, env(safe-area-inset-top)) + var(--neko-tutorial-crop-safe-area-top));
     right: 18px;
     z-index: 100006;
     border: 1px solid rgba(68, 183, 254, 0.45);

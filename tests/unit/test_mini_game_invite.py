@@ -514,6 +514,8 @@ async def test_maybe_deliver_user_toggle_default_true_keeps_bc(monkeypatch):
     )
     assert out is not None
     assert out["action"] == "chat"
+    assert out["reason_code"] == sr.PROACTIVE_REASON_CHAT_DELIVERED
+    assert out["stage"] == sr.PROACTIVE_STAGE_DELIVERY
 
 
 @pytest.mark.asyncio
@@ -534,6 +536,8 @@ async def test_force_game_type_overrides_snapshot_and_cooldown_gates(monkeypatch
     )
     assert out is not None
     assert out["action"] == "chat"
+    assert out["reason_code"] == sr.PROACTIVE_REASON_CHAT_DELIVERED
+    assert out["stage"] == sr.PROACTIVE_STAGE_DELIVERY
     assert out.get("game_type") == 'soccer'
 
 
@@ -594,6 +598,8 @@ async def test_maybe_deliver_chat_when_eligible(monkeypatch):
     )
     assert out is not None
     assert out["action"] == "chat"
+    assert out["reason_code"] == sr.PROACTIVE_REASON_CHAT_DELIVERED
+    assert out["stage"] == sr.PROACTIVE_STAGE_DELIVERY
     assert out["channel"] == "mini_game"
     assert out["turn_id"] == "sid-eligible"
 
@@ -631,6 +637,8 @@ async def test_maybe_deliver_pass_when_prepare_refuses(monkeypatch):
     )
     assert out is not None
     assert out["action"] == "pass"
+    assert out["reason_code"] == sr.PROACTIVE_REASON_PASS_DELIVERY_BUSY
+    assert out["stage"] == sr.PROACTIVE_STAGE_DELIVERY
     mgr.finish_proactive_delivery.assert_not_awaited()
     assert LANLAN not in sr._mini_game_invite_state
 
@@ -648,6 +656,8 @@ async def test_maybe_deliver_pass_when_user_takes_over_before_finish(monkeypatch
     )
     assert out is not None
     assert out["action"] == "pass"
+    assert out["reason_code"] == sr.PROACTIVE_REASON_DELIVERY_PREEMPTED
+    assert out["stage"] == sr.PROACTIVE_STAGE_DELIVERY
     assert LANLAN not in sr._mini_game_invite_state
     assert LANLAN not in sr._proactive_chat_history
 

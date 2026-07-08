@@ -43,6 +43,74 @@ const EasingFunctions = {
     easeInOutQuad: t => t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t
 };
 
+function getLive2DNiriPetPhysicalCropApi() {
+    const api = typeof window !== 'undefined' ? window.__nekoNiriPetPhysicalCrop : null;
+    if (!api || typeof api !== 'object') return null;
+    try {
+        if (typeof api.isActive === 'function' && !api.isActive()) return null;
+    } catch (_) {
+        return null;
+    }
+    return api;
+}
+
+function normalizeLive2DPoint(point) {
+    if (!point || typeof point !== 'object') return null;
+    const x = Number(point.x);
+    const y = Number(point.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    return { x, y };
+}
+
+function getLive2DNiriPetPointerCoordinates(event) {
+    const raw = {
+        x: Number(event && event.clientX),
+        y: Number(event && event.clientY)
+    };
+    if (!Number.isFinite(raw.x) || !Number.isFinite(raw.y)) {
+        return {
+            local: { x: 0, y: 0 },
+            virtual: { x: 0, y: 0 },
+            active: false,
+            patched: false
+        };
+    }
+
+    const api = getLive2DNiriPetPhysicalCropApi();
+    if (api && typeof api.getEventCoordinates === 'function') {
+        try {
+            const coords = api.getEventCoordinates(event);
+            const local = normalizeLive2DPoint(coords && coords.local);
+            const virtual = normalizeLive2DPoint(coords && coords.virtual);
+            if (local && virtual) {
+                return {
+                    local,
+                    virtual,
+                    active: coords.active === true,
+                    patched: coords.patched === true
+                };
+            }
+        } catch (_) {}
+    }
+
+    return {
+        local: raw,
+        virtual: raw,
+        active: false,
+        patched: false
+    };
+}
+
+function isLive2DPointInRect(point, rect, padding = 0) {
+    const p = normalizeLive2DPoint(point);
+    if (!p || !rect) return false;
+    const pad = Number.isFinite(Number(padding)) ? Number(padding) : 0;
+    return p.x >= rect.left - pad &&
+        p.x <= rect.right + pad &&
+        p.y >= rect.top - pad &&
+        p.y <= rect.bottom + pad;
+}
+
 /**
  * 检测模型是否超出当前屏幕边界，并计算吸附目标位置
  * @param {PIXI.DisplayObject} model - Live2D 模型对象
@@ -296,9 +364,47 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
     let clickStartTime = 0;
     let clickStartX = 0;
     let clickStartY = 0;
+    let dragHintStartPointer = null;
+    let dragHintLastPointer = null;
+    let dragHintApproachShown = false;
     let hasMoved = false;
     const CLICK_THRESHOLD_DISTANCE = 10; // 移动距离阈值（像素）
     const CLICK_THRESHOLD_TIME = 300; // 时间阈值（毫秒）
+
+    const captureDragHintPointer = (event) => {
+        const screenX = Number(event?.screenX);
+        const screenY = Number(event?.screenY);
+        if (!Number.isFinite(screenX) || !Number.isFinite(screenY)) return null;
+        return { screenX, screenY };
+    };
+
+    const recordDragHintPointerEdgeRelease = async () => {
+        const helper = window.NekoAvatarMultiScreenDragHint;
+        if (!helper || typeof helper.recordPointerEdgeRelease !== 'function') return false;
+        if (!dragHintStartPointer || !dragHintLastPointer) return false;
+        return await helper.recordPointerEdgeRelease('live2d', {
+            startedAt: dragHintStartPointer.startedAt,
+            startScreenX: dragHintStartPointer.screenX,
+            startScreenY: dragHintStartPointer.screenY,
+            screenX: dragHintLastPointer.screenX,
+            screenY: dragHintLastPointer.screenY
+        });
+    };
+
+    const recordDragHintPointerEdgeApproach = async () => {
+        const helper = window.NekoAvatarMultiScreenDragHint;
+        if (!helper || typeof helper.recordPointerEdgeApproach !== 'function') return false;
+        if (dragHintApproachShown || !dragHintStartPointer || !dragHintLastPointer) return false;
+        const shown = await helper.recordPointerEdgeApproach('live2d', {
+            startedAt: dragHintStartPointer.startedAt,
+            startScreenX: dragHintStartPointer.screenX,
+            startScreenY: dragHintStartPointer.screenY,
+            screenX: dragHintLastPointer.screenX,
+            screenY: dragHintLastPointer.screenY
+        });
+        if (shown) dragHintApproachShown = true;
+        return shown;
+    };
 
     // 使用 avatar-ui-drag.js 中的共享工具函数（按钮 pointer-events 管理）
     const disableButtonPointerEvents = () => {
@@ -353,6 +459,12 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
         clickStartTime = Date.now();
         clickStartX = globalPos.x;
         clickStartY = globalPos.y;
+        dragHintStartPointer = captureDragHintPointer(originalEvent);
+        if (dragHintStartPointer) {
+            dragHintStartPointer.startedAt = Date.now();
+        }
+        dragHintLastPointer = dragHintStartPointer;
+        dragHintApproachShown = false;
         hasMoved = false;
         this._touchSetPointerSeq = (this._touchSetPointerSeq || 0) + 1;
         this._lastTouchPointer = { x: clickStartX, y: clickStartY, time: clickStartTime, seq: this._touchSetPointerSeq };
@@ -368,11 +480,12 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
         disableButtonPointerEvents();
     });
 
-    const onDragEnd = async () => {
+    const onDragEnd = async (event) => {
         if (this._isDraggingModel) {
             this._isDraggingModel = false;
             document.getElementById('live2d-canvas').style.cursor = '';
             restoreButtonPointerEvents();
+            dragHintLastPointer = captureDragHintPointer(event) || dragHintLastPointer;
 
             if (!this._isModelReadyForInteraction) return;
 
@@ -412,15 +525,13 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
 
             // 如果没有发生屏幕切换，检测并执行自动吸附
             if (!displaySwitched) {
+                await recordDragHintPointerEdgeRelease();
                 // 执行自动吸附检测和动画
                 const snapped = await this._checkAndPerformSnap(model);
 
                 // 如果没有执行吸附，则正常保存位置
                 if (!snapped) {
                     await this._savePositionAfterInteraction();
-                } else if (window.NekoAvatarMultiScreenDragHint &&
-                    typeof window.NekoAvatarMultiScreenDragHint.recordEdgeBounce === 'function') {
-                    window.NekoAvatarMultiScreenDragHint.recordEdgeBounce('live2d');
                 }
                 // 如果执行了吸附，_checkAndPerformSnap 内部会保存位置
             }
@@ -455,6 +566,8 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
             // 这里假设 canvas 是全屏覆盖的
             const x = event.clientX;
             const y = event.clientY;
+            dragHintLastPointer = captureDragHintPointer(event) || dragHintLastPointer;
+            void recordDragHintPointerEdgeApproach();
 
             // 检测是否移动超过阈值
             const moveDistance = Math.sqrt(
@@ -703,13 +816,18 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
         };
         const isPointerNearLock = () => {
             if (!lockIcon || lockIcon.style.display !== 'block') return false;
-            const x = this._lastMouseX;
-            const y = this._lastMouseY;
-            if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
             const rect = lockIcon.getBoundingClientRect();
             const expandPx = 8;
-            return x >= rect.left - expandPx && x <= rect.right + expandPx &&
-                y >= rect.top - expandPx && y <= rect.bottom + expandPx;
+            const localX = Number.isFinite(this._lastMouseLocalX) ? this._lastMouseLocalX : this._lastMouseX;
+            const localY = Number.isFinite(this._lastMouseLocalY) ? this._lastMouseLocalY : this._lastMouseY;
+            return isLive2DPointInRect({ x: localX, y: localY }, rect, expandPx);
+        };
+        const isPointerNearFloatingButtons = () => {
+            if (!floatingButtons || floatingButtons.style.display === 'none') return false;
+            const rect = floatingButtons.getBoundingClientRect();
+            const localX = Number.isFinite(this._lastMouseLocalX) ? this._lastMouseLocalX : this._lastMouseX;
+            const localY = Number.isFinite(this._lastMouseLocalY) ? this._lastMouseLocalY : this._lastMouseY;
+            return isLive2DPointInRect({ x: localX, y: localY }, rect, 8);
         };
 
         if (this._goodbyeClicked) return;
@@ -728,7 +846,7 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
             }
 
             // 再次检查鼠标是否在按钮区域内
-            if (this._isMouseOverButtons || isPointerNearLock() || hasOpenOverlay()) {
+            if (this._isMouseOverButtons || isPointerNearLock() || isPointerNearFloatingButtons() || hasOpenOverlay()) {
                 // 鼠标在按钮上，不隐藏，重新启动定时器
                 this._hideButtonsTimer = null;
                 startHideTimer(delay);
@@ -887,10 +1005,13 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
             return;
         }
         
-        // 使用 clientX/Y 作为全局坐标
-        const pointer = { x: event.clientX, y: event.clientY };
+        const pointerCoords = getLive2DNiriPetPointerCoordinates(event);
+        const pointer = pointerCoords.virtual;
+        const localPointer = pointerCoords.local;
         this._lastMouseX = pointer.x;
         this._lastMouseY = pointer.y;
+        this._lastMouseLocalX = localPointer.x;
+        this._lastMouseLocalY = localPointer.y;
 
         // 在拖拽期间不执行任何操作
         if ((model.interactive && model.dragging) || this._isDraggingModel) {
@@ -977,11 +1098,11 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
             let isOverUi = false;
             if (live2dLockIcon && live2dLockIcon.style.display !== 'none') {
                 const lr = live2dLockIcon.getBoundingClientRect();
-                if (pointer.x >= lr.left && pointer.x <= lr.right && pointer.y >= lr.top && pointer.y <= lr.bottom) isOverUi = true;
+                if (isLive2DPointInRect(localPointer, lr, 0)) isOverUi = true;
             }
             if (!isOverUi && live2dFloatingBtns && live2dFloatingBtns.style.display !== 'none') {
                 const br = live2dFloatingBtns.getBoundingClientRect();
-                if (pointer.x >= br.left && pointer.x <= br.right && pointer.y >= br.top && pointer.y <= br.bottom) isOverUi = true;
+                if (isLive2DPointInRect(localPointer, br, 0)) isOverUi = true;
             }
             if (isOverUi) {
                 clearStationaryFadeTimer();

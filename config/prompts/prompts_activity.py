@@ -1245,6 +1245,23 @@ def _label_before_colon(line: str) -> str | None:
     return None
 
 
+# Activity / propensity enum literals that are ordinary standalone English
+# words (unlike the multi-token enums such as ``focused_work`` /
+# ``restricted_screen_only``). These are EXCLUDED from the proactive leak
+# denylist: ``_strip_proactive_intent_label_leak`` drops a whole first line
+# when it matches a denied label, so denying a bare "idle" / "gaming" / "open"
+# would scrub a legitimate English reply that opens with the word. The
+# multi-token enums never occur as natural speech, so they stay denied.
+# ⚠️ Keep in sync with ``ActivityState`` / ``Propensity`` in
+# ``main_logic/activity/snapshot.py``: a newly added SINGLE-WORD state/propensity
+# must be listed here, otherwise it will (wrongly) start being stripped from
+# replies. Multi-token additions need no change — they are denied by default.
+_ACTIVITY_ENUM_COMMON_WORDS = frozenset({
+    'away', 'gaming', 'chatting', 'idle', 'transitioning', 'private',  # ActivityState
+    'open', 'closed',                                                  # Propensity
+})
+
+
 @lru_cache(maxsize=1)
 def get_proactive_intent_leak_labels() -> frozenset[str]:
     """All internal guidance labels that must never reach spoken output.
@@ -1283,6 +1300,24 @@ def get_proactive_intent_leak_labels() -> frozenset[str]:
         label = (label or '').strip()
         if label:
             labels.add(label)
+
+    # Activity state / propensity enum literals + their English labels.
+    # The activity-state section historically rendered the bare English enum
+    # keys (state line / scores line), and weak models echo them as the reply's
+    # first line. Deny every enum key + English label EXCEPT the ordinary single
+    # words in ``_ACTIVITY_ENUM_COMMON_WORDS`` (see its docstring): denying a
+    # bare "idle" / "open" would let ``_strip`` scrub a legit reply opening with
+    # the word, while multi-token forms (focused_work, "focused work") never
+    # occur as natural speech and are safe to strip. English only on purpose:
+    # the leak is always the English literal.
+    for state_key, en_label in ACTIVITY_STATE_LABELS['en'].items():
+        if state_key not in _ACTIVITY_ENUM_COMMON_WORDS:
+            labels.add(state_key)
+        if en_label not in _ACTIVITY_ENUM_COMMON_WORDS:
+            labels.add(en_label)
+    for prop_key in ACTIVITY_PROPENSITY_DIRECTIVES['en']:
+        if prop_key not in _ACTIVITY_ENUM_COMMON_WORDS:
+            labels.add(prop_key)
 
     return frozenset(label.casefold() for label in labels if label)
 

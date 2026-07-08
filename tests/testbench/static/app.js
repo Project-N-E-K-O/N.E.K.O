@@ -21,16 +21,18 @@ import { mountSessionRestoreBanner } from './ui/session_restore_banner.js';
 import { mountSetupWorkspace }    from './ui/workspace_setup.js';
 import { mountChatWorkspace }     from './ui/workspace_chat.js';
 import { mountEvaluationWorkspace } from './ui/workspace_evaluation.js';
+import { mountMemoryTraceWorkspace } from './ui/workspace_memory_trace.js';
 import { mountDiagnosticsWorkspace } from './ui/workspace_diagnostics.js';
 import { mountSettingsWorkspace }  from './ui/workspace_settings.js';
 
 /** Tab 声明 — 顺序即渲染顺序. */
 const WORKSPACES = [
-  { id: 'setup',       labelKey: 'tabs.setup',       mount: mountSetupWorkspace       },
-  { id: 'chat',        labelKey: 'tabs.chat',        mount: mountChatWorkspace        },
-  { id: 'evaluation',  labelKey: 'tabs.evaluation',  mount: mountEvaluationWorkspace  },
-  { id: 'diagnostics', labelKey: 'tabs.diagnostics', mount: mountDiagnosticsWorkspace },
-  { id: 'settings',    labelKey: 'tabs.settings',    mount: mountSettingsWorkspace    },
+  { id: 'setup',        labelKey: 'tabs.setup',        mount: mountSetupWorkspace        },
+  { id: 'chat',         labelKey: 'tabs.chat',         mount: mountChatWorkspace         },
+  { id: 'evaluation',   labelKey: 'tabs.evaluation',   mount: mountEvaluationWorkspace   },
+  { id: 'memory_trace', labelKey: 'tabs.memory_trace', mount: mountMemoryTraceWorkspace  },
+  { id: 'diagnostics',  labelKey: 'tabs.diagnostics',  mount: mountDiagnosticsWorkspace  },
+  { id: 'settings',     labelKey: 'tabs.settings',     mount: mountSettingsWorkspace     },
 ];
 
 const _mountedWorkspaces = new Set();

@@ -51,6 +51,9 @@ class MMDInteraction {
         this._orbitPivot = null;
         this._lastPanDragPointerScreen = null;
         this._panDragModelCenterOffset = null;
+        this._dragHintPanStartPointer = null;
+        this._dragHintPanLastPointer = null;
+        this._dragHintApproachShown = false;
     }
 
     // ═══════════════════ 射线检测 ═══════════════════
@@ -82,6 +85,56 @@ class MMDInteraction {
 
         return clientX >= bounds.minX && clientX <= bounds.maxX &&
                clientY >= bounds.minY && clientY <= bounds.maxY;
+    }
+
+    _captureDragHintPointer(event) {
+        const screenX = Number(event?.screenX);
+        const screenY = Number(event?.screenY);
+        if (!Number.isFinite(screenX) || !Number.isFinite(screenY)) return null;
+        return { screenX, screenY };
+    }
+
+    _rememberDragHintPanPointer(event, { start = false } = {}) {
+        const pointer = this._captureDragHintPointer(event);
+        if (!pointer) return;
+        if (start) {
+            pointer.startedAt = Date.now();
+            this._dragHintPanStartPointer = pointer;
+        }
+        this._dragHintPanLastPointer = pointer;
+    }
+
+    async _recordDragHintPointerEdgeRelease(source) {
+        const helper = window.NekoAvatarMultiScreenDragHint;
+        if (!helper || typeof helper.recordPointerEdgeRelease !== 'function') return false;
+        const start = this._dragHintPanStartPointer;
+        const release = this._dragHintPanLastPointer;
+        if (!start || !release) return false;
+        return await helper.recordPointerEdgeRelease(source, {
+            startedAt: start.startedAt,
+            startScreenX: start.screenX,
+            startScreenY: start.screenY,
+            screenX: release.screenX,
+            screenY: release.screenY
+        });
+    }
+
+    async _recordDragHintPointerEdgeApproach(source) {
+        const helper = window.NekoAvatarMultiScreenDragHint;
+        if (!helper || typeof helper.recordPointerEdgeApproach !== 'function') return false;
+        if (this._dragHintApproachShown) return false;
+        const start = this._dragHintPanStartPointer;
+        const pointer = this._dragHintPanLastPointer;
+        if (!start || !pointer) return false;
+        const shown = await helper.recordPointerEdgeApproach(source, {
+            startedAt: start.startedAt,
+            startScreenX: start.screenX,
+            startScreenY: start.screenY,
+            screenX: pointer.screenX,
+            screenY: pointer.screenY
+        });
+        if (shown) this._dragHintApproachShown = true;
+        return shown;
     }
 
     /**
@@ -312,6 +365,8 @@ class MMDInteraction {
                 this.dragMode = 'pan';
                 this.previousMousePosition = { x: e.clientX, y: e.clientY };
                 this._rememberPanDragPointer(e, { captureOffset: true });
+                this._rememberDragHintPanPointer(e, { start: true });
+                this._dragHintApproachShown = false;
                 canvas.style.cursor = 'move';
                 e.preventDefault();
                 e.stopPropagation();
@@ -366,6 +421,8 @@ class MMDInteraction {
             const dy = e.clientY - this.previousMousePosition.y;
             if (this.dragMode === 'pan') {
                 this._rememberPanDragPointer(e);
+                this._rememberDragHintPanPointer(e);
+                void this._recordDragHintPointerEdgeApproach('mmd');
             }
             this.previousMousePosition = { x: e.clientX, y: e.clientY };
 
@@ -424,6 +481,7 @@ class MMDInteraction {
             if (this.isDragging) {
                 if (this.dragMode === 'pan') {
                     this._rememberPanDragPointer(e);
+                    this._rememberDragHintPanPointer(e);
                 }
                 // 保留本次拖拽类型再清状态，跨屏切换只对 pan 生效
                 // （orbit 是绕模型中心旋转朝向，不应触发多屏切换）
@@ -440,6 +498,9 @@ class MMDInteraction {
                     : false;
 
                 if (!displaySwitched) {
+                    if (wasPanDrag) {
+                        await this._recordDragHintPointerEdgeRelease('mmd');
+                    }
                     // 桌宠窗口与网页端统一：clampModelPosition 已按可见像素(200px)判定，
                     // 只有模型绝大部分出屏才回弹，贴边摆放不会被过度纠正。
                     const snapped = await this._snapModelIntoScreen({ animate: true });
@@ -692,7 +753,6 @@ class MMDInteraction {
                 }
             }
             if (!targetDisplay) {
-                recordDisplaySwitchMiss();
                 return false;
             }
 

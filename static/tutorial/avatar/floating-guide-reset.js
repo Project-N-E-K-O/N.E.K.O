@@ -6,8 +6,8 @@
     const ICEBREAKER_RESET_EVENT = 'neko:new-user-icebreaker-reset';
     const RESET_EVENT = 'neko:avatar-floating-guide-reset';
     const RESET_BROADCAST_KEY = 'neko_avatar_floating_guide_reset_event';
-    const HOME_TUTORIAL_KEYS = ['neko_tutorial_home_yui_v1', 'neko_tutorial_home'];
-    const HOME_MANUAL_INTENT_KEY = 'neko_tutorial_home_manual_intent';
+    const HOME_TUTORIAL_KEYS = ['neko_tutorial_home_yui_v1'];
+    const HOME_MANUAL_INTENT_KEY = 'neko_tutorial_home_yui_v1_manual_intent';
     const ROUND_COUNT = 7;
     const RESET_HISTORY_LIMIT = 20;
 

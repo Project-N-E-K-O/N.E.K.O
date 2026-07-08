@@ -18,6 +18,16 @@ YUI_GUIDE_COMMON_PATH = Path(__file__).resolve().parents[2] / "static" / "tutori
 COMMON_UI_PATH = Path(__file__).resolve().parents[2] / "static" / "common_ui.js"
 APP_AUDIO_CAPTURE_PATH = Path(__file__).resolve().parents[2] / "static" / "app-audio-capture.js"
 CHAT_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "chat.html"
+APP_PROMPT_PATH = Path(__file__).resolve().parents[2] / "static" / "tutorial/core/app-prompt.js"
+AVATAR_FLOATING_BOOT_PREDICTOR_PATH = (
+    Path(__file__).resolve().parents[2] / "static" / "tutorial/core/avatar-floating-boot-predictor.js"
+)
+FLOATING_GUIDE_RESET_PATH = (
+    Path(__file__).resolve().parents[2] / "static" / "tutorial/avatar/floating-guide-reset.js"
+)
+CHARACTER_PERSONALITY_ONBOARDING_PATH = (
+    Path(__file__).resolve().parents[2] / "static" / "js/character_personality_onboarding.js"
+)
 
 
 def _read_manager() -> str:
@@ -60,6 +70,22 @@ def _read_chat_template() -> str:
     return CHAT_TEMPLATE_PATH.read_text(encoding="utf-8")
 
 
+def _read_app_prompt() -> str:
+    return APP_PROMPT_PATH.read_text(encoding="utf-8")
+
+
+def _read_avatar_floating_boot_predictor() -> str:
+    return AVATAR_FLOATING_BOOT_PREDICTOR_PATH.read_text(encoding="utf-8")
+
+
+def _read_floating_guide_reset() -> str:
+    return FLOATING_GUIDE_RESET_PATH.read_text(encoding="utf-8")
+
+
+def _read_character_personality_onboarding() -> str:
+    return CHARACTER_PERSONALITY_ONBOARDING_PATH.read_text(encoding="utf-8")
+
+
 def test_universal_tutorial_manager_excludes_legacy_driver_tutorial_system():
     source = _read_manager()
 
@@ -81,6 +107,18 @@ def test_universal_tutorial_manager_excludes_legacy_driver_tutorial_system():
         "neko-tutorial-driver",
     ):
         assert obsolete not in source
+
+
+def test_home_tutorial_runtime_no_longer_uses_legacy_home_storage_key():
+    for source in (
+        _read_manager(),
+        _read_app_prompt(),
+        _read_avatar_floating_boot_predictor(),
+        _read_floating_guide_reset(),
+        _read_character_personality_onboarding(),
+    ):
+        assert "'neko_tutorial_home'" not in source
+        assert '"neko_tutorial_home"' not in source
 
 
 def test_non_home_page_tutorials_are_restored_in_separate_driver_runtime():
@@ -127,7 +165,7 @@ def test_non_home_page_tutorials_are_restored_in_separate_driver_runtime():
     assert "window.resetPageTutorialStorage = resetPageTutorialStorage;" in page_source
     assert "if (path === '/' || path === '/index.html' || path === '/chat')" in page_source
     assert "return 'home';" in page_source
-    assert "return SUPPORTED_PAGES.includes(this.currentPage);" in page_source
+    assert "if (!SUPPORTED_PAGES.includes(this.currentPage)) return false;" in page_source
     assert "const DriverClass = window.driver;" in page_source
     assert "this.driver = new DriverClass({" in page_source
     assert "getModelManagerSteps()" in page_source
@@ -187,8 +225,71 @@ def test_page_tutorial_manager_honors_mobile_viewport_bailout():
     # and startTutorial() funnel through this method.
     assert "window.innerWidth <= 768" in manage_block
     assert manage_block.index("window.innerWidth <= 768") < manage_block.index(
-        "return SUPPORTED_PAGES.includes(this.currentPage);"
+        "return true;"
     )
+    assert "!this.shouldAllowCompactDesktopTutorial()" in manage_block
+
+
+def test_page_tutorial_manager_allows_voice_clone_desktop_popup_width():
+    page_source = _read_page_manager()
+
+    compact_block = page_source.split("        shouldAllowCompactDesktopTutorial() {", 1)[1].split(
+        "        }",
+        1,
+    )[0]
+
+    assert "this.currentPage !== 'voice_clone'" in compact_block
+    assert "viewportWidth >= 640" in compact_block
+    assert "screenWidth > 768" in compact_block
+
+
+def test_voice_clone_tutorial_targets_visible_dropdown_triggers():
+    page_source = _read_page_manager()
+
+    voice_clone_block = page_source.split("        getVoiceCloneSteps() {", 1)[1].split(
+        "        getSteamWorkshopSteps() {",
+        1,
+    )[0]
+
+    assert "#voiceProvider-dropdown-trigger" in voice_clone_block
+    assert "#refLanguage-dropdown-trigger" in voice_clone_block
+    assert voice_clone_block.index("#refLanguage-dropdown-trigger") < voice_clone_block.index("#refLanguage'")
+
+
+def test_page_tutorial_skip_button_restores_pointer_events_inside_fixed_portal():
+    page_source = _read_page_manager()
+    show_block = page_source.split("        showSkipButton() {", 1)[1].split(
+        "        hideSkipButton() {",
+        1,
+    )[0]
+    hide_block = page_source.split("        hideSkipButton() {", 1)[1].split(
+        "        handleTutorialEnd",
+        1,
+    )[0]
+
+    assert "let skipHandled = false;" in show_block
+    assert "const absorbSkipEvent = (event) => {" in show_block
+    assert "event.preventDefault();" in show_block
+    assert "event.stopImmediatePropagation();" in show_block
+    assert "event.stopPropagation();" in show_block
+    assert "const completeSkipRequest = () => {" in show_block
+    assert "const handleSkipPress = (event) => {" in show_block
+    assert "const handleSkipRequest = (event, delayMs = 0) => {" in show_block
+    assert "if (skipHandled) {" in show_block
+    assert "skipHandled = true;" in show_block
+    assert "window.setTimeout(completeSkipRequest, delayMs);" in show_block
+    assert "const controller = this.ensureSkipSafeAreaController();" in show_block
+    assert "const host = controller && typeof controller.getButtonHost === 'function'" in show_block
+    assert "button.className = 'neko-page-tutorial-skip-btn';" in show_block
+    for event_name in ("pointerdown", "mousedown", "touchstart"):
+        assert f"button.addEventListener('{event_name}', handleSkipPress" in show_block
+    assert "button.addEventListener('pointerup', (event) => handleSkipRequest(event, 80));" in show_block
+    assert "button.addEventListener('touchend', (event) => handleSkipRequest(event, 80), { passive: false });" in show_block
+    assert "button.addEventListener('click', handleSkipRequest);" in show_block
+    assert "button.style.setProperty('pointer-events', 'auto', 'important');" in show_block
+    assert "button.style.setProperty('z-index', '2147483647', 'important');" in show_block
+    assert "button.style.touchAction = 'manipulation';" in show_block
+    assert "this._skipSafeAreaController.hide();" in hide_block
 
 
 def test_page_tutorial_manager_waits_for_api_settings_loading_overlay():
@@ -397,9 +498,24 @@ def test_universal_tutorial_manager_resets_and_delays_startup_greeting_release()
         1,
     )[0]
     assert "this.clearStartupGreetingRelease('tutorial-started');" in emit_block
+    assert "this.relayYuiGuideTutorialLifecycleStarted(page, source);" in emit_block
     assert emit_block.index("this.clearStartupGreetingRelease('tutorial-started');") < emit_block.index(
+        "this.relayYuiGuideTutorialLifecycleStarted(page, source);"
+    )
+    assert emit_block.index("this.relayYuiGuideTutorialLifecycleStarted(page, source);") < emit_block.index(
         "window.dispatchEvent(new CustomEvent('neko:tutorial-started'"
     )
+    lifecycle_started_block = source.split(
+        "    relayYuiGuideTutorialLifecycleStarted(page, source) {",
+        1,
+    )[1].split(
+        "    syncYuiGuideCompactChatFixedLayout",
+        1,
+    )[0]
+    assert "this.ensurePcTutorialGlobalOverlayStarted('tutorial-lifecycle-started')" in lifecycle_started_block
+    assert lifecycle_started_block.index(
+        "this.ensurePcTutorialGlobalOverlayStarted('tutorial-lifecycle-started')"
+    ) < lifecycle_started_block.index("const startedMessage = {")
 
     end_block = source.split("    onTutorialEnd() {", 1)[1].split(
         "    restoreYuiGuideChatInputState",
