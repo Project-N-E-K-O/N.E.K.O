@@ -31,7 +31,7 @@ const HOSTED_UI_GLOBAL_NAMES = [
   'Form', 'ActionButton', 'RefreshButton', 'ActionForm', 'AsyncBlock', 'InlineError', 'CodeBlock',
   'Tip', 'Warning', 'Steps', 'Step', 'Tabs', 'useI18n',
   'useState', 'useReducer', 'useEffect', 'useLayoutEffect', 'useMemo', 'useCallback', 'useRef', 'useLocalState',
-  'useDebounce', 'useDebouncedState', 'useForm', 'useAsync', 'useToast', 'useConfirm',
+  'useDebounce', 'useDebouncedState', 'useForm', 'useAsync', 'showToast', 'useToast', 'useConfirm',
 ]
 const sourceTextCache = new Map()
 

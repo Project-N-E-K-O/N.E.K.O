@@ -68,7 +68,7 @@ const props = withDefaults(defineProps<{
   surface: PluginUiSurface
   height?: string
 }>(), {
-  height: '520px',
+  height: 'clamp(520px, calc(100vh - 220px), 1200px)',
 })
 
 const emit = defineEmits<{

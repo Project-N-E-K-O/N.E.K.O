@@ -19,6 +19,7 @@ declare global {
   const useDebounce: typeof HostedUi.useDebounce
   const useDebouncedState: typeof HostedUi.useDebouncedState
   const useAsync: typeof HostedUi.useAsync
+  const showToast: typeof HostedUi.showToast
   const Page: typeof HostedUi.Page
   const Card: typeof HostedUi.Card
   const Section: typeof HostedUi.Section
