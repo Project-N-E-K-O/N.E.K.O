@@ -1021,10 +1021,9 @@ function updatePrefixFieldForProvider(provider) {
 
     if (isDoubaoTtsProvider(provider)) {
         prefixInput.removeAttribute('maxlength');
-        setI18nText(prefixLabel, 'voice.doubaoSpeakerIdLabel', 'Doubao Speaker ID (starts with S_, required)');
-        setI18nText(prefixHint, 'voice.doubaoSpeakerIdNote', 'Paste the existing Doubao Speech Speaker ID from Volcengine exactly. It must start with S_, e.g. S_xeC2CDp72');
+        setI18nText(prefixLabel, 'voice.doubaoSpeakerIdLabel', 'Doubao Speaker ID (overwrite existing S_ voice, required)');
+        setI18nText(prefixHint, 'voice.doubaoSpeakerIdNote', 'Clone the voice in the Doubao Speech console first and copy its S_ Speaker ID here; NEKO will overwrite that existing voice and will not create a new Doubao voice ID, e.g. S_xeC2CDp72');
         setI18nPlaceholder(prefixInput, 'voice.doubaoSpeakerIdPlaceholder', 'e.g. S_xeC2CDp72');
-        setI18nText(registerText, 'voice.register', 'Register Voice');
         return;
     }
 
