@@ -558,6 +558,7 @@ describe('hosted ui runtime', () => {
       const settled = vi.fn()
       promise.then(settled, settled)
       expect(requestMessage?.type).toBe('neko-hosted-surface-request')
+      expect(requestMessage?.timeoutMs).toBe(80000)
 
       await vi.advanceTimersByTimeAsync(30000)
       await flushMicrotasks()
@@ -700,5 +701,191 @@ describe('hosted ui runtime', () => {
     fireEvent.keyDown(window, { key: 'Escape' })
     await flushMicrotasks()
     expect(document.querySelector('.neko-modal')).toBeNull()
+  })
+
+  it('supports Gradio-parity controls', async () => {
+    let selectedLayer: any = null
+
+    function App() {
+      const [parts, setParts] = ui.useState(['Hair'])
+      const [method, setMethod] = ui.useState('anime_face')
+      const [feather, setFeather] = ui.useState(2)
+      const [image, setImage] = ui.useState({ type: 'image', dataUrl: 'data:image/png;base64,ZmFrZQ==', label: 'Preview' })
+      return ui.h('section', null,
+        ui.h(ui.CheckboxGroup, {
+          value: parts,
+          options: [{ value: 'Hair', label: 'Hair' }, { value: 'Body', label: 'Body' }],
+          onChange: setParts,
+        }),
+        ui.h(ui.RadioGroup, {
+          value: method,
+          options: [{ value: 'anime_face', label: 'AnimeFace' }, { value: 'color', label: 'Color' }],
+          onChange: setMethod,
+        }),
+        ui.h(ui.SegmentedControl, {
+          value: method,
+          options: ['anime_face', 'color'],
+          onChange: setMethod,
+        }),
+        ui.h(ui.Slider, { value: feather, min: 0, max: 8, onChange: setFeather }),
+        ui.h(ui.PasswordInput, { value: 'secret', onChange: () => undefined }),
+        ui.h(ui.ImageUpload, { value: image, onChange: setImage }),
+        ui.h(ui.ImagePreview, { src: image, label: 'Preview' }),
+        ui.h(ui.Gallery, {
+          items: [{ name: 'Layer', preview_data_url: image }],
+          onSelect: (item: any) => { selectedLayer = item },
+        }),
+        ui.h('output', { id: 'state', 'data-parts': parts.join(','), 'data-method': method, 'data-feather': feather }, image.dataUrl),
+      )
+    }
+
+    ui.render(ui.h(App, null), root)
+
+    fireEvent.click(Array.from(root.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')).find((input) => input.value === 'Body')!)
+    await flushMicrotasks()
+    expect(root.querySelector('#state')?.getAttribute('data-parts')).toBe('Hair,Body')
+
+    fireEvent.click(Array.from(root.querySelectorAll<HTMLInputElement>('input[type="radio"]')).find((input) => input.value === 'color')!)
+    await flushMicrotasks()
+    expect(root.querySelector('#state')?.getAttribute('data-method')).toBe('color')
+
+    const slider = root.querySelector<HTMLInputElement>('input[type="range"]')!
+    slider.value = '5'
+    fireEvent.input(slider)
+    await flushMicrotasks()
+    expect(root.querySelector('#state')?.getAttribute('data-feather')).toBe('5')
+
+    expect(root.querySelector('.neko-image-preview img')?.getAttribute('src')).toContain('data:image/png;base64')
+    fireEvent.click(root.querySelector('.neko-gallery-item')!)
+    expect(selectedLayer?.name).toBe('Layer')
+  })
+
+  it('routes hosted downloads through the parent window', () => {
+    const messages: any[] = []
+    Object.defineProperty(window, 'parent', {
+      value: {
+        postMessage(message: any) {
+          messages.push(message)
+        },
+      },
+      configurable: true,
+    })
+    window.__NEKO_PAYLOAD.host = { origin: 'http://127.0.0.1:48911' }
+
+    ui.render(ui.h(ui.FileDownload, { href: '/plugin/demo/hosted-ui/artifact?path=x.zip', label: 'Download' }), root)
+    fireEvent.click(root.querySelector('button')!)
+
+    expect(messages).toEqual([{
+      type: 'neko-hosted-surface-open-external',
+      payload: { url: 'http://127.0.0.1:48911/plugin/demo/hosted-ui/artifact?path=x.zip' },
+    }])
+  })
+
+  it('routes local hosted download paths through the parent window', () => {
+    const messages: any[] = []
+    Object.defineProperty(window, 'parent', {
+      value: {
+        postMessage(message: any) {
+          messages.push(message)
+        },
+      },
+      configurable: true,
+    })
+    window.__NEKO_PAYLOAD.host = { origin: 'http://127.0.0.1:48911' }
+
+    ui.render(ui.h(ui.FileDownload, { path: '/tmp/neko/package', label: 'Open folder' }), root)
+    fireEvent.click(root.querySelector('button')!)
+
+    expect(messages).toEqual([{
+      type: 'neko-hosted-surface-open-path',
+      payload: { path: '/tmp/neko/package' },
+    }])
+  })
+
+  it('normalizes artifact-like values into type and view', () => {
+    expect(ui.normalizeArtifact({ type: 'table', rows: [{ a: 1 }] })).toMatchObject({
+      type: 'json',
+      view: 'table',
+      data: [{ a: 1 }],
+    })
+    expect(ui.normalizeArtifact({ type: 'folder', path: '/tmp/out' })).toMatchObject({
+      type: 'file',
+      isDirectory: true,
+      path: '/tmp/out',
+    })
+    expect(ui.normalizeArtifact({ markdown: '# Report' })).toMatchObject({
+      type: 'text',
+      view: 'markdown',
+      text: '# Report',
+    })
+    expect(ui.normalizeArtifact({ mime: 'audio/webm', dataUrl: 'data:audio/webm;base64,ZmFrZQ==' })).toMatchObject({
+      type: 'audio',
+      dataUrl: 'data:audio/webm;base64,ZmFrZQ==',
+    })
+  })
+
+  it('automatically renders mixed artifacts', () => {
+    ui.render(ui.h(ui.ArtifactList, {
+      items: [
+        { type: 'image', dataUrl: 'data:image/png;base64,ZmFrZQ==', label: 'Image' },
+        { type: 'audio', dataUrl: 'data:audio/webm;base64,ZmFrZQ==', label: 'Audio' },
+        { type: 'video', dataUrl: 'data:video/webm;base64,ZmFrZQ==', label: 'Video' },
+        { type: 'text', view: 'log', text: 'line 1\nline 2', label: 'Log' },
+        { type: 'json', view: 'table', data: [{ name: 'Neko', score: 9 }], label: 'Rows' },
+        { type: 'file', path: '/tmp/out.zip', label: 'Package' },
+      ],
+    }), root)
+
+    expect(root.querySelectorAll('.neko-artifact-card')).toHaveLength(6)
+    expect(root.querySelector('.neko-image-preview img')?.getAttribute('src')).toContain('data:image/png')
+    expect(root.querySelector('audio')?.getAttribute('src')).toContain('data:audio')
+    expect(root.querySelector('video')?.getAttribute('src')).toContain('data:video')
+    expect(root.querySelector('.neko-log-viewer')?.textContent).toContain('line 2')
+    expect(root.querySelector('.neko-table')?.textContent).toContain('Neko')
+    expect(root.querySelector('.neko-download')?.textContent).toContain('Package')
+  })
+
+  it('emits artifact-like objects from audio and video uploads', async () => {
+    const OriginalFileReader = window.FileReader
+    class MockFileReader {
+      result = ''
+      onload: null | (() => void) = null
+      onerror: null | (() => void) = null
+      error: Error | null = null
+      readAsDataURL(file: File) {
+        this.result = `data:${file.type};base64,ZmFrZQ==`
+        queueMicrotask(() => this.onload && this.onload())
+      }
+    }
+    Object.defineProperty(window, 'FileReader', { value: MockFileReader, configurable: true })
+
+    const audioChange = vi.fn()
+    const videoChange = vi.fn()
+    ui.render(ui.h('section', null,
+      ui.h(ui.AudioUpload, { onChange: audioChange }),
+      ui.h(ui.VideoUpload, { onChange: videoChange }),
+    ), root)
+
+    const [audioInput, videoInput] = Array.from(root.querySelectorAll<HTMLInputElement>('input[type="file"]')) as [HTMLInputElement, HTMLInputElement]
+    fireEvent.change(audioInput, { target: { files: [new File(['audio'], 'voice.webm', { type: 'audio/webm' })] } })
+    fireEvent.change(videoInput, { target: { files: [new File(['video'], 'clip.webm', { type: 'video/webm' })] } })
+    await flushMicrotasks()
+
+    expect(audioChange).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'audio',
+      dataUrl: 'data:audio/webm;base64,ZmFrZQ==',
+      name: 'voice.webm',
+      mime: 'audio/webm',
+      size: 5,
+    }))
+    expect(videoChange).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'video',
+      dataUrl: 'data:video/webm;base64,ZmFrZQ==',
+      name: 'clip.webm',
+      mime: 'video/webm',
+      size: 5,
+    }))
+
+    Object.defineProperty(window, 'FileReader', { value: OriginalFileReader, configurable: true })
   })
 })

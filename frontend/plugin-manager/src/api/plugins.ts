@@ -257,6 +257,7 @@ export function callPluginHostedSurfaceAction(pluginId: string, actionId: string
   kind: PluginUiSurface['kind']
   id: string
   locale?: string
+  timeoutMs?: number
 }): Promise<{
   plugin_id: string
   action_id: string
@@ -269,6 +270,7 @@ export function callPluginHostedSurfaceAction(pluginId: string, actionId: string
     kind: surface?.kind,
     surface_id: surface?.id,
     locale: surface?.locale,
+    timeout_ms: surface?.timeoutMs,
   })
 }
 

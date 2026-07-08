@@ -43,14 +43,26 @@ export type AsyncState<T> = { loading: boolean; error: any; data: T | undefined;
 export type FormState<T extends Record<string, any>> = {
   values: T
   setValues: (next: T | ((previous: T) => T)) => T
-  setField: <K extends keyof T>(name: K, value: T[K]) => T
-  field: <K extends keyof T>(name: K) => { value: T[K]; onChange: (value: T[K]) => T }
-  checkbox: <K extends keyof T>(name: K) => { checked: boolean; onChange: (value: boolean) => T }
+  setField: {
+    <K extends keyof T>(name: K, value: T[K]): T
+    (name: string, value: any): T
+  }
+  field: {
+    <K extends keyof T>(name: K): { value: T[K]; onChange: (value: T[K]) => T }
+    (name: string): { value: any; onChange: (value: any) => T }
+  }
+  checkbox: {
+    <K extends keyof T>(name: K): { checked: boolean; onChange: (value: boolean) => T }
+    (name: string): { checked: boolean; onChange: (value: boolean) => T }
+  }
   reset: (next?: T | (() => T)) => T
 }
 
 export type PluginSurfaceProps<State = Record<string, any>> = {
   plugin: Record<string, any>
+  host?: {
+    origin?: string
+  }
   surface: Record<string, any>
   state: State
   stateSchema?: JsonSchema | null
@@ -70,6 +82,7 @@ export type PluginSurfaceProps<State = Record<string, any>> = {
 }
 
 export type CommonProps = {
+  key?: any
   className?: string
   children?: any
 }
@@ -78,6 +91,58 @@ export type DataTableColumn<T = Record<string, any>> = string | {
   key: keyof T | string
   label?: any
   render?: (row: T, index: number) => any
+}
+
+export type UiOption = string | {
+  value: any
+  label?: any
+  title?: any
+  disabled?: boolean
+}
+
+export type UploadedFileInfo = {
+  name: string
+  size: number
+  type: string
+}
+
+export type ArtifactType = "image" | "audio" | "video" | "text" | "json" | "file" | "unknown"
+export type ArtifactView = "preview" | "download" | "markdown" | "log" | "code" | "table" | "keyValue" | "raw" | string
+export type ArtifactLike = {
+  id?: string | number
+  type?: ArtifactType | "markdown" | "log" | "table" | "folder"
+  view?: ArtifactView
+  role?: "input" | "output" | "reference" | "debug" | "intermediate" | string
+  label?: any
+  title?: any
+  description?: any
+  dataUrl?: string
+  src?: string
+  url?: string
+  href?: string
+  path?: string
+  data?: any
+  value?: any
+  text?: string
+  markdown?: string
+  rows?: any[]
+  columns?: Array<DataTableColumn<any>>
+  name?: string
+  filename?: string
+  mime?: string
+  size?: number
+  durationMs?: number
+  width?: number
+  height?: number
+  isDirectory?: boolean
+  status?: "pending" | "running" | "done" | "error" | string
+  error?: any
+  metadata?: Record<string, any>
+}
+export type NormalizedArtifact = ArtifactLike & {
+  type: ArtifactType
+  view: ArtifactView
+  label?: any
 }
 
 export function Page(props: CommonProps & { title?: any; subtitle?: any }): any
@@ -114,13 +179,38 @@ export function EmptyState(props: CommonProps & { title?: any; description?: any
 export function Modal(props: CommonProps & { open?: boolean; title?: any; footer?: any; closeOnBackdrop?: boolean; onClose?: () => void }): any
 export function ConfirmDialog(props: CommonProps & { open?: boolean; title?: any; message?: any; tone?: Tone; confirmLabel?: any; cancelLabel?: any; closeOnBackdrop?: boolean; onConfirm?: () => void; onCancel?: () => void }): any
 export function List<T = any>(props: CommonProps & { items?: T[]; render?: (item: T, index: number) => any }): any
-export function Progress(props: CommonProps & { label?: any; value?: number }): any
+export function Progress(props: CommonProps & { label?: any; value?: number; indeterminate?: boolean }): any
 export function JsonView(props: CommonProps & { data?: any; value?: any }): any
 export function Field(props: CommonProps & { label?: any; help?: any; error?: any; required?: boolean }): any
-export function Input(props: CommonProps & { value?: any; placeholder?: string; invalid?: boolean; error?: any; onChange?: (value: string) => void }): any
-export function Select(props: CommonProps & { value?: any; options?: Array<string | { value: any; label?: any }>; invalid?: boolean; error?: any; onChange?: (value: any) => void }): any
+export function Input(props: CommonProps & { type?: string; value?: any; placeholder?: string; min?: number; max?: number; step?: number; invalid?: boolean; error?: any; onChange?: (value: string) => void }): any
+export function PasswordInput(props: CommonProps & { value?: any; placeholder?: string; invalid?: boolean; error?: any; onChange?: (value: string) => void }): any
+export function NumberInput(props: CommonProps & { value?: number | ""; placeholder?: string; min?: number; max?: number; step?: number; invalid?: boolean; error?: any; onChange?: (value: number | string) => void }): any
+export function Slider(props: CommonProps & { value?: number; min?: number; max?: number; step?: number; showValue?: boolean; disabled?: boolean; onChange?: (value: number) => void }): any
+export function Select(props: CommonProps & { value?: any; options?: UiOption[]; invalid?: boolean; error?: any; onChange?: (value: any) => void }): any
+export function RadioGroup(props: CommonProps & { name?: string; value?: any; options?: UiOption[]; disabled?: boolean; onChange?: (value: any) => void }): any
+export function SegmentedControl(props: CommonProps & { value?: any; options?: UiOption[]; disabled?: boolean; onChange?: (value: any) => void }): any
 export function Textarea(props: CommonProps & { value?: any; placeholder?: string; invalid?: boolean; error?: any; onChange?: (value: string) => void }): any
 export function Switch(props: CommonProps & { checked?: boolean; label?: any; invalid?: boolean; error?: any; onChange?: (value: boolean) => void }): any
+export function Checkbox(props: CommonProps & { checked?: boolean; value?: boolean; label?: any; invalid?: boolean; error?: any; disabled?: boolean; onChange?: (value: boolean) => void }): any
+export function CheckboxGroup(props: CommonProps & { value?: any[]; options?: UiOption[]; disabled?: boolean; onChange?: (value: any[]) => void }): any
+export function Accordion(props: CommonProps & { id?: string; title?: any; label?: any; open?: boolean }): any
+export function Markdown(props: CommonProps & { source?: any; text?: any }): any
+export function ImageUpload(props: CommonProps & { value?: ArtifactLike | string; label?: any; placeholder?: any; alt?: string; accept?: string; maxBytes?: number; compact?: boolean; variant?: string; onChange?: (artifact: ArtifactLike) => void; onError?: (error: any) => void }): any
+export function AudioUpload(props: CommonProps & { value?: ArtifactLike | string; label?: any; placeholder?: any; accept?: string; maxBytes?: number; compact?: boolean; variant?: string; onChange?: (artifact: ArtifactLike) => void; onError?: (error: any) => void }): any
+export function VideoUpload(props: CommonProps & { value?: ArtifactLike | string; label?: any; placeholder?: any; accept?: string; maxBytes?: number; compact?: boolean; variant?: string; onChange?: (artifact: ArtifactLike) => void; onError?: (error: any) => void }): any
+export function ImagePreview(props: CommonProps & { artifact?: ArtifactLike; src?: string; value?: string | ArtifactLike; label?: any; caption?: any; alt?: string; emptyText?: any; placeholder?: any }): any
+export function AudioPlayer(props: CommonProps & { artifact?: ArtifactLike; src?: string; value?: string | ArtifactLike; label?: any; caption?: any; controls?: boolean; preload?: string; emptyText?: any }): any
+export function VideoPlayer(props: CommonProps & { artifact?: ArtifactLike; src?: string; value?: string | ArtifactLike; label?: any; caption?: any; poster?: string; controls?: boolean; preload?: string; emptyText?: any }): any
+export function Gallery<T = any>(props: CommonProps & { items?: T[]; columns?: number; cols?: number; emptyText?: any; onSelect?: (item: T, index: number) => void }): any
+export function FileDownload(props: CommonProps & { href?: string; url?: string; dataUrl?: string; path?: string; filename?: string; label?: any; copiedLabel?: any; tone?: Tone; target?: string; openExternal?: boolean }): any
+export function TextBlock(props: CommonProps & { text?: any; value?: any }): any
+export function LogViewer(props: CommonProps & { text?: any; value?: any }): any
+export function JsonEditorLite(props: CommonProps & { value?: any; data?: any; mode?: "json" | "text"; onChange?: (value: any) => void }): any
+export function ArtifactRenderer(props: CommonProps & { artifact?: ArtifactLike; item?: ArtifactLike; value?: ArtifactLike; render?: (artifact: NormalizedArtifact) => any }): any
+export function ArtifactCard(props: CommonProps & { artifact?: ArtifactLike; item?: ArtifactLike; value?: ArtifactLike; label?: any; renderArtifact?: (artifact: NormalizedArtifact) => any }): any
+export function ArtifactList(props: CommonProps & { items?: ArtifactLike[]; layout?: "list" | "grid"; empty?: any; emptyText?: any; cardClassName?: string | ((item: ArtifactLike, index: number) => string); renderArtifact?: (artifact: NormalizedArtifact) => any }): any
+export function normalizeArtifact(value: any): NormalizedArtifact
+export function detectArtifactType(value: any): ArtifactType
 export function Form(props: CommonProps & { onSubmit?: (event: Event) => void | Promise<void> }): any
 export function ActionButton(props: CommonProps & {
   action?: HostedAction
