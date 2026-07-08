@@ -1353,6 +1353,7 @@
         "toggleFullscreen": "Alternar pantalla completa",
         "exitFullscreen": "Salir de pantalla completa",
         "modelType": "Tipo de modelo",
+        "modelType3d": "Modelo 3D",
         "selectLive2DModel": "Seleccione el modelo Live2D",
         "selectVRMModel": "Modelo VRM",
         "selectVRMFile": "Seleccionar archivo VRM",
@@ -3152,7 +3153,7 @@
             "mmd": {
                 "step1": {
                     "title": "🎭 Seleccione modelo MMD",
-                    "desc": "En el modo Live3D (MMD), elige tu modelo aquí. MMD comparte la misma lista de modelos que VRM."
+                    "desc": "En el modo Modelo 3D (MMD), elige tu modelo aquí. MMD comparte la misma lista de modelos que VRM."
                 },
                 "step2": {
                     "title": "💃 Animación VMD",
@@ -3164,7 +3165,7 @@
                 },
                 "step4": {
                     "title": "😄 Configuración de emociones",
-                    "desc": "Después de seleccionar un modelo, abra la configuración de emociones aquí. MMD y VRM comparten este botón Live3D (no el de Live2D)."
+                    "desc": "Después de seleccionar un modelo, abra la configuración de emociones aquí. MMD y VRM comparten este botón Modelo 3D (no el de Live2D)."
                 }
             }
         },
