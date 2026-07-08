@@ -386,6 +386,7 @@
     var COMPACT_SURFACE_VIEWPORT_PAD_X = 16;
     var COMPACT_SURFACE_VIEWPORT_PAD_TOP = 12;
     var COMPACT_SURFACE_VIEWPORT_PAD_BOTTOM = 18;
+    var COMPACT_SURFACE_ELECTRON_DEFAULT_BOTTOM_GAP = 320;
     var COMPACT_SURFACE_DEFAULT_HEIGHT = 64;
     var COMPACT_SURFACE_AVATAR_VERTICAL_RATIO = 0.72;
     var COMPACT_SURFACE_POSITION_STORAGE_KEY = 'neko.reactChatWindow.compactSurfacePosition';
@@ -1340,9 +1341,12 @@
         var metrics = getCompactSurfaceMetrics();
         var viewportWidth = window.innerWidth;
         var viewportHeight = window.innerHeight;
+        var fallbackBottomGap = isCompactOnlyElectronChatHost()
+            ? Math.max(COMPACT_SURFACE_VIEWPORT_PAD_BOTTOM, COMPACT_SURFACE_ELECTRON_DEFAULT_BOTTOM_GAP)
+            : COMPACT_SURFACE_VIEWPORT_PAD_BOTTOM;
         var fallbackTop = Math.max(
             COMPACT_SURFACE_VIEWPORT_PAD_TOP,
-            viewportHeight - metrics.height - COMPACT_SURFACE_VIEWPORT_PAD_BOTTOM
+            viewportHeight - metrics.height - fallbackBottomGap
         );
 
         if (isElectronChatWindow()) {
