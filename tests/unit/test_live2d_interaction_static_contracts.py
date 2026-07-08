@@ -69,3 +69,31 @@ def test_live2d_niri_physical_crop_mouse_tracking_splits_virtual_and_local_coord
     assert "isLive2DPointInRect(localPointer, lr, 0)" in source
     assert "isLive2DPointInRect(localPointer, br, 0)" in source
     assert "isPointerNearFloatingButtons()" in source
+
+
+def test_live2d_click_touch_set_logs_trigger_summary():
+    source = _live2d_source()
+
+    assert "function logLive2DClickTriggerSummary(label, details = {})" in source
+    assert "triggered=${triggerCount}, motions=${motionCount}, expressions=${expressionCount}" in source
+    assert "requestedHitArea" in source
+    assert "resolvedHitArea" in source
+    assert "motionCandidates" in source
+    assert "expressionCandidates" in source
+    assert "failedMotions" in source
+    assert "failedExpressions" in source
+    assert "await this._playTouchSetAnimation(useBlock, { requestedHitArea });" in source
+    assert "fallback: 'default'" in source
+    assert "triggerLog.motions.push({" in source
+    assert "triggerLog.expressions.push({" in source
+
+
+def test_live2d_click_prefers_motion_and_uses_expression_as_fallback():
+    source = _live2d_source()
+
+    assert "// 准备表情兜底：动作不可用或播放失败时才播放" in source
+    assert "// 1. 优先播放低优先级动作" in source
+    assert "// 2. 动作不可用或播放失败时，再用表情兜底" in source
+    assert "if (!didPlayEffect && expressionFiles.length > 0)" in source
+    assert "if (triggerLog.motions.length === 0 && expressions.length > 0)" in source
+    assert "fallbackFor: 'motion'" in source
