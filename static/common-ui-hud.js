@@ -1994,3 +1994,53 @@ window.AgentHUD._setupDragging = function (hud) {
     `;
     document.head.appendChild(style);
 })();
+
+// ===== i18n 就绪 / 语言切换后重译任务 HUD 外壳 =====
+// HUD 外壳文案（标题 / 统计 / 折叠·终止按钮 title / 空态文本）由 createAgentTaskHUD
+// 用 window.t 直接写入且没有 data-i18n 属性，因此 i18n 的 updatePageTexts() 不会重译它们。
+// 当 HUD 在 i18n 初始化完成前就抢先构建时（典型场景：启动时后端恢复了上次 NekoClaw 会话的
+// 任务，agenthud 页面拉到 active_tasks 后立即渲染 HUD），这些外壳文案会停留在初始兜底态，
+// 表现为「i18n 文字加载异常」。这里监听 localechange（i18n 初始化完成及语言切换时派发），
+// 补一次外壳重译，并用缓存快照刷新任务卡片状态/类型文案。
+window.AgentHUD.refreshHudI18n = function () {
+    if (typeof window.t !== 'function') return;
+    // 仅当 i18n 真正解析出翻译（而非降级返回 key）时才重译，避免把兜底文案覆盖成 key。
+    const titleText = window.t('agent.taskHud.title');
+    if (!titleText || titleText === 'agent.taskHud.title') return;
+
+    const title = document.getElementById('agent-task-hud-title');
+    if (title) {
+        title.innerHTML = '<span style="color: var(--neko-popup-accent, #2a7bc4); margin-right: 8px;">⚡</span>' + titleText;
+    }
+    const stats = document.getElementById('agent-task-hud-stats');
+    if (stats) {
+        const labelled = stats.querySelectorAll('span[title]');
+        if (labelled[0]) labelled[0].title = window.t('agent.taskHud.running');
+        if (labelled[1]) labelled[1].title = window.t('agent.taskHud.queued');
+    }
+    const minimizeBtn = document.getElementById('agent-task-hud-minimize');
+    if (minimizeBtn) minimizeBtn.title = window.t('agent.taskHud.minimize');
+    const cancelBtn = document.getElementById('agent-task-hud-cancel');
+    if (cancelBtn) cancelBtn.title = window.t('agent.taskHud.cancelAll');
+    const emptyState = document.getElementById('agent-task-empty');
+    if (emptyState && emptyState.firstElementChild) {
+        emptyState.firstElementChild.textContent = window.t('agent.taskHud.noTasks');
+    }
+
+    // 用缓存的任务快照重渲染卡片，刷新状态 / 类型 / 终止按钮等文案。
+    // 仅在 HUD 已存在且当前可见时执行：_doUpdateAgentTaskHUD 在 HUD 缺失时会创建、
+    // 在有活动任务且隐藏时会自动显示，纯 i18n 重译不应触发这些副作用。
+    const hud = document.getElementById('agent-task-hud');
+    const hudVisible = !!(hud && hud.style.display !== 'none' && hud.style.opacity !== '0');
+    if (hudVisible && this._latestTasksData && typeof this._doUpdateAgentTaskHUD === 'function') {
+        try { this._doUpdateAgentTaskHUD(); } catch (_) { /* ignore */ }
+    }
+};
+
+window.addEventListener('localechange', function () {
+    try {
+        if (window.AgentHUD && typeof window.AgentHUD.refreshHudI18n === 'function') {
+            window.AgentHUD.refreshHudI18n();
+        }
+    } catch (_) { /* ignore */ }
+});
