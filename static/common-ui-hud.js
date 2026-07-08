@@ -2033,6 +2033,21 @@ window.AgentHUD.refreshHudI18n = function () {
     const hud = document.getElementById('agent-task-hud');
     const hudVisible = !!(hud && hud.style.display !== 'none' && hud.style.opacity !== '0');
     if (hudVisible && this._latestTasksData && typeof this._doUpdateAgentTaskHUD === 'function') {
+        // 卡片走差分更新：_updateTaskCard 仅在状态变化时改状态徽标，且从不更新类型标签 /
+        // 卡片终止按钮 title。语言切换而任务状态不变时（例如运行中的 computer_use 任务）
+        // 卡片文案会停留旧语言。差分门控是每次 WS 更新的热路径，不宜改动；因此在这条低频的
+        // 重译路径里显式清空已有卡片，交由 _doUpdateAgentTaskHUD 用当前语言重建，完整覆盖
+        // 状态 / 类型 / 终止按钮等本地化字段。
+        const taskList = document.getElementById('agent-task-list');
+        if (taskList) {
+            taskList.querySelectorAll('.task-card').forEach((card) => {
+                const descRow = card.querySelector('.task-card-desc');
+                if (descRow && window.NekoTooltip && typeof window.NekoTooltip.destroyFor === 'function') {
+                    try { window.NekoTooltip.destroyFor(descRow); } catch (_) { /* ignore */ }
+                }
+                card.remove();
+            });
+        }
         try { this._doUpdateAgentTaskHUD(); } catch (_) { /* ignore */ }
     }
 };
