@@ -816,7 +816,11 @@
             const director = this.director;
             const petalSequencePromise = this.preloadReturnPetalSequence();
             const durationMs = director.getAvatarFloatingNarrationDurationMs(voiceKey, text);
-            const cueMs = clamp(Math.round(durationMs * 0.7), 900, Math.max(900, durationMs));
+            const reducedMotion = director.shouldReduceTutorialMotion();
+            const minimumPetalDurationMs = reducedMotion ? 900 : 2600;
+            // 修改原因：所有新手教程的花瓣转场都包含挥手和模型恢复，开始点应由动画窗口反推，
+            // 避免短语种过早切换或长语种台词还没播完画面已经结束。
+            const cueMs = clamp(Math.round(durationMs - minimumPetalDurationMs), 900, Math.max(900, durationMs));
             const elapsedMs = Math.max(0, Date.now() - narrationStartedAt);
             const waitMs = Math.max(0, cueMs - elapsedMs);
             if (!(await director.waitForSceneDelay(waitMs))) {
@@ -854,7 +858,6 @@
                 console.warn('[YuiGuide] 悬浮窗教程收尾挥手动作播放失败:', error);
             });
             const remainingMs = Math.max(0, durationMs - cueMs);
-            const minimumPetalDurationMs = director.shouldReduceTutorialMotion() ? 900 : 2600;
             try {
                 await this.playReturn({
                     durationMs: Math.max(remainingMs, minimumPetalDurationMs),
