@@ -9385,9 +9385,12 @@ class LLMSessionManager:
         self.sync_message_queue.put({'type': 'system', 'data': 'API server disconnected'})
         await self.cleanup(expected_session=expected_session)
     
+    def _should_drop_live_vision_stream(self, input_type: str | None) -> bool:
+        return input_type in _LIVE_VISION_STREAM_INPUT_TYPES and self.is_goodbye_silent()
+
     async def stream_data(self, message: dict):  # 向Core API发送Media数据
         input_type = message.get("input_type")
-        if input_type in _LIVE_VISION_STREAM_INPUT_TYPES and self.is_goodbye_silent():
+        if self._should_drop_live_vision_stream(input_type):
             return
         if input_type == "audio":
             await self._enqueue_audio_stream_data(message)
@@ -9396,7 +9399,7 @@ class LLMSessionManager:
 
     async def _stream_data_now(self, message: dict):
         input_type = message.get("input_type")
-        if input_type in _LIVE_VISION_STREAM_INPUT_TYPES and self.is_goodbye_silent():
+        if self._should_drop_live_vision_stream(input_type):
             return
         # 检查session是否就绪
         async with self.input_cache_lock:
@@ -9442,7 +9445,7 @@ class LLMSessionManager:
         """Internal method: the actual stream_data processing logic"""
         data = message.get("data")
         input_type = message.get("input_type")
-        if input_type in _LIVE_VISION_STREAM_INPUT_TYPES and self.is_goodbye_silent():
+        if self._should_drop_live_vision_stream(input_type):
             return
         # 检查session是否发生致命错误（如1011错误、Response timeout）
         if self.session and isinstance(self.session, OmniRealtimeClient):

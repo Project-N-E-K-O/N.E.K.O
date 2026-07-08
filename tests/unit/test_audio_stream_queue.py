@@ -1,7 +1,7 @@
 import asyncio
 import os
 import sys
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
@@ -52,6 +52,22 @@ async def test_live_vision_stream_does_not_auto_start_session_when_inactive():
     )
 
     mgr.start_session.assert_not_awaited()
+
+
+async def test_goodbye_silent_drops_live_vision_stream_in_internal_processor():
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    mgr.lanlan_name = "Test"
+    mgr.goodbye_silent = True
+    mgr.session = MagicMock()
+    mgr.session.stream_image = AsyncMock()
+    mgr.is_active = True
+
+    await LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "camera", "data": "data:image/jpeg;base64,abc"},
+    )
+
+    mgr.session.stream_image.assert_not_called()
 
 
 async def test_flush_pending_input_data_routes_audio_through_bounded_queue():
