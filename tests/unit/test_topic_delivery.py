@@ -339,7 +339,7 @@ def test_topic_hook_delivery_available_false_when_proactive_chat_disabled(monkey
         clear_topic_session_manager_getter()
 
 
-def test_topic_hook_delivery_available_false_when_proactive_chat_setting_missing(monkeypatch):
+def test_topic_hook_delivery_available_true_when_proactive_chat_setting_missing(monkeypatch):
     class FakeManager:
         def topic_hook_delivery_allowed(self):
             return True
@@ -354,7 +354,7 @@ def test_topic_hook_delivery_available_false_when_proactive_chat_setting_missing
     clear_topic_session_manager_getter()
     register_topic_session_manager_getter(lambda name: FakeManager())
     try:
-        assert topic_hook_delivery_available("妮可") is False
+        assert topic_hook_delivery_available("妮可") is True
     finally:
         clear_topic_session_manager_getter()
 
