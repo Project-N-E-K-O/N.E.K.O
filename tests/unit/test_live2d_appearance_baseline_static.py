@@ -218,7 +218,7 @@ def test_live2d_reset_ignores_unfiltered_saved_runtime_baseline():
           ParamBodyAngleX: 0,
         }};
         manager.motionBaselineParameters = {{
-          ParamBodyAngleX: 0,
+          ParamBodyAngleX: 5,
           param_1: 0,
         }};
         manager.appearanceBaselineParameters = {{
@@ -233,7 +233,7 @@ def test_live2d_reset_ignores_unfiltered_saved_runtime_baseline():
         manager._resetParametersToInitialState({{ preserveExpression: false }});
 
         assert.strictEqual(values[0], 1);
-        assert.strictEqual(values[1], 0);
+        assert.strictEqual(values[1], 5);
         """
     )
 
