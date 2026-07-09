@@ -17,7 +17,8 @@
                 <span id="login-status-pill" class="status-pill" data-i18n="ui.status.idle">未登录</span>
             </div>
             <div class="qrcode-body">
-                <p class="field-hint" data-i18n="ui.qrcode.hint">请使用手机微信扫一扫，在手机上确认登录。二维码有效期约 5 分钟。</p>
+                <!-- Hint text (hidden when logged in or QR active) -->
+                <p class="field-hint" id="qrcode-hint" data-i18n="ui.qrcode.hint">请使用手机微信扫一扫，在手机上确认登录。二维码有效期约 5 分钟。</p>
                 <div class="qrcode-wrapper">
                     <img id="qrcode-image" alt="QR Code" src="" />
                     <div id="qrcode-loading" class="empty-state qrcode-placeholder">
@@ -28,6 +29,19 @@
                         <span class="qrcode-placeholder-icon">📱</span>
                         <span data-i18n="ui.qrcode.empty">点击下方按钮获取二维码</span>
                     </div>
+                    <!-- Account info overlay (shown after login, replaces QR area) -->
+                    <div id="account-overlay" class="account-overlay" style="display:none;">
+                        <span class="account-icon">✅</span>
+                        <span class="account-title" data-i18n="ui.account.title">登录成功</span>
+                        <div class="account-info-row">
+                            <span class="account-label" data-i18n="ui.account.account_id">Account ID</span>
+                            <span id="status-account-id" class="account-value">-</span>
+                        </div>
+                        <div class="account-info-row">
+                            <span class="account-label" data-i18n="ui.account.user_id">User ID</span>
+                            <span id="status-user-id" class="account-value">-</span>
+                        </div>
+                    </div>
                 </div>
                 <div id="login-tips" class="login-tips" style="display:none;">
                     <p data-i18n="ui.qrcode.waiting">等待扫码中，请在手机上确认登录...</p>
@@ -35,33 +49,16 @@
             </div>
             <div class="qrcode-actions">
                 <button id="qrcode-toggle" class="ghost-action" type="button" onclick="toggleQrcodeCard()" data-i18n="ui.qrcode.toggle.hide">隐藏</button>
-                <button class="btn-add-entity" type="button" id="btn-start-login" onclick="startLogin()" data-i18n="ui.qrcode.start">开始扫码登录</button>
-                <button class="ghost-action" type="button" id="btn-refresh-qrcode" onclick="refreshQrcode()" data-i18n="ui.qrcode.refresh">刷新二维码</button>
+                <button id="btn-start-login" class="ghost-action" type="button" onclick="startLogin()" data-i18n="ui.qrcode.start">开始扫码登录</button>
+                <button id="btn-refresh-qrcode" class="ghost-action" type="button" onclick="refreshQrcode()" data-i18n="ui.qrcode.refresh">刷新二维码</button>
             </div>
             <div id="qrcode-error" class="qrcode-error" style="display:none;"></div>
-        </section>
-
-        <!-- Account Info (shown after login) -->
-        <section class="status-card" id="account-card" style="display:none;">
-            <div class="status-head">
-                <span class="status-title">✅ <span data-i18n="ui.account.title">登录成功</span></span>
-            </div>
-            <div class="status-grid" id="account-info-grid">
-                <div class="status-item">
-                    <span class="status-label" data-i18n="ui.account.account_id">Account ID</span>
-                    <div id="status-account-id" class="status-value">-</div>
-                </div>
-                <div class="status-item">
-                    <span class="status-label" data-i18n="ui.account.user_id">User ID</span>
-                    <div id="status-user-id" class="status-value">-</div>
-                </div>
-            </div>
         </section>
 
         <!-- Settings (collapsed by default) -->
         <section class="config-section" id="config-section">
             <div class="config-header" onclick="toggleConfig()">
-                <span class="status-title" data-i18n="ui.config.section">API 设置</span>
+                <span class="config-title">⚙️ <span data-i18n="ui.config.section">API 设置</span></span>
                 <span class="config-arrow" id="config-arrow">▼</span>
             </div>
             <div class="config-body" id="config-body" style="display:none;">
