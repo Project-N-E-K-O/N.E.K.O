@@ -51,7 +51,11 @@ try:
     from .runtime_hosting_api import RuntimeHostingApiMixin
 except ImportError:
     class RuntimeHostingApiMixin:
-        pass
+        def _start_idle_hosting_loop(self) -> None:
+            return None
+
+        async def _stop_idle_hosting_loop(self) -> None:
+            return None
 
 try:
     from .runtime_live_input_api import RuntimeLiveInputApiMixin
