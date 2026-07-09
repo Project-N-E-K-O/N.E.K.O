@@ -221,6 +221,12 @@
             clientState.autoSwitched = true;
             clientState.manualOverride = false;
             try {
+                if (window.nekoLive2DGameModeEdgePeek &&
+                    typeof window.nekoLive2DGameModeEdgePeek.clear === 'function') {
+                    window.nekoLive2DGameModeEdgePeek.clear('game-mode-auto');
+                }
+            } catch (_) {}
+            try {
                 window.dispatchEvent(new CustomEvent('live2d-goodbye-click', {
                     detail: {
                         autoGoodbye: true,

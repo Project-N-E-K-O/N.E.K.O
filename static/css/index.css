@@ -513,7 +513,9 @@ button * {
 }
 
 body.neko-live2d-peek #live2d-floating-buttons,
-body.neko-live2d-peek #live2d-lock-icon {
+body.neko-live2d-peek #live2d-lock-icon,
+body.neko-live2d-game-mode-edge-peek #live2d-floating-buttons,
+body.neko-live2d-game-mode-edge-peek #live2d-lock-icon {
     display: none !important;
     pointer-events: none !important;
 }

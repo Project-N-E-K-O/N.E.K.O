@@ -4714,6 +4714,38 @@ class Live2DManager {
             return null;
         }
 
+        const gameModeEdgePeekState = this._live2DGameModeEdgePeekState;
+        if (gameModeEdgePeekState && gameModeEdgePeekState.active &&
+            Array.isArray(gameModeEdgePeekState.maskPoints) && gameModeEdgePeekState.maskPoints.length >= 3) {
+            const points = gameModeEdgePeekState.maskPoints.filter((point) =>
+                point &&
+                Number.isFinite(Number(point.x)) &&
+                Number.isFinite(Number(point.y))
+            );
+            if (points.length >= 3) {
+                const xs = points.map((point) => Number(point.x));
+                const ys = points.map((point) => Number(point.y));
+                const left = Math.min(...xs);
+                const right = Math.max(...xs);
+                const top = Math.min(...ys);
+                const bottom = Math.max(...ys);
+                const width = right - left;
+                const height = bottom - top;
+                if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+                    return {
+                        left: left,
+                        right: right,
+                        top: top,
+                        bottom: bottom,
+                        width: width,
+                        height: height,
+                        centerX: left + width / 2,
+                        centerY: top + height / 2
+                    };
+                }
+            }
+        }
+
         if (typeof model.getBounds !== 'function') {
             return null;
         }
@@ -4764,6 +4796,9 @@ class Live2DManager {
     async resetModelPosition() {
         if (typeof this.clearLive2DPeek === 'function') {
             this.clearLive2DPeek('reset-model-position');
+        }
+        if (typeof this.clearLive2DGameModeEdgePeek === 'function') {
+            this.clearLive2DGameModeEdgePeek('reset-model-position');
         }
         if (!this.currentModel || !this.pixi_app) {
             console.warn('无法复位：模型或PIXI应用未初始化');
