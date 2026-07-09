@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 from plugin.plugins.neko_roast.core.module_registry import ModuleRegistry
 from plugin.plugins.neko_roast.modules._base import BaseModule, ReservedModule
@@ -84,6 +85,58 @@ def test_snapshot_exposes_domain_schema_degraded_and_guards_status():
 
     # status() 抛错的模块不拖垮整盘 snapshot，退化成带 error 的 status。
     assert "error" in snap["boom_status"]["status"]
+
+
+def test_snapshot_sanitizes_status_and_config_schema_public_projection():
+    class _LooksLikeSecret:
+        def __str__(self):
+            return "token=must-not-leak"
+
+    class _LooseMeta(BaseModule):
+        id = "loose_meta"
+        title = "Loose token=must-not-leak"
+        version = _LooksLikeSecret()
+        domain = _LooksLikeSecret()
+        enabled = _LooksLikeSecret()
+
+        def status(self):
+            return {
+                "message": "ok cookie=must-not-leak",
+                "nested": {"secret": _LooksLikeSecret(), "items": [_LooksLikeSecret(), b"raw"]},
+                "bad_number": float("nan"),
+                _LooksLikeSecret(): "bad-key",
+            }
+
+        def config_schema(self):
+            return [
+                {
+                    "name": "field",
+                    "label": "panel.fields.token",
+                    "default": _LooksLikeSecret(),
+                    "options": [{"label": _LooksLikeSecret(), "value": "safe"}],
+                    "raw": b"raw",
+                }
+            ]
+
+    reg = ModuleRegistry()
+    reg.register(_LooseMeta())
+
+    record = reg.snapshot()[0]
+    dumped = json.dumps(record, ensure_ascii=False)
+
+    assert record["id"] == "loose_meta"
+    assert record["title"] == "Loose [redacted]"
+    assert record["version"] == ""
+    assert record["domain"] == ""
+    assert record["enabled"] is False
+    assert record["status"]["message"] == "ok [redacted]"
+    assert record["status"]["nested"]["secret"] == ""
+    assert record["status"]["nested"]["items"] == ["", ""]
+    assert record["status"]["bad_number"] == 0.0
+    assert record["config_schema"][0]["default"] == ""
+    assert record["config_schema"][0]["options"][0]["label"] == ""
+    assert record["config_schema"][0]["raw"] == ""
+    assert "must-not-leak" not in dumped
 
 
 def test_teardown_failure_is_isolated():
