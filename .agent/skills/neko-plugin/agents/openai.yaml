@@ -1,0 +1,4 @@
+interface:
+  display_name: "N.E.K.O Plugin"
+  short_description: "Route N.E.K.O plugin work"
+  default_prompt: "Help me choose the right N.E.K.O plugin workflow."

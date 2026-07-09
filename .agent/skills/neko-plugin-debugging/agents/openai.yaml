@@ -1,0 +1,4 @@
+interface:
+  display_name: "N.E.K.O Plugin Debugging"
+  short_description: "Debug N.E.K.O plugin load, runtime, CLI, UI, and validation failures"
+  default_prompt: "Debug this N.E.K.O plugin failure."
