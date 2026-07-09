@@ -5384,7 +5384,11 @@
                 return fallbackTarget;
             }
 
-            if (stepId === 'day1_intro_activation' || stepId === 'day1_intro_greeting' || stepId === 'day1_takeover_return_control') {
+            if (stepId === 'day1_intro_greeting' || stepId === 'day1_takeover_return_control') {
+                return this.getChatCapsuleInputTarget() || this.getChatInputTarget() || this.getChatWindowTarget() || null;
+            }
+
+            if (stepId === 'day1_intro_activation') {
                 return this.getChatInputTarget() || this.getChatWindowTarget() || null;
             }
 

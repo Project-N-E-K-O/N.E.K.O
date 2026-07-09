@@ -3,7 +3,7 @@ from pathlib import Path
 from plugin.core.entry_points import normalize_plugin_entry_point
 
 
-def test_normalize_user_installed_legacy_plugin_plugins_entry(tmp_path: Path) -> None:
+def test_normalize_user_installed_canonical_plugin_plugins_entry(tmp_path: Path) -> None:
     builtin_root = tmp_path / "repo" / "plugin" / "plugins"
     config_path = tmp_path / "user" / "N.E.K.O" / "plugins" / "demo" / "plugin.toml"
 
