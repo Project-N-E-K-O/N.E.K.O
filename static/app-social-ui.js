@@ -2,15 +2,17 @@
  * app-social-ui.js — Social SSE UI 接入（M6-h follow-up）
  *
  * 监听 NEKO-PC 主进程通过 contextBridge 暴露的 window.nekoSocial 桥
- * （定义见 NEKO-PC/src/preload-common.js setupSocialBridge），把 5 个
- * SSE 事件渲染到 Pet UI：
+ * （定义见 NEKO-PC/src/preload-common.js setupSocialBridge）：
  *
- * - NOTIFY_UNREAD     → social 按钮右上角红点 badge（vrm-btn-social /
- *                       mmd-btn-social 通配 selector）
- * - NOTIFY_INCOMING   → 简短 toast 提示（"📩 新消息"）
- * - QUOTA_CHANGED     → 不直接画 UI（snapshot 数据留给后续 quota panel 用）
- * - DROP_ANIMATION    → body 顶部飘下一个 🪙 + CSS keyframes 旋转下坠
- * - CONN_STATE        → 不画 UI（log 一行调试）
+ * - NOTIFY_UNREAD           → 未读通知数（普通消息）
+ * - LIKE_DAILY_CLAIMABLE    → 每日点赞可领（粘性：打开社区/已读不消，领取后才消）
+ * - 红点显示 = max(未读, 可领?1:0)；挂在圆形 social 按钮上（非 wrapper，避免错位）
+ * - NOTIFY_INCOMING         → 简短 toast 提示（"📩 新消息"）
+ * - QUOTA_CHANGED           → 不直接画 UI（snapshot 数据留给后续 quota panel 用）
+ * - CONN_STATE              → 不画 UI（log 一行调试）
+ *
+ * DROP_ANIMATION（🪙 / emoji 飘落）已退役：掉券 UX 统一走 CREDIT_DROP →
+ * forge-drop-overlay.js（迷你券卡）。
  *
  * 宿主检测：
  * - 非 Electron / NEKO-PC 宿主时 window.nekoSocial 不存在 → 整体 noop
@@ -19,8 +21,7 @@
  *
  * 加载位置：index.html 在 avatar-ui-buttons.js 之后（social 按钮 ID 生成器
  * 已就绪）。模块用 MutationObserver 监听 social 按钮的挂载/重挂（切换 vrm/mmd
- * manager 会销毁重建按钮），按钮没就绪时先缓存 unread 值，挂载后用缓存值补画
- * badge，所以前后顺序差别不大。
+ * manager 会销毁重建按钮），按钮没就绪时先缓存值，挂载后补画。
  */
 
 (function () {
@@ -59,21 +60,43 @@
     ].join(';');
   }
 
-  function paintBadge(value) {
-    // social 按钮由 avatar-ui-buttons.js apply()，prefix 可能是 'vrm' 或 'mmd'。
-    // 用 attribute selector 通配两种 manager 同时挂载的情况，画到两个按钮上。
+  // 未读通知 + 每日点赞可领（粘性）合并成一颗红点
+  let cachedUnread = 0;
+  let cachedClaimable = false;
+
+  function badgeValue() {
+    var unread = cachedUnread > 0 ? cachedUnread : 0;
+    var claim = cachedClaimable ? 1 : 0;
+    return Math.max(unread, claim);
+  }
+
+  function paintBadge() {
+    // social 按钮由 avatar-ui-buttons.js apply()，prefix 可能是 'vrm' / 'mmd' / …
     const buttons = document.querySelectorAll('[id$="-btn-social"]');
     if (buttons.length === 0) return false;
+    var value = badgeValue();
     buttons.forEach((btn) => {
-      const wrapper = btn.parentElement; // btnWrapper（avatar-ui-buttons.js line 408 起创建，position:relative）
-      if (!wrapper) return;
-      let badge = wrapper.querySelector('.' + BADGE_CLASS);
+      // 挂在圆形按钮本身（48×48），与蓝色券角标一致；挂 wrapper 会因 flex 行宽错位
+      try {
+        var cs = window.getComputedStyle(btn);
+        if (cs && cs.position === 'static') btn.style.position = 'relative';
+      } catch (_) { /* ignore */ }
+
+      // 清掉旧版挂在 wrapper 上的残留
+      var wrapper = btn.parentElement;
+      if (wrapper) {
+        wrapper.querySelectorAll('.' + BADGE_CLASS).forEach(function (el) {
+          if (el.parentElement !== btn) el.remove();
+        });
+      }
+
+      let badge = btn.querySelector('.' + BADGE_CLASS);
       if (value > 0) {
         if (!badge) {
           badge = document.createElement('span');
           badge.className = BADGE_CLASS;
           badge.style.cssText = buildBadgeStyle();
-          wrapper.appendChild(badge);
+          btn.appendChild(badge);
         }
         badge.textContent = value > 99 ? '99+' : String(value);
       } else if (badge) {
@@ -83,26 +106,26 @@
     return true;
   }
 
-  // 首次 onUnreadCount 触发时按钮可能还没渲染（avatar-ui-buttons 在 vrm/mmd-init
-  // 之后才挂 social 按钮），且切换 vrm/mmd manager 时按钮会被销毁重挂。缓存未读数：
-  // 按钮已在场就立即画，没在场则等 MutationObserver 在挂载时补画。
-  let cachedUnread = 0;
-
   window.nekoSocial.onUnreadCount((data) => {
     cachedUnread = (data && typeof data.value === 'number') ? data.value : 0;
-    paintBadge(cachedUnread);
+    paintBadge();
   });
 
-  // social 按钮的 id 在插入 DOM 前就已设好（avatar-ui-buttons.js:419），所以新挂载
-  // 的 btnWrapper 一进 DOM 就能被 querySelector 命中。监听挂载/重挂，用缓存的未读数
-  // 补画——修复"先挂的按钮画了、后挂的按钮（视图切换/延迟渲染）漏画"的问题。
+  if (typeof window.nekoSocial.onLikeDailyClaimable === 'function') {
+    window.nekoSocial.onLikeDailyClaimable((data) => {
+      cachedClaimable = !!(data && data.claimable);
+      paintBadge();
+    });
+  }
+
+  // social 按钮的 id 在插入 DOM 前就已设好，新挂载时用缓存补画
   const buttonObserver = new MutationObserver((mutations) => {
     for (const m of mutations) {
       for (const node of m.addedNodes) {
-        if (node.nodeType !== 1) continue; // 只看元素节点
+        if (node.nodeType !== 1) continue;
         if ((node.matches && node.matches('[id$="-btn-social"]')) ||
             (node.querySelector && node.querySelector('[id$="-btn-social"]'))) {
-          paintBadge(cachedUnread);
+          paintBadge();
           return;
         }
       }
@@ -131,61 +154,13 @@
 
   window.nekoSocial.onQuotaChanged((snapshot) => {
     if (!snapshot) return;
-    // 把最新 snapshot 挂到 window 给其他模块拿（不主动触发任何 UI）
     window.__nekoSocialQuotaSnapshot = snapshot;
   });
 
-  // ===== 4) DROP_ANIMATION =====
-
-  const DROP_KEYFRAMES_ID = 'neko-quota-drop-keyframes';
-  const DROP_ANIMATION_NAME = 'neko-quota-drop';
-
-  function ensureDropKeyframes() {
-    if (document.getElementById(DROP_KEYFRAMES_ID)) return;
-    const style = document.createElement('style');
-    style.id = DROP_KEYFRAMES_ID;
-    style.textContent =
-      '@keyframes ' + DROP_ANIMATION_NAME + ' {' +
-      '  0%   { transform: translateY(-40px) rotate(0deg);   opacity: 0; }' +
-      '  20%  { transform: translateY(20px)  rotate(20deg);  opacity: 1; }' +
-      '  80%  { transform: translateY(180px) rotate(300deg); opacity: 1; }' +
-      '  100% { transform: translateY(240px) rotate(360deg); opacity: 0; }' +
-      '}';
-    document.head.appendChild(style);
-  }
-
-  function playDropAnimation(payload) {
-    ensureDropKeyframes();
-    // payload: { reason: 'quota_bonus_increased', delta?: number, snapshot?: {...} }
-    // 当前只播单枚硬币动画；delta > 1 时连播几枚做"多枚"提示。
-    const count = Math.max(1, Math.min(5, payload && typeof payload.delta === 'number' ? payload.delta : 1));
-    for (let i = 0; i < count; i += 1) {
-      setTimeout(() => {
-        const coin = document.createElement('div');
-        coin.textContent = '🪙';
-        coin.style.cssText = [
-          'position: fixed',
-          'top: -20px',
-          'right: ' + (32 + i * 16) + 'px',
-          'font-size: 36px',
-          'z-index: 99999',
-          'pointer-events: none',
-          'user-select: none',
-          'animation: ' + DROP_ANIMATION_NAME + ' 1.6s ease-out forwards',
-        ].join(';');
-        document.body.appendChild(coin);
-        setTimeout(() => { try { coin.remove(); } catch (_) {} }, 1900);
-      }, i * 120); // 错开 120ms 播下一枚
-    }
-  }
-
-  window.nekoSocial.onDropAnimation(playDropAnimation);
-
-  // ===== 5) 连接状态（仅调试 log，无 UI） =====
+  // ===== 4) 连接状态（仅调试 log，无 UI） =====
 
   window.nekoSocial.onConnState((state) => {
     if (!state) return;
-    // 写到 window 上方便用户从 console 看一眼
     window.__nekoSocialConnState = state;
     try {
       if (state.connected) {

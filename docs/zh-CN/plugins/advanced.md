@@ -149,12 +149,20 @@ dep = await self.plugins.require_enabled("required_plugin")
 
 ### 事件总线
 
-```python
-# 通过总线发布事件
-self.bus.emit("my_event", {"key": "value"})
+`self.bus` 是一个只读视图（`SdkBusContext`），暴露五个命名空间快照：`messages`、`events`、`lifecycle`、`conversations`、`memory`，每个都有 `.get(...)`。它**没有** `emit()` 或 `on()` 方法——总线只用于读取命名空间快照，不能直接发布事件。
 
-# 订阅事件（通常在 startup 中进行）
-self.bus.on("some_event", self._handle_event)
+```python
+# 读取某个命名空间的最新快照
+events = self.bus.events.get()
+
+# 订阅变更：先 get() 得到列表，再 watch() 得到 watcher，
+# watcher.subscribe(on=...) 是一个装饰器，处理函数收到一个 SdkBusDelta
+watcher = self.bus.events.get().watch(self.ctx)
+
+@watcher.subscribe(on="some_event")
+def _handle_event(delta):
+    # delta.added / delta.removed / delta.current
+    ...
 ```
 
 ---

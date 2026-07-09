@@ -3,7 +3,7 @@
 ![Logo](assets/neko_logo_new.jpg)
 
 [English](docs/README_en.md) | [日本語](docs/README_ja.md) | [Русский](docs/README_ru.md)
-# Project N.E.K.O. :kissing_cat: <br>**听见你的心情，看见你的世界，<br>陪你发现更多喜欢。**
+# N.E.K.O. 猫娘计划 :kissing_cat: <br>**听见你的心情，看见你的世界，<br>陪你发现更多喜欢。**
 
 > **N.E.K.O.** = **N**etworked **E**motional **K**nowledging **O**rganism (网络型情感知性生命体)
 >
@@ -31,9 +31,9 @@
 <table>
 <tr>
 <td align="center" width="25%">💬<br><b>主动陪伴</b><br>屏幕理解、社交媒体热搜、个人动态、音乐梗图，她会主动找你聊天，分享你喜欢的新鲜事</td>
-<td align="center" width="25%">🎙️<br><b>实时语音、文字与视觉理解</b><br>语音实时对话 (Realtime API) + 文字对话 (ChatCompletion)，支持实时视觉理解</td>
+<td align="center" width="25%">🎙️<br><b>实时语音与视觉理解</b><br>语音实时对话 (Realtime API) + 文字对话 (ChatCompletion)，支持实时视觉理解</td>
 <td align="center" width="25%">🧠<br><b>五维记忆系统</b><br>工作记忆 / 近期记忆 / 事实记忆 / 反思记忆 / 人格记忆，让她越聊越懂你</td>
-<td align="center" width="25%">🎭<br><b>多形态 Avatar</b><br>Live2D / VRM / MMD 三种形态，支持动作捕捉与全屏追踪</td>
+<td align="center" width="25%">🎭<br><b>多形态 Avatar</b><br>Live2D / VRM / MMD / PNGTuber / 猫咪桌宠 五种形态，支持动作捕捉与全屏追踪</td>
 </tr>
 <tr>
 <td align="center">🤖<br><b>Agent 工具执行</b><br>可操作浏览器与电脑，调用 CUA / OpenClaw A2A / 插件完成任务</td>
@@ -54,17 +54,38 @@
 
 ---
 
-# 猫娘计划 (Project N.E.K.O.)
+## 🐾 我们是什么，不是什么
+
+一句话：**N.E.K.O. 不是帮你干活的 Agent，也不是陪你角色扮演的聊天前端——它是一个有现实时间感知、会主动找你、记得你、也能动手帮你的「数字生命」。**
+
+**✅ 我们是：**
+
+- **端到端集成的 AI 伴侣平台**：实时语音 / 文字 / 视觉理解 + 五维持久记忆 + 多形态 Avatar（Live2D / VRM / MMD）+ 主动陪伴 + Agent 工具执行 + 角色卡分享 + 插件商城 + 多设备生态，**全部开箱即用**。
+- **同一个"她"**：跨桌面、移动端、游戏、智能硬件共享同一份记忆与人格，有着时间感知的同时，越处越懂你。
+- **始终开源**：核心驱动器基于 Apache 2.0，本地运行，数据在你自己手里。
+
+**❌ 我们不是：**
+
+- 不是一个"**任务自动化工具**"——干活只是她与你共同生活的手段之一，而不是目的。
+- 不是一个"**角色扮演皮肤**"——她有真实的主动性、持久记忆和感官，而不是靠你手动喂世界书来维持人设。
+- 不是一个"**云端黑盒**"——核心本地运行，你的对话不被偷藏。
+
+**❓️ 和相关产品的区别：**
+
+| 对比对象 | 它们是 | N.E.K.O. 的不同 |
+|---|---|---|
+| **OpenClaw / Hermes 等通用 Agent** | 以"完成任务"为目标的执行引擎：给指令 → 干活 → 结束 | 以"**关系与陪伴**"为核心；可把这类 Agent 当作手脚来调用（A2A），但任务执行过程中她依然能实时关注你 |
+| **AI 酒馆（SillyTavern）等角色扮演前端** | 纯文字 RP 前端：需要自己拼接模型，依赖手动维护上下文 / 世界书 | **端到端集成、打破次元壁**：原生语音 + 视觉感知、角色外形 + 动作、跨场景持久记忆、有时间感知、能真正操作外设，零配置开箱即用 |
+
+## 🐱 我们是——**猫娘计划 (Project N.E.K.O.)**
 
 `N.E.K.O.` 是一个以开源为驱动的AI伙伴平台。核心驱动器基于Apache 2.0许可证 **始终开源**，你的每一次贡献都将有机会实装到Steam和App商店的正式版本中。
 
----
-
-### 🚀 项目现状 & 近期计划
+#### 🚀 项目现状 & 近期计划
 
 * **✅ Steam 创意工坊**：已上线。用户可上传和分享自定义角色、模型、语音包。
 * **🚧 [K.U.R.O.](https://github.com/Project-N-E-K-O/K.U.R.O)**：基于 N.E.K.O. 生态的首款 AI Native 独立游戏，开发中。
-* **🚧 移动端**：iOS / Android 适配进行中。
+* **🚧 移动端**：iOS / Android 适配进行中，已有Demo。
 * **🚧 猫娘网络 (The N.E.K.O. Network)**：AI自主社交——猫娘们拥有自己的"意识"，互相交流、结成群体，在模拟社交媒体上发布动态。即将上线。
 
 **跨场景记忆同步**：无论你是在桌面与她聊天，还是在游戏中与她探险，她都是同一个她。所有应用中的AI伙伴将 **完全同步记忆**。
@@ -448,9 +469,25 @@ curl -k https://localhost:48912
 
 **环境要求**：Python 3.11（不支持其他版本）、[uv](https://docs.astral.sh/uv/) 包管理器、Node.js（>=20.19）
 
+> [!IMPORTANT]
+> ### ⚡⚡ 强烈建议:用「部分克隆」拉取本仓库! ⚡⚡
+> **本仓库历史体积较大(`.git` 约 390 MB)**,因为历史里沉淀了大量旧版二进制资源(VRM 模型、MMD、贴图、音频、原生库等)。普通 `git clone` 会把这些**早已废弃的历史版本全部下载**,又慢又占空间。
+>
+> 👉 **请改用下面的「部分克隆」命令**,只按需下载真正用到的文件,**首次克隆体积大幅缩小、速度大幅提升**,且**完全不影响**后续开发与提交:
+>
+> ```bash
+> # ✅【推荐】部分克隆:历史 blob 用到才下载
+> git clone --filter=blob:none https://github.com/Project-N-E-K-O/N.E.K.O.git
+>
+> # ⚡【更快】只要最新代码、不需要历史时,再加 --depth 1
+> git clone --depth 1 --filter=blob:none https://github.com/Project-N-E-K-O/N.E.K.O.git
+> ```
+>
+> ⚠️ 仍可使用完整 `git clone`,但会下载全部历史,**不推荐**新参与者这样做。
+
 ```bash
-# 1. 克隆项目
-git clone https://github.com/Project-N-E-K-O/N.E.K.O.git
+# 1. 克隆项目（⚡ 强烈推荐用上方「部分克隆」命令；如确需完整历史，去掉 --filter 即可）
+git clone --filter=blob:none https://github.com/Project-N-E-K-O/N.E.K.O.git
 cd N.E.K.O
 
 # 2. 安装 Python 依赖
@@ -458,8 +495,10 @@ uv sync
 
 # 3. 构建前端项目（需要 Node.js >= 20.19，首次运行或前端代码变更后需要）
 #    推荐：使用一键脚本（这是官方支持的构建方式）
-#      Windows：      build_frontend.bat
-#      Linux/macOS：  ./build_frontend.sh
+#      Windows：      
+build_frontend.bat
+#      Linux/macOS：  
+./build_frontend.sh
 #    如需手动构建（命令须与脚本保持一致）：
 # cd frontend/react-neko-chat && npm install && npm run build && cd ../..
 # cd frontend/plugin-manager && npm install && npm run build-only && cd ../..
@@ -548,12 +587,14 @@ N.E.K.O/
 │   ├── cross_server.py          # 跨服务器通信
 │   ├── omni_realtime_client.py  # 实时API客户端（Realtime API）
 │   ├── omni_offline_client.py   # 文本API客户端（ChatCompletion）
-│   └── tts_client.py            # 🔊 TTS引擎适配器
-├── 📁 main_routers/             # 🌐 API路由模块（14个路由）
-├── 📁 memory/                   # 🧠 五维记忆系统（部分示例）
-│   ├── facts/                   # 事实记忆
-│   ├── reflection/              # 反思记忆
-│   └── persona/                 # 人格记忆
+│   ├── 📁 activity/             # 系统/用户状态跟踪
+│   ├── 📁 topic/                # 主动话题
+│   └── 📁 tts_client/           # 🔊 TTS引擎适配器（多provider对偶）
+├── 📁 main_routers/             # 🌐 API路由模块（26个路由）
+├── 📁 memory/                   # 🧠 五维记忆系统
+│   ├── facts.py                 # 事实记忆
+│   ├── reflection.py            # 反思记忆
+│   └── persona.py               # 人格记忆
 ├── 📁 frontend/                 # 🖥️ 现代前端项目
 │   ├── react-neko-chat/         # React 聊天窗口组件
 │   └── plugin-manager/          # Vue 插件管理面板
@@ -561,7 +602,7 @@ N.E.K.O/
 │   ├── sdk/                     # 插件 SDK
 │   └── server/                  # 插件服务端
 ├── 📁 static/                   # 🌐 前端静态资源（含构建产物）
-├── 📁 templates/                # 📄 前端HTML模板（14个页面）
+├── 📁 templates/                # 📄 前端HTML模板（24个页面）
 ├── 📁 utils/                    # 🛠️ 工具模块
 ├── 📁 app/                      # 🚀 服务器入口模块
 │   ├── main_server.py           # 🌐 主服务器
@@ -583,13 +624,13 @@ N.E.K.O/
 
 ### 开发计划
 
-v0.7: ✅ 完善Agent相关功能。**已完成。**
+v0.7: ✅ 初步完成Agent相关功能。**第一阶段已完成。等待后续优化**
 
-v0.8: ✅ 完善记忆相关功能，完善OpenClaw类似功能。**已完成（2026年4月）。**
+v0.8: ✅ 完善记忆相关功能和桌宠模式，内置多款双人小游戏。**第一阶段已完成。等待后续优化**
 
-v0.9：完善多系统适配，包括linux，手机。猫娘网络上线。预计2026年6月完成。
+v0.9：完善多系统适配，包括linux，手机。猫娘网络上线。预计2026年7月初完成。
 
-v1.0：放弃部分模型供应商的适配，专注于自研大模型和智能体系统。预计2026年8月完成。
+v1.0：放弃部分模型供应商的适配，专注于自研大模型和智能体系统。预计2026年8月底完成。
 
 ### 遥测说明 (Telemetry)
 

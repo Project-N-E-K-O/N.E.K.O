@@ -17,6 +17,8 @@
     <script src="/static/common_dialogs.js"></script>
     <link rel="stylesheet" href="/static/css/model_manager.css?v={{ static_asset_version | default('0') }}">
     <link rel="stylesheet" href="/static/css/dark-mode.css">
+    <link rel="stylesheet" href="/static/libs/driver.min.css?v={{ static_asset_version | default('0') }}">
+    <link rel="stylesheet" href="/static/css/tutorial-styles.css?v={{ static_asset_version | default('0') }}">
     <link rel="stylesheet" href="/static/css/model-profiler.css">
     <script src="/static/theme-manager.js"></script>
 </head>
@@ -37,6 +39,7 @@
         <div class="control-group">
             <input type="file" id="model-upload" webkitdirectory directory multiple style="display: none;">
             <input type="file" id="pngtuber-model-upload" webkitdirectory directory multiple style="display: none;">
+            <input type="file" id="pngtuber-package-upload" accept=".pngRemix,.pngremix,.save" style="display: none;">
             <input type="file" id="vrm-file-upload" accept=".vrm,.zip" style="display: none;">
             <input type="file" id="mmd-file-upload" accept=".pmx,.pmd,.zip" style="display: none;">
             <input type="file" id="mmd-animation-file-upload" accept=".vmd" style="display: none;">
@@ -63,12 +66,12 @@
                 </button>
                 <select id="model-type-select" class="control-select" style="display: none;">
                     <option value="live2d">Live2D</option>
-                    <option value="live3d">Live3D</option>
+                    <option value="live3d" data-i18n="live2d.modelType3d">3D Model</option>
                     <option value="pngtuber">PNGTuber</option>
                 </select>
                 <div id="model-type-dropdown" class="model-type-dropdown" style="display: none;">
                     <div class="dropdown-item" data-value="live2d"><span class="dropdown-item-text" data-text="Live2D">Live2D</span></div>
-                    <div class="dropdown-item" data-value="live3d"><span class="dropdown-item-text" data-text="Live3D">Live3D</span></div>
+                    <div class="dropdown-item" data-value="live3d"><span class="dropdown-item-text" data-text="3D Model">3D Model</span></div>
                     <div class="dropdown-item" data-value="pngtuber"><span class="dropdown-item-text" data-text="PNGTuber">PNGTuber</span></div>
                 </div>
             </div>
@@ -165,10 +168,10 @@
                 <div id="vrm-animation-select-wrapper" style="position: relative; display: flex; flex: 1;">
                     <button id="vrm-animation-select-btn" class="btn btn-primary" type="button" disabled data-i18n-title="live2d.vrmAnimation.selectAnimation">
                         <img src="/static/icons/motion_select_icon.png?v=1" data-i18n-alt="live2d.vrmAnimation.selectAnimation" class="vrm-animation-select-icon" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;">
-                        <span class="round-stroke-text" id="vrm-animation-select-text" data-i18n="live2d.vrmAnimation.selectAnimation" data-text="Select Animation">选择动作</span>
+                        <span class="round-stroke-text" id="vrm-animation-select-text" data-i18n="live2d.noMotion" data-text="No Motion">无动作</span>
                     </button>
                     <select id="vrm-animation-select" class="control-select" style="display: none;" disabled>
-                        <option value="" data-i18n="live2d.vrmAnimation.selectAnimation">选择动作</option>
+                        <option value="_no_motion_" data-i18n="live2d.noMotion">无动作</option>
                     </select>
                     <div id="vrm-animation-dropdown" class="vrm-animation-dropdown" style="display: none;">
                         <!-- 下拉菜单项将动态生成 -->
@@ -184,10 +187,10 @@
                 <div id="vrm-expression-select-wrapper" style="position: relative; display: flex; flex: 1;">
                     <button id="vrm-expression-select-btn" class="btn btn-primary" type="button" disabled data-i18n-title="live2d.vrmExpression.selectExpression">
                         <img src="/static/icons/expression_chosen.png?v=1" data-i18n-alt="live2d.vrmExpression.selectExpression" class="vrm-expression-select-icon" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;">
-                        <span class="round-stroke-text" id="vrm-expression-select-text" data-i18n="live2d.vrmExpression.selectExpression" data-text="Select Expression">选择表情</span>
+                        <span class="round-stroke-text" id="vrm-expression-select-text" data-i18n="live2d.noExpression" data-text="No Expression">无表情</span>
                     </button>
                     <select id="vrm-expression-select" class="control-select" style="display: none;" disabled>
-                        <option value="" data-i18n="live2d.vrmExpression.selectExpression">选择表情</option>
+                        <option value="_no_expression_" data-i18n="live2d.noExpression">无表情</option>
                     </select>
                     <div id="vrm-expression-dropdown" class="vrm-expression-dropdown" style="display: none;">
                         <!-- 下拉菜单项将动态生成 -->
@@ -722,17 +725,19 @@
     </script>
 
 
-    <script src="/static/tutorial/core/skip-controller.js?v=13"></script>
-    <script src="/static/tutorial/avatar/reload-controller.js?v=13"></script>
+    <script src="/static/libs/driver.min.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/tutorial/core/skip-controller.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/tutorial/avatar/reload-controller.js?v={{ static_asset_version | default('0') }}"></script>
     <!-- 通用教程管理器 -->
-    <script src="/static/tutorial/core/lifecycle-state-store.js?v=13"></script>
+    <script src="/static/tutorial/core/lifecycle-state-store.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/tutorial/core/page-tutorial-manager.js?v={{ static_asset_version | default('0') }}"></script>
     <link rel="stylesheet" href="/static/css/touch-config.css">
     <script src="/static/touch-config.js"></script>
     <!-- 初始化 -->
     <script>
         document.addEventListener('DOMContentLoaded', function() {
-            if (typeof initUniversalTutorialManager === 'function') {
-                initUniversalTutorialManager();
+            if (typeof initPageTutorialManager === 'function') {
+                initPageTutorialManager();
             }
         });
     </script>

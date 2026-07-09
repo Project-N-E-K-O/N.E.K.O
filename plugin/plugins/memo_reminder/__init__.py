@@ -31,7 +31,6 @@ _STORE_KEY = "reminders"
 
 _TZ_UTC = timezone.utc
 _DEFAULT_TZ = "Asia/Shanghai"
-DEFERRED_WINDOW_SECONDS = 3600  # 与 agent_server 的 DEFERRED_TASK_TIMEOUT 对齐（1小时）
 
 _FORMATS_WITH_DATE = (
     ("%Y-%m-%d %H:%M:%S", True),
@@ -161,7 +160,13 @@ class MemoReminderPlugin(NekoPluginBase):
 
     def _load_reminders_unlocked(self) -> List[Dict[str, Any]]:
         data = self._store_get_sync(_STORE_KEY, [])
-        return data if isinstance(data, list) else []
+        if not isinstance(data, list):
+            return []
+        return [
+            self._strip_legacy_deferred_fields(r)
+            for r in data
+            if isinstance(r, dict)
+        ]
 
     def _save_reminders_unlocked(self, reminders: List[Dict[str, Any]]) -> None:
         self._store_set_sync(_STORE_KEY, reminders)
@@ -173,6 +178,23 @@ class MemoReminderPlugin(NekoPluginBase):
     def _save_reminders(self, reminders: List[Dict[str, Any]]) -> None:
         with self._reminders_lock:
             self._save_reminders_unlocked(reminders)
+
+    @staticmethod
+    def _strip_legacy_deferred_fields(reminder: Dict[str, Any]) -> Dict[str, Any]:
+        """Drop old deferred-task callback fields from persisted reminders."""
+        legacy_keys = (
+            "agent_task_id",
+            "deferred_bind_pending",
+            "callback_pending",
+            "callback_error",
+            "callback_retry_count",
+        )
+        if not any(key in reminder for key in legacy_keys):
+            return reminder
+        cleaned = dict(reminder)
+        for key in legacy_keys:
+            cleaned.pop(key, None)
+        return cleaned
 
     def _notify_change(self) -> None:
         """唤醒 checker 线程，使其立即重新计算下次触发时间。若线程已死则重启。"""
@@ -279,9 +301,8 @@ class MemoReminderPlugin(NekoPluginBase):
         self.logger.info("Checker thread exiting")
 
     def _fire_due_reminders(self) -> None:
-        # Phase 1 — under lock: classify reminders, save snapshot
+        # Phase 1 - under lock: classify reminders and save a cleaned snapshot.
         to_push: List[Dict[str, Any]] = []
-        to_retry_cb: List[Dict[str, Any]] = []
 
         self.logger.info("_fire_due: acquiring lock...")
         with self._reminders_lock:
@@ -299,7 +320,8 @@ class MemoReminderPlugin(NekoPluginBase):
                 self.logger.info("Checker tick: {} reminders, now={}", len(reminders), now.isoformat())
             kept: List[Dict[str, Any]] = []
 
-            for r in reminders:
+            for raw in reminders:
+                r = self._strip_legacy_deferred_fields(raw)
                 trigger_iso = r.get("trigger_at", "")
                 try:
                     trigger_dt = datetime.fromisoformat(trigger_iso)
@@ -307,31 +329,17 @@ class MemoReminderPlugin(NekoPluginBase):
                     kept.append(r)
                     continue
 
-                if r.get("delivered") and r.get("callback_pending"):
-                    to_retry_cb.append(r)
-                    continue
-
                 if trigger_dt <= now:
-                    if r.get("deferred_bind_pending") and r.get("agent_task_id") is None:
-                        try:
-                            created_dt = datetime.fromisoformat(
-                                r.get("created_at", "").replace("Z", "+00:00")
-                            )
-                            if (now - created_dt).total_seconds() < 5.0:
-                                kept.append(r)
-                                continue
-                        except (ValueError, TypeError):
-                            pass
                     to_push.append(r)
                 else:
                     kept.append(r)
 
-            self._save_reminders_unlocked(kept + to_push + to_retry_cb)
+            self._save_reminders_unlocked(kept + to_push)
 
-        if not to_push and not to_retry_cb:
+        if not to_push:
             return
 
-        # Phase 2 — NO lock: do all I/O (ZMQ push, HTTP callbacks)
+        # Phase 2 - no lock: push reminder events. Reminder firing does not complete agent tasks.
         fired_ids: List[str] = []
 
         for r in to_push:
@@ -341,50 +349,13 @@ class MemoReminderPlugin(NekoPluginBase):
             except Exception:
                 self.logger.exception("Failed to push reminder {}", rid)
                 continue
-            if not r.get("callback_pending"):
-                fired_ids.append(rid)
+            fired_ids.append(rid)
 
-        for r in to_retry_cb:
-            rid = r.get("id", "?")
-            agent_task_id = r.get("agent_task_id")
-            if not agent_task_id:
-                fired_ids.append(rid)
-                continue
-            try:
-                import httpx as _httpx
-                from config import TOOL_SERVER_PORT
-                with _httpx.Client(timeout=2.0, proxy=None, trust_env=False) as c:
-                    resp = c.post(f"http://127.0.0.1:{TOOL_SERVER_PORT}/api/agent/tasks/{agent_task_id}/complete")
-                    if resp.is_success:
-                        r["callback_pending"] = False
-                        r["callback_error"] = None
-                        self.logger.info("Retry callback succeeded for reminder {}", rid)
-                        fired_ids.append(rid)
-                        continue
-                    elif resp.status_code == 404:
-                        r["callback_pending"] = False
-                        r["callback_error"] = "Task not found (404)"
-                        self.logger.warning("Retry callback abandoned for reminder {}: 404", rid)
-                        fired_ids.append(rid)
-                        continue
-                    else:
-                        self.logger.warning("Retry callback failed for reminder {}: HTTP {}", rid, resp.status_code)
-            except Exception as e:
-                self.logger.warning("Retry callback exception for reminder {}: {}", rid, e)
-            retry_count = r.get("callback_retry_count", 0) + 1
-            if retry_count >= 5:
-                self.logger.warning("Retry callback abandoned for reminder {}: max retries", rid)
-                r["callback_pending"] = False
-                r["callback_error"] = "Max retries exceeded"
-                fired_ids.append(rid)
-            else:
-                r["callback_retry_count"] = retry_count
-
-        # Phase 3 — under lock: merge results back (handles concurrent add/delete)
+        # Phase 3 - under lock: merge results back (handles concurrent add/delete).
         with self._reminders_lock:
-            processed_ids = {r.get("id") for r in to_push + to_retry_cb}
+            processed_ids = {r.get("id") for r in to_push}
             final: List[Dict[str, Any]] = []
-            for r in to_push + to_retry_cb:
+            for r in to_push:
                 rid = r.get("id", "?")
                 if rid in fired_ids:
                     updated = self._reschedule(r, now)
@@ -409,11 +380,12 @@ class MemoReminderPlugin(NekoPluginBase):
                 source="memo_reminder",
                 visibility=[],
                 ai_behavior="respond",
-                parts=[{"type": "text", "text": f"⏰ 提醒: {msg}"}],
+                parts=[{"type": "text", "text": f"⏰ 之前设置的提醒时间到了：{msg}"}],
                 priority=8,
                 metadata={
                     "task_id": rid,
                     "reminder_id": rid,
+                    "event_type": "reminder_fired",
                     "repeat": repeat_label,
                     "trigger_at": r.get("trigger_at"),
                     "created_at": r.get("created_at"),
@@ -424,28 +396,6 @@ class MemoReminderPlugin(NekoPluginBase):
             )
             # 标记消息已发送
             r["delivered"] = True
-
-        # 通知 agent_server deferred 任务已完成
-        agent_task_id = r.get("agent_task_id")
-        if agent_task_id:
-            try:
-                import httpx as _httpx
-                from config import TOOL_SERVER_PORT
-                with _httpx.Client(timeout=2.0, proxy=None, trust_env=False) as c:
-                    resp = c.post(f"http://127.0.0.1:{TOOL_SERVER_PORT}/api/agent/tasks/{agent_task_id}/complete")
-                    if not resp.is_success:
-                        self.logger.warning(
-                            "Failed to notify agent task completion for reminder {}: HTTP {} - {}",
-                            rid, resp.status_code, resp.text
-                        )
-                        # 标记回调待重试（但不抛出异常，避免消息重复发送）
-                        r["callback_pending"] = True
-                        r["callback_error"] = f"HTTP {resp.status_code}: {resp.text}"
-            except Exception as e:
-                self.logger.warning("Failed to notify agent task completion for reminder {}: {}", rid, e)
-                # 标记回调待重试
-                r["callback_pending"] = True
-                r["callback_error"] = str(e)
 
     @staticmethod
     def _reschedule(r: Dict[str, Any], now: datetime) -> Optional[Dict[str, Any]]:
@@ -500,7 +450,7 @@ class MemoReminderPlugin(NekoPluginBase):
         r.pop("callback_pending", None)
         r.pop("callback_error", None)
         r.pop("callback_retry_count", None)
-        # 清除旧的任务关联，下次触发时会生成新的 agent_task_id
+        # Drop legacy deferred-task fields so repeats stay on the reminder-only lifecycle.
         r.pop("agent_task_id", None)
         r.pop("deferred_bind_pending", None)
         return r
@@ -602,10 +552,6 @@ class MemoReminderPlugin(NekoPluginBase):
         if not lanlan_name:
             lanlan_name = getattr(self.ctx, "_current_lanlan", None)
 
-        # 只有当触发时间在 1 小时内时才需要 deferred 机制（与 agent_server 的 DEFERRED_TASK_TIMEOUT 对齐）
-        trigger_delay = (trigger_dt - now).total_seconds()
-        needs_deferred = trigger_delay < DEFERRED_WINDOW_SECONDS
-
         rid = uuid.uuid4().hex[:12]
         reminder = {
             "id": rid,
@@ -614,8 +560,6 @@ class MemoReminderPlugin(NekoPluginBase):
             "created_at": now.isoformat(),
             "repeat": repeat,
             "lanlan_name": lanlan_name,
-            "agent_task_id": None,
-            "deferred_bind_pending": needs_deferred,
         }
         if max_count is not None and repeat != "once":
             reminder["max_count"] = int(max_count)
@@ -640,7 +584,6 @@ class MemoReminderPlugin(NekoPluginBase):
 
         return Ok({
             "status": "scheduled",
-            "deferred": needs_deferred,
             "reminder_id": rid,
             "trigger_at_local": local_str,
             "repeat": repeat,
@@ -657,14 +600,14 @@ class MemoReminderPlugin(NekoPluginBase):
     @plugin_entry(
         id="bind_task",
         name="绑定Agent任务ID",
-        description="内部接口：将 agent_task_id 关联到提醒记录，用于 deferred 完成通知",
+        description="兼容旧 deferred 调用；提醒触发不再绑定 agent_task_id 或回调完成任务",
     )
     async def bind_task(self, reminder_id: str, agent_task_id: str, **kwargs):
-        """将 agent_task_id 写回到对应的提醒记录，供 daemon 触发时回调使用"""
+        """Compatibility no-op for old deferred reminder binding calls."""
         bound = await asyncio.to_thread(self._bind_task_sync, reminder_id, agent_task_id)
         if bound:
             self._notify_change()
-            return Ok({"bound": True})
+            return Ok({"bound": True, "ignored": True})
         return Err(SdkError(f"Reminder {reminder_id} not found"))
 
     @plugin_entry(
@@ -735,10 +678,12 @@ class MemoReminderPlugin(NekoPluginBase):
             reminders = self._load_reminders_unlocked()
             for r in reminders:
                 if r.get("id") == reminder_id:
-                    r["agent_task_id"] = agent_task_id
-                    r["deferred_bind_pending"] = False
                     self._save_reminders_unlocked(reminders)
-                    self.logger.info("Bound agent_task_id={} to reminder={}", agent_task_id, reminder_id)
+                    self.logger.info(
+                        "Ignored legacy bind_task agent_task_id={} for reminder={}",
+                        agent_task_id,
+                        reminder_id,
+                    )
                     return True
         return False
 

@@ -8,7 +8,7 @@
 | 位深度 | 16 位有符号 | 16 位有符号 |
 | 编码 | PCM 小端序 | PCM 小端序 |
 | 声道 | 单声道 | 单声道 |
-| 传输方式 | JSON 中的 Base64 | JSON 中的 Base64 |
+| 传输方式 | JSON 中的 Base64 | 二进制 WebSocket 帧（先发 JSON header，后发原始 PCM 字节） |
 
 ## 输入管线
 
@@ -17,7 +17,7 @@ Microphone ──> Browser AudioContext ──> PCM chunks ──> Base64 ──
                                                                     │
                                                                Main Server
                                                                     │
-                                                    OmniRealtimeClient.send_audio()
+                                                    OmniRealtimeClient.stream_audio()
                                                                     │
                                                               LLM Provider
 ```
@@ -31,7 +31,7 @@ LLM Provider ──> on_audio_delta ──> 24kHz PCM
                                         │
                                    soxr resampler
                                         │
-                                   48kHz PCM ──> Base64 ──> WebSocket ──> Browser
+                                   48kHz PCM ──> 二进制 WS 帧（前置 JSON header） ──> WebSocket ──> Browser
 ```
 
 `soxr` 库提供高质量的采样率转换，将 LLM 原生的 24kHz 转换为浏览器播放所需的 48kHz。

@@ -37,6 +37,16 @@ const statusBlockSchema = z.object({
   text: z.string(),
 });
 
+// Frontend-only "she has a topic she'd like to bring up" teaser, shown just
+// before a proactive deep-topic opener. Backend sends only the character name
+// (no LLM-context text); the dedicated TopicHintBubble renders localized copy.
+const topicHintBlockSchema = z.object({
+  type: z.literal('topic-hint'),
+  // Trim before length check so a whitespace-only author is rejected, matching
+  // the trim the bubble does at render time.
+  author: z.string().trim().min(1),
+});
+
 const buttonGroupBlockSchema = z.object({
   type: z.literal('buttons'),
   buttons: z.array(messageActionSchema),
@@ -187,6 +197,10 @@ export const avatarToolStatePayloadSchema = z.object({
   withinAvatarRange: z.boolean().optional(),
   overCompactZone: z.boolean().optional(),
   insideHostWindow: z.boolean().optional(),
+  cursorClientX: z.number().finite().optional(),
+  cursorClientY: z.number().finite().optional(),
+  cursorScreenX: z.number().finite().optional(),
+  cursorScreenY: z.number().finite().optional(),
   tool: avatarToolDescriptorSchema.nullable().optional(),
   textContext: z.string().optional(),
   timestamp: z.number().finite(),
@@ -198,6 +212,7 @@ export const messageBlockSchema = z.discriminatedUnion('type', [
   linkBlockSchema,
   statusBlockSchema,
   buttonGroupBlockSchema,
+  topicHintBlockSchema,
 ]);
 
 const turnIdSchema = z.preprocess((value) => {
@@ -356,6 +371,7 @@ export type ImageBlock = z.infer<typeof imageBlockSchema>;
 export type LinkBlock = z.infer<typeof linkBlockSchema>;
 export type StatusBlock = z.infer<typeof statusBlockSchema>;
 export type ButtonGroupBlock = z.infer<typeof buttonGroupBlockSchema>;
+export type TopicHintBlock = z.infer<typeof topicHintBlockSchema>;
 export type ComposerAttachment = z.infer<typeof composerAttachmentSchema>;
 export type ChatSurfaceMode = z.infer<typeof chatSurfaceModeSchema>;
 export type CompactChatState = z.infer<typeof compactChatStateSchema>;

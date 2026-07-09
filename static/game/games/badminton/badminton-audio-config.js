@@ -10,6 +10,8 @@
   ];
   var racketShuttleSingle = '/static/game/games/badminton/audio/badminton-racket-shuttlecock-single.mp3';
   var racketSwing = '/static/game/games/badminton/audio/zapsplat_sport_badminton_racket_fast_swing_whoosh_001_76396.mp3';
+  var bananaSlipGoofy = '/static/game/games/badminton/audio/badminton-banana-slip-goofy.mp3';
+  var octopusInkPoof = '/static/game/games/badminton/audio/badminton-octopus-ink-poof.mp3';
 
   var badmintonGameAudioConfig = {
     audioMix: {
@@ -36,13 +38,24 @@
         ],
       },
       mood: {
-        calm: ['/static/game/games/soccer/audio/Prelude.mp3'],
-        happy: [{ src: '/static/game/games/soccer/audio/Chocobos_S.mp3', gainDb: 0.59 }],
-        angry: [{ src: '/static/game/games/soccer/audio/纯狐_心之所在_plus_L.mp3', gainDb: -2.94 }],
-        relaxed: ['/static/game/games/soccer/audio/Chocobos_L.mp3'],
-        sad: ['/static/game/games/soccer/audio/Prelude.mp3'],
-        surprised: [{ src: '/static/game/games/soccer/audio/Battle_1_E.mp3', gainDb: 1.5 }],
+        calm: [],
+        happy: {
+          intro: '/static/game/games/soccer/audio/Chocobos_S.mp3',
+          loop: '/static/game/games/soccer/audio/Chocobos_L.mp3',
+        },
+        angry: {
+          loop: '/static/game/games/soccer/audio/纯狐_心之所在_L.mp3',
+          outro: '/static/game/games/soccer/audio/纯狐_心之所在_E.mp3',
+        },
+        relaxed: {
+          intro: '/static/game/games/soccer/audio/Chocobos_S.mp3',
+          loop: '/static/game/games/soccer/audio/Chocobos_L.mp3',
+        },
+        sad: [],
+        surprised: [],
       },
+      // Battle_1_E.mp3 只是临时结算占位。它更像胜利结算，不一定适合作为所有 gameOver。
+      // 后续如果要区分玩家胜利 / Yui 胜利 / 非 duel 分数结算，需要再补素材和规则。
       result: { gameOver: [{ src: '/static/game/games/soccer/audio/Battle_1_E.mp3', gainDb: 1.5 }] },
     },
     loopedBgm: {},
@@ -57,6 +70,10 @@
       },
       shuttleContact: racketShuttleHits.concat([racketShuttleSingle]).map(function (src) { return { src: src, gainDb: -2 }; }),
       net: [{ src: racketShuttle, gainDb: -7 }],
+      yuiCheat: {
+        bananaSlip: [{ src: bananaSlipGoofy, gainDb: -1 }],
+        octopusInk: [{ src: octopusInkPoof, gainDb: -2 }],
+      },
       streak: [{ src: '/static/game/games/soccer/audio/Chocobos_S.mp3', gainDb: -6 }],
       record: [{ src: '/static/game/games/soccer/audio/Battle_1_E.mp3', gainDb: -2 }],
     },

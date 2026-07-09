@@ -23,6 +23,8 @@
     const HOME_TUTORIAL_RESET_EVENT = 'neko:home-tutorial-reset';
     const HOME_TUTORIAL_RESET_STORAGE_EVENT_KEY = 'neko_home_tutorial_reset_event';
     const HOME_TUTORIAL_RESET_CHANNEL = 'neko_tutorial_events';
+    // 与 universal-manager.js / app-websocket.js 同名：教程派发的「启动问候放行」事件。
+    const STARTUP_GREETING_RELEASE_EVENT = 'neko:startup-greeting-release';
 
     function interpolateTemplate(template, options) {
         return String(template || '').replace(/{{\s*(\w+)\s*}}/g, (_, name) => {
@@ -201,6 +203,14 @@
         }
 
         async openFromSettings(characterName) {
+            // _tutorialFlowAborted 是 manager 上的持久标志，handleHomeTutorialStartupRelease 在教程正常完成/夭折
+            // (released:true) 时也会置位它。设置里的人格重选是独立的一次等待：仅当此刻确有教程占屏(locked)时才清掉
+            // 遗留的 abort 去重新等待（治 Codex 指出的「遗留 abort 让重选越过运行中教程」）；若当前无锁则保留 abort，
+            // 否则清掉后 settle 会在新用户 observing/new 上无限轮询且不会再有 release（Greptile 指出的反向死锁）。
+            // 用可靠的 isHomeTutorialInteractionLocked 判定，而非会被 app-websocket 消费删除的 __NEKO_STARTUP_GREETING_RELEASED__。
+            if (this.isHomeTutorialInteractionLocked()) {
+                this._tutorialFlowAborted = false;
+            }
             await this.waitForTutorialFlowToSettle();
             this.openReason = 'settings';
             this.currentCharacterName = String(characterName || '').trim() || await this.fetchCurrentCharacterName();
@@ -290,6 +300,7 @@
 
             const manager = window.universalTutorialManager || null;
             if (window.isInTutorial === true
+                || window.isNekoHomeTutorialPending === true
                 || (manager && manager.currentPage === 'home' && manager.isTutorialRunning)) {
                 return true;
             }
@@ -361,8 +372,7 @@
             }
 
             try {
-                return localStorage.getItem('neko_tutorial_home_yui_v1') === 'true'
-                    || localStorage.getItem('neko_tutorial_home') === 'true';
+                return localStorage.getItem('neko_tutorial_home_yui_v1') === 'true';
             } catch (_) {
                 return false;
             }
@@ -640,6 +650,21 @@
                 void this.openIfPending();
             };
 
+            const handleHomeTutorialStartupRelease = (event) => {
+                const detail = event && event.detail;
+                // released:true = 教程已决定不启动（夭折）或已结束（dispatchStartupGreetingRelease），不会再占屏；
+                // released:false 是教程正在启动（clearStartupGreetingRelease），由 isTutorialRunning 接管，跳过。
+                if (!detail || detail.released !== true) {
+                    return;
+                }
+                if (!this.shouldRespectHomeTutorialGate()) {
+                    return;
+                }
+                // 停止等待新手教程、放行选人格。否则在「教程夭折」一类没有 tutorial-completed/skipped 事件的路径上，
+                // pending 被 choke point 清除后 settle 轮询会卡在新用户 observing 态永不 resolve（永远不弹选人格）。
+                this._tutorialFlowAborted = true;
+            };
+
             const resetHomeTutorialCompletedFromStorage = (event) => {
                 if (!event || event.key !== HOME_TUTORIAL_RESET_STORAGE_EVENT_KEY || !event.newValue) {
                     return;
@@ -653,6 +678,7 @@
 
             window.addEventListener(HOME_TUTORIAL_RESET_EVENT, resetHomeTutorialCompleted);
             window.addEventListener('storage', resetHomeTutorialCompletedFromStorage);
+            window.addEventListener(STARTUP_GREETING_RELEASE_EVENT, handleHomeTutorialStartupRelease);
             window.addEventListener('neko:tutorial-started', queueResume);
             window.addEventListener('neko:tutorial-completed', markHomeTutorialCompleted);
             window.addEventListener('neko:tutorial-skipped', markHomeTutorialCompleted);

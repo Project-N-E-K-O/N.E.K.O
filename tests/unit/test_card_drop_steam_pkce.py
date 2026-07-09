@@ -1,7 +1,9 @@
-"""Steam 社区登录 PKCE（code_verifier/code_challenge）纯逻辑单测。
+"""Unit tests for Steam community-login PKCE (code_verifier / code_challenge).
 
-只覆盖 NEKO 端：pending 标记里 verifier 的落盘/取回、authorize URL 拼 code_challenge。
-云端校验在 N.E.K.O.Servers tests/test_oauth_native.py。完整 Steam OpenID 往返靠 e2e。
+Covers the NEKO side only: pending-marker verifier persist/load and authorize
+URL assembly with ``code_challenge``. Cloud verification lives in
+N.E.K.O.Servers ``tests/test_oauth_native.py``; full Steam OpenID round-trips
+are e2e.
 """
 from __future__ import annotations
 
@@ -18,7 +20,7 @@ import main_routers.card_drop_router as C
 
 @pytest.fixture
 def pending_path(tmp_path, monkeypatch):
-    """把 pending 标记重定向到 tmp 文件，避免碰用户真实 Documents 树。"""
+    """Redirect the pending marker to a tmp file (avoid the real Documents tree)."""
     p = tmp_path / "community_steam_pending.json"
     monkeypatch.setattr(C, "_steam_pending_path", lambda: p)
     return p
@@ -90,8 +92,9 @@ def test_steam_login_url_carries_code_challenge(pending_path):
     resp = TestClient(app).get("/api/card-drop/steam-login")
     assert resp.status_code == 200
     url = resp.json()["authorize_url"]
-    # authorize URL 必须带 redirect_to + state + code_challenge
+    # authorize URL must carry redirect_to + state + code_challenge (+ S256 method)
     assert "code_challenge=" in url
+    assert "code_challenge_method=S256" in url
     assert "state=" in url
     assert "redirect_to=" in url
     # URL 里的 code_challenge 必须等于落盘 verifier 的 S256（端到端绑定）

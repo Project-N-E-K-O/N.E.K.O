@@ -26,6 +26,12 @@
             -webkit-user-select: none;
         }
 
+        html[data-theme="dark"],
+        html[data-theme="dark"] body {
+            --neko-jukebox-bg: #101722;
+            color-scheme: dark;
+        }
+
         html.neko-jukebox-standalone-host,
         html.neko-jukebox-standalone-host body,
         html[data-theme="dark"].neko-jukebox-standalone-host,
@@ -119,13 +125,113 @@
             transition: none !important;
             transform: none !important;
         }
+
+        .jukebox-loading-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 10;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 14px;
+            color: rgba(28, 48, 68, 0.94);
+            background: var(--neko-jukebox-bg);
+            opacity: 1;
+            transition: opacity 180ms ease;
+            pointer-events: none;
+        }
+
+        .jukebox-loading-overlay.hidden {
+            opacity: 0;
+        }
+
+        .jukebox-loading-spinner {
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            border: 3px solid rgba(53, 169, 201, 0.22);
+            border-top-color: #35a9c9;
+            animation: jukebox-loading-spin 800ms linear infinite;
+        }
+
+        .jukebox-loading-text {
+            max-width: min(320px, calc(100vw - 48px));
+            font-size: 15px;
+            line-height: 1.4;
+            text-align: center;
+        }
+
+        .jukebox-loading-overlay.error .jukebox-loading-spinner {
+            display: none;
+        }
+
+        .jukebox-loading-overlay.error .jukebox-loading-text {
+            color: #8f2230;
+        }
+
+        html[data-theme="dark"] .jukebox-loading-overlay {
+            color: rgba(230, 237, 243, 0.94);
+        }
+
+        @keyframes jukebox-loading-spin {
+            to { transform: rotate(360deg); }
+        }
     </style>
 </head>
 <body>
+    <div id="jukebox-loading-overlay" class="jukebox-loading-overlay" role="status" aria-live="polite">
+        <div class="jukebox-loading-spinner" aria-hidden="true"></div>
+        <div id="jukebox-loading-text" class="jukebox-loading-text">正在初始化点歌台...</div>
+    </div>
     <script>
         // Applied before JS mount so dark-mode global styles cannot flash a black standalone background.
         document.documentElement.classList.add('neko-jukebox-standalone-host');
         window.__NEKO_JUKEBOX_STANDALONE__ = true;
+        window.__NEKO_JUKEBOX_MIN_BOUNDS__ = { width: 560, height: 480 };
+        window.__NEKO_ENSURE_JUKEBOX_MINIMUM_BOUNDS__ = function() {
+            var bridge = window.nekoJukeboxWindow || window.nekoJukeboxBridge;
+            var minBounds = window.__NEKO_JUKEBOX_MIN_BOUNDS__;
+            var minWidth = minBounds.width;
+            var minHeight = minBounds.height;
+            if (!bridge || typeof bridge.getBounds !== 'function' || typeof bridge.setBounds !== 'function') {
+                return;
+            }
+
+            var workAreaPromise = typeof bridge.getWorkArea === 'function'
+                ? Promise.resolve(bridge.getWorkArea()).catch(function() { return null; })
+                : Promise.resolve(null);
+
+            Promise.all([
+                Promise.resolve(bridge.getBounds()).catch(function() { return null; }),
+                workAreaPromise
+            ]).then(function(results) {
+                var bounds = results[0];
+                var workArea = results[1];
+                if (!bounds || (bounds.width >= minWidth && bounds.height >= minHeight)) {
+                    return;
+                }
+
+                var width = Math.max(minWidth, Math.round(Number(bounds.width) || minWidth));
+                var height = Math.max(minHeight, Math.round(Number(bounds.height) || minHeight));
+                var x = Math.round(Number(bounds.x) || 0);
+                var y = Math.round(Number(bounds.y) || 0);
+
+                if (workArea) {
+                    var areaX = Math.round(Number(workArea.x) || 0);
+                    var areaY = Math.round(Number(workArea.y) || 0);
+                    var areaWidth = Math.max(minWidth, Math.round(Number(workArea.width) || width));
+                    var areaHeight = Math.max(minHeight, Math.round(Number(workArea.height) || height));
+                    width = Math.min(width, areaWidth);
+                    height = Math.min(height, areaHeight);
+                    x = Math.max(areaX, Math.min(x, areaX + areaWidth - width));
+                    y = Math.max(areaY, Math.min(y, areaY + areaHeight - height));
+                }
+
+                bridge.setBounds(x, y, width, height);
+            }).catch(function() {});
+        };
+        window.__NEKO_ENSURE_JUKEBOX_MINIMUM_BOUNDS__();
     </script>
     <script src="/static/Jukebox.js"></script>
     <script src="/static/jukebox-standalone.js"></script>
@@ -143,64 +249,95 @@
             } catch (_) {}
         }
 
+        function _setJukeboxLoadingText(key, fallback) {
+            var overlay = document.getElementById('jukebox-loading-overlay');
+            var text = document.getElementById('jukebox-loading-text');
+            if (!text) return;
+            try {
+                text.textContent = typeof window.t === 'function' ? window.t(key, fallback) : fallback;
+            } catch (_) {
+                text.textContent = fallback;
+            }
+            if (overlay) overlay.classList.remove('error');
+        }
+
+        function _showJukeboxLoadingError(error) {
+            var overlay = document.getElementById('jukebox-loading-overlay');
+            _setJukeboxLoadingText('Jukebox.initializeFailed', '点歌台初始化失败');
+            if (overlay) overlay.classList.add('error');
+            console.error('[Jukebox] 独立窗口初始化失败:', error);
+        }
+
+        function _hideJukeboxLoading() {
+            var overlay = document.getElementById('jukebox-loading-overlay');
+            if (!overlay) return;
+            overlay.classList.add('hidden');
+            setTimeout(function() {
+                if (overlay && overlay.parentNode) overlay.remove();
+            }, 220);
+        }
+
         async function _initJukebox() {
             if (!window.Jukebox) return;
 
-            await _fetchModelType();
+            try {
+                _setJukeboxLoadingText('Jukebox.initializing', '正在初始化点歌台...');
+                await _fetchModelType();
 
-            window.Jukebox_playSong = window.Jukebox.playSong;
-            window.Jukebox_close = function() {
-                try {
-                    if (window.Jukebox && typeof window.Jukebox.stopPlayback === 'function') {
-                        window.Jukebox.stopPlayback();
+                window.Jukebox_playSong = window.Jukebox.playSong;
+                window.Jukebox_close = function() {
+                    try {
+                        if (window.Jukebox && typeof window.Jukebox.close === 'function') {
+                            window.Jukebox.close();
+                        }
+                    } catch (error) {
+                        console.warn('[Jukebox] 关闭前清理失败:', error);
                     }
-                    if (window.Jukebox && window.Jukebox.SongActionManager &&
-                        typeof window.Jukebox.SongActionManager.hide === 'function') {
-                        window.Jukebox.SongActionManager.hide();
-                    }
-                } catch (error) {
-                    console.warn('[Jukebox] 关闭前清理失败:', error);
-                }
 
-                try {
-                    // 主进程会复用隐藏的点歌台窗口，不能销毁页面 DOM。
-                    if (window.nekoJukeboxWindow && typeof window.nekoJukeboxWindow.hide === 'function') {
-                        window.nekoJukeboxWindow.hide();
-                        return;
+                    try {
+                        if (window.nekoJukeboxWindow && typeof window.nekoJukeboxWindow.close === 'function') {
+                            window.nekoJukeboxWindow.close();
+                            return;
+                        }
+                    } catch (error) {
+                        console.warn('[Jukebox] 关闭窗口失败:', error);
                     }
-                } catch (error) {
-                    console.warn('[Jukebox] 关闭窗口失败:', error);
-                }
-                if (typeof window.close === 'function') window.close();
-            };
-            window.Jukebox_hide = function() {
-                try {
-                    if (window.nekoJukeboxWindow && typeof window.nekoJukeboxWindow.hide === 'function') {
-                        window.nekoJukeboxWindow.hide();
-                        return;
-                    }
-                } catch (error) {
-                    console.warn('[Jukebox] 隐藏窗口失败，改为关闭:', error);
-                }
 
-                try {
-                    if (window.Jukebox && typeof window.Jukebox.close === 'function') {
-                        window.Jukebox.close();
-                    }
-                } catch (error) {
-                    console.warn('[Jukebox] 最小化降级关闭前清理失败:', error);
-                } finally {
                     if (typeof window.close === 'function') window.close();
+                };
+                window.Jukebox_hide = function() {
+                    try {
+                        if (window.nekoJukeboxWindow && typeof window.nekoJukeboxWindow.hide === 'function') {
+                            window.nekoJukeboxWindow.hide();
+                            return;
+                        }
+                    } catch (error) {
+                        console.warn('[Jukebox] 隐藏窗口失败，改为关闭:', error);
+                    }
+
+                    try {
+                        if (window.Jukebox && typeof window.Jukebox.hide === 'function') {
+                            window.Jukebox.hide();
+                            return;
+                        }
+                    } catch (error) {
+                        console.warn('[Jukebox] 最小化降级隐藏前清理失败:', error);
+                    }
+
+                    if (typeof window.close === 'function') window.close();
+                };
+                window.Jukebox_updateVolume = window.Jukebox.updateVolume;
+                window.Jukebox_logVolumeChange = window.Jukebox.logVolumeChange;
+                window.Jukebox_togglePause = window.Jukebox.togglePause;
+
+                window.Jukebox.open();
+
+                if (window.NekoJukeboxStandalonePage) {
+                    window.NekoJukeboxStandalonePage.mount();
                 }
-            };
-            window.Jukebox_updateVolume = window.Jukebox.updateVolume;
-            window.Jukebox_logVolumeChange = window.Jukebox.logVolumeChange;
-            window.Jukebox_togglePause = window.Jukebox.togglePause;
-
-            window.Jukebox.open();
-
-            if (window.NekoJukeboxStandalonePage) {
-                window.NekoJukeboxStandalonePage.mount();
+                _hideJukeboxLoading();
+            } catch (error) {
+                _showJukeboxLoadingError(error);
             }
         }
 

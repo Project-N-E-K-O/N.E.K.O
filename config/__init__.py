@@ -27,7 +27,7 @@ from config.prompts.prompts_chara import lanlan_prompt, get_lanlan_prompt, is_de
 
 # 应用程序名称与版本配置
 APP_NAME = "N.E.K.O"
-APP_VERSION = "0.8.2"
+APP_VERSION = "0.8.3"
 logger = logging.getLogger(f"{APP_NAME}.{__name__}")
 
 # GPT-SoVITS voice_id 前缀(角色管理中使用 "gsv:<voice_id>" 格式标识 GPT-SoVITS 声音)
@@ -705,6 +705,8 @@ DEFAULT_CORE_CONFIG = {
     "assistApiKeyStep": "",
     "assistApiKeySilicon": "",
     "assistApiKeyGemini": "",
+    "assistApiKeyKimi": "",
+    "assistApiKeyKimiCode": "",
     "assistApiKeyQwenIntl": "",
     "assistApiKeyMinimax": "",
     "assistApiKeyMimo": "",
@@ -855,6 +857,16 @@ DEFAULT_ASSIST_API_PROFILES = {
         'VISION_MODEL': "kimi-latest",
         'AGENT_MODEL': "kimi-latest",
     },
+    'kimi_code': {
+        'OPENROUTER_URL': "https://api.kimi.com/coding",
+        'PROVIDER_TYPE': "anthropic",
+        'CONVERSATION_MODEL': "kimi-for-coding",
+        'SUMMARY_MODEL': "kimi-for-coding",
+        'CORRECTION_MODEL': "kimi-for-coding",
+        'EMOTION_MODEL': "kimi-for-coding",
+        'VISION_MODEL': "kimi-for-coding",
+        'AGENT_MODEL': "kimi-for-coding",
+    },
     'claude': {
         'OPENROUTER_URL': "https://api.anthropic.com/v1",
         'CONVERSATION_MODEL': "claude-sonnet-4-6",
@@ -916,6 +928,7 @@ DEFAULT_ASSIST_API_KEY_FIELDS = {
     'silicon': 'ASSIST_API_KEY_SILICON',
     'gemini': 'ASSIST_API_KEY_GEMINI',
     'kimi': 'ASSIST_API_KEY_KIMI',
+    'kimi_code': 'ASSIST_API_KEY_KIMI_CODE',
     'qwen_intl': 'ASSIST_API_KEY_QWEN_INTL',
     'minimax': 'ASSIST_API_KEY_MINIMAX',
     'mimo': 'ASSIST_API_KEY_MIMO',
@@ -993,6 +1006,20 @@ EVIDENCE_SIGNAL_CHECK_EVERY_N_TURNS = 10         # 累积 N 轮触发
 EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES = 5           # 或空闲 N 分钟触发
 EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS = 40      # 轮询间隔（与 IDLE_CHECK_INTERVAL 对齐）
 EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS = 30    # Stage-2 LLM rerank 后进 prompt 的 obs 上限（减少 NxM 配对决策点）
+
+# ── activity_guess 自适应退避门控 ──────────────────────────────────────
+# 活动心跳 (main_logic/activity/tracker.py:_activity_guess_loop) 通过 emotion-tier
+# LLM 把"用户在干嘛"叙述出来，只喂 proactive 搭话 prompt。这组旋钮约束「活动没
+# 实质变化时」它多久刷一次——用户在两个 app 间来回切窗口曾让它每 ~40s 烧一次
+# (静默, 无业务日志) 无限持续。详见 main_logic/activity/activity_guess_gate.py。
+# 同一活动每被重述一次，下次重述间隔就 ×MULTIPLIER 增长，封顶 CAP：30→120→480→900。
+# CAP 选 900s 对齐 AWAY_IDLE_SECONDS（state_machine.py，挂机 15min 进 away 后心跳硬 bail），
+# 这样稳定活动退避到地板时差不多也该转 away 了。消费端 get_snapshot 读 cache 无 TTL
+# 守卫，所以 CAP 放大不会让 proactive 拿到“过期”叙述（叙述只描述“在干嘛”，旧 = 仍准）。
+ACTIVITY_GUESS_BACKOFF_BASE_SECONDS = 30.0   # 两次调用之间的硬地板 + 首次重述间隔
+ACTIVITY_GUESS_BACKOFF_MULTIPLIER = 4.0      # 每次重述后退避间隔的增长倍数（必须 > 1）
+ACTIVITY_GUESS_BACKOFF_CAP_SECONDS = 900.0   # 活动稳定后重述间隔的封顶（对齐 AWAY_IDLE 15min）
+ACTIVITY_GUESS_SIG_CACHE_SIZE = 8            # 退避记忆的「不同活动签名」条数
 
 # ── AI-aware Stage-1 (path B) ─────────────────────────────────────────
 # 原 SignalLoop (path A) 只看 user 消息，导致 PR #1346 之后 AI 自我披露 + proactive
@@ -1341,6 +1368,30 @@ LLM_OUTPUT_GUARD_MAX_TOKENS = 4096
 - 残留边界：max output < 4096 的极老/极小模型仍可能 400；这类安装可下调本常量。
   彻底鲁棒需要 per-model 上限元数据（codebase 目前不跟踪），故取保守定值。"""
 
+ICEBREAKER_FREE_TEXT_INTERPRETER_TIMEOUT_SECONDS = 20.0
+"""新用户破冰自由输入解释器 LLM timeout（秒）。用户面前的短分类/短回复调用，卡住时应快速失败。"""
+
+ICEBREAKER_FREE_TEXT_OUTPUT_MAX_TOKENS = 512
+"""新用户破冰自由输入解释器输出 token 上限。输出固定 JSON，512 只作短任务上限。"""
+
+ICEBREAKER_FREE_TEXT_ASSISTANT_LINE_MAX_TOKENS = 800
+"""破冰自由输入解释器：当前 YUI 台词输入 token 上限。"""
+
+ICEBREAKER_FREE_TEXT_USER_TEXT_MAX_TOKENS = 800
+"""破冰自由输入解释器：用户自由输入 token 上限。"""
+
+ICEBREAKER_FREE_TEXT_OPTION_LABEL_MAX_TOKENS = 200
+"""破冰自由输入解释器：单个选项文案 token 上限。"""
+
+ICEBREAKER_FREE_TEXT_HISTORY_TEXT_MAX_TOKENS = 240
+"""破冰自由输入解释器：近期自由输入记录单段文本 token 上限。"""
+
+ICEBREAKER_FREE_TEXT_HISTORY_MAX_ITEMS = 4
+"""破冰自由输入解释器：近期自由输入记录最多带入条数。"""
+
+ICEBREAKER_FREE_TEXT_REPLY_MAX_TOKENS = 240
+"""破冰自由输入解释器：模型 reply 字段清洗后的 token 上限。"""
+
 DIALOG_LLM_STREAM_TIMEOUT_SECONDS = 180
 """主对话流式 LLM client 的总请求 timeout（秒），作 hang-guard。
 - 用途：OmniOfflineClient 的 streaming chat client（stream_text /
@@ -1352,6 +1403,22 @@ DIALOG_LLM_STREAM_TIMEOUT_SECONDS = 180
   路径，宁可多等也不能误截正常回复。
 - 政策：LLM_OUTPUT_BUDGET lint 要求每个 client 构造都带 timeout；本常量是
   主对话流式路径的统一来源。"""
+
+FOCUS_THINKING_EXTRA_TOKENS = 800
+"""凝神（focus / thinking-on）轮次额外放宽的 max_completion_tokens。
+- 背景：thinking 模型（Qwen enable_thinking / GLM·Kimi·Doubao thinking.type /
+  OpenRouter reasoning.effort）的 reasoning token 与正式回复共享同一个
+  max_completion_tokens 预算池（见 docs/design/llm-prompt-budget.md §0），
+  凝神轮一开思考就会从回复额度里扣，把正式回复挤短。
+- 作用：仅在 thinking_on 的那一轮，把 API 端 max_completion_tokens 临时
+  抬高本值，给推理链单独留头寸，不动 Python-side 长度 guard（回复可见
+  长度仍按 max_response_length 收口）。
+- 路由：作为 per-call override 经 _focus_stream_overrides → astream →
+  ChatOpenAI._params 透传，不改 self.llm 实例属性（与 extra_body 同一条
+  per-call 路径，并发安全、下一轮自动复位）。
+- 适用面：Claude 凝神保持 thinking-off（config/providers.py），本加值对其
+  天然 no-op；Gemini thinking_budget 是独立字段（800），本余量也足够覆盖。
+- 取值：扁平 800，不按 provider 分叉——只在真正开思考的轮次生效。"""
 
 # ---- Memory: refine (Phase A-3) — MemoryRefineEngine 的 cron 参数 ----
 # 通用 cosine 聚类 + LLM 决议管道，复用在 PERSONA_REFINE 和
@@ -1627,6 +1694,25 @@ AGENT_PLUGIN_FULL_MAX_TOKENS = 500
 - 用途：返回 plugin_id + plugin_args + reason。
 - 上游：LLM 输出。"""
 
+AGENT_EXTERNAL_GATE_ENABLED = True
+"""廉价前置闸总开关（默认开）。
+- 用途：开 = 用 master-emotion 在 input-time 顺带产出的 external_intent，在 agent
+  侧 turn_end 评估前做一道零成本前置判断：若这一轮被自信地读成「不需要外部能力」
+  （既没要求对外操作、也不需要外部/实时信息），且零 LLM 的确定性 shortcut（magic
+  word 规则 + 插件关键词）也全静默，就跳过那 1~2 次大模型评估，省掉闲聊轮的
+  analyzer 开销。关掉则每个 turn 照常全量评估。
+- 闸是非对称的：external_intent 缺失（None）或确定性命中都不刹车，所以最坏只是多花
+  一次评估，绝不漏真任务。
+- 上游：DirectTaskExecutor._analyze_and_execute_inner 的前置判定。"""
+
+AGENT_EXTERNAL_GATE_THRESHOLD = 0.2
+"""external_intent 刹车阈值（0~1）。
+- 用途：external_intent < 此值才视为「自信地不需要外部能力」、进入刹车候选；>= 此值
+  或为 None 一律放行。
+- 取保守低位（默认 0.2）：小模型只需可靠认出「显然只是闲聊、靠对话和常识就能答」
+  这 90% 的易判 case，模棱两可的全 fail-open 到准确的大评估。调高 = 更激进省钱但
+  漏判风险上升。"""
+
 PLUGIN_INPUT_DESC_MAX_TOKENS = 1000
 """_ensure_short_descriptions 输入的 plugin manifest description 上限。
 - 用途：生成 short_description 时把原始 description 截断后再送入 prompt
@@ -1693,6 +1779,19 @@ ANTI_REPEAT_FG_WINDOW = 5
 - 用途：BM25 评分把最近 N 条当 query corpus 算 TF；新 draft 与这 5 条比。
 - 设计依据：5 条 ≈ 用户最近能感知到的复读窗口；7+ 已经记不清了。"""
 
+ANTI_REPEAT_FG_TTL_SECONDS = 600.0
+"""anti-repeat 前景窗口的时间新鲜度上限（秒）。仅作用于 FG（TF/复读判定），
+不影响 BG（DF/IDF 词频背景，仍按 ANTI_REPEAT_BG_WINDOW 条数封顶）。
+- 用途：memory/anti_repeat.py 的 score_draft / top_recent_topics 只把「最近
+  ANTI_REPEAT_FG_TTL_SECONDS 内」的输出计入前景 TF；更早的条目照旧留在 BG
+  里贡献 IDF。
+- 设计依据：修复「空闲死锁」——主动搭话在用户空闲时才触发，而所有 drop 路径
+  都不写 corpus、成功投递才写，于是空闲期 FG 窗被最近几条同话题（如屏幕解说）
+  冻结，每轮打出同样的超高 BM25 → 永远 drop → 永远无法搭话。加了 TTL 后，空闲
+  超此时长 FG 自然清空、bm25_score 命中 `not fg_docs` 返回 0，本轮放行。
+- 取值：10 分钟。防复读本就只防「刚说过、又说一遍」的 back-to-back 复读；十分钟
+  前说过的话题再提不算复读。BG（IDF 语境）不设 TTL，评分质量不受影响。"""
+
 ANTI_REPEAT_INJECT_TOP_K = 6
 """注入 system prompt 的 "最近高频 topic 词" 数量。
 - 用途：build_recent_topics_block 取 BM25 排名前 K 的 ngram。
@@ -1719,6 +1818,21 @@ ANTI_REPEAT_MIN_DRAFT_TOKENS = 12
 """draft 短于此长度（tokens 数）就不评分，直接放行。
 - 用途：避免"嗯。"、"好"这种短回复被错杀。
 - 设计依据：~12 个 ngram token 才能形成稳定的 BM25 信号。"""
+
+ANTI_REPEAT_EXEMPT_SOURCE_TAGS = frozenset({"MUSIC", "MEME"})
+"""主动搭话里"复读判定从台词切到素材维度"的来源标签。
+- 动机：BM25 防的是"话题/措辞复读"，但素材推送类 channel 的开场白天生模板
+  化（推歌"换首歌 / 这旋律 / 听听看"、表情包"看这个 / 笑死"），台词长一个
+  样、而推送的素材（曲目 / 表情包搜索关键词）却不同；用台词 BM25 判它属于
+  天生误杀——博士连点几首后 FG 窗被音乐 intro 占满，分数爆表，后续自发推
+  歌全被 drop，表现为"放音乐频率极低"。
+- 语义：这类 channel 的复读按"素材本身"去重——MUSIC 看曲目、MEME 看搜索
+  关键词（不是图片）。本轮素材与近期不雷同时，豁免台词级硬拦截（字面相似
+  度 + BM25 regen/drop）直接放行；素材雷同（反复推同一曲目 / 同一关键词）
+  才回落到正常台词判定，台词没雷同则依然能发。
+- 另：这类 channel 的台词不录进 anti-repeat corpus（见 finish_proactive_
+  delivery），免得模板化 intro 污染 FG 窗、漂移其它 channel 的复读基线；
+  素材标识的近期去重走 system_router 的 _proactive_material_history。"""
 
 AVATAR_INTERACTION_DEDUPE_MAX_ITEMS = 32
 """_recent_avatar_interaction_ids deque maxlen。
@@ -1874,47 +1988,80 @@ FOCUS_CHARGE_RETENTION = 0.5
 - 稳态：持续每轮 score=s 时 charge → s/(1-retention)（如 retention=0.5、s=0.5 → 趋近 1.0）。
 - 这是「敏感度」主旋钮。仅用于 inline（用户发声）路径。"""
 
-# idle（proactive 主动搭话）冷却分两档——proactive 绝不抬升 charge，只衰减；进入/
-# 维持凝神只由 inline（用户自己说的话）驱动。衰减快慢取决于这一轮 proactive 到底
-# 有没有把话说出来：开口了（消耗了这份专注）衰减快，没说出话（守着没开口，或思考
-# 超时/异常没接住）衰减略慢。故凝神的持续由「她开口次数」主导而非单纯时间流逝。
-# 两者都须 > 0、< 1，且 silent > replied。
-FOCUS_IDLE_SILENT_RETENTION = 0.7
+# idle（proactive 主动搭话）冷却——proactive 绝不抬升 charge，只衰减；进入/维持凝神
+# 只由 inline（用户自己说的话）驱动。原先分「开口/沉默」两档（开口更耗专注），现统一
+# 为同一保留率：无论这一轮 proactive 有没有把话说出来，凝神都按同一速度温和降温，持续
+# 长短由 proactive 触发频率主导而非单纯时间流逝。两个旋钮保留以便日后再拆，但须都 > 0、
+# < 1，且 replied <= silent。
+FOCUS_IDLE_SILENT_RETENTION = 0.8
 """proactive 本轮没把话说出来时的电荷保留率。
 - 涵盖：action != chat（被 guard/接管挡下、内容空、[PASS]），以及 Phase 2 思考
   超时 / 流式异常导致 aborted（最终也归 action=pass）——开了思考模式却没能在限时内
   接住，同样按此档降温。
-- 用途：charge = charge × 此值。0.7 = 每轮明显降温——没说出话（含思考超时）就别
-  一直占着凝神，但仍比开口（replied）退得慢一点。
-- 调低 = 沉默 / 超时也更快冷却。"""
+- 用途：charge = charge × 此值。0.8 = 每轮温和降温。当前与 replied 统一为 0.8，
+  开口与沉默同速冷却。
+- 调低 = 沉默 / 超时更快冷却。"""
 
-FOCUS_IDLE_REPLIED_RETENTION = 0.6
+FOCUS_IDLE_REPLIED_RETENTION = 0.8
 """proactive 本轮真开口了（action == chat：投递了主动搭话）时的电荷保留率。
-- 用途：charge = charge × 此值。0.6 = 每开口一次明显消耗——cap=1.0 起约 3 次主动
-  搭话漏到 EXIT(0.3) 以下退出（「她降临后追一两句就放下」）。
-- 须 < FOCUS_IDLE_SILENT_RETENTION：开口比沉默消耗更多。调低 = 开口后退得更快。
+- 用途：charge = charge × 此值。0.8 = 每开口一次温和消耗——cap=1.0(满电)起约需 6 次
+  主动搭话才漏到 EXIT(0.3) 以下退出，凝神逗留更久。
+- 须 <= FOCUS_IDLE_SILENT_RETENTION：开口不比沉默退得更慢。当前两档统一为 0.8。
 - 上游：SM.update_focus 的 retention_override（idle 收尾按 action 选这两档之一）。"""
 
-# 调参护栏：把两档冷却的注释约定变成 fail-fast 的硬校验，避免后续误配把语义反转——
-# >= 1.0 会让 idle tick 不降反升（破坏「绝不抬升」），silent <= replied 会让「开口」
-# 比「沉默」消耗更少（快慢档颠倒）。模块加载即校验，配错直接报错而非静默跑坏。
-if not (0.0 < FOCUS_IDLE_REPLIED_RETENTION < FOCUS_IDLE_SILENT_RETENTION < 1.0):
+# 调参护栏：把两档冷却的约定变成 fail-fast 的硬校验，避免后续误配把语义反转——
+# >= 1.0 会让 idle tick 不降反升（破坏「绝不抬升」），replied > silent 会让「开口」
+# 比「沉默」退得更慢（快慢档颠倒）。允许两档相等（当前统一 0.8，开口/沉默同速）。
+# 模块加载即校验，配错直接报错而非静默跑坏。
+if not (0.0 < FOCUS_IDLE_REPLIED_RETENTION <= FOCUS_IDLE_SILENT_RETENTION < 1.0):
     raise ValueError(
-        "Focus idle retentions must satisfy 0 < replied < silent < 1 "
+        "Focus idle retentions must satisfy 0 < replied <= silent < 1 "
         f"(got replied={FOCUS_IDLE_REPLIED_RETENTION}, "
         f"silent={FOCUS_IDLE_SILENT_RETENTION})"
     )
 
-FOCUS_CHARGE_ENTER = 1.0
-"""进入凝神的电荷阈值。
-- 用途：charge ≥ 此值 → REGULAR→FOCUS。
-- 一句重话（score≈1.0）即可秒进；零散脆弱靠累积逼近此值后进入。
-- 调低 = 更易进。charge 进入后被 cap 在此值（避免长重情节拖出过长尾巴）。"""
+FOCUS_CHARGE_ENTER = 0.6
+"""进入凝神的电荷阈值，也是「完全激活」点。
+- 用途：charge ≥ 此值 → REGULAR→FOCUS，同时前端边缘辉光在此处非线性跃升 + 起呼吸。
+- 单个强信号即可单轮秒进：强 distress 情绪读数（emotion 满格 0.7、≥~0.86 时越阈）或
+  满格复杂提问（question 1.0×0.6=0.6）。脆弱词单独不足以单轮进（keyword 满格 0.5 < 此阈，
+  有意——词表是廉价信号），须叠加 emotion 或跨轮累积；零散信号靠 charge 累积逼近此值后进入。
+  注：score 现为各信号加权和（无分母，见 FOCUS_SIGNAL_WEIGHTS）。
+- charge 不再 cap 在此值——见 FOCUS_CHARGE_CAP，0.6 以上继续累积到 1.0（更亮更持久）。
+- 时间衰减以此为界：charge < ENTER 衰减快（FOCUS_TIME_DECAY_PER_SEC），≥ ENTER（完全激活）
+  衰减减半（FOCUS_TIME_DECAY_PER_SEC_ACTIVATED）→ 0.6 以上自然更持久。"""
+
+FOCUS_CHARGE_CAP = 1.0
+"""电荷上限（封顶）。
+- 用途：charge 累积的天花板。ENTER(0.6) 是进入/完全激活点，0.6→CAP 只是「更深」——
+  前端边缘辉光峰值随 charge 继续抬高直到此处封顶。
+- 须 ≥ ENTER。"""
+
+FOCUS_TIME_DECAY_PER_SEC = 0.02
+"""未完全激活（charge < ENTER）时电荷的每秒时间衰减量。
+- 用途：与按轮 retention 叠加的「双重衰减」之时间分量——即便没有新 turn，charge 也随
+  wall-clock 真实流逝（惰性在 update_focus 计算、前端按同速率本地外推辉光）。
+- 0.02/s ⇒ 从 0.6 漏到 0（如无新证据）约 30s 量级；调高 = 凉得更快。"""
+
+FOCUS_TIME_DECAY_PER_SEC_ACTIVATED = 0.01
+"""完全激活（charge ≥ ENTER）后的每秒时间衰减量（减半，更持久）。
+- 用途：进入凝神后时间衰减放慢一半，「她降临后多停留一会」；charge 越高离 ENTER 越远、
+  停留越久（0.6 以上更持久即源于此）。
+- 地板：激活后时间衰减最多只能把 charge 降到 ENTER（0.6）为止，**绝不靠时间降到 0.6 以下**——
+  退出激活必须靠一轮对话的 retention（见 _decay_charge_over_time）。0.6 以下才会被时间衰减到 0。
+- 须 < FOCUS_TIME_DECAY_PER_SEC（激活后必须比激活前慢）。"""
+
+if not (FOCUS_TIME_DECAY_PER_SEC_ACTIVATED < FOCUS_TIME_DECAY_PER_SEC):
+    raise ValueError(
+        "FOCUS_TIME_DECAY_PER_SEC_ACTIVATED must be < FOCUS_TIME_DECAY_PER_SEC "
+        f"(got activated={FOCUS_TIME_DECAY_PER_SEC_ACTIVATED}, "
+        f"base={FOCUS_TIME_DECAY_PER_SEC})"
+    )
 
 FOCUS_CHARGE_EXIT = 0.3
 """退出凝神的电荷阈值（迟滞低门，须 < ENTER）。
 - 用途：FOCUS 期间 charge < 此值 → 退出。
-- 转中性后从 cap 处按 retention 漏：retention=0.5/cap=1.0 时约 2 轮漏到 0.25<0.3 退出
+- 转中性后从 cap 处按 retention 漏：retention=0.5/cap=ENTER(0.6) 时约 1~2 轮漏到 <0.3 退出
   （即「她降临后追一两轮才放下」）。调低 = 更黏、追更久。"""
 
 FOCUS_HARD_CAP_TURNS = 8
@@ -1924,21 +2071,32 @@ FOCUS_HARD_CAP_TURNS = 8
 - 上游：SM 的 focus_turn_count 计数器。"""
 
 FOCUS_SIGNAL_WEIGHTS: dict[str, float] = {
-    "keyword": 0.45,      # 用户消息命中脆弱情绪词
-    "cadence": 0.20,      # 回复字数相对基线骤跌
-    "emotion": 0.35,      # master 情绪画像：高唤醒 + 负效价（distress），见 MasterEmotionTracker
+    "keyword": 0.5,       # 用户消息命中脆弱情绪词（词表）
+    "cadence": 0.2,       # 回复字数相对基线骤跌（仅在有 distress 证据时计入）
+    "emotion": 0.7,       # master 情绪画像（主信号，**带符号**）：负效价 distress 为正、正效价 joy 为负，见 MasterEmotionTracker
+    "question": 0.6,      # master 模型判定「正在问复杂客观问题（数学/逻辑/推理）」的认知加分项
 }
 """FocusScorer 各信号的相对权重（仅 inline 路径——评分只看用户自己说的话）。
-- 用途：scorer 对适用信号子集内权重重新归一后加权平均 → 该轮 score（喂给累加器）。
+- 用途：scorer 对适用信号按权重**直接加权求和（不归一、无分母）** → 该轮 score（喂给
+  累加器）。权重即每个信号的绝对贡献：present 信号加 weight×value 进 score，缺席信号贡献 0。
 - 信号语义分两类：
-  · keyword / emotion 是「distress 正证据」——无证据时返回 None、不进分母（不投反对
-    票）。于是 keyword 满分 或 emotion 满分**任一都能单轮独立触发**，不会被对方的「0」
-    在分母里互相稀释。这是有意的：emotion 是 keyword 词表的真模型升级，用词不在词表
-    但情绪强烈时应能独立把人拉进 FOCUS。
-  · cadence 是行为信号——它的 0.0（「字数没骤降」）是有信息的、照常进分母；只有样本
-    不足时返回 None。
+  · keyword / emotion / question 是触发信号——缺席返回 None、不计入（贡献 0，不稀释别的）。
+    emotion 是 keyword 词表的真模型升级（故词表权重 0.5 < 模型情绪 0.7），且**带符号**：
+    负效价 distress 为正、正效价 joy 为负（neutral 返回 None）——开心会把 score/charge
+    往下拉。question 是认知轴加分项（问复杂客观题——数学/逻辑/推理——也值得 thinking-on），
+    与 distress 正交但并入同一 charge。
+  · cadence 是行为信号——只在样本足够且**有 distress 证据**（keyword / question / emotion>0）
+    时才计入（否则一句短的开心话会让 cadence 误推 focus）。无分母后它的 0.0（「字数没骤降」）
+    贡献 0、等价于缺席，只有字数真的骤降才往 score 加分。
+- ⚠️ 无分母 ⇒ score 不再封顶在 1.0：全信号满格 = 各权重之和（当前 0.5+0.2+0.7+0.6=2.0），
+  下游由 FOCUS_CHARGE_CAP 截。调权重 = 直接调每信号绝对推力，也间接改相对 ENTER 的触发难度。
+- ⚠️ 单信号能否单轮进 ENTER 取决于「权重×满格值 ≥ ENTER」：去分母后 keyword 满格仅 0.5、
+  cadence 0.2，单独都越不过 ENTER(0.6)——脆弱词必须叠加 emotion 或跨轮累积才进（有意：词表
+  是廉价信号）；只有 emotion（≥~0.86）与满格 question（1.0×0.6）能单信号单轮进。
 - emotion 读 master 情绪画像（MasterEmotionTracker）已算好的最近 VA 读数，映射成
-  distress = arousal × max(0,-valence)。**滞后一拍**（画像异步算，inline 拿上一轮读数）；
+  distress = max(0,-valence) × (FOCUS_EMOTION_AROUSAL_FLOOR + (1-floor)×arousal)——
+  负效价主导、arousal 带下限放大（见 FOCUS_EMOTION_AROUSAL_FLOOR）。**滞后一拍**
+  （画像异步算，inline 拿上一轮读数）；
   MASTER_EMOTION_ENABLED 关或无读数/无 distress 时返回 None、自动退回 keyword+cadence。
 - idle（proactive）路径不评分：它只用 FOCUS_IDLE_SILENT/REPLIED_RETENTION 让 charge
   衰减，绝不抬升，故不在此表里（凝神的进入/维持只由 inline 驱动）。
@@ -1950,6 +2108,27 @@ FOCUS_KEYWORD_SATURATION = 3
 - 用途：scan_vulnerability_keywords 返回的命中数 / 此值后截到 1.0 作为 keyword
   子信号——单个「累」是轻推，「撑不住 + 一个人 + 没意思」叠加才是满格。
 - 上游：config/prompts/prompts_focus.scan_vulnerability_keywords 的命中计数。"""
+
+FOCUS_EMOTION_AROUSAL_FLOOR = 0.5
+"""emotion 信号里 arousal（唤醒度）作为放大器的下限。
+- 映射：distress = max(0,-valence) × (floor + (1-floor) × arousal)。
+- 语义：distress 由「负效价」主导触发，arousal 只在 [floor, 1] 区间缩放强度，
+  不再当与门。脆弱/倾诉常是「低唤醒 + 强负效价」（默默难过、丧），旧的纯乘积
+  distress = arousal × negativity 会被低 arousal 压到接近 0、漏掉这类安静型 distress；
+  给 arousal 一个下限后，强负效价即使唤醒度低也能透过大部分分值。
+- 取值：=0 退回旧的纯乘积（arousal 仍是与门）；=1 完全忽略 arousal、纯看 valence；
+  0.5 折中——低唤醒保底过半、高唤醒满额放大。须 ∈ [0,1]。
+- 上游：FocusScorer._signal_emotion。仅作用于 emotion 子信号，keyword/cadence 不受影响。"""
+
+FOCUS_EMOTION_POSITIVE_SCALE = 0.5
+"""正效价（用户开心）时 emotion 信号的「反凝神」幅度系数。
+- emotion 信号现在是**带符号**的：负效价 → 正 distress（推进凝神，上限 +1）；正效价 → 负值
+  （把 charge 往下拉、别打扰好心情），幅度上限为此系数。
+- 映射（正效价侧）：emotion = -(positivity × m × 此系数)，其中 positivity=max(0,valence)，
+  m = AROUSAL_FLOOR + (1-AROUSAL_FLOOR)×arousal（与 distress 侧同一 arousal 放大器，∈[0.5,1]）。
+- 取 0.5 ⇒ 正效价侧最深为 -0.5（valence=+1、arousal=1，m=1）；valence=+1、arousal=0.3 时
+  m=0.65 → emotion=-0.5×0.65=-0.325。即正效价拉力天花板只有负效价 distress 的一半。
+- 须 ∈ [0,1]；=0 关闭「开心反凝神」、退回「正效价不投票（None）」。"""
 
 FOCUS_CADENCE_BASELINE_WINDOW = 6
 """cadence 信号的基线窗口：取最近 N 条用户消息长度算中位数做基线。
@@ -2310,6 +2489,10 @@ __all__ = [
     'EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS',
     'EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS',
     'EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS',
+    'ACTIVITY_GUESS_BACKOFF_BASE_SECONDS',
+    'ACTIVITY_GUESS_BACKOFF_MULTIPLIER',
+    'ACTIVITY_GUESS_BACKOFF_CAP_SECONDS',
+    'ACTIVITY_GUESS_SIG_CACHE_SIZE',
     'PERSONA_RENDER_MAX_TOKENS',
     'REFLECTION_RENDER_MAX_TOKENS',
     'PERSONA_RENDER_ENCODING',
@@ -2331,7 +2514,16 @@ __all__ = [
     'PERSONA_VERSION_HISTORY_MAX',
     'MEMORY_LLM_HARD_TIMEOUT_SECONDS',
     'DIALOG_LLM_STREAM_TIMEOUT_SECONDS',
+    'FOCUS_THINKING_EXTRA_TOKENS',
     'LLM_OUTPUT_GUARD_MAX_TOKENS',
+    'ICEBREAKER_FREE_TEXT_INTERPRETER_TIMEOUT_SECONDS',
+    'ICEBREAKER_FREE_TEXT_OUTPUT_MAX_TOKENS',
+    'ICEBREAKER_FREE_TEXT_ASSISTANT_LINE_MAX_TOKENS',
+    'ICEBREAKER_FREE_TEXT_USER_TEXT_MAX_TOKENS',
+    'ICEBREAKER_FREE_TEXT_OPTION_LABEL_MAX_TOKENS',
+    'ICEBREAKER_FREE_TEXT_HISTORY_TEXT_MAX_TOKENS',
+    'ICEBREAKER_FREE_TEXT_HISTORY_MAX_ITEMS',
+    'ICEBREAKER_FREE_TEXT_REPLY_MAX_TOKENS',
     'MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS',
     'MEMORY_REFINE_COSINE_THRESHOLD',
     'MEMORY_REFINE_TOPK_PER_ENTRY',
@@ -2363,6 +2555,8 @@ __all__ = [
     'AGENT_PLUGIN_COARSE_MAX_TOKENS',
     'AGENT_UNIFIED_ASSESS_MAX_TOKENS',
     'AGENT_PLUGIN_FULL_MAX_TOKENS',
+    'AGENT_EXTERNAL_GATE_ENABLED',
+    'AGENT_EXTERNAL_GATE_THRESHOLD',
     'PLUGIN_INPUT_DESC_MAX_TOKENS',
     'COMPUTER_USE_MAX_TOKENS',
     'LLM_PING_MAX_TOKENS',
@@ -2373,12 +2567,14 @@ __all__ = [
     'USER_DIRECTIVE_MAX_ACTIVE',
     'ANTI_REPEAT_BG_WINDOW',
     'ANTI_REPEAT_FG_WINDOW',
+    'ANTI_REPEAT_FG_TTL_SECONDS',
     'ANTI_REPEAT_INJECT_TOP_K',
     'ANTI_REPEAT_REGEN_THRESHOLD',
     'ANTI_REPEAT_DROP_THRESHOLD',
     'ANTI_REPEAT_BM25_K1',
     'ANTI_REPEAT_BM25_B',
     'ANTI_REPEAT_MIN_DRAFT_TOKENS',
+    'ANTI_REPEAT_EXEMPT_SOURCE_TAGS',
     'AVATAR_INTERACTION_DEDUPE_MAX_ITEMS',
     'AVATAR_INTERACTION_DEDUPE_WINDOW_MS',
     'AVATAR_INTERACTION_CONTEXT_MAX_TOKENS',

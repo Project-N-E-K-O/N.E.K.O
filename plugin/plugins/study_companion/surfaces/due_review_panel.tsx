@@ -1,7 +1,7 @@
 import { useEffect, useState } from '@neko/plugin-ui';
 import type { PluginSurfaceProps } from '@neko/plugin-ui';
 import { callPlugin, errorMessage, text } from './memory_shared';
-import { ensureBrandCSS, postStudySurfaceMessage, STUDY_SURFACE_MESSAGE_TYPES } from './study_surface_utils';
+import { ensureBrandCSS, memoryItemTypeLabel, postStudySurfaceMessage, STUDY_SURFACE_MESSAGE_TYPES } from './study_surface_utils';
 import {
   getMemoryHabitStatus,
   getPomodoroStatus,
@@ -165,7 +165,7 @@ export default function DueReviewPanel(props: PluginSurfaceProps) {
           const r = Number.isFinite(Number(review.retrievability)) ? `${Math.round(Number(review.retrievability) * 100)}%` : '-';
           return (
             <div key={review.item_id} className="study-panel__row">
-              <span>{review.deck?.name || ''} / {review.item?.item_type || ''} / {r}</span>
+              <span>{review.deck?.name || ''} / {memoryItemTypeLabel(props, review.item?.item_type)} / {r}</span>
               <span>{review.item?.prompt || review.item_id}</span>
               {habitBridgeAvailable(habitStatus) && review.deck?.id ? (
                 <button type="button" disabled={busy} onClick={() => handleStartFocus(String(review.deck?.id || ''))}>

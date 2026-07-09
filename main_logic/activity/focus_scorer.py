@@ -14,8 +14,10 @@
 
 """Focus-mode signal scorer (the Focus trigger).
 
-Produces the single [0, 1] score that ``SessionStateMachine.update_focus``
-feeds into its hysteresis. Scoring is **inline-only**: it reads what the
+Produces the single scalar score that ``SessionStateMachine.update_focus``
+feeds into its hysteresis — a direct weighted sum, NOT bounded to ``[0, 1]``
+(it can reach ``sum(weights)`` ≈ 2.0 or go slightly negative on a happy turn;
+see ``_weighted_sum``). Scoring is **inline-only**: it reads what the
 user just typed (``stream_text``), never the screen. The applicable
 signals are keyword + cadence + emotion — keyword/cadence read the message
 directly, emotion reads the latest master-emotion VA reading the caller hands
@@ -28,10 +30,12 @@ cool down (faster when she spoke, slower when she stayed silent — see
 ``docs/design/focus-truename-mode.md`` and ``LLMSessionManager.
 _focus_idle_cooldown``).
 
-The score is a weighted average over the *applicable* signals
-(``FOCUS_SIGNAL_WEIGHTS`` renormalised to the present subset), so an
-absent signal (e.g. cadence before the baseline has enough samples) never
-silently drags the average toward zero.
+The score is a direct weighted sum over the *applicable* signals
+(``FOCUS_SIGNAL_WEIGHTS`` applied as absolute weights, NOT renormalised),
+so an absent signal (e.g. cadence before the baseline has enough samples)
+drops out entirely — it contributes nothing rather than dragging the sum
+toward zero. Each present signal adds ``weight × value`` straight into the
+score, so the configured weights are the literal per-signal contributions.
 
 The scorer is intentionally thin: the only state it owns is a small
 rolling buffer of recent user-message lengths for the cadence signal. One
@@ -52,8 +56,10 @@ from config.prompts.prompts_focus import scan_vulnerability_keywords
 class FocusScore:
     """Result of one scoring pass: the final score plus the per-signal breakdown.
 
-    ``signals`` holds each sub-signal's value in [0, 1], or ``None`` when
-    it didn't apply to this path — kept for diagnostics / logging so a
+    ``signals`` holds each sub-signal's value (``[0, 1]`` for keyword /
+    cadence / question, SIGNED for emotion — negative on a happy turn), or
+    ``None`` when it didn't apply to this path — kept for diagnostics /
+    logging so a
     tuner can see *why* a turn fed the accumulator a high or low score
     (the score is integrated into the leaky charge; see ``FOCUS_CHARGE_*``).
     """
@@ -94,17 +100,22 @@ class FocusScorer:
         """
         kw = self._signal_keyword(user_text)
         emotion = self._signal_emotion(emotion_reading)
+        question = self._signal_question(emotion_reading)
         cadence = self._signal_cadence(user_text)
-        # cadence amplifies distress evidence; it is NOT a trigger on its own.
-        # With keyword/emotion using positive-evidence-only (None) semantics, a
-        # lone cadence signal would renormalise to a full 1.0 — so an ordinary
-        # short reply ("ok") could enter Focus with no distress evidence at all.
-        # Gate it: when neither keyword nor emotion is present, drop cadence too.
-        if kw is None and emotion is None:
+        # cadence amplifies distress evidence; it is NOT a trigger on its own, and
+        # must NOT fire on a happy turn (emotion < 0) — a short cheerful reply
+        # should not push Focus. Gate it on POSITIVE evidence only: a present
+        # keyword, a complex question, or a distress-side emotion (> 0).
+        has_distress_evidence = (
+            kw is not None
+            or question is not None
+            or (emotion is not None and emotion > 0.0)
+        )
+        if not has_distress_evidence:
             cadence = None
 
-        signals = {"keyword": kw, "cadence": cadence, "emotion": emotion}
-        score = _weighted_average(signals, config.FOCUS_SIGNAL_WEIGHTS)
+        signals = {"keyword": kw, "cadence": cadence, "emotion": emotion, "question": question}
+        score = _weighted_sum(signals, config.FOCUS_SIGNAL_WEIGHTS)
 
         # Update the cadence baseline for this inline message.
         if user_text.strip():
@@ -118,10 +129,11 @@ class FocusScorer:
 
     # ── sub-signals ──────────────────────────────────────────────────
     # keyword / emotion are *positive distress evidence*: they return None (not
-    # 0.0) when absent, so an empty one never dilutes the other in the weighted
-    # average — a saturated keyword OR a saturated emotion reading can each
-    # trigger Focus on its own. cadence is a behavioural signal whose 0.0
-    # ("message length normal") is informative, so it keeps 0.0 in the denom.
+    # 0.0) when absent, so an empty one simply drops out of the weighted sum —
+    # a saturated keyword OR a saturated emotion reading can each trigger Focus
+    # on its own. cadence returns 0.0 ("message length normal") rather than
+    # None; with no denominator that 0.0 contributes nothing (≡ absent), so
+    # cadence only ever ADDS to the score when the length actually dropped.
     def _signal_keyword(self, user_text: str) -> Optional[float]:
         count = scan_vulnerability_keywords(user_text)
         if count <= 0:
@@ -148,13 +160,17 @@ class FocusScorer:
         return (baseline - cur) / (baseline - lo)
 
     def _signal_emotion(self, emotion_reading) -> Optional[float]:
-        """Distress signal from the master emotion VA reading.
+        """SIGNED emotion signal from the master emotion VA reading.
 
-        High arousal × negative valence → distress, the model-grade upgrade of
-        the vulnerability-keyword signal. Returns ``None`` (drops out of the
-        weighted average) when there is no reading OR no distress — a stale
-        neutral/positive reading must not dilute a current keyword-positive
-        turn, same "positive evidence only" rule as ``_signal_keyword``.
+        Negative valence → POSITIVE distress (push toward Focus, up to +1);
+        positive valence → NEGATIVE value (pull Focus down — don't intrude on a
+        good mood), down to ``-FOCUS_EMOTION_POSITIVE_SCALE`` (≈ -0.5). Both
+        sides share the same arousal amplifier ``m = floor + (1-floor)×arousal``
+        (floor = FOCUS_EMOTION_AROUSAL_FLOOR). The positive side is deliberately
+        weaker (scaled by POSITIVE_SCALE) — joy nudges away, distress pulls in
+        harder. Returns ``None`` ONLY at neutral valence (no reading / no axis /
+        valence ≈ 0) so a flat turn doesn't dilute keyword/question; a genuine
+        positive reading is a real (negative) vote, not a no-op.
         """
         if emotion_reading is None:
             return None
@@ -167,33 +183,57 @@ class FocusScorer:
             arousal = float(arousal)
         except (TypeError, ValueError):
             return None
-        # arousal ∈ [0,1] = intensity; negativity = max(0, -valence) fires ONLY
-        # in the negative-valence half (valence -1→1, 0→0, +1→0). So distress =
-        # arousal × negativity ≈ 1 for strong-negative & high-arousal, and 0 for
-        # neutral OR positive affect — neither calm, mere intensity, nor elation
-        # triggers Focus, matching the "high arousal + NEGATIVE valence" def.
-        # Focus is for vulnerability / distress.
-        negativity = max(0.0, -valence)
-        distress = max(0.0, min(1.0, arousal * negativity))
-        # No distress (neutral / positive / stale) → None, not 0.0 (see above).
-        return distress if distress > 0.0 else None
+        floor = max(0.0, min(1.0, float(getattr(config, "FOCUS_EMOTION_AROUSAL_FLOOR", 0.5))))
+        pos_scale = max(0.0, min(1.0, float(getattr(config, "FOCUS_EMOTION_POSITIVE_SCALE", 0.5))))
+        arousal = max(0.0, min(1.0, arousal))
+        m = floor + (1.0 - floor) * arousal  # arousal amplifier ∈ [floor, 1]
+        if valence < 0.0:
+            # distress: strong-negative (even low-arousal/quiet) reads high.
+            return min(1.0, -valence * m)
+        if valence > 0.0:
+            # joy: pull Focus down, capped at POSITIVE_SCALE (half the distress reach).
+            return -min(1.0, valence * m * pos_scale)
+        return None  # exactly neutral → no vote (don't dilute other signals)
+
+    def _signal_question(self, emotion_reading) -> Optional[float]:
+        """Cognitive-load bonus from the master model's ``complexity`` read — how
+        much the user is posing a COMPLEX, OBJECTIVE question (math / logic /
+        reasoning), which also merits thinking-on. Orthogonal to distress but
+        folded into the same charge. Same "positive evidence only" rule: ``None``
+        (drops out) when there is no reading or no complexity, so it never dilutes
+        an emotional turn — it only ever adds.
+        """
+        if emotion_reading is None:
+            return None
+        complexity = getattr(emotion_reading, "complexity", None)
+        if complexity is None:
+            return None
+        try:
+            complexity = float(complexity)
+        except (TypeError, ValueError):
+            return None
+        complexity = max(0.0, min(1.0, complexity))
+        return complexity if complexity > 0.0 else None
 
 
-def _weighted_average(signals: dict, weights: dict) -> float:
-    """Weighted average over applicable (non-None) signals, weights renormalised.
+def _weighted_sum(signals: dict, weights: dict) -> float:
+    """Direct weighted sum over applicable (non-None) signals — NO denominator.
 
-    A signal whose value is ``None`` (not applicable to this path) is
-    excluded from both numerator and denominator, so it neither counts as
-    zero nor inflates the result. Returns 0.0 when no signal applies.
+    Each present signal contributes ``weight × value`` as an ABSOLUTE amount;
+    the weights are the literal per-signal contributions, not renormalised. A
+    signal whose value is ``None`` (not applicable to this path) drops out — it
+    contributes nothing, neither dragging the score toward zero nor inflating
+    it. Returns 0.0 when no signal applies.
+
+    Without a denominator the sum is not renormalised (all signals saturated ⇒
+    ``sum(weights.values())``, which may exceed 1.0); the charge accumulator's
+    ``FOCUS_CHARGE_CAP`` clamps the downstream charge, and a signal that returns
+    exactly ``0.0`` (e.g. cadence "length normal") is equivalent to being absent
+    here.
     """
-    num = 0.0
-    den = 0.0
+    total = 0.0
     for name, val in signals.items():
         if val is None:
             continue
-        w = float(weights.get(name, 0.0))
-        num += w * float(val)
-        den += w
-    if den <= 0.0:
-        return 0.0
-    return num / den
+        total += float(weights.get(name, 0.0)) * float(val)
+    return total

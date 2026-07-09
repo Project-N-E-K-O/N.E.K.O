@@ -4,7 +4,7 @@
     const HEARTBEAT_INTERVAL_MS = 15000;
     const FAST_HEARTBEAT_DELAY_MS = 1200;
     const HOME_TUTORIAL_START_WAIT_TIMEOUT_MS = 15000;
-    const HOME_TUTORIAL_STORAGE_KEY_FALLBACK = 'neko_tutorial_home';
+    const HOME_TUTORIAL_STORAGE_KEY = 'neko_tutorial_home_yui_v1';
     const HOME_TUTORIAL_RESET_EVENT = 'neko:home-tutorial-reset';
     const HOME_TUTORIAL_RESET_STORAGE_EVENT_KEY = 'neko_home_tutorial_reset_event';
     const HOME_TUTORIAL_RESET_CHANNEL = 'neko_tutorial_events';
@@ -656,7 +656,6 @@
                 if (restored && canRestoreAgentSnapshot(restoreToken)) {
                     clearPersistedAgentRestoreSnapshot(persisted.token);
                     syncAgentFlagsUi();
-                    console.log('[TutorialPrompt] restored interrupted agent suppression:', reason || 'init');
                 }
             })
             .catch(function (error) {
@@ -713,19 +712,16 @@
             }
         }
         if (typeof window.getTutorialStorageKeyForPage === 'function') {
-            addKey(window.getTutorialStorageKeyForPage('home'));
+            addKey(window.getTutorialStorageKeyForPage('home_yui_v1'));
         }
-        if (manager && manager.STORAGE_KEY_PREFIX) {
-            addKey(manager.STORAGE_KEY_PREFIX + 'home');
-        }
-        addKey(HOME_TUTORIAL_STORAGE_KEY_FALLBACK);
+        addKey(HOME_TUTORIAL_STORAGE_KEY);
 
         return keys;
     }
 
     function getHomeTutorialStorageKey() {
         const keys = getHomeTutorialStorageKeys();
-        return keys.length ? keys[0] : HOME_TUTORIAL_STORAGE_KEY_FALLBACK;
+        return keys.length ? keys[0] : HOME_TUTORIAL_STORAGE_KEY;
     }
 
     function markHomeTutorialStorageSeen() {

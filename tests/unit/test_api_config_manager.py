@@ -51,6 +51,7 @@ class TestKeybookSaveLoad:
         'assistApiKeySilicon': 'ASSIST_API_KEY_SILICON',
         'assistApiKeyGemini': 'ASSIST_API_KEY_GEMINI',
         'assistApiKeyKimi': 'ASSIST_API_KEY_KIMI',
+        'assistApiKeyKimiCode': 'ASSIST_API_KEY_KIMI_CODE',
         'assistApiKeyDeepseek': 'ASSIST_API_KEY_DEEPSEEK',
         'assistApiKeyDoubao': 'ASSIST_API_KEY_DOUBAO',
         'assistApiKeyMinimax': 'ASSIST_API_KEY_MINIMAX',
@@ -97,7 +98,8 @@ class TestKeybookSaveLoad:
         # 其余所有槽位保持空，不应被 CORE_API_KEY 污染
         for upper in ['ASSIST_API_KEY_GLM', 'ASSIST_API_KEY_STEP',
                        'ASSIST_API_KEY_SILICON', 'ASSIST_API_KEY_GEMINI',
-                       'ASSIST_API_KEY_KIMI', 'ASSIST_API_KEY_DEEPSEEK',
+                       'ASSIST_API_KEY_KIMI', 'ASSIST_API_KEY_KIMI_CODE',
+                       'ASSIST_API_KEY_DEEPSEEK',
                        'ASSIST_API_KEY_DOUBAO', 'ASSIST_API_KEY_GROK',
                        'ASSIST_API_KEY_CLAUDE', 'ASSIST_API_KEY_OPENROUTER',
                        'ASSIST_API_KEY_QWEN_INTL',
@@ -544,6 +546,34 @@ class TestAssistFollowsCore:
         assert response['coreApi'] == 'free'
         assert response['assistApi'] == 'free'
         assert response['assistApiKeyQwen'] == ''
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_get_core_config_api_returns_kimi_code_key(self, monkeypatch):
+        """GET must echo back assistApiKeyKimiCode; otherwise the frontend reads
+        an empty value and a re-save overwrites the stored secret."""
+        from main_routers import config_router
+
+        async def fake_read_json_async(_path):
+            return {
+                'coreApiKey': 'sk-core',
+                'coreApi': 'qwen',
+                'assistApi': 'kimi_code',
+                'assistApiKeyKimiCode': 'sk-kimi-code-stored',
+            }
+
+        class FakeConfigManager:
+            def get_runtime_config_path(self, _filename):
+                return 'core_config.json'
+
+        monkeypatch.setattr(config_router, 'read_json_async', fake_read_json_async)
+        monkeypatch.setattr(config_router, 'get_config_manager', lambda: FakeConfigManager())
+
+        response = await config_router.get_core_config_api()
+
+        assert response['success'] is True
+        assert response['assistApi'] == 'kimi_code'
+        assert response['assistApiKeyKimiCode'] == 'sk-kimi-code-stored'
 
     @pytest.mark.unit
     def test_free_core_defaults_assist_to_free_when_key_missing(self, config_manager):
@@ -1718,6 +1748,98 @@ class TestGptsovitsEnabledSaveMigration:
         assert saved.get('gptsovitsEnabled') is True
         config_manager._core_config_cache = None
         assert config_manager.get_core_config()['GPTSOVITS_ENABLED'] is True
+
+    @pytest.mark.unit
+    def test_update_core_config_persists_kimi_code_assist_key(self, config_manager, monkeypatch):
+        config_router, asyncio = self._neutralize_side_effects(monkeypatch)
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'kimi_code',
+            'enableCustomApi': True,
+        })
+
+        resp = asyncio.run(config_router.update_core_config(self._FakeRequest({
+            'enableCustomApi': True,
+            'coreApi': 'qwen',
+            'assistApi': 'kimi_code',
+            'assistApiKeyKimiCode': 'sk-kimi-code-test',
+        })))
+        assert resp.get('success') is True
+
+        saved = config_manager.load_json_config('core_config.json', {})
+        assert saved.get('assistApiKeyKimiCode') == 'sk-kimi-code-test'
+        config_manager._core_config_cache = None
+        assert config_manager.get_core_config()['ASSIST_API_KEY_KIMI_CODE'] == 'sk-kimi-code-test'
+
+    @pytest.mark.unit
+    def test_get_model_api_config_returns_kimi_code_provider_type(self, config_manager):
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'kimi_code',
+            'assistApiKeyKimiCode': 'sk-kimi-code-test',
+            'enableCustomApi': False,
+        })
+
+        config_manager._core_config_cache = None
+        api_config = config_manager.get_model_api_config('conversation')
+
+        assert api_config['model'] == 'kimi-for-coding'
+        assert api_config['base_url'] == 'https://api.kimi.com/coding'
+        assert api_config['api_key'] == 'sk-kimi-code-test'
+        assert api_config['provider_type'] == 'anthropic'
+
+    @pytest.mark.unit
+    def test_kimi_code_agent_falls_back_to_vision_model(self, config_manager):
+        # kimi_code 的 agent 槽和其它 provider 一样回退到 VISION_MODEL
+        # （= kimi-for-coding）。曾经用 AGENT_MODEL_DISABLED 把它单独关掉，
+        # 但 claude 同样走 Anthropic CUA 路径却未关，门控是不一致的半成品；
+        # 已 revert，剩余 Anthropic 路径问题在 follow-up issue 跟踪。
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'kimi_code',
+            'assistApiKeyKimiCode': 'sk-kimi-code-test',
+            'enableCustomApi': False,
+        })
+
+        config_manager._core_config_cache = None
+        api_config = config_manager.get_model_api_config('agent')
+
+        assert api_config['model'] == 'kimi-for-coding'
+        assert api_config['provider_type'] == 'anthropic'
+
+    @pytest.mark.unit
+    def test_provider_type_follow_cycle_does_not_recurse(self, config_manager):
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'kimi_code',
+            'assistApiKeyKimiCode': 'sk-kimi-code-test',
+            'enableCustomApi': True,
+            'conversationModelProvider': 'follow_summary',
+            'summaryModelProvider': 'follow_conversation',
+        })
+
+        summary_config = config_manager.get_model_api_config('summary')
+        conversation_config = config_manager.get_model_api_config('conversation')
+
+        assert summary_config['provider_type'] == 'anthropic'
+        assert conversation_config['provider_type'] == 'anthropic'
+
+    @pytest.mark.unit
+    def test_empty_core_fallback_provider_type_uses_core_profile(self, config_manager):
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'coreApiKey': 'sk-core-qwen',
+            'assistApi': 'kimi_code',
+            'assistApiKeyKimiCode': 'sk-kimi-code-test',
+            'enableCustomApi': False,
+            'omniModelProvider': '',
+        })
+
+        realtime_config = config_manager.get_model_api_config('realtime')
+
+        assert realtime_config['provider_type'] == 'openai_compatible'
+        assert realtime_config['api_key'] == 'sk-core-qwen'
+        assert 'dashscope' in realtime_config['base_url']
 
 
 if __name__ == '__main__':

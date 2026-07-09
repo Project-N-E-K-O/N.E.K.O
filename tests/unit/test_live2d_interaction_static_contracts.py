@@ -53,3 +53,19 @@ def test_live2d_does_not_switch_display_during_drag_before_mouseup():
 
     assert "maybeSwitchDisplayDuringDrag" not in source
     assert "liveDisplaySwitchPromise" not in source
+
+
+def test_live2d_niri_physical_crop_mouse_tracking_splits_virtual_and_local_coords():
+    source = _live2d_source()
+
+    assert "function getLive2DNiriPetPointerCoordinates(event)" in source
+    assert "typeof api.isActive === 'function' && !api.isActive()" in source
+    assert "typeof api.getEventCoordinates === 'function'" in source
+    assert "const pointerCoords = getLive2DNiriPetPointerCoordinates(event);" in source
+    assert "const pointer = pointerCoords.virtual;" in source
+    assert "const localPointer = pointerCoords.local;" in source
+    assert "this._lastMouseLocalX = localPointer.x;" in source
+    assert "this._lastMouseLocalY = localPointer.y;" in source
+    assert "isLive2DPointInRect(localPointer, lr, 0)" in source
+    assert "isLive2DPointInRect(localPointer, br, 0)" in source
+    assert "isPointerNearFloatingButtons()" in source

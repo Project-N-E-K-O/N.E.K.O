@@ -18,12 +18,12 @@ body.subtitle-window-host {
     --subtitle-panel-bg-rgb: 255, 255, 255;
     --subtitle-panel-text: #080a0d;
     --subtitle-text-fill: #05070a;
-    --subtitle-text-stroke: rgba(255, 255, 255, 0.78);
+    --subtitle-text-stroke: rgba(255, 255, 255, 0.58);
     --subtitle-placeholder-fill: rgba(5, 7, 10, 0.68);
-    --subtitle-placeholder-stroke: rgba(255, 255, 255, 0.72);
+    --subtitle-placeholder-stroke: rgba(255, 255, 255, 0.52);
     --subtitle-panel-shadow: none;
-    --subtitle-panel-text-shadow: 0 1px 2px rgba(255, 255, 255, 0.95),
-        0 0 8px rgba(255, 255, 255, 0.78);
+    --subtitle-panel-text-shadow: 0 1px 1px rgba(255, 255, 255, 0.72),
+        0 0 3px rgba(255, 255, 255, 0.36);
     --subtitle-control-bg: rgba(255, 255, 255, 0.68);
     --subtitle-control-hover-bg: rgba(255, 255, 255, 0.92);
     --subtitle-control-border: rgba(36, 43, 49, 0.14);
@@ -98,12 +98,12 @@ html.dark #subtitle-display {
     --subtitle-panel-bg-rgb: 18, 20, 23;
     --subtitle-panel-text: #ffffff;
     --subtitle-text-fill: #ffffff;
-    --subtitle-text-stroke: rgba(0, 0, 0, 0.46);
+    --subtitle-text-stroke: rgba(0, 0, 0, 0.34);
     --subtitle-placeholder-fill: rgba(255, 255, 255, 0.82);
-    --subtitle-placeholder-stroke: rgba(0, 0, 0, 0.5);
+    --subtitle-placeholder-stroke: rgba(0, 0, 0, 0.34);
     --subtitle-panel-shadow: none;
-    --subtitle-panel-text-shadow: 0 1px 3px rgba(0, 0, 0, 0.52),
-        0 0 8px rgba(0, 0, 0, 0.3);
+    --subtitle-panel-text-shadow: 0 1px 2px rgba(0, 0, 0, 0.38),
+        0 0 3px rgba(0, 0, 0, 0.18);
     --subtitle-control-bg: rgba(25, 28, 32, 0.72);
     --subtitle-control-hover-bg: rgba(44, 49, 55, 0.92);
     --subtitle-control-border: rgba(255, 255, 255, 0.14);
@@ -324,7 +324,7 @@ body.subtitle-window-host.subtitle-linux-host #subtitle-display {
     white-space: pre-wrap;
     overflow-wrap: break-word;
     text-shadow: var(--subtitle-panel-text-shadow);
-    -webkit-text-stroke: 0.35px var(--subtitle-text-stroke);
+    -webkit-text-stroke: 0.22px var(--subtitle-text-stroke);
     paint-order: stroke fill;
     pointer-events: auto;
 }
@@ -389,7 +389,7 @@ body.subtitle-window-host.subtitle-linux-host #subtitle-display {
     white-space: nowrap;
     color: var(--subtitle-text-fill);
     text-shadow: var(--subtitle-panel-text-shadow);
-    -webkit-text-stroke: 0.35px var(--subtitle-text-stroke);
+    -webkit-text-stroke: 0.22px var(--subtitle-text-stroke);
     paint-order: stroke fill;
 }
 
@@ -407,7 +407,7 @@ body.subtitle-window-host.subtitle-linux-host #subtitle-display {
     content: attr(data-subtitle-placeholder);
     display: inline-block;
     color: var(--subtitle-placeholder-fill);
-    -webkit-text-stroke: 0.3px var(--subtitle-placeholder-stroke);
+    -webkit-text-stroke: 0.2px var(--subtitle-placeholder-stroke);
     text-shadow: var(--subtitle-panel-text-shadow);
     opacity: 0.82;
 }

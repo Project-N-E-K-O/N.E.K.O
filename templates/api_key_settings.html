@@ -12,6 +12,8 @@
     <link rel="stylesheet" href="/static/css/window_controls.css?v={{ static_asset_version }}">
     <link rel="stylesheet" href="/static/css/dark-mode.css?v={{ static_asset_version }}">
     <link rel="stylesheet" href="/static/css/yui-guide.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/libs/driver.min.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/css/tutorial-styles.css?v={{ static_asset_version }}">
     <script src="/static/theme-manager.js?v={{ static_asset_version }}"></script>
     <script src="/static/js/window_controls.js?v={{ static_asset_version }}" defer></script>
 </head>
@@ -133,7 +135,7 @@
                                         <div class="tooltip-content">
                                             <strong data-i18n="api.coreApiTitle">核心API负责对话功能：</strong><br>
                                             • <span data-i18n="api.freeVersionCore">免费版：完全免费，无需API
-                                                Key，但不支持自定义语音、Agent模式和视频对话</span><br>
+                                                Key，但不支持视频对话</span><br>
                                             • <span data-i18n="api.aliCore">阿里：有免费额度，功能全面</span><br>
                                             • <span data-i18n="api.glmCore">智谱：有免费额度，但需充值1元，内置联网搜索功能</span><br>
                                             • <span data-i18n="api.stepCore">阶跃星辰：完全免费，但不支持视频</span><br>
@@ -165,20 +167,21 @@
                         <h3>
                             <img src="/static/icons/summary_model_icon.png" alt=""
                                 style="width: 48px; height: 48px; vertical-align: middle; margin-right: 8px;">
-                            <span data-i18n="api.assistApiProvider">辅助API（记忆管理/自定义语音/文本聊天）</span>
+                            <span data-i18n="api.assistApiProvider">辅助API（记忆/Agent/文本聊天）</span>
                             <div class="tooltip-container">
                                 <span class="tooltip-icon">?</span>
                                 <div class="tooltip-content">
-                                    <strong data-i18n="api.assistApiTitle">辅助API负责记忆管理和自定义语音：</strong><br>
-                                    • <span data-i18n="api.freeVersionAssist">免费版：完全免费，无需API Key，但不支持自定义语音</span><br>
-                                    • <span data-i18n="api.aliAssist">阿里：推荐选择，支持自定义语音</span><br>
+                                    <strong data-i18n="api.assistApiTitle">辅助API负责记忆管理、文本对话和Agent模式：</strong><br>
+                                    • <span data-i18n="api.freeVersionAssist">免费版：完全免费，无需API Key，Agent 有免费配额</span><br>
+                                    • <span data-i18n="api.aliAssist">阿里：推荐选择，功能最全面，支持Agent模式</span><br>
                                     • <span data-i18n="api.glmAssist">智谱：支持Agent模式</span><br>
                                     • <span data-i18n="api.stepAssist">阶跃星辰：价格相对便宜</span><br>
                                     • <span data-i18n="api.siliconAssist">硅基流动：性价比高</span><br>
                                     • <span data-i18n="api.openaiAssist">OpenAI：记忆管理能力强</span><br>
                                     • <span data-i18n="api.geminiAssist">Gemini：智能和性价比极高，但国内版不支持</span><br>
                                     • <span data-i18n="api.kimiAssist">Kimi：国内可用，支持长上下文和视觉</span><br>
-                                    <strong data-i18n="api.assistApiNote">注意：只有阿里支持自定义语音功能</strong>
+                                    • <span data-i18n="api.kimiCodeAssist">Kimi Code：Anthropic Messages 兼容格式，适合代码与长文本任务</span><br>
+                                    <strong data-i18n="api.assistApiNote">注意：不建议使用智谱和阶跃星辰。</strong>
                                 </div>
                             </div>
                         </h3>
@@ -876,13 +879,18 @@
     <script src="/static/tutorial/core/round-prelude-controller.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/core/lifecycle-state-store.js?v={{ static_asset_version }}"></script>
     <!-- 通用教程管理器 -->
+    <script src="/static/libs/driver.min.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/core/universal-manager.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/page-tutorial-manager.js?v={{ static_asset_version }}"></script>
 
     <!-- 初始化 -->
     <script>
         document.addEventListener('DOMContentLoaded', function () {
             if (typeof initUniversalTutorialManager === 'function') {
                 initUniversalTutorialManager();
+            }
+            if (typeof initPageTutorialManager === 'function') {
+                initPageTutorialManager();
             }
         });
     </script>

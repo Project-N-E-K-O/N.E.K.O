@@ -66,6 +66,7 @@ function compileHostedTsx(source: string, dependencies: HostedTsxDependency[] = 
 function buildPayload(options: BuildHostedTsxDocumentOptions) {
   return {
     plugin: options.context?.plugin || { id: options.pluginId },
+    host: { origin: window.location.origin },
     surface: options.surface,
     state: (options.context?.state && typeof options.context.state === 'object') ? options.context.state : {},
     stateSchema: options.context?.state_schema || null,
@@ -104,10 +105,16 @@ ${escapeScriptContent(uiKit.runtime)}
     if (!window.NekoUiKit.api || typeof window.NekoUiKit.api.call !== 'function' || typeof window.NekoUiKit.api.refresh !== 'function') {
       throw new Error('N.E.K.O UI Kit failed to initialize the hosted API bridge.');
     }
+    function __hostedTargetOrigin() {
+      const host = __NEKO_PAYLOAD && typeof __NEKO_PAYLOAD.host === 'object' ? __NEKO_PAYLOAD.host : {};
+      const origin = typeof host.origin === 'string' ? host.origin.trim() : '';
+      return origin || window.location.origin;
+    }
     function __normalizeHostedPayload(context) {
       const next = context && typeof context === 'object' ? context : {};
       return {
         plugin: next.plugin || __NEKO_PAYLOAD.plugin,
+        host: next.host || __NEKO_PAYLOAD.host,
         surface: next.surface || __NEKO_PAYLOAD.surface,
         state: next.state && typeof next.state === 'object' ? next.state : {},
         stateSchema: next.state_schema || next.stateSchema || null,
@@ -122,6 +129,7 @@ ${escapeScriptContent(uiKit.runtime)}
     function __hostedProps() {
       return {
         plugin: __NEKO_PAYLOAD.plugin,
+        host: __NEKO_PAYLOAD.host,
         surface: __NEKO_PAYLOAD.surface,
         state: __NEKO_PAYLOAD.state,
         stateSchema: __NEKO_PAYLOAD.stateSchema,
@@ -136,28 +144,69 @@ ${escapeScriptContent(uiKit.runtime)}
         useLocalState: window.NekoUiKit.useLocalState,
       };
     }
-    function __showHostedError(error) {
-      const message = error && error.stack ? error.stack : String(error);
-      const meta = {
+    function __hostedSurfaceMeta(extra) {
+      return {
         pluginId: __NEKO_PAYLOAD.plugin && (__NEKO_PAYLOAD.plugin.id || __NEKO_PAYLOAD.plugin.plugin_id),
         surface: __NEKO_PAYLOAD.surface && (__NEKO_PAYLOAD.surface.kind + ':' + __NEKO_PAYLOAD.surface.id),
         entry: __NEKO_PAYLOAD.surface && __NEKO_PAYLOAD.surface.entry,
+        ...(extra || {}),
       };
+    }
+    function __serializeHostedConsoleArg(arg) {
+      if (arg instanceof Error) return { name: arg.name, message: arg.message, stack: arg.stack };
+      if (arg === null || arg === undefined) return arg;
+      if (typeof arg === 'string' || typeof arg === 'number' || typeof arg === 'boolean') return arg;
+      try { return JSON.parse(JSON.stringify(arg)); } catch (_) { return String(arg); }
+    }
+    function __postHostedDiagnostic(type, payload) {
+      try {
+        parent.postMessage({ type, payload }, __hostedTargetOrigin());
+      } catch (_) {}
+    }
+    function __installHostedConsoleBridge() {
+      if (window.__NekoHostedConsoleBridgeInstalled) return;
+      window.__NekoHostedConsoleBridgeInstalled = true;
+      ['debug', 'log', 'info', 'warn', 'error'].forEach((level) => {
+        const original = console[level] && console[level].bind(console);
+        console[level] = function(...args) {
+          try {
+            __postHostedDiagnostic('neko-hosted-surface-console', {
+              level,
+              args: args.map(__serializeHostedConsoleArg),
+              surface: __hostedSurfaceMeta(),
+              timestamp: new Date().toISOString(),
+            });
+          } catch (_) {}
+          if (original) original(...args);
+        };
+      });
+    }
+    function __showHostedError(error) {
+      const message = error && error.stack ? error.stack : String(error);
+      const meta = __hostedSurfaceMeta();
       try {
         console.error('[plugin-ui] fatal surface render error', { ...meta, message, error });
       } catch (_) {}
       const root = document.getElementById('root');
       if (root) window.NekoUiKit.render(window.NekoUiKit.h('div', { className: 'neko-error', role: 'alert' },
-        window.NekoUiKit.h('strong', null, '插件界面渲染失败'),
-        window.NekoUiKit.h('pre', null, message),
-        window.NekoUiKit.h('div', { className: 'neko-error-actions' },
-          window.NekoUiKit.h('button', { className: 'neko-button', type: 'button', onClick: () => window.__NekoRenderHostedSurface && window.__NekoRenderHostedSurface() }, '重新渲染'),
-          window.NekoUiKit.h('button', { className: 'neko-button', type: 'button', onClick: () => navigator.clipboard && navigator.clipboard.writeText(message).catch(() => {}) }, '复制错误'),
-          window.NekoUiKit.h('button', { className: 'neko-button', type: 'button', onClick: () => parent.postMessage({ type: 'neko-hosted-surface-open-logs', payload: meta }, '*') }, '查看日志')
-        ),
-        window.NekoUiKit.h('div', { className: 'neko-error-meta' }, JSON.stringify(meta))
-      ), root);
-      parent.postMessage({ type: 'neko-hosted-surface-error', payload: { message, fatal: true, scope: 'surface.render', details: meta } }, '*');
+          window.NekoUiKit.h('strong', null, '插件界面渲染失败'),
+          window.NekoUiKit.h('pre', null, message),
+          window.NekoUiKit.h('div', { className: 'neko-error-actions' },
+            window.NekoUiKit.h('button', { className: 'neko-button', type: 'button', onClick: () => window.__NekoRenderHostedSurface && window.__NekoRenderHostedSurface() }, '重新渲染'),
+            window.NekoUiKit.h('button', { className: 'neko-button', type: 'button', onClick: () => navigator.clipboard && navigator.clipboard.writeText(message).catch(() => {}) }, '复制错误'),
+            window.NekoUiKit.h('button', { className: 'neko-button', type: 'button', onClick: () => parent.postMessage({ type: 'neko-hosted-surface-open-logs', payload: meta }, __hostedTargetOrigin()) }, '查看日志')
+          ),
+          window.NekoUiKit.h('div', { className: 'neko-error-meta' }, JSON.stringify(meta))
+        ), root);
+      __postHostedDiagnostic('neko-hosted-surface-error', {
+        message,
+        fatal: true,
+        scope: 'surface.render',
+        details: meta,
+        surface: meta,
+        code: error && error.code,
+        status: error && error.status,
+      });
     }
     window.__NekoRefreshHostedPayload = function(context) {
       __NEKO_PAYLOAD = __normalizeHostedPayload(context);
@@ -167,6 +216,7 @@ ${escapeScriptContent(uiKit.runtime)}
       }
       return __NEKO_PAYLOAD;
     };
+    __installHostedConsoleBridge();
     try {
 ${escapeScriptContent(compiled)}
       if (typeof __Panel !== 'function') throw new Error('Hosted TSX must export a default function component.');

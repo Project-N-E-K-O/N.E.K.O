@@ -6,7 +6,7 @@ Miscellaneous system endpoints for emotion analysis, file utilities, screenshots
 
 ## Emotion analysis
 
-### `POST /api/analyze_emotion`
+### `POST /api/emotion/analysis`
 
 Analyze the emotional tone of text.
 
@@ -35,23 +35,25 @@ Find the first image file in a directory.
 
 **Query:** `directory` — Directory path to search.
 
-### `GET /api/proxy-image`
+### `GET /api/meme/proxy-image`
 
-Proxy an image request to bypass CORS restrictions.
+Proxy a remote image (e.g. a meme) to bypass CORS restrictions, with SSRF protection and caching.
 
-**Query:** `url` — Image URL to proxy.
+**Query:** `url` — Remote image URL to proxy (must be http/https).
+
+### `GET /api/steam/proxy-image`
+
+Proxy access to a local image file (notably the Steam Workshop directory), supporting absolute and relative paths.
+
+**Query:** `image_path` — Local file path to the image.
 
 ## Steam achievements
 
-### `POST /api/steam_achievement`
+### `POST /api/steam/set-achievement-status/{name}`
 
-Unlock a Steam achievement.
+Unlock a Steam achievement. The achievement name is passed as a path parameter `{name}`.
 
-**Body:**
-
-```json
-{ "achievement_id": "ACHIEVEMENT_NAME" }
-```
+**Path parameter:** `name` — The Steam achievement name (e.g. `ACH_FIRST_DIALOGUE`).
 
 ## Proactive chat
 
@@ -68,22 +70,38 @@ Generate a proactive message from the character (used for idle conversation).
 }
 ```
 
+**Response:** `action` is `chat` when a proactive line is delivered and `pass` when the
+turn is skipped. Proactive `pass`/`chat`/error responses include a stable
+machine-readable `reason_code`, such as `CHAT_DELIVERED`, `PASS_BUSY`,
+`PASS_SOURCE_EMPTY`, `PASS_DUPLICATE`, `DELIVERY_PREEMPTED`, or `ERROR_TIMEOUT`.
+They also include `stage`, a coarse process stage such as `entry_guard`,
+`activity_gate`, `source_selection`, `model_decision`, `generation`, `dedup`,
+`delivery`, or `runtime_error`.
+
 ::: info
 Proactive messages are rate-limited: maximum 10 per character per hour.
 :::
 
-## Web screening
+::: info
+Internally, proactive chat runs a two-phase pipeline: a Phase 1 LLM call screens candidate web content (and extracts music/meme keywords) before the Phase 2 persona-aware reply is generated. There is no separately addressable web-screening endpoint.
+:::
 
-### `POST /api/web_screening`
+## Screenshots
 
-Screen web content through AI review (for content filtering and relevance ranking).
+### `POST /api/screenshot`
 
-**Body:** Web content data with screening mode.
+Backend screenshot fallback: when all frontend screen-capture APIs fail, the backend captures the local screen with pyautogui. Loopback-only; disabled when the backend is configured as remote.
 
-## Screenshot analysis
+**Response:** `{ "success": true, "data": "data:image/jpeg;base64,...", "size": <bytes> }`
 
-### `POST /api/screenshot_analysis`
+### `POST /api/screenshot/interactive`
 
-Analyze a screenshot using a vision model.
+System-native interactive (region-select) screenshot, preferred by the chat screenshot button. macOS uses `screencapture` region selection; other platforms delegate to the frontend. Loopback-only.
 
-**Body:** Base64-encoded image data with optional context.
+**Response:** A JSON envelope (not a raw DataURL).
+
+```json
+{ "success": true, "data": "data:image/jpeg;base64,...", "size": <bytes> }
+```
+
+On a canceled selection: `{ "success": false, "canceled": true }`. On a non-localhost / remote-configured backend: `{ "success": false, "error": "..." }`.

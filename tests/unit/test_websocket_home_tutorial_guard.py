@@ -1,42 +1,42 @@
 from pathlib import Path
 
-from main_routers import websocket_router
-
 
 WEBSOCKET_ROUTER_PATH = Path(__file__).resolve().parents[2] / "main_routers" / "websocket_router.py"
 
 
-def test_home_tutorial_greeting_guard_expires(monkeypatch):
-    lanlan_name = "TestCat"
-    monkeypatch.setitem(
-        websocket_router._home_tutorial_blocking_greeting,
-        lanlan_name,
-        (True, 100.0),
-    )
-
-    monkeypatch.setattr(websocket_router.time, "time", lambda: 120.0)
-    assert websocket_router._is_home_tutorial_blocking_greeting(lanlan_name) is True
-
-    monkeypatch.setattr(websocket_router.time, "time", lambda: 200.1)
-    assert websocket_router._is_home_tutorial_blocking_greeting(lanlan_name) is False
-    assert lanlan_name not in websocket_router._home_tutorial_blocking_greeting
+def _read_router() -> str:
+    return WEBSOCKET_ROUTER_PATH.read_text(encoding="utf-8")
 
 
-def test_home_tutorial_greeting_guard_false_state_does_not_block(monkeypatch):
-    lanlan_name = "TestCat"
-    monkeypatch.setitem(
-        websocket_router._home_tutorial_blocking_greeting,
-        lanlan_name,
-        (False, 100.0),
-    )
+def test_home_tutorial_greeting_guard_is_removed_from_backend():
+    source = _read_router()
 
-    monkeypatch.setattr(websocket_router.time, "time", lambda: 120.0)
-    assert websocket_router._is_home_tutorial_blocking_greeting(lanlan_name) is False
+    assert "_home_tutorial_blocking_greeting" not in source
+    assert "_is_home_tutorial_blocking_greeting" not in source
+    assert "home_tutorial_state" not in source
+    assert "blocking_greeting" not in source
+    assert "skipped by home tutorial guard" not in source
 
 
-def test_tutorial_release_reason_does_not_block_released_greeting():
-    source = WEBSOCKET_ROUTER_PATH.read_text(encoding="utf-8")
+def test_backend_greeting_check_no_longer_depends_on_tutorial_state():
+    source = _read_router()
+    greeting_block = source.split('elif action == "greeting_check":', 1)[1].split(
+        'elif action == "cat_greeting_check":',
+        1,
+    )[0]
 
-    assert "_is_tutorial_release_greeting_reason" not in source
-    assert "skipped after tutorial release" not in source
-    assert "new-user icebreaker owns this slot" not in source
+    assert "_publish_agent_intent_restore_signal(lanlan_name)" in greeting_block
+    assert "_is_home_tutorial_blocking_greeting" not in greeting_block
+    assert "is_switch = message.get(\"is_switch\", False)" in greeting_block
+    assert "greeting_reason = str(message.get(\"reason\")" in greeting_block
+
+
+def test_backend_cat_greeting_check_no_longer_depends_on_tutorial_state():
+    source = _read_router()
+    cat_block = source.split('elif action == "cat_greeting_check":', 1)[1].split(
+        'elif action == "submit_tool_result":',
+        1,
+    )[0]
+
+    assert "_is_home_tutorial_blocking_greeting" not in cat_block
+    assert "cat_duration = float(message.get(\"cat_duration_seconds\"" in cat_block

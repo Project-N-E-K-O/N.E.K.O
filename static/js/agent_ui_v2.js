@@ -54,9 +54,32 @@
         };
         return map[key] || key;
     };
-    const setStatus = (msg) => {
+    const isTutorialAgentStatusLocked = () => {
+        if (window.isInTutorial !== true) return false;
+        if (window.isNekoHomeTutorialPending === true) return true;
+        if (window.universalTutorialManager && window.universalTutorialManager.isTutorialRunning === true) return true;
+        if (typeof window.isNekoHomeTutorialInteractionLocked === 'function') {
+            try {
+                if (window.isNekoHomeTutorialInteractionLocked() === true) return true;
+            } catch (_) {}
+        }
+        if (
+            window.NekoHomeTutorialFeatureController
+            && typeof window.NekoHomeTutorialFeatureController.isActive === 'function'
+        ) {
+            try {
+                if (window.NekoHomeTutorialFeatureController.isActive() === true) return true;
+            } catch (_) {}
+        }
+        return false;
+    };
+    const setStatus = (msg, options) => {
         const { status } = el();
-        status.forEach(s => { if (s) s.textContent = msg || ''; });
+        const shouldStabilizeTutorialText = options
+            && options.stabilizeTutorialText === true
+            && isTutorialAgentStatusLocked();
+        const text = shouldStabilizeTutorialText ? 'NekoClaw server ready' : (msg || '');
+        status.forEach(s => { if (s) s.textContent = text; });
     };
     const currentLanlanName = () => {
         const fromConfig = window.lanlan_config && typeof window.lanlan_config.lanlan_name === 'string'
@@ -321,7 +344,9 @@
                 });
                 sync(list);
             });
-            setStatus(window.t ? window.t('agent.status.connecting') : 'Agent状态同步中...');
+            setStatus(window.t ? window.t('agent.status.connecting') : 'Agent状态同步中...', {
+                stabilizeTutorialText: true
+            });
             return;
         }
 
@@ -430,13 +455,21 @@
             c => c && typeof c.reason === 'string' && c.reason.includes('PENDING')
         );
         if (state.globalBusy) {
-            setStatus(window.t ? window.t('settings.toggles.checking') : '已接受操作，切换中...');
+            setStatus(window.t ? window.t('settings.toggles.checking') : '已接受操作，切换中...', {
+                stabilizeTutorialText: true
+            });
         } else if (anyPending) {
-            setStatus(window.t ? window.t('agent.status.connectivityCheck') : 'Agent LLM 连接检查中...');
+            setStatus(window.t ? window.t('agent.status.connectivityCheck') : 'Agent LLM 连接检查中...', {
+                stabilizeTutorialText: true
+            });
         } else if (!analyzerEnabled) {
-            setStatus(window.t ? window.t('agent.status.ready') : 'Agent服务器就绪');
+            setStatus(window.t ? window.t('agent.status.ready') : 'Agent服务器就绪', {
+                stabilizeTutorialText: true
+            });
         } else {
-            setStatus(window.t ? window.t('agent.status.enabled') : 'Agent模式已开启');
+            setStatus(window.t ? window.t('agent.status.enabled') : 'Agent模式已开启', {
+                stabilizeTutorialText: true
+            });
         }
         state.suppressChange = false;
 

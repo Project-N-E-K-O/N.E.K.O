@@ -53,7 +53,7 @@ HARNESS_HTML = """
 """
 
 
-def test_jukebox_close_hides_window_without_destroying_dom():
+def test_jukebox_close_fully_closes_window_and_cleans_dom():
     match = re.search(
         r"window\.Jukebox_close = function\(\) \{(?P<body>.*?)\s*\};",
         JUKEBOX_TEMPLATE,
@@ -62,9 +62,25 @@ def test_jukebox_close_hides_window_without_destroying_dom():
     assert match is not None
     close_body = match.group("body")
 
-    assert "window.Jukebox.stopPlayback()" in close_body
-    assert "window.nekoJukeboxWindow.hide()" in close_body
-    assert "window.Jukebox.close()" not in close_body
+    assert "window.Jukebox.close()" in close_body
+    assert "window.nekoJukeboxWindow.close()" in close_body
+    assert "window.nekoJukeboxWindow.hide()" not in close_body
+
+
+def test_jukebox_hide_keeps_reusable_window_alive():
+    match = re.search(
+        r"window\.Jukebox_hide = function\(\) \{(?P<body>.*?)\s*\};",
+        JUKEBOX_TEMPLATE,
+        re.S,
+    )
+    assert match is not None
+    hide_body = match.group("body")
+
+    assert "window.nekoJukeboxWindow.hide()" in hide_body
+    assert "window.nekoJukeboxWindow.close()" not in hide_body
+    assert "} finally {" not in hide_body
+    assert "window.Jukebox.hide()" in hide_body
+    assert hide_body.rfind("window.close()") > hide_body.rfind("window.Jukebox.hide()")
 
 
 def test_jukebox_header_buttons_are_outside_native_drag_region():

@@ -29,6 +29,7 @@
     const NEKO_MODEL_CAT_TRANSITION_EDGE_MASK = 'radial-gradient(circle at center, #000 0%, #000 44%, rgba(0,0,0,0.72) 58%, rgba(0,0,0,0.18) 72%, rgba(0,0,0,0) 88%, rgba(0,0,0,0) 100%)';
     const NEKO_MODEL_RETURN_ENTER_TRANSITION = 'opacity 1120ms ease-out, transform 1080ms cubic-bezier(0.22, 1, 0.36, 1)';
     const NEKO_MODEL_RETURN_ENTER_CLEANUP_MS = 1160;
+    const NEKO_MODEL_RETURN_ENTER_SETTLE_BUFFER_MS = 180;
     const NEKO_MODEL_RETURN_CANVAS_FADE_TRANSITION = 'opacity 1.12s ease-out';
     const NEKO_MODEL_RETURN_CANVAS_FADE_CLEANUP_MS = 1160;
     const NEKO_MODEL_GOODBYE_VISUAL_FADE_TRANSITION = 'opacity 240ms ease-in';
@@ -44,6 +45,270 @@
     let nekoModelCatTransitionToken = 0;
     let nekoModelCatTransitionActive = null;
     let nekoModelCatRevealPlaybackToken = 0;
+    const GOODBYE_RESOURCE_SUSPEND_STORAGE_KEY = 'neko-goodbye-resource-suspended';
+    let goodbyeResourceSuspendToken = 0;
+
+    function getGoodbyeResourceSnapshot() {
+        return S && S.goodbyeResourceSuspendSnapshot ? S.goodbyeResourceSuspendSnapshot : null;
+    }
+
+    function publishGoodbyeResourceState(snapshot, source) {
+        const suspended = !!(snapshot && snapshot.suspended);
+        const pending = !!(snapshot && snapshot.pending);
+        if (S) {
+            S.goodbyeResourceSuspended = suspended;
+            S.goodbyeResourceSuspendPending = pending;
+            S.goodbyeResourceSuspendSnapshot = snapshot || null;
+        }
+        window.goodbyeResourceSuspended = suspended;
+        window.__nekoGoodbyeResourceSuspendPending = pending;
+        window.__nekoGoodbyeResourceSuspendSnapshot = snapshot || null;
+        try {
+            localStorage.setItem(GOODBYE_RESOURCE_SUSPEND_STORAGE_KEY, suspended ? 'true' : 'false');
+        } catch (_) { /* ignore */ }
+        window.dispatchEvent(new CustomEvent('neko:goodbye-resource-suspend-state', {
+            detail: {
+                suspended,
+                pending,
+                source: source || 'goodbye-resource',
+                token: snapshot ? snapshot.token : goodbyeResourceSuspendToken,
+                activeModelType: snapshot ? snapshot.activeModelType : ''
+            }
+        }));
+    }
+
+    publishGoodbyeResourceState(null, 'goodbye-resource-boot');
+
+    window.isNekoGoodbyeResourceSuspended = function () {
+        return !!(S && S.goodbyeResourceSuspended);
+    };
+
+    window.isNekoGoodbyeResourceSuspendingOrSuspended = function () {
+        return !!(S && (S.goodbyeResourceSuspended || S.goodbyeResourceSuspendPending));
+    };
+
+    function isVisibleElement(el) {
+        if (!el) return false;
+        if (el.classList && el.classList.contains('hidden')) return false;
+        if (el.style && el.style.display === 'none') return false;
+        try {
+            const style = window.getComputedStyle ? window.getComputedStyle(el) : null;
+            if (style && (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0')) {
+                return false;
+            }
+        } catch (_) { /* ignore */ }
+        return true;
+    }
+
+    function isElementVisibleById(id) {
+        return isVisibleElement(document.getElementById(id));
+    }
+
+    function getActiveGoodbyeModelType(fallbackType) {
+        if (fallbackType) return fallbackType;
+        if (isElementVisibleById('mmd-container')) return 'mmd';
+        if (isElementVisibleById('vrm-container')) return 'vrm';
+        const configured = (window.lanlan_config?.model_type || '').toLowerCase();
+        if (configured === 'pngtuber' && isElementVisibleById('pngtuber-container')) return 'pngtuber';
+        return 'live2d';
+    }
+
+    function getModelManagerByType(type) {
+        if (type === 'live2d') return window.live2dManager;
+        if (type === 'vrm') return window.vrmManager;
+        if (type === 'mmd') return window.mmdManager;
+        if (type === 'pngtuber') return window.pngtuberManager;
+        return null;
+    }
+
+    function isModelRenderingActive(type, manager) {
+        if (!manager) return false;
+        if (type === 'live2d') {
+            const ticker = manager.pixi_app && manager.pixi_app.ticker;
+            return !!(ticker && ticker.started !== false);
+        }
+        if (type === 'vrm' || type === 'mmd') {
+            return !!manager._animationFrameId;
+        }
+        if (type === 'pngtuber') {
+            const container = manager.container || document.getElementById('pngtuber-container');
+            return !!(container && container.style.display !== 'none' &&
+                !(container.classList && container.classList.contains('hidden')));
+        }
+        return false;
+    }
+
+    function pauseModelRenderingForGoodbye(snapshot) {
+        const activeModelType = snapshot && snapshot.activeModelType;
+        ['live2d', 'vrm', 'mmd', 'pngtuber'].forEach((type) => {
+            const manager = getModelManagerByType(type);
+            if (!manager || typeof manager.pauseRendering !== 'function') return;
+            if (activeModelType !== type && !isModelRenderingActive(type, manager)) return;
+            try {
+                manager.pauseRendering();
+                snapshot.pausedByCat[type] = true;
+            } catch (error) {
+                console.warn('[GoodbyeResource] pauseRendering failed:', type, error);
+            }
+        });
+    }
+
+    function resumeModelRenderingFromGoodbye(snapshot) {
+        if (!snapshot || !snapshot.pausedByCat) return;
+        ['live2d', 'vrm', 'mmd', 'pngtuber'].forEach((type) => {
+            if (!snapshot.pausedByCat[type]) return;
+            const manager = getModelManagerByType(type);
+            if (!manager || typeof manager.resumeRendering !== 'function') return;
+            try {
+                manager.resumeRendering();
+            } catch (error) {
+                console.warn('[GoodbyeResource] resumeRendering failed:', type, error);
+            }
+        });
+    }
+
+    function isSubtitleDisplayVisible() {
+        return isVisibleElement(document.getElementById('subtitle-display'));
+    }
+
+    function wasSubtitleVisibleBeforeGoodbyeSnapshot() {
+        try {
+            if (window.subtitleBridge && typeof window.subtitleBridge.wasVisibleBeforeGoodbye === 'function' &&
+                window.subtitleBridge.wasVisibleBeforeGoodbye()) {
+                return true;
+            }
+        } catch (_) { /* ignore */ }
+        return isSubtitleDisplayVisible();
+    }
+
+    function isAgentHudVisible() {
+        const hud = document.getElementById('agent-task-hud');
+        return !!(hud && hud.style.display !== 'none' && hud.style.opacity !== '0');
+    }
+
+    function hideSubtitleSettingsDomForGoodbye() {
+        const panel = document.getElementById('subtitle-settings-panel');
+        if (panel) {
+            panel.classList.add('hidden');
+            panel.style.opacity = '0';
+        }
+        const settingsBtn = document.getElementById('subtitle-settings-btn');
+        if (settingsBtn) {
+            settingsBtn.setAttribute('aria-expanded', 'false');
+        }
+    }
+
+    function hideGoodbyeAuxiliaryWindows(snapshot) {
+        try {
+            if (window.subtitleBridge && typeof window.subtitleBridge.suspendForGoodbye === 'function') {
+                window.subtitleBridge.suspendForGoodbye({ source: 'goodbye-resource-suspend' });
+            }
+        } catch (error) {
+            console.warn('[GoodbyeResource] subtitle suspend failed:', error);
+        }
+        hideSubtitleSettingsDomForGoodbye();
+        try {
+            if (window.nekoSubtitleWindow && typeof window.nekoSubtitleWindow.hide === 'function') {
+                window.nekoSubtitleWindow.hide();
+            }
+        } catch (_) { /* ignore */ }
+        try {
+            if (window.AgentHUD && typeof window.AgentHUD.hideAgentTaskHUD === 'function') {
+                window.AgentHUD.hideAgentTaskHUD();
+            }
+            if (typeof window.stopAgentTaskPolling === 'function') {
+                window.stopAgentTaskPolling({ source: 'goodbye-resource-suspend' });
+            }
+            if (window.nekoAgentHud && typeof window.nekoAgentHud.hide === 'function') {
+                window.nekoAgentHud.hide();
+            }
+        } catch (error) {
+            console.warn('[GoodbyeResource] Agent HUD suspend failed:', error);
+        }
+        snapshot.subtitleWindowHiddenByCat = true;
+        snapshot.agentHudHiddenByCat = true;
+    }
+
+    function beginGoodbyeResourceSuspend(options = {}) {
+        const token = ++goodbyeResourceSuspendToken;
+        const activeModelType = getActiveGoodbyeModelType(options.activeModelType);
+        const snapshot = {
+            token,
+            pending: true,
+            suspended: false,
+            activeModelType,
+            pausedByCat: { live2d: false, vrm: false, mmd: false, pngtuber: false },
+            subtitleWindowWasVisible: wasSubtitleVisibleBeforeGoodbyeSnapshot(),
+            agentHudWasVisible: isAgentHudVisible(),
+            subtitleWindowHiddenByCat: false,
+            agentHudHiddenByCat: false
+        };
+        publishGoodbyeResourceState(snapshot, 'goodbye-resource-pending');
+        return token;
+    }
+
+    function completeGoodbyeResourceSuspend(token) {
+        const snapshot = getGoodbyeResourceSnapshot();
+        if (!snapshot || snapshot.token !== token) return;
+        if (typeof window.isNekoGoodbyeModeActive === 'function' && !window.isNekoGoodbyeModeActive()) {
+            publishGoodbyeResourceState(null, 'goodbye-resource-stale');
+            return;
+        }
+        snapshot.pending = false;
+        snapshot.suspended = true;
+        publishGoodbyeResourceState(snapshot, 'goodbye-resource-suspended');
+        hideGoodbyeAuxiliaryWindows(snapshot);
+        pauseModelRenderingForGoodbye(snapshot);
+        publishGoodbyeResourceState(snapshot, 'goodbye-resource-paused');
+    }
+
+    function restoreGoodbyeResourceSuspend(reason) {
+        goodbyeResourceSuspendToken += 1;
+        const snapshot = getGoodbyeResourceSnapshot();
+        if (!snapshot) {
+            publishGoodbyeResourceState(null, reason || 'goodbye-resource-restore-empty');
+            return;
+        }
+        resumeModelRenderingFromGoodbye(snapshot);
+        publishGoodbyeResourceState(null, reason || 'goodbye-resource-restoring');
+        try {
+            if (window.subtitleBridge && typeof window.subtitleBridge.restoreAfterGoodbye === 'function') {
+                window.subtitleBridge.restoreAfterGoodbye({
+                    source: reason || 'goodbye-resource-restore',
+                    restoreWindow: true
+                });
+            }
+        } catch (error) {
+            console.warn('[GoodbyeResource] subtitle restore failed:', error);
+        }
+        if (snapshot.subtitleWindowWasVisible) {
+            try {
+                if (window.nekoSubtitleWindow && typeof window.nekoSubtitleWindow.show === 'function') {
+                    window.nekoSubtitleWindow.show();
+                }
+            } catch (_) { /* ignore */ }
+        }
+        if (snapshot.agentHudWasVisible) {
+            try {
+                if (window.AgentHUD && typeof window.AgentHUD.showAgentTaskHUD === 'function') {
+                    window.AgentHUD.showAgentTaskHUD();
+                }
+                if (typeof window.checkAndToggleTaskHUD === 'function') {
+                    window.checkAndToggleTaskHUD();
+                }
+            } catch (error) {
+                console.warn('[GoodbyeResource] Agent HUD restore failed:', error);
+            }
+        }
+    }
+
+    mod.restoreGoodbyeResourceSuspend = restoreGoodbyeResourceSuspend;
+    mod.completeGoodbyeResourceSuspend = completeGoodbyeResourceSuspend;
+    window.addEventListener('neko:goodbye-state-cleared', (event) => {
+        const detail = event && event.detail ? event.detail : {};
+        const reason = detail.reason || 'goodbye-state-cleared';
+        restoreGoodbyeResourceSuspend(reason);
+    });
 
     // ================================================================
     //  1. Status toast  (app.js lines 86-145)
@@ -148,6 +413,44 @@
     //  2. Voice toasts & prominent notice  (app.js lines 3674-3999)
     // ================================================================
 
+    function normalizeVoiceToastMessage(message) {
+        var fallbackKey = 'app.voiceSystemPreparing';
+        var defaultFallback = '语音系统准备中...';
+
+        function usableText(value) {
+            if (typeof value !== 'string') return '';
+            var text = value.trim();
+            if (!text || text === '[object Module]' || text === '[object Object]') return '';
+            return value;
+        }
+        var fallback = defaultFallback;
+        if (typeof window.t === 'function') {
+            var translatedFallback = usableText(window.t(fallbackKey, defaultFallback));
+            if (translatedFallback && translatedFallback.trim() !== fallbackKey) {
+                fallback = translatedFallback;
+            }
+        }
+
+        var directText = usableText(message);
+        if (directText) return directText;
+
+        if (message && typeof message === 'object') {
+            if (typeof window.translateStatusMessage === 'function') {
+                var translated = usableText(window.translateStatusMessage(message));
+                if (translated) return translated;
+            }
+            var nestedText = usableText(message.message);
+            if (nestedText) return nestedText;
+            var codeText = usableText(message.code);
+            if (codeText) return codeText;
+            console.warn('[VoiceToast] Non-string message ignored:', message);
+        } else if (message !== undefined && message !== null) {
+            console.warn('[VoiceToast] Unusable message ignored:', message);
+        }
+
+        return fallback;
+    }
+
     // --- showVoicePreparingToast ---
     function showVoicePreparingToast(message) {
         // 检查是否已存在提示框，避免重复创建
@@ -217,7 +520,7 @@
         var spinner = document.createElement('div');
         spinner.style.cssText = 'width:20px;height:20px;border:3px solid rgba(255,255,255,0.3);border-top-color:white;border-radius:50%;animation:spin 1s linear infinite;';
         var msgSpan = document.createElement('span');
-        msgSpan.textContent = message;
+        msgSpan.textContent = normalizeVoiceToastMessage(message);
         toast.appendChild(spinner);
         toast.appendChild(msgSpan);
 
@@ -677,6 +980,325 @@
     mod.showProminentNotice = showProminentNotice;
     window.showProminentNotice = showProminentNotice;
 
+    // --- showSurveyModal ---
+    // 版本问卷弹窗：在 changelog 确认后对老玩家弹出。题目来自后端 /api/survey
+    // （已本地化），支持单选 / 多选 / 填空。返回 Promise，resolve 为
+    //   { action: 'submit', answers: {qid: value|[values]|text} }  或
+    //   { action: 'skip',   answers: {} }
+    // 调用方据此 POST /api/survey/submit 并记 localStorage（不再重复弹）。
+    function _surveyText(key, fallback) {
+        try {
+            if (typeof window.t === 'function') {
+                const v = window.t(key);
+                if (typeof v === 'string' && v && v !== key) return v;
+            }
+        } catch (_) { }
+        return fallback;
+    }
+
+    function showSurveyModal(survey) {
+        survey = survey || {};
+        const questions = Array.isArray(survey.questions) ? survey.questions : [];
+
+        return new Promise((resolve) => {
+            const bodyPE = document.body.style.pointerEvents;
+            const needRestoreBodyPE = getComputedStyle(document.body).pointerEvents === 'none';
+            if (needRestoreBodyPE) document.body.style.pointerEvents = 'auto';
+
+            const overlay = document.createElement('div');
+            overlay.id = 'survey-modal-overlay';
+            overlay.style.cssText = `
+                position: fixed; inset: 0;
+                background: rgba(0,0,0,0.55);
+                z-index: 2147483647;
+                display: flex; align-items: center; justify-content: center;
+                pointer-events: auto;
+                animation: pnOverlayIn 0.25s ease;
+            `;
+
+            const box = document.createElement('div');
+            box.setAttribute('role', 'dialog');
+            box.setAttribute('aria-modal', 'true');
+            box.setAttribute('aria-label', survey.title || 'Survey');
+            box.tabIndex = -1;
+            box.className = 'survey-modal-box';
+            box.style.cssText = `
+                position: relative;
+                background: linear-gradient(180deg, #fffafd 0%, #f1f8ff 100%);
+                color: #334155;
+                border: 1px solid rgba(255,255,255,0.92);
+                border-radius: 26px;
+                padding: 26px 28px 22px;
+                width: min(560px, calc(100vw - 44px));
+                max-height: min(86vh, 760px);
+                box-sizing: border-box;
+                box-shadow: 0 24px 70px rgba(92,132,184,0.28), inset 0 1px 0 rgba(255,255,255,0.95);
+                text-align: left;
+                pointer-events: auto;
+                display: flex;
+                flex-direction: column;
+                align-items: stretch;
+                animation: pnBoxIn 0.3s ease;
+            `;
+
+            // 标题 + 引导语
+            const head = document.createElement('div');
+            head.style.cssText = 'margin:0 0 14px;flex-shrink:0;';
+            const h2 = document.createElement('h2');
+            h2.textContent = survey.title || _surveyText('survey.title', '问卷调查');
+            h2.style.cssText = 'margin:0;color:#334155;font-size:21px;line-height:1.3;font-weight:800;';
+            head.appendChild(h2);
+            if (survey.intro) {
+                const intro = document.createElement('p');
+                intro.textContent = survey.intro;
+                intro.style.cssText = 'margin:8px 0 0;color:#64748b;font-size:13px;line-height:1.55;font-weight:600;';
+                head.appendChild(intro);
+            }
+
+            // 题目滚动区
+            const form = document.createElement('form');
+            form.className = 'survey-modal-form';
+            form.style.cssText = [
+                'display:flex', 'flex-direction:column', 'gap:18px',
+                'flex:1 1 auto', 'min-height:0', 'overflow-y:auto', 'overflow-x:hidden',
+                'padding:4px 8px 4px 2px', 'margin:0',
+                'scrollbar-width:thin',
+                'scrollbar-color:rgba(148,163,184,0.55) transparent',
+            ].join(';');
+
+            // 每题状态记录：{ q, getValue, markError }
+            const fields = [];
+            // 联动 placeholder 用：单选题 id -> 其 input 列表 / 待联动的填空题
+            const optionInputsById = {};
+            const linkedPlaceholders = [];
+
+            questions.forEach((q, idx) => {
+                if (!q || typeof q !== 'object' || !q.id) return;
+                const type = (q.type === 'multi' || q.type === 'text') ? q.type : 'single';
+                const qid = String(q.id);
+
+                const wrap = document.createElement('div');
+                wrap.className = 'survey-q';
+                wrap.style.cssText = 'display:flex;flex-direction:column;gap:9px;';
+
+                const label = document.createElement('div');
+                label.style.cssText = 'color:#475569;font-size:15px;line-height:1.4;font-weight:800;';
+                label.textContent = (q.required ? '* ' : '') + (q.label || '');
+                wrap.appendChild(label);
+
+                const err = document.createElement('div');
+                err.style.cssText = 'display:none;color:#e11d48;font-size:12px;font-weight:700;margin-top:-2px;';
+                err.textContent = _surveyText('survey.requiredHint', '这道题需要先回答哦');
+
+                let getValue;
+                if (type === 'text') {
+                    const ta = document.createElement('textarea');
+                    ta.rows = 3;
+                    ta.placeholder = q.placeholder || '';
+                    const maxLen = (typeof q.max_length === 'number' && q.max_length > 0) ? q.max_length : 500;
+                    ta.maxLength = maxLen;
+                    ta.className = 'survey-input';
+                    ta.style.cssText = `
+                        width:100%;box-sizing:border-box;resize:vertical;
+                        border:1px solid rgba(148,163,184,0.4);border-radius:12px;
+                        padding:10px 12px;font-size:14px;line-height:1.5;color:#334155;
+                        background:rgba(255,255,255,0.78);font-family:inherit;
+                    `;
+                    wrap.appendChild(ta);
+                    getValue = () => ta.value.trim();
+                    // 声明式联动：placeholder 跟着指定单选题的选择走，引导用户写具体方向
+                    if (q.placeholder_from && q.placeholder_template) {
+                        linkedPlaceholders.push({
+                            ta,
+                            fromId: String(q.placeholder_from),
+                            template: String(q.placeholder_template),
+                            fallback: q.placeholder || '',
+                        });
+                    }
+                } else {
+                    // single / multi —— 选项组
+                    const optionsBox = document.createElement('div');
+                    optionsBox.style.cssText = 'display:flex;flex-direction:column;gap:8px;';
+                    const opts = Array.isArray(q.options) ? q.options : [];
+                    const inputs = [];
+                    opts.forEach((opt) => {
+                        if (!opt || typeof opt !== 'object') return;
+                        const optRow = document.createElement('label');
+                        optRow.className = 'survey-opt';
+                        optRow.style.cssText = `
+                            display:flex;align-items:flex-start;gap:10px;cursor:pointer;
+                            padding:10px 12px;border-radius:12px;
+                            background:rgba(255,255,255,0.62);
+                            box-shadow:inset 0 0 0 1px rgba(148,163,184,0.18);
+                            font-size:14px;line-height:1.4;color:#475569;font-weight:600;
+                            transition:box-shadow 0.15s, background 0.15s;
+                        `;
+                        const input = document.createElement('input');
+                        input.type = (type === 'multi') ? 'checkbox' : 'radio';
+                        input.name = 'survey_' + qid;
+                        input.value = String(opt.value != null ? opt.value : '');
+                        input.style.cssText = 'margin-top:2px;flex-shrink:0;accent-color:#65aef4;';
+                        input._label = opt.label != null ? String(opt.label) : input.value;
+                        const span = document.createElement('span');
+                        span.textContent = opt.label || input.value;
+                        optRow.appendChild(input);
+                        optRow.appendChild(span);
+                        const sync = () => {
+                            optRow.style.background = input.checked ? 'rgba(141,204,255,0.18)' : 'rgba(255,255,255,0.62)';
+                            optRow.style.boxShadow = input.checked
+                                ? 'inset 0 0 0 1.5px rgba(101,174,244,0.7)'
+                                : 'inset 0 0 0 1px rgba(148,163,184,0.18)';
+                            if (err.style.display !== 'none') err.style.display = 'none';
+                        };
+                        input.addEventListener('change', () => {
+                            if (type === 'single') inputs.forEach((i) => i._sync && i._sync());
+                            sync();
+                        });
+                        input._sync = sync;
+                        inputs.push(input);
+                        optionsBox.appendChild(optRow);
+                    });
+                    wrap.appendChild(optionsBox);
+                    optionInputsById[qid] = inputs;
+                    getValue = () => {
+                        const checked = inputs.filter((i) => i.checked).map((i) => i.value);
+                        if (type === 'multi') return checked;
+                        return checked.length ? checked[0] : '';
+                    };
+                }
+
+                wrap.appendChild(err);
+                form.appendChild(wrap);
+                fields.push({
+                    q, type, wrap,
+                    getValue,
+                    isEmpty: () => {
+                        const v = getValue();
+                        return Array.isArray(v) ? v.length === 0 : !v;
+                    },
+                    showError: () => { err.style.display = 'block'; },
+                });
+            });
+
+            // 接线：填空题的 placeholder 跟着来源单选题的选择变化，未选时回退到通用提示
+            linkedPlaceholders.forEach((link) => {
+                const srcInputs = optionInputsById[link.fromId];
+                if (!Array.isArray(srcInputs) || !srcInputs.length) return;
+                const refresh = () => {
+                    const picked = srcInputs.find((i) => i.checked);
+                    link.ta.placeholder = picked
+                        ? link.template.replaceAll('{label}', picked._label || picked.value)
+                        : link.fallback;
+                };
+                srcInputs.forEach((i) => i.addEventListener('change', refresh));
+                refresh();
+            });
+
+            // 底部按钮：跳过（次） + 提交（主）
+            const footer = document.createElement('div');
+            footer.style.cssText = 'display:flex;gap:12px;justify-content:flex-end;align-items:center;margin-top:18px;flex-shrink:0;';
+
+            const skipBtn = document.createElement('button');
+            skipBtn.type = 'button';
+            skipBtn.textContent = _surveyText('survey.skip', '跳过');
+            skipBtn.style.cssText = `
+                background:transparent;color:#94a3b8;border:none;
+                border-radius:999px;padding:11px 22px;font-size:14px;font-weight:700;
+                cursor:pointer;pointer-events:auto;transition:color 0.15s;
+            `;
+            skipBtn.addEventListener('mouseenter', () => { skipBtn.style.color = '#64748b'; });
+            skipBtn.addEventListener('mouseleave', () => { skipBtn.style.color = '#94a3b8'; });
+
+            const submitBtn = document.createElement('button');
+            submitBtn.type = 'submit';
+            submitBtn.textContent = _surveyText('survey.submit', '提交');
+            submitBtn.style.cssText = `
+                min-width:130px;
+                background:linear-gradient(180deg, #8dccff 0%, #65aef4 100%);
+                color:#fff;border:none;border-radius:999px;
+                padding:12px 36px;font-size:15px;font-weight:700;cursor:pointer;
+                pointer-events:auto;transition:transform 0.15s ease, filter 0.15s ease;
+                box-shadow:0 14px 30px rgba(101,174,244,0.34), inset 0 3px 6px rgba(255,255,255,0.36);
+            `;
+            submitBtn.addEventListener('mouseenter', () => { submitBtn.style.filter = 'brightness(1.03)'; submitBtn.style.transform = 'translateY(-2px)'; });
+            submitBtn.addEventListener('mouseleave', () => { submitBtn.style.filter = ''; submitBtn.style.transform = ''; });
+
+            footer.appendChild(skipBtn);
+            footer.appendChild(submitBtn);
+
+            box.appendChild(head);
+            box.appendChild(form);
+            box.appendChild(footer);
+            overlay.appendChild(box);
+
+            const prevActive = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+            let done = false;
+
+            const teardown = (result) => {
+                if (done) return;
+                done = true;
+                overlay.style.animation = 'pnOverlayOut 0.2s ease forwards';
+                setTimeout(() => {
+                    overlay.remove();
+                    if (needRestoreBodyPE) document.body.style.pointerEvents = bodyPE;
+                    if (prevActive && document.contains(prevActive)) prevActive.focus();
+                    resolve(result);
+                }, 200);
+            };
+
+            const collectAnswers = () => {
+                const answers = {};
+                fields.forEach((f) => {
+                    const v = f.getValue();
+                    if (Array.isArray(v)) {
+                        if (v.length) answers[String(f.q.id)] = v;
+                    } else if (v) {
+                        answers[String(f.q.id)] = v;
+                    }
+                });
+                return answers;
+            };
+
+            const onSubmit = (e) => {
+                if (e) e.preventDefault();
+                // 必填校验：仅对 submit 生效
+                let firstMissing = null;
+                fields.forEach((f) => {
+                    if (f.q.required && f.isEmpty()) {
+                        f.showError();
+                        if (!firstMissing) firstMissing = f;
+                    }
+                });
+                if (firstMissing) {
+                    // 滚到第一个未答的必填题，而不是一律回到顶部——否则底部的题报错时
+                    // 视口停在上方，用户看不到红字提示。
+                    try {
+                        if (firstMissing.wrap && typeof firstMissing.wrap.scrollIntoView === 'function') {
+                            firstMissing.wrap.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+                        } else {
+                            form.scrollTop = 0;
+                        }
+                    } catch (_) { try { form.scrollTop = 0; } catch (_) { } }
+                    return;
+                }
+                teardown({ action: 'submit', answers: collectAnswers() });
+            };
+
+            form.addEventListener('submit', onSubmit);
+            submitBtn.addEventListener('click', onSubmit);
+            skipBtn.addEventListener('click', () => teardown({ action: 'skip', answers: {} }));
+
+            document.body.appendChild(overlay);
+            try {
+                const firstInput = form.querySelector('input, textarea');
+                (firstInput || submitBtn).focus();
+            } catch (_) { submitBtn.focus(); }
+        });
+    }
+
+    mod.showSurveyModal = showSurveyModal;
+    window.showSurveyModal = showSurveyModal;
+
     // --- showReadyToSpeakToast ---
     function showReadyToSpeakToast() {
         let toast = document.getElementById('voice-ready-toast');
@@ -844,9 +1466,67 @@
 
     mod.hideLive2d = hideLive2d;
 
+    function shouldPreserveYuiGuideLive2DPreparing() {
+        return window.nekoYuiGuideLive2dPreparing === true
+            || (
+                window.isInTutorial === true
+                && typeof document !== 'undefined'
+                && document.body
+                && document.body.classList
+                && document.body.classList.contains('yui-guide-live2d-preparing')
+            );
+    }
+
+    function hideYuiGuideLive2DPreparingControls() {
+        [
+            'live2d-floating-buttons',
+            'live2d-lock-icon',
+            'live2d-return-button-container'
+        ].forEach((id) => {
+            const element = document.getElementById(id);
+            if (!element || !element.style || typeof element.style.removeProperty !== 'function') {
+                return;
+            }
+            element.style.setProperty('display', 'none', 'important');
+            element.style.setProperty('visibility', 'hidden', 'important');
+            element.style.setProperty('opacity', '0', 'important');
+            element.style.setProperty('pointer-events', 'none', 'important');
+        });
+    }
+
+    function restoreYuiGuideLive2DPreparingControls() {
+        [
+            'live2d-floating-buttons',
+            'live2d-lock-icon'
+        ].forEach((id) => {
+            const element = document.getElementById(id);
+            if (!element || !element.style || typeof element.style.removeProperty !== 'function') {
+                return;
+            }
+            element.style.removeProperty('display');
+            element.style.removeProperty('visibility');
+            element.style.removeProperty('opacity');
+            element.style.removeProperty('pointer-events');
+        });
+    }
+
+    function keepAvatarRootContainerPassthrough(container) {
+        if (!container || !container.id || !container.style) return false;
+        if (container.id !== 'live2d-container' && container.id !== 'pngtuber-container') return false;
+        container.style.setProperty('pointer-events', 'none', 'important');
+        return true;
+    }
+
     function restoreLive2DDisplaySurface(reason) {
+        const preserveAvatarCornerPeekOpacity = window.nekoYuiGuideAvatarCornerPeekActive === true;
+        const preserveYuiGuidePreparing = shouldPreserveYuiGuideLive2DPreparing();
+        if (!preserveYuiGuidePreparing) {
+            restoreYuiGuideLive2DPreparingControls();
+        }
         if (document.body && document.body.classList) {
-            document.body.classList.remove('yui-guide-live2d-preparing');
+            if (!preserveYuiGuidePreparing) {
+                document.body.classList.remove('yui-guide-live2d-preparing');
+            }
             document.body.classList.remove('yui-guide-return-petal-fade');
         }
         if (document.body && document.body.style && typeof document.body.style.removeProperty === 'function') {
@@ -861,8 +1541,12 @@
             live2dContainer.style.display = 'block';
             live2dContainer.style.visibility = 'visible';
             live2dContainer.style.removeProperty('transition');
-            live2dContainer.style.removeProperty('opacity');
-            live2dContainer.style.removeProperty('pointer-events');
+            if (preserveYuiGuidePreparing) {
+                // 新手教程开场演出会在首句动作起点统一 reveal。
+            } else if (!preserveAvatarCornerPeekOpacity) {
+                live2dContainer.style.removeProperty('opacity');
+            }
+            keepAvatarRootContainerPassthrough(live2dContainer);
         }
 
         const live2dCanvas = document.getElementById('live2d-canvas');
@@ -870,13 +1554,18 @@
             live2dCanvas.classList.remove('minimized');
             live2dCanvas.style.display = 'block';
             live2dCanvas.style.removeProperty('transition');
-            live2dCanvas.style.setProperty('opacity', '1', 'important');
+            if (preserveYuiGuidePreparing) {
+                live2dCanvas.style.removeProperty('pointer-events');
+            } else if (!preserveAvatarCornerPeekOpacity) {
+                live2dCanvas.style.setProperty('opacity', '1', 'important');
+                live2dCanvas.style.setProperty('pointer-events', 'auto', 'important');
+            }
             live2dCanvas.style.setProperty('visibility', 'visible', 'important');
-            live2dCanvas.style.setProperty('pointer-events', 'auto', 'important');
         }
     }
 
     function activateLive2DRenderForDisplay(reason) {
+        const preserveAvatarCornerPeekOpacity = window.nekoYuiGuideAvatarCornerPeekActive === true;
         const manager = window.live2dManager || null;
         const app = manager && manager.pixi_app;
         const ticker = app && app.ticker;
@@ -887,14 +1576,18 @@
         try {
             if (model) {
                 model.visible = true;
-                model.alpha = 1;
+                if (!preserveAvatarCornerPeekOpacity) {
+                    model.alpha = 1;
+                }
                 if (model.renderable !== undefined) {
                     model.renderable = true;
                 }
             }
             if (app && app.stage) {
                 app.stage.visible = true;
-                app.stage.alpha = 1;
+                if (!preserveAvatarCornerPeekOpacity) {
+                    app.stage.alpha = 1;
+                }
                 if (app.stage.renderable !== undefined) {
                     app.stage.renderable = true;
                 }
@@ -968,6 +1661,10 @@
 
         const container = document.getElementById('live2d-container');
         console.log('[App] showLive2d调用前，容器类列表:', container.classList.toString());
+        const preserveYuiGuidePreparing = shouldPreserveYuiGuideLive2DPreparing();
+        if (preserveYuiGuidePreparing) {
+            hideYuiGuideLive2DPreparingControls();
+        }
 
         // 检测模型是否已经可见（避免不必要的淡入动画导致闪烁）
         const isAlreadyVisible = container &&
@@ -996,17 +1693,21 @@
         }
 
         // 确保浮动按钮显示
-        if (floatingButtons) {
+        if (!preserveYuiGuidePreparing && floatingButtons) {
             floatingButtons.style.setProperty('display', 'flex', 'important');
             floatingButtons.style.setProperty('visibility', 'visible', 'important');
             floatingButtons.style.setProperty('opacity', '1', 'important');
+            floatingButtons.style.setProperty('pointer-events', 'auto', 'important');
         }
 
         const lockIcon = document.getElementById('live2d-lock-icon');
-        if (lockIcon) {
+        if (!preserveYuiGuidePreparing && lockIcon) {
             lockIcon.style.removeProperty('display');
             lockIcon.style.removeProperty('visibility');
             lockIcon.style.removeProperty('opacity');
+            lockIcon.style.removeProperty('pointer-events');
+        } else if (preserveYuiGuidePreparing) {
+            hideYuiGuideLive2DPreparingControls();
         }
 
         // 原生按钮和status栏应该永不出现，保持隐藏状态
@@ -1138,6 +1839,180 @@
             : (window.innerWidth <= 768);
     }
 
+    const NEKO_MODEL_VIEWPORT_RESTORE_FALLBACK_MS = 900;
+    const NEKO_MODEL_VIEWPORT_RESTORE_RETRY_MS = 300;
+    const NEKO_NATIVE_RETURN_BALL_SHRINK_VIEWPORT_SIZE = 160;
+    let pendingNativeModelViewportRestoreBounds = null;
+
+    function normalizeModelViewportBounds(bounds) {
+        const candidate = bounds && typeof bounds === 'object'
+            ? (bounds.requestedBounds || bounds.bounds || bounds)
+            : null;
+        if (!candidate) return null;
+        const x = Number.isFinite(Number(candidate.x))
+            ? Math.round(Number(candidate.x))
+            : (Number.isFinite(Number(window.screenX)) ? Math.round(Number(window.screenX)) : 0);
+        const y = Number.isFinite(Number(candidate.y))
+            ? Math.round(Number(candidate.y))
+            : (Number.isFinite(Number(window.screenY)) ? Math.round(Number(window.screenY)) : 0);
+        const width = Math.round(Number(candidate.width));
+        const height = Math.round(Number(candidate.height));
+        if (![x, y, width, height].every(Number.isFinite) || width <= 1 || height <= 1) {
+            return null;
+        }
+        if (isNativeReturnBallViewportSize(width, height)) {
+            return null;
+        }
+        return { x, y, width, height };
+    }
+
+    function setPendingNativeModelViewportRestoreBounds(bounds) {
+        pendingNativeModelViewportRestoreBounds = normalizeModelViewportBounds(bounds);
+        return pendingNativeModelViewportRestoreBounds;
+    }
+
+    function isNativeReturnBallViewportSize(width, height) {
+        const w = Math.round(Number(width));
+        const h = Math.round(Number(height));
+        if (!Number.isFinite(w) || !Number.isFinite(h)) return false;
+        return Math.abs(w - NEKO_NATIVE_RETURN_BALL_SHRINK_VIEWPORT_SIZE) <= 2
+            && Math.abs(h - NEKO_NATIVE_RETURN_BALL_SHRINK_VIEWPORT_SIZE) <= 2;
+    }
+
+    function isModelViewportRestored(bounds) {
+        const target = normalizeModelViewportBounds(bounds);
+        if (!target) return true;
+        const tolerance = 2;
+        return Math.abs((window.innerWidth || 0) - target.width) <= tolerance &&
+            Math.abs((window.innerHeight || 0) - target.height) <= tolerance;
+    }
+
+    function waitForModelViewportRestore(bounds, options = {}) {
+        const target = normalizeModelViewportBounds(bounds);
+        if (!target || isModelViewportRestored(target)) {
+            return waitForAnimationFrames(2).then(() => ({ restored: true, skipped: !target }));
+        }
+
+        const timeoutMs = Number.isFinite(options.timeoutMs)
+            ? Math.max(0, Number(options.timeoutMs))
+            : NEKO_MODEL_VIEWPORT_RESTORE_FALLBACK_MS;
+        const deadline = Date.now() + timeoutMs;
+
+        return new Promise((resolve) => {
+            let timerId = null;
+            let finished = false;
+            const finish = (restored, timedOut) => {
+                if (finished) return;
+                finished = true;
+                if (timerId) {
+                    clearTimeout(timerId);
+                    timerId = null;
+                }
+                window.removeEventListener('resize', check);
+                waitForAnimationFrames(2).then(() => resolve({
+                    restored: !!restored,
+                    timedOut: !!timedOut
+                }));
+            };
+            const check = () => {
+                if (isModelViewportRestored(target)) {
+                    finish(true, false);
+                    return;
+                }
+                if (Date.now() >= deadline) {
+                    finish(false, true);
+                    return;
+                }
+                timerId = setTimeout(check, 16);
+            };
+            window.addEventListener('resize', check);
+            timerId = setTimeout(check, 16);
+        });
+    }
+
+    function recoverLive2DRendererFromReturnBallViewport(reason) {
+        try {
+            if (!window.live2dManager ||
+                typeof window.live2dManager.recoverRendererFromReturnBallViewport !== 'function') {
+                return false;
+            }
+            const recovered = window.live2dManager.recoverRendererFromReturnBallViewport(reason);
+            return !!recovered;
+        } catch (error) {
+            console.warn('[showCurrentModel] recover Live2D renderer from return-ball viewport failed:', error);
+            return false;
+        }
+    }
+
+    function getPendingModelViewportRestoreBounds() {
+        const pending = normalizeModelViewportBounds(pendingNativeModelViewportRestoreBounds);
+        if (pending) return pending;
+        if (multiWindowReturnBallDragState) {
+            const width = Math.round(Number(multiWindowReturnBallDragState.savedWindowW));
+            const height = Math.round(Number(multiWindowReturnBallDragState.savedWindowH));
+            if (Number.isFinite(width) && Number.isFinite(height) && width > 1 && height > 1) {
+                return {
+                    x: Number.isFinite(Number(window.screenX)) ? Math.round(Number(window.screenX)) : 0,
+                    y: Number.isFinite(Number(window.screenY)) ? Math.round(Number(window.screenY)) : 0,
+                    width,
+                    height
+                };
+            }
+        }
+        return null;
+    }
+
+    async function ensureModelViewportReadyBeforeShowCurrentModel() {
+        const restoreBounds = getPendingModelViewportRestoreBounds();
+        if (!restoreBounds) {
+            if (isNativeReturnBallViewportSize(window.innerWidth, window.innerHeight)) {
+                return {
+                    ready: false,
+                    restored: false,
+                    missingRestoreBounds: true,
+                    returnBallViewport: true
+                };
+            }
+            recoverLive2DRendererFromReturnBallViewport('ensure-model-viewport-ready:no-restore-bounds');
+            return { ready: true, skipped: true };
+        }
+        if (isModelViewportRestored(restoreBounds)) {
+            pendingNativeModelViewportRestoreBounds = null;
+            recoverLive2DRendererFromReturnBallViewport('ensure-model-viewport-ready:already-restored');
+            return { ready: true, restored: true };
+        }
+
+        if (window.nekoPetDrag && typeof window.nekoPetDrag.reveal === 'function') {
+            try {
+                const revealResult = await Promise.resolve(window.nekoPetDrag.reveal());
+                if (revealResult === false) {
+                    await waitForModelViewportRestore(restoreBounds, {
+                        timeoutMs: NEKO_MODEL_VIEWPORT_RESTORE_RETRY_MS
+                    });
+                }
+            } catch (error) {
+                console.warn('[showCurrentModel] restore model viewport reveal retry failed:', error);
+            }
+        }
+
+        const viewportWait = await waitForModelViewportRestore(restoreBounds);
+        if (viewportWait.restored) {
+            pendingNativeModelViewportRestoreBounds = null;
+            recoverLive2DRendererFromReturnBallViewport('ensure-model-viewport-ready:after-wait');
+            return { ready: true, restored: true, viewportWait };
+        }
+
+        console.warn('[showCurrentModel] blocked model display because Pet viewport is still return-ball sized:', {
+            target: restoreBounds,
+            current: {
+                width: window.innerWidth,
+                height: window.innerHeight
+            },
+            returnBallViewport: isNativeReturnBallViewportSize(window.innerWidth, window.innerHeight)
+        });
+        return { ready: false, restored: false, viewportWait, restoreBounds };
+    }
+
     // --- showCurrentModel ---
     async function showCurrentModel() {
         // 检查"请她离开"状态
@@ -1152,6 +2027,11 @@
         if (window.mmdManager && window.mmdManager._goodbyeClicked) {
             console.log('[showCurrentModel] 当前处于"请她离开"状态（MMD），跳过显示逻辑');
             return;
+        }
+
+        const modelViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel();
+        if (!modelViewportReady.ready) {
+            return false;
         }
 
         // 重置 goodbye 标志
@@ -1542,13 +2422,19 @@
                     pngtuberContainer.style.visibility = 'visible';
                 }
 
+                const modelReturnEnterRect = pngtuberContainer ? consumeModelReturnEnterRect() : null;
                 if (pngtuberContainer) {
-                    prepareModelReturnContainer(pngtuberContainer, consumeModelReturnEnterRect(), { clearPointerEvents: true });
-                    pngtuberContainer.style.setProperty('pointer-events', 'auto', 'important');
-                    const pngtuberImage = pngtuberContainer.querySelector('.pngtuber-image');
-                    if (pngtuberImage) {
-                        pngtuberImage.style.setProperty('pointer-events', 'auto', 'important');
+                    prepareModelReturnContainer(pngtuberContainer, modelReturnEnterRect, { clearPointerEvents: true });
+                    if (modelReturnEnterRect) {
+                        playModelReturnEnter(pngtuberContainer, modelReturnEnterRect);
                     }
+                    pngtuberContainer.style.setProperty('pointer-events', 'none', 'important');
+                    pngtuberContainer.querySelectorAll('.pngtuber-image').forEach((pngtuberImage) => {
+                        pngtuberImage.style.removeProperty('transition');
+                        pngtuberImage.style.removeProperty('opacity');
+                        pngtuberImage.style.setProperty('visibility', 'visible', 'important');
+                        pngtuberImage.style.setProperty('pointer-events', 'auto', 'important');
+                    });
                 }
 
                 const live2dContainerPngtuber = document.getElementById('live2d-container');
@@ -1642,6 +2528,47 @@
     let idleReturnBallDesktopDragStateFrame = 0;
     let idleReturnBallDesktopDragStatePending = null;
     let pendingPngtuberReturnConfig = null;
+
+    function resolveModelReturnEnter(reason) {
+        const resolve = window._nekoModelReturnEnterResolve;
+        window._nekoModelReturnEnterResolve = null;
+        window._nekoModelReturnEnterPromise = null;
+        window._nekoModelReturnEnterContainer = null;
+        if (typeof resolve === 'function') {
+            try {
+                resolve({ reason });
+            } catch (_) {}
+        }
+    }
+
+    function startModelReturnEnterWait(container) {
+        resolveModelReturnEnter('replaced');
+        let resolveWait = null;
+        const promise = new Promise(resolve => {
+            resolveWait = resolve;
+        });
+        window._nekoModelReturnEnterContainer = container || null;
+        window._nekoModelReturnEnterResolve = resolveWait;
+        window._nekoModelReturnEnterPromise = promise;
+        return promise;
+    }
+
+    async function waitForModelReturnEnterToSettle() {
+        const promise = window._nekoModelReturnEnterPromise;
+        if (promise && typeof promise.then === 'function') {
+            let timeoutId = null;
+            await Promise.race([
+                promise,
+                new Promise(resolve => {
+                    timeoutId = setTimeout(resolve, NEKO_MODEL_RETURN_ENTER_CLEANUP_MS + NEKO_MODEL_RETURN_ENTER_SETTLE_BUFFER_MS);
+                })
+            ]);
+            if (timeoutId) {
+                clearTimeout(timeoutId);
+            }
+        }
+        await waitForAnimationFrames(2);
+    }
 
     function waitForAnimationFrames(count) {
         const remaining = Math.max(1, Number(count) || 1);
@@ -1803,6 +2730,7 @@
 
     async function settleReturnedModelBounds(shouldSaveWhenUnchanged) {
         // showCurrentModel 会恢复容器和 canvas；等布局提交后再读边界，避免拿到隐藏态尺寸。
+        await waitForModelReturnEnterToSettle();
         await waitForAnimationFrames(2);
 
         let activeModelType = null;
@@ -2080,7 +3008,9 @@
         container.style.opacity = hasReturnRect ? '0' : '1';
         container.style.transform = hasReturnRect ? getModelCatTransitionScaleTransform() : 'none';
         if (options.clearPointerEvents) {
-            container.style.removeProperty('pointer-events');
+            if (!keepAvatarRootContainerPassthrough(container)) {
+                container.style.removeProperty('pointer-events');
+            }
         }
         return true;
     }
@@ -2130,7 +3060,9 @@
         if (window._nekoModelReturnEnterTimer) {
             clearTimeout(window._nekoModelReturnEnterTimer);
             window._nekoModelReturnEnterTimer = null;
+            resolveModelReturnEnter('timer-cleared');
         }
+        startModelReturnEnterWait(container);
 
         container.style.transition = 'none';
         container.style.opacity = '0';
@@ -2138,7 +3070,10 @@
         void container.offsetWidth;
 
         requestAnimationFrame(() => {
-            if (!container || !container.isConnected) return;
+            if (!container || !container.isConnected) {
+                resolveModelReturnEnter('disconnected-before-raf');
+                return;
+            }
             container.style.transition = NEKO_MODEL_RETURN_ENTER_TRANSITION;
             container.style.opacity = '1';
             container.style.transform = 'scale(1) translateZ(0)';
@@ -2149,6 +3084,7 @@
                     container.style.removeProperty('transform');
                 }
                 window._nekoModelReturnEnterTimer = null;
+                resolveModelReturnEnter('cleanup');
             }, NEKO_MODEL_RETURN_ENTER_CLEANUP_MS);
         });
         return true;
@@ -2291,6 +3227,16 @@
         );
     }
 
+    function shouldBlockCatToModelTransitionForModelViewport(direction) {
+        if (direction !== 'cat-to-model') return false;
+        const restoreBounds = getPendingModelViewportRestoreBounds();
+        if (restoreBounds && !isModelViewportRestored(restoreBounds)) {
+            return true;
+        }
+        const blockRawShrink = isNativeReturnBallViewportSize(window.innerWidth, window.innerHeight);
+        return blockRawShrink;
+    }
+
     function playNekoModelCatTransition(options = {}) {
         const container = options.container || null;
         const anchorRect = options.anchorRect || null;
@@ -2304,6 +3250,13 @@
             ? Math.max(0, Number(options.beforeOverlayCleanupMs))
             : NEKO_MODEL_CAT_REVEAL_BEFORE_SMOKE_HIDE_MS;
         let token = transitionToken;
+        if (shouldBlockCatToModelTransitionForModelViewport(direction)) {
+            return Promise.resolve({
+                blocked: true,
+                direction,
+                reason: 'model-viewport-not-restored'
+            });
+        }
         if (nekoModelCatTransitionActive) {
             const ownsActiveTransition = transitionToken &&
                 nekoModelCatTransitionActive.token === transitionToken &&
@@ -2663,6 +3616,31 @@
         };
     }
 
+    function syncIdleReturnBallDesktopStateFromManualMove(detail) {
+        if (!detail || typeof detail !== 'object') return;
+        const reason = typeof detail.reason === 'string' ? detail.reason : '';
+        if (!reason || !reason.startsWith('return-ball-drag-')) return;
+        const container = detail.container || getVisibleIdleReturnBallContainer();
+        if (!container) return;
+        if (reason === 'return-ball-drag-motion') {
+            const sx = Number(detail.screenX);
+            const sy = Number(detail.screenY);
+            const width = container.offsetWidth || Number(detail.width) || 64;
+            const height = container.offsetHeight || Number(detail.height) || 64;
+            const screenRect = Number.isFinite(sx) && Number.isFinite(sy)
+                ? getReturnBallDragScreenRect(sx, sy, width, height)
+                : null;
+            scheduleIdleReturnBallDesktopDragState(container, screenRect);
+            scheduleIdleReturnBallDesktopBridge('return-ball-dragging', container);
+            return;
+        }
+        scheduleIdleReturnBallDesktopBridge(reason, container);
+    }
+
+    window.addEventListener('neko:return-ball-manual-move', (event) => {
+        syncIdleReturnBallDesktopStateFromManualMove(event && event.detail);
+    });
+
     window.addEventListener('neko:auto-goodbye:state-change', (event) => {
         const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
         if (!detail || detail.type !== 'visual-tier') return;
@@ -2735,6 +3713,10 @@
         NEKO_IDLE_CAT1_EDGE_PEEK_CLASSES.forEach((className) => {
             button.classList.remove(className);
         });
+        const art = button.querySelector('.neko-idle-return-art');
+        if (art) {
+            art.style.removeProperty('--neko-idle-return-edge-visual-shift-y');
+        }
     }
 
     function isNekoIdleCat1EdgePeekEligible(container) {
@@ -2798,12 +3780,26 @@
         if (!container || !button || !placement || !placement.edge) return false;
         clearNekoIdleCat1EdgePeek(container);
         button.classList.add(`is-cat1-edge-peek-${placement.edge}`);
+        const visualShiftY = Number(placement.visualShiftY);
+        if (Number.isFinite(visualShiftY) && visualShiftY !== 0) {
+            const art = button.querySelector('.neko-idle-return-art');
+            if (art) {
+                art.style.setProperty('--neko-idle-return-edge-visual-shift-y', `${Math.round(visualShiftY)}px`);
+            }
+        }
         container.style.left = `${placement.left}px`;
         container.style.top = `${placement.top}px`;
         container.style.right = '';
         container.style.bottom = '';
         container.style.transform = 'none';
         return true;
+    }
+
+    function _getNekoIdleCat1EdgePeekVisualShiftY(bounds, height) {
+        const offsetY = Number(bounds && bounds.actualBoundsOffset && bounds.actualBoundsOffset.y);
+        if (!Number.isFinite(offsetY) || offsetY <= 0) return 0;
+        const maxShift = Math.max(0, Math.round(Number(height) || 0));
+        return -Math.min(Math.round(offsetY), maxShift || Math.round(offsetY));
     }
 
     function restoreNekoIdleCat1EdgePeekBeforeDrag(container) {
@@ -2832,6 +3828,25 @@
         );
     }
 
+    function isNiriPhysicalCropReturnBallDragActive() {
+        const cropApi = window.__nekoNiriPetPhysicalCrop;
+        if (!cropApi) return false;
+        try {
+            if (typeof cropApi.isActive === 'function' && cropApi.isActive()) return true;
+        } catch (_) {}
+        try {
+            const cropState = typeof cropApi.getState === 'function' ? cropApi.getState() : null;
+            if (cropState && cropState.enabled) return true;
+        } catch (_) {}
+        try {
+            if (document.documentElement &&
+                document.documentElement.classList.contains('neko-niri-pet-physical-crop')) {
+                return true;
+            }
+        } catch (_) {}
+        return false;
+    }
+
     function cleanupMultiWindowReturnBallDrag() {
         const state = multiWindowReturnBallDragState;
         if (!state) return;
@@ -2847,6 +3862,7 @@
         if (state.container) {
             state.container.removeEventListener('mousedown', state.handleMouseDown, true);
             state.container.removeEventListener('touchstart', state.handleTouchStart, true);
+            state.container.removeEventListener('click', state.handleClick, true);
         }
         document.removeEventListener('mousemove', state.handleMouseMove);
         document.removeEventListener('mouseup', state.handleMouseUp);
@@ -2859,11 +3875,16 @@
         window.removeEventListener('blur', state.handleWindowBlur);
         window.removeEventListener('pagehide', state.handlePageHide);
         document.removeEventListener('visibilitychange', state.handleVisibilityChange);
+        if (state.suppressDomClickTimer) {
+            clearTimeout(state.suppressDomClickTimer);
+            state.suppressDomClickTimer = null;
+        }
 
         if (state.container) {
             restoreSavedReturnBallStyle(state.container, state);
             resetReturnBallTemporaryStyle(state.container);
             state.container.setAttribute('data-dragging', 'false');
+            state.container.removeAttribute('data-neko-return-click-suppressed');
         }
         delete document.body.dataset.nekoBallDrag;
         multiWindowReturnBallDragState = null;
@@ -2909,12 +3930,15 @@
             savedBallStyle: null,
             savedBallWidth: 64,
             savedBallHeight: 64,
+            niriPhysicalCropDrag: false,
             viewportWaitOnResize: null,
             viewportWaitFallbackTimer: null,
             transitionCleanupTimer: null,
             dragSessionToken: 0,
             dragRecoveryTimer: null,
             lastPointerEventAt: 0,
+            suppressDomClickTimer: null,
+            handleClick: null,
             handleMouseDown: null,
             handleMouseMove: null,
             handleMouseUp: null,
@@ -2992,10 +4016,15 @@
 
         function normalizeWindowBounds(bounds) {
             if (!bounds) return null;
-            const x = Number(bounds.x);
-            const y = Number(bounds.y);
-            const width = Number(bounds.width);
-            const height = Number(bounds.height);
+            const source = bounds.requestedBounds || (
+                bounds.bounds && !Number.isFinite(Number(bounds.x))
+                    ? bounds.bounds
+                    : bounds
+            );
+            const x = Number(source.x);
+            const y = Number(source.y);
+            const width = Number(source.width);
+            const height = Number(source.height);
             if (!Number.isFinite(x) || !Number.isFinite(y) ||
                 !Number.isFinite(width) || !Number.isFinite(height)) {
                 return null;
@@ -3003,7 +4032,17 @@
             if (width <= 0 || height <= 0) {
                 return null;
             }
-            return { x, y, width, height };
+            const normalized = { x, y, width, height };
+            const offset = bounds.actualBoundsOffset || source.actualBoundsOffset;
+            const offsetX = Number(offset && offset.x);
+            const offsetY = Number(offset && offset.y);
+            if (Number.isFinite(offsetX) && Number.isFinite(offsetY)) {
+                normalized.actualBoundsOffset = {
+                    x: offsetX,
+                    y: offsetY
+                };
+            }
+            return normalized;
         }
 
         function isActiveDragToken(token) {
@@ -3044,6 +4083,22 @@
                 container: container
             }).catch(() => {});
             dispatchClickEvent();
+        }
+
+        function setReturnBallDomClickSuppressed(suppressed, ttlMs) {
+            if (state.suppressDomClickTimer) {
+                clearTimeout(state.suppressDomClickTimer);
+                state.suppressDomClickTimer = null;
+            }
+            if (!suppressed) {
+                container.removeAttribute('data-neko-return-click-suppressed');
+                return;
+            }
+            container.setAttribute('data-neko-return-click-suppressed', 'true');
+            state.suppressDomClickTimer = setTimeout(() => {
+                state.suppressDomClickTimer = null;
+                container.removeAttribute('data-neko-return-click-suppressed');
+            }, Number.isFinite(ttlMs) ? ttlMs : 500);
         }
 
         function markDragPointerActivity() {
@@ -3220,6 +4275,8 @@
 
             const dragStarted = window.nekoPetDrag.start(screenX, screenY);
             if (dragStarted === false) {
+                container.setAttribute('data-dragging', 'false');
+                setReturnBallDomClickSuppressed(false);
                 return;
             }
 
@@ -3238,6 +4295,7 @@
             state.releaseScreenY = screenY;
             state.savedWindowW = window.innerWidth;
             state.savedWindowH = window.innerHeight;
+            state.niriPhysicalCropDrag = isNiriPhysicalCropReturnBallDragActive();
             markDragPointerActivity();
 
             const rect = container.getBoundingClientRect();
@@ -3258,51 +4316,57 @@
             const centeredLeft = Math.max(0, Math.round((MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_SIZE - state.savedBallWidth) / 2));
             const centeredTop = Math.max(0, Math.round((MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_SIZE - state.savedBallHeight) / 2));
 
-            // 先隐藏球再移动到居中位置，防止闪烁
             container.style.transition = 'none';
-            container.style.opacity = '0';
             container.style.setProperty('--neko-ball-drag-size', `${state.savedBallWidth}px`);
-
-            container.style.left = `${centeredLeft}px`;
-            container.style.top = `${centeredTop}px`;
-            container.style.right = '';
-            container.style.bottom = '';
-            container.style.transform = 'none';
             container.setAttribute('data-dragging', 'false');
+            if (state.niriPhysicalCropDrag) {
+                container.style.opacity = getSavedBallStyleValue('opacity');
+                container.style.visibility = getSavedBallStyleValue('visibility');
+                container.style.willChange = 'transform';
+            } else {
+                // 先隐藏球再移动到居中位置，防止闪烁
+                container.style.opacity = '0';
+                container.style.left = `${centeredLeft}px`;
+                container.style.top = `${centeredTop}px`;
+                container.style.right = '';
+                container.style.bottom = '';
+                container.style.transform = 'none';
 
-            document.documentElement.style.setProperty('background', 'transparent', 'important');
-            document.body.style.setProperty('background', 'transparent', 'important');
-            if (!document.getElementById('_neko-ball-drag-style')) {
-                const styleEl = document.createElement('style');
-                styleEl.id = '_neko-ball-drag-style';
-                styleEl.textContent = [
-                    'body[data-neko-ball-drag], body[data-neko-ball-drag] * { background:transparent!important; background-color:transparent!important; box-shadow:none!important; }',
-                    'body[data-neko-ball-drag] > *:not([id$="-return-button-container"]) { display:none!important; }',
-                    'body[data-neko-ball-drag] * { transition:none!important; animation:none!important; }',
-                    'body[data-neko-ball-drag] .neko-idle-return-btn { --neko-idle-return-size:var(--neko-ball-drag-size)!important; width:var(--neko-ball-drag-size)!important; height:var(--neko-ball-drag-size)!important; min-width:var(--neko-ball-drag-size)!important; min-height:var(--neko-ball-drag-size)!important; max-width:var(--neko-ball-drag-size)!important; max-height:var(--neko-ball-drag-size)!important; }',
-                    'body[data-neko-ball-drag] .neko-idle-return-art, body[data-neko-ball-drag] .neko-idle-return-art-next { width:100%!important; height:100%!important; object-fit:contain!important; object-position:center!important; }',
-                ].join('\n');
-                document.head.appendChild(styleEl);
-            }
-            document.body.dataset.nekoBallDrag = '1';
-
-            // dragStart 的 shrink 通过异步 IPC 落到主进程，不能再靠固定帧数猜测
-            // 拖拽视口已经生效；否则返回球会按临时 left/top 在原窗口左侧闪一帧。
-            waitForViewportSize(
-                dragToken,
-                MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_SIZE,
-                MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_SIZE,
-                () => {
-                    if (!state.isDragging || !isActiveDragToken(dragToken)) return;
-                    container.style.opacity = getSavedBallStyleValue('opacity');
-                    container.style.visibility = getSavedBallStyleValue('visibility');
-                    container.style.willChange = 'opacity';
-                },
-                {
-                    fallbackMs: MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_FALLBACK_MS,
-                    continueOnFallback: true
+                document.documentElement.style.setProperty('background', 'transparent', 'important');
+                document.body.style.setProperty('background', 'transparent', 'important');
+                if (!document.getElementById('_neko-ball-drag-style')) {
+                    const styleEl = document.createElement('style');
+                    styleEl.id = '_neko-ball-drag-style';
+                    styleEl.textContent = [
+                        'body[data-neko-ball-drag], body[data-neko-ball-drag] * { background:transparent!important; background-color:transparent!important; box-shadow:none!important; }',
+                        'body[data-neko-ball-drag] > *:not([id$="-return-button-container"]) { display:none!important; }',
+                        'body[data-neko-ball-drag] * { transition:none!important; animation:none!important; }',
+                        'body[data-neko-ball-drag] .neko-idle-return-btn { --neko-idle-return-size:var(--neko-ball-drag-size)!important; width:var(--neko-ball-drag-size)!important; height:var(--neko-ball-drag-size)!important; min-width:var(--neko-ball-drag-size)!important; min-height:var(--neko-ball-drag-size)!important; max-width:var(--neko-ball-drag-size)!important; max-height:var(--neko-ball-drag-size)!important; }',
+                        'body[data-neko-ball-drag] .neko-idle-return-art, body[data-neko-ball-drag] .neko-idle-return-art-next { width:100%!important; height:100%!important; object-fit:contain!important; object-position:center!important; }',
+                        'body[data-neko-ball-drag] .neko-idle-return-btn.is-cat1-playing > .neko-idle-return-art, body[data-neko-ball-drag] .neko-idle-return-art[data-neko-cat1-play-finishing="true"] { width:175%!important; min-width:175%!important; max-width:none!important; height:100%!important; object-fit:contain!important; object-position:center!important; }',
+                    ].join('\n');
+                    document.head.appendChild(styleEl);
                 }
-            );
+                document.body.dataset.nekoBallDrag = '1';
+
+                // dragStart 的 shrink 通过异步 IPC 落到主进程，不能再靠固定帧数猜测
+                // 拖拽视口已经生效；否则返回球会按临时 left/top 在原窗口左侧闪一帧。
+                waitForViewportSize(
+                    dragToken,
+                    MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_SIZE,
+                    MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_SIZE,
+                    () => {
+                        if (!state.isDragging || !isActiveDragToken(dragToken)) return;
+                        container.style.opacity = getSavedBallStyleValue('opacity');
+                        container.style.visibility = getSavedBallStyleValue('visibility');
+                        container.style.willChange = 'opacity';
+                    },
+                    {
+                        fallbackMs: MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_FALLBACK_MS,
+                        continueOnFallback: true
+                    }
+                );
+            }
             scheduleReturnBallDragRecoveryCheck();
 
             if (event) {
@@ -3311,11 +4375,24 @@
             }
         }
 
+        function sendReturnBallNativeDragMove(screenX, screenY) {
+            if (!state.niriPhysicalCropDrag ||
+                !window.nekoPetDrag ||
+                typeof window.nekoPetDrag.move !== 'function') {
+                return;
+            }
+            if (!Number.isFinite(screenX) || !Number.isFinite(screenY)) return;
+            try {
+                window.nekoPetDrag.move(screenX, screenY);
+            } catch (_) {}
+        }
+
         function updateDrag(screenX, screenY, sourcePoint = null) {
             if (!state.isDragging) return;
             markDragPointerActivity();
             state.releaseScreenX = screenX;
             state.releaseScreenY = screenY;
+            sendReturnBallNativeDragMove(screenX, screenY);
 
             const dx = screenX - state.startScreenX;
             const dy = screenY - state.startScreenY;
@@ -3361,6 +4438,7 @@
 
             const options = arguments[2] && typeof arguments[2] === 'object' ? arguments[2] : {};
             const suppressClick = options.suppressClick === true;
+            const suppressNoMoveClick = suppressClick;
             state.isDragging = false;
             state.releaseScreenX = screenX;
             state.releaseScreenY = screenY;
@@ -3368,11 +4446,13 @@
             clearReturnBallDragRecoveryTimer(state);
             clearMultiWindowReturnBallDeferredWork(state);
 
-            // 先瞬间隐藏球，防止恢复 UI 时球在 (8,8) 闪烁
             container.style.transition = 'none';
-            container.style.opacity = '0';
-            container.style.visibility = 'hidden';
-            void container.offsetWidth;
+            if (!state.niriPhysicalCropDrag) {
+                // 先瞬间隐藏球，防止恢复 UI 时球在 (8,8) 闪烁
+                container.style.opacity = '0';
+                container.style.visibility = 'hidden';
+                void container.offsetWidth;
+            }
 
             if (!state.hasMoved) {
                 container.setAttribute('data-dragging', 'true');
@@ -3382,19 +4462,24 @@
                 } catch (error) {
                     console.warn('[App] 返回球点击结束时恢复窗口失败:', error);
                 }
+                const pendingRestoreBounds = restoreBounds || {
+                    width: state.savedWindowW,
+                    height: state.savedWindowH
+                };
                 if (!isActiveDragToken(dragToken)) return;
+                setPendingNativeModelViewportRestoreBounds(pendingRestoreBounds);
                 const expectedWidth = restoreBounds ? restoreBounds.width : state.savedWindowW;
                 const expectedHeight = restoreBounds ? restoreBounds.height : state.savedWindowH;
-                waitForViewportSize(dragToken, expectedWidth, expectedHeight, () => {
+                const completeNoMoveDrag = () => {
                     restoreSavedBallStyle();
                     delete document.body.dataset.nekoBallDrag;
                     container.setAttribute('data-dragging', 'false');
                     scheduleIdleReturnBallDesktopBridge(
-                        suppressClick ? 'return-ball-drag-cancel' : 'return-ball-drag-click',
+                        suppressNoMoveClick ? 'return-ball-drag-cancel' : 'return-ball-drag-click',
                         container
                     );
                     revealReturnBallDragWindow();
-                    if (suppressClick) {
+                    if (suppressNoMoveClick) {
                         window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
                             detail: {
                                 reason: 'return-ball-drag-end',
@@ -3404,9 +4489,15 @@
                             }
                         }));
                     } else {
+                        setReturnBallDomClickSuppressed(true, 500);
                         dispatchReturnBallClick();
                     }
-                }, {
+                };
+                if (state.niriPhysicalCropDrag) {
+                    completeNoMoveDrag();
+                    return;
+                }
+                waitForViewportSize(dragToken, expectedWidth, expectedHeight, completeNoMoveDrag, {
                     fallbackMs: MULTI_WINDOW_RETURN_BALL_DRAG_RESTORE_FALLBACK_MS,
                     continueOnFallback: true
                 });
@@ -3414,6 +4505,10 @@
             }
             const finalBounds = await resolveFinalWindowBounds(screenX, screenY, dragToken);
             if (!isActiveDragToken(dragToken)) return;
+            setPendingNativeModelViewportRestoreBounds(finalBounds || {
+                width: state.savedWindowW,
+                height: state.savedWindowH
+            });
             const movedDistancePx = Math.hypot(
                 state.releaseScreenX - state.startScreenX,
                 state.releaseScreenY - state.startScreenY
@@ -3439,6 +4534,9 @@
                         finalBounds.height
                     )
                     : null;
+                if (placement && placement.edge && placement.edge.includes('bottom')) {
+                    placement.visualShiftY = _getNekoIdleCat1EdgePeekVisualShiftY(finalBounds, height);
+                }
 
                 if (!applyNekoIdleCat1EdgePeek(container, placement)) {
                     clearNekoIdleCat1EdgePeek(container);
@@ -3454,7 +4552,7 @@
 
             const expectedWidth = finalBounds ? finalBounds.width : state.savedWindowW;
             const expectedHeight = finalBounds ? finalBounds.height : state.savedWindowH;
-            waitForViewportSize(dragToken, expectedWidth, expectedHeight, () => {
+            const completeMovedDrag = () => {
                 if (shouldRestoreSavedBallStyle) {
                     restoreSavedBallStyle();
                     container.setAttribute('data-dragging', 'false');
@@ -3495,7 +4593,12 @@
                     container.style.transition = getSavedBallStyleValue('transition');
                     state.savedBallStyle = null;
                 }, 180);
-            }, {
+            };
+            if (state.niriPhysicalCropDrag) {
+                completeMovedDrag();
+                return;
+            }
+            waitForViewportSize(dragToken, expectedWidth, expectedHeight, completeMovedDrag, {
                 fallbackMs: MULTI_WINDOW_RETURN_BALL_DRAG_RESTORE_FALLBACK_MS,
                 continueOnFallback: true
             });
@@ -3540,6 +4643,8 @@
             if (isThoughtBubbleEventTarget(event)) return;
             const point = getTouchScreenPoint(event.touches[0]);
             if (!point) return;
+            event.preventDefault();
+            event.stopImmediatePropagation();
             beginDrag(point.x, point.y, event);
         };
         state.handleTouchMove = (event) => {
@@ -3570,9 +4675,21 @@
                 cancelActiveDrag('visibility-hidden');
             }
         };
+        state.handleClick = (event) => {
+            const isSuppressed = container.getAttribute('data-neko-return-click-suppressed') === 'true';
+            const isNativeDragActive = container.getAttribute('data-dragging') === 'true' ||
+                container.getAttribute('data-dragging') === 'pending';
+            if (!isSuppressed && !isNativeDragActive) return;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            if (!isNativeDragActive) {
+                setReturnBallDomClickSuppressed(false);
+            }
+        };
 
         container.addEventListener('mousedown', state.handleMouseDown, true);
         container.addEventListener('touchstart', state.handleTouchStart, true);
+        container.addEventListener('click', state.handleClick, true);
         document.addEventListener('mousemove', state.handleMouseMove);
         document.addEventListener('mouseup', state.handleMouseUp);
         document.addEventListener('pointermove', state.handlePointerMove, true);
@@ -3670,11 +4787,26 @@
 
         window.addEventListener('live2d-mic-toggle', async (e) => {
             if (e.detail.active) {
-                if (!S.isRecording && !micButton.classList.contains('active')) {
+if (S.isRecording) {
+                    // 已在录音：仅按需联动自动共享屏幕
+                    if (voiceAutoScreenEnabled()) {
+                        await startScreenSharingFromVoiceButton();
+                    }
+                    return;
+                }
+                if (S.voiceStartPending || window.isMicStarting) {
+                    return;
+                }
+                if (!micButton.classList.contains('active')) {
                     micButton.click();
                     await waitForVoiceRecordingReady(5000);
-                } else if (!S.isRecording && typeof window.startMicCapture === 'function') {
-                    await window.startMicCapture();
+                } else {
+                    // 按钮卡在 active 但未真正录音：清状态后重试
+                    micButton.classList.remove('active');
+                    micButton.classList.remove('recording');
+                    micButton.disabled = false;
+                    micButton.click();
+                    await waitForVoiceRecordingReady(5000);
                 }
                 // 仅当用户显式开启「语音时自动共享屏幕」才联动起屏；默认关 = 开麦只开麦。
                 if (S.isRecording && voiceAutoScreenEnabled()) {
@@ -3935,6 +5067,12 @@
                 pngtuberContainer.style.display !== 'none' &&
                 !pngtuberContainer.classList.contains('hidden');
             console.log('[App] 判断当前模型类型 - isVrmActive:', isVrmActive, 'isMmdActive:', isMmdActive);
+            const activeGoodbyeModelType = isMmdActive
+                ? 'mmd'
+                : (isVrmActive ? 'vrm' : (isPngtuberActive ? 'pngtuber' : 'live2d'));
+            const goodbyeResourceToken = beginGoodbyeResourceSuspend({
+                activeModelType: activeGoodbyeModelType
+            });
 
             // VRM 也先仅禁用交互
             const vrmCanvas = document.getElementById('vrm-canvas');
@@ -4020,6 +5158,7 @@
                     pngtuberContainer.style.setProperty('visibility', 'hidden', 'important');
                     pngtuberContainer.style.setProperty('display', 'none', 'important');
                 }
+                completeGoodbyeResourceSuspend(goodbyeResourceToken);
             }, NEKO_MODEL_CAT_TRANSITION_DURATION_MS);
 
             // 隐藏所有浮动按钮和锁按钮
@@ -4100,10 +5239,42 @@
             }
 
             // 显示Live2D的返回按钮（仅在非VRM/非MMD/非PNGTuber模式时显示）
-            if (!useVrmReturn && !useMmdReturn && !usePngtuberReturn && live2dReturnButtonContainer) {
-                activeReturnButtonContainer = showReturnBallContainer(live2dReturnButtonContainer, savedGoodbyeRect, { deferReveal: true });
+            const useLive2dReturn = !useVrmReturn && !useMmdReturn && !usePngtuberReturn;
+            let live2dReturnContainer = live2dReturnButtonContainer;
+            // 与 VRM/MMD/PNGTuber 分支对齐：返回球容器缺失时（模型切换 / 打开过模型管理 / 上一次告别拆除
+            // 了浮动按钮）用 setupFloatingButtons 重建，否则 Live2D 会"自动变猫后直接消失"——模型已最小化，
+            // 却没有任何可点的毛线球留下，且无法点回来。这是四种模型里唯一漏掉自愈重建的分支。
+            if (useLive2dReturn && !live2dReturnContainer && window.live2dManager
+                && typeof window.live2dManager.setupFloatingButtons === 'function') {
+                const live2dModelForReturn = typeof window.live2dManager.getCurrentModel === 'function'
+                    ? window.live2dManager.getCurrentModel()
+                    : window.live2dManager.currentModel;
+                if (live2dModelForReturn && !live2dModelForReturn.destroyed) {
+                    window.live2dManager.setupFloatingButtons(live2dModelForReturn);
+                    live2dReturnContainer = document.getElementById('live2d-return-button-container');
+                    // setupFloatingButtons 会重新显示主浮动按钮工具栏与锁图标；告别态需再次隐藏，
+                    // 并恢复上面 setLocked(true) 的锁定，保持与本 handler 既有隐藏逻辑一致。
+                    const rebuiltFloatingButtons = document.getElementById('live2d-floating-buttons');
+                    if (rebuiltFloatingButtons) {
+                        rebuiltFloatingButtons.style.setProperty('display', 'none', 'important');
+                        rebuiltFloatingButtons.style.setProperty('visibility', 'hidden', 'important');
+                        rebuiltFloatingButtons.style.setProperty('opacity', '0', 'important');
+                    }
+                    const rebuiltLockIcon = document.getElementById('live2d-lock-icon');
+                    if (rebuiltLockIcon) {
+                        rebuiltLockIcon.style.setProperty('display', 'none', 'important');
+                        rebuiltLockIcon.style.setProperty('visibility', 'hidden', 'important');
+                        rebuiltLockIcon.style.setProperty('opacity', '0', 'important');
+                    }
+                    if (typeof window.live2dManager.setLocked === 'function') {
+                        window.live2dManager.setLocked(true, { updateFloatingButtons: false });
+                    }
+                }
+            }
+            if (useLive2dReturn && live2dReturnContainer) {
+                activeReturnButtonContainer = showReturnBallContainer(live2dReturnContainer, savedGoodbyeRect, { deferReveal: true });
             } else {
-                hideReturnBallContainer(live2dReturnButtonContainer);
+                hideReturnBallContainer(live2dReturnContainer);
             }
 
             if (usePngtuberReturn && !pngtuberReturnButtonContainer && window.pngtuberManager) {
@@ -4230,7 +5401,9 @@
                 if (toggleChatBtn) {
                     const iconImg = toggleChatBtn.querySelector('img');
                     if (iconImg) {
-                        iconImg.src = '/static/assets/neko-idle/chat-minimized-yarn-ball.png';
+                        iconImg.src = '/static/assets/neko-idle/chat-minimized-yarn-ball-116.png';
+                        iconImg.srcset = '/static/assets/neko-idle/chat-minimized-yarn-ball-116.png 1x, /static/assets/neko-idle/chat-minimized-yarn-ball-232.png 2x';
+                        iconImg.style.imageRendering = 'auto';
                         iconImg.alt = window.t ? window.t('common.expand') : '展开';
                     }
                     toggleChatBtn.title = window.t ? window.t('common.expand') : '展开';
@@ -4244,18 +5417,49 @@
             }
 
             // 触发原有的离开逻辑
+            const runGoodbyeResetClickIfActive = (reason) => {
+                const goodbyeStillActive = !!(
+                    (window.live2dManager && window.live2dManager._goodbyeClicked) ||
+                    (window.vrmManager && window.vrmManager._goodbyeClicked) ||
+                    (window.mmdManager && window.mmdManager._goodbyeClicked)
+                );
+                if (!goodbyeStillActive) {
+                    console.log('[App] 跳过过期的 resetSessionButton.click()：当前已不在 goodbye 状态', reason || '');
+                    return false;
+                }
+                console.log('[App] 触发 resetSessionButton.click()，当前 goodbyeClicked 状态:', window.live2dManager ? window.live2dManager._goodbyeClicked : 'undefined', 'reason:', reason || 'delayed-goodbye-reset');
+                // 语音启动会把侧栏离开按钮置为 disabled；程序化 click 需要先恢复，
+                // 后续最终按钮状态仍交给 reset handler 统一收口。
+                resetSessionButton.disabled = false;
+                resetSessionButton.click();
+                return true;
+            };
             if (resetSessionButton) {
-                setTimeout(() => {
-                    console.log('[App] 触发 resetSessionButton.click()，当前 goodbyeClicked 状态:', window.live2dManager ? window.live2dManager._goodbyeClicked : 'undefined');
-                    // 语音启动会把侧栏离开按钮置为 disabled；程序化 click 需要先恢复，
-                    // 后续最终按钮状态仍交给 reset handler 统一收口。
-                    resetSessionButton.disabled = false;
-                    resetSessionButton.click();
+                if (window._goodbyeResetClickTimerId) {
+                    clearTimeout(window._goodbyeResetClickTimerId);
+                }
+                window._goodbyeResetClickTimerId = setTimeout(() => {
+                    window._goodbyeResetClickTimerId = null;
+                    runGoodbyeResetClickIfActive('delayed-goodbye-reset');
                 }, 10);
             } else {
                 console.error('[App] resetSessionButton 未找到！');
+        }
+    });
+
+        function restoreReturnBallAfterBlockedModelViewport(event) {
+            const eventType = String(event && event.type || '');
+            const match = eventType.match(/^([a-z0-9-]+)-return-click$/i);
+            const returnRect = event && event.detail && event.detail.returnButtonRect;
+            const container = match && match[1]
+                ? document.getElementById(`${match[1]}-return-button-container`)
+                : getVisibleIdleReturnBallContainer();
+            if (!container) return;
+            if (container.style.display === 'none') {
+                showReturnBallContainer(container, returnRect);
             }
-        });
+            revealReturnBallContainer(container, 'return-ball-model-viewport-blocked');
+        }
 
         // 请她回来按钮（统一处理函数）
         const handleReturnClick = async (event) => {
@@ -4264,19 +5468,30 @@
                 console.log('[App] 模型正在切换为猫形态，忽略本次请她回来事件');
                 return;
             }
-            const isReturningToPngtuber = (window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber';
-            if (multiWindowReturnBallDragState) {
-                multiWindowReturnBallDragState.dragSessionToken += 1;
-                clearMultiWindowReturnBallDeferredWork(multiWindowReturnBallDragState);
+            const hadPendingGoodbyeReset = !!window._goodbyeResetClickTimerId;
+            if (hadPendingGoodbyeReset) {
+                clearTimeout(window._goodbyeResetClickTimerId);
+                window._goodbyeResetClickTimerId = null;
             }
-
-            // 取消延迟隐藏定时器
             if (window._goodbyeHideTimerId) {
                 clearTimeout(window._goodbyeHideTimerId);
                 window._goodbyeHideTimerId = null;
                 console.log('[App] handleReturnClick: 已取消 goodbye 延迟隐藏定时器');
             }
-
+            const preReturnViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel();
+            if (!preReturnViewportReady.ready) {
+                console.warn('[App] 请她回来已暂缓：Pet viewport 仍处于猫形态小窗口，保留 return 状态');
+                restoreReturnBallAfterBlockedModelViewport(event);
+                if (hadPendingGoodbyeReset) {
+                    runGoodbyeResetClickIfActive('return-viewport-blocked');
+                }
+                return;
+            }
+            const isReturningToPngtuber = (window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber';
+            if (multiWindowReturnBallDragState) {
+                multiWindowReturnBallDragState.dragSessionToken += 1;
+                clearMultiWindowReturnBallDeferredWork(multiWindowReturnBallDragState);
+            }
             // 同步 window 中的设置值到状态
             if (typeof window.focusModeEnabled !== 'undefined') {
                 S.focusModeEnabled = window.focusModeEnabled;
@@ -4310,6 +5525,7 @@
 
             console.log('[App] 标志清除后 - live2dManager._goodbyeClicked:', window.live2dManager?._goodbyeClicked);
             console.log('[App] 标志清除后 - vrmManager._goodbyeClicked:', window.vrmManager?._goodbyeClicked);
+            restoreGoodbyeResourceSuspend('return-click');
 
             // 隐藏"请她回来"按钮
             const live2dReturnButtonContainer = document.getElementById('live2d-return-button-container');
@@ -4363,11 +5579,15 @@
                 : (window.innerWidth <= 768);
 
             // 使用 showCurrentModel() 做最终裁决
+            let modelDisplayReady = true;
             try {
-                await showCurrentModel();
+                modelDisplayReady = await showCurrentModel();
             } catch (error) {
                 console.error('[App] showCurrentModel 失败:', error);
                 showLive2d();
+            }
+            if (modelDisplayReady === false) {
+                return;
             }
 
             await settleReturnedModelBounds(returnModelWasMoved);
@@ -4579,6 +5799,8 @@
                     const iconImg = toggleChatBtn.querySelector('img');
                     if (iconImg) {
                         iconImg.src = '/static/icons/expand_icon_off.png';
+                        iconImg.removeAttribute('srcset');
+                        iconImg.style.imageRendering = '';
                         iconImg.alt = window.t ? window.t('common.minimize') : '最小化';
                     }
                     toggleChatBtn.title = window.t ? window.t('common.minimize') : '最小化';

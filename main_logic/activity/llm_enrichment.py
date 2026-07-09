@@ -79,6 +79,7 @@ _SCORED_STATES: tuple[str, ...] = (
     'gaming',
     'focused_work',
     'casual_browsing',
+    'focused_video',
     'chatting',
     'voice_engaged',
     'idle',
@@ -411,6 +412,7 @@ async def _invoke_emotion_tier(prompt: str, *, timeout: float, label: str) -> st
             temperature=0.4,
             max_completion_tokens=512,
             timeout=timeout,  # same budget the asyncio.wait_for below enforces
+            provider_type=cfg.get('provider_type'),
         )
     except Exception as e:
         logger.debug('emotion-tier llm init failed: %s', e)
@@ -463,6 +465,7 @@ async def _invoke_capable_tier(prompt: str, *, timeout: float, label: str) -> st
             temperature=0.3,
             max_completion_tokens=128,
             timeout=timeout,  # same budget the asyncio.wait_for below enforces
+            provider_type=cfg.get('provider_type'),
         )
     except Exception as e:
         logger.debug('summary-tier llm init failed: %s', e)

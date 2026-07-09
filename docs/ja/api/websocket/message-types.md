@@ -1,6 +1,6 @@
 # WebSocket メッセージタイプ
 
-すべてのメッセージは JSON テキストフレームです。
+オーディオペイロードを除き、メッセージは JSON テキストフレームです。オーディオの場合、サーバーはまず `audio_chunk` JSON ヘッダーフレームを送信し、続いて PCM バイトを運ぶ独立した生のバイナリフレームを送信します（詳細は下記の `audio_chunk` セクションを参照）。
 
 ## クライアント → サーバー
 
@@ -73,27 +73,32 @@ LLM セッションを初期化します。
 
 ## サーバー → クライアント
 
-### `text`
+### `gemini_response`
 
 LLM からのストリーミングテキストレスポンス。
 
 ```json
 {
-  "type": "text",
-  "text": "Hi there! How can I help you?"
+  "type": "gemini_response",
+  "text": "Hi there! How can I help you?",
+  "isNewMessage": true,
+  "turn_id": "<turn id>",
+  "request_id": "<request id>"
 }
 ```
 
-### `audio`
+### `audio_chunk`
 
-オーディオレスポンス（TTS 出力または直接 LLM オーディオ）。
+オーディオレスポンス（TTS 出力または直接 LLM オーディオ）。サーバーはまずこの JSON ヘッダーフレームを送信し、続いて生の PCM オーディオバイトを独立したバイナリ WebSocket フレームとして送信します（base64 として埋め込まれません）。`speech_id` は割り込み（barge-in）時にこのターンの音声を正確に照合するために使われます。
 
 ```json
 {
-  "type": "audio",
-  "audio_data": "<base64 encoded PCM 48kHz>"
+  "type": "audio_chunk",
+  "speech_id": "<このターンの speech_id>"
 }
 ```
+
+その後にバイナリフレーム（生の PCM バイト）が続きます。クライアントは上記のヘッダーフレームを受信した後、次のバイナリフレームを読み取ってデコードし再生します。
 
 ### `status`
 

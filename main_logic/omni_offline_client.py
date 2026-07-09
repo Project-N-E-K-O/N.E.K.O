@@ -19,11 +19,25 @@ import json
 import re
 import time
 from typing import Optional, Callable, Dict, Any, Awaitable, List
-from utils.llm_client import SystemMessage, HumanMessage, AIMessage, LLMStreamChunk, ThinkingStreamStripper, strip_thinking_segments, create_chat_llm, create_chat_llm_async
+from utils.llm_client import (
+    SystemMessage,
+    HumanMessage,
+    AIMessage,
+    LLMStreamChunk,
+    ThinkingStreamStripper,
+    anthropic_retry_error_types,
+    strip_thinking_segments,
+    create_chat_llm,
+    create_chat_llm_async,
+)
 from openai import APIConnectionError, AuthenticationError, InternalServerError, RateLimitError
 from utils.frontend_utils import calculate_text_similarity
 from utils.tokenize import count_tokens, truncate_to_tokens
-from config import OMNI_RECENT_RESPONSES_MAX, DIALOG_LLM_STREAM_TIMEOUT_SECONDS
+from config import (
+    OMNI_RECENT_RESPONSES_MAX,
+    DIALOG_LLM_STREAM_TIMEOUT_SECONDS,
+    FOCUS_THINKING_EXTRA_TOKENS,
+)
 from main_logic.tool_calling import (
     OnToolCallCallback,
     ToolCall,
@@ -32,6 +46,14 @@ from main_logic.tool_calling import (
     parse_arguments_json,
 )
 from utils.llm_tool_leak_filter import ToolLeakFilter, log_tool_leak_filtered
+
+_LLM_RETRY_ERROR_TYPES = (
+    APIConnectionError,
+    AuthenticationError,
+    InternalServerError,
+    RateLimitError,
+    *anthropic_retry_error_types(),
+)
 
 # google-genai 懒加载。该 SDK import 很重（~0.6s），且在 import 时会捎带 mcp
 # （~0.5s），但 offline 路径只有用户用 native-Gemini 端点时才需要它。改成首次使用
@@ -221,6 +243,10 @@ _GIBBERISH_PS_RATIO_CEIL = 0.25    # > 25% punct/symbol → emoji/mark spam
 # matter without bloating cost.
 _MAX_TOKENS_SLACK = 20
 _UNLIMITED_BUDGET = 999999  # sentinel set when user picks the slider's "无限制"
+
+# 主动搭话遗留截图的存活上限：暂存后超过这个时长就视为过期、不再注入用户回复
+# （屏幕早变了，旧图反而误导模型）。在注入点惰性判定，无需后台定时器。
+_PROACTIVE_SCREENSHOT_TTL_SECONDS = 60.0
 
 
 def _budget_to_max_tokens(budget: int, summary_mode: bool = False) -> int | None:
@@ -551,9 +577,12 @@ class OmniOfflineClient:
         vision_model: str = "",
         vision_base_url: str = "",  # 独立的视觉模型 API URL
         vision_api_key: str = "",   # 独立的视觉模型 API Key
+        provider_type: str | None = None,
+        vision_provider_type: str | None = None,
         voice: str = "",  # Unused for text mode but kept for compatibility
         turn_detection_mode = None,  # Unused for text mode
         on_text_delta: Optional[Callable[[str, bool], Awaitable[None]]] = None,
+        on_thinking_active: Optional[Callable[[bool], Awaitable[None]]] = None,
         on_audio_delta: Optional[Callable[[bytes], Awaitable[None]]] = None,  # Unused
         on_interrupt: Optional[Callable[[], Awaitable[None]]] = None,  # Unused
         on_input_transcript: Optional[Callable[[str], Awaitable[None]]] = None,
@@ -580,8 +609,35 @@ class OmniOfflineClient:
         # 视觉模型独立配置（如果未指定则回退到主配置）
         self.vision_base_url = vision_base_url if vision_base_url else base_url
         self.vision_api_key = vision_api_key if vision_api_key else api_key
+        self.provider_type = provider_type
+        self.vision_provider_type = vision_provider_type or provider_type
         self._model_switch_lock = asyncio.Lock()
         self.on_text_delta = on_text_delta
+        # Called with True the first time a stream emits a reasoning / thinking
+        # chunk (the text itself is filtered out before it reaches text/TTS —
+        # only the "is thinking" boolean is surfaced), and with False to clear
+        # when that stream ends without an external unconditional clear (see
+        # _notify_reasoning_done). Drives the chat thinking-dots bubble for ANY
+        # turn that actually reasons, decoupled from Focus mode.
+        self.on_thinking_active = on_thinking_active
+        # Reasoning-pulse ownership. A proactive prompt_ephemeral turn can
+        # interleave with a user stream_text on this SAME client (core drops stale
+        # proactive chunks via the expected-sid guard rather than awaiting the
+        # prompt). Ownership is tracked by a single source of truth — NOT a shared
+        # boolean, which _begin_reasoning_stream would reset out from under an
+        # older still-running stream (Codex P2):
+        #   _reasoning_stream_seq      — monotonic counter, bumped per stream entry
+        #                                (stream_text / prompt_ephemeral) so each
+        #                                stream has a distinct token.
+        #   _reasoning_active_pulse_seq — the seq that currently owns an un-cleared
+        #                                True pulse (None = bubble not lit by us).
+        #                                A pulse stamps it; a clear only fires for
+        #                                the owning seq. Because it is NOT reset on
+        #                                stream entry, a preempted proactive turn
+        #                                still clears its OWN pulse, yet cannot
+        #                                clear a newer stream that already re-pulsed.
+        self._reasoning_stream_seq = 0
+        self._reasoning_active_pulse_seq: Optional[int] = None
         self.on_input_transcript = on_input_transcript
         self.on_output_transcript = on_output_transcript
         self.handle_connection_error = on_connection_error
@@ -630,6 +686,7 @@ class OmniOfflineClient:
             streaming=True, max_retries=0,
             max_completion_tokens=_budget_to_max_tokens(self.max_response_length),
             timeout=DIALOG_LLM_STREAM_TIMEOUT_SECONDS,  # hang-guard; generous so normal/long replies aren't truncated
+            provider_type=self.provider_type,
         )
 
         # ── Tool calling state ────────────────────────────────────────
@@ -649,6 +706,18 @@ class OmniOfflineClient:
         self._instructions = ""
         self._stream_task = None
         self._pending_images = []  # Store pending images to send with next text
+        # 主动搭话以「屏幕」为素材投递后遗留的那张截图，待下一条用户 text 回复
+        # 时作为前导视觉背景注入（让对话模型「看到」刚才搭话评论的屏幕）。刻意
+        # 与 _pending_images（用户自己的下一帧）隔离：共用会偷走用户的待发帧，
+        # 见 core.py proactive media 注释（Codex P2）。单张、一次性消费、带 TTL
+        # （_proactive_image_staged_at = 暂存时刻的 monotonic 秒，0.0 = 无暂存）。
+        # _proactive_image_history_len = 暂存那一刻的历史长度：截图只对「紧接它的
+        # 下一条用户回复」有效，若中途又来了别的 AI 轮（greeting / agent 回调走
+        # prompt_ephemeral，不过 finish_proactive_delivery）使历史变长，这张就过时
+        # 了、注入时丢弃——把截图钉死在「最后一条 AI 轮」上（Codex P2）。
+        self._proactive_image_to_inject = None
+        self._proactive_image_staged_at = 0.0
+        self._proactive_image_history_len = 0
 
         # ── Empty-completion 诊断（finish_reason / prompt_tokens / block_reason）──
         # Gemini 在 SAFETY / RECITATION / MAX_TOKENS 等场景会返回 finish_reason
@@ -802,6 +871,72 @@ class OmniOfflineClient:
                 "name": tool_call.name,
                 "content": result.output_as_json_string(),
             })
+
+    async def _notify_reasoning_active(self) -> None:
+        """Tell the host that the model is emitting reasoning / thinking chunks, so
+        the chat can show a thinking-dots bubble even on a non-Focus turn whose
+        provider reasons internally. The reasoning TEXT is still filtered out at the
+        call site — only this boolean pulse escapes. Pulses once per stream: it
+        records the current stream's seq as the pulse owner and no-ops while that
+        same seq still owns the pulse, so the three filter points can call it
+        blindly. Best-effort: a callback failure must never disturb the stream.
+
+        getattr defaults guard ``__new__`` test stubs that bypass ``__init__``."""
+        cur = getattr(self, "_reasoning_stream_seq", 0)
+        if getattr(self, "_reasoning_active_pulse_seq", None) == cur:
+            return  # already pulsed for THIS stream
+        self._reasoning_active_pulse_seq = cur
+        cb = getattr(self, "on_thinking_active", None)
+        if cb is None:
+            return
+        try:
+            await cb(True)
+        except Exception as e:
+            logger.debug("on_thinking_active(True) callback failed (ignored): %s", e)
+
+    def _begin_reasoning_stream(self) -> int:
+        """Open a new reasoning-pulse scope for one stream and return its ownership
+        token. Bumps the seq so this stream's first reasoning chunk re-pulses and
+        so an older interleaving stream's clear can't fire for this scope. Crucially
+        does NOT touch ``_reasoning_active_pulse_seq`` — that single source of truth
+        stays owned by whoever last lit the bubble, so a preempted older stream can
+        still clear its own pulse (Codex P2). Called at the top of both stream entry
+        points (stream_text and prompt_ephemeral)."""
+        self._reasoning_stream_seq = getattr(self, "_reasoning_stream_seq", 0) + 1
+        return self._reasoning_stream_seq
+
+    async def _notify_reasoning_done(self, owner_seq: Optional[int] = None) -> None:
+        """Symmetric clear for ``_notify_reasoning_active``: push the bubble back to
+        False when THIS stream still owns the active pulse. Required for callers
+        without an external unconditional clear — ``prompt_ephemeral``'s proactive /
+        greeting / avatar turns clear the bubble only when a visible token reaches
+        ``send_lanlan_response``; a turn that reasons but commits no text (safety /
+        empty / tool-only) would otherwise leave the bubble stuck on (Codex P2).
+        ``stream_text``'s Focus path is cleared by core's own unconditional finally
+        instead (it must also clear the Focus pre-pulse, which fires with no
+        reasoning chunk), so this is wired into ``prompt_ephemeral``'s finally only.
+
+        ``owner_seq`` is the token from this stream's ``_begin_reasoning_stream``.
+        The clear fires only when ``_reasoning_active_pulse_seq`` still equals it:
+          - a NEWER stream that already re-pulsed took ownership (seq differs) → we
+            must NOT clear the bubble it is reasoning under;
+          - but if the newer stream merely STARTED (bumped seq) without pulsing yet,
+            ownership is still ours, so we correctly clear our own pulse rather than
+            leaking it (the bug a shared per-stream boolean would have caused).
+        Idempotent; getattr defaults guard ``__new__`` test stubs."""
+        active = getattr(self, "_reasoning_active_pulse_seq", None)
+        if active is None:
+            return
+        if owner_seq is not None and active != owner_seq:
+            return
+        self._reasoning_active_pulse_seq = None
+        cb = getattr(self, "on_thinking_active", None)
+        if cb is None:
+            return
+        try:
+            await cb(False)
+        except Exception as e:
+            logger.debug("on_thinking_active(False) clear failed (ignored): %s", e)
 
     async def _astream_with_tools(self, messages, **overrides):
         """Polymorphic streaming entry point. Yields ``LLMStreamChunk``
@@ -959,6 +1094,13 @@ class OmniOfflineClient:
                     streamed_text_buffer += chunk.content
                 if getattr(chunk, "reasoning_content", None):
                     streamed_reasoning_buffer += chunk.reasoning_content
+                    # Pulse the thinking bubble on ANY chunk carrying reasoning,
+                    # BEFORE the pure-reasoning skip below — a thinking provider
+                    # can pack reasoning_content onto the SAME delta as a
+                    # tool_call_delta / finish_reason (the OpenAI adapter keeps
+                    # them in one LLMStreamChunk), and a reasoning tool-call turn
+                    # has no visible token to show feedback otherwise (Codex P2).
+                    await self._notify_reasoning_active()
                 if chunk.tool_call_deltas:
                     deltas_per_chunk.append(chunk.tool_call_deltas)
                 if chunk.finish_reason:
@@ -981,6 +1123,8 @@ class OmniOfflineClient:
                     and not chunk.finish_reason
                     and not chunk.usage_metadata
                 ):
+                    # Pure reasoning-only chunk: already pulsed above; drop it so
+                    # the "first token" TTFT埋点 isn't fooled by a reasoning token.
                     continue
                 # 永远 yield 文本 chunk —— 即便是 tool-only turn 也可能在
                 # finish_reason=tool_calls 之前 emit usage chunk 和空 content。
@@ -1065,6 +1209,11 @@ class OmniOfflineClient:
                 pt = chunk.usage_metadata.get("prompt_tokens")
                 if pt:
                     final_prompt_tokens = pt
+            # Pulse on ANY reasoning chunk (incl. reasoning bundled with a tool
+            # delta / finish_reason on one delta), before the pure-reasoning skip
+            # below — same fix as the main loop (Codex P2).
+            if getattr(chunk, "reasoning_content", None):
+                await self._notify_reasoning_active()
             # 与常规 tool-loop 路径一致：不向下游转发 thinking 模型的纯
             # reasoning chunk（有 reasoning_content、无 content / tool delta /
             # finish / usage）。stream_text 在首个 yield 的 chunk 上记 TTFT，
@@ -1200,8 +1349,13 @@ class OmniOfflineClient:
                     cand_content = getattr(cand, "content", None)
                     parts = getattr(cand_content, "parts", None) or []
                     for part in parts:
-                        # Skip thinking parts (Gemini 2.5+ thinking models).
+                        # Skip thinking parts (Gemini 2.5+ thinking models) — but
+                        # surface the boolean "is thinking" pulse first so the
+                        # bubble shows on genai reasoning turns too (dual with the
+                        # OpenAI-compat reasoning_content path). The thought TEXT
+                        # itself is still dropped.
                         if getattr(part, "thought", False):
+                            await self._notify_reasoning_active()
                             continue
                         text = getattr(part, "text", None) or ""
                         fn_call = getattr(part, "function_call", None)
@@ -1512,9 +1666,11 @@ class OmniOfflineClient:
             if use_vision_config:
                 base_url = self.vision_base_url
                 api_key = self.vision_api_key if self.vision_api_key and self.vision_api_key != '' else None
+                provider_type = self.vision_provider_type
             else:
                 base_url = self.base_url
                 api_key = self.api_key
+                provider_type = self.provider_type
 
             # 先创建新 client，成功后再原子替换，避免半切换状态。
             # max_completion_tokens 跟随当前 max_response_length 同步设置
@@ -1525,18 +1681,11 @@ class OmniOfflineClient:
                 # 普通 budget；summary 的 3000 抬升只在 stream_text 内临时生效。
                 max_completion_tokens=_budget_to_max_tokens(self.max_response_length),
                 timeout=DIALOG_LLM_STREAM_TIMEOUT_SECONDS,  # hang-guard; generous so normal/long replies aren't truncated
+                provider_type=provider_type,
             )
             old_llm = self.llm
             self.llm = new_llm
             self.model = new_model
-            # Focus vision guard: this is the single choke point for vision-model
-            # switches. Record whether the session is now committed to a separate
-            # persistent vision model — used to recompute _focus_images_seen after
-            # repetition recovery wipes _conversation_history (the in-history image
-            # is gone, so only a permanent model switch should keep thinking off).
-            # Name-comparison can't tell vision from conversation when they're
-            # equal (shared-model profiles), hence this explicit flag.
-            self._focus_vision_committed = bool(use_vision_config)
             # ⚠️ 同步 self.base_url / self.api_key —— 否则后续 _astream_with_tools
             # 重新计算 _use_genai_sdk 时拿到的还是旧 conversation 配置，会
             # 把 vision 走的 Gemini endpoint 错误路由到 OpenAI-compat（反之亦然）。
@@ -1590,15 +1739,6 @@ class OmniOfflineClient:
                 self._conversation_history = [self._conversation_history[0]]
             else:
                 self._conversation_history = []
-
-            # Focus vision guard: the image-bearing history just got erased, so
-            # an image that only "persisted in history" (shared-model profile)
-            # no longer suppresses thinking — recompute the sticky flag from the
-            # one thing that survives a history wipe: an actual persistent
-            # vision-model switch. In shared-model profiles _focus_vision_committed
-            # is False (no switch happened) → flag clears; on a separate vision
-            # model it stays True (switch is irreversible).
-            self._focus_images_seen = getattr(self, "_focus_vision_committed", False)
 
             # 清空重复检测缓存
             self._recent_responses.clear()
@@ -1655,6 +1795,7 @@ class OmniOfflineClient:
         emotion_api_key = emotion_config.get('api_key')
         emotion_model = emotion_config.get('model')
         emotion_base_url = emotion_config.get('base_url')
+        emotion_provider_type = emotion_config.get('provider_type')
         if not (emotion_api_key and emotion_model):
             logger.info("summary: emotion 模型/Key 未配置，跳过长回复摘要")
             return None
@@ -1698,6 +1839,7 @@ class OmniOfflineClient:
                 emotion_model, emotion_base_url, emotion_api_key,
                 max_completion_tokens=120,
                 timeout=30,
+                provider_type=emotion_provider_type,
             )
         except Exception as e:
             logger.warning("summary: 构造 emotion LLM 失败: %s", e)
@@ -1746,25 +1888,59 @@ class OmniOfflineClient:
         return summary
 
     @staticmethod
-    def _focus_stream_overrides(thinking_on: bool, uses_vision: bool, model: str) -> dict:
+    def _focus_stream_overrides(
+        thinking_on: bool, model: str, base_max_tokens: int | None = None,
+    ) -> dict:
         """Per-call streaming overrides for a Focus turn.
 
-        When thinking-on (and not on a vision model), override extra_body with
-        ``focus_extra_body(model)`` — the provider's resolved extra_body minus
-        the thinking-disable keys. This lets thinking run free while PRESERVING
-        non-thinking provider extras (e.g. step-2-mini's built-in web_search),
-        which a blunt ``extra_body=None`` would silently drop. Returns ``{}``
-        (instance default, thinking off) otherwise.
+        When thinking-on, override extra_body with ``focus_extra_body(model)`` —
+        the provider's thinking knob flipped to its ENABLED form (per provider
+        dialect) while PRESERVING non-thinking provider extras (e.g. step-2-mini's
+        built-in web_search), which a blunt ``extra_body=None`` would drop.
+        Returns ``{}`` (instance default, thinking off) otherwise.
 
-        ``uses_vision`` must be True both when this turn carries images AND when
-        the session has already sent images (image data persists in history, so
-        a later text-only turn still runs on the vision model — vision + thinking
-        reliably times out, see ``main_routers/system_router.py`` Phase-2 note).
+        Also bumps ``max_completion_tokens`` by ``FOCUS_THINKING_EXTRA_TOKENS``
+        — but ONLY when this turn actually flips thinking ON for the provider:
+        thinking models (Qwen / GLM / Kimi / Doubao / OpenRouter) bill reasoning
+        tokens against the SAME budget as the visible reply, so without headroom
+        the chain-of-thought squeezes the answer short. "Actually on" is detected
+        by ``focus_extra_body(model) != get_extra_body(model)`` — when the focus
+        form equals the regular (thinking-off) extra_body (Claude kept disabled,
+        unknown models → None, non-thinking providers only preserving their
+        non-thinking extras) there is no reasoning to reserve for, and a needless
+        +800 could push a request past a model's output ceiling near the cap /
+        summary floor. The bump is layered on ``base_max_tokens`` (the live
+        instance ceiling, already reflecting summary-mode lift / vision-model
+        switch), so it composes with both. ``base_max_tokens=None`` (unlimited
+        budget) omits the field — the request stays uncapped. The Python-side
+        length guard still caps the visible reply at ``max_response_length``;
+        this only gives reasoning its own slack on the API side.
+
+        Vision-model turns are included: Focus runs thinking-on regardless of
+        whether the turn carries images. The inline streaming timeout
+        (``DIALOG_LLM_STREAM_TIMEOUT_SECONDS``, 180s) is generous enough for a
+        vision reasoning turn — unlike the short-windowed proactive Phase-2 path,
+        which still keeps thinking off (its 16-25s window would time out).
         """
-        if not (thinking_on and not uses_vision):
+        if not thinking_on:
             return {}
-        from config.providers import focus_extra_body
-        return {"extra_body": focus_extra_body(model)}
+        from config.providers import focus_extra_body, get_extra_body
+        fb = focus_extra_body(model)
+        overrides: dict = {"extra_body": fb}
+        # Headroom only when Focus actually enables thinking for this provider:
+        # ``fb is None`` ⇒ no thinking-enable override at all (unknown model);
+        # ``fb == get_extra_body(model)`` ⇒ focus form equals the regular
+        # (thinking-off) form (Claude kept disabled, non-thinking providers only
+        # preserving their own extras). Either way there's no reasoning to
+        # reserve for, and a needless +800 could push a request past a model's
+        # output ceiling.
+        if (
+            base_max_tokens is not None
+            and fb is not None
+            and fb != get_extra_body(model)
+        ):
+            overrides["max_completion_tokens"] = base_max_tokens + FOCUS_THINKING_EXTRA_TOKENS
+        return overrides
 
     async def stream_text(
         self,
@@ -1819,22 +1995,40 @@ class OmniOfflineClient:
             else:
                 return
 
-        # Check if we need to switch to vision model
-        has_images = len(self._pending_images) > 0
-        # Focus vision guard (sticky): mark the session vision-unsafe-for-thinking
-        # ONLY when this turn leaves a PERSISTENT vision state — either a separate
-        # vision-model switch (vision_model != model, irreversible once it
-        # happens), or an image that actually stays in _conversation_history.
-        # When history_replacement_text is set the image-bearing message is
-        # evicted to text-only in the finally block, so in shared-model profiles
-        # (vision_model == conversation_model) nothing persists; flagging there
-        # would falsely freeze thinking off on every later text-only Focus turn.
-        # Sticky (never cleared here) so a real earlier image still counts.
-        _persistent_vision_switch = bool(self.vision_model and self.vision_model != self.model)
-        _image_will_persist = not (history_replacement_text and str(history_replacement_text).strip())
-        self._focus_images_seen = getattr(self, "_focus_images_seen", False) or (
-            has_images and (_persistent_vision_switch or _image_will_persist)
-        )
+        # Fresh stream: open a new reasoning-pulse scope (bump the ownership seq)
+        # so this turn's first reasoning chunk re-pulses the bubble. stream_text
+        # does not clear via _notify_reasoning_done — core's inline finally clears
+        # unconditionally — so it only needs the bump, not an owner token.
+        self._begin_reasoning_stream()
+
+        # Check if we need to switch to vision model. A staged proactive-vision
+        # screenshot (the screen she just commented on) counts as an image too,
+        # so a text-only user reply still goes multi-modal and the model sees it.
+        # The staged screenshot is dropped (not injected) when either:
+        #  - TTL: older than _PROACTIVE_SCREENSHOT_TTL_SECONDS (the screen has moved
+        #    on — a stale frame would mislead more than help); or
+        #  - superseded: a later AI turn was appended after staging (e.g. a
+        #    greeting / agent callback via prompt_ephemeral), so this reply isn't
+        #    answering the screen-based talk anymore. History only grows by
+        #    appends between staging and this read (the user hasn't been appended
+        #    yet), so a length change means an intervening AI turn (Codex P2).
+        proactive_image = self._proactive_image_to_inject
+        if proactive_image:
+            _expired = (
+                time.monotonic() - self._proactive_image_staged_at
+                > _PROACTIVE_SCREENSHOT_TTL_SECONDS
+            )
+            _superseded = len(self._conversation_history) != self._proactive_image_history_len
+            if _expired or _superseded:
+                logger.info(
+                    "Proactive screenshot dropped (expired=%s superseded=%s)",
+                    _expired, _superseded,
+                )
+                self._proactive_image_to_inject = None
+                self._proactive_image_staged_at = 0.0
+                self._proactive_image_history_len = 0
+                proactive_image = None
+        has_images = bool(proactive_image) or len(self._pending_images) > 0
         # 就地植入 system_prefix：拼到 user content 的 text 段前缀（watermark
         # 自带，不补 separator 也能区分）。callback 文本随 HumanMessage 一起
         # 落 history，跟 voice mode user-role 注入对偶。
@@ -1855,7 +2049,17 @@ class OmniOfflineClient:
             # Multi-modal message: images + text
             content = []
 
-            # Add images first
+            # Add images first. Temporal order: the proactive screenshot (the
+            # screen she commented on, BEFORE the user spoke) leads, then the
+            # user's own pending frame(s) — so the model doesn't mistake the
+            # earlier screen for what the user just captured.
+            if proactive_image:
+                content.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{proactive_image}"
+                    }
+                })
             for img_b64 in self._pending_images:
                 content.append({
                     "type": "image_url",
@@ -1871,10 +2075,19 @@ class OmniOfflineClient:
             })
 
             user_message = HumanMessage(content=content)
-            logger.info(f"Sending multi-modal message with {len(self._pending_images)} images")
+            _img_count = len(self._pending_images) + (1 if proactive_image else 0)
+            logger.info(
+                f"Sending multi-modal message with {_img_count} image(s)"
+                f"{' (incl. proactive screen)' if proactive_image else ''}"
+            )
 
-            # Clear pending images after using them
+            # Clear pending images after using them (content already holds the
+            # data urls). The proactive screenshot is one-shot: consumed by this
+            # reply, then cleared so it never re-injects into later turns.
             self._pending_images.clear()
+            self._proactive_image_to_inject = None
+            self._proactive_image_staged_at = 0.0
+            self._proactive_image_history_len = 0
         else:
             # Text-only message（已含 system_prefix watermark 前缀，若有）
             user_message = HumanMessage(content=_user_text_with_prefix)
@@ -2041,26 +2254,27 @@ class OmniOfflineClient:
                         # instance's thinking-off extra_body applies. Routed
                         # through the visible (tool-leak-filtered) variant,
                         # which forwards **overrides to ``_astream_with_tools``.
-                        # uses_vision = images sent this turn or earlier this
-                        # session (sticky flag, not model-name equality — see the
-                        # _focus_images_seen note where has_images is computed).
+                        # Also threads a ``max_completion_tokens`` bump
+                        # (+FOCUS_THINKING_EXTRA_TOKENS) so reasoning gets its
+                        # own headroom instead of eating the reply's budget;
+                        # base is the live instance ceiling (already reflects
+                        # summary-mode lift / vision switch), ``None`` stays
+                        # uncapped.
                         _focus_overrides = self._focus_stream_overrides(
-                            thinking_on, self._focus_images_seen, self.model,
+                            thinking_on, self.model,
+                            base_max_tokens=self.llm.max_completion_tokens if self.llm else None,
                         )
                         # Focus 凝神: leak-prone models (qwen3.5/3.6/3.7 hybrids)
                         # stream their chain-of-thought into ``content`` ending in
                         # a lone ``</think>``; hold + drop it before TTS/UI ever
                         # see it. Clean providers (reasoning_content path) get no
                         # stripper, so their streaming stays byte-for-byte untouched.
-                        # Gate on the SAME effective-thinking condition as
-                        # _focus_stream_overrides (``thinking_on and not uses_vision``):
-                        # a vision Focus turn runs thinking-OFF, so no </think> ever
-                        # arrives and a stripper would needlessly hold the stream.
+                        # Gate on the SAME condition as _focus_stream_overrides
+                        # (just ``thinking_on`` — vision turns now reason too).
                         from config.providers import leaks_thinking_in_content
                         think_stripper = (
                             ThinkingStreamStripper()
-                            if thinking_on and not self._focus_images_seen
-                            and leaks_thinking_in_content(self.model)
+                            if thinking_on and leaks_thinking_in_content(self.model)
                             else None
                         )
                         async for chunk in self._astream_visible_with_tools(
@@ -2750,7 +2964,7 @@ class OmniOfflineClient:
                     if assistant_message_total:
                         break
 
-                except (APIConnectionError, AuthenticationError, InternalServerError, RateLimitError) as e:
+                except _LLM_RETRY_ERROR_TYPES as e:
                     error_type = type(e).__name__
                     error_str_lower = str(e).lower()
                     is_internal_error = isinstance(e, InternalServerError)
@@ -2974,6 +3188,34 @@ class OmniOfflineClient:
         """Check if there are pending images waiting to be sent."""
         return len(self._pending_images) > 0
 
+    def set_proactive_screenshot(self, image_b64: str | None) -> None:
+        """Stage (or clear) the proactive-vision screenshot for the user's next reply.
+
+        When proactive chat used the screen as its material, the committed
+        AIMessage carries only text, so the conversation model can't see what
+        was on screen when the user replies. This stashes that screenshot so the
+        NEXT ``stream_text`` folds it in as leading visual context — symmetric
+        with how ``_pending_images`` carries the user's own frame, but kept in a
+        SEPARATE single-slot field: sharing ``_pending_images`` would steal the
+        user's next frame (see core.py proactive media note / Codex P2).
+
+        Pass ``None`` (e.g. a proactive round that obtained no screenshot) to
+        clear, so the slot always reflects the most recent proactive round and a
+        stale screenshot never trails a later talk. The stage timestamp arms the
+        TTL (``_PROACTIVE_SCREENSHOT_TTL_SECONDS``) checked lazily at injection;
+        the history-length marker pins the screenshot to the AI turn it was staged
+        on, so a later proactive talk delivered through another path (greeting /
+        agent callback via ``prompt_ephemeral``) supersedes it.
+        """
+        if image_b64:
+            self._proactive_image_to_inject = image_b64
+            self._proactive_image_staged_at = time.monotonic()
+            self._proactive_image_history_len = len(self._conversation_history)
+        else:
+            self._proactive_image_to_inject = None
+            self._proactive_image_staged_at = 0.0
+            self._proactive_image_history_len = 0
+
     def _evict_old_images(self, keep_turns: int = 2) -> None:
         # 只保留最近 keep_turns 个含图 HumanMessage 的图片，更早的剥掉 image_url
         # 仅留文本。base64 图片在 vision tokenizer 下约 1.5k~3k tokens/张，
@@ -3152,15 +3394,9 @@ class OmniOfflineClient:
         # stream_text does (一旦带图就永久切 vision — 既定设计；vision model 也能跑
         # 后续纯文本轮). The instruction itself stays ephemeral (not persisted).
         if images:
-            # Focus vision guard: these proactive images are EPHEMERAL (not
-            # persisted to _conversation_history), so the only lasting effect is
-            # the model switch — which is irreversible once it happens. Mark the
-            # sticky guard ONLY when we actually switch to a separate persistent
-            # vision model. In shared-model profiles (vision_model ==
-            # conversation_model) nothing persists, so setting the flag would
-            # falsely suppress thinking on every later text-only Focus turn.
+            # 一旦带图就永久切到 vision model（既定设计，见上）。vision model 也能
+            # 跑后续纯文本轮，且凝神不再因 vision 而关闭思考。
             if self.vision_model and self.vision_model != self.model:
-                self._focus_images_seen = True
                 logger.info(
                     f"🖼️ prompt_ephemeral: switching to vision model {self.vision_model} (from {self.model}) for proactive media"
                 )
@@ -3190,6 +3426,11 @@ class OmniOfflineClient:
         self._last_finish_reason = None
         self._last_block_reason = None
         self._last_prompt_tokens = None
+        # Open a new reasoning-pulse scope like stream_text does and capture the
+        # ownership token: the finally clear below must fire ONLY for this turn's
+        # own pulse, never for a newer user stream_text that interleaved and
+        # re-pulsed under a fresher seq (Codex P2).
+        _reasoning_owner_seq = self._begin_reasoning_stream()
 
         try:
             self._is_responding = True
@@ -3276,7 +3517,7 @@ class OmniOfflineClient:
 
                     break  # 流正常结束，跳出 retry 循环
 
-                except (APIConnectionError, AuthenticationError, InternalServerError, RateLimitError) as e:
+                except _LLM_RETRY_ERROR_TYPES as e:
                     error_type = type(e).__name__
                     error_str_lower = str(e).lower()
                     logger.info(f"ℹ️ prompt_ephemeral 捕获到 {error_type} 错误")
@@ -3346,10 +3587,27 @@ class OmniOfflineClient:
             return False
         finally:
             self._is_responding = False
+            # Clear the thinking bubble if this proactive/greeting/avatar turn
+            # pulsed it but committed no visible text — unlike stream_text, there
+            # is no external unconditional clear bracketing this call (Codex P2).
+            # Passing the owner seq suppresses the clear when a newer user turn
+            # interleaved and re-pulsed. No-op when nothing pulsed or it was
+            # already cleared on the first visible token (idempotent).
+            await self._notify_reasoning_done(_reasoning_owner_seq)
             # Token usage 由 _AsyncStreamWrapper hook 在流结束时自动记录，
             # 此处不再手动调用 TokenTracker.record() 避免双重计数。
             committed_text = _strip_nonverbal_directives(assistant_message).strip()
             content_committed = bool(committed_text)
+            # 一条可见的 ephemeral 回复（greeting / agent 回调 / 戳头像的 quip）是
+            # 用户接下来要回应的「新一条 AI 轮」，它让之前为「下一条用户回复」暂存的
+            # 屏幕截图过时——清掉它。persist_response=False 的回复（如头像 quip）不进
+            # 历史、历史长度不变，stream_text 的 history-len marker 看不到，必须在这条
+            # ephemeral 回复的 choke point 清（Codex P2）。只在真吐了可见文本时清，
+            # 半途 abort / 无文本的尝试不丢一张仍有效的暂存屏。
+            if content_committed:
+                self._proactive_image_to_inject = None
+                self._proactive_image_staged_at = 0.0
+                self._proactive_image_history_len = 0
             # Empty-completion 诊断：和 stream_text 的兜底 warning 对偶。
             # 主动搭话语义上是"静默放弃"，所以不发 status_message，但 INFO
             # 一行 finish_reason 让日志能复盘——上次出问题就是因为没法区分
@@ -3428,6 +3686,9 @@ class OmniOfflineClient:
         self._is_responding = False
         self._conversation_history = []
         self._pending_images.clear()
+        self._proactive_image_to_inject = None
+        self._proactive_image_staged_at = 0.0
+        self._proactive_image_history_len = 0
         if self.llm:
             try:
                 await self.llm.aclose()

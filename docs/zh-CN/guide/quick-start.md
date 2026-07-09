@@ -6,8 +6,8 @@
 
 ```bash
 # 在不同的终端中运行：
-uv run python memory_server.py
-uv run python main_server.py
+uv run python app/memory_server.py
+uv run python app/main_server.py
 ```
 
 ## 2. 配置 API 提供商

@@ -16,7 +16,8 @@
 import sys
 import os
 _repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _repo_root not in sys.path:
+# Force project root to sys.path[0] — see agent_server.py top for rationale.
+if sys.path[0:1] != [_repo_root]:
     sys.path.insert(0, _repo_root)
 
 # Wire DI bindings explicitly — direct script invocation
@@ -101,6 +102,7 @@ from utils.cloudsave_runtime import (
 )
 from utils.config_manager import get_config_manager
 from utils.storage_location_bootstrap import get_storage_startup_blocking_reason
+from utils.asgi_body_limit import InboundBodySizeLimitMiddleware
 from pydantic import BaseModel
 import re
 import asyncio
@@ -175,6 +177,13 @@ async def storage_limited_mode_guard(request: Request, call_next):
             "error": "Memory server 正处于存储受限启动状态，请等待存储位置选择、迁移或恢复完成。",
         },
     )
+
+
+# 全局入站 body 体积守门（issue #1586）：与 main_server 对偶，memory_server 的
+# 端点（对话缓存 / reflection 记录等）都是小 JSON，统一加上同一守门保持一致。
+# agent_server 因 /openfang-llm-proxy 透明转发大 LLM 请求（vision/长上下文 JSON
+# 可超 16M）有意不装，见 PR 说明。
+app.add_middleware(InboundBodySizeLimitMiddleware)
 
 
 @app.exception_handler(MaintenanceModeError)
@@ -4163,12 +4172,16 @@ async def get_recent_history(lanlan_name: str):
     name_mapping['ai'] = lanlan_name
     result = _loc(RECENT_HISTORY_INTRO, _lang).format(name=lanlan_name)
     for i in history:
-        if i.type == 'system':
-            result += i.content + "\n"
+        if isinstance(i.content, str):
+            content = i.content
         else:
-            texts = [j['text'] for j in i.content if j['type']=='text']
-            joined = "\n".join(texts)
-            result += f"{name_mapping[i.type]} | {joined}\n"
+            texts = [j['text'] for j in i.content if isinstance(j, dict) and j.get('type') == 'text']
+            content = "\n".join(texts)
+        if i.type == 'system':
+            result += content + "\n"
+        else:
+            speaker = name_mapping.get(i.type, i.type)
+            result += f"{speaker} | {content}\n"
     return result
 
 @app.get("/search_for_memory/{lanlan_name}/{query}")

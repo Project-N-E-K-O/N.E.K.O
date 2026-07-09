@@ -5,6 +5,8 @@
     const SNOOZE_MS = 3 * 24 * 60 * 60 * 1000;
     const MISS_WINDOW_MS = 30 * 1000;
     const REQUIRED_MISSES = 2;
+    const EDGE_RELEASE_THRESHOLD_PX = 180;
+    const MIN_EDGE_DRAG_DISTANCE_PX = 48;
 
     const FALLBACK_TEXT = {
         title: 'Move YUI to another screen',
@@ -15,9 +17,17 @@
 
     let isPromptVisible = false;
     let missRecordQueue = Promise.resolve();
+    let approachRecordQueue = Promise.resolve();
+    let approachRecordPending = false;
+    let latestApproachRecord = null;
+    let lastDisplaySwitchMissCall = null;
 
     function now() {
         return Date.now();
+    }
+
+    function normalizeSource(source) {
+        return source || 'avatar';
     }
 
     function translate(key, fallback) {
@@ -58,6 +68,7 @@
         return Boolean(
             window.electronScreen &&
             typeof window.electronScreen.getAllDisplays === 'function' &&
+            typeof window.electronScreen.getCurrentDisplay === 'function' &&
             typeof window.electronScreen.moveWindowToDisplay === 'function'
         );
     }
@@ -275,10 +286,199 @@
     }
 
     function recordDisplaySwitchMiss(source) {
+        const normalizedSource = normalizeSource(source);
+        lastDisplaySwitchMissCall = {
+            source: normalizedSource,
+            at: now()
+        };
         const nextRecord = missRecordQueue.then(function () {
-            return recordDisplaySwitchMissNow(source);
+            return recordDisplaySwitchMissNow(normalizedSource);
         });
         missRecordQueue = nextRecord.catch(function () {});
+        return nextRecord;
+    }
+
+    function normalizeDisplay(display) {
+        if (!display || typeof display !== 'object') return null;
+        const x = Number.isFinite(display.screenX) ? display.screenX : (display.bounds && display.bounds.x);
+        const y = Number.isFinite(display.screenY) ? display.screenY : (display.bounds && display.bounds.y);
+        const width = Number.isFinite(display.width) ? display.width : (display.bounds && display.bounds.width);
+        const height = Number.isFinite(display.height) ? display.height : (display.bounds && display.bounds.height);
+        if (!Number.isFinite(x) || !Number.isFinite(y) || !(width > 0) || !(height > 0)) return null;
+        return {
+            id: display.id,
+            x,
+            y,
+            width,
+            height,
+            right: x + width,
+            bottom: y + height
+        };
+    }
+
+    function isSameDisplay(displayA, displayB) {
+        if (!displayA || !displayB) return false;
+        if (displayA.id !== undefined && displayB.id !== undefined) return displayA.id === displayB.id;
+        return displayA.x === displayB.x && displayA.y === displayB.y &&
+            displayA.width === displayB.width && displayA.height === displayB.height;
+    }
+
+    function getPointerEdgeIntents(pointer, currentDisplay) {
+        if (!pointer || !currentDisplay) return [];
+        const startX = Number(pointer.startScreenX);
+        const startY = Number(pointer.startScreenY);
+        const releaseX = Number(pointer.screenX);
+        const releaseY = Number(pointer.screenY);
+        if (!Number.isFinite(startX) || !Number.isFinite(startY) ||
+            !Number.isFinite(releaseX) || !Number.isFinite(releaseY)) {
+            return [];
+        }
+
+        const deltaX = releaseX - startX;
+        const deltaY = releaseY - startY;
+        const candidates = [
+            {
+                edge: 'right',
+                distance: deltaX,
+                near: releaseX >= currentDisplay.right - EDGE_RELEASE_THRESHOLD_PX
+            },
+            {
+                edge: 'left',
+                distance: -deltaX,
+                near: releaseX <= currentDisplay.x + EDGE_RELEASE_THRESHOLD_PX
+            },
+            {
+                edge: 'bottom',
+                distance: deltaY,
+                near: releaseY >= currentDisplay.bottom - EDGE_RELEASE_THRESHOLD_PX
+            },
+            {
+                edge: 'top',
+                distance: -deltaY,
+                near: releaseY <= currentDisplay.y + EDGE_RELEASE_THRESHOLD_PX
+            }
+        ].filter(candidate => candidate.near && candidate.distance >= MIN_EDGE_DRAG_DISTANCE_PX);
+
+        if (candidates.length === 0) return [];
+        candidates.sort((left, right) => right.distance - left.distance);
+        return candidates.map(candidate => candidate.edge);
+    }
+
+    function touchesDisplayEdge(display, currentDisplay, edge) {
+        if (edge === 'right') return Math.abs(display.x - currentDisplay.right) <= 1;
+        if (edge === 'left') return Math.abs(display.right - currentDisplay.x) <= 1;
+        if (edge === 'bottom') return Math.abs(display.y - currentDisplay.bottom) <= 1;
+        if (edge === 'top') return Math.abs(display.bottom - currentDisplay.y) <= 1;
+        return false;
+    }
+
+    function releasePointMatchesDisplayEdge(display, edge, releaseX, releaseY) {
+        if (!Number.isFinite(releaseX) || !Number.isFinite(releaseY)) return false;
+        if (edge === 'right' || edge === 'left') {
+            return releaseY >= display.y && releaseY < display.bottom;
+        }
+        if (edge === 'bottom' || edge === 'top') {
+            return releaseX >= display.x && releaseX < display.right;
+        }
+        return false;
+    }
+
+    function hasAdjacentDisplayForEdge(displays, currentDisplay, edge, pointer) {
+        if (!Array.isArray(displays) || !currentDisplay || !edge) return false;
+        const releaseX = Number(pointer && pointer.screenX);
+        const releaseY = Number(pointer && pointer.screenY);
+        for (const rawDisplay of displays) {
+            const display = normalizeDisplay(rawDisplay);
+            if (!display || isSameDisplay(display, currentDisplay)) continue;
+            if (touchesDisplayEdge(display, currentDisplay, edge) &&
+                releasePointMatchesDisplayEdge(display, edge, releaseX, releaseY)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    async function hasPointerAdjacentEdgeIntent(pointer) {
+        if (!hasDisplaySwitchBridge()) return false;
+        const displays = await window.electronScreen.getAllDisplays();
+        if (!Array.isArray(displays) || displays.length <= 1) return false;
+        const currentDisplay = normalizeDisplay(await window.electronScreen.getCurrentDisplay());
+        if (!currentDisplay) return false;
+        const edges = getPointerEdgeIntents(pointer, currentDisplay);
+        return edges.length > 0 &&
+            edges.some(edge => hasAdjacentDisplayForEdge(displays, currentDisplay, edge, pointer));
+    }
+
+    function wasDisplaySwitchMissRecordedSince(source, startedAt) {
+        const since = Number(startedAt);
+        if (!Number.isFinite(since)) return false;
+        const normalizedSource = normalizeSource(source);
+        if (lastDisplaySwitchMissCall &&
+            lastDisplaySwitchMissCall.source === normalizedSource &&
+            Number(lastDisplaySwitchMissCall.at) >= since) {
+            return true;
+        }
+        const state = readState();
+        return state.lastSource === normalizedSource && Number(state.lastMissAt) >= since;
+    }
+
+    async function recordPointerEdgeRelease(source, pointer) {
+        try {
+            if (!(await hasPointerAdjacentEdgeIntent(pointer))) return false;
+            const startedAt = Number(pointer && pointer.startedAt);
+            if (wasDisplaySwitchMissRecordedSince(source, startedAt)) return false;
+            return recordDisplaySwitchMiss(source);
+        } catch (_) {
+            return false;
+        }
+    }
+
+    async function recordPointerEdgeApproachNow(source, pointer) {
+        try {
+            const state = readState();
+            if (isSuppressed(state) || isPromptVisible) return false;
+            if (!(await hasPointerAdjacentEdgeIntent(pointer))) return false;
+            state.lastSource = normalizeSource(source);
+            state.lastMissAt = now();
+            writeState(state);
+            showPrompt();
+            return true;
+        } catch (_) {
+            return false;
+        }
+    }
+
+    async function drainPointerEdgeApproaches(initialRecord) {
+        let currentRecord = initialRecord;
+        try {
+            while (currentRecord) {
+                const shown = await recordPointerEdgeApproachNow(
+                    currentRecord.source,
+                    currentRecord.pointer
+                );
+                if (shown) {
+                    latestApproachRecord = null;
+                    return true;
+                }
+                currentRecord = latestApproachRecord;
+                latestApproachRecord = null;
+            }
+            return false;
+        } finally {
+            approachRecordPending = false;
+        }
+    }
+
+    async function recordPointerEdgeApproach(source, pointer) {
+        if (approachRecordPending) {
+            latestApproachRecord = { source, pointer };
+            return false;
+        }
+        approachRecordPending = true;
+        const nextRecord = approachRecordQueue.then(function () {
+            return drainPointerEdgeApproaches({ source, pointer });
+        });
+        approachRecordQueue = nextRecord.catch(function () {});
         return nextRecord;
     }
 
@@ -319,6 +519,34 @@
         }
     }
 
+    async function isModelCenterOnAnotherDisplay(model) {
+        try {
+            if (!hasDisplaySwitchBridge() || !isModelCenterOutsideCurrentWindow(model)) return false;
+            if (!model || typeof model.getBounds !== 'function') return false;
+            const bounds = model.getBounds();
+            if (!bounds) return false;
+            const centerX = (Number(bounds.left) + Number(bounds.right)) / 2;
+            const centerY = (Number(bounds.top) + Number(bounds.bottom)) / 2;
+            if (!Number.isFinite(centerX) || !Number.isFinite(centerY)) return false;
+
+            const currentDisplay = normalizeDisplay(await window.electronScreen.getCurrentDisplay());
+            if (!currentDisplay) return false;
+            const screenX = currentDisplay.x + centerX;
+            const screenY = currentDisplay.y + centerY;
+            const displays = await window.electronScreen.getAllDisplays();
+            if (!Array.isArray(displays) || displays.length <= 1) return false;
+
+            return displays.some(function (rawDisplay) {
+                const display = normalizeDisplay(rawDisplay);
+                return display && !isSameDisplay(display, currentDisplay) &&
+                    screenX >= display.x && screenX < display.right &&
+                    screenY >= display.y && screenY < display.bottom;
+            });
+        } catch (_) {
+            return false;
+        }
+    }
+
     function installLive2DDisplaySwitchMissHook() {
         const Manager = window.Live2DManager;
         const proto = Manager && Manager.prototype;
@@ -328,7 +556,7 @@
         const originalCheckAndSwitchDisplay = proto._checkAndSwitchDisplay;
         const wrappedCheckAndSwitchDisplay = async function (model) {
             const displaySwitched = await originalCheckAndSwitchDisplay.apply(this, arguments);
-            if (hasDisplaySwitchBridge() && !displaySwitched && isModelCenterOutsideCurrentWindow(model)) {
+            if (!displaySwitched && await isModelCenterOnAnotherDisplay(model)) {
                 recordDisplaySwitchMiss('live2d');
             }
             return displaySwitched;
@@ -358,6 +586,8 @@
 
     window.NekoAvatarMultiScreenDragHint = {
         recordDisplaySwitchMiss,
+        recordPointerEdgeApproach,
+        recordPointerEdgeRelease,
         markDisplaySwitchSuccess,
         ackPrompt,
         dismissForever,

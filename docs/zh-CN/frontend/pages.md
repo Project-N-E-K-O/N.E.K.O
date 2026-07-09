@@ -15,6 +15,7 @@
 | `/live2d_parameter_editor` | `live2d_parameter_editor.html` | Live2D 模型参数微调 |
 | `/live2d_emotion_manager` | `live2d_emotion_manager.html` | Live2D 情感映射 |
 | `/vrm_emotion_manager` | `vrm_emotion_manager.html` | VRM 情感映射 |
+| `/mmd_emotion_manager` | `mmd_emotion_manager.html` | MMD 情感（变形）映射 |
 | `/voice_clone` | `voice_clone.html` | 语音克隆界面 |
 | `/memory_browser` | `memory_browser.html` | 记忆浏览和编辑 |
 
@@ -34,4 +35,7 @@
 | `/static` | `static/` | JS、CSS、图片、语言文件 |
 | `/user_live2d` | 用户文档 | 用户导入的 Live2D 模型 |
 | `/user_vrm` | 用户文档 | 用户导入的 VRM 模型 |
+| `/user_mmd` | 用户数据 | 用户导入的 MMD 模型（PMX/PMD） |
+| `/user_mmd/animation` | 用户数据 | 用户导入的 VMD 动画 |
+| `/user_pngtuber` | 用户数据 | 用户导入的 PNGTuber 包 |
 | `/workshop` | Steam 创意工坊 | 工坊订阅的模型 |
