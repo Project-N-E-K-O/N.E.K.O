@@ -8475,9 +8475,9 @@ def test_avatar_floating_distance_threshold_triggers_light_resistance_without_sp
 
                 director.lastPointerPoint = { x: 100, y: 100, t: 1000, speed: 0.04 };
                 [
-                    { t: 2000, x: 520 },
-                    { t: 3000, x: 940 },
-                    { t: 4000, x: 1360 },
+                    { t: 2000, x: 920 },
+                    { t: 3000, x: 1740 },
+                    { t: 4000, x: 2560 },
                 ].forEach((sample) => {
                     window.__now = sample.t;
                     director.handleInterrupt({
@@ -8485,7 +8485,7 @@ def test_avatar_floating_distance_threshold_triggers_light_resistance_without_sp
                         type: 'mousemove',
                         clientX: sample.x,
                         clientY: 100,
-                        movementX: 420,
+                        movementX: 820,
                         movementY: 0,
                     });
                 });
@@ -8545,6 +8545,8 @@ def test_avatar_floating_quick_mousemove_displacement_threshold_triggers_light_r
                     { t: 1120, x: 580 },
                     { t: 1160, x: 740 },
                     { t: 1200, x: 900 },
+                    { t: 1240, x: 1060 },
+                    { t: 1280, x: 1220 },
                 ].forEach((sample) => {
                     window.__now = sample.t;
                     director.handleInterrupt({
@@ -8702,9 +8704,9 @@ def test_avatar_floating_light_resistance_reveals_real_cursor_for_two_seconds(
 
                 director.lastPointerPoint = { x: 100, y: 100, t: 1000, speed: 0.04 };
                 [
-                    { t: 2000, x: 520 },
-                    { t: 3000, x: 940 },
-                    { t: 4000, x: 1360 },
+                    { t: 2000, x: 920 },
+                    { t: 3000, x: 1740 },
+                    { t: 4000, x: 2560 },
                 ].forEach((sample) => {
                     window.__now = sample.t;
                     director.handleInterrupt({
@@ -8712,7 +8714,7 @@ def test_avatar_floating_light_resistance_reveals_real_cursor_for_two_seconds(
                         type: 'mousemove',
                         clientX: sample.x,
                         clientY: 100,
-                        movementX: 420,
+                        movementX: 820,
                         movementY: 0,
                     });
                 });
@@ -8827,9 +8829,9 @@ def test_avatar_floating_second_light_resistance_refreshes_cursor_while_first_li
                 const playQualifyingGroup = () => {
                     director.lastPointerPoint = { x: 100, y: 100, t: window.__now, speed: 0.04 };
                     [
-                        { t: window.__now + 1000, x: 520 },
-                        { t: window.__now + 2000, x: 940 },
-                        { t: window.__now + 3000, x: 1360 },
+                        { t: window.__now + 1000, x: 920 },
+                        { t: window.__now + 2000, x: 1740 },
+                        { t: window.__now + 3000, x: 2560 },
                     ].forEach((sample) => {
                         window.__now = sample.t;
                         director.handleInterrupt({
@@ -8837,7 +8839,7 @@ def test_avatar_floating_second_light_resistance_refreshes_cursor_while_first_li
                             type: 'mousemove',
                             clientX: sample.x,
                             clientY: 100,
-                            movementX: 420,
+                            movementX: 820,
                             movementY: 0,
                         });
                     });
@@ -9309,7 +9311,7 @@ def test_avatar_floating_third_light_resistance_enters_angry_exit(
                 const playQualifyingGroup = () => {
                     director.lastPointerPoint = { x, y: 100, t, speed: 0 };
                     for (let index = 0; index < 3; index += 1) {
-                        x += 420;
+                        x += 820;
                         t += 1000;
                         window.__now = t;
                         director.handleInterrupt({
@@ -9317,7 +9319,7 @@ def test_avatar_floating_third_light_resistance_enters_angry_exit(
                             type: 'mousemove',
                             clientX: x,
                             clientY: 100,
-                            movementX: 420,
+                            movementX: 820,
                             movementY: 0,
                         });
                     }
