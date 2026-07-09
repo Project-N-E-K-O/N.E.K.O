@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import uuid
 from typing import Any, Optional
 from urllib.parse import quote
 
@@ -49,6 +50,12 @@ class WechatIntegrationPlugin(NekoPluginBase):
         self.wechat_client: Optional[WechatClient] = None
         self._login_session: Optional[LoginSession] = None
         self._qr_expired_count = 0
+        self._sync_buf: str = ""
+        self._context_tokens: dict[str, str] = {}
+        self._running: bool = False
+        self._message_task: Optional[asyncio.Task] = None
+        self._shutdown_event = asyncio.Event()
+        self._wechat_sessions: dict[str, dict[str, Any]] = {}  # user_id → {history, last_activity}
 
     # ------------------------------------------------------------------ config
     async def _load_config(self) -> dict[str, Any]:
@@ -92,6 +99,8 @@ class WechatIntegrationPlugin(NekoPluginBase):
             token=settings.get("token") or None,
         )
 
+        self._sync_buf = str(settings.get("sync_buf") or "")
+
         self.register_static_ui("static")
         self.set_list_actions([
             {
@@ -106,6 +115,15 @@ class WechatIntegrationPlugin(NekoPluginBase):
 
     @lifecycle(id="shutdown")
     async def shutdown(self, **_):
+        self._shutdown_event.set()
+        if self._message_task and not self._message_task.done():
+            self._message_task.cancel()
+            try:
+                await self._message_task
+            except asyncio.CancelledError:
+                pass
+            self._message_task = None
+        self._running = False
         if self.wechat_client:
             await self.wechat_client.close()
             self.wechat_client = None
@@ -163,6 +181,7 @@ class WechatIntegrationPlugin(NekoPluginBase):
                 "token_masked": self._mask_token(str(settings.get("token") or "")),
                 "bot_type": settings.get("bot_type", "3"),
                 "show_onboarding": bool(settings.get("show_onboarding", True)),
+                "auto_reply_running": self._running,
             },
             "config_ready": True,
             "ui": build_open_ui_payload(plugin_id=self.plugin_id, available=True, i18n=self.i18n),
@@ -180,6 +199,9 @@ class WechatIntegrationPlugin(NekoPluginBase):
                 {"id": "refresh_qrcode", "entry_id": "refresh_qrcode"},
                 {"id": "save_settings", "entry_id": "save_settings"},
                 {"id": "get_dashboard_state", "entry_id": "get_dashboard_state"},
+                {"id": "start_auto_reply", "entry_id": "start_auto_reply"},
+                {"id": "stop_auto_reply", "entry_id": "stop_auto_reply"},
+                {"id": "send_message", "entry_id": "send_message"},
             ],
         }
 
@@ -363,3 +385,367 @@ class WechatIntegrationPlugin(NekoPluginBase):
         payload = self._build_dashboard_state()
         payload["persisted"] = success
         return Ok(payload)
+
+    # ------------------------------------------------------ message handling
+    @staticmethod
+    def _extract_text_from_item_list(item_list: list[dict[str, Any]] | None) -> str:
+        if not item_list:
+            return ""
+        text_parts: list[str] = []
+        for item in item_list:
+            item_type = int(item.get("type") or 0)
+            if item_type == 1:
+                t = str(item.get("text_item", {}).get("text", "")).strip()
+                if t:
+                    text_parts.append(t)
+            elif item_type == 2:
+                text_parts.append("[图片]")
+            elif item_type == 3:
+                voice_text = str(item.get("voice_item", {}).get("text", "")).strip()
+                text_parts.append(voice_text or "[语音]")
+            elif item_type == 4:
+                text_parts.append("[文件]")
+            elif item_type == 5:
+                text_parts.append("[视频]")
+        return "\n".join(text_parts).strip()
+
+    async def _generate_wechat_reply(self, user_id: str, message: str) -> str | None:
+        """生成微信回复，维护每个用户的对话历史"""
+        try:
+            from config.prompts.prompts_sys import SESSION_INIT_PROMPT
+            from main_logic.core import apply_role_placeholders
+            from utils.config_manager import get_config_manager
+            from utils.llm_client import create_chat_llm_async
+            from utils.language_utils import get_global_language
+
+            config_manager = get_config_manager()
+            master_name, her_name, _, catgirl_data, _, lanlan_prompt_map, _, _, _ = config_manager.get_character_data()
+            model_config = config_manager.get_model_api_config("agent")
+            base_url = str(model_config.get("base_url") or "").strip()
+            model = str(model_config.get("model") or "").strip()
+            api_key = str(model_config.get("api_key") or "").strip()
+
+            if not base_url or not model:
+                self.logger.warning("[wechat_integration] agent model not configured, skip reply")
+                return None
+
+            master_title = master_name if master_name else "主人"
+            character_prompt = lanlan_prompt_map.get(her_name, "你是一个友好的AI助手")
+
+            # 角色卡额外字段
+            current_character = catgirl_data.get(her_name, {})
+            character_card_fields = {}
+            for key, value in current_character.items():
+                if key not in ["_reserved", "voice_id", "system_prompt", "model_type",
+                               "live2d", "vrm", "vrm_animation", "lighting", "vrm_rotation",
+                               "live2d_item_id", "item_id", "idleAnimation"]:
+                    if isinstance(value, (str, int, float, bool)) and value:
+                        character_card_fields[key] = value
+
+            # 语言
+            user_language = get_global_language()
+            try:
+                from utils.i18n_utils import normalize_language_code
+                short_language = normalize_language_code(user_language, format="short") if normalize_language_code else user_language
+            except Exception:
+                short_language = user_language
+            init_prompt_template = SESSION_INIT_PROMPT.get(
+                short_language,
+                SESSION_INIT_PROMPT.get(user_language, SESSION_INIT_PROMPT["zh"]),
+            )
+
+            # 构建 system prompt
+            system_prompt_parts = [
+                init_prompt_template.format(name=her_name),
+                apply_role_placeholders(character_prompt, lanlan_name=her_name, master_name=master_title),
+            ]
+            if character_card_fields:
+                system_prompt_parts.append("\n======角色卡额外设定======")
+                for field_name, field_value in character_card_fields.items():
+                    rendered_value = apply_role_placeholders(
+                        str(field_value), lanlan_name=her_name, master_name=master_title,
+                    )
+                    system_prompt_parts.append(f"{field_name}: {rendered_value}")
+                system_prompt_parts.append("======角色卡设定结束======")
+            system_prompt_parts.append(
+                f"\n======身份定义======\n"
+                f"- 你自己：{her_name}，你是当前回复者\n"
+                f"- 主人/管理员：{master_title}，是固定身份\n"
+                f"- 当前对话对象：{master_title}（微信ID: {user_id}），这就是主人/管理员本人\n"
+                f"- 即使对方的名字、主人名字、你的名字或角色设定中的人物名称相同，也必须按上述身份定义区分，绝不能混淆角色\n"
+                f"======身份定义结束======\n"
+                f"\n======微信私聊环境======\n"
+                f"- 你正在通过微信与{master_title}私聊\n"
+                f"- 请保持角色设定，用简短自然的话回复（不超过50字）\n"
+                f"- 不要使用 Markdown 格式，不要使用表情符号\n"
+                f"- 记住你是 {her_name}，始终以 {her_name} 的身份回复\n"
+                f"- 在回复中自然地称呼对方为\"{master_title}\"\n"
+                f"- 注意不要重复之前的发言\n"
+                f"======环境说明结束======"
+            )
+            system_prompt = "\n".join(system_prompt_parts)
+
+            # 获取或创建会话历史
+            now = time.time()
+            self._cleanup_wechat_sessions(now)
+            session = self._wechat_sessions.get(user_id)
+            if session is None:
+                session = {"history": [], "last_activity": now}
+                self._wechat_sessions[user_id] = session
+            session["last_activity"] = now
+
+            # 构建完整消息列表: system + history + new_user_msg
+            messages = [{"role": "system", "content": system_prompt}]
+            messages.extend(session["history"])
+            messages.append({"role": "user", "content": message})
+
+            llm = await create_chat_llm_async(
+                model=model,
+                base_url=base_url,
+                api_key=api_key,
+                max_completion_tokens=300,
+                timeout=30.0,
+                provider_type=model_config.get("provider_type"),
+            )
+            try:
+                response = await llm.ainvoke(messages)
+                reply = (getattr(response, "content", "") or "").strip()
+                if reply:
+                    # 保存到对话历史
+                    session["history"].append({"role": "user", "content": message})
+                    session["history"].append({"role": "assistant", "content": reply})
+                    self.logger.info(
+                        f"[wechat_integration] LLM reply len={len(reply)} history_turns={len(session['history']) // 2}"
+                    )
+                    return reply
+                self.logger.warning("[wechat_integration] LLM returned empty reply")
+                return None
+            finally:
+                aclose = getattr(llm, "aclose", None)
+                if callable(aclose):
+                    try:
+                        await aclose()
+                    except Exception:
+                        pass
+        except Exception as e:
+            self.logger.error(f"[wechat_integration] generate reply failed: {e}")
+            return None
+
+    def _cleanup_wechat_sessions(self, now: float | None = None) -> None:
+        """清理超过 5 分钟无活动的微信会话"""
+        if now is None:
+            now = time.time()
+        stale = [
+            uid for uid, s in self._wechat_sessions.items()
+            if now - s.get("last_activity", 0) > 300
+        ]
+        for uid in stale:
+            del self._wechat_sessions[uid]
+            self.logger.info(f"[wechat_integration] cleaned up stale session: {uid}")
+
+    async def _handle_inbound_message(self, msg: dict[str, Any]) -> None:
+        from_user_id = str(msg.get("from_user_id") or "").strip()
+        if not from_user_id:
+            return
+
+        context_token = str(msg.get("context_token") or "").strip()
+        if context_token:
+            self._context_tokens[from_user_id] = context_token
+
+        item_list: list[dict[str, Any]] = msg.get("item_list", []) or []
+        text = self._extract_text_from_item_list(item_list)
+        if not text:
+            return
+
+        self.logger.info(
+            f"[wechat_integration] received msg from={from_user_id} text={text[:50]}"
+        )
+
+        # 生成回复
+        reply = await self._generate_wechat_reply(user_id=from_user_id, message=text)
+        if not reply:
+            self.logger.warning("[wechat_integration] no reply generated, skip send")
+            return
+
+        # 发送回复
+        success = await self._send_text_message(from_user_id, reply)
+        if not success:
+            self.logger.warning("[wechat_integration] failed to send reply to WeChat")
+
+    async def _poll_inbound_updates(self) -> None:
+        if not self.wechat_client:
+            return
+
+        data = await self.wechat_client.get_updates(sync_buf=self._sync_buf)
+
+        ret = int(data.get("ret") or 0)
+        errcode = data.get("errcode", 0)
+        if ret != 0 and ret is not None:
+            errmsg = str(data.get("errmsg", ""))
+            self.logger.warning(
+                f"[wechat_integration] getupdates error: ret={ret} errcode={errcode} errmsg={errmsg}"
+            )
+            return
+        if errcode and int(errcode) != 0:
+            errmsg = str(data.get("errmsg", ""))
+            # Session timeout: clear token, force re-login
+            if int(errcode) == -14:
+                self.logger.warning(
+                    "[wechat_integration] session timeout, clearing token for re-login"
+                )
+                self._settings["token"] = ""
+                self._sync_buf = ""
+                self._context_tokens.clear()
+                self._login_session = None
+                if self.wechat_client:
+                    self.wechat_client.token = None
+                await self._persist_config()
+                return
+            self.logger.warning(
+                f"[wechat_integration] getupdates error: ret={ret} errcode={errcode} errmsg={errmsg}"
+            )
+            return
+
+        if data.get("get_updates_buf"):
+            self._sync_buf = str(data["get_updates_buf"])
+
+        for msg in data.get("msgs", []) if isinstance(data.get("msgs"), list) else []:
+            if self._shutdown_event.is_set():
+                return
+            if not isinstance(msg, dict):
+                continue
+            await self._handle_inbound_message(msg)
+
+    async def _send_text_message(self, user_id: str, text: str) -> bool:
+        if not self.wechat_client or not self._is_logged_in():
+            self.logger.warning("[wechat_integration] cannot send: not logged in")
+            return False
+        if not text or not text.strip():
+            return False
+
+        context_token = self._context_tokens.get(user_id)
+        if not context_token:
+            self.logger.warning(
+                f"[wechat_integration] no context_token for {user_id}, cannot send"
+            )
+            return False
+
+        payload = {
+            "base_info": {"channel_version": "kiraai"},
+            "msg": {
+                "from_user_id": "",
+                "to_user_id": user_id,
+                "client_id": uuid.uuid4().hex,
+                "message_type": 2,
+                "message_state": 2,
+                "context_token": context_token,
+                "item_list": [
+                    {"type": 1, "text_item": {"text": text.strip()}}
+                ],
+            },
+        }
+
+        try:
+            await self.wechat_client.send_message_payload(payload)
+            self.logger.info(f"[wechat_integration] send_message ok: to={user_id} len={len(text)}")
+            return True
+        except Exception as e:
+            self.logger.error(f"[wechat_integration] send failed: {e}")
+            return False
+
+    async def _run_message_loop(self) -> None:
+        while not self._shutdown_event.is_set():
+            if not self._is_logged_in():
+                await asyncio.sleep(2)
+                continue
+            try:
+                await self._poll_inbound_updates()
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                self.logger.error(f"[wechat_integration] poll inbound failed: {e}")
+                await asyncio.sleep(5)
+
+    # --------------------------------------------------- plugin entries (msg)
+    @plugin_entry(
+        id="start_auto_reply",
+        name=tr("entries.start_auto_reply.name", default="开始消息监听"),
+        description=tr(
+            "entries.start_auto_reply.description",
+            default="开始接收微信消息并自动推送到 AI 对话，AI 可以直接回复。",
+        ),
+        input_schema={"type": "object", "properties": {}},
+    )
+    async def start_auto_reply(self, **_):
+        if not self._is_logged_in():
+            return Err(SdkError(
+                self.i18n.t("errors.not_logged_in", default="未登录，请先扫码登录后再开始消息监听")
+            ))
+        if self._running:
+            return Ok({"status": "already_running"})
+
+        self._shutdown_event.clear()
+        self._running = True
+        self._message_task = asyncio.create_task(self._run_message_loop())
+        self.logger.info("[wechat_integration] auto-reply message loop started")
+        return Ok(self._build_dashboard_state())
+
+    @plugin_entry(
+        id="stop_auto_reply",
+        name=tr("entries.stop_auto_reply.name", default="停止消息监听"),
+        description=tr(
+            "entries.stop_auto_reply.description",
+            default="停止接收微信消息，不再自动推送到 AI 对话。",
+        ),
+        input_schema={"type": "object", "properties": {}},
+    )
+    async def stop_auto_reply(self, **_):
+        if not self._running and not self._message_task:
+            return Ok({"status": "not_running"})
+
+        self._shutdown_event.set()
+        if self._message_task and not self._message_task.done():
+            self._message_task.cancel()
+            try:
+                await self._message_task
+            except asyncio.CancelledError:
+                pass
+            self._message_task = None
+        self._running = False
+        self.logger.info("[wechat_integration] auto-reply message loop stopped")
+        return Ok(self._build_dashboard_state())
+
+    @plugin_entry(
+        id="send_message",
+        name=tr("entries.send_message.name", default="发送微信消息"),
+        description=tr(
+            "entries.send_message.description",
+            default="向指定微信用户发送一条文本消息。需要先在消息监听中收到过该用户的消息。",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "user_id": {"type": "string", "description": "目标微信用户 ID"},
+                "text": {"type": "string", "description": "要发送的文本内容"},
+            },
+            "required": ["user_id", "text"],
+            "additionalProperties": False,
+        },
+    )
+    async def send_message(self, user_id: str, text: str, **_):
+        if not self._is_logged_in():
+            return Err(SdkError(
+                self.i18n.t("errors.not_logged_in", default="未登录，请先扫码登录")
+            ))
+        self.logger.info(f"[wechat_integration] send_message called: user={user_id} text={text[:50]}")
+        success = await self._send_text_message(str(user_id).strip(), str(text).strip())
+        if success:
+            return Ok({"status": "sent", "user_id": str(user_id).strip()})
+        return Err(SdkError(
+            self.i18n.t(
+                "errors.send_failed",
+                default="发送失败：未找到该用户的 context_token，请先通过消息监听接收一条该用户的消息。",
+            )
+        ))

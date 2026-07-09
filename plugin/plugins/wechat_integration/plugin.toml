@@ -1,6 +1,6 @@
 [plugin]
 name = "微信集成"
-description = "通过 OpenClaw API 连接微信个人号，支持扫码登录和凭证管理。"
+description = "通过 OpenClaw API 连接微信个人号，支持扫码登录、消息监听和自动回复。"
 short_description = "微信个人号扫码登录与集成。"
 keywords = ["wechat", "openclaw", "qr-login", "weixin"]
 passive = false

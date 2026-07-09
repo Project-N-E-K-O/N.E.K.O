@@ -105,3 +105,25 @@ class WechatClient:
             timeout_ms=35000,
             headers={"iLink-App-ClientVersion": "1"},
         )
+
+    async def get_updates(self, sync_buf: str = "") -> dict[str, Any]:
+        """长轮询拉取新消息"""
+        return await self.request_json(
+            "POST",
+            "ilink/bot/getupdates",
+            payload={
+                "base_info": {"channel_version": "kiraai"},
+                "get_updates_buf": sync_buf,
+            },
+            token_required=True,
+            timeout_ms=35000,
+        )
+
+    async def send_message_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """发送消息"""
+        return await self.request_json(
+            "POST",
+            "ilink/bot/sendmessage",
+            payload=payload,
+            token_required=True,
+        )
