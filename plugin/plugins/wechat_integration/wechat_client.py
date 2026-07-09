@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-import random
+import secrets
 import base64
 from typing import Any, cast
 
@@ -42,7 +42,7 @@ class WechatClient:
             "Content-Type": "application/json",
             "AuthorizationType": "ilink_bot_token",
             "X-WECHAT-UIN": base64.b64encode(
-                str(random.getrandbits(32)).encode("utf-8")
+                str(secrets.randbits(32)).encode("utf-8")
             ).decode("utf-8"),
         }
         if token_required and self.token:

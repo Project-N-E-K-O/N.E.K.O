@@ -4,12 +4,17 @@ import asyncio
 import time
 import uuid
 from typing import Any, Optional
-from urllib.parse import quote
+import base64
+import io
 
 from plugin.sdk.plugin import NekoPluginBase, lifecycle, neko_plugin, plugin_entry, Ok, Err, SdkError, tr, ui
 
 from .config_store import WechatConfigStore
 from .wechat_client import WechatClient
+
+# 滑动窗口上限：最近 20 轮（每轮 2 条 = user + assistant），防止单次活跃会话历史撑爆
+MAX_HISTORY_TURNS = 20
+MAX_HISTORY_MESSAGES = MAX_HISTORY_TURNS * 2
 
 
 def build_open_ui_payload(*, plugin_id: str, available: bool, i18n=None) -> dict[str, Any]:
@@ -156,10 +161,19 @@ class WechatIntegrationPlugin(NekoPluginBase):
 
         qrcode_url = ""
         if login_session and login_session.status == "wait":
-            qrcode_url = (
-                f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data="
-                f"{quote(login_session.qrcode_img_content)}"
-            )
+            try:
+                import qrcode as qrcode_lib
+                img = qrcode_lib.make(
+                    login_session.qrcode_img_content,
+                    error_correction=qrcode_lib.constants.ERROR_CORRECT_L,
+                    box_size=10,
+                    border=2,
+                )
+                buf = io.BytesIO()
+                img.save(buf, format="PNG")
+                qrcode_url = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+            except Exception:
+                qrcode_url = ""
 
         return {
             "login": {
@@ -511,9 +525,11 @@ class WechatIntegrationPlugin(NekoPluginBase):
             if memory_context:
                 final_system_prompt = system_prompt + "\n\n" + memory_context
 
-            # 构建完整消息列表: system + history + new_user_msg
+            # 构建完整消息列表: system + history (裁剪到窗口上限) + new_user_msg
             messages = [{"role": "system", "content": final_system_prompt}]
-            messages.extend(session["history"])
+            # 防御性裁剪：仅取最近 MAX_HISTORY_MESSAGES 条
+            recent_history = session["history"][-MAX_HISTORY_MESSAGES:]
+            messages.extend(recent_history)
             messages.append({"role": "user", "content": message})
 
             llm = await create_chat_llm_async(
@@ -531,6 +547,13 @@ class WechatIntegrationPlugin(NekoPluginBase):
                     # 保存到对话历史
                     session["history"].append({"role": "user", "content": message})
                     session["history"].append({"role": "assistant", "content": reply})
+                    # 滑动窗口裁剪：只保留最近 N 轮，防止历史无限增长撑爆 token
+                    if len(session["history"]) > MAX_HISTORY_MESSAGES:
+                        trimmed = len(session["history"]) - MAX_HISTORY_MESSAGES
+                        del session["history"][:trimmed]
+                        self.logger.debug(
+                            f"[wechat_integration] trimmed {trimmed} old history messages for {user_id}"
+                        )
                     self.logger.info(
                         f"[wechat_integration] LLM reply len={len(reply)} history_turns={len(session['history']) // 2}"
                     )
