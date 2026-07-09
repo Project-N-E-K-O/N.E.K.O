@@ -133,8 +133,14 @@ window.I18n = I18n;
   I18n.init(pluginId).then(() => {
     I18n.scanDOM();
     window.dispatchEvent(new CustomEvent('i18n-ready', { detail: { locale: I18n.lang() } }));
+  }).catch((err) => {
+    console.error('[wechat_integration] i18n bootstrap failed', err);
   });
   window.addEventListener('localechange', async () => {
-    await I18n.refresh();
+    try {
+      await I18n.refresh();
+    } catch (err) {
+      console.error('[wechat_integration] i18n refresh failed', err);
+    }
   });
 })();
