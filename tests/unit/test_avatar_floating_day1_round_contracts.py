@@ -497,7 +497,7 @@ def test_pc_external_chat_spotlight_preserves_highlight_during_resistance_pause(
     )[1]
 
 
-def test_externalized_chat_spotlight_preserves_plain_capsule_variant_for_pc_overlay():
+def test_externalized_chat_spotlight_keeps_variant_pipeline_but_day1_uses_capsule_target():
     interpage_source = INTERPAGE_PATH.read_text(encoding="utf-8")
     takeover_source = (ROOT / "static" / "tutorial/core/interaction-takeover.js").read_text(encoding="utf-8")
     scene_source = SCENE_ORCHESTRATOR_PATH.read_text(encoding="utf-8")
@@ -505,7 +505,8 @@ def test_externalized_chat_spotlight_preserves_plain_capsule_variant_for_pc_over
     visual_runtime_source = (ROOT / "static" / "tutorial/core/visual-runtime.js").read_text(encoding="utf-8")
     day1_source = DAY1_GUIDE_PATH.read_text(encoding="utf-8")
 
-    assert "spotlightVariant: 'plain-capsule'" in day1_source
+    assert "target: 'chat-capsule-input'" in day1_source
+    assert "spotlightVariant: 'plain-capsule'" not in day1_source
     assert "this.externalizedChatSpotlightVariant = '';" in takeover_source
     assert "const previousVariant = this.externalizedChatSpotlightVariant;" in takeover_source
     assert "variant: this.externalizedChatSpotlightVariant" in takeover_source
