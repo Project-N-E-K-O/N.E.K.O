@@ -1,6 +1,11 @@
 // 允许的来源列表
 const ALLOWED_ORIGINS = [window.location.origin];
 const MINIMAX_PREFIX_MAX_LENGTH = 10;
+const VOICE_DESIGN_PREFIX_MAX_LENGTH = 10;
+const ELEVENLABS_VOICE_DESIGN_DESC_MIN_LENGTH = 20;
+const ELEVENLABS_VOICE_DESIGN_DESC_MAX_LENGTH = 1000;
+const VOICE_DESIGN_PREFIX_PATTERN = /^[A-Za-z0-9]+$/;
+const VOICE_PREVIEW_CACHE_VERSION = 3;
 let workshopReferenceFile = null;
 let workshopReferenceAudioUrl = '';
 let providerTouchedByUser = false;
@@ -435,8 +440,8 @@ function parseVoiceRegisterError(errorObj) {
     let displayError = errorMsg;
     let shouldFlash = false;
 
-    if (errorCode === 'PREFIX_INVALID') {
-        displayError = window.t ? window.t('voice.prefixShouldBeEnglishLetterAndNumber') : '前缀应为英文字母和数字';
+    if (errorCode === 'PREFIX_INVALID' || errorCode === 'VOICE_DESIGN_PREFIX_INVALID') {
+        displayError = window.t ? window.t('voice.prefixShouldBeEnglishLetterAndNumber') : '前缀必须是 1-10 个字符，只能包含英文字母和数字，不能包含下划线或空格';
         shouldFlash = true;
     } else if (errorCode === 'INVALID_API_KEY') {
         displayError = window.t ? window.t('voice.invalidApiKeyProvided') : '提供的API密钥无效';
@@ -444,7 +449,7 @@ function parseVoiceRegisterError(errorObj) {
     } else {
         const lowerMsg = errorMsg.toLowerCase();
         if (lowerMsg.includes('prefix should be') && lowerMsg.includes('english letter and number')) {
-            displayError = window.t ? window.t('voice.prefixShouldBeEnglishLetterAndNumber') : '前缀应为英文字母和数字';
+            displayError = window.t ? window.t('voice.prefixShouldBeEnglishLetterAndNumber') : '前缀必须是 1-10 个字符，只能包含英文字母和数字，不能包含下划线或空格';
             shouldFlash = true;
         } else if (lowerMsg.includes('invalid api-key provided')) {
             displayError = window.t ? window.t('voice.invalidApiKeyProvided') : '提供的API密钥无效';
@@ -1276,6 +1281,7 @@ document.addEventListener('DOMContentLoaded', function initProviderSwitch() {
         normalizePrefixInputForProvider();
         updateCloneMethodForProvider(providerSelect.value);
         updateRefTextRowForProvider(providerSelect.value);
+        updateVoiceSourceForProvider(providerSelect.value);
     });
     if (prefixInput) {
         prefixInput.addEventListener('input', () => {
@@ -1286,10 +1292,92 @@ document.addEventListener('DOMContentLoaded', function initProviderSwitch() {
     normalizePrefixInputForProvider();
     updateCloneMethodForProvider(providerSelect.value);
     updateRefTextRowForProvider(providerSelect.value);
+    updateVoiceSourceForProvider(providerSelect.value);
 });
 
 // 当前克隆方式
 let currentCloneMethod = 'file';
+let currentVoiceSource = 'clone';
+
+function isVoiceDesignSupportedProvider(provider) {
+    return ['cosyvoice', 'cosyvoice_intl', 'minimax', 'minimax_intl', 'elevenlabs', 'mimo'].includes(provider);
+}
+
+function isVoiceDesignLanguageSupportedProvider(provider) {
+    return provider === 'cosyvoice' || provider === 'cosyvoice_intl';
+}
+
+function isElevenLabsProvider(provider) {
+    return provider === 'elevenlabs';
+}
+
+function setVoiceCloneI18nText(element, key, fallback) {
+    if (!element) return;
+    element.setAttribute('data-i18n', key);
+    const text = window.t ? window.t(key) : fallback;
+    element.textContent = text && text !== key ? text : fallback;
+}
+
+function updateRefLanguageForVoiceSource(provider) {
+    const row = document.getElementById('refLanguageRow');
+    const label = document.getElementById('refLanguageLabel');
+    const hint = document.getElementById('refLanguageHint');
+    const select = document.getElementById('refLanguage');
+    if (!row || !select) return;
+
+    const designLanguageMode = currentVoiceSource === 'design' && isVoiceDesignLanguageSupportedProvider(provider);
+    if (currentVoiceSource === 'design' && !designLanguageMode) {
+        row.style.display = 'none';
+        return;
+    }
+
+    row.style.display = '';
+    if (designLanguageMode) {
+        setVoiceCloneI18nText(label, 'voice.designLanguage', 'Voice language hint');
+        setVoiceCloneI18nText(hint, 'voice.designLanguageNote', 'Only Chinese and English hints are supported for CosyVoice Voice Design.');
+        Array.from(select.options).forEach(option => {
+            const allowed = option.value === 'ch' || option.value === 'en';
+            option.hidden = !allowed;
+            option.disabled = !allowed;
+        });
+        if (select.value !== 'ch' && select.value !== 'en') {
+            select.value = 'ch';
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        if (typeof syncVoiceCloneSelectDropdowns === 'function') {
+            syncVoiceCloneSelectDropdowns(select, { rebuild: true });
+        }
+    } else {
+        setVoiceCloneI18nText(label, 'voice.refLanguage', 'Reference audio language');
+        setVoiceCloneI18nText(hint, 'voice.refLanguageNote', 'Select the language spoken in the uploaded reference audio.');
+        Array.from(select.options).forEach(option => {
+            option.hidden = false;
+            option.disabled = false;
+        });
+        if (typeof syncVoiceCloneSelectDropdowns === 'function') {
+            syncVoiceCloneSelectDropdowns(select, { rebuild: true });
+        }
+    }
+}
+
+function updateVoiceDesignHint(provider) {
+    const hint = document.getElementById('voiceDesignHint');
+    if (!hint) return;
+
+    if (isElevenLabsProvider(provider)) {
+        setVoiceCloneI18nText(
+            hint,
+            'voice.designHintElevenlabs',
+            'Describe only the voice, not the character personality. ElevenLabs requires 20-1000 characters.'
+        );
+    } else {
+        setVoiceCloneI18nText(
+            hint,
+            'voice.designHint',
+            'Describe only the voice, not the character personality. Previews use the same template as Voice Cloning.'
+        );
+    }
+}
 
 // MiMo 只支持本地文件克隆：它把参考样本存在本地、不走 /voice_clone_direct（后端
 // valid_providers 不含 mimo，直链会直接 TTS_PROVIDER_INVALID）。选中 MiMo 时禁用直链方式。
@@ -1316,6 +1404,75 @@ function updateCloneMethodForProvider(provider) {
 
 // vLLM-Omni 克隆需要参考音频原文（ref_text），其它 provider 不需要。
 // 选中 vllm_omni 时显示 ref_text 输入区，其它 provider 时隐藏。
+function updateRegisterButtonForVoiceSource() {
+    const registerText = document.querySelector('.register-text');
+    if (!registerText) return;
+    const i18nKey = currentVoiceSource === 'design' ? 'voice.generateVoice' : 'voice.register';
+    const fallback = currentVoiceSource === 'design' ? 'Generate Voice' : 'Register Voice';
+    const text = window.t ? window.t(i18nKey) : fallback;
+    registerText.setAttribute('data-i18n', i18nKey);
+    registerText.textContent = text && text !== i18nKey ? text : fallback;
+    registerText.setAttribute('data-text', registerText.textContent);
+}
+
+function switchVoiceSource(source) {
+    const provider = (document.getElementById('voiceProvider') || {}).value || 'cosyvoice';
+    if (source === 'design' && !isVoiceDesignSupportedProvider(provider)) {
+        source = 'clone';
+    }
+    currentVoiceSource = source === 'design' ? 'design' : 'clone';
+
+    const btnClone = document.getElementById('btnVoiceSourceClone');
+    const btnDesign = document.getElementById('btnVoiceSourceDesign');
+    const cloneMethodRow = document.getElementById('cloneMethodRow');
+    const fileCloneSection = document.getElementById('fileCloneSection');
+    const directLinkCloneSection = document.getElementById('directLinkCloneSection');
+    const voiceDesignSection = document.getElementById('voiceDesignSection');
+
+    if (btnClone) {
+        btnClone.classList.toggle('active', currentVoiceSource === 'clone');
+        btnClone.setAttribute('aria-selected', currentVoiceSource === 'clone' ? 'true' : 'false');
+        btnClone.setAttribute('tabindex', currentVoiceSource === 'clone' ? '0' : '-1');
+    }
+    if (btnDesign) {
+        btnDesign.classList.toggle('active', currentVoiceSource === 'design');
+        btnDesign.setAttribute('aria-selected', currentVoiceSource === 'design' ? 'true' : 'false');
+        btnDesign.setAttribute('tabindex', currentVoiceSource === 'design' ? '0' : '-1');
+    }
+
+    if (currentVoiceSource === 'design') {
+        if (cloneMethodRow) cloneMethodRow.style.display = 'none';
+        if (fileCloneSection) fileCloneSection.style.display = 'none';
+        if (directLinkCloneSection) directLinkCloneSection.style.display = 'none';
+        if (voiceDesignSection) voiceDesignSection.style.display = 'block';
+    } else {
+        if (cloneMethodRow) cloneMethodRow.style.display = '';
+        if (voiceDesignSection) voiceDesignSection.style.display = 'none';
+        switchCloneMethod(currentCloneMethod);
+    }
+    updateRegisterButtonForVoiceSource();
+    updateRefLanguageForVoiceSource(provider);
+    updateVoiceDesignHint(provider);
+}
+
+function updateVoiceSourceForProvider(provider) {
+    const sourceRow = document.getElementById('voiceSourceRow');
+    const btnDesign = document.getElementById('btnVoiceSourceDesign');
+    const supported = isVoiceDesignSupportedProvider(provider);
+    if (sourceRow) sourceRow.style.display = supported ? '' : 'none';
+    if (btnDesign) {
+        btnDesign.disabled = !supported;
+        btnDesign.hidden = !supported;
+        btnDesign.style.display = supported ? '' : 'none';
+        btnDesign.setAttribute('aria-disabled', supported ? 'false' : 'true');
+    }
+    if (!supported && currentVoiceSource === 'design') {
+        switchVoiceSource('clone');
+    } else {
+        switchVoiceSource(currentVoiceSource);
+    }
+}
+
 function updateRefTextRowForProvider(provider) {
     const refTextRow = document.getElementById('vllmRefTextRow');
     if (refTextRow) {
@@ -1340,6 +1497,12 @@ function switchCloneMethod(method) {
 
     if (!btnFileClone || !btnDirectLinkClone || !fileCloneSection || !directLinkCloneSection) {
         console.warn('克隆方式切换：部分DOM元素未找到');
+        return;
+    }
+
+    if (currentVoiceSource === 'design') {
+        fileCloneSection.style.display = 'none';
+        directLinkCloneSection.style.display = 'none';
         return;
     }
 
@@ -1448,11 +1611,13 @@ async function initWorkshopVoiceReference() {
 function setFormDisabled(disabled) {
     const audioFile = document.getElementById('audioFile');
     const directLinkUrl = document.getElementById('directLinkUrl');
+    const voiceDesignPrompt = document.getElementById('voiceDesignPrompt');
     const refLanguage = document.getElementById('refLanguage');
     const prefix = document.getElementById('prefix');
     const voiceProvider = document.getElementById('voiceProvider');
     if (audioFile) audioFile.disabled = disabled;
     if (directLinkUrl) directLinkUrl.disabled = disabled;
+    if (voiceDesignPrompt) voiceDesignPrompt.disabled = disabled;
     if (refLanguage) refLanguage.disabled = disabled;
     if (prefix) prefix.disabled = disabled;
     if (voiceProvider) voiceProvider.disabled = disabled;
@@ -1467,6 +1632,9 @@ function setFormDisabled(disabled) {
     // 状态冲掉，若不重新触发 provider change，MiMo 下直链按钮会变回可点（与策略不一致）。
     if (!disabled && typeof updateCloneMethodForProvider === 'function') {
         updateCloneMethodForProvider(voiceProvider ? voiceProvider.value : '');
+    }
+    if (!disabled && typeof updateVoiceSourceForProvider === 'function') {
+        updateVoiceSourceForProvider(voiceProvider ? voiceProvider.value : '');
     }
 }
 
@@ -1486,9 +1654,46 @@ async function registerVoice() {
     applyVoiceCloneProviderRestrictions(providerSelect);
     const provider = (providerSelect || {}).value || 'cosyvoice';
     const prefix = normalizePrefixInputForProvider();
+    const designPromptEl = document.getElementById('voiceDesignPrompt');
+    const designPrompt = designPromptEl ? designPromptEl.value.trim() : '';
 
     // 根据克隆方式验证输入
-    if (currentCloneMethod === 'file') {
+    if (currentVoiceSource === 'design') {
+        if (!isVoiceDesignSupportedProvider(provider)) {
+            resultDiv.textContent = window.t ? window.t('voice.designProviderUnsupported') : 'Voice Design is not available for the selected provider.';
+            resultDiv.className = 'result error';
+            return;
+        }
+        if (!prefix) {
+            resultDiv.textContent = window.t ? window.t('voice.pleaseEnterPrefix') : '璇峰～鍐欒嚜瀹氫箟鍓嶇紑';
+            resultDiv.className = 'result error';
+            return;
+        }
+        if (prefix.length > VOICE_DESIGN_PREFIX_MAX_LENGTH || !VOICE_DESIGN_PREFIX_PATTERN.test(prefix)) {
+            resultDiv.textContent = window.t ? window.t('voice.prefixShouldBeEnglishLetterAndNumber') : '前缀必须是 1-10 个字符，只能包含英文字母和数字，不能包含下划线或空格';
+            resultDiv.className = 'result error';
+            return;
+        }
+        if (!designPrompt) {
+            resultDiv.textContent = window.t ? window.t('voice.pleaseEnterDesignPrompt') : 'Please describe the voice you want to design.';
+            resultDiv.className = 'result error';
+            return;
+        }
+        if (isElevenLabsProvider(provider) && designPrompt.length < ELEVENLABS_VOICE_DESIGN_DESC_MIN_LENGTH) {
+            resultDiv.textContent = window.t
+                ? window.t('voice.designPromptTooShortElevenlabs', { min: ELEVENLABS_VOICE_DESIGN_DESC_MIN_LENGTH })
+                : `ElevenLabs voice description must be at least ${ELEVENLABS_VOICE_DESIGN_DESC_MIN_LENGTH} characters.`;
+            resultDiv.className = 'result error';
+            return;
+        }
+        if (isElevenLabsProvider(provider) && designPrompt.length > ELEVENLABS_VOICE_DESIGN_DESC_MAX_LENGTH) {
+            resultDiv.textContent = window.t
+                ? window.t('voice.designPromptTooLongElevenlabs', { max: ELEVENLABS_VOICE_DESIGN_DESC_MAX_LENGTH })
+                : `ElevenLabs voice description must be at most ${ELEVENLABS_VOICE_DESIGN_DESC_MAX_LENGTH} characters.`;
+            resultDiv.className = 'result error';
+            return;
+        }
+    } else if (currentCloneMethod === 'file') {
         // 先检查文件
         if (!effectiveAudioFile) {
             resultDiv.textContent = window.t ? window.t('voice.pleaseUploadFile') : '请选择音频文件';
@@ -1540,12 +1745,28 @@ async function registerVoice() {
     }
 
     setFormDisabled(true);
-    resultDiv.textContent = window.t ? window.t('voice.registering') : '正在注册声音，请稍后！';
+    resultDiv.textContent = currentVoiceSource === 'design'
+        ? (window.t ? window.t('voice.generatingVoice') : 'Generating voice, please wait...')
+        : (window.t ? window.t('voice.registering') : '正在注册声音，请稍后！');
     resultDiv.className = 'result';
 
     // 根据克隆方式选择API端点和参数
     let requestOptions;
-    if (currentCloneMethod === 'file') {
+    let apiUrl = '';
+    if (currentVoiceSource === 'design') {
+        requestOptions = {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                provider: provider,
+                prefix: prefix,
+                voice_prompt: designPrompt,
+                ref_language: refLanguage,
+                i18n_language: getVoicePreviewLanguage()
+            })
+        };
+        apiUrl = '/api/characters/voice_design';
+    } else if (currentCloneMethod === 'file') {
         // 本地文件克隆
         const formData = new FormData();
         formData.append('file', effectiveAudioFile, effectiveAudioFile.name);
@@ -1560,6 +1781,7 @@ async function registerVoice() {
             method: 'POST',
             body: formData
         };
+        apiUrl = '/api/characters/voice_clone';
     } else {
         // 直链克隆
         requestOptions = {
@@ -1572,11 +1794,8 @@ async function registerVoice() {
                 provider: provider
             })
         };
+        apiUrl = '/api/characters/voice_clone_direct';
     }
-
-    const apiUrl = currentCloneMethod === 'file'
-        ? '/api/characters/voice_clone'
-        : '/api/characters/voice_clone_direct';
 
     fetch(apiUrl, requestOptions)
         .then(async res => {
@@ -1709,7 +1928,7 @@ window.addEventListener('message', function (event) {
     }
 });
 
-async function playPreview(voiceId, btn) {
+async function playPreview(voiceId, btn, options = {}) {
     if (btn.disabled) return;
 
     const originalContent = btn.innerHTML;
@@ -1727,7 +1946,7 @@ async function playPreview(voiceId, btn) {
                 const cachedData = JSON.parse(cachedPreview);
                 if (
                     cachedData
-                    && cachedData.version === 2
+                    && cachedData.version === VOICE_PREVIEW_CACHE_VERSION
                     && cachedData.language === previewLanguage
                     && typeof cachedData.audioSrc === 'string'
                     && cachedData.audioSrc
@@ -1741,14 +1960,16 @@ async function playPreview(voiceId, btn) {
 
         if (!audioSrc) {
             // 如果本地没有缓存，则从服务器获取
-            // TTS 合成耗时按音色类型分两档：克隆音色（voiceId 含 '-clone-'，如
-            // mimo-clone-* / vllm-omni-clone-* 等）需服务端实时合成参考音频，耗时
-            // 远超普通调用，用 30s 超时（对齐后端 asyncio.wait_for timeout=30）、共尝试 2 次；
-            // 预制音色合成快，沿用改造前的 5s 超时、共尝试 3 次——避免预制音色在服务端偶发
-            // 卡住时让用户干等过久才报错。
-            const isCloneVoice = typeof voiceId === 'string' && voiceId.includes('-clone-');
-            const ttsTimeoutMs = isCloneVoice ? 30_000 : 5_000;
-            const ttsMaxAttempts = isCloneVoice ? 2 : 3;
+            // TTS 合成耗时按音色类型分两档：克隆/设计音色需要服务端实时合成，
+            // 耗时远超普通预制音色，用 30s 超时；预制音色沿用 5s，避免用户干等。
+            const voiceSource = String(options.source || '').trim().toLowerCase();
+            const isRealtimeRegisteredVoice = ['clone', 'design'].includes(voiceSource)
+                || (
+                    typeof voiceId === 'string'
+                    && (voiceId.includes('-clone-') || voiceId.includes('-design-'))
+                );
+            const ttsTimeoutMs = isRealtimeRegisteredVoice ? 30_000 : 5_000;
+            const ttsMaxAttempts = isRealtimeRegisteredVoice ? 2 : 3;
             let lastTtsError = null;
             let response = null;
             for (let attempt = 1; attempt <= ttsMaxAttempts; attempt += 1) {
@@ -1763,7 +1984,9 @@ async function playPreview(voiceId, btn) {
                     if (response.ok || response.status < 500 || attempt >= ttsMaxAttempts) break;
                     lastTtsError = new Error(`API returned ${response.status}`);
                 } catch (error) {
-                    lastTtsError = error;
+                    lastTtsError = (error && error.name === 'AbortError')
+                        ? new Error(window.t ? window.t('voice.previewTimeout') : '试听生成超时，请稍后重试')
+                        : error;
                     if (attempt >= ttsMaxAttempts) break;
                 } finally {
                     clearTimeout(tid);
@@ -1787,7 +2010,7 @@ async function playPreview(voiceId, btn) {
                 // 保存到 localStorage
                 try {
                     localStorage.setItem(storageKey, JSON.stringify({
-                        version: 2,
+                        version: VOICE_PREVIEW_CACHE_VERSION,
                         language: previewLanguage,
                         audioSrc
                     }));
@@ -1951,7 +2174,7 @@ async function loadVoices() {
         });
 
         // 创建音色列表项
-        voicesArray.forEach(({ voiceId, prefix, created_at }) => {
+        voicesArray.forEach(({ voiceId, prefix, created_at, source, provider }) => {
             const item = document.createElement('div');
             item.className = 'voice-list-item';
             item.dataset.voiceId = voiceId;
@@ -1994,7 +2217,7 @@ async function loadVoices() {
             previewBtn.appendChild(document.createTextNode(previewText));
             previewBtn.onclick = (event) => {
                 event.stopPropagation();
-                playPreview(voiceId, previewBtn);
+                playPreview(voiceId, previewBtn, { source, provider });
             };
 
             const deleteBtn = document.createElement('button');

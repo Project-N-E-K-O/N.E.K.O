@@ -66,6 +66,45 @@ def test_registry_declares_design_for_elevenlabs():
     assert "design" in meta["elevenlabs"]["capabilities"]
 
 
+@pytest.mark.unit
+def test_registry_declares_design_for_cosyvoice():
+    import main_logic.tts_client  # noqa: F401 - registers providers
+    import utils.tts_provider_registry as reg
+
+    cosy = reg.get("cosyvoice")
+    assert cosy is not None and "design" in cosy.capabilities and "clone" in cosy.capabilities
+    meta = {m["key"]: m for m in reg.ui_metadata()}
+    assert "design" in meta["cosyvoice"]["capabilities"]
+
+
+@pytest.mark.unit
+def test_registry_declares_design_for_minimax_and_mimo():
+    import main_logic.tts_client  # noqa: F401 - registers providers
+    import utils.tts_provider_registry as reg
+
+    minimax = reg.get("minimax")
+    assert minimax is not None and "design" in minimax.capabilities and "clone" in minimax.capabilities
+    mimo = reg.get("mimo")
+    assert mimo is not None and "design" in mimo.capabilities and "clone" in mimo.capabilities
+    meta = {m["key"]: m for m in reg.ui_metadata()}
+    assert "design" in meta["minimax"]["capabilities"]
+    assert "design" in meta["mimo"]["capabilities"]
+
+
+@pytest.mark.unit
+def test_cosyvoice_design_language_hints_are_limited_to_zh_en():
+    from main_routers import characters_router as cr
+
+    assert cr._cosyvoice_design_language_hints("ch") == ["zh"]
+    assert cr._cosyvoice_design_language_hints("zh") == ["zh"]
+    assert cr._cosyvoice_design_language_hints("en") == ["en"]
+    assert cr._cosyvoice_design_language_hints("ru") == ["zh"]
+    assert cr._cosyvoice_design_default_preview_text("en") == cr.VOICE_PREVIEW_TEXTS["en"]
+    assert cr._cosyvoice_design_default_preview_text("ru") == cr.VOICE_PREVIEW_TEXTS["zh-CN"]
+    assert cr._voice_design_preview_text("ru", "ch") == cr.VOICE_PREVIEW_TEXTS["ru"]
+    assert cr._voice_design_preview_text(None, "en") == cr.VOICE_PREVIEW_TEXTS["en"]
+
+
 # ── router design helpers: design previews → create-from-preview ──────────────
 
 class _FakeElevenTransport(httpx.AsyncBaseTransport):
@@ -138,3 +177,355 @@ def test_voice_design_description_validation():
     assert ok is None and desc.startswith("a warm")
     _, too_long = cr._validate_voice_design_description("x" * 1001)
     assert too_long is not None and too_long.status_code == 400
+
+
+class _FakeCosyVoiceDesignTransport(httpx.AsyncBaseTransport):
+    def __init__(self):
+        self.requests = []
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content) if request.content else {}
+        self.requests.append({
+            "url": str(request.url),
+            "body": body,
+            "headers": dict(request.headers),
+        })
+        return httpx.Response(200, json={
+            "output": {
+                "voice_id": "cosyvoice-v3.5-plus-demo",
+                "preview_audio": {
+                    "data": "UklGRg==",
+                    "response_format": "wav",
+                    "sample_rate": 24000,
+                },
+            },
+            "request_id": "req-cosy-design",
+        })
+
+
+class _FailingCosyVoiceDesignTransport(httpx.AsyncBaseTransport):
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("[Errno 11001] getaddrinfo failed", request=request)
+
+
+class _UrlCosyVoiceDesignTransport(httpx.AsyncBaseTransport):
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "output": {
+                "voice_id": "cosyvoice-v3.5-plus-demo",
+                "preview_audio": {
+                    "audio_url": "https://dashscope-preview.example.com/preview.wav",
+                    "response_format": "wav",
+                },
+            },
+            "request_id": "req-cosy-url",
+        })
+
+
+class _FakeMiniMaxDesignTransport(httpx.AsyncBaseTransport):
+    def __init__(self):
+        self.requests = []
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content) if request.content else {}
+        self.requests.append({
+            "url": str(request.url),
+            "body": body,
+            "headers": dict(request.headers),
+        })
+        return httpx.Response(200, json={
+            "voice_id": "mini-design-1",
+            "trial_audio": "UklGRg==",
+            "base_resp": {"status_code": 0, "status_msg": "success"},
+            "request_id": "req-minimax-design",
+        })
+
+
+@pytest.mark.unit
+async def test_cosyvoice_design_payload_and_parse(monkeypatch):
+    from main_routers import characters_router as cr
+
+    transport = _FakeCosyVoiceDesignTransport()
+    async with httpx.AsyncClient(transport=transport) as client:
+        voice_id, preview_audio, media_type, request_id = await cr._cosyvoice_design_voice(
+            api_key="cosy-key",
+            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            prefix="aria",
+            voice_prompt="a warm clear voice",
+            preview_text="hello there",
+            ref_language="ch",
+            target_model="cosyvoice-v3.5-plus",
+            http_client=client,
+        )
+
+    assert voice_id == "cosyvoice-v3.5-plus-demo"
+    assert preview_audio == "UklGRg=="
+    assert media_type == "audio/wav"
+    assert request_id == "req-cosy-design"
+
+    req = transport.requests[0]
+    assert req["url"] == "https://dashscope.aliyuncs.com/api/v1/services/audio/tts/customization"
+    assert req["headers"]["authorization"] == "Bearer cosy-key"
+    assert req["body"]["model"] == "voice-enrollment"
+    assert req["body"]["input"] == {
+        "action": "create_voice",
+        "target_model": "cosyvoice-v3.5-plus",
+        "voice_prompt": "a warm clear voice",
+        "preview_text": "hello there",
+        "prefix": "aria",
+        "language_hints": ["zh"],
+    }
+    assert req["body"]["parameters"] == {"sample_rate": 24000, "response_format": "wav"}
+
+
+@pytest.mark.unit
+async def test_cosyvoice_design_parses_preview_audio_url():
+    from main_routers import characters_router as cr
+
+    async with httpx.AsyncClient(transport=_UrlCosyVoiceDesignTransport()) as client:
+        voice_id, preview_audio, media_type, request_id = await cr._cosyvoice_design_voice(
+            api_key="cosy-key",
+            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            prefix="aria",
+            voice_prompt="a warm clear voice",
+            preview_text="hello there",
+            ref_language="ch",
+            target_model="cosyvoice-v3.5-plus",
+            http_client=client,
+        )
+
+    assert voice_id == "cosyvoice-v3.5-plus-demo"
+    assert preview_audio == "https://dashscope-preview.example.com/preview.wav"
+    assert media_type == "audio/wav"
+    assert request_id == "req-cosy-url"
+
+
+@pytest.mark.unit
+async def test_minimax_design_payload_and_parse():
+    from main_routers import characters_router as cr
+
+    transport = _FakeMiniMaxDesignTransport()
+    async with httpx.AsyncClient(transport=transport) as client:
+        voice_id, request_id = await cr._minimax_design_voice(
+            api_key="mini-key",
+            base_url="https://api.minimax.io",
+            voice_id="aria12345678",
+            voice_prompt="a warm clear voice",
+            preview_text="hello there",
+            http_client=client,
+        )
+
+    assert voice_id == "mini-design-1"
+    assert request_id == "req-minimax-design"
+    req = transport.requests[0]
+    assert req["url"] == "https://api.minimax.io/v1/voice_design"
+    assert req["headers"]["authorization"] == "Bearer mini-key"
+    assert req["body"] == {
+        "prompt": "a warm clear voice",
+        "preview_text": "hello there",
+    }
+
+
+@pytest.mark.unit
+async def test_cosyvoice_design_network_error_is_actionable():
+    from main_routers import characters_router as cr
+
+    async with httpx.AsyncClient(transport=_FailingCosyVoiceDesignTransport()) as client:
+        with pytest.raises(cr.QwenVoiceCloneError) as exc_info:
+            await cr._cosyvoice_design_voice(
+                api_key="cosy-key",
+                base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+                prefix="aria",
+                voice_prompt="a warm clear voice",
+                preview_text="hello there",
+                ref_language="ch",
+                target_model="cosyvoice-v3.5-plus",
+                http_client=client,
+            )
+
+    message = str(exc_info.value)
+    assert "dashscope.aliyuncs.com" in message
+    assert "DNS" in message
+    assert "proxy" in message
+
+
+class _JsonRequest:
+    def __init__(self, payload):
+        self.payload = payload
+
+    async def json(self):
+        return self.payload
+
+
+@pytest.mark.unit
+async def test_cosyvoice_design_endpoint_saves_source_design(monkeypatch):
+    from main_routers import characters_router as cr
+
+    saved = {}
+
+    class _CM:
+        def get_cosyvoice_clone_runtime(self, provider):
+            assert provider == "cosyvoice"
+            return {
+                "api_key": "cosy-key",
+                "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                "storage_key": "cosy-key",
+                "provider_label": "Alibaba Bailian CosyVoice",
+            }
+
+        def save_voice_for_api_key(self, storage_key, voice_id, voice_data):
+            saved["storage_key"] = storage_key
+            saved["voice_id"] = voice_id
+            saved["voice_data"] = voice_data
+
+    async def fake_design(**kwargs):
+        assert kwargs["api_key"] == "cosy-key"
+        assert kwargs["prefix"] == "aria"
+        assert kwargs["preview_text"] == cr.VOICE_PREVIEW_TEXTS["zh-CN"]
+        return "cosy-design-1", "UklGRg==", "audio/wav", "req-1"
+
+    monkeypatch.setattr(cr, "get_config_manager", lambda: _CM())
+    monkeypatch.setattr(cr, "_cosyvoice_design_voice", fake_design)
+
+    response = await cr.voice_design(_JsonRequest({
+        "provider": "cosyvoice",
+        "prefix": "aria",
+        "voice_prompt": "a warm clear voice",
+        "preview_text": "This caller-supplied text must be ignored.",
+        "ref_language": "ch",
+    }))
+    body = json.loads(response.body)
+
+    assert response.status_code == 200
+    assert body["voice_id"] == "cosy-design-1"
+    assert body["source"] == "design"
+    assert "preview_audio" not in body
+    assert saved["storage_key"] == "cosy-key"
+    assert saved["voice_id"] == "cosy-design-1"
+    assert saved["voice_data"]["source"] == "design"
+    assert saved["voice_data"]["provider"] == "cosyvoice"
+    assert saved["voice_data"]["design_prompt"] == "a warm clear voice"
+    assert saved["voice_data"]["preview_text"] == cr.VOICE_PREVIEW_TEXTS["zh-CN"]
+
+
+@pytest.mark.unit
+async def test_cosyvoice_intl_design_endpoint_uses_intl_runtime(monkeypatch):
+    from main_routers import characters_router as cr
+
+    saved = {}
+
+    class _CM:
+        def get_cosyvoice_clone_runtime(self, provider):
+            assert provider == "cosyvoice_intl"
+            return {
+                "api_key": "intl-key",
+                "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                "storage_key": "__COSYVOICE_INTL__intl-key",
+                "provider_label": "Alibaba Intl CosyVoice",
+            }
+
+        def save_voice_for_api_key(self, storage_key, voice_id, voice_data):
+            saved["storage_key"] = storage_key
+            saved["voice_id"] = voice_id
+            saved["voice_data"] = voice_data
+
+    async def fake_design(**kwargs):
+        assert kwargs["api_key"] == "intl-key"
+        assert kwargs["base_url"] == "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+        assert kwargs["target_model"] == "cosyvoice-v3-plus"
+        return "cosy-intl-design-1", "", "audio/wav", "req-intl"
+
+    monkeypatch.setattr(cr, "get_config_manager", lambda: _CM())
+    monkeypatch.setattr(cr, "_cosyvoice_design_voice", fake_design)
+    monkeypatch.setattr("utils.api_config_loader.get_cosyvoice_clone_model", lambda provider: "cosyvoice-v3-plus")
+
+    response = await cr.voice_design(_JsonRequest({
+        "provider": "cosyvoice_intl",
+        "prefix": "aria",
+        "voice_prompt": "a warm clear voice",
+        "ref_language": "en",
+    }))
+    body = json.loads(response.body)
+
+    assert response.status_code == 200
+    assert body["voice_id"] == "cosy-intl-design-1"
+    assert body["provider"] == "cosyvoice_intl"
+    assert saved["storage_key"] == "__COSYVOICE_INTL__intl-key"
+    assert saved["voice_data"]["provider"] == "cosyvoice_intl"
+    assert saved["voice_data"]["dashscope_base_url"] == "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+
+
+@pytest.mark.unit
+async def test_minimax_design_endpoint_saves_source_design(monkeypatch):
+    from main_routers import characters_router as cr
+
+    saved = {}
+
+    class _CM:
+        def get_tts_api_key(self, provider):
+            assert provider == "minimax_intl"
+            return "minimax-intl-key"
+
+        def save_voice_for_api_key(self, storage_key, voice_id, voice_data):
+            saved["storage_key"] = storage_key
+            saved["voice_id"] = voice_id
+            saved["voice_data"] = voice_data
+
+    async def fake_design(**kwargs):
+        assert kwargs["api_key"] == "minimax-intl-key"
+        assert kwargs["base_url"] == "https://api.minimax.io"
+        assert kwargs["voice_prompt"] == "a warm clear voice"
+        assert kwargs["preview_text"] == cr.VOICE_PREVIEW_TEXTS["en"]
+        return "mini-design-1", "req-mini"
+
+    monkeypatch.setattr(cr, "get_config_manager", lambda: _CM())
+    monkeypatch.setattr(cr, "_minimax_design_voice", fake_design)
+
+    response = await cr.voice_design(_JsonRequest({
+        "provider": "minimax_intl",
+        "prefix": "aria",
+        "voice_prompt": "a warm clear voice",
+        "ref_language": "en",
+    }))
+    body = json.loads(response.body)
+
+    assert response.status_code == 200
+    assert body["voice_id"] == "mini-design-1"
+    assert body["provider"] == "minimax_intl"
+    assert saved["storage_key"].startswith("__MINIMAX_INTL__")
+    assert saved["voice_data"]["provider"] == "minimax_intl"
+    assert saved["voice_data"]["source"] == "design"
+    assert saved["voice_data"]["minimax_base_url"] == "https://api.minimax.io"
+
+
+@pytest.mark.unit
+async def test_voice_design_endpoint_rejects_vllm_omni_provider():
+    from main_routers import characters_router as cr
+
+    response = await cr.voice_design(_JsonRequest({
+        "provider": "vllm_omni",
+        "prefix": "aria",
+        "voice_prompt": "a warm clear voice",
+        "preview_text": "hello there",
+    }))
+    body = json.loads(response.body)
+
+    assert response.status_code == 400
+    assert body["code"] == "VOICE_DESIGN_PROVIDER_UNSUPPORTED"
+
+
+@pytest.mark.unit
+async def test_cosyvoice_design_endpoint_rejects_underscore_prefix():
+    from main_routers import characters_router as cr
+
+    response = await cr.voice_design(_JsonRequest({
+        "provider": "cosyvoice",
+        "prefix": "cosy_test6",
+        "voice_prompt": "a warm clear voice",
+        "preview_text": "hello there",
+    }))
+    body = json.loads(response.body)
+
+    assert response.status_code == 400
+    assert body["code"] == "VOICE_DESIGN_PREFIX_INVALID"
+    assert "Underscores" in body["message"]

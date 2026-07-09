@@ -18,6 +18,7 @@ MIMO_TTS_MODEL = "mimo-v2.5-tts"
 # characters_router 的 /voice_clone mimo 分支，对偶 cosyvoice/minimax 的云端克隆流程；
 # dispatch 由 tts_provider_registry 的 mimo provider 按 voice_meta 选中（见设计文档 §4/§7）。
 MIMO_TTS_VOICECLONE_MODEL = "mimo-v2.5-tts-voiceclone"
+MIMO_TTS_VOICEDESIGN_MODEL = "mimo-v2.5-tts-voicedesign"
 MIMO_TTS_DEFAULT_VOICE = "mimo_default"
 MIMO_TTS_BASE_URL = "https://api.xiaomimimo.com/v1"
 

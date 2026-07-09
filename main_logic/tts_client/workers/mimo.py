@@ -23,6 +23,7 @@ from functools import partial
 from utils.mimo_tts_voices import (
     MIMO_TTS_MODEL,
     MIMO_TTS_VOICECLONE_MODEL,
+    MIMO_TTS_VOICEDESIGN_MODEL,
     mimo_chat_completions_url,
     normalize_mimo_tts_voice,
 )
@@ -76,7 +77,7 @@ def _extract_mimo_tts_audio_bytes(payload: dict) -> bytes | None:
     return None
 
 def mimo_tts_worker(request_queue, response_queue, audio_api_key, voice_id, base_url=None,
-                    clone_voice=None):
+                    clone_voice=None, design_prompt=None):
     """Xiaomi MiMo-V2.5-TTS worker — chat-completions JSON returns PCM16.
 
     ``clone_voice`` is the cloned-voice variant: when set it is a
@@ -89,8 +90,16 @@ def mimo_tts_worker(request_queue, response_queue, audio_api_key, voice_id, base
     import httpx
 
     is_clone = bool(clone_voice)
-    tts_model = MIMO_TTS_VOICECLONE_MODEL if is_clone else MIMO_TTS_MODEL
-    if is_clone:
+    is_design = bool(str(design_prompt or "").strip())
+    if is_design:
+        tts_model = MIMO_TTS_VOICEDESIGN_MODEL
+    elif is_clone:
+        tts_model = MIMO_TTS_VOICECLONE_MODEL
+    else:
+        tts_model = MIMO_TTS_MODEL
+    if is_design:
+        voice_param = None
+    elif is_clone:
         voice_param = clone_voice
     else:
         requested_voice_id = (voice_id or "").strip()
@@ -123,17 +132,22 @@ def mimo_tts_worker(request_queue, response_queue, audio_api_key, voice_id, base
         )
 
         async def synthesize(text: str, speech_id: str) -> None:
+            messages = [{"role": "assistant", "content": text}]
+            if is_design:
+                messages = [
+                    {"role": "user", "content": str(design_prompt).strip()},
+                    {"role": "assistant", "content": text},
+                ]
             payload = {
                 "model": tts_model,
-                "messages": [
-                    {"role": "assistant", "content": text},
-                ],
+                "messages": messages,
                 "audio": {
                     "format": "pcm16",
-                    "voice": voice_param,
                 },
                 "stream": True,
             }
+            if voice_param:
+                payload["audio"]["voice"] = voice_param
             resampler = soxr.ResampleStream(24000, 48000, 1, dtype="float32")
 
             def handle_event(event: dict) -> None:
@@ -238,6 +252,19 @@ def _mimo_resolve(ctx):
     # 克隆音色优先：用户挑了某个具体的 MiMo 克隆音色（voice_meta.provider=='mimo'），即使
     # 同时把 MiMo 配成了默认 TTS 也应当尊重这个更具体的选择，走 voiceclone 内联参考音频。
     vm = ctx.voice_meta
+    if vm and vm.get('provider') == 'mimo' and vm.get('source') == 'design':
+        design_prompt = str(vm.get('design_prompt') or '').strip()
+        if not design_prompt:
+            logger.warning(
+                "MiMo 设计音色 %s 缺少 design_prompt，改用 dummy TTS worker", ctx.voice_id)
+            return dummy_tts_worker, None, None
+        design_base_url = config_base_url or (vm or {}).get('mimo_base_url') or None
+        return (
+            partial(mimo_tts_worker, base_url=design_base_url, design_prompt=design_prompt),
+            mimo_api_key,
+            'mimo',
+        )
+
     if _mimo_voice_meta_is_clone(vm):
         clone_voice = _build_mimo_clone_data_uri(vm)
         if not clone_voice:

@@ -95,6 +95,7 @@ from utils.config_manager import (
     strip_generated_persona_selection_prompt,
 )
 from utils.dashscope_region import DASHSCOPE_GLOBAL_LOCK, configure_dashscope_sdk_urls
+from utils.external_http_client import get_external_http_client
 from utils.voice_config import read_legacy_voice_id
 from utils.native_voice_registry import (
     get_active_realtime_native_provider_for_ui,
@@ -752,6 +753,16 @@ def _get_voice_preview_language(request: Request, language: object = None, i18n_
                 return normalized
 
     return "zh-CN"
+
+
+def _get_voice_preview_text(voice_data: object, preview_language: str) -> str:
+    """Pick the spoken line for a voice preview.
+
+    Keep this aligned with VoiceClone's historical behavior: every saved voice,
+    including Voice Design voices, previews with the localized template from
+    ``config/prompts/prompts_voice.py``.
+    """
+    return _loc(VOICE_PREVIEW_TEXTS, preview_language)
 
 
 def _is_free_preset_voice_id(voice_id: object) -> bool:
@@ -1535,6 +1546,18 @@ async def _elevenlabs_clone_voice(
 # so no separate worker is needed (design doc §7).
 ELEVENLABS_VOICE_DESIGN_DESC_MIN = 20
 ELEVENLABS_VOICE_DESIGN_DESC_MAX = 1000
+COSYVOICE_VOICE_DESIGN_PROMPT_MAX = 500
+COSYVOICE_VOICE_DESIGN_PREFIX_MAX = 10
+COSYVOICE_VOICE_DESIGN_PREFIX_PATTERN = re.compile(r"^[A-Za-z0-9]+$")
+COSYVOICE_VOICE_DESIGN_DEFAULT_MEDIA_TYPE = "audio/wav"
+VOICE_DESIGN_SUPPORTED_PROVIDERS = frozenset({
+    "cosyvoice",
+    "cosyvoice_intl",
+    "minimax",
+    "minimax_intl",
+    "elevenlabs",
+    "mimo",
+})
 # ElevenLabs voice-design previews require a ``text`` between 100 and 1000 chars to
 # synthesize audible samples. ``auto_generate_text`` only returns generated voice ids
 # (no audio), which would yield empty/unplayable previews — so we always pass a fixed
@@ -1546,6 +1569,227 @@ ELEVENLABS_VOICE_DESIGN_PREVIEW_TEXT = (
 )
 
 
+def _cosyvoice_customization_url(base_url: str) -> str:
+    """Build the DashScope customization endpoint used by CosyVoice voice design."""
+    fallback = "https://dashscope.aliyuncs.com/api/v1/services/audio/tts/customization"
+    raw = (base_url or "").strip()
+    if not raw:
+        return fallback
+    try:
+        parsed = urlparse(raw)
+    except Exception:
+        return fallback
+    if not parsed.scheme or not parsed.netloc:
+        return fallback
+    if parsed.path.rstrip("/").endswith("/api/v1/services/audio/tts/customization"):
+        return raw.rstrip("/")
+    return f"{parsed.scheme}://{parsed.netloc}/api/v1/services/audio/tts/customization"
+
+
+def _cosyvoice_design_language_hints(ref_language: str) -> list[str]:
+    normalized = str(ref_language or "ch").strip().lower()
+    hint = "en" if normalized == "en" else "zh"
+    return [hint]
+
+
+def _cosyvoice_design_default_preview_text(ref_language: str) -> str:
+    return _loc(
+        VOICE_PREVIEW_TEXTS,
+        "en" if _cosyvoice_design_language_hints(ref_language) == ["en"] else "zh-CN",
+    )
+
+
+def _voice_design_preview_language(raw_language: object = None, ref_language: object = None) -> str:
+    normalized = _normalize_voice_preview_language(raw_language)
+    if normalized:
+        return normalized
+
+    raw_ref = str(ref_language or "").strip().lower()
+    if raw_ref in ("ch", "zh", "zh-cn", "zh_hans", "zh-hans"):
+        return "zh-CN"
+    normalized_ref = _normalize_voice_preview_language(raw_ref)
+    if normalized_ref:
+        return normalized_ref
+    return "zh-CN"
+
+
+def _voice_design_preview_text(raw_language: object = None, ref_language: object = None) -> str:
+    return _loc(VOICE_PREVIEW_TEXTS, _voice_design_preview_language(raw_language, ref_language))
+
+
+def _first_nested_value(payload: object, names: set[str]) -> object:
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            if key in names and value not in (None, ""):
+                return value
+        for value in payload.values():
+            found = _first_nested_value(value, names)
+            if found not in (None, ""):
+                return found
+    elif isinstance(payload, list):
+        for item in payload:
+            found = _first_nested_value(item, names)
+            if found not in (None, ""):
+                return found
+    return None
+
+
+async def _cosyvoice_design_voice(
+    *,
+    api_key: str,
+    base_url: str,
+    prefix: str,
+    voice_prompt: str,
+    preview_text: str,
+    ref_language: str,
+    target_model: str,
+    http_client: httpx.AsyncClient | None = None,
+) -> tuple[str, str, str, str | None]:
+    """Create a CosyVoice designed voice and return voice_id plus preview audio."""
+    from utils.api_config_loader import cosyvoice_model_supports_language_hints
+
+    payload_input = {
+        "action": "create_voice",
+        "target_model": target_model,
+        "voice_prompt": voice_prompt,
+        "preview_text": preview_text,
+        "prefix": prefix,
+    }
+    if cosyvoice_model_supports_language_hints(target_model):
+        payload_input["language_hints"] = _cosyvoice_design_language_hints(ref_language)
+
+    payload = {
+        "model": "voice-enrollment",
+        "input": payload_input,
+        "parameters": {
+            "sample_rate": 24000,
+            "response_format": "wav",
+        },
+    }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    endpoint = _cosyvoice_customization_url(base_url)
+    client = http_client or get_external_http_client()
+    try:
+        resp = await client.post(endpoint, headers=headers, json=payload, timeout=90)
+    except httpx.RequestError as exc:
+        host = urlparse(endpoint).netloc or endpoint
+        raise QwenVoiceCloneError(
+            f"CosyVoice voice design network error while connecting to {host}: {exc}. "
+            "Please check DashScope base URL, DNS, and proxy settings."
+        ) from exc
+    if resp.status_code >= 400:
+        raise QwenVoiceCloneError(f"CosyVoice voice design upstream error ({resp.status_code}): {resp.text[:300]}")
+    try:
+        data = resp.json()
+    except Exception as exc:
+        raise QwenVoiceCloneError("CosyVoice voice design returned invalid JSON") from exc
+
+    voice_id = _first_nested_value(data, {"voice_id", "voiceId"})
+    if not isinstance(voice_id, str) or not voice_id.strip():
+        raise QwenVoiceCloneError("CosyVoice voice design did not return voice_id")
+
+    preview_audio_block = _first_nested_value(data, {"preview_audio"})
+    if isinstance(preview_audio_block, dict):
+        preview_audio = _first_nested_value(preview_audio_block, {
+            "data",
+            "audio",
+            "audio_base64",
+            "audio_base_64",
+            "audio_url",
+            "url",
+        })
+        media_type = _first_nested_value(preview_audio_block, {
+            "media_type",
+            "mime_type",
+            "content_type",
+            "response_format",
+        })
+    else:
+        preview_audio = preview_audio_block or _first_nested_value(data, {
+            "audio",
+            "audio_base64",
+            "audio_base_64",
+            "audio_url",
+            "preview_audio_url",
+            "url",
+        })
+        media_type = _first_nested_value(data, {"media_type", "mime_type", "content_type", "response_format"})
+    request_id = _first_nested_value(data, {"request_id", "requestId"})
+
+    audio_text = str(preview_audio or "").strip()
+    resolved_media_type = str(media_type or COSYVOICE_VOICE_DESIGN_DEFAULT_MEDIA_TYPE).strip()
+    if audio_text.startswith("data:"):
+        header, _, b64_payload = audio_text.partition(",")
+        audio_text = b64_payload
+        if ";" in header:
+            resolved_media_type = header[5:].split(";", 1)[0] or resolved_media_type
+    if resolved_media_type in ("wav", "mp3", "mpeg"):
+        resolved_media_type = "audio/mpeg" if resolved_media_type in ("mp3", "mpeg") else "audio/wav"
+
+    return voice_id.strip(), audio_text, resolved_media_type, str(request_id or "").strip() or None
+
+
+def _minimax_voice_design_url(base_url: str) -> str:
+    raw = (base_url or get_minimax_base_url("minimax")).strip().rstrip("/")
+    if not raw:
+        raw = get_minimax_base_url("minimax")
+    if raw.endswith("/v1/voice_design"):
+        return raw
+    if raw.endswith("/v1"):
+        return f"{raw}/voice_design"
+    return f"{raw}/v1/voice_design"
+
+
+async def _minimax_design_voice(
+    *,
+    api_key: str,
+    base_url: str,
+    voice_id: str,
+    voice_prompt: str,
+    preview_text: str,
+    http_client: httpx.AsyncClient | None = None,
+) -> tuple[str, str | None]:
+    payload = {
+        "prompt": voice_prompt,
+        "preview_text": preview_text,
+    }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    endpoint = _minimax_voice_design_url(base_url)
+    client = http_client or get_external_http_client()
+    try:
+        resp = await client.post(endpoint, headers=headers, json=payload, timeout=90)
+    except httpx.RequestError as exc:
+        host = urlparse(endpoint).netloc or endpoint
+        raise MinimaxVoiceCloneError(
+            f"MiniMax voice design network error while connecting to {host}: {exc}. "
+            "Please check MiniMax base URL, DNS, and proxy settings."
+        ) from exc
+    if resp.status_code >= 400:
+        raise MinimaxVoiceCloneError(f"MiniMax voice design upstream error ({resp.status_code}): {resp.text[:300]}")
+    try:
+        data = resp.json()
+    except Exception as exc:
+        raise MinimaxVoiceCloneError("MiniMax voice design returned invalid JSON") from exc
+
+    base_resp = data.get("base_resp") if isinstance(data, dict) else None
+    if isinstance(base_resp, dict) and base_resp.get("status_code", 0) not in (0, "0", None):
+        raise MinimaxVoiceCloneError(
+            f"MiniMax voice design failed: {base_resp.get('status_msg') or base_resp.get('message') or 'Unknown error'}"
+        )
+
+    returned_voice_id = _first_nested_value(data, {"voice_id", "voiceId"})
+    if not isinstance(returned_voice_id, str) or not returned_voice_id.strip():
+        returned_voice_id = voice_id
+    request_id = _first_nested_value(data, {"request_id", "requestId", "trace_id", "traceId"})
+    return returned_voice_id.strip(), str(request_id or "").strip() or None
+
+
 async def _elevenlabs_design_previews(
     *,
     api_key: str,
@@ -1555,9 +1799,9 @@ async def _elevenlabs_design_previews(
     """Call POST /v1/text-to-voice/design — returns the list of voice previews.
 
     Each preview has ``generated_voice_id`` (the handle for create-from-preview)
-    and ``audio_base_64`` (an mp3 sample for the user to audition). We let
-    ElevenLabs auto-generate the preview text so the caller only supplies a
-    description.
+    and ``audio_base_64`` (an mp3 sample for the user to audition). ElevenLabs
+    requires a long enough preview line here; saved NEKO voice previews still
+    use ``VOICE_PREVIEW_TEXTS`` like VoiceClone.
     """
     url = f"{base_url.rstrip('/')}/v1/text-to-voice/design"
     headers = {"xi-api-key": api_key, "Content-Type": "application/json"}
@@ -4580,7 +4824,7 @@ async def get_voice_preview(
         logger.info(f"正在为音色 {voice_id} 生成预览音频...")
 
         preview_language = _get_voice_preview_language(request, language, i18n_language)
-        text = _loc(VOICE_PREVIEW_TEXTS, preview_language)
+        text = _get_voice_preview_text(voice_data, preview_language)
 
         # hosted/local provider 的预制音色（如选中 MiMo 时的预制声线）经 native_voices
         # 通道露给前端会渲染试听按钮，但其试听需走该 provider 自己的合成路径（尚未接）。
@@ -4601,6 +4845,48 @@ async def get_voice_preview(
         # voiceclone 模型一次性合成预览句（对偶 MiniMax 的克隆试听；避免落到下方
         # CosyVoice/DashScope 通用分支拿着 mimo-clone-* 的 id 误合成）。
         if provider == 'mimo':
+            if (voice_data or {}).get('source') == 'design':
+                design_prompt = str((voice_data or {}).get('design_prompt') or '').strip()
+                if not design_prompt:
+                    return JSONResponse({
+                        'success': False,
+                        'error': f'MiMo 设计音色缺少描述，无法试听: {voice_id}',
+                        'code': 'MIMO_VOICE_DESIGN_PROMPT_MISSING',
+                    }, status_code=400)
+                mimo_api_key = _config_manager.get_tts_api_key('mimo')
+                if not mimo_api_key:
+                    return JSONResponse({
+                        'success': False,
+                        'error': 'MIMO_API_KEY_MISSING',
+                        'code': 'MIMO_API_KEY_MISSING',
+                    }, status_code=400)
+                if str(preview_core_config.get('assistApi') or '').strip().lower() == 'mimo':
+                    mimo_base_url = (preview_core_config.get('OPENROUTER_URL') or '').strip()
+                else:
+                    mimo_base_url = str((voice_data or {}).get('mimo_base_url') or '').strip()
+                try:
+                    mimo_client = MimoVoiceCloneClient(api_key=mimo_api_key, base_url=mimo_base_url or None)
+                    audio_data = await mimo_client.synthesize_design_preview(
+                        design_prompt,
+                        text=text,
+                    )
+                    audio_base64 = base64.b64encode(audio_data).decode('utf-8')
+                    logger.info(f"MiMo 设计音色 {voice_id} 预览音频生成成功，大小: {len(audio_data)} 字节")
+                    return {'success': True, 'audio': audio_base64, 'mime_type': 'audio/wav'}
+                except MimoVoiceCloneError as e:
+                    logger.error(f"MiMo 设计音色 {voice_id} 预览失败: {e}")
+                    return JSONResponse({
+                        'success': False,
+                        'error': f'MiMo 预览生成失败: {str(e)}',
+                        'code': 'MIMO_VOICE_PREVIEW_FAILED',
+                    }, status_code=502)
+                except Exception as e:
+                    logger.error(f"MiMo 设计音色 {voice_id} 预览异常: {e}")
+                    return JSONResponse({
+                        'success': False,
+                        'error': f'MiMo 预览生成失败: {str(e)}',
+                    }, status_code=500)
+
             sample_b64 = (voice_data or {}).get('clone_sample_b64') or ''
             if not sample_b64:
                 return JSONResponse({
@@ -5874,6 +6160,250 @@ async def voice_clone(
         'voice_id': voice_id,
         'message': f'{provider_label}音色注册成功并已保存到音色库',
         'provider': provider,
+    })
+
+
+@router.post('/voice_design')
+async def voice_design(request: Request):
+    """Create a reusable designed voice from a text description."""
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({'error': 'INVALID_JSON', 'code': 'INVALID_JSON'}, status_code=400)
+    if not isinstance(data, dict):
+        return JSONResponse({'error': 'INVALID_JSON', 'code': 'INVALID_JSON'}, status_code=400)
+
+    provider = str(data.get('provider') or 'cosyvoice').strip().lower()
+    prefix = str(data.get('prefix') or '').strip()
+    voice_prompt = str(data.get('voice_prompt') or data.get('description') or '').strip()
+    ref_language = str(data.get('ref_language') or 'ch').strip().lower()
+    request_language = data.get('i18n_language') or data.get('language')
+
+    if provider not in VOICE_DESIGN_SUPPORTED_PROVIDERS:
+        return JSONResponse({
+            'error': 'VOICE_DESIGN_PROVIDER_UNSUPPORTED',
+            'code': 'VOICE_DESIGN_PROVIDER_UNSUPPORTED',
+            'details': {'provider': provider},
+        }, status_code=400)
+    if not prefix:
+        return JSONResponse({'error': 'VOICE_DESIGN_PREFIX_REQUIRED', 'code': 'VOICE_DESIGN_PREFIX_REQUIRED'}, status_code=400)
+    if (
+        len(prefix) > COSYVOICE_VOICE_DESIGN_PREFIX_MAX
+        or not COSYVOICE_VOICE_DESIGN_PREFIX_PATTERN.fullmatch(prefix)
+    ):
+        return JSONResponse({
+            'error': 'VOICE_DESIGN_PREFIX_INVALID',
+            'code': 'VOICE_DESIGN_PREFIX_INVALID',
+            'details': {'max': COSYVOICE_VOICE_DESIGN_PREFIX_MAX},
+            'message': 'Prefix must be 1-10 characters and contain only A-Z, a-z, and 0-9. Underscores are not allowed.',
+        }, status_code=400)
+    if not voice_prompt:
+        return JSONResponse({'error': 'VOICE_DESIGN_PROMPT_REQUIRED', 'code': 'VOICE_DESIGN_PROMPT_REQUIRED'}, status_code=400)
+    if provider == 'elevenlabs':
+        description, err = _validate_voice_design_description(voice_prompt)
+        if err is not None:
+            return err
+        voice_prompt = description
+    elif len(voice_prompt) > COSYVOICE_VOICE_DESIGN_PROMPT_MAX:
+        return JSONResponse({
+            'error': 'VOICE_DESIGN_PROMPT_TOO_LONG',
+            'code': 'VOICE_DESIGN_PROMPT_TOO_LONG',
+            'max': COSYVOICE_VOICE_DESIGN_PROMPT_MAX,
+        }, status_code=400)
+    valid_languages = ['ch', 'en', 'fr', 'de', 'ja', 'ko', 'ru']
+    if ref_language not in valid_languages:
+        ref_language = 'ch'
+    if provider in ('cosyvoice', 'cosyvoice_intl') and ref_language not in ('ch', 'en'):
+        ref_language = 'ch'
+
+    preview_text = _voice_design_preview_text(request_language, ref_language)
+
+    _config_manager = get_config_manager()
+    provider_label = provider
+    storage_key = ''
+    voice_id = ''
+    request_id = None
+    voice_data: dict = {
+        'prefix': prefix,
+        'provider': provider,
+        'source': 'design',
+        'design_prompt': voice_prompt,
+        'preview_text': preview_text,
+        'ref_language': ref_language,
+        'created_at': datetime.now().isoformat(),
+    }
+
+    try:
+        if provider in ('cosyvoice', 'cosyvoice_intl'):
+            from utils.api_config_loader import get_cosyvoice_clone_model
+
+            cosyvoice_runtime = _config_manager.get_cosyvoice_clone_runtime(provider)
+            api_key = (cosyvoice_runtime.get('api_key') or '').strip()
+            if not api_key:
+                return JSONResponse({
+                    'error': 'TTS_AUDIO_API_KEY_MISSING',
+                    'code': 'TTS_AUDIO_API_KEY_MISSING',
+                    'provider': provider,
+                }, status_code=400)
+            provider_label = cosyvoice_runtime.get('provider_label') or (
+                '阿里国际版CosyVoice' if provider == 'cosyvoice_intl' else '阿里百炼CosyVoice'
+            )
+            dashscope_base_url = cosyvoice_runtime.get('base_url', '')
+            storage_key = cosyvoice_runtime.get('storage_key') or api_key
+            design_model = get_cosyvoice_clone_model(provider)
+            voice_id, _preview_audio, _preview_media_type, request_id = await _cosyvoice_design_voice(
+                api_key=api_key,
+                base_url=dashscope_base_url,
+                prefix=prefix,
+                voice_prompt=voice_prompt,
+                preview_text=preview_text,
+                ref_language=ref_language,
+                target_model=design_model,
+            )
+            voice_data.update({
+                'dashscope_base_url': dashscope_base_url,
+                'design_model': design_model,
+            })
+        elif provider in ('minimax', 'minimax_intl'):
+            api_key = (_config_manager.get_tts_api_key(provider) or '').strip()
+            if not api_key:
+                return JSONResponse({
+                    'error': 'TTS_AUDIO_API_KEY_MISSING',
+                    'code': 'TTS_AUDIO_API_KEY_MISSING',
+                    'provider': provider,
+                }, status_code=400)
+            base_url = get_minimax_base_url(provider)
+            provider_label = 'MiniMax国际服' if provider == 'minimax_intl' else 'MiniMax国服'
+            storage_key = f'{get_minimax_storage_prefix(provider)}{api_key[-8:]}'
+            original_prefix, requested_voice_id = _build_minimax_request_prefix(prefix, provider_label)
+            voice_id, request_id = await _minimax_design_voice(
+                api_key=api_key,
+                base_url=base_url,
+                voice_id=requested_voice_id,
+                voice_prompt=voice_prompt,
+                preview_text=preview_text,
+            )
+            voice_data.update({
+                'preview_text': preview_text,
+                'original_prefix': original_prefix,
+                'minimax_prefix': requested_voice_id,
+                'minimax_base_url': base_url,
+            })
+        elif provider == 'elevenlabs':
+            api_key = (_config_manager.get_tts_api_key('elevenlabs') or '').strip()
+            if not api_key:
+                return JSONResponse({
+                    'error': 'ELEVENLABS_API_KEY_MISSING',
+                    'code': 'ELEVENLABS_API_KEY_MISSING',
+                    'provider': provider,
+                }, status_code=400)
+            base_url = await _get_elevenlabs_base_url(_config_manager)
+            provider_label = 'ElevenLabs'
+            previews = await _elevenlabs_design_previews(
+                api_key=api_key,
+                base_url=base_url,
+                voice_description=voice_prompt,
+            )
+            generated_voice_id = str((previews[0] or {}).get('generated_voice_id') or '').strip()
+            if not generated_voice_id:
+                raise ElevenLabsUpstreamError(502, "ElevenLabs did not return generated_voice_id")
+            raw_voice_id = await _elevenlabs_create_voice_from_preview(
+                api_key=api_key,
+                base_url=base_url,
+                voice_name=prefix or 'NEKO Designed Voice',
+                voice_description=voice_prompt,
+                generated_voice_id=generated_voice_id,
+            )
+            voice_id = raw_voice_id
+            storage_key = f'__ELEVENLABS__{api_key[-8:]}'
+            voice_data.update({
+                'raw_voice_id': _raw_elevenlabs_voice_id(voice_id),
+                'design_description': voice_prompt,
+                'generated_voice_id': generated_voice_id,
+                'elevenlabs_base_url': base_url,
+            })
+        elif provider == 'mimo':
+            api_key = (_config_manager.get_tts_api_key('mimo') or '').strip()
+            if not api_key:
+                return JSONResponse({
+                    'error': 'TTS_AUDIO_API_KEY_MISSING',
+                    'code': 'TTS_AUDIO_API_KEY_MISSING',
+                    'provider': provider,
+                }, status_code=400)
+            provider_label = 'MiMo'
+            core_config = _config_manager.get_core_config()
+            assist_api_type = str(core_config.get('assistApi') or '').strip().lower()
+            mimo_base_url = (core_config.get('OPENROUTER_URL') or '').strip() if assist_api_type == 'mimo' else ''
+            client = MimoVoiceCloneClient(api_key=api_key, base_url=mimo_base_url or None)
+            await client.validate_design_prompt(
+                voice_prompt,
+                sample_text=preview_text,
+            )
+            import uuid
+            safe_prefix = sanitize_minimax_voice_prefix(prefix, max_length=MINIMAX_PREFIX_MAX_LENGTH)
+            voice_id = f"mimo-design-{safe_prefix}-{uuid.uuid4().hex[:8]}"
+            storage_key = f'{MIMO_VOICE_STORAGE_KEY}{api_key[-8:]}'
+            voice_data.update({
+                'mimo_base_url': mimo_base_url,
+            })
+    except QwenVoiceCloneError as e:
+        logger.error(f"{provider_label} voice design failed: {e}")
+        return JSONResponse({
+            'error': f'{provider_label} voice design failed: {str(e)}',
+            'code': 'COSYVOICE_VOICE_DESIGN_FAILED',
+            'provider': provider,
+        }, status_code=502)
+    except MinimaxVoiceCloneError as e:
+        logger.error(f"{provider_label} voice design failed: {e}")
+        return JSONResponse({
+            'error': f'{provider_label} voice design failed: {str(e)}',
+            'code': 'MINIMAX_VOICE_DESIGN_FAILED',
+            'provider': provider,
+        }, status_code=502)
+    except ElevenLabsUpstreamError as e:
+        logger.error(f"{provider_label} voice design failed: {e}")
+        return JSONResponse({
+            'error': f'{provider_label} voice design failed: {str(e)}',
+            'code': 'ELEVENLABS_VOICE_DESIGN_FAILED',
+            'provider': provider,
+        }, status_code=502)
+    except MimoVoiceCloneError as e:
+        logger.error(f"{provider_label} voice design failed: {e}")
+        return JSONResponse({
+            'error': f'{provider_label} voice design failed: {str(e)}',
+            'code': 'MIMO_VOICE_DESIGN_FAILED',
+            'provider': provider,
+        }, status_code=502)
+    except Exception as e:
+        logger.error(f"{provider_label} voice design unexpected error: {e}")
+        return JSONResponse({
+            'error': f'{provider_label} voice design failed: {str(e)}',
+            'code': 'COSYVOICE_VOICE_DESIGN_FAILED',
+            'provider': provider,
+        }, status_code=500)
+
+    voice_data['voice_id'] = voice_id
+    if request_id:
+        voice_data['request_id'] = request_id
+
+    try:
+        _config_manager.save_voice_for_api_key(storage_key, voice_id, voice_data)
+    except Exception as save_error:
+        logger.error(f"保存 {provider_label} voice design 到音色库失败: {save_error}")
+        return JSONResponse({
+            'voice_id': voice_id,
+            'message': f'{provider_label} voice design succeeded, but local save failed',
+            'local_save_failed': True,
+            'error': str(save_error),
+            'provider': provider,
+            'source': 'design',
+        }, status_code=200)
+
+    return JSONResponse({
+        'voice_id': voice_id,
+        'message': f'{provider_label} voice design succeeded',
+        'provider': provider,
+        'source': 'design',
     })
 
 

@@ -425,6 +425,20 @@ class MimoVoiceCloneClient:
             'stream': False,
         }
 
+    def _build_design_payload(self, design_prompt: str, text: str) -> dict:
+        from utils.mimo_tts_voices import MIMO_TTS_VOICEDESIGN_MODEL
+        return {
+            'model': MIMO_TTS_VOICEDESIGN_MODEL,
+            'messages': [
+                {'role': 'user', 'content': str(design_prompt or '').strip()},
+                {'role': 'assistant', 'content': text},
+            ],
+            'audio': {
+                'format': _MIMO_PREVIEW_AUDIO_FORMAT,
+            },
+            'stream': False,
+        }
+
     async def _post(self, payload: dict) -> dict:
         from utils.mimo_tts_voices import mimo_chat_completions_url
         url = mimo_chat_completions_url(self.base_url)
@@ -487,6 +501,35 @@ class MimoVoiceCloneClient:
         audio = _extract_mimo_audio_bytes(data)
         if not audio:
             raise MimoVoiceCloneError("MiMo 预览成功但未返回音频")
+        return audio
+
+    async def validate_design_prompt(
+        self,
+        design_prompt: str,
+        *,
+        sample_text: str = '你好呀，很高兴认识你。',
+    ) -> None:
+        """Validate a MiMo voice-design prompt by producing one short sample."""
+        prompt = str(design_prompt or '').strip()
+        if not prompt:
+            raise MimoVoiceCloneError("MiMo 设计音色描述不能为空")
+        data = await self._post(self._build_design_payload(prompt, sample_text))
+        if not _extract_mimo_audio_bytes(data):
+            raise MimoVoiceCloneError("MiMo 设计音色校验未产出音频")
+
+    async def synthesize_design_preview(
+        self,
+        design_prompt: str,
+        *,
+        text: str = '你好呀，很高兴认识你。',
+    ) -> bytes:
+        prompt = str(design_prompt or '').strip()
+        if not prompt:
+            raise MimoVoiceCloneError("MiMo 设计音色描述不能为空")
+        data = await self._post(self._build_design_payload(prompt, text))
+        audio = _extract_mimo_audio_bytes(data)
+        if not audio:
+            raise MimoVoiceCloneError("MiMo 设计音色预览成功但未返回音频")
         return audio
 
 

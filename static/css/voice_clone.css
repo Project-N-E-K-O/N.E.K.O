@@ -1650,6 +1650,16 @@ html[lang="zh-CN"] .register-voice-btn .register-text {
     width: 100%;
 }
 
+.voice-design-section .field-row {
+    margin-bottom: 12px;
+}
+
+.voice-design-section textarea {
+    border-radius: 16px;
+    resize: vertical;
+    min-height: 84px;
+}
+
 /* 提示横幅 */
 .alibaba-api-notice {
     background: #fffde7;
