@@ -8507,7 +8507,7 @@ def test_avatar_floating_distance_threshold_triggers_light_resistance_without_sp
 
 
 @pytest.mark.frontend
-def test_avatar_floating_quick_mousemove_under_distance_threshold_does_not_trigger_light_resistance(
+def test_avatar_floating_quick_mousemove_displacement_threshold_triggers_light_resistance(
     mock_page: Page,
 ):
     _bootstrap_page(
@@ -8568,8 +8568,8 @@ def test_avatar_floating_quick_mousemove_under_distance_threshold_does_not_trigg
         """
     )
 
-    assert result["lightInterrupts"] == []
-    assert result["interruptCount"] == 0
+    assert len(result["lightInterrupts"]) == 1
+    assert result["interruptCount"] == 1
     assert result["streak"] == 0
 
 
