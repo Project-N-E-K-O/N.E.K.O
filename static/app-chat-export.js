@@ -128,6 +128,39 @@
         }
     }
 
+    function getWindowHref(win) {
+        if (!win || win.closed) return '';
+        try {
+            return String(win.location && win.location.href || '');
+        } catch (_) {
+            return '';
+        }
+    }
+
+    function isCurrentChatWindowHandle(win) {
+        if (win === window) return true;
+        try {
+            return !!(win && win.document === document);
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function isExportPreviewShellUrl(href) {
+        if (!href) return false;
+        try {
+            var current = new URL(href, window.location.href);
+            var target = new URL(getExportPreviewShellUrl(), window.location.href);
+            return current.origin === target.origin && current.pathname === target.pathname;
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function isReusableExportPreviewWindow(win) {
+        return !!(win && !win.closed && !isCurrentChatWindowHandle(win) && isExportPreviewShellUrl(getWindowHref(win)));
+    }
+
     function isExportPreviewShellReady(previewWindow, targetUrl) {
         if (!previewWindow || previewWindow.closed) return false;
         try {
@@ -3071,25 +3104,50 @@
 
     async function openExportPreviewWindow() {
         var previewTitle = translateLabel('chat.exportPreviewTitle', 'Export Preview');
-        var isExistingWindow = !!(state.previewWindow && !state.previewWindow.closed);
-        var previewWindow = isExistingWindow
+        var existingPreviewWindow = isReusableExportPreviewWindow(state.previewWindow)
             ? state.previewWindow
-            : window.open(getExportPreviewShellUrl(), 'neko-chat-export-preview', buildExportWindowFeatures());
+            : null;
+        if (state.previewWindow && !existingPreviewWindow && !state.previewWindow.closed) {
+            console.warn('[ChatExport] ignoring stale export preview window handle', {
+                href: getWindowHref(state.previewWindow)
+            });
+            state.previewWindow = null;
+        }
+        var isExistingWindow = !!existingPreviewWindow;
+        var previewWindow = isExistingWindow
+            ? existingPreviewWindow
+            : window.open('', '_blank', buildExportWindowFeatures());
         if (!previewWindow) return null;
+        if (isCurrentChatWindowHandle(previewWindow)) {
+            console.warn('[ChatExport] export preview window resolved to the current chat window; aborting.');
+            if (state.previewWindow === previewWindow) state.previewWindow = null;
+            return null;
+        }
+        var returnedHref = getWindowHref(previewWindow);
+        if (returnedHref && returnedHref !== 'about:blank' && !isExportPreviewShellUrl(returnedHref)) {
+            console.warn('[ChatExport] export preview window returned unexpected handle; aborting.', {
+                href: returnedHref
+            });
+            if (state.previewWindow === previewWindow) state.previewWindow = null;
+            return null;
+        }
 
         if (isExistingWindow) {
             disposePreviewModal(false);
         }
         state.previewWindow = previewWindow;
         if (!isExistingWindow) {
-            var canRewritePreview = await waitForExportPreviewRewriteGate(previewWindow, getExportPreviewShellUrl());
-            if (!previewWindow || previewWindow.closed) return null;
-            if (!canRewritePreview) {
-                if (state.previewWindow === previewWindow) state.previewWindow = null;
-                try {
-                    previewWindow.close();
-                } catch (_) {}
-                return null;
+            var openedShellWindow = isExportPreviewShellUrl(returnedHref);
+            if (openedShellWindow) {
+                var canRewritePreview = await waitForExportPreviewRewriteGate(previewWindow, getExportPreviewShellUrl());
+                if (!previewWindow || previewWindow.closed) return null;
+                if (!canRewritePreview) {
+                    if (state.previewWindow === previewWindow) state.previewWindow = null;
+                    try {
+                        previewWindow.close();
+                    } catch (_) {}
+                    return null;
+                }
             }
         }
         try {
