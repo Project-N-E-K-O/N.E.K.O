@@ -250,15 +250,6 @@ function toggleQrcodeCard() {
     if (state.dashboard) applyDashboardState(state.dashboard);
 }
 
-function toggleConfig() {
-    const body = document.getElementById('config-body');
-    const arrow = document.getElementById('config-arrow');
-    if (!body || !arrow) return;
-    var open = body.style.display !== 'none';
-    body.style.display = open ? 'none' : 'block';
-    arrow.textContent = open ? '▼' : '▲';
-}
-
 async function saveSettings() {
     try {
         const elBaseUrl = document.getElementById('cfg-base-url');
@@ -288,7 +279,6 @@ async function reloadDashboard() {
 window.startLogin = startLogin;
 window.refreshQrcode = refreshQrcode;
 window.toggleQrcodeCard = toggleQrcodeCard;
-window.toggleConfig = toggleConfig;
 
 window.addEventListener('localechange', function () {
     if (state.dashboard) applyDashboardState(state.dashboard);

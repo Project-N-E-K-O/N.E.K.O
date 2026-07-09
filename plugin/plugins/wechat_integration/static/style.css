@@ -56,11 +56,6 @@ body, html { margin: 0; padding: 0; font-family: -apple-system, sans-serif; back
 
 /* ---------- config ---------- */
 .config-section { overflow: hidden; }
-.config-header { display: flex; align-items: center; justify-content: space-between; cursor: pointer; user-select: none; }
-.config-header:hover { opacity: 0.85; }
-.config-title { font-size: 15px; font-weight: 800; color: var(--text-main); }
-.config-arrow { font-size: 12px; color: var(--text-sub); transition: transform 0.2s; }
-.config-body { margin-top: 18px; padding-top: 18px; border-top: 2px solid var(--border); }
 .form-group { margin-bottom: 18px; }
 .field-label { display: block; font-size: 13px; font-weight: 700; margin-bottom: 8px; }
 .field-hint { margin-top: 6px; color: var(--text-sub); font-size: 12px; line-height: 1.4; }

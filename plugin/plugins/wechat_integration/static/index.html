@@ -55,26 +55,21 @@
             <div id="qrcode-error" class="qrcode-error" style="display:none;"></div>
         </section>
 
-        <!-- Settings (collapsed by default) -->
+        <!-- Settings -->
         <section class="config-section" id="config-section">
-            <div class="config-header" onclick="toggleConfig()">
-                <span class="config-title">⚙️ <span data-i18n="ui.config.section">API 设置</span></span>
-                <span class="config-arrow" id="config-arrow">▼</span>
+            <span class="status-title" data-i18n="ui.config.section">API 设置</span>
+            <div class="form-group">
+                <label class="field-label" for="cfg-base-url" data-i18n="ui.config.base_url.label">API 基础地址</label>
+                <input type="text" id="cfg-base-url" class="input-control" placeholder="https://ilinkai.weixin.qq.com">
+                <div class="field-hint" data-i18n="ui.config.base_url.hint">微信 OpenClaw API 的基础 URL，一般不需要修改。</div>
             </div>
-            <div class="config-body" id="config-body" style="display:none;">
-                <div class="form-group">
-                    <label class="field-label" for="cfg-base-url" data-i18n="ui.config.base_url.label">API 基础地址</label>
-                    <input type="text" id="cfg-base-url" class="input-control" placeholder="https://ilinkai.weixin.qq.com">
-                    <div class="field-hint" data-i18n="ui.config.base_url.hint">微信 OpenClaw API 的基础 URL，一般不需要修改。</div>
-                </div>
-                <div class="form-group">
-                    <label class="field-label" for="cfg-bot-type" data-i18n="ui.config.bot_type.label">Bot 类型</label>
-                    <input type="text" id="cfg-bot-type" class="input-control" placeholder="3">
-                    <div class="field-hint" data-i18n="ui.config.bot_type.hint">微信 Bot 类型编号，默认为 3。</div>
-                </div>
-                <div class="save-row">
-                    <button class="primary-action" id="save-settings-btn" data-i18n="ui.actions.save_settings">保存设置</button>
-                </div>
+            <div class="form-group">
+                <label class="field-label" for="cfg-bot-type" data-i18n="ui.config.bot_type.label">Bot 类型</label>
+                <input type="text" id="cfg-bot-type" class="input-control" placeholder="3">
+                <div class="field-hint" data-i18n="ui.config.bot_type.hint">微信 Bot 类型编号，默认为 3。</div>
+            </div>
+            <div class="save-row">
+                <button class="primary-action" id="save-settings-btn" data-i18n="ui.actions.save_settings">保存设置</button>
             </div>
         </section>
     </div>
