@@ -2,15 +2,15 @@
  * app-social-ui.js — Social SSE UI 接入（M6-h follow-up）
  *
  * 监听 NEKO-PC 主进程通过 contextBridge 暴露的 window.nekoSocial 桥
- * （定义见 NEKO-PC/src/preload-common.js setupSocialBridge），把 5 个
- * SSE 事件渲染到 Pet UI：
+ * （定义见 NEKO-PC/src/preload-common.js setupSocialBridge）：
  *
- * - NOTIFY_UNREAD     → social 按钮右上角红点 badge（vrm-btn-social /
- *                       mmd-btn-social 通配 selector）
+ * - NOTIFY_UNREAD     → social 按钮右上角红点 badge（唯一实现；preload 不再重复画）
  * - NOTIFY_INCOMING   → 简短 toast 提示（"📩 新消息"）
  * - QUOTA_CHANGED     → 不直接画 UI（snapshot 数据留给后续 quota panel 用）
- * - DROP_ANIMATION    → body 顶部飘下一个 🪙 + CSS keyframes 旋转下坠
  * - CONN_STATE        → 不画 UI（log 一行调试）
+ *
+ * DROP_ANIMATION（🪙 / emoji 飘落）已退役：掉券 UX 统一走 CREDIT_DROP →
+ * forge-drop-overlay.js（迷你券卡）。
  *
  * 宿主检测：
  * - 非 Electron / NEKO-PC 宿主时 window.nekoSocial 不存在 → 整体 noop
@@ -135,53 +135,7 @@
     window.__nekoSocialQuotaSnapshot = snapshot;
   });
 
-  // ===== 4) DROP_ANIMATION =====
-
-  const DROP_KEYFRAMES_ID = 'neko-quota-drop-keyframes';
-  const DROP_ANIMATION_NAME = 'neko-quota-drop';
-
-  function ensureDropKeyframes() {
-    if (document.getElementById(DROP_KEYFRAMES_ID)) return;
-    const style = document.createElement('style');
-    style.id = DROP_KEYFRAMES_ID;
-    style.textContent =
-      '@keyframes ' + DROP_ANIMATION_NAME + ' {' +
-      '  0%   { transform: translateY(-40px) rotate(0deg);   opacity: 0; }' +
-      '  20%  { transform: translateY(20px)  rotate(20deg);  opacity: 1; }' +
-      '  80%  { transform: translateY(180px) rotate(300deg); opacity: 1; }' +
-      '  100% { transform: translateY(240px) rotate(360deg); opacity: 0; }' +
-      '}';
-    document.head.appendChild(style);
-  }
-
-  function playDropAnimation(payload) {
-    ensureDropKeyframes();
-    // payload: { reason: 'quota_bonus_increased', delta?: number, snapshot?: {...} }
-    // 当前只播单枚硬币动画；delta > 1 时连播几枚做"多枚"提示。
-    const count = Math.max(1, Math.min(5, payload && typeof payload.delta === 'number' ? payload.delta : 1));
-    for (let i = 0; i < count; i += 1) {
-      setTimeout(() => {
-        const coin = document.createElement('div');
-        coin.textContent = '🪙';
-        coin.style.cssText = [
-          'position: fixed',
-          'top: -20px',
-          'right: ' + (32 + i * 16) + 'px',
-          'font-size: 36px',
-          'z-index: 99999',
-          'pointer-events: none',
-          'user-select: none',
-          'animation: ' + DROP_ANIMATION_NAME + ' 1.6s ease-out forwards',
-        ].join(';');
-        document.body.appendChild(coin);
-        setTimeout(() => { try { coin.remove(); } catch (_) {} }, 1900);
-      }, i * 120); // 错开 120ms 播下一枚
-    }
-  }
-
-  window.nekoSocial.onDropAnimation(playDropAnimation);
-
-  // ===== 5) 连接状态（仅调试 log，无 UI） =====
+  // ===== 4) 连接状态（仅调试 log，无 UI） =====
 
   window.nekoSocial.onConnState((state) => {
     if (!state) return;
