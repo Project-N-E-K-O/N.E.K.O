@@ -108,7 +108,6 @@ class QQOpenPlatformConnection(QQConnectionBase):
             self._heartbeat_interval = max(10.0, float(hello["d"]["heartbeat_interval"]) / 1000.0 - 2.0)
             if self.logger:
                 self.logger.info(f"[QQOpenPlatform] Hello 收到, 心跳间隔: {self._heartbeat_interval:.0f}s")
-            self._session_id = str(hello["d"].get("session_id") or "")
         # 重连优先 Resume，失败再 Identify
         if is_reconnect and self._session_id:
             await self._ws.send(json.dumps({
@@ -255,6 +254,7 @@ class QQOpenPlatformConnection(QQConnectionBase):
             return None
 
         await self._ensure_token()
+        body: dict[str, Any] = {}
         # 群图片需要先上传获取 file_info，再用 msg_type=7 + media 发送
         if image_url:
             file_info = await self._upload_group_image(group_id, image_url)
