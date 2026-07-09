@@ -29,6 +29,9 @@ class LiveProviderRouter:
         except (TypeError, ValueError):
             return 0
 
+    def normalize_room_ref(self, value: Any) -> dict[str, Any]:
+        return normalize_room_ref_for_platform(self.platform, value)
+
     def is_listening(self) -> bool:
         ingest = getattr(self.runtime, "bili_live_ingest", None)
         checker = getattr(ingest, "is_listening", None)
@@ -45,6 +48,32 @@ class LiveProviderRouter:
         except Exception:
             data = {}
         return data if isinstance(data, dict) else {}
+
+    async def start_listening(self, room_ref: Any) -> bool:
+        normalized = self.normalize_room_ref(room_ref)
+        if not normalized.get("ok"):
+            return False
+        ingest = getattr(self.runtime, "bili_live_ingest", None)
+        starter = getattr(ingest, "start_listening", None)
+        if not callable(starter):
+            return False
+        return await starter(int(normalized.get("room_id") or 0)) is True
+
+    async def stop_listening(self) -> None:
+        ingest = getattr(self.runtime, "bili_live_ingest", None)
+        stopper = getattr(ingest, "stop_listening", None)
+        if callable(stopper):
+            await stopper()
+
+    async def lookup_room_status(self, room_ref: Any) -> Any:
+        normalized = self.normalize_room_ref(room_ref)
+        if not normalized.get("ok"):
+            return None
+        ingest = getattr(self.runtime, "bili_live_ingest", None)
+        lookup = getattr(ingest, "lookup_room_status", None)
+        if not callable(lookup):
+            return None
+        return await lookup(int(normalized.get("room_id") or 0))
 
     async def resolve_identity(self, event: Any) -> ViewerIdentity:
         identity = getattr(self.runtime, "bili_identity", None)

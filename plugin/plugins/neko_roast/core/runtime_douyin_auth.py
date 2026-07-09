@@ -15,8 +15,31 @@ from .contracts import utc_now_iso
 _DOUYIN_FIELDS = ("cookie", "uid", "nickname", "saved_at")
 
 
+class _EarlyDouyinCredentialStore:
+    def has_credential(self) -> bool:
+        return False
+
+    async def load(self) -> dict[str, Any] | None:
+        return None
+
+    async def save(self, payload: dict[str, Any]) -> bool:
+        _ = payload
+        return False
+
+    async def delete(self) -> list[str]:
+        return []
+
+
 def create_credential_store(plugin: Any, audit: Any) -> CredentialStore:
-    return CredentialStore(plugin, audit, namespace="douyin", fields=_DOUYIN_FIELDS)
+    try:
+        return CredentialStore(plugin, audit, namespace="douyin", fields=_DOUYIN_FIELDS)
+    except TypeError:
+        audit.record(
+            "douyin_credential_store_unavailable",
+            "namespaced credential store is provided by the Douyin bridge slice",
+            level="warning",
+        )
+        return _EarlyDouyinCredentialStore()
 
 
 async def reload_credential(runtime: Any) -> None:
