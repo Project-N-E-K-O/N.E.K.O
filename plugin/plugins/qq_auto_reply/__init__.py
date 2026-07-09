@@ -311,7 +311,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                         continue
                     try:
                         await self.memory_bridge.post_memory_history(
-                            "append_group_context",
+                            "process",
                             her_name,
                             [{"role": "system", "content": (
                                 f"[QQ群聊记录] {her_name} 使用QQ插件在群 {group_id}"
