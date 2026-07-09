@@ -12,14 +12,17 @@
 - 🎯 在代码中集成成就触发点
 - 🧪 测试成就解锁功能
 - 📊 查看成就统计和状态
-- ⏱️ 自动追踪游戏时长（Steam 统计）
+- ⏱️ 基于 Steam Progress Stat（`PLAY_TIME_SECONDS`）自动解锁计时成就
 
 ## 已实现的成就
 
-### 时长相关成就（自动追踪）✅
-1. **ACH_TIME_5MIN** - 茶歇时刻（5分钟）
-2. **ACH_TIME_1HR** - 渐入佳境（1小时）
-3. **ACH_TIME_100HR** - 朝夕相伴（100小时）
+### 时长相关成就（Progress Stat）✅
+1. **ACH_TIME_5MIN** - 茶歇时刻（5分钟 / 300 秒）
+2. **ACH_TIME_1HR** - 渐入佳境（1小时 / 3600 秒）
+3. **ACH_TIME_100HR** - 朝夕相伴（100小时 / 360000 秒）
+
+> 官方推荐：在 Steamworks 后台创建 Stat `PLAY_TIME_SECONDS`，并将上述成就绑定为 Progress Stat（阈值分别为 300 / 3600 / 360000）。
+> 游戏只负责本地累加并定期 `SetStat` + `StoreStats`；Steam 服务器在同步后自动解锁成就。
 
 ### 一次性成就
 4. **ACH_FIRST_DIALOGUE** - 初次邂逅 ✅
@@ -38,12 +41,13 @@
 
 1. **前端成就管理器**
    - 文件：`static/achievement_manager.js`
-   - 功能：统一管理所有成就的定义、解锁逻辑、计数器追踪
+   - 功能：统一管理所有成就的定义、解锁逻辑、计数器追踪；计时成就由主窗口/Pet 本地累加并每 60s / 页面隐藏时上报 Progress Stat（Chat 窗口不重复上报，避免双倍计时）
 
 2. **后端 API**
    - 文件：`main_routers/system_router.py`
-   - 端点：`/api/steam/set-achievement-status/{name}`
-   - 功能：调用 Steamworks API 解锁成就
+   - 端点：
+     - `/api/steam/set-achievement-status/{name}` — 显式解锁（一次性/计数型）
+     - `/api/steam/update-playtime` — 累加 `PLAY_TIME_SECONDS` 并 `StoreStats`（**不**调用 `SetAchievement`）
 
 3. **Steam SDK**
    - 文件：`steamworks/interfaces/userstats.py`
@@ -67,6 +71,24 @@ steamworks.UserStats.SetAchievement()
 steamworks.UserStats.StoreStats()
     ↓
 Steam 客户端弹出成就通知 🎉
+```
+
+### 计时成就流程（Progress Stat）
+
+```text
+achievement_manager.js
+    ├─ 本地累加会话秒数
+    ├─ 每 60s / pagehide / visibility hidden
+    └─ POST /api/steam/update-playtime {seconds}
+         ↓
+system_router.py
+    ├─ GetStatInt(PLAY_TIME_SECONDS)
+    ├─ SetStat(PLAY_TIME_SECONDS, current + seconds)
+    ├─ StoreStats() + run_callbacks()
+    └─ 读取 progressUnlocked（Steam 已自动解锁的 ACH_TIME_*）
+         ↓
+Steam 服务器：Stat 达绑定阈值 → 自动解锁成就并弹窗
+前端：仅同步本地缓存 / toast，不主动 SetAchievement
 ```
 
 ## 成就类型
@@ -199,9 +221,10 @@ window.addEventListener('achievement-unlocked', (e) => {
 
 1. **成就只能解锁，不能撤销** - 一旦解锁，无法通过代码撤销
 2. **Steam 客户端必须运行** - 否则成就解锁会失败
-3. **本地存储同步** - 计数器存储在 localStorage，清除浏览器数据会重置
-4. **防重复解锁** - 成就管理器会自动检查，避免重复调用 API
-5. **跨窗口通信** - 子窗口需要通过 `window.parent` 或 `window.opener` 访问主窗口的成就管理器
+3. **计时成就依赖 Steamworks Progress Stat 绑定** - 后台需创建 `PLAY_TIME_SECONDS` 并将 `ACH_TIME_*` 绑定阈值；游戏侧只上报 Stat，不主动 `SetAchievement`
+4. **本地存储同步** - 计数器存储在 localStorage，清除浏览器数据会重置
+5. **防重复解锁** - 成就管理器会自动检查，避免重复调用 API
+6. **跨窗口通信** - 子窗口需要通过 `window.parent` 或 `window.opener` 访问主窗口的成就管理器
 
 ## 示例：添加一个新成就
 
