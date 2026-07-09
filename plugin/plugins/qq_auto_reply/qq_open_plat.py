@@ -165,10 +165,12 @@ class QQOpenPlatformConnection(QQConnectionBase):
                                 self._message_queue.put_nowait(msg)
                 elif op == 1:  # Heartbeat
                     await self._ws.send(json.dumps({"op": 11, "d": self._last_seq}))
-                elif op == 7:  # Reconnect
+                elif op == 7:  # Reconnect → 关闭当前连接，由下方 _try_reconnect() 重建
                     if self.logger:
                         self.logger.warning("[QQOpenPlatform] 服务端要求重连")
-                    break
+                    await self._ws.close()
+                    self._ws = None
+                    self.ws = None
                 # 成功处理 dispatch/heartbeat → 继续循环，跳过重连
                 continue
             except websockets.ConnectionClosed:
