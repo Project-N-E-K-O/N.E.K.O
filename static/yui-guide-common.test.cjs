@@ -1373,8 +1373,9 @@ test('interaction takeover preserves external chat spotlight clears during resis
     )[0];
 
     assert.match(spotlightBlock, /const previousKind = this\.externalizedChatSpotlightKind;/);
-    assert.match(spotlightBlock, /this\.externalizedChatSpotlightKind = typeof kind === 'string' \? kind : '';/);
-    assert.match(spotlightBlock, /\(this\.externalizedChatSpotlightKind \|\| previousKind\)/);
+    assert.match(spotlightBlock, /const normalizedKind = typeof kind === 'string' \? kind : '';/);
+    assert.match(spotlightBlock, /this\.externalizedChatSpotlightKind = normalizedKind;/);
+    assert.match(spotlightBlock, /\(this\.externalizedChatSpotlightKind \|\| previousKind \|\| previousVariant\)/);
     assert.match(spotlightBlock, /safeInvoke\(this\.isResistancePaused,\s*\[\],\s*false\) === true/);
     assert.match(spotlightBlock, /message\.preserveDuringResistance = true;/);
     assert.match(spotlightBlock, /this\.postExternalChatCommand\('yui_guide_set_chat_spotlight', message\);/);
