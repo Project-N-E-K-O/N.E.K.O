@@ -97,7 +97,6 @@ class QQAutoReplyConfigStore:
             "napcat_directory": "",
             "show_napcat_window": True,
             "reply_mode": "text",
-            "enable_group_attention": False,
             "group_attention_decay_per_second": 0.02,
             "group_attention_message_recovery": 0.6,
             "group_attention_reply_penalty": 1.3,

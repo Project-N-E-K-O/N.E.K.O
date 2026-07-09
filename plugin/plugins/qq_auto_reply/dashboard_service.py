@@ -28,7 +28,6 @@ class QQDashboardService:
     async def build_dashboard_state(self) -> dict[str, Any]:
         login = await self.plugin.runtime_service.fetch_login_status_payload()
         settings = dict(self.plugin._qq_settings or {})
-        self.plugin.logger.info(f"[qq_auto_reply debug] build_dashboard_state source settings: {settings}")
         napcat_dir = self.plugin.napcat_service.get_napcat_directory()
         runtime = self.plugin.runtime_service.build_runtime_status()
         return {
@@ -194,7 +193,6 @@ class QQDashboardService:
             return Err(SdkError(f"INVALID_ARGUMENT: {self.plugin.i18n.t('errors.invalid_probability', default=field + ' 必须在 0 到 1 之间')}"))
         payload = await self.build_dashboard_state()
         payload.update(result)
-        self.plugin.logger.info(f"[qq_auto_reply debug] save_settings result payload: {payload}")
         return Ok(self._inject_business_permissions(payload))
 
     async def add_trusted_user(

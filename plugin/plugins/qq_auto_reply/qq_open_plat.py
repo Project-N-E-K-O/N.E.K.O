@@ -74,18 +74,6 @@ class QQOpenPlatformConnection(QQConnectionBase):
 
     async def get_group_list(self) -> list[dict[str, Any]]:
         return []
-        self._ws = None
-        self._http: Optional[httpx.AsyncClient] = None
-        self._access_token: str = ""
-        self._token_expires_at: float = 0
-        self._heartbeat_task: Optional[asyncio.Task] = None
-        self._receive_task: Optional[asyncio.Task] = None
-        self._heartbeat_interval: float = 30.0
-        self._closing = False
-        self._self_id: str = ""
-        self._self_nickname: str = ""
-        self._last_seq: int = 0
-        self._sent_message_ids: dict[str, float] = {}
 
     # ==========================================
     # 连接生命周期
@@ -181,6 +169,8 @@ class QQOpenPlatformConnection(QQConnectionBase):
                     if self.logger:
                         self.logger.warning("[QQOpenPlatform] 服务端要求重连")
                     break
+                # 成功处理 dispatch/heartbeat → 继续循环，跳过重连
+                continue
             except websockets.ConnectionClosed:
                 if self.logger:
                     self.logger.warning("[QQOpenPlatform] WebSocket 断开")

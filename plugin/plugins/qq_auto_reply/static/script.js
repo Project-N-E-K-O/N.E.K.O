@@ -192,9 +192,6 @@ const pluginId = 'qq_auto_reply';
             const data = raw.value || raw.data || raw;
             const settings = data.settings || {};
             const permissions = data.permissions || {};
-            console.log('[qq_auto_reply debug] applyDashboardState payload =', data);
-            console.log('[qq_auto_reply debug] applyDashboardState settings =', settings);
-            console.log('[qq_auto_reply debug] applyDashboardState permissions =', permissions);
             state.dashboard = data;
             state.users = Array.isArray(permissions.trusted_users) ? permissions.trusted_users : [];
             state.groups = Array.isArray(permissions.trusted_groups) ? permissions.trusted_groups : [];
@@ -211,12 +208,9 @@ const pluginId = 'qq_auto_reply';
             state.backlogLabels = Array.isArray(settings.backlog_labels) ? settings.backlog_labels.map(normalizeBacklogLabelDraft) : [];
             state.backlogLabelDrafts = state.backlogLabels.map((item) => ({ ...item }));
             state.backlogItems = Array.isArray(data.backlog_items) ? data.backlog_items : [];
-            console.log('[qq_auto_reply debug] backlog labels loaded', state.backlogLabelDrafts);
             renderBacklogLabelEditor();
             document.getElementById('cfg-url').value = state.config.url;
-            console.log('[qq_auto_reply debug] cfg-url after set =', document.getElementById('cfg-url').value);
             document.getElementById('cfg-token').value = String(settings.token || '');
-            console.log('[qq_auto_reply debug] cfg-token after set =', document.getElementById('cfg-token').value);
             document.getElementById('cfg-path').value = state.config.path;
             document.getElementById('cfg-show-napcat-window').checked = Boolean(settings.show_napcat_window ?? true);
             document.getElementById('cfg-reply-mode').value = state.config.replyMode;
@@ -230,7 +224,6 @@ const pluginId = 'qq_auto_reply';
             document.getElementById('cfg-open-app-id').value = String(settings.qq_open_app_id || '');
             document.getElementById('cfg-open-secret').value = String(settings.qq_open_client_secret || '');
             onConnectionModeChange();
-            console.log('[qq_auto_reply debug] cfg-path after set =', document.getElementById('cfg-path').value);
             document.getElementById('cfg-normal-probability').value = Number.isFinite(state.config.normalRelayProbability) ? String(state.config.normalRelayProbability) : '0.1';
             document.getElementById('cfg-truth-probability').value = Number.isFinite(state.config.truthReplyProbability) ? String(state.config.truthReplyProbability) : '0.1';
             const runtime = data.runtime || {};
@@ -273,8 +266,6 @@ const pluginId = 'qq_auto_reply';
                     renderBacklogDetail();
                 }
             }
-            console.log('[qq_auto_reply debug] onboarding desired visible =', state.config.showOnboarding);
-            console.log('[qq_auto_reply debug] onboarding display after apply =', document.getElementById('onboarding').style.display);
         }
         function scrollToConfigSection() {
             document.getElementById('config-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' });

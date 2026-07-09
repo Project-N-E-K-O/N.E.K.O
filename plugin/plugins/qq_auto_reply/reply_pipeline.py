@@ -233,6 +233,20 @@ class QQReplyPipelineRunner:
         if url:
             ark_obj["ark"]["kv"].append({"key": "#URL#", "value": url})
 
+        from .qq_open_plat import QQOpenPlatformConnection
+        if not isinstance(self.plugin.qq_client, QQOpenPlatformConnection):
+            # NapCat / OneBot 不支持 Ark 卡片，降级为文本发送
+            fallback = body_text or title or desc or ""
+            if fallback:
+                await self.plugin._deliver_group_reply(
+                    str(request.group_id or ""),
+                    fallback,
+                    reply_message_id="",
+                    at_user_id="",
+                    fallback_to_text_on_voice_failure=True,
+                )
+                return True
+            return False
         try:
             await self.plugin.qq_client._ensure_token()
             r = await self.plugin.qq_client._http.post(

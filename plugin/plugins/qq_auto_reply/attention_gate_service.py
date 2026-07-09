@@ -113,14 +113,9 @@ class QQAttentionGateService:
         if QQFeedbackClassifier.is_blacklisted(message_text, label_defs):
             return GateDecision("ignore", reason="blacklist")
 
-        # 4. 关键词 → 大幅提升注意力 + 必定回复
+        # 4. 关键词 → 必定回复（注意力已在 update_on_message 内完成加成，此处只标记焦点）
         category = QQFeedbackClassifier.classify(message_text, label_defs)
         if category and category != "chat":
-            await attention.boost_attention(
-                normalized_group_id,
-                attention._keyword_boost_scale(),
-                reason=f"keyword:{category}",
-            )
             attention.mark_focus(normalized_group_id)
             return GateDecision("reply", reason=f"keyword:{category}", force_reply=True)
 

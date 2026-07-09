@@ -371,9 +371,21 @@ class QQSessionInstructionService:
                 # 找最近的 user 消息
                 for msg in reversed(history[-10:]):
                     role = getattr(msg, "role", "") if hasattr(msg, "role") else msg.get("role", "")
-                    content = getattr(msg, "content", "") if hasattr(msg, "content") else msg.get("content", "")
-                    if role == "user" and content:
-                        last_msg = str(content)[:50]
+                    raw = getattr(msg, "content", "") if hasattr(msg, "content") else msg.get("content", "")
+                    if role == "user" and raw:
+                        # 结构化 content（list[dict]）→ 提取 text 片段，避免 repr 污染 prompt
+                        if isinstance(raw, str):
+                            last_msg = raw[:50]
+                        elif isinstance(raw, list):
+                            parts = []
+                            for item in raw:
+                                if isinstance(item, dict) and item.get("type") == "text":
+                                    parts.append(str(item.get("text", "")))
+                                elif isinstance(item, str):
+                                    parts.append(item)
+                            last_msg = "".join(parts)[:50]
+                        else:
+                            last_msg = str(raw)[:50]
                         break
             if last_msg:
                 lines.append(f"- 群 {gid} 最近在聊: {last_msg}")

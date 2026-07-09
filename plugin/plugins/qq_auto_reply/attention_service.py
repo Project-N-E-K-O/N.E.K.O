@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -503,7 +504,9 @@ class QQAttentionService:
     async def stop_decay_loop(self) -> None:
         """停止后台衰减循环"""
         task = getattr(self, "_decay_task", None)
-        if task and not task.done():
+        if task is None:
+            return
+        if not task.done():
             task.cancel()
         try:
             await task

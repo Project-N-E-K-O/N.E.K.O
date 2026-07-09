@@ -78,6 +78,9 @@ class QQReplyPostprocessNode:
         at_user_id = ""
         reply_message_id = ""
         poke_user = ""
+        sticker_id = ""
+        keyboard = ""
+        ark_attrs: dict[str, str] = {}
         strategy_mode = getattr(self.plugin, "_strategy_mode", "neko_dynamic")
         if strategy_mode == "neko_dynamic" and reply_text:
             before_parse = reply_text

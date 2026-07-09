@@ -13,6 +13,7 @@ class QQSettingsService:
     async def load_business_config(self) -> dict[str, Any]:
         self.plugin._qq_settings = await self.plugin.config_store.load()
         self.plugin.backlog_store = self.plugin._create_backlog_store_from_settings(self.plugin._qq_settings)
+        self._enforce_attention_for_dynamic_mode()
         return dict(self.plugin._qq_settings)
 
     async def ensure_business_config_initialized(self) -> dict[str, Any]:
@@ -48,8 +49,19 @@ class QQSettingsService:
         self.plugin._backlog_issue_notify_threshold = max(1, int(settings.get("backlog_issue_notify_threshold", 1) or 1))
         # 猫娘动态注意力策略配置
         self.plugin._strategy_mode = self.plugin.config_store._normalize_strategy_mode(settings.get("strategy_mode"))
-        # 强制启用 attention（neko_dynamic 模式下必须）
-        if self.plugin._strategy_mode == "neko_dynamic":
+        self._enforce_attention_for_dynamic_mode()
+        # 前端日志：显示当前连接配置（token 脱敏），方便用户排查浏览器自动回填等问题
+        url = str(settings.get("onebot_url") or "").strip()
+        masked = self.plugin._mask_token(str(settings.get("token") or ""))
+        mode = str(settings.get("qq_connection_mode") or "napcat").strip()
+        self.plugin._emit_log("INFO", f"连接模式: {mode} | 地址: {url or '(未配置)'} | Token: {masked}{' (空)' if not settings.get('token') else ''} | 策略: {self.plugin._strategy_mode}")
+
+    def _enforce_attention_for_dynamic_mode(self) -> None:
+        """neko_dynamic 模式下强制启用多群注意力，确保磁盘配置与运行时一致。"""
+        strategy_mode = self.plugin.config_store._normalize_strategy_mode(
+            self.plugin._qq_settings.get("strategy_mode")
+        )
+        if strategy_mode == "neko_dynamic":
             self.plugin._qq_settings["enable_group_attention"] = True
 
     def rebuild_permission_managers(self, config: dict[str, Any]) -> None:
@@ -73,13 +85,17 @@ class QQSettingsService:
 
         if onebot_url is not None:
             self.plugin._qq_settings["onebot_url"] = str(onebot_url or "").strip()
+            self.plugin._emit_log("INFO", f"OneBot 地址已更新: {self.plugin._qq_settings['onebot_url'] or '(空)'}")
         if token is not None:
             self.plugin._qq_settings["token"] = str(token or "")
+            masked = self.plugin._mask_token(self.plugin._qq_settings["token"])
+            self.plugin._emit_log("INFO", f"Token 已更新: {masked}{' (空)' if not self.plugin._qq_settings['token'] else ''}")
         qq_connection_mode = kwargs.get("qq_connection_mode")
         qq_open_app_id = kwargs.get("qq_open_app_id")
         qq_open_client_secret = kwargs.get("qq_open_client_secret")
         if qq_connection_mode is not None:
             self.plugin._qq_settings["qq_connection_mode"] = str(qq_connection_mode or "napcat").strip()
+            self.plugin._emit_log("INFO", f"连接模式已切换: {self.plugin._qq_settings['qq_connection_mode']}")
         if qq_open_app_id is not None:
             self.plugin._qq_settings["qq_open_app_id"] = str(qq_open_app_id or "").strip()
         if qq_open_client_secret is not None:
@@ -90,6 +106,7 @@ class QQSettingsService:
             self.plugin._qq_settings["show_napcat_window"] = bool(show_napcat_window)
         if reply_mode is not None:
             self.plugin._qq_settings["reply_mode"] = self.plugin.config_store.normalize_reply_mode(reply_mode)
+            self.plugin._emit_log("INFO", f"回复模式已切换: {self.plugin._qq_settings['reply_mode']}")
         if show_onboarding is not None:
             self.plugin._qq_settings["show_onboarding"] = bool(show_onboarding)
         if guide_step_napcat_done is not None:
@@ -117,13 +134,17 @@ class QQSettingsService:
         strategy_mode = kwargs.get("strategy_mode")
         if strategy_mode is not None:
             self.plugin._qq_settings["strategy_mode"] = self.plugin.config_store._normalize_strategy_mode(strategy_mode)
+            self.plugin._emit_log("INFO", f"策略模式已切换: {self.plugin._qq_settings['strategy_mode']}")
+        self._enforce_attention_for_dynamic_mode()
         self.plugin._qq_settings.pop("guide_step_settings_done", None)
         self.plugin._ensure_qq_client_initialized()
         success = await self.persist_business_config()
+        if success:
+            self.plugin._emit_log("INFO", "设置已保存到磁盘" + (" (需重启自动回复以应用新连接)" if self.plugin._running else ""))
         if self.plugin.qq_client:
             self.plugin.qq_client.onebot_url = self.plugin._qq_settings.get("onebot_url", self.plugin.qq_client.onebot_url)
             self.plugin.qq_client.token = self.plugin._qq_settings.get("token", self.plugin.qq_client.token)
-        if onebot_url is not None or token is not None or napcat_directory is not None or show_napcat_window is not None:
+        if onebot_url is not None or token is not None or napcat_directory is not None or show_napcat_window is not None or qq_connection_mode is not None or qq_open_app_id is not None or qq_open_client_secret is not None:
             self.plugin._startup_error = None
         return {
             "persisted": success,

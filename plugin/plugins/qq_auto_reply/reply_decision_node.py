@@ -63,14 +63,19 @@ class QQReplyDecisionNode:
         group_id = str(request.group_id or "").strip()
         attention = self._attention_state(group_id)
 
-        # 猫娘动态主策略：注意力门控已在 dispatcher 层处理，此处只需放行
+        # 猫娘动态主策略：注意力门控已在 dispatcher 层处理，此处补充群权限门控
         strategy_mode = getattr(self.plugin, "_strategy_mode", "neko_dynamic")
         if strategy_mode == "neko_dynamic":
-            kwargs = self._decision_kwargs(request, "open", attention)
+            # 即使注意力门控已放行，仍需校验群是否在权限列表中（阻止未配置/已移除的群绕过）
+            group_level = self.plugin.group_permission_mgr.get_group_level(group_id) if self.plugin.group_permission_mgr else "none"
+            if group_level == "none":
+                return QQReplyDecision(action="ignore", **self._decision_kwargs(request, group_level, attention), attention_gate_reason="permission_none")
+            if group_level == "normal":
+                relay_probability = self.plugin.group_permission_mgr.get_normal_relay_probability(group_id) if self.plugin.group_permission_mgr else None
+                return QQReplyDecision(action="relay", relay_probability=relay_probability, **self._decision_kwargs(request, group_level, attention), attention_gate_reason="relay")
+            kwargs = self._decision_kwargs(request, group_level, attention)
             kwargs["attention_gate_reason"] = "attention_gate"
-            if request.force_reply:
-                return QQReplyDecision(action="reply", permission_level="open", **kwargs)
-            return QQReplyDecision(action="reply", permission_level="open", **kwargs)
+            return QQReplyDecision(action="reply", **kwargs)
 
         # N.E.K.O 退级策略：原有完整权限门控
         group_level = self.plugin.group_permission_mgr.get_group_level(group_id) if self.plugin.group_permission_mgr else "none"

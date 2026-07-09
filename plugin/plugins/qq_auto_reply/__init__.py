@@ -256,7 +256,6 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         if not await self.config_store.exists():
             await self._create_business_config()
         settings = await self._ensure_business_config_initialized()
-        self.logger.info(f"[qq_auto_reply debug] startup settings loaded: {settings}")
         self.settings_service.rebuild_permission_managers(settings)
         self.settings_service.apply_runtime_settings(settings)
         await self.attention_service.load_cached_state()
@@ -275,7 +274,6 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             self._session_housekeeping_task = asyncio.create_task(self._session_housekeeping_loop())
         return Ok({"status": "ready"})
 
-    @lifecycle(id="shutdown")
     async def _group_digest_loop(self, interval_minutes: int = 5):
         """定期将各群聊摘要推送到 Memory Server（跨群共享记忆）"""
         await asyncio.sleep(60)
@@ -327,6 +325,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             except Exception as e:
                 self.logger.warning(f"群摘要推送异常: {e}")
 
+    @lifecycle(id="shutdown")
     async def shutdown(self, **_):
         await self._stop_auto_reply_runtime(stop_napcat=True)
         await self._flush_all_memory_sessions(reason="shutdown")
