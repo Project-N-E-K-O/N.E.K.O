@@ -4524,6 +4524,38 @@ class Live2DManager {
      * @returns {Object|null} 边界对象 { left, right, top, bottom, width, height, centerX, centerY } 或 null
      */
     getModelScreenBounds() {
+        const edgePeekState = this._live2DGameModeEdgePeekState;
+        if (edgePeekState && edgePeekState.active &&
+            Array.isArray(edgePeekState.maskPoints) && edgePeekState.maskPoints.length >= 3) {
+            const points = edgePeekState.maskPoints.filter((point) =>
+                point &&
+                Number.isFinite(Number(point.x)) &&
+                Number.isFinite(Number(point.y))
+            );
+            if (points.length >= 3) {
+                const xs = points.map((point) => Number(point.x));
+                const ys = points.map((point) => Number(point.y));
+                const left = Math.min(...xs);
+                const right = Math.max(...xs);
+                const top = Math.min(...ys);
+                const bottom = Math.max(...ys);
+                const width = right - left;
+                const height = bottom - top;
+                if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+                    return {
+                        left: left,
+                        right: right,
+                        top: top,
+                        bottom: bottom,
+                        width: width,
+                        height: height,
+                        centerX: left + width / 2,
+                        centerY: top + height / 2
+                    };
+                }
+            }
+        }
+
         const model = this.currentModel;
         if (!model) {
             return null;
@@ -4577,6 +4609,9 @@ class Live2DManager {
 
     // 复位模型位置和缩放到初始状态
     async resetModelPosition() {
+        if (typeof this.clearLive2DGameModeEdgePeek === 'function') {
+            this.clearLive2DGameModeEdgePeek('reset-model-position');
+        }
         if (!this.currentModel || !this.pixi_app) {
             console.warn('无法复位：模型或PIXI应用未初始化');
             return;

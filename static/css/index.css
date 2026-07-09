@@ -507,6 +507,12 @@ button * {
     gap: 12px;
 }
 
+body.neko-live2d-game-mode-edge-peek #live2d-floating-buttons,
+body.neko-live2d-game-mode-edge-peek #live2d-lock-icon {
+    display: none !important;
+    pointer-events: none !important;
+}
+
 body.neko-game-active #live2d-container,
 body.neko-game-active #vrm-container,
 body.neko-game-active #mmd-container,

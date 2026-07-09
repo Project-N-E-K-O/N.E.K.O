@@ -137,6 +137,483 @@ function isLive2DPointInRect(point, rect, padding = 0) {
         p.y <= rect.bottom + pad;
 }
 
+const LIVE2D_GAME_MODE_EDGE_PEEK_TRIGGER_RATIO = 0.025;
+const LIVE2D_GAME_MODE_EDGE_PEEK_ANGLE_DEGREES = 45;
+const LIVE2D_GAME_MODE_EDGE_PEEK_BELT_X_RATIO = 0.5;
+const LIVE2D_GAME_MODE_EDGE_PEEK_BELT_Y_RATIO = 0.48;
+const LIVE2D_GAME_MODE_EDGE_PEEK_EDGE_INSET_PX = 8;
+const LIVE2D_GAME_MODE_EDGE_PEEK_VISIBLE_MARGIN_PX = 8;
+
+function isLive2DGameModeEdgePeekEnabled() {
+    try {
+        return !!(window.nekoGameModeBeta &&
+            typeof window.nekoGameModeBeta.isEnabled === 'function' &&
+            window.nekoGameModeBeta.isEnabled());
+    } catch (_) {
+        return false;
+    }
+}
+
+function getLive2DGameModeEdgePeekBounds(model) {
+    if (!model || typeof model.getBounds !== 'function') return null;
+    let bounds = null;
+    try {
+        bounds = model.getBounds();
+    } catch (_) {
+        return null;
+    }
+    if (!bounds) return null;
+    const left = Number.isFinite(bounds.left) ? bounds.left : bounds.x;
+    const top = Number.isFinite(bounds.top) ? bounds.top : bounds.y;
+    const right = Number.isFinite(bounds.right) ? bounds.right : left + bounds.width;
+    const bottom = Number.isFinite(bounds.bottom) ? bounds.bottom : top + bounds.height;
+    const width = Number.isFinite(bounds.width) ? bounds.width : right - left;
+    const height = Number.isFinite(bounds.height) ? bounds.height : bottom - top;
+    if (![left, top, right, bottom, width, height].every(Number.isFinite) || width <= 0 || height <= 0) {
+        return null;
+    }
+    return { left, top, right, bottom, width, height };
+}
+
+function clampLive2DGameModeEdgePeekCoordinate(value, min, max) {
+    if (!Number.isFinite(value)) return min;
+    return Math.min(max, Math.max(min, value));
+}
+
+function getLive2DGameModeEdgePeekSide(edge, bounds, viewportW) {
+    if (edge === 'left' || edge === 'top-left' || edge === 'bottom-left') return 'left';
+    if (edge === 'right' || edge === 'top-right' || edge === 'bottom-right') return 'right';
+    const centerX = bounds.left + bounds.width / 2;
+    return centerX < viewportW / 2 ? 'left' : 'right';
+}
+
+function rotateLive2DGameModeEdgePeekPoint(point, origin, angleRadians) {
+    const cos = Math.cos(angleRadians);
+    const sin = Math.sin(angleRadians);
+    const dx = point.x - origin.x;
+    const dy = point.y - origin.y;
+    return {
+        x: origin.x + dx * cos - dy * sin,
+        y: origin.y + dx * sin + dy * cos
+    };
+}
+
+function getLive2DGameModeEdgePeekVisibleUpperBounds(bounds, rotationOrigin, offsetX, offsetY, angleRadians) {
+    const rotated = getLive2DGameModeEdgePeekVisibleUpperMaskPoints(
+        bounds,
+        rotationOrigin,
+        offsetX,
+        offsetY,
+        angleRadians
+    );
+    const xs = rotated.map((point) => point.x);
+    const ys = rotated.map((point) => point.y);
+    const left = Math.min(...xs);
+    const right = Math.max(...xs);
+    const top = Math.min(...ys);
+    const bottom = Math.max(...ys);
+    return {
+        left,
+        top,
+        right,
+        bottom,
+        width: right - left,
+        height: bottom - top
+    };
+}
+
+function getLive2DGameModeEdgePeekVisibleUpperMaskPoints(bounds, rotationOrigin, offsetX, offsetY, angleRadians) {
+    const maskPadding = Math.max(8, Math.round(Math.max(bounds.width, bounds.height) * 0.02));
+    const beltY = bounds.top + bounds.height * LIVE2D_GAME_MODE_EDGE_PEEK_BELT_Y_RATIO;
+    const corners = [
+        { x: bounds.left - maskPadding, y: bounds.top - maskPadding },
+        { x: bounds.right + maskPadding, y: bounds.top - maskPadding },
+        { x: bounds.right + maskPadding, y: beltY + maskPadding },
+        { x: bounds.left - maskPadding, y: beltY + maskPadding }
+    ];
+    return corners.map((point) => {
+        const rotatedPoint = rotateLive2DGameModeEdgePeekPoint(point, rotationOrigin, angleRadians);
+        return {
+            x: rotatedPoint.x + offsetX,
+            y: rotatedPoint.y + offsetY
+        };
+    });
+}
+
+function getLive2DGameModeEdgePeekClipPath(maskPoints) {
+    if (!Array.isArray(maskPoints) || maskPoints.length < 3) return '';
+    const polygon = maskPoints
+        .map((point) => `${Number(point.x).toFixed(1)}px ${Number(point.y).toFixed(1)}px`)
+        .join(', ');
+    return polygon ? `polygon(${polygon})` : '';
+}
+
+function applyLive2DGameModeEdgePeekCanvasClip(maskPoints) {
+    const clipPath = getLive2DGameModeEdgePeekClipPath(maskPoints);
+    if (!clipPath) return false;
+    const canvas = document.getElementById('live2d-canvas');
+    if (!canvas || !canvas.style) return false;
+    canvas.style.clipPath = clipPath;
+    canvas.style.webkitClipPath = clipPath;
+    return true;
+}
+
+function clearLive2DGameModeEdgePeekCanvasClip() {
+    const canvas = document.getElementById('live2d-canvas');
+    if (!canvas || !canvas.style) return;
+    canvas.style.clipPath = '';
+    canvas.style.webkitClipPath = '';
+}
+
+function getLive2DGameModeEdgePeekVisibleUpperCorrection(visibleBounds, viewportW, viewportH) {
+    const margin = LIVE2D_GAME_MODE_EDGE_PEEK_VISIBLE_MARGIN_PX;
+    const usableW = Math.max(0, viewportW - margin * 2);
+    const usableH = Math.max(0, viewportH - margin * 2);
+    let x = 0;
+    let y = 0;
+
+    if (visibleBounds.width <= usableW) {
+        if (visibleBounds.left < margin) x = margin - visibleBounds.left;
+        else if (visibleBounds.right > viewportW - margin) x = viewportW - margin - visibleBounds.right;
+    } else {
+        x = viewportW / 2 - (visibleBounds.left + visibleBounds.right) / 2;
+    }
+
+    if (visibleBounds.height <= usableH) {
+        if (visibleBounds.top < margin) y = margin - visibleBounds.top;
+        else if (visibleBounds.bottom > viewportH - margin) y = viewportH - margin - visibleBounds.bottom;
+    } else {
+        y = viewportH / 2 - (visibleBounds.top + visibleBounds.bottom) / 2;
+    }
+
+    return { x, y };
+}
+
+function addLive2DGameModeEdgePeekChildAt(parent, child, index) {
+    if (!parent || !child) return false;
+    if (typeof parent.addChildAt === 'function' &&
+        Number.isInteger(index) &&
+        index >= 0 &&
+        (!Array.isArray(parent.children) || index <= parent.children.length)) {
+        parent.addChildAt(child, index);
+        return true;
+    }
+    if (typeof parent.addChild === 'function') {
+        parent.addChild(child);
+        return true;
+    }
+    return false;
+}
+
+function createLive2DGameModeEdgePeekWrapper(model, bounds, placement) {
+    if (!model || !bounds || typeof PIXI === 'undefined' || !PIXI.Graphics || !PIXI.Container) return null;
+    const parent = model.parent && typeof model.parent.addChild === 'function' ? model.parent : null;
+    if (!parent) return null;
+    const parentIndex = Array.isArray(parent.children) ? parent.children.indexOf(model) : -1;
+    const maskPoints = getLive2DGameModeEdgePeekVisibleUpperMaskPoints(
+        bounds,
+        { x: model.x, y: model.y },
+        placement.offsetX,
+        placement.offsetY,
+        placement.rotation
+    );
+    if (!Array.isArray(maskPoints) || maskPoints.length < 4) return null;
+    const mask = new PIXI.Graphics();
+    mask.beginFill(0xffffff, 1);
+    mask.drawPolygon(maskPoints.flatMap((point) => [point.x, point.y]));
+    mask.endFill();
+
+    const wrapper = new PIXI.Container();
+    wrapper.name = 'neko-live2d-game-mode-edge-peek-wrapper';
+    try {
+        if (!addLive2DGameModeEdgePeekChildAt(parent, wrapper, parentIndex >= 0 ? parentIndex : undefined)) {
+            return null;
+        }
+        wrapper.addChild(model);
+        parent.addChild(mask);
+        wrapper.mask = mask;
+    } catch (_) {
+        try {
+            if (model.parent === wrapper) {
+                addLive2DGameModeEdgePeekChildAt(parent, model, parentIndex >= 0 ? parentIndex : undefined);
+            }
+        } catch (__) {}
+        try {
+            if (wrapper.parent && typeof wrapper.parent.removeChild === 'function') {
+                wrapper.parent.removeChild(wrapper);
+            }
+        } catch (__) {}
+        try {
+            if (mask.parent && typeof mask.parent.removeChild === 'function') {
+                mask.parent.removeChild(mask);
+            }
+        } catch (__) {}
+        try {
+            if (typeof wrapper.destroy === 'function') wrapper.destroy({ children: false });
+        } catch (__) {}
+        try {
+            if (typeof mask.destroy === 'function') mask.destroy({ children: true });
+        } catch (__) {}
+        return null;
+    }
+
+    return { wrapper, mask, parent, parentIndex };
+}
+
+function getLive2DGameModeEdgePeekPlacement(model, bounds) {
+    if (!bounds) return null;
+    const viewportW = Math.max(bounds.width, window.innerWidth || 0);
+    const viewportH = Math.max(bounds.height, window.innerHeight || 0);
+    const horizontalThreshold = bounds.width * LIVE2D_GAME_MODE_EDGE_PEEK_TRIGGER_RATIO;
+    const verticalThreshold = bounds.height * LIVE2D_GAME_MODE_EDGE_PEEK_TRIGGER_RATIO;
+    const nearLeft = bounds.left <= horizontalThreshold;
+    const nearRight = viewportW - bounds.right <= horizontalThreshold;
+    const nearTop = bounds.top <= verticalThreshold;
+    const nearBottom = viewportH - bounds.bottom <= verticalThreshold;
+    if (!nearLeft && !nearRight && !nearTop && !nearBottom) return null;
+
+    let edge = '';
+    const centerX = bounds.left + bounds.width / 2;
+    if (nearTop) {
+        if (nearLeft || centerX <= bounds.width) edge = 'top-left';
+        else if (nearRight || centerX >= viewportW - bounds.width) edge = 'top-right';
+        else edge = 'top';
+    } else if (nearBottom) {
+        if (nearLeft || centerX <= bounds.width) edge = 'bottom-left';
+        else if (nearRight || centerX >= viewportW - bounds.width) edge = 'bottom-right';
+        else edge = 'bottom';
+    } else if (nearLeft) {
+        edge = 'left';
+    } else if (nearRight) {
+        edge = 'right';
+    }
+    if (!edge) return null;
+
+    const beltX = bounds.left + bounds.width * LIVE2D_GAME_MODE_EDGE_PEEK_BELT_X_RATIO;
+    const beltY = bounds.top + bounds.height * LIVE2D_GAME_MODE_EDGE_PEEK_BELT_Y_RATIO;
+    const belt = { x: beltX, y: beltY };
+    const rotationOrigin = { x: model.x, y: model.y };
+    let targetBeltX = clampLive2DGameModeEdgePeekCoordinate(
+        beltX,
+        LIVE2D_GAME_MODE_EDGE_PEEK_EDGE_INSET_PX,
+        viewportW - LIVE2D_GAME_MODE_EDGE_PEEK_EDGE_INSET_PX
+    );
+    let targetBeltY = clampLive2DGameModeEdgePeekCoordinate(
+        beltY,
+        LIVE2D_GAME_MODE_EDGE_PEEK_EDGE_INSET_PX,
+        viewportH - LIVE2D_GAME_MODE_EDGE_PEEK_EDGE_INSET_PX
+    );
+    let angle = 0;
+    const side = getLive2DGameModeEdgePeekSide(edge, bounds, viewportW);
+    if (side === 'left') {
+        targetBeltX = LIVE2D_GAME_MODE_EDGE_PEEK_EDGE_INSET_PX;
+        angle = LIVE2D_GAME_MODE_EDGE_PEEK_ANGLE_DEGREES;
+    } else if (side === 'right') {
+        targetBeltX = viewportW - LIVE2D_GAME_MODE_EDGE_PEEK_EDGE_INSET_PX;
+        angle = -LIVE2D_GAME_MODE_EDGE_PEEK_ANGLE_DEGREES;
+    }
+
+    if (edge === 'top' || edge === 'top-left' || edge === 'top-right') {
+        targetBeltY = LIVE2D_GAME_MODE_EDGE_PEEK_EDGE_INSET_PX;
+        if (edge === 'top') angle = side === 'left'
+            ? LIVE2D_GAME_MODE_EDGE_PEEK_ANGLE_DEGREES
+            : -LIVE2D_GAME_MODE_EDGE_PEEK_ANGLE_DEGREES;
+    } else if (edge === 'bottom' || edge === 'bottom-left' || edge === 'bottom-right') {
+        targetBeltY = viewportH - LIVE2D_GAME_MODE_EDGE_PEEK_EDGE_INSET_PX;
+        if (edge === 'bottom') angle = side === 'left'
+            ? LIVE2D_GAME_MODE_EDGE_PEEK_ANGLE_DEGREES
+            : -LIVE2D_GAME_MODE_EDGE_PEEK_ANGLE_DEGREES;
+    }
+
+    const rotation = angle * Math.PI / 180;
+    const rotatedBelt = rotateLive2DGameModeEdgePeekPoint(belt, rotationOrigin, rotation);
+    let offsetX = targetBeltX - rotatedBelt.x;
+    let offsetY = targetBeltY - rotatedBelt.y;
+    const visibleUpperBounds = getLive2DGameModeEdgePeekVisibleUpperBounds(
+        bounds,
+        rotationOrigin,
+        offsetX,
+        offsetY,
+        rotation
+    );
+    const correction = getLive2DGameModeEdgePeekVisibleUpperCorrection(visibleUpperBounds, viewportW, viewportH);
+    offsetX += correction.x;
+    offsetY += correction.y;
+
+    return {
+        edge,
+        side,
+        angle,
+        rotation,
+        originX: beltX,
+        originY: beltY,
+        offsetX,
+        offsetY,
+        modelX: model.x + offsetX,
+        modelY: model.y + offsetY
+    };
+}
+
+Live2DManager.prototype.clearLive2DGameModeEdgePeek = function (reason = 'manual', options = {}) {
+    const state = this._live2DGameModeEdgePeekState;
+    const model = state && state.model && !state.model.destroyed ? state.model : null;
+    if (state && state.active) {
+        clearLive2DGameModeEdgePeekCanvasClip();
+    }
+    if (state && state.active && state.mask) {
+        if (state.wrapper && state.wrapper.mask === state.mask) {
+            state.wrapper.mask = null;
+        }
+        if (model && state.wrapper && model.parent === state.wrapper && state.parent) {
+            try {
+                addLive2DGameModeEdgePeekChildAt(
+                    state.parent,
+                    model,
+                    Number.isInteger(state.parentIndex) && state.parentIndex >= 0 ? state.parentIndex : undefined
+                );
+            } catch (_) {}
+        }
+        const mask = state.mask;
+        try {
+            if (mask.parent && typeof mask.parent.removeChild === 'function') {
+                mask.parent.removeChild(mask);
+            }
+        } catch (_) {}
+        try {
+            if (typeof mask.destroy === 'function') {
+                state.mask.destroy({ children: true });
+            }
+        } catch (_) {}
+        try {
+            if (state.wrapper && state.wrapper.parent && typeof state.wrapper.parent.removeChild === 'function') {
+                state.wrapper.parent.removeChild(state.wrapper);
+            }
+        } catch (_) {}
+        try {
+            if (state.wrapper && typeof state.wrapper.destroy === 'function') {
+                state.wrapper.destroy({ children: false });
+            }
+        } catch (_) {}
+    }
+    const restore = options.restore !== false;
+    if (state && state.active && state.movedModel === true && restore) {
+        if (model && !model.destroyed && Number.isFinite(state.baseX) && Number.isFinite(state.baseY)) {
+            model.x = state.baseX;
+            model.y = state.baseY;
+            if (Number.isFinite(state.baseRotation)) {
+                model.rotation = state.baseRotation;
+            }
+            if (state.baseMask !== undefined) {
+                model.mask = state.baseMask || null;
+            }
+        }
+    }
+    this._live2DGameModeEdgePeekState = null;
+    if (document.body) {
+        document.body.classList.remove('neko-live2d-game-mode-edge-peek');
+    }
+    try {
+        window.dispatchEvent(new CustomEvent('neko:live2d-game-mode-edge-peek-changed', {
+            detail: { active: false, reason }
+        }));
+    } catch (_) {}
+};
+
+Live2DManager.prototype._tryApplyLive2DGameModeEdgePeek = function (model) {
+    if (!isLive2DGameModeEdgePeekEnabled()) {
+        this.clearLive2DGameModeEdgePeek('game-mode-disabled');
+        return false;
+    }
+    const bounds = getLive2DGameModeEdgePeekBounds(model);
+    const placement = getLive2DGameModeEdgePeekPlacement(model, bounds);
+    if (!bounds || !placement) {
+        this.clearLive2DGameModeEdgePeek('drag-away-from-edge');
+        return false;
+    }
+    this.clearLive2DGameModeEdgePeek('reapply', { restore: false });
+    const baseX = model.x;
+    const baseY = model.y;
+    const baseRotation = Number.isFinite(model.rotation) ? model.rotation : 0;
+    const baseMask = model.mask || null;
+    const maskPoints = getLive2DGameModeEdgePeekVisibleUpperMaskPoints(
+        bounds,
+        { x: model.x, y: model.y },
+        placement.offsetX,
+        placement.offsetY,
+        placement.rotation
+    );
+    if (!applyLive2DGameModeEdgePeekCanvasClip(maskPoints)) {
+        this.clearLive2DGameModeEdgePeek('canvas-clip-unavailable', { restore: false });
+        return false;
+    }
+    const wrapperState = createLive2DGameModeEdgePeekWrapper(model, bounds, placement);
+    if (!wrapperState) {
+        clearLive2DGameModeEdgePeekCanvasClip();
+        this.clearLive2DGameModeEdgePeek('wrapper-unavailable', { restore: false });
+        return false;
+    }
+    const offsetX = placement.offsetX;
+    const offsetY = placement.offsetY;
+    model.rotation = placement.rotation;
+    model.x = placement.modelX;
+    model.y = placement.modelY;
+    this._live2DGameModeEdgePeekState = {
+        active: true,
+        edge: placement.edge,
+        model,
+        baseX,
+        baseY,
+        baseRotation,
+        baseMask,
+        mask: wrapperState.mask,
+        wrapper: wrapperState.wrapper,
+        parent: wrapperState.parent,
+        parentIndex: wrapperState.parentIndex,
+        maskPoints,
+        offsetX,
+        offsetY,
+        movedModel: true
+    };
+    if (document.body) {
+        document.body.classList.add('neko-live2d-game-mode-edge-peek');
+    }
+    try {
+        window.dispatchEvent(new CustomEvent('neko:live2d-game-mode-edge-peek-changed', {
+            detail: { active: true, edge: placement.edge }
+        }));
+    } catch (_) {}
+    return true;
+};
+
+function clearLive2DGameModeEdgePeek(reason, options) {
+    const manager = window.live2dManager;
+    if (manager && typeof manager.clearLive2DGameModeEdgePeek === 'function') {
+        manager.clearLive2DGameModeEdgePeek(reason, options);
+    } else if (document.body) {
+        document.body.classList.remove('neko-live2d-game-mode-edge-peek');
+    }
+}
+
+function clearLive2DGameModeEdgePeekOnDisabled(event) {
+    const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+    if (detail.enabled === false) {
+        clearLive2DGameModeEdgePeek('game-mode-disabled');
+    }
+}
+
+function clearLive2DGameModeEdgePeekOnGoodbye() {
+    clearLive2DGameModeEdgePeek('live2d-goodbye');
+}
+
+if (typeof window !== 'undefined') {
+    window.nekoLive2DGameModeEdgePeek = {
+        clear: clearLive2DGameModeEdgePeek,
+        isEnabled: isLive2DGameModeEdgePeekEnabled
+    };
+    window.addEventListener('neko:game-mode-beta-state', clearLive2DGameModeEdgePeekOnDisabled);
+    window.addEventListener('live2d-goodbye-click', clearLive2DGameModeEdgePeekOnGoodbye);
+}
+
 /**
  * 检测模型是否超出当前屏幕边界，并计算吸附目标位置
  * @param {PIXI.DisplayObject} model - Live2D 模型对象
@@ -378,6 +855,7 @@ Live2DManager.prototype._checkAndPerformSnap = async function (model, options = 
 
 // 设置拖拽功能
 Live2DManager.prototype.setupDragAndDrop = function (model) {
+    this.clearLive2DGameModeEdgePeek('model-reload');
     model.interactive = true;
     // 移除 stage.hitArea = screen，避免阻挡背景点击
     // this.pixi_app.stage.interactive = true;
@@ -472,6 +950,7 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
             return;
         }
 
+        this.clearLive2DGameModeEdgePeek('drag-start');
         this._isDraggingModel = true;
         if (typeof this.boostLinuxX11InteractiveFPS === 'function') {
             this.boostLinuxX11InteractiveFPS(1400);
@@ -559,6 +1038,7 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
                 if (!snapped) {
                     await this._savePositionAfterInteraction();
                 }
+                this._tryApplyLive2DGameModeEdgePeek(model);
                 // 如果执行了吸附，_checkAndPerformSnap 内部会保存位置
             }
         }
