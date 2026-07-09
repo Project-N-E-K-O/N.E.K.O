@@ -288,9 +288,18 @@
             const REPORT_INTERVAL_MS = 60000;
             let prevTs = Date.now();
             let reporting = false;
+            let activeController = null;
 
             const flushPlayTime = async ({ force = false } = {}) => {
-                if (reporting) return;
+                // Unload flush must not be dropped by the in-flight sentinel:
+                // abort the regular request (no keepalive) and re-send with keepalive.
+                if (reporting) {
+                    if (!force) return;
+                    if (activeController) {
+                        try { activeController.abort(); } catch (_) { }
+                        activeController = null;
+                    }
+                }
                 const now = Date.now();
                 const elapsedSeconds = Math.min(
                     3600,
@@ -305,19 +314,23 @@
                 }
 
                 reporting = true;
+                const controller = force ? null : new AbortController();
+                if (controller) activeController = controller;
                 try {
                     const playtimeHeaders = { 'Content-Type': 'application/json' };
                     const sec = window.nekoLocalMutationSecurity;
                     if (sec && typeof sec.getMutationHeaders === 'function') {
                         try { Object.assign(playtimeHeaders, await sec.getMutationHeaders()); } catch (_) { }
                     }
-                    const response = await fetch('/api/steam/update-playtime', {
+                    const fetchOpts = {
                         method: 'POST',
                         headers: playtimeHeaders,
                         // pagehide / visibility hidden 时页面可能正在卸载，keepalive 保证请求能发完
                         keepalive: !!force,
                         body: JSON.stringify({ seconds: elapsedSeconds })
-                    });
+                    };
+                    if (controller) fetchOpts.signal = controller.signal;
+                    const response = await fetch('/api/steam/update-playtime', fetchOpts);
 
                     if (response.ok) {
                         prevTs = now;
@@ -330,8 +343,13 @@
                     }
                     // 其他错误保留 prevTs，下次重试这段时间
                 } catch (error) {
+                    if (error && error.name === 'AbortError') {
+                        // Superseded by a force/keepalive flush; keep prevTs for that retry.
+                        return;
+                    }
                     console.debug('更新游戏时长进度失败:', error.message);
                 } finally {
+                    if (activeController === controller) activeController = null;
                     reporting = false;
                 }
             };
