@@ -70,7 +70,7 @@ async def start_live_listener(runtime: Any, room_ref: Any) -> bool:
     return started
 
 
-async def stop_live_listener(runtime: Any, *, mark_disabled: bool = True) -> None:
+async def stop_live_listener(runtime: Any, *, mark_disabled: bool) -> None:
     await runtime.live_provider.stop_listening()
     runtime.live_events.reset()
     if mark_disabled:
