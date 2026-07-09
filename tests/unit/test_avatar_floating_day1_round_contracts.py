@@ -497,7 +497,7 @@ def test_pc_external_chat_spotlight_preserves_highlight_during_resistance_pause(
     )[1]
 
 
-def test_externalized_chat_spotlight_preserves_plain_capsule_variant_for_pc_overlay():
+def test_externalized_chat_spotlight_keeps_variant_pipeline_but_day1_uses_capsule_target():
     interpage_source = INTERPAGE_PATH.read_text(encoding="utf-8")
     takeover_source = (ROOT / "static" / "tutorial/core/interaction-takeover.js").read_text(encoding="utf-8")
     scene_source = SCENE_ORCHESTRATOR_PATH.read_text(encoding="utf-8")
@@ -505,7 +505,8 @@ def test_externalized_chat_spotlight_preserves_plain_capsule_variant_for_pc_over
     visual_runtime_source = (ROOT / "static" / "tutorial/core/visual-runtime.js").read_text(encoding="utf-8")
     day1_source = DAY1_GUIDE_PATH.read_text(encoding="utf-8")
 
-    assert "spotlightVariant: 'plain-capsule'" in day1_source
+    assert "target: 'chat-capsule-input'" in day1_source
+    assert "spotlightVariant: 'plain-capsule'" not in day1_source
     assert "this.externalizedChatSpotlightVariant = '';" in takeover_source
     assert "const previousVariant = this.externalizedChatSpotlightVariant;" in takeover_source
     assert "variant: this.externalizedChatSpotlightVariant" in takeover_source
@@ -923,11 +924,11 @@ def test_day1_chat_input_round_rect_highlight_excludes_mid_flow_cursor_scenes():
     assert "cursorAction: 'wobble'" not in greeting_scene_block
     assert "timelinePlayback: true" in greeting_scene_block
     assert "day1-intro-greeting-flow" not in greeting_scene_block
-    assert "target: 'chat-input'" in greeting_scene_block
+    assert "target: 'chat-capsule-input'" in greeting_scene_block
     assert "cursorTarget: 'chat-capsule-input'" in greeting_scene_block
     assert "cursorAction: 'move'" in greeting_scene_block
     assert "operation: 'day1-intro-greeting-performance'" in greeting_scene_block
-    assert "target: 'chat-input'" in capsule_block
+    assert "target: 'chat-capsule-input'" in capsule_block
     assert "spotlight: false" in capsule_block
     assert "cursorWobbleDurationMs: 2000" in capsule_block
     assert "target: 'chat-input'" in history_block
@@ -1030,7 +1031,7 @@ def test_day1_intro_greeting_highlights_capsule_input_without_cursor_wobble():
     )[0]
 
     assert "setExternalizedChatCursor('');" not in greeting_block
-    assert "target: 'chat-input'" in greeting_block
+    assert "target: 'chat-capsule-input'" in greeting_block
     assert "cursorTarget: 'chat-capsule-input'" in greeting_block
     assert "cursorAction: 'move'" in greeting_block
     assert "operation: 'day1-intro-greeting-performance'" in greeting_block
