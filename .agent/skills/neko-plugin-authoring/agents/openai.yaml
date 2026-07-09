@@ -1,4 +1,0 @@
-interface:
-  display_name: "N.E.K.O Plugin Authoring"
-  short_description: "Create or modify N.E.K.O plugins"
-  default_prompt: "Create or modify a N.E.K.O plugin."

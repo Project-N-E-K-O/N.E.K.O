@@ -128,6 +128,13 @@ Primary source files:
 - `docs/plugins/plugin-toml.md`
 - existing `plugin/plugins/*/plugin.toml`
 
+## I18n Contract
+
+Use one plugin-owned locale source for plugin text.
+
+- Plugin metadata, entries, and actions use `tr()` references plus `[plugin.i18n]` locale files. This includes display names, descriptions, UI action labels, confirmation text, and other registered Python-side user-facing strings.
+- Hosted TSX visible copy uses `props.t()` or `useI18n().t()` against the same plugin i18n messages. Do not hand-roll per-component locale dictionaries in TSX when the text can live in the plugin locale files.
+
 ## Entry Contract
 
 Normal plugin code should use public SDK imports, usually:
@@ -148,6 +155,32 @@ Entry rules:
 - Entry timeout can be set on `@plugin_entry(timeout=...)`; `timeout <= 0` disables the timeout.
 - Entry names, descriptions, schemas, and return payloads should match the plugin purpose and be traceable from `plugin.toml` and `DESIGN.md`.
 
+## Router Contract
+
+Routers are an organization mechanism for large plugins, not a default architecture choice.
+
+Use `PluginRouter` only when the plugin's main entry file is becoming hard to maintain. As a rule of thumb, recommend routers when the project/plugin main module is over about 1k lines, has many entries split across distinct feature areas, or needs multiple contributors to own separate feature modules. Do not introduce routers for a minimal implementation or a plugin with only a few entries.
+
+Router rules:
+
+- Keep minimal plugins in the main entry class.
+- Import router APIs from the public facade, usually `from plugin.sdk.plugin import PluginRouter, plugin_entry, Ok`.
+- Register routers from the main plugin instance with `self.include_router(...)`.
+- Treat router modules as plugin-local implementation details under `plugin/plugins/<plugin_id>/`, commonly `routers/`.
+- Router entries still obey the Entry Contract: runtime-triggered `@plugin_entry` handlers must be `async def`, ids must be unique, and schemas/results should match plugin purpose.
+
+## Hook Contract
+
+Hooks are opt-in interception points for entry execution. Use them only when there is a concrete need to run logic before, after, around, or instead of another entry. Do not add hooks just to organize normal business logic; ordinary helper functions, entries, lifecycle hooks, or routers are simpler.
+
+Hook rules:
+
+- Use `before_entry`, `after_entry`, `around_entry`, `replace_entry`, or `hook` from the public SDK facade.
+- Prefer the narrowest `target` entry id. Use `target="*"` only when every entry really needs the behavior.
+- Keep hook behavior small and predictable: validation, auditing, timing, result shaping, compatibility shims, or extension-style interception.
+- Be cautious with `replace_entry`; it changes the target entry's behavior and should be justified in the plugin design or review notes.
+- Hooks do not replace lifecycle work. Use `@lifecycle` for startup, shutdown, reload, and config-change behavior.
+
 ## Package Type
 
 Choose the package type from the manifest/SDK contract.
@@ -155,11 +188,12 @@ Choose the package type from the manifest/SDK contract.
 - `plugin`: default for independent features. Use it for user-callable entries, background listeners, timers, hosted/static UI, state/settings, cross-plugin calls, and ordinary external API/device integrations controlled from N.E.K.O.
 - `extension`: only for adding entries or hooks to an existing host plugin without modifying that host. It uses `plugin.sdk.extension`, runs injected into the host plugin process, and requires `[plugin.host]`.
 - `adapter`: only for bridging an external protocol or request stream into N.E.K.O plugin calls. It uses `plugin.sdk.adapter` plus adapter/gateway contracts. Do not choose adapter merely because the plugin calls an external service.
-- `script`: exists in the core type literal but is not scaffolded by `uv run neko-plugin init`; do not use it for new plugin work unless the user explicitly asks and runtime support has been verified.
 
 Capabilities are selected after package type:
 
 - callable entry: `@plugin_entry`
+- large-plugin organization: `PluginRouter` plus `self.include_router(...)`; use only when the main plugin module is large or feature-split, not for minimal implementations
+- entry interception: hook decorators such as `before_entry`, `after_entry`, `around_entry`, and `replace_entry`; use only for a concrete interception need
 - lifecycle/background behavior: `@lifecycle`
 - scheduled behavior: `@timer_interval(id=..., seconds>0)`
 - host message reaction: `@message(id=...)`
@@ -168,6 +202,10 @@ Capabilities are selected after package type:
 - protocol gateway: adapter gateway components
 
 ## UI Surface Modes
+
+Current UI has three rendering modes. Default to Hosted TSX for new UI unless the surface is truly read-only documentation. Do not use Static legacy unless there is a concrete reason Hosted TSX or Markdown cannot serve the use case.
+
+For implementation details, read `hosted-ui-authoring.md`. For the Hosted TSX component, hook, and type API, read `hosted-ui-api.md`.
 
 Do not collapse UI kind and UI mode.
 
@@ -179,9 +217,9 @@ Surface kind controls where the surface appears:
 
 Rendering mode controls how `entry` is loaded:
 
-- `hosted-tsx`: interactive TSX/JSX surface, usually `entry = "ui/panel.tsx"`. Use for forms, buttons, tables, config/state views, and UI actions. Add only the permissions it needs, such as `state:read`, `config:read`, `config:write`, or `action:call`.
-- `markdown`: read-only Markdown/MDX surface, usually `entry = "docs/quickstart.md"`. Use for simple docs and guides; it should not rely on UI actions.
-- `static`: legacy standalone HTML surface, usually `entry = "static/index.html"`. Use when the plugin already owns a custom HTML/CSS/JS page or needs full iframe control.
+- `hosted-tsx`: primary mode for new plugin UI. Use TSX/JSX loaded by the Plugin Manager, usually `entry = "ui/panel.tsx"`. Choose it for interactive panels, settings, dashboards, forms, buttons, tables, state/config views, i18n-aware UI, and UI actions. Add only the permissions it needs, such as `state:read`, `config:read`, `config:write`, or `action:call`.
+- `markdown`: read-only documentation mode. Use Markdown/MDX loaded by the Plugin Manager, usually `entry = "docs/quickstart.md"`. Choose it for quickstarts, guides, and reference docs. It should not require UI actions, custom scripts, or iframe behavior.
+- `static`: legacy standalone HTML mode. Use HTML loaded in an iframe/static route, usually `entry = "static/index.html"`. Avoid it for new UI. Use it only when migrating an existing standalone page, when the plugin must preserve custom HTML/CSS/JS behavior, or when Hosted TSX cannot support a required browser/runtime capability.
 
 If `mode` is omitted, the platform infers it from `entry`: `.tsx`/`.jsx` -> `hosted-tsx`, `.md`/`.mdx` -> `markdown`, `.html`/`.htm` -> `static`. `auto` exists for inference/compatibility; do not choose it as the default authoring mode.
 

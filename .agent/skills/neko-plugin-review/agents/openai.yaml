@@ -1,4 +1,0 @@
-interface:
-  display_name: "N.E.K.O Plugin Review"
-  short_description: "Review N.E.K.O plugin changes"
-  default_prompt: "Review this N.E.K.O plugin for boundary, manifest, and SDK issues."

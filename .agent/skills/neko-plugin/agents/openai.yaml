@@ -1,4 +1,4 @@
 interface:
   display_name: "N.E.K.O Plugin"
-  short_description: "Route N.E.K.O plugin work"
-  default_prompt: "Help me choose the right N.E.K.O plugin workflow."
+  short_description: "Create, debug, review, and validate plugins"
+  default_prompt: "Use $neko-plugin to work on this N.E.K.O plugin end to end."

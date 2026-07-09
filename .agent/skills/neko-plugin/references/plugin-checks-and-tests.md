@@ -102,6 +102,12 @@ Use for bundle candidates. It reports plugin count, ids, SDK version overlap, an
 
 First identify the surface mode. Surface kind (`panel`, `guide`, `docs`) is placement; mode (`hosted-tsx`, `markdown`, `static`) is rendering.
 
+Mode policy:
+
+- Prefer Hosted TSX for new interactive plugin UI.
+- Use Markdown for read-only guides/docs.
+- Treat Static as legacy; use it only for existing standalone pages or cases Hosted TSX cannot support.
+
 For Hosted TSX (`.tsx`/`.jsx`, or `mode = "hosted-tsx"`), prefer the targeted frontend check:
 
 ```bash
