@@ -632,7 +632,8 @@
                     context ? context.sceneRunId : 0,
                     audio.voiceKey || legacyScene.voiceKey || '',
                     audio.text || legacyScene.text || '',
-                    context ? context.narrationStartedAt : 0
+                    context ? context.narrationStartedAt : 0,
+                    event.beforeAudioEndMs
                 );
             }
             if (director && director.cursor && typeof director.cursor.hide === 'function') {
