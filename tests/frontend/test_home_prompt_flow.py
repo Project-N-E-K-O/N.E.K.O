@@ -8574,6 +8574,78 @@ def test_avatar_floating_quick_mousemove_accumulates_distance_to_trigger_light_r
 
 
 @pytest.mark.frontend
+def test_avatar_floating_slow_continuous_mousemove_does_not_accumulate_forever(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const originalNow = Date.now;
+            window.__now = 1000;
+            Date.now = () => window.__now;
+            try {
+                const director = window.createYuiGuideDirector({ page: 'home' });
+                const lightInterrupts = [];
+                director.platformCapabilities = { windowBoundsSource: 'electron-window-bounds' };
+                director.currentSceneId = 'test_scene';
+                director.currentStep = {
+                    performance: {},
+                    interrupts: { threshold: 3, throttleMs: 0 },
+                };
+                director.interruptsEnabled = true;
+                director.cursor.hasPosition = () => true;
+                director.cursor.reactToUserMotion = () => {};
+                director.playLightResistance = (x, y, options) => {
+                    lightInterrupts.push({ x, y, options });
+                };
+
+                director.lastPointerPoint = {
+                    x: 100,
+                    y: 100,
+                    t: 1000,
+                    speed: 0,
+                    interruptAccumulatedDistance: 0,
+                    interruptAccumulationStartedAt: 1000,
+                };
+                let x = 100;
+                for (let index = 1; index <= 30; index += 1) {
+                    x += 20;
+                    window.__now = 1000 + index * 100;
+                    director.handleInterrupt({
+                        isTrusted: true,
+                        type: 'mousemove',
+                        clientX: x,
+                        clientY: 100,
+                        movementX: 20,
+                        movementY: 0,
+                    });
+                }
+                return {
+                    lightInterrupts,
+                    interruptCount: director.interruptCount,
+                    streak: director.interruptQualifyingMoveStreak,
+                    accumulatedDistance: director.lastPointerPoint.interruptAccumulatedDistance,
+                };
+            } finally {
+                Date.now = originalNow;
+            }
+        }
+        """
+    )
+
+    assert result["lightInterrupts"] == []
+    assert result["interruptCount"] == 0
+    assert result["streak"] == 0
+    assert result["accumulatedDistance"] < 400
+
+
+@pytest.mark.frontend
 def test_avatar_floating_light_resistance_reveals_real_cursor_for_two_seconds(
     mock_page: Page,
 ):

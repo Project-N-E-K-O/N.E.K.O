@@ -341,12 +341,14 @@
                 return;
             }
 
+            const now = Date.now();
             director.lastPointerPoint = {
                 x: x,
                 y: y,
-                t: Date.now(),
+                t: now,
                 speed: 0,
-                interruptAccumulatedDistance: 0
+                interruptAccumulatedDistance: 0,
+                interruptAccumulationStartedAt: now
             };
             director.interruptQualifyingMoveStreak = 0;
         }
@@ -425,7 +427,8 @@
                     y: y,
                     t: now,
                     speed: 0,
-                    interruptAccumulatedDistance: 0
+                    interruptAccumulatedDistance: 0,
+                    interruptAccumulationStartedAt: now
                 };
                 if (sampleDx !== null || sampleDy !== null) {
                     const initialDx = sampleDx === null ? 0 : sampleDx;
@@ -447,12 +450,20 @@
             const speed = distance / dt;
             const previousSpeed = Number.isFinite(previousPoint.speed) ? previousPoint.speed : 0;
             const acceleration = (speed - previousSpeed) / dt;
-            const previousAccumulatedDistance = (
+            const previousAccumulationStartedAt = Number.isFinite(previousPoint.interruptAccumulationStartedAt)
+                ? previousPoint.interruptAccumulationStartedAt
+                : previousPoint.t;
+            const shouldContinueAccumulation = (
                 Number.isFinite(previousPoint.interruptAccumulatedDistance)
-                && dt <= DEFAULT_INTERRUPT_ACCUMULATION_WINDOW_MS
-            )
+                && Number.isFinite(previousAccumulationStartedAt)
+                && (now - previousAccumulationStartedAt) <= DEFAULT_INTERRUPT_ACCUMULATION_WINDOW_MS
+            );
+            const previousAccumulatedDistance = shouldContinueAccumulation
                 ? previousPoint.interruptAccumulatedDistance
                 : 0;
+            const accumulationStartedAt = shouldContinueAccumulation
+                ? previousAccumulationStartedAt
+                : now;
             const accumulatedDistance = previousAccumulatedDistance + distance;
 
             director.lastPointerPoint = {
@@ -460,7 +471,8 @@
                 y: y,
                 t: now,
                 speed: speed,
-                interruptAccumulatedDistance: accumulatedDistance
+                interruptAccumulatedDistance: accumulatedDistance,
+                interruptAccumulationStartedAt: accumulationStartedAt
             };
 
             director.noteUserCursorRevealSuppressionAttempt(distance, now);
