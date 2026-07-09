@@ -8507,6 +8507,73 @@ def test_avatar_floating_distance_threshold_triggers_light_resistance_without_sp
 
 
 @pytest.mark.frontend
+def test_avatar_floating_quick_mousemove_accumulates_distance_to_trigger_light_resistance(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const originalNow = Date.now;
+            window.__now = 1000;
+            Date.now = () => window.__now;
+            try {
+                const director = window.createYuiGuideDirector({ page: 'home' });
+                const lightInterrupts = [];
+                director.platformCapabilities = { windowBoundsSource: 'electron-window-bounds' };
+                director.currentSceneId = 'test_scene';
+                director.currentStep = {
+                    performance: {},
+                    interrupts: { threshold: 3, throttleMs: 0 },
+                };
+                director.interruptsEnabled = true;
+                director.cursor.hasPosition = () => true;
+                director.cursor.reactToUserMotion = () => {};
+                director.playLightResistance = (x, y, options) => {
+                    lightInterrupts.push({ x, y, options });
+                };
+
+                director.lastPointerPoint = { x: 100, y: 100, t: 1000, speed: 0, interruptAccumulatedDistance: 0 };
+                [
+                    { t: 1040, x: 260 },
+                    { t: 1080, x: 420 },
+                    { t: 1120, x: 580 },
+                    { t: 1160, x: 740 },
+                    { t: 1200, x: 900 },
+                ].forEach((sample) => {
+                    window.__now = sample.t;
+                    director.handleInterrupt({
+                        isTrusted: true,
+                        type: 'mousemove',
+                        clientX: sample.x,
+                        clientY: 100,
+                        movementX: 160,
+                        movementY: 0,
+                    });
+                });
+                return {
+                    lightInterrupts,
+                    interruptCount: director.interruptCount,
+                    streak: director.interruptQualifyingMoveStreak,
+                };
+            } finally {
+                Date.now = originalNow;
+            }
+        }
+        """
+    )
+
+    assert len(result["lightInterrupts"]) == 1
+    assert result["interruptCount"] == 1
+    assert result["streak"] == 0
+
+
+@pytest.mark.frontend
 def test_avatar_floating_light_resistance_reveals_real_cursor_for_two_seconds(
     mock_page: Page,
 ):
@@ -12542,6 +12609,68 @@ def test_day1_takeover_capture_cursor_does_not_highlight_chat_capsule(
 
     assert "highlight-chat-window" not in result["events"]
     assert "compact-chat-input" not in result["persistentSpotlights"]
+
+
+@pytest.mark.frontend
+def test_day1_intro_greeting_restore_keeps_capsule_spotlight_target(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            document.body.innerHTML = `
+                <div id="react-chat-window-root">
+                    <div
+                        id="compact-chat-input"
+                        data-compact-geometry-owner="surface"
+                        data-compact-geometry-item="input"
+                        style="position:absolute; left:20px; top:20px; width:280px; height:48px;"
+                    ></div>
+                    <div
+                        id="compact-chat-capsule"
+                        data-compact-geometry-part="capsuleBody"
+                        style="position:absolute; left:80px; top:90px; width:360px; height:56px;"
+                    ></div>
+                </div>
+            `;
+        """,
+        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const persistentSpotlights = [];
+            director.overlay.setPersistentSpotlight = (target) => {
+                persistentSpotlights.push(target ? target.id : '');
+            };
+            director.overlay.activateSpotlight = () => {};
+            director.overlay.clearActionSpotlight = () => {};
+            director.overlay.clearPersistentSpotlight = () => {};
+            director.overlay.showBubble = () => {};
+            director.applyCircularFloatingButtonSpotlightHint = () => {};
+            director.appendGuideChatMessage = () => {};
+            director.applyGuideEmotion = () => {};
+            director.currentSceneId = 'day1_intro_greeting';
+            director.currentStep = {
+                performance: {
+                    bubbleText: 'hello',
+                    emotion: 'happy',
+                    cursorTarget: 'chat-capsule-input',
+                },
+                anchor: 'chat-capsule-input',
+            };
+
+            director.restoreCurrentScenePresentation({});
+
+            return { persistentSpotlights };
+        }
+        """
+    )
+
+    assert result["persistentSpotlights"] == ["compact-chat-capsule"]
 
 
 @pytest.mark.frontend

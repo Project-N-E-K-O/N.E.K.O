@@ -923,11 +923,11 @@ def test_day1_chat_input_round_rect_highlight_excludes_mid_flow_cursor_scenes():
     assert "cursorAction: 'wobble'" not in greeting_scene_block
     assert "timelinePlayback: true" in greeting_scene_block
     assert "day1-intro-greeting-flow" not in greeting_scene_block
-    assert "target: 'chat-input'" in greeting_scene_block
+    assert "target: 'chat-capsule-input'" in greeting_scene_block
     assert "cursorTarget: 'chat-capsule-input'" in greeting_scene_block
     assert "cursorAction: 'move'" in greeting_scene_block
     assert "operation: 'day1-intro-greeting-performance'" in greeting_scene_block
-    assert "target: 'chat-input'" in capsule_block
+    assert "target: 'chat-capsule-input'" in capsule_block
     assert "spotlight: false" in capsule_block
     assert "cursorWobbleDurationMs: 2000" in capsule_block
     assert "target: 'chat-input'" in history_block
@@ -1030,7 +1030,7 @@ def test_day1_intro_greeting_highlights_capsule_input_without_cursor_wobble():
     )[0]
 
     assert "setExternalizedChatCursor('');" not in greeting_block
-    assert "target: 'chat-input'" in greeting_block
+    assert "target: 'chat-capsule-input'" in greeting_block
     assert "cursorTarget: 'chat-capsule-input'" in greeting_block
     assert "cursorAction: 'move'" in greeting_block
     assert "operation: 'day1-intro-greeting-performance'" in greeting_block
