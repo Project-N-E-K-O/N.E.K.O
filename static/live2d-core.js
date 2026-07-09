@@ -118,6 +118,7 @@ class Live2DManager {
         this.modelRootPath = null; // 记录当前模型根路径，如 /static/<modelName>
         this.savedModelParameters = null; // 保存的模型参数（从parameters.json加载），供定时器定期应用
         this._shouldApplySavedParams = false; // 是否应该应用保存的参数
+        this.appearanceBaselineParameters = {}; // 用户保存后的外观基准，用于表情/motion 重置
         this._savedParamsTimer = null; // 保存参数应用的定时器
         this._mouseTrackingEnabled = window.mouseTrackingEnabled !== false; // 鼠标跟踪启用状态
         this._fullscreenTrackingEnabled = window.live2dFullscreenTrackingEnabled === true; // 全屏跟踪启用状态

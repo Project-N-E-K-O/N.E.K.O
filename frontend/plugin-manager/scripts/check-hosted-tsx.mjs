@@ -21,13 +21,18 @@ const fileExistsCache = new Map()
 // NekoUiKit)`). Entry check files destructure them from NekoUi; copied
 // dependency files use them bare, so they get these as ambient declarations.
 const HOSTED_UI_GLOBAL_NAMES = [
-  'Page', 'Card', 'Section', 'Heading', 'Stack', 'Grid', 'Text', 'Button', 'ButtonGroup',
+  'Page', 'Card', 'Section', 'Heading', 'Container', 'Stack', 'Inline', 'Grid', 'Columns', 'Split', 'ScrollArea', 'Text', 'Button', 'ButtonGroup',
   'StatusBadge', 'StatCard', 'KeyValue', 'DataTable', 'Divider', 'Toolbar', 'ToolbarGroup',
-  'Alert', 'EmptyState', 'ErrorBoundary', 'Modal', 'ConfirmDialog', 'List', 'Progress', 'JsonView', 'Field', 'Input', 'Select',
-  'Textarea', 'Switch', 'Form', 'ActionButton', 'RefreshButton', 'ActionForm', 'AsyncBlock', 'InlineError', 'CodeBlock',
+  'Alert', 'EmptyState', 'ErrorBoundary', 'Modal', 'ConfirmDialog', 'Tooltip', 'List', 'Progress', 'JsonView', 'Field', 'Input', 'Select',
+  'PasswordInput', 'NumberInput', 'Slider', 'RadioGroup', 'SegmentedControl', 'Textarea', 'Switch', 'Checkbox', 'CheckboxGroup',
+  'Accordion', 'Markdown', 'ImageUpload', 'AudioUpload', 'VideoUpload', 'ImagePreview', 'AudioPlayer', 'VideoPlayer',
+  'Gallery', 'FileDownload', 'TextBlock', 'LogViewer', 'JsonEditorLite', 'ArtifactRenderer', 'ArtifactCard', 'ArtifactList',
+  'normalizeArtifact', 'detectArtifactType',
+  'Form', 'FormSection', 'FormActions', 'ActionButton', 'RefreshButton', 'ActionForm', 'AsyncBlock', 'InlineError', 'CodeBlock',
   'Tip', 'Warning', 'Steps', 'Step', 'Tabs', 'useI18n',
-  'useState', 'useReducer', 'useEffect', 'useLayoutEffect', 'useMemo', 'useCallback', 'useRef', 'useLocalState',
-  'useDebounce', 'useDebouncedState', 'useForm', 'useAsync', 'useToast', 'useConfirm',
+  'useState', 'useReducer', 'useEffect', 'useLayoutEffect', 'useMemo', 'useCallback', 'useRef', 'useElementSize',
+  'useScrollIntoView', 'useScrollToBottom', 'useClipboard', 'useLocalState',
+  'useDebounce', 'useDebouncedState', 'useForm', 'useAsync', 'showToast', 'useToast', 'useConfirm',
 ]
 const sourceTextCache = new Map()
 
@@ -745,16 +750,41 @@ function createCheckFile(entryPath, tempDir, surface, tomlPath) {
 
 function formatDiagnostic(diagnostic, metaByCheckPath) {
   const message = ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n')
+  const hintedMessage = withHostedHint(message)
   if (diagnostic.file && diagnostic.start !== undefined) {
     const meta = metaByCheckPath.get(diagnostic.file.fileName)
     const pos = diagnostic.file.getLineAndCharacterOfPosition(diagnostic.start)
     if (meta) {
       const sourceLine = Math.max(1, pos.line + 1 - meta.prefixLines)
-      return `${meta.entryPath}:${sourceLine}:${pos.character + 1} [${surfaceLabel(meta.surface)}] - ${message}`
+      return `${meta.entryPath}:${sourceLine}:${pos.character + 1} [${surfaceLabel(meta.surface)}] - ${hintedMessage}`
     }
-    return `${diagnostic.file.fileName}:${pos.line + 1}:${pos.character + 1} - ${message}`
+    return `${diagnostic.file.fileName}:${pos.line + 1}:${pos.character + 1} - ${hintedMessage}`
   }
-  return message
+  return hintedMessage
+}
+
+function hostedHintForMessage(message) {
+  if (/Dynamic import is not supported/i.test(message)) {
+    return 'Use a static relative import (`import { X } from "./x"`) or move async work into `useAsync`/`props.api.call`.'
+  }
+  if (/bare module/i.test(message) || /cannot resolve inside the surface iframe/i.test(message)) {
+    return 'Hosted TSX only bundles relative plugin files and `@neko/plugin-ui`; move third-party code behind a plugin action or a curated UI module.'
+  }
+  if (/Use props\.api/i.test(message) || /global api object/i.test(message)) {
+    return 'Accept `props: PluginSurfaceProps` in your default component and call `props.api.call(...)` or `props.api.refresh()`.'
+  }
+  if (/must export a default function component/i.test(message)) {
+    return 'Add `export default function Panel(props: PluginSurfaceProps) { return <Page /> }` to the entry file.'
+  }
+  if (/Cannot find name/i.test(message) || /has no exported member/i.test(message)) {
+    return 'Check that the component is exported from `@neko/plugin-ui`, or import it with `import { Component } from "@neko/plugin-ui"`.'
+  }
+  return ''
+}
+
+function withHostedHint(message) {
+  const hint = hostedHintForMessage(message)
+  return hint ? `${message} Hint: ${hint}` : message
 }
 
 function main() {
@@ -820,18 +850,18 @@ function main() {
         try {
           checkFile = createCheckFile(checkedEntryPath, tempDir, surface, tomlPath)
         } catch (error) {
-          errors.push(`${entryPath}:1:1 [${label}] - ${formatError(error)}`)
+          errors.push(`${entryPath}:1:1 [${label}] - ${withHostedHint(formatError(error))}`)
           continue
         }
         checkFiles.push(checkFile)
         if (!checkFile.hasDefaultExport) {
-          errors.push(`${entryPath}:1:1 [${label}] - Hosted TSX must export a default function component.`)
+          errors.push(`${entryPath}:1:1 [${label}] - ${withHostedHint('Hosted TSX must export a default function component.')}`)
         }
         if (/\balert\s*\(/.test(checkFile.source)) {
           warnings.push(`${entryPath} [${label}] - Prefer inline UI errors over alert(); use ActionForm/ActionButton onError or InlineError.`)
         }
         if (/(^|[^\w.])api\./m.test(checkFile.source)) {
-          errors.push(`${entryPath}:1:1 [${label}] - Use props.api from PluginSurfaceProps instead of the global api object.`)
+          errors.push(`${entryPath}:1:1 [${label}] - ${withHostedHint('Use props.api from PluginSurfaceProps instead of the global api object.')}`)
         }
       }
     }
