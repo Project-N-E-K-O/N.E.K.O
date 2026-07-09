@@ -262,6 +262,14 @@ class QQClient(QQConnectionBase):
                                 self.logger.info(f"Queued private message from {message.get('user_id')}")
                             else:
                                 self.logger.info(f"Queued group message from group {message.get('group_id')}, user {message.get('user_id')}")
+                elif message.get("post_type") == "notice" and message.get("notice_type") == "notify" and message.get("sub_type") == "poke":
+                    # 戳一戳事件：入队以便自动回戳
+                    try:
+                        self._message_queue.put_nowait(message)
+                    except asyncio.QueueFull:
+                        pass
+                    if self.logger:
+                        self.logger.info(f"Queued poke notice: group {message.get('group_id')}, target {message.get('target_id')}, user {message.get('user_id')}")
 
             except asyncio.CancelledError:
                 raise
@@ -292,6 +300,18 @@ class QQClient(QQConnectionBase):
             self_id = raw_msg.get("self_id")
             if self_id:
                 self._self_id = str(self_id)
+
+            # 戳一戳通知事件
+            if raw_msg.get("post_type") == "notice":
+                return {
+                    "message_type": "notice",
+                    "notice_type": raw_msg.get("sub_type", ""),
+                    "user_id": str(raw_msg.get("user_id") or ""),
+                    "group_id": str(raw_msg.get("group_id") or ""),
+                    "target_id": str(raw_msg.get("target_id") or ""),
+                    "timestamp": raw_msg.get("time"),
+                    "raw": raw_msg,
+                }
 
             msg_type = raw_msg.get("message_type")
             sender_info = raw_msg.get("sender", {})

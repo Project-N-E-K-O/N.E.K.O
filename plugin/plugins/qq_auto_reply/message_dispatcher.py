@@ -78,6 +78,28 @@ class QQMessageDispatcher:
                 await __import__("asyncio").sleep(1)
 
     async def handle_message(self, message: dict[str, Any]):
+        # 戳一戳通知：自动回戳（每人每5分钟最多2次，防止骚扰）
+        if message.get("message_type") == "notice" and message.get("notice_type") == "poke":
+            group_id = str(message.get("group_id") or "").strip()
+            poker_id = str(message.get("user_id") or "").strip()
+            target_id = str(message.get("target_id") or "").strip()
+            self_id = str(getattr(self.plugin.qq_client, "_self_id", "") or "")
+            if group_id and poker_id and (not self_id or target_id == self_id):
+                now = __import__("time").time()
+                timestamps = self.plugin._poke_timestamps.setdefault(poker_id, [])
+                # 清理5分钟前的记录
+                cutoff = now - 300
+                timestamps[:] = [t for t in timestamps if t > cutoff]
+                if len(timestamps) >= 2:
+                    self.plugin._emit_log("INFO", f"戳一戳限频: poker={poker_id} 5分钟内已回戳{len(timestamps)}次，跳过")
+                else:
+                    timestamps.append(now)
+                    self.plugin._emit_log("INFO", f"收到戳一戳: group={group_id} poker={poker_id} → 回戳")
+                    try:
+                        await self.plugin.qq_client.send_group_poke(group_id, poker_id)
+                    except Exception as e:
+                        self.plugin._emit_log("INFO", f"回戳失败: {e}")
+            return
         # 黑名单优先：命中负优先级标签 → 不记录、不处理
         label_defs = list((self.plugin._qq_settings or {}).get("backlog_labels") or [])
         raw_content = str(message.get("content") or "").strip()

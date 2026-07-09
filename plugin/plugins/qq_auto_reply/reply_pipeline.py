@@ -10,6 +10,10 @@ class QQReplyPipelineRunner:
         self.plugin = plugin
 
     async def run(self, request: QQReplyRequest) -> QQReplyOutcome:
+        # 群聊消息计数器（用于表情包间隔控制）
+        if request.is_group:
+            gid = str(request.group_id or "")
+            self.plugin._sticker_since[gid] = (self.plugin._sticker_since.get(gid) or 0) + 1
         decision = self._run_decision(request)
         decision_trace = QQPipelineStageTrace(
             stage="decision",
@@ -107,9 +111,15 @@ class QQReplyPipelineRunner:
         outcome.delivery_plan = self._build_delivery_plan(request, outcome)
         outcome.delivery_result = await self._run_delivery(outcome.delivery_plan)
 
-        # 表情包作为文字后的跟发消息
+        # 表情包作为文字后的跟发消息（每群每5条消息最多发一次）
         if outcome.parsed_sticker_id and request.is_group:
-            await self._send_sticker(request, outcome)
+            gid = str(request.group_id or "")
+            since = self.plugin._sticker_since.get(gid) or 0
+            if since >= 5:
+                self.plugin._sticker_since[gid] = 0
+                await self._send_sticker(request, outcome)
+            else:
+                self.plugin._emit_log("INFO", f"[Sticker] 群 {gid} 距上次表情包仅 {since} 条消息，跳过（需≥5）")
             outcome.traces.append(
                 QQPipelineStageTrace(
                     stage="delivery",

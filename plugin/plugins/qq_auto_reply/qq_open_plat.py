@@ -47,6 +47,7 @@ class QQOpenPlatformConnection(QQConnectionBase):
         self._self_id = ""
         self._self_nickname = ""
         self._last_seq = 0
+        self._session_id = ""  # Resume 重连所需
         self._sent_message_ids: dict[str, float] = {}
         self._message_queue: asyncio.Queue = asyncio.Queue(maxsize=max(1, message_queue_size))
 
@@ -94,17 +95,42 @@ class QQOpenPlatformConnection(QQConnectionBase):
         self.ws = self._ws
         if self.logger:
             self.logger.info("[QQOpenPlatform] WebSocket 已连接")
-        # 等待 Hello
+        await self._handshake(is_reconnect=False)
+        self._receive_task = asyncio.create_task(self._receive_loop())
+        self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+
+    async def _handshake(self, *, is_reconnect: bool) -> None:
+        """WebSocket 握手：Hello → [Resume] → Identify → READY"""
+        # Hello
         raw = await self._ws.recv()
         hello = json.loads(raw)
         if hello.get("op") == 10:
             self._heartbeat_interval = max(10.0, float(hello["d"]["heartbeat_interval"]) / 1000.0 - 2.0)
             if self.logger:
                 self.logger.info(f"[QQOpenPlatform] Hello 收到, 心跳间隔: {self._heartbeat_interval:.0f}s")
-        # 发送 Identify
+            self._session_id = str(hello["d"].get("session_id") or "")
+        # 重连优先 Resume，失败再 Identify
+        if is_reconnect and self._session_id:
+            await self._ws.send(json.dumps({
+                "op": 6, "d": {"token": f"QQBot {self._access_token}",
+                                "session_id": self._session_id,
+                                "seq": self._last_seq},
+            }))
+            try:
+                resp = await asyncio.wait_for(self._ws.recv(), timeout=5.0)
+                event = json.loads(resp)
+                if event.get("op") == 0 and event.get("t") == "RESUMED":
+                    if self.logger:
+                        self.logger.info("[QQOpenPlatform] Resume 成功，事件已补发")
+                    return
+                if self.logger:
+                    self.logger.warning(f"[QQOpenPlatform] Resume 失败(op={event.get('op')} t={event.get('t')})，回退 Identify")
+            except asyncio.TimeoutError:
+                if self.logger:
+                    self.logger.warning("[QQOpenPlatform] Resume 超时，回退 Identify")
+        # Identify
         await self._ws.send(json.dumps({
-            "op": 2,
-            "d": {
+            "op": 2, "d": {
                 "token": f"QQBot {self._access_token}",
                 "intents": (1 << 25) | (1 << 12),
                 "shard": [0, 1],
@@ -113,15 +139,14 @@ class QQOpenPlatformConnection(QQConnectionBase):
         resp = await self._ws.recv()
         ready = json.loads(resp)
         if ready.get("op") == 0 and ready.get("t") == "READY":
-            user = ready["d"]["user"]
+            user = ready["d"].get("user") or {}
             self._self_id = str(user.get("id") or "")
             self._self_nickname = str(user.get("username") or "")
+            self._session_id = str(ready["d"].get("session_id") or "")
             if self.logger:
                 self.logger.info(f"[QQOpenPlatform] 已就绪: {self._self_nickname} ({self._self_id})")
         else:
             raise RuntimeError(f"鉴权失败: op={ready.get('op')} t={ready.get('t')}")
-        self._receive_task = asyncio.create_task(self._receive_loop())
-        self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
     async def disconnect(self) -> None:
         self._closing = True
@@ -167,6 +192,8 @@ class QQOpenPlatformConnection(QQConnectionBase):
                 elif op == 1:  # Heartbeat
                     await self._ws.send(json.dumps({"op": 11, "d": self._last_seq}))
                     continue  # 成功，跳过重连
+                elif op == 11:  # Heartbeat ACK → 忽略
+                    continue
                 elif op == 7:  # Reconnect → 关闭当前连接，由下方 _try_reconnect() 重建
                     if self.logger:
                         self.logger.warning("[QQOpenPlatform] 服务端要求重连")
@@ -228,15 +255,22 @@ class QQOpenPlatformConnection(QQConnectionBase):
             return None
 
         await self._ensure_token()
-        body: dict[str, Any] = {}
+        # 群图片需要先上传获取 file_info，再用 msg_type=7 + media 发送
         if image_url:
-            body["msg_type"] = 2
-            body["image"] = image_url
-            if content:
+            file_info = await self._upload_group_image(group_id, image_url)
+            if file_info:
+                body["msg_type"] = 7
+                body["media"] = {"file_info": file_info}
+                if content:
+                    body["content"] = content
+            else:
+                # 上传失败 → 降级为文本
+                if not content:
+                    content = "[图片]"
                 body["content"] = content
         else:
-            # 自动检测 Markdown 语法
-            _MD_PATTERNS = (r'\*\*', r'\*', r'~~', r'^> ', r'`', r'\[.+\]\(.+\)', r'^#{1,3} ', r'^- ', r'^\d+\. ')
+            # 自动检测 Markdown 语法（仅识别明确的格式标记，避免误判普通文本）
+            _MD_PATTERNS = (r'\*\*[^*]+\*\*', r'\*[^*]+\*', r'~~[^~]+~~', r'^> ', r'`[^`]+`', r'\[.+\]\(.+\)', r'^#{1,3} ')
             import re as _re
             is_md = any(_re.search(p, content, _re.MULTILINE) for p in _MD_PATTERNS)
             if is_md:
@@ -398,30 +432,15 @@ class QQOpenPlatformConnection(QQConnectionBase):
                     try: await self._ws.close()
                     except Exception: pass
                 self._ws = None; self.ws = None
-                # 重新连接
+                # 重新连接 + 握手（优先 Resume 补发遗漏事件）
                 await self._refresh_token()
                 ws_url = await self._get_gateway_url()
                 self._ws = await websockets.connect(ws_url, max_size=2 ** 23)
                 self.ws = self._ws
-                raw = await self._ws.recv()
-                hello = json.loads(raw)
-                if hello.get("op") == 10:
-                    self._heartbeat_interval = max(10.0, float(hello["d"]["heartbeat_interval"]) / 1000.0 - 2.0)
-                await self._ws.send(json.dumps({
-                    "op": 2, "d": {
-                        "token": f"QQBot {self._access_token}",
-                        "intents": (1 << 25) | (1 << 12),
-                        "shard": [0, 1],
-                    },
-                }))
-                resp = await self._ws.recv()
-                ready = json.loads(resp)
-                if ready.get("op") == 0 and ready.get("t") == "READY":
-                    if self.logger:
-                        self.logger.info("[QQOpenPlatform] 重连成功")
-                    return  # 回到 _receive_loop
+                await self._handshake(is_reconnect=True)
                 if self.logger:
-                    self.logger.warning(f"[QQOpenPlatform] 重连鉴权失败: op={ready.get('op')}")
+                    self.logger.info("[QQOpenPlatform] 重连成功")
+                return  # 回到 _receive_loop
             except Exception as e:
                 if self.logger:
                     self.logger.warning(f"[QQOpenPlatform] 重连失败: {e}")
@@ -457,6 +476,57 @@ class QQOpenPlatformConnection(QQConnectionBase):
     async def _ensure_token(self) -> None:
         if time.time() >= self._token_expires_at:
             await self._refresh_token()
+
+    async def _upload_group_image(self, group_id: str, image_url: str) -> str:
+        """上传群聊图片到 QQ 开放平台，返回 file_info 或空串"""
+        import os, mimetypes
+        image_url = str(image_url or "").strip()
+        if not image_url:
+            return ""
+        # 获取本地文件路径（file:// 或直接路径）
+        file_path = image_url
+        if file_path.startswith("file://"):
+            file_path = file_path[7:]
+        if not os.path.isfile(file_path):
+            if self.logger:
+                self.logger.warning(f"[QQOpenPlatform] 图片文件不存在: {file_path}")
+            return ""
+        try:
+            mime_type = mimetypes.guess_type(file_path)[0] or "image/png"
+            file_size = os.path.getsize(file_path)
+            # Step 1: 申请上传
+            resp = await self._http.post(
+                f"{self._API_BASE}/v2/groups/{group_id}/files",
+                json={"file_type": 1, "file_name": os.path.basename(file_path),
+                      "file_size": file_size, "mime_type": mime_type},
+                headers=self._auth_headers(),
+            )
+            data = resp.json()
+            upload_url = str(data.get("upload_url") or "")
+            if not upload_url:
+                if self.logger:
+                    self.logger.warning(f"[QQOpenPlatform] 申请上传URL失败: {data}")
+                return ""
+            # Step 2: 上传文件
+            with open(file_path, "rb") as f:
+                upload_resp = await self._http.put(
+                    upload_url,
+                    content=f.read(),
+                    headers={"Content-Type": mime_type},
+                )
+            upload_data = upload_resp.json() if upload_resp.text else {}
+            file_info = str(upload_data.get("file_info") or data.get("file_info") or "")
+            if file_info:
+                if self.logger:
+                    self.logger.info(f"[QQOpenPlatform] 图片上传成功: {file_info}")
+                return file_info
+            if self.logger:
+                self.logger.warning(f"[QQOpenPlatform] 图片上传失败: {upload_data}")
+            return ""
+        except Exception as e:
+            if self.logger:
+                self.logger.warning(f"[QQOpenPlatform] 图片上传异常: {e}")
+            return ""
 
     async def _get_gateway_url(self) -> str:
         await self._ensure_token()

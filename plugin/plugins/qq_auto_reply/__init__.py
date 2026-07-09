@@ -166,7 +166,8 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         self._backlog_issue_notify_threshold = 1
         self._relay_backlog_items: list[dict[str, Any]] = []
         self._recent_pipeline_traces: list[dict[str, Any]] = []
-        self._sticker_since: dict[str, int] = {}  # 群 → 距上次表情包的消息数，≥10 才允许再发
+        self._sticker_since: dict[str, int] = {}  # 群 → 距上次表情包的消息数，≥5 才允许再发
+        self._poke_timestamps: dict[str, list[float]] = {}  # user_id → 最近回戳时间戳列表（5分钟窗口）
         self._startup_error: str | None = None
 
     def _create_backlog_store_from_settings(self, settings: dict[str, Any] | None) -> QQBacklogStore:
