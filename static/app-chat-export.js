@@ -157,8 +157,21 @@
         }
     }
 
+    function isExportPreviewDocumentWindow(win) {
+        if (!win || win.closed || isCurrentChatWindowHandle(win)) return false;
+        try {
+            if (win.__nekoChatExportPreviewWindow === true) return true;
+            return !!(win.document && win.document.body && win.document.body.classList.contains('chat-export-window'));
+        } catch (_) {
+            return false;
+        }
+    }
+
     function isReusableExportPreviewWindow(win) {
-        return !!(win && !win.closed && !isCurrentChatWindowHandle(win) && isExportPreviewShellUrl(getWindowHref(win)));
+        return !!(win
+            && !win.closed
+            && !isCurrentChatWindowHandle(win)
+            && (isExportPreviewShellUrl(getWindowHref(win)) || isExportPreviewDocumentWindow(win)));
     }
 
     function isExportPreviewShellReady(previewWindow, targetUrl) {
@@ -3153,6 +3166,9 @@
         try {
             if (typeof previewWindow.stop === 'function') previewWindow.stop();
         } catch (_) {}
+        try {
+            previewWindow.__nekoChatExportPreviewWindow = true;
+        } catch (_) {}
         var doc = previewWindow.document;
         doc.open();
         doc.write('<!DOCTYPE html><html lang="' + escapeHtml(document.documentElement.lang || 'en') + '"' + getPreviewThemeAttributesHtml() + '><head><meta charset="utf-8">'
@@ -3178,6 +3194,9 @@
             + 'html[data-theme="dark"] body.chat-export-window .chat-export-preview-body,html[data-theme="dark"] body.chat-export-window .chat-export-preview-frame{background:#0f172a;}'
             + '</style></head><body class="chat-export-window"></body></html>');
         doc.close();
+        try {
+            previewWindow.__nekoChatExportPreviewWindow = true;
+        } catch (_) {}
         applyPreviewThemeToDocument(doc);
         previewWindow.focus();
         if (!previewWindow._chatExportBeforeUnloadHandler) {
