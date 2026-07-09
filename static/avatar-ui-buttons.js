@@ -6888,14 +6888,13 @@ const AvatarButtonMixin = {
                 return;
             }
 
-            const buttonActive = !!(buttonData && buttonData.button && buttonData.button.dataset.active === 'true');
             const popup = document.getElementById(`${this._avatarPrefix}-popup-${buttonId}`);
             const popupExpanded = !!(
                 popup &&
                 popup.style.display === 'flex' &&
                 (popup.style.opacity !== '0' || popup.classList.contains('is-positioning'))
             );
-            triggerIcon.style.transform = (buttonActive || popupExpanded) ? 'rotate(180deg)' : 'rotate(0deg)';
+            triggerIcon.style.transform = popupExpanded ? 'rotate(180deg)' : 'rotate(0deg)';
         };
 
         /**
