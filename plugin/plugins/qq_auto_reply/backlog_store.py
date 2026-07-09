@@ -26,6 +26,7 @@ class QQBacklogStore:
             "schema_version": 2,
             "conversations": {},
             "groups": {},
+            "group_attention_state": {},
         }
 
     async def exists(self) -> bool:
@@ -203,6 +204,32 @@ class QQBacklogStore:
             state["groups"] = groups
             await atomic_write_json_async(self._path, state)
             return state
+
+    async def get_recent_group_messages(self, group_id: str, *, limit: int = 5, exclude_message_id: str = "") -> list[dict[str, Any]]:
+        state = await self.load()
+        groups = state["groups"]
+        conversations = state["conversations"]
+        group = groups.get(str(group_id or "").strip())
+        if not isinstance(group, dict):
+            return []
+        excluded = str(exclude_message_id or "").strip()
+        timeline: list[dict[str, Any]] = []
+        for key in list(group.get("conversation_keys") or []):
+            conversation = conversations.get(key)
+            if not isinstance(conversation, dict):
+                continue
+            for item in list(conversation.get("messages") or []):
+                if not isinstance(item, dict):
+                    continue
+                message_id = str(item.get("message_id") or "").strip()
+                if excluded and message_id == excluded:
+                    continue
+                timeline.append(item)
+        timeline.sort(key=lambda item: (int(item.get("timestamp") or 0), str(item.get("message_id") or "")))
+        if limit > 0:
+            timeline = timeline[-int(limit):]
+        return timeline
+
 
     async def get_group_detail(self, group_id: str) -> dict[str, Any]:
         state = await self.load()

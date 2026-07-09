@@ -48,6 +48,7 @@ const pluginId = 'qq_auto_reply';
                 normalRelayProbability: 0.1,
                 truthReplyProbability: 0.1,
                 replyMode: 'text',
+                strategyMode: 'neko_dynamic',
             },
             users: [],
             groups: [],
@@ -71,6 +72,15 @@ const pluginId = 'qq_auto_reply';
             document.getElementById('dot' + stepNum).classList.add('active');
         }
 
+        function onConnectionModeChange() {
+            const el = document.getElementById('cfg-connection-mode');
+            const napcatEl = document.getElementById('napcat-fields');
+            const openplatEl = document.getElementById('openplat-fields');
+            if (!el || !napcatEl || !openplatEl) return;
+            const mode = el.value;
+            napcatEl.style.display = mode === 'napcat' ? '' : 'none';
+            openplatEl.style.display = mode === 'open_platform' ? '' : 'none';
+        }
         async function initConfig() {
             try {
                 const payload = await callPlugin('init_config', {});
@@ -210,6 +220,16 @@ const pluginId = 'qq_auto_reply';
             document.getElementById('cfg-path').value = state.config.path;
             document.getElementById('cfg-show-napcat-window').checked = Boolean(settings.show_napcat_window ?? true);
             document.getElementById('cfg-reply-mode').value = state.config.replyMode;
+            state.config.strategyMode = String(settings.strategy_mode || 'neko_dynamic');
+            state.config.connectionMode = String(settings.qq_connection_mode || 'napcat');
+            document.getElementById('cfg-strategy-mode').value = state.config.strategyMode;
+            const connModeEl = document.getElementById('cfg-connection-mode');
+            connModeEl.value = state.config.connectionMode;
+            connModeEl.removeEventListener('change', onConnectionModeChange);
+            connModeEl.addEventListener('change', onConnectionModeChange);
+            document.getElementById('cfg-open-app-id').value = String(settings.qq_open_app_id || '');
+            document.getElementById('cfg-open-secret').value = String(settings.qq_open_client_secret || '');
+            onConnectionModeChange();
             console.log('[qq_auto_reply debug] cfg-path after set =', document.getElementById('cfg-path').value);
             document.getElementById('cfg-normal-probability').value = Number.isFinite(state.config.normalRelayProbability) ? String(state.config.normalRelayProbability) : '0.1';
             document.getElementById('cfg-truth-probability').value = Number.isFinite(state.config.truthReplyProbability) ? String(state.config.truthReplyProbability) : '0.1';
@@ -277,7 +297,7 @@ const pluginId = 'qq_auto_reply';
             document.getElementById('entity-form-title').textContent = isUser
                 ? (isEditing ? t('ui.entity_form.user.edit_title', '编辑用户') : t('ui.entity_form.user.title', '添加用户'))
                 : (isEditing ? t('ui.entity_form.group.edit_title', '编辑群聊') : t('ui.entity_form.group.title', '添加群聊'));
-            document.getElementById('entity-number-label').textContent = isUser ? t('ui.entity_form.user.number', '号码') : t('ui.entity_form.group.number', '号码');
+            document.getElementById('entity-number-label').textContent = isUser ? t('ui.entity_form.user.number', 'QQ 号') : t('ui.entity_form.group.number', '群号');
             document.getElementById('entity-level-label').textContent = t('ui.entity_form.level', '级别');
             document.getElementById('entity-number').value = isUser ? String(item?.qq || '') : String(item?.group_id || '');
             document.getElementById('entity-number').disabled = isEditing;
@@ -364,7 +384,7 @@ const pluginId = 'qq_auto_reply';
             }
             container.innerHTML = items.map((item, index) => {
                 const isUser = state.currentTab === 'users';
-                const name = isUser ? (item.nickname || item.qq || t('ui.defaults.user', '喵呜管理员')) : (item.group_id || t('ui.defaults.group', '核心猫草群'));
+                const name = isUser ? (item.nickname || item.qq || t('ui.defaults.user', '朋友们')) : (item.group_id || t('ui.defaults.group', '猫圈群聊'));
                 const baseSub = isUser ? `${item.level || ''}${item.qq ? ` · ${item.qq}` : ''}` : `${item.level || ''}${item.group_id ? ` · ${item.group_id}` : ''}`;
                 const probabilityParts = [];
                 if (item.normal_relay_probability !== undefined) {
@@ -982,14 +1002,18 @@ const pluginId = 'qq_auto_reply';
                     const normalRelayProbability = validateProbability(document.getElementById('cfg-normal-probability').value, 'ui.probability.normal.invalid');
                     const truthReplyProbability = validateProbability(document.getElementById('cfg-truth-probability').value, 'ui.probability.truth.invalid');
                     await callPlugin('save_settings', {
+                        qq_connection_mode: document.getElementById('cfg-connection-mode').value,
                         onebot_url: document.getElementById('cfg-url').value.trim(),
                         token: document.getElementById('cfg-token').value,
                         napcat_directory: document.getElementById('cfg-path').value.trim(),
                         show_napcat_window: document.getElementById('cfg-show-napcat-window').checked,
+                        qq_open_app_id: document.getElementById('cfg-open-app-id').value.trim(),
+                        qq_open_client_secret: document.getElementById('cfg-open-secret').value,
                         reply_mode: document.getElementById('cfg-reply-mode').value,
                         normal_relay_probability: normalRelayProbability,
                         truth_reply_probability: truthReplyProbability,
                         backlog_labels: buildBacklogLabelsPayload(),
+                        strategy_mode: document.getElementById('cfg-strategy-mode').value,
                     });
                     await reloadDashboard();
                     await loadBacklogSummary();
