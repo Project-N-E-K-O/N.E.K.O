@@ -194,7 +194,14 @@
 
             if (preAudioEvents.length > 0) {
                 for (let index = 0; index < preAudioEvents.length; index += 1) {
-                    await Promise.resolve(this.dispatchEvent(preAudioEvents[index], context, triggered));
+                    const event = preAudioEvents[index];
+                    const resultPromise = this.dispatchEvent(event, context, triggered);
+                    if (event.blocking === false) {
+                        this.watchNonBlockingEvent(event, resultPromise);
+                        await Promise.resolve();
+                    } else {
+                        await Promise.resolve(resultPromise);
+                    }
                     if (this.isRunCancelled(runToken)) {
                         return {
                             completed: false,

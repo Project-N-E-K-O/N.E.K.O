@@ -66,6 +66,8 @@ Nested ``{lang_code: {key: str}}`` tables (resolved via
 
 from __future__ import annotations
 
+from functools import lru_cache
+
 
 # ── Old reflection follow-up memory cues ────────────────────────────
 
@@ -748,6 +750,7 @@ ACTIVITY_STATE_LABELS: dict[str, dict[str, str]] = {
         "gaming": "游戏中",
         "focused_work": "专注工作中",
         "casual_browsing": "休闲浏览",
+        "focused_video": "专注看视频",
         "chatting": "聊天中",
         "voice_engaged": "语音对话中",
         "idle": "空闲",
@@ -760,6 +763,7 @@ ACTIVITY_STATE_LABELS: dict[str, dict[str, str]] = {
         "gaming": "gaming",
         "focused_work": "focused work",
         "casual_browsing": "casual browsing",
+        "focused_video": "focused video",
         "chatting": "chatting",
         "voice_engaged": "voice conversation",
         "idle": "idle",
@@ -772,6 +776,7 @@ ACTIVITY_STATE_LABELS: dict[str, dict[str, str]] = {
         "gaming": "ゲーム中",
         "focused_work": "集中作業中",
         "casual_browsing": "のんびりブラウジング",
+        "focused_video": "動画に集中",
         "chatting": "チャット中",
         "voice_engaged": "ボイス会話中",
         "idle": "アイドル",
@@ -784,6 +789,7 @@ ACTIVITY_STATE_LABELS: dict[str, dict[str, str]] = {
         "gaming": "게임 중",
         "focused_work": "집중 작업 중",
         "casual_browsing": "캐주얼 브라우징",
+        "focused_video": "영상 몰입",
         "chatting": "채팅 중",
         "voice_engaged": "음성 대화 중",
         "idle": "유휴",
@@ -796,6 +802,7 @@ ACTIVITY_STATE_LABELS: dict[str, dict[str, str]] = {
         "gaming": "играет",
         "focused_work": "сосредоточенная работа",
         "casual_browsing": "неспешный сёрфинг",
+        "focused_video": "погружён в видео",
         "chatting": "переписка",
         "voice_engaged": "голосовая беседа",
         "idle": "простой",
@@ -809,6 +816,7 @@ ACTIVITY_STATE_LABELS: dict[str, dict[str, str]] = {
         "gaming": "jugando",
         "focused_work": "trabajo enfocado",
         "casual_browsing": "navegación casual",
+        "focused_video": "viendo vídeo",
         "chatting": "chateando",
         "transitioning": "cambiando de ventana",
         "idle": "inactivo",
@@ -821,6 +829,7 @@ ACTIVITY_STATE_LABELS: dict[str, dict[str, str]] = {
         "gaming": "jogando",
         "focused_work": "trabalho focado",
         "casual_browsing": "navegação casual",
+        "focused_video": "assistindo vídeo",
         "chatting": "conversando",
         "transitioning": "trocando de janela",
         "idle": "ocioso",
@@ -1196,6 +1205,123 @@ ACTIVITY_TONE_QUALITY_BARS: dict[str, dict[str, str]] = {
 }
 
 
+# ── Echoable internal-label registry (proactive output leak guard) ──
+#
+# The proactive Phase 2 prompt renders tone-angle seeds and memory-cue
+# labels as "<label>：<description>" bullets / lines (full-width "：" for
+# zh/ja, half-width ": " for en/ko/ru/es/pt). The "<label>" half is an
+# internal mnemonic the model is told to *act on*, never to *speak*. Weak
+# models occasionally echo the bare label as the first line of the reply
+# (e.g. saying the angle name out loud), which the client then splits into
+# its own chat bubble.
+#
+# This registry derives that label set straight from the prompt tables so
+# it stays in lock-step as the tables are edited — no hand-maintained
+# denylist to rot. Consumed by the proactive output stripper in
+# ``main_routers/system_router.py``.
+
+_INTENT_LEAK_LABEL_MAXLEN = 40
+
+
+def _label_before_colon(line: str) -> str | None:
+    """Return the heading label before the first colon in a bullet/line.
+
+    Splits on the *earliest* colon, whether full-width (zh/ja) or half-width
+    (en/ko/ru/es/pt), so the label boundary is found regardless of which
+    colon style a line uses. Returns None when there is no colon, when
+    nothing precedes it, or when the candidate is implausibly long for a
+    label — a colon that actually lives inside the description.
+    """
+    sep_idx = -1
+    for sep in ('：', ':'):
+        idx = line.find(sep)
+        if idx > 0 and (sep_idx == -1 or idx < sep_idx):
+            sep_idx = idx
+    if sep_idx <= 0:
+        return None
+    label = line[:sep_idx].strip()
+    if label and '\n' not in label and len(label) <= _INTENT_LEAK_LABEL_MAXLEN:
+        return label
+    return None
+
+
+# Activity / propensity enum literals that are ordinary standalone English
+# words (unlike the multi-token enums such as ``focused_work`` /
+# ``restricted_screen_only``). These are EXCLUDED from the proactive leak
+# denylist: ``_strip_proactive_intent_label_leak`` drops a whole first line
+# when it matches a denied label, so denying a bare "idle" / "gaming" / "open"
+# would scrub a legitimate English reply that opens with the word. The
+# multi-token enums never occur as natural speech, so they stay denied.
+# ⚠️ Keep in sync with ``ActivityState`` / ``Propensity`` in
+# ``main_logic/activity/snapshot.py``: a newly added SINGLE-WORD state/propensity
+# must be listed here, otherwise it will (wrongly) start being stripped from
+# replies. Multi-token additions need no change — they are denied by default.
+_ACTIVITY_ENUM_COMMON_WORDS = frozenset({
+    'away', 'gaming', 'chatting', 'idle', 'transitioning', 'private',  # ActivityState
+    'open', 'closed',                                                  # Propensity
+})
+
+
+@lru_cache(maxsize=1)
+def get_proactive_intent_leak_labels() -> frozenset[str]:
+    """All internal guidance labels that must never reach spoken output.
+
+    Casefolded for case-insensitive matching. Spans every locale on
+    purpose: the leaked label and the real reply may be in different
+    languages, and matching the union is strictly safer than guessing the
+    round's locale.
+    """
+    labels: set[str] = set()
+
+    def _add_before_colon(text: str) -> None:
+        lab = _label_before_colon(text)
+        if lab:
+            labels.add(lab)
+
+    # Tone-angle seeds: "<label>：<description>" bullets.
+    for per_lang in ACTIVITY_TONE_HINTS.values():
+        for variants in per_lang.values():
+            if isinstance(variants, str):
+                variants = [variants]
+            for bullet in variants:
+                _add_before_colon(bullet)
+
+    # Tone quality bars: "<label>：<description>".
+    for per_lang in ACTIVITY_TONE_QUALITY_BARS.values():
+        for bar in per_lang.values():
+            _add_before_colon(bar)
+
+    # Memory-cue intro: opens with "<label>：…".
+    for intro in TOPIC_MEMORY_CUE_INTROS.values():
+        _add_before_colon(intro)
+
+    # Memory-cue per-item labels: bare labels, no colon.
+    for label in TOPIC_MEMORY_CUE_LABELS.values():
+        label = (label or '').strip()
+        if label:
+            labels.add(label)
+
+    # Activity state / propensity enum literals + their English labels.
+    # The activity-state section historically rendered the bare English enum
+    # keys (state line / scores line), and weak models echo them as the reply's
+    # first line. Deny every enum key + English label EXCEPT the ordinary single
+    # words in ``_ACTIVITY_ENUM_COMMON_WORDS`` (see its docstring): denying a
+    # bare "idle" / "open" would let ``_strip`` scrub a legit reply opening with
+    # the word, while multi-token forms (focused_work, "focused work") never
+    # occur as natural speech and are safe to strip. English only on purpose:
+    # the leak is always the English literal.
+    for state_key, en_label in ACTIVITY_STATE_LABELS['en'].items():
+        if state_key not in _ACTIVITY_ENUM_COMMON_WORDS:
+            labels.add(state_key)
+        if en_label not in _ACTIVITY_ENUM_COMMON_WORDS:
+            labels.add(en_label)
+    for prop_key in ACTIVITY_PROPENSITY_DIRECTIVES['en']:
+        if prop_key not in _ACTIVITY_ENUM_COMMON_WORDS:
+            labels.add(prop_key)
+
+    return frozenset(label.casefold() for label in labels if label)
+
+
 # ── Propensity directives (positive instructions, not prohibitions) ─
 #
 # These say *what to do*, not *what to avoid* — the prompt builder
@@ -1259,6 +1385,7 @@ ACTIVITY_PROPENSITY_DIRECTIVES: dict[str, dict[str, str]] = {
 #   state_gaming            {app: str}
 #   state_focused_work      {app: str, dwell_seconds: int}
 #   state_casual_browsing   {app: str}
+#   state_focused_video     {app: str}
 #   state_chatting          {app: str}
 #   state_transitioning     {}
 #   state_idle              {}
@@ -1278,6 +1405,7 @@ ACTIVITY_REASON_TEMPLATES: dict[str, dict[str, str]] = {
         "state_gaming": "前台游戏：{app}",
         "state_focused_work": "专注 {app} 已 {dwell_seconds}s",
         "state_casual_browsing": "浏览娱乐：{app}",
+        "state_focused_video": "沉浸观看视频：{app}",
         "state_chatting": "前台聊天：{app}",
         "state_transitioning": "近期窗口频繁切换",
         "state_idle": "在电脑前但无明显任务",
@@ -1293,6 +1421,7 @@ ACTIVITY_REASON_TEMPLATES: dict[str, dict[str, str]] = {
         "state_gaming": "foreground game: {app}",
         "state_focused_work": "focused on {app} for {dwell_seconds}s",
         "state_casual_browsing": "browsing entertainment: {app}",
+        "state_focused_video": "immersed in video: {app}",
         "state_chatting": "foreground chat: {app}",
         "state_transitioning": "rapid window switching recently",
         "state_idle": "at the computer but no clear task",
@@ -1308,6 +1437,7 @@ ACTIVITY_REASON_TEMPLATES: dict[str, dict[str, str]] = {
         "state_gaming": "フォアグラウンドゲーム：{app}",
         "state_focused_work": "{app} に {dwell_seconds}秒間集中中",
         "state_casual_browsing": "エンタメ閲覧：{app}",
+        "state_focused_video": "動画に没入中：{app}",
         "state_chatting": "フォアグラウンドチャット：{app}",
         "state_transitioning": "最近のウィンドウ切替が頻繁",
         "state_idle": "PC前にいるが明確な作業なし",
@@ -1323,6 +1453,7 @@ ACTIVITY_REASON_TEMPLATES: dict[str, dict[str, str]] = {
         "state_gaming": "전경 게임: {app}",
         "state_focused_work": "{app}에 {dwell_seconds}초 집중 중",
         "state_casual_browsing": "엔터테인먼트 둘러보기: {app}",
+        "state_focused_video": "영상에 몰입 중: {app}",
         "state_chatting": "전경 채팅: {app}",
         "state_transitioning": "최근 창 전환 빈번",
         "state_idle": "PC 앞에 있으나 명확한 작업 없음",
@@ -1338,6 +1469,7 @@ ACTIVITY_REASON_TEMPLATES: dict[str, dict[str, str]] = {
         "state_gaming": "игра на переднем плане: {app}",
         "state_focused_work": "сосредоточен на {app} уже {dwell_seconds}с",
         "state_casual_browsing": "просмотр развлечений: {app}",
+        "state_focused_video": "погружён в видео: {app}",
         "state_chatting": "переписка на переднем плане: {app}",
         "state_transitioning": "недавно частая смена окон",
         "state_idle": "за компьютером без явной задачи",
@@ -1353,6 +1485,7 @@ ACTIVITY_REASON_TEMPLATES: dict[str, dict[str, str]] = {
         "state_gaming": "juego en primer plano: {app}",
         "state_focused_work": "concentrado en {app} por {dwell_seconds}s",
         "state_casual_browsing": "navegación de entretenimiento: {app}",
+        "state_focused_video": "inmerso en vídeo: {app}",
         "state_chatting": "chat en primer plano: {app}",
         "state_transitioning": "cambios de ventana frecuentes recientemente",
         "state_idle": "en la PC sin tarea clara",
@@ -1368,6 +1501,7 @@ ACTIVITY_REASON_TEMPLATES: dict[str, dict[str, str]] = {
         "state_gaming": "jogo em primeiro plano: {app}",
         "state_focused_work": "focado em {app} por {dwell_seconds}s",
         "state_casual_browsing": "navegação de entretenimento: {app}",
+        "state_focused_video": "imerso em vídeo: {app}",
         "state_chatting": "chat em primeiro plano: {app}",
         "state_transitioning": "trocas de janela frequentes recentemente",
         "state_idle": "no PC sem tarefa clara",

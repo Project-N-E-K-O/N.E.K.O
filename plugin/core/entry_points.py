@@ -43,3 +43,33 @@ def normalize_plugin_entry_point(
     if not suffix:
         return entry_point
     return f"plugins.{suffix}:{class_name}"
+
+
+def describe_plugin_entry_directory_mismatch(entry_point: str, *, config_path: Path) -> str | None:
+    """Return an error message when a ``plugins.<name>`` entry targets another directory.
+
+    User plugins are loaded from ``<plugin-root>/<directory>/plugin.toml``.  If
+    an entry points at ``plugins.some_id`` but the package directory is not
+    ``some_id``, the normal namespace import cannot resolve the plugin package.
+    Treat that as a packaging/config error instead of silently loading a
+    different directory.
+    """
+
+    if ":" not in entry_point:
+        return None
+
+    module_path, _class_name = entry_point.split(":", 1)
+    parts = module_path.split(".")
+    if len(parts) < 2 or parts[0] != "plugins":
+        return None
+
+    entry_package = parts[1]
+    plugin_dir_name = config_path.parent.name
+    if entry_package == plugin_dir_name:
+        return None
+
+    return (
+        f"Plugin entry '{entry_point}' targets package 'plugins.{entry_package}', "
+        f"but plugin.toml is located in directory '{plugin_dir_name}'. "
+        f"Rename the directory to '{entry_package}' or update [plugin].entry to match the directory."
+    )

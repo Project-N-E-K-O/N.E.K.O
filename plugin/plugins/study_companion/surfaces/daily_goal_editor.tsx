@@ -1,7 +1,7 @@
 import { useEffect, useState } from '@neko/plugin-ui';
 import type { PluginSurfaceProps } from '@neko/plugin-ui';
 
-import { callPlugin, ensureBrandCSS, formatError, text } from './study_surface_utils';
+import { callPlugin, ensureBrandCSS, formatError, goalUnitLabel, targetTypeLabel, text } from './study_surface_utils';
 
 export default function DailyGoalEditor(props: PluginSurfaceProps) {
   const [goals, setGoals] = useState<any[]>([]);
@@ -63,7 +63,7 @@ export default function DailyGoalEditor(props: PluginSurfaceProps) {
       <div className="study-panel__actions">
         {goals.map((goal) => (
           <button key={goal.id} type="button" onClick={() => deleteGoal(goal.id)}>
-            {goal.subject || goal.target_type}: {goal.progress_amount}/{goal.target_amount} {goal.unit}
+            {goal.subject || targetTypeLabel(props, goal.target_type)}: {goal.progress_amount}/{goal.target_amount} {goalUnitLabel(props, goal.unit)}
           </button>
         ))}
       </div>

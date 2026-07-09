@@ -8,6 +8,7 @@
     <script src="/static/i18n-i18next.js"></script>
     <link rel="stylesheet" href="/static/css/dark-mode.css">
     <script src="/static/theme-manager.js"></script>
+    <script src="/static/js/window_controls.js"></script>
     <style>
         :root {
             color-scheme: light;
@@ -63,22 +64,23 @@
         body {
             height: 100vh;
             min-height: 100vh;
-            padding: 24px;
+            padding: 0;
             overflow: hidden;
         }
 
         .guide-shell {
-            height: calc(100vh - 48px);
-            min-height: calc(100vh - 48px);
+            height: 100vh;
+            min-height: 100vh;
             display: grid;
             grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
             background: var(--guide-shell);
-            border: 1px solid var(--guide-card-border);
-            border-radius: 28px;
+            border: none;
+            border-radius: 0;
             overflow: hidden;
-            box-shadow: var(--guide-shadow);
+            box-shadow: none;
             backdrop-filter: blur(22px);
             -webkit-backdrop-filter: blur(22px);
+            -webkit-app-region: no-drag;
         }
 
         .guide-sidebar {
@@ -90,6 +92,7 @@
             gap: 18px;
             min-height: 0;
             overflow: hidden;
+            -webkit-app-region: drag;
         }
 
         .sidebar-badge {
@@ -103,12 +106,16 @@
             font-size: 13px;
             font-weight: 600;
             letter-spacing: 0.04em;
+            -webkit-app-region: drag;
+            user-select: none;
         }
 
         .sidebar-title {
             margin: 0;
             font-size: clamp(28px, 4vw, 40px);
             line-height: 1.08;
+            -webkit-app-region: drag;
+            user-select: none;
         }
 
         .sidebar-copy {
@@ -126,6 +133,7 @@
             gap: 10px;
             padding-top: 16px;
             border-top: 1px solid rgba(255, 255, 255, 0.18);
+            -webkit-app-region: no-drag;
         }
 
         .guide-toc-title {
@@ -217,6 +225,7 @@
             flex-direction: column;
             padding: 24px;
             gap: 18px;
+            -webkit-app-region: drag;
         }
 
         .guide-topbar {
@@ -224,6 +233,12 @@
             justify-content: space-between;
             align-items: flex-start;
             gap: 16px;
+            -webkit-app-region: drag;
+        }
+
+        .guide-heading {
+            -webkit-app-region: drag;
+            user-select: none;
         }
 
         .guide-heading h1 {
@@ -238,6 +253,7 @@
             align-items: center;
             justify-content: flex-end;
             gap: 10px;
+            -webkit-app-region: no-drag;
         }
 
         .guide-action-btn {
@@ -258,6 +274,7 @@
             justify-content: center;
             gap: 8px;
             cursor: pointer;
+            -webkit-app-region: no-drag;
         }
 
         .guide-action-btn:hover {
@@ -297,6 +314,7 @@
             -webkit-backdrop-filter: blur(18px);
             z-index: 20;
             display: none;
+            -webkit-app-region: no-drag;
         }
 
         html[data-theme="dark"] .guide-lang-menu {
@@ -343,6 +361,7 @@
             min-height: 0;
             flex: 1;
             overflow: hidden;
+            -webkit-app-region: no-drag;
         }
 
         .guide-content {
@@ -358,6 +377,7 @@
             scroll-behavior: smooth;
             scrollbar-width: none;
             -ms-overflow-style: none;
+            -webkit-app-region: no-drag;
         }
 
         .guide-content::-webkit-scrollbar {
@@ -380,6 +400,7 @@
             border-radius: 999px;
             background: transparent;
             z-index: 3;
+            -webkit-app-region: no-drag;
         }
 
         .guide-content-scrollbar.is-hidden {
@@ -528,12 +549,12 @@
         @media (max-width: 980px) {
             body {
                 height: 100vh;
-                padding: 12px;
+                padding: 0;
             }
 
             .guide-shell {
-                height: calc(100vh - 24px);
-                min-height: calc(100vh - 24px);
+                height: 100vh;
+                min-height: 100vh;
                 grid-template-columns: 1fr;
                 grid-template-rows: auto minmax(0, 1fr);
             }
@@ -612,6 +633,10 @@
                         <span id="themeToggleIcon">◐</span>
                         <span id="themeToggleText">主题切换</span>
                     </button>
+                    <button id="minimizeGuideBtn" class="guide-action-btn" type="button">
+                        <span aria-hidden="true">&minus;</span>
+                        <span data-guide-common="minimize">最小化</span>
+                    </button>
                     <button id="closeGuideBtn" class="guide-action-btn" type="button">
                         <span>✕</span>
                         <span data-guide-common="close">关闭</span>
@@ -641,6 +666,7 @@
             const themeToggleBtn = document.getElementById('themeToggleBtn');
             const themeToggleText = document.getElementById('themeToggleText');
             const themeToggleIcon = document.getElementById('themeToggleIcon');
+            const minimizeGuideBtn = document.getElementById('minimizeGuideBtn');
             const closeGuideBtn = document.getElementById('closeGuideBtn');
             const guideContent = document.getElementById('guideContent');
             const guideContentWrap = guideContent;
@@ -1101,6 +1127,7 @@
                 });
 
                 document.title = translate('openclawGuide.windowTitle', 'OpenClaw 接入教程 - N.E.K.O.');
+                minimizeGuideBtn.title = translate('common.minimize', '最小化');
                 closeGuideBtn.title = translate('common.close', '关闭');
                 languageToggleBtn.title = translate('openclawGuide.languageLabel', '语言');
                 if (guideTocNav) {
@@ -1189,6 +1216,18 @@
                 });
             }
 
+            function initializeMinimizeButton() {
+                minimizeGuideBtn.addEventListener('click', async () => {
+                    const controller = window.nekoWindowControl;
+                    if (!controller || typeof controller.minimize !== 'function') return;
+                    try {
+                        await controller.minimize();
+                    } catch (error) {
+                        console.warn('[OpenClawGuide] Failed to minimize guide window:', error);
+                    }
+                });
+            }
+
             function initializeCloseButton() {
                 closeGuideBtn.addEventListener('click', () => window.close());
             }
@@ -1245,6 +1284,7 @@
             async function initializePage() {
                 initializeLanguageSelect();
                 initializeThemeToggle();
+                initializeMinimizeButton();
                 initializeCloseButton();
                 initializeGuideTocScroll();
                 initializeGuideContentScrollbar();

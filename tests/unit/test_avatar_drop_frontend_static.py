@@ -181,6 +181,9 @@ def test_avatar_drop_payload_sends_full_prompt_but_records_memory_summary_only()
     assert "memoryText: prompt" not in send_payload
     assert "extraImageDataUrls: imageDataUrls" in send_payload
     assert "input_type: 'avatar_drop_image',\n                                request_id: requestId" in source
+    assert "var messageSource = typeof options.source === 'string' ? options.source.trim() : '';" in source
+    assert "extraMessage.source = messageSource" in source
+    assert "textMessage.source = messageSource" in source
     assert "forceReactOptimisticMessage: true" in send_payload
     assert "ignoreComposerAttachments: true" in send_payload
 

@@ -60,18 +60,18 @@ Alternatively, start the required servers manually in separate terminals:
 
 ```bash
 # Terminal 1 — Memory server (required)
-uv run python memory_server.py
+uv run python app/memory_server.py
 
 # Terminal 2 — Main server (required)
-uv run python main_server.py
+uv run python app/main_server.py
 
 # Terminal 3 — Agent server (optional)
-uv run python agent_server.py
+uv run python app/agent_server.py
 ```
 
 Notes:
 
-- To validate the production Steam Auto-Cloud path, launch through Steam or the desktop launcher. Desktop source runs on Windows, macOS, and Linux can now use the RemoteStorage bundle helper when Steam is running and logged in, but that helper is still a development-side compatibility path rather than the packaged app's main sync path.
+- To validate the production Steam cloud path, launch through Steam or the desktop launcher. Packaged builds and desktop source runs on Windows, macOS, and Linux use the RemoteStorage bundle helper when Steam is running and logged in, while Steam Auto-Cloud still syncs the raw `cloudsave/` directory when the App Admin rules match the platform anchor path.
 - In manual three-server mode, `main_server` will still perform a fallback snapshot import when needed and will try to notify `memory_server` to reload afterward.
 - Shutdown no longer stages runtime changes into `cloudsave/` automatically. If you want Steam to upload new character data, prepare or overwrite the staged snapshot for that character from Cloud Save Manager before you exit.
 - On macOS source runs, if Apple reports that `SteamworksPy.dylib` cannot be verified, Gatekeeper is usually blocking the local unnotarized Steamworks libraries. First make sure you are launching from the project root. If it is still blocked, run the following from the repo root:
@@ -82,7 +82,7 @@ codesign --force --sign - steamworks/libsteam_api.dylib
 codesign --force --sign - steamworks/SteamworksPy.dylib
 ```
 
-- After that, retry `uv run python launcher.py` or `uv run python main_server.py`.
+- After that, retry `uv run python launcher.py` or `uv run python app/main_server.py`.
 
 ## Configuration
 
@@ -96,7 +96,7 @@ Alternatively, set environment variables before starting:
 ```bash
 export NEKO_CORE_API_KEY="sk-your-key"
 export NEKO_CORE_API="qwen"
-uv run python main_server.py
+uv run python app/main_server.py
 ```
 
 ## Alternative: pip install
@@ -107,8 +107,8 @@ If you prefer pip over uv:
 python3.11 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-python memory_server.py
-python main_server.py
+python app/memory_server.py
+python app/main_server.py
 ```
 
 ## Verify

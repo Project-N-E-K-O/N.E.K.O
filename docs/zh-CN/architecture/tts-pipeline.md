@@ -76,9 +76,9 @@ N.E.K.O. 内置了无需自定义 API 密钥的音色：
 
 | 名称 | Voice ID |
 |------|----------|
-| 俏皮女孩 (Playful Girl) | `voice-tone-OdVwaw2Az2` |
-| 可爱女孩 (Cute Girl) | `voice-tone-OdVwrbG3No` |
-| 可爱少女 (Cute Maiden) | `voice-tone-OdVx7X482K` |
-| 温柔少女 (Gentle Maiden) | `voice-tone-OdVyxjm0lk` |
-| 清冷御姐 (Cool Elder Sister) | `voice-tone-OdVyPmim9I` |
+| 俏皮女孩 (Playful Girl) | `voice-tone-PGLiTXeJCS` |
+| 可爱女孩 (Cute Girl) | `voice-tone-PGLiyZt65w` |
+| 可爱少女 (Cute Maiden) | `voice-tone-PGLjbHIMbI` |
+| 温柔少女 (Gentle Maiden) | `voice-tone-PGLlrd5SNM` |
+| 清冷御姐 (Cool Elder Sister) | `voice-tone-PGLlMvr0Ai` |
 | 以及更多 5 种... | |

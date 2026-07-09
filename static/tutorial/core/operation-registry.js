@@ -60,8 +60,14 @@
             this.registerOperation('day1-intro-greeting-flow', () => (
                 this.runDay1IntroGreetingFlow()
             ));
-            this.registerOperation('day1-intro-greeting-performance', () => (
-                this.runDay1IntroGreetingPerformance()
+            this.registerOperation('day1-intro-greeting-performance', (context) => (
+                this.runDay1IntroGreetingPerformance(context)
+            ));
+            this.registerOperation('daily-intro-greeting-performance', (context) => (
+                this.runDailyIntroGreetingPerformance(context.scene, context)
+            ));
+            this.registerOperation('daily-intro-avatar-performance', (context) => (
+                this.runDailyIntroAvatarPerformance(context.scene, context)
             ));
             this.registerOperation('day1-intro-basic-voice-showcase', (context) => (
                 this.runDay1IntroBasicVoiceShowcase(
@@ -101,8 +107,8 @@
                 || context.operation.indexOf('show-agent-sidepanel:') === 0
                 || context.operation.indexOf('show-settings-sidepanel:') === 0
             ), (context) => this.runPreparedNoopOperation(context.scene, context.operation));
-            this.registerOperation('day2-open-settings-personalization', () => this.runDay2OpenSettingsPersonalization());
-            this.registerOperation('day2-settings-detail', () => this.runDay2SettingsDetail());
+            this.registerOperation('day3-open-settings-personalization', () => this.runDay3OpenSettingsPersonalization());
+            this.registerOperation('day3-settings-detail', () => this.runDay3SettingsDetail());
             this.registerOperation('day4-animation-distance-showcase', (context) => (
                 this.runDay4AnimationDistanceShowcase(context.scene, context.narrationStartedAt)
             ));
@@ -186,22 +192,47 @@
             return await director.playDay1IntroGreetingRoundScene(director.sceneRunId);
         }
 
-        async runDay1IntroGreetingPerformance() {
+        async runDailyIntroGreetingPerformance(scene, context) {
+            const director = this.director;
+            if (!director || typeof director.runDailyIntroGreetingPerformance !== 'function') {
+                return false;
+            }
+            return await director.runDailyIntroGreetingPerformance(scene, undefined, context);
+        }
+
+        async runDailyIntroAvatarPerformance(scene, context) {
+            const director = this.director;
+            if (!director || typeof director.runDailyIntroAvatarPerformance !== 'function') {
+                return false;
+            }
+            return await director.runDailyIntroAvatarPerformance(scene, undefined, context);
+        }
+
+        async runDay1IntroGreetingPerformance(context) {
             const director = this.director;
             if (!director) {
                 return false;
             }
-            await Promise.all([
-                typeof director.runIntroGreetingHugPerformance === 'function'
-                    ? director.runIntroGreetingHugPerformance().catch((error) => {
+            const avatarPerformancePromise = typeof director.runDailyIntroAvatarPerformance === 'function'
+                ? director.runDailyIntroAvatarPerformance({
+                        id: 'day1_intro_greeting',
+                        introAvatarPerformance: { preset: 'wave-zoom' }
+                    }, undefined, context).catch((error) => {
                         console.warn('[YuiGuide] intro greeting hug performance failed:', error);
                     })
-                    : Promise.resolve(),
-                typeof director.runIntroGiftHeartPerformance === 'function'
-                    ? director.runIntroGiftHeartPerformance().catch((error) => {
-                        console.warn('[YuiGuide] intro gift heart performance failed:', error);
-                    })
-                    : Promise.resolve()
+                : Promise.resolve();
+            const giftHeartPromise = typeof director.runIntroGiftHeartPerformance === 'function'
+                ? director.runIntroGiftHeartPerformance().catch((error) => {
+                    console.warn('[YuiGuide] intro gift heart performance failed:', error);
+                })
+                : Promise.resolve();
+            if (context && context.isFirstDailyScene === true) {
+                giftHeartPromise.catch(() => {});
+                return await avatarPerformancePromise;
+            }
+            await Promise.all([
+                avatarPerformancePromise,
+                giftHeartPromise
             ]);
             return true;
         }
@@ -330,17 +361,17 @@
         }
 
         async runPreparedNoopOperation(scene, operation) {
-            if (!operation && scene && scene.id === 'day3_galgame_games') {
+            if (!operation && scene && scene.id === 'day2_galgame_games') {
                 await this.director.tourMiniGameChoiceButtons();
             }
             return true;
         }
 
-        async runDay2OpenSettingsPersonalization() {
+        async runDay3OpenSettingsPersonalization() {
             return await this.director.openSettingsPanel();
         }
 
-        async runDay2SettingsDetail() {
+        async runDay3SettingsDetail() {
             await this.director.ensureCharacterSettingsSidePanelVisible().catch(() => null);
             return true;
         }
@@ -479,10 +510,14 @@
                     if (typeof director.clearHomeSpotlightsForExternalizedChat === 'function') {
                         director.clearHomeSpotlightsForExternalizedChat();
                     }
+                    const spotlightVariant = scene && typeof scene.spotlightVariant === 'string'
+                        ? scene.spotlightVariant.trim()
+                        : '';
                     director.interactionTakeover.setExternalizedChatSpotlight(
                         this.getExternalKind(scene && scene.persistent || '')
                         || director.getExternalizedChatTargetKind(scene && scene.persistent || '', scene)
-                        || 'avatar-tools'
+                        || 'avatar-tools',
+                        { variant: spotlightVariant }
                     );
                 }
                 await director.waitForSceneDelay(520);
@@ -566,15 +601,15 @@
             return true;
         }
 
-        run(scene, primaryTarget, narrationStartedAt, narrationPromise) {
+        run(scene, primaryTarget, narrationStartedAt, narrationPromise, operationContext) {
             const operation = scene && typeof scene.operation === 'string' ? scene.operation : '';
-            const context = {
+            const context = Object.assign({}, operationContext || {}, {
                 scene,
                 primaryTarget,
                 narrationStartedAt,
                 narrationPromise,
                 operation
-            };
+            });
             for (let index = 0; index < this.operationHandlers.length; index += 1) {
                 const entry = this.operationHandlers[index];
                 if (entry.matches(context)) {

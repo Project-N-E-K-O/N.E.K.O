@@ -19,6 +19,8 @@
     const USER_ACTIVITY_CANCEL_GRACE_MS = 700;
     const GREETING_CHECK_RETRY_BASE_MS = 800;
     const GREETING_CHECK_RETRY_MAX_MS = 5000;
+    const STARTUP_GREETING_RELEASE_FALLBACK_MS = 65000;
+    const STARTUP_GREETING_RELEASE_EVENT = 'neko:startup-greeting-release';
     const NEW_USER_ICEBREAKER_STORAGE_KEY = 'neko.new_user_icebreaker.v1';
     const NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS = 2 * 60 * 60 * 1000;
     const MUSIC_PLAY_URL_FOLLOWER_GRACE_MS = 500;
@@ -51,6 +53,19 @@
     function textSendButton()     { return $id('textSendButton'); }
     function screenshotButton()   { return $id('screenshotButton'); }
     function chatContainer()      { return $id('chatContainer'); }
+
+    function isGoodbyeUiSuppressed() {
+        try {
+            if (typeof window.isNekoGoodbyeResourceSuspendingOrSuspended === 'function' &&
+                window.isNekoGoodbyeResourceSuspendingOrSuspended()) {
+                return true;
+            }
+            if (typeof window.isNekoGoodbyeModeActive === 'function' && window.isNekoGoodbyeModeActive()) {
+                return true;
+            }
+        } catch (_) { }
+        return false;
+    }
 
     async function releaseVoiceCaptureResources() {
         if (S.stream && typeof S.stream.getTracks === 'function') {
@@ -547,34 +562,6 @@
         dispatchMusicPlayUrlResponse(response, 'websocket');
     }
 
-    function isHomeTutorialLockedForGreeting() {
-        try {
-            if (typeof window.isNekoHomeTutorialBlockingGreeting === 'function') {
-                if (window.isNekoHomeTutorialBlockingGreeting() === true) {
-                    return true;
-                }
-            }
-            if (typeof window.isNekoHomeTutorialInteractionLocked === 'function') {
-                if (window.isNekoHomeTutorialInteractionLocked() === true) {
-                    return true;
-                }
-            }
-        } catch (_) {}
-        try {
-            if (window.NekoHomeTutorialFeatureController
-                && typeof window.NekoHomeTutorialFeatureController.isActive === 'function'
-                && window.NekoHomeTutorialFeatureController.isActive() === true) {
-                return true;
-            }
-        } catch (_) {}
-        try {
-            if (document.body && document.body.classList.contains('yui-taking-over')) {
-                return true;
-            }
-        } catch (_) {}
-        return false;
-    }
-
     function readNewUserIcebreakerStore() {
         try {
             if (typeof localStorage === 'undefined') return null;
@@ -609,51 +596,45 @@
         return Date.now() - latest <= NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS;
     }
 
-    function isNewUserIcebreakerPeriodActive() {
-        if (window.newUserIcebreaker && typeof window.newUserIcebreaker.getActiveSession === 'function') {
-            try {
-                if (window.newUserIcebreaker.getActiveSession()) return true;
-            } catch (_) {}
-        }
+    function isNewUserIcebreakerEntryBlocking(entry) {
+        return !!(entry && entry.completed !== true && isRecentNewUserIcebreakerEntry(entry));
+    }
 
+    function isNewUserIcebreakerStorePeriodActive() {
         var store = readNewUserIcebreakerStore();
         var days = store && typeof store.days === 'object' ? store.days : null;
         if (!days) return false;
         if (hasCompletedNewUserIcebreaker()) return false;
         for (var day = 1; day <= 7; day += 1) {
             var entry = days[String(day)];
-            if (isRecentNewUserIcebreakerEntry(entry)) {
+            if (isNewUserIcebreakerEntryBlocking(entry)) {
                 return true;
             }
         }
         return false;
     }
 
-    function isTutorialReleaseGreetingReason(reason) {
-        var normalizedReason = String(reason || '').trim().toLowerCase();
-        return normalizedReason === 'tutorial-completed' || normalizedReason === 'tutorial-skipped';
+    function isNewUserIcebreakerActiveForGreeting() {
+        if (window.newUserIcebreaker && typeof window.newUserIcebreaker.getActiveSession === 'function') {
+            try {
+                if (window.newUserIcebreaker.getActiveSession()) return true;
+            } catch (_) {}
+        }
+        try {
+            var state = window.NekoNewUserIcebreakerState;
+            if (state && typeof state.isPeriodActive === 'function') {
+                if (state.isPeriodActive()) return true;
+            }
+        } catch (_) {}
+        return isNewUserIcebreakerStorePeriodActive();
+    }
+
+    function isNewUserIcebreakerPeriodActive() {
+        return isNewUserIcebreakerActiveForGreeting();
     }
 
     function isNewUserIcebreakerBlockingGreeting(reason) {
-        var normalizedReason = String(reason || S._greetingCheckReason || '').trim().toLowerCase();
-        if (isTutorialReleaseGreetingReason(normalizedReason)) {
-            return false;
-        }
-        return isNewUserIcebreakerPeriodActive();
-    }
-
-    function sendHomeTutorialState(reason) {
-        if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return;
-        try {
-            S.socket.send(JSON.stringify({
-                action: 'home_tutorial_state',
-                blocking_greeting: isHomeTutorialLockedForGreeting() || isNewUserIcebreakerBlockingGreeting(reason),
-                reason: reason || 'state-sync',
-                timestamp: Date.now(),
-            }));
-        } catch (error) {
-            console.warn('[HomeTutorial] failed to sync tutorial state:', error);
-        }
+        return isNewUserIcebreakerActiveForGreeting();
     }
 
     function normalizeAssistantTurnId(turnId) {
@@ -786,6 +767,26 @@
         // response_discarded / socket_close / user_activity_cancel 路径调用，
         // 等于把 marker 接进了完整的 turn 生命周期收尾。
         S.pendingTextTurnSubmitAt = 0;
+    }
+
+    function clearPendingRollbackForRequest(requestId) {
+        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.clearPendingRollbackDraft === 'function') {
+            window.reactChatWindowHost.clearPendingRollbackDraft(requestId);
+        }
+        if (requestId && window._lastSubmittedRequestId === requestId) {
+            window._lastSubmittedText = '';
+            window._lastSubmittedRequestId = '';
+        }
+    }
+
+    function isNewUserIcebreakerMirrorTurnEnd(response) {
+        var meta = response && response.meta;
+        if (!meta || typeof meta !== 'object') return false;
+        if (meta.source === 'new_user_icebreaker' || meta.kind === 'new_user_icebreaker') {
+            return true;
+        }
+        var event = meta.event;
+        return !!(event && typeof event === 'object' && event.source === 'new_user_icebreaker');
     }
 
     // turn-end / turn end agent_callback 两条路径共用的 realistic/structured
@@ -1140,6 +1141,47 @@
         });
     }
 
+    function stopAssistantTextOutputOnSessionEnd(source) {
+        S.suppressAssistantStreamUntilNextSession = true;
+        window._realisticGeminiVersion = (window._realisticGeminiVersion || 0) + 1;
+        window._realisticGeminiQueue = [];
+        window._realisticGeminiBuffer = '';
+        window._geminiTurnFullText = '';
+        window._pendingMusicCommand = '';
+        window._structuredGeminiStreaming = false;
+        window._isProcessingRealisticQueue = false;
+        window._realisticProcessingOwner = null;
+        window._geminiTurnEndSealed = true;
+
+        var currentBubbles = Array.isArray(window.currentTurnGeminiBubbles)
+            ? window.currentTurnGeminiBubbles.slice()
+            : [];
+        if (currentBubbles.length === 0 && window.currentGeminiMessage) {
+            currentBubbles = [window.currentGeminiMessage];
+        }
+        var currentBubbleIds = [];
+        currentBubbles.forEach(function (bubble) {
+            if (bubble && bubble.dataset && bubble.dataset.reactChatMessageId) {
+                currentBubbleIds.push(bubble.dataset.reactChatMessageId);
+            }
+            if (typeof window.setReactMessageStatus === 'function') {
+                try {
+                    window.setReactMessageStatus(bubble, 'assistant', 'sent');
+                } catch (_) {}
+            }
+        });
+        if (currentBubbleIds.length > 0 && typeof window._clearPendingHostMessagesByIds === 'function') {
+            window._clearPendingHostMessagesByIds(currentBubbleIds);
+        }
+
+        window.currentGeminiMessage = null;
+        window.currentTurnGeminiBubbles = [];
+        window.realisticGeminiCurrentTurnId = null;
+        logAssistantLifecycle('stopAssistantTextOutputOnSessionEnd', {
+            source: source || 'session_end'
+        });
+    }
+
     window.addEventListener('neko-assistant-turn-start', clearPendingUserActivityCancel);
     window.addEventListener('neko-assistant-speech-start', clearPendingUserActivityCancel);
     window.addEventListener('neko-assistant-speech-cancel', clearPendingUserActivityCancel);
@@ -1378,7 +1420,7 @@
                             running_count: tasks.filter(function (t) { return t.status === 'running'; }).length,
                             queued_count: tasks.filter(function (t) { return t.status === 'queued'; }).length,
                         });
-                        if (hasRunning && !window._agentTaskTimeUpdateInterval) {
+                        if (hasRunning && !window._agentTaskTimeUpdateInterval && !isGoodbyeUiSuppressed()) {
                             window._agentTaskTimeUpdateInterval = setInterval(function () {
                                 if (typeof window.updateTaskRunningTimes === 'function') window.updateTaskRunningTimes();
                             }, 1000);
@@ -1428,8 +1470,6 @@
                 }
             }, C.HEARTBEAT_INTERVAL);
             console.log(window.t('console.heartbeatStarted'));
-
-            sendHomeTutorialState('ws-open');
 
             // ── 首次连接 / 切换角色：标记 greeting 意图，若模型已就绪则立即发送 ──
             var goodbyeActiveOnOpen = false;
@@ -1482,9 +1522,16 @@
                 S._greetingCheckReason = '';
                 S._pendingGreetingSwitch = false;
             } else {
-                _markGreetingCheckPending(!!S._pendingGreetingSwitch, S._greetingCheckReason || 'ws-open');
+                var isGreetingSwitchOnOpen = !!S._pendingGreetingSwitch;
+                var greetingReasonOnOpen = S._greetingCheckReason || (isGreetingSwitchOnOpen ? 'character-switch' : 'ws-open');
+                _markGreetingCheckPending(isGreetingSwitchOnOpen, greetingReasonOnOpen);
                 S._pendingGreetingSwitch = false;
-                _sendGreetingCheckIfReady();
+                if (isGreetingSwitchOnOpen || S._startupGreetingReleaseGateUsed) {
+                    _sendGreetingCheckIfReady();
+                } else {
+                    S._startupGreetingReleaseGateUsed = true;
+                    sendStartupGreetingReleaseRequest('ws-open');
+                }
             }
 
             // ── game-window-state 重连兜底（codex P2）──
@@ -1552,6 +1599,10 @@
 
                 // -------- gemini_response --------
                 if (response.type === 'gemini_response') {
+                    if (S.suppressAssistantStreamUntilNextSession) {
+                        console.log('[App] discard assistant chunk after session ended by server');
+                        return;
+                    }
                     var isNewMessage = response.isNewMessage || false;
                     if (response.metadata && response.metadata.game_route) {
                         var gameMeta = response.metadata.game_route;
@@ -1619,6 +1670,13 @@
                 } else if (response.type === 'response_discarded') {
                     clearPendingUserActivityCancel();
                     window.invalidatePendingMusicSearch();
+                    if (S.suppressAssistantStreamUntilNextSession) {
+                        logAssistantLifecycle('response_discarded_suppressed_after_session_end', {
+                            reason: response.reason,
+                            willRetry: !!response.will_retry
+                        });
+                        return;
+                    }
                     emitAssistantSpeechCancel('response_discarded');
                     S.assistantTurnId = null;
                     window._nekoAssistantTurnId = null;
@@ -1959,6 +2017,45 @@
                         detail: { active: !!response.active },
                     }));
 
+                // -------- focus_charge (凝神 edge-glow level) --------
+                // Continuous Focus charge (0..1) + wall-clock stamp. The React
+                // window scales its edge glow from this and extrapolates the
+                // time decay locally between pushes for a smooth fade.
+                } else if (response.type === 'focus_charge') {
+                    window.dispatchEvent(new CustomEvent('neko-focus-charge', {
+                        detail: { charge: Number(response.charge) || 0, atMs: Number(response.at_ms) || 0 },
+                    }));
+
+                // -------- focus_thinking (凝神 model-thinking pulse) --------
+                // True while a Focus turn runs thinking-on but hasn't emitted
+                // visible content yet; cleared once it speaks or the turn ends.
+                // The React chat window shows a thinking-dots bubble at the tail
+                // of the history while active. Inert unless Focus is engaged.
+                } else if (response.type === 'focus_thinking') {
+                    window.dispatchEvent(new CustomEvent('neko-focus-thinking', {
+                        detail: { active: !!response.active },
+                    }));
+
+                // -------- topic_hint（深话题预告气泡，仅前端展示，不入上下文）--------
+                } else if (response.type === 'topic_hint') {
+                    if (typeof window.appendReactTopicHint === 'function') {
+                        try {
+                            window.appendReactTopicHint(response.author, response.turn_id);
+                        } catch (topicHintErr) {
+                            console.warn('[topic_hint] append failed', topicHintErr);
+                        }
+                    }
+
+                // -------- cancel_topic_hint（开场白生成失败时撤回孤儿预告气泡）--------
+                } else if (response.type === 'cancel_topic_hint') {
+                    if (typeof window.removeReactTopicHint === 'function') {
+                        try {
+                            window.removeReactTopicHint(response.turn_id);
+                        } catch (cancelHintErr) {
+                            console.warn('[cancel_topic_hint] remove failed', cancelHintErr);
+                        }
+                    }
+
                 // -------- status --------
                 } else if (response.type === 'status') {
                     var statusCode = null;
@@ -2133,6 +2230,7 @@
                                     var sessionStartPromise = new Promise(function (resolve, reject) {
                                         S.sessionStartedResolver = resolve;
                                         S.sessionStartedRejecter = reject;
+                                        S._pendingSessionStartMode = 'audio';
                                         if (window.sessionTimeoutId) {
                                             clearTimeout(window.sessionTimeoutId);
                                             window.sessionTimeoutId = null;
@@ -2265,7 +2363,7 @@
                     try {
                         var masterOn = !!flags.agent_enabled;
                         var anyChildOn = !!(flags.computer_use_enabled || flags.browser_use_enabled || flags.user_plugin_enabled || flags.openclaw_enabled || flags.openfang_enabled);
-                        if (masterOn && anyChildOn && typeof window.startAgentTaskPolling === 'function') {
+                        if (masterOn && anyChildOn && typeof window.startAgentTaskPolling === 'function' && !isGoodbyeUiSuppressed()) {
                             window.startAgentTaskPolling();
                         }
                         var curName2 = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
@@ -2381,7 +2479,7 @@
                             if (typeof window.AgentHUD.showAgentTaskHUD === 'function') {
                                 window.AgentHUD.showAgentTaskHUD();
                             }
-                            if (hasRunning2 && !window._agentTaskTimeUpdateInterval) {
+                            if (hasRunning2 && !window._agentTaskTimeUpdateInterval && !isGoodbyeUiSuppressed()) {
                                 window._agentTaskTimeUpdateInterval = setInterval(function () {
                                     if (typeof window.updateTaskRunningTimes === 'function') window.updateTaskRunningTimes();
                                 }, 1000);
@@ -2574,14 +2672,14 @@
 
                 // -------- system turn end (agent_callback — no proactive chat) --------
                 } else if (response.type === 'system' && response.data === 'turn end agent_callback') {
-                    if (window.reactChatWindowHost && typeof window.reactChatWindowHost.clearPendingRollbackDraft === 'function') {
-                        window.reactChatWindowHost.clearPendingRollbackDraft(response.request_id);
+                    if (S.suppressAssistantStreamUntilNextSession) {
+                        console.log('[App] discard assistant turn_end after session ended by server');
+                        clearPendingRollbackForRequest(response.request_id);
+                        clearPendingAssistantTurnStart();
+                        return;
                     }
-                    if (response.request_id && window._lastSubmittedRequestId === response.request_id) {
-                        window._lastSubmittedText = '';
-                        window._lastSubmittedRequestId = '';
-                    }
-                    console.log('[WS] turn end (agent_callback) — skipping proactive chat schedule');
+                    clearPendingRollbackForRequest(response.request_id);
+                    console.log('[WS] turn end (agent_callback) - skipping proactive chat schedule');
                     logAssistantLifecycle('ws:turn_end_agent_callback:received');
                     try {
                         flushRealisticBufferOnTurnEnd();
@@ -2613,13 +2711,13 @@
 
                 // -------- system turn end --------
                 } else if (response.type === 'system' && response.data === 'turn end') {
-                    if (window.reactChatWindowHost && typeof window.reactChatWindowHost.clearPendingRollbackDraft === 'function') {
-                        window.reactChatWindowHost.clearPendingRollbackDraft(response.request_id);
+                    if (S.suppressAssistantStreamUntilNextSession) {
+                        console.log('[App] discard assistant turn_end after session ended by server');
+                        clearPendingRollbackForRequest(response.request_id);
+                        clearPendingAssistantTurnStart();
+                        return;
                     }
-                    if (response.request_id && window._lastSubmittedRequestId === response.request_id) {
-                        window._lastSubmittedText = '';
-                        window._lastSubmittedRequestId = '';
-                    }
+                    clearPendingRollbackForRequest(response.request_id);
                     console.log(window.t('console.turnEndReceived'));
                     logAssistantLifecycle('ws:turn_end:received');
                     // Flush remaining buffer
@@ -2647,7 +2745,14 @@
 
                     // Emotion analysis & subtitle on turn completion —— 与
                     // agent_callback 路径共用 finalizeAssistantTurn；正常轮启用 music。
-                    finalizeAssistantTurn(assistantTurnId);
+                    //
+                    // 破冰 mirror TTS 的 turn_end 只表示语音播报链路结束；破冰文案
+                    // 已在 icebreaker runtime 用 subtitleBridge 精确 finalize。这里
+                    // 若再走普通聊天 finalizeAssistantTurn，会用 Gemini buffer /
+                    // 当前聊天气泡的旧文本二次翻译，覆盖破冰字幕。
+                    if (!isNewUserIcebreakerMirrorTurnEnd(response)) {
+                        finalizeAssistantTurn(assistantTurnId);
+                    }
 
                     // AI turn_end 后只 reschedule，不 reset backoff。
                     // 理由：turn_end 无法区分"用户发话引发的 turn"和"proactive 自己引发的 turn"，
@@ -2665,6 +2770,11 @@
                 } else if (response.type === 'session_preparing') {
                     console.log(window.t('console.sessionPreparingReceived'), response.input_mode);
                     if (response.input_mode !== 'text') {
+                        if (typeof window.isNekoGoodbyeModeActive === 'function'
+                                && window.isNekoGoodbyeModeActive()) {
+                            if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
+                            return;
+                        }
                         var preparingMessage = window.t ? window.t('app.voiceSystemPreparing') : '语音系统准备中，请稍候...';
                         if (typeof window.showVoicePreparingToast === 'function') window.showVoicePreparingToast(preparingMessage);
                     }
@@ -2675,6 +2785,7 @@
                             && typeof window.isNekoGoodbyeModeActive === 'function'
                             && window.isNekoGoodbyeModeActive()) {
                         console.log('[App] ignore stale audio session_started while goodbye is active');
+                        if (typeof window.stopScreening === 'function') window.stopScreening();
                         if (typeof window.cancelPendingSessionStart === 'function') {
                             window.cancelPendingSessionStart('Voice start cancelled by goodbye');
                         } else {
@@ -2696,7 +2807,26 @@
                         }
                         return;
                     }
+                    // 跨模式 ack 守卫：用户点的麦/文本启动正在 await session_started 时
+                    // （resolver 还在 + _pendingSessionStartMode 记着请求模式），若到达的
+                    // input_mode 与用户请求的不一致，这条 ack 属于并发的后台会话——典型是
+                    // proactive / greeting 自起的 text 会话（它也是一次正常 start_session，
+                    // 完成时会发 session_started(text)）。绝不能用它去 resolve 用户的 audio
+                    // 启动 promise 或翻转 voiceChatActive/isTextSessionActive，否则用户点了
+                    // 语音却被 text ack 收口 → 开麦但后端是 text 会话、UI 错配。直接忽略，
+                    // 用户那次启动的真正 ack（后端跨模式撞车会等 in-flight 落定后改起本模式
+                    // 会话再发，见 core.py start_session）随后到达时按下方正常流程收口。
+                    // 注意要求 resolver 仍在：无 pending 启动时（如 chat.html 子窗口纯靠
+                    // session_started 同步 hide 自己的输入框）不拦，维持多窗口原行为。
+                    if (S._pendingSessionStartMode
+                            && S.sessionStartedResolver
+                            && response.input_mode !== S._pendingSessionStartMode) {
+                        console.log('[App] ignore cross-mode session_started', response.input_mode,
+                            'while pending', S._pendingSessionStartMode);
+                        return;
+                    }
                     console.log(window.t('console.sessionStartedReceived'), response.input_mode);
+                    S.suppressAssistantStreamUntilNextSession = false;
                     S.isTextSessionActive = response.input_mode === 'text';
                     S.voiceChatActive = response.input_mode !== 'text';
                     S.voiceStartPending = false;
@@ -2728,6 +2858,15 @@
                         window.syncVoiceChatComposerHidden(_shouldHide);
                     }
 
+                    // 立即清掉启动超时：匹配的 ack 已到（已过上方 mode 守卫），若拖到下面
+                    // 500ms 后才清，贴近 15s deadline 的 ack（如 14.8s，尤其跨模式等待+重启
+                    // 链路）会被先一步触发的超时误 reject + end_session，把后端已接受的会话
+                    // 打断（Codex P2）。resolve 仍延后做（留时间收尾 UI），但超时此刻就拆。
+                    if (S.sessionStartedResolver && window.sessionTimeoutId) {
+                        clearTimeout(window.sessionTimeoutId);
+                        window.sessionTimeoutId = null;
+                    }
+
                     setTimeout(function () {
                         if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
                         if (S.sessionStartedResolver) {
@@ -2738,6 +2877,7 @@
                             S.sessionStartedResolver(response.input_mode);
                             S.sessionStartedResolver = null;
                             S.sessionStartedRejecter = null;
+                            S._pendingSessionStartMode = null;
                         }
                     }, 500);
 
@@ -2758,6 +2898,20 @@
                 // -------- session_failed --------
                 } else if (response.type === 'session_failed') {
                     console.log(window.t('console.sessionFailedReceived'), response.input_mode);
+                    // 跨模式 fail 守卫（与上方 session_started 守卫对偶）：用户的启动正在
+                    // await 时，并发的后台会话（如 proactive 自起的 text）若启动失败会发
+                    // session_failed(text)。它不该 reject 用户那次 audio 启动——后端跨模式
+                    // 撞车会等 in-flight 落定后改起 audio（见 core.py start_session），用户的
+                    // 真正 ack 随后到达。模式不一致就忽略这条 fail。session_failed 一定带
+                    // input_mode（见后端 send_session_failed），故 mismatch 判定可靠。
+                    if (S._pendingSessionStartMode
+                            && S.sessionStartedRejecter
+                            && response.input_mode
+                            && response.input_mode !== S._pendingSessionStartMode) {
+                        console.log('[App] ignore cross-mode session_failed', response.input_mode,
+                            'while pending', S._pendingSessionStartMode);
+                        return;
+                    }
                     if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
                     S.voiceChatActive = false;
                     S.voiceStartPending = false;
@@ -2786,6 +2940,7 @@
                     }
                     S.sessionStartedResolver = null;
                     S.sessionStartedRejecter = null;
+                    S._pendingSessionStartMode = null;
 
                 // -------- session_ended_by_server --------
                 } else if (response.type === 'session_ended_by_server') {
@@ -2794,6 +2949,8 @@
                     S.isTextSessionActive = false;
                     S.voiceChatActive = false;
                     S.voiceStartPending = false;
+                    if (typeof window.stopScreening === 'function') window.stopScreening();
+                    stopAssistantTextOutputOnSessionEnd('session_ended_by_server');
                     clearAssistantLifecycleOnDisconnect('session_ended_by_server');
 
                     if (S.sessionStartedRejecter) {
@@ -2801,6 +2958,7 @@
                     }
                     S.sessionStartedResolver = null;
                     S.sessionStartedRejecter = null;
+                    S._pendingSessionStartMode = null;
 
                     if (window.sessionTimeoutId) {
                         clearTimeout(window.sessionTimeoutId);
@@ -3229,27 +3387,8 @@
         }
         return false;
     }
-    function _isHomeTutorialPage() {
-        if (window.location && typeof window.location.pathname === 'string') {
-            var path = window.location.pathname || '/';
-            return path === '/' || path === '/index.html';
-        }
-        var manager = window.universalTutorialManager || null;
-        return !!(manager && manager.currentPage === 'home');
-    }
-    function _isTutorialBlockingGreeting() {
-        if (!_isHomeTutorialPage()) return false;
-        try {
-            if (isHomeTutorialLockedForGreeting()) {
-                return true;
-            }
-        } catch (_) {}
-        return window.isInTutorial === true
-            || !!(window.universalTutorialManager && window.universalTutorialManager.isTutorialRunning);
-    }
     function _isGreetingCheckBlocked() {
         if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return true;
-        if (_isTutorialBlockingGreeting()) return true;
         if (S.isRecording || S.isPlaying) return true;
         if (S.assistantTurnId && S.assistantTurnId !== S.assistantTurnCompletedId) return true;
         if (S.assistantTurnAwaitingBubble || S.assistantSpeechActiveTurnId) return true;
@@ -3285,15 +3424,95 @@
         S._greetingCheckIsSwitch = !!isSwitch;
         S._greetingCheckReason = reason || '';
     }
-    function _consumeGreetingCheckForNewUserIcebreaker() {
-        if (isTutorialReleaseGreetingReason(S._greetingCheckReason)) return false;
+
+    function consumeStartupGreetingReleasedDetail() {
+        try {
+            const detail = window.__NEKO_STARTUP_GREETING_RELEASED__;
+            if (detail && detail.released === true) {
+                delete window.__NEKO_STARTUP_GREETING_RELEASED__;
+            }
+            return detail && detail.released === true ? detail : null;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function hasStartupGreetingReleaseProducer() {
+        try {
+            if (window.universalTutorialManager) {
+                return true;
+            }
+        } catch (_) {}
+        try {
+            return !!document.querySelector('script[src*="/static/tutorial/core/universal-manager.js"],script[src*="tutorial/core/universal-manager.js"]');
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function isStartupTutorialActiveForGreeting() {
+        try {
+            var manager = window.universalTutorialManager || null;
+            if (manager && manager.isTutorialRunning === true) return true;
+            if (manager && manager.activeAvatarFloatingGuideRound) return true;
+            if (document.body && document.body.classList && document.body.classList.contains('yui-taking-over')) {
+                return true;
+            }
+        } catch (_) {}
+        return false;
+    }
+
+    function scheduleStartupGreetingReleaseFallback() {
+        if (S._startupGreetingReleaseFallbackTimer) {
+            clearTimeout(S._startupGreetingReleaseFallbackTimer);
+        }
+        S._startupGreetingReleaseFallbackTimer = setTimeout(function () {
+            S._startupGreetingReleaseFallbackTimer = 0;
+            if (S._startupGreetingReleasePending) {
+                if (isStartupTutorialActiveForGreeting()) {
+                    scheduleStartupGreetingReleaseFallback();
+                    return;
+                }
+                releaseStartupGreetingCheck('startup-greeting-release-timeout');
+            }
+        }, STARTUP_GREETING_RELEASE_FALLBACK_MS);
+    }
+
+    function sendStartupGreetingReleaseRequest(reason) {
+        const released = consumeStartupGreetingReleasedDetail();
+        if (released) {
+            releaseStartupGreetingCheck(released.reason || 'startup-greeting-release');
+            return;
+        }
+        if (!hasStartupGreetingReleaseProducer()) {
+            releaseStartupGreetingCheck(reason || 'startup-greeting-no-release-producer');
+            return;
+        }
+        S._startupGreetingReleasePending = true;
+        S._startupGreetingReleaseReason = reason || 'ws-open';
+        scheduleStartupGreetingReleaseFallback();
+    }
+
+    function releaseStartupGreetingCheck(reason) {
+        if (!S._startupGreetingReleasePending && !S._greetingCheckPending) {
+            return;
+        }
+        S._startupGreetingReleasePending = false;
+        S._startupGreetingReleaseReason = '';
+        if (S._startupGreetingReleaseFallbackTimer) {
+            clearTimeout(S._startupGreetingReleaseFallbackTimer);
+            S._startupGreetingReleaseFallbackTimer = 0;
+        }
+        if (reason) {
+            S._greetingCheckReason = reason;
+        }
+        _sendGreetingCheckIfReady();
+    }
+
+    function _deferGreetingCheckForNewUserIcebreaker() {
         if (!isNewUserIcebreakerBlockingGreeting(S._greetingCheckReason)) return false;
-        sendHomeTutorialState('greeting-check-consumed-by-icebreaker');
-        S._greetingCheckPending = false;
-        S._greetingCheckIsSwitch = false;
-        S._greetingCheckReason = '';
-        _resetGreetingCheckRetry(true);
-        console.log('[greeting_check] consumed by new-user icebreaker period');
+        _scheduleGreetingCheckRetry();
+        console.log('[greeting_check] deferred by active new-user icebreaker');
         return true;
     }
     function _sendGreetingCheckIfReady() {
@@ -3301,11 +3520,13 @@
             if (!S._greetingCheckPending) _resetGreetingCheckRetry(true);
             return;
         }
-        if (_consumeGreetingCheckForNewUserIcebreaker()) {
+        if (S._startupGreetingReleasePending) {
+            return;
+        }
+        if (_deferGreetingCheckForNewUserIcebreaker()) {
             return;
         }
         if (_isGreetingCheckBlocked()) {
-            sendHomeTutorialState('greeting-check-blocked');
             _scheduleGreetingCheckRetry();
             return;
         }
@@ -3330,10 +3551,6 @@
                 } catch (_) { greetingLang = ''; }
                 var greetingIsSwitch = !!S._greetingCheckIsSwitch;
                 var greetingReason = S._greetingCheckReason || (greetingIsSwitch ? 'character-switch' : 'ws-open');
-                var homeTutorialStateReason = isTutorialReleaseGreetingReason(greetingReason)
-                    ? greetingReason
-                    : 'greeting-check-ready';
-                sendHomeTutorialState(homeTutorialStateReason);
                 S.socket.send(JSON.stringify({
                     action: 'greeting_check',
                     is_switch: greetingIsSwitch,
@@ -3411,28 +3628,16 @@
         });
     }
 
-    window.addEventListener('neko:home-tutorial-lock-changed', function (event) {
-        var detail = event && event.detail ? event.detail : {};
-        sendHomeTutorialState(detail.reason || 'lock-changed');
-        if (detail.locked === false) {
-            if ((detail.reason === 'tutorial-completed' || detail.reason === 'tutorial-skipped')
-                && S._greetingCheckPending) {
-                S._greetingCheckReason = detail.reason;
-            }
-            _sendGreetingCheckIfReady();
-        }
+    window.addEventListener('neko:new-user-icebreaker-ended', function () {
+        _sendGreetingCheckIfReady();
     });
 
-    window.addEventListener('neko:home-tutorial-features-suppressed', function (event) {
+    window.addEventListener(STARTUP_GREETING_RELEASE_EVENT, function (event) {
         var detail = event && event.detail ? event.detail : {};
-        var reason = detail.reason || (detail.active === false ? 'features-restored' : 'features-suppressed');
-        if (detail.active === false && reason) {
-            S._greetingCheckReason = reason;
+        if (detail.released === false) {
+            return;
         }
-        sendHomeTutorialState(reason);
-        if (detail.active === false) {
-            _sendGreetingCheckIfReady();
-        }
+        releaseStartupGreetingCheck(detail.reason || 'startup-greeting-release');
     });
 
     // 从猫咪形态变回猫娘（请她回来）时，按猫咪停留时长 + tier 请求一次专属问候。

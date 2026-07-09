@@ -10,37 +10,29 @@ Steam Workshop features require the Steam client to be running and the Steamwork
 
 ## Items
 
-### `GET /api/steam/workshop/items`
+### `GET /api/steam/workshop/subscribed-items`
 
 Get all subscribed Steam Workshop items.
 
-### `GET /api/steam/workshop/items/{item_id}`
+### `GET /api/steam/workshop/item/{item_id}`
 
 Get details for a specific Workshop item.
 
-### `POST /api/steam/workshop/items/publish`
+### `POST /api/steam/workshop/publish`
 
 Publish a new item to Steam Workshop.
 
-**Body:** Item metadata including title, description, tags, and content path.
+**Body:** Item metadata. Required fields: `title`, `content_folder`, `visibility` (plus other optional metadata such as description, tags).
 
 ::: warning
 Publishing uses a serialized lock to prevent concurrent publish operations.
 :::
-
-### `POST /api/steam/workshop/items/{item_id}/update`
-
-Update an existing Workshop item.
 
 ## Configuration
 
 ### `GET /api/steam/workshop/config`
 
 Get Workshop configuration (Workshop root path, metadata).
-
-### `GET /api/steam/workshop/local_items`
-
-List local mods/items not yet published to Workshop.
 
 ## Workshop metadata
 

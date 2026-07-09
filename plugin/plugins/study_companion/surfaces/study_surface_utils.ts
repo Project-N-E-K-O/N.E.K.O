@@ -449,6 +449,71 @@ export const BRAND_CSS = `
     border-color: rgba(31, 157, 98, 0.34);
   }
 
+  .knowledge-edge-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 12px;
+    align-items: start;
+  }
+
+  .knowledge-edge-card {
+    display: grid;
+    gap: 10px;
+    min-width: 0;
+    padding: 14px;
+    border: 1px solid rgba(47, 125, 87, 0.16);
+    border-radius: 8px;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 252, 249, 0.86));
+  }
+
+  .knowledge-edge-card h3 {
+    margin: 0;
+    color: var(--ink);
+    font-size: 14px;
+    line-height: 1.35;
+  }
+
+  .knowledge-edge-card__items {
+    display: grid;
+    gap: 8px;
+  }
+
+  .knowledge-edge-row {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 8px;
+    align-items: center;
+    min-width: 0;
+  }
+
+  .knowledge-edge-row__relation {
+    padding: 4px 8px;
+    border-radius: 999px;
+    background: rgba(47, 125, 87, 0.10);
+    color: var(--brand-dark);
+    font-size: 12px;
+    font-weight: 900;
+    white-space: nowrap;
+  }
+
+  .knowledge-edge-row[data-relation="prerequisite"] .knowledge-edge-row__relation {
+    background: rgba(217, 164, 65, 0.16);
+    color: #8a5a00;
+  }
+
+  .knowledge-edge-row__target {
+    min-width: 0;
+    color: var(--muted);
+    font-weight: 800;
+    overflow-wrap: anywhere;
+  }
+
+  .knowledge-edge-more {
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 800;
+  }
+
   .pomodoro-ring {
     display: grid;
     place-items: center;
@@ -817,6 +882,94 @@ export async function callPlugin<T = Record<string, unknown>>(
 export function text(props: PluginSurfaceProps, key: string, fallback: string) {
   const value = props.t?.(key);
   return value && value !== key ? value : fallback;
+}
+
+export function deckTypeLabel(props: PluginSurfaceProps, value: unknown): string {
+  const normalized = String(value || 'custom').trim().toLowerCase();
+  const labels: Record<string, [string, string]> = {
+    word: ['ui.memory.deck_type.word', 'Word'],
+    passage: ['ui.memory.deck_type.passage', 'Passage'],
+    formula: ['ui.memory.deck_type.formula', 'Formula'],
+    custom: ['ui.memory.deck_type.custom', 'Custom'],
+  };
+  const pair = labels[normalized] || labels.custom;
+  return text(props, pair[0], pair[1]);
+}
+
+export function goalUnitLabel(props: PluginSurfaceProps, value: unknown): string {
+  const normalized = String(value || 'cards').trim().toLowerCase();
+  const labels: Record<string, [string, string]> = {
+    card: ['ui.daily_goal.deck_unit_cards', 'cards'],
+    cards: ['ui.daily_goal.deck_unit_cards', 'cards'],
+    minute: ['ui.daily_goal.deck_unit_minutes', 'minutes'],
+    minutes: ['ui.daily_goal.deck_unit_minutes', 'minutes'],
+    attempt: ['ui.daily_goal.deck_unit_attempts', 'attempts'],
+    attempts: ['ui.daily_goal.deck_unit_attempts', 'attempts'],
+  };
+  const pair = labels[normalized];
+  return pair ? text(props, pair[0], pair[1]) : normalized;
+}
+
+export function memoryItemTypeLabel(props: PluginSurfaceProps, value: unknown): string {
+  return deckTypeLabel(props, value);
+}
+
+export function targetTypeLabel(props: PluginSurfaceProps, value: unknown): string {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'subject') return text(props, 'ui.label.subject', 'Subject');
+  if (normalized === 'deck') return text(props, 'ui.memory.deck', 'Deck');
+  return normalized || '-';
+}
+
+export function pomodoroModeLabel(props: PluginSurfaceProps, value: unknown): string {
+  const normalized = String(value || 'focus').trim().toLowerCase();
+  const labels: Record<string, [string, string]> = {
+    focus: ['ui.pomodoro.mode.focus', 'Focus'],
+    break_short: ['ui.pomodoro.mode.break_short', 'Short break'],
+    break_long: ['ui.pomodoro.mode.break_long', 'Long break'],
+  };
+  const pair = labels[normalized];
+  return pair ? text(props, pair[0], pair[1]) : normalized;
+}
+
+export function pomodoroStateLabel(props: PluginSurfaceProps, value: unknown): string {
+  const normalized = String(value || 'idle').trim().toLowerCase();
+  const labels: Record<string, [string, string]> = {
+    idle: ['ui.status.pomodoro.idle', 'Idle'],
+    focusing: ['ui.status.pomodoro.focusing', 'Focusing'],
+    paused: ['ui.status.pomodoro.paused', 'Paused'],
+    short_break: ['ui.status.pomodoro.short_break', 'Short break'],
+    long_break: ['ui.status.pomodoro.long_break', 'Long break'],
+    cancelled: ['ui.status.pomodoro.cancelled', 'Stopped'],
+    completed: ['ui.status.pomodoro.completed', 'Completed'],
+  };
+  const pair = labels[normalized];
+  return pair ? text(props, pair[0], pair[1]) : normalized;
+}
+
+export function exportFormatLabel(props: PluginSurfaceProps, value: unknown): string {
+  const normalized = String(value || '').trim().toLowerCase();
+  const labels: Record<string, [string, string]> = {
+    csv: ['ui.format.csv', 'CSV'],
+    json: ['ui.format.json', 'JSON'],
+    markdown: ['ui.format.markdown', 'Markdown'],
+    pdf: ['ui.format.pdf', 'PDF'],
+    docx: ['ui.format.docx', 'DOCX'],
+    xmind: ['ui.format.xmind', 'XMind'],
+  };
+  const pair = labels[normalized];
+  return pair ? text(props, pair[0], pair[1]) : normalized;
+}
+
+export function exportStyleLabel(props: PluginSurfaceProps, value: unknown): string {
+  const normalized = String(value || 'neko').trim().toLowerCase();
+  const labels: Record<string, [string, string]> = {
+    neko: ['ui.export.style.neko', 'Neko'],
+    academic: ['ui.export.style.academic', 'Academic'],
+    compact: ['ui.export.style.compact', 'Compact'],
+  };
+  const pair = labels[normalized] || labels.neko;
+  return text(props, pair[0], pair[1]);
 }
 
 export function formatError(error: unknown) {

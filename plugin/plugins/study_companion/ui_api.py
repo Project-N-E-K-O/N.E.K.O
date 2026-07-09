@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import quote
+
+
+STUDY_PANEL_SURFACE_ID = "study-panel"
 
 
 def _topic_ref_id(value: Any) -> str:
@@ -10,7 +14,11 @@ def _topic_ref_id(value: Any) -> str:
 
 
 def build_open_ui_payload(*, plugin_id: str, available: bool) -> dict[str, Any]:
-    path = f"/plugin/{plugin_id}/ui/" if available else ""
+    path = (
+        f"/plugin/{quote(plugin_id, safe='')}/ui/"
+        if available
+        else ""
+    )
     message_key = "ui.open.available" if available else "ui.open.unavailable"
     return {
         "available": available,
@@ -35,10 +43,19 @@ def build_knowledge_map_payload(
     nodes = []
     edges = []
     weak_node_count = 0
+    stage_counts: dict[str, int] = {}
     for topic in topic_items:
         topic_id = str(topic.get("id") or "").strip()
         if not topic_id:
             continue
+        stage = str(
+            topic.get("stage")
+            or topic.get("grade_level")
+            or topic.get("education_level")
+            or topic.get("course_level")
+            or ""
+        )
+        stage_counts[stage] = stage_counts.get(stage, 0) + 1
         mastery = mastery_by_topic.get(topic_id) or {}
         weak = topic_id in weak_topic_ids
         if weak:
@@ -49,6 +66,8 @@ def build_knowledge_map_payload(
                 "label": str(topic.get("name") or topic_id),
                 "subject": str(topic.get("subject") or ""),
                 "chapter": str(topic.get("chapter") or ""),
+                "stage": stage,
+                "grade_level": stage,  # backward-compat alias for older consumers
                 "mastery": float(mastery.get("mastery") or 0.0),
                 "level": str(mastery.get("level") or ""),
                 "weak": weak,
@@ -84,6 +103,7 @@ def build_knowledge_map_payload(
             "edge_count": len(edges),
             "weak_topic_count": weak_node_count,
             "wrong_question_count": len(wrong_items),
+            "stage_counts": stage_counts,
         },
     }
 

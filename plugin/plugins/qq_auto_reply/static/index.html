@@ -139,6 +139,15 @@
                     <span data-i18n="ui.config.show_napcat_window.hint">勾选为前台启动（显示 NapCat 控制台），取消为后台启动。</span>
                 </label>
             </div>
+            <div class="form-group">
+                <label class="field-label" for="cfg-reply-mode" data-i18n="ui.config.reply_mode.label">回复模式</label>
+                <select id="cfg-reply-mode" class="input-control">
+                    <option value="text" data-i18n="ui.config.reply_mode.option_text">纯文本</option>
+                    <option value="voice" data-i18n="ui.config.reply_mode.option_voice">纯语音</option>
+                    <option value="both" data-i18n="ui.config.reply_mode.option_both">复合发送</option>
+                </select>
+                <div class="field-hint" data-i18n="ui.config.reply_mode.hint">选择 QQ 自动回复实际发送文本、语音，或两者都发。</div>
+            </div>
             <div class="config-divider"></div>
             <span class="status-title" data-i18n="ui.probability.section">回复概率设置</span>
             <p class="inline-note" data-i18n="ui.probability.summary">这两个概率只影响未来消息的触发行为，取值范围为 0 到 1。</p>

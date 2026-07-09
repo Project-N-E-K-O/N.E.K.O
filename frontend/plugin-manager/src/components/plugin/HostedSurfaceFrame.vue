@@ -60,7 +60,7 @@ import { useI18n } from 'vue-i18n'
 import { Document, Loading, WarningFilled } from '@element-plus/icons-vue'
 import { callPluginHostedSurfaceAction, getPluginHostedSurfaceContext, getPluginHostedSurfaceSource } from '@/api/plugins'
 import { buildHostedTsxDocument } from '@/components/plugin/hosted/tsxRuntime'
-import { openExternalUrl } from '@/utils/openExternal'
+import { openExternalUrl, openLocalPath } from '@/utils/openExternal'
 import type { PluginUiSurface } from '@/types/api'
 
 const props = withDefaults(defineProps<{
@@ -68,7 +68,7 @@ const props = withDefaults(defineProps<{
   surface: PluginUiSurface
   height?: string
 }>(), {
-  height: '520px',
+  height: 'clamp(520px, calc(100vh - 220px), 1200px)',
 })
 
 const emit = defineEmits<{
@@ -96,6 +96,7 @@ type HostedBridgeError = {
 }
 
 const frameStyle = computed(() => ({
+  height: props.height,
   minHeight: props.height,
 }))
 
@@ -455,6 +456,19 @@ function handleMessage(event: MessageEvent) {
     emit('error', message)
     return
   }
+  if (data && typeof data === 'object' && data.type === 'neko-hosted-surface-console') {
+    const level = typeof data.payload?.level === 'string' ? data.payload.level : 'log'
+    const args = Array.isArray(data.payload?.args) ? data.payload.args : []
+    const consoleMethod: 'debug' | 'info' | 'warn' | 'error' | 'log' = level === 'debug' || level === 'info' || level === 'warn' || level === 'error' ? level : 'log'
+    console[consoleMethod]('[HostedSurfaceFrame] plugin UI console', {
+      pluginId: props.pluginId,
+      surface: `${props.surface.kind}:${props.surface.id}`,
+      args,
+      timestamp: data.payload?.timestamp,
+    })
+    emit('message', data)
+    return
+  }
   if (data && typeof data === 'object' && data.type === 'neko-hosted-surface-open-logs') {
     emit('openLogs')
     return
@@ -462,6 +476,11 @@ function handleMessage(event: MessageEvent) {
   if (data && typeof data === 'object' && data.type === 'neko-hosted-surface-open-external') {
     const url = typeof data.payload?.url === 'string' ? data.payload.url : ''
     if (url) openExternalUrl(url)
+    return
+  }
+  if (data && typeof data === 'object' && data.type === 'neko-hosted-surface-open-path') {
+    const path = typeof data.payload?.path === 'string' ? data.payload.path : ''
+    if (path) openLocalPath(path)
     return
   }
   if (data && typeof data === 'object' && data.type === 'neko-hosted-surface-request') {
@@ -476,6 +495,7 @@ function handleMessage(event: MessageEvent) {
 async function handleHostedRequest(data: any) {
   const requestId = typeof data.requestId === 'string' ? data.requestId : ''
   const method = typeof data.method === 'string' ? data.method : ''
+  const actionId = method === 'call' ? String(data.payload?.actionId || '') : ''
   const respond = (payload: Record<string, any>) => {
     // PR #1480 review-fix 1.30: target the trusted origin instead of '*'.
     // For srcdoc iframes (opaque origin, reported as 'null'), the postMessage
@@ -491,12 +511,13 @@ async function handleHostedRequest(data: any) {
   if (!requestId) return
   try {
     if (method === 'call') {
-      const actionId = String(data.payload?.actionId || '')
       const args = data.payload?.args && typeof data.payload.args === 'object' ? data.payload.args : {}
+      const timeoutMs = Number(data.timeoutMs)
       const result = await callPluginHostedSurfaceAction(props.pluginId, actionId, args, {
         kind: props.surface.kind,
         id: props.surface.id,
         locale: String(locale.value),
+        timeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : undefined,
       })
       respond({ ok: true, result })
       return
@@ -517,7 +538,12 @@ async function handleHostedRequest(data: any) {
       ok: false,
       error: bridgeError.message,
       code: bridgeError.code,
-      details: bridgeError.details,
+      details: {
+        surface: `${props.surface.kind}:${props.surface.id}`,
+        method,
+        actionId: actionId || undefined,
+        cause: bridgeError.details,
+      },
       status: bridgeError.status,
     })
   }
@@ -556,12 +582,14 @@ watch(
 
 .hosted-surface-frame__iframe {
   width: 100%;
+  height: 100%;
   min-height: inherit;
   border: none;
   display: block;
 }
 
 .hosted-surface-frame__placeholder {
+  height: 100%;
   min-height: inherit;
   display: flex;
   flex-direction: column;

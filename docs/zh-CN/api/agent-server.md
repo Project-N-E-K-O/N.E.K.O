@@ -47,12 +47,15 @@
 
 ## 执行适配器
 
-智能体服务器使用三个适配器来执行任务：
+智能体服务器使用以下执行适配器来执行任务：
 
 | 适配器 | 模块 | 能力 |
 |--------|------|------|
-| MCP 客户端 | `brain/mcp_client.py` | 通过模型上下文协议调用外部工具 |
 | Computer Use | `brain/computer_use.py` | 截图分析、鼠标/键盘自动化 |
 | Browser Use | `brain/browser_use_adapter.py` | 网页浏览、表单填写、内容提取 |
+| OpenClaw | `brain/openclaw_adapter.py` | 将任务委派给 OpenClaw 独立智能体通道 |
+| OpenFang | `brain/openfang_adapter.py` | 将任务委派给 OpenFang 独立智能体通道 |
+
+MCP（模型上下文协议）调用已从 `brain/` 层移除，现由用户可安装的插件 `plugin/plugins/mcp_adapter/`（`MCPClient` / `MCPPluginInvoker`）提供。
 
 详见[智能体系统](/zh-CN/architecture/agent-system)了解详细架构。

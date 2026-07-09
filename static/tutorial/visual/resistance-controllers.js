@@ -16,6 +16,7 @@
         'interrupt_resist_light_3'
     ]);
     const DEFAULT_INTERRUPT_DISTANCE = 56;
+    const DEFAULT_CURSOR_RESISTANCE_DISTANCE = 30;
     const DEFAULT_INTERRUPT_ACCELERATION_THRESHOLD = 0.16;
     const DEFAULT_INTERRUPT_QUALIFYING_MOVE_STREAK = 3;
     const DEFAULT_RESISTANCE_LINES = Object.freeze([
@@ -43,6 +44,8 @@
             const normalizedOptions = options || {};
             this.overlay = normalizedOptions.overlay || null;
             this.cursor = normalizedOptions.cursor || null;
+            // syncSystemCursorHidden: optional callback for PC builds that need
+            // to keep the real cursor hidden during takeover and resistance.
             this.callbacks = normalizedOptions.callbacks || {};
             this.resistanceVoiceKeys = Array.isArray(normalizedOptions.resistanceVoiceKeys)
                 && normalizedOptions.resistanceVoiceKeys.length
@@ -102,7 +105,8 @@
             const presentationSnapshot = call(this.callbacks, 'capturePresentationSnapshot', null);
 
             if (!normalizedOptions.suppressCursorReveal) {
-                call(this.callbacks, 'prepareResistanceCursorReveal', null, normalizedOptions);
+                call(this.callbacks, 'syncSystemCursorHidden', null, true, 'interrupt_resist_light');
+                call(this.callbacks, 'suppressResistanceCursorReveal', null, normalizedOptions);
             }
 
             call(this.callbacks, 'pauseCurrentSceneForResistance', null);
@@ -111,6 +115,7 @@
             if (this.overlay && typeof this.overlay.hideBubble === 'function') {
                 this.overlay.hideBubble();
             }
+            call(this.overlay, 'emphasizeControlBanner', null);
 
             call(this.callbacks, 'appendGuideChatMessage', null, resistanceMessage.message, {
                 textKey: resistanceMessage.textKey,
@@ -202,6 +207,8 @@
             call(this.callbacks, 'disableInterrupts', null);
             call(this.callbacks, 'cancelActiveNarration', null);
             call(this.callbacks, 'beginGuideInterruptPresentation', null);
+            // 修改原因：生气退出会脱离教程接管态，必须先恢复真实鼠标，避免退出台词播放时系统鼠标仍被隐藏。
+            call(this.callbacks, 'syncSystemCursorHidden', null, false, 'interrupt_angry_exit');
 
             const angryStep = call(this.callbacks, 'getStep', null, 'interrupt_angry_exit') || {};
             const performance = (angryStep && angryStep.performance) || {};
@@ -221,7 +228,9 @@
                 ? lastPointerPoint
                 : null;
 
-            call(this.callbacks, 'setTutorialTakingOver', null, true);
+            call(this.callbacks, 'setTutorialTakingOver', null, true, {
+                syncSystemCursor: false
+            });
             if (this.overlay && typeof this.overlay.setAngry === 'function') {
                 this.overlay.setAngry(true);
             }
@@ -342,10 +351,17 @@
 
         handleInterrupt(event) {
             const director = this.director;
+            // 修改原因：轻对抗台词播放期间会把 scenePausedForResistance 置 true，
+            // 但用户此时连续拖动仍是同一次对抗链路的一部分；只允许该状态继续累计和刷新真实鼠标，
+            // 其他暂停场景仍保持拦截，避免污染普通教程演出。
+            const shouldAllowPausedLightResistanceInterrupt = (
+                director.scenePausedForResistance
+                && this.lightResistanceActive
+            );
             if (
                 director.destroyed
                 || director.angryExitTriggered
-                || director.scenePausedForResistance
+                || (director.scenePausedForResistance && !shouldAllowPausedLightResistanceInterrupt)
                 || !director.interruptsEnabled
                 || !event
                 || event.isTrusted === false
@@ -412,8 +428,10 @@
                     const initialDx = sampleDx === null ? 0 : sampleDx;
                     const initialDy = sampleDy === null ? 0 : sampleDy;
                     const initialDistance = Math.hypot(initialDx, initialDy);
-                    director.noteUserCursorRevealAttempt(initialDistance, now);
-                    director.playCursorResistanceToUserMotion(x, y, initialDistance, initialDx, initialDy);
+                    director.noteUserCursorRevealSuppressionAttempt(initialDistance, now);
+                    if (initialDistance > DEFAULT_CURSOR_RESISTANCE_DISTANCE) {
+                        director.playCursorResistanceToUserMotion(x, y, initialDistance, initialDx, initialDy);
+                    }
                 }
                 director.interruptQualifyingMoveStreak = 0;
                 return;
@@ -434,8 +452,10 @@
                 speed: speed
             };
 
-            director.noteUserCursorRevealAttempt(distance, now);
-            director.playCursorResistanceToUserMotion(x, y, distance, dx, dy);
+            director.noteUserCursorRevealSuppressionAttempt(distance, now);
+            if (distance > DEFAULT_CURSOR_RESISTANCE_DISTANCE) {
+                director.playCursorResistanceToUserMotion(x, y, distance, dx, dy);
+            }
 
             if (
                 distance < DEFAULT_INTERRUPT_DISTANCE
@@ -466,10 +486,19 @@
                 return;
             }
 
+            // 修改原因：轻对抗计数成立时先刷新 2 秒真实鼠标显示；
+            // 即使上一段台词演出还在 active 保护内，第二次触发也不能只剩第一次显示的尾巴。
+            const cursorRevealAlreadyRequested = typeof director.revealSystemCursorTemporarily === 'function';
+            if (cursorRevealAlreadyRequested) {
+                director.revealSystemCursorTemporarily(2000, 'interrupt_resist_light');
+            }
             director.lastPointerPoint = null;
             director.playLightResistance(x, y, {
                 motionDx: dx,
-                motionDy: dy
+                motionDy: dy,
+                forceSystemCursorReveal: true,
+                suppressCursorReveal: true,
+                cursorRevealAlreadyRequested: cursorRevealAlreadyRequested
             });
         }
 
@@ -493,7 +522,15 @@
             const presentationSnapshot = director.captureCurrentGuidePresentationSnapshot();
 
             if (!normalizedOptions.suppressCursorReveal) {
-                director.prepareResistanceCursorReveal(normalizedOptions);
+                director.suppressResistanceCursorReveal(normalizedOptions);
+            }
+            // 修改原因：正常进入轻对抗演出时仍由这里兜底显示真实鼠标；
+            // 已在触发点刷新过的场景跳过，避免同一次轻对抗重复发送两次 PC 临时显示事件。
+            if (
+                !normalizedOptions.cursorRevealAlreadyRequested
+                && typeof director.revealSystemCursorTemporarily === 'function'
+            ) {
+                director.revealSystemCursorTemporarily(2000, 'interrupt_resist_light');
             }
 
             director.pauseCurrentSceneForResistance();
@@ -501,6 +538,9 @@
 
             if (director.overlay && typeof director.overlay.hideBubble === 'function') {
                 director.overlay.hideBubble();
+            }
+            if (director.overlay && typeof director.overlay.emphasizeControlBanner === 'function') {
+                director.overlay.emphasizeControlBanner();
             }
 
             director.appendGuideChatMessage(resistanceMessage.message, {
@@ -578,6 +618,13 @@
             director.disableInterrupts();
             director.cancelActiveNarration();
             director.beginGuideInterruptPresentation();
+            // 修改原因：生气退出会脱离教程接管态，必须先取消页面侧轻对抗临时显示 timer；
+            // 随后的 interrupt_angry_exit 可见性消息也是 PC 侧清理临时显示 timer 的跨端契约。
+            if (director.resistanceCursorTimer) {
+                window.clearTimeout(director.resistanceCursorTimer);
+                director.resistanceCursorTimer = null;
+            }
+            this.syncSystemCursorHidden(false, 'interrupt_angry_exit');
 
             const angryStep = director.getStep('interrupt_angry_exit') || {};
             const performance = (angryStep && angryStep.performance) || {};
@@ -594,7 +641,9 @@
                 ? lastPointerPoint
                 : null;
 
-            director.setTutorialTakingOver(true);
+            director.setTutorialTakingOver(true, {
+                syncSystemCursor: false
+            });
             if (director.overlay && typeof director.overlay.setAngry === 'function') {
                 director.overlay.setAngry(true);
             }
@@ -648,6 +697,13 @@
         destroy() {
             this.destroyed = true;
             this.lightResistanceActive = false;
+        }
+
+        syncSystemCursorHidden(hidden, reason) {
+            const director = this.director;
+            if (director && typeof director.syncSystemCursorHidden === 'function') {
+                director.syncSystemCursorHidden(hidden, reason);
+            }
         }
     }
 
@@ -823,6 +879,9 @@
             const finalReason = tutorialReason || reason || 'skip';
             director.setGuideChatInputLocked(false, 'avatar-floating-guide-' + finalReason);
             director.notifyPluginDashboardTerminationRequested(finalReason);
+            if (typeof director.recordAvatarFloatingGuideRoundEndForTermination === 'function') {
+                director.recordAvatarFloatingGuideRoundEndForTermination(finalReason);
+            }
             director.closePluginDashboardWindowIfCreatedByGuide('终止请求').catch((error) => {
                 console.warn('[YuiGuide] 终止请求时关闭插件面板失败:', error);
             });

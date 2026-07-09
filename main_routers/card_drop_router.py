@@ -361,6 +361,7 @@ async def steam_login_endpoint(request: Request):
         f"{base}/api/auth/oauth/steam/authorize?redirect_to={quote(callback, safe='')}"
         f"&state={quote(state, safe='')}"
         f"&code_challenge={quote(code_challenge, safe='')}"
+        f"&code_challenge_method=S256"
     )
     return {"authorize_url": authorize_url, "callback": callback}
 

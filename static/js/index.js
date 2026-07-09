@@ -150,7 +150,15 @@ async function loadPageConfig() {
                 if (typeof window.hideOtherAvatarRuntimesForPNGTuber === 'function') {
                     window.hideOtherAvatarRuntimesForPNGTuber();
                 }
-                if (typeof window.loadPNGTuberAvatar === 'function') {
+                const shouldSkipPngtuberBoot = window.NekoAvatarFloatingBoot
+                    && typeof window.NekoAvatarFloatingBoot.shouldSkipUserModelBoot === 'function'
+                    && window.NekoAvatarFloatingBoot.shouldSkipUserModelBoot();
+                if (shouldSkipPngtuberBoot) {
+                    if (typeof window.NekoAvatarFloatingBoot.markUserModelBootSkipped === 'function') {
+                        window.NekoAvatarFloatingBoot.markUserModelBootSkipped('pngtuber-init');
+                    }
+                    console.log('[主页] 新手教程启动预测命中，跳过用户 PNGTuber 模型加载');
+                } else if (typeof window.loadPNGTuberAvatar === 'function') {
                     window.loadPNGTuberAvatar(lanlan_config.pngtuber || { idle_image: modelPath });
                 }
             } else if (modelType === 'live3d' || modelType === 'vrm') {
@@ -239,6 +247,10 @@ async function loadPageConfig() {
         return false;
     }
 }
+
+// 暴露给模型初始化层做"模型路径缺失"时的有界自愈重取（live2d-init.js scheduleLive2DConfigRetry）。
+// 重新拉取 page_config 并刷新 window.cubism4Model / window.vrmModel 等全局，再由调用方重试初始化。
+window.reloadPageConfig = loadPageConfig;
 
 let resolvePageConfigReady = null;
 window.pageConfigReady = new Promise(function (resolve) {

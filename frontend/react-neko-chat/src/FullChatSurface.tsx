@@ -28,6 +28,11 @@ import CompactExportHistoryPanel, {
 } from './CompactExportHistoryPanel';
 import { getChatCompanionEmptyStateFallback, getChatEmptyStateFallback } from './chat-copy';
 import { i18n } from './i18n';
+import { useFocusGlow } from './useFocusGlow';
+import {
+  playCompactToolWheelDetentSound,
+  useCompactToolWheelAudioPreload,
+} from './compactToolWheelAudio';
 import {
   type ChatMessage,
   type MessageAction,
@@ -111,24 +116,6 @@ const COMPACT_INPUT_TOOL_WHEEL_DETENT_RESISTANCE_START_RATIO = 0.68;
 const COMPACT_INPUT_TOOL_WHEEL_DETENT_HOLD_RATIO = 0.86;
 const COMPACT_INPUT_TOOL_WHEEL_DETENT_BREAK_RATIO = 1.16;
 const COMPACT_TOOL_WHEEL_DRAG_ANGLE_STEP_DEG = 30.82;
-const COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS = [
-  '/static/sounds/compact-tool-wheel/gear-detent-1.mp3',
-  '/static/sounds/compact-tool-wheel/gear-detent-2.mp3',
-  '/static/sounds/compact-tool-wheel/gear-detent-3.mp3',
-  '/static/sounds/compact-tool-wheel/gear-detent-4.mp3',
-] as const;
-const COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC = '/static/sounds/compact-tool-wheel/gear-rebound.mp3';
-const COMPACT_TOOL_WHEEL_PRELOAD_SOUND_SRCS = [
-  ...COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS,
-  COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC,
-] as const;
-const COMPACT_TOOL_WHEEL_REBOUND_SOUND_MIN_RATIO = 0.2;
-const COMPACT_TOOL_WHEEL_REBOUND_SOUND_MEDIUM_RATIO = 0.4;
-const COMPACT_TOOL_WHEEL_REBOUND_SOUND_STRONG_RATIO = 0.7;
-const COMPACT_TOOL_WHEEL_REBOUND_SOUND_SOFT_VOLUME = 0.38;
-const COMPACT_TOOL_WHEEL_REBOUND_SOUND_MEDIUM_VOLUME = 0.6;
-const COMPACT_TOOL_WHEEL_REBOUND_SOUND_STRONG_VOLUME = 0.85;
-const COMPACT_TOOL_WHEEL_AUDIO_PRELOAD_RETRY_DELAYS_MS = [120, 300, 700, 1500] as const;
 const COMPACT_INPUT_TOOL_FAN_ORIGIN_CLOSE_SIZE = 48;
 const COMPACT_INPUT_TOOL_FAN_INTERACTIVE_DELAY_MS = 220;
 const COMPACT_SURFACE_RESIZE_MIN_WIDTH = 430;
@@ -208,6 +195,27 @@ function getCompactSurfaceResizePointerX(event: ReactPointerEvent<HTMLDivElement
     return screenX;
   }
   return event.clientX;
+}
+
+type AvatarToolPointerPosition = {
+  x: number;
+  y: number;
+  screenX?: number;
+  screenY?: number;
+};
+
+function getAvatarToolPointerPosition(event: Pick<PointerEvent | ReactMouseEvent<HTMLElement>, 'clientX' | 'clientY' | 'screenX' | 'screenY'>): AvatarToolPointerPosition {
+  const next: AvatarToolPointerPosition = {
+    x: Number(event.clientX) || 0,
+    y: Number(event.clientY) || 0,
+  };
+  const screenX = Number(event.screenX);
+  const screenY = Number(event.screenY);
+  if (Number.isFinite(screenX) && Number.isFinite(screenY)) {
+    next.screenX = screenX;
+    next.screenY = screenY;
+  }
+  return next;
 }
 
 function isDesktopCompactSurfaceLayoutActive(): boolean {
@@ -816,124 +824,6 @@ function playAvatarToolSound(soundPath: string) {
   }
 }
 
-type NekoGameAudioSystemInstance = {
-  playSfx: (keyOrAudio: unknown, options?: Record<string, unknown>) => unknown;
-  preloadSfx?: (keyOrAudio: unknown) => unknown;
-};
-
-type NekoGameAudioSystemConstructor = new (options?: Record<string, unknown>) => NekoGameAudioSystemInstance;
-
-let compactToolWheelAudioSystem: NekoGameAudioSystemInstance | null | undefined;
-
-function getCompactToolWheelAudioSystem(): NekoGameAudioSystemInstance | null {
-  if (compactToolWheelAudioSystem) {
-    return compactToolWheelAudioSystem;
-  }
-  if (typeof window === 'undefined') {
-    return null;
-  }
-  const GameAudioSystem = (window as Window & {
-    NekoGameSystem?: {
-      GameAudioSystem?: NekoGameAudioSystemConstructor;
-    };
-  }).NekoGameSystem?.GameAudioSystem;
-  if (typeof GameAudioSystem !== 'function') {
-    return null;
-  }
-  try {
-    const audioSystem = new GameAudioSystem({
-      config: {
-        audioMix: {
-          sfx: {
-            baseVolume: 1,
-            maxVolume: 1,
-          },
-        },
-        sfx: {},
-      },
-    });
-    if (typeof audioSystem.playSfx !== 'function') {
-      return null;
-    }
-    audioSystem.preloadSfx?.(COMPACT_TOOL_WHEEL_PRELOAD_SOUND_SRCS);
-    compactToolWheelAudioSystem = audioSystem;
-  } catch {
-    compactToolWheelAudioSystem = undefined;
-    return null;
-  }
-  return compactToolWheelAudioSystem;
-}
-
-function preloadCompactToolWheelSounds(): boolean {
-  return getCompactToolWheelAudioSystem() !== null;
-}
-
-function useCompactToolWheelAudioPreload() {
-  useEffect(() => {
-    let retryTimer: number | null = null;
-    let retryIndex = 0;
-    let cancelled = false;
-
-    const tryPreload = () => {
-      if (cancelled) return;
-      if (preloadCompactToolWheelSounds()) return;
-      if (retryIndex >= COMPACT_TOOL_WHEEL_AUDIO_PRELOAD_RETRY_DELAYS_MS.length) return;
-      const delayMs = COMPACT_TOOL_WHEEL_AUDIO_PRELOAD_RETRY_DELAYS_MS[retryIndex];
-      retryIndex += 1;
-      retryTimer = window.setTimeout(tryPreload, delayMs);
-    };
-
-    tryPreload();
-    return () => {
-      cancelled = true;
-      if (retryTimer !== null) {
-        window.clearTimeout(retryTimer);
-      }
-    };
-  }, []);
-}
-
-function playCompactToolWheelDetentSound(soundSrc: string | readonly string[] = COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS) {
-  const soundSrcs = Array.isArray(soundSrc) ? soundSrc : [soundSrc];
-  const availableSoundSrcs = soundSrcs.map(src => src.trim()).filter(Boolean);
-  if (availableSoundSrcs.length === 0) return;
-  const src = availableSoundSrcs[Math.floor(Math.random() * availableSoundSrcs.length)] ?? availableSoundSrcs[0];
-  if (!src) return;
-  const audioSystem = getCompactToolWheelAudioSystem();
-  if (!audioSystem) return;
-  try {
-    void audioSystem.playSfx({ src, preload: 'auto' });
-  } catch {
-    // Optional UI SFX must never block wheel interaction.
-  }
-}
-
-function getCompactToolWheelReboundVolume(offsetRatio: number): number | null {
-  const absOffsetRatio = Math.abs(offsetRatio);
-  if (absOffsetRatio < COMPACT_TOOL_WHEEL_REBOUND_SOUND_MIN_RATIO) return null;
-  if (absOffsetRatio < COMPACT_TOOL_WHEEL_REBOUND_SOUND_MEDIUM_RATIO) {
-    return COMPACT_TOOL_WHEEL_REBOUND_SOUND_SOFT_VOLUME;
-  }
-  return absOffsetRatio >= COMPACT_TOOL_WHEEL_REBOUND_SOUND_STRONG_RATIO
-    ? COMPACT_TOOL_WHEEL_REBOUND_SOUND_STRONG_VOLUME
-    : COMPACT_TOOL_WHEEL_REBOUND_SOUND_MEDIUM_VOLUME;
-}
-
-function playCompactToolWheelReboundSound(
-  soundSrc = COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC,
-  volume = COMPACT_TOOL_WHEEL_REBOUND_SOUND_STRONG_VOLUME,
-) {
-  const src = soundSrc.trim();
-  if (!src) return;
-  const audioSystem = getCompactToolWheelAudioSystem();
-  if (!audioSystem) return;
-  try {
-    void audioSystem.playSfx({ src, preload: 'auto' }, { volume });
-  } catch {
-    // Optional UI SFX must never block wheel interaction.
-  }
-}
-
 function supportsDesktopFinePointer(): boolean {
   if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
     return true;
@@ -1251,7 +1141,7 @@ export default function FullChatSurface({
   const floatingFistDropIdRef = useRef(0);
   const floatingFistDropTimeoutIdsRef = useRef<number[]>([]);
   const interactionBurstHistoryRef = useRef<Record<string, number[]>>({});
-  const latestPointerPositionRef = useRef({ x: 0, y: 0 });
+  const latestPointerPositionRef = useRef<AvatarToolPointerPosition>({ x: 0, y: 0 });
   const latestPointerTargetRef = useRef<EventTarget | null>(null);
   const compactHistoryDesktopDropTargetRef = useRef<{ sessionId?: string; overTarget: boolean; timestamp: number } | null>(null);
   const avatarRangeHoldUntilRef = useRef(0);
@@ -1287,6 +1177,15 @@ export default function FullChatSurface({
   const [compactSpeechVisibleLength, setCompactSpeechVisibleLength] = useState(0);
   const [compactSpeechFallbackRevealActive, setCompactSpeechFallbackRevealActive] = useState(false);
   const [speechPlaybackState, setSpeechPlaybackState] = useState<SpeechPlaybackState | null>(null);
+  // Focus 凝神: this frozen legacy full surface is rendered via App's early
+  // return (App.tsx), BEFORE the compact `focusActive` state exists — so it
+  // never receives that prop and must self-subscribe to the same backend
+  // `focus_state` signal. Self-contained on purpose (legacy isolation): it only
+  // reads the flag and reuses the shared `data-focus-active`/.chat-window glow
+  // CSS, touching no other legacy logic.
+  const [focusActive, setFocusActive] = useState(false);
+  // 凝神 thinking-dots pulse — mirrors the compact surface (App.tsx).
+  const [focusThinking, setFocusThinking] = useState(false);
   const [compactChoiceLayerPlacement, setCompactChoiceLayerPlacement] = useState<'above' | 'below'>('above');
   const [compactInputToolFanOpen, setCompactInputToolFanOpen] = useState(false);
   const [compactInputToolFanInteractive, setCompactInputToolFanInteractive] = useState(false);
@@ -2043,6 +1942,42 @@ export default function FullChatSurface({
     };
   }, []);
 
+  // Focus 凝神 indicator: reflect backend enter/exit. Mirrors the compact
+  // surface's subscription (App.tsx) — app-websocket.js translates the
+  // `focus_state` ws message into this `neko-focus-state` event.
+  useEffect(() => {
+    const handleFocusState = (event: Event) => {
+      const detail = (event as CustomEvent<{ active?: boolean }>).detail;
+      setFocusActive(Boolean(detail && detail.active));
+    };
+    window.addEventListener('neko-focus-state', handleFocusState);
+    return () => {
+      window.removeEventListener('neko-focus-state', handleFocusState);
+    };
+  }, []);
+
+  // 凝神 thinking-dots: show a "…" bubble at the tail of the history while a
+  // Focus turn is thinking-on but hasn't emitted visible content yet.
+  useEffect(() => {
+    const handleThinking = (event: Event) => {
+      const detail = (event as CustomEvent<{ active?: boolean }>).detail;
+      setFocusThinking(Boolean(detail && detail.active));
+    };
+    const handleFocusState = (event: Event) => {
+      const detail = (event as CustomEvent<{ active?: boolean }>).detail;
+      if (!(detail && detail.active)) setFocusThinking(false);
+    };
+    window.addEventListener('neko-focus-thinking', handleThinking);
+    window.addEventListener('neko-focus-state', handleFocusState);
+    return () => {
+      window.removeEventListener('neko-focus-thinking', handleThinking);
+      window.removeEventListener('neko-focus-state', handleFocusState);
+    };
+  }, []);
+
+  // Focus 凝神 edge glow: charge-driven, scaled on the app-shell via CSS vars.
+  useFocusGlow(appShellRef);
+
   useEffect(() => {
     const textNode = compactPreviewTextRef.current;
     if (!textNode) return;
@@ -2075,8 +2010,6 @@ export default function FullChatSurface({
 
     const gap = 16;
     let frameId: number | null = null;
-    let trackingFrameId: number | null = null;
-    let disposed = false;
 
     const getDesktopPlacementSpace = (shellRect: DOMRect) => {
       const layout = (window as typeof window & {
@@ -2162,17 +2095,16 @@ export default function FullChatSurface({
       });
     };
 
-    const trackPlacement = () => {
-      if (disposed) return;
-      updatePlacement();
-      trackingFrameId = window.requestAnimationFrame(trackPlacement);
-    };
-
     schedulePlacementUpdate();
-    trackingFrameId = window.requestAnimationFrame(trackPlacement);
 
     const visualViewport = window.visualViewport;
     window.addEventListener('resize', schedulePlacementUpdate);
+    // Surface/desktop layout moves (avatar drag, window move, work-area change)
+    // have no element-level signal a ResizeObserver could catch, so listen for
+    // the host's layout-change events instead of polling every frame. Mirrors the
+    // event-driven compact placement effect in App.tsx (CompactChatApp).
+    window.addEventListener('neko:compact-surface-layout-change', schedulePlacementUpdate);
+    window.addEventListener('neko:desktop-compact-layout-change', schedulePlacementUpdate);
     visualViewport?.addEventListener('resize', schedulePlacementUpdate);
     visualViewport?.addEventListener('scroll', schedulePlacementUpdate);
 
@@ -2186,14 +2118,12 @@ export default function FullChatSurface({
     }
 
     return () => {
-      disposed = true;
       if (frameId !== null) {
         window.cancelAnimationFrame(frameId);
       }
-      if (trackingFrameId !== null) {
-        window.cancelAnimationFrame(trackingFrameId);
-      }
       window.removeEventListener('resize', schedulePlacementUpdate);
+      window.removeEventListener('neko:compact-surface-layout-change', schedulePlacementUpdate);
+      window.removeEventListener('neko:desktop-compact-layout-change', schedulePlacementUpdate);
       visualViewport?.removeEventListener('resize', schedulePlacementUpdate);
       visualViewport?.removeEventListener('scroll', schedulePlacementUpdate);
       observer?.disconnect();
@@ -2660,13 +2590,9 @@ export default function FullChatSurface({
         compactInputToolWheelSuppressClickRef.current = false;
       }, 0);
     }
-    const reboundVolume = getCompactToolWheelReboundVolume(pointerState.dragOffsetRatio);
     compactInputToolWheelPointerRef.current = null;
     setCompactInputToolWheelDragActive(false);
     setCompactInputToolWheelDragOffsetRatio(0);
-    if (reboundVolume !== null) {
-      playCompactToolWheelReboundSound(COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC, reboundVolume);
-    }
   }, []);
 
   useEffect(() => {
@@ -2907,6 +2833,9 @@ export default function FullChatSurface({
       ? (outsideRangeCursorVariants[activeCursorToolId] ?? 'primary')
       : 'primary';
     const textContext = sanitizeInteractionTextContext(draft);
+    const latestPointerPosition = latestPointerPositionRef.current;
+    const hasCursorScreenPoint = Number.isFinite(latestPointerPosition.screenX)
+      && Number.isFinite(latestPointerPosition.screenY);
 
     onAvatarToolStateChange({
       active: !!activeToolItem,
@@ -2918,6 +2847,12 @@ export default function FullChatSurface({
       withinAvatarRange: isCursorWithinAvatarToolRange,
       overCompactZone: isCursorOverCompactCursorZone,
       insideHostWindow: isCursorInsideHostWindow,
+      cursorClientX: latestPointerPosition.x,
+      cursorClientY: latestPointerPosition.y,
+      ...(hasCursorScreenPoint ? {
+        cursorScreenX: latestPointerPosition.screenX,
+        cursorScreenY: latestPointerPosition.screenY,
+      } : {}),
       tool: activeToolItem
         ? {
           id: activeToolItem.id,
@@ -3022,7 +2957,6 @@ export default function FullChatSurface({
   }
 
   function updateHammerCursorOverlayPosition(clientX: number, clientY: number) {
-    latestPointerPositionRef.current = { x: clientX, y: clientY };
     const overlayNode = hammerCursorOverlayRef.current;
     if (!overlayNode || !hammerToolItem) return;
     const hotspot = getScaledToolCursorHotspot(hammerToolItem, hammerCursorOverlayScale);
@@ -3030,7 +2964,6 @@ export default function FullChatSurface({
   }
 
   function updateAvatarCursorOverlayPosition(clientX: number, clientY: number) {
-    latestPointerPositionRef.current = { x: clientX, y: clientY };
     const overlayNode = avatarCursorOverlayRef.current;
     if (!overlayNode || !activeToolItem) return;
     const hotspot = getScaledToolCursorHotspot(activeToolItem, avatarCursorOverlayScale);
@@ -3214,6 +3147,8 @@ export default function FullChatSurface({
 
     const toggleCursorVariantOnPointerDown = (event: PointerEvent) => {
       if (event.button !== 0) return;
+      latestPointerPositionRef.current = getAvatarToolPointerPosition(event);
+      latestPointerTargetRef.current = event.target;
       const isOverCompactCursorZoneAtPointer = isPointWithinCompactCursorZone(event.clientX, event.clientY);
       setIsCursorOverCompactCursorZone(previousValue => (
         previousValue === isOverCompactCursorZoneAtPointer ? previousValue : isOverCompactCursorZoneAtPointer
@@ -3402,7 +3337,7 @@ export default function FullChatSurface({
 
     const handlePointerMove = (event: PointerEvent) => {
       setIsCursorInsideHostWindow(true);
-      latestPointerPositionRef.current = { x: event.clientX, y: event.clientY };
+      latestPointerPositionRef.current = getAvatarToolPointerPosition(event);
       latestPointerTargetRef.current = event.target;
       if (activeCursorToolId === 'hammer') {
         updateHammerCursorOverlayPosition(event.clientX, event.clientY);
@@ -3690,7 +3625,7 @@ export default function FullChatSurface({
             setToolMenuOpen(false);
           }}
         >
-          <span aria-hidden="true">×</span>
+          <span className="composer-tool-clear-icon" aria-hidden="true" />
         </button>
       ) : null}
       {toolMenuOpen ? (
@@ -3716,10 +3651,7 @@ export default function FullChatSurface({
               title={itemLabel}
               disabled={composerInteractionsDisabled}
               onClick={(event) => {
-                latestPointerPositionRef.current = {
-                  x: event.clientX,
-                  y: event.clientY,
-                };
+                latestPointerPositionRef.current = getAvatarToolPointerPosition(event);
                 latestPointerTargetRef.current = event.currentTarget;
                 setIsCursorInsideHostWindow(true);
                 setIsCursorOverCompactCursorZone(true);
@@ -4159,7 +4091,7 @@ export default function FullChatSurface({
               closeCompactInputToolFanFromUserClick();
             }}
           >
-            <span aria-hidden="true">×</span>
+            <span className="composer-tool-clear-icon" aria-hidden="true" />
           </button>
         ) : null}
       </div>
@@ -4191,10 +4123,7 @@ export default function FullChatSurface({
                   event.stopPropagation();
                   return;
                 }
-                latestPointerPositionRef.current = {
-                  x: event.clientX,
-                  y: event.clientY,
-                };
+                latestPointerPositionRef.current = getAvatarToolPointerPosition(event);
                 latestPointerTargetRef.current = event.currentTarget;
                 setIsCursorInsideHostWindow(true);
                 setIsCursorOverCompactCursorZone(true);
@@ -4421,6 +4350,7 @@ export default function FullChatSurface({
       messages={messages}
       ariaLabel={messageListAriaLabel}
       failedStatusLabel={failedStatusLabel}
+      thinking={focusThinking}
       onAction={onMessageAction}
     />
   );
@@ -4490,7 +4420,21 @@ export default function FullChatSurface({
       data-compact-export-preview-open={isCompactSurface && compactExportPreviewOpen ? 'true' : 'false'}
       data-compact-export-selected-count={isCompactSurface ? compactExportSelectedCount : 0}
       data-compact-export-auto-scroll={isCompactSurface && compactExportAutoScrollToBottom ? 'true' : 'false'}
+      data-focus-active={focusActive ? 'true' : 'false'}
     >
+      {focusActive ? (
+        <div
+          className="chat-surface-focus-indicator"
+          role="status"
+          aria-live="polite"
+          title={i18n('chat.focusIndicator', '凝神中')}
+        >
+          <span className="chat-surface-focus-indicator-label">
+            {i18n('chat.focusIndicator', '凝神中')}
+          </span>
+        </div>
+      ) : null}
+      <div className="chat-focus-overlay" aria-hidden="true" />
       {compactExportHistoryNode}
       {compactChoiceLayerNode}
       {floatingFistDrops.map(drop => (

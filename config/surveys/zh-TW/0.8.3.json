@@ -1,0 +1,40 @@
+{
+  "survey_version": "0.8.3",
+  "title": "一路陪伴到現在，開發貓貓想聽聽你的想法",
+  "intro": "花一分鐘幫我們做得更好吧，全部選填，隨時可以跳過。",
+  "questions": [
+    {
+      "id": "keep_one",
+      "type": "single",
+      "label": "如果接下來開發組只能集中精力打磨一個功能，你最希望是哪個？",
+      "options": [
+        { "value": "chat", "label": "文字對話" },
+        { "value": "voice", "label": "語音對話" },
+        { "value": "proactive", "label": "主動搭話" },
+        { "value": "games", "label": "小遊戲 / 互動" },
+        { "value": "appearance", "label": "形象 / 換裝" }
+      ]
+    },
+    {
+      "id": "drop_one",
+      "type": "single",
+      "label": "如果精力實在有限、必須暫停一個功能的更新，哪個對你影響最小？",
+      "options": [
+        { "value": "chat", "label": "文字對話" },
+        { "value": "voice", "label": "語音對話" },
+        { "value": "proactive", "label": "主動搭話" },
+        { "value": "games", "label": "小遊戲 / 互動" },
+        { "value": "appearance", "label": "形象 / 換裝" }
+      ]
+    },
+    {
+      "id": "suggestion",
+      "type": "text",
+      "label": "還有什麼想對我們說的？吐槽或許願都行。",
+      "placeholder": "比如最近哪裡讓你想關掉、或者最希望優化的功能，或者只是想對開發貓貓說句話……（選填）",
+      "placeholder_from": "keep_one",
+      "placeholder_template": "你最希望「{label}」往哪個方向打磨呢？也歡迎說點別的～（選填）",
+      "max_length": 500
+    }
+  ]
+}

@@ -5,6 +5,7 @@ from collections import deque
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
 from main_routers import system_router as sr
+from config.prompts.prompts_proactive import get_proactive_format_sections
 
 
 def test_parse_unified_phase1_marks_explicit_music_and_meme_pass():
@@ -151,6 +152,40 @@ def test_recent_proactive_similarity_blocks_at_90_percent():
 
     assert is_duplicate is True
     assert score >= 0.90
+
+
+def test_format_sections_omit_music_tag_without_playable_track():
+    # 没有可播曲目时（Phase 1 链接去重清空 / 无 track），上游不会构造 music_section，
+    # has_music=False。output-format 必须不暴露 [MUSIC] 选项——从模型视角等同"用户
+    # 没碰过音乐分享"，杜绝模型在无歌可投时仍押 [MUSIC]（发了 [MUSIC] 转译不出）。
+    _src, fmt = get_proactive_format_sections(
+        has_screen=False, has_web=True, has_music=False, has_meme=False, lang="zh",
+    )
+    assert "[MUSIC]" not in fmt
+    assert "[MEME]" not in fmt
+    assert "[WEB]" in fmt  # 其它有副作用通道仍正常列出
+
+
+def test_format_sections_expose_music_tag_with_playable_track():
+    # 有可播曲目（selected_music_link 非空 → music_section 非空 → has_music=True）时，
+    # output-format 才列出 [MUSIC] 选项。
+    _src, fmt = get_proactive_format_sections(
+        has_screen=False, has_web=False, has_music=True, has_meme=False, lang="zh",
+    )
+    assert "[MUSIC]" in fmt
+    assert "[WEB]" not in fmt
+    assert "[MEME]" not in fmt
+
+
+def test_format_sections_no_side_effect_tags_is_tagless():
+    # 完全没有副作用素材时走 _of_none：纯文本无 tag，更不会出现 [MUSIC]。
+    _src, fmt = get_proactive_format_sections(
+        has_screen=True, has_web=False, has_music=False, has_meme=False, lang="zh",
+    )
+    assert "[MUSIC]" not in fmt
+    assert "[WEB]" not in fmt
+    assert "[MEME]" not in fmt
+    assert "[CHAT]" not in fmt
 
 
 def test_recent_proactive_similarity_ignores_expired_history():

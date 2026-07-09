@@ -47,12 +47,15 @@ Agent Server はバックグラウンドタスクの実行を処理します。H
 
 ## 実行アダプター
 
-Agent Server はタスク実行に3つのアダプターを使用します：
+Agent Server はタスク実行に以下の実行アダプターを使用します：
 
 | アダプター | モジュール | 機能 |
 |---------|--------|-------------|
-| MCP Client | `brain/mcp_client.py` | Model Context Protocol を介した外部ツール呼び出し |
 | Computer Use | `brain/computer_use.py` | スクリーンショット分析、マウス/キーボード自動化 |
 | Browser Use | `brain/browser_use_adapter.py` | Web ブラウジング、フォーム入力、コンテンツ抽出 |
+| OpenClaw | `brain/openclaw_adapter.py` | タスクを OpenClaw スタンドアロンエージェントチャネルに委譲 |
+| OpenFang | `brain/openfang_adapter.py` | タスクを OpenFang スタンドアロンエージェントチャネルに委譲 |
+
+MCP（Model Context Protocol）ツール呼び出しは `brain/` レイヤーから削除され、現在はユーザーがインストール可能なプラグイン `plugin/plugins/mcp_adapter/`（`MCPClient` / `MCPPluginInvoker`）によって提供されます。
 
 詳細なアーキテクチャについては[エージェントシステム](/ja/architecture/agent-system)を参照してください。

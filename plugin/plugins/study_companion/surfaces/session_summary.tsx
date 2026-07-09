@@ -1,7 +1,7 @@
 import { useEffect, useState } from '@neko/plugin-ui';
 import type { PluginSurfaceProps } from '@neko/plugin-ui';
 
-import { callPlugin, ensureBrandCSS, formatError, text } from './study_surface_utils';
+import { callPlugin, ensureBrandCSS, formatError, goalUnitLabel, targetTypeLabel, text } from './study_surface_utils';
 
 export default function SessionSummary(props: PluginSurfaceProps) {
   const [summary, setSummary] = useState<any>({});
@@ -43,7 +43,7 @@ export default function SessionSummary(props: PluginSurfaceProps) {
           <div><span>{text(props, 'ui.summary.memory_due_remaining', 'Due')}</span><strong>{memory.due_remaining || 0}</strong></div>
         </section>
       ) : null}
-      <pre>{[...completed, ...incomplete].map((goal: any) => `${goal.subject || goal.target_type}: ${goal.progress_amount}/${goal.target_amount} ${goal.unit}`).join('\n')}</pre>
+      <pre>{[...completed, ...incomplete].map((goal: any) => `${goal.subject || targetTypeLabel(props, goal.target_type)}: ${goal.progress_amount}/${goal.target_amount} ${goalUnitLabel(props, goal.unit)}`).join('\n')}</pre>
     </div>
   );
 }

@@ -68,6 +68,10 @@ svg {
 .app-shell {
   width: 100%;
   height: 100%;
+  /* Positioned containing block for absolutely-placed overlays anchored to the
+     surface (e.g. .chat-focus-overlay). The compact variant already sets this;
+     declaring it on the base keeps the full surface consistent. */
+  position: relative;
 }
 
 .avatar-cursor-overlay {
@@ -409,7 +413,7 @@ svg {
   }
 }
 /* SR-only — gives assistive tech the "in Focus" tell without any visual text
-   (the glow above is the visual cue). */
+   (the topbar badge below is aria-hidden, so this stays the single AT announce). */
 .chat-surface-focus-indicator {
   position: absolute;
   width: 1px;
@@ -420,6 +424,144 @@ svg {
   clip-path: inset(50%);
   white-space: nowrap;
   border: 0;
+}
+
+/* ===== Focus 凝神 — charge-driven edge glow =====
+   useFocusGlow (driven by the streamed `focus_charge`) sets on `.app-shell`:
+     --focus-glow            intensity 0..1 that the box-shadows scale by
+     data-focus-glow="true"  charge >= onset (0.3) — glow visible
+     data-focus-breathing    charge >= enter (0.6) — the non-linear jump + breathe
+   Below enter: a steady glow rising with charge. At/above enter: a step up to
+   the baseline + breathing whose peak scales toward the 1.0 cap (brighter, and
+   — via the slower time decay — more persistent). Compact glows the rounded
+   capsule's OUTER ring; full rings the panel via the on-top overlay (z-index 60,
+   pointer-events:none) so neither is occluded. The pill/banner is gone. */
+.chat-focus-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 900; /* above topbar/composer/messages so the band isn't occluded; below the history modal (100001) */
+  pointer-events: none;
+  border-radius: inherit;
+}
+
+/* --- Full surface: on-top inset glow band on the overlay. A DEFINED bright
+   band (thick spread border + a tight-ish halo) at HIGH alpha — needs to read
+   clearly on the large panel, not wash out into faint diffuse haze. --- */
+.app-shell:not(.chat-surface-mode-compact)[data-focus-glow="true"] .chat-focus-overlay {
+  box-shadow:
+    inset 0 0 calc(12px + 28px * var(--focus-glow, 0)) calc(1px + 4px * var(--focus-glow, 0)) rgba(150, 195, 255, calc(0.32 + 0.45 * var(--focus-glow, 0))),
+    inset 0 0 calc(30px + 64px * var(--focus-glow, 0)) calc(3px + 10px * var(--focus-glow, 0)) rgba(130, 180, 255, calc(0.2 + 0.4 * var(--focus-glow, 0)));
+}
+.app-shell:not(.chat-surface-mode-compact)[data-focus-breathing="true"] .chat-focus-overlay {
+  animation: focus-glow-breathe-full 3.4s ease-in-out infinite;
+}
+@keyframes focus-glow-breathe-full {
+  0%, 100% {
+    box-shadow:
+      inset 0 0 calc(20px * var(--focus-glow, 0.6)) calc(2px * var(--focus-glow, 0.6)) rgba(150, 195, 255, calc(0.5 * var(--focus-glow, 0.6))),
+      inset 0 0 calc(44px * var(--focus-glow, 0.6)) calc(7px * var(--focus-glow, 0.6)) rgba(130, 180, 255, calc(0.38 * var(--focus-glow, 0.6)));
+  }
+  50% {
+    box-shadow:
+      inset 0 0 calc(46px * var(--focus-glow, 0.6)) calc(9px * var(--focus-glow, 0.6)) rgba(150, 195, 255, calc(0.95 * var(--focus-glow, 0.6))),
+      inset 0 0 calc(100px * var(--focus-glow, 0.6)) calc(22px * var(--focus-glow, 0.6)) rgba(130, 180, 255, calc(0.78 * var(--focus-glow, 0.6)));
+  }
+}
+
+/* Electron /chat_full is a translucent GLASS window — the desktop shows through,
+   so the blue glow that reads well on index.html's opaque white edge loses
+   contrast. Only in the Electron runtime: raise the alpha floor hard (so even
+   the low/mid charge range is clearly visible against glass) and lift the peak.
+   index.html (no neko-electron-runtime) keeps the already-good base above. */
+body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus-glow="true"] .chat-focus-overlay {
+  box-shadow:
+    inset 0 0 calc(14px + 24px * var(--focus-glow, 0)) calc(2px + 4px * var(--focus-glow, 0)) rgba(165, 205, 255, calc(0.46 + 0.3 * var(--focus-glow, 0))),
+    inset 0 0 calc(30px + 56px * var(--focus-glow, 0)) calc(4px + 10px * var(--focus-glow, 0)) rgba(140, 185, 255, calc(0.3 + 0.3 * var(--focus-glow, 0)));
+}
+body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus-breathing="true"] .chat-focus-overlay {
+  animation: focus-glow-breathe-full-electron 3.4s ease-in-out infinite;
+}
+/* The non-linear jump at 0.6 is intentional but kept SMALL: the breathing band
+   only sits a touch above the just-below-0.6 (≈0.59) level and climbs gently to
+   the cap — not the old hard ramp to full brightness. */
+@keyframes focus-glow-breathe-full-electron {
+  0%, 100% {
+    box-shadow:
+      inset 0 0 calc(16px + 14px * var(--focus-glow, 0.6)) calc(2px + 3px * var(--focus-glow, 0.6)) rgba(165, 205, 255, calc(0.45 + 0.12 * var(--focus-glow, 0.6))),
+      inset 0 0 calc(32px + 28px * var(--focus-glow, 0.6)) calc(5px + 7px * var(--focus-glow, 0.6)) rgba(140, 185, 255, calc(0.32 + 0.1 * var(--focus-glow, 0.6)));
+  }
+  50% {
+    box-shadow:
+      inset 0 0 calc(26px + 20px * var(--focus-glow, 0.6)) calc(5px + 5px * var(--focus-glow, 0.6)) rgba(175, 210, 255, calc(0.55 + 0.15 * var(--focus-glow, 0.6))),
+      inset 0 0 calc(55px + 30px * var(--focus-glow, 0.6)) calc(12px + 10px * var(--focus-glow, 0.6)) rgba(140, 185, 255, calc(0.4 + 0.12 * var(--focus-glow, 0.6)));
+  }
+}
+
+/* --- Compact surface: outer glow on the rounded capsule frame --- */
+.app-shell.chat-surface-mode-compact[data-focus-glow="true"] .compact-chat-surface-frame {
+  box-shadow:
+    0 0 0 1px rgba(150, 190, 255, calc(0.3 + 0.5 * var(--focus-glow, 0))),
+    0 0 calc(6px + 22px * var(--focus-glow, 0)) calc(1px + 4px * var(--focus-glow, 0)) rgba(120, 170, 255, calc(0.25 + 0.55 * var(--focus-glow, 0)));
+}
+.app-shell.chat-surface-mode-compact[data-focus-breathing="true"] .compact-chat-surface-frame {
+  animation: focus-glow-breathe-compact 3.4s ease-in-out infinite;
+}
+@keyframes focus-glow-breathe-compact {
+  0%, 100% {
+    box-shadow:
+      0 0 0 1px rgba(150, 190, 255, calc(0.35 * var(--focus-glow, 0.6))),
+      0 0 calc(8px * var(--focus-glow, 0.6)) 1px rgba(120, 170, 255, calc(0.4 * var(--focus-glow, 0.6)));
+  }
+  50% {
+    box-shadow:
+      0 0 0 2px rgba(150, 190, 255, calc(0.9 * var(--focus-glow, 0.6))),
+      0 0 calc(30px * var(--focus-glow, 0.6)) calc(6px * var(--focus-glow, 0.6)) rgba(120, 170, 255, calc(0.85 * var(--focus-glow, 0.6)));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-shell:not(.chat-surface-mode-compact)[data-focus-breathing="true"] .chat-focus-overlay,
+  body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus-breathing="true"] .chat-focus-overlay,
+  .app-shell.chat-surface-mode-compact[data-focus-breathing="true"] .compact-chat-surface-frame {
+    animation: none;
+  }
+}
+
+/* --- 凝神 thinking-dots: a "…" bubble at the tail of the chat history while a
+   Focus turn thinks-on but hasn't spoken yet. Three dots ripple one→two→three
+   and back. Tinted to the same soft blue as the Focus edge glow so it reads as
+   part of the same 凝神 visual language. --- */
+.focus-thinking-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  line-height: 1;
+}
+.focus-thinking-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(120, 170, 255, 0.9);
+  opacity: 0.35;
+  animation: focus-thinking-dot-pulse 1.25s ease-in-out infinite;
+}
+.focus-thinking-dot:nth-child(2) { animation-delay: 0.18s; }
+.focus-thinking-dot:nth-child(3) { animation-delay: 0.36s; }
+@keyframes focus-thinking-dot-pulse {
+  0%, 75%, 100% { opacity: 0.3; transform: translateY(0); }
+  35% { opacity: 1; transform: translateY(-2px); }
+}
+/* Full surface: the trailing assistant row reuses the assistant bubble look; just
+   keep the dots vertically centered. */
+.focus-thinking-row .focus-thinking-bubble {
+  display: inline-flex;
+  align-items: center;
+}
+@media (prefers-reduced-motion: reduce) {
+  .focus-thinking-dot {
+    animation: none;
+    opacity: 0.75;
+  }
 }
 
 .window-topbar {
@@ -1129,6 +1271,29 @@ svg {
 
 .system-chip .message-block-text {
   white-space: normal;
+}
+
+/* 深话题预告气泡：她"有想聊的话题"的前端专属提示，斜体 + 特殊强调色，
+   与普通 system-chip 区分。纯前端展示，不进 LLM 上下文。 */
+.topic-hint-chip {
+  max-width: min(82%, 640px);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 0.76rem;
+  font-style: italic;
+  color: #7d5fc4;
+  background: rgba(130, 105, 205, 0.12);
+  border: 1px solid rgba(130, 105, 205, 0.22);
+}
+
+.topic-hint-chip-text {
+  white-space: normal;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .composer-panel {
@@ -1934,9 +2099,11 @@ svg {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  /* 选项文本只有滚动起来才能读全，所以即便在「减少动画」偏好下也保留 hover 滚动，
+     只是放慢到 1.6×、位移更平缓——而不是像以前那样直接跳到句末，让句首和句中永远看不见。 */
   .composer-galgame-option[data-composer-option-marquee="true"]:is(:hover, :focus-visible) .composer-galgame-option-text-inner {
-    animation: none;
-    transform: translateX(calc(-1 * var(--composer-option-marquee-distance, 0px)));
+    animation-name: composer-option-marquee;
+    animation-duration: calc(var(--composer-option-marquee-duration, 4800ms) * 1.6);
   }
 }
 
@@ -2044,9 +2211,9 @@ body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-g
   background:
     linear-gradient(
       90deg,
-      rgba(206, 229, 252, 0.68) 0%,
-      rgba(232, 244, 255, 0.46) 52%,
-      rgba(247, 252, 255, 0.14) 82%,
+      rgba(206, 229, 252, 0.78) 0%,
+      rgba(232, 244, 255, 0.58) 52%,
+      rgba(247, 252, 255, 0.24) 82%,
       rgba(255, 255, 255, 0) 100%
     );
   box-shadow: none;
@@ -2056,17 +2223,12 @@ body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-g
   background:
     linear-gradient(
       90deg,
-      rgba(190, 220, 249, 0.76) 0%,
-      rgba(224, 240, 255, 0.54) 52%,
-      rgba(244, 250, 255, 0.18) 82%,
+      rgba(190, 220, 249, 0.86) 0%,
+      rgba(224, 240, 255, 0.66) 52%,
+      rgba(244, 250, 255, 0.28) 82%,
       rgba(255, 255, 255, 0) 100%
     );
   border-color: transparent;
-}
-
-body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-option-text {
-  -webkit-mask-image: linear-gradient(90deg, #000 0%, #000 78%, transparent 100%);
-  mask-image: linear-gradient(90deg, #000 0%, #000 78%, transparent 100%);
 }
 
 body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-choice-layer-open="false"] {
@@ -2142,7 +2304,7 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
 }
 
 .compact-chat-surface-frame {
-  --compact-chat-minimize-ball-size: 41px;
+  --compact-chat-minimize-ball-size: 46px;
   --compact-chat-minimize-ball-inset: 2px;
   --compact-chat-minimize-ball-gap: 8px;
   --compact-chat-minimize-ball-slot: calc(
@@ -2157,6 +2319,8 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   position: relative;
   overflow: hidden;
   isolation: isolate;
+  clip-path: inset(0 round 999px);
+  background-clip: padding-box;
   display: flex;
   align-items: center;
   width: 100%;
@@ -2195,6 +2359,9 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   height: var(--compact-chat-minimize-ball-size);
   padding: 0;
   border: 0;
+  border-radius: 999px;
+  overflow: hidden;
+  contain: paint;
   background: transparent;
   cursor: grab;
   touch-action: none;
@@ -2209,19 +2376,26 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
 }
 
 .compact-chat-minimize-ball-icon {
-  width: 37px;
-  height: 37px;
-  object-fit: contain;
+  display: block;
+  width: 46px;
+  height: 40px;
+  flex: 0 0 auto;
   opacity: 0.8;
   transition: opacity 0.15s ease, transform 0.15s ease;
   pointer-events: none;
+  background-image: -webkit-image-set(url('/static/assets/neko-idle/chat-minimized-yarn-ball-compact-press-1x.png') 1x, url('/static/assets/neko-idle/chat-minimized-yarn-ball-compact-press-2x.png') 2x);
+  background-image: image-set(url('/static/assets/neko-idle/chat-minimized-yarn-ball-compact-press-1x.png') 1x, url('/static/assets/neko-idle/chat-minimized-yarn-ball-compact-press-2x.png') 2x);
+  background-position: 0 0;
+  background-repeat: no-repeat;
+  background-size: 1104px 40px;
+  image-rendering: auto;
 }
 
 .compact-chat-surface-shell:hover .compact-chat-minimize-ball-icon,
 .compact-chat-minimize-ball:hover .compact-chat-minimize-ball-icon,
 .compact-chat-minimize-ball:active .compact-chat-minimize-ball-icon {
   opacity: 1;
-  transform: scale(1.08);
+  transform: translateY(0);
 }
 
 .compact-chat-surface-frame[data-compact-tool-toggle-visible="true"]:not([data-compact-chat-state="input"]) {
@@ -2418,10 +2592,16 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   --compact-export-history-system-bubble-max-ratio: 94%;
   --compact-export-preview-bubble-max-ratio: 90%;
   --compact-export-preview-system-bubble-max-ratio: 95%;
+  --compact-export-preview-min-height: 360px;
+  --compact-export-preview-max-height: 78vh;
+  --compact-export-preview-region-height: min(
+    max(var(--compact-export-history-region-height), var(--compact-export-preview-min-height)),
+    var(--compact-export-preview-max-height)
+  );
   width: var(--compact-export-history-inline-size);
   /* 与 JS getCompactHistorySlotMaxHeight 对齐：高度上限只受屏幕(78vh)约束、不再挂对话条宽度，
      否则窄宽+高屏时 JS 允许的 slot 高 > CSS anchor 高，hit region 会被裁出死区(Codex P2)。 */
-  max-height: 78vh;
+  max-height: var(--compact-export-preview-max-height);
   transform: translateX(-50%);
   z-index: 100001;
   pointer-events: none;
@@ -2446,7 +2626,11 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   --compact-export-history-max-inline-size: calc(
     var(--compact-desktop-workarea-width, 1440px) - var(--compact-export-history-viewport-gutter)
   );
-  max-height: min(calc(var(--compact-export-surface-width) * 1.46), calc(var(--compact-desktop-workarea-height, 900px) * 0.78));
+  --compact-export-preview-max-height: min(
+    calc(var(--compact-export-surface-width) * 1.46),
+    calc(var(--compact-desktop-workarea-height, 900px) * 0.78)
+  );
+  max-height: var(--compact-export-preview-max-height);
 }
 
 .compact-export-history-panel {
@@ -2892,6 +3076,92 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   display: none;
 }
 
+/* 主动分享表情包 overlay：常显挂件，显示最新一张表情包，常显到用户开口（下一条 role==='user'
+   消息）才收起。默认贴近胶囊（offset-y 8px）；位置可用 --compact-meme-overlay-offset-y 微调。
+   ⚠️ 像素位置需在三条链路（index 宽屏 / 窄宽手机 / chat.html Electron）实测微调。 */
+.compact-meme-overlay {
+  --compact-meme-surface-width: var(--compact-surface-resize-width, var(--desktop-compact-surface-width, var(--compact-surface-width, 430px)));
+  --compact-meme-overlay-offset-y: 8px;
+  position: fixed;
+  left: calc(var(--desktop-compact-surface-left, var(--compact-surface-left, 50vw)) + (var(--compact-meme-surface-width) / 2));
+  bottom: calc(100vh - var(--desktop-compact-surface-top, var(--compact-surface-top, 68vh)) + var(--compact-meme-overlay-offset-y));
+  box-sizing: border-box;
+  width: min(calc(var(--compact-meme-surface-width) - 16px), 240px, calc(100vw - 24px));
+  transform: translateX(-50%);
+  z-index: 8;
+  /* 居中 inline-block 的 frame（frame 收紧到图片尺寸，让关闭叉贴图片角）。 */
+  text-align: center;
+  /* 被动展示，不接收指针事件——让点击穿透到桌面/下层，且不被 Electron pass-through 当可交互 island。
+     注：pointer-events 会继承给子元素，所以图片区也穿透；唯独关闭叉按钮单独开 auto 才可点。 */
+  pointer-events: none;
+  -webkit-app-region: no-drag;
+}
+
+/* 同一轮既推表情包又放歌时，音乐条占据胶囊正上方那一档；表情包上移到音乐条上方让位，避免重叠。
+   只有这种共存场景才需要大 offset，单表情包仍贴近胶囊（上面的 8px）。 */
+.app-shell:has(#music-player-mount.compact-music-player-mount:not(:empty)) .compact-meme-overlay {
+  --compact-meme-overlay-offset-y: 96px;
+}
+
+.compact-meme-overlay img {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  max-height: 200px;
+  margin: 0 auto;
+  object-fit: contain;
+  border-radius: 12px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+}
+
+/* 关闭叉的定位框：inline-block 收紧到图片实际尺寸，叉子绝对定位到框右上角＝图片右上角。
+   pointer-events 继承 overlay 的 none（图片区继续穿透），只有下面的按钮单独开 auto。 */
+.compact-meme-overlay-frame {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+}
+
+.compact-meme-overlay-close {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  line-height: 0;
+  cursor: pointer;
+  /* overlay 整体 pointer-events:none（含图片区，点击穿透）；唯独这个按钮开 auto 才接得住点击。 */
+  pointer-events: auto;
+  -webkit-app-region: no-drag;
+  opacity: 0.85;
+  transition: opacity 0.16s ease, background 0.16s ease, transform 0.16s ease;
+  z-index: 1;
+}
+
+.compact-meme-overlay-close:hover {
+  background: rgba(0, 0, 0, 0.68);
+  opacity: 1;
+  transform: scale(1.06);
+}
+
+.compact-meme-overlay-close:active {
+  transform: scale(0.96);
+}
+
+.compact-meme-overlay-close-icon {
+  display: block;
+  width: 12px;
+  height: 12px;
+  pointer-events: none;
+}
+
 #music-player-mount.compact-music-player-mount[data-compact-music-player-visibility="closing"],
 #music-player-mount.compact-music-player-mount[data-compact-music-player-visibility="closed"] {
   opacity: 0;
@@ -3122,16 +3392,20 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
    但动画规则原本只在 host 的 static/css/index.css。Vite dev / 独立 React bundle 路径下没有
    index.css，class 会失效、擦除/挤压不跑（Codex P2）。这里在 bundle 自带的 styles.css 里镜像
    同一套规则，保证组件自带动画 CSS。两份保持一致。 */
-@keyframes neko-compact-minimize-press {
-  0%   { transform: scale(1, 1); }
-  30%  { transform: scale(1.12, 0.74); }
-  58%  { transform: scale(0.94, 1.08); }
-  80%  { transform: scale(1.03, 0.97); }
-  100% { transform: scale(1, 1); }
+@keyframes neko-compact-minimize-press-frame {
+  from { background-position: 0 0; }
+  to { background-position: -1058px 0; }
+}
+@keyframes neko-compact-minimize-press-move {
+  0%   { transform: translateY(0); opacity: 1; }
+  30%  { transform: translateY(3px); opacity: 1; }
+  58%  { transform: translateY(-1px); opacity: 1; }
+  80%  { transform: translateY(0); opacity: 1; }
+  100% { transform: translateY(0); opacity: 1; }
 }
 .compact-chat-minimize-ball-icon.neko-minimize-ball-pressing {
   transform-origin: center bottom;
-  animation: neko-compact-minimize-press 420ms cubic-bezier(0.3, 0.8, 0.4, 1) both;
+  animation: neko-compact-minimize-press-frame 420ms steps(23, end) both, neko-compact-minimize-press-move 420ms cubic-bezier(0.3, 0.8, 0.4, 1) both;
 }
 @keyframes neko-compact-collapse-wipe {
   from { -webkit-mask-position: 0% 0;   mask-position: 0% 0; }
@@ -3302,8 +3576,8 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   align-items: stretch;
   gap: 8px;
   width: 100%;
-  height: var(--compact-export-history-region-height);
-  max-height: var(--compact-export-history-region-height);
+  height: var(--compact-export-preview-region-height);
+  max-height: var(--compact-export-preview-region-height);
   border-radius: 18px;
   padding: 9px;
   overflow: hidden;
@@ -3747,9 +4021,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   --compact-tool-wheel-charge-first-angle: 0deg;
   --compact-tool-wheel-charge-second-angle: 0deg;
   --compact-tool-wheel-charge-third-angle: 0deg;
-  --compact-tool-wheel-selection-angle: 29.59deg;
-  --compact-tool-wheel-selection-pointer-deflection-angle: 0deg;
-  --compact-tool-wheel-selection-pointer-deflection-shift: 0px;
+  --compact-tool-wheel-selection-angle: 45deg;
   --compact-tool-preview-fade-left: linear-gradient(99deg, rgba(0, 0, 0, 0.04) 0%, rgba(0, 0, 0, 0.52) 46%, #000 100%);
   --compact-tool-preview-fade-right: linear-gradient(172deg, rgba(0, 0, 0, 0.04) 0%, rgba(0, 0, 0, 0.52) 46%, #000 100%);
   position: absolute;
@@ -3892,13 +4164,11 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   transform:
     translate(-1px, -50%)
     rotate(var(--compact-tool-wheel-selection-angle))
-    translateX(43px)
-    translateY(var(--compact-tool-wheel-selection-pointer-deflection-shift))
-    rotate(var(--compact-tool-wheel-selection-pointer-deflection-angle));
+    translateX(43px);
   transform-origin: 1px 50%;
   transition:
     opacity 0.16s ease,
-    transform 0.08s cubic-bezier(0.18, 0.86, 0.32, 1.24);
+    transform 0.14s cubic-bezier(0.22, 0.78, 0.24, 1);
   z-index: 4;
 }
 
@@ -3983,9 +4253,9 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 }
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] button.compact-input-tool-item:not(:disabled)[data-compact-tool-pointer-hovered="true"] > .compact-input-tool-tooltip,
-.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] button.compact-input-tool-item:not(:disabled):focus-within > .compact-input-tool-tooltip,
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] button.compact-input-tool-item:not(:disabled):focus-visible > .compact-input-tool-tooltip,
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item-avatar[data-compact-tool-pointer-hovered="true"]:has(> .composer-emoji-btn:not(:disabled)) > .compact-input-tool-tooltip,
-.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item-avatar:has(> .composer-emoji-btn:not(:disabled)):focus-within > .compact-input-tool-tooltip {
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item-avatar:has(> .composer-emoji-btn:not(:disabled):focus-visible) > .compact-input-tool-tooltip {
   opacity: 1;
   transform: translate(0, 0);
 }
@@ -4103,6 +4373,14 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   box-shadow: var(--compact-tool-button-active-shadow);
 }
 
+.compact-input-tool-fan button.compact-input-tool-item[data-compact-tool-active="true"]:not(:disabled)[data-compact-tool-pointer-hovered="true"]::after,
+.compact-input-tool-fan button.compact-input-tool-item[data-compact-tool-active="true"]:not(:disabled):focus-within::after,
+.compact-input-tool-fan .compact-input-tool-item-avatar[data-compact-tool-active="true"][data-compact-tool-pointer-hovered="true"]:has(> .composer-emoji-btn:not(:disabled))::after,
+.compact-input-tool-fan .compact-input-tool-item-avatar[data-compact-tool-active="true"]:has(> .composer-emoji-btn:not(:disabled)):focus-within::after {
+  background: var(--compact-tool-button-active-fill);
+  box-shadow: var(--compact-tool-button-active-shadow);
+}
+
 .compact-input-tool-fan .compact-input-tool-item[data-compact-tool-active="true"]::before {
   content: "";
   position: absolute;
@@ -4198,6 +4476,78 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="hidden-backward"] {
   transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(138.51deg) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(-138.51deg) scale(0.56);
+}
+
+/* Used when the default arc would overflow the visible screen/work area. */
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] {
+  --compact-tool-wheel-selection-angle: -125deg;
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="hidden"],
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="hidden-forward"],
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="hidden-backward"] {
+  transition: none;
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="hidden"] {
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(calc(-140deg + var(--compact-tool-wheel-drag-angle))) translateX(calc(var(--compact-tool-wheel-orbit-radius) * 0.2)) rotate(calc(140deg + var(--compact-tool-wheel-drag-counter-angle))) scale(0.56);
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="hidden-forward"] {
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(calc(-50deg + var(--compact-tool-wheel-drag-angle))) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(calc(50deg + var(--compact-tool-wheel-drag-counter-angle))) scale(0.56);
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="hidden-backward"] {
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(calc(-230deg + var(--compact-tool-wheel-drag-angle))) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(calc(230deg + var(--compact-tool-wheel-drag-counter-angle))) scale(0.56);
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"],
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-1"],
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="0"],
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="1"],
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] {
+  opacity: 1;
+  pointer-events: auto;
+  transition: none;
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"],
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] {
+  pointer-events: none;
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] {
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(calc(-200deg + var(--compact-tool-wheel-drag-angle))) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(calc(200deg + var(--compact-tool-wheel-drag-counter-angle))) scale(0.86);
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-1"] {
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(calc(-170deg + var(--compact-tool-wheel-drag-angle))) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(calc(170deg + var(--compact-tool-wheel-drag-counter-angle))) scale(0.98);
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="0"] {
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(calc(-140deg + var(--compact-tool-wheel-drag-angle))) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(calc(140deg + var(--compact-tool-wheel-drag-counter-angle))) scale(1.04);
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="1"] {
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(calc(-110deg + var(--compact-tool-wheel-drag-angle))) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(calc(110deg + var(--compact-tool-wheel-drag-counter-angle))) scale(0.98);
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] {
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(calc(-80deg + var(--compact-tool-wheel-drag-angle))) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(calc(80deg + var(--compact-tool-wheel-drag-counter-angle))) scale(0.86);
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"]::after,
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] > img,
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] > svg,
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] > .composer-galgame-btn-glyph,
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] > .composer-tool-btn,
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"]::after,
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] > img,
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] > svg,
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] > .composer-galgame-btn-glyph,
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] > .composer-tool-btn {
+  -webkit-mask-image: none;
+  mask-image: none;
 }
 
 .compact-input-tool-fan .composer-tool-btn img {
@@ -4498,6 +4848,12 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   position: fixed;
   left: var(--avatar-tool-manager-left);
   top: var(--avatar-tool-manager-top);
+}
+
+.avatar-tool-manager-dialog.is-desktop-compact-layout {
+  width: var(--avatar-tool-manager-width, 380px);
+  height: var(--avatar-tool-manager-height, 600px);
+  max-height: var(--avatar-tool-manager-max-height, 600px);
 }
 
 .avatar-tool-manager-dialog.is-dragging {
@@ -4984,59 +5340,6 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
     padding: 5px 62px 5px var(--compact-chat-minimize-ball-slot);
   }
 
-  /* Only use the phone fallback when the original wheel geometry would overflow the viewport. */
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] {
-    --compact-tool-wheel-selection-angle: -125deg;
-  }
-
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"],
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-1"],
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="0"],
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="1"],
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] {
-    opacity: 1;
-    pointer-events: auto;
-    transition: none;
-  }
-
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"],
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] {
-    pointer-events: none;
-  }
-
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] {
-    transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(calc(-200deg + var(--compact-tool-wheel-drag-angle))) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(calc(200deg + var(--compact-tool-wheel-drag-counter-angle))) scale(0.86);
-  }
-
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-1"] {
-    transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(calc(-170deg + var(--compact-tool-wheel-drag-angle))) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(calc(170deg + var(--compact-tool-wheel-drag-counter-angle))) scale(0.98);
-  }
-
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="0"] {
-    transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(calc(-140deg + var(--compact-tool-wheel-drag-angle))) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(calc(140deg + var(--compact-tool-wheel-drag-counter-angle))) scale(1.04);
-  }
-
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="1"] {
-    transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(calc(-110deg + var(--compact-tool-wheel-drag-angle))) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(calc(110deg + var(--compact-tool-wheel-drag-counter-angle))) scale(0.98);
-  }
-
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] {
-    transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(calc(-80deg + var(--compact-tool-wheel-drag-angle))) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(calc(80deg + var(--compact-tool-wheel-drag-counter-angle))) scale(0.86);
-  }
-
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"]::after,
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] > img,
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] > svg,
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] > .composer-galgame-btn-glyph,
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] > .composer-tool-btn,
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"]::after,
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] > img,
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] > svg,
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] > .composer-galgame-btn-glyph,
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] > .composer-tool-btn {
-    -webkit-mask-image: none;
-    mask-image: none;
-  }
 }
 
 /* ===================================================================
@@ -5305,6 +5608,12 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   color: #7a8494;
 }
 
+[data-theme="dark"] .topic-hint-chip {
+  color: #c2acf2;
+  background: rgba(124, 104, 184, 0.24);
+  border-color: rgba(150, 128, 214, 0.36);
+}
+
 /* --- 输入区域 --- */
 [data-theme="dark"] .composer-panel {
   background: rgba(28, 28, 46, 0.91);
@@ -5479,9 +5788,9 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   background:
     linear-gradient(
       90deg,
-      rgba(55, 113, 164, 0.58) 0%,
-      rgba(43, 83, 124, 0.38) 52%,
-      rgba(25, 54, 84, 0.14) 82%,
+      rgba(55, 113, 164, 0.70) 0%,
+      rgba(43, 83, 124, 0.50) 52%,
+      rgba(25, 54, 84, 0.24) 82%,
       rgba(8, 17, 30, 0) 100%
     );
   border-color: transparent;
@@ -5492,9 +5801,9 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   background:
     linear-gradient(
       90deg,
-      rgba(66, 132, 188, 0.66) 0%,
-      rgba(50, 98, 145, 0.46) 52%,
-      rgba(30, 65, 100, 0.18) 82%,
+      rgba(66, 132, 188, 0.78) 0%,
+      rgba(50, 98, 145, 0.58) 52%,
+      rgba(30, 65, 100, 0.28) 82%,
       rgba(8, 17, 30, 0) 100%
     );
   border-color: transparent;
@@ -5874,7 +6183,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   }
 
   .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item[data-compact-tool-pointer-hovered="true"] > .compact-input-tool-tooltip,
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item:focus-within > .compact-input-tool-tooltip {
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item:has(:focus-visible) > .compact-input-tool-tooltip {
     transform: translate(0, 0);
   }
 

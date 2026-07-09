@@ -188,6 +188,68 @@
         return visualPx / Math.max(clampOverlayScale(scale), 0.001);
     }
 
+    function makePlacementRect(rect) {
+        if (!rect) return null;
+        const left = Number.isFinite(Number(rect.left)) ? Number(rect.left) : Number(rect.x);
+        const top = Number.isFinite(Number(rect.top)) ? Number(rect.top) : Number(rect.y);
+        const width = Number(rect.width);
+        const height = Number(rect.height);
+        if (!Number.isFinite(left) || !Number.isFinite(top) ||
+            !Number.isFinite(width) || !Number.isFinite(height)) {
+            return null;
+        }
+        return {
+            x: left,
+            y: top,
+            left,
+            top,
+            width,
+            height,
+            right: left + width,
+            bottom: top + height
+        };
+    }
+
+    function getNiriPetPhysicalCropPlacementApi() {
+        const api = window.__nekoNiriPetPhysicalCrop;
+        if (!api || typeof api.isActive !== 'function') return null;
+        try {
+            return api.isActive() ? api : null;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function getNiriPetPhysicalCropViewport(api) {
+        if (!api || typeof api.getState !== 'function') return null;
+        try {
+            const state = api.getState();
+            const bounds = state && state.virtualBounds;
+            const width = Number(bounds && bounds.width);
+            const height = Number(bounds && bounds.height);
+            if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null;
+            return { width, height };
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function toPlacementRect(rect, api) {
+        const normalized = makePlacementRect(rect);
+        if (!normalized || !api || typeof api.toVirtualRect !== 'function') return normalized;
+        try {
+            const virtualRect = api.toVirtualRect({
+                x: normalized.left,
+                y: normalized.top,
+                width: normalized.width,
+                height: normalized.height
+            });
+            return makePlacementRect(virtualRect) || normalized;
+        } catch (_) {
+            return normalized;
+        }
+    }
+
     function formatSidePanelTransform(container, motion = 'none') {
         const scale = clampOverlayScale(container && container.dataset ? container.dataset.nekoUiScale : 1);
         const motionPart = motion && motion !== 'none' ? String(motion) : '';
@@ -222,10 +284,13 @@
         const ownerPrefix = getPopupOwnerPrefix(popup) || String(buttonPrefix).replace(/-btn-$/, '');
         const sidePanelScale = getFloatingButtonScale(ownerPrefix, popup);
         const effectiveSidePanelWidth = sidePanelWidth * sidePanelScale;
+        const niriCropApi = getNiriPetPhysicalCropPlacementApi();
+        const niriViewport = getNiriPetPhysicalCropViewport(niriCropApi);
+        const placementApi = niriViewport ? niriCropApi : null;
 
         const triggerIcon = document.querySelector(`.${triggerPrefix}${buttonId}`);
-        const screenWidth = window.innerWidth;
-        const screenHeight = window.innerHeight;
+        const screenWidth = niriViewport ? niriViewport.width : window.innerWidth;
+        const screenHeight = niriViewport ? niriViewport.height : window.innerHeight;
         let opensLeft = false;
 
         // ── 关键修复：先重置到默认右弹位置再测量 ──
@@ -234,7 +299,7 @@
         void popup.offsetHeight; // 强制 reflow，确保测量基于默认位置
 
         // Horizontal overflow handling.
-        let popupRect = popup.getBoundingClientRect();
+        let popupRect = toPlacementRect(popup.getBoundingClientRect(), placementApi);
         // 考虑侧面板宽度：如果 popup + gap + 侧面板一起会溢出右边缘，提前选择向左弹出
         // sidePanelWidth 是纯面板宽度（不含 gap），gap 在此处统一添加
         const effectiveRight = effectiveSidePanelWidth > 0
@@ -269,17 +334,17 @@
         popup.dataset.opensLeft = String(opensLeft);
 
         // Vertical overflow handling.
-        popupRect = popup.getBoundingClientRect();
+        popupRect = toPlacementRect(popup.getBoundingClientRect(), placementApi);
         const currentTop = toNumber(popup.style.top, 0);
         let nextTop = currentTop;
         if (popupRect.bottom > screenHeight - bottomMargin) {
-            nextTop -= (popupRect.bottom - (screenHeight - bottomMargin));
+            nextTop -= toLocalCssPx(popupRect.bottom - (screenHeight - bottomMargin), sidePanelScale);
         }
         popup.style.top = `${nextTop}px`;
 
-        popupRect = popup.getBoundingClientRect();
+        popupRect = toPlacementRect(popup.getBoundingClientRect(), placementApi);
         if (popupRect.top < topMargin) {
-            popup.style.top = `${toNumber(popup.style.top, 0) + (topMargin - popupRect.top)}px`;
+            popup.style.top = `${toNumber(popup.style.top, 0) + toLocalCssPx(topMargin - popupRect.top, sidePanelScale)}px`;
         }
 
         return { opensLeft };
@@ -370,7 +435,11 @@
         // ── Step 0.5：手机端特殊处理：向下展开而非向左/向右 ──
         // Electron Pet 窗口永不进入手机模式，统一走 canonical 谓词。
         const screenWidth = window.innerWidth;
-        const isMobile = typeof window.isMobileWidth === 'function' ? window.isMobileWidth() : (screenWidth <= 768);
+        const niriCropApi = getNiriPetPhysicalCropPlacementApi();
+        const niriViewport = getNiriPetPhysicalCropViewport(niriCropApi);
+        const placementApi = niriViewport ? niriCropApi : null;
+        const isNiriPetPhysicalCrop = !!placementApi;
+        const isMobile = !isNiriPetPhysicalCrop && (typeof window.isMobileWidth === 'function' ? window.isMobileWidth() : (screenWidth <= 768));
         const goDown = isMobile;
         container.dataset.goDown = String(goDown);
 
@@ -378,14 +447,17 @@
         const popup = container._popupElement;
         // 如果 opensLeft 未设置，默认为 true（保守策略：面板放在按钮左侧）
         // 手机端忽略此设置，始终向下展开
-        const goLeft = popup ? (popup.dataset.opensLeft === 'true' || !popup.dataset.opensLeft) : true;
+        const goLeft = isNiriPetPhysicalCrop
+            ? false
+            : (popup ? (popup.dataset.opensLeft === 'true' || !popup.dataset.opensLeft) : true);
         container.dataset.goLeft = String(goLeft);
+        container.dataset.niriPhysicalCropPositioned = 'false';
 
         // ── Step 2：基于 popup 实际位置定位（取代基于 button zone 定位） ──
-        const popupRect = popup ? popup.getBoundingClientRect() : anchor.getBoundingClientRect();
-        const anchorRect = anchor.getBoundingClientRect();
-        const screenW = window.innerWidth;
-        const screenH = window.innerHeight;
+        const popupRect = toPlacementRect(popup ? popup.getBoundingClientRect() : anchor.getBoundingClientRect(), placementApi);
+        const anchorRect = toPlacementRect(anchor.getBoundingClientRect(), placementApi);
+        const screenW = niriViewport ? niriViewport.width : window.innerWidth;
+        const screenH = niriViewport ? niriViewport.height : window.innerHeight;
         const panelW = container.offsetWidth * panelScale;
         const panelH = container.offsetHeight * panelScale;
         let entryMotion = 'translateX(-6px)';
@@ -453,6 +525,11 @@
             if (topVal + panelH > screenH - bottomSafe) topVal = screenH - bottomSafe - panelH;
             if (topVal < edgeMargin) topVal = edgeMargin;
             container.style.top = `${topVal}px`;
+        }
+
+        if (isNiriPetPhysicalCrop) {
+            container.dataset.niriPhysicalCropPositioned = 'true';
+            return;
         }
 
         // ── Step 4：按钮禁区安全验证（降级为 fallback，不再是主逻辑）── 非手机端执行

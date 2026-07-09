@@ -415,9 +415,6 @@ def test_app_auto_goodbye_phase1_harness():
           dragEnd();
           home.tickAll();
           assert(home.win.nekoAutoGoodbye.getState().visualTier === 'cat3', 'first CAT3 drag should keep CAT3');
-          dragEnd();
-          home.tickAll();
-          assert(home.win.nekoAutoGoodbye.getState().visualTier === 'cat3', 'second CAT3 drag should keep CAT3');
           home.win.dispatchEvent(new CustomEventLike('neko:return-ball-manual-move', {{
             detail: {{ reason: 'return-ball-drag-end', movedDistancePx: 0, dragCancelled: true }}
           }}));
@@ -425,7 +422,7 @@ def test_app_auto_goodbye_phase1_harness():
           assert(home.win.nekoAutoGoodbye.getState().visualTier === 'cat3', 'cancelled CAT3 drag should not count toward drag demotion');
           dragEnd();
           home.tickAll();
-          assert(home.win.nekoAutoGoodbye.getState().visualTier === 'cat2', 'third CAT3 drag should step back to CAT2');
+          assert(home.win.nekoAutoGoodbye.getState().visualTier === 'cat2', 'second CAT3 drag should step back to CAT2');
           assert(home.win.nekoAutoGoodbye.getState().lastInteractionAt === cat3Baseline, 'CAT3 drag demotion should not refresh idle baseline');
 
           dragEnd();
@@ -881,7 +878,10 @@ def test_app_interpage_relays_idle_chat_minimized_state_to_pet_window():
     assert "case 'idle_chat_minimized_state':" in source
     assert "function dispatchIdleChatMinimizedState(detail)" in source
     assert "new CustomEvent('neko:idle-chat-minimized-state'" in source
-    assert "nekoBroadcastChannel.postMessage(Object.assign({" in source
+    assert "postInterpageMessage(Object.assign({" in source
+    assert "function isHighVolumeBroadcastChannelAction(action)" in source
+    assert "action === 'idle_chat_minimized_state'" in source
+    assert "if (!isHighVolumeBroadcastChannelAction(message.action))" in source
 
 
 def test_app_interpage_relays_idle_chat_pair_move_bounds_to_chat_window():

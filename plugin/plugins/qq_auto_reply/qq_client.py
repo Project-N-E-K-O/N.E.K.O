@@ -6,6 +6,7 @@ QQ 客户端封装（基于 OneBot 协议）
 
 import asyncio
 import json
+import re
 import secrets
 from typing import Any, Dict, Optional
 import websockets
@@ -13,6 +14,64 @@ import websockets
 
 class QQClient:
     """OneBot 协议客户端"""
+
+    @staticmethod
+    def _looks_like_path(value: str) -> bool:
+        text = str(value or "").strip()
+        if not text:
+            return False
+        if text.startswith("file://"):
+            return True
+        if re.match(r"^[A-Za-z]:[\\/]", text):
+            return True
+        return text.startswith("/")
+
+    @classmethod
+    def _build_image_attachment(cls, segment: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        if not isinstance(segment, dict) or segment.get("type") != "image":
+            return None
+        data = segment.get("data")
+        if not isinstance(data, dict):
+            return None
+        raw_url = str(data.get("url") or "").strip()
+        raw_path = str(data.get("path") or "").strip()
+        raw_file = str(data.get("file") or "").strip()
+        locator_type = ""
+        locator_value = ""
+        if raw_url:
+            locator_type = "url"
+            locator_value = raw_url
+        elif raw_path:
+            locator_type = "path"
+            locator_value = raw_path
+        elif raw_file:
+            locator_type = "path" if cls._looks_like_path(raw_file) else "file"
+            locator_value = raw_file
+        if not locator_value:
+            return None
+        attachment = {
+            "type": "image_url",
+            "url": locator_value,
+            "locator_type": locator_type,
+            "source": "onebot:image",
+        }
+        if raw_path:
+            attachment["path"] = raw_path
+        if raw_file:
+            attachment["file"] = raw_file
+        return attachment
+
+    @classmethod
+    def _extract_attachments(cls, raw_msg: Dict[str, Any]) -> list[Dict[str, Any]]:
+        segments = raw_msg.get("message")
+        if not isinstance(segments, list):
+            return []
+        attachments: list[Dict[str, Any]] = []
+        for segment in segments:
+            attachment = cls._build_image_attachment(segment)
+            if attachment:
+                attachments.append(attachment)
+        return attachments
 
     def __init__(self, onebot_url: str, token: Optional[str] = None, logger=None):
         self.onebot_url = onebot_url
@@ -167,6 +226,7 @@ class QQClient:
                 "message_id": raw_msg.get("message_id"),
                 "timestamp": raw_msg.get("time"),
                 "raw": raw_msg,
+                "attachments": self._extract_attachments(raw_msg),
             }
 
             if msg_type == "group":
@@ -261,6 +321,37 @@ class QQClient:
         await self.ws.send(json.dumps(payload))
         if self.logger:
             self.logger.debug(f"Sent group message to {group_id}")
+
+    async def send_private_message_segments(self, user_id: str, segments: list[Dict[str, Any]]):
+        """发送私聊消息片段"""
+        if not self.ws:
+            raise RuntimeError("Not connected to OneBot")
+
+        payload = {
+            "action": "send_private_msg",
+            "params": {
+                "user_id": int(user_id),
+                "message": segments,
+            },
+        }
+
+        await self.ws.send(json.dumps(payload))
+        if self.logger:
+            self.logger.debug(f"Sent segmented private message to {user_id}")
+
+    async def send_private_record(self, user_id: str, file_uri: str):
+        """发送私聊语音"""
+        await self.send_private_message_segments(user_id, [{"type": "record", "data": {"file": str(file_uri or "")}}])
+
+    async def send_group_record(self, group_id: str, file_uri: str, *, reply_message_id: str = "", at_user_id: str = ""):
+        """发送群聊语音"""
+        segments: list[Dict[str, Any]] = []
+        if str(reply_message_id or "").strip():
+            segments.append({"type": "reply", "data": {"id": str(reply_message_id)}})
+        if str(at_user_id or "").strip():
+            segments.append({"type": "at", "data": {"qq": str(at_user_id)}})
+        segments.append({"type": "record", "data": {"file": str(file_uri or "")}})
+        await self.send_group_message_segments(group_id, segments)
 
     async def send_group_message_segments(self, group_id: str, segments: list[Dict[str, Any]]):
         """发送群聊消息片段"""

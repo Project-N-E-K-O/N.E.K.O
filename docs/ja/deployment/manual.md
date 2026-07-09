@@ -57,18 +57,18 @@ uv run python launcher.py
 
 ```bash
 # ターミナル 1 -- メモリサーバー（必須）
-uv run python memory_server.py
+uv run python app/memory_server.py
 
 # ターミナル 2 -- メインサーバー（必須）
-uv run python main_server.py
+uv run python app/main_server.py
 
 # ターミナル 3 -- エージェントサーバー（オプション）
-uv run python agent_server.py
+uv run python app/agent_server.py
 ```
 
 補足:
 
-- 本番の Steam Auto-Cloud 主経路を検証したい場合は、引き続き Steam またはデスクトップランチャー経由で起動してください。現在は Windows / macOS / Linux のソース実行でも、Steam が起動中かつログイン済みであれば RemoteStorage bundle helper を使ったクロスデバイス検証が可能ですが、この経路はあくまで開発用の互換パスであり、パッケージ版の主同期経路ではありません。
+- 本番の Steam クラウド経路を検証する場合は、Steam またはデスクトップランチャー経由で起動してください。Windows / macOS / Linux のパッケージ版とソース実行は、Steam が起動中かつログイン済みであれば RemoteStorage bundle helper を使用します。同時に、Steam 側の Auto-Cloud ルールがプラットフォームの anchor パスと一致している場合は、従来どおり生の `cloudsave/` ディレクトリも同期されます。
 - 手動の 3 サーバーモードでは、必要に応じて `main_server` がフォールバックのスナップショット import を実行し、その後 `memory_server` に reload を通知しようとします。
 - shutdown では実行中データを `cloudsave/` に自動で書き戻しません。Steam に新しいキャラクターデータをアップロードしたい場合は、終了前に Cloud Save Manager から対象キャラクターの staged snapshot を手動で生成または上書きしてください。
 - macOS でソース実行したときに「Apple は `SteamworksPy.dylib` を検証できません」と表示される場合、通常は Gatekeeper がローカルの未公証 Steamworks ライブラリをブロックしています。まずプロジェクトのルートディレクトリから起動していることを確認してください。まだブロックされる場合は、リポジトリルートで次を実行します:
@@ -79,7 +79,7 @@ codesign --force --sign - steamworks/libsteam_api.dylib
 codesign --force --sign - steamworks/SteamworksPy.dylib
 ```
 
-- その後、`uv run python launcher.py` または `uv run python main_server.py` を再実行してください。
+- その後、`uv run python launcher.py` または `uv run python app/main_server.py` を再実行してください。
 
 ## 設定
 
@@ -93,7 +93,7 @@ codesign --force --sign - steamworks/SteamworksPy.dylib
 ```bash
 export NEKO_CORE_API_KEY="sk-your-key"
 export NEKO_CORE_API="qwen"
-uv run python main_server.py
+uv run python app/main_server.py
 ```
 
 ## 代替手段: pip install
@@ -104,8 +104,8 @@ uv よりも pip を使用したい場合：
 python3.11 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-python memory_server.py
-python main_server.py
+python app/memory_server.py
+python app/main_server.py
 ```
 
 ## 確認

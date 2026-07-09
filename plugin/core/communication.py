@@ -29,6 +29,7 @@ from plugin.core.zmq_transport import (
 )
 
 _T = TypeVar("_T")
+STARTUP_RESULT_REQ_ID = "__plugin_startup__"
 
 
 @dataclass
@@ -50,6 +51,7 @@ class PluginCommunicationResourceManager:
     _message_target_queue: Optional[asyncio.Queue] = None
     _background_tasks: set[asyncio.Task] = field(default_factory=set)
     _owner_loop: Optional[asyncio.AbstractEventLoop] = None
+    _startup_result: Optional[dict] = field(default=None, init=False, repr=False)
     _last_forward_log_key: Optional[tuple] = field(default=None, init=False, repr=False)
     _last_forward_log_time: float = field(default=0.0, init=False, repr=False)
     _last_forward_log_repeat_count: int = field(default=0, init=False, repr=False)
@@ -89,6 +91,54 @@ class PluginCommunicationResourceManager:
 
     async def start(self, message_target_queue: Optional[asyncio.Queue] = None) -> None:
         await self._run_on_owner_loop(self._start_local(message_target_queue=message_target_queue))
+
+    async def _prepare_startup_wait_local(self) -> None:
+        existing = self._pending_futures.pop(STARTUP_RESULT_REQ_ID, None)
+        if existing is not None and not existing.done():
+            existing.cancel()
+        self._startup_result = None
+        self._pending_futures[STARTUP_RESULT_REQ_ID] = asyncio.get_running_loop().create_future()
+
+    async def prepare_startup_wait(self) -> None:
+        await self._run_on_owner_loop(self._prepare_startup_wait_local())
+
+    async def _wait_for_startup_local(self, timeout: float, allow_startup_error: bool = False) -> Any:
+        result = self._startup_result
+        if result is None:
+            future = self._pending_futures.get(STARTUP_RESULT_REQ_ID)
+            if future is None:
+                future = asyncio.get_running_loop().create_future()
+                self._pending_futures[STARTUP_RESULT_REQ_ID] = future
+            try:
+                result = await asyncio.wait_for(future, timeout=timeout)
+            except asyncio.TimeoutError:
+                self._pending_futures.pop(STARTUP_RESULT_REQ_ID, None)
+                raise TimeoutError(
+                    f"Plugin {self.plugin_id} startup timed out after {timeout}s"
+                ) from None
+
+        self._pending_futures.pop(STARTUP_RESULT_REQ_ID, None)
+        self._startup_result = None
+        if isinstance(result, dict):
+            data = result.get("data")
+            if isinstance(data, dict) and data.get("startup_error"):
+                if allow_startup_error:
+                    return data
+                raise RuntimeError(str(data["startup_error"]))
+            if result.get("success"):
+                return data
+            error = result.get("error")
+        else:
+            error = result
+        raise RuntimeError(str(error or "plugin startup failed"))
+
+    async def wait_for_startup(self, timeout: float, allow_startup_error: bool = False) -> Any:
+        return await self._run_on_owner_loop(
+            self._wait_for_startup_local(
+                timeout=timeout,
+                allow_startup_error=allow_startup_error,
+            )
+        )
 
     async def _shutdown_local(self, timeout: float = PLUGIN_SHUTDOWN_TIMEOUT) -> None:
         self.logger.debug("Shutting down communication for plugin {}", self.plugin_id)
@@ -420,7 +470,10 @@ class PluginCommunicationResourceManager:
         if fut:
             if not fut.done():
                 fut.set_result(res)
-            self._pending_futures.pop(req_id, None)
+            if req_id != STARTUP_RESULT_REQ_ID:
+                self._pending_futures.pop(req_id, None)
+        elif req_id == STARTUP_RESULT_REQ_ID:
+            self._startup_result = res
         else:
             self.logger.warning(
                 "Result for unknown req_id {} from plugin {}. Known: {}",

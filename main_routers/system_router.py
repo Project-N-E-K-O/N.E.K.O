@@ -55,7 +55,13 @@ from uuid import uuid4
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 from openai import APIConnectionError, InternalServerError, RateLimitError
-from utils.llm_client import SystemMessage, HumanMessage, ThinkingStreamStripper, create_chat_llm_async
+from utils.llm_client import (
+    SystemMessage,
+    HumanMessage,
+    ThinkingStreamStripper,
+    anthropic_retry_error_types,
+    create_chat_llm_async,
+)
 from utils.tokenize import count_tokens
 import ssl
 import httpx
@@ -73,6 +79,135 @@ from PIL import Image
 #     that's a few milliseconds saved per turn, but more importantly avoids
 #     the cold-start case where the first thread hop can take much longer.
 from cachetools import TTLCache
+
+_PROACTIVE_LLM_RETRY_ERROR_TYPES = (
+    asyncio.TimeoutError,
+    APIConnectionError,
+    InternalServerError,
+    RateLimitError,
+    *anthropic_retry_error_types(),
+)
+
+PROACTIVE_REASON_CHAT_DELIVERED = "CHAT_DELIVERED"
+PROACTIVE_REASON_PASS_BUSY = "PASS_BUSY"
+PROACTIVE_REASON_PASS_ACTIVITY_BUSY = "PASS_ACTIVITY_BUSY"
+PROACTIVE_REASON_PASS_DELIVERY_BUSY = "PASS_DELIVERY_BUSY"
+PROACTIVE_REASON_PASS_DISABLED = "PASS_DISABLED"
+PROACTIVE_REASON_PASS_ROUTE_ACTIVE = "PASS_ROUTE_ACTIVE"
+PROACTIVE_REASON_PASS_PRIVACY = "PASS_PRIVACY"
+PROACTIVE_REASON_PASS_RESTRICTED_SCREEN_ONLY = "PASS_RESTRICTED_SCREEN_ONLY"
+PROACTIVE_REASON_PASS_THROTTLED = "PASS_THROTTLED"
+PROACTIVE_REASON_PASS_SOURCE_EMPTY = "PASS_SOURCE_EMPTY"
+PROACTIVE_REASON_PASS_MODEL_PASS = "PASS_MODEL_PASS"
+PROACTIVE_REASON_PASS_GENERATION_EMPTY = "PASS_GENERATION_EMPTY"
+PROACTIVE_REASON_PASS_DUPLICATE = "PASS_DUPLICATE"
+PROACTIVE_REASON_DELIVERY_PREEMPTED = "DELIVERY_PREEMPTED"
+PROACTIVE_REASON_DELIVERY_FAILED = "DELIVERY_FAILED"
+PROACTIVE_REASON_ERROR_TIMEOUT = "ERROR_TIMEOUT"
+PROACTIVE_REASON_ERROR_INTERNAL = "ERROR_INTERNAL"
+PROACTIVE_REASON_ERROR_CHARACTER_NOT_FOUND = "ERROR_CHARACTER_NOT_FOUND"
+PROACTIVE_REASON_ERROR_SOURCE_FETCH_FAILED = "ERROR_SOURCE_FETCH_FAILED"
+PROACTIVE_REASON_PASS_UNSPECIFIED = "PASS_UNSPECIFIED"
+
+PROACTIVE_STAGE_ENTRY_GUARD = "entry_guard"
+PROACTIVE_STAGE_ACTIVITY_GATE = "activity_gate"
+PROACTIVE_STAGE_SOURCE_SELECTION = "source_selection"
+PROACTIVE_STAGE_MODEL_DECISION = "model_decision"
+PROACTIVE_STAGE_GENERATION = "generation"
+PROACTIVE_STAGE_DEDUP = "dedup"
+PROACTIVE_STAGE_DELIVERY = "delivery"
+PROACTIVE_STAGE_RUNTIME_ERROR = "runtime_error"
+PROACTIVE_STAGE_UNKNOWN = "unknown"
+
+_PROACTIVE_REASON_STAGE: dict[str, str] = {
+    PROACTIVE_REASON_CHAT_DELIVERED: PROACTIVE_STAGE_DELIVERY,
+    PROACTIVE_REASON_PASS_BUSY: PROACTIVE_STAGE_ENTRY_GUARD,
+    PROACTIVE_REASON_PASS_ACTIVITY_BUSY: PROACTIVE_STAGE_ACTIVITY_GATE,
+    PROACTIVE_REASON_PASS_DELIVERY_BUSY: PROACTIVE_STAGE_DELIVERY,
+    PROACTIVE_REASON_PASS_DISABLED: PROACTIVE_STAGE_ENTRY_GUARD,
+    PROACTIVE_REASON_PASS_ROUTE_ACTIVE: PROACTIVE_STAGE_ENTRY_GUARD,
+    PROACTIVE_REASON_PASS_PRIVACY: PROACTIVE_STAGE_ACTIVITY_GATE,
+    PROACTIVE_REASON_PASS_RESTRICTED_SCREEN_ONLY: PROACTIVE_STAGE_ACTIVITY_GATE,
+    PROACTIVE_REASON_PASS_THROTTLED: PROACTIVE_STAGE_ACTIVITY_GATE,
+    PROACTIVE_REASON_PASS_SOURCE_EMPTY: PROACTIVE_STAGE_SOURCE_SELECTION,
+    PROACTIVE_REASON_PASS_MODEL_PASS: PROACTIVE_STAGE_MODEL_DECISION,
+    PROACTIVE_REASON_PASS_GENERATION_EMPTY: PROACTIVE_STAGE_GENERATION,
+    PROACTIVE_REASON_PASS_DUPLICATE: PROACTIVE_STAGE_DEDUP,
+    PROACTIVE_REASON_DELIVERY_PREEMPTED: PROACTIVE_STAGE_DELIVERY,
+    PROACTIVE_REASON_DELIVERY_FAILED: PROACTIVE_STAGE_DELIVERY,
+    PROACTIVE_REASON_ERROR_TIMEOUT: PROACTIVE_STAGE_RUNTIME_ERROR,
+    PROACTIVE_REASON_ERROR_INTERNAL: PROACTIVE_STAGE_RUNTIME_ERROR,
+    PROACTIVE_REASON_ERROR_CHARACTER_NOT_FOUND: PROACTIVE_STAGE_ENTRY_GUARD,
+    PROACTIVE_REASON_ERROR_SOURCE_FETCH_FAILED: PROACTIVE_STAGE_SOURCE_SELECTION,
+    PROACTIVE_REASON_PASS_UNSPECIFIED: PROACTIVE_STAGE_UNKNOWN,
+}
+
+
+def _proactive_stage_for_reason(reason_code: str | None) -> str:
+    if not reason_code:
+        return PROACTIVE_STAGE_UNKNOWN
+    return _PROACTIVE_REASON_STAGE.get(reason_code, PROACTIVE_STAGE_UNKNOWN)
+
+
+def _proactive_response_body(
+    action: str | None,
+    reason_code: str,
+    *,
+    success: bool,
+    **extra: Any,
+) -> dict[str, Any]:
+    body: dict[str, Any] = {"success": success, "reason_code": reason_code}
+    if action is not None:
+        body["action"] = action
+    body.update(extra)
+    body["reason_code"] = reason_code
+    if not body.get("stage"):
+        body["stage"] = _proactive_stage_for_reason(reason_code)
+    if action is not None:
+        body["action"] = action
+    return body
+
+
+def _proactive_pass_body(reason_code: str, **extra: Any) -> dict[str, Any]:
+    success = bool(extra.pop("success", True))
+    return _proactive_response_body("pass", reason_code, success=success, **extra)
+
+
+def _proactive_chat_body(
+    reason_code: str = PROACTIVE_REASON_CHAT_DELIVERED,
+    **extra: Any,
+) -> dict[str, Any]:
+    success = bool(extra.pop("success", True))
+    return _proactive_response_body("chat", reason_code, success=success, **extra)
+
+
+def _proactive_error_body(reason_code: str, **extra: Any) -> dict[str, Any]:
+    success = bool(extra.pop("success", False))
+    return _proactive_response_body(None, reason_code, success=success, **extra)
+
+
+def _ensure_proactive_reason_code(
+    body: dict[str, Any],
+    *,
+    default_reason_code: str | None = None,
+) -> dict[str, Any]:
+    existing_reason_code = body.get("reason_code")
+    if existing_reason_code:
+        if not body.get("stage"):
+            body["stage"] = _proactive_stage_for_reason(str(existing_reason_code))
+        return body
+    action = body.get("action")
+    if default_reason_code is None:
+        if action == "chat":
+            default_reason_code = PROACTIVE_REASON_CHAT_DELIVERED
+        elif action == "pass":
+            default_reason_code = PROACTIVE_REASON_PASS_UNSPECIFIED
+        else:
+            default_reason_code = PROACTIVE_REASON_ERROR_INTERNAL
+    body["reason_code"] = default_reason_code
+    if not body.get("stage"):
+        body["stage"] = _proactive_stage_for_reason(default_reason_code)
+    return body
 
 from .shared_state import ensure_steamworks as get_steamworks, get_config_manager, get_sync_message_queue, get_session_manager
 from main_logic.omni_realtime_client import OmniRealtimeClient
@@ -96,6 +231,7 @@ from config import (
     ANTI_REPEAT_DROP_THRESHOLD,
     ANTI_REPEAT_INJECT_TOP_K,
     ANTI_REPEAT_REGEN_THRESHOLD,
+    ANTI_REPEAT_EXEMPT_SOURCE_TAGS,
     MINI_GAME_INVITE_ENABLED,
     MINI_GAME_INVITE_FORCE_GAME_TYPE,
     MINI_GAME_INVITE_TRIGGER_PROBABILITY,
@@ -704,17 +840,23 @@ async def get_system_client_id(response: Response):
     _set_no_store_headers(response)
     try:
         config_manager = _get_system_config_manager()
+        # load_* 在文件缺失时会返回带新 UUID 的默认态但不落盘；若此处不 persist，
+        # 每次 /client-id 都会换 cid，社交/绑卡会把游客资产挂到不同设备上。
+        state_path = config_manager.cloudsave_local_state_path
+        needs_persist = not state_path.exists()
         state = config_manager.load_cloudsave_local_state()
         client_id = state.get("client_id") if isinstance(state, dict) else None
         if not client_id:
-            new_state = config_manager.build_default_cloudsave_local_state()
+            state = config_manager.build_default_cloudsave_local_state()
+            client_id = state.get("client_id")
+            needs_persist = True
+        if needs_persist and isinstance(state, dict):
             try:
-                config_manager.save_cloudsave_local_state(new_state)
+                config_manager.save_cloudsave_local_state(state)
             except Exception as save_exc:
                 logger.warning(
                     "failed to persist freshly-generated client_id: %s", save_exc
                 )
-            client_id = new_state.get("client_id")
         return {"ok": True, "client_id": client_id}
     except Exception as exc:
         logger.warning("system client-id endpoint failed: %s", exc)
@@ -1294,9 +1436,10 @@ async def get_changelog(since: str = "", lang: str = ""):
     The frontend passes the lastNotifiedVersion stored in localStorage; the backend
     returns all changelog entries > since (ascending by version) plus the current
     version number.
-    The lang parameter is the frontend locale (e.g. zh-CN / en / ja / ko / ru / zh-TW);
-    for non-Chinese locales the matching translation is preferred, falling back to en,
-    then to the original Chinese.
+    The lang parameter is the frontend locale (e.g. zh-CN / en / ja / ko / ru / zh-TW).
+    A concrete locale (including Chinese variants like zh-TW) prefers its own subdir
+    first; non-Chinese locales then fall back to en; everything finally lands on the
+    Simplified Chinese base file. Mirrors the survey loader's fallback chain.
     """
     from config import APP_VERSION
     import glob as _glob
@@ -1312,14 +1455,19 @@ async def get_changelog(since: str = "", lang: str = ""):
     entries: list[dict] = []
     since_ver = _parse_ver(since) if since else (0,)
 
-    # 确定 fallback 链：用户语言 -> en -> 中文原文
+    # lang 来自 query string，下面会拼进 os.path.join(changelog_dir, lang, ...)，
+    # 先白名单化挡路径穿越（与 survey 下发口共用 _safe_locale）。
+    lang = _safe_locale(lang)
+    # 确定 fallback 链，与 survey 下发口（_load_survey_for_version）保持一致：
+    # 具体 locale（含 zh-TW 等中文变体）先试自己的子目录 -> 非中文再回退 en ->
+    # 最后都落到简体中文原文（zh_content）。zh-TW 也 startswith("zh")，但简体
+    # base 并无 zh-CN/ 子目录，所以简体请求自然落回原文，不受影响。
     is_chinese = lang.startswith("zh") if lang else True
     fallback_langs: list[str] = []
-    if not is_chinese:
-        if lang:
-            fallback_langs.append(lang)
-        if "en" not in fallback_langs:
-            fallback_langs.append("en")
+    if lang:
+        fallback_langs.append(lang)
+    if not is_chinese and "en" not in fallback_langs:
+        fallback_langs.append("en")
 
     def _read_localized(stem: str, zh_content: str) -> str:
         """Look up the localized version along the fallback chain; returns the original Chinese when not found."""
@@ -1345,15 +1493,193 @@ async def get_changelog(since: str = "", lang: str = ""):
                         zh_content = f.read()
                 except Exception:
                     zh_content = ""
-                content = _read_localized(stem, zh_content) if not is_chinese else zh_content
+                content = _read_localized(stem, zh_content)
                 entries.append({"version": stem, "content": content})
 
     return {"current_version": APP_VERSION, "entries": entries}
 
 
+_LOCALE_RE = re.compile(r'^[A-Za-z]{2,8}(-[A-Za-z0-9]{2,8})*$')
+
+
+def _safe_locale(lang: object) -> str:
+    """Whitelist a client-supplied locale (zh-CN / en / ja / ...) before it touches a filesystem path.
+
+    ``lang`` arrives from the request query string and is joined into changelog /
+    survey file paths; an unfiltered ``../`` or an absolute prefix would let a
+    crafted value escape the content dir (path traversal). Anything not matching the
+    locale shape returns '' (→ caller falls back to the Chinese base / en).
+    """
+    return lang if (isinstance(lang, str) and _LOCALE_RE.match(lang)) else ""
+
+
+def _load_survey_for_version(version: str, lang: str) -> dict | None:
+    """Load config/surveys/<version>.json with a per-locale fallback chain.
+
+    Returns the parsed (localized) survey dict, or None when no survey exists for
+    the version. Fallback: a concrete locale tries its own subdir first (incl.
+    Chinese variants like zh-TW); Chinese variants then fall back to the Simplified
+    base file, non-Chinese fall back to en, and everything finally lands on the
+    base. This loader is independent of ``_load_changelog`` — changing it does not
+    touch changelog's language fallback. The whole file is swapped per locale
+    (question ids must stay identical across locales — answers are reported by id).
+    """
+    surveys_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "surveys")
+    base_file = os.path.join(surveys_dir, f"{version}.json")
+    if not os.path.isfile(base_file):
+        return None
+
+    # 任何具体 locale 先试自己的子目录（含 zh-TW 等中文变体，于是繁体不再被并入
+    # 简体 base）；中文变体回退到简体 base，非中文回退 en，最后都落 base。
+    candidates: list[str] = []
+    if lang:
+        candidates.append(os.path.join(surveys_dir, lang, f"{version}.json"))
+    is_chinese = lang.startswith("zh") if lang else True
+    if not is_chinese:
+        en_path = os.path.join(surveys_dir, "en", f"{version}.json")
+        if en_path not in candidates:
+            candidates.append(en_path)
+    candidates.append(base_file)
+
+    for path in candidates:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            continue
+        if isinstance(data, dict):
+            # 强制归一到文件版本（= APP_VERSION），不用 setdefault：本地化文件若误写了
+            # 别的 survey_version，会让前端去重键和上报版本错位、统计分裂。
+            data["survey_version"] = version
+            return data
+    return None
+
+
+def _sanitize_survey_answers(answers: object) -> dict:
+    """Whitelist + cap the answer dict before forwarding (abuse / oversized-payload guard).
+
+    Mirrors the remote server's data-minimization contract: at most 50 questions,
+    keys <= 64 chars, string answers <= 2000 chars, list answers <= 50 items of
+    <= 200 chars each. Anything else is dropped.
+    """
+    out: dict = {}
+    if not isinstance(answers, dict):
+        return out
+    for i, (k, v) in enumerate(answers.items()):
+        if i >= 50:
+            break
+        if not isinstance(k, str) or not k:
+            continue
+        key = k[:64]
+        if isinstance(v, bool):
+            out[key] = v
+        elif isinstance(v, str):
+            out[key] = v[:2000]
+        elif isinstance(v, (int, float)):
+            out[key] = v
+        elif isinstance(v, list):
+            out[key] = [str(x)[:200] for x in v[:50] if isinstance(x, (str, int, float, bool))]
+    return out
+
+
+def _resolve_survey_for_request(version: str, lang: str) -> dict | None:
+    """Steam gate + localized survey load (sync; runs in a worker thread).
+
+    Survey is Steam-only: a non-Steam install gets None (-> has_survey:false). The
+    judgment is distribution=='steam' (live Steam64 / workshop subscription /
+    workshop_config.json disk fallback; see survey_client.is_steam_user). On any
+    error in the steam check we fail closed (None) — better to skip the popup than
+    to show it to a possibly-non-Steam user.
+    """
+    try:
+        from utils.survey_client import is_steam_user
+        if not is_steam_user():
+            return None
+    except Exception:
+        return None
+    return _load_survey_for_version(version, lang)
+
+
+@router.get("/survey")
+async def get_survey(lang: str = ""):
+    """Return the survey for the current app version, or {has_survey: false}.
+
+    Two gates before content is served:
+    - DNT: opted-out users (NEKO_DO_NOT_TRACK / DO_NOT_TRACK) get nothing — the same
+      switch governs passive stats and surveys.
+    - Steam-only: non-Steam installs get nothing (judged by the cached Steam64 +
+      distribution==steam fallback).
+    """
+    from config import APP_VERSION
+
+    try:
+        from utils.survey_client import is_reporting_enabled
+        if not is_reporting_enabled():
+            return {"has_survey": False, "survey_version": APP_VERSION}
+    except Exception:
+        return {"has_survey": False, "survey_version": APP_VERSION}
+
+    survey = await asyncio.to_thread(_resolve_survey_for_request, APP_VERSION, _safe_locale(lang))
+    if not survey:
+        return {"has_survey": False, "survey_version": APP_VERSION}
+    return {
+        "has_survey": True,
+        "survey_version": survey.get("survey_version", APP_VERSION),
+        "survey": survey,
+    }
+
+
+@router.post("/survey/submit")
+async def submit_survey(request: Request):
+    """Receive the user's survey answers (or a skip) and forward them, HMAC-signed, to the remote survey server.
+
+    Best-effort: a failed upload still returns ok=True so the frontend records the
+    survey as done and never re-prompts; uploaded reflects whether the remote 200'd.
+    """
+    payload = await _read_json_object(request)
+    validation_error = _validate_local_mutation_request(request, payload=payload)
+    if validation_error is not None:
+        return validation_error
+
+    from config import APP_VERSION
+
+    action = payload.get("action")
+    if action not in ("submit", "skip"):
+        action = "submit"
+    # survey_version 用服务端 APP_VERSION 权威值，不信客户端传入——否则恶意请求可写
+    # 任意版本污染远端版本维度。问卷本就只对当前版本下发，没有跨版本提交的合法场景。
+    survey_version = APP_VERSION
+    answers = _sanitize_survey_answers(payload.get("answers"))
+
+    uploaded = False
+    try:
+        from utils.survey_client import report_survey
+        config_dir = None
+        try:
+            config_dir = get_config_manager().config_dir
+        except Exception:
+            config_dir = None
+        uploaded = await asyncio.to_thread(
+            report_survey, survey_version, action, answers, config_dir=config_dir
+        )
+    except Exception as e:
+        logger.warning("survey submit forward failed: %s", e)
+
+    return {"ok": True, "uploaded": bool(uploaded)}
+
+
 # --- 主动搭话近期记录暂存区 ---
 # {lanlan_name: deque([(timestamp, message), ...], maxlen=10)}
 _proactive_chat_history: dict[str, deque] = {}
+
+# --- 主动搭话"素材标识"近期去重暂存区（ANTI_REPEAT_EXEMPT_SOURCE_TAGS 用）---
+# {lanlan_name: {source_tag: deque([(timestamp, material_key), ...], maxlen=N)}}
+# 素材推送类 channel（MUSIC/MEME）豁免台词级复读判定，改按"素材本身"去重：
+# MUSIC 看曲目（title|artist），MEME 看搜索关键词。本轮素材与近期不雷同就放行；
+# 雷同才回落到台词判定。进程内、重启清零——短期复读保护，与 _proactive_chat_
+# history / _mini_game_invite_state 同样是内存态即可。
+_proactive_material_history: dict[str, dict[str, deque]] = {}
+_PROACTIVE_MATERIAL_HISTORY_MAX = 10
 
 # --- Mini-game 邀请短路状态（每角色独立）---
 # {lanlan_name: {'delivered_at': float|None,
@@ -1686,8 +2012,13 @@ def _parse_web_screening_result(text: str) -> dict | None:
     return None
 
 
-def _phase1_text_is_pass(text: str) -> bool:
-    """Return True when a Phase 1 section explicitly says PASS."""
+def _text_is_pass_sentinel(text: str) -> bool:
+    """Return True when ``text`` as a whole is the PASS skip sentinel.
+
+    Brackets are optional: matches both "[PASS]" (the prompted form) and a
+    bare "PASS" the model occasionally emits. Phase-agnostic — used by both
+    the Phase 1 section parser and the Phase 2 stream guards.
+    """
     return bool(re.fullmatch(r'\s*\[?\s*PASS\s*\]?\s*', text or '', re.IGNORECASE))
 
 
@@ -1770,14 +2101,14 @@ def _parse_unified_phase1_result(text: str) -> dict:
         parsed_web = _parse_web_screening_result(web_text)
         if parsed_web:
             result['web'] = parsed_web
-        elif _phase1_text_is_pass(web_text):
+        elif _text_is_pass_sentinel(web_text):
             result['web_pass'] = True  # 确实是 PASS，web 保持 None
 
     # --- 解析 music 段 ---
     music_text = sections.get('music', '')
     if music_text:
         music_text = music_text.strip()
-        if _phase1_text_is_pass(music_text):
+        if _text_is_pass_sentinel(music_text):
             result['music_pass'] = True
         elif music_text:
             # 去掉前缀标签（如"关键词：" "keyword:" 等）
@@ -1795,7 +2126,7 @@ def _parse_unified_phase1_result(text: str) -> dict:
     meme_text = sections.get('meme', '')
     if meme_text:
         meme_text = meme_text.strip()
-        if _phase1_text_is_pass(meme_text):
+        if _text_is_pass_sentinel(meme_text):
             result['meme_pass'] = True
         elif meme_text:
             keyword = re.sub(
@@ -1852,6 +2183,81 @@ def _strip_proactive_screen_tag_leak(text: str) -> tuple[str, str]:
     if legal:
         return leading + rest[legal.end():].lstrip(), legal.group(1).upper()
     return leading + rest, "CHAT"
+
+
+# Decoration a model may wrap a leaked label in (markdown bold/heading/bullet,
+# CJK + ASCII brackets). Stripped from both ends before matching so e.g.
+# "**屏幕细节轻问**" / "【回忆线索】" still resolve to the bare label.
+_INTENT_LABEL_DECOR = '*-•◦·#`_~【】「」[]《》（）() \t'
+
+
+def _strip_proactive_intent_label_leak(text: str) -> str:
+    """Strip an internal guidance label echoed as a leading heading.
+
+    Weak models sometimes copy a tone-angle seed or memory-cue label from
+    the proactive Phase 2 prompt and emit the bare label as the first line
+    of the reply; the client then splits it into its own chat bubble. Such
+    labels are pure scaffolding and must never be spoken.
+
+    Removes, from the START of ``text`` only and repeating to peel stacked
+    labels:
+    - a standalone first line that exactly matches a known label (optional
+      decoration / trailing colon), when real content follows on a later
+      line;
+    - a leading ``<label>:`` / ``<label>：`` prefix on the first line,
+      keeping the rest of that line as content.
+
+    Exact (decoration-trimmed, casefolded) matching against the derived
+    label set keeps generic words from being scrubbed out of normal speech.
+    Returns ``text`` unchanged when the leading segment is not a known label.
+    """
+    if not text:
+        return text
+    from config.prompts.prompts_activity import get_proactive_intent_leak_labels
+    labels = get_proactive_intent_leak_labels()
+    if not labels:
+        return text
+
+    def _norm(segment: str) -> str:
+        out = segment.strip().strip(_INTENT_LABEL_DECOR)
+        out = out.rstrip('：:').strip(_INTENT_LABEL_DECOR)
+        return out.strip()
+
+    # Bounded peel — a handful of stacked labels at most; never loop the body.
+    for _ in range(4):
+        body = text.lstrip()
+        if not body:
+            break
+        nl = body.find('\n')
+        first = body if nl == -1 else body[:nl]
+        rest = '' if nl == -1 else body[nl + 1:]
+
+        # Case 1: the whole first line is a label, with real content after it.
+        if rest.strip() and _norm(first).casefold() in labels:
+            text = rest
+            continue
+
+        # Case 2: "<label>：<content>" sharing one line. Take the EARLIEST
+        # colon (full- or half-width), not full-width-first — otherwise a
+        # half-width separator followed by a full-width colon in the body
+        # (e.g. "Memory cues: ...：...") would split on the wrong colon and
+        # leave the leading label unstripped.
+        sep_idx = -1
+        for sep in ('：', ':'):
+            idx = first.find(sep)
+            if idx > 0 and (sep_idx == -1 or idx < sep_idx):
+                sep_idx = idx
+        if sep_idx > 0:
+            cand = _norm(first[:sep_idx]).casefold()
+            after = first[sep_idx + 1:].strip()
+            if cand in labels and (after or rest.strip()):
+                if after:
+                    text = after + ('\n' + rest if rest else '')
+                else:
+                    text = rest
+                continue
+        break
+    return text
 
 
 def _lookup_link_by_title(title: str, all_links: list[dict]) -> dict | None:
@@ -1990,6 +2396,62 @@ def _record_proactive_chat(lanlan_name: str, message: str, channel: str = ''):
     except Exception:
         # 埋点失败不能影响主动搭话投递
         pass
+
+
+def _normalize_material_key(raw: str) -> str:
+    """Normalize a material identity string for exact-match dedup (lowercase + collapse whitespace)."""
+    s = (raw or "").strip().lower()
+    return re.sub(r'\s+', ' ', s)
+
+
+def _proactive_material_key(
+    source_tag: str | None,
+    selected_music_link: dict | None,
+    meme_content: dict | None,
+) -> str:
+    """Compute the dedup identity of the material this round pushes.
+
+    - MUSIC → the picked track (title|artist); two different songs never collide
+    - MEME → the **search keyword** (not the image): same keyword reused soon is a
+      repeat, a fresh keyword is not. Random hot-word fallback has an empty keyword
+      → empty key → treated as "never a repeat" (each random fetch is varied)
+
+    Empty/unknown → "" (caller treats as non-repeat, i.e. always exempt).
+    """
+    if source_tag == 'MUSIC' and selected_music_link:
+        title = (selected_music_link.get('title') or '').strip()
+        artist = (selected_music_link.get('artist') or '').strip()
+        return _normalize_material_key(f"{title}|{artist}") if (title or artist) else ""
+    if source_tag == 'MEME' and meme_content:
+        return _normalize_material_key(meme_content.get('keyword') or '')
+    return ""
+
+
+def _is_recent_proactive_material(lanlan_name: str, source_tag: str, key: str) -> bool:
+    """Whether *key* was pushed for *source_tag* within the recent window (exact match).
+
+    Empty key → never a repeat (no material identity to compare on).
+    """
+    if not key:
+        return False
+    bucket = _proactive_material_history.get(lanlan_name, {}).get(source_tag)
+    if not bucket:
+        return False
+    now = time.time()
+    return any(
+        k == key and now - ts < _RECENT_CHAT_MAX_AGE_SECONDS
+        for ts, k in bucket
+    )
+
+
+def _record_proactive_material(lanlan_name: str, source_tag: str, key: str) -> None:
+    """Record one successfully delivered material identity (skip empty keys)."""
+    if not key:
+        return
+    per_tag = _proactive_material_history.setdefault(lanlan_name, {})
+    if source_tag not in per_tag:
+        per_tag[source_tag] = deque(maxlen=_PROACTIVE_MATERIAL_HISTORY_MAX)
+    per_tag[source_tag].append((time.time(), key))
 
 
 def _open_threads_for_activity_state(activity_snapshot, fresh_open_threads) -> list[str]:
@@ -2595,11 +3057,10 @@ async def _maybe_deliver_mini_game_invite(
         return None
 
     if not await mgr.prepare_proactive_delivery(min_idle_secs=10.0):
-        return {
-            "success": True,
-            "action": "pass",
-            "message": "mini-game invite skipped: prepare_proactive_delivery refused",
-        }
+        return _proactive_pass_body(
+            PROACTIVE_REASON_PASS_DELIVERY_BUSY,
+            message="mini-game invite skipped: prepare_proactive_delivery refused",
+        )
     proactive_sid = mgr.current_speech_id
     from main_logic.session_state import SessionEvent as _SE
     await mgr.state.fire(_SE.PROACTIVE_PHASE2)
@@ -2616,11 +3077,10 @@ async def _maybe_deliver_mini_game_invite(
         expected_speech_id=proactive_sid,
     )
     if not committed:
-        return {
-            "success": True,
-            "action": "pass",
-            "message": "mini-game invite skipped: user took over before delivery",
-        }
+        return _proactive_pass_body(
+            PROACTIVE_REASON_DELIVERY_PREEMPTED,
+            message="mini-game invite skipped: user took over before delivery",
+        )
     # 给本次邀请生成独立 session_id，前端按钮点击 / 文本关键词命中走 endpoint 时
     # 必须带回这个 id 给后端校验：避免 stale 邀请的延迟回应被错算成响应当前 pending。
     invite_session_id = str(uuid4())
@@ -2674,17 +3134,16 @@ async def _maybe_deliver_mini_game_invite(
         f"(game={game_type}, force_first={force_first}, "
         f"session_id={invite_session_id[:8]}…): {invite_text[:60]}…"
     )
-    return {
-        "success": True,
-        "action": "chat",
-        "message": "mini-game invite delivered",
-        "channel": "mini_game",
-        "game_type": game_type,
-        "force_first": force_first,
-        "lanlan_name": lanlan_name,
-        "turn_id": proactive_sid,
-        "invite_session_id": invite_session_id,
-    }
+    return _proactive_chat_body(
+        PROACTIVE_REASON_CHAT_DELIVERED,
+        message="mini-game invite delivered",
+        channel="mini_game",
+        game_type=game_type,
+        force_first=force_first,
+        lanlan_name=lanlan_name,
+        turn_id=proactive_sid,
+        invite_session_id=invite_session_id,
+    )
 
 
 # ---------- Break-reminder rendering + minimal-Phase-2 delivery ----------
@@ -2849,6 +3308,7 @@ async def _deliver_break_reminder_via_llm(
         correction_model = correction_config.get('model')
         correction_base_url = correction_config.get('base_url')
         correction_api_key = correction_config.get('api_key')
+        correction_provider_type = correction_config.get('provider_type')
         if not correction_model or not correction_api_key:
             logger.warning(
                 "[%s] break reminder skipped: correction model misconfigured",
@@ -2896,6 +3356,7 @@ async def _deliver_break_reminder_via_llm(
         async with asyncio.timeout(timeout_seconds):
             async with (await create_chat_llm_async(
                 correction_model, correction_base_url, correction_api_key,
+                provider_type=correction_provider_type,
                 temperature=1.0,
                 max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
                 streaming=True,
@@ -3423,6 +3884,7 @@ async def emotion_analysis(request: Request):
         emotion_api_key = emotion_config.get('api_key')
         emotion_model = emotion_config.get('model')
         emotion_base_url = emotion_config.get('base_url')
+        emotion_provider_type = emotion_config.get('provider_type')
         
         # 优先使用请求参数，其次使用配置
         api_key = api_key or emotion_api_key
@@ -3456,6 +3918,7 @@ async def emotion_analysis(request: Request):
             model,
             emotion_base_url,
             api_key,
+            provider_type=emotion_provider_type,
             temperature=0.3,
             # Gemini 模型可能返回 markdown 格式，需要更多 token
             max_completion_tokens=EMOTION_ANALYSIS_MAX_TOKENS,
@@ -4859,32 +5322,35 @@ async def proactive_chat(request: Request):
         # 获取session manager
         mgr = session_manager.get(lanlan_name)
         if not mgr:
-            return JSONResponse({"success": False, "error": f"角色 {lanlan_name} 不存在"}, status_code=404)
+            return JSONResponse(
+                _proactive_error_body(
+                    PROACTIVE_REASON_ERROR_CHARACTER_NOT_FOUND,
+                    error=f"角色 {lanlan_name} 不存在",
+                ),
+                status_code=404,
+            )
 
         if getattr(mgr, "is_goodbye_silent", lambda: False)():
             logger.info("[%s] 主动搭话本轮未发起：goodbye silent", lanlan_name)
-            return JSONResponse({
-                "success": True,
-                "action": "pass",
-                "message": "goodbye silent; proactive skipped",
-            })
+            return JSONResponse(_proactive_pass_body(
+                PROACTIVE_REASON_PASS_DISABLED,
+                message="goodbye silent; proactive skipped",
+            ))
 
         try:
             from main_routers.game_router import is_game_route_active
             if is_game_route_active(lanlan_name):
                 logger.info("[%s] 主动搭话本轮未发起：游戏路由 active", lanlan_name)
-                return JSONResponse({
-                    "success": True,
-                    "action": "pass",
-                    "message": "game route active; ordinary proactive skipped",
-                })
+                return JSONResponse(_proactive_pass_body(
+                    PROACTIVE_REASON_PASS_ROUTE_ACTIVE,
+                    message="game route active; ordinary proactive skipped",
+                ))
         except Exception as game_route_err:
             logger.warning("[%s] proactive game-route guard failed closed: %s", lanlan_name, game_route_err)
-            return JSONResponse({
-                "success": True,
-                "action": "pass",
-                "message": "game route guard unavailable; ordinary proactive skipped",
-            })
+            return JSONResponse(_proactive_pass_body(
+                PROACTIVE_REASON_PASS_ROUTE_ACTIVE,
+                message="game route guard unavailable; ordinary proactive skipped",
+            ))
         
         # 检查能否发起新一轮主动搭话：状态机统一把 "AI 正在响应"（_is_responding）、
         # "另一轮 proactive 在跑"（phase != IDLE）两个信号收拢到 O(1) 判定。
@@ -4921,12 +5387,15 @@ async def proactive_chat(request: Request):
                 )
             if not mgr.state.can_start_proactive(session=probe_session):
                 logger.info("[%s] 主动搭话本轮未发起：语音模式 AI 正在响应中（409）", lanlan_name)
-                return JSONResponse({
-                    "success": False,
-                    "error": "AI正在响应中，无法主动搭话",
-                    "message": "请等待当前响应完成",
-                    "state": mgr.state.snapshot(),
-                }, status_code=409)
+                return JSONResponse(
+                    _proactive_error_body(
+                        PROACTIVE_REASON_PASS_BUSY,
+                        error="AI正在响应中，无法主动搭话",
+                        message="请等待当前响应完成",
+                        state=mgr.state.snapshot(),
+                    ),
+                    status_code=409,
+                )
             delivered = await mgr.trigger_voice_proactive_nudge()
             if delivered:
                 # 1h+10 chats 冷却的 chat counter：voice nudge 也算一次主动搭话，
@@ -4940,11 +5409,15 @@ async def proactive_chat(request: Request):
             # Focus thinking-on reply, so it is not a Focus proactive turn — the
             # cooldown is applied only at the text Phase-2 idle path (which is
             # where _focus_idle_thinking actually gates thinking-on).
-            return JSONResponse({
-                "success": True,
-                "action": "chat" if delivered else "pass",
-                "message": "voice proactive triggered" if delivered else "voice proactive skipped (guard)",
-            })
+            if delivered:
+                return JSONResponse(_proactive_chat_body(
+                    PROACTIVE_REASON_CHAT_DELIVERED,
+                    message="voice proactive triggered",
+                ))
+            return JSONResponse(_proactive_pass_body(
+                PROACTIVE_REASON_PASS_BUSY,
+                message="voice proactive skipped (guard)",
+            ))
 
         # ========== Text-mode proactive：原子 "检查 + 占坑" ==========
         # try_start_proactive 在 _write_lock 内完成 can_start_proactive 判定 + 翻
@@ -4953,12 +5426,15 @@ async def proactive_chat(request: Request):
         from main_logic.session_state import SessionEvent as _SE
         if not await mgr.state.try_start_proactive(session=probe_session):
             logger.info("[%s] 主动搭话本轮未发起：AI 正在响应或已有一轮在跑（409）", lanlan_name)
-            return JSONResponse({
-                "success": False,
-                "error": "AI正在响应中，无法主动搭话",
-                "message": "请等待当前响应完成",
-                "state": mgr.state.snapshot(),
-            }, status_code=409)
+            return JSONResponse(
+                _proactive_error_body(
+                    PROACTIVE_REASON_PASS_BUSY,
+                    error="AI正在响应中，无法主动搭话",
+                    message="请等待当前响应完成",
+                    state=mgr.state.snapshot(),
+                ),
+                status_code=409,
+            )
         _proactive_done_emitted = False
         # Set after activity snapshot fetch — tells the frontend scheduler
         # to skip the regular tier backoff and use a flat baseInterval on
@@ -4998,6 +5474,7 @@ async def proactive_chat(request: Request):
                 return resp
             if not isinstance(body, dict):
                 return resp
+            body = _ensure_proactive_reason_code(body)
             # text-mode 占坑后的所有出口都经过这里。本轮最终没把话说出来
             # （action != "chat"：各种 guard/skip/内容为空/被用户接管）就在
             # info 留一条带原因的日志，原因取响应体 message（无则 error）。
@@ -5025,9 +5502,7 @@ async def proactive_chat(request: Request):
                     )
                 except Exception as _focus_err:
                     logger.debug("[%s] focus idle cooldown failed: %s", lanlan_name, _focus_err)
-            if 'next_schedule_fixed_mode' in body:
-                return resp
-            body['next_schedule_fixed_mode'] = _next_schedule_fixed_mode
+            body.setdefault('next_schedule_fixed_mode', _next_schedule_fixed_mode)
             return JSONResponse(body, status_code=resp.status_code)
 
         def _proactive_preempted_json(where: str) -> dict:
@@ -5041,6 +5516,7 @@ async def proactive_chat(request: Request):
             return {
                 "success": True,
                 "action": "pass",
+                "reason_code": PROACTIVE_REASON_DELIVERY_PREEMPTED,
                 "message": f"proactive {where} preempted by user takeover",
             }
 
@@ -5144,6 +5620,7 @@ async def proactive_chat(request: Request):
             return await _end_proactive(JSONResponse({
                 "success": True,
                 "action": "pass",
+                "reason_code": PROACTIVE_REASON_PASS_PRIVACY,
                 "message": f"user state={activity_snapshot.state} → closed (privacy lockdown)",
             }))
 
@@ -5264,6 +5741,7 @@ async def proactive_chat(request: Request):
                     return await _end_proactive(JSONResponse({
                         "success": True,
                         "action": "chat",
+                        "reason_code": PROACTIVE_REASON_CHAT_DELIVERED,
                         "message": "anti-slack reminder delivered",
                         "channel": "anti_slack",
                     }))
@@ -5273,6 +5751,7 @@ async def proactive_chat(request: Request):
                 return await _end_proactive(JSONResponse({
                     "success": True,
                     "action": "pass",
+                    "reason_code": PROACTIVE_REASON_DELIVERY_PREEMPTED,
                     "message": "anti-slack reminder pending but delivery skipped",
                 }))
 
@@ -5379,6 +5858,7 @@ async def proactive_chat(request: Request):
                     return await _end_proactive(JSONResponse({
                         "success": True,
                         "action": "chat",
+                        "reason_code": PROACTIVE_REASON_CHAT_DELIVERED,
                         "message": "work-break + game-invite delivered",
                         "channel": "work_break_game_invite",
                         "game_type": chosen_game_type,
@@ -5390,6 +5870,7 @@ async def proactive_chat(request: Request):
                 return await _end_proactive(JSONResponse({
                     "success": True,
                     "action": "pass",
+                    "reason_code": PROACTIVE_REASON_DELIVERY_PREEMPTED,
                     "message": "work-break + game-invite pending but delivery skipped",
                 }))
 
@@ -5420,6 +5901,7 @@ async def proactive_chat(request: Request):
                 return await _end_proactive(JSONResponse({
                     "success": True,
                     "action": "chat",
+                    "reason_code": PROACTIVE_REASON_CHAT_DELIVERED,
                     "message": "work-break reminder delivered",
                     "channel": "work_break",
                     "seed": wb_seed,
@@ -5427,6 +5909,7 @@ async def proactive_chat(request: Request):
             return await _end_proactive(JSONResponse({
                 "success": True,
                 "action": "pass",
+                "reason_code": PROACTIVE_REASON_DELIVERY_PREEMPTED,
                 "message": "work-break reminder pending but delivery skipped",
             }))
 
@@ -5458,6 +5941,7 @@ async def proactive_chat(request: Request):
                 return await _end_proactive(JSONResponse({
                     "success": True,
                     "action": "pass",
+                    "reason_code": PROACTIVE_REASON_PASS_THROTTLED,
                     "message": (
                         f"probabilistic skip: state={activity_snapshot.state} "
                         f"intensity={activity_snapshot.game_intensity} "
@@ -5516,6 +6000,7 @@ async def proactive_chat(request: Request):
                 return await _end_proactive(JSONResponse({
                     "success": True,
                     "action": "pass",
+                    "reason_code": PROACTIVE_REASON_PASS_RESTRICTED_SCREEN_ONLY,
                     "message": f"user state={activity_snapshot.state} restricts proactive to screen-only, but vision not enabled this round",
                 }))
 
@@ -5555,6 +6040,7 @@ async def proactive_chat(request: Request):
             return await _end_proactive(JSONResponse({
                 "success": True,
                 "action": "pass",
+                "reason_code": PROACTIVE_REASON_PASS_SOURCE_EMPTY,
                 "message": "no source modes enabled and mini-game invite did not fire",
             }))
 
@@ -5688,11 +6174,14 @@ async def proactive_chat(request: Request):
             # + 无 vision），sources 必定为空但不应当 pass —— 让 Phase 2 拿对话
             # 历史 + state_section 跑 text-only [CHAT] 跟进。
             if not _has_unfinished_thread:
-                return await _end_proactive(JSONResponse({
-                    "success": False,
-                    "error": "所有信息源获取失败",
-                    "action": "pass"
-                }, status_code=500))
+                return await _end_proactive(JSONResponse(
+                    _proactive_pass_body(
+                        PROACTIVE_REASON_ERROR_SOURCE_FETCH_FAILED,
+                        success=False,
+                        error="所有信息源获取失败",
+                    ),
+                    status_code=500,
+                ))
             print(f"[{lanlan_name}] sources 为空但有未收尾话题，进入 text-only 跟进路径")
 
         # Phase 1 preempt check：信息源并行 fetch 完，正式进入 LLM 前先瞄一眼
@@ -5834,11 +6323,13 @@ async def proactive_chat(request: Request):
             conversation_model = conversation_config.get('model')
             conversation_base_url = conversation_config.get('base_url')
             conversation_api_key = conversation_config.get('api_key')
+            conversation_provider_type = conversation_config.get('provider_type')
 
             if not conversation_model or not conversation_api_key:
                 logger.error("对话模型配置缺失: model或api_key未设置")
                 return await _end_proactive(JSONResponse({
                     "success": False,
+                    "reason_code": PROACTIVE_REASON_ERROR_INTERNAL,
                     "error": "对话模型配置缺失",
                     "detail": "请在设置中配置对话模型的model和api_key"
                 }, status_code=500))
@@ -5847,6 +6338,7 @@ async def proactive_chat(request: Request):
             vision_model_name = vision_config.get('model', '')
             vision_base_url = vision_config.get('base_url', '')
             vision_api_key = vision_config.get('api_key', '')
+            vision_provider_type = vision_config.get('provider_type')
             has_vision_model = bool(vision_model_name and vision_api_key)
             if not has_vision_model:
                 logger.info("Vision 模型未配置，Phase 2 将退回使用对话模型")
@@ -5854,6 +6346,7 @@ async def proactive_chat(request: Request):
             logger.error(f"获取模型配置失败: {e}")
             return await _end_proactive(JSONResponse({
                 "success": False,
+                "reason_code": PROACTIVE_REASON_ERROR_INTERNAL,
                 "error": "模型配置异常",
                 "detail": str(e)
             }, status_code=500))
@@ -5869,14 +6362,17 @@ async def proactive_chat(request: Request):
             """
             if use_vision and has_vision_model:
                 m, bu, ak = vision_model_name, vision_base_url, vision_api_key
+                provider_type = vision_provider_type
             else:
                 m, bu, ak = conversation_model, conversation_base_url, conversation_api_key
+                provider_type = conversation_provider_type
             from config import DIALOG_LLM_STREAM_TIMEOUT_SECONDS
             kw: dict = dict(
                 temperature=temperature,
                 max_completion_tokens=max_completion_tokens,
                 streaming=True,
                 timeout=DIALOG_LLM_STREAM_TIMEOUT_SECONDS,  # hang-guard for the streaming call
+                provider_type=provider_type,
             )
             if not disable_thinking:
                 # Focus thinking-on: strip ONLY the thinking-disable keys from
@@ -5930,7 +6426,7 @@ async def proactive_chat(request: Request):
                         # [临时调试]
                         print(f"\n[PROACTIVE-DEBUG] LLM output [{label}]: {response.content[:500]}...\n")
                         return response.content.strip()
-                except (asyncio.TimeoutError, APIConnectionError, InternalServerError, RateLimitError) as e:
+                except _PROACTIVE_LLM_RETRY_ERROR_TYPES as e:
                     if attempt < max_retries - 1:
                         logger.warning(f"[{lanlan_name}] LLM [{label}] 调用失败 (尝试 {attempt + 1}/{max_retries}): {e}")
                         await asyncio.sleep(retry_delays[attempt])
@@ -6377,9 +6873,13 @@ async def proactive_chat(request: Request):
                         selected_music_topic_key = picked_key
                         phase1_topics.append(('music', music_topic))
                 else:
-                    logger.debug(f"[{lanlan_name}] Phase 1 音乐话题已添加 (topic_len={len(music_topic)})")
-                    print(f"[{lanlan_name}] Phase 1 音乐话题: {music_topic[:100]}")
-                    phase1_topics.append(('music', music_topic))
+                    # formatted_content 非空时 _format_music_content 必已输出至少一条
+                    # 曲目，所以这里实际不可达；保留为防御兜底，并与上面 picked_track
+                    # is None 路径对偶：没有可播曲目就不进 active_channels，守住
+                    # "music ∈ active_channels ⟺ selected_music_link 非空" 这条不变量，
+                    # 避免 Phase 2 出现音乐素材却无歌可投（发了 [MUSIC] 转译不出）。
+                    logger.debug(f"[{lanlan_name}] Phase 1 音乐 formatted_content 非空但无曲目数据，跳过音乐通道")
+                    music_content = None
 
         # ============================================================
         # 表情包话题组装（遍历候选 → 去重 → 限1张）
@@ -6454,6 +6954,7 @@ async def proactive_chat(request: Request):
                 return await _end_proactive(JSONResponse({
                     "success": True,
                     "action": "pass",
+                    "reason_code": PROACTIVE_REASON_PASS_MODEL_PASS,
                     "message": "所有信息源筛选后均不值得搭话"
                 }))
             print(f"[{lanlan_name}] Phase 1 无话题但有未收尾话题，进入 text-only 跟进 Phase 2")
@@ -6541,9 +7042,12 @@ async def proactive_chat(request: Request):
             external_section = f"{el}\n{web_topic}\n{ef}"
         
         music_section = ""
-        # 如果正在放歌或处于冷却期，强行屏蔽音乐素材推荐，避免 AI 误触
-        # （冷却期时 music_content 已在上游被清空，music_topic 必为 None，此分支不会命中）
-        if music_topic and not is_playing_music and not music_cooldown:
+        # gate 钉在 selected_music_link（本轮真选中、可播的曲目）而非 music_topic：
+        # 保证 Phase 2 prompt 一旦出现音乐素材 / output-format 列出 [MUSIC]，下游必有
+        # 歌可投递，不会"发了 [MUSIC] 却转译不出"。selected_music_link 非空时
+        # music_topic 必非空（同生于 Phase 1 选曲）。正在放歌 / 冷却期时
+        # music_content / selected_music_link 已在上游清空，此分支自然不命中。
+        if selected_music_link and not is_playing_music and not music_cooldown:
             # 【优化】使用独立的标识符，防止模型将音乐素材误认为普通的外部 WEB 话题
             msh = _loc(MUSIC_SECTION_HEADER, proactive_lang)
             msf = _loc(MUSIC_SECTION_FOOTER, proactive_lang)
@@ -6651,7 +7155,8 @@ async def proactive_chat(request: Request):
             output_format_section=output_format_section,
         )
         dynamic_context_for_phase2 = ""
-        if music_topic:
+        # 同 music_section：[MUSIC] tag 强制指令只在真有可播曲目时注入。
+        if selected_music_link:
             dynamic_context_for_phase2 += PROACTIVE_MUSIC_TAG_INSTRUCTIONS.get(
                 proactive_lang,
                 PROACTIVE_MUSIC_TAG_INSTRUCTIONS.get('en', PROACTIVE_MUSIC_TAG_INSTRUCTIONS['zh']),
@@ -6680,6 +7185,7 @@ async def proactive_chat(request: Request):
             return await _end_proactive(JSONResponse({
                 "success": True,
                 "action": "pass",
+                "reason_code": PROACTIVE_REASON_PASS_ACTIVITY_BUSY,
                 "message": "主动搭话条件未满足（用户近期活跃或语音会话正在进行）"
             }))
 
@@ -6738,13 +7244,26 @@ async def proactive_chat(request: Request):
         full_text = ""
         pipe_count = 0
         aborted = False
+        abort_reason_code: str | None = None
         # 滚动尾部缓冲区：保留最近 5 个字符以检测跨 chunk 的 "[PASS]"（长度 6）
         pass_probe = ""
         _PASS_PROBE_LEN = 5  # len("[PASS]") - 1
 
+        def _abort(reason_code: str) -> None:
+            nonlocal aborted, abort_reason_code
+            aborted = True
+            # User takeover is the most important telemetry signal. If a later
+            # cleanup path also notices empty/invalid output, keep the takeover
+            # reason so the final pass is classified as delivery preemption.
+            if (
+                abort_reason_code is None
+                or reason_code == PROACTIVE_REASON_DELIVERY_PREEMPTED
+            ):
+                abort_reason_code = reason_code
+
         async def _emit_safe(text: str) -> bool:
             """Send to TTS after passing the fence/length checks. Returns True when we should abort."""
-            nonlocal pipe_count, full_text, aborted
+            nonlocal pipe_count, full_text
             if not text:
                 return False
             # 状态机 preempt check：O(1) 读 sticky flag + sid 比较。用户抢占
@@ -6755,20 +7274,20 @@ async def proactive_chat(request: Request):
             # 再一次性 feed。否则重复文本会在 guard 命中前已经被用户听到。
             if mgr.state.is_proactive_preempted(proactive_sid):
                 print(f"[{lanlan_name}] Phase 2 检测到用户接管（state 抢占），abort")
-                aborted = True
+                _abort(PROACTIVE_REASON_DELIVERY_PREEMPTED)
                 return True
             for ch in text:
                 if ch in ('|', '｜'):
                     pipe_count += 1
                     if pipe_count >= 2:
                         print(f"[{lanlan_name}] Phase 2 fence 触发 (pipe_count={pipe_count})，abort")
-                        aborted = True
+                        _abort(PROACTIVE_REASON_PASS_GENERATION_EMPTY)
                         return True
             # sync count_tokens — see PHASE2_OUTPUT_MAX_TOKENS docstring
             n_tokens = count_tokens(full_text + text)
             if n_tokens > PHASE2_OUTPUT_MAX_TOKENS:
                 print(f"[{lanlan_name}] Phase 2 长度超限 ({n_tokens} > {PHASE2_OUTPUT_MAX_TOKENS} tokens)，abort")
-                aborted = True
+                _abort(PROACTIVE_REASON_PASS_GENERATION_EMPTY)
                 return True
             full_text += text
             return False
@@ -6795,7 +7314,7 @@ async def proactive_chat(request: Request):
                         # 用户抢占立刻跳出；_emit_safe 里还有一次保险。
                         if mgr.state.is_proactive_preempted(proactive_sid):
                             print(f"[{lanlan_name}] Phase 2 astream chunk 前检测到抢占，abort")
-                            aborted = True
+                            _abort(PROACTIVE_REASON_DELIVERY_PREEMPTED)
                             break
                         content = chunk.content if hasattr(chunk, 'content') else ''
                         if _p2_strip is not None and content:
@@ -6828,10 +7347,15 @@ async def proactive_chat(request: Request):
                                 if _leak_tag:
                                     source_tag = _leak_tag
                             tag_parsed = True
-                            
-                            if source_tag == 'PASS' or '[PASS]' in cleaned.upper():
-                                print(f"[{lanlan_name}] Phase 2 流式检测到 [PASS]，abort")
-                                aborted = True
+
+                            # 模型本该输出带括号的 [PASS]，但偶尔吐裸 PASS：tag 正则
+                            # 认不出 → source_tag 空、'[PASS]' 也不在 cleaned 里。再补
+                            # 一道整段哨兵判定（fullmatch，方括号可选），裸 PASS 与
+                            # [PASS] 一视同仁 abort；fullmatch 不会误伤正文里的 "pass"。
+                            if (source_tag == 'PASS' or '[PASS]' in cleaned.upper()
+                                    or _text_is_pass_sentinel(cleaned)):
+                                print(f"[{lanlan_name}] Phase 2 流式检测到 PASS，abort")
+                                _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
                                 break
                             
                             # 缓冲中剩余的文本经由 pass_probe 逻辑输出
@@ -6839,7 +7363,7 @@ async def proactive_chat(request: Request):
                                 combined = pass_probe + cleaned
                                 if '[PASS]' in combined.upper():
                                     print(f"[{lanlan_name}] Phase 2 流式检测到 [PASS]，abort")
-                                    aborted = True
+                                    _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
                                     break
                                 safe_text = combined[:-_PASS_PROBE_LEN] if len(combined) > _PASS_PROBE_LEN else ''
                                 pass_probe = combined[-_PASS_PROBE_LEN:] if len(combined) >= _PASS_PROBE_LEN else combined
@@ -6851,7 +7375,7 @@ async def proactive_chat(request: Request):
                         combined = pass_probe + content
                         if '[PASS]' in combined.upper():
                             print(f"[{lanlan_name}] Phase 2 流式检测到内嵌 [PASS]，abort")
-                            aborted = True
+                            _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
                             break
                         # 将本次 chunk 的尾部保留到 pass_probe，可安全输出的部分为去掉尾部的前段
                         safe_text = combined[:-_PASS_PROBE_LEN] if len(combined) > _PASS_PROBE_LEN else ''
@@ -6862,12 +7386,12 @@ async def proactive_chat(request: Request):
         
         except (asyncio.TimeoutError, Exception) as e:
             logger.warning(f"[{lanlan_name}] Phase 2 流式调用异常: {type(e).__name__}: {e}")
-            aborted = True
+            _abort(PROACTIVE_REASON_PASS_GENERATION_EMPTY)
         
         # --- 流结束后：flush pass_probe 残留 ---
         if pass_probe and not aborted:
             if '[PASS]' in pass_probe.upper():
-                aborted = True
+                _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
             else:
                 await _emit_safe(pass_probe)
         pass_probe = ""
@@ -6897,8 +7421,12 @@ async def proactive_chat(request: Request):
                 cleaned, _leak_tag = _strip_proactive_screen_tag_leak(cleaned)
                 if _leak_tag:
                     source_tag = _leak_tag
-            if source_tag == 'PASS' or '[PASS]' in cleaned.upper():
-                aborted = True
+            # 短 bare-PASS 回复（如整段就 "PASS"，4 字 < 80 无换行）流式期一直
+            # 在 buffer 里 continue、tag_parsed 始终 False，最终落到这里兜底。
+            # 同样补整段哨兵判定，裸 PASS 与 [PASS] 一视同仁 abort。
+            if (source_tag == 'PASS' or '[PASS]' in cleaned.upper()
+                    or _text_is_pass_sentinel(cleaned)):
+                _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
             elif cleaned.strip():
                 await _emit_safe(cleaned)
         
@@ -6917,7 +7445,7 @@ async def proactive_chat(request: Request):
             # 照常生效）；仍无 tag / [PASS] / 空 → 才判格式泄漏 drop。preempt 时放弃。
             print(f"[{lanlan_name}] Phase 2 输出无合法来源标签，尝试格式自救 regen")
             if mgr.state.is_proactive_preempted(proactive_sid):
-                aborted = True
+                _abort(PROACTIVE_REASON_DELIVERY_PREEMPTED)
             else:
                 _fix_human_text = f"{render_format_fix_instruction(proactive_lang, master_name_current)}\n\n{human_text}"
                 if phase2_use_vision:
@@ -6963,7 +7491,14 @@ async def proactive_chat(request: Request):
                     print(f"[{lanlan_name}] Phase 2 格式自救成功 tag={source_tag}")
                 else:
                     print(f"[{lanlan_name}] Phase 2 格式自救仍无合法 tag，drop")
-                    aborted = True
+                    if (
+                        _fix_tag == "PASS"
+                        or "[PASS]" in _fc.upper()
+                        or _text_is_pass_sentinel(_fc)
+                    ):
+                        _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
+                    else:
+                        _abort(PROACTIVE_REASON_PASS_GENERATION_EMPTY)
 
         # --- 结果处理 ---
         # buffer 是流前 ~80 字符的原始累积（含 [TAG]\n 前缀和正文头部），
@@ -6972,6 +7507,7 @@ async def proactive_chat(request: Request):
         # 调试只需要 tag + 实际投递文本即可。
         print(f"\n[PROACTIVE-DEBUG] Phase 2 STREAM output (aborted={aborted}, tag={source_tag}): {full_text[:300]}\n")
         if aborted or not full_text.strip():
+            final_abort_reason_code = abort_reason_code or PROACTIVE_REASON_PASS_GENERATION_EMPTY
             # 只有当用户没接管时才调 handle_new_message 清 TTS —— 否则会把
             # 用户正常回复的 TTS 也清掉（PR #862 修的 bug）。状态机的
             # is_proactive_preempted 是权威信号，sid 比较作为最后一道兜底。
@@ -6983,6 +7519,7 @@ async def proactive_chat(request: Request):
             return await _end_proactive(JSONResponse({
                 "success": True,
                 "action": "pass",
+                "reason_code": final_abort_reason_code,
                 "message": "Phase 2 流式输出被拦截或为空"
             }))
         
@@ -6990,12 +7527,56 @@ async def proactive_chat(request: Request):
         if _leak_tag and not source_tag:
             source_tag = _leak_tag
         response_text = full_text.strip()
+        # 剥掉模型偶尔把活动状态里的「口吻 / 回忆线索」等内部引导标签当成首行小标题
+        # 念出来的泄漏（前端 realistic 模式会按换行切成单独一个气泡）。必须在下方
+        # 重复度 / BM25 防复读判定**之前**剥：否则被泄漏标签做前缀的复读句会因前缀
+        # 稀释相似度而绕过 dedup。这些标签纯脚手架，绝不该进 TTS / 历史。
+        response_text = _strip_proactive_intent_label_leak(response_text)
         # 不要把 proactive 原文写进 logger（会进日志文件 / 遥测）；只记元数据。
         # 完整原文通过 print 给开发者本地查看。
         logger.debug(f"[{lanlan_name}] Phase 2 流式完成 (vision={phase2_use_vision}, len={len(response_text)} chars)")
         print(f"\n[PROACTIVE-DEBUG] Phase 2 STREAM output: {response_text[:200]}...\n")
 
-        is_duplicate, similarity_score = _is_similar_to_recent_proactive_chat(lanlan_name, response_text)
+        # 素材推送类 channel（MUSIC/MEME）的复读按"素材本身"去重而非台词：本轮
+        # 素材（曲目 / 搜索关键词）与近期不雷同时，台词级硬拦截（字面相似度 +
+        # 下面的 BM25 regen/drop）一律豁免，免得模板化 intro 被误判为复读、把自
+        # 发推歌/推图压到极低频。素材雷同（反复推同一曲目 / 同一关键词）才回落
+        # 到正常台词判定。一次算清，下面两道门共用。
+        #
+        # 归类按"真实投递 channel"而非模型原始 source_tag——gate 在
+        # build_proactive_response 之前，用 Phase-1 已定的 selected_*/active_channels
+        # 预测最终投递（Codex P2）：
+        # - music-only 且已选中曲目 → 无论模型出 [CHAT] 还是 [MUSIC]，下面的
+        #   should_try_music_fallback 都会挂上曲目，本轮等于一次音乐投递，fresh
+        #   曲目不该被 CHAT 文案的字面相似度 / BM25 连带 drop/regen。
+        # - 模型出 [MEME] 但没选中表情包（selected_meme_link 为空）→ 最终
+        #   build_proactive_response 回退 web/vision/plain、meme 没真发出，按非豁免
+        #   走正常台词判定（不能凭模型 tag 就豁免）。
+        _music_only_pending = (
+            'music' in active_channels and selected_music_link is not None
+            and not is_playing_music and not music_cooldown
+            and not any(ch in ('vision', 'web', 'meme') for ch in active_channels)
+        )
+        if _music_only_pending and source_tag != 'MUSIC':
+            _dedup_tag = 'MUSIC'
+        elif source_tag == 'MEME' and selected_meme_link is None:
+            _dedup_tag = 'CHAT'
+        else:
+            _dedup_tag = source_tag
+        _material_key = _proactive_material_key(_dedup_tag, selected_music_link, meme_content)
+        _exempt_text_dedup = (
+            _dedup_tag in ANTI_REPEAT_EXEMPT_SOURCE_TAGS
+            and not _is_recent_proactive_material(lanlan_name, _dedup_tag, _material_key)
+        )
+        if _exempt_text_dedup:
+            logger.info(
+                "[%s] proactive text-dedup exempt: tag=%s (model_tag=%s) material=%r (fresh material, skip similarity+BM25)",
+                lanlan_name, _dedup_tag, source_tag, _material_key or "(none)",
+            )
+
+        is_duplicate, similarity_score = (False, 0.0)
+        if not _exempt_text_dedup:
+            is_duplicate, similarity_score = _is_similar_to_recent_proactive_chat(lanlan_name, response_text)
         if is_duplicate:
             logger.info(
                 "[%s] proactive repeat guard blocked Phase 2 output (similarity=%.3f threshold=%.2f)",
@@ -7012,6 +7593,7 @@ async def proactive_chat(request: Request):
             return await _end_proactive(JSONResponse({
                 "success": True,
                 "action": "pass",
+                "reason_code": PROACTIVE_REASON_PASS_DUPLICATE,
                 "message": "主动搭话重复度过高，已拦截",
                 "similarity": similarity_score,
                 "threshold": _PROACTIVE_SIMILARITY_THRESHOLD,
@@ -7029,14 +7611,25 @@ async def proactive_chat(request: Request):
         # ``PROACTIVE_PHASE2_GENERATE_MAX_TOKENS`` / ``render_regen_avoid_instruction``）；
         # 这里 try 仅包 corpus 单例与评分本身——若把常量 import 也塞进 try，
         # except 后下面的 ``>= ANTI_REPEAT_DROP_THRESHOLD`` 会 NameError（codex P1）。
-        try:
-            from memory.anti_repeat import get_anti_repeat_corpus
-            _ar_corpus = get_anti_repeat_corpus()
-            _bm25_total, _bm25_terms = _ar_corpus.score_draft(lanlan_name, response_text)
-        except Exception as _ar_exc:  # pragma: no cover - defensive
-            logger.debug("[AntiRepeat] BM25 score skipped: %s", _ar_exc)
+        # 素材推送类 channel（推歌/推图）的开场白天生模板化、台词长一个样而素材
+        # （曲目 / 搜索关键词）却不同，用台词 BM25 判复读属于天生误杀（博士连点几
+        # 首后 FG 窗被音乐 intro 占满，分数爆表，后续自发推歌全被 drop → "放音乐
+        # 频率极低"）。本轮素材与近期不雷同时（_exempt_text_dedup，已在上方字面
+        # 相似度门一并算好）跳过整段评分 + regen/drop；录入 corpus 时也豁免（见
+        # finish_proactive_delivery），免得模板化 intro 污染 FG 窗。素材雷同时
+        # 回落到正常台词 BM25（台词没雷同仍可发）。
+        if _exempt_text_dedup:
             _bm25_total, _bm25_terms = 0.0, {}
             _ar_corpus = None
+        else:
+            try:
+                from memory.anti_repeat import get_anti_repeat_corpus
+                _ar_corpus = get_anti_repeat_corpus()
+                _bm25_total, _bm25_terms = _ar_corpus.score_draft(lanlan_name, response_text)
+            except Exception as _ar_exc:  # pragma: no cover - defensive
+                logger.debug("[AntiRepeat] BM25 score skipped: %s", _ar_exc)
+                _bm25_total, _bm25_terms = 0.0, {}
+                _ar_corpus = None
 
         # ANTI_REPEAT_DROP_THRESHOLD 仅在 regen 之后才生效：初稿超 DROP 也得
         # 给 LLM 一次纠正机会，跑完再用同阈值二判。之前的版本初稿 ≥ DROP
@@ -7088,6 +7681,7 @@ async def proactive_chat(request: Request):
                 return await _end_proactive(JSONResponse({
                     "success": True,
                     "action": "pass",
+                    "reason_code": PROACTIVE_REASON_DELIVERY_PREEMPTED,
                     "message": "BM25 regen 前用户已接管",
                 }))
             try:
@@ -7134,6 +7728,10 @@ async def proactive_chat(request: Request):
                 _cleaned, _leak_tag = _strip_proactive_screen_tag_leak(_cleaned)
                 if _leak_tag:
                     regen_source_tag = _leak_tag
+            # 同初稿：把泄漏的内部引导标签从 regen 产出里剥掉，且必须在下面两道
+            # regen 复读复判（score_draft / 字面相似度）**之前**剥——否则带标签前缀
+            # 的复读会稀释分数绕过 drop。_cleaned 在此一次性规范化，复判与投递共用。
+            _cleaned = _strip_proactive_intent_label_leak(_cleaned)
             # regen 输出 [PASS] / 空 → 等价于"模型放弃了"，drop 而不是退回原文。
             # 显式把 ``regen_source_tag == 'PASS'`` 也算 drop（前面剥过 [TAG] 前缀，
             # _cleaned 已不含字面 "[PASS]"，但 regen_source_tag 记下了是 PASS）。
@@ -7152,6 +7750,7 @@ async def proactive_chat(request: Request):
                 return await _end_proactive(JSONResponse({
                     "success": True,
                     "action": "pass",
+                    "reason_code": PROACTIVE_REASON_PASS_DUPLICATE,
                     "message": "BM25 regen 失败，已 drop",
                 }))
 
@@ -7170,6 +7769,7 @@ async def proactive_chat(request: Request):
                 return await _end_proactive(JSONResponse({
                     "success": True,
                     "action": "pass",
+                    "reason_code": PROACTIVE_REASON_PASS_DUPLICATE,
                     "message": "BM25 regen 后仍超阈值，已 drop",
                     "bm25_score": _regen_total,
                 }))
@@ -7190,6 +7790,7 @@ async def proactive_chat(request: Request):
                 return await _end_proactive(JSONResponse({
                     "success": True,
                     "action": "pass",
+                    "reason_code": PROACTIVE_REASON_PASS_DUPLICATE,
                     "message": "BM25 regen 后字面相似度仍超阈值，已 drop",
                     "similarity": _regen_sim,
                     "threshold": _PROACTIVE_SIMILARITY_THRESHOLD,
@@ -7212,7 +7813,8 @@ async def proactive_chat(request: Request):
                     )
                 selected_music_link = None
                 music_content = None
-            # 采用 regen 文本接着走下游 source_tag / TTS 投递
+            # 采用 regen 文本接着走下游 source_tag / TTS 投递（_cleaned 已在上方
+            # 落定时剥过泄漏标签，复读复判与投递共用同一份干净文本）。
             response_text = _cleaned
             full_text = _cleaned
 
@@ -7245,6 +7847,7 @@ async def proactive_chat(request: Request):
             return await _end_proactive(JSONResponse({
                 "success": True,
                 "action": "pass",
+                "reason_code": PROACTIVE_REASON_PASS_MODEL_PASS,
                 "message": f"[{lanlan_name}] 播放中推荐拦截触发，动作已取消"
             }))
 
@@ -7286,7 +7889,34 @@ async def proactive_chat(request: Request):
             music_already_appended = any(link.get('source') == '音乐推荐' for link in source_links)
             if not music_already_appended:
                 _append_music_recommendations(source_links, music_content)
-        
+
+        # anti-repeat / 素材去重按"真实投递的 channel"归类，而非模型原始 source_tag
+        # （此处 primary_channel 已由 build_proactive_response 按实际 source_links 定下，
+        # 比 gate 的 Phase-1 预测更准）（Codex P2）：
+        # - is_music_used（含模型出 [CHAT] 但 should_try_music_fallback 追加了曲目）
+        #   或 primary_channel=='music' → 实际投递音乐 → MUSIC：否则模板 intro 会被
+        #   按 CHAT 录进 BM25 corpus、且曲目 key 不记，重新引入 fallback 推歌污染。
+        # - 仅当 primary_channel=='meme' 且确有表情包链接（selected_meme_link 非空，
+        #   build_proactive_response 此时才真 append 图）才算 MEME 投递；模型出 [MEME]
+        #   但选空时它已回退别的 channel（甚至 primary 仍是 'meme' 但无链接），不能按
+        #   MEME 记——否则模板文案漏录 corpus，且把没发出的关键词记成已投递，害得之后
+        #   同关键词的真表情包被当复读跳过。
+        # - 其余落到非豁免 CHAT（WEB/vision 同样非豁免，对 anti-repeat 等价）。
+        if is_music_used or primary_channel == 'music':
+            _delivered_tag = 'MUSIC'
+        elif primary_channel == 'meme' and selected_meme_link is not None:
+            _delivered_tag = 'MEME'
+        else:
+            _delivered_tag = 'CHAT'
+        # 曲目优先取 selected_music_link；regen 把 tag 降级 CHAT 时它已被清空，则从已
+        # 追加的 source_links（source=='音乐推荐'）里取首条。
+        _delivered_music_link = selected_music_link
+        if _delivered_tag == 'MUSIC' and not _delivered_music_link:
+            _delivered_music_link = next(
+                (l for l in (source_links or []) if isinstance(l, dict) and l.get('source') == '音乐推荐'),
+                None,
+            )
+
         # 一次性投递完整文本 + 记录历史 + TTS end + turn end
         # 传 proactive_sid：若 Phase 2 流结束到这里之间用户已打断（换了 sid），
         # finish 内部会跳过所有写入，避免 proactive 文本污染用户当前轮次。
@@ -7300,12 +7930,22 @@ async def proactive_chat(request: Request):
             language=proactive_lang,
             master_name=master_name_current,
         )
+        # 只要本轮后端拿到了截图、且有可用 vision 模型（phase2_use_vision 同时
+        # 蕴含 screenshot_b64_for_phase2 非空），就缓存最后这张主动搭话截图，等
+        # 用户下一条 text 回复时注入——不按最终投递通道筛（哪怕这轮文案落到了
+        # music/web，屏幕仍是这轮看过的画面，留着供用户追问）。截图在
+        # finish_proactive_delivery 内 commit 成功后才真正落 session：新一轮主动
+        # 搭话产生即覆盖/清掉旧缓存（非 vision 轮传 None 清），session 侧再用 2
+        # 分钟 TTL 兜底过期。
+        _stage_vision_screenshot = screenshot_b64_for_phase2 if phase2_use_vision else None
         try:
             await mgr.feed_tts_chunk(response_text, expected_speech_id=proactive_sid)
             committed = await mgr.finish_proactive_delivery(
                 response_text,
                 expected_speech_id=proactive_sid,
                 action_note=action_note,
+                source_tag=_delivered_tag,
+                vision_screenshot_b64=_stage_vision_screenshot,
             )
         except Exception as exc:
             logger.warning("[%s] buffered proactive delivery failed: %s", lanlan_name, exc)
@@ -7316,6 +7956,7 @@ async def proactive_chat(request: Request):
             return await _end_proactive(JSONResponse({
                 "success": True,
                 "action": "pass",
+                "reason_code": PROACTIVE_REASON_DELIVERY_FAILED,
                 "message": "Phase 2 buffered delivery failed",
             }))
         if not committed:
@@ -7329,6 +7970,7 @@ async def proactive_chat(request: Request):
             return await _end_proactive(JSONResponse({
                 "success": True,
                 "action": "pass",
+                "reason_code": PROACTIVE_REASON_DELIVERY_PREEMPTED,
                 "message": "proactive delivery skipped: user took over turn",
                 "lanlan_name": lanlan_name,
                 "turn_id": mgr.current_speech_id,
@@ -7336,6 +7978,14 @@ async def proactive_chat(request: Request):
 
         # 记录主动搭话
         _record_proactive_chat(lanlan_name, response_text, primary_channel)
+        # 记录本轮实际投递的"素材标识"（曲目 / 搜索关键词），供下次同 channel 的
+        # 素材级去重。按"真实投递 channel"_delivered_tag/_delivered_music_link 归类
+        # （含模型出 CHAT 但 fallback 追加了曲目的情形），key 为空则不记录。
+        _record_proactive_material(
+            lanlan_name,
+            _delivered_tag,
+            _proactive_material_key(_delivered_tag, _delivered_music_link, meme_content),
+        )
         # Mini-game 邀请冷却 counter 推进：spec 是"被回应后再 10 次搭话才解禁"，
         # 任何 channel 的成功投递都算一次，pending 期间（responded_at=None）函数
         # 内部自然 no-op，不靠"邀请自身"提前耗 counter。
@@ -7451,6 +8101,7 @@ async def proactive_chat(request: Request):
         return await _end_proactive(JSONResponse({
             "success": True,
             "action": "chat",
+            "reason_code": PROACTIVE_REASON_CHAT_DELIVERED,
             "message": "主动搭话已发送",
             "lanlan_name": lanlan_name,
             "source_mode": primary_channel.lower(),
@@ -7463,18 +8114,24 @@ async def proactive_chat(request: Request):
     except asyncio.TimeoutError:
         logger.error("主动搭话超时")
         await _safe_fire_proactive_done(locals())
-        return JSONResponse({
-            "success": False,
-            "error": "AI处理超时"
-        }, status_code=504)
+        return JSONResponse(
+            _proactive_error_body(
+                PROACTIVE_REASON_ERROR_TIMEOUT,
+                error="AI处理超时",
+            ),
+            status_code=504,
+        )
     except Exception as e:
         logger.error(f"主动搭话接口异常: {e}")
         await _safe_fire_proactive_done(locals())
-        return JSONResponse({
-            "success": False,
-            "error": "服务器内部错误",
-            "detail": str(e)
-        }, status_code=500)
+        return JSONResponse(
+            _proactive_error_body(
+                PROACTIVE_REASON_ERROR_INTERNAL,
+                error="服务器内部错误",
+                detail=str(e),
+            ),
+            status_code=500,
+        )
 
 
 
@@ -7917,54 +8574,6 @@ async def translate_text_api(request: Request):
             "source_lang": "unknown",
             "target_lang": "zh"
         }
-
-# ========== 个性化内容接口 ==========
-
-@router.post('/personal_dynamics')
-async def get_personal_dynamics(request: Request):
-    """
-    Get personalized content data.
-    """
-    validation_error = _validate_local_mutation_request(request)
-    if validation_error is not None:
-        return validation_error
-
-    from utils.web_scraper import fetch_personal_dynamics, format_personal_dynamics
-    try:
-
-        data = await request.json()
-        limit = data.get('limit', 10)
-
-        # 获取个性化内容
-        personal_content = await fetch_personal_dynamics(limit=limit)
-
-        if not personal_content['success']:
-            return JSONResponse({
-                "success": False,
-                "error": "无法获取个性化内容",
-                "detail": personal_content.get('error', '未知错误')
-            }, status_code=500)
-
-        # 格式化内容用于前端显示
-        formatted_content = format_personal_dynamics(personal_content)
-
-        return JSONResponse({
-            "success": True,
-            "data": {
-                "raw": personal_content,
-                "formatted": formatted_content,
-                "platforms": [k for k in personal_content.keys() if k not in ('success', 'error', 'region')]
-            }
-        })
-
-    except Exception as e:
-        logger.error(f"获取个性化内容失败: {e}")
-        return JSONResponse({
-            "success": False,
-            "error": "服务器内部错误",
-            "detail": str(e)
-        }, status_code=500)
-
 
 # Self-register the mini-game-invite keyword matcher with main_logic's
 # event bus. Same rationale as plugin/core/state.py: ``main_logic.core``

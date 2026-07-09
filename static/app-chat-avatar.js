@@ -11,6 +11,7 @@
     let isCapturing = false;
     let pendingAutoCapture = false;
     let activeCaptureToken = 0;
+    let activeCaptureCardVisible = false;
     let cachedPreview = null;
     let autoCaptureTimer = null;
     let lastScheduledCacheKey = '';
@@ -254,7 +255,11 @@
         [legacyButton, headerButton].forEach(function (btn) {
             if (!btn) return;
             btn.classList.toggle('is-loading', loading);
-            btn.disabled = loading;
+            if (loading) {
+                btn.setAttribute('aria-busy', 'true');
+            } else {
+                btn.removeAttribute('aria-busy');
+            }
         });
         if (refreshButton) {
             refreshButton.disabled = loading;
@@ -892,6 +897,10 @@
         const manualCrop = options.manualCrop === true;
 
         if (isCapturing) {
+            if (showCard) {
+                setPreviewVisible(true, trigger);
+                activeCaptureCardVisible = true;
+            }
             if (!showCard && silent) {
                 pendingAutoCapture = true;
             }
@@ -912,6 +921,7 @@
 
         isCapturing = true;
         const token = ++activeCaptureToken;
+        activeCaptureCardVisible = showCard;
         const cacheKey = getCurrentModelCacheKey();
         const prevCachedPreview = cachedPreview ? Object.assign({}, cachedPreview) : null;
         if (showCard) {
@@ -983,7 +993,7 @@
         } catch (error) {
             if (token !== activeCaptureToken) return;
 
-            if (showCard) {
+            if (showCard || activeCaptureCardVisible) {
                 setPreviewImage('');
                 setPreviewStatus(translateLabel('chat.avatarPreviewFailed', '生成头像失败'));
                 setPreviewNote(getErrorMessage(error));
@@ -997,6 +1007,7 @@
         } finally {
             if (token === activeCaptureToken) {
                 isCapturing = false;
+                activeCaptureCardVisible = false;
                 setLoadingState(false);
                 if (pendingAutoCapture) {
                     pendingAutoCapture = false;

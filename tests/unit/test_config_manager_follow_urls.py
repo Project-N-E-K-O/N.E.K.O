@@ -57,6 +57,99 @@ def test_follow_assist_uses_resolved_provider_url_instead_of_stale_saved_url():
         shutil.rmtree(config_dir, ignore_errors=True)
 
 
+def test_follow_assist_uses_saved_model_id_for_text_tiers():
+    """follow_assist keeps saved text model IDs while following URL and key."""
+    config_dir = _make_workspace_temp_dir()
+    try:
+        cm = _manager_with_core_config(config_dir, {
+            "coreApiKey": "free-access",
+            "coreApi": "free",
+            "assistApi": "deepseek",
+            "assistApiKeyDeepseek": "sk-deepseek",
+            "enableCustomApi": True,
+            "conversationModelProvider": "follow_assist",
+            "conversationModelUrl": "https://api.deepseek.com/v1",
+            "conversationModelId": "deepseek-v4-flash",
+            "conversationModelApiKey": "sk-deepseek",
+            "correctionModelProvider": "follow_assist",
+            "correctionModelUrl": "https://api.deepseek.com/v1",
+            "correctionModelId": "deepseek-v4-flash",
+            "correctionModelApiKey": "sk-deepseek",
+            "agentModelProvider": "follow_assist",
+            "agentModelUrl": "https://api.deepseek.com/v1",
+            "agentModelId": "deepseek-v4-flash",
+            "agentModelApiKey": "sk-deepseek",
+        })
+
+        assert cm.get_model_api_config("conversation")["model"] == "deepseek-v4-flash"
+        assert cm.get_model_api_config("correction")["model"] == "deepseek-v4-flash"
+        assert cm.get_model_api_config("agent")["model"] == "deepseek-v4-flash"
+    finally:
+        shutil.rmtree(config_dir, ignore_errors=True)
+
+
+def test_free_follow_assist_ignores_stale_saved_model_id_for_text_tiers():
+    """Free assist has fixed model names and must not reuse stale paid provider IDs."""
+    config_dir = _make_workspace_temp_dir()
+    try:
+        cm = _manager_with_core_config(config_dir, {
+            "coreApiKey": "free-access",
+            "coreApi": "free",
+            "assistApi": "free",
+            "assistApiKey": "free-access",
+            "enableCustomApi": True,
+            "conversationModelProvider": "follow_assist",
+            "conversationModelUrl": "https://www.lanlan.tech/text/v1",
+            "conversationModelId": "deepseek-v4-pro",
+            "conversationModelApiKey": "free-access",
+            "emotionModelProvider": "follow_assist",
+            "emotionModelUrl": "https://www.lanlan.tech/text/v1",
+            "emotionModelId": "deepseek-v4-pro",
+            "emotionModelApiKey": "free-access",
+            "agentModelProvider": "follow_assist",
+            "agentModelUrl": "https://www.lanlan.tech/text/v1",
+            "agentModelId": "deepseek-v4-pro",
+            "agentModelApiKey": "free-access",
+        })
+
+        assert cm.get_model_api_config("conversation")["model"] == "free-model"
+        assert cm.get_model_api_config("emotion")["model"] == "free-mini-model"
+        assert cm.get_model_api_config("agent")["model"] == "free-agent-model"
+    finally:
+        shutil.rmtree(config_dir, ignore_errors=True)
+
+
+def test_follow_core_uses_saved_model_id_for_text_tiers():
+    """follow_core keeps saved text model IDs while following URL and key."""
+    config_dir = _make_workspace_temp_dir()
+    try:
+        cm = _manager_with_core_config(config_dir, {
+            "coreApi": "deepseek",
+            "coreApiKeyDeepseek": "sk-deepseek",
+            "assistApi": "free",
+            "assistApiKey": "free-access",
+            "enableCustomApi": True,
+            "conversationModelProvider": "follow_core",
+            "conversationModelUrl": "https://api.deepseek.com/v1",
+            "conversationModelId": "deepseek-v4-flash",
+            "conversationModelApiKey": "sk-deepseek",
+            "correctionModelProvider": "follow_core",
+            "correctionModelUrl": "https://api.deepseek.com/v1",
+            "correctionModelId": "deepseek-v4-flash",
+            "correctionModelApiKey": "sk-deepseek",
+            "agentModelProvider": "follow_core",
+            "agentModelUrl": "https://api.deepseek.com/v1",
+            "agentModelId": "deepseek-v4-flash",
+            "agentModelApiKey": "sk-deepseek",
+        })
+
+        assert cm.get_model_api_config("conversation")["model"] == "deepseek-v4-flash"
+        assert cm.get_model_api_config("correction")["model"] == "deepseek-v4-flash"
+        assert cm.get_model_api_config("agent")["model"] == "deepseek-v4-flash"
+    finally:
+        shutil.rmtree(config_dir, ignore_errors=True)
+
+
 def test_follow_core_non_omni_still_uses_core_provider_http_url():
     """非 omni 的 follow_core 仍应解析为核心 provider 对应的 HTTP 兼容地址。"""
     config_dir = _make_workspace_temp_dir()

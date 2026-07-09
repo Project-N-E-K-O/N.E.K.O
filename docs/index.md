@@ -14,7 +14,7 @@ hero:
       link: /guide/
     - theme: brand
       text: Get on Steam
-      link: https://store.steampowered.com/app/3117010/NEKO/
+      link: https://store.steampowered.com/app/4099310/__NEKO/
     - theme: alt
       text: API Reference
       link: /api/
@@ -26,7 +26,7 @@ features:
   - icon: 🎮
     title: Steam Workshop & Community
     details: Available on Steam with full Workshop UGC support — share and discover characters, models, voice packs, and plugins created by the community.
-    link: https://store.steampowered.com/app/3117010/NEKO/
+    link: https://store.steampowered.com/app/4099310/__NEKO/
     linkText: View on Steam
   - icon: 🎙️
     title: Omni-Modal Dialogue
@@ -39,8 +39,8 @@ features:
     link: /guide/
     linkText: Learn more
   - icon: 🧠
-    title: Three-Tier Memory
-    details: Semantic recall via hybrid embedding-vector and BM25 indexing. Facts, reflections, and persona layers with sliding-window compression and persistent user preferences.
+    title: Five-Dimensional Memory
+    details: Semantic recall via hybrid embedding-vector and BM25 indexing. Working, recent, facts, reflection, and persona layers with sliding-window compression and persistent user preferences.
     link: /architecture/memory-system
     linkText: How it works
   - icon: 🤖
@@ -54,8 +54,8 @@ features:
     link: /plugins/
     linkText: Build a plugin
   - icon: 🎭
-    title: Live2D, VRM, MMD & Voice Clone
-    details: Embodied avatars with emotion-mapped expressions, lip sync, and idle animations. Clone any voice from a 5-second sample via MiniMax or CosyVoice backends.
+    title: Live2D, VRM, MMD, PNGTuber & Cat Pet
+    details: Five embodied avatar forms with emotion-mapped expressions, lip sync, idle animations, motion capture, and full-screen tracking. Clone any voice from a 5-second sample via MiniMax or CosyVoice backends.
     link: /frontend/
     linkText: Frontend guide
   - icon: 🌐

@@ -1133,39 +1133,118 @@
         syncColorWidthActive();
     }
 
+    var FLOATING_PANEL_MARGIN = 12;
+    var FLOATING_PANEL_GAP = 8;
+
+    function getOverlayClientSize() {
+        return {
+            w: (overlay && overlay.clientWidth) || window.innerWidth || document.documentElement.clientWidth || 0,
+            h: (overlay && overlay.clientHeight) || window.innerHeight || document.documentElement.clientHeight || 0
+        };
+    }
+
+    function clampPanelCoord(value, panelSize, viewportSize) {
+        var min = FLOATING_PANEL_MARGIN;
+        var max = viewportSize - panelSize - FLOATING_PANEL_MARGIN;
+        if (max < min) return min;
+        return Math.max(min, Math.min(max, value));
+    }
+
+    function prepareFloatingPanel(panel) {
+        var size = getOverlayClientSize();
+        panel.style.maxWidth = Math.max(1, size.w - FLOATING_PANEL_MARGIN * 2) + 'px';
+        // 先恢复内容自身宽度再测量，避免上一次 left 位置影响 absolute auto-width 的换行结果。
+        panel.style.width = 'max-content';
+    }
+
+    function measureFloatingPanel(panel, fallbackW, fallbackH) {
+        var rect = panel.getBoundingClientRect ? panel.getBoundingClientRect() : null;
+        var overlaySize = getOverlayClientSize();
+        var maxW = Math.max(1, overlaySize.w - FLOATING_PANEL_MARGIN * 2);
+        var w = Math.max(
+            fallbackW || 0,
+            panel.offsetWidth || 0,
+            rect ? rect.width : 0
+        );
+        var h = Math.max(
+            fallbackH || 0,
+            panel.offsetHeight || 0,
+            rect ? rect.height : 0,
+            panel.scrollHeight || 0
+        );
+        if (panel.scrollWidth) w = Math.max(w, Math.min(panel.scrollWidth, maxW));
+        return {
+            w: Math.ceil(Math.min(w, maxW)),
+            h: Math.ceil(h)
+        };
+    }
+
+    function pickPanelLeft(anchorX, anchorW, panelW) {
+        var size = getOverlayClientSize();
+        var min = FLOATING_PANEL_MARGIN;
+        var max = size.w - panelW - FLOATING_PANEL_MARGIN;
+        var candidates = [
+            anchorX,
+            anchorX + anchorW - panelW,
+            anchorX + (anchorW - panelW) / 2
+        ];
+        for (var i = 0; i < candidates.length; i++) {
+            if (candidates[i] >= min && candidates[i] <= max) return candidates[i];
+        }
+        return clampPanelCoord(anchorX, panelW, size.w);
+    }
+
+    function pickPanelTop(anchorY, anchorH, panelH) {
+        var size = getOverlayClientSize();
+        var below = anchorY + anchorH + FLOATING_PANEL_GAP;
+        var above = anchorY - panelH - FLOATING_PANEL_GAP;
+        var spaceBelow = size.h - FLOATING_PANEL_MARGIN - below - panelH;
+        var spaceAbove = anchorY - FLOATING_PANEL_MARGIN - FLOATING_PANEL_GAP;
+        var belowFits = spaceBelow >= 0;
+        var aboveFits = above >= FLOATING_PANEL_MARGIN;
+        var anchorCenterY = anchorY + anchorH / 2;
+
+        // 底部区域优先上翻，避免工具栏跟着选区向下拖动时被屏幕边缘吃掉。
+        if (aboveFits && (!belowFits || anchorCenterY >= size.h / 2 || spaceAbove > spaceBelow)) {
+            return above;
+        }
+        if (belowFits) return below;
+        if (aboveFits) return above;
+        return clampPanelCoord(spaceAbove > spaceBelow ? above : below, panelH, size.h);
+    }
+
+    function placeFloatingPanel(panel, anchor, fallbackW, fallbackH) {
+        prepareFloatingPanel(panel);
+        var panelSize = measureFloatingPanel(panel, fallbackW, fallbackH);
+        panel.style.width = panelSize.w + 'px';
+        var left = pickPanelLeft(anchor.x, anchor.w, panelSize.w);
+        var top = pickPanelTop(anchor.y, anchor.h, panelSize.h);
+        panel.style.left = Math.round(left) + 'px';
+        panel.style.top = Math.round(top) + 'px';
+        panelSize = measureFloatingPanel(panel, panelSize.w, panelSize.h);
+        left = clampPanelCoord(left, panelSize.w, getOverlayClientSize().w);
+        top = clampPanelCoord(top, panelSize.h, getOverlayClientSize().h);
+        panel.style.left = Math.round(left) + 'px';
+        panel.style.top = Math.round(top) + 'px';
+        return {
+            x: left,
+            y: top,
+            w: panelSize.w,
+            h: panelSize.h
+        };
+    }
+
     function positionToolbar(cs) {
         if (!toolbarEl) return;
         toolbarEl.style.display = 'flex';
-        var tw = toolbarEl.offsetWidth || 360;
-        var th = toolbarEl.offsetHeight || 44;
-        var left = cs.x;
-        var top = cs.y + cs.h + 12;
-        if (top + th > overlay.clientHeight - 12) {
-            top = cs.y - th - 12; // 选区贴底时翻到上方
-        }
-        if (top < 12) top = 12;
-        if (left + tw > overlay.clientWidth - 12) left = overlay.clientWidth - tw - 12;
-        if (left < 12) left = 12;
-        toolbarEl.style.left = left + 'px';
-        toolbarEl.style.top = top + 'px';
-        positionOptionsBar(left, top, th);
+        var placedToolbar = placeFloatingPanel(toolbarEl, cs, 360, 44);
+        positionOptionsBar(placedToolbar);
     }
 
     // 选项条贴着主工具栏：默认浮在工具栏下方（仿 QQ），下方放不下则翻到上方（随屏幕边缘自适应）。
-    function positionOptionsBar(toolbarLeft, toolbarTop, toolbarH) {
+    function positionOptionsBar(toolbarRect) {
         if (!optionsBarEl || optionsBarEl.style.display === 'none') return;
-        var ow = optionsBarEl.offsetWidth || 240;
-        var oh = optionsBarEl.offsetHeight || 40;
-        var left = toolbarLeft;
-        var top = toolbarTop + toolbarH + 8;
-        if (top + oh > overlay.clientHeight - 12) {
-            top = toolbarTop - oh - 8; // 下方贴边则翻到工具栏上方
-        }
-        if (top < 12) top = 12;
-        if (left + ow > overlay.clientWidth - 12) left = overlay.clientWidth - ow - 12;
-        if (left < 12) left = 12;
-        optionsBarEl.style.left = left + 'px';
-        optionsBarEl.style.top = top + 'px';
+        placeFloatingPanel(optionsBarEl, toolbarRect, 240, 40);
     }
 
     // ======================== Contextual options bar ========================
@@ -1255,6 +1334,10 @@
             }));
         }
         optionsBarEl.style.display = 'flex';
+        if (sel) {
+            var cs = clampSel(sel);
+            if (cs) positionToolbar(cs);
+        }
     }
 
     // ======================== Watermark helpers ========================

@@ -36,17 +36,8 @@
 | `NEKO_AGENT_MQ_PORT` | `48917` | Agent 消息队列 |
 | `NEKO_MAIN_AGENT_EVENT_PORT` | `48918` | Agent 事件端口 |
 
-## 模型覆盖
-
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `NEKO_SUMMARY_MODEL` | `qwen-plus` | 摘要模型 |
-| `NEKO_CORRECTION_MODEL` | `qwen-max` | 文本纠错模型 |
-| `NEKO_EMOTION_MODEL` | `qwen-turbo` / `qwen-flash` | 情感分析模型 |
-| `NEKO_VISION_MODEL` | `qwen3-vl-plus-2025-09-23` | 视觉/图像理解模型 |
-
 ## 服务 URL
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `NEKO_MCP_ROUTER_URL` | `http://localhost:3282` | MCP Router 端点 |
+| `NEKO_MCP_ROUTER_URL` | `http://localhost:3283` | MCP Router 端点 |
