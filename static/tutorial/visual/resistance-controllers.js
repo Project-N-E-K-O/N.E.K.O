@@ -15,10 +15,9 @@
         'interrupt_resist_light_1',
         'interrupt_resist_light_3'
     ]);
-    const DEFAULT_INTERRUPT_DISTANCE = 800;
+    const DEFAULT_INTERRUPT_DISTANCE = 200;
     const DEFAULT_CURSOR_RESISTANCE_DISTANCE = 30;
     const DEFAULT_INTERRUPT_ACCELERATION_THRESHOLD = 2;
-    const DEFAULT_INTERRUPT_GESTURE_WINDOW_MS = 1000;
     const DEFAULT_INTERRUPT_QUALIFYING_MOVE_STREAK = 3;
     const DEFAULT_RESISTANCE_LINES = Object.freeze([
         '喂！不要拽我啦，现在还没轮到你的回合呢！',
@@ -346,10 +345,7 @@
                 x: x,
                 y: y,
                 t: now,
-                speed: 0,
-                interruptGestureStartX: x,
-                interruptGestureStartY: y,
-                interruptGestureStartedAt: now
+                speed: 0
             };
             director.interruptQualifyingMoveStreak = 0;
         }
@@ -427,10 +423,7 @@
                     x: x,
                     y: y,
                     t: now,
-                    speed: 0,
-                    interruptGestureStartX: x,
-                    interruptGestureStartY: y,
-                    interruptGestureStartedAt: now
+                    speed: 0
                 };
                 if (sampleDx !== null || sampleDy !== null) {
                     const initialDx = sampleDx === null ? 0 : sampleDx;
@@ -452,28 +445,12 @@
             const speed = distance / dt;
             const previousSpeed = Number.isFinite(previousPoint.speed) ? previousPoint.speed : 0;
             const acceleration = (speed - previousSpeed) / dt;
-            const previousGestureStartedAt = Number.isFinite(previousPoint.interruptGestureStartedAt)
-                ? previousPoint.interruptGestureStartedAt
-                : previousPoint.t;
-            const shouldContinueGesture = (
-                Number.isFinite(previousPoint.interruptGestureStartX)
-                && Number.isFinite(previousPoint.interruptGestureStartY)
-                && Number.isFinite(previousGestureStartedAt)
-                && (now - previousGestureStartedAt) <= DEFAULT_INTERRUPT_GESTURE_WINDOW_MS
-            );
-            const gestureStartX = shouldContinueGesture ? previousPoint.interruptGestureStartX : previousPoint.x;
-            const gestureStartY = shouldContinueGesture ? previousPoint.interruptGestureStartY : previousPoint.y;
-            const gestureStartedAt = shouldContinueGesture ? previousGestureStartedAt : previousPoint.t;
-            const gestureDistance = Math.hypot(x - gestureStartX, y - gestureStartY);
 
             director.lastPointerPoint = {
                 x: x,
                 y: y,
                 t: now,
-                speed: speed,
-                interruptGestureStartX: gestureStartX,
-                interruptGestureStartY: gestureStartY,
-                interruptGestureStartedAt: gestureStartedAt
+                speed: speed
             };
 
             director.noteUserCursorRevealSuppressionAttempt(distance, now);
@@ -481,9 +458,9 @@
                 director.playCursorResistanceToUserMotion(x, y, distance, dx, dy);
             }
 
-            const exceedsDistanceThreshold = gestureDistance >= DEFAULT_INTERRUPT_DISTANCE;
+            const exceedsDistanceThreshold = distance >= DEFAULT_INTERRUPT_DISTANCE;
             const exceedsAccelerationThreshold = (
-                distance > DEFAULT_CURSOR_RESISTANCE_DISTANCE
+                distance >= DEFAULT_INTERRUPT_DISTANCE
                 && acceleration >= DEFAULT_INTERRUPT_ACCELERATION_THRESHOLD
             );
             if (
