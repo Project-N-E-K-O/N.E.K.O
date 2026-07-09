@@ -60,7 +60,7 @@ type PluginSurfaceProps<State = Record<string, any>> = {
   stateSchema?: JsonSchema | null
   actions: HostedAction[]
   entries: Array<Record<string, any>>
-  config: { schema: JsonSchema; value: Record<string, any>; readonly?: boolean }
+  config?: { schema: JsonSchema; value: Record<string, any>; readonly?: boolean }
   warnings: Array<{ path: string; code: string; message: string }>
   locale: string
   t: (source: string, params?: Record<string, any>) => string
@@ -70,7 +70,7 @@ type PluginSurfaceProps<State = Record<string, any>> = {
 }
 ```
 
-Default export components receive this object.
+Default export components receive this object. `config` is present only when the surface has permission to read plugin config; always handle it as optional.
 
 ## Layout Components
 

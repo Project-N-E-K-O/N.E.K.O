@@ -14,7 +14,8 @@ Ask these before designing a new plugin, unless the conversation already answere
    - Adapter: bridges an external protocol/request stream into N.E.K.O plugin calls.
 4. What should the first version include?
    - callable entries, background/lifecycle work, timers, message reaction, UI, storage/settings, cross-plugin calls, external service/device connection, or protocol gateway.
-5. What is out of scope for the first version?
+5. If this is an Extension, which host plugin does it attach to?
+6. What is out of scope for the first version?
 
 Keep questions in user-facing language. Use the answers to infer plugin architecture; do not ask the user to design individual entries first.
 
@@ -54,6 +55,7 @@ Template:
 - name:
 - entry:
 - main class:
+- host plugin: <!-- Extension only -->
 
 ## Purpose
 

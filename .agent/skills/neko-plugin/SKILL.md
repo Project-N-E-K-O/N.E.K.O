@@ -85,6 +85,7 @@ If a plugin goal cannot be achieved inside `plugin/plugins/<plugin_id>/`, stop b
 ## Reference Map
 
 - `references/core-plugin-contract.md`: identity lock, `plugin.toml`, entry imports, package type, capabilities.
+- `references/execution-boundary.md`: write workspace, read context, and escalation rules.
 - `references/plugin-creation-workflow.md`: minimum questions, design brief, scaffold commands.
 - `references/plugin-system-surface-map.md`: SDK/API capability index; check before inventing abstractions.
 - `references/plugin-cli-and-debugging.md`: CLI usage and runtime/debug workflow.
