@@ -455,6 +455,7 @@ class QQSessionInstructionService:
             return self._build_group_scene_section(
                 her_name=her_name,
                 master_title=master_title,
+                permission_level=permission_level,
                 sender_id=sender_id,
                 user_title=user_title,
                 group_id=group_id,
@@ -476,6 +477,7 @@ class QQSessionInstructionService:
         *,
         her_name: str,
         master_title: str,
+        permission_level: str,
         sender_id: str,
         user_title: str,
         group_id: str | None,
@@ -484,10 +486,13 @@ class QQSessionInstructionService:
         shared_group_session: bool,
         group_scene_mode: str,
     ) -> str:
+        admin_line = ""
+        if permission_level == "admin":
+            admin_line = f"\n## 身份确认（Identity Confirmation）\n当前发言人 {user_title}（QQ: {sender_id}）**就是主人/管理员本人**。请使用对主人的称呼和态度来回应，不要怀疑对方的身份。\n"
         # 猫娘动态主策略：统一软指令，不加硬 Identity Boundary
         strategy_mode = getattr(self.plugin, "_strategy_mode", "neko_dynamic")
         if strategy_mode == "neko_dynamic":
-            return self.plugin.i18n.t(
+            return admin_line + self.plugin.i18n.t(
                 "prompts.group.kira_unified",
                 default=SCENE_KIRA_UNIFIED_GROUP,
                 her_name=her_name,
@@ -496,7 +501,7 @@ class QQSessionInstructionService:
             )
         # N.E.K.O 退级策略：四套硬场景模板（原有逻辑）
         if group_scene_mode == "group_collective" or group_facing:
-            return self.plugin.i18n.t(
+            return admin_line + self.plugin.i18n.t(
                 "prompts.group.collective",
                 default=SCENE_COLLECTIVE_GROUP,
                 her_name=her_name,
@@ -504,7 +509,7 @@ class QQSessionInstructionService:
                 group_id=group_id or "",
             )
         if group_scene_mode == "shared_context" or shared_group_session:
-            return self.plugin.i18n.t(
+            return admin_line + self.plugin.i18n.t(
                 "prompts.group.shared_session",
                 default=SCENE_SHARED_GROUP,
                 her_name=her_name,
@@ -517,7 +522,7 @@ class QQSessionInstructionService:
             self.plugin.i18n.t("prompts.group.naming_without_title", default='- 不要直接称呼对方名字、昵称或QQ号，只针对当前话题自然回应')
         )
         title_line = self.plugin.i18n.t("prompts.group.title_line", default='- 当前发言人的称呼是：{user_title}\n', user_title=user_title) if address_user_by_name else ""
-        return self.plugin.i18n.t(
+        return admin_line + self.plugin.i18n.t(
             "prompts.group.directed",
             default=SCENE_DIRECTED_GROUP,
             her_name=her_name,

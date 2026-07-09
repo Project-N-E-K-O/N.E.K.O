@@ -163,16 +163,19 @@ class QQOpenPlatformConnection(QQConnectionBase):
                             except asyncio.QueueFull:
                                 self._message_queue.get_nowait()
                                 self._message_queue.put_nowait(msg)
+                    continue  # 成功，跳过重连
                 elif op == 1:  # Heartbeat
                     await self._ws.send(json.dumps({"op": 11, "d": self._last_seq}))
+                    continue  # 成功，跳过重连
                 elif op == 7:  # Reconnect → 关闭当前连接，由下方 _try_reconnect() 重建
                     if self.logger:
                         self.logger.warning("[QQOpenPlatform] 服务端要求重连")
-                    await self._ws.close()
+                    if self._ws:
+                        try: await self._ws.close()
+                        except Exception: pass
                     self._ws = None
                     self.ws = None
-                # 成功处理 dispatch/heartbeat → 继续循环，跳过重连
-                continue
+                # op==7 及其他未知 op → 不 continue，自然落到重连逻辑
             except websockets.ConnectionClosed:
                 if self.logger:
                     self.logger.warning("[QQOpenPlatform] WebSocket 断开")
@@ -313,6 +316,9 @@ class QQOpenPlatformConnection(QQConnectionBase):
         content = "".join(content_parts).strip()
         if not content and not image_url:
             return None
+        # 私聊图片需要先上传获取 file_info，当前仅支持文本；纯图片降级为文本占位
+        if image_url and not content:
+            content = "[图片]"
 
         await self._ensure_token()
         try:
