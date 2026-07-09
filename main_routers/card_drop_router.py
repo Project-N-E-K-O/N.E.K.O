@@ -1,9 +1,9 @@
-"""Community-login + coupon (券) proxy routes for NEKO (``/api/card-drop`` prefix).
+"""Community-login + forge-credit proxy routes for NEKO (``/api/card-drop`` prefix).
 
 The old conversation card-drop (local 5-pick overlay + ``/draw`` direct mint) has
 been retired: drop decisions and credit grants now live in the private NEKO-PC
 forge-dropper, and minting goes through the cloud forge-beta flow (the cloud
-``POST /api/cards/draw`` is offline). This router now only proxies the live coupon
+``POST /api/cards/draw`` is offline). This router now only proxies the live credit
 endpoints (``/credits``) and the community Steam login
 (``/steam-login`` / ``/steam-callback`` / ``/auth-status``).
 
@@ -181,12 +181,13 @@ def _steam_pending_path() -> Path | None:
 
 
 def _pkce_pair() -> tuple[str, str]:
-    """生成 PKCE（RFC 7636，S256）的 (code_verifier, code_challenge)。
+    """Build a PKCE S256 pair ``(code_verifier, code_challenge)`` (RFC 7636).
 
-    verifier 留本地（落盘 pending），challenge = base64url(sha256(verifier)) 无 padding，
-    拼进 authorize URL 发给云端。云端把 challenge 与一次性 code 同库，回调换 token 时本端再
-    出示 verifier，云端校验匹配 —— 把短码绑定到「发起登录的这台 NEKO」。verifier 用
-    token_urlsafe(32)（43 字符高熵，满足 RFC 的 43..128 unreserved 约束）。
+    The verifier is kept locally (pending file); the challenge is
+    ``base64url(sha256(verifier))`` without padding and is sent on the authorize
+    URL. The cloud stores the challenge with the one-time code and checks the
+    verifier on token exchange, binding the short code to this NEKO instance.
+    Verifier uses ``token_urlsafe(32)`` (43 chars; RFC 43..128 unreserved).
     """
     verifier = secrets.token_urlsafe(32)
     digest = hashlib.sha256(verifier.encode("ascii")).digest()
@@ -195,12 +196,14 @@ def _pkce_pair() -> tuple[str, str]:
 
 
 def _mark_steam_pending() -> tuple[str, str] | None:
-    """写一次性待回调标记，返回 (state, code_challenge)。
+    """Write a one-shot pending marker; return ``(state, code_challenge)``.
 
-    state：不可猜 CSRF token（NEKO 自存自校，防 login-CSRF）。code_challenge：PKCE S256
-    挑战，拼进 authorize URL；配对的 code_verifier 落盘 pending、回调时换 token 才出示。
-    无法持久化（无路径 / 写失败）时返回 None —— 没落盘就发不出可被本地校验的回调，调用方应
-    直接中止登录入口，别把用户带进必失败的 Steam 授权流程。
+    ``state`` is an unguessable CSRF token (checked locally against login-CSRF).
+    ``code_challenge`` is the PKCE S256 challenge put on the authorize URL; the
+    matching ``code_verifier`` is stored in the pending file and only shown on
+    token exchange. Returns ``None`` when persistence fails (no path / write
+    error) so callers abort the login entry instead of sending the user into a
+    Steam flow that cannot be verified locally.
     """
     state = secrets.token_urlsafe(24)
     verifier, challenge = _pkce_pair()
@@ -219,12 +222,14 @@ def _mark_steam_pending() -> tuple[str, str] | None:
 
 
 def _consume_steam_pending(state: str) -> tuple[bool, str | None]:
-    """消费一次性标记：存在、未过期、state 与发起登录时一致才放行（防 login-CSRF + 重放）。
+    """Consume the one-shot pending marker (exists, fresh, state matches).
 
-    返回 (ok, code_verifier)：ok=True 时附带落盘的 PKCE verifier（老标记无该字段 → None，
-    换 token 时不带 verifier，向后兼容）。只在「标记损坏 / 过期 / state 匹配成功」时删标记；
-    state 不匹配时**保留**到 TTL，避免攻击者用错误 state 的回调把合法登录标记删掉（DoS）。
-    匹配成功但删除失败 → 返回 (False, None) 保「一次性」。
+    Returns ``(ok, code_verifier)``. On success, ``code_verifier`` is the stored
+    PKCE verifier (``None`` for legacy markers without it — exchange omits
+    verifier for backward compatibility). Delete the marker only when it is
+    corrupt, expired, or the state matches; keep it until TTL on mismatch so a
+    wrong-state callback cannot DoS a legitimate login. If state matches but
+    delete fails, return ``(False, None)`` to preserve one-shot semantics.
     """
     p = _steam_pending_path()
     if not p or not p.exists():
