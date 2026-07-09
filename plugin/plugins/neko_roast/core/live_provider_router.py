@@ -4,7 +4,65 @@ from __future__ import annotations
 
 from typing import Any
 
-from .contracts import ViewerIdentity
+from .contracts import ViewerIdentity, normalize_live_platform, parse_room_id
+
+
+class LiveProviderRouter:
+    """Runtime-facing placeholder until provider-events adds full routing."""
+
+    id = "live_provider"
+
+    def __init__(self, runtime: Any) -> None:
+        self.runtime = runtime
+
+    @property
+    def platform(self) -> str:
+        return "bilibili"
+
+    def configured_room_ref(self) -> str:
+        room_id = self.configured_room_id()
+        return str(room_id) if room_id > 0 else ""
+
+    def configured_room_id(self) -> int:
+        try:
+            return max(0, int(getattr(self.runtime.config, "live_room_id", 0) or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    def is_listening(self) -> bool:
+        ingest = getattr(self.runtime, "bili_live_ingest", None)
+        checker = getattr(ingest, "is_listening", None)
+        try:
+            return bool(checker()) if callable(checker) else False
+        except Exception:
+            return False
+
+    def listener_state(self) -> dict[str, Any]:
+        ingest = getattr(self.runtime, "bili_live_ingest", None)
+        state_fn = getattr(ingest, "listener_state", None)
+        try:
+            data = state_fn() if callable(state_fn) else {}
+        except Exception:
+            data = {}
+        return data if isinstance(data, dict) else {}
+
+    async def resolve_identity(self, event: Any) -> ViewerIdentity:
+        identity = getattr(self.runtime, "bili_identity", None)
+        resolver = getattr(identity, "resolve", None)
+        if callable(resolver):
+            return await resolver(event)
+        return ViewerIdentity(uid=str(getattr(event, "uid", "") or ""), nickname=str(getattr(event, "nickname", "") or ""))
+
+    def identity_step_id(self) -> str:
+        return "bili_identity"
+
+    def status(self) -> dict[str, Any]:
+        return {
+            "platform": self.platform,
+            "room_id": self.configured_room_id(),
+            "room_ref": self.configured_room_ref(),
+            "listening": self.is_listening(),
+        }
 
 
 class _LegacyBilibiliIdentityProvider:
@@ -29,3 +87,24 @@ def identity_provider_for(runtime: Any) -> Any:
 
     provider = getattr(runtime, "live_provider", None)
     return provider if provider is not None else _LegacyBilibiliIdentityProvider(runtime)
+
+
+def normalize_room_ref_for_platform(platform: Any, value: Any) -> dict[str, Any]:
+    normalized_platform = normalize_live_platform(platform)
+    if normalized_platform == "bilibili":
+        room_id = parse_room_id(value)
+        return {
+            "ok": room_id > 0,
+            "platform": "bilibili",
+            "room_ref": str(room_id) if room_id > 0 else "",
+            "room_id": room_id,
+            "message": "" if room_id > 0 else "room_id must be positive",
+        }
+    room_ref = str(value or "").strip()
+    return {
+        "ok": bool(room_ref),
+        "platform": normalized_platform,
+        "room_ref": room_ref,
+        "room_id": 0,
+        "message": "" if room_ref else "room_ref must not be empty",
+    }
