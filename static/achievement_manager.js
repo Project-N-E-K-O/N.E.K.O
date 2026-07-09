@@ -289,16 +289,22 @@
             let prevTs = Date.now();
             let reporting = false;
             let activeController = null;
+            let forceFlushInFlight = false;
 
             const flushPlayTime = async ({ force = false } = {}) => {
+                // visibilitychange(hidden) + pagehide often fire together; only one
+                // keepalive unload flush should run for the same elapsed window.
+                if (force && forceFlushInFlight) return;
+
                 // Unload flush must not be dropped by the in-flight sentinel:
                 // abort the regular request (no keepalive) and re-send with keepalive.
                 if (reporting) {
                     if (!force) return;
-                    if (activeController) {
-                        try { activeController.abort(); } catch (_) { }
-                        activeController = null;
-                    }
+                    // A force flush is already in flight (no AbortController) — do not
+                    // start a second keepalive with the same elapsedSeconds.
+                    if (!activeController) return;
+                    try { activeController.abort(); } catch (_) { }
+                    activeController = null;
                 }
                 const now = Date.now();
                 const elapsedSeconds = Math.min(
@@ -314,6 +320,7 @@
                 }
 
                 reporting = true;
+                if (force) forceFlushInFlight = true;
                 const controller = force ? null : new AbortController();
                 if (controller) activeController = controller;
                 try {
@@ -350,6 +357,7 @@
                     console.debug('更新游戏时长进度失败:', error.message);
                 } finally {
                     if (activeController === controller) activeController = null;
+                    if (force) forceFlushInFlight = false;
                     reporting = false;
                 }
             };
