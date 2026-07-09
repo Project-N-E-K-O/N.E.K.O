@@ -4089,6 +4089,10 @@ async def update_playtime(request: Request):
     seconds_to_add = min(seconds_to_add, 3600)
 
     try:
+        # Ensure Steam has delivered current stats before read/modify/write;
+        # otherwise GetStatInt may return 0 and StoreStats would clobber progress.
+        await _prepare_steam_user_stats(steamworks)
+
         try:
             current_playtime = steamworks.UserStats.GetStatInt(_PLAYTIME_PROGRESS_STAT)
         except Exception as e:
@@ -4149,7 +4153,7 @@ async def update_playtime(request: Request):
             "progressUnlocked": progress_unlocked,
         })
     except Exception as e:
-        logger.error(f"更新游戏时长失败: {e}")
+        logger.error("更新游戏时长失败: %s", e)
         return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
 
 
