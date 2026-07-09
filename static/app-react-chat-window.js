@@ -3116,19 +3116,29 @@
     }
 
     function handleComposerScreenshot() {
+        var handled = false;
         if (typeof state.onComposerScreenshot === 'function') {
             try {
                 state.onComposerScreenshot();
+                handled = true;
             } catch (error) {
                 console.error('[ReactChatWindow] onComposerScreenshot failed:', error);
+                handled = false;
             }
         } else if (window.appButtons && typeof window.appButtons.captureScreenshotToPendingList === 'function') {
-            window.appButtons.captureScreenshotToPendingList();
+            try {
+                window.appButtons.captureScreenshotToPendingList();
+                handled = true;
+            } catch (error) {
+                console.error('[ReactChatWindow] captureScreenshotToPendingList failed:', error);
+                handled = false;
+            }
         } else {
             console.warn('[ReactChatWindow] no screenshot handler available');
         }
 
-        dispatchHostEvent('screenshot', {});
+        dispatchHostEvent('screenshot', { handled: handled });
+        return handled;
     }
 
     function handleComposerRemoveAttachment(attachmentId) {
@@ -7139,6 +7149,7 @@
         setOnComposerScreenshot: function (handler) {
             state.onComposerScreenshot = typeof handler === 'function' ? handler : null;
         },
+        triggerComposerScreenshot: handleComposerScreenshot,
         setOnComposerRemoveAttachment: function (handler) {
             state.onComposerRemoveAttachment = typeof handler === 'function' ? handler : null;
         },
