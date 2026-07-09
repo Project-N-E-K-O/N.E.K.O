@@ -55,6 +55,19 @@
             <div id="qrcode-error" class="qrcode-error" style="display:none;"></div>
         </section>
 
+        <!-- Message Monitor -->
+        <section class="config-section" id="monitor-section">
+            <div class="status-head">
+                <span class="status-title" data-i18n="ui.monitor.title">消息监听</span>
+                <span id="monitor-status-pill" class="status-pill" data-i18n="ui.monitor.stopped">已停止</span>
+            </div>
+            <p class="field-hint" data-i18n="ui.monitor.hint">登录后即可开始监听微信消息。收到消息后 AI 会自动生成回复并发送。</p>
+            <div class="save-row">
+                <button id="btn-start-monitor" class="primary-action" type="button" onclick="startAutoReply()" data-i18n="ui.monitor.start">开始监听</button>
+                <button id="btn-stop-monitor" class="ghost-action" type="button" onclick="stopAutoReply()" data-i18n="ui.monitor.stop" style="display:none;">停止监听</button>
+            </div>
+        </section>
+
         <!-- Settings -->
         <section class="config-section" id="config-section">
             <span class="status-title" data-i18n="ui.config.section">API 设置</span>

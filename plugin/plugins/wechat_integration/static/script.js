@@ -42,6 +42,7 @@ let state = {
     pollingTimer: null,
     isLoggedIn: false,
     qrcodeSessionActive: false,
+    autoReplyRunning: false,
 };
 
 function t(key, fallback) {
@@ -182,6 +183,35 @@ function applyDashboardState(payload) {
     } else {
         stopPolling();
     }
+
+    // ---- Message monitor section ----
+    const autoReplyRunning = !!(settings.auto_reply_running);
+    state.autoReplyRunning = autoReplyRunning;
+    const monitorPill = document.getElementById('monitor-status-pill');
+    const btnStartMonitor = document.getElementById('btn-start-monitor');
+    const btnStopMonitor = document.getElementById('btn-stop-monitor');
+
+    if (monitorPill) {
+        if (autoReplyRunning) {
+            monitorPill.textContent = t('ui.monitor.running', '监听中');
+            monitorPill.style.background = '#dcfce7'; monitorPill.style.color = '#166534';
+        } else {
+            monitorPill.textContent = t('ui.monitor.stopped', '已停止');
+            monitorPill.style.background = ''; monitorPill.style.color = '';
+        }
+    }
+    if (btnStartMonitor && btnStopMonitor) {
+        if (!state.isLoggedIn) {
+            btnStartMonitor.style.display = 'none';
+            btnStopMonitor.style.display = 'none';
+        } else if (autoReplyRunning) {
+            btnStartMonitor.style.display = 'none';
+            btnStopMonitor.style.display = 'inline-block';
+        } else {
+            btnStartMonitor.style.display = 'inline-block';
+            btnStopMonitor.style.display = 'none';
+        }
+    }
 }
 
 // ---- Polling ----
@@ -279,6 +309,29 @@ async function reloadDashboard() {
 window.startLogin = startLogin;
 window.refreshQrcode = refreshQrcode;
 window.toggleQrcodeCard = toggleQrcodeCard;
+window.startAutoReply = startAutoReply;
+window.stopAutoReply = stopAutoReply;
+
+async function startAutoReply() {
+    if (!state.isLoggedIn) { showToast(t('ui.toast.need_login', '请先登录')); return; }
+    try {
+        await callPlugin('start_auto_reply', {});
+        await reloadDashboard();
+        showToast(t('ui.toast.monitor_started', '消息监听已开启'));
+    } catch (error) {
+        showToast(error.message || t('ui.toast.monitor_failed', '开启失败'));
+    }
+}
+
+async function stopAutoReply() {
+    try {
+        await callPlugin('stop_auto_reply', {});
+        await reloadDashboard();
+        showToast(t('ui.toast.monitor_stopped', '消息监听已停止'));
+    } catch (error) {
+        showToast(error.message || t('ui.toast.monitor_failed', '停止失败'));
+    }
+}
 
 window.addEventListener('localechange', function () {
     if (state.dashboard) applyDashboardState(state.dashboard);

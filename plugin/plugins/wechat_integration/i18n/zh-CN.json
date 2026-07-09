@@ -55,5 +55,15 @@
   "ui.toast.login_failed": "获取二维码失败",
   "ui.toast.qrcode_ready": "二维码已生成，请用微信扫码",
   "ui.toast.qrcode_refreshed": "二维码已刷新",
-  "ui.toast.already_logged_in": "已登录，无需重新扫码"
+  "ui.toast.already_logged_in": "已登录，无需重新扫码",
+  "ui.toast.need_login": "请先登录",
+  "ui.toast.monitor_started": "消息监听已开启",
+  "ui.toast.monitor_stopped": "消息监听已停止",
+  "ui.toast.monitor_failed": "操作失败",
+  "ui.monitor.title": "消息监听",
+  "ui.monitor.hint": "登录后即可开始监听微信消息。收到消息后 AI 会自动生成回复并发送。",
+  "ui.monitor.running": "监听中",
+  "ui.monitor.stopped": "已停止",
+  "ui.monitor.start": "开始监听",
+  "ui.monitor.stop": "停止监听"
 }
