@@ -15,9 +15,9 @@
         'interrupt_resist_light_1',
         'interrupt_resist_light_3'
     ]);
-    const DEFAULT_INTERRUPT_DISTANCE = 56;
+    const DEFAULT_INTERRUPT_DISTANCE = 400;
     const DEFAULT_CURSOR_RESISTANCE_DISTANCE = 30;
-    const DEFAULT_INTERRUPT_ACCELERATION_THRESHOLD = 0.16;
+    const DEFAULT_INTERRUPT_ACCELERATION_THRESHOLD = 2;
     const DEFAULT_INTERRUPT_QUALIFYING_MOVE_STREAK = 3;
     const DEFAULT_RESISTANCE_LINES = Object.freeze([
         '喂！不要拽我啦，现在还没轮到你的回合呢！',

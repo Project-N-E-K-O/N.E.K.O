@@ -7045,8 +7045,8 @@ def test_externalized_chat_spotlight_renders_compact_capsule_in_pc_overlay_only(
     assert result["begins"] == [{"tutorialRunId": "test-run"}]
     assert len(result["updates"]) >= 1
     spotlight_payload = result["updates"][-1]["payload"]["spotlights"][0]
-    assert spotlight_payload["id"] == "external-chat-input-0"
-    assert spotlight_payload["kind"] == "primary"
+    assert spotlight_payload["id"] == "external-chat-input"
+    assert spotlight_payload["kind"] == "input"
     assert spotlight_payload["shape"] == "rounded-rect"
     assert spotlight_payload["x"] == 692
     assert spotlight_payload["y"] == 442
@@ -7123,8 +7123,8 @@ def test_externalized_chat_input_spotlight_retries_after_capsule_layout_appears(
         """
     )
 
-    assert result["updates"][-1]["payload"]["spotlights"][0]["id"] == "external-chat-input-0"
-    assert result["updates"][-1]["payload"]["spotlights"][0]["kind"] == "primary"
+    assert result["updates"][-1]["payload"]["spotlights"][0]["id"] == "external-chat-input"
+    assert result["updates"][-1]["payload"]["spotlights"][0]["kind"] == "input"
     assert result["updates"][-1]["payload"]["spotlights"][0]["width"] == 446
     assert result["updates"][-1]["payload"]["spotlights"][0]["height"] == 70
 
@@ -7166,7 +7166,7 @@ def test_externalized_chat_capsule_spotlight_keeps_last_rect_when_target_tempora
                 </div>
             `;
         """,
-        script_names=("app-interpage.js",),
+        script_names=("tutorial/yui-guide/common.js", "app-interpage.js"),
     )
 
     result = mock_page.evaluate(
@@ -7210,7 +7210,7 @@ def test_externalized_chat_capsule_spotlight_keeps_last_rect_when_target_tempora
         if entry.get("payload", {}).get("spotlights")
     ]
     assert first_spotlight_payloads
-    assert first_spotlight_payloads[0]["payload"]["spotlights"][0]["id"] == "external-chat-capsule-input-0"
+    assert first_spotlight_payloads[0]["payload"]["spotlights"][0]["id"] == "external-chat-capsule-input"
     hidden_spotlight_lengths = [
         len(entry.get("payload", {}).get("spotlights", []))
         for entry in result["hiddenUpdates"][:-1]
@@ -7219,6 +7219,76 @@ def test_externalized_chat_capsule_spotlight_keeps_last_rect_when_target_tempora
     assert hidden_spotlight_lengths
     assert all(length > 0 for length in hidden_spotlight_lengths)
     assert result["hiddenUpdates"][-1]["payload"]["spotlights"] == []
+
+
+@pytest.mark.frontend
+def test_externalized_chat_capsule_input_spotlight_uses_capsule_body_rect_without_variant(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/chat');
+            window.localStorage.setItem('yuiGuidePcOverlayRunId', 'test-run');
+            window.__externalChatOverlayUpdates = [];
+            window.nekoTutorialOverlay = {
+                getWindowMetricsSync: () => ({
+                    bounds: { x: 100, y: 50, width: 1200, height: 800 },
+                    contentBounds: { x: 100, y: 50, width: 1200, height: 800 },
+                    zoomFactor: 1,
+                }),
+                update: (payload) => {
+                    window.__externalChatOverlayUpdates.push(payload);
+                    return Promise.resolve({ ok: true });
+                },
+                begin: () => Promise.resolve({ ok: true }),
+                clear: () => Promise.resolve({ ok: true }),
+            };
+            document.body.innerHTML = `
+                <div id="react-chat-window-shell" style="position:fixed; left:560px; top:360px; width:480px; height:90px;">
+                    <div id="react-chat-window-root">
+                        <div
+                            class="compact-chat-surface-frame"
+                            data-compact-geometry-owner="surface"
+                            data-compact-geometry-item="capsule"
+                            data-compact-geometry-part="capsuleBody"
+                            data-compact-drag-surface="true"
+                            style="position:fixed; left:600px; top:400px; width:430px; height:54px; border-radius:999px;"
+                        ></div>
+                        <button
+                            class="compact-chat-capsule-button"
+                            data-compact-hit-region-id="capsule:text"
+                            style="position:fixed; left:780px; top:408px; width:180px; height:38px;"
+                        ></button>
+                    </div>
+                </div>
+            `;
+        """,
+        script_names=("tutorial/yui-guide/common.js", "app-interpage.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            window.postMessage({
+                __nekoTutorialOverlayRelay: true,
+                payload: {
+                    action: 'yui_guide_set_chat_spotlight',
+                    kind: 'capsule-input',
+                    timestamp: Date.now(),
+                    tutorialRunId: 'test-run',
+                },
+            }, '*');
+            await new Promise((resolve) => setTimeout(resolve, 160));
+            const updates = window.__externalChatOverlayUpdates || [];
+            return updates.filter((entry) => entry.payload && entry.payload.spotlights);
+        }
+        """
+    )
+
+    assert result
+    spotlight = result[-1]["payload"]["spotlights"][0]
+    assert spotlight["id"] == "external-chat-capsule-input"
+    assert spotlight["x"] == 692
+    assert spotlight["width"] == 446
 
 
 @pytest.mark.frontend
@@ -8337,9 +8407,9 @@ def test_avatar_floating_distance_below_new_threshold_does_not_trigger_light_res
 
                 director.lastPointerPoint = { x: 100, y: 100, t: 1000, speed: 0.04 };
                 [
-                    { t: 2000, x: 140 },
-                    { t: 3000, x: 180 },
-                    { t: 4000, x: 220 },
+                    { t: 2000, x: 460 },
+                    { t: 3000, x: 820 },
+                    { t: 4000, x: 1180 },
                 ].forEach((sample) => {
                     window.__now = sample.t;
                     director.handleInterrupt({
@@ -8347,7 +8417,7 @@ def test_avatar_floating_distance_below_new_threshold_does_not_trigger_light_res
                         type: 'mousemove',
                         clientX: sample.x,
                         clientY: 100,
-                        movementX: 40,
+                        movementX: 360,
                         movementY: 0,
                     });
                 });
@@ -8405,9 +8475,9 @@ def test_avatar_floating_distance_threshold_triggers_light_resistance_without_sp
 
                 director.lastPointerPoint = { x: 100, y: 100, t: 1000, speed: 0.04 };
                 [
-                    { t: 2000, x: 164 },
-                    { t: 3000, x: 228 },
-                    { t: 4000, x: 292 },
+                    { t: 2000, x: 520 },
+                    { t: 3000, x: 940 },
+                    { t: 4000, x: 1360 },
                 ].forEach((sample) => {
                     window.__now = sample.t;
                     director.handleInterrupt({
@@ -8415,7 +8485,7 @@ def test_avatar_floating_distance_threshold_triggers_light_resistance_without_sp
                         type: 'mousemove',
                         clientX: sample.x,
                         clientY: 100,
-                        movementX: 64,
+                        movementX: 420,
                         movementY: 0,
                     });
                 });
@@ -8497,9 +8567,9 @@ def test_avatar_floating_light_resistance_reveals_real_cursor_for_two_seconds(
 
                 director.lastPointerPoint = { x: 100, y: 100, t: 1000, speed: 0.04 };
                 [
-                    { t: 2000, x: 164 },
-                    { t: 3000, x: 228 },
-                    { t: 4000, x: 292 },
+                    { t: 2000, x: 520 },
+                    { t: 3000, x: 940 },
+                    { t: 4000, x: 1360 },
                 ].forEach((sample) => {
                     window.__now = sample.t;
                     director.handleInterrupt({
@@ -8507,7 +8577,7 @@ def test_avatar_floating_light_resistance_reveals_real_cursor_for_two_seconds(
                         type: 'mousemove',
                         clientX: sample.x,
                         clientY: 100,
-                        movementX: 64,
+                        movementX: 420,
                         movementY: 0,
                     });
                 });
@@ -8622,9 +8692,9 @@ def test_avatar_floating_second_light_resistance_refreshes_cursor_while_first_li
                 const playQualifyingGroup = () => {
                     director.lastPointerPoint = { x: 100, y: 100, t: window.__now, speed: 0.04 };
                     [
-                        { t: window.__now + 1000, x: 164 },
-                        { t: window.__now + 2000, x: 228 },
-                        { t: window.__now + 3000, x: 292 },
+                        { t: window.__now + 1000, x: 520 },
+                        { t: window.__now + 2000, x: 940 },
+                        { t: window.__now + 3000, x: 1360 },
                     ].forEach((sample) => {
                         window.__now = sample.t;
                         director.handleInterrupt({
@@ -8632,7 +8702,7 @@ def test_avatar_floating_second_light_resistance_refreshes_cursor_while_first_li
                             type: 'mousemove',
                             clientX: sample.x,
                             clientY: 100,
-                            movementX: 64,
+                            movementX: 420,
                             movementY: 0,
                         });
                     });
@@ -8870,6 +8940,71 @@ def test_voice_queue_speak_stays_cancelled_when_stopped_during_start_delay(
 
 
 @pytest.mark.frontend
+def test_avatar_floating_acceleration_below_new_threshold_does_not_trigger_light_resistance(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const originalNow = Date.now;
+            window.__now = 1000;
+            Date.now = () => window.__now;
+            try {
+                const director = window.createYuiGuideDirector({ page: 'home' });
+                const lightInterrupts = [];
+                director.platformCapabilities = { windowBoundsSource: 'electron-window-bounds' };
+                director.currentSceneId = 'test_scene';
+                director.currentStep = {
+                    performance: {},
+                    interrupts: { threshold: 3, throttleMs: 0 },
+                };
+                director.interruptsEnabled = true;
+                director.cursor.hasPosition = () => true;
+                director.cursor.reactToUserMotion = () => {};
+                director.playLightResistance = (x, y, options) => {
+                    lightInterrupts.push({ x, y, options });
+                };
+
+                director.lastPointerPoint = { x: 100, y: 100, t: 1000, speed: 0 };
+                [
+                    { t: 1001, x: 101, dx: 1 },
+                    { t: 1002, x: 103, dx: 2 },
+                    { t: 1003, x: 106, dx: 3 },
+                ].forEach((sample) => {
+                    window.__now = sample.t;
+                    director.handleInterrupt({
+                        isTrusted: true,
+                        type: 'mousemove',
+                        clientX: sample.x,
+                        clientY: 100,
+                        movementX: sample.dx,
+                        movementY: 0,
+                    });
+                });
+                return {
+                    lightInterrupts,
+                    interruptCount: director.interruptCount,
+                    streak: director.interruptQualifyingMoveStreak,
+                };
+            } finally {
+                Date.now = originalNow;
+            }
+        }
+        """
+    )
+
+    assert result["lightInterrupts"] == []
+    assert result["interruptCount"] == 0
+    assert result["streak"] == 0
+
+
+@pytest.mark.frontend
 def test_avatar_floating_acceleration_threshold_triggers_light_resistance_without_distance(
     mock_page: Page,
 ):
@@ -8973,7 +9108,7 @@ def test_avatar_floating_third_light_resistance_enters_angry_exit(
                 const playQualifyingGroup = () => {
                     director.lastPointerPoint = { x, y: 100, t, speed: 0 };
                     for (let index = 0; index < 3; index += 1) {
-                        x += 64;
+                        x += 420;
                         t += 1000;
                         window.__now = t;
                         director.handleInterrupt({
@@ -8981,7 +9116,7 @@ def test_avatar_floating_third_light_resistance_enters_angry_exit(
                             type: 'mousemove',
                             clientX: x,
                             clientY: 100,
-                            movementX: 64,
+                            movementX: 420,
                             movementY: 0,
                         });
                     }
@@ -12250,7 +12385,7 @@ def test_day1_externalized_capsule_and_history_do_not_spotlight_chat_input(
             await director.playAvatarFloatingScene({
                 id: 'day1_capsule_drag_hint',
                 text: '把鼠标移到这里，长按就可以拉着聊天框到处跑啦~ 点击一下就能随时发消息给我哦！',
-                target: 'chat-input',
+                target: 'chat-capsule-input',
                 cursorAction: 'wobble',
                 cursorWobbleDurationMs: 2000,
                 spotlight: false,
@@ -12271,7 +12406,7 @@ def test_day1_externalized_capsule_and_history_do_not_spotlight_chat_input(
     )
 
     assert "spotlight:input" not in result
-    assert "cursor:input:wobble" in result
+    assert "cursor:capsule-input:wobble" in result
     assert "cursor:history:move" in result
 
 
