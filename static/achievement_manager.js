@@ -314,6 +314,8 @@
                     const response = await fetch('/api/steam/update-playtime', {
                         method: 'POST',
                         headers: playtimeHeaders,
+                        // pagehide / visibility hidden 时页面可能正在卸载，keepalive 保证请求能发完
+                        keepalive: !!force,
                         body: JSON.stringify({ seconds: elapsedSeconds })
                     });
 

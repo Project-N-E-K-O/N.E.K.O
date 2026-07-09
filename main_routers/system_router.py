@@ -4043,7 +4043,7 @@ async def set_achievement_status(name: str, request: Request):
             return JSONResponse(content=result, status_code=500)
         return JSONResponse(content=result)
     except Exception as e:
-        logger.error(f"设置成就失败: {e}")
+        logger.error("设置成就失败: %s", e)
         return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
 
 
