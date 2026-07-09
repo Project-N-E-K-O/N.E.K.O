@@ -52,7 +52,7 @@ Choose package type from the manifest/SDK contract, not from feature vibes:
 1. Read `references/plugin-cli-and-debugging.md` and `references/plugin-checks-and-tests.md`.
 2. Identify whether the plugin is running, disabled, manual-start, or load-failed.
 3. Inspect `plugin.toml`, entry class, local tests, logs, and `DESIGN.md`.
-4. Run `uv run neko-plugin check <plugin_id>` first unless the symptom clearly points elsewhere.
+4. Run `uv run neko-plugin check <plugin_id|plugin_path>` first unless the symptom clearly points elsewhere.
 5. For entry/runtime failures, verify runtime-triggered entries are `async def`.
 6. For UI failures, verify mode, surface permissions, running state, context/action exposure, and targeted Hosted TSX checks when relevant.
 7. Fix only inside the plugin workspace unless escalation is confirmed.

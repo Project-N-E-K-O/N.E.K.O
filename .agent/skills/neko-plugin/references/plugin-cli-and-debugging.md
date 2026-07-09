@@ -64,7 +64,7 @@ Before using a command, run CLI help or read the command module enough to confir
 2. Inspect `plugin/plugins/<plugin_id>/plugin.toml`.
 3. Check Identity Lock and manifest fields.
 4. Inspect the entry class and decorators.
-5. Run `uv run neko-plugin check <plugin_id>` unless the symptom clearly points elsewhere.
+5. Run `uv run neko-plugin check <plugin_id|plugin_path>` unless the symptom clearly points elsewhere.
 6. Search tests for the failing surface.
 7. Run the smallest CLI command, unit test, or trigger path that reproduces the issue.
 8. Fix only inside `plugin/plugins/<plugin_id>/` unless escalation is confirmed.

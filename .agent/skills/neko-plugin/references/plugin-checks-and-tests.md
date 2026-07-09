@@ -7,17 +7,17 @@ Use this map before inventing debugging commands. Prefer plugin-facing checks fi
 ### Readiness check
 
 ```bash
-uv run neko-plugin check <plugin_id>
+uv run neko-plugin check <plugin_id|plugin_path>
 ```
 
-Use first for load/manifest/entry/decorator/dependency issues. It calls the internal `validate_plugin_dir()` helper and reports actionable errors/warnings.
+Use first for load/manifest/entry/decorator/dependency issues. The argument may be a plugin directory name under `plugin/plugins/` or an explicit path to a directory containing `plugin.toml`. It calls the internal `validate_plugin_dir()` helper and reports actionable errors/warnings.
 
 Useful variants:
 
 ```bash
-uv run neko-plugin check <plugin_id> --strict
-uv run neko-plugin check <plugin_id> --release
-uv run neko-plugin check <plugin_id> --release --skip-tests
+uv run neko-plugin check <plugin_id|plugin_path> --strict
+uv run neko-plugin check <plugin_id|plugin_path> --release
+uv run neko-plugin check <plugin_id|plugin_path> --release --skip-tests
 ```
 
 What `check` validates:
@@ -165,7 +165,7 @@ cd plugin/plugins/<plugin_id>
 uv run python -m pytest tests -q
 ```
 
-`neko-plugin check --release <plugin_id>` also runs plugin-local `tests/` when present.
+`neko-plugin check <plugin_id|plugin_path> --release` also runs plugin-local `tests/` when present.
 
 ## Targeted Test Files
 
@@ -198,8 +198,8 @@ Many repository convention scripts intentionally exclude `plugin/plugins` by def
 
 Plugin-facing by default:
 
-- `uv run neko-plugin check <plugin_id>`
-- `uv run neko-plugin check --release <plugin_id>`
+- `uv run neko-plugin check <plugin_id|plugin_path>`
+- `uv run neko-plugin check <plugin_id|plugin_path> --release`
 - `uv run neko-plugin add/sync <plugin_id> ...`
 - `uv run neko-plugin build/inspect/verify ...`
 - plugin-local tests under `plugin/plugins/<plugin_id>/tests`

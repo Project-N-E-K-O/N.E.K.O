@@ -222,4 +222,4 @@ npm run test:hosted
 npm run test:hosted:e2e
 ```
 
-`uv run neko-plugin check <plugin_id>` verifies manifest shape and that UI entry files exist, but it does not fully type-check Hosted TSX or exercise iframe behavior.
+`uv run neko-plugin check <plugin_id|plugin_path>` verifies manifest shape and that UI entry files exist, but it only performs shallow `input_schema` checks for literal dicts and does not fully type-check Hosted TSX or exercise iframe behavior.
