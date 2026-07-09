@@ -3207,7 +3207,7 @@ function mergeFreshCatgirlRawDataWithLocal(freshRawData, localRawData) {
 
 function applyLocalVoiceIdToRawData(rawData, voiceId) {
     if (!rawData || typeof rawData !== 'object') return rawData;
-    const normalizedVoiceId = String(voiceId || '').trim();
+    const normalizedVoiceId = (voiceId == null ? '' : String(voiceId)).trim();
     rawData.voice_id = normalizedVoiceId;
     if (rawData.voice && typeof rawData.voice === 'object') {
         rawData.voice.voice_id = normalizedVoiceId;
@@ -7341,9 +7341,6 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
             }
         }
         await loadCharacterCards();
-        if (savedVoiceIdForLocalRawData !== null) {
-            applyLocalVoiceIdToRawData(savedRawDataForCache, savedVoiceIdForLocalRawData);
-        }
         setLocalRawDataFieldOrder(savedRawDataForCache, fieldOrder);
         syncCharacterCardCache(savedCatgirlName, savedRawDataForCache);
         return true;
