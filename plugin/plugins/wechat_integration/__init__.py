@@ -490,12 +490,29 @@ class WechatIntegrationPlugin(NekoPluginBase):
             self._cleanup_wechat_sessions(now)
             session = self._wechat_sessions.get(user_id)
             if session is None:
-                session = {"history": [], "last_activity": now}
+                # 新建会话：加载记忆上下文
+                memory_context = await self._fetch_memory_context(her_name)
+                session = {
+                    "history": [],
+                    "last_activity": now,
+                    "her_name": her_name,
+                    "memory_enabled": True,
+                }
                 self._wechat_sessions[user_id] = session
+                self.logger.info(
+                    f"[wechat_integration] new session for {user_id}, memory_ctx_len={len(memory_context or '')}"
+                )
+            else:
+                memory_context = None
             session["last_activity"] = now
 
+            # 构建 system prompt（含记忆上下文）
+            final_system_prompt = system_prompt
+            if memory_context:
+                final_system_prompt = system_prompt + "\n\n" + memory_context
+
             # 构建完整消息列表: system + history + new_user_msg
-            messages = [{"role": "system", "content": system_prompt}]
+            messages = [{"role": "system", "content": final_system_prompt}]
             messages.extend(session["history"])
             messages.append({"role": "user", "content": message})
 
@@ -517,6 +534,11 @@ class WechatIntegrationPlugin(NekoPluginBase):
                     self.logger.info(
                         f"[wechat_integration] LLM reply len={len(reply)} history_turns={len(session['history']) // 2}"
                     )
+                    # 缓存增量到 Memory Server
+                    await self._cache_memory_delta(her_name, [
+                        {"role": "user", "content": message},
+                        {"role": "assistant", "content": reply},
+                    ])
                     return reply
                 self.logger.warning("[wechat_integration] LLM returned empty reply")
                 return None
@@ -532,7 +554,7 @@ class WechatIntegrationPlugin(NekoPluginBase):
             return None
 
     def _cleanup_wechat_sessions(self, now: float | None = None) -> None:
-        """清理超过 5 分钟无活动的微信会话"""
+        """清理超过 5 分钟无活动的微信会话，先结算记忆再删除"""
         if now is None:
             now = time.time()
         stale = [
@@ -540,8 +562,72 @@ class WechatIntegrationPlugin(NekoPluginBase):
             if now - s.get("last_activity", 0) > 300
         ]
         for uid in stale:
+            session = self._wechat_sessions.get(uid)
+            if session and session.get("memory_enabled") and session.get("history"):
+                asyncio.ensure_future(
+                    self._finalize_memory_session(
+                        session["her_name"], list(session["history"]), reason="idle_timeout"
+                    )
+                )
             del self._wechat_sessions[uid]
             self.logger.info(f"[wechat_integration] cleaned up stale session: {uid}")
+
+    # ------------------------------------------------ Memory Server helpers
+    @staticmethod
+    async def _fetch_memory_context(her_name: str) -> str | None:
+        """从 Memory Server 加载对话记忆"""
+        try:
+            import httpx
+            from config import MEMORY_SERVER_PORT
+            async with httpx.AsyncClient(timeout=5.0, proxy=None, trust_env=False) as client:
+                response = await client.get(
+                    f"http://127.0.0.1:{MEMORY_SERVER_PORT}/new_dialog/{her_name}"
+                )
+                if response.is_success:
+                    memory = response.text.strip()
+                    if memory:
+                        return memory
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    async def _cache_memory_delta(her_name: str, messages: list[dict[str, Any]]) -> None:
+        """缓存增量对话到 Memory Server"""
+        try:
+            import json
+            import httpx
+            from config import MEMORY_SERVER_PORT
+            payload = {"input_history": json.dumps(messages, ensure_ascii=False)}
+            async with httpx.AsyncClient(timeout=5.0, proxy=None, trust_env=False) as client:
+                response = await client.post(
+                    f"http://127.0.0.1:{MEMORY_SERVER_PORT}/cache/{her_name}",
+                    json=payload,
+                )
+                if response.is_success:
+                    return
+        except Exception:
+            pass
+
+    @staticmethod
+    async def _finalize_memory_session(
+        her_name: str, messages: list[dict[str, Any]], reason: str
+    ) -> None:
+        """正式结算会话记忆到 Memory Server"""
+        try:
+            import json
+            import httpx
+            from config import MEMORY_SERVER_PORT
+            payload = {"input_history": json.dumps(messages, ensure_ascii=False)}
+            async with httpx.AsyncClient(timeout=30.0, proxy=None, trust_env=False) as client:
+                response = await client.post(
+                    f"http://127.0.0.1:{MEMORY_SERVER_PORT}/process/{her_name}",
+                    json=payload,
+                )
+                if response.is_success:
+                    return
+        except Exception:
+            pass
 
     async def _handle_inbound_message(self, msg: dict[str, Any]) -> None:
         from_user_id = str(msg.get("from_user_id") or "").strip()
