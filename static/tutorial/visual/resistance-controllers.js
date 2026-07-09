@@ -18,7 +18,6 @@
     const DEFAULT_INTERRUPT_DISTANCE = 400;
     const DEFAULT_CURSOR_RESISTANCE_DISTANCE = 30;
     const DEFAULT_INTERRUPT_ACCELERATION_THRESHOLD = 2;
-    const DEFAULT_INTERRUPT_ACCUMULATION_WINDOW_MS = 240;
     const DEFAULT_INTERRUPT_QUALIFYING_MOVE_STREAK = 3;
     const DEFAULT_RESISTANCE_LINES = Object.freeze([
         '喂！不要拽我啦，现在还没轮到你的回合呢！',
@@ -346,9 +345,7 @@
                 x: x,
                 y: y,
                 t: now,
-                speed: 0,
-                interruptAccumulatedDistance: 0,
-                interruptAccumulationStartedAt: now
+                speed: 0
             };
             director.interruptQualifyingMoveStreak = 0;
         }
@@ -426,9 +423,7 @@
                     x: x,
                     y: y,
                     t: now,
-                    speed: 0,
-                    interruptAccumulatedDistance: 0,
-                    interruptAccumulationStartedAt: now
+                    speed: 0
                 };
                 if (sampleDx !== null || sampleDy !== null) {
                     const initialDx = sampleDx === null ? 0 : sampleDx;
@@ -450,29 +445,12 @@
             const speed = distance / dt;
             const previousSpeed = Number.isFinite(previousPoint.speed) ? previousPoint.speed : 0;
             const acceleration = (speed - previousSpeed) / dt;
-            const previousAccumulationStartedAt = Number.isFinite(previousPoint.interruptAccumulationStartedAt)
-                ? previousPoint.interruptAccumulationStartedAt
-                : previousPoint.t;
-            const shouldContinueAccumulation = (
-                Number.isFinite(previousPoint.interruptAccumulatedDistance)
-                && Number.isFinite(previousAccumulationStartedAt)
-                && (now - previousAccumulationStartedAt) <= DEFAULT_INTERRUPT_ACCUMULATION_WINDOW_MS
-            );
-            const previousAccumulatedDistance = shouldContinueAccumulation
-                ? previousPoint.interruptAccumulatedDistance
-                : 0;
-            const accumulationStartedAt = shouldContinueAccumulation
-                ? previousAccumulationStartedAt
-                : now;
-            const accumulatedDistance = previousAccumulatedDistance + distance;
 
             director.lastPointerPoint = {
                 x: x,
                 y: y,
                 t: now,
-                speed: speed,
-                interruptAccumulatedDistance: accumulatedDistance,
-                interruptAccumulationStartedAt: accumulationStartedAt
+                speed: speed
             };
 
             director.noteUserCursorRevealSuppressionAttempt(distance, now);
@@ -480,10 +458,14 @@
                 director.playCursorResistanceToUserMotion(x, y, distance, dx, dy);
             }
 
+            const exceedsDistanceThreshold = distance >= DEFAULT_INTERRUPT_DISTANCE;
+            const exceedsAccelerationThreshold = (
+                distance > DEFAULT_CURSOR_RESISTANCE_DISTANCE
+                && acceleration >= DEFAULT_INTERRUPT_ACCELERATION_THRESHOLD
+            );
             if (
-                distance < DEFAULT_INTERRUPT_DISTANCE
-                && accumulatedDistance < DEFAULT_INTERRUPT_DISTANCE
-                && acceleration < DEFAULT_INTERRUPT_ACCELERATION_THRESHOLD
+                !exceedsDistanceThreshold
+                && !exceedsAccelerationThreshold
             ) {
                 director.interruptQualifyingMoveStreak = 0;
                 return;

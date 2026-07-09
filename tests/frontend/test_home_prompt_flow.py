@@ -8507,7 +8507,7 @@ def test_avatar_floating_distance_threshold_triggers_light_resistance_without_sp
 
 
 @pytest.mark.frontend
-def test_avatar_floating_quick_mousemove_accumulates_distance_to_trigger_light_resistance(
+def test_avatar_floating_quick_mousemove_under_distance_threshold_does_not_trigger_light_resistance(
     mock_page: Page,
 ):
     _bootstrap_page(
@@ -8538,7 +8538,7 @@ def test_avatar_floating_quick_mousemove_accumulates_distance_to_trigger_light_r
                     lightInterrupts.push({ x, y, options });
                 };
 
-                director.lastPointerPoint = { x: 100, y: 100, t: 1000, speed: 0, interruptAccumulatedDistance: 0 };
+                director.lastPointerPoint = { x: 100, y: 100, t: 1000, speed: 0 };
                 [
                     { t: 1040, x: 260 },
                     { t: 1080, x: 420 },
@@ -8568,8 +8568,8 @@ def test_avatar_floating_quick_mousemove_accumulates_distance_to_trigger_light_r
         """
     )
 
-    assert len(result["lightInterrupts"]) == 1
-    assert result["interruptCount"] == 1
+    assert result["lightInterrupts"] == []
+    assert result["interruptCount"] == 0
     assert result["streak"] == 0
 
 
@@ -8610,8 +8610,6 @@ def test_avatar_floating_slow_continuous_mousemove_does_not_accumulate_forever(
                     y: 100,
                     t: 1000,
                     speed: 0,
-                    interruptAccumulatedDistance: 0,
-                    interruptAccumulationStartedAt: 1000,
                 };
                 let x = 100;
                 for (let index = 1; index <= 30; index += 1) {
@@ -8630,7 +8628,6 @@ def test_avatar_floating_slow_continuous_mousemove_does_not_accumulate_forever(
                     lightInterrupts,
                     interruptCount: director.interruptCount,
                     streak: director.interruptQualifyingMoveStreak,
-                    accumulatedDistance: director.lastPointerPoint.interruptAccumulatedDistance,
                 };
             } finally {
                 Date.now = originalNow;
@@ -8642,7 +8639,6 @@ def test_avatar_floating_slow_continuous_mousemove_does_not_accumulate_forever(
     assert result["lightInterrupts"] == []
     assert result["interruptCount"] == 0
     assert result["streak"] == 0
-    assert result["accumulatedDistance"] < 400
 
 
 @pytest.mark.frontend
@@ -9144,7 +9140,7 @@ def test_avatar_floating_acceleration_below_new_threshold_does_not_trigger_light
 
 
 @pytest.mark.frontend
-def test_avatar_floating_acceleration_threshold_triggers_light_resistance_without_distance(
+def test_avatar_floating_small_acceleration_spikes_do_not_trigger_light_resistance(
     mock_page: Page,
 ):
     _bootstrap_page(
@@ -9180,6 +9176,72 @@ def test_avatar_floating_acceleration_threshold_triggers_light_resistance_withou
                     { t: 1001, x: 105, dx: 5 },
                     { t: 1002, x: 115, dx: 10 },
                     { t: 1003, x: 135, dx: 20 },
+                    { t: 1004, x: 160, dx: 25 },
+                ].forEach((sample) => {
+                    window.__now = sample.t;
+                    director.handleInterrupt({
+                        isTrusted: true,
+                        type: 'mousemove',
+                        clientX: sample.x,
+                        clientY: 100,
+                        movementX: sample.dx,
+                        movementY: 0,
+                    });
+                });
+                return {
+                    lightInterrupts,
+                    interruptCount: director.interruptCount,
+                    streak: director.interruptQualifyingMoveStreak,
+                };
+            } finally {
+                Date.now = originalNow;
+            }
+        }
+        """
+    )
+
+    assert result["lightInterrupts"] == []
+    assert result["interruptCount"] == 0
+    assert result["streak"] == 0
+
+
+@pytest.mark.frontend
+def test_avatar_floating_acceleration_threshold_triggers_light_resistance_without_distance(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const originalNow = Date.now;
+            window.__now = 1000;
+            Date.now = () => window.__now;
+            try {
+                const director = window.createYuiGuideDirector({ page: 'home' });
+                const lightInterrupts = [];
+                director.platformCapabilities = { windowBoundsSource: 'electron-window-bounds' };
+                director.currentSceneId = 'test_scene';
+                director.currentStep = {
+                    performance: {},
+                    interrupts: { threshold: 3, throttleMs: 0 },
+                };
+                director.interruptsEnabled = true;
+                director.cursor.hasPosition = () => true;
+                director.cursor.reactToUserMotion = () => {};
+                director.playLightResistance = (x, y, options) => {
+                    lightInterrupts.push({ x, y, options });
+                };
+
+                director.lastPointerPoint = { x: 100, y: 100, t: 1000, speed: 0 };
+                [
+                    { t: 1001, x: 140, dx: 40 },
+                    { t: 1002, x: 200, dx: 60 },
+                    { t: 1003, x: 290, dx: 90 },
                 ].forEach((sample) => {
                     window.__now = sample.t;
                     director.handleInterrupt({
