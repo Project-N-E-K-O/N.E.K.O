@@ -300,7 +300,6 @@ window.addEventListener('localechange', function () {
 
         try {
             await reloadDashboard();
-            if (!state.isLoggedIn) await startLogin();
         } catch (e) {
             showToast(t('ui.toast.load_failed', '加载失败'));
         }
