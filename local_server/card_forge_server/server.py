@@ -17,6 +17,8 @@ import random
 import sys
 import time
 import uuid
+import urllib.error
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -198,6 +200,25 @@ def _read_card_face_data_url(name: str) -> str:
         }
     )
     return data_url
+
+
+def _read_main_server_character_reference_data_url() -> str:
+    """Return the full-body character reference cached by the main NEKO server."""
+    url = os.environ.get(
+        "NEKO_MAIN_ACTIVE_CHARACTER_URL",
+        "http://127.0.0.1:48911/card-forge/active-character?include_avatar=true",
+    )
+    try:
+        with urllib.request.urlopen(url, timeout=0.8) as response:
+            if response.status >= 400:
+                return ""
+            payload = json.loads(response.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError):
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    data_url = payload.get("characterReferenceDataUrl") or payload.get("character_reference_data_url")
+    return data_url if _is_avatar_data_url(data_url) else ""
 
 
 def _card_face_dirs() -> list[Path]:
@@ -838,11 +859,13 @@ async def arena_active_character(include_avatar: bool = False):
         except Exception as exc:
             logger.warning("active-character: resolve failed: %s", type(exc).__name__)
     avatar_data_url = ""
+    character_reference_data_url = ""
     avatar_url = _card_face_avatar_url(name) if name else ""
     if name and include_avatar:
         card_face_data_url = _read_card_face_data_url(name)
         if _is_avatar_data_url(card_face_data_url):
             avatar_data_url = card_face_data_url
+        character_reference_data_url = _read_main_server_character_reference_data_url()
     return {
         "name": name or "",
         "master_name": master or "",
@@ -850,6 +873,8 @@ async def arena_active_character(include_avatar: bool = False):
         "avatar_url": avatar_url,
         "dataUrl": avatar_data_url,
         "avatarDataUrl": avatar_data_url,
+        "characterReferenceDataUrl": character_reference_data_url,
+        "character_reference_data_url": character_reference_data_url,
     }
 
 
