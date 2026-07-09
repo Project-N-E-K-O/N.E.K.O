@@ -109,7 +109,9 @@ class QQMessageDispatcher:
         await self.plugin._record_backlog_message(message)
         if str(message.get("message_type") or "").strip() == "group" and getattr(self.plugin, "attention_service", None):
             if self.plugin.qq_client and self.plugin.qq_client.needs_attention:
-                await self.plugin.attention_service.update_on_message(message)
+                # neko_dynamic 下由 attention_gate_service.evaluate() 统一更新注意力，此处跳过避免双倍计数
+                if self.plugin._strategy_mode != "neko_dynamic":
+                    await self.plugin.attention_service.update_on_message(message)
         self.plugin._emit_log("INFO", f"收到消息: type={message.get('message_type')} from={message.get('user_id')} text={str(message.get('content',''))[:40]}")
         message_type = message.get("message_type")
         sender_id = str(message.get("user_id") or "").strip()
