@@ -166,3 +166,16 @@ async def test_config_fallback_does_not_persist_ephemeral_live_enabled(runtime: 
 
     assert runtime.plugin.config.ensure_payloads == [{"neko_roast": {"dry_run": False}}]
     assert runtime.plugin.config.updates == [{"neko_roast": {"dry_run": False}}]
+
+
+@pytest.mark.asyncio
+async def test_douyin_config_update_keeps_live_room_ref(runtime: RoastRuntime) -> None:
+    runtime.config.live_platform = "douyin"
+    runtime.config.live_room_ref = "room-42"
+    runtime.config.live_enabled = True
+
+    await runtime.update_config({"live_room_ref": "room-43", "live_enabled": True})
+
+    assert runtime.live_provider.platform == "douyin"
+    assert runtime.live_provider.configured_room_ref() == "room-43"
+    assert runtime.config.live_room_ref == "room-43"

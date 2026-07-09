@@ -17,13 +17,20 @@ class LiveProviderRouter:
 
     @property
     def platform(self) -> str:
-        return "bilibili"
+        return normalize_live_platform(getattr(self.runtime.config, "live_platform", "bilibili"))
 
     def configured_room_ref(self) -> str:
+        raw_room_ref = str(getattr(self.runtime.config, "live_room_ref", "") or "").strip()
+        if self.platform != "bilibili":
+            return raw_room_ref
+        if raw_room_ref:
+            return raw_room_ref
         room_id = self.configured_room_id()
         return str(room_id) if room_id > 0 else ""
 
     def configured_room_id(self) -> int:
+        if self.platform != "bilibili":
+            return 0
         try:
             return max(0, int(getattr(self.runtime.config, "live_room_id", 0) or 0))
         except (TypeError, ValueError):
@@ -53,6 +60,8 @@ class LiveProviderRouter:
         normalized = self.normalize_room_ref(room_ref)
         if not normalized.get("ok"):
             return False
+        if self.platform != "bilibili":
+            return False
         ingest = getattr(self.runtime, "bili_live_ingest", None)
         starter = getattr(ingest, "start_listening", None)
         if not callable(starter):
@@ -69,6 +78,8 @@ class LiveProviderRouter:
         normalized = self.normalize_room_ref(room_ref)
         if not normalized.get("ok"):
             return None
+        if self.platform != "bilibili":
+            return None
         ingest = getattr(self.runtime, "bili_live_ingest", None)
         lookup = getattr(ingest, "lookup_room_status", None)
         if not callable(lookup):
@@ -83,7 +94,7 @@ class LiveProviderRouter:
         return ViewerIdentity(uid=str(getattr(event, "uid", "") or ""), nickname=str(getattr(event, "nickname", "") or ""))
 
     def identity_step_id(self) -> str:
-        return "bili_identity"
+        return "bili_identity" if self.platform == "bilibili" else f"{self.platform}_identity"
 
     def status(self) -> dict[str, Any]:
         return {
