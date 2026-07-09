@@ -1,4 +1,4 @@
-"""CredentialStore（P5 登录态）单测：加解密往返、落盘为密文、退出登录删文件。"""
+"""CredentialStore tests: encryption roundtrip, deletion, and namespace isolation."""
 
 from __future__ import annotations
 
@@ -52,3 +52,58 @@ async def test_credential_delete_removes_files(tmp_path):
     assert "bili_credential.key" in removed
     assert store.has_credential() is False
     assert await store.load() is None
+
+
+@pytest.mark.asyncio
+async def test_credential_store_namespace_keeps_douyin_cookie_separate(tmp_path):
+    pytest.importorskip("cryptography")
+    store = CredentialStore(
+        _FakePlugin(tmp_path),
+        audit=None,
+        namespace="douyin",
+        fields=("cookie", "uid", "nickname", "saved_at"),
+    )
+
+    ok = await store.save(
+        {
+            "cookie": "ttwid=secret-cookie; odin_tt=hidden",
+            "uid": "42",
+            "nickname": "dy-user",
+            "saved_at": "now",
+            "SESSDATA": "drop-me",
+        }
+    )
+
+    assert ok is True
+    assert store.has_credential() is True
+    assert (tmp_path / "douyin_credential.enc").exists()
+    assert (tmp_path / "douyin_credential.key").exists()
+    assert not (tmp_path / "bili_credential.enc").exists()
+    data = await store.load()
+    assert data == {
+        "cookie": "ttwid=secret-cookie; odin_tt=hidden",
+        "uid": "42",
+        "nickname": "dy-user",
+        "saved_at": "now",
+    }
+    assert b"secret-cookie" not in (tmp_path / "douyin_credential.enc").read_bytes()
+
+
+@pytest.mark.asyncio
+async def test_credential_store_namespace_is_sanitized_for_file_names(tmp_path):
+    pytest.importorskip("cryptography")
+    store = CredentialStore(
+        _FakePlugin(tmp_path),
+        audit=None,
+        namespace="../douyin/../../evil",
+        fields=("cookie",),
+    )
+
+    ok = await store.save({"cookie": "ttwid=secret-cookie"})
+
+    assert ok is True
+    assert store.namespace == "douyinevil"
+    assert (tmp_path / "douyinevil_credential.enc").exists()
+    assert (tmp_path / "douyinevil_credential.key").exists()
+    assert not any(path.name == "evil" and path.is_dir() for path in tmp_path.rglob("*"))
+    assert b"secret-cookie" not in (tmp_path / "douyinevil_credential.enc").read_bytes()
