@@ -1,11 +1,9 @@
-"""加密的 B站 登录凭据 store（P5 登录态）。
+"""Namespaced encrypted credential store for live-platform auth.
 
-凭据（SESSDATA / bili_jct / DedeUserID / buvid3）用 Fernet 对称加密落盘到 per-plugin data
-目录，密钥与密文分别 `chmod 600`（非 Windows）。**凭据绝不写 audit / log / config / UI**——
-只回显 uid / 用户名 / 是否登录。登录态供 `bili_identity` 头像抓取、`bili_live_ingest` 弹幕连接、
-`lookup` 使用，过登录态绕 B站 -352 风控（匿名 buvid3 不足以过，见 development.md「-352」）。
-
-加密模式移植自旧插件 `bilibili_danmaku`（Fernet + 独立密钥文件），是 P5 复用的既有方案。
+Credential payloads are Fernet-encrypted under the per-plugin data directory.
+The default ``bili`` namespace keeps the legacy ``bili_credential.*`` filenames;
+other providers get isolated ``{namespace}_credential.*`` files. Secrets must
+never be written to audit / log / config / UI.
 """
 
 from __future__ import annotations
@@ -23,15 +21,35 @@ _FIELDS = ("SESSDATA", "bili_jct", "DedeUserID", "buvid3")
 
 
 class CredentialStore:
-    """B站 登录凭据的加密本地 store。save/load/delete 走线程池不阻塞事件循环。"""
+    """Encrypted local credential store. save/load/delete run in a worker thread."""
 
-    def __init__(self, plugin: Any, audit: Any = None) -> None:
+    def __init__(
+        self,
+        plugin: Any,
+        audit: Any = None,
+        *,
+        namespace: str = "bili",
+        fields: tuple[str, ...] = _FIELDS,
+    ) -> None:
         self.plugin = plugin
         self.audit = audit
+        self.namespace = "".join(ch for ch in str(namespace or "bili") if ch.isalnum() or ch in {"_", "-"})
+        if not self.namespace:
+            self.namespace = "bili"
+        self.fields = tuple(fields or _FIELDS)
         self._lock = asyncio.Lock()
 
     def _data_dir(self) -> Path:
         return Path(self.plugin.data_path())
+
+    def _key_file(self) -> str:
+        return _KEY_FILE if self.namespace == "bili" else f"{self.namespace}_credential.key"
+
+    def _cred_file(self) -> str:
+        return _CRED_FILE if self.namespace == "bili" else f"{self.namespace}_credential.enc"
+
+    def _audit_op(self, suffix: str) -> str:
+        return f"{self.namespace}_credential_{suffix}"
 
     @staticmethod
     def _chmod600(path: Path) -> None:
@@ -45,7 +63,7 @@ class CredentialStore:
         from cryptography.fernet import Fernet
 
         data_dir = self._data_dir()
-        key_path = data_dir / _KEY_FILE
+        key_path = data_dir / self._key_file()
         if key_path.exists():
             return Fernet(key_path.read_bytes())
         key = Fernet.generate_key()
@@ -62,10 +80,10 @@ class CredentialStore:
 
     def _save_sync(self, payload: dict) -> bool:
         try:
-            cred = {key: str(payload.get(key) or "") for key in _FIELDS}
+            cred = {key: str(payload.get(key) or "") for key in self.fields}
             fernet = self._get_fernet()
             enc = fernet.encrypt(json.dumps(cred, ensure_ascii=False).encode("utf-8"))
-            cred_path = self._data_dir() / _CRED_FILE
+            cred_path = self._data_dir() / self._cred_file()
             cred_path.parent.mkdir(parents=True, exist_ok=True)
             cred_path.write_bytes(enc)
             self._chmod600(cred_path)
@@ -76,8 +94,8 @@ class CredentialStore:
     def _load_sync(self) -> dict | None:
         try:
             data_dir = self._data_dir()
-            cred_path = data_dir / _CRED_FILE
-            key_path = data_dir / _KEY_FILE
+            cred_path = data_dir / self._cred_file()
+            key_path = data_dir / self._key_file()
             if not cred_path.exists() or not key_path.exists():
                 return None
             from cryptography.fernet import Fernet
@@ -92,7 +110,7 @@ class CredentialStore:
     def _delete_sync(self) -> list[str]:
         removed: list[str] = []
         data_dir = self._data_dir()
-        for name in (_CRED_FILE, _KEY_FILE):
+        for name in (self._cred_file(), self._key_file()):
             path = data_dir / name
             try:
                 if path.exists():
@@ -110,12 +128,12 @@ class CredentialStore:
         if self.audit is not None:
             if ok:
                 self.audit.record(
-                    "bili_credential_saved",
+                    self._audit_op("saved"),
                     "credential saved (encrypted)",
                     detail={"uid": str(payload.get("DedeUserID") or "")},
                 )
             else:
-                self.audit.record("bili_credential_save_failed", "encrypt/save failed", level="warning")
+                self.audit.record(self._audit_op("save_failed"), "encrypt/save failed", level="warning")
         return ok
 
     async def load(self) -> dict | None:
@@ -126,13 +144,13 @@ class CredentialStore:
         async with self._lock:
             removed = await asyncio.to_thread(self._delete_sync)
         if self.audit is not None and removed:
-            self.audit.record("bili_credential_deleted", "credential files removed", detail={"files": removed})
+            self.audit.record(self._audit_op("deleted"), "credential files removed", detail={"files": removed})
         return removed
 
     def has_credential(self) -> bool:
         try:
             data_dir = self._data_dir()
-            return (data_dir / _CRED_FILE).exists() and (data_dir / _KEY_FILE).exists()
+            return (data_dir / self._cred_file()).exists() and (data_dir / self._key_file()).exists()
         except Exception:
             return False
 
