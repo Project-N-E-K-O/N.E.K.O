@@ -410,7 +410,7 @@ class WechatIntegrationPlugin(NekoPluginBase):
         return "\n".join(text_parts).strip()
 
     async def _generate_wechat_reply(self, user_id: str, message: str) -> str | None:
-        """生成微信回复，维护每个用户的对话历史"""
+        """生成微信回复。微信是主人专用通道，对话对象始终是主人。"""
         try:
             from config.prompts.prompts_sys import SESSION_INIT_PROMPT
             from main_logic.core import apply_role_placeholders
@@ -470,11 +470,11 @@ class WechatIntegrationPlugin(NekoPluginBase):
             system_prompt_parts.append(
                 f"\n======身份定义======\n"
                 f"- 你自己：{her_name}，你是当前回复者\n"
-                f"- 主人/管理员：{master_title}，是固定身份\n"
-                f"- 当前对话对象：{master_title}（微信ID: {user_id}），这就是主人/管理员本人\n"
-                f"- 即使对方的名字、主人名字、你的名字或角色设定中的人物名称相同，也必须按上述身份定义区分，绝不能混淆角色\n"
+                f"- 主人：{master_title}，是固定身份\n"
+                f"- 当前对话对象：{master_title}（微信ID: {user_id}），这就是{master_title}本人\n"
+                f"- 微信是主人专用通道，通过微信联系你的人就是{master_title}本人\n"
                 f"======身份定义结束======\n"
-                f"\n======微信私聊环境======\n"
+                f"\n======微信私聊环境（主人专用）======\n"
                 f"- 你正在通过微信与{master_title}私聊\n"
                 f"- 请保持角色设定，用简短自然的话回复（不超过50字）\n"
                 f"- 不要使用 Markdown 格式，不要使用表情符号\n"
