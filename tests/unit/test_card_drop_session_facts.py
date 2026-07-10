@@ -134,6 +134,38 @@ def test_card_face_lookup_rejects_path_traversal(tmp_path, monkeypatch):
     assert server._find_card_face_path("../secret") is None
 
 
+def test_forge_server_uses_config_manager_app_data_paths(tmp_path, monkeypatch):
+    server = importlib.import_module("local_server.card_forge_server.server")
+    import utils.config_manager as config_manager
+
+    config_dir = tmp_path / "platform-app-data" / "config"
+    card_faces_dir = tmp_path / "platform-app-data" / "card_faces"
+    config_dir.mkdir(parents=True)
+    card_faces_dir.mkdir(parents=True)
+    (config_dir / "characters.json").write_text(
+        json.dumps({"当前猫娘": "Lanlan", "主人": {"档案名": "Master"}}),
+        encoding="utf-8",
+    )
+    expected_face = card_faces_dir / "Lanlan.png"
+    expected_face.write_bytes(b"valid")
+
+    class FakeConfigManager:
+        pass
+
+    manager = FakeConfigManager()
+    manager.config_dir = config_dir
+    manager.card_faces_dir = card_faces_dir
+    monkeypatch.delenv("NEKO_USER_CONFIG_DIR", raising=False)
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: manager)
+
+    assert server._read_active_character_config_snapshot() == {
+        "name": "Lanlan",
+        "master_name": "Master",
+    }
+    assert card_faces_dir in server._card_face_dirs()
+    assert server._find_card_face_path("Lanlan") == expected_face
+
+
 def test_forge_active_character_endpoint_fails_closed_without_runtime_binding(monkeypatch):
     server = importlib.import_module("local_server.card_forge_server.server")
 

@@ -115,12 +115,27 @@ _CARD_FACE_DATA_URL_CACHE: dict[str, Any] = {
 }
 
 
+def _config_manager_path(attribute: str) -> Path | None:
+    """Resolve a platform-aware user-data path from NEKO's ConfigManager."""
+    try:
+        from utils.config_manager import get_config_manager
+
+        value = getattr(get_config_manager(), attribute, None)
+        return Path(value) if value else None
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("card-forge: cannot resolve ConfigManager.%s: %s", attribute, exc)
+        return None
+
+
 def _read_active_character_config_snapshot() -> dict[str, str]:
     """Read the current character name directly from the local NEKO config."""
     candidates: list[Path] = []
     env_config_dir = os.environ.get("NEKO_USER_CONFIG_DIR", "").strip()
     if env_config_dir:
         candidates.append(Path(env_config_dir) / "characters.json")
+    config_dir = _config_manager_path("config_dir")
+    if config_dir is not None:
+        candidates.append(config_dir / "characters.json")
     candidates.extend(
         [
             Path.home() / "Library/Application Support/N.E.K.O/config/characters.json",
@@ -218,13 +233,16 @@ def _card_face_dirs() -> list[Path]:
     env_config_dir = os.environ.get("NEKO_USER_CONFIG_DIR", "").strip()
     if env_config_dir:
         candidates.append(Path(env_config_dir).parent / "card_faces")
+    card_faces_dir = _config_manager_path("card_faces_dir")
+    if card_faces_dir is not None:
+        candidates.append(card_faces_dir)
     candidates.extend(
         [
             Path.home() / "Library/Application Support/N.E.K.O/card_faces",
             PROJECT_ROOT / "card_faces",
         ]
     )
-    return candidates
+    return list(dict.fromkeys(candidates))
 
 
 def _find_card_face_path(name: str) -> Path | None:
