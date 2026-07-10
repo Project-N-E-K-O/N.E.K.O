@@ -6375,10 +6375,18 @@ async def voice_design(request: Request):
             'provider': provider,
         }, status_code=502)
     except Exception as e:
+        generic_error_code = {
+            'cosyvoice': 'COSYVOICE_VOICE_DESIGN_FAILED',
+            'cosyvoice_intl': 'COSYVOICE_VOICE_DESIGN_FAILED',
+            'minimax': 'MINIMAX_VOICE_DESIGN_FAILED',
+            'minimax_intl': 'MINIMAX_VOICE_DESIGN_FAILED',
+            'elevenlabs': 'ELEVENLABS_VOICE_DESIGN_FAILED',
+            'mimo': 'MIMO_VOICE_DESIGN_FAILED',
+        }.get(provider, 'VOICE_DESIGN_FAILED')
         logger.error(f"{provider_label} voice design unexpected error: {e}")
         return JSONResponse({
             'error': f'{provider_label} voice design failed: {str(e)}',
-            'code': 'COSYVOICE_VOICE_DESIGN_FAILED',
+            'code': generic_error_code,
             'provider': provider,
         }, status_code=500)
 

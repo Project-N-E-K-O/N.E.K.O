@@ -1665,7 +1665,7 @@ async function registerVoice() {
             return;
         }
         if (!prefix) {
-            resultDiv.textContent = window.t ? window.t('voice.pleaseEnterPrefix') : '璇峰～鍐欒嚜瀹氫箟鍓嶇紑';
+            resultDiv.textContent = window.t ? window.t('voice.pleaseEnterPrefix') : '请填写自定义前缀';
             resultDiv.className = 'result error';
             return;
         }
