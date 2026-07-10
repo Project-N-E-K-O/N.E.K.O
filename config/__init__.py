@@ -27,7 +27,7 @@ from config.prompts.prompts_chara import lanlan_prompt, get_lanlan_prompt, is_de
 
 # 应用程序名称与版本配置
 APP_NAME = "N.E.K.O"
-APP_VERSION = "0.8.2"
+APP_VERSION = "0.8.3"
 logger = logging.getLogger(f"{APP_NAME}.{__name__}")
 
 # GPT-SoVITS voice_id 前缀(角色管理中使用 "gsv:<voice_id>" 格式标识 GPT-SoVITS 声音)
@@ -705,6 +705,8 @@ DEFAULT_CORE_CONFIG = {
     "assistApiKeyStep": "",
     "assistApiKeySilicon": "",
     "assistApiKeyGemini": "",
+    "assistApiKeyKimi": "",
+    "assistApiKeyKimiCode": "",
     "assistApiKeyQwenIntl": "",
     "assistApiKeyMinimax": "",
     "assistApiKeyMimo": "",
@@ -714,6 +716,7 @@ DEFAULT_CORE_CONFIG = {
     "assistApiKeyClaude": "",
     "assistApiKeyGrok": "",
     "assistApiKeyDoubao": "",
+    "assistApiKeyDoubaoTts": "",
     "mcpToken": "",
     "agentModelUrl": "",
     "agentModelId": "",
@@ -855,6 +858,16 @@ DEFAULT_ASSIST_API_PROFILES = {
         'VISION_MODEL': "kimi-latest",
         'AGENT_MODEL': "kimi-latest",
     },
+    'kimi_code': {
+        'OPENROUTER_URL': "https://api.kimi.com/coding",
+        'PROVIDER_TYPE': "anthropic",
+        'CONVERSATION_MODEL': "kimi-for-coding",
+        'SUMMARY_MODEL': "kimi-for-coding",
+        'CORRECTION_MODEL': "kimi-for-coding",
+        'EMOTION_MODEL': "kimi-for-coding",
+        'VISION_MODEL': "kimi-for-coding",
+        'AGENT_MODEL': "kimi-for-coding",
+    },
     'claude': {
         'OPENROUTER_URL': "https://api.anthropic.com/v1",
         'CONVERSATION_MODEL': "claude-sonnet-4-6",
@@ -916,6 +929,7 @@ DEFAULT_ASSIST_API_KEY_FIELDS = {
     'silicon': 'ASSIST_API_KEY_SILICON',
     'gemini': 'ASSIST_API_KEY_GEMINI',
     'kimi': 'ASSIST_API_KEY_KIMI',
+    'kimi_code': 'ASSIST_API_KEY_KIMI_CODE',
     'qwen_intl': 'ASSIST_API_KEY_QWEN_INTL',
     'minimax': 'ASSIST_API_KEY_MINIMAX',
     'mimo': 'ASSIST_API_KEY_MIMO',
@@ -993,6 +1007,20 @@ EVIDENCE_SIGNAL_CHECK_EVERY_N_TURNS = 10         # 累积 N 轮触发
 EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES = 5           # 或空闲 N 分钟触发
 EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS = 40      # 轮询间隔（与 IDLE_CHECK_INTERVAL 对齐）
 EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS = 30    # Stage-2 LLM rerank 后进 prompt 的 obs 上限（减少 NxM 配对决策点）
+
+# ── activity_guess 自适应退避门控 ──────────────────────────────────────
+# 活动心跳 (main_logic/activity/tracker.py:_activity_guess_loop) 通过 emotion-tier
+# LLM 把"用户在干嘛"叙述出来，只喂 proactive 搭话 prompt。这组旋钮约束「活动没
+# 实质变化时」它多久刷一次——用户在两个 app 间来回切窗口曾让它每 ~40s 烧一次
+# (静默, 无业务日志) 无限持续。详见 main_logic/activity/activity_guess_gate.py。
+# 同一活动每被重述一次，下次重述间隔就 ×MULTIPLIER 增长，封顶 CAP：30→120→480→900。
+# CAP 选 900s 对齐 AWAY_IDLE_SECONDS（state_machine.py，挂机 15min 进 away 后心跳硬 bail），
+# 这样稳定活动退避到地板时差不多也该转 away 了。消费端 get_snapshot 读 cache 无 TTL
+# 守卫，所以 CAP 放大不会让 proactive 拿到“过期”叙述（叙述只描述“在干嘛”，旧 = 仍准）。
+ACTIVITY_GUESS_BACKOFF_BASE_SECONDS = 30.0   # 两次调用之间的硬地板 + 首次重述间隔
+ACTIVITY_GUESS_BACKOFF_MULTIPLIER = 4.0      # 每次重述后退避间隔的增长倍数（必须 > 1）
+ACTIVITY_GUESS_BACKOFF_CAP_SECONDS = 900.0   # 活动稳定后重述间隔的封顶（对齐 AWAY_IDLE 15min）
+ACTIVITY_GUESS_SIG_CACHE_SIZE = 8            # 退避记忆的「不同活动签名」条数
 
 # ── AI-aware Stage-1 (path B) ─────────────────────────────────────────
 # 原 SignalLoop (path A) 只看 user 消息，导致 PR #1346 之后 AI 自我披露 + proactive
@@ -1341,6 +1369,30 @@ LLM_OUTPUT_GUARD_MAX_TOKENS = 4096
 - 残留边界：max output < 4096 的极老/极小模型仍可能 400；这类安装可下调本常量。
   彻底鲁棒需要 per-model 上限元数据（codebase 目前不跟踪），故取保守定值。"""
 
+ICEBREAKER_FREE_TEXT_INTERPRETER_TIMEOUT_SECONDS = 20.0
+"""新用户破冰自由输入解释器 LLM timeout（秒）。用户面前的短分类/短回复调用，卡住时应快速失败。"""
+
+ICEBREAKER_FREE_TEXT_OUTPUT_MAX_TOKENS = 512
+"""新用户破冰自由输入解释器输出 token 上限。输出固定 JSON，512 只作短任务上限。"""
+
+ICEBREAKER_FREE_TEXT_ASSISTANT_LINE_MAX_TOKENS = 800
+"""破冰自由输入解释器：当前 YUI 台词输入 token 上限。"""
+
+ICEBREAKER_FREE_TEXT_USER_TEXT_MAX_TOKENS = 800
+"""破冰自由输入解释器：用户自由输入 token 上限。"""
+
+ICEBREAKER_FREE_TEXT_OPTION_LABEL_MAX_TOKENS = 200
+"""破冰自由输入解释器：单个选项文案 token 上限。"""
+
+ICEBREAKER_FREE_TEXT_HISTORY_TEXT_MAX_TOKENS = 240
+"""破冰自由输入解释器：近期自由输入记录单段文本 token 上限。"""
+
+ICEBREAKER_FREE_TEXT_HISTORY_MAX_ITEMS = 4
+"""破冰自由输入解释器：近期自由输入记录最多带入条数。"""
+
+ICEBREAKER_FREE_TEXT_REPLY_MAX_TOKENS = 240
+"""破冰自由输入解释器：模型 reply 字段清洗后的 token 上限。"""
+
 DIALOG_LLM_STREAM_TIMEOUT_SECONDS = 180
 """主对话流式 LLM client 的总请求 timeout（秒），作 hang-guard。
 - 用途：OmniOfflineClient 的 streaming chat client（stream_text /
@@ -1352,6 +1404,22 @@ DIALOG_LLM_STREAM_TIMEOUT_SECONDS = 180
   路径，宁可多等也不能误截正常回复。
 - 政策：LLM_OUTPUT_BUDGET lint 要求每个 client 构造都带 timeout；本常量是
   主对话流式路径的统一来源。"""
+
+FOCUS_THINKING_EXTRA_TOKENS = 800
+"""凝神（focus / thinking-on）轮次额外放宽的 max_completion_tokens。
+- 背景：thinking 模型（Qwen enable_thinking / GLM·Kimi·Doubao thinking.type /
+  OpenRouter reasoning.effort）的 reasoning token 与正式回复共享同一个
+  max_completion_tokens 预算池（见 docs/design/llm-prompt-budget.md §0），
+  凝神轮一开思考就会从回复额度里扣，把正式回复挤短。
+- 作用：仅在 thinking_on 的那一轮，把 API 端 max_completion_tokens 临时
+  抬高本值，给推理链单独留头寸，不动 Python-side 长度 guard（回复可见
+  长度仍按 max_response_length 收口）。
+- 路由：作为 per-call override 经 _focus_stream_overrides → astream →
+  ChatOpenAI._params 透传，不改 self.llm 实例属性（与 extra_body 同一条
+  per-call 路径，并发安全、下一轮自动复位）。
+- 适用面：Claude 凝神保持 thinking-off（config/providers.py），本加值对其
+  天然 no-op；Gemini thinking_budget 是独立字段（800），本余量也足够覆盖。
+- 取值：扁平 800，不按 provider 分叉——只在真正开思考的轮次生效。"""
 
 # ---- Memory: refine (Phase A-3) — MemoryRefineEngine 的 cron 参数 ----
 # 通用 cosine 聚类 + LLM 决议管道，复用在 PERSONA_REFINE 和
@@ -1627,6 +1695,25 @@ AGENT_PLUGIN_FULL_MAX_TOKENS = 500
 - 用途：返回 plugin_id + plugin_args + reason。
 - 上游：LLM 输出。"""
 
+AGENT_EXTERNAL_GATE_ENABLED = True
+"""廉价前置闸总开关（默认开）。
+- 用途：开 = 用 master-emotion 在 input-time 顺带产出的 external_intent，在 agent
+  侧 turn_end 评估前做一道零成本前置判断：若这一轮被自信地读成「不需要外部能力」
+  （既没要求对外操作、也不需要外部/实时信息），且零 LLM 的确定性 shortcut（magic
+  word 规则 + 插件关键词）也全静默，就跳过那 1~2 次大模型评估，省掉闲聊轮的
+  analyzer 开销。关掉则每个 turn 照常全量评估。
+- 闸是非对称的：external_intent 缺失（None）或确定性命中都不刹车，所以最坏只是多花
+  一次评估，绝不漏真任务。
+- 上游：DirectTaskExecutor._analyze_and_execute_inner 的前置判定。"""
+
+AGENT_EXTERNAL_GATE_THRESHOLD = 0.2
+"""external_intent 刹车阈值（0~1）。
+- 用途：external_intent < 此值才视为「自信地不需要外部能力」、进入刹车候选；>= 此值
+  或为 None 一律放行。
+- 取保守低位（默认 0.2）：小模型只需可靠认出「显然只是闲聊、靠对话和常识就能答」
+  这 90% 的易判 case，模棱两可的全 fail-open 到准确的大评估。调高 = 更激进省钱但
+  漏判风险上升。"""
+
 PLUGIN_INPUT_DESC_MAX_TOKENS = 1000
 """_ensure_short_descriptions 输入的 plugin manifest description 上限。
 - 用途：生成 short_description 时把原始 description 截断后再送入 prompt
@@ -1692,6 +1779,19 @@ ANTI_REPEAT_FG_WINDOW = 5
 """anti-repeat 前景窗口长度（最近 N 条算"是否重复"）。
 - 用途：BM25 评分把最近 N 条当 query corpus 算 TF；新 draft 与这 5 条比。
 - 设计依据：5 条 ≈ 用户最近能感知到的复读窗口；7+ 已经记不清了。"""
+
+ANTI_REPEAT_FG_TTL_SECONDS = 600.0
+"""anti-repeat 前景窗口的时间新鲜度上限（秒）。仅作用于 FG（TF/复读判定），
+不影响 BG（DF/IDF 词频背景，仍按 ANTI_REPEAT_BG_WINDOW 条数封顶）。
+- 用途：memory/anti_repeat.py 的 score_draft / top_recent_topics 只把「最近
+  ANTI_REPEAT_FG_TTL_SECONDS 内」的输出计入前景 TF；更早的条目照旧留在 BG
+  里贡献 IDF。
+- 设计依据：修复「空闲死锁」——主动搭话在用户空闲时才触发，而所有 drop 路径
+  都不写 corpus、成功投递才写，于是空闲期 FG 窗被最近几条同话题（如屏幕解说）
+  冻结，每轮打出同样的超高 BM25 → 永远 drop → 永远无法搭话。加了 TTL 后，空闲
+  超此时长 FG 自然清空、bm25_score 命中 `not fg_docs` 返回 0，本轮放行。
+- 取值：10 分钟。防复读本就只防「刚说过、又说一遍」的 back-to-back 复读；十分钟
+  前说过的话题再提不算复读。BG（IDF 语境）不设 TTL，评分质量不受影响。"""
 
 ANTI_REPEAT_INJECT_TOP_K = 6
 """注入 system prompt 的 "最近高频 topic 词" 数量。
@@ -1924,8 +2024,10 @@ if not (0.0 < FOCUS_IDLE_REPLIED_RETENTION <= FOCUS_IDLE_SILENT_RETENTION < 1.0)
 FOCUS_CHARGE_ENTER = 0.6
 """进入凝神的电荷阈值，也是「完全激活」点。
 - 用途：charge ≥ 此值 → REGULAR→FOCUS，同时前端边缘辉光在此处非线性跃升 + 起呼吸。
-- 一句重话（强 distress 读数 score≈0.65+，或两个脆弱词）即可单轮秒进；零散脆弱靠
-  累积逼近此值后进入。
+- 单个强信号即可单轮秒进：强 distress 情绪读数（emotion 满格 0.7、≥~0.86 时越阈）或
+  满格复杂提问（question 1.0×0.6=0.6）。脆弱词单独不足以单轮进（keyword 满格 0.5 < 此阈，
+  有意——词表是廉价信号），须叠加 emotion 或跨轮累积；零散信号靠 charge 累积逼近此值后进入。
+  注：score 现为各信号加权和（无分母，见 FOCUS_SIGNAL_WEIGHTS）。
 - charge 不再 cap 在此值——见 FOCUS_CHARGE_CAP，0.6 以上继续累积到 1.0（更亮更持久）。
 - 时间衰减以此为界：charge < ENTER 衰减快（FOCUS_TIME_DECAY_PER_SEC），≥ ENTER（完全激活）
   衰减减半（FOCUS_TIME_DECAY_PER_SEC_ACTIVATED）→ 0.6 以上自然更持久。"""
@@ -1970,22 +2072,28 @@ FOCUS_HARD_CAP_TURNS = 8
 - 上游：SM 的 focus_turn_count 计数器。"""
 
 FOCUS_SIGNAL_WEIGHTS: dict[str, float] = {
-    "keyword": 0.4,       # 用户消息命中脆弱情绪词（词表）
+    "keyword": 0.5,       # 用户消息命中脆弱情绪词（词表）
     "cadence": 0.2,       # 回复字数相对基线骤跌（仅在有 distress 证据时计入）
     "emotion": 0.7,       # master 情绪画像（主信号，**带符号**）：负效价 distress 为正、正效价 joy 为负，见 MasterEmotionTracker
     "question": 0.6,      # master 模型判定「正在问复杂客观问题（数学/逻辑/推理）」的认知加分项
 }
 """FocusScorer 各信号的相对权重（仅 inline 路径——评分只看用户自己说的话）。
-- 用途：scorer 对适用信号子集内权重重新归一后加权平均 → 该轮 score（喂给累加器）。
+- 用途：scorer 对适用信号按权重**直接加权求和（不归一、无分母）** → 该轮 score（喂给
+  累加器）。权重即每个信号的绝对贡献：present 信号加 weight×value 进 score，缺席信号贡献 0。
 - 信号语义分两类：
-  · keyword / emotion / question 是触发信号——缺席返回 None、不进分母（不稀释别的）。
-    emotion 是 keyword 词表的真模型升级（故词表权重 0.4 < 模型情绪 0.7），且**带符号**：
+  · keyword / emotion / question 是触发信号——缺席返回 None、不计入（贡献 0，不稀释别的）。
+    emotion 是 keyword 词表的真模型升级（故词表权重 0.5 < 模型情绪 0.7），且**带符号**：
     负效价 distress 为正、正效价 joy 为负（neutral 返回 None）——开心会把 score/charge
     往下拉。question 是认知轴加分项（问复杂客观题——数学/逻辑/推理——也值得 thinking-on），
     与 distress 正交但并入同一 charge。
-  · cadence 是行为信号——它的 0.0（「字数没骤降」）是有信息的、照常进分母；只有样本
-    不足时返回 None；且**仅在有 distress 证据**（keyword / question / emotion>0）时才计入
-    （否则一句短的开心话会让 cadence 误推 focus）。
+  · cadence 是行为信号——只在样本足够且**有 distress 证据**（keyword / question / emotion>0）
+    时才计入（否则一句短的开心话会让 cadence 误推 focus）。无分母后它的 0.0（「字数没骤降」）
+    贡献 0、等价于缺席，只有字数真的骤降才往 score 加分。
+- ⚠️ 无分母 ⇒ score 不再封顶在 1.0：全信号满格 = 各权重之和（当前 0.5+0.2+0.7+0.6=2.0），
+  下游由 FOCUS_CHARGE_CAP 截。调权重 = 直接调每信号绝对推力，也间接改相对 ENTER 的触发难度。
+- ⚠️ 单信号能否单轮进 ENTER 取决于「权重×满格值 ≥ ENTER」：去分母后 keyword 满格仅 0.5、
+  cadence 0.2，单独都越不过 ENTER(0.6)——脆弱词必须叠加 emotion 或跨轮累积才进（有意：词表
+  是廉价信号）；只有 emotion（≥~0.86）与满格 question（1.0×0.6）能单信号单轮进。
 - emotion 读 master 情绪画像（MasterEmotionTracker）已算好的最近 VA 读数，映射成
   distress = max(0,-valence) × (FOCUS_EMOTION_AROUSAL_FLOOR + (1-floor)×arousal)——
   负效价主导、arousal 带下限放大（见 FOCUS_EMOTION_AROUSAL_FLOOR）。**滞后一拍**
@@ -2382,6 +2490,10 @@ __all__ = [
     'EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS',
     'EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS',
     'EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS',
+    'ACTIVITY_GUESS_BACKOFF_BASE_SECONDS',
+    'ACTIVITY_GUESS_BACKOFF_MULTIPLIER',
+    'ACTIVITY_GUESS_BACKOFF_CAP_SECONDS',
+    'ACTIVITY_GUESS_SIG_CACHE_SIZE',
     'PERSONA_RENDER_MAX_TOKENS',
     'REFLECTION_RENDER_MAX_TOKENS',
     'PERSONA_RENDER_ENCODING',
@@ -2403,7 +2515,16 @@ __all__ = [
     'PERSONA_VERSION_HISTORY_MAX',
     'MEMORY_LLM_HARD_TIMEOUT_SECONDS',
     'DIALOG_LLM_STREAM_TIMEOUT_SECONDS',
+    'FOCUS_THINKING_EXTRA_TOKENS',
     'LLM_OUTPUT_GUARD_MAX_TOKENS',
+    'ICEBREAKER_FREE_TEXT_INTERPRETER_TIMEOUT_SECONDS',
+    'ICEBREAKER_FREE_TEXT_OUTPUT_MAX_TOKENS',
+    'ICEBREAKER_FREE_TEXT_ASSISTANT_LINE_MAX_TOKENS',
+    'ICEBREAKER_FREE_TEXT_USER_TEXT_MAX_TOKENS',
+    'ICEBREAKER_FREE_TEXT_OPTION_LABEL_MAX_TOKENS',
+    'ICEBREAKER_FREE_TEXT_HISTORY_TEXT_MAX_TOKENS',
+    'ICEBREAKER_FREE_TEXT_HISTORY_MAX_ITEMS',
+    'ICEBREAKER_FREE_TEXT_REPLY_MAX_TOKENS',
     'MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS',
     'MEMORY_REFINE_COSINE_THRESHOLD',
     'MEMORY_REFINE_TOPK_PER_ENTRY',
@@ -2435,6 +2556,8 @@ __all__ = [
     'AGENT_PLUGIN_COARSE_MAX_TOKENS',
     'AGENT_UNIFIED_ASSESS_MAX_TOKENS',
     'AGENT_PLUGIN_FULL_MAX_TOKENS',
+    'AGENT_EXTERNAL_GATE_ENABLED',
+    'AGENT_EXTERNAL_GATE_THRESHOLD',
     'PLUGIN_INPUT_DESC_MAX_TOKENS',
     'COMPUTER_USE_MAX_TOKENS',
     'LLM_PING_MAX_TOKENS',
@@ -2445,6 +2568,7 @@ __all__ = [
     'USER_DIRECTIVE_MAX_ACTIVE',
     'ANTI_REPEAT_BG_WINDOW',
     'ANTI_REPEAT_FG_WINDOW',
+    'ANTI_REPEAT_FG_TTL_SECONDS',
     'ANTI_REPEAT_INJECT_TOP_K',
     'ANTI_REPEAT_REGEN_THRESHOLD',
     'ANTI_REPEAT_DROP_THRESHOLD',

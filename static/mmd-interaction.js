@@ -49,6 +49,11 @@ class MMDInteraction {
 
         // 旋转轴心（右键按下时缓存）
         this._orbitPivot = null;
+        this._lastPanDragPointerScreen = null;
+        this._panDragModelCenterOffset = null;
+        this._dragHintPanStartPointer = null;
+        this._dragHintPanLastPointer = null;
+        this._dragHintApproachShown = false;
     }
 
     // ═══════════════════ 射线检测 ═══════════════════
@@ -80,6 +85,56 @@ class MMDInteraction {
 
         return clientX >= bounds.minX && clientX <= bounds.maxX &&
                clientY >= bounds.minY && clientY <= bounds.maxY;
+    }
+
+    _captureDragHintPointer(event) {
+        const screenX = Number(event?.screenX);
+        const screenY = Number(event?.screenY);
+        if (!Number.isFinite(screenX) || !Number.isFinite(screenY)) return null;
+        return { screenX, screenY };
+    }
+
+    _rememberDragHintPanPointer(event, { start = false } = {}) {
+        const pointer = this._captureDragHintPointer(event);
+        if (!pointer) return;
+        if (start) {
+            pointer.startedAt = Date.now();
+            this._dragHintPanStartPointer = pointer;
+        }
+        this._dragHintPanLastPointer = pointer;
+    }
+
+    async _recordDragHintPointerEdgeRelease(source) {
+        const helper = window.NekoAvatarMultiScreenDragHint;
+        if (!helper || typeof helper.recordPointerEdgeRelease !== 'function') return false;
+        const start = this._dragHintPanStartPointer;
+        const release = this._dragHintPanLastPointer;
+        if (!start || !release) return false;
+        return await helper.recordPointerEdgeRelease(source, {
+            startedAt: start.startedAt,
+            startScreenX: start.screenX,
+            startScreenY: start.screenY,
+            screenX: release.screenX,
+            screenY: release.screenY
+        });
+    }
+
+    async _recordDragHintPointerEdgeApproach(source) {
+        const helper = window.NekoAvatarMultiScreenDragHint;
+        if (!helper || typeof helper.recordPointerEdgeApproach !== 'function') return false;
+        if (this._dragHintApproachShown) return false;
+        const start = this._dragHintPanStartPointer;
+        const pointer = this._dragHintPanLastPointer;
+        if (!start || !pointer) return false;
+        const shown = await helper.recordPointerEdgeApproach(source, {
+            startedAt: start.startedAt,
+            startScreenX: start.screenX,
+            startScreenY: start.screenY,
+            screenX: pointer.screenX,
+            screenY: pointer.screenY
+        });
+        if (shown) this._dragHintApproachShown = true;
+        return shown;
     }
 
     /**
@@ -151,6 +206,107 @@ class MMDInteraction {
         }
     }
 
+    _getProjectedModelCenterInWindow() {
+        const mesh = this.manager.currentModel?.mesh;
+        const camera = this.manager.camera;
+        const renderer = this.manager.renderer;
+        if (!mesh || !camera || !renderer || !THREE) return null;
+
+        try {
+            mesh.updateMatrixWorld(true);
+            const box = new THREE.Box3().setFromObject(mesh);
+            if (!box || !Number.isFinite(box.min.x) || !Number.isFinite(box.max.x)) return null;
+
+            const canvasRect = renderer.domElement.getBoundingClientRect();
+            const screenWidth = canvasRect.width;
+            const screenHeight = canvasRect.height;
+            if (!(screenWidth > 0) || !(screenHeight > 0)) return null;
+
+            const corners = [
+                new THREE.Vector3(box.min.x, box.min.y, box.min.z),
+                new THREE.Vector3(box.max.x, box.min.y, box.min.z),
+                new THREE.Vector3(box.min.x, box.max.y, box.min.z),
+                new THREE.Vector3(box.max.x, box.max.y, box.min.z),
+                new THREE.Vector3(box.min.x, box.min.y, box.max.z),
+                new THREE.Vector3(box.max.x, box.min.y, box.max.z),
+                new THREE.Vector3(box.min.x, box.max.y, box.max.z),
+                new THREE.Vector3(box.max.x, box.max.y, box.max.z),
+            ];
+            let minX = Infinity, maxX = -Infinity;
+            let minY = Infinity, maxY = -Infinity;
+            for (const corner of corners) {
+                const projected = corner.clone().project(camera);
+                const x = (projected.x * 0.5 + 0.5) * screenWidth + canvasRect.left;
+                const y = (-projected.y * 0.5 + 0.5) * screenHeight + canvasRect.top;
+                minX = Math.min(minX, x);
+                maxX = Math.max(maxX, x);
+                minY = Math.min(minY, y);
+                maxY = Math.max(maxY, y);
+            }
+            const x = (minX + maxX) / 2;
+            const y = (minY + maxY) / 2;
+            if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+            return { x, y };
+        } catch (_) {
+            return null;
+        }
+    }
+
+    _rememberPanDragPointer(event, { captureOffset = false } = {}) {
+        const screenX = Number(event?.screenX);
+        const screenY = Number(event?.screenY);
+        if (Number.isFinite(screenX) && Number.isFinite(screenY)) {
+            this._lastPanDragPointerScreen = { x: screenX, y: screenY };
+        }
+
+        if (!captureOffset) return;
+        const clientX = Number(event?.clientX);
+        const clientY = Number(event?.clientY);
+        const center = this._getProjectedModelCenterInWindow();
+        if (center && Number.isFinite(clientX) && Number.isFinite(clientY)) {
+            this._panDragModelCenterOffset = {
+                x: center.x - clientX,
+                y: center.y - clientY
+            };
+        } else {
+            this._panDragModelCenterOffset = { x: 0, y: 0 };
+        }
+    }
+
+    _moveModelCenterToWindowPoint(targetX, targetY) {
+        const mesh = this.manager.currentModel?.mesh;
+        const camera = this.manager.camera;
+        const renderer = this.manager.renderer;
+        if (!mesh || !camera || !renderer || !THREE) return false;
+        if (!Number.isFinite(targetX) || !Number.isFinite(targetY)) return false;
+
+        const center = this._getProjectedModelCenterInWindow();
+        if (!center) return false;
+
+        const canvasRect = renderer.domElement.getBoundingClientRect();
+        const screenWidth = canvasRect.width;
+        const screenHeight = canvasRect.height;
+        if (!(screenWidth > 0) || !(screenHeight > 0)) return false;
+
+        const deltaPxX = targetX - center.x;
+        const deltaPxY = targetY - center.y;
+        if (deltaPxX === 0 && deltaPxY === 0) return true;
+
+        const cameraDistance = camera.position.distanceTo(mesh.position);
+        const fov = camera.fov * (Math.PI / 180);
+        const worldHeight = 2 * Math.tan(fov / 2) * cameraDistance;
+        const worldWidth = worldHeight * (screenWidth / screenHeight);
+        const pixelToWorldX = worldWidth / screenWidth;
+        const pixelToWorldY = worldHeight / screenHeight;
+
+        const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+        const up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
+
+        mesh.position.add(right.clone().multiplyScalar(deltaPxX * pixelToWorldX));
+        mesh.position.add(up.clone().multiplyScalar(-deltaPxY * pixelToWorldY));
+        return true;
+    }
+
     // ═══════════════════ 锁定控制 ═══════════════════
 
     setLocked(locked) {
@@ -208,6 +364,9 @@ class MMDInteraction {
                 this.isDragging = true;
                 this.dragMode = 'pan';
                 this.previousMousePosition = { x: e.clientX, y: e.clientY };
+                this._rememberPanDragPointer(e, { captureOffset: true });
+                this._rememberDragHintPanPointer(e, { start: true });
+                this._dragHintApproachShown = false;
                 canvas.style.cursor = 'move';
                 e.preventDefault();
                 e.stopPropagation();
@@ -260,6 +419,11 @@ class MMDInteraction {
 
             const dx = e.clientX - this.previousMousePosition.x;
             const dy = e.clientY - this.previousMousePosition.y;
+            if (this.dragMode === 'pan') {
+                this._rememberPanDragPointer(e);
+                this._rememberDragHintPanPointer(e);
+                void this._recordDragHintPointerEdgeApproach('mmd');
+            }
             this.previousMousePosition = { x: e.clientX, y: e.clientY };
 
             if (this.dragMode === 'pan') {
@@ -313,8 +477,12 @@ class MMDInteraction {
         };
 
         // 鼠标抬起
-        this.mouseUpHandler = async () => {
+        this.mouseUpHandler = async (e) => {
             if (this.isDragging) {
+                if (this.dragMode === 'pan') {
+                    this._rememberPanDragPointer(e);
+                    this._rememberDragHintPanPointer(e);
+                }
                 // 保留本次拖拽类型再清状态，跨屏切换只对 pan 生效
                 // （orbit 是绕模型中心旋转朝向，不应触发多屏切换）
                 const wasPanDrag = this.dragMode === 'pan';
@@ -330,6 +498,9 @@ class MMDInteraction {
                     : false;
 
                 if (!displaySwitched) {
+                    if (wasPanDrag) {
+                        await this._recordDragHintPointerEdgeRelease('mmd');
+                    }
                     // 桌宠窗口与网页端统一：clampModelPosition 已按可见像素(200px)判定，
                     // 只有模型绝大部分出屏才回弹，贴边摆放不会被过度纠正。
                     const snapped = await this._snapModelIntoScreen({ animate: true });
@@ -501,11 +672,19 @@ class MMDInteraction {
             // 模型中心（相对于 canvas 左上角的像素），再偏移 canvas 在窗口中的位置
             const modelCenterX = (modelMinX + modelMaxX) / 2 + canvasRect.left;
             const modelCenterY = (modelMinY + modelMaxY) / 2 + canvasRect.top;
+            const dragPointer = this._lastPanDragPointerScreen;
+            const hasDragPointer = dragPointer
+                && Number.isFinite(dragPointer.x)
+                && Number.isFinite(dragPointer.y);
+            const pointerOffset = this._panDragModelCenterOffset || { x: 0, y: 0 };
+            this._lastPanDragPointerScreen = null;
+            this._panDragModelCenterOffset = null;
 
             const windowWidth = window.innerWidth;
             const windowHeight = window.innerHeight;
-            if (modelCenterX >= 0 && modelCenterX < windowWidth &&
-                modelCenterY >= 0 && modelCenterY < windowHeight) {
+            const modelCenterInsideWindow = modelCenterX >= 0 && modelCenterX < windowWidth &&
+                modelCenterY >= 0 && modelCenterY < windowHeight;
+            if (!hasDragPointer && modelCenterInsideWindow) {
                 return false;
             }
 
@@ -541,8 +720,20 @@ class MMDInteraction {
 
             const modelScreenX = currentScreenX + modelCenterX;
             const modelScreenY = currentScreenY + modelCenterY;
+            const pointerWindowX = hasDragPointer ? dragPointer.x - currentScreenX : null;
+            const pointerWindowY = hasDragPointer ? dragPointer.y - currentScreenY : null;
+            const pointerOutsideCurrentWindow = hasDragPointer && !(
+                pointerWindowX >= 0 && pointerWindowX < windowWidth &&
+                pointerWindowY >= 0 && pointerWindowY < windowHeight
+            );
+            if (hasDragPointer && !pointerOutsideCurrentWindow && modelCenterInsideWindow) {
+                return false;
+            }
+            const useDragPointerForSwitch = hasDragPointer && pointerOutsideCurrentWindow;
+            const switchScreenX = useDragPointerForSwitch ? dragPointer.x : modelScreenX;
+            const switchScreenY = useDragPointerForSwitch ? dragPointer.y : modelScreenY;
 
-            // 4. 查找包含模型中心点的目标显示器
+            // 4. 优先使用跨出当前窗口的释放点；否则回退到模型中心，保留旧的宽模型边缘拖拽行为。
             let targetDisplay = null;
             for (const display of displays) {
                 const dx = Number.isFinite(display.screenX) ? display.screenX
@@ -555,20 +746,19 @@ class MMDInteraction {
                     : (display.bounds && display.bounds.height);
                 if (!Number.isFinite(dx) || !Number.isFinite(dy) ||
                     !Number.isFinite(dw) || !Number.isFinite(dh)) continue;
-                if (modelScreenX >= dx && modelScreenX < dx + dw &&
-                    modelScreenY >= dy && modelScreenY < dy + dh) {
+                if (switchScreenX >= dx && switchScreenX < dx + dw &&
+                    switchScreenY >= dy && switchScreenY < dy + dh) {
                     targetDisplay = { ...display, screenX: dx, screenY: dy, width: dw, height: dh };
                     break;
                 }
             }
             if (!targetDisplay) {
-                recordDisplaySwitchMiss();
                 return false;
             }
 
             console.log('[MMD] 检测到模型移出当前屏幕，准备切换到屏幕:', targetDisplay.id);
 
-            const result = await window.electronScreen.moveWindowToDisplay(modelScreenX, modelScreenY);
+            const result = await window.electronScreen.moveWindowToDisplay(switchScreenX, switchScreenY);
 
             if (!(result && result.success && !result.sameDisplay)) {
                 recordDisplaySwitchMiss();
@@ -576,31 +766,23 @@ class MMDInteraction {
             }
             console.log('[MMD] 屏幕切换成功:', result);
 
-            // 5. 将模型在世界坐标中偏移，使它在新窗口中仍显示在原本的屏幕绝对位置
-            const deltaPxX = currentScreenX - targetDisplay.screenX;
-            const deltaPxY = currentScreenY - targetDisplay.screenY;
-
-            if (deltaPxX !== 0 || deltaPxY !== 0) {
-                const cameraDistance = camera.position.distanceTo(mesh.position);
-                const fov = camera.fov * (Math.PI / 180);
-                const worldHeight = 2 * Math.tan(fov / 2) * cameraDistance;
-                const worldWidth = worldHeight * (screenWidth / screenHeight);
-                const pixelToWorldX = worldWidth / screenWidth;
-                const pixelToWorldY = worldHeight / screenHeight;
-
-                const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
-                const up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
-
-                mesh.position.add(right.clone().multiplyScalar(deltaPxX * pixelToWorldX));
-                mesh.position.add(up.clone().multiplyScalar(-deltaPxY * pixelToWorldY));
-            }
+            // 5. 将模型在世界坐标中偏移，使拖拽抓取点落到释放鼠标的位置。
+            const desiredModelCenterX = useDragPointerForSwitch
+                ? switchScreenX - targetDisplay.screenX + (Number(pointerOffset.x) || 0)
+                : modelScreenX - targetDisplay.screenX;
+            const desiredModelCenterY = useDragPointerForSwitch
+                ? switchScreenY - targetDisplay.screenY + (Number(pointerOffset.y) || 0)
+                : modelScreenY - targetDisplay.screenY;
 
             // 6. 等待新窗口尺寸生效，再执行回弹与保存
             await new Promise(resolve => requestAnimationFrame(resolve));
             await new Promise(resolve => requestAnimationFrame(resolve));
+            this._moveModelCenterToWindowPoint(desiredModelCenterX, desiredModelCenterY);
 
-            const snapped = await this._snapModelIntoScreen({ animate: true });
-            if (!snapped) {
+            const snapped = useDragPointerForSwitch
+                ? false
+                : await this._snapModelIntoScreen({ animate: true });
+            if (useDragPointerForSwitch || !snapped) {
                 await this._savePositionAfterInteraction();
             }
             if (window.NekoAvatarMultiScreenDragHint &&

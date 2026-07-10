@@ -41,6 +41,7 @@ class TaskDeduper:
             api_config['api_key'], temperature=0, max_retries=0,
             timeout=30,
             max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; tiny JSON normally, but a thinking model's reasoning is covered too
+            provider_type=api_config.get('provider_type'),
         )
 
     def _build_prompt(self, new_task: str, candidates: List[Tuple[str, str]]) -> str:
@@ -127,5 +128,4 @@ class TaskDeduper:
             except Exception as e:
                 logger.error(f"[Deduper] LLM调用失败: {e}")
                 return {"duplicate": False, "matched_id": None}
-
 

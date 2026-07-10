@@ -32,12 +32,23 @@
                 {
                     id: 'day4_intro_companion',
                     timelinePlayback: true,
+                    timeline: [
+                        { at: 0, command: 'operation.run', operation: 'daily-intro-avatar-performance', blocking: false },
+                        { at: 0, command: 'chat.message' },
+                        { at: 0, command: 'emotion.set' },
+                        { at: 0, command: 'spotlight.show', key: 'day4_intro_companion', target: 'chat-capsule-input' },
+                        { at: 220, command: 'cursor.move', action: 'move', target: 'chat-capsule-input', durationMs: 760 }
+                    ],
                     textKey: 'tutorial.avatarFloating.day4.intro',
                     voiceKey: 'avatar_floating_day4_intro',
                     text: '今天，就让我悄悄跟上你的步伐吧。特别希望能在这个温馨的日子里，再多了解你一点点呢。',
                     emotion: 'happy',
                     target: 'chat-capsule-input',
-                    cursorAction: 'move'
+                    cursorAction: 'move',
+                    operation: 'daily-intro-avatar-performance',
+                    introAvatarPerformance: {
+                        preset: 'soft-approach'
+                    }
                 },
                 {
                     id: 'day4_chat_settings',
@@ -78,6 +89,7 @@
                     target: 'settings-sidepanel:animation-settings',
                     cursorAction: 'tour',
                     operation: 'show-settings-sidepanel:animation-settings',
+                    deferSettingsSidePanelUntilCursorClick: true,
                     afterSceneDelayMs: 0
                 },
                 {
@@ -98,6 +110,7 @@
                     target: 'settings-sidepanel:animation-settings',
                     cursorAction: 'tour',
                     operation: 'show-settings-sidepanel:animation-settings',
+                    deferSettingsSidePanelUntilCursorClick: true,
                     afterSceneDelayMs: 0
                 },
                 {
@@ -126,7 +139,7 @@
                     timelinePlayback: true,
                     textKey: 'tutorial.avatarFloating.day4.modelLock',
                     voiceKey: 'avatar_floating_day4_model_lock',
-                    text: '总是不小心触碰到、把我点歪吗？那就快把我牢牢固定在当前的位置吧！开启锁定后，我就哪儿也不去，乖乖在原地陪着你~',
+                    text: '总是不小心触碰到、把我点歪吗？那就快把我牢牢固定在当前的位置吧！开启锁定后，我就哪儿也不去，乖乖在原地陪着你~解锁后把鼠标移动到我身上，滚动滚轮就能把我放大缩小，长按还能给我换个位置。',
                     emotion: 'happy',
                     target: '#${p}-lock-icon',
                     cursorAction: 'move',
@@ -146,13 +159,44 @@
                 {
                     id: 'day4_wrap',
                     timelinePlayback: true,
+                    timeline: [
+                        { at: 0, command: 'chat.message' },
+                        { at: 0, command: 'emotion.set' },
+                        { at: 0, command: 'spotlight.show', key: 'day4_wrap', target: 'chat-capsule-input' },
+                        {
+                            at: 220,
+                            command: 'cursor.move',
+                            action: 'move',
+                            target: 'chat-capsule-input',
+                            durationMs: 900,
+                            freezePoint: true
+                        },
+                        {
+                            at: 1240,
+                            command: 'cursor.hold',
+                            target: 'chat-capsule-input',
+                            freezePoint: true
+                        },
+                        {
+                            at: 1240,
+                            command: 'operation.run',
+                            operation: 'cleanup',
+                            trigger: 'afterCursorMove',
+                            blocking: true,
+                            preserveExternalizedChatGuideTarget: true
+                        }
+                    ],
                     textKey: 'tutorial.avatarFloating.day4.wrap',
                     voiceKey: 'avatar_floating_day4_wrap',
                     text: '真正舒服的陪伴才不是一刻不停地粘着你呢~ 而是懂得什么时候该悄悄靠近抓抓你的衣角撒个娇，什么时候该安安静静地趴在一旁，用目光默默守候着你喵~',
                     emotion: 'happy',
-                    target: 'chat-input',
+                    target: 'chat-capsule-input',
+                    cursorTarget: 'chat-capsule-input',
                     cursorAction: 'move',
+                    cursorMoveDurationMs: 900,
+                    freezeCursorAfterMove: true,
                     operation: 'cleanup',
+                    preserveExternalizedChatGuideTarget: true,
                     petalTransition: true
                 }
             ]

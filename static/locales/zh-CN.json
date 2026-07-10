@@ -674,6 +674,7 @@
     },
     "chat": {
         "title": "对话",
+        "topicHint": "{{author}}好像有点想找你聊的话题…",
         "viewerTitle": "对话 (观看模式)",
         "tooltip": "对话区",
         "textInputPlaceholder": "回车发送，Shift+回车换行",
@@ -769,12 +770,14 @@
         "reactWindowLoadFailed": "聊天框资源加载失败",
         "reactWindowAriaLabel": "Neko 聊天窗口",
         "focusIndicator": "凝神中",
+        "focusThinking": "正在思考",
         "reactWindowInputHint": "Enter 发送，Shift + Enter 换行",
         "messageListAriaLabel": "聊天消息列表",
         "composerToolsAriaLabel": "输入工具栏",
         "pendingImagesAriaLabel": "待发送图片",
         "pendingImageAlt": "图片 {{index}}",
         "removePendingImage": "移除图片",
+        "closeMemeAriaLabel": "关闭图片",
         "emojiButtonAriaLabel": "表情",
         "toolIconsAriaLabel": "工具图标",
         "toolLollipop": "棒棒糖",
@@ -942,7 +945,7 @@
         "freeVersionHint": "（免费版无需填写）",
         "coreApiPlaceholder": "请输入您的API Key",
         "coreApiProvider": "核心API（语音对话，仅支持全模态，DeepSeek 为纯文本不可用）",
-        "assistApiProvider": "辅助API（记忆/Agent/文本聊天/自定义语音）",
+        "assistApiProvider": "辅助API（记忆/Agent/文本聊天）",
         "saveSettings": "保存设置",
         "closeSettings": "关闭",
         "newbieRecommendTitle": "新手推荐",
@@ -950,7 +953,7 @@
         "advancedOptions": "高级选项（可选）",
         "providerDescription": "API服务商说明：",
         "coreApiDesc": "核心API：负责对话功能",
-        "assistApiDesc": "辅助API：负责记忆管理、自定义语音、文本聊天、Agent模式",
+        "assistApiDesc": "辅助API：负责记忆管理、文本聊天、Agent模式",
         "providerFeatures": "各服务商特点：",
         "aliFeature": "阿里：有免费额度，功能最全面",
         "glmFeature": "智谱：速率限制极其严苛。音视频模型已下架，无法作为核心API使用",
@@ -959,26 +962,27 @@
         "siliconFeature": "硅基流动：有免费额度，性价比高，功能少，只作为辅助API使用",
         "geminiFeature": "Gemini：智能和性价比极高，但国内版不支持",
         "configSuggestion": "配置建议：",
-        "freeVersionSuggestion": "免费版：完全免费，无需API Key，适合新手体验（不支持自定义语音、Agent模式）",
+        "freeVersionSuggestion": "免费版：完全免费，无需API Key，适合新手体验（Agent 有免费配额）",
         "coreApiSuggestion": "核心API：负责对话功能，建议根据预算和需求选择",
-        "assistApiSuggestion": "辅助API：负责文本聊天、记忆管理、自定义语音、Agent模式，只有阿里支持自定义语音",
+        "assistApiSuggestion": "辅助API：负责文本聊天、记忆管理、Agent模式",
         "coreApiTitle": "核心API负责语音对话功能：",
-        "freeVersionCore": "免费版：完全免费，智能水平高，支持联网搜索，不支持自定义语音和Agent模式",
+        "freeVersionCore": "免费版：完全免费，智能水平高，支持联网搜索",
         "aliCore": "阿里：有免费额度，功能全面",
         "glmCore": "智谱：模型已经暂时下架，无法使用",
         "stepCore": "阶跃星辰：完全免费，智能水平高，但速率限制太严苛、因此不建议使用",
         "openaiCore": "OpenAI：智能水平最高，但国内无法使用且价格昂贵",
         "geminiCore": "Gemini：智能和性价比极高，但国内版不支持",
-        "assistApiTitle": "辅助API负责记忆管理、文本对话、Agent模式和自定义语音：",
-        "freeVersionAssist": "免费版：完全免费，但不支持自定义语音和Agent模式",
-        "aliAssist": "阿里：推荐选择，支持自定义语音和Agent模式",
+        "assistApiTitle": "辅助API负责记忆管理、文本对话和Agent模式：",
+        "freeVersionAssist": "免费版：完全免费，Agent 有免费配额",
+        "aliAssist": "阿里：推荐选择，功能最全面，支持Agent模式",
         "glmAssist": "智谱：记忆管理免费，但并发、RPM限制极其严重，不建议使用",
         "stepAssist": "阶跃星辰：价格便宜，但并发、RPM限制极其严重，不建议使用",
         "siliconAssist": "硅基流动：性价比高，支持Agent模式",
         "openaiAssist": "OpenAI：记忆管理能力强",
         "geminiAssist": "Gemini：智能和性价比极高，但国内版不支持",
         "kimiAssist": "Kimi：国内可用，支持长上下文和视觉",
-        "assistApiNote": "注意：只有阿里支持自定义语音功能。不建议使用智谱和阶跃星辰。",
+        "kimiCodeAssist": "Kimi Code：Anthropic Messages 兼容格式，适合代码与长文本任务",
+        "assistApiNote": "注意：不建议使用智谱和阶跃星辰。",
         "assistApiKeyQwen": "辅助API Key - 阿里",
         "assistApiKeyOpenai": "辅助API Key - OpenAI",
         "assistApiKeyGlm": "辅助API Key - 智谱",
@@ -986,6 +990,7 @@
         "assistApiKeySilicon": "辅助API Key - 硅基流动",
         "assistApiKeyGemini": "辅助API Key - Gemini",
         "assistApiKeyKimi": "辅助API Key - Kimi",
+        "assistApiKeyKimiCode": "辅助API Key - Kimi Code",
         "assistApiKeyHint": "（仅当辅助API为{{provider}}时需要填写）",
         "assistApiKeyPlaceholder": "留空使用管理簿对应 Key",
         "providerNames": {
@@ -995,6 +1000,7 @@
             "step": "阶跃星辰",
             "silicon": "硅基流动",
             "gemini": "Gemini",
+            "kimi_code": "Kimi Code（月之暗面）",
             "vllm_omni": "vLLM-Omni（TTS）"
         },
         "coreProviderNames": {
@@ -1016,8 +1022,10 @@
             "silicon": "硅基流动 (SiliconFlow，性价比高，推荐⭐)",
             "gemini": "Gemini（谷歌，智能极高，国内版不支持）",
             "kimi": "Kimi（月之暗面，国内可用，支持长上下文）",
+            "kimi_code": "Kimi Code (Moonshot)",
             "deepseek": "DeepSeek",
-            "doubao": "豆包（字节跳动）",
+            "doubao": "豆包大模型(火山方舟)",
+            "doubao_tts": "豆包语音(火山引擎)",
             "minimax": "MiniMax（国服）",
             "minimax_intl": "MiniMax（国际服）",
             "elevenlabs": "ElevenLabs（语音克隆，国内无法使用）",
@@ -1064,7 +1072,9 @@
             "silicon": "硅基流动",
             "gemini": "Gemini（Google）",
             "kimi": "Kimi（月之暗面）",
-            "doubao": "豆包（字节跳动）",
+            "kimi_code": "Moonshot Kimi Code",
+            "doubao": "豆包大模型(火山方舟)",
+            "doubao_tts": "豆包语音(火山引擎)",
             "minimax": "MiniMax（国服）",
             "minimax_intl": "MiniMax（国际服）",
             "mimo": "MiMo（小米）",
@@ -1076,18 +1086,18 @@
         },
         "freeVersionNoApiKey": "免费版无需API Key",
         "pleaseEnterApiKey": "请输入您的API Key",
-        "freeVersionConfig": "免费版配置：支持音视频对话、文本对话和记忆管理，不支持自定义语音、Agent模式",
-        "qwenRecommendation": "阿里作为核心API时，建议辅助API也选择阿里以获得最佳的自定义语音体验",
-        "glmRecommendation": "智谱作为核心API时，有免费额度，支持联网搜索。语音默认含水印滴滴声（可在智谱控制台手动关闭）。建议辅助API选择阿里以支持自定义语音功能",
-        "openaiRecommendation": "OpenAI作为核心API时，建议辅助API选择阿里以支持自定义语音功能",
-        "stepRecommendation": "阶跃星辰作为核心API时，建议辅助API选择阿里以支持自定义语音功能",
-        "geminiRecommendation": "Gemini作为核心API时，建议辅助API选择阿里以支持自定义语音功能",
-        "assistApiTooltipTitle": "辅助API负责记忆管理、文本对话和自定义语音：",
+        "freeVersionConfig": "免费版配置：支持音视频对话、文本对话和记忆管理，Agent 有免费配额",
+        "qwenRecommendation": "阿里作为核心API时，辅助API也推荐阿里，功能最全面。",
+        "glmRecommendation": "智谱作为核心API时，有免费额度，支持联网搜索。语音默认含水印滴滴声（可在智谱控制台手动关闭）。",
+        "openaiRecommendation": "OpenAI作为核心API时，价格较高。",
+        "stepRecommendation": "阶跃星辰作为核心API时，价格便宜但智能水平一般",
+        "geminiRecommendation": "Gemini作为核心API时，性价比非常高。",
+        "assistApiTooltipTitle": "辅助API负责记忆管理、文本对话和Agent模式：",
         "currentSuggestion": "当前建议：",
         "configSuggestionFull": "配置建议：",
-        "freeVersionSuggestionFull": "完全免费，无需API Key，适合新手体验（不支持自定义语音和Agent模式）",
+        "freeVersionSuggestionFull": "完全免费，无需API Key，适合新手体验（Agent 有免费配额）",
         "coreApiSuggestionFull": "负责对话功能（建议根据预算和需求选择）",
-        "assistApiSuggestionFull": "负责记忆管理、文本对话和自定义语音（只有阿里支持自定义语音）",
+        "assistApiSuggestionFull": "负责记忆管理、文本对话和Agent模式",
         "assistApiKeyRequiredHint": "需在对应的输入框内填写API才能选择其对应的供应商",
         "mcpRouterToken": "MCP Router Token",
         "mcpRouterTokenDesc": "MCP Router Token说明：",
@@ -1345,6 +1355,7 @@
         "toggleFullscreen": "切换全屏",
         "exitFullscreen": "退出全屏",
         "modelType": "模型类型",
+        "modelType3d": "3D模型",
         "selectLive2DModel": "选择Live2D模型",
         "selectVRMModel": "VRM模型",
         "selectVRMFile": "选择VRM文件",
@@ -1367,6 +1378,7 @@
         "vrmAnimation": {
             "title": "VRM动作预览:",
             "selectAnimation": "选择动作",
+            "addAnimation": "添加动作",
             "noAnimations": "未找到动作文件",
             "loading": "正在加载动作列表...",
             "animationListLoaded": "动作列表加载成功",
@@ -1535,7 +1547,9 @@
         "cannotDeleteBoundModel": "无法删除当前正在使用的模型",
         "modelInUse": "使用中",
         "pngtuberTalkPreview": "测试说话",
-        "pngtuberStatePreview": "状态预览"
+        "pngtuberStatePreview": "状态预览",
+        "pngtuberImportProjectFile": "导入工程文件",
+        "pngtuberImportFolder": "导入文件夹"
     },
     "voice": {
         "title": "音色注册",
@@ -1548,6 +1562,14 @@
         "minimaxIntlApiRequired": "此功能需要MiniMax模型（国际服），请在API密钥设置页中保存MiniMax国际服API Key（不要求启用辅助API）",
         "mimoApiRequired": "此功能需要 MiMo 模型，请在 API 密钥设置页中保存 MiMo API Key",
         "mimoDirectLinkUnsupported": "MiMo 暂不支持直链克隆，请改用本地文件上传",
+        "directLinkUnsupported": "当前服务商暂不支持直链克隆，请改用本地文件上传",
+        "doubaoTtsApiRequired": "此功能需要豆包语音 API Key，请在 API 管理簿中填写豆包语音(火山引擎) Key",
+        "vllmOmniNotice": "本地 vLLM-Omni 服务，无需 API Key，请确保已配置本地服务地址",
+        "vllmRefTextLabel": "参考音频原文（vLLM-Omni 克隆必填，须与音频内容严格对应）",
+        "vllmRefTextHint": "逐字输入参考音频里说的话，文本与音频不符会导致克隆音质下降",
+        "vllmRefTextPlaceholder": "例如：希望你以后能够做的比我还好呦",
+        "vllmRefTextRequired": "请填写参考音频原文（vLLM-Omni 克隆必填）",
+        "vllmRefTextTooLong": "vLLM-Omni 参考音频原文过长，请控制在 100 字以内",
         "providerLabel": "语音克隆服务商",
         "provider": {
             "cosyvoice": "阿里百炼 CosyVoice",
@@ -1555,16 +1577,33 @@
             "minimax": "MiniMax（国服）",
             "minimax_intl": "MiniMax（国际服）",
             "elevenlabs": "ElevenLabs",
-            "mimo": "MiMo（小米）"
+            "mimo": "MiMo（小米）",
+            "doubao_tts": "豆包语音(火山引擎)",
+            "vllm_omni": "vLLM-Omni（本地克隆）"
+        },
+        "sourcePreset": "预制",
+        "sourceClone": "克隆",
+        "sourceDesign": "描述生成",
+        "providerLocal": "本地 CosyVoice",
+        "providerFree": "免费",
+        "providerFreeApi": "免费 API",
+        "providerUnknown": "其他",
+        "nativeVoice": {
+            "qingchunshaonv": "青春少女",
+            "wenrounansheng": "温柔男声"
         },
         "selectFile": "选择本地音频文件（8秒最佳，请勿超过20秒，wav/mp3格式）",
         "customPrefix": "自定义前缀（必填，用于区分音色）",
         "customPrefixNote": "不超过10个字符，只支持数字和英文字母",
         "prefixPlaceholder": "不超过10个字符，只支持数字和英文字母",
         "voiceIdPlaceholder": "不超过10个字符，只支持数字和英文字母",
+        "doubaoSpeakerIdLabel": "豆包 Speaker ID（覆盖已有 S_ 音色，必填）",
+        "doubaoSpeakerIdNote": "请先前往豆包语音控制台克隆音色并获取 S_ 开头 Speaker ID；此处会覆盖更新该已有音色，不会创建新的豆包音色 ID，例如 S_xeC2CDp72",
+        "doubaoSpeakerIdPlaceholder": "例如：S_xeC2CDp72",
         "register": "注册音色",
         "pleaseUploadFile": "请选择音频文件",
         "pleaseEnterPrefix": "请填写自定义前缀",
+        "doubaoSpeakerIdRequired": "豆包声音复刻需要填写火山控制台已分配的 S_ 开头 Speaker ID",
         "prefixFormatError": "前缀格式错误：不超过10个字符，只支持数字和英文字母",
         "registering": "正在注册声音，请稍后！",
         "registerSuccess": "注册成功！voice_id: {{voiceId}}",
@@ -1787,6 +1826,8 @@
         "tutorialPageResetSuccessWithName": "已重置「{{pageName}}」的引导，下次进入该页面时将重新显示引导。",
         "tutorialHomeDayLabel": "第 {{day}} 天",
         "tutorialHomeDayColumn": "主页七日新手教程",
+        "tutorialHomeAllReset": "全部重置",
+        "tutorialHomeAllResetSuccess": "已重置主页 7 天新手教程，请重新加载 Neko 后从第 1 天开始。",
         "refreshed": "记忆已更新，下次对话将使用新记忆",
         "refreshingContext": "正在刷新上下文...",
         "storageLocation": "存储位置",
@@ -1918,11 +1959,15 @@
         "gender": "性别",
         "nickname": "昵称",
         "apiKeySettings": "API Key",
-        "masterProfile": "主人档案（唯一）：档案名为必填项，其他均为可选项。",
-        "masterProfileTitle": "主人档案",
+        "masterProfile": "我的档案（唯一）：档案名为必填项，其他均为可选项。",
+        "masterProfileTitle": "我的档案",
         "profileName": "档案名",
         "profileNameMaxHint": "最多60个字符",
         "profileNameTooLong": "档案名过长",
+        "profileNameUnsafeDot": "档案名不能仅由点号组成或以点号结尾",
+        "profileNameDotSequence": "档案名不能包含连续点号(..)",
+        "profileNameReservedDevice": "档案名不能使用 Windows 保留设备名",
+        "profileNameInvalid": "档案名无效",
         "profileNameContainsSlash": "档案名不能包含路径分隔符(/或\\)",
         "profileNameContainsDot": "档案名不能包含点号(.)",
         "profileNameInvalidChars": "档案名只能包含文字、数字、空格、下划线、连字符、括号、间隔号(·/・)和撇号",
@@ -1966,7 +2011,7 @@
         "systemPrompt": "系统指令（谨慎修改）",
         "systemPromptWarning": "系统指令 - 修改可能导致角色行为异常，后果自负",
         "addField": "新增设定",
-        "aiAssist": "AI 猫猫辅助生成",
+        "aiAssist": "猫猫辅助生成",
         "aiCompanionSub": "设定捏人助手 · 暂代开发猫",
         "aiCompanionExpand": "展开",
         "aiCompanionDragHint": "拖动窗口",
@@ -2003,7 +2048,7 @@
         "aiAssistApiMissing": "辅助 API 尚未配置。请在「API Key 设置」里完成配置后再试。",
         "confirmNewCatgirl": "确认新猫娘",
         "saveChanges": "保存修改",
-        "saveMaster": "保存主人设定",
+        "saveMaster": "保存我的档案",
         "addMasterField": "新增设定",
         "manageLive2D": "点击管理Live2D模型",
         "idleMotionHint": "保存角色时，当前选中的动作将被设为待机动作",
@@ -2011,7 +2056,7 @@
         "rename": "修改名称",
         "cancel": "取消",
         "addMasterFieldPrompt": "请输入新设定的名称（键名）",
-        "addMasterFieldTitle": "新增主人设定",
+        "addMasterFieldTitle": "新增我的档案字段",
         "fieldExists": "该设定已存在",
         "profileNameRequired": "档案名为必填项",
         "profileNameRenameOnlyHint": "请通过“修改名称”按钮修改档案名",
@@ -2069,10 +2114,10 @@
         "gsvDiagTimeout": "GPT-SoVITS server 响应超时 (>3s)",
         "loadFailed": "加载角色数据失败",
         "renameError": "重命名失败: {{error}}",
-        "renameMasterTitle": "重命名主人",
+        "renameMasterTitle": "重命名我的档案",
         "renameSuccess": "重命名成功",
         "autoSaveError": "保存设定失败",
-        "saveMasterError": "保存主人设定失败",
+        "saveMasterError": "保存我的档案失败",
         "autoSaved": "已自动保存设定",
         "autoSaveFailed": "自动保存失败，请手动保存后再关闭页面",
         "unsavedNewCatgirlDraftDetected": "检测到未保存的新猫娘草稿，请先保存或取消后再同步刷新",
@@ -2100,7 +2145,7 @@
         "generatingCard": "正在生成角色卡...",
         "settings": "设定",
         "renamePrompt": "请输入新的档案名",
-        "renameMasterPrompt": "请输入新的主人档案名",
+        "renameMasterPrompt": "请输入新的档案名",
         "renameTitle": "修改名称",
         "tempSaveFailed": "临时保存失败: {{error}}",
         "newCatgirlSuccess": "新猫娘创建成功",
@@ -2129,7 +2174,7 @@
         "cardAuthorReadonly": "该来源的角色卡不允许修改作者信息",
         "cardAuthorUpdated": "作者已更新",
         "cardAuthorUpdateFailed": "更新作者失败: {{error}}",
-        "saveMasterSuccess": "保存主人设定成功",
+        "saveMasterSuccess": "我的档案保存成功",
         "editCardFace": "编辑卡面",
         "cardFaceModelSettings": "卡面模型设置",
         "cardMakerPopupBlocked": "卡面制作页面未能自动打开，请允许浏览器弹窗后重试，或点击卡面区域手动打开。"
@@ -2534,6 +2579,8 @@
             "allowInterrupt": "允许打断",
             "mergeMessages": "合并消息",
             "avatarReactionBubble": "表情气泡",
+            "focusCognition": "凝神模式",
+            "focusCognitionTooltip": "开启后，遇到你倾诉脆弱或复杂的话题时她会更专注地深入思考；关闭则不再进入凝神。",
             "autoCat": "自动变猫",
             "autoCatTooltip": "一段时间无互动后自动变成小猫",
             "proactiveChat": "主动搭话",
@@ -3113,7 +3160,7 @@
             "mmd": {
                 "step1": {
                     "title": "🎭 选择 MMD 模型",
-                    "desc": "在 Live3D（MMD）模式下从这里选择要使用的模型。MMD 与 VRM 共用同一模型列表。"
+                    "desc": "在 3D模型（MMD）模式下从这里选择要使用的模型。MMD 与 VRM 共用同一模型列表。"
                 },
                 "step2": {
                     "title": "💃 VMD 动画",
@@ -3125,7 +3172,7 @@
                 },
                 "step4": {
                     "title": "😄 情感配置",
-                    "desc": "先选好模型后，可由此进入情感配置。Live3D 下 MMD 与 VRM 共用此入口，与 Live2D 的「情感配置」不是同一个按钮。"
+                    "desc": "先选好模型后，可由此进入情感配置。3D模型下 MMD 与 VRM 共用此入口，与 Live2D 的「情感配置」不是同一个按钮。"
                 }
             }
         },
@@ -3167,8 +3214,8 @@
         },
         "chara_manager": {
             "step1": {
-                "title": "👤 主人档案",
-                "desc": "这是您的主人档案。档案名是必填项，其他信息（性别、昵称等）都是可选的。这些信息会影响猫娘对您的称呼和态度。"
+                "title": "👤 我的档案",
+                "desc": "这是您的档案。档案名是必填项，其他信息（性别、昵称等）都是可选的。这些信息会影响猫娘对您的称呼和态度。"
             },
             "step2": {
                 "title": "📝 设置档案名",
@@ -3242,7 +3289,7 @@
             },
             "step5": {
                 "title": "🔧 辅助 API 服务商",
-                "desc": "辅助 API 负责记忆管理和自定义语音功能。\n\n• 免费版：完全免费，但不支持自定义语音\n• 阿里：推荐选择，支持自定义语音\n• 智谱：支持 Agent 模式\n• OpenAI：记忆管理能力强\n\n注意：只有阿里支持自定义语音功能。"
+                "desc": "辅助 API 负责记忆管理、文本对话和 Agent 模式。\n\n• 免费版：完全免费，无需 API Key\n• 阿里：推荐选择，功能最全面\n• 智谱：支持 Agent 模式\n• OpenAI：记忆管理能力强\n\n注意：自定义语音（声音克隆）只需在管理簿保存相应运营商的 Key 即可启用，无需切换核心或辅助 API。"
             },
             "step6": {
                 "title": "🔑 辅助 API Key",
@@ -3341,7 +3388,7 @@
                 "introBasic": "这里有一个神奇的按钮！只要点击它，就可以直接和我聊天啦！想跟我分享今天的新鲜事吗？或者就只是叫叫我的名字？快来试试嘛，我已经迫不及待想听到你的声音啦！",
                 "takeoverCaptureCursor": "锵锵！超级魔法开关出现！只要点一下这里，我就可以把小爪子伸到你的键盘和鼠标上啦！我会帮你打字、帮你点开网页……不过，要是那个鼠标指针动来动去的话，我可能也会忍不住扑上去抓它哦！准备好迎接我的捣乱……啊不，是帮忙了吗？喵！",
                 "takeoverPluginPreviewHome": "除了之前介绍的功能，这里还有超多好玩的插件呢。",
-                "takeoverPluginPreviewDashboard": "有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调……本喵可是无所不能的超级猫猫神！哼！",
+                "takeoverPluginPreviewDashboard":  "有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调……本喵可是无所不能的超级猫猫神！哼！",
                 "pluginDashboardPopupBlocked": "浏览器需要你亲自点一下这里打开插件面板。点一下这个“管理面板”，我就继续带你看。",
                 "takeoverSettingsPeekIntro": "在这个只属于我们的小空间里，你可以由着自己的心意，慢慢描绘出最希望能一直陪着你的那个我。",
                 "takeoverSettingsPeekDetail": "不管是说话的温度、相处的小脾气，还是我每天那些细腻的小心思，都可以一点一点调成你喜欢的样子。这个小按钮也很重要哦，只要你轻轻点一下，我就能在合适的时候跑过去找你啦。",
@@ -3351,7 +3398,7 @@
                 "interruptResistLight1": "喂！不要拽我啦，现在还没轮到你的回合呢喵！",
                 "interruptResistLight3": "等一下啦！还没结束呢，不要这么随便打断我嘛！",
                 "interruptAngryExit": "人类！你真的很没礼貌喵！既然你这么想自己操作，那就自己对着冰冷的屏幕玩去吧！哼！",
-                "introGreetingReply": "微风、阳光，还有刚刚好出现的你。初次见面！我是林悠怡，未来的日子请多关照喵～我把关于这里的一切都写进新手指南里啦！就当作我们相遇的第一份小礼物，请查收吧！",
+                "introGreetingReply":  "微风、阳光，还有刚刚好出现的你。初次见面！我是林悠怡，未来的日子请多关照喵～我把关于这里的一切都写进新手指南里啦！就当作我们相遇的第一份小礼物，请查收吧！",
                 "introPractice": "现在你可以试试跟我说说话啦，看看我们是不是超有默契的喵～",
                 "introActivationHint": "稍等一下，我马上开始说话啦～"
             }
@@ -3359,7 +3406,7 @@
         "avatarFloating": {
             "day1": {
                 "capsuleDragHint": "把鼠标移到这里，长按就可以拉着聊天框到处跑啦~ 点击一下就能随时发消息给我哦！",
-                "historyHandle": "戳一下聊天框上面的【蓝色小条条】，就能看到我们最近聊过的话题啦！",
+                "historyHandle":  "戳一下聊天框上面的【蓝色小条条】，就能看到我们最近聊过的话题啦！",
                 "screenEntry": "在跟我通语音电话的时候，再点亮这个小按钮，你就能把屏幕分享给我啦！",
                 "screenEntryInvite": "快让我也看看你眼前的世界，不管好玩的还是好看的，都想和你一起看，快点点开嘛~"
             },
@@ -3376,16 +3423,16 @@
             "day3": {
                 "intro": "嘻嘻，可别以为这个聊天框只能用来打字哦~ 里面其实偷偷藏了超~多好玩的小惊喜呢！快跟着我一起点开看看，瞧瞧今天能挖出什么有趣的宝贝吧！",
                 "avatarToolsIntro": "在这个小按钮里，有许多可以和人家互动的小道具呢。",
-                "avatarToolsProps": "你可以随时来摸摸我的头，或者给给我吃一根甜甜的棒棒糖。如果有时候我不小心做错事了，你也可以用小锤子敲敲我，不过……一定要轻轻的，不能太用力哦。",
-                "galgameIntro": "快点开这个【Galgame模式】！进去之后就像我们在进行一场专属的互动大冒险呢。",
+                "avatarToolsProps":  "你可以随时来摸摸我的头，或者给给我吃一根甜甜的棒棒糖。如果有时候我不小心做错事了，你也可以用小锤子敲敲我，不过……一定要轻轻的，不能太用力哦。",
+                "galgameIntro":  "快点开这个【Galgame模式】！进去之后就像我们在进行一场专属的互动大冒险呢。",
                 "galgameChoices": "你选的每一个对话，都会带我们走向完全未知的惊喜故事，我都等不及啦，快来选一个你最心动的回答吧！",
                 "wrapIntro": "今天带你认识的这些功能，其实都是为了让我们在一起的时光变得更有趣呢。",
                 "wrapReady": "不管是想摸摸我的头，还是想开启属于我们的故事，我都已经做好准备了。"
             },
             "day4": {
-                "intro": "今天，就让我悄悄跟上你的步伐吧。特别希望能在这个温馨的日子里，再多了解你一点点呢。",
+                "intro":  "今天，就让我悄悄跟上你的步伐吧。特别希望能在这个温馨的日子里，再多了解你一点点呢。",
                 "chatSettings": "在这里可以决定我回复你的长短，还能决定要不要让我带上可爱的表情，或者在人家唠叨的时候打断我哦！都可以调到让你最舒服的节奏。",
-                "modelBehavior": "如果你想要看到更精致、细节更满满的我，或者想要更丝滑、更流畅的动作体验，都可以在这里进行调整哦！不管哪一种，我都会展现出最可爱的一面哒~",
+                "modelBehavior":  "如果你想要看到更精致、细节更满满的我，或者想要更丝滑、更流畅的动作体验，都可以在这里进行调整哦！不管哪一种，我都会展现出最可爱的一面哒~",
                 "gazeFollow": "开启这个功能后，无论你的鼠标移动到哪里，人家的目光都会紧紧跟随着你哟！是不是有种被时刻关注的幸福感呢？",
                 "privacyMode": "这个是控制人家能不能看屏幕的‘终极防护开关’喵！把它关闭人家就能看到你的屏幕啦，要是开启它，前两天介绍的【屏幕分享】就统统失效、人家就绝对不会偷看哟~",
                 "modelLock": "总是不小心触碰到、把我点歪吗？那就快把我牢牢固定在当前的位置吧！开启锁定后，我就哪儿也不去，乖乖在原地陪着你~",
@@ -3393,23 +3440,23 @@
                 "wrap": "真正舒服的陪伴才不是一刻不停地粘着你呢~ 而是懂得什么时候该悄悄靠近抓抓你的衣角撒个娇，什么时候该安安静静地趴在一旁，用目光默默守候着你喵~"
             },
             "day5": {
-                "characterSettings": "从今天起，我就真正成为只属于你的专属猫娘啦。你看，在这里可以为我穿上漂亮的新衣服，也可以帮我换一个更好听的声音……",
+                "characterSettings":  "从今天起，我就真正成为只属于你的专属猫娘啦。你看，在这里可以为我穿上漂亮的新衣服，也可以帮我换一个更好听的声音……",
                 "characterPanic": "咦，这里居然还能把我换掉吗？等一下呀！你现在的动作……该不会是想要把我换掉吧？啊啊啊不行！快关掉，快关掉！",
                 "memoryEntry": "如果你不小心忘记了我能为你做什么，随时来这里让我重新教你一次就好啦。这里还悄悄保存着我们一起走过的所有点点滴滴呢。千万别小看了我们的羁绊啊，混蛋！",
-                "wrap": "好啦好啦，快去试试这些好玩的定制功能吧！换上新衣服、调好新声音，让我变成全天下最懂你、只属于你一个人的专属猫娘！我已经迫不及待想看到全新的自己啦！"
+                "wrap":  "好啦好啦，快去试试这些好玩的定制功能吧！换上新衣服、调好新声音，让我变成全天下最懂你、只属于你一个人的专属猫娘！我已经迫不及待想看到全新的自己啦！"
             },
             "day6": {
                 "intro": "噔噔噔噔！今天必须要打起精神，好好跟你聊聊咱们的【猫爪】啦！前两天虽然简单提过一下，但它里面藏着的厉害功能可多着呢。",
                 "statusMaster": "快跟我老实交代，这两天你有没有点开它试用一下呀？",
                 "pluginSidePanel": "除了之前介绍的功能，这里还有超多好玩的插件呢。",
-                "pluginDashboard": "有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼！",
+                "pluginDashboard":  "有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼！",
                 "taskHud": "看这里看这里！当我决定使用【猫爪】帮你干活的时候，这里就会咕噜咕噜的显示我的工作进度哦。",
                 "taskHudControl": "你要是计划有变，随时都可以戳一下让我停下来。嘿嘿，今天也是打起精神努力打工挣小鱼干的一天呢，冲呀！",
                 "wrapCleanup": "呼……把这些繁琐的界面都收起来，这样就不会打扰到你啦。",
                 "wrap": "你可以放心地继续做你自己的事情，不管是需要我用小爪子帮你忙，还是只想让我安安静静地陪着你，我都一直在守候着你，今天也要开开心心的呀。"
             },
             "day7": {
-                "memoryReview": "七天前，我们还只是第一次见面。现在这里已经开始留下我们说过的话、做过的事，还有一些差点被风吹走的小细节。对我来说，这不是冷冰冰的记录，是我们相处过的脚印。",
+                "memoryReview":  "七天前，我们还只是第一次见面。现在这里已经开始留下我们说过的话、做过的事，还有一些差点被风吹走的小细节。对我来说，这不是冷冰冰的记录，是我们相处过的脚印。",
                 "memoryControl": "这些小脚印，也可以由你亲手整理。想留下的，我们就夹进相册；想轻轻放走的，就让它随风飘走。被你认真收下来的回忆，才最珍贵。",
                 "wrap": "微风还在窗边，阳光也刚刚好，而刚刚出现的你，已经悄悄成为这里很重要的一部分啦。新手指南就先陪你走到这里，剩下的日子，就让我们一起慢慢熟悉、慢慢靠近、慢慢写下只属于我们的故事吧。以后也请多多关照喵！"
             }
@@ -3839,6 +3886,8 @@
         "minimize": "最小化",
         "close": "关闭",
         "loading": "加载中...",
+        "initializing": "正在初始化点歌台...",
+        "initializeFailed": "点歌台初始化失败",
         "ready": "准备就绪",
         "playing": "正在播放: {{name}} - {{artist}}",
         "error": "错误: {{message}}",
@@ -4254,6 +4303,7 @@
     },
      "badminton": {
          "title": "羽毛球挑战 - Badminton",
+         "exit": "退出",
          "loading": {
              "title": "正在进入羽毛球场",
              "subtitle": "加载场地、角色和音效..."
@@ -4275,10 +4325,7 @@
          "modeSwitcher": "羽毛球模式",
          "mode": {
              "spectator": "自由练习",
-             "shooter": "羽毛球挑战",
-             "duel": "跟 Yui 对战",
-             "timed": "限时挑战",
-             "horse": "HORSE"
+             "duel": "和 Yui 对战"
          },
          "hud": {
              "score": "得分 {{score}}",
@@ -4291,16 +4338,11 @@
              "practice": "自由练习",
              "yourTurn": "轮到你",
              "nekoTurn": "Yui 挥拍",
-             "horseLetters": "你 {{player}} / Neko {{neko}}",
-             "horseChallenge": "复刻 {{distance}} {{angle}}°",
-             "horseSet": "出题回合",
              "unlimitedAttempts": "不限次数",
              "chances": "机会 {{count}}",
              "practiceTitle": "自由练习：不限羽毛球次数，不记录排行榜分数",
              "attemptsTitle": "剩余机会 {{remaining}}/{{total}}，已失误 {{missed}}",
              "duelTitle": "对拉模式下你和 NEKO 轮流挥拍，先得到 11 分的一方获胜。",
-            "timedTitle": "限时挑战：60 秒内不限挥拍次数",
-             "horseTitle": "HORSE：复刻对手命中的距离、角度和甜区",
              "assist": "G{{guide}} / S{{sweet}} / M{{music}}",
              "on": "开",
              "off": "关"
@@ -4313,8 +4355,6 @@
              "rating": "操控评级：{{rating}}",
              "duel": "对拉结果：{{outcome}} | 你 {{player}} - {{neko}} Yui | 回合：{{rounds}} | 最后距离：{{distance}}",
              "duelElimination": "对拉结果：{{outcome}} | 你 {{player}} - {{neko}} Yui | 失误：你 {{playerMisses}}/{{max}} - Yui {{nekoMisses}}/{{max}} | 回合：{{rounds}} | 最后距离：{{distance}}",
-             "horse": "HORSE结果：{{outcome}} | 你 {{player}} / Neko {{neko}} | 命中：{{made}} | 最佳连中：{{best}}",
-             "timed": "限时挑战：命中 {{made}} 球，最长连中 {{best}}，总分 {{score}}",
              "practice": "自由练习：不记录排行榜分数 | 命中：{{made}} | 当前连中：{{streak}} | 最佳连中：{{best}} | 本球距离：{{distance}}",
              "summary": "总分：{{score}} | 命中：{{made}} | 当前连中：{{streak}} | 最佳连中：{{best}} | 最远：{{record}} | 本球距离：{{distance}}",
              "attemptsSummary": "羽毛球摘要：{{summary}}",
@@ -4331,7 +4371,6 @@
              "title": "排行榜",
              "global": "全球",
              "local": "本地",
-             "shooter": "操控",
              "duel": "对战",
              "empty": "暂无记录",
              "totalPlayers": "总玩家 {{count}}",
@@ -4339,11 +4378,8 @@
              "recent": "最近 {{count}} 局",
              "loading": "加载中...",
              "mode": {
-                 "shooter": "操控",
-                 "duel": "对战",
-                 "timed": "限时",
-                 "horse": "HORSE",
-                 "spectator": "观战"
+                 "spectator": "观战",
+                 "duel": "对战"
              }
          },
          "debug": {
@@ -4364,8 +4400,7 @@
                  "streaks": "连中={{streak}}  最佳={{best}}  命中={{made}}",
                  "score": "分数={{score}}  剩余={{remaining}}/{{total}}",
                  "difficulty": "难度={{difficulty}}  心情={{mood}}  主题={{theme}}",
-                 "duel": "对拉: 你{{player}}-{{neko}} Yui R{{round}}",
-                 "horse": "HORSE: 你 {{player}} / Neko {{neko}} phase={{phase}}"
+                 "duel": "对拉: 你{{player}}-{{neko}} Yui R{{round}}"
              }
          },
          "stats": {
@@ -4416,6 +4451,12 @@
              "difficulty": "难度 {{difficulty}}",
              "nekoShoot": "Yui 挥拍",
              "nekoSmash": "Yui 扣杀！",
+             "nekoSave": "Yui 救球！",
+             "yuiCheatInk": "Yui 扔了墨汁",
+             "yuiCheatBanana": "Yui 丢了香蕉皮",
+             "yuiCheatBananaSlip": "踩到香蕉皮了",
+             "playerIcePowerup": "冰块生效，Yui 被冻住了",
+             "yuiFrozen": "Yui 还被冰住，出拍延后",
              "nekoThinking": "Yui 思考中",
              "nekoTurn": "Yui 回合",
              "copyNeko": "复刻Neko",
@@ -4452,191 +4493,167 @@
          "lines": {
              "default": {
                  "shot_missed": [
-                     "还有机会喵",
-                     "稳一点再来"
+                     "没事，下一拍",
+                     "别急，先看准"
                  ],
                  "game_over": [
-                     "再来一局？",
-                     "这次先记着"
+                     "这局先到这儿",
+                     "还要再打一局吗"
                  ],
                  "long_aim": [
-                    "快挥拍呀喵",
-                     "还在瞄准？"
+                    "再不挥球要落了",
+                     "想太久会僵哦"
                  ],
                  "close_to_record": [
-                     "快摸到纪录了",
-                     "差一点点喵"
+                     "纪录快到了",
+                     "再稳一拍就到"
                  ],
                  "new_record": [
-                     "破纪录了喵！",
-                     "这也太远了"
+                     "好吧，破纪录了",
+                     "这球我认了"
                  ],
                  "streak_5": [
-                     "五连中喵！",
-                     "手感来了"
+                     "五拍连住了",
+                     "手感开始热了"
                  ],
                  "streak_10": [
-                     "十连中？！",
-                     "你是怪物喵"
+                     "十连了？有点稳",
+                     "别得意，还没完"
                  ],
                  "streak_15": [
-                     "十五连也太夸张",
-                     "这次真稳"
+                     "十五连还不断",
+                     "我开始认真看了"
                  ],
                  "streak_20": [
-                     "二十连？！",
-                     "这回合离谱喵"
+                     "二十连也太久了",
+                     "这回合还没结束？"
                  ],
                  "line_in": [
-                     "压线喵！",
-                     "落点漂亮"
+                     "贴线了，算你准",
+                     "这球压得挺好"
                  ],
                  "net_touch": [
-                     "擦网也算喵",
-                     "角度不错"
+                     "擦网偷过去了",
+                     "这角度有点险"
                  ],
                  "zone_in": [
-                     "刚好进区喵",
-                     "落点很刁钻"
+                     "刚好进区",
+                     "落点挺会挑"
                  ],
                  "out": [
-                     "差一点喵",
-                     "这拍太长了"
+                     "差一点出去了",
+                     "这拍有点长"
                  ],
                  "net": [
-                     "球网在中间喵",
-                     "偏太多啦"
-                 ]
-             },
-             "shooter": {
-                 "shot_missed": [
-                     "还有机会，别乱控",
-                     "稳一点啦"
-                 ],
-                 "game_over": [
-                     "这操控我记下了",
-                    "下次别乱带我挥拍"
-                 ],
-                 "long_aim": [
-                     "快点啦，手酸了",
-                     "还没瞄好吗"
-                 ],
-                 "close_to_record": [
-                     "快摸到纪录了",
-                     "别在这儿失手"
-                 ],
-                 "new_record": [
-                     "勉强算新纪录",
-                     "你这次还挺稳"
-                 ],
-                 "streak_5": [
-                     "五连中，别飘",
-                     "五连中，还算稳"
-                 ],
-                 "streak_10": [
-                     "十连中？还行吧",
-                     "十连中，别得意"
-                 ],
-                 "streak_15": [
-                     "十五连？别太骄傲",
-                     "这次确实稳"
-                 ],
-                 "streak_20": [
-                     "二十连？你认真的？",
-                     "这局有点夸张"
-                 ],
-                 "line_in": [
-                     "哼，控制得还行",
-                     "这次算你准"
-                 ],
-                 "net_touch": [
-                     "擦网也算你会控",
-                     "角度还凑合"
-                 ],
-                 "zone_in": [
-                     "别得意，有点运气",
-                     "差点被你控坏了"
-                 ],
-                 "out": [
-                     "力度差一点啦",
-                     "你刚刚手抖了吧"
-                 ],
-                 "net": [
-                     "你往哪儿瞄呢",
-                     "拍面再打开一点啦"
+                     "被网挡住了",
+                     "拍面再抬一点"
                  ]
              },
              "duel": {
                  "shot_missed": [
                      "下一回合补回来",
-                     "别急，继续对战"
+                     "刚刚慢了半拍",
+                     "节奏先稳回来",
+                     "下一球我还等着"
                  ],
                  "game_over": [
-                     "这局我记下了",
-                     "下回再分高下"
+                     "这次先到这儿",
+                     "下一局别跑",
+                     "这局先收着",
+                     "比分摆在这儿"
                  ],
                  "long_aim": [
                     "该挥拍了吧",
-                     "别让回合拖太久"
+                     "想太久会僵哦",
+                     "你是在等风向吗",
+                     "再不挥我要催了"
                  ],
                  "close_to_record": [
                      "快摸到纪录了",
-                     "对战也能冲纪录"
+                     "再稳一拍就到了",
+                     "这一拍别手软",
+                     "别在这里断掉"
                  ],
                  "new_record": [
                      "这局破纪录了",
-                     "节奏被你带起来了"
+                     "新纪录先借你",
+                     "这节奏被你带起来了",
+                     "下一球该我了"
                  ],
                  "streak_5": [
                      "五连回合了",
-                     "手感开始热了"
+                     "节奏顺起来了",
+                     "五拍连住，手感不错嘛",
+                     "这回合有点意思"
                  ],
                  "streak_10": [
                      "十连？对战认真了",
-                     "你这节奏真怪"
+                     "我开始盯紧了",
+                     "十连了？别得意",
+                     "这个回合有点意思"
                  ],
                  "streak_15": [
                      "十五连也太离谱",
-                     "这局有点压不住"
+                     "别让我太没面子",
+                     "十五连还不断，挺能撑嘛",
+                     "我不信你还能一直稳"
                  ],
                  "streak_20": [
                      "二十连？！",
-                     "这回合彻底疯了"
+                     "这回合还不结束？",
+                     "场馆都要看着你了",
+                     "我手都要酸了"
                  ],
                  "clutch": "……这球必须进",
                  "excuse": [
                      "哎，手有点酸了",
-                     "今天手感不太好，下球我要认真了"
+                     "那拍不算，我没站稳",
+                     "风向有点奇怪而已",
+                     "拍线松了，不是我失误"
                  ],
                  "difficultyLv2": [
                      "热身结束，接下来我会快一点。",
-                     "过家家时间结束了"
+                     "下一球会快一点",
+                     "我认真接了哦",
+                     "接稳了，别眨眼"
                  ],
                  "difficultyMax": [
                      "现在认真起来了。",
                      "从现在起天上地下唯我独尊",
                      "现在你才是挑战者",
-                     "如果未来是你的，证明给我看！"
+                     "如果未来是你的，证明给我看！",
+                     "这拍开始不让了",
+                     "接得住就试试看"
                  ],
                  "line_in": [
                      "这回合我拿下了",
-                     "轮到我发力"
+                     "边线都帮你了",
+                     "轮到我追了",
+                     "算你打得漂亮"
                  ],
                  "net_touch": [
                      "擦网也算有数",
-                     "角度我记着"
+                     "这球贴得真险",
+                     "擦网偷过，算你会玩",
+                     "这球贴得有点险"
                  ],
                  "zone_in": [
                      "有点运气吧",
-                     "差点就拦住了"
+                     "这落点还挺会选",
+                     "我差一点就够到",
+                     "别总挑这种位置"
                  ],
                  "out": [
                      "差一点点而已",
-                     "这球还能再来"
+                     "这球飞太深了",
+                     "就差那么一点",
+                     "下次别急着加力"
                  ],
                  "net": [
                      "你这是飘哪儿去",
-                     "回合太急了吧"
+                     "这拍急了吧",
+                     "球网替我拦你",
+                     "拍面再抬一点"
                  ]
              },
              "fallback": [
@@ -4649,14 +4666,47 @@
                  "playerAhead": "你还挺厉害嘛...",
                  "playerBehind": "再加把劲喵"
              },
-             "horse": {
-                 "nekoMiss": "没复刻上？记一个 {{letters}}",
-                 "playerMiss": "你也记一个 {{letters}}"
-             },
              "mindGame": [
                  "你手在抖哦",
                  "想好再挥拍，不急~",
-                 "这个距离可不近喵"
+                 "这个距离可不近",
+                 "你是不是想偷边线",
+                 "我看见你的拍面了",
+                 "别盯太久，手会僵哦"
+             ],
+             "yuiCheat": {
+                 "banana": [
+                     "小心脚下，香蕉皮来了",
+                     "别踩到哦，我丢过去了",
+                     "这一步可要看清楚",
+                     "跳过去就算你厉害"
+                 ],
+                 "octopus": [
+                     "墨汁来了，看得见吗",
+                     "视野借我挡一下",
+                     "别眨眼，已经晚了",
+                     "看不清也要接哦"
+                 ]
+             },
+             "yuiCheatScore": {
+                 "banana": [
+                     "这一步太滑啦，这分我收下",
+                     "香蕉皮助攻成功，嘿嘿",
+                     "脚下一打滑，比分就到我这边啦",
+                     "小心地面，Yui 要加一分了"
+                 ],
+                 "octopus": [
+                     "墨汁遮得刚刚好，这分归我",
+                     "看不清也要接球哦",
+                     "视野被挡住的时候，我已经得分啦",
+                     "这团墨汁的战术效果不错吧"
+                 ]
+             },
+             "playerIceScore": [
+                 "唔不算嘛不算嘛重来！",
+                 "被冻住的时候得分不算啦！",
+                 "等一下等一下，刚才我被冰住了！",
+                 "这球有冰块加成，重来重来！"
              ],
              "easterEgg": {
                  "lateNight": "这么晚了还在羽毛球？",

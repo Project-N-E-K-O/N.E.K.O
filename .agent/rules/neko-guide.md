@@ -74,11 +74,11 @@ CI 守门：
 
 ## 架构：跨模块 prompt 不能写死特定游戏 / 功能
 
-系统级 / 跨模块的 LLM prompt（archive label、history review、postgame realtime context、memory highlight selector、context organizer 等）只能用通用层概念，**不能**出现"足球""比分""射门""乌龙""抢断""进球""防守"等特定游戏术语。具体游戏术语只能出现在 module-bound 的 helper 内（函数名带 module 名的，如 `_format_soccer_pregame_context_for_prompt`、`_build_soccer_balance_hint`），或者 `config/prompts/prompts_game.py` 里 `SOCCER_*_PROMPT` 这种 specific-by-design 的常量里。
+系统级 / 跨模块的 LLM prompt（archive label、history review、postgame realtime context、memory highlight selector、context organizer 等）只能用通用层概念，**不能**出现"足球""比分""射门""乌龙""抢断""进球""防守"等特定游戏术语。具体游戏术语只能出现在 module-bound 的 helper 内（函数名带 module 名的，如 `_format_soccer_pregame_context_for_prompt`、`_build_soccer_balance_hint`），或者 `config/prompts/prompts_soccer.py` 里 `SOCCER_*_PROMPT` 这种 specific-by-design 的常量里。
 
 边界判定：
 - **prompt 指令**：`_build_game_archive_memory_text` / `_build_postgame_realtime_context_text` / `_select_game_archive_memory_highlights` / `_run_game_context_organizer_ai` 这种函数名是 generic（没有 module 名）的，里面所有字符串都必须 module-agnostic。
-- **module-bound prompt**：函数名 `_*_soccer_*` 或 `prompts_game.py` 里的 `SOCCER_*_PROMPT`，用 `if game_type == "soccer":` gate 进入，里面提足球/比分天然合理。
+- **module-bound prompt**：函数名 `_*_soccer_*` 或 `prompts_soccer.py` 里的 `SOCCER_*_PROMPT`，用 `if game_type == "soccer":` gate 进入，里面提足球/比分天然合理。
 - **data 不算 prompt**：score 数值、`_GAME_EVENT_MEMORY_LABELS` 这种 event-kind→中文 label 表、`game_type: "soccer"` 字段值——是数据不是指令，不受此规则约束。
 - **写入侧也要查**：写进 ordinary memory 的字符串会被后续 `HISTORY_REVIEW_PROMPT` 读到，等同于 prompt，必须 generic；不要靠 review prompt 兜底（`config/prompts/prompts_memory.py` 里的"游戏模块归档"豁免规则是兜底，不是借口）。
 

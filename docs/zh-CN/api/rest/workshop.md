@@ -10,37 +10,29 @@ Steam 创意工坊功能需要 Steam 客户端正在运行且 Steamworks SDK 已
 
 ## 物品
 
-### `GET /api/steam/workshop/items`
+### `GET /api/steam/workshop/subscribed-items`
 
 获取所有已订阅的 Steam 创意工坊物品。
 
-### `GET /api/steam/workshop/items/{item_id}`
+### `GET /api/steam/workshop/item/{item_id}`
 
 获取特定创意工坊物品的详细信息。
 
-### `POST /api/steam/workshop/items/publish`
+### `POST /api/steam/workshop/publish`
 
 发布新物品到 Steam 创意工坊。
 
-**请求体：** 物品元数据，包括标题、描述、标签和内容路径。
+**请求体：** 物品元数据。必填字段：`title`、`content_folder`、`visibility`（以及其他可选元数据，如 description、tags）。
 
 ::: warning
 发布操作使用序列化锁以防止并发发布。
 :::
-
-### `POST /api/steam/workshop/items/{item_id}/update`
-
-更新现有的创意工坊物品。
 
 ## 配置
 
 ### `GET /api/steam/workshop/config`
 
 获取创意工坊配置（创意工坊根路径、元数据）。
-
-### `GET /api/steam/workshop/local_items`
-
-列出尚未发布到创意工坊的本地 Mod/物品。
 
 ## 创意工坊元数据
 

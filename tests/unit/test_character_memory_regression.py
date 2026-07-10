@@ -95,6 +95,23 @@ class _FakeTranslationService:
 
 
 @pytest.mark.unit
+def test_character_router_profile_name_validation_maps_dot_error_codes():
+    router_module = reload_module("main_routers.characters_router")
+
+    assert "点号" in router_module._validate_profile_name(".")
+    assert "点号" in router_module._validate_profile_name("foo.")
+    assert "路径分隔符" in router_module._validate_profile_name("..")
+    assert "点号" in router_module._validate_profile_name("N.E.K.O")
+    assert "保留" in router_module._validate_profile_name("api")
+
+    assert router_module._validate_existing_character_path_name(".") is not None
+    assert router_module._validate_existing_character_path_name("foo.") is not None
+    assert router_module._validate_existing_character_path_name("..") is not None
+    assert router_module._validate_existing_character_path_name("N.E.K.O") is None
+    assert router_module._validate_existing_character_path_name("api") is None
+
+
+@pytest.mark.unit
 def test_profile_rename_event_prompt_i18n_is_complete_and_first_person():
     from config.prompts.prompts_memory import (
         PROFILE_RENAME_EVENT_FIELD,
@@ -306,6 +323,108 @@ async def test_character_management_and_recent_save_regression():
             assert not (Path(cm.memory_dir) / "测试角色").exists()
             tombstones = cm.load_character_tombstones_state().get("tombstones") or []
             assert any(entry.get("character_name") == "测试角色" for entry in tombstones)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_add_catgirl_rejects_unsafe_dot_profile_name():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        async def _noop_any(*args, **kwargs):
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                role_state={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
+            )
+
+            characters_router_module = reload_module("main_routers.characters_router")
+            response = await characters_router_module.add_catgirl(_DummyRequest({"档案名": "."}))
+
+            assert response.status_code == 400
+            payload = json.loads(response.body.decode("utf-8"))
+            assert payload["success"] is False
+            assert "点号" in payload["error"]
+            assert "." not in cm.load_characters().get("猫娘", {})
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_body_delete_rejects_non_object_json_payload():
+    characters_router_module = reload_module("main_routers.characters_router")
+
+    response = await characters_router_module.delete_catgirl_by_body(_DummyRequest(["."]))
+
+    assert response.status_code == 400
+    payload = json.loads(response.body.decode("utf-8"))
+    assert payload["success"] is False
+    assert "JSON" in payload["error"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_body_delete_rescues_unsafe_dot_character_without_touching_memory_paths():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        async def _noop_any(*args, **kwargs):
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                role_state={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
+            )
+
+            characters = cm.load_characters()
+            characters.setdefault("猫娘", {})["正常角色"] = {"昵称": "正常角色"}
+            characters.setdefault("猫娘", {})["."] = {"昵称": "坏角色"}
+            characters["当前猫娘"] = "正常角色"
+            cm.save_characters(characters, bypass_write_fence=True)
+
+            sentinel = Path(cm.memory_dir) / "sentinel.txt"
+            sentinel.parent.mkdir(parents=True, exist_ok=True)
+            sentinel.write_text("keep", encoding="utf-8")
+
+            characters_router_module = reload_module("main_routers.characters_router")
+            mock_notify_reload = AsyncMock(return_value=True)
+            with (
+                patch.object(characters_router_module, "notify_memory_server_reload", mock_notify_reload),
+                patch.object(characters_router_module, "delete_character_memory_storage") as mock_delete_memory,
+            ):
+                result = await characters_router_module.delete_catgirl_by_body(_DummyRequest({"name": "."}))
+
+            assert result["success"] is True
+            assert result["unsafe_name_rescue"] is True
+            assert result["memory_deleted"] is False
+            mock_notify_reload.assert_awaited_once()
+            assert "." not in cm.load_characters().get("猫娘", {})
+            assert sentinel.read_text(encoding="utf-8") == "keep"
+            mock_delete_memory.assert_not_called()
 
 
 @pytest.mark.unit

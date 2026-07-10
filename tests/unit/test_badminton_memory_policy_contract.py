@@ -214,5 +214,5 @@ def test_badminton_demo_memory_toggle_and_payload_contract():
     assert "gameMemoryArchiveEnabled: enabled" in html
     assert "game_memory_postgame_context_enabled: enabled" in html
     assert "gameMemoryToggle.checked === true" in html
-    assert "localStorage.getItem('bd_record_distance')" in html
+    assert "readBadmintonStorage('bd_record_distance')" in html
     assert "event: Object.assign({}, event, _badmintonGameMemoryPolicyPayload(), {" in html

@@ -533,6 +533,7 @@ class TutorLLMAgent:
             base_url,
             model,
             self._api_key_cache_fingerprint(api_key),
+            api_config.get("provider_type"),
         )
         timeout_seconds = (
             float(self._config.llm_call_timeout_seconds)
@@ -545,6 +546,7 @@ class TutorLLMAgent:
                 base_url=base_url,
                 api_key=api_key,
                 timeout=timeout_seconds,
+                provider_type=api_config.get("provider_type"),
             ),
         )
         if llm is None:

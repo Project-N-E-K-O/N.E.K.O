@@ -1,6 +1,7 @@
 import clsx from 'clsx';
 import { i18n } from './i18n';
 import MessageBlockView, { isGuideMessage } from './MessageBlockView';
+import TopicHintBubble, { isTopicHintMessage } from './TopicHintBubble';
 import {
   type ChatMessage,
   type MessageAction,
@@ -54,6 +55,10 @@ export default function MessageBubble({
   const showAvatar = message.role !== 'system' && !isGroupedWithPrevious;
   const showMeta = message.role !== 'system' && !isGroupedWithPrevious;
   const showFailed = message.role !== 'system' && message.status === 'failed';
+
+  if (isTopicHintMessage(message)) {
+    return <TopicHintBubble message={message} />;
+  }
 
   if (message.role === 'system') {
     return (

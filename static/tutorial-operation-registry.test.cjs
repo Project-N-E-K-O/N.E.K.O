@@ -50,8 +50,62 @@ test('OperationRegistry built-ins are registered declaratively', async () => {
 
     assert.ok(Array.isArray(registry.operationHandlers));
     assert.ok(registry.operationHandlers.length > 10);
-    assert.equal(await registry.run({ operation: 'day2-open-settings-personalization' }), 'settings-opened');
+    assert.equal(await registry.run({ operation: 'day3-open-settings-personalization' }), 'settings-opened');
     assert.equal(await registry.run({ operation: 'cleanup' }), true);
     assert.equal(await registry.run({ operation: 'day1-managed-scene-settled:done' }), true);
-    assert.equal(await registry.run({ id: 'day3_galgame_games' }), true);
+    assert.equal(await registry.run({ id: 'day2_galgame_games' }), true);
+});
+
+test('OperationRegistry routes daily intro greeting to generic performance only', async () => {
+    const calls = [];
+    const registry = new OperationRegistry({
+        runDailyIntroGreetingPerformance(scene) {
+            calls.push(scene.id);
+            return Promise.resolve('daily-intro-complete');
+        },
+        runIntroGiftHeartPerformance() {
+            calls.push('gift-heart');
+            return Promise.resolve();
+        },
+        waitForSceneDelay() {
+            return Promise.resolve();
+        }
+    });
+
+    const result = await registry.run({
+        id: 'day2_intro_context',
+        operation: 'daily-intro-greeting-performance'
+    });
+
+    assert.equal(result, 'daily-intro-complete');
+    assert.deepEqual(calls, ['day2_intro_context']);
+});
+
+test('OperationRegistry routes daily intro avatar motion presets through the director', async () => {
+    const calls = [];
+    const revealPrepared = () => 'revealed';
+    const registry = new OperationRegistry({
+        runDailyIntroAvatarPerformance(scene, day, options) {
+            calls.push([
+                scene.id,
+                scene.introAvatarPerformance && scene.introAvatarPerformance.preset,
+                options && options.revealPrepared
+            ]);
+            return Promise.resolve('avatar-motion-complete');
+        },
+        waitForSceneDelay() {
+            return Promise.resolve();
+        }
+    });
+
+    const result = await registry.run({
+        id: 'day5_character_settings',
+        operation: 'daily-intro-avatar-performance',
+        introAvatarPerformance: {
+            preset: 'top-peek'
+        }
+    }, null, 0, null, { revealPrepared });
+
+    assert.equal(result, 'avatar-motion-complete');
+    assert.deepEqual(calls, [['day5_character_settings', 'top-peek', revealPrepared]]);
 });

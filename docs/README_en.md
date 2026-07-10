@@ -23,8 +23,6 @@
 
 :newspaper: **The [Steam version](https://store.steampowered.com/app/4099310/__NEKO/) is available for free! If you like her, add her to your library and leave a kind review~**
 
-*Project N.E.K.O., NekoVerse!*
-
 </div>
 
 ---
@@ -36,7 +34,7 @@
 <td align="center" width="25%">💬<br><b>Proactive Companion</b><br>Screen understanding, social trends, personal updates, music and memes — she starts conversations and shares fresh things you love</td>
 <td align="center" width="25%">🎙️<br><b>Real-Time Voice, Text & Vision</b><br>Real-time voice (Realtime API) + text chat (ChatCompletion) with live visual understanding</td>
 <td align="center" width="25%">🧠<br><b>Five-Dimensional Memory</b><br>Working / Recent / Facts / Reflection / Persona memory, so she understands you better over time</td>
-<td align="center" width="25%">🎭<br><b>Multi-Form Avatar</b><br>Live2D / VRM / MMD with motion capture and full-screen tracking support</td>
+<td align="center" width="25%">🎭<br><b>Multi-Form Avatar</b><br>Five forms: Live2D / VRM / MMD / PNGTuber / desktop cat pet, with motion capture and full-screen tracking support</td>
 </tr>
 <tr>
 <td align="center">🤖<br><b>Agent Tool Execution</b><br>Controls browsers and computers, calling CUA / OpenClaw A2A / plugins to complete tasks</td>
@@ -48,7 +46,30 @@
 
 ---
 
-# The N.E.K.O. Project
+## 🐾 What We Are — and What We're Not
+
+In one line: **N.E.K.O. is not an Agent that runs chores for you, nor a chat frontend for role-play — it's a "digital life" that senses real-world time, reaches out to you first, remembers you, and can also get things done for you.**
+
+**✅ What we are:**
+
+- **An end-to-end integrated AI companion platform**: real-time voice / text / vision understanding + five-dimensional persistent memory + multi-form Avatar (Live2D / VRM / MMD) + proactive companionship + Agent tool execution + character-card sharing + plugin marketplace + multi-device ecosystem — **all out of the box**.
+- **One and the same "her"**: shares a single set of memories and personality across desktop, mobile, games, and smart hardware, with a sense of time — the more time you spend together, the better she knows you.
+- **Always open source**: the core driver is Apache 2.0, runs locally, and your data stays in your own hands.
+
+**❌ What we're not:**
+
+- Not a "**task-automation tool**" — getting things done is just one of the ways she shares life with you, not the goal.
+- Not a "**role-play skin**" — she has genuine initiative, persistent memory, and senses, instead of relying on you to hand-feed a worldbook to keep her persona alive.
+- Not a "**cloud black box**" — the core runs locally, and your conversations are never quietly harvested.
+
+**❓️ How we differ from related products:**
+
+| Compared with | What they are | How N.E.K.O. differs |
+|---|---|---|
+| **General-purpose Agents like OpenClaw / Hermes** | Execution engines built to "complete a task": give a command → it works → it's done | Centered on "**relationship and companionship**"; you can call such Agents as her hands and feet (A2A), yet while a task runs she still keeps an eye on you in real time |
+| **Role-play frontends like AI taverns (SillyTavern)** | Pure-text RP frontends: you wire up the model yourself and rely on manually maintained context / worldbooks | **End-to-end integrated, breaking the fourth wall**: native voice + visual perception, character appearance + motion, cross-scene persistent memory, time awareness, and the ability to truly operate external devices — zero-config, out of the box |
+
+## 🐱 We Are — The N.E.K.O. Project
 
 `Project N.E.K.O.` is an open-source-driven AI companion platform. The core driver is **always open source** under the Apache License 2.0 — every contribution you make has the chance to ship in the official Steam and App Store releases.
 
@@ -384,9 +405,25 @@ After container startup:
 
 **Requirements**: Python 3.11 (other versions not supported), [uv](https://docs.astral.sh/uv/) package manager, Node.js (>=20.19)
 
+> [!IMPORTANT]
+> ### ⚡⚡ Strongly recommended: clone this repo with a "partial clone"! ⚡⚡
+> **This repository has a large history (`.git` is ~390 MB)** because lots of old binary assets (VRM models, MMD, textures, audio, native libraries, etc.) are baked into history. A plain `git clone` downloads **all those long-dead historical versions** — slow and disk-heavy.
+>
+> 👉 **Use the partial-clone command below instead.** It fetches only the files you actually need, so the **initial clone is far smaller and much faster**, with **zero impact** on later development and commits:
+>
+> ```bash
+> # ✅ [Recommended] Partial clone: history blobs fetched on demand
+> git clone --filter=blob:none https://github.com/Project-N-E-K-O/N.E.K.O.git
+>
+> # ⚡ [Even faster] If you only need the latest code (no history), add --depth 1
+> git clone --depth 1 --filter=blob:none https://github.com/Project-N-E-K-O/N.E.K.O.git
+> ```
+>
+> ⚠️ A full `git clone` still works, but downloads the entire history — **not recommended** for new contributors.
+
 ```bash
-# 1. Clone the project
-git clone https://github.com/Project-N-E-K-O/N.E.K.O.git
+# 1. Clone the project (⚡ strongly prefer the partial-clone command above; drop --filter only if you truly need full history)
+git clone --filter=blob:none https://github.com/Project-N-E-K-O/N.E.K.O.git
 cd N.E.K.O
 
 # 2. Install Python dependencies
@@ -394,17 +431,19 @@ uv sync
 
 # 3. Build frontend projects (requires Node.js >= 20.19; needed on first run or after frontend changes)
 #    Recommended: use the convenience script (this is the officially supported build path)
-#      Windows:      build_frontend.bat
-#      Linux/macOS:  ./build_frontend.sh
+#      Windows:
+build_frontend.bat
+#      Linux/macOS:
+./build_frontend.sh
 #    Manual build (must match what the script runs):
 # cd frontend/react-neko-chat && npm install && npm run build && cd ../..
 # cd frontend/plugin-manager && npm install && npm run build-only && cd ../..
 
 # 4. Start services (main_server and memory_server required at minimum)
-uv run python memory_server.py
-uv run python main_server.py
+uv run python app/memory_server.py
+uv run python app/main_server.py
 # Optional: start Agent service
-uv run python agent_server.py
+uv run python app/agent_server.py
 
 # 5. Visit http://localhost:48911 to configure API Key and start using
 ```
@@ -421,12 +460,12 @@ Developers are encouraged to join QQ group 995414391.
 
 Configure third-party AI services for additional features:
 
-- **Core API** (real-time voice conversation): Must support Realtime API. Recommended: *Alibaba Cloud*.
+- **Core API** (real-time voice conversation): Must support Realtime API. Recommended for overseas users: *Gemini*.
 - **Assist API** (memory/emotion/vision): Supports standard ChatCompletion interface. 14+ providers available.
 
 Visit `http://localhost:48911/api_key` to configure directly through the Web interface.
 
-> Obtaining *Alibaba Cloud API*: Register an account on Alibaba Cloud's Bailian platform [official website](https://bailian.console.aliyun.com/). New users can receive substantial free credits after real-name verification. After registration, visit the [console](https://bailian.console.aliyun.com/api-key?tab=model#/api-key) to get your API Key.
+> Obtaining a *Gemini API Key*: Visit [Google AI Studio](https://aistudio.google.com/app/apikey), sign in with your Google account, and create an API key. Gemini is the recommended Core API provider for overseas users.
 
 #### Modifying Character Persona
 
@@ -464,22 +503,24 @@ N.E.K.O/
 │   ├── openfang_adapter.py      # OpenFang headless execution backend
 │   ├── task_executor.py         # Task execution engine
 │   └── 📁 cua/                  # Computer Use Agent subsystem
-├── 📁 config/                   # ⚙️ Configuration management
+├── 📁 config/                   # ⚙️ Configuration management module
 │   ├── api_providers.json       # API provider configuration
 │   └── 📁 prompts/              # Character, system, and feature prompts
 │       ├── prompts_chara.py     # Character prompts
 │       └── prompts_sys.py       # System prompts
-├── 📁 main_logic/               # 🔧 Core modules
+├── 📁 main_logic/               # 🔧 Core logic modules
 │   ├── core.py                  # Core dialogue module
 │   ├── cross_server.py          # Cross-server communication
-│   ├── omni_realtime_client.py  # Realtime API client
+│   ├── omni_realtime_client.py  # Realtime API client (Realtime API)
 │   ├── omni_offline_client.py   # Text API client (ChatCompletion)
-│   └── tts_client.py            # 🔊 TTS engine adapter
-├── 📁 main_routers/             # 🌐 API routers (14 routes)
-├── 📁 memory/                   # 🧠 Five-dimensional memory system (partial examples)
-│   ├── facts/                   # Fact memory
-│   ├── reflection/              # Reflection memory
-│   └── persona/                 # Persona memory
+│   ├── 📁 activity/             # System/user state tracking
+│   ├── 📁 topic/                # Proactive topics
+│   └── 📁 tts_client/           # 🔊 TTS engine adapters (multi-provider symmetry)
+├── 📁 main_routers/             # 🌐 API router modules (26 routes)
+├── 📁 memory/                   # 🧠 Five-dimensional memory system
+│   ├── facts.py                 # Fact memory
+│   ├── reflection.py            # Reflection memory
+│   └── persona.py               # Persona memory
 ├── 📁 frontend/                 # 🖥️ Modern frontend projects
 │   ├── react-neko-chat/         # React chat window component
 │   └── plugin-manager/          # Vue plugin manager dashboard
@@ -487,11 +528,14 @@ N.E.K.O/
 │   ├── sdk/                     # Plugin SDK
 │   └── server/                  # Plugin server
 ├── 📁 static/                   # 🌐 Frontend static resources (incl. build artifacts)
-├── 📁 templates/                # 📄 Frontend HTML templates (14 pages)
+├── 📁 templates/                # 📄 Frontend HTML templates (24 pages)
 ├── 📁 utils/                    # 🛠️ Utility modules
-├── main_server.py               # 🌐 Main server
-├── agent_server.py              # 🤖 AI agent server
-└── memory_server.py             # 🧠 Memory server
+├── 📁 app/                      # 🚀 Server entry modules
+│   ├── main_server.py           # 🌐 Main server
+│   ├── agent_server.py          # 🤖 AI agent server
+│   ├── memory_server.py         # 🧠 Memory server
+│   └── monitor.py               # 📺 Standalone monitor view
+└── launcher.py                  # 🎬 One-click launch entry (packaging entry)
 ```
 
 > **AI-Assisted Development**: The `.agent/` directory follows the Google Antigravity open convention and contains the project's development rules and skill sets. Only Antigravity auto-reads it; all other AI tools (including Claude Code) need to import manually. See the [adaptation guide](https://project-neko.online/contributing/ai-assisted-dev).
@@ -502,15 +546,17 @@ N.E.K.O/
 
 > Full developer documentation at [project-neko.online](https://project-neko.online)
 
+> Maintenance notes for the homepage onboarding prompt: [docs/design/tutorial_prompt_maintenance.zh-CN.md](design/tutorial_prompt_maintenance.zh-CN.md)
+
 ### Roadmap
 
-v0.7: ✅ Agent-related features. **Completed.**
+v0.7: ✅ Initial Agent-related features. **First phase completed. Pending future optimization.**
 
-v0.8: Memory-related features, OpenClaw-like functionality. Expected: March 2026.
+v0.8: ✅ Memory features and desktop pet mode improved, with several built-in two-player mini-games. **First phase completed. Pending future optimization.**
 
-v0.9: Multi-system support (Linux, mobile). N.E.K.O. Network launch. Expected: April 2026.
+v0.9: Improve multi-system adaptation, including Linux and mobile. N.E.K.O. Network launch. Expected: early July 2026.
 
-v1.0: Focus on in-house large models and agent systems. Expected: June 2026.
+v1.0: Drop support for some model providers and focus on in-house large models and agent systems. Expected: late August 2026.
 
 ### Telemetry
 

@@ -600,4 +600,14 @@ describe('CompactExportHistoryPanel', () => {
       consoleError.mockRestore();
     }
   });
+
+  it('renders a 凝神 thinking-dots bubble at the tail only while thinking', () => {
+    const { container, rerender } = renderPanel({ previewOpen: false, visibilityState: 'open' });
+    expect(container.querySelector('.focus-thinking-history-row')).toBeNull();
+    rerender(<CompactExportHistoryPanel {...createPanelProps({ previewOpen: false, visibilityState: 'open', thinking: true })} />);
+    const row = container.querySelector('.focus-thinking-history-row');
+    expect(row).not.toBeNull();
+    expect(row?.getAttribute('data-focus-thinking')).toBe('true');
+    expect(row?.querySelectorAll('.focus-thinking-dot').length).toBe(3);
+  });
 });

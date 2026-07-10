@@ -7,7 +7,7 @@ N.E.K.O. supports VRM (Virtual Reality Model) format for 3D character rendering 
 ## Model management
 
 - Upload VRM files via `/api/model/vrm/upload` (max 200MB)
-- Upload animations separately via `/api/model/vrm/animation/upload`
+- Upload animations separately via `/api/model/vrm/upload_animation`
 - Configure emotion mappings via `/vrm_emotion_manager`
 
 ## Lighting configuration
@@ -16,12 +16,12 @@ VRM models use a configurable lighting system:
 
 | Light | Default | Range | Description |
 |-------|---------|-------|-------------|
-| Ambient | 0.4 | 0 - 1.0 | HemisphereLight intensity |
-| Main | 1.2 | 0 - 2.5 | Primary directional light |
-| Fill | 0.5 | 0 - 1.0 | Secondary fill light |
-| Rim | 0.8 | 0 - 1.5 | Edge/rim lighting |
-| Top | 0.3 | 0 - 1.0 | Top-down light |
-| Bottom | 0.15 | 0 - 0.5 | Bottom-up light |
+| Ambient | 0.83 | 0 - 1.0 | HemisphereLight intensity |
+| Main | 1.91 | 0 - 2.5 | Primary directional light |
+| Fill | 0.0 | 0 - 1.0 | Secondary fill light (disabled by default) |
+| Rim | 0.0 | 0 - 1.5 | Edge/rim lighting (disabled by default; MToon handles edge light) |
+| Top | 0.0 | 0 - 1.0 | Top-down light (disabled by default) |
+| Bottom | 0.0 | 0 - 0.5 | Bottom-up light (disabled by default) |
 
 Configure via `PUT /api/characters/catgirl/{name}/lighting`.
 
@@ -30,7 +30,7 @@ Configure via `PUT /api/characters/catgirl/{name}/lighting`.
 | Module | Purpose |
 |--------|---------|
 | `vrm-ui-buttons.js` | VRM-specific control buttons |
-| `vrm-ui-popup.js` | VRM popup dialogs |
+| `avatar-ui-popup.js` | Shared popup dialog logic (MMD/VRM/Live2D) |
 
 ## Known issues & fixes
 

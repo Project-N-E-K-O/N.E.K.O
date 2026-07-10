@@ -11,6 +11,7 @@ const controllerSource = fs.readFileSync(path.join(__dirname, 'tutorial/avatar/s
 const overlaySource = fs.readFileSync(path.join(__dirname, 'tutorial/yui-guide/overlay.js'), 'utf8');
 const live2dInteractionSource = fs.readFileSync(path.join(__dirname, 'live2d-interaction.js'), 'utf8');
 const live2dInitSource = fs.readFileSync(path.join(__dirname, 'live2d-init.js'), 'utf8');
+const live2dButtonsSource = fs.readFileSync(path.join(__dirname, 'live2d-ui-buttons.js'), 'utf8');
 const appUiSource = fs.readFileSync(path.join(__dirname, 'app-ui.js'), 'utf8');
 const appInterpageSource = fs.readFileSync(path.join(__dirname, 'app-interpage.js'), 'utf8');
 const universalManagerSource = fs.readFileSync(path.join(__dirname, 'tutorial/core/universal-manager.js'), 'utf8');
@@ -234,26 +235,29 @@ function createHeadAnchoredCornerPeekSession(position) {
 }
 
 test('returns fixed Live2D corner peek cues without image resources', () => {
-    assert.deepEqual(standIn.getCue(3, 'day3_avatar_tools'), {
-        delay: 900,
-        duration: 5000,
-        position: 'bottom-left'
-    });
-    assert.deepEqual(standIn.getCue(3, 'day3_galgame_entry'), {
+    assert.equal(standIn.getCue(2, 'day2_tool_toggle_intro'), null);
+    assert.equal(
+        standIn.getCue(2, 'day2_avatar_tools'),
+        null,
+        'day2_avatar_tools stays disabled because it sits too close to the opening motion'
+    );
+    assert.deepEqual(standIn.getCue(2, 'day2_galgame_entry'), {
         delay: 900,
         duration: 5000,
         position: 'top-right'
+    });
+    assert.deepEqual(standIn.getCue(3, 'day3_proactive_chat'), {
+        delay: 900,
+        duration: 5000,
+        position: 'top-left'
     });
     assert.deepEqual(standIn.getCue(4, 'day4_privacy_mode'), {
         delay: 900,
         duration: 5000,
         position: 'bottom-right'
     });
-    assert.deepEqual(standIn.getCue(5, 'day5_character_settings'), {
-        delay: 2900,
-        duration: 5000,
-        position: 'top-right'
-    });
+    assert.equal(standIn.getCue(5, 'day5_character_settings'), null);
+    assert.equal(standIn.getCue(7, 'day7_memory_review'), null);
     assert.equal(standIn.getCue(7, 'day7_wrap'), null);
     assert.equal(typeof standIn.getResourcePath, 'undefined');
 });
@@ -262,12 +266,12 @@ test('exports all fixed day two through seven cue positions', () => {
     const cues = standIn.getAllCues();
     const allowedPositions = new Set(['bottom-right', 'bottom-left', 'top-right', 'top-left']);
     const expectedCueCounts = {
-        2: 2,
-        3: 2,
+        2: 1,
+        3: 1,
         4: 2,
-        5: 1,
+        5: 0,
         6: 2,
-        7: 1
+        7: 0
     };
 
     assert.equal(Object.keys(cues).length, 6);
@@ -284,10 +288,18 @@ test('exports all fixed day two through seven cue positions', () => {
 });
 
 test('does not schedule Live2D corner peek on final wrap-adjacent scenes', () => {
-    assert.equal(standIn.getCue(3, 'day3_galgame_choices'), null);
+    assert.equal(standIn.getCue(2, 'day2_tool_toggle_intro'), null);
+    assert.equal(
+        standIn.getCue(2, 'day2_avatar_tools'),
+        null,
+        'day2_avatar_tools intentionally remains outside the legacy stand-in cue table'
+    );
+    assert.equal(standIn.getCue(2, 'day2_galgame_choices'), null);
     assert.equal(standIn.getCue(4, 'day4_return_home'), null);
+    assert.equal(standIn.getCue(5, 'day5_character_settings'), null);
     assert.equal(standIn.getCue(5, 'day5_memory_entry'), null);
     assert.equal(standIn.getCue(6, 'day6_wrap_cleanup'), null);
+    assert.equal(standIn.getCue(7, 'day7_memory_review'), null);
     assert.equal(standIn.getCue(7, 'day7_memory_control'), null);
     assert.equal(standIn.getCue(7, 'day7_graduation_wrap'), null);
 });
@@ -310,6 +322,71 @@ test('avatar stage exposes generic Live2D corner peek while keeping plugin-dashb
     assert.match(avatarStageSource, /startAvatarCornerPeek: startAvatarCornerPeek/);
     assert.match(avatarStageSource, /startPluginDashboardCornerPeek: startPluginDashboardCornerPeek/);
     assert.match(avatarStageSource, /Live2DPluginDashboardCornerSession: Live2DAvatarCornerPeekSession/);
+});
+
+test('avatar stage exposes reusable motion core and preset playback entry', () => {
+    assert.match(avatarStageSource, /class Live2DMotionBaseSession/);
+    assert.match(avatarStageSource, /class Live2DFrameMotionSession extends Live2DMotionBaseSession/);
+    assert.match(avatarStageSource, /async function playAvatarMotion\(options\)/);
+    assert.match(avatarStageSource, /playAvatarMotion: playAvatarMotion/);
+    assert.match(avatarStageSource, /Live2DMotionBaseSession: Live2DMotionBaseSession/);
+    assert.match(avatarStageSource, /Live2DFrameMotionSession: Live2DFrameMotionSession/);
+});
+
+test('bottom-rise intro avatar motion approaches and holds the first-day half-body frame', () => {
+    assert.match(avatarStageSource, /to:\s*isBottomRise\s*\?\s*'close-up'\s*:/);
+    assert.match(avatarStageSource, /frameScale[\s\S]*:\s*INTRO_GREETING_HUG_CLOSE_SCALE/);
+    assert.match(avatarStageSource, /frameY[\s\S]*resolveIntroGreetingHugFrameShift\(this\.container\)/);
+    assert.match(avatarStageSource, /frameY[\s\S]*:\s*undefined/);
+    assert.match(avatarStageSource, /restoreMode[\s\S]*normalizedOptions\.restore[\s\S]*\|\|\s*'half-body'/);
+    assert.match(avatarStageSource, /this\.restoreMode === 'half-body'[\s\S]*this\.applyFrame\(this\.toFrame, this\.initialAlpha\)/);
+});
+
+test('corner and top peek intro avatar motions settle on the first-day half-body frame', () => {
+    assert.match(avatarStageSource, /function applyAvatarMotionHalfBodyPlacement\(options\)/);
+    assert.match(avatarStageSource, /INTRO_GREETING_HUG_CLOSE_SCALE/);
+    assert.match(avatarStageSource, /const container = getLive2DContainer/);
+    assert.match(avatarStageSource, /resolveIntroGreetingHugFrameShift\(container\)/);
+    assert.match(avatarStageSource, /await handle\.stop\('avatar_motion_complete', \{ animateReturn: false \}\);[\s\S]*if \(restoreMode === 'half-body'\)/);
+    assert.match(avatarStageSource, /applyAvatarMotionHalfBodyPlacement\(normalizedOptions\)/);
+});
+
+test('corner peek keeps floating buttons frozen by default but intro motion can opt out', () => {
+    assert.match(avatarStageSource, /this\.freezeFloatingButtons = normalizedOptions\.freezeFloatingButtons !== false;/);
+    assert.match(avatarStageSource, /if \(this\.freezeFloatingButtons\) \{[\s\S]*this\.freezeFloatingButtonsPosition\(\);[\s\S]*\}/);
+    assert.match(avatarStageSource, /freezeFloatingButtons: normalizedOptions\.freezeFloatingButtons/);
+    assert.match(avatarStageSource, /function showAvatarMotionFloatingButtons\(options\)/);
+    assert.match(avatarStageSource, /showAvatarMotionFloatingButtons\(normalizedOptions\)/);
+    assert.match(directorSource, /freezeFloatingButtons: performance\.freezeFloatingButtons === false \? false : undefined/);
+});
+
+test('corner peek can rotate floating buttons only when intro motion opts in', () => {
+    assert.match(avatarStageSource, /this\.rotateFloatingButtons = normalizedOptions\.rotateFloatingButtons === true;/);
+    assert.match(avatarStageSource, /this\.syncFloatingButtonsRotation\(frame\)/);
+    assert.match(avatarStageSource, /manager\._floatingButtonsRotationRadians = rotation;/);
+    assert.match(live2dButtonsSource, /const rotation = Number\(this\._floatingButtonsRotationRadians\) \|\| 0;/);
+    assert.match(live2dButtonsSource, /buttonsContainer\.style\.transform = `scale\(\$\{scale\}\)\$\{rotateTransform\}`;/);
+    assert.match(directorSource, /rotateFloatingButtons: performance\.rotateFloatingButtons === true/);
+});
+
+test('corner and top peek intro avatar motions fade in the half-body handoff', () => {
+    assert.match(avatarStageSource, /const AVATAR_MOTION_HALF_BODY_FADE_IN_MS = 900;/);
+    assert.match(avatarStageSource, /const AVATAR_MOTION_HALF_BODY_FADE_OUT_MS = 420;/);
+    assert.match(avatarStageSource, /function collectAvatarMotionVisibleOpacityTargets\(context, options\)/);
+    assert.match(avatarStageSource, /function writeAvatarMotionVisibleOpacity\(context, targets, modelAlpha, displayAlpha\)/);
+    assert.match(avatarStageSource, /async function fadeOutAvatarMotionVisibleLayer\(options\)/);
+    assert.match(avatarStageSource, /async function fadeInAvatarMotionHalfBodyPlacement\(options\)/);
+    assert.match(avatarStageSource, /const targetAlpha = 1;/);
+    assert.match(avatarStageSource, /const targetDisplayAlpha = 1;/);
+    assert.match(avatarStageSource, /await fadeOutAvatarMotionVisibleLayer\(normalizedOptions\)/);
+    assert.match(avatarStageSource, /writeAvatarMotionVisibleOpacity\(context, targets, 0, 0\)/);
+    assert.match(avatarStageSource, /writeAvatarMotionVisibleOpacity\(context, targets, lerp\(0, targetAlpha, eased\), displayAlpha\)/);
+    assert.match(avatarStageSource, /await fadeInAvatarMotionHalfBodyPlacement\(normalizedOptions\)/);
+});
+
+test('soft approach intro avatar motion uses the first-day half-body scale', () => {
+    assert.doesNotMatch(avatarStageSource, /preset === 'soft-approach'\s*\?\s*1\.08/);
+    assert.match(avatarStageSource, /const frameScale = INTRO_GREETING_HUG_CLOSE_SCALE;/);
 });
 
 test('Live2D corner peek keeps center model still while fading and uses one second phases', () => {

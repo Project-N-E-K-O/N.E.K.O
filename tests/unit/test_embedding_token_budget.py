@@ -253,13 +253,20 @@ def test_truncation_failure_aborts_load_with_distinct_reason():
     monkey["_is_nonempty_file"] = embeddings._is_nonempty_file
     embeddings._is_nonempty_file = fake_nonempty
 
-    # 伪 ort 模块
+    # 伪 ort 模块。SessionOptions 用一个轻量类而不是 SimpleNamespace,因为
+    # _load_session_blocking 会调 add_session_config_entry(关 spin),
+    # SimpleNamespace 没有这个方法会 AttributeError。
+    class _FakeSessOpts:
+        def __init__(self):
+            self.intra_op_num_threads = 0
+            self.graph_optimization_level = 0
+            self.enable_cpu_mem_arena = True
+
+        def add_session_config_entry(self, _key, _value):
+            pass
+
     fake_ort = types.SimpleNamespace(
-        SessionOptions=lambda: types.SimpleNamespace(
-            intra_op_num_threads=0,
-            graph_optimization_level=0,
-            enable_cpu_mem_arena=True,
-        ),
+        SessionOptions=_FakeSessOpts,
         InferenceSession=lambda *a, **kw: object(),
         GraphOptimizationLevel=types.SimpleNamespace(ORT_ENABLE_ALL=0),
     )

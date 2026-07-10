@@ -23,7 +23,19 @@ http://localhost:48911
 | [Memory](/ja/api/rest/memory) | `/api/memory` | メモリファイル、レビュー設定 |
 | [Agent](/ja/api/rest/agent) | `/api/agent` | エージェントフラグ、タスク、ヘルスチェック |
 | [Workshop](/ja/api/rest/workshop) | `/api/steam/workshop` | Steam Workshop アイテム、パブリッシュ |
+| [MMD](/ja/api/rest/mmd) | `/api/model/mmd` | MMD モデル管理 |
+| [PNGTuber](/ja/api/rest/pngtuber) | `/api/model/pngtuber` | PNGTuber モデル管理 |
+| [Music](/ja/api/rest/music) | `/api/music` | 音楽検索と再生プロキシ |
+| [Jukebox](/ja/api/rest/jukebox) | `/api/jukebox` | 楽曲とアクションのライブラリ |
+| [Game](/ja/api/rest/game) | `/api/game` | ミニゲームバックエンド |
+| [Galgame](/ja/api/rest/galgame) | `/api/galgame` | ギャルゲーの返信オプション |
+| [Icebreaker](/ja/api/rest/icebreaker) | `/api/icebreaker` | 新規ユーザーのオンボーディング |
+| [Proactive](/ja/api/rest/proactive) | `/api/proactive` | プロアクティブチャットのモードと設定 |
 | [System](/ja/api/rest/system) | `/api` | 感情分析、スクリーンショット、ユーティリティ |
+
+### その他 / 内部ルーター
+
+以下のルーターは稼働していますが、ここでは個別にドキュメント化されていません：`capture`（`/api/capture`）、`cloudsave`（`/api/cloudsave`）、`storage-location`（`/api/storage/location`）、`avatar-drop`（`/api/avatar-drop`）、`card-assist`（`/api/card-assist`）、`auth`/cookies（`/api/auth`）、`tool`（`/api/tools`）、`debug`（`/api/debug`）。
 
 ## WebSocket
 

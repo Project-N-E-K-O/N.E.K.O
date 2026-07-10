@@ -30,6 +30,7 @@
                     timelinePlayback: true,
                     timelineAudio: false,
                     timeline: [
+                        { at: 0, command: 'operation.run', operation: 'daily-intro-avatar-performance', blocking: false },
                         { at: 0, command: 'settingsTour.play', blocking: true }
                     ],
                     afterSceneDelayMs: 0,
@@ -39,7 +40,12 @@
                     emotion: 'happy',
                     target: 'settings-sidepanel:character-settings',
                     cursorAction: 'tour',
-                    operation: 'show-settings-sidepanel:character-settings'
+                    operation: 'show-settings-sidepanel:character-settings',
+                    introAvatarPerformance: {
+                        preset: 'top-peek',
+                        restore: 'half-body',
+                        freezeFloatingButtons: false
+                    }
                 },
                 {
                     id: 'day5_character_panic',

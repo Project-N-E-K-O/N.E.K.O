@@ -8,7 +8,7 @@
 | ビット深度 | 16-bit signed | 16-bit signed |
 | エンコーディング | PCM little-endian | PCM little-endian |
 | チャンネル | モノラル | モノラル |
-| トランスポート | JSON 内の Base64 | JSON 内の Base64 |
+| トランスポート | JSON 内の Base64 | バイナリ WebSocket フレーム（先に JSON ヘッダー、続けて生の PCM バイト） |
 
 ## 入力パイプライン
 
@@ -17,7 +17,7 @@ Microphone ──> Browser AudioContext ──> PCM chunks ──> Base64 ──
                                                                     │
                                                                Main Server
                                                                     │
-                                                    OmniRealtimeClient.send_audio()
+                                                    OmniRealtimeClient.stream_audio()
                                                                     │
                                                               LLM Provider
 ```
@@ -31,7 +31,7 @@ LLM Provider ──> on_audio_delta ──> 24kHz PCM
                                         │
                                    soxr resampler
                                         │
-                                   48kHz PCM ──> Base64 ──> WebSocket ──> Browser
+                                   48kHz PCM ──> バイナリ WS フレーム（先頭に JSON ヘッダー） ──> WebSocket ──> Browser
 ```
 
 `soxr` ライブラリは、LLM のネイティブ 24kHz からブラウザの 48kHz 再生レートへの高品質なサンプルレート変換を提供します。

@@ -164,3 +164,90 @@ test('tutorial avatar reload snapshots proactive chat when override starts, not 
     assert.equal(window.appState.proactiveVisionChatEnabled, true);
     assert.equal(window.scheduleCalls, 1);
 });
+
+test('tutorial avatar reload can keep prepared model hidden for intro performance reveal', async () => {
+    const window = loadReloadControllerWindow();
+    const reloadCalls = [];
+    const revealCalls = [];
+    const host = {
+        constructor: {
+            detectModelPrefix() {
+                return 'live2d';
+            }
+        }
+    };
+    const controller = window.TutorialAvatarReloadController.createController({
+        host,
+        timeoutMs: 200,
+        resolveCurrentName: () => Promise.resolve('LanLan'),
+        fetchCharacters: () => Promise.resolve({
+            '猫娘': {
+                LanLan: {
+                    model_type: 'live2d',
+                    live2d: 'lanlan'
+                }
+            }
+        }),
+        buildSnapshotPayload: () => ({ model_type: 'live2d', live2d: 'lanlan' }),
+        reloadModel: (name, payload, options) => {
+            reloadCalls.push({ name, payload, options });
+            return Promise.resolve();
+        },
+        setPreparing: () => {},
+        revealPrepared: () => revealCalls.push('reveal'),
+        applyIdentityOverride: () => {},
+        clearViewportWatcher: () => {}
+    });
+
+    await controller.beginOverride({ deferRevealPrepared: true });
+
+    assert.equal(reloadCalls.length, 1);
+    assert.equal(reloadCalls[0].options.deferRevealPrepared, true);
+    assert.deepEqual(revealCalls, []);
+});
+
+test('tutorial avatar reload fades out current model before preparing hide', async () => {
+    const window = loadReloadControllerWindow();
+    const calls = [];
+    const host = {
+        constructor: {
+            detectModelPrefix() {
+                return 'live2d';
+            }
+        }
+    };
+    const controller = window.TutorialAvatarReloadController.createController({
+        host,
+        timeoutMs: 200,
+        resolveCurrentName: () => Promise.resolve('LanLan'),
+        fetchCharacters: () => Promise.resolve({
+            '猫娘': {
+                LanLan: {
+                    model_type: 'live2d',
+                    live2d: 'lanlan'
+                }
+            }
+        }),
+        buildSnapshotPayload: () => ({ model_type: 'live2d', live2d: 'lanlan' }),
+        fadeOutCurrentModel: () => {
+            calls.push({ type: 'fadeOut' });
+            return Promise.resolve();
+        },
+        reloadModel: () => {
+            calls.push({ type: 'reload' });
+            return Promise.resolve();
+        },
+        setPreparing: (value) => calls.push({ type: 'preparing', value }),
+        revealPrepared: () => {},
+        applyIdentityOverride: () => {},
+        clearViewportWatcher: () => {}
+    });
+
+    await controller.beginOverride({ deferRevealPrepared: true });
+
+    assert.deepEqual(calls.slice(0, 3), [
+        { type: 'fadeOut' },
+        { type: 'preparing', value: true },
+        { type: 'reload' }
+    ]);
+});

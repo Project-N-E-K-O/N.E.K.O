@@ -9,8 +9,8 @@ Core providers must support **Realtime API** (WebSocket-based streaming).
 | Provider | WebSocket URL | Default model |
 |----------|---------------|---------------|
 | `free` | Built-in server | `free-model` |
-| `qwen` | `wss://dashscope.aliyuncs.com/api-ws/v1/realtime` | `qwen3-omni-flash-realtime` |
-| `openai` | `wss://api.openai.com/v1/realtime` | `gpt-realtime-mini` |
+| `qwen` | `wss://dashscope.aliyuncs.com/api-ws/v1/realtime` | `qwen3.5-omni-flash-realtime-2026-03-15` |
+| `openai` | `wss://api.openai.com/v1/realtime` | `gpt-realtime-2` |
 | `step` | `wss://api.stepfun.com/v1/realtime` | `step-audio-2` |
 | `gemini` | Google GenAI SDK | `gemini-2.5-flash-native-audio-preview-12-2025` |
 
@@ -20,7 +20,7 @@ The **free** tier uses a community server and requires no API key. It's suitable
 
 ## Assist API providers
 
-Assist providers use OpenAI-compatible HTTP APIs for text-based tasks.
+Assist providers use OpenAI-compatible HTTP APIs for text-based tasks, with the exception of `kimi_code` which uses the Anthropic Messages API format.
 
 | Provider | Base URL |
 |----------|----------|
@@ -31,6 +31,7 @@ Assist providers use OpenAI-compatible HTTP APIs for text-based tasks.
 | `silicon` | `https://api.siliconflow.cn/v1` |
 | `gemini` | `https://generativelanguage.googleapis.com/v1beta/openai/` |
 | `kimi` | `https://api.moonshot.cn/v1` |
+| `kimi_code` | `https://api.kimi.com/coding` |
 
 Each assist provider defines models for these tasks:
 
@@ -64,3 +65,4 @@ Each assist provider maps to a specific environment variable:
 | `silicon` | `NEKO_ASSIST_API_KEY_SILICON` |
 | `gemini` | `NEKO_ASSIST_API_KEY_GEMINI` |
 | `kimi` | `NEKO_ASSIST_API_KEY_KIMI` |
+| `kimi_code` | `NEKO_ASSIST_API_KEY_KIMI_CODE` |

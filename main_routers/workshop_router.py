@@ -53,6 +53,7 @@ from utils.workshop_utils import (
 )
 from utils.logger_config import get_module_logger
 from utils.config_manager import get_reserved, set_reserved
+from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
 from config import CHARACTER_RESERVED_FIELDS
 import hashlib
 
@@ -5261,9 +5262,18 @@ async def sync_workshop_character_cards(
                             chara_name_raw = chara_data.get('档案名') or chara_data.get('name')
                             if not chara_name_raw:
                                 continue
-                            chara_name = str(chara_name_raw).strip()
-                            if not chara_name or '/' in chara_name or '\\' in chara_name or '..' in chara_name or len(chara_name) > 120:
-                                logger.warning(f"sync_workshop_character_cards: 跳过非法角色名 '{chara_name_raw}' (物品 {item_id})")
+                            name_validation = validate_character_name(
+                                chara_name_raw,
+                                max_units=PROFILE_NAME_MAX_UNITS,
+                            )
+                            chara_name = name_validation.normalized
+                            if not name_validation.ok:
+                                logger.warning(
+                                    "sync_workshop_character_cards: 跳过非法角色名 %r (code=%s, 物品 %s)",
+                                    chara_name_raw,
+                                    name_validation.code,
+                                    item_id,
+                                )
                                 continue
                             _append_unique(found_character_names, chara_name)
 

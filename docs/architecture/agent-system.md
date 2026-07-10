@@ -1,6 +1,6 @@
 # Agent System
 
-The agent system enables N.E.K.O. characters to perform background tasks — browsing the web, controlling the computer, running sandboxed code, and calling external tools — triggered by conversation context.
+The agent system enables N.E.K.O. characters to perform background tasks — browsing the web, controlling the computer, delegating to standalone agent channels, and calling external tools — triggered by conversation context.
 
 ## Architecture
 
@@ -14,10 +14,11 @@ Main Server                          Agent Server
 │   │            │                  │   └── Deduper        │
 │   │ callbacks  │ <──────────────  │                      │
 │   │            │  PUSH/PULL       │ Adapters:            │
-└────────────────┘                  │   ├── MCP Client     │
-                                    │   ├── Computer Use   │
+└────────────────┘                  │   ├── Computer Use   │
                                     │   ├── Browser Use    │
-                                    │   └── Virtual Machine│
+                                    │   ├── OpenClaw       │
+                                    │   ├── OpenFang       │
+                                    │   └── User Plugin    │
                                     └────────────────────┘
 ```
 
@@ -29,9 +30,10 @@ Agent capabilities are toggled via flags managed through the `/api/agent/flags` 
 |------|---------|-------------|
 | `agent_enabled` | false | Master switch for agent system |
 | `computer_use_enabled` | false | Screenshot analysis, mouse/keyboard |
-| `mcp_enabled` | false | Model Context Protocol tool calls |
 | `browser_use_enabled` | false | Web browsing automation |
-| `vm_enabled` | false | Virtual machine sandbox execution |
+| `user_plugin_enabled` | false | Plugin / Model Context Protocol tool calls |
+| `openclaw_enabled` | false | OpenClaw standalone-agent channel |
+| `openfang_enabled` | false | OpenFang standalone-agent channel |
 
 ## Task execution pipeline
 
@@ -40,10 +42,10 @@ Agent capabilities are toggled via flags managed through the `/api/agent/flags` 
 2. **Plan**: The `Planner` decomposes the request into a task plan with ordered steps.
 
 3. **Execute**: The `Processor` runs each step through the appropriate adapter:
-   - **MCP Client** — Calls external tools via the Model Context Protocol
    - **Computer Use** — Takes screenshots, analyzes them with vision models, performs mouse/keyboard actions
    - **Browser Use** — Navigates web pages, extracts content, fills forms
-   - **Virtual Machine** — Executes code and commands in an isolated sandbox environment
+   - **OpenClaw / OpenFang** — Delegate the task to a standalone agent channel
+   - **User Plugin** — Calls external tools via user-installed plugins (Model Context Protocol)
 
 4. **Analyze**: The `Analyzer` evaluates whether the task goal has been achieved.
 
@@ -80,14 +82,15 @@ The Browser Use adapter (`brain/browser_use_adapter.py`) wraps the `browser-use`
 - Click elements
 - Take page screenshots
 
-## Virtual Machine
+## OpenClaw
 
-The Virtual Machine adapter provides an isolated sandbox environment for code execution:
+The OpenClaw adapter (`brain/openclaw_adapter.py`) delegates an actionable task to the OpenClaw standalone agent channel (internally referenced as `qwenpaw`).
 
-- Execute code and shell commands in a sandboxed VM
-- File system isolation prevents unintended modifications to the host
-- Supports long-running tasks with timeout controls
-- Results are streamed back via ZeroMQ
+## OpenFang
+
+The OpenFang adapter (`brain/openfang_adapter.py`) delegates an actionable task to the OpenFang standalone agent channel.
+
+The channel selection priority is defined in `brain/task_executor.py` as `_CHANNEL_PRIORITY = ["qwenpaw", "openfang", "browser_use", "computer_use"]`. Plugin / MCP tool calls (`user_plugin_enabled`) are dispatched through a separate path and are **not** part of `_CHANNEL_PRIORITY`.
 
 ## API endpoints
 

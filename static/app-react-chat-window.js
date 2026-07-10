@@ -18,7 +18,8 @@
     var CHAT_SURFACE_MODE_STORAGE_KEY = 'neko.reactChatWindow.chatSurfaceMode';
     var GALGAME_HISTORY_LIMIT = 6;
     var EVENT_PREFIX = 'react-chat-window:';
-    var CHAT_MINIMIZED_BALL_ICON_SRC = '/static/assets/neko-idle/chat-minimized-yarn-ball.png';
+    var CHAT_MINIMIZED_BALL_ICON_SRC = '/static/assets/neko-idle/chat-minimized-yarn-ball-116.png';
+    var CHAT_MINIMIZED_BALL_ICON_SRCSET = '/static/assets/neko-idle/chat-minimized-yarn-ball-116.png 1x, /static/assets/neko-idle/chat-minimized-yarn-ball-232.png 2x';
     // Frozen legacy `full` keeps its era's minimized orb — the glowing "breathing
     // light" ball (old icon + box-shadow pulse from full-chat-minimize.css) —
     // instead of the active compact yarn ball. Strictly gated on the restorable
@@ -131,6 +132,20 @@
             && isElectronChatWindow()
             && body.getAttribute('data-chat-host-kind') === 'compact'
         );
+    }
+
+    function isElectronChatRuntime() {
+        var body = document.body;
+        return !!(
+            (body && body.classList.contains('neko-electron-runtime')) ||
+            window.nekoChatWindow ||
+            /Electron/i.test(navigator.userAgent || '') ||
+            (window.process && window.process.versions && window.process.versions.electron)
+        );
+    }
+
+    function isCompactOnlyElectronRuntimeChatHost() {
+        return !!(isCompactOnlyElectronChatHost() && isElectronChatRuntime());
     }
 
     function coerceChatSurfaceModeForHost(mode) {
@@ -387,6 +402,7 @@
     var COMPACT_SURFACE_VIEWPORT_PAD_X = 16;
     var COMPACT_SURFACE_VIEWPORT_PAD_TOP = 12;
     var COMPACT_SURFACE_VIEWPORT_PAD_BOTTOM = 18;
+    var COMPACT_SURFACE_ELECTRON_DEFAULT_BOTTOM_GAP = 320;
     var COMPACT_SURFACE_DEFAULT_HEIGHT = 64;
     var COMPACT_SURFACE_AVATAR_VERTICAL_RATIO = 0.72;
     var COMPACT_SURFACE_POSITION_STORAGE_KEY = 'neko.reactChatWindow.compactSurfacePosition';
@@ -395,6 +411,10 @@
     var mobileExpandClickGuard = null;
     var mobileExpandVisualGuardTimer = 0;
     var compactMinimizeBallFrame = 0;
+    // surface 锚点跟踪：拖拽/缩放会话每帧同步保证跟手；静止时只做短暂 settle，
+    // 后续由 layout/avatar/resize/geometry 事件重新唤醒，避免 compact 打开后长期空转。
+    var COMPACT_SURFACE_IDLE_SETTLE_FRAME_COUNT = 3;
+    var compactSurfaceTrackingSettleFramesRemaining = 0;
     var compactSurfaceAnchorSnapshot = '';
     var compactDesktopSurfaceAnchorSnapshot = '';
     var compactInteractionGeometrySnapshot = '';
@@ -466,6 +486,7 @@
             compactSurfaceAnchorLocked = false;
             compactSurfaceAnchorSnapshot = '';
         }
+        // 桌面侧布局变化（窗口移动/跨屏等）：立即唤醒短 settle，避免静止态停帧后漏掉新 anchor。
         scheduleCompactMinimizeBallTracking();
     }
 
@@ -986,6 +1007,44 @@
         showIdleCat1CompactMirror(detail);
     }
 
+    function getIdleCat1PlayYarnReleaseTargetRect(detail) {
+        if (!detail || typeof detail !== 'object') return null;
+        var screenTarget = normalizeCompactDesktopRect(detail.targetScreenRect);
+        if (screenTarget && !isElectronChatWindow()) {
+            var screenX = Number.isFinite(Number(window.screenX)) ? Number(window.screenX) : Number(window.screenLeft);
+            var screenY = Number.isFinite(Number(window.screenY)) ? Number(window.screenY) : Number(window.screenTop);
+            if (Number.isFinite(screenX) && Number.isFinite(screenY)) {
+                return normalizeCompactDesktopRect({
+                    left: screenTarget.left - screenX,
+                    top: screenTarget.top - screenY,
+                    width: screenTarget.width,
+                    height: screenTarget.height
+                });
+            }
+        }
+        return normalizeCompactDesktopRect(detail.targetRect);
+    }
+
+    function applyIdleCat1PlayYarnRelease(detail) {
+        if (!detail || !detail.releaseDrag) return;
+        if (dragState) {
+            stopDrag({ suppressClick: true });
+        }
+        if (isElectronChatWindow()) return;
+        var shell = getShell();
+        if (!shell || !shell.classList || !shell.classList.contains('is-minimized')) return;
+        var target = getIdleCat1PlayYarnReleaseTargetRect(detail);
+        if (!target) return;
+        var shellRect = shell.getBoundingClientRect();
+        var width = shellRect && shellRect.width > 0 ? shellRect.width : MINIMIZED_SIZE;
+        var height = shellRect && shellRect.height > 0 ? shellRect.height : MINIMIZED_SIZE;
+        applyPosition(
+            target.left + target.width / 2 - width / 2,
+            target.top + target.height / 2 - height / 2
+        );
+        syncCompactInteractionGeometry();
+    }
+
     function handleIdleCat1PlayYarnVisibility(event) {
         var detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
         var hidden = !!(detail && detail.hidden);
@@ -999,10 +1058,17 @@
                 syncCompactInteractionGeometry();
             }
         }
+        if (!hidden) {
+            applyIdleCat1PlayYarnRelease(detail);
+        }
         var bridge = window.nekoChatWindow;
         if (bridge && typeof bridge.setCompactChatBallTemporarilyHidden === 'function') {
             try {
-                bridge.setCompactChatBallTemporarilyHidden(hidden);
+                bridge.setCompactChatBallTemporarilyHidden(hidden, {
+                    releaseDrag: !!(detail && detail.releaseDrag),
+                    targetScreenRect: detail && detail.targetScreenRect ? detail.targetScreenRect : null,
+                    releaseReason: detail && detail.releaseReason ? detail.releaseReason : ''
+                });
             } catch (_) {}
         }
     }
@@ -1291,9 +1357,12 @@
         var metrics = getCompactSurfaceMetrics();
         var viewportWidth = window.innerWidth;
         var viewportHeight = window.innerHeight;
+        var fallbackBottomGap = isCompactOnlyElectronRuntimeChatHost()
+            ? Math.max(COMPACT_SURFACE_VIEWPORT_PAD_BOTTOM, COMPACT_SURFACE_ELECTRON_DEFAULT_BOTTOM_GAP)
+            : COMPACT_SURFACE_VIEWPORT_PAD_BOTTOM;
         var fallbackTop = Math.max(
             COMPACT_SURFACE_VIEWPORT_PAD_TOP,
-            viewportHeight - metrics.height - COMPACT_SURFACE_VIEWPORT_PAD_BOTTOM
+            viewportHeight - metrics.height - fallbackBottomGap
         );
 
         if (isElectronChatWindow()) {
@@ -1766,7 +1835,7 @@
                 if (style && Number(style.opacity) <= 0.01) return null;
                 var rect = normalizeCompactDomRect(child.getBoundingClientRect());
                 if (!rect) return null;
-                var clippedRect = kind === 'musicPlayer'
+                var clippedRect = kind === 'musicPlayer' || kind === 'meme'
                     ? rect
                     : (parentRect ? intersectCompactRects(rect, parentRect) : rect);
                 if (!clippedRect) return null;
@@ -2036,8 +2105,18 @@
             window.cancelAnimationFrame(compactMinimizeBallFrame);
             compactMinimizeBallFrame = 0;
         }
+        compactSurfaceTrackingSettleFramesRemaining = 0;
         compactSurfacePendingModelOpen = false;
         clearCompactSurfaceAnchor();
+    }
+
+    function isCompactSurfaceTrackingActive() {
+        return !!(
+            (dragState && dragState.compactSurface) ||
+            compactSurfaceDesktopDragActive ||
+            compactSurfaceResizeSession ||
+            compactSurfaceDesktopResizeActive
+        );
     }
 
     function scheduleCompactMinimizeBallTracking() {
@@ -2045,6 +2124,7 @@
             stopCompactMinimizeBallTracking();
             return;
         }
+        compactSurfaceTrackingSettleFramesRemaining = COMPACT_SURFACE_IDLE_SETTLE_FRAME_COUNT;
         if (compactMinimizeBallFrame) {
             return;
         }
@@ -2055,8 +2135,17 @@
                 stopCompactMinimizeBallTracking();
                 return;
             }
+            var trackingActive = isCompactSurfaceTrackingActive();
+            if (!trackingActive && compactSurfaceTrackingSettleFramesRemaining <= 0) {
+                return;
+            }
             syncCompactSurfaceAnchor();
             syncCompactInteractionGeometry();
+            if (trackingActive) {
+                compactSurfaceTrackingSettleFramesRemaining = COMPACT_SURFACE_IDLE_SETTLE_FRAME_COUNT;
+            } else {
+                compactSurfaceTrackingSettleFramesRemaining -= 1;
+            }
             compactMinimizeBallFrame = window.requestAnimationFrame(loop);
         };
 
@@ -2574,7 +2663,7 @@
             galgameModeEnabled: !!state.galgameModeEnabled,
             galgameOptions: Array.isArray(state.galgameOptions) ? state.galgameOptions : [],
             galgameOptionsLoading: !!state.galgameOptionsLoading,
-            choicePrompt: state.choicePrompt || null,
+            choicePrompt: getRevealedChoicePrompt(),
             onMessageAction: handleMessageAction,
             onComposerImportImage: handleComposerImportImage,
             onComposerScreenshot: handleComposerScreenshot,
@@ -2591,6 +2680,8 @@
             onChoiceSelect: handleChoiceSelect,
             onCompactChatStateChange: handleCompactChatStateChange,
             onCompactMinimizeRequest: handleCompactMinimizeRequest,
+            avatarToolMenuOpenRequest: state.viewProps.avatarToolMenuOpenRequest || null,
+            compactToolFanOpenRequest: state.viewProps.compactToolFanOpenRequest || null,
             compactToolWheelRotateRequest: state.viewProps.compactToolWheelRotateRequest || null,
             compactToolWheelIndexRequest: state.viewProps.compactToolWheelIndexRequest || null,
             compactHistoryOpenRequest: state.viewProps.compactHistoryOpenRequest || null
@@ -3045,19 +3136,29 @@
     }
 
     function handleComposerScreenshot() {
+        var handled = false;
         if (typeof state.onComposerScreenshot === 'function') {
             try {
                 state.onComposerScreenshot();
+                handled = true;
             } catch (error) {
                 console.error('[ReactChatWindow] onComposerScreenshot failed:', error);
+                handled = false;
             }
         } else if (window.appButtons && typeof window.appButtons.captureScreenshotToPendingList === 'function') {
-            window.appButtons.captureScreenshotToPendingList();
+            try {
+                window.appButtons.captureScreenshotToPendingList();
+                handled = true;
+            } catch (error) {
+                console.error('[ReactChatWindow] captureScreenshotToPendingList failed:', error);
+                handled = false;
+            }
         } else {
             console.warn('[ReactChatWindow] no screenshot handler available');
         }
 
-        dispatchHostEvent('screenshot', {});
+        dispatchHostEvent('screenshot', { handled: handled });
+        return handled;
     }
 
     function handleComposerRemoveAttachment(attachmentId) {
@@ -3240,11 +3341,16 @@
     function setTranslateEnabled(enabled, options) {
         var requestOptions = options || {};
         var next = !!enabled;
+        var shouldPersist = requestOptions.persist !== false;
+        var syncSource = requestOptions.source || 'react-chat-host-set-enabled';
         if (requestOptions.syncBridge !== false) {
             try {
                 var bridge = window.subtitleBridge;
                 if (bridge && typeof bridge.setSubtitleEnabled === 'function') {
-                    bridge.setSubtitleEnabled(next);
+                    bridge.setSubtitleEnabled(next, {
+                        persist: shouldPersist,
+                        source: syncSource
+                    });
                 } else {
                     throw new Error('subtitleBridge.setSubtitleEnabled unavailable');
                 }
@@ -3259,14 +3365,15 @@
                         subtitleStore.updateSettings({
                             subtitleEnabled: next
                         }, {
-                            source: 'react-chat-fallback-set-enabled'
+                            persist: shouldPersist,
+                            source: syncSource
                         });
                         synced = true;
                     } catch (storeErr) {
                         console.warn('[ReactChatWindow] subtitle shared update failed:', storeErr);
                     }
                 }
-                if (!synced) {
+                if (!synced && shouldPersist) {
                     try {
                         localStorage.setItem('subtitleEnabled', String(next));
                     } catch (storageErr) {
@@ -3276,7 +3383,7 @@
             }
         }
 
-        if (requestOptions.persist !== false
+        if (shouldPersist
             && window.appSettings
             && typeof window.appSettings.saveSettings === 'function') {
             try {
@@ -3410,19 +3517,31 @@
         }
     }
 
-    function setGalgameModeTemporarilyDisabled(disabled) {
+    function setGalgameModeTemporarilyDisabled(disabled, options) {
+        var requestOptions = options || {};
         var next = !!disabled;
         var changed = state.galgameTemporarilyDisabled !== next;
         state.galgameTemporarilyDisabled = next;
 
         if (next) {
-            setGalgameModeEnabled(false, { persist: false });
+            setGalgameModeEnabled(false, {
+                persist: false,
+                skipRender: requestOptions.skipRender === true
+            });
         } else if (changed) {
             setGalgameModeEnabled(readGalgameModePreference(), {
                 persist: false,
-                suppressRefetch: true
+                suppressRefetch: true,
+                skipRender: requestOptions.skipRender === true
             });
         }
+    }
+
+    function syncTutorialGalgameSuppression() {
+        setGalgameModeTemporarilyDisabled(
+            state.homeTutorialInputLocked || isHomeTutorialInteractionLocked(),
+            { skipRender: true }
+        );
     }
 
     function setGalgameModeEnabled(enabled, options) {
@@ -3446,7 +3565,9 @@
         if ((!requestOptions || requestOptions.persist !== false) && !isGalgameModeTemporarilyDisabled()) {
             persistGalgameModePreference(next);
         }
-        renderWindow();
+        if (!requestOptions.skipRender) {
+            renderWindow();
+        }
         if (changed) {
             // 派发 effective 值（与 body class 一致）：composer 隐藏期间即使
             // setGalgameModeEnabled(true) 也广播 enabled=false，避免监听器
@@ -3499,6 +3620,7 @@
         for (var i = msgs.length - 1; i >= 0 && collected.length < GALGAME_HISTORY_LIMIT; i--) {
             var m = msgs[i];
             if (!m) continue;
+            if (isYuiGuideChatMessage(m)) continue;
             if (m.role !== 'assistant' && m.role !== 'user') continue;
             var text = '';
             if (Array.isArray(m.blocks)) {
@@ -3541,6 +3663,12 @@
     function fetchGalgameOptionsForLatestTurn() {
         if (isGalgameModeTemporarilyDisabled()) return;
         if (!state.galgameModeEnabled) return;
+        // icebreaker 脚本选项激活期间不抢选项槽——含揭示延迟内 prompt 已就位、按钮尚未
+        // 露出（choicePrompt 非 null 但 getRevealedChoicePrompt 返回 null）的那段。否则
+        // icebreaker 台词的 turn-end 会触发 galgame A/B/C，在脚本选项露出前挤进同一槽位
+        // （Codex P2）。icebreaker 运行在 home tutorial 之外，galgameTemporarilyDisabled
+        // 此时并不覆盖它，故须单独按 choicePrompt 拦。
+        if (state.choicePrompt && state.choicePrompt.source === 'new_user_icebreaker') return;
         var history = getRecentGalgameMessageHistory();
         if (!history.length) return;
         if (history[history.length - 1].role !== 'assistant') return;
@@ -3981,6 +4109,44 @@
         renderWindow();
     }
 
+    var choicePromptRevealTimer = null;
+
+    // icebreaker choicePrompt 的「视觉揭示」延迟：state.choicePrompt 一旦设置就立刻生效
+    // （handleComposerSubmit 据此把间隙内的自由文本判为 icebreaker free-text 而非普通
+    // 聊天），但带 revealAt 时，按钮要等到该时刻才传给 React 组件（见 getRevealedChoicePrompt
+    // + buildRenderProps）。延迟只藏按钮、不扣状态，这样既保留「选项晚于台词露出」的观感，
+    // 又不会重新打开间隙内输入落到普通聊天的窗口。
+    function scheduleChoicePromptReveal() {
+        if (choicePromptRevealTimer) {
+            window.clearTimeout(choicePromptRevealTimer);
+            choicePromptRevealTimer = null;
+        }
+        var prompt = state.choicePrompt;
+        if (!prompt || !prompt.revealAt) return;
+        var remaining = prompt.revealAt - Date.now();
+        if (remaining <= 0) {
+            prompt.revealAt = 0;
+            return;
+        }
+        choicePromptRevealTimer = window.setTimeout(function () {
+            choicePromptRevealTimer = null;
+            // 仅当同一个 prompt 仍在台上才揭示——期间被新 prompt 覆盖或清空则什么都不做。
+            if (state.choicePrompt === prompt) {
+                prompt.revealAt = 0;
+                renderWindow();
+            }
+        }, remaining);
+    }
+
+    // 渲染层取用的 choicePrompt：揭示时刻未到的 icebreaker prompt 先把按钮藏起来（返回
+    // null，视觉等同于尚未下发），其他 source 或已到点的照常返回。
+    function getRevealedChoicePrompt() {
+        var prompt = state.choicePrompt;
+        if (!prompt) return null;
+        if (prompt.revealAt && Date.now() < prompt.revealAt) return null;
+        return prompt;
+    }
+
     function setNewUserIcebreakerPrompt(payload) {
         if (!payload) return;
         var sessionId = String(payload.sessionId || '');
@@ -3998,13 +4164,16 @@
             console.warn('[NewUserIcebreaker] all options filtered out, skipping render', payload);
             return;
         }
+        var revealDelayMs = Number(payload.revealDelayMs) || 0;
         state.choicePrompt = {
             source: 'new_user_icebreaker',
             sessionId: sessionId,
             gameType: String(payload.gameType || 'new_user_icebreaker'),
-            options: cleanedOptions
+            options: cleanedOptions,
+            revealAt: revealDelayMs > 0 ? Date.now() + revealDelayMs : 0
         };
         invalidatePendingGalgameRequest();
+        scheduleChoicePromptReveal();
         renderWindow();
     }
 
@@ -4024,10 +4193,32 @@
         setNewUserIcebreakerPrompt(payload);
     }
 
+    function clearChoicePromptBySource(source, reason) {
+        var normalizedSource = String(source || '');
+        if (!normalizedSource) return false;
+        if (normalizedSource !== 'new_user_icebreaker') return false;
+        if (!state.choicePrompt || state.choicePrompt.source !== normalizedSource) return false;
+        if (window.console && typeof window.console.debug === 'function') {
+            window.console.debug('[NewUserIcebreaker] clearChoicePromptBySource:', normalizedSource, reason || '');
+        }
+        state.choicePrompt = null;
+        if (choicePromptRevealTimer) {
+            window.clearTimeout(choicePromptRevealTimer);
+            choicePromptRevealTimer = null;
+        }
+        invalidatePendingGalgameRequest();
+        renderWindow();
+        return true;
+    }
+
     function clearIcebreakerChoicePrompt(sessionId) {
         if (!state.choicePrompt || state.choicePrompt.source !== 'new_user_icebreaker') return false;
         if (sessionId && state.choicePrompt.sessionId !== String(sessionId)) return false;
         state.choicePrompt = null;
+        if (choicePromptRevealTimer) {
+            window.clearTimeout(choicePromptRevealTimer);
+            choicePromptRevealTimer = null;
+        }
         renderWindow();
         return true;
     }
@@ -4295,6 +4486,7 @@
             compactChatState: getCurrentCompactChatState(),
             composerDisabled: !!next
         });
+        syncTutorialGalgameSuppression();
         renderWindow();
     }
 
@@ -4312,6 +4504,7 @@
             compactInputLocked: next,
             composerDisabled: !!state.homeTutorialInteractionLocked
         });
+        syncTutorialGalgameSuppression();
         renderWindow();
     }
 
@@ -4561,6 +4754,13 @@
             if (!idleDockTriggeredMinimize || idleDockActive || !isIdleDockTierActive()) return;
             var latestShell = getShell();
             if (!latestShell) return;
+            if (isMinimizeTransitioning) {
+                var pendingSurfaceMode = pendingChatSurfaceMode;
+                var pendingSurfaceCommit = pendingMinimizedSurfaceCommit;
+                cancelActiveAnimation();
+                pendingChatSurfaceMode = pendingSurfaceMode;
+                pendingMinimizedSurfaceCommit = pendingSurfaceCommit;
+            }
             minimized = true;
             latestShell.classList.remove('is-collapsing', 'is-expanding');
             latestShell.style.transform = 'none';
@@ -4570,6 +4770,12 @@
             latestShell.style.removeProperty('bottom');
             latestShell.classList.add('is-minimized');
             syncChatSurfaceModeUI();
+            commitPendingMinimizedSurfaceMode();
+            flushPendingChatSurfaceModeIfNeeded();
+            if (!minimized || getCurrentChatSurfaceMode() !== 'minimized') {
+                clearIdleDockState();
+                return;
+            }
             finishIdleDockMinimize(latestShell);
         }, 460);
     }
@@ -5428,6 +5634,7 @@
             ballIcon.src = legacyFull
                 ? CHAT_MINIMIZED_BALL_LEGACY_FULL_ICON_SRC
                 : CHAT_MINIMIZED_BALL_ICON_SRC;
+            ballIcon.srcset = legacyFull ? '' : CHAT_MINIMIZED_BALL_ICON_SRCSET;
         }
         var shell = getShell();
         if (shell) {
@@ -5444,9 +5651,11 @@
         if (!icon) {
             icon = document.createElement('img');
             icon.className = 'react-chat-minimized-icon';
-            icon.src = isLegacyFullMinimizedBall()
+            var legacyFullIcon = isLegacyFullMinimizedBall();
+            icon.src = legacyFullIcon
                 ? CHAT_MINIMIZED_BALL_LEGACY_FULL_ICON_SRC
                 : CHAT_MINIMIZED_BALL_ICON_SRC;
+            icon.srcset = legacyFullIcon ? '' : CHAT_MINIMIZED_BALL_ICON_SRCSET;
             icon.alt = '';
             icon.draggable = false;
             var handle = getHeader();
@@ -5682,20 +5891,38 @@
             shell.classList.add('is-collapsing');
             void shell.offsetHeight; // 强制 reflow
 
+            var handled = false;
+            var collapseTimer = null;
+            var collapseScaleFrame = 0;
+            var collapseScaleInnerFrame = 0;
+            function cancelCollapseScaleFrames() {
+                if (collapseScaleFrame) {
+                    window.cancelAnimationFrame(collapseScaleFrame);
+                    collapseScaleFrame = 0;
+                }
+                if (collapseScaleInnerFrame) {
+                    window.cancelAnimationFrame(collapseScaleInnerFrame);
+                    collapseScaleInnerFrame = 0;
+                }
+            }
+
             // 5. 设置目标 transform，触发动画
             //    动画期间 left/top 不动，只通过动态 origin 缩放到 target。
-            requestAnimationFrame(function () {
-                requestAnimationFrame(function () {
+            collapseScaleFrame = requestAnimationFrame(function () {
+                collapseScaleFrame = 0;
+                if (handled || !shell.classList.contains('is-collapsing') || shell.classList.contains('is-minimized')) return;
+                collapseScaleInnerFrame = requestAnimationFrame(function () {
+                    collapseScaleInnerFrame = 0;
+                    if (handled || !shell.classList.contains('is-collapsing') || shell.classList.contains('is-minimized')) return;
                     shell.style.transform = 'scale(' + sx + ', ' + sy + ')';
                 });
             });
 
             // 6. 过渡结束后切换到最终的 minimized 状态
-            var handled = false;
-            var collapseTimer = null;
             var finishCollapse = function () {
                 if (handled) return;
                 handled = true;
+                cancelCollapseScaleFrames();
                 clearTimeout(collapseTimer);
                 shell.removeEventListener('transitionend', onEnd);
                 activeAnimationCleanup = null;
@@ -5730,6 +5957,7 @@
 
             // 注册清理句柄，供 closeWindow / 下次动画调用
             activeAnimationCleanup = function () {
+                cancelCollapseScaleFrames();
                 clearTimeout(collapseTimer);
                 shell.removeEventListener('transitionend', onEnd);
                 shell.classList.remove('is-collapsing');
@@ -6192,6 +6420,9 @@
 
         shell.classList.add('is-dragging');
         document.body.classList.add('react-chat-window-dragging');
+        if (compactSurface) {
+            scheduleCompactMinimizeBallTracking();
+        }
     }
 
     function updateDrag(clientX, clientY) {
@@ -6624,6 +6855,10 @@
             setGalgameModeTemporarilyDisabled(false);
         });
 
+        window.addEventListener('neko:new-user-icebreaker-reset', function () {
+            clearChoicePromptBySource('new_user_icebreaker', 'new-user-icebreaker-reset');
+        });
+
         // Refresh option list whenever an assistant turn finishes streaming.
         window.addEventListener('neko-assistant-turn-end', function () {
             if (!state.galgameModeEnabled) return;
@@ -6995,6 +7230,7 @@
         setOnComposerScreenshot: function (handler) {
             state.onComposerScreenshot = typeof handler === 'function' ? handler : null;
         },
+        triggerComposerScreenshot: handleComposerScreenshot,
         setOnComposerRemoveAttachment: function (handler) {
             state.onComposerRemoveAttachment = typeof handler === 'function' ? handler : null;
         },
@@ -7028,6 +7264,7 @@
         setMiniGameInvitePrompt: setMiniGameInvitePrompt,
         setIcebreakerChoicePrompt: setIcebreakerChoicePrompt,
         setChoicePrompt: setChoicePrompt,
+        clearChoicePromptBySource: clearChoicePromptBySource,
         setNewUserIcebreakerPrompt: setNewUserIcebreakerPrompt,
         clearIcebreakerChoicePrompt: clearIcebreakerChoicePrompt,
         // unified resolved handler：accept 兼 launch / decline / suppress 都通过

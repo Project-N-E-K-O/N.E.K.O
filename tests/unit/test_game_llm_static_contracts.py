@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from config.prompts.prompts_game import (
+from config.prompts.prompts_soccer import (
     get_soccer_pregame_context_prompt,
     get_soccer_quick_lines_prompt,
     get_soccer_quick_lines_user_prompt,
@@ -85,17 +85,47 @@ def test_soccer_realtime_context_posts_local_mutation_headers():
 @pytest.mark.unit
 def test_soccer_template_posts_session_debug_errors():
     html = ROOT.joinpath("templates/soccer_demo.html").read_text(encoding="utf-8")
-    debug_block = html.split("function _sendSoccerDebugLog(payload)", 1)[1].split(
-        "function soccerSessionDebugLog",
-        1,
-    )[0]
+    debug_start_anchor = "function _sendSoccerDebugLog(payload)"
+    debug_end_anchor = "function soccerSessionDebugLog"
+    assert debug_start_anchor in html
+    assert debug_end_anchor in html
+    debug_block = html.split(debug_start_anchor, 1)[1].split(debug_end_anchor, 1)[0]
 
     assert "/api/game/logs" in html
+    assert "/api/game/logs/enable" in html
     assert "window.SoccerDemoDebugLog = soccerSessionDebugLog" in html
+    assert "window.EnableSoccerSessionDebugLog = enableSoccerSessionDebugLog" in html
     assert "window.addEventListener('error'" in html
     assert "window.addEventListener('unhandledrejection'" in html
     assert "console.warn = function soccerDebugConsoleWarn" in html
     assert "console.error = function soccerDebugConsoleError" in html
+    assert "sessionDebugLogEnabled: false" in html
+    assert "sessionDebugLogEnablePromise: null" in html
+    assert "sessionDebugLogEnableGeneration: 0" in html
+    assert "sessionDebugLogMutationHeaders: null" in html
+    assert "if (!_llm.sessionDebugLogEnabled) return;" in debug_block
+    assert "function resetSoccerSessionDebugLogEnableState()" in html
+    assert "resetSoccerSessionDebugLogEnableState();" in html
+    assert "SOCCER_SESSION_DEBUG_ENABLE_TIMEOUT_MS" in html
+    assert "function _hasSoccerSessionDebugLogSendCredentials()" in html
+    assert "function _enableSoccerSessionDebugLogAfterRouteStart()" in html
+    assert "function _startSoccerSessionDebugLogEnablePromise(workPromise, generation)" in html
+    assert "_llm.sessionDebugLogEnableGeneration += 1;" in html
+    assert "const isCurrentGeneration = () => _llm.sessionDebugLogEnableGeneration === generation;" in html
+    assert "if (!isCurrentGeneration()) return { ok: false, reason: 'stale_enable_result' };" in html
+    assert "then((headers) => _enableSoccerDebugLogWithHeaders(reason, headers || {}))" in html
+    assert "return _startSoccerSessionDebugLogEnablePromise(_getLocalMutationHeaders()" in html
+    assert "enableReason: 'route_start_send_gate'" in html
+    assert "reason: 'missing_csrf_token'" in html
+    assert "_llm.sessionDebugLogMutationHeaders = debugLogMutationHeaders;" in html
+    assert "_llm.sessionDebugLogMutationHeaders = null;" in html
+    assert "_postSoccerDebugLogPayload(logPayload, _llm.sessionDebugLogMutationHeaders)" in debug_block
+    assert "await enableSoccerSessionDebugLog('auto_route_start')" not in html
+    assert "enableSoccerSessionDebugLog('auto_route_start')" not in html
+    assert not re.search(r"if\s*\(\s*data\.ok\s*\)\s*{\s*_llm\.sessionDebugLogEnabled\s*=\s*true;", html)
+    route_success_block = html.split("if (data.ok)", 1)[1].split("_llm.routeLanlanName", 1)[0]
+    assert "_enableSoccerSessionDebugLogAfterRouteStart();" in route_success_block
+    assert "enableSoccerSessionDebugLog('keyboard_l')" in html
     assert "session_id: _llm.sessionId" in html
     assert "game_type: 'soccer'" in html
     assert "lanlan_name: _llm.routeLanlanName || ''" in html

@@ -1,6 +1,6 @@
 # LLMSessionManager
 
-**文件：** `main_logic/core.py`（约 2300 行）
+**文件：** `main_logic/core.py`（约 10400 行）
 
 `LLMSessionManager` 是 N.E.K.O. 的核心——每个角色一个实例，管理整个对话生命周期。
 
@@ -56,9 +56,9 @@
 
 将待处理的 Agent 结果注入到下一轮 LLM 对话中，使角色能够引用 Agent 的发现。
 
-### `translate_if_needed(text)`
+### `_get_translation_service()`
 
-当用户语言与角色语言不同时翻译文本。
+惰性初始化并返回一个共享的 `TranslationService`（来自 `utils/language_utils.py`），它通过 `translate_text_robust()` / `translate_dict()` 执行稳健翻译，采用 googletrans → translatepy → LLM 的回退链。注意：`LLMSessionManager` 仅暴露该访问器，并不存在 `translate_if_needed(text)` 方法。真正「当用户语言与角色语言不同时翻译」的行为位于 REST 层（例如 `main_routers/characters_router.py`，它负责翻译角色档案字段），而不在会话管理器上。
 
 ## 线程模型
 

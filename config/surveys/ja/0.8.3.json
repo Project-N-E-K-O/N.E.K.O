@@ -1,0 +1,40 @@
+{
+  "survey_version": "0.8.3",
+  "title": "ここまで付き合ってくれてありがとう、開発ねこが感想を聞きたいな",
+  "intro": "1分だけ、もっと良くするために協力してね。すべて任意で、いつでもスキップできるよ。",
+  "questions": [
+    {
+      "id": "keep_one",
+      "type": "single",
+      "label": "これから開発チームが一つの機能だけに集中して磨けるとしたら、どれにしてほしい？",
+      "options": [
+        { "value": "chat", "label": "テキスト会話" },
+        { "value": "voice", "label": "ボイス会話" },
+        { "value": "proactive", "label": "自発的な話しかけ" },
+        { "value": "games", "label": "ミニゲーム・ふれあい" },
+        { "value": "appearance", "label": "見た目・着せ替え" }
+      ]
+    },
+    {
+      "id": "drop_one",
+      "type": "single",
+      "label": "もし手が足りなくて一つの機能の更新を止めるとしたら、どれが一番影響が少ない？",
+      "options": [
+        { "value": "chat", "label": "テキスト会話" },
+        { "value": "voice", "label": "ボイス会話" },
+        { "value": "proactive", "label": "自発的な話しかけ" },
+        { "value": "games", "label": "ミニゲーム・ふれあい" },
+        { "value": "appearance", "label": "見た目・着せ替え" }
+      ]
+    },
+    {
+      "id": "suggestion",
+      "type": "text",
+      "label": "ほかに伝えたいことはある？ぐちでも願いごとでも大歓迎。",
+      "placeholder": "たとえば最近そっと閉じたくなった瞬間、いちばん改善してほしい機能、あるいは開発ねこへの一言でも……（任意）",
+      "placeholder_from": "keep_one",
+      "placeholder_template": "「{label}」をどの方向に磨いてほしい？ほかのことでもどうぞ～（任意）",
+      "max_length": 500
+    }
+  ]
+}

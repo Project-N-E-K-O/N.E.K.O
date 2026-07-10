@@ -2,7 +2,7 @@
     'use strict';
 
     var SOURCE = 'new_user_icebreaker';
-    var GAME_TYPE = 'new_user_icebreaker';
+    var ICEBREAKER_API_BASE = '/api/icebreaker';
     var STORAGE_KEY = 'neko.new_user_icebreaker.v1';
     var AVATAR_FLOATING_GUIDE_STORAGE_KEY = 'neko_avatar_floating_guide_v1';
     var ICEBREAKER_BRIDGE_STORAGE_KEY = 'neko_new_user_icebreaker_bridge_event';
@@ -11,14 +11,28 @@
     var TRIGGER_WINDOW_MS = 2 * 60 * 1000;
     var PERSISTED_END_WINDOW_MS = 15 * 60 * 1000;
     var TUTORIAL_IDLE_RETRY_MS = 500;
+    var CHOICE_PROMPT_REVEAL_MIN_DELAY_MS = 700;
+    var CHOICE_PROMPT_REVEAL_MAX_DELAY_MS = 1400;
+    var CHOICE_PROMPT_REVEAL_SPEECH_RATIO = 0.18;
+    var TTS_REQUEST_MAX_WAIT_MS = 12000;
+    var assistantLoading = window.NekoIcebreakerAssistantLoading;
+    var freeTextRuntime = window.NekoIcebreakerFreeTextRuntime;
+    var FREE_TEXT_TOPIC_ON_TOPIC = freeTextRuntime && freeTextRuntime.TOPIC_ON_TOPIC || 'on_topic';
+    var FREE_TEXT_TOPIC_SOFT_DERAIL = freeTextRuntime && freeTextRuntime.TOPIC_SOFT_DERAIL || 'soft_derail';
+    var FREE_TEXT_TOPIC_HARD_EXIT = freeTextRuntime && freeTextRuntime.TOPIC_HARD_EXIT || 'hard_exit';
     var activeSession = null;
     var pendingStartDay = '';
+    var pendingGuideEndStateDay = '';
+    var pendingGuideEndState = null;
+    var pendingGuideEndStartPromise = null;
     var scriptPromise = null;
     var localePromises = Object.create(null);
     var icebreakerSortKeySeq = 0;
     var icebreakerBridgeTimestampSeq = 0;
-    var icebreakerSubtitlePanelOpenedSessionId = '';
     var contextAppendPromise = Promise.resolve();
+    var freeTextState = freeTextRuntime && typeof freeTextRuntime.createRuntimeStateStore === 'function'
+        ? freeTextRuntime.createRuntimeStateStore()
+        : null;
 
     function safeJsonParse(raw, fallback) {
         if (!raw) return fallback;
@@ -60,7 +74,7 @@
     }
 
     function isPeriodActive() {
-        return !!activeSession;
+        return !!(activeSession || pendingStartDay || pendingGuideEndStateDay);
     }
 
     function fetchJson(url) {
@@ -130,7 +144,7 @@
         }
 
         return getLocalMutationHeaders().then(function (headers) {
-            return fetch('/api/game/' + encodeURIComponent(GAME_TYPE) + path, {
+            return fetch(ICEBREAKER_API_BASE + path, {
                 method: 'POST',
                 headers: headers,
                 credentials: 'same-origin',
@@ -148,41 +162,96 @@
         });
     }
 
-    function openSubtitleTranslationForIcebreakerAssistantMessage() {
-        try {
-            var bridge = window.subtitleBridge;
-            if (bridge && typeof bridge.setSubtitleEnabled === 'function') {
-                bridge.setSubtitleEnabled(true);
-            }
-        } catch (error) {
-            console.warn('[NewUserIcebreaker] subtitle bridge open failed:', error);
-        }
-        try {
-            var host = window.reactChatWindowHost;
-            if (host && typeof host.setTranslateEnabled === 'function') {
-                host.setTranslateEnabled(true, {
-                    syncBridge: false,
-                    suppressHostEvent: true
-                });
-            }
-        } catch (error) {
-            console.warn('[NewUserIcebreaker] subtitle host translation open failed:', error);
-        }
-    }
-
     function clearPendingStartDay(dayKey) {
         if (pendingStartDay === dayKey) {
             pendingStartDay = '';
         }
     }
 
+    function clearPendingGuideEndStateDay(dayKey) {
+        if (pendingGuideEndStateDay === dayKey) {
+            pendingGuideEndStateDay = '';
+        }
+        if (pendingGuideEndState && String(pendingGuideEndState.day || '') === dayKey) {
+            pendingGuideEndState = null;
+        }
+    }
+
+    function markPendingStartFromEndState(endState) {
+        var dayKey = String(endState && endState.day || '');
+        if (dayKey) {
+            pendingGuideEndStateDay = dayKey;
+            pendingGuideEndState = endState;
+        }
+        return dayKey;
+    }
+
+    function dispatchIcebreakerEnded(reason) {
+        try {
+            window.dispatchEvent(new CustomEvent('neko:new-user-icebreaker-ended', {
+                detail: { reason: reason || 'complete' }
+            }));
+        } catch (_) {}
+    }
+
     function endIcebreakerRoute(session, reason) {
         if (!session || session.routeEnded) return Promise.resolve(false);
         session.routeEnded = true;
+        clearFreeTextRuntimeStateForSession(session);
         return postIcebreakerRoute('/route/end', session, {
             reason: reason || 'icebreaker_complete',
             postgameProactive: { enabled: false }
         });
+    }
+
+    function endIcebreakerRouteOnPageExit(reason) {
+        var session = activeSession;
+        if (!session || session.routeEnded || !session.sessionId) return;
+        clearChoicePrompt();
+        session.routeEnded = true;
+        clearFreeTextRuntimeStateForSession(session);
+        var body = {
+            lanlan_name: resolveLanlanName(),
+            session_id: String(session.sessionId || ''),
+            i18n_language: currentLocale(),
+            reason: reason || 'icebreaker_page_exit',
+            postgameProactive: { enabled: false }
+        };
+        try {
+            var security = window.nekoLocalMutationSecurity;
+            if (security && typeof security.peekCachedToken === 'function') {
+                var token = security.peekCachedToken();
+                if (token) {
+                    body._csrf_token = token;
+                }
+            }
+        } catch (_) {}
+        var rawBody = JSON.stringify(body);
+        try {
+            if (navigator.sendBeacon && typeof Blob === 'function') {
+                if (navigator.sendBeacon(
+                    ICEBREAKER_API_BASE + '/route/end',
+                    new Blob([rawBody], { type: 'application/json' })
+                )) {
+                    return;
+                }
+            }
+        } catch (error) {
+            console.warn('[NewUserIcebreaker] route lifecycle beacon failed:', error);
+        }
+        try {
+            fetch(ICEBREAKER_API_BASE + '/route/end', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'same-origin',
+                keepalive: true,
+                body: rawBody
+            }).catch(function (error) {
+                console.warn('[NewUserIcebreaker] route lifecycle keepalive failed:', error);
+            });
+        } catch (error) {
+            console.warn('[NewUserIcebreaker] route lifecycle keepalive threw:', error);
+        }
     }
 
     function loadScripts() {
@@ -243,6 +312,19 @@
         return Math.min(9000, Math.max(1400, value.length * 120));
     }
 
+    // 选项揭示延迟：让选项按钮在 assistant 台词上屏、开始播放之后再露出，避免选项与
+    // 台词同时蹦出。注意这只是「视觉」延迟——choicePrompt 仍会立刻下发给 chat host 完成
+    // 输入路由绑定（host 据此把间隙内的自由文本判为 icebreaker free-text 而非普通聊天），
+    // 真正延后的只是按钮的可见性（host 按 revealDelayMs 计时露出）。延迟若改回「扣住
+    // choicePrompt 不下发」会重新打开间隙内输入落到普通聊天的窗口。
+    function computeChoicePromptRevealDelay(text) {
+        var speechDuration = estimateSpeechDurationMs(text);
+        return Math.min(
+            CHOICE_PROMPT_REVEAL_MAX_DELAY_MS,
+            Math.max(CHOICE_PROMPT_REVEAL_MIN_DELAY_MS, speechDuration * CHOICE_PROMPT_REVEAL_SPEECH_RATIO)
+        );
+    }
+
     function resolveLanlanName() {
         try {
             return (window.appState && window.appState.lanlan_name)
@@ -257,6 +339,22 @@
 
     function resolveAuthor() {
         return resolveLanlanName() || 'N.E.K.O';
+    }
+
+    function makeIcebreakerApiError(reason, payload) {
+        var normalizedReason = String(reason || 'icebreaker_api_error');
+        var error = new Error(normalizedReason);
+        error.reason = normalizedReason;
+        error.payload = payload || null;
+        return error;
+    }
+
+    function isIcebreakerRouteInactiveError(error) {
+        var reason = String((error && error.reason) || (error && error.message) || '');
+        return reason === 'route_not_active'
+            || reason === 'stale_session'
+            || reason === 'session_id_mismatch'
+            || reason === 'missing_session_id';
     }
 
     function resolveAssistantAvatarUrl() {
@@ -368,6 +466,14 @@
         });
     }
 
+    function broadcastIcebreakerClearChoicePromptSource(source, reason) {
+        broadcastIcebreaker(null, {
+            action: 'icebreaker_clear_choice_prompt_source',
+            source: source || SOURCE,
+            reason: reason || 'icebreaker_source_reset'
+        });
+    }
+
     function appendLlmContext(role, text, meta) {
         var cleanRole = String(role || '').trim();
         var cleanText = String(text || '').trim();
@@ -401,7 +507,7 @@
         }
 
         function postContextWithHeaders(headers, allowRetry) {
-            return fetch('/api/game/' + encodeURIComponent(GAME_TYPE) + '/context', {
+            return fetch(ICEBREAKER_API_BASE + '/context', {
                 method: 'POST',
                 headers: headers,
                 credentials: 'same-origin',
@@ -437,8 +543,115 @@
         return contextAppendPromise;
     }
 
-    function finalizeIcebreakerAssistantSubtitle(text) {
-        var line = String(text || '').trim();
+    // 把用户在破冰里点的「有效选项」追加进后端持久化选项池（/api/icebreaker/choice）。
+    // 这条独立于 appendLlmContext：后者写的是临时会话上下文，这里写的是跨会话留存、
+    // 当前不喂模型也不进记忆的独立信号，纯 fire-and-forget，失败只告警不阻断教程流。
+    function recordChoiceToPool(meta) {
+        var info = meta && typeof meta === 'object' ? meta : {};
+        var nodeId = String(info.nodeId || '').trim();
+        var choice = String(info.choice || '').trim();
+        if (!nodeId || !choice) return Promise.resolve(false);
+        // 用 session 起始钉死的角色快照，而非点击时现取 resolveLanlanName()：若中途换了
+        // 当前角色，选项仍归属到 /route/start 激活的那个角色，避免把后半段路径写到错角色
+        // 名下（正是这个 per-角色池要避免的串味）。同步取值，防 activeSession 在 await 中被清。
+        var lanlanName = String((activeSession && activeSession.lanlanName) || resolveLanlanName() || '');
+        var body = {
+            lanlan_name: lanlanName,
+            session_id: String(info.sessionId || (activeSession && activeSession.sessionId) || ''),
+            day: String(info.day || (activeSession && activeSession.day) || ''),
+            node_id: nodeId,
+            choice: choice,
+            label: String(info.label || ''),
+            handoff: info.handoff === true,
+            completed: info.completed === true,
+            seq: Number(info.seq) || 0
+        };
+
+        function parseChoiceResponse(response) {
+            if (!response.ok) throw new Error('HTTP ' + response.status);
+            return response.json().then(function (data) {
+                return !!(data && data.ok);
+            });
+        }
+
+        // 与 /context 同款：缓存的 local-mutation token 过期（如后端重启而页面常驻）时，
+        // 403 csrf_validation_failed 不当普通失败丢弃，刷新 token 后重试一次，避免静默漏记。
+        function postChoiceWithHeaders(headers, allowRetry) {
+            return fetch(ICEBREAKER_API_BASE + '/choice', {
+                method: 'POST',
+                headers: headers,
+                credentials: 'same-origin',
+                // keepalive：让本请求挺过页面卸载（reload/close），与 endIcebreakerRouteOnPageExit
+                // 用 beacon/keepalive 发 /route/end 对称，避免点完即关页时浏览器取消普通 fetch 致丢记。
+                // body 仅 ~200 字节，远低于 keepalive 的 64KB 上限。
+                keepalive: true,
+                body: JSON.stringify(body)
+            }).then(function (response) {
+                if (allowRetry && response.status === 403) {
+                    return response.clone().json().catch(function () {
+                        return null;
+                    }).then(function (errorBody) {
+                        if (errorBody && errorBody.error_code === 'csrf_validation_failed') {
+                            return refreshLocalMutationHeaders().then(function (nextHeaders) {
+                                return postChoiceWithHeaders(nextHeaders, false);
+                            });
+                        }
+                        return parseChoiceResponse(response);
+                    });
+                }
+                return parseChoiceResponse(response);
+            });
+        }
+
+        return getLocalMutationHeaders().then(function (headers) {
+            return postChoiceWithHeaders(headers, true);
+        }).catch(function (error) {
+            console.warn('[NewUserIcebreaker] record choice to pool failed:', error);
+            return false;
+        });
+    }
+
+    // Also defined in app-interpage.js for the standalone chat bridge path.
+    function getIcebreakerMessageText(message) {
+        var blocks = message && Array.isArray(message.blocks) ? message.blocks : [];
+        for (var i = 0; i < blocks.length; i++) {
+            if (blocks[i] && blocks[i].type === 'text') {
+                var text = String(blocks[i].text || '').trim();
+                if (text) return text;
+            }
+        }
+        return '';
+    }
+
+    function syncIcebreakerAssistantCompactCaption(role, message) {
+        if (role !== 'assistant') return;
+        var line = getIcebreakerMessageText(message);
+        if (!line) return;
+        var turnId = String((message && (message.turnId || message.id)) || makeMessageId('icebreaker-turn'));
+        var detail = {
+            turnId: turnId,
+            segmentId: turnId + ':icebreaker',
+            text: line,
+            source: SOURCE
+        };
+        try {
+            window.dispatchEvent(new CustomEvent('neko-assistant-turn-start', {
+                detail: {
+                    turnId: turnId,
+                    source: SOURCE
+                }
+            }));
+            window.dispatchEvent(new CustomEvent('neko-compact-caption-update', {
+                detail: detail
+            }));
+        } catch (error) {
+            console.warn('[NewUserIcebreaker] compact caption sync failed:', error);
+        }
+    }
+
+    function finalizeIcebreakerAssistantSubtitleTranslation(role, message) {
+        if (role !== 'assistant') return;
+        var line = getIcebreakerMessageText(message);
         if (!line) return;
         try {
             var bridge = window.subtitleBridge;
@@ -459,19 +672,52 @@
         }
     }
 
-    function shouldOpenIcebreakerSubtitlePanelOnce() {
-        var sessionId = activeSession && activeSession.sessionId ? activeSession.sessionId : '';
-        if (!sessionId || icebreakerSubtitlePanelOpenedSessionId === sessionId) return false;
-        icebreakerSubtitlePanelOpenedSessionId = sessionId;
-        return true;
+    function waitForIcebreakerChatHostMounted(host) {
+        return new Promise(function (resolve) {
+            var attempts = 0;
+            function checkMounted() {
+                var isMounted = false;
+                try {
+                    isMounted = !!(host && typeof host.isMounted === 'function' && host.isMounted());
+                } catch (_) {}
+                if (isMounted || attempts >= 100) {
+                    window.setTimeout(resolve, 0);
+                    return;
+                }
+                attempts += 1;
+                window.setTimeout(checkMounted, 50);
+            }
+            checkMounted();
+        });
     }
 
-    function syncIcebreakerAssistantSubtitle(role, contextOk, text) {
-        if (role !== 'assistant' || contextOk !== true) return;
-        if (shouldOpenIcebreakerSubtitlePanelOnce()) {
-            openSubtitleTranslationForIcebreakerAssistantMessage();
+    function showIcebreakerAssistantFakeLoading(session) {
+        if (!assistantLoading || typeof assistantLoading.showAssistantFakeLoading !== 'function') {
+            return Promise.resolve(false);
         }
-        finalizeIcebreakerAssistantSubtitle(text);
+        return assistantLoading.showAssistantFakeLoading({
+            session: session,
+            source: SOURCE,
+            getActiveSession: function () { return activeSession; },
+            shouldRender: shouldRenderIcebreakerOnLocalChatHost,
+            waitForChatHost: waitForChatHost,
+            waitForMounted: waitForIcebreakerChatHostMounted
+        });
+    }
+
+    function appendAssistantChatMessage(text, meta, session) {
+        var targetSession = session || activeSession;
+        return showIcebreakerAssistantFakeLoading(targetSession).then(function () {
+            if (targetSession && activeSession !== targetSession) return null;
+            return appendChatMessage('assistant', text, meta);
+        }).then(function (message) {
+            if (targetSession && activeSession !== targetSession) return null;
+            return message;
+        });
+    }
+
+    function didAppendChatMessage(message) {
+        return !!message;
     }
 
     function appendChatMessage(role, text, meta) {
@@ -492,19 +738,28 @@
             icebreaker: Object.assign({ source: SOURCE }, meta || {})
         };
         broadcastIcebreakerAppendMessage(message);
-        return appendLlmContext(role, messageText, meta || {}).then(function (contextOk) {
+        return appendLlmContext(role, messageText, meta || {}).then(function () {
             if (!shouldRenderIcebreakerOnLocalChatHost()) {
-                syncIcebreakerAssistantSubtitle(role, contextOk, messageText);
+                // In desktop multi-window mode the standalone /chat page renders the
+                // bubble/caption, but the pet page remains the subtitle translation
+                // owner. Finalize here so the translation panel is populated.
+                finalizeIcebreakerAssistantSubtitleTranslation(role, message);
                 return message;
             }
+            var chatHost = null;
             return waitForChatHost(30000).then(function (host) {
+                chatHost = host;
                 if (typeof host.openWindow === 'function') {
                     host.openWindow();
                 }
                 return host.appendMessage(message);
             }).then(function (result) {
-                syncIcebreakerAssistantSubtitle(role, contextOk, messageText);
-                return result;
+                if (!result) return result;
+                return waitForIcebreakerChatHostMounted(chatHost).then(function () {
+                    syncIcebreakerAssistantCompactCaption(role, message);
+                    finalizeIcebreakerAssistantSubtitleTranslation(role, message);
+                    return result;
+                });
             });
         }).catch(function (error) {
             console.warn('[NewUserIcebreaker] append message failed:', error);
@@ -512,7 +767,7 @@
         });
     }
 
-    function speakViaProjectTts(text, voiceKey) {
+    function speakViaProjectTts(text, voiceKey, signal) {
         var line = String(text || '').trim();
         if (!line) return Promise.resolve(false);
         var sessionId = activeSession && activeSession.sessionId ? activeSession.sessionId : '';
@@ -530,29 +785,60 @@
                 voice_key: String(voiceKey || '')
             }
         };
-        return fetch('/api/game/' + encodeURIComponent(GAME_TYPE) + '/speak', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            credentials: 'same-origin',
-            body: JSON.stringify(body)
+        return getLocalMutationHeaders().then(function (headers) {
+            var requestOptions = {
+                method: 'POST',
+                headers: headers,
+                credentials: 'same-origin',
+                body: JSON.stringify(body)
+            };
+            if (signal) requestOptions.signal = signal;
+            return fetch(ICEBREAKER_API_BASE + '/speak', requestOptions);
         }).then(function (response) {
             if (!response.ok) throw new Error('HTTP ' + response.status);
             return response.json();
         }).then(function (data) {
             return !!(data && data.ok);
         }).catch(function (error) {
+            if (error && error.name === 'AbortError') return false;
             console.warn('[NewUserIcebreaker] project TTS failed:', error);
             return false;
         });
     }
 
-    function speakLine(text, voiceKey) {
-        speakViaProjectTts(text, voiceKey).then(function (ok) {
-            if (ok) return;
-            return new Promise(function (resolve) {
-                window.setTimeout(resolve, estimateSpeechDurationMs(text));
-            });
+    function waitForTtsRequest(text, voiceKey) {
+        return new Promise(function (resolve) {
+            var settled = false;
+            var controller = typeof AbortController === 'function' ? new AbortController() : null;
+            var timeoutId = window.setTimeout(function () {
+                if (controller) controller.abort();
+                finish();
+            }, TTS_REQUEST_MAX_WAIT_MS);
+            function finish() {
+                if (settled) return;
+                settled = true;
+                window.clearTimeout(timeoutId);
+                resolve();
+            }
+            try {
+                Promise.resolve(
+                    speakViaProjectTts(text, voiceKey, controller ? controller.signal : undefined)
+                ).then(finish).catch(function () {
+                    finish();
+                });
+            } catch (error) {
+                console.warn('[NewUserIcebreaker] project TTS failed:', error);
+                finish();
+            }
         });
+    }
+
+    function speakLine(text, voiceKey) {
+        var speechDurationPromise = new Promise(function (resolve) {
+            window.setTimeout(resolve, estimateSpeechDurationMs(text));
+        });
+        var ttsRequestPromise = waitForTtsRequest(text, voiceKey);
+        return Promise.all([speechDurationPromise, ttsRequestPromise]).then(function () {});
     }
 
     function applyAssistantTextEmotion(text) {
@@ -578,11 +864,141 @@
         });
     }
 
-    function setChoicePrompt(node, localeData) {
+    function findOptionByChoice(node, choice) {
+        if (freeTextRuntime && typeof freeTextRuntime.findOptionByChoice === 'function') {
+            return freeTextRuntime.findOptionByChoice(node, choice);
+        }
+        return null;
+    }
+
+    function normalizeFreeTextInterpretation(data) {
+        if (freeTextRuntime && typeof freeTextRuntime.normalizeInterpretation === 'function') {
+            return freeTextRuntime.normalizeInterpretation(data);
+        }
+        return { action: 'respond_and_keep_options', choice: '', reply: '', topicState: FREE_TEXT_TOPIC_ON_TOPIC };
+    }
+
+    function clearFreeTextRuntimeStateForSession(session) {
+        if (freeTextState && typeof freeTextState.clearForSession === 'function') {
+            freeTextState.clearForSession(session);
+        }
+    }
+
+    function getRecentFreeTextTurns(session, nodeId) {
+        return freeTextState && typeof freeTextState.getRecentTurns === 'function'
+            ? freeTextState.getRecentTurns(session, nodeId)
+            : [];
+    }
+
+    function recordFreeTextTurn(session, turn, nodeId) {
+        if (freeTextState && typeof freeTextState.recordTurn === 'function') {
+            freeTextState.recordTurn(session, turn, nodeId);
+        }
+    }
+
+    function getFreeTextDerailStreak(session, nodeId) {
+        return freeTextState && typeof freeTextState.getDerailStreak === 'function'
+            ? freeTextState.getDerailStreak(session, nodeId)
+            : 0;
+    }
+
+    function setFreeTextDerailStreak(session, nodeId, value) {
+        if (freeTextState && typeof freeTextState.setDerailStreak === 'function') {
+            freeTextState.setDerailStreak(session, nodeId, value);
+        }
+    }
+
+    function postIcebreakerJson(path, body) {
+        function parseJsonResponse(response) {
+            return response.json().catch(function () {
+                return null;
+            }).then(function (data) {
+                if (!response.ok) {
+                    throw makeIcebreakerApiError(
+                        (data && (data.reason || data.error_code)) || ('HTTP ' + response.status),
+                        data
+                    );
+                }
+                return data;
+            });
+        }
+
+        function postWithHeaders(headers, allowRetry) {
+            return fetch(ICEBREAKER_API_BASE + path, {
+                method: 'POST',
+                headers: headers,
+                credentials: 'same-origin',
+                body: JSON.stringify(body || {})
+            }).then(function (response) {
+                if (allowRetry && response.status === 403) {
+                    return response.clone().json().catch(function () {
+                        return null;
+                    }).then(function (errorBody) {
+                        if (errorBody && errorBody.error_code === 'csrf_validation_failed') {
+                            return refreshLocalMutationHeaders().then(function (nextHeaders) {
+                                return postWithHeaders(nextHeaders, false);
+                            });
+                        }
+                        return parseJsonResponse(response);
+                    });
+                }
+                return parseJsonResponse(response);
+            });
+        }
+
+        return getLocalMutationHeaders().then(function (headers) {
+            return postWithHeaders(headers, true);
+        });
+    }
+
+    function interpretFreeTextWithLlm(session, text, snapshot) {
+        var info = snapshot && typeof snapshot === 'object' ? snapshot : {};
+        var bodyNodeId = String(info.nodeId || (session && session.nodeId) || '');
+        var node = session && session.dayConfig && session.dayConfig.nodes
+            ? session.dayConfig.nodes[bodyNodeId]
+            : null;
+        var localeData = info.localeData || (session && session.localeData) || {};
+        var body = {
+            lanlan_name: String((session && session.lanlanName) || resolveLanlanName() || ''),
+            session_id: String(info.sessionId || (session && session.sessionId) || ''),
+            day: String(info.day || (session && session.day) || ''),
+            node_id: bodyNodeId,
+            i18n_language: currentLocale(),
+            assistant_line: getText(localeData, node && node.lineKey),
+            options: buildPromptOptions(node, localeData),
+            user_text: String(text || ''),
+            free_text_derail_streak: getFreeTextDerailStreak(session, bodyNodeId),
+            recent_free_text_turns: getRecentFreeTextTurns(session, bodyNodeId),
+            request_id: String(info.requestId || '')
+        };
+        return postIcebreakerJson('/free-text/interpret', body).then(function (data) {
+            if (data && data.skipped === 'stale_session') {
+                throw makeIcebreakerApiError('stale_session', data);
+            }
+            if (!data || data.ok !== true) {
+                throw makeIcebreakerApiError((data && data.reason) || 'free_text_interpreter_failed', data);
+            }
+            return normalizeFreeTextInterpretation(data);
+        });
+    }
+
+    function fallbackFreeTextInterpretation(snapshot) {
+        var fallback = (snapshot && snapshot.fallback) || {};
+        var localeData = (snapshot && snapshot.localeData) || {};
+        return {
+            action: 'respond_and_keep_options',
+            choice: '',
+            reply: getText(localeData, fallback.redirectKey),
+            topicState: FREE_TEXT_TOPIC_SOFT_DERAIL
+        };
+    }
+
+    function setChoicePrompt(node, localeData, revealDelayMs) {
         var prompt = {
             sessionId: activeSession.sessionId,
-            gameType: GAME_TYPE,
-            options: buildPromptOptions(node, localeData)
+            gameType: SOURCE,
+            options: buildPromptOptions(node, localeData),
+            revealDelayMs: revealDelayMs > 0 ? revealDelayMs : 0
         };
         broadcastIcebreakerChoicePrompt(prompt);
         if (!shouldRenderIcebreakerOnLocalChatHost()) {
@@ -642,6 +1058,18 @@
         return false;
     }
 
+    function isDay1SystrayIntroBlockingIcebreaker() {
+        try {
+            if (document.body && document.body.classList.contains('neko-day1-systray-intro-open')) {
+                return true;
+            }
+        } catch (_) {}
+        return hasVisibleTutorialBlocker([
+            '#neko-day1-systray-intro-modal',
+            '.neko-day1-systray-intro-modal'
+        ]);
+    }
+
     function isTutorialBlockingIcebreaker() {
         try {
             if (window.isInTutorial) return true;
@@ -656,6 +1084,7 @@
                 return true;
             }
         } catch (_) {}
+        if (isDay1SystrayIntroBlockingIcebreaker()) return true;
         return hasVisibleTutorialBlocker([
             '#neko-tutorial-skip-btn',
             '#home-avatar-floating-guide-player',
@@ -666,27 +1095,40 @@
     }
 
     function deliverNode(nodeId) {
-        if (!activeSession) return Promise.resolve();
-        var dayConfig = activeSession.dayConfig;
+        if (!activeSession) return Promise.resolve(false);
+        var session = activeSession;
+        var previousNodeId = session.nodeId;
+        var localeData = session.localeData;
+        var dayConfig = session.dayConfig;
         var node = dayConfig && dayConfig.nodes ? dayConfig.nodes[nodeId] : null;
-        if (!node) return Promise.resolve();
-        activeSession.nodeId = nodeId;
-        markDay(activeSession.day, {
-            started: true,
-            completed: false,
-            sessionId: activeSession.sessionId,
-            nodeId: nodeId,
-            updatedAt: Date.now()
-        });
-        var text = getText(activeSession.localeData, node.lineKey);
-        applyAssistantTextEmotion(text);
-        return appendChatMessage('assistant', text, {
-            day: activeSession.day,
+        if (!node) return Promise.resolve(false);
+        session.nodeId = nodeId;
+        var text = getText(localeData, node.lineKey);
+        return appendAssistantChatMessage(text, {
+            day: session.day,
             nodeId: nodeId,
             voiceKey: node.voiceKey || ''
-        }).then(function () {
+        }, session).then(function (message) {
+            if (activeSession !== session || session.nodeId !== nodeId) return false;
+            if (!didAppendChatMessage(message)) {
+                if (activeSession === session && session.nodeId === nodeId) {
+                    session.nodeId = previousNodeId;
+                }
+                return false;
+            }
+            markDay(session.day, {
+                started: true,
+                completed: false,
+                sessionId: session.sessionId,
+                nodeId: nodeId,
+                updatedAt: Date.now()
+            });
+            applyAssistantTextEmotion(text);
             speakLine(text, node.voiceKey || '');
-            return setChoicePrompt(node, activeSession.localeData);
+            // 立刻下发 choicePrompt 绑定输入路由；按钮可见性由 host 按 revealDelayMs 延后。
+            return setChoicePrompt(node, localeData, computeChoicePromptRevealDelay(text)).then(function () {
+                return true;
+            });
         });
     }
 
@@ -697,15 +1139,32 @@
         var day = session.day;
         var nodeId = session.nodeId;
         var sessionId = session.sessionId;
-        applyAssistantTextEmotion(text);
-        clearChoicePrompt();
-        return appendChatMessage('assistant', text, {
+        var handoffSpeechPromise = Promise.resolve(false);
+        return appendAssistantChatMessage(text, {
             day: day,
             nodeId: nodeId,
             voiceKey: option.handoffVoiceKey || '',
             handoff: true
-        }).then(function () {
-            speakLine(text, option.handoffVoiceKey || '');
+        }, session).then(function (message) {
+            if (!didAppendChatMessage(message)) return false;
+            clearChoicePrompt();
+            applyAssistantTextEmotion(text);
+            handoffSpeechPromise = speakLine(text, option.handoffVoiceKey || '');
+            // 关 route 前 await 本 session 全部未决池写入（中间+收尾）：严格后端 route 一关就
+            // 拒收，迟到的写入会丢。绝大多数早已 resolve，Promise.all 实际几乎立即完成。
+            var pendingWrites = (session.pendingChoiceWrites || []).map(function (p) {
+                return Promise.resolve(p).catch(function () {});
+            });
+            return Promise.all(pendingWrites).then(function () {
+                return endIcebreakerRoute(session, 'icebreaker_handoff');
+            });
+        }).then(function (completed) {
+            if (!completed) return false;
+            return Promise.resolve(handoffSpeechPromise).catch(function () {}).then(function () {
+                return true;
+            });
+        }).then(function (completed) {
+            if (!completed) return false;
             markDay(day, {
                 started: true,
                 completed: true,
@@ -713,20 +1172,45 @@
                 sessionId: sessionId,
                 nodeId: nodeId
             });
-            return endIcebreakerRoute(session, 'icebreaker_handoff');
-        }).then(function () {
             if (activeSession === session) {
                 activeSession = null;
             }
+            dispatchIcebreakerEnded('handoff');
             return true;
         });
+    }
+
+    function advanceWithChoice(session, option, choice, label, choiceNodeId) {
+        if (!session || activeSession !== session || !option) return Promise.resolve(null);
+        var isHandoffChoice = !!option.handoffKey;
+        setFreeTextDerailStreak(session, choiceNodeId, 0);
+        // seq 是 session 内自增步序，让消费侧按点击顺序还原路径，不受 fire-and-forget
+        // 写入到达顺序被网络打乱的影响；收尾前 completeWithHandoff 会 await 这些写入。
+        var choiceWritePromise = recordChoiceToPool({
+            day: session.day,
+            sessionId: session.sessionId,
+            nodeId: choiceNodeId,
+            choice: choice,
+            label: label,
+            handoff: isHandoffChoice,
+            completed: isHandoffChoice,
+            seq: (session.choiceSeq = (session.choiceSeq || 0) + 1)
+        });
+        (session.pendingChoiceWrites || (session.pendingChoiceWrites = [])).push(choiceWritePromise);
+        if (option.next) {
+            return deliverNode(option.next);
+        }
+        if (option.handoffKey) {
+            return completeWithHandoff(option);
+        }
+        return Promise.resolve(false);
     }
 
     function handleChoice(detail) {
         if (!activeSession || !detail) return;
         if (detail.sessionId && detail.sessionId !== activeSession.sessionId) return;
         var session = activeSession;
-        if (session.choiceInFlight) return;
+        if (session.choiceInFlight || session.freeTextInFlight) return;
         var node = session.dayConfig.nodes[session.nodeId];
         if (!node || !Array.isArray(node.options)) return;
         var choice = String(detail.choice || '');
@@ -737,6 +1221,9 @@
         session.choiceInFlight = true;
         clearChoicePrompt();
         var label = (detail.option && detail.option.label) || getText(session.localeData, option.labelKey);
+        // 叶子节点的选项带 handoffKey（无 next）即这天的收尾选择；中间节点带 next。
+        // 本次选择所属节点：deliverNode 之后 session.nodeId 会被改写，先快照下来。
+        var choiceNodeId = session.nodeId;
         appendChatMessage('user', label, {
             day: session.day,
             nodeId: session.nodeId,
@@ -752,16 +1239,15 @@
             if (activeSession !== session) {
                 return null;
             }
-            if (option.next) {
-                return deliverNode(option.next);
-            }
-            if (option.handoffKey) {
-                return completeWithHandoff(option);
-            }
-            return null;
+            // 仅在用户消息被接受后才写池：appendChatMessage 返回 null（host 渲染超时）会回滚到
+            // 原节点，此刻不能留下一条用户可能改选的幻影选项（handoff 还会误标 completed）。
+            return advanceWithChoice(session, option, choice, label, choiceNodeId);
         }).then(function (result) {
             if (activeSession === session) {
                 session.choiceInFlight = false;
+                if (result === false) {
+                    setChoicePrompt(node, session.localeData);
+                }
             }
             return result;
         }).catch(function (error) {
@@ -773,6 +1259,152 @@
         });
     }
 
+    function applyFreeTextInterpretation(session, interpretation, snapshot) {
+        if (!session || activeSession !== session) return Promise.resolve(null);
+        var info = snapshot && typeof snapshot === 'object' ? snapshot : {};
+        var day = String(info.day || session.day || '');
+        var nodeId = String(info.nodeId || session.nodeId || '');
+        var sessionId = String(info.sessionId || session.sessionId || '');
+        var localeData = info.localeData || session.localeData || {};
+        var fallback = info.fallback || (session.dayConfig && session.dayConfig.fallback) || {};
+        var currentNode = session.dayConfig && session.dayConfig.nodes
+            ? session.dayConfig.nodes[nodeId]
+            : null;
+        var decision = normalizeFreeTextInterpretation(interpretation);
+
+        if (decision.action === 'choose' && currentNode) {
+            var option = findOptionByChoice(currentNode, decision.choice);
+            if (option) {
+                setFreeTextDerailStreak(session, nodeId, 0);
+                recordFreeTextTurn(session, {
+                    userText: info.userText,
+                    action: 'choose',
+                    choice: decision.choice,
+                    topicState: FREE_TEXT_TOPIC_ON_TOPIC
+                }, nodeId);
+                clearChoicePrompt();
+                session.choiceInFlight = true;
+                return advanceWithChoice(session, option, decision.choice, getText(localeData, option.labelKey), nodeId).then(function (result) {
+                    if (activeSession === session) {
+                        session.choiceInFlight = false;
+                        if (result === false) {
+                            setChoicePrompt(currentNode, localeData);
+                        }
+                    }
+                    return result;
+                }).catch(function (error) {
+                    console.warn('[NewUserIcebreaker] interpreted choice failed:', error);
+                    if (activeSession === session) {
+                        session.choiceInFlight = false;
+                        setChoicePrompt(currentNode, localeData);
+                    }
+                    return null;
+                });
+            }
+            decision = {
+                action: 'respond_and_keep_options',
+                choice: '',
+                reply: decision.reply,
+                topicState: decision.topicState
+            };
+        }
+
+        if (decision.action === 'respond_and_keep_options'
+            && decision.topicState === FREE_TEXT_TOPIC_SOFT_DERAIL
+            && getFreeTextDerailStreak(session, nodeId) >= 1) {
+            decision = {
+                action: 'release',
+                choice: '',
+                reply: '',
+                topicState: FREE_TEXT_TOPIC_SOFT_DERAIL
+            };
+        }
+
+        if (decision.action === 'release') {
+            var releaseText = decision.reply || getText(localeData, fallback.releaseKey);
+            var releaseVoiceKey = fallback.releaseVoiceKey || '';
+            recordFreeTextTurn(session, {
+                userText: info.userText,
+                action: 'release',
+                topicState: decision.topicState,
+                reply: releaseText
+            }, nodeId);
+            var releaseAppend = releaseText ? appendAssistantChatMessage(releaseText, {
+                day: day,
+                nodeId: nodeId,
+                voiceKey: releaseVoiceKey,
+                fallback: 'release',
+                freeText: true,
+                requestId: info.requestId || ''
+            }, session).then(function (message) {
+                if (!didAppendChatMessage(message)) return false;
+                return true;
+            }) : Promise.resolve(activeSession === session);
+            return releaseAppend.then(function (didAppendRelease) {
+                if (!didAppendRelease || activeSession !== session) return false;
+                session.releasedByFreeText = true;
+                setFreeTextDerailStreak(session, nodeId, 0);
+                clearChoicePrompt();
+                clearFreeTextRuntimeStateForSession(session);
+                return Promise.resolve().then(function () {
+                    if (!releaseText) return null;
+                    return speakLine(releaseText, releaseVoiceKey);
+                }).catch(function () {}).then(function () {
+                    if (activeSession !== session) return false;
+                    return endIcebreakerRoute(session, 'icebreaker_free_text_release');
+                });
+            }).then(function (completed) {
+                if (!completed) return false;
+                markDay(day, {
+                    started: true,
+                    completed: true,
+                    completedAt: Date.now(),
+                    sessionId: sessionId,
+                    nodeId: nodeId,
+                    releasedByFreeText: true
+                });
+                if (activeSession === session) {
+                    activeSession = null;
+                }
+                dispatchIcebreakerEnded('free_text_release');
+                return true;
+            });
+        }
+
+        var replyText = decision.reply || getText(localeData, fallback.redirectKey);
+        if (!replyText) {
+            return currentNode ? setChoicePrompt(currentNode, localeData) : Promise.resolve(null);
+        }
+        recordFreeTextTurn(session, {
+            userText: info.userText,
+            action: 'respond_and_keep_options',
+            topicState: decision.topicState,
+            reply: replyText
+        }, nodeId);
+        return appendAssistantChatMessage(replyText, {
+            day: day,
+            nodeId: nodeId,
+            fallback: 'respond_and_keep_options',
+            freeText: true,
+            requestId: info.requestId || ''
+        }, session).then(function (message) {
+            if (!didAppendChatMessage(message)) return null;
+            if (decision.topicState === FREE_TEXT_TOPIC_SOFT_DERAIL) {
+                setFreeTextDerailStreak(session, nodeId, 1);
+            } else {
+                setFreeTextDerailStreak(session, nodeId, 0);
+            }
+            applyAssistantTextEmotion(replyText);
+            speakLine(replyText, '');
+            if (activeSession !== session) return null;
+            currentNode = session.dayConfig && session.dayConfig.nodes
+                ? session.dayConfig.nodes[nodeId]
+                : null;
+            if (!currentNode) return null;
+            return setChoicePrompt(currentNode, localeData, computeChoicePromptRevealDelay(replyText));
+        });
+    }
+
     function handleFreeText(detail) {
         if (!activeSession || !detail) return;
         var session = activeSession;
@@ -780,59 +1412,82 @@
         var text = String(detail.text || '').trim();
         if (!text) return;
         if (session.releasedByFreeText) return;
+        if (session.freeTextInFlight || session.choiceInFlight) return;
+        session.freeTextInFlight = true;
         var day = session.day;
         var nodeId = session.nodeId;
         var sessionId = session.sessionId;
         var localeData = session.localeData;
         var fallback = (session.dayConfig && session.dayConfig.fallback) || {};
-        var isRelease = Number(session.offTopicCount || 0) >= 1;
-        session.offTopicCount = Number(session.offTopicCount || 0) + 1;
-        if (isRelease) {
-            session.releasedByFreeText = true;
-            clearChoicePrompt();
-        }
+        var requestId = detail.requestId || '';
 
-        appendChatMessage('user', text, {
+        return appendChatMessage('user', text, {
             day: day,
             nodeId: nodeId,
             freeText: true,
-            requestId: detail.requestId || ''
-        }).then(function () {
-            var fallbackKey = isRelease ? fallback.releaseKey : fallback.redirectKey;
-            var voiceKey = isRelease ? fallback.releaseVoiceKey : fallback.redirectVoiceKey;
-            var fallbackText = getText(localeData, fallbackKey);
-            if (!fallbackText) return null;
-            applyAssistantTextEmotion(fallbackText);
-            return appendChatMessage('assistant', fallbackText, {
-                day: day,
-                nodeId: nodeId,
-                voiceKey: voiceKey || '',
-                fallback: isRelease ? 'release' : 'redirect'
-            }).then(function () {
-                speakLine(fallbackText, voiceKey || '');
-                if (isRelease) {
-                    markDay(day, {
-                        started: true,
-                        completed: true,
-                        completedAt: Date.now(),
-                        sessionId: sessionId,
-                        nodeId: nodeId,
-                        releasedByFreeText: true
-                    });
-                    endIcebreakerRoute(session, 'icebreaker_free_text_release');
-                    if (activeSession === session) {
-                        activeSession = null;
-                    }
-                } else if (activeSession === session) {
-                    var currentNode = session.dayConfig && session.dayConfig.nodes
+            requestId: requestId
+        }).then(function (message) {
+            if (!message) {
+                if (activeSession === session) {
+                    var restoreNode = session.dayConfig && session.dayConfig.nodes
                         ? session.dayConfig.nodes[nodeId]
                         : null;
-                    if (currentNode) {
-                        setChoicePrompt(currentNode, localeData);
-                    }
+                    if (restoreNode) setChoicePrompt(restoreNode, localeData);
                 }
                 return null;
+            }
+            if (activeSession !== session) {
+                return null;
+            }
+            return interpretFreeTextWithLlm(session, text, {
+                day: day,
+                nodeId: nodeId,
+                sessionId: sessionId,
+                localeData: localeData,
+                fallback: fallback,
+                userText: text,
+                requestId: requestId
+            }).catch(function (error) {
+                if (isIcebreakerRouteInactiveError(error)) {
+                    throw error;
+                }
+                console.warn('[NewUserIcebreaker] free-text interpreter failed:', error);
+                return fallbackFreeTextInterpretation({
+                    localeData: localeData,
+                    fallback: fallback
+                });
+            }).then(function (interpretation) {
+                return applyFreeTextInterpretation(session, interpretation, {
+                    day: day,
+                    nodeId: nodeId,
+                    sessionId: sessionId,
+                    localeData: localeData,
+                    fallback: fallback,
+                    userText: text,
+                    requestId: requestId
+                });
             });
+        }).then(function (result) {
+            if (activeSession === session) {
+                session.freeTextInFlight = false;
+            }
+            return result;
+        }).catch(function (error) {
+            console.warn('[NewUserIcebreaker] free-text handling failed:', error);
+            if (activeSession === session) {
+                session.freeTextInFlight = false;
+                if (isIcebreakerRouteInactiveError(error)) {
+                    clearChoicePrompt();
+                    clearFreeTextRuntimeStateForSession(session);
+                    activeSession = null;
+                    return null;
+                }
+                var currentNode = session.dayConfig && session.dayConfig.nodes
+                    ? session.dayConfig.nodes[nodeId]
+                    : null;
+                if (currentNode) setChoicePrompt(currentNode, localeData);
+            }
+            return null;
         });
     }
 
@@ -840,8 +1495,7 @@
         if (!endState || endState.ended !== true) return false;
         if (endState.isAngryExit) return false;
         var outcome = String(endState.outcome || endState.rawReason || '');
-        if (outcome === 'destroy') return false;
-        if (outcome && outcome !== 'complete' && outcome !== 'skip') return false;
+        if (outcome !== 'complete') return false;
         var endedAt = Number(endState.endedAt || 0);
         if (endedAt && Date.now() - endedAt > TRIGGER_WINDOW_MS) return false;
         var day = String(endState.day || '');
@@ -910,21 +1564,22 @@
                 dayConfig: dayConfig,
                 localeData: localeData || {},
                 nodeId: dayConfig.root,
-                offTopicCount: 0,
+                // 钉死本 session 的角色：后续选项写入用这个快照而非现取，避免中途换角色串味。
+                lanlanName: resolveLanlanName(),
                 sessionId: 'icebreaker-day' + dayKey + '-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8)
             };
             return startIcebreakerRoute(nextSession).then(function (started) {
                 if (!started) return false;
                 activeSession = nextSession;
-                markDay(dayKey, {
-                    started: true,
-                    completed: false,
-                    triggeredAt: Date.now(),
-                    sessionId: activeSession.sessionId,
-                    nodeId: dayConfig.root
-                });
-                return deliverNode(dayConfig.root).then(function () {
-                    return true;
+                clearPendingGuideEndStateDay(dayKey);
+                return deliverNode(dayConfig.root).then(function (delivered) {
+                    if (delivered) return true;
+                    if (activeSession === nextSession) {
+                        activeSession = null;
+                    }
+                    return endIcebreakerRoute(nextSession, 'icebreaker_start_append_failed').then(function () {
+                        return false;
+                    });
                 });
             });
         }).then(function (result) {
@@ -954,7 +1609,8 @@
     function startFromEndStateWhenTutorialIdle(endState) {
         if (!endState) return Promise.resolve(false);
         if (isTutorialBlockingIcebreaker()) {
-            if (Date.now() >= getEndStateTriggerDeadline(endState)) return Promise.resolve(false);
+            // The Day 1 systray intro is a user-controlled modal; keep the guide end state until it closes.
+            if (!isDay1SystrayIntroBlockingIcebreaker() && Date.now() >= getEndStateTriggerDeadline(endState)) return Promise.resolve(false);
             return new Promise(function (resolve) {
                 window.setTimeout(resolve, TUTORIAL_IDLE_RETRY_MS);
             }).then(function () {
@@ -964,16 +1620,37 @@
         return Promise.resolve(startFromEndState(endState));
     }
 
+    function attemptStartFromGuideEndState(endState, pendingDay) {
+        if (!endState) return Promise.resolve(false);
+        var dayKey = String(pendingDay || endState.day || '');
+        if (activeSession) return Promise.resolve(true);
+        if (!pendingGuideEndState) return Promise.resolve(true);
+        if (dayKey && String(pendingGuideEndState.day || '') !== dayKey) return Promise.resolve(true);
+        if (pendingGuideEndStartPromise) return pendingGuideEndStartPromise;
+        pendingGuideEndStartPromise = startFromEndStateWhenTutorialIdle(endState).then(function (started) {
+            if (!started) {
+                clearPendingGuideEndStateDay(pendingDay);
+                dispatchIcebreakerEnded('start_failed');
+            }
+            return started;
+        }).catch(function (error) {
+            console.warn('[NewUserIcebreaker] deferred start failed:', error);
+            clearPendingGuideEndStateDay(pendingDay);
+            dispatchIcebreakerEnded('start_failed');
+            return false;
+        }).then(function (started) {
+            pendingGuideEndStartPromise = null;
+            return started;
+        });
+        return pendingGuideEndStartPromise;
+    }
+
     function synthesizeEndStateFromEvent(eventType, detail) {
         var normalizedDetail = detail && typeof detail === 'object' ? detail : {};
         var day = normalizedDetail.day;
         var outcome = '';
-        if (eventType === 'neko:avatar-floating-guide-skip') {
-            outcome = 'skip';
-        } else if (eventType === 'neko:avatar-floating-guide-complete') {
+        if (eventType === 'neko:avatar-floating-guide-complete') {
             outcome = 'complete';
-        } else if (eventType === 'neko:tutorial-skipped' && normalizedDetail.page === 'home') {
-            outcome = 'skip';
         } else if (eventType === 'neko:tutorial-completed' && normalizedDetail.page === 'home') {
             outcome = 'complete';
         }
@@ -1004,8 +1681,17 @@
     function handleGuideEndEvent(event) {
         var detail = event && event.detail ? event.detail : {};
         var eventType = event && event.type ? String(event.type) : '';
+        var endState = resolveLatestEndState(detail, eventType);
+        if (
+            !endState
+            || endState.isAngryExit === true
+            || String(endState.outcome || endState.rawReason || '') !== 'complete'
+        ) {
+            return;
+        }
+        var pendingDay = markPendingStartFromEndState(endState);
         window.setTimeout(function () {
-            startFromEndStateWhenTutorialIdle(resolveLatestEndState(detail, eventType));
+            attemptStartFromGuideEndState(endState, pendingDay);
         }, 500);
     }
 
@@ -1016,14 +1702,28 @@
     }
 
     window.addEventListener('neko:avatar-floating-guide-complete', handleGuideEndEvent);
-    window.addEventListener('neko:avatar-floating-guide-skip', handleGuideEndEvent);
     window.addEventListener('neko:tutorial-completed', handleGuideEndEvent);
-    window.addEventListener('neko:tutorial-skipped', handleGuideEndEvent);
+    window.addEventListener('neko:day1-systray-intro-closed', function () {
+        if (!pendingGuideEndState) return;
+        attemptStartFromGuideEndState(pendingGuideEndState, String(pendingGuideEndState.day || ''));
+    });
+    window.addEventListener('pagehide', function () {
+        endIcebreakerRouteOnPageExit('icebreaker_pagehide');
+    });
+    window.addEventListener('beforeunload', function () {
+        endIcebreakerRouteOnPageExit('icebreaker_beforeunload');
+    });
+    window.addEventListener('unload', function () {
+        endIcebreakerRouteOnPageExit('icebreaker_unload');
+    });
     window.addEventListener('neko:icebreaker-choice-selected', function (event) {
         handleChoice(event && event.detail);
     });
     window.addEventListener('neko:icebreaker-free-text-submitted', function (event) {
         handleFreeText(event && event.detail);
+    });
+    window.addEventListener('neko:new-user-icebreaker-reset', function () {
+        broadcastIcebreakerClearChoicePromptSource(SOURCE, 'new-user-icebreaker-reset');
     });
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', bootstrapFromRecentEndState, { once: true });

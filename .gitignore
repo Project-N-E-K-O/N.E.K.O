@@ -78,6 +78,7 @@ data/embedding_models/
 *.code-workspace
 .claude
 .trae/
+.kilo/
 plans/
 CLAUDE.md
 /.workbuddy/

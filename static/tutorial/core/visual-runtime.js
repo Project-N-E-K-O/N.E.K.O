@@ -31,6 +31,26 @@
         return scene.audio || {};
     }
 
+    function resolveSceneVoiceKey(director, legacyScene, fallbackVoiceKey) {
+        if (director && typeof director.resolveAvatarFloatingSceneVoiceKey === 'function') {
+            return director.resolveAvatarFloatingSceneVoiceKey(legacyScene) || fallbackVoiceKey || '';
+        }
+        return fallbackVoiceKey || '';
+    }
+
+    function resolveSceneEmotion(director, legacyScene, fallbackEmotion) {
+        if (director && typeof director.resolveAvatarFloatingSceneEmotion === 'function') {
+            const legacyEmotion = legacyScene && typeof legacyScene.emotion === 'string'
+                ? legacyScene.emotion
+                : '';
+            if (fallbackEmotion && fallbackEmotion !== legacyEmotion) {
+                return fallbackEmotion;
+            }
+            return director.resolveAvatarFloatingSceneEmotion(legacyScene) || fallbackEmotion || '';
+        }
+        return fallbackEmotion || '';
+    }
+
     function safeCall(target, methodName, fallbackValue, ...args) {
         if (!target || typeof target[methodName] !== 'function') {
             return fallbackValue;
@@ -128,7 +148,11 @@
             }
             director.appendGuideChatMessage(text, {
                 textKey: eventTextKey || sceneTextKey,
-                voiceKey: event.voiceKey || (getSceneAudio(context).voiceKey || legacyScene.voiceKey || ''),
+                voiceKey: resolveSceneVoiceKey(
+                    director,
+                    legacyScene,
+                    event.voiceKey || getSceneAudio(context).voiceKey || legacyScene.voiceKey || ''
+                ),
                 buttons: Array.isArray(event.buttons) ? event.buttons : []
             });
             return true;
@@ -137,7 +161,7 @@
         handleEmotionSet(event, context) {
             const director = getDirector(context) || this.director;
             const legacyScene = getLegacyScene(context);
-            const emotion = event.emotion || legacyScene.emotion || '';
+            const emotion = resolveSceneEmotion(director, legacyScene, event.emotion || legacyScene.emotion || '');
             if (!emotion || !director || typeof director.applyGuideEmotion !== 'function') {
                 return false;
             }
@@ -157,6 +181,12 @@
                 && typeof director.isAvatarFloatingInputIntroScene === 'function'
                 && director.isAvatarFloatingInputIntroScene(legacyScene)
             );
+            const legacySpotlightVariant = legacyScene && typeof legacyScene.spotlightVariant === 'string'
+                ? legacyScene.spotlightVariant.trim()
+                : '';
+            const externalizedSpotlightOptions = {
+                variant: legacySpotlightVariant
+            };
             if (
                 isFirstDailyInputIntro
                 && typeof director.isHomeChatExternalized === 'function'
@@ -171,7 +201,10 @@
                 if (typeof director.clearHomeSpotlightsForExternalizedChat === 'function') {
                     director.clearHomeSpotlightsForExternalizedChat();
                 }
-                director.interactionTakeover.setExternalizedChatSpotlight(normalizedIntroKind);
+                director.interactionTakeover.setExternalizedChatSpotlight(
+                    normalizedIntroKind,
+                    externalizedSpotlightOptions
+                );
                 if (typeof director.interactionTakeover.setExternalizedChatCursor === 'function') {
                     const cursorOptions = typeof director.getAvatarFloatingIntroExternalizedCursorOptions === 'function'
                         ? director.getAvatarFloatingIntroExternalizedCursorOptions(legacyScene)
@@ -209,7 +242,10 @@
                     if (typeof director.clearHomeSpotlightsForExternalizedChat === 'function') {
                         director.clearHomeSpotlightsForExternalizedChat();
                     }
-                    director.interactionTakeover.setExternalizedChatSpotlight(externalizedSpotlightKind);
+                    director.interactionTakeover.setExternalizedChatSpotlight(
+                        externalizedSpotlightKind,
+                        externalizedSpotlightOptions
+                    );
                     return true;
                 }
             }
@@ -291,7 +327,8 @@
                 const cursorKind = director.getExternalizedChatCursorTargetKind(cursorScene);
                 if (cursorKind) {
                     director.setExternalizedChatCursorEffect(cursorKind, 'move', {
-                        durationMs
+                        durationMs,
+                        freezePoint: event.freezePoint === true
                     });
                     const waitMs = durationMs > 0 ? durationMs + 500 : undefined;
                     return await director.waitForExternalizedChatCursorMove(cursorScene.id || '', waitMs);
@@ -482,6 +519,9 @@
             const legacyScene = Object.assign({}, getLegacyScene(context), {
                 operation: event.operation || (getLegacyScene(context).operation || '')
             });
+            if (event.preserveExternalizedChatGuideTarget === true) {
+                legacyScene.preserveExternalizedChatGuideTarget = true;
+            }
             if (
                 event.trigger === 'afterCursorMove'
                 && typeof director.isHomeChatExternalized === 'function'
@@ -507,7 +547,8 @@
                     legacyScene,
                     primaryTarget,
                     context ? context.narrationStartedAt : 0,
-                    context ? context.narrationPromise : null
+                    context ? context.narrationPromise : null,
+                    context
                 );
             }
             if (director.operationRegistry && typeof director.operationRegistry.run === 'function') {
@@ -515,7 +556,8 @@
                     legacyScene,
                     primaryTarget,
                     context ? context.narrationStartedAt : 0,
-                    context ? context.narrationPromise : null
+                    context ? context.narrationPromise : null,
+                    context
                 );
             }
             return false;
@@ -541,6 +583,14 @@
                 return false;
             }
             const legacyScene = getLegacyScene(context);
+            if (
+                legacyScene
+                && typeof legacyScene.id === 'string'
+                && legacyScene.id.indexOf('day4_') === 0
+                && typeof director.clearExternalizedChatGuideTarget === 'function'
+            ) {
+                director.clearExternalizedChatGuideTarget({ clearCursor: true });
+            }
             return await director.settingsTourFlow.play(legacyScene, {
                 sceneRunId: context ? context.sceneRunId : undefined,
                 previousSceneId: context ? context.previousSceneId : undefined,
@@ -582,7 +632,8 @@
                     context ? context.sceneRunId : 0,
                     audio.voiceKey || legacyScene.voiceKey || '',
                     audio.text || legacyScene.text || '',
-                    context ? context.narrationStartedAt : 0
+                    context ? context.narrationStartedAt : 0,
+                    event.beforeAudioEndMs
                 );
             }
             if (director && director.cursor && typeof director.cursor.hide === 'function') {

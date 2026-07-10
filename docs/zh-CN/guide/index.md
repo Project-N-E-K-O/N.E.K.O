@@ -1,6 +1,6 @@
 # 简介
 
-**Project N.E.K.O.**（**N**etworked **E**mpathetic **K**nowledging **O**rganism）是一个开源 AI 伙伴平台，将实时语音/文字交互、Live2D/VRM 模型渲染、持久化记忆和基于智能体的任务执行融合为一体化体验。
+**Project N.E.K.O.**（**N**etworked **E**motional **K**nowledging **O**rganism）是一个开源 AI 伙伴平台，将实时语音/文字交互、多形态 Avatar 渲染（Live2D / VRM / MMD / PNGTuber / 猫咪桌宠）、持久化记忆和基于智能体的任务执行融合为一体化体验。
 
 ## 什么是 N.E.K.O.？
 

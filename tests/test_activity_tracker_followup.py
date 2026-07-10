@@ -22,6 +22,7 @@ import pytest
 from main_logic.activity.snapshot import (
     ActivitySnapshot,
     UnfinishedThread,
+    derive_propensity,
     derive_skip_probability,
     derive_tone,
     format_activity_state_section,
@@ -518,6 +519,41 @@ def test_activity_state_unfinished_thread_hides_followup_count():
     assert '/1' not in out
 
 
+@pytest.mark.unit
+def test_activity_state_line_uses_localized_label_not_english_enum():
+    """Regression: the state line renders only the localized label, never
+    the bare English enum (snap.state / snap.propensity). Weak models echo
+    a leaked enum as the reply's first line, so a zh user ends up hearing
+    'focused_work' / 'restricted_screen_only'."""
+    snap = ActivitySnapshot(
+        state='focused_work', state_age_seconds=10.0, previous_state=None,
+        transitioned_recently=False, stale_returning=False,
+        propensity='restricted_screen_only', tone='concise',
+    )
+    out = format_activity_state_section(snap, lang='zh')
+    assert '专注工作中' in out
+    assert 'focused_work' not in out
+    assert 'restricted_screen_only' not in out
+
+
+@pytest.mark.unit
+def test_activity_scores_line_maps_english_state_keys_to_localized_labels():
+    """Regression: the scores line maps English state keys to localized
+    labels instead of emitting 'focused_work' raw. The keys come from the
+    emotion-tier LLM under an English contract — the subtlest leak source."""
+    snap = ActivitySnapshot(
+        state='focused_work', state_age_seconds=10.0, previous_state=None,
+        transitioned_recently=False, stale_returning=False,
+        propensity='open', tone='concise',
+        activity_scores={'focused_work': 0.7, 'chatting': 0.2, 'idle': 0.1},
+    )
+    out = format_activity_state_section(snap, lang='zh')
+    assert '专注工作中 0.7' in out
+    assert '聊天中 0.2' in out
+    assert 'focused_work' not in out
+    assert 'chatting' not in out
+
+
 # ── #1 / skip_probability ───────────────────────────────────────────
 
 
@@ -960,6 +996,29 @@ def test_activity_guess_loop_kicks_topic_candidates_before_private_bail():
     assert source.index("if rule_snap.state == 'private':") < source.index("if not _proactive_chat_enabled():")
 
 
+def test_activity_guess_gate_wired_with_production_backoff_knobs():
+    """config → tracker → gate wiring carries the user-tuned faster-decay
+    schedule: 4x growth per re-narration, capped at 900s (aligned with the
+    15-min away threshold)."""
+    from main_logic.activity.tracker import UserActivityTracker
+    from config import (
+        ACTIVITY_GUESS_BACKOFF_BASE_SECONDS,
+        ACTIVITY_GUESS_BACKOFF_MULTIPLIER,
+        ACTIVITY_GUESS_BACKOFF_CAP_SECONDS,
+    )
+
+    tracker = UserActivityTracker('test_lanlan')
+    gate = tracker._activity_guess_gate
+    assert gate._base == ACTIVITY_GUESS_BACKOFF_BASE_SECONDS
+    assert gate._mult == ACTIVITY_GUESS_BACKOFF_MULTIPLIER
+    assert gate._cap == max(
+        ACTIVITY_GUESS_BACKOFF_CAP_SECONDS, ACTIVITY_GUESS_BACKOFF_BASE_SECONDS,
+    )
+    # Pin the user's headline ask so a silent revert to the old 2x/600s is caught.
+    assert ACTIVITY_GUESS_BACKOFF_MULTIPLIER == 4.0
+    assert ACTIVITY_GUESS_BACKOFF_CAP_SECONDS == 900.0
+
+
 def test_narration_suppressed_check_defaults_and_injection():
     from main_logic.activity.tracker import UserActivityTracker
 
@@ -1007,24 +1066,48 @@ def test_activity_guess_loop_skips_llm_when_narration_suppressed():
 
 
 def test_activity_guess_signature_excludes_idle_bucket():
-    """idle seconds growing must not flip the dedup signature.
+    """The activity_guess gate must not key on monotonically-growing idle time.
 
-    While AFK, system_idle_seconds keeps climbing; the old code folded
-    idle//30 into the signature, flipping it every ~30s, defeating dedup
-    and burning one emotion-tier LLM call every ~40s during pure idle.
-    The signature now keys only on "what the user is doing" (state +
-    window + subcategory); the active->idle->away transition is still
-    caught by state (away bails anyway).
+    While AFK, system_idle_seconds keeps climbing; an earlier version folded
+    idle//30 into the dedup signature, flipping it every ~30s and burning one
+    emotion-tier LLM call every ~40s during pure idle. The gate now keys on a
+    coarse ``(state, window-category)`` signature handed to ActivityGuessGate
+    (per-signature backoff + novelty bypass); idle seconds never enter it. The
+    active->idle->away transition is still caught by state (away bails anyway).
     """
     from main_logic.activity.tracker import UserActivityTracker
 
-    source = inspect.getsource(UserActivityTracker._activity_guess_loop)
+    from types import SimpleNamespace
+
+    loop_source = inspect.getsource(UserActivityTracker._activity_guess_loop)
+    sig_source = inspect.getsource(UserActivityTracker._coarse_activity_sig)
     # idle_bucket 是旧签名里按 idle 秒数分桶的那个变量名（空烧根因），断言它
     # 不回归即精准守住该行为。不断言 "system_idle_seconds" not in source：那比
     # 约束目标更宽，会误伤将来 loop 里对 idle 秒数的其它无害引用（喂 LLM 的
     # signals 仍在 _snapshot_signals_for_llm 这个独立方法里用到它）。
-    assert "idle_bucket" not in source
-    assert "sig = (" in source
+    assert "idle_bucket" not in loop_source
+    assert "idle_bucket" not in sig_source
+    assert "self._activity_guess_gate.should_fire(" in loop_source
+    # Behaviour (not just the comment): the coarse key is (state, category) —
+    # different category → different key; same category but different
+    # canonical/subcategory → SAME key (coarsening), so window flicker within a
+    # category does not re-narrate.
+    work = SimpleNamespace(
+        state='focused_work',
+        active_window=SimpleNamespace(category='work', canonical='IDE', subcategory='code'),
+    )
+    chat = SimpleNamespace(
+        state='focused_work',
+        active_window=SimpleNamespace(category='chat', canonical='IM', subcategory='dm'),
+    )
+    same_bucket = SimpleNamespace(
+        state='focused_work',
+        active_window=SimpleNamespace(category='work', canonical='Browser', subcategory='docs'),
+    )
+    assert (UserActivityTracker._coarse_activity_sig(work)
+            != UserActivityTracker._coarse_activity_sig(chat))
+    assert (UserActivityTracker._coarse_activity_sig(work)
+            == UserActivityTracker._coarse_activity_sig(same_bucket))
 
 
 def test_conversation_turn_dispatcher_does_not_purge_topic_signals_for_redacted_turns():
@@ -1876,3 +1959,158 @@ def test_loader_wires_work_break_game_invite_probability(tmp_path):
     prefs = _load_from_file(str(pref_file))
     assert prefs is not None
     assert prefs.work_break_game_invite_probability is None
+
+
+# ── focused_video (immersive video watching) ────────────────────────
+#
+# Placed at the end of the file deliberately: the docstring-cjk ratchet
+# (scripts/check_docstring_no_cjk.py) flags CJK docstrings whose line span
+# overlaps diff-added lines. ``test_witty_quality_bar_renders`` above carries
+# an intentional CJK docstring; appending here keeps it out of this change's
+# diff range so it isn't re-flagged.
+
+
+def _video_prefs(*, focused=100, casual=10) -> ActivityPreferences:
+    """ActivityPreferences classifying player.exe as entertainment/video.
+
+    Uses a small focused_video / casual_browsing dwell threshold so tests
+    can cross them with modest fabricated time deltas.
+    """
+    return ActivityPreferences(
+        user_app_overrides={
+            'player.exe': _AppOverride(
+                category='entertainment', subcategory='video', canonical='Player',
+            ),
+            'editor.exe': _AppOverride(
+                category='work', subcategory='ide', canonical='Editor',
+            ),
+        },
+        thresholds={
+            'focused_video_min_dwell_seconds': focused,
+            'casual_browsing_min_dwell_seconds': casual,
+        },
+    )
+
+
+def test_focused_video_propensity_and_tone():
+    """focused_video reuses restricted_screen_only propensity + witty tone.
+
+    Both are deliberate reuse (no new propensity / tone added): the
+    propensity cuts music/meme/web while keeping screen snark, and witty
+    carries the same "[PASS] if you have nothing funny" quality bar as
+    casual_browsing.
+    """
+    assert derive_propensity('focused_video') == 'restricted_screen_only'
+    assert derive_tone('focused_video') == 'witty'
+
+
+def test_focused_video_fires_after_sustained_dwell():
+    """Video window below the dwell bar stays casual_browsing; past it flips.
+
+    The high threshold is the "don't trip on a freshly opened clip" gate.
+    """
+    prefs = _video_prefs(focused=100, casual=10)
+    sm = ActivityStateMachine(prefs=prefs)
+    video = _sys_snap(title='Long Movie', process='player.exe')
+    t0 = 1000.0
+    sm.update_system(video)
+    sm.update_window(observation_from_system(video, prefs), now=t0)
+
+    # Below focused_video threshold → casual_browsing (open) — just a clip.
+    early = sm.get_snapshot(now=t0 + 50)
+    assert early.state == 'casual_browsing'
+    assert early.propensity == 'open'
+
+    # Past threshold → focused_video (restricted + witty).
+    late = sm.get_snapshot(now=t0 + 120)
+    assert late.state == 'focused_video'
+    assert late.propensity == 'restricted_screen_only'
+    assert late.tone == 'witty'
+    codes = [code for code, _ in late.propensity_reasons]
+    assert 'state_focused_video' in codes
+
+
+def test_focused_video_dwell_resets_on_window_switch():
+    """Continuity: switching to a non-video window resets the dwell clock.
+
+    Watching a video, flicking to a work window, then back to the video
+    restarts the dwell timer — so the user doesn't slide into focused_video
+    on accumulated-but-interrupted watch time. This is what keeps
+    "work while a video plays in the corner" on the open (casual) side.
+    """
+    prefs = _video_prefs(focused=100, casual=10)
+    sm = ActivityStateMachine(prefs=prefs)
+    video = _sys_snap(title='Ep 1', process='player.exe')
+    work = _sys_snap(title='main.py', process='editor.exe')
+    t0 = 1000.0
+
+    # Watch video, approaching the focused_video threshold but not crossing.
+    sm.update_system(video)
+    sm.update_window(observation_from_system(video, prefs), now=t0)
+    assert sm.get_snapshot(now=t0 + 80).state == 'casual_browsing'
+
+    # Flick to a work window (dwell resets), then back to the video.
+    sm.update_window(observation_from_system(work, prefs), now=t0 + 90)
+    sm.update_system(video)
+    sm.update_window(observation_from_system(video, prefs), now=t0 + 100)
+
+    # Only 50s on the video since switching back → still casual_browsing,
+    # even though absolute time since t0 (150s) is well past the threshold.
+    snap = sm.get_snapshot(now=t0 + 150)
+    assert snap.state == 'casual_browsing'
+    assert snap.propensity == 'open'
+
+
+def test_non_video_entertainment_never_upgrades_to_focused_video():
+    """Non-video entertainment (social/etc) stays casual_browsing forever.
+
+    Only subcategory video/live can reach focused_video; other
+    entertainment dwell, however long, stays on the open side.
+    """
+    prefs = ActivityPreferences(
+        user_app_overrides={
+            'social.exe': _AppOverride(
+                category='entertainment', subcategory='social', canonical='SocialApp',
+            ),
+        },
+        thresholds={
+            'focused_video_min_dwell_seconds': 100,
+            'casual_browsing_min_dwell_seconds': 10,
+        },
+    )
+    sm = ActivityStateMachine(prefs=prefs)
+    sn = _sys_snap(title='Feed', process='social.exe')
+    t0 = 1000.0
+    sm.update_system(sn)
+    sm.update_window(observation_from_system(sn, prefs), now=t0)
+
+    snap = sm.get_snapshot(now=t0 + 500)  # way past focused_video threshold
+    assert snap.state == 'casual_browsing'
+    assert snap.propensity == 'open'
+
+
+def test_focused_video_default_dwell_threshold_is_120():
+    """Default FOCUSED_VIDEO_MIN_DWELL_SECONDS is 120s (2 min)."""
+    from main_logic.activity.state_machine import FOCUSED_VIDEO_MIN_DWELL_SECONDS
+
+    assert FOCUSED_VIDEO_MIN_DWELL_SECONDS == 120.0
+
+    # No threshold override → the instance picks up the code default.
+    prefs = ActivityPreferences(
+        user_app_overrides={
+            'player.exe': _AppOverride(
+                category='entertainment', subcategory='video', canonical='Player',
+            ),
+        },
+    )
+    sm = ActivityStateMachine(prefs=prefs)
+    assert sm._focused_video_min_dwell_seconds == 120.0
+
+    video = _sys_snap(title='Cool Video', process='player.exe')
+    t0 = 1000.0
+    sm.update_system(video)
+    sm.update_window(observation_from_system(video, prefs), now=t0)
+    # Just under the 120s default → casual_browsing (30s default already cleared).
+    assert sm.get_snapshot(now=t0 + 119).state == 'casual_browsing'
+    # Just past it → focused_video.
+    assert sm.get_snapshot(now=t0 + 121).state == 'focused_video'

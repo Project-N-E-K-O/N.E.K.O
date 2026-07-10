@@ -82,6 +82,7 @@ export const I18N = {
       setup: 'Setup 准备',
       chat: 'Chat 对话',
       evaluation: 'Evaluation 评分',
+      memory_trace: 'Memory Analysis 记忆系统分析',
       diagnostics: 'Diagnostics 诊断',
       settings: 'Settings 设置',
     },
@@ -132,6 +133,397 @@ export const I18N = {
         todo_list: [
           { tag: 'P04', text: 'Models / API Keys / Providers / UI / About 五个子页' },
         ],
+      },
+    },
+    memory_trace: {
+      title: 'Memory Trace 记忆溯源',
+      // 记忆系统分析 workspace 的子页菜单 (subnav). 记忆溯源是首个子页;
+      // 后续记忆分析子页在此追加.
+      nav: {
+        overview: '系统概况',
+        lineage: '记忆溯源',
+        embedding_space: '向量空间',
+      },
+      // 向量空间 (Embedding) 子页 (P28). 只读分析当前角色磁盘上已有的向量嵌入.
+      embedding: {
+        title: 'Embedding 向量空间',
+        intro:
+          '把当前角色每条记忆 (事实 / 反思 / 人设) 的向量嵌入 (embedding) 拿来做只读分析: '
+          + 'PCA 降到 2D 看聚类 (散点), 点选一条看它在向量空间里的最近邻, '
+          + '或对照"反思声明的来源事实"与"它语义上最像的事实" (语义源 vs 结构源). '
+          + '向量由主程序后台异步生成; 测试台自建数据通常没有向量, 需从已跑过主程序的角色导入.',
+        loading: '加载中…',
+        select_hint: '在散点图里点选一个点, 这里显示它的内容与最近邻.',
+        neighbors: '最近邻 (cosine)',
+        neighbors_none: '没有可比较的最近邻 (同一向量空间里条目太少).',
+        legend: '类型 (可勾选筛选)',
+        jump_to_lineage: '在记忆溯源中查看',
+        mode: {
+          scatter: '散点',
+          duplicates: '近重复',
+          matrix: '相似度矩阵',
+          bridges: '语义源 vs 结构源',
+        },
+        dup: {
+          threshold: '相似度阈值 (cosine)',
+          empty: '当前阈值下没有近重复对。调低阈值滑块可放宽。',
+          count_fmt: (n) => `近重复对: ${n}`,
+          capped_fmt: (n) => `过多, 仅显示分数最高的 ${n} 对。`,
+        },
+        matrix: {
+          empty_heading: '没有可比的向量子集',
+          empty_body: '需要主向量空间里至少有若干条已嵌入记忆。可在图例里调整类型筛选, 或先导入已嵌入的角色。',
+          subset_fmt: (n) => `子集: ${n} 条 (已按相似度聚类重排)`,
+          truncated_fmt: (total, shown) => `子集过大: 共 ${total} 条, 仅取前 ${shown} 条画矩阵。可用类型筛选缩小范围。`,
+          scale_low: '低',
+          scale_high: '高',
+          hint: '颜色越深 = cosine 越高。对角线恒为 1。悬停看两条记忆与分数。',
+        },
+        reducer: {
+          head: '降维算法',
+          pca: 'PCA',
+          umap: 'UMAP',
+          ready: 'UMAP 已就绪, 可切换.',
+          umap_hint: 'UMAP 按拓扑结构降维, 聚类更分明, 但需联网安装 (umap-learn '
+            + '及其二进制依赖 numba/llvmlite). 点 UMAP 即开始按需安装, 装好后自动切换; '
+            + '装不上会保持 PCA.',
+          installing: '正在安装 UMAP (联网 pip install, 可能需要几分钟, 含编译 '
+            + 'numba/llvmlite)…',
+          fallback_small: '本向量空间条目过少, UMAP 暂回落到 PCA (需 ≥4 条).',
+        },
+        cluster: {
+          toggle: '自动聚类',
+          head: '聚类',
+          loading: '聚类计算中…',
+          empty: '没有识别出明显的簇 (条目太少或彼此都不够相似)。',
+          summary_fmt: (k, noise) => `识别出 ${k} 个簇 · ${noise} 个离群点`,
+          cc_note: 'sklearn 不可用, 用 numpy 连通分量近似聚类; 启用 UMAP 会带入 HDBSCAN, 更准。',
+          proj_note: '簇在原始高维空间上划分; 投到 PCA 2D 可能看着有交叠 (UMAP 会分得更开), 这是降维固有现象。',
+          llm_btn: '用 LLM 概括聚类',
+          labeling: 'LLM 概括中…',
+          llm_fallback: 'LLM 概括未成功, 暂用每簇最具代表性的记忆作标签。',
+        },
+        type: {
+          fact: '事实',
+          reflection: '反思',
+          persona: '人设',
+        },
+        cov: {
+          embedded_fmt: (n, total) => `已嵌入 ${n}/${total} 条`,
+          missing_fmt: (n) => `缺失 ${n} 条 (无向量)`,
+          stale_fmt: (n) => `过期 ${n} 条 (改过文)`,
+          dim_fmt: (dim, count) => `主向量空间 ${dim} 维 · ${count} 条`,
+          other_space_fmt: (n) => `另有 ${n} 条属于其它维度的向量空间 (不参与本图)`,
+        },
+        empty: {
+          heading: '该角色没有可分析的向量',
+          body: '当前角色的记忆里没有任何已嵌入的向量. 向量由主程序后台异步生成 — '
+            + '请在主程序开启向量功能、让它跑出向量后, 再从 Setup → Import 导入该角色.',
+        },
+        bridges: {
+          intro:
+            '对每条反思, 比较它"声明的来源事实" (source_fact_ids, 结构源) 与"向量上最像的事实" (语义源). '
+            + '一致说明归因可信; 偏离 (蓝色=语义相近却没被列为来源 / 灰色=列为来源却语义不近) 值得复查.',
+          empty: '没有可对照的反思与事实 (需两者都已嵌入向量).',
+          semantic: '语义最近事实:',
+          extra: '声明却不相近:',
+          fact_unembedded: '(未嵌入, 无法比对语义)',
+          fact_missing: '(已删除/缺失)',
+          jump: '在溯源中查看',
+          jump_hint: '跳到记忆溯源子页并聚焦这条反思, 看它的结构化来源链.',
+        },
+      },
+      // 系统概况 (Overview) 子页 (P29). 记忆系统分析的入口页: 一屏图景 + 自动发现 +
+      // 下钻到溯源/向量空间. 只读, 不改记忆.
+      overview: {
+        title: '记忆系统概况',
+        intro:
+          '一屏看清当前角色记忆系统的运行状况: 记忆构成、嵌入覆盖、向量空间与聚类、流水线吞吐, '
+          + '并自动排查冗余重复、矛盾记忆、归因偏离、结构孤儿、嵌入健康等问题。'
+          + '每条发现可一键下钻到"记忆溯源"或"向量空间"看详情。本页只读, 不会修改任何记忆。'
+          + '可选用 LLM 生成体检报告、对"待核对候选"做矛盾判定。',
+        loading: '加载中…',
+        reload: '刷新',
+        load_failed: '加载失败',
+        no_session: {
+          heading: '尚未创建会话',
+          body: '先在顶栏新建会话并选择角色, 再来看记忆系统概况。',
+        },
+        no_character: {
+          heading: '尚未选择角色',
+          body: '当前会话还没有绑定角色; 在 Setup 选定角色后即可分析其记忆系统。',
+        },
+        empty: {
+          heading: '该角色暂无可分析的记忆',
+          body: '当前角色没有事实 / 反思 / 人设记忆。先在主程序或 Setup 让它产生记忆后再来概览。',
+        },
+        attention: {
+          none: '未发现需要关注的问题 👍',
+          some_fmt: (n) => `发现 ${n} 项需要关注`,
+        },
+        cards: {
+          composition: {
+            head: '记忆构成',
+            fmt: (c) => `事实 ${c.facts} · 反思 ${c.reflections} · 人设 ${c.persona} · `
+              + `纠正 ${c.corrections} · 对话 ${c.convo_turns} 回合`,
+          },
+          coverage: {
+            head: '嵌入覆盖',
+            fmt: (c) => `已嵌入 ${c.embedded}/${c.total} (${Math.round((c.embedded_ratio || 0) * 100)}%)`,
+            detail_fmt: (c) => `缺失 ${c.missing} · 过期 ${c.stale} · 损坏 ${c.corrupt}`,
+          },
+          space: {
+            head: '向量空间',
+            fmt: (c) => (c.primary_dim
+              ? `主空间 ${c.primary_dim} 维 · ${c.primary_count} 条`
+              : '无可用向量空间'),
+            other_fmt: (n) => `另有 ${n} 条属其它维度 (不可比)`,
+          },
+          clusters: {
+            head: '聚类',
+            fmt: (c) => (c.n_clusters
+              ? `${c.n_clusters} 个簇 · ${c.noise_count} 离群`
+              : '未识别出明显簇'),
+          },
+          pipeline: {
+            head: '流水线漏斗',
+            fmt: (c) => {
+              const pct = (x) => (x == null ? '—' : `${Math.round(x * 100)}%`);
+              return `晋升 ${pct(c.promote_rate)} · 否决 ${pct(c.reject_rate)} · `
+                + `产出 ${pct(c.extract_yield)} · 待处理 ${c.pending}`;
+            },
+          },
+          credibility: {
+            head: '结论可信度',
+            fmt: (conf) => `可信度: ${conf._levelLabel} (嵌入 ${Math.round((conf.embedded_ratio || 0) * 100)}%)`,
+          },
+        },
+        severity: { bad: '严重', warn: '注意', info: '提示' },
+        stage: {
+          extract: '抽取', dedup: '去重', reflect: '反思', promote: '晋升',
+          correct: '纠正', embed: '嵌入', structure: '结构',
+        },
+        category: {
+          redundancy: '冗余重复', contradiction: '矛盾记忆', attribution: '归因',
+          structure: '结构', embedding: '嵌入健康', pipeline: '流水线',
+          fidelity: '晋升保真', retention: '留存质量',
+        },
+        findings_head: '自动发现',
+        no_findings: '规则排查未发现明显问题。',
+        info_show_fmt: (n) => `展开 ${n} 项提示`,
+        info_hide: '收起提示项',
+        drill: {
+          lineage: '去记忆溯源查看 →',
+          embedding: '去向量空间查看 →',
+        },
+        examples_more_fmt: (n) => `…等共 ${n} 项`,
+        ai: {
+          btn: 'LLM 体检报告',
+          running: '生成中…',
+          head: 'LLM 体检报告',
+          unavailable: 'LLM 报告暂不可用 (见下方原因)。',
+          hint: '基于上面的只读统计, 让记忆模型给出总体判断与优先建议 (仅建议, 不改记忆)。',
+        },
+        contra: {
+          btn: '矛盾 NLI 裁决',
+          running: '裁决中…',
+          head: '矛盾裁决 (LLM NLI)',
+          hint: '对"同主题待核对候选"逐对做自然语言推理, 判断是否真矛盾 / 重复 / 互补 / 无关。相似不等于矛盾。',
+          none: '没有需要裁决的候选对。',
+          empty_verdicts: '模型未给出有效裁决 (见原因); 下面是候选对原文。',
+          relation: {
+            contradiction: '互相矛盾', duplicate: '重复同义',
+            complementary: '互补', unrelated: '其实无关',
+          },
+          verdict_fmt: (v) => `${v._relLabel}: ${v.reason || ''}`,
+        },
+        confidence: {
+          level: { high: '高', medium: '中', low: '低' },
+          note: {
+            NO_EMBEDDINGS: '当前角色无向量 → 冗余/归因/晋升保真/矛盾候选等向量类排查不可用。',
+            LOW_EMBED_COVERAGE: '嵌入覆盖偏低 → 向量类结论只覆盖部分记忆。',
+            SPLIT_SPACES: '存在多个维度的向量空间 → 只对最大空间作比较, 其余未参与。',
+            NO_TIME_DB: '缺少对话时间库 → 抽取产出率等对话相关指标可能不准。',
+            NO_REFLECTIONS: '尚无反思 → 晋升/否决/归因相关排查为空。',
+            FIDELITY_PARTIAL: '部分晋升缺少向量 → 晋升保真度仅部分可核验。',
+          },
+        },
+        // 每条发现的标题 + 详情. detail(f) 接收整条 finding (用 f.count / f.data).
+        finding: {
+          A1: { title: '近重复记忆对',
+            detail: (f) => `有 ${f.count} 对记忆相似度 ≥ ${f.data.threshold}, 疑似重复。`
+              + (f.data.capped ? ' (过多, 仅取分数最高的若干对)' : '') },
+          A2: { title: '高度重复的记忆簇',
+            detail: (f) => `有 ${f.count} 个簇内部高度雷同, 像是同一件事被反复记录。` },
+          A3: { title: '冗余代价',
+            detail: (f) => `约 ${f.data.redundant} 条记忆可被合并 (占已嵌入的 `
+              + `${Math.round((f.data.ratio || 0) * 100)}%, 分 ${f.data.groups} 组)。` },
+          B1: { title: '已记录的矛盾信号',
+            detail: (f) => `磁盘上有 ${f.count} 条已记录的冲突信号 (纠正 ${f.data.corrections} · `
+              + `被否决反思 ${f.data.denied} · 被抑制人设 ${f.data.suppressed})。` },
+          B2: { title: '同主题待核对候选',
+            detail: (f) => `检索到 ${f.count} 对"同对象、语义相近但不完全相同"的记忆, 值得人工或 LLM 核对是否冲突 (相似≠矛盾)。` },
+          N1: { title: '未解决的矛盾',
+            detail: (f) => `有 ${f.count} 条纠正所针对的旧人设文本仍然在册 (纠正未生效)。` },
+          C1: { title: '可能漏标的来源',
+            detail: (f) => `有 ${f.count} 条反思存在"语义上很像、却没被列为来源"的事实, 归因可能有遗漏。` },
+          C2: { title: '存疑的来源声明',
+            detail: (f) => `有 ${f.count} 条反思列出的来源事实在语义上并不接近, 归因可能偏弱。` },
+          D1: { title: '无来源的反思',
+            detail: (f) => `有 ${f.count} 条反思没有任何有效的来源事实, 无法溯源。` },
+          D2: { title: '无来源的人设',
+            detail: (f) => `有 ${f.count} 条人设声称来自反思, 但其来源反思已不存在。` },
+          D3: { title: '未被使用的事实',
+            detail: (f) => `有 ${f.count} 条事实既未被任何反思引用、也未被吸收 (共 ${f.data.total_facts} 条事实)。` },
+          D4: { title: '引用了已删除的事实',
+            detail: (f) => `有 ${f.count} 条反思的来源声明里, 共引用了 ${f.data.dangling_refs} 处已不存在 (被删除) 的事实。`
+              + '已删除的事实不应再被后续节点引用——这通常是删除事实时未同步清理引用它的反思所致, 会让这些反思的溯源链出现断点。' },
+          E1: { title: '缺失嵌入',
+            detail: (f) => `有 ${f.count}/${f.data.total} 条记忆没有向量, 无法参与向量分析。` },
+          E2: { title: '过期嵌入',
+            detail: (f) => `有 ${f.count} 条记忆改过文本但向量未更新 (stale)。` },
+          E3: { title: '损坏嵌入',
+            detail: (f) => `有 ${f.count} 条记忆的向量无法解码 (corrupt)。` },
+          E4: { title: '向量空间分裂',
+            detail: (f) => `有 ${f.count} 条向量属于非主维度空间, 与主空间不可比较。` },
+          F2: { title: '晋升停滞',
+            detail: (f) => `${f.data.reflections} 条反思里只有 ${f.data.promoted} 条晋升为人设 `
+              + `(${Math.round((f.data.rate || 0) * 100)}%), 偏低。` },
+          F3: { title: '反思积压',
+            detail: (f) => `有 ${f.count} 条反思超过 ${f.data.age_days} 天仍停留在待处理 (共 ${f.data.pending} 条待处理)。` },
+          F4: { title: '否决率偏高',
+            detail: (f) => `${f.data.reflections} 条反思里有 ${f.data.denied} 条被否决 `
+              + `(${Math.round((f.data.rate || 0) * 100)}%), 抽取质量可能有问题。` },
+          G1: { title: '晋升语义漂移',
+            detail: (f) => `有 ${f.count} 条人设与其来源反思的相似度 < ${f.data.threshold}, 晋升中语义发生了漂移。`
+              + (f.data.unverifiable ? ` (另有 ${f.data.unverifiable} 条因缺向量无法核验)` : '') },
+          H1: { title: '高价值事实被冷落',
+            detail: (f) => `有 ${f.count} 条重要度 ≥ ${f.data.importance} 的事实从未被任何反思使用。` },
+          H2: { title: '低质量事实',
+            detail: (f) => `有 ${f.count} 条事实文本过短或缺少实体, 质量偏低。` },
+          H3: { title: '僵尸事实',
+            detail: (f) => `有 ${f.count} 条事实超过 ${f.data.age_days} 天既未吸收也未被引用。` },
+        },
+      },
+      intro:
+        '把当前角色的记忆按"对话 → recent 摘要 → 事实 → 反思 → 人设"分层画成只读节点流水线图, '
+        + '看清一条记忆从哪来、到哪去. 实线 = 已落盘的真因果; 虚线 = 启发式推断 (Tier C 反向归因). '
+        + '默认只画"有连线"的记忆 (即真正参与溯源的节点), 按来源对齐、留足间距; 大量"无连线"的事实/对话默认折叠, '
+        + '点工具栏"显示未连线"可在下方网格区查看. 若图里没有连线, 点"推测全部源头"用文本相似度补出对话级来源虚线.',
+      reload: '刷新',
+      loading: '加载中…',
+      focus_tip: '点选任意节点即聚焦: 自动把该记忆的整条溯源链 (上游来源 + 下游影响) 重排并缩放到最小画面完整呈现; 点击空白处取消聚焦, 恢复整图.',
+      zoom: {
+        in: '放大',
+        out: '缩小',
+        fit: '适配窗口 (缩放到整图可见)',
+        fit_label: '适配',
+        reset: '重置为 1:1',
+      },
+      attribute_all_btn: '推测全部源头',
+      attribute_all_running: '推测中…',
+      attribute_all_hint:
+        '一次性对所有 事实 / 反思 / 人设 跑文本相似度反向归因, 画出全部虚线 (Tier C 启发式推断, 非已落盘真因果).',
+      attribute_all_done_fmt: (n, nodes, total) =>
+        `已为 ${nodes}/${total} 条记忆推测出 ${n} 条来源虚线 (文本相似度). 点选任一节点即可只看它这一条链路.`,
+      attribute_all_none: '未找到任何文本相似的来源对话 (该角色可能无对话语料, 或相似度过低).',
+      heuristic_hidden_fmt: (n) =>
+        `总览已隐藏 ${n} 条启发式来源虚线 (数量过多会看不清且拖慢画面). 点选任一记忆节点, 即可只看它这一条链路的来源.`,
+      isolated_show_fmt: (n) => `显示未连线 (${n})`,
+      isolated_hide: '隐藏未连线',
+      isolated_toggle_hint:
+        '默认折叠所有"无任何溯源连线"的节点 (多为孤立事实/对话). 展开后它们会以紧凑网格出现在主图下方, 仅供浏览, 不参与连线.',
+      isolated_zone_fmt: (n) =>
+        `未连线节点 · ${n} 条 (与任何记忆/对话都无溯源关系, 仅供浏览)`,
+      no_session: {
+        heading: '先建一个会话',
+        body: '左上角"新建会话"并选定角色后, 这里会画出该角色的记忆溯源图.',
+      },
+      no_character: {
+        heading: '先选一个角色',
+        body: '在 Setup → Persona 填角色名, 或在 Setup → Import 从真实角色导入, 才能分析其记忆.',
+      },
+      empty: {
+        heading: '该角色暂无记忆',
+        body: '当前角色还没有任何事实 / 反思 / 人设 / 对话记录. 跑几次记忆操作或导入一个真实角色后再来.',
+      },
+      load_failed: '记忆溯源图加载失败',
+      lanes: {
+        message: '对话',
+        recent_memo: 'recent 摘要',
+        fact: '事实',
+        reflection: '反思',
+        persona_entry: '人设',
+      },
+      node_type: {
+        message: '对话',
+        recent_memo: 'recent 摘要',
+        fact: '事实',
+        reflection: '反思',
+        persona_entry: '人设',
+        correction: '矛盾待裁决',
+      },
+      relation: {
+        source_fact: '由事实合成',
+        promoted_from: '由反思晋升',
+        merged_from: '由反思合并',
+        compressed_from: '由对话压缩',
+        extracted_from: '由对话抽取',
+        attributed_from: '反向归因',
+        corrects: '修正',
+      },
+      confidence: {
+        persisted: '已落盘 (真因果)',
+        captured: '生成时捕获',
+        heuristic: '启发式推断',
+      },
+      legend: {
+        heading: '图例',
+        solid: '实线 · 已落盘真因果',
+        dashed: '虚线 · 启发式推断',
+      },
+      counts_fmt: (c) =>
+        `对话 ${c.messages} · 摘要 ${c.recent_memos} · 事实 ${c.facts} · 反思 ${c.reflections} · 人设 ${c.persona} · 矛盾 ${c.corrections}`,
+      budget_fmt: (shown, total) =>
+        `已显示 ${shown} / ${total} 个节点 (其余按节点预算省略)`,
+      sources: {
+        heading: '数据源',
+        time_indexed_db_present: '对话归档 (time_indexed.db): 已加载',
+        time_indexed_db_absent: '对话归档 (time_indexed.db): 无 — 预设角色或从未对话; 导入真实角色后才有对话级溯源.',
+        time_indexed_db_hint: '提示: 重度角色的对话归档可能超过存档大小上限而不随存档/读档保留, 如需溯源请重新从真实角色导入.',
+        events_present: '事件流 (events.ndjson): 已加载',
+        events_absent: '事件流 (events.ndjson): 无 — testbench 原生记忆无 evidence 时间线, 变迁史由 status 字段粗粒度重建.',
+        trace_present: 'Tier B 侧车 (trace_provenance.json): 已加载',
+      },
+      warnings_heading: '读取告警',
+      detail: {
+        heading: '节点详情',
+        empty: '点击左侧任意节点查看其内容、来源与影响.',
+        field_type: '类型',
+        field_status: '状态',
+        field_entity: '归属',
+        field_created: '创建时间',
+        field_content: '内容',
+        field_source: '来源',
+        field_origin: '对话来源',
+        upstream: '上游来源',
+        downstream: '下游影响',
+        none: '无',
+        attribute_btn: '分析来源 (文本相似度)',
+        attribute_llm_btn: '分析来源 (LLM 精判)',
+        attributing: '分析中…',
+        attribute_hint: '反向归因为启发式重建, 画虚线 (Tier C), 非已落盘真因果.',
+        attribute_done_fmt: (n, method) =>
+          `${method === 'llm' ? 'LLM' : '文本相似度'}归因到 ${n} 条对话 (虚线)`,
+        attribute_fallback_fmt: (n, reason) =>
+          `LLM 精判失败, 已回退文本相似度归因到 ${n} 条对话 (虚线)。`
+          + `这些虚线来自文本相似度而非 LLM 精判。原因: ${reason || '未知'}`,
+        attribute_none: '未找到可归因的对话片段.',
+        attribute_failed: '反向归因失败',
+      },
+      origin: {
+        time_indexed_db: '对话归档',
+        recent_json: 'recent 窗口',
       },
     },
     setup: {
@@ -224,6 +616,29 @@ export const I18N = {
         real: {
           heading: '从主 App 真实角色导入',
           intro: '列出 ~/Documents/N.E.K.O/config/characters.json 里的所有猫娘. 只读真实目录, 复制到沙盒.',
+        },
+        // zip 人格档案导入 (用户自带压缩包, 走和 preset / 真实角色同一套写管线).
+        archive: {
+          heading: '从 zip 人格档案导入',
+          intro: '选一个 .zip 压缩包导入到当前会话. 期望布局: 根目录有 characters.json + memory/<角色名>/ (与内置预设 / 主程序数据目录同构). 只解压到沙盒临时目录, 不写真实目录. 若压缩包内含多个角色, 在下方填要导入的角色名.',
+          name_placeholder: '角色名 (多角色时必填, 单角色可留空)',
+          button_pick: '选择 zip 导入',
+          button_reading: '读取文件中…',
+          button_importing: '导入中…',
+          import_ok: (name, count) => `已从压缩包导入 ${name} (${count} 个文件)`,
+          import_failed: '压缩包导入失败',
+          // 客户端预校验 (上传前就拦掉明显不合法的选择).
+          bad_ext: (name) => `"${name}" 不是 .zip 文件. 请选择 zip 格式的人格档案压缩包.`,
+          empty_file: '选择的文件是空的 (0 字节), 无法作为人格档案导入.',
+          too_large_client: (mb) => `文件超过 ${mb} MiB 上限, 多半选错了文件 (人格档案通常远小于此). 已取消导入.`,
+          read_failed: '读取本地文件失败, 请重试或换一个文件.',
+          // 失败分类标题 (内联状态区主标题, 后端 message 作详情副行).
+          err_format: '文件格式不合法: 无法解析为角色档案',
+          err_toolarge: '压缩包过大',
+          err_no_session: '请先在顶栏新建会话, 再导入人格档案.',
+          err_ambiguous: '压缩包内含多个角色',
+          err_ambiguous_hint: '请在上方输入框填写要导入的角色名后, 重新选择文件导入.',
+          err_generic: '导入出错',
         },
         no_session: '需要先建会话才能读取真实角色目录.',
         no_real: '主 App 文档目录下没找到 characters.json, 或暂无角色.',

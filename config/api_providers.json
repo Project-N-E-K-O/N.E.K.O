@@ -62,7 +62,7 @@
     "free": {
       "key": "free",
       "name": "免费版（猫娘专属福利）",
-      "description": "阶跃星辰赞助，完全免费，无需API Key，但不支持自定义语音",
+      "description": "阶跃星辰赞助，完全免费，无需API Key",
       "openrouter_url": "https://www.lanlan.tech/text/v1",
       "conversation_model": "free-model",
       "summary_model": "free-model",
@@ -77,19 +77,19 @@
     "qwen": {
       "key": "qwen",
       "name": "阿里百炼（推荐）",
-      "description": "推荐选择，支持自定义语音和Agent模式，价格适中，国内版",
+      "description": "推荐选择，支持Agent模式，价格适中，国内版",
       "openrouter_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-      "conversation_model": "qwen3.7-plus-2026-05-26",
-      "summary_model": "qwen3.7-plus-2026-05-26",
-      "correction_model": "qwen3.7-plus",
+      "conversation_model": "qwen3.7-plus",
+      "summary_model": "qwen3.7-plus",
+      "correction_model": "qwen3.7-plus-2026-05-26",
       "emotion_model": "qwen3.6-flash",
-      "vision_model": "qwen3.7-plus-2026-05-26",
-      "agent_model": "qwen3.7-plus"
+      "vision_model": "qwen3.7-plus",
+      "agent_model": "qwen3.7-plus-2026-05-26"
     },
     "qwen_intl": {
       "key": "qwen_intl",
       "name": "阿里国际版",
-      "description": "阿里云国际版，适合海外用户，支持自定义语音和Agent模式",
+      "description": "阿里云国际版，适合海外用户，支持Agent模式",
       "openrouter_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
       "openrouter_urls": [
         "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
@@ -105,7 +105,7 @@
     "openai": {
       "key": "openai",
       "name": "OpenAI",
-      "description": "记忆管理能力强，价格很贵，不支持自定义语音",
+      "description": "记忆管理能力强，价格很贵",
       "openrouter_url": "https://api.openai.com/v1",
       "conversation_model": "gpt-5-chat-latest",
       "summary_model": "gpt-5-chat-latest",
@@ -117,7 +117,7 @@
     "glm": {
       "key": "glm",
       "name": "智谱",
-      "description": "目前完全免费，支持Agent模式，不支持自定义语音",
+      "description": "目前完全免费，支持Agent模式",
       "openrouter_url": "https://open.bigmodel.cn/api/paas/v4",
       "conversation_model": "glm-4.7-flash",
       "summary_model": "glm-4.7-flash",
@@ -129,7 +129,7 @@
     "step": {
       "key": "step",
       "name": "阶跃星辰",
-      "description": "价格便宜，功能较少，不支持Agent模式和自定义语音",
+      "description": "价格便宜，功能较少，不支持Agent模式",
       "openrouter_url": "https://api.stepfun.com/v1",
       "conversation_model": "step-2-mini",
       "summary_model": "step-2-mini",
@@ -141,7 +141,7 @@
     "silicon": {
       "key": "silicon",
       "name": "硅基流动",
-      "description": "性价比高，支持Agent模式，不支持自定义语音",
+      "description": "性价比高，支持Agent模式",
       "openrouter_url": "https://api.siliconflow.cn/v1",
       "conversation_model": "deepseek-ai/DeepSeek-V4-Flash",
       "summary_model": "deepseek-ai/DeepSeek-V4-Flash",
@@ -155,17 +155,17 @@
       "name": "Gemini（Google）",
       "description": "智能和性价比极高的辅助模型，国内版不支持",
       "openrouter_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
-      "conversation_model": "gemini-3-flash-preview",
+      "conversation_model": "gemini-3.1-flash-lite",
       "summary_model": "gemini-2.5-flash",
       "correction_model": "gemini-3-flash-preview",
       "emotion_model": "gemini-2.5-flash-lite",
-      "vision_model": "gemini-3-flash-preview",
-      "agent_model": "gemini-3-flash-preview"
+      "vision_model": "gemini-3.1-flash-lite",
+      "agent_model": "gemini-3.5-flash"
     },
     "kimi": {
       "key": "kimi",
       "name": "Kimi（月之暗面）",
-      "description": "国内可用，支持长上下文和视觉，不支持自定义语音",
+      "description": "国内可用，支持长上下文和视觉",
       "openrouter_url": "https://api.moonshot.cn/v1",
       "conversation_model": "kimi-k2.5",
       "summary_model": "kimi-k2.5",
@@ -174,10 +174,24 @@
       "vision_model": "kimi-k2.5",
       "agent_model": "kimi-k2.5"
     },
+    "kimi_code": {
+      "key": "kimi_code",
+      "name": "Kimi Code（月之暗面）",
+      "description": "Kimi Code 编程助手 API，使用 Anthropic Messages 兼容格式",
+      "openrouter_url": "https://api.kimi.com/coding",
+      "provider_type": "anthropic",
+      "fixed_model": true,
+      "conversation_model": "kimi-for-coding",
+      "summary_model": "kimi-for-coding",
+      "correction_model": "kimi-for-coding",
+      "emotion_model": "kimi-for-coding",
+      "vision_model": "kimi-for-coding",
+      "agent_model": "kimi-for-coding"
+    },
     "deepseek": {
       "key": "deepseek",
       "name": "DeepSeek",
-      "description": "性价比极高，推理能力强，不支持自定义语音",
+      "description": "性价比极高，推理能力强",
       "openrouter_url": "https://api.deepseek.com/v1",
       "conversation_model": "deepseek-v4-pro",
       "summary_model": "deepseek-v4-flash",
@@ -188,14 +202,14 @@
     },
     "doubao": {
       "key": "doubao",
-      "name": "豆包（字节跳动）",
-      "description": "国内可用，价格适中，不支持自定义语音",
+      "name": "豆包大模型(火山方舟)",
+      "description": "需提供火山方舟 API，用于豆包大模型",
       "openrouter_url": "https://ark.cn-beijing.volces.com/api/v3",
-      "conversation_model": "doubao-seed-2-0-lite-260428",
+      "conversation_model": "doubao-seed-character-260628",
       "summary_model": "doubao-seed-2-0-lite-260428",
-      "correction_model": "doubao-seed-2-0-lite-260428",
+      "correction_model": "doubao-seed-character-260628",
       "emotion_model": "doubao-seed-2-0-mini-260428",
-      "vision_model": "doubao-seed-2-0-lite-260428",
+      "vision_model": "doubao-seed-character-260628",
       "agent_model": "doubao-seed-2-0-pro-260215"
     },
     "minimax": {
@@ -243,8 +257,9 @@
     "claude": {
       "key": "claude",
       "name": "Claude（Anthropic）",
-      "description": "Anthropic的强力模型，国内无法使用，不支持自定义语音",
+      "description": "Anthropic的强力模型，国内无法使用",
       "openrouter_url": "https://api.anthropic.com/v1",
+      "provider_type": "anthropic",
       "conversation_model": "claude-sonnet-4-6",
       "summary_model": "claude-sonnet-4-6",
       "correction_model": "claude-sonnet-4-6",
@@ -291,6 +306,20 @@
       "tts_default_voice": "default"
     }
   },
+  "keybook_api_providers": {
+    "doubao_tts": {
+      "key": "doubao_tts",
+      "name": "豆包语音(火山引擎)",
+      "description": "需提供豆包语音 API，用于豆包语音合成 / 声音复刻",
+      "openrouter_url": "https://openspeech.bytedance.com",
+      "provider_type": "tts",
+      "tts_default_model": "seed-icl-2.0",
+      "tts_default_voice": "",
+      "tts_config_visible": false,
+      "probe_kind": "http_tts",
+      "probe_sub_type": "doubao_tts"
+    }
+  },
   "default_models": {
     "router_model": "openai/gpt-4.1",
     "summary_model": "qwen-plus",
@@ -316,8 +345,10 @@
     "silicon": "ASSIST_API_KEY_SILICON",
     "gemini": "ASSIST_API_KEY_GEMINI",
     "kimi": "ASSIST_API_KEY_KIMI",
+    "kimi_code": "ASSIST_API_KEY_KIMI_CODE",
     "deepseek": "ASSIST_API_KEY_DEEPSEEK",
     "doubao": "ASSIST_API_KEY_DOUBAO",
+    "doubao_tts": "ASSIST_API_KEY_DOUBAO_TTS",
     "minimax": "ASSIST_API_KEY_MINIMAX",
     "minimax_intl": "ASSIST_API_KEY_MINIMAX_INTL",
     "mimo": "ASSIST_API_KEY_MIMO",
@@ -363,6 +394,10 @@
       "config_field": "assistApiKeyKimi",
       "restricted": false
     },
+    "kimi_code": {
+      "config_field": "assistApiKeyKimiCode",
+      "restricted": false
+    },
     "doubao": {
       "config_field": "assistApiKeyDoubao",
       "restricted": false
@@ -397,6 +432,10 @@
     },
     "vllm_omni": {
       "config_field": "ttsModelApiKey",
+      "restricted": false
+    },
+    "doubao_tts": {
+      "config_field": "assistApiKeyDoubaoTts",
       "restricted": false
     }
   },

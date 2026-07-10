@@ -48,6 +48,7 @@ import tempfile
 import wave
 import zlib
 import socket
+import inspect
 from dataclasses import dataclass
 from urllib.parse import urlparse, urljoin
 from datetime import datetime, timezone
@@ -56,6 +57,7 @@ from fastapi import APIRouter, Request, File, UploadFile, Form
 from fastapi.responses import JSONResponse, Response
 import aiohttp
 import httpx
+import websockets
 # dashscope 仅用于声音克隆 TTS 预览（_do_preview_synthesize），import 偏重
 # （~0.1s）且不在 greeting/启动链上，改成用到时再 import；由 module_warmup 预热。
 
@@ -103,6 +105,19 @@ from utils.native_voice_registry import (
 from utils import tts_provider_registry
 from utils.audio import normalize_voice_clone_api_audio, validate_audio_file
 from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
+from utils.doubao_tts import (
+    DOUBAO_TTS_DEFAULT_BASE_URL,
+    DOUBAO_TTS_DEFAULT_CONTEXT_TEXTS,
+    DOUBAO_TTS_DEFAULT_RESOURCE_ID,
+    DOUBAO_VOICE_CLONE_RESOURCE_ID,
+    DOUBAO_VOICE_STORAGE_KEY,
+    DoubaoTtsError,
+    DoubaoVoiceCloneClient,
+    build_doubao_tts_payload,
+    doubao_api_headers,
+    doubao_tts_url,
+    extract_doubao_audio_bytes,
+)
 from utils.initial_personality_state import (
     clear_manual_personality_reselect,
     load_initial_personality_state,
@@ -1306,8 +1321,10 @@ def _validate_profile_name(name: str) -> str | None:
     result = validate_character_name(name, max_units=PROFILE_NAME_MAX_UNITS)
     if result.code == 'empty':
         return '档案名为必填项'
-    if result.code == 'contains_path_separator':
+    if result.code in {'contains_path_separator', 'path_traversal'}:
         return '档案名不能包含路径分隔符(/或\\)'
+    if result.code == 'unsafe_dot':
+        return '档案名不能仅由点号组成或以点号结尾'
     if result.code == 'contains_dot':
         return '档案名不能包含点号(.)'
     if result.code == 'reserved_device_name':
@@ -1318,6 +1335,33 @@ def _validate_profile_name(name: str) -> str | None:
         return '档案名只能包含文字、数字、空格、下划线、连字符、括号、间隔号(·/・)和撇号'
     if result.code == 'too_long_units':
         return f'档案名长度不能超过{PROFILE_NAME_MAX_UNITS}单位（ASCII=1，其他=2；PROFILE_NAME_MAX_UNITS={PROFILE_NAME_MAX_UNITS}）'
+    if result.code:
+        return '档案名无效'
+    return None
+
+
+def _is_safe_profile_name(name: str) -> bool:
+    return _validate_profile_name(name) is None
+
+
+def _validate_existing_character_path_name(name: str) -> str | None:
+    result = validate_character_name(name, allow_dots=True, max_units=PROFILE_NAME_MAX_UNITS)
+    if result.code == 'empty':
+        return '角色名不能为空'
+    if result.code in {'contains_path_separator', 'path_traversal'}:
+        return '角色名不能包含路径分隔符(/或\\)'
+    if result.code == 'unsafe_dot':
+        return '角色名不能仅由点号组成或以点号结尾'
+    if result.code == 'reserved_route_name':
+        return None
+    if result.code == 'reserved_device_name':
+        return '角色名不能使用 Windows 保留设备名'
+    if result.code == 'invalid_character':
+        return '角色名只能包含文字、数字、空格、点号、下划线、连字符、括号、间隔号(·/・)和撇号'
+    if result.code == 'too_long_units':
+        return f'角色名长度不能超过{PROFILE_NAME_MAX_UNITS}单位（ASCII=1，其他=2；PROFILE_NAME_MAX_UNITS={PROFILE_NAME_MAX_UNITS}）'
+    if result.code:
+        return '角色名无效'
     return None
 
 
@@ -1422,6 +1466,13 @@ def _build_minimax_request_prefix(prefix: str, provider_label: str) -> tuple[str
             safe_prefix,
         )
     return original_prefix, f"{safe_prefix}{uuid.uuid4().hex[:8]}"
+
+
+def _normalize_doubao_voice_clone_speaker_id(value: str) -> str:
+    speaker_id = str(value or '').strip()
+    if not re.fullmatch(r"S_[A-Za-z0-9]+", speaker_id):
+        raise ValueError("豆包声音复刻需要填写 S_ 开头的 Speaker ID")
+    return speaker_id
 
 
 async def _get_elevenlabs_base_url(config_manager) -> str:
@@ -2361,6 +2412,14 @@ async def update_catgirl_l2d(name: str, request: Request):
                 pngtuber_payload['scale'] = _bounded_number(pngtuber_payload.get('scale'), 1, 0.1, 5)
                 pngtuber_payload['offset_x'] = _bounded_number(pngtuber_payload.get('offset_x'), 0, -5000, 5000)
                 pngtuber_payload['offset_y'] = _bounded_number(pngtuber_payload.get('offset_y'), 0, -5000, 5000)
+                pngtuber_payload['mobile_scale'] = _bounded_number(
+                    pngtuber_payload.get('mobile_scale'),
+                    min(pngtuber_payload['scale'], 1),
+                    0.1,
+                    5,
+                )
+                pngtuber_payload['mobile_offset_x'] = _bounded_number(pngtuber_payload.get('mobile_offset_x'), 0, -5000, 5000)
+                pngtuber_payload['mobile_offset_y'] = _bounded_number(pngtuber_payload.get('mobile_offset_y'), 0, -5000, 5000)
             except ValueError as exc:
                 return JSONResponse(content={'success': False, 'error': str(exc)}, status_code=400)
             pngtuber_payload['mirror'] = _config_value_is_enabled(pngtuber_payload.get('mirror'))
@@ -2984,9 +3043,9 @@ async def update_catgirl_voice_id(name: str, request: Request):
         legacy_keys=('voice_id',)
     ))
 
-    # 幂等保护：提交同值时直接返回，避免无实际变更触发 reload_page。
+    # 幂等保护：提交同值时直接返回，避免无实际变更触发会话重置。
     if old_voice_id == voice_id:
-        logger.info("猫娘 %s 的 voice_id 未变化，跳过刷新流程", name)
+        logger.info("猫娘 %s 的 voice_id 未变化，跳过会话重置流程", name)
         return {"success": True, "session_restarted": False, "voice_id_changed": False}
 
     if _is_current_catgirl_voice_session_starting(name, characters, session_manager):
@@ -3013,10 +3072,12 @@ async def update_catgirl_voice_id(name: str, request: Request):
     if is_current_catgirl and name in session_manager:
         # 检查是否有活跃的session
         if session_manager[name].is_active:
-            logger.info(f"检测到 {name} 的voice_id已更新（{old_voice_id} -> {voice_id}），准备刷新...")
+            logger.info(f"检测到 {name} 的voice_id已更新（{old_voice_id} -> {voice_id}），准备结束当前语音会话...")
 
-            # 1. 先发送刷新消息（WebSocket还连着）
-            await send_reload_page_notice(session_manager[name])
+            # 1. 通知前端按 session 结束路径收口，避免 Electron 为音色切换整页重载。
+            notify_session_ended = getattr(session_manager[name], "send_session_ended_by_server", None)
+            if callable(notify_session_ended):
+                await notify_session_ended()
 
             # 2. 立刻关闭session（这会断开WebSocket）
             try:
@@ -3026,7 +3087,7 @@ async def update_catgirl_voice_id(name: str, request: Request):
             except Exception as e:
                 logger.error(f"结束session时出错: {e}")
             # 切音色后，前一会话累计的失败计数 / 熔断不再适用：
-            # reload 页面后用户的下一次 start_session 应是全新尝试，否则
+            # 用户的下一次 start_session 应是全新尝试，否则
             # 这条 SessionManager 实例还会被旧失败计数 / 熔断继续静默拦截。
             session_manager[name].reset_session_start_circuit()
 
@@ -3047,6 +3108,15 @@ async def update_catgirl_voice_id(name: str, request: Request):
 @router.get('/catgirl/{name}/voice_mode_status')
 async def get_catgirl_voice_mode_status(name: str):
     """Check whether the specified character is in voice mode."""
+    if _validate_existing_character_path_name(name):
+        return _json_no_store_response({
+            'is_voice_mode': False,
+            'is_current': False,
+            'is_active': False,
+            'is_starting': False,
+            'is_voice_starting': False,
+            'invalid_name': True,
+        })
     _config_manager = get_config_manager()
     session_manager = get_session_manager()
     characters = await _config_manager.aload_characters()
@@ -3319,8 +3389,10 @@ async def unregister_voice(name: str):
 
         if is_current_catgirl and name in session_manager:
             if session_manager[name].is_active:
-                logger.info(f"检测到 {name} 的voice_id已清空（{old_voice_id} -> ''），准备刷新...")
-                await send_reload_page_notice(session_manager[name], "音色已清除，页面即将刷新")
+                logger.info(f"检测到 {name} 的voice_id已清空（{old_voice_id} -> ''），准备结束当前语音会话...")
+                notify_session_ended = getattr(session_manager[name], "send_session_ended_by_server", None)
+                if callable(notify_session_ended):
+                    await notify_session_ended()
                 try:
                     await session_manager[name].end_session(by_server=True)
                     session_ended = True
@@ -3328,7 +3400,7 @@ async def unregister_voice(name: str):
                 except Exception as e:
                     logger.error(f"结束session时出错: {e}")
                 # 与 set_voice_id 路径对偶：清掉前一会话的失败计数 / 熔断，
-                # 否则 reload 后新 start_session 会被旧熔断静默拦截。
+                # 否则下一次 start_session 会被旧熔断静默拦截。
                 session_manager[name].reset_session_start_circuit()
 
         # Fast path：只刷新被编辑角色的 session_manager（voice_id），不遍历其它 N-1 个。
@@ -3563,6 +3635,8 @@ async def set_current_catgirl(request: Request):
 
     if not catgirl_name:
         return JSONResponse({'success': False, 'error': '猫娘名称不能为空'}, status_code=400)
+    if _validate_existing_character_path_name(catgirl_name):
+        return JSONResponse({'success': False, 'error': '猫娘名称无效'}, status_code=400)
 
     _config_manager = get_config_manager()
     session_manager = get_session_manager()
@@ -3748,11 +3822,11 @@ async def rename_master(old_name: str, request: Request):
     async with _ugc_sync_lock:
         characters = await _config_manager.aload_characters()
         if '主人' not in characters or not characters['主人']:
-            return JSONResponse({'success': False, 'error': '主人档案不存在'}, status_code=404)
+            return JSONResponse({'success': False, 'error': '我的档案不存在'}, status_code=404)
 
         current_master = characters['主人'].get('档案名', '')
         if current_master != old_name:
-            return JSONResponse({'success': False, 'error': '原主人档案名不匹配'}, status_code=400)
+            return JSONResponse({'success': False, 'error': '原档案名不匹配'}, status_code=400)
 
         characters['主人']['档案名'] = new_name
         _append_profile_rename_event(characters['主人'], old_name, new_name)
@@ -3958,10 +4032,12 @@ async def update_catgirl(name: str, request: Request):
         session_manager = get_session_manager()
         is_current_catgirl = (name == characters.get('当前猫娘', ''))
 
-        # 如果是当前活跃的猫娘，需要先通知前端，再关闭 session
+        # 如果是当前活跃的猫娘，只结束当前语音会话；voice_id 会在下方刷新到 session_manager。
         if is_current_catgirl and name in session_manager and session_manager[name].is_active:
-            logger.info(f"检测到 {name} 的voice_id已变更（{old_voice_id} -> {new_voice_id}），准备刷新...")
-            await send_reload_page_notice(session_manager[name])
+            logger.info(f"检测到 {name} 的voice_id已变更（{old_voice_id} -> {new_voice_id}），准备结束当前语音会话...")
+            notify_session_ended = getattr(session_manager[name], "send_session_ended_by_server", None)
+            if callable(notify_session_ended):
+                await notify_session_ended()
             try:
                 await session_manager[name].end_session(by_server=True)
                 session_ended = True
@@ -3969,7 +4045,7 @@ async def update_catgirl(name: str, request: Request):
             except Exception as e:
                 logger.error(f"结束session时出错: {e}")
             # 与 set_voice_id 路径对偶：清掉前一会话的失败计数 / 熔断，
-            # 否则 reload 后新 start_session 会被旧熔断静默拦截。
+            # 否则下一次 start_session 会被旧熔断静默拦截。
             session_manager[name].reset_session_start_circuit()
 
         if is_current_catgirl:
@@ -3999,8 +4075,32 @@ async def update_catgirl(name: str, request: Request):
     }
 
 
+@router.post('/catgirl/delete')
+async def delete_catgirl_by_body(request: Request):
+    """Delete a character by JSON body.
+
+    This is the rescue path for historical unsafe names such as "." that cannot
+    be represented safely as a URL path segment.
+    """
+    try:
+        data = await request.json()
+    except Exception as e:
+        logger.warning(f"解析删除猫娘请求体失败: {e}")
+        return JSONResponse({'success': False, 'error': '请求体必须是合法的JSON格式'}, status_code=400)
+    if not isinstance(data, dict):
+        return JSONResponse({'success': False, 'error': '请求体必须是合法的JSON格式'}, status_code=400)
+    name = str((data or {}).get('name') or '').strip()
+    if not name:
+        return JSONResponse({'success': False, 'error': '猫娘名称不能为空'}, status_code=400)
+    return await _delete_catgirl_by_name(name)
+
+
 @router.delete('/catgirl/{name}')
 async def delete_catgirl(name: str):
+    return await _delete_catgirl_by_name(name)
+
+
+async def _delete_catgirl_by_name(name: str):
     _config_manager = get_config_manager()
     characters = await _config_manager.aload_characters()
     if name not in characters.get('猫娘', {}):
@@ -4011,11 +4111,57 @@ async def delete_catgirl(name: str):
     if name == current_catgirl:
         return JSONResponse({'success': False, 'error': '不能删除当前正在使用的猫娘！请先切换到其他猫娘后再删除。'}, status_code=400)
 
+    safe_path_name = _validate_existing_character_path_name(name) is None
     assert_cloudsave_writable(
         _config_manager,
         operation="delete",
         target=f"characters/{name}",
     )
+
+    if not safe_path_name:
+        logger.warning("正在执行历史非法角色名救援删除，仅移除配置，不触碰角色文件路径: %s", name)
+        characters_snapshot = copy.deepcopy(characters)
+        try:
+            del characters['猫娘'][name]
+            await _config_manager.asave_characters(characters)
+
+            remove_one_catgirl = get_remove_one_catgirl()
+            await remove_one_catgirl(name)
+
+            memory_server_reloaded = await notify_memory_server_reload(reason=f"救援删除非法角色名: {name}")
+            if not memory_server_reloaded:
+                rollback_error = await _rollback_character_operation(
+                    _config_manager,
+                    characters_snapshot=characters_snapshot,
+                    memory_snapshot_records=[],
+                    reason=f"救援删除非法角色名回滚: {name}",
+                )
+                error_message = "救援删除非法角色名失败: notify_memory_server_reload returned False"
+                if rollback_error:
+                    error_message = f"{error_message}; 回滚失败: {rollback_error}"
+                return JSONResponse({"success": False, "error": error_message}, status_code=500)
+        except MaintenanceModeError:
+            raise
+        except Exception as exc:
+            rollback_error = await _rollback_character_operation(
+                _config_manager,
+                characters_snapshot=characters_snapshot,
+                memory_snapshot_records=[],
+                reason=f"救援删除非法角色名回滚: {name}",
+            )
+            logger.exception("救援删除非法角色名失败，已尝试回滚: %s", name)
+            error_message = f"救援删除非法角色名失败: {exc}"
+            if rollback_error:
+                error_message = f"{error_message}; 回滚失败: {rollback_error}"
+            return JSONResponse({"success": False, "error": error_message}, status_code=500)
+
+        return {
+            "success": True,
+            "unsafe_name_rescue": True,
+            "memory_deleted": False,
+            "card_face_deleted": False,
+            "memory_server_reloaded": memory_server_reloaded,
+        }
 
     released_memory_handle = await release_memory_server_character(
         name,
@@ -4527,6 +4673,227 @@ async def get_voice_preview(
                     'error': f'MiMo 预览生成失败: {str(e)}',
                 }, status_code=500)
 
+        if provider == 'doubao_tts':
+            doubao_api_key = _config_manager.get_tts_api_key('doubao_tts')
+            if not doubao_api_key:
+                return JSONResponse({
+                    'success': False,
+                    'error': 'DOUBAO_TTS_API_KEY_MISSING',
+                    'code': 'DOUBAO_TTS_API_KEY_MISSING',
+                }, status_code=400)
+            doubao_base_url = (
+                (voice_data or {}).get('doubao_base_url')
+                or DOUBAO_TTS_DEFAULT_BASE_URL
+            )
+            doubao_resource_id = (
+                (voice_data or {}).get('doubao_resource_id')
+                or DOUBAO_VOICE_CLONE_RESOURCE_ID
+            )
+            try:
+                async with httpx.AsyncClient(timeout=60) as client:
+                    resp = await client.post(
+                        doubao_tts_url(doubao_base_url),
+                        headers=doubao_api_headers(doubao_api_key, doubao_resource_id),
+                        json=build_doubao_tts_payload(
+                            text,
+                            voice_id,
+                            context_texts=(DOUBAO_TTS_DEFAULT_CONTEXT_TEXTS,),
+                        ),
+                    )
+                if resp.status_code != 200:
+                    return JSONResponse({
+                        'success': False,
+                        'error': f'豆包语音预览失败: HTTP {resp.status_code}, {resp.text[:200]}',
+                        'code': 'DOUBAO_TTS_PREVIEW_FAILED',
+                    }, status_code=502)
+                audio_data = extract_doubao_audio_bytes(await resp.aread())
+                if not audio_data:
+                    return JSONResponse({
+                        'success': False,
+                        'error': '豆包语音预览未返回音频',
+                        'code': 'DOUBAO_TTS_PREVIEW_NO_AUDIO',
+                    }, status_code=502)
+                audio_base64 = base64.b64encode(audio_data).decode('utf-8')
+                logger.info(f"豆包语音音色 {voice_id} 预览音频生成成功，大小: {len(audio_data)} 字节")
+                return {'success': True, 'audio': audio_base64, 'mime_type': 'audio/wav'}
+            except DoubaoTtsError as e:
+                logger.error(f"豆包语音音色 {voice_id} 预览失败: {e}")
+                return JSONResponse({
+                    'success': False,
+                    'error': f'豆包语音预览失败: {str(e)}',
+                    'code': 'DOUBAO_TTS_PREVIEW_FAILED',
+                }, status_code=502)
+            except Exception as e:
+                logger.error(f"豆包语音音色 {voice_id} 预览异常: {e}")
+                return JSONResponse({
+                    'success': False,
+                    'error': f'豆包语音预览失败: {str(e)}',
+                }, status_code=500)
+
+        # vLLM-Omni 克隆音色（provider=='vllm_omni'）试听：读 voice_meta 里的参考样本
+        # base64，通过 vLLM-Omni WebSocket 合成预览句（对偶 MiMo 的克隆试听；避免落到
+        # 下方 CosyVoice/DashScope 通用分支拿着无效 API key 误合成报 401）。
+        if provider == 'vllm_omni':
+            import numpy as np
+            import soxr
+
+            clone_sample_b64 = str((voice_data or {}).get('clone_sample_b64') or '').strip()
+            if not clone_sample_b64:
+                return JSONResponse({
+                    'success': False,
+                    'error': f'vLLM-Omni 克隆音色缺少参考样本，无法试听: {voice_id}',
+                    'code': 'VLLM_OMNI_VOICE_SAMPLE_MISSING',
+                }, status_code=400)
+            # 构建 data: URI：复用 worker 的 _build_vllm_omni_clone_data_uri，
+            # 与 dispatch 路径同一封装（含 MIME 默认值 audio/wav 与空 b64 保护），
+            # 避免预览/dispatch 两处独立维护拼接逻辑时悄悄产生行为差异。
+            from main_logic.tts_client.workers.vllm_omni import _build_vllm_omni_clone_data_uri
+            from main_logic.tts_client._infra import _resample_audio
+            clone_data_uri = _build_vllm_omni_clone_data_uri(voice_data)
+            ref_text = str((voice_data or {}).get('clone_ref_text') or '').strip()
+            # base_url：优先 voice_meta 存的 vllm_omni_base_url，缺省回落
+            # preview_core_config 的 ttsModelUrl。无配置 URL 时返回 400 —— 不硬编码
+            # 任何内网端点（旧实现 fallback 到固定 IP，推到公共仓库后必失败且泄漏拓扑）。
+            base_url = str((voice_data or {}).get('vllm_omni_base_url') or '').strip()
+            if not base_url:
+                base_url = str(
+                    (preview_core_config or {}).get('ttsModelUrl')
+                    or (preview_core_config or {}).get('TTS_MODEL_URL')
+                    or ''
+                ).strip()
+            if not base_url:
+                return JSONResponse({
+                    'success': False,
+                    'error': 'vLLM-Omni 服务地址未配置，请先在 TTS 设置中填写端点 URL',
+                    'code': 'VLLM_OMNI_URL_MISSING',
+                }, status_code=400)
+            # model：从 preview_core_config 的 ttsModelId 或默认 Qwen3-TTS
+            model = str((preview_core_config or {}).get('ttsModelId') or '').strip() or 'Qwen3-TTS'
+            # URL 规整复用 worker 的 _vllm_omni_normalize_ws_endpoint（http→ws / 补 /v1 /
+            # 幂等 endpoint 拼接）——避免 preview 复制粘贴时漏掉协议转换导致用户配 http://
+            # 端点必失败（dual to vllm_omni_tts_worker 的 URL 规整）。
+            from main_logic.tts_client import _vllm_omni_normalize_ws_endpoint
+            ws_endpoint = _vllm_omni_normalize_ws_endpoint(base_url)
+            # API key 鉴权（对齐 worker 的 _connect_and_config 双路径：WS handshake
+            # Authorization header + session.config.api_key）。有认证的 vLLM 端点克隆
+            # 预览也需要传 key，否则 401 失败（C6 fix）。
+            vllm_api_key = str((preview_core_config or {}).get('ttsModelApiKey') or '').strip()
+            ws_kwargs = {"max_size": None, "open_timeout": 10, "close_timeout": 5}
+            if vllm_api_key:
+                # 兼容旧版本 websockets：用 inspect 探测参数名，避免 try/except TypeError
+                # 过宽吞掉 WS 通信中的合法 TypeError，也避免 await connect() + async with ws:
+                # 导致 websockets 16.0 的 connect.__aenter__ 再次 await self 重连（C6-1 fix）。
+                # NOTE: preview 用 inspect 探测参数名，worker 仍用 try/except TypeError。
+                # 两条路径策略不同是因为 preview 是短连接（async with 自动管理），
+                # worker 是长连接（手动管理）。worker 的 try/except TypeError 在
+                # connect() 阶段执行，send/recv 在块外，吞没风险较低。
+                try:
+                    _ws_sig = inspect.signature(websockets.connect)
+                    _header_key = "additional_headers" if "additional_headers" in _ws_sig.parameters else "extra_headers"
+                except (ValueError, TypeError):
+                    _header_key = "additional_headers"  # 新版本优先
+                ws_kwargs[_header_key] = [
+                    ("Authorization", f"Bearer {vllm_api_key}"),
+                ]
+            try:
+                # 整体超时 30s：vLLM-Omni 预览无服务端超时，若服务端接受连接但不发
+                # session.done（半开/挂起），async for 会永久阻塞占用 worker。open_timeout/
+                # close_timeout 与 worker 的 _connect_and_config 对齐。
+                async with asyncio.timeout(30):
+                    async with websockets.connect(ws_endpoint, **ws_kwargs) as ws:
+                        # 发送 session.config
+                        config_msg = {
+                            "type": "session.config",
+                            "model": model,
+                            "voice": "default",
+                            "response_format": "pcm",
+                            "speed": 1.0,
+                            "stream_audio": True,
+                            "split_granularity": "sentence",
+                            "ref_audio": clone_data_uri,
+                        }
+                        if ref_text:
+                            config_msg["ref_text"] = ref_text
+                        # session 层鉴权（部分自建服务端从 config 读 api_key）
+                        if vllm_api_key:
+                            config_msg["api_key"] = vllm_api_key
+                        await ws.send(json.dumps(config_msg))
+                        # 发送预览文本
+                        await ws.send(json.dumps({"type": "input.text", "text": text}))
+                        await ws.send(json.dumps({"type": "input.done"}))
+                        # 接收 PCM 二进制帧（24kHz/16bit/mono）和 JSON 事件
+                        pcm_chunks: list[bytes] = []
+                        # 流式重采样器：维护 chunk 边界滤波器状态，避免无状态 soxr.resample()
+                        # 在每个分片边界重置导致杂音（与 worker 路径的 ResampleStream 一致）。
+                        resampler = soxr.ResampleStream(24000, 48000, 1, dtype='float32')
+                        async for message in ws:
+                            if isinstance(message, bytes):
+                                if len(message) < 2:
+                                    continue
+                                audio_array = np.frombuffer(message, dtype=np.int16)
+                                pcm_chunks.append(_resample_audio(audio_array, 24000, 48000, resampler))
+                            else:
+                                try:
+                                    event = json.loads(message)
+                                except json.JSONDecodeError:
+                                    continue
+                                event_type = event.get("type", "")
+                                if event_type == "session.done":
+                                    break
+                                elif event_type == "error":
+                                    error_msg = event.get("message", event.get("error", str(event)))
+                                    logger.error(f"vLLM-Omni 克隆音色 {voice_id} 预览服务端错误: {error_msg}")
+                                    return JSONResponse({
+                                        'success': False,
+                                        'error': f'vLLM-Omni 预览生成失败: {error_msg}',
+                                        'code': 'VLLM_OMNI_VOICE_PREVIEW_FAILED',
+                                    }, status_code=502)
+                # 空帧守卫：vLLM-Omni 在显式送入 response_format: pcm 时，返回的是
+                # 裸 PCM 流（本身不含 44 字节 WAV 头，由下面 _build_wav_payload 补头）。
+                # 若 session.done 后没收到任何 PCM 帧（服务端合成失败却没发 error 事件，
+                # 或帧长 < 2 被全部跳过），_build_wav_payload([]) 只会产出一个仅含 44 字节
+                # WAV 头的空文件。直接以 success:True 回前端会让用户点试听毫无声音、无任何
+                # 错误提示（哑弹）。正常路径下 error 事件已能拦住多数失败，此处是额外兜底。
+                if not pcm_chunks:
+                    logger.error(f"vLLM-Omni 克隆音色 {voice_id} 预览未返回任何音频帧")
+                    return JSONResponse({
+                        'success': False,
+                        'error': 'vLLM-Omni 预览未返回任何音频帧',
+                        'code': 'VLLM_OMNI_VOICE_PREVIEW_NO_AUDIO',
+                    }, status_code=502)
+                # 封装 WAV（给裸 PCM 补 44 字节头）
+                audio_data = _build_wav_payload(pcm_chunks, 1, 2, 48000)
+                audio_base64 = base64.b64encode(audio_data).decode('utf-8')
+                logger.info(f"vLLM-Omni 克隆音色 {voice_id} 预览音频生成成功，大小: {len(audio_data)} 字节")
+                return {'success': True, 'audio': audio_base64, 'mime_type': 'audio/wav'}
+            except (TimeoutError, asyncio.TimeoutError):
+                logger.error(f"vLLM-Omni 克隆音色 {voice_id} 预览超时（30秒）")
+                return JSONResponse({
+                    'success': False,
+                    'error': 'vLLM-Omni 预览生成失败: 服务端响应超时（30秒）',
+                    'code': 'VLLM_OMNI_VOICE_PREVIEW_TIMEOUT',
+                }, status_code=504)
+            except websockets.exceptions.ConnectionClosed as e:
+                logger.error(f"vLLM-Omni 克隆音色 {voice_id} 预览 WebSocket 连接关闭: {e}")
+                return JSONResponse({
+                    'success': False,
+                    'error': f'vLLM-Omni 预览生成失败: WebSocket 连接异常',
+                    'code': 'VLLM_OMNI_VOICE_PREVIEW_FAILED',
+                }, status_code=502)
+            except (OSError, ConnectionError) as e:
+                logger.error(f"vLLM-Omni 克隆音色 {voice_id} 预览连接失败: {e}")
+                return JSONResponse({
+                    'success': False,
+                    'error': f'vLLM-Omni 预览生成失败: 连接失败',
+                    'code': 'VLLM_OMNI_VOICE_PREVIEW_FAILED',
+                }, status_code=502)
+            except Exception as e:
+                logger.error(f"vLLM-Omni 克隆音色 {voice_id} 预览异常: {e}")
+                return JSONResponse({
+                    'success': False,
+                    'error': f'vLLM-Omni 预览生成失败: {str(e)}',
+                }, status_code=500)
+
         native_preview_provider = _get_active_native_preview_provider(_config_manager, voice_id)
         if native_preview_provider:
             native_voice_id, _ = normalize_native_voice(native_preview_provider, voice_id)
@@ -4823,9 +5190,11 @@ async def delete_voice(voice_id: str):
 
                 # 对于受影响的活跃角色，并行通知 + 结束 session（每个 end_session ≈ 1s）
                 async def _refresh_one(name):
-                    logger.info(f"检测到活跃角色 {name} 的 voice_id 已被删除，准备刷新...")
-                    # 1. 发送刷新通知
-                    await send_reload_page_notice(session_manager[name], "音色已删除，页面即将刷新")
+                    logger.info(f"检测到活跃角色 {name} 的 voice_id 已被删除，准备结束当前语音会话...")
+                    # 1. 通知前端按 session 结束路径收口，避免 Electron 为音色切换整页重载。
+                    notify_session_ended = getattr(session_manager[name], "send_session_ended_by_server", None)
+                    if callable(notify_session_ended):
+                        await notify_session_ended()
                     # 2. 结束 session
                     try:
                         await session_manager[name].end_session(by_server=True)
@@ -4833,7 +5202,7 @@ async def delete_voice(voice_id: str):
                     except Exception as e:
                         logger.error(f"结束受影响角色 {name} 的 session 时出错: {e}")
                     # 与 set_voice_id 路径对偶：清掉前一会话的失败计数 / 熔断，
-                    # 否则 reload 后新 start_session 会被旧熔断静默拦截。
+                    # 否则下一次 start_session 会被旧熔断静默拦截。
                     session_manager[name].reset_session_start_circuit()
 
                 if affected_active_names:
@@ -5117,6 +5486,7 @@ async def voice_clone(
     prefix: str = Form(...),
     ref_language: str = Form(default="ch"),
     provider: str = Form(default="cosyvoice"),
+    ref_text: str = Form(default=""),
 ):
     """
     Voice cloning endpoint.
@@ -5126,7 +5496,9 @@ async def voice_clone(
         prefix: voice prefix name
         ref_language: language of the reference audio; one of: ch, en, fr, de, ja, ko, ru
                       Note: this is the language of the reference audio, not the target voice
-        provider: service provider; one of: cosyvoice (Alibaba Bailian), cosyvoice_intl (Alibaba international), minimax (China), minimax_intl (international), elevenlabs
+        provider: service provider; one of: cosyvoice (Alibaba Bailian), cosyvoice_intl (Alibaba international), minimax (China), minimax_intl (international), elevenlabs, mimo, vllm_omni
+        ref_text: transcript of the reference audio (vLLM-Omni inline clone only; must
+                  correspond strictly to the audio content)
     """
     # 流式读取上传文件（带大小限制）并增量计算 MD5
     try:
@@ -5145,6 +5517,22 @@ async def voice_clone(
     ref_language = ref_language.lower().strip() if ref_language else 'ch'
     if ref_language not in valid_languages:
         ref_language = 'ch'
+
+    # vLLM-Omni 克隆必填 ref_text：vLLM-Omni 服务端要求 ref_audio 与 ref_text 严格对应，
+    # 缺失 ref_text 会导致合成失败（服务端 ValueError）。前端 voice_clone.js 也做了
+    # 同步校验（L1484-1491），后端补上防止绕过前端直接调 API。
+    vllm_ref_text = ref_text.strip() if ref_text else ''
+    if provider == 'vllm_omni':
+        if not vllm_ref_text:
+            return JSONResponse(
+                {'error': 'vLLM-Omni 克隆必须填写参考音频原文（ref_text）', 'provider': provider},
+                status_code=400,
+            )
+        if len(vllm_ref_text) > 100:
+            return JSONResponse(
+                {'error': 'vLLM-Omni 参考音频原文过长，请控制在 100 字以内', 'provider': provider},
+                status_code=400,
+            )
 
     # 检测是否使用本地 TTS（ws/wss 协议）
     _config_manager = get_config_manager()
@@ -5305,6 +5693,27 @@ async def voice_clone(
         storage_key = f'{MIMO_VOICE_STORAGE_KEY}{api_key[-8:]}'
         provider_label = 'MiMo'
 
+    elif provider == 'vllm_omni':
+        # vLLM-Omni 是本地 self-hosted 服务，没有 API key、也没有远端音色注册接口。克隆走
+        # 「内联参考音频」范式（对偶 MiMo）：参考音频 base64 + ref_text 整段落进 voice_storage
+        # 的 voice_meta，每次合成时内联进 session.config 的 ref_audio/ref_text。桶名固定
+        # __VLLM_OMNI__（无 key 后缀，因本地服务无 key 可分桶）。base_url 取当前配置的
+        # ttsModelUrl（与 _vllm_omni_resolve 同源），仅存档备查，dispatch 仍按当前配置重解析。
+        base_url = (core_config.get('ttsModelUrl') or core_config.get('TTS_MODEL_URL') or '').strip()
+        storage_key = '__VLLM_OMNI__'
+        provider_label = 'vLLM-Omni'
+
+    elif provider == 'doubao_tts':
+        if not api_key:
+            return JSONResponse({
+                'error': 'DOUBAO_TTS_API_KEY_MISSING',
+                'code': 'DOUBAO_TTS_API_KEY_MISSING',
+                'message': '未配置豆包语音 API Key，请先在设置中填写'
+            }, status_code=400)
+        base_url = DOUBAO_TTS_DEFAULT_BASE_URL
+        storage_key = f'{DOUBAO_VOICE_STORAGE_KEY}{api_key[-8:]}'
+        provider_label = '豆包语音'
+
     else:
         return JSONResponse({'error': f'不支持的 provider: {provider}'}, status_code=400)
 
@@ -5313,6 +5722,26 @@ async def voice_clone(
         existing = _config_manager.find_cosyvoice_voice_by_audio_md5(provider, audio_md5, ref_language)
     else:
         existing = _config_manager.find_voice_by_audio_md5(storage_key, audio_md5, ref_language)
+    if existing:
+        voice_id_ex, voice_data_ex = existing
+        # vLLM-Omni：同音频 + 同语言但不同 ref_text 视为不同音色（转录修正场景），
+        # 不命中去重，允许用户用修正后的 ref_text 重新注册。
+        if provider == 'vllm_omni':
+            existing_ref_text = str((voice_data_ex or {}).get('clone_ref_text') or '').strip()
+            if existing_ref_text != vllm_ref_text:
+                # 清理旧条目：否则 find_voice_by_audio_md5 按插入顺序总是先返回
+                # 最旧的匹配条目，旧 voice 永远占位，新注册无限重复创建；
+                # 旧 voice 也仍出现在音色列表中，用户可能选到错误音色。
+                try:
+                    _config_manager.delete_voice_for_current_api(voice_id_ex)
+                    logger.info(
+                        f"vLLM-Omni 克隆音色 {voice_id_ex} ref_text 变更"
+                        f"（旧: {existing_ref_text!r} → 新: {vllm_ref_text!r}），已删除旧条目")
+                except Exception:
+                    logger.warning(
+                        "vLLM-Omni 旧条目 %s 删除失败，可能导致下次去重仍命中旧条目",
+                        voice_id_ex, exc_info=True)
+                existing = None
     if existing:
         voice_id, voice_data = existing
         logger.info(f"{provider_label} 音频 MD5 命中，复用 voice_id: {voice_id}")
@@ -5421,6 +5850,69 @@ async def voice_clone(
                 'created_at': datetime.now().isoformat()
             }
 
+        elif provider == 'vllm_omni':
+            # vLLM-Omni 内联克隆（对偶 MiMo）：无远端注册接口，参考音频 base64 + ref_text 整段
+            # 落进 voice_storage 的 voice_meta，dispatch 时读出来内联进 session.config 的
+            # ref_audio/ref_text。vLLM-Omni 无远端校验接口（不像 MiMo 有 validate_sample），
+            # 参考音频运行时才用，所以这里跳过校验直接落库。
+            sample_bytes = normalized_buffer.getvalue()
+            # voice_id 维度与去重键一致：含 ref_language 避免同音频换语言覆盖，含
+            # ref_text hash 避免同音频不同转录命中旧 voice（转录修正场景）。
+            # 无 key 后缀（本地服务无 key），桶 __VLLM_OMNI__ 是全局唯一分区。
+            ref_text_hash = hashlib.md5(vllm_ref_text.encode('utf-8')).hexdigest()[:8]
+            voice_id = f'vllm-omni-clone-{ref_language}-{audio_md5[:12]}-{ref_text_hash}'
+            voice_data = {
+                'voice_id': voice_id,
+                'prefix': prefix,
+                'audio_md5': audio_md5,
+                'ref_language': ref_language,
+                'provider': 'vllm_omni',
+                'source': 'clone',
+                # 克隆身份：参考音频 base64（对偶 MiMo 的 clone_sample_b64），dispatch/preview
+                # 读它内联进 session.config 的 ref_audio。存进 voice_meta 即随 voice_storage 云同步。
+                'clone_sample_b64': base64.b64encode(sample_bytes).decode('ascii'),
+                'clone_sample_mime': 'audio/wav',
+                # 参考音频原文：vLLM-Omni 克隆要求 ref_text 与音频严格对应，作 session.config.ref_text。
+                'clone_ref_text': vllm_ref_text,
+                # base_url 存进 voice_meta（对偶 mimo_base_url）；dispatch 仍按当前配置重解析。
+                'vllm_omni_base_url': base_url or '',
+                'created_at': datetime.now().isoformat()
+            }
+
+        elif provider == 'doubao_tts':
+            try:
+                speaker_id = _normalize_doubao_voice_clone_speaker_id(prefix)
+            except ValueError as exc:
+                return JSONResponse({
+                    'error': 'DOUBAO_SPEAKER_ID_REQUIRED',
+                    'code': 'DOUBAO_SPEAKER_ID_REQUIRED',
+                    'message': str(exc),
+                }, status_code=400)
+            resource_id = DOUBAO_TTS_DEFAULT_RESOURCE_ID
+            client = DoubaoVoiceCloneClient(
+                api_key=api_key,
+                base_url=base_url,
+                resource_id=resource_id,
+            )
+            voice_id = await client.clone_voice(
+                normalized_buffer,
+                speaker_id=speaker_id,
+                display_name=speaker_id,
+                audio_format='wav',
+            )
+            voice_data = {
+                'voice_id': voice_id,
+                'prefix': prefix,
+                'audio_md5': audio_md5,
+                'ref_language': ref_language,
+                'provider': 'doubao_tts',
+                'source': 'clone',
+                'doubao_base_url': base_url,
+                'doubao_resource_id': resource_id,
+                'clone_model': resource_id,
+                'created_at': datetime.now().isoformat()
+            }
+
         else:  # cosyvoice / cosyvoice_intl
             from utils.api_config_loader import get_cosyvoice_clone_model
             clone_model = get_cosyvoice_clone_model(provider)
@@ -5459,7 +5951,7 @@ async def voice_clone(
             'code': 'ELEVENLABS_UPSTREAM_ERROR',
             'provider': provider,
         }, status_code=502)
-    except (MinimaxVoiceCloneError, QwenVoiceCloneError, MimoVoiceCloneError) as e:
+    except (MinimaxVoiceCloneError, QwenVoiceCloneError, MimoVoiceCloneError, DoubaoTtsError) as e:
         logger.error(f"{provider_label} 音色注册失败: {e}")
         error_detail = str(e)
         if '超时' in error_detail:
@@ -5484,7 +5976,7 @@ async def voice_clone(
         # 会给用户一个根本不存在的 voice_id。而且 MiMo 不存在"重试会重复创建远端资源"的代价
         # （validate 不创建任何东西），重试是安全的——所以这里返回真失败，让客户端知道并可重试
         # （Codex review #1851；与 PR #528「远端已创建→200 partial」规则的前提相反）。
-        if provider == 'mimo':
+        if provider in ('mimo', 'vllm_omni'):
             return JSONResponse({
                 'error': f'{provider_label}音色保存失败: {str(save_error)}',
                 'code': 'TTS_VOICE_SAVE_FAILED',
@@ -7174,9 +7666,9 @@ async def list_card_metas():
 async def get_card_meta(name: str):
     """Get a single catgirl's card-face metadata. Without a sidecar, infers origin from the catgirl config and returns defaults."""
     _config_manager = get_config_manager()
-    safe_name = os.path.basename(name)
-    if safe_name != name or not name:
-        return JSONResponse({'success': False, 'error': '无效的角色名'}, status_code=400)
+    name_error = _validate_existing_character_path_name(name)
+    if name_error:
+        return JSONResponse({'success': False, 'error': f'无效的角色名: {name_error}'}, status_code=400)
 
     characters = await _config_manager.aload_characters()
     if name not in characters.get('猫娘', {}):
@@ -7194,9 +7686,9 @@ async def get_card_meta(name: str):
 async def put_card_meta(name: str, request: Request):
     """Update card-face metadata (currently only the author field, and only when origin=self)."""
     _config_manager = get_config_manager()
-    safe_name = os.path.basename(name)
-    if safe_name != name or not name:
-        return JSONResponse({'success': False, 'error': '无效的角色名'}, status_code=400)
+    name_error = _validate_existing_character_path_name(name)
+    if name_error:
+        return JSONResponse({'success': False, 'error': f'无效的角色名: {name_error}'}, status_code=400)
 
     characters = await _config_manager.aload_characters()
     if name not in characters.get('猫娘', {}):
@@ -7285,10 +7777,9 @@ def _strip_legacy_card_face_header(image_data: bytes) -> bytes:
 async def get_card_face(name: str):
     """Get the character's custom card-face image."""
     _config_manager = get_config_manager()
-    # 安全检查：防止路径遍历
-    safe_name = os.path.basename(name)
-    if safe_name != name or not name:
-        return JSONResponse({'success': False, 'error': '无效的角色名'}, status_code=400)
+    name_error = _validate_existing_character_path_name(name)
+    if name_error:
+        return JSONResponse({'success': False, 'error': f'无效的角色名: {name_error}'}, status_code=400)
 
     face_path = _config_manager.card_faces_dir / f"{name}.png"
     if not face_path.exists():
@@ -7303,10 +7794,9 @@ async def get_card_face(name: str):
 async def put_card_face(name: str, image: UploadFile = File(...)):
     """Save the character's custom card-face image."""
     _config_manager = get_config_manager()
-    # 安全检查：防止路径遍历
-    safe_name = os.path.basename(name)
-    if safe_name != name or not name:
-        return JSONResponse({'success': False, 'error': '无效的角色名'}, status_code=400)
+    name_error = _validate_existing_character_path_name(name)
+    if name_error:
+        return JSONResponse({'success': False, 'error': f'无效的角色名: {name_error}'}, status_code=400)
 
     characters = await _config_manager.aload_characters()
     if name not in characters.get('猫娘', {}):

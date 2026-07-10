@@ -148,6 +148,10 @@
         return Date.now() - latest <= NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS;
     }
 
+    function isNewUserIcebreakerEntryBlocking(entry) {
+        return !!(entry && entry.completed !== true && isRecentNewUserIcebreakerEntry(entry));
+    }
+
     function getNewUserIcebreakerBlockingRetryMs() {
         try {
             if (window.newUserIcebreaker && typeof window.newUserIcebreaker.getActiveSession === 'function') {
@@ -167,6 +171,7 @@
         for (let day = 1; day <= 7; day += 1) {
             const entry = days[String(day)];
             if (!entry || typeof entry !== 'object') continue;
+            if (entry.completed === true) continue;
             [
                 Number(entry.triggeredAt || 0),
                 Number(entry.updatedAt || 0),
@@ -206,7 +211,7 @@
         if (finalDay && finalDay.completed === true) return false;
         for (let day = 1; day <= 7; day += 1) {
             const entry = days[String(day)];
-            if (isRecentNewUserIcebreakerEntry(entry)) {
+            if (isNewUserIcebreakerEntryBlocking(entry)) {
                 return true;
             }
         }
@@ -222,6 +227,7 @@
             for (let day = 1; day <= 7; day += 1) {
                 const entry = days[String(day)];
                 if (!entry || typeof entry !== 'object') continue;
+                if (entry.completed === true) continue;
                 const latest = Math.max(
                     Number(entry.triggeredAt || 0),
                     Number(entry.updatedAt || 0),
@@ -1632,6 +1638,14 @@
             return;
         }
 
+        // 表情包绑定它所属主动搭话轮的 turn_id（与同轮台词共享同一个值：flush 条件是
+        // realisticGeminiCurrentTurnId === captureTurnId，而台词的 turnId 也是 String(turn_id)）。
+        // compact overlay 靠它判定「新一轮发言才换场、同轮台词不顶掉」。turn_id 缺失（'fallback'/空）
+        // 时留 undefined，React 侧回退到旧的「只有用户开口才收起」逻辑。
+        var memeTurnId = (targetTurnId !== undefined && targetTurnId !== null
+            && targetTurnId !== '' && targetTurnId !== 'fallback')
+            ? String(targetTurnId) : undefined;
+
         // 优先通过 React 聊天窗口 API 显示表情包
         var host = window.reactChatWindowHost;
         if (host && typeof host.appendMessage === 'function') {
@@ -1662,6 +1676,7 @@
                         author: assistantName,
                         time: timeStr,
                         createdAt: Date.now(),
+                        turnId: memeTurnId,
                         avatarLabel: assistantName.trim().slice(0, 1).toUpperCase(),
                         avatarUrl: avatarUrl || undefined,
                         blocks: [{ type: 'image', url: proxyUrl, alt: meme.title || 'Meme' }],

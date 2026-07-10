@@ -29,7 +29,8 @@ body {
 /* Status 气泡框样式 - 更显眼的样式 */
 #status-toast {
     position: fixed;
-    top: 20px;
+    --neko-status-toast-crop-safe-area-top: calc(var(--neko-niri-pet-crop-offset-y, 0) * 1px);
+    top: calc(20px + var(--neko-status-toast-crop-safe-area-top));
     right: 20px;
     z-index: 99999;
     max-width: 500px;
@@ -249,7 +250,7 @@ body {
 /* 移动端响应式设计 */
 @media (max-width: 600px) {
     #status-toast {
-        top: 10px;
+        top: calc(10px + var(--neko-status-toast-crop-safe-area-top));
         right: 10px;
         left: 10px;
         max-width: none;
@@ -497,6 +498,15 @@ button * {
         `{prefix}-return-button-container` / `{prefix}-lock-icon` 三组 ID
         命名约定（live2d / vrm / mmd 各一份）注入到 body，靠属性后缀
         匹配统一收掉，避免漏一个 prefix 留个浮动按钮挡鼠标。 */
+#live2d-floating-buttons,
+#vrm-floating-buttons,
+#mmd-floating-buttons,
+#pngtuber-floating-buttons {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
 body.neko-game-active #live2d-container,
 body.neko-game-active #vrm-container,
 body.neko-game-active #mmd-container,
@@ -512,6 +522,18 @@ body.neko-game-active [id$="-return-button-container"],
 body.neko-game-active [id$="-lock-icon"] {
     display: none !important;
     pointer-events: none !important;
+}
+
+/* 锁图标的 pointer-events 兜底。
+   整页以 html,body{pointer-events:none} 作点击穿透底，锁图标本应自行 opt-in auto。
+   锁创建时（avatar-ui-buttons / live2d-ui-buttons 等）设的是 inline pointer-events:auto，
+   但 showLive2d / restoreYuiGuideLive2DPreparingControls 等「恢复」函数会对它
+   removeProperty('pointer-events') 来清掉 !important 残留，连带把那份 auto 也抹掉，
+   于是锁掉回继承的 none、永久点不动（直到一次 goodbye→return 重新设上 auto）。
+   这条兜底把锁的静止态钉成可点；拖拽屏蔽（body.neko-model-dragging …!important）、
+   游戏态隐藏、教程 preparing 隐藏（均用 !important none）仍能正常压住它。 */
+[id$="-lock-icon"] {
+    pointer-events: auto;
 }
 
 /* Goodbye 后的 return 入口 Phase 2 改为 CAT1 占位表现，但继续复用原有
@@ -1268,6 +1290,7 @@ body.subtitle-web-host #react-chat-window-shell.is-minimized .react-chat-minimiz
     height: 100%;
     object-fit: contain;
     pointer-events: none;
+    image-rendering: auto !important;
 }
 
 /* 隐藏 resize 边缘 */
@@ -1301,20 +1324,21 @@ body.subtitle-web-host #react-chat-window-shell.is-dragging {
     box-shadow: 0 36px 110px rgba(12, 20, 34, 0.36);
 }
 
-/* compact 输入框左侧毛绒球「按下挤压回弹」弹性动画：点按折叠时由 app-react-chat-window.js
-   handleCompactMinimizeRequest 给图标加 .neko-minimize-ball-pressing 触发（与展开时按独立
-   球的 squash bounce 对偶；折叠原本无动画）。运行中的动画 transform 会盖过 :active 的 scale(1.08)。
-   transform-origin 底部 + scale Y 变矮/X 变宽 = 向下挤扁（不是均匀缩小），与 neko-ball-bounce 同手感。 */
-@keyframes neko-compact-minimize-press {
-    0%   { transform: scale(1, 1); }
-    30%  { transform: scale(1.12, 0.74); }  /* 向下挤扁（squash：变宽变矮） */
-    58%  { transform: scale(0.94, 1.08); }  /* 回弹拉伸 */
-    80%  { transform: scale(1.03, 0.97); }  /* 小回压 */
-    100% { transform: scale(1, 1); }        /* 落定 */
+/* compact 输入框左侧毛绒球「按下挤压回弹」动画：使用 2x 预缩放纹理承载 squash/stretch，降低运行时采样锯齿。 */
+@keyframes neko-compact-minimize-press-frame {
+    from { background-position: 0 0; }
+    to { background-position: -1058px 0; }
+}
+@keyframes neko-compact-minimize-press-move {
+    0%   { transform: translateY(0); opacity: 1; }
+    30%  { transform: translateY(3px); opacity: 1; }
+    58%  { transform: translateY(-1px); opacity: 1; }
+    80%  { transform: translateY(0); opacity: 1; }
+    100% { transform: translateY(0); opacity: 1; }
 }
 .compact-chat-minimize-ball-icon.neko-minimize-ball-pressing {
     transform-origin: center bottom;
-    animation: neko-compact-minimize-press 420ms cubic-bezier(0.3, 0.8, 0.4, 1) both;
+    animation: neko-compact-minimize-press-frame 420ms steps(23, end) both, neko-compact-minimize-press-move 420ms cubic-bezier(0.3, 0.8, 0.4, 1) both;
 }
 
 /* compact 对话条折叠/展开的「方向性渐变擦除」：折叠＝从右往左收（右先消失），展开＝反向从左往右展。
@@ -1590,12 +1614,19 @@ body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"
     pointer-events: none;
 }
 
-/* 主动分享表情包 overlay 是纯被动展示挂件，必须全程点击穿透。它注册了 data-compact-geometry-owner="surface"，
-   会被上面那条把 surface 子树重新开成 auto 的通用规则命中；这里用同优先级、靠后定义的规则把它压回 none
-   （否则表情包显示期间会吞掉它矩形区域的点击）。React styles.css 那条单 class 规则赢不了 host 的 ID 选择器。 */
+/* 主动分享表情包 overlay 的图片区域保持点击穿透；关闭叉是唯一可交互 hit region。
+   它注册了 data-compact-geometry-owner="surface"，会被上面那条把 surface 子树重新开成 auto 的通用规则命中；
+   这里用同优先级、靠后定义的规则把透明包装和图片区压回 none，再单独保留关闭按钮 auto。
+   React styles.css 那条单 class 规则赢不了 host 的 ID 选择器。 */
 body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-meme-overlay,
-body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-meme-overlay * {
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-meme-overlay img,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-meme-overlay-frame,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-meme-overlay-close-icon {
     pointer-events: none;
+}
+
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-meme-overlay-close {
+    pointer-events: auto;
 }
 
 body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-export-history-bubble,
@@ -2072,6 +2103,7 @@ body.react-chat-window-dragging {
 
 .chat-avatar-preview-card-close {
     flex: 0 0 auto;
+    position: relative;
     width: 28px;
     height: 28px;
     border-radius: 999px;
@@ -2079,12 +2111,34 @@ body.react-chat-window-dragging {
     background: rgba(68, 183, 254, 0.08);
     color: #2497d9;
     cursor: pointer;
-    font-size: 18px;
-    line-height: 1;
+    font-size: 0;
+    line-height: 0;
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    padding: 0;
     transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
+
+.chat-avatar-preview-card-close::before,
+.chat-avatar-preview-card-close::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 12px;
+    height: 2px;
+    border-radius: 999px;
+    background: currentColor;
+    pointer-events: none;
+}
+
+.chat-avatar-preview-card-close::before {
+    transform: translate(-50%, -50%) rotate(45deg);
+}
+
+.chat-avatar-preview-card-close::after {
+    transform: translate(-50%, -50%) rotate(-45deg);
 }
 
 .chat-avatar-preview-card-close:hover {
@@ -2858,6 +2912,7 @@ body.react-chat-window-dragging {
     flex-wrap: wrap;
     align-items: center;
     gap: 4px;
+    box-sizing: border-box;
     max-width: calc(100vw - 24px);
     padding: 6px 8px;
     border-radius: 12px;
@@ -2873,11 +2928,13 @@ body.react-chat-window-dragging {
 
 .crop-tool-group {
     display: flex;
+    flex: 0 0 auto;
     align-items: center;
     gap: 2px;
 }
 
 .crop-tool-divider {
+    flex: 0 0 auto;
     width: 1px;
     align-self: stretch;
     margin: 4px;
@@ -3003,6 +3060,7 @@ body.react-chat-window-dragging {
     flex-wrap: wrap;
     align-items: center;
     gap: 14px;
+    box-sizing: border-box;
     max-width: calc(100vw - 24px);
     padding: 8px 14px;
     border-radius: 12px;
@@ -3230,6 +3288,7 @@ body.react-chat-window-dragging {
     transition: none;
     animation: none;
     will-change: auto;
+    image-rendering: auto !important;
 }
 
 #chat-container.minimized #chat-header {
@@ -3298,6 +3357,8 @@ body.react-chat-window-dragging {
 #chat-container.minimized #toggle-chat-btn img {
     width: 100% !important;
     height: 100% !important;
+    object-fit: contain;
+    image-rendering: auto !important;
 }
 
 #input-row {
@@ -3672,6 +3733,7 @@ body.react-chat-window-dragging {
         height: 100%;
         object-fit: contain;
         pointer-events: none;
+        image-rendering: auto !important;
     }
 
     :where(body:not(.lanlan-pet-mode)) #chat-container.minimized::before {
@@ -3679,6 +3741,28 @@ body.react-chat-window-dragging {
         -webkit-backdrop-filter: none !important;
         background: transparent !important;
     }
+}
+
+body.yui-guide-compact-chat-fixed.subtitle-web-host:not(.neko-electron-runtime) #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) {
+    left: clamp(24px, 6vw, 72px) !important;
+    top: min(62vh, calc(100vh - var(--compact-surface-height, 58px) - 24px)) !important;
+    bottom: auto !important;
+    width: min(400px, calc(100vw - 32px)) !important;
+    transform: none !important;
+}
+
+body.yui-guide-compact-chat-fixed.subtitle-web-host:not(.neko-electron-runtime) > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] {
+    left: calc(clamp(24px, 6vw, 72px) + 200px);
+}
+
+body.yui-guide-compact-chat-fixed.subtitle-web-host:not(.neko-electron-runtime) > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-compact-choice-placement="above"] {
+    top: auto;
+    bottom: calc(100vh - min(62vh, calc(100vh - var(--compact-surface-height, 58px) - 24px)) + 16px);
+}
+
+body.yui-guide-compact-chat-fixed.subtitle-web-host:not(.neko-electron-runtime) > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-compact-choice-placement="below"] {
+    top: calc(min(62vh, calc(100vh - var(--compact-surface-height, 58px) - 24px)) + var(--compact-surface-height, 58px) + 16px);
+    bottom: auto;
 }
 
 /* Agent HUD 空状态折叠按钮样式 */

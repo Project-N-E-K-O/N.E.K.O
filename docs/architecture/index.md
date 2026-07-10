@@ -10,36 +10,41 @@ Project N.E.K.O. is built as a **multi-process microservice system** where three
 
 | Server | Port | Entry point | Role |
 |--------|------|-------------|------|
-| **Main Server** | 48911 | `main_server.py` | Web UI, REST API, WebSocket chat, TTS |
-| **Memory Server** | 48912 | `memory_server.py` | Semantic recall, time-indexed history, memory compression |
-| **Agent Server** | 48915 | `agent_server.py` | Background task execution (MCP, Computer Use, Browser Use, Virtual Machine) |
+| **Main Server** | 48911 | `app/main_server.py` | Web UI, REST API, WebSocket chat, TTS |
+| **Memory Server** | 48912 | `app/memory_server.py` | Semantic recall, time-indexed history, memory compression |
+| **Agent Server** | 48915 | `app/agent_server.py` | Background task execution (Computer Use, Browser Use, OpenClaw remote agent, OpenFang standalone agent, User Plugins) |
 
 The main server is the user-facing entry point. It serves the Web UI, handles all REST API requests, and maintains WebSocket connections for real-time voice/text chat. The memory and agent servers are internal services that the main server communicates with.
 
 ## Communication patterns
 
 ```
-┌──────────────────────────────────────────┐
-│              Main Server (:48911)         │
-│                                          │
-│  FastAPI ─── REST Routers                │
-│  WebSocket ─── LLMSessionManager         │
-│  ZeroMQ PUB ───┐                         │
-│  ZeroMQ PULL ──┼── AgentEventBridge      │
-│  HTTP Client ──┤                         │
-└────────────────┼─────────────────────────┘
-                 │
-        ┌────────┼────────┐
-        │        │        │
-        ▼        ▼        ▼
-   Memory     Agent    Monitor
-   Server     Server   Server
-   (:48912)   (:48915) (:48913)
+┌────────────────────────────────────────────────┐
+│              Main Server (:48911)                │
+│                                                  │
+│  FastAPI ─── REST Routers                        │
+│  WebSocket ─── LLMSessionManager                 │
+│  HTTP Client (httpx) ───────────┐                │
+│  ZeroMQ PUB  (:48961) ──┐       │                │
+│  ZeroMQ PUSH (:48963) ──┼── MainServerAgentBridge│
+│  ZeroMQ PULL (:48962) ──┘       │                │
+└─────────┬───────────────────────┼────────────────┘
+          │                       │
+    ┌─────┴─────┐         ┌───────┴────────┐
+    │           │         │                │
+    ▼           ▼         ▼                ▼
+  Memory     Monitor    Agent Server   User-Plugin
+  Server     Server     (Tool Server)  Server
+  (:48912)   (:48913)   (:48915)       (:48916)
+   HTTP      one-way     HTTP REST +    HTTP REST
+            status push  ZeroMQ events
 ```
 
-- **Main ↔ Memory**: HTTP requests for storing/querying memories
-- **Main ↔ Agent**: ZeroMQ pub/sub for task delegation and result streaming
-- **Main ↔ Monitor**: WebSocket for real-time status updates
+- **Main ↔ Memory**: HTTP requests for storing/querying memories (memory server `:48912`)
+- **Main ↔ Agent**: two channels working together —
+  - **Control / dispatch**: HTTP REST via `httpx` to the Tool Server (`:48915`), plus the User-Plugin server (`:48916`)
+  - **Event streaming**: ZeroMQ, where the main process binds the sockets — `PUB :48961` (session → agent), `PUSH :48963` (analyze queue → agent), `PULL :48962` (agent → main results); `agent_server` connects the mirror sockets
+- **Main ↔ Monitor**: one-way status push to the monitor server (`:48913`)
 
 ## Key architectural patterns
 

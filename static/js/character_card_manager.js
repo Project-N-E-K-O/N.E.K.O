@@ -17,6 +17,16 @@ const FRONTEND_FORCE_HIDDEN_FIELDS = [
     'mmd_idle_animations',
 ];
 
+let charaCardParticleCanvas = null;
+let charaCardParticleContext = null;
+let charaCardParticleFrame = 0;
+let charaCardParticles = [];
+let charaCardParticleResizeBound = false;
+let charaCardParticleResizeHandler = null;
+let charaCardDissolveRunId = 0;
+const CHARA_CARD_DISSOLVE_PARTICLE_LIMIT = 144;
+const CHARA_CARD_DISSOLVE_DURATION = 680;
+
 function _safeArray(value) {
     return ReservedFieldsUtils._safeArray(value);
 }
@@ -3195,7 +3205,17 @@ function mergeFreshCatgirlRawDataWithLocal(freshRawData, localRawData) {
     return merged;
 }
 
-function syncCharacterCardCache(catgirlName, rawData) {
+function applyLocalVoiceIdToRawData(rawData, voiceId) {
+    if (!rawData || typeof rawData !== 'object') return rawData;
+    const normalizedVoiceId = (voiceId == null ? '' : String(voiceId)).trim();
+    rawData.voice_id = normalizedVoiceId;
+    if (rawData.voice && typeof rawData.voice === 'object') {
+        rawData.voice.voice_id = normalizedVoiceId;
+    }
+    return rawData;
+}
+
+function syncCharacterCardCache(catgirlName, rawData, options = {}) {
     if (!catgirlName) return;
     if (!Array.isArray(window.characterCards)) {
         window.characterCards = [];
@@ -3214,7 +3234,9 @@ function syncCharacterCardCache(catgirlName, rawData) {
     globalCharacterCards = window.characterCards || [];
 
     refreshCharacterCardSelectOptions();
-    renderCharaCardsView();
+    if (options.render !== false) {
+        renderCharaCardsView();
+    }
 }
 
 function waitForCharacterCardModelScanBudget(scanPromise) {
@@ -3459,7 +3481,7 @@ async function loadCharacterCards() {
         showMessage(window.t ? window.t('steam.characterCardsRefreshedEmpty') : '已刷新角色卡列表，暂无角色卡', 'info');
     }
 
-    // 同步加载主人档案和已隐藏猫娘列表
+    // 同步加载我的档案和已隐藏猫娘列表
     loadMasterProfile();
     renderHiddenCatgirls();
 
@@ -3668,8 +3690,22 @@ async function openModelManagerForCharacterForm(form, fallbackName) {
         await showProfileNameRequiredDialog();
         return;
     }
+    const nameInput = form?.querySelector?.('[name="档案名"]');
+    const shouldCreateCharacter = form && form._isNew && (!form._autoCreated || form._autoCreatedName !== catgirlName);
+    if (shouldCreateCharacter) {
+        if (form._autoCreated && form._autoCreatedName !== catgirlName) {
+            form._autoCreatedDetachedName = form._autoCreatedName;
+            form._autoCreated = false;
+            form._autoCreatedName = '';
+        }
+        if (!(await ensureValidCharacterProfileName(catgirlName, nameInput))) {
+            return;
+        }
+    } else if (!(await ensureSafeExistingCharacterPathName(catgirlName, nameInput))) {
+        return;
+    }
 
-    if (form && form._isNew && !form._autoCreated) {
+    if (shouldCreateCharacter) {
         try {
             const tmpResp = await fetch('/api/characters/catgirl', {
                 method: 'POST',
@@ -3740,6 +3776,98 @@ async function openModelManagerForCharacterForm(form, fallbackName) {
 
 function getProfileNameFromCharacterForm(form, fallbackName) {
     return String(form?.querySelector?.('[name="档案名"]')?.value || fallbackName || '').trim();
+}
+
+const CHARACTER_PROFILE_RESERVED_ROUTE_NAMES = new Set([
+    'l2d',
+    'model_manager',
+    'live2d_parameter_editor',
+    'live2d_emotion_manager',
+    'vrm_emotion_manager',
+    'mmd_emotion_manager',
+    'voice_clone',
+    'api_key',
+    'character_card_manager',
+    'cloudsave_manager',
+    'memory_browser',
+    'cookies_login',
+    'chat',
+    'subtitle',
+    'agenthud',
+    'toast',
+    'card_maker',
+    'soccer_demo',
+    'badminton_demo',
+    'jukebox',
+    'static',
+    'user_live2d',
+    'user_live2d_local',
+    'user_vrm',
+    'user_mmd',
+    'user_mods',
+    'workshop',
+    'api',
+    'ws',
+    'health',
+]);
+const CHARACTER_PROFILE_RESERVED_DEVICE_RE = /^(con|prn|aux|nul|clock\$|com[1-9]|lpt[1-9])$/i;
+const CHARACTER_PROFILE_ALLOWED_PUNCTUATION = new Set([' ', '_', '-', '(', ')', '（', '）', '·', '・', "'", '’']);
+const CHARACTER_PROFILE_NAME_MAX_UNITS = 60;
+
+function countCharacterProfileNameUnits(name) {
+    return Array.from(String(name || '')).reduce((total, ch) => total + (ch.codePointAt(0) <= 0x7F ? 1 : 2), 0);
+}
+
+function getCharacterProfileNameError(name) {
+    const value = String(name || '').trim();
+    if (!value) return window.t ? window.t('character.profileNameRequired') : '档案名为必填项';
+    if (value.includes('/') || value.includes('\\')) return window.t ? window.t('character.profileNameContainsSlash') : '档案名不能包含路径分隔符(/或\\)';
+    if (value.includes('..')) return window.t ? window.t('character.profileNameDotSequence') : '档案名不能包含连续点号(..)';
+    if (value === '.' || value.endsWith('.')) return window.t ? window.t('character.profileNameUnsafeDot') : '档案名不能仅由点号组成或以点号结尾';
+    if (value.includes('.')) return window.t ? window.t('character.profileNameContainsDot') : '档案名不能包含点号(.)';
+    if (CHARACTER_PROFILE_RESERVED_DEVICE_RE.test(value.split('.', 1)[0])) return window.t ? window.t('character.profileNameReservedDevice') : '档案名不能使用 Windows 保留设备名';
+    if (CHARACTER_PROFILE_RESERVED_ROUTE_NAMES.has(value)) return window.t ? window.t('character.profileNameReservedRoute') : '此名称是系统保留的路由名称，不能用作档案名';
+    for (const ch of value) {
+        if (/[\u0000-\u001F\u007F]/.test(ch)) return window.t ? window.t('character.profileNameInvalidChars') : '档案名只能包含文字、数字、空格、下划线、连字符、括号、间隔号(·/・)和撇号';
+        if (/[\p{L}\p{N}]/u.test(ch) || CHARACTER_PROFILE_ALLOWED_PUNCTUATION.has(ch)) continue;
+        return window.t ? window.t('character.profileNameInvalidChars') : '档案名只能包含文字、数字、空格、下划线、连字符、括号、间隔号(·/・)和撇号';
+    }
+    if (countCharacterProfileNameUnits(value) > CHARACTER_PROFILE_NAME_MAX_UNITS) return window.t ? window.t('character.profileNameTooLong') : '档案名过长';
+    return '';
+}
+
+async function showCharacterProfileNameInvalidDialog(message) {
+    const text = message || (window.t ? window.t('character.profileNameInvalid') : '档案名无效');
+    showMessage(text, 'warning', 6000);
+    if (typeof showAlertDialog === 'function') {
+        await showAlertDialog(text, { type: 'warning' });
+    }
+}
+
+async function ensureValidCharacterProfileName(name, input) {
+    const error = getCharacterProfileNameError(name);
+    if (!error) return true;
+    if (input && typeof input.focus === 'function') input.focus();
+    await showCharacterProfileNameInvalidDialog(error);
+    return false;
+}
+
+function getExistingCharacterPathNameError(name) {
+    const value = String(name || '').trim();
+    if (!isUnsafeCharacterPathSegment(value)) return '';
+    if (!value) return window.t ? window.t('character.profileNameRequired') : '档案名为必填项';
+    if (value.includes('/') || value.includes('\\')) return window.t ? window.t('character.profileNameContainsSlash') : '档案名不能包含路径分隔符(/或\\)';
+    if (value.includes('..')) return window.t ? window.t('character.profileNameDotSequence') : '档案名不能包含连续点号(..)';
+    if (value === '.' || value.endsWith('.')) return window.t ? window.t('character.profileNameUnsafeDot') : '档案名不能仅由点号组成或以点号结尾';
+    return window.t ? window.t('character.profileNameInvalid') : '档案名无效';
+}
+
+async function ensureSafeExistingCharacterPathName(name, input) {
+    const error = getExistingCharacterPathNameError(name);
+    if (!error) return true;
+    if (input && typeof input.focus === 'function') input.focus();
+    await showCharacterProfileNameInvalidDialog(error);
+    return false;
 }
 
 async function showProfileNameRequiredDialog(key = 'character.fillProfileNameFirst', fallback = '请先填写猫娘档案名，然后再设置模型') {
@@ -4441,6 +4569,207 @@ function renderCharaCardsView() {
     document.getElementById('chara-view-list-btn')?.classList.toggle('active', charaCardsViewMode === 'list');
 }
 
+function _ensureCharaCardParticleCanvas() {
+    if (charaCardParticleCanvas) return;
+    charaCardParticleCanvas = document.createElement('canvas');
+    charaCardParticleCanvas.id = 'chara-card-particle-canvas';
+    charaCardParticleCanvas.className = 'chara-card-particle-canvas';
+    charaCardParticleCanvas.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(charaCardParticleCanvas);
+    charaCardParticleContext = charaCardParticleCanvas.getContext('2d');
+
+    if (!charaCardParticleResizeBound) {
+        charaCardParticleResizeHandler = function () {
+            if (!charaCardParticleCanvas || !charaCardParticleContext) return;
+            const dpr = window.devicePixelRatio || 1;
+            charaCardParticleCanvas.width = Math.max(1, Math.floor(window.innerWidth * dpr));
+            charaCardParticleCanvas.height = Math.max(1, Math.floor(window.innerHeight * dpr));
+            charaCardParticleCanvas.style.width = `${window.innerWidth}px`;
+            charaCardParticleCanvas.style.height = `${window.innerHeight}px`;
+            charaCardParticleContext.setTransform(dpr, 0, 0, dpr, 0, 0);
+        };
+        window.addEventListener('resize', charaCardParticleResizeHandler);
+        charaCardParticleResizeBound = true;
+        charaCardParticleResizeHandler();
+    }
+}
+
+function _teardownCharaCardParticleCanvas() {
+    if (!charaCardParticleCanvas) return;
+    if (charaCardParticleResizeBound && charaCardParticleResizeHandler) {
+        window.removeEventListener('resize', charaCardParticleResizeHandler);
+    }
+    window.cancelAnimationFrame(charaCardParticleFrame);
+    charaCardParticleFrame = 0;
+    if (charaCardParticleContext) {
+        charaCardParticleContext.clearRect(0, 0, window.innerWidth, window.innerHeight);
+    }
+    if (charaCardParticleCanvas.parentNode) {
+        charaCardParticleCanvas.parentNode.removeChild(charaCardParticleCanvas);
+    }
+    charaCardParticleCanvas = null;
+    charaCardParticleContext = null;
+    charaCardParticles = [];
+    charaCardParticleResizeBound = false;
+    charaCardParticleResizeHandler = null;
+}
+
+function _randomBetween(min, max) {
+    return min + Math.random() * (max - min);
+}
+
+function _createCharaCardParticle(x, y, color, delay) {
+    const angle = _randomBetween(-Math.PI * 0.9, -Math.PI * 0.1);
+    const speed = _randomBetween(1, 3.8);
+    charaCardParticles.push({
+        x,
+        y,
+        vx: Math.cos(angle) * speed + _randomBetween(-0.4, 0.4),
+        vy: Math.sin(angle) * speed - _randomBetween(0.2, 1.2),
+        rotation: _randomBetween(0, Math.PI),
+        spin: _randomBetween(-0.18, 0.18),
+        size: _randomBetween(2.8, 6.4),
+        life: 0,
+        maxLife: _randomBetween(42, 76),
+        delay: delay || 0,
+        color,
+        alpha: 1,
+    });
+}
+
+function _spawnCharaCardParticles(target) {
+    const rect = target.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+
+    const palette = ['#40c5f1', '#7fd9ff', '#ffffff', '#ff9eb5', '#ff6f8b', '#e3f4ff'];
+    const particleCount = Math.min(CHARA_CARD_DISSOLVE_PARTICLE_LIMIT, Math.max(18, Math.floor(rect.width * rect.height / 180)));
+
+    for (let i = 0; i < particleCount; i++) {
+        _createCharaCardParticle(
+            _randomBetween(rect.left + rect.width * 0.07, rect.right - rect.width * 0.07),
+            _randomBetween(rect.top + rect.height * 0.05, rect.bottom - rect.height * 0.05),
+            palette[Math.floor(Math.random() * palette.length)],
+            _randomBetween(0, 22)
+        );
+    }
+}
+
+function _animateCharaCardParticles() {
+    if (!charaCardParticleContext) return;
+    charaCardParticleContext.clearRect(0, 0, window.innerWidth, window.innerHeight);
+
+    charaCardParticles = charaCardParticles.filter(particle => {
+        if (particle.delay > 0) {
+            particle.delay -= 1;
+            return true;
+        }
+
+        particle.life += 1;
+        const progress = particle.life / particle.maxLife;
+        particle.vy += 0.018;
+        particle.vx *= 0.992;
+        particle.x += particle.vx;
+        particle.y += particle.vy;
+        particle.rotation += particle.spin;
+        particle.alpha = Math.max(0, 1 - progress);
+
+        charaCardParticleContext.save();
+        charaCardParticleContext.globalAlpha = particle.alpha;
+        charaCardParticleContext.translate(particle.x, particle.y);
+        charaCardParticleContext.rotate(particle.rotation);
+        charaCardParticleContext.fillStyle = particle.color;
+        charaCardParticleContext.shadowColor = 'rgba(64, 197, 241, 0.35)';
+        charaCardParticleContext.shadowBlur = 7 * particle.alpha;
+        charaCardParticleContext.fillRect(-particle.size / 2, -particle.size / 2, particle.size, particle.size);
+        charaCardParticleContext.restore();
+
+        return particle.life < particle.maxLife;
+    });
+
+    if (charaCardParticles.length) {
+        charaCardParticleFrame = requestAnimationFrame(_animateCharaCardParticles);
+    } else {
+        cancelAnimationFrame(charaCardParticleFrame);
+        charaCardParticleFrame = 0;
+        _teardownCharaCardParticleCanvas();
+    }
+}
+
+function _startCharaCardParticles() {
+    if (!charaCardParticleCanvas) _ensureCharaCardParticleCanvas();
+    if (!charaCardParticleFrame) {
+        charaCardParticleFrame = requestAnimationFrame(_animateCharaCardParticles);
+    }
+}
+
+function _wait(duration) {
+    return new Promise(resolve => window.setTimeout(resolve, duration));
+}
+
+async function _dissolveCharaCardElement(target) {
+    if (!(target && target.classList)) {
+        return;
+    }
+    const runId = ++charaCardDissolveRunId;
+    const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    target.style.pointerEvents = 'none';
+
+    if (reduceMotion) {
+        target.style.opacity = '0';
+        target.style.visibility = 'hidden';
+        return;
+    }
+
+    target.classList.add('is-dissolving');
+    _ensureCharaCardParticleCanvas();
+    _spawnCharaCardParticles(target);
+    _startCharaCardParticles();
+
+    await _wait(CHARA_CARD_DISSOLVE_DURATION);
+    if (runId !== charaCardDissolveRunId) {
+        target.classList.remove('is-dissolving');
+        target.style.opacity = '0';
+        target.style.visibility = 'hidden';
+        target.style.pointerEvents = 'none';
+        return;
+    }
+    target.classList.remove('is-dissolving');
+    target.style.opacity = '0';
+    target.style.visibility = 'hidden';
+    target.style.pointerEvents = '';
+}
+
+async function _deleteCharaCardWithParticle(name, targetCardElement, triggerButton) {
+    try {
+        const deleted = await workshopDeleteCatgirl(name, { skipReload: true });
+        if (!deleted) {
+            if (triggerButton) triggerButton.disabled = false;
+            return false;
+        }
+
+        if (targetCardElement) {
+            await _dissolveCharaCardElement(targetCardElement);
+        }
+
+        try {
+            await loadCharacterCards();
+        } catch (error) {
+            console.error('刷新角色卡列表失败:', error);
+            if (targetCardElement && targetCardElement.parentNode) {
+                targetCardElement.parentNode.removeChild(targetCardElement);
+            } else if (triggerButton) {
+                triggerButton.disabled = false;
+            }
+        }
+        return true;
+    } catch (error) {
+        console.error('删除角色卡粒子消散流程失败:', error);
+        if (triggerButton) triggerButton.disabled = false;
+        return false;
+    }
+}
+
 // 卡片视图渲染
 function renderCharaCardsGrid(container, cards, currentCatgirl, hiddenKeys) {
     const grid = document.createElement('div');
@@ -4544,9 +4873,12 @@ function renderCharaCardsGrid(container, cards, currentCatgirl, hiddenKeys) {
         deleteBtn.title = window.t ? window.t('character.deleteCard') : '删除角色卡';
         deleteBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>'
             + '<span>' + (window.t ? window.t('character.deleteCard') : '删除角色卡') + '</span>';
-        deleteBtn.onclick = function (e) {
+        deleteBtn.onclick = async function (e) {
             e.stopPropagation();
-            workshopDeleteCatgirl(name);
+            if (deleteBtn.disabled) return;
+            deleteBtn.disabled = true;
+            const deleted = await _deleteCharaCardWithParticle(name, item, deleteBtn);
+            if (!deleted) deleteBtn.disabled = false;
         };
         actionsRow.appendChild(deleteBtn);
 
@@ -4644,9 +4976,12 @@ function renderCharaCardsList(container, cards, currentCatgirl, hiddenKeys) {
         deleteBtn.title = window.t ? window.t('character.deleteCard') : '删除角色卡';
         deleteBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>'
             + '<span class="list-action-label">' + (window.t ? window.t('character.deleteCard') : '删除角色卡') + '</span>';
-        deleteBtn.onclick = function (e) {
+        deleteBtn.onclick = async function (e) {
             e.stopPropagation();
-            workshopDeleteCatgirl(name);
+            if (deleteBtn.disabled) return;
+            deleteBtn.disabled = true;
+            const deleted = await _deleteCharaCardWithParticle(name, item, deleteBtn);
+            if (!deleted) deleteBtn.disabled = false;
         };
         actions.appendChild(deleteBtn);
 
@@ -4804,6 +5139,14 @@ function openCatgirlPanel(card, originEl) {
                 'character.fillProfileNameFirstForCardFace',
                 '请先填写猫娘档案名，然后再设置卡面'
             );
+            return;
+        }
+        const nameInput = form?.querySelector?.('[name="档案名"]');
+        if (form && form._isNew && !form._autoCreated) {
+            if (!(await ensureValidCharacterProfileName(currentName, nameInput))) {
+                return;
+            }
+        } else if (!(await ensureSafeExistingCharacterPathName(currentName, nameInput))) {
             return;
         }
         const makerUrl = `/card_maker?name=${encodeURIComponent(currentName)}&mode=maker`;
@@ -5449,11 +5792,15 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
                 newName = prompt(window.t ? window.t('character.renamePrompt') : '请输入新的档案名', name);
             }
             if (!newName || newName.trim() === '' || newName.trim() === name) return;
+            const normalizedNewName = newName.trim();
+            if (!(await ensureValidCharacterProfileName(normalizedNewName))) {
+                return;
+            }
             try {
                 const resp = await fetch('/api/characters/catgirl/' + encodeURIComponent(name) + '/rename', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ new_name: newName.trim() })
+                    body: JSON.stringify({ new_name: normalizedNewName })
                 });
                 const result = await resp.json();
                 if (result.success) {
@@ -6039,9 +6386,16 @@ function _panelSetFieldLabel(labelEl, key) {
     const MAX_LABEL_LEN = 8;
     let displayText = key;
     if (window.t && typeof window.t === 'function') {
-        const translated = window.t('character.field.' + key);
-        if (translated && translated !== 'character.field.' + key) {
-            displayText = translated;
+        const profileLabelKey = 'characterProfile.labels.' + key;
+        const translatedProfileLabel = window.t(profileLabelKey);
+        if (translatedProfileLabel && translatedProfileLabel !== profileLabelKey) {
+            displayText = translatedProfileLabel;
+        } else {
+            const fieldKey = 'character.field.' + key;
+            const translatedFieldLabel = window.t(fieldKey);
+            if (translatedFieldLabel && translatedFieldLabel !== fieldKey) {
+                displayText = translatedFieldLabel;
+            }
         }
     }
     labelEl.textContent = displayText;
@@ -6127,7 +6481,14 @@ function _panelAttachTextareaAutoResize(textarea) {
 function _panelGetNativeVoiceProviderLabel(nativeEntries) {
     if (!Array.isArray(nativeEntries)) return '';
     for (const [, voiceData] of nativeEntries) {
-        const label = voiceData && (voiceData.provider_label || voiceData.provider);
+        const provider = voiceData && String(voiceData.provider || '').trim();
+        if (provider === 'free') {
+            return _panelVoiceI18n('voice.providerFreeApi', 'Free API');
+        }
+        if (VoiceDisplayUtils.isKnownProvider(provider, { includeFree: false })) {
+            return _panelVoiceProviderShortName(provider);
+        }
+        const label = voiceData && (voiceData.provider_label || provider);
         if (label) return String(label);
     }
     return '';
@@ -6161,45 +6522,30 @@ function _panelGetRegisteredVoiceDisplayName(voiceId, voiceData) {
 // ── source-first 选声：把音色按「provider · 来源」分组（声音来源统一架构 §5）──
 // 品牌名跨语言通用，用 JS 常量；只有 local（本地 CosyVoice）/ free（免费）与「· 来源」
 // 后缀需本地化（voice.provider.* / voice.source.*）。
-const _PANEL_VOICE_PROVIDER_SHORT = Object.freeze({
-    cosyvoice: 'CosyVoice',
-    cosyvoice_intl: 'CosyVoice Intl',
-    minimax: 'MiniMax',
-    minimax_intl: 'MiniMax Intl',
-    elevenlabs: 'ElevenLabs',
-    gptsovits: 'GPT-SoVITS',
-    gemini: 'Gemini',
-    step: 'StepFun',
-    grok: 'Grok',
-    mimo: 'MiMo',
-    vllm_omni: 'vLLM-Omni',
-});
-
 function _panelVoiceI18n(key, fallback) {
-    if (window.t) {
-        const t = window.t(key);
-        if (t && t !== key) return t;
-    }
-    return fallback;
+    return VoiceDisplayUtils.t(key, fallback);
 }
 
 function _panelVoiceProviderShortName(provider) {
-    const p = String(provider || '').trim();
-    if (!p) return _panelVoiceI18n('voice.providerUnknown', '其他');
-    if (p === 'local') return _panelVoiceI18n('voice.providerLocal', '本地 CosyVoice');
-    if (p === 'free') return _panelVoiceI18n('voice.providerFree', '免费');
-    return _PANEL_VOICE_PROVIDER_SHORT[p] || p;
+    return VoiceDisplayUtils.providerShortName(provider, {
+        freeKey: 'voice.providerFree',
+        freeFallback: 'Free',
+    });
 }
 
 function _panelVoiceSourceLabel(source) {
     const s = String(source || '').trim();
     const map = {
-        preset: ['voice.sourcePreset', '预制'],
-        clone: ['voice.sourceClone', '克隆'],
-        design: ['voice.sourceDesign', '描述生成'],
+        preset: ['voice.sourcePreset', 'Preset'],
+        clone: ['voice.sourceClone', 'Clone'],
+        design: ['voice.sourceDesign', 'Voice Design'],
     };
     const entry = map[s];
     return entry ? _panelVoiceI18n(entry[0], entry[1]) : s;
+}
+
+function _panelNativeVoiceDisplayName(voiceId, voiceData) {
+    return VoiceDisplayUtils.nativeVoiceDisplayName(voiceId, voiceData);
 }
 
 // 「<Provider> · <来源>」组标签，如 "ElevenLabs · 克隆" / "Gemini · 预制"
@@ -6549,7 +6895,7 @@ async function _loadPanelVoices(selectEl, currentVoiceId) {
                     const nativeGroup = document.createElement('optgroup');
                     // native 预制：「<Provider> · 预制」（provider 取自 voiceData.provider_label/provider）
                     const _nativeProviderLabel = _panelGetNativeVoiceProviderLabel(nativeEntries)
-                        || _panelVoiceI18n('voice.providerUnknown', '其他');
+                        || _panelVoiceI18n('voice.providerUnknown', 'Other');
                     nativeGroup.label = _panelNormalizeVoiceGroupLabel(
                         _nativeProviderLabel + ' · ' + _panelVoiceSourceLabel('preset')
                     );
@@ -6557,7 +6903,7 @@ async function _loadPanelVoices(selectEl, currentVoiceId) {
                     nativeEntries.forEach(function ([voiceId, voiceData]) {
                         const option = document.createElement('option');
                         option.value = voiceId;
-                        option.textContent = (voiceData && voiceData.prefix) || voiceId;
+                        option.textContent = _panelNativeVoiceDisplayName(voiceId, voiceData);
                         option.title = voiceId;
                         if (voiceId === currentVoiceId) option.selected = true;
                         nativeGroup.appendChild(option);
@@ -6760,6 +7106,13 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
             await showAlertDialog(window.t ? window.t('character.profileNameRequired') : '请输入档案名', { type: 'warning' });
             return false;
         }
+        const shouldUseStrictProfileNameRule = isNew || !nameInput.readOnly;
+        if (shouldUseStrictProfileNameRule && !(await ensureValidCharacterProfileName(nameInput.value, nameInput))) {
+            return false;
+        }
+        if (!shouldUseStrictProfileNameRule && !(await ensureSafeExistingCharacterPathName(nameInput.value, nameInput))) {
+            return false;
+        }
 
         const selectedVoiceId = (form.querySelector('select[name="voice_id"]')?.value ?? '').trim();
         const previousVoiceId = form._previousVoiceId || '';
@@ -6774,6 +7127,7 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
         attachCharacterFieldOrderPayload(data, fieldOrder);
 
         // 如果新建猫娘已被临时保存（自动创建），则改用 PUT 更新
+        const shouldSelectAfterSave = !!isNew;
         const effectiveIsNew = isNew && !form._autoCreated;
         const url = '/api/characters/catgirl' + (effectiveIsNew ? '' : '/' + encodeURIComponent(effectiveIsNew ? '' : (form._autoCreatedName || originalName)));
         const response = await fetch(url, {
@@ -6798,9 +7152,15 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
             showMessage(result.error || (window.t ? window.t('character.saveFailed') : '保存失败'), 'error');
             return false;
         }
-        const localRawData = buildLocalCatgirlRawData(data['档案名'], data, fieldOrder);
+        const savedCatgirlName = String(result.character_name || data['档案名'] || '').trim();
+        if (savedCatgirlName && savedCatgirlName !== data['档案名']) {
+            data['档案名'] = savedCatgirlName;
+            if (nameInput) nameInput.value = savedCatgirlName;
+        }
+        const localRawData = buildLocalCatgirlRawData(savedCatgirlName, data, fieldOrder);
+        let savedVoiceIdForLocalRawData = null;
         let savedRawDataForCache = localRawData;
-        syncCharacterCardCache(data['档案名'], localRawData);
+        syncCharacterCardCache(savedCatgirlName, localRawData, { render: !shouldSelectAfterSave });
         if (form._autoCreatedDetachedName) {
             await rollbackAutoCreatedCatgirl(form, form._autoCreatedDetachedName);
             form._autoCreated = false;
@@ -6813,10 +7173,10 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
         // voice_id 通过专用接口更新
         if (selectedVoiceId !== previousVoiceId) {
             if (selectedVoiceId) {
-                const voiceSwitchOpId = createVoiceConfigSwitchOpId(data['档案名']);
-                notifyVoiceConfigSwitching(data['档案名'], true, voiceSwitchOpId);
+                const voiceSwitchOpId = createVoiceConfigSwitchOpId(savedCatgirlName);
+                notifyVoiceConfigSwitching(savedCatgirlName, true, voiceSwitchOpId);
                 try {
-                    const voiceResp = await fetch('/api/characters/catgirl/voice_id/' + encodeURIComponent(data['档案名']), {
+                    const voiceResp = await fetch('/api/characters/catgirl/voice_id/' + encodeURIComponent(savedCatgirlName), {
                         method: 'PUT',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ voice_id: selectedVoiceId })
@@ -6827,7 +7187,7 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
                     // 是 PUT 被拒、还是后续 cleanup_invalid_voice_ids 把它清掉了。
                     console.log(
                         '[character voice PUT]',
-                        'name=', data['档案名'],
+                        'name=', savedCatgirlName,
                         'voice_id=', selectedVoiceId,
                         'status=', voiceResp.status,
                         'response=', voiceResult,
@@ -6842,6 +7202,9 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
                             window.t ? window.t('character.partialSaveVoiceFailed', { error: detail }) : '角色已保存，但音色更新失败: ' + detail,
                             'error'
                         );
+                    } else {
+                        savedVoiceIdForLocalRawData = selectedVoiceId;
+                        applyLocalVoiceIdToRawData(localRawData, savedVoiceIdForLocalRawData);
                     }
                 } catch (voiceErr) {
                     showMessage(
@@ -6849,13 +7212,13 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
                         'error'
                     );
                 } finally {
-                    notifyVoiceConfigSwitching(data['档案名'], false, voiceSwitchOpId);
+                    notifyVoiceConfigSwitching(savedCatgirlName, false, voiceSwitchOpId);
                 }
             } else if (previousVoiceId) {
-                const voiceSwitchOpId = createVoiceConfigSwitchOpId(data['档案名']);
-                notifyVoiceConfigSwitching(data['档案名'], true, voiceSwitchOpId);
+                const voiceSwitchOpId = createVoiceConfigSwitchOpId(savedCatgirlName);
+                notifyVoiceConfigSwitching(savedCatgirlName, true, voiceSwitchOpId);
                 try {
-                    const clearResp = await fetch('/api/characters/catgirl/' + encodeURIComponent(data['档案名']) + '/unregister_voice', {
+                    const clearResp = await fetch('/api/characters/catgirl/' + encodeURIComponent(savedCatgirlName) + '/unregister_voice', {
                         method: 'POST'
                     });
                     const clearResult = await clearResp.json().catch(() => ({}));
@@ -6865,6 +7228,9 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
                             window.t ? window.t('character.partialSaveVoiceFailed', { error: detail }) : '角色已保存，但音色更新失败: ' + detail,
                             'error'
                         );
+                    } else {
+                        savedVoiceIdForLocalRawData = '';
+                        applyLocalVoiceIdToRawData(localRawData, savedVoiceIdForLocalRawData);
                     }
                 } catch (clearErr) {
                     showMessage(
@@ -6872,7 +7238,7 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
                         'error'
                     );
                 } finally {
-                    notifyVoiceConfigSwitching(data['档案名'], false, voiceSwitchOpId);
+                    notifyVoiceConfigSwitching(savedCatgirlName, false, voiceSwitchOpId);
                 }
             }
         }
@@ -6882,7 +7248,7 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
             const motionSelect = document.getElementById('preview-motion-select');
             const idleAnimation = motionSelect ? (motionSelect.value || '') : '';
             try {
-                const l2dResp = await fetch('/api/characters/catgirl/l2d/' + encodeURIComponent(data['档案名']), {
+                const l2dResp = await fetch('/api/characters/catgirl/l2d/' + encodeURIComponent(savedCatgirlName), {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -6900,11 +7266,32 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
             }
         }
 
-        showMessage(isNew
-            ? (window.t ? window.t('character.newCatgirlSuccess') : '新猫娘创建成功')
-            : (window.t ? window.t('character.saveSuccess') : '保存成功'), 'success');
+        let selectedAfterSave = !shouldSelectAfterSave;
+        if (shouldSelectAfterSave) {
+            try {
+                selectedAfterSave = await applyCurrentCatgirlSelection(savedCatgirlName, { showError: false });
+                if (!selectedAfterSave) {
+                    showMessage(
+                        window.t ? window.t('character.switchFailed') : '切换失败',
+                        'warning'
+                    );
+                }
+            } catch (switchError) {
+                console.warn('[角色面板] 新建角色已保存，但自动切换当前角色失败:', switchError);
+                showMessage(
+                    window.t ? window.t('character.switchError') : '切换猫娘时发生错误',
+                    'warning'
+                );
+            }
+        }
+
+        if (!shouldSelectAfterSave || selectedAfterSave) {
+            showMessage(isNew
+                ? (window.t ? window.t('character.newCatgirlSuccess') : '新猫娘创建成功')
+                : (window.t ? window.t('character.saveSuccess') : '保存成功'), 'success');
+        }
         if (isNew) {
-            const catgirlName = data['档案名'];
+            const catgirlName = savedCatgirlName;
             const hasCardFace = window._cardFaceNames && window._cardFaceNames.has(catgirlName);
             if (!hasCardFace) {
                 const makerParams = new URLSearchParams({
@@ -6935,21 +7322,27 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
             if (cancelBtn) cancelBtn.style.display = 'none';
             try {
                 const freshData = await loadCharacterData();
-                const freshRawData = freshData && freshData['猫娘'] && freshData['猫娘'][data['档案名']]
-                    ? freshData['猫娘'][data['档案名']]
+                const freshRawData = freshData && freshData['猫娘'] && freshData['猫娘'][savedCatgirlName]
+                    ? freshData['猫娘'][savedCatgirlName]
                     : {};
                 savedRawDataForCache = mergeFreshCatgirlRawDataWithLocal(freshRawData, localRawData);
+                if (savedVoiceIdForLocalRawData !== null) {
+                    applyLocalVoiceIdToRawData(savedRawDataForCache, savedVoiceIdForLocalRawData);
+                }
                 setLocalRawDataFieldOrder(savedRawDataForCache, fieldOrder);
-                syncCharacterCardCache(data['档案名'], savedRawDataForCache);
-                buildCatgirlDetailForm(data['档案名'], savedRawDataForCache, false, container);
+                syncCharacterCardCache(savedCatgirlName, savedRawDataForCache);
+                buildCatgirlDetailForm(savedCatgirlName, savedRawDataForCache, false, container);
             } catch (e) {
                 console.error('重新加载猫娘数据失败:', e);
-                buildCatgirlDetailForm(data['档案名'], localRawData, false, container);
+                if (savedVoiceIdForLocalRawData !== null) {
+                    applyLocalVoiceIdToRawData(localRawData, savedVoiceIdForLocalRawData);
+                }
+                buildCatgirlDetailForm(savedCatgirlName, localRawData, false, container);
             }
         }
         await loadCharacterCards();
         setLocalRawDataFieldOrder(savedRawDataForCache, fieldOrder);
-        syncCharacterCardCache(data['档案名'], savedRawDataForCache);
+        syncCharacterCardCache(savedCatgirlName, savedRawDataForCache);
         return true;
     } catch (error) {
         console.error('保存猫娘失败:', error);
@@ -6973,6 +7366,10 @@ async function ensureCanModifyCardsOutsideVoiceMode() {
         const currentCatgirl = currentData.current_catgirl || '';
 
         if (currentCatgirl) {
+            if (isUnsafeCharacterPathSegment(currentCatgirl)) {
+                console.warn('[CharacterCardManager] 当前角色名不能安全放进 URL path，跳过语音状态检查以允许救援切换:', currentCatgirl);
+                return { ok: true, currentCatgirl, skippedVoiceCheckForInvalidName: true };
+            }
             const voiceResp = await fetch(
                 `/api/characters/catgirl/${encodeURIComponent(currentCatgirl)}/voice_mode_status`,
                 { cache: 'no-store' }
@@ -6981,6 +7378,10 @@ async function ensureCanModifyCardsOutsideVoiceMode() {
                 throw new Error(`voice_mode_status request failed: ${voiceResp.status}`);
             }
             const voiceData = await voiceResp.json();
+            if (voiceData && voiceData.invalid_name) {
+                console.warn('[CharacterCardManager] 当前角色名已被后端标记为非法，跳过语音状态检查以允许救援切换:', currentCatgirl);
+                return { ok: true, currentCatgirl, skippedVoiceCheckForInvalidName: true };
+            }
             if (voiceData.is_voice_mode) {
                 const msg = window.t ? window.t('character.cannotModifyInVoiceMode') : '语音状态下无法切换或删除角色卡，请先关闭语音控制';
                 showMessage(msg, 'error', 6000);
@@ -6996,6 +7397,18 @@ async function ensureCanModifyCardsOutsideVoiceMode() {
         await showAlertDialog(msg, { type: 'error' });
         return { ok: false };
     }
+}
+
+function isUnsafeCharacterPathSegment(name) {
+    const value = String(name || '').trim();
+    return !value
+        || value === '.'
+        || value === '..'
+        || value.endsWith('.')
+        || value.includes('..')
+        || value.includes('/')
+        || value.includes('\\')
+        || /[\u0000-\u001F\u007F]/.test(value);
 }
 
 // 跨窗口通知主窗口（index.html / chat.html）热切换角色
@@ -7019,6 +7432,57 @@ function _broadcastCatgirlSwitched(newCatgirl, oldCatgirl) {
     } catch (e) {
         console.warn('[CharaCardManager] catgirl_switched 广播失败:', e);
     }
+}
+
+async function applyCurrentCatgirlSelection(name, options = {}) {
+    const targetName = String(name || '').trim();
+    if (!targetName) return false;
+
+    let oldCatgirl = String(options.oldCatgirl || window._workshopCurrentCatgirl || '').trim();
+    if (!oldCatgirl) {
+        try {
+            const currentResp = await fetch('/api/characters/current_catgirl', { cache: 'no-store' });
+            if (currentResp.ok) {
+                const currentData = await currentResp.json();
+                oldCatgirl = String(currentData.current_catgirl || '').trim();
+            }
+        } catch (e) {
+            console.warn('[CharaCardManager] 读取当前角色失败，继续尝试切换:', e);
+        }
+    }
+
+    if (oldCatgirl === targetName) {
+        window._workshopCurrentCatgirl = targetName;
+        return true;
+    }
+
+    const response = await fetch('/api/characters/current_catgirl', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ catgirl_name: targetName })
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || !result.success) {
+        if (options.showError !== false) {
+            showMessage(result.error || (window.t ? window.t('character.switchFailed') : '切换失败'), 'error');
+        }
+        return false;
+    }
+
+    window._workshopCurrentCatgirl = targetName;
+    renderCharaCardsView();
+    _refreshOpenCatgirlPanelActions();
+
+    if (typeof window.handleCatgirlSwitch === 'function') {
+        const currentName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+        if (currentName !== targetName) {
+            await Promise.resolve(window.handleCatgirlSwitch(targetName, oldCatgirl)).catch(e => {
+                console.warn('[CharaCardManager] 同页角色切换失败:', e);
+            });
+        }
+    }
+    _broadcastCatgirlSwitched(targetName, oldCatgirl);
+    return true;
 }
 
 // 角色卡详情面板（modal）目前只读取 _workshopCurrentCatgirl 的初始值来决定按钮态，
@@ -7056,20 +7520,9 @@ async function workshopSwitchCatgirl(name) {
     const oldCatgirl = guard.currentCatgirl || window._workshopCurrentCatgirl || '';
 
     try {
-        const response = await fetch('/api/characters/current_catgirl', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ catgirl_name: name })
-        });
-        const result = await response.json();
-        if (result.success) {
-            window._workshopCurrentCatgirl = name;
-            renderCharaCardsView();
-            _refreshOpenCatgirlPanelActions();
-            _broadcastCatgirlSwitched(name, oldCatgirl);
+        const switched = await applyCurrentCatgirlSelection(name, { oldCatgirl });
+        if (switched) {
             showMessage(window.t ? window.t('character.switchSuccess') : '切换成功', 'success');
-        } else {
-            showMessage(result.error || (window.t ? window.t('character.switchFailed') : '切换失败'), 'error');
         }
     } catch (error) {
         console.error('切换猫娘失败:', error);
@@ -7079,7 +7532,8 @@ async function workshopSwitchCatgirl(name) {
 
 // 删除猫娘
 // 返回值约定：成功删除返回 true；任何早退/失败/用户取消都返回 false——给调用方据此决定是否关面板
-async function workshopDeleteCatgirl(name) {
+async function workshopDeleteCatgirl(name, options = {}) {
+    const shouldReload = options && options.skipReload ? false : true;
     // 先做语音态预检并拿到权威当前角色名，避免别窗口切换后本地缓存失效
     const guard = await ensureCanModifyCardsOutsideVoiceMode();
     if (!guard.ok) {
@@ -7134,7 +7588,17 @@ async function workshopDeleteCatgirl(name) {
     if (!confirmed) return false;
 
     try {
-        const resp = await fetch('/api/characters/catgirl/' + encodeURIComponent(name), { method: 'DELETE' });
+        const useBodyDelete = isUnsafeCharacterPathSegment(name);
+        const resp = await fetch(
+            useBodyDelete ? '/api/characters/catgirl/delete' : '/api/characters/catgirl/' + encodeURIComponent(name),
+            useBodyDelete
+                ? {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name })
+                }
+                : { method: 'DELETE' }
+        );
         if (!resp.ok) {
             let serverMsg = '';
             try {
@@ -7146,8 +7610,10 @@ async function workshopDeleteCatgirl(name) {
             await showAlertDialog(msg, { type: 'error' });
             return false;
         }
-        // 重新加载角色卡列表
-        await loadCharacterCards();
+        if (shouldReload) {
+            // 重新加载角色卡列表
+            await loadCharacterCards();
+        }
         return true;
     } catch (error) {
         console.error('删除猫娘失败:', error);
@@ -9270,6 +9736,10 @@ async function destroyLive2DPreviewContext() {
             manager._displayChangeHandler = null;
         }
 
+        if (typeof manager._stopIdleFpsGovernor === 'function') {
+            manager._stopIdleFpsGovernor();
+        }
+
         if (manager.pixi_app && typeof manager.pixi_app.destroy === 'function') {
             try {
                 manager.pixi_app.destroy(true);
@@ -10244,7 +10714,7 @@ function selectPreviewImage() {
 }
 
 
-// ===================== 主人档案管理 =====================
+// ===================== 我的档案管理 =====================
 
 async function loadMasterProfile() {
     try {
@@ -10254,7 +10724,7 @@ async function loadMasterProfile() {
         const master = data?.['主人'] || {};
         renderMasterForm(master);
     } catch (e) {
-        console.error('加载主人档案失败:', e);
+        console.error('加载我的档案失败:', e);
     }
 }
 
@@ -10298,7 +10768,7 @@ function renderMasterForm(master) {
     renameBtn.className = 'btn sm';
     renameBtn.style.minWidth = '70px';
     const renameText = window.t ? window.t('character.rename') : '修改名称';
-    const renameTitle = window.t ? window.t('character.renameMasterTitle') : '重命名主人';
+    const renameTitle = window.t ? window.t('character.renameMasterTitle') : '重命名我的档案';
     renameBtn.textContent = renameText;
     renameBtn.title = renameTitle;
     renameBtn.setAttribute('aria-label', renameTitle);
@@ -10323,7 +10793,7 @@ function renderMasterForm(master) {
         wrapper.className = 'field-row-wrapper custom-row';
 
         const label = document.createElement('label');
-        label.textContent = normalizedKey;
+        _panelSetFieldLabel(label, normalizedKey);
         wrapper.appendChild(label);
 
         const row = document.createElement('div');
@@ -10376,7 +10846,7 @@ function renderMasterForm(master) {
     saveBtn.id = 'save-master-btn';
     saveBtn.className = 'btn sm';
     saveBtn.style.display = hasMasterProfileName ? 'none' : '';
-    const saveText = window.t ? window.t('character.saveMaster') : '保存主人设定';
+    const saveText = window.t ? window.t('character.saveMaster') : '保存我的档案';
     saveBtn.textContent = saveText;
     saveBtn.onclick = saveMasterForm;
     btnArea.appendChild(saveBtn);
@@ -10424,6 +10894,9 @@ async function saveMasterForm() {
         showMessage(window.t ? window.t('character.profileNameRequired') : '档案名为必填项', 'error');
         return;
     }
+    if (!nameInput.readOnly && !(await ensureValidCharacterProfileName(nameInput.value, nameInput))) {
+        return;
+    }
     const baseData = nameInput.readOnly
         ? {}
         : { '档案名': normalizeCharacterFieldName(nameInput.value) };
@@ -10442,14 +10915,14 @@ async function saveMasterForm() {
             body: JSON.stringify(data)
         });
         if (resp.ok) {
-            showMessage(window.t ? window.t('character.saveMasterSuccess') : '保存主人设定成功', 'success');
+            showMessage(window.t ? window.t('character.saveMasterSuccess') : '我的档案保存成功', 'success');
             await loadMasterProfile();
         } else {
             const err = await resp.text();
             showMessage((window.t ? window.t('character.saveMasterError') : '保存失败') + ': ' + err, 'error');
         }
     } catch (e) {
-        showMessage(window.t ? window.t('character.saveMasterError') : '保存主人设定失败', 'error');
+        showMessage(window.t ? window.t('character.saveMasterError') : '保存我的档案失败', 'error');
     }
 }
 
@@ -10592,7 +11065,7 @@ async function addMasterField() {
         key = await showPrompt(
             window.t ? window.t('character.addMasterFieldPrompt') : '请输入新设定的名称（键名）',
             '',
-            window.t ? window.t('character.addMasterFieldTitle') : '新增主人设定'
+            window.t ? window.t('character.addMasterFieldTitle') : '新增我的档案字段'
         );
     } else {
         key = prompt(window.t ? window.t('character.addMasterFieldPrompt') : '请输入新设定的名称（键名）');
@@ -10609,7 +11082,7 @@ async function addMasterField() {
     const wrapper = document.createElement('div');
     wrapper.className = 'field-row-wrapper custom-row';
     const label = document.createElement('label');
-    label.textContent = key;
+    _panelSetFieldLabel(label, key);
     wrapper.appendChild(label);
 
     const row = document.createElement('div');
@@ -10655,8 +11128,8 @@ async function renameMaster() {
         showMessage(window.t ? window.t('character.profileNameRequired') : '档案名为必填项', 'error');
         return;
     }
-    const promptText = window.t ? window.t('character.renameMasterPrompt') : '请输入新的主人档案名';
-    const titleText = window.t ? window.t('character.renameMasterTitle') : '重命名主人';
+    const promptText = window.t ? window.t('character.renameMasterPrompt') : '请输入新的档案名';
+    const titleText = window.t ? window.t('character.renameMasterTitle') : '重命名我的档案';
     let newName;
     if (typeof showPrompt === 'function') {
         newName = await showPrompt(
@@ -10669,6 +11142,9 @@ async function renameMaster() {
     }
     const normalizedNewName = normalizeCharacterFieldName(newName);
     if (!normalizedNewName || normalizedNewName === oldName) return;
+    if (!(await ensureValidCharacterProfileName(normalizedNewName, nameInput))) {
+        return;
+    }
     try {
         const useBodyFallback = /[\\/]/.test(oldName);
         let resp;
@@ -10711,10 +11187,50 @@ function toggleMasterSection() {
     const content = document.getElementById('master-profile-content');
     const header = document.getElementById('master-profile-header');
     if (!content || !header) return;
-    const isHidden = content.style.display === 'none';
-    content.style.display = isHidden ? 'block' : 'none';
-    header.classList.toggle('open', isHidden);
-    header.setAttribute('aria-expanded', isHidden ? 'true' : 'false');
+    const isOpening = !content.classList.contains('open');
+
+    if (content._masterProfileHideTimer) {
+        clearTimeout(content._masterProfileHideTimer);
+        content._masterProfileHideTimer = null;
+    }
+    if (content._masterProfileHideContent) {
+        content.removeEventListener('transitionend', content._masterProfileHideContent);
+        content._masterProfileHideContent = null;
+    }
+
+    if (isOpening) {
+        content.style.display = 'block';
+        content.style.setProperty('--master-profile-viewport-left', `${content.getBoundingClientRect().left}px`);
+        content.getBoundingClientRect();
+        content.classList.add('open');
+        header.classList.add('open');
+        header.setAttribute('aria-expanded', 'true');
+        return;
+    }
+
+    content.classList.remove('open');
+    header.classList.remove('open');
+    header.setAttribute('aria-expanded', 'false');
+
+    const hideContent = function (event) {
+        if (event && event.target !== content) return;
+        if (event && event.propertyName !== 'clip-path') return;
+        if (!content.classList.contains('open')) {
+            content.style.display = 'none';
+        }
+        content.removeEventListener('transitionend', hideContent);
+        if (content._masterProfileHideTimer) {
+            clearTimeout(content._masterProfileHideTimer);
+            content._masterProfileHideTimer = null;
+        }
+        if (content._masterProfileHideContent === hideContent) {
+            content._masterProfileHideContent = null;
+        }
+    };
+
+    content.addEventListener('transitionend', hideContent);
+    content._masterProfileHideContent = hideContent;
+    content._masterProfileHideTimer = setTimeout(hideContent, 280);
 }
 
 // ===================== 隐藏猫娘 =====================

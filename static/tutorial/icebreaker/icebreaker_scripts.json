@@ -59,14 +59,17 @@
             {
               "id": "A",
               "labelKey": "day1.1AA.options.A",
-              "next": "1AAA"
+              "handoffKey": "day1.1AA.handoff.A",
+              "handoffVoiceKey": "icebreaker_day1_1AA_A"
             },
             {
               "id": "B",
               "labelKey": "day1.1AA.options.B",
-              "next": "1AAB"
+              "handoffKey": "day1.1AA.handoff.B",
+              "handoffVoiceKey": "icebreaker_day1_1AA_B"
             }
-          ]
+          ],
+          "complete": true
         },
         "1AB": {
           "lineKey": "day1.1AB.line",
@@ -75,14 +78,17 @@
             {
               "id": "A",
               "labelKey": "day1.1AB.options.A",
-              "next": "1ABA"
+              "handoffKey": "day1.1AB.handoff.A",
+              "handoffVoiceKey": "icebreaker_day1_1AB_A"
             },
             {
               "id": "B",
               "labelKey": "day1.1AB.options.B",
-              "next": "1ABB"
+              "handoffKey": "day1.1AB.handoff.B",
+              "handoffVoiceKey": "icebreaker_day1_1AB_B"
             }
-          ]
+          ],
+          "complete": true
         },
         "1BA": {
           "lineKey": "day1.1BA.line",
@@ -91,14 +97,17 @@
             {
               "id": "A",
               "labelKey": "day1.1BA.options.A",
-              "next": "1BAA"
+              "handoffKey": "day1.1BA.handoff.A",
+              "handoffVoiceKey": "icebreaker_day1_1BA_A"
             },
             {
               "id": "B",
               "labelKey": "day1.1BA.options.B",
-              "next": "1BAB"
+              "handoffKey": "day1.1BA.handoff.B",
+              "handoffVoiceKey": "icebreaker_day1_1BA_B"
             }
-          ]
+          ],
+          "complete": true
         },
         "1BB": {
           "lineKey": "day1.1BB.line",
@@ -107,443 +116,14 @@
             {
               "id": "A",
               "labelKey": "day1.1BB.options.A",
-              "next": "1BBA"
+              "handoffKey": "day1.1BB.handoff.A",
+              "handoffVoiceKey": "icebreaker_day1_1BB_A"
             },
             {
               "id": "B",
               "labelKey": "day1.1BB.options.B",
-              "next": "1BBB"
-            }
-          ]
-        },
-        "1AAA": {
-          "lineKey": "day1.1AAA.line",
-          "voiceKey": "icebreaker_day1_1AAA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day1.1AAA.options.A",
-              "next": "1AAAA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day1.1AAA.options.B",
-              "next": "1AAAB"
-            }
-          ]
-        },
-        "1AAB": {
-          "lineKey": "day1.1AAB.line",
-          "voiceKey": "icebreaker_day1_1AAB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day1.1AAB.options.A",
-              "next": "1AABA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day1.1AAB.options.B",
-              "next": "1AABB"
-            }
-          ]
-        },
-        "1ABA": {
-          "lineKey": "day1.1ABA.line",
-          "voiceKey": "icebreaker_day1_1ABA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day1.1ABA.options.A",
-              "next": "1ABAA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day1.1ABA.options.B",
-              "next": "1ABAB"
-            }
-          ]
-        },
-        "1ABB": {
-          "lineKey": "day1.1ABB.line",
-          "voiceKey": "icebreaker_day1_1ABB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day1.1ABB.options.A",
-              "next": "1ABBA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day1.1ABB.options.B",
-              "next": "1ABBB"
-            }
-          ]
-        },
-        "1BAA": {
-          "lineKey": "day1.1BAA.line",
-          "voiceKey": "icebreaker_day1_1BAA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day1.1BAA.options.A",
-              "next": "1BAAA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day1.1BAA.options.B",
-              "next": "1BAAB"
-            }
-          ]
-        },
-        "1BAB": {
-          "lineKey": "day1.1BAB.line",
-          "voiceKey": "icebreaker_day1_1BAB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day1.1BAB.options.A",
-              "next": "1BABA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day1.1BAB.options.B",
-              "next": "1BABB"
-            }
-          ]
-        },
-        "1BBA": {
-          "lineKey": "day1.1BBA.line",
-          "voiceKey": "icebreaker_day1_1BBA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day1.1BBA.options.A",
-              "next": "1BBAA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day1.1BBA.options.B",
-              "next": "1BBAB"
-            }
-          ]
-        },
-        "1BBB": {
-          "lineKey": "day1.1BBB.line",
-          "voiceKey": "icebreaker_day1_1BBB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day1.1BBB.options.A",
-              "next": "1BBBA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day1.1BBB.options.B",
-              "next": "1BBBB"
-            }
-          ]
-        },
-        "1AAAA": {
-          "lineKey": "day1.1AAAA.line",
-          "voiceKey": "icebreaker_day1_1AAAA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day1.1AAAA.options.A",
-              "handoffKey": "day1.1AAAA.handoff.A",
-              "handoffVoiceKey": "icebreaker_day1_1AAAA_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day1.1AAAA.options.B",
-              "handoffKey": "day1.1AAAA.handoff.B",
-              "handoffVoiceKey": "icebreaker_day1_1AAAA_B"
-            }
-          ],
-          "complete": true
-        },
-        "1AAAB": {
-          "lineKey": "day1.1AAAB.line",
-          "voiceKey": "icebreaker_day1_1AAAB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day1.1AAAB.options.A",
-              "handoffKey": "day1.1AAAB.handoff.A",
-              "handoffVoiceKey": "icebreaker_day1_1AAAB_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day1.1AAAB.options.B",
-              "handoffKey": "day1.1AAAB.handoff.B",
-              "handoffVoiceKey": "icebreaker_day1_1AAAB_B"
-            }
-          ],
-          "complete": true
-        },
-        "1AABA": {
-          "lineKey": "day1.1AABA.line",
-          "voiceKey": "icebreaker_day1_1AABA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day1.1AABA.options.A",
-              "handoffKey": "day1.1AABA.handoff.A",
-              "handoffVoiceKey": "icebreaker_day1_1AABA_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day1.1AABA.options.B",
-              "handoffKey": "day1.1AABA.handoff.B",
-              "handoffVoiceKey": "icebreaker_day1_1AABA_B"
-            }
-          ],
-          "complete": true
-        },
-        "1AABB": {
-          "lineKey": "day1.1AABB.line",
-          "voiceKey": "icebreaker_day1_1AABB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day1.1AABB.options.A",
-              "handoffKey": "day1.1AABB.handoff.A",
-              "handoffVoiceKey": "icebreaker_day1_1AABB_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day1.1AABB.options.B",
-              "handoffKey": "day1.1AABB.handoff.B",
-              "handoffVoiceKey": "icebreaker_day1_1AABB_B"
-            }
-          ],
-          "complete": true
-        },
-        "1ABAA": {
-          "lineKey": "day1.1ABAA.line",
-          "voiceKey": "icebreaker_day1_1ABAA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day1.1ABAA.options.A",
-              "handoffKey": "day1.1ABAA.handoff.A",
-              "handoffVoiceKey": "icebreaker_day1_1ABAA_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day1.1ABAA.options.B",
-              "handoffKey": "day1.1ABAA.handoff.B",
-              "handoffVoiceKey": "icebreaker_day1_1ABAA_B"
-            }
-          ],
-          "complete": true
-        },
-        "1ABAB": {
-          "lineKey": "day1.1ABAB.line",
-          "voiceKey": "icebreaker_day1_1ABAB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day1.1ABAB.options.A",
-              "handoffKey": "day1.1ABAB.handoff.A",
-              "handoffVoiceKey": "icebreaker_day1_1ABAB_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day1.1ABAB.options.B",
-              "handoffKey": "day1.1ABAB.handoff.B",
-              "handoffVoiceKey": "icebreaker_day1_1ABAB_B"
-            }
-          ],
-          "complete": true
-        },
-        "1ABBA": {
-          "lineKey": "day1.1ABBA.line",
-          "voiceKey": "icebreaker_day1_1ABBA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day1.1ABBA.options.A",
-              "handoffKey": "day1.1ABBA.handoff.A",
-              "handoffVoiceKey": "icebreaker_day1_1ABBA_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day1.1ABBA.options.B",
-              "handoffKey": "day1.1ABBA.handoff.B",
-              "handoffVoiceKey": "icebreaker_day1_1ABBA_B"
-            }
-          ],
-          "complete": true
-        },
-        "1ABBB": {
-          "lineKey": "day1.1ABBB.line",
-          "voiceKey": "icebreaker_day1_1ABBB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day1.1ABBB.options.A",
-              "handoffKey": "day1.1ABBB.handoff.A",
-              "handoffVoiceKey": "icebreaker_day1_1ABBB_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day1.1ABBB.options.B",
-              "handoffKey": "day1.1ABBB.handoff.B",
-              "handoffVoiceKey": "icebreaker_day1_1ABBB_B"
-            }
-          ],
-          "complete": true
-        },
-        "1BAAA": {
-          "lineKey": "day1.1BAAA.line",
-          "voiceKey": "icebreaker_day1_1BAAA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day1.1BAAA.options.A",
-              "handoffKey": "day1.1BAAA.handoff.A",
-              "handoffVoiceKey": "icebreaker_day1_1BAAA_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day1.1BAAA.options.B",
-              "handoffKey": "day1.1BAAA.handoff.B",
-              "handoffVoiceKey": "icebreaker_day1_1BAAA_B"
-            }
-          ],
-          "complete": true
-        },
-        "1BAAB": {
-          "lineKey": "day1.1BAAB.line",
-          "voiceKey": "icebreaker_day1_1BAAB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day1.1BAAB.options.A",
-              "handoffKey": "day1.1BAAB.handoff.A",
-              "handoffVoiceKey": "icebreaker_day1_1BAAB_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day1.1BAAB.options.B",
-              "handoffKey": "day1.1BAAB.handoff.B",
-              "handoffVoiceKey": "icebreaker_day1_1BAAB_B"
-            }
-          ],
-          "complete": true
-        },
-        "1BABA": {
-          "lineKey": "day1.1BABA.line",
-          "voiceKey": "icebreaker_day1_1BABA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day1.1BABA.options.A",
-              "handoffKey": "day1.1BABA.handoff.A",
-              "handoffVoiceKey": "icebreaker_day1_1BABA_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day1.1BABA.options.B",
-              "handoffKey": "day1.1BABA.handoff.B",
-              "handoffVoiceKey": "icebreaker_day1_1BABA_B"
-            }
-          ],
-          "complete": true
-        },
-        "1BABB": {
-          "lineKey": "day1.1BABB.line",
-          "voiceKey": "icebreaker_day1_1BABB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day1.1BABB.options.A",
-              "handoffKey": "day1.1BABB.handoff.A",
-              "handoffVoiceKey": "icebreaker_day1_1BABB_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day1.1BABB.options.B",
-              "handoffKey": "day1.1BABB.handoff.B",
-              "handoffVoiceKey": "icebreaker_day1_1BABB_B"
-            }
-          ],
-          "complete": true
-        },
-        "1BBAA": {
-          "lineKey": "day1.1BBAA.line",
-          "voiceKey": "icebreaker_day1_1BBAA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day1.1BBAA.options.A",
-              "handoffKey": "day1.1BBAA.handoff.A",
-              "handoffVoiceKey": "icebreaker_day1_1BBAA_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day1.1BBAA.options.B",
-              "handoffKey": "day1.1BBAA.handoff.B",
-              "handoffVoiceKey": "icebreaker_day1_1BBAA_B"
-            }
-          ],
-          "complete": true
-        },
-        "1BBAB": {
-          "lineKey": "day1.1BBAB.line",
-          "voiceKey": "icebreaker_day1_1BBAB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day1.1BBAB.options.A",
-              "handoffKey": "day1.1BBAB.handoff.A",
-              "handoffVoiceKey": "icebreaker_day1_1BBAB_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day1.1BBAB.options.B",
-              "handoffKey": "day1.1BBAB.handoff.B",
-              "handoffVoiceKey": "icebreaker_day1_1BBAB_B"
-            }
-          ],
-          "complete": true
-        },
-        "1BBBA": {
-          "lineKey": "day1.1BBBA.line",
-          "voiceKey": "icebreaker_day1_1BBBA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day1.1BBBA.options.A",
-              "handoffKey": "day1.1BBBA.handoff.A",
-              "handoffVoiceKey": "icebreaker_day1_1BBBA_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day1.1BBBA.options.B",
-              "handoffKey": "day1.1BBBA.handoff.B",
-              "handoffVoiceKey": "icebreaker_day1_1BBBA_B"
-            }
-          ],
-          "complete": true
-        },
-        "1BBBB": {
-          "lineKey": "day1.1BBBB.line",
-          "voiceKey": "icebreaker_day1_1BBBB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day1.1BBBB.options.A",
-              "handoffKey": "day1.1BBBB.handoff.A",
-              "handoffVoiceKey": "icebreaker_day1_1BBBB_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day1.1BBBB.options.B",
-              "handoffKey": "day1.1BBBB.handoff.B",
-              "handoffVoiceKey": "icebreaker_day1_1BBBB_B"
+              "handoffKey": "day1.1BB.handoff.B",
+              "handoffVoiceKey": "icebreaker_day1_1BB_B"
             }
           ],
           "complete": true
@@ -551,8 +131,8 @@
       },
       "fallback": {
         "redirectKey": "day1.fallback.redirect",
-        "releaseKey": "day1.fallback.release",
         "redirectVoiceKey": "icebreaker_day1_fallback_redirect",
+        "releaseKey": "day1.fallback.release",
         "releaseVoiceKey": "icebreaker_day1_fallback_release"
       }
     },
@@ -582,12 +162,12 @@
             {
               "id": "A",
               "labelKey": "day2.1A.options.A",
-              "next": "1AA"
+              "next": "1AAAA"
             },
             {
               "id": "B",
               "labelKey": "day2.1A.options.B",
-              "next": "1AB"
+              "next": "1AAAB"
             }
           ]
         },
@@ -598,204 +178,12 @@
             {
               "id": "A",
               "labelKey": "day2.1B.options.A",
-              "next": "1BA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day2.1B.options.B",
-              "next": "1BB"
-            }
-          ]
-        },
-        "1AA": {
-          "lineKey": "day2.1AA.line",
-          "voiceKey": "icebreaker_day2_1AA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day2.1AA.options.A",
-              "next": "1AAA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day2.1AA.options.B",
-              "next": "1AAB"
-            }
-          ]
-        },
-        "1AB": {
-          "lineKey": "day2.1AB.line",
-          "voiceKey": "icebreaker_day2_1AB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day2.1AB.options.A",
-              "next": "1ABA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day2.1AB.options.B",
-              "next": "1ABB"
-            }
-          ]
-        },
-        "1BA": {
-          "lineKey": "day2.1BA.line",
-          "voiceKey": "icebreaker_day2_1BA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day2.1BA.options.A",
-              "next": "1BAA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day2.1BA.options.B",
-              "next": "1BAB"
-            }
-          ]
-        },
-        "1BB": {
-          "lineKey": "day2.1BB.line",
-          "voiceKey": "icebreaker_day2_1BB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day2.1BB.options.A",
-              "next": "1BBA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day2.1BB.options.B",
-              "next": "1BBB"
-            }
-          ]
-        },
-        "1AAA": {
-          "lineKey": "day2.1AAA.line",
-          "voiceKey": "icebreaker_day2_1AAA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day2.1AAA.options.A",
-              "next": "1AAAA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day2.1AAA.options.B",
-              "next": "1AAAB"
-            }
-          ]
-        },
-        "1AAB": {
-          "lineKey": "day2.1AAB.line",
-          "voiceKey": "icebreaker_day2_1AAB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day2.1AAB.options.A",
-              "next": "1AABA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day2.1AAB.options.B",
-              "next": "1AABB"
-            }
-          ]
-        },
-        "1ABA": {
-          "lineKey": "day2.1ABA.line",
-          "voiceKey": "icebreaker_day2_1ABA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day2.1ABA.options.A",
-              "next": "1ABAA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day2.1ABA.options.B",
-              "next": "1ABAB"
-            }
-          ]
-        },
-        "1ABB": {
-          "lineKey": "day2.1ABB.line",
-          "voiceKey": "icebreaker_day2_1ABB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day2.1ABB.options.A",
-              "next": "1ABBA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day2.1ABB.options.B",
-              "next": "1ABBB"
-            }
-          ]
-        },
-        "1BAA": {
-          "lineKey": "day2.1BAA.line",
-          "voiceKey": "icebreaker_day2_1BAA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day2.1BAA.options.A",
               "next": "1BAAA"
             },
             {
               "id": "B",
-              "labelKey": "day2.1BAA.options.B",
+              "labelKey": "day2.1B.options.B",
               "next": "1BAAB"
-            }
-          ]
-        },
-        "1BAB": {
-          "lineKey": "day2.1BAB.line",
-          "voiceKey": "icebreaker_day2_1BAB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day2.1BAB.options.A",
-              "next": "1BABA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day2.1BAB.options.B",
-              "next": "1BABB"
-            }
-          ]
-        },
-        "1BBA": {
-          "lineKey": "day2.1BBA.line",
-          "voiceKey": "icebreaker_day2_1BBA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day2.1BBA.options.A",
-              "next": "1BBAA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day2.1BBA.options.B",
-              "next": "1BBAB"
-            }
-          ]
-        },
-        "1BBB": {
-          "lineKey": "day2.1BBB.line",
-          "voiceKey": "icebreaker_day2_1BBB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day2.1BBB.options.A",
-              "next": "1BBBA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day2.1BBB.options.B",
-              "next": "1BBBB"
             }
           ]
         },
@@ -837,120 +225,6 @@
           ],
           "complete": true
         },
-        "1AABA": {
-          "lineKey": "day2.1AABA.line",
-          "voiceKey": "icebreaker_day2_1AABA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day2.1AABA.options.A",
-              "handoffKey": "day2.1AABA.handoff.A",
-              "handoffVoiceKey": "icebreaker_day2_1AABA_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day2.1AABA.options.B",
-              "handoffKey": "day2.1AABA.handoff.B",
-              "handoffVoiceKey": "icebreaker_day2_1AABA_B"
-            }
-          ],
-          "complete": true
-        },
-        "1AABB": {
-          "lineKey": "day2.1AABB.line",
-          "voiceKey": "icebreaker_day2_1AABB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day2.1AABB.options.A",
-              "handoffKey": "day2.1AABB.handoff.A",
-              "handoffVoiceKey": "icebreaker_day2_1AABB_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day2.1AABB.options.B",
-              "handoffKey": "day2.1AABB.handoff.B",
-              "handoffVoiceKey": "icebreaker_day2_1AABB_B"
-            }
-          ],
-          "complete": true
-        },
-        "1ABAA": {
-          "lineKey": "day2.1ABAA.line",
-          "voiceKey": "icebreaker_day2_1ABAA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day2.1ABAA.options.A",
-              "handoffKey": "day2.1ABAA.handoff.A",
-              "handoffVoiceKey": "icebreaker_day2_1ABAA_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day2.1ABAA.options.B",
-              "handoffKey": "day2.1ABAA.handoff.B",
-              "handoffVoiceKey": "icebreaker_day2_1ABAA_B"
-            }
-          ],
-          "complete": true
-        },
-        "1ABAB": {
-          "lineKey": "day2.1ABAB.line",
-          "voiceKey": "icebreaker_day2_1ABAB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day2.1ABAB.options.A",
-              "handoffKey": "day2.1ABAB.handoff.A",
-              "handoffVoiceKey": "icebreaker_day2_1ABAB_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day2.1ABAB.options.B",
-              "handoffKey": "day2.1ABAB.handoff.B",
-              "handoffVoiceKey": "icebreaker_day2_1ABAB_B"
-            }
-          ],
-          "complete": true
-        },
-        "1ABBA": {
-          "lineKey": "day2.1ABBA.line",
-          "voiceKey": "icebreaker_day2_1ABBA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day2.1ABBA.options.A",
-              "handoffKey": "day2.1ABBA.handoff.A",
-              "handoffVoiceKey": "icebreaker_day2_1ABBA_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day2.1ABBA.options.B",
-              "handoffKey": "day2.1ABBA.handoff.B",
-              "handoffVoiceKey": "icebreaker_day2_1ABBA_B"
-            }
-          ],
-          "complete": true
-        },
-        "1ABBB": {
-          "lineKey": "day2.1ABBB.line",
-          "voiceKey": "icebreaker_day2_1ABBB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day2.1ABBB.options.A",
-              "handoffKey": "day2.1ABBB.handoff.A",
-              "handoffVoiceKey": "icebreaker_day2_1ABBB_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day2.1ABBB.options.B",
-              "handoffKey": "day2.1ABBB.handoff.B",
-              "handoffVoiceKey": "icebreaker_day2_1ABBB_B"
-            }
-          ],
-          "complete": true
-        },
         "1BAAA": {
           "lineKey": "day2.1BAAA.line",
           "voiceKey": "icebreaker_day2_1BAAA",
@@ -988,126 +262,12 @@
             }
           ],
           "complete": true
-        },
-        "1BABA": {
-          "lineKey": "day2.1BABA.line",
-          "voiceKey": "icebreaker_day2_1BABA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day2.1BABA.options.A",
-              "handoffKey": "day2.1BABA.handoff.A",
-              "handoffVoiceKey": "icebreaker_day2_1BABA_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day2.1BABA.options.B",
-              "handoffKey": "day2.1BABA.handoff.B",
-              "handoffVoiceKey": "icebreaker_day2_1BABA_B"
-            }
-          ],
-          "complete": true
-        },
-        "1BABB": {
-          "lineKey": "day2.1BABB.line",
-          "voiceKey": "icebreaker_day2_1BABB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day2.1BABB.options.A",
-              "handoffKey": "day2.1BABB.handoff.A",
-              "handoffVoiceKey": "icebreaker_day2_1BABB_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day2.1BABB.options.B",
-              "handoffKey": "day2.1BABB.handoff.B",
-              "handoffVoiceKey": "icebreaker_day2_1BABB_B"
-            }
-          ],
-          "complete": true
-        },
-        "1BBAA": {
-          "lineKey": "day2.1BBAA.line",
-          "voiceKey": "icebreaker_day2_1BBAA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day2.1BBAA.options.A",
-              "handoffKey": "day2.1BBAA.handoff.A",
-              "handoffVoiceKey": "icebreaker_day2_1BBAA_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day2.1BBAA.options.B",
-              "handoffKey": "day2.1BBAA.handoff.B",
-              "handoffVoiceKey": "icebreaker_day2_1BBAA_B"
-            }
-          ],
-          "complete": true
-        },
-        "1BBAB": {
-          "lineKey": "day2.1BBAB.line",
-          "voiceKey": "icebreaker_day2_1BBAB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day2.1BBAB.options.A",
-              "handoffKey": "day2.1BBAB.handoff.A",
-              "handoffVoiceKey": "icebreaker_day2_1BBAB_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day2.1BBAB.options.B",
-              "handoffKey": "day2.1BBAB.handoff.B",
-              "handoffVoiceKey": "icebreaker_day2_1BBAB_B"
-            }
-          ],
-          "complete": true
-        },
-        "1BBBA": {
-          "lineKey": "day2.1BBBA.line",
-          "voiceKey": "icebreaker_day2_1BBBA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day2.1BBBA.options.A",
-              "handoffKey": "day2.1BBBA.handoff.A",
-              "handoffVoiceKey": "icebreaker_day2_1BBBA_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day2.1BBBA.options.B",
-              "handoffKey": "day2.1BBBA.handoff.B",
-              "handoffVoiceKey": "icebreaker_day2_1BBBA_B"
-            }
-          ],
-          "complete": true
-        },
-        "1BBBB": {
-          "lineKey": "day2.1BBBB.line",
-          "voiceKey": "icebreaker_day2_1BBBB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day2.1BBBB.options.A",
-              "handoffKey": "day2.1BBBB.handoff.A",
-              "handoffVoiceKey": "icebreaker_day2_1BBBB_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day2.1BBBB.options.B",
-              "handoffKey": "day2.1BBBB.handoff.B",
-              "handoffVoiceKey": "icebreaker_day2_1BBBB_B"
-            }
-          ],
-          "complete": true
         }
       },
       "fallback": {
         "redirectKey": "day2.fallback.redirect",
-        "releaseKey": "day2.fallback.release",
         "redirectVoiceKey": "icebreaker_day2_fallback_redirect",
+        "releaseKey": "day2.fallback.release",
         "releaseVoiceKey": "icebreaker_day2_fallback_release"
       }
     },
@@ -1137,12 +297,12 @@
             {
               "id": "A",
               "labelKey": "day3.1A.options.A",
-              "next": "1AA"
+              "next": "1AAAA"
             },
             {
               "id": "B",
               "labelKey": "day3.1A.options.B",
-              "next": "1AB"
+              "next": "1AAAB"
             }
           ]
         },
@@ -1153,204 +313,12 @@
             {
               "id": "A",
               "labelKey": "day3.1B.options.A",
-              "next": "1BA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day3.1B.options.B",
-              "next": "1BB"
-            }
-          ]
-        },
-        "1AA": {
-          "lineKey": "day3.1AA.line",
-          "voiceKey": "icebreaker_day3_1AA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day3.1AA.options.A",
-              "next": "1AAA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day3.1AA.options.B",
-              "next": "1AAB"
-            }
-          ]
-        },
-        "1AB": {
-          "lineKey": "day3.1AB.line",
-          "voiceKey": "icebreaker_day3_1AB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day3.1AB.options.A",
-              "next": "1ABA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day3.1AB.options.B",
-              "next": "1ABB"
-            }
-          ]
-        },
-        "1BA": {
-          "lineKey": "day3.1BA.line",
-          "voiceKey": "icebreaker_day3_1BA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day3.1BA.options.A",
-              "next": "1BAA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day3.1BA.options.B",
-              "next": "1BAB"
-            }
-          ]
-        },
-        "1BB": {
-          "lineKey": "day3.1BB.line",
-          "voiceKey": "icebreaker_day3_1BB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day3.1BB.options.A",
-              "next": "1BBA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day3.1BB.options.B",
-              "next": "1BBB"
-            }
-          ]
-        },
-        "1AAA": {
-          "lineKey": "day3.1AAA.line",
-          "voiceKey": "icebreaker_day3_1AAA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day3.1AAA.options.A",
-              "next": "1AAAA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day3.1AAA.options.B",
-              "next": "1AAAB"
-            }
-          ]
-        },
-        "1AAB": {
-          "lineKey": "day3.1AAB.line",
-          "voiceKey": "icebreaker_day3_1AAB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day3.1AAB.options.A",
-              "next": "1AABA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day3.1AAB.options.B",
-              "next": "1AABB"
-            }
-          ]
-        },
-        "1ABA": {
-          "lineKey": "day3.1ABA.line",
-          "voiceKey": "icebreaker_day3_1ABA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day3.1ABA.options.A",
-              "next": "1ABAA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day3.1ABA.options.B",
-              "next": "1ABAB"
-            }
-          ]
-        },
-        "1ABB": {
-          "lineKey": "day3.1ABB.line",
-          "voiceKey": "icebreaker_day3_1ABB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day3.1ABB.options.A",
-              "next": "1ABBA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day3.1ABB.options.B",
-              "next": "1ABBB"
-            }
-          ]
-        },
-        "1BAA": {
-          "lineKey": "day3.1BAA.line",
-          "voiceKey": "icebreaker_day3_1BAA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day3.1BAA.options.A",
               "next": "1BAAA"
             },
             {
               "id": "B",
-              "labelKey": "day3.1BAA.options.B",
+              "labelKey": "day3.1B.options.B",
               "next": "1BAAB"
-            }
-          ]
-        },
-        "1BAB": {
-          "lineKey": "day3.1BAB.line",
-          "voiceKey": "icebreaker_day3_1BAB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day3.1BAB.options.A",
-              "next": "1BABA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day3.1BAB.options.B",
-              "next": "1BABB"
-            }
-          ]
-        },
-        "1BBA": {
-          "lineKey": "day3.1BBA.line",
-          "voiceKey": "icebreaker_day3_1BBA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day3.1BBA.options.A",
-              "next": "1BBAA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day3.1BBA.options.B",
-              "next": "1BBAB"
-            }
-          ]
-        },
-        "1BBB": {
-          "lineKey": "day3.1BBB.line",
-          "voiceKey": "icebreaker_day3_1BBB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day3.1BBB.options.A",
-              "next": "1BBBA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day3.1BBB.options.B",
-              "next": "1BBBB"
             }
           ]
         },
@@ -1392,120 +360,6 @@
           ],
           "complete": true
         },
-        "1AABA": {
-          "lineKey": "day3.1AABA.line",
-          "voiceKey": "icebreaker_day3_1AABA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day3.1AABA.options.A",
-              "handoffKey": "day3.1AABA.handoff.A",
-              "handoffVoiceKey": "icebreaker_day3_1AABA_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day3.1AABA.options.B",
-              "handoffKey": "day3.1AABA.handoff.B",
-              "handoffVoiceKey": "icebreaker_day3_1AABA_B"
-            }
-          ],
-          "complete": true
-        },
-        "1AABB": {
-          "lineKey": "day3.1AABB.line",
-          "voiceKey": "icebreaker_day3_1AABB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day3.1AABB.options.A",
-              "handoffKey": "day3.1AABB.handoff.A",
-              "handoffVoiceKey": "icebreaker_day3_1AABB_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day3.1AABB.options.B",
-              "handoffKey": "day3.1AABB.handoff.B",
-              "handoffVoiceKey": "icebreaker_day3_1AABB_B"
-            }
-          ],
-          "complete": true
-        },
-        "1ABAA": {
-          "lineKey": "day3.1ABAA.line",
-          "voiceKey": "icebreaker_day3_1ABAA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day3.1ABAA.options.A",
-              "handoffKey": "day3.1ABAA.handoff.A",
-              "handoffVoiceKey": "icebreaker_day3_1ABAA_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day3.1ABAA.options.B",
-              "handoffKey": "day3.1ABAA.handoff.B",
-              "handoffVoiceKey": "icebreaker_day3_1ABAA_B"
-            }
-          ],
-          "complete": true
-        },
-        "1ABAB": {
-          "lineKey": "day3.1ABAB.line",
-          "voiceKey": "icebreaker_day3_1ABAB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day3.1ABAB.options.A",
-              "handoffKey": "day3.1ABAB.handoff.A",
-              "handoffVoiceKey": "icebreaker_day3_1ABAB_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day3.1ABAB.options.B",
-              "handoffKey": "day3.1ABAB.handoff.B",
-              "handoffVoiceKey": "icebreaker_day3_1ABAB_B"
-            }
-          ],
-          "complete": true
-        },
-        "1ABBA": {
-          "lineKey": "day3.1ABBA.line",
-          "voiceKey": "icebreaker_day3_1ABBA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day3.1ABBA.options.A",
-              "handoffKey": "day3.1ABBA.handoff.A",
-              "handoffVoiceKey": "icebreaker_day3_1ABBA_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day3.1ABBA.options.B",
-              "handoffKey": "day3.1ABBA.handoff.B",
-              "handoffVoiceKey": "icebreaker_day3_1ABBA_B"
-            }
-          ],
-          "complete": true
-        },
-        "1ABBB": {
-          "lineKey": "day3.1ABBB.line",
-          "voiceKey": "icebreaker_day3_1ABBB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day3.1ABBB.options.A",
-              "handoffKey": "day3.1ABBB.handoff.A",
-              "handoffVoiceKey": "icebreaker_day3_1ABBB_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day3.1ABBB.options.B",
-              "handoffKey": "day3.1ABBB.handoff.B",
-              "handoffVoiceKey": "icebreaker_day3_1ABBB_B"
-            }
-          ],
-          "complete": true
-        },
         "1BAAA": {
           "lineKey": "day3.1BAAA.line",
           "voiceKey": "icebreaker_day3_1BAAA",
@@ -1543,126 +397,12 @@
             }
           ],
           "complete": true
-        },
-        "1BABA": {
-          "lineKey": "day3.1BABA.line",
-          "voiceKey": "icebreaker_day3_1BABA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day3.1BABA.options.A",
-              "handoffKey": "day3.1BABA.handoff.A",
-              "handoffVoiceKey": "icebreaker_day3_1BABA_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day3.1BABA.options.B",
-              "handoffKey": "day3.1BABA.handoff.B",
-              "handoffVoiceKey": "icebreaker_day3_1BABA_B"
-            }
-          ],
-          "complete": true
-        },
-        "1BABB": {
-          "lineKey": "day3.1BABB.line",
-          "voiceKey": "icebreaker_day3_1BABB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day3.1BABB.options.A",
-              "handoffKey": "day3.1BABB.handoff.A",
-              "handoffVoiceKey": "icebreaker_day3_1BABB_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day3.1BABB.options.B",
-              "handoffKey": "day3.1BABB.handoff.B",
-              "handoffVoiceKey": "icebreaker_day3_1BABB_B"
-            }
-          ],
-          "complete": true
-        },
-        "1BBAA": {
-          "lineKey": "day3.1BBAA.line",
-          "voiceKey": "icebreaker_day3_1BBAA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day3.1BBAA.options.A",
-              "handoffKey": "day3.1BBAA.handoff.A",
-              "handoffVoiceKey": "icebreaker_day3_1BBAA_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day3.1BBAA.options.B",
-              "handoffKey": "day3.1BBAA.handoff.B",
-              "handoffVoiceKey": "icebreaker_day3_1BBAA_B"
-            }
-          ],
-          "complete": true
-        },
-        "1BBAB": {
-          "lineKey": "day3.1BBAB.line",
-          "voiceKey": "icebreaker_day3_1BBAB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day3.1BBAB.options.A",
-              "handoffKey": "day3.1BBAB.handoff.A",
-              "handoffVoiceKey": "icebreaker_day3_1BBAB_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day3.1BBAB.options.B",
-              "handoffKey": "day3.1BBAB.handoff.B",
-              "handoffVoiceKey": "icebreaker_day3_1BBAB_B"
-            }
-          ],
-          "complete": true
-        },
-        "1BBBA": {
-          "lineKey": "day3.1BBBA.line",
-          "voiceKey": "icebreaker_day3_1BBBA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day3.1BBBA.options.A",
-              "handoffKey": "day3.1BBBA.handoff.A",
-              "handoffVoiceKey": "icebreaker_day3_1BBBA_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day3.1BBBA.options.B",
-              "handoffKey": "day3.1BBBA.handoff.B",
-              "handoffVoiceKey": "icebreaker_day3_1BBBA_B"
-            }
-          ],
-          "complete": true
-        },
-        "1BBBB": {
-          "lineKey": "day3.1BBBB.line",
-          "voiceKey": "icebreaker_day3_1BBBB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day3.1BBBB.options.A",
-              "handoffKey": "day3.1BBBB.handoff.A",
-              "handoffVoiceKey": "icebreaker_day3_1BBBB_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day3.1BBBB.options.B",
-              "handoffKey": "day3.1BBBB.handoff.B",
-              "handoffVoiceKey": "icebreaker_day3_1BBBB_B"
-            }
-          ],
-          "complete": true
         }
       },
       "fallback": {
         "redirectKey": "day3.fallback.redirect",
-        "releaseKey": "day3.fallback.release",
         "redirectVoiceKey": "icebreaker_day3_fallback_redirect",
+        "releaseKey": "day3.fallback.release",
         "releaseVoiceKey": "icebreaker_day3_fallback_release"
       }
     },
@@ -1692,12 +432,12 @@
             {
               "id": "A",
               "labelKey": "day4.1A.options.A",
-              "next": "1AA"
+              "next": "1AAAA"
             },
             {
               "id": "B",
               "labelKey": "day4.1A.options.B",
-              "next": "1AB"
+              "next": "1AAAB"
             }
           ]
         },
@@ -1708,204 +448,12 @@
             {
               "id": "A",
               "labelKey": "day4.1B.options.A",
-              "next": "1BA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day4.1B.options.B",
-              "next": "1BB"
-            }
-          ]
-        },
-        "1AA": {
-          "lineKey": "day4.1AA.line",
-          "voiceKey": "icebreaker_day4_1AA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day4.1AA.options.A",
-              "next": "1AAA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day4.1AA.options.B",
-              "next": "1AAB"
-            }
-          ]
-        },
-        "1AB": {
-          "lineKey": "day4.1AB.line",
-          "voiceKey": "icebreaker_day4_1AB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day4.1AB.options.A",
-              "next": "1ABA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day4.1AB.options.B",
-              "next": "1ABB"
-            }
-          ]
-        },
-        "1BA": {
-          "lineKey": "day4.1BA.line",
-          "voiceKey": "icebreaker_day4_1BA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day4.1BA.options.A",
-              "next": "1BAA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day4.1BA.options.B",
-              "next": "1BAB"
-            }
-          ]
-        },
-        "1BB": {
-          "lineKey": "day4.1BB.line",
-          "voiceKey": "icebreaker_day4_1BB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day4.1BB.options.A",
-              "next": "1BBA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day4.1BB.options.B",
-              "next": "1BBB"
-            }
-          ]
-        },
-        "1AAA": {
-          "lineKey": "day4.1AAA.line",
-          "voiceKey": "icebreaker_day4_1AAA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day4.1AAA.options.A",
-              "next": "1AAAA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day4.1AAA.options.B",
-              "next": "1AAAB"
-            }
-          ]
-        },
-        "1AAB": {
-          "lineKey": "day4.1AAB.line",
-          "voiceKey": "icebreaker_day4_1AAB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day4.1AAB.options.A",
-              "next": "1AABA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day4.1AAB.options.B",
-              "next": "1AABB"
-            }
-          ]
-        },
-        "1ABA": {
-          "lineKey": "day4.1ABA.line",
-          "voiceKey": "icebreaker_day4_1ABA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day4.1ABA.options.A",
-              "next": "1ABAA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day4.1ABA.options.B",
-              "next": "1ABAB"
-            }
-          ]
-        },
-        "1ABB": {
-          "lineKey": "day4.1ABB.line",
-          "voiceKey": "icebreaker_day4_1ABB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day4.1ABB.options.A",
-              "next": "1ABBA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day4.1ABB.options.B",
-              "next": "1ABBB"
-            }
-          ]
-        },
-        "1BAA": {
-          "lineKey": "day4.1BAA.line",
-          "voiceKey": "icebreaker_day4_1BAA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day4.1BAA.options.A",
               "next": "1BAAA"
             },
             {
               "id": "B",
-              "labelKey": "day4.1BAA.options.B",
+              "labelKey": "day4.1B.options.B",
               "next": "1BAAB"
-            }
-          ]
-        },
-        "1BAB": {
-          "lineKey": "day4.1BAB.line",
-          "voiceKey": "icebreaker_day4_1BAB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day4.1BAB.options.A",
-              "next": "1BABA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day4.1BAB.options.B",
-              "next": "1BABB"
-            }
-          ]
-        },
-        "1BBA": {
-          "lineKey": "day4.1BBA.line",
-          "voiceKey": "icebreaker_day4_1BBA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day4.1BBA.options.A",
-              "next": "1BBAA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day4.1BBA.options.B",
-              "next": "1BBAB"
-            }
-          ]
-        },
-        "1BBB": {
-          "lineKey": "day4.1BBB.line",
-          "voiceKey": "icebreaker_day4_1BBB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day4.1BBB.options.A",
-              "next": "1BBBA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day4.1BBB.options.B",
-              "next": "1BBBB"
             }
           ]
         },
@@ -1947,120 +495,6 @@
           ],
           "complete": true
         },
-        "1AABA": {
-          "lineKey": "day4.1AABA.line",
-          "voiceKey": "icebreaker_day4_1AABA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day4.1AABA.options.A",
-              "handoffKey": "day4.1AABA.handoff.A",
-              "handoffVoiceKey": "icebreaker_day4_1AABA_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day4.1AABA.options.B",
-              "handoffKey": "day4.1AABA.handoff.B",
-              "handoffVoiceKey": "icebreaker_day4_1AABA_B"
-            }
-          ],
-          "complete": true
-        },
-        "1AABB": {
-          "lineKey": "day4.1AABB.line",
-          "voiceKey": "icebreaker_day4_1AABB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day4.1AABB.options.A",
-              "handoffKey": "day4.1AABB.handoff.A",
-              "handoffVoiceKey": "icebreaker_day4_1AABB_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day4.1AABB.options.B",
-              "handoffKey": "day4.1AABB.handoff.B",
-              "handoffVoiceKey": "icebreaker_day4_1AABB_B"
-            }
-          ],
-          "complete": true
-        },
-        "1ABAA": {
-          "lineKey": "day4.1ABAA.line",
-          "voiceKey": "icebreaker_day4_1ABAA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day4.1ABAA.options.A",
-              "handoffKey": "day4.1ABAA.handoff.A",
-              "handoffVoiceKey": "icebreaker_day4_1ABAA_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day4.1ABAA.options.B",
-              "handoffKey": "day4.1ABAA.handoff.B",
-              "handoffVoiceKey": "icebreaker_day4_1ABAA_B"
-            }
-          ],
-          "complete": true
-        },
-        "1ABAB": {
-          "lineKey": "day4.1ABAB.line",
-          "voiceKey": "icebreaker_day4_1ABAB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day4.1ABAB.options.A",
-              "handoffKey": "day4.1ABAB.handoff.A",
-              "handoffVoiceKey": "icebreaker_day4_1ABAB_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day4.1ABAB.options.B",
-              "handoffKey": "day4.1ABAB.handoff.B",
-              "handoffVoiceKey": "icebreaker_day4_1ABAB_B"
-            }
-          ],
-          "complete": true
-        },
-        "1ABBA": {
-          "lineKey": "day4.1ABBA.line",
-          "voiceKey": "icebreaker_day4_1ABBA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day4.1ABBA.options.A",
-              "handoffKey": "day4.1ABBA.handoff.A",
-              "handoffVoiceKey": "icebreaker_day4_1ABBA_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day4.1ABBA.options.B",
-              "handoffKey": "day4.1ABBA.handoff.B",
-              "handoffVoiceKey": "icebreaker_day4_1ABBA_B"
-            }
-          ],
-          "complete": true
-        },
-        "1ABBB": {
-          "lineKey": "day4.1ABBB.line",
-          "voiceKey": "icebreaker_day4_1ABBB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day4.1ABBB.options.A",
-              "handoffKey": "day4.1ABBB.handoff.A",
-              "handoffVoiceKey": "icebreaker_day4_1ABBB_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day4.1ABBB.options.B",
-              "handoffKey": "day4.1ABBB.handoff.B",
-              "handoffVoiceKey": "icebreaker_day4_1ABBB_B"
-            }
-          ],
-          "complete": true
-        },
         "1BAAA": {
           "lineKey": "day4.1BAAA.line",
           "voiceKey": "icebreaker_day4_1BAAA",
@@ -2098,126 +532,12 @@
             }
           ],
           "complete": true
-        },
-        "1BABA": {
-          "lineKey": "day4.1BABA.line",
-          "voiceKey": "icebreaker_day4_1BABA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day4.1BABA.options.A",
-              "handoffKey": "day4.1BABA.handoff.A",
-              "handoffVoiceKey": "icebreaker_day4_1BABA_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day4.1BABA.options.B",
-              "handoffKey": "day4.1BABA.handoff.B",
-              "handoffVoiceKey": "icebreaker_day4_1BABA_B"
-            }
-          ],
-          "complete": true
-        },
-        "1BABB": {
-          "lineKey": "day4.1BABB.line",
-          "voiceKey": "icebreaker_day4_1BABB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day4.1BABB.options.A",
-              "handoffKey": "day4.1BABB.handoff.A",
-              "handoffVoiceKey": "icebreaker_day4_1BABB_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day4.1BABB.options.B",
-              "handoffKey": "day4.1BABB.handoff.B",
-              "handoffVoiceKey": "icebreaker_day4_1BABB_B"
-            }
-          ],
-          "complete": true
-        },
-        "1BBAA": {
-          "lineKey": "day4.1BBAA.line",
-          "voiceKey": "icebreaker_day4_1BBAA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day4.1BBAA.options.A",
-              "handoffKey": "day4.1BBAA.handoff.A",
-              "handoffVoiceKey": "icebreaker_day4_1BBAA_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day4.1BBAA.options.B",
-              "handoffKey": "day4.1BBAA.handoff.B",
-              "handoffVoiceKey": "icebreaker_day4_1BBAA_B"
-            }
-          ],
-          "complete": true
-        },
-        "1BBAB": {
-          "lineKey": "day4.1BBAB.line",
-          "voiceKey": "icebreaker_day4_1BBAB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day4.1BBAB.options.A",
-              "handoffKey": "day4.1BBAB.handoff.A",
-              "handoffVoiceKey": "icebreaker_day4_1BBAB_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day4.1BBAB.options.B",
-              "handoffKey": "day4.1BBAB.handoff.B",
-              "handoffVoiceKey": "icebreaker_day4_1BBAB_B"
-            }
-          ],
-          "complete": true
-        },
-        "1BBBA": {
-          "lineKey": "day4.1BBBA.line",
-          "voiceKey": "icebreaker_day4_1BBBA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day4.1BBBA.options.A",
-              "handoffKey": "day4.1BBBA.handoff.A",
-              "handoffVoiceKey": "icebreaker_day4_1BBBA_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day4.1BBBA.options.B",
-              "handoffKey": "day4.1BBBA.handoff.B",
-              "handoffVoiceKey": "icebreaker_day4_1BBBA_B"
-            }
-          ],
-          "complete": true
-        },
-        "1BBBB": {
-          "lineKey": "day4.1BBBB.line",
-          "voiceKey": "icebreaker_day4_1BBBB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day4.1BBBB.options.A",
-              "handoffKey": "day4.1BBBB.handoff.A",
-              "handoffVoiceKey": "icebreaker_day4_1BBBB_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day4.1BBBB.options.B",
-              "handoffKey": "day4.1BBBB.handoff.B",
-              "handoffVoiceKey": "icebreaker_day4_1BBBB_B"
-            }
-          ],
-          "complete": true
         }
       },
       "fallback": {
         "redirectKey": "day4.fallback.redirect",
-        "releaseKey": "day4.fallback.release",
         "redirectVoiceKey": "icebreaker_day4_fallback_redirect",
+        "releaseKey": "day4.fallback.release",
         "releaseVoiceKey": "icebreaker_day4_fallback_release"
       }
     },
@@ -2247,12 +567,12 @@
             {
               "id": "A",
               "labelKey": "day5.1A.options.A",
-              "next": "1AA"
+              "next": "1AAAA"
             },
             {
               "id": "B",
               "labelKey": "day5.1A.options.B",
-              "next": "1AB"
+              "next": "1AAAB"
             }
           ]
         },
@@ -2263,204 +583,12 @@
             {
               "id": "A",
               "labelKey": "day5.1B.options.A",
-              "next": "1BA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day5.1B.options.B",
-              "next": "1BB"
-            }
-          ]
-        },
-        "1AA": {
-          "lineKey": "day5.1AA.line",
-          "voiceKey": "icebreaker_day5_1AA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day5.1AA.options.A",
-              "next": "1AAA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day5.1AA.options.B",
-              "next": "1AAB"
-            }
-          ]
-        },
-        "1AB": {
-          "lineKey": "day5.1AB.line",
-          "voiceKey": "icebreaker_day5_1AB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day5.1AB.options.A",
-              "next": "1ABA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day5.1AB.options.B",
-              "next": "1ABB"
-            }
-          ]
-        },
-        "1BA": {
-          "lineKey": "day5.1BA.line",
-          "voiceKey": "icebreaker_day5_1BA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day5.1BA.options.A",
-              "next": "1BAA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day5.1BA.options.B",
-              "next": "1BAB"
-            }
-          ]
-        },
-        "1BB": {
-          "lineKey": "day5.1BB.line",
-          "voiceKey": "icebreaker_day5_1BB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day5.1BB.options.A",
-              "next": "1BBA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day5.1BB.options.B",
-              "next": "1BBB"
-            }
-          ]
-        },
-        "1AAA": {
-          "lineKey": "day5.1AAA.line",
-          "voiceKey": "icebreaker_day5_1AAA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day5.1AAA.options.A",
-              "next": "1AAAA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day5.1AAA.options.B",
-              "next": "1AAAB"
-            }
-          ]
-        },
-        "1AAB": {
-          "lineKey": "day5.1AAB.line",
-          "voiceKey": "icebreaker_day5_1AAB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day5.1AAB.options.A",
-              "next": "1AABA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day5.1AAB.options.B",
-              "next": "1AABB"
-            }
-          ]
-        },
-        "1ABA": {
-          "lineKey": "day5.1ABA.line",
-          "voiceKey": "icebreaker_day5_1ABA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day5.1ABA.options.A",
-              "next": "1ABAA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day5.1ABA.options.B",
-              "next": "1ABAB"
-            }
-          ]
-        },
-        "1ABB": {
-          "lineKey": "day5.1ABB.line",
-          "voiceKey": "icebreaker_day5_1ABB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day5.1ABB.options.A",
-              "next": "1ABBA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day5.1ABB.options.B",
-              "next": "1ABBB"
-            }
-          ]
-        },
-        "1BAA": {
-          "lineKey": "day5.1BAA.line",
-          "voiceKey": "icebreaker_day5_1BAA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day5.1BAA.options.A",
               "next": "1BAAA"
             },
             {
               "id": "B",
-              "labelKey": "day5.1BAA.options.B",
+              "labelKey": "day5.1B.options.B",
               "next": "1BAAB"
-            }
-          ]
-        },
-        "1BAB": {
-          "lineKey": "day5.1BAB.line",
-          "voiceKey": "icebreaker_day5_1BAB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day5.1BAB.options.A",
-              "next": "1BABA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day5.1BAB.options.B",
-              "next": "1BABB"
-            }
-          ]
-        },
-        "1BBA": {
-          "lineKey": "day5.1BBA.line",
-          "voiceKey": "icebreaker_day5_1BBA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day5.1BBA.options.A",
-              "next": "1BBAA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day5.1BBA.options.B",
-              "next": "1BBAB"
-            }
-          ]
-        },
-        "1BBB": {
-          "lineKey": "day5.1BBB.line",
-          "voiceKey": "icebreaker_day5_1BBB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day5.1BBB.options.A",
-              "next": "1BBBA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day5.1BBB.options.B",
-              "next": "1BBBB"
             }
           ]
         },
@@ -2502,120 +630,6 @@
           ],
           "complete": true
         },
-        "1AABA": {
-          "lineKey": "day5.1AABA.line",
-          "voiceKey": "icebreaker_day5_1AABA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day5.1AABA.options.A",
-              "handoffKey": "day5.1AABA.handoff.A",
-              "handoffVoiceKey": "icebreaker_day5_1AABA_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day5.1AABA.options.B",
-              "handoffKey": "day5.1AABA.handoff.B",
-              "handoffVoiceKey": "icebreaker_day5_1AABA_B"
-            }
-          ],
-          "complete": true
-        },
-        "1AABB": {
-          "lineKey": "day5.1AABB.line",
-          "voiceKey": "icebreaker_day5_1AABB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day5.1AABB.options.A",
-              "handoffKey": "day5.1AABB.handoff.A",
-              "handoffVoiceKey": "icebreaker_day5_1AABB_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day5.1AABB.options.B",
-              "handoffKey": "day5.1AABB.handoff.B",
-              "handoffVoiceKey": "icebreaker_day5_1AABB_B"
-            }
-          ],
-          "complete": true
-        },
-        "1ABAA": {
-          "lineKey": "day5.1ABAA.line",
-          "voiceKey": "icebreaker_day5_1ABAA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day5.1ABAA.options.A",
-              "handoffKey": "day5.1ABAA.handoff.A",
-              "handoffVoiceKey": "icebreaker_day5_1ABAA_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day5.1ABAA.options.B",
-              "handoffKey": "day5.1ABAA.handoff.B",
-              "handoffVoiceKey": "icebreaker_day5_1ABAA_B"
-            }
-          ],
-          "complete": true
-        },
-        "1ABAB": {
-          "lineKey": "day5.1ABAB.line",
-          "voiceKey": "icebreaker_day5_1ABAB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day5.1ABAB.options.A",
-              "handoffKey": "day5.1ABAB.handoff.A",
-              "handoffVoiceKey": "icebreaker_day5_1ABAB_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day5.1ABAB.options.B",
-              "handoffKey": "day5.1ABAB.handoff.B",
-              "handoffVoiceKey": "icebreaker_day5_1ABAB_B"
-            }
-          ],
-          "complete": true
-        },
-        "1ABBA": {
-          "lineKey": "day5.1ABBA.line",
-          "voiceKey": "icebreaker_day5_1ABBA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day5.1ABBA.options.A",
-              "handoffKey": "day5.1ABBA.handoff.A",
-              "handoffVoiceKey": "icebreaker_day5_1ABBA_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day5.1ABBA.options.B",
-              "handoffKey": "day5.1ABBA.handoff.B",
-              "handoffVoiceKey": "icebreaker_day5_1ABBA_B"
-            }
-          ],
-          "complete": true
-        },
-        "1ABBB": {
-          "lineKey": "day5.1ABBB.line",
-          "voiceKey": "icebreaker_day5_1ABBB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day5.1ABBB.options.A",
-              "handoffKey": "day5.1ABBB.handoff.A",
-              "handoffVoiceKey": "icebreaker_day5_1ABBB_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day5.1ABBB.options.B",
-              "handoffKey": "day5.1ABBB.handoff.B",
-              "handoffVoiceKey": "icebreaker_day5_1ABBB_B"
-            }
-          ],
-          "complete": true
-        },
         "1BAAA": {
           "lineKey": "day5.1BAAA.line",
           "voiceKey": "icebreaker_day5_1BAAA",
@@ -2653,126 +667,12 @@
             }
           ],
           "complete": true
-        },
-        "1BABA": {
-          "lineKey": "day5.1BABA.line",
-          "voiceKey": "icebreaker_day5_1BABA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day5.1BABA.options.A",
-              "handoffKey": "day5.1BABA.handoff.A",
-              "handoffVoiceKey": "icebreaker_day5_1BABA_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day5.1BABA.options.B",
-              "handoffKey": "day5.1BABA.handoff.B",
-              "handoffVoiceKey": "icebreaker_day5_1BABA_B"
-            }
-          ],
-          "complete": true
-        },
-        "1BABB": {
-          "lineKey": "day5.1BABB.line",
-          "voiceKey": "icebreaker_day5_1BABB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day5.1BABB.options.A",
-              "handoffKey": "day5.1BABB.handoff.A",
-              "handoffVoiceKey": "icebreaker_day5_1BABB_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day5.1BABB.options.B",
-              "handoffKey": "day5.1BABB.handoff.B",
-              "handoffVoiceKey": "icebreaker_day5_1BABB_B"
-            }
-          ],
-          "complete": true
-        },
-        "1BBAA": {
-          "lineKey": "day5.1BBAA.line",
-          "voiceKey": "icebreaker_day5_1BBAA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day5.1BBAA.options.A",
-              "handoffKey": "day5.1BBAA.handoff.A",
-              "handoffVoiceKey": "icebreaker_day5_1BBAA_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day5.1BBAA.options.B",
-              "handoffKey": "day5.1BBAA.handoff.B",
-              "handoffVoiceKey": "icebreaker_day5_1BBAA_B"
-            }
-          ],
-          "complete": true
-        },
-        "1BBAB": {
-          "lineKey": "day5.1BBAB.line",
-          "voiceKey": "icebreaker_day5_1BBAB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day5.1BBAB.options.A",
-              "handoffKey": "day5.1BBAB.handoff.A",
-              "handoffVoiceKey": "icebreaker_day5_1BBAB_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day5.1BBAB.options.B",
-              "handoffKey": "day5.1BBAB.handoff.B",
-              "handoffVoiceKey": "icebreaker_day5_1BBAB_B"
-            }
-          ],
-          "complete": true
-        },
-        "1BBBA": {
-          "lineKey": "day5.1BBBA.line",
-          "voiceKey": "icebreaker_day5_1BBBA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day5.1BBBA.options.A",
-              "handoffKey": "day5.1BBBA.handoff.A",
-              "handoffVoiceKey": "icebreaker_day5_1BBBA_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day5.1BBBA.options.B",
-              "handoffKey": "day5.1BBBA.handoff.B",
-              "handoffVoiceKey": "icebreaker_day5_1BBBA_B"
-            }
-          ],
-          "complete": true
-        },
-        "1BBBB": {
-          "lineKey": "day5.1BBBB.line",
-          "voiceKey": "icebreaker_day5_1BBBB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day5.1BBBB.options.A",
-              "handoffKey": "day5.1BBBB.handoff.A",
-              "handoffVoiceKey": "icebreaker_day5_1BBBB_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day5.1BBBB.options.B",
-              "handoffKey": "day5.1BBBB.handoff.B",
-              "handoffVoiceKey": "icebreaker_day5_1BBBB_B"
-            }
-          ],
-          "complete": true
         }
       },
       "fallback": {
         "redirectKey": "day5.fallback.redirect",
-        "releaseKey": "day5.fallback.release",
         "redirectVoiceKey": "icebreaker_day5_fallback_redirect",
+        "releaseKey": "day5.fallback.release",
         "releaseVoiceKey": "icebreaker_day5_fallback_release"
       }
     },
@@ -2802,12 +702,12 @@
             {
               "id": "A",
               "labelKey": "day6.1A.options.A",
-              "next": "1AA"
+              "next": "1AAAA"
             },
             {
               "id": "B",
               "labelKey": "day6.1A.options.B",
-              "next": "1AB"
+              "next": "1AAAB"
             }
           ]
         },
@@ -2818,204 +718,12 @@
             {
               "id": "A",
               "labelKey": "day6.1B.options.A",
-              "next": "1BA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day6.1B.options.B",
-              "next": "1BB"
-            }
-          ]
-        },
-        "1AA": {
-          "lineKey": "day6.1AA.line",
-          "voiceKey": "icebreaker_day6_1AA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day6.1AA.options.A",
-              "next": "1AAA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day6.1AA.options.B",
-              "next": "1AAB"
-            }
-          ]
-        },
-        "1AB": {
-          "lineKey": "day6.1AB.line",
-          "voiceKey": "icebreaker_day6_1AB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day6.1AB.options.A",
-              "next": "1ABA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day6.1AB.options.B",
-              "next": "1ABB"
-            }
-          ]
-        },
-        "1BA": {
-          "lineKey": "day6.1BA.line",
-          "voiceKey": "icebreaker_day6_1BA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day6.1BA.options.A",
-              "next": "1BAA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day6.1BA.options.B",
-              "next": "1BAB"
-            }
-          ]
-        },
-        "1BB": {
-          "lineKey": "day6.1BB.line",
-          "voiceKey": "icebreaker_day6_1BB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day6.1BB.options.A",
-              "next": "1BBA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day6.1BB.options.B",
-              "next": "1BBB"
-            }
-          ]
-        },
-        "1AAA": {
-          "lineKey": "day6.1AAA.line",
-          "voiceKey": "icebreaker_day6_1AAA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day6.1AAA.options.A",
-              "next": "1AAAA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day6.1AAA.options.B",
-              "next": "1AAAB"
-            }
-          ]
-        },
-        "1AAB": {
-          "lineKey": "day6.1AAB.line",
-          "voiceKey": "icebreaker_day6_1AAB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day6.1AAB.options.A",
-              "next": "1AABA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day6.1AAB.options.B",
-              "next": "1AABB"
-            }
-          ]
-        },
-        "1ABA": {
-          "lineKey": "day6.1ABA.line",
-          "voiceKey": "icebreaker_day6_1ABA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day6.1ABA.options.A",
-              "next": "1ABAA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day6.1ABA.options.B",
-              "next": "1ABAB"
-            }
-          ]
-        },
-        "1ABB": {
-          "lineKey": "day6.1ABB.line",
-          "voiceKey": "icebreaker_day6_1ABB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day6.1ABB.options.A",
-              "next": "1ABBA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day6.1ABB.options.B",
-              "next": "1ABBB"
-            }
-          ]
-        },
-        "1BAA": {
-          "lineKey": "day6.1BAA.line",
-          "voiceKey": "icebreaker_day6_1BAA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day6.1BAA.options.A",
               "next": "1BAAA"
             },
             {
               "id": "B",
-              "labelKey": "day6.1BAA.options.B",
+              "labelKey": "day6.1B.options.B",
               "next": "1BAAB"
-            }
-          ]
-        },
-        "1BAB": {
-          "lineKey": "day6.1BAB.line",
-          "voiceKey": "icebreaker_day6_1BAB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day6.1BAB.options.A",
-              "next": "1BABA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day6.1BAB.options.B",
-              "next": "1BABB"
-            }
-          ]
-        },
-        "1BBA": {
-          "lineKey": "day6.1BBA.line",
-          "voiceKey": "icebreaker_day6_1BBA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day6.1BBA.options.A",
-              "next": "1BBAA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day6.1BBA.options.B",
-              "next": "1BBAB"
-            }
-          ]
-        },
-        "1BBB": {
-          "lineKey": "day6.1BBB.line",
-          "voiceKey": "icebreaker_day6_1BBB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day6.1BBB.options.A",
-              "next": "1BBBA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day6.1BBB.options.B",
-              "next": "1BBBB"
             }
           ]
         },
@@ -3057,120 +765,6 @@
           ],
           "complete": true
         },
-        "1AABA": {
-          "lineKey": "day6.1AABA.line",
-          "voiceKey": "icebreaker_day6_1AABA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day6.1AABA.options.A",
-              "handoffKey": "day6.1AABA.handoff.A",
-              "handoffVoiceKey": "icebreaker_day6_1AABA_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day6.1AABA.options.B",
-              "handoffKey": "day6.1AABA.handoff.B",
-              "handoffVoiceKey": "icebreaker_day6_1AABA_B"
-            }
-          ],
-          "complete": true
-        },
-        "1AABB": {
-          "lineKey": "day6.1AABB.line",
-          "voiceKey": "icebreaker_day6_1AABB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day6.1AABB.options.A",
-              "handoffKey": "day6.1AABB.handoff.A",
-              "handoffVoiceKey": "icebreaker_day6_1AABB_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day6.1AABB.options.B",
-              "handoffKey": "day6.1AABB.handoff.B",
-              "handoffVoiceKey": "icebreaker_day6_1AABB_B"
-            }
-          ],
-          "complete": true
-        },
-        "1ABAA": {
-          "lineKey": "day6.1ABAA.line",
-          "voiceKey": "icebreaker_day6_1ABAA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day6.1ABAA.options.A",
-              "handoffKey": "day6.1ABAA.handoff.A",
-              "handoffVoiceKey": "icebreaker_day6_1ABAA_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day6.1ABAA.options.B",
-              "handoffKey": "day6.1ABAA.handoff.B",
-              "handoffVoiceKey": "icebreaker_day6_1ABAA_B"
-            }
-          ],
-          "complete": true
-        },
-        "1ABAB": {
-          "lineKey": "day6.1ABAB.line",
-          "voiceKey": "icebreaker_day6_1ABAB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day6.1ABAB.options.A",
-              "handoffKey": "day6.1ABAB.handoff.A",
-              "handoffVoiceKey": "icebreaker_day6_1ABAB_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day6.1ABAB.options.B",
-              "handoffKey": "day6.1ABAB.handoff.B",
-              "handoffVoiceKey": "icebreaker_day6_1ABAB_B"
-            }
-          ],
-          "complete": true
-        },
-        "1ABBA": {
-          "lineKey": "day6.1ABBA.line",
-          "voiceKey": "icebreaker_day6_1ABBA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day6.1ABBA.options.A",
-              "handoffKey": "day6.1ABBA.handoff.A",
-              "handoffVoiceKey": "icebreaker_day6_1ABBA_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day6.1ABBA.options.B",
-              "handoffKey": "day6.1ABBA.handoff.B",
-              "handoffVoiceKey": "icebreaker_day6_1ABBA_B"
-            }
-          ],
-          "complete": true
-        },
-        "1ABBB": {
-          "lineKey": "day6.1ABBB.line",
-          "voiceKey": "icebreaker_day6_1ABBB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day6.1ABBB.options.A",
-              "handoffKey": "day6.1ABBB.handoff.A",
-              "handoffVoiceKey": "icebreaker_day6_1ABBB_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day6.1ABBB.options.B",
-              "handoffKey": "day6.1ABBB.handoff.B",
-              "handoffVoiceKey": "icebreaker_day6_1ABBB_B"
-            }
-          ],
-          "complete": true
-        },
         "1BAAA": {
           "lineKey": "day6.1BAAA.line",
           "voiceKey": "icebreaker_day6_1BAAA",
@@ -3208,126 +802,12 @@
             }
           ],
           "complete": true
-        },
-        "1BABA": {
-          "lineKey": "day6.1BABA.line",
-          "voiceKey": "icebreaker_day6_1BABA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day6.1BABA.options.A",
-              "handoffKey": "day6.1BABA.handoff.A",
-              "handoffVoiceKey": "icebreaker_day6_1BABA_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day6.1BABA.options.B",
-              "handoffKey": "day6.1BABA.handoff.B",
-              "handoffVoiceKey": "icebreaker_day6_1BABA_B"
-            }
-          ],
-          "complete": true
-        },
-        "1BABB": {
-          "lineKey": "day6.1BABB.line",
-          "voiceKey": "icebreaker_day6_1BABB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day6.1BABB.options.A",
-              "handoffKey": "day6.1BABB.handoff.A",
-              "handoffVoiceKey": "icebreaker_day6_1BABB_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day6.1BABB.options.B",
-              "handoffKey": "day6.1BABB.handoff.B",
-              "handoffVoiceKey": "icebreaker_day6_1BABB_B"
-            }
-          ],
-          "complete": true
-        },
-        "1BBAA": {
-          "lineKey": "day6.1BBAA.line",
-          "voiceKey": "icebreaker_day6_1BBAA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day6.1BBAA.options.A",
-              "handoffKey": "day6.1BBAA.handoff.A",
-              "handoffVoiceKey": "icebreaker_day6_1BBAA_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day6.1BBAA.options.B",
-              "handoffKey": "day6.1BBAA.handoff.B",
-              "handoffVoiceKey": "icebreaker_day6_1BBAA_B"
-            }
-          ],
-          "complete": true
-        },
-        "1BBAB": {
-          "lineKey": "day6.1BBAB.line",
-          "voiceKey": "icebreaker_day6_1BBAB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day6.1BBAB.options.A",
-              "handoffKey": "day6.1BBAB.handoff.A",
-              "handoffVoiceKey": "icebreaker_day6_1BBAB_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day6.1BBAB.options.B",
-              "handoffKey": "day6.1BBAB.handoff.B",
-              "handoffVoiceKey": "icebreaker_day6_1BBAB_B"
-            }
-          ],
-          "complete": true
-        },
-        "1BBBA": {
-          "lineKey": "day6.1BBBA.line",
-          "voiceKey": "icebreaker_day6_1BBBA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day6.1BBBA.options.A",
-              "handoffKey": "day6.1BBBA.handoff.A",
-              "handoffVoiceKey": "icebreaker_day6_1BBBA_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day6.1BBBA.options.B",
-              "handoffKey": "day6.1BBBA.handoff.B",
-              "handoffVoiceKey": "icebreaker_day6_1BBBA_B"
-            }
-          ],
-          "complete": true
-        },
-        "1BBBB": {
-          "lineKey": "day6.1BBBB.line",
-          "voiceKey": "icebreaker_day6_1BBBB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day6.1BBBB.options.A",
-              "handoffKey": "day6.1BBBB.handoff.A",
-              "handoffVoiceKey": "icebreaker_day6_1BBBB_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day6.1BBBB.options.B",
-              "handoffKey": "day6.1BBBB.handoff.B",
-              "handoffVoiceKey": "icebreaker_day6_1BBBB_B"
-            }
-          ],
-          "complete": true
         }
       },
       "fallback": {
         "redirectKey": "day6.fallback.redirect",
-        "releaseKey": "day6.fallback.release",
         "redirectVoiceKey": "icebreaker_day6_fallback_redirect",
+        "releaseKey": "day6.fallback.release",
         "releaseVoiceKey": "icebreaker_day6_fallback_release"
       }
     },
@@ -3357,12 +837,12 @@
             {
               "id": "A",
               "labelKey": "day7.1A.options.A",
-              "next": "1AA"
+              "next": "1AAAA"
             },
             {
               "id": "B",
               "labelKey": "day7.1A.options.B",
-              "next": "1AB"
+              "next": "1AAAB"
             }
           ]
         },
@@ -3373,204 +853,12 @@
             {
               "id": "A",
               "labelKey": "day7.1B.options.A",
-              "next": "1BA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day7.1B.options.B",
-              "next": "1BB"
-            }
-          ]
-        },
-        "1AA": {
-          "lineKey": "day7.1AA.line",
-          "voiceKey": "icebreaker_day7_1AA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day7.1AA.options.A",
-              "next": "1AAA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day7.1AA.options.B",
-              "next": "1AAB"
-            }
-          ]
-        },
-        "1AB": {
-          "lineKey": "day7.1AB.line",
-          "voiceKey": "icebreaker_day7_1AB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day7.1AB.options.A",
-              "next": "1ABA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day7.1AB.options.B",
-              "next": "1ABB"
-            }
-          ]
-        },
-        "1BA": {
-          "lineKey": "day7.1BA.line",
-          "voiceKey": "icebreaker_day7_1BA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day7.1BA.options.A",
-              "next": "1BAA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day7.1BA.options.B",
-              "next": "1BAB"
-            }
-          ]
-        },
-        "1BB": {
-          "lineKey": "day7.1BB.line",
-          "voiceKey": "icebreaker_day7_1BB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day7.1BB.options.A",
-              "next": "1BBA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day7.1BB.options.B",
-              "next": "1BBB"
-            }
-          ]
-        },
-        "1AAA": {
-          "lineKey": "day7.1AAA.line",
-          "voiceKey": "icebreaker_day7_1AAA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day7.1AAA.options.A",
-              "next": "1AAAA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day7.1AAA.options.B",
-              "next": "1AAAB"
-            }
-          ]
-        },
-        "1AAB": {
-          "lineKey": "day7.1AAB.line",
-          "voiceKey": "icebreaker_day7_1AAB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day7.1AAB.options.A",
-              "next": "1AABA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day7.1AAB.options.B",
-              "next": "1AABB"
-            }
-          ]
-        },
-        "1ABA": {
-          "lineKey": "day7.1ABA.line",
-          "voiceKey": "icebreaker_day7_1ABA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day7.1ABA.options.A",
-              "next": "1ABAA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day7.1ABA.options.B",
-              "next": "1ABAB"
-            }
-          ]
-        },
-        "1ABB": {
-          "lineKey": "day7.1ABB.line",
-          "voiceKey": "icebreaker_day7_1ABB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day7.1ABB.options.A",
-              "next": "1ABBA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day7.1ABB.options.B",
-              "next": "1ABBB"
-            }
-          ]
-        },
-        "1BAA": {
-          "lineKey": "day7.1BAA.line",
-          "voiceKey": "icebreaker_day7_1BAA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day7.1BAA.options.A",
               "next": "1BAAA"
             },
             {
               "id": "B",
-              "labelKey": "day7.1BAA.options.B",
+              "labelKey": "day7.1B.options.B",
               "next": "1BAAB"
-            }
-          ]
-        },
-        "1BAB": {
-          "lineKey": "day7.1BAB.line",
-          "voiceKey": "icebreaker_day7_1BAB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day7.1BAB.options.A",
-              "next": "1BABA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day7.1BAB.options.B",
-              "next": "1BABB"
-            }
-          ]
-        },
-        "1BBA": {
-          "lineKey": "day7.1BBA.line",
-          "voiceKey": "icebreaker_day7_1BBA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day7.1BBA.options.A",
-              "next": "1BBAA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day7.1BBA.options.B",
-              "next": "1BBAB"
-            }
-          ]
-        },
-        "1BBB": {
-          "lineKey": "day7.1BBB.line",
-          "voiceKey": "icebreaker_day7_1BBB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day7.1BBB.options.A",
-              "next": "1BBBA"
-            },
-            {
-              "id": "B",
-              "labelKey": "day7.1BBB.options.B",
-              "next": "1BBBB"
             }
           ]
         },
@@ -3612,120 +900,6 @@
           ],
           "complete": true
         },
-        "1AABA": {
-          "lineKey": "day7.1AABA.line",
-          "voiceKey": "icebreaker_day7_1AABA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day7.1AABA.options.A",
-              "handoffKey": "day7.1AABA.handoff.A",
-              "handoffVoiceKey": "icebreaker_day7_1AABA_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day7.1AABA.options.B",
-              "handoffKey": "day7.1AABA.handoff.B",
-              "handoffVoiceKey": "icebreaker_day7_1AABA_B"
-            }
-          ],
-          "complete": true
-        },
-        "1AABB": {
-          "lineKey": "day7.1AABB.line",
-          "voiceKey": "icebreaker_day7_1AABB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day7.1AABB.options.A",
-              "handoffKey": "day7.1AABB.handoff.A",
-              "handoffVoiceKey": "icebreaker_day7_1AABB_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day7.1AABB.options.B",
-              "handoffKey": "day7.1AABB.handoff.B",
-              "handoffVoiceKey": "icebreaker_day7_1AABB_B"
-            }
-          ],
-          "complete": true
-        },
-        "1ABAA": {
-          "lineKey": "day7.1ABAA.line",
-          "voiceKey": "icebreaker_day7_1ABAA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day7.1ABAA.options.A",
-              "handoffKey": "day7.1ABAA.handoff.A",
-              "handoffVoiceKey": "icebreaker_day7_1ABAA_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day7.1ABAA.options.B",
-              "handoffKey": "day7.1ABAA.handoff.B",
-              "handoffVoiceKey": "icebreaker_day7_1ABAA_B"
-            }
-          ],
-          "complete": true
-        },
-        "1ABAB": {
-          "lineKey": "day7.1ABAB.line",
-          "voiceKey": "icebreaker_day7_1ABAB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day7.1ABAB.options.A",
-              "handoffKey": "day7.1ABAB.handoff.A",
-              "handoffVoiceKey": "icebreaker_day7_1ABAB_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day7.1ABAB.options.B",
-              "handoffKey": "day7.1ABAB.handoff.B",
-              "handoffVoiceKey": "icebreaker_day7_1ABAB_B"
-            }
-          ],
-          "complete": true
-        },
-        "1ABBA": {
-          "lineKey": "day7.1ABBA.line",
-          "voiceKey": "icebreaker_day7_1ABBA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day7.1ABBA.options.A",
-              "handoffKey": "day7.1ABBA.handoff.A",
-              "handoffVoiceKey": "icebreaker_day7_1ABBA_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day7.1ABBA.options.B",
-              "handoffKey": "day7.1ABBA.handoff.B",
-              "handoffVoiceKey": "icebreaker_day7_1ABBA_B"
-            }
-          ],
-          "complete": true
-        },
-        "1ABBB": {
-          "lineKey": "day7.1ABBB.line",
-          "voiceKey": "icebreaker_day7_1ABBB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day7.1ABBB.options.A",
-              "handoffKey": "day7.1ABBB.handoff.A",
-              "handoffVoiceKey": "icebreaker_day7_1ABBB_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day7.1ABBB.options.B",
-              "handoffKey": "day7.1ABBB.handoff.B",
-              "handoffVoiceKey": "icebreaker_day7_1ABBB_B"
-            }
-          ],
-          "complete": true
-        },
         "1BAAA": {
           "lineKey": "day7.1BAAA.line",
           "voiceKey": "icebreaker_day7_1BAAA",
@@ -3763,126 +937,12 @@
             }
           ],
           "complete": true
-        },
-        "1BABA": {
-          "lineKey": "day7.1BABA.line",
-          "voiceKey": "icebreaker_day7_1BABA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day7.1BABA.options.A",
-              "handoffKey": "day7.1BABA.handoff.A",
-              "handoffVoiceKey": "icebreaker_day7_1BABA_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day7.1BABA.options.B",
-              "handoffKey": "day7.1BABA.handoff.B",
-              "handoffVoiceKey": "icebreaker_day7_1BABA_B"
-            }
-          ],
-          "complete": true
-        },
-        "1BABB": {
-          "lineKey": "day7.1BABB.line",
-          "voiceKey": "icebreaker_day7_1BABB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day7.1BABB.options.A",
-              "handoffKey": "day7.1BABB.handoff.A",
-              "handoffVoiceKey": "icebreaker_day7_1BABB_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day7.1BABB.options.B",
-              "handoffKey": "day7.1BABB.handoff.B",
-              "handoffVoiceKey": "icebreaker_day7_1BABB_B"
-            }
-          ],
-          "complete": true
-        },
-        "1BBAA": {
-          "lineKey": "day7.1BBAA.line",
-          "voiceKey": "icebreaker_day7_1BBAA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day7.1BBAA.options.A",
-              "handoffKey": "day7.1BBAA.handoff.A",
-              "handoffVoiceKey": "icebreaker_day7_1BBAA_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day7.1BBAA.options.B",
-              "handoffKey": "day7.1BBAA.handoff.B",
-              "handoffVoiceKey": "icebreaker_day7_1BBAA_B"
-            }
-          ],
-          "complete": true
-        },
-        "1BBAB": {
-          "lineKey": "day7.1BBAB.line",
-          "voiceKey": "icebreaker_day7_1BBAB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day7.1BBAB.options.A",
-              "handoffKey": "day7.1BBAB.handoff.A",
-              "handoffVoiceKey": "icebreaker_day7_1BBAB_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day7.1BBAB.options.B",
-              "handoffKey": "day7.1BBAB.handoff.B",
-              "handoffVoiceKey": "icebreaker_day7_1BBAB_B"
-            }
-          ],
-          "complete": true
-        },
-        "1BBBA": {
-          "lineKey": "day7.1BBBA.line",
-          "voiceKey": "icebreaker_day7_1BBBA",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day7.1BBBA.options.A",
-              "handoffKey": "day7.1BBBA.handoff.A",
-              "handoffVoiceKey": "icebreaker_day7_1BBBA_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day7.1BBBA.options.B",
-              "handoffKey": "day7.1BBBA.handoff.B",
-              "handoffVoiceKey": "icebreaker_day7_1BBBA_B"
-            }
-          ],
-          "complete": true
-        },
-        "1BBBB": {
-          "lineKey": "day7.1BBBB.line",
-          "voiceKey": "icebreaker_day7_1BBBB",
-          "options": [
-            {
-              "id": "A",
-              "labelKey": "day7.1BBBB.options.A",
-              "handoffKey": "day7.1BBBB.handoff.A",
-              "handoffVoiceKey": "icebreaker_day7_1BBBB_A"
-            },
-            {
-              "id": "B",
-              "labelKey": "day7.1BBBB.options.B",
-              "handoffKey": "day7.1BBBB.handoff.B",
-              "handoffVoiceKey": "icebreaker_day7_1BBBB_B"
-            }
-          ],
-          "complete": true
         }
       },
       "fallback": {
         "redirectKey": "day7.fallback.redirect",
-        "releaseKey": "day7.fallback.release",
         "redirectVoiceKey": "icebreaker_day7_fallback_redirect",
+        "releaseKey": "day7.fallback.release",
         "releaseVoiceKey": "icebreaker_day7_fallback_release"
       }
     }

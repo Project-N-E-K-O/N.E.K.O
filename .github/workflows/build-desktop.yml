@@ -116,9 +116,8 @@ jobs:
           # reads numpy's __cpu_features__, no py-cpuinfo) are in
           # [project.dependencies] now — plain `uv sync` covers both the
           # build-time prepare step and the bundled runtime.
-          # `--group galgame` adds rapidocr-onnxruntime + opencv-python-headless
-          # for the bundled OCR backend; pyproject's [tool.uv].override-dependencies
-          # blocks opencv-python (full) so only the headless cv2 ships.
+          # `--group galgame` adds the local rapidocr-pillow fork for the
+          # bundled OCR backend without the opencv/shapely dependency chain.
           uv sync --group galgame
           uv pip install --python .venv nuitka ordered-set zstandard
 
@@ -128,14 +127,10 @@ jobs:
         run: |
           python -c "
           import json, os
+          # 本地化角色种子在 config/characters/<locale>.json（已入库的目录，PR #1282），
+          # 不需在此生成；只补 git 不跟踪的运行时文件，让构建有可读的基准配置。
           configs = {
             'config/characters.json': {'主人': {'档案名': '', '性别': '', '昵称': ''}, '猫娘': {}, '当前猫娘': ''},
-            'config/characters.en.json': {'主人': {'档案名': '', '性别': '', '昵称': ''}, '猫娘': {}, '当前猫娘': ''},
-            'config/characters.ja.json': {'主人': {'档案名': '', '性别': '', '昵称': ''}, '猫娘': {}, '当前猫娘': ''},
-            'config/characters.ko.json': {'主人': {'档案名': '', '性别': '', '昵称': ''}, '猫娘': {}, '当前猫娘': ''},
-            'config/characters.ru.json': {'主人': {'档案名': '', '性别': '', '昵称': ''}, '猫娘': {}, '当前猫娘': ''},
-            'config/characters.zh-CN.json': {'主人': {'档案名': '', '性别': '', '昵称': ''}, '猫娘': {}, '当前猫娘': ''},
-            'config/characters.zh-TW.json': {'主人': {'档案名': '', '性别': '', '昵称': ''}, '猫娘': {}, '当前猫娘': ''},
             'config/core_config.json': {},
             'config/user_preferences.json': [],
           }
@@ -285,12 +280,10 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/__init__.py=config/__init__.py"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/api_providers.json=config/api_providers.json"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/characters.json=config/characters.json"
-          NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/characters.en.json=config/characters.en.json"
-          NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/characters.ja.json=config/characters.ja.json"
-          NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/characters.ko.json=config/characters.ko.json"
-          NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/characters.ru.json=config/characters.ru.json"
-          NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/characters.zh-CN.json=config/characters.zh-CN.json"
-          NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/characters.zh-TW.json=config/characters.zh-TW.json"
+          # 本地化角色种子在 config/characters/<locale>.json（PR #1282 后），ConfigManager.
+          # _get_localized_characters_source 按 locale 读该目录；打整个目录，别再引用已不存在的
+          # 根级 config/characters.<locale>.json（旧路径，会静默丢失全部本地化种子）。
+          NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=config/characters=config/characters"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/core_config.json=config/core_config.json"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/user_preferences.json=config/user_preferences.json"
           # changelog/.md 与 survey/.json 是纯数据文件，--include-package=config 只编 .py
@@ -324,6 +317,9 @@ jobs:
             NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=data/embedding_models=data/embedding_models"
           fi
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=static=static"
+          # 应用内 OpenClaw 引导文档 + 图片，由 agent_router 经 /api/agent/openclaw/guide/* 提供；
+          # 是纯数据目录，--include-package 不带，漏了引导页内容/图片打包后 404。
+          NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=docs/zh-CN/guide=docs/zh-CN/guide"
 
           # Packages
           NUITKA_OPTS="$NUITKA_OPTS --include-package=uvicorn"
@@ -363,15 +359,11 @@ jobs:
           # package itself (CI previously only carried its package-data).
           NUITKA_OPTS="$NUITKA_OPTS --include-package=bilibili_api"
           # galgame_plugin native OCR/vision cohort. Installed on every platform by
-          # `uv sync --group galgame` (rapidocr-onnxruntime + opencv-python-headless,
-          # which pulls shapely/pyclipper). Nuitka's auto-follow misses their data
-          # files, so include package + data explicitly. Synced with build_nuitka.bat.
-          NUITKA_OPTS="$NUITKA_OPTS --include-package=cv2"
-          NUITKA_OPTS="$NUITKA_OPTS --include-package-data=cv2"
+          # `uv sync --group galgame` (local rapidocr-pillow fork + pyclipper).
+          # Nuitka's auto-follow misses their data files, so include package +
+          # data explicitly.
           NUITKA_OPTS="$NUITKA_OPTS --include-package=rapidocr_onnxruntime"
           NUITKA_OPTS="$NUITKA_OPTS --include-package-data=rapidocr_onnxruntime"
-          NUITKA_OPTS="$NUITKA_OPTS --include-package=shapely"
-          NUITKA_OPTS="$NUITKA_OPTS --include-package-data=shapely"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=pyclipper"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=mss"
           # dxcam is Windows-only (win32 marker); it's handled in the Windows cmd
@@ -461,12 +453,10 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/__init__.py=config/__init__.py
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/api_providers.json=config/api_providers.json
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/characters.json=config/characters.json
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/characters.en.json=config/characters.en.json
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/characters.ja.json=config/characters.ja.json
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/characters.ko.json=config/characters.ko.json
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/characters.ru.json=config/characters.ru.json
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/characters.zh-CN.json=config/characters.zh-CN.json
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/characters.zh-TW.json=config/characters.zh-TW.json
+          rem 本地化角色种子是 config/characters 目录下按 locale 命名的 json（en.json 等，PR #1282 后）；
+          rem 打整个目录，别再引用 PR #1282 前已不存在的根级 config.characters.locale.json 旧路径。
+          rem （cmd 的 rem 行会把尖括号当重定向解析，注释里一律不用尖括号）
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=config/characters=config/characters
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/core_config.json=config/core_config.json
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/user_preferences.json=config/user_preferences.json
           rem changelog/.md 与 survey/.json 是纯数据，--include-package=config 不带，须显式打包
@@ -482,6 +472,9 @@ jobs:
           if exist "data\tiktoken_cache" set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=data/tiktoken_cache=data/tiktoken_cache
           if exist "data\embedding_models" set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=data/embedding_models=data/embedding_models
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=static=static
+          rem 应用内 OpenClaw 引导文档 + 图片，由 agent_router 经 /api/agent/openclaw/guide/* 提供；
+          rem 纯数据目录，漏了引导页内容/图片打包后 404。
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=docs/zh-CN/guide=docs/zh-CN/guide
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=uvicorn
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=fastapi
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=starlette
@@ -491,7 +484,7 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=config
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=plugin
           rem Built-in plugins are imported at runtime via their dotted entry path
-          rem (plugin.plugins.<name>:Class in plugin.toml), so they must be compiled
+          rem (plugin.plugins.[name]:Class in plugin.toml), so they must be compiled
           rem into the binary; --include-data-dir alone drops the .py. Synced with
           rem build_nuitka.bat. training/ is offline-only (torch) so carve it out.
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=plugin.plugins
@@ -538,16 +531,11 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=bilibili_api
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=bilibili_api
           rem galgame_plugin native OCR/vision cohort (uv sync --group galgame:
-          rem rapidocr-onnxruntime + opencv-python-headless, pulling shapely/pyclipper;
-          rem mss/dxcam from main deps). Nuitka auto-follow misses their data files,
-          rem so include package + data explicitly. Synced with build_nuitka.bat.
+          rem local rapidocr-pillow fork + pyclipper; mss/dxcam from main deps).
+          rem Nuitka auto-follow misses their data files, so include package + data.
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=rapidocr_onnxruntime
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=rapidocr_onnxruntime
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=cv2
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=cv2
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=pyclipper
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=shapely
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=shapely
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=mss
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=dxcam
           set NUITKA_OPTS=%NUITKA_OPTS% --enable-plugin=dill-compat

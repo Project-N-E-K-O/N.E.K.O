@@ -43,6 +43,187 @@ export async function renderImportPage(host) {
   const realSection = el('div', { className: 'import-section' });
   host.append(realSection);
   await renderRealCharacters(realSection);
+
+  host.append(el('hr', { className: 'import-divider' }));
+
+  // ── Section 3: 从 zip 人格档案导入 (用户自带压缩包, 走和 preset 同一管线) ──
+  const archiveSection = el('div', { className: 'import-section' });
+  host.append(archiveSection);
+  renderArchiveImport(archiveSection);
+}
+
+// 客户端体积上限 (MiB). 与后端 _MAX_ARCHIVE_BYTES 对齐, 上传前先拦掉,
+// 避免把超大文件 readAsArrayBuffer 进内存再被后端 400.
+const _ARCHIVE_MAX_MIB = 200;
+
+// 后端 error_type → 归类. "格式不合法/无法解析为角色档案" 这一类要给用户最
+// 明确的提示 (这是用户主诉: 选错文件 / 文件损坏 / 不是角色档案 zip).
+const _FORMAT_ERROR_TYPES = new Set([
+  'InvalidArchive', 'InvalidBase64', 'UnsafeArchive', 'EmptyArchive',
+  'NoCharactersJson', 'BrokenCharactersJson', 'NoCharacterInArchive',
+  'UnknownCharacter',
+]);
+
+function renderArchiveImport(host) {
+  host.append(
+    el('h3', { className: 'import-section-heading' },
+      i18n('setup.import.archive.heading')),
+    el('p', { className: 'muted tiny' },
+      i18n('setup.import.archive.intro')),
+  );
+
+  // 可选: 当压缩包内含多个角色时, 在这里指定要导入哪个 (留空则自动判定).
+  const nameField = el('input', {
+    type: 'text',
+    className: 'import-archive-name',
+    placeholder: i18n('setup.import.archive.name_placeholder'),
+  });
+
+  // 持久化的内联状态区: 成功/失败都在这里常驻显示 (toast 会消失, 这个不会),
+  // 让用户能看清"为什么失败 / 哪里不合法". 默认隐藏.
+  const statusEl = el('div', { className: 'import-archive-status', hidden: true });
+  function setStatus(kind, title, detail) {
+    statusEl.hidden = false;
+    statusEl.className = `import-archive-status is-${kind}`;
+    statusEl.innerHTML = '';
+    statusEl.append(el('div', { className: 'import-archive-status__title' }, title));
+    if (detail) {
+      statusEl.append(el('div', { className: 'import-archive-status__detail' }, detail));
+    }
+  }
+  function clearStatus() {
+    statusEl.hidden = true;
+    statusEl.innerHTML = '';
+  }
+
+  const fileInput = el('input', {
+    type: 'file',
+    accept: '.zip,application/zip',
+    hidden: true,
+    onChange: (ev) => {
+      const file = ev.target.files && ev.target.files[0];
+      ev.target.value = '';  // 允许同文件重复选
+      if (file) onPickArchive(file, nameField.value.trim(), pickBtn, setStatus, clearStatus);
+    },
+  });
+
+  const pickBtn = el('button', {
+    className: 'primary',
+    onClick: () => fileInput.click(),
+  }, i18n('setup.import.archive.button_pick'));
+
+  host.append(
+    el('div', { className: 'import-archive-controls' },
+      nameField, pickBtn, fileInput),
+    statusEl,
+  );
+}
+
+function _bytesToBase64(bytes) {
+  // Chunked to avoid "Maximum call stack" on large archives.
+  let binary = '';
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
+}
+
+// 把一次失败的后端响应映射成 {title, detail} 内联展示文案.
+function _describeArchiveFailure(res) {
+  const type = res.error?.type || '';
+  const backendMsg = res.error?.message || '';
+  if (res.status === 404 || type === 'NoActiveSession') {
+    return { title: i18n('setup.import.archive.err_no_session'), detail: backendMsg };
+  }
+  if (type === 'AmbiguousArchive') {
+    return {
+      title: i18n('setup.import.archive.err_ambiguous'),
+      detail: `${backendMsg} ${i18n('setup.import.archive.err_ambiguous_hint')}`,
+    };
+  }
+  if (type === 'ArchiveTooLarge') {
+    return { title: i18n('setup.import.archive.err_toolarge'), detail: backendMsg };
+  }
+  if (_FORMAT_ERROR_TYPES.has(type)) {
+    return { title: i18n('setup.import.archive.err_format'), detail: backendMsg };
+  }
+  // 409 SessionConflict / 500 / 其它未知: 归"导入出错", 仍把后端消息透出.
+  return {
+    title: i18n('setup.import.archive.err_generic'),
+    detail: backendMsg || i18n('setup.import.archive.import_failed'),
+  };
+}
+
+async function onPickArchive(file, characterName, button, setStatus, clearStatus) {
+  const labelIdle = i18n('setup.import.archive.button_pick');
+  clearStatus();
+
+  // ── 上传前客户端预校验 (空 / 体积 / 扩展名), 给最直白的提示 ──
+  const name = file.name || '';
+  if (!/\.zip$/i.test(name)) {
+    const msg = i18n('setup.import.archive.bad_ext', name || '(未命名)');
+    setStatus('err', i18n('setup.import.archive.err_format'), msg);
+    toast.err(i18n('setup.import.archive.err_format'), { message: msg });
+    return;
+  }
+  if (file.size === 0) {
+    const msg = i18n('setup.import.archive.empty_file');
+    setStatus('err', i18n('setup.import.archive.err_format'), msg);
+    toast.err(i18n('setup.import.archive.err_format'), { message: msg });
+    return;
+  }
+  if (file.size > _ARCHIVE_MAX_MIB * 1024 * 1024) {
+    const msg = i18n('setup.import.archive.too_large_client', _ARCHIVE_MAX_MIB);
+    setStatus('err', i18n('setup.import.archive.err_toolarge'), msg);
+    toast.err(i18n('setup.import.archive.err_toolarge'), { message: msg });
+    return;
+  }
+
+  button.disabled = true;
+  try {
+    // 读本地文件 → base64. 读失败 (权限 / 文件被移动) 也要明确提示.
+    button.textContent = i18n('setup.import.archive.button_reading');
+    let archive_b64;
+    try {
+      const buf = await file.arrayBuffer();
+      archive_b64 = _bytesToBase64(new Uint8Array(buf));
+    } catch (readExc) {
+      const msg = `${i18n('setup.import.archive.read_failed')} (${readExc?.message || readExc})`;
+      setStatus('err', i18n('setup.import.archive.err_generic'), msg);
+      toast.err(i18n('setup.import.archive.read_failed'), { message: String(readExc) });
+      return;
+    }
+
+    button.textContent = i18n('setup.import.archive.button_importing');
+    const res = await api.post('/api/persona/import_from_archive', {
+      archive_b64,
+      character_name: characterName || null,
+      filename: name,
+    }, { expectedStatuses: [400, 404, 409, 422] });
+
+    if (res.ok) {
+      const ch = res.data?.character_name || res.data?.persona?.character_name || name;
+      const n = res.data?.copied_files?.length ?? 0;
+      const warnings = res.data?.warnings || [];
+      setStatus('ok', i18n('setup.import.archive.import_ok', ch, n),
+        warnings.join(' '));
+      toast.ok(i18n('setup.import.archive.import_ok', ch, n));
+      for (const w of warnings) toast.warn(w);
+    } else {
+      const { title, detail } = _describeArchiveFailure(res);
+      setStatus('err', title, detail);
+      toast.err(title, { message: detail });
+    }
+  } catch (exc) {
+    // 兜底: 任何未预期异常也要给用户一个明确的"导入出错"而不是静默.
+    const msg = exc?.message || String(exc);
+    setStatus('err', i18n('setup.import.archive.err_generic'), msg);
+    toast.err(i18n('setup.import.archive.import_failed'), { message: msg });
+  } finally {
+    button.disabled = false;
+    button.textContent = labelIdle;
+  }
 }
 
 async function renderBuiltinPresets(host) {

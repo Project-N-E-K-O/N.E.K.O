@@ -320,6 +320,7 @@ async def generate_galgame_options(request: Request):
             api_key,
             max_completion_tokens=GALGAME_OPTION_MAX_TOKENS,
             timeout=GALGAME_OPTION_TIMEOUT_SECONDS,
+            provider_type=summary_config.get('provider_type'),
         )
         async with llm:
             result = await asyncio.wait_for(

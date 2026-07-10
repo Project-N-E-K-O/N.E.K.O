@@ -43,10 +43,15 @@ Implementation notes:
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
+import io
 import json
 import os
 import shutil
+import tempfile
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +63,7 @@ from utils.config_manager import get_config_manager
 
 from tests.testbench.logger import python_logger
 from tests.testbench.persona_config import PersonaConfig
+from tests.testbench.pipeline.atomic_io import atomic_write_json as _atomic_write_json
 from tests.testbench.pipeline.snapshot_store import capture_safe as _snapshot_capture
 from tests.testbench.presets import PRESETS_ROOT
 from tests.testbench.session_store import (
@@ -791,8 +797,9 @@ def _copytree_safe_with_normalization(src: Path, dst: Path) -> list[str]:
             with facts_path.open("r", encoding="utf-8") as fp:
                 data = json.load(fp)
             _normalize_preset_facts(data)
-            with facts_path.open("w", encoding="utf-8") as fp:
-                json.dump(data, fp, ensure_ascii=False, indent=2)
+            # Crash-safe write (tmp + fsync + os.replace); a hard-kill mid-write
+            # must not leave facts.json half-overwritten (§3A F1 convention).
+            _atomic_write_json(facts_path, data)
         except (OSError, json.JSONDecodeError) as exc:
             python_logger().warning(
                 "persona_router: normalize facts.json in %s failed: %s",
@@ -950,3 +957,365 @@ async def import_builtin_preset(preset_id: str) -> dict[str, Any]:
         raise _session_conflict_to_http(exc) from exc
     except LookupError as exc:
         raise HTTPException(status_code=404, detail={"message": str(exc)}) from exc
+
+
+# ── zip archive import (P05.z) ──────────────────────────────────────
+#
+# Third import source: a user-supplied **.zip persona archive**. Same
+# filesystem-first write pipeline as import_from_real / import_builtin_preset
+# (write sandbox characters.json -> copytree memory -> set persona -> snapshot)
+# — only the *source* differs (an uploaded zip, extracted to a temp dir, instead
+# of the real config dir or a bundled preset dir). Accepts the same layout a
+# preset / a real N.E.K.O. data dump uses:
+#
+#     characters.json                      (or config/characters.json)
+#     memory/<character_name>/{persona,facts,reflections,recent,...}.json
+#     meta.json                            (optional: language / character_name)
+#
+# Upload transport mirrors session export (base64 in a JSON body) rather than
+# multipart — testbench has no UploadFile endpoint and base64-over-JSON keeps
+# the api.post() client path uniform.
+
+#: Decoded zip byte ceiling (defends against a giant upload pre-extraction).
+_MAX_ARCHIVE_BYTES = 200 * 1024 * 1024
+#: Total uncompressed byte ceiling across all members (zip-bomb guard).
+_MAX_ARCHIVE_UNCOMPRESSED_BYTES = 500 * 1024 * 1024
+#: Stream-copy chunk for zip extraction (also the size-guard granularity).
+_ZIP_COPY_CHUNK = 1 << 16  # 64 KiB
+
+
+class _ImportArchiveRequest(BaseModel):
+    """Body for ``POST /api/persona/import_from_archive``.
+
+    ``archive_b64`` is the base64 of a ``.zip``. ``character_name`` is optional
+    and only needed to disambiguate an archive whose ``characters.json`` holds
+    more than one cat girl. ``filename`` is for logging only.
+    """
+
+    archive_b64: str
+    character_name: str | None = None
+    filename: str | None = None
+
+
+def _safe_extract_zip(data: bytes, dest: Path) -> None:
+    """Extract ``data`` (zip bytes) into ``dest`` with traversal + size guards.
+
+    Rejects absolute / ``..`` member paths (zip-slip) and aborts if the total
+    uncompressed size exceeds :data:`_MAX_ARCHIVE_UNCOMPRESSED_BYTES`. Never
+    extracts outside ``dest``.
+    """
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(data))
+    except zipfile.BadZipFile as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"error_type": "InvalidArchive",
+                    "message": f"不是有效的 zip 压缩包: {exc}"},
+        ) from exc
+    dest_resolved = dest.resolve()
+    total = 0
+    with zf:
+        # NOTE: we deliberately do NOT trust ``info.file_size`` for the size
+        # guard — it is attacker-controllable ZIP metadata (a crafted entry can
+        # claim file_size=0 while its compressed payload decompresses to GBs).
+        # We also drop the upfront ``zf.testzip()`` (it decompresses every member
+        # before any guard runs — a free zip-bomb amplifier). Instead we count
+        # *actual* decompressed bytes while streaming, aborting the moment the
+        # running total crosses the limit. CRC corruption still surfaces:
+        # zipfile verifies each member's CRC as ``ZipExtFile`` reaches EOF.
+        for info in zf.infolist():
+            if info.is_dir():
+                continue
+            target = (dest / info.filename).resolve()
+            if os.path.commonpath([dest_resolved, target]) != str(dest_resolved):
+                raise HTTPException(
+                    status_code=400,
+                    detail={"error_type": "UnsafeArchive",
+                            "message": f"压缩包包含越界路径 (zip-slip): {info.filename!r}"},
+                )
+            target.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                with zf.open(info) as src, target.open("wb") as out:
+                    while True:
+                        chunk = src.read(_ZIP_COPY_CHUNK)
+                        if not chunk:
+                            break
+                        total += len(chunk)
+                        if total > _MAX_ARCHIVE_UNCOMPRESSED_BYTES:
+                            raise HTTPException(
+                                status_code=400,
+                                detail={"error_type": "ArchiveTooLarge",
+                                        "message": "压缩包解压后体积超过上限 (500 MiB)."},
+                            )
+                        out.write(chunk)
+            except zipfile.BadZipFile as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail={"error_type": "InvalidArchive",
+                            "message": f"压缩包内文件损坏: {info.filename!r} ({exc})"},
+                ) from exc
+
+
+def _find_shallowest(root: Path, filename: str) -> Path | None:
+    """Return the shallowest file named ``filename`` under ``root`` (or None)."""
+    matches = [p for p in root.rglob(filename) if p.is_file()]
+    if not matches:
+        return None
+    matches.sort(key=lambda p: len(p.relative_to(root).parts))
+    return matches[0]
+
+
+def _read_json_file(path: Path) -> dict[str, Any] | None:
+    """Load a JSON object file; return None on missing / invalid / non-dict."""
+    try:
+        with path.open("r", encoding="utf-8") as fp:
+            data = json.load(fp)
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _assert_safe_character_name(name: str) -> str:
+    """Reject a character name that is unsafe as a single path component.
+
+    This is NOT content filtering (the project never sanitizes user *content*):
+    ``name`` is used verbatim to build sandbox filesystem paths
+    (``sandbox/memory/<name>/``), so a value containing a path separator,
+    ``..``, an absolute-path marker, or NUL could escape the sandbox. We reject
+    those structurally and leave the name otherwise untouched.
+    """
+    n = str(name or "").strip()
+    if (not n or n in (".", "..")
+            or "/" in n or "\\" in n or "\x00" in n
+            or os.path.isabs(n)):
+        raise HTTPException(
+            status_code=422,
+            detail={"error_type": "UnsafeCharacterName",
+                    "message": f"角色名 {name!r} 含有非法路径字符, 无法用作目录名."},
+        )
+    return n
+
+
+def _resolve_archive_character_name(
+    raw: dict[str, Any], requested: str | None, meta: dict[str, Any] | None,
+) -> str:
+    """Pick which cat girl to import from the archive's ``characters.json``.
+
+    Priority: explicit ``requested`` -> ``meta.json.character_name`` ->
+    ``当前猫娘`` -> the single key when unambiguous. Raises 422 when the
+    archive has no usable character or when it is ambiguous and no name was
+    given.
+    """  # noqa: DOCSTRING_CJK
+    catgirls = raw.get("猫娘")
+    catgirls = catgirls if isinstance(catgirls, dict) else {}
+    names = [str(k) for k in catgirls.keys()]
+    if requested:
+        if requested in catgirls:
+            return requested
+        raise HTTPException(
+            status_code=422,
+            detail={"error_type": "UnknownCharacter",
+                    "message": f"压缩包的 characters.json 里没有角色 {requested!r}. "
+                               f"可选: {names or '（空）'}"},
+        )
+    meta_name = str((meta or {}).get("character_name", "") or "")
+    if meta_name and meta_name in catgirls:
+        return meta_name
+    current = str(raw.get("当前猫娘", "") or "")
+    if current in catgirls:
+        return current
+    if len(names) == 1:
+        return names[0]
+    if not names:
+        raise HTTPException(
+            status_code=422,
+            detail={"error_type": "NoCharacterInArchive",
+                    "message": "压缩包的 characters.json 里没有任何猫娘条目."},
+        )
+    raise HTTPException(
+        status_code=422,
+        detail={"error_type": "AmbiguousArchive",
+                "message": f"压缩包内含多个角色 {names}, 请指定 character_name."},
+    )
+
+
+def _resolve_archive_memory_dir(
+    extract_root: Path, char_json: Path, character_name: str,
+) -> Path | None:
+    """Locate ``memory/<character_name>/`` within the extracted archive.
+
+    Tolerant of common layouts: ``<root>/memory/<char>`` (preset / data dump),
+    ``config/characters.json`` sibling ``memory/`` (real dir dump), or a bare
+    ``<char>/`` folder. Falls back to an rglob for any dir named ``character_name``
+    that holds a known memory file.
+    """
+    candidates = [
+        char_json.parent / "memory" / character_name,
+        char_json.parent.parent / "memory" / character_name,
+        char_json.parent / character_name,
+    ]
+    for c in candidates:
+        if c.is_dir():
+            return c
+    # rglob("*") + literal name compare — NOT rglob(character_name), whose
+    # argument is a glob *pattern*: a name with metacharacters (``*?[]``) would
+    # match unintended directories.
+    for d in extract_root.rglob("*"):
+        if (d.is_dir() and d.name == character_name
+                and any((d / f).exists() for f in _KNOWN_MEMORY_FILES)):
+            return d
+    return None
+
+
+@router.post("/import_from_archive")
+async def import_from_archive(body: _ImportArchiveRequest) -> dict[str, Any]:
+    """Import a persona archive (.zip) into the active session sandbox.
+
+    Side effects mirror :func:`import_from_real` / :func:`import_builtin_preset`:
+    writes ``sandbox/config/characters.json``, copies the archive's
+    ``memory/<character>/`` into the sandbox (filling empty fact hashes), and
+    updates ``session.persona``. Read of the host filesystem only — never writes
+    outside the sandbox; the uploaded zip is extracted to a temp dir that is
+    always removed.
+
+    Errors: 404 no session, 409 SessionConflict, 400 invalid / unsafe / oversize
+    zip, 422 missing characters.json / unknown or ambiguous character.
+    """
+    _require_session()  # pre-flight 404 before touching the lock
+
+    raw_b64 = (body.archive_b64 or "").strip()
+    if not raw_b64:
+        raise HTTPException(
+            status_code=422,
+            detail={"error_type": "EmptyArchive", "message": "archive_b64 不能为空."},
+        )
+    # Tolerate a data-URL prefix (``data:application/zip;base64,....``).
+    if raw_b64.startswith("data:") and "," in raw_b64:
+        raw_b64 = raw_b64.split(",", 1)[1]
+    try:
+        data = base64.b64decode(raw_b64, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"error_type": "InvalidBase64",
+                    "message": f"archive_b64 不是合法 base64: {exc}"},
+        ) from exc
+    if not data:
+        raise HTTPException(
+            status_code=422,
+            detail={"error_type": "EmptyArchive", "message": "解码后压缩包为空."},
+        )
+    if len(data) > _MAX_ARCHIVE_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail={"error_type": "ArchiveTooLarge",
+                    "message": "上传压缩包超过上限 (200 MiB)."},
+        )
+
+    tmp_root = Path(tempfile.mkdtemp(prefix="tb_persona_zip_"))
+    try:
+        extract_dir = tmp_root / "x"
+        extract_dir.mkdir(parents=True, exist_ok=True)
+        _safe_extract_zip(data, extract_dir)
+
+        char_json = _find_shallowest(extract_dir, "characters.json")
+        if char_json is None:
+            raise HTTPException(
+                status_code=422,
+                detail={"error_type": "NoCharactersJson",
+                        "message": "压缩包内未找到 characters.json. "
+                                   "期望布局: characters.json + memory/<角色名>/..."},
+            )
+        raw = _read_json_file(char_json)
+        if raw is None:
+            raise HTTPException(
+                status_code=422,
+                detail={"error_type": "BrokenCharactersJson",
+                        "message": "压缩包内 characters.json 无法解析或不是对象."},
+            )
+        meta_path = _find_shallowest(extract_dir, "meta.json")
+        meta = _read_json_file(meta_path) if meta_path else None
+        character_name = _assert_safe_character_name(
+            _resolve_archive_character_name(
+                raw, (body.character_name or "").strip() or None, meta))
+        entry = _extract_catgirl_entry(raw, character_name)
+        if entry is None:
+            raise HTTPException(
+                status_code=422,
+                detail={"error_type": "UnknownCharacter",
+                        "message": f"characters.json 内没有角色 {character_name!r} 的条目."},
+            )
+
+        mem_src = _resolve_archive_memory_dir(extract_dir, char_json, character_name)
+        master_entry = raw.get("主人") if isinstance(raw.get("主人"), dict) else {}
+        master_name = str(master_entry.get("档案名", "") or "")
+        system_prompt = _get_reserved_system_prompt(entry)
+        archive_language = str((meta or {}).get("language") or "") or None
+
+        store = get_session_store()
+        try:
+            async with store.session_operation(
+                f"persona.import_archive:{character_name}"
+            ) as session:
+                cm = get_config_manager()
+                sb_config_dir = Path(cm.config_dir)
+                sb_memory_dir = Path(cm.memory_dir)
+
+                _write_sandbox_characters_json(
+                    sandbox_config_dir=sb_config_dir,
+                    master_entry=master_entry,
+                    character_name=character_name,
+                    character_entry=entry,
+                )
+                warnings: list[str] = []
+                if mem_src is not None:
+                    copied = _copytree_safe_with_normalization(
+                        mem_src, sb_memory_dir / character_name)
+                else:
+                    copied = []
+                    warnings.append(
+                        f"压缩包内未找到 memory/{character_name}/ 目录, "
+                        "仅导入了角色卡 (无事实 / 反思 / 对话归档).")
+
+                persona = PersonaConfig(
+                    master_name=master_name,
+                    character_name=character_name,
+                    language=archive_language
+                    or session.persona.get("language") or "zh-CN",
+                    system_prompt=system_prompt,
+                )
+                _store(session, persona)
+                session.logger.log_sync(
+                    "persona.import_from_archive",
+                    payload={
+                        "character_name": character_name,
+                        "master_name": master_name,
+                        "files_copied": copied,
+                        "source_filename": body.filename,
+                    },
+                )
+                python_logger().info(
+                    "persona import archive: %r -> sandbox %s (%d files)",
+                    body.filename or "<zip>", session.sandbox.root, len(copied),
+                )
+
+                known = [f for f in copied if f in _KNOWN_MEMORY_FILES]
+                extra = [f for f in copied if f not in _KNOWN_MEMORY_FILES]
+                _snapshot_capture(session, trigger="persona_update")
+                return {
+                    "ok": True,
+                    "character_name": character_name,
+                    "persona": persona.summary(),
+                    "copied_files": copied,
+                    "known_files": known,
+                    "extra_files": extra,
+                    "warnings": warnings,
+                    "sandbox_memory_dir": str(sb_memory_dir / character_name),
+                }
+        except SessionConflictError as exc:
+            raise _session_conflict_to_http(exc) from exc
+        except LookupError as exc:
+            raise HTTPException(
+                status_code=404, detail={"message": str(exc)}) from exc
+    finally:
+        shutil.rmtree(tmp_root, ignore_errors=True)

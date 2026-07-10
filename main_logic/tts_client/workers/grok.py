@@ -23,7 +23,7 @@ import asyncio
 
 from utils.native_voice_registry import make_native_tts_resolver, register_tts_worker_resolver
 
-from .._infra import TTS_SHUTDOWN_SENTINEL, _resample_audio, _enqueue_error
+from .._infra import TTS_SHUTDOWN_SENTINEL, _resample_audio, make_audio_jitter_buffer, _enqueue_error
 from .._telemetry import _record_tts_telemetry
 from utils.logger_config import get_module_logger
 
@@ -90,6 +90,9 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
         receive_task = None
         text_done_sent = False
         resampler = soxr.ResampleStream(24000, 48000, 1, dtype='float32')
+        # 与 step/qwen 对偶：xAI 流式音频首包后第一个 inter-chunk gap 偏大，用共享
+        # jitter buffer 攒首包领先量盖过开头几个字的 jitter。
+        audio_jitter = make_audio_jitter_buffer(response_queue)
         # 当 reconnect 失败时缓冲尚未发出的文本 chunks（同一 utterance）。下一次
         # 同 sid chunk 到达并 reconnect 成功后，缓冲内容会拼到第一条 text.delta
         # 前一起发送 —— 避免触发 reconnect 的那一条 chunk 在 continue 后丢失，
@@ -110,7 +113,7 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                     if isinstance(message, bytes):
                         try:
                             audio_array = np.frombuffer(message, dtype=np.int16)
-                            response_queue.put(_resample_audio(audio_array, 24000, 48000, resampler))
+                            audio_jitter.append(_resample_audio(audio_array, 24000, 48000, resampler))
                         except Exception as e:
                             logger.error(f"xAI TTS 二进制音频解码失败: {e}")
                         continue
@@ -129,11 +132,12 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                         try:
                             audio_bytes = base64.b64decode(audio_b64)
                             audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
-                            response_queue.put(_resample_audio(audio_array, 24000, 48000, resampler))
+                            audio_jitter.append(_resample_audio(audio_array, 24000, 48000, resampler))
                         except Exception as e:
                             logger.error(f"xAI TTS 音频解码失败: {e}")
                     elif event_type == "audio.done":
-                        pass
+                        # 本轮音频结束，放掉缓冲区里不足 steady 阈值的尾音
+                        audio_jitter.flush()
                     elif event_type == "error":
                         logger.error(f"xAI TTS server error: {event}")
                         _enqueue_error(response_queue, event)
@@ -186,6 +190,7 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                     text_done_sent = False
                     pending_text.clear()
                     pending_text_sid = None
+                    audio_jitter.reset()  # 打断：丢弃未放出的缓冲音频
                     continue
 
                 if sid is None:
@@ -201,6 +206,7 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                             current_speech_id = pending_text_sid
                             text_done_sent = False
                             resampler.clear()
+                            audio_jitter.reset()
                             logger.info("xAI TTS last-chance reconnect on utterance end succeeded")
                         except Exception as e:
                             logger.warning(f"xAI TTS last-chance reconnect 失败，pending 丢弃: {e}")
@@ -229,6 +235,11 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                                 try:
                                     ws = await websockets.connect(tts_url, additional_headers=headers, close_timeout=0.5)
                                     receive_task = asyncio.create_task(receive_messages())
+                                    # 换了新 receive_task：与 last-chance reconnect 一致，reset 掉旧连接
+                                    # 里未 flush 的残留音频，避免拼到重试音频前面（ws 原本存活、上一轮
+                                    # 已 append 过的路径才会非空；走过 last-chance 的路径 buffer 已空）。
+                                    resampler.clear()
+                                    audio_jitter.reset()
                                     for delta in _grok_chunk_text_delta("".join(pending_text)):
                                         await ws.send(json.dumps({"type": "text.delta", "delta": delta}))
                                     logger.info("flush pending_text 重连重试成功")
@@ -290,6 +301,7 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                     current_speech_id = sid
                     text_done_sent = False
                     resampler.clear()
+                    audio_jitter.reset()  # 新轮次重置 jitter buffer 领先量
 
                 if not tts_text or not tts_text.strip():
                     continue

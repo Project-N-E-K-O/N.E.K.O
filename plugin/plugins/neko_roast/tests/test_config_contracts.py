@@ -6,16 +6,17 @@ import pytest
 from plugin.plugins.neko_roast.adapters.bili_auth_service import BiliAuthService
 from plugin.plugins.neko_roast.adapters.neko_dispatcher import NekoDispatcher
 from plugin.plugins.neko_roast.core.contracts import InteractionRequest, RoastConfig, SafetyDecision, ViewerEvent, ViewerIdentity, ViewerProfile, utc_now_iso
+from plugin.plugins.neko_roast.core.contracts_public import public_text
 from plugin.plugins.neko_roast.core.module_registry import ModuleRegistry
 from plugin.plugins.neko_roast.core.permission_gate import PermissionGate
 from plugin.plugins.neko_roast.core.pipeline import RoastPipeline
 from plugin.plugins.neko_roast.modules.bili_identity import BiliIdentityModule
 
 
-def test_roast_config_defaults_to_dry_run_for_real_room_safety():
-    assert RoastConfig().dry_run is True
-    assert RoastConfig.from_mapping({}).dry_run is True
-    assert RoastConfig.from_mapping(None).dry_run is True
+def test_roast_config_defaults_to_real_output_with_live_disabled():
+    assert RoastConfig().dry_run is False
+    assert RoastConfig.from_mapping({}).dry_run is False
+    assert RoastConfig.from_mapping(None).dry_run is False
 
 
 def test_roast_config_preserves_explicit_dry_run_false_for_real_output_window():
@@ -24,6 +25,41 @@ def test_roast_config_preserves_explicit_dry_run_false_for_real_output_window():
 
 def test_roast_config_preserves_explicit_avatar_timeout_zero():
     assert RoastConfig.from_mapping({"avatar_fetch_timeout_seconds": 0}).avatar_fetch_timeout_seconds == 0
+
+
+def test_roast_config_accepts_whole_number_float_int_fields():
+    config = RoastConfig.from_mapping(
+        {
+            "rate_limit_seconds": 30.0,
+            "queue_limit": 7.0,
+            "recent_limit": 12.5,
+        }
+    )
+
+    assert config.rate_limit_seconds == 30
+    assert config.queue_limit == 7
+    assert config.recent_limit == 30
+
+
+def test_public_text_truncation_respects_max_len():
+    assert public_text("abcdef", max_len=5) == "ab..."
+    assert public_text("abcdef", max_len=3) == "..."
+    assert public_text("abcdef", max_len=2) == ".."
+    assert public_text("abcdef", max_len=0) == ""
+
+
+def test_viewer_event_public_projection_sanitizes_trace_and_drops_raw():
+    projected = ViewerEvent(
+        uid="1",
+        nickname="tester",
+        trace_id="token=secret",
+        raw={"token": "secret", "event_type": "danmaku"},
+    ).to_dict()
+
+    assert "raw" not in projected
+    assert projected["trace_id"] == "[redacted]"
+    assert projected["event_type"] == "danmaku"
+    assert "token" not in projected
 
 
 def test_utc_now_iso_returns_timezone_aware_utc_timestamp():

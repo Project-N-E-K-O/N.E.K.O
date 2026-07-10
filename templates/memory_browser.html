@@ -13,6 +13,8 @@
     <link rel="stylesheet" href="/static/css/window_controls.css?v={{ static_asset_version }}">
     <link rel="stylesheet" href="/static/css/dark-mode.css?v={{ static_asset_version }}">
     <link rel="stylesheet" href="/static/css/yui-guide.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/libs/driver.min.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/css/tutorial-styles.css?v={{ static_asset_version }}">
     <script src="/static/theme-manager.js?v={{ static_asset_version }}"></script>
     <script src="/static/js/window_controls.js?v={{ static_asset_version }}" defer></script>
 </head>
@@ -104,6 +106,7 @@
                                         <button type="button" class="tutorial-cascader-option" data-tutorial-page="current_personality" data-i18n="memory.tutorialPageCurrentPersonality">当前角色性格</button>
                                     </div>
                                     <div class="tutorial-cascader-column tutorial-cascader-day-column" role="listbox" aria-label="主页七日新手教程" data-i18n-aria="memory.tutorialHomeDayColumn" hidden>
+                                        <button type="button" class="tutorial-cascader-option" data-tutorial-home-all="true" data-i18n="memory.tutorialHomeAllReset">全部重置</button>
                                         <button type="button" class="tutorial-cascader-option" data-tutorial-day="1">第 1 天</button>
                                         <button type="button" class="tutorial-cascader-option" data-tutorial-day="2">第 2 天</button>
                                         <button type="button" class="tutorial-cascader-option" data-tutorial-day="3">第 3 天</button>
@@ -222,7 +225,9 @@
     <script src="/static/tutorial/core/round-prelude-controller.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/core/lifecycle-state-store.js?v={{ static_asset_version }}"></script>
     <!-- 通用教程管理器 -->
+    <script src="/static/libs/driver.min.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/core/universal-manager.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/page-tutorial-manager.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/avatar/floating-guide-reset.js?v={{ static_asset_version }}"></script>
 
     <!-- 初始化 -->
@@ -230,6 +235,9 @@
         document.addEventListener('DOMContentLoaded', function() {
             if (typeof initUniversalTutorialManager === 'function') {
                 initUniversalTutorialManager();
+            }
+            if (typeof initPageTutorialManager === 'function') {
+                initPageTutorialManager();
             }
         });
     </script>

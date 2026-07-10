@@ -447,6 +447,7 @@ class FactDedupResolver:
                 api_config['base_url'], api_config['api_key'],
                 timeout=60, max_retries=0,
                 max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous so the dedup-decisions JSON isn't truncated
+                provider_type=api_config.get('provider_type'),
             )
             try:
                 resp = await llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET  # dedup prompt assembled from FACT_DEDUP_BATCH_LIMIT-capped fact pairs.

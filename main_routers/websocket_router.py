@@ -44,6 +44,10 @@ from .shared_state import (
     get_session_id,
 )
 from .game_router import is_game_route_active, route_external_stream_message
+from utils.icebreaker_route_state import (
+    finalize_icebreaker_route,
+    get_active_icebreaker_route_session_id,
+)
 
 router = APIRouter(tags=["websocket"])
 logger = get_module_logger(__name__, "Main")
@@ -509,8 +513,21 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
         async with _lock:
             session_id = get_session_id()
             is_current = session_id.get(lanlan_name) == this_session_id
+            icebreaker_session_id = ""
+            if is_current:
+                icebreaker_session_id = get_active_icebreaker_route_session_id(lanlan_name)
             if is_current:
                 session_id.pop(lanlan_name, None)
+
+        if is_current and icebreaker_session_id:
+            try:
+                finalize_icebreaker_route(
+                    lanlan_name,
+                    session_id=icebreaker_session_id,
+                    reason="websocket_disconnect",
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[icebreaker] finalize on ws disconnect failed: %s", exc)
 
         if is_current and lanlan_name in session_manager:
             await session_manager[lanlan_name].cleanup(expected_websocket=websocket)

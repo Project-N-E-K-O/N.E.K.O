@@ -563,7 +563,9 @@ class StudyCompanionPlugin(
             window_seconds=self._cfg.awareness.context_window_minutes * 60,
             snapshot_interval=self._cfg.awareness.snapshot_interval_seconds,
         )
-        self._last_awareness_push_at = 0.0
+        self._last_awareness_push_at = (
+            time.monotonic() - float(self._cfg.awareness.push_to_llm_interval_seconds)
+        )
         self._awareness_idle_ticks = 0
         self._consecutive_os_read_failures = 0
         self._awareness_task = asyncio.create_task(self._run_awareness_loop())

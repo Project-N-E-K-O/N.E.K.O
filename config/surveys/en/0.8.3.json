@@ -1,0 +1,40 @@
+{
+  "survey_version": "0.8.3",
+  "title": "You've stuck with us this far — tell the Dev Nekos what you think",
+  "intro": "One minute to help us do better. Everything is optional, and you can skip anytime.",
+  "questions": [
+    {
+      "id": "keep_one",
+      "type": "single",
+      "label": "If the team could only focus on polishing one feature next, which would you most want it to be?",
+      "options": [
+        { "value": "chat", "label": "Text chat" },
+        { "value": "voice", "label": "Voice chat" },
+        { "value": "proactive", "label": "Proactive messages" },
+        { "value": "games", "label": "Mini-games / interaction" },
+        { "value": "appearance", "label": "Appearance / outfits" }
+      ]
+    },
+    {
+      "id": "drop_one",
+      "type": "single",
+      "label": "If we had to pause updates on one feature to save effort, which would you miss the least?",
+      "options": [
+        { "value": "chat", "label": "Text chat" },
+        { "value": "voice", "label": "Voice chat" },
+        { "value": "proactive", "label": "Proactive messages" },
+        { "value": "games", "label": "Mini-games / interaction" },
+        { "value": "appearance", "label": "Appearance / outfits" }
+      ]
+    },
+    {
+      "id": "suggestion",
+      "type": "text",
+      "label": "Anything else you'd like to tell us? Gripes or wishes welcome.",
+      "placeholder": "e.g. what's made you want to close it lately, a feature you'd most like improved, or just something you'd say to the dev kittens… (optional)",
+      "placeholder_from": "keep_one",
+      "placeholder_template": "Which direction would you most like \"{label}\" to go? Other thoughts are welcome too. (optional)",
+      "max_length": 500
+    }
+  ]
+}

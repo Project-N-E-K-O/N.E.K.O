@@ -1,0 +1,40 @@
+{
+  "survey_version": "0.8.3",
+  "title": "여기까지 함께 와줘서 고마워, 개발냥이가 네 생각을 듣고 싶어",
+  "intro": "1분만 투자해서 더 나아지게 도와줘. 모두 선택 사항이고, 언제든 건너뛸 수 있어.",
+  "questions": [
+    {
+      "id": "keep_one",
+      "type": "single",
+      "label": "앞으로 개발팀이 딱 하나의 기능만 집중해서 다듬을 수 있다면, 어떤 걸 가장 원해?",
+      "options": [
+        { "value": "chat", "label": "텍스트 대화" },
+        { "value": "voice", "label": "음성 대화" },
+        { "value": "proactive", "label": "먼저 말 걸기" },
+        { "value": "games", "label": "미니게임·상호작용" },
+        { "value": "appearance", "label": "외형·코디" }
+      ]
+    },
+    {
+      "id": "drop_one",
+      "type": "single",
+      "label": "여력이 부족해서 한 기능의 업데이트를 멈춰야 한다면, 어떤 게 가장 영향이 적어?",
+      "options": [
+        { "value": "chat", "label": "텍스트 대화" },
+        { "value": "voice", "label": "음성 대화" },
+        { "value": "proactive", "label": "먼저 말 걸기" },
+        { "value": "games", "label": "미니게임·상호작용" },
+        { "value": "appearance", "label": "외형·코디" }
+      ]
+    },
+    {
+      "id": "suggestion",
+      "type": "text",
+      "label": "그 밖에 하고 싶은 말 있어? 불만이든 바람이든 다 환영이야.",
+      "placeholder": "예를 들면 요즘 끄고 싶었던 순간, 가장 개선됐으면 하는 기능, 아니면 그냥 개발냥이에게 한마디라도……（선택）",
+      "placeholder_from": "keep_one",
+      "placeholder_template": "'{label}', 어떤 방향으로 다듬으면 좋을까? 다른 얘기도 환영이야～（선택）",
+      "max_length": 500
+    }
+  ]
+}

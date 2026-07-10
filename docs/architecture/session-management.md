@@ -65,4 +65,4 @@ The session manager coordinates with the agent system through callbacks:
 
 ## Translation support
 
-`translate_if_needed()` provides automatic translation when the user's language differs from the character's configured language. This uses the `TranslationService` which falls back through googletrans → translatepy → LLM-based translation.
+Automatic translation (when the user's language differs from the character's configured language) is performed by `TranslationService` (in `utils/language_utils.py`), which falls back through googletrans → translatepy → LLM-based translation. This runs in the REST layer (e.g. `main_routers/characters_router.py`, which translates character-profile fields), not as an `LLMSessionManager` method.

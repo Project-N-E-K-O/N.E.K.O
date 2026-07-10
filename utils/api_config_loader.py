@@ -148,6 +148,7 @@ def _convert_assist_api_profile(json_profile: Dict[str, Any]) -> Dict[str, Any]:
         'agent_model': 'AGENT_MODEL',
         'audio_api_key': 'AUDIO_API_KEY',
         'openrouter_api_key': 'OPENROUTER_API_KEY',
+        'provider_type': 'PROVIDER_TYPE',
     }
     
     for json_key, python_key in field_mapping.items():

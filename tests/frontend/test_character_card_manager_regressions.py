@@ -446,6 +446,76 @@ def test_character_card_manager_voice_dropdown_groups_by_provider_source(
 
 
 @pytest.mark.frontend
+def test_character_card_manager_localizes_free_api_native_voice_provider_label(
+    mock_page: Page,
+    running_server: str,
+):
+    """Backend catalog labels can be Chinese; the character voice picker localizes the provider name."""
+    _open_character_card_manager(mock_page, running_server)
+
+    state = mock_page.evaluate(
+        """
+        async () => {
+            window.t = (key) => ({
+                'voice.providerFreeApi': 'Free API',
+                'voice.providerFree': 'Free',
+                'voice.providerUnknown': 'Other',
+                'voice.sourcePreset': 'Preset',
+                'voice.sourceClone': 'Clone',
+                'voice.sourceDesign': 'Voice Design',
+                'voice.nativeVoice.qingchunshaonv': 'Youthful Girl',
+                'voice.nativeVoice.wenrounansheng': 'Gentle Male Voice'
+            }[key] || key);
+
+            const originalFetch = window.fetch.bind(window);
+            window.fetch = async (input, init) => {
+                const url = typeof input === 'string' ? input : input.url;
+                const path = new URL(url, window.location.origin).pathname;
+                if (path === '/api/characters/voices') {
+                    return new Response(JSON.stringify({
+                        voices: {},
+                        free_voices: {},
+                        native_voices: {
+                            qingchunshaonv: {
+                                prefix: '青春少女',
+                                provider: 'free',
+                                provider_label: '免费 API'
+                            },
+                            wenrounansheng: {
+                                prefix: '温柔男声',
+                                provider: 'free',
+                                provider_label: '免费 API'
+                            }
+                        }
+                    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+                }
+                if (path === '/api/characters/custom_tts_voices') {
+                    return new Response(JSON.stringify({ success: true, voices: [] }), {
+                        status: 200, headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+                return originalFetch(input, init);
+            };
+
+            const select = document.createElement('select');
+            document.body.appendChild(select);
+            await _loadPanelVoices(select, '');
+            const labels = Array.from(select.querySelectorAll('optgroup')).map(group => group.label);
+            const optionTexts = Array.from(select.querySelectorAll('option')).map(option => option.textContent);
+            return { labels, optionTexts };
+        }
+        """
+    )
+
+    assert "Free API · Preset" in state["labels"]
+    assert all("免费 API" not in label for label in state["labels"])
+    assert "Youthful Girl" in state["optionTexts"]
+    assert "Gentle Male Voice" in state["optionTexts"]
+    assert "青春少女" not in state["optionTexts"]
+    assert "温柔男声" not in state["optionTexts"]
+
+
+@pytest.mark.frontend
 def test_character_card_manager_creates_tag_scroll_buttons_for_dynamic_wrapper(
     mock_page: Page,
     running_server: str,
@@ -647,6 +717,58 @@ def test_character_card_manager_renders_and_opens_cards_when_model_scan_never_re
     assert state["panelOpen"] is True
     assert state["profileName"] == "模拟猫娘"
     assert state["saveButtonExists"] is True
+
+
+@pytest.mark.frontend
+def test_character_card_manager_localizes_master_profile_builtin_field_labels(
+    mock_page: Page,
+    running_server: str,
+):
+    _open_character_card_manager(mock_page, running_server)
+
+    state = mock_page.evaluate(
+        """
+        () => {
+            window.t = (key) => {
+                const translations = {
+                    'character.profileName': 'Profile Name',
+                    'character.required': '*',
+                    'character.rename': 'Rename',
+                    'character.renameMasterTitle': 'Rename My Profile',
+                    'character.deleteField': 'Delete Field',
+                    'character.addMasterField': 'Add Field',
+                    'character.saveMaster': 'Save My Profile',
+                    'character.cancel': 'Cancel',
+                    'characterProfile.labels.昵称': 'Nickname',
+                    'characterProfile.labels.性别': 'Gender'
+                };
+                return Object.prototype.hasOwnProperty.call(translations, key) ? translations[key] : key;
+            };
+
+            renderMasterForm({
+                '档案名': 'Master',
+                '昵称': 'Yuki',
+                '性别': 'Female',
+                '喜欢的食物': 'cookies'
+            });
+
+            const rows = Array.from(document.querySelectorAll('#master-form .field-row-wrapper'));
+            return rows.map(row => ({
+                label: row.querySelector('label')?.textContent || '',
+                name: row.querySelector('input, textarea')?.getAttribute('name') || '',
+                value: row.querySelector('input, textarea')?.value || ''
+            }));
+        }
+        """
+    )
+
+    by_name = {row["name"]: row for row in state}
+    assert by_name["档案名"]["label"].startswith("Profile Name")
+    assert by_name["昵称"]["label"] == "Nickname"
+    assert by_name["性别"]["label"] == "Gender"
+    assert by_name["喜欢的食物"]["label"] == "喜欢的食物"
+    assert by_name["昵称"]["value"] == "Yuki"
+    assert by_name["喜欢的食物"]["value"] == "cookies"
 
 
 @pytest.mark.frontend

@@ -1,6 +1,6 @@
 # WebSocket 消息类型
 
-所有消息均为 JSON 文本帧。
+除音频负载外，消息均为 JSON 文本帧。对于音频，服务器先发送一条 `audio_chunk` JSON 头部帧，随后发送一帧独立的原始二进制帧承载 PCM 字节（详见下文 `audio_chunk` 一节）。
 
 ## 客户端 → 服务器
 
@@ -73,27 +73,32 @@
 
 ## 服务器 → 客户端
 
-### `text`
+### `gemini_response`
 
 来自 LLM 的流式文本响应。
 
 ```json
 {
-  "type": "text",
-  "text": "Hi there! How can I help you?"
+  "type": "gemini_response",
+  "text": "Hi there! How can I help you?",
+  "isNewMessage": true,
+  "turn_id": "<turn id>",
+  "request_id": "<request id>"
 }
 ```
 
-### `audio`
+### `audio_chunk`
 
-音频响应（TTS 输出或 LLM 直接音频）。
+音频响应（TTS 输出或 LLM 直接音频）。服务器先发送一条 JSON 头部消息，紧接着以独立的二进制 WebSocket 帧发送原始 PCM 音频字节（并非内嵌 base64）。`speech_id` 用于打断（barge-in）时精确匹配本轮语音。
 
 ```json
 {
-  "type": "audio",
-  "audio_data": "<base64 encoded PCM 48kHz>"
+  "type": "audio_chunk",
+  "speech_id": "<本轮语音的 speech_id>"
 }
 ```
+
+随后是一帧二进制音频数据（原始 PCM）；客户端在收到上述头部消息后读取下一帧二进制数据进行解码播放。
 
 ### `status`
 

@@ -100,14 +100,26 @@
             let narrationPromise = Promise.resolve();
             const legacyScene = scene || {};
             const audio = timelineScene && timelineScene.audio ? timelineScene.audio : {};
+            const resolveText = () => {
+                if (typeof director.resolveAvatarFloatingSceneText === 'function') {
+                    return director.resolveAvatarFloatingSceneText(legacyScene) || audio.text || legacyScene.text || '';
+                }
+                return audio.text || legacyScene.text || '';
+            };
+            const resolveVoiceKey = (fallbackVoiceKey) => {
+                if (typeof director.resolveAvatarFloatingSceneVoiceKey === 'function') {
+                    return director.resolveAvatarFloatingSceneVoiceKey(legacyScene)
+                        || fallbackVoiceKey
+                        || audio.voiceKey
+                        || legacyScene.voiceKey
+                        || '';
+                }
+                return fallbackVoiceKey || audio.voiceKey || legacyScene.voiceKey || '';
+            };
             return {
                 play: (voiceKey, audioOptions) => {
-                    const text = audio.text || (
-                        typeof director.resolveAvatarFloatingSceneText === 'function'
-                            ? director.resolveAvatarFloatingSceneText(legacyScene)
-                            : ''
-                    );
-                    const resolvedVoiceKey = voiceKey || audio.voiceKey || legacyScene.voiceKey || '';
+                    const text = resolveText();
+                    const resolvedVoiceKey = resolveVoiceKey(voiceKey);
                     if (typeof director.speakGuideLine === 'function' && (text || resolvedVoiceKey)) {
                         narrationPromise = Promise.resolve(director.speakGuideLine(text, {
                             voiceKey: resolvedVoiceKey,
@@ -125,7 +137,7 @@
                 waitForEnd: () => narrationPromise,
                 getDurationMs: (voiceKey) => {
                     if (typeof director.getGuideVoiceDurationMs === 'function') {
-                        return director.getGuideVoiceDurationMs(voiceKey || audio.voiceKey || '', '');
+                        return director.getGuideVoiceDurationMs(resolveVoiceKey(voiceKey || audio.voiceKey), '');
                     }
                     if (Number.isFinite(audio.durationMs)) {
                         return audio.durationMs;
@@ -135,10 +147,10 @@
                 resolveCueMs: (voiceKey, cueName) => {
                     if (typeof director.resolveGuideVoiceCueTargetMs === 'function') {
                         return director.resolveGuideVoiceCueTargetMs(
-                            voiceKey || audio.voiceKey || '',
+                            resolveVoiceKey(voiceKey || audio.voiceKey),
                             cueName,
                             0,
-                            audio.text || legacyScene.text || ''
+                            resolveText()
                         );
                     }
                     return 0;
@@ -146,11 +158,35 @@
             };
         }
 
+        clearSuppressedTimelineSpotlight(scene) {
+            const director = this.director;
+            if (!scene || scene.spotlight !== false || !director) {
+                return false;
+            }
+
+            if (director.overlay && typeof director.overlay.clearActionSpotlight === 'function') {
+                director.overlay.clearActionSpotlight();
+            }
+            if (director.overlay && typeof director.overlay.clearPersistentSpotlight === 'function') {
+                director.overlay.clearPersistentSpotlight();
+            }
+            if (typeof director.clearExternalizedChatSpotlightOnly === 'function') {
+                director.clearExternalizedChatSpotlightOnly();
+            } else if (
+                director.interactionTakeover
+                && typeof director.interactionTakeover.setExternalizedChatSpotlight === 'function'
+            ) {
+                director.interactionTakeover.setExternalizedChatSpotlight('');
+            }
+            return true;
+        }
+
         async playTimelineScene(scene, day, index, total, context) {
             const surfaceReady = await this.prepareGenericSceneSurface(scene, context);
             if (!surfaceReady) {
                 return false;
             }
+            this.clearSuppressedTimelineSpotlight(scene);
             const timelineScene = this.normalizeSceneToTimeline(scene);
             if (!timelineScene) {
                 return false;
@@ -228,7 +264,7 @@
             };
         }
 
-        async playScene(scene, day, index, total) {
+        async playScene(scene, day, index, total, roundContext = {}) {
             const director = this.director;
             if (
                 director.scenePausedForResistance
@@ -243,6 +279,12 @@
             const previousSceneId = director.currentSceneId;
             director.currentSceneId = scene.id;
             director.currentStep = director.getAvatarFloatingInterruptStep(scene);
+            if (typeof director.syncAvatarFloatingToolbarForScene === 'function') {
+                director.syncAvatarFloatingToolbarForScene(scene, scene.id || 'scene');
+            }
+            if (typeof director.syncDay4LockSpotlightSafeAreaForScene === 'function') {
+                director.syncDay4LockSpotlightSafeAreaForScene(scene);
+            }
             const isFirstDailyScene = index === 0;
             const preserveExternalizedChatGuideTarget = !!(
                 director.shouldPreserveExternalizedChatCursor(previousSceneId, scene)
@@ -257,8 +299,22 @@
                 director.cursor.cancel();
                 director.cursorAnchorStore.clear();
             }
+            const shouldClearExternalizedChatCursor = !!(
+                scene && scene.clearExternalizedChatCursorOnEnter === true
+            );
             director.clearSceneTimers();
             director.overlay.setAngry(false);
+            if (
+                shouldClearExternalizedChatCursor
+                && director.isHomeChatExternalized()
+                && !preserveExternalizedChatGuideTarget
+                && !preserveIntroExternalizedChatGuideTarget
+            ) {
+                director.clearExternalizedChatGuideTarget({
+                    clearCursor: true,
+                    preservePcOverlayCursor: true
+                });
+            }
             director.clearSceneExtraSpotlights();
             director.clearAllVirtualSpotlights();
             director.clearSpotlightGeometryHints();
@@ -267,8 +323,12 @@
                 director.isHomeChatExternalized()
                 && !preserveExternalizedChatGuideTarget
                 && !preserveIntroExternalizedChatGuideTarget
+                && !shouldClearExternalizedChatCursor
             ) {
-                director.clearExternalizedChatGuideTarget();
+                director.clearExternalizedChatGuideTarget({
+                    clearCursor: shouldClearExternalizedChatCursor,
+                    preservePcOverlayCursor: shouldClearExternalizedChatCursor
+                });
             }
             this.applyFirstDailySceneIntroCursorPrelude(scene, {
                 isFirstDailyScene,
@@ -282,7 +342,8 @@
                     previousSceneId,
                     isFirstDailyScene,
                     preserveExternalizedChatGuideTarget,
-                    preserveIntroExternalizedChatGuideTarget
+                    preserveIntroExternalizedChatGuideTarget,
+                    revealPrepared: roundContext.revealPrepared
                 });
             }
 
@@ -306,7 +367,8 @@
                 previousSceneId,
                 isFirstDailyScene,
                 preserveExternalizedChatGuideTarget,
-                preserveIntroExternalizedChatGuideTarget
+                preserveIntroExternalizedChatGuideTarget,
+                revealPrepared: roundContext.revealPrepared
             });
         }
 
@@ -420,6 +482,12 @@
                 ? director.getExternalizedChatTargetKind(scene.persistent, scene)
                 : '';
             const shouldShowSceneSpotlight = scene.spotlight !== false;
+            const sceneSpotlightVariant = scene && typeof scene.spotlightVariant === 'string'
+                ? scene.spotlightVariant.trim()
+                : '';
+            const externalizedSpotlightOptions = {
+                variant: sceneSpotlightVariant
+            };
             let persistentTarget = null;
             let primaryTarget = null;
             let secondaryTarget = null;
@@ -427,7 +495,10 @@
                 if (typeof director.clearHomeSpotlightsForExternalizedChat === 'function') {
                     director.clearHomeSpotlightsForExternalizedChat();
                 }
-                director.interactionTakeover.setExternalizedChatSpotlight(introExternalizedChatSpotlightKind);
+                director.interactionTakeover.setExternalizedChatSpotlight(
+                    introExternalizedChatSpotlightKind,
+                    externalizedSpotlightOptions
+                );
                 if (typeof director.setHomePcCursorOutputSuppressedForExternalizedChat === 'function') {
                     director.setHomePcCursorOutputSuppressedForExternalizedChat(true);
                 }
@@ -460,11 +531,12 @@
             } else if (externalizedSceneTargetKind) {
                 const shouldSkipExternalizedSceneCursor = !!(
                     scene
-                    && scene.id === 'day3_galgame_entry'
+                    && scene.id === 'day2_galgame_entry'
                     && scene.operation === 'rotate-galgame-tool-into-center'
                 );
                 const externalizedCursorOptions = {
-                    effect: director.getExternalizedChatCursorEffect(scene)
+                    effect: director.getExternalizedChatCursorEffect(scene),
+                    spotlightVariant: sceneSpotlightVariant
                 };
                 if (scene && scene.cursorAction === 'click') {
                     externalizedCursorOptions.effect = 'move';
@@ -475,6 +547,9 @@
                 }
                 if (Number.isFinite(scene.cursorWobbleDurationMs)) {
                     externalizedCursorOptions.effectDurationMs = Math.max(0, Math.floor(scene.cursorWobbleDurationMs));
+                }
+                if (scene.freezeCursorAfterMove === true) {
+                    externalizedCursorOptions.freezePoint = true;
                 }
                 const shouldPreferExternalizedPrimaryKind = !!(
                     scene
@@ -501,7 +576,10 @@
                         if (typeof director.clearHomeSpotlightsForExternalizedChat === 'function') {
                             director.clearHomeSpotlightsForExternalizedChat();
                         }
-                        director.interactionTakeover.setExternalizedChatSpotlight(externalizedSpotlightKind);
+                        director.interactionTakeover.setExternalizedChatSpotlight(
+                            externalizedSpotlightKind,
+                            externalizedSpotlightOptions
+                        );
                     }
                 } else {
                     director.clearExternalizedChatSpotlightOnly();
@@ -524,19 +602,14 @@
                 });
                 primaryTarget = await director.resolveAvatarFloatingTarget(scene, 'primary');
                 secondaryTarget = await director.resolveAvatarFloatingTarget(scene, 'secondary');
-                const day2CharacterSettingsPersistentTarget = director.getDay2CharacterSettingsPersistenceTarget(scene.id);
-                const day4SettingsPersistentTarget = director.getDay4SettingsButtonPersistenceTarget(scene.id);
                 const highlightConfig = {
-                    key: scene.id,
+                    key: scene.spotlightKey || scene.id,
                     persistent: shouldShowSceneSpotlight ? persistentTarget : null,
                     primary: shouldShowSceneSpotlight ? primaryTarget : null,
                     secondary: shouldShowSceneSpotlight ? secondaryTarget : null
                 };
-                if (typeof day2CharacterSettingsPersistentTarget !== 'undefined') {
-                    highlightConfig.persistent = day2CharacterSettingsPersistentTarget;
-                }
-                if (typeof day4SettingsPersistentTarget !== 'undefined') {
-                    highlightConfig.persistent = day4SettingsPersistentTarget;
+                if (typeof director.applyAvatarFloatingPersistenceOverride === 'function') {
+                    director.applyAvatarFloatingPersistenceOverride(highlightConfig, scene.id);
                 }
                 director.applyAvatarFloatingSceneSpotlightVariant(scene, primaryTarget);
                 director.applyGuideHighlights(highlightConfig);
@@ -571,7 +644,8 @@
                     sceneRunId,
                     voiceKey,
                     text,
-                    narrationStartedAt
+                    narrationStartedAt,
+                    scene.petalCueBeforeAudioEndMs
                 ).catch((error) => {
                     console.warn('[YuiGuide] 悬浮窗教程每日花瓣转场失败，继续流程:', scene.id, error);
                 })
@@ -654,19 +728,14 @@
                     result: sceneRunId === director.sceneRunId && !director.isStopping()
                 };
             }
-            const day2CharacterSettingsPersistentTarget = director.getDay2CharacterSettingsPersistenceTarget(scene.id);
-            const day4SettingsPersistentTarget = director.getDay4SettingsButtonPersistenceTarget(scene.id);
             const highlightConfig = {
-                key: scene.id,
+                key: scene.spotlightKey || scene.id,
                 persistent: persistentTarget,
                 primary: primaryTarget,
                 secondary: secondaryTarget
             };
-            if (typeof day2CharacterSettingsPersistentTarget !== 'undefined') {
-                highlightConfig.persistent = day2CharacterSettingsPersistentTarget;
-            }
-            if (typeof day4SettingsPersistentTarget !== 'undefined') {
-                highlightConfig.persistent = day4SettingsPersistentTarget;
+            if (typeof director.applyAvatarFloatingPersistenceOverride === 'function') {
+                director.applyAvatarFloatingPersistenceOverride(highlightConfig, scene.id);
             }
             director.applyAvatarFloatingSceneSpotlightVariant(scene, primaryTarget);
             director.applyGuideHighlights(highlightConfig);
@@ -737,23 +806,9 @@
 
         async applySettledCleanupHighlight(scene) {
             const director = this.director;
-            const day2CharacterSettingsPersistentTarget = director.getDay2CharacterSettingsPersistenceTarget(scene.id);
-            const day4SettingsPersistentTarget = director.getDay4SettingsButtonPersistenceTarget(scene.id);
-            const highlightConfig = {
-                key: scene.id + '-settled',
-                persistent: await director.resolveAvatarFloatingPersistent(scene, {
-                    fallbackToChatWindow: false
-                }),
-                primary: await director.resolveAvatarFloatingTarget(scene, 'primary'),
-                secondary: await director.resolveAvatarFloatingTarget(scene, 'secondary')
-            };
-            if (typeof day2CharacterSettingsPersistentTarget !== 'undefined') {
-                highlightConfig.persistent = day2CharacterSettingsPersistentTarget;
+            if (typeof director.applyAvatarFloatingSettledCleanupHighlight === 'function') {
+                await director.applyAvatarFloatingSettledCleanupHighlight(scene);
             }
-            if (typeof day4SettingsPersistentTarget !== 'undefined') {
-                highlightConfig.persistent = day4SettingsPersistentTarget;
-            }
-            director.applyGuideHighlights(highlightConfig);
         }
 
         async finishGenericScene(scene, index, total, context, narration, playback) {
@@ -842,13 +897,13 @@
                 await director.ensureAvatarFloatingGuideSurfaceReady(round);
             }
             director.setGuideChatInputLocked(true, 'avatar-floating-guide-day' + roundNumber);
-            if (roundNumber === 3) {
-                director.setCompactToolWheelIndexForGuide(0, 'avatar-floating-guide-day3-entry-reset');
+            if (roundNumber === 2) {
+                director.setCompactToolWheelIndexForGuide(0, 'avatar-floating-guide-day2-entry-reset');
             }
             if (isDay1Round) {
                 director.overlay.clearPersistentSpotlight();
                 director.overlay.clearActionSpotlight();
-            } else if (roundNumber === 3) {
+            } else if (roundNumber === 2) {
                 if (director.isHomeChatExternalized()) {
                     if (
                         director.interactionTakeover
@@ -862,21 +917,50 @@
             } else {
                 director.highlightChatWindow();
             }
-            return await director.withLookAt({
-                isCancelled: () => director.isStopping(),
-                completeReason: roundId + '_complete',
-                startFailureMessage: '[YuiGuide] Avatar floating cursor look-at startup failed:'
-            }, async () => {
+            let day1LookAtHandle = null;
+            let day1LookAtPromise = null;
+            const startDay1LookAt = () => {
+                if (!isDay1Round || day1LookAtPromise || day1LookAtHandle) {
+                    return;
+                }
+                day1LookAtPromise = director.ensurePersistentGhostCursorLookAtPerformance({
+                    isCancelled: () => director.isStopping()
+                }).then((handle) => {
+                    day1LookAtHandle = handle || null;
+                    return day1LookAtHandle;
+                }).catch((error) => {
+                    console.warn('[YuiGuide] Avatar floating cursor look-at startup failed:', error);
+                    return null;
+                });
+            };
+            const stopDay1LookAt = async () => {
+                if (!day1LookAtPromise && !day1LookAtHandle) {
+                    return;
+                }
+                if (day1LookAtPromise && !day1LookAtHandle) {
+                    day1LookAtHandle = await day1LookAtPromise;
+                }
+                if (day1LookAtHandle) {
+                    await director.stopIntroVoiceCursorLookAtPerformance(day1LookAtHandle, roundId + '_complete');
+                } else {
+                    await director.stopPersistentGhostCursorLookAtPerformance(roundId + '_complete');
+                }
+            };
+            const playScenes = async () => {
                 try {
                     for (let index = 0; index < config.scenes.length; index += 1) {
                         if (director.isStopping()) {
                             return false;
                         }
+                        if (isDay1Round && config.scenes[index].id === 'day1_capsule_drag_hint') {
+                            startDay1LookAt();
+                        }
                         const keepGoing = await director.playAvatarFloatingScene(
                             config.scenes[index],
                             roundNumber,
                             index,
-                            config.scenes.length
+                            config.scenes.length,
+                            options || {}
                         );
                         if (!keepGoing) {
                             return false;
@@ -886,6 +970,12 @@
                         round: roundNumber,
                         durationMs: Math.max(0, Date.now() - startedAt)
                     });
+                    if (
+                        isDay1Round
+                        && typeof director.recordAvatarFloatingGuideRoundEnd === 'function'
+                    ) {
+                        director.recordAvatarFloatingGuideRoundEnd(roundNumber);
+                    }
                     return !director.isStopping();
                 } finally {
                     if (
@@ -894,6 +984,7 @@
                     ) {
                         await director.waitForAngryExitPresentationCompletion();
                     }
+                    await stopDay1LookAt();
                     director.disableInterrupts();
                     director.clearAvatarStandIn({ clearPending: true, restoreModel: true });
                     director.setGuideChatInputLocked(false, 'avatar-floating-guide-day' + roundNumber + '-complete');
@@ -904,16 +995,30 @@
                     director.clearAllExtraSpotlights();
                     director.clearSpotlightGeometryHints();
                     director.clearSpotlightVariantHints();
+                    if (typeof director.setDay4LockSpotlightSafeAreaActive === 'function') {
+                        director.setDay4LockSpotlightSafeAreaActive(false, 'round-complete');
+                    }
                     director.overlay.clearPersistentSpotlight();
                     director.overlay.clearActionSpotlight();
                     director.cursor.hide();
+                    if (typeof director.setAvatarFloatingToolbarVisible === 'function') {
+                        director.setAvatarFloatingToolbarVisible(true, 'round-complete');
+                    }
                     if (!director.destroyed) {
                         director.setTutorialTakingOver(false);
                     }
                     director.currentSceneId = null;
                     director.currentStep = null;
                 }
-            });
+            };
+            if (isDay1Round) {
+                return await playScenes();
+            }
+            return await director.withLookAt({
+                isCancelled: () => director.isStopping(),
+                completeReason: roundId + '_complete',
+                startFailureMessage: '[YuiGuide] Avatar floating cursor look-at startup failed:'
+            }, playScenes);
         }
     }
 

@@ -26,7 +26,7 @@ from urllib.parse import quote
 from utils.config_manager import get_config_manager
 from utils.dashscope_region import dashscope_ws_url_from_base
 
-from .._infra import TTS_SHUTDOWN_SENTINEL, _resample_audio, _parse_env_float, _enqueue_error
+from .._infra import TTS_SHUTDOWN_SENTINEL, _resample_audio, make_audio_jitter_buffer, _enqueue_error
 from .._telemetry import _record_tts_telemetry
 from utils.logger_config import get_module_logger
 
@@ -81,42 +81,8 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
         resampler = soxr.ResampleStream(24000, 48000, 1, dtype='float32')
         # Qwen realtime can produce 1-2s inter-chunk gaps. A small jitter buffer
         # gives the client enough queued PCM to ride over short upstream stalls.
-        qwen_audio_bytes_per_second = 48000 * 2
-        qwen_initial_buffer_bytes = int(_parse_env_float("NEKO_QWEN_TTS_INITIAL_BUFFER_MS", 400, 0) / 1000 * qwen_audio_bytes_per_second)
-        qwen_steady_buffer_bytes = int(_parse_env_float("NEKO_QWEN_TTS_STEADY_BUFFER_MS", 200, 0) / 1000 * qwen_audio_bytes_per_second)
-
-        class QwenAudioJitterBuffer:
-            def __init__(self):
-                self.buffer = bytearray()
-                self.started = False
-
-            def reset(self):
-                self.buffer.clear()
-                self.started = False
-
-            def append(self, audio_bytes):
-                if not audio_bytes:
-                    return
-                self.buffer.extend(audio_bytes)
-                if not self.started:
-                    if len(self.buffer) < qwen_initial_buffer_bytes:
-                        return
-                    self._flush()
-                    self.started = True
-                    return
-                if len(self.buffer) >= qwen_steady_buffer_bytes:
-                    self._flush()
-
-            def flush(self):
-                self._flush()
-
-            def _flush(self):
-                if not self.buffer:
-                    return
-                response_queue.put(bytes(self.buffer))
-                self.buffer.clear()
-
-        qwen_audio_jitter = QwenAudioJitterBuffer()
+        # 共享 AudioJitterBuffer，旧的 NEKO_QWEN_TTS_* 覆盖仍兼容（见 make_audio_jitter_buffer）。
+        qwen_audio_jitter = make_audio_jitter_buffer(response_queue, legacy_env_prefix="NEKO_QWEN_TTS")
 
         def build_config_message(lang_hint=None):
             """Build the session.update message; lang_hint='ja' specifies Japanese, anything else uses server-side Auto."""

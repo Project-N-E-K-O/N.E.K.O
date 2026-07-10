@@ -79,15 +79,28 @@
                 },
                 {
                     id: 'day1_intro_greeting',
+                    timelinePlayback: true,
+                    timeline: [
+                        { at: 0, command: 'operation.run', operation: 'day1-intro-greeting-performance', blocking: false },
+                        { at: 0, command: 'chat.message' },
+                        { at: 0, command: 'emotion.set' },
+                        // 修改原因：Day1 这里展示的是胶囊输入框；spotlight 目标若仍是 chat-input，
+                        // 外置聊天窗只会收到普通 input，高亮会稳定退回兜底矩形。
+                        { at: 0, command: 'spotlight.show', key: 'day1_intro_greeting', target: 'chat-capsule-input' },
+                        { at: 220, command: 'cursor.move', action: 'move', target: 'chat-capsule-input', durationMs: 760 }
+                    ],
                     afterSceneDelayMs: 0,
                     textKey: 'tutorial.yuiGuide.lines.introGreetingReply',
                     voiceKey: 'intro_greeting_reply',
                     emotion: 'happy',
-                    target: 'chat-input',
+                    // 修改原因：显式 timeline 与 legacy scene target 保持一致，避免恢复/兼容路径再读到普通输入框。
+                    target: 'chat-capsule-input',
                     cursorTarget: 'chat-capsule-input',
                     cursorAction: 'move',
                     operation: 'day1-intro-greeting-performance',
-                    spotlightVariant: 'plain-capsule'
+                    introAvatarPerformance: {
+                        preset: 'wave-zoom'
+                    }
                 },
                 {
                     id: 'day1_capsule_drag_hint',
@@ -96,7 +109,7 @@
                     text: '把鼠标移到这里，长按就可以拉着聊天框到处跑啦~ 点击一下就能随时发消息给我哦！',
                     voiceKey: 'day1_capsule_drag_hint',
                     emotion: 'happy',
-                    target: 'chat-input',
+                    target: 'chat-capsule-input',
                     cursorAction: 'wobble',
                     cursorWobbleDurationMs: 2000,
                     spotlight: false
@@ -170,12 +183,12 @@
                     textKey: 'tutorial.yuiGuide.lines.takeoverReturnControl',
                     voiceKey: 'takeover_return_control',
                     emotion: 'happy',
-                    target: 'chat-input',
+                    // 修改原因：返还控制权时高亮和光标都应指向胶囊输入框，不能只移动光标而让 spotlight 留在普通输入框。
+                    target: 'chat-capsule-input',
                     cursorTarget: 'chat-capsule-input',
                     cursorAction: 'move',
                     cursorMoveDurationMs: 900,
                     operation: 'cleanup',
-                    spotlightVariant: 'plain-capsule',
                     petalTransition: true
                 }
             ]

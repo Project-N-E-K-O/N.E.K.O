@@ -135,6 +135,7 @@ KEY_MAPPING = {
     "assistApiKeySilicon": "ASSIST_API_KEY_SILICON",
     "assistApiKeyGemini": "ASSIST_API_KEY_GEMINI",
     "assistApiKeyKimi": "ASSIST_API_KEY_KIMI",
+    "assistApiKeyKimiCode": "ASSIST_API_KEY_KIMI_CODE",
     "assistApiKeyMimo": "ASSIST_API_KEY_MIMO",
     "assistApiKeyMimoTokenPlan": "ASSIST_API_KEY_MIMO_TOKEN_PLAN",
 }

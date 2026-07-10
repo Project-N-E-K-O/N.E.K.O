@@ -12,7 +12,7 @@
     'use strict';
 
     const SETTINGS_TOUR_SCENE_METHODS = Object.freeze({
-        day2_personalization_detail: 'playDay2PersonalizationDetailScene',
+        day3_personalization_detail: 'playDay3PersonalizationDetailScene',
         day4_chat_settings: 'playDay4ChatSettingsScene',
         day4_model_behavior: 'playDay4ModelBehaviorScene',
         day4_gaze_follow: 'playDay4GazeFollowScene',
@@ -28,9 +28,11 @@
             anchorHighlightSuffix: 'chat-settings-button',
             panelHighlightSuffix: 'chat-settings-panel',
             cursorMoveDurationMs: 620,
+            panelEllipseDurationMs: 4200,
+            panelMinDurationMs: 4200,
             openWithSettingsCursor: true,
             settingsCursorIdSuffix: '_settings_button',
-            settingsCursorMoveDurationMs: 760,
+            settingsCursorMoveDurationMs: 560,
             openFailureMessage: '[YuiGuide] 第4天对话设置打开设置面板失败:'
         }),
         day4_model_behavior: Object.freeze({
@@ -40,10 +42,14 @@
             anchorHighlightSuffix: 'animation-settings-button',
             panelHighlightSuffix: 'animation-settings-panel',
             cursorMoveDurationMs: 620,
-            collapseBeforeAnchorHighlight: true
+            collapseBeforeAnchorHighlight: true,
+            openWithAnchorCursor: true,
+            panelEllipseDurationMs: 3200,
+            panelMinDurationMs: 3200
         })
     });
     const DEFAULT_CURSOR_CLICK_VISIBLE_MS = 420;
+    const DAY4_GAZE_FOLLOW_CHECKED_DISPLAY_MS = 1800;
 
     class SettingsTourFlow {
         constructor(director) {
@@ -87,7 +93,7 @@
             );
         }
 
-        async playDay2PersonalizationDetailScene(scene, context) {
+        async playDay3PersonalizationDetailScene(scene, context) {
             const director = this.director;
             const normalizedContext = context || {};
             const sceneRunId = normalizedContext.sceneRunId;
@@ -160,6 +166,7 @@
             const narration = this.prepareNarration(scene);
             const settingsButton = director.getDay4SettingsButtonSpotlightTarget();
             let sidePanel = null;
+            let openedPanelPromise = null;
 
             if (normalizedSchema.waitForPanelBeforeOpening) {
                 sidePanel = director.getAvatarFloatingSidePanel(panelId);
@@ -194,7 +201,9 @@
             }
             director.enableInterrupts(director.currentStep);
 
-            const narrationPromise = this.createNarrationPromise(scene, narration);
+            const narrationPromise = this.createNarrationPromise(scene, narration, {
+                minDurationMs: normalizedSchema.panelMinDurationMs
+            });
 
             await director.waitForSceneDelay(220);
             if (this.isSceneStale(sceneRunId)) {
@@ -214,7 +223,26 @@
             } else if (!normalizedSchema.waitForPanelBeforeOpening) {
                 await director.openSettingsPanel();
             } else if (anchorButton) {
-                await director.moveCursorToElement(anchorButton, normalizedSchema.cursorMoveDurationMs);
+                if (
+                    normalizedSchema.openWithAnchorCursor
+                    && typeof director.moveAvatarFloatingCursor === 'function'
+                ) {
+                    await director.moveAvatarFloatingCursor({
+                        id: scene.id + '_anchor_button',
+                        cursorAction: 'click',
+                        cursorMoveDurationMs: normalizedSchema.cursorMoveDurationMs
+                    }, anchorButton, null, previousSceneId, {
+                        onClickStart: () => {
+                            if (!this.isSceneStale(sceneRunId)) {
+                                openedPanelPromise = this.ensurePanelForScene(panelId, sceneRunId, scene, {
+                                    skipOpenSettingsPanel: true
+                                });
+                            }
+                        }
+                    });
+                } else {
+                    await director.moveCursorToElement(anchorButton, normalizedSchema.cursorMoveDurationMs);
+                }
             }
             if (this.isSceneStale(sceneRunId)) {
                 return false;
@@ -241,11 +269,21 @@
                 return false;
             }
 
-            const touredPanel = await director.ensureAvatarFloatingSettingsSidePanel(panelId)
+            const openedPanel = openedPanelPromise ? await openedPanelPromise : null;
+            if (this.isSceneStale(sceneRunId)) {
+                return false;
+            }
+            const touredPanel = openedPanel
+                || await this.ensurePanelForScene(panelId, sceneRunId, scene)
                 || sidePanel;
+            if (this.isSceneStale(sceneRunId)) {
+                return false;
+            }
             await this.tourPanel(scene, sceneRunId, touredPanel, narrationPromise, {
                 key: scene.id + '-' + normalizedSchema.panelHighlightSuffix,
-                persistent: settingsButton || null
+                persistent: settingsButton || null,
+                ellipseDurationMs: normalizedSchema.panelEllipseDurationMs,
+                minDurationMs: normalizedSchema.panelMinDurationMs
             });
 
             return this.finalizeNarration(sceneRunId, narration, normalizedContext);
@@ -280,10 +318,27 @@
             }
 
             if (mouseTrackingTarget) {
-                await director.moveCursorToElement(mouseTrackingTarget, 620);
+                const moved = await director.moveCursorToElement(mouseTrackingTarget, 620);
+                if (moved && typeof director.runActionWithCursorClick === 'function') {
+                    await director.runActionWithCursorClick(DEFAULT_CURSOR_CLICK_VISIBLE_MS, () => {
+                        if (
+                            this.shouldClickToggleToEnable(mouseTrackingTarget)
+                            && typeof mouseTrackingTarget.click === 'function'
+                        ) {
+                            mouseTrackingTarget.click();
+                        }
+                    });
+                    if (this.isSceneStale(sceneRunId)) {
+                        return false;
+                    }
+                    await director.waitForSceneDelay(DAY4_GAZE_FOLLOW_CHECKED_DISPLAY_MS);
+                }
             }
 
             await narrationPromise;
+            if (this.isSceneStale(sceneRunId)) {
+                return false;
+            }
             return this.finalizeNarration(sceneRunId, narration, normalizedContext);
         }
 
@@ -318,11 +373,14 @@
 
             await narrationPromise;
             if (!this.isSceneStale(sceneRunId)) {
+                this.safeHideSettingsPanels();
                 await director.closeSettingsPanel().catch((error) => {
                     console.warn('[YuiGuide] 第4天隐私模式结束后收起设置面板失败，继续流程:', error);
                 });
-                director.forceHideManagedPanel('settings');
-                director.collapseAvatarFloatingSidePanelsExcept(null);
+                if (this.isSceneStale(sceneRunId)) {
+                    return false;
+                }
+                this.safeHideSettingsPanels();
             }
             return this.finalizeNarration(sceneRunId, narration, normalizedContext);
         }
@@ -340,6 +398,9 @@
             )
                 ? director.getAvatarFloatingIntroExternalizedSpotlightKind(scene)
                 : '';
+            const spotlightVariant = scene && typeof scene.spotlightVariant === 'string'
+                ? scene.spotlightVariant.trim()
+                : '';
             const introChatTarget = introExternalizedChatSpotlightKind
                 ? null
                 : director.getAvatarFloatingIntroSpotlightTarget(scene);
@@ -347,7 +408,10 @@
                 if (typeof director.clearHomeSpotlightsForExternalizedChat === 'function') {
                     director.clearHomeSpotlightsForExternalizedChat();
                 }
-                director.interactionTakeover.setExternalizedChatSpotlight(introExternalizedChatSpotlightKind);
+                director.interactionTakeover.setExternalizedChatSpotlight(
+                    introExternalizedChatSpotlightKind,
+                    { variant: spotlightVariant }
+                );
                 if (typeof director.interactionTakeover.setExternalizedChatCursor === 'function') {
                     director.interactionTakeover.setExternalizedChatCursor(
                         introExternalizedChatSpotlightKind,
@@ -401,6 +465,9 @@
                 return false;
             }
             await director.openSettingsPanel();
+            if (typeof director.positionManagedPanelNow === 'function') {
+                director.positionManagedPanelNow('settings');
+            }
             if (this.isSceneStale(sceneRunId)) {
                 return false;
             }
@@ -424,6 +491,9 @@
 
             characterSettingsPanel = await director.ensureAvatarFloatingSettingsSidePanel('character-settings')
                 || characterSettingsPanel;
+            if (typeof director.refreshAvatarFloatingSettingsPanelLayout === 'function') {
+                director.refreshAvatarFloatingSettingsPanelLayout(characterSettingsPanel);
+            }
             await this.tourPanel(scene, sceneRunId, characterSettingsPanel, narrationPromise, {
                 key: scene.id + '-character-settings-panel',
                 persistent: settingsButton || null
@@ -439,15 +509,36 @@
             const narration = this.prepareNarration(scene);
             const { text, voiceKey } = narration;
 
-            const characterSettingsPanel = director.getCharacterSettingsSidePanel()
-                || await director.ensureAvatarFloatingSettingsSidePanel('character-settings');
+            let characterSettingsPanel = director.getCharacterSettingsSidePanel();
+            const hasVisibleCharacterPanel = characterSettingsPanel && (
+                typeof director.isElementVisible !== 'function'
+                || director.isElementVisible(characterSettingsPanel)
+            );
+            if (!hasVisibleCharacterPanel) {
+                characterSettingsPanel = await director.ensureAvatarFloatingSettingsSidePanel('character-settings')
+                    || characterSettingsPanel;
+                if (this.isSceneStale(sceneRunId)) {
+                    return false;
+                }
+            }
             const characterSettingsButton = director.getDay5CharacterSettingsButtonTarget();
+            if (characterSettingsPanel && typeof director.refreshAvatarFloatingSettingsPanelLayout === 'function') {
+                director.refreshAvatarFloatingSettingsPanelLayout(characterSettingsPanel);
+            }
             if (characterSettingsPanel) {
                 director.applyGuideHighlights({
                     key: scene.id + '-character-settings-panel',
                     persistent: characterSettingsButton || null,
                     primary: characterSettingsPanel
                 });
+                if (typeof director.moveCursorToElement === 'function') {
+                    await director.moveCursorToElement(characterSettingsPanel, 0, {
+                        exactDuration: true
+                    });
+                    if (this.isSceneStale(sceneRunId)) {
+                        return false;
+                    }
+                }
             }
             director.enableInterrupts(director.currentStep);
 
@@ -496,6 +587,100 @@
             return sceneRunId !== director.sceneRunId || director.isStopping();
         }
 
+        shouldGuardPanelFlow(scene) {
+            const sceneId = scene && typeof scene.id === 'string' ? scene.id : '';
+            return sceneId.indexOf('day4_') === 0;
+        }
+
+        shouldClickToggleToEnable(target) {
+            const checked = this.readToggleChecked(target);
+            return checked !== true;
+        }
+
+        readToggleChecked(target) {
+            if (!target) {
+                return null;
+            }
+            const candidates = [];
+            if (typeof target.querySelector === 'function') {
+                const nestedToggle = target.querySelector('input[type="checkbox"]');
+                if (nestedToggle && !candidates.includes(nestedToggle)) {
+                    candidates.push(nestedToggle);
+                }
+            }
+            if (!candidates.includes(target)) {
+                candidates.push(target);
+            }
+            if (typeof target.querySelector === 'function') {
+                const nestedToggle = target.querySelector('[role="switch"], [aria-checked]');
+                if (nestedToggle && !candidates.includes(nestedToggle)) {
+                    candidates.push(nestedToggle);
+                }
+            }
+            for (const candidate of candidates) {
+                if (!candidate) {
+                    continue;
+                }
+                if (typeof candidate.checked === 'boolean') {
+                    return !!candidate.checked;
+                }
+                if (typeof candidate.getAttribute === 'function') {
+                    const ariaChecked = candidate.getAttribute('aria-checked');
+                    if (ariaChecked === 'true') {
+                        return true;
+                    }
+                    if (ariaChecked === 'false') {
+                        return false;
+                    }
+                }
+                if (candidate.classList && typeof candidate.classList.contains === 'function') {
+                    if (
+                        candidate.classList.contains('is-checked')
+                        || candidate.classList.contains('checked')
+                        || candidate.classList.contains('active')
+                    ) {
+                        return true;
+                    }
+                }
+            }
+            return null;
+        }
+
+        safeHideSettingsPanels() {
+            const director = this.director;
+            try {
+                if (director && typeof director.forceHideManagedPanel === 'function') {
+                    director.forceHideManagedPanel('settings');
+                }
+            } catch (error) {
+                console.warn('[YuiGuide] 第4天隐私模式隐藏设置面板失败，继续流程:', error);
+            }
+            try {
+                if (director && typeof director.collapseAvatarFloatingSidePanelsExcept === 'function') {
+                    director.collapseAvatarFloatingSidePanelsExcept(null);
+                }
+            } catch (error) {
+                console.warn('[YuiGuide] 第4天隐私模式收起侧栏失败，继续流程:', error);
+            }
+        }
+
+        async ensurePanelForScene(panelId, sceneRunId, scene, options) {
+            const director = this.director;
+            if (this.isSceneStale(sceneRunId)) {
+                return null;
+            }
+            const normalizedOptions = options || {};
+            const ensureOptions = this.shouldGuardPanelFlow(scene)
+                ? { shouldContinue: () => !this.isSceneStale(sceneRunId) }
+                : undefined;
+            if (normalizedOptions.skipOpenSettingsPanel) {
+                return director.ensureAvatarFloatingSettingsSidePanel(panelId, Object.assign({}, ensureOptions, {
+                    skipOpenSettingsPanel: true
+                }));
+            }
+            return director.ensureAvatarFloatingSettingsSidePanel(panelId, ensureOptions);
+        }
+
         async finalizeNarration(sceneRunId, narration, context) {
             const normalizedNarration = narration || {};
             const normalizedContext = context || {};
@@ -522,7 +707,11 @@
                 if (Number.isFinite(normalizedOptions.cursorMoveDurationMs)) {
                     await director.moveCursorToElement(panel, normalizedOptions.cursorMoveDurationMs);
                 }
-                await this.runPanelNarrationEllipse(sceneRunId, panel, narrationPromise);
+                await this.runPanelNarrationEllipse(sceneRunId, panel, narrationPromise, {
+                    scene,
+                    durationMs: normalizedOptions.ellipseDurationMs,
+                    minDurationMs: normalizedOptions.minDurationMs
+                });
                 return;
             }
             await (narrationPromise || Promise.resolve());
@@ -554,8 +743,33 @@
             const durationMs = Number.isFinite(normalizedOptions.durationMs)
                 ? Math.max(0, normalizedOptions.durationMs)
                 : 5600;
+            const minDurationMs = Number.isFinite(normalizedOptions.minDurationMs)
+                ? Math.max(0, normalizedOptions.minDurationMs)
+                : 0;
             let narrationDone = false;
-            const guardedNarrationPromise = resolvedNarrationPromise.finally(() => {
+            const shouldGuardDelay = this.shouldGuardPanelFlow(normalizedOptions.scene);
+            const isPanelFlowStale = () => sceneRunId !== director.sceneRunId || director.isStopping();
+            const waitForSceneDelay = (delayMs) => {
+                if (typeof director.waitForSceneDelay === 'function') {
+                    const delayOptions = shouldGuardDelay
+                        ? { shouldContinue: () => !isPanelFlowStale() }
+                        : undefined;
+                    return director.waitForSceneDelay(delayMs, delayOptions);
+                }
+                return new Promise((resolve) => {
+                    const timerApi = typeof window !== 'undefined' && window.setTimeout
+                        ? window
+                        : globalThis;
+                    timerApi.setTimeout(resolve, delayMs);
+                });
+            };
+            const minimumDisplayPromise = minDurationMs > 0
+                ? waitForSceneDelay(minDurationMs)
+                : Promise.resolve();
+            const guardedNarrationPromise = Promise.all([
+                resolvedNarrationPromise,
+                minimumDisplayPromise
+            ]).finally(() => {
                 narrationDone = true;
             });
             const narrationSettledPromise = guardedNarrationPromise.catch(() => {});
@@ -564,28 +778,26 @@
                 if (narrationDone || director.isStopping()) {
                     return;
                 }
-                const delayPromise = typeof director.waitForSceneDelay === 'function'
-                    ? director.waitForSceneDelay(ellipseYieldMs)
-                    : new Promise((resolve) => {
-                        const timerApi = typeof window !== 'undefined' && window.setTimeout
-                            ? window
-                            : globalThis;
-                        timerApi.setTimeout(resolve, ellipseYieldMs);
-                    });
+                const delayPromise = waitForSceneDelay(ellipseYieldMs);
                 await Promise.race([narrationSettledPromise, delayPromise]);
             };
             const ellipsePromise = (async () => {
                 if (typeof director.setHomePcCursorOutputSuppressedForExternalizedChat === 'function') {
                     director.setHomePcCursorOutputSuppressedForExternalizedChat(false);
                 }
-                while (sceneRunId === director.sceneRunId && !narrationDone && !director.isStopping()) {
+                while (!isPanelFlowStale() && !narrationDone) {
                     const moved = await director.cursor.runPauseAwareEllipse(
                         centerX,
                         centerY,
                         radiusX,
                         radiusY,
                         durationMs,
-                        () => narrationDone || director.destroyed || director.angryExitTriggered,
+                        () => (
+                            narrationDone
+                            || director.destroyed
+                            || director.angryExitTriggered
+                            || (shouldGuardDelay && isPanelFlowStale())
+                        ),
                         () => director.scenePausedForResistance,
                         () => director.isStopping()
                     );
@@ -599,6 +811,14 @@
                     await waitForEllipseYield();
                 }
             })();
+            if (shouldGuardDelay) {
+                const ellipseResultPromise = ellipsePromise.then(() => {
+                    return isPanelFlowStale() ? false : guardedNarrationPromise;
+                });
+                await Promise.race([guardedNarrationPromise, ellipseResultPromise]);
+                await ellipsePromise;
+                return;
+            }
             await Promise.all([guardedNarrationPromise, ellipsePromise]);
         }
     }

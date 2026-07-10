@@ -171,8 +171,9 @@ async def on_shutdown(self, **_):
     if self.session:
         await self.session.close()
 
-    # 刷新待处理的数据
-    await self.store.flush()
+    # 无需刷新 self.store：每次 set() 都会同步提交。
+    # 如果是你自己打开的 store，可在此关闭（可选）：
+    # await self.store.close()
 
     # 取消定时器（自动处理，但记录日志）
     self.logger.info("Plugin shutting down gracefully")

@@ -36,7 +36,9 @@ changelog 确认弹窗走完后，向**老玩家**（本地存过 `neko_last_not
       "id": "suggestion",
       "type": "text",
       "label": "还有什么想对我们说的？",
-      "placeholder": "选填",
+      "placeholder": "选填",                       // 未联动 / 来源题未选时的提示
+      "placeholder_from": "keep_one",              // 可选：placeholder 跟随此单选题的选择
+      "placeholder_template": "「{label}」往哪个方向打磨？",  // 联动模板，{label} 替换为所选项文案
       "max_length": 500               // text 可选，默认 500
     }
   ]
@@ -44,3 +46,8 @@ changelog 确认弹窗走完后，向**老玩家**（本地存过 `neko_last_not
 ```
 
 `value` 是低基数稳定枚举（上报与统计用），`label` 是展示文案（可随本地化变）。
+
+`placeholder_from` + `placeholder_template`（仅 `text` 题）：填空提示随来源单选题的选择实时
+变化，引导用户对刚选的项写具体想法；来源题未选时回退到 `placeholder`。模板里的 `{label}` 会
+替换成所选项的本地化 `label`，因此各语言文件都要保留 `{label}` 占位符。**两者需成对提供才启用
+联动**——任一缺失（或来源题未选）都退回静态 `placeholder`。

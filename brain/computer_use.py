@@ -348,17 +348,60 @@ def parse_response(
     return result
 
 
+def _extract_raw_llm_text(resp: Any) -> Tuple[str, Optional[str]]:
+    """Extract text from either OpenAI-compatible or Anthropic raw responses."""
+    choices = getattr(resp, "choices", None)
+    if choices is not None:
+        choice = choices[0] if choices else None
+        msg = getattr(choice, "message", None) if choice else None
+        content = getattr(msg, "content", "") if msg else ""
+        reasoning = getattr(msg, "reasoning_content", None) if msg else None
+        return content or "", reasoning
+
+    content = getattr(resp, "content", None)
+    if isinstance(content, str):
+        return content, None
+    if isinstance(content, list):
+        text_parts: List[str] = []
+        reasoning_parts: List[str] = []
+        for block in content:
+            if isinstance(block, dict):
+                if block.get("type") == "text":
+                    text_parts.append(str(block.get("text") or ""))
+                elif block.get("type") in ("thinking", "reasoning"):
+                    reasoning = block.get("thinking") or block.get("text") or block.get("reasoning")
+                    if reasoning:
+                        reasoning_parts.append(str(reasoning))
+                continue
+            if getattr(block, "type", None) == "text":
+                text_parts.append(str(getattr(block, "text", "") or ""))
+            elif getattr(block, "type", None) in ("thinking", "reasoning"):
+                reasoning = (
+                    getattr(block, "thinking", None)
+                    or getattr(block, "text", None)
+                    or getattr(block, "reasoning", None)
+                )
+                if reasoning:
+                    reasoning_parts.append(str(reasoning))
+        return "".join(text_parts), "\n".join(reasoning_parts) or None
+
+    return str(resp or ""), None
+
+
 # ─── Coordinate-scaling proxy ───────────────────────────────────────────
 
 
 class _ScaledPyAutoGUI:
-    """Projects [0, 999] model coordinates to physical screen pixels.
+    """Projects model coordinates to physical screen pixels.
 
     If both x and y are in [0, 999] they are scaled to screen dimensions.
+    Float pairs in [0, 1] are accepted as normalized coordinates because
+    some OpenAI-compatible vision models emit that form despite the prompt.
     Values > 999 are passed through as absolute pixel coordinates.
     """
 
     _COORD_MAX = 999
+    _FAILSAFE_EDGE_PX = 4
 
     def __init__(
         self,
@@ -395,28 +438,62 @@ class _ScaledPyAutoGUI:
             and 0 <= y <= self._COORD_MAX
         )
 
+    def _in_unit_range(self, x, y) -> bool:
+        return (
+            isinstance(x, float)
+            and isinstance(y, float)
+            and 0 <= x <= 1
+            and 0 <= y <= 1
+        )
+
+    def _safe_screen_point(self, x: float, y: float, *, inset: bool = False) -> Tuple[int, int]:
+        max_x = max(0, self._w - 1)
+        max_y = max(0, self._h - 1)
+        px = int(round(x))
+        py = int(round(y))
+        px = max(0, min(px, max_x))
+        py = max(0, min(py, max_y))
+        if inset and self._w > self._FAILSAFE_EDGE_PX * 2:
+            px = max(self._FAILSAFE_EDGE_PX, min(px, max_x - self._FAILSAFE_EDGE_PX))
+        if inset and self._h > self._FAILSAFE_EDGE_PX * 2:
+            py = max(self._FAILSAFE_EDGE_PX, min(py, max_y - self._FAILSAFE_EDGE_PX))
+        return px, py
+
+    def _project_pair(self, x, y) -> Tuple[int, int]:
+        if self._in_unit_range(x, y):
+            return self._safe_screen_point(
+                float(x) * max(0, self._w - 1),
+                float(y) * max(0, self._h - 1),
+                inset=True,
+            )
+        if self._in_range(x, y):
+            return self._safe_screen_point(
+                float(x) * max(0, self._w - 1) / self._COORD_MAX,
+                float(y) * max(0, self._h - 1) / self._COORD_MAX,
+                inset=True,
+            )
+        return self._safe_screen_point(float(x), float(y))
+
     def _project(self, args, kwargs):
         if (
             len(args) >= 2
             and isinstance(args[0], (int, float))
             and isinstance(args[1], (int, float))
         ):
-            x, y = args[0], args[1]
-            if self._in_range(x, y):
-                x = int(round(x * self._w / self._COORD_MAX))
-                y = int(round(y * self._h / self._COORD_MAX))
-            else:
-                x, y = int(round(x)), int(round(y))
+            x, y = self._project_pair(args[0], args[1])
             return (x, y) + tuple(args[2:]), kwargs
+        if (
+            len(args) == 1
+            and isinstance(args[0], (int, float))
+            and isinstance(kwargs.get("y"), (int, float))
+        ):
+            x, y = self._project_pair(args[0], kwargs["y"])
+            kw = dict(kwargs)
+            kw["y"] = y
+            return (x,), kw
         if "x" in kwargs and "y" in kwargs:
             kw = dict(kwargs)
-            x, y = kw["x"], kw["y"]
-            if self._in_range(x, y):
-                kw["x"] = int(round(x * self._w / self._COORD_MAX))
-                kw["y"] = int(round(y * self._h / self._COORD_MAX))
-            else:
-                kw["x"] = int(round(x))
-                kw["y"] = int(round(y))
+            kw["x"], kw["y"] = self._project_pair(kw["x"], kw["y"])
             return args, kw
         return args, kwargs
 
@@ -467,11 +544,7 @@ class _ScaledPyAutoGUI:
     def scroll(self, clicks, x=None, y=None, *args, **kwargs):
         self._ensure_not_cancelled()
         if x is not None and y is not None:
-            if self._in_range(x, y):
-                scaled_x = int(round(x * self._w / self._COORD_MAX))
-                scaled_y = int(round(y * self._h / self._COORD_MAX))
-            else:
-                scaled_x, scaled_y = int(round(x)), int(round(y))
+            scaled_x, scaled_y = self._project_pair(x, y)
             return self._backend.scroll(clicks, x=scaled_x, y=scaled_y, *args, **kwargs)
         return self._backend.scroll(clicks, x=x, y=y, *args, **kwargs)
 
@@ -487,6 +560,12 @@ class _ScaledPyAutoGUI:
             and isinstance(args[1], (int, float))
         ):
             return int(args[0]), int(args[1])
+        if (
+            len(args) == 1
+            and isinstance(args[0], (int, float))
+            and isinstance(kwargs.get("y"), (int, float))
+        ):
+            return int(args[0]), int(kwargs["y"])
         x, y = kwargs.get("x"), kwargs.get("y")
         if x is not None and y is not None:
             return int(x), int(y)
@@ -530,9 +609,20 @@ class _ScaledPyAutoGUI:
         self._backend.hotkey(paste_key, "v")
         time.sleep(0.05)
 
-    def write(self, text, *a, **kw):
+    def _coerce_write_args(self, args, kwargs):
+        if args:
+            return str(args[0]), tuple(args[1:]), kwargs
+
+        kw = dict(kwargs)
+        for key in ("text", "message", "string"):
+            if key in kw:
+                return str(kw.pop(key)), (), kw
+
+        raise TypeError("write() missing required text argument")
+
+    def write(self, *a, **kw):
         self._ensure_not_cancelled()
-        text_str = str(text)
+        text_str, a, kw = self._coerce_write_args(a, kw)
         # Clipboard paste is only needed for non-ASCII (CJK, emoji, etc.)
         # that pyautogui.write() cannot handle natively.
         # For ASCII-only text, use real key simulation so it works in games
@@ -545,8 +635,8 @@ class _ScaledPyAutoGUI:
                 pass
         self._backend.write(text_str, *a, **kw)
 
-    def typewrite(self, text, *a, **kw):
-        self.write(text, *a, **kw)
+    def typewrite(self, *a, **kw):
+        self.write(*a, **kw)
 
 
 # ─── Main Adapter ───────────────────────────────────────────────────────
@@ -613,6 +703,7 @@ class ComputerUseAdapter:
             api_key = self._agent_model_cfg.get("api_key") or "EMPTY"
             base_url = self._agent_model_cfg.get("base_url", "")
             model = self._agent_model_cfg.get("model", "")
+            provider_type = self._agent_model_cfg.get("provider_type")
             if not base_url or not model:
                 self.last_error = "Agent model not configured"
                 return
@@ -624,6 +715,7 @@ class ComputerUseAdapter:
                 timeout=65.0,
                 max_retries=0,
                 temperature=0,
+                provider_type=provider_type,
             )
         except Exception as e:
             self.last_error = str(e)
@@ -666,6 +758,7 @@ class ComputerUseAdapter:
         api_key = cfg.get("api_key") or "EMPTY"
         base_url = cfg.get("base_url", "")
         model = cfg.get("model", "")
+        provider_type = cfg.get("provider_type")
         if not base_url or not model:
             self.init_ok = False
             self.last_error = "Agent model not configured"
@@ -674,7 +767,7 @@ class ComputerUseAdapter:
         last_exc: Exception | None = None
         for attempt in range(_retries + 1):
             try:
-                current_sig = (base_url.rstrip("/"), api_key, model)
+                current_sig = (base_url.rstrip("/"), api_key, model, provider_type)
                 if self._llm_client is None or self._llm_client_sig != current_sig:
                     # CRITICAL: keep the client instance's default timeout at
                     # 65.0s, NOT ``timeout_s``. ``self._llm_client`` is reused
@@ -694,6 +787,7 @@ class ComputerUseAdapter:
                         timeout=65.0,
                         max_retries=0,
                         temperature=0,
+                        provider_type=provider_type,
                     )
                     self._llm_client_sig = current_sig
                 extra = get_agent_extra_body(model) or {}
@@ -712,9 +806,7 @@ class ComputerUseAdapter:
                 # 连通性检测只关心 HTTP 层是否通、响应结构是否合法；某些上游
                 # （如 free-agent-model）会返回 choices 非空但 message=None
                 # 的合法 200，message 为空也视为成功。
-                choice = resp.choices[0] if resp.choices else None
-                msg = choice.message if choice else None
-                _ = getattr(msg, "content", None)
+                _extract_raw_llm_text(resp)
                 self.init_ok = True
                 self.last_error = None
                 logger.info("[CUA] LLM connectivity OK (%s @ %s)", model, base_url)
@@ -1188,9 +1280,7 @@ class ComputerUseAdapter:
                     max_completion_tokens=self.max_completion_tokens,
                     extra_body=extra or None,
                 )
-                msg = resp.choices[0].message
-                content = msg.content or ""
-                reasoning = getattr(msg, "reasoning_content", None)
+                content, reasoning = _extract_raw_llm_text(resp)
 
                 parsed = parse_response(content, reasoning if self.thinking else None)
                 if parsed["code"]:

@@ -223,12 +223,13 @@ All methods return `Result` types — check with `isinstance(result, Ok)` before
 
 ## PluginStore (Persistent Storage)
 
-```python
-from plugin.sdk.plugin import PluginStore
+Access via `self.store` (the host pre-builds and injects it at plugin construction time — you do not instantiate `PluginStore` yourself).
 
-store = PluginStore(self.ctx)
-await store.set("key", {"count": 42})
-value = await store.get("key")  # → {"count": 42}
+All `PluginStore` methods return a `Result`; unwrap with `unwrap_or(...)`.
+
+```python
+unwrap_or(await self.store.set("key", {"count": 42}), None)
+value = unwrap_or(await self.store.get("key"), None)  # → {"count": 42}
 ```
 
 ---
@@ -238,18 +239,20 @@ value = await store.get("key")  # → {"count": 42}
 Access via `self.memory`.
 
 ```python
-result = await self.memory.search("keyword")
-result = await self.memory.store("key", "value")
+result = await self.memory.query("default", "keyword")  # search a bucket
+result = await self.memory.get("default", limit=20)      # list recent records in a bucket
 ```
 
 ---
 
 ## SystemInfo
 
-Access via `self.system_info`.
+Access via `self.system_info`. These methods all return a `Result`; unwrap with `unwrap_or(...)`.
 
 ```python
-info = await self.system_info.get()
+config = unwrap_or(await self.system_info.get_system_config(), {})
+settings = unwrap_or(await self.system_info.get_server_settings(), {})
+python_env = unwrap_or(await self.system_info.get_python_env(), {})
 ```
 
 ---

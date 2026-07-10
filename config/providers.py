@@ -25,6 +25,7 @@ hard-coding their own.
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -33,11 +34,41 @@ from typing import Any
 # Extra-body 常量 & 映射（原 config/__init__.py）
 # ────────────────────────────────────────────────────────────────
 
+# 每个 provider 的 thinking 旋钮成对定义：上为默认（关思考，进 MODELS_EXTRA_BODY_MAP），
+# 下为凝神启用形式（_THINKING 后缀，由 focus_extra_body 取用）。对偶按各家 API 的
+# 自身语义，不是机械翻 bool —— 见 _THINKING_ENABLE_FORM 与 focus_extra_body。
 EXTRA_BODY_OPENAI = {"enable_thinking": False}
+EXTRA_BODY_OPENAI_THINKING = {"enable_thinking": True}
+
 EXTRA_BODY_CLAUDE = {"thinking": {"type": "disabled"}}
+EXTRA_BODY_CLAUDE_THINKING = {"thinking": {"type": "enabled"}}
+
+# Anthropic 原生 claude（经 OpenAI-compat 透传 thinking）跟 GLM/Kimi/Doubao 的
+# thinking.type 方言不一样：Opus 4.7+ 已移除 {type:enabled,budget_tokens}，发它直接
+# 400，启用思考必须用 {type:adaptive}；Opus 4.6/Sonnet 4.6 也用 adaptive；Haiku 4.5
+# 是否支持还要逐个验证 OpenAI-compat 行为。本 PR 暂只用 disabled（平时关思考），且
+# 故意不配 enable 对偶 —— 凝神对 claude 保持 thinking-off（安全退化，绝不 400），
+# adaptive 的正确 per-model 接入留 follow-up。
+EXTRA_BODY_ANTHROPIC = {"thinking": {"type": "disabled"}}
+
 EXTRA_BODY_GEMINI = {"extra_body": {"google": {"thinking_config": {"thinking_budget": 0}}}}
+# Gemini 2.5: budget 0 = 关；凝神给一个低固定预算 800 token（开思考但不深思）。
+EXTRA_BODY_GEMINI_THINKING = {"extra_body": {"google": {"thinking_config": {"thinking_budget": 800}}}}
+
 EXTRA_BODY_GEMINI_3 = {"extra_body": {"google": {"thinking_config": {"thinking_level": "low", "include_thoughts": False}}}}
+# Gemini 3: 思考档位保持最低(low)，只把思考过程透出(thoughts 走独立字段，不混进 content)。
+EXTRA_BODY_GEMINI_3_THINKING = {"extra_body": {"google": {"thinking_config": {"thinking_level": "low", "include_thoughts": True}}}}
+
 EXTRA_BODY_OPENROUTER = {"reasoning": {"effort": "none"}}
+# OpenRouter: effort none→low（开思考但取最低努力档）。
+EXTRA_BODY_OPENROUTER_THINKING = {"reasoning": {"effort": "low"}}
+
+# MiniMax 的 reasoning_split 只控制思考的「输出格式」，不是 on/off 开关：M3 始终内部
+# 推理、无法关闭；True=思考走独立 reasoning_details 字段，False/省略=思考以 <think>
+# 标签嵌进 content。凝神保持 True（不收录进下方 _THINKING_ENABLE_FORM 即「不翻」）：
+# 思考本就常开、无需动它；且 True 让 CoT 留在独立字段、不混进 content 被 TTS 当台词
+# 念出（与 leaks_thinking_in_content 防的是同一类问题）。
+# 文档 https://platform.minimax.io/docs/guides/text-m3-function-call
 EXTRA_BODY_MINIMAX = {"reasoning_split": True}
 
 # Agent 调用统一开关：是否加载 extra_body。
@@ -84,11 +115,14 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "Qwen/Qwen3.5-397B-A17B": EXTRA_BODY_OPENAI,
     # Step
     "step-2-mini": {"tools": [{"type": "web_search", "function": {"description": "这个web_search用来搜索互联网的信息"}}]},
-    # Claude 系列
-    "claude-sonnet-4-6": EXTRA_BODY_CLAUDE,
-    "claude-haiku-4-5-20251001": EXTRA_BODY_CLAUDE,
-    "claude-opus-4-7": EXTRA_BODY_CLAUDE,
-    "claude-opus-4-6": EXTRA_BODY_CLAUDE,
+    # 免费版（lanlan.tech / lanlan.app，模型名固定 free-model）：用 thinking.type 风格，
+    # 平时下发 disabled、凝神由 focus_extra_body flip 成 enabled。
+    "free-model": EXTRA_BODY_CLAUDE,
+    # Claude 系列（Anthropic 原生：enable 须用 adaptive，本 PR 暂不翻，见 EXTRA_BODY_ANTHROPIC）
+    "claude-sonnet-4-6": EXTRA_BODY_ANTHROPIC,
+    "claude-haiku-4-5-20251001": EXTRA_BODY_ANTHROPIC,
+    "claude-opus-4-7": EXTRA_BODY_ANTHROPIC,
+    "claude-opus-4-6": EXTRA_BODY_ANTHROPIC,
     # Doubao Seed 2.0 系列
     "doubao-seed-2-0-lite-260215": EXTRA_BODY_CLAUDE,
     "doubao-seed-2-0-mini-260215": EXTRA_BODY_CLAUDE,
@@ -99,10 +133,14 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "gemini-2.5-flash": EXTRA_BODY_GEMINI,
     "gemini-2.5-flash-lite": EXTRA_BODY_GEMINI,
     "gemini-3-flash-preview": EXTRA_BODY_GEMINI_3,
+    "gemini-3.1-flash-lite": EXTRA_BODY_GEMINI_3,
+    "gemini-3.5-flash": EXTRA_BODY_GEMINI_3,
     # OpenRouter 格式 (provider/model) — OpenRouter 使用统一的 reasoning 参数
     "google/gemini-2.5-flash": EXTRA_BODY_OPENROUTER,
     "google/gemini-2.5-flash-lite": EXTRA_BODY_OPENROUTER,
     "google/gemini-3-flash-preview": EXTRA_BODY_OPENROUTER,
+    "google/gemini-3.1-flash-lite": EXTRA_BODY_OPENROUTER,
+    "google/gemini-3.5-flash": EXTRA_BODY_OPENROUTER,
     "qwen/qwen3.5-9b": EXTRA_BODY_OPENROUTER,
 }
 
@@ -126,32 +164,52 @@ def get_agent_extra_body(model: str) -> dict | None:
     return get_extra_body(model)
 
 
-# Top-level extra_body keys that *disable* thinking (one per provider family in
-# MODELS_EXTRA_BODY_MAP). Gemini nests its thinking_config under an "extra_body"
-# wrapper key whose only payload here is the thinking config, so the whole key is
-# thinking-related. Anything NOT in this set (e.g. step-2-mini's "tools" with the
-# built-in web_search) is unrelated provider config that must survive Focus.
-_THINKING_EXTRA_BODY_KEYS = frozenset({
-    "enable_thinking",   # EXTRA_BODY_OPENAI (qwen / silicon …)
-    "thinking",          # EXTRA_BODY_CLAUDE (claude / glm / kimi / doubao …)
-    "reasoning",         # EXTRA_BODY_OPENROUTER
-    "reasoning_split",   # EXTRA_BODY_MINIMAX
-    "extra_body",        # EXTRA_BODY_GEMINI/_3 (google.thinking_config wrapper)
-})
+# 凝神（thinking-on）时把各 provider 的「关思考」extra_body 翻成「开思考」形式。
+# 键 = 「关」常量的 id，值 = 对应「开」常量；按各家 API 语义一一对偶，不机械翻 bool。
+# 未收录的「关」常量（如 MiniMax 的 reasoning_split）表示「凝神保持原值不翻」；非
+# thinking 的 provider extra（如 step-2-mini 的 web_search tools）天然不在此表，在
+# MODELS_FOCUS_EXTRA_BODY_MAP 里回退为原值、原样保留。
+_THINKING_ENABLE_FORM: dict[int, dict] = {
+    id(EXTRA_BODY_OPENAI): EXTRA_BODY_OPENAI_THINKING,
+    id(EXTRA_BODY_CLAUDE): EXTRA_BODY_CLAUDE_THINKING,
+    id(EXTRA_BODY_GEMINI): EXTRA_BODY_GEMINI_THINKING,
+    id(EXTRA_BODY_GEMINI_3): EXTRA_BODY_GEMINI_3_THINKING,
+    id(EXTRA_BODY_OPENROUTER): EXTRA_BODY_OPENROUTER_THINKING,
+}
+
+# model → 凝神 extra_body，与 MODELS_EXTRA_BODY_MAP 同源派生（共用 model 列表，不会
+# 漂移）：命中对偶则取「开」形式，否则回退原值（保留 web_search / 不翻 MiniMax）。
+# 依赖 MODELS_EXTRA_BODY_MAP 的值是模块级常量引用，故可用 id 做配对键。
+MODELS_FOCUS_EXTRA_BODY_MAP: dict[str, dict] = {
+    model: _THINKING_ENABLE_FORM.get(id(body), body)
+    for model, body in MODELS_EXTRA_BODY_MAP.items()
+}
 
 
 def focus_extra_body(model: str) -> dict | None:
-    """extra_body for a Focus (thinking-on) turn: the model's resolved extra_body
-    with only the *thinking-disable* keys removed.
+    """extra_body for a Focus (thinking-on) turn.
 
-    Focus wants thinking to run free (drop the disable knob), but must NOT
-    silently nuke unrelated provider config — e.g. ``step-2-mini`` ships a
-    built-in ``web_search`` tool in its extra_body, which a blunt
-    ``extra_body=None`` would drop. Returns the surviving non-thinking dict, or
-    ``None`` when nothing remains (the body was purely thinking-disable)."""
-    resolved = get_extra_body(model) or {}
-    kept = {k: v for k, v in resolved.items() if k not in _THINKING_EXTRA_BODY_KEYS}
-    return kept or None
+    Regular turns send the provider's thinking-DISABLED extra_body (see
+    ``MODELS_EXTRA_BODY_MAP``). A Focus turn flips each provider's thinking knob
+    to its semantic ENABLED form — NOT by blindly dropping keys, but per the
+    provider's own dialect (see ``_THINKING_ENABLE_FORM`` and the paired
+    ``EXTRA_BODY_*_THINKING`` constants):
+      - enable_thinking: False -> True                  (Qwen / Silicon / free OpenAI-shape)
+      - thinking.type: disabled -> enabled              (GLM / Kimi / Doubao / Claude / free)
+      - thinking_budget: 0 -> 800 (low fixed budget)    (Gemini 2.5)
+      - thinking_level low (kept minimal), include_thoughts->True (Gemini 3)
+      - reasoning.effort: none -> low                   (OpenRouter)
+
+    Provider extras that are NOT thinking knobs (e.g. ``step-2-mini``'s built-in
+    ``web_search`` tools, or MiniMax's reasoning_split) are preserved unchanged.
+    Returns ``None`` when the model has no registered extra_body."""
+    if not model:
+        return None
+    enabled = MODELS_FOCUS_EXTRA_BODY_MAP.get(model)
+    # deepcopy: enabled is a shared module-level constant, possibly nested
+    # (Gemini's thinking_config); a caller mutating the result must not poison
+    # the registry. Cheap — focus_extra_body runs once per focus turn.
+    return copy.deepcopy(enabled) if enabled else None
 
 
 def leaks_thinking_in_content(model: str) -> bool:
@@ -321,7 +379,7 @@ CACHE_PROVIDERS: dict[str, CacheProviderConfig] = {
     ),
     "doubao": CacheProviderConfig(
         provider_id="doubao",
-        name="豆包（字节跳动）",
+        name="豆包大模型(火山方舟)",
         base_url="https://ark.cn-beijing.volces.com/api/v3",
         base_url_pattern="ark.cn-beijing.volces.com",
         cache_mode="auto",

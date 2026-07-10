@@ -60,6 +60,11 @@ class VRMInteraction {
         this._snapAnimationFrameId = null;
         this._isSnappingModel = false;
         this._snapResolve = null;
+        this._lastPanDragPointerScreen = null;
+        this._panDragModelCenterOffset = null;
+        this._dragHintPanStartPointer = null;
+        this._dragHintPanLastPointer = null;
+        this._dragHintApproachShown = false;
     }
 
 
@@ -76,6 +81,158 @@ class VRMInteraction {
         if (window.DragHelpers) {
             window.DragHelpers.restoreButtonPointerEvents();
         }
+    }
+
+    _getProjectedModelCenterInWindow() {
+        const scene = this.manager.currentModel?.vrm?.scene;
+        const camera = this.manager.camera;
+        const renderer = this.manager.renderer;
+        if (!scene || !camera || !renderer || !THREE) return null;
+
+        try {
+            scene.updateMatrixWorld(true);
+            const box = new THREE.Box3().setFromObject(scene);
+            if (!box || !Number.isFinite(box.min.x) || !Number.isFinite(box.max.x)) return null;
+
+            const canvasRect = renderer.domElement.getBoundingClientRect();
+            const screenWidth = canvasRect.width;
+            const screenHeight = canvasRect.height;
+            if (!(screenWidth > 0) || !(screenHeight > 0)) return null;
+
+            const corners = [
+                new THREE.Vector3(box.min.x, box.min.y, box.min.z),
+                new THREE.Vector3(box.max.x, box.min.y, box.min.z),
+                new THREE.Vector3(box.min.x, box.max.y, box.min.z),
+                new THREE.Vector3(box.max.x, box.max.y, box.min.z),
+                new THREE.Vector3(box.min.x, box.min.y, box.max.z),
+                new THREE.Vector3(box.max.x, box.min.y, box.max.z),
+                new THREE.Vector3(box.min.x, box.max.y, box.max.z),
+                new THREE.Vector3(box.max.x, box.max.y, box.max.z),
+            ];
+            let minX = Infinity, maxX = -Infinity;
+            let minY = Infinity, maxY = -Infinity;
+            corners.forEach(corner => {
+                const projected = corner.clone().project(camera);
+                const x = (projected.x * 0.5 + 0.5) * screenWidth + canvasRect.left;
+                const y = (-projected.y * 0.5 + 0.5) * screenHeight + canvasRect.top;
+                minX = Math.min(minX, x);
+                maxX = Math.max(maxX, x);
+                minY = Math.min(minY, y);
+                maxY = Math.max(maxY, y);
+            });
+            const x = (minX + maxX) / 2;
+            const y = (minY + maxY) / 2;
+            if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+            return { x, y };
+        } catch (_) {
+            return null;
+        }
+    }
+
+    _rememberPanDragPointer(event, { captureOffset = false } = {}) {
+        const screenX = Number(event?.screenX);
+        const screenY = Number(event?.screenY);
+        if (Number.isFinite(screenX) && Number.isFinite(screenY)) {
+            this._lastPanDragPointerScreen = { x: screenX, y: screenY };
+        }
+
+        if (!captureOffset) return;
+        const clientX = Number(event?.clientX);
+        const clientY = Number(event?.clientY);
+        const center = this._getProjectedModelCenterInWindow();
+        if (center && Number.isFinite(clientX) && Number.isFinite(clientY)) {
+            this._panDragModelCenterOffset = {
+                x: center.x - clientX,
+                y: center.y - clientY
+            };
+        } else {
+            this._panDragModelCenterOffset = { x: 0, y: 0 };
+        }
+    }
+
+    _captureDragHintPointer(event) {
+        const screenX = Number(event?.screenX);
+        const screenY = Number(event?.screenY);
+        if (!Number.isFinite(screenX) || !Number.isFinite(screenY)) return null;
+        return { screenX, screenY };
+    }
+
+    _rememberDragHintPanPointer(event, { start = false } = {}) {
+        const pointer = this._captureDragHintPointer(event);
+        if (!pointer) return;
+        if (start) {
+            pointer.startedAt = Date.now();
+            this._dragHintPanStartPointer = pointer;
+        }
+        this._dragHintPanLastPointer = pointer;
+    }
+
+    async _recordDragHintPointerEdgeRelease(source) {
+        const helper = window.NekoAvatarMultiScreenDragHint;
+        if (!helper || typeof helper.recordPointerEdgeRelease !== 'function') return false;
+        const start = this._dragHintPanStartPointer;
+        const release = this._dragHintPanLastPointer;
+        if (!start || !release) return false;
+        return await helper.recordPointerEdgeRelease(source, {
+            startedAt: start.startedAt,
+            startScreenX: start.screenX,
+            startScreenY: start.screenY,
+            screenX: release.screenX,
+            screenY: release.screenY
+        });
+    }
+
+    async _recordDragHintPointerEdgeApproach(source) {
+        const helper = window.NekoAvatarMultiScreenDragHint;
+        if (!helper || typeof helper.recordPointerEdgeApproach !== 'function') return false;
+        if (this._dragHintApproachShown) return false;
+        const start = this._dragHintPanStartPointer;
+        const pointer = this._dragHintPanLastPointer;
+        if (!start || !pointer) return false;
+        const shown = await helper.recordPointerEdgeApproach(source, {
+            startedAt: start.startedAt,
+            startScreenX: start.screenX,
+            startScreenY: start.screenY,
+            screenX: pointer.screenX,
+            screenY: pointer.screenY
+        });
+        if (shown) this._dragHintApproachShown = true;
+        return shown;
+    }
+
+    _moveModelCenterToWindowPoint(targetX, targetY) {
+        const scene = this.manager.currentModel?.scene;
+        const camera = this.manager.camera;
+        const renderer = this.manager.renderer;
+        if (!scene || !camera || !renderer || !THREE) return false;
+        if (!Number.isFinite(targetX) || !Number.isFinite(targetY)) return false;
+
+        const center = this._getProjectedModelCenterInWindow();
+        if (!center) return false;
+
+        const canvasRect = renderer.domElement.getBoundingClientRect();
+        const screenWidth = canvasRect.width;
+        const screenHeight = canvasRect.height;
+        if (!(screenWidth > 0) || !(screenHeight > 0)) return false;
+
+        const deltaPxX = targetX - center.x;
+        const deltaPxY = targetY - center.y;
+        if (deltaPxX === 0 && deltaPxY === 0) return true;
+
+        const modelCenterWorld = scene.position.clone();
+        const cameraDistance = camera.position.distanceTo(modelCenterWorld);
+        const fov = camera.fov * (Math.PI / 180);
+        const worldHeight = 2 * Math.tan(fov / 2) * cameraDistance;
+        const worldWidth = worldHeight * (screenWidth / screenHeight);
+        const pixelToWorldX = worldWidth / screenWidth;
+        const pixelToWorldY = worldHeight / screenHeight;
+
+        const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+        const up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
+
+        scene.position.add(right.clone().multiplyScalar(deltaPxX * pixelToWorldX));
+        scene.position.add(up.clone().multiplyScalar(-deltaPxY * pixelToWorldY));
+        return true;
     }
 
     /**
@@ -182,6 +339,9 @@ class VRMInteraction {
                 this.isDragging = true;
                 this.dragMode = 'pan';
                 this.previousMousePosition = { x: e.clientX, y: e.clientY };
+                this._rememberPanDragPointer(e, { captureOffset: true });
+                this._rememberDragHintPanPointer(e, { start: true });
+                this._dragHintApproachShown = false;
                 canvas.style.cursor = 'move';
                 e.preventDefault();
                 e.stopPropagation();
@@ -248,6 +408,11 @@ class VRMInteraction {
 
             const deltaX = e.clientX - this.previousMousePosition.x;
             const deltaY = e.clientY - this.previousMousePosition.y;
+            if (this.dragMode === 'pan') {
+                this._rememberPanDragPointer(e);
+                this._rememberDragHintPanPointer(e);
+                void this._recordDragHintPointerEdgeApproach('vrm');
+            }
 
             if (this.dragMode === 'pan' && this.manager.currentModel && this.manager.currentModel.scene) {
                 // 动态计算平移速度：根据相机距离和FOV，使鼠标移动距离与屏幕上模型移动距离同步
@@ -322,6 +487,10 @@ class VRMInteraction {
             if (this.isDragging) {
                 e.preventDefault();
                 e.stopPropagation();
+                if (this.dragMode === 'pan') {
+                    this._rememberPanDragPointer(e);
+                    this._rememberDragHintPanPointer(e);
+                }
                 // 保留本次拖拽类型再清状态，跨屏切换只对 pan 生效
                 // （orbit 绕包围盒中心原地转身，屏幕投影不位移，无需多屏切换）
                 const wasPanDrag = this.dragMode === 'pan';
@@ -339,6 +508,9 @@ class VRMInteraction {
                     : false;
 
                 if (!displaySwitched) {
+                    if (wasPanDrag) {
+                        await this._recordDragHintPointerEdgeRelease('vrm');
+                    }
                     // 拖拽结束后：若超出屏幕范围，执行回弹
                     await this._snapModelIntoScreen({ animate: true });
 
@@ -929,12 +1101,20 @@ class VRMInteraction {
             // 模型中心（相对于 canvas 左上角的像素），再偏移 canvas 在窗口中的位置
             const modelCenterX = (modelMinX + modelMaxX) / 2 + canvasRect.left;
             const modelCenterY = (modelMinY + modelMaxY) / 2 + canvasRect.top;
+            const dragPointer = this._lastPanDragPointerScreen;
+            const hasDragPointer = dragPointer
+                && Number.isFinite(dragPointer.x)
+                && Number.isFinite(dragPointer.y);
+            const pointerOffset = this._panDragModelCenterOffset || { x: 0, y: 0 };
+            this._lastPanDragPointerScreen = null;
+            this._panDragModelCenterOffset = null;
 
             const windowWidth = window.innerWidth;
             const windowHeight = window.innerHeight;
-            // 如果模型中心仍在当前窗口内，不切屏
-            if (modelCenterX >= 0 && modelCenterX < windowWidth &&
-                modelCenterY >= 0 && modelCenterY < windowHeight) {
+            const modelCenterInsideWindow = modelCenterX >= 0 && modelCenterX < windowWidth &&
+                modelCenterY >= 0 && modelCenterY < windowHeight;
+            // 没有拖拽释放点时维持旧逻辑：模型中心仍在当前窗口内就不切屏。
+            if (!hasDragPointer && modelCenterInsideWindow) {
                 return false;
             }
 
@@ -970,8 +1150,20 @@ class VRMInteraction {
 
             const modelScreenX = currentScreenX + modelCenterX;
             const modelScreenY = currentScreenY + modelCenterY;
+            const pointerWindowX = hasDragPointer ? dragPointer.x - currentScreenX : null;
+            const pointerWindowY = hasDragPointer ? dragPointer.y - currentScreenY : null;
+            const pointerOutsideCurrentWindow = hasDragPointer && !(
+                pointerWindowX >= 0 && pointerWindowX < windowWidth &&
+                pointerWindowY >= 0 && pointerWindowY < windowHeight
+            );
+            if (hasDragPointer && !pointerOutsideCurrentWindow && modelCenterInsideWindow) {
+                return false;
+            }
+            const useDragPointerForSwitch = hasDragPointer && pointerOutsideCurrentWindow;
+            const switchScreenX = useDragPointerForSwitch ? dragPointer.x : modelScreenX;
+            const switchScreenY = useDragPointerForSwitch ? dragPointer.y : modelScreenY;
 
-            // 4. 查找包含模型中心点的目标显示器
+            // 4. 优先使用跨出当前窗口的释放点；否则回退到模型中心，保留旧的宽模型边缘拖拽行为。
             let targetDisplay = null;
             for (const display of displays) {
                 const dx = Number.isFinite(display.screenX) ? display.screenX
@@ -984,20 +1176,19 @@ class VRMInteraction {
                     : (display.bounds && display.bounds.height);
                 if (!Number.isFinite(dx) || !Number.isFinite(dy) ||
                     !Number.isFinite(dw) || !Number.isFinite(dh)) continue;
-                if (modelScreenX >= dx && modelScreenX < dx + dw &&
-                    modelScreenY >= dy && modelScreenY < dy + dh) {
+                if (switchScreenX >= dx && switchScreenX < dx + dw &&
+                    switchScreenY >= dy && switchScreenY < dy + dh) {
                     targetDisplay = { ...display, screenX: dx, screenY: dy, width: dw, height: dh };
                     break;
                 }
             }
             if (!targetDisplay) {
-                recordDisplaySwitchMiss();
                 return false;
             }
 
             console.log('[VRM] 检测到模型移出当前屏幕，准备切换到屏幕:', targetDisplay.id);
 
-            const result = await window.electronScreen.moveWindowToDisplay(modelScreenX, modelScreenY);
+            const result = await window.electronScreen.moveWindowToDisplay(switchScreenX, switchScreenY);
 
             if (!(result && result.success && !result.sameDisplay)) {
                 recordDisplaySwitchMiss();
@@ -1005,36 +1196,24 @@ class VRMInteraction {
             }
             console.log('[VRM] 屏幕切换成功:', result);
 
-            // 5. 将模型在世界坐标中偏移，使它在新窗口中仍显示在原本的屏幕绝对位置
-            //    新窗口原点假定为 targetDisplay.(screenX, screenY)
-            //    期望的新窗口像素位置 = modelScreen(X,Y) - targetDisplay.(screenX, screenY)
-            //    当前投影后的窗口像素位置 = (modelCenterX, modelCenterY)
-            //    需要在屏幕空间移动的像素 = 期望 - 当前 = currentDisplay.(screenX, screenY) - targetDisplay.(screenX, screenY)
-            const deltaPxX = currentScreenX - targetDisplay.screenX;
-            const deltaPxY = currentScreenY - targetDisplay.screenY;
-
-            if (deltaPxX !== 0 || deltaPxY !== 0) {
-                const modelCenterWorld = scene.position.clone();
-                const cameraDistance = camera.position.distanceTo(modelCenterWorld);
-                const fov = camera.fov * (Math.PI / 180);
-                const worldHeight = 2 * Math.tan(fov / 2) * cameraDistance;
-                const worldWidth = worldHeight * (screenWidth / screenHeight);
-                const pixelToWorldX = worldWidth / screenWidth;
-                const pixelToWorldY = worldHeight / screenHeight;
-
-                const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
-                const up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
-
-                // 屏幕像素 -> 世界空间：X 沿 +right，Y 沿 -up（屏幕 Y 向下）
-                scene.position.add(right.clone().multiplyScalar(deltaPxX * pixelToWorldX));
-                scene.position.add(up.clone().multiplyScalar(-deltaPxY * pixelToWorldY));
-            }
+            // 5. 将模型在世界坐标中偏移，使拖拽抓取点落到释放鼠标的位置。
+            const desiredModelCenterX = useDragPointerForSwitch
+                ? switchScreenX - targetDisplay.screenX + (Number(pointerOffset.x) || 0)
+                : modelScreenX - targetDisplay.screenX;
+            const desiredModelCenterY = useDragPointerForSwitch
+                ? switchScreenY - targetDisplay.screenY + (Number(pointerOffset.y) || 0)
+                : modelScreenY - targetDisplay.screenY;
 
             // 6. 等待一帧让新窗口尺寸生效，再执行回弹与保存
             await new Promise(resolve => requestAnimationFrame(resolve));
+            this._moveModelCenterToWindowPoint(desiredModelCenterX, desiredModelCenterY);
 
-            await this._snapModelIntoScreen({ animate: true });
-            await this._savePositionAfterInteraction();
+            if (useDragPointerForSwitch) {
+                await this._savePositionAfterInteraction();
+            } else {
+                await this._snapModelIntoScreen({ animate: true });
+                await this._savePositionAfterInteraction();
+            }
             if (window.NekoAvatarMultiScreenDragHint &&
                 typeof window.NekoAvatarMultiScreenDragHint.markDisplaySwitchSuccess === 'function') {
                 window.NekoAvatarMultiScreenDragHint.markDisplaySwitchSuccess('vrm');

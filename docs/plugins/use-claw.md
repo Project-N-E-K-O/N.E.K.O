@@ -8,7 +8,7 @@
 - `brain/task_executor.py` 中的统一渠道判定逻辑
 - `brain/computer_use.py` 中的键鼠执行器
 - `brain/browser_use_adapter.py` 中的浏览器执行器
-- `agent_server.py` 中的任务分发、取消、状态追踪
+- `app/agent_server.py` 中的任务分发、取消、状态追踪
 
 用尽量少的代码改动，实现一套可落地的“意图识别与纠正记忆”方案。
 
@@ -86,12 +86,12 @@
 
 ### 2.4 任务状态与取消链路已经存在
 
-[agent_server.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/agent_server.py) 已维护 `task_registry`。  
+[app/agent_server.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/app/agent_server.py) 已维护 `task_registry`。  
 对于 `computer_use` 和 `browser_use`：
 
 - 会记录任务状态
 - 会发 `task_update`
-- 已有取消接口 [agent_server.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/agent_server.py) 中的 `/tasks/{task_id}/cancel`
+- 已有取消接口 [app/agent_server.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/app/agent_server.py) 中的 `/tasks/{task_id}/cancel`
 
 所以做“用户纠正”时，不需要新造整套任务系统，只要在当前任务记录基础上补一层“纠正事件上报”即可。
 
@@ -227,7 +227,7 @@
 
 文件：
 
-- [agent_server.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/agent_server.py)
+- [app/agent_server.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/app/agent_server.py)
 
 当前已经有：
 
@@ -258,7 +258,7 @@
 2. 组装纠正事件。
 3. 调用 `TaskExecutor` 或共享 helper 将事件追加到 JSON 文件。
 
-为了让这个接口能拿到更多上下文，建议顺手在注册任务时把以下字段写进 `agent_server.py` 中任务对象的私有结构 `task_info["_internal_corrections"]`：
+为了让这个接口能拿到更多上下文，建议顺手在注册任务时把以下字段写进 `app/agent_server.py` 中任务对象的私有结构 `task_info["_internal_corrections"]`：
 
 - `decision_reason`
 - `task_description`
@@ -417,7 +417,7 @@ def _sanitize_correction_text(text: str) -> str:
 
 1. 系统错误地把网页任务分配到 `computer_use`。
 2. 用户通过现有取消接口：
-   - [agent_server.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/agent_server.py) 中的 `/tasks/{task_id}/cancel`
+   - [app/agent_server.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/app/agent_server.py) 中的 `/tasks/{task_id}/cancel`
 3. 由前端弹出一个简单纠正输入框，或者先通过调试接口/手动 API 提交纠正：
    - 正确工具是什么
    - 纠正说明是什么
@@ -505,9 +505,9 @@ async def submit_task_correction(task_id: str, body: ToolCorrectionPayload):
 同时在以下位置补充少量字段，便于回写：
 
 - `computer_use` 任务注册处：
-  - [agent_server.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/agent_server.py)
+  - [app/agent_server.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/app/agent_server.py)
 - `browser_use` 任务注册处：
-  - [agent_server.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/agent_server.py)
+  - [app/agent_server.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/app/agent_server.py)
 
 建议存入纠正字段：
 
@@ -601,7 +601,7 @@ async def submit_task_correction(task_id: str, body: ToolCorrectionPayload):
    - 新增纠正记忆 JSON 读写与检索 helper
    - 在 `_assess_unified_channels()` 注入历史纠正
 
-3. [agent_server.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/agent_server.py)
+3. [app/agent_server.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/app/agent_server.py)
    - 增加纠正事件上报接口
    - 在任务注册时保存少量决策上下文
 
@@ -629,7 +629,7 @@ async def submit_task_correction(task_id: str, body: ToolCorrectionPayload):
 因此，最小改动路线不是去重写 `browser_use` 或 `computer_use`，而是：
 
 - 在 [brain/task_executor.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/brain/task_executor.py) 加检索与注入
-- 在 [agent_server.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/agent_server.py) 加纠正上报
+- 在 [app/agent_server.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/app/agent_server.py) 加纠正上报
 - 在 [config/prompts/prompts_agent.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/config/prompts/prompts_agent.py) 稍微强化渠道描述
 
 这样能最大化复用现有代码，同时把“意图识别 + 用户纠正记忆”真正落到可维护的实现路径上。

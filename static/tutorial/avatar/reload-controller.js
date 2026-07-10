@@ -101,6 +101,7 @@
             this.resolveCurrentName = normalizedOptions.resolveCurrentName || noop;
             this.fetchCharacters = normalizedOptions.fetchCharacters || noop;
             this.buildSnapshotPayload = normalizedOptions.buildSnapshotPayload || noop;
+            this.fadeOutCurrentModel = normalizedOptions.fadeOutCurrentModel || noop;
             this.reloadModel = normalizedOptions.reloadModel || noop;
             this.setPreparing = normalizedOptions.setPreparing || noop;
             this.revealPrepared = normalizedOptions.revealPrepared || noop;
@@ -118,7 +119,10 @@
             return this.overridePromise;
         }
 
-        beginOverride() {
+        beginOverride(options) {
+            const normalizedOptions = options || {};
+            const deferRevealPrepared = normalizedOptions.deferRevealPrepared === true;
+            const skipSourceModelFade = normalizedOptions.skipSourceModelFade === true;
             const host = this.host;
             if (!host) {
                 return Promise.reject(new Error('tutorial avatar reload host is required'));
@@ -126,7 +130,7 @@
 
             if (this.overridePromise) {
                 if (this.override && (this.override.restoring || this.override.restoreRequested)) {
-                    return this.overridePromise.then(() => this.beginOverride());
+                    return this.overridePromise.then(() => this.beginOverride(options));
                 }
                 return this.overridePromise;
             }
@@ -179,8 +183,17 @@
                 this.override.proactiveSnapshot = snapshotProactiveState();
                 applyProactiveState(buildDisabledProactiveState());
 
+                if (!skipSourceModelFade) {
+                    await Promise.resolve(this.fadeOutCurrentModel({
+                        deferRevealPrepared
+                    }));
+                }
+                ensureOverrideActive();
                 this.setPreparing(true);
-                await this.reloadModel(currentName, tutorialModelPayload, { temporary: true });
+                await this.reloadModel(currentName, tutorialModelPayload, {
+                    temporary: true,
+                    deferRevealPrepared
+                });
                 ensureOverrideActive();
                 this.setPreparing(true);
                 this.applyIdentityOverride({
@@ -189,7 +202,6 @@
                     avatarDataUrl: '',
                     modelType: 'live2d'
                 });
-                console.log('[TutorialAvatarReloadController] 新手教程期间已临时切换到 yui-origin 模型（未写入用户配置）:', tutorialModelPayload);
             })(), setupDeadline]).catch(async (error) => {
                 override.cancelled = true;
                 this.revealPrepared();
@@ -264,7 +276,6 @@
                     }
 
                     await this.reloadModel(currentName, snapshotPayload || {});
-                    console.log('[TutorialAvatarReloadController] 已恢复新手教程前的用户模型:', override.activePrefix || 'unknown');
                 } catch (error) {
                     console.warn('[TutorialAvatarReloadController] 恢复新手教程前用户模型失败:', error);
                     if (typeof window.showCurrentModel === 'function') {

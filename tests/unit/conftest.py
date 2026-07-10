@@ -28,6 +28,11 @@ def _needs_game_route_reset(request) -> bool:
     return module_name.startswith("test_game_") or request.node.get_closest_marker("game_route") is not None
 
 
+def _needs_icebreaker_route_reset(request) -> bool:
+    module_name = getattr(request.module, "__name__", "").split(".")[-1]
+    return module_name.startswith("test_icebreaker_") or request.node.get_closest_marker("icebreaker_route") is not None
+
+
 @pytest.fixture(autouse=True)
 def _reset_shared_state():
     shared_state = sys.modules.get("main_routers.shared_state")
@@ -58,3 +63,24 @@ def _reset_game_sessions(request):
 
     with reset_game_route_state():
         yield
+
+
+@pytest.fixture(autouse=True)
+def _reset_icebreaker_routes(request):
+    if not _needs_icebreaker_route_reset(request):
+        yield
+        return
+
+    from utils import icebreaker_route_state
+
+    states_snapshot = dict(icebreaker_route_state._icebreaker_route_states)
+    locks_snapshot = dict(icebreaker_route_state._icebreaker_route_locks)
+    try:
+        icebreaker_route_state._icebreaker_route_states.clear()
+        icebreaker_route_state._icebreaker_route_locks.clear()
+        yield
+    finally:
+        icebreaker_route_state._icebreaker_route_states.clear()
+        icebreaker_route_state._icebreaker_route_states.update(states_snapshot)
+        icebreaker_route_state._icebreaker_route_locks.clear()
+        icebreaker_route_state._icebreaker_route_locks.update(locks_snapshot)

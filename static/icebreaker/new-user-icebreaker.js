@@ -123,7 +123,7 @@
             return false;
         }
         try {
-            const response = await fetch('/api/game/new_user_icebreaker/context', {
+            const response = await fetch('/api/icebreaker/context', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({

@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import threading
 import time
 from collections import defaultdict
@@ -46,6 +47,16 @@ _CANDIDATE_MATURE_SECONDS = 60.0
 _MIN_TOPIC_TRIGGER_GAP_SECONDS = 4 * 60 * 60
 _MAX_DAILY_TOPIC_TRIGGERS = 2
 _USED_TOPIC_RECENT_SECONDS = 48 * 60 * 60
+# Quota is weight-based, not count-based: a delivery the user never engages with
+# costs only a fraction of the daily budget, so we keep trying until topics
+# actually land. A delivered-but-unanswered hook starts at this weight and is
+# upgraded to a full 1.0 once the user replies within the response window —
+# roughly three ignored deliveries equal one full success.
+_UNANSWERED_TOPIC_WEIGHT = 1.0 / 3.0
+# A user turn arriving within this window after a delivery counts as a response.
+_TOPIC_RESPONSE_WINDOW_SECONDS = 10 * 60
+# Tolerance for the daily weight-sum quota comparison (weight units).
+_QUOTA_WEIGHT_EPSILON = 1e-6
 
 
 def _clean_text(value: Any, *, token_limit: int = _MAX_TEXT_TOKENS) -> str:
@@ -58,6 +69,22 @@ def _clean_timestamp(value: Any) -> float:
         return float(value)
     except (TypeError, ValueError):
         return time.time()
+
+
+def _record_weight(record: Mapping[str, Any]) -> float:
+    """Quota weight of a used-topic record.
+
+    Records persisted before the weight field existed (or with a malformed
+    value) count as a full 1.0 — they were full successes under the old
+    count-based quota, so treating them as such is the conservative default.
+    """
+    try:
+        weight = float(record.get("weight", 1.0))
+    except (TypeError, ValueError):
+        return 1.0
+    if math.isnan(weight):
+        return 1.0
+    return max(0.0, min(1.0, weight))
 
 
 def _local_day(value: float) -> date:
@@ -268,6 +295,11 @@ class TopicHookPool:
         self._used_topics: dict[str, list[dict[str, Any]]] = defaultdict(list)
         self._used_topics_lock = threading.RLock()
         self._used_topics_write_lock = threading.Lock()
+        # Per-character "a topic was just delivered, awaiting a user reply"
+        # marker: {used_at, deadline}. In-memory only — a delivery whose
+        # response window straddles a restart simply stays at the unanswered
+        # weight (conservative). See note_user_message / _arm_topic_response_window.
+        self._awaiting_response: dict[str, dict[str, float]] = {}
         self._load_used_topics()
         # Restored persisted signals are dirty once after startup: they should
         # be eligible for the next heartbeat, then stop unless a new turn
@@ -282,6 +314,7 @@ class TopicHookPool:
         self._signal_store.clear(name)
         self._materials.pop(name, None)
         self._dirty.discard(name)
+        self._awaiting_response.pop(name, None)
         with self._used_topics_lock:
             self._used_topics.pop(name, None)
         self._persist_used_topics()
@@ -389,6 +422,10 @@ class TopicHookPool:
         if not cleaned:
             return
         name = str(lanlan_name or "default")
+        # A real user turn after a delivery is the response signal: upgrade the
+        # delivered hook from the unanswered weight to a full success. The AI's
+        # own opener arrives via note_ai_message, so it can never self-upgrade.
+        self._maybe_upgrade_topic_response(name)
         self._seq[name] += 1
         self._signal_store.note_turn(name, actor="user", text=cleaned)
         self._langs[name] = lang or self._langs.get(name, "zh")
@@ -441,7 +478,7 @@ class TopicHookPool:
         seen_seq = self._seq.get(name, 0)
         seen_purge_generation = self._purge_generation.get(name, 0)
         if any(item.get("status") == "pending" for item in self._materials.get(name, [])):
-            logger.info("[%s] topic collection deferred: pending material is in delivery phase", name)
+            logger.debug("[%s] topic collection deferred: pending material is in delivery phase", name)
             return
         if not self._signal_store.is_ready(name):
             logger.info(
@@ -651,7 +688,7 @@ class TopicHookPool:
             if current_material.get("status") != "pending":
                 return
             if self._daily_quota_reached(name):
-                logger.info("[%s] topic material trigger waiting: daily quota reached", name)
+                logger.debug("[%s] topic material trigger waiting: daily quota reached", name)
                 self._reschedule_trigger_retry(name, current_material, lang)
                 return
             if self._topic_was_recently_used(name, current_material):
@@ -673,12 +710,12 @@ class TopicHookPool:
             # prepare a deeper online lead off the user hot path. A later gate
             # close just keeps the prepared material pending for the next retry.
             if not self._delivery_available_now(name):
-                logger.info("[%s] topic material trigger waiting: delivery gate closed", name)
+                logger.debug("[%s] topic material trigger waiting: delivery gate closed", name)
                 self._reschedule_trigger_retry(name, current_material, lang)
                 return
             await self._deepen_material(name, current_material, lang)
             if not self._delivery_available_now(name):
-                logger.info("[%s] topic material trigger waiting: delivery gate closed after prepare", name)
+                logger.debug("[%s] topic material trigger waiting: delivery gate closed after prepare", name)
                 self._reschedule_trigger_retry(name, current_material, lang)
                 return
             delivery_material = deepcopy(current_material)
@@ -704,6 +741,7 @@ class TopicHookPool:
             current_material["status"] = "used"
             current_material["used_at"] = time.time()
             self._mark_topic_used(name, current_material, persist=False)
+            self._arm_topic_response_window(name, current_material)
             await asyncio.to_thread(self._persist_used_topics)
             self._materials[name] = []
             await self._discard_delivered_signals_async(name, current_material)
@@ -836,7 +874,9 @@ class TopicHookPool:
     def _daily_quota_reached(self, name: str, *, now: float | None = None) -> bool:
         if self._daily_topic_limit <= 0:
             return True
-        return len(self._prune_used_topics(name, now=now)) >= self._daily_topic_limit
+        today = self._prune_used_topics(name, now=now)
+        total_weight = sum(_record_weight(record) for record in today)
+        return total_weight >= self._daily_topic_limit - _QUOTA_WEIGHT_EPSILON
 
     def _seconds_until_next_topic_trigger(self, name: str, *, now: float | None = None) -> float:
         if self._min_trigger_gap_seconds <= 0:
@@ -911,6 +951,46 @@ class TopicHookPool:
             available.append(dict(material))
         return available
 
+    def _arm_topic_response_window(self, name: str, material: Mapping[str, Any]) -> None:
+        """Mark a just-delivered topic as awaiting a user reply.
+
+        The record is persisted at the unanswered weight by ``_mark_topic_used``;
+        a user turn inside the window upgrades it to full via
+        ``_maybe_upgrade_topic_response``. We hold a direct reference to the
+        just-appended record rather than keying on ``used_at`` — coarse clock
+        resolution (e.g. ~15 ms on Windows) can give two close deliveries the
+        same timestamp, and a value match would then upgrade the wrong record.
+        """
+        used_at = float(material.get("used_at") or time.time())
+        with self._used_topics_lock:
+            records = self._used_topics.get(name) or []
+            record = records[-1] if records else None
+        self._awaiting_response[name] = {
+            "deadline": used_at + _TOPIC_RESPONSE_WINDOW_SECONDS,
+            "record": record,
+        }
+
+    def _maybe_upgrade_topic_response(self, name: str, *, now: float | None = None) -> None:
+        pending = self._awaiting_response.get(name)
+        if not pending:
+            return
+        current = float(now if now is not None else time.time())
+        # One-shot: clear the marker whether or not it is still in-window, so a
+        # later turn can't upgrade a stale delivery.
+        self._awaiting_response.pop(name, None)
+        if current > float(pending.get("deadline") or 0.0):
+            return
+        record = pending.get("record")
+        if record is None:
+            return
+        with self._used_topics_lock:
+            # Guard against the record having been pruned out of the live list.
+            if record not in self._used_topics.get(name, ()):
+                return
+            record["weight"] = 1.0
+        logger.info("[%s] topic response within window: quota weight upgraded to full", name)
+        self._request_used_topics_persist()
+
     def _mark_topic_used(
         self,
         name: str,
@@ -923,6 +1003,7 @@ class TopicHookPool:
             self._used_topics[name].append(
                 {
                     "used_at": float(material.get("used_at") or time.time()),
+                    "weight": _UNANSWERED_TOPIC_WEIGHT,
                     "hook_id": str(material.get("hook_id") or "").strip(),
                     "hook_id_hash": _topic_fingerprint(material.get("hook_id")),
                     "interest": _clean_text(material.get("interest"), token_limit=90),
@@ -972,6 +1053,7 @@ class TopicHookPool:
                 loaded.append(
                     {
                         "used_at": used_at,
+                        "weight": _record_weight(entry),
                         "hook_id_hash": _stored_topic_fingerprint(
                             entry.get("hook_id_hash") or entry.get("hook_id")
                         ),
@@ -1015,6 +1097,7 @@ class TopicHookPool:
                     name: [
                         {
                             "used_at": float(record.get("used_at") or 0.0),
+                            "weight": _record_weight(record),
                             "hook_id_hash": _stored_topic_fingerprint(
                                 record.get("hook_id_hash") or record.get("hook_id")
                             ),

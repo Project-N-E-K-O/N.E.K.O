@@ -14,6 +14,8 @@ const VOICE_CLONE_PROVIDER_REGISTRY_KEYS = Object.freeze({
     minimax_intl: 'minimax_intl',
     elevenlabs: 'elevenlabs',
     mimo: 'mimo',
+    vllm_omni: 'vllm_omni',
+    doubao_tts: 'doubao_tts',
 });
 const VOICE_CLONE_RESTRICTED_REGISTRY_KEYS = new Set([
     'qwen_intl',
@@ -27,6 +29,7 @@ const VOICE_CLONE_PROVIDER_KEY_FIELDS = Object.freeze([
     ['minimax_intl', 'assistApiKeyMinimaxIntl'],
     ['elevenlabs', 'assistApiKeyElevenlabs'],
     ['mimo', 'assistApiKeyMimo'],
+    ['doubao_tts', 'assistApiKeyDoubaoTts'],
 ]);
 const voiceCloneProviderRestrictionState = {
     loaded: false,
@@ -43,7 +46,6 @@ const voiceCloneApiConfigState = {
 const VOICE_CLONE_LOADER_FETCH_TIMEOUT_MS = 5000;
 const VOICE_CLONE_LOADER_FETCH_ATTEMPTS = 3;
 const VOICE_CLONE_LOADER_FETCH_BACKOFF_MS = 250;
-
 function sleepVoiceCloneLoaderRetry(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -198,10 +200,25 @@ function normalizeVoicePreviewLanguage(rawLanguage) {
     return 'en';
 }
 
+function voiceCloneI18n(key, fallback) {
+    return VoiceDisplayUtils.t(key, fallback);
+}
+
+function getNativeProviderShortName(provider) {
+    return VoiceDisplayUtils.providerShortName(provider, {
+        freeKey: 'voice.providerFreeApi',
+        freeFallback: 'Free API',
+    });
+}
+
 function getNativeVoiceProviderLabel(nativeEntries) {
     if (!Array.isArray(nativeEntries)) return '';
     for (const [, voiceData] of nativeEntries) {
-        const label = voiceData && (voiceData.provider_label || voiceData.provider);
+        const provider = voiceData && String(voiceData.provider || '').trim();
+        if (VoiceDisplayUtils.isKnownProvider(provider)) {
+            return getNativeProviderShortName(provider);
+        }
+        const label = voiceData && (voiceData.provider_label || provider);
         if (label) return String(label);
     }
     return '';
@@ -215,6 +232,10 @@ function formatNativeVoiceLabel(nativeEntries) {
             : providerLabel + ' 原生音色';
     }
     return window.t ? window.t('voice.nativePresetLabelGeneric') : '原生预设音色';
+}
+
+function getNativeVoiceDisplayName(voiceId, voiceData) {
+    return VoiceDisplayUtils.nativeVoiceDisplayName(voiceId, voiceData);
 }
 
 function getVoicePreviewLanguage() {
@@ -440,6 +461,14 @@ function isMiniMaxProvider(provider) {
     return provider === 'minimax' || provider === 'minimax_intl';
 }
 
+function isDoubaoTtsProvider(provider) {
+    return provider === 'doubao_tts';
+}
+
+function isDoubaoSpeakerId(value) {
+    return /^S_[A-Za-z0-9]+$/.test(String(value || '').trim());
+}
+
 function getVoiceCloneProviderKeyField(provider) {
     const entry = VOICE_CLONE_PROVIDER_KEY_FIELDS.find(([providerKey]) => providerKey === provider);
     return entry ? entry[1] : '';
@@ -458,10 +487,17 @@ function getActiveMimoKeyField(cfg) {
     return tokenPlanActive ? VOICE_CLONE_MIMO_TOKEN_PLAN_KEY_FIELD : 'assistApiKeyMimo';
 }
 
+function cfgHasDoubaoTtsKey(cfg) {
+    return !!(cfg && cfg.assistApiKeyDoubaoTts);
+}
+
 function cfgHasCloneProviderKey(cfg, provider) {
     if (!cfg || typeof cfg !== 'object') return false;
     if (provider === 'mimo') {
         return !!cfg[getActiveMimoKeyField(cfg)];
+    }
+    if (provider === 'doubao_tts') {
+        return cfgHasDoubaoTtsKey(cfg);
     }
     const fieldName = getVoiceCloneProviderKeyField(provider);
     return !!(fieldName && cfg[fieldName]);
@@ -515,6 +551,7 @@ async function ensureVoiceCloneApiConfigState(options = {}) {
 }
 
 function hasVoiceCloneProviderApi(provider) {
+    if (provider === 'vllm_omni') return true;
     if (voiceCloneApiConfigState.isLocalTts) return true;
     return cfgHasCloneProviderKey(voiceCloneApiConfigState.cfg, provider);
 }
@@ -874,6 +911,9 @@ function getPreferredCloneProviderFromConfig(cfg) {
 function hasUsableCloneApiFromConfig(cfg, isLocalTts) {
     if (isLocalTts) return true;
     if (!cfg || typeof cfg !== 'object') return false;
+    // vLLM-Omni 是本地服务，无需 API key；只要配置了 ttsModelUrl 即可克隆。
+    const vllmUrl = (cfg.ttsModelUrl || cfg.TTS_MODEL_URL || '').trim();
+    if (vllmUrl) return true;
     return VOICE_CLONE_PROVIDER_KEY_FIELDS.some(([provider]) => (
         cfgHasCloneProviderKey(cfg, provider) && !isVoiceCloneProviderRestricted(provider)
     ));
@@ -889,11 +929,15 @@ function updateVoiceCloneProviderNoticeText(noticeDiv, provider) {
         'minimax_intl': 'voice.minimaxIntlApiRequired',
         'elevenlabs': 'voice.elevenlabsApiRequired',
         'mimo': 'voice.mimoApiRequired',
+        'vllm_omni': 'voice.vllmOmniNotice',
+        'doubao_tts': 'voice.doubaoTtsApiRequired',
     };
     const fallbackMap = {
         'cosyvoice_intl': '请先在 API 设置中填写阿里国际版 API Key',
         'elevenlabs': '请先在 API 设置中填写 ElevenLabs API Key',
         'mimo': '请先在 API 设置中填写 MiMo API Key',
+        'vllm_omni': '本地 vLLM-Omni 服务，无需 API Key',
+        'doubao_tts': 'Please save a Doubao Speech (Volcengine) API Key in the API Key Book.',
     };
     const i18nKey = keyMap[provider] || 'voice.alibabaApiRequired';
     span.setAttribute('data-i18n', i18nKey);
@@ -929,6 +973,11 @@ function normalizePrefixInputForProvider() {
         return '';
     }
 
+    updatePrefixFieldForProvider(provider);
+    if (isDoubaoTtsProvider(provider)) {
+        return prefixInput.value.trim();
+    }
+
     if (!isMiniMaxProvider(provider)) {
         prefixInput.removeAttribute('maxlength');
         return prefixInput.value.trim();
@@ -941,6 +990,47 @@ function normalizePrefixInputForProvider() {
         prefixInput.value = sanitized;
     }
     return sanitized;
+}
+
+function setI18nText(element, key, fallback) {
+    if (!element) return;
+    element.setAttribute('data-i18n', key);
+    element.textContent = voiceCloneI18n(key, fallback);
+}
+
+function setI18nPlaceholder(element, key, fallback) {
+    if (!element) return;
+    element.setAttribute('data-i18n-placeholder', key);
+    element.placeholder = voiceCloneI18n(key, fallback);
+}
+
+function updatePrefixFieldForProvider(provider) {
+    const prefixInput = document.getElementById('prefix');
+    if (!prefixInput) return;
+    const row = prefixInput.closest('.field-row');
+    const registerText = document.querySelector('.register-voice-btn .register-text');
+    const prefixLabel = document.getElementById('prefixLabel')
+        || (row ? row.querySelector('label[data-i18n="voice.customPrefix"], label[data-i18n="voice.doubaoSpeakerIdLabel"]') : null);
+    let prefixHint = document.getElementById('prefixHint');
+    if (!prefixHint && row) {
+        prefixHint = document.createElement('label');
+        prefixHint.id = 'prefixHint';
+        prefixHint.className = 'hint';
+        row.insertBefore(prefixHint, prefixInput);
+    }
+
+    if (isDoubaoTtsProvider(provider)) {
+        prefixInput.removeAttribute('maxlength');
+        setI18nText(prefixLabel, 'voice.doubaoSpeakerIdLabel', 'Doubao Speaker ID (overwrite existing S_ voice, required)');
+        setI18nText(prefixHint, 'voice.doubaoSpeakerIdNote', 'Clone the voice in the Doubao Speech console first and copy its S_ Speaker ID here; NEKO will overwrite that existing voice and will not create a new Doubao voice ID, e.g. S_xeC2CDp72');
+        setI18nPlaceholder(prefixInput, 'voice.doubaoSpeakerIdPlaceholder', 'e.g. S_xeC2CDp72');
+        return;
+    }
+
+    setI18nText(prefixLabel, 'voice.customPrefix', '自定义前缀（必填，用于区分音色）');
+    setI18nText(prefixHint, 'voice.customPrefixNote', '不超过10个字符，只支持数字和英文字母');
+    setI18nPlaceholder(prefixInput, 'voice.voiceIdPlaceholder', '不超过10个字符，只支持数字和英文字母');
+    setI18nText(registerText, 'voice.register', 'Register Voice');
 }
 
 function guessAudioMimeType(filename) {
@@ -1250,6 +1340,7 @@ document.addEventListener('DOMContentLoaded', function initProviderSwitch() {
         refreshVoiceCloneProviderNotice(providerSelect, noticeDiv);
         normalizePrefixInputForProvider();
         updateCloneMethodForProvider(providerSelect.value);
+        updateRefTextRowForProvider(providerSelect.value);
     });
     if (prefixInput) {
         prefixInput.addEventListener('input', () => {
@@ -1259,6 +1350,7 @@ document.addEventListener('DOMContentLoaded', function initProviderSwitch() {
     refreshVoiceCloneProviderNotice(providerSelect, noticeDiv);
     normalizePrefixInputForProvider();
     updateCloneMethodForProvider(providerSelect.value);
+    updateRefTextRowForProvider(providerSelect.value);
 });
 
 // 当前克隆方式
@@ -1267,7 +1359,7 @@ let currentCloneMethod = 'file';
 // MiMo 只支持本地文件克隆：它把参考样本存在本地、不走 /voice_clone_direct（后端
 // valid_providers 不含 mimo，直链会直接 TTS_PROVIDER_INVALID）。选中 MiMo 时禁用直链方式。
 function isDirectLinkUnsupportedProvider(provider) {
-    return provider === 'mimo';
+    return provider === 'mimo' || provider === 'vllm_omni' || provider === 'doubao_tts';
 }
 
 function updateCloneMethodForProvider(provider) {
@@ -1278,12 +1370,21 @@ function updateCloneMethodForProvider(provider) {
         btnDirectLinkClone.classList.toggle('disabled', disabled);
         btnDirectLinkClone.setAttribute('aria-disabled', disabled ? 'true' : 'false');
         btnDirectLinkClone.title = disabled
-            ? (window.t ? window.t('voice.mimoDirectLinkUnsupported') : 'MiMo 暂不支持直链克隆')
+            ? (window.t ? window.t('voice.directLinkUnsupported') : '当前服务商暂不支持直链克隆，请上传本地文件')
             : '';
     }
     // 当前在直链方式但切到了不支持直链的 provider → 强制回退到本地文件
     if (disabled && currentCloneMethod === 'directlink') {
         switchCloneMethod('file');
+    }
+}
+
+// vLLM-Omni 克隆需要参考音频原文（ref_text），其它 provider 不需要。
+// 选中 vllm_omni 时显示 ref_text 输入区，其它 provider 时隐藏。
+function updateRefTextRowForProvider(provider) {
+    const refTextRow = document.getElementById('vllmRefTextRow');
+    if (refTextRow) {
+        refTextRow.style.display = (provider === 'vllm_omni') ? '' : 'none';
     }
 }
 
@@ -1450,6 +1551,17 @@ async function registerVoice() {
     applyVoiceCloneProviderRestrictions(providerSelect);
     const provider = (providerSelect || {}).value || 'cosyvoice';
     const prefix = normalizePrefixInputForProvider();
+    const validateDoubaoSpeakerId = () => {
+        if (provider !== 'doubao_tts') {
+            return false;
+        }
+        if (isDoubaoSpeakerId(prefix)) return false;
+        resultDiv.textContent = window.t
+            ? window.t('voice.doubaoSpeakerIdRequired')
+            : '豆包声音复刻需要填写 S_ 开头的 Speaker ID';
+        resultDiv.className = 'result error';
+        return true;
+    };
 
     // 根据克隆方式验证输入
     if (currentCloneMethod === 'file') {
@@ -1465,6 +1577,24 @@ async function registerVoice() {
             resultDiv.className = 'result error';
             return;
         }
+        if (validateDoubaoSpeakerId()) {
+            return;
+        }
+        // vLLM-Omni 必须填写参考音频原文
+        if (provider === 'vllm_omni') {
+            const refTextEl = document.getElementById('vllmRefText');
+            const refTextVal = refTextEl ? refTextEl.value.trim() : '';
+            if (!refTextVal) {
+                resultDiv.textContent = window.t ? window.t('voice.vllmRefTextRequired') : '请填写参考音频原文（vLLM-Omni 克隆必填）';
+                resultDiv.className = 'result error';
+                return;
+            }
+            if (refTextVal.length > 100) {
+                resultDiv.textContent = window.t ? window.t('voice.vllmRefTextTooLong') : 'vLLM-Omni 参考音频原文过长，请控制在 100 字以内';
+                resultDiv.className = 'result error';
+                return;
+            }
+        }
     } else {
         // 直链克隆
         const url = directLinkUrl.value.trim();
@@ -1478,6 +1608,9 @@ async function registerVoice() {
         if (!prefix) {
             resultDiv.textContent = window.t ? window.t('voice.pleaseEnterPrefix') : '请填写自定义前缀';
             resultDiv.className = 'result error';
+            return;
+        }
+        if (validateDoubaoSpeakerId()) {
             return;
         }
         // 验证URL格式
@@ -1501,6 +1634,10 @@ async function registerVoice() {
         formData.append('ref_language', refLanguage);
         formData.append('prefix', prefix);
         formData.append('provider', provider);
+        if (provider === 'vllm_omni') {
+            const refTextEl = document.getElementById('vllmRefText');
+            formData.append('ref_text', refTextEl ? refTextEl.value.trim() : '');
+        }
         requestOptions = {
             method: 'POST',
             body: formData
@@ -1686,9 +1823,36 @@ async function playPreview(voiceId, btn) {
 
         if (!audioSrc) {
             // 如果本地没有缓存，则从服务器获取
-            const response = await fetchVoiceCloneLoaderResponse(
-                `/api/characters/voice_preview?voice_id=${encodeURIComponent(voiceId)}&language=${encodeURIComponent(previewLanguage)}`
-            );
+            // TTS 合成耗时按音色类型分两档：克隆音色（voiceId 含 '-clone-'，如
+            // mimo-clone-* / vllm-omni-clone-* 等）需服务端实时合成参考音频，耗时
+            // 远超普通调用，用 30s 超时（对齐后端 asyncio.wait_for timeout=30）、共尝试 2 次；
+            // 预制音色合成快，沿用改造前的 5s 超时、共尝试 3 次——避免预制音色在服务端偶发
+            // 卡住时让用户干等过久才报错。
+            const isCloneVoice = typeof voiceId === 'string' && voiceId.includes('-clone-');
+            const ttsTimeoutMs = isCloneVoice ? 30_000 : 5_000;
+            const ttsMaxAttempts = isCloneVoice ? 2 : 3;
+            let lastTtsError = null;
+            let response = null;
+            for (let attempt = 1; attempt <= ttsMaxAttempts; attempt += 1) {
+                response = null;
+                const ctrl = new AbortController();
+                const tid = setTimeout(() => ctrl.abort(), ttsTimeoutMs);
+                try {
+                    response = await fetch(
+                        `/api/characters/voice_preview?voice_id=${encodeURIComponent(voiceId)}&language=${encodeURIComponent(previewLanguage)}`,
+                        { signal: ctrl.signal }
+                    );
+                    if (response.ok || response.status < 500 || attempt >= ttsMaxAttempts) break;
+                    lastTtsError = new Error(`API returned ${response.status}`);
+                } catch (error) {
+                    lastTtsError = error;
+                    if (attempt >= ttsMaxAttempts) break;
+                } finally {
+                    clearTimeout(tid);
+                }
+                await sleepVoiceCloneLoaderRetry(VOICE_CLONE_LOADER_FETCH_BACKOFF_MS * attempt);
+            }
+            if (!response) throw lastTtsError || new Error('请求失败');
             const { data, nonJson, text } = await safeReadResponse(response);
             if (!response.ok) {
                 if (data && (data.error || data.detail)) {
@@ -2074,7 +2238,7 @@ async function loadVoices() {
 
                     const nameDiv = document.createElement('div');
                     nameDiv.className = 'voice-name';
-                    const displayName = (voiceData && voiceData.prefix) || voiceId;
+                    const displayName = getNativeVoiceDisplayName(voiceId, voiceData);
                     nameDiv.textContent = displayName;
                     const badge = document.createElement('span');
                     badge.style.cssText = 'margin-left: 8px; font-size: 10px; padding: 1px 6px; border-radius: 8px; background: rgba(140,120,220,0.25); color: #b8a4ff;';

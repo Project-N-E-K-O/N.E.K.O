@@ -4576,6 +4576,42 @@ margin-top: 10px;
     transform: translateY(-1px);
 }
 
+.chara-card-item.is-dissolving,
+.chara-list-item.is-dissolving {
+    pointer-events: none;
+    animation: var(--chara-card-dissolve-animation, chara-card-ghost-out 680ms ease forwards);
+}
+
+.chara-card-particle-canvas {
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    height: 100vh;
+    pointer-events: none;
+    z-index: 9999;
+}
+
+@keyframes chara-card-ghost-out {
+    0% {
+        opacity: 1;
+        filter: blur(0);
+        transform: translateY(0) scale(1);
+    }
+    100% {
+        opacity: 0;
+        filter: blur(6px);
+        transform: translateY(-6px) scale(0.985);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .chara-card-item.is-dissolving,
+    .chara-list-item.is-dissolving {
+        --chara-card-dissolve-animation: none;
+        animation: none;
+    }
+}
+
 /* ===== 角色卡详情面板 ===== */
 .catgirl-panel-overlay {
     position: fixed;

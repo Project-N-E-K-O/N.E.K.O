@@ -1,6 +1,6 @@
 # エージェントシステム
 
-エージェントシステムにより、N.E.K.O. のキャラクターはバックグラウンドタスク — Webブラウジング、コンピューター操作、サンドボックスでのコード実行、外部ツールの呼び出し — を会話コンテキストに基づいて実行できます。
+エージェントシステムにより、N.E.K.O. のキャラクターはバックグラウンドタスク — Webブラウジング、コンピューター操作、独立したエージェントチャネルへの委譲、外部ツールの呼び出し — を会話コンテキストに基づいて実行できます。
 
 ## アーキテクチャ
 
@@ -14,10 +14,11 @@ Main Server                          Agent Server
 │   │            │                  │   └── Deduper        │
 │   │ callbacks  │ <──────────────  │                      │
 │   │            │  PUSH/PULL       │ Adapters:            │
-└────────────────┘                  │   ├── MCP Client     │
-                                    │   ├── Computer Use   │
+└────────────────┘                  │   ├── Computer Use   │
                                     │   ├── Browser Use    │
-                                    │   └── Virtual Machine│
+                                    │   ├── OpenClaw       │
+                                    │   ├── OpenFang       │
+                                    │   └── User Plugin    │
                                     └────────────────────┘
 ```
 
@@ -29,9 +30,10 @@ Main Server                          Agent Server
 |--------|----------|------|
 | `agent_enabled` | false | エージェントシステムのマスタースイッチ |
 | `computer_use_enabled` | false | スクリーンショット分析、マウス/キーボード |
-| `mcp_enabled` | false | Model Context Protocolツール呼び出し |
 | `browser_use_enabled` | false | Webブラウジング自動化 |
-| `vm_enabled` | false | 仮想マシンサンドボックス実行 |
+| `user_plugin_enabled` | false | プラグイン / Model Context Protocol ツール呼び出し |
+| `openclaw_enabled` | false | OpenClaw 独立エージェントチャネル |
+| `openfang_enabled` | false | OpenFang 独立エージェントチャネル |
 
 ## タスク実行パイプライン
 
@@ -40,10 +42,10 @@ Main Server                          Agent Server
 2. **計画**: `Planner` がリクエストを順序付きのステップを持つタスクプランに分解します。
 
 3. **実行**: `Processor` が適切なアダプターを通じて各ステップを実行します：
-   - **MCP Client** — Model Context Protocol経由で外部ツールを呼び出し
    - **Computer Use** — スクリーンショットを撮影し、ビジョンモデルで分析し、マウス/キーボード操作を実行
    - **Browser Use** — Webページのナビゲーション、コンテンツの抽出、フォームの入力
-   - **Virtual Machine** — 隔離されたサンドボックス環境でコードとコマンドを実行
+   - **OpenClaw / OpenFang** — タスクを独立したエージェントチャネルに委譲
+   - **User Plugin** — ユーザーがインストールしたプラグイン（Model Context Protocol）経由で外部ツールを呼び出し
 
 4. **分析**: `Analyzer` がタスクの目標が達成されたかどうかを評価します。
 
@@ -80,14 +82,15 @@ Browser Useアダプター（`brain/browser_use_adapter.py`）は、Web自動化
 - 要素のクリック
 - ページスクリーンショットの撮影
 
-## Virtual Machine
+## OpenClaw
 
-仮想マシンアダプターは、コード実行のための隔離されたサンドボックス環境を提供します：
+OpenClaw アダプター（`brain/openclaw_adapter.py`）は、実行可能なタスクを OpenClaw 独立エージェントチャネル（内部では `qwenpaw` として参照）に委譲します。
 
-- サンドボックスVM内でコードやシェルコマンドを実行
-- ファイルシステムの隔離により、ホストへの意図しない変更を防止
-- タイムアウト制御付きの長時間実行タスクをサポート
-- 結果はZeroMQ経由でストリーミング返却
+## OpenFang
+
+OpenFang アダプター（`brain/openfang_adapter.py`）は、実行可能なタスクを OpenFang 独立エージェントチャネルに委譲します。
+
+チャネル選択の優先順位は `brain/task_executor.py` で `_CHANNEL_PRIORITY = ["qwenpaw", "openfang", "browser_use", "computer_use"]` として定義されています。プラグイン / MCP ツール呼び出し（`user_plugin_enabled`）は別の経路でディスパッチされ、`_CHANNEL_PRIORITY` には**含まれません**。
 
 ## APIエンドポイント
 

@@ -267,9 +267,9 @@ async def unregister_on_shutdown():
 プラグインのライフサイクルフックにバインド：
 
 ```python
-from plugin.sdk.plugin import NekoPluginBase, plugin
+from plugin.sdk.plugin import NekoPluginBase, neko_plugin
 
-@plugin
+@neko_plugin
 class WeatherPlugin(NekoPluginBase):
     async def on_start(self):
         # 非同期で登録（プラグイン起動メインフローをブロックしない）

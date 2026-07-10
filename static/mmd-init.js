@@ -452,13 +452,22 @@
 })();
 
 // 模块加载完成后，若当前是 MMD 模式则自动初始化并加载模型
-(async function autoInitMMDOnMainPage() {
+async function autoInitMMDOnMainPage() {
     // 模型管理页面和角色卡导出页不自动加载
     if (window._cardExportPage) return;
     if (window.location.pathname.includes('model_manager') || document.querySelector('#vrm-model-select') !== null) return;
 
     if (window.__nekoStorageLocationStartupBarrier && typeof window.__nekoStorageLocationStartupBarrier.then === 'function') {
         await window.__nekoStorageLocationStartupBarrier;
+    }
+
+    if (window.NekoAvatarFloatingBoot && typeof window.NekoAvatarFloatingBoot.shouldSkipUserModelBoot === 'function'
+        && window.NekoAvatarFloatingBoot.shouldSkipUserModelBoot()) {
+        if (typeof window.NekoAvatarFloatingBoot.markUserModelBootSkipped === 'function') {
+            window.NekoAvatarFloatingBoot.markUserModelBootSkipped('mmd-init');
+        }
+        console.log('[MMD Init] 新手教程启动预测命中，跳过用户 MMD 模型加载');
+        return;
     }
 
     // 等待页面配置加载完成
@@ -586,7 +595,10 @@
         console.error('[MMD Init] MMD 自动加载失败:', e);
         window.MMDLoadingOverlay.fail(loadingSessionId, { detail: e?.message || String(e) });
     }
-})();
+}
+
+window.autoInitMMDOnMainPage = autoInitMMDOnMainPage;
+autoInitMMDOnMainPage();
 
 // ── 主页面 MMD 待机动作轮换 ──────────────────────────────
 // 策略：优先在动画一轮播完（loop 事件）时切换，避免动作中途跳变；

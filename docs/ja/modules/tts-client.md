@@ -1,6 +1,6 @@
 # TTS Client
 
-**ファイル:** `main_logic/tts_client.py`（約2300行）
+**モジュール:** `main_logic/tts_client/`（Python パッケージ。`__init__.py`、`_infra.py`、`_registry_meta.py`、`_telemetry.py`、およびプロバイダーごとの worker モジュールを含む `workers/` サブパッケージで合計約5900行）。ファクトリ関数 `get_tts_worker` は `main_logic/tts_client/__init__.py` に定義されています。
 
 TTS クライアントは、統一されたキューベースのインターフェースで複数のプロバイダーにわたるテキスト音声合成を処理します。
 

@@ -6,7 +6,7 @@
 
 ## 感情分析
 
-### `POST /api/analyze_emotion`
+### `POST /api/emotion/analysis`
 
 テキストの感情トーンを分析します。
 
@@ -35,23 +35,25 @@
 
 **クエリ:** `directory` — 検索するディレクトリパス。
 
-### `GET /api/proxy-image`
+### `GET /api/meme/proxy-image`
 
-CORS 制限を回避するための画像リクエストのプロキシ。
+CORS 制限を回避するためにリモート画像（ミームなど）をプロキシします。SSRF 保護とキャッシュ付き。
 
-**クエリ:** `url` — プロキシする画像 URL。
+**クエリ:** `url` — プロキシするリモート画像 URL（http/https である必要があります）。
+
+### `GET /api/steam/proxy-image`
+
+ローカル画像ファイル（特に Steam Workshop ディレクトリ）へのアクセスをプロキシします。絶対パスと相対パスに対応します。
+
+**クエリ:** `image_path` — 画像のローカルファイルパス。
 
 ## Steam 実績
 
-### `POST /api/steam_achievement`
+### `POST /api/steam/set-achievement-status/{name}`
 
-Steam 実績をアンロックします。
+Steam 実績をアンロックします。実績名はパスパラメータ `{name}` として渡します。
 
-**ボディ:**
-
-```json
-{ "achievement_id": "ACHIEVEMENT_NAME" }
-```
+**パスパラメータ:** `name` — Steam 実績名（例: `ACH_FIRST_DIALOGUE`）。
 
 ## プロアクティブチャット
 
@@ -72,18 +74,26 @@ Steam 実績をアンロックします。
 プロアクティブメッセージにはレート制限があります：キャラクターごとに1時間あたり最大10件。
 :::
 
-## Web スクリーニング
+::: info
+内部的には、プロアクティブチャットは 2 段階のパイプラインで動作します。フェーズ 1 の LLM 呼び出しが候補となる Web コンテンツをスクリーニングし（あわせて音楽/ミームのキーワードを抽出）、その後フェーズ 2 でペルソナに沿った返信を生成します。単独で呼び出せる Web スクリーニング用エンドポイントは存在しません。
+:::
 
-### `POST /api/web_screening`
+## スクリーンショット
 
-AI レビューによる Web コンテンツのスクリーニング（コンテンツフィルタリングと関連性ランキング用）。
+### `POST /api/screenshot`
 
-**ボディ:** スクリーニングモード付きの Web コンテンツデータ。
+バックエンドのスクリーンショットフォールバック：フロントエンドの画面キャプチャ API がすべて失敗した場合に、バックエンドが pyautogui でローカル画面をキャプチャします。ループバックのみ。バックエンドがリモートとして構成されている場合は無効です。
 
-## スクリーンショット分析
+**レスポンス:** `{ "success": true, "data": "data:image/jpeg;base64,...", "size": <バイト数> }`
 
-### `POST /api/screenshot_analysis`
+### `POST /api/screenshot/interactive`
 
-ビジョンモデルを使用してスクリーンショットを分析します。
+システムネイティブの対話的（範囲選択）スクリーンショット。チャットのスクリーンショットボタンが優先的に使用します。macOS は `screencapture` の範囲選択を使用し、それ以外のプラットフォームではフロントエンドに委譲します。ループバックのみ。
 
-**ボディ:** オプションのコンテキスト付き Base64 エンコード画像データ。
+**レスポンス:** JSON エンベロープ（生の DataURL ではありません）。
+
+```json
+{ "success": true, "data": "data:image/jpeg;base64,...", "size": <バイト数> }
+```
+
+ユーザーが選択をキャンセルした場合: `{ "success": false, "canceled": true }`。localhost 以外 / リモートとして構成されたバックエンドの場合: `{ "success": false, "error": "..." }`。

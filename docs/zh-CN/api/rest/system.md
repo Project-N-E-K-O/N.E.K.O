@@ -6,7 +6,7 @@
 
 ## 情感分析
 
-### `POST /api/analyze_emotion`
+### `POST /api/emotion/analysis`
 
 分析文本的情感倾向。
 
@@ -35,23 +35,25 @@
 
 **查询参数：** `directory` — 要搜索的目录路径。
 
-### `GET /api/proxy-image`
+### `GET /api/meme/proxy-image`
 
-代理图片请求以绕过 CORS 限制。
+代理远程图片（例如表情包）以绕过 CORS 限制，带 SSRF 防护与缓存。
 
-**查询参数：** `url` — 要代理的图片 URL。
+**查询参数：** `url` — 要代理的远程图片 URL（必须为 http/https）。
+
+### `GET /api/steam/proxy-image`
+
+代理访问本地图片文件（尤其是 Steam Workshop 目录），支持绝对路径与相对路径。
+
+**查询参数：** `image_path` — 图片的本地文件路径。
 
 ## Steam 成就
 
-### `POST /api/steam_achievement`
+### `POST /api/steam/set-achievement-status/{name}`
 
-解锁 Steam 成就。
+解锁 Steam 成就。成就名称通过路径参数 `{name}` 传入。
 
-**请求体：**
-
-```json
-{ "achievement_id": "ACHIEVEMENT_NAME" }
-```
+**路径参数：** `name` — Steam 成就名称（例如 `ACH_FIRST_DIALOGUE`）。
 
 ## 主动聊天
 
@@ -68,22 +70,37 @@
 }
 ```
 
+**响应：** 主动搭话成功投递时 `action` 为 `chat`，本轮跳过时为 `pass`。
+主动搭话的 `pass` / `chat` / error 响应会包含稳定的机器字段 `reason_code`，
+例如 `CHAT_DELIVERED`、`PASS_BUSY`、`PASS_SOURCE_EMPTY`、`PASS_DUPLICATE`、
+`DELIVERY_PREEMPTED` 或 `ERROR_TIMEOUT`。响应也会包含 `stage`，表示粗粒度流程阶段，
+例如 `entry_guard`、`activity_gate`、`source_selection`、`model_decision`、
+`generation`、`dedup`、`delivery` 或 `runtime_error`。
+
 ::: info
 主动消息有频率限制：每个角色每小时最多 10 条。
 :::
 
-## 网页审查
+::: info
+在内部，主动聊天运行两阶段流程：阶段 1 的 LLM 调用会先审查候选网页内容（并提取音乐/表情包关键词），然后才在阶段 2 生成符合人设的回复。不存在单独可调用的网页审查端点。
+:::
 
-### `POST /api/web_screening`
+## 截图
 
-通过 AI 审查网页内容（用于内容过滤和相关性排序）。
+### `POST /api/screenshot`
 
-**请求体：** 包含审查模式的网页内容数据。
+后端截图兜底：当所有前端屏幕捕获 API 都失败时，由后端使用 pyautogui 捕获本地屏幕。仅限本地回环（loopback）；当后端配置为远程时禁用。
 
-## 截图分析
+**响应：** `{ "success": true, "data": "data:image/jpeg;base64,...", "size": <字节数> }`
 
-### `POST /api/screenshot_analysis`
+### `POST /api/screenshot/interactive`
 
-使用视觉模型分析截图。
+系统原生的交互式（框选区域）截图，聊天截图按钮优先使用。macOS 使用 `screencapture` 框选；其他平台委托给前端。仅限本地回环（loopback）。
 
-**请求体：** Base64 编码的图片数据，可附带上下文信息。
+**响应：** 一个 JSON 信封（而非原始 DataURL）。
+
+```json
+{ "success": true, "data": "data:image/jpeg;base64,...", "size": <字节数> }
+```
+
+用户取消框选时：`{ "success": false, "canceled": true }`。当后端非 localhost / 配置为远程时：`{ "success": false, "error": "..." }`。

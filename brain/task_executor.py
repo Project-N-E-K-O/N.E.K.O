@@ -20,6 +20,7 @@ Evaluates ComputerUse / BrowserUse / UserPlugin feasibility in parallel
 import json
 import os
 import re
+import hashlib
 import asyncio
 import time
 from pathlib import Path
@@ -39,6 +40,8 @@ from config import (
     AGENT_PLUGIN_COARSE_MAX_TOKENS,
     AGENT_UNIFIED_ASSESS_MAX_TOKENS,
     AGENT_PLUGIN_FULL_MAX_TOKENS,
+    AGENT_EXTERNAL_GATE_ENABLED,
+    AGENT_EXTERNAL_GATE_THRESHOLD,
     TASK_DETAIL_MAX_TOKENS,
 )
 from utils.llm_client import (
@@ -57,7 +60,7 @@ from config.prompts.prompts_agent import (
     USER_PLUGIN_COARSE_SCREEN_PROMPT,
 )
 from config.prompts.prompts_sys import _loc
-from utils.file_utils import robust_json_loads
+from utils.file_utils import atomic_write_json, robust_json_loads
 from plugin.settings import PLUGIN_EXECUTION_TIMEOUT
 from utils.config_manager import get_config_manager
 from utils.logger_config import get_module_logger
@@ -236,8 +239,19 @@ class DirectTaskExecutor:
         self._cached_llms: dict[tuple, ChatOpenAI] = {}
         self._cached_llm_config_key: tuple = ()  # tracks (api_key, base_url, model) to detect config changes
         self._cleanup_tasks: set = set()  # 持有关闭任务的强引用，防止 GC 回收
-        # plugin_id -> (full_description, generated_short_description)
-        self._short_desc_cache: dict[str, tuple[str, str]] = {}
+        # plugin_id -> (description_key, generated_short_description)
+        # description_key = full description 的 hash（见 _desc_key）：既精确反映完整
+        # description 的变化（截断只用于喂 LLM，不能当失效 key），又有界，避免超大
+        # description 撑爆内存/缓存文件。只有 LLM 生成的条目会落盘（见
+        # _persist_generated_short_descriptions）；manifest 自带 short_description
+        # 的插件每次加载都能免费重新 prime，无需持久化。
+        self._short_desc_cache_filename = "plugin_short_desc_cache.json"
+        self._short_desc_cache: dict[str, tuple[str, str]] = self._load_short_desc_cache()
+        # plugin ids currently being generated in a background prewarm task —
+        # dedupes the per-analyze force_refresh so we don't pile up duplicate
+        # generation tasks. The tasks set holds strong refs to prevent GC.
+        self._short_desc_prewarm_inflight: set[str] = set()
+        self._short_desc_prewarm_tasks: set = set()
         self._correction_memory_filename = "correction_memory.json"
         self._search_term_allowlist = {"id", "os", "db", "ui", "ux", "qa"}
         # 白名单 + alias 归一化，防止任意字符串被写进 correction_memory.json
@@ -285,30 +299,97 @@ class DirectTaskExecutor:
         """Allow agent_server to inject a custom async provider for plugin discovery."""
         self._external_plugin_provider = provider
 
-    async def _ensure_short_descriptions(self, plugins: List[Dict[str, Any]]) -> None:
-        """For plugins missing short_description, generate one via LLM (best-effort, cached)."""
-        to_generate: list[dict] = []
+    @staticmethod
+    def _desc_key(desc: str) -> str:
+        """Stable, bounded validity key for a plugin description. The cache hits
+        only while the *full* description is unchanged; hashing keeps the key
+        small (a plugin's raw description is uncapped)."""
+        return hashlib.sha256((desc or "").encode("utf-8")).hexdigest()
+
+    def _apply_cached_short_descriptions(self, plugins: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Apply manifest-provided or previously-generated short_description
+        onto each plugin dict. Pure manifest/cache read — NEVER calls the LLM,
+        so it is safe on the analyze hot path.
+
+        Returns the plugins that are still missing a short_description (and have
+        a description to summarize) — i.e. the candidates for background prewarm.
+        """
+        missing: list[dict] = []
         for p in plugins:
             if not isinstance(p, dict):
                 continue
             pid = p.get("id", "")
             short = str(p.get("short_description", "") or "").strip()
             desc = str(p.get("description", "") or "").strip()
-            # Apply cached value if available and description hasn't changed
-            cached = self._short_desc_cache.get(pid)
-            if cached and cached[0] == desc and not short:
-                p["short_description"] = cached[1]
-                continue
-            if not short and desc:
-                to_generate.append(p)
-            elif pid and short:
-                self._short_desc_cache[pid] = (desc, short)
+            if not short:
+                # Apply cached value if available and the (full) description
+                # hasn't changed. Key off the full description, not the truncated
+                # one used for the LLM prompt, so long-description plugins still hit.
+                cached = self._short_desc_cache.get(pid)
+                if cached and cached[0] == self._desc_key(desc):
+                    p["short_description"] = cached[1]
+                    continue
+                if desc:
+                    missing.append(p)
+            elif pid:
+                # (a) manifest already carries short_description — use it as-is,
+                # zero LLM. Prime the cache so it survives a desc-unchanged refresh.
+                self._short_desc_cache[pid] = (self._desc_key(desc), short)
+        return missing
 
-        if not to_generate:
+    def _schedule_short_desc_prewarm(self, plugins: List[Dict[str, Any]]) -> None:
+        """Apply cached/manifest short_descriptions onto ``plugins`` (hot-path
+        safe, zero LLM) and, for any plugin still missing one, schedule a
+        fire-and-forget background task to generate it at plugin-load time.
+
+        NEVER awaited on the analyze path: the current analyze safely falls back
+        to the full description for plugins whose short_description hasn't been
+        generated yet (see ``_stage1_llm_coarse_screen``). The generated value
+        lands in ``_short_desc_cache`` for subsequent analyze runs.
+
+        Deduped by plugin id via ``_short_desc_prewarm_inflight`` so the
+        per-analyze ``force_refresh`` doesn't pile up duplicate generation tasks.
+        """
+        missing = self._apply_cached_short_descriptions(plugins)
+        if not missing:
             return
-
-        logger.info("[Agent] Generating short_description for %d plugin(s)", len(to_generate))
+        # Lazy-init for instances built via object.__new__ (test fixtures bypass __init__).
+        inflight = getattr(self, "_short_desc_prewarm_inflight", None)
+        if inflight is None:
+            inflight = set()
+            self._short_desc_prewarm_inflight = inflight
+        if getattr(self, "_short_desc_prewarm_tasks", None) is None:
+            self._short_desc_prewarm_tasks = set()
+        pending = [
+            p for p in missing
+            if str(p.get("id", "")).strip() and str(p.get("id", "")) not in inflight
+        ]
+        if not pending:
+            return
+        pids = {str(p.get("id", "")) for p in pending}
+        # Resolve the loop BEFORE constructing the coroutine: if there's no
+        # running event loop (sync context), bail out without leaving an
+        # un-awaited coroutine behind. analyze still falls back to full desc.
         try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        inflight |= pids
+        task = loop.create_task(self._prewarm_short_descriptions(pending, pids))
+        self._short_desc_prewarm_tasks.add(task)
+        task.add_done_callback(self._short_desc_prewarm_tasks.discard)
+
+    async def _prewarm_short_descriptions(
+        self, to_generate: List[Dict[str, Any]], pids: set[str],
+    ) -> None:
+        """Background LLM generation of short_description for plugins missing one
+        (best-effort, cached). Runs OFF the analyze hot path — scheduled by
+        ``_schedule_short_desc_prewarm`` at plugin-load time. Newly generated
+        entries are persisted to disk so subsequent app restarts reuse them
+        (keyed by description, so a manifest change still invalidates)."""
+        generated: dict[str, tuple[str, str]] = {}
+        try:
+            logger.info("[Agent] Generating short_description for %d plugin(s)", len(to_generate))
             llm = self._get_llm(temperature=0, max_completion_tokens=AGENT_PLUGIN_SHORTDESC_MAX_TOKENS)
             for p in to_generate:
                 pid = p.get("id", "unknown")
@@ -329,7 +410,12 @@ class DirectTaskExecutor:
                     from utils.tokenize import count_tokens
                     if text and count_tokens(text) <= AGENT_PLUGIN_SHORTDESC_MAX_TOKENS:
                         p["short_description"] = text
-                        self._short_desc_cache[pid] = (desc, text)
+                        # Key off the FULL description (truncation is prompt-only),
+                        # so apply-time lookup hits even for long-description plugins.
+                        desc_key = self._desc_key(raw_desc)
+                        self._short_desc_cache[pid] = (desc_key, text)
+                        if isinstance(pid, str) and pid:
+                            generated[pid] = (desc_key, text)
                         # LLM 生成原文不写 logger
                         logger.debug("[Agent] Generated short_description for %s (len=%d chars)", pid, len(text))
                         print(f"[Agent] short_description {pid}: {text[:80]}")
@@ -338,6 +424,10 @@ class DirectTaskExecutor:
                     logger.debug("[Agent] Failed to generate short_description for %s: %s", pid, e)
         except Exception as e:
             logger.warning("[Agent] short_description generation batch failed: %s", e)
+        finally:
+            self._short_desc_prewarm_inflight -= pids
+            # 把本批生成的（贵的）条目落盘，下次启动直接复用、不再现生成。
+            self._persist_generated_short_descriptions(generated)
 
     async def plugin_list_provider(self, force_refresh: bool = True) -> List[Dict[str, Any]]:
         # return cached list when allowed
@@ -350,7 +440,10 @@ class DirectTaskExecutor:
                 plugins = await self._external_plugin_provider(force_refresh)
                 if isinstance(plugins, list):
                     self.plugin_list = plugins
-                    await self._ensure_short_descriptions(self.plugin_list)
+                    # Apply cached/manifest short_descriptions synchronously
+                    # (zero LLM) and prewarm any missing ones in the background —
+                    # never generate on the analyze hot path.
+                    self._schedule_short_desc_prewarm(self.plugin_list)
                     logger.info(f"[Agent] Loaded {len(self.plugin_list)} plugins via external provider")
                     return self.plugin_list
             except Exception as e:
@@ -373,7 +466,9 @@ class DirectTaskExecutor:
                     # only update cache when we obtained a non-empty list
                     if plugin_list:
                         self.plugin_list = plugin_list  # 更新实例变量
-                        await self._ensure_short_descriptions(self.plugin_list)
+                        # 同步应用缓存/manifest 的 short_description（零 LLM），
+                        # 缺失的放后台预热，绝不在 analyze 热路径上现生成。
+                        self._schedule_short_desc_prewarm(self.plugin_list)
             except Exception as e:
                 logger.warning(f"[Agent] plugin_list_provider http fetch failed: {e}")
         logger.info(f"[Agent] Loaded {len(self.plugin_list)} plugins: {[p.get('id', 'unknown') for p in self.plugin_list if isinstance(p, dict)]}")
@@ -403,14 +498,19 @@ class DirectTaskExecutor:
         # for the summary tier and the others share the same upstream; keying
         # off summary keeps the original semantics.
         watch_config = self._config_manager.get_model_api_config("summary")
-        watch_key = (watch_config['api_key'], watch_config['base_url'], watch_config['model'])
+        watch_key = (
+            watch_config['api_key'],
+            watch_config['base_url'],
+            watch_config['model'],
+            watch_config.get('provider_type'),
+        )
         if self._cached_llm_config_key != watch_key:
             self._close_all_llms()
             self._cached_llm_config_key = watch_key
 
         instance_key = (
             tier, api_config['api_key'], api_config['base_url'], api_config['model'],
-            temperature, max_completion_tokens,
+            api_config.get('provider_type'), temperature, max_completion_tokens,
         )
         if instance_key not in self._cached_llms:
             llm = create_chat_llm(
@@ -421,6 +521,7 @@ class DirectTaskExecutor:
                 max_completion_tokens=max_completion_tokens,
                 max_retries=0,
                 timeout=120.0,  # hang-guard for agent task LLM calls (large context + tool loops)
+                provider_type=api_config.get('provider_type'),
             )
             self._cached_llms[instance_key] = llm
             logger.debug(
@@ -728,18 +829,88 @@ class DirectTaskExecutor:
             os.chmod(path.parent, 0o700)
         except OSError:
             pass
-        tmp_path = path.with_suffix(path.suffix + ".tmp")
-        with tmp_path.open("w", encoding="utf-8") as handle:
-            json.dump(data, handle, ensure_ascii=False, indent=2)
-        try:
-            os.chmod(tmp_path, 0o600)
-        except OSError:
-            pass
-        tmp_path.replace(path)
+        # 走统一原子写（tmp + fsync + os.replace）：补齐此前缺的 fsync，断电不留 0
+        # 字节文件；mkstemp 的 tmp 天生 0o600，不经过 umask 决定的可读窗口。
+        atomic_write_json(path, data, ensure_ascii=False, indent=2)
         try:
             os.chmod(path, 0o600)
         except OSError:
             pass
+
+    def _get_short_desc_cache_path(self) -> Path:
+        self._config_manager.ensure_config_directory()
+        return Path(self._config_manager.config_dir) / self._short_desc_cache_filename
+
+    def _load_short_desc_cache(self) -> dict[str, tuple[str, str]]:
+        """Load the on-disk short_description cache (LLM-generated entries only).
+
+        Returns ``{plugin_id: (description_key, short_description)}``.
+        ``description_key`` is a hash of the full description (see ``_desc_key``):
+        at apply time we re-generate when the plugin's current description no
+        longer hashes to the stored key. Best-effort — a missing or corrupt file
+        just yields an empty cache.
+        """
+        try:
+            path = self._get_short_desc_cache_path()
+        except Exception as exc:
+            logger.debug("[Agent] short_desc cache path unavailable: %s", exc)
+            return {}
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except FileNotFoundError:
+            return {}
+        except Exception as exc:
+            logger.warning("[Agent] Failed to load short_desc cache %s: %s", path, exc)
+            return {}
+        entries = data.get("entries") if isinstance(data, dict) else None
+        if not isinstance(entries, dict):
+            return {}
+        cache: dict[str, tuple[str, str]] = {}
+        for pid, item in entries.items():
+            if not isinstance(pid, str) or not isinstance(item, dict):
+                continue
+            key = item.get("key")
+            short = item.get("short")
+            if isinstance(key, str) and isinstance(short, str) and short:
+                cache[pid] = (key, short)
+        return cache
+
+    def _persist_generated_short_descriptions(self, generated: dict[str, tuple[str, str]]) -> None:
+        """Merge newly LLM-generated entries into the on-disk cache (atomic write).
+
+        Only generated entries are persisted; manifest-provided short_descriptions
+        are re-derived for free on every load and would only bloat the file (a
+        plugin's raw ``description`` is uncapped). Best-effort — a write failure
+        just means the next session regenerates."""
+        if not generated:
+            return
+        try:
+            path = self._get_short_desc_cache_path()
+        except Exception as exc:
+            logger.debug("[Agent] short_desc cache path unavailable, skip persist: %s", exc)
+            return
+        # Re-read so concurrent prewarm batches don't clobber each other's entries.
+        on_disk = self._load_short_desc_cache()
+        on_disk.update(generated)
+        payload = {
+            "version": 1,
+            "entries": {pid: {"key": k, "short": s} for pid, (k, s) in on_disk.items()},
+        }
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                os.chmod(path.parent, 0o700)
+            except OSError:
+                pass
+            # 统一原子写：tmp + fsync + os.replace，崩溃只丢 .tmp 不破坏原文件。
+            atomic_write_json(path, payload, ensure_ascii=False, indent=2)
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                pass
+        except Exception as exc:
+            logger.warning("[Agent] Failed to persist short_desc cache %s: %s", path, exc)
 
     def _is_allowed_search_term(self, term: str) -> bool:
         if not term or term.isdigit():
@@ -1336,6 +1507,18 @@ class DirectTaskExecutor:
 
                 response = await llm.ainvoke(messages)
                 raw_text = response.content
+                # Telemetry: every LLM response that actually came back is one
+                # Stage-2 assessment — including the empty / unparseable ones that
+                # return early below. This is the *total* denominator, so the
+                # documented retry / extra-round-trip rates aren't overstated by
+                # silently dropping non-retry failures (a parse error never fires
+                # a correction retry but still cost a Stage-2 round-trip).
+                try:
+                    from utils.instrument import counter as _instr_counter
+                    _instr_counter("plugin_assess_stage2")
+                except Exception:
+                    # 埋点失败静默，绝不能影响插件评估主路径。
+                    pass
                 # Log the prompts we sent (truncated) and the raw response (truncated) at INFO level
                 try:
                     prompt_dump = (system_prompt + "\n\n" + user_prompt)[:2000]
@@ -1440,6 +1623,17 @@ class DirectTaskExecutor:
                     decision["plugin_id"] = d_pid
 
                 if d_has and d_can:
+                    # Telemetry: the subset of Stage-2 assessments where the LLM
+                    # claimed an executable task — the only state a correction
+                    # retry can fire from. retries / this counter = conditional
+                    # correction rate; retries / plugin_assess_stage2 = the broader
+                    # extra-round-trip cost rate across all Stage-2 calls.
+                    try:
+                        from utils.instrument import counter as _instr_counter
+                        _instr_counter("plugin_assess_stage2_actionable")
+                    except Exception:
+                        # 埋点失败静默，绝不能影响插件评估主路径。
+                        pass
                     correction_hint = None
                     visible_entries = valid_entries_map.get(d_pid)
                     if not d_pid:
@@ -1531,6 +1725,26 @@ class DirectTaskExecutor:
                         decision["can_execute"] = False
                         decision["reason"] = f"entry_id '{final_eid}' not found in plugin '{final_pid}'"
 
+                # Telemetry: if a correction retry fired, record whether the
+                # re-asked decision ended up actionable. At this point
+                # decision["can_execute"] reflects final validation (forced False
+                # when plugin_id/entry_id is still invalid), so has_task &
+                # can_execute both true means a valid plugin_id/entry_id survived.
+                # Combined with the plugin_assess_stage2 denominator this gives the
+                # retry trigger rate (sum of this counter / stage2) and the
+                # post-retry success rate, without logging any LLM text.
+                if up_retry_done:
+                    try:
+                        from utils.instrument import counter as _instr_counter
+                        _retry_ok = bool(decision.get("has_task") and decision.get("can_execute"))
+                        _instr_counter(
+                            "plugin_assess_correction_retry",
+                            result="success" if _retry_ok else "fail",
+                        )
+                    except Exception:
+                        # 埋点失败静默，绝不能影响插件评估主路径。
+                        pass
+
                 return UserPluginDecision(
                     has_task=decision.get("has_task", False),
                     can_execute=decision.get("can_execute", False),
@@ -1559,6 +1773,7 @@ class DirectTaskExecutor:
         agent_flags: Optional[Dict[str, bool]] = None,
         conversation_id: Optional[str] = None,
         lang: str = "en",
+        external_intent: Optional[float] = None,
     ) -> Optional[TaskResult]:
         """
         Assess each channel's feasibility and return a Decision (no execution).
@@ -1579,9 +1794,69 @@ class DirectTaskExecutor:
                 agent_flags=agent_flags,
                 conversation_id=conversation_id,
                 lang=lang,
+                external_intent=external_intent,
             )
         finally:
             reset_active_character(char_token)
+
+    def _deterministic_action_signal(
+        self, user_text: str, *, openclaw_enabled: bool, user_plugin_enabled: bool,
+    ) -> bool:
+        """Zero-LLM action shortcuts the cheap pre-gate must NEVER skip.
+
+        Returns True if either fires — meaning the gate must not brake even when
+        the small model read the turn as chat:
+        * OpenClaw magic word (pure rule match, no LLM).
+        * Plugin keyword match over the ALREADY-CACHED plugin list only (no fetch,
+          so the brake path never triggers short_description generation).
+
+        Fails open (returns True) when user_plugin is on but the plugin list is
+        not yet loaded: we cannot run the keyword shortcut, so we must not let the
+        gate skip it. A brand-new plugin's keyword may be missed by the gate until
+        the next non-braked turn refreshes ``self.plugin_list`` — acceptable since
+        a session's plugin set rarely changes mid-conversation.
+        """
+        text = (user_text or "").strip()
+        if not text:
+            return False
+        if openclaw_enabled:
+            try:
+                from brain.openclaw_adapter import OpenClawAdapter
+                # Full ZERO-LLM rule classifier, not just exact magic words: it
+                # also catches natural-language commands ("取消这个任务" → /stop,
+                # "换个话题" → /new, …). These are no-LLM shortcuts the gate must
+                # keep — only the LLM magic-intent path is fair to skip on chat.
+                if OpenClawAdapter.rule_magic_command(text):
+                    return True
+            except Exception:
+                return True  # can't run the shortcut → fail open
+        if user_plugin_enabled:
+            plugins = self.plugin_list
+            if not plugins:
+                return True  # not loaded → can't run keyword shortcut → fail open
+            try:
+                from brain.plugin_filter import _match_keywords
+                for p in plugins:
+                    # Skip passive plugins: they never participate in dispatch
+                    # (mirrors _assess_user_plugin), so a passive plugin must not
+                    # influence the gate at all.
+                    if not isinstance(p, dict) or p.get("passive"):
+                        continue
+                    kws = p.get("keywords", [])
+                    if isinstance(kws, list) and kws:
+                        if _match_keywords(text, kws):
+                            return True
+                    elif self._agent_visible_plugin_entries(p):
+                        # A dispatchable plugin with no usable keyword shortcut can
+                        # only be selected by the LLM _assess_user_plugin (e.g.
+                        # first-party plugins exposing agent entries but no
+                        # top-level keywords). The keyword shortcut can't represent
+                        # it, so the gate must fail open when one exists — never
+                        # brake a turn such a plugin could have handled.
+                        return True
+            except Exception:
+                return True  # on any error, fail open
+        return False
 
     async def _analyze_and_execute_inner(
         self,
@@ -1590,6 +1865,7 @@ class DirectTaskExecutor:
         agent_flags: Optional[Dict[str, bool]] = None,
         conversation_id: Optional[str] = None,
         lang: str = "en",
+        external_intent: Optional[float] = None,
     ) -> Optional[TaskResult]:
         task_id = str(uuid.uuid4())
 
@@ -1618,6 +1894,29 @@ class DirectTaskExecutor:
         latest_user_request = self._extract_latest_user_intent(conversation)
         recent_context = self._extract_recent_context(messages)
         normalized_intent = self._normalize_user_intent(latest_user_request, recent_context)
+
+        # ── 廉价前置闸 ───────────────────────────────────────
+        # external_intent 是 master-emotion 在 input-time 那次小模型调用产出的
+        # 「外部能力相关度」信号（显式对外操作 + 需要外部/实时信息两类合一），已在
+        # main 侧做过两件事：(1) 按本轮 user 文本做 freshness 匹配（陈旧/异轮读数 →
+        # None，绝不用上一轮信号刹本轮）；(2) 折进 complexity 取 max，所以高
+        # complexity 的硬推理轮（如 openfang 多步推理）即便 external 低也不会被刹。
+        # 这里只要：自信地低 + 零 LLM 确定性 shortcut（magic word 规则 + 插件关键词）
+        # 也全静默，就跳过下面 1~2 次大模型评估。
+        # 闸非对称：None（无可用信号/陈旧）或任一确定性命中都不刹车 —— 最坏多花一次
+        # 评估，绝不漏真任务。
+        if external_intent is not None and AGENT_EXTERNAL_GATE_ENABLED:
+            if external_intent < AGENT_EXTERNAL_GATE_THRESHOLD and not self._deterministic_action_signal(
+                latest_user_request,
+                openclaw_enabled=openclaw_enabled,
+                user_plugin_enabled=user_plugin_enabled,
+            ):
+                logger.info(
+                    "[AgentGate] skip assessment: external_intent=%.2f < %.2f, no deterministic signal",
+                    external_intent, AGENT_EXTERNAL_GATE_THRESHOLD,
+                )
+                return None
+
         # ── 可用性检查 ──────────────────────────────────────
         cu_available = False
         if computer_use_enabled:

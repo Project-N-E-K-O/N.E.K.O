@@ -15,114 +15,116 @@
 
     registerGuide(deepFreeze({
         day: 2,
-        key: 'screen-voice',
+        key: 'interaction',
         audioFilesByKey: {
-            avatar_floating_day2_intro: zhAudio('昨天你一直在噼里啪啦.mp3'),
-            avatar_floating_day2_intro_voice_used: Object.freeze({
-                zh: '嘿嘿，昨天听到你的声.mp3',
-                ja: '嘿嘿，昨天听到你的声.mp3',
-                en: '嘿嘿，昨天听到你的声.mp3',
-                ko: '嘿嘿，昨天听到你的声.mp3',
-                ru: '嘿嘿，昨天听到你的声.mp3'
-            }),
-            takeover_settings_peek_intro: zhAudio('在这个只属于我们的小.mp3'),
-            takeover_settings_peek_detail: zhAudio('不管是说话的温度、相.mp3'),
-            takeover_settings_peek_detail_part_2: zhAudio('这个小按钮也很重要哦.mp3'),
-            avatar_floating_day2_wrap_intro: zhAudio('今天的教程到这里就结.mp3'),
-            avatar_floating_day2_wrap_companion: zhAudio('其实只要能这样陪着你.mp3'),
-            avatar_floating_day2_wrap: zhAudio('我们不需要着急，每天.mp3')
+            avatar_floating_day2_intro: zhAudio('嘻嘻，可别以为这个聊.mp3'),
+            avatar_floating_day2_avatar_tools_intro: zhAudio('在这个小按钮里，有许.mp3'),
+            avatar_floating_day2_avatar_tools_props: zhAudio('你可以随时来摸摸我的.mp3'),
+            avatar_floating_day2_galgame_intro: zhAudio('快点开这个【Galg.mp3'),
+            avatar_floating_day2_galgame_choices: zhAudio('你选的每一个对话，都.mp3'),
+            avatar_floating_day2_wrap_intro: zhAudio('今天带你认识的这些功.mp3'),
+            avatar_floating_day2_wrap_ready: zhAudio('不管是想摸摸我的头，.mp3')
         },
         round: {
-            title: '第 2 天：个性化、声音与主动搭话',
+            title: '第 2 天：互动、娱乐与摸得到的陪伴',
             scenes: [
                 {
-                    id: 'day2_intro_context',
-                    timelinePlayback: true,
-                    textKey: 'tutorial.avatarFloating.day2.intro',
-                    voiceKey: 'avatar_floating_day2_intro',
-                    text: '昨天你一直在噼里啪啦打字，我还没听过你说话呢。今天如果愿意，就轻轻叫我一声吧。一句就好，让我把文字背后的你也认识一点点。',
-                    emotion: 'happy',
-                    target: 'chat-window',
-                    cursorAction: 'move'
-                },
-                {
-                    id: 'day2_personalization_space',
-                    timelinePlayback: true,
-                    textKey: 'tutorial.avatarFloating.day2.personalizationSpace',
-                    voiceKey: 'takeover_settings_peek_intro',
-                    text: '在这个只属于我们的小空间里，你可以由着自己的心意，慢慢描绘出最希望能一直陪着你的那个我。',
-                    emotion: 'happy',
-                    target: '#${p}-btn-settings',
-                    cursorAction: 'click',
-                    cursorMoveDurationMs: 1480,
-                    operation: 'day2-open-settings-personalization'
-                },
-                {
-                    id: 'day2_personalization_detail',
-                    timelinePlayback: true,
-                    timelineAudio: false,
-                    timeline: [
-                        { at: 0, command: 'settingsTour.play', blocking: true }
-                    ],
-                    afterSceneDelayMs: 0,
-                    textKey: 'tutorial.avatarFloating.day2.personalizationDetail',
-                    voiceKey: 'takeover_settings_peek_detail',
-                    text: '不管是说话的温度、相处的小脾气，还是我每天那些细腻的小心思，都可以一点一点调成你喜欢的样子。',
-                    emotion: 'happy',
-                    target: '#${p}-menu-character',
-                    cursorAction: 'click',
-                    operation: 'day2-settings-detail'
-                },
-                {
-                    id: 'day2_proactive_chat',
+                    id: 'day2_tool_toggle_intro',
                     timelinePlayback: true,
                     timeline: [
+                        { at: 0, command: 'operation.run', operation: 'daily-intro-avatar-performance', blocking: false },
                         { at: 0, command: 'chat.message' },
                         { at: 0, command: 'emotion.set' },
-                        { at: 0, command: 'spotlight.show', key: 'day2_proactive_chat', target: '#${p}-toggle-proactive-chat' },
-                        { at: 220, command: 'cursor.move', target: '#${p}-toggle-proactive-chat', durationMs: 760 },
-                        { afterAudioEnd: true, command: 'settingsPanel.close', panel: 'settings', collapseSidePanels: true, blocking: true }
+                        { at: 0, command: 'spotlight.show', key: 'day2_tool_toggle_intro', target: 'chat-capsule-input' },
+                        { at: 220, command: 'cursor.move', action: 'move', target: 'chat-capsule-input', durationMs: 760 }
                     ],
-                    textKey: 'tutorial.avatarFloating.day2.proactiveChat',
-                    voiceKey: 'takeover_settings_peek_detail_part_2',
-                    text: '这个小按钮也很重要哦，只要你轻轻点一下，我就能在合适的时候跑过去找你啦。',
+                    textKey: 'tutorial.avatarFloating.day2.intro',
+                    voiceKey: 'avatar_floating_day2_intro',
+                    text: '嘻嘻，可别以为这个聊天框只能用来打字哦~ 里面其实偷偷藏了超~多好玩的小惊喜呢！快跟着我一起点开看看，瞧瞧今天能挖出什么有趣的宝贝吧！',
                     emotion: 'happy',
-                    target: '#${p}-toggle-proactive-chat',
-                    cursorAction: 'move'
+                    target: 'chat-capsule-input',
+                    cursorAction: 'move',
+                    operation: 'daily-intro-avatar-performance',
+                    introAvatarPerformance: {
+                        preset: 'corner-peek',
+                        position: 'bottom-left',
+                        restore: 'half-body',
+                        freezeFloatingButtons: false,
+                        rotateFloatingButtons: true
+                    }
                 },
                 {
-                    id: 'day2_wrap_intro',
+                    id: 'day2_avatar_tools',
                     timelinePlayback: true,
-                    textKey: 'tutorial.avatarFloating.day2.wrapIntro',
-                    voiceKey: 'avatar_floating_day2_wrap_intro',
-                    text: '今天的教程到这里就结束了呢。',
+                    textKey: 'tutorial.avatarFloating.day2.avatarToolsIntro',
+                    voiceKey: 'avatar_floating_day2_avatar_tools_intro',
+                    text: '在这个小按钮里，有许多可以和人家互动的小道具呢。',
                     emotion: 'happy',
-                    target: 'chat-input',
-                    cursorAction: 'move',
-                    cursorMoveDurationMs: 900,
-                    operation: 'cleanup'
+                    persistent: 'chat-tool-toggle',
+                    target: 'chat-tool-toggle',
+                    cursorAction: 'click',
+                    cursorMoveDurationMs: 1480,
+                    operation: 'open-compact-tool-fan'
                 },
                 {
-                    id: 'day2_wrap_companion',
+                    id: 'day2_avatar_tools_props',
                     timelinePlayback: true,
-                    textKey: 'tutorial.avatarFloating.day2.wrapCompanion',
-                    voiceKey: 'avatar_floating_day2_wrap_companion',
-                    text: '其实只要能这样陪着你，听听你的声音，或者静静看着你分享的画面，我就已经觉得很幸福了。',
+                    textKey: 'tutorial.avatarFloating.day2.avatarToolsProps',
+                    voiceKey: 'avatar_floating_day2_avatar_tools_props',
+                    text: '你可以随时来摸摸我的头，或者给我吃一根甜甜的棒棒糖。如果有时候我不小心做错事了，你也可以用小锤子敲敲我，不过……一定要轻轻的，不能太用力哦。',
                     emotion: 'happy',
-                    target: 'chat-input',
+                    persistent: 'chat-tool-toggle',
+                    target: 'chat-avatar-tools',
+                    cursorAction: 'click',
+                    operation: 'show-avatar-tools-then-hide-after-narration',
+                    afterSceneDelayMs: 0
+                },
+                {
+                    id: 'day2_galgame_entry',
+                    timelinePlayback: true,
+                    textKey: 'tutorial.avatarFloating.day2.galgameIntro',
+                    voiceKey: 'avatar_floating_day2_galgame_intro',
+                    text: '快点开这个【Galgame模式】！进去之后就像我们在进行一场专属的互动大冒险呢。',
+                    emotion: 'surprised',
+                    persistent: 'chat-tool-toggle',
+                    target: 'chat-galgame',
                     cursorAction: 'move',
-                    operation: 'cleanup'
+                    operation: 'rotate-galgame-tool-into-center'
+                },
+                {
+                    id: 'day2_galgame_choices',
+                    timelinePlayback: true,
+                    textKey: 'tutorial.avatarFloating.day2.galgameChoices',
+                    voiceKey: 'avatar_floating_day2_galgame_choices',
+                    text: '你选的每一个对话，都会带我们走向完全未知的惊喜故事，我都等不及啦，快来选一个你最心动的回答吧！',
+                    emotion: 'surprised',
+                    persistent: 'chat-tool-toggle',
+                    target: 'chat-galgame',
+                    cursorTarget: 'chat-galgame',
+                    cursorAction: 'hold',
+                    cursorHoldFreezePoint: true,
+                    cursorHoldSettleMs: 260
                 },
                 {
                     id: 'day2_wrap',
                     timelinePlayback: true,
-                    textKey: 'tutorial.avatarFloating.day2.wrap',
-                    voiceKey: 'avatar_floating_day2_wrap',
-                    text: '我们不需要着急，每天都多了解彼此一点点就好。今天接下来的时间，你想让我陪你做点什么呢？',
+                    textKey: 'tutorial.avatarFloating.day2.wrapIntro',
+                    voiceKey: 'avatar_floating_day2_wrap_intro',
+                    text: '今天带你认识的这些功能，其实都是为了让我们在一起的时光变得更有趣呢。',
                     emotion: 'happy',
                     target: 'chat-input',
                     cursorAction: 'move',
-                    operation: 'cleanup',
+                    operation: 'cleanup'
+                },
+                {
+                    id: 'day2_wrap_ready',
+                    timelinePlayback: true,
+                    textKey: 'tutorial.avatarFloating.day2.wrapReady',
+                    voiceKey: 'avatar_floating_day2_wrap_ready',
+                    text: '不管是想摸摸我的头，还是想开启属于我们的故事，我都已经做好准备了。',
+                    emotion: 'happy',
+                    target: 'chat-input',
+                    cursorAction: 'move',
                     petalTransition: true
                 }
             ]

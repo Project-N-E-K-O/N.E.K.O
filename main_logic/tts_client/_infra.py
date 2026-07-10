@@ -75,6 +75,85 @@ def _resample_audio(audio_int16: np.ndarray, src_rate: int, dst_rate: int,
     resampled_int16 = (resampled_float * 32768.0).clip(-32768, 32767).astype(np.int16)
     return resampled_int16.tobytes()
 
+# 48kHz / 16-bit / mono PCM（所有 worker 重采样后的统一输出格式）每秒字节数。
+_TTS_OUTPUT_BYTES_PER_SECOND = 48000 * 2
+
+class AudioJitterBuffer:
+    """Coalesce upstream PCM chunks to ride over inter-chunk gaps.
+
+    Streaming TTS upstreams emit fragmented chunks, and the largest gap is right
+    after the first chunk (model first-frame latency). Holding back an initial
+    head-start of ``initial_buffer_bytes`` before releasing the first batch gives
+    the player a lead it can ride over that opening gap; steady state then flushes
+    whenever ``steady_buffer_bytes`` has accumulated. The two knobs are independent:
+    ``initial_buffer_bytes=0`` releases the first chunk immediately (no head-start)
+    yet still coalesces later chunks by ``steady_buffer_bytes``; ``steady_buffer_bytes=0``
+    keeps the head-start but then passes each chunk straight through; both 0 is full
+    low-latency pass-through.
+
+    Provider-agnostic: a worker appends resampled PCM bytes and drives reset() on a
+    new utterance / interrupt and flush() on response.done. The buffer never owns
+    those boundaries because only the worker sees them.
+    """
+    def __init__(self, response_queue, initial_buffer_bytes: int, steady_buffer_bytes: int):
+        self._response_queue = response_queue
+        self._initial_buffer_bytes = initial_buffer_bytes
+        self._steady_buffer_bytes = steady_buffer_bytes
+        self.buffer = bytearray()
+        self.started = False
+
+    def reset(self):
+        self.buffer.clear()
+        self.started = False
+
+    def append(self, audio_bytes):
+        if not audio_bytes:
+            return
+        self.buffer.extend(audio_bytes)
+        if not self.started:
+            if len(self.buffer) < self._initial_buffer_bytes:
+                return
+            self._flush()  # 越过 head-start，放行并标记 started
+            return
+        if len(self.buffer) >= self._steady_buffer_bytes:
+            self._flush()
+
+    def flush(self):
+        self._flush()
+
+    def _flush(self):
+        if not self.buffer:
+            return
+        self._response_queue.put(bytes(self.buffer))
+        self.buffer.clear()
+        # 放行即视为本轮已开播：短句不足 initial 阈值靠终结 flush 首次放行时，
+        # 后续若有上游晚到的 stray delta 走 steady 而非重新 head-start 再被 reset 丢弃。
+        self.started = True
+
+def make_audio_jitter_buffer(response_queue, initial_ms_default: float = 400,
+                             steady_ms_default: float = 200,
+                             legacy_env_prefix: str | None = None) -> AudioJitterBuffer:
+    """Build an :class:`AudioJitterBuffer` from the generic NEKO_TTS_JITTER_* env knobs.
+
+    ``legacy_env_prefix`` (e.g. "NEKO_QWEN_TTS") keeps honoring a provider's
+    pre-unification env names (``<prefix>_INITIAL_BUFFER_MS`` / ``_STEADY_BUFFER_MS``)
+    as a fallback when the generic knobs are unset, so existing overrides keep working.
+    """
+    def _resolve_ms(generic_env: str, legacy_suffix: str, default: float) -> float:
+        if os.getenv(generic_env) not in (None, ""):
+            return _parse_env_float(generic_env, default, 0)
+        if legacy_env_prefix:
+            legacy_env = f"{legacy_env_prefix}_{legacy_suffix}"
+            if os.getenv(legacy_env) not in (None, ""):
+                return _parse_env_float(legacy_env, default, 0)
+        return default
+
+    initial_ms = _resolve_ms("NEKO_TTS_JITTER_INITIAL_MS", "INITIAL_BUFFER_MS", initial_ms_default)
+    steady_ms = _resolve_ms("NEKO_TTS_JITTER_STEADY_MS", "STEADY_BUFFER_MS", steady_ms_default)
+    initial_bytes = int(initial_ms / 1000 * _TTS_OUTPUT_BYTES_PER_SECOND)
+    steady_bytes = int(steady_ms / 1000 * _TTS_OUTPUT_BYTES_PER_SECOND)
+    return AudioJitterBuffer(response_queue, initial_bytes, steady_bytes)
+
 def _enqueue_error(response_queue, error_value):
     """Unified error logging and error-message enqueueing."""
     if isinstance(error_value, str):

@@ -271,6 +271,7 @@ class CompressedRecentHistoryManager:
             api_config['api_key'] or None,
             timeout=30, max_retries=0,
             max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous so variable-length summary/JSON isn't truncated
+            provider_type=api_config.get('provider_type'),
         )
 
     def _get_review_llm(self):
@@ -296,6 +297,7 @@ class CompressedRecentHistoryManager:
             timeout=MEMORY_LLM_HARD_TIMEOUT_SECONDS, max_retries=0,
             max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous so variable-length JSON (incl. thinking) isn't truncated
             extra_body=None,
+            provider_type=api_config.get('provider_type'),
         )
 
     async def update_history(self, new_messages, lanlan_name, detailed=False, compress=True, on_compress_done=None):

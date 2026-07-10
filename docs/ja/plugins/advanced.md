@@ -149,12 +149,20 @@ dep = await self.plugins.require_enabled("required_plugin")
 
 ### イベントバス
 
-```python
-# バス経由でイベントを発行
-self.bus.emit("my_event", {"key": "value"})
+`self.bus` は読み取り専用のビュー（`SdkBusContext`）で、5 つの名前空間スナップショット `messages`、`events`、`lifecycle`、`conversations`、`memory` を公開し、それぞれに `.get(...)` があります。`emit()` や `on()` メソッドは**ありません**。バスは名前空間スナップショットの読み取り専用であり、イベントを直接発行することはできません。
 
-# イベントをサブスクライブ（通常は startup で行う）
-self.bus.on("some_event", self._handle_event)
+```python
+# 名前空間の最新スナップショットを読み取る
+events = self.bus.events.get()
+
+# 変更をサブスクライブする：まず get() でリストを取得し、watch() で watcher を得る。
+# watcher.subscribe(on=...) はデコレーターで、ハンドラーは SdkBusDelta を受け取る。
+watcher = self.bus.events.get().watch(self.ctx)
+
+@watcher.subscribe(on="some_event")
+def _handle_event(delta):
+    # delta.added / delta.removed / delta.current
+    ...
 ```
 
 ---

@@ -36,17 +36,8 @@
 | `NEKO_AGENT_MQ_PORT` | `48917` | エージェントメッセージキュー |
 | `NEKO_MAIN_AGENT_EVENT_PORT` | `48918` | エージェントイベントポート |
 
-## モデルのオーバーライド
-
-| 変数 | デフォルト | 説明 |
-|------|------------|------|
-| `NEKO_SUMMARY_MODEL` | `qwen-plus` | 要約モデル |
-| `NEKO_CORRECTION_MODEL` | `qwen-max` | テキスト校正モデル |
-| `NEKO_EMOTION_MODEL` | `qwen-turbo` / `qwen-flash` | 感情分析モデル |
-| `NEKO_VISION_MODEL` | `qwen3-vl-plus-2025-09-23` | ビジョン/画像理解モデル |
-
 ## サービス URL
 
 | 変数 | デフォルト | 説明 |
 |------|------------|------|
-| `NEKO_MCP_ROUTER_URL` | `http://localhost:3282` | MCP Router エンドポイント |
+| `NEKO_MCP_ROUTER_URL` | `http://localhost:3283` | MCP Router エンドポイント |

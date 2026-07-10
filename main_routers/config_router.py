@@ -714,6 +714,9 @@ async def get_core_config_api():
         if not _assist_api_provider:
             _assist_api_provider = 'free' if _core_api_provider == 'free' else 'qwen'
         _fallback_providers = {_core_api_provider, _assist_api_provider}
+        _doubao_tts_shared_key = ''
+        if str(core_cfg.get('ttsModelProvider') or '').strip() == 'doubao_tts':
+            _doubao_tts_shared_key = core_cfg.get('ttsModelApiKey', '')
 
         def _fb(provider: str) -> str:
             """Fall back to coreApiKey only when the provider matches the user-selected coreApi/assistApi."""
@@ -731,8 +734,10 @@ async def get_core_config_api():
             "assistApiKeySilicon": core_cfg.get('assistApiKeySilicon', '') or _fb('silicon'),
             "assistApiKeyGemini": core_cfg.get('assistApiKeyGemini', '') or _fb('gemini'),
             "assistApiKeyKimi": core_cfg.get('assistApiKeyKimi', '') or _fb('kimi'),
+            "assistApiKeyKimiCode": core_cfg.get('assistApiKeyKimiCode', '') or _fb('kimi_code'),
             "assistApiKeyDeepseek": core_cfg.get('assistApiKeyDeepseek', '') or _fb('deepseek'),
             "assistApiKeyDoubao": core_cfg.get('assistApiKeyDoubao', '') or _fb('doubao'),
+            "assistApiKeyDoubaoTts": core_cfg.get('assistApiKeyDoubaoTts', '') or _doubao_tts_shared_key,
             # MiniMax / MiMo 是 assist-only TTS provider，coreApiKey 不保证兼容；
             # 不 fallback，以免把无效 key 塞进 TTS 凭证槽位导致 401。
             "assistApiKeyMinimax": core_cfg.get('assistApiKeyMinimax', ''),
@@ -884,10 +889,10 @@ async def update_core_config(request: Request):
         _api_key_fields = [
             'assistApiKeyQwen', 'assistApiKeyQwenIntl', 'assistApiKeyOpenai', 'assistApiKeyDeepseek',
             'assistApiKeyGlm', 'assistApiKeyStep', 'assistApiKeySilicon',
-            'assistApiKeyGemini', 'assistApiKeyKimi', 'assistApiKeyDoubao',
+            'assistApiKeyGemini', 'assistApiKeyKimi', 'assistApiKeyDoubao', 'assistApiKeyDoubaoTts',
             'assistApiKeyMinimax', 'assistApiKeyMinimaxIntl', 'assistApiKeyMimo',
             'assistApiKeyMimoTokenPlan', 'assistApiKeyElevenlabs', 'assistApiKeyGrok',
-            'assistApiKeyClaude', 'assistApiKeyOpenrouter',
+            'assistApiKeyClaude', 'assistApiKeyKimiCode', 'assistApiKeyOpenrouter',
         ]
         for field in _api_key_fields:
             if field in data:
@@ -940,6 +945,12 @@ async def update_core_config(request: Request):
         _incoming_tts_provider = str(data.get('ttsModelProvider', '') or '').strip()
         if _incoming_tts_provider and _incoming_tts_provider != 'gptsovits':
             core_cfg['gptsovitsEnabled'] = False
+        if _incoming_tts_provider == 'doubao_tts':
+            doubao_key = str(core_cfg.get('assistApiKeyDoubaoTts') or '').strip()
+            if doubao_key and '***' not in doubao_key:
+                core_cfg['ttsModelApiKey'] = doubao_key
+            else:
+                core_cfg['ttsModelApiKey'] = ''
         if 'ttsVoiceId' in data:
             core_cfg['ttsVoiceId'] = data['ttsVoiceId']
 
@@ -1061,10 +1072,11 @@ async def get_api_providers_config():
             get_assist_api_providers_for_frontend,
         )
 
-        full_config = get_config()
-        # 使用缓存加载配置（性能更好，配置更新后需要重启服务）
-        core_providers = get_core_api_providers_for_frontend()
-        assist_providers = get_assist_api_providers_for_frontend()
+        full_config = get_config(force_reload=True)
+        # API settings is an admin/config surface; prefer current provider metadata
+        # over stale in-process cache so label/keybook changes show up immediately.
+        core_providers = get_core_api_providers_for_frontend(force_reload=True)
+        assist_providers = get_assist_api_providers_for_frontend(force_reload=True)
 
         # TTS provider 的前端驱动元数据：单一源来自 utils.tts_provider_registry，
         # 避免前端把「哪些 provider 只进 TTS 下拉 / 端点可编辑 / 支持哪些声音来源 /
@@ -1085,6 +1097,7 @@ async def get_api_providers_config():
             "api_key_registry": full_config.get("api_key_registry", {}),
             "assist_api_providers_full": full_config.get("assist_api_providers", {}),
             "core_api_providers_full": full_config.get("core_api_providers", {}),
+            "keybook_api_providers_full": full_config.get("keybook_api_providers", {}),
             "tts_providers": tts_providers,
         }
     except Exception as e:
@@ -1394,11 +1407,11 @@ class ConnectivityTestRequest(BaseModel):
     api_key: Optional[str] = ""
     model: Optional[str] = ""
     provider_type: Optional[str] = "openai_compatible"
-    # Sub-type used to dispatch to a non-Realtime probe when provider_type=='websocket'.
     # Currently the only recognized value is 'vllm_omni_tts'; vLLM-Omni's WebSocket
     # speech endpoint does NOT speak the OpenAI Realtime protocol (no session.update),
     # so it requires a handshake-only probe instead of _test_websocket. (#1764 review 第六轮)
     sub_type: Optional[str] = ""
+    voice_id: Optional[str] = ""
     is_free: Optional[bool] = False
 
 
@@ -1491,6 +1504,73 @@ def _classify_openai_error(e: Exception, is_free: bool = False) -> dict:
         return {"success": False, "error": f"HTTP {status}", "error_code": "unknown"}
 
     # Fallback
+    return {"success": False, "error": str(e), "error_code": "unknown"}
+
+
+async def _test_anthropic(url: str, api_key: str, model: str = "", is_free: bool = False) -> dict:
+    """Test an Anthropic Messages API endpoint (Kimi Code / Anthropic)."""
+    from utils.llm_client import ChatAnthropic as _ChatAnthropic, _is_kimi_code_anthropic_base_url
+    from config import CONNECTIVITY_TEST_MAX_TOKENS
+
+    try:
+        test_model = str(model or "").strip()
+        if not test_model:
+            if _is_kimi_code_anthropic_base_url(url):
+                test_model = "kimi-for-coding"
+            else:
+                return {"success": False, "error": "缺少模型 ID", "error_code": "missing_params"}
+        default_headers = (
+            {"User-Agent": "claude-code/0.1.0"}
+            if _is_kimi_code_anthropic_base_url(url)
+            else None
+        )
+        client = _ChatAnthropic(
+            model=test_model,
+            base_url=url,
+            api_key=api_key or "sk-placeholder",
+            max_tokens=CONNECTIVITY_TEST_MAX_TOKENS,
+            timeout=10.0,
+            max_retries=0,
+            default_headers=default_headers,
+        )
+        try:
+            await client.ainvoke([{"role": "user", "content": "hi"}])
+            return {"success": True}
+        finally:
+            await client.aclose()
+    except Exception as e:
+        return _classify_anthropic_error(e, is_free=is_free)
+
+
+def _classify_anthropic_error(e: Exception, is_free: bool = False) -> dict:
+    """Classify an Anthropic SDK exception into a connectivity test result."""
+    try:
+        from anthropic import AuthenticationError, APITimeoutError, APIConnectionError, APIStatusError, RateLimitError
+    except Exception:
+        return {"success": False, "error": str(e), "error_code": "unknown"}
+
+    if isinstance(e, AuthenticationError):
+        return {"success": False, "error": "API Key无效或已过期", "error_code": "auth_failed"}
+    if isinstance(e, RateLimitError):
+        return {"success": True}
+    if isinstance(e, (APITimeoutError, TimeoutError, asyncio.TimeoutError)):
+        return {"success": False, "error": "请求超时（10秒）", "error_code": "timeout"}
+    if isinstance(e, APIConnectionError):
+        err_str = str(e).lower()
+        if "getaddrinfo" in err_str or "name or service" in err_str or "nodename" in err_str:
+            return {"success": False, "error": "域名解析失败", "error_code": "dns_error"}
+        if "connection refused" in err_str or "connect call failed" in err_str:
+            return {"success": False, "error": "无法连接到目标服务器", "error_code": "connection_refused"}
+        return {"success": False, "error": f"连接失败: {e}", "error_code": "connection_refused"}
+    if isinstance(e, ssl.SSLError):
+        return {"success": False, "error": "SSL证书验证失败", "error_code": "ssl_error"}
+    if isinstance(e, APIStatusError):
+        status = e.status_code
+        if status in (401, 403):
+            return {"success": False, "error": "API Key无效或已过期", "error_code": "auth_failed"}
+        if is_free and status == 400:
+            return {"success": True}
+        return {"success": False, "error": f"HTTP {status}", "error_code": "unknown"}
     return {"success": False, "error": str(e), "error_code": "unknown"}
 
 
@@ -1658,6 +1738,55 @@ async def _test_vllm_omni_ws_handshake(url: str, api_key: str) -> dict:
         return {"success": False, "error": f"WebSocket连接失败: {e}", "error_code": "ws_error"}
 
 
+async def _test_doubao_tts_connectivity(url: str, api_key: str, model: str = "", voice_id: str = "") -> dict:
+    import httpx
+    from utils.doubao_tts import (
+        DoubaoTtsError,
+        build_doubao_tts_payload,
+        doubao_api_headers,
+        doubao_tts_url,
+        extract_doubao_audio_bytes,
+        DOUBAO_TTS_DEFAULT_BASE_URL,
+        DOUBAO_TTS_DEFAULT_RESOURCE_ID,
+    )
+
+    speaker = (voice_id or "").strip()
+    if not speaker:
+        return {"success": False, "error": "缺少 Voice ID", "error_code": "missing_params"}
+
+    base_url = (url or DOUBAO_TTS_DEFAULT_BASE_URL).strip()
+    resource_id = (model or DOUBAO_TTS_DEFAULT_RESOURCE_ID).strip()
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                doubao_tts_url(base_url),
+                headers=doubao_api_headers(api_key, resource_id),
+                json=build_doubao_tts_payload("测试", speaker, context_texts=()),
+            )
+        if resp.status_code in (401, 403):
+            return {"success": False, "error": "API Key无效或已过期", "error_code": "auth_failed"}
+        if resp.status_code == 429:
+            return {"success": True}
+        if resp.status_code != 200:
+            return {"success": False, "error": f"HTTP {resp.status_code}", "error_code": "unknown"}
+        if not extract_doubao_audio_bytes(resp.content):
+            return {"success": False, "error": "豆包 TTS 未返回音频数据", "error_code": "empty_response"}
+        return {"success": True}
+    except DoubaoTtsError as exc:
+        return {"success": False, "error": str(exc), "error_code": "unknown"}
+    except httpx.TimeoutException:
+        return {"success": False, "error": "请求超时（10秒）", "error_code": "timeout"}
+    except httpx.ConnectError as exc:
+        err_str = str(exc).lower()
+        if "getaddrinfo" in err_str or "name or service" in err_str or "nodename" in err_str:
+            return {"success": False, "error": "域名解析失败", "error_code": "dns_error"}
+        return {"success": False, "error": "无法连接到目标服务器", "error_code": "connection_refused"}
+    except ssl.SSLError:
+        return {"success": False, "error": "SSL证书验证失败", "error_code": "ssl_error"}
+    except Exception as exc:
+        return {"success": False, "error": str(exc), "error_code": "unknown"}
+
+
 def _normalize_provider_url_candidates(profile: dict[str, Any], primary_field: str) -> list[str]:
     """Read the provider's primary URL and candidate URLs, removing blanks and duplicates while preserving order."""
     raw_candidates: list[Any] = [profile.get(primary_field)]
@@ -1679,6 +1808,29 @@ def _normalize_provider_url_candidates(profile: dict[str, Any], primary_field: s
     return result
 
 
+def _looks_like_anthropic_messages_url(url: str | None) -> bool:
+    if not url:
+        return False
+    try:
+        parsed = urllib.parse.urlsplit(str(url))
+    except Exception:
+        return False
+    host = (parsed.hostname or "").lower()
+    path = parsed.path.rstrip("/").lower()
+    if host == "api.anthropic.com":
+        return True
+    return host == "api.kimi.com" and path == "/coding"
+
+
+def _normalize_provider_type(profile: dict[str, Any] | None, url: str | None = None) -> str:
+    provider_type = str((profile or {}).get("provider_type") or "openai_compatible").strip().lower()
+    if provider_type not in ("openai_compatible", "anthropic", "websocket", "tts"):
+        return "openai_compatible"
+    if provider_type == "openai_compatible" and _looks_like_anthropic_messages_url(url):
+        return "anthropic"
+    return provider_type
+
+
 async def _test_connectivity_candidates(
     urls: list[str],
     api_key: str,
@@ -1686,6 +1838,7 @@ async def _test_connectivity_candidates(
     provider_type: str,
     is_free: bool,
     sub_type: str = "",
+    voice_id: str = "",
 ) -> dict:
     """Probe the candidate URLs concurrently; return the first that succeeds.
 
@@ -1704,6 +1857,15 @@ async def _test_connectivity_candidates(
                 result = await _test_vllm_omni_ws_handshake(candidate_url, api_key)
             else:
                 result = await _test_websocket(candidate_url, api_key, model=model)
+        elif provider_type == "tts" and sub_type == "doubao_tts":
+            result = await _test_doubao_tts_connectivity(
+                candidate_url,
+                api_key,
+                model=model,
+                voice_id=voice_id,
+            )
+        elif provider_type == "anthropic":
+            result = await _test_anthropic(candidate_url, api_key, model=model, is_free=is_free)
         else:
             result = await _test_openai_compatible(candidate_url, api_key, model=model, is_free=is_free)
         return candidate_url, result
@@ -1794,7 +1956,7 @@ def _build_save_connectivity_targets(core_cfg: dict, api_config: dict) -> dict[s
                 return
             urls = _normalize_provider_url_candidates(profile, "openrouter_url")
             model = profile.get("conversation_model", "")
-            provider_type = "openai_compatible"
+            provider_type = _normalize_provider_type(profile, urls[0] if urls else profile.get("openrouter_url", ""))
 
         # 单 URL 不需要解析候选地域；页面全量检测会负责常规连通性状态。
         if len(urls) < 2:
@@ -1972,6 +2134,7 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
     The test strategy is chosen by provider_type:
     - openai_compatible (default): send a minimal chat completion request via ChatOpenAI (max_completion_tokens governed by CONNECTIVITY_TEST_MAX_TOKENS)
     - websocket: WebSocket handshake, closed immediately on success
+    - anthropic: send a minimal Anthropic Messages request
 
     All requests have a 10-second timeout. The endpoint is async, so it naturally supports concurrent requests without blocking.
     """
@@ -2002,7 +2165,7 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
             url_candidates = _normalize_provider_url_candidates(profile, "openrouter_url")
             # Use conversation_model as the test model (most representative)
             model = profile.get("conversation_model", "")
-            provider_type = "openai_compatible"
+            provider_type = _normalize_provider_type(profile, url_stripped)
             is_free = profile.get("is_free_version", False)
             _source_label = profile.get("name", provider_key)
         else:
@@ -2019,7 +2182,7 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
                 url_stripped = fallback_url
                 url_candidates = _normalize_provider_url_candidates(assist_profile, "openrouter_url")
                 model = fallback_model
-                provider_type = "openai_compatible"
+                provider_type = _normalize_provider_type(assist_profile, url_stripped)
                 _source_label = assist_profile.get("name", profile.get("name", provider_key)) + "（通过辅助端点验证）"
             else:
                 return {"success": False, "error": f"供应商 {_source_label} 暂不支持连通测试", "error_code": "missing_params"}
@@ -2039,7 +2202,7 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
         url_stripped = req.url.strip()
         url_candidates = [url_stripped]
         model = (req.model or "gpt-3.5-turbo").strip()
-        provider_type = (req.provider_type or "openai_compatible").strip().lower()
+        provider_type = _normalize_provider_type({"provider_type": req.provider_type}, url_stripped)
         is_free = bool(req.is_free)
         _source_label = _identify_provider_label(url_stripped, is_free)
 
@@ -2058,6 +2221,7 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
             provider_type,
             is_free,
             sub_type=sub_type,
+            voice_id=(req.voice_id or "").strip(),
         )
     except Exception as e:
         logger.exception("[ConnectivityTest] 未预期的异常")
@@ -2087,6 +2251,7 @@ def _identify_provider_label(url: str, is_free: bool) -> str:
         "api.siliconflow.cn": "硅基流动",
         "generativelanguage.googleapis.com": "Gemini",
         "api.moonshot.cn": "Kimi",
+        "api.kimi.com": "Kimi Code",
         "api.xiaomimimo.com": "MiMo",
         "token-plan-cn.xiaomimimo.com": "MiMo Token Plan",
         "token-plan-sgp.xiaomimimo.com": "MiMo Token Plan",

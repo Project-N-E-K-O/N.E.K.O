@@ -6,8 +6,8 @@
     const ICEBREAKER_RESET_EVENT = 'neko:new-user-icebreaker-reset';
     const RESET_EVENT = 'neko:avatar-floating-guide-reset';
     const RESET_BROADCAST_KEY = 'neko_avatar_floating_guide_reset_event';
-    const HOME_TUTORIAL_KEYS = ['neko_tutorial_home_yui_v1', 'neko_tutorial_home'];
-    const HOME_MANUAL_INTENT_KEY = 'neko_tutorial_home_manual_intent';
+    const HOME_TUTORIAL_KEYS = ['neko_tutorial_home_yui_v1'];
+    const HOME_MANUAL_INTENT_KEY = 'neko_tutorial_home_yui_v1_manual_intent';
     const ROUND_COUNT = 7;
     const RESET_HISTORY_LIMIT = 20;
 
@@ -176,6 +176,7 @@
         const state = loadGuideState();
 
         resetAllIcebreakerDays();
+        state.firstSeenDate = getTodayLocalDate();
         state.completedRounds = [];
         state.skippedRounds = [];
         state.currentRound = null;
@@ -309,6 +310,10 @@
             '已重置第 {{day}} 天新手教程，请刷新 Neko 后启动。',
             { day }
         );
+        if (typeof window.showTutorialResetNotice === 'function') {
+            void window.showTutorialResetNotice(message);
+            return;
+        }
         if (typeof window.showStatusToast === 'function') {
             window.showStatusToast(message, 2500, { priority: 1 });
             return;
@@ -334,13 +339,16 @@
                     });
                 } catch (error) {
                     console.error('[AvatarFloatingGuideReset] 重置失败:', error);
-                    if (typeof window.showStatusToast === 'function') {
+                    const message = translateResetMessage(
+                        'tutorial.reset.dayFailed',
+                        '新手教程重置失败，请稍后再试。',
+                        { day }
+                    );
+                    if (typeof window.showTutorialResetNotice === 'function') {
+                        void window.showTutorialResetNotice(message, { variant: 'error' });
+                    } else if (typeof window.showStatusToast === 'function') {
                         window.showStatusToast(
-                            translateResetMessage(
-                                'tutorial.reset.dayFailed',
-                                '新手教程重置失败，请稍后再试。',
-                                { day }
-                            ),
+                            message,
                             3000,
                             { priority: 2 }
                         );

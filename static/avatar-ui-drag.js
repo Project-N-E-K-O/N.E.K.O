@@ -27,9 +27,10 @@
             'body.' + DRAGGING_CLASS + ' [id^="vrm-btn-"],',
             'body.' + DRAGGING_CLASS + ' .mmd-floating-btn,',
             'body.' + DRAGGING_CLASS + ' [id^="mmd-btn-"],',
-            'body.' + DRAGGING_CLASS + ' #live2d-lock-icon,',
-            'body.' + DRAGGING_CLASS + ' #vrm-lock-icon,',
-            'body.' + DRAGGING_CLASS + ' #mmd-lock-icon,',
+            // 四种模型的锁图标统一按 id 后缀匹配（含 pngtuber-lock-icon），与
+            // index.css 的 [id$="-lock-icon"]{pointer-events:auto} 兜底对偶；少一个 prefix
+            // 就会让该模型拖拽时锁仍可点而粘手。
+            'body.' + DRAGGING_CLASS + ' [id$="-lock-icon"],',
             'body.' + DRAGGING_CLASS + ' #live2d-floating-buttons,',
             'body.' + DRAGGING_CLASS + ' #live2d-floating-buttons *,',
             'body.' + DRAGGING_CLASS + ' #vrm-floating-buttons,',

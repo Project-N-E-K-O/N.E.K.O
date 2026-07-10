@@ -6,8 +6,8 @@ This page walks you through a first run of N.E.K.O. after completing the [Develo
 
 ```bash
 # In separate terminals:
-uv run python memory_server.py
-uv run python main_server.py
+uv run python app/memory_server.py
+uv run python app/main_server.py
 ```
 
 ## 2. Configure an API provider

@@ -8,6 +8,22 @@ def _live2d_source() -> str:
     return (PROJECT_ROOT / "static/live2d-interaction.js").read_text(encoding="utf-8")
 
 
+def _js_block(source: str, marker: str) -> str:
+    start = source.index(marker)
+    params_end = source.index(")", start)
+    brace_start = source.index("{", params_end)
+    depth = 0
+    for pos in range(brace_start, len(source)):
+        char = source[pos]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start : pos + 1]
+    raise AssertionError(f"Could not find closing brace for {marker!r}")
+
+
 def test_live2d_drag_snap_keeps_visible_area_threshold_on_all_platforms():
     source = _live2d_source()
 
@@ -53,3 +69,64 @@ def test_live2d_does_not_switch_display_during_drag_before_mouseup():
 
     assert "maybeSwitchDisplayDuringDrag" not in source
     assert "liveDisplaySwitchPromise" not in source
+
+
+def test_live2d_niri_physical_crop_mouse_tracking_splits_virtual_and_local_coords():
+    source = _live2d_source()
+
+    assert "function getLive2DNiriPetPointerCoordinates(event)" in source
+    assert "typeof api.isActive === 'function' && !api.isActive()" in source
+    assert "typeof api.getEventCoordinates === 'function'" in source
+    assert "const pointerCoords = getLive2DNiriPetPointerCoordinates(event);" in source
+    assert "const pointer = pointerCoords.virtual;" in source
+    assert "const localPointer = pointerCoords.local;" in source
+    assert "this._lastMouseLocalX = localPointer.x;" in source
+    assert "this._lastMouseLocalY = localPointer.y;" in source
+    assert "isLive2DPointInRect(localPointer, lr, 0)" in source
+    assert "isLive2DPointInRect(localPointer, br, 0)" in source
+    assert "isPointerNearFloatingButtons()" in source
+
+
+def test_live2d_click_touch_set_logs_trigger_summary():
+    source = _live2d_source()
+    summary_logger = _js_block(source, "function logLive2DClickTriggerSummary")
+    touch_set_fallback = _js_block(source, "Live2DManager.prototype._playTouchSetWithFallback")
+    touch_set_animation = _js_block(source, "Live2DManager.prototype._playTouchSetAnimation")
+
+    assert "function logLive2DClickTriggerSummary(label, details = {})" in summary_logger
+    assert "triggered=${triggerCount}, motions=${motionCount}, expressions=${expressionCount}" in summary_logger
+    assert "requestedHitArea" in summary_logger
+    assert "resolvedHitArea" in summary_logger
+    assert "summaryType" in summary_logger
+    assert "motionCandidates" in summary_logger
+    assert "expressionCandidates" in summary_logger
+    assert "failedMotions" in summary_logger
+    assert "failedExpressions" in summary_logger
+    assert "await this._playTouchSetAnimation(useBlock, { requestedHitArea });" in touch_set_fallback
+    assert "fallback: 'default'" in touch_set_fallback
+    assert "summaryType: 'routing_decision'" in touch_set_fallback
+    assert "triggerLog.motions.push({" in touch_set_animation
+    assert "triggerLog.expressions.push({" in touch_set_animation
+
+
+def test_live2d_random_click_prefers_motion_and_uses_expression_as_fallback():
+    source = _live2d_source()
+    click_effect = _js_block(source, "Live2DManager.prototype._playTemporaryClickEffect")
+
+    motion_branch = click_effect.index("if (motions && motions.length > 0)")
+    expression_fallback = click_effect.index("if (!didPlayEffect && expressionFiles.length > 0)")
+    assert motion_branch < expression_fallback
+    assert "const motion = await this.currentModel.motion(motionGroup, undefined, priority);" in click_effect
+    assert "triggerLog.motions.push({" in click_effect
+    assert "triggerLog.expressions.push({ emotion, file: choiceFile, fallbackFor: 'motion' });" in click_effect
+
+
+def test_live2d_touch_set_prefers_motion_and_uses_expression_as_fallback():
+    source = _live2d_source()
+    touch_set_animation = _js_block(source, "Live2DManager.prototype._playTouchSetAnimation")
+
+    motion_branch = touch_set_animation.index("if (motions.length > 0)")
+    expression_fallback = touch_set_animation.index("if (triggerLog.motions.length === 0 && expressions.length > 0)")
+    assert motion_branch < expression_fallback
+    assert "triggerLog.motions.push({" in touch_set_animation
+    assert "fallbackFor: 'motion'" in touch_set_animation

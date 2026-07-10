@@ -38,6 +38,7 @@ PROVIDER_TO_KEY_FIELD: dict[str, str] = {
     "silicon": "assistApiKeySilicon",
     "gemini": "assistApiKeyGemini",
     "kimi": "assistApiKeyKimi",
+    "kimi_code": "assistApiKeyKimiCode",
     "mimo": "assistApiKeyMimo",
     "mimo_token_plan": "assistApiKeyMimoTokenPlan",
 }

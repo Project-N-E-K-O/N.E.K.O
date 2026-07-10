@@ -450,6 +450,7 @@ class MemoryRefineEngine:
             max_retries=0,
             max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous so variable-length JSON (incl. thinking) isn't truncated
             extra_body=None,  # 显式开 thinking（同 correction）
+            provider_type=api_config.get('provider_type'),
         )
         try:
             resp = await llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET  # prompt assembled from token-capped memory components (refine clusters bounded upstream).

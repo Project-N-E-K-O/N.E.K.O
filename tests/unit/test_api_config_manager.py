@@ -51,8 +51,10 @@ class TestKeybookSaveLoad:
         'assistApiKeySilicon': 'ASSIST_API_KEY_SILICON',
         'assistApiKeyGemini': 'ASSIST_API_KEY_GEMINI',
         'assistApiKeyKimi': 'ASSIST_API_KEY_KIMI',
+        'assistApiKeyKimiCode': 'ASSIST_API_KEY_KIMI_CODE',
         'assistApiKeyDeepseek': 'ASSIST_API_KEY_DEEPSEEK',
         'assistApiKeyDoubao': 'ASSIST_API_KEY_DOUBAO',
+        'assistApiKeyDoubaoTts': 'ASSIST_API_KEY_DOUBAO_TTS',
         'assistApiKeyMinimax': 'ASSIST_API_KEY_MINIMAX',
         'assistApiKeyMinimaxIntl': 'ASSIST_API_KEY_MINIMAX_INTL',
         'assistApiKeyMimo': 'ASSIST_API_KEY_MIMO',
@@ -97,8 +99,9 @@ class TestKeybookSaveLoad:
         # 其余所有槽位保持空，不应被 CORE_API_KEY 污染
         for upper in ['ASSIST_API_KEY_GLM', 'ASSIST_API_KEY_STEP',
                        'ASSIST_API_KEY_SILICON', 'ASSIST_API_KEY_GEMINI',
-                       'ASSIST_API_KEY_KIMI', 'ASSIST_API_KEY_DEEPSEEK',
-                       'ASSIST_API_KEY_DOUBAO', 'ASSIST_API_KEY_GROK',
+                       'ASSIST_API_KEY_KIMI', 'ASSIST_API_KEY_KIMI_CODE',
+                       'ASSIST_API_KEY_DEEPSEEK',
+                       'ASSIST_API_KEY_DOUBAO', 'ASSIST_API_KEY_DOUBAO_TTS', 'ASSIST_API_KEY_GROK',
                        'ASSIST_API_KEY_CLAUDE', 'ASSIST_API_KEY_OPENROUTER',
                        'ASSIST_API_KEY_QWEN_INTL',
                        'ASSIST_API_KEY_MINIMAX', 'ASSIST_API_KEY_MINIMAX_INTL',
@@ -544,6 +547,34 @@ class TestAssistFollowsCore:
         assert response['coreApi'] == 'free'
         assert response['assistApi'] == 'free'
         assert response['assistApiKeyQwen'] == ''
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_get_core_config_api_returns_kimi_code_key(self, monkeypatch):
+        """GET must echo back assistApiKeyKimiCode; otherwise the frontend reads
+        an empty value and a re-save overwrites the stored secret."""
+        from main_routers import config_router
+
+        async def fake_read_json_async(_path):
+            return {
+                'coreApiKey': 'sk-core',
+                'coreApi': 'qwen',
+                'assistApi': 'kimi_code',
+                'assistApiKeyKimiCode': 'sk-kimi-code-stored',
+            }
+
+        class FakeConfigManager:
+            def get_runtime_config_path(self, _filename):
+                return 'core_config.json'
+
+        monkeypatch.setattr(config_router, 'read_json_async', fake_read_json_async)
+        monkeypatch.setattr(config_router, 'get_config_manager', lambda: FakeConfigManager())
+
+        response = await config_router.get_core_config_api()
+
+        assert response['success'] is True
+        assert response['assistApi'] == 'kimi_code'
+        assert response['assistApiKeyKimiCode'] == 'sk-kimi-code-stored'
 
     @pytest.mark.unit
     def test_free_core_defaults_assist_to_free_when_key_missing(self, config_manager):
@@ -1103,6 +1134,60 @@ class TestVoiceCloneKeyResolution:
         assert key is None
 
     @pytest.mark.unit
+    def test_doubao_tts_key_falls_back_to_doubao_keybook(self, config_manager):
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen',
+            'assistApi': 'mimo',
+            'ttsModelProvider': 'doubao_tts',
+            'ttsModelApiKey': '',
+            'assistApiKeyDoubaoTts': 'ark-doubao-speech-key',
+            'assistApiKeyDoubao': 'chat-doubao-key',
+        })
+        key = config_manager.get_tts_api_key('doubao_tts')
+        assert key == 'ark-doubao-speech-key'
+
+    @pytest.mark.unit
+    def test_doubao_tts_key_does_not_fallback_to_doubao_chat_key(self, config_manager):
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen',
+            'assistApi': 'mimo',
+            'ttsModelProvider': 'doubao_tts',
+            'ttsModelApiKey': '',
+            'assistApiKeyDoubaoTts': '',
+            'assistApiKeyDoubao': 'legacy-doubao-key',
+        })
+        key = config_manager.get_tts_api_key('doubao_tts')
+        assert key is None
+
+    @pytest.mark.unit
+    def test_doubao_tts_key_ignores_shared_key_from_other_tts_provider(self, config_manager):
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen',
+            'assistApi': 'mimo',
+            'ttsModelProvider': 'vllm_omni',
+            'ttsModelApiKey': 'sk-vllm-should-not-leak',
+            'assistApiKeyDoubaoTts': 'ark-doubao-speech-key',
+        })
+        key = config_manager.get_tts_api_key('doubao_tts')
+        assert key == 'ark-doubao-speech-key'
+
+    @pytest.mark.unit
+    def test_doubao_tts_key_skips_masked_shared_key(self, config_manager):
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen',
+            'assistApi': 'mimo',
+            'ttsModelProvider': 'doubao_tts',
+            'ttsModelApiKey': 'sk-********************************',
+            'assistApiKeyDoubaoTts': 'ark-doubao-speech-key',
+        })
+        key = config_manager.get_tts_api_key('doubao_tts')
+        assert key == 'ark-doubao-speech-key'
+
+    @pytest.mark.unit
     def test_cosyvoice_tts_key_from_custom_config(self, config_manager):
         """get_tts_api_key('cosyvoice') reads from tts_custom model config."""
         _write_core_config(config_manager, {
@@ -1473,6 +1558,32 @@ class TestVllmOmniRawKeyPassthrough:
         assert 'local-speaker' in config_manager.load_voice_storage()['__LOCAL_TTS__']
 
     @pytest.mark.unit
+    def test_doubao_tts_cloned_voice_is_available_for_character_binding(self, config_manager):
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'ttsModelProvider': 'doubao_tts',
+            'ttsModelApiKey': '112997',
+        })
+        config_manager.save_voice_storage({
+            '__DOUBAO_TTS__112997': {
+                'S_xeC2CDp72': {
+                    'voice_id': 'S_xeC2CDp72',
+                    'provider': 'doubao_tts',
+                    'source': 'clone',
+                },
+            },
+        })
+
+        voices = config_manager.get_voices_for_current_api(for_listing=True)
+
+        assert voices['S_xeC2CDp72']['provider'] == 'doubao_tts'
+        assert config_manager.validate_voice_id('S_xeC2CDp72') is True
+        assert config_manager.delete_voice_for_current_api('S_xeC2CDp72') is True
+        assert config_manager.load_voice_storage()['__DOUBAO_TTS__112997'] == {}
+
+    @pytest.mark.unit
     def test_cleanup_keeps_vllm_omni_character_voice(self, config_manager, monkeypatch):
         """cleanup_invalid_voice_ids must not clear provider-local vLLM voices."""
         _write_core_config(config_manager, {
@@ -1718,6 +1829,193 @@ class TestGptsovitsEnabledSaveMigration:
         assert saved.get('gptsovitsEnabled') is True
         config_manager._core_config_cache = None
         assert config_manager.get_core_config()['GPTSOVITS_ENABLED'] is True
+
+    @pytest.mark.unit
+    def test_update_core_config_persists_kimi_code_assist_key(self, config_manager, monkeypatch):
+        config_router, asyncio = self._neutralize_side_effects(monkeypatch)
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'kimi_code',
+            'enableCustomApi': True,
+        })
+
+        resp = asyncio.run(config_router.update_core_config(self._FakeRequest({
+            'enableCustomApi': True,
+            'coreApi': 'qwen',
+            'assistApi': 'kimi_code',
+            'assistApiKeyKimiCode': 'sk-kimi-code-test',
+        })))
+        assert resp.get('success') is True
+
+        saved = config_manager.load_json_config('core_config.json', {})
+        assert saved.get('assistApiKeyKimiCode') == 'sk-kimi-code-test'
+        config_manager._core_config_cache = None
+        assert config_manager.get_core_config()['ASSIST_API_KEY_KIMI_CODE'] == 'sk-kimi-code-test'
+
+    @pytest.mark.unit
+    def test_update_core_config_doubao_tts_overwrites_stale_shared_tts_key(self, config_manager, monkeypatch):
+        config_router, asyncio = self._neutralize_side_effects(monkeypatch)
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'enableCustomApi': True,
+            'ttsModelProvider': 'vllm_omni',
+            'ttsModelApiKey': 'sk-vllm-should-not-leak',
+        })
+
+        resp = asyncio.run(config_router.update_core_config(self._FakeRequest({
+            'enableCustomApi': True,
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'ttsModelProvider': 'doubao_tts',
+            'assistApiKeyDoubaoTts': 'ark-doubao-speech-key',
+        })))
+        assert resp.get('success') is True
+
+        saved = config_manager.load_json_config('core_config.json', {})
+        assert saved.get('ttsModelApiKey') == 'ark-doubao-speech-key'
+
+    @pytest.mark.unit
+    def test_update_core_config_doubao_tts_clears_stale_shared_tts_key_without_speech_key(
+        self,
+        config_manager,
+        monkeypatch,
+    ):
+        config_router, asyncio = self._neutralize_side_effects(monkeypatch)
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'assistApiKeyDoubao': 'ark-chat-key',
+            'enableCustomApi': True,
+            'ttsModelProvider': 'vllm_omni',
+            'ttsModelApiKey': 'sk-vllm-should-not-leak',
+        })
+
+        resp = asyncio.run(config_router.update_core_config(self._FakeRequest({
+            'enableCustomApi': True,
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'ttsModelProvider': 'doubao_tts',
+        })))
+        assert resp.get('success') is True
+
+        saved = config_manager.load_json_config('core_config.json', {})
+        assert saved.get('ttsModelApiKey') == ''
+        assert saved.get('assistApiKeyDoubaoTts', '') == ''
+
+    @pytest.mark.unit
+    def test_get_core_config_api_doubao_tts_display_ignores_foreign_shared_key(
+        self,
+        config_manager,
+    ):
+        import asyncio
+        from main_routers import config_router
+
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'enableCustomApi': True,
+            'ttsModelProvider': 'vllm_omni',
+            'ttsModelApiKey': 'sk-vllm-should-not-display',
+            'assistApiKeyDoubaoTts': '',
+        })
+
+        resp = asyncio.run(config_router.get_core_config_api())
+
+        assert resp['success'] is True
+        assert resp['assistApiKeyDoubaoTts'] == ''
+
+    @pytest.mark.unit
+    def test_get_core_config_api_doubao_tts_display_uses_owned_shared_key(
+        self,
+        config_manager,
+    ):
+        import asyncio
+        from main_routers import config_router
+
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'enableCustomApi': True,
+            'ttsModelProvider': 'doubao_tts',
+            'ttsModelApiKey': 'ark-doubao-speech-key',
+            'assistApiKeyDoubaoTts': '',
+        })
+
+        resp = asyncio.run(config_router.get_core_config_api())
+
+        assert resp['success'] is True
+        assert resp['assistApiKeyDoubaoTts'] == 'ark-doubao-speech-key'
+
+    @pytest.mark.unit
+    def test_get_model_api_config_returns_kimi_code_provider_type(self, config_manager):
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'kimi_code',
+            'assistApiKeyKimiCode': 'sk-kimi-code-test',
+            'enableCustomApi': False,
+        })
+
+        config_manager._core_config_cache = None
+        api_config = config_manager.get_model_api_config('conversation')
+
+        assert api_config['model'] == 'kimi-for-coding'
+        assert api_config['base_url'] == 'https://api.kimi.com/coding'
+        assert api_config['api_key'] == 'sk-kimi-code-test'
+        assert api_config['provider_type'] == 'anthropic'
+
+    @pytest.mark.unit
+    def test_kimi_code_agent_falls_back_to_vision_model(self, config_manager):
+        # kimi_code 的 agent 槽和其它 provider 一样回退到 VISION_MODEL
+        # （= kimi-for-coding）。曾经用 AGENT_MODEL_DISABLED 把它单独关掉，
+        # 但 claude 同样走 Anthropic CUA 路径却未关，门控是不一致的半成品；
+        # 已 revert，剩余 Anthropic 路径问题在 follow-up issue 跟踪。
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'kimi_code',
+            'assistApiKeyKimiCode': 'sk-kimi-code-test',
+            'enableCustomApi': False,
+        })
+
+        config_manager._core_config_cache = None
+        api_config = config_manager.get_model_api_config('agent')
+
+        assert api_config['model'] == 'kimi-for-coding'
+        assert api_config['provider_type'] == 'anthropic'
+
+    @pytest.mark.unit
+    def test_provider_type_follow_cycle_does_not_recurse(self, config_manager):
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'kimi_code',
+            'assistApiKeyKimiCode': 'sk-kimi-code-test',
+            'enableCustomApi': True,
+            'conversationModelProvider': 'follow_summary',
+            'summaryModelProvider': 'follow_conversation',
+        })
+
+        summary_config = config_manager.get_model_api_config('summary')
+        conversation_config = config_manager.get_model_api_config('conversation')
+
+        assert summary_config['provider_type'] == 'anthropic'
+        assert conversation_config['provider_type'] == 'anthropic'
+
+    @pytest.mark.unit
+    def test_empty_core_fallback_provider_type_uses_core_profile(self, config_manager):
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'coreApiKey': 'sk-core-qwen',
+            'assistApi': 'kimi_code',
+            'assistApiKeyKimiCode': 'sk-kimi-code-test',
+            'enableCustomApi': False,
+            'omniModelProvider': '',
+        })
+
+        realtime_config = config_manager.get_model_api_config('realtime')
+
+        assert realtime_config['provider_type'] == 'openai_compatible'
+        assert realtime_config['api_key'] == 'sk-core-qwen'
+        assert 'dashscope' in realtime_config['base_url']
 
 
 if __name__ == '__main__':

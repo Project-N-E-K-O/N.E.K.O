@@ -36,6 +36,39 @@
         rejecter(error);
     }
 
+    function getVoiceStartErrorMessage(error) {
+        var fallbackKey = 'app.sessionFailed';
+        var defaultFallback = 'Session启动失败';
+        function usableText(value) {
+            if (typeof value !== 'string') return '';
+            var text = value.trim();
+            if (!text || text === '[object Module]' || text === '[object Object]') return '';
+            return value;
+        }
+        var fallback = defaultFallback;
+        if (typeof window.t === 'function') {
+            var translatedFallback = usableText(window.t(fallbackKey, defaultFallback));
+            if (translatedFallback && translatedFallback.trim() !== fallbackKey) {
+                fallback = translatedFallback;
+            }
+        }
+
+        var message = usableText(error && error.message);
+        if (message) return message;
+        message = usableText(typeof error === 'string' ? error : '');
+        if (message) return message;
+
+        if (error && typeof error === 'object' && typeof window.translateStatusMessage === 'function') {
+            message = usableText(window.translateStatusMessage(error));
+            if (message) return message;
+        }
+
+        if (error !== undefined && error !== null) {
+            console.warn('[VoiceStart] Non-string error message ignored:', error);
+        }
+        return fallback;
+    }
+
     function isHomeTutorialInteractionLocked() {
         try {
             return typeof window.isNekoHomeTutorialInteractionLocked === 'function'
@@ -722,6 +755,14 @@
         }).filter(Boolean);
     };
 
+    function getPendingAttachmentInputType(item) {
+        var source = item && item.dataset ? String(item.dataset.source || '') : '';
+        if (source === 'user-image' || source === 'clipboard-image' || source === 'compact-history') {
+            return 'user_image';
+        }
+        return U.isMobile() ? 'camera' : 'screen';
+    }
+
     mod.syncPendingComposerAttachments = function syncPendingComposerAttachments() {
         if (window.reactChatWindowHost && typeof window.reactChatWindowHost.setComposerAttachments === 'function') {
             window.reactChatWindowHost.setComposerAttachments(mod.getPendingComposerAttachments());
@@ -774,7 +815,7 @@
 
         return mod.normalizeImageBlobForPendingList(file)
             .then(function (dataUrl) {
-                mod.addScreenshotToList(dataUrl);
+                mod.addScreenshotToList(dataUrl, null, { source: 'user-image' });
                 return dataUrl;
             });
     };
@@ -2113,6 +2154,7 @@
                 S.isSwitchingMode = false;
 
             } catch (error) {
+                var voiceStartErrorMessage = getVoiceStartErrorMessage(error);
                 var isVoiceStartCancelled = !!(error && error.voiceStartCancelled);
                 var preserveGoodbyeUi = isVoiceStartCancelled
                     && typeof window.isNekoGoodbyeModeActive === 'function'
@@ -2137,7 +2179,7 @@
                 }
 
                 if (error && error.voiceConfigSwitchTimedOut) {
-                    window.showVoicePreparingToast(error.message);
+                    window.showVoicePreparingToast(voiceStartErrorMessage);
                 } else {
                     window.hideVoicePreparingToast();
                 }
@@ -2173,9 +2215,9 @@
                 if (preserveGoodbyeUi) {
                     window.showStatusToast('', 0);
                 } else if (error && error.voiceConfigSwitchTimedOut) {
-                    window.showStatusToast(error.message, 5000);
+                    window.showStatusToast(voiceStartErrorMessage, 5000);
                 } else {
-                    window.showStatusToast(window.t ? window.t('app.startFailed', { error: error.message }) : '\u542F\u52A8\u5931\u8D25: ' + error.message, 5000);
+                    window.showStatusToast(window.t ? window.t('app.startFailed', { error: voiceStartErrorMessage }) : '\u542F\u52A8\u5931\u8D25: ' + voiceStartErrorMessage, 5000);
                 }
 
                 screenButton.classList.remove('active');
@@ -2241,6 +2283,10 @@
                 classList: live2dContainer ? live2dContainer.classList.toString() : 'undefined',
                 display: live2dContainer ? getComputedStyle(live2dContainer).display : 'undefined'
             });
+
+            if (typeof window.stopScreening === 'function') {
+                window.stopScreening();
+            }
 
             if (S.socket && S.socket.readyState === WebSocket.OPEN) {
                 S._suppressCharacterLeft = true;
@@ -2558,6 +2604,7 @@
             window._lastSubmittedText = typeof options.rollbackText === 'string' ? options.rollbackText : text;
             window._lastSubmittedRequestId = window._lastSubmittedText ? requestId : '';
             var isReactWindowSource = options.source === 'react-chat-window';
+            var messageSource = typeof options.source === 'string' ? options.source.trim() : '';
             var reactOptimisticMessageId = '';
             var reactOptimisticMessageAppended = null;
             var sentUserContent = false;
@@ -2716,7 +2763,7 @@
                                 var msg = {
                                     action: 'stream_data',
                                     data: img.src,
-                                    input_type: U.isMobile() ? 'camera' : 'screen'
+                                    input_type: getPendingAttachmentInputType(screenshotItems[i])
                                 };
                                 if (text) {
                                     msg.request_id = requestId;
@@ -2756,12 +2803,16 @@
                         for (var extraIndex = 0; extraIndex < extraImageDataUrls.length; extraIndex += 1) {
                             var extraUrl = extraImageDataUrls[extraIndex];
                             sentImageUrls.push(extraUrl);
-                            S.socket.send(JSON.stringify({
+                            var extraMessage = {
                                 action: 'stream_data',
                                 data: extraUrl,
                                 input_type: 'avatar_drop_image',
                                 request_id: requestId
-                            }));
+                            };
+                            if (messageSource) {
+                                extraMessage.source = messageSource;
+                            }
+                            S.socket.send(JSON.stringify(extraMessage));
                         }
 
                         sentUserContent = true;
@@ -2791,6 +2842,9 @@
                         };
                         if (memoryText) {
                             textMessage.memory_text = memoryText;
+                        }
+                        if (messageSource) {
+                            textMessage.source = messageSource;
                         }
                         S.socket.send(JSON.stringify(textMessage));
 
@@ -3133,26 +3187,40 @@
             // 注意：即使没有预选源也要走原子化路径。原子化在主进程里把"含 Live2D 的 Pet 窗口"
             // 一起 hide 掉再抓屏，是唯一能真正抹掉立绘的途径；下面的 renderer fallback 只能
             // 对 Pet 的 DOM 做 visibility:hidden，盖不住 WebGL 合成层 —— 那正是"隐藏NEKO
-            // 画面刷新了但立绘还在"的根因。主进程在 sourceId 缺省时会自动取主屏。
+            // 画面刷新了但立绘还在"的根因。主进程在 sourceId 缺省时会自行选择合适屏幕。
             if (window.electronDesktopCapturer
                 && typeof window.electronDesktopCapturer.captureSourceWithoutNeko === 'function') {
+                var atomicFailed = false;
                 try {
                     var atomic = await window.electronDesktopCapturer.captureSourceWithoutNeko(selectedSourceId || null);
                     if (atomic && atomic.success && atomic.dataUrl) {
                         return atomic.dataUrl;
                     } else if (atomic && atomic.error) {
+                        atomicFailed = true;
                         console.warn('[隐藏NEKO] 主进程原子化路径失败:', atomic.error);
                         if (typeof window.maybeClearSourceOnNotFound === 'function') {
                             window.maybeClearSourceOnNotFound(atomic, 'recaptureWithoutNeko atomic Source not found');
                         }
+                    } else {
+                        atomicFailed = true;
+                        console.warn('[隐藏NEKO] 主进程原子化路径未返回可用截图');
                     }
                 } catch (e) {
-                    console.warn('[隐藏NEKO] 主进程原子化路径抛错，回退到渲染器路径:', e);
+                    atomicFailed = true;
+                    console.warn('[隐藏NEKO] 主进程原子化路径抛错:', e);
                 }
-                // 主进程路径失败则继续走下面 renderer 端的兜底（visibility:hidden + MediaStream）
+                if (atomicFailed) {
+                    // Electron 下只有主进程原子化路径会真正 hide 含 WebGL/Live2D 的 Pet 窗口。
+                    // 后续 renderer / pyautogui 兜底只能隐藏 DOM 或重新触发系统屏幕共享，
+                    // 结果会变成"对话框消失但模型仍在"。这里直接停止重拍，避免生成错误截图。
+                    if (typeof window.showStatusToast === 'function') {
+                        window.showStatusToast(window.t ? window.t('app.screenshotFailed') : '\u622A\u56FE\u5931\u8D25', 4000);
+                    }
+                    return null;
+                }
             }
 
-            // Fallback：web 浏览器模式或主进程路径失败 —— 渲染器侧 CSS 隐藏 + 常规抓屏兜底
+            // Fallback：web 浏览器模式或没有主进程原子化能力的旧环境 —— 渲染器侧 CSS 隐藏 + 常规抓屏兜底
             // Electron 下额外让主进程 hide 卫星窗口；Pet 自己的 DOM 用 visibility:hidden 处理。
             // MediaStream 抓帧（getDisplayMedia）会把卫星窗口也拍进去，CSS 隐藏覆盖不到它们。
             var saved = hideNekoUI();
@@ -3253,6 +3321,14 @@
          */
         var _captureScreenshotDataUrlBusy = false;
 
+        function setScreenshotCaptureSessionActive(active) {
+            try {
+                window.dispatchEvent(new CustomEvent('neko:screenshot-capture-session', {
+                    detail: { active: active === true }
+                }));
+            } catch (e) { }
+        }
+
         mod.captureScreenshotDataUrl = async function captureScreenshotDataUrl() {
             if (_captureScreenshotDataUrlBusy) {
                 console.warn('[截图] 截图流程进行中，忽略重复请求');
@@ -3262,6 +3338,12 @@
             var acquiredStream = null;
             var isCachedStream = false;
             var captureType = null;
+            var screenshotCaptureSessionActive = false;
+
+            if (!U.isMobile()) {
+                screenshotCaptureSessionActive = true;
+                setScreenshotCaptureSessionActive(true);
+            }
 
             try {
                 var dataUrl = null;
@@ -3441,6 +3523,9 @@
                     }
                 }
             } finally {
+                if (screenshotCaptureSessionActive) {
+                    setScreenshotCaptureSessionActive(false);
+                }
                 _captureScreenshotDataUrlBusy = false;
                 if (!isCachedStream && acquiredStream instanceof MediaStream) {
                     try {
@@ -3560,7 +3645,7 @@
                     if (!blob) continue;
                     mod.normalizeImageBlobForPendingList(blob)
                         .then(function (dataUrl) {
-                            mod.addScreenshotToList(dataUrl);
+                            mod.addScreenshotToList(dataUrl, null, { source: 'clipboard-image' });
                             window.showStatusToast(
                                 window.t ? window.t('app.screenshotAdded') : '\u622A\u56FE\u5DF2\u6DFB\u52A0\uFF0C\u70B9\u51FB\u53D1\u9001\u4E00\u8D77\u53D1\u9001',
                                 3000

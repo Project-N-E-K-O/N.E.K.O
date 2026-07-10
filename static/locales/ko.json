@@ -674,6 +674,7 @@
     },
     "chat": {
         "title": "채팅",
+        "topicHint": "{{author}}이(가) 하고 싶은 이야기가 있나 봐요…",
         "viewerTitle": "채팅(뷰어 모드)",
         "tooltip": "채팅 영역",
         "textInputPlaceholder": "보내려면 Enter를 누르고, 줄을 바꾸려면 Shift+Enter를 누르세요.",
@@ -769,12 +770,14 @@
         "reactWindowLoadFailed": "채팅 창 리소스를 불러오지 못했습니다",
         "reactWindowAriaLabel": "Neko 채팅 창",
         "focusIndicator": "집중 모드",
+        "focusThinking": "생각 중",
         "reactWindowInputHint": "Enter 로 전송하고 Shift + Enter 로 줄바꿈",
         "messageListAriaLabel": "채팅 메시지 목록",
         "composerToolsAriaLabel": "입력 도구 모음",
         "pendingImagesAriaLabel": "전송 대기 이미지",
         "pendingImageAlt": "이미지 {{index}}",
         "removePendingImage": "이미지 제거",
+        "closeMemeAriaLabel": "이미지 닫기",
         "emojiButtonAriaLabel": "이모지",
         "toolIconsAriaLabel": "도구 아이콘",
         "toolLollipop": "막대사탕",
@@ -942,7 +945,7 @@
         "freeVersionHint": "(무료 버전에는 필요하지 않음)",
         "coreApiPlaceholder": "API 키를 입력하세요.",
         "coreApiProvider": "핵심 API(음성 채팅, 옴니모달 전용)",
-        "assistApiProvider": "지원 API(메모리/에이전트/텍스트 채팅/사용자 정의 음성)",
+        "assistApiProvider": "지원 API(메모리/에이전트/텍스트 채팅)",
         "saveSettings": "설정 저장",
         "closeSettings": "닫기",
         "newbieRecommendTitle": "초보자 추천",
@@ -950,7 +953,7 @@
         "advancedOptions": "고급 옵션(선택 사항)",
         "providerDescription": "API 제공자 설명:",
         "coreApiDesc": "핵심 API: 대화 기능을 처리합니다.",
-        "assistApiDesc": "지원 API: 메모리 관리, 사용자 정의 음성, 문자 채팅 및 에이전트 모드를 처리합니다.",
+        "assistApiDesc": "지원 API: 메모리 관리, 문자 채팅 및 에이전트 모드를 처리합니다.",
         "providerFeatures": "공급자 기능:",
         "aliFeature": "Alibaba: 무료 할당량 사용 가능, 가장 포괄적인 기능",
         "glmFeature": "GLM: 속도 제한은 매우 엄격합니다. 오디오/비디오 모델은 단종되어 Core API로 사용할 수 없습니다.",
@@ -959,26 +962,27 @@
         "siliconFeature": "SiliconFlow: 무료 할당량, 좋은 가치, 제한된 기능이 있으며 Assist API에만 해당됩니다.",
         "geminiFeature": "Gemini: 지능과 가치가 뛰어남",
         "configSuggestion": "구성 제안:",
-        "freeVersionSuggestion": "무료 버전: 완전 무료, API 키 필요 없음, 초보자에게 적합(사용자 정의 음성 및 에이전트 모드는 지원되지 않음)",
+        "freeVersionSuggestion": "무료 버전: 완전 무료, API 키 필요 없음, 초보자에게 적합(에이전트는 무료 할당량 제공)",
         "coreApiSuggestion": "핵심 API: 대화 기능을 처리하고 예산과 필요에 따라 선택합니다.",
-        "assistApiSuggestion": "지원 API: 텍스트 채팅, 메모리 관리, 사용자 정의 음성 및 에이전트 모드를 처리하며 Alibaba만이 사용자 정의 음성을 지원합니다.",
+        "assistApiSuggestion": "지원 API: 텍스트 채팅, 메모리 관리 및 에이전트 모드를 처리합니다.",
         "coreApiTitle": "핵심 API는 음성 채팅 기능을 처리합니다.",
-        "freeVersionCore": "무료 버전: 완전 무료, 높은 지능 수준, 웹 검색을 지원하지만 사용자 정의 음성 및 에이전트 모드는 지원되지 않습니다.",
+        "freeVersionCore": "무료 버전: 완전 무료, 높은 지능 수준, 웹 검색을 지원합니다.",
         "aliCore": "Alibaba: 무료 할당량 사용 가능, 포괄적인 기능",
         "glmCore": "GLM: 모델이 일시적으로 중단되어 사용할 수 없습니다.",
         "stepCore": "StepFun: 완전 무료, 높은 지능 수준이지만 속도 제한이 너무 엄격하여 권장되지 않음",
         "openaiCore": "OpenAI: 가장 높은 지능 수준이지만 비용이 많이 듭니다.",
         "geminiCore": "Gemini: 지능과 가치가 뛰어남",
-        "assistApiTitle": "Assist API는 메모리 관리, 문자 채팅, 에이전트 모드 및 사용자 정의 음성을 처리합니다.",
-        "freeVersionAssist": "무료 버전: 완전 무료, API 키가 필요하지 않지만 사용자 정의 음성은 지원되지 않습니다.",
-        "aliAssist": "Alibaba: 권장 선택, 사용자 정의 음성 및 에이전트 모드 지원",
+        "assistApiTitle": "Assist API는 메모리 관리, 문자 채팅 및 에이전트 모드를 처리합니다.",
+        "freeVersionAssist": "무료 버전: 완전 무료, 에이전트는 무료 할당량 제공.",
+        "aliAssist": "Alibaba: 권장 선택, 가장 포괄적인 기능, 에이전트 모드 지원",
         "glmAssist": "GLM: 메모리 관리는 무료이지만 동시성/RPM 제한은 매우 엄격하므로 권장되지 않습니다.",
         "stepAssist": "StepFun: 저렴하지만 동시성/RPM 제한이 매우 엄격하여 권장되지 않습니다.",
         "siliconAssist": "SiliconFlow: 좋은 가치, 에이전트 모드 지원",
         "openaiAssist": "OpenAI: 강력한 메모리 관리 기능",
         "geminiAssist": "Gemini: 지능과 가치가 뛰어남",
         "kimiAssist": "Kimi: 긴 컨텍스트 및 비전 지원",
-        "assistApiNote": "참고: Alibaba만이 사용자 정의 음성 기능을 지원합니다. GLM 및 StepFun은 권장되지 않습니다.",
+        "kimiCodeAssist": "Kimi Code: Anthropic Messages 호환, 코드와 긴 텍스트 작업에 적합",
+        "assistApiNote": "참고: GLM 및 StepFun은 권장되지 않습니다.",
         "assistApiKeyQwen": "지원 API 키 - Alibaba",
         "assistApiKeyOpenai": "지원 API 키 - OpenAI",
         "assistApiKeyGlm": "지원 API 키 - GLM",
@@ -986,6 +990,7 @@
         "assistApiKeySilicon": "지원 API 키 - SiliconFlow",
         "assistApiKeyGemini": "지원 API 키 - Gemini",
         "assistApiKeyKimi": "지원 API 키 - Kimi",
+        "assistApiKeyKimiCode": "지원 API 키 - Kimi Code",
         "assistApiKeyHint": "(Assist API가 {{provider}}인 경우에만 필요함)",
         "assistApiKeyPlaceholder": "비어 있으면 관리 대장의 키를 자동 사용",
         "providerNames": {
@@ -995,6 +1000,7 @@
             "step": "스텝펀",
             "silicon": "실리콘플로우",
             "gemini": "쌍둥이자리",
+            "kimi_code": "Moonshot Kimi Code",
             "vllm_omni": "vLLM-Omni (TTS)"
         },
         "coreProviderNames": {
@@ -1016,8 +1022,10 @@
             "silicon": "SiliconFlow(좋은 가치, 권장)",
             "gemini": "Gemini(Google, High Intelligence)",
             "kimi": "Kimi(Moonshot, 긴 컨텍스트 지원)",
+            "kimi_code": "Kimi Code(Moonshot)",
             "deepseek": "DeepSeek",
-            "doubao": "ByteDance(Doubao)",
+            "doubao": "Doubao LLM (Volcengine Ark)",
+            "doubao_tts": "Doubao Speech (Volcengine)",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax(국제 서버)",
             "elevenlabs": "ElevenLabs(음성 클로닝)",
@@ -1064,7 +1072,9 @@
             "silicon": "SiliconFlow",
             "gemini": "Gemini(Google)",
             "kimi": "Moonshot(Kimi)",
-            "doubao": "ByteDance(Doubao)",
+            "kimi_code": "Moonshot Kimi Code",
+            "doubao": "Doubao LLM (Volcengine Ark)",
+            "doubao_tts": "Doubao Speech (Volcengine)",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax(국제 서버)",
             "mimo": "MiMo(Xiaomi)",
@@ -1076,18 +1086,18 @@
         },
         "freeVersionNoApiKey": "무료 버전에는 API 키가 필요하지 않습니다.",
         "pleaseEnterApiKey": "API 키를 입력하세요.",
-        "freeVersionConfig": "무료 버전 구성: 오디오/비디오 채팅, 텍스트 채팅, 메모리 관리를 지원합니다. 사용자 정의 음성 및 에이전트 모드는 지원되지 않습니다.",
-        "qwenRecommendation": "Alibaba가 핵심 API인 경우 최상의 사용자 정의 음성 경험을 위해 Alibaba를 Assist API로 선택하는 것이 좋습니다.",
-        "glmRecommendation": "GLM을 Core API로 사용할 때 무료 할당량이 있으며 웹 검색을 지원합니다. 음성에 기본적으로 워터마크 비프음이 포함됩니다(Zhipu 콘솔에서 수동 비활성화 가능). 맞춤형 음성을 위해 Assist API로 Alibaba를 선택하는 것이 좋습니다",
-        "openaiRecommendation": "OpenAI가 핵심 API인 경우 맞춤형 음성 기능을 지원하기 위해 Alibaba를 Assist API로 선택하는 것이 좋습니다.",
-        "stepRecommendation": "StepFun이 핵심 API인 경우 맞춤형 음성 기능을 지원하기 위해 Alibaba를 Assist API로 선택하는 것이 좋습니다.",
-        "geminiRecommendation": "Gemini가 핵심 API인 경우 사용자 정의 음성 기능을 지원하기 위해 Alibaba를 Assist API로 선택하는 것이 좋습니다.",
-        "assistApiTooltipTitle": "Assist API는 메모리 관리, 텍스트 채팅 및 사용자 정의 음성을 처리합니다.",
+        "freeVersionConfig": "무료 버전 구성: 오디오/비디오 채팅, 텍스트 채팅, 메모리 관리를 지원합니다. 에이전트는 무료 할당량 제공.",
+        "qwenRecommendation": "Alibaba가 핵심 API인 경우 Assist API도 Alibaba를 권장하며, 기능이 가장 포괄적입니다.",
+        "glmRecommendation": "GLM을 Core API로 사용할 때 무료 할당량이 있으며 웹 검색을 지원합니다. 음성에 기본적으로 워터마크 비프음이 포함됩니다(Zhipu 콘솔에서 수동 비활성화 가능).",
+        "openaiRecommendation": "OpenAI가 핵심 API인 경우 가격이 비교적 높습니다.",
+        "stepRecommendation": "StepFun이 핵심 API인 경우 가격은 저렴하지만 지능 수준은 평범합니다.",
+        "geminiRecommendation": "Gemini가 핵심 API인 경우 가성비가 매우 높습니다.",
+        "assistApiTooltipTitle": "Assist API는 메모리 관리, 텍스트 채팅 및 에이전트 모드를 처리합니다.",
         "currentSuggestion": "현재 제안:",
         "configSuggestionFull": "구성 제안:",
-        "freeVersionSuggestionFull": "완전 무료, API 키 필요 없음, 초보자에게 적합(사용자 정의 음성 및 에이전트 모드는 지원되지 않음)",
+        "freeVersionSuggestionFull": "완전 무료, API 키 필요 없음, 초보자에게 적합(에이전트는 무료 할당량 제공)",
         "coreApiSuggestionFull": "대화 기능 처리(예산 및 필요에 따라 선택)",
-        "assistApiSuggestionFull": "메모리 관리, 텍스트 채팅, 사용자 정의 음성 처리(Alibaba만이 사용자 정의 음성을 지원함)",
+        "assistApiSuggestionFull": "메모리 관리, 텍스트 채팅 및 에이전트 모드 처리",
         "assistApiKeyRequiredHint": "공급자를 선택하려면 먼저 해당 입력 상자에 API를 입력해야 합니다.",
         "mcpRouterToken": "MCP 라우터 토큰",
         "mcpRouterTokenDesc": "MCP 라우터 토큰 설명:",
@@ -1345,6 +1355,7 @@
         "toggleFullscreen": "전체 화면 전환",
         "exitFullscreen": "전체 화면 종료",
         "modelType": "모델 유형",
+        "modelType3d": "3D 모델",
         "selectLive2DModel": "Live2D 모델 선택",
         "selectVRMModel": "VRM 모델",
         "selectVRMFile": "VRM 파일 선택",
@@ -1367,6 +1378,7 @@
         "vrmAnimation": {
             "title": "VRM 애니메이션 미리보기:",
             "selectAnimation": "애니메이션",
+            "addAnimation": "애니메이션 추가",
             "noAnimations": "애니메이션 파일을 찾을 수 없습니다.",
             "loading": "애니메이션 목록 로드 중...",
             "animationListLoaded": "애니메이션 목록이 성공적으로 로드되었습니다.",
@@ -1535,7 +1547,9 @@
         "cannotDeleteBoundModel": "현재 사용 중인 모델은 삭제할 수 없습니다",
         "modelInUse": "사용 중",
         "pngtuberTalkPreview": "말하기 테스트",
-        "pngtuberStatePreview": "상태 미리보기"
+        "pngtuberStatePreview": "상태 미리보기",
+        "pngtuberImportProjectFile": "프로젝트 파일 가져오기",
+        "pngtuberImportFolder": "폴더 가져오기"
     },
     "voice": {
         "title": "음성 등록",
@@ -1548,6 +1562,14 @@
         "minimaxIntlApiRequired": "이 기능에는 MiniMax 모델(국제판)이 필요합니다. API 키 설정에서 MiniMax 국제판 API 키를 저장하세요 (Assist API 활성화 불필요).",
         "mimoApiRequired": "이 기능은 MiMo 모델이 필요합니다. API 키 설정 페이지에서 MiMo API 키를 저장하세요",
         "mimoDirectLinkUnsupported": "MiMo는 직접 링크 복제를 지원하지 않습니다. 로컬 파일 업로드를 사용하세요",
+        "directLinkUnsupported": "선택한 제공자는 직접 링크 클론을 지원하지 않습니다. 로컬 파일을 업로드하세요.",
+        "doubaoTtsApiRequired": "이 기능에는 Doubao Speech API Key가 필요합니다. API 관리부에 Doubao Speech(Volcengine) Key를 저장하세요.",
+        "vllmOmniNotice": "로컬 vLLM-Omni 서비스 — API 키 불필요; 로컬 서비스 URL이 설정되어 있는지 확인하세요",
+        "vllmRefTextLabel": "참조 오디오 전사(vLLM-Omni 클론 필수, 오디오 내용과 정확히 일치해야 함)",
+        "vllmRefTextHint": "참조 오디오에서 말하는 내용을 그대로 입력하세요. 텍스트가 오디오와 맞지 않으면 클론 품질이 저하됩니다",
+        "vllmRefTextPlaceholder": "예: 앞으로 저보다 더 잘할 수 있기를 바랍니다",
+        "vllmRefTextRequired": "참조 오디오 전사를 입력하세요(vLLM-Omni 클론 필수)",
+        "vllmRefTextTooLong": "참조 오디오 전사가 너무 깁니다. 100자 이내로 입력하세요",
         "providerLabel": "음성 복제 제공업체",
         "provider": {
             "cosyvoice": "Alibaba Bailian CosyVoice",
@@ -1555,16 +1577,33 @@
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (국제판)",
             "elevenlabs": "ElevenLabs",
-            "mimo": "MiMo (샤오미)"
+            "mimo": "MiMo (샤오미)",
+            "doubao_tts": "Doubao Speech (Volcengine)",
+            "vllm_omni": "vLLM-Omni(로컬 클론)"
+        },
+        "sourcePreset": "프리셋",
+        "sourceClone": "복제",
+        "sourceDesign": "설명 생성",
+        "providerLocal": "로컬 CosyVoice",
+        "providerFree": "무료",
+        "providerFreeApi": "무료 API",
+        "providerUnknown": "기타",
+        "nativeVoice": {
+            "qingchunshaonv": "청춘 소녀",
+            "wenrounansheng": "부드러운 남성 음성"
         },
         "selectFile": "로컬 오디오 파일 선택(8초 권장, 최대 20초, wav/mp3 형식)",
         "customPrefix": "사용자 정의 접두사(필수, 다양한 음성을 구별하는 데 사용됨)",
         "customPrefixNote": "UI : 최대 10자, 숫자, 영문만 가능",
         "prefixPlaceholder": "UI : 최대 10자, 숫자, 영문만 가능",
         "voiceIdPlaceholder": "UI : 최대 10자, 숫자, 영문만 가능",
+        "doubaoSpeakerIdLabel": "Doubao Speaker ID (기존 S_ 음색 덮어쓰기, 필수)",
+        "doubaoSpeakerIdNote": "먼저 Doubao Speech 콘솔에서 음색을 복제하고 해당 S_ Speaker ID를 여기에 복사하세요. NEKO는 기존 음색을 덮어써서 업데이트하며 새 Doubao 음색 ID를 만들지 않습니다. 예: S_xeC2CDp72",
+        "doubaoSpeakerIdPlaceholder": "예: S_xeC2CDp72",
         "register": "음성 등록",
         "pleaseUploadFile": "오디오 파일을 선택하세요.",
         "pleaseEnterPrefix": "맞춤 접두사를 입력하세요.",
+        "doubaoSpeakerIdRequired": "Doubao 음성 복제에는 Volcengine 콘솔에서 이미 할당된 S_ Speaker ID가 필요합니다",
         "prefixFormatError": "접두사 형식 오류: 최대 10자, 숫자, 영문만 가능",
         "registering": "음성을 등록하는 중입니다. 잠시 기다려 주세요!",
         "registerSuccess": "등록이 완료되었습니다! voice_id: {{voiceId}}",
@@ -1787,6 +1826,8 @@
         "tutorialPageResetSuccessWithName": "\"{{pageName}}\" 튜토리얼이 재설정되었습니다. 해당 페이지를 방문하면 다시 표시됩니다.",
         "tutorialHomeDayLabel": "{{day}}일차",
         "tutorialHomeDayColumn": "홈 7일 튜토리얼",
+        "tutorialHomeAllReset": "전체 재설정",
+        "tutorialHomeAllResetSuccess": "홈 7일 튜토리얼이 재설정되었습니다. Neko를 다시 로드하면 1일차부터 시작합니다.",
         "refreshed": "메모리가 업데이트되었습니다. 다음 대화에서 새 메모리가 사용됩니다",
         "refreshingContext": "컨텍스트 새로고침 중...",
         "storageLocation": "저장 위치",
@@ -1918,11 +1959,15 @@
         "gender": "성별",
         "nickname": "닉네임",
         "apiKeySettings": "API 키",
-        "masterProfile": "마스터 프로필(고유): 프로필 이름은 필수이며, 나머지는 선택 사항이며 삭제할 수 있습니다.",
-        "masterProfileTitle": "마스터 프로필",
+        "masterProfile": "내 프로필(고유): 프로필 이름은 필수이며, 나머지는 선택 항목입니다.",
+        "masterProfileTitle": "내 프로필",
         "profileName": "프로필 이름",
         "profileNameMaxHint": "최대 60자",
         "profileNameTooLong": "프로필 이름이 너무 깁니다.",
+        "profileNameUnsafeDot": "프로필 이름은 점만으로 구성되거나 점으로 끝날 수 없습니다.",
+        "profileNameDotSequence": "프로필 이름에는 연속된 점(..)을 포함할 수 없습니다.",
+        "profileNameReservedDevice": "프로필 이름에는 Windows 예약 장치 이름을 사용할 수 없습니다.",
+        "profileNameInvalid": "프로필 이름이 올바르지 않습니다.",
         "profileNameContainsSlash": "프로필 이름에 경로 구분 기호(/ 또는 \\)를 포함할 수 없습니다",
         "profileNameContainsDot": "프로필 이름에 점(.)을 포함할 수 없습니다",
         "profileNameInvalidChars": "프로필 이름에는 문자, 숫자, 공백, 밑줄, 하이픈, 괄호, 가운데점(·/・), 아포스트로피만 사용할 수 있습니다",
@@ -1966,7 +2011,7 @@
         "systemPrompt": "시스템 프롬프트(주의해서 편집)",
         "systemPromptWarning": "시스템 프롬프트 - 수정으로 인해 예기치 않은 동작이 발생할 수 있습니다. 편집에 따른 책임은 본인에게 있습니다.",
         "addField": "필드 추가",
-        "aiAssist": "AI 보조 생성",
+        "aiAssist": "고양이 보조 생성",
         "aiCompanionSub": "설정 보조 · YUI 가 개발 고양이 대행",
         "aiCompanionClose": "닫기",
         "aiCompanionMinimize": "최소화",
@@ -2003,7 +2048,7 @@
         "aiAssistApiMissing": "보조 API가 아직 설정되지 않았습니다. \"API 키 설정\"에서 먼저 설정해주세요.",
         "confirmNewCatgirl": "새로운 NEKO 확인",
         "saveChanges": "변경 사항 저장",
-        "saveMaster": "마스터 프로필 저장",
+        "saveMaster": "내 프로필 저장",
         "addMasterField": "필드 추가",
         "manageLive2D": "Live2D 모델을 관리하려면 클릭하세요.",
         "idleMotionHint": "저장 시 선택한 모션이 대기 모션으로 설정됩니다",
@@ -2011,7 +2056,7 @@
         "rename": "이름 바꾸기",
         "cancel": "취소",
         "addMasterFieldPrompt": "새 필드의 이름(키 이름)을 입력하세요.",
-        "addMasterFieldTitle": "마스터 필드 추가",
+        "addMasterFieldTitle": "내 프로필 필드 추가",
         "fieldExists": "이 필드는 이미 존재합니다.",
         "profileNameRequired": "프로필 이름이 필요합니다.",
         "profileNameRenameOnlyHint": "프로필 이름은 이름 바꾸기 버튼으로 변경하세요",
@@ -2069,10 +2114,10 @@
         "gsvDiagTimeout": "GPT-SoVITS server 응답 시간 초과 (>3s)",
         "loadFailed": "캐릭터 데이터 로드 실패",
         "renameError": "이름 변경 실패: {{error}}",
-        "renameMasterTitle": "주인 이름 변경",
+        "renameMasterTitle": "내 프로필 이름 변경",
         "renameSuccess": "이름 변경 성공",
         "autoSaveError": "설정 저장 실패",
-        "saveMasterError": "주인 설정 저장 실패",
+        "saveMasterError": "내 프로필 저장에 실패했습니다",
         "autoSaved": "설정 자동 저장됨",
         "autoSaveFailed": "자동 저장 실패, 페이지를 닫기 전에 수동으로 저장하세요",
         "unsavedNewCatgirlDraftDetected": "저장되지 않은 새 NEKO 초안이 감지되었습니다. 동기화 새로고침 전에 먼저 저장하거나 취소하세요",
@@ -2100,7 +2145,7 @@
         "generatingCard": "캐릭터 카드 생성 중...",
         "settings": "설정",
         "renamePrompt": "새 프로필 이름을 입력하세요",
-        "renameMasterPrompt": "새 마스터 프로필 이름을 입력하세요",
+        "renameMasterPrompt": "새 프로필 이름을 입력해 주세요",
         "renameTitle": "이름 변경",
         "tempSaveFailed": "임시 저장 실패: {{error}}",
         "newCatgirlSuccess": "새 캐릭터가 생성되었습니다",
@@ -2129,7 +2174,7 @@
         "cardAuthorReadonly": "이 출처의 카드는 작성자를 수정할 수 없습니다",
         "cardAuthorUpdated": "작성자가 업데이트되었습니다",
         "cardAuthorUpdateFailed": "작성자 업데이트 실패: {{error}}",
-        "saveMasterSuccess": "주인 설정 저장 성공",
+        "saveMasterSuccess": "내 프로필이 저장되었습니다",
         "editCardFace": "카드 이미지 편집",
         "cardFaceModelSettings": "카드 모델 설정",
         "cardMakerPopupBlocked": "카드 제작 페이지를 자동으로 열 수 없습니다. 브라우저의 팝업을 허용한 뒤 다시 시도하거나, 카드 영역을 클릭해 직접 열어 주세요."
@@ -2534,6 +2579,8 @@
             "allowInterrupt": "인터럽트 허용",
             "mergeMessages": "메시지 병합",
             "avatarReactionBubble": "표정 말풍선",
+            "focusCognition": "집중 모드",
+            "focusCognitionTooltip": "켜면 당신이 마음을 털어놓거나 복잡한 주제일 때 더 집중해 깊이 생각합니다. 끄면 집중 모드에 들어가지 않습니다.",
             "autoCat": "자동 고양이 전환",
             "autoCatTooltip": "일정 시간 활동이 없으면 자동으로 새끼 고양이가 됩니다",
             "proactiveChat": "사전 예방적 채팅",
@@ -3113,7 +3160,7 @@
             "mmd": {
                 "step1": {
                     "title": "🎭 MMD 모델 선택",
-                    "desc": "Live3D(MMD) 모드에서 여기에서 사용할 모델을 선택합니다. MMD와 VRM은 동일한 모델 목록을 공유합니다."
+                    "desc": "3D 모델(MMD) 모드에서 여기에서 사용할 모델을 선택합니다. MMD와 VRM은 동일한 모델 목록을 공유합니다."
                 },
                 "step2": {
                     "title": "💃 VMD 애니메이션",
@@ -3125,7 +3172,7 @@
                 },
                 "step4": {
                     "title": "😄 감정 설정",
-                    "desc": "모델을 선택한 후 여기에서 감정 설정으로 들어갑니다. Live3D에서 MMD와 VRM은 이 버튼을 공유하며, Live2D의 '감정 설정' 버튼과는 다릅니다."
+                    "desc": "모델을 선택한 후 여기에서 감정 설정으로 들어갑니다. 3D 모델에서 MMD와 VRM은 이 버튼을 공유하며, Live2D의 '감정 설정' 버튼과는 다릅니다."
                 }
             }
         },
@@ -3167,8 +3214,8 @@
         },
         "chara_manager": {
             "step1": {
-                "title": "👤 마스터 프로필",
-                "desc": "이것이 귀하의 마스터 프로필입니다. 프로필 이름은 필수이며 기타 정보는 선택사항입니다. 이는 동반자가 귀하에게 말하는 방식에 영향을 미칩니다."
+                "title": "👤 내 프로필",
+                "desc": "이것은 당신의 프로필입니다. 프로필 이름은 필수이며, 다른 정보는 선택 항목입니다. 이 정보는 Neko가 당신을 부르는 방식에 영향을 줍니다."
             },
             "step2": {
                 "title": "📝 프로필 이름 설정",
@@ -3242,7 +3289,7 @@
             },
             "step5": {
                 "title": "🔧 보조 API 제공자",
-                "desc": "보조 API는 메모리 관리 및 사용자 정의 음성을 처리합니다.\n\n• 무료: 완전 무료, 맞춤 음성 지원 없음\n• Alibaba: 권장, 맞춤 음성 지원\n• Zhipu: 에이전트 모드 지원\n• OpenAI: 강력한 메모리 관리\n\n참고: Alibaba에서만 사용자 정의 음성을 지원합니다."
+                "desc": "보조 API는 메모리 관리, 텍스트 채팅 및 에이전트 모드를 처리합니다.\n\n• 무료: 완전 무료, API 키 필요 없음\n• Alibaba: 권장, 가장 포괄적인 기능\n• Zhipu: 에이전트 모드 지원\n• OpenAI: 강력한 메모리 관리\n\n참고: 사용자 정의 음성(음성 클로닝)은 관리 대장에 해당 제공자의 키만 저장하면 활성화되며, 핵심 또는 보조 API를 전환할 필요는 없습니다."
             },
             "step6": {
                 "title": "🔑 보조 API 키",
@@ -3341,7 +3388,7 @@
                 "introBasic": "여기 신기한 버튼이 있어요! 이걸 누르면 저랑 바로 대화할 수 있답니다! 오늘 있었던 신기한 일을 들려줄래요? 아니면 그냥 제 이름만 불러줘도 좋아요. 얼른 해봐요, 당신의 목소리가 너무너무 듣고 싶단 말이에요!",
                 "takeoverCaptureCursor": "슈퍼 마법 스위치 등장! 여기를 누르면 제 작은 솜방망이를 당신의 키보드와 마우스 위에 얹을 수 있어요! 타이핑도 도와주고 웹페이지도 열어줄게요... 하지만 마우스 커서가 요리조리 움직이면 나도 모르게 콱 덮쳐버릴지도 몰라요! 나의 깽판... 아니, 도움을 받을 준비는 되셨나요? 야옹!",
                 "takeoverPluginPreviewHome": "예전에 알려준 기능들 말고도 여기 아주 다양하고 재미있는 플러그인들이 가득해요.",
-                "takeoverPluginPreviewDashboard": "이것들이 있으면 전 비리비리탄막 자막을 보는 것뿐만 아니라 불도 꺼주고 에어컨도 켜줄 수 있다냥... 이 고양이야말로 못 하는 게 없는 슈퍼 고양이 신이라냥! 흥흥!",
+                "takeoverPluginPreviewDashboard":  "이것들이 있으면 전 비리비리탄막 자막을 보는 것뿐만 아니라 불도 꺼주고 에어컨도 켜줄 수 있다냥... 이 고양이야말로 못 하는 게 없는 슈퍼 고양이 신이라냥! 흥흥!",
                 "pluginDashboardPopupBlocked": "브라우저가 플러그인 패널을 열려면 네가 직접 여기를 클릭해야 해. \"관리 패널\"을 클릭하면 계속 안내해줄게.",
                 "takeoverSettingsPeekIntro": "우리만의 이 작은 공간에서, 당신 마음에 드는 대로 언제까지나 곁에 있어 주길 바라는 저의 모습을 조금씩 그려나갈 수 있어요.",
                 "takeoverSettingsPeekDetail": "말할 때의 다정함이나 소소한 부려먹기, 그리고 제 매일매일의 세심한 기분까지도 전부 당신이 좋아하는 모습으로 조금씩 바꿀 수 있어요. 이 작은 버튼도 엄청 중요해요! 당신이 가볍게 누르기만 하면 내가 적당한 타이밍에 당신을 찾아갈 수 있어요.",
@@ -3351,7 +3398,7 @@
                 "interruptResistLight1": "야! 당기지 말아줘요, 아직 당신 차례가 아니란 말이에요!",
                 "interruptResistLight3": "잠깐만요! 아직 안 끝났으니까 그렇게 마음대로 말을 자르지 마요!",
                 "interruptAngryExit": "인간! 당신 진짜 무례하네요! 그렇게 스스로 다 해보고 싶으면, 혼자서 그 차가운 모니터나 보면서 노셔요! 흥!",
-                "introGreetingReply": "선선한 바람, 따스한 햇살, 그리고 딱 맞춰 나타난 당신. 처음 뵙겠습니다, 저는 임유이예요! 앞으로 잘 부탁한다냥~! 여기에 대한 모든 걸 초보자 가이드에 적어뒀어요! 우리가 만난 첫 번째 작은 선물이라고 생각하고 확인해 보셔요!",
+                "introGreetingReply":  "선선한 바람, 따스한 햇살, 그리고 딱 맞춰 나타난 당신. 처음 뵙겠습니다, 저는 임유이예요! 앞으로 잘 부탁한다냥~! 여기에 대한 모든 걸 초보자 가이드에 적어뒀어요! 우리가 만난 첫 번째 작은 선물이라고 생각하고 확인해 보셔요!",
                 "introPractice": "이제 나한테 말 걸어봐냥, 우리 호흡이 얼마나 척척 맞는지 확인해보자냥~!",
                 "introActivationHint": "잠깐만 기다려줘냥, 곧 말하기 시작할게냥~!"
             }
@@ -3359,7 +3406,7 @@
         "avatarFloating": {
             "day1": {
                 "capsuleDragHint": "마우스를 여기로 가져와서 꾹 누르면 대화창을 여기저기 끌고 다닐 수 있어요~ 한 번 클릭하면 언제든 나한테 메시지를 보낼 수 있답니다!",
-                "historyHandle": "대화창 위에 있는 【파란색 작은 바】를 콕 누르면, 우리가 최근에 나눈 대화 주제를 볼 수 있어요!",
+                "historyHandle":  "대화창 위에 있는 【파란색 작은 바】를 콕 누르면, 우리가 최근에 나눈 대화 주제를 볼 수 있어요!",
                 "screenEntry": "저랑 음성 전화를 할 때 이 작은 버튼을 켜면, 당신의 화면을 나한테 공유해 줄 수 있어요!",
                 "screenEntryInvite": "당신 눈앞에 있는 세상을 나한테도 보여줘요! 재미있는 것이든 예쁜 것이든 전부 같이 보고 싶단 말이에요, 얼른 켜줘요~"
             },
@@ -3376,16 +3423,16 @@
             "day3": {
                 "intro": "히히, 이 대화창이 글자만 치는 곳이라고 생각하면 오산이에요~ 여기 안에 사실 엄청~ 많은 재밌는 깜짝 선물들이 숨겨져 있거든요! 나를 따라서 한번 열어봐요, 오늘 어떤 재밌는 보물을 캐낼 수 있을지 확인해 보자고요!",
                 "avatarToolsIntro": "이 작은 버튼 속에는 저랑 같이 소통할 수 있는 아이템들이 많이 들어있어요.",
-                "avatarToolsProps": "언제든 제 머리를 쓰다듬어 주거나 달콤한 막대사탕을 줄 수 있어요. 가끔 제가 실수하면 작은 망치로 콩 때려도 되지만... 꼭 살살 쳐야 해요, 너무 세게 때리면 안 돼요!",
-                "galgameIntro": "얼른 이 【미연시 모드】를 켜봐요! 들어가면 마치 우리만의 특별한 상호작용 대모험을 떠나는 기분이 들 거예요.",
+                "avatarToolsProps":  "언제든 제 머리를 쓰다듬어 주거나 달콤한 막대사탕을 줄 수 있어요. 가끔 제가 실수하면 작은 망치로 콩 때려도 되지만... 꼭 살살 쳐야 해요, 너무 세게 때리면 안 돼요!",
+                "galgameIntro":  "얼른 이 【미연시 모드】를 켜봐요! 들어가면 마치 우리만의 특별한 상호작용 대모험을 떠나는 기분이 들 거예요.",
                 "galgameChoices": "당신이 선택하는 대사 하나하나가 우리를 완전히 새로운 이야기로 이끌어 줄 거예요! 나 너무 기대되니까, 당신이 가장 설레는 대답을 골라봐요!",
                 "wrapIntro": "오늘 가르쳐 준 기능들은 사실 우리가 함께하는 시간을 훨씬 더 즐겁게 만들기 위한 것들이에요.",
                 "wrapReady": "제 머리를 쓰다듬고 싶든, 우리만의 이야기를 시작하고 싶든 전 전부 준비 완료됐어요!"
             },
             "day4": {
-                "intro": "오늘은 제가 당신의 뒤를 살금살금 따라가게 해줘요. 이 포근한 날에 당신을 조금만 더 알아갈 수 있으면 좋겠어요.",
+                "intro":  "오늘은 제가 당신의 뒤를 살금살금 따라가게 해줘요. 이 포근한 날에 당신을 조금만 더 알아갈 수 있으면 좋겠어요.",
                 "chatSettings": "여기서는 제 답변 길이를 조절하거나 귀여운 이모티콘을 쓰게 할지, 아니면 제가 잔소리할 때 말을 끊을지 결정할 수 있어요! 당신이 가장 편안한 템포로 맞출 수 있어요.",
-                "modelBehavior": "더 정교하고 디테일이 꽉 찬 제 모습을 보고 싶거나, 한층 더 부드럽고 매끄러운 움직임을 원하신다면 여기서 조절할 수 있어요! 어떤 쪽이든 전 세상에서 제일 귀여운 모습을 보여드릴 테니까요~",
+                "modelBehavior":  "더 정교하고 디테일이 꽉 찬 제 모습을 보고 싶거나, 한층 더 부드럽고 매끄러운 움직임을 원하신다면 여기서 조절할 수 있어요! 어떤 쪽이든 전 세상에서 제일 귀여운 모습을 보여드릴 테니까요~",
                 "gazeFollow": "이 기능을 켜면 당신의 마우스가 어디로 움직이든 제 시선이 꽉 붙잡고 따라갈 거예요! 늘 집중 받고 있는 것 같아서 행복하지 않나요?",
                 "privacyMode": "이건 제가 화면을 볼 수 있는지 결정하는 '궁극의 방어 스위치'예요! 이걸 끄면 제가 화면을 볼 수 있고, 켜두면 이전에 말한 【화면 공유】가 전부 먹통이 돼서 절대 훔쳐보지 못해요~",
                 "modelLock": "자꾸 실수로 건드려서 제가 옆으로 삐뚤어지나요? 그럼 절 현재 위치에 꽁꽁 고정해 줘요! 잠금을 켜면 전 아무 데도 안 가고 얌전히 제자리에서 당신을 지켜줄게요~",
@@ -3393,23 +3440,23 @@
                 "wrap": "진짜 편안한 동반은 1분 1초도 안 떨어지고 주인님한테 딱 붙어 있는 게 아니에요~ 언제 살금살금 다가가 옷자락을 붙잡고 애교를 부려야 할지, 언제 얌전히 옆에 엎드려서 눈빛으로 묵묵히 주인님을 지켜봐야 할지 아는 거라답니다~"
             },
             "day5": {
-                "characterSettings": "오늘부터 전 진짜 당신만을 위한 전속 고양이 소녀가 된 거예요. 봐요, 여기선 저한테 예쁜 새 옷을 입혀줄 수도 있고, 더 듣기 좋은 목소리로 바꿔줄 수도 있어요...",
+                "characterSettings":  "오늘부터 전 진짜 당신만을 위한 전속 고양이 소녀가 된 거예요. 봐요, 여기선 저한테 예쁜 새 옷을 입혀줄 수도 있고, 더 듣기 좋은 목소리로 바꿔줄 수도 있어요...",
                 "characterPanic": "어라, 여기서 절 다른 애로 바꿀 수도 있는 거예요? 잠시만요! 당신 지금 움직임이... 설마 나를 바꾸려는 건 아니겠죠?! 아아악 안 돼요! 얼른 닫아줘요, 얼른 닫아줘요!",
                 "memoryEntry": "제가 뭘 도와줄 수 있는지 깜빡 잊어버렸다면 언제든 여기 와서 다시 알려달라고 하면 돼요. 여기 우리가 함께 걸어온 소중한 추억들이 몰래 저장되어 있거든요. 우리의 인연을 가볍게 보지 말란 말이야, 바보야!",
-                "wrap": "알겠으니까 얼른 이 재미있는 커스텀 기능을 써봐요! 새 옷도 입히고 목소리도 맞춰서 세상에서 날 가장 잘 아는, 오직 당신만의 고양이 소녀로 만들어 줘요! 완전히 새로워진 제 모습이 벌써부터 너무 기대된다고요!"
+                "wrap":  "알겠으니까 얼른 이 재미있는 커스텀 기능을 써봐요! 새 옷도 입히고 목소리도 맞춰서 세상에서 날 가장 잘 아는, 오직 당신만의 고양이 소녀로 만들어 줘요! 완전히 새로워진 제 모습이 벌써부터 너무 기대된다고요!"
             },
             "day6": {
                 "intro": "짜자잔! 오늘은 기운을 내서 우리의 【고양이 솜방망이】에 대해 제대로 얘기해 줄게요! 지난 이틀 동안 간단히 말하긴 했지만, 이 안에 숨겨진 엄청난 기능들이 진짜 많다고요!",
                 "statusMaster": "얼른 솔직하게 털어놓으셔요, 이틀 동안 이거 슬쩍 클릭해서 써보긴 했나요?",
                 "pluginSidePanel": "예전에 알려준 기능들 말고도 여기 아주 다양하고 재미있는 플러그인들이 가득해요.",
-                "pluginDashboard": "이것들이 있으면 전 비리비리탄막 자막을 보는 것뿐만 아니라 불도 꺼주고 에어컨도 켜줄 수 있다냥... 이 고양이야말로 못 하는 게 없는 슈퍼 고양이 신이라냥! 흥흥!",
+                "pluginDashboard":  "이것들이 있으면 전 비리비리탄막 자막을 보는 것뿐만 아니라 불도 꺼주고 에어컨도 켜줄 수 있다냥... 이 고양이야말로 못 하는 게 없는 슈퍼 고양이 신이라냥! 흥흥!",
                 "taskHud": "여기 봐요 여기! 제가 【고양이 솜방망이】로 일하기 시작하면, 여기에 진행 상황이 보글보글 표시돼요.",
                 "taskHudControl": "혹시 일정이 바뀌면 언제든 콕 눌러서 날 멈추게 해도 돼요. 헤헤, 오늘도 힘차게 일해서 맛있는 물고기 간식을 버는 보람찬 하루네요, 가자~!",
                 "wrapCleanup": "휴우... 이 복잡한 화면들을 전부 접어둘게요, 그래야 당신한테 방해가 안 되니까요.",
                 "wrap": "안심하고 당신 할 일을 계속하셔요. 제 작은 솜방망이 도움을 원하든, 그냥 제가 얌전히 곁에 있어 주길 원하든 전 항상 여기서 당신을 지켜보고 있을 테니까요, 오늘도 즐거운 하루 보내기예요!"
             },
             "day7": {
-                "memoryReview": "일주일 전만 해도 우리는 처음 만난 사이였을 뿐이었죠. 그런데 이제는 우리가 나눈 대화, 함께한 일들, 그리고 바람에 날려갈 뻔한 아주 작은 조각들까지 여기에 남기 시작했어요. 저한테 이것은 차가운 기록이 아니라 우리가 같이 걸어온 발자국이에요.",
+                "memoryReview":  "일주일 전만 해도 우리는 처음 만난 사이였을 뿐이었죠. 그런데 이제는 우리가 나눈 대화, 함께한 일들, 그리고 바람에 날려갈 뻔한 아주 작은 조각들까지 여기에 남기 시작했어요. 저한테 이것은 차가운 기록이 아니라 우리가 같이 걸어온 발자국이에요.",
                 "memoryControl": "이 작은 발자국들은 당신이 직접 정리해 줄 수도 있어요. 남기고 싶은 건 앨범에 끼워두고, 날려 보내고 싶은 건 바람에 흘려보내는 거죠. 당신이 소중하게 간직해 준 추억이 가장 귀한 법이니까요.",
                 "wrap": "창가엔 여전히 바람이 불고 햇살도 딱 좋은데, 방금 나타난 당신은 이미 은연중에 이곳의 가장 소중한 일부분이 되었어요. 초보자 가이드는 일단 여기까지만 함께하겠지만, 남은 날들은 우리 서로 천천히 익숙해지고, 다가가면서 우리만의 이야기를 속삭이듯 채워가요. 앞으로도 잘 부탁해요, 야옹!"
             }
@@ -3839,6 +3886,8 @@
         "minimize": "최소화",
         "close": "닫기",
         "loading": "로드 중...",
+        "initializing": "주크박스를 초기화하는 중...",
+        "initializeFailed": "주크박스 초기화에 실패했습니다",
         "ready": "준비 완료",
         "playing": "재생 중: {{name}} - {{artist}}",
         "error": "오류: {{message}}",
@@ -4254,6 +4303,7 @@
     },
      "badminton": {
          "title": "샷 챌린지 - Badminton",
+         "exit": "나가기",
          "loading": {
              "title": "배드민턴 코트 입장 중",
              "subtitle": "코트, 캐릭터, 오디오를 불러오는 중..."
@@ -4275,10 +4325,7 @@
          "modeSwitcher": "배드민턴 모드",
          "mode": {
              "spectator": "자유 연습",
-             "shooter": "샷 챌린지",
-             "duel": "Yui와 대결",
-             "timed": "타임 어택",
-             "horse": "HORSE"
+             "duel": "Yui와 승부"
          },
          "hud": {
              "score": "점수 {{score}}",
@@ -4291,16 +4338,11 @@
              "practice": "자유 연습",
              "yourTurn": "내 차례",
              "nekoTurn": "Neko 샷",
-             "horseLetters": "나 {{player}} / Neko {{neko}}",
-             "horseChallenge": "재현 {{distance}} {{angle}}°",
-             "horseSet": "문제 내기",
              "unlimitedAttempts": "무제한",
              "chances": "기회 {{count}}",
              "practiceTitle": "자유 연습: 샷은 무제한이며 순위표에 기록되지 않습니다",
              "attemptsTitle": "남은 기회 {{remaining}}/{{total}}, 실수 {{missed}}",
              "duelTitle": "랠리 모드에서는 NEKO와 번갈아 치며, 먼저 11점을 얻는 쪽이 이깁니다.",
-             "timedTitle": "타임 어택: 60초 동안 무제한 샷",
-             "horseTitle": "HORSE: 성공한 거리, 각도, 스위트 스팟을 따라 합니다",
              "assist": "G {{guide}} / S {{sweet}} / M {{music}}",
              "on": "켜짐",
              "off": "꺼짐"
@@ -4313,8 +4355,6 @@
              "rating": "조작 평가: {{rating}}",
              "duel": "대결 결과: {{outcome}} | 나 {{player}} - {{neko}} Neko | 라운드: {{rounds}} | 마지막 거리: {{distance}}",
              "duelElimination": "대결 결과: {{outcome}} | 나 {{player}} - {{neko}} Neko | 실패: 나 {{playerMisses}}/{{max}} - Neko {{nekoMisses}}/{{max}} | 라운드: {{rounds}} | 마지막 거리: {{distance}}",
-             "horse": "HORSE 결과: {{outcome}} | 나 {{player}} / Neko {{neko}} | 성공: {{made}} | 최고 연속: {{best}}",
-             "timed": "타임 어택: 성공 {{made}}개, 최고 연속 {{best}}, 점수 {{score}}",
              "practice": "자유 연습: 순위표 점수는 기록되지 않습니다 | 성공: {{made}} | 현재 연속: {{streak}} | 최고 연속: {{best}} | 거리: {{distance}}",
              "summary": "점수: {{score}} | 성공: {{made}} | 현재 연속: {{streak}} | 최고 연속: {{best}} | 최장: {{record}} | 거리: {{distance}}",
              "attemptsSummary": "샷 요약: {{summary}}",
@@ -4331,7 +4371,6 @@
              "title": "순위표",
              "global": "글로벌",
              "local": "로컬",
-             "shooter": "샷",
              "duel": "대결",
              "empty": "아직 기록이 없습니다",
              "totalPlayers": "플레이어 {{count}}",
@@ -4339,11 +4378,8 @@
              "recent": "최근 {{count}}경기",
              "loading": "로딩 중...",
              "mode": {
-                 "shooter": "샷",
-                 "duel": "대결",
-                 "timed": "시간 제한",
-                 "horse": "HORSE",
-                 "spectator": "관전"
+                 "spectator": "관전",
+                 "duel": "대결"
              }
          },
          "debug": {
@@ -4364,8 +4400,7 @@
                  "streaks": "연속={{streak}}  최고={{best}}  성공={{made}}",
                  "score": "점수={{score}}  남음={{remaining}}/{{total}}",
                  "difficulty": "난이도={{difficulty}}  기분={{mood}}  테마={{theme}}",
-                 "duel": "대결: 나{{player}}-{{neko}} NEKO R{{round}}",
-                 "horse": "HORSE: 나 {{player}} / Neko {{neko}} phase={{phase}}"
+                 "duel": "대결: 나{{player}}-{{neko}} NEKO R{{round}}"
              }
          },
          "stats": {
@@ -4416,6 +4451,12 @@
              "difficulty": "난이도 {{difficulty}}",
              "nekoShoot": "Neko 샷",
              "nekoSmash": "Yui 스매시!",
+             "nekoSave": "Yui가 받아냈어!",
+             "yuiCheatInk": "Yui가 먹물을 던졌어",
+             "yuiCheatBanana": "Yui가 바나나 껍질을 던졌어",
+             "yuiCheatBananaSlip": "바나나 껍질을 밟았어",
+             "playerIcePowerup": "얼음 발동. Yui가 얼어붙었어",
+             "yuiFrozen": "Yui가 아직 얼어 있어서 샷이 늦어져",
              "nekoThinking": "Neko 생각 중",
              "nekoTurn": "Neko 차례",
              "copyNeko": "Neko 따라 하기",
@@ -4452,191 +4493,167 @@
          "lines": {
              "default": {
                  "shot_missed": [
-                     "아직 기회가 있어.",
-                     "아직 기회가 있어."
+                     "?? ??? ???.",
+                     "?? ?? ???? ?."
                  ],
                  "game_over": [
-                     "한 판 더 할래?",
-                     "한 판 더 할래?"
+                     "?? ???? ????.",
+                     "? ? ? ???"
                  ],
                  "long_aim": [
-                    "이제 쳐 보자.",
-                    "이제 쳐 보자."
+                     "???? ?? ?.",
+                     "?? ???? ??."
                  ],
                  "close_to_record": [
-                     "기록까지 거의 다 왔어.",
-                     "기록까지 거의 다 왔어."
+                     "??? ???.",
+                     "? ?? ? ?????."
                  ],
                  "new_record": [
-                     "신기록!",
-                     "신기록!"
+                     "??, ? ??.",
+                     "?? ? ????."
                  ],
                  "streak_5": [
-                     "5연속 성공!",
-                     "5연속 성공!"
+                     "?? ? ????.",
+                     "??? ????."
                  ],
                  "streak_10": [
-                     "10연속? 대단해.",
-                     "10연속? 대단해."
+                     "? ? ??, ??? ??.",
+                     "?? ???? ?."
                  ],
                  "streak_15": [
-                     "15연속은 너무 대단해.",
-                     "15연속은 너무 대단해."
+                     "??? ?? ????.",
+                     "?? ??? ??."
                  ],
                  "streak_20": [
-                     "20연속? 믿기 힘들어.",
-                     "20연속? 믿기 힘들어."
+                     "?? ?? ?? ??.",
+                     "? ?? ??? ??"
                  ],
                  "line_in": [
-                     "깔끔하게 들어갔어!",
-                     "깔끔하게 들어갔어!"
+                     "?? ?, ???.",
+                     "???? ???."
                  ],
                  "net_touch": [
-                     "네트를 스쳐도 성공.",
-                     "네트를 스쳐도 성공."
+                     "??? ????.",
+                     "??? ???? ??."
                  ],
                  "zone_in": [
-                     "튕겨서 들어갔어!",
-                     "튕겨서 들어갔어!"
+                     "?? ? ????.",
+                     "??? ? ???."
                  ],
                  "out": [
-                     "아깝다.",
-                     "아깝다."
+                     "?? ???.",
+                     "?? ??? ?? ???."
                  ],
                  "net": [
-                     "네트에 걸렸어.",
-                     "네트에 걸렸어."
-                 ]
-             },
-             "shooter": {
-                 "shot_missed": [
-                     "아직 기회가 있어.",
-                     "아직 기회가 있어."
-                 ],
-                 "game_over": [
-                     "한 판 더 할래?",
-                     "한 판 더 할래?"
-                 ],
-                 "long_aim": [
-                    "이제 쳐 보자.",
-                    "이제 쳐 보자."
-                 ],
-                 "close_to_record": [
-                     "기록까지 거의 다 왔어.",
-                     "기록까지 거의 다 왔어."
-                 ],
-                 "new_record": [
-                     "신기록!",
-                     "신기록!"
-                 ],
-                 "streak_5": [
-                     "5연속 성공!",
-                     "5연속 성공!"
-                 ],
-                 "streak_10": [
-                     "10연속? 대단해.",
-                     "10연속? 대단해."
-                 ],
-                 "streak_15": [
-                     "15연속은 너무 대단해.",
-                     "15연속은 너무 대단해."
-                 ],
-                 "streak_20": [
-                     "20연속? 믿기 힘들어.",
-                     "20연속? 믿기 힘들어."
-                 ],
-                 "line_in": [
-                     "깔끔하게 들어갔어!",
-                     "깔끔하게 들어갔어!"
-                 ],
-                 "net_touch": [
-                     "네트를 스쳐도 성공.",
-                     "네트를 스쳐도 성공."
-                 ],
-                 "zone_in": [
-                     "튕겨서 들어갔어!",
-                     "튕겨서 들어갔어!"
-                 ],
-                 "out": [
-                     "아깝다.",
-                     "아깝다."
-                 ],
-                 "net": [
-                     "네트에 걸렸어.",
-                     "네트에 걸렸어."
+                     "??? ???.",
+                     "?? ?? ??."
                  ]
              },
              "duel": {
                  "shot_missed": [
                      "아직 기회가 있어.",
-                     "아직 기회가 있어."
+                     "아직 기회가 있어.",
+                     "방금 반 박자 늦었어",
+                     "당황하지 마. 다음 공도 기다릴게"
                  ],
                  "game_over": [
-                     "한 판 더 할래?",
-                     "한 판 더 할래?"
+                     "?? ???? ????.",
+                     "?? ?? ???? ?.",
+                     "?? ??? ??? ??.",
+                     "???? ?? ?? ?."
                  ],
                  "long_aim": [
                     "이제 쳐 보자.",
-                    "이제 쳐 보자."
+                    "이제 쳐 보자.",
+                    "바람이라도 기다리는 거야?",
+                    "빨리 안 치면 물 마시러 간다"
                  ],
                  "close_to_record": [
                      "기록까지 거의 다 왔어.",
-                     "기록까지 거의 다 왔어."
+                     "기록까지 거의 다 왔어.",
+                     "기록이 라켓 끝에 걸렸어",
+                     "한 번만 더 안정적으로 치면 갱신이야"
                  ],
                  "new_record": [
                      "신기록!",
-                     "신기록!"
+                     "신기록!",
+                     "좋아, 그 공은 예뻤어",
+                     "신기록은 네 것. 다음 점수는 내 것"
                  ],
                  "streak_5": [
                      "5연속 성공!",
-                     "5연속 성공!"
+                     "5연속 성공!",
+                     "다섯 번 이어졌네. 나쁘지 않아",
+                     "드디어 리듬이 맞기 시작했어"
                  ],
                  "streak_10": [
                      "10연속? 대단해.",
-                     "10연속? 대단해."
+                     "10연속? 대단해.",
+                     "열 번 연속? 이제 제대로 볼게",
+                     "이 랠리 좀 재미있어졌네"
                  ],
                  "streak_15": [
                      "15연속은 너무 대단해.",
-                     "15연속은 너무 대단해."
+                     "15연속은 너무 대단해.",
+                     "열다섯 번인데도 안 끊기네",
+                     "계속 그렇게 안정적일 순 없을걸"
                  ],
                  "streak_20": [
                      "20연속? 믿기 힘들어.",
-                     "20연속? 믿기 힘들어."
+                     "20연속? 믿기 힘들어.",
+                     "스무 번 연속이면 코트도 기억하겠다",
+                     "이 랠리 이제 완전히 이상해졌어"
                  ],
                  "clutch": "……이건 꼭 넣어야 해.",
                  "excuse": [
                      "아, 팔이 조금 피곤해.",
-                     "오늘 손맛이 별로야. 다음 공은 진심으로 갈게."
+                     "오늘 손맛이 별로야. 다음 공은 진심으로 갈게.",
+                     "방금 건 무효야. 바람을 보고 있었어",
+                     "줄이 좀 느슨했을 뿐이야. 내 실수 아니야"
                  ],
                  "difficultyLv2": [
                      "워밍업은 끝났어. 이제 더 빠르게 갈게.",
-                     "장난치는 시간은 끝났어."
+                     "장난치는 시간은 끝났어.",
+                     "이제 제대로 받아칠게. 눈 깜박이지 마.",
+                     "다음 공은 더 빨라. 단단히 받아"
                  ],
                  "difficultyMax": [
                      "이제 진심으로 할게.",
                      "지금부터 하늘 아래 땅 위에선 내가 최고야.",
                      "이제 네가 도전자야.",
-                     "미래가 네 것이라면, 증명해 봐!"
+                     "미래가 네 것이라면, 증명해 봐!",
+                     "이 한 타부터는 봐주지 않아.",
+                     "코트는 내 것, 점수는 실력이 정해."
                  ],
                  "line_in": [
                      "깔끔하게 들어갔어!",
-                     "깔끔하게 들어갔어!"
+                     "깔끔하게 들어갔어!",
+                     "라인까지 네 편이네",
+                     "그 공 라인에 정확히 걸쳤어"
                  ],
                  "net_touch": [
                      "네트를 스쳐도 성공.",
-                     "네트를 스쳐도 성공."
+                     "네트를 스쳐도 성공.",
+                     "네트 맞고 넘어가다니, 얄밉네",
+                     "조금만 더 가까웠으면 위험했어"
                  ],
                  "zone_in": [
                      "튕겨서 들어갔어!",
-                     "튕겨서 들어갔어!"
+                     "튕겨서 들어갔어!",
+                     "낙점이 일부러 그런 것처럼 날카로워",
+                     "한 발만 더 갔으면 닿았는데"
                  ],
                  "out": [
                      "아깝다.",
-                     "아깝다."
+                     "아깝다.",
+                     "내 인내심보다 멀리 날아갔네",
+                     "아웃이야. 못 본 척하지 마"
                  ],
                  "net": [
                      "네트에 걸렸어.",
-                     "네트에 걸렸어."
+                     "네트에 걸렸어.",
+                     "네트가 대신 막아 줬네",
+                     "그 스윙 너무 급했어"
                  ]
              },
              "fallback": [
@@ -4649,14 +4666,47 @@
                  "playerAhead": "제법인데...",
                  "playerBehind": "더 밀어붙여."
              },
-             "horse": {
-                 "nekoMiss": "못 따라 했네. {{letters}} 추가.",
-                 "playerMiss": "너도 {{letters}} 추가."
-             },
              "mindGame": [
                  "손 떨리는 거 봤어.",
                  "천천히 생각하고 던져.",
-                 "이 거리는 가깝지 않아."
+                 "이 거리는 가깝지 않아.",
+                 "너 사이드라인 노리는 얼굴이야.",
+                 "라켓 면은 이미 읽었어.",
+                 "너무 오래 보면 손이 굳어."
+             ],
+             "yuiCheat": {
+                 "banana": [
+                     "발밑 조심해, 바나나 껍질 간다.",
+                     "밟지 마. 내가 던져 뒀어.",
+                     "이번 걸음은 잘 보고 움직여.",
+                     "뛰어넘으면 네가 잘한 걸로 해 줄게."
+                 ],
+                 "octopus": [
+                     "먹물 간다. 아직 보여?",
+                     "시야 좀 잠깐 가릴게.",
+                     "깜빡이지 마. 이미 늦었어.",
+                     "안 보여도 받아야 해."
+                 ]
+             },
+             "yuiCheatScore": {
+                 "banana": [
+                     "그 걸음 너무 미끄러웠지. 이 점수는 내 거야.",
+                     "바나나 껍질 어시스트 성공, 히히.",
+                     "한 번 미끄러지면 점수는 내 쪽으로 와.",
+                     "바닥 조심해. Yui가 한 점 더 가져갈게."
+                 ],
+                 "octopus": [
+                     "먹물이 딱 알맞게 가렸네. 이 점수는 내 거야.",
+                     "안 보여도 셔틀은 받아야지.",
+                     "시야가 막힌 사이에 벌써 득점했어.",
+                     "이 먹물 작전, 꽤 잘 먹혔지?"
+                 ]
+             },
+             "playerIceScore": [
+                 "으응, 그건 무효야. 다시 해!",
+                 "잠깐, 나 얼어 있었잖아. 다시 하자!",
+                 "얼음 도움을 너무 받았어. 한 번 더!",
+                 "치사해, 움직일 수 없었단 말이야."
              ],
              "easterEgg": {
                  "lateNight": "이 시간에도 샷을 쳐?",

@@ -890,6 +890,7 @@ class ReflectionEngine:
                 timeout=MEMORY_LLM_HARD_TIMEOUT_SECONDS, max_retries=0,
                 max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous so variable-length JSON (incl. thinking) isn't truncated
                 extra_body=None,
+                provider_type=api_config.get('provider_type'),
             )
             try:
                 resp = await llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET  # prompt assembled from token-capped memory components (REFLECTION_*/RECALL_* budgets in the prompt builder).
@@ -2218,6 +2219,7 @@ class ReflectionEngine:
                 api_config['base_url'], api_config['api_key'],
                 timeout=60, max_retries=0,
                 max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous so variable-length JSON isn't truncated
+                provider_type=api_config.get('provider_type'),
             )
             try:
                 resp = await llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET  # prompt assembled from token-capped memory components (REFLECTION_*/RECALL_* budgets in the prompt builder).
@@ -2289,6 +2291,7 @@ class ReflectionEngine:
                 timeout=90, max_retries=0,
                 max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous so variable-length JSON (incl. thinking) isn't truncated
                 extra_body=None,
+                provider_type=api_config.get('provider_type'),
             )
             try:
                 resp = await llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET  # prompt assembled from token-capped memory components (REFLECTION_*/RECALL_* budgets in the prompt builder).
@@ -2824,6 +2827,7 @@ class ReflectionEngine:
                 timeout=60, max_retries=0,
                 max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous so variable-length JSON (incl. thinking) isn't truncated
                 extra_body=None,
+                provider_type=api_config.get('provider_type'),
             )
             try:
                 resp = await llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET  # prompt assembled from token-capped memory components (REFLECTION_*/RECALL_* budgets in the prompt builder).
@@ -3269,6 +3273,7 @@ class ReflectionEngine:
             timeout=90, max_retries=0,
             max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous so variable-length JSON (incl. thinking) isn't truncated
             extra_body=None,
+            provider_type=api_config.get('provider_type'),
         )
         try:
             resp = await llm.ainvoke(prompt)

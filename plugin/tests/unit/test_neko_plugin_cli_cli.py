@@ -245,6 +245,104 @@ def test_validate_plugin_dir_reports_invalid_utf8_optional_files(tmp_path: Path)
     assert any(".gitignore is not valid UTF-8" in message for message in messages)
 
 
+def test_validate_plugin_dir_accepts_startup_failure_policy(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    plugin_toml_path = plugin_dir / "plugin.toml"
+    plugin_toml_path.write_text(
+        plugin_toml_path.read_text(encoding="utf-8").replace(
+            "auto_start = false",
+            "auto_start = false\nstartup_failure = \"warn\"\ntimeout = 1.5",
+        ),
+        encoding="utf-8",
+    )
+
+    issues = validate_plugin_dir(plugin_dir, strict=True)
+    messages = [message for _level, message in issues]
+
+    assert not any("[plugin_runtime].startup_failure is not a recognized" in message for message in messages)
+    assert not any(level == "error" and "startup_failure" in message for level, message in issues)
+
+
+def test_validate_plugin_dir_rejects_invalid_startup_failure_policy(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    plugin_toml_path = plugin_dir / "plugin.toml"
+    plugin_toml_path.write_text(
+        plugin_toml_path.read_text(encoding="utf-8").replace(
+            "auto_start = false",
+            "auto_start = false\nstartup_failure = \"strict\"",
+        ),
+        encoding="utf-8",
+    )
+
+    issues = validate_plugin_dir(plugin_dir, strict=True)
+
+    assert any(
+        level == "error" and "[plugin_runtime].startup_failure must be one of" in message
+        for level, message in issues
+    )
+
+
+def test_validate_plugin_dir_rejects_non_positive_runtime_timeout(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    plugin_toml_path = plugin_dir / "plugin.toml"
+    plugin_toml_path.write_text(
+        plugin_toml_path.read_text(encoding="utf-8").replace(
+            "auto_start = false",
+            "auto_start = false\ntimeout = 0",
+        ),
+        encoding="utf-8",
+    )
+
+    issues = validate_plugin_dir(plugin_dir, strict=True)
+
+    assert any(
+        level == "error" and "[plugin_runtime].timeout must be > 0" in message
+        for level, message in issues
+    )
+
+
+def test_validate_plugin_dir_rejects_too_large_runtime_timeout(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    plugin_toml_path = plugin_dir / "plugin.toml"
+    plugin_toml_path.write_text(
+        plugin_toml_path.read_text(encoding="utf-8").replace(
+            "auto_start = false",
+            "auto_start = false\ntimeout = 300.1",
+        ),
+        encoding="utf-8",
+    )
+
+    issues = validate_plugin_dir(plugin_dir, strict=True)
+
+    assert any(
+        level == "error" and "[plugin_runtime].timeout must be <= 300" in message
+        for level, message in issues
+    )
+
+
+@pytest.mark.parametrize("timeout_literal", ["nan", "inf", "-inf"])
+def test_validate_plugin_dir_rejects_non_finite_runtime_timeout(
+    tmp_path: Path,
+    timeout_literal: str,
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    plugin_toml_path = plugin_dir / "plugin.toml"
+    plugin_toml_path.write_text(
+        plugin_toml_path.read_text(encoding="utf-8").replace(
+            "auto_start = false",
+            f"auto_start = false\ntimeout = {timeout_literal}",
+        ),
+        encoding="utf-8",
+    )
+
+    issues = validate_plugin_dir(plugin_dir, strict=True)
+
+    assert any(
+        level == "error" and "[plugin_runtime].timeout must be finite" in message
+        for level, message in issues
+    )
+
+
 def test_init_repo_uses_market_repository_name_and_keeps_plugin_id(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -267,7 +365,7 @@ def test_init_repo_uses_market_repository_name_and_keeps_plugin_id(
     assert not (tmp_path / "market_demo").exists()
     plugin_toml_text = (repo_dir / "plugin.toml").read_text(encoding="utf-8")
     assert 'id = "market_demo"' in plugin_toml_text
-    assert 'entry = "plugins.market_demo:MarketDemoPlugin"' in plugin_toml_text
+    assert 'entry = "plugin.plugins.market_demo:MarketDemoPlugin"' in plugin_toml_text
     assert "store.db" in (repo_dir / ".gitignore").read_text(encoding="utf-8")
     assert (repo_dir / ".github" / "workflows" / "verify.yml").is_file()
     release_workflow = repo_dir / ".github" / "workflows" / "release.yml"
@@ -279,6 +377,7 @@ def test_init_repo_uses_market_repository_name_and_keeps_plugin_id(
 
     messages = [message for _level, message in validate_plugin_dir(repo_dir, strict=True)]
     assert not any("does not match directory name" in message for message in messages)
+    assert not any("plugin.entry should usually start with" in message for message in messages)
 
     check_exit = neko_plugin_cli.main(["check", "market_demo", "--plugins-root", str(tmp_path)])
     assert check_exit == 0

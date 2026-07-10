@@ -27,6 +27,7 @@
             this.destroyed = false;
             this.active = false;
             this.externalizedChatSpotlightKind = '';
+            this.externalizedChatSpotlightVariant = '';
             this.tutorialFaceForwardLockSnapshot = null;
             this.externalChatCommandBus = this.createExternalChatCommandBus();
         }
@@ -342,13 +343,24 @@
         }
 
         setExternalizedChatSpotlight(kind) {
+            const options = arguments.length > 1 && arguments[1] && typeof arguments[1] === 'object'
+                ? arguments[1]
+                : null;
             const previousKind = this.externalizedChatSpotlightKind;
-            this.externalizedChatSpotlightKind = typeof kind === 'string' ? kind : '';
+            const previousVariant = this.externalizedChatSpotlightVariant;
+            const normalizedKind = typeof kind === 'string' ? kind : '';
+            const hasVariantOption = options && Object.prototype.hasOwnProperty.call(options, 'variant');
+            const normalizedVariant = hasVariantOption && typeof options.variant === 'string'
+                ? options.variant.trim()
+                : (normalizedKind && normalizedKind === previousKind ? previousVariant : '');
+            this.externalizedChatSpotlightKind = normalizedKind;
+            this.externalizedChatSpotlightVariant = this.externalizedChatSpotlightKind ? normalizedVariant : '';
             const message = {
-                kind: this.externalizedChatSpotlightKind
+                kind: this.externalizedChatSpotlightKind,
+                variant: this.externalizedChatSpotlightVariant
             };
             if (
-                (this.externalizedChatSpotlightKind || previousKind)
+                (this.externalizedChatSpotlightKind || previousKind || previousVariant)
                 && safeInvoke(this.isResistancePaused, [], false) === true
             ) {
                 message.preserveDuringResistance = true;
@@ -362,6 +374,7 @@
             }
             return this.postExternalChatCommand('yui_guide_set_chat_spotlight', {
                 kind: this.externalizedChatSpotlightKind,
+                variant: this.externalizedChatSpotlightVariant,
                 preserveDuringResistance: true
             });
         }
@@ -376,7 +389,8 @@
                 targetIndex: options && Number.isFinite(options.targetIndex)
                     ? Math.max(0, Math.floor(options.targetIndex))
                     : 0,
-                freezePoint: !!(options && options.freezePoint === true)
+                freezePoint: !!(options && options.freezePoint === true),
+                preservePcOverlayCursor: !!(options && options.preservePcOverlayCursor === true)
             };
             if (options && Number.isFinite(options.durationMs)) {
                 message.durationMs = Math.max(0, Math.floor(options.durationMs));
@@ -467,12 +481,20 @@
             this.postExternalChatCommand('yui_guide_arc_chat_cursor', message);
         }
 
+        setExternalizedChatCompactFixedLayout(fixed, reason) {
+            this.postExternalChatCommand('yui_guide_set_compact_chat_fixed_layout', {
+                fixed: fixed === true,
+                reason: typeof reason === 'string' ? reason : ''
+            });
+        }
+
         clearExternalizedChatGuideMessages() {
             this.postExternalChatCommand('yui_guide_clear_chat_messages');
         }
 
         clearExternalizedChatFx() {
             this.externalizedChatSpotlightKind = '';
+            this.externalizedChatSpotlightVariant = '';
             this.setExternalizedChatInputLocked(false, 'clear-externalized-chat-fx');
             this.setExternalizedChatSpotlight('');
             this.setExternalizedChatCursor('');
@@ -487,6 +509,13 @@
             }
 
             this.setExternalizedChatButtonsDisabled(true);
+            this.setExternalizedChatInputLocked(true, 'external-chat-ready');
+            if (
+                this.document.body
+                && this.document.body.classList.contains('yui-guide-compact-chat-fixed')
+            ) {
+                this.setExternalizedChatCompactFixedLayout(true, 'external-chat-ready');
+            }
             if (this.externalizedChatSpotlightKind) {
                 this.setExternalizedChatSpotlight(this.externalizedChatSpotlightKind);
             }

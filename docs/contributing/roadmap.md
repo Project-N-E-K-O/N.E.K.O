@@ -2,24 +2,25 @@
 
 ## Version plan
 
-### v0.7 — Agent system (target: Feb 2026)
+### v0.7 — Agent system ✅ (Phase 1 complete)
 - Complete Agent-related features
 - MCP, Computer Use, Browser Use, Virtual Machine integration
 
-### v0.8 — Memory system (target: Mar 2026)
+### v0.8 — Memory, desktop pet & minigames ✅ (Phase 1 complete)
 - Enhanced memory management
-- OpenClaw-like features
+- Desktop pet mode
+- Built-in two-player minigames
 - Improved memory compression and recall
 
-### v0.9 — Multi-platform (target: Apr 2026)
+### v0.9 — Multi-platform (target: early Jul 2026)
 - Linux support improvements
 - Mobile platform exploration
 - N.E.K.O. Network launch (AI social features)
 
-### v1.0 — Custom AI (target: Jun 2026)
-- Transition to custom-trained models
+### v1.0 — Custom AI (target: late Aug 2026)
+- Drop adaptation for some third-party model providers
+- Transition to self-developed models
 - Dedicated agent system
-- Reduced dependency on third-party model providers
 
 ## Long-term vision
 

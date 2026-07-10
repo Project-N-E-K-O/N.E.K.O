@@ -76,6 +76,7 @@ const _vrmPopupConfig = {
             syncCheckbox(document.querySelector(`#${prefix}-merge-messages`), window.mergeMessagesEnabled);
             syncCheckbox(document.querySelector(`#${prefix}-focus-mode`), !window.focusModeEnabled);
             syncCheckbox(document.querySelector(`#${prefix}-avatar-reaction-bubble`), window.avatarReactionBubbleEnabled);
+            syncCheckbox(document.querySelector(`#${prefix}-focus-cognition`), window.focusCognitionEnabled);
             syncCheckbox(popup.querySelector(`#${prefix}-proactive-chat`), window.proactiveChatEnabled);
             // proactive-vision 走 inverted（"隐私模式" UI 显示），与 avatar-ui-popup.js 对齐
             syncCheckbox(popup.querySelector(`#${prefix}-proactive-vision`), !window.proactiveVisionEnabled);

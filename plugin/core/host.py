@@ -24,7 +24,7 @@ from plugin.core.entry_points import normalize_plugin_entry_point
 from plugin.sdk import PERSIST_ATTR
 from plugin.core.state import state
 from plugin.core.context import PluginContext
-from plugin.core.communication import PluginCommunicationResourceManager
+from plugin.core.communication import PluginCommunicationResourceManager, STARTUP_RESULT_REQ_ID
 from plugin._types.models import HealthCheckResponse
 from plugin._types.exceptions import (
     PluginLifecycleError,
@@ -697,10 +697,12 @@ def _plugin_process_runner(
     uplink_endpoint: str,
     stop_event: Any | None = None,
     extension_configs: list | None = None,
+    startup_options: dict[str, object] | None = None,
 ) -> None:
     """独立进程中的运行函数。通过 ZMQ 与宿主进程通信。"""
     # 保存进程级 stop event
     process_stop_event = stop_event
+    startup_failure_policy = str((startup_options or {}).get("startup_failure") or "warn").strip().lower()
     
     # 初始化：探测项目根目录、配置 logger
     project_root = _find_project_root(config_path)
@@ -1067,7 +1069,29 @@ def _plugin_process_runner(
 
         # 生命周期：startup
         lifecycle_events = events_by_type.get("lifecycle", {})
+
+        def _send_startup_result(startup_error: str | None) -> None:
+            try:
+                startup_success = startup_error is None
+                startup_data: dict[str, Any] = {
+                    "status": "ready" if startup_success else "failed",
+                }
+                if startup_error is not None:
+                    startup_data["startup_error"] = startup_error
+                res_sender.put(
+                    {
+                        "req_id": STARTUP_RESULT_REQ_ID,
+                        "success": startup_success,
+                        "data": startup_data,
+                        "error": startup_error,
+                    },
+                    timeout=10.0,
+                )
+            except Exception:
+                logger.exception("[Plugin Process] Failed to send startup result")
+
         startup_fn = lifecycle_events.get("startup")
+        startup_error: str | None = None
         if startup_fn:
             try:
                 with ctx._handler_scope("lifecycle.startup"):
@@ -1078,6 +1102,7 @@ def _plugin_process_runner(
             except Exception as e:
                 error_msg = f"Error in lifecycle.startup: {str(e)}"
                 logger.exception(error_msg)
+                startup_error = error_msg
                 # 记录错误但不中断进程启动
                 # 如果启动失败是致命的，可以在这里 raise PluginLifecycleError
         
@@ -1100,6 +1125,19 @@ def _plugin_process_runner(
             except Exception as e:
                 error_msg = f"Error in lifecycle.unfreeze: {str(e)}"
                 logger.exception(error_msg)
+
+        _send_startup_result(startup_error)
+        if startup_error is not None and startup_failure_policy == "fail":
+            logger.info("[Plugin Process] Startup failed with policy='fail'; skipping auto-start work")
+            try:
+                ctx.close()
+            except Exception as e:
+                logger.debug("[Plugin Process] Context close failed after startup failure: {}", e)
+            try:
+                child_transport.close()
+            except Exception:
+                pass
+            return
 
         # 定时任务：timer auto_start interval
         def _run_timer_interval(fn, interval_seconds: int, fn_name: str, stop_event: threading.Event):
@@ -1709,7 +1747,13 @@ def _plugin_process_runner(
                 "success": False,
                 "data": None,
                 "error": f"Process crashed: {str(e)}"
-            })
+            }, timeout=10.0)
+            res_sender.put({
+                "req_id": STARTUP_RESULT_REQ_ID,
+                "success": False,
+                "data": None,
+                "error": f"Process crashed: {str(e)}"
+            }, timeout=10.0)
         except Exception:
             pass  # 如果队列也坏了，只能放弃
         raise  # 重新抛出，让进程退出
@@ -1734,6 +1778,7 @@ class PluginHost:
         self.transport = HostTransport()
 
         self._process_stop_event: Any = multiprocessing.Event()
+        self._startup_options: dict[str, object] = {"startup_failure": "warn"}
 
         # Shared response notification primitives must be initialized before
         # forking, otherwise each child creates its own Manager proxies.
@@ -1762,6 +1807,7 @@ class PluginHost:
                 self.transport.uplink_endpoint,
                 self._process_stop_event,
                 extension_configs,
+                self._startup_options,
             ),
             # Plugin code may spawn subprocesses/Managers; daemon process would forbid that.
             daemon=False,
@@ -1772,7 +1818,12 @@ class PluginHost:
             transport=self.transport,
         )
     
-    async def start(self, message_target_queue=None) -> None:
+    async def start(
+        self,
+        message_target_queue=None,
+        startup_timeout: float | None = None,
+        startup_failure: str = "warn",
+    ) -> Any:
         """
         启动后台任务（需要在异步上下文中调用）
         
@@ -1784,6 +1835,9 @@ class PluginHost:
         state.register_downlink_sender(self.plugin_id, self.comm_manager.send_plugin_response)
 
         await self.comm_manager.start(message_target_queue=message_target_queue)
+        should_wait_for_startup = startup_timeout is not None and startup_timeout > 0
+        startup_failure_policy = str(startup_failure or "warn").strip().lower()
+        self._startup_options["startup_failure"] = startup_failure_policy
 
         if self.process.is_alive():
             self.logger.debug(
@@ -1793,6 +1847,9 @@ class PluginHost:
             )
             return
 
+        if should_wait_for_startup:
+            await self.comm_manager.prepare_startup_wait()
+
         try:
             _refresh_child_storage_layout_env(self.logger)
             await asyncio.to_thread(self.process.start)
@@ -1801,7 +1858,7 @@ class PluginHost:
                 "Plugin {} process failed to start, shutting down comm_manager",
                 self.plugin_id,
             )
-            state.unregister_downlink_sender(self.plugin_id)
+            state.remove_downlink_sender(self.plugin_id)
             try:
                 self.transport.close()
             except Exception:
@@ -1818,14 +1875,16 @@ class PluginHost:
                 self.plugin_id,
                 exitcode,
             )
-            state.unregister_downlink_sender(self.plugin_id)
+            state.remove_downlink_sender(self.plugin_id)
             try:
                 self.transport.close()
             except Exception:
                 pass
             await self.comm_manager.shutdown(timeout=PLUGIN_SHUTDOWN_TIMEOUT)
             raise PluginLifecycleError(
-                f"Plugin {self.plugin_id} failed to stay alive after startup (exitcode={exitcode})"
+                self.plugin_id,
+                "startup",
+                f"process exited immediately (exitcode={exitcode})",
             )
         else:
             self.logger.info(
@@ -1833,6 +1892,65 @@ class PluginHost:
                 self.plugin_id,
                 self.process.pid,
             )
+
+        if should_wait_for_startup:
+            try:
+                startup_result = await self.comm_manager.wait_for_startup(
+                    timeout=float(startup_timeout),
+                    allow_startup_error=startup_failure_policy != "fail",
+                )
+                if isinstance(startup_result, dict) and startup_result.get("startup_error"):
+                    self.logger.warning(
+                        "Plugin {} startup completed with warning: {}",
+                        self.plugin_id,
+                        startup_result["startup_error"],
+                    )
+                return startup_result
+            except TimeoutError as exc:
+                self.logger.error(
+                    "Plugin {} startup timed out after {}s",
+                    self.plugin_id,
+                    startup_timeout,
+                )
+                await self._abort_startup_after_failure(timeout=min(float(startup_timeout), PLUGIN_SHUTDOWN_TIMEOUT))
+                raise PluginLifecycleError(
+                    self.plugin_id,
+                    "startup",
+                    f"startup timed out after {startup_timeout}s",
+                ) from exc
+            except Exception as exc:
+                self.logger.error(
+                    "Plugin {} startup failed: {}",
+                    self.plugin_id,
+                    exc,
+                )
+                await self._abort_startup_after_failure(timeout=PLUGIN_SHUTDOWN_TIMEOUT)
+                raise PluginLifecycleError(
+                    self.plugin_id,
+                    "startup",
+                    str(exc),
+                ) from exc
+
+    async def _abort_startup_after_failure(self, timeout: float) -> None:
+        try:
+            if getattr(self, "_process_stop_event", None) is not None:
+                self._process_stop_event.set()
+        except Exception:
+            pass
+        state.remove_downlink_sender(self.plugin_id)
+        try:
+            await self.comm_manager.send_stop_command()
+        except Exception:
+            pass
+        try:
+            await self.comm_manager.shutdown(timeout=timeout)
+        except Exception:
+            pass
+        try:
+            self.transport.close()
+        except Exception:
+            pass
+        await asyncio.to_thread(self._shutdown_process, timeout)
     
     async def shutdown(self, timeout: float = PLUGIN_SHUTDOWN_TIMEOUT) -> None:
         """

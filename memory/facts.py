@@ -420,6 +420,7 @@ class FactStore:
                     timeout=timeout,
                     max_retries=0,
                     max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,
+                    provider_type=api_config.get('provider_type'),
                 )
                 if extra_body is not _DEFAULT_EXTRA_BODY:
                     _llm_kwargs['extra_body'] = extra_body
@@ -1401,6 +1402,7 @@ class FactStore:
                 timeout=60, max_retries=0,
                 max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous so variable-length JSON (incl. thinking) isn't truncated
                 extra_body=None,
+                provider_type=api_config.get('provider_type'),
             )
             try:
                 resp = await llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET  # recheck prompt assembled from token-capped memory components.

@@ -14,8 +14,10 @@
 
 """Focus-mode signal scorer (the Focus trigger).
 
-Produces the single [0, 1] score that ``SessionStateMachine.update_focus``
-feeds into its hysteresis. Scoring is **inline-only**: it reads what the
+Produces the single scalar score that ``SessionStateMachine.update_focus``
+feeds into its hysteresis — a direct weighted sum, NOT bounded to ``[0, 1]``
+(it can reach ``sum(weights)`` ≈ 2.0 or go slightly negative on a happy turn;
+see ``_weighted_sum``). Scoring is **inline-only**: it reads what the
 user just typed (``stream_text``), never the screen. The applicable
 signals are keyword + cadence + emotion — keyword/cadence read the message
 directly, emotion reads the latest master-emotion VA reading the caller hands
@@ -28,10 +30,12 @@ cool down (faster when she spoke, slower when she stayed silent — see
 ``docs/design/focus-truename-mode.md`` and ``LLMSessionManager.
 _focus_idle_cooldown``).
 
-The score is a weighted average over the *applicable* signals
-(``FOCUS_SIGNAL_WEIGHTS`` renormalised to the present subset), so an
-absent signal (e.g. cadence before the baseline has enough samples) never
-silently drags the average toward zero.
+The score is a direct weighted sum over the *applicable* signals
+(``FOCUS_SIGNAL_WEIGHTS`` applied as absolute weights, NOT renormalised),
+so an absent signal (e.g. cadence before the baseline has enough samples)
+drops out entirely — it contributes nothing rather than dragging the sum
+toward zero. Each present signal adds ``weight × value`` straight into the
+score, so the configured weights are the literal per-signal contributions.
 
 The scorer is intentionally thin: the only state it owns is a small
 rolling buffer of recent user-message lengths for the cadence signal. One
@@ -52,8 +56,10 @@ from config.prompts.prompts_focus import scan_vulnerability_keywords
 class FocusScore:
     """Result of one scoring pass: the final score plus the per-signal breakdown.
 
-    ``signals`` holds each sub-signal's value in [0, 1], or ``None`` when
-    it didn't apply to this path — kept for diagnostics / logging so a
+    ``signals`` holds each sub-signal's value (``[0, 1]`` for keyword /
+    cadence / question, SIGNED for emotion — negative on a happy turn), or
+    ``None`` when it didn't apply to this path — kept for diagnostics /
+    logging so a
     tuner can see *why* a turn fed the accumulator a high or low score
     (the score is integrated into the leaky charge; see ``FOCUS_CHARGE_*``).
     """
@@ -109,7 +115,7 @@ class FocusScorer:
             cadence = None
 
         signals = {"keyword": kw, "cadence": cadence, "emotion": emotion, "question": question}
-        score = _weighted_average(signals, config.FOCUS_SIGNAL_WEIGHTS)
+        score = _weighted_sum(signals, config.FOCUS_SIGNAL_WEIGHTS)
 
         # Update the cadence baseline for this inline message.
         if user_text.strip():
@@ -123,10 +129,11 @@ class FocusScorer:
 
     # ── sub-signals ──────────────────────────────────────────────────
     # keyword / emotion are *positive distress evidence*: they return None (not
-    # 0.0) when absent, so an empty one never dilutes the other in the weighted
-    # average — a saturated keyword OR a saturated emotion reading can each
-    # trigger Focus on its own. cadence is a behavioural signal whose 0.0
-    # ("message length normal") is informative, so it keeps 0.0 in the denom.
+    # 0.0) when absent, so an empty one simply drops out of the weighted sum —
+    # a saturated keyword OR a saturated emotion reading can each trigger Focus
+    # on its own. cadence returns 0.0 ("message length normal") rather than
+    # None; with no denominator that 0.0 contributes nothing (≡ absent), so
+    # cadence only ever ADDS to the score when the length actually dropped.
     def _signal_keyword(self, user_text: str) -> Optional[float]:
         count = scan_vulnerability_keywords(user_text)
         if count <= 0:
@@ -209,21 +216,24 @@ class FocusScorer:
         return complexity if complexity > 0.0 else None
 
 
-def _weighted_average(signals: dict, weights: dict) -> float:
-    """Weighted average over applicable (non-None) signals, weights renormalised.
+def _weighted_sum(signals: dict, weights: dict) -> float:
+    """Direct weighted sum over applicable (non-None) signals — NO denominator.
 
-    A signal whose value is ``None`` (not applicable to this path) is
-    excluded from both numerator and denominator, so it neither counts as
-    zero nor inflates the result. Returns 0.0 when no signal applies.
+    Each present signal contributes ``weight × value`` as an ABSOLUTE amount;
+    the weights are the literal per-signal contributions, not renormalised. A
+    signal whose value is ``None`` (not applicable to this path) drops out — it
+    contributes nothing, neither dragging the score toward zero nor inflating
+    it. Returns 0.0 when no signal applies.
+
+    Without a denominator the sum is not renormalised (all signals saturated ⇒
+    ``sum(weights.values())``, which may exceed 1.0); the charge accumulator's
+    ``FOCUS_CHARGE_CAP`` clamps the downstream charge, and a signal that returns
+    exactly ``0.0`` (e.g. cadence "length normal") is equivalent to being absent
+    here.
     """
-    num = 0.0
-    den = 0.0
+    total = 0.0
     for name, val in signals.items():
         if val is None:
             continue
-        w = float(weights.get(name, 0.0))
-        num += w * float(val)
-        den += w
-    if den <= 0.0:
-        return 0.0
-    return num / den
+        total += float(weights.get(name, 0.0)) * float(val)
+    return total

@@ -39,13 +39,33 @@ const metrics = computed(() => metricsStore.allMetrics)
 const loading = computed(() => metricsStore.loading)
 
 let refreshTimer: number | null = null
+const GOODBYE_RESOURCE_SUSPEND_STORAGE_KEY = 'neko-goodbye-resource-suspended'
+
+function isGoodbyeResourceSuspendingOrSuspended() {
+  if (typeof window === 'undefined') return false
+  try {
+    const helper = (window as any).isNekoGoodbyeResourceSuspendingOrSuspended
+    if (typeof helper === 'function' && helper()) return true
+    if ((window as any).goodbyeResourceSuspended === true) return true
+    if ((window as any).__nekoGoodbyeResourceSuspendPending === true) return true
+    return window.localStorage.getItem(GOODBYE_RESOURCE_SUSPEND_STORAGE_KEY) === 'true'
+  } catch {
+    return false
+  }
+}
 
 async function handleRefresh() {
   await metricsStore.fetchAllMetrics()
 }
 
 function startAutoRefresh() {
+  if (isGoodbyeResourceSuspendingOrSuspended()) return
+  stopAutoRefresh()
   refreshTimer = window.setInterval(async () => {
+    if (isGoodbyeResourceSuspendingOrSuspended()) {
+      stopAutoRefresh()
+      return
+    }
     if (!loading.value) {
       await handleRefresh()
     }
@@ -59,12 +79,34 @@ function stopAutoRefresh() {
   }
 }
 
+function handleGoodbyeResourceState(event: Event) {
+  const detail = (event as CustomEvent).detail || {}
+  if (detail.suspended || detail.pending || isGoodbyeResourceSuspendingOrSuspended()) {
+    stopAutoRefresh()
+  } else {
+    startAutoRefresh()
+  }
+}
+
+function handleGoodbyeResourceStorage(event: StorageEvent) {
+  if (event.key !== null && event.key !== GOODBYE_RESOURCE_SUSPEND_STORAGE_KEY) return
+  if (isGoodbyeResourceSuspendingOrSuspended()) {
+    stopAutoRefresh()
+  } else {
+    startAutoRefresh()
+  }
+}
+
 onMounted(async () => {
   await handleRefresh()
+  window.addEventListener('neko:goodbye-resource-suspend-state', handleGoodbyeResourceState)
+  window.addEventListener('storage', handleGoodbyeResourceStorage)
   startAutoRefresh()
 })
 
 onUnmounted(() => {
+  window.removeEventListener('neko:goodbye-resource-suspend-state', handleGoodbyeResourceState)
+  window.removeEventListener('storage', handleGoodbyeResourceStorage)
   stopAutoRefresh()
 })
 </script>
@@ -86,4 +128,3 @@ onUnmounted(() => {
   gap: 16px;
 }
 </style>
-

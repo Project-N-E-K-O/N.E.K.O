@@ -247,9 +247,9 @@ async def unregister_on_shutdown():
 绑定到 plugin lifecycle hook：
 
 ```python
-from plugin.sdk.plugin import NekoPluginBase, plugin
+from plugin.sdk.plugin import NekoPluginBase, neko_plugin
 
-@plugin
+@neko_plugin
 class WeatherPlugin(NekoPluginBase):
     async def on_start(self):
         # plugin 进程起来后异步注册，不阻塞 plugin 启动主流程

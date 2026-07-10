@@ -243,6 +243,21 @@ def test_get_tts_worker_routes_explicit_vllm_before_assist_mimo(monkeypatch):
 
 @pytest.mark.unit
 def test_get_tts_worker_routes_explicit_vllm_before_cloned_voice(monkeypatch):
+    """Explicit vllm_omni as default TTS + voice_meta is NOT a vllm_omni clone
+    → should route to the preset path.
+
+    The old test used pytest.fail to block _get_voice_meta calls, asserting
+    that "voice_meta must not be accessed when vllm_omni is explicitly
+    selected" (short-circuit contract).  That caused a bug: when the user
+    both selected vllm_omni as default provider AND chose a vllm_omni clone
+    voice, resolve skipped the clone check and took the preset path, sending
+    the clone's internal ID (e.g. vllm-omni-clone-ch-xxx) as the voice
+    parameter — the server rejected it as Invalid Voice.  Aligned with
+    MiMo's _mimo_resolve: clone check always takes priority over preset,
+    regardless of config_selected.  So resolve now accesses voice_meta, but
+    when voice_meta is not a vllm_omni clone it still falls through to
+    preset — the correct behaviour.
+    """
     class _CM:
         def get_core_config(self):
             return {
@@ -269,11 +284,14 @@ def test_get_tts_worker_routes_explicit_vllm_before_cloned_voice(monkeypatch):
         def get_tts_api_key(self, provider):
             pytest.fail("explicit vllm_omni should bypass cloned voice providers")
 
+    # voice_meta 返回 None（非 vllm_omni 克隆）→ resolve 检查后走 preset 路径。
+    # 不再用 pytest.fail 拦截：resolve 必须检查 voice_meta 以区分 clone vs preset，
+    # 与 MiMo 的 _mimo_resolve 对齐（clone 优先于 config-selected preset）。
     monkeypatch.setattr(tts_client, "get_config_manager", lambda: _CM())
     monkeypatch.setattr(
         tts_client,
         "_get_voice_meta",
-        lambda voice_id: pytest.fail("explicit vllm_omni should run before voice metadata lookup"),
+        lambda voice_id: None,
     )
 
     worker, api_key, provider_key = tts_client.get_tts_worker(
@@ -294,7 +312,72 @@ def test_get_tts_worker_routes_explicit_vllm_before_cloned_voice(monkeypatch):
 
 
 @pytest.mark.unit
-def test_get_tts_worker_keeps_normalized_fallbacks_out_of_vllm(monkeypatch):
+def test_get_tts_worker_routes_vllm_clone_when_config_selected(monkeypatch):
+    """Explicit vllm_omni as default TTS + vllm_omni clone voice selected
+    → should route to the clone path.
+
+    Bug-fix: previously the config_selected=True guard caused resolve to skip
+    the clone check, sending the clone's internal ID (e.g. vllm-omni-clone-ch-xxx)
+    as the voice parameter to the vLLM-Omni server, which rejected it as
+    Invalid Voice.  Aligned with MiMo's _mimo_resolve: clone takes priority
+    over preset, not blocked by the config_selected guard.
+    """
+    CLONE_B64 = "UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA="  # 1-byte WAV
+
+    class _CM:
+        def get_core_config(self):
+            return {
+                "assistApi": "qwen",
+                "TTS_PROVIDER": "",
+                "ENABLE_CUSTOM_API": True,
+                "GPTSOVITS_ENABLED": False,
+            }
+
+        def load_json_config(self, filename, default):
+            assert filename == "core_config.json"
+            return {
+                "ttsModelProvider": "vllm_omni",
+                "ttsModelUrl": "http://localhost:8091",
+                "ttsModelId": "Qwen3-TTS",
+                "ttsVoiceId": "global-vllm-voice",
+                "ttsModelApiKey": "vllm-key",
+            }
+
+        def get_model_api_config(self, model_type):
+            assert model_type == "tts_custom"
+            return {"is_custom": False, "base_url": "https://fallback.invalid"}
+
+        def get_tts_api_key(self, provider):
+            pytest.fail("vllm_omni clone should not query tts api key")
+
+    monkeypatch.setattr(tts_client, "get_config_manager", lambda: _CM())
+    # voice_meta 返回 vllm_omni 克隆音色 → resolve 应走 clone 路径
+    monkeypatch.setattr(
+        tts_client,
+        "_get_voice_meta",
+        lambda voice_id: {
+            "provider": "vllm_omni",
+            "clone_sample_b64": CLONE_B64,
+            "clone_sample_mime": "audio/wav",
+            "clone_ref_text": "你好",
+        },
+    )
+
+    worker, api_key, provider_key = tts_client.get_tts_worker(
+        core_api_type="qwen",
+        has_custom_voice=True,
+        voice_id="vllm-omni-clone-ch-abc123",
+    )
+
+    assert isinstance(worker, partial)
+    assert worker.func is tts_client.vllm_omni_tts_worker
+    # clone 路径：voice='default'（不传克隆 ID），ref_audio 带 data URI，ref_text 有值
+    assert worker.keywords.get("voice") == "default"
+    assert worker.keywords.get("ref_audio") == f"data:audio/wav;base64,{CLONE_B64}"
+    assert worker.keywords.get("ref_text") == "你好"
+    # clone 路径读取 ttsModelApiKey 用于 WS 鉴权（与 preset 路径一致，见 _vllm_omni_clone_resolve L688）
+    assert api_key == "vllm-key"
+    assert provider_key == "vllm_omni"
     class _CM:
         def get_core_config(self):
             return {

@@ -266,6 +266,7 @@ async def _build_assist_llm():
             model,
             base_url,
             api_key,
+            provider_type=(api_cfg or {}).get("provider_type"),
             timeout=_LLM_TIMEOUT_SECONDS,
             max_retries=1,
             max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous so variable-length structured suggestions aren't truncated

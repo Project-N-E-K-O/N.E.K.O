@@ -48,6 +48,11 @@ ActivityState = Literal[
     'gaming',              # Game window in foreground / known game process
     'focused_work',        # IDE / Office / PDF / etc. + sustained input
     'casual_browsing',     # Entertainment domains/clients dominate
+    'focused_video',       # Sustained immersion in a video/live window
+                           # (entertainment + subcategory video/live, dwell
+                           # past FOCUSED_VIDEO_MIN_DWELL_SECONDS). Keeps the
+                           # screen-snark channel but cuts music/meme/web —
+                           # propensity reuses restricted_screen_only.
     'chatting',            # IM/email/meeting in foreground + active text
     'voice_engaged',       # Voice mode and recent RMS / VAD activity
     'idle',                # At the computer but no clear activity bucket
@@ -346,6 +351,9 @@ _STATE_TO_PROPENSITY: dict[ActivityState, Propensity] = {
     'gaming':           'restricted_screen_only',
     'focused_work':     'restricted_screen_only',
     'casual_browsing':  'open',
+    'focused_video':    'restricted_screen_only',       # Immersed in a video —
+                                                        # keep screen snark, drop
+                                                        # music/meme/web externals
     'chatting':         'open',
     'voice_engaged':    'open',
     'idle':             'open',
@@ -408,7 +416,9 @@ def derive_propensity(
 #         genre=other               → 'mellow'
 #       intensity=casual            → 'playful'
 #       intensity=varied / None     → 'concise' (conservative fallback)
-#   4. state == 'casual_browsing'  → 'witty' (watching anime/video — snark + quality bar)
+#   4. state in {casual_browsing, focused_video} → 'witty' (watching
+#      anime/video — snark + quality bar; focused_video is the sustained-
+#      immersion variant, same delivery voice)
 #   5. state == 'chatting'         → 'warm'
 #   6. state == 'stale_returning'  → 'warm' (greeting moment)
 #   7. state == 'focused_work'     → 'concise'
@@ -442,7 +452,7 @@ def derive_tone(
             return 'playful'
         # game_intensity in {'varied', None}
         return 'concise'
-    if state == 'casual_browsing':
+    if state in ('casual_browsing', 'focused_video'):
         # Watching anime / video / streams. Running snarky commentary is
         # the whole appeal here — but a flat, unfunny line is worse than
         # silence, so ``witty`` is quality-barred (see
@@ -546,18 +556,21 @@ from config.prompts.prompts_activity import (
 def _render_reason(reason: tuple[str, dict], lang_key: str) -> str:
     """Render one structured reason via the per-language template table.
 
-    Falls back to English template if the locale entry is missing,
-    and to the raw reason code if even English is missing (defensive —
-    keeps ``state_section`` printable when a new code is added but the
-    table hasn't been updated yet).
+    Falls back to the English template if the locale entry is missing.
+    If even English lacks the code, returns '' rather than the raw code:
+    a bare English reason code (e.g. ``high_gpu``) must never reach the
+    prompt, where weak models echo it into spoken output. The caller
+    drops empty reasons.
     """
     code, params = reason
     table = ACTIVITY_REASON_TEMPLATES.get(lang_key, ACTIVITY_REASON_TEMPLATES['en'])
-    template = table.get(code) or ACTIVITY_REASON_TEMPLATES['en'].get(code) or code
+    template = table.get(code) or ACTIVITY_REASON_TEMPLATES['en'].get(code)
+    if not template:
+        return ''
     try:
         return template.format(**params)
     except (KeyError, IndexError):
-        return code
+        return ''
 
 
 def _normalize_lang(lang: str) -> str:
@@ -595,11 +608,11 @@ def format_activity_state_section(snap: 'ActivitySnapshot', lang: str = 'zh') ->
     Layout (compact example):
 
         ======Activity state======
-        focused_work (focused work) -> brief screen-only comment
+        focused work -> brief screen-only comment
         Focused in VS Code for 200s; CPU 30s 75%
         18:00 evening | user 30s ago | AI 2min ago
         Unfinished thread: "...what time are you leaving?" (60s ago)
-        Scores: focused_work 0.7 · chatting 0.2 · idle 0.1
+        Scores: focused work 0.7 · chatting 0.2 · idle 0.1
         Narrative: user is debugging in VS Code after asking for help
         Open threads:
         - AI promised to inspect tests later
@@ -630,12 +643,16 @@ def format_activity_state_section(snap: 'ActivitySnapshot', lang: str = 'zh') ->
         return ''
     L = _normalize_lang(lang)
     labels = ACTIVITY_STATE_SECTION_LABELS.get(L, ACTIVITY_STATE_SECTION_LABELS['en'])
-    state_label = ACTIVITY_STATE_LABELS.get(L, ACTIVITY_STATE_LABELS['en']).get(
-        snap.state, snap.state,
-    )
+    # Localized label only — the fallback deliberately lands on '' rather
+    # than the bare English enum key (snap.state / snap.propensity). Weak
+    # models copy those keys into spoken output verbatim, so a zh user
+    # hears "focused_work" / "restricted_screen_only". The line degrades
+    # gracefully below when a label is missing.
+    _state_labels = ACTIVITY_STATE_LABELS.get(L, ACTIVITY_STATE_LABELS['en'])
+    state_label = _state_labels.get(snap.state, '')
     propensity_directive = ACTIVITY_PROPENSITY_DIRECTIVES.get(
         L, ACTIVITY_PROPENSITY_DIRECTIVES['en'],
-    ).get(snap.propensity, snap.propensity)
+    ).get(snap.propensity, '')
 
     period_key = f'period_{snap.period}'
     period_label = labels.get(period_key, snap.period)
@@ -647,13 +664,24 @@ def format_activity_state_section(snap: 'ActivitySnapshot', lang: str = 'zh') ->
         header = header + ' ' + OS_DEGRADED_MARKER.get(L, OS_DEGRADED_MARKER['en'])
     lines: list[str] = [header]
 
-    # Line 1: state + propensity directive on a single line.
-    lines.append(f"{snap.state}（{state_label}）→ {propensity_directive}")
+    # Line 1: localized state label + propensity directive. The bare
+    # English enum (snap.state) is intentionally NOT rendered — only the
+    # localized label — so weak models can't echo it into spoken output.
+    # Empty parts are dropped so a missing label/directive never leaves a
+    # stray "→".
+    state_parts = [p for p in (state_label, propensity_directive) if p]
+    if state_parts:
+        lines.append(' → '.join(state_parts))
 
-    # Line 2: rule reasons (skip if empty — happens for unknown states).
+    # Line 2: rule reasons (skip if empty — happens for unknown states or
+    # when a code has no template in any locale; _render_reason returns ''
+    # rather than leaking the raw English reason code).
     if snap.propensity_reasons:
-        rendered_reasons = [_render_reason(r, L) for r in snap.propensity_reasons]
-        lines.append('; '.join(rendered_reasons))
+        rendered_reasons = [
+            s for s in (_render_reason(r, L) for r in snap.propensity_reasons) if s
+        ]
+        if rendered_reasons:
+            lines.append('; '.join(rendered_reasons))
 
     # Line 3: time + msg recency. Compact form, side(s) omitted when no data.
     time_str = labels['time_fmt'].format(hour=snap.hour, period=period_label)
@@ -695,8 +723,15 @@ def format_activity_state_section(snap: 'ActivitySnapshot', lang: str = 'zh') ->
             (kv for kv in snap.activity_scores.items() if kv[1] >= 0.05),
             key=lambda kv: -kv[1],
         )[:3]
-        if ordered:
-            score_str = ' · '.join(f'{name} {score:.1f}' for name, score in ordered)
+        # Keys are English state enums (the emotion-tier LLM returns them
+        # per _SCORED_STATES). Map to the localized label before rendering
+        # so the scores line can't leak "focused_work" into the reply; an
+        # unmapped key (LLM hallucinated an off-list state) is dropped.
+        scored = [(_state_labels.get(name), score) for name, score in ordered]
+        score_str = ' · '.join(
+            f'{label} {score:.1f}' for label, score in scored if label
+        )
+        if score_str:
             lines.append(f"{labels['activity_scores_label']}: {score_str}")
     if snap.activity_guess:
         lines.append(f"{labels['activity_guess_label']}: {snap.activity_guess}")

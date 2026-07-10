@@ -20,12 +20,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
+import main_routers.config_router as config_router
 from main_routers.config_router import (
     ConnectivityTestRequest,
     ConnectivityTestResponse,
     _auto_resolve_provider_urls_for_save,
     _get_save_provider_api_key,
     _test_openai_compatible,
+    _test_anthropic,
     _test_websocket,
     _test_vllm_omni_ws_handshake,
     _classify_openai_error,
@@ -65,9 +67,11 @@ class TestSchemaValidation:
             url="wss://realtime.example.com",
             api_key="sk-ws-key",
             provider_type="websocket",
+            voice_id="S_test",
             is_free=True,
         )
         assert req.provider_type == "websocket"
+        assert req.voice_id == "S_test"
         assert req.is_free is True
 
     def test_request_model_defaults(self):
@@ -159,6 +163,45 @@ class TestSchemaValidation:
             mock_ws.assert_awaited_once()
             assert result["success"] is True
 
+    async def test_anthropic_connectivity_sets_kimi_code_user_agent(self, monkeypatch):
+        captured = {}
+
+        class FakeChatAnthropic:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+            async def ainvoke(self, messages):
+                captured["messages"] = messages
+                return MagicMock(content="ok")
+
+            async def aclose(self):
+                captured["closed"] = True
+
+        monkeypatch.setattr("utils.llm_client.ChatAnthropic", FakeChatAnthropic)
+
+        result = await _test_anthropic(
+            "https://api.kimi.com/coding",
+            "sk-test",
+            model="kimi-for-coding",
+        )
+
+        assert result["success"] is True
+        assert captured["default_headers"]["User-Agent"] == "claude-code/0.1.0"
+        assert captured["closed"] is True
+
+    async def test_anthropic_connectivity_requires_model_for_non_kimi_endpoint(self, monkeypatch):
+        constructor = MagicMock()
+        monkeypatch.setattr("utils.llm_client.ChatAnthropic", constructor)
+
+        result = await _test_anthropic(
+            "https://api.anthropic.com",
+            "sk-test",
+            model="",
+        )
+
+        assert result == {"success": False, "error": "缺少模型 ID", "error_code": "missing_params"}
+        constructor.assert_not_called()
+
     async def test_builtin_assist_accepts_any_successful_candidate_url(self):
         """内置辅助 provider 有多个候选 URL 时，任一通过即返回可用 URL。"""
         calls = []
@@ -197,6 +240,76 @@ class TestSchemaValidation:
         assert result["success"] is True
         assert result["resolved_url"] == "https://dashscope-us.aliyuncs.com/compatible-mode/v1"
         assert "https://dashscope-us.aliyuncs.com/compatible-mode/v1" in calls
+
+    async def test_builtin_assist_infers_anthropic_probe_from_url(self):
+        """Built-in Anthropic URLs without provider_type still use the Anthropic probe."""
+        fake_config = {
+            "assist_api_providers": {
+                "claude": {
+                    "name": "Claude",
+                    "openrouter_url": "https://api.anthropic.com/v1",
+                    "conversation_model": "claude-sonnet-test",
+                }
+            }
+        }
+
+        with patch("utils.api_config_loader.get_config", return_value=fake_config), patch(
+            "main_routers.config_router._test_anthropic",
+            new=AsyncMock(return_value={"success": True}),
+        ) as mock_anthropic, patch(
+            "main_routers.config_router._test_openai_compatible",
+            new=AsyncMock(return_value={"success": True}),
+        ) as mock_openai:
+            req = ConnectivityTestRequest(
+                provider_key="claude",
+                provider_scope="assist",
+                api_key="sk-anthropic",
+            )
+            result = await _endpoint_test_connectivity(req)
+
+        assert result["success"] is True
+        mock_anthropic.assert_awaited_once_with(
+            "https://api.anthropic.com/v1",
+            "sk-anthropic",
+            model="claude-sonnet-test",
+            is_free=False,
+        )
+        mock_openai.assert_not_awaited()
+
+    async def test_builtin_assist_keeps_kimi_coding_v1_on_openai_probe(self):
+        """Kimi's documented /coding/v1 OpenAI-compatible URL must not be treated as Messages API."""
+        fake_config = {
+            "assist_api_providers": {
+                "kimi_code": {
+                    "name": "Kimi Code",
+                    "openrouter_url": "https://api.kimi.com/coding/v1",
+                    "conversation_model": "kimi-for-coding",
+                }
+            }
+        }
+
+        with patch("utils.api_config_loader.get_config", return_value=fake_config), patch(
+            "main_routers.config_router._test_anthropic",
+            new=AsyncMock(return_value={"success": True}),
+        ) as mock_anthropic, patch(
+            "main_routers.config_router._test_openai_compatible",
+            new=AsyncMock(return_value={"success": True}),
+        ) as mock_openai:
+            req = ConnectivityTestRequest(
+                provider_key="kimi_code",
+                provider_scope="assist",
+                api_key="sk-kimi",
+            )
+            result = await _endpoint_test_connectivity(req)
+
+        assert result["success"] is True
+        mock_openai.assert_awaited_once_with(
+            "https://api.kimi.com/coding/v1",
+            "sk-kimi",
+            model="kimi-for-coding",
+            is_free=False,
+        )
+        mock_anthropic.assert_not_awaited()
 
     async def test_builtin_mimo_assist_accepts_token_plan_url_override(self):
         """MiMo Token Plan may override the built-in MiMo assist endpoint."""
@@ -1316,6 +1429,42 @@ class TestVllmOmniWsHandshake:
 
         mock_handshake.assert_awaited_once()
         mock_realtime_ws.assert_not_called()
+
+    async def test_endpoint_dispatches_doubao_tts_probe(self, monkeypatch):
+        captured = {}
+
+        async def fake_probe(url, api_key, model="", voice_id=""):
+            captured.update({
+                "url": url,
+                "api_key": api_key,
+                "model": model,
+                "voice_id": voice_id,
+            })
+            return {"success": True}
+
+        monkeypatch.setattr(config_router, "_test_doubao_tts_connectivity", fake_probe)
+        with patch(
+            "main_routers.config_router._test_openai_compatible",
+            new=AsyncMock(return_value={"success": False}),
+        ) as mock_openai:
+            req = ConnectivityTestRequest(
+                url="https://openspeech.bytedance.com",
+                api_key="ark-test",
+                model="seed-icl-2.0",
+                provider_type="tts",
+                sub_type="doubao_tts",
+                voice_id="S_test",
+            )
+            result = await _endpoint_test_connectivity(req)
+
+        assert result["success"] is True
+        assert captured == {
+            "url": "https://openspeech.bytedance.com",
+            "api_key": "ark-test",
+            "model": "seed-icl-2.0",
+            "voice_id": "S_test",
+        }
+        mock_openai.assert_not_called()
 
     async def test_endpoint_websocket_without_sub_type_uses_realtime_probe(self):
         """End-to-end inverse contract: when sub_type is omitted, the request

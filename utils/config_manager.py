@@ -48,6 +48,7 @@ from utils.api_config_loader import (
     is_livestream_active,
 )
 from utils.custom_tts_adapter import check_custom_tts_voice_allowed
+from utils.doubao_tts import DOUBAO_VOICE_STORAGE_KEY
 from utils.file_utils import atomic_write_json
 from utils.gptsovits_config import normalize_gsv_api_url
 from utils.voice_config import read_legacy_voice_id
@@ -2677,6 +2678,8 @@ class ConfigManager:
         - minimax:   ASSIST_API_KEY_MINIMAX → MINIMAX_API_KEY fallback
         - minimax_intl: ASSIST_API_KEY_MINIMAX_INTL → MINIMAX_INTL_API_KEY fallback
         - mimo: ASSIST_API_KEY_MIMO
+        - doubao_tts: ttsModelApiKey only when the active TTS provider is doubao_tts,
+          then the dedicated Doubao Speech keybook entry
         """
         if provider == 'cosyvoice':
             core_config = self.get_core_config()
@@ -2720,6 +2723,21 @@ class ConfigManager:
             key = (core_config.get(key_field) or '').strip()
             if '***' in key:
                 return None
+            return key or None
+        if provider == 'doubao_tts':
+            try:
+                raw_core_config = self.load_json_config('core_config.json', {})
+            except Exception:
+                raw_core_config = {}
+            key = ''
+            if str(raw_core_config.get('ttsModelProvider') or '').strip() == 'doubao_tts':
+                key = (raw_core_config.get('ttsModelApiKey') or '').strip()
+                if '***' in key:
+                    key = ''
+            if not key:
+                key = (raw_core_config.get('assistApiKeyDoubaoTts') or '').strip()
+                if '***' in key:
+                    key = ''
             return key or None
         return None
 
@@ -2891,13 +2909,42 @@ class ConfigManager:
                 result.append(bucket)
         return result
 
+    def _get_doubao_tts_storage_keys(self) -> list[str]:
+        voice_storage = self.load_voice_storage()
+        result = []
+        key = self.get_tts_api_key('doubao_tts')
+        if key:
+            suffix = key[-8:] if len(key) >= 8 else key
+            bucket = f'{DOUBAO_VOICE_STORAGE_KEY}{suffix}'
+            if bucket in voice_storage:
+                result.append(bucket)
+        return result
+
+    def _get_vllm_omni_storage_keys(self) -> list[str]:
+        """Return the list of voice_storage keys for vLLM-Omni cloned voices.
+
+        Dual to :meth:`_get_mimo_storage_keys`, with one key difference: vLLM-Omni
+        is a self-hosted local service with **no API key**, so cloned voices live
+        in a single fixed ``__VLLM_OMNI__`` bucket (no key suffix) instead of a
+        per-key ``__MIMO__{suffix}`` bucket. A vLLM-Omni clone is selected by
+        ``voice_meta.provider`` at dispatch (the inline reference-audio model, see
+        ``workers/vllm_omni.py``), so the bucket merges into the current-API voice
+        list regardless of which core/TTS provider is otherwise active."""
+        voice_storage = self.load_voice_storage()
+        bucket = '__VLLM_OMNI__'
+        return [bucket] if bucket in voice_storage else []
+
     @staticmethod
     def _infer_provider_from_storage_key(storage_key: str) -> str:
         """Infer the provider from a voice_storage partition key (only for legacy data compatibility)."""
         if storage_key == '__LOCAL_TTS__':
             return 'local'
+        if storage_key.startswith('__VLLM_OMNI__'):
+            return 'vllm_omni'
         if storage_key.startswith('__MIMO__'):
             return 'mimo'
+        if storage_key.startswith(DOUBAO_VOICE_STORAGE_KEY):
+            return 'doubao_tts'
         if storage_key.startswith('__ELEVENLABS__'):
             return 'elevenlabs'
         if storage_key.startswith('__MINIMAX_INTL__'):
@@ -3022,6 +3069,24 @@ class ConfigManager:
                         vdata['provider'] = 'mimo'
                     result[vid] = vdata
 
+        for doubao_key in self._get_doubao_tts_storage_keys():
+            doubao_voices = voice_storage.get(doubao_key, {})
+            for vid, vdata in doubao_voices.items():
+                if vid not in result:
+                    if isinstance(vdata, dict) and 'provider' not in vdata:
+                        vdata['provider'] = 'doubao_tts'
+                    result[vid] = vdata
+
+        # 合并 vLLM-Omni 克隆音色（dual to MiMo；vLLM-Omni 克隆走固定 __VLLM_OMNI__ 桶
+        # + voice_meta 选中，与 MiMo 同构。差异：vLLM-Omni 是本地服务无 API key，桶名固定）
+        for vllm_key in self._get_vllm_omni_storage_keys():
+            vllm_voices = voice_storage.get(vllm_key, {})
+            for vid, vdata in vllm_voices.items():
+                if vid not in result:
+                    if isinstance(vdata, dict) and 'provider' not in vdata:
+                        vdata['provider'] = 'vllm_omni'
+                    result[vid] = vdata
+
         if for_listing:
             # UI 试听列表不需要 MiMo 克隆的参考样本 base64（可达 MB）——剥掉，避免把大 blob
             # 推给前端。dispatch / preview 走 for_listing=False，仍拿到完整 voice_meta。
@@ -3136,14 +3201,16 @@ class ConfigManager:
         """Delete the given voice under the current TTS config (including standalone-provider voices)"""
         voice_storage = self.load_voice_storage()
 
-        # 先检查带前缀的独立服务商存储
+        # 先检查带前缀的独立服务商存储（含 vLLM-Omni 固定桶 __VLLM_OMNI__）
         for storage_key in list(voice_storage.keys()):
             if (
                 storage_key.startswith('__MINIMAX__')
                 or storage_key.startswith('__MINIMAX_INTL__')
                 or storage_key.startswith('__ELEVENLABS__')
                 or storage_key.startswith('__MIMO__')
+                or storage_key.startswith(DOUBAO_VOICE_STORAGE_KEY)
                 or storage_key.startswith('__COSYVOICE_INTL__')
+                or storage_key.startswith('__VLLM_OMNI__')
             ) and voice_id in voice_storage.get(storage_key, {}):
                 # 克隆身份（含 MiMo 的样本 base64）都在 voice_data 里，删除 entry 随之消失，
                 # 无旁路本地文件需清理（对偶 MiniMax/ElevenLabs）。
@@ -3808,8 +3875,10 @@ class ConfigManager:
             'ASSIST_API_KEY_SILICON': DEFAULT_CORE_API_KEY,
             'ASSIST_API_KEY_GEMINI': DEFAULT_CORE_API_KEY,
             'ASSIST_API_KEY_KIMI': DEFAULT_CORE_API_KEY,
+            'ASSIST_API_KEY_KIMI_CODE': DEFAULT_CORE_API_KEY,
             'ASSIST_API_KEY_DEEPSEEK': DEFAULT_CORE_API_KEY,
             'ASSIST_API_KEY_DOUBAO': DEFAULT_CORE_API_KEY,
+            'ASSIST_API_KEY_DOUBAO_TTS': '',
             'ASSIST_API_KEY_QWEN_INTL': '',
             'ASSIST_API_KEY_MINIMAX': '',
             'ASSIST_API_KEY_MINIMAX_INTL': '',
@@ -3897,8 +3966,10 @@ class ConfigManager:
         config['ASSIST_API_KEY_SILICON'] = core_cfg.get('assistApiKeySilicon', '') or _fb('silicon')
         config['ASSIST_API_KEY_GEMINI'] = core_cfg.get('assistApiKeyGemini', '') or _fb('gemini')
         config['ASSIST_API_KEY_KIMI'] = core_cfg.get('assistApiKeyKimi', '') or _fb('kimi')
+        config['ASSIST_API_KEY_KIMI_CODE'] = core_cfg.get('assistApiKeyKimiCode', '') or _fb('kimi_code')
         config['ASSIST_API_KEY_DEEPSEEK'] = core_cfg.get('assistApiKeyDeepseek', '') or _fb('deepseek')
         config['ASSIST_API_KEY_DOUBAO'] = core_cfg.get('assistApiKeyDoubao', '') or _fb('doubao')
+        config['ASSIST_API_KEY_DOUBAO_TTS'] = core_cfg.get('assistApiKeyDoubaoTts', '')
         # MiniMax / MiMo 是 assist-only TTS provider，coreApiKey 不保证兼容；
         # 不 fallback，以免把无效 key 塞进 TTS 凭证槽位导致 401，
         # 掩盖"未配置 TTS provider key"的真实提示。
@@ -4088,12 +4159,16 @@ class ConfigManager:
         # core.py 判断是否启用外部 TTS，并生成与实际 worker 参数一致的复用 key。
         # 凭证字段 ttsModelApiKey 不放入 snapshot；它仍由 tts_client.py 从持久化
         # 配置读取，避免扩大通用配置快照中的敏感字段范围。
-        config['ttsModelProvider'] = str(core_cfg.get('ttsModelProvider', '') or '')
+        for _model_provider_prefix in (
+            'conversation', 'summary', 'gameMain', 'gameSummary', 'correction',
+            'emotion', 'vision', 'agent', 'omni', 'tts',
+        ):
+            config[f'{_model_provider_prefix}ModelProvider'] = str(
+                core_cfg.get(f'{_model_provider_prefix}ModelProvider', '') or ''
+            )
         config['ttsModelUrl'] = str(core_cfg.get('ttsModelUrl', '') or '')
         config['ttsModelId'] = str(core_cfg.get('ttsModelId', '') or '')
         config['ttsVoiceId'] = str(core_cfg.get('ttsVoiceId', '') or '')
-        config['gameMainModelProvider'] = str(core_cfg.get('gameMainModelProvider', '') or '')
-        config['gameSummaryModelProvider'] = str(core_cfg.get('gameSummaryModelProvider', '') or '')
 
         # 禁用TTS
         _raw_disable_tts = core_cfg.get('disableTts', False)
@@ -4204,9 +4279,9 @@ class ConfigManager:
                 # 其他 model type（conversation/summary/correction/emotion/vision/agent）
                 # 走 chat completion REST，没有 'local' 分支；跳 URL 反而会改变它们的
                 # follow_* 路由（详见 PR #1084 review thread），故仅对 omni/tts 跳。
-                # 注：follow_* 下用户填的 modelId 当前在 get_model_api_config fallback
-                # 路径里读不到（fallback 用 CORE_MODEL，不是 REALTIME_MODEL/TTS_MODEL），
-                # 那是另一个层面的问题，下个 PR 跟进。
+                # 注：follow_* 下 omni/tts 仍不能依赖 get_model_api_config fallback
+                # 读取用户填的 modelId（fallback 用 CORE_MODEL，不是 REALTIME_MODEL/TTS_MODEL），
+                # 因此这些特殊前缀继续走既有 follow 解析。
                 is_follow = provider in ('follow_core', 'follow_assist', 'follow_conversation', 'follow_summary')
                 # GSV 启用时 ttsModelUrl 是 GPT-SoVITS server URL，不是 follow_*
                 # 联动出来的 LLM URL。即便 ttsModelProvider 仍是默认 follow_assist，
@@ -4239,9 +4314,19 @@ class ConfigManager:
                 elif provider == 'follow_summary':
                     config[model_key] = config.get('SUMMARY_MODEL', '')
                 elif provider in ('follow_core', 'follow_assist'):
-                    followed_model = _resolve_game_follow_model_id(prefix, provider)
-                    if followed_model:
-                        config[model_key] = followed_model
+                    uses_fixed_free_assist_model = provider == 'follow_assist' and assist_api_value == 'free'
+                    if (
+                        not uses_fixed_free_assist_model
+                        and
+                        prefix not in ('gameMain', 'gameSummary', 'omni', 'tts')
+                        and isinstance(cfg_model, str)
+                        and cfg_model.strip()
+                    ):
+                        config[model_key] = cfg_model.strip()
+                    else:
+                        followed_model = _resolve_game_follow_model_id(prefix, provider)
+                        if followed_model:
+                            config[model_key] = followed_model
                 elif cfg_model is not None:
                     config[model_key] = cfg_model or config.get(model_key, '')
 
@@ -4417,6 +4502,68 @@ class ConfigManager:
         
         mapping = model_type_mapping[model_type]
 
+        def _normalize_provider_type_value(value: object) -> str:
+            provider_type = str(value or 'openai_compatible').strip().lower()
+            if provider_type not in ('openai_compatible', 'anthropic', 'websocket'):
+                return 'openai_compatible'
+            return provider_type
+
+        def _provider_type_from_assist_key(provider_key: str) -> str:
+            profile = get_assist_api_profiles().get(str(provider_key or '').strip(), {})
+            if isinstance(profile, dict):
+                return _normalize_provider_type_value(profile.get('PROVIDER_TYPE'))
+            return 'openai_compatible'
+
+        def _provider_type_from_core_key(provider_key: str) -> str:
+            profile = get_core_api_profiles().get(str(provider_key or '').strip(), {})
+            if isinstance(profile, dict):
+                return _normalize_provider_type_value(profile.get('PROVIDER_TYPE'))
+            return _provider_type_from_assist_key(provider_key)
+
+        def _resolved_provider_type_for_model(target_model_type: str, _seen: frozenset[str] = frozenset()) -> str:
+            if target_model_type in _seen:
+                return _normalize_provider_type_value(core_config.get('PROVIDER_TYPE'))
+            seen = _seen | frozenset((target_model_type,))
+            prefix_by_type = {
+                'conversation': 'conversation',
+                'summary': 'summary',
+                'game_main': 'gameMain',
+                'game_summary': 'gameSummary',
+                'correction': 'correction',
+                'emotion': 'emotion',
+                'vision': 'vision',
+                'agent': 'agent',
+                'realtime': 'omni',
+                'tts_default': 'tts',
+                'tts_custom': 'tts',
+            }
+            prefix = prefix_by_type.get(target_model_type, target_model_type)
+            provider = str(core_config.get(f'{prefix}ModelProvider') or '').strip()
+            if provider == 'custom':
+                return 'openai_compatible'
+            if provider == 'follow_conversation':
+                if target_model_type == 'conversation':
+                    return _normalize_provider_type_value(core_config.get('PROVIDER_TYPE'))
+                return _resolved_provider_type_for_model('conversation', seen)
+            if provider == 'follow_summary':
+                if target_model_type == 'summary':
+                    return _normalize_provider_type_value(core_config.get('PROVIDER_TYPE'))
+                return _resolved_provider_type_for_model('summary', seen)
+            if provider == 'follow_core':
+                return _provider_type_from_core_key(core_config.get('CORE_API_TYPE', ''))
+            if provider == 'follow_assist':
+                return _normalize_provider_type_value(core_config.get('PROVIDER_TYPE'))
+            if not provider:
+                fallback_type = model_type_mapping.get(target_model_type, {}).get('fallback_type')
+                if fallback_type == 'core':
+                    return _provider_type_from_core_key(core_config.get('CORE_API_TYPE', ''))
+                if fallback_type == 'conversation':
+                    return _resolved_provider_type_for_model('conversation', seen)
+                if fallback_type == 'summary':
+                    return _resolved_provider_type_for_model('summary', seen)
+                return _normalize_provider_type_value(core_config.get('PROVIDER_TYPE'))
+            return _provider_type_from_assist_key(provider)
+
         if model_type == 'game_main':
             provider = str(core_config.get('gameMainModelProvider') or 'follow_conversation').strip()
             if not treat_as_custom or provider == 'follow_conversation':
@@ -4455,6 +4602,7 @@ class ConfigManager:
                     'api_key': resolved_api_key,
                     'base_url': custom_url,
                     'is_custom': treat_as_custom,
+                    'provider_type': _resolved_provider_type_for_model(model_type),
                     # 对于 realtime 模型，自定义配置时 api_type 设为 'local'
                     # TODO: 后续完善 'local' 类型的具体实现（如本地推理服务等）
                     'api_type': 'local' if model_type == 'realtime' else None,
@@ -4502,6 +4650,7 @@ class ConfigManager:
                     'api_key': qwen_api_key,
                     'base_url': base_url,
                     'is_custom': False,
+                    'provider_type': _provider_type_from_assist_key(qwen_provider),
                 }
 
         # 根据 fallback_type 回退到不同的 API
@@ -4512,6 +4661,7 @@ class ConfigManager:
                 'api_key': core_config.get('CORE_API_KEY', ''),
                 'base_url': core_config.get('CORE_URL', ''),
                 'is_custom': False,
+                'provider_type': _resolved_provider_type_for_model(model_type),
                 # 对于 realtime 模型，回退到核心API时使用配置的 CORE_API_TYPE
                 'api_type': core_config.get('CORE_API_TYPE', '') if model_type == 'realtime' else None,
             }
@@ -4526,6 +4676,7 @@ class ConfigManager:
                 'api_key': core_config.get('OPENROUTER_API_KEY', ''),
                 'base_url': core_config.get('OPENROUTER_URL', ''),
                 'is_custom': False,
+                'provider_type': _resolved_provider_type_for_model(model_type),
             }
 
     def is_agent_api_ready(self) -> tuple[bool, list[str]]:

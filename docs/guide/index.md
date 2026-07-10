@@ -1,6 +1,6 @@
 # Introduction
 
-**Project N.E.K.O.** (**N**etworked **E**mpathetic **K**nowledging **O**rganism) is an open-source AI companion platform that combines real-time voice/text interaction, Live2D/VRM model rendering, persistent memory, and agent-based task execution into a cohesive experience.
+**Project N.E.K.O.** (**N**etworked **E**motional **K**nowledging **O**rganism) is an open-source AI companion platform that combines real-time voice/text interaction, multi-form avatar rendering (Live2D / VRM / MMD / PNGTuber / desktop cat pet), persistent memory, and agent-based task execution into a cohesive experience.
 
 ## What is N.E.K.O.?
 

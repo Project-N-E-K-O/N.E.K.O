@@ -24,7 +24,7 @@ N.E.K.O. 使用 Cubism SDK 通过 Pixi.js 渲染 Live2D 模型。模型显示在
 }
 ```
 
-情感由后端（`/api/analyze_emotion`）检测，并通过 WebSocket 发送到前端。
+情感由后端的情感分析端点（`POST /api/emotion/analysis`，定义于 `main_routers/system_router.py`）检测。前端将助手的文本发送到该端点，并把返回的情感应用到模型上；后端同时通过同步消息队列向监控系统推送一条 `emotion` 更新。
 
 ## UI 组件
 

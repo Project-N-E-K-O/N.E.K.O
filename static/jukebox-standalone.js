@@ -11,8 +11,9 @@
   var STANDALONE_INTERACTIVE_SELECTOR =
     '.jukebox-header, .jukebox-header-left, .jukebox-header-buttons, ' +
     '.jukebox-content, .jukebox-controls-row, .jukebox-calibration-section, .jukebox-notice';
-  var MIN_WIDTH = 360;
-  var MIN_HEIGHT = 300;
+  var MIN_BOUNDS = window.__NEKO_JUKEBOX_MIN_BOUNDS__ || {};
+  var MIN_WIDTH = Math.max(560, Math.round(Number(MIN_BOUNDS.width) || 560));
+  var MIN_HEIGHT = Math.max(480, Math.round(Number(MIN_BOUNDS.height) || 480));
 
   function readWindowBounds() {
     return {
@@ -126,6 +127,33 @@
     return controller;
   }
 
+  function ensureMinimumWindowBounds(controller) {
+    if (!controller) return;
+    Promise.all([controller.getBounds(), controller.getWorkArea()]).then(function(results) {
+      var bounds = results[0] || readWindowBounds();
+      var workArea = results[1] || readScreenWorkArea();
+      if (bounds.width >= MIN_WIDTH && bounds.height >= MIN_HEIGHT) {
+        return;
+      }
+
+      var nextBounds = clampBounds({
+        x: bounds.x,
+        y: bounds.y,
+        width: Math.max(bounds.width, MIN_WIDTH),
+        height: Math.max(bounds.height, MIN_HEIGHT)
+      }, workArea, MIN_WIDTH, MIN_HEIGHT);
+
+      if (
+        nextBounds.x !== bounds.x ||
+        nextBounds.y !== bounds.y ||
+        nextBounds.width !== bounds.width ||
+        nextBounds.height !== bounds.height
+      ) {
+        controller.setBounds(nextBounds);
+      }
+    }).catch(function() {});
+  }
+
   function disconnectLegacyStandaloneDrag() {
     if (!window.Jukebox || !window.Jukebox.State || !window.Jukebox.State._dragGuard) {
       return;
@@ -161,9 +189,11 @@
     var header = container.querySelector('.jukebox-header');
     if (header) {
       setAppRegion(header, useRendererNativeDrag ? 'no-drag' : 'drag');
+      header.style.cursor = 'grab';
     }
     container.querySelectorAll('.jukebox-header-left, .jukebox-header-drag-fill').forEach(function(el) {
       setAppRegion(el, useRendererNativeDrag ? 'no-drag' : 'drag');
+      el.style.cursor = 'grab';
     });
     container.querySelectorAll('.jukebox-header-buttons, .jukebox-header-buttons *').forEach(function(el) {
       setAppRegion(el, 'no-drag');
@@ -536,6 +566,7 @@
       return false;
     }
 
+    ensureMinimumWindowBounds(controller);
     neutralizeLegacyRegions(container, controller);
     document.body.classList.add('neko-jukebox-standalone-page');
 

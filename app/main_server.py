@@ -19,7 +19,7 @@ import os
 # (python app/main_server.py). Under launcher.py the path is already set
 # up; the insert below is then a no-op.
 _repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _repo_root not in sys.path:
+if sys.path[0:1] != [_repo_root]:
     sys.path.insert(0, _repo_root)
 
 # Wire DI bindings (config._runtime resolvers ← utils.language_utils /
@@ -101,6 +101,7 @@ from utils.storage_location_bootstrap import get_storage_startup_blocking_reason
 from utils.logger_config import setup_logging # noqa: E402
 from utils.ssl_env_diagnostics import probe_ssl_environment, write_ssl_diagnostic # noqa: E402
 from utils.asyncio_executor import configure_default_executor # noqa: E402
+from utils.asgi_body_limit import InboundBodySizeLimitMiddleware # noqa: E402
 
 _main_log_level = getattr(logging, (os.environ.get("NEKO_LOG_LEVEL") or "INFO").upper(), logging.INFO)
 logger, log_config = setup_logging(service_name="Main", log_level=_main_log_level, silent=not _IS_MAIN_PROCESS)
@@ -1602,6 +1603,14 @@ async def main_storage_limited_mode_guard(request: Request, call_next):
     )
 
 
+# 全局入站 body 体积守门（issue #1586）：在 router 的 request.json()/form()
+# 解析之前，按 Content-Length 拒收超大「非 multipart」请求体，跨所有 router
+# 统一生效，与各 router 的业务校验（如 validate_chat_payload）正交。multipart
+# 文件上传（模型/音乐/角色卡等）一律放行，交给各上传 router 自带的流式分块守门。
+# add_middleware 后注册即处于最外层，最先执行——解析前拒收，不浪费后续处理。
+app.add_middleware(InboundBodySizeLimitMiddleware)
+
+
 @app.exception_handler(MaintenanceModeError)
 async def handle_maintenance_mode_error(_request, exc: MaintenanceModeError):
     return JSONResponse(status_code=409, content=maintenance_error_payload(exc))
@@ -1707,6 +1716,7 @@ from main_routers.cloudsave_router import router as cloudsave_router # noqa
 from main_routers.config_router import router as config_router # noqa
 from main_routers.proactive_router import router as proactive_router # noqa
 from main_routers.galgame_router import router as galgame_router # noqa
+from main_routers.icebreaker_router import router as icebreaker_router # noqa
 from main_routers.jukebox_router import router as jukebox_router # noqa
 from main_routers.live2d_router import router as live2d_router # noqa
 from main_routers.memory_router import router as memory_router # noqa
@@ -1854,6 +1864,7 @@ app.include_router(system_router)
 app.include_router(tool_router)
 app.include_router(music_router)
 app.include_router(galgame_router)
+app.include_router(icebreaker_router)
 app.include_router(game_router)
 app.include_router(card_assist_router)
 app.include_router(capture_router)

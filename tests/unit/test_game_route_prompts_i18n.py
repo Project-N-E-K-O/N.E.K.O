@@ -1,6 +1,6 @@
 import pytest
 
-from config.prompts.prompts_game_route import (
+from config.prompts.prompts_minigame_route import (
     GAME_CONTEXT_SIGNAL_GROUP_KEYS,
     get_game_archive_fallback_highlight_labels,
     get_game_archive_highlight_source_labels,

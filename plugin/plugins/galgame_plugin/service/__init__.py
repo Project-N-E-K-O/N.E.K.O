@@ -63,7 +63,9 @@ from ..context_builder.builder import (
     _looks_like_game_dialogue_context_line,
     _looks_like_ocr_overlay_text,
 )
+from ..dialogue_library import built_in_dialogue_library_status
 from ..dxcam_support import inspect_dxcam_installation
+from ..ocr_text_normalize import _normalize_window_title
 from ..reader import expand_bridge_root, normalize_text, read_session_json
 from plugin.plugins._shared.rapidocr.rapidocr_support import (
     DEFAULT_RAPIDOCR_ENGINE_TYPE,
@@ -1532,10 +1534,11 @@ def build_primary_diagnosis(local_state: dict[str, Any]) -> dict[str, Any]:
         and ocr_background_status.get("trigger_mode") == OCR_TRIGGER_MODE_INTERVAL
         and runtime_obj.get("target_is_foreground") is False
     )
-    # rapidocr install prompt removed: rapidocr-onnxruntime is now bundled
-    # via [dependency-groups] galgame; if it's missing the dev needs to run
-    # `uv sync --group galgame`, not click an in-app install button. We still
-    # honor inspection_failed signals so a corrupt wheel surfaces a warning
+    # rapidocr install prompt removed: rapidocr-pillow now provides the
+    # rapidocr_onnxruntime runtime via [dependency-groups] galgame; if it's
+    # missing the dev needs to run `uv sync --group galgame`, not click an
+    # in-app install button. We still honor inspection_failed signals so a
+    # corrupt wheel surfaces a warning
     # instead of being silently swept under "插件运行出错".
     dependency_status = local_state.get("dependency_status")
     dependency_status_obj = dependency_status if isinstance(dependency_status, dict) else {}
@@ -2558,6 +2561,20 @@ def _build_status_payload_unchecked(
         "memory_reader_runtime": copy_for_payload(state.memory_reader_runtime),
         "memory_reader_target": copy_for_payload(getattr(state, "memory_reader_target", {})),
         "ocr_reader_runtime": ocr_runtime,
+        "dialogue_library_status": built_in_dialogue_library_status(
+            process_name=str(
+                ocr_runtime_obj.get("effective_process_name")
+                or ocr_runtime_obj.get("process_name")
+                or ""
+            ),
+            normalized_title=_normalize_window_title(
+                str(
+                    ocr_runtime_obj.get("effective_window_title")
+                    or ocr_runtime_obj.get("window_title")
+                    or ""
+                )
+            ),
+        ),
         "screen_type": str(getattr(state, "screen_type", "") or ""),
         "screen_ui_elements": copy_for_payload(getattr(state, "screen_ui_elements", [])),
         "screen_confidence": float(getattr(state, "screen_confidence", 0.0) or 0.0),

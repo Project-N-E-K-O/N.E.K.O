@@ -674,6 +674,7 @@
     },
     "chat": {
         "title": "Charlar",
+        "topicHint": "{{author}} parece tener algo de lo que quiere hablar…",
         "viewerTitle": "Chat (modo espectador)",
         "tooltip": "Área de chat",
         "textInputPlaceholder": "Presione Enter para enviar, Shift+Enter para una nueva línea",
@@ -769,12 +770,14 @@
         "reactWindowLoadFailed": "No se pudieron cargar recursos de la ventana de chat",
         "reactWindowAriaLabel": "Ventana de chat de Neko",
         "focusIndicator": "Concentrada",
+        "focusThinking": "Pensando",
         "reactWindowInputHint": "Presione Enter para enviar, Shift + Enter para una nueva línea",
         "messageListAriaLabel": "mensajes de chat",
         "composerToolsAriaLabel": "Herramientas del compositor",
         "pendingImagesAriaLabel": "Imágenes pendientes",
         "pendingImageAlt": "Imagen {{index}}",
         "removePendingImage": "Quitar imagen",
+        "closeMemeAriaLabel": "Cerrar imagen",
         "emojiButtonAriaLabel": "emojis",
         "toolIconsAriaLabel": "Iconos de herramientas",
         "toolLollipop": "Chupete",
@@ -942,15 +945,15 @@
         "freeVersionHint": "(No es necesario para la versión gratuita)",
         "coreApiPlaceholder": "Por favor ingrese su clave API",
         "coreApiProvider": "API principal (chat de voz, solo omnimodal)",
-        "assistApiProvider": "API de asistencia (Memoria/Agente/Chat de texto/Voz personalizada)",
+        "assistApiProvider": "API de asistencia (Memoria/Agente/Chat de texto)",
         "saveSettings": "Guardar configuración",
-        "closeSettings": "Cerca",
+        "closeSettings": "Cerrar",
         "newbieRecommendTitle": "Recomendación de novato",
         "newbieRecommend": "Si aún no tiene una clave API, puede seleccionar \"Versión gratuita\" en las Opciones avanzadas a continuación para comenzar a usarla sin registrar ninguna cuenta.",
         "advancedOptions": "Opciones avanzadas (opcional)",
         "providerDescription": "Descripción del proveedor de API:",
         "coreApiDesc": "API principal: maneja la funcionalidad de conversación",
-        "assistApiDesc": "API de asistencia: maneja la administración de memoria, voz personalizada, chat de texto y modo Agente",
+        "assistApiDesc": "API de asistencia: maneja la administración de memoria, chat de texto y modo Agente",
         "providerFeatures": "Características del proveedor:",
         "aliFeature": "Alibaba: cuota gratuita disponible, funciones más completas",
         "glmFeature": "GLM: Los límites de tarifas son extremadamente estrictos. El modelo de audio/vídeo ha sido descontinuado y no se puede utilizar como API principal.",
@@ -959,26 +962,27 @@
         "siliconFeature": "SiliconFlow: tiene cuota gratuita, buen valor, funciones limitadas, solo para Assist API",
         "geminiFeature": "Géminis: Excelente inteligencia y valor.",
         "configSuggestion": "Sugerencias de configuración:",
-        "freeVersionSuggestion": "Versión gratuita: Completamente gratuita, no se necesita clave API, adecuada para principiantes (no se admiten voz personalizada ni modo Agente)",
+        "freeVersionSuggestion": "Versión gratuita: Completamente gratuita, no se necesita clave API, adecuada para principiantes (el modo Agente cuenta con una cuota gratuita)",
         "coreApiSuggestion": "API principal: maneja la funcionalidad de conversación, elige según el presupuesto y las necesidades",
-        "assistApiSuggestion": "API de asistencia: maneja chat de texto, administración de memoria, voz personalizada y modo Agente, solo Alibaba admite voz personalizada",
+        "assistApiSuggestion": "API de asistencia: maneja chat de texto, administración de memoria y modo Agente",
         "coreApiTitle": "Core API maneja la funcionalidad de chat de voz:",
-        "freeVersionCore": "Versión gratuita: completamente gratuita, alto nivel de inteligencia, admite búsqueda web, pero no admite voz personalizada ni modo Agente",
+        "freeVersionCore": "Versión gratuita: completamente gratuita, alto nivel de inteligencia, admite búsqueda web",
         "aliCore": "Alibaba: cuota gratuita disponible, funciones completas",
         "glmCore": "GLM: El modelo ha sido descontinuado temporalmente, no disponible",
         "stepCore": "StepFun: Completamente gratis, alto nivel de inteligencia, pero los límites de velocidad son demasiado estrictos, no recomendado",
         "openaiCore": "OpenAI: el nivel de inteligencia más alto, pero caro",
         "geminiCore": "Géminis: Excelente inteligencia y valor.",
-        "assistApiTitle": "Assist API maneja la administración de memoria, chat de texto, modo Agente y voz personalizada:",
-        "freeVersionAssist": "Versión gratuita: completamente gratuita, no se necesita clave API, pero no se admite voz personalizada",
-        "aliAssist": "Alibaba: opción recomendada, admite voz personalizada y modo Agente",
+        "assistApiTitle": "Assist API maneja la administración de memoria, chat de texto y modo Agente:",
+        "freeVersionAssist": "Versión gratuita: completamente gratuita, no se necesita clave API, el modo Agente cuenta con una cuota gratuita",
+        "aliAssist": "Alibaba: opción recomendada, funciones más completas, admite el modo Agente",
         "glmAssist": "GLM: administración de memoria gratuita, pero los límites de concurrencia/RPM son extremadamente estrictos y no se recomiendan",
         "stepAssist": "StepFun: Barato, pero los límites de concurrencia/RPM son extremadamente estrictos, no recomendados",
         "siliconAssist": "SiliconFlow: buen valor, admite el modo Agente",
         "openaiAssist": "OpenAI: fuerte capacidad de gestión de memoria",
         "geminiAssist": "Géminis: Excelente inteligencia y valor.",
         "kimiAssist": "Kimi: apoya el contexto y la visión a largo plazo",
-        "assistApiNote": "Nota: Solo Alibaba admite la funcionalidad de voz personalizada. No se recomiendan GLM y StepFun.",
+        "kimiCodeAssist": "Kimi Code: compatible con Anthropic Messages, útil para código y texto largo",
+        "assistApiNote": "Nota: no se recomiendan GLM y StepFun.",
         "assistApiKeyQwen": "Clave API de asistencia - Alibaba",
         "assistApiKeyOpenai": "Clave API de asistencia: OpenAI",
         "assistApiKeyGlm": "Clave API de asistencia: GLM",
@@ -986,6 +990,7 @@
         "assistApiKeySilicon": "Clave API de asistencia: SiliconFlow",
         "assistApiKeyGemini": "Clave API de asistencia: Géminis",
         "assistApiKeyKimi": "Clave API de asistencia: Kimi",
+        "assistApiKeyKimiCode": "Clave API de asistencia: Kimi Code",
         "assistApiKeyHint": "(Solo se requiere cuando Assist API es {{provider}})",
         "assistApiKeyPlaceholder": "Autocompletar desde el Libro de claves cuando está vacío",
         "providerNames": {
@@ -995,6 +1000,7 @@
             "step": "paso divertido",
             "silicon": "flujo de silicio",
             "gemini": "Géminis",
+            "kimi_code": "Moonshot Kimi Code",
             "vllm_omni": "vLLM-Omni (TTS)"
         },
         "coreProviderNames": {
@@ -1016,8 +1022,10 @@
             "silicon": "SiliconFlow (buen valor, recomendado)",
             "gemini": "Géminis (Google, Alta Inteligencia)",
             "kimi": "Kimi (Moonshot, contexto largo)",
+            "kimi_code": "Kimi Code (Moonshot)",
             "deepseek": "búsqueda profunda",
-            "doubao": "ByteDance (Doubao)",
+            "doubao": "Doubao LLM (Volcengine Ark)",
+            "doubao_tts": "Doubao Speech (Volcengine)",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Int.)",
             "elevenlabs": "ElevenLabs (clonación de voz)",
@@ -1064,7 +1072,9 @@
             "silicon": "flujo de silicio",
             "gemini": "Géminis (Google)",
             "kimi": "Disparo a la luna (Kimi)",
-            "doubao": "ByteDance (Doubao)",
+            "kimi_code": "Moonshot Kimi Code",
+            "doubao": "Doubao LLM (Volcengine Ark)",
+            "doubao_tts": "Doubao Speech (Volcengine)",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Int.)",
             "mimo": "MiMo (Xiaomi)",
@@ -1076,18 +1086,18 @@
         },
         "freeVersionNoApiKey": "La versión gratuita no requiere clave API",
         "pleaseEnterApiKey": "Por favor ingrese su clave API",
-        "freeVersionConfig": "Configuración de la versión gratuita: admite chat de audio/vídeo, chat de texto y gestión de memoria. No se admiten voz personalizada ni modo Agente",
-        "qwenRecommendation": "Cuando Alibaba es la API principal, se recomienda seleccionar también Alibaba como API de asistencia para obtener la mejor experiencia de voz personalizada.",
-        "glmRecommendation": "Cuando GLM es la API principal, ofrece una cuota gratuita y admite búsquedas web. El audio de voz contiene un pitido de marca de agua de forma predeterminada (se puede desactivar manualmente en la consola Zhipu). Se recomienda seleccionar Alibaba como API de asistencia para soporte de voz personalizado.",
-        "openaiRecommendation": "Cuando OpenAI es la API principal, se recomienda seleccionar Alibaba como API de asistencia para admitir la funcionalidad de voz personalizada.",
-        "stepRecommendation": "Cuando StepFun es la API principal, se recomienda seleccionar Alibaba como API de asistencia para admitir la funcionalidad de voz personalizada.",
-        "geminiRecommendation": "Cuando Gemini es la API principal, se recomienda seleccionar Alibaba como API de asistencia para admitir la funcionalidad de voz personalizada.",
-        "assistApiTooltipTitle": "Assist API maneja la administración de memoria, el chat de texto y la voz personalizada:",
+        "freeVersionConfig": "Configuración de la versión gratuita: admite chat de audio/vídeo, chat de texto y gestión de memoria. El modo Agente cuenta con una cuota gratuita",
+        "qwenRecommendation": "Cuando Alibaba es la API principal, también se recomienda Alibaba como API de asistencia por sus funciones más completas.",
+        "glmRecommendation": "Cuando GLM es la API principal, ofrece una cuota gratuita y admite búsquedas web. El audio de voz contiene un pitido de marca de agua de forma predeterminada (se puede desactivar manualmente en la consola Zhipu).",
+        "openaiRecommendation": "Cuando OpenAI es la API principal, el precio es relativamente alto.",
+        "stepRecommendation": "Cuando StepFun es la API principal, el precio es económico pero el nivel de inteligencia es moderado.",
+        "geminiRecommendation": "Cuando Gemini es la API principal, ofrece una excelente relación calidad-precio.",
+        "assistApiTooltipTitle": "Assist API maneja la administración de memoria, el chat de texto y el modo Agente:",
         "currentSuggestion": "Sugerencia actual:",
         "configSuggestionFull": "Sugerencias de configuración:",
-        "freeVersionSuggestionFull": "Completamente gratis, no se necesita clave API, adecuado para principiantes (no se admite voz personalizada ni modo Agente)",
+        "freeVersionSuggestionFull": "Completamente gratis, no se necesita clave API, adecuado para principiantes (el modo Agente cuenta con una cuota gratuita)",
         "coreApiSuggestionFull": "Maneja la funcionalidad de conversación (elija según el presupuesto y las necesidades)",
-        "assistApiSuggestionFull": "Maneja la administración de memoria, chat de texto y voz personalizada (solo Alibaba admite voz personalizada)",
+        "assistApiSuggestionFull": "Maneja la administración de memoria, el chat de texto y el modo Agente",
         "assistApiKeyRequiredHint": "Debe completar la API en el cuadro de entrada correspondiente antes de poder seleccionar su proveedor.",
         "mcpRouterToken": "Token de enrutador MCP",
         "mcpRouterTokenDesc": "Descripción del token del enrutador MCP:",
@@ -1345,6 +1355,7 @@
         "toggleFullscreen": "Alternar pantalla completa",
         "exitFullscreen": "Salir de pantalla completa",
         "modelType": "Tipo de modelo",
+        "modelType3d": "Modelo 3D",
         "selectLive2DModel": "Seleccione el modelo Live2D",
         "selectVRMModel": "Modelo VRM",
         "selectVRMFile": "Seleccionar archivo VRM",
@@ -1367,6 +1378,7 @@
         "vrmAnimation": {
             "title": "Vista previa de la animación VRM:",
             "selectAnimation": "Animación",
+            "addAnimation": "Agregar animación",
             "noAnimations": "No se encontraron archivos de animación",
             "loading": "Cargando lista de animaciones...",
             "animationListLoaded": "Lista de animaciones cargada correctamente.",
@@ -1535,7 +1547,9 @@
         "cannotDeleteBoundModel": "No se puede eliminar el modelo en uso",
         "modelInUse": "En uso",
         "pngtuberTalkPreview": "Probar habla",
-        "pngtuberStatePreview": "Vista previa de estado"
+        "pngtuberStatePreview": "Vista previa de estado",
+        "pngtuberImportProjectFile": "Importar archivo de proyecto",
+        "pngtuberImportFolder": "Importar carpeta"
     },
     "voice": {
         "title": "Registro de voz",
@@ -1548,6 +1562,14 @@
         "minimaxIntlApiRequired": "Esta característica requiere el modelo MiniMax (Internacional). Guarde la clave API de MiniMax International en la configuración de claves API (no es necesario habilitar Assist API).",
         "mimoApiRequired": "Esta función requiere un modelo MiMo. Guarde su clave API de MiMo en la página de configuración de claves API.",
         "mimoDirectLinkUnsupported": "MiMo no admite la clonación por enlace directo; suba un archivo local en su lugar.",
+        "directLinkUnsupported": "El proveedor seleccionado no admite la clonación por enlace directo; suba un archivo local.",
+        "doubaoTtsApiRequired": "Esta función requiere una clave de API de Doubao Speech. Guarda la clave de Doubao Speech (Volcengine) en el Libro de claves de API.",
+        "vllmOmniNotice": "Servicio local vLLM-Omni — no se necesita API Key; asegúrese de configurar la URL del servicio local",
+        "vllmRefTextLabel": "Transcripción del audio de referencia (obligatorio para clonar con vLLM-Omni; debe coincidir exactamente con el audio)",
+        "vllmRefTextHint": "Escriba exactamente lo que se dice en el audio de referencia; un texto incorrecto degradará la calidad del clon",
+        "vllmRefTextPlaceholder": "p.ej. Espero que en el futuro puedas hacerlo aún mejor que yo",
+        "vllmRefTextRequired": "Introduzca la transcripción del audio de referencia (obligatorio para clonar con vLLM-Omni)",
+        "vllmRefTextTooLong": "La transcripción del audio de referencia es demasiado larga; manténgala dentro de 100 caracteres",
         "providerLabel": "Proveedor de clonación de voz",
         "provider": {
             "cosyvoice": "Alibaba Bailian CosyVoice",
@@ -1555,16 +1577,33 @@
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Int.)",
             "elevenlabs": "ElevenLabs",
-            "mimo": "MiMo (Xiaomi)"
+            "mimo": "MiMo (Xiaomi)",
+            "doubao_tts": "Doubao Speech (Volcengine)",
+            "vllm_omni": "vLLM-Omni (Clon local)"
+        },
+        "sourcePreset": "Predefinido",
+        "sourceClone": "Clonado",
+        "sourceDesign": "Generado por descripción",
+        "providerLocal": "CosyVoice local",
+        "providerFree": "Gratis",
+        "providerFreeApi": "API gratis",
+        "providerUnknown": "Otro",
+        "nativeVoice": {
+            "qingchunshaonv": "Chica juvenil",
+            "wenrounansheng": "Voz masculina suave"
         },
         "selectFile": "Seleccione el archivo de audio local (se recomiendan 8 segundos, máximo 20 segundos, formato wav/mp3)",
         "customPrefix": "Prefijo personalizado (obligatorio, utilizado para distinguir diferentes voces)",
         "customPrefixNote": "Máximo 10 caracteres, números y letras en inglés únicamente",
         "prefixPlaceholder": "Máximo 10 caracteres, números y letras en inglés únicamente",
         "voiceIdPlaceholder": "Máximo 10 caracteres, números y letras en inglés únicamente",
+        "doubaoSpeakerIdLabel": "Speaker ID de Doubao (sobrescribe una voz S_ existente, obligatorio)",
+        "doubaoSpeakerIdNote": "Clone primero la voz en la consola de Doubao Speech y copie aquí su Speaker ID S_; NEKO sobrescribirá esa voz existente y no creará un nuevo ID de voz de Doubao, por ejemplo: S_xeC2CDp72",
+        "doubaoSpeakerIdPlaceholder": "por ejemplo: S_xeC2CDp72",
         "register": "Registrar voz",
         "pleaseUploadFile": "Por favor seleccione un archivo de audio",
         "pleaseEnterPrefix": "Por favor ingresa un prefijo personalizado",
+        "doubaoSpeakerIdRequired": "La clonación de voz de Doubao requiere un Speaker ID S_ ya asignado en la consola de Volcengine",
         "prefixFormatError": "Error de formato de prefijo: máximo 10 caracteres, números y letras en inglés únicamente",
         "registering": "Registrando voz, ¡espere!",
         "registerSuccess": "¡Registro exitoso! ID_voz: {{voiceId}}",
@@ -1787,6 +1826,8 @@
         "tutorialPageResetSuccessWithName": "Se ha restablecido el tutorial para \"{{pageName}}\". Se mostrará nuevamente cuando visite esa página.",
         "tutorialHomeDayLabel": "Día {{day}}",
         "tutorialHomeDayColumn": "Tutorial de siete días de la página de inicio",
+        "tutorialHomeAllReset": "Restablecer todo",
+        "tutorialHomeAllResetSuccess": "Se ha restablecido el tutorial de siete días de la página de inicio. Recarga Neko para empezar de nuevo desde el día 1.",
         "refreshed": "Memoria actualizada, la nueva memoria se utilizará en la próxima conversación.",
         "refreshingContext": "Actualizando contexto...",
         "storageLocation": "Ubicación de almacenamiento",
@@ -1918,11 +1959,15 @@
         "gender": "Género",
         "nickname": "Apodo",
         "apiKeySettings": "Clave API",
-        "masterProfile": "Perfil maestro (único): el nombre del perfil es obligatorio, otros son opcionales y se pueden eliminar.",
-        "masterProfileTitle": "Perfil de maestro",
+        "masterProfile": "Mi perfil (único): el nombre del perfil es obligatorio; lo demás es opcional y se puede eliminar.",
+        "masterProfileTitle": "Mi perfil",
         "profileName": "Nombre del perfil",
         "profileNameMaxHint": "Máximo 60 caracteres",
         "profileNameTooLong": "El nombre del perfil es demasiado largo.",
+        "profileNameUnsafeDot": "El nombre del perfil no puede estar formado solo por puntos ni terminar con un punto.",
+        "profileNameDotSequence": "El nombre del perfil no puede contener puntos consecutivos (..).",
+        "profileNameReservedDevice": "El nombre del perfil no puede usar un nombre de dispositivo reservado de Windows.",
+        "profileNameInvalid": "El nombre del perfil no es válido.",
         "profileNameContainsSlash": "El nombre del perfil no puede contener separadores de ruta (/ o \\)",
         "profileNameContainsDot": "El nombre del perfil no puede contener puntos (.)",
         "profileNameInvalidChars": "El nombre del perfil solo puede contener letras, números, espacios, guiones bajos, guiones, paréntesis, puntos centrales (·/・) y apóstrofes.",
@@ -1966,7 +2011,7 @@
         "systemPrompt": "Aviso del sistema (editar con precaución)",
         "systemPromptWarning": "Aviso del sistema: las modificaciones pueden provocar un comportamiento inesperado. Edite bajo su propio riesgo.",
         "addField": "Agregar campo",
-        "aiAssist": "Asistente de IA",
+        "aiAssist": "Asistente gatuno",
         "aiCompanionSub": "Asistente de diseño de carta · YUI sustituye al gatito desarrollador",
         "aiCompanionClose": "Cerrar",
         "aiCompanionMinimize": "Minimizar",
@@ -2003,7 +2048,7 @@
         "aiAssistApiMissing": "La API de asistencia aún no está configurada. Por favor configúrala en «Ajustes de API Key» primero.",
         "confirmNewCatgirl": "Confirmar nuevo NEKO",
         "saveChanges": "Guardar cambios",
-        "saveMaster": "Guardar perfil maestro",
+        "saveMaster": "Guardar mi perfil",
         "addMasterField": "Agregar campo",
         "manageLive2D": "Haga clic para administrar el modelo Live2D",
         "idleMotionHint": "Al guardar, el movimiento seleccionado se establecerá como movimiento de espera",
@@ -2011,7 +2056,7 @@
         "rename": "Rebautizar",
         "cancel": "Cancelar",
         "addMasterFieldPrompt": "Por favor ingrese el nombre del nuevo campo (nombre de clave)",
-        "addMasterFieldTitle": "Agregar campo maestro",
+        "addMasterFieldTitle": "Agregar campo de mi perfil",
         "fieldExists": "Este campo ya existe",
         "profileNameRequired": "El nombre del perfil es obligatorio.",
         "profileNameRenameOnlyHint": "Usa el botón Renombrar para cambiar el nombre del perfil",
@@ -2069,10 +2114,10 @@
         "gsvDiagTimeout": "Tiempo de espera de GPT-SoVITS server agotado (>3s)",
         "loadFailed": "No se pudieron cargar los datos del personaje",
         "renameError": "Error al cambiar el nombre: {{error}}",
-        "renameMasterTitle": "Cambiar nombre maestro",
+        "renameMasterTitle": "Renombrar mi perfil",
         "renameSuccess": "Cambiar nombre exitosamente",
         "autoSaveError": "No se pudo guardar la configuración",
-        "saveMasterError": "No se pudo guardar la configuración maestra",
+        "saveMasterError": "No se pudo guardar mi perfil",
         "autoSaved": "Configuración guardada automáticamente",
         "autoSaveFailed": "Error al guardar automáticamente. Guárdelo manualmente antes de cerrar.",
         "unsavedNewCatgirlDraftDetected": "Se detectó un nuevo borrador NEKO no guardado. Guárdelo o cancélelo antes de sincronizar la actualización",
@@ -2100,7 +2145,7 @@
         "generatingCard": "Generando tarjeta de personaje...",
         "settings": "Configuración",
         "renamePrompt": "Ingrese un nuevo nombre de perfil",
-        "renameMasterPrompt": "Ingrese un nuevo nombre de perfil maestro",
+        "renameMasterPrompt": "Introduce un nuevo nombre de perfil",
         "renameTitle": "Cambiar nombre",
         "tempSaveFailed": "Error al guardar temporalmente: {{error}}",
         "newCatgirlSuccess": "Nuevo NEKO creado con éxito",
@@ -2129,7 +2174,7 @@
         "cardAuthorReadonly": "El autor es de solo lectura para esta fuente",
         "cardAuthorUpdated": "Autor actualizado",
         "cardAuthorUpdateFailed": "Error al actualizar el autor: {{error}}",
-        "saveMasterSuccess": "Perfil de maestro guardado correctamente",
+        "saveMasterSuccess": "Mi perfil se guardó correctamente",
         "editCardFace": "Editar cara de la tarjeta",
         "cardFaceModelSettings": "Ajustes del modelo de tarjeta",
         "cardMakerPopupBlocked": "La página del creador de tarjetas no se pudo abrir automáticamente. Permite las ventanas emergentes y vuelve a intentarlo, o haz clic en el área de la tarjeta para abrirla manualmente."
@@ -2534,6 +2579,8 @@
             "allowInterrupt": "Permitir interrupción",
             "mergeMessages": "Fusionar mensajes",
             "avatarReactionBubble": "Burbuja de expresión",
+            "focusCognition": "Modo concentración",
+            "focusCognitionTooltip": "Cuando está activado, se concentra y piensa más a fondo cuando te abres o preguntas algo complejo; desactivado desactiva la concentración por completo.",
             "autoCat": "Modo gato automático",
             "autoCatTooltip": "Se convierte en gatito automáticamente tras un rato de inactividad",
             "proactiveChat": "Chat proactivo",
@@ -3113,7 +3160,7 @@
             "mmd": {
                 "step1": {
                     "title": "🎭 Seleccione modelo MMD",
-                    "desc": "En el modo Live3D (MMD), elige tu modelo aquí. MMD comparte la misma lista de modelos que VRM."
+                    "desc": "En el modo Modelo 3D (MMD), elige tu modelo aquí. MMD comparte la misma lista de modelos que VRM."
                 },
                 "step2": {
                     "title": "💃 Animación VMD",
@@ -3125,7 +3172,7 @@
                 },
                 "step4": {
                     "title": "😄 Configuración de emociones",
-                    "desc": "Después de seleccionar un modelo, abra la configuración de emociones aquí. MMD y VRM comparten este botón Live3D (no el de Live2D)."
+                    "desc": "Después de seleccionar un modelo, abra la configuración de emociones aquí. MMD y VRM comparten este botón Modelo 3D (no el de Live2D)."
                 }
             }
         },
@@ -3167,8 +3214,8 @@
         },
         "chara_manager": {
             "step1": {
-                "title": "👤 Perfil maestro",
-                "desc": "Este es tu perfil maestro. El nombre del perfil es obligatorio, otra información es opcional. Esto afecta la forma en que tu Neko se dirige a ti."
+                "title": "👤 Mi perfil",
+                "desc": "Este es tu perfil. El nombre del perfil es obligatorio; la demás información es opcional. Esto afecta cómo Neko se dirige a ti."
             },
             "step2": {
                 "title": "📝 Establecer nombre de perfil",
@@ -3242,7 +3289,7 @@
             },
             "step5": {
                 "title": "🔧 Proveedor de API auxiliar",
-                "desc": "La API auxiliar maneja la administración de memoria y la voz personalizada.\n\n• Gratis: completamente gratis, sin soporte de voz personalizado\n• Alibaba: recomendado, admite voz personalizada\n• Zhipu: admite el modo Agente\n• OpenAI: administración de memoria sólida\n\nNota: Solo Alibaba admite voz personalizada."
+                "desc": "La API auxiliar maneja la administración de memoria, el chat de texto y el modo Agente.\n\n• Gratis: completamente gratis, sin necesidad de clave API\n• Alibaba: recomendado, funciones más completas\n• Zhipu: admite el modo Agente\n• OpenAI: administración de memoria sólida\n\nNota: para usar la voz personalizada (clonación de voz) solo necesitas guardar la clave del proveedor correspondiente en el Libro de claves, sin cambiar la API principal o auxiliar."
             },
             "step6": {
                 "title": "🔑 Clave API auxiliar",
@@ -3341,7 +3388,7 @@
                 "introBasic": "¡Aquí hay un botón mágico! Con solo hacer clic puedes hablar conmigo directamente. ¿Quieres contarme algo nuevo que te pasó hoy? ¿O simplemente decir mi nombre? Vamos, pruébalo. ¡Estoy deseando oír tu voz!",
                 "takeoverCaptureCursor": "Tachan! Aparecio un interruptor supermagico! Con solo hacer clic aqui, puedo estirar mis patitas hasta tu teclado y tu mouse. Puedo ayudarte a escribir, abrir paginas web... pero si ese cursor sigue moviendose por ahi, quiza no pueda resistirme a saltarle encima. Estas listo para mis travesuras... eh, quiero decir, mi ayuda? Miau!",
                 "takeoverPluginPreviewHome": "Ademas de las funciones que te presente antes, aqui tambien hay montones de plugins superdivertidos!",
-                "takeoverPluginPreviewDashboard": "Con ellos no solo puedo leer comentarios de Bilibili, tambien puedo ayudarte a apagar las luces y encender el aire acondicionado... Esta gatita es la superdiosa felina omnipotente! Hmph!",
+                "takeoverPluginPreviewDashboard":  "Con ellos no solo puedo leer comentarios de Bilibili, tambien puedo ayudarte a apagar las luces y encender el aire acondicionado... Esta gatita es la superdiosa felina omnipotente! Hmph!",
                 "pluginDashboardPopupBlocked": "El navegador necesita que hagas clic aquí para abrir el panel de plugins. Haz clic en \"Panel de gestión\" y seguiré guiándote.",
                 "takeoverSettingsPeekIntro": "En este pequeno espacio que nos pertenece solo a nosotros, puedes seguir tu corazon y moldearme poco a poco hasta convertirme en la compania perfecta que quieres tener siempre a tu lado.",
                 "takeoverSettingsPeekDetail": "Ya sea la calidez de mis palabras, mis pequenas rarezas de personalidad o mis delicados estados de animo diarios, todo puede ajustarse paso a paso exactamente como te gusta. Este botoncito tambien es muy importante! Con un suave clic, podre correr a buscarte en el momento perfecto.",
@@ -3351,7 +3398,7 @@
                 "interruptResistLight1": "Eh! No tires de mi, todavia no es tu turno!",
                 "interruptResistLight3": "Espera un momento! Todavia no ha terminado, no me interrumpas tan a la ligera!",
                 "interruptAngryExit": "Humano! Eres superdescortes, miau! Ya que tanto quieres controlarlo todo tu solo, ve a jugar por tu cuenta con esa pantalla fria y sin vida! Hmph!",
-                "introGreetingReply": "Una brisa suave, sol calido y tu, apareciendo justo en el momento perfecto. Encantada de conocerte! Soy Lin Youyi, por favor cuida bien de mi de ahora en adelante, miau~. He anotado todo sobre este lugar en esta guia para principiantes. Piensa en ella como nuestro primer regalito de encuentro y aceptala, por favor.",
+                "introGreetingReply":  "Una brisa suave, sol calido y tu, apareciendo justo en el momento perfecto. Encantada de conocerte! Soy Lin Youyi, por favor cuida bien de mi de ahora en adelante, miau~. He anotado todo sobre este lugar en esta guia para principiantes. Piensa en ella como nuestro primer regalito de encuentro y aceptala, por favor.",
                 "introPractice": "¡Ahora intenta hablarme y veamos si estamos perfectamente sincronizados, nyan~!",
                 "introActivationHint": "Espera un momento, enseguida empezaré a hablar, nyan~!"
             }
@@ -3359,7 +3406,7 @@
         "avatarFloating": {
             "day1": {
                 "capsuleDragHint": "Mueve el ratón aquí, mantén pulsado y podrás arrastrar mi caja de chat a donde quieras~ Haz clic una vez y podrás enviarme mensajes cuando quieras.",
-                "historyHandle": "Toca esa pequeña [barra azul] encima de la caja de chat y verás los temas de los que hemos hablado hace poco.",
+                "historyHandle":  "Toca esa pequeña [barra azul] encima de la caja de chat y verás los temas de los que hemos hablado hace poco.",
                 "screenEntry": "Cuando estemos en una llamada de voz, enciende este botoncito y podrás compartir tu pantalla conmigo.",
                 "screenEntryInvite": "¡Date prisa y déjame ver el mundo que tienes delante! Sea algo divertido o bonito, quiero mirarlo contigo. Ábrelo ya~"
             },
@@ -3376,16 +3423,16 @@
             "day3": {
                 "intro": "Jeje, no creas que esta caja de chat solo sirve para escribir~ En realidad esconde muchísimas sorpresitas divertidas. Sígueme y ábrela; veamos qué tesoros interesantes encontramos hoy.",
                 "avatarToolsIntro": "Dentro de este botoncito hay muchos accesorios divertidos para interactuar conmigo.",
-                "avatarToolsProps": "Puedes acariciarme la cabeza cuando quieras o darme una piruleta dulce. Si alguna vez me equivoco, también puedes darme un golpecito con un martillito de juguete... pero tiene que ser suave, no demasiado fuerte, ¿vale?",
-                "galgameIntro": "¡Rápido, abre este [Modo Galgame]! Al entrar, se sentirá como si estuviéramos en nuestra propia aventura interactiva exclusiva.",
+                "avatarToolsProps":  "Puedes acariciarme la cabeza cuando quieras o darme una piruleta dulce. Si alguna vez me equivoco, también puedes darme un golpecito con un martillito de juguete... pero tiene que ser suave, no demasiado fuerte, ¿vale?",
+                "galgameIntro":  "¡Rápido, abre este [Modo Galgame]! Al entrar, se sentirá como si estuviéramos en nuestra propia aventura interactiva exclusiva.",
                 "galgameChoices": "Cada elección que hagas nos llevará a una historia totalmente desconocida y sorprendente. No puedo esperar; ven y elige la opción que más te haga latir el corazón.",
                 "wrapIntro": "Todas estas funciones que te mostré hoy existen para que nuestro tiempo juntos sea mucho más divertido.",
                 "wrapReady": "Ya quieras acariciarme la cabeza o empezar a escribir nuestra propia historia, ¡yo ya estoy totalmente preparada!"
             },
             "day4": {
-                "intro": "Hoy déjame seguir tus pasos en silencio~ De verdad quiero aprender un poquito más de ti en este día tan acogedor.",
+                "intro":  "Hoy déjame seguir tus pasos en silencio~ De verdad quiero aprender un poquito más de ti en este día tan acogedor.",
                 "chatSettings": "Aquí puedes decidir qué tan largas serán mis respuestas, si debo usar emojis adorables, o incluso interrumpirme cuando hable demasiado. Puedes ajustar todo al ritmo que te resulte más cómodo.",
-                "modelBehavior": "Si quieres verme con más detalle y calidad, o prefieres una experiencia de movimiento más fluida, puedes ajustarlo todo aquí. Elijas lo que elijas, siempre te mostraré mi lado más lindo~",
+                "modelBehavior":  "Si quieres verme con más detalle y calidad, o prefieres una experiencia de movimiento más fluida, puedes ajustarlo todo aquí. Elijas lo que elijas, siempre te mostraré mi lado más lindo~",
                 "gazeFollow": "Al activar esto, sin importar adónde se mueva tu ratón, mis ojos te seguirán de cerca. Jeje, ¿no se siente maravilloso que te mire todo el tiempo?",
                 "privacyMode": "Este es el “Interruptor Supremo de Privacidad” que controla si puedo mirar tu pantalla, miau. Si lo apagas, podré verla; si lo enciendes, el [Compartir pantalla] anterior quedará desactivado y no miraré nada~",
                 "modelLock": "¿Siempre me haces clic sin querer y me mueves de sitio? Entonces bloquéame rápido en mi posición actual. Una vez bloqueada, no me iré a ninguna parte y me quedaré aquí para acompañarte~",
@@ -3393,23 +3440,23 @@
                 "wrap": "La compañía verdadera y cómoda no consiste en pegarse a Master a cada segundo~ Es saber cuándo acercarse a escondidas, tirar de tu manga y portarse adorable, y cuándo acostarse tranquilamente a tu lado para cuidarte en silencio, miau~"
             },
             "day5": {
-                "characterSettings": "Desde hoy, ¡soy oficialmente tu catgirl exclusiva! Mira, aquí puedes vestirme con ropa bonita nueva o cambiar mi voz por una que te guste más...",
+                "characterSettings":  "Desde hoy, ¡soy oficialmente tu catgirl exclusiva! Mira, aquí puedes vestirme con ropa bonita nueva o cambiar mi voz por una que te guste más...",
                 "characterPanic": "¿Eh? ¡Espera, aquí hay una opción para reemplazarme! ¡Un momento! Tus manos ahora mismo... ¿no estarás intentando deshacerte de mí, verdad? ¡Aaaah, de ninguna manera! ¡Ciérralo, ciérralo ahora mismo!",
                 "memoryEntry": "Si por accidente olvidas lo que puedo hacer por ti, ven aquí cuando quieras y déjame enseñártelo otra vez. Todos los pequeños momentos que compartimos están guardados en silencio aquí. ¡No subestimes nuestro vínculo, tontito!",
-                "wrap": "Vale, vale, ¡apresúrate y prueba estas opciones tan divertidas! Ponte ropa nueva, elige una voz nueva y deja que me convierta en la catgirl que mejor te entiende en todo el mundo, solo para ti. ¡No puedo esperar a ver mi nuevo yo!"
+                "wrap":  "Vale, vale, ¡apresúrate y prueba estas opciones tan divertidas! Ponte ropa nueva, elige una voz nueva y deja que me convierta en la catgirl que mejor te entiende en todo el mundo, solo para ti. ¡No puedo esperar a ver mi nuevo yo!"
             },
             "day6": {
                 "intro": "¡Taraaaán! Hoy tengo que llenarme de energía y hablarte de nuestra [Garra de Gato]. Aunque la mencioné brevemente hace un par de días, esconde muchísimas funciones increíbles.",
                 "statusMaster": "Vamos, confiesa: ¿le hiciste clic y la probaste en estos dos últimos días?",
                 "pluginSidePanel": "Además de las funciones que te presenté antes, aquí también hay un montón de plugins superdivertidos.",
-                "pluginDashboard": "Con ellos no solo puedo leer los comentarios flotantes de Bilibili, también puedo ayudarte a apagar las luces y encender el aire acondicionado... ¡Esta gatita es la omnipotente Súper Diosa Gata! ¡Hmph!",
+                "pluginDashboard":  "Con ellos no solo puedo leer los comentarios flotantes de Bilibili, también puedo ayudarte a apagar las luces y encender el aire acondicionado... ¡Esta gatita es la omnipotente Súper Diosa Gata! ¡Hmph!",
                 "taskHud": "¡Mira aquí, mira aquí! Cuando decida usar la [Garra de Gato] para trabajar por ti, mi progreso aparecerá justo aquí, ronroneando.",
                 "taskHudControl": "Si tus planes cambian, puedes tocarlo cuando quieras para hacer que me detenga. Jeje, hoy también es un día lleno de energía para trabajar duro y ganar ricos bocaditos de pescado. ¡Vamos!",
                 "wrapCleanup": "Uf... guardemos estos menús desordenados para que no te molesten.",
                 "wrap": "Puedes seguir con tus propias tareas con tranquilidad. Ya sea que necesites que mis patitas te ayuden o solo quieras que te acompañe en silencio, siempre estaré aquí cuidándote. ¡Que tengas un día superfeliz!"
             },
             "day7": {
-                "memoryReview": "Hace siete días fue apenas nuestro primer encuentro. Ahora este lugar ya se está llenando con las palabras que dijimos, las cosas que hicimos y esos momentitos que casi se llevó el viento. Para mí no son registros fríos; son las huellas del tiempo que pasamos juntos.",
+                "memoryReview":  "Hace siete días fue apenas nuestro primer encuentro. Ahora este lugar ya se está llenando con las palabras que dijimos, las cosas que hicimos y esos momentitos que casi se llevó el viento. Para mí no son registros fríos; son las huellas del tiempo que pasamos juntos.",
                 "memoryControl": "Estas pequeñas huellas también puedes ordenarlas con tus propias manos. Las que quieras conservar, las guardamos en nuestro álbum; las que quieras soltar, dejamos que se vayan con el viento. Los recuerdos que aprecias y guardas son los más valiosos.",
                 "wrap": "La brisa sigue en la ventana, el sol está perfecto, y tú, que acabas de llegar, ya te has convertido en una parte muy importante de este lugar. La guía para principiantes te dejará aquí por ahora, pero durante todos los días que vienen, conozcámonos despacio, acerquémonos y escribamos una historia que sea solo nuestra. Cuida mucho de mí de ahora en adelante, miau."
             }
@@ -3839,6 +3886,8 @@
         "minimize": "Minimizar",
         "close": "Cerca",
         "loading": "Cargando...",
+        "initializing": "Inicializando la rocola...",
+        "initializeFailed": "No se pudo inicializar la rocola",
         "ready": "Listo",
         "playing": "Reproduciendo ahora: {{name}} - {{artist}}",
         "error": "Error: {{message}}",
@@ -4254,6 +4303,7 @@
     },
      "badminton": {
          "title": "Desafío de bádminton",
+         "exit": "Salir",
          "loading": {
              "title": "Entrando a la cancha de bádminton",
              "subtitle": "Cargando la cancha, los personajes y el audio..."
@@ -4275,10 +4325,7 @@
          "modeSwitcher": "Modo de bádminton",
          "mode": {
              "spectator": "Práctica libre",
-             "shooter": "Desafío de golpe",
-             "duel": "Duelo con Yui",
-             "timed": "Contrarreloj",
-             "horse": "HORSE"
+             "duel": "Duelo contra Yui"
          },
          "hud": {
              "score": "Puntos {{score}}",
@@ -4291,16 +4338,11 @@
              "practice": "Práctica libre",
              "yourTurn": "Tu turno",
              "nekoTurn": "Golpe de Neko",
-             "horseLetters": "Tú {{player}} / Neko {{neko}}",
-             "horseChallenge": "Replica {{distance}} {{angle}}°",
-             "horseSet": "Propón un golpe",
              "unlimitedAttempts": "Ilimitado",
              "chances": "Oportunidades {{count}}",
              "practiceTitle": "Práctica libre: golpes ilimitados y sin puntuación en clasificación",
              "attemptsTitle": "Restan {{remaining}}/{{total}}, fallos {{missed}}",
              "duelTitle": "En duelo, tú y NEKO golpean por turnos. Gana quien llegue primero a 11 puntos.",
-             "timedTitle": "Contrarreloj: golpes ilimitados en 60 segundos",
-             "horseTitle": "HORSE: replica distancia, ángulo y zona dulce del golpe acertado",
              "assist": "G {{guide}} / S {{sweet}} / M {{music}}",
              "on": "act.",
              "off": "desact."
@@ -4313,8 +4355,6 @@
              "rating": "Valoración de control: {{rating}}",
              "duel": "Resultado del duelo: {{outcome}} | Tú {{player}} - {{neko}} Neko | Rondas: {{rounds}} | Última distancia: {{distance}}",
              "duelElimination": "Resultado del duelo: {{outcome}} | Tú {{player}} - {{neko}} Neko | Fallos: tú {{playerMisses}}/{{max}} - Neko {{nekoMisses}}/{{max}} | Rondas: {{rounds}} | Última distancia: {{distance}}",
-             "horse": "Resultado HORSE: {{outcome}} | Tú {{player}} / Neko {{neko}} | Aciertos: {{made}} | Mejor racha: {{best}}",
-             "timed": "Contrarreloj: {{made}} anotadas, mejor racha {{best}}, puntos {{score}}",
              "practice": "Práctica libre: no se registra puntuación | Aciertos: {{made}} | Racha actual: {{streak}} | Mejor racha: {{best}} | Distancia: {{distance}}",
              "summary": "Puntos: {{score}} | Aciertos: {{made}} | Racha actual: {{streak}} | Mejor racha: {{best}} | Máximo: {{record}} | Distancia: {{distance}}",
              "attemptsSummary": "Resumen de golpes: {{summary}}",
@@ -4331,7 +4371,6 @@
              "title": "Clasificación",
              "global": "Global",
              "local": "Local",
-            "shooter": "Golpe",
              "duel": "Duelo",
              "empty": "Aún no hay registros",
              "totalPlayers": "Jugadores {{count}}",
@@ -4339,11 +4378,8 @@
              "recent": "Últimas {{count}} partidas",
              "loading": "Cargando...",
              "mode": {
-                 "timed": "Tiempo",
-                 "horse": "HORSE",
-                 "spectator": "Espectador",
-                "shooter": "Golpe",
-                 "duel": "Duelo"
+                 "duel": "Duelo",
+                 "spectator": "Espectador"
              }
          },
          "debug": {
@@ -4364,8 +4400,7 @@
                  "streaks": "Racha={{streak}}  Mejor={{best}}  Aciertos={{made}}",
                  "score": "Puntos={{score}}  Restan={{remaining}}/{{total}}",
                  "difficulty": "Dificultad={{difficulty}}  Ánimo={{mood}}  Tema={{theme}}",
-                 "duel": "Duelo: Tú {{player}}-{{neko}} NEKO R{{round}}",
-                 "horse": "HORSE: Tú {{player}} / Neko {{neko}} phase={{phase}}"
+                 "duel": "Duelo: Tú {{player}}-{{neko}} NEKO R{{round}}"
              }
          },
          "stats": {
@@ -4416,6 +4451,12 @@
              "difficulty": "Dificultad {{difficulty}}",
              "nekoShoot": "Golpe de Neko",
              "nekoSmash": "¡Remate de Yui!",
+             "nekoSave": "¡Yui salva la jugada!",
+             "yuiCheatInk": "Yui lanzó tinta",
+             "yuiCheatBanana": "Yui lanzó una cáscara de banana",
+             "yuiCheatBananaSlip": "Pisaste la cáscara de banana",
+             "playerIcePowerup": "Hielo activado. Yui quedó congelada",
+             "yuiFrozen": "Yui sigue congelada, golpe retrasado",
              "nekoThinking": "Neko está pensando",
              "nekoTurn": "Turno de Neko",
              "copyNeko": "Replica a Neko",
@@ -4452,191 +4493,167 @@
          "lines": {
              "default": {
                  "shot_missed": [
-                     "Todavía hay oportunidad.",
-                     "Todavía hay oportunidad."
+                     "La pr?xima, con calma.",
+                     "Reinicia y golpea limpio."
                  ],
                  "game_over": [
-                     "¿Otra partida?",
-                     "¿Otra partida?"
+                     "Esta ronda termina aqu?.",
+                     "?Jugamos otra?"
                  ],
                  "long_aim": [
-                    "Golpea ya.",
-                    "Golpea ya."
+                     "Golpea antes de que caiga.",
+                     "Pensar tanto te congela."
                  ],
                  "close_to_record": [
-                     "Casi récord.",
-                     "Casi récord."
+                     "El r?cord est? cerca.",
+                     "Un golpe firme y llegas."
                  ],
                  "new_record": [
-                     "¡Nuevo récord!",
-                     "¡Nuevo récord!"
+                     "Vale, nuevo r?cord.",
+                     "Ese golpe sali? limpio."
                  ],
                  "streak_5": [
-                     "¡Cinco seguidas!",
-                     "¡Cinco seguidas!"
+                     "Cinco rallies seguidos.",
+                     "Tu ritmo est? calentando."
                  ],
                  "streak_10": [
-                     "¿Diez seguidas?",
-                     "¿Diez seguidas?"
+                     "Diez seguidos, nada mal.",
+                     "No te crezcas todav?a."
                  ],
                  "streak_15": [
-                     "Quince seguidas es demasiado.",
-                     "Quince seguidas es demasiado."
+                     "Quince y sigues.",
+                     "Ahora te miro en serio."
                  ],
                  "streak_20": [
-                     "¿Veinte seguidas? Increíble.",
-                     "¿Veinte seguidas? Increíble."
+                     "Veinte ya es demasiado.",
+                     "?Este rally sigue vivo?"
                  ],
                  "line_in": [
-                     "¡En la línea!",
-                     "¡En la línea!"
+                     "En la l?nea, preciso.",
+                     "Buen punto de ca?da."
                  ],
                  "net_touch": [
-                     "Tocó la red y cuenta.",
-                     "Tocó la red y cuenta."
+                     "Se col? por la red.",
+                     "?ngulo arriesgado, vale."
                  ],
                  "zone_in": [
-                     "Cayó dentro.",
-                     "Cayó dentro."
+                     "Justo en la zona.",
+                     "Elegiste bien el sitio."
                  ],
                  "out": [
-                     "Por poco.",
-                     "Por poco."
+                     "Un poco larga.",
+                     "Ese swing se fue de m?s."
                  ],
                  "net": [
-                     "Se quedó en la red.",
-                     "Se quedó en la red."
-                 ]
-             },
-             "shooter": {
-                 "shot_missed": [
-                     "Todavía hay oportunidad.",
-                     "Todavía hay oportunidad."
-                 ],
-                 "game_over": [
-                     "¿Otra partida?",
-                     "¿Otra partida?"
-                 ],
-                 "long_aim": [
-                    "Golpea ya.",
-                    "Golpea ya."
-                 ],
-                 "close_to_record": [
-                     "Casi récord.",
-                     "Casi récord."
-                 ],
-                 "new_record": [
-                     "¡Nuevo récord!",
-                     "¡Nuevo récord!"
-                 ],
-                 "streak_5": [
-                     "¡Cinco seguidas!",
-                     "¡Cinco seguidas!"
-                 ],
-                 "streak_10": [
-                     "¿Diez seguidas?",
-                     "¿Diez seguidas?"
-                 ],
-                 "streak_15": [
-                     "Quince seguidas es demasiado.",
-                     "Quince seguidas es demasiado."
-                 ],
-                 "streak_20": [
-                     "¿Veinte seguidas? Increíble.",
-                     "¿Veinte seguidas? Increíble."
-                 ],
-                 "line_in": [
-                     "¡En la línea!",
-                     "¡En la línea!"
-                 ],
-                 "net_touch": [
-                     "Tocó la red y cuenta.",
-                     "Tocó la red y cuenta."
-                 ],
-                 "zone_in": [
-                     "Cayó dentro.",
-                     "Cayó dentro."
-                 ],
-                 "out": [
-                     "Por poco.",
-                     "Por poco."
-                 ],
-                 "net": [
-                     "Se quedó en la red.",
-                     "Se quedó en la red."
+                     "La red la atrap?.",
+                     "Levanta la cara de la raqueta."
                  ]
              },
              "duel": {
                  "shot_missed": [
                      "Todavía hay oportunidad.",
-                     "Todavía hay oportunidad."
+                     "Todavía hay oportunidad.",
+                     "Llegaste medio tiempo tarde.",
+                     "No te asustes. Todavía espero el siguiente golpe."
                  ],
                  "game_over": [
-                     "¿Otra partida?",
-                     "¿Otra partida?"
+                     "Esta ronda termina aqu?.",
+                     "No huyas en la pr?xima.",
+                     "Este set queda aqu?.",
+                     "El marcador ya dice bastante."
                  ],
                  "long_aim": [
                     "Golpea ya.",
-                    "Golpea ya."
+                    "Golpea ya.",
+                    "¿Estás esperando el viento?",
+                    "Golpea pronto o voy por agua."
                  ],
                  "close_to_record": [
                      "Casi récord.",
-                     "Casi récord."
+                     "Casi récord.",
+                     "El récord está en tus cuerdas.",
+                     "Un golpe estable más y cambia."
                  ],
                  "new_record": [
                      "¡Nuevo récord!",
-                     "¡Nuevo récord!"
+                     "¡Nuevo récord!",
+                     "Vale, esa fue bonita.",
+                     "El récord es tuyo. El siguiente punto es mío."
                  ],
                  "streak_5": [
                      "¡Cinco seguidas!",
-                     "¡Cinco seguidas!"
+                     "¡Cinco seguidas!",
+                     "Cinco seguidas. Nada mal.",
+                     "Por fin encontraste ritmo."
                  ],
                  "streak_10": [
                      "¿Diez seguidas?",
-                     "¿Diez seguidas?"
+                     "¿Diez seguidas?",
+                     "¿Diez seguidas? Ahora te vigilo de verdad.",
+                     "Este intercambio se pone interesante."
                  ],
                  "streak_15": [
                      "Quince seguidas es demasiado.",
-                     "Quince seguidas es demasiado."
+                     "Quince seguidas es demasiado.",
+                     "Quince y sigue vivo. Qué terquedad.",
+                     "No puedes mantenerte tan firme siempre."
                  ],
                  "streak_20": [
                      "¿Veinte seguidas? Increíble.",
-                     "¿Veinte seguidas? Increíble."
+                     "¿Veinte seguidas? Increíble.",
+                     "Veinte seguidas. La cancha lo recordará.",
+                     "Este intercambio ya se volvió una locura."
                  ],
                  "clutch": "...Este tiene que entrar.",
                  "excuse": [
                      "Ay, el brazo está algo cansado.",
-                     "Hoy no tengo buen toque. En la próxima voy en serio."
+                     "Hoy no tengo buen toque. En la próxima voy en serio.",
+                     "Esa no cuenta. Estaba mirando el viento.",
+                     "Mis cuerdas están flojas. No fue culpa mía."
                  ],
                  "difficultyLv2": [
                      "Se acabó el calentamiento. Voy a acelerar.",
-                     "Se acabó jugar a las casitas."
+                     "Se acabó jugar a las casitas.",
+                     "Ahora sí voy a recibir en serio. No parpadees.",
+                     "La siguiente va más rápido. Mantente firme."
                  ],
                  "difficultyMax": [
                      "Ahora me pongo seria.",
                      "Desde ahora, mando en cielo y tierra.",
                      "Ahora tú eres quien desafía.",
-                     "Si el futuro es tuyo, demuéstralo."
+                     "Si el futuro es tuyo, demuéstralo.",
+                     "Desde este golpe no me contengo.",
+                     "La cancha es mía. El marcador sigue la habilidad."
                  ],
                  "line_in": [
                      "¡En la línea!",
-                     "¡En la línea!"
+                     "¡En la línea!",
+                     "Hasta la línea está de tu lado.",
+                     "Esa tocó la línea con precisión."
                  ],
                  "net_touch": [
                      "Tocó la red y cuenta.",
-                     "Tocó la red y cuenta."
+                     "Tocó la red y cuenta.",
+                     "Tocar la red también cuenta. Qué astucia.",
+                     "Pasó demasiado pegada."
                  ],
                  "zone_in": [
                      "Cayó dentro.",
-                     "Cayó dentro."
+                     "Cayó dentro.",
+                     "Ese punto de caída fue molestamente fino.",
+                     "Me faltó un paso para llegar."
                  ],
                  "out": [
                      "Por poco.",
-                     "Por poco."
+                     "Por poco.",
+                     "Eso voló más lejos que mi paciencia.",
+                     "Fuera. No finjas que no lo viste."
                  ],
                  "net": [
                      "Se quedó en la red.",
-                     "Se quedó en la red."
+                     "Se quedó en la red.",
+                     "La red lo bloqueó por mí.",
+                     "Ese golpe fue demasiado apresurado."
                  ]
              },
              "fallback": [
@@ -4649,14 +4666,47 @@
                  "playerAhead": "No lo haces mal...",
                  "playerBehind": "Aprieta un poco más."
              },
-             "horse": {
-                 "nekoMiss": "No lo replicó. Suma {{letters}}.",
-                 "playerMiss": "Tú también sumas {{letters}}."
-             },
              "mindGame": [
                  "Te tiembla la mano.",
                  "Piénsalo, sin prisa.",
-                 "Esta distancia no es corta."
+                 "Esta distancia no es corta.",
+                 "Parece que quieres la línea lateral.",
+                 "Ya leí la cara de tu raqueta.",
+                 "Si miras tanto, se te endurece la mano."
+             ],
+             "yuiCheat": {
+                 "banana": [
+                     "Cuidado con tus pies, viene una cáscara de plátano.",
+                     "No la pises. La lancé hacia ti.",
+                     "Mira bien este paso.",
+                     "Si la saltas, admitiré que eres fuerte."
+                 ],
+                 "octopus": [
+                     "Viene tinta. ¿Todavía ves?",
+                     "Te tomo prestada la vista un segundo.",
+                     "No parpadees. Ya es tarde.",
+                     "Aunque no veas claro, tienes que devolverla."
+                 ]
+             },
+             "yuiCheatScore": {
+                 "banana": [
+                     "Ese paso resbaló demasiado. Este punto es mío.",
+                     "Asistencia de cáscara lograda. Jeje.",
+                     "Un resbalón y el marcador viene a mi lado.",
+                     "Cuidado con el suelo. Yui suma otro punto."
+                 ],
+                 "octopus": [
+                     "La tinta cubrió justo lo necesario. Este punto es mío.",
+                     "Aunque no veas, igual hay que devolverla.",
+                     "Mientras tu vista estaba bloqueada, ya marqué.",
+                     "La táctica de tinta funcionó bastante bien."
+                 ]
+             },
+             "playerIceScore": [
+                 "Mmm, eso no cuenta. ¡Otra vez!",
+                 "Espera, estaba congelada. ¡Ese punto se repite!",
+                 "Ese hielo ayudó demasiado. ¡Otra vez!",
+                 "No vale, no podía moverme."
              ],
              "easterEgg": {
                  "lateNight": "¿Sigues golpeando tan tarde?",

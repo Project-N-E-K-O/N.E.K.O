@@ -183,6 +183,82 @@ test('TimelineEngine dispatches zero-time prelude commands before starting audio
     ]);
 });
 
+test('TimelineEngine starts explicit non-blocking zero-time commands without delaying audio', async () => {
+    let currentTime = 0;
+    let resolveMotion;
+    let resolveMotionStarted;
+    let resolveAudioEnded;
+    const motionStartedPromise = new Promise((resolve) => {
+        resolveMotionStarted = resolve;
+    });
+    const audioEndedPromise = new Promise((resolve) => {
+        resolveAudioEnded = resolve;
+    });
+    const calls = [];
+    const registry = new CommandRegistry({
+        handlers: {
+            'operation.run': async () => {
+                calls.push(['motion.start', currentTime]);
+                resolveMotionStarted();
+                await new Promise((resolve) => {
+                    resolveMotion = resolve;
+                });
+                calls.push(['motion.end', currentTime]);
+            },
+            'chat.message': () => {
+                calls.push(['chat.message', currentTime]);
+            }
+        }
+    });
+    const engine = new TimelineEngine({
+        commandRegistry: registry,
+        audioRuntime: {
+            play(voiceKey) {
+                calls.push(['audio.play', voiceKey, currentTime]);
+            },
+            waitForEnd() {
+                calls.push(['audio.end', currentTime]);
+                resolveAudioEnded();
+            }
+        },
+        now: () => currentTime,
+        wait: async (delayMs) => {
+            currentTime += delayMs;
+        }
+    });
+
+    const resultPromise = engine.playScene({
+        id: 'scene-intro-motion',
+        audio: { voiceKey: 'voice-a', minDurationMs: 1000 },
+        timeline: [
+            { id: 'motion', at: 0, command: 'operation.run', blocking: false },
+            { id: 'chat', at: 0, command: 'chat.message' }
+        ]
+    });
+
+    await motionStartedPromise;
+    await audioEndedPromise;
+    assert.deepEqual(calls.map((entry) => entry.slice()), [
+        ['motion.start', 0],
+        ['chat.message', 0],
+        ['audio.play', 'voice-a', 0],
+        ['audio.end', 0]
+    ]);
+
+    resolveMotion();
+    const result = await resultPromise;
+
+    assert.equal(result.completed, true);
+    assert.deepEqual(result.triggered, ['motion', 'chat']);
+    assert.deepEqual(calls, [
+        ['motion.start', 0],
+        ['chat.message', 0],
+        ['audio.play', 'voice-a', 0],
+        ['audio.end', 0],
+        ['motion.end', 0]
+    ]);
+});
+
 test('TimelineEngine shares audio runtime context with later commands', async () => {
     let currentTime = 0;
     const calls = [];
@@ -218,6 +294,47 @@ test('TimelineEngine shares audio runtime context with later commands', async ()
     assert.equal(result.completed, true);
     assert.deepEqual(calls, [
         ['petal.play', 0, 'scene-with-petal']
+    ]);
+});
+
+test('TimelineEngine schedules commands relative to narration end', async () => {
+    let currentTime = 0;
+    const calls = [];
+    const registry = new CommandRegistry({
+        handlers: {
+            'petal.play': () => {
+                calls.push(['petal.play', currentTime]);
+            }
+        }
+    });
+    const engine = new TimelineEngine({
+        commandRegistry: registry,
+        audioRuntime: {
+            getDurationMs() {
+                return 10000;
+            },
+            play(voiceKey) {
+                calls.push(['audio.play', voiceKey, currentTime]);
+            }
+        },
+        now: () => currentTime,
+        wait: async (delayMs) => {
+            currentTime += delayMs;
+        }
+    });
+
+    const result = await engine.playScene({
+        id: 'scene-with-petal',
+        audio: { voiceKey: 'voice-a', minDurationMs: 1000 },
+        timeline: [
+            { id: 'petal', beforeAudioEndMs: 2600, command: 'petal.play', blocking: true }
+        ]
+    });
+
+    assert.equal(result.completed, true);
+    assert.deepEqual(calls, [
+        ['audio.play', 'voice-a', 0],
+        ['petal.play', 7400]
     ]);
 });
 

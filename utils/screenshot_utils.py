@@ -216,6 +216,7 @@ async def analyze_image_with_vision_model(
             max_retries=0,
             max_completion_tokens=max_completion_tokens,
             timeout=30,  # hang-guard for vision/screenshot analysis
+            provider_type=api_config.get('provider_type'),
         )
         messages = [
             {
@@ -438,7 +439,6 @@ def overlay_avatar_annotation(
         # 计算 Avatar 中心点在图片上的像素坐标
         px = int(cx * iw)
         py = int(cy * ih)
-        model_h = int(avatar_position.get('height', 0.3) * ih)
 
         # 自适应字号：基于图片高度，但限制范围
         font_size = max(12, min(28, int(ih * 0.022)))
@@ -459,9 +459,9 @@ def overlay_avatar_annotation(
         total_tw = max(m[0] for m in line_metrics)
         total_th = sum(m[1] for m in line_metrics) + line_gap * (len(lines) - 1)
 
-        # 文字放在 Avatar 中心偏下（模型身体区域）
+        # 文字放在 Avatar 中心（不再向下偏移到身体区域，否则显得太靠下）
         text_cx = px
-        text_cy = py + int(model_h * 0.15)
+        text_cy = py
 
         # 背景矩形（半透明）
         pad_x = max(6, font_size // 2)

@@ -11,7 +11,6 @@
 
     const DELAY_MS = 900;
     const DURATION_MS = 5000;
-    const DAY5_CHARACTER_SETTINGS_DELAY_MS = 2900;
 
     function cue(position, delayMs) {
         return Object.freeze({
@@ -23,27 +22,21 @@
 
     const CUES = Object.freeze({
         2: Object.freeze({
-            day2_intro_context: cue('bottom-right'),
-            day2_proactive_chat: cue('top-left')
+            day2_galgame_entry: cue('top-right')
         }),
         3: Object.freeze({
-            day3_avatar_tools: cue('bottom-left'),
-            day3_galgame_entry: cue('top-right')
+            day3_proactive_chat: cue('top-left')
         }),
         4: Object.freeze({
             day4_gaze_follow: cue('top-left'),
             day4_privacy_mode: cue('bottom-right')
         }),
-        5: Object.freeze({
-            day5_character_settings: cue('top-right', DAY5_CHARACTER_SETTINGS_DELAY_MS)
-        }),
+        5: Object.freeze({}),
         6: Object.freeze({
             day6_plugin_dashboard: cue('bottom-right'),
             day6_agent_task_hud: cue('top-left')
         }),
-        7: Object.freeze({
-            day7_memory_review: cue('bottom-left')
-        })
+        7: Object.freeze({})
     });
 
     function cloneCue(value) {
@@ -72,7 +65,6 @@
     return {
         DELAY_MS,
         DURATION_MS,
-        DAY5_CHARACTER_SETTINGS_DELAY_MS,
         getCue,
         getAllCues
     };

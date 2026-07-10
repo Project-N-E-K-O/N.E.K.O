@@ -1,0 +1,40 @@
+{
+  "survey_version": "0.8.3",
+  "title": "Has llegado hasta aquí con nosotros: los gatitos del equipo quieren saber qué piensas",
+  "intro": "Un minuto para ayudarnos a mejorar. Todo es opcional y puedes saltarlo cuando quieras.",
+  "questions": [
+    {
+      "id": "keep_one",
+      "type": "single",
+      "label": "Si el equipo solo pudiera pulir una función a partir de ahora, ¿cuál querrías que fuera?",
+      "options": [
+        { "value": "chat", "label": "Chat de texto" },
+        { "value": "voice", "label": "Chat de voz" },
+        { "value": "proactive", "label": "Mensajes espontáneos" },
+        { "value": "games", "label": "Minijuegos e interacción" },
+        { "value": "appearance", "label": "Apariencia y outfits" }
+      ]
+    },
+    {
+      "id": "drop_one",
+      "type": "single",
+      "label": "Si tuviéramos que pausar las actualizaciones de una función por falta de recursos, ¿cuál echarías menos en falta?",
+      "options": [
+        { "value": "chat", "label": "Chat de texto" },
+        { "value": "voice", "label": "Chat de voz" },
+        { "value": "proactive", "label": "Mensajes espontáneos" },
+        { "value": "games", "label": "Minijuegos e interacción" },
+        { "value": "appearance", "label": "Apariencia y outfits" }
+      ]
+    },
+    {
+      "id": "suggestion",
+      "type": "text",
+      "label": "¿Algo más que quieras contarnos? Quejas o deseos, todo es bienvenido.",
+      "placeholder": "p. ej., qué te ha dado ganas de cerrarlo últimamente, la función que más te gustaría mejorar, o simplemente algo para los gatitos del equipo… (opcional)",
+      "placeholder_from": "keep_one",
+      "placeholder_template": "¿Hacia dónde te gustaría que llevásemos «{label}»? Otras ideas también son bienvenidas. (opcional)",
+      "max_length": 500
+    }
+  ]
+}

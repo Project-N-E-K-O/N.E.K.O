@@ -1,6 +1,6 @@
 # はじめに
 
-**Project N.E.K.O.**（**N**etworked **E**mpathetic **K**nowledging **O**rganism）は、リアルタイムの音声/テキストインタラクション、Live2D/VRMモデルレンダリング、永続的メモリ、エージェントベースのタスク実行を統合したオープンソースAIコンパニオンプラットフォームです。
+**Project N.E.K.O.**（**N**etworked **E**motional **K**nowledging **O**rganism）は、リアルタイムの音声/テキストインタラクション、マルチ形態アバターレンダリング（Live2D / VRM / MMD / PNGTuber / 猫デスクトップペット）、永続的メモリ、エージェントベースのタスク実行を統合したオープンソースAIコンパニオンプラットフォームです。
 
 ## N.E.K.O. とは？
 

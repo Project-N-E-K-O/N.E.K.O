@@ -48,6 +48,7 @@ def _option_texts(data):
 def _expected_llm_kwargs():
     return {
         "max_completion_tokens": galgame_router.GALGAME_OPTION_MAX_TOKENS,
+        "provider_type": None,
         "timeout": galgame_router.GALGAME_OPTION_TIMEOUT_SECONDS,
     }
 
@@ -169,6 +170,7 @@ async def test_galgame_option_generation_timeout_returns_fallback(monkeypatch):
     assert _option_texts(data) == list(get_galgame_fallback_options("en"))
     assert captured["kwargs"] == {
         "max_completion_tokens": galgame_router.GALGAME_OPTION_MAX_TOKENS,
+        "provider_type": None,
         "timeout": 0.01,
     }
 

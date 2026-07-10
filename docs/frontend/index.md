@@ -11,6 +11,10 @@ N.E.K.O.'s frontend consists of three layers: traditional server-rendered pages,
 | Plugin manager | Vue 3 + Element Plus | `frontend/plugin-manager/` |
 | Live2D rendering | Pixi.js + Live2D Cubism SDK | `static/` |
 | VRM rendering | Three.js + @pixiv/three-vrm | `static/` |
+| MMD rendering | Three.js + MMD loader (PMX/PMD models + VMD animations) | `static/` (mmd-*.js) |
+| PNGTuber rendering | 2D image states (Canvas/IMG) + layered_canvas_v1 adapter | `static/pngtuber-core.js` |
+
+The desktop pet (桌宠) is a window **mode** (the Electron pet window loading `index.html`), not a separate avatar format — any of the avatar forms above renders inside it.
 
 ## Traditional frontend (static/ + templates/)
 
@@ -25,6 +29,8 @@ static/
 ├── locales/                  # i18n JSON files (en, zh-CN, zh-TW, ja, ko, ru, es, pt)
 ├── live2d-ui-*.js            # Live2D UI components
 ├── vrm-ui-*.js               # VRM UI components
+├── mmd-*.js                  # MMD rendering (Three.js, PMX/PMD + VMD)
+├── pngtuber-core.js          # PNGTuber rendering (Canvas/IMG)
 └── react/neko-chat/          # React chat window build output
 ```
 

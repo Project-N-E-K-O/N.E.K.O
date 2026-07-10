@@ -1685,6 +1685,11 @@
   window.addEventListener('keydown', e => {
     if (!isGameRuntimeReady()) return;
     if (isGameUiTarget(e.target)) return;
+    if (e.key === 'l' || e.key === 'L') {
+      e.preventDefault();
+      enableSoccerSessionDebugLog('keyboard_l');
+      return;
+    }
     if (e.key === 'r' || e.key === 'R') resetPositions();
     // 难度快捷键：u=max，i=lv2，o=lv3，p=lv4。
     const difficultyHotkey = { u: 'max', i: 'lv2', o: 'lv3', p: 'lv4' }[e.key.toLowerCase()];
@@ -3206,6 +3211,11 @@
     gameMemoryTailCount: null,
     soccerGameMemoryEnabled: false,
     loggedExternalInputKeys: new Set(),
+    sessionDebugLogEnabled: false,
+    sessionDebugLogEnableInFlight: false,
+    sessionDebugLogEnablePromise: null,
+    sessionDebugLogEnableGeneration: 0,
+    sessionDebugLogMutationHeaders: null,
     routeVoiceSttActive: false,
     routeVoiceSttListening: false,
     routeVoiceSttStopping: false,
@@ -3278,6 +3288,7 @@
     }).catch(() => {});
   }
   function _sendSoccerDebugLog(payload) {
+    if (!_llm.sessionDebugLogEnabled) return;
     const now = Date.now();
     if (now - _soccerDebugLogState.lastWindowStart > 60000) {
       _soccerDebugLogState.lastWindowStart = now;
@@ -3308,7 +3319,151 @@
         .catch(() => _postSoccerDebugLogPayload(logPayload));
       return;
     }
+    if (_llm.sessionDebugLogMutationHeaders) {
+      _postSoccerDebugLogPayload(logPayload, _llm.sessionDebugLogMutationHeaders);
+      return;
+    }
     _postSoccerDebugLogPayload(logPayload);
+  }
+  function _enableSoccerDebugLogWithHeaders(reason, mutationHeaders = {}) {
+    const debugLogMutationHeaders = { ...mutationHeaders };
+    const token = _soccerDebugCsrfTokenFromHeaders(mutationHeaders);
+    const payload = {
+      session_id: _llm.sessionId,
+      game_type: 'soccer',
+      lanlan_name: _llm.routeLanlanName || '',
+      source: 'soccer_demo',
+      reason,
+    };
+    const body = JSON.stringify(token ? { ...payload, _csrf_token: token } : payload);
+    return fetch('/api/game/logs/enable', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...mutationHeaders },
+      body,
+      keepalive: true,
+    }).then((response) => response.json().catch(() => ({ ok: false, reason: 'bad_json' })))
+      .then((result) => {
+        if (result && result.ok) {
+          _llm.sessionDebugLogMutationHeaders = debugLogMutationHeaders;
+        }
+        return result;
+      });
+  }
+  function resetSoccerSessionDebugLogEnableState() {
+    _llm.sessionDebugLogEnableGeneration += 1;
+    _llm.sessionDebugLogEnabled = false;
+    _llm.sessionDebugLogEnableInFlight = false;
+    _llm.sessionDebugLogEnablePromise = null;
+    _llm.sessionDebugLogMutationHeaders = null;
+  }
+  const SOCCER_SESSION_DEBUG_ENABLE_TIMEOUT_MS = 3500;
+  function _hasSoccerSessionDebugLogSendCredentials() {
+    const security = window.nekoLocalMutationSecurity;
+    return !!(
+      _llm.sessionDebugLogMutationHeaders ||
+      (security && (
+        typeof security.peekCachedToken === 'function' ||
+        typeof security.getMutationHeaders === 'function'
+      ))
+    );
+  }
+  function _enableSoccerSessionDebugLogAfterRouteStart() {
+    const generation = _llm.sessionDebugLogEnableGeneration;
+    if (_hasSoccerSessionDebugLogSendCredentials()) {
+      _llm.sessionDebugLogEnabled = true;
+      return Promise.resolve({ ok: true, reason: 'route_start_credentials_ready' });
+    }
+    if (_llm.sessionDebugLogEnableInFlight && _llm.sessionDebugLogEnablePromise) {
+      return _llm.sessionDebugLogEnablePromise;
+    }
+    _llm.sessionDebugLogEnableInFlight = true;
+    return _startSoccerSessionDebugLogEnablePromise(_getLocalMutationHeaders()
+      .then((headers) => {
+        if (_llm.sessionDebugLogEnableGeneration !== generation) {
+          return { ok: false, reason: 'stale_enable_result' };
+        }
+        const debugLogMutationHeaders = { ...(headers || {}) };
+        if (!_soccerDebugCsrfTokenFromHeaders(debugLogMutationHeaders)) {
+          return { ok: false, reason: 'missing_csrf_token' };
+        }
+        _llm.sessionDebugLogMutationHeaders = debugLogMutationHeaders;
+        return { ok: true, enableReason: 'route_start_send_gate' };
+      }), generation);
+  }
+  function _startSoccerSessionDebugLogEnablePromise(workPromise, generation) {
+    const isCurrentGeneration = () => _llm.sessionDebugLogEnableGeneration === generation;
+    const timeoutPromise = new Promise((resolve) => {
+      setTimeout(() => resolve({ ok: false, reason: 'enable_timeout' }), SOCCER_SESSION_DEBUG_ENABLE_TIMEOUT_MS);
+    });
+    const guardedWork = Promise.resolve(workPromise)
+      .then((result) => {
+        if (!isCurrentGeneration()) return { ok: false, reason: 'stale_enable_result' };
+        const enabledResult = onSoccerSessionDebugLogEnabled(result);
+        return enabledResult;
+      })
+      .catch((error) => {
+        if (!isCurrentGeneration()) return { ok: false, reason: 'stale_enable_error' };
+        return onSoccerSessionDebugLogEnableFailed(error);
+      });
+    _llm.sessionDebugLogEnablePromise = Promise.race([guardedWork, timeoutPromise])
+      .then((result) => {
+        if (!isCurrentGeneration()) return { ok: false, reason: 'stale_enable_result' };
+        if (result && result.reason === 'enable_timeout') {
+          _soccerDebugConsole.warn('[Soccer] [SessionLog] 小游戏场次诊断日志启用超时，稍后可重试');
+        }
+        return result;
+      })
+      .finally(() => {
+        if (isCurrentGeneration()) {
+          _llm.sessionDebugLogEnableInFlight = false;
+        }
+      });
+    return _llm.sessionDebugLogEnablePromise;
+  }
+  function onSoccerSessionDebugLogEnabled(result) {
+    if (result && result.ok) {
+      _llm.sessionDebugLogEnabled = true;
+      console.log('[Soccer] [SessionLog] 小游戏场次诊断日志已启用', {
+        sessionId: _llm.sessionId,
+        reason: result.enableReason || result.reason || 'unknown',
+      });
+    } else {
+      _soccerDebugConsole.warn('[Soccer] [SessionLog] 小游戏场次诊断日志启用失败', result || {});
+    }
+    return result;
+  }
+  function onSoccerSessionDebugLogEnableFailed(error) {
+    _soccerDebugConsole.warn('[Soccer] [SessionLog] 小游戏场次诊断日志启用请求失败', error);
+    return { ok: false, reason: 'request_failed' };
+  }
+  function enableSoccerSessionDebugLog(reason = 'keyboard') {
+    if (_llm.sessionDebugLogEnabled) return Promise.resolve({ ok: true, skipped: 'already_enabled' });
+    if (_llm.sessionDebugLogEnableInFlight && _llm.sessionDebugLogEnablePromise) {
+      return _llm.sessionDebugLogEnablePromise;
+    }
+    _llm.sessionDebugLogEnableInFlight = true;
+    const generation = _llm.sessionDebugLogEnableGeneration;
+    const security = window.nekoLocalMutationSecurity;
+    const withEnableReason = (result) => ({ ...(result || {}), enableReason: reason });
+    try {
+      if (security && typeof security.peekCachedToken === 'function') {
+        const token = security.peekCachedToken();
+        if (token) {
+          return _startSoccerSessionDebugLogEnablePromise(
+            _enableSoccerDebugLogWithHeaders(reason, { 'X-CSRF-Token': token }).then(withEnableReason),
+            generation
+          );
+        }
+      }
+    } catch (_) {}
+    if (security && typeof security.getMutationHeaders === 'function') {
+      return _startSoccerSessionDebugLogEnablePromise(Promise.resolve(security.getMutationHeaders())
+        .then((headers) => _enableSoccerDebugLogWithHeaders(reason, headers || {}))
+        .then(withEnableReason), generation);
+    }
+    return _startSoccerSessionDebugLogEnablePromise(_getLocalMutationHeaders()
+      .then((headers) => _enableSoccerDebugLogWithHeaders(reason, headers || {}))
+      .then(withEnableReason), generation);
   }
   function soccerSessionDebugLog(level, category, event, message, details = {}, sensitivePossible = false, options = {}) {
     try {
@@ -3327,6 +3482,7 @@
     } catch (_) {}
   }
   window.SoccerDemoDebugLog = soccerSessionDebugLog;
+  window.EnableSoccerSessionDebugLog = enableSoccerSessionDebugLog;
   window.addEventListener('error', (event) => {
     soccerSessionDebugLog('error', 'frontend', 'window_error', event.message || '前端脚本错误', {
       filename: event.filename || '',
@@ -3861,6 +4017,7 @@
 	  async function _startGameRoute() {
 	    try {
 	      window.__SoccerLoading?.beginStart?.(_i18n('loading.beginStartDefault', '分析开局上下文…'));
+	      resetSoccerSessionDebugLogEnableState();
 	      const resp = await fetch('/api/game/soccer/route/start', {
 	        method: 'POST',
 	        headers: { 'Content-Type': 'application/json' },
@@ -3868,6 +4025,7 @@
 	      });
 	      const data = await resp.json().catch(() => ({}));
 	      if (data.ok) {
+	        _enableSoccerSessionDebugLogAfterRouteStart();
 	        _llm.routeLanlanName = data.state?.lanlan_name || _llm.routeLanlanName || '';
 	        console.log('[SoccerRoute] 已接管主语音入口/主聊天窗:', data.state);
 	        _applyPreGameContext(data.state);

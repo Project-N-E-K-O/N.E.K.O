@@ -2,22 +2,24 @@
 
 ```
 N.E.K.O/
-├── main_server.py              # 主服务器入口（端口 48911）
-├── memory_server.py            # 记忆服务器入口（端口 48912）
-├── agent_server.py             # 智能体服务器入口（端口 48915）
 ├── launcher.py                 # 桌面启动器（Steam/exe）
-├── monitor.py                  # 监控服务
+│
+├── app/                        # 服务器进程入口
+│   ├── main_server.py          # 主服务器入口（端口 48911）
+│   ├── memory_server.py        # 记忆服务器入口（端口 48912）
+│   ├── agent_server.py         # 智能体服务器入口（端口 48915）
+│   └── monitor.py              # 监控服务
 │
 ├── brain/                      # 智能体与任务执行
 │   ├── task_executor.py        # 主任务执行引擎
 │   ├── computer_use.py         # 计算机视觉/交互
 │   ├── browser_use_adapter.py  # 浏览器自动化适配器
-│   ├── mcp_client.py           # Model Context Protocol 客户端
-│   ├── planner.py              # 任务规划与分解
-│   ├── analyzer.py             # 结果分析
+│   ├── openclaw_adapter.py     # OpenClaw 适配器
+│   ├── openfang_adapter.py     # OpenFang 适配器
+│   ├── plugin_filter.py        # 智能体工具的插件筛选
 │   ├── deduper.py              # 重复检测
-│   ├── processor.py            # 任务处理流水线
-│   └── agent_session.py        # 智能体会话管理
+│   ├── agent_session.py        # 智能体会话管理
+│   └── cua/                    # 计算机使用智能体子包
 │
 ├── config/                     # 配置
 │   ├── __init__.py             # 常量、默认值、端口定义
@@ -30,7 +32,7 @@ N.E.K.O/
 │   ├── core.py                 # LLMSessionManager（中央会话处理器）
 │   ├── omni_realtime_client.py # Realtime API WebSocket 客户端
 │   ├── omni_offline_client.py  # 文本/Response API 客户端（离线回退）
-│   ├── tts_client.py           # TTS 引擎适配器（CosyVoice、GPT-SoVITS）
+│   ├── tts_client/             # TTS 引擎适配器包（CosyVoice、GPT-SoVITS 等）
 │   ├── cross_server.py         # 服务间通信
 │   └── agent_event_bus.py      # ZeroMQ 事件桥（主服务器 ↔ 智能体）
 │
@@ -67,7 +69,6 @@ N.E.K.O/
 │   ├── frontend_utils.py       # 模型发现、文本工具
 │   ├── api_config_loader.py    # API 提供商解析
 │   ├── logger_config.py        # 日志配置（含速率限制）
-│   ├── translation_service.py  # 基于 LLM 的翻译
 │   ├── workshop_utils.py       # Steam 创意工坊辅助工具
 │   ├── web_scraper.py          # 网页内容抓取与过滤
 │   └── screenshot_utils.py     # 截图处理（用于视觉 API）
@@ -108,6 +109,6 @@ N.E.K.O/
 |------|------|------|
 | `main_logic/core.py` | ~2300 | 中央会话管理器 —— 系统的核心 |
 | `utils/config_manager.py` | ~1500 | 配置加载、验证、持久化 |
-| `main_logic/tts_client.py` | ~2300 | 多提供商 TTS 合成 |
+| `main_logic/tts_client/` | ~1300 | 多提供商 TTS 合成包 |
 | `brain/task_executor.py` | ~1600 | 智能体任务规划与执行 |
 | `utils/web_scraper.py` | ~1900 | 用于主动聊天的网页内容抓取 |
