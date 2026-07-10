@@ -331,6 +331,28 @@ async def test_minimax_design_payload_and_parse():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("resolved_base_url", "expected"),
+    [
+        ("https://api.minimaxi.com", "https://api.minimaxi.com/v1/voice_design"),
+        ("https://api.minimax.io", "https://api.minimax.io/v1/voice_design"),
+    ],
+)
+def test_minimax_voice_design_url_preserves_provider_region(resolved_base_url, expected):
+    from main_routers import characters_router as cr
+
+    assert cr._minimax_voice_design_url(resolved_base_url) == expected
+
+
+@pytest.mark.unit
+def test_minimax_voice_design_url_rejects_missing_resolved_base_url():
+    from main_routers import characters_router as cr
+
+    with pytest.raises(ValueError, match="base URL is required"):
+        cr._minimax_voice_design_url("")
+
+
+@pytest.mark.unit
 async def test_cosyvoice_design_network_error_is_actionable():
     from main_routers import characters_router as cr
 

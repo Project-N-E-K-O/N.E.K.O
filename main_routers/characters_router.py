@@ -1725,9 +1725,9 @@ async def _cosyvoice_design_voice(
 
 
 def _minimax_voice_design_url(base_url: str) -> str:
-    raw = (base_url or get_minimax_base_url("minimax")).strip().rstrip("/")
+    raw = base_url.strip().rstrip("/")
     if not raw:
-        raw = get_minimax_base_url("minimax")
+        raise ValueError("MiniMax voice design base URL is required")
     if raw.endswith("/v1/voice_design"):
         return raw
     if raw.endswith("/v1"):
