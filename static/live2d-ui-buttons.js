@@ -216,8 +216,11 @@ Live2DManager.prototype.setupHTMLLockIcon = function(model) {
             const targetX = bounds.right * 0.7 + bounds.left * 0.3;
             const targetY = bounds.top * 0.3 + bounds.bottom * 0.7;
 
+            const maxLockTop = typeof window.getNekoYuiGuideLockIconMaxTop === 'function'
+                ? window.getNekoYuiGuideLockIconMaxTop(screenHeight - 40, 40)
+                : screenHeight - 40;
             lockIcon.style.left = `${Math.max(0, Math.min(targetX, screenWidth - 40))}px`;
-            lockIcon.style.top = `${Math.max(0, Math.min(targetY, screenHeight - 40))}px`;
+            lockIcon.style.top = `${Math.max(0, Math.min(targetY, maxLockTop))}px`;
 
             const lockRect = lockIcon.getBoundingClientRect();
             let isOverlapped = false;

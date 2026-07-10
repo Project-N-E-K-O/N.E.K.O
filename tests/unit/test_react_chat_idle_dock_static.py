@@ -423,6 +423,49 @@ def test_idle_dock_uses_mutation_observer_to_detect_minimize_completion():
     assert "shell.classList.remove('is-minimized', 'is-collapsing', 'is-idle-docked')" in source
 
 
+def test_minimize_collapse_deferred_scale_write_is_cancellable():
+    source = _read(APP_REACT_CHAT_WINDOW_PATH)
+    minimize_block = _between(
+        source,
+        "if (willMinimize) {",
+        "        } else {",
+    )
+
+    assert "var collapseScaleFrame = 0;" in minimize_block
+    assert "var collapseScaleInnerFrame = 0;" in minimize_block
+    assert "function cancelCollapseScaleFrames()" in minimize_block
+    assert "window.cancelAnimationFrame(collapseScaleFrame)" in minimize_block
+    assert "window.cancelAnimationFrame(collapseScaleInnerFrame)" in minimize_block
+    assert minimize_block.count("cancelCollapseScaleFrames();") >= 2
+    assert (
+        "if (handled || !shell.classList.contains('is-collapsing') || "
+        "shell.classList.contains('is-minimized')) return;"
+    ) in minimize_block
+
+
+def test_idle_dock_minimize_fallback_preserves_pending_surface_mode():
+    source = _read(APP_REACT_CHAT_WINDOW_PATH)
+    fallback_block = _between(
+        source,
+        "function scheduleIdleDockMinimizeFallback(shell) {",
+        "function getElectronIdleDockBridge() {",
+    )
+
+    assert "var pendingSurfaceMode = pendingChatSurfaceMode;" in fallback_block
+    assert "var pendingSurfaceCommit = pendingMinimizedSurfaceCommit;" in fallback_block
+    assert "pendingChatSurfaceMode = pendingSurfaceMode;" in fallback_block
+    assert "pendingMinimizedSurfaceCommit = pendingSurfaceCommit;" in fallback_block
+    assert "commitPendingMinimizedSurfaceMode();" in fallback_block
+    assert "flushPendingChatSurfaceModeIfNeeded();" in fallback_block
+    assert (
+        "if (!minimized || getCurrentChatSurfaceMode() !== 'minimized') {"
+    ) in fallback_block
+
+    flush_index = fallback_block.index("flushPendingChatSurfaceModeIfNeeded();")
+    finish_index = fallback_block.index("finishIdleDockMinimize(latestShell);")
+    assert flush_index < finish_index
+
+
 def test_idle_dock_does_not_follow_return_ball_after_initial_dock():
     source = _read(APP_REACT_CHAT_WINDOW_PATH)
     electron_return_block = _between(

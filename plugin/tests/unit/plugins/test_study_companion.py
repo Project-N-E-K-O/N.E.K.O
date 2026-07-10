@@ -573,6 +573,34 @@ async def test_start_awareness_loop_runs_async_tick_and_pushes_context(
 
 
 @pytest.mark.asyncio
+async def test_start_awareness_loop_primes_first_push_before_uptime_interval(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin = StudyCompanionPlugin(
+        _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
+    )
+    plugin._cfg = StudyConfig(
+        awareness=AwarenessConfig(
+            enabled=True,
+            snapshot_interval_seconds=60,
+            push_to_llm_mode="read",
+            os_signals_enabled=False,
+        )
+    )
+    plugin._ocr_pipeline = object()
+    monkeypatch.setattr(study_companion_module.time, "monotonic", lambda: 10.0)
+
+    plugin.start_awareness_loop()
+    try:
+        assert plugin._last_awareness_push_at == pytest.approx(-290.0)
+        assert plugin._should_push_context() is True
+    finally:
+        plugin.stop_awareness_loop()
+        await plugin._await_awareness_stop()
+
+
+@pytest.mark.asyncio
 async def test_awareness_tick_counts_unusable_snapshot_as_idle(tmp_path: Path) -> None:
     class _NoActivitySnapshot:
         status = "ok"

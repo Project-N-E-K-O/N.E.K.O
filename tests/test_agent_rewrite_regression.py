@@ -276,6 +276,16 @@ def test_standalone_agent_hud_show_hide_keeps_origin_position():
     assert "translateY(-50%) translateX(20px)" in hide_body
 
 
+def test_agent_hud_viewport_clamp_uses_layout_for_non_pixel_positions():
+    hud_source = Path("static/common-ui-hud.js").read_text(encoding="utf-8")
+
+    assert "function getAgentHudPixelCoordinate(value, fallback)" in hud_source
+    assert "normalized.endsWith('px') && Number.isFinite(numeric)" in hud_source
+    assert "const currentLeft = getAgentHudPixelCoordinate(hud.style.left, rect.left);" in hud_source
+    assert "const currentTop = getAgentHudPixelCoordinate(hud.style.top, rect.top);" in hud_source
+    assert "Number.isFinite(parseFloat(hud.style.top))" not in hud_source
+
+
 def test_agent_server_expected_event_driven_endpoints_exist():
     paths = _route_paths_from_decorators("app/agent_server.py", "app")
     for expected in {
@@ -1437,12 +1447,18 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     assert "mmdCanvas: readPointerEvents('mmd-canvas')" in tutorial_source
     assert "const hasSnapshotPointerEvents = snapshot.pointerEvents" in avatar_interaction_restore_block
     assert "const snapshotPointerEvents = hasSnapshotPointerEvents ? snapshot.pointerEvents[pointerKey] : null;" in avatar_interaction_restore_block
+    assert "function restoreAvatarPointerEvents(element, elementId, snapshotPointerEvents, hasSnapshotPointerEvents)" in avatar_interaction_restore_block
     assert "if (hasSnapshotPointerEvents && snapshotPointerEvents) {" in avatar_interaction_restore_block
     assert "element.style.pointerEvents = snapshotPointerEvents;" in avatar_interaction_restore_block
     assert "element.style.pointerEvents = snapshot.pointerEvents[pointerKey] || '';" not in avatar_interaction_restore_block
     assert "activePrefix === 'live2d' || activePrefix === 'pngtuber'" in avatar_interaction_restore_block
+    assert "const isActiveAvatarContainer = elementId === `${activePrefix}-container`;" in avatar_interaction_restore_block
+    assert "if (isActiveAvatarContainer && (activePrefix === 'live2d' || activePrefix === 'pngtuber')) {" in avatar_interaction_restore_block
+    assert "element.style.setProperty('pointer-events', 'none', 'important');" in avatar_interaction_restore_block
+    assert "restoreAvatarPointerEvents(element, elementId, snapshotPointerEvents, hasSnapshotPointerEvents);" in avatar_interaction_restore_block
     assert "element.style.removeProperty('pointer-events');" in avatar_interaction_restore_block
     assert "element.style.pointerEvents = activeLocked ? 'none' : 'auto';" in avatar_interaction_restore_block
+    assert avatar_interaction_restore_block.index("const isActiveAvatarContainer = elementId === `${activePrefix}-container`;") < avatar_interaction_restore_block.index("if (hasSnapshotPointerEvents && snapshotPointerEvents) {")
     assert "this.restoreAvatarFloatingModelInteractionState('teardown-early');" in tutorial_source
     assert ".then(() => this.clearTutorialYuiLive2dRuntimeResidue('tutorial-avatar-restored'))" in tutorial_source
     assert ".then(() => this.restoreAvatarFloatingModelInteractionState('tutorial-avatar-restored'))" in tutorial_source
@@ -1799,15 +1815,14 @@ def test_avatar_floating_tutorial_boot_predictor_contract():
     assert "markUserModelBootSkipped" in predictor_source
     assert "claimDirectTutorialBoot" in predictor_source
     assert "releaseDirectTutorialBoot" in predictor_source
-    assert "beginDirectTutorialLoading" in predictor_source
-    assert "clearDirectTutorialLoading" in predictor_source
-    assert "window.nekoTutorialLoadingOverlay" in predictor_source
-    assert "function isPcLoadingOverlayBridge(bridge)" in predictor_source
-    assert "window.nekoTutorialOverlay.loadingOverlay" in predictor_source
-    assert "isPcLoadingOverlayBridge(window.nekoTutorialOverlay)" in predictor_source
-    assert "window.nekoTutorialOverlay.beginLoading" in predictor_source
     assert "yuiGuidePcOverlayRunId" in predictor_source
-    assert "emotion_model_icon.png" in predictor_source
+    assert "beginDirectTutorialLoading" not in predictor_source
+    assert "clearDirectTutorialLoading" not in predictor_source
+    assert "window.nekoTutorialLoadingOverlay" not in predictor_source
+    assert "function isPcLoadingOverlayBridge(bridge)" not in predictor_source
+    assert "window.nekoTutorialOverlay.loadingOverlay" not in predictor_source
+    assert "window.nekoTutorialOverlay.beginLoading" not in predictor_source
+    assert "emotion_model_icon.png" not in predictor_source
     assert "function isTutorialBootAvailable()" in predictor_source
     assert "window.innerWidth <= 768" in predictor_source
     assert "window.innerWidth <= 768" in manager_source
@@ -1880,7 +1895,7 @@ def test_avatar_floating_direct_tutorial_boot_uses_manager_recheck_and_user_mode
     assert "window.NekoAvatarFloatingBoot.claimDirectTutorialBoot" in tutorial_source
     assert "window.NekoAvatarFloatingBoot.releaseDirectTutorialBoot" in tutorial_source
     assert "window.NekoAvatarFloatingBoot.recoverUserModelBoot" in tutorial_source
-    assert "window.NekoAvatarFloatingBoot.clearDirectTutorialLoading" in tutorial_source
+    assert "window.NekoAvatarFloatingBoot.clearDirectTutorialLoading" not in tutorial_source
     assert "getDirectAvatarFloatingTutorialBootRound()" in tutorial_source
 
     start_round_block = tutorial_source.split("async startAvatarFloatingGuideRound(day, options = {})", 1)[1].split(
@@ -1893,7 +1908,7 @@ def test_avatar_floating_direct_tutorial_boot_uses_manager_recheck_and_user_mode
     assert "await this.waitForFloatingButtons()" in start_round_block
     assert "this.claimDirectAvatarFloatingTutorialBoot(round, source);" in start_round_block
     assert "skipSourceModelFade: directTutorialBoot" in start_round_block
-    assert "this.clearDirectAvatarFloatingTutorialLoading('avatar-floating-yui-ready');" in start_round_block
+    assert "clearDirectAvatarFloatingTutorialLoading" not in start_round_block
     assert "await this.recoverUserModelAfterDirectTutorialBootFailure('avatar-floating-start-failed')" in start_round_block
     assert "this.releaseDirectAvatarFloatingTutorialBoot('avatar-floating-before-teardown', {" in start_round_block
     assert "keepUserModelBootSkipped: true" in start_round_block
@@ -1956,7 +1971,8 @@ def test_avatar_floating_direct_boot_does_not_wait_for_user_floating_buttons():
     assert "const directBootRound = this.getDirectAvatarFloatingTutorialBootRound();" in check_block
     assert "this.isDirectAvatarFloatingTutorialBoot(directBootRound)" in check_block
     assert "const round = this.getHomeAvatarFloatingGuideLaunchRound();" in check_block
-    assert "this.beginDirectAvatarFloatingTutorialLoading('startup-direct-tutorial-predicted');" in check_block
+    assert "beginDirectAvatarFloatingTutorialLoading" not in tutorial_source
+    assert "clearDirectAvatarFloatingTutorialLoading" not in tutorial_source
     assert "this.pendingTutorialStartSource = 'manual_reset';" in check_block
     assert "this.startTutorialWhenI18nReady(1500);" in check_block
     assert check_block.index("this.isDirectAvatarFloatingTutorialBoot(directBootRound)") < check_block.index(

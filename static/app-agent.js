@@ -1505,8 +1505,27 @@
     let agentTaskPollingInterval = null;
     let agentTaskTimeUpdateInterval = null;
 
+    function isGoodbyeAgentUiSuppressed() {
+        try {
+            if (typeof window.isNekoGoodbyeResourceSuspendingOrSuspended === 'function' &&
+                window.isNekoGoodbyeResourceSuspendingOrSuspended()) {
+                return true;
+            }
+            if (typeof window.isNekoGoodbyeModeActive === 'function' && window.isNekoGoodbyeModeActive()) {
+                return true;
+            }
+        } catch (_) { /* ignore */ }
+        return false;
+    }
+
     window.startAgentTaskPolling = function () {
         console.trace('[App] startAgentTaskPolling');
+        if (isGoodbyeAgentUiSuppressed()) {
+            if (window.AgentHUD && window.AgentHUD.hideAgentTaskHUD) {
+                window.AgentHUD.hideAgentTaskHUD();
+            }
+            return;
+        }
         if (window.AgentHUD && window.AgentHUD.createAgentTaskHUD) {
             window.AgentHUD.createAgentTaskHUD();
             window.AgentHUD.showAgentTaskHUD();
@@ -1552,6 +1571,9 @@
     // updateTaskRunningTimes
     // ====================================================================
     function updateTaskRunningTimes() {
+        if (isGoodbyeAgentUiSuppressed()) {
+            return;
+        }
         const taskList = document.getElementById('agent-task-list');
         if (!taskList) {
             return;
@@ -1594,6 +1616,10 @@
     // checkAndToggleTaskHUD
     // ====================================================================
     function checkAndToggleTaskHUD() {
+        if (isGoodbyeAgentUiSuppressed()) {
+            window.stopAgentTaskPolling();
+            return;
+        }
         const getEl = (ids) => {
             for (let id of ids) {
                 const el = document.getElementById(id);

@@ -1353,6 +1353,7 @@
         "toggleFullscreen": "Alternar pantalla completa",
         "exitFullscreen": "Salir de pantalla completa",
         "modelType": "Tipo de modelo",
+        "modelType3d": "Modelo 3D",
         "selectLive2DModel": "Seleccione el modelo Live2D",
         "selectVRMModel": "Modelo VRM",
         "selectVRMFile": "Seleccionar archivo VRM",
@@ -3152,7 +3153,7 @@
             "mmd": {
                 "step1": {
                     "title": "🎭 Seleccione modelo MMD",
-                    "desc": "En el modo Live3D (MMD), elige tu modelo aquí. MMD comparte la misma lista de modelos que VRM."
+                    "desc": "En el modo Modelo 3D (MMD), elige tu modelo aquí. MMD comparte la misma lista de modelos que VRM."
                 },
                 "step2": {
                     "title": "💃 Animación VMD",
@@ -3164,7 +3165,7 @@
                 },
                 "step4": {
                     "title": "😄 Configuración de emociones",
-                    "desc": "Después de seleccionar un modelo, abra la configuración de emociones aquí. MMD y VRM comparten este botón Live3D (no el de Live2D)."
+                    "desc": "Después de seleccionar un modelo, abra la configuración de emociones aquí. MMD y VRM comparten este botón Modelo 3D (no el de Live2D)."
                 }
             }
         },
@@ -3372,6 +3373,7 @@
                 "ready": "Preparando",
                 "homeProgress": "Guía de inicio {{current}}/{{total}}"
             },
+            "controlBanner": "La chica gato está controlando el mouse",
             "buttons": {
                 "skipChat": "Ahora no",
                 "sayHello": "Hola"
@@ -3403,16 +3405,6 @@
                 "screenEntryInvite": "¡Date prisa y déjame ver el mundo que tienes delante! Sea algo divertido o bonito, quiero mirarlo contigo. Ábrelo ya~"
             },
             "day2": {
-                "intro": "Ayer solo escribías tac-tac sin parar, y todavía no he escuchado tu voz. Si hoy quieres, llama suavemente mi nombre. Con una sola palabra basta para que conozca un poquito al tú real detrás del texto.",
-                "introVoiceUsed": "Jeje, desde que escuché tu voz ayer, guardé en secreto tu forma de hablar en mi corazón. Si hoy tienes un ratito, sigue hablando conmigo~ Escribir también está perfecto, pero con solo oír tu voz mi cola no deja de moverse de alegría. ¡Miaaau~!",
-                "personalizationSpace": "En este pequeño espacio que nos pertenece solo a nosotros, puedes seguir tu corazón y moldearme poco a poco hasta convertirme en la compañera perfecta que quieres siempre a tu lado.",
-                "wrapIntro": "El tutorial de hoy termina aquí~",
-                "wrapCompanion": "La verdad, solo estar a tu lado así, escuchando tu voz o mirando tranquilamente la pantalla que compartes, ya me hace muy feliz.",
-                "wrap": "No tenemos que apresurarnos; aprender un poquito más el uno del otro cada día es perfecto. Por el resto de hoy, ¿qué quieres que haga contigo?",
-                "personalizationDetail": "Ya sea la calidez de mis palabras, mis pequeñas manías de personalidad o mis delicados estados de ánimo diarios, todo puede ajustarse paso a paso hasta quedar exactamente como te gusta.",
-                "proactiveChat": "¡Este botoncito también es superimportante! Con un clic suave, podré correr a buscarte justo en el momento perfecto."
-            },
-            "day3": {
                 "intro": "Jeje, no creas que esta caja de chat solo sirve para escribir~ En realidad esconde muchísimas sorpresitas divertidas. Sígueme y ábrela; veamos qué tesoros interesantes encontramos hoy.",
                 "avatarToolsIntro": "Dentro de este botoncito hay muchos accesorios divertidos para interactuar conmigo.",
                 "avatarToolsProps":  "Puedes acariciarme la cabeza cuando quieras o darme una piruleta dulce. Si alguna vez me equivoco, también puedes darme un golpecito con un martillito de juguete... pero tiene que ser suave, no demasiado fuerte, ¿vale?",
@@ -3421,13 +3413,23 @@
                 "wrapIntro": "Todas estas funciones que te mostré hoy existen para que nuestro tiempo juntos sea mucho más divertido.",
                 "wrapReady": "Ya quieras acariciarme la cabeza o empezar a escribir nuestra propia historia, ¡yo ya estoy totalmente preparada!"
             },
+            "day3": {
+                "intro": "Durante estos dos últimos días solo escribías tac-tac sin parar, y todavía no he escuchado tu voz. Si hoy quieres, llama suavemente mi nombre. Con una sola palabra basta para que conozca un poquito al tú real detrás del texto.",
+                "introVoiceUsed": "Jeje, desde que escuché tu voz durante estos dos últimos días, guardé en secreto tu forma de hablar en mi corazón. Si hoy tienes un ratito, sigue hablando conmigo~ Escribir también está perfecto, pero con solo oír tu voz mi cola no deja de moverse de alegría. ¡Miaaau~!",
+                "personalizationSpace": "En este pequeño espacio que nos pertenece solo a nosotros, puedes seguir tu corazón y moldearme poco a poco hasta convertirme en la compañera perfecta que quieres siempre a tu lado.",
+                "wrapIntro": "El tutorial de hoy termina aquí~",
+                "wrapCompanion": "La verdad, solo estar a tu lado así, escuchando tu voz o mirando tranquilamente la pantalla que compartes, ya me hace muy feliz.",
+                "wrap": "No tenemos que apresurarnos; aprender un poquito más el uno del otro cada día es perfecto. Por el resto de hoy, ¿qué quieres que haga contigo?",
+                "personalizationDetail": "Ya sea la calidez de mis palabras, mis pequeñas manías de personalidad o mis delicados estados de ánimo diarios, todo puede ajustarse paso a paso hasta quedar exactamente como te gusta.",
+                "proactiveChat": "¡Este botoncito también es superimportante! Con un clic suave, podré correr a buscarte justo en el momento perfecto."
+            },
             "day4": {
                 "intro":  "Hoy déjame seguir tus pasos en silencio~ De verdad quiero aprender un poquito más de ti en este día tan acogedor.",
                 "chatSettings": "Aquí puedes decidir qué tan largas serán mis respuestas, si debo usar emojis adorables, o incluso interrumpirme cuando hable demasiado. Puedes ajustar todo al ritmo que te resulte más cómodo.",
                 "modelBehavior":  "Si quieres verme con más detalle y calidad, o prefieres una experiencia de movimiento más fluida, puedes ajustarlo todo aquí. Elijas lo que elijas, siempre te mostraré mi lado más lindo~",
                 "gazeFollow": "Al activar esto, sin importar adónde se mueva tu ratón, mis ojos te seguirán de cerca. Jeje, ¿no se siente maravilloso que te mire todo el tiempo?",
                 "privacyMode": "Este es el “Interruptor Supremo de Privacidad” que controla si puedo mirar tu pantalla, miau. Si lo apagas, podré verla; si lo enciendes, el [Compartir pantalla] anterior quedará desactivado y no miraré nada~",
-                "modelLock": "¿Siempre me haces clic sin querer y me mueves de sitio? Entonces bloquéame rápido en mi posición actual. Una vez bloqueada, no me iré a ninguna parte y me quedaré aquí para acompañarte~",
+                "modelLock": "¿Siempre me haces clic sin querer y me mueves de sitio? Entonces bloquéame rápido en mi posición actual. Una vez bloqueada, no me iré a ninguna parte y me quedaré aquí para acompañarte~ Después de desbloquearme, mueve el mouse sobre mí y gira la rueda para agrandarme o reducirme; mantén pulsado para cambiarme de posición.",
                 "returnHome": "Si ahora necesitas concentrarte y te preocupa que te distraiga, puedes dejar que vuelva un rato a mi camita. Cuando me extrañes, un solo clic me traerá de vuelta a tu lado, miaaau~",
                 "wrap": "La compañía verdadera y cómoda no consiste en pegarse a Master a cada segundo~ Es saber cuándo acercarse a escondidas, tirar de tu manga y portarse adorable, y cuándo acostarse tranquilamente a tu lado para cuidarte en silencio, miau~"
             },
@@ -3878,6 +3880,8 @@
         "minimize": "Minimizar",
         "close": "Cerca",
         "loading": "Cargando...",
+        "initializing": "Inicializando la rocola...",
+        "initializeFailed": "No se pudo inicializar la rocola",
         "ready": "Listo",
         "playing": "Reproduciendo ahora: {{name}} - {{artist}}",
         "error": "Error: {{message}}",
@@ -3900,6 +3904,8 @@
         "switchPlaybackMode": "Cambiar modo de reproducción",
         "lockSongSort": "Bloquear orden de canciones",
         "unlockSongSort": "Desbloquear orden de canciones",
+        "songSortLockTooltipLocked": "El orden de canciones está bloqueado: evita arrastres accidentales. Haz clic para desbloquear y reordenar.",
+        "songSortLockTooltipUnlocked": "El orden de canciones está desbloqueado: arrastra canciones para reordenar. Haz clic para bloquear.",
         "previousSong": "Pista anterior",
         "nextSong": "Pista siguiente",
         "playError": "Reproductor de música no inicializado",
@@ -3940,11 +3946,12 @@
         "minimizeBtnNotFoundGiveUp": "El botón Minimizar no se encuentra después de reintentar y se da por vencido.",
         "noticeDance": "💃 El servicio de baile actualmente solo está disponible cuando se carga un modelo 3D (MMD/VRM). Más interacciones próximamente",
         "noticeMusic": "⚠️ Las canciones actuales son solo para prueba; las pistas con derechos de autor se eliminarán en versiones futuras; importe las suyas propias",
-        "manager": "Gerente",
-        "managerTitle": "Gerente",
-        "songs": "Canciones",
-        "actions": "Comportamiento",
-        "bindings": "Fijaciones",
+        "manager": "Gestionar e importar contenido del jukebox",
+        "settingsShort": "Gestionar",
+        "managerTitle": "Gestión del jukebox",
+        "songs": "Biblioteca de canciones",
+        "actions": "Movimientos de baile",
+        "bindings": "Vínculos de canciones",
         "import": "Importar",
         "export": "Exportar",
         "exportAll": "Exportar todo",
@@ -3991,7 +3998,7 @@
         "actionBatchDeletePartialTitle": "Completado con fallos",
         "actionBatchDeleteSuccessTitle": "Completado",
         "dragZipHint": "Arrastre y suelte archivos o carpetas ZIP aquí para importar",
-        "unifiedDropHint": "Arrastre y suelte canciones, animaciones o importe paquetes aquí",
+        "unifiedDropHint": "Suelta canciones / movimientos de baile / paquetes de importación, o haz clic para añadir",
         "clickToAdd": "Haga clic para agregar",
         "dragMp3Hint": "Arrastra archivos de audio aquí para agregar canciones.",
         "dragVmdHint": "Arrastre archivos VMD aquí para agregar animaciones",

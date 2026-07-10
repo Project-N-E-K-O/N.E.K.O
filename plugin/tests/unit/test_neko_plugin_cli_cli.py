@@ -365,7 +365,7 @@ def test_init_repo_uses_market_repository_name_and_keeps_plugin_id(
     assert not (tmp_path / "market_demo").exists()
     plugin_toml_text = (repo_dir / "plugin.toml").read_text(encoding="utf-8")
     assert 'id = "market_demo"' in plugin_toml_text
-    assert 'entry = "plugins.market_demo:MarketDemoPlugin"' in plugin_toml_text
+    assert 'entry = "plugin.plugins.market_demo:MarketDemoPlugin"' in plugin_toml_text
     assert "store.db" in (repo_dir / ".gitignore").read_text(encoding="utf-8")
     assert (repo_dir / ".github" / "workflows" / "verify.yml").is_file()
     release_workflow = repo_dir / ".github" / "workflows" / "release.yml"
@@ -377,6 +377,7 @@ def test_init_repo_uses_market_repository_name_and_keeps_plugin_id(
 
     messages = [message for _level, message in validate_plugin_dir(repo_dir, strict=True)]
     assert not any("does not match directory name" in message for message in messages)
+    assert not any("plugin.entry should usually start with" in message for message in messages)
 
     check_exit = neko_plugin_cli.main(["check", "market_demo", "--plugins-root", str(tmp_path)])
     assert check_exit == 0

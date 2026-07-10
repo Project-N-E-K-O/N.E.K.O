@@ -36,8 +36,8 @@ test('normalizeTutorialScene maps legacy capsule spotlight and wobble cursor int
 
 test('normalizeTutorialScene maps click scenes to cursor click and blocking operation commands', () => {
     const scene = normalizeTutorialScene({
-        id: 'day3_avatar_tools',
-        voiceKey: 'avatar_floating_day3_avatar_tools_intro',
+        id: 'day2_avatar_tools',
+        voiceKey: 'avatar_floating_day2_avatar_tools_intro',
         target: 'chat-tool-toggle',
         cursorAction: 'click',
         operation: 'open-compact-tool-fan',
@@ -56,7 +56,7 @@ test('normalizeTutorialScene maps click scenes to cursor click and blocking oper
     assert.equal(click.target, 'chat-tool-toggle');
     assert.equal(click.blocking, true);
     assert.deepEqual(click.onStart, [{
-        id: 'day3_avatar_tools:operation',
+        id: 'day2_avatar_tools:operation',
         command: 'operation.run',
         operation: 'open-compact-tool-fan',
         trigger: 'onClickStart',
@@ -66,8 +66,8 @@ test('normalizeTutorialScene maps click scenes to cursor click and blocking oper
 
 test('normalizeTutorialScene maps hold scenes to explicit cursor hold without move or operation commands', () => {
     const scene = normalizeTutorialScene({
-        id: 'day3_galgame_choices',
-        voiceKey: 'avatar_floating_day3_galgame_choices',
+        id: 'day2_galgame_choices',
+        voiceKey: 'avatar_floating_day2_galgame_choices',
         persistent: 'chat-tool-toggle',
         target: 'chat-galgame',
         cursorAction: 'hold',
@@ -82,14 +82,14 @@ test('normalizeTutorialScene maps hold scenes to explicit cursor hold without mo
         'cursor.hold'
     ]);
     assert.deepEqual(scene.timeline.find((event) => event.command === 'cursor.hold'), {
-        id: 'day3_galgame_choices:cursor-hold',
+        id: 'day2_galgame_choices:cursor-hold',
         at: 0,
         command: 'cursor.hold',
         target: 'chat-galgame',
         freezePoint: true
     });
-    assert.deepEqual(scene.timeline.find((event) => event.id === 'day3_galgame_choices:cursor-hold-settle'), {
-        id: 'day3_galgame_choices:cursor-hold-settle',
+    assert.deepEqual(scene.timeline.find((event) => event.id === 'day2_galgame_choices:cursor-hold-settle'), {
+        id: 'day2_galgame_choices:cursor-hold-settle',
         at: 260,
         command: 'cursor.hold',
         target: 'chat-galgame',
@@ -121,8 +121,8 @@ test('normalizeTutorialScene can freeze cursor after a move scene', () => {
 
 test('normalizeTutorialScene maps day3 galgame wheel rotation to a dedicated timeline command', () => {
     const scene = normalizeTutorialScene({
-        id: 'day3_galgame_entry',
-        voiceKey: 'avatar_floating_day3_galgame_intro',
+        id: 'day2_galgame_entry',
+        voiceKey: 'avatar_floating_day2_galgame_intro',
         persistent: 'chat-tool-toggle',
         target: 'chat-galgame',
         cursorAction: 'move',
@@ -137,7 +137,7 @@ test('normalizeTutorialScene maps day3 galgame wheel rotation to a dedicated tim
         'compactToolWheel.rotateGalgameIntoCenter'
     ]);
     assert.deepEqual(scene.timeline.find((event) => event.command === 'compactToolWheel.rotateGalgameIntoCenter'), {
-        id: 'day3_galgame_entry:galgame-wheel-rotation',
+        id: 'day2_galgame_entry:galgame-wheel-rotation',
         at: 860,
         command: 'compactToolWheel.rotateGalgameIntoCenter',
         target: 'chat-galgame',
@@ -148,7 +148,7 @@ test('normalizeTutorialScene maps day3 galgame wheel rotation to a dedicated tim
 
 test('normalizeTutorialScene does not duplicate galgame rotation for click scenes', () => {
     const scene = normalizeTutorialScene({
-        id: 'day3_galgame_entry_click',
+        id: 'day2_galgame_entry_click',
         target: 'chat-galgame',
         cursorAction: 'click',
         operation: 'rotate-galgame-tool-into-center'
@@ -220,6 +220,24 @@ test('normalizeTutorialScene maps petal transition to explicit channel cleanup c
 
     const petal = scene.timeline.find((event) => event.command === 'petal.play');
     assert.deepEqual(petal.clear, ['cursor', 'spotlights']);
-    assert.equal(petal.atRatio, 0.7);
+    assert.equal(petal.beforeAudioEndMs, 2600);
+    assert.equal(petal.atRatio, undefined);
     assert.equal(petal.blocking, true);
+});
+
+test('normalizeTutorialScene appends petal transition for explicit timeline scenes', () => {
+    const scene = normalizeTutorialScene({
+        id: 'day4_wrap',
+        voiceKey: 'avatar_floating_day4_wrap',
+        timeline: [
+            { at: 0, command: 'chat.message' },
+            { at: 1240, command: 'operation.run', operation: 'cleanup', blocking: true }
+        ],
+        petalTransition: true
+    });
+
+    const petalEvents = scene.timeline.filter((event) => event.command === 'petal.play');
+    assert.equal(petalEvents.length, 1);
+    assert.equal(petalEvents[0].beforeAudioEndMs, 2600);
+    assert.equal(petalEvents[0].blocking, true);
 });

@@ -163,6 +163,7 @@
             this._pngtuberPointerEvaluateFrame = null;
             this._lastPngtuberPointerX = null;
             this._lastPngtuberPointerY = null;
+            this._renderingPaused = false;
         }
 
         ensureContainer() {
@@ -314,6 +315,55 @@
             this.layeredBlinking = false;
         }
 
+        pauseRendering() {
+            this._renderingPaused = true;
+            this.clearLayeredTimers();
+            if (this.speakingMouthTimer) {
+                clearTimeout(this.speakingMouthTimer);
+                this.speakingMouthTimer = null;
+            }
+            if (this.returnIdleTimer) {
+                clearTimeout(this.returnIdleTimer);
+                this.returnIdleTimer = null;
+            }
+            if (this.clickTimer) {
+                clearTimeout(this.clickTimer);
+                this.clickTimer = null;
+            }
+            if (this.lipSyncFrame) {
+                cancelAnimationFrame(this.lipSyncFrame);
+                this.lipSyncFrame = null;
+            }
+            this.lipSyncMouthOpen = 0;
+            this.lipSyncMouthState = false;
+            this.lipSyncLastStateChangeAt = 0;
+            this.lipSyncNextPulseAt = 0;
+            this.lipSyncPulseCloseAt = 0;
+            this.speakingMouthOpen = false;
+            this.stopTalkingHopAnimation();
+            this.stopSpeakingBounceAnimation();
+        }
+
+        resumeRendering() {
+            if (!this._renderingPaused) return;
+            this._renderingPaused = false;
+            const container = this.container || document.getElementById(this.containerId);
+            if (!container || container.style.display === 'none' ||
+                (container.classList && container.classList.contains('hidden'))) {
+                return;
+            }
+            if (this.isLayeredActive()) {
+                this.drawLayeredState(this.state || 'idle');
+                if (!this.layeredBlinkTimer && !this.layeredBlinkEndTimer) {
+                    this.startLayeredBlinkLoop();
+                }
+                this.startLayeredAnimationLoop({ preserveTimeline: true });
+            }
+            if (this.isSpeaking) {
+                this.startSpeakingMouthAnimation();
+            }
+        }
+
         stopLayeredAnimationLoop() {
             if (this.layeredAnimationFrame) {
                 cancelAnimationFrame(this.layeredAnimationFrame);
@@ -414,6 +464,7 @@
         }
 
         playLayeredAnimation(target, options = {}) {
+            if (this._renderingPaused) return false;
             if (!this.isLayeredActive()) return false;
             return this.setLayeredStateIndex(this.resolveLayeredAnimationTarget(target), {
                 returnToDefaultAfterMs: options.returnToDefaultAfterMs,
@@ -727,6 +778,7 @@
         }
 
         startLayeredAnimationLoop(options = {}) {
+            if (this._renderingPaused) return;
             this.startLayeredBreathingLoop();
             if (this.layeredAnimationFrame) return;
             if (!this.isLayeredActive() || !this.hasMotionLayersForCurrentState()) return;
@@ -782,6 +834,7 @@
         }
 
         startLayeredBreathingLoop() {
+            if (this._renderingPaused) return;
             if (this.layeredBreathingFrame || !this.layeredBreathingEnabled()) return;
             this.layeredBreathingStart = this.layeredBreathingStart || performance.now();
             const tick = (timestamp) => {
@@ -1342,8 +1395,12 @@
             const lockVerticalGap = 80;
             const targetX = rect.right * 0.7 + rect.left * 0.3 + lockGap;
             const targetY = rect.top * 0.3 + rect.bottom * 0.7 + lockVerticalGap;
+            const defaultMaxTop = window.innerHeight - 40;
+            const maxTop = typeof window.getNekoYuiGuideLockIconMaxTop === 'function'
+                ? window.getNekoYuiGuideLockIconMaxTop(defaultMaxTop, 40)
+                : defaultMaxTop;
             lockIcon.style.left = `${Math.max(0, Math.min(targetX, window.innerWidth - 40))}px`;
-            lockIcon.style.top = `${Math.max(0, Math.min(targetY, window.innerHeight - 40))}px`;
+            lockIcon.style.top = `${Math.max(0, Math.min(targetY, maxTop))}px`;
             lockIcon.style.display = 'block';
             lockIcon.style.visibility = 'visible';
 
@@ -1542,6 +1599,7 @@
         }
 
         startSpeakingBounceAnimation() {
+            if (this._renderingPaused) return;
             const config = this.speakingBounceConfig();
             if (!config) return;
             const now = performance.now();
@@ -1585,6 +1643,7 @@
         }
 
         startTalkingHopAnimation() {
+            if (this._renderingPaused) return;
             if (this.talkingHopFrame || !this.isSpeaking || !this.isLayeredActive()) return;
             this.talkingHopStart = performance.now();
             this.talkingHopAmplitude = 4.5;
@@ -1623,6 +1682,7 @@
         }
 
         startLipSync(analyser) {
+            if (this._renderingPaused) return false;
             if (!analyser || typeof analyser.getByteTimeDomainData !== 'function') {
                 this.startSpeakingMouthAnimation();
                 return false;
@@ -1696,6 +1756,7 @@
         }
 
         scheduleSpeakingMouthFrame() {
+            if (this._renderingPaused) return;
             if (!this.isSpeaking) return;
             if (this.lipSyncFrame) return;
             const nextDelay = this.speakingMouthOpen
@@ -1714,6 +1775,7 @@
         }
 
         startSpeakingMouthAnimation() {
+            if (this._renderingPaused) return;
             this.isSpeaking = true;
             this.startTalkingHopAnimation();
             if (this.lipSyncFrame) return;
@@ -1836,6 +1898,10 @@
         }
 
         setSpeaking(isSpeaking) {
+            if (this._renderingPaused) {
+                this.isSpeaking = !!isSpeaking;
+                return;
+            }
             if (this.returnIdleTimer) {
                 clearTimeout(this.returnIdleTimer);
                 this.returnIdleTimer = null;

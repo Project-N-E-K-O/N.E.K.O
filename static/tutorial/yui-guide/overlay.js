@@ -11,6 +11,9 @@
     const DEFAULT_CURSOR_CLICK_VISIBLE_MS = 420;
     const SMOOTH_CURSOR_SHOW_DURATION_MS = 560;
     const PC_OVERLAY_SEQUENCE_STORAGE_KEY = 'yuiGuidePcOverlaySequence';
+    const CONTROL_BANNER_TEXT_KEY = 'tutorial.yuiGuide.controlBanner';
+    const CONTROL_BANNER_FALLBACK_TEXT = 'The catgirl is controlling the mouse';
+    const CONTROL_BANNER_INTERRUPT_EMPHASIS_MS = 2000;
     const OverlayRendererApi = window.TutorialOverlayRendererApi || {};
     const OverlayCursorStateStore = OverlayRendererApi.OverlayCursorStateStore
         || (window.TutorialOverlayRenderer && window.TutorialOverlayRenderer.OverlayCursorStateStore);
@@ -52,6 +55,29 @@
         } catch (_) {
             return false;
         }
+    }
+
+    function resolveControlBannerText() {
+        if (typeof window.t === 'function') {
+            try {
+                const translated = window.t(CONTROL_BANNER_TEXT_KEY);
+                if (typeof translated === 'string' && translated.trim() && translated !== CONTROL_BANNER_TEXT_KEY) {
+                    return translated;
+                }
+            } catch (_) {}
+        }
+
+        return CONTROL_BANNER_FALLBACK_TEXT;
+    }
+
+    function createControlBannerElement() {
+        const banner = createElement('div', 'yui-guide-control-banner');
+        banner.hidden = true;
+        banner.setAttribute('role', 'status');
+        banner.setAttribute('aria-live', 'polite');
+        banner.setAttribute('data-yui-cursor-hidden', 'true');
+        banner.textContent = resolveControlBannerText();
+        return banner;
     }
 
     function createPcOverlayBridge(doc) {
@@ -172,7 +198,7 @@
         const getMetrics = () => {
             try {
                 const metrics = host.getWindowMetricsSync();
-                if (metrics && metrics.contentBounds) {
+                if (metrics && (metrics.contentBounds || metrics.bounds)) {
                     return metrics;
                 }
             } catch (_) {}
@@ -186,11 +212,216 @@
                 zoomFactor: 1
             };
         };
+        const getScreenCoordinateBounds = (metrics) => (
+            metrics && (metrics.bounds || metrics.contentBounds) || { x: 0, y: 0 }
+        );
+
+        const normalizeNiriPetPhysicalCropBounds = (bounds) => {
+            if (!bounds || typeof bounds !== 'object') {
+                return null;
+            }
+            const x = Number(bounds.x);
+            const y = Number(bounds.y);
+            const width = Number(bounds.width);
+            const height = Number(bounds.height);
+            if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+                return null;
+            }
+            return {
+                x: Math.round(x),
+                y: Math.round(y),
+                width: Math.max(1, Math.round(width)),
+                height: Math.max(1, Math.round(height))
+            };
+        };
+        const normalizeNiriPetPhysicalCropPoint = (point) => {
+            if (!point || typeof point !== 'object') {
+                return null;
+            }
+            const x = Number(point.x);
+            const y = Number(point.y);
+            return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
+        };
+        const normalizeNiriPetPhysicalCropRect = (rect) => {
+            if (!rect || typeof rect !== 'object') {
+                return null;
+            }
+            const x = Number(Object.prototype.hasOwnProperty.call(rect, 'x') ? rect.x : rect.left);
+            const y = Number(Object.prototype.hasOwnProperty.call(rect, 'y') ? rect.y : rect.top);
+            const width = Number(rect.width);
+            const height = Number(rect.height);
+            if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+                return null;
+            }
+            return { x, y, width, height };
+        };
+        const getNiriPetPhysicalCropApi = () => {
+            try {
+                const api = typeof window !== 'undefined' ? window.__nekoNiriPetPhysicalCrop : null;
+                if (!api || typeof api !== 'object') {
+                    return null;
+                }
+                if (typeof api.isActive === 'function' && !api.isActive()) {
+                    return null;
+                }
+                return api;
+            } catch (_) {
+                return null;
+            }
+        };
+
+        const areNiriPetPhysicalCropBoundsEquivalent = (first, second) => (
+            !!(first && second
+                && Math.abs(Number(first.x || 0) - Number(second.x || 0)) <= 1
+                && Math.abs(Number(first.y || 0) - Number(second.y || 0)) <= 1
+                && Math.abs(Number(first.width || 0) - Number(second.width || 0)) <= 1
+                && Math.abs(Number(first.height || 0) - Number(second.height || 0)) <= 1)
+        );
+
+        const hasNiriPetPhysicalCropVirtualizedMetrics = (metrics) => {
+            if (!metrics || metrics.niriPetPhysicalCrop !== true) {
+                return false;
+            }
+            if (metrics.niriPetPhysicalCropMetricsVirtualized === true) {
+                return true;
+            }
+            const screenBounds = normalizeNiriPetPhysicalCropBounds(metrics.contentBounds || metrics.bounds);
+            const virtualBounds = normalizeNiriPetPhysicalCropBounds(metrics.niriPetPhysicalCropVirtualBounds);
+            return areNiriPetPhysicalCropBoundsEquivalent(screenBounds, virtualBounds);
+        };
+
+        const getNiriPetPhysicalCropState = (metrics) => {
+            if (metrics && metrics.niriPetPhysicalCrop === true) {
+                const metricCropBounds = normalizeNiriPetPhysicalCropBounds(
+                    metrics.niriPetPhysicalCropBounds || metrics.contentBounds || metrics.bounds
+                );
+                const metricVirtualBounds = normalizeNiriPetPhysicalCropBounds(metrics.niriPetPhysicalCropVirtualBounds);
+                const metricOffsetX = Number(metrics.niriPetPhysicalCropOffsetX);
+                const metricOffsetY = Number(metrics.niriPetPhysicalCropOffsetY);
+                return metricCropBounds ? {
+                    cropBounds: metricCropBounds,
+                    virtualBounds: metricVirtualBounds,
+                    offsetX: Number.isFinite(metricOffsetX) ? Math.round(metricOffsetX) : 0,
+                    offsetY: Number.isFinite(metricOffsetY) ? Math.round(metricOffsetY) : 0,
+                    metricsVirtualized: hasNiriPetPhysicalCropVirtualizedMetrics(metrics)
+                } : null;
+            }
+
+            try {
+                const api = typeof window !== 'undefined' ? window.__nekoNiriPetPhysicalCrop : null;
+                if (!api || typeof api !== 'object') {
+                    return null;
+                }
+                if (typeof api.isActive === 'function' && !api.isActive()) {
+                    return null;
+                }
+                const state = typeof api.getState === 'function' ? api.getState() : null;
+                const cropBounds = normalizeNiriPetPhysicalCropBounds(state && state.cropBounds);
+                const virtualBounds = normalizeNiriPetPhysicalCropBounds(state && state.virtualBounds);
+                if (!cropBounds) {
+                    return null;
+                }
+                let offsetX = Number(state && state.offsetX);
+                let offsetY = Number(state && state.offsetY);
+                if (!Number.isFinite(offsetX) && virtualBounds) {
+                    offsetX = cropBounds.x - virtualBounds.x;
+                }
+                if (!Number.isFinite(offsetY) && virtualBounds) {
+                    offsetY = cropBounds.y - virtualBounds.y;
+                }
+                return {
+                    cropBounds: cropBounds,
+                    virtualBounds: virtualBounds,
+                    offsetX: Number.isFinite(offsetX) ? Math.round(offsetX) : 0,
+                    offsetY: Number.isFinite(offsetY) ? Math.round(offsetY) : 0
+                };
+            } catch (_) {
+                return null;
+            }
+        };
+        const toNiriPetPhysicalCropVirtualPoint = (x, y) => {
+            const api = getNiriPetPhysicalCropApi();
+            if (!api || typeof api.toVirtualPoint !== 'function') {
+                return null;
+            }
+            try {
+                return normalizeNiriPetPhysicalCropPoint(api.toVirtualPoint({
+                    x: Number(x || 0),
+                    y: Number(y || 0)
+                }));
+            } catch (_) {
+                return null;
+            }
+        };
+        const toNiriPetPhysicalCropVirtualRect = (rect) => {
+            const api = getNiriPetPhysicalCropApi();
+            if (!api || typeof api.toVirtualRect !== 'function') {
+                return null;
+            }
+            try {
+                const virtualRect = normalizeNiriPetPhysicalCropRect(api.toVirtualRect({
+                    x: Number(rect.left || 0),
+                    y: Number(rect.top || 0),
+                    width: Number(rect.width || 0),
+                    height: Number(rect.height || 0)
+                }));
+                return virtualRect ? {
+                    left: virtualRect.x,
+                    top: virtualRect.y,
+                    width: virtualRect.width,
+                    height: virtualRect.height
+                } : null;
+            } catch (_) {
+                return null;
+            }
+        };
+        const toNiriPetPhysicalCropVirtualPointWithState = (x, y, cropState) => (
+            cropState && cropState.metricsVirtualized ? {
+                x: Number(x || 0),
+                y: Number(y || 0)
+            } :
+            toNiriPetPhysicalCropVirtualPoint(x, y) || {
+                x: Number(x || 0) + Number(cropState && cropState.offsetX || 0),
+                y: Number(y || 0) + Number(cropState && cropState.offsetY || 0)
+            }
+        );
+        const toNiriPetPhysicalCropVirtualRectWithState = (rect, cropState) => (
+            cropState && cropState.metricsVirtualized ? {
+                left: Number(rect.left || 0),
+                top: Number(rect.top || 0),
+                width: rect.width,
+                height: rect.height
+            } :
+            toNiriPetPhysicalCropVirtualRect(rect) || {
+                left: Number(rect.left || 0) + Number(cropState && cropState.offsetX || 0),
+                top: Number(rect.top || 0) + Number(cropState && cropState.offsetY || 0),
+                width: rect.width,
+                height: rect.height
+            }
+        );
+        const shouldApplyVisualViewportOffset = (metrics) => !getNiriPetPhysicalCropState(metrics);
+
+        const toScreenVirtualPoint = (x, y, cropState) => {
+            const screenBounds = cropState.virtualBounds || cropState.cropBounds;
+            return {
+                x: Number(screenBounds.x || 0) + Number(x || 0),
+                y: Number(screenBounds.y || 0) + Number(y || 0)
+            };
+        };
 
         const toScreenPoint = (x, y) => {
             const metrics = getMetrics();
-            const bounds = metrics.bounds || metrics.contentBounds || { x: 0, y: 0 };
-            const viewport = window.visualViewport || null;
+            const cropState = getNiriPetPhysicalCropState(metrics);
+            if (cropState && cropState.cropBounds) {
+                const virtualPoint = toNiriPetPhysicalCropVirtualPointWithState(x, y, cropState);
+                return toScreenVirtualPoint(
+                    virtualPoint.x,
+                    virtualPoint.y,
+                    cropState
+                );
+            }
+            const bounds = getScreenCoordinateBounds(metrics);
+            const viewport = shouldApplyVisualViewportOffset(metrics) ? (window.visualViewport || null) : null;
             const offsetLeft = viewport && Number.isFinite(Number(viewport.offsetLeft)) ? Number(viewport.offsetLeft) : 0;
             const offsetTop = viewport && Number.isFinite(Number(viewport.offsetTop)) ? Number(viewport.offsetTop) : 0;
             return {
@@ -203,7 +434,14 @@
             if (!rect || rect.width <= 0 || rect.height <= 0) {
                 return null;
             }
-            const topLeft = toScreenPoint(rect.left, rect.top);
+            const metrics = getMetrics();
+            const cropState = getNiriPetPhysicalCropState(metrics);
+            const cropRect = cropState && cropState.cropBounds
+                ? toNiriPetPhysicalCropVirtualRectWithState(rect, cropState)
+                : rect;
+            const topLeft = cropState && cropState.cropBounds
+                ? toScreenVirtualPoint(cropRect.left, cropRect.top, cropState)
+                : toScreenPoint(rect.left, rect.top);
             return {
                 id: kind + '-' + index,
                 kind: kind,
@@ -211,8 +449,8 @@
                 variant: variant || '',
                 x: topLeft.x,
                 y: topLeft.y,
-                width: rect.width,
-                height: rect.height,
+                width: cropRect.width,
+                height: cropRect.height,
                 radius: rect.radius
             };
         };
@@ -344,6 +582,19 @@
                 remoteReady = false;
             }
         };
+        let lastLocalSpotlightEntries = [];
+        const buildSpotlights = (rects) => (Array.isArray(rects) ? rects : [])
+            .map((entry, index) => toScreenRect(entry.rect, entry.kind, index, entry.variant || ''))
+            .filter(Boolean);
+        const refreshSpotlightsForCropState = () => {
+            if (cleared || lastLocalSpotlightEntries.length === 0) {
+                return;
+            }
+            send({ spotlights: buildSpotlights(lastLocalSpotlightEntries) }, true);
+        };
+        try {
+            window.addEventListener('neko:niri-pet-physical-crop-state-applied', refreshSpotlightsForCropState);
+        } catch (_) {}
 
         return {
             isAvailable() {
@@ -364,10 +615,8 @@
                 return active && !failed;
             },
             setSpotlights(rects) {
-                const spotlights = (Array.isArray(rects) ? rects : [])
-                    .map((entry, index) => toScreenRect(entry.rect, entry.kind, index, entry.variant || ''))
-                    .filter(Boolean);
-                send({ spotlights: spotlights }, false);
+                lastLocalSpotlightEntries = Array.isArray(rects) ? rects.slice() : [];
+                send({ spotlights: buildSpotlights(lastLocalSpotlightEntries) }, false);
             },
             showCursorAt(x, y) {
                 const point = toScreenPoint(x, y);
@@ -433,7 +682,11 @@
                 lastKey = '';
                 remoteReady = false;
                 failed = false;
+                lastLocalSpotlightEntries = [];
                 completeStateStore.reset();
+                try {
+                    window.removeEventListener('neko:niri-pet-physical-crop-state-applied', refreshSpotlightsForCropState);
+                } catch (_) {}
                 try {
                     if (window.localStorage.getItem('yuiGuidePcOverlayRunId') === runId) {
                         window.localStorage.removeItem('yuiGuidePcOverlayRunId');
@@ -486,8 +739,21 @@
     class YuiGuideOverlay {
         constructor(doc) {
             this.document = doc || document;
+            const hostWindow = this.document && this.document.defaultView
+                ? this.document.defaultView
+                : window;
+            this.lifecycleEpoch = Number(
+                hostWindow && hostWindow.__NEKO_YUI_GUIDE_OVERLAY_LIFECYCLE_EPOCH__
+            ) || 0;
+            this.destroyed = false;
             this.root = null;
             this.stage = null;
+            this.controlBanner = null;
+            this.controlBannerEmphasisTimer = null;
+            this.controlBannerEmphasisActive = false;
+            this.renderedControlBannerText = '';
+            this.renderedControlBannerVisible = null;
+            this.renderedControlBannerEmphasis = null;
             this.interactionShield = null;
             this.tutorialInputShieldActive = false;
             this.takingOverActive = false;
@@ -683,7 +949,22 @@
             return this.overlayRenderer.shouldSuppressDom();
         }
 
+        isTutorialLifecycleCurrent() {
+            const hostWindow = this.document && this.document.defaultView
+                ? this.document.defaultView
+                : window;
+            const currentEpoch = Number(
+                hostWindow && hostWindow.__NEKO_YUI_GUIDE_OVERLAY_LIFECYCLE_EPOCH__
+            ) || 0;
+            return currentEpoch === this.lifecycleEpoch;
+        }
+
         ensureRoot() {
+            if (!this.isTutorialLifecycleCurrent()) {
+                this.root = null;
+                this.stage = null;
+                return null;
+            }
             if (this.root && this.root.isConnected) {
                 return this.root;
             }
@@ -802,6 +1083,8 @@
                 preview.appendChild(previewTitle);
                 preview.appendChild(previewList);
 
+                const controlBanner = createControlBannerElement();
+
                 stage.appendChild(backdrop);
                 stage.appendChild(interactionShield);
                 stage.appendChild(persistentSpotlightFrame);
@@ -809,10 +1092,12 @@
                 stage.appendChild(secondaryActionSpotlightFrame);
                 stage.appendChild(bubble);
                 stage.appendChild(preview);
+                stage.appendChild(controlBanner);
                 root.appendChild(stage);
                 this.document.body.appendChild(root);
 
                 this.stage = stage;
+                this.controlBanner = controlBanner;
                 this.interactionShield = interactionShield;
                 this.backdrop = backdrop;
                 this.backdropMask = mask;
@@ -835,6 +1120,11 @@
                 this.extraSpotlightEntries = extraSpotlightEntries;
             } else {
                 this.stage = root.querySelector('.yui-guide-stage');
+                this.controlBanner = root.querySelector('.yui-guide-control-banner');
+                if (!this.controlBanner && this.stage) {
+                    this.controlBanner = createControlBannerElement();
+                    this.stage.appendChild(this.controlBanner);
+                }
                 this.interactionShield = root.querySelector('.yui-guide-interaction-shield');
                 this.backdrop = root.querySelector('.yui-guide-backdrop');
                 this.backdropMask = root.querySelector('mask#' + BACKDROP_MASK_ID);
@@ -875,8 +1165,58 @@
             }
 
             this.root = root;
+            this.syncControlBanner();
             this.installInteractionShieldBlocker();
             return root;
+        }
+
+        syncControlBanner() {
+            if (!this.controlBanner) {
+                return;
+            }
+
+            const isVisible = this.takingOverActive === true;
+            const isEmphasized = isVisible && this.controlBannerEmphasisActive === true;
+            const text = resolveControlBannerText();
+
+            if (
+                this.renderedControlBannerText === text
+                && this.renderedControlBannerVisible === isVisible
+                && this.renderedControlBannerEmphasis === isEmphasized
+                && this.controlBanner.hidden === !isVisible
+                && this.controlBanner.classList.contains('is-visible') === isVisible
+                && this.controlBanner.classList.contains('is-interrupt-emphasis') === isEmphasized
+            ) {
+                return;
+            }
+
+            if (this.renderedControlBannerText !== text) {
+                this.controlBanner.textContent = text;
+                this.renderedControlBannerText = text;
+            }
+            this.controlBanner.hidden = !isVisible;
+            this.controlBanner.classList.toggle('is-visible', isVisible);
+            this.controlBanner.classList.toggle('is-interrupt-emphasis', isEmphasized);
+            this.renderedControlBannerVisible = isVisible;
+            this.renderedControlBannerEmphasis = isEmphasized;
+        }
+
+        emphasizeControlBanner(durationMs = CONTROL_BANNER_INTERRUPT_EMPHASIS_MS) {
+            if (!this.takingOverActive) {
+                return;
+            }
+            if (!this.ensureRoot()) return;
+            if (this.controlBannerEmphasisTimer) {
+                window.clearTimeout(this.controlBannerEmphasisTimer);
+                this.controlBannerEmphasisTimer = null;
+            }
+            this.controlBannerEmphasisActive = true;
+            this.syncControlBanner();
+            this.controlBannerEmphasisTimer = window.setTimeout(() => {
+                this.controlBannerEmphasisTimer = null;
+                this.controlBannerEmphasisActive = false;
+                this.syncControlBanner();
+            }, Math.max(0, Math.round(Number(durationMs) || CONTROL_BANNER_INTERRUPT_EMPHASIS_MS)));
         }
 
         isSkipControlEventTarget(target) {
@@ -1105,7 +1445,7 @@
                 return null;
             }
 
-            this.ensureRoot();
+            if (!this.ensureRoot()) return null;
             if (this.extraSpotlightEntries[normalizedIndex]) {
                 return this.extraSpotlightEntries[normalizedIndex];
             }
@@ -1143,7 +1483,7 @@
         }
 
         setExtraSpotlights(elements) {
-            this.ensureRoot();
+            if (!this.ensureRoot()) return;
             if (this.clearIfSpotlightSuppressed()) {
                 return;
             }
@@ -1153,7 +1493,7 @@
         }
 
         clearExtraSpotlights() {
-            this.ensureRoot();
+            if (!this.ensureRoot()) return;
             this.spotlightState.clearExtra();
             this.extraSpotlightEntries.forEach((entry) => {
                 if (!entry) {
@@ -1241,7 +1581,7 @@
                 return;
             }
 
-            this.ensureRoot();
+            if (!this.ensureRoot()) return;
 
             if (this.backdrop) {
                 this.syncBackdropViewport();
@@ -1307,23 +1647,31 @@
         }
 
         setTakingOver(active) {
-            this.ensureRoot();
+            if (!this.ensureRoot()) return;
             this.takingOverActive = active === true;
+            if (!this.takingOverActive) {
+                if (this.controlBannerEmphasisTimer) {
+                    window.clearTimeout(this.controlBannerEmphasisTimer);
+                    this.controlBannerEmphasisTimer = null;
+                }
+                this.controlBannerEmphasisActive = false;
+            }
             this.document.body.classList.toggle('yui-taking-over', this.takingOverActive);
             this.root.classList.toggle('is-taking-over', this.takingOverActive);
+            this.syncControlBanner();
             this.syncInteractionShield();
             this.document.documentElement.style.cursor = '';
             this.document.body.style.cursor = '';
         }
 
         setInteractionShieldSuppressed(active) {
-            this.ensureRoot();
+            if (!this.ensureRoot()) return;
             this.interactionShieldSuppressed = active === true;
             this.syncInteractionShield();
         }
 
         setTutorialInputShieldActive(active) {
-            this.ensureRoot();
+            if (!this.ensureRoot()) return;
             this.tutorialInputShieldActive = active === true;
             if (this.document.body) {
                 this.document.body.classList.toggle('yui-guide-input-shield-active', this.tutorialInputShieldActive);
@@ -1352,7 +1700,7 @@
         }
 
         setInteractionShieldEnabled(active) {
-            this.ensureRoot();
+            if (!this.ensureRoot()) return;
             if (!this.interactionShield) {
                 return;
             }
@@ -1370,7 +1718,7 @@
         }
 
         setAngry(active) {
-            this.ensureRoot();
+            if (!this.ensureRoot()) return;
             this.root.classList.toggle('is-angry', !!active);
             if (this.bubble) {
                 this.bubble.classList.toggle('is-angry', !!active);
@@ -1378,7 +1726,7 @@
         }
 
         clearBubblePlacement() {
-            this.ensureRoot();
+            if (!this.ensureRoot()) return;
 
             if (!this.bubble) {
                 return;
@@ -1402,7 +1750,7 @@
         }
 
         positionBubble(anchorRect, options) {
-            this.ensureRoot();
+            if (!this.ensureRoot()) return;
             this.clearBubblePlacement();
 
             const normalizedOptions = options || {};
@@ -1470,7 +1818,7 @@
         }
 
         showBubble(text, options) {
-            this.ensureRoot();
+            if (!this.ensureRoot()) return;
             this.ensureBubbleHeader();
 
             const normalizedOptions = options || {};
@@ -1498,7 +1846,7 @@
         }
 
         hideBubble() {
-            this.ensureRoot();
+            if (!this.ensureRoot()) return;
             this.bubble.hidden = true;
             this.bubble.classList.remove('is-visible');
             this.clearBubblePlacement();
@@ -1507,7 +1855,7 @@
         }
 
         showPluginPreview(items, options) {
-            this.ensureRoot();
+            if (!this.ensureRoot()) return;
 
             const previewItems = Array.isArray(items) && items.length > 0 ? items : [
                 'WebSearch',
@@ -1538,7 +1886,7 @@
         }
 
         hidePluginPreview() {
-            this.ensureRoot();
+            if (!this.ensureRoot()) return;
             this.preview.hidden = true;
             this.preview.classList.remove('is-visible');
             this.previewList.innerHTML = '';
@@ -1553,7 +1901,7 @@
         }
 
         setPersistentSpotlight(element) {
-            this.ensureRoot();
+            if (!this.ensureRoot()) return;
             if (this.clearIfSpotlightSuppressed()) {
                 return;
             }
@@ -1563,7 +1911,7 @@
         }
 
         activateSpotlight(element) {
-            this.ensureRoot();
+            if (!this.ensureRoot()) return;
             if (this.clearIfSpotlightSuppressed()) {
                 return;
             }
@@ -1573,7 +1921,7 @@
         }
 
         activateSecondarySpotlight(element) {
-            this.ensureRoot();
+            if (!this.ensureRoot()) return;
             if (this.clearIfSpotlightSuppressed()) {
                 return;
             }
@@ -1583,14 +1931,14 @@
         }
 
         clearActionSpotlight() {
-            this.ensureRoot();
+            if (!this.ensureRoot()) return;
             this.spotlightState.clearAction();
             this.refreshSpotlight();
             this.syncSpotlightTracking();
         }
 
         clearPersistentSpotlight() {
-            this.ensureRoot();
+            if (!this.ensureRoot()) return;
             this.spotlightState.clearPersistent();
             this.refreshSpotlight();
             this.syncSpotlightTracking();
@@ -1601,7 +1949,7 @@
                 options
                 && options.preservePcOverlaySpotlights === true
             );
-            this.ensureRoot();
+            if (!this.ensureRoot()) return;
             this.stopSpotlightTracking();
             this.spotlightState.clearAll();
             if (this.isPcOverlayActive() && !preservePcOverlaySpotlights) {
@@ -1691,7 +2039,7 @@
         }
 
         showCursorAt(x, y) {
-            this.ensureRoot();
+            if (!this.ensureRoot()) return;
             this.updateSuppressedCursorMotion();
             const previous = this.cursorPosition;
             const glideDurationMs = this.getSmoothCursorShowDurationMs(x, y);
@@ -1972,6 +2320,10 @@
         }
 
         destroy() {
+            if (this.destroyed) {
+                return;
+            }
+            this.destroyed = true;
             this.overlayRenderer.clear();
             this.document.body.classList.remove('yui-taking-over');
             this.document.body.classList.remove('yui-guide-input-shield-active');
@@ -1986,6 +2338,15 @@
             }
             this.root = null;
             this.stage = null;
+            this.controlBanner = null;
+            if (this.controlBannerEmphasisTimer) {
+                window.clearTimeout(this.controlBannerEmphasisTimer);
+                this.controlBannerEmphasisTimer = null;
+            }
+            this.controlBannerEmphasisActive = false;
+            this.renderedControlBannerText = '';
+            this.renderedControlBannerVisible = null;
+            this.renderedControlBannerEmphasis = null;
             this.interactionShield = null;
             this.tutorialInputShieldActive = false;
             this.takingOverActive = false;
@@ -2018,6 +2379,14 @@
             this.extraSpotlightElements = [];
             this.extraSpotlightEntries = [];
             this.highlightedElements = new Set();
+            const hostWindow = this.document && this.document.defaultView
+                ? this.document.defaultView
+                : window;
+            if (hostWindow) {
+                hostWindow.__NEKO_YUI_GUIDE_OVERLAY_LIFECYCLE_EPOCH__ = (
+                    Number(hostWindow.__NEKO_YUI_GUIDE_OVERLAY_LIFECYCLE_EPOCH__) || 0
+                ) + 1;
+            }
         }
     }
 

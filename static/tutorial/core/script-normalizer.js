@@ -14,7 +14,7 @@
     const DEFAULT_CURSOR_START_MS = 220;
     const DEFAULT_CURSOR_MOVE_MS = 760;
     const DEFAULT_CURSOR_FOLLOWUP_MS = 360;
-    const DEFAULT_PETAL_CUE_RATIO = 0.7;
+    const DEFAULT_PETAL_CUE_BEFORE_AUDIO_END_MS = 2600;
 
     function clonePlain(value) {
         if (!value || typeof value !== 'object') {
@@ -112,7 +112,7 @@
                 id: sceneId + ':spotlight',
                 at: 0,
                 command: 'spotlight.show',
-                key: sceneId,
+                key: scene.spotlightKey || sceneId,
                 target: typeof scene.target === 'string' ? scene.target : '',
                 persistent: typeof scene.persistent === 'string' ? scene.persistent : '',
                 secondary: typeof scene.secondary === 'string' ? scene.secondary : ''
@@ -209,17 +209,32 @@
             pushIfCommand(timeline, operationEvent);
         }
 
-        if (scene.petalTransition === true) {
-            pushIfCommand(timeline, {
-                id: sceneId + ':petal',
-                atRatio: Number.isFinite(scene.petalCueAt) ? scene.petalCueAt : DEFAULT_PETAL_CUE_RATIO,
-                command: 'petal.play',
-                clear: ['cursor', 'spotlights'],
-                blocking: true
-            });
-        }
+        appendPetalTransitionEvent(timeline, scene, sceneId);
 
         return timeline;
+    }
+
+    function appendPetalTransitionEvent(timeline, scene, sceneId) {
+        if (!Array.isArray(timeline) || !scene || scene.petalTransition !== true) {
+            return false;
+        }
+        if (timeline.some((event) => event && event.command === 'petal.play')) {
+            return false;
+        }
+
+        const beforeAudioEndMs = Number.isFinite(scene.petalCueBeforeAudioEndMs)
+            ? Math.max(1, Math.floor(scene.petalCueBeforeAudioEndMs))
+            : DEFAULT_PETAL_CUE_BEFORE_AUDIO_END_MS;
+        // 修改原因：花瓣转场的真实开始点由 PetalTransitionController 按剩余时长精确等待，
+        // normalizer 只负责提前进入通用 handler，不能再固定在音频 70% 处。
+        pushIfCommand(timeline, {
+            id: sceneId + ':petal',
+            beforeAudioEndMs,
+            command: 'petal.play',
+            clear: ['cursor', 'spotlights'],
+            blocking: true
+        });
+        return true;
     }
 
     function normalizeTutorialScene(scene, options) {
@@ -246,6 +261,7 @@
         const timeline = Array.isArray(normalizedScene.timeline)
             ? normalizeExistingTimeline(normalizedScene)
             : normalizeLegacyTimeline(normalizedScene, options);
+        appendPetalTransitionEvent(timeline, normalizedScene, typeof normalizedScene.id === 'string' ? normalizedScene.id : '');
 
         const completion = Object.assign({
             mode: normalizedScene.waitForUserAction ? 'user-action' : 'audio-and-blocking-commands',

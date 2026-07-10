@@ -12,7 +12,7 @@
     'use strict';
 
     const SETTINGS_TOUR_SCENE_METHODS = Object.freeze({
-        day2_personalization_detail: 'playDay2PersonalizationDetailScene',
+        day3_personalization_detail: 'playDay3PersonalizationDetailScene',
         day4_chat_settings: 'playDay4ChatSettingsScene',
         day4_model_behavior: 'playDay4ModelBehaviorScene',
         day4_gaze_follow: 'playDay4GazeFollowScene',
@@ -49,6 +49,7 @@
         })
     });
     const DEFAULT_CURSOR_CLICK_VISIBLE_MS = 420;
+    const DAY4_GAZE_FOLLOW_CHECKED_DISPLAY_MS = 1800;
 
     class SettingsTourFlow {
         constructor(director) {
@@ -92,7 +93,7 @@
             );
         }
 
-        async playDay2PersonalizationDetailScene(scene, context) {
+        async playDay3PersonalizationDetailScene(scene, context) {
             const director = this.director;
             const normalizedContext = context || {};
             const sceneRunId = normalizedContext.sceneRunId;
@@ -232,7 +233,11 @@
                         cursorMoveDurationMs: normalizedSchema.cursorMoveDurationMs
                     }, anchorButton, null, previousSceneId, {
                         onClickStart: () => {
-                            openedPanelPromise = Promise.resolve(sidePanel);
+                            if (!this.isSceneStale(sceneRunId)) {
+                                openedPanelPromise = this.ensurePanelForScene(panelId, sceneRunId, scene, {
+                                    skipOpenSettingsPanel: true
+                                });
+                            }
                         }
                     });
                 } else {
@@ -313,10 +318,27 @@
             }
 
             if (mouseTrackingTarget) {
-                await director.moveCursorToElement(mouseTrackingTarget, 620);
+                const moved = await director.moveCursorToElement(mouseTrackingTarget, 620);
+                if (moved && typeof director.runActionWithCursorClick === 'function') {
+                    await director.runActionWithCursorClick(DEFAULT_CURSOR_CLICK_VISIBLE_MS, () => {
+                        if (
+                            this.shouldClickToggleToEnable(mouseTrackingTarget)
+                            && typeof mouseTrackingTarget.click === 'function'
+                        ) {
+                            mouseTrackingTarget.click();
+                        }
+                    });
+                    if (this.isSceneStale(sceneRunId)) {
+                        return false;
+                    }
+                    await director.waitForSceneDelay(DAY4_GAZE_FOLLOW_CHECKED_DISPLAY_MS);
+                }
             }
 
             await narrationPromise;
+            if (this.isSceneStale(sceneRunId)) {
+                return false;
+            }
             return this.finalizeNarration(sceneRunId, narration, normalizedContext);
         }
 
@@ -351,11 +373,14 @@
 
             await narrationPromise;
             if (!this.isSceneStale(sceneRunId)) {
+                this.safeHideSettingsPanels();
                 await director.closeSettingsPanel().catch((error) => {
                     console.warn('[YuiGuide] 第4天隐私模式结束后收起设置面板失败，继续流程:', error);
                 });
-                director.forceHideManagedPanel('settings');
-                director.collapseAvatarFloatingSidePanelsExcept(null);
+                if (this.isSceneStale(sceneRunId)) {
+                    return false;
+                }
+                this.safeHideSettingsPanels();
             }
             return this.finalizeNarration(sceneRunId, narration, normalizedContext);
         }
@@ -373,6 +398,9 @@
             )
                 ? director.getAvatarFloatingIntroExternalizedSpotlightKind(scene)
                 : '';
+            const spotlightVariant = scene && typeof scene.spotlightVariant === 'string'
+                ? scene.spotlightVariant.trim()
+                : '';
             const introChatTarget = introExternalizedChatSpotlightKind
                 ? null
                 : director.getAvatarFloatingIntroSpotlightTarget(scene);
@@ -380,7 +408,10 @@
                 if (typeof director.clearHomeSpotlightsForExternalizedChat === 'function') {
                     director.clearHomeSpotlightsForExternalizedChat();
                 }
-                director.interactionTakeover.setExternalizedChatSpotlight(introExternalizedChatSpotlightKind);
+                director.interactionTakeover.setExternalizedChatSpotlight(
+                    introExternalizedChatSpotlightKind,
+                    { variant: spotlightVariant }
+                );
                 if (typeof director.interactionTakeover.setExternalizedChatCursor === 'function') {
                     director.interactionTakeover.setExternalizedChatCursor(
                         introExternalizedChatSpotlightKind,
@@ -561,15 +592,93 @@
             return sceneId.indexOf('day4_') === 0;
         }
 
-        async ensurePanelForScene(panelId, sceneRunId, scene) {
+        shouldClickToggleToEnable(target) {
+            const checked = this.readToggleChecked(target);
+            return checked !== true;
+        }
+
+        readToggleChecked(target) {
+            if (!target) {
+                return null;
+            }
+            const candidates = [];
+            if (typeof target.querySelector === 'function') {
+                const nestedToggle = target.querySelector('input[type="checkbox"]');
+                if (nestedToggle && !candidates.includes(nestedToggle)) {
+                    candidates.push(nestedToggle);
+                }
+            }
+            if (!candidates.includes(target)) {
+                candidates.push(target);
+            }
+            if (typeof target.querySelector === 'function') {
+                const nestedToggle = target.querySelector('[role="switch"], [aria-checked]');
+                if (nestedToggle && !candidates.includes(nestedToggle)) {
+                    candidates.push(nestedToggle);
+                }
+            }
+            for (const candidate of candidates) {
+                if (!candidate) {
+                    continue;
+                }
+                if (typeof candidate.checked === 'boolean') {
+                    return !!candidate.checked;
+                }
+                if (typeof candidate.getAttribute === 'function') {
+                    const ariaChecked = candidate.getAttribute('aria-checked');
+                    if (ariaChecked === 'true') {
+                        return true;
+                    }
+                    if (ariaChecked === 'false') {
+                        return false;
+                    }
+                }
+                if (candidate.classList && typeof candidate.classList.contains === 'function') {
+                    if (
+                        candidate.classList.contains('is-checked')
+                        || candidate.classList.contains('checked')
+                        || candidate.classList.contains('active')
+                    ) {
+                        return true;
+                    }
+                }
+            }
+            return null;
+        }
+
+        safeHideSettingsPanels() {
+            const director = this.director;
+            try {
+                if (director && typeof director.forceHideManagedPanel === 'function') {
+                    director.forceHideManagedPanel('settings');
+                }
+            } catch (error) {
+                console.warn('[YuiGuide] 第4天隐私模式隐藏设置面板失败，继续流程:', error);
+            }
+            try {
+                if (director && typeof director.collapseAvatarFloatingSidePanelsExcept === 'function') {
+                    director.collapseAvatarFloatingSidePanelsExcept(null);
+                }
+            } catch (error) {
+                console.warn('[YuiGuide] 第4天隐私模式收起侧栏失败，继续流程:', error);
+            }
+        }
+
+        async ensurePanelForScene(panelId, sceneRunId, scene, options) {
             const director = this.director;
             if (this.isSceneStale(sceneRunId)) {
                 return null;
             }
-            const options = this.shouldGuardPanelFlow(scene)
+            const normalizedOptions = options || {};
+            const ensureOptions = this.shouldGuardPanelFlow(scene)
                 ? { shouldContinue: () => !this.isSceneStale(sceneRunId) }
                 : undefined;
-            return director.ensureAvatarFloatingSettingsSidePanel(panelId, options);
+            if (normalizedOptions.skipOpenSettingsPanel) {
+                return director.ensureAvatarFloatingSettingsSidePanel(panelId, Object.assign({}, ensureOptions, {
+                    skipOpenSettingsPanel: true
+                }));
+            }
+            return director.ensureAvatarFloatingSettingsSidePanel(panelId, ensureOptions);
         }
 
         async finalizeNarration(sceneRunId, narration, context) {

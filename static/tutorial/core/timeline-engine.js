@@ -59,6 +59,13 @@
             const durationMs = getAudioDurationMs(scene, audioRuntime);
             return Math.max(0, Math.floor(durationMs * clamp(event.atRatio, 0, 1)));
         }
+        if (Number.isFinite(event.beforeAudioEndMs)) {
+            const durationMs = getAudioDurationMs(scene, audioRuntime);
+            const beforeAudioEndMs = Math.max(0, Math.floor(event.beforeAudioEndMs));
+            // 修改原因：花瓣转场要按“音频结束前的动画窗口”触发，但仍需等音频启动后再派发，
+            // 这样 handler 才能拿到 narrationStartedAt 并继续做精确等待。
+            return Math.max(1, Math.floor(durationMs - beforeAudioEndMs));
+        }
         if (
             event.cue
             && audioRuntime

@@ -108,6 +108,7 @@
         voiceChatActive: false,
         voiceStartPending: false,
         isTextSessionActive: false,
+        suppressAssistantStreamUntilNextSession: false,
         isSwitchingMode: false,
         sessionStartedResolver: null,
         sessionStartedRejecter: null,
@@ -157,7 +158,7 @@
         videoSenderInterval: null,
 
         // --- 主动搭话 ---
-        proactiveChatEnabled: false,
+        proactiveChatEnabled: true,
         proactiveVisionEnabled: false,
         proactiveVisionChatEnabled: true,
         proactiveNewsChatEnabled: false,

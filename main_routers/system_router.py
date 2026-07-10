@@ -88,6 +88,127 @@ _PROACTIVE_LLM_RETRY_ERROR_TYPES = (
     *anthropic_retry_error_types(),
 )
 
+PROACTIVE_REASON_CHAT_DELIVERED = "CHAT_DELIVERED"
+PROACTIVE_REASON_PASS_BUSY = "PASS_BUSY"
+PROACTIVE_REASON_PASS_ACTIVITY_BUSY = "PASS_ACTIVITY_BUSY"
+PROACTIVE_REASON_PASS_DELIVERY_BUSY = "PASS_DELIVERY_BUSY"
+PROACTIVE_REASON_PASS_DISABLED = "PASS_DISABLED"
+PROACTIVE_REASON_PASS_ROUTE_ACTIVE = "PASS_ROUTE_ACTIVE"
+PROACTIVE_REASON_PASS_PRIVACY = "PASS_PRIVACY"
+PROACTIVE_REASON_PASS_RESTRICTED_SCREEN_ONLY = "PASS_RESTRICTED_SCREEN_ONLY"
+PROACTIVE_REASON_PASS_THROTTLED = "PASS_THROTTLED"
+PROACTIVE_REASON_PASS_SOURCE_EMPTY = "PASS_SOURCE_EMPTY"
+PROACTIVE_REASON_PASS_MODEL_PASS = "PASS_MODEL_PASS"
+PROACTIVE_REASON_PASS_GENERATION_EMPTY = "PASS_GENERATION_EMPTY"
+PROACTIVE_REASON_PASS_DUPLICATE = "PASS_DUPLICATE"
+PROACTIVE_REASON_DELIVERY_PREEMPTED = "DELIVERY_PREEMPTED"
+PROACTIVE_REASON_DELIVERY_FAILED = "DELIVERY_FAILED"
+PROACTIVE_REASON_ERROR_TIMEOUT = "ERROR_TIMEOUT"
+PROACTIVE_REASON_ERROR_INTERNAL = "ERROR_INTERNAL"
+PROACTIVE_REASON_ERROR_CHARACTER_NOT_FOUND = "ERROR_CHARACTER_NOT_FOUND"
+PROACTIVE_REASON_ERROR_SOURCE_FETCH_FAILED = "ERROR_SOURCE_FETCH_FAILED"
+PROACTIVE_REASON_PASS_UNSPECIFIED = "PASS_UNSPECIFIED"
+
+PROACTIVE_STAGE_ENTRY_GUARD = "entry_guard"
+PROACTIVE_STAGE_ACTIVITY_GATE = "activity_gate"
+PROACTIVE_STAGE_SOURCE_SELECTION = "source_selection"
+PROACTIVE_STAGE_MODEL_DECISION = "model_decision"
+PROACTIVE_STAGE_GENERATION = "generation"
+PROACTIVE_STAGE_DEDUP = "dedup"
+PROACTIVE_STAGE_DELIVERY = "delivery"
+PROACTIVE_STAGE_RUNTIME_ERROR = "runtime_error"
+PROACTIVE_STAGE_UNKNOWN = "unknown"
+
+_PROACTIVE_REASON_STAGE: dict[str, str] = {
+    PROACTIVE_REASON_CHAT_DELIVERED: PROACTIVE_STAGE_DELIVERY,
+    PROACTIVE_REASON_PASS_BUSY: PROACTIVE_STAGE_ENTRY_GUARD,
+    PROACTIVE_REASON_PASS_ACTIVITY_BUSY: PROACTIVE_STAGE_ACTIVITY_GATE,
+    PROACTIVE_REASON_PASS_DELIVERY_BUSY: PROACTIVE_STAGE_DELIVERY,
+    PROACTIVE_REASON_PASS_DISABLED: PROACTIVE_STAGE_ENTRY_GUARD,
+    PROACTIVE_REASON_PASS_ROUTE_ACTIVE: PROACTIVE_STAGE_ENTRY_GUARD,
+    PROACTIVE_REASON_PASS_PRIVACY: PROACTIVE_STAGE_ACTIVITY_GATE,
+    PROACTIVE_REASON_PASS_RESTRICTED_SCREEN_ONLY: PROACTIVE_STAGE_ACTIVITY_GATE,
+    PROACTIVE_REASON_PASS_THROTTLED: PROACTIVE_STAGE_ACTIVITY_GATE,
+    PROACTIVE_REASON_PASS_SOURCE_EMPTY: PROACTIVE_STAGE_SOURCE_SELECTION,
+    PROACTIVE_REASON_PASS_MODEL_PASS: PROACTIVE_STAGE_MODEL_DECISION,
+    PROACTIVE_REASON_PASS_GENERATION_EMPTY: PROACTIVE_STAGE_GENERATION,
+    PROACTIVE_REASON_PASS_DUPLICATE: PROACTIVE_STAGE_DEDUP,
+    PROACTIVE_REASON_DELIVERY_PREEMPTED: PROACTIVE_STAGE_DELIVERY,
+    PROACTIVE_REASON_DELIVERY_FAILED: PROACTIVE_STAGE_DELIVERY,
+    PROACTIVE_REASON_ERROR_TIMEOUT: PROACTIVE_STAGE_RUNTIME_ERROR,
+    PROACTIVE_REASON_ERROR_INTERNAL: PROACTIVE_STAGE_RUNTIME_ERROR,
+    PROACTIVE_REASON_ERROR_CHARACTER_NOT_FOUND: PROACTIVE_STAGE_ENTRY_GUARD,
+    PROACTIVE_REASON_ERROR_SOURCE_FETCH_FAILED: PROACTIVE_STAGE_SOURCE_SELECTION,
+    PROACTIVE_REASON_PASS_UNSPECIFIED: PROACTIVE_STAGE_UNKNOWN,
+}
+
+
+def _proactive_stage_for_reason(reason_code: str | None) -> str:
+    if not reason_code:
+        return PROACTIVE_STAGE_UNKNOWN
+    return _PROACTIVE_REASON_STAGE.get(reason_code, PROACTIVE_STAGE_UNKNOWN)
+
+
+def _proactive_response_body(
+    action: str | None,
+    reason_code: str,
+    *,
+    success: bool,
+    **extra: Any,
+) -> dict[str, Any]:
+    body: dict[str, Any] = {"success": success, "reason_code": reason_code}
+    if action is not None:
+        body["action"] = action
+    body.update(extra)
+    body["reason_code"] = reason_code
+    if not body.get("stage"):
+        body["stage"] = _proactive_stage_for_reason(reason_code)
+    if action is not None:
+        body["action"] = action
+    return body
+
+
+def _proactive_pass_body(reason_code: str, **extra: Any) -> dict[str, Any]:
+    success = bool(extra.pop("success", True))
+    return _proactive_response_body("pass", reason_code, success=success, **extra)
+
+
+def _proactive_chat_body(
+    reason_code: str = PROACTIVE_REASON_CHAT_DELIVERED,
+    **extra: Any,
+) -> dict[str, Any]:
+    success = bool(extra.pop("success", True))
+    return _proactive_response_body("chat", reason_code, success=success, **extra)
+
+
+def _proactive_error_body(reason_code: str, **extra: Any) -> dict[str, Any]:
+    success = bool(extra.pop("success", False))
+    return _proactive_response_body(None, reason_code, success=success, **extra)
+
+
+def _ensure_proactive_reason_code(
+    body: dict[str, Any],
+    *,
+    default_reason_code: str | None = None,
+) -> dict[str, Any]:
+    existing_reason_code = body.get("reason_code")
+    if existing_reason_code:
+        if not body.get("stage"):
+            body["stage"] = _proactive_stage_for_reason(str(existing_reason_code))
+        return body
+    action = body.get("action")
+    if default_reason_code is None:
+        if action == "chat":
+            default_reason_code = PROACTIVE_REASON_CHAT_DELIVERED
+        elif action == "pass":
+            default_reason_code = PROACTIVE_REASON_PASS_UNSPECIFIED
+        else:
+            default_reason_code = PROACTIVE_REASON_ERROR_INTERNAL
+    body["reason_code"] = default_reason_code
+    if not body.get("stage"):
+        body["stage"] = _proactive_stage_for_reason(default_reason_code)
+    return body
+
 from .shared_state import ensure_steamworks as get_steamworks, get_config_manager, get_sync_message_queue, get_session_manager
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.activity.system_signals import is_remote_backend_deployment
@@ -2873,11 +2994,10 @@ async def _maybe_deliver_mini_game_invite(
         return None
 
     if not await mgr.prepare_proactive_delivery(min_idle_secs=10.0):
-        return {
-            "success": True,
-            "action": "pass",
-            "message": "mini-game invite skipped: prepare_proactive_delivery refused",
-        }
+        return _proactive_pass_body(
+            PROACTIVE_REASON_PASS_DELIVERY_BUSY,
+            message="mini-game invite skipped: prepare_proactive_delivery refused",
+        )
     proactive_sid = mgr.current_speech_id
     from main_logic.session_state import SessionEvent as _SE
     await mgr.state.fire(_SE.PROACTIVE_PHASE2)
@@ -2894,11 +3014,10 @@ async def _maybe_deliver_mini_game_invite(
         expected_speech_id=proactive_sid,
     )
     if not committed:
-        return {
-            "success": True,
-            "action": "pass",
-            "message": "mini-game invite skipped: user took over before delivery",
-        }
+        return _proactive_pass_body(
+            PROACTIVE_REASON_DELIVERY_PREEMPTED,
+            message="mini-game invite skipped: user took over before delivery",
+        )
     # 给本次邀请生成独立 session_id，前端按钮点击 / 文本关键词命中走 endpoint 时
     # 必须带回这个 id 给后端校验：避免 stale 邀请的延迟回应被错算成响应当前 pending。
     invite_session_id = str(uuid4())
@@ -2952,17 +3071,16 @@ async def _maybe_deliver_mini_game_invite(
         f"(game={game_type}, force_first={force_first}, "
         f"session_id={invite_session_id[:8]}…): {invite_text[:60]}…"
     )
-    return {
-        "success": True,
-        "action": "chat",
-        "message": "mini-game invite delivered",
-        "channel": "mini_game",
-        "game_type": game_type,
-        "force_first": force_first,
-        "lanlan_name": lanlan_name,
-        "turn_id": proactive_sid,
-        "invite_session_id": invite_session_id,
-    }
+    return _proactive_chat_body(
+        PROACTIVE_REASON_CHAT_DELIVERED,
+        message="mini-game invite delivered",
+        channel="mini_game",
+        game_type=game_type,
+        force_first=force_first,
+        lanlan_name=lanlan_name,
+        turn_id=proactive_sid,
+        invite_session_id=invite_session_id,
+    )
 
 
 # ---------- Break-reminder rendering + minimal-Phase-2 delivery ----------
@@ -3828,6 +3946,79 @@ async def emotion_analysis(request: Request):
         }
 
 
+# Progress Stat for timed achievements. Steamworks Partner must bind
+# ACH_TIME_* achievements to this stat with matching thresholds; Steam unlocks
+# them automatically when StoreStats syncs a value past the bound threshold.
+_PLAYTIME_PROGRESS_STAT = "PLAY_TIME_SECONDS"
+_PLAYTIME_PROGRESS_ACHIEVEMENTS: tuple[str, ...] = (
+    "ACH_TIME_5MIN",
+    "ACH_TIME_1HR",
+    "ACH_TIME_100HR",
+)
+
+
+async def _prepare_steam_user_stats(steamworks: Any) -> None:
+    steamworks.UserStats.RequestCurrentStats()
+    for _ in range(10):
+        steamworks.run_callbacks()
+        await asyncio.sleep(0.1)
+
+
+async def _unlock_steam_achievement(steamworks: Any, name: str) -> dict[str, Any]:
+    """Unlock one Steam achievement. Returns a status dict (no HTTP response)."""
+    await _prepare_steam_user_stats(steamworks)
+    achievement_status = steamworks.UserStats.GetAchievement(name)
+    logger.info("Achievement status: %s=%s", name, achievement_status)
+    if achievement_status:
+        return {
+            "success": True,
+            "achievement": name,
+            "newlyUnlocked": False,
+            "alreadyUnlocked": True,
+            "message": f"成就 {name} 已经解锁",
+        }
+
+    result = steamworks.UserStats.SetAchievement(name)
+    if not result:
+        logger.warning("设置成就首次尝试失败，正在重试: %s", name)
+        await asyncio.sleep(0.5)
+        steamworks.run_callbacks()
+        result = steamworks.UserStats.SetAchievement(name)
+
+    if not result:
+        logger.error("设置成就失败: %s，请确认成就ID在Steam后台已配置", name)
+        return {
+            "success": False,
+            "achievement": name,
+            "newlyUnlocked": False,
+            "alreadyUnlocked": False,
+            "error": f"设置成就失败: {name}，请确认成就ID在Steam后台已配置",
+        }
+
+    steamworks.UserStats.StoreStats()
+    steamworks.run_callbacks()
+    logger.info("成功设置成就: %s", name)
+    return {
+        "success": True,
+        "achievement": name,
+        "newlyUnlocked": True,
+        "alreadyUnlocked": False,
+        "message": f"成就 {name} 已解锁",
+    }
+
+
+def _read_progress_unlocked_achievements(steamworks: Any) -> list[str]:
+    """Read which progress-stat achievements Steam has already unlocked."""
+    unlocked: list[str] = []
+    for achievement_name in _PLAYTIME_PROGRESS_ACHIEVEMENTS:
+        try:
+            if steamworks.UserStats.GetAchievement(achievement_name):
+                unlocked.append(achievement_name)
+        except Exception as exc:
+            logger.debug("读取进度成就状态失败 %s: %s", achievement_name, exc)
+    return unlocked
+
+
 @router.post('/steam/set-achievement-status/{name}')
 async def set_achievement_status(name: str, request: Request):
     """
@@ -3836,158 +4027,134 @@ async def set_achievement_status(name: str, request: Request):
     - receives the achievement name as a path parameter and sets the achievement via the Steamworks API
     - first requests current stats and runs callbacks to ensure the data is loaded
     - checks the achievement's current state; if already unlocked, returns success directly
-    - if not unlocked, tries to set it; returns success if it works, otherwise waits 1 second and retries
-    - retries at most 10 times; if still failing, returns an error hinting at possible configuration issues
+    - if not unlocked, tries to set it; returns success if it works, otherwise waits and retries once
     """
     validation_error = _validate_local_mutation_request(request)
     if validation_error is not None:
         return validation_error
 
     steamworks = get_steamworks()
-    if steamworks is not None:
-        try:
-            # 先请求统计数据并运行回调，确保数据已加载
-            steamworks.UserStats.RequestCurrentStats()
-            # 运行回调等待数据加载（多次运行以确保接收到响应）
-            for _ in range(10):
-                steamworks.run_callbacks()
-                await asyncio.sleep(0.1)
-            
-            achievement_status = steamworks.UserStats.GetAchievement(name)
-            logger.info(f"Achievement status: {achievement_status}")
-            if not achievement_status:
-                result = steamworks.UserStats.SetAchievement(name)
-                if result:
-                    logger.info(f"成功设置成就: {name}")
-                    steamworks.UserStats.StoreStats()
-                    steamworks.run_callbacks()
-                    return JSONResponse(content={
-                        "success": True,
-                        "achievement": name,
-                        "newlyUnlocked": True,
-                        "alreadyUnlocked": False,
-                        "message": f"成就 {name} 已解锁",
-                    })
-                else:
-                    # 第一次失败，等待后重试一次
-                    logger.warning(f"设置成就首次尝试失败，正在重试: {name}")
-                    await asyncio.sleep(0.5)
-                    steamworks.run_callbacks()
-                    result = steamworks.UserStats.SetAchievement(name)
-                    if result:
-                        logger.info(f"成功设置成就（重试后）: {name}")
-                        steamworks.UserStats.StoreStats()
-                        steamworks.run_callbacks()
-                        return JSONResponse(content={
-                            "success": True,
-                            "achievement": name,
-                            "newlyUnlocked": True,
-                            "alreadyUnlocked": False,
-                            "message": f"成就 {name} 已解锁",
-                        })
-                    else:
-                        logger.error(f"设置成就失败: {name}，请确认成就ID在Steam后台已配置")
-                        return JSONResponse(content={"success": False, "error": f"设置成就失败: {name}，请确认成就ID在Steam后台已配置"}, status_code=500)
-            else:
-                logger.info(f"成就已解锁，无需重复设置: {name}")
-                return JSONResponse(content={
-                    "success": True,
-                    "achievement": name,
-                    "newlyUnlocked": False,
-                    "alreadyUnlocked": True,
-                    "message": f"成就 {name} 已经解锁",
-                })
-        except Exception as e:
-            logger.error(f"设置成就失败: {e}")
-            return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
-    else:
+    if steamworks is None:
         return JSONResponse(content={"success": False, "error": "Steamworks未初始化"}, status_code=503)
+
+    try:
+        result = await _unlock_steam_achievement(steamworks, name)
+        if not result.get("success"):
+            return JSONResponse(content=result, status_code=500)
+        return JSONResponse(content=result)
+    except Exception as e:
+        logger.error("设置成就失败: %s", e)
+        return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
 
 
 @router.post('/steam/update-playtime')
 async def update_playtime(request: Request):
     """
-    Update playtime statistics (PLAY_TIME_SECONDS).
+    Accumulate PLAY_TIME_SECONDS progress stat and StoreStats.
+
+    Timed achievements (ACH_TIME_*) must be bound to this Progress Stat in
+    Steamworks Partner. Steam unlocks them automatically when the synced value
+    crosses the configured threshold — this endpoint never calls SetAchievement.
     """
     validation_error = _validate_local_mutation_request(request)
     if validation_error is not None:
         return validation_error
 
     steamworks = get_steamworks()
-    if steamworks is not None:
-        try:
-            data = await request.json()
-            seconds_to_add = data.get('seconds', 10)
-
-            # 验证 seconds 参数
-            try:
-                seconds_to_add = int(seconds_to_add)
-                if seconds_to_add < 0:
-                    return JSONResponse(
-                        content={"success": False, "error": "seconds must be non-negative"},
-                        status_code=400
-                    )
-            except (ValueError, TypeError):
-                return JSONResponse(
-                    content={"success": False, "error": "seconds must be a valid integer"},
-                    status_code=400
-                )
-
-            # 注意:不需要每次都调用 RequestCurrentStats()
-            # RequestCurrentStats() 应该只在应用启动时调用一次
-            # 频繁调用可能导致性能问题和同步延迟
-            # 这里直接获取和更新统计值即可
-
-            # 获取当前游戏时长（如果统计不存在，从 0 开始）
-            try:
-                current_playtime = steamworks.UserStats.GetStatInt('PLAY_TIME_SECONDS')
-            except Exception as e:
-                logger.warning(f"获取 PLAY_TIME_SECONDS 失败，从 0 开始: {e}")
-                current_playtime = 0
-
-            # 增加时长
-            new_playtime = current_playtime + seconds_to_add
-
-            # 设置新的时长
-            try:
-                result = steamworks.UserStats.SetStat('PLAY_TIME_SECONDS', new_playtime)
-
-                if result:
-                    # 存储统计数据
-                    steamworks.UserStats.StoreStats()
-                    steamworks.run_callbacks()
-
-                    logger.debug(f"游戏时长已更新: {current_playtime}s -> {new_playtime}s (+{seconds_to_add}s)")
-
-                    return JSONResponse(content={
-                        "success": True,
-                        "totalPlayTime": new_playtime,
-                        "added": seconds_to_add
-                    })
-                else:
-                    logger.debug("SetStat 返回 False - PLAY_TIME_SECONDS 统计可能未在 Steamworks 后台配置")
-                    # 即使失败也返回成功，避免前端报错
-                    return JSONResponse(content={
-                        "success": True,
-                        "totalPlayTime": new_playtime,
-                        "added": seconds_to_add,
-                        "warning": "Steam stat not configured"
-                    })
-            except Exception as stat_error:
-                logger.warning(f"设置 Steam 统计失败: {stat_error} - 统计可能未在 Steamworks 后台配置")
-                # 即使失败也返回成功，避免前端报错
-                return JSONResponse(content={
-                    "success": True,
-                    "totalPlayTime": new_playtime,
-                    "added": seconds_to_add,
-                    "warning": "Steam stat not configured"
-                })
-
-        except Exception as e:
-            logger.error(f"更新游戏时长失败: {e}")
-            return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
-    else:
+    if steamworks is None:
         return JSONResponse(content={"success": False, "error": "Steamworks未初始化"}, status_code=503)
+
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+
+    seconds_to_add = data.get("seconds", 10)
+    try:
+        seconds_to_add = int(seconds_to_add)
+        if seconds_to_add < 0:
+            return JSONResponse(
+                content={"success": False, "error": "seconds must be non-negative"},
+                status_code=400,
+            )
+    except (ValueError, TypeError):
+        return JSONResponse(
+            content={"success": False, "error": "seconds must be a valid integer"},
+            status_code=400,
+        )
+
+    # Cap a single report to 1 hour to limit abuse / clock-jump spikes.
+    seconds_to_add = min(seconds_to_add, 3600)
+
+    try:
+        # Ensure Steam has delivered current stats before read/modify/write;
+        # otherwise GetStatInt may return 0 and StoreStats would clobber progress.
+        await _prepare_steam_user_stats(steamworks)
+
+        try:
+            current_playtime = steamworks.UserStats.GetStatInt(_PLAYTIME_PROGRESS_STAT)
+        except Exception as e:
+            logger.warning("获取 %s 失败，从 0 开始: %s", _PLAYTIME_PROGRESS_STAT, e)
+            current_playtime = 0
+
+        new_playtime = int(current_playtime) + seconds_to_add
+
+        try:
+            result = steamworks.UserStats.SetStat(_PLAYTIME_PROGRESS_STAT, new_playtime)
+        except Exception as stat_error:
+            logger.warning(
+                "设置 Steam 进度统计失败: %s - 统计可能未在 Steamworks 后台配置",
+                stat_error,
+            )
+            return JSONResponse(content={
+                "success": True,
+                "totalPlayTime": new_playtime,
+                "added": seconds_to_add,
+                "stat": _PLAYTIME_PROGRESS_STAT,
+                "warning": "Steam progress stat not configured",
+                "progressUnlocked": [],
+            })
+
+        if not result:
+            logger.debug(
+                "SetStat 返回 False - %s 统计可能未在 Steamworks 后台配置",
+                _PLAYTIME_PROGRESS_STAT,
+            )
+            return JSONResponse(content={
+                "success": True,
+                "totalPlayTime": new_playtime,
+                "added": seconds_to_add,
+                "stat": _PLAYTIME_PROGRESS_STAT,
+                "warning": "Steam progress stat not configured",
+                "progressUnlocked": [],
+            })
+
+        steamworks.UserStats.StoreStats()
+        # Give Steam a short window to apply Progress Stat → achievement unlocks.
+        for _ in range(5):
+            steamworks.run_callbacks()
+            await asyncio.sleep(0.05)
+
+        progress_unlocked = _read_progress_unlocked_achievements(steamworks)
+        logger.debug(
+            "游戏时长进度已更新: %ss -> %ss (+%ss); progressUnlocked=%s",
+            current_playtime,
+            new_playtime,
+            seconds_to_add,
+            progress_unlocked,
+        )
+        return JSONResponse(content={
+            "success": True,
+            "totalPlayTime": new_playtime,
+            "added": seconds_to_add,
+            "stat": _PLAYTIME_PROGRESS_STAT,
+            "progressUnlocked": progress_unlocked,
+        })
+    except Exception as e:
+        logger.error("更新游戏时长失败: %s", e)
+        return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
 
 
 @router.get('/steam/list-achievements')
@@ -5141,32 +5308,35 @@ async def proactive_chat(request: Request):
         # 获取session manager
         mgr = session_manager.get(lanlan_name)
         if not mgr:
-            return JSONResponse({"success": False, "error": f"角色 {lanlan_name} 不存在"}, status_code=404)
+            return JSONResponse(
+                _proactive_error_body(
+                    PROACTIVE_REASON_ERROR_CHARACTER_NOT_FOUND,
+                    error=f"角色 {lanlan_name} 不存在",
+                ),
+                status_code=404,
+            )
 
         if getattr(mgr, "is_goodbye_silent", lambda: False)():
             logger.info("[%s] 主动搭话本轮未发起：goodbye silent", lanlan_name)
-            return JSONResponse({
-                "success": True,
-                "action": "pass",
-                "message": "goodbye silent; proactive skipped",
-            })
+            return JSONResponse(_proactive_pass_body(
+                PROACTIVE_REASON_PASS_DISABLED,
+                message="goodbye silent; proactive skipped",
+            ))
 
         try:
             from main_routers.game_router import is_game_route_active
             if is_game_route_active(lanlan_name):
                 logger.info("[%s] 主动搭话本轮未发起：游戏路由 active", lanlan_name)
-                return JSONResponse({
-                    "success": True,
-                    "action": "pass",
-                    "message": "game route active; ordinary proactive skipped",
-                })
+                return JSONResponse(_proactive_pass_body(
+                    PROACTIVE_REASON_PASS_ROUTE_ACTIVE,
+                    message="game route active; ordinary proactive skipped",
+                ))
         except Exception as game_route_err:
             logger.warning("[%s] proactive game-route guard failed closed: %s", lanlan_name, game_route_err)
-            return JSONResponse({
-                "success": True,
-                "action": "pass",
-                "message": "game route guard unavailable; ordinary proactive skipped",
-            })
+            return JSONResponse(_proactive_pass_body(
+                PROACTIVE_REASON_PASS_ROUTE_ACTIVE,
+                message="game route guard unavailable; ordinary proactive skipped",
+            ))
         
         # 检查能否发起新一轮主动搭话：状态机统一把 "AI 正在响应"（_is_responding）、
         # "另一轮 proactive 在跑"（phase != IDLE）两个信号收拢到 O(1) 判定。
@@ -5203,12 +5373,15 @@ async def proactive_chat(request: Request):
                 )
             if not mgr.state.can_start_proactive(session=probe_session):
                 logger.info("[%s] 主动搭话本轮未发起：语音模式 AI 正在响应中（409）", lanlan_name)
-                return JSONResponse({
-                    "success": False,
-                    "error": "AI正在响应中，无法主动搭话",
-                    "message": "请等待当前响应完成",
-                    "state": mgr.state.snapshot(),
-                }, status_code=409)
+                return JSONResponse(
+                    _proactive_error_body(
+                        PROACTIVE_REASON_PASS_BUSY,
+                        error="AI正在响应中，无法主动搭话",
+                        message="请等待当前响应完成",
+                        state=mgr.state.snapshot(),
+                    ),
+                    status_code=409,
+                )
             delivered = await mgr.trigger_voice_proactive_nudge()
             if delivered:
                 # 1h+10 chats 冷却的 chat counter：voice nudge 也算一次主动搭话，
@@ -5222,11 +5395,15 @@ async def proactive_chat(request: Request):
             # Focus thinking-on reply, so it is not a Focus proactive turn — the
             # cooldown is applied only at the text Phase-2 idle path (which is
             # where _focus_idle_thinking actually gates thinking-on).
-            return JSONResponse({
-                "success": True,
-                "action": "chat" if delivered else "pass",
-                "message": "voice proactive triggered" if delivered else "voice proactive skipped (guard)",
-            })
+            if delivered:
+                return JSONResponse(_proactive_chat_body(
+                    PROACTIVE_REASON_CHAT_DELIVERED,
+                    message="voice proactive triggered",
+                ))
+            return JSONResponse(_proactive_pass_body(
+                PROACTIVE_REASON_PASS_BUSY,
+                message="voice proactive skipped (guard)",
+            ))
 
         # ========== Text-mode proactive：原子 "检查 + 占坑" ==========
         # try_start_proactive 在 _write_lock 内完成 can_start_proactive 判定 + 翻
@@ -5235,12 +5412,15 @@ async def proactive_chat(request: Request):
         from main_logic.session_state import SessionEvent as _SE
         if not await mgr.state.try_start_proactive(session=probe_session):
             logger.info("[%s] 主动搭话本轮未发起：AI 正在响应或已有一轮在跑（409）", lanlan_name)
-            return JSONResponse({
-                "success": False,
-                "error": "AI正在响应中，无法主动搭话",
-                "message": "请等待当前响应完成",
-                "state": mgr.state.snapshot(),
-            }, status_code=409)
+            return JSONResponse(
+                _proactive_error_body(
+                    PROACTIVE_REASON_PASS_BUSY,
+                    error="AI正在响应中，无法主动搭话",
+                    message="请等待当前响应完成",
+                    state=mgr.state.snapshot(),
+                ),
+                status_code=409,
+            )
         _proactive_done_emitted = False
         # Set after activity snapshot fetch — tells the frontend scheduler
         # to skip the regular tier backoff and use a flat baseInterval on
@@ -5280,6 +5460,7 @@ async def proactive_chat(request: Request):
                 return resp
             if not isinstance(body, dict):
                 return resp
+            body = _ensure_proactive_reason_code(body)
             # text-mode 占坑后的所有出口都经过这里。本轮最终没把话说出来
             # （action != "chat"：各种 guard/skip/内容为空/被用户接管）就在
             # info 留一条带原因的日志，原因取响应体 message（无则 error）。
@@ -5307,9 +5488,7 @@ async def proactive_chat(request: Request):
                     )
                 except Exception as _focus_err:
                     logger.debug("[%s] focus idle cooldown failed: %s", lanlan_name, _focus_err)
-            if 'next_schedule_fixed_mode' in body:
-                return resp
-            body['next_schedule_fixed_mode'] = _next_schedule_fixed_mode
+            body.setdefault('next_schedule_fixed_mode', _next_schedule_fixed_mode)
             return JSONResponse(body, status_code=resp.status_code)
 
         def _proactive_preempted_json(where: str) -> dict:
@@ -5323,6 +5502,7 @@ async def proactive_chat(request: Request):
             return {
                 "success": True,
                 "action": "pass",
+                "reason_code": PROACTIVE_REASON_DELIVERY_PREEMPTED,
                 "message": f"proactive {where} preempted by user takeover",
             }
 
@@ -5426,6 +5606,7 @@ async def proactive_chat(request: Request):
             return await _end_proactive(JSONResponse({
                 "success": True,
                 "action": "pass",
+                "reason_code": PROACTIVE_REASON_PASS_PRIVACY,
                 "message": f"user state={activity_snapshot.state} → closed (privacy lockdown)",
             }))
 
@@ -5546,6 +5727,7 @@ async def proactive_chat(request: Request):
                     return await _end_proactive(JSONResponse({
                         "success": True,
                         "action": "chat",
+                        "reason_code": PROACTIVE_REASON_CHAT_DELIVERED,
                         "message": "anti-slack reminder delivered",
                         "channel": "anti_slack",
                     }))
@@ -5555,6 +5737,7 @@ async def proactive_chat(request: Request):
                 return await _end_proactive(JSONResponse({
                     "success": True,
                     "action": "pass",
+                    "reason_code": PROACTIVE_REASON_DELIVERY_PREEMPTED,
                     "message": "anti-slack reminder pending but delivery skipped",
                 }))
 
@@ -5661,6 +5844,7 @@ async def proactive_chat(request: Request):
                     return await _end_proactive(JSONResponse({
                         "success": True,
                         "action": "chat",
+                        "reason_code": PROACTIVE_REASON_CHAT_DELIVERED,
                         "message": "work-break + game-invite delivered",
                         "channel": "work_break_game_invite",
                         "game_type": chosen_game_type,
@@ -5672,6 +5856,7 @@ async def proactive_chat(request: Request):
                 return await _end_proactive(JSONResponse({
                     "success": True,
                     "action": "pass",
+                    "reason_code": PROACTIVE_REASON_DELIVERY_PREEMPTED,
                     "message": "work-break + game-invite pending but delivery skipped",
                 }))
 
@@ -5702,6 +5887,7 @@ async def proactive_chat(request: Request):
                 return await _end_proactive(JSONResponse({
                     "success": True,
                     "action": "chat",
+                    "reason_code": PROACTIVE_REASON_CHAT_DELIVERED,
                     "message": "work-break reminder delivered",
                     "channel": "work_break",
                     "seed": wb_seed,
@@ -5709,6 +5895,7 @@ async def proactive_chat(request: Request):
             return await _end_proactive(JSONResponse({
                 "success": True,
                 "action": "pass",
+                "reason_code": PROACTIVE_REASON_DELIVERY_PREEMPTED,
                 "message": "work-break reminder pending but delivery skipped",
             }))
 
@@ -5740,6 +5927,7 @@ async def proactive_chat(request: Request):
                 return await _end_proactive(JSONResponse({
                     "success": True,
                     "action": "pass",
+                    "reason_code": PROACTIVE_REASON_PASS_THROTTLED,
                     "message": (
                         f"probabilistic skip: state={activity_snapshot.state} "
                         f"intensity={activity_snapshot.game_intensity} "
@@ -5798,6 +5986,7 @@ async def proactive_chat(request: Request):
                 return await _end_proactive(JSONResponse({
                     "success": True,
                     "action": "pass",
+                    "reason_code": PROACTIVE_REASON_PASS_RESTRICTED_SCREEN_ONLY,
                     "message": f"user state={activity_snapshot.state} restricts proactive to screen-only, but vision not enabled this round",
                 }))
 
@@ -5837,6 +6026,7 @@ async def proactive_chat(request: Request):
             return await _end_proactive(JSONResponse({
                 "success": True,
                 "action": "pass",
+                "reason_code": PROACTIVE_REASON_PASS_SOURCE_EMPTY,
                 "message": "no source modes enabled and mini-game invite did not fire",
             }))
 
@@ -5970,11 +6160,14 @@ async def proactive_chat(request: Request):
             # + 无 vision），sources 必定为空但不应当 pass —— 让 Phase 2 拿对话
             # 历史 + state_section 跑 text-only [CHAT] 跟进。
             if not _has_unfinished_thread:
-                return await _end_proactive(JSONResponse({
-                    "success": False,
-                    "error": "所有信息源获取失败",
-                    "action": "pass"
-                }, status_code=500))
+                return await _end_proactive(JSONResponse(
+                    _proactive_pass_body(
+                        PROACTIVE_REASON_ERROR_SOURCE_FETCH_FAILED,
+                        success=False,
+                        error="所有信息源获取失败",
+                    ),
+                    status_code=500,
+                ))
             print(f"[{lanlan_name}] sources 为空但有未收尾话题，进入 text-only 跟进路径")
 
         # Phase 1 preempt check：信息源并行 fetch 完，正式进入 LLM 前先瞄一眼
@@ -6122,6 +6315,7 @@ async def proactive_chat(request: Request):
                 logger.error("对话模型配置缺失: model或api_key未设置")
                 return await _end_proactive(JSONResponse({
                     "success": False,
+                    "reason_code": PROACTIVE_REASON_ERROR_INTERNAL,
                     "error": "对话模型配置缺失",
                     "detail": "请在设置中配置对话模型的model和api_key"
                 }, status_code=500))
@@ -6138,6 +6332,7 @@ async def proactive_chat(request: Request):
             logger.error(f"获取模型配置失败: {e}")
             return await _end_proactive(JSONResponse({
                 "success": False,
+                "reason_code": PROACTIVE_REASON_ERROR_INTERNAL,
                 "error": "模型配置异常",
                 "detail": str(e)
             }, status_code=500))
@@ -6745,6 +6940,7 @@ async def proactive_chat(request: Request):
                 return await _end_proactive(JSONResponse({
                     "success": True,
                     "action": "pass",
+                    "reason_code": PROACTIVE_REASON_PASS_MODEL_PASS,
                     "message": "所有信息源筛选后均不值得搭话"
                 }))
             print(f"[{lanlan_name}] Phase 1 无话题但有未收尾话题，进入 text-only 跟进 Phase 2")
@@ -6975,6 +7171,7 @@ async def proactive_chat(request: Request):
             return await _end_proactive(JSONResponse({
                 "success": True,
                 "action": "pass",
+                "reason_code": PROACTIVE_REASON_PASS_ACTIVITY_BUSY,
                 "message": "主动搭话条件未满足（用户近期活跃或语音会话正在进行）"
             }))
 
@@ -7033,13 +7230,26 @@ async def proactive_chat(request: Request):
         full_text = ""
         pipe_count = 0
         aborted = False
+        abort_reason_code: str | None = None
         # 滚动尾部缓冲区：保留最近 5 个字符以检测跨 chunk 的 "[PASS]"（长度 6）
         pass_probe = ""
         _PASS_PROBE_LEN = 5  # len("[PASS]") - 1
 
+        def _abort(reason_code: str) -> None:
+            nonlocal aborted, abort_reason_code
+            aborted = True
+            # User takeover is the most important telemetry signal. If a later
+            # cleanup path also notices empty/invalid output, keep the takeover
+            # reason so the final pass is classified as delivery preemption.
+            if (
+                abort_reason_code is None
+                or reason_code == PROACTIVE_REASON_DELIVERY_PREEMPTED
+            ):
+                abort_reason_code = reason_code
+
         async def _emit_safe(text: str) -> bool:
             """Send to TTS after passing the fence/length checks. Returns True when we should abort."""
-            nonlocal pipe_count, full_text, aborted
+            nonlocal pipe_count, full_text
             if not text:
                 return False
             # 状态机 preempt check：O(1) 读 sticky flag + sid 比较。用户抢占
@@ -7050,20 +7260,20 @@ async def proactive_chat(request: Request):
             # 再一次性 feed。否则重复文本会在 guard 命中前已经被用户听到。
             if mgr.state.is_proactive_preempted(proactive_sid):
                 print(f"[{lanlan_name}] Phase 2 检测到用户接管（state 抢占），abort")
-                aborted = True
+                _abort(PROACTIVE_REASON_DELIVERY_PREEMPTED)
                 return True
             for ch in text:
                 if ch in ('|', '｜'):
                     pipe_count += 1
                     if pipe_count >= 2:
                         print(f"[{lanlan_name}] Phase 2 fence 触发 (pipe_count={pipe_count})，abort")
-                        aborted = True
+                        _abort(PROACTIVE_REASON_PASS_GENERATION_EMPTY)
                         return True
             # sync count_tokens — see PHASE2_OUTPUT_MAX_TOKENS docstring
             n_tokens = count_tokens(full_text + text)
             if n_tokens > PHASE2_OUTPUT_MAX_TOKENS:
                 print(f"[{lanlan_name}] Phase 2 长度超限 ({n_tokens} > {PHASE2_OUTPUT_MAX_TOKENS} tokens)，abort")
-                aborted = True
+                _abort(PROACTIVE_REASON_PASS_GENERATION_EMPTY)
                 return True
             full_text += text
             return False
@@ -7090,7 +7300,7 @@ async def proactive_chat(request: Request):
                         # 用户抢占立刻跳出；_emit_safe 里还有一次保险。
                         if mgr.state.is_proactive_preempted(proactive_sid):
                             print(f"[{lanlan_name}] Phase 2 astream chunk 前检测到抢占，abort")
-                            aborted = True
+                            _abort(PROACTIVE_REASON_DELIVERY_PREEMPTED)
                             break
                         content = chunk.content if hasattr(chunk, 'content') else ''
                         if _p2_strip is not None and content:
@@ -7131,7 +7341,7 @@ async def proactive_chat(request: Request):
                             if (source_tag == 'PASS' or '[PASS]' in cleaned.upper()
                                     or _text_is_pass_sentinel(cleaned)):
                                 print(f"[{lanlan_name}] Phase 2 流式检测到 PASS，abort")
-                                aborted = True
+                                _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
                                 break
                             
                             # 缓冲中剩余的文本经由 pass_probe 逻辑输出
@@ -7139,7 +7349,7 @@ async def proactive_chat(request: Request):
                                 combined = pass_probe + cleaned
                                 if '[PASS]' in combined.upper():
                                     print(f"[{lanlan_name}] Phase 2 流式检测到 [PASS]，abort")
-                                    aborted = True
+                                    _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
                                     break
                                 safe_text = combined[:-_PASS_PROBE_LEN] if len(combined) > _PASS_PROBE_LEN else ''
                                 pass_probe = combined[-_PASS_PROBE_LEN:] if len(combined) >= _PASS_PROBE_LEN else combined
@@ -7151,7 +7361,7 @@ async def proactive_chat(request: Request):
                         combined = pass_probe + content
                         if '[PASS]' in combined.upper():
                             print(f"[{lanlan_name}] Phase 2 流式检测到内嵌 [PASS]，abort")
-                            aborted = True
+                            _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
                             break
                         # 将本次 chunk 的尾部保留到 pass_probe，可安全输出的部分为去掉尾部的前段
                         safe_text = combined[:-_PASS_PROBE_LEN] if len(combined) > _PASS_PROBE_LEN else ''
@@ -7162,12 +7372,12 @@ async def proactive_chat(request: Request):
         
         except (asyncio.TimeoutError, Exception) as e:
             logger.warning(f"[{lanlan_name}] Phase 2 流式调用异常: {type(e).__name__}: {e}")
-            aborted = True
+            _abort(PROACTIVE_REASON_PASS_GENERATION_EMPTY)
         
         # --- 流结束后：flush pass_probe 残留 ---
         if pass_probe and not aborted:
             if '[PASS]' in pass_probe.upper():
-                aborted = True
+                _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
             else:
                 await _emit_safe(pass_probe)
         pass_probe = ""
@@ -7202,7 +7412,7 @@ async def proactive_chat(request: Request):
             # 同样补整段哨兵判定，裸 PASS 与 [PASS] 一视同仁 abort。
             if (source_tag == 'PASS' or '[PASS]' in cleaned.upper()
                     or _text_is_pass_sentinel(cleaned)):
-                aborted = True
+                _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
             elif cleaned.strip():
                 await _emit_safe(cleaned)
         
@@ -7221,7 +7431,7 @@ async def proactive_chat(request: Request):
             # 照常生效）；仍无 tag / [PASS] / 空 → 才判格式泄漏 drop。preempt 时放弃。
             print(f"[{lanlan_name}] Phase 2 输出无合法来源标签，尝试格式自救 regen")
             if mgr.state.is_proactive_preempted(proactive_sid):
-                aborted = True
+                _abort(PROACTIVE_REASON_DELIVERY_PREEMPTED)
             else:
                 _fix_human_text = f"{render_format_fix_instruction(proactive_lang, master_name_current)}\n\n{human_text}"
                 if phase2_use_vision:
@@ -7267,7 +7477,14 @@ async def proactive_chat(request: Request):
                     print(f"[{lanlan_name}] Phase 2 格式自救成功 tag={source_tag}")
                 else:
                     print(f"[{lanlan_name}] Phase 2 格式自救仍无合法 tag，drop")
-                    aborted = True
+                    if (
+                        _fix_tag == "PASS"
+                        or "[PASS]" in _fc.upper()
+                        or _text_is_pass_sentinel(_fc)
+                    ):
+                        _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
+                    else:
+                        _abort(PROACTIVE_REASON_PASS_GENERATION_EMPTY)
 
         # --- 结果处理 ---
         # buffer 是流前 ~80 字符的原始累积（含 [TAG]\n 前缀和正文头部），
@@ -7276,6 +7493,7 @@ async def proactive_chat(request: Request):
         # 调试只需要 tag + 实际投递文本即可。
         print(f"\n[PROACTIVE-DEBUG] Phase 2 STREAM output (aborted={aborted}, tag={source_tag}): {full_text[:300]}\n")
         if aborted or not full_text.strip():
+            final_abort_reason_code = abort_reason_code or PROACTIVE_REASON_PASS_GENERATION_EMPTY
             # 只有当用户没接管时才调 handle_new_message 清 TTS —— 否则会把
             # 用户正常回复的 TTS 也清掉（PR #862 修的 bug）。状态机的
             # is_proactive_preempted 是权威信号，sid 比较作为最后一道兜底。
@@ -7287,6 +7505,7 @@ async def proactive_chat(request: Request):
             return await _end_proactive(JSONResponse({
                 "success": True,
                 "action": "pass",
+                "reason_code": final_abort_reason_code,
                 "message": "Phase 2 流式输出被拦截或为空"
             }))
         
@@ -7360,6 +7579,7 @@ async def proactive_chat(request: Request):
             return await _end_proactive(JSONResponse({
                 "success": True,
                 "action": "pass",
+                "reason_code": PROACTIVE_REASON_PASS_DUPLICATE,
                 "message": "主动搭话重复度过高，已拦截",
                 "similarity": similarity_score,
                 "threshold": _PROACTIVE_SIMILARITY_THRESHOLD,
@@ -7447,6 +7667,7 @@ async def proactive_chat(request: Request):
                 return await _end_proactive(JSONResponse({
                     "success": True,
                     "action": "pass",
+                    "reason_code": PROACTIVE_REASON_DELIVERY_PREEMPTED,
                     "message": "BM25 regen 前用户已接管",
                 }))
             try:
@@ -7515,6 +7736,7 @@ async def proactive_chat(request: Request):
                 return await _end_proactive(JSONResponse({
                     "success": True,
                     "action": "pass",
+                    "reason_code": PROACTIVE_REASON_PASS_DUPLICATE,
                     "message": "BM25 regen 失败，已 drop",
                 }))
 
@@ -7533,6 +7755,7 @@ async def proactive_chat(request: Request):
                 return await _end_proactive(JSONResponse({
                     "success": True,
                     "action": "pass",
+                    "reason_code": PROACTIVE_REASON_PASS_DUPLICATE,
                     "message": "BM25 regen 后仍超阈值，已 drop",
                     "bm25_score": _regen_total,
                 }))
@@ -7553,6 +7776,7 @@ async def proactive_chat(request: Request):
                 return await _end_proactive(JSONResponse({
                     "success": True,
                     "action": "pass",
+                    "reason_code": PROACTIVE_REASON_PASS_DUPLICATE,
                     "message": "BM25 regen 后字面相似度仍超阈值，已 drop",
                     "similarity": _regen_sim,
                     "threshold": _PROACTIVE_SIMILARITY_THRESHOLD,
@@ -7609,6 +7833,7 @@ async def proactive_chat(request: Request):
             return await _end_proactive(JSONResponse({
                 "success": True,
                 "action": "pass",
+                "reason_code": PROACTIVE_REASON_PASS_MODEL_PASS,
                 "message": f"[{lanlan_name}] 播放中推荐拦截触发，动作已取消"
             }))
 
@@ -7717,6 +7942,7 @@ async def proactive_chat(request: Request):
             return await _end_proactive(JSONResponse({
                 "success": True,
                 "action": "pass",
+                "reason_code": PROACTIVE_REASON_DELIVERY_FAILED,
                 "message": "Phase 2 buffered delivery failed",
             }))
         if not committed:
@@ -7730,6 +7956,7 @@ async def proactive_chat(request: Request):
             return await _end_proactive(JSONResponse({
                 "success": True,
                 "action": "pass",
+                "reason_code": PROACTIVE_REASON_DELIVERY_PREEMPTED,
                 "message": "proactive delivery skipped: user took over turn",
                 "lanlan_name": lanlan_name,
                 "turn_id": mgr.current_speech_id,
@@ -7860,6 +8087,7 @@ async def proactive_chat(request: Request):
         return await _end_proactive(JSONResponse({
             "success": True,
             "action": "chat",
+            "reason_code": PROACTIVE_REASON_CHAT_DELIVERED,
             "message": "主动搭话已发送",
             "lanlan_name": lanlan_name,
             "source_mode": primary_channel.lower(),
@@ -7872,18 +8100,24 @@ async def proactive_chat(request: Request):
     except asyncio.TimeoutError:
         logger.error("主动搭话超时")
         await _safe_fire_proactive_done(locals())
-        return JSONResponse({
-            "success": False,
-            "error": "AI处理超时"
-        }, status_code=504)
+        return JSONResponse(
+            _proactive_error_body(
+                PROACTIVE_REASON_ERROR_TIMEOUT,
+                error="AI处理超时",
+            ),
+            status_code=504,
+        )
     except Exception as e:
         logger.error(f"主动搭话接口异常: {e}")
         await _safe_fire_proactive_done(locals())
-        return JSONResponse({
-            "success": False,
-            "error": "服务器内部错误",
-            "detail": str(e)
-        }, status_code=500)
+        return JSONResponse(
+            _proactive_error_body(
+                PROACTIVE_REASON_ERROR_INTERNAL,
+                error="服务器内部错误",
+                detail=str(e),
+            ),
+            status_code=500,
+        )
 
 
 

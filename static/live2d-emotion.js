@@ -24,6 +24,7 @@ Live2DManager.prototype.recordInitialParameters = function() {
         const coreModel = this.currentModel.internalModel.coreModel;
         this.initialParameters = {};
         this.motionBaselineParameters = {};
+        this.appearanceBaselineParameters = {};
         this._activeExpressionParamIds = null;
         this._activeMotionParamIds = null;
         this._motionParameterTrackGeneration = (this._motionParameterTrackGeneration || 0) + 1;
@@ -134,12 +135,31 @@ Live2DManager.prototype.recordInitialParameters = function() {
         
         // 结束可折叠日志组
         if (_verbose) console.groupEnd();
+        this.appearanceBaselineParameters = {};
+        if (typeof this._resolveModelParameterKey === 'function' && typeof this._isRuntimeManagedAppearanceParam === 'function') {
+            for (const [paramId, value] of Object.entries(this.initialParameters)) {
+                if (typeof value !== 'number' || !Number.isFinite(value)) continue;
+
+                const resolved = this._resolveModelParameterKey(coreModel, paramId);
+                if (!resolved) continue;
+
+                const resolvedParamId = resolved.resolvedId;
+                if (this._isRuntimeManagedAppearanceParam(paramId, resolvedParamId, coreModel)) {
+                    continue;
+                }
+
+                this.appearanceBaselineParameters[paramId] = value;
+                this.appearanceBaselineParameters[resolvedParamId] = value;
+                this.appearanceBaselineParameters[`param_${resolved.idx}`] = value;
+            }
+        }
         
         console.log(`[Live2D] 已记录${Object.keys(this.initialParameters).length}个初始参数 (跳过${paramCount - Object.keys(this.initialParameters).length}个位置/嘴巴参数)，${Object.keys(this.motionBaselineParameters).length}个motion基线`);
     } catch (error) {
         console.warn('记录初始参数失败:', error);
         this.initialParameters = {};
         this.motionBaselineParameters = {};
+        this.appearanceBaselineParameters = {};
         this._activeExpressionParamIds = null;
         this._activeMotionParamIds = null;
         this._motionParameterTrackGeneration = (this._motionParameterTrackGeneration || 0) + 1;
@@ -271,6 +291,11 @@ Live2DManager.prototype._resetParametersToInitialState = function(options = {}) 
 
     for (const [paramId, initialValue] of Object.entries(this.initialParameters)) {
         try {
+            const baseline = this._findRecordedParameterBaseline(paramId, coreModel, {
+                includeSavedParameters: true
+            });
+            const resetValue = baseline.found ? baseline.value : initialValue;
+
             if (paramId.startsWith('param_')) {
                 const paramIndex = parseInt(paramId.substring(6), 10);
                 if (!isNaN(paramIndex)) {
@@ -284,12 +309,12 @@ Live2DManager.prototype._resetParametersToInitialState = function(options = {}) 
                         resolvedParamId = null;
                     }
                     if (resolvedParamId && protectedIds.has(resolvedParamId)) continue;
-                    coreModel.setParameterValueByIndex(paramIndex, initialValue);
+                    coreModel.setParameterValueByIndex(paramIndex, resetValue);
                     resetCount++;
                 }
             } else {
                 if (protectedIds.has(paramId)) continue;
-                coreModel.setParameterValueById(paramId, initialValue);
+                coreModel.setParameterValueById(paramId, resetValue);
                 resetCount++;
             }
         } catch (e) {
@@ -362,7 +387,7 @@ Live2DManager.prototype._trackActiveMotionParametersFromFile = async function(mo
 Live2DManager.prototype._findRecordedParameterBaseline = function(paramId, coreModel, options = {}) {
     const includeSavedParameters = options.includeSavedParameters === true;
     const baselineSources = includeSavedParameters
-        ? [this.savedModelParameters, this.motionBaselineParameters, this.initialParameters]
+        ? [this.appearanceBaselineParameters, this.motionBaselineParameters, this.initialParameters]
         : [this.motionBaselineParameters, this.initialParameters];
 
     for (const source of baselineSources) {

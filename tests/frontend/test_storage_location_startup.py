@@ -400,7 +400,7 @@ def test_storage_location_overlay_blocks_independent_startup_requests_while_barr
         route.fulfill(
             status=200,
             content_type="application/json",
-            body='{"totalPlayTime": 0}',
+            body='{"success": true, "totalPlayTime": 0, "added": 0, "progressUnlocked": []}',
         )
 
     page.route("**/api/config/page_config**", handle_page_config)
