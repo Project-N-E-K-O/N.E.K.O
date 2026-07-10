@@ -65,7 +65,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'ZH_002',
             "name": 'corner of mouth curling into a smile/smirk',
-            "find": '(?:他|她|它|我|你)?嘴角(?:微微|轻轻|缓缓)?(?:勾起|扬起|上扬|挑起|噙着|带着)(?:了)?一(?:抹|丝|缕|道)?(?:弧度|笑意|坏笑|微笑|笑容|冷笑|浅笑)',
+            "find": '嘴角(?:微微|轻轻|缓缓)?(?:勾起|扬起|上扬|挑起|噙着|带着)(?:了)?一(?:抹|丝|缕|道)?(?:弧度|笑意|坏笑|微笑|笑容|冷笑|浅笑)',
             "replace": [
                 '唇边松开一点笑',
                 '笑意爬上了眼睛',
@@ -713,7 +713,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'EN_006',
             "name": 'eyes widened',
-            "find": r"\b(his|her|their|my|your)\s+eyes\s+(?:widen(?:ed|s)?|went\s+wide|grew\s+wide)\b",
+            "find": r"\b(his|her|their|my|your)\s+eyes\s+(?:widened|went\s+wide|grew\s+wide)\b",
             "replace": [
                 r"\1 eyes opened wider",
                 r"\1 gaze snapped up",
@@ -732,7 +732,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'EN_007',
             "name": 'biting/bit lower lip',
-            "find": r"\b(he|she|they|I|you)\s+(?:bit|bites|chewed|worried|nibbled)\s+(?:down\s+on\s+|at\s+)?(his|her|their|my|your)\s+(?:lower|bottom)\s+lip\b",
+            "find": r"\b(he|she|they|I|you)\s+(?:bit|chewed|worried|nibbled)\s+(?:down\s+on\s+|at\s+)?(his|her|their|my|your)\s+(?:lower|bottom)\s+lip\b",
             "replace": [
                 r"\1 caught \2 lower lip and held it",
                 r"\1 worried at \2 lower lip",
@@ -764,7 +764,7 @@ SLOP_RULES: dict[str, list[dict]] = {
                 r"\1 shoulders tightened against a chill",
                 r"a tremor passed over \1 skin",
                 r"\1 back went cold all at once",
-                r"a shudder caught \1 off guard",
+                'a shudder took hold without warning',
             ],
         },
         {
@@ -1629,7 +1629,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'KO_002',
             "name": '숨을 삼키다/들이켜다 (catch/draw breath)',
-            "find": r"숨을\s*(?:꿀꺽\s*)?(?:삼켰|들이켰|들이마셨|멈췄|죽였)(?:다|었다|었어|어)",
+            "find": r"숨을\s*(?:꿀꺽\s*)?(?:삼켰|들이켰|들이마셨|멈췄|죽였)(?:다|었다|었어|어요|어)",
             "replace": [
                 '숨이 잠깐 막혔다',
                 '호흡이 멎는 듯했다',
@@ -1857,7 +1857,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'KO_014',
             "name": '한숨을 내쉬다 (let out a sigh)',
-            "find": r"(?:깊은\s*|나직한\s*|작은\s*)?한숨을\s*(?:푹\s*|길게\s*)?(?:내쉬었|쉬었|내뱉었|토해냈|내뿜었)(?:다|어)",
+            "find": r"(?:깊은\s*|나직한\s*|작은\s*)?한숨을\s*(?:푹\s*|길게\s*)?(?:내쉬었|쉬었|내뱉었|토해냈|내뿜었)(?:다|어요|어)",
             "replace": [
                 '긴 숨을 내뱉었다',
                 '한숨이 절로 새어 나왔다',
@@ -2341,7 +2341,7 @@ SLOP_RULES: dict[str, list[dict]] = {
                 'sintió un cosquilleo helado en la nuca',
                 'un temblor le bajó hasta los pies',
                 'se le pusieron los pelos de punta',
-                'lo sacudió un estremecimiento',
+                'un estremecimiento le recorrió el cuerpo',
                 'un frío repentino le subió por dentro',
                 'tembló sin querer',
                 'se le heló algo en la espalda',
@@ -2364,7 +2364,7 @@ SLOP_RULES: dict[str, list[dict]] = {
                 r"\1 con un brillo blando en la cara",
                 r"\1 con el gesto relajado",
                 r"\1 como quien no esconde nada",
-                r"\1 y se le iluminó la cara",
+                r"\1 con la cara iluminada",
                 r"\1 con todo el rostro",
                 r"\1 con franqueza",
                 r"\1, despacio y de verdad",
