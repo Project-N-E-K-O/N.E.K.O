@@ -18,28 +18,27 @@ def normalize_plugin_entry_point(
     config_path: Path,
     builtin_plugin_root: Path,
 ) -> str:
-    """Normalize legacy built-in-style entries for user-installed plugins.
+    """Normalize canonical manifest entries for user-installed plugins.
 
-    Market packages are installed under the user plugin root as
-    ``plugins/<plugin_id>``. Older ``init-repo`` templates wrote entries as
-    ``plugin.plugins.<plugin_id>:Class``, which only works for in-repo built-in
-    plugins. When such a package is found outside the built-in root, rewrite it
-    to the user-root import namespace.
+    Plugin manifests use ``plugin.plugins.<plugin_id>:Class`` as the canonical
+    source-tree entry path. Market packages are installed under the user plugin
+    root as ``plugins/<plugin_id>`` at runtime, so entries found outside the
+    built-in root are rewritten to the user-root import namespace.
     """
 
     if ":" not in entry_point:
         return entry_point
 
     module_path, class_name = entry_point.split(":", 1)
-    legacy_prefix = "plugin.plugins."
-    if not module_path.startswith(legacy_prefix):
+    canonical_prefix = "plugin.plugins."
+    if not module_path.startswith(canonical_prefix):
         return entry_point
 
     plugin_dir = config_path.parent
     if _is_same_or_within(plugin_dir, builtin_plugin_root):
         return entry_point
 
-    suffix = module_path[len(legacy_prefix):]
+    suffix = module_path[len(canonical_prefix):]
     if not suffix:
         return entry_point
     return f"plugins.{suffix}:{class_name}"

@@ -3205,6 +3205,16 @@ function mergeFreshCatgirlRawDataWithLocal(freshRawData, localRawData) {
     return merged;
 }
 
+function applyLocalVoiceIdToRawData(rawData, voiceId) {
+    if (!rawData || typeof rawData !== 'object') return rawData;
+    const normalizedVoiceId = (voiceId == null ? '' : String(voiceId)).trim();
+    rawData.voice_id = normalizedVoiceId;
+    if (rawData.voice && typeof rawData.voice === 'object') {
+        rawData.voice.voice_id = normalizedVoiceId;
+    }
+    return rawData;
+}
+
 function syncCharacterCardCache(catgirlName, rawData, options = {}) {
     if (!catgirlName) return;
     if (!Array.isArray(window.characterCards)) {
@@ -7148,6 +7158,7 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
             if (nameInput) nameInput.value = savedCatgirlName;
         }
         const localRawData = buildLocalCatgirlRawData(savedCatgirlName, data, fieldOrder);
+        let savedVoiceIdForLocalRawData = null;
         let savedRawDataForCache = localRawData;
         syncCharacterCardCache(savedCatgirlName, localRawData, { render: !shouldSelectAfterSave });
         if (form._autoCreatedDetachedName) {
@@ -7191,6 +7202,9 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
                             window.t ? window.t('character.partialSaveVoiceFailed', { error: detail }) : '角色已保存，但音色更新失败: ' + detail,
                             'error'
                         );
+                    } else {
+                        savedVoiceIdForLocalRawData = selectedVoiceId;
+                        applyLocalVoiceIdToRawData(localRawData, savedVoiceIdForLocalRawData);
                     }
                 } catch (voiceErr) {
                     showMessage(
@@ -7214,6 +7228,9 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
                             window.t ? window.t('character.partialSaveVoiceFailed', { error: detail }) : '角色已保存，但音色更新失败: ' + detail,
                             'error'
                         );
+                    } else {
+                        savedVoiceIdForLocalRawData = '';
+                        applyLocalVoiceIdToRawData(localRawData, savedVoiceIdForLocalRawData);
                     }
                 } catch (clearErr) {
                     showMessage(
@@ -7309,11 +7326,17 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
                     ? freshData['猫娘'][savedCatgirlName]
                     : {};
                 savedRawDataForCache = mergeFreshCatgirlRawDataWithLocal(freshRawData, localRawData);
+                if (savedVoiceIdForLocalRawData !== null) {
+                    applyLocalVoiceIdToRawData(savedRawDataForCache, savedVoiceIdForLocalRawData);
+                }
                 setLocalRawDataFieldOrder(savedRawDataForCache, fieldOrder);
                 syncCharacterCardCache(savedCatgirlName, savedRawDataForCache);
                 buildCatgirlDetailForm(savedCatgirlName, savedRawDataForCache, false, container);
             } catch (e) {
                 console.error('重新加载猫娘数据失败:', e);
+                if (savedVoiceIdForLocalRawData !== null) {
+                    applyLocalVoiceIdToRawData(localRawData, savedVoiceIdForLocalRawData);
+                }
                 buildCatgirlDetailForm(savedCatgirlName, localRawData, false, container);
             }
         }

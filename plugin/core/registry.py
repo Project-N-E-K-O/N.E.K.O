@@ -1881,7 +1881,8 @@ def load_plugins_from_roots(
 
     logger.info("Loading plugins from roots: {}", [str(root) for root in roots])
 
-    # 用户插件继续使用顶层 ``plugins.xxx`` 导入；内置插件则改为 ``plugin.plugins.xxx``。
+    # plugin.toml 使用 ``plugin.plugins.xxx`` 作为规范入口；用户安装插件运行时会
+    # 通过 normalize_plugin_entry_point 映射到顶层 ``plugins.xxx`` 导入命名空间。
     _prepare_plugin_import_roots(roots, logger)
     logger.info("Current working directory: {}", os.getcwd())
     logger.info("Python path (first 3): {}", sys.path[:3])

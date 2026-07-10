@@ -132,6 +132,20 @@
         );
     }
 
+    function isElectronChatRuntime() {
+        var body = document.body;
+        return !!(
+            (body && body.classList.contains('neko-electron-runtime')) ||
+            window.nekoChatWindow ||
+            /Electron/i.test(navigator.userAgent || '') ||
+            (window.process && window.process.versions && window.process.versions.electron)
+        );
+    }
+
+    function isCompactOnlyElectronRuntimeChatHost() {
+        return !!(isCompactOnlyElectronChatHost() && isElectronChatRuntime());
+    }
+
     function coerceChatSurfaceModeForHost(mode) {
         var normalized = normalizeChatSurfaceMode(mode);
         // /chat 是 Electron 紧凑宿主；full 由 /chat_full 独立窗口承载，避免历史 full 状态污染透明承载窗。
@@ -386,6 +400,7 @@
     var COMPACT_SURFACE_VIEWPORT_PAD_X = 16;
     var COMPACT_SURFACE_VIEWPORT_PAD_TOP = 12;
     var COMPACT_SURFACE_VIEWPORT_PAD_BOTTOM = 18;
+    var COMPACT_SURFACE_ELECTRON_DEFAULT_BOTTOM_GAP = 320;
     var COMPACT_SURFACE_DEFAULT_HEIGHT = 64;
     var COMPACT_SURFACE_AVATAR_VERTICAL_RATIO = 0.72;
     var COMPACT_SURFACE_POSITION_STORAGE_KEY = 'neko.reactChatWindow.compactSurfacePosition';
@@ -1340,9 +1355,12 @@
         var metrics = getCompactSurfaceMetrics();
         var viewportWidth = window.innerWidth;
         var viewportHeight = window.innerHeight;
+        var fallbackBottomGap = isCompactOnlyElectronRuntimeChatHost()
+            ? Math.max(COMPACT_SURFACE_VIEWPORT_PAD_BOTTOM, COMPACT_SURFACE_ELECTRON_DEFAULT_BOTTOM_GAP)
+            : COMPACT_SURFACE_VIEWPORT_PAD_BOTTOM;
         var fallbackTop = Math.max(
             COMPACT_SURFACE_VIEWPORT_PAD_TOP,
-            viewportHeight - metrics.height - COMPACT_SURFACE_VIEWPORT_PAD_BOTTOM
+            viewportHeight - metrics.height - fallbackBottomGap
         );
 
         if (isElectronChatWindow()) {
@@ -3116,19 +3134,29 @@
     }
 
     function handleComposerScreenshot() {
+        var handled = false;
         if (typeof state.onComposerScreenshot === 'function') {
             try {
                 state.onComposerScreenshot();
+                handled = true;
             } catch (error) {
                 console.error('[ReactChatWindow] onComposerScreenshot failed:', error);
+                handled = false;
             }
         } else if (window.appButtons && typeof window.appButtons.captureScreenshotToPendingList === 'function') {
-            window.appButtons.captureScreenshotToPendingList();
+            try {
+                window.appButtons.captureScreenshotToPendingList();
+                handled = true;
+            } catch (error) {
+                console.error('[ReactChatWindow] captureScreenshotToPendingList failed:', error);
+                handled = false;
+            }
         } else {
             console.warn('[ReactChatWindow] no screenshot handler available');
         }
 
-        dispatchHostEvent('screenshot', {});
+        dispatchHostEvent('screenshot', { handled: handled });
+        return handled;
     }
 
     function handleComposerRemoveAttachment(attachmentId) {
@@ -7139,6 +7167,7 @@
         setOnComposerScreenshot: function (handler) {
             state.onComposerScreenshot = typeof handler === 'function' ? handler : null;
         },
+        triggerComposerScreenshot: handleComposerScreenshot,
         setOnComposerRemoveAttachment: function (handler) {
             state.onComposerRemoveAttachment = typeof handler === 'function' ? handler : null;
         },

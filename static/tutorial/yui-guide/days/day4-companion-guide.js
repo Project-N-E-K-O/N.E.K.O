@@ -184,12 +184,6 @@
                             trigger: 'afterCursorMove',
                             blocking: true,
                             preserveExternalizedChatGuideTarget: true
-                        },
-                        {
-                            atRatio: 0.7,
-                            command: 'petal.play',
-                            clear: ['cursor', 'spotlights'],
-                            blocking: true
                         }
                     ],
                     textKey: 'tutorial.avatarFloating.day4.wrap',

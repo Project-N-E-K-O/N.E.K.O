@@ -1,10 +1,9 @@
 """User-level persistence for per-plugin runtime toggles.
 
 Plugin manifests declare a default ``plugin_runtime.enabled`` value. The plugin
-manager UI lets users override that default at runtime (currently only the
-"Disable / Enable Extension" buttons exposed by ``PluginActions.vue``). Without
-persistence those toggles live only in :data:`plugin.core.state.state.plugins`
-and are lost on restart.
+manager UI lets users override that default at runtime via plugin start/stop and
+extension enable/disable actions. Without persistence those toggles live only in
+:data:`plugin.core.state.state.plugins` and are lost on restart.
 
 This module persists the user-toggled subset to ``plugin_runtime_overrides.json``
 under the user's app config directory (``ConfigManager.config_dir``). On the
