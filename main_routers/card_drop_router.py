@@ -34,6 +34,68 @@ router = APIRouter(prefix="/api/card-drop", tags=["card-drop"])
 _HTTP_TIMEOUT_SEC = 60.0
 _DEFAULT_SOCIAL_BASE_URL = "http://localhost:8080"
 _SOCIAL_SESSION_FILENAME = "social_session.json"
+_BIND_OWNERSHIP_CONFLICT = "client_already_bound_to_other_user"
+_SYNC_TICKET_TTL_SEC = 5 * 60
+_SYNC_TICKET_MAX_ACTIVE = 16
+_native_sync_tickets: dict[str, float] = {}
+
+
+class _ClientBindingConflict(Exception):
+    """The local client belongs to another cloud user; do not publish new JWTs."""
+
+    detail = _BIND_OWNERSHIP_CONFLICT
+
+
+def _sync_ticket_digest(ticket: str) -> str:
+    return hashlib.sha256(ticket.encode("utf-8")).hexdigest()
+
+
+def _normalize_sync_ticket(value: object) -> str:
+    ticket = value.strip() if isinstance(value, str) else ""
+    if not 32 <= len(ticket) <= 256:
+        return ""
+    if any(not (char.isalnum() or char in "_-") for char in ticket):
+        return ""
+    return ticket
+
+
+def _prune_sync_tickets(now: float | None = None) -> None:
+    current = time.monotonic() if now is None else now
+    expired = [digest for digest, expires_at in _native_sync_tickets.items() if expires_at <= current]
+    for digest in expired:
+        _native_sync_tickets.pop(digest, None)
+
+
+def _issue_sync_ticket() -> str:
+    now = time.monotonic()
+    _prune_sync_tickets(now)
+    while len(_native_sync_tickets) >= _SYNC_TICKET_MAX_ACTIVE:
+        oldest = min(_native_sync_tickets, key=_native_sync_tickets.get)
+        _native_sync_tickets.pop(oldest, None)
+    ticket = secrets.token_urlsafe(32)
+    _native_sync_tickets[_sync_ticket_digest(ticket)] = now + _SYNC_TICKET_TTL_SEC
+    return ticket
+
+
+def _sync_ticket_is_valid(value: object) -> bool:
+    ticket = _normalize_sync_ticket(value)
+    if not ticket:
+        return False
+    now = time.monotonic()
+    _prune_sync_tickets(now)
+    return _native_sync_tickets.get(_sync_ticket_digest(ticket), 0) > now
+
+
+def _consume_sync_ticket(value: object) -> bool:
+    ticket = _normalize_sync_ticket(value)
+    if not ticket:
+        return False
+    now = time.monotonic()
+    _prune_sync_tickets(now)
+    digest = _sync_ticket_digest(ticket)
+    expires_at = _native_sync_tickets.pop(digest, 0)
+    return expires_at > now
+
 
 def _social_base_url() -> str:
     """Return the cloud base URL, falling back to the local dev default."""
@@ -106,13 +168,33 @@ def _sync_cors_headers(request: Request) -> dict[str, str] | None:
         return {}
     if not _same_originish(origin, _social_base_url()):
         return None
-    return {
+    headers = {
         "Access-Control-Allow-Origin": origin,
         "Access-Control-Allow-Methods": "POST, OPTIONS",
         "Access-Control-Allow-Headers": "content-type",
         "Access-Control-Max-Age": "600",
         "Vary": "Origin",
     }
+    if (request.headers.get("access-control-request-private-network") or "").lower() == "true":
+        headers["Access-Control-Allow-Private-Network"] = "true"
+    return headers
+
+
+def _facts_cors_headers(request: Request) -> dict[str, str] | None:
+    """CORS for private local-memory reads; an explicit trusted Origin is mandatory."""
+    origin = (request.headers.get("origin") or "").strip().rstrip("/")
+    if not origin or not _same_originish(origin, _social_base_url()):
+        return None
+    headers = {
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Allow-Methods": "GET, OPTIONS",
+        "Access-Control-Allow-Headers": "authorization, content-type",
+        "Access-Control-Max-Age": "600",
+        "Vary": "Origin",
+    }
+    if (request.headers.get("access-control-request-private-network") or "").lower() == "true":
+        headers["Access-Control-Allow-Private-Network"] = "true"
+    return headers
 
 
 # ---- 社区账号登录：JWT 存本地 community_auth.json；draw 时带 Authorization ----
@@ -128,9 +210,28 @@ def _auth_path() -> Path | None:
         return None
 
 
-def _social_session_path() -> Path | None:
+def _legacy_social_session_path() -> Path | None:
     p = _auth_path()
     return (p.parent / _SOCIAL_SESSION_FILENAME) if p else None
+
+
+def _social_session_path() -> Path | None:
+    """Return the Electron-visible session path when the desktop host supplies it."""
+    override = (os.environ.get("NEKO_USER_DATA_DIR") or "").strip()
+    if override:
+        candidate = Path(override).expanduser()
+        if candidate.is_absolute():
+            return candidate / _SOCIAL_SESSION_FILENAME
+        logger.warning("card_drop: ignoring relative NEKO_USER_DATA_DIR")
+    return _legacy_social_session_path()
+
+
+def _social_session_paths() -> list[Path]:
+    paths: list[Path] = []
+    for candidate in (_social_session_path(), _legacy_social_session_path()):
+        if candidate is not None and candidate not in paths:
+            paths.append(candidate)
+    return paths
 
 
 def _load_auth() -> dict | None:
@@ -144,12 +245,31 @@ def _load_auth() -> dict | None:
         return None
 
 
+def _write_private_json(path: Path, data: dict) -> None:
+    """Atomically persist local credentials with owner-only permissions where supported."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
+    try:
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        try:
+            tmp.chmod(0o600)
+        except OSError:
+            pass
+        tmp.replace(path)
+    finally:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
+
+
 def _save_auth(data: dict) -> None:
     p = _auth_path()
     if not p:
         return
     try:
-        p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        _write_private_json(p, data)
     except OSError as exc:
         logger.warning("card_drop: save auth failed: %s", exc)
 
@@ -167,7 +287,7 @@ def _save_social_session(base: str, access: str | None, refresh: str | None) -> 
     if refresh:
         data["refresh_token"] = refresh
     try:
-        p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        _write_private_json(p, data)
     except OSError as exc:
         logger.warning("card_drop: save social session failed: %s", exc)
 
@@ -179,8 +299,9 @@ def _clear_auth() -> None:
             p.unlink()
         except OSError:
             pass
-    sp = _social_session_path()
-    if sp and sp.exists():
+    for sp in _social_session_paths():
+        if not sp.exists():
+            continue
         try:
             sp.unlink()
         except OSError:
@@ -198,6 +319,11 @@ async def _store_session(base: str, access: str | None, refresh: str | None, use
     Email/password and Steam login share this path. The bind result is persisted
     and exposed through auth-status so client-binding conflicts are visible.
     """
+    # Bind before publishing either local credential file.  A client that belongs to another
+    # user is a non-recoverable identity conflict: publishing the new JWT even briefly would let
+    # Electron observe and use the wrong account before this request reports the conflict.
+    # Other historical bind failures remain recoverable and still persist the cloud-validated
+    # login below, together with their bind status.
     bind: dict = {"bound": False, "error": None}
     cid = _get_client_id()
     if not cid:
@@ -221,12 +347,17 @@ async def _store_session(base: str, access: str | None, refresh: str | None, use
         except (httpx.HTTPError, OSError) as exc:
             bind["error"] = "cloud_unreachable"
             logger.info("card_drop: bind-client after login failed: %s", exc)
-    _save_auth({
+
+    if bind.get("error") == _BIND_OWNERSHIP_CONFLICT:
+        raise _ClientBindingConflict()
+
+    auth_payload = {
         "access_token": access,
         "refresh_token": refresh,
         "user": {"display_name": user.get("display_name"), "email": user.get("email")},
         "bind": bind,
-    })
+    }
+    _save_auth(auth_payload)
     _save_social_session(base, access, refresh)
     return bind
 
@@ -235,7 +366,12 @@ async def _finish_login(base: str, login_out: dict) -> tuple[dict, dict]:
     """Complete email/password login by storing JWTs and binding the client."""
     tokens = login_out.get("tokens") or {}
     user = login_out.get("user") or {}
-    bind = await _store_session(base, tokens.get("access_token"), tokens.get("refresh_token"), user)
+    try:
+        bind = await _store_session(
+            base, tokens.get("access_token"), tokens.get("refresh_token"), user
+        )
+    except _ClientBindingConflict as exc:
+        raise HTTPException(status_code=409, detail=exc.detail) from exc
     return user, bind
 
 
@@ -360,6 +496,15 @@ async def auth_status_endpoint():
     return {"logged_in": False, "user": None, "bind": None}
 
 
+@router.get("/sync-ticket", summary="签发一次性社区网页登录态同步票据")
+async def sync_ticket_endpoint():
+    """Issue a short-lived ticket readable only by the local NEKO page."""
+    return JSONResponse(
+        {"sync_ticket": _issue_sync_ticket(), "expires_in": _SYNC_TICKET_TTL_SEC},
+        headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+    )
+
+
 @router.options("/sync-session", summary="社区网页登录态同步预检")
 async def sync_session_options(request: Request):
     cors = _sync_cors_headers(request)
@@ -377,6 +522,36 @@ async def sync_session_endpoint(request: Request, payload: dict = Body(...)):
     base = (payload.get("base_url") or payload.get("baseUrl") or _social_base_url() or "").strip().rstrip("/")
     if not _same_originish(base, _social_base_url()):
         return JSONResponse({"detail": "base_url_not_allowed"}, status_code=400, headers=cors)
+
+    sync_ticket = payload.get("sync_ticket") or payload.get("syncTicket")
+    if not _sync_ticket_is_valid(sync_ticket):
+        return JSONResponse({"detail": "invalid_sync_ticket"}, status_code=403, headers=cors)
+
+    clear_requested = bool(
+        payload.get("clear")
+        or payload.get("logout")
+        or str(payload.get("action") or "").strip().lower() in {"clear", "logout"}
+    )
+    if clear_requested:
+        # Logout is account-scoped.  If Web login B could not replace the desktop's bound
+        # account A, B's later logout must not erase A's still-valid local session.
+        current_access = _access_token() or ""
+        requested_access = (
+            payload.get("access_token") or payload.get("accessToken") or ""
+        ).strip()
+        if current_access and (
+            not requested_access
+            or not secrets.compare_digest(current_access, requested_access)
+        ):
+            return JSONResponse(
+                {"detail": "local_session_mismatch"}, status_code=409, headers=cors
+            )
+        if not _consume_sync_ticket(sync_ticket):
+            return JSONResponse(
+                {"detail": "invalid_sync_ticket"}, status_code=403, headers=cors
+            )
+        _clear_auth()
+        return JSONResponse({"ok": True, "cleared": True}, headers=cors)
 
     access = (payload.get("access_token") or payload.get("accessToken") or "").strip()
     refresh = (payload.get("refresh_token") or payload.get("refreshToken") or "").strip() or None
@@ -402,7 +577,15 @@ async def sync_session_endpoint(request: Request, payload: dict = Body(...)):
         user = (r.json() or {}).get("user") or {}
     except ValueError:
         user = {}
-    bind = await _store_session(base, access, refresh, user)
+    # Consume only after the cloud token is validated.  A 401 keeps the ticket usable so the
+    # current browser tab can finish login and retry; concurrent reuse still has exactly one
+    # winner at this atomic pop.
+    if not _consume_sync_ticket(sync_ticket):
+        return JSONResponse({"detail": "invalid_sync_ticket"}, status_code=403, headers=cors)
+    try:
+        bind = await _store_session(base, access, refresh, user)
+    except _ClientBindingConflict as exc:
+        return JSONResponse({"detail": exc.detail}, status_code=409, headers=cors)
     return JSONResponse(
         {
             "ok": True,
@@ -411,6 +594,61 @@ async def sync_session_endpoint(request: Request, payload: dict = Body(...)):
         },
         headers=cors,
     )
+
+
+def _request_bearer_token(request: Request) -> str:
+    authorization = (request.headers.get("authorization") or "").strip()
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer":
+        return ""
+    return token.strip()
+
+
+def _facts_request_is_authenticated(request: Request) -> bool:
+    expected = _access_token() or ""
+    supplied = _request_bearer_token(request)
+    return bool(expected and supplied and secrets.compare_digest(expected, supplied))
+
+
+async def _build_local_forge_facts(**kwargs):
+    """Lazy import keeps the normal main-server import surface lightweight."""
+    from main_logic.card_forge_facts import build_forge_facts_payload
+
+    return await build_forge_facts_payload(**kwargs)
+
+
+@router.options("/facts", summary="社区读取本地 NEKO 记忆候选预检")
+async def forge_facts_options(request: Request):
+    cors = _facts_cors_headers(request)
+    if cors is None:
+        return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
+    return JSONResponse({"ok": True}, headers=cors)
+
+
+@router.get("/facts", summary="社区铸造：受控读取当前猫娘的本地记忆候选")
+async def forge_facts_endpoint(
+    request: Request,
+    runtime_character_hint: str | None = Query(default=None, max_length=64),
+    min_importance: int = Query(default=0, ge=0, le=10),
+    include_absorbed: bool = Query(default=True),
+    limit: int = Query(default=5, ge=1, le=10),
+    exclude_fact_ids: str | None = Query(default=None, max_length=4096),
+    exclude_hashes: str | None = Query(default=None, max_length=4096),
+):
+    cors = _facts_cors_headers(request)
+    if cors is None:
+        return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
+    if not _facts_request_is_authenticated(request):
+        return JSONResponse({"detail": "local_session_mismatch"}, status_code=401, headers=cors)
+    payload = await _build_local_forge_facts(
+        runtime_character_hint=runtime_character_hint,
+        min_importance=min_importance,
+        include_absorbed=include_absorbed,
+        limit=limit,
+        exclude_fact_ids=exclude_fact_ids,
+        exclude_hashes=exclude_hashes,
+    )
+    return JSONResponse(payload, headers=cors)
 
 
 @router.post("/login", summary="邮箱密码登录社区账号（存 JWT + 迁移游客卡）")
@@ -473,8 +711,11 @@ html,body{{margin:0;height:100%;background:#0f1020;color:#eef;font-family:-apple
 </body></html>"""
 
 
-def _steam_callback_html(title: str, sub: str) -> HTMLResponse:
-    return HTMLResponse(_STEAM_CALLBACK_PAGE.format(title=html.escape(title), sub=html.escape(sub)))
+def _steam_callback_html(title: str, sub: str, *, status_code: int = 200) -> HTMLResponse:
+    return HTMLResponse(
+        _STEAM_CALLBACK_PAGE.format(title=html.escape(title), sub=html.escape(sub)),
+        status_code=status_code,
+    )
 
 
 @router.get("/steam-login", summary="返回 Steam 登录授权 URL（前端用浏览器打开）")
@@ -546,12 +787,17 @@ async def steam_callback_endpoint(
             logger.info("card_drop: steam-callback /me returned %s", r.status_code)
     except (httpx.HTTPError, OSError, ValueError) as exc:
         logger.info("card_drop: steam-callback fetch /me failed: %s", exc)
-    bind = await _store_session(base, access_token, refresh_token, user)
+    try:
+        bind = await _store_session(base, access_token, refresh_token, user)
+    except _ClientBindingConflict:
+        return _steam_callback_html(
+            "登录冲突",
+            "这台设备已经绑定其他社区账号，本次登录未生效；原登录状态保持不变。",
+            status_code=409,
+        )
     name = user.get("display_name") or "你"
     if bind.get("bound"):
         sub = "卡片会存进你的卡册了，可以关掉本页回到 NEKO。"
-    elif bind.get("error") == "client_already_bound_to_other_user":
-        sub = "已登录，但这台设备早先绑过别的社区账号，这次的卡留在原账号里。可关掉本页回到 NEKO。"
     else:
         sub = "已登录，但游客卡迁移没完成（稍后可重试）。可关掉本页回到 NEKO。"
     return _steam_callback_html(f"已登录，欢迎 {name}", sub)

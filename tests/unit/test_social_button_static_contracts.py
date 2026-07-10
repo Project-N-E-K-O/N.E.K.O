@@ -1,10 +1,13 @@
 from pathlib import Path
 
+import pytest
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 APP_UI_PATH = PROJECT_ROOT / "static" / "app-ui.js"
 
 
+@pytest.mark.unit
 def test_social_open_request_is_deduped_before_fetching_config():
     source = APP_UI_PATH.read_text(encoding="utf-8")
 
@@ -22,3 +25,6 @@ def test_social_open_request_is_deduped_before_fetching_config():
     )
     assert listener.index("finally {") < listener.index("releaseSocialOpenRequest();")
     assert listener.index("releaseSocialOpenRequest();") > listener.index("window.electronShell.openExternal(url)")
+    assert "fetch('/api/card-drop/sync-ticket', { cache: 'no-store' })" in listener
+    assert "native_sync: String(ticketJson.sync_ticket)" in listener
+    assert "targetUrl.searchParams.set('cid', cidJson.client_id)" in listener

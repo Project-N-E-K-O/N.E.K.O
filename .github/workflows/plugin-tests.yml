@@ -80,3 +80,10 @@ jobs:
         # use its own pytest.ini while repo-root static contracts are still
         # covered by CI.
         run: uv run pytest tests/unit/test_avatar_return_button_idle_tiers_static.py -q
+
+      - name: Run card-drop desktop contracts
+        run: >-
+          uv run pytest
+          tests/unit/test_card_drop_session_facts.py
+          tests/unit/test_card_drop_steam_pkce.py
+          -q

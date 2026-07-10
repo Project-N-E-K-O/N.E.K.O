@@ -4922,19 +4922,35 @@ if (S.isRecording) {
                     console.warn('[social] no social_base_url from /api/system/social/config');
                     return;
                 }
-                // 顺手把 client_id 拼进 URL（社区页本地 JS 据此关联游客身份）
+                const targetUrl = new URL(url, window.location.href);
+                // 只有从本体按钮打开的页面才能拿到一次性同步票据。票据放 fragment，
+                // 不进入社区服务器 access log / Referer；社区页读取后会立即从地址栏移除。
+                try {
+                    const ticketRes = await fetch('/api/card-drop/sync-ticket', { cache: 'no-store' });
+                    if (ticketRes.ok) {
+                        const ticketJson = await ticketRes.json();
+                        if (ticketJson && ticketJson.sync_ticket) {
+                            targetUrl.hash = new URLSearchParams({
+                                native_sync: String(ticketJson.sync_ticket)
+                            }).toString();
+                        }
+                    }
+                } catch (ticketErr) {
+                    console.warn('[social] native session sync ticket fetch failed (non-fatal):', ticketErr);
+                }
+                // 顺手把 client_id 拼进 URL（仅关联游客身份，不构成登录态同步授权）。
                 try {
                     const cidRes = await fetch('/api/system/client-id');
                     if (cidRes.ok) {
                         const cidJson = await cidRes.json();
                         if (cidJson && cidJson.client_id) {
-                            const sep = url.includes('?') ? '&' : '?';
-                            url = `${url}${sep}cid=${encodeURIComponent(cidJson.client_id)}`;
+                            targetUrl.searchParams.set('cid', cidJson.client_id);
                         }
                     }
                 } catch (cidErr) {
                     console.warn('[social] client_id fetch failed (non-fatal):', cidErr);
                 }
+                url = targetUrl.toString();
                 if (window.electronShell && typeof window.electronShell.openExternal === 'function') {
                     await window.electronShell.openExternal(url);
                     return;

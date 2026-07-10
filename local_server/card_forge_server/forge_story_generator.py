@@ -252,7 +252,7 @@ def build_forge_story_prompt(payload: dict[str, Any]) -> tuple[str, str]:
 async def generate_forge_card_story(payload: dict[str, Any]) -> ForgeStoryResult:
     """Generate a Forged card story through NEKO's configured core LLM client."""
 
-    from active_neko_context import resolve_active_neko_context
+    from main_logic.card_forge_facts import resolve_active_neko_context
     from utils.config_manager import get_config_manager
     from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm, reset_active_character, set_active_character
     from utils.token_tracker import set_call_type
