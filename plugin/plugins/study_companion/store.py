@@ -418,6 +418,7 @@ class StudyStore:
             "subject": str(row["subject"]),
             "chapter": str(row["chapter"] or ""),
             "stage": str(row["stage"] or ""),
+            "unit": str(row["unit"] or ""),
             "depth": safe_int(row["depth"], 1),
             "difficulty": safe_float(row["difficulty"], 0.5),
             "prerequisites": StudyStore._json_loads(row["prerequisites"], []),
@@ -425,6 +426,11 @@ class StudyStore:
             "typical_misconceptions": StudyStore._json_loads(
                 row["typical_misconceptions"], []
             ),
+            "skills": StudyStore._json_loads(row["skills"], []),
+            "question_types": StudyStore._json_loads(row["question_types"], []),
+            "examples": StudyStore._json_loads(row["examples"], []),
+            "course_family": str(row["course_family"] or ""),
+            "aliases": StudyStore._json_loads(row["aliases"], []),
             "source": str(row["source"] or ""),
             "created_at": str(row["created_at"] or ""),
             "updated_at": str(row["updated_at"] or ""),
@@ -995,20 +1001,55 @@ class StudyStore:
         conn.execute(
             """
             INSERT INTO topics (
-                id, name, subject, chapter, stage, depth, difficulty,
-                prerequisites, related, typical_misconceptions, source, updated_at
+                id, name, subject, chapter, stage, unit, depth, difficulty,
+                prerequisites, related, typical_misconceptions, skills,
+                question_types, examples, course_family, aliases, source, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             ON CONFLICT(id) DO UPDATE SET
                 name = CASE WHEN topics.source = 'seed' THEN topics.name ELSE excluded.name END,
                 subject = CASE WHEN topics.source = 'seed' THEN topics.subject ELSE excluded.subject END,
                 chapter = CASE WHEN topics.source = 'seed' THEN topics.chapter ELSE excluded.chapter END,
-                stage = CASE WHEN topics.source = 'seed' THEN topics.stage ELSE excluded.stage END,
+                stage = CASE
+                    WHEN topics.source = 'seed' AND topics.stage = '' AND excluded.stage != '' THEN excluded.stage
+                    WHEN topics.source = 'seed' THEN topics.stage
+                    ELSE excluded.stage
+                END,
+                unit = CASE
+                    WHEN topics.source = 'seed' AND (topics.unit = '' OR topics.unit = topics.chapter) AND excluded.unit != '' THEN excluded.unit
+                    WHEN topics.source = 'seed' THEN topics.unit
+                    ELSE excluded.unit
+                END,
                 depth = CASE WHEN topics.source = 'seed' THEN topics.depth ELSE excluded.depth END,
                 difficulty = CASE WHEN topics.source = 'seed' THEN topics.difficulty ELSE excluded.difficulty END,
                 prerequisites = CASE WHEN topics.source = 'seed' THEN topics.prerequisites ELSE excluded.prerequisites END,
                 related = CASE WHEN topics.source = 'seed' THEN topics.related ELSE excluded.related END,
                 typical_misconceptions = CASE WHEN topics.source = 'seed' THEN topics.typical_misconceptions ELSE excluded.typical_misconceptions END,
+                skills = CASE
+                    WHEN topics.source = 'seed' AND topics.skills = '[]' AND excluded.skills != '[]' THEN excluded.skills
+                    WHEN topics.source = 'seed' THEN topics.skills
+                    ELSE excluded.skills
+                END,
+                question_types = CASE
+                    WHEN topics.source = 'seed' AND topics.question_types = '[]' AND excluded.question_types != '[]' THEN excluded.question_types
+                    WHEN topics.source = 'seed' THEN topics.question_types
+                    ELSE excluded.question_types
+                END,
+                examples = CASE
+                    WHEN topics.source = 'seed' AND topics.examples = '[]' AND excluded.examples != '[]' THEN excluded.examples
+                    WHEN topics.source = 'seed' THEN topics.examples
+                    ELSE excluded.examples
+                END,
+                course_family = CASE
+                    WHEN topics.source = 'seed' AND topics.course_family = '' AND excluded.course_family != '' THEN excluded.course_family
+                    WHEN topics.source = 'seed' THEN topics.course_family
+                    ELSE excluded.course_family
+                END,
+                aliases = CASE
+                    WHEN topics.source = 'seed' AND topics.aliases = '[]' AND excluded.aliases != '[]' THEN excluded.aliases
+                    WHEN topics.source = 'seed' THEN topics.aliases
+                    ELSE excluded.aliases
+                END,
                 source = CASE WHEN topics.source = 'seed' THEN topics.source ELSE excluded.source END,
                 updated_at = datetime('now')
             """,
@@ -1024,6 +1065,7 @@ class StudyStore:
                     or topic.get("course_level")
                     or ""
                 ),
+                str(topic.get("unit") or topic.get("chapter") or ""),
                 safe_int(topic.get("depth"), 1),
                 safe_float(topic.get("difficulty"), 0.5),
                 self._json_dumps(
@@ -1038,6 +1080,21 @@ class StudyStore:
                     topic.get("typical_misconceptions")
                     if isinstance(topic.get("typical_misconceptions"), list)
                     else []
+                ),
+                self._json_dumps(
+                    topic.get("skills") if isinstance(topic.get("skills"), list) else []
+                ),
+                self._json_dumps(
+                    topic.get("question_types")
+                    if isinstance(topic.get("question_types"), list)
+                    else []
+                ),
+                self._json_dumps(
+                    topic.get("examples") if isinstance(topic.get("examples"), list) else []
+                ),
+                str(topic.get("course_family") or "").strip(),
+                self._json_dumps(
+                    topic.get("aliases") if isinstance(topic.get("aliases"), list) else []
                 ),
                 str(topic.get("source") or "runtime"),
             ),
