@@ -141,7 +141,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'ZH_006',
             "name": 'involuntarily / unconsciously doing something',
-            "find": r"(?:他|她|它|我|你)?(?:不自觉|不由自主|不受控制|情不自禁|下意识)地(?=.{1,8}[，。、！？\s])",
+            "find": r"(?:不自觉|不由自主|不受控制|情不自禁|下意识)地(?=.{1,8}[，。、！？\s])",
             "replace": [
                 '没经过脑子就',
                 '鬼使神差地',
@@ -352,18 +352,18 @@ SLOP_RULES: dict[str, list[dict]] = {
             "name": 'the corner of the eye glimpsing (眼角的余光)',
             "find": '(?:用)?眼角(?:的)?余光(?:瞥|扫|瞟|看)(?:了|向|到)?(?:一眼)?(?:他|她|它|我|你)?',
             "replace": [
-                '斜眼瞟到',
-                '眼梢一扫，瞧见',
-                '余光里晃过',
-                '侧过视线，瞥见',
-                '眼角悄悄扫了一下，看见',
-                '不动声色地瞄到',
-                '目光从眼尾滑过，落在',
-                '偷偷睨了一眼',
-                '用眼神的边角扫过',
-                '假装没看，实则瞄着',
-                '眼尾余光捎带着望见',
-                '斜睨过去，正好瞧见',
+                '斜斜地瞟了一眼',
+                '眼梢一扫',
+                '余光里晃了一下',
+                '用眼尾扫了扫',
+                '眼角悄悄瞄了一下',
+                '不动声色地瞟了眼',
+                '目光从眼尾滑了过去',
+                '偷偷睨了睨',
+                '拿眼角余光扫了扫',
+                '假装没看，眼角却瞟着',
+                '眼尾余光捎带着扫过',
+                '斜睨了一眼',
             ],
         },
         {
@@ -426,7 +426,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'ZH_021',
             "name": "couldn't help but (忍不住做某事)",
-            "find": r"(?:他|她|它|我|你)?(?:终究|始终|实在|还是)?忍不住(?:想要|想|要)?(?=.{1,8}[，。、！？\s])",
+            "find": r"(?:终究|始终|实在|还是)?忍不住(?:想要|想|要)?(?=.{1,8}[，。、！？\s])",
             "replace": [
                 '到底没忍住，',
                 '压根憋不住，便',
@@ -618,7 +618,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'EN_001',
             "name": 'heart pounding/hammering in chest',
-            "find": r"\b(his|her|their|my|your)\s+heart\s+(?:was\s+)?(?:pounding|hammering|thudding|thundering|racing)\s+(?:in|against|within)\s+\1\s+(?:chest|ribs|ribcage)\b",
+            "find": r"\b(his|her|their|my|your)\s+heart\s+was\s+(?:pounding|hammering|thudding|thundering|racing)\s+(?:in|against|within)\s+\1\s+(?:chest|ribs|ribcage)\b",
             "replace": [
                 r"\1 pulse jumped",
                 r"\1 heartbeat went uneven",
@@ -637,7 +637,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'EN_002',
             "name": 'breath hitched/caught',
-            "find": r"\b(his|her|their|my|your)\s+breath\s+(?:hitch(?:ed|es)?|caught)\b(?:\s+in\s+\1\s+throat)?",
+            "find": r"\b(his|her|their|my|your)\s+breath\s+(?:hitch(?:ed|es)|caught)\b(?:\s+in\s+\1\s+throat)?",
             "replace": [
                 r"\1 breath snagged",
                 r"\1 breathing stalled",
@@ -770,7 +770,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'EN_009',
             "name": 'knuckles white / white-knuckled grip',
-            "find": r"\b(his|her|their|my|your)\s+knuckles\s+(?:turning|turned|going|went|gone|were|are)\s+white\b",
+            "find": r"\b(his|her|their|my|your)\s+knuckles\s+(?:turned|went|were|are)\s+white\b",
             "replace": [
                 r"\1 grip went rigid",
                 r"\1 fingers locked tight",
@@ -884,7 +884,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'EN_015',
             "name": 'the air crackled/was thick with tension',
-            "find": r"\b[Tt]he\s+air\s+(?:crackled|hummed|buzzed|was\s+thick|grew\s+thick|hung\s+heavy|was\s+charged|crackling)\s+with\s+(tension|anticipation|electricity|menace|unease|expectation|hostility|longing|grief|magic|dread|danger)(?:\s+between\s+(?:them|us))?\b",
+            "find": r"\b[Tt]he\s+air\s+(?:crackled|hummed|buzzed|was\s+thick|grew\s+thick|hung\s+heavy|was\s+charged)\s+with\s+(tension|anticipation|electricity|menace|unease|expectation|hostility|longing|grief|magic|dread|danger)(?:\s+between\s+(?:them|us))?\b",
             "replace": [
                 r"the \1 in the room was hard to miss",
                 r"you could feel the \1 settle over everything",
@@ -1209,7 +1209,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'JA_002',
             "name": 'heart thumping (心臓がどくどくと)',
-            "find": '心臓がどく(?:どく|ん)と',
+            "find": '心臓がどく(?:どく|ん)と(?!し)',
             "replace": [
                 '胸が大きく',
                 '鼓動が重く',
@@ -2357,7 +2357,7 @@ SLOP_RULES: dict[str, list[dict]] = {
             "find": r"\b(sonri[oó]|sonr[ií]e) (?:c[aá]lidamente|con (?:calidez|dulzura|ternura|suavidad)|dulcemente|tiernamente)\b",
             "replace": [
                 r"\1 con los ojos también",
-                r"\1, y la sonrisa le llegó a la mirada",
+                r"\1, con la sonrisa llegándole a la mirada",
                 r"\1 con ganas",
                 r"\1 sin reservas",
                 r"\1 de oreja a oreja",
@@ -2488,6 +2488,7 @@ SLOP_RULES: dict[str, list[dict]] = {
             "id": 'ES_014',
             "name": 'se le formó un nudo en la garganta',
             "find": r"\b(?:se le )?(?:form[oó]|hizo|apret[oó]|atravesaba|cerr[oó]) un nudo en la garganta\b",
+            "flags": re.IGNORECASE,
             "replace": [
                 'sintió la garganta cerrada',
                 'no logró que le saliera la voz',
@@ -2798,7 +2799,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'PT_015',
             "name": 'lágrimas marejaram/encheram os olhos',
-            "find": r"\b(?:(?:[Aa]s\s+)?lágrimas\s+(?:marejaram|encheram|brotaram|surgiram|assomaram|inundaram)|os\s+olhos\s+(?:se\s+encheram\s+de\s+lágrimas|marejaram|umedeceram|se\s+marejaram))\b",
+            "find": r"\b(?:(?:[Aa]s\s+)?lágrimas\s+(?:marejaram|encheram|brotaram|surgiram|assomaram|inundaram)|os\s+olhos\s+(?:se\s+encheram\s+de\s+lágrimas|marejaram|umedeceram|se\s+marejaram))\b(?=\s*[.,;:!?]|\s*$)",
             "replace": [
                 'ficou com os olhos ardendo, prestes a transbordar',
                 'sentiu a vista embaçar de repente',
