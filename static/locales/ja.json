@@ -1594,8 +1594,6 @@
             "vllm_omni": "vLLM-Omni（ローカルクローン）"
         },
         "sourcePreset": "プリセット",
-        "sourceClone": "音声クローン",
-        "sourceDesign": "音声デザイン",
         "providerLocal": "ローカル CosyVoice",
         "providerFree": "無料",
         "providerFreeApi": "無料 API",
@@ -1699,6 +1697,8 @@
         "directLinkPlaceholder": "https://example.com/audio.wav",
         "directLinkHint": "公開アクセス可能な音声ファイルの直リンクを入力してください。システムはアップロード手順をスキップし、このリンクを直接使用して音声を登録します。",
         "voiceSource": "音色ソース",
+        "sourceClone": "音声クローン",
+        "sourceDesign": "音声デザイン",
         "generateVoice": "音色を生成",
         "designPromptLabel": "デザインしたい音色を説明",
         "designPromptPlaceholder": "落ち着いた若い女性の、温かく明瞭でやさしい話し方の声",

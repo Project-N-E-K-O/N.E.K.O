@@ -1594,8 +1594,6 @@
             "vllm_omni": "vLLM-Omni（本機複製）"
         },
         "sourcePreset": "預製",
-        "sourceClone": "聲音克隆",
-        "sourceDesign": "聲音設計",
         "providerLocal": "本地 CosyVoice",
         "providerFree": "免費",
         "providerFreeApi": "免費 API",
@@ -1699,6 +1697,8 @@
         "directLinkPlaceholder": "https://example.com/audio.wav",
         "directLinkHint": "輸入可公開存取的音訊檔案直鏈，系統將跳過上傳步驟直接使用該連結註冊音色",
         "voiceSource": "音色來源",
+        "sourceClone": "聲音克隆",
+        "sourceDesign": "聲音設計",
         "generateVoice": "生成音色",
         "designPromptLabel": "描述想要設計的音色",
         "designPromptPlaceholder": "一位溫柔清澈、語氣自然的年輕女性聲音",

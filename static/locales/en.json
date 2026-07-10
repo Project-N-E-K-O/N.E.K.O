@@ -1594,8 +1594,6 @@
             "vllm_omni": "vLLM-Omni (Local Clone)"
         },
         "sourcePreset": "Preset",
-        "sourceClone": "Voice Cloning",
-        "sourceDesign": "Voice Design",
         "providerLocal": "Local CosyVoice",
         "providerFree": "Free",
         "providerFreeApi": "Free API",
@@ -1699,6 +1697,8 @@
         "directLinkPlaceholder": "https://example.com/audio.wav",
         "directLinkHint": "Enter a publicly accessible audio file direct link. The system will skip the upload step and use this link directly to register the voice.",
         "voiceSource": "Voice Source",
+        "sourceClone": "Voice Cloning",
+        "sourceDesign": "Voice Design",
         "generateVoice": "Generate Voice",
         "designPromptLabel": "Describe the voice you want to design",
         "designPromptPlaceholder": "A calm young woman with a warm, clear voice and gentle speaking style",

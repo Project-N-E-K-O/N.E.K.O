@@ -1594,8 +1594,6 @@
             "vllm_omni": "vLLM-Omni (Локальный клон)"
         },
         "sourcePreset": "Пресет",
-        "sourceClone": "Клонирование голоса",
-        "sourceDesign": "Дизайн голоса",
         "providerLocal": "Локальный CosyVoice",
         "providerFree": "Бесплатно",
         "providerFreeApi": "Бесплатный API",
@@ -1699,6 +1697,8 @@
         "directLinkPlaceholder": "https://example.com/audio.wav",
         "directLinkHint": "Введите прямую ссылку на общедоступный аудиофайл. Система пропустит шаг загрузки и напрямую использует эту ссылку для регистрации голоса.",
         "voiceSource": "Источник голоса",
+        "sourceClone": "Клонирование голоса",
+        "sourceDesign": "Дизайн голоса",
         "generateVoice": "Создать голос",
         "designPromptLabel": "Опишите голос, который хотите создать",
         "designPromptPlaceholder": "Спокойный голос молодой женщины, теплый, четкий и мягкий",
