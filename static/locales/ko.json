@@ -1697,7 +1697,6 @@
         "directLinkPlaceholder": "https://example.com/audio.wav",
         "directLinkHint": "공개 접근 가능한 오디오 파일의 직접 링크를 입력하세요. 시스템은 업로드 단계를 건너뛰고 이 링크를 직접 사용하여 음성을 등록합니다.",
         "voiceSource": "음색 소스",
-        "sourceClone": "음성 복제",
         "sourceDesign": "음성 디자인",
         "generateVoice": "음색 생성",
         "designPromptLabel": "디자인할 음색 설명",

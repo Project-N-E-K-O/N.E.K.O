@@ -1697,7 +1697,6 @@
         "directLinkPlaceholder": "https://ejemplo.com/audio.wav",
         "directLinkHint": "Ingrese un enlace directo de un archivo de audio de acceso público. El sistema omitirá el paso de carga y utilizará este enlace directamente para registrar la voz.",
         "voiceSource": "Origen de la voz",
-        "sourceClone": "Clonación de voz",
         "sourceDesign": "Diseño de voz",
         "generateVoice": "Generar voz",
         "designPromptLabel": "Describe la voz que quieres diseñar",

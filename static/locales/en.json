@@ -1697,7 +1697,6 @@
         "directLinkPlaceholder": "https://example.com/audio.wav",
         "directLinkHint": "Enter a publicly accessible audio file direct link. The system will skip the upload step and use this link directly to register the voice.",
         "voiceSource": "Voice Source",
-        "sourceClone": "Voice Cloning",
         "sourceDesign": "Voice Design",
         "generateVoice": "Generate Voice",
         "designPromptLabel": "Describe the voice you want to design",
