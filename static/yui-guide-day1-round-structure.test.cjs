@@ -60,6 +60,7 @@ test('Day1 activation and greeting keep timeline-owned capsule targets', () => {
   assert.match(greetingSceneBlock, /cursorTarget:\s*'chat-capsule-input'/);
   assert.match(greetingSceneBlock, /cursorAction:\s*'move'/);
   assert.match(greetingSceneBlock, /operation:\s*'day1-intro-greeting-performance'/);
+  assert.doesNotMatch(greetingSceneBlock, /spotlightVariant:\s*'plain-capsule'/);
   assert.match(operationRegistryBlock[1], /registerOperation\('day1-intro-activation-flow'/);
   assert.match(operationRegistryBlock[1], /runDay1IntroActivationFlow/);
   assert.match(operationRegistryBlock[1], /registerOperation\('day1-intro-greeting-performance'/);

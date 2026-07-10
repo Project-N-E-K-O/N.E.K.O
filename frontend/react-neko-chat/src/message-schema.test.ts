@@ -131,6 +131,16 @@ describe('message-schema', () => {
     expect(onAvatarInteraction).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps validated host callback identities stable across repeated prop parsing', () => {
+    const onAvatarToolStateChange = vi.fn();
+    const firstProps = parseChatWindowProps({ onAvatarToolStateChange });
+    const secondProps = parseChatWindowProps({ onAvatarToolStateChange });
+
+    expect(firstProps.onAvatarToolStateChange).toBe(secondProps.onAvatarToolStateChange);
+    expect(firstProps.onAvatarToolStateChange).not.toBe(onAvatarToolStateChange);
+    expect(() => secondProps.onAvatarToolStateChange?.({ active: 'yes' } as never)).toThrow(ZodError);
+  });
+
   it('rejects avatar interaction payloads with a non-avatar target', () => {
     const onAvatarInteraction = vi.fn();
     const props = parseChatWindowProps({ onAvatarInteraction });

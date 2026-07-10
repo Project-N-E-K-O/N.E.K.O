@@ -232,6 +232,7 @@ test('day1 activation delegates timing through timeline while greeting follows t
     assert.equal(greetingCursor.target, 'chat-capsule-input');
     assert.equal(greeting.target, 'chat-capsule-input');
     assert.equal(greeting.cursorTarget, 'chat-capsule-input');
+    assert.equal(greeting.spotlightVariant, undefined);
     assert.equal(greeting.cursorAction, 'move');
     assert.equal(greeting.operation, 'day1-intro-greeting-performance');
 });

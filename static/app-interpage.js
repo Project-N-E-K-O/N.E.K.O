@@ -2984,6 +2984,18 @@
         if (!message || !message.action) {
             return false;
         }
+        if (isYuiGuideLifecycleStartAction(message.action)) {
+            openYuiGuidePcOverlayLifecycle(message);
+        }
+        if (
+            yuiGuidePcOverlayLifecycleClosed
+            && isYuiGuideLifecycleScopedAction(message.action)
+        ) {
+            return true;
+        }
+        if (!isYuiGuideMessageForCurrentLifecycle(message)) {
+            return true;
+        }
         if (
             message.action !== 'yui_guide_tutorial_lifecycle_ended'
             && isYuiGuideLifecycleScopedAction(message.action)
@@ -3245,6 +3257,19 @@
                     && isDuplicateMessage(message.action, message.timestamp)
                 ) {
                     console.log('[BroadcastChannel] 跳过重复消息:', message.action);
+                    return;
+                }
+
+                if (isYuiGuideLifecycleStartAction(message.action)) {
+                    openYuiGuidePcOverlayLifecycle(message);
+                }
+                if (
+                    yuiGuidePcOverlayLifecycleClosed
+                    && isYuiGuideLifecycleScopedAction(message.action)
+                ) {
+                    return;
+                }
+                if (!isYuiGuideMessageForCurrentLifecycle(message)) {
                     return;
                 }
 
@@ -3984,6 +4009,9 @@
     var yuiGuidePcOverlayReady = false;
     var yuiGuidePcOverlayRunIdOverride = '';
     var yuiGuidePcOverlayEndedRunId = '';
+    var yuiGuidePcOverlayLifecycleEpoch = 0;
+    var yuiGuidePcOverlayLifecycleClosed = false;
+    var yuiGuidePcOverlayLifecycleRunId = '';
     var yuiGuidePcOverlaySequence = 0;
     var yuiGuidePcOverlaySpotlights = [];
     var yuiGuidePcOverlayCursor = null;
@@ -4195,6 +4223,59 @@
         }
     }
 
+    function isYuiGuideLifecycleStartAction(action) {
+        return action === 'yui_guide_tutorial_lifecycle_started'
+            || action === 'yui_guide_tutorial_started'
+            || action === 'avatar_floating_guide_started';
+    }
+
+    function openYuiGuidePcOverlayLifecycle(message) {
+        var runId = message && typeof message.tutorialRunId === 'string'
+            ? message.tutorialRunId
+            : '';
+        if (
+            (runId && isYuiGuidePcOverlayRunEnded(runId))
+            || (yuiGuidePcOverlayLifecycleClosed && !runId)
+        ) {
+            return false;
+        }
+        if (
+            yuiGuidePcOverlayLifecycleEpoch === 0
+            || yuiGuidePcOverlayLifecycleClosed
+            || (runId && runId !== yuiGuidePcOverlayLifecycleRunId)
+        ) {
+            yuiGuidePcOverlayLifecycleEpoch += 1;
+        }
+        yuiGuidePcOverlayLifecycleClosed = false;
+        yuiGuidePcOverlayLifecycleRunId = runId || yuiGuidePcOverlayLifecycleRunId;
+        yuiGuidePcOverlayEndedRunId = '';
+        return true;
+    }
+
+    function closeYuiGuidePcOverlayLifecycle() {
+        yuiGuidePcOverlayLifecycleEpoch += 1;
+        yuiGuidePcOverlayLifecycleClosed = true;
+        yuiGuidePcOverlayLifecycleRunId = '';
+    }
+
+    function isYuiGuideMessageForCurrentLifecycle(message) {
+        if (
+            !message
+            || (
+                message.action !== 'yui_guide_tutorial_lifecycle_ended'
+                && !isYuiGuideLifecycleScopedAction(message.action)
+            )
+        ) {
+            return true;
+        }
+        var runId = typeof message.tutorialRunId === 'string'
+            ? message.tutorialRunId
+            : '';
+        return !runId
+            || !yuiGuidePcOverlayLifecycleRunId
+            || runId === yuiGuidePcOverlayLifecycleRunId;
+    }
+
     function resetYuiGuidePcOverlayRunForRetry() {
         yuiGuidePcOverlayActive = false;
         yuiGuidePcOverlayReady = false;
@@ -4205,9 +4286,15 @@
         } catch (_) {}
     }
 
-    function handleYuiGuidePcOverlayStaleResult(result, patch, attemptedRunId, retried) {
+    function handleYuiGuidePcOverlayStaleResult(result, patch, attemptedRunId, retried, attemptedLifecycleEpoch) {
         var isStaleResponse = !!(result && result.stale === true);
         var alreadyRetried = retried === true;
+        if (
+            yuiGuidePcOverlayLifecycleClosed
+            || attemptedLifecycleEpoch !== yuiGuidePcOverlayLifecycleEpoch
+        ) {
+            return;
+        }
         var attemptedCurrentRun = !!(attemptedRunId && attemptedRunId === yuiGuidePcOverlayRunIdOverride);
         var attemptedChatOwnedRun = isYuiGuideChatOwnedPcOverlayRunId(attemptedRunId);
         var storedCanonicalRunId = readStoredYuiGuidePcOverlayRunId();
@@ -4576,9 +4663,10 @@
 
     function sendYuiGuidePcOverlayPatch(patch, retried, options) {
         var host = getYuiGuidePcOverlayHost();
-        if (!host) {
+        if (!host || yuiGuidePcOverlayLifecycleClosed) {
             return false;
         }
+        var sendLifecycleEpoch = yuiGuidePcOverlayLifecycleEpoch;
         var sendOptions = options || {};
         if (isYuiGuidePcOverlayRunEnded(sendOptions.tutorialRunId)) {
             return false;
@@ -4607,8 +4695,20 @@
         if (!yuiGuidePcOverlayActive && sendOptions.skipBegin !== true && typeof host.begin === 'function') {
             try {
                 Promise.resolve(host.begin({ tutorialRunId: runId })).then(function (result) {
+                    if (
+                        yuiGuidePcOverlayLifecycleClosed
+                        || sendLifecycleEpoch !== yuiGuidePcOverlayLifecycleEpoch
+                    ) {
+                        return;
+                    }
                     if (result && result.stale === true) {
-                        handleYuiGuidePcOverlayStaleResult(result, patch, runId, retried === true);
+                        handleYuiGuidePcOverlayStaleResult(
+                            result,
+                            patch,
+                            runId,
+                            retried === true,
+                            sendLifecycleEpoch
+                        );
                         return;
                     }
                     if (result && result.ok === false) {
@@ -4616,6 +4716,9 @@
                         yuiGuidePcOverlayReady = false;
                     }
                 }).catch(function () {
+                    if (sendLifecycleEpoch !== yuiGuidePcOverlayLifecycleEpoch) {
+                        return;
+                    }
                     yuiGuidePcOverlayActive = false;
                     yuiGuidePcOverlayReady = false;
                 });
@@ -4630,8 +4733,20 @@
                 sequence: yuiGuidePcOverlaySequence,
                 payload: payload
             })).then(function (result) {
+                if (
+                    yuiGuidePcOverlayLifecycleClosed
+                    || sendLifecycleEpoch !== yuiGuidePcOverlayLifecycleEpoch
+                ) {
+                    return;
+                }
                 if (result && result.stale === true) {
-                    handleYuiGuidePcOverlayStaleResult(result, patch, runId, retried === true);
+                    handleYuiGuidePcOverlayStaleResult(
+                        result,
+                        patch,
+                        runId,
+                        retried === true,
+                        sendLifecycleEpoch
+                    );
                     return;
                 }
                 if (result && result.ok === false) {
@@ -4640,6 +4755,9 @@
                 }
                 yuiGuidePcOverlayReady = true;
             }).catch(function () {
+                if (sendLifecycleEpoch !== yuiGuidePcOverlayLifecycleEpoch) {
+                    return;
+                }
                 yuiGuidePcOverlayReady = false;
             });
             yuiGuidePcOverlayReady = true;
@@ -5393,10 +5511,16 @@
 
     function applyYuiGuideChatCursorRelay(message) {
         if (!message || typeof message !== 'object' || !isStandaloneChatPage() || !document.body) return false;
+        if (yuiGuidePcOverlayLifecycleClosed) {
+            return false;
+        }
         if (isYuiGuidePcOverlayRunEnded(message.tutorialRunId)) {
             return false;
         }
         var action = message.action || '';
+        if (!isYuiGuideMessageForCurrentLifecycle(message)) {
+            return false;
+        }
         var cursorOptions = Object.assign({}, message, {
             pcOverlayRunId: message.pcOverlayRunId || getYuiGuidePcOverlayRunIdFromMessage(message)
         });
@@ -5433,6 +5557,7 @@
         if (endedRunId) {
             yuiGuidePcOverlayEndedRunId = endedRunId;
         }
+        closeYuiGuidePcOverlayLifecycle();
         yuiGuidePcOverlayActive = false;
         yuiGuidePcOverlayReady = false;
         yuiGuidePcOverlayRunIdOverride = '';

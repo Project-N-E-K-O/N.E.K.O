@@ -109,7 +109,7 @@
                     text: '把鼠标移到这里，长按就可以拉着聊天框到处跑啦~ 点击一下就能随时发消息给我哦！',
                     voiceKey: 'day1_capsule_drag_hint',
                     emotion: 'happy',
-                    target: 'chat-input',
+                    target: 'chat-capsule-input',
                     cursorAction: 'wobble',
                     cursorWobbleDurationMs: 2000,
                     spotlight: false
