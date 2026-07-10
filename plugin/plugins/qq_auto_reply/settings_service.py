@@ -47,6 +47,7 @@ class QQSettingsService:
         self.plugin._backlog_summary_threshold = max(1, int(settings.get("backlog_summary_threshold", 10) or 10))
         self.plugin._backlog_notify_cooldown_seconds = max(60, int(settings.get("backlog_notify_cooldown_seconds", 900) or 900))
         self.plugin._backlog_issue_notify_threshold = max(1, int(settings.get("backlog_issue_notify_threshold", 1) or 1))
+        self.plugin._sticker_cooldown_messages = max(0, int(settings.get("sticker_cooldown_messages", 5) or 5))
         # 猫娘动态注意力策略配置
         self.plugin._strategy_mode = self.plugin.config_store._normalize_strategy_mode(settings.get("strategy_mode"))
         self._enforce_attention_for_dynamic_mode()
@@ -130,6 +131,16 @@ class QQSettingsService:
             self.plugin._truth_reply_probability = value
         if backlog_labels is not None:
             self.plugin._qq_settings["backlog_labels"] = self.plugin.config_store.normalize_backlog_labels(backlog_labels)
+        sticker_cooldown_messages = kwargs.get("sticker_cooldown_messages")
+        if sticker_cooldown_messages is not None:
+            self.plugin._qq_settings["sticker_cooldown_messages"] = max(0, int(sticker_cooldown_messages))
+            self.plugin._sticker_cooldown_messages = max(0, int(sticker_cooldown_messages))
+        retroactive_review_max_messages = kwargs.get("retroactive_review_max_messages")
+        if retroactive_review_max_messages is not None:
+            self.plugin._qq_settings["retroactive_review_max_messages"] = max(1, int(retroactive_review_max_messages))
+        retroactive_review_max_reply = kwargs.get("retroactive_review_max_reply")
+        if retroactive_review_max_reply is not None:
+            self.plugin._qq_settings["retroactive_review_max_reply"] = max(1, int(retroactive_review_max_reply))
         # 猫娘动态策略配置
         strategy_mode = kwargs.get("strategy_mode")
         if strategy_mode is not None:

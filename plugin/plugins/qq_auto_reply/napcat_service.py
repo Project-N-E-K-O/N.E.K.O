@@ -164,13 +164,11 @@ class QQNapcatService:
             show_window = bool(self.plugin._qq_settings.get("show_napcat_window", True))
             creationflags = 0
             if show_window:
-                command = ["cmd.exe", "/c", "start", "", str(launcher)]
+                creationflags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0x00000010)
             else:
-                command = ["cmd.exe", "/c", str(launcher)]
-                if hasattr(subprocess, "CREATE_NO_WINDOW"):
-                    creationflags = subprocess.CREATE_NO_WINDOW
+                creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
             self.plugin._napcat_process = await asyncio.create_subprocess_exec(
-                *command,
+                "cmd.exe", "/c", str(launcher),
                 cwd=str(launcher.parent),
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
@@ -178,9 +176,11 @@ class QQNapcatService:
             )
             self.plugin._manages_napcat_process = True
             self.clear_startup_error()
+            pid = self.plugin._napcat_process.pid
             self.plugin.logger.info(
-                f"Started NapCat launcher via cmd: {launcher} (pid={self.plugin._napcat_process.pid}, show_window={show_window})"
+                f"Started NapCat: {launcher} (pid={pid}, show_window={show_window})"
             )
+            self.plugin._emit_log("INFO", f"NapCat 已启动 PID={pid}")
 
             async def _delayed_sync_qrcode():
                 await asyncio.sleep(1.5)
@@ -199,19 +199,22 @@ class QQNapcatService:
         self.plugin._manages_napcat_process = False
         if not process or process.returncode is not None:
             return
+        pid = process.pid
         try:
-            process.terminate()
-        except ProcessLookupError:
-            return
+            # 使用 /T 递归杀进程树，确保 NapCat 本体和 cmd 包装一起结束
+            kill_proc = await asyncio.create_subprocess_exec(
+                "taskkill", "/PID", str(pid), "/T", "/F",
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+            )
+            await kill_proc.wait()
+            self.plugin._emit_log("INFO", f"NapCat 进程树已终止 PID={pid}")
         except Exception as e:
-            self.plugin.logger.warning(f"Failed to terminate managed NapCat process: {e}")
-            return
-        try:
-            await asyncio.wait_for(process.wait(), timeout=5.0)
-        except asyncio.TimeoutError:
-            self.plugin.logger.warning("Timed out waiting for managed NapCat process to stop; killing it")
+            self.plugin.logger.warning(f"Failed to kill NapCat process tree (PID={pid}): {e}")
             try:
                 process.kill()
             except ProcessLookupError:
-                return
-            await process.wait()
+                pass
+        try:
+            await asyncio.wait_for(process.wait(), timeout=3.0)
+        except asyncio.TimeoutError:
+            pass

@@ -10,6 +10,24 @@ class QQMessageDispatcher:
     def __init__(self, plugin: Any):
         self.plugin = plugin
 
+    def _resolve_poke_nickname(self, user_id: str, raw_msg: dict[str, Any]) -> str:
+        """从戳一戳事件中获取用户昵称"""
+        uid = str(user_id or "").strip()
+        if not uid:
+            return "未知用户"
+        # 优先用 sender 中的 nickname/card
+        sender = raw_msg.get("sender") or {}
+        if isinstance(sender, dict):
+            nick = sender.get("card") or sender.get("nickname") or ""
+            if str(nick).strip():
+                return str(nick).strip()
+        # 其次查权限管理器中的昵称
+        if self.plugin.permission_mgr:
+            nick = self.plugin.permission_mgr.get_nickname(uid)
+            if nick:
+                return nick
+        return f"QQ用户{uid}"
+
     @staticmethod
     def _looks_like_human_followup(message_text: str) -> bool:
         normalized = str(message_text or "").strip()
@@ -78,28 +96,57 @@ class QQMessageDispatcher:
                 await __import__("asyncio").sleep(1)
 
     async def handle_message(self, message: dict[str, Any]):
-        # 戳一戳通知：自动回戳（每人每5分钟最多2次，防止骚扰）
+        # 戳一戳通知：少量 → 回戳不说话；大量 → 说话不回戳；戳别人 → LLM 决定是否也戳
         if message.get("message_type") == "notice" and message.get("notice_type") == "poke":
             group_id = str(message.get("group_id") or "").strip()
             poker_id = str(message.get("user_id") or "").strip()
             target_id = str(message.get("target_id") or "").strip()
             self_id = str(getattr(self.plugin.qq_client, "_self_id", "") or "")
-            if group_id and poker_id and (not self_id or target_id == self_id):
-                now = __import__("time").time()
-                timestamps = self.plugin._poke_timestamps.setdefault(poker_id, [])
-                # 清理5分钟前的记录
-                cutoff = now - 300
-                timestamps[:] = [t for t in timestamps if t > cutoff]
-                if len(timestamps) >= 2:
-                    self.plugin._emit_log("INFO", f"戳一戳限频: poker={poker_id} 5分钟内已回戳{len(timestamps)}次，跳过")
+            if not group_id or not poker_id:
+                return
+            is_poke_me = bool(self_id and target_id == self_id)
+            now = __import__("time").time()
+            poker_name = self._resolve_poke_nickname(poker_id, message)
+            target_name = self._resolve_poke_nickname(target_id, message) if target_id and not is_poke_me else ""
+
+            if is_poke_me:
+                # 统计短时间窗内戳猫娘的人数
+                storm = self.plugin._poke_storm.setdefault(group_id, [])
+                storm[:] = [(t, p) for t, p in storm if now - t < 30]
+                if not any(p == poker_id for p in (p for _, p in storm)):
+                    storm.append((now, poker_id))
+                storm_count = len(storm)
+
+                # 人数少 → 逐个回戳，不进入 LLM
+                if storm_count < 2:
+                    timestamps = self.plugin._poke_timestamps.setdefault(poker_id, [])
+                    timestamps[:] = [t for t in timestamps if t > now - 300]
+                    if len(timestamps) < 2:
+                        timestamps.append(now)
+                        try:
+                            await self.plugin.qq_client.send_group_poke(group_id, poker_id)
+                        except Exception as e:
+                            self.plugin._emit_log("INFO", f"回戳失败: {e}")
+                    return  # 不回话
+                # 人数多 → 不回戳，注入 LLM 让猫娘在群里反应
+                self.plugin._emit_log("INFO", f"戳一戳风暴: group={group_id} {storm_count}人戳猫娘 → 会话模式")
+                poke_text = f"[戳一戳] {storm_count}个人戳了戳你，包括 {poker_name}"
+                message["is_at_bot"] = True
+            else:
+                # 戳别人 → LLM 决定是否也戳一下
+                if target_name:
+                    poke_text = f"[戳一戳] {poker_name} 戳了戳 {target_name}"
                 else:
-                    timestamps.append(now)
-                    self.plugin._emit_log("INFO", f"收到戳一戳: group={group_id} poker={poker_id} → 回戳")
-                    try:
-                        await self.plugin.qq_client.send_group_poke(group_id, poker_id)
-                    except Exception as e:
-                        self.plugin._emit_log("INFO", f"回戳失败: {e}")
-            return
+                    poke_text = f"[戳一戳] {poker_name} 戳了戳某人"
+                message["is_at_bot"] = False
+
+            message["message_type"] = "group"
+            message["group_id"] = group_id
+            message["user_id"] = poker_id
+            message["content"] = poke_text
+            message["raw_message"] = poke_text
+            message["message_id"] = f"poke_{group_id}_{poker_id}_{int(now)}"
+            # 不 return，继续走正常的注意力门控 + LLM 管道
         # 黑名单优先：命中负优先级标签 → 不记录、不处理
         label_defs = list((self.plugin._qq_settings or {}).get("backlog_labels") or [])
         raw_content = str(message.get("content") or "").strip()

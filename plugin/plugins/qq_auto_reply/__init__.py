@@ -164,10 +164,12 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         self._backlog_summary_threshold = 10
         self._backlog_notify_cooldown_seconds = 900
         self._backlog_issue_notify_threshold = 1
+        self._sticker_cooldown_messages = 5
         self._relay_backlog_items: list[dict[str, Any]] = []
         self._recent_pipeline_traces: list[dict[str, Any]] = []
         self._sticker_since: dict[str, int] = {}  # 群 → 距上次表情包的消息数，≥5 才允许再发
         self._poke_timestamps: dict[str, list[float]] = {}  # user_id → 最近回戳时间戳列表（5分钟窗口）
+        self._poke_storm: dict[str, list[tuple[float, str]]] = {}  # group_id → [(timestamp, poker_id)] 戳猫娘风暴检测
         self._startup_error: str | None = None
 
     def _create_backlog_store_from_settings(self, settings: dict[str, Any] | None) -> QQBacklogStore:
@@ -739,7 +741,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         return Ok({"stickers": items, "total": len(items)})
 
     @ui.action(id="save_settings", label=tr("entries.save_settings.name", default="保存 QQ 自动回复设置"), refresh_context=True)
-    @plugin_entry(id="save_settings", name=tr("entries.save_settings.name", default="保存 QQ 自动回复设置"), description=tr("entries.save_settings.description", default="保存 QQ 插件当前的 OneBot 地址、Token、NapCat 路径、回复概率和 backlog 标签等设置。"), input_schema={"type": "object", "properties": {"onebot_url": {"type": "string"}, "token": {"type": "string"}, "napcat_directory": {"type": "string"}, "show_napcat_window": {"type": "boolean"}, "reply_mode": {"type": "string", "enum": ["text", "voice", "both"]}, "show_onboarding": {"type": "boolean"}, "guide_step_napcat_done": {"type": "boolean"}, "guide_step_config_done": {"type": "boolean"}, "guide_step_runtime_done": {"type": "boolean"}, "normal_relay_probability": {"type": "number"}, "truth_reply_probability": {"type": "number"}, "backlog_labels": {"type": "array", "items": {"type": "object"}}, "strategy_mode": {"type": "string", "enum": ["neko_dynamic", "neko_scene"]}, "qq_connection_mode": {"type": "string", "enum": ["napcat", "open_platform"]}, "qq_open_app_id": {"type": "string"}, "qq_open_client_secret": {"type": "string"}}, "additionalProperties": False})
+    @plugin_entry(id="save_settings", name=tr("entries.save_settings.name", default="保存 QQ 自动回复设置"), description=tr("entries.save_settings.description", default="保存 QQ 插件当前的 OneBot 地址、Token、NapCat 路径、回复概率和 backlog 标签等设置。"), input_schema={"type": "object", "properties": {"onebot_url": {"type": "string"}, "token": {"type": "string"}, "napcat_directory": {"type": "string"}, "show_napcat_window": {"type": "boolean"}, "reply_mode": {"type": "string", "enum": ["text", "voice", "both"]}, "show_onboarding": {"type": "boolean"}, "guide_step_napcat_done": {"type": "boolean"}, "guide_step_config_done": {"type": "boolean"}, "guide_step_runtime_done": {"type": "boolean"}, "normal_relay_probability": {"type": "number"}, "truth_reply_probability": {"type": "number"}, "backlog_labels": {"type": "array", "items": {"type": "object"}}, "strategy_mode": {"type": "string", "enum": ["neko_dynamic", "neko_scene"]}, "qq_connection_mode": {"type": "string", "enum": ["napcat", "open_platform"]}, "qq_open_app_id": {"type": "string"}, "qq_open_client_secret": {"type": "string"}, "sticker_cooldown_messages": {"type": "integer"}, "retroactive_review_max_messages": {"type": "integer"}, "retroactive_review_max_reply": {"type": "integer"}}, "additionalProperties": False})
     async def save_settings(
         self,
         onebot_url: Optional[str] = None,
@@ -754,6 +756,9 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         normal_relay_probability: Optional[float] = None,
         truth_reply_probability: Optional[float] = None,
         backlog_labels: Optional[list[dict[str, Any]]] = None,
+        sticker_cooldown_messages: Optional[int] = None,
+        retroactive_review_max_messages: Optional[int] = None,
+        retroactive_review_max_reply: Optional[int] = None,
         strategy_mode: Optional[str] = None,
         qq_connection_mode: Optional[str] = None,
         qq_open_app_id: Optional[str] = None,
@@ -773,6 +778,9 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             normal_relay_probability=normal_relay_probability,
             truth_reply_probability=truth_reply_probability,
             backlog_labels=backlog_labels,
+            sticker_cooldown_messages=sticker_cooldown_messages,
+            retroactive_review_max_messages=retroactive_review_max_messages,
+            retroactive_review_max_reply=retroactive_review_max_reply,
             strategy_mode=strategy_mode,
             qq_connection_mode=qq_connection_mode,
             qq_open_app_id=qq_open_app_id,
@@ -870,6 +878,182 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
     async def mark_group_backlog_reviewed(self, group_id: str, **_):
         normalized_group_id = self._validate_group_id(group_id)
         return Ok(await self.backlog_service.mark_group_reviewed_payload(normalized_group_id))
+
+    # ==========================================
+    # 提示词编辑器
+    # ==========================================
+
+    @plugin_entry(
+        id="get_prompt_editor_state",
+        name=tr("entries.get_prompt_editor_state.name", default="获取提示词编辑器状态"),
+        description=tr("entries.get_prompt_editor_state.description", default="返回当前语言下的各层提示词元数据和配置，供提示词编辑器使用。"),
+        input_schema={"type": "object", "properties": {"mode": {"type": "string"}}, "additionalProperties": False},
+    )
+    async def get_prompt_editor_state(self, mode: str = "", **_):
+        # 优先用前端传入的 mode，其次读存储的配置
+        frontend_mode = str(mode or "").strip()
+        stored_mode = str((self._qq_settings or {}).get("qq_connection_mode", "napcat") or "napcat").strip()
+        mode = frontend_mode if frontend_mode in ("napcat", "open_platform") else stored_mode
+        from utils.language_utils import get_global_language
+        locale = get_global_language()
+        strategy_mode = getattr(self, "_strategy_mode", "neko_dynamic")
+        is_napcat = mode == "napcat"
+        overrides = (self._qq_settings or {}).get("prompt_overrides") or {}
+        if not isinstance(overrides, dict):
+            overrides = {}
+        layers = []
+        for layer_def in self.session_instruction_service._PROMPT_LAYERS:
+            lid = layer_def["id"]
+            is_runtime = layer_def.get("runtime", False)
+            is_scene = lid.startswith("scene_") or lid.startswith("naming_")
+            # 按连接模式过滤 format/scene 层
+            if lid.startswith("format_"):
+                if is_napcat:
+                    if lid == "format_open_platform":
+                        continue
+                    if lid == "format_neko_dynamic" and strategy_mode != "neko_dynamic":
+                        continue
+                    if lid == "format_neko_scene" and strategy_mode != "neko_scene":
+                        continue
+                else:
+                    # 开放平台只显示 format_open_platform
+                    if lid != "format_open_platform":
+                        continue
+            # NapCat 按策略模式过滤 scene 层
+            if is_scene and strategy_mode == "neko_dynamic":
+                if lid not in ("scene_group_dynamic",):
+                    continue
+            # 开放平台跳过 scene/naming 层
+            if not is_napcat and is_scene:
+                continue
+            # 获取当前生效的文本
+            i18n_key = layer_def.get("i18n_key", "")
+            default_text = ""
+            if not is_runtime:
+                from .prompt_fragment_templates import (
+                    ROLE_PROMPT_SECTION, ATTENTION_PROMPT_SECTION, CHARACTER_PROMPT_SECTION,
+                    TIME_PROMPT_SECTION, DETAIL_CONSTRAINTS_SECTION, OUTPUT_PROMPT_SECTION,
+                    FORMAT_PROMPT_SECTION, FORMAT_PROMPT_SECTION_NEKO_DYNAMIC, FORMAT_PROMPT_SECTION_OPEN_PLATFORM,
+                )
+                from .scene_prompt_templates import (
+                    SCENE_COLLECTIVE_GROUP, SCENE_DIRECTED_GROUP,
+                    SCENE_KIRA_UNIFIED_GROUP, SCENE_SHARED_GROUP, SCENE_PRIVATE_CHAT,
+                )
+                default_map = {
+                    "role_prompt_section": ROLE_PROMPT_SECTION,
+                    "attention_prompt_section": ATTENTION_PROMPT_SECTION,
+                    "character_prompt_section": CHARACTER_PROMPT_SECTION,
+                    "time_prompt_section": TIME_PROMPT_SECTION,
+                    "detail_constraints_section": DETAIL_CONSTRAINTS_SECTION,
+                    "output_prompt_section": OUTPUT_PROMPT_SECTION,
+                    "format_prompt_section": FORMAT_PROMPT_SECTION,
+                    "format_prompt_section_neko_dynamic": FORMAT_PROMPT_SECTION_NEKO_DYNAMIC,
+                    "format_prompt_section_open_platform": FORMAT_PROMPT_SECTION_OPEN_PLATFORM,
+                    "prompts.group.collective": SCENE_COLLECTIVE_GROUP,
+                    "prompts.group.directed": SCENE_DIRECTED_GROUP,
+                    "prompts.group.kira_unified": SCENE_KIRA_UNIFIED_GROUP,
+                    "prompts.group.shared_session": SCENE_SHARED_GROUP,
+                    "prompts.private.body": SCENE_PRIVATE_CHAT,
+                }
+                default_text = default_map.get(i18n_key, "")
+            has_override = False
+            effective_text = ""
+            if not is_runtime:
+                if isinstance(overrides.get(locale), dict) and i18n_key in overrides[locale]:
+                    has_override = True
+                    effective_text = str(overrides[locale][i18n_key] or "")
+                else:
+                    effective_text = self.i18n.t(i18n_key, default=default_text)
+            layers.append({
+                "id": lid,
+                "i18n_key": i18n_key,
+                "is_runtime": is_runtime,
+                "required_placeholders": layer_def.get("required_placeholders", []),
+                "format_after": layer_def.get("format_after", False),
+                "has_override": has_override,
+                "default_text": default_text,
+                "effective_text": effective_text,
+            })
+        self._emit_log("INFO", f"[PromptEditor] mode={mode} is_napcat={is_napcat} strategy={strategy_mode} locale={locale} layers={len(layers)}")
+        self.logger.info(f"[PromptEditor] mode={mode} is_napcat={is_napcat} strategy={strategy_mode} locale={locale} layers={len(layers)}")
+        return Ok({
+            "mode": mode,
+            "locale": locale,
+            "strategy_mode": strategy_mode,
+            "layers": layers,
+        })
+
+    @plugin_entry(
+        id="save_prompt_override",
+        name=tr("entries.save_prompt_override.name", default="保存提示词覆盖"),
+        description=tr("entries.save_prompt_override.description", default="保存某个提示词层的自定义覆盖值到 business_config。"),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "locale": {"type": "string"},
+                "layer_id": {"type": "string"},
+                "text": {"type": "string", "maxLength": 65536},
+            },
+            "required": ["locale", "layer_id", "text"],
+            "additionalProperties": False,
+        },
+    )
+    async def save_prompt_override(self, locale: str, layer_id: str, text: str, **_):
+        locale = str(locale or "").strip()
+        layer_id = str(layer_id or "").strip()
+        text_val = str(text or "")
+        if not locale:
+            return Err(SdkError("INVALID_INPUT: locale 不能为空"))
+        if not layer_id:
+            return Err(SdkError("INVALID_INPUT: layer_id 不能为空"))
+        # 验证 layer_id 存在且非 runtime
+        layer_def = next((ld for ld in self.session_instruction_service._PROMPT_LAYERS if ld["id"] == layer_id), None)
+        if layer_def is None:
+            return Err(SdkError(f"INVALID_INPUT: 未知的提示词层: {layer_id}"))
+        if layer_def.get("runtime"):
+            return Err(SdkError(f"INVALID_INPUT: 运行时层不可编辑: {layer_id}"))
+        # 写入覆盖
+        overrides = dict((self._qq_settings or {}).get("prompt_overrides") or {})
+        if not isinstance(overrides, dict):
+            overrides = {}
+        overrides.setdefault(locale, {})
+        overrides[locale][layer_def["i18n_key"]] = text_val if text_val.strip() else ""
+        self._qq_settings["prompt_overrides"] = overrides
+        success = await self.settings_service.persist_business_config()
+        if success:
+            self.session_instruction_service._discard_all_sessions_for_prompt_change()
+        return Ok({"persisted": success, "layer_id": layer_id, "locale": locale})
+
+    @plugin_entry(
+        id="reset_prompt_override",
+        name=tr("entries.reset_prompt_override.name", default="重置提示词覆盖"),
+        description=tr("entries.reset_prompt_override.description", default="删除某个提示词层的自定义覆盖值，恢复默认。"),
+        input_schema={
+            "type": "object",
+            "properties": {"locale": {"type": "string"}, "layer_id": {"type": "string"}},
+            "required": ["locale", "layer_id"],
+            "additionalProperties": False,
+        },
+    )
+    async def reset_prompt_override(self, locale: str, layer_id: str, **_):
+        locale = str(locale or "").strip()
+        layer_id = str(layer_id or "").strip()
+        if not locale or not layer_id:
+            return Err(SdkError("INVALID_INPUT"))
+        layer_def = next((ld for ld in self.session_instruction_service._PROMPT_LAYERS if ld["id"] == layer_id), None)
+        if layer_def is None or layer_def.get("runtime"):
+            return Err(SdkError(f"INVALID_INPUT: 无法重置的层: {layer_id}"))
+        overrides = dict((self._qq_settings or {}).get("prompt_overrides") or {})
+        if isinstance(overrides, dict) and locale in overrides and isinstance(overrides[locale], dict):
+            overrides[locale].pop(layer_def["i18n_key"], None)
+            if not overrides[locale]:
+                overrides.pop(locale, None)
+            self._qq_settings["prompt_overrides"] = overrides
+            success = await self.settings_service.persist_business_config()
+            if success:
+                self.session_instruction_service._discard_all_sessions_for_prompt_change()
+            return Ok({"persisted": success, "layer_id": layer_id, "locale": locale})
+        return Ok({"persisted": True, "layer_id": layer_id, "locale": locale, "reason": "no_override_found"})
 
     async def _maybe_notify_backlog_summary(self, *, group_id: str) -> None:
         await self.backlog_service.maybe_notify_summary(group_id=group_id)

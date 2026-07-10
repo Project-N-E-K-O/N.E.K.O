@@ -52,8 +52,11 @@ class QQBacklogService:
             return
         category = QQFeedbackClassifier.classify(message_text, self._label_defs())
         # 点名标签只用 is_at_bot 判定，不用 @用户\d+ 正则（避免 @任何人都会计入）
-        if message.get("is_at_bot") and category != "mention":
-            category = "mention"
+        if message.get("is_at_bot"):
+            if category != "mention":
+                category = "mention"
+        elif category == "mention":
+            category = "chat"
 
         if message_type == "private":
             permission_level = self.plugin.permission_mgr.get_permission_level(sender_id) if self.plugin.permission_mgr else "none"

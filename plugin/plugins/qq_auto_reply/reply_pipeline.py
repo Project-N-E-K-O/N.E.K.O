@@ -115,11 +115,13 @@ class QQReplyPipelineRunner:
         if outcome.parsed_sticker_id and request.is_group:
             gid = str(request.group_id or "")
             since = self.plugin._sticker_since.get(gid) or 0
-            if since >= 5:
-                self.plugin._sticker_since[gid] = 0
+            threshold = getattr(self.plugin, "_sticker_cooldown_messages", 5)
+            if threshold <= 0 or since >= threshold:
+                if threshold > 0:
+                    self.plugin._sticker_since[gid] = 0
                 await self._send_sticker(request, outcome)
             else:
-                self.plugin._emit_log("INFO", f"[Sticker] 群 {gid} 距上次表情包仅 {since} 条消息，跳过（需≥5）")
+                self.plugin._emit_log("INFO", f"[Sticker] 群 {gid} 距上次表情包仅 {since} 条消息，跳过（需≥{threshold}）")
             outcome.traces.append(
                 QQPipelineStageTrace(
                     stage="delivery",

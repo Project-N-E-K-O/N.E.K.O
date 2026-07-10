@@ -120,6 +120,9 @@ class QQAutoReplyConfigStore:
             # 回溯补回参数
             "retroactive_review_max_messages": 30,  # 回溯最多取多少条被忽略消息
             "retroactive_review_max_reply": 5,      # 回溯最多补回多少条
+            "sticker_cooldown_messages": 5,          # 表情包发送间隔（群内消息数），0=不限制
+            # 提示词编辑器覆盖值（locale → layer_id → text）
+            "prompt_overrides": {},
         }
 
     async def exists(self) -> bool:

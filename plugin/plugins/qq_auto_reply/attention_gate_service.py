@@ -55,6 +55,7 @@ class QQAttentionGateService:
         self._last_focus_group: str = ""
         self._focus_shifting: bool = False
         self._retroactive_lock = asyncio.Lock()
+        self._digest_tasks: set[asyncio.Task] = set()
         self._logger = plugin.logger
 
     # ==========================================
@@ -97,13 +98,7 @@ class QQAttentionGateService:
             "is_at_bot": is_at_bot,
         })
 
-        # 2. 管理员发言 → 必定回复
-        if self.plugin.permission_mgr and self.plugin.permission_mgr.get_permission_level(sender_id) == "admin":
-            attention.mark_focus(normalized_group_id)
-            self.plugin._emit_log("INFO", f"[Admin] 管理员 {sender_id} 发言，强制回复")
-            return GateDecision("reply", reason="admin", force_reply=True)
-
-        # 3. @bot → 必定回复（强制唤醒）
+        # 2. @bot → 必定回复（强制唤醒）
         if is_at_bot:
             attention.mark_focus(normalized_group_id)
             return GateDecision("reply", reason="at_bot", force_reply=True)
@@ -115,6 +110,9 @@ class QQAttentionGateService:
 
         # 4. 关键词 → 必定回复（注意力已在 update_on_message 内完成加成，此处只标记焦点）
         category = QQFeedbackClassifier.classify(message_text, label_defs)
+        # mention 分类仅对真正 @bot（或 @全体/引用 bot）生效，避免 @其他人触发回复
+        if category == "mention" and not is_at_bot:
+            category = "chat"
         if category and category != "chat":
             attention.mark_focus(normalized_group_id)
             return GateDecision("reply", reason=f"keyword:{category}", force_reply=True)
@@ -171,7 +169,16 @@ class QQAttentionGateService:
             # 原焦点群进入冷却期，防止立即抢回焦点
             if previous:
                 attention.set_focus_cooldown(previous)
-                asyncio.create_task(self._push_group_digest(previous))
+                digest_task = asyncio.create_task(self._push_group_digest(previous))
+                self._digest_tasks.add(digest_task)
+                self.plugin._group_digest_task = digest_task
+
+                def _clear_digest_task(done_task: asyncio.Task) -> None:
+                    self._digest_tasks.discard(done_task)
+                    if self.plugin._group_digest_task is done_task:
+                        self.plugin._group_digest_task = None
+
+                digest_task.add_done_callback(_clear_digest_task)
             return FocusShiftResult(
                 previous_focus_group=previous or "",
                 new_focus_group=new_focus,
@@ -417,6 +424,14 @@ class QQAttentionGateService:
     async def shutdown(self) -> None:
         self._last_focus_group = ""
         self._focus_shifting = False
+        digest_tasks = list(self._digest_tasks)
+        for task in digest_tasks:
+            if not task.done():
+                task.cancel()
+        if digest_tasks:
+            await asyncio.gather(*digest_tasks, return_exceptions=True)
+        self._digest_tasks.clear()
+        self.plugin._group_digest_task = None
         if self.plugin.attention_service:
             await self.plugin.attention_service.stop_decay_loop()
         self._logger.info("[AttentionGate] 已关闭")

@@ -290,8 +290,12 @@ class QQAttentionService:
                     label_priority = 0.0
                 break
             if label_priority > 0:
+                boost = label_priority * self._keyword_boost_scale()
+                # 焦点群被@ → 注意力加分减半，避免已关注的群因@而过度霸占焦点
+                if category == "mention" and group_id == focus_group_id:
+                    boost *= 0
                 state.keyword_boost_score += label_priority
-                state.attention_score += label_priority * self._keyword_boost_scale()
+                state.attention_score += boost
                 state.last_boost_at = now
                 state.last_focus_reason = category
         self._write_state(self._normalize_state(state))
