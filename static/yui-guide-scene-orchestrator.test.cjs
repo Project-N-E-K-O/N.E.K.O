@@ -1101,15 +1101,15 @@ test('SceneOrchestrator places the first daily guide cursor in the capsule input
         }
     };
     const orchestrator = new SceneOrchestrator(director);
-    orchestrator.playGenericScene = function () {
-        calls.push('core');
+    orchestrator.playGenericScene = function (_scene, _day, _index, _total, context) {
+        calls.push(['core', context.introCursorPreludeApplied]);
         return Promise.resolve(true);
     };
 
     const result = await orchestrator.playScene(scene, 6, 0, 8);
 
     assert.equal(result, true);
-    assert.ok(calls.includes('core'));
+    assert.ok(calls.some((entry) => Array.isArray(entry) && entry[0] === 'core' && entry[1] === true));
     assert.ok(!calls.includes('externalized:clear'));
     assert.ok(calls.some((entry) => (
         Array.isArray(entry)
@@ -1118,7 +1118,7 @@ test('SceneOrchestrator places the first daily guide cursor in the capsule input
         && entry[2] === ''
         && entry[3] === 0
     )));
-    assert.ok(calls.indexOf('cursor:home-hide') < calls.indexOf('core'));
+    assert.ok(calls.indexOf('cursor:home-hide') < calls.findIndex((entry) => Array.isArray(entry) && entry[0] === 'core'));
 });
 
 test('SceneOrchestrator preserves Day1 input-origin wobble during the first externalized cursor handoff', () => {
@@ -1159,6 +1159,58 @@ test('SceneOrchestrator preserves Day1 input-origin wobble during the first exte
         ['options', 'day1_intro_activation'],
         ['cursor', 'capsule-input', 'wobble', 0],
         'hide-home-cursor'
+    ]);
+});
+
+test('SceneOrchestrator sends the first externalized intro cursor only once across prelude and spotlight', async () => {
+    const { SceneOrchestrator } = require('./tutorial/core/scene-orchestrator.js');
+    const calls = [];
+    const scene = { id: 'day1_intro_activation', cursorAction: 'input-origin' };
+    const director = {
+        currentStep: null,
+        isAvatarFloatingInputIntroScene() {
+            return true;
+        },
+        isHomeChatExternalized() {
+            return true;
+        },
+        getAvatarFloatingIntroSpotlightTarget() {
+            return null;
+        },
+        getAvatarFloatingIntroExternalizedSpotlightKind() {
+            return 'capsule-input';
+        },
+        getAvatarFloatingIntroExternalizedCursorOptions() {
+            return { effect: 'wobble', durationMs: 0 };
+        },
+        interactionTakeover: {
+            setExternalizedChatSpotlight(kind) {
+                calls.push(['spotlight', kind]);
+            },
+            setExternalizedChatCursor(kind, options) {
+                calls.push(['cursor', kind, options.effect, options.durationMs]);
+            }
+        },
+        clearHomeSpotlightsForExternalizedChat() {},
+        setHomePcCursorOutputSuppressedForExternalizedChat() {},
+        hideHomeCursorForExternalizedChat() {},
+        enableInterrupts() {}
+    };
+    const orchestrator = new SceneOrchestrator(director);
+
+    const introCursorPreludeApplied = orchestrator.applyFirstDailySceneIntroCursorPrelude(scene, {
+        isFirstDailyScene: true
+    });
+    await orchestrator.resolveAndApplySceneSpotlight(scene, {
+        isFirstDailyScene: true,
+        introCursorPreludeApplied
+    });
+
+    assert.deepEqual(calls.filter((entry) => entry[0] === 'cursor'), [
+        ['cursor', 'capsule-input', 'wobble', 0]
+    ]);
+    assert.deepEqual(calls.filter((entry) => entry[0] === 'spotlight'), [
+        ['spotlight', 'capsule-input']
     ]);
 });
 

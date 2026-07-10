@@ -330,7 +330,7 @@
                     preservePcOverlayCursor: shouldClearExternalizedChatCursor
                 });
             }
-            this.applyFirstDailySceneIntroCursorPrelude(scene, {
+            const introCursorPreludeApplied = this.applyFirstDailySceneIntroCursorPrelude(scene, {
                 isFirstDailyScene,
                 preserveIntroExternalizedChatGuideTarget
             });
@@ -368,6 +368,7 @@
                 isFirstDailyScene,
                 preserveExternalizedChatGuideTarget,
                 preserveIntroExternalizedChatGuideTarget,
+                introCursorPreludeApplied,
                 revealPrepared: roundContext.revealPrepared
             });
         }
@@ -508,7 +509,10 @@
                 if (typeof director.setHomePcCursorOutputSuppressedForExternalizedChat === 'function') {
                     director.setHomePcCursorOutputSuppressedForExternalizedChat(true);
                 }
-                if (typeof director.interactionTakeover.setExternalizedChatCursor === 'function') {
+                if (
+                    !context.introCursorPreludeApplied
+                    && typeof director.interactionTakeover.setExternalizedChatCursor === 'function'
+                ) {
                     director.interactionTakeover.setExternalizedChatCursor(
                         introExternalizedChatSpotlightKind,
                         director.getAvatarFloatingIntroExternalizedCursorOptions(scene)
