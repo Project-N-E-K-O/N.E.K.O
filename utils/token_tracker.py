@@ -430,6 +430,15 @@ _TELEMETRY_BRANCH_FILE = ".telemetry_branch"
 #     branch 正是本实验组的 install，在「判非法 → 重抽」时把仍停在 20s 的
 #     proactiveChatInterval 拉回控制组 15s（见 _rollback_retired_proactive_interval；
 #     重抽即天然幂等标记，不压制用户日后再手选 20s）。
+#   - "compact_history_default"（⚠️ 非本池分支：纯前端 localStorage 实验，仅在此留底。
+#     试 compact 聊天历史面板首启默认 open/closed，分组 key
+#     'neko.experiment.compactHistoryDefault'，曝光 counter 'experiment_exposure'）：
+#     2026-07 退役。数据不可用——Electron 多窗口下教程结束事件只在 Pet 窗口派发、到不了
+#     承载实验 effect 的 /chat 窗口，而教程锁 class 又会经 interpage 中继过去压制 3s
+#     兜底，套用/曝光退化为与教程启动时序的竞速（07-06 CN Steam 新用户覆盖率仅 54%，
+#     且曝光组显著偏活跃、带选择偏差）；另 06-29（#2078）前构建曝光走 event 通道上不了
+#     远程，历史口径断层。结论改为无偏好一律默认折叠（控制组行为），用户显式开/合偏好
+#     照旧生效。分组 key 只停读写、不清理存量残值（保留客户端取证窗口），勿复用该 key 名。
 _TELEMETRY_BRANCHES: tuple = ("main",)
 
 # 进程级缓存：keyed by str(config_dir)。写盘失败的环境下（只读 FS / 权限拒绝），
