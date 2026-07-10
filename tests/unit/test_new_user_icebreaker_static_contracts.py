@@ -384,7 +384,7 @@ def test_icebreaker_runtime_wires_choice_prompt_and_project_tts():
     assert "expressionFile" not in runtime
     assert "resolveLatestEndState(detail, eventType)" in runtime
     assert "synthesizeEndStateFromEvent(eventType, normalizedDetail)" in runtime
-    assert "eventType === 'neko:tutorial-skipped'" in runtime
+    assert "eventType === 'neko:tutorial-skipped'" not in runtime
     assert "eventType === 'neko:tutorial-completed'" in runtime
     assert "normalizedDetail.day" in runtime
     assert "day = 1" not in runtime
@@ -925,6 +925,7 @@ def test_icebreaker_tutorial_end_events_start_from_explicit_event_state():
     body = match.group("body")
     assert "startFromEndState(resolveLatestEndState(detail, eventType))" not in body
     assert "var endState = resolveLatestEndState(detail, eventType);" in body
+    assert "String(endState.outcome || endState.rawReason || '') !== 'complete'" in body
     assert "var pendingDay = markPendingStartFromEndState(endState);" in body
     assert "attemptStartFromGuideEndState(endState, pendingDay)" in body
 
@@ -1030,13 +1031,14 @@ def test_home_tutorial_release_events_carry_current_avatar_round_end_state():
     assert "state.lastEndState" in reset_runtime
     assert "state.lastEndState" in runtime
 
-    generic_tutorial_branch = re.search(
-        r"eventType === 'neko:tutorial-skipped'.*?outcome = 'skip';",
-        runtime,
-        re.DOTALL,
-    )
-    assert generic_tutorial_branch is not None
-    assert "day = 1" not in generic_tutorial_branch.group(0)
+    assert "window.addEventListener('neko:avatar-floating-guide-skip', handleGuideEndEvent)" not in runtime
+    assert "window.addEventListener('neko:tutorial-skipped', handleGuideEndEvent)" not in runtime
+    can_start_block = runtime.split("function canStartFromEndState(endState, scripts)", 1)[1].split(
+        "function readPersistedAvatarGuideState",
+        1,
+    )[0]
+    assert "if (outcome !== 'complete') return false;" in can_start_block
+    assert "outcome !== 'skip'" not in can_start_block
 
 
 def test_avatar_floating_angry_exit_skip_event_preserves_raw_end_state():

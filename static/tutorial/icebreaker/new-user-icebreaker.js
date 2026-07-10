@@ -1495,8 +1495,7 @@
         if (!endState || endState.ended !== true) return false;
         if (endState.isAngryExit) return false;
         var outcome = String(endState.outcome || endState.rawReason || '');
-        if (outcome === 'destroy') return false;
-        if (outcome && outcome !== 'complete' && outcome !== 'skip') return false;
+        if (outcome !== 'complete') return false;
         var endedAt = Number(endState.endedAt || 0);
         if (endedAt && Date.now() - endedAt > TRIGGER_WINDOW_MS) return false;
         var day = String(endState.day || '');
@@ -1650,12 +1649,8 @@
         var normalizedDetail = detail && typeof detail === 'object' ? detail : {};
         var day = normalizedDetail.day;
         var outcome = '';
-        if (eventType === 'neko:avatar-floating-guide-skip') {
-            outcome = 'skip';
-        } else if (eventType === 'neko:avatar-floating-guide-complete') {
+        if (eventType === 'neko:avatar-floating-guide-complete') {
             outcome = 'complete';
-        } else if (eventType === 'neko:tutorial-skipped' && normalizedDetail.page === 'home') {
-            outcome = 'skip';
         } else if (eventType === 'neko:tutorial-completed' && normalizedDetail.page === 'home') {
             outcome = 'complete';
         }
@@ -1687,6 +1682,13 @@
         var detail = event && event.detail ? event.detail : {};
         var eventType = event && event.type ? String(event.type) : '';
         var endState = resolveLatestEndState(detail, eventType);
+        if (
+            !endState
+            || endState.isAngryExit === true
+            || String(endState.outcome || endState.rawReason || '') !== 'complete'
+        ) {
+            return;
+        }
         var pendingDay = markPendingStartFromEndState(endState);
         window.setTimeout(function () {
             attemptStartFromGuideEndState(endState, pendingDay);
@@ -1700,9 +1702,7 @@
     }
 
     window.addEventListener('neko:avatar-floating-guide-complete', handleGuideEndEvent);
-    window.addEventListener('neko:avatar-floating-guide-skip', handleGuideEndEvent);
     window.addEventListener('neko:tutorial-completed', handleGuideEndEvent);
-    window.addEventListener('neko:tutorial-skipped', handleGuideEndEvent);
     window.addEventListener('neko:day1-systray-intro-closed', function () {
         if (!pendingGuideEndState) return;
         attemptStartFromGuideEndState(pendingGuideEndState, String(pendingGuideEndState.day || ''));
