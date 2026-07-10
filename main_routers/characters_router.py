@@ -105,6 +105,19 @@ from utils.native_voice_registry import (
 from utils import tts_provider_registry
 from utils.audio import normalize_voice_clone_api_audio, validate_audio_file
 from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
+from utils.doubao_tts import (
+    DOUBAO_TTS_DEFAULT_BASE_URL,
+    DOUBAO_TTS_DEFAULT_CONTEXT_TEXTS,
+    DOUBAO_TTS_DEFAULT_RESOURCE_ID,
+    DOUBAO_VOICE_CLONE_RESOURCE_ID,
+    DOUBAO_VOICE_STORAGE_KEY,
+    DoubaoTtsError,
+    DoubaoVoiceCloneClient,
+    build_doubao_tts_payload,
+    doubao_api_headers,
+    doubao_tts_url,
+    extract_doubao_audio_bytes,
+)
 from utils.initial_personality_state import (
     clear_manual_personality_reselect,
     load_initial_personality_state,
@@ -1453,6 +1466,13 @@ def _build_minimax_request_prefix(prefix: str, provider_label: str) -> tuple[str
             safe_prefix,
         )
     return original_prefix, f"{safe_prefix}{uuid.uuid4().hex[:8]}"
+
+
+def _normalize_doubao_voice_clone_speaker_id(value: str) -> str:
+    speaker_id = str(value or '').strip()
+    if not re.fullmatch(r"S_[A-Za-z0-9]+", speaker_id):
+        raise ValueError("豆包声音复刻需要填写 S_ 开头的 Speaker ID")
+    return speaker_id
 
 
 async def _get_elevenlabs_base_url(config_manager) -> str:
@@ -4653,6 +4673,63 @@ async def get_voice_preview(
                     'error': f'MiMo 预览生成失败: {str(e)}',
                 }, status_code=500)
 
+        if provider == 'doubao_tts':
+            doubao_api_key = _config_manager.get_tts_api_key('doubao_tts')
+            if not doubao_api_key:
+                return JSONResponse({
+                    'success': False,
+                    'error': 'DOUBAO_TTS_API_KEY_MISSING',
+                    'code': 'DOUBAO_TTS_API_KEY_MISSING',
+                }, status_code=400)
+            doubao_base_url = (
+                (voice_data or {}).get('doubao_base_url')
+                or DOUBAO_TTS_DEFAULT_BASE_URL
+            )
+            doubao_resource_id = (
+                (voice_data or {}).get('doubao_resource_id')
+                or DOUBAO_VOICE_CLONE_RESOURCE_ID
+            )
+            try:
+                async with httpx.AsyncClient(timeout=60) as client:
+                    resp = await client.post(
+                        doubao_tts_url(doubao_base_url),
+                        headers=doubao_api_headers(doubao_api_key, doubao_resource_id),
+                        json=build_doubao_tts_payload(
+                            text,
+                            voice_id,
+                            context_texts=(DOUBAO_TTS_DEFAULT_CONTEXT_TEXTS,),
+                        ),
+                    )
+                if resp.status_code != 200:
+                    return JSONResponse({
+                        'success': False,
+                        'error': f'豆包语音预览失败: HTTP {resp.status_code}, {resp.text[:200]}',
+                        'code': 'DOUBAO_TTS_PREVIEW_FAILED',
+                    }, status_code=502)
+                audio_data = extract_doubao_audio_bytes(await resp.aread())
+                if not audio_data:
+                    return JSONResponse({
+                        'success': False,
+                        'error': '豆包语音预览未返回音频',
+                        'code': 'DOUBAO_TTS_PREVIEW_NO_AUDIO',
+                    }, status_code=502)
+                audio_base64 = base64.b64encode(audio_data).decode('utf-8')
+                logger.info(f"豆包语音音色 {voice_id} 预览音频生成成功，大小: {len(audio_data)} 字节")
+                return {'success': True, 'audio': audio_base64, 'mime_type': 'audio/wav'}
+            except DoubaoTtsError as e:
+                logger.error(f"豆包语音音色 {voice_id} 预览失败: {e}")
+                return JSONResponse({
+                    'success': False,
+                    'error': f'豆包语音预览失败: {str(e)}',
+                    'code': 'DOUBAO_TTS_PREVIEW_FAILED',
+                }, status_code=502)
+            except Exception as e:
+                logger.error(f"豆包语音音色 {voice_id} 预览异常: {e}")
+                return JSONResponse({
+                    'success': False,
+                    'error': f'豆包语音预览失败: {str(e)}',
+                }, status_code=500)
+
         # vLLM-Omni 克隆音色（provider=='vllm_omni'）试听：读 voice_meta 里的参考样本
         # base64，通过 vLLM-Omni WebSocket 合成预览句（对偶 MiMo 的克隆试听；避免落到
         # 下方 CosyVoice/DashScope 通用分支拿着无效 API key 误合成报 401）。
@@ -5626,6 +5703,17 @@ async def voice_clone(
         storage_key = '__VLLM_OMNI__'
         provider_label = 'vLLM-Omni'
 
+    elif provider == 'doubao_tts':
+        if not api_key:
+            return JSONResponse({
+                'error': 'DOUBAO_TTS_API_KEY_MISSING',
+                'code': 'DOUBAO_TTS_API_KEY_MISSING',
+                'message': '未配置豆包语音 API Key，请先在设置中填写'
+            }, status_code=400)
+        base_url = DOUBAO_TTS_DEFAULT_BASE_URL
+        storage_key = f'{DOUBAO_VOICE_STORAGE_KEY}{api_key[-8:]}'
+        provider_label = '豆包语音'
+
     else:
         return JSONResponse({'error': f'不支持的 provider: {provider}'}, status_code=400)
 
@@ -5791,6 +5879,40 @@ async def voice_clone(
                 'created_at': datetime.now().isoformat()
             }
 
+        elif provider == 'doubao_tts':
+            try:
+                speaker_id = _normalize_doubao_voice_clone_speaker_id(prefix)
+            except ValueError as exc:
+                return JSONResponse({
+                    'error': 'DOUBAO_SPEAKER_ID_REQUIRED',
+                    'code': 'DOUBAO_SPEAKER_ID_REQUIRED',
+                    'message': str(exc),
+                }, status_code=400)
+            resource_id = DOUBAO_TTS_DEFAULT_RESOURCE_ID
+            client = DoubaoVoiceCloneClient(
+                api_key=api_key,
+                base_url=base_url,
+                resource_id=resource_id,
+            )
+            voice_id = await client.clone_voice(
+                normalized_buffer,
+                speaker_id=speaker_id,
+                display_name=speaker_id,
+                audio_format='wav',
+            )
+            voice_data = {
+                'voice_id': voice_id,
+                'prefix': prefix,
+                'audio_md5': audio_md5,
+                'ref_language': ref_language,
+                'provider': 'doubao_tts',
+                'source': 'clone',
+                'doubao_base_url': base_url,
+                'doubao_resource_id': resource_id,
+                'clone_model': resource_id,
+                'created_at': datetime.now().isoformat()
+            }
+
         else:  # cosyvoice / cosyvoice_intl
             from utils.api_config_loader import get_cosyvoice_clone_model
             clone_model = get_cosyvoice_clone_model(provider)
@@ -5829,7 +5951,7 @@ async def voice_clone(
             'code': 'ELEVENLABS_UPSTREAM_ERROR',
             'provider': provider,
         }, status_code=502)
-    except (MinimaxVoiceCloneError, QwenVoiceCloneError, MimoVoiceCloneError) as e:
+    except (MinimaxVoiceCloneError, QwenVoiceCloneError, MimoVoiceCloneError, DoubaoTtsError) as e:
         logger.error(f"{provider_label} 音色注册失败: {e}")
         error_detail = str(e)
         if '超时' in error_detail:

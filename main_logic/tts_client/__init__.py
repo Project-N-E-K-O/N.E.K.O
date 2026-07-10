@@ -94,6 +94,11 @@ from .workers.mimo import (
     _mimo_is_selected,
     _mimo_resolve,
 )
+from .workers.doubao import (
+    doubao_tts_worker,
+    _doubao_is_selected,
+    _doubao_resolve,
+)
 from .workers.gptsovits import (
     gptsovits_tts_worker,
     get_custom_tts_voices,
@@ -145,6 +150,7 @@ __all__ = [
     "step_realtime_tts_worker", "grok_streaming_tts_worker", "qwen_realtime_tts_worker",
     "cosyvoice_vc_tts_worker", "cogtts_tts_worker", "gemini_tts_worker",
     "openai_tts_worker", "vllm_omni_tts_worker", "mimo_tts_worker",
+    "doubao_tts_worker",
     "gptsovits_tts_worker", "minimax_tts_worker", "elevenlabs_tts_worker",
     "local_cosyvoice_worker", "dummy_tts_worker",
     # provider constants
@@ -171,6 +177,7 @@ __all__ = [
     "_elevenlabs_clone_is_selected", "_elevenlabs_clone_resolve",
     "_cosyvoice_clone_is_selected", "_cosyvoice_clone_resolve",
     "_mimo_is_selected", "_mimo_resolve",
+    "_doubao_is_selected", "_doubao_resolve",
 ]
 
 
@@ -492,4 +499,21 @@ _tts_providers.register(_tts_providers.TTSProvider(
     resolve=_mimo_resolve,
     preset_catalog=MIMO_PRESET_CATALOG,
     tts_dropdown_only=False,
+))
+
+_tts_providers.register(_tts_providers.TTSProvider(
+    key='doubao_tts',
+    kind='hosted',
+    priority=65,
+    capabilities=frozenset({'clone'}),
+    is_selected=_doubao_is_selected,
+    resolve=_doubao_resolve,
+    default_url='https://openspeech.bytedance.com',
+    default_model='seed-icl-2.0',
+    default_voice='',
+    editable_endpoint=True,
+    probe_kind='http_tts',
+    probe_sub_type='doubao_tts',
+    tts_dropdown_only=True,
+    tts_config_visible=False,
 ))

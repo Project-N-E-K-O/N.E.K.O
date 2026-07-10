@@ -716,6 +716,7 @@ DEFAULT_CORE_CONFIG = {
     "assistApiKeyClaude": "",
     "assistApiKeyGrok": "",
     "assistApiKeyDoubao": "",
+    "assistApiKeyDoubaoTts": "",
     "mcpToken": "",
     "agentModelUrl": "",
     "agentModelId": "",
