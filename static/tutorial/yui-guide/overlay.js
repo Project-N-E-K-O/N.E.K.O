@@ -960,10 +960,6 @@
 
         ensureRoot() {
             if (!this.isTutorialLifecycleCurrent()) {
-                const staleRoot = this.document.getElementById(ROOT_ID);
-                if (staleRoot && staleRoot.isConnected) {
-                    staleRoot.remove();
-                }
                 this.root = null;
                 this.stage = null;
                 return null;

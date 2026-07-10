@@ -2993,6 +2993,9 @@
         ) {
             return true;
         }
+        if (!isYuiGuideMessageForCurrentLifecycle(message)) {
+            return true;
+        }
         if (
             message.action !== 'yui_guide_tutorial_lifecycle_ended'
             && isYuiGuideLifecycleScopedAction(message.action)
@@ -3264,6 +3267,9 @@
                     yuiGuidePcOverlayLifecycleClosed
                     && isYuiGuideLifecycleScopedAction(message.action)
                 ) {
+                    return;
+                }
+                if (!isYuiGuideMessageForCurrentLifecycle(message)) {
                     return;
                 }
 
@@ -4250,6 +4256,18 @@
         yuiGuidePcOverlayLifecycleEpoch += 1;
         yuiGuidePcOverlayLifecycleClosed = true;
         yuiGuidePcOverlayLifecycleRunId = '';
+    }
+
+    function isYuiGuideMessageForCurrentLifecycle(message) {
+        if (!message || !isYuiGuideLifecycleScopedAction(message.action)) {
+            return true;
+        }
+        var runId = typeof message.tutorialRunId === 'string'
+            ? message.tutorialRunId
+            : '';
+        return !runId
+            || !yuiGuidePcOverlayLifecycleRunId
+            || runId === yuiGuidePcOverlayLifecycleRunId;
     }
 
     function resetYuiGuidePcOverlayRunForRetry() {
@@ -5494,6 +5512,9 @@
             return false;
         }
         var action = message.action || '';
+        if (!isYuiGuideMessageForCurrentLifecycle(message)) {
+            return false;
+        }
         var cursorOptions = Object.assign({}, message, {
             pcOverlayRunId: message.pcOverlayRunId || getYuiGuidePcOverlayRunIdFromMessage(message)
         });

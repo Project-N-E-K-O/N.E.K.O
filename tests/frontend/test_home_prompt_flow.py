@@ -6856,7 +6856,15 @@ def test_yui_overlay_lifecycle_epoch_blocks_late_dom_recreation(mock_page: Page)
             const nextOverlay = new window.YuiGuideOverlay(document);
             nextOverlay.showBubble('next tutorial');
             const recreatedByNextInstance = !!document.getElementById('yui-guide-overlay');
-            return { initiallyCreated, recreatedByStaleInstance, recreatedByNextInstance };
+            const nextRoot = document.getElementById('yui-guide-overlay');
+            staleOverlay.showBubble('older callback after next tutorial');
+            const nextRootPreserved = document.getElementById('yui-guide-overlay') === nextRoot;
+            return {
+                initiallyCreated,
+                recreatedByStaleInstance,
+                recreatedByNextInstance,
+                nextRootPreserved,
+            };
         }
         """
     )
@@ -6865,6 +6873,7 @@ def test_yui_overlay_lifecycle_epoch_blocks_late_dom_recreation(mock_page: Page)
         "initiallyCreated": True,
         "recreatedByStaleInstance": False,
         "recreatedByNextInstance": True,
+        "nextRootPreserved": True,
     }
 
 
