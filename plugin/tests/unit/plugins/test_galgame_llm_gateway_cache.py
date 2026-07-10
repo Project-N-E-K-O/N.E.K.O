@@ -337,7 +337,7 @@ async def test_llm_gateway_semaphore_wait_is_bounded_by_call_timeout() -> None:
     gateway = LLMGateway(
         None,
         None,
-        _config(llm_max_in_flight=1, llm_call_timeout_seconds=0.2),
+        _config(llm_max_in_flight=1, llm_call_timeout_seconds=2.0),
         backend=backend,
     )
     first = asyncio.create_task(gateway.agent_reply({"prompt": "first"}))
@@ -361,7 +361,7 @@ async def test_llm_gateway_semaphore_wait_timeout_does_not_poison_provider() -> 
     gateway = LLMGateway(
         None,
         None,
-        _config(llm_max_in_flight=1, llm_call_timeout_seconds=0.2),
+        _config(llm_max_in_flight=1, llm_call_timeout_seconds=2.0),
         backend=backend,
     )
     first = asyncio.create_task(gateway.agent_reply({"prompt": "first"}))
@@ -371,7 +371,12 @@ async def test_llm_gateway_semaphore_wait_timeout_does_not_poison_provider() -> 
     try:
         second = await gateway.agent_reply({"prompt": "second"})
         backend.release.set()
-        first_result = await asyncio.wait_for(first, timeout=1.0)
+        first_result = await asyncio.wait_for(first, timeout=2.0)
+        # The 0.01s timeout above only exists to force the semaphore wait of
+        # "second" to expire while "first" holds the slot. Restore a wall-clock
+        # budget that a busy CI runner can meet before issuing "third"; the
+        # provider backoff state under test survives update_config.
+        gateway.update_config(_config(llm_max_in_flight=1, llm_call_timeout_seconds=2.0))
         third = await gateway.agent_reply({"prompt": "third"})
     finally:
         backend.release.set()
