@@ -4879,20 +4879,12 @@
                 window.pngtuberManager.resetAllButtons();
             }
 
-            // 保存当前锁定状态，以便"请她回来"时恢复
-            // core.setLocked() 将值写入 manager.isLocked，因此从 manager 级别读取
+            // 判断当前 PNGTuber 是否激活，告别态只锁定正在使用的 2D 图片模型。
             const pngtuberContainerForState = document.getElementById('pngtuber-container');
             const isPngtuberActiveForState = (window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber'
                 && pngtuberContainerForState
                 && pngtuberContainerForState.style.display !== 'none'
                 && !pngtuberContainerForState.classList.contains('hidden');
-
-            window._savedLockState = {
-                live2d: window.live2dManager ? window.live2dManager.isLocked : false,
-                vrm: window.vrmManager ? window.vrmManager.isLocked : false,
-                mmd: window.mmdManager ? window.mmdManager.isLocked : false,
-                pngtuber: isPngtuberActiveForState && window.pngtuberManager ? window.pngtuberManager.isLocked : false
-            };
 
             // 设置锁定状态
             if (window.live2dManager && typeof window.live2dManager.setLocked === 'function') {
@@ -5513,8 +5505,7 @@
                     mmdLockIcon.style.opacity = '0';
                 }
             }
-            // 恢复"请她离开"之前的锁定状态（而非强制解锁）
-            const savedLock = window._savedLockState || { live2d: false, vrm: false, mmd: false };
+            // 回来后统一清理锁定状态，不回放离开前的锁定快照，避免 UI、拖拽和穿透状态分叉。
             const pngtuberLockIcon = document.getElementById('pngtuber-lock-icon');
             if (pngtuberLockIcon) {
                 pngtuberLockIcon.style.removeProperty('display');
@@ -5522,18 +5513,17 @@
                 pngtuberLockIcon.style.removeProperty('opacity');
             }
             if (window.live2dManager && typeof window.live2dManager.setLocked === 'function') {
-                window.live2dManager.setLocked(savedLock.live2d, { updateFloatingButtons: false });
+                window.live2dManager.setLocked(false, { updateFloatingButtons: false });
             }
             if (window.vrmManager && window.vrmManager.core && typeof window.vrmManager.core.setLocked === 'function') {
-                window.vrmManager.core.setLocked(savedLock.vrm);
+                window.vrmManager.core.setLocked(false);
             }
             if (window.mmdManager && window.mmdManager.core && typeof window.mmdManager.core.setLocked === 'function') {
-                window.mmdManager.core.setLocked(savedLock.mmd);
+                window.mmdManager.core.setLocked(false);
             }
-            if (isReturningToPngtuber && window.pngtuberManager && typeof window.pngtuberManager.setLocked === 'function') {
-                window.pngtuberManager.setLocked(savedLock.pngtuber, { updateFloatingButtons: false });
+            if (window.pngtuberManager && typeof window.pngtuberManager.setLocked === 'function') {
+                window.pngtuberManager.setLocked(false, { updateFloatingButtons: false });
             }
-            window._savedLockState = null;
 
             // 恢复浮动按钮系统
             const live2dFloatingButtons = document.getElementById('live2d-floating-buttons');

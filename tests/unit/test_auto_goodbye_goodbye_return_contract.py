@@ -74,3 +74,18 @@ def test_return_ball_keeps_handle_return_click_semantics():
     assert "action: 'start_session'" in return_session_block
     assert "action: 'goodbye_state'" in return_session_block
     assert "active: false" in return_session_block
+
+
+def test_return_clears_all_model_lock_state_instead_of_replaying_a_snapshot():
+    ui_source = _read(APP_UI_PATH)
+    handle_return_block = _between(
+        ui_source,
+        "const handleReturnClick = async (event) => {",
+        "window.addEventListener('live2d-return-click', handleReturnClick);",
+    )
+
+    assert "_savedLockState" not in ui_source
+    assert "window.live2dManager.setLocked(false, { updateFloatingButtons: false });" in handle_return_block
+    assert "window.vrmManager.core.setLocked(false);" in handle_return_block
+    assert "window.mmdManager.core.setLocked(false);" in handle_return_block
+    assert "window.pngtuberManager.setLocked(false, { updateFloatingButtons: false });" in handle_return_block
