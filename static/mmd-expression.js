@@ -31,6 +31,7 @@ class MMDExpression {
         this.moodMap = {
             'neutral': ['default', 'ニュートラル'],
             'happy': ['笑い', 'にやり', 'にこり', 'smile', 'happy', 'joy', 'ワ'],
+            'shy': ['照れ', '照れ顔', '赤面', '恥ずかしい', 'shy', 'blush'],
             'sad': ['悲しい', '泣き', 'sad', 'sorrow', 'しょんぼり'],
             'angry': ['怒り', 'angry', 'anger', 'むっ'],
             'surprised': ['驚き', 'びっくり', 'surprised', 'shock', 'おっ'],

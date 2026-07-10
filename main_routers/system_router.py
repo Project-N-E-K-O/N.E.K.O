@@ -830,7 +830,7 @@ async def get_system_status(response: Response):
 # 多语言关键词/别名表统一在 config/prompts/prompts_emotion.py 维护，此处只做扁平索引。
 _EMOTION_LABEL_ALIASES = get_emotion_label_aliases_flat()
 
-_EMOTION_CANONICAL_LABELS = ("happy", "sad", "angry", "surprised", "neutral")
+_EMOTION_CANONICAL_LABELS = ("happy", "shy", "sad", "angry", "surprised", "neutral")
 _EMOTION_NORMALIZED_ALIAS_LOOKUP = {}
 _EMOTION_COMPACT_ALIAS_LOOKUP = {}
 for _alias, _canonical in _EMOTION_LABEL_ALIASES.items():
@@ -1169,6 +1169,10 @@ def _infer_emotion_from_text(text):
         # 重复出现时 keyword 那边已经按命中数累加分数；这里只额外 +1 作为信号 boost，
         # 避免 `haha haha haha / 哈哈哈哈哈` 类 filler 文本被双倍放大触发 override。
         scores["happy"] += 1
+    if scores.get("shy", 0) and happy_playful_hits and not sad_vulnerable_hits and not angry_attack_hits:
+        # 害羞经常带着“哈哈/嘿嘿/可爱”这类轻快外壳；明确 shy 信号存在时，
+        # 给 shy 一个小 boost，避免被 happy 的风格词抢走主情绪。
+        scores["shy"] += 1
     if sad_vulnerable_hits and happy_playful_hits:
         # 撒娇外壳下的委屈/想哭，优先视为 sad 而不是 happy
         scores["sad"] += 1
@@ -3918,6 +3922,10 @@ async def emotion_analysis(request: Request):
                         emotion = heuristic_emotion
                         confidence = max(confidence, min(0.84, 0.5 + heuristic_score * 0.08))
                         decision_source = "heuristic_sad_override"
+                    elif heuristic_emotion == "shy" and emotion == "happy" and heuristic_score >= 2:
+                        emotion = heuristic_emotion
+                        confidence = max(confidence, min(0.82, 0.5 + heuristic_score * 0.08))
+                        decision_source = "heuristic_shy_override"
                     elif emotion == "neutral" and confidence < 0.6:
                         emotion = heuristic_emotion
                         confidence = max(confidence, min(0.78, 0.42 + heuristic_score * 0.12))

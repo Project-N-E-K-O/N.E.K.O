@@ -133,6 +133,10 @@
         "motions/mtn_02.motion3.json",
         "motions/mtn_03.motion3.json"
       ],
+      "shy": [
+        "motions/mtn_02.motion3.json",
+        "motions/mtn_03.motion3.json"
+      ],
       "sad": [
         "motions/special_02.motion3.json"
       ],
@@ -150,6 +154,9 @@
       ]
     },
     "expressions": {
+      "shy": [
+        "expressions/exp_01.exp3.json"
+      ],
       "常驻": []
     }
   }
