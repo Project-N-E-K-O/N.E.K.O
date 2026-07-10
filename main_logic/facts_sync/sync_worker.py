@@ -104,6 +104,14 @@ def _enumerate_lanlan_dirs(memory_dir: Path) -> list[Path]:
         return []
 
 
+def _coerce_importance(value: Any) -> float:
+    """Defensively coerce importance; malformed values become 0 (skipped)."""
+    try:
+        return float(value or 0.0)
+    except (OverflowError, TypeError, ValueError):
+        return 0.0
+
+
 def _select_unsynced_facts(
     facts_data: list[dict],
     already_synced_hashes: set[str],
@@ -115,7 +123,7 @@ def _select_unsynced_facts(
             continue
         if fact.get("private") is True or fact.get("redacted") is True:
             continue
-        importance_raw = float(fact.get("importance") or 0.0)
+        importance_raw = _coerce_importance(fact.get("importance"))
         if importance_raw < MIN_IMPORTANCE:
             continue
         # NEKO 0-10 → Servers 0-1 归一化；对已经在 [0,1] 范围的值无影响。

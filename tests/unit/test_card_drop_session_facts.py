@@ -12,6 +12,8 @@ import main_routers.card_drop_router as C
 import main_logic.card_forge_facts as F
 from main_logic.card_forge_facts import ActiveNekoContext, build_forge_facts_payload
 
+pytestmark = pytest.mark.unit
+
 
 def test_packaged_facts_modules_use_package_qualified_imports():
     shared = importlib.import_module("main_logic.card_forge_facts")

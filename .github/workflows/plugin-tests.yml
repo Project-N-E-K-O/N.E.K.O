@@ -12,6 +12,10 @@ on:
       - 'plugin/**'
       - 'static/avatar-ui-buttons.js'
       - 'tests/unit/test_avatar_return_button_idle_tiers_static.py'
+      - 'main_routers/card_drop_router.py'
+      - 'main_logic/card_forge_facts.py'
+      - 'tests/unit/test_card_drop_session_facts.py'
+      - 'tests/unit/test_card_drop_steam_pkce.py'
       - '.github/workflows/plugin-tests.yml'
       # Dependency changes alter the plugin test/runtime environment (e.g.
       # removing a dev dep plugin/tests needs) — without these a deps-only
@@ -24,6 +28,10 @@ on:
       - 'plugin/**'
       - 'static/avatar-ui-buttons.js'
       - 'tests/unit/test_avatar_return_button_idle_tiers_static.py'
+      - 'main_routers/card_drop_router.py'
+      - 'main_logic/card_forge_facts.py'
+      - 'tests/unit/test_card_drop_session_facts.py'
+      - 'tests/unit/test_card_drop_steam_pkce.py'
       - '.github/workflows/plugin-tests.yml'
       - 'pyproject.toml'
       - 'uv.lock'
