@@ -1568,6 +1568,7 @@ test('director routes resistance interrupts through ResistanceController boundar
     assert.match(resistanceSource, /const DEFAULT_INTERRUPT_SHAKE_REQUIRED_REVERSALS = 8;/);
     assert.match(resistanceSource, /const DEFAULT_INTERRUPT_SHAKE_MIN_SPAN_MS = 600;/);
     assert.match(resistanceSource, /const DEFAULT_INTERRUPT_SHAKE_MIN_SUSTAINED_SPEED = 1100;/);
+    assert.match(resistanceSource, /reversals\.slice\(1\)\.reduce\(/);
     assert.match(resistanceControllerBlock, /trackInterruptShakeMotion\(point\) \{/);
     assert.match(resistanceControllerBlock, /shakeReady = isInterruptShakeReady\(motion\.reversals\);/);
     assert.doesNotMatch(resistanceControllerBlock, /isPrimaryButtonDrag/);
@@ -1577,6 +1578,7 @@ test('director routes resistance interrupts through ResistanceController boundar
     assert.match(pluginRuntimeSource, /const DEFAULT_INTERRUPT_SHAKE_REQUIRED_REVERSALS = 8/);
     assert.match(pluginRuntimeSource, /const DEFAULT_INTERRUPT_SHAKE_MIN_SPAN_MS = 600/);
     assert.match(pluginRuntimeSource, /const DEFAULT_INTERRUPT_SHAKE_MIN_SUSTAINED_SPEED = 1100/);
+    assert.match(pluginRuntimeSource, /reversals\.slice\(1\)\.reduce\(/);
     assert.match(pluginRuntimeSource, /trackInterruptShakeMotion\(point:/);
     assert.match(pluginRuntimeSource, /if \(!this\.trackInterruptShakeMotion\(shakePoint\)\) \{[\s\S]*?return[\s\S]*?this\.resetInterruptShakeMotion\(\)/);
     assert.doesNotMatch(pluginRuntimeSource, /DEFAULT_INTERRUPT_ACCELERATION_STREAK/);

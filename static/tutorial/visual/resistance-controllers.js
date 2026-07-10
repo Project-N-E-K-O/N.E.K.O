@@ -81,7 +81,7 @@
             return false;
         }
 
-        const totalDistance = reversals.reduce((sum, item) => sum + Number(item.distance || 0), 0);
+        const totalDistance = reversals.slice(1).reduce((sum, item) => sum + Number(item.distance || 0), 0);
         const sustainedSpeed = totalDistance / Math.max(0.001, spanMs / 1000);
         return sustainedSpeed >= DEFAULT_INTERRUPT_SHAKE_MIN_SUSTAINED_SPEED;
     }

@@ -8666,7 +8666,7 @@ def test_avatar_floating_sustained_shake_triggers_light_resistance(
                     lightInterruptCount: lightInterrupts.length,
                     interruptCount: director.interruptCount,
                 };
-                playShake([100, 200, 100, 200, 100, 200, 100, 200, 100, 200], 2000);
+                playShake([100, 220, 100, 220, 100, 220, 100, 220, 100, 220], 2000);
                 return {
                     lightInterrupts,
                     interruptCount: director.interruptCount,
@@ -8687,6 +8687,67 @@ def test_avatar_floating_sustained_shake_triggers_light_resistance(
     assert len(result["lightInterrupts"]) == 1
     assert result["interruptCount"] == 1
     assert result["streak"] == 0
+
+
+@pytest.mark.frontend
+def test_avatar_floating_near_threshold_shake_uses_matching_distance_and_time_interval(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const originalNow = Date.now;
+            window.__now = 1000;
+            Date.now = () => window.__now;
+            try {
+                const director = window.createYuiGuideDirector({ page: 'home' });
+                const lightInterrupts = [];
+                director.platformCapabilities = { windowBoundsSource: 'electron-window-bounds' };
+                director.currentSceneId = 'test_scene';
+                director.currentStep = {
+                    performance: {},
+                    interrupts: { threshold: 3, throttleMs: 0 },
+                };
+                director.interruptsEnabled = true;
+                director.cursor.hasPosition = () => true;
+                director.cursor.reactToUserMotion = () => {};
+                director.playLightResistance = (x, y, options) => {
+                    lightInterrupts.push({ x, y, options });
+                };
+
+                [100, 200, 100, 200, 100, 200, 100, 200, 100, 200].forEach((x, index, samples) => {
+                    const previousX = index > 0 ? samples[index - 1] : 0;
+                    window.__now = 1000 + (index * 100);
+                    director.handleInterrupt({
+                        isTrusted: true,
+                        type: 'mousemove',
+                        clientX: x,
+                        clientY: 100,
+                        screenX: x,
+                        screenY: 100,
+                        movementX: x - previousX,
+                        movementY: 0,
+                    });
+                });
+                return {
+                    lightInterrupts,
+                    interruptCount: director.interruptCount,
+                };
+            } finally {
+                Date.now = originalNow;
+            }
+        }
+        """
+    )
+
+    assert result["lightInterrupts"] == []
+    assert result["interruptCount"] == 0
 
 
 @pytest.mark.frontend
@@ -8957,15 +9018,15 @@ def test_avatar_floating_light_resistance_reveals_real_cursor_for_two_seconds(
                 director.lastPointerPoint = { x: 0, y: 100, t: 900, speed: 0 };
                 const samples = [
                     { t: 1000, x: 100 },
-                    { t: 1100, x: 200 },
+                    { t: 1100, x: 220 },
                     { t: 1200, x: 100 },
-                    { t: 1300, x: 200 },
+                    { t: 1300, x: 220 },
                     { t: 1400, x: 100 },
-                    { t: 1500, x: 200 },
+                    { t: 1500, x: 220 },
                     { t: 1600, x: 100 },
-                    { t: 1700, x: 200 },
+                    { t: 1700, x: 220 },
                     { t: 1800, x: 100 },
-                    { t: 1900, x: 200 },
+                    { t: 1900, x: 220 },
                 ];
                 samples.forEach((sample, index) => {
                     const previousX = index > 0 ? samples[index - 1].x : 0;
@@ -9092,7 +9153,7 @@ def test_avatar_floating_second_light_resistance_refreshes_cursor_while_first_li
                 const playQualifyingGroup = () => {
                     const startAt = window.__now;
                     director.lastPointerPoint = { x: 0, y: 100, t: startAt, speed: 0 };
-                    const samples = [100, 200, 100, 200, 100, 200, 100, 200, 100, 200];
+                    const samples = [100, 220, 100, 220, 100, 220, 100, 220, 100, 220];
                     samples.forEach((x, index) => {
                         window.__now = startAt + ((index + 1) * 100);
                         director.handleInterrupt({
@@ -9571,7 +9632,7 @@ def test_avatar_floating_third_light_resistance_enters_angry_exit(
 
                 let t = 1000;
                 const playQualifyingGroup = () => {
-                    const samples = [100, 200, 100, 200, 100, 200, 100, 200, 100, 200];
+                    const samples = [100, 220, 100, 220, 100, 220, 100, 220, 100, 220];
                     director.lastPointerPoint = { x: 0, y: 100, t, speed: 0 };
                     samples.forEach((sampleX, index) => {
                         t += 100;
