@@ -6789,6 +6789,116 @@ def test_pc_overlay_suppresses_dom_cursor_on_first_show(mock_page: Page):
 
 
 @pytest.mark.frontend
+def test_tutorial_skip_and_angry_exit_do_not_start_new_user_icebreaker(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.__icebreakerFetchCount = 0;",
+        fetch_js="""
+            window.__icebreakerFetchCount += 1;
+            return jsonResponse({}, 200);
+        """,
+        script_names=("tutorial/icebreaker/new-user-icebreaker.js",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            window.dispatchEvent(new CustomEvent('neko:avatar-floating-guide-skip', {
+                detail: {
+                    day: 1,
+                    endState: {
+                        day: 1,
+                        ended: true,
+                        outcome: 'skip',
+                        rawReason: 'angry_exit',
+                        isAngryExit: true,
+                    },
+                },
+            }));
+            window.dispatchEvent(new CustomEvent('neko:tutorial-skipped', {
+                detail: {
+                    page: 'home',
+                    day: 1,
+                    reason: 'skip',
+                },
+            }));
+            window.dispatchEvent(new CustomEvent('neko:tutorial-completed', {
+                detail: {
+                    page: 'home',
+                    day: 1,
+                    endState: {
+                        day: 1,
+                        ended: true,
+                        outcome: 'skip',
+                        rawReason: 'angry_exit',
+                        isAngryExit: true,
+                    },
+                },
+            }));
+            await new Promise((resolve) => setTimeout(resolve, 700));
+            return {
+                fetchCount: window.__icebreakerFetchCount,
+                activeSession: window.newUserIcebreaker.getActiveSession(),
+            };
+        }
+        """
+    )
+
+    assert result == {"fetchCount": 0, "activeSession": None}
+
+
+@pytest.mark.frontend
+def test_yui_overlay_lifecycle_epoch_blocks_late_dom_recreation(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.isInTutorial = true;",
+        script_names=("tutorial/yui-guide/overlay.js",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const staleOverlay = new window.YuiGuideOverlay(document);
+            staleOverlay.showBubble('active tutorial');
+            const initiallyCreated = !!document.getElementById('yui-guide-overlay');
+
+            staleOverlay.destroy();
+            staleOverlay.showBubble('late callback');
+            const recreatedByStaleInstance = !!document.getElementById('yui-guide-overlay');
+
+            const nextOverlay = new window.YuiGuideOverlay(document);
+            nextOverlay.showBubble('next tutorial');
+            const recreatedByNextInstance = !!document.getElementById('yui-guide-overlay');
+            const nextRoot = document.getElementById('yui-guide-overlay');
+            const nextEpoch = window.__NEKO_YUI_GUIDE_OVERLAY_LIFECYCLE_EPOCH__;
+            staleOverlay.destroy();
+            staleOverlay.showBubble('older callback after next tutorial');
+            const nextRootPreserved = document.getElementById('yui-guide-overlay') === nextRoot;
+            const nextContentPreserved = document.querySelector('.yui-guide-bubble-body')?.textContent === 'next tutorial';
+            const nextEpochPreserved = window.__NEKO_YUI_GUIDE_OVERLAY_LIFECYCLE_EPOCH__ === nextEpoch;
+            return {
+                initiallyCreated,
+                recreatedByStaleInstance,
+                recreatedByNextInstance,
+                nextRootPreserved,
+                nextContentPreserved,
+                nextEpochPreserved,
+            };
+        }
+        """
+    )
+
+    assert result == {
+        "initiallyCreated": True,
+        "recreatedByStaleInstance": False,
+        "recreatedByNextInstance": True,
+        "nextRootPreserved": True,
+        "nextContentPreserved": True,
+        "nextEpochPreserved": True,
+    }
+
+
+@pytest.mark.frontend
 def test_pc_overlay_move_with_existing_position_never_reveals_dom_cursor(
     mock_page: Page,
 ):
