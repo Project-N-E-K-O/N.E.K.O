@@ -132,6 +132,28 @@ def test_card_face_lookup_rejects_path_traversal(tmp_path, monkeypatch):
     assert server._find_card_face_path("../secret") is None
 
 
+def test_forge_active_character_endpoint_fails_closed_without_runtime_binding(monkeypatch):
+    server = importlib.import_module("local_server.card_forge_server.server")
+
+    monkeypatch.setattr(
+        server,
+        "_read_active_character_config_snapshot",
+        lambda: {"name": "Lanlan", "master_name": "Master"},
+    )
+    monkeypatch.setattr(
+        server,
+        "_read_main_server_active_character_snapshot",
+        lambda include_avatar=False: {},
+    )
+
+    with TestClient(server.app) as test_client:
+        response = test_client.get("/forge/active-character")
+
+    assert response.status_code == 200
+    assert response.json()["name"] == ""
+    assert response.json()["master_name"] == ""
+
+
 @pytest.mark.asyncio
 async def test_shared_facts_selector_filters_private_and_redacted_memory(
     tmp_path, monkeypatch

@@ -28,3 +28,19 @@ def test_social_open_request_is_deduped_before_fetching_config():
     assert "fetch('/api/card-drop/sync-ticket', { cache: 'no-store' })" in listener
     assert "native_sync: String(ticketJson.sync_ticket)" in listener
     assert "targetUrl.searchParams.set('cid', cidJson.client_id)" in listener
+
+
+@pytest.mark.unit
+def test_social_browser_fallback_preopens_popup_before_async_fetches():
+    source = APP_UI_PATH.read_text(encoding="utf-8")
+
+    listener_start = source.index("window.addEventListener('live2d-social-click', async () => {")
+    listener_end = source.index("// 睡觉按钮（请她离开）", listener_start)
+    listener = source[listener_start:listener_end]
+
+    assert "popupRef = window.open('about:blank', '_blank', 'noopener,noreferrer');" in listener
+    assert listener.index("popupRef = window.open('about:blank', '_blank', 'noopener,noreferrer');") < listener.index(
+        "const cfgRes = await fetch('/api/system/social/config');"
+    )
+    assert "popupRef.location.replace(url);" in listener
+    assert "closePopup();" in listener

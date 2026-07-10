@@ -6,7 +6,8 @@ Design notes:
 - Each batch contains at most 50 facts to match the server contract.
 - A sweep runs every five minutes. Each character stores synced hashes in
   ``memory/<lanlan>/facts_sync_state.json`` to avoid duplicate POSTs.
-- Private facts and low-importance facts are filtered locally before upload.
+- Private facts, redacted facts, and low-importance facts are filtered locally
+  before upload.
 - Network and non-2xx HTTP failures leave hashes pending for the next sweep;
   hashes that fail too often are written to ``facts_sync_pending.jsonl``.
 """
@@ -112,7 +113,7 @@ def _select_unsynced_facts(
     for fact in facts_data:
         if not isinstance(fact, dict):
             continue
-        if fact.get("private") is True:
+        if fact.get("private") is True or fact.get("redacted") is True:
             continue
         importance_raw = float(fact.get("importance") or 0.0)
         if importance_raw < MIN_IMPORTANCE:

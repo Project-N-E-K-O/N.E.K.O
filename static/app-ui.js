@@ -4907,30 +4907,59 @@ if (S.isRecording) {
             if (shouldIgnoreSocialOpenRequest()) {
                 return;
             }
+            const useExternal = !!(window.electronShell && typeof window.electronShell.openExternal === 'function');
+            let popupRef = null;
+            const closePopup = () => {
+                if (!popupRef) {
+                    return;
+                }
+                try {
+                    if (!popupRef.closed) {
+                        popupRef.close();
+                    }
+                } catch (_) { /* ignore */ }
+                popupRef = null;
+            };
             try {
+                if (!useExternal) {
+                    popupRef = window.open('about:blank', '_blank', 'noopener,noreferrer');
+                    if (!popupRef) {
+                        if (typeof window.showStatusToast === 'function') {
+                            window.showStatusToast(
+                                (window.t && window.t('app.socialOpenFailed', { error: 'popup blocked' }))
+                                    || '社交窗口打开失败：请允许弹窗',
+                                4000
+                            );
+                        }
+                        return;
+                    }
+                }
                 const cfgRes = await fetch('/api/system/social/config');
                 if (!cfgRes.ok) {
                     if (typeof window.showStatusToast === 'function') {
                         window.showStatusToast(
-                            window.t ? window.t('app.socialUnavailable') : '社交服务不可用 (config fetch failed)',
+                            (window.t && window.t('app.socialUnavailable')) || '社交服务不可用 (config fetch failed)',
                             3000
                         );
                     }
+                    closePopup();
                     return;
                 }
                 const cfg = await cfgRes.json();
                 if (cfg && cfg.enabled === false) {
                     if (typeof window.showStatusToast === 'function') {
                         window.showStatusToast(
-                            window.t ? window.t('app.socialDisabled') : '社交服务已禁用',
+                            (window.t && window.t('app.socialDisabled')) || '社交服务已禁用',
                             3000
                         );
                     }
+                    closePopup();
                     return;
                 }
                 let url = (cfg && cfg.social_base_url) ? cfg.social_base_url.replace(/\/+$/, '') + '/feed' : null;
                 if (!url) {
                     console.warn('[social] no social_base_url from /api/system/social/config');
+                    closePopup();
                     return;
                 }
                 const targetUrl = new URL(url, window.location.href);
@@ -4962,17 +4991,20 @@ if (S.isRecording) {
                     console.warn('[social] client_id fetch failed (non-fatal):', cidErr);
                 }
                 url = targetUrl.toString();
-                if (window.electronShell && typeof window.electronShell.openExternal === 'function') {
+                if (useExternal) {
                     await window.electronShell.openExternal(url);
                     return;
                 }
-                const opened = window.open(url, '_blank', 'noopener,noreferrer');
-                try { opened && opened.focus && opened.focus(); } catch (_) { /* ignore */ }
+                popupRef.location.replace(url);
+                try { popupRef.focus && popupRef.focus(); } catch (_) { /* ignore */ }
+                popupRef = null;
             } catch (err) {
+                closePopup();
                 console.error('[social] open failed:', err);
                 if (typeof window.showStatusToast === 'function') {
                     window.showStatusToast(
-                        window.t ? window.t('app.socialOpenFailed', { error: err.message }) : `社交窗口打开失败：${err.message}`,
+                        (window.t && window.t('app.socialOpenFailed', { error: err.message }))
+                            || `社交窗口打开失败：${err.message}`,
                         4000
                     );
                 }

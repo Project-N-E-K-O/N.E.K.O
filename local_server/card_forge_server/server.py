@@ -20,6 +20,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import quote
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 import uvicorn
 from fastapi import FastAPI, Query
@@ -173,22 +174,42 @@ def _read_card_face_data_url(name: str) -> str:
     return data_url
 
 
-def _read_main_server_character_reference_data_url() -> str:
-    """Return the full-body character reference cached by the main NEKO server."""
-    url = os.environ.get(
+def _read_main_server_active_character_snapshot(include_avatar: bool = False) -> dict[str, str]:
+    """Read the runtime-synced active character snapshot from the main NEKO server."""
+    base_url = os.environ.get(
         "NEKO_MAIN_ACTIVE_CHARACTER_URL",
-        "http://127.0.0.1:48911/card-forge/active-character?include_avatar=true",
+        "http://127.0.0.1:48911/card-forge/active-character",
     )
+    parsed = urlsplit(base_url)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    if include_avatar:
+        query["include_avatar"] = "true"
+    url = urlunsplit(parsed._replace(query=urlencode(query)))
     try:
         with urllib.request.urlopen(url, timeout=0.8) as response:
             if response.status >= 400:
-                return ""
+                return {}
             payload = json.loads(response.read().decode("utf-8"))
     except (OSError, urllib.error.URLError, json.JSONDecodeError):
-        return ""
+        return {}
     if not isinstance(payload, dict):
-        return ""
-    data_url = payload.get("characterReferenceDataUrl") or payload.get("character_reference_data_url")
+        return {}
+    return {
+        "name": str(payload.get("name") or ""),
+        "dataUrl": str(payload.get("dataUrl") or ""),
+        "characterReferenceDataUrl": str(
+            payload.get("characterReferenceDataUrl")
+            or payload.get("character_reference_data_url")
+            or ""
+        ),
+    }
+
+
+def _read_main_server_character_reference_data_url() -> str:
+    """Return the full-body character reference cached by the main NEKO server."""
+    data_url = _read_main_server_active_character_snapshot(include_avatar=True).get(
+        "characterReferenceDataUrl", ""
+    )
     return data_url if _is_avatar_data_url(data_url) else ""
 
 
@@ -378,18 +399,11 @@ async def arena_active_character(include_avatar: bool = False):
     不写回本地 —— 这里仅暴露 NEKO 既有的主人设定与本地角色卡脸图。
     """
     config_snapshot = _read_active_character_config_snapshot()
-    name = config_snapshot.get("name", "")
-    master = config_snapshot.get("master_name", "")
-    if not name:
-        try:
-            context = await asyncio.wait_for(
-                _resolve_active_facts_context(None, None),
-                timeout=0.5,
-            )
-            name = context.lanlan_name if context else ""
-            master = context.master_name if context else ""
-        except Exception as exc:
-            logger.warning("active-character: resolve failed: %s", type(exc).__name__)
+    runtime_snapshot = await asyncio.to_thread(
+        _read_main_server_active_character_snapshot, include_avatar,
+    )
+    name = str(runtime_snapshot.get("name") or "").strip()
+    master = str(config_snapshot.get("master_name") or "").strip() if name else ""
     avatar_data_url = ""
     character_reference_data_url = ""
     avatar_url = _card_face_avatar_url(name) if name else ""
@@ -397,7 +411,10 @@ async def arena_active_character(include_avatar: bool = False):
         card_face_data_url = _read_card_face_data_url(name)
         if _is_avatar_data_url(card_face_data_url):
             avatar_data_url = card_face_data_url
-        character_reference_data_url = _read_main_server_character_reference_data_url()
+        main_server_reference = runtime_snapshot.get("characterReferenceDataUrl") or ""
+        character_reference_data_url = (
+            main_server_reference if _is_avatar_data_url(main_server_reference) else ""
+        )
     return {
         "name": name or "",
         "master_name": master or "",
