@@ -6295,7 +6295,8 @@
         isAvatarFloatingInputIntroScene(scene) {
             const sceneId = scene && typeof scene.id === 'string' ? scene.id : '';
             return !!(
-                sceneId === 'day2_tool_toggle_intro'
+                sceneId === 'day1_intro_activation'
+                || sceneId === 'day2_tool_toggle_intro'
                 || sceneId === 'day3_intro_context'
                 || sceneId === 'day4_intro_companion'
                 || sceneId === 'day5_character_settings'

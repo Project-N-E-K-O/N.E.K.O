@@ -15,10 +15,13 @@
         'interrupt_resist_light_1',
         'interrupt_resist_light_3'
     ]);
-    const DEFAULT_INTERRUPT_DISTANCE = 200;
     const DEFAULT_CURSOR_RESISTANCE_DISTANCE = 30;
-    const DEFAULT_INTERRUPT_ACCELERATION_THRESHOLD = 2;
-    const DEFAULT_INTERRUPT_QUALIFYING_MOVE_STREAK = 3;
+    const DEFAULT_INTERRUPT_SHAKE_WINDOW_MS = 1100;
+    const DEFAULT_INTERRUPT_SHAKE_MIN_DISTANCE = 50;
+    const DEFAULT_INTERRUPT_SHAKE_MIN_SPAN_MS = 600;
+    const DEFAULT_INTERRUPT_SHAKE_MIN_SUSTAINED_SPEED = 1100;
+    const DEFAULT_INTERRUPT_SHAKE_REQUIRED_REVERSALS = 8;
+    const DEFAULT_INTERRUPT_SHAKE_REVERSE_DOT_THRESHOLD = 0;
     const DEFAULT_RESISTANCE_LINES = Object.freeze([
         '喂！不要拽我啦，现在还没轮到你的回合呢！',
         '等一下啦！还没结束呢，不要这么随便打断我啦！'
@@ -37,6 +40,50 @@
 
     function getCount(value) {
         return Math.max(0, Math.floor(Number.isFinite(value) ? value : 0));
+    }
+
+    function createInterruptShakeMotion() {
+        return {
+            lastX: null,
+            lastY: null,
+            lastAt: 0,
+            lastVector: null,
+            reversals: []
+        };
+    }
+
+    function isInterruptShakeReversal(previousVector, currentVector) {
+        if (!previousVector || !currentVector) {
+            return false;
+        }
+
+        const denominator = previousVector.distance * currentVector.distance;
+        if (!Number.isFinite(denominator) || denominator <= 0) {
+            return false;
+        }
+
+        const dot = (
+            previousVector.dx * currentVector.dx
+            + previousVector.dy * currentVector.dy
+        ) / denominator;
+        return Number.isFinite(dot) && dot <= DEFAULT_INTERRUPT_SHAKE_REVERSE_DOT_THRESHOLD;
+    }
+
+    function isInterruptShakeReady(reversals) {
+        if (!Array.isArray(reversals) || reversals.length < DEFAULT_INTERRUPT_SHAKE_REQUIRED_REVERSALS) {
+            return false;
+        }
+
+        const first = reversals[0];
+        const last = reversals[reversals.length - 1];
+        const spanMs = Number(last.at) - Number(first.at);
+        if (!Number.isFinite(spanMs) || spanMs < DEFAULT_INTERRUPT_SHAKE_MIN_SPAN_MS) {
+            return false;
+        }
+
+        const totalDistance = reversals.reduce((sum, item) => sum + Number(item.distance || 0), 0);
+        const sustainedSpeed = totalDistance / Math.max(0.001, spanMs / 1000);
+        return sustainedSpeed >= DEFAULT_INTERRUPT_SHAKE_MIN_SUSTAINED_SPEED;
     }
 
     class ResetInterruptController {
@@ -290,6 +337,7 @@
             this.destroyed = false;
             this.lightResistanceActive = false;
             this.resistanceVoiceKeys = DEFAULT_RESISTANCE_VOICE_KEYS.slice();
+            this.interruptShakeMotion = createInterruptShakeMotion();
         }
 
         getInterruptCount() {
@@ -328,6 +376,63 @@
             };
         }
 
+        resetInterruptShakeMotion() {
+            this.interruptShakeMotion = createInterruptShakeMotion();
+            this.director.interruptQualifyingMoveStreak = 0;
+        }
+
+        getInterruptShakePoint(event, now) {
+            const screenX = Number.isFinite(event.screenX) ? event.screenX : null;
+            const screenY = Number.isFinite(event.screenY) ? event.screenY : null;
+            const hasScreenPoint = screenX !== null && screenY !== null;
+            return {
+                x: hasScreenPoint ? screenX : event.clientX,
+                y: hasScreenPoint ? screenY : event.clientY,
+                at: now
+            };
+        }
+
+        trackInterruptShakeMotion(point) {
+            const motion = this.interruptShakeMotion;
+            if (
+                !Number.isFinite(motion.lastX)
+                || !Number.isFinite(motion.lastY)
+            ) {
+                motion.lastX = point.x;
+                motion.lastY = point.y;
+                motion.lastAt = point.at;
+                return null;
+            }
+
+            const vector = {
+                dx: point.x - motion.lastX,
+                dy: point.y - motion.lastY
+            };
+            vector.distance = Math.hypot(vector.dx, vector.dy);
+            if (!Number.isFinite(vector.distance) || vector.distance < DEFAULT_INTERRUPT_SHAKE_MIN_DISTANCE) {
+                return null;
+            }
+
+            const elapsedMs = point.at - motion.lastAt;
+            let shakeReady = false;
+            if (elapsedMs > 0 && isInterruptShakeReversal(motion.lastVector, vector)) {
+                const cutoff = point.at - DEFAULT_INTERRUPT_SHAKE_WINDOW_MS;
+                motion.reversals = motion.reversals.filter((item) => item.at >= cutoff);
+                motion.reversals.push({
+                    at: point.at,
+                    distance: vector.distance
+                });
+                this.director.interruptQualifyingMoveStreak = motion.reversals.length;
+                shakeReady = isInterruptShakeReady(motion.reversals);
+            }
+
+            motion.lastX = point.x;
+            motion.lastY = point.y;
+            motion.lastAt = point.at;
+            motion.lastVector = vector;
+            return shakeReady ? vector : null;
+        }
+
         recordPointerDown(event) {
             const director = this.director;
             if (!event || event.isTrusted === false) {
@@ -347,7 +452,7 @@
                 t: now,
                 speed: 0
             };
-            director.interruptQualifyingMoveStreak = 0;
+            this.resetInterruptShakeMotion();
         }
 
         handleInterrupt(event) {
@@ -417,6 +522,7 @@
             }
 
             const now = Date.now();
+            const shakePoint = this.getInterruptShakePoint(event, now);
             const previousPoint = director.lastPointerPoint;
             if (!previousPoint || !Number.isFinite(previousPoint.t)) {
                 director.lastPointerPoint = {
@@ -434,7 +540,8 @@
                         director.playCursorResistanceToUserMotion(x, y, initialDistance, initialDx, initialDy);
                     }
                 }
-                director.interruptQualifyingMoveStreak = 0;
+                this.resetInterruptShakeMotion();
+                this.trackInterruptShakeMotion(shakePoint);
                 return;
             }
 
@@ -443,8 +550,6 @@
             const distance = Math.hypot(dx, dy);
             const dt = Math.max(1, now - previousPoint.t);
             const speed = distance / dt;
-            const previousSpeed = Number.isFinite(previousPoint.speed) ? previousPoint.speed : 0;
-            const acceleration = (speed - previousSpeed) / dt;
 
             director.lastPointerPoint = {
                 x: x,
@@ -458,24 +563,11 @@
                 director.playCursorResistanceToUserMotion(x, y, distance, dx, dy);
             }
 
-            const exceedsDistanceThreshold = distance >= DEFAULT_INTERRUPT_DISTANCE;
-            const exceedsAccelerationThreshold = (
-                distance >= DEFAULT_INTERRUPT_DISTANCE
-                && acceleration >= DEFAULT_INTERRUPT_ACCELERATION_THRESHOLD
-            );
-            if (
-                !exceedsDistanceThreshold
-                && !exceedsAccelerationThreshold
-            ) {
-                director.interruptQualifyingMoveStreak = 0;
+            const interruptMotion = this.trackInterruptShakeMotion(shakePoint);
+            if (!interruptMotion) {
                 return;
             }
-
-            director.interruptQualifyingMoveStreak += 1;
-            if (director.interruptQualifyingMoveStreak < DEFAULT_INTERRUPT_QUALIFYING_MOVE_STREAK) {
-                return;
-            }
-            director.interruptQualifyingMoveStreak = 0;
+            this.resetInterruptShakeMotion();
 
             const throttleMs = Number.isFinite(interrupts.throttleMs) ? interrupts.throttleMs : 500;
             if (now - director.lastInterruptAt < throttleMs) {
@@ -500,8 +592,8 @@
             }
             director.lastPointerPoint = null;
             director.playLightResistance(x, y, {
-                motionDx: dx,
-                motionDy: dy,
+                motionDx: interruptMotion.dx,
+                motionDy: interruptMotion.dy,
                 forceSystemCursorReveal: true,
                 suppressCursorReveal: true,
                 cursorRevealAlreadyRequested: cursorRevealAlreadyRequested
@@ -703,6 +795,7 @@
         destroy() {
             this.destroyed = true;
             this.lightResistanceActive = false;
+            this.resetInterruptShakeMotion();
         }
 
         syncSystemCursorHidden(hidden, reason) {
