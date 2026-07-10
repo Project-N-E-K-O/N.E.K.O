@@ -12,6 +12,9 @@ _SPENT_OUTPUT_FAMILY_TOKENS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "choice_vote",
         (
+            "either_or",
+            "a/b",
+            "choice",
             "\u4e8c\u9009\u4e00",
             "\u4e8c\u62e9\u4e00",
             "\u9009\u4e00\u4e2a",
@@ -88,7 +91,6 @@ _SPENT_OUTPUT_FAMILY_TOKENS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "short_callback",
         ("one word", "password", "一个字", "一个词", "三字", "暗号", "打分"),
     ),
-    ("choice_vote", ("either_or", "a/b", "choice", "二选一", "选一个", "还是")),
     ("room_mood", ("room mood", "气氛", "温度", "猫窝", "小电台", "晴天", "小雨")),
     (
         "object_scene",

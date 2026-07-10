@@ -123,6 +123,8 @@ def recent_live_danmaku_event_age_sec(recent_results: Any, iso_age_fn: IsoAgeFn 
     for result in reversed(list(recent_results or [])):
         if not isinstance(result, dict):
             continue
+        if str(result.get("status") or "") != "pushed":
+            continue
         event = result.get("event") if isinstance(result.get("event"), dict) else {}
         if str(event.get("source") or "") != "live_danmaku":
             continue

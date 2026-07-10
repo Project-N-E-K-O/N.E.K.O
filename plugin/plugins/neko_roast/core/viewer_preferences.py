@@ -159,7 +159,6 @@ def viewer_profile_projection(profile: Any) -> dict[str, Any]:
     joke_counts = safe_preference_counts(_get(profile, "running_jokes"))
     danmaku_count = safe_int(_get(profile, "danmaku_count"))
     roast_count = safe_int(_get(profile, "roast_count"))
-    style = safe_text(_get(profile, "interaction_style"), max_len=48)
     stored_response = safe_text(_get(profile, "response_preference"), max_len=180)
     latest_summary = safe_text(_get(profile, "last_interaction_summary"), max_len=160)
     stored_impression = safe_text(_get(profile, "impression_summary"), max_len=180)
@@ -202,8 +201,6 @@ def viewer_profile_projection(profile: Any) -> dict[str, Any]:
 
 def viewer_preference_prompt_block(profile: Any) -> str:
     counts = safe_preference_counts(getattr(profile, "preference_tags", None))
-    favorite_counts = safe_preference_counts(getattr(profile, "favorite_topics", None))
-    joke_counts = safe_preference_counts(getattr(profile, "running_jokes", None))
     style = safe_text(getattr(profile, "interaction_style", ""), max_len=48)
     response = safe_text(getattr(profile, "response_preference", ""), max_len=180)
     summary = safe_text(getattr(profile, "last_interaction_summary", ""), max_len=160)

@@ -2,7 +2,19 @@ from types import SimpleNamespace
 
 from plugin.plugins.neko_roast.core.live_status_active import active_engagement_status
 from plugin.plugins.neko_roast.core.live_status_director import live_director_status
-from plugin.plugins.neko_roast.core.live_status_timing import recent_hosting_output_age_sec
+from plugin.plugins.neko_roast.core.live_status_timing import (
+    recent_hosting_output_age_sec,
+    recent_live_danmaku_event_age_sec,
+)
+from plugin.plugins.neko_roast.core.recent_output_families import spent_output_families
+from plugin.plugins.neko_roast.core.runtime_recent_context_api import (
+    RuntimeRecentContextApiMixin,
+)
+
+
+class _RecentContextRuntime(RuntimeRecentContextApiMixin):
+    def __init__(self, recent_results):
+        self.recent_results = recent_results
 
 
 def test_recent_hosting_output_age_ignores_dry_run_results():
@@ -15,6 +27,36 @@ def test_recent_hosting_output_age_ignores_dry_run_results():
     ]
 
     assert recent_hosting_output_age_sec(results, lambda value: 1.0) is None
+
+
+def test_recent_danmaku_event_age_ignores_dry_run_results():
+    results = [
+        {
+            "status": "dry_run",
+            "event": {"source": "live_danmaku"},
+            "created_at": "2026-07-10T18:00:00Z",
+        }
+    ]
+
+    assert recent_live_danmaku_event_age_sec(results, lambda value: 1.0) is None
+
+
+def test_dry_run_danmaku_does_not_reset_actual_route_streak():
+    runtime = _RecentContextRuntime(
+        [
+            {"status": "pushed", "response_module": "idle_hosting"},
+            {"status": "pushed", "response_module": "idle_hosting"},
+            {"status": "dry_run", "event": {"source": "live_danmaku"}},
+        ]
+    )
+
+    assert runtime._recent_actual_route_streak_since_viewer_activity("idle_hosting") == 2
+
+
+def test_spent_output_families_returns_choice_vote_once():
+    families = spent_output_families("choice either_or \u4e8c\u9009\u4e00")
+
+    assert families.count("choice_vote") == 1
 
 
 def test_idle_takeover_streak_reaches_director_active_engagement_branch():

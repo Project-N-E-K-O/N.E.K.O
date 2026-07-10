@@ -12,7 +12,6 @@ from . import (
 )
 
 
-_activity_level = live_status_timing.activity_level
 active_engagement_min_interval_seconds = (
     live_status_timing.active_engagement_min_interval_seconds
 )
