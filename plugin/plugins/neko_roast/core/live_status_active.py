@@ -63,6 +63,15 @@ def active_engagement_status(
         reason = str(live_status.get("reason") or "live_status_not_ready")
     elif float(live_status.get("cooldown_remaining") or 0.0) > 0.0:
         reason = "cooldown"
+    elif idle_takeover_candidate:
+        reason = "idle_hosting_streak"
+        if cooldown_remaining > 0.0:
+            eligible = False
+        elif recent_danmaku_cooldown > 0.0:
+            cooldown_remaining = recent_danmaku_cooldown
+            eligible = False
+        else:
+            eligible = True
     elif cooldown_remaining > 0.0:
         reason = "minimum_interval"
         eligible = False
@@ -74,9 +83,6 @@ def active_engagement_status(
         reason = "recent_host_output"
         cooldown_remaining = host_output_cooldown
         eligible = False
-    elif idle_takeover_candidate:
-        reason = "idle_hosting_streak"
-        eligible = True
     elif (
         idle_hosting_wait_remaining is not None
         and idle_hosting_wait_remaining <= float(idle_grace_seconds)
