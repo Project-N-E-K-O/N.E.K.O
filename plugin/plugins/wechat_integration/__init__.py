@@ -129,6 +129,31 @@ class WechatIntegrationPlugin(NekoPluginBase):
                 pass
             self._message_task = None
         self._running = False
+
+        # Every turn has already gone through /cache.  Flush the cached turns
+        # before the plugin disappears so an otherwise-active conversation is
+        # summarized/reviewed too.  Do not send ``history`` to /process here:
+        # that endpoint persists its input again and would duplicate the turns
+        # that /cache has already written.
+        active_sessions = list(self._wechat_sessions.values())
+        self._wechat_sessions.clear()
+        if active_sessions:
+            results = await asyncio.gather(
+                *(
+                    self._settle_memory_session(
+                        str(session.get("her_name") or ""), reason="plugin_shutdown"
+                    )
+                    for session in active_sessions
+                    if session.get("memory_enabled") and session.get("history")
+                ),
+                return_exceptions=True,
+            )
+            failures = sum(result is not True for result in results)
+            if failures:
+                self.logger.warning(
+                    "[wechat_integration] failed to settle %d active memory session(s) on shutdown",
+                    failures,
+                )
         if self.wechat_client:
             await self.wechat_client.close()
             self.wechat_client = None
@@ -588,8 +613,8 @@ class WechatIntegrationPlugin(NekoPluginBase):
             session = self._wechat_sessions.get(uid)
             if session and session.get("memory_enabled") and session.get("history"):
                 asyncio.ensure_future(
-                    self._finalize_memory_session(
-                        session["her_name"], list(session["history"]), reason="idle_timeout"
+                    self._settle_memory_session(
+                        session["her_name"], reason="idle_timeout"
                     )
                 )
             del self._wechat_sessions[uid]
@@ -633,24 +658,29 @@ class WechatIntegrationPlugin(NekoPluginBase):
             pass
 
     @staticmethod
-    async def _finalize_memory_session(
-        her_name: str, messages: list[dict[str, Any]], reason: str
-    ) -> None:
-        """正式结算会话记忆到 Memory Server"""
+    async def _settle_memory_session(her_name: str, reason: str) -> bool:
+        """结算已通过 ``/cache`` 持久化的会话，不重复写入对话消息。"""
+        if not her_name:
+            return False
         try:
             import json
             import httpx
             from config import MEMORY_SERVER_PORT
-            payload = {"input_history": json.dumps(messages, ensure_ascii=False)}
+            # /settle with an empty increment performs compression/review for
+            # cached turns.  Passing the in-memory session history to /process
+            # would append the same messages to recent history and SQLite again.
+            payload = {"input_history": json.dumps([], ensure_ascii=False)}
             async with httpx.AsyncClient(timeout=30.0, proxy=None, trust_env=False) as client:
                 response = await client.post(
-                    f"http://127.0.0.1:{MEMORY_SERVER_PORT}/process/{her_name}",
+                    f"http://127.0.0.1:{MEMORY_SERVER_PORT}/settle/{her_name}",
                     json=payload,
                 )
                 if response.is_success:
-                    return
+                    return True
         except Exception:
+            # Keep the failure non-fatal, matching the cache path's behavior.
             pass
+        return False
 
     async def _handle_inbound_message(self, msg: dict[str, Any]) -> None:
         from_user_id = str(msg.get("from_user_id") or "").strip()
