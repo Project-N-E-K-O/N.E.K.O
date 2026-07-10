@@ -6331,7 +6331,7 @@ async def voice_design(request: Request):
                     'provider': provider,
                 }, status_code=400)
             provider_label = 'MiMo'
-            core_config = _config_manager.get_core_config()
+            core_config = await asyncio.to_thread(_config_manager.get_core_config)
             assist_api_type = str(core_config.get('assistApi') or '').strip().lower()
             mimo_base_url = (core_config.get('OPENROUTER_URL') or '').strip() if assist_api_type == 'mimo' else ''
             client = MimoVoiceCloneClient(api_key=api_key, base_url=mimo_base_url or None)
