@@ -118,16 +118,14 @@ window.addEventListener('error', (event) => {
     const msg = event.message || '';
     if (msg.includes('message channel closed') || msg.includes('Extension context invalidated')) return;
     console.error('[model_manager] 全局错误:', event.error || msg);
-    const statusSpan = document.getElementById('status-text');
-    if (statusSpan) statusSpan.textContent = `初始化错误: ${msg}`;
+    setModelManagerStatusText(`初始化错误: ${msg}`);
 });
 window.addEventListener('unhandledrejection', (event) => {
     const reason = event.reason?.message || String(event.reason || '');
     // 忽略浏览器扩展/Electron IPC 的已知无害错误
     if (reason.includes('message channel closed') || reason.includes('Extension context invalidated')) return;
     console.error('[model_manager] 未处理的 Promise 拒绝:', event.reason);
-    const statusSpan = document.getElementById('status-text');
-    if (statusSpan) statusSpan.textContent = `异步错误: ${reason}`;
+    setModelManagerStatusText(`异步错误: ${reason}`);
 });
 
 // ===== 选项条统一管理器 =====
@@ -267,6 +265,7 @@ class DropdownManager {
 
         let text = defaultText;
         let fullText = null;
+        let textKey = this.config.defaultTextKey;
 
         // 如果配置了 alwaysShowDefault，始终显示默认文字
         if (this.config.alwaysShowDefault) {
@@ -277,6 +276,7 @@ class DropdownManager {
                 if (selectedOption) {
                     text = this.config.getText(selectedOption);
                     fullText = text;
+                    textKey = selectedOption.dataset.i18n || null;
                 }
             } else if (this.select.options.length > 0) {
                 // 没有选择，但有选项：显示第一个“可显示”的选项
@@ -286,6 +286,7 @@ class DropdownManager {
                     .find(opt => !this.config.shouldSkipOption(opt));
                 if (firstDisplayOption) {
                     text = this.config.getText(firstDisplayOption);
+                    textKey = firstDisplayOption.dataset.i18n || null;
                 }
             }
         }
@@ -297,6 +298,12 @@ class DropdownManager {
 
         this.textSpan.textContent = displayText;
         this.textSpan.setAttribute('data-text', displayText);
+        if (textKey) {
+            this.textSpan.setAttribute('data-i18n', textKey);
+        } else {
+            // 运行时的模型/动作名称不是翻译键，避免 updatePageTexts 将其覆盖回占位文案。
+            this.textSpan.removeAttribute('data-i18n');
+        }
 
         if (this.button) {
             this.button.title = accessibleLabel;
@@ -318,6 +325,13 @@ class DropdownManager {
             if (hasFullTextLabel) {
                 this.button.removeAttribute('data-i18n-title');
                 this.button.removeAttribute('data-i18n-aria');
+            } else if (this.config.iconAltKey) {
+                // 从具体选项回到默认状态时恢复通用控件文案的 i18n 绑定。
+                this.button.setAttribute('data-i18n-title', this.config.iconAltKey);
+                this.button.setAttribute('data-i18n-aria', this.config.iconAltKey);
+                if (imageIcon) {
+                    imageIcon.setAttribute('data-i18n-alt', this.config.iconAltKey);
+                }
             }
         }
     }
@@ -820,7 +834,11 @@ function modelManagerText(key, fallback, params = {}) {
 
 function setModelManagerStatusText(message) {
     const statusSpan = document.getElementById('status-text');
-    if (statusSpan) statusSpan.textContent = message;
+    if (statusSpan) {
+        statusSpan.removeAttribute('data-i18n');
+        statusSpan.removeAttribute('data-i18n-params');
+        statusSpan.textContent = message;
+    }
 }
 
 const MODEL_MANAGER_SETTINGS_WAITING_EVENT = 'neko-model-manager-settings-waiting-change';
@@ -2003,7 +2021,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             const statusTextSpan = document.getElementById('status-text');
             if (!statusTextSpan && statusDiv) {
                 const currentText = statusDiv.textContent || '正在初始化...';
-                statusDiv.innerHTML = `<img src="/static/icons/reminder_icon.png?v=1" alt="提示" class="reminder-icon" style="height: 16px; width: 16px; vertical-align: middle; margin-right: 6px; display: inline-block; image-rendering: crisp-edges;"><span id="status-text">${currentText}</span>`;
+                statusDiv.innerHTML = `<img src="/static/icons/reminder_icon.png?v=1" alt="${t('common.alert', '提示')}" data-i18n-alt="common.alert" class="reminder-icon" style="height: 16px; width: 16px; vertical-align: middle; margin-right: 6px; display: inline-block; image-rendering: crisp-edges;"><span id="status-text">${currentText}</span>`;
             }
             if (typeof updateBackToMainButtonText === 'function') {
                 updateBackToMainButtonText();
@@ -2036,10 +2054,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 初始化状态文本（带图标）
     const updateStatusText = (text) => {
         if (statusTextSpan) {
+            // 状态栏在初始化后显示运行时消息，不能再被 status.initializing 覆盖。
+            statusTextSpan.removeAttribute('data-i18n');
+            statusTextSpan.removeAttribute('data-i18n-params');
             statusTextSpan.textContent = text;
         } else {
             // 如果 span 不存在，重建结构
-            statusDiv.innerHTML = `<img src="/static/icons/reminder_icon.png?v=1" alt="提示" class="reminder-icon" style="height: 16px; width: 16px; vertical-align: middle; margin-right: 6px; display: inline-block; image-rendering: crisp-edges;"><span id="status-text">${text}</span>`;
+            statusDiv.innerHTML = `<img src="/static/icons/reminder_icon.png?v=1" alt="${t('common.alert', '提示')}" data-i18n-alt="common.alert" class="reminder-icon" style="height: 16px; width: 16px; vertical-align: middle; margin-right: 6px; display: inline-block; image-rendering: crisp-edges;"><span id="status-text">${text}</span>`;
         }
     };
     const modelTypeSelect = document.getElementById('model-type-select');
@@ -2777,12 +2798,30 @@ document.addEventListener('DOMContentLoaded', async () => {
         setButtonAccessibilityLabel(playExpressionBtn, '.expression-play-icon', 'common.play', '播放');
     }
 
+    function setLocalizedElementText(element, key, fallback, params = {}) {
+        if (!element) return '';
+
+        const text = t(key, fallback, params);
+        element.setAttribute('data-i18n', key);
+        if (Object.keys(params).length > 0) {
+            element.setAttribute('data-i18n-params', JSON.stringify(params));
+        } else {
+            element.removeAttribute('data-i18n-params');
+        }
+        element.textContent = text;
+        if (element.hasAttribute('data-text')) {
+            element.setAttribute('data-text', text);
+        }
+        return text;
+    }
+
     function updateMmdOutlineStatusText() {
         const statusEl = document.getElementById('mmd-outline-status');
         if (!statusEl) return;
 
         const isEnabled = !!(mmdOutlineToggle && mmdOutlineToggle.checked);
-        statusEl.textContent = isEnabled ? t('common.on', 'ON') : t('common.off', 'OFF');
+        const key = isEnabled ? 'common.on' : 'common.off';
+        setLocalizedElementText(statusEl, key, isEnabled ? 'ON' : 'OFF');
     }
 
     function updatePNGTuberTalkPreviewButtonText() {
@@ -2842,18 +2881,26 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (!textSpan || !backImg || !pawImg) {
             backToMainBtn.innerHTML = '<img src="/static/icons/back_to_main_button.png?v=1" alt="返回" class="back-icon" draggable="false" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;"><span class="round-stroke-text" id="back-text" data-text="返回主页">返回主页</span><img src="/static/icons/paw_ui.png?v=1" alt="猫爪" class="paw-icon" draggable="false" style="height: 70px; width: auto; max-width: 60px; image-rendering: crisp-edges; margin-left: auto; flex-shrink: 0; object-fit: contain; display: inline-block;">';
             textSpan = document.getElementById('back-text');
+            backImg = backToMainBtn.querySelector('.back-icon');
+            pawImg = backToMainBtn.querySelector('.paw-icon');
         }
 
         const isPopupWindow = isModelManagerPopupWindow();
+        const translationKey = isPopupWindow ? 'common.close' : 'live2d.backToMain';
+        const fallback = isPopupWindow ? '关闭' : '返回主页';
+        const text = t(translationKey, fallback);
         if (textSpan) {
-            let text;
-            if (isPopupWindow) {
-                text = t('common.close', '✖ 关闭');
-            } else {
-                text = t('live2d.backToMain', '返回主页');
-            }
+            textSpan.setAttribute('data-i18n', translationKey);
             textSpan.textContent = text;
             textSpan.setAttribute('data-text', text);
+        }
+        backToMainBtn.setAttribute('data-i18n-title', translationKey);
+        backToMainBtn.setAttribute('data-i18n-aria', translationKey);
+        backToMainBtn.title = text;
+        backToMainBtn.setAttribute('aria-label', text);
+        if (backImg) {
+            backImg.setAttribute('data-i18n-alt', translationKey);
+            backImg.alt = text;
         }
     }
 
@@ -2875,6 +2922,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (!textSpan || !importImg) {
             uploadBtn.innerHTML = '<img src="/static/icons/import_model_button_icon.png?v=1" alt="导入模型" class="import-icon" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;"><span class="round-stroke-text" id="upload-text" data-text="导入模型">导入模型</span>';
             textSpan = document.getElementById('upload-text');
+            importImg = uploadBtn.querySelector('.import-icon');
         }
 
         // 根据模型类型更新文字 - 统一显示"导入模型"
@@ -2894,8 +2942,17 @@ document.addEventListener('DOMContentLoaded', async () => {
                     console.warn('翻译失败，使用默认值:', e);
                 }
             }
+            textSpan.setAttribute('data-i18n', 'live2d.importModel');
             textSpan.textContent = text;
             textSpan.setAttribute('data-text', text);
+            uploadBtn.setAttribute('data-i18n-title', 'live2d.importModel');
+            uploadBtn.setAttribute('data-i18n-aria', 'live2d.importModel');
+            uploadBtn.title = text;
+            uploadBtn.setAttribute('aria-label', text);
+            if (importImg) {
+                importImg.setAttribute('data-i18n-alt', 'live2d.importModel');
+                importImg.alt = text;
+            }
         }
     }
 
@@ -3190,7 +3247,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     showStatus(t('live2d.modelListLoaded', '模型列表加载成功'));
                 }
             } else {
-                modelSelect.innerHTML = `<option value="">${t('live2d.noModelsFound', '未找到可用模型')}</option>`;
+                modelSelect.innerHTML = `<option value="" data-i18n="live2d.noModelsFound">${t('live2d.noModelsFound', '未找到可用模型')}</option>`;
                 updateLive2DModelDropdown();
                 updateLive2DModelSelectButtonText();
                 if (showLoadedStatus) {
@@ -3232,7 +3289,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         // 被误置而导致 live2d-init 静默跳过 Live2D/VRM 初始化。
         currentLive3dSubType = '';
         currentModelInfo = {
-            name: modelInfo.label || modelName || t('live2d.pngtuber', 'PNGTuber'),
+            name: modelInfo.label || modelName || 'PNGTuber',
             folder: modelInfo.folder || pngtuberConfig.folder || pngtuberConfig.model_folder || modelName,
             path: modelInfo.path || pngtuberConfig.idle_image || '',
             url: modelInfo.url || pngtuberConfig.idle_image || '',
@@ -3259,7 +3316,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             pngtuberContainer.classList.remove('hidden');
             pngtuberContainer.style.display = 'block';
         }
-        showStatus(`已加载PNGTuber模型: ${currentModelInfo.name}`, 2000);
+        showStatus(t('live2d.modelLoadSuccess', '模型 {{model}} 加载成功', { model: currentModelInfo.name }), 2000);
 
         if (options.markDirty) {
             window.hasUnsavedChanges = true;
@@ -4749,13 +4806,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                 updateVRMModelSelectButtonText();
                 showStatus(t('live2d.vrmModelListLoaded', 'VRM 模型列表加载成功'), 2000);
             } else {
-                vrmModelSelect.innerHTML = `<option value="">${t('live2d.noVRMModelsFound', '未找到可用 VRM 模型')}</option>`;
+                vrmModelSelect.innerHTML = `<option value="" data-i18n="live2d.noVRMModelsFound">${t('live2d.noVRMModelsFound', '未找到可用 VRM 模型')}</option>`;
                 updateVRMModelDropdown();
                 updateVRMModelSelectButtonText();
             }
         } catch (error) {
             console.error('加载 VRM 模型列表失败:', error);
-            vrmModelSelect.innerHTML = `<option value="">${t('live2d.loadFailed', '加载失败')}</option>`;
+            vrmModelSelect.innerHTML = `<option value="" data-i18n="live2d.loadFailed">${t('live2d.loadFailed', '加载失败')}</option>`;
             updateVRMModelDropdown();
             updateVRMModelSelectButtonText();
             showStatus(t('live2d.loadError', `错误: ${error.message}`, { error: error.message }), 5000);
@@ -4843,14 +4900,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                 modelSelect.disabled = false;
                 if (live2dModelSelectBtn) live2dModelSelectBtn.disabled = false;
             } else {
-                modelSelect.innerHTML = '<option value="">未找到PNGTuber模型</option>';
+                modelSelect.innerHTML = `<option value="" data-i18n="live2d.noModelsFound">${t('live2d.noModelsFound', '未找到PNGTuber模型')}</option>`;
             }
             updateLive2DModelDropdown();
             updateLive2DModelSelectButtonText();
         } catch (error) {
             console.error('加载 PNGTuber 模型列表失败:', error);
             if (modelSelect) {
-                modelSelect.innerHTML = `<option value="">${t('live2d.loadFailed', '加载失败')}</option>`;
+                modelSelect.innerHTML = `<option value="" data-i18n="live2d.loadFailed">${t('live2d.loadFailed', '加载失败')}</option>`;
             }
             updateLive2DModelDropdown();
             updateLive2DModelSelectButtonText();
@@ -4872,7 +4929,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             updatePNGTuberTalkPreviewButtonText();
         }
         if (pngtuberStatePreviewSelect) {
-            pngtuberStatePreviewSelect.innerHTML = `<option value="">${t('live2d.pngtuberStatePreview', '状态预览')}</option>`;
+            pngtuberStatePreviewSelect.innerHTML = `<option value="" data-i18n="live2d.pngtuberStatePreview">${t('live2d.pngtuberStatePreview', '状态预览')}</option>`;
             pngtuberStatePreviewSelect.value = '';
         }
         if (pngtuberStatePreviewManager) {
@@ -4888,14 +4945,17 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     function updatePNGTuberStatePreviewButtonText() {
+        if (pngtuberStatePreviewManager) {
+            pngtuberStatePreviewManager.updateButtonText();
+            return;
+        }
         if (!pngtuberStatePreviewSelectBtn) return;
         let textSpan = document.getElementById('pngtuber-state-preview-select-text');
         if (!textSpan) {
             textSpan = pngtuberStatePreviewSelectBtn.querySelector('span');
         }
         if (!textSpan) return;
-        textSpan.textContent = '状态预览';
-        textSpan.setAttribute('data-text', '状态预览');
+        setLocalizedElementText(textSpan, 'live2d.pngtuberStatePreview', '状态预览');
     }
 
     async function fetchPNGTuberLayeredMetadata(pngtuberConfig) {
@@ -4933,7 +4993,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     function renderPNGTuberStatePreviewDropdown(metadata) {
         if (!pngtuberStatePreviewSelect || !pngtuberStatePreviewSection) return;
-        pngtuberStatePreviewSelect.innerHTML = `<option value="">${t('live2d.pngtuberStatePreview', '状态预览')}</option>`;
+        pngtuberStatePreviewSelect.innerHTML = `<option value="" data-i18n="live2d.pngtuberStatePreview">${t('live2d.pngtuberStatePreview', '状态预览')}</option>`;
         pngtuberStatePreviewSelect.value = '';
         const labels = getPNGTuberStateLabels(metadata);
         if (labels.length === 0) {
@@ -4978,7 +5038,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (pngtuberTalkPreviewBtn) {
         pngtuberTalkPreviewBtn.addEventListener('click', () => {
             if (!window.pngtuberManager || typeof window.pngtuberManager.setSpeaking !== 'function') {
-                showStatus('PNGTuber 模型尚未加载', 2000);
+                showStatus(t('live2d.pleaseLoadModel', '请先加载模型'), 2000);
                 return;
             }
             if (pngtuberTalkPreviewTimer) clearTimeout(pngtuberTalkPreviewTimer);
@@ -5399,11 +5459,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                 vrmAnimationSelect.innerHTML = '';
                 const noMotionOption = document.createElement('option');
                 noMotionOption.value = '_no_motion_';
+                noMotionOption.dataset.i18n = 'live2d.noMotion';
                 noMotionOption.textContent = t('live2d.noMotion', '无动作');
                 vrmAnimationSelect.appendChild(noMotionOption);
 
                 const addAnimationOption = document.createElement('option');
                 addAnimationOption.value = '';
+                addAnimationOption.dataset.i18n = 'live2d.vrmAnimation.addAnimation';
                 addAnimationOption.textContent = t('live2d.vrmAnimation.addAnimation', '添加动作');
                 vrmAnimationSelect.appendChild(addAnimationOption);
 
@@ -5474,7 +5536,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         } catch (error) {
             console.error('加载 VRM 动作列表失败:', error);
             if (vrmAnimationSelect) {
-                vrmAnimationSelect.innerHTML = `<option value="">${t('live2d.loadFailed', '加载失败')}</option>`;
+                vrmAnimationSelect.innerHTML = `<option value="" data-i18n="live2d.loadFailed">${t('live2d.loadFailed', '加载失败')}</option>`;
             }
             updateVRMAnimationDropdown();
             updateVRMAnimationSelectButtonText();
@@ -5700,14 +5762,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                 mmdModelSelect.disabled = false;
                 if (mmdModelSelectBtn) mmdModelSelectBtn.disabled = false;
             } else {
-                mmdModelSelect.innerHTML = `<option value="">${t('live2d.mmdModel.noModels', '未找到MMD模型')}</option>`;
+                mmdModelSelect.innerHTML = `<option value="" data-i18n="live2d.mmdModel.noModels">${t('live2d.mmdModel.noModels', '未找到MMD模型')}</option>`;
             }
             updateMMDModelDropdown();
             updateMMDModelSelectButtonText();
         } catch (error) {
             console.error('加载MMD模型列表失败:', error);
             if (mmdModelSelect) {
-                mmdModelSelect.innerHTML = `<option value="">${t('live2d.loadFailed', '加载失败')}</option>`;
+                mmdModelSelect.innerHTML = `<option value="" data-i18n="live2d.loadFailed">${t('live2d.loadFailed', '加载失败')}</option>`;
             }
             updateMMDModelDropdown();
             updateMMDModelSelectButtonText();
@@ -5753,9 +5815,31 @@ document.addEventListener('DOMContentLoaded', async () => {
         const textSpan = mmdModelSelectBtn.querySelector('#mmd-model-select-text');
         if (!textSpan) return;
         const selected = mmdModelSelect.options[mmdModelSelect.selectedIndex];
-        const text = (selected && selected.value) ? selected.textContent : t('live2d.mmdModel.selectModel', '选择MMD模型');
+        const hasSelectedModel = !!(selected && selected.value);
+        const key = 'live2d.mmdModel.selectModel';
+        const text = hasSelectedModel ? selected.textContent : t(key, '选择MMD模型');
         textSpan.textContent = text;
         textSpan.setAttribute('data-text', text);
+        if (hasSelectedModel) {
+            textSpan.removeAttribute('data-i18n');
+            mmdModelSelectBtn.removeAttribute('data-i18n-title');
+            mmdModelSelectBtn.removeAttribute('data-i18n-aria');
+        } else {
+            textSpan.setAttribute('data-i18n', key);
+            mmdModelSelectBtn.setAttribute('data-i18n-title', key);
+            mmdModelSelectBtn.setAttribute('data-i18n-aria', key);
+        }
+        mmdModelSelectBtn.title = text;
+        mmdModelSelectBtn.setAttribute('aria-label', text);
+        const icon = mmdModelSelectBtn.querySelector('img');
+        if (icon) {
+            icon.alt = text;
+            if (hasSelectedModel) {
+                icon.removeAttribute('data-i18n-alt');
+            } else {
+                icon.setAttribute('data-i18n-alt', key);
+            }
+        }
     }
 
     async function loadMMDAnimations() {
@@ -5764,9 +5848,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             mmdAnimations = (data.success && Array.isArray(data.animations)) ? data.animations : [];
             if (!mmdAnimationSelect) return;
 
-            mmdAnimationSelect.innerHTML = `<option value="">${t('live2d.mmdAnimation.selectAnimation', '选择VMD动画')}</option>`;
+            mmdAnimationSelect.innerHTML = `<option value="" data-i18n="live2d.mmdAnimation.selectAnimation">${t('live2d.mmdAnimation.selectAnimation', '选择VMD动画')}</option>`;
             const noMotionOption = document.createElement('option');
             noMotionOption.value = '_no_motion_';
+            noMotionOption.dataset.i18n = 'live2d.noMotion';
             noMotionOption.textContent = t('live2d.noMotion', '无动作');
             mmdAnimationSelect.appendChild(noMotionOption);
             if (mmdAnimations.length > 0) {
@@ -5789,7 +5874,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         } catch (error) {
             console.error('加载MMD动画列表失败:', error);
             if (mmdAnimationSelect) {
-                mmdAnimationSelect.innerHTML = `<option value="">${t('live2d.loadFailed', '加载失败')}</option>`;
+                mmdAnimationSelect.innerHTML = `<option value="" data-i18n="live2d.loadFailed">${t('live2d.loadFailed', '加载失败')}</option>`;
             }
             updateMMDAnimationDropdown();
             updateMMDAnimationSelectButtonText();
@@ -5854,15 +5939,27 @@ document.addEventListener('DOMContentLoaded', async () => {
     function updateConfirmDeleteMMDButton() {
         if (confirmDeleteMMDBtn) {
             confirmDeleteMMDBtn.disabled = selectedDeleteMMDModels.size === 0;
-            confirmDeleteMMDBtn.textContent = selectedDeleteMMDModels.size > 0
-                ? `删除选中 (${selectedDeleteMMDModels.size})`
-                : '删除选中';
+            const count = selectedDeleteMMDModels.size;
+            if (count > 0) {
+                setLocalizedElementText(
+                    confirmDeleteMMDBtn,
+                    'live2d.deleteSelected',
+                    '删除选中 ({{count}})',
+                    { count }
+                );
+            } else {
+                setLocalizedElementText(
+                    confirmDeleteMMDBtn,
+                    'live2d.mmdModel.deleteSelected',
+                    '删除选中'
+                );
+            }
         }
     }
 
     async function loadMMDUserModels() {
         if (!mmdUserModelList) return;
-        mmdUserModelList.innerHTML = '<div class="empty-message">加载中...</div>';
+        mmdUserModelList.innerHTML = `<div class="empty-message">${t('common.loading', '加载中...')}</div>`;
 
         try {
             const data = await RequestHelper.fetchJson('/api/model/mmd/models');
@@ -5870,7 +5967,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             const userModels = models.filter(m => m.location === 'user');
 
             if (userModels.length === 0) {
-                mmdUserModelList.innerHTML = '<div class="empty-message">暂无可删除的用户MMD模型</div>';
+                mmdUserModelList.innerHTML = `<div class="empty-message">${t('live2d.mmdModel.noUserModels', '暂无可删除的用户MMD模型')}</div>`;
                 return;
             }
 
@@ -5889,7 +5986,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                 if (isBound) {
                     checkbox.disabled = true;
-                    checkbox.title = '无法删除当前正在使用的模型';
+                    checkbox.title = t('live2d.cannotDeleteBoundModel', '无法删除当前正在使用的模型');
                 }
 
                 checkbox.addEventListener('change', () => {
@@ -5906,7 +6003,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 label.textContent = `${model.name} (${model.filename}) ${sizeKB}`;
                 if (isBound) {
                     label.style.opacity = '0.5';
-                    label.textContent += ' [使用中]';
+                    label.textContent += ` [${t('live2d.modelInUse', '使用中')}]`;
                 }
 
                 item.appendChild(checkbox);
@@ -5915,7 +6012,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             });
         } catch (error) {
             console.error('加载MMD用户模型列表失败:', error);
-            mmdUserModelList.innerHTML = '<div class="empty-message">加载失败</div>';
+            mmdUserModelList.innerHTML = `<div class="empty-message">${t('common.loadFailed', '加载失败')}</div>`;
         }
     }
 
@@ -5923,15 +6020,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (selectedDeleteMMDModels.size === 0) return;
 
         const confirmDelete = await showConfirm(
-            `确定要删除选中的 ${selectedDeleteMMDModels.size} 个MMD模型吗？模型文件夹（含纹理）将一并删除，此操作不可恢复。`,
-            '删除MMD模型',
+            t('live2d.mmdModel.deleteConfirm', '确定要删除选中的 {{count}} 个MMD模型吗？模型文件夹（含纹理）将一并删除，此操作不可恢复。', { count: selectedDeleteMMDModels.size }),
+            t('live2d.mmdModel.deleteModelTitle', '删除已导入MMD模型'),
             { danger: true }
         );
         if (!confirmDelete) return;
 
         if (confirmDeleteMMDBtn) {
             confirmDeleteMMDBtn.disabled = true;
-            confirmDeleteMMDBtn.textContent = '删除中...';
+            setLocalizedElementText(confirmDeleteMMDBtn, 'live2d.deleting', '删除中...');
         }
 
         let successCount = 0;
@@ -5962,9 +6059,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         await loadMMDModels();
 
         if (successCount > 0) {
-            showStatus(`成功删除 ${successCount} 个MMD模型${failCount > 0 ? `，${failCount} 个失败` : ''}`, 3000);
+            const successMessage = t('live2d.deleteSuccess', '成功删除 {{count}} 个模型', { count: successCount });
+            const failureMessage = failCount > 0
+                ? t('live2d.deleteFailed', '删除 {{count}} 个模型失败', { count: failCount })
+                : '';
+            showStatus(failureMessage ? `${successMessage}; ${failureMessage}` : successMessage, 3000);
         } else if (failCount > 0) {
-            showStatus(`删除失败: ${failCount} 个模型`, 3000);
+            showStatus(t('live2d.deleteFailed', '删除 {{count}} 个模型失败', { count: failCount }), 3000);
         }
     }
 
@@ -6009,9 +6110,21 @@ document.addEventListener('DOMContentLoaded', async () => {
     function updateConfirmDeleteMMDAnimationButton() {
         if (confirmDeleteMMDAnimationBtn) {
             confirmDeleteMMDAnimationBtn.disabled = selectedDeleteMMDAnimations.size === 0;
-            confirmDeleteMMDAnimationBtn.textContent = selectedDeleteMMDAnimations.size > 0
-                ? t('live2d.mmdAnimation.deleteSelectedCount', '删除选中 ({{count}})', { count: selectedDeleteMMDAnimations.size })
-                : t('live2d.mmdAnimation.deleteSelected', '删除选中');
+            const count = selectedDeleteMMDAnimations.size;
+            if (count > 0) {
+                setLocalizedElementText(
+                    confirmDeleteMMDAnimationBtn,
+                    'live2d.mmdAnimation.deleteSelectedCount',
+                    '删除选中 ({{count}})',
+                    { count }
+                );
+            } else {
+                setLocalizedElementText(
+                    confirmDeleteMMDAnimationBtn,
+                    'live2d.mmdAnimation.deleteSelected',
+                    '删除选中'
+                );
+            }
         }
     }
 
@@ -6212,7 +6325,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 vrmModelSelect.disabled = false;
                 if (vrmModelSelectBtn) vrmModelSelectBtn.disabled = false;
             } else {
-                vrmModelSelect.innerHTML = `<option value="">${t('live2d.noVRMModelsFound', '未找到可用模型')}</option>`;
+                vrmModelSelect.innerHTML = `<option value="" data-i18n="live2d.noVRMModelsFound">${t('live2d.noVRMModelsFound', '未找到可用模型')}</option>`;
             }
 
             updateVRMModelDropdown();
@@ -6237,7 +6350,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         } catch (error) {
             console.error('加载Live3D模型列表失败:', error);
             if (vrmModelSelect) {
-                vrmModelSelect.innerHTML = `<option value="">${t('live2d.loadFailed', '加载失败')}</option>`;
+                vrmModelSelect.innerHTML = `<option value="" data-i18n="live2d.loadFailed">${t('live2d.loadFailed', '加载失败')}</option>`;
             }
             updateVRMModelDropdown();
             updateVRMModelSelectButtonText();
@@ -6591,6 +6704,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         vrmExpressionSelect.innerHTML = '';
         const noExpressionOption = document.createElement('option');
         noExpressionOption.value = '_no_expression_';
+        noExpressionOption.dataset.i18n = 'live2d.noExpression';
         noExpressionOption.textContent = t('live2d.noExpression', '无表情');
         vrmExpressionSelect.appendChild(noExpressionOption);
 
@@ -6611,7 +6725,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             updateVRMExpressionDropdown();
             updateVRMExpressionSelectButtonText();
         } else {
-            vrmExpressionSelect.innerHTML = `<option value="">${t('live2d.vrmExpression.noExpressions', '无可用表情')}</option>`;
+            vrmExpressionSelect.innerHTML = `<option value="" data-i18n="live2d.vrmExpression.noExpressions">${t('live2d.vrmExpression.noExpressions', '无可用表情')}</option>`;
             vrmExpressionSelect.disabled = true;
             if (vrmExpressionSelectBtn) {
                 vrmExpressionSelectBtn.disabled = true;
@@ -8346,7 +8460,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const motionSelectBtn = document.getElementById('motion-select-btn');
                 if (motionSelectBtn) motionSelectBtn.disabled = true;
                 playMotionBtn.disabled = true;
-                motionSelect.innerHTML = `<option value="">${t('live2d.noMotionFiles', '没有动作文件')}</option>`;
+                motionSelect.innerHTML = `<option value="" data-i18n="live2d.noMotionFiles">${t('live2d.noMotionFiles', '没有动作文件')}</option>`;
                 // 更新按钮文字
                 if (typeof updateMotionSelectButtonText === 'function') {
                     updateMotionSelectButtonText();
@@ -9382,12 +9496,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             const ext = file.name.toLowerCase();
             const isZip = ext.endsWith('.zip');
             if (!ext.endsWith('.pmx') && !ext.endsWith('.pmd') && !isZip) {
-                showStatus('请选择 .pmx、.pmd 或 .zip 文件', 3000);
+                showStatus(t('live2d.mmdModel.selectFile', '请选择 .pmx、.pmd 或 .zip 文件'), 3000);
                 mmdFileUpload.value = '';
                 return;
             }
 
-            showStatus('正在上传MMD模型...', 0);
+            showStatus(t('live2d.uploadingModel', '正在上传模型...'), 0);
             setControlsDisabled(true);
             try {
                 const formData = new FormData();
@@ -9399,7 +9513,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 });
                 const result = await response.json();
                 if (result.success) {
-                    showStatus(`MMD模型 ${result.filename || file.name} 上传成功`, 2000);
+                    const filename = result.filename || file.name;
+                    showStatus(t('live2d.uploadSuccess', '上传成功: {{message}}', { message: filename }), 2000);
                     if (currentModelType === 'live3d') {
                         // 保存当前选中值，loadLive3DModels 会重建 vrmModelSelect
                         const prevValue = vrmModelSelect ? vrmModelSelect.value : '';
@@ -9416,11 +9531,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                         await loadMMDModels();
                     }
                 } else {
-                    showStatus(`上传失败: ${result.error}`, 3000);
+                    showStatus(t('live2d.uploadFailed', '上传失败: {{error}}', { error: result.error }), 3000);
                 }
             } catch (error) {
                 console.error('上传MMD模型失败:', error);
-                showStatus(`上传失败: ${error.message}`, 3000);
+                showStatus(t('live2d.uploadError', '上传失败: {{error}}', { error: error.message }), 3000);
             } finally {
                 setControlsDisabled(false);
                 mmdFileUpload.value = '';
@@ -9615,7 +9730,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     try {
                         const modelsResponse = await fetch('/api/live2d/models');
                         availableModels = await modelsResponse.json();
-                        modelSelect.innerHTML = `<option value="">${t('live2d.pleaseSelectModel', '选择模型')}</option>`;
+                        modelSelect.innerHTML = `<option value="" data-i18n="live2d.pleaseSelectModel">${t('live2d.pleaseSelectModel', '选择模型')}</option>`;
                         availableModels.forEach(model => {
                             const option = document.createElement('option');
                             option.value = model.name;
@@ -9672,7 +9787,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     async function uploadPNGTuberFiles(files) {
         if (!files || files.length === 0) return;
 
-        uploadStatus.textContent = '正在上传PNGTuber模型...';
+        uploadStatus.textContent = t('live2d.uploadingModel', '正在上传模型...');
         uploadStatus.style.color = '#4f8cff';
         uploadBtn.disabled = true;
 
@@ -9689,7 +9804,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             const result = await response.json();
 
             if (result.success) {
-                uploadStatus.textContent = `✓ ${result.message}`;
+                uploadStatus.textContent = t('live2d.uploadSuccess', '上传成功: {{message}}', { message: result.message });
                 uploadStatus.style.color = '#28a745';
                 await loadPNGTuberModels();
                 if (result.folder && modelSelect) {
@@ -9705,13 +9820,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
                 setTimeout(() => { uploadStatus.textContent = ''; }, 3000);
             } else {
-                uploadStatus.textContent = `✗ ${result.error}`;
+                uploadStatus.textContent = t('live2d.uploadFailed', '上传失败: {{error}}', { error: result.error });
                 uploadStatus.style.color = '#dc3545';
                 setTimeout(() => { uploadStatus.textContent = ''; }, 5000);
             }
         } catch (error) {
             console.error('上传PNGTuber模型失败:', error);
-            uploadStatus.textContent = `✗ 上传失败: ${error.message}`;
+            uploadStatus.textContent = t('live2d.uploadError', '上传失败: {{error}}', { error: error.message });
             uploadStatus.style.color = '#dc3545';
             setTimeout(() => { uploadStatus.textContent = ''; }, 5000);
         } finally {
@@ -9749,7 +9864,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         // 检查是否为 ZIP 包（MMD 模型 + 纹理）
         const zipFile = files.find(f => f.name.toLowerCase().endsWith('.zip'));
         if (zipFile) {
-            showStatus('正在上传MMD模型包（ZIP）...', 0);
+            showStatus(t('live2d.uploadingModel', '正在上传模型...'), 0);
             setControlsDisabled(true);
             try {
                 const formData = new FormData();
@@ -9760,14 +9875,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                 });
                 const result = await response.json();
                 if (result.success) {
-                    showStatus(`${result.message}`, 3000);
+                    showStatus(t('live2d.uploadSuccess', '上传成功: {{message}}', { message: result.message }), 3000);
                     await loadLive3DModels();
                 } else {
-                    showStatus(`上传失败: ${result.error}`, 3000);
+                    showStatus(t('live2d.uploadFailed', '上传失败: {{error}}', { error: result.error }), 3000);
                 }
             } catch (error) {
                 console.error('上传MMD ZIP包失败:', error);
-                showStatus(`上传失败: ${error.message}`, 3000);
+                showStatus(t('live2d.uploadError', '上传失败: {{error}}', { error: error.message }), 3000);
             } finally {
                 setControlsDisabled(false);
                 vrmFileUpload.value = '';
@@ -10158,7 +10273,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (confirmDeleteBtn) {
             confirmDeleteBtn.disabled = selectedDeleteModels.size === 0;
             const count = selectedDeleteModels.size || 0;
-            confirmDeleteBtn.textContent = t('live2d.deleteSelected', '删除选中 ({{count}})', { count: count });
+            setLocalizedElementText(
+                confirmDeleteBtn,
+                'live2d.deleteSelected',
+                '删除选中 ({{count}})',
+                { count }
+            );
         }
     }
 
@@ -10255,7 +10375,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (deletedLive2D && currentModelType === 'live2d') {
             try {
                 availableModels = await RequestHelper.fetchJson('/api/live2d/models');
-                modelSelect.innerHTML = `<option value="">${t('live2d.pleaseSelectModel', '选择模型')}</option>`;
+                modelSelect.innerHTML = `<option value="" data-i18n="live2d.pleaseSelectModel">${t('live2d.pleaseSelectModel', '选择模型')}</option>`;
                 availableModels.forEach(model => {
                     const option = document.createElement('option');
                     option.value = model.name;
@@ -10569,11 +10689,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (type === 'motion') {
             const noMotionOption = document.createElement('option');
             noMotionOption.value = '_no_motion_';
+            noMotionOption.dataset.i18n = 'live2d.noMotion';
             noMotionOption.textContent = noMotionText;
             select.appendChild(noMotionOption);
         } else if (type === 'expression') {
             const noExpressionOption = document.createElement('option');
             noExpressionOption.value = '_no_expression_';
+            noExpressionOption.dataset.i18n = 'live2d.noExpression';
             noExpressionOption.textContent = noExpressionText;
             select.appendChild(noExpressionOption);
         }
@@ -10728,7 +10850,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                         url: pngtuberConfig.idle_image,
                     }, { markDirty: false });
                 }
-                showStatus(`已加载角色 ${lanlanName} 的 PNGTuber 模型`, 2000);
+                showStatus(t('live2d.modelLoaded', '已加载角色 {{name}} 的模型: {{model}}', {
+                    name: lanlanName,
+                    model: 'PNGTuber'
+                }), 2000);
                 return;
             }
 
@@ -11022,8 +11147,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }, 500);
   } catch (_fatalError) {
     console.error('[模型管理] DOMContentLoaded 致命错误:', _fatalError);
-    const _s = document.getElementById('status-text');
-    if (_s) _s.textContent = `初始化失败: ${_fatalError.message}`;
+    setModelManagerStatusText(`初始化失败: ${_fatalError.message}`);
   }
 });
 

@@ -1396,6 +1396,8 @@
             "deleteWarning": "以下はすべてのインポート済みユーザーMMDモデルです。削除するモデルを選択してください（モデルフォルダとテクスチャも削除されます）。",
             "noUserModels": "削除可能なユーザーMMDモデルはありません",
             "noModels": "MMDモデルが見つかりません",
+            "selectFile": ".pmx、.pmd、または .zip ファイルを選択してください",
+            "deleteConfirm": "選択した{{count}}件のMMDモデルを削除しますか？テクスチャを含むモデルフォルダも削除されます。この操作は元に戻せません。",
             "deleteSelected": "選択を削除"
         },
         "mmdAnimation": {

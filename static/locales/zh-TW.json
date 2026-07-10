@@ -1396,6 +1396,8 @@
             "deleteWarning": "以下列出了所有已匯入的使用者MMD模型。選擇要刪除的模型（模型資料夾及貢圖將一併刪除）。",
             "noUserModels": "暫無可刪除的使用者MMD模型",
             "noModels": "未找到MMD模型",
+            "selectFile": "請選擇 .pmx、.pmd 或 .zip 檔案",
+            "deleteConfirm": "確定要刪除選取的 {{count}} 個MMD模型嗎？模型資料夾（含紋理）將一併刪除，此操作無法復原。",
             "deleteSelected": "刪除選中"
         },
         "mmdAnimation": {

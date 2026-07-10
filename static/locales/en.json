@@ -1396,6 +1396,8 @@
             "deleteWarning": "Below are all imported user MMD models. Select models to delete (model folder and textures will be deleted together).",
             "noUserModels": "No user MMD models to delete",
             "noModels": "No MMD models found",
+            "selectFile": "Please select a .pmx, .pmd, or .zip file",
+            "deleteConfirm": "Delete the selected {{count}} MMD model(s)? The model folder, including textures, will also be deleted. This cannot be undone.",
             "deleteSelected": "Delete Selected"
         },
         "mmdAnimation": {

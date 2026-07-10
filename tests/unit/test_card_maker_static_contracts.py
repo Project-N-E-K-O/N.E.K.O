@@ -92,6 +92,62 @@ def test_model_manager_pngtuber_talk_preview_keeps_i18n_after_early_load():
     assert controls_block.count("updatePNGTuberTalkPreviewButtonText();") >= 1
 
 
+def test_model_manager_runtime_labels_keep_their_current_i18n_binding():
+    script = MODEL_MANAGER_JS.read_text(encoding="utf-8")
+    dropdown_block = script[
+        script.index("    updateButtonText() {"):
+        script.index("    updateDropdown() {", script.index("    updateButtonText() {"))
+    ]
+    back_block = script[
+        script.index("function updateBackToMainButtonText()"):
+        script.index("// 检测页面来源", script.index("function updateBackToMainButtonText()"))
+    ]
+    outline_block = script[
+        script.index("function updateMmdOutlineStatusText()"):
+        script.index("function updatePNGTuberTalkPreviewButtonText()")
+    ]
+    pngtuber_state_block = script[
+        script.index("function updatePNGTuberStatePreviewButtonText()"):
+        script.index("async function fetchPNGTuberLayeredMetadata")
+    ]
+
+    assert "textKey = selectedOption.dataset.i18n || null;" in dropdown_block
+    assert "this.textSpan.removeAttribute('data-i18n');" in dropdown_block
+    assert "this.button.setAttribute('data-i18n-title', this.config.iconAltKey);" in dropdown_block
+
+    assert "const translationKey = isPopupWindow ? 'common.close' : 'live2d.backToMain';" in back_block
+    assert "textSpan.setAttribute('data-i18n', translationKey);" in back_block
+    assert "backToMainBtn.setAttribute('data-i18n-title', translationKey);" in back_block
+    assert "backImg.setAttribute('data-i18n-alt', translationKey);" in back_block
+
+    assert "const key = isEnabled ? 'common.on' : 'common.off';" in outline_block
+    assert "setLocalizedElementText(statusEl, key" in outline_block
+    assert "pngtuberStatePreviewManager.updateButtonText();" in pngtuber_state_block
+    assert "textSpan.textContent = '状态预览';" not in pngtuber_state_block
+
+
+def test_model_manager_dynamic_i18n_options_keep_translation_keys():
+    script = MODEL_MANAGER_JS.read_text(encoding="utf-8")
+
+    for expected in (
+        'data-i18n="live2d.noModelsFound"',
+        'data-i18n="live2d.noVRMModelsFound"',
+        'data-i18n="live2d.loadFailed"',
+        'data-i18n="live2d.pngtuberStatePreview"',
+        "noMotionOption.dataset.i18n = 'live2d.noMotion';",
+        "noExpressionOption.dataset.i18n = 'live2d.noExpression';",
+        "addAnimationOption.dataset.i18n = 'live2d.vrmAnimation.addAnimation';",
+    ):
+        assert expected in script
+
+    localized_text_helper = script[
+        script.index("function setLocalizedElementText("):
+        script.index("function updateMmdOutlineStatusText()")
+    ]
+    assert "element.setAttribute('data-i18n', key);" in localized_text_helper
+    assert "element.setAttribute('data-i18n-params', JSON.stringify(params));" in localized_text_helper
+
+
 def test_model_manager_pngtuber_card_face_prefers_visible_drawable():
     script = MODEL_MANAGER_JS.read_text(encoding="utf-8")
     start = script.index("function getPNGTuberCaptureDrawable()")
