@@ -468,7 +468,7 @@
                 }
 
                 // 使用 ?? 运算符提供更好的默认值处理（避免将 false 误判为需要使用默认值）
-                S.proactiveChatEnabled = settings.proactiveChatEnabled ?? false;
+                S.proactiveChatEnabled = settings.proactiveChatEnabled ?? true;
                 S.proactiveVisionEnabled = settings.proactiveVisionEnabled ?? false;
                 S.proactiveVisionChatEnabled = settings.proactiveVisionChatEnabled ?? true;
                 S.proactiveNewsChatEnabled = settings.proactiveNewsChatEnabled ?? false;

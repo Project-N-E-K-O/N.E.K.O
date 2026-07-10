@@ -1024,7 +1024,8 @@
             "kimi": "Kimi(Moonshot, 긴 컨텍스트 지원)",
             "kimi_code": "Kimi Code(Moonshot)",
             "deepseek": "DeepSeek",
-            "doubao": "ByteDance(Doubao)",
+            "doubao": "Doubao LLM (Volcengine Ark)",
+            "doubao_tts": "Doubao Speech (Volcengine)",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax(국제 서버)",
             "elevenlabs": "ElevenLabs(음성 클로닝)",
@@ -1072,7 +1073,8 @@
             "gemini": "Gemini(Google)",
             "kimi": "Moonshot(Kimi)",
             "kimi_code": "Moonshot Kimi Code",
-            "doubao": "ByteDance(Doubao)",
+            "doubao": "Doubao LLM (Volcengine Ark)",
+            "doubao_tts": "Doubao Speech (Volcengine)",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax(국제 서버)",
             "mimo": "MiMo(Xiaomi)",
@@ -1353,6 +1355,7 @@
         "toggleFullscreen": "전체 화면 전환",
         "exitFullscreen": "전체 화면 종료",
         "modelType": "모델 유형",
+        "modelType3d": "3D 모델",
         "selectLive2DModel": "Live2D 모델 선택",
         "selectVRMModel": "VRM 모델",
         "selectVRMFile": "VRM 파일 선택",
@@ -1559,6 +1562,8 @@
         "minimaxIntlApiRequired": "이 기능에는 MiniMax 모델(국제판)이 필요합니다. API 키 설정에서 MiniMax 국제판 API 키를 저장하세요 (Assist API 활성화 불필요).",
         "mimoApiRequired": "이 기능은 MiMo 모델이 필요합니다. API 키 설정 페이지에서 MiMo API 키를 저장하세요",
         "mimoDirectLinkUnsupported": "MiMo는 직접 링크 복제를 지원하지 않습니다. 로컬 파일 업로드를 사용하세요",
+        "directLinkUnsupported": "선택한 제공자는 직접 링크 클론을 지원하지 않습니다. 로컬 파일을 업로드하세요.",
+        "doubaoTtsApiRequired": "이 기능에는 Doubao Speech API Key가 필요합니다. API 관리부에 Doubao Speech(Volcengine) Key를 저장하세요.",
         "vllmOmniNotice": "로컬 vLLM-Omni 서비스 — API 키 불필요; 로컬 서비스 URL이 설정되어 있는지 확인하세요",
         "vllmRefTextLabel": "참조 오디오 전사(vLLM-Omni 클론 필수, 오디오 내용과 정확히 일치해야 함)",
         "vllmRefTextHint": "참조 오디오에서 말하는 내용을 그대로 입력하세요. 텍스트가 오디오와 맞지 않으면 클론 품질이 저하됩니다",
@@ -1573,6 +1578,7 @@
             "minimax_intl": "MiniMax (국제판)",
             "elevenlabs": "ElevenLabs",
             "mimo": "MiMo (샤오미)",
+            "doubao_tts": "Doubao Speech (Volcengine)",
             "vllm_omni": "vLLM-Omni(로컬 클론)"
         },
         "sourcePreset": "프리셋",
@@ -1591,9 +1597,13 @@
         "customPrefixNote": "UI : 최대 10자, 숫자, 영문만 가능",
         "prefixPlaceholder": "UI : 최대 10자, 숫자, 영문만 가능",
         "voiceIdPlaceholder": "UI : 최대 10자, 숫자, 영문만 가능",
+        "doubaoSpeakerIdLabel": "Doubao Speaker ID (기존 S_ 음색 덮어쓰기, 필수)",
+        "doubaoSpeakerIdNote": "먼저 Doubao Speech 콘솔에서 음색을 복제하고 해당 S_ Speaker ID를 여기에 복사하세요. NEKO는 기존 음색을 덮어써서 업데이트하며 새 Doubao 음색 ID를 만들지 않습니다. 예: S_xeC2CDp72",
+        "doubaoSpeakerIdPlaceholder": "예: S_xeC2CDp72",
         "register": "음성 등록",
         "pleaseUploadFile": "오디오 파일을 선택하세요.",
         "pleaseEnterPrefix": "맞춤 접두사를 입력하세요.",
+        "doubaoSpeakerIdRequired": "Doubao 음성 복제에는 Volcengine 콘솔에서 이미 할당된 S_ Speaker ID가 필요합니다",
         "prefixFormatError": "접두사 형식 오류: 최대 10자, 숫자, 영문만 가능",
         "registering": "음성을 등록하는 중입니다. 잠시 기다려 주세요!",
         "registerSuccess": "등록이 완료되었습니다! voice_id: {{voiceId}}",
@@ -2573,8 +2583,6 @@
             "focusCognitionTooltip": "켜면 당신이 마음을 털어놓거나 복잡한 주제일 때 더 집중해 깊이 생각합니다. 끄면 집중 모드에 들어가지 않습니다.",
             "autoCat": "자동 고양이 전환",
             "autoCatTooltip": "일정 시간 활동이 없으면 자동으로 새끼 고양이가 됩니다",
-            "catAudio": "고양이 소리",
-            "catAudioTooltip": "잠시 떠나 달라고 한 뒤 고양이 형태의 소리를 켜거나 끕니다. 자동 고양이 전환이 필요합니다.",
             "proactiveChat": "사전 예방적 채팅",
             "proactiveVision": "프라이버시 모드",
             "proactiveVisionTooltip": "꺼짐: 네코는 활성 창 제목에 따라 활발함과 대화 모드를 조정하며, 말을 걸 때 화면 내용을 참고할 수 있습니다.\n켜짐: 네코는 스스로 화면을 볼 수 없고 당신이 무엇을 하고 있는지 알 수 없습니다. 스크린샷은 직접 보낼 수 있습니다.",
@@ -3152,7 +3160,7 @@
             "mmd": {
                 "step1": {
                     "title": "🎭 MMD 모델 선택",
-                    "desc": "Live3D(MMD) 모드에서 여기에서 사용할 모델을 선택합니다. MMD와 VRM은 동일한 모델 목록을 공유합니다."
+                    "desc": "3D 모델(MMD) 모드에서 여기에서 사용할 모델을 선택합니다. MMD와 VRM은 동일한 모델 목록을 공유합니다."
                 },
                 "step2": {
                     "title": "💃 VMD 애니메이션",
@@ -3164,7 +3172,7 @@
                 },
                 "step4": {
                     "title": "😄 감정 설정",
-                    "desc": "모델을 선택한 후 여기에서 감정 설정으로 들어갑니다. Live3D에서 MMD와 VRM은 이 버튼을 공유하며, Live2D의 '감정 설정' 버튼과는 다릅니다."
+                    "desc": "모델을 선택한 후 여기에서 감정 설정으로 들어갑니다. 3D 모델에서 MMD와 VRM은 이 버튼을 공유하며, Live2D의 '감정 설정' 버튼과는 다릅니다."
                 }
             }
         },
@@ -3878,6 +3886,8 @@
         "minimize": "최소화",
         "close": "닫기",
         "loading": "로드 중...",
+        "initializing": "주크박스를 초기화하는 중...",
+        "initializeFailed": "주크박스 초기화에 실패했습니다",
         "ready": "준비 완료",
         "playing": "재생 중: {{name}} - {{artist}}",
         "error": "오류: {{message}}",

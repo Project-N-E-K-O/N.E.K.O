@@ -121,6 +121,45 @@ body .container-header {
     -webkit-app-region: no-drag;
 }
 
+.container-header .close-page-btn {
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    cursor: pointer;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.2s, transform 0.1s ease, opacity 0.2s ease;
+    -webkit-app-region: no-drag;
+}
+
+.container-header .close-page-btn img {
+    width: 32px;
+    height: 32px;
+    display: block;
+}
+
+.container-header .close-page-btn:hover {
+    background: rgba(255, 255, 255, 0.2);
+    transform: translateY(-1px);
+}
+
+.container-header .close-page-btn:active {
+    background: rgba(255, 255, 255, 0.3);
+    transform: translateY(1px) scale(0.95);
+    opacity: 0.9;
+}
+
+.container-header .close-page-btn:focus-visible {
+    outline: 2px solid rgba(255, 255, 255, 0.85);
+    outline-offset: 2px;
+    box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.18);
+}
+
 .container-content {
     padding: 24px 32px;
     background: #e3f4ff;

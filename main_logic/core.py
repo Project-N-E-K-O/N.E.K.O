@@ -117,6 +117,7 @@ _MAGIC_COMMAND_IMAGE_DROP_REQUEST_MAX = 64
 _VOICE_PROACTIVE_ACK_GRACE_S = 0.05
 _TEXT_SESSION_INPUT_TYPES = frozenset({"text", "avatar_drop_image", "user_image"})
 _IMAGE_INPUT_TYPES = frozenset({"screen", "camera", "avatar_drop_image", "user_image"})
+_LIVE_VISION_STREAM_INPUT_TYPES = frozenset({"screen", "camera"})
 _CONTEXT_APPEND_DEDUP_TTL_SECONDS = 120.0
 _CONTEXT_APPEND_DEDUP_MAX_ENTRIES = 256
 _CONTEXT_APPEND_READY_FLUSH_MAX_PASSES = 8
@@ -2310,7 +2311,7 @@ class LLMSessionManager:
             while not self.tts_response_queue.empty():
                 try:
                     self.tts_response_queue.get_nowait()
-                except: # noqa
+                except Exception:
                     break
             try:
                 self.tts_request_queue.put(("__interrupt__", None))
@@ -2323,7 +2324,7 @@ class LLMSessionManager:
             while not self.tts_response_queue.empty():
                 try:
                     self.tts_response_queue.get_nowait()
-                except: # noqa
+                except Exception:
                     break
         async with self.tts_cache_lock:
             self.tts_pending_chunks.clear()
@@ -2979,7 +2980,7 @@ class LLMSessionManager:
                 while not self.tts_response_queue.empty():
                     try:
                         self.tts_response_queue.get_nowait()
-                    except: # noqa
+                    except Exception:
                         break
 
         # 文本模式下，无论是否使用TTS，都要发送文本到前端显示
@@ -7124,8 +7125,9 @@ class LLMSessionManager:
         visual context — the conversation model otherwise sees only the proactive
         text and can't tell what was on screen. Passing None clears any previously
         staged screenshot, so a new proactive round always discards the prior
-        cache (and may fill a fresh one). The session enforces a 2-min TTL on the
-        staged screenshot at injection time. Staging happens inside the sid-guard
+        cache (and may fill a fresh one). The session enforces a short TTL
+        (``_PROACTIVE_SCREENSHOT_TTL_SECONDS``) on the staged screenshot at
+        injection time. Staging happens inside the sid-guard
         below, so a user takeover (sid change → early return) never stages a
         screenshot for an undelivered turn.
 
@@ -7174,8 +7176,9 @@ class LLMSessionManager:
                 # （仅暂存，不作为图片写进历史），下一条用户 text 回复经 stream_text
                 # 时会把它作为前导视觉背景注入——否则对话模型只看到搭话文本，回复
                 # 时完全不知道刚才评论的屏幕长什么样。新一轮主动搭话产生即覆盖/清掉
-                # 旧缓存（没拿到截图的轮次传 None 清），session 侧再用 2 分钟 TTL
-                # 兜底过期。set_* 在 sid 校验之后，用户接管（sid 变→早 return）时
+                # 旧缓存（没拿到截图的轮次传 None 清），session 侧再用短 TTL
+                # （_PROACTIVE_SCREENSHOT_TTL_SECONDS）兜底过期。set_* 在 sid 校验之
+                # 后，用户接管（sid 变→早 return）时
                 # 绝不会为未投递的轮次暂存截图。
                 if hasattr(self.session, "set_proactive_screenshot"):
                     self.session.set_proactive_screenshot(vision_screenshot_b64)
@@ -9395,14 +9398,23 @@ class LLMSessionManager:
         self.sync_message_queue.put({'type': 'system', 'data': 'API server disconnected'})
         await self.cleanup(expected_session=expected_session)
     
+    def _should_drop_live_vision_stream(self, input_type: str | None) -> bool:
+        """Deliberately checked at each stream boundary; callers may enter below stream_data."""
+        return input_type in _LIVE_VISION_STREAM_INPUT_TYPES and self.is_goodbye_silent()
+
     async def stream_data(self, message: dict):  # 向Core API发送Media数据
-        if message.get("input_type") == "audio":
+        input_type = message.get("input_type")
+        if self._should_drop_live_vision_stream(input_type):
+            return
+        if input_type == "audio":
             await self._enqueue_audio_stream_data(message)
             return
         await self._stream_data_now(message)
 
     async def _stream_data_now(self, message: dict):
         input_type = message.get("input_type")
+        if self._should_drop_live_vision_stream(input_type):
+            return
         # 检查session是否就绪
         async with self.input_cache_lock:
             if not self.session_ready:
@@ -9421,6 +9433,8 @@ class LLMSessionManager:
         # 在锁外检查是否需要创建新session（不要在锁内创建session，避免死锁）
         if not self.session_ready and self._starting_session_count == 0:
             if not self.session or not self.is_active:
+                if input_type in _LIVE_VISION_STREAM_INPUT_TYPES:
+                    return
                 # Memory Server 专属冷却检查
                 if self._emit_cooldown_turn_end_if_needed():
                     return
@@ -9445,6 +9459,8 @@ class LLMSessionManager:
         """Internal method: the actual stream_data processing logic"""
         data = message.get("data")
         input_type = message.get("input_type")
+        if self._should_drop_live_vision_stream(input_type):
+            return
         # 检查session是否发生致命错误（如1011错误、Response timeout）
         if self.session and isinstance(self.session, OmniRealtimeClient):
             if hasattr(self.session, '_fatal_error_occurred') and self.session._fatal_error_occurred:
@@ -9458,6 +9474,8 @@ class LLMSessionManager:
 
         # 如果 session 不存在或不活跃，检查是否可以自动重建
         if not self.session or not self.is_active:
+            if input_type in _LIVE_VISION_STREAM_INPUT_TYPES:
+                return
             # Memory Server 专属冷却检查
             if self._emit_cooldown_turn_end_if_needed():
                 return

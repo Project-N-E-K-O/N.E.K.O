@@ -508,7 +508,7 @@ def test_drawing_guess_static_route_contract():
 def test_drawing_guess_locale_cache_version_bumped_for_save_art_actions():
     script = _i18n_script()
 
-    assert "2026-06-29-drawing-guess-save-art-copy-i18n" in script
+    assert "2026-07-11-drawing-guess-merge-doubao-speaker-id-model-type-3d-label-i18n" in script
 
 
 @pytest.mark.unit

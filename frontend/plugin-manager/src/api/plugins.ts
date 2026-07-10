@@ -257,6 +257,7 @@ export function callPluginHostedSurfaceAction(pluginId: string, actionId: string
   kind: PluginUiSurface['kind']
   id: string
   locale?: string
+  timeoutMs?: number
 }): Promise<{
   plugin_id: string
   action_id: string
@@ -264,12 +265,15 @@ export function callPluginHostedSurfaceAction(pluginId: string, actionId: string
 }> {
   const safeId = encodeURIComponent(pluginId)
   const safeActionId = encodeURIComponent(actionId)
+  const requestedTimeoutMs = Number(surface?.timeoutMs)
+  const timeoutMs = Number.isFinite(requestedTimeoutMs) && requestedTimeoutMs > 0 ? requestedTimeoutMs : undefined
   return post(`/plugin/${safeId}/hosted-ui/action/${safeActionId}`, {
     args: args || {},
     kind: surface?.kind,
     surface_id: surface?.id,
     locale: surface?.locale,
-  })
+    timeout_ms: timeoutMs,
+  }, timeoutMs ? { timeout: timeoutMs } : undefined)
 }
 
 /**

@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
+import main_routers.config_router as config_router
 from main_routers.config_router import (
     ConnectivityTestRequest,
     ConnectivityTestResponse,
@@ -66,9 +67,11 @@ class TestSchemaValidation:
             url="wss://realtime.example.com",
             api_key="sk-ws-key",
             provider_type="websocket",
+            voice_id="S_test",
             is_free=True,
         )
         assert req.provider_type == "websocket"
+        assert req.voice_id == "S_test"
         assert req.is_free is True
 
     def test_request_model_defaults(self):
@@ -1426,6 +1429,42 @@ class TestVllmOmniWsHandshake:
 
         mock_handshake.assert_awaited_once()
         mock_realtime_ws.assert_not_called()
+
+    async def test_endpoint_dispatches_doubao_tts_probe(self, monkeypatch):
+        captured = {}
+
+        async def fake_probe(url, api_key, model="", voice_id=""):
+            captured.update({
+                "url": url,
+                "api_key": api_key,
+                "model": model,
+                "voice_id": voice_id,
+            })
+            return {"success": True}
+
+        monkeypatch.setattr(config_router, "_test_doubao_tts_connectivity", fake_probe)
+        with patch(
+            "main_routers.config_router._test_openai_compatible",
+            new=AsyncMock(return_value={"success": False}),
+        ) as mock_openai:
+            req = ConnectivityTestRequest(
+                url="https://openspeech.bytedance.com",
+                api_key="ark-test",
+                model="seed-icl-2.0",
+                provider_type="tts",
+                sub_type="doubao_tts",
+                voice_id="S_test",
+            )
+            result = await _endpoint_test_connectivity(req)
+
+        assert result["success"] is True
+        assert captured == {
+            "url": "https://openspeech.bytedance.com",
+            "api_key": "ark-test",
+            "model": "seed-icl-2.0",
+            "voice_id": "S_test",
+        }
+        mock_openai.assert_not_called()
 
     async def test_endpoint_websocket_without_sub_type_uses_realtime_probe(self):
         """End-to-end inverse contract: when sub_type is omitted, the request

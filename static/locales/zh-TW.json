@@ -1024,7 +1024,8 @@
             "kimi": "Kimi（月之暗面，支持長上下文）",
             "kimi_code": "Kimi Code (Moonshot)",
             "deepseek": "DeepSeek",
-            "doubao": "豆包（字節跳動）",
+            "doubao": "豆包大模型(火山方舟)",
+            "doubao_tts": "豆包語音(火山引擎)",
             "minimax": "MiniMax（中國）",
             "minimax_intl": "MiniMax（國際服）",
             "elevenlabs": "ElevenLabs（語音克隆，國內無法使用）",
@@ -1072,7 +1073,8 @@
             "gemini": "Gemini（Google）",
             "kimi": "Kimi（月之暗面）",
             "kimi_code": "Moonshot Kimi Code",
-            "doubao": "豆包（字節跳動）",
+            "doubao": "豆包大模型(火山方舟)",
+            "doubao_tts": "豆包語音(火山引擎)",
             "minimax": "MiniMax（中國）",
             "minimax_intl": "MiniMax（國際服）",
             "mimo": "MiMo（小米）",
@@ -1353,6 +1355,7 @@
         "toggleFullscreen": "切換全屏",
         "exitFullscreen": "退出全屏",
         "modelType": "模型類型",
+        "modelType3d": "3D模型",
         "selectLive2DModel": "選擇Live2D模型",
         "selectVRMModel": "VRM模型",
         "selectVRMFile": "選擇VRM文件",
@@ -1559,6 +1562,8 @@
         "minimaxIntlApiRequired": "此功能需要MiniMax模型（國際版），請在API密鑰設定頁中保存MiniMax國際版API Key（不要求啟用輔助API）",
         "mimoApiRequired": "此功能需要 MiMo 模型，請在 API 密鑰設置頁中保存 MiMo API Key",
         "mimoDirectLinkUnsupported": "MiMo 暫不支持直鏈克隆，請改用本地文件上傳",
+        "directLinkUnsupported": "當前服務商暫不支持直鏈克隆，請改用本地文件上傳",
+        "doubaoTtsApiRequired": "此功能需要豆包語音 API Key，請在 API 管理簿中填寫豆包語音(火山引擎) Key",
         "vllmOmniNotice": "本地 vLLM-Omni 服務，無需 API Key，請確保已配置本地服務地址",
         "vllmRefTextLabel": "參考音頻原文（vLLM-Omni 克隆必填，須與音頻內容嚴格對應）",
         "vllmRefTextHint": "逐字輸入參考音頻裡說的話，文本與音頻不符會導致克隆音質下降",
@@ -1573,6 +1578,7 @@
             "minimax_intl": "MiniMax（國際版）",
             "elevenlabs": "ElevenLabs",
             "mimo": "MiMo（小米）",
+            "doubao_tts": "豆包語音(火山引擎)",
             "vllm_omni": "vLLM-Omni（本機複製）"
         },
         "sourcePreset": "預製",
@@ -1591,9 +1597,13 @@
         "customPrefixNote": "不超過10個字符，只支持數字和英文字母",
         "prefixPlaceholder": "不超過10個字符，只支持數字和英文字母",
         "voiceIdPlaceholder": "不超過10個字符，只支持數字和英文字母",
+        "doubaoSpeakerIdLabel": "豆包 Speaker ID（覆蓋已有 S_ 音色，必填）",
+        "doubaoSpeakerIdNote": "請先前往豆包語音控制台克隆音色並取得 S_ 開頭 Speaker ID；此處會覆蓋更新該已有音色，不會建立新的豆包音色 ID，例如 S_xeC2CDp72",
+        "doubaoSpeakerIdPlaceholder": "例如：S_xeC2CDp72",
         "register": "注冊音色",
         "pleaseUploadFile": "請選擇音頻文件",
         "pleaseEnterPrefix": "請填寫自定義前綴",
+        "doubaoSpeakerIdRequired": "豆包聲音複刻需要填寫火山控制台已分配的 S_ 開頭 Speaker ID",
         "prefixFormatError": "前綴格式錯誤：不超過10個字符，只支持數字和英文字母",
         "registering": "正在注冊聲音，請稍後！",
         "registerSuccess": "注冊成功！voice_id: {{voiceId}}",
@@ -2573,8 +2583,6 @@
             "focusCognitionTooltip": "開啟後，遇到你傾訴脆弱或複雜的話題時她會更專注地深入思考；關閉則不再進入凝神。",
             "autoCat": "自動變貓",
             "autoCatTooltip": "一段時間無互動後自動變成小貓",
-            "catAudio": "貓貓音效",
-            "catAudioTooltip": "請她離開後開關貓形態的聲音；需開啟自動變貓。",
             "proactiveChat": "主動搭話",
             "proactiveVision": "隱私模式",
             "proactiveVisionTooltip": "關閉時：貓娘會根據活躍視窗的標題改變活躍度與搭話模式，可能會在搭話時結合螢幕內容。\n開啟時：貓娘無法主動觀看螢幕，也無法了解你正在做什麼。你仍然可以主動傳送截圖。",
@@ -3152,7 +3160,7 @@
             "mmd": {
                 "step1": {
                     "title": "🎭 選擇 MMD 模型",
-                    "desc": "在 Live3D（MMD）模式下從這裡選擇要使用的模型。MMD 與 VRM 共用同一模型列表。"
+                    "desc": "在 3D模型（MMD）模式下從這裡選擇要使用的模型。MMD 與 VRM 共用同一模型列表。"
                 },
                 "step2": {
                     "title": "💃 VMD 動畫",
@@ -3164,7 +3172,7 @@
                 },
                 "step4": {
                     "title": "😄 情感配置",
-                    "desc": "先選好模型後，可由此進入情感配置。Live3D 下 MMD 與 VRM 共用此入口，與 Live2D 的「情感配置」不是同一個按鈕。"
+                    "desc": "先選好模型後，可由此進入情感配置。3D模型下 MMD 與 VRM 共用此入口，與 Live2D 的「情感配置」不是同一個按鈕。"
                 }
             }
         },
@@ -3878,6 +3886,8 @@
         "minimize": "最小化",
         "close": "關閉",
         "loading": "載入中...",
+        "initializing": "正在初始化點歌台...",
+        "initializeFailed": "點歌台初始化失敗",
         "ready": "準備就緒",
         "playing": "正在播放: {{name}} - {{artist}}",
         "error": "錯誤: {{message}}",

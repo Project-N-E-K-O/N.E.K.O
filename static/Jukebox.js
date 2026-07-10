@@ -5,48 +5,48 @@ window.Jukebox = {
   Config: {
     width: '500px',
     container: {
-      background: '#87CEEB', // 容器背景色
-      boxShadow: '0 8px 32px rgba(0, 0, 0, 0.3)', // 容器阴影
-      color: 'rgba(255, 255, 255, 1)' // 容器文字颜色
+      background: 'linear-gradient(160deg, rgba(255,255,255,.92), rgba(232,247,255,.86))', // 容器背景色
+      boxShadow: '0 18px 48px rgba(78, 153, 190, 0.28), 0 4px 18px rgba(255, 159, 189, 0.16)', // 容器阴影
+      color: 'rgba(28, 48, 68, 0.94)' // 容器文字颜色
     },
     header: {
-      borderBottom: '1px solid rgba(255, 255, 255, 0.2)', // 标题栏下边框
-      btnHoverBg: 'rgba(255, 255, 255, 0.2)' // 标题栏按钮悬停背景
+      borderBottom: '1px solid rgba(116, 190, 224, 0.28)', // 标题栏下边框
+      btnHoverBg: 'rgba(99, 199, 232, 0.16)' // 标题栏按钮悬停背景
     },
     notice: {
-      background: 'rgba(255, 255, 255, 0.18)', // 提示区域背景
-      border: '1px solid rgba(255, 255, 255, 0.35)' // 提示区域边框
+      background: 'rgba(255, 255, 255, 0.62)', // 提示区域背景
+      border: '1px solid rgba(120, 203, 232, 0.24)' // 提示区域边框
     },
     table: {
-      headerBg: 'rgba(0, 0, 0, 0.2)', // 表头背景
-      headerColor: 'rgba(255, 255, 255, 0.9)', // 表头文字颜色
-      bodyBg: 'rgba(255, 255, 255, 0.1)', // 表格背景
-      rowHoverBg: 'rgba(255, 255, 255, 0.15)', // 表格行悬停背景
-      rowBorder: '1px solid rgba(255, 255, 255, 0.1)', // 表格行边框
-      loadingColor: 'rgba(255, 255, 255, 0.7)' // 加载中文字颜色
+      headerBg: 'rgba(255, 255, 255, 0.58)', // 表头背景
+      headerColor: 'rgba(45, 78, 104, 0.86)', // 表头文字颜色
+      bodyBg: 'rgba(255, 255, 255, 0.52)', // 表格背景
+      rowHoverBg: 'rgba(255, 255, 255, 0.86)', // 表格行悬停背景
+      rowBorder: '1px solid rgba(116, 190, 224, 0.16)', // 表格行边框
+      loadingColor: 'rgba(38, 118, 148, 0.82)' // 加载中文字颜色
     },
     button: {
-      playBg: '#4CAF50', // 播放按钮背景
-      playHoverBg: '#45a049', // 播放按钮悬停背景
-      playingBg: '#f44336', // 播放中按钮背景
-      playingHoverBg: '#da190b', // 播放中按钮悬停背景
-      pauseBg: '#FF9800', // 暂停按钮背景
-      pauseHoverBg: '#F57C00', // 暂停按钮悬停背景
-      resumeBg: '#63c7c7ff', // 恢复按钮背景
-      resumeHoverBg: '#7fe0e0ff', // 恢复按钮悬停背景
+      playBg: '#35a9c9', // 播放按钮背景
+      playHoverBg: '#63c7e8', // 播放按钮悬停背景
+      playingBg: '#d94b61', // 播放中按钮背景
+      playingHoverBg: '#ec6a7c', // 播放中按钮悬停背景
+      pauseBg: '#ff9fbd', // 暂停按钮背景
+      pauseHoverBg: '#ffb3ca', // 暂停按钮悬停背景
+      resumeBg: '#63c7e8', // 恢复按钮背景
+      resumeHoverBg: '#8dd9ef', // 恢复按钮悬停背景
       color: 'white' // 按钮文字颜色
     },
     progress: {
-      containerBg: 'rgba(0, 0, 0, 0.2)', // 进度条容器背景
-      trackBg: 'rgba(255, 255, 255, 0.3)', // 进度条轨道背景
-      sliderBg: 'rgba(255, 255, 255, 0.6)', // 进度条滑块背景
-      sliderSeekableBg: '#4CAF50', // 进度条滑块可拖动时背景
-      textColor: 'rgba(255, 255, 255, 0.9)' // 进度条文字颜色
+      containerBg: 'rgba(255, 255, 255, 0.58)', // 进度条容器背景
+      trackBg: 'rgba(99, 199, 232, 0.22)', // 进度条轨道背景
+      sliderBg: 'rgba(99, 199, 232, 0.7)', // 进度条滑块背景
+      sliderSeekableBg: '#35a9c9', // 进度条滑块可拖动时背景
+      textColor: 'rgba(45, 78, 104, 0.8)' // 进度条文字颜色
     },
     volume: {
-      iconColor: 'rgba(255, 255, 255, 1)', // 喇叭图标颜色
-      iconHoverColor: 'rgba(0, 40, 80, 1)', // 喇叭悬停颜色
-      iconHoverBg: 'rgba(0, 60, 100, 0.15)', // 喇叭悬停背景
+      iconColor: 'rgba(45, 78, 104, 0.86)', // 喇叭图标颜色
+      iconHoverColor: 'rgba(28, 48, 68, 0.94)', // 喇叭悬停颜色
+      iconHoverBg: 'rgba(99, 199, 232, 0.14)', // 喇叭悬停背景
       popupBg: 'rgba(255, 255, 255, 0.95)', // 弹出窗口背景
       popupShadow: '0 4px 12px rgba(0, 0, 0, 0.15)', // 弹出窗口阴影
       trackColor: 'rgba(0, 100, 150, 0.3)', // 音量轨道颜色
@@ -54,10 +54,10 @@ window.Jukebox = {
       textHoverBg: 'rgba(0, 100, 150, 0.15)', // 文字悬停背景
       inputBg: 'rgba(0, 100, 150, 0.1)', // 输入框背景
       inputBorder: 'rgba(0, 100, 150, 0.3)', // 输入框边框
-      inputFocusBorder: '#4CAF50', // 输入框聚焦边框
+      inputFocusBorder: '#35a9c9', // 输入框聚焦边框
       inputFocusBg: 'rgba(0, 100, 150, 0.15)', // 输入框聚焦背景
-      sliderColor: '#4CAF50', // 滑块颜色
-      sliderHoverColor: '#45a049' // 滑块悬停颜色
+      sliderColor: '#35a9c9', // 滑块颜色
+      sliderHoverColor: '#63c7e8' // 滑块悬停颜色
     },
     buttonActive: {
       background: 'rgba(30, 60, 114, 0.3)' // 点歌台按钮激活状态背景
@@ -85,8 +85,8 @@ window.Jukebox = {
     },
     // 状态文字
     status: {
-      color: 'rgba(255, 255, 255, 0.8)', // 状态文字颜色
-      bg: 'rgba(0, 0, 0, 0.15)' // 状态文字背景
+      color: 'rgba(38, 118, 148, 0.88)', // 状态文字颜色
+      bg: 'rgba(232,247,255,0.72)' // 状态文字背景
     }
   },
   
@@ -120,6 +120,8 @@ window.Jukebox = {
     container: null,
     styleElement: null,
     observer: null,
+    closeListenerButton: null,
+    closeListenerHandler: null,
     songElements: {},
     tooltipElement: null,
     tooltipTimeout: null,
@@ -204,6 +206,26 @@ window.Jukebox = {
     element.addEventListener('mouseleave', () => Jukebox.hideTooltip());
   },
 
+  setupTooltipOnce: function(element, text) {
+    if (!element) return;
+    element.removeAttribute('title');
+    if (element.dataset.nekoTooltipBound !== 'true') {
+      Jukebox.setupTooltip(element, text);
+      element.dataset.nekoTooltipBound = 'true';
+    }
+  },
+
+  bindTextTooltips: function(root) {
+    const scope = root || document;
+    scope.querySelectorAll('[data-neko-marquee], [data-tooltip]').forEach((element) => {
+      const titleText = element.getAttribute('title');
+      if (titleText && !element.dataset.tooltip) {
+        element.dataset.tooltip = titleText;
+      }
+      Jukebox.setupTooltipOnce(element, () => element.dataset.tooltip || element.textContent.trim());
+    });
+  },
+
   refreshTooltip: function(element) {
     if (!Jukebox.State.tooltipElement) return;
     if (element && Jukebox.State.tooltipTarget !== element) return;
@@ -273,10 +295,15 @@ window.Jukebox = {
 
     const rect = container.getBoundingClientRect();
     if (!rect || rect.width <= 0 || rect.height <= 0) return;
+    const computedStyle = window.getComputedStyle(container);
+    const contentWidth = parseFloat(computedStyle.width);
+    const contentHeight = parseFloat(computedStyle.height);
+    const width = Number.isFinite(contentWidth) && contentWidth > 0 ? contentWidth : rect.width;
+    const height = Number.isFinite(contentHeight) && contentHeight > 0 ? contentHeight : rect.height;
 
     Jukebox.setStoredJson('windowSize', {
-      width: Math.round(rect.width),
-      height: Math.round(rect.height)
+      width: Math.round(width),
+      height: Math.round(height)
     });
   },
 
@@ -378,7 +405,22 @@ window.Jukebox = {
       modeContainer.innerHTML = '';
       Jukebox.appendPlaybackModeButtons(modeContainer);
     }
+    Jukebox.bindMainControlTooltips();
     Jukebox.updateGlobalTransportControls();
+  },
+
+  bindMainControlTooltips: function() {
+    const prevBtn = document.getElementById('jukebox-control-prev');
+    Jukebox.setupTooltipOnce(prevBtn, () => window.t('Jukebox.previousSong', '上一首'));
+
+    const nextBtn = document.getElementById('jukebox-control-next');
+    Jukebox.setupTooltipOnce(nextBtn, () => window.t('Jukebox.nextSong', '下一首'));
+
+    const playPauseBtn = document.getElementById('jukebox-control-play-pause');
+    Jukebox.setupTooltipOnce(playPauseBtn, () => playPauseBtn?.dataset.tooltip || window.t('Jukebox.play', '播放'));
+
+    const speakerBtn = document.getElementById('jukebox-speaker-btn');
+    Jukebox.setupTooltipOnce(speakerBtn, () => window.t('Jukebox.mute', '静音'));
   },
 
   getGlobalPlayPauseIcon: function() {
@@ -399,9 +441,11 @@ window.Jukebox = {
           : window.t('Jukebox.play', '播放'));
       playPauseBtn.innerHTML = Jukebox.getGlobalPlayPauseIcon();
       playPauseBtn.setAttribute('aria-label', label);
-      playPauseBtn.title = label;
+      playPauseBtn.removeAttribute('title');
+      playPauseBtn.dataset.tooltip = label;
       playPauseBtn.classList.toggle('pause-btn', isPauseAction);
       playPauseBtn.classList.toggle('resume-btn', !isPauseAction && Jukebox.State.currentSong && Jukebox.State.isPaused);
+      Jukebox.refreshTooltip(playPauseBtn);
     }
   },
 
@@ -683,6 +727,12 @@ window.Jukebox = {
       : window.t('Jukebox.unlockSongSort', '解锁歌曲排序');
   },
 
+  getSongSortLockTooltip: function() {
+    return Jukebox.isSongSortUnlocked()
+      ? window.t('Jukebox.songSortLockTooltipUnlocked', '歌曲排序已解锁：可以拖动歌曲调整顺序，点击后锁定防误拖')
+      : window.t('Jukebox.songSortLockTooltipLocked', '歌曲排序已锁定：防止误拖，点击解锁后可拖动歌曲调整顺序');
+  },
+
   getSongSortLockIcon: function() {
     if (Jukebox.isSongSortUnlocked()) {
       return '<svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="M7 10V7a5 5 0 0 1 9.6-1.9l-1.9.8A3 3 0 0 0 9 7v3h8a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2zm0 2v7h10v-7H7zm4 2h2v3h-2v-3z"/></svg>';
@@ -706,11 +756,13 @@ window.Jukebox = {
     const scope = root || document;
     const unlocked = Jukebox.isSongSortUnlocked();
     const label = Jukebox.getSongSortLockLabel();
+    const tooltip = Jukebox.getSongSortLockTooltip();
     scope.querySelectorAll('.jukebox-sort-lock-btn').forEach((button) => {
       button.classList.toggle('unlocked', unlocked);
       button.setAttribute('aria-pressed', unlocked ? 'true' : 'false');
       button.setAttribute('aria-label', label);
-      button.title = label;
+      button.removeAttribute('title');
+      button.dataset.tooltip = tooltip;
       button.innerHTML = Jukebox.getSongSortLockIcon();
     });
     scope.querySelectorAll('#jukebox-song-list tr[data-song-id]').forEach((row) => {
@@ -833,24 +885,30 @@ window.Jukebox = {
   SongActionManager: {
     element: null,
 
-    // 管理器颜色配置
+    // 管理面板颜色配置
     Config: {
       // 面板
       panel: {
-        background: 'rgba(0, 0, 0, 0.85)',
-        color: 'white'
+        background: 'linear-gradient(160deg, rgba(255,255,255,.92), rgba(232,247,255,.86))',
+        color: 'rgba(28, 48, 68, 0.94)',
+        border: '1px solid rgba(120, 203, 232, 0.45)',
+        shadow: '0 18px 48px rgba(78, 153, 190, 0.28), 0 4px 18px rgba(255, 159, 189, 0.16)'
       },
       // 标签页
       tabs: {
-        borderBottom: 'rgba(255,255,255,0.2)',
-        tabColor: 'rgba(255,255,255,0.7)',
-        tabHoverBg: 'rgba(255,255,255,0.1)',
-        tabActiveBg: 'rgba(255,255,255,0.2)'
+        borderBottom: 'rgba(116, 190, 224, 0.28)',
+        tabColor: 'rgba(54, 92, 118, 0.76)',
+        tabHoverBg: 'rgba(99, 199, 232, 0.14)',
+        tabActiveBg: 'linear-gradient(135deg, rgba(99,199,232,.92), rgba(255,159,189,.82))',
+        tabActiveShadow: '0 6px 16px rgba(99, 199, 232, 0.25)'
       },
       // 列表项
       item: {
-        background: 'rgba(255,255,255,0.1)',
-        hoverBg: 'rgba(255,255,255,0.15)',
+        background: 'rgba(255,255,255,0.68)',
+        hoverBg: 'rgba(255,255,255,0.9)',
+        border: '1px solid rgba(120, 203, 232, 0.22)',
+        hoverBorder: 'rgba(255,159,189,0.36)',
+        shadow: '0 6px 18px rgba(78, 153, 190, 0.12)',
         draggingOpacity: '0.5'
       },
       // 格式颜色
@@ -859,84 +917,88 @@ window.Jukebox = {
         bvh: { primary: '#FF9800', bg: 'rgba(255,152,0,0.4)', bgHover: 'rgba(255,152,0,0.6)', bgDefault: 'rgba(255,152,0,0.85)', border: 'rgba(255,152,0,0.6)', borderDefault: 'rgba(255,200,100,0.9)', smallBg: 'rgba(255,152,0,0.3)', smallBgDefault: 'rgba(255,152,0,0.7)', smallBorder: 'rgba(255,152,0,0.5)' },
         vrma: { primary: '#4CAF50', bg: 'rgba(76,175,80,0.4)', bgHover: 'rgba(76,175,80,0.6)', bgDefault: 'rgba(76,175,80,0.85)', border: 'rgba(76,175,80,0.6)', borderDefault: 'rgba(120,220,120,0.9)', smallBg: 'rgba(76,175,80,0.3)', smallBgDefault: 'rgba(76,175,80,0.7)', smallBorder: 'rgba(76,175,80,0.5)' },
         fbx: { primary: '#9C27B0', bg: 'rgba(156,39,176,0.4)', bgHover: 'rgba(156,39,176,0.6)', bgDefault: 'rgba(156,39,176,0.85)', border: 'rgba(156,39,176,0.6)', borderDefault: 'rgba(200,100,220,0.9)', smallBg: 'rgba(156,39,176,0.3)', smallBgDefault: 'rgba(156,39,176,0.7)', smallBorder: 'rgba(156,39,176,0.5)' },
-        default: { primary: '#757575', bg: 'rgba(158,158,158,0.4)', bgHover: 'rgba(158,158,158,0.6)', bgDefault: 'rgba(158,158,158,0.85)', border: 'rgba(158,158,158,0.6)', borderDefault: 'rgba(200,200,200,0.9)', smallBg: 'rgba(158,158,158,0.3)', smallBgDefault: 'rgba(158,158,158,0.7)', smallBorder: 'rgba(158,158,158,0.5)' }
+        default: { primary: '#35a9c9', bg: 'rgba(99,199,232,0.24)', bgHover: 'rgba(99,199,232,0.34)', bgDefault: 'rgba(255,159,189,0.36)', border: 'rgba(99,199,232,0.42)', borderDefault: 'rgba(255,159,189,0.58)', smallBg: 'rgba(99,199,232,0.18)', smallBgDefault: 'rgba(255,159,189,0.26)', smallBorder: 'rgba(99,199,232,0.34)' }
       },
       // 功能色
       functional: {
-        success: '#4CAF50',
-        successBg: 'rgba(76,175,80,0.1)',
-        successHoverBg: 'rgba(76,175,80,0.3)',
-        danger: '#ff4444',
-        dangerHover: '#ff6666',
-        missing: '#ff6b6b',
-        missingBg: 'rgba(255,107,107,0.2)',
-        confirmBg: 'rgba(76,175,80,0.7)',
-        confirmHoverBg: 'rgba(76,175,80,0.9)',
-        cancelBg: 'rgba(244,67,54,0.7)',
-        cancelHoverBg: 'rgba(244,67,54,0.9)',
-        dropdownBg: 'rgba(40,40,40,0.95)',
-        tagBg: 'rgba(76,175,80,0.3)',
-        countBg: 'rgba(120,120,120,0.8)'
+        success: '#35a9c9',
+        successSubtleBg: 'rgba(99,199,232,0.06)',
+        successBg: 'rgba(99,199,232,0.14)',
+        successEmphasisBg: 'rgba(99,199,232,0.22)',
+        successHoverBg: 'rgba(99,199,232,0.28)',
+        successStrongHoverBg: 'rgba(99,199,232,0.46)',
+        danger: '#d94b61',
+        dangerHover: '#ec6a7c',
+        missing: '#d94b61',
+        missingBg: 'rgba(217,75,97,0.12)',
+        confirmBg: 'rgba(99,199,232,0.72)',
+        confirmHoverBg: 'rgba(99,199,232,0.9)',
+        cancelBg: 'rgba(217,75,97,0.18)',
+        cancelHoverBg: 'rgba(217,75,97,0.28)',
+        dropdownBg: 'rgba(248,252,255,0.98)',
+        tagBg: 'rgba(255,159,189,0.22)',
+        countBg: 'rgba(99,199,232,0.78)'
       },
       // 边框和分割线
       borders: {
-        dashed: 'rgba(255,255,255,0.2)',
-        solid: 'rgba(255,255,255,0.3)',
-        divider: 'rgba(255,255,255,0.1)',
-        itemFormatBg: 'rgba(255,255,255,0.1)'
+        dashed: 'rgba(99,199,232,0.32)',
+        solid: 'rgba(99,199,232,0.38)',
+        divider: 'rgba(116,190,224,0.18)',
+        itemFormatBg: 'rgba(99,199,232,0.12)'
       },
       // 文字颜色
       text: {
-        primary: 'white',
-        secondary: 'rgba(255,255,255,0.8)',
-        muted: 'rgba(255,255,255,0.6)',
-        placeholder: 'rgba(255,255,255,0.5)',
-        empty: 'rgba(255,255,255,0.5)'
+        primary: 'rgba(28,48,68,0.94)',
+        secondary: 'rgba(38,118,148,0.86)',
+        muted: 'rgba(54,112,140,0.78)',
+        placeholder: 'rgba(54,112,140,0.72)',
+        empty: 'rgba(38,118,148,0.78)'
       },
       // 输入框
       input: {
-        hoverBg: 'rgba(255,255,255,0.1)',
-        focusBg: 'rgba(255,255,255,0.2)'
+        hoverBg: 'rgba(99,199,232,0.12)',
+        focusBg: 'rgba(255,255,255,0.82)'
       },
       // 按钮
       buttons: {
         visibility: {
-          color: 'rgba(255,255,255,0.7)',
-          hoverBg: 'rgba(255,255,255,0.1)',
-          hoverColor: 'rgba(255,255,255,0.9)',
-          hiddenColor: 'rgba(255,255,255,0.4)'
+          color: 'rgba(38,118,148,0.9)',
+          hoverBg: 'rgba(99,199,232,0.2)',
+          hoverColor: 'rgba(28,48,68,0.92)',
+          hiddenColor: 'rgba(255,159,189,0.82)'
         },
         delete: {
-          color: '#ff6666',
-          hoverBg: 'rgba(255,102,102,0.2)'
+          color: '#d94b61',
+          hoverBg: 'rgba(217,75,97,0.12)'
         },
         primary: {
-          bg: '#4CAF50',
-          hoverBg: '#45a049'
+          bg: '#35a9c9',
+          hoverBg: '#63c7e8',
+          softBg: 'rgba(53,169,201,0.2)'
         }
       },
       // 选中状态
       selected: {
-        bg: 'rgba(76,175,80,0.2)',
-        border: '3px solid #4CAF50'
+        bg: 'rgba(99,199,232,0.2)',
+        border: '3px solid #63c7e8'
       },
       // 允许的文件扩展名（与后端 ALLOWED_AUDIO/ACTION_EXTENSIONS 保持一致）
       allowedAudioExts: ['mp3', 'wav', 'ogg', 'flac'],
       allowedActionExts: ['vmd', 'bvh', 'fbx', 'vrma'],
       // 拖放区域
       dropzone: {
-        overBg: 'rgba(100, 150, 255, 0.2)',
-        overBorder: '2px dashed rgba(100, 150, 255, 0.5)'
+        overBg: 'rgba(99,199,232,0.2)',
+        overBorder: '2px dashed rgba(99,199,232,0.5)'
       },
       // 底部区域
       footer: {
-        bg: 'rgba(0,0,0,0.3)',
-        borderTop: '1px solid rgba(255,255,255,0.1)',
-        importBg: 'rgba(0,0,0,0.4)',
-        buttonBg: 'rgba(255,255,255,0.2)',
-        buttonHoverBg: 'rgba(255,255,255,0.3)',
-        hintColor: 'rgba(255,255,255,0.7)',
-        shortcutColor: 'rgba(255,255,255,0.5)'
+        bg: 'rgba(255,255,255,0.58)',
+        borderTop: '1px solid rgba(116,190,224,0.2)',
+        importBg: 'rgba(255,255,255,0.52)',
+        buttonBg: 'rgba(255,255,255,0.78)',
+        buttonHoverBg: 'rgba(99,199,232,0.2)',
+        hintColor: 'rgba(38,118,148,0.82)',
+        shortcutColor: 'rgba(38,118,148,0.76)'
       }
     },
 
@@ -1241,15 +1303,18 @@ window.Jukebox = {
           <div class="sam-resize-handle" data-dir="se"></div>
         `}
         <div class="sam-header">
-          <span class="sam-title">${window.t('Jukebox.managerTitle', '管理器')}</span>
+          <span class="sam-title">${window.t('Jukebox.managerTitle', '点歌台管理')}</span>
           <span class="sam-drag-fill sam-drag-fill-left" aria-hidden="true"></span>
           <div class="sam-tabs">
-            <button class="sam-tab active" data-tab="songs">${window.t('Jukebox.songs', '歌曲')}</button>
-            <button class="sam-tab" data-tab="actions">${window.t('Jukebox.actions', '动作')}</button>
-            <button class="sam-tab" data-tab="bindings">${window.t('Jukebox.bindings', '绑定')}</button>
+            <button class="sam-tab active" data-tab="songs">${window.t('Jukebox.songs', '歌曲库')}</button>
+            <button class="sam-tab" data-tab="actions">${window.t('Jukebox.actions', '舞蹈动作')}</button>
+            <button class="sam-tab" data-tab="bindings">${window.t('Jukebox.bindings', '歌曲绑定')}</button>
           </div>
           <span class="sam-drag-fill sam-drag-fill-right" aria-hidden="true"></span>
-          <button class="sam-close-btn" onclick="Jukebox.SongActionManager.hide()" title="${window.t('Jukebox.close', '关闭')}">×</button>
+          <button class="sam-close-btn"
+                  onclick="Jukebox.SongActionManager.hide()"
+                  data-tooltip="${Jukebox.escapeAttr(window.t('Jukebox.close', '关闭'))}"
+                  aria-label="${Jukebox.escapeAttr(window.t('Jukebox.close', '关闭'))}">×</button>
         </div>
         <div class="sam-content">
           <div class="sam-panel songs-panel active"></div>
@@ -1271,7 +1336,7 @@ window.Jukebox = {
           </div>
           <span class="sam-selection-info" id="sam-selection-info"></span>
           <div class="sam-unified-hint" id="sam-unified-hint">
-            <span class="sam-hint-normal">${window.t('Jukebox.unifiedDropHint', '支持拖拽歌曲、动作、导入包到此处')} · <span class="sam-click-add" onclick="Jukebox.SongActionManager.showUnifiedFilePicker()">+ ${window.t('Jukebox.clickToAdd', '点击添加')}</span></span>
+            <span class="sam-hint-normal">${window.t('Jukebox.unifiedDropHint', '拖入歌曲 / 舞蹈动作 / 导入包，或点击添加')} · <span class="sam-click-add" onclick="Jukebox.SongActionManager.showUnifiedFilePicker()">+ ${window.t('Jukebox.clickToAdd', '点击添加')}</span></span>
             <span class="sam-hint-status" style="display:none"></span>
           </div>
         </div>
@@ -1299,6 +1364,32 @@ window.Jukebox = {
           
           this.renderTab(tabName);
         });
+      });
+      this.bindButtonTooltips(panel);
+    },
+
+    bindButtonTooltips(panel) {
+      if (!panel) return;
+      panel.querySelectorAll('.sam-close-btn').forEach((button) => {
+        Jukebox.setupTooltipOnce(button, () => button.dataset.tooltip || window.t('Jukebox.close', '关闭'));
+      });
+      panel.querySelectorAll('.sam-visibility-btn').forEach((button) => {
+        Jukebox.setupTooltipOnce(button, () => button.dataset.tooltip || button.getAttribute('aria-label') || '');
+      });
+      panel.querySelectorAll('.sam-delete-btn').forEach((button) => {
+        Jukebox.setupTooltipOnce(button, () => button.dataset.tooltip || window.t('Jukebox.delete', '删除'));
+      });
+      panel.querySelectorAll('.sam-unbind-btn').forEach((button) => {
+        Jukebox.setupTooltipOnce(button, () => button.dataset.tooltip || window.t('Jukebox.unbind', '解除绑定'));
+      });
+      panel.querySelectorAll('.sam-add-binding-btn').forEach((button) => {
+        Jukebox.setupTooltipOnce(button, () => button.dataset.tooltip || '');
+      });
+      panel.querySelectorAll('.sam-add-binding-confirm').forEach((button) => {
+        Jukebox.setupTooltipOnce(button, () => button.dataset.tooltip || window.t('Jukebox.confirm', '确认'));
+      });
+      panel.querySelectorAll('.sam-add-binding-cancel').forEach((button) => {
+        Jukebox.setupTooltipOnce(button, () => button.dataset.tooltip || window.t('Jukebox.cancel', '取消'));
       });
     },
     
@@ -1345,28 +1436,32 @@ window.Jukebox = {
         </div>
         <div class="sam-list">
             ${songs.length === 0 ? `<div class="sam-empty">${window.t('Jukebox.noSongs', '暂无歌曲')}</div>` :
-              songs.map(([id, song]) => `
-                <div class="sam-item ${song.visible === false ? 'sam-item-hidden' : ''} ${this.selectedSongs?.has(id) ? 'sam-item-selected' : ''}" data-id="${id}" draggable="true">
+              songs.map(([id, song]) => {
+                const idAttr = Jukebox.escapeAttr(id);
+                const idJs = Jukebox.escapeJsAttr(id);
+                return `
+                <div class="sam-item ${song.visible === false ? 'sam-item-hidden' : ''} ${this.selectedSongs?.has(id) ? 'sam-item-selected' : ''}" data-id="${idAttr}" draggable="true">
                   <div class="sam-item-header">
                     <label class="sam-checkbox sam-item-checkbox">
-                      <input type="checkbox" class="sam-song-select" data-id="${id}" ${this.selectedSongs?.has(id) ? 'checked' : ''} onchange="Jukebox.SongActionManager.toggleSongSelect('${id}', this.checked)">
+                      <input type="checkbox" class="sam-song-select" data-id="${idAttr}" ${this.selectedSongs?.has(id) ? 'checked' : ''} onchange="Jukebox.SongActionManager.toggleSongSelect('${idJs}', this.checked)">
                     </label>
-                    <span class="sam-item-name" contenteditable="true" data-neko-marquee title="${Jukebox.escapeHtml(song.name)}"
-                          onblur="Jukebox.SongActionManager.updateSongName('${id}', this.innerText)"
+                    <span class="sam-item-name" contenteditable="true" data-neko-marquee data-tooltip="${Jukebox.escapeAttr(song.name)}"
+                          onblur="Jukebox.SongActionManager.updateSongName('${idJs}', this.innerText)"
                           onkeydown="if(event.key==='Enter'){this.blur();event.preventDefault();}">${Jukebox.escapeHtml(song.name)}</span>
                     <div class="sam-item-actions">
                       <button class="sam-visibility-btn ${song.visible === false ? 'hidden' : ''}"
-                              onclick="Jukebox.SongActionManager.toggleSongVisibility('${id}')"
-                              title="${song.visible === false ? window.t('Jukebox.show', '显示') : window.t('Jukebox.hide', '隐藏')}">
+                              onclick="Jukebox.SongActionManager.toggleSongVisibility('${idJs}')"
+                              data-tooltip="${Jukebox.escapeAttr(song.visible === false ? window.t('Jukebox.show', '显示') : window.t('Jukebox.hide', '隐藏'))}"
+                              aria-label="${Jukebox.escapeAttr(song.visible === false ? window.t('Jukebox.show', '显示') : window.t('Jukebox.hide', '隐藏'))}">
                         ${song.visible === false
                           ? '<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/><line x1="3" y1="3" x2="21" y2="21" stroke="currentColor" stroke-width="2"/></svg>'
                           : '<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>'}
                       </button>
-                      <button class="sam-delete-btn" onclick="Jukebox.SongActionManager.confirmDeleteSong('${id}')" title="${window.t('Jukebox.delete', '删除')}">🗑</button>
+                      <button class="sam-delete-btn" onclick="Jukebox.SongActionManager.confirmDeleteSong('${idJs}')" data-tooltip="${Jukebox.escapeAttr(window.t('Jukebox.delete', '删除'))}" aria-label="${Jukebox.escapeAttr(window.t('Jukebox.delete', '删除'))}">🗑</button>
                     </div>
                   </div>
-                  <div class="sam-item-artist" contenteditable="true" data-neko-marquee title="${Jukebox.escapeHtml(song.artist || window.t('Jukebox.unknown', '未知'))}"
-                       onblur="Jukebox.SongActionManager.updateSongArtist('${id}', this.innerText)"
+                  <div class="sam-item-artist" contenteditable="true" data-neko-marquee data-tooltip="${Jukebox.escapeAttr(song.artist || window.t('Jukebox.unknown', '未知'))}"
+                       onblur="Jukebox.SongActionManager.updateSongArtist('${idJs}', this.innerText)"
                        onkeydown="if(event.key==='Enter'){this.blur();event.preventDefault();}">${Jukebox.escapeHtml(song.artist || window.t('Jukebox.unknown', '未知'))}
                   </div>
                   <div class="sam-item-bindings">
@@ -1378,21 +1473,25 @@ window.Jukebox = {
                       const titleText = isDefault
                         ? `${window.t('Jukebox.defaultAction', '默认动画')} - ${window.t('Jukebox.clickSetDefault', '点击设为默认')}\n${window.t('Jukebox.format', '格式')}: ${format.toUpperCase()}`
                         : `${window.t('Jukebox.clickSetDefault', '点击设为默认')}\n${window.t('Jukebox.format', '格式')}: ${format.toUpperCase()}`;
+                      const actionIdJs = Jukebox.escapeJsAttr(actionId);
                       return `<span class="sam-binding-tag sam-action-tag sam-action-tag-${format.toLowerCase()} ${isDefault ? 'sam-action-tag-default' : ''}"
                                    data-neko-marquee
-                                   onclick="Jukebox.SongActionManager.setDefaultAction('${id}', '${actionId}')"
-                                   title="${titleText}">
+                                   data-tooltip="${Jukebox.escapeAttr(titleText)}"
+                                   onclick="Jukebox.SongActionManager.setDefaultAction('${idJs}', '${actionIdJs}')"
+                                   >
                         ${isDefault ? '★ ' : ''}${Jukebox.escapeHtml(action.name)}
                       </span>`;
                     }).join('')}
                   </div>
                 </div>
-              `).join('')}
+              `}).join('')}
           </div>
       `;
       this.syncCheckboxState(panel.querySelector('#select-all-songs'), allSongsSelected, hasAnySongsSelected && !allSongsSelected);
       this.bindDragEvents(panel);
       this.bindFileDropEvents(panel, 'audio');
+      this.bindButtonTooltips(panel);
+      Jukebox.bindTextTooltips(panel);
       Jukebox.scheduleMarqueeTextUpdate(panel);
     },
 
@@ -1415,34 +1514,37 @@ window.Jukebox = {
         <div class="sam-list">
             ${actions.length === 0 ? `<div class="sam-empty">${window.t('Jukebox.noActions', '暂无动画')}</div>` :
               actions.map(([id, action]) => {
+                const idAttr = Jukebox.escapeAttr(id);
+                const idJs = Jukebox.escapeJsAttr(id);
                 const format = action.format || 'vmd';
                 const formatColor = this.getFormatColor(format);
                 return `
-                <div class="sam-item ${action.visible === false ? 'sam-item-hidden' : ''} ${this.selectedActions?.has(id) ? 'sam-item-selected' : ''}" data-id="${id}" draggable="true">
+                <div class="sam-item ${action.visible === false ? 'sam-item-hidden' : ''} ${this.selectedActions?.has(id) ? 'sam-item-selected' : ''}" data-id="${idAttr}" draggable="true">
                   <div class="sam-item-header">
                     <label class="sam-checkbox sam-item-checkbox">
-                      <input type="checkbox" class="sam-action-select" data-id="${id}" ${this.selectedActions?.has(id) ? 'checked' : ''} onchange="Jukebox.SongActionManager.toggleActionSelect('${id}', this.checked)">
+                      <input type="checkbox" class="sam-action-select" data-id="${idAttr}" ${this.selectedActions?.has(id) ? 'checked' : ''} onchange="Jukebox.SongActionManager.toggleActionSelect('${idJs}', this.checked)">
                     </label>
                     <span class="sam-format-dot" style="background-color: ${formatColor};"></span>
-                    <span class="sam-item-name" contenteditable="true" data-neko-marquee title="${Jukebox.escapeHtml(action.name)}"
-                          onblur="Jukebox.SongActionManager.updateActionName('${id}', this.innerText)"
+                    <span class="sam-item-name" contenteditable="true" data-neko-marquee data-tooltip="${Jukebox.escapeAttr(action.name)}"
+                          onblur="Jukebox.SongActionManager.updateActionName('${idJs}', this.innerText)"
                           onkeydown="if(event.key==='Enter'){this.blur();event.preventDefault();}">${Jukebox.escapeHtml(action.name)}</span>
                     <div class="sam-item-actions">
                       ${action.missing ? `<span class="sam-missing-badge">${window.t('Jukebox.missing', '缺失')}</span>` : ''}
                       <button class="sam-visibility-btn ${action.visible === false ? 'hidden' : ''}"
-                              onclick="Jukebox.SongActionManager.toggleActionVisibility('${id}')"
-                              title="${action.visible === false ? window.t('Jukebox.show', '显示') : window.t('Jukebox.hide', '隐藏')}">
+                              onclick="Jukebox.SongActionManager.toggleActionVisibility('${idJs}')"
+                              data-tooltip="${Jukebox.escapeAttr(action.visible === false ? window.t('Jukebox.show', '显示') : window.t('Jukebox.hide', '隐藏'))}"
+                              aria-label="${Jukebox.escapeAttr(action.visible === false ? window.t('Jukebox.show', '显示') : window.t('Jukebox.hide', '隐藏'))}">
                         ${action.visible === false
                           ? '<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/><line x1="3" y1="3" x2="21" y2="21" stroke="currentColor" stroke-width="2"/></svg>'
                           : '<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>'}
                       </button>
-                      <button class="sam-delete-btn" onclick="Jukebox.SongActionManager.confirmDeleteAction('${id}')" title="${window.t('Jukebox.delete', '删除')}">🗑</button>
+                      <button class="sam-delete-btn" onclick="Jukebox.SongActionManager.confirmDeleteAction('${idJs}')" data-tooltip="${Jukebox.escapeAttr(window.t('Jukebox.delete', '删除'))}" aria-label="${Jukebox.escapeAttr(window.t('Jukebox.delete', '删除'))}">🗑</button>
                     </div>
                   </div>
                   <div class="sam-item-bindings">
                     ${this.getActionBindings(id).filter(songId => this.shouldShowSong(this.data.songs[songId])).map(songId => {
                       const song = this.data.songs[songId];
-                      return song ? `<span class="sam-binding-tag" data-neko-marquee title="${Jukebox.escapeHtml(song.name)}">${Jukebox.escapeHtml(song.name)}</span>` : '';
+                      return song ? `<span class="sam-binding-tag" data-neko-marquee data-tooltip="${Jukebox.escapeAttr(song.name)}">${Jukebox.escapeHtml(song.name)}</span>` : '';
                     }).join('')}
                   </div>
                 </div>
@@ -1452,6 +1554,8 @@ window.Jukebox = {
       this.syncCheckboxState(panel.querySelector('#select-all-actions'), allActionsSelected, hasAnyActionsSelected && !allActionsSelected);
       this.bindDragEvents(panel);
       this.bindFileDropEvents(panel, 'action');
+      this.bindButtonTooltips(panel);
+      Jukebox.bindTextTooltips(panel);
       Jukebox.scheduleMarqueeTextUpdate(panel);
     },
 
@@ -1481,14 +1585,16 @@ window.Jukebox = {
                   const boundActions = this.getSongBindings(id).filter(actionId => this.shouldShowAction(this.data.actions[actionId]));
                   const isSelected = this.bindingSelectedSongs.has(id);
                   const songIndex = index + 1;
+                  const idAttr = Jukebox.escapeAttr(id);
+                  const idJs = Jukebox.escapeJsAttr(id);
                   return `
-                <div class="sam-binding-item ${isSelected ? 'sam-binding-item-selected' : ''}" data-song-id="${id}" draggable="true" data-index="${songIndex}">
+                <div class="sam-binding-item ${isSelected ? 'sam-binding-item-selected' : ''}" data-song-id="${idAttr}" draggable="true" data-index="${songIndex}">
                   <div class="sam-binding-item-main">
                     <label class="sam-checkbox sam-item-checkbox">
-                      <input type="checkbox" ${isSelected ? 'checked' : ''} onchange="Jukebox.SongActionManager.toggleBindingSongSelect('${id}', this.checked)">
+                      <input type="checkbox" ${isSelected ? 'checked' : ''} onchange="Jukebox.SongActionManager.toggleBindingSongSelect('${idJs}', this.checked)">
                     </label>
                     <span class="sam-binding-item-index">${songIndex}</span>
-                    <span class="sam-binding-item-name" data-neko-marquee title="${Jukebox.escapeHtml(song.name)}">${Jukebox.escapeHtml(song.name)}</span>
+                    <span class="sam-binding-item-name" data-neko-marquee data-tooltip="${Jukebox.escapeAttr(song.name)}">${Jukebox.escapeHtml(song.name)}</span>
                   </div>
                   <div class="sam-binding-item-tags">
                     ${boundActions.map(actionId => {
@@ -1501,16 +1607,17 @@ window.Jukebox = {
                       const titleText = isDefault
                         ? `${window.t('Jukebox.defaultAction', '默认动画')} - ${window.t('Jukebox.clickSetDefault', '点击设为默认')}\n${window.t('Jukebox.offset', '偏移')}: ${offset}${window.t('Jukebox.frame', '帧')}\n${window.t('Jukebox.format', '格式')}: ${format.toUpperCase()}`
                         : `${window.t('Jukebox.clickSetDefault', '点击设为默认')}\n${window.t('Jukebox.offset', '偏移')}: ${offset}${window.t('Jukebox.frame', '帧')}\n${window.t('Jukebox.format', '格式')}: ${format.toUpperCase()}`;
+                      const actionIdJs = Jukebox.escapeJsAttr(actionId);
                       return action ? `
                         <span class="sam-binding-tag-small sam-action-tag-small sam-action-tag-small-${format.toLowerCase()} ${isActionSelected ? 'sam-tag-selected' : ''} ${isDefault ? 'sam-action-tag-small-default' : ''}"
-                              onclick="Jukebox.SongActionManager.setDefaultAction('${id}', '${actionId}')"
-                              title="${titleText}">
+                              onclick="Jukebox.SongActionManager.setDefaultAction('${idJs}', '${actionIdJs}')"
+                              data-tooltip="${Jukebox.escapeAttr(titleText)}">
                           <span class="sam-format-dot" style="background-color: ${formatColor};"></span>
                           <span class="sam-binding-tag-label" data-neko-marquee>${isDefault ? '★ ' : ''}${Jukebox.escapeHtml(action.name)}</span>
-                          <button class="sam-unbind-btn" onclick="event.stopPropagation(); Jukebox.SongActionManager.unbindSongFromAction('${id}', '${actionId}');" title="${window.t('Jukebox.unbind', '解除绑定')}">×</button>
+                          <button class="sam-unbind-btn" onclick="event.stopPropagation(); Jukebox.SongActionManager.unbindSongFromAction('${idJs}', '${actionIdJs}');" data-tooltip="${Jukebox.escapeAttr(window.t('Jukebox.unbind', '解除绑定'))}" aria-label="${Jukebox.escapeAttr(window.t('Jukebox.unbind', '解除绑定'))}">×</button>
                         </span>` : '';
                     }).join('')}
-                    <button class="sam-add-binding-btn" onclick="Jukebox.SongActionManager.showAddBindingInput(this, '${id}', 'song')" title="${window.t('Jukebox.addActionBinding', '手动添加动画绑定')}">+</button>
+                    <button class="sam-add-binding-btn" onclick="Jukebox.SongActionManager.showAddBindingInput(this, '${idJs}', 'song')" data-tooltip="${Jukebox.escapeAttr(window.t('Jukebox.addActionBinding', '手动添加动画绑定'))}" aria-label="${Jukebox.escapeAttr(window.t('Jukebox.addActionBinding', '手动添加动画绑定'))}">+</button>
                   </div>
                 </div>
               `}).join('')}
@@ -1532,15 +1639,17 @@ window.Jukebox = {
                   const format = action.format || 'vmd';
                   const formatColor = this.getFormatColor(format);
                   const actionIndex = index + 1;
+                  const idAttr = Jukebox.escapeAttr(id);
+                  const idJs = Jukebox.escapeJsAttr(id);
                   return `
-                <div class="sam-binding-item ${isSelected ? 'sam-binding-item-selected' : ''}" data-action-id="${id}" draggable="true" data-index="${actionIndex}">
+                <div class="sam-binding-item ${isSelected ? 'sam-binding-item-selected' : ''}" data-action-id="${idAttr}" draggable="true" data-index="${actionIndex}">
                   <div class="sam-binding-item-main">
                     <label class="sam-checkbox sam-item-checkbox">
-                      <input type="checkbox" ${isSelected ? 'checked' : ''} onchange="Jukebox.SongActionManager.toggleBindingActionSelect('${id}', this.checked)">
+                      <input type="checkbox" ${isSelected ? 'checked' : ''} onchange="Jukebox.SongActionManager.toggleBindingActionSelect('${idJs}', this.checked)">
                     </label>
                     <span class="sam-binding-item-index">${actionIndex}</span>
                     <span class="sam-format-dot" style="background-color: ${formatColor};"></span>
-                    <span class="sam-binding-item-name" data-neko-marquee title="${Jukebox.escapeHtml(action.name)}">${Jukebox.escapeHtml(action.name)}</span>
+                    <span class="sam-binding-item-name" data-neko-marquee data-tooltip="${Jukebox.escapeAttr(action.name)}">${Jukebox.escapeHtml(action.name)}</span>
                   </div>
                   <div class="sam-binding-item-tags">
                     ${boundSongs.filter(songId => this.shouldShowSong(this.data.songs[songId])).map(songId => {
@@ -1548,13 +1657,14 @@ window.Jukebox = {
                       const isSongSelected = this.bindingSelectedSongs.has(songId);
                       const offset = this.data.bindings[songId]?.[id]?.offset || 0;
                       const titleText = `${window.t('Jukebox.offset', '偏移')}: ${offset}${window.t('Jukebox.frame', '帧')}`;
+                      const songIdJs = Jukebox.escapeJsAttr(songId);
                       return song ? `
-                        <span class="sam-binding-tag-small ${isSongSelected ? 'sam-tag-selected' : ''}" title="${titleText}">
+                        <span class="sam-binding-tag-small ${isSongSelected ? 'sam-tag-selected' : ''}" data-tooltip="${Jukebox.escapeAttr(titleText)}">
                           <span class="sam-binding-tag-label" data-neko-marquee>${Jukebox.escapeHtml(song.name)}</span>
-                          <button class="sam-unbind-btn" onclick="Jukebox.SongActionManager.unbindSongFromAction('${songId}', '${id}'); event.stopPropagation();" title="${window.t('Jukebox.unbind', '解除绑定')}">×</button>
+                          <button class="sam-unbind-btn" onclick="Jukebox.SongActionManager.unbindSongFromAction('${songIdJs}', '${idJs}'); event.stopPropagation();" data-tooltip="${Jukebox.escapeAttr(window.t('Jukebox.unbind', '解除绑定'))}" aria-label="${Jukebox.escapeAttr(window.t('Jukebox.unbind', '解除绑定'))}">×</button>
                         </span>` : '';
                     }).join('')}
-                    <button class="sam-add-binding-btn" onclick="Jukebox.SongActionManager.showAddBindingInput(this, '${id}', 'action')" title="${window.t('Jukebox.addSongBinding', '手动添加歌曲绑定')}">+</button>
+                    <button class="sam-add-binding-btn" onclick="Jukebox.SongActionManager.showAddBindingInput(this, '${idJs}', 'action')" data-tooltip="${Jukebox.escapeAttr(window.t('Jukebox.addSongBinding', '手动添加歌曲绑定'))}" aria-label="${Jukebox.escapeAttr(window.t('Jukebox.addSongBinding', '手动添加歌曲绑定'))}">+</button>
                   </div>
                 </div>
               `}).join('')}
@@ -1565,6 +1675,8 @@ window.Jukebox = {
       this.syncCheckboxState(panel.querySelector('#select-all-binding-songs'), allBindingSongsSelected, hasAnyBindingSongsSelected && !allBindingSongsSelected);
       this.syncCheckboxState(panel.querySelector('#select-all-binding-actions'), allBindingActionsSelected, hasAnyBindingActionsSelected && !allBindingActionsSelected);
       this.bindBindingDragEvents(panel);
+      this.bindButtonTooltips(panel);
+      Jukebox.bindTextTooltips(panel);
       Jukebox.scheduleMarqueeTextUpdate(panel);
     },
     
@@ -2913,9 +3025,9 @@ window.Jukebox = {
       const inputWrapper = document.createElement('span');
       inputWrapper.className = 'sam-add-binding-input-wrapper';
       inputWrapper.innerHTML = `
-        <input type="text" class="sam-add-binding-input" placeholder="${window.t('Jukebox.inputIndexOrName', '输入序号或名称')}">
-        <button class="sam-add-binding-confirm" title="${window.t('Jukebox.confirm', '确认')}">✓</button>
-        <button class="sam-add-binding-cancel" title="${window.t('Jukebox.cancel', '取消')}">✕</button>
+        <input type="text" class="sam-add-binding-input" placeholder="${Jukebox.escapeAttr(window.t('Jukebox.inputIndexOrName', '输入序号或名称'))}">
+        <button class="sam-add-binding-confirm" data-tooltip="${Jukebox.escapeAttr(window.t('Jukebox.confirm', '确认'))}" aria-label="${Jukebox.escapeAttr(window.t('Jukebox.confirm', '确认'))}">✓</button>
+        <button class="sam-add-binding-cancel" data-tooltip="${Jukebox.escapeAttr(window.t('Jukebox.cancel', '取消'))}" aria-label="${Jukebox.escapeAttr(window.t('Jukebox.cancel', '取消'))}">✕</button>
       `;
 
       // 替换按钮为输入框
@@ -2941,9 +3053,9 @@ window.Jukebox = {
       const dropdown = document.createElement('div');
       dropdown.className = 'sam-add-binding-dropdown';
       dropdown.innerHTML = filteredItems.map(({ id, item, originalIndex }) =>
-        `<div class="sam-add-binding-option" data-id="${id}">
+        `<div class="sam-add-binding-option" data-id="${Jukebox.escapeAttr(id)}">
           <span class="sam-add-binding-option-index">${originalIndex}</span>
-          <span class="sam-add-binding-option-name">${item.name}</span>
+          <span class="sam-add-binding-option-name">${Jukebox.escapeHtml(item.name)}</span>
         </div>`
       ).join('');
 
@@ -2954,6 +3066,8 @@ window.Jukebox = {
       const input = inputWrapper.querySelector('.sam-add-binding-input');
       const confirmBtn = inputWrapper.querySelector('.sam-add-binding-confirm');
       const cancelBtn = inputWrapper.querySelector('.sam-add-binding-cancel');
+      Jukebox.setupTooltipOnce(confirmBtn, () => confirmBtn.dataset.tooltip || window.t('Jukebox.confirm', '确认'));
+      Jukebox.setupTooltipOnce(cancelBtn, () => cancelBtn.dataset.tooltip || window.t('Jukebox.cancel', '取消'));
 
       input.focus();
 
@@ -3745,7 +3859,10 @@ window.Jukebox = {
           display: flex;
           flex-direction: column;
           box-sizing: border-box;
-          border: 2px solid transparent;
+          border: ${C.panel.border};
+          box-shadow: ${C.panel.shadow};
+          backdrop-filter: blur(18px) saturate(1.12);
+          -webkit-backdrop-filter: blur(18px) saturate(1.12);
           transition: border-color 0.3s, box-shadow 0.3s;
           pointer-events: auto;
           cursor: default;
@@ -3788,15 +3905,18 @@ window.Jukebox = {
         }
 
         .sam-header {
-          display: flex;
-          justify-content: space-between;
+          display: grid;
+          grid-template-columns: auto minmax(0, 1fr) auto;
           align-items: center;
           margin-bottom: 10px;
-          padding: 15px 15px 10px;
+          padding: 12px 12px 10px 16px;
           border-bottom: 1px solid ${C.tabs.borderBottom};
-          gap: 10px;
+          gap: 8px;
           cursor: grab;
           touch-action: none;
+          min-height: 58px;
+          box-sizing: border-box;
+          overflow: visible;
         }
 
         .sam-title,
@@ -3814,9 +3934,7 @@ window.Jukebox = {
         }
 
         .sam-drag-fill {
-          align-self: stretch;
-          flex: 1 1 24px;
-          min-width: 16px;
+          display: none;
         }
 
         body.sam-panel-dragging {
@@ -3833,55 +3951,72 @@ window.Jukebox = {
         .sam-title {
           font-size: 16px;
           font-weight: 600;
-          flex-shrink: 0;
+          color: ${C.text.primary};
+          min-width: 0;
+          white-space: nowrap;
         }
 
         .sam-close-btn {
-          background: none;
-          border: none;
-          color: ${C.panel.color};
-          font-size: 24px;
+          background: rgba(255,255,255,0.46);
+          border: 1px solid rgba(99,199,232,0.16);
+          color: rgba(38,118,148,0.86);
+          font-weight: 500;
+          font-size: 28px;
           cursor: pointer;
           padding: 0;
-          width: 30px;
-          height: 30px;
+          width: 36px;
+          height: 36px;
+          min-width: 36px;
           display: flex;
           align-items: center;
           justify-content: center;
-          border-radius: 4px;
-          transition: background 0.3s;
+          border-radius: 50%;
+          line-height: 1;
+          overflow: visible;
+          transition: background 0.2s ease, color 0.2s ease, transform 0.2s ease;
           flex-shrink: 0;
+          box-sizing: border-box;
         }
 
         .sam-close-btn:hover {
-          background: ${C.item.hoverBg};
+          color: ${C.text.primary};
+          background: ${C.tabs.tabHoverBg};
+          transform: scale(1.04);
         }
 
         .sam-tabs {
           display: flex;
           gap: 5px;
-          flex: 0 0 auto;
           justify-content: center;
+          min-width: 0;
+          overflow: hidden;
         }
 
         .sam-tab {
-          background: none;
-          border: none;
+          background: rgba(255,255,255,0.42);
+          border: 1px solid rgba(99,199,232,0.14);
           color: ${C.tabs.tabColor};
-          padding: 5px 10px;
+          padding: 6px 10px;
+          min-width: 0;
           cursor: pointer;
-          border-radius: 4px;
-          transition: all 0.3s;
+          border-radius: 999px;
+          font-weight: 600;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          transition: background 0.2s ease, color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
         }
 
         .sam-tab:hover {
           color: ${C.text.primary};
           background: ${C.tabs.tabHoverBg};
+          transform: translateY(-1px);
         }
 
         .sam-tab.active {
-          color: ${C.text.primary};
+          color: white;
           background: ${C.tabs.tabActiveBg};
+          box-shadow: ${C.tabs.tabActiveShadow};
         }
         
         .sam-content {
@@ -3928,7 +4063,7 @@ window.Jukebox = {
 
         .sam-file-drop-zone:hover {
           border-color: ${C.functional.success};
-          background: ${C.functional.successBg.replace('0.1', '0.05')};
+          background: ${C.functional.successSubtleBg};
         }
 
         .sam-file-drop-zone.drag-over {
@@ -3945,6 +4080,9 @@ window.Jukebox = {
           color: ${C.text.placeholder};
           text-align: center;
           flex-shrink: 0;
+          background: rgba(232,247,255,0.58);
+          border: 1px dashed rgba(99,199,232,0.24);
+          border-radius: 8px;
         }
 
         .sam-drop-icon {
@@ -3972,13 +4110,17 @@ window.Jukebox = {
         .sam-item {
           background: ${C.item.background};
           padding: 10px;
-          border-radius: 6px;
+          border: ${C.item.border};
+          border-radius: 10px;
+          box-shadow: ${C.item.shadow};
           cursor: default;
-          transition: all 0.3s;
+          transition: background 0.2s ease, border-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
         }
 
         .sam-item:hover {
           background: ${C.item.hoverBg};
+          border-color: ${C.item.hoverBorder};
+          transform: translateY(-1px);
         }
 
         .sam-item.dragging {
@@ -3995,10 +4137,11 @@ window.Jukebox = {
 
         .sam-item-format {
           font-size: 11px;
-          color: ${C.text.muted};
-          background: ${C.borders.itemFormatBg};
+          color: ${C.text.secondary};
+          background: rgba(232,247,255,0.82);
+          border: 1px solid rgba(99,199,232,0.18);
           padding: 2px 6px;
-          border-radius: 3px;
+          border-radius: 999px;
         }
 
         .sam-missing-badge {
@@ -4006,7 +4149,7 @@ window.Jukebox = {
           color: ${C.functional.missing};
           background: ${C.functional.missingBg};
           padding: 2px 6px;
-          border-radius: 3px;
+          border-radius: 999px;
         }
 
         .sam-item-bindings {
@@ -4018,8 +4161,9 @@ window.Jukebox = {
 
         .sam-binding-tag {
           font-size: 10px;
-          color: ${C.text.secondary};
+          color: rgba(38, 118, 148, 0.9);
           background: ${C.functional.tagBg};
+          border: 1px solid rgba(255,159,189,0.18);
           padding: 2px 6px;
           border-radius: 10px;
           display: inline-block;
@@ -4145,6 +4289,10 @@ window.Jukebox = {
           text-align: center;
           color: ${C.text.empty};
           padding: 20px;
+          margin: 6px;
+          border-radius: 10px;
+          background: rgba(232,247,255,0.52);
+          border: 1px dashed rgba(99,199,232,0.24);
         }
 
         .sam-add-btn {
@@ -4160,7 +4308,7 @@ window.Jukebox = {
         }
 
         .sam-add-btn:hover {
-          background: ${C.functional.successHoverBg.replace('0.3', '0.5')};
+          background: ${C.functional.successStrongHoverBg};
         }
 
         .sam-bindings-container {
@@ -4190,6 +4338,7 @@ window.Jukebox = {
           margin: 0 0 10px 0;
           font-size: 13px;
           color: ${C.text.secondary};
+          font-weight: 700;
         }
 
         .sam-bindings-list {
@@ -4239,13 +4388,13 @@ window.Jukebox = {
 
         .sam-binding-item.drag-over {
           border: 2px solid ${C.functional.success};
-          background: ${C.functional.successBg.replace('0.1', '0.2')};
+          background: ${C.functional.successEmphasisBg};
           transform: scale(1.02);
         }
 
         .sam-binding-item.drag-over-duplicate {
           border: 2px solid ${C.buttons.primary.bg};
-          background: ${C.buttons.primary.bg.replace(')', ', 0.2)')};
+          background: ${C.buttons.primary.softBg};
           transform: scale(1.02);
         }
 
@@ -4261,8 +4410,9 @@ window.Jukebox = {
 
         .sam-binding-item-index {
           font-size: 11px;
-          color: ${C.text.muted};
-          background: ${C.borders.itemFormatBg};
+          color: ${C.text.secondary};
+          background: rgba(232,247,255,0.82);
+          border: 1px solid rgba(99,199,232,0.18);
           padding: 2px 6px;
           border-radius: 4px;
           min-width: 20px;
@@ -4275,7 +4425,8 @@ window.Jukebox = {
         }
 
         .sam-binding-item-name {
-          font-weight: 500;
+          font-weight: 650;
+          color: rgba(28,48,68,0.94);
           flex: 1;
           min-width: 0;
           max-width: 100%;
@@ -4312,81 +4463,94 @@ window.Jukebox = {
         }
 
         .sam-add-binding-btn {
-          width: 20px;
-          height: 20px;
-          border-radius: 50%;
-          border: 1px dashed ${C.borders.dashed};
-          background: transparent;
-          color: ${C.text.muted};
+          width: 22px;
+          height: 22px;
+          border-radius: 999px;
+          border: 1px dashed rgba(99, 199, 232, 0.46);
+          background: linear-gradient(160deg, rgba(255,255,255,0.88), rgba(232,247,255,0.72));
+          color: #35a9c9;
           font-size: 14px;
+          font-weight: 700;
           line-height: 1;
           cursor: pointer;
           display: flex;
           align-items: center;
           justify-content: center;
-          transition: all 0.2s;
-          flex: 0 0 20px;
+          transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
+          flex: 0 0 22px;
           box-sizing: border-box;
+          box-shadow: 0 3px 8px rgba(78, 153, 190, 0.12);
         }
 
         .sam-add-binding-btn:hover {
-          border-color: ${C.borders.solid};
-          color: ${C.text.primary};
-          background: ${C.tabs.tabHoverBg};
+          border-color: rgba(255, 159, 189, 0.5);
+          color: rgba(28, 48, 68, 0.94);
+          background: linear-gradient(135deg, rgba(99,199,232,0.24), rgba(255,159,189,0.2));
+          transform: translateY(-1px);
+          box-shadow: 0 5px 12px rgba(99, 199, 232, 0.18);
         }
 
         .sam-add-binding-input-wrapper {
           display: inline-flex;
           align-items: center;
-          gap: 2px;
+          gap: 4px;
+          position: relative;
         }
 
         .sam-add-binding-input {
-          width: 80px;
-          height: 20px;
-          padding: 0 4px;
-          font-size: 11px;
-          border: 1px solid ${C.borders.solid};
-          border-radius: 3px;
-          background: rgba(0,0,0,0.5);
+          width: 92px;
+          height: 24px;
+          padding: 0 8px;
+          font-size: 12px;
+          border: 1px solid rgba(99, 199, 232, 0.32);
+          border-radius: 999px;
+          background: rgba(255, 255, 255, 0.82);
           color: ${C.text.primary};
           outline: none;
+          box-sizing: border-box;
         }
 
         .sam-add-binding-input:focus {
-          border-color: ${C.borders.solid};
+          border-color: rgba(99, 199, 232, 0.72);
+          box-shadow: 0 0 0 3px rgba(99, 199, 232, 0.14);
         }
 
         .sam-add-binding-confirm,
         .sam-add-binding-cancel {
-          width: 18px;
-          height: 18px;
-          border: none;
-          border-radius: 3px;
+          width: 22px;
+          height: 22px;
+          border: 1px solid transparent;
+          border-radius: 999px;
           font-size: 10px;
+          font-weight: 700;
           cursor: pointer;
           display: flex;
           align-items: center;
           justify-content: center;
           padding: 0;
+          transition: background 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
         }
 
         .sam-add-binding-confirm {
           background: ${C.functional.confirmBg};
-          color: ${C.text.primary};
+          color: white;
         }
 
         .sam-add-binding-confirm:hover {
           background: ${C.functional.confirmHoverBg};
+          transform: translateY(-1px);
+          box-shadow: 0 5px 12px rgba(99, 199, 232, 0.2);
         }
 
         .sam-add-binding-cancel {
           background: ${C.functional.cancelBg};
-          color: ${C.text.primary};
+          color: #b94356;
+          border-color: rgba(217, 75, 97, 0.18);
         }
 
         .sam-add-binding-cancel:hover {
           background: ${C.functional.cancelHoverBg};
+          transform: translateY(-1px);
         }
 
         .sam-add-binding-dropdown {
@@ -4397,11 +4561,14 @@ window.Jukebox = {
           max-height: 200px;
           overflow-y: auto;
           background: ${C.functional.dropdownBg};
-          border: 1px solid ${C.borders.solid};
-          border-radius: 4px;
+          border: 1px solid rgba(99, 199, 232, 0.26);
+          border-radius: 10px;
           z-index: 1000;
           display: none;
-          margin-top: 2px;
+          margin-top: 6px;
+          box-shadow: 0 12px 26px rgba(78, 153, 190, 0.18);
+          backdrop-filter: blur(12px);
+          -webkit-backdrop-filter: blur(12px);
         }
 
         .sam-add-binding-option {
@@ -4470,12 +4637,12 @@ window.Jukebox = {
         }
 
         .sam-unbind-btn {
-          width: 14px;
-          height: 14px;
+          width: 16px;
+          height: 16px;
           border-radius: 50%;
-          background: ${C.functional.danger};
-          border: none;
-          color: ${C.text.primary};
+          background: rgba(255, 239, 244, 0.92);
+          border: 1px solid rgba(217, 75, 97, 0.32);
+          color: #b94356;
           font-size: 10px;
           font-weight: bold;
           cursor: pointer;
@@ -4496,7 +4663,7 @@ window.Jukebox = {
         }
 
         .sam-unbind-btn:hover {
-          background: ${C.functional.dangerHover};
+          background: rgba(217, 75, 97, 0.18);
           transform: scale(1.1);
         }
 
@@ -4590,7 +4757,7 @@ window.Jukebox = {
 
         .sam-drop-zone.drag-over {
           border-color: ${C.functional.success};
-          background: ${C.functional.successBg.replace('0.1', '0.2')};
+          background: ${C.functional.successEmphasisBg};
           z-index: 10;
         }
         
@@ -4611,7 +4778,8 @@ window.Jukebox = {
           flex: 1;
           display: flex;
           flex-direction: column;
-          background: rgba(0,0,0,0.2);
+          background: rgba(255,255,255,0.62);
+          border: 1px solid rgba(120, 203, 232, 0.22);
           border-radius: 8px;
           overflow: hidden;
         }
@@ -4621,14 +4789,14 @@ window.Jukebox = {
           justify-content: space-between;
           align-items: center;
           padding: 12px 16px;
-          background: rgba(255,255,255,0.05);
-          border-bottom: 1px solid rgba(255,255,255,0.1);
+          background: rgba(255,255,255,0.58);
+          border-bottom: 1px solid rgba(116, 190, 224, 0.18);
         }
         
         .sam-import-header h4 {
           margin: 0;
           font-size: 14px;
-          color: rgba(255,255,255,0.9);
+          color: ${C.text.primary};
         }
         
         .sam-import-list {
@@ -4700,7 +4868,8 @@ window.Jukebox = {
           max-width: 100%;
           overflow: hidden;
           white-space: nowrap;
-          font-weight: 500;
+          font-weight: 650;
+          color: rgba(28,48,68,0.94);
           cursor: text;
           padding: 2px 4px;
           border-radius: 3px;
@@ -4718,7 +4887,8 @@ window.Jukebox = {
 
         .sam-item-artist {
           font-size: 12px;
-          color: ${C.text.muted};
+          color: rgba(38,118,148,0.86);
+          font-weight: 500;
           cursor: text;
           padding: 2px 4px;
           border-radius: 3px;
@@ -4747,12 +4917,12 @@ window.Jukebox = {
         .sam-visibility-btn {
           width: 24px;
           height: 24px;
-          border: none;
-          background: transparent;
+          border: 1px solid rgba(99, 199, 232, 0.28);
+          background: linear-gradient(160deg, rgba(255,255,255,0.88), rgba(232,247,255,0.72));
           cursor: pointer;
           font-size: 14px;
-          border-radius: 4px;
-          transition: all 0.2s;
+          border-radius: 999px;
+          transition: background 0.2s ease, color 0.2s ease, transform 0.2s ease;
           display: flex;
           align-items: center;
           justify-content: center;
@@ -4762,26 +4932,31 @@ window.Jukebox = {
         .sam-visibility-btn:hover {
           background: ${C.buttons.visibility.hoverBg};
           color: ${C.buttons.visibility.hoverColor};
+          transform: translateY(-1px);
         }
 
         .sam-visibility-btn.hidden {
           color: ${C.buttons.visibility.hiddenColor};
+          border-color: rgba(255,159,189,0.28);
+          background: rgba(255,159,189,0.14);
         }
 
         .sam-delete-btn {
           width: 24px;
           height: 24px;
-          border: none;
-          background: transparent;
+          border: 1px solid rgba(217,75,97,0.24);
+          background: linear-gradient(160deg, rgba(255,255,255,0.88), rgba(255,239,244,0.72));
           cursor: pointer;
           font-size: 14px;
-          border-radius: 4px;
-          transition: all 0.2s;
+          border-radius: 999px;
+          transition: background 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
           color: ${C.buttons.delete.color};
         }
 
         .sam-delete-btn:hover {
-          background: ${C.buttons.delete.hoverBg};
+          background: rgba(217,75,97,0.18);
+          transform: translateY(-1px);
+          box-shadow: 0 5px 12px rgba(217,75,97,0.12);
         }
 
         .sam-checkbox {
@@ -4790,7 +4965,7 @@ window.Jukebox = {
           gap: 6px;
           cursor: pointer;
           font-size: 12px;
-          color: ${C.text.muted};
+          color: ${C.text.secondary};
         }
 
         .sam-checkbox input {
@@ -4841,6 +5016,10 @@ window.Jukebox = {
           font-size: 11px;
           color: ${C.footer.shortcutColor};
           text-align: center;
+          background: rgba(232,247,255,0.5);
+          border: 1px solid rgba(99,199,232,0.18);
+          border-radius: 999px;
+          padding: 4px 10px;
         }
 
         .sam-footer.drag-over {
@@ -4852,8 +5031,11 @@ window.Jukebox = {
           font-size: 11px;
           color: ${C.footer.shortcutColor};
           text-align: center;
-          padding: 4px 0;
+          padding: 5px 10px;
           min-height: 20px;
+          background: rgba(232,247,255,0.5);
+          border: 1px solid rgba(99,199,232,0.18);
+          border-radius: 999px;
         }
 
         .sam-hint-normal {
@@ -4889,15 +5071,17 @@ window.Jukebox = {
         .sam-btn {
           padding: 8px 16px;
           background: ${C.footer.buttonBg};
-          border: none;
+          border: 1px solid rgba(99, 199, 232, 0.18);
           color: ${C.text.primary};
-          border-radius: 4px;
+          border-radius: 999px;
           cursor: pointer;
           transition: all 0.3s;
+          box-shadow: 0 4px 12px rgba(78, 153, 190, 0.1);
         }
 
         .sam-btn:hover {
           background: ${C.footer.buttonHoverBg};
+          transform: translateY(-1px);
         }
 
         .sam-danger-action-wrap {
@@ -4906,13 +5090,13 @@ window.Jukebox = {
         }
 
         .sam-btn-danger {
-          background: rgba(190, 45, 45, 0.32);
-          color: #ffd7d7;
-          border: 1px solid rgba(255, 110, 110, 0.42);
+          background: rgba(217, 75, 97, 0.1);
+          color: #b94356;
+          border: 1px solid rgba(217, 75, 97, 0.26);
         }
 
         .sam-btn-danger:hover {
-          background: rgba(220, 60, 60, 0.46);
+          background: rgba(217, 75, 97, 0.18);
         }
 
         .sam-danger-tooltip {
@@ -4925,16 +5109,45 @@ window.Jukebox = {
           width: max-content;
           max-width: 320px;
           padding: 8px 10px;
-          border-radius: 6px;
-          background: rgba(20, 20, 24, 0.96);
-          border: 1px solid rgba(255,255,255,0.14);
-          box-shadow: 0 8px 24px rgba(0,0,0,0.32);
+          border-radius: 8px;
+          background: linear-gradient(160deg, rgba(255,255,255,0.96), rgba(232,247,255,0.92));
+          border: 1px solid rgba(217,75,97,0.18);
+          box-shadow: 0 10px 26px rgba(78, 153, 190, 0.18), 0 2px 8px rgba(217,75,97,0.1);
           color: ${C.text.primary};
           font-size: 12px;
           line-height: 1.45;
           text-align: left;
           white-space: pre-line;
           pointer-events: none;
+        }
+
+        .jukebox-tooltip {
+          position: fixed;
+          background: linear-gradient(160deg, rgba(255, 255, 255, 0.96), rgba(232, 247, 255, 0.92));
+          color: #24566a;
+          padding: 8px 12px;
+          border: 1px solid rgba(99, 199, 232, 0.28);
+          border-radius: 8px;
+          box-shadow: 0 10px 26px rgba(76, 157, 190, 0.18), 0 2px 8px rgba(255, 159, 189, 0.12);
+          backdrop-filter: blur(10px);
+          -webkit-backdrop-filter: blur(10px);
+          font-size: 12px;
+          line-height: 1.45;
+          pointer-events: none;
+          z-index: 100030;
+          box-sizing: border-box;
+          max-width: min(280px, calc(100vw - 16px));
+          overflow-wrap: anywhere;
+          text-align: center;
+          white-space: pre-line;
+          opacity: 0;
+          transform: translateY(2px);
+          transition: opacity 0.15s ease, transform 0.15s ease;
+        }
+
+        .jukebox-tooltip.visible {
+          opacity: 1;
+          transform: translateY(0);
         }
 
         .sam-danger-modal-backdrop {
@@ -4944,7 +5157,9 @@ window.Jukebox = {
           display: flex;
           align-items: center;
           justify-content: center;
-          background: rgba(0,0,0,0.52);
+          background: rgba(54, 92, 118, 0.28);
+          backdrop-filter: blur(6px);
+          -webkit-backdrop-filter: blur(6px);
           -webkit-app-region: no-drag;
           pointer-events: auto;
         }
@@ -4957,10 +5172,10 @@ window.Jukebox = {
         .sam-danger-modal {
           width: min(420px, calc(100vw - 32px));
           padding: 18px;
-          border-radius: 8px;
-          background: rgba(31, 34, 42, 0.98);
-          border: 1px solid rgba(255,255,255,0.14);
-          box-shadow: 0 18px 54px rgba(0,0,0,0.42);
+          border-radius: 12px;
+          background: linear-gradient(160deg, rgba(255,255,255,0.96), rgba(232,247,255,0.92));
+          border: 1px solid rgba(120,203,232,0.32);
+          box-shadow: 0 18px 54px rgba(78,153,190,0.24), 0 4px 18px rgba(217,75,97,0.12);
           color: ${C.text.primary};
           pointer-events: auto;
         }
@@ -4979,7 +5194,11 @@ window.Jukebox = {
         }
 
         .sam-danger-modal-detail {
-          color: ${C.text.muted};
+          color: ${C.text.secondary};
+          background: rgba(232,247,255,0.52);
+          border: 1px solid rgba(99,199,232,0.18);
+          border-radius: 8px;
+          padding: 8px 10px;
         }
 
         .sam-danger-modal-actions {
@@ -4998,18 +5217,20 @@ window.Jukebox = {
         .sam-danger-modal-actions button {
           min-width: 88px;
           padding: 8px 14px;
-          border-radius: 4px;
-          border: 1px solid rgba(255,255,255,0.16);
+          border-radius: 999px;
+          border: 1px solid rgba(99,199,232,0.18);
           color: ${C.text.primary};
           cursor: pointer;
         }
 
         .sam-danger-modal-cancel {
-          background: rgba(255,255,255,0.12);
+          background: rgba(255,255,255,0.72);
         }
 
         .sam-danger-modal-confirm {
-          background: rgba(190, 45, 45, 0.78);
+          background: rgba(217,75,97,0.16);
+          border-color: rgba(217,75,97,0.26);
+          color: #b94356;
         }
 
         .sam-danger-confirm-zone-final {
@@ -5048,9 +5269,11 @@ window.Jukebox = {
     window.Jukebox_logVolumeChange = Jukebox.logVolumeChange;
     window.Jukebox_togglePause = Jukebox.togglePause;
 
-    // 独立窗口模式：不需要绑定按钮和监听聊天框关闭
+    // 独立窗口模式不需要绑定旧 DOM；懒加载模式只跳过按钮绑定，仍保留聊天最小化清理监听。
     if (!window.__NEKO_JUKEBOX_STANDALONE__) {
-      Jukebox.setupButton();
+      if (!window.__NEKO_JUKEBOX_LAZY_LOADER__) {
+        Jukebox.setupButton();
+      }
       Jukebox.setupCloseListener();
     }
   },
@@ -5081,22 +5304,31 @@ window.Jukebox = {
   
   setupCloseListener: function(retries = 0) {
     const MAX_RETRIES = 20;
-    if (Jukebox.State.observer) return;
+    if (Jukebox.State.observer && Jukebox.State.closeListenerButton) return;
 
     const toggleChatBtn = document.getElementById('toggle-chat-btn');
     if (toggleChatBtn) {
-      toggleChatBtn.addEventListener('click', () => {
-        // 仅在聊天框即将最小化时销毁（展开时不需要）
-        const chatContainer = document.getElementById('chat-container');
-        const isCurrentlyMinimized = chatContainer &&
-          (chatContainer.classList.contains('minimized') || chatContainer.classList.contains('mobile-collapsed'));
-        if (isCurrentlyMinimized) {
-          // 当前已最小化 → 即将展开，不销毁
-          return;
+      if (!Jukebox.State.closeListenerHandler) {
+        Jukebox.State.closeListenerHandler = () => {
+          // 仅在聊天框即将最小化时销毁（展开时不需要）
+          const chatContainer = document.getElementById('chat-container');
+          const isCurrentlyMinimized = chatContainer &&
+            (chatContainer.classList.contains('minimized') || chatContainer.classList.contains('mobile-collapsed'));
+          if (isCurrentlyMinimized) {
+            // 当前已最小化 → 即将展开，不销毁
+            return;
+          }
+          console.log('[Jukebox]', window.t('Jukebox.minimizeDetected', '检测到对话框最小化，销毁点歌台'));
+          Jukebox.destroy();
+        };
+      }
+      if (Jukebox.State.closeListenerButton !== toggleChatBtn) {
+        if (Jukebox.State.closeListenerButton && Jukebox.State.closeListenerHandler) {
+          Jukebox.State.closeListenerButton.removeEventListener('click', Jukebox.State.closeListenerHandler);
         }
-        console.log('[Jukebox]', window.t('Jukebox.minimizeDetected', '检测到对话框最小化，销毁点歌台'));
-        Jukebox.destroy();
-      });
+        toggleChatBtn.addEventListener('click', Jukebox.State.closeListenerHandler);
+        Jukebox.State.closeListenerButton = toggleChatBtn;
+      }
       console.log('[Jukebox]', window.t('Jukebox.minimizeListenerSet', '最小化按钮监听器已设置'));
     } else {
       if (retries >= MAX_RETRIES) {
@@ -5108,26 +5340,40 @@ window.Jukebox = {
       return;
     }
     
-    const observer = new MutationObserver((mutations) => {
-      mutations.forEach((mutation) => {
-        if (mutation.type === 'childList') {
-          const removedNodes = Array.from(mutation.removedNodes);
-          const jukeboxRemoved = removedNodes.some(node => 
-            node === Jukebox.State.container
-          );
-          
-          if (jukeboxRemoved) {
-            console.log('[Jukebox]', window.t('Jukebox.removedDetected', '检测到点歌台被移除'));
-            Jukebox.State.isOpen = false;
+    if (!Jukebox.State.observer) {
+      const observer = new MutationObserver((mutations) => {
+        mutations.forEach((mutation) => {
+          if (mutation.type === 'childList') {
+            const removedNodes = Array.from(mutation.removedNodes);
+            const jukeboxRemoved = removedNodes.some(node =>
+              node === Jukebox.State.container
+            );
+
+            if (jukeboxRemoved) {
+              console.log('[Jukebox]', window.t('Jukebox.removedDetected', '检测到点歌台被移除'));
+              Jukebox.State.isOpen = false;
+            }
           }
-        }
+        });
       });
-    });
-    
-    observer.observe(document.body, { childList: true, subtree: true });
-    Jukebox.State.observer = observer;
-    
+
+      observer.observe(document.body, { childList: true, subtree: true });
+      Jukebox.State.observer = observer;
+    }
+
     console.log('[Jukebox]', window.t('Jukebox.closeListenerSet', '关闭监听器已设置'));
+  },
+
+  cleanupCloseListener: function() {
+    if (Jukebox.State.closeListenerButton && Jukebox.State.closeListenerHandler) {
+      Jukebox.State.closeListenerButton.removeEventListener('click', Jukebox.State.closeListenerHandler);
+    }
+    Jukebox.State.closeListenerButton = null;
+    Jukebox.State.closeListenerHandler = null;
+    if (Jukebox.State.observer) {
+      Jukebox.State.observer.disconnect();
+      Jukebox.State.observer = null;
+    }
   },
   
   toggle: function() {
@@ -5146,9 +5392,13 @@ window.Jukebox = {
   },
   
   open: function() {
+    const Jukebox = window.Jukebox || this;
     if (Jukebox.State.isOpen) return;
     
     Jukebox.buildUI();
+    if (!window.__NEKO_JUKEBOX_STANDALONE__) {
+      Jukebox.setupCloseListener();
+    }
     
     requestAnimationFrame(() => {
       setTimeout(() => {
@@ -5229,9 +5479,67 @@ window.Jukebox = {
     
     console.log('[Jukebox] 点歌台已显示');
   },
+
+  destroyPlayer: function() {
+    const player = Jukebox.State.player;
+    if (player) {
+      try {
+        if (typeof player.pause === 'function') player.pause();
+      } catch (_) {}
+      try {
+        if (typeof player.seek === 'function') player.seek(0);
+      } catch (_) {}
+      try {
+        if (player.list && typeof player.list.clear === 'function') player.list.clear();
+      } catch (_) {}
+      try {
+        if (typeof player.destroy === 'function') player.destroy();
+      } catch (error) {
+        console.warn('[Jukebox] APlayer 销毁失败:', error);
+      }
+    }
+
+    Jukebox.State.player = null;
+    Jukebox.State.boundPlayer = null;
+    Jukebox.State.audioElement = null;
+  },
+
+  prepareForUnload: function() {
+    Jukebox.stopProgressUpdate();
+    Jukebox.destroyPlayer();
+    Jukebox.hideTooltip();
+
+    if (Jukebox.State.marqueeRaf) {
+      cancelAnimationFrame(Jukebox.State.marqueeRaf);
+      Jukebox.State.marqueeRaf = null;
+    }
+    if (Jukebox.State.marqueeItems) {
+      Jukebox.State.marqueeItems.clear();
+    }
+
+    Jukebox.stopConfigPolling();
+
+    try {
+      if (Jukebox._broadcastChannel) {
+        Jukebox._broadcastChannel.onmessage = null;
+        Jukebox._broadcastChannel.close();
+        Jukebox._broadcastChannel = null;
+      }
+    } catch (_) {}
+
+  },
+
+  notifyFullClose: function(reason) {
+    try {
+      window.dispatchEvent(new CustomEvent('neko:jukebox-full-close', {
+        detail: { reason: reason || 'close' }
+      }));
+    } catch (_) {}
+  },
   
   close: function() {
     Jukebox.stopPlayback();
+    Jukebox.prepareForUnload();
     
     // 销毁管理器面板（移除 DOM 节点 + 清理拖拽监听）
     Jukebox.SongActionManager.destroy();
@@ -5292,10 +5600,12 @@ window.Jukebox = {
     }
     
     console.log('[Jukebox] 点歌台已关闭');
+    Jukebox.notifyFullClose('close');
   },
   
   destroy: function() {
     Jukebox.stopPlayback();
+    Jukebox.prepareForUnload();
     
     Jukebox.SongActionManager.destroy();
     
@@ -5342,6 +5652,7 @@ window.Jukebox = {
     Jukebox.State.songElements = {}; // 清空元素映射
 
     console.log('[Jukebox] 点歌台已销毁');
+    Jukebox.notifyFullClose('destroy');
   },
   
   buildUI: function() {
@@ -5364,9 +5675,12 @@ window.Jukebox = {
         </div>
         <div class="jukebox-header-drag-fill" aria-hidden="true"></div>
         <div class="jukebox-header-buttons">
-          <button class="jukebox-settings" onclick="Jukebox.SongActionManager.toggle()" title="${window.t('Jukebox.manager', '管理器')}">⚙</button>
-          <button class="jukebox-minimize" onclick="Jukebox_hide()" title="${window.t('Jukebox.minimize', '最小化')}">−</button>
-          <button class="jukebox-close" onclick="Jukebox_close()" title="${window.t('Jukebox.close', '关闭')}">×</button>
+          <button class="jukebox-settings" onclick="Jukebox.SongActionManager.toggle()" data-tooltip="${Jukebox.escapeAttr(window.t('Jukebox.manager', '点歌台管理与导入'))}" aria-label="${Jukebox.escapeAttr(window.t('Jukebox.manager', '点歌台管理与导入'))}">
+            <span class="jukebox-settings-icon" aria-hidden="true">⚙</span>
+            <span class="jukebox-settings-label">${window.t('Jukebox.settingsShort', '管理/导入')}</span>
+          </button>
+          <button class="jukebox-minimize" onclick="Jukebox_hide()" data-tooltip="${Jukebox.escapeAttr(window.t('Jukebox.minimize', '最小化'))}" aria-label="${Jukebox.escapeAttr(window.t('Jukebox.minimize', '最小化'))}">−</button>
+          <button class="jukebox-close" onclick="Jukebox_close()" data-tooltip="${Jukebox.escapeAttr(window.t('Jukebox.close', '关闭'))}" aria-label="${Jukebox.escapeAttr(window.t('Jukebox.close', '关闭'))}">×</button>
         </div>
       </div>
       <div class="jukebox-resize-handle" data-dir="n"></div>
@@ -5415,7 +5729,7 @@ window.Jukebox = {
               <th class="jukebox-sequence-th">
                 <div class="jukebox-sequence-header">
                   <span>${window.t('Jukebox.sequence', '序号')}</span>
-                  <button type="button" class="jukebox-sort-lock-btn" onclick="Jukebox.toggleSongSortLock(event)" title="${window.t('Jukebox.unlockSongSort', '解锁歌曲排序')}" aria-label="${window.t('Jukebox.unlockSongSort', '解锁歌曲排序')}" aria-pressed="false">
+          <button type="button" class="jukebox-sort-lock-btn" onclick="Jukebox.toggleSongSortLock(event)" data-tooltip="${Jukebox.escapeAttr(window.t('Jukebox.songSortLockTooltipLocked', '歌曲排序已锁定：防止误拖，点击解锁后可拖动歌曲调整顺序'))}" aria-label="${Jukebox.escapeAttr(window.t('Jukebox.unlockSongSort', '解锁歌曲排序'))}" aria-pressed="false">
                     ${Jukebox.getSongSortLockIcon()}
                   </button>
                 </div>
@@ -5439,26 +5753,26 @@ window.Jukebox = {
           <span id="jukebox-time-total">0:00</span>
         </div>
         <div class="jukebox-playback-controls">
-          <div id="jukebox-mode-controls" class="jukebox-mode-controls" aria-label="${window.t('Jukebox.switchPlaybackMode', '切换播放模式')}"></div>
+          <div id="jukebox-mode-controls" class="jukebox-mode-controls" aria-label="${Jukebox.escapeAttr(window.t('Jukebox.switchPlaybackMode', '切换播放模式'))}"></div>
           <div class="jukebox-control-divider" aria-hidden="true"></div>
           <div class="jukebox-transport-controls">
-            <button type="button" class="play-btn jukebox-transport-btn" id="jukebox-control-prev" onclick="Jukebox.playAdjacentSong(-1)" title="${window.t('Jukebox.previousSong', '上一首')}" aria-label="${window.t('Jukebox.previousSong', '上一首')}">
+            <button type="button" class="play-btn jukebox-transport-btn" id="jukebox-control-prev" onclick="Jukebox.playAdjacentSong(-1)" aria-label="${Jukebox.escapeAttr(window.t('Jukebox.previousSong', '上一首'))}">
               <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M6 6h2v12H6V6zm3 6 9 6V6l-9 6z"/></svg>
             </button>
-            <button type="button" class="play-btn jukebox-transport-btn jukebox-play-pause-btn" id="jukebox-control-play-pause" onclick="Jukebox.toggleGlobalPlayPause()" title="${window.t('Jukebox.play', '播放')}" aria-label="${window.t('Jukebox.play', '播放')}">
+            <button type="button" class="play-btn jukebox-transport-btn jukebox-play-pause-btn" id="jukebox-control-play-pause" onclick="Jukebox.toggleGlobalPlayPause()" data-tooltip="${Jukebox.escapeAttr(window.t('Jukebox.play', '播放'))}" aria-label="${Jukebox.escapeAttr(window.t('Jukebox.play', '播放'))}">
               <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
             </button>
-            <button type="button" class="play-btn jukebox-transport-btn" id="jukebox-control-next" onclick="Jukebox.playAdjacentSong(1)" title="${window.t('Jukebox.nextSong', '下一首')}" aria-label="${window.t('Jukebox.nextSong', '下一首')}">
+            <button type="button" class="play-btn jukebox-transport-btn" id="jukebox-control-next" onclick="Jukebox.playAdjacentSong(1)" aria-label="${Jukebox.escapeAttr(window.t('Jukebox.nextSong', '下一首'))}">
               <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M16 6h2v12h-2V6zM6 18l9-6-9-6v12z"/></svg>
             </button>
           </div>
           <div class="jukebox-volume-wrapper">
-            <button class="jukebox-speaker-btn" id="jukebox-speaker-btn" title="${window.t('Jukebox.mute', '静音')}">
+            <button class="jukebox-speaker-btn" id="jukebox-speaker-btn" aria-label="${Jukebox.escapeAttr(window.t('Jukebox.mute', '静音'))}">
               <svg class="speaker-icon" viewBox="0 0 24 24" width="20" height="20">
-                <path fill="${Jukebox.Config.volume.iconColor}" d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
+                <path fill="currentColor" d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
               </svg>
               <svg class="speaker-muted-icon" viewBox="0 0 24 24" width="20" height="20" style="display:none;">
-                <path fill="${Jukebox.Config.volume.iconColor}" d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/>
+                <path fill="currentColor" d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/>
               </svg>
             </button>
             <div class="jukebox-volume-popup">
@@ -5489,6 +5803,12 @@ window.Jukebox = {
 
     Jukebox.injectStyles();
     Jukebox.renderPlaybackControls();
+    Jukebox.bindTextTooltips(jukeboxContainer.querySelector('.jukebox-header-buttons'));
+    const sortLockButton = jukeboxContainer.querySelector('.jukebox-sort-lock-btn');
+    if (sortLockButton) {
+      Jukebox.setupTooltip(sortLockButton, () => Jukebox.getSongSortLockTooltip());
+    }
+    Jukebox.updateSongSortLockControls(jukeboxContainer);
 
     // Standalone 点歌台的桌面端拖拽/缩放统一交给 static/jukebox-standalone.js，
     // 避免在 open() 首帧先写入旧的 app-region 热区，导致标题按钮命中缓存异常。
@@ -5939,6 +6259,9 @@ window.Jukebox = {
         border-radius: 12px;
         box-shadow: ${Jukebox.Config.container.boxShadow};
         color: ${Jukebox.Config.container.color};
+        border: 1px solid rgba(120, 203, 232, 0.45);
+        backdrop-filter: blur(18px) saturate(1.12);
+        -webkit-backdrop-filter: blur(18px) saturate(1.12);
         padding: 0;
         display: flex;
         flex-direction: column;
@@ -6101,6 +6424,7 @@ window.Jukebox = {
         margin: 0;
         font-size: 20px;
         font-weight: 600;
+        color: ${Jukebox.Config.container.color};
         flex: 0 0 auto;
         white-space: nowrap;
       }
@@ -6256,63 +6580,86 @@ window.Jukebox = {
       }
 
       .jukebox-settings {
-        background: none;
-        border: none;
-        color: ${Jukebox.Config.container.color};
-        font-size: 20px;
+        background: rgba(255,255,255,0.58);
+        border: 1px solid rgba(99,199,232,0.22);
+        color: rgba(45, 78, 104, 0.86);
+        font-size: 13px;
+        font-weight: 700;
         cursor: pointer;
-        padding: 0;
-        width: 30px;
-        height: 30px;
+        padding: 0 12px;
+        min-width: 70px;
+        height: 34px;
         display: flex;
         align-items: center;
         justify-content: center;
-        border-radius: 4px;
-        transition: background 0.3s;
+        gap: 5px;
+        border-radius: 999px;
+        line-height: 1;
+        white-space: nowrap;
+        transition: background 0.2s ease, color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
       }
 
       .jukebox-settings:hover {
         background: ${Jukebox.Config.header.btnHoverBg};
+        color: rgba(28, 48, 68, 0.94);
+        transform: translateY(-1px);
+        box-shadow: 0 6px 14px rgba(99, 199, 232, 0.18);
+      }
+
+      .jukebox-settings-icon {
+        font-size: 15px;
+        line-height: 1;
+      }
+
+      .jukebox-settings-label {
+        line-height: 1;
       }
 
       .jukebox-minimize {
-        background: none;
-        border: none;
-        color: ${Jukebox.Config.container.color};
+        background: rgba(255,255,255,0.46);
+        border: 1px solid rgba(99,199,232,0.16);
+        color: rgba(45, 78, 104, 0.8);
         font-size: 24px;
         cursor: pointer;
         padding: 0;
-        width: 30px;
-        height: 30px;
+        width: 34px;
+        height: 34px;
         display: flex;
         align-items: center;
         justify-content: center;
-        border-radius: 4px;
-        transition: background 0.3s;
+        border-radius: 50%;
+        line-height: 1;
+        transition: background 0.2s ease, color 0.2s ease, transform 0.2s ease;
       }
 
       .jukebox-minimize:hover {
         background: ${Jukebox.Config.header.btnHoverBg};
+        color: rgba(28, 48, 68, 0.94);
+        transform: translateY(-1px);
       }
 
       .jukebox-close {
-        background: none;
-        border: none;
-        color: ${Jukebox.Config.container.color};
-        font-size: 24px;
+        background: rgba(255,255,255,0.46);
+        border: 1px solid rgba(217,75,97,0.16);
+        color: rgba(120, 52, 68, 0.76);
+        font-size: 25px;
         cursor: pointer;
         padding: 0;
-        width: 30px;
-        height: 30px;
+        width: 34px;
+        height: 34px;
         display: flex;
         align-items: center;
         justify-content: center;
-        border-radius: 4px;
-        transition: background 0.3s;
+        border-radius: 50%;
+        line-height: 1;
+        overflow: visible;
+        transition: background 0.2s ease, color 0.2s ease, transform 0.2s ease;
       }
 
       .jukebox-close:hover {
-        background: ${Jukebox.Config.header.btnHoverBg};
+        background: rgba(217,75,97,0.12);
+        color: #b94356;
+        transform: translateY(-1px);
       }
       
       .jukebox-content {
@@ -6330,11 +6677,14 @@ window.Jukebox = {
       
       .jukebox-table {
         width: 100%;
-        border-collapse: collapse;
+        border-collapse: separate;
+        border-spacing: 0;
         background: ${Jukebox.Config.table.bodyBg};
-        border-radius: 8px;
+        border: 1px solid rgba(120, 203, 232, 0.18);
+        border-radius: 10px;
         overflow: hidden;
         table-layout: fixed;
+        box-shadow: 0 8px 24px rgba(78, 153, 190, 0.12);
       }
 
       .jukebox-table col.jukebox-col-sequence {
@@ -6369,8 +6719,8 @@ window.Jukebox = {
         background-image: linear-gradient(
           to bottom,
           transparent 18%,
-          rgba(255, 255, 255, 0.22) 18%,
-          rgba(255, 255, 255, 0.22) 82%,
+          rgba(116, 190, 224, 0.22) 18%,
+          rgba(116, 190, 224, 0.22) 82%,
           transparent 82%
         );
         background-repeat: no-repeat;
@@ -6393,30 +6743,33 @@ window.Jukebox = {
       }
 
       .jukebox-sort-lock-btn {
-        width: 21px;
-        height: 21px;
-        flex: 0 0 21px;
+        width: 22px;
+        height: 22px;
+        flex: 0 0 22px;
         display: inline-flex;
         align-items: center;
         justify-content: center;
         padding: 0;
-        border: none;
-        border-radius: 4px;
-        color: rgba(255, 255, 255, 0.82);
-        background: rgba(255, 255, 255, 0.12);
+        border: 1px solid rgba(99, 199, 232, 0.18);
+        border-radius: 999px;
+        color: rgba(45, 78, 104, 0.76);
+        background: linear-gradient(160deg, rgba(255,255,255,0.86), rgba(232,247,255,0.72));
+        box-shadow: 0 3px 8px rgba(78, 153, 190, 0.12);
         cursor: pointer;
         line-height: 1;
-        transition: background 0.18s ease, color 0.18s ease, transform 0.18s ease;
+        transition: background 0.18s ease, color 0.18s ease, transform 0.18s ease, box-shadow 0.18s ease;
       }
 
       .jukebox-sort-lock-btn:hover,
       .jukebox-sort-lock-btn.unlocked {
-        color: rgba(255, 255, 255, 1);
-        background: rgba(30, 60, 114, 0.46);
+        color: rgba(28, 48, 68, 0.94);
+        background: linear-gradient(135deg, rgba(99,199,232,0.24), rgba(255,159,189,0.2));
+        box-shadow: 0 5px 12px rgba(99, 199, 232, 0.18);
+        transform: translateY(-1px);
       }
 
       .jukebox-sort-lock-btn:active {
-        transform: translateY(1px);
+        transform: translateY(0);
       }
 
       .jukebox-sort-lock-btn svg {
@@ -6435,8 +6788,8 @@ window.Jukebox = {
         background-image: linear-gradient(
           to bottom,
           transparent 20%,
-          rgba(255, 255, 255, 0.18) 20%,
-          rgba(255, 255, 255, 0.18) 80%,
+          rgba(116, 190, 224, 0.16) 20%,
+          rgba(116, 190, 224, 0.16) 80%,
           transparent 80%
         );
         background-repeat: no-repeat;
@@ -6464,6 +6817,16 @@ window.Jukebox = {
         text-overflow: clip;
         scrollbar-width: none;
         -ms-overflow-style: none;
+      }
+
+      .jukebox-table td.song-name {
+        color: rgba(28, 48, 68, 0.94);
+        font-weight: 650;
+      }
+
+      .jukebox-table td.song-artist {
+        color: rgba(38, 118, 148, 0.82);
+        font-weight: 500;
       }
 
       .jukebox-table td.song-name::-webkit-scrollbar,
@@ -6558,23 +6921,27 @@ window.Jukebox = {
       }
 
       .play-btn.jukebox-mode-btn {
-        background: rgba(255, 255, 255, 0.18);
-        border: 1px solid rgba(255, 255, 255, 0.24);
+        background: linear-gradient(160deg, rgba(255,255,255,0.86), rgba(232,247,255,0.72));
+        border: 1px solid rgba(99,199,232,0.24);
+        color: rgba(38,118,148,0.88);
         padding: 6px 7px;
+        box-shadow: 0 3px 8px rgba(78,153,190,0.12);
       }
 
       .play-btn.jukebox-mode-btn:hover {
-        background: rgba(255, 255, 255, 0.28);
+        background: linear-gradient(135deg, rgba(99,199,232,0.24), rgba(255,159,189,0.2));
+        color: rgba(28,48,68,0.94);
       }
 
       .play-btn.jukebox-mode-btn.active {
-        background: rgba(0, 60, 100, 0.58);
-        border-color: rgba(255, 255, 255, 0.42);
-        box-shadow: inset 0 0 0 1px rgba(0, 30, 70, 0.32);
+        background: linear-gradient(135deg, rgba(99,199,232,0.92), rgba(255,159,189,0.82));
+        border-color: rgba(99,199,232,0.42);
+        color: white;
+        box-shadow: 0 6px 14px rgba(99,199,232,0.22);
       }
 
       .play-btn.jukebox-mode-btn.active:hover {
-        background: rgba(0, 48, 86, 0.72);
+        background: linear-gradient(135deg, rgba(83,188,222,0.98), rgba(255,143,180,0.88));
       }
       
       .jukebox-controls-row {
@@ -6620,7 +6987,7 @@ window.Jukebox = {
       .jukebox-control-divider {
         width: 1px;
         height: 22px;
-        background: rgba(255, 255, 255, 0.28);
+        background: rgba(99,199,232,0.24);
         margin: 0 2px;
       }
 
@@ -6628,6 +6995,7 @@ window.Jukebox = {
       .jukebox-play-pause-btn {
         min-width: 32px;
         min-height: 30px;
+        box-shadow: 0 4px 10px rgba(53,169,201,0.18);
       }
 
       .jukebox-play-pause-btn {
@@ -6693,21 +7061,24 @@ window.Jukebox = {
       }
 
       .jukebox-speaker-btn {
-        background: none;
-        border: none;
+        background: linear-gradient(160deg, rgba(255,255,255,0.86), rgba(232,247,255,0.72));
+        border: 1px solid rgba(99,199,232,0.24);
         color: ${Jukebox.Config.volume.iconColor};
         cursor: pointer;
         padding: 5px;
-        border-radius: 4px;
-        transition: background 0.3s, color 0.3s;
+        border-radius: 999px;
+        transition: background 0.3s, color 0.3s, transform 0.2s ease, box-shadow 0.2s ease;
         display: flex;
         align-items: center;
         justify-content: center;
+        box-shadow: 0 3px 8px rgba(78,153,190,0.12);
       }
 
       .jukebox-speaker-btn:hover {
         background: ${Jukebox.Config.volume.iconHoverBg};
         color: ${Jukebox.Config.volume.iconHoverColor};
+        transform: translateY(-1px);
+        box-shadow: 0 5px 12px rgba(99,199,232,0.18);
       }
 
       .jukebox-speaker-btn svg {
@@ -6859,24 +7230,491 @@ window.Jukebox = {
 
       .jukebox-tooltip {
         position: fixed;
-        background: rgba(0, 0, 0, 0.85);
-        color: white;
-        padding: 6px 10px;
-        border-radius: 4px;
+        background: linear-gradient(160deg, rgba(255, 255, 255, 0.96), rgba(232, 247, 255, 0.92));
+        color: #24566a;
+        padding: 8px 12px;
+        border: 1px solid rgba(99, 199, 232, 0.28);
+        border-radius: 8px;
+        box-shadow: 0 10px 26px rgba(76, 157, 190, 0.18), 0 2px 8px rgba(255, 159, 189, 0.12);
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
         font-size: 12px;
+        line-height: 1.45;
         pointer-events: none;
         z-index: 100030;
         box-sizing: border-box;
-        max-width: calc(100vw - 16px);
+        max-width: min(280px, calc(100vw - 16px));
         overflow-wrap: anywhere;
         text-align: center;
-        white-space: normal;
+        white-space: pre-line;
         opacity: 0;
-        transition: opacity 0.15s ease;
+        transform: translateY(2px);
+        transition: opacity 0.15s ease, transform 0.15s ease;
       }
 
       .jukebox-tooltip.visible {
         opacity: 1;
+        transform: translateY(0);
+      }
+
+      [data-theme="dark"] {
+        --neko-jukebox-bg: #101722;
+      }
+
+      html[data-theme="dark"].neko-jukebox-standalone-host,
+      html[data-theme="dark"].neko-jukebox-standalone-host body.neko-jukebox-standalone-page,
+      html[data-theme="dark"] body.neko-jukebox-standalone-page {
+        background: var(--neko-jukebox-bg) !important;
+      }
+
+      [data-theme="dark"] .jukebox-container {
+        background: linear-gradient(160deg, rgba(18, 25, 36, 0.96), rgba(26, 38, 52, 0.94));
+        color: #e6edf3;
+        border-color: rgba(124, 218, 244, 0.24);
+        box-shadow: 0 20px 54px rgba(2, 8, 23, 0.54), 0 4px 18px rgba(0, 0, 0, 0.28);
+      }
+
+      [data-theme="dark"] .jukebox-header {
+        border-bottom-color: rgba(124, 218, 244, 0.16);
+      }
+
+      [data-theme="dark"] .jukebox-header h3 {
+        color: #f8fafc;
+      }
+
+      [data-theme="dark"] .jukebox-status-text {
+        color: #9bdcf5;
+        background: rgba(14, 165, 233, 0.12);
+      }
+
+      [data-theme="dark"] .jukebox-notice {
+        color: #cbd5e1;
+        background: rgba(15, 23, 42, 0.54);
+        border-color: rgba(124, 218, 244, 0.18);
+      }
+
+      [data-theme="dark"] .jukebox-settings,
+      [data-theme="dark"] .jukebox-minimize,
+      [data-theme="dark"] .jukebox-sort-lock-btn,
+      [data-theme="dark"] .jukebox-speaker-btn,
+      [data-theme="dark"] .play-btn.jukebox-mode-btn {
+        color: #b7e8f8;
+        background: linear-gradient(160deg, rgba(30, 41, 59, 0.9), rgba(15, 23, 42, 0.82));
+        border-color: rgba(124, 218, 244, 0.22);
+        box-shadow: 0 4px 12px rgba(2, 8, 23, 0.26);
+      }
+
+      [data-theme="dark"] .jukebox-settings:hover,
+      [data-theme="dark"] .jukebox-minimize:hover,
+      [data-theme="dark"] .jukebox-sort-lock-btn:hover,
+      [data-theme="dark"] .jukebox-sort-lock-btn.unlocked,
+      [data-theme="dark"] .jukebox-speaker-btn:hover,
+      [data-theme="dark"] .play-btn.jukebox-mode-btn:hover {
+        color: #f8fafc;
+        background: linear-gradient(135deg, rgba(14, 165, 233, 0.28), rgba(244, 114, 182, 0.18));
+        border-color: rgba(124, 218, 244, 0.36);
+        box-shadow: 0 6px 16px rgba(14, 165, 233, 0.16);
+      }
+
+      [data-theme="dark"] .jukebox-close {
+        color: #fca5a5;
+        background: rgba(30, 41, 59, 0.82);
+        border-color: rgba(248, 113, 113, 0.2);
+      }
+
+      [data-theme="dark"] .jukebox-close:hover {
+        color: #fff1f2;
+        background: rgba(220, 38, 38, 0.22);
+        border-color: rgba(248, 113, 113, 0.34);
+      }
+
+      [data-theme="dark"] .play-btn.jukebox-mode-btn.active {
+        color: #ffffff;
+        background: linear-gradient(135deg, rgba(14, 165, 233, 0.88), rgba(244, 114, 182, 0.62));
+        border-color: rgba(125, 211, 252, 0.48);
+        box-shadow: 0 8px 20px rgba(14, 165, 233, 0.24);
+      }
+
+      [data-theme="dark"] .play-btn.jukebox-mode-btn.active:hover {
+        background: linear-gradient(135deg, rgba(56, 189, 248, 0.92), rgba(251, 113, 133, 0.68));
+      }
+
+      [data-theme="dark"] .speaker-icon,
+      [data-theme="dark"] .speaker-muted-icon {
+        filter: none;
+      }
+
+      [data-theme="dark"] .jukebox-table {
+        background: rgba(15, 23, 42, 0.48);
+        border-color: rgba(124, 218, 244, 0.18);
+        box-shadow: 0 10px 28px rgba(2, 8, 23, 0.28);
+      }
+
+      [data-theme="dark"] .jukebox-table thead {
+        background: rgba(30, 41, 59, 0.66);
+      }
+
+      [data-theme="dark"] .jukebox-table th {
+        color: #c8e7f5;
+      }
+
+      [data-theme="dark"] .jukebox-table th:not(:last-child) {
+        background-image: linear-gradient(
+          to bottom,
+          transparent 18%,
+          rgba(124, 218, 244, 0.16) 18%,
+          rgba(124, 218, 244, 0.16) 82%,
+          transparent 82%
+        );
+      }
+
+      [data-theme="dark"] .jukebox-table td {
+        border-bottom-color: rgba(124, 218, 244, 0.12);
+      }
+
+      [data-theme="dark"] .jukebox-table td:not(:last-child) {
+        background-image: linear-gradient(
+          to bottom,
+          transparent 20%,
+          rgba(124, 218, 244, 0.1) 20%,
+          rgba(124, 218, 244, 0.1) 80%,
+          transparent 80%
+        );
+      }
+
+      [data-theme="dark"] .jukebox-table td.song-name {
+        color: #f1f5f9;
+      }
+
+      [data-theme="dark"] .jukebox-table td.song-artist,
+      [data-theme="dark"] .jukebox-container .loading {
+        color: #9bdcf5;
+      }
+
+      [data-theme="dark"] .jukebox-table tbody tr:hover {
+        background: rgba(30, 41, 59, 0.78);
+      }
+
+      [data-theme="dark"] .jukebox-table tbody tr.jukebox-row-dragging {
+        background: rgba(14, 165, 233, 0.16);
+      }
+
+      [data-theme="dark"] .jukebox-table tbody tr.jukebox-row-drop-before td {
+        box-shadow: inset 0 2px 0 rgba(125, 211, 252, 0.9);
+      }
+
+      [data-theme="dark"] .jukebox-table tbody tr.jukebox-row-drop-after td {
+        box-shadow: inset 0 -2px 0 rgba(125, 211, 252, 0.9);
+      }
+
+      [data-theme="dark"] .jukebox-controls-row {
+        color: #cbd5e1;
+        background: rgba(15, 23, 42, 0.58);
+        border: 1px solid rgba(124, 218, 244, 0.14);
+      }
+
+      [data-theme="dark"] .jukebox-control-divider {
+        background: rgba(124, 218, 244, 0.18);
+      }
+
+      [data-theme="dark"] .jukebox-progress {
+        color: #b8c7d9;
+      }
+
+      [data-theme="dark"] #jukebox-progress-slider {
+        background: rgba(148, 163, 184, 0.22);
+      }
+
+      [data-theme="dark"] #jukebox-progress-slider::-webkit-slider-thumb,
+      [data-theme="dark"] #jukebox-volume-slider::-webkit-slider-thumb {
+        background: #38bdf8;
+      }
+
+      [data-theme="dark"] #jukebox-progress-slider.seekable::-webkit-slider-thumb,
+      [data-theme="dark"] #jukebox-volume-slider::-webkit-slider-thumb:hover {
+        background: #7dd3fc;
+      }
+
+      [data-theme="dark"] #jukebox-progress-slider::-moz-range-thumb,
+      [data-theme="dark"] #jukebox-volume-slider::-moz-range-thumb {
+        background: #38bdf8;
+      }
+
+      [data-theme="dark"] #jukebox-progress-slider.seekable::-moz-range-thumb,
+      [data-theme="dark"] #jukebox-volume-slider::-moz-range-thumb:hover {
+        background: #7dd3fc;
+      }
+
+      [data-theme="dark"] .jukebox-volume-popup {
+        background: rgba(15, 23, 42, 0.96);
+        border: 1px solid rgba(124, 218, 244, 0.18);
+        box-shadow: 0 14px 34px rgba(2, 8, 23, 0.46);
+      }
+
+      [data-theme="dark"] .jukebox-volume-track {
+        background: rgba(148, 163, 184, 0.28);
+      }
+
+      [data-theme="dark"] #jukebox-volume-value,
+      [data-theme="dark"] .jukebox-volume-input {
+        color: #dcebf5;
+      }
+
+      [data-theme="dark"] .jukebox-volume-value-editable:hover {
+        background: rgba(14, 165, 233, 0.16);
+      }
+
+      [data-theme="dark"] .jukebox-volume-input {
+        background: rgba(30, 41, 59, 0.9);
+        border-color: rgba(124, 218, 244, 0.28);
+      }
+
+      [data-theme="dark"] .jukebox-volume-input:focus {
+        background: rgba(15, 23, 42, 0.96);
+        border-color: #38bdf8;
+      }
+
+      [data-theme="dark"] .jukebox-calibration-toggle {
+        color: #f8fafc;
+        background: linear-gradient(135deg, #0ea5e9, #38bdf8);
+      }
+
+      [data-theme="dark"] .jukebox-calibration-panel {
+        background: rgba(15, 23, 42, 0.66);
+        border: 1px solid rgba(124, 218, 244, 0.14);
+      }
+
+      [data-theme="dark"] .jukebox-calibration-title,
+      [data-theme="dark"] .jukebox-calibration-value {
+        color: #f8fafc;
+      }
+
+      [data-theme="dark"] .jukebox-calibration-fps {
+        color: #94a3b8;
+      }
+
+      [data-theme="dark"] .jukebox-calibration-close,
+      [data-theme="dark"] .jukebox-calibration-btn {
+        color: #dbeafe;
+        background: rgba(30, 41, 59, 0.9);
+        border-color: rgba(124, 218, 244, 0.2);
+      }
+
+      [data-theme="dark"] .jukebox-calibration-close:hover,
+      [data-theme="dark"] .jukebox-calibration-btn:hover {
+        color: #f8fafc;
+        background: rgba(14, 165, 233, 0.2);
+        border-color: rgba(124, 218, 244, 0.36);
+      }
+
+      [data-theme="dark"] .jukebox-tooltip,
+      [data-theme="dark"] .sam-danger-tooltip {
+        color: #e6edf3;
+        background: linear-gradient(160deg, rgba(15, 23, 42, 0.96), rgba(30, 41, 59, 0.92));
+        border-color: rgba(124, 218, 244, 0.2);
+        box-shadow: 0 12px 30px rgba(2, 8, 23, 0.42);
+      }
+
+      /* Keep this SongActionManager dark palette in sync with templates/jukebox_manager.html. */
+      [data-theme="dark"] .jukebox-sam-panel {
+        color: #e6edf3;
+        background: linear-gradient(160deg, rgba(18, 25, 36, 0.97), rgba(26, 38, 52, 0.94));
+        border-color: rgba(124, 218, 244, 0.24);
+        box-shadow: 0 20px 54px rgba(2, 8, 23, 0.54), 0 4px 18px rgba(0, 0, 0, 0.28);
+      }
+
+      [data-theme="dark"] .sam-header {
+        border-bottom-color: rgba(124, 218, 244, 0.16);
+      }
+
+      [data-theme="dark"] .sam-title,
+      [data-theme="dark"] .sam-import-header h4,
+      [data-theme="dark"] .sam-item-name,
+      [data-theme="dark"] .sam-binding-item-name,
+      [data-theme="dark"] .sam-danger-modal h3 {
+        color: #f8fafc;
+      }
+
+      [data-theme="dark"] .sam-close-btn,
+      [data-theme="dark"] .sam-tab,
+      [data-theme="dark"] .sam-btn,
+      [data-theme="dark"] .sam-add-binding-btn,
+      [data-theme="dark"] .sam-visibility-btn {
+        color: #b7e8f8;
+        background: linear-gradient(160deg, rgba(30, 41, 59, 0.9), rgba(15, 23, 42, 0.82));
+        border-color: rgba(124, 218, 244, 0.22);
+      }
+
+      [data-theme="dark"] .sam-close-btn:hover,
+      [data-theme="dark"] .sam-tab:hover,
+      [data-theme="dark"] .sam-btn:hover,
+      [data-theme="dark"] .sam-add-binding-btn:hover,
+      [data-theme="dark"] .sam-visibility-btn:hover {
+        color: #f8fafc;
+        background: linear-gradient(135deg, rgba(14, 165, 233, 0.28), rgba(244, 114, 182, 0.18));
+        border-color: rgba(124, 218, 244, 0.36);
+      }
+
+      [data-theme="dark"] .sam-tab.active {
+        color: #ffffff;
+        background: linear-gradient(135deg, rgba(14, 165, 233, 0.88), rgba(244, 114, 182, 0.62));
+        box-shadow: 0 8px 20px rgba(14, 165, 233, 0.22);
+      }
+
+      [data-theme="dark"] .sam-file-drop-zone,
+      [data-theme="dark"] .sam-bindings-list {
+        border-color: rgba(124, 218, 244, 0.22);
+      }
+
+      [data-theme="dark"] .sam-file-drop-zone:hover,
+      [data-theme="dark"] .sam-file-drop-zone.drag-over,
+      [data-theme="dark"] .sam-bindings-list.drag-over {
+        background: rgba(14, 165, 233, 0.12);
+        border-color: rgba(125, 211, 252, 0.48);
+      }
+
+      [data-theme="dark"] .sam-drop-hint,
+      [data-theme="dark"] .sam-empty,
+      [data-theme="dark"] .sam-import-hint,
+      [data-theme="dark"] .sam-unified-hint,
+      [data-theme="dark"] .sam-danger-modal-detail {
+        color: #94a3b8;
+        background: rgba(15, 23, 42, 0.58);
+        border-color: rgba(124, 218, 244, 0.18);
+      }
+
+      [data-theme="dark"] .sam-item,
+      [data-theme="dark"] .sam-binding-item {
+        background: rgba(15, 23, 42, 0.58);
+        border-color: rgba(124, 218, 244, 0.16);
+        box-shadow: 0 8px 20px rgba(2, 8, 23, 0.24);
+      }
+
+      [data-theme="dark"] .sam-item:hover,
+      [data-theme="dark"] .sam-binding-item:hover,
+      [data-theme="dark"] .sam-add-hint:hover,
+      [data-theme="dark"] .sam-import-item:hover,
+      [data-theme="dark"] .sam-item-name:hover,
+      [data-theme="dark"] .sam-item-artist:hover {
+        background: rgba(30, 41, 59, 0.78);
+      }
+
+      [data-theme="dark"] .sam-item-name:focus,
+      [data-theme="dark"] .sam-item-artist:focus {
+        background: rgba(14, 165, 233, 0.16);
+      }
+
+      [data-theme="dark"] .sam-item-artist,
+      [data-theme="dark"] .sam-import-item-name,
+      [data-theme="dark"] .sam-checkbox,
+      [data-theme="dark"] .sam-bindings-section h4,
+      [data-theme="dark"] .sam-item-format,
+      [data-theme="dark"] .sam-binding-item-index {
+        color: #b8c7d9;
+      }
+
+      [data-theme="dark"] .sam-item-format,
+      [data-theme="dark"] .sam-binding-item-index,
+      [data-theme="dark"] .sam-binding-tag,
+      [data-theme="dark"] .sam-binding-count {
+        background: rgba(30, 41, 59, 0.76);
+        border-color: rgba(124, 218, 244, 0.18);
+      }
+
+      [data-theme="dark"] .sam-binding-tag {
+        color: #b7e8f8;
+      }
+
+      [data-theme="dark"] .sam-binding-count {
+        color: #f8fafc;
+      }
+
+      [data-theme="dark"] .sam-binding-item-tags {
+        border-top-color: rgba(124, 218, 244, 0.14);
+      }
+
+      [data-theme="dark"] .sam-add-binding-input,
+      [data-theme="dark"] .jukebox-sam-panel input:not([type="checkbox"]):not([type="file"]),
+      [data-theme="dark"] .jukebox-sam-panel textarea,
+      [data-theme="dark"] .jukebox-sam-panel select {
+        color: #e6edf3;
+        background: rgba(15, 23, 42, 0.78);
+        border-color: rgba(124, 218, 244, 0.24);
+      }
+
+      [data-theme="dark"] .sam-add-binding-input:focus,
+      [data-theme="dark"] .jukebox-sam-panel input:not([type="checkbox"]):not([type="file"]):focus,
+      [data-theme="dark"] .jukebox-sam-panel textarea:focus,
+      [data-theme="dark"] .jukebox-sam-panel select:focus {
+        border-color: #38bdf8;
+        box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.18);
+      }
+
+      [data-theme="dark"] .jukebox-sam-panel input[type="checkbox"] {
+        accent-color: #38bdf8;
+      }
+
+      [data-theme="dark"] .sam-import-container {
+        background: rgba(15, 23, 42, 0.52);
+        border-color: rgba(124, 218, 244, 0.18);
+      }
+
+      [data-theme="dark"] .sam-import-header,
+      [data-theme="dark"] .sam-list-header,
+      [data-theme="dark"] .sam-footer,
+      [data-theme="dark"] .sam-import-footer {
+        background: rgba(15, 23, 42, 0.62);
+        border-color: rgba(124, 218, 244, 0.14);
+      }
+
+      [data-theme="dark"] .sam-selection-info,
+      [data-theme="dark"] .sam-footer,
+      [data-theme="dark"] .sam-danger-modal p,
+      [data-theme="dark"] .sam-danger-modal-detail {
+        color: #b8c7d9;
+      }
+
+      [data-theme="dark"] .sam-item-selected {
+        background: rgba(14, 165, 233, 0.18) !important;
+        border-left-color: #38bdf8;
+      }
+
+      [data-theme="dark"] .sam-visibility-btn.hidden {
+        color: #f9a8d4;
+        background: rgba(244, 114, 182, 0.14);
+        border-color: rgba(244, 114, 182, 0.28);
+      }
+
+      [data-theme="dark"] .sam-delete-btn,
+      [data-theme="dark"] .sam-btn-danger,
+      [data-theme="dark"] .sam-danger-modal-confirm {
+        color: #fca5a5;
+        background: rgba(220, 38, 38, 0.14);
+        border-color: rgba(248, 113, 113, 0.28);
+      }
+
+      [data-theme="dark"] .sam-delete-btn:hover,
+      [data-theme="dark"] .sam-btn-danger:hover,
+      [data-theme="dark"] .sam-danger-modal-confirm:hover {
+        color: #fff1f2;
+        background: rgba(220, 38, 38, 0.24);
+      }
+
+      [data-theme="dark"] .sam-danger-modal-backdrop {
+        background: rgba(2, 8, 23, 0.68);
+      }
+
+      [data-theme="dark"] .sam-danger-modal {
+        color: #e6edf3;
+        background: linear-gradient(160deg, rgba(15, 23, 42, 0.98), rgba(30, 41, 59, 0.94));
+        border-color: rgba(124, 218, 244, 0.22);
+        box-shadow: 0 20px 54px rgba(2, 8, 23, 0.58);
+      }
+
+      [data-theme="dark"] .sam-danger-modal-cancel {
+        color: #dbeafe;
+        background: rgba(30, 41, 59, 0.92);
+        border-color: rgba(124, 218, 244, 0.2);
       }
     `;
     
@@ -6908,6 +7746,7 @@ window.Jukebox = {
   },
 
   checkConfigUpdates: async function() {
+    const Jukebox = window.Jukebox || this;
     if (!Jukebox.State.isOpen || Jukebox.State.configPollInFlight) return;
 
     Jukebox.State.configPollInFlight = true;
@@ -6937,6 +7776,7 @@ window.Jukebox = {
   },
   
   loadSongs: async function() {
+    const Jukebox = window.Jukebox || this;
     try {
       // 从后端API加载配置
       const response = await fetch('/api/jukebox/config');
@@ -7054,6 +7894,7 @@ window.Jukebox = {
     console.log('[Jukebox]', window.t('Jukebox.songsRendered', '歌曲列表已渲染'));
     Jukebox.updatePlaybackModeButtons();
     Jukebox.updateSongSortLockControls();
+    Jukebox.bindTextTooltips(tbody);
     Jukebox.scheduleMarqueeTextUpdate(tbody);
   },
 
@@ -7064,10 +7905,10 @@ window.Jukebox = {
     tr.draggable = Jukebox.isSongSortUnlocked();
     tr.innerHTML = `
       <td class="song-index"><span class="song-index-number">${index + 1}</span></td>
-      <td class="song-name" data-neko-marquee title="${Jukebox.escapeHtml(song.name)}">${Jukebox.escapeHtml(song.name)}</td>
-      <td class="song-artist" data-neko-marquee title="${Jukebox.escapeHtml(song.artist)}">${Jukebox.escapeHtml(song.artist)}</td>
+      <td class="song-name" data-neko-marquee data-tooltip="${Jukebox.escapeAttr(song.name)}">${Jukebox.escapeHtml(song.name)}</td>
+      <td class="song-artist" data-neko-marquee data-tooltip="${Jukebox.escapeAttr(song.artist)}">${Jukebox.escapeHtml(song.artist)}</td>
       <td class="song-action">
-        <button class="play-btn" data-song-id="${Jukebox.escapeHtml(song.id)}" data-tooltip="${window.t('Jukebox.play', '播放')}">
+        <button class="play-btn" data-song-id="${Jukebox.escapeAttr(song.id)}" data-tooltip="${Jukebox.escapeAttr(window.t('Jukebox.play', '播放'))}">
           <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
         </button>
       </td>
@@ -7100,14 +7941,16 @@ window.Jukebox = {
     const nameCell = row.querySelector('.song-name');
     if (nameCell) {
       nameCell.textContent = song.name;
-      nameCell.title = song.name;
+      nameCell.dataset.tooltip = song.name;
+      nameCell.removeAttribute('title');
     }
 
     // 更新歌手
     const artistCell = row.querySelector('.song-artist');
     if (artistCell) {
       artistCell.textContent = song.artist;
-      artistCell.title = song.artist;
+      artistCell.dataset.tooltip = song.artist;
+      artistCell.removeAttribute('title');
     }
 
     Jukebox.scheduleMarqueeTextUpdate(row);
@@ -7718,6 +8561,7 @@ window.Jukebox = {
   },
 
   restoreIdleAnimation: async function() {
+    const Jukebox = window.Jukebox || this;
     // 独立窗口模式：Pet 侧在 stopVMD 时自动恢复，此处无需操作
     if (window.__NEKO_JUKEBOX_STANDALONE__) return;
 
@@ -7972,6 +8816,7 @@ window.Jukebox = {
   },
   
   initPlayer: function() {
+    const Jukebox = window.Jukebox || this;
     if (window.music_ui && window.music_ui.getMusicPlayerInstance) {
       const existingPlayer = window.music_ui.getMusicPlayerInstance();
       if (existingPlayer) {
@@ -7990,7 +8835,7 @@ window.Jukebox = {
     
     if (typeof APlayer === 'undefined') {
       console.warn('[Jukebox] APlayer 未加载，等待加载...');
-      setTimeout(Jukebox.initPlayer, 500);
+      setTimeout(() => Jukebox.initPlayer(), 500);
       return;
     }
     
@@ -8336,6 +9181,21 @@ window.Jukebox = {
     return div.innerHTML;
   },
 
+  escapeAttr: function(text) {
+    return Jukebox.escapeHtml(text).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  },
+
+  escapeJsAttr: function(text) {
+    const jsText = String(text)
+      .replace(/\\/g, '\\\\')
+      .replace(/'/g, "\\'")
+      .replace(/\r/g, '\\r')
+      .replace(/\n/g, '\\n')
+      .replace(/\u2028/g, '\\u2028')
+      .replace(/\u2029/g, '\\u2029');
+    return Jukebox.escapeAttr(jsText);
+  },
+
   /**
    * 语言切换后刷新 Jukebox UI 文本
    * 独立窗口模式直接重载页面；嵌入模式逐一更新 DOM 元素
@@ -8355,11 +9215,28 @@ window.Jukebox = {
     var h3 = c.querySelector('.jukebox-header h3');
     if (h3) h3.textContent = window.t('Jukebox.title', '点歌台');
     var settingsBtn = c.querySelector('.jukebox-settings');
-    if (settingsBtn) settingsBtn.title = window.t('Jukebox.manager', '管理器');
+    if (settingsBtn) {
+      settingsBtn.dataset.tooltip = window.t('Jukebox.manager', '点歌台管理与导入');
+      settingsBtn.removeAttribute('title');
+      settingsBtn.setAttribute('aria-label', settingsBtn.dataset.tooltip);
+      Jukebox.refreshTooltip(settingsBtn);
+      var settingsLabel = settingsBtn.querySelector('.jukebox-settings-label');
+      if (settingsLabel) settingsLabel.textContent = window.t('Jukebox.settingsShort', '管理/导入');
+    }
     var minBtn = c.querySelector('.jukebox-minimize');
-    if (minBtn) minBtn.title = window.t('Jukebox.minimize', '最小化');
+    if (minBtn) {
+      minBtn.dataset.tooltip = window.t('Jukebox.minimize', '最小化');
+      minBtn.removeAttribute('title');
+      minBtn.setAttribute('aria-label', minBtn.dataset.tooltip);
+      Jukebox.refreshTooltip(minBtn);
+    }
     var closeBtn = c.querySelector('.jukebox-close');
-    if (closeBtn) closeBtn.title = window.t('Jukebox.close', '关闭');
+    if (closeBtn) {
+      closeBtn.dataset.tooltip = window.t('Jukebox.close', '关闭');
+      closeBtn.removeAttribute('title');
+      closeBtn.setAttribute('aria-label', closeBtn.dataset.tooltip);
+      Jukebox.refreshTooltip(closeBtn);
+    }
 
     // --- Calibration ---
     var calToggle = c.querySelector('#jukebox-calibration-toggle');
@@ -8396,15 +9273,18 @@ window.Jukebox = {
 
     // --- Mute button ---
     var speakerBtn = c.querySelector('#jukebox-speaker-btn');
-    if (speakerBtn) speakerBtn.title = window.t('Jukebox.mute', '静音');
+    if (speakerBtn) {
+      speakerBtn.removeAttribute('title');
+      speakerBtn.setAttribute('aria-label', window.t('Jukebox.mute', '静音'));
+    }
     var prevBtn = c.querySelector('#jukebox-control-prev');
     if (prevBtn) {
-      prevBtn.title = window.t('Jukebox.previousSong', '上一首');
+      prevBtn.removeAttribute('title');
       prevBtn.setAttribute('aria-label', window.t('Jukebox.previousSong', '上一首'));
     }
     var nextBtn = c.querySelector('#jukebox-control-next');
     if (nextBtn) {
-      nextBtn.title = window.t('Jukebox.nextSong', '下一首');
+      nextBtn.removeAttribute('title');
       nextBtn.setAttribute('aria-label', window.t('Jukebox.nextSong', '下一首'));
     }
     Jukebox.renderPlaybackControls();
@@ -8421,15 +9301,20 @@ window.Jukebox = {
         // Rebuild panel to refresh tab titles and static text
         var panel = Jukebox.SongActionManager.element;
         var titleEl = panel.querySelector('.sam-title');
-        if (titleEl) titleEl.textContent = window.t('Jukebox.managerTitle', '管理器');
+        if (titleEl) titleEl.textContent = window.t('Jukebox.managerTitle', '点歌台管理');
         var tabs = panel.querySelectorAll('.sam-tab');
         var tabKeys = ['Jukebox.songs', 'Jukebox.actions', 'Jukebox.bindings'];
-        var tabDefaults = ['歌曲', '动作', '绑定'];
+        var tabDefaults = ['歌曲库', '舞蹈动作', '歌曲绑定'];
         tabs.forEach(function(tab, i) {
           if (tabKeys[i]) tab.textContent = window.t(tabKeys[i], tabDefaults[i]);
         });
         var samCloseBtn = panel.querySelector('.sam-close-btn');
-        if (samCloseBtn) samCloseBtn.title = window.t('Jukebox.close', '关闭');
+        if (samCloseBtn) {
+          samCloseBtn.dataset.tooltip = window.t('Jukebox.close', '关闭');
+          samCloseBtn.removeAttribute('title');
+          samCloseBtn.setAttribute('aria-label', samCloseBtn.dataset.tooltip);
+          Jukebox.refreshTooltip(samCloseBtn);
+        }
         // Re-render active tab content
         Jukebox.SongActionManager.render();
       }
@@ -8443,8 +9328,13 @@ window.Jukebox = {
 // i18n-i18next.js 会通过 storage 事件检测其他窗口的语言变更并调用 changeLanguage，
 // changeLanguage 触发 languageChanged → localechange 自定义事件。
 // 此处监听 localechange，在 Jukebox 已打开时自动刷新 UI 文本。
-window.addEventListener('localechange', function() {
-  if (Jukebox.State.isOpen || Jukebox.State.isHidden) {
+if (window.__JukeboxLocaleChangeHandler) {
+  window.removeEventListener('localechange', window.__JukeboxLocaleChangeHandler);
+}
+window.__JukeboxLocaleChangeHandler = function() {
+  const Jukebox = window.Jukebox;
+  if (Jukebox && Jukebox.State && (Jukebox.State.isOpen || Jukebox.State.isHidden)) {
     Jukebox.refreshLocale();
   }
-});
+};
+window.addEventListener('localechange', window.__JukeboxLocaleChangeHandler);

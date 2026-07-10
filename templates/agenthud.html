@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="agent-hud-standalone-page">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -10,10 +10,11 @@
     <link rel="stylesheet" href="/static/css/dark-mode.css">
     <script src="/static/theme-manager.js"></script>
     <style>
-        html, body {
+        html.agent-hud-standalone-page,
+        body.agent-hud-standalone-page:not(.lanlan-pet-mode) {
             margin: 0; padding: 0;
             width: 100%; height: 100%;
-            background: #1a1a2e;
+            background: transparent !important;
             overflow: hidden;
         }
         /* AgentHUD 独立窗口：复用 common-ui-hud.js 的样式 */

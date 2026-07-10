@@ -15,6 +15,18 @@ import { createPortal } from 'react-dom';
 import AvatarToolItemManager, { type AvatarToolManagerAnchorRect } from './AvatarToolItemManager';
 import AvatarToolQuickbar from './AvatarToolQuickbar';
 import FullChatSurface from './FullChatSurface';
+import {
+  COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS,
+  COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC,
+  COMPACT_TOOL_WHEEL_REBOUND_VISUAL_SOFT_INTENSITY,
+  getCompactToolWheelReboundVisualIntensity,
+  getCompactToolWheelReboundVolume,
+  playCompactToolWheelDetentSound,
+  playCompactToolWheelReboundSound,
+  preloadCompactToolWheelSounds,
+  resetCompactToolWheelDetentAudioForTests,
+  useCompactToolWheelAudioPreload,
+} from './compactToolWheelAudio';
 import { useFocusGlow } from './useFocusGlow';
 import CompactExportHistoryPanel, {
   COMPACT_EXPORT_SELECTION_LIMIT,
@@ -50,6 +62,17 @@ import {
   type AvatarToolItem,
   type CursorVariant,
 } from './avatarTools';
+
+export {
+  COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS,
+  COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC,
+  getCompactToolWheelReboundVisualIntensity,
+  getCompactToolWheelReboundVolume,
+  preloadCompactToolWheelSounds,
+  playCompactToolWheelDetentSound,
+  playCompactToolWheelReboundSound,
+  resetCompactToolWheelDetentAudioForTests,
+};
 
 export type ChatWindowProps = ChatWindowSchemaProps & {
   onMessageAction?: (message: ChatMessage, action: MessageAction) => void;
@@ -140,10 +163,10 @@ const COMPACT_INPUT_TOOL_WHEEL_CHARGE_START_TURNS = 3;
 const COMPACT_INPUT_TOOL_WHEEL_CHARGE_ACTIVE_TURNS = 15;
 const COMPACT_INPUT_TOOL_WHEEL_CHARGE_START_STEPS = COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT * COMPACT_INPUT_TOOL_WHEEL_CHARGE_START_TURNS;
 const COMPACT_INPUT_TOOL_WHEEL_CHARGE_MAX_STEPS = COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT * COMPACT_INPUT_TOOL_WHEEL_CHARGE_ACTIVE_TURNS;
-const COMPACT_INPUT_TOOL_WHEEL_CHARGE_RELEASE_MIN_STEP_MS = 16;
+const COMPACT_INPUT_TOOL_WHEEL_CHARGE_RELEASE_MIN_STEP_MS = 25;
 const COMPACT_INPUT_TOOL_WHEEL_CHARGE_RELEASE_MID_STEP_MS = 42;
 const COMPACT_INPUT_TOOL_WHEEL_CHARGE_RELEASE_MAX_STEP_MS = 125;
-const COMPACT_INPUT_TOOL_WHEEL_CHARGE_RELEASE_LOW_CHARGE_MIN_STEP_MS = 24;
+const COMPACT_INPUT_TOOL_WHEEL_CHARGE_RELEASE_LOW_CHARGE_MIN_STEP_MS = 25;
 const COMPACT_INPUT_TOOL_WHEEL_CHARGE_RELEASE_MAX_TURNS = COMPACT_INPUT_TOOL_WHEEL_CHARGE_ACTIVE_TURNS;
 const COMPACT_INPUT_TOOL_WHEEL_CHARGE_RELEASE_MAX_TAIL_STEPS = 8;
 const COMPACT_INPUT_TOOL_WHEEL_CHARGE_RATTLE_WEAK_RATIO = 0.5;
@@ -175,26 +198,8 @@ const compactInputToolWheelViewportFitVisibleSlots = [
   { angleDeg: -110, scale: 0.98 },
   { angleDeg: -80, scale: 0.86 },
 ] as const;
-export const COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS = [
-  '/static/sounds/compact-tool-wheel/gear-detent-1.mp3',
-  '/static/sounds/compact-tool-wheel/gear-detent-2.mp3',
-  '/static/sounds/compact-tool-wheel/gear-detent-3.mp3',
-  '/static/sounds/compact-tool-wheel/gear-detent-4.mp3',
-] as const;
-export const COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC = '/static/sounds/compact-tool-wheel/gear-rebound.mp3';
-const COMPACT_TOOL_WHEEL_PRELOAD_SOUND_SRCS = [
-  ...COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS,
-  COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC,
-] as const;
-const COMPACT_TOOL_WHEEL_REBOUND_SOUND_MIN_RATIO = 0.2;
-const COMPACT_TOOL_WHEEL_REBOUND_SOUND_MEDIUM_RATIO = 0.4;
-const COMPACT_TOOL_WHEEL_REBOUND_SOUND_STRONG_RATIO = 0.7;
-const COMPACT_TOOL_WHEEL_REBOUND_SOUND_SOFT_VOLUME = 0.38;
-const COMPACT_TOOL_WHEEL_REBOUND_SOUND_MEDIUM_VOLUME = 0.6;
-const COMPACT_TOOL_WHEEL_REBOUND_SOUND_STRONG_VOLUME = 0.85;
 const COMPACT_TOOL_WHEEL_CHARGE_RELEASE_REBOUND_OVERSHOOT_RATIO = 0.18;
 const COMPACT_TOOL_WHEEL_CHARGE_RELEASE_REBOUND_VISUAL_MS = 120;
-const COMPACT_TOOL_WHEEL_AUDIO_PRELOAD_RETRY_DELAYS_MS = [120, 300, 700, 1500] as const;
 const COMPACT_TOOL_WHEEL_DEFAULT_DRAG_ANGLE_STEP_DEG = Math.abs(
   compactInputToolWheelDefaultVisibleSlots[2].angleDeg - compactInputToolWheelDefaultVisibleSlots[3].angleDeg,
 );
@@ -1217,128 +1222,6 @@ function playAvatarToolSound(soundPath: string) {
   }
 }
 
-type NekoGameAudioSystemInstance = {
-  playSfx: (keyOrAudio: unknown, options?: Record<string, unknown>) => unknown;
-  preloadSfx?: (keyOrAudio: unknown) => unknown;
-};
-
-type NekoGameAudioSystemConstructor = new (options?: Record<string, unknown>) => NekoGameAudioSystemInstance;
-
-let compactToolWheelAudioSystem: NekoGameAudioSystemInstance | null | undefined;
-
-function getCompactToolWheelAudioSystem(): NekoGameAudioSystemInstance | null {
-  if (compactToolWheelAudioSystem) {
-    return compactToolWheelAudioSystem;
-  }
-  if (typeof window === 'undefined') {
-    return null;
-  }
-  const GameAudioSystem = (window as Window & {
-    NekoGameSystem?: {
-      GameAudioSystem?: NekoGameAudioSystemConstructor;
-    };
-  }).NekoGameSystem?.GameAudioSystem;
-  if (typeof GameAudioSystem !== 'function') {
-    return null;
-  }
-  try {
-    const audioSystem = new GameAudioSystem({
-      config: {
-        audioMix: {
-          sfx: {
-            baseVolume: 0.5,
-            maxVolume: 1,
-          },
-        },
-        sfx: {},
-      },
-    });
-    if (typeof audioSystem.playSfx !== 'function') {
-      return null;
-    }
-    audioSystem.preloadSfx?.(COMPACT_TOOL_WHEEL_PRELOAD_SOUND_SRCS);
-    compactToolWheelAudioSystem = audioSystem;
-  } catch {
-    compactToolWheelAudioSystem = undefined;
-    return null;
-  }
-  return compactToolWheelAudioSystem;
-}
-
-export function preloadCompactToolWheelSounds(): boolean {
-  return getCompactToolWheelAudioSystem() !== null;
-}
-
-function useCompactToolWheelAudioPreload() {
-  useEffect(() => {
-    let retryTimer: number | null = null;
-    let retryIndex = 0;
-    let cancelled = false;
-
-    const tryPreload = () => {
-      if (cancelled) return;
-      if (preloadCompactToolWheelSounds()) return;
-      if (retryIndex >= COMPACT_TOOL_WHEEL_AUDIO_PRELOAD_RETRY_DELAYS_MS.length) return;
-      const delayMs = COMPACT_TOOL_WHEEL_AUDIO_PRELOAD_RETRY_DELAYS_MS[retryIndex];
-      retryIndex += 1;
-      retryTimer = window.setTimeout(tryPreload, delayMs);
-    };
-
-    tryPreload();
-    return () => {
-      cancelled = true;
-      if (retryTimer !== null) {
-        window.clearTimeout(retryTimer);
-      }
-    };
-  }, []);
-}
-
-export function resetCompactToolWheelDetentAudioForTests() {
-  compactToolWheelAudioSystem = undefined;
-}
-
-export function playCompactToolWheelDetentSound(soundSrc: string | readonly string[] = COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS) {
-  const soundSrcs = Array.isArray(soundSrc) ? soundSrc : [soundSrc];
-  const availableSoundSrcs = soundSrcs.map(src => src.trim()).filter(Boolean);
-  if (availableSoundSrcs.length === 0) return;
-  const src = availableSoundSrcs[Math.floor(Math.random() * availableSoundSrcs.length)] ?? availableSoundSrcs[0];
-  if (!src) return;
-  const audioSystem = getCompactToolWheelAudioSystem();
-  if (!audioSystem) return;
-  try {
-    void audioSystem.playSfx({ src, preload: 'auto' });
-  } catch {
-    // Optional UI SFX must never block wheel interaction.
-  }
-}
-
-export function getCompactToolWheelReboundVolume(offsetRatio: number): number | null {
-  const absOffsetRatio = Math.abs(offsetRatio);
-  if (absOffsetRatio < COMPACT_TOOL_WHEEL_REBOUND_SOUND_MIN_RATIO) return null;
-  if (absOffsetRatio < COMPACT_TOOL_WHEEL_REBOUND_SOUND_MEDIUM_RATIO) {
-    return COMPACT_TOOL_WHEEL_REBOUND_SOUND_SOFT_VOLUME;
-  }
-  return absOffsetRatio >= COMPACT_TOOL_WHEEL_REBOUND_SOUND_STRONG_RATIO
-    ? COMPACT_TOOL_WHEEL_REBOUND_SOUND_STRONG_VOLUME
-    : COMPACT_TOOL_WHEEL_REBOUND_SOUND_MEDIUM_VOLUME;
-}
-
-export function playCompactToolWheelReboundSound(
-  soundSrc = COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC,
-  volume = COMPACT_TOOL_WHEEL_REBOUND_SOUND_STRONG_VOLUME,
-) {
-  const src = soundSrc.trim();
-  if (!src) return;
-  const audioSystem = getCompactToolWheelAudioSystem();
-  if (!audioSystem) return;
-  try {
-    void audioSystem.playSfx({ src, preload: 'auto' }, { volume });
-  } catch {
-    // Optional UI SFX must never block wheel interaction.
-  }
-}
-
 function supportsDesktopFinePointer(): boolean {
   if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
     return true;
@@ -1854,6 +1737,7 @@ function CompactChatApp({
   const [compactExportPreviewOpen, setCompactExportPreviewOpen] = useState(false);
   const [compactExportSelectedIds, setCompactExportSelectedIds] = useState<Set<string>>(() => new Set());
   const [compactExportAutoScrollToBottom, setCompactExportAutoScrollToBottom] = useState(true);
+  const compactExportHistoryGeometryStateRef = useRef<{ mounted: boolean; open: boolean } | null>(null);
   // 折叠进行中：点最小化时置 true → 蓝条（历史区开关）淡出（#2）+ 胶囊右→左擦除收走。mode 切到
   // minimized 后由下方 useEffect 复位。展开进行中：minimized→compact 时置 true → 胶囊左→右展开 reveal。
   // 这两个擦除/reveal 类必须由 React state 写进 className（而非 host/preload 用 classList 加）—— 否则
@@ -2245,6 +2129,26 @@ function CompactChatApp({
       compactExportHistoryUnmountTimerRef.current = null;
     }, COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS);
   }, [clearCompactExportHistoryUnmountTimer, messages]);
+
+  useEffect(() => {
+    if (!isCompactSurface) {
+      compactExportHistoryGeometryStateRef.current = null;
+      return;
+    }
+    const previous = compactExportHistoryGeometryStateRef.current;
+    compactExportHistoryGeometryStateRef.current = {
+      mounted: compactExportHistoryMounted,
+      open: compactExportHistoryOpen,
+    };
+    if (!previous) return;
+    if (
+      previous.mounted === compactExportHistoryMounted
+      && previous.open === compactExportHistoryOpen
+    ) {
+      return;
+    }
+    window.dispatchEvent(new CustomEvent('neko:compact-interaction-geometry-refresh'));
+  }, [compactExportHistoryMounted, compactExportHistoryOpen, isCompactSurface]);
 
   useEffect(() => {
     const request = compactHistoryOpenRequest;
@@ -3402,14 +3306,62 @@ function CompactChatApp({
     const gap = 16;
     let frameId: number | null = null;
 
-    const syncChoiceLayerSurfaceVars = (shellRect: DOMRect, layerNode: HTMLElement) => {
-      layerNode.style.setProperty('--compact-choice-surface-left', `${shellRect.left}px`);
-      layerNode.style.setProperty('--compact-choice-surface-top', `${shellRect.top}px`);
-      layerNode.style.setProperty('--compact-choice-surface-width', `${Math.max(1, shellRect.width)}px`);
-      layerNode.style.setProperty('--compact-choice-surface-height', `${Math.max(1, shellRect.height)}px`);
+    const syncChoiceLayerSurfaceVars = (
+      surfaceRect: { left: number; top: number; width: number; height: number },
+      layerNode: HTMLElement,
+    ) => {
+      layerNode.style.setProperty('--compact-choice-surface-left', `${surfaceRect.left}px`);
+      layerNode.style.setProperty('--compact-choice-surface-top', `${surfaceRect.top}px`);
+      layerNode.style.setProperty('--compact-choice-surface-width', `${Math.max(1, surfaceRect.width)}px`);
+      layerNode.style.setProperty('--compact-choice-surface-height', `${Math.max(1, surfaceRect.height)}px`);
     };
 
-    const getDesktopPlacementSpace = (shellRect: DOMRect) => {
+    const getDesktopCompactLayout = (event?: Event) => {
+      const eventDetail = event instanceof CustomEvent ? event.detail : null;
+      if (eventDetail && typeof eventDetail === 'object') {
+        return eventDetail as DesktopCompactChoicePlacementLayout;
+      }
+      return (window as typeof window & {
+        __nekoDesktopCompactLayout?: DesktopCompactChoicePlacementLayout | null;
+      }).__nekoDesktopCompactLayout;
+    };
+
+    const getDesktopLayoutSurfaceRect = (layout?: DesktopCompactChoicePlacementLayout | null) => {
+      const surface = layout?.surface;
+      const left = Number(surface?.left);
+      const top = Number(surface?.top);
+      const width = Number(surface?.width);
+      const height = Number(surface?.height);
+      if (
+        !Number.isFinite(left)
+        || !Number.isFinite(top)
+        || !Number.isFinite(width)
+        || !Number.isFinite(height)
+        || width <= 0
+        || height <= 0
+      ) {
+        return null;
+      }
+      return {
+        left,
+        top,
+        right: left + width,
+        bottom: top + height,
+        width,
+        height,
+      };
+    };
+
+    const syncChoiceLayerSurfaceVarsFromDesktopLayout = (layout?: DesktopCompactChoicePlacementLayout | null) => {
+      const nextLayerNode = compactChoiceLayerRef.current;
+      if (!nextLayerNode) return false;
+      const surfaceRect = getDesktopLayoutSurfaceRect(layout ?? getDesktopCompactLayout());
+      if (!surfaceRect) return false;
+      syncChoiceLayerSurfaceVars(surfaceRect, nextLayerNode);
+      return true;
+    };
+
+    const getDesktopPlacementSpace = (surfaceRect: { top: number; height: number }) => {
       const layout = (window as typeof window & {
         __nekoDesktopCompactLayout?: DesktopCompactChoicePlacementLayout | null;
       }).__nekoDesktopCompactLayout;
@@ -3429,13 +3381,13 @@ function CompactChatApp({
 
       const layoutSurfaceTop = Number(layout?.surface?.top);
       const layoutSurfaceHeight = Number(layout?.surface?.height);
-      const measuredTop = Number.isFinite(shellRect.top) ? shellRect.top : layoutSurfaceTop;
-      const measuredHeight = Number.isFinite(shellRect.height) && shellRect.height > 0
-        ? shellRect.height
+      const measuredTop = Number.isFinite(surfaceRect.top) ? surfaceRect.top : layoutSurfaceTop;
+      const measuredHeight = Number.isFinite(surfaceRect.height) && surfaceRect.height > 0
+        ? surfaceRect.height
         : layoutSurfaceHeight;
       const surfaceScreenTop = windowY + (Number.isFinite(measuredTop) ? measuredTop : 0);
       const surfaceScreenBottom = surfaceScreenTop
-        + (Number.isFinite(measuredHeight) && measuredHeight > 0 ? measuredHeight : Math.max(1, shellRect.height));
+        + (Number.isFinite(measuredHeight) && measuredHeight > 0 ? measuredHeight : Math.max(1, surfaceRect.height));
       const workAreaBottom = workAreaY + workAreaHeight;
       return {
         availableAbove: Math.max(0, surfaceScreenTop - workAreaY),
@@ -3443,16 +3395,17 @@ function CompactChatApp({
       };
     };
 
-    const updatePlacement = () => {
+    const updatePlacement = (desktopLayoutOverride?: DesktopCompactChoicePlacementLayout | null) => {
       const nextShellNode = compactInputShellRef.current;
       const nextLayerNode = compactChoiceLayerRef.current;
       if (!nextShellNode || !nextLayerNode) return;
 
-      const desktopForcedPlacement = ((window as typeof window & {
-        __nekoDesktopCompactLayout?: DesktopCompactChoicePlacementLayout | null;
-      }).__nekoDesktopCompactLayout?.compactChoicePlacement);
+      const desktopLayout = desktopLayoutOverride ?? getDesktopCompactLayout();
+      const desktopForcedPlacement = desktopLayout?.compactChoicePlacement;
       const shellRect = nextShellNode.getBoundingClientRect();
-      syncChoiceLayerSurfaceVars(shellRect, nextLayerNode);
+      const desktopLayoutSurfaceRect = getDesktopLayoutSurfaceRect(desktopLayout);
+      const surfaceRect = desktopLayoutSurfaceRect ?? shellRect;
+      syncChoiceLayerSurfaceVars(surfaceRect, nextLayerNode);
       if (desktopForcedPlacement === 'above' || desktopForcedPlacement === 'below') {
         setCompactChoiceLayerPlacement(current => (current === desktopForcedPlacement ? current : desktopForcedPlacement));
         return;
@@ -3460,9 +3413,9 @@ function CompactChatApp({
       const layerRect = nextLayerNode.getBoundingClientRect();
       const layerHeight = Math.max(layerRect.height, nextLayerNode.scrollHeight);
       const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
-      const desktopSpace = getDesktopPlacementSpace(shellRect);
-      const availableBelow = desktopSpace?.availableBelow ?? Math.max(0, viewportHeight - shellRect.bottom);
-      const availableAbove = desktopSpace?.availableAbove ?? Math.max(0, shellRect.top);
+      const desktopSpace = getDesktopPlacementSpace(surfaceRect);
+      const availableBelow = desktopSpace?.availableBelow ?? Math.max(0, viewportHeight - surfaceRect.bottom);
+      const availableAbove = desktopSpace?.availableAbove ?? Math.max(0, surfaceRect.top);
       const requiredSpace = layerHeight + gap;
       const nextPlacement = availableBelow >= requiredSpace
         ? 'below'
@@ -3491,22 +3444,35 @@ function CompactChatApp({
       });
     };
 
+    let scheduledDesktopLayoutOverride: DesktopCompactChoicePlacementLayout | null | undefined;
     const schedulePlacementUpdate = () => {
       if (frameId !== null) {
         window.cancelAnimationFrame(frameId);
       }
       frameId = window.requestAnimationFrame(() => {
         frameId = null;
-        updatePlacement();
+        const desktopLayoutOverride = scheduledDesktopLayoutOverride;
+        scheduledDesktopLayoutOverride = undefined;
+        updatePlacement(desktopLayoutOverride);
       });
     };
+    const schedulePlacementUpdateWithDesktopLayout = (layout?: DesktopCompactChoicePlacementLayout | null) => {
+      scheduledDesktopLayoutOverride = layout;
+      schedulePlacementUpdate();
+    };
 
+    syncChoiceLayerSurfaceVarsFromDesktopLayout();
     schedulePlacementUpdate();
 
     const visualViewport = window.visualViewport;
+    const handleDesktopCompactLayoutChange = (event: Event) => {
+      const layout = getDesktopCompactLayout(event);
+      syncChoiceLayerSurfaceVarsFromDesktopLayout(layout);
+      schedulePlacementUpdateWithDesktopLayout(layout);
+    };
     window.addEventListener('resize', schedulePlacementUpdate);
     window.addEventListener('neko:compact-surface-layout-change', schedulePlacementUpdate);
-    window.addEventListener('neko:desktop-compact-layout-change', schedulePlacementUpdate);
+    window.addEventListener('neko:desktop-compact-layout-change', handleDesktopCompactLayoutChange);
     visualViewport?.addEventListener('resize', schedulePlacementUpdate);
     visualViewport?.addEventListener('scroll', schedulePlacementUpdate);
 
@@ -3525,7 +3491,7 @@ function CompactChatApp({
       }
       window.removeEventListener('resize', schedulePlacementUpdate);
       window.removeEventListener('neko:compact-surface-layout-change', schedulePlacementUpdate);
-      window.removeEventListener('neko:desktop-compact-layout-change', schedulePlacementUpdate);
+      window.removeEventListener('neko:desktop-compact-layout-change', handleDesktopCompactLayoutChange);
       visualViewport?.removeEventListener('resize', schedulePlacementUpdate);
       visualViewport?.removeEventListener('scroll', schedulePlacementUpdate);
       observer?.disconnect();
@@ -4332,6 +4298,14 @@ function CompactChatApp({
 
   const openCompactInputToolFan = useCallback((intent: 'click' | 'hover', options?: { ignoreDisabled?: boolean }) => {
     if ((!options?.ignoreDisabled && composerDisabled) || compactInputHasPayload) return false;
+    if (compactInputToolFanOpenRef.current) {
+      clearCompactInputToolFanCloseTimer();
+      if (compactInputToolFanOpenIntentRef.current !== 'click') {
+        compactInputToolFanOpenIntentRef.current = intent;
+      }
+      updateCompactInputToolFanPosition();
+      return true;
+    }
     // 展开时延续上次轮盘中心索引（compactInputToolWheelIndex 是组件级 state，会话内常驻）：
     // hover 抖动重入或重新打开都不主动把用户刚滚到的位置弹回默认位。复位只随页面刷新/组件
     // 重挂发生（useState 初值为环位 0）。取舍脉络：#1697 曾在此「每次展开复位 index=0」，
@@ -4363,7 +4337,7 @@ function CompactChatApp({
   ]);
 
   const shouldOpenCompactToolFanOnHover = useCallback((pointerType: string) => {
-    return pointerType === 'mouse';
+    return pointerType === 'mouse' || pointerType === '';
   }, []);
 
   const isCompactInputToolPointerInToggleHoverRegion = useCallback((clientX: number, clientY: number, relatedTarget?: EventTarget | null) => {
@@ -4542,7 +4516,7 @@ function CompactChatApp({
   const startCompactInputToolWheelChargeRelease = useCallback((
     direction: 1 | -1,
     chargeSteps: number,
-    reboundVolume: number | null,
+    reboundVisualIntensity: number | null,
   ) => {
     const releaseSteps = getCompactToolWheelChargeReleaseVisualStepCount(
       Math.round(chargeSteps),
@@ -4551,9 +4525,6 @@ function CompactChatApp({
     const chargeProgressRatio = getCompactToolWheelChargeProgressRatio(chargeSteps);
     clearCompactInputToolWheelChargeReleaseTimer();
     if (releaseSteps <= 0) {
-      if (reboundVolume !== null) {
-        playCompactToolWheelReboundSound(COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC, reboundVolume);
-      }
       return;
     }
 
@@ -4577,7 +4548,7 @@ function CompactChatApp({
         }, COMPACT_TOOL_WHEEL_CHARGE_RELEASE_REBOUND_VISUAL_MS);
         playCompactToolWheelReboundSound(
           COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC,
-          reboundVolume ?? COMPACT_TOOL_WHEEL_REBOUND_SOUND_SOFT_VOLUME,
+          reboundVisualIntensity ?? COMPACT_TOOL_WHEEL_REBOUND_VISUAL_SOFT_INTENSITY,
         );
       }
     };
@@ -5022,7 +4993,7 @@ function CompactChatApp({
   ]);
 
   useEffect(() => {
-    if (!isCompactSurface || effectiveCompactChatState !== 'input') {
+    if (!isCompactSurface || composerHidden) {
       resetCompactInputToolFanHoverBlock();
       return;
     }
@@ -5070,8 +5041,8 @@ function CompactChatApp({
   }, [
     clearCompactInputToolFanCloseTimer,
     compactInputHasPayload,
+    composerHidden,
     composerDisabled,
-    effectiveCompactChatState,
     isCompactInputToolPointerInHoverRegion,
     isCompactInputToolPointerInToggleHoverRegion,
     isCompactSurface,
@@ -5101,7 +5072,7 @@ function CompactChatApp({
         compactInputToolWheelSuppressClickRef.current = false;
       }, 0);
     }
-    const reboundVolume = getCompactToolWheelReboundVolume(pointerState.dragOffsetRatio);
+    const reboundVisualIntensity = getCompactToolWheelReboundVisualIntensity(pointerState.dragOffsetRatio);
     const chargeState = compactInputToolWheelChargeRef.current;
     const releaseDirection = chargeState.direction === null
       ? null
@@ -5114,9 +5085,9 @@ function CompactChatApp({
     setCompactInputToolWheelDragOffsetRatio(0);
     dispatchCompactToolWheelDragState(false, pointerState.id);
     if (releaseDirection !== null && releaseSteps > 0) {
-      startCompactInputToolWheelChargeRelease(releaseDirection, releaseSteps, reboundVolume);
-    } else if (reboundVolume !== null) {
-      playCompactToolWheelReboundSound(COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC, reboundVolume);
+      startCompactInputToolWheelChargeRelease(releaseDirection, releaseSteps, reboundVisualIntensity);
+    } else if (reboundVisualIntensity !== null) {
+      playCompactToolWheelReboundSound(COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC, reboundVisualIntensity);
     }
   }, [
     clearCompactInputToolWheelDragGuardTimer,
@@ -5795,7 +5766,9 @@ function CompactChatApp({
     lastCompactToolFanOpenRequestIdRef.current = request.id;
     if (request.open) {
       lastCompactToolFanOpenRequestIdRef.current = request.id;
-      const opened = openCompactInputToolFan('click', { ignoreDisabled: true });
+      const requestReason = typeof request.reason === 'string' ? request.reason : '';
+      const requestIntent = requestReason.startsWith('desktop-compact-tool-toggle') ? 'hover' : 'click';
+      const opened = openCompactInputToolFan(requestIntent, { ignoreDisabled: true });
       if (!opened) return;
       return;
     }
@@ -7468,7 +7441,7 @@ function CompactChatApp({
                     data-compact-drag-surface="true"
                     data-compact-chat-state={effectiveCompactChatState}
                     data-compact-geometry-part={effectiveCompactChatState === 'input' ? 'inputBody' : 'capsuleBody'}
-                    data-compact-geometry-hit-scope={effectiveCompactChatState === 'input' ? 'children' : undefined}
+                    data-compact-geometry-hit-scope={!composerHidden ? 'children' : undefined}
                     data-compact-tool-toggle-visible={compactToolToggleVisible ? 'true' : 'false'}
                     onPointerDown={beginCompactToolOriginDrag}
                     onPointerMove={updateCompactToolOriginDrag}
@@ -7518,6 +7491,9 @@ function CompactChatApp({
                         <button
                           className="compact-chat-capsule-button"
                           type="button"
+                          data-compact-hit-region="true"
+                          data-compact-hit-region-id="capsule:text"
+                          data-compact-hit-region-kind="capsule-text"
                           disabled={compactCapsuleEntryLocked}
                           onClick={() => {
                             if (composerHidden) return;

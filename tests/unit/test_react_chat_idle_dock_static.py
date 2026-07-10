@@ -149,6 +149,11 @@ def test_react_chat_broadcasts_minimized_screen_rect_for_cat1_follow():
     avatar_source = _read(AVATAR_UI_BUTTONS_PATH)
 
     assert "function dispatchElectronChatMinimizedState(reason)" in source
+    assert "function getElectronChatMinimizedScreenRect(windowRect)" in source
+    assert "width: MINIMIZED_SIZE" in source
+    assert "height: MINIMIZED_SIZE" in source
+    assert "Math.round(windowRect.left + Math.max(0, (windowRect.width - MINIMIZED_SIZE) / 2))" in source
+    assert "Math.round(windowRect.top + Math.max(0, (windowRect.height - MINIMIZED_SIZE) / 2))" in source
     assert "action: 'idle_chat_minimized_state'" in source
     assert "new CustomEvent('neko:idle-chat-minimized-state'" in source
     assert "bridge.getBounds().then(function (bounds)" in source
@@ -159,6 +164,14 @@ def test_react_chat_broadcasts_minimized_screen_rect_for_cat1_follow():
     assert "}, 500);" in source
     assert "electronChatMinimizedStatePublishedAt" in source
     assert "_NEKO_IDLE_DESKTOP_CHAT_RECT_STALE_MS = 2500" in avatar_source
+
+    dispatch_block = source.split("function dispatchElectronChatMinimizedState(reason)", 1)[1].split(
+        "function scheduleElectronChatMinimizedState(reason)",
+        1,
+    )[0]
+    assert "getElectronChatMinimizedScreenRect(windowRect)" in dispatch_block
+    assert "classList.contains('is-minimized')" not in dispatch_block
+    assert "querySelector('.react-chat-minimized-icon')" not in dispatch_block
 
 
 def test_cat1_minimized_ball_target_wins_over_stale_compact_surface():
@@ -270,28 +283,65 @@ def test_react_chat_applies_desktop_cat1_pair_move_bounds_when_collapsed():
     assert "runtime.isLinuxX11" in source
     assert "runtime.platform === 'linux'" in source
     assert "electronCat1PairMoveBoundsFrame" in source
-    assert "function scheduleElectronCat1PairMoveBounds(bounds)" in source
-    assert "async function applyElectronCat1PairMoveBounds(bounds)" in source
+    assert "electronCat1PairMovePendingForce" in source
+    assert "electronCat1PairMovePendingReason" in source
+    assert "function scheduleElectronCat1PairMoveBounds(bounds, options)" in source
+    assert "async function applyElectronCat1PairMoveBounds(bounds, options)" in source
+    assert "function electronVisibleYarnRectToWindowBounds(rect, carrierRect)" in source
+    assert "ELECTRON_CHAT_MINIMIZED_FALLBACK_WINDOW_SIZE = 83" in source
     assert "window.addEventListener('neko:idle-chat-pair-move-bounds'" in source
-    assert "scheduleElectronCat1PairMoveBounds(detail.screenRect || detail.bounds)" in source
+    assert "scheduleElectronCat1PairMoveBounds(detail.screenRect || detail.bounds, {" in source
+    assert "reason: detail.reason || detail.source || 'cat1-pair-move'" in source
     assert "if (!bridge || !isElectronChatWindowCollapsed(bridge)) return;" in source
     assert "if (hasElectronIdleDockPendingOrActive()) return;" in source
     assert "bridge.idleDockCommitCollapsedBounds(targetBounds)" in source
-    assert "scheduleElectronChatMinimizedState('cat1-pair-move')" in source
+    assert "scheduleElectronChatMinimizedState(reason)" in source
 
     apply_block = _between(
         source,
-        "async function applyElectronCat1PairMoveBounds(bounds) {",
-        "function scheduleElectronCat1PairMoveBounds(bounds) {",
+        "async function applyElectronCat1PairMoveBounds(bounds, options) {",
+        "function scheduleElectronCat1PairMoveBounds(bounds, options) {",
     )
-    assert "if (isElectronLinuxRuntime()) return;" in apply_block
+    assert "var force = !!(options && options.force);" in apply_block
+    assert "var reason = options && typeof options.reason === 'string' && options.reason" in apply_block
+    assert ": 'cat1-pair-move';" in apply_block
+    assert "if (isElectronLinuxRuntime() && !force) return;" in apply_block
+    assert "if (isElectronLinuxRuntime()) return;" not in apply_block
+    assert "carrierBounds = await bridge.getBounds();" in apply_block
+    assert "var targetBounds = electronVisibleYarnRectToWindowBounds(bounds, carrierBounds);" in apply_block
+    assert "electronRectToBounds(bounds)" not in apply_block
+
+    visible_to_window_block = _between(
+        source,
+        "function electronVisibleYarnRectToWindowBounds(rect, carrierRect) {",
+        "async function applyElectronCat1PairMoveBounds(bounds, options) {",
+    )
+    assert "var carrier = normalizeElectronWindowBoundsRect(carrierRect);" in visible_to_window_block
+    assert "Math.max(ELECTRON_CHAT_MINIMIZED_FALLBACK_WINDOW_SIZE, Math.round(normalized.width))" in visible_to_window_block
+    assert "var insetX = Math.max(0, (carrierWidth - normalized.width) / 2);" in visible_to_window_block
+    assert "var insetY = Math.max(0, (carrierHeight - normalized.height) / 2);" in visible_to_window_block
+    assert "x: Math.round(normalized.left - insetX)" in visible_to_window_block
+    assert "y: Math.round(normalized.top - insetY)" in visible_to_window_block
+    assert "width: Math.round(carrierWidth)" in visible_to_window_block
+    assert "height: Math.round(carrierHeight)" in visible_to_window_block
 
     schedule_block = _between(
         source,
-        "function scheduleElectronCat1PairMoveBounds(bounds) {",
+        "function scheduleElectronCat1PairMoveBounds(bounds, options) {",
         "function isElectronIdleDockCurrent(generation) {",
     )
-    assert "if (isElectronLinuxRuntime()) return;" in schedule_block
+    assert "var force = !!(options && options.force);" in schedule_block
+    assert "var reason = options && typeof options.reason === 'string' && options.reason" in schedule_block
+    assert "if (isElectronLinuxRuntime() && !force) return;" in schedule_block
+    assert "if (isElectronLinuxRuntime()) return;" not in schedule_block
+    assert "electronCat1PairMovePendingForce = electronCat1PairMovePendingForce || force;" in schedule_block
+    assert "electronCat1PairMovePendingReason = reason;" in schedule_block
+    assert "var pendingForce = electronCat1PairMovePendingForce;" in schedule_block
+    assert "electronCat1PairMovePendingBounds = normalizeElectronRect({" in schedule_block
+    assert "var pendingReason = electronCat1PairMovePendingReason || 'cat1-pair-move';" in schedule_block
+    assert "electronCat1PairMovePendingForce = false;" in schedule_block
+    assert "electronCat1PairMovePendingReason = '';" in schedule_block
+    assert "reason: pendingReason" in schedule_block
 
 
 def test_cat1_desktop_pair_move_skips_linux_runtime_native_bounds_sync():
@@ -311,9 +361,9 @@ def test_cat1_desktop_pair_move_skips_linux_runtime_native_bounds_sync():
         "function _dispatchNekoIdleDesktopChatPairMoveBounds(screenRect, options = {}) {",
         "function _getNekoIdleCat1PairMoveChatTarget() {",
     )
-    assert "if (_isNekoDesktopLinuxRuntime()) return false;" in dispatch_block
-    assert "_rememberNekoIdleDesktopChatPairMoveRect(screenRect)" in dispatch_block
     assert "const force = !!(options && options.force);" in dispatch_block
+    assert "if (_isNekoDesktopLinuxRuntime() && !force) return false;" in dispatch_block
+    assert "_rememberNekoIdleDesktopChatPairMoveRect(screenRect)" in dispatch_block
     assert "if (!force) {" in dispatch_block
     assert "signature === _nekoIdleDesktopChatPairMoveLastDispatchSignature" in dispatch_block
     assert "now - _nekoIdleDesktopChatPairMoveLastDispatchAt < _NEKO_IDLE_CAT1_DESKTOP_PAIR_MOVE_SYNC_MIN_MS" in dispatch_block
@@ -421,6 +471,49 @@ def test_idle_dock_uses_mutation_observer_to_detect_minimize_completion():
     assert "triggered && !wasActive && wasTransitioning" in source
     assert "cancelActiveAnimation()" in source
     assert "shell.classList.remove('is-minimized', 'is-collapsing', 'is-idle-docked')" in source
+
+
+def test_minimize_collapse_deferred_scale_write_is_cancellable():
+    source = _read(APP_REACT_CHAT_WINDOW_PATH)
+    minimize_block = _between(
+        source,
+        "if (willMinimize) {",
+        "        } else {",
+    )
+
+    assert "var collapseScaleFrame = 0;" in minimize_block
+    assert "var collapseScaleInnerFrame = 0;" in minimize_block
+    assert "function cancelCollapseScaleFrames()" in minimize_block
+    assert "window.cancelAnimationFrame(collapseScaleFrame)" in minimize_block
+    assert "window.cancelAnimationFrame(collapseScaleInnerFrame)" in minimize_block
+    assert minimize_block.count("cancelCollapseScaleFrames();") >= 2
+    assert (
+        "if (handled || !shell.classList.contains('is-collapsing') || "
+        "shell.classList.contains('is-minimized')) return;"
+    ) in minimize_block
+
+
+def test_idle_dock_minimize_fallback_preserves_pending_surface_mode():
+    source = _read(APP_REACT_CHAT_WINDOW_PATH)
+    fallback_block = _between(
+        source,
+        "function scheduleIdleDockMinimizeFallback(shell) {",
+        "function getElectronIdleDockBridge() {",
+    )
+
+    assert "var pendingSurfaceMode = pendingChatSurfaceMode;" in fallback_block
+    assert "var pendingSurfaceCommit = pendingMinimizedSurfaceCommit;" in fallback_block
+    assert "pendingChatSurfaceMode = pendingSurfaceMode;" in fallback_block
+    assert "pendingMinimizedSurfaceCommit = pendingSurfaceCommit;" in fallback_block
+    assert "commitPendingMinimizedSurfaceMode();" in fallback_block
+    assert "flushPendingChatSurfaceModeIfNeeded();" in fallback_block
+    assert (
+        "if (!minimized || getCurrentChatSurfaceMode() !== 'minimized') {"
+    ) in fallback_block
+
+    flush_index = fallback_block.index("flushPendingChatSurfaceModeIfNeeded();")
+    finish_index = fallback_block.index("finishIdleDockMinimize(latestShell);")
+    assert flush_index < finish_index
 
 
 def test_idle_dock_does_not_follow_return_ball_after_initial_dock():

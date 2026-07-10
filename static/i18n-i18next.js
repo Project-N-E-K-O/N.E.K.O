@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 更新语言包内容时可以递增此值
-    const LOCALE_VERSION = '2026-06-29-drawing-guess-save-art-copy-i18n-topic-hint-voice-profile-i18n-review-fixes';
+    // 修改原因：合并 main 后语言包同时包含你画我猜与 Doubao Speaker ID/模型类型 3D 标签文案，递增版本强制客户端重新拉取。
+    const LOCALE_VERSION = '2026-07-11-drawing-guess-merge-doubao-speaker-id-model-type-3d-label-i18n';
 
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {

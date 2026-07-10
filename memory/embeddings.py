@@ -1411,7 +1411,24 @@ class EmbeddingService:
             raise _DisabledError(_DisableReason.NO_TOKENIZERS) from e
 
         sess_opts = ort.SessionOptions()
-        sess_opts.intra_op_num_threads = max(1, (os.cpu_count() or 2) // 2)
+        # intra-op 线程数:backfill 是后台补向量的任务,在小核机上占掉一半核心
+        # 已经可感(4 核 → 2 线程 = 50%,与前端渲染 / LLM 客户端 / TTS 抢核)。
+        # ≤4 核降到单线程,把余下的核留给交互路径;>4 核维持「一半核心」的老
+        # 策略——大核机吞吐优先,头部余量仍然够。
+        #
+        # 「小核机」阈值按*物理*核判,不用 os.cpu_count():4 核 + 超线程的 CPU
+        # (i3/i5 常见)逻辑核报 8,按逻辑核判会漏掉这类机器走 >4 分支给 4 线程
+        # ——而这恰是要压占用的目标硬件。psutil 已是本模块依赖(detect_total_ram_gb),
+        # 物理核拿不到(平台不支持 / 无 psutil)再退回逻辑核。>4 分支仍按逻辑核
+        # 折半,与本改动前的行为逐字一致,不动大核机。
+        logical = os.cpu_count() or 2
+        try:
+            import psutil
+            physical = psutil.cpu_count(logical=False)
+        except Exception:  # noqa: BLE001 — 无 psutil / 平台不支持 → 退回逻辑核
+            physical = None
+        cores = physical or logical
+        sess_opts.intra_op_num_threads = 1 if cores <= 4 else max(1, logical // 2)
         sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         # Arena 默认 True(BFCArena 只涨不还):一次性大分配后 RSS 永久
         # 钉在高水位,把瞬时尖峰变成永久占用。我们的输入有 _INFER_BATCH_MAX_TOKENS
@@ -1419,6 +1436,22 @@ class EmbeddingService:
         # 也避免冷路径偶发长批次永久污染基线。代价:每次 run 重新 malloc,
         # CPU 推理本来就 100ms+ 级,malloc 几 μs 可忽略。
         sess_opts.enable_cpu_mem_arena = False
+        # 关掉 intra-op 线程池的 spin-wait。ORT 默认在每次 run 结束后让 worker
+        # 线程忙等(busy-spin)一小段以抢下一批活;而 backfill 是「一连串小 run,
+        # 中间夹着 Python 侧 tokenize / numpy 预处理」的突发型负载,spin 会在这些
+        # 间隙把核心持续顶高。改成阻塞等待后,下次 run 唤醒线程多花几 μs——对
+        # 100ms+ 级的 CPU 推理可忽略——却能显著压低 backfill / 召回期间的占用。
+        # add_session_config_entry 在旧版本 ORT 上可能缺失,失败只是回到默认
+        # spin 行为(功能不受影响),所以吞掉异常不当作 load 失败。
+        try:
+            sess_opts.add_session_config_entry(
+                "session.intra_op.allow_spinning", "0",
+            )
+        except Exception as e:  # noqa: BLE001 — 老 ORT 无此键 → 保持默认 spin
+            logger.debug(
+                "EmbeddingService: allow_spinning=0 not applied (%s: %s)",
+                type(e).__name__, e,
+            )
         self._session = ort.InferenceSession(
             model_path, sess_options=sess_opts, providers=["CPUExecutionProvider"],
         )

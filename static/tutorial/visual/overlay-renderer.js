@@ -88,6 +88,7 @@
             : DEFAULT_CURSOR_CLICK_VISIBLE_MS;
         let currentSpotlights = [];
         let currentCursor = null;
+        let currentCursorEffectPayload = null;
         let currentCursorEffectSuppressUntil = 0;
         let currentPetal = null;
 
@@ -108,9 +109,13 @@
             if (hasCursor) {
                 currentCursor = withoutTransientCursorEffect(patch.cursor);
                 const cursorEffectDurationMs = getCursorEffectDurationMs(patch.cursor, defaultCursorClickVisibleMs);
-                currentCursorEffectSuppressUntil = cursorEffectDurationMs > 0
-                    ? now() + cursorEffectDurationMs
-                    : 0;
+                if (cursorEffectDurationMs > 0) {
+                    currentCursorEffectPayload = patch.cursor || null;
+                    currentCursorEffectSuppressUntil = now() + cursorEffectDurationMs;
+                } else {
+                    currentCursorEffectPayload = null;
+                    currentCursorEffectSuppressUntil = 0;
+                }
             }
             if (hasPetal) {
                 currentPetal = patch.petal || null;
@@ -121,6 +126,8 @@
             }
             if (hasCursor) {
                 payload.cursor = patch.cursor || null;
+            } else if (currentCursorEffectPayload && isCursorEffectActive()) {
+                payload.cursor = currentCursorEffectPayload;
             } else if (currentCursor && !isCursorEffectActive()) {
                 payload.cursor = currentCursor;
             }
@@ -133,6 +140,7 @@
         function reset() {
             currentSpotlights = [];
             currentCursor = null;
+            currentCursorEffectPayload = null;
             currentCursorEffectSuppressUntil = 0;
             currentPetal = null;
         }
@@ -142,6 +150,7 @@
             reset,
             clearCursorCache() {
                 currentCursor = null;
+                currentCursorEffectPayload = null;
                 currentCursorEffectSuppressUntil = 0;
             },
             getPetal() {

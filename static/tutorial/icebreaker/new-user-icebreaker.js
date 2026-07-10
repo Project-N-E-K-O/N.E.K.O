@@ -23,6 +23,8 @@
     var activeSession = null;
     var pendingStartDay = '';
     var pendingGuideEndStateDay = '';
+    var pendingGuideEndState = null;
+    var pendingGuideEndStartPromise = null;
     var scriptPromise = null;
     var localePromises = Object.create(null);
     var icebreakerSortKeySeq = 0;
@@ -170,11 +172,17 @@
         if (pendingGuideEndStateDay === dayKey) {
             pendingGuideEndStateDay = '';
         }
+        if (pendingGuideEndState && String(pendingGuideEndState.day || '') === dayKey) {
+            pendingGuideEndState = null;
+        }
     }
 
     function markPendingStartFromEndState(endState) {
         var dayKey = String(endState && endState.day || '');
-        if (dayKey) pendingGuideEndStateDay = dayKey;
+        if (dayKey) {
+            pendingGuideEndStateDay = dayKey;
+            pendingGuideEndState = endState;
+        }
         return dayKey;
     }
 
@@ -641,6 +649,29 @@
         }
     }
 
+    function finalizeIcebreakerAssistantSubtitleTranslation(role, message) {
+        if (role !== 'assistant') return;
+        var line = getIcebreakerMessageText(message);
+        if (!line) return;
+        try {
+            var bridge = window.subtitleBridge;
+            if (!bridge || typeof bridge.finalizeTurnWithTranslation !== 'function') {
+                return;
+            }
+            if (typeof bridge.beginTurn === 'function') {
+                bridge.beginTurn({ latch: false });
+            }
+            var result = bridge.finalizeTurnWithTranslation(line);
+            if (result && typeof result.catch === 'function') {
+                result.catch(function (error) {
+                    console.warn('[NewUserIcebreaker] subtitle translation failed:', error);
+                });
+            }
+        } catch (error) {
+            console.warn('[NewUserIcebreaker] subtitle translation failed:', error);
+        }
+    }
+
     function waitForIcebreakerChatHostMounted(host) {
         return new Promise(function (resolve) {
             var attempts = 0;
@@ -709,8 +740,10 @@
         broadcastIcebreakerAppendMessage(message);
         return appendLlmContext(role, messageText, meta || {}).then(function () {
             if (!shouldRenderIcebreakerOnLocalChatHost()) {
-                // The standalone /chat page applies both append and compact caption sync
-                // from the broadcast receiver in app-interpage.js.
+                // In desktop multi-window mode the standalone /chat page renders the
+                // bubble/caption, but the pet page remains the subtitle translation
+                // owner. Finalize here so the translation panel is populated.
+                finalizeIcebreakerAssistantSubtitleTranslation(role, message);
                 return message;
             }
             var chatHost = null;
@@ -724,6 +757,7 @@
                 if (!result) return result;
                 return waitForIcebreakerChatHostMounted(chatHost).then(function () {
                     syncIcebreakerAssistantCompactCaption(role, message);
+                    finalizeIcebreakerAssistantSubtitleTranslation(role, message);
                     return result;
                 });
             });
@@ -1024,6 +1058,18 @@
         return false;
     }
 
+    function isDay1SystrayIntroBlockingIcebreaker() {
+        try {
+            if (document.body && document.body.classList.contains('neko-day1-systray-intro-open')) {
+                return true;
+            }
+        } catch (_) {}
+        return hasVisibleTutorialBlocker([
+            '#neko-day1-systray-intro-modal',
+            '.neko-day1-systray-intro-modal'
+        ]);
+    }
+
     function isTutorialBlockingIcebreaker() {
         try {
             if (window.isInTutorial) return true;
@@ -1038,6 +1084,7 @@
                 return true;
             }
         } catch (_) {}
+        if (isDay1SystrayIntroBlockingIcebreaker()) return true;
         return hasVisibleTutorialBlocker([
             '#neko-tutorial-skip-btn',
             '#home-avatar-floating-guide-player',
@@ -1448,8 +1495,7 @@
         if (!endState || endState.ended !== true) return false;
         if (endState.isAngryExit) return false;
         var outcome = String(endState.outcome || endState.rawReason || '');
-        if (outcome === 'destroy') return false;
-        if (outcome && outcome !== 'complete' && outcome !== 'skip') return false;
+        if (outcome !== 'complete') return false;
         var endedAt = Number(endState.endedAt || 0);
         if (endedAt && Date.now() - endedAt > TRIGGER_WINDOW_MS) return false;
         var day = String(endState.day || '');
@@ -1563,7 +1609,8 @@
     function startFromEndStateWhenTutorialIdle(endState) {
         if (!endState) return Promise.resolve(false);
         if (isTutorialBlockingIcebreaker()) {
-            if (Date.now() >= getEndStateTriggerDeadline(endState)) return Promise.resolve(false);
+            // The Day 1 systray intro is a user-controlled modal; keep the guide end state until it closes.
+            if (!isDay1SystrayIntroBlockingIcebreaker() && Date.now() >= getEndStateTriggerDeadline(endState)) return Promise.resolve(false);
             return new Promise(function (resolve) {
                 window.setTimeout(resolve, TUTORIAL_IDLE_RETRY_MS);
             }).then(function () {
@@ -1573,16 +1620,37 @@
         return Promise.resolve(startFromEndState(endState));
     }
 
+    function attemptStartFromGuideEndState(endState, pendingDay) {
+        if (!endState) return Promise.resolve(false);
+        var dayKey = String(pendingDay || endState.day || '');
+        if (activeSession) return Promise.resolve(true);
+        if (!pendingGuideEndState) return Promise.resolve(true);
+        if (dayKey && String(pendingGuideEndState.day || '') !== dayKey) return Promise.resolve(true);
+        if (pendingGuideEndStartPromise) return pendingGuideEndStartPromise;
+        pendingGuideEndStartPromise = startFromEndStateWhenTutorialIdle(endState).then(function (started) {
+            if (!started) {
+                clearPendingGuideEndStateDay(pendingDay);
+                dispatchIcebreakerEnded('start_failed');
+            }
+            return started;
+        }).catch(function (error) {
+            console.warn('[NewUserIcebreaker] deferred start failed:', error);
+            clearPendingGuideEndStateDay(pendingDay);
+            dispatchIcebreakerEnded('start_failed');
+            return false;
+        }).then(function (started) {
+            pendingGuideEndStartPromise = null;
+            return started;
+        });
+        return pendingGuideEndStartPromise;
+    }
+
     function synthesizeEndStateFromEvent(eventType, detail) {
         var normalizedDetail = detail && typeof detail === 'object' ? detail : {};
         var day = normalizedDetail.day;
         var outcome = '';
-        if (eventType === 'neko:avatar-floating-guide-skip') {
-            outcome = 'skip';
-        } else if (eventType === 'neko:avatar-floating-guide-complete') {
+        if (eventType === 'neko:avatar-floating-guide-complete') {
             outcome = 'complete';
-        } else if (eventType === 'neko:tutorial-skipped' && normalizedDetail.page === 'home') {
-            outcome = 'skip';
         } else if (eventType === 'neko:tutorial-completed' && normalizedDetail.page === 'home') {
             outcome = 'complete';
         }
@@ -1614,18 +1682,16 @@
         var detail = event && event.detail ? event.detail : {};
         var eventType = event && event.type ? String(event.type) : '';
         var endState = resolveLatestEndState(detail, eventType);
+        if (
+            !endState
+            || endState.isAngryExit === true
+            || String(endState.outcome || endState.rawReason || '') !== 'complete'
+        ) {
+            return;
+        }
         var pendingDay = markPendingStartFromEndState(endState);
         window.setTimeout(function () {
-            startFromEndStateWhenTutorialIdle(endState).then(function (started) {
-                if (!started) {
-                    clearPendingGuideEndStateDay(pendingDay);
-                    dispatchIcebreakerEnded('start_failed');
-                }
-            }).catch(function (error) {
-                console.warn('[NewUserIcebreaker] deferred start failed:', error);
-                clearPendingGuideEndStateDay(pendingDay);
-                dispatchIcebreakerEnded('start_failed');
-            });
+            attemptStartFromGuideEndState(endState, pendingDay);
         }, 500);
     }
 
@@ -1636,9 +1702,11 @@
     }
 
     window.addEventListener('neko:avatar-floating-guide-complete', handleGuideEndEvent);
-    window.addEventListener('neko:avatar-floating-guide-skip', handleGuideEndEvent);
     window.addEventListener('neko:tutorial-completed', handleGuideEndEvent);
-    window.addEventListener('neko:tutorial-skipped', handleGuideEndEvent);
+    window.addEventListener('neko:day1-systray-intro-closed', function () {
+        if (!pendingGuideEndState) return;
+        attemptStartFromGuideEndState(pendingGuideEndState, String(pendingGuideEndState.day || ''));
+    });
     window.addEventListener('pagehide', function () {
         endIcebreakerRouteOnPageExit('icebreaker_pagehide');
     });
