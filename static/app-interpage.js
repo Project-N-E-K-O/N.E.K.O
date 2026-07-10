@@ -4259,7 +4259,13 @@
     }
 
     function isYuiGuideMessageForCurrentLifecycle(message) {
-        if (!message || !isYuiGuideLifecycleScopedAction(message.action)) {
+        if (
+            !message
+            || (
+                message.action !== 'yui_guide_tutorial_lifecycle_ended'
+                && !isYuiGuideLifecycleScopedAction(message.action)
+            )
+        ) {
             return true;
         }
         var runId = typeof message.tutorialRunId === 'string'

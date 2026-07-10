@@ -6822,6 +6822,19 @@ def test_tutorial_skip_and_angry_exit_do_not_start_new_user_icebreaker(mock_page
                     reason: 'skip',
                 },
             }));
+            window.dispatchEvent(new CustomEvent('neko:tutorial-completed', {
+                detail: {
+                    page: 'home',
+                    day: 1,
+                    endState: {
+                        day: 1,
+                        ended: true,
+                        outcome: 'skip',
+                        rawReason: 'angry_exit',
+                        isAngryExit: true,
+                    },
+                },
+            }));
             await new Promise((resolve) => setTimeout(resolve, 700));
             return {
                 fetchCount: window.__icebreakerFetchCount,
@@ -6857,13 +6870,19 @@ def test_yui_overlay_lifecycle_epoch_blocks_late_dom_recreation(mock_page: Page)
             nextOverlay.showBubble('next tutorial');
             const recreatedByNextInstance = !!document.getElementById('yui-guide-overlay');
             const nextRoot = document.getElementById('yui-guide-overlay');
+            const nextEpoch = window.__NEKO_YUI_GUIDE_OVERLAY_LIFECYCLE_EPOCH__;
+            staleOverlay.destroy();
             staleOverlay.showBubble('older callback after next tutorial');
             const nextRootPreserved = document.getElementById('yui-guide-overlay') === nextRoot;
+            const nextContentPreserved = document.querySelector('.yui-guide-bubble-body')?.textContent === 'next tutorial';
+            const nextEpochPreserved = window.__NEKO_YUI_GUIDE_OVERLAY_LIFECYCLE_EPOCH__ === nextEpoch;
             return {
                 initiallyCreated,
                 recreatedByStaleInstance,
                 recreatedByNextInstance,
                 nextRootPreserved,
+                nextContentPreserved,
+                nextEpochPreserved,
             };
         }
         """
@@ -6874,6 +6893,8 @@ def test_yui_overlay_lifecycle_epoch_blocks_late_dom_recreation(mock_page: Page)
         "recreatedByStaleInstance": False,
         "recreatedByNextInstance": True,
         "nextRootPreserved": True,
+        "nextContentPreserved": True,
+        "nextEpochPreserved": True,
     }
 
 

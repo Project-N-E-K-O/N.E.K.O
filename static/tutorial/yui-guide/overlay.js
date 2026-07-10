@@ -745,6 +745,7 @@
             this.lifecycleEpoch = Number(
                 hostWindow && hostWindow.__NEKO_YUI_GUIDE_OVERLAY_LIFECYCLE_EPOCH__
             ) || 0;
+            this.destroyed = false;
             this.root = null;
             this.stage = null;
             this.controlBanner = null;
@@ -2319,6 +2320,10 @@
         }
 
         destroy() {
+            if (this.destroyed) {
+                return;
+            }
+            this.destroyed = true;
             this.overlayRenderer.clear();
             this.document.body.classList.remove('yui-taking-over');
             this.document.body.classList.remove('yui-guide-input-shield-active');

@@ -2162,10 +2162,12 @@ test('tutorial teardown removes DOM overlay residue and blocks late overlay recr
     )[0];
 
     assert.match(overlaySource, /this\.lifecycleEpoch = Number\([\s\S]*__NEKO_YUI_GUIDE_OVERLAY_LIFECYCLE_EPOCH__/);
+    assert.match(overlaySource, /this\.destroyed = false;/);
     assert.match(overlaySource, /isTutorialLifecycleCurrent\(\) \{[\s\S]*return currentEpoch === this\.lifecycleEpoch;/);
     assert.match(ensureRootBlock, /if \(!this\.isTutorialLifecycleCurrent\(\)\) \{[\s\S]*this\.root = null;[\s\S]*return null;/);
     assert.doesNotMatch(ensureRootBlock, /staleRoot|\.remove\(\)/);
     assert.match(destroyBlock, /__NEKO_YUI_GUIDE_OVERLAY_LIFECYCLE_EPOCH__[\s\S]*\+ 1;/);
+    assert.match(destroyBlock, /if \(this\.destroyed\) \{\s*return;\s*\}[\s\S]*this\.destroyed = true;/);
     assert.doesNotMatch(overlaySource, /^\s*this\.ensureRoot\(\);/m);
     assert.match(overlaySource, /if \(!this\.ensureRoot\(\)\) return;/);
 });
@@ -2838,6 +2840,7 @@ test('external chat ignores stale guide commands after lifecycle ended', () => {
     assert.match(lifecycleBlock, /runId && runId !== yuiGuidePcOverlayLifecycleRunId/);
     assert.match(lifecycleBlock, /function closeYuiGuidePcOverlayLifecycle\(\) \{[\s\S]*yuiGuidePcOverlayLifecycleEpoch \+= 1;[\s\S]*yuiGuidePcOverlayLifecycleClosed = true;/);
     assert.match(lifecycleBlock, /function isYuiGuideMessageForCurrentLifecycle\(message\) \{[\s\S]*runId === yuiGuidePcOverlayLifecycleRunId;/);
+    assert.match(lifecycleBlock, /message\.action !== 'yui_guide_tutorial_lifecycle_ended'/);
     assert.match(appInterpageSource, /case 'yui_guide_set_chat_input_locked':/);
     assert.match(appInterpageSource, /case 'yui_guide_set_chat_spotlight':/);
     assert.match(appInterpageSource, /case 'yui_guide_set_chat_cursor':/);
