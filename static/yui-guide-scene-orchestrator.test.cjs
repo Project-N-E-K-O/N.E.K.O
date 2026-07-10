@@ -1121,6 +1121,47 @@ test('SceneOrchestrator places the first daily guide cursor in the capsule input
     assert.ok(calls.indexOf('cursor:home-hide') < calls.indexOf('core'));
 });
 
+test('SceneOrchestrator preserves Day1 input-origin wobble during the first externalized cursor handoff', () => {
+    const { SceneOrchestrator } = require('./tutorial/core/scene-orchestrator.js');
+    const calls = [];
+    const scene = { id: 'day1_intro_activation', cursorAction: 'input-origin' };
+    const director = {
+        isAvatarFloatingInputIntroScene() {
+            return true;
+        },
+        isHomeChatExternalized() {
+            return true;
+        },
+        getAvatarFloatingIntroExternalizedSpotlightKind() {
+            return 'capsule-input';
+        },
+        getAvatarFloatingIntroExternalizedCursorOptions(inputScene) {
+            calls.push(['options', inputScene.id]);
+            return { effect: 'wobble', durationMs: 0 };
+        },
+        interactionTakeover: {
+            setExternalizedChatCursor(kind, options) {
+                calls.push(['cursor', kind, options.effect, options.durationMs]);
+            }
+        },
+        hideHomeCursorForExternalizedChat() {
+            calls.push('hide-home-cursor');
+        }
+    };
+    const orchestrator = new SceneOrchestrator(director);
+
+    const applied = orchestrator.applyFirstDailySceneIntroCursorPrelude(scene, {
+        isFirstDailyScene: true
+    });
+
+    assert.equal(applied, true);
+    assert.deepEqual(calls, [
+        ['options', 'day1_intro_activation'],
+        ['cursor', 'capsule-input', 'wobble', 0],
+        'hide-home-cursor'
+    ]);
+});
+
 test('SceneOrchestrator schedules avatar stand-ins after scene surface preparation', async () => {
     const { SceneOrchestrator } = require('./tutorial/core/scene-orchestrator.js');
     const calls = [];

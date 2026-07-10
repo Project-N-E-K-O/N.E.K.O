@@ -1572,6 +1572,15 @@ test('director routes resistance interrupts through ResistanceController boundar
     assert.match(resistanceControllerBlock, /shakeReady = isInterruptShakeReady\(motion\.reversals\);/);
     assert.doesNotMatch(resistanceControllerBlock, /isPrimaryButtonDrag/);
     assert.doesNotMatch(resistanceControllerBlock, /director\.interruptQualifyingMoveStreak \+= 1;/);
+    assert.match(pluginRuntimeSource, /const DEFAULT_INTERRUPT_SHAKE_WINDOW_MS = 1100/);
+    assert.match(pluginRuntimeSource, /const DEFAULT_INTERRUPT_SHAKE_MIN_DISTANCE = 50/);
+    assert.match(pluginRuntimeSource, /const DEFAULT_INTERRUPT_SHAKE_REQUIRED_REVERSALS = 8/);
+    assert.match(pluginRuntimeSource, /const DEFAULT_INTERRUPT_SHAKE_MIN_SPAN_MS = 600/);
+    assert.match(pluginRuntimeSource, /const DEFAULT_INTERRUPT_SHAKE_MIN_SUSTAINED_SPEED = 1100/);
+    assert.match(pluginRuntimeSource, /trackInterruptShakeMotion\(point:/);
+    assert.match(pluginRuntimeSource, /if \(!this\.trackInterruptShakeMotion\(shakePoint\)\) \{[\s\S]*?return[\s\S]*?this\.resetInterruptShakeMotion\(\)/);
+    assert.doesNotMatch(pluginRuntimeSource, /DEFAULT_INTERRUPT_ACCELERATION_STREAK/);
+    assert.doesNotMatch(pluginRuntimeSource, /DEFAULT_INTERRUPT_DISTANCE/);
     assert.match(resistanceControllerBlock, /director\.interruptCount \+= 1;/);
     assert.match(resistanceControllerBlock, /director\.abortAsAngryExit\('pointer_interrupt'\);/);
     assert.match(resistanceControllerBlock, /director\.playLightResistance\(x,\s*y,\s*\{/);
@@ -1833,12 +1842,23 @@ test('settings tour flow owns migrated settings tour concrete scene bodies', () 
 
 test('Day1 activation uses the shared first-daily input cursor handoff', () => {
     const source = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/director.js'), 'utf8');
+    const orchestratorSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/scene-orchestrator.js'), 'utf8');
     const inputIntroSceneBlock = source.split('        isAvatarFloatingInputIntroScene(scene) {')[1].split(
         '        getAvatarFloatingIntroSpotlightTarget(scene) {',
         1
     )[0];
+    const cursorOptionsBlock = source.split('        getAvatarFloatingIntroExternalizedCursorOptions(scene) {')[1].split(
+        '        getAvatarFloatingSidePanel(type) {',
+        1
+    )[0];
+    const cursorPreludeBlock = orchestratorSource.split('        applyFirstDailySceneIntroCursorPrelude(scene, context) {')[1].split(
+        '        async resolveAndApplySceneSpotlight(scene, context) {',
+        1
+    )[0];
 
     assert.match(inputIntroSceneBlock, /sceneId === 'day1_intro_activation'/);
+    assert.match(cursorOptionsBlock, /scene\.id === 'day1_intro_activation'[\s\S]*effect: this\.getExternalizedChatCursorEffect\(scene\)/);
+    assert.match(cursorPreludeBlock, /getAvatarFloatingIntroExternalizedCursorOptions\(scene\)/);
 });
 
 test('director routes cursor anchor persistence through CursorAnchorStore', () => {

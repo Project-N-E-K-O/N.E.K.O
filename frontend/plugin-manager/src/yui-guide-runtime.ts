@@ -23,13 +23,13 @@ const HANDOFF_TOKEN_VERSION = 1
 const PREACTIVATE_CLEANUP_MS = 8000
 const GUIDE_AUDIO_BASE_URL = '/static/assets/tutorial/guide-audio/'
 const DEFAULT_GUIDE_LOCALE = 'zh'
-const DEFAULT_INTERRUPT_DISTANCE = 32
-const DEFAULT_INTERRUPT_SPEED_THRESHOLD = 1.8
-const DEFAULT_INTERRUPT_ACCELERATION_THRESHOLD = 0.09
-const DEFAULT_INTERRUPT_ACCELERATION_STREAK = 3
+const DEFAULT_INTERRUPT_SHAKE_WINDOW_MS = 1100
+const DEFAULT_INTERRUPT_SHAKE_MIN_DISTANCE = 50
+const DEFAULT_INTERRUPT_SHAKE_MIN_SPAN_MS = 600
+const DEFAULT_INTERRUPT_SHAKE_MIN_SUSTAINED_SPEED = 1100
+const DEFAULT_INTERRUPT_SHAKE_REQUIRED_REVERSALS = 8
+const DEFAULT_INTERRUPT_SHAKE_REVERSE_DOT_THRESHOLD = 0
 const DEFAULT_INTERRUPT_THROTTLE_MS = 500
-const SCRIPTED_MOTION_INTERRUPT_STREAK = 2
-const SCRIPTED_MOTION_INTERRUPT_WINDOW_MS = 220
 const DEFAULT_PASSIVE_RESISTANCE_DISTANCE = 10
 const DEFAULT_PASSIVE_RESISTANCE_SPEED_THRESHOLD = 0.2
 const DEFAULT_PASSIVE_RESISTANCE_INTERVAL_MS = 140
@@ -47,6 +47,68 @@ const PLUGIN_DASHBOARD_NARRATION_FINISH_FALLBACK_EXTRA_MS = 30000
 const PLUGIN_MAIN_SPOTLIGHT_INSET = -25
 const PLUGIN_DASHBOARD_DEFAULT_TOTAL_MS = 9000
 const MIN_SPOTLIGHT_RADIUS = 4
+
+type InterruptShakeVector = {
+  dx: number
+  dy: number
+  distance: number
+}
+
+type InterruptShakeMotion = {
+  lastX: number | null
+  lastY: number | null
+  lastAt: number
+  lastVector: InterruptShakeVector | null
+  reversals: Array<{ at: number; distance: number }>
+}
+
+function createInterruptShakeMotion(): InterruptShakeMotion {
+  return {
+    lastX: null,
+    lastY: null,
+    lastAt: 0,
+    lastVector: null,
+    reversals: [],
+  }
+}
+
+function isInterruptShakeReversal(previousVector: InterruptShakeVector | null, currentVector: InterruptShakeVector) {
+  if (!previousVector) {
+    return false
+  }
+
+  const denominator = previousVector.distance * currentVector.distance
+  if (!Number.isFinite(denominator) || denominator <= 0) {
+    return false
+  }
+
+  const dot = (
+    previousVector.dx * currentVector.dx
+    + previousVector.dy * currentVector.dy
+  ) / denominator
+  return Number.isFinite(dot) && dot <= DEFAULT_INTERRUPT_SHAKE_REVERSE_DOT_THRESHOLD
+}
+
+function isInterruptShakeReady(reversals: Array<{ at: number; distance: number }>) {
+  if (reversals.length < DEFAULT_INTERRUPT_SHAKE_REQUIRED_REVERSALS) {
+    return false
+  }
+
+  const first = reversals[0]
+  const last = reversals[reversals.length - 1]
+  if (!first || !last) {
+    return false
+  }
+  const spanMs = last.at - first.at
+  if (!Number.isFinite(spanMs) || spanMs < DEFAULT_INTERRUPT_SHAKE_MIN_SPAN_MS) {
+    return false
+  }
+
+  const totalDistance = reversals.reduce((sum, item) => sum + item.distance, 0)
+  const sustainedSpeed = totalDistance / Math.max(0.001, spanMs / 1000)
+  return sustainedSpeed >= DEFAULT_INTERRUPT_SHAKE_MIN_SUSTAINED_SPEED
+}
+
 const RESISTANCE_LINES = [
   '喂！不要拽我啦，现在还没轮到你的回合呢！',
   '等一下啦！还没结束呢，不要这么随便打断我啦！',
@@ -1262,12 +1324,10 @@ class PluginDashboardGuideRuntime {
   homeNarrationOwnedByOpener = false
   angryExitTriggered = false
   interruptCount = 0
-  interruptAccelerationStreak = 0
+  interruptShakeMotion = createInterruptShakeMotion()
   lastInterruptAt = 0
   lastPassiveResistanceAt = 0
   lastPointerPoint: { x: number; y: number; t: number; speed: number } | null = null
-  scriptedMotionInterruptDistance = 0
-  scriptedMotionInterruptWindowStartedAt = 0
   resistanceCursorTimer: number | null = null
   userCursorRevealMoveCount = 0
   userCursorRevealSuppressed = false
@@ -2480,8 +2540,7 @@ class PluginDashboardGuideRuntime {
     }
     this.scenePausedForResistance = true
     this.cancelCursorMotion()
-    this.scriptedMotionInterruptDistance = 0
-    this.scriptedMotionInterruptWindowStartedAt = 0
+    this.resetInterruptShakeMotion()
   }
 
   resumeCurrentSceneAfterResistance() {
@@ -2794,6 +2853,59 @@ class PluginDashboardGuideRuntime {
     await this.moveCursor(returnTarget.x, returnTarget.y, 260, undefined, false)
   }
 
+  resetInterruptShakeMotion() {
+    this.interruptShakeMotion = createInterruptShakeMotion()
+  }
+
+  getInterruptShakePoint(event: MouseEvent, now: number) {
+    const screenX = Number.isFinite(event.screenX) ? event.screenX : null
+    const screenY = Number.isFinite(event.screenY) ? event.screenY : null
+    const hasScreenPoint = screenX !== null && screenY !== null
+    return {
+      x: hasScreenPoint ? screenX : event.clientX,
+      y: hasScreenPoint ? screenY : event.clientY,
+      at: now,
+    }
+  }
+
+  trackInterruptShakeMotion(point: { x: number; y: number; at: number }) {
+    const motion = this.interruptShakeMotion
+    if (motion.lastX === null || motion.lastY === null) {
+      motion.lastX = point.x
+      motion.lastY = point.y
+      motion.lastAt = point.at
+      return false
+    }
+
+    const vector: InterruptShakeVector = {
+      dx: point.x - motion.lastX,
+      dy: point.y - motion.lastY,
+      distance: 0,
+    }
+    vector.distance = Math.hypot(vector.dx, vector.dy)
+    if (!Number.isFinite(vector.distance) || vector.distance < DEFAULT_INTERRUPT_SHAKE_MIN_DISTANCE) {
+      return false
+    }
+
+    const elapsedMs = point.at - motion.lastAt
+    let shakeReady = false
+    if (elapsedMs > 0 && isInterruptShakeReversal(motion.lastVector, vector)) {
+      const cutoff = point.at - DEFAULT_INTERRUPT_SHAKE_WINDOW_MS
+      motion.reversals = motion.reversals.filter((item) => item.at >= cutoff)
+      motion.reversals.push({
+        at: point.at,
+        distance: vector.distance,
+      })
+      shakeReady = isInterruptShakeReady(motion.reversals)
+    }
+
+    motion.lastX = point.x
+    motion.lastY = point.y
+    motion.lastAt = point.at
+    motion.lastVector = vector
+    return shakeReady
+  }
+
   onPointerDown(event: MouseEvent) {
     if (!event) {
       return
@@ -2809,9 +2921,7 @@ class PluginDashboardGuideRuntime {
       t: Date.now(),
       speed: 0,
     }
-    this.interruptAccelerationStreak = 0
-    this.scriptedMotionInterruptDistance = 0
-    this.scriptedMotionInterruptWindowStartedAt = 0
+    this.resetInterruptShakeMotion()
   }
 
   handleInterrupt(event: MouseEvent) {
@@ -2848,10 +2958,12 @@ class PluginDashboardGuideRuntime {
     }
 
     const now = Date.now()
+    const shakePoint = this.getInterruptShakePoint(event, now)
     const previousPoint = this.lastPointerPoint
     if (!previousPoint || !Number.isFinite(previousPoint.t)) {
       this.lastPointerPoint = { x, y, t: now, speed: 0 }
-      this.interruptAccelerationStreak = 0
+      this.resetInterruptShakeMotion()
+      this.trackInterruptShakeMotion(shakePoint)
       return
     }
 
@@ -2860,8 +2972,6 @@ class PluginDashboardGuideRuntime {
     const distance = Math.hypot(dx, dy)
     const dt = Math.max(1, now - previousPoint.t)
     const speed = distance / dt
-    const previousSpeed = Number.isFinite(previousPoint.speed) ? previousPoint.speed : 0
-    const acceleration = (speed - previousSpeed) / dt
 
     this.lastPointerPoint = { x, y, t: now, speed }
     this.noteUserCursorRevealSuppressionAttempt(distance, now)
@@ -2872,47 +2982,14 @@ class PluginDashboardGuideRuntime {
       && !this.homeNarrationFinished
       && !this.canRequestHomeInterruptPlayback()
     ) {
+      this.resetInterruptShakeMotion()
       return
     }
 
-    const isScriptedMotionInterrupt = this.cursorTransitionActive
-    let effectiveDistance = distance
-    if (isScriptedMotionInterrupt && distance < DEFAULT_INTERRUPT_DISTANCE) {
-      if (
-        this.scriptedMotionInterruptWindowStartedAt <= 0
-        || (now - this.scriptedMotionInterruptWindowStartedAt) > SCRIPTED_MOTION_INTERRUPT_WINDOW_MS
-      ) {
-        this.scriptedMotionInterruptWindowStartedAt = now
-        this.scriptedMotionInterruptDistance = 0
-      }
-      this.scriptedMotionInterruptDistance += distance
-      effectiveDistance = this.scriptedMotionInterruptDistance
-    }
-
-    if (effectiveDistance < DEFAULT_INTERRUPT_DISTANCE) {
-      this.interruptAccelerationStreak = 0
+    if (!this.trackInterruptShakeMotion(shakePoint)) {
       return
     }
-    this.scriptedMotionInterruptDistance = 0
-    this.scriptedMotionInterruptWindowStartedAt = 0
-
-    if (speed < DEFAULT_INTERRUPT_SPEED_THRESHOLD) {
-      this.interruptAccelerationStreak = 0
-      return
-    }
-    if (!isScriptedMotionInterrupt && acceleration < DEFAULT_INTERRUPT_ACCELERATION_THRESHOLD) {
-      this.interruptAccelerationStreak = 0
-      return
-    }
-
-    this.interruptAccelerationStreak += 1
-    const requiredStreak = isScriptedMotionInterrupt
-      ? SCRIPTED_MOTION_INTERRUPT_STREAK
-      : DEFAULT_INTERRUPT_ACCELERATION_STREAK
-    if (this.interruptAccelerationStreak < requiredStreak) {
-      return
-    }
-    this.interruptAccelerationStreak = 0
+    this.resetInterruptShakeMotion()
 
     if ((now - this.lastInterruptAt) < DEFAULT_INTERRUPT_THROTTLE_MS) {
       return
@@ -3063,8 +3140,7 @@ class PluginDashboardGuideRuntime {
     this.interruptsEnabled = false
     this.cancelActiveNarration()
     this.stopGhostCursorAnimation()
-    this.scriptedMotionInterruptDistance = 0
-    this.scriptedMotionInterruptWindowStartedAt = 0
+    this.resetInterruptShakeMotion()
     this.clearSpotlight()
     this.setAngryVisual(true)
     this.homeNarrationFinished = false
@@ -3218,12 +3294,10 @@ class PluginDashboardGuideRuntime {
     this.homeNarrationOwnedByOpener = false
     this.angryExitTriggered = false
     this.interruptCount = 0
-    this.interruptAccelerationStreak = 0
+    this.resetInterruptShakeMotion()
     this.lastInterruptAt = 0
     this.lastPassiveResistanceAt = 0
     this.lastPointerPoint = null
-    this.scriptedMotionInterruptDistance = 0
-    this.scriptedMotionInterruptWindowStartedAt = 0
     this.narrationResumeTimer = null
     this.cursorMotionToken = 0
     this.cursorReactionInFlight = false

@@ -421,10 +421,16 @@
                 if (typeof director.setHomePcCursorOutputSuppressedForExternalizedChat === 'function') {
                     director.setHomePcCursorOutputSuppressedForExternalizedChat(true);
                 }
-                director.interactionTakeover.setExternalizedChatCursor(introExternalizedCursorKind || 'capsule-input', {
-                    effect: '',
-                    durationMs: 0
-                });
+                const introExternalizedCursorOptions = typeof director.getAvatarFloatingIntroExternalizedCursorOptions === 'function'
+                    ? director.getAvatarFloatingIntroExternalizedCursorOptions(scene)
+                    : {
+                        effect: '',
+                        durationMs: 0
+                    };
+                director.interactionTakeover.setExternalizedChatCursor(
+                    introExternalizedCursorKind || 'capsule-input',
+                    introExternalizedCursorOptions
+                );
                 if (typeof director.hideHomeCursorForExternalizedChat === 'function') {
                     director.hideHomeCursorForExternalizedChat();
                 }

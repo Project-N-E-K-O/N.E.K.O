@@ -6320,6 +6320,12 @@
         }
 
         getAvatarFloatingIntroExternalizedCursorOptions(scene) {
+            if (scene && scene.id === 'day1_intro_activation') {
+                return {
+                    effect: this.getExternalizedChatCursorEffect(scene),
+                    durationMs: 0
+                };
+            }
             if (this.isAvatarFloatingInputIntroScene(scene)) {
                 return {
                     effect: '',
