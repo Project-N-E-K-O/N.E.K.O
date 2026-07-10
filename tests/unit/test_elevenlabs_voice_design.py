@@ -75,8 +75,8 @@ def test_registry_declares_design_for_cosyvoice():
     assert cosy is not None and "design" in cosy.capabilities and "clone" in cosy.capabilities
     meta = {m["key"]: m for m in reg.ui_metadata()}
     assert "design" in meta["cosyvoice"]["capabilities"]
-    assert "cosyvoice_intl" in meta["cosyvoice"]["aliases"]
-    assert reg.get("cosyvoice_intl") is cosy
+    assert "cosyvoice_intl" not in meta["cosyvoice"]["aliases"]
+    assert reg.get("cosyvoice_intl") is None
 
 
 @pytest.mark.unit
@@ -413,35 +413,8 @@ async def test_cosyvoice_design_endpoint_saves_source_design(monkeypatch):
 
 
 @pytest.mark.unit
-async def test_cosyvoice_intl_design_endpoint_uses_intl_runtime(monkeypatch):
+async def test_cosyvoice_intl_design_endpoint_is_rejected():
     from main_routers import characters_router as cr
-
-    saved = {}
-
-    class _CM:
-        def get_cosyvoice_clone_runtime(self, provider):
-            assert provider == "cosyvoice_intl"
-            return {
-                "api_key": "intl-key",
-                "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
-                "storage_key": "__COSYVOICE_INTL__intl-key",
-                "provider_label": "Alibaba Intl CosyVoice",
-            }
-
-        async def asave_voice_for_api_key(self, storage_key, voice_id, voice_data):
-            saved["storage_key"] = storage_key
-            saved["voice_id"] = voice_id
-            saved["voice_data"] = voice_data
-
-    async def fake_design(**kwargs):
-        assert kwargs["api_key"] == "intl-key"
-        assert kwargs["base_url"] == "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
-        assert kwargs["target_model"] == "cosyvoice-v3-plus"
-        return "cosy-intl-design-1", "", "audio/wav", "req-intl"
-
-    monkeypatch.setattr(cr, "get_config_manager", lambda: _CM())
-    monkeypatch.setattr(cr, "_cosyvoice_design_voice", fake_design)
-    monkeypatch.setattr("utils.api_config_loader.get_cosyvoice_clone_model", lambda provider: "cosyvoice-v3-plus")
 
     response = await cr.voice_design(_JsonRequest({
         "provider": "cosyvoice_intl",
@@ -451,12 +424,8 @@ async def test_cosyvoice_intl_design_endpoint_uses_intl_runtime(monkeypatch):
     }))
     body = json.loads(response.body)
 
-    assert response.status_code == 200
-    assert body["voice_id"] == "cosy-intl-design-1"
-    assert body["provider"] == "cosyvoice_intl"
-    assert saved["storage_key"] == "__COSYVOICE_INTL__intl-key"
-    assert saved["voice_data"]["provider"] == "cosyvoice_intl"
-    assert saved["voice_data"]["dashscope_base_url"] == "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+    assert response.status_code == 400
+    assert body["code"] == "VOICE_DESIGN_PROVIDER_UNSUPPORTED"
 
 
 @pytest.mark.unit
@@ -549,6 +518,12 @@ async def test_elevenlabs_design_endpoint_saves_source_design(monkeypatch):
     }
     assert saved["voice_data"]["source"] == "design"
     assert saved["voice_data"]["provider"] == "elevenlabs"
+    assert saved["storage_key"] == "__ELEVENLABS__labs-key"
+    assert saved["voice_id"] == "eleven:designed-1"
+    assert saved["voice_data"]["raw_voice_id"] == "designed-1"
+    assert saved["voice_data"]["design_description"] == "a warm and clear young adult voice"
+    assert saved["voice_data"]["generated_voice_id"] == "generated-1"
+    assert saved["voice_data"]["elevenlabs_base_url"] == "https://api.elevenlabs.io"
 
 
 @pytest.mark.unit

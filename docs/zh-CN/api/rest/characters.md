@@ -155,7 +155,7 @@
 
 ### `POST /api/characters/voice_design`
 
-根据文字描述创建并保存可复用音色。支持的服务商由 TTS provider registry 决定；暂不支持 vLLM-Omni。
+根据文字描述创建并保存可复用音色。支持的服务商由 TTS provider registry 决定。暂不支持 vLLM-Omni 和 CosyVoice 国际版；阿里国际区的声音设计使用另一套 Qwen Voice Design API。
 
 **请求体：**
 

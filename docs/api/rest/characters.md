@@ -155,7 +155,7 @@ Clone a voice from audio samples.
 
 ### `POST /api/characters/voice_design`
 
-Create and save a reusable voice from a text description. Supported providers are determined by the TTS provider registry; vLLM-Omni is not supported.
+Create and save a reusable voice from a text description. Supported providers are determined by the TTS provider registry. vLLM-Omni and CosyVoice International are not supported; Alibaba's international Voice Design uses the separate Qwen Voice Design API.
 
 **Body:**
 

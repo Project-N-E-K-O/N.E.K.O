@@ -1,11 +1,7 @@
 import json
-from pathlib import Path
 
 import pytest
 from playwright.sync_api import Page, expect
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
-VOICE_CLONE_SCRIPT = REPO_ROOT / "static" / "js" / "voice_clone.js"
 
 
 VOICE_CLONE_API_PROVIDERS_RESPONSE = {
@@ -19,7 +15,7 @@ VOICE_CLONE_API_PROVIDERS_RESPONSE = {
         "mimo": {"config_field": "assistApiKeyMimo", "restricted": False},
     },
     "tts_providers": [
-        {"key": "cosyvoice", "aliases": ["cosyvoice_intl"], "capabilities": ["clone", "design"]},
+        {"key": "cosyvoice", "aliases": [], "capabilities": ["clone", "design"]},
         {"key": "minimax", "aliases": ["minimax_intl"], "capabilities": ["clone", "design"]},
         {"key": "elevenlabs", "aliases": [], "capabilities": ["clone", "design"]},
         {"key": "mimo", "aliases": [], "capabilities": ["clone", "design", "preset"]},
@@ -61,22 +57,81 @@ def route_voice_clone_region_dependencies(page: Page, steam_language_payload: di
     )
 
 
-def test_voice_preview_treats_design_voices_as_realtime_synthesis():
-    source = VOICE_CLONE_SCRIPT.read_text(encoding="utf-8")
+@pytest.mark.frontend
+def test_saved_design_voice_preview_uses_runtime_endpoint(mock_page: Page, running_server: str):
+    preview_requests = []
+    try:
+        route_voice_clone_region_dependencies(
+            mock_page,
+            {
+                "success": True,
+                "steam_language": "schinese",
+                "i18n_language": "zh-CN",
+                "ip_country": "CN",
+                "is_mainland_china": True,
+            },
+        )
+        mock_page.add_init_script(
+            """window.__playedVoicePreviews = [];
+            window.Audio = class {
+                constructor(src) { this.src = src; }
+                play() {
+                    window.__playedVoicePreviews.push(this.src);
+                    return Promise.resolve();
+                }
+            };"""
+        )
+        mock_page.route(
+            "**/api/characters/voices",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({
+                    "voices": {
+                        "mimo-design-test01": {
+                            "prefix": "test01",
+                            "provider": "mimo",
+                            "source": "design",
+                            "created_at": "2026-07-10T00:00:00",
+                        },
+                    },
+                    "free_voices": {},
+                    "pinned_voices": [],
+                    "native_voices": {},
+                }),
+            ),
+        )
 
-    assert "cachedData.version === 2" in source
-    assert "version: 2" in source
-    assert "const isCloneVoice = typeof voiceId === 'string' && voiceId.includes('-clone-');" in source
-    assert "const isDesignVoice = voiceSource === 'design'" in source
-    assert "voiceId.includes('-design-')" in source
-    assert "window.t ? window.t('voice.previewTimeout')" in source
+        def handle_preview(route):
+            preview_requests.append(route.request.url)
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({
+                    "success": True,
+                    "audio": "UklGRg==",
+                    "mime_type": "audio/wav",
+                }),
+            )
 
+        mock_page.route("**/api/characters/voice_preview?*", handle_preview)
+        mock_page.goto(f"{running_server}/voice_clone")
+        mock_page.wait_for_load_state("domcontentloaded")
 
-def test_voice_design_capabilities_come_from_provider_metadata():
-    source = VOICE_CLONE_SCRIPT.read_text(encoding="utf-8")
+        item = mock_page.locator('.voice-list-item[data-voice-id="mimo-design-test01"]')
+        expect(item).to_be_visible()
+        item.locator(".voice-preview-btn").click()
+        mock_page.wait_for_function("window.__playedVoicePreviews.length === 1")
 
-    assert "meta.capabilities.includes('design')" in source
-    assert "['cosyvoice', 'cosyvoice_intl', 'minimax'" not in source
+        assert len(preview_requests) == 1
+        assert "voice_id=mimo-design-test01" in preview_requests[0]
+        assert mock_page.evaluate("window.__playedVoicePreviews[0]") == "data:audio/wav;base64,UklGRg=="
+    finally:
+        mock_page.unroute("**/api/config/steam_language")
+        mock_page.unroute("**/api/config/api_providers")
+        mock_page.unroute("**/api/config/core_api")
+        mock_page.unroute("**/api/characters/voices")
+        mock_page.unroute("**/api/characters/voice_preview?*")
 
 
 @pytest.mark.frontend
@@ -267,9 +322,9 @@ def test_voice_design_toggle_for_supported_providers_except_vllm_omni(mock_page:
                 select.dispatchEvent(new Event('change', { bubbles: true }));
             }"""
         )
-        mock_page.locator("#btnVoiceSourceDesign").click()
-        expect(mock_page.locator("#refLanguageRow")).to_be_visible()
-        expect(mock_page.locator("#refLanguageLabel")).to_contain_text("音色语言倾向")
+        expect(mock_page.locator("#voiceSourceRow")).to_be_hidden()
+        expect(mock_page.locator("#voiceDesignSection")).to_be_hidden()
+        expect(mock_page.locator("#cloneMethodRow")).to_be_visible()
 
         for provider in ["minimax", "minimax_intl", "elevenlabs", "mimo"]:
             mock_page.evaluate(

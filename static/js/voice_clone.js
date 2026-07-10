@@ -1322,7 +1322,7 @@ function isVoiceDesignSupportedProvider(provider) {
 }
 
 function isVoiceDesignLanguageSupportedProvider(provider) {
-    return provider === 'cosyvoice' || provider === 'cosyvoice_intl';
+    return provider === 'cosyvoice';
 }
 
 function isElevenLabsProvider(provider) {

@@ -1603,7 +1603,7 @@ def _provider_supports_voice_design(provider: str) -> bool:
     """Read Voice Design support from the TTS provider registry."""
     from utils import tts_provider_registry
 
-    import main_logic.tts_client  # noqa: F401 - ensures provider registration
+    from main_logic import tts_client  # noqa: F401 - ensures provider registration
 
     provider_meta = tts_provider_registry.get(provider)
     return bool(provider_meta and "design" in provider_meta.capabilities)
@@ -6205,7 +6205,7 @@ async def voice_design(request: Request):
     valid_languages = ['ch', 'en', 'fr', 'de', 'ja', 'ko', 'ru']
     if ref_language not in valid_languages:
         ref_language = 'ch'
-    if provider in ('cosyvoice', 'cosyvoice_intl') and ref_language not in ('ch', 'en'):
+    if provider == 'cosyvoice' and ref_language not in ('ch', 'en'):
         ref_language = 'ch'
 
     preview_text = _voice_design_preview_text(request_language, ref_language)
@@ -6226,7 +6226,7 @@ async def voice_design(request: Request):
     }
 
     try:
-        if provider in ('cosyvoice', 'cosyvoice_intl'):
+        if provider == 'cosyvoice':
             from utils.api_config_loader import get_cosyvoice_clone_model
 
             cosyvoice_runtime = _config_manager.get_cosyvoice_clone_runtime(provider)
@@ -6237,9 +6237,7 @@ async def voice_design(request: Request):
                     'code': 'TTS_AUDIO_API_KEY_MISSING',
                     'provider': provider,
                 }, status_code=400)
-            provider_label = cosyvoice_runtime.get('provider_label') or (
-                '阿里国际版CosyVoice' if provider == 'cosyvoice_intl' else '阿里百炼CosyVoice'
-            )
+            provider_label = cosyvoice_runtime.get('provider_label') or '阿里百炼CosyVoice'
             dashscope_base_url = cosyvoice_runtime.get('base_url', '')
             storage_key = cosyvoice_runtime.get('storage_key') or api_key
             design_model = get_cosyvoice_clone_model(provider)
@@ -6369,7 +6367,6 @@ async def voice_design(request: Request):
     except Exception as e:
         generic_error_code = {
             'cosyvoice': 'COSYVOICE_VOICE_DESIGN_FAILED',
-            'cosyvoice_intl': 'COSYVOICE_VOICE_DESIGN_FAILED',
             'minimax': 'MINIMAX_VOICE_DESIGN_FAILED',
             'minimax_intl': 'MINIMAX_VOICE_DESIGN_FAILED',
             'elevenlabs': 'ELEVENLABS_VOICE_DESIGN_FAILED',

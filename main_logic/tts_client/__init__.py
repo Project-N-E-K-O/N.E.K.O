@@ -467,7 +467,6 @@ _tts_providers.register(_tts_providers.TTSProvider(
     kind='hosted',
     priority=50,
     capabilities=frozenset({'clone', 'design'}),
-    aliases=frozenset({'cosyvoice_intl'}),
     is_selected=_cosyvoice_clone_is_selected,
     resolve=_cosyvoice_clone_resolve,
     tts_dropdown_only=False,
