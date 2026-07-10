@@ -2021,7 +2021,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             const statusTextSpan = document.getElementById('status-text');
             if (!statusTextSpan && statusDiv) {
                 const currentText = statusDiv.textContent || '正在初始化...';
-                statusDiv.innerHTML = `<img src="/static/icons/reminder_icon.png?v=1" alt="${t('common.alert', '提示')}" data-i18n-alt="common.alert" class="reminder-icon" style="height: 16px; width: 16px; vertical-align: middle; margin-right: 6px; display: inline-block; image-rendering: crisp-edges;"><span id="status-text">${currentText}</span>`;
+                statusDiv.innerHTML = `<img src="/static/icons/reminder_icon.png?v=1" alt="${t('common.alert', '提示')}" data-i18n-alt="common.alert" class="reminder-icon" style="height: 16px; width: 16px; vertical-align: middle; margin-right: 6px; display: inline-block; image-rendering: crisp-edges;"><span id="status-text"></span>`;
+                const rebuiltStatusTextSpan = statusDiv.querySelector('#status-text');
+                if (rebuiltStatusTextSpan) rebuiltStatusTextSpan.textContent = currentText;
             }
             if (typeof updateBackToMainButtonText === 'function') {
                 updateBackToMainButtonText();
@@ -2060,7 +2062,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             statusTextSpan.textContent = text;
         } else {
             // 如果 span 不存在，重建结构
-            statusDiv.innerHTML = `<img src="/static/icons/reminder_icon.png?v=1" alt="${t('common.alert', '提示')}" data-i18n-alt="common.alert" class="reminder-icon" style="height: 16px; width: 16px; vertical-align: middle; margin-right: 6px; display: inline-block; image-rendering: crisp-edges;"><span id="status-text">${text}</span>`;
+            statusDiv.innerHTML = `<img src="/static/icons/reminder_icon.png?v=1" alt="${t('common.alert', '提示')}" data-i18n-alt="common.alert" class="reminder-icon" style="height: 16px; width: 16px; vertical-align: middle; margin-right: 6px; display: inline-block; image-rendering: crisp-edges;"><span id="status-text"></span>`;
+            const rebuiltStatusTextSpan = statusDiv.querySelector('#status-text');
+            if (rebuiltStatusTextSpan) rebuiltStatusTextSpan.textContent = text;
         }
     };
     const modelTypeSelect = document.getElementById('model-type-select');
@@ -5773,6 +5777,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
             updateMMDModelDropdown();
             updateMMDModelSelectButtonText();
+            showStatus(t('live2d.loadError', `错误: ${error.message}`, { error: error.message }), 5000);
         }
     }
 

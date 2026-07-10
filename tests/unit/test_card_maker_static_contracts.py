@@ -148,6 +148,35 @@ def test_model_manager_dynamic_i18n_options_keep_translation_keys():
     assert "element.setAttribute('data-i18n-params', JSON.stringify(params));" in localized_text_helper
 
 
+def test_model_manager_status_rebuild_does_not_parse_runtime_text_as_html():
+    script = MODEL_MANAGER_JS.read_text(encoding="utf-8")
+    initialization_block = script[
+        script.index("// 保护状态文本结构"):
+        script.index("if (typeof updateBackToMainButtonText", script.index("// 保护状态文本结构"))
+    ]
+    update_block = script[
+        script.index("const updateStatusText = (text) =>"):
+        script.index("const modelTypeSelect =", script.index("const updateStatusText = (text) =>"))
+    ]
+
+    assert '<span id="status-text">${currentText}</span>' not in initialization_block
+    assert "rebuiltStatusTextSpan.textContent = currentText;" in initialization_block
+    assert '<span id="status-text">${text}</span>' not in update_block
+    assert "rebuiltStatusTextSpan.textContent = text;" in update_block
+
+
+def test_model_manager_mmd_list_failure_is_visible_to_user():
+    script = MODEL_MANAGER_JS.read_text(encoding="utf-8")
+    load_block = script[
+        script.index("async function loadMMDModels()"):
+        script.index("function updateMMDModelDropdown()", script.index("async function loadMMDModels()"))
+    ]
+    catch_block = load_block[load_block.index("} catch (error) {"):]
+
+    assert "console.error('加载MMD模型列表失败:', error);" in catch_block
+    assert "showStatus(t('live2d.loadError'" in catch_block
+
+
 def test_model_manager_pngtuber_card_face_prefers_visible_drawable():
     script = MODEL_MANAGER_JS.read_text(encoding="utf-8")
     start = script.index("function getPNGTuberCaptureDrawable()")
