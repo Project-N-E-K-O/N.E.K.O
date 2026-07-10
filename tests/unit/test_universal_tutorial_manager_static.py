@@ -165,7 +165,7 @@ def test_non_home_page_tutorials_are_restored_in_separate_driver_runtime():
     assert "window.resetPageTutorialStorage = resetPageTutorialStorage;" in page_source
     assert "if (path === '/' || path === '/index.html' || path === '/chat')" in page_source
     assert "return 'home';" in page_source
-    assert "return SUPPORTED_PAGES.includes(this.currentPage);" in page_source
+    assert "if (!SUPPORTED_PAGES.includes(this.currentPage)) return false;" in page_source
     assert "const DriverClass = window.driver;" in page_source
     assert "this.driver = new DriverClass({" in page_source
     assert "getModelManagerSteps()" in page_source
@@ -225,8 +225,71 @@ def test_page_tutorial_manager_honors_mobile_viewport_bailout():
     # and startTutorial() funnel through this method.
     assert "window.innerWidth <= 768" in manage_block
     assert manage_block.index("window.innerWidth <= 768") < manage_block.index(
-        "return SUPPORTED_PAGES.includes(this.currentPage);"
+        "return true;"
     )
+    assert "!this.shouldAllowCompactDesktopTutorial()" in manage_block
+
+
+def test_page_tutorial_manager_allows_voice_clone_desktop_popup_width():
+    page_source = _read_page_manager()
+
+    compact_block = page_source.split("        shouldAllowCompactDesktopTutorial() {", 1)[1].split(
+        "        }",
+        1,
+    )[0]
+
+    assert "this.currentPage !== 'voice_clone'" in compact_block
+    assert "viewportWidth >= 640" in compact_block
+    assert "screenWidth > 768" in compact_block
+
+
+def test_voice_clone_tutorial_targets_visible_dropdown_triggers():
+    page_source = _read_page_manager()
+
+    voice_clone_block = page_source.split("        getVoiceCloneSteps() {", 1)[1].split(
+        "        getSteamWorkshopSteps() {",
+        1,
+    )[0]
+
+    assert "#voiceProvider-dropdown-trigger" in voice_clone_block
+    assert "#refLanguage-dropdown-trigger" in voice_clone_block
+    assert voice_clone_block.index("#refLanguage-dropdown-trigger") < voice_clone_block.index("#refLanguage'")
+
+
+def test_page_tutorial_skip_button_restores_pointer_events_inside_fixed_portal():
+    page_source = _read_page_manager()
+    show_block = page_source.split("        showSkipButton() {", 1)[1].split(
+        "        hideSkipButton() {",
+        1,
+    )[0]
+    hide_block = page_source.split("        hideSkipButton() {", 1)[1].split(
+        "        handleTutorialEnd",
+        1,
+    )[0]
+
+    assert "let skipHandled = false;" in show_block
+    assert "const absorbSkipEvent = (event) => {" in show_block
+    assert "event.preventDefault();" in show_block
+    assert "event.stopImmediatePropagation();" in show_block
+    assert "event.stopPropagation();" in show_block
+    assert "const completeSkipRequest = () => {" in show_block
+    assert "const handleSkipPress = (event) => {" in show_block
+    assert "const handleSkipRequest = (event, delayMs = 0) => {" in show_block
+    assert "if (skipHandled) {" in show_block
+    assert "skipHandled = true;" in show_block
+    assert "window.setTimeout(completeSkipRequest, delayMs);" in show_block
+    assert "const controller = this.ensureSkipSafeAreaController();" in show_block
+    assert "const host = controller && typeof controller.getButtonHost === 'function'" in show_block
+    assert "button.className = 'neko-page-tutorial-skip-btn';" in show_block
+    for event_name in ("pointerdown", "mousedown", "touchstart"):
+        assert f"button.addEventListener('{event_name}', handleSkipPress" in show_block
+    assert "button.addEventListener('pointerup', (event) => handleSkipRequest(event, 80));" in show_block
+    assert "button.addEventListener('touchend', (event) => handleSkipRequest(event, 80), { passive: false });" in show_block
+    assert "button.addEventListener('click', handleSkipRequest);" in show_block
+    assert "button.style.setProperty('pointer-events', 'auto', 'important');" in show_block
+    assert "button.style.setProperty('z-index', '2147483647', 'important');" in show_block
+    assert "button.style.touchAction = 'manipulation';" in show_block
+    assert "this._skipSafeAreaController.hide();" in hide_block
 
 
 def test_page_tutorial_manager_waits_for_api_settings_loading_overlay():

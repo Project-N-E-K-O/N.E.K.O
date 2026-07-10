@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=70", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rapidocr-pillow"
+version = "1.4.4.post1"
+description = "RapidOCR 1.4.4 fork with Pillow/numpy/scipy image processing instead of opencv/shapely."
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+license = { text = "Apache-2.0" }
+authors = [
+    { name = "RapidAI" },
+]
+dependencies = [
+    "numpy>=1.19.5,<3.0.0",
+    "onnxruntime>=1.7.0",
+    "Pillow",
+    "pyclipper>=1.2.0",
+    "PyYAML",
+    "scipy>=1.10.0",
+]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["rapidocr_onnxruntime*"]
+
+[tool.setuptools.package-data]
+rapidocr_onnxruntime = ["*.yaml", "models/*.onnx"]

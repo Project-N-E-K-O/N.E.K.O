@@ -86,6 +86,7 @@ Live2DManager.prototype.removeModel = async function(options = {}) {
     }
     this.initialParameters = {};
     this.motionBaselineParameters = {};
+    this.appearanceBaselineParameters = {};
     this._activeExpressionParamIds = null;
     this._activeMotionParamIds = null;
     this._motionParameterTrackGeneration = (this._motionParameterTrackGeneration || 0) + 1;
@@ -201,6 +202,125 @@ Live2DManager.prototype.removeModel = async function(options = {}) {
     this._isModelReadyForInteraction = false;
     if (!this._isLoadingModel) {
         this._modelLoadState = 'idle';
+    }
+};
+
+Live2DManager.prototype._resolveModelParameterKey = function(coreModel, paramId) {
+    if (!coreModel || paramId === undefined || paramId === null) return null;
+
+    const key = String(paramId);
+    const isIndexKey = /^(?:param_)?\d+$/.test(key);
+    let idx = -1;
+    let resolvedId = key;
+    let hasResolvedId = !isIndexKey;
+
+    if (isIndexKey) {
+        const parsedIndex = parseInt(key.replace(/^param_/, ''), 10);
+        const parameterCount = typeof coreModel.getParameterCount === 'function'
+            ? coreModel.getParameterCount()
+            : Number.POSITIVE_INFINITY;
+        if (parsedIndex >= 0 && parsedIndex < parameterCount) {
+            idx = parsedIndex;
+            try {
+                if (typeof coreModel.getParameterId === 'function') {
+                    const id = coreModel.getParameterId(idx);
+                    if (id) {
+                        resolvedId = id;
+                        hasResolvedId = true;
+                    }
+                }
+            } catch (_) {}
+        }
+    } else {
+        try {
+            idx = coreModel.getParameterIndex(key);
+        } catch (_) {}
+    }
+
+    if (idx >= 0 && isIndexKey && !hasResolvedId) {
+        resolvedId = `param_${idx}`;
+    }
+
+    return idx >= 0 ? { idx, resolvedId, hasResolvedId, isIndexKey } : null;
+};
+
+Live2DManager.prototype._isRuntimeManagedAppearanceParam = function(paramId, resolvedParamId, coreModel) {
+    const ids = [paramId, resolvedParamId].filter(Boolean).map(id => String(id));
+    if (ids.length === 0) return true;
+
+    const hasNamedParamId = ids.some(id => !/^(?:param_)?\d+$/.test(id));
+    if (!hasNamedParamId) {
+        return true;
+    }
+
+    const lipSyncParams = typeof window !== 'undefined' && Array.isArray(window.LIPSYNC_PARAMS)
+        ? window.LIPSYNC_PARAMS
+        : ['ParamMouthOpenY', 'ParamMouthForm', 'ParamMouthOpen', 'ParamA', 'ParamI', 'ParamU', 'ParamE', 'ParamO'];
+    const runtimeParamIds = new Set([
+        ...lipSyncParams,
+        'ParamAngleX', 'ParamAngleY', 'ParamAngleZ',
+        'ParamBodyAngleX', 'ParamBodyAngleY', 'ParamBodyAngleZ',
+        'ParamEyeBallX', 'ParamEyeBallY',
+        'ParamLookAtX', 'ParamLookAtY',
+        'ParamBreath', 'ParamBreath2', 'ParamBreath3',
+        'ParamShake',
+        'ParamOpacity', 'ParamVisibility'
+    ]);
+
+    try {
+        const breathParams = typeof this._resolveRuntimeBreathParams === 'function'
+            ? this._resolveRuntimeBreathParams(coreModel)
+            : [];
+        breathParams.forEach(id => runtimeParamIds.add(id));
+    } catch (_) {}
+
+    try {
+        if (typeof this.getPersistentExpressionParamIds === 'function') {
+            const persistentParamIds = this.getPersistentExpressionParamIds();
+            if (ids.some(id => persistentParamIds.has(id))) return true;
+        }
+    } catch (_) {}
+
+    return ids.some(id => runtimeParamIds.has(id) || this._isEyeBlinkParamId(id));
+};
+
+Live2DManager.prototype.mergeAppearanceBaselineParameters = function(model, parameters) {
+    if (!model || !model.internalModel || !model.internalModel.coreModel || !parameters) {
+        return;
+    }
+
+    if (!this.initialParameters || Object.keys(this.initialParameters).length === 0) {
+        return;
+    }
+
+    const coreModel = model.internalModel.coreModel;
+    const mergeAppearanceParam = (paramId, value) => {
+        if (typeof value !== 'number' || !Number.isFinite(value)) return;
+
+        const resolved = this._resolveModelParameterKey(coreModel, paramId);
+        if (!resolved) return;
+
+        const resolvedParamId = resolved.resolvedId;
+        if (this._isRuntimeManagedAppearanceParam(paramId, resolvedParamId, coreModel)) {
+            return;
+        }
+
+        this.appearanceBaselineParameters[paramId] = value;
+        this.appearanceBaselineParameters[resolvedParamId] = value;
+        this.appearanceBaselineParameters[`param_${resolved.idx}`] = value;
+    };
+
+    if (!this.appearanceBaselineParameters || Object.keys(this.appearanceBaselineParameters).length === 0) {
+        this.appearanceBaselineParameters = {};
+        for (const paramId in this.initialParameters) {
+            if (!Object.prototype.hasOwnProperty.call(this.initialParameters, paramId)) continue;
+            mergeAppearanceParam(paramId, this.initialParameters[paramId]);
+        }
+    }
+
+    for (const paramId in parameters) {
+        if (!Object.prototype.hasOwnProperty.call(parameters, paramId)) continue;
+        mergeAppearanceParam(paramId, parameters[paramId]);
     }
 };
 
@@ -2611,32 +2731,6 @@ Live2DManager.prototype.applyModelParameters = function(model, parameters) {
     const coreModel = model.internalModel.coreModel;
     const persistentParamIds = this.getPersistentExpressionParamIds();
     const visibilityParams = ['ParamOpacity', 'ParamVisibility']; // 跳过可见性参数，防止模型被设置为不可见
-    const resolveParameterKey = (paramId) => {
-        let idx = -1;
-        let resolvedId = paramId;
-        if (/^(?:param_)?\d+$/.test(paramId)) {
-            const parsedIndex = parseInt(paramId.replace(/^param_/, ''), 10);
-            const parameterCount = typeof coreModel.getParameterCount === 'function'
-                ? coreModel.getParameterCount()
-                : Number.POSITIVE_INFINITY;
-            if (parsedIndex >= 0 && parsedIndex < parameterCount) {
-                idx = parsedIndex;
-                try {
-                    if (typeof coreModel.getParameterId === 'function') {
-                        const id = coreModel.getParameterId(idx);
-                        if (id) resolvedId = id;
-                    }
-                } catch (_) {}
-            }
-        } else {
-            try {
-                idx = coreModel.getParameterIndex(paramId);
-            } catch (e) {
-                // Ignore
-            }
-        }
-        return idx >= 0 ? { idx, resolvedId } : null;
-    };
 
     for (const paramId in parameters) {
         if (parameters.hasOwnProperty(paramId)) {
@@ -2646,7 +2740,7 @@ Live2DManager.prototype.applyModelParameters = function(model, parameters) {
                     continue;
                 }
 
-                const resolved = resolveParameterKey(paramId);
+                const resolved = this._resolveModelParameterKey(coreModel, paramId);
                 if (!resolved) {
                     continue;
                 }
@@ -2674,6 +2768,7 @@ Live2DManager.prototype.applyModelParameters = function(model, parameters) {
         }
     }
     
+    this.mergeAppearanceBaselineParameters(model, parameters);
     // 参数已应用
 };
 

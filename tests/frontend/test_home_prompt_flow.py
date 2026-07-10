@@ -6789,6 +6789,116 @@ def test_pc_overlay_suppresses_dom_cursor_on_first_show(mock_page: Page):
 
 
 @pytest.mark.frontend
+def test_tutorial_skip_and_angry_exit_do_not_start_new_user_icebreaker(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.__icebreakerFetchCount = 0;",
+        fetch_js="""
+            window.__icebreakerFetchCount += 1;
+            return jsonResponse({}, 200);
+        """,
+        script_names=("tutorial/icebreaker/new-user-icebreaker.js",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            window.dispatchEvent(new CustomEvent('neko:avatar-floating-guide-skip', {
+                detail: {
+                    day: 1,
+                    endState: {
+                        day: 1,
+                        ended: true,
+                        outcome: 'skip',
+                        rawReason: 'angry_exit',
+                        isAngryExit: true,
+                    },
+                },
+            }));
+            window.dispatchEvent(new CustomEvent('neko:tutorial-skipped', {
+                detail: {
+                    page: 'home',
+                    day: 1,
+                    reason: 'skip',
+                },
+            }));
+            window.dispatchEvent(new CustomEvent('neko:tutorial-completed', {
+                detail: {
+                    page: 'home',
+                    day: 1,
+                    endState: {
+                        day: 1,
+                        ended: true,
+                        outcome: 'skip',
+                        rawReason: 'angry_exit',
+                        isAngryExit: true,
+                    },
+                },
+            }));
+            await new Promise((resolve) => setTimeout(resolve, 700));
+            return {
+                fetchCount: window.__icebreakerFetchCount,
+                activeSession: window.newUserIcebreaker.getActiveSession(),
+            };
+        }
+        """
+    )
+
+    assert result == {"fetchCount": 0, "activeSession": None}
+
+
+@pytest.mark.frontend
+def test_yui_overlay_lifecycle_epoch_blocks_late_dom_recreation(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.isInTutorial = true;",
+        script_names=("tutorial/yui-guide/overlay.js",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const staleOverlay = new window.YuiGuideOverlay(document);
+            staleOverlay.showBubble('active tutorial');
+            const initiallyCreated = !!document.getElementById('yui-guide-overlay');
+
+            staleOverlay.destroy();
+            staleOverlay.showBubble('late callback');
+            const recreatedByStaleInstance = !!document.getElementById('yui-guide-overlay');
+
+            const nextOverlay = new window.YuiGuideOverlay(document);
+            nextOverlay.showBubble('next tutorial');
+            const recreatedByNextInstance = !!document.getElementById('yui-guide-overlay');
+            const nextRoot = document.getElementById('yui-guide-overlay');
+            const nextEpoch = window.__NEKO_YUI_GUIDE_OVERLAY_LIFECYCLE_EPOCH__;
+            staleOverlay.destroy();
+            staleOverlay.showBubble('older callback after next tutorial');
+            const nextRootPreserved = document.getElementById('yui-guide-overlay') === nextRoot;
+            const nextContentPreserved = document.querySelector('.yui-guide-bubble-body')?.textContent === 'next tutorial';
+            const nextEpochPreserved = window.__NEKO_YUI_GUIDE_OVERLAY_LIFECYCLE_EPOCH__ === nextEpoch;
+            return {
+                initiallyCreated,
+                recreatedByStaleInstance,
+                recreatedByNextInstance,
+                nextRootPreserved,
+                nextContentPreserved,
+                nextEpochPreserved,
+            };
+        }
+        """
+    )
+
+    assert result == {
+        "initiallyCreated": True,
+        "recreatedByStaleInstance": False,
+        "recreatedByNextInstance": True,
+        "nextRootPreserved": True,
+        "nextContentPreserved": True,
+        "nextEpochPreserved": True,
+    }
+
+
+@pytest.mark.frontend
 def test_pc_overlay_move_with_existing_position_never_reveals_dom_cursor(
     mock_page: Page,
 ):
@@ -7045,8 +7155,8 @@ def test_externalized_chat_spotlight_renders_compact_capsule_in_pc_overlay_only(
     assert result["begins"] == [{"tutorialRunId": "test-run"}]
     assert len(result["updates"]) >= 1
     spotlight_payload = result["updates"][-1]["payload"]["spotlights"][0]
-    assert spotlight_payload["id"] == "external-chat-input-0"
-    assert spotlight_payload["kind"] == "primary"
+    assert spotlight_payload["id"] == "external-chat-input"
+    assert spotlight_payload["kind"] == "input"
     assert spotlight_payload["shape"] == "rounded-rect"
     assert spotlight_payload["x"] == 692
     assert spotlight_payload["y"] == 442
@@ -7123,8 +7233,8 @@ def test_externalized_chat_input_spotlight_retries_after_capsule_layout_appears(
         """
     )
 
-    assert result["updates"][-1]["payload"]["spotlights"][0]["id"] == "external-chat-input-0"
-    assert result["updates"][-1]["payload"]["spotlights"][0]["kind"] == "primary"
+    assert result["updates"][-1]["payload"]["spotlights"][0]["id"] == "external-chat-input"
+    assert result["updates"][-1]["payload"]["spotlights"][0]["kind"] == "input"
     assert result["updates"][-1]["payload"]["spotlights"][0]["width"] == 446
     assert result["updates"][-1]["payload"]["spotlights"][0]["height"] == 70
 
@@ -7166,7 +7276,7 @@ def test_externalized_chat_capsule_spotlight_keeps_last_rect_when_target_tempora
                 </div>
             `;
         """,
-        script_names=("app-interpage.js",),
+        script_names=("tutorial/yui-guide/common.js", "app-interpage.js"),
     )
 
     result = mock_page.evaluate(
@@ -7210,7 +7320,7 @@ def test_externalized_chat_capsule_spotlight_keeps_last_rect_when_target_tempora
         if entry.get("payload", {}).get("spotlights")
     ]
     assert first_spotlight_payloads
-    assert first_spotlight_payloads[0]["payload"]["spotlights"][0]["id"] == "external-chat-capsule-input-0"
+    assert first_spotlight_payloads[0]["payload"]["spotlights"][0]["id"] == "external-chat-capsule-input"
     hidden_spotlight_lengths = [
         len(entry.get("payload", {}).get("spotlights", []))
         for entry in result["hiddenUpdates"][:-1]
@@ -7219,6 +7329,76 @@ def test_externalized_chat_capsule_spotlight_keeps_last_rect_when_target_tempora
     assert hidden_spotlight_lengths
     assert all(length > 0 for length in hidden_spotlight_lengths)
     assert result["hiddenUpdates"][-1]["payload"]["spotlights"] == []
+
+
+@pytest.mark.frontend
+def test_externalized_chat_capsule_input_spotlight_uses_capsule_body_rect_without_variant(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/chat');
+            window.localStorage.setItem('yuiGuidePcOverlayRunId', 'test-run');
+            window.__externalChatOverlayUpdates = [];
+            window.nekoTutorialOverlay = {
+                getWindowMetricsSync: () => ({
+                    bounds: { x: 100, y: 50, width: 1200, height: 800 },
+                    contentBounds: { x: 100, y: 50, width: 1200, height: 800 },
+                    zoomFactor: 1,
+                }),
+                update: (payload) => {
+                    window.__externalChatOverlayUpdates.push(payload);
+                    return Promise.resolve({ ok: true });
+                },
+                begin: () => Promise.resolve({ ok: true }),
+                clear: () => Promise.resolve({ ok: true }),
+            };
+            document.body.innerHTML = `
+                <div id="react-chat-window-shell" style="position:fixed; left:560px; top:360px; width:480px; height:90px;">
+                    <div id="react-chat-window-root">
+                        <div
+                            class="compact-chat-surface-frame"
+                            data-compact-geometry-owner="surface"
+                            data-compact-geometry-item="capsule"
+                            data-compact-geometry-part="capsuleBody"
+                            data-compact-drag-surface="true"
+                            style="position:fixed; left:600px; top:400px; width:430px; height:54px; border-radius:999px;"
+                        ></div>
+                        <button
+                            class="compact-chat-capsule-button"
+                            data-compact-hit-region-id="capsule:text"
+                            style="position:fixed; left:780px; top:408px; width:180px; height:38px;"
+                        ></button>
+                    </div>
+                </div>
+            `;
+        """,
+        script_names=("tutorial/yui-guide/common.js", "app-interpage.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            window.postMessage({
+                __nekoTutorialOverlayRelay: true,
+                payload: {
+                    action: 'yui_guide_set_chat_spotlight',
+                    kind: 'capsule-input',
+                    timestamp: Date.now(),
+                    tutorialRunId: 'test-run',
+                },
+            }, '*');
+            await new Promise((resolve) => setTimeout(resolve, 160));
+            const updates = window.__externalChatOverlayUpdates || [];
+            return updates.filter((entry) => entry.payload && entry.payload.spotlights);
+        }
+        """
+    )
+
+    assert result
+    spotlight = result[-1]["payload"]["spotlights"][0]
+    assert spotlight["id"] == "external-chat-capsule-input"
+    assert spotlight["x"] == 692
+    assert spotlight["width"] == 446
 
 
 @pytest.mark.frontend
@@ -8330,16 +8510,16 @@ def test_avatar_floating_distance_below_new_threshold_does_not_trigger_light_res
                 director.cursor.reactToUserMotion = () => {};
                 director.playLightResistance = (x, y, options) => {
                     lightInterrupts.push({ x, y, options });
-                    if (options && options.forceSystemCursorReveal) {
+                    if (options && options.forceSystemCursorReveal && !options.cursorRevealAlreadyRequested) {
                         director.revealSystemCursorTemporarily(2000, 'interrupt_resist_light');
                     }
                 };
 
                 director.lastPointerPoint = { x: 100, y: 100, t: 1000, speed: 0.04 };
                 [
-                    { t: 2000, x: 140 },
-                    { t: 3000, x: 180 },
-                    { t: 4000, x: 220 },
+                    { t: 2000, x: 280 },
+                    { t: 3000, x: 460 },
+                    { t: 4000, x: 640 },
                 ].forEach((sample) => {
                     window.__now = sample.t;
                     director.handleInterrupt({
@@ -8347,7 +8527,7 @@ def test_avatar_floating_distance_below_new_threshold_does_not_trigger_light_res
                         type: 'mousemove',
                         clientX: sample.x,
                         clientY: 100,
-                        movementX: 40,
+                        movementX: 180,
                         movementY: 0,
                     });
                 });
@@ -8405,9 +8585,9 @@ def test_avatar_floating_distance_threshold_triggers_light_resistance_without_sp
 
                 director.lastPointerPoint = { x: 100, y: 100, t: 1000, speed: 0.04 };
                 [
-                    { t: 2000, x: 164 },
-                    { t: 3000, x: 228 },
-                    { t: 4000, x: 292 },
+                    { t: 2000, x: 320 },
+                    { t: 3000, x: 540 },
+                    { t: 4000, x: 760 },
                 ].forEach((sample) => {
                     window.__now = sample.t;
                     director.handleInterrupt({
@@ -8415,7 +8595,7 @@ def test_avatar_floating_distance_threshold_triggers_light_resistance_without_sp
                         type: 'mousemove',
                         clientX: sample.x,
                         clientY: 100,
-                        movementX: 64,
+                        movementX: 220,
                         movementY: 0,
                     });
                 });
@@ -8437,7 +8617,142 @@ def test_avatar_floating_distance_threshold_triggers_light_resistance_without_sp
 
 
 @pytest.mark.frontend
-def test_avatar_floating_interrupt_count_reveals_real_cursor_for_three_seconds(
+def test_avatar_floating_quick_mousemove_under_single_event_threshold_does_not_trigger_light_resistance(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const originalNow = Date.now;
+            window.__now = 1000;
+            Date.now = () => window.__now;
+            try {
+                const director = window.createYuiGuideDirector({ page: 'home' });
+                const lightInterrupts = [];
+                director.platformCapabilities = { windowBoundsSource: 'electron-window-bounds' };
+                director.currentSceneId = 'test_scene';
+                director.currentStep = {
+                    performance: {},
+                    interrupts: { threshold: 3, throttleMs: 0 },
+                };
+                director.interruptsEnabled = true;
+                director.cursor.hasPosition = () => true;
+                director.cursor.reactToUserMotion = () => {};
+                director.playLightResistance = (x, y, options) => {
+                    lightInterrupts.push({ x, y, options });
+                };
+
+                director.lastPointerPoint = { x: 100, y: 100, t: 1000, speed: 0 };
+                [
+                    { t: 1040, x: 260 },
+                    { t: 1080, x: 420 },
+                    { t: 1120, x: 580 },
+                    { t: 1160, x: 740 },
+                    { t: 1200, x: 900 },
+                ].forEach((sample) => {
+                    window.__now = sample.t;
+                    director.handleInterrupt({
+                        isTrusted: true,
+                        type: 'mousemove',
+                        clientX: sample.x,
+                        clientY: 100,
+                        movementX: 160,
+                        movementY: 0,
+                    });
+                });
+                return {
+                    lightInterrupts,
+                    interruptCount: director.interruptCount,
+                    streak: director.interruptQualifyingMoveStreak,
+                };
+            } finally {
+                Date.now = originalNow;
+            }
+        }
+        """
+    )
+
+    assert result["lightInterrupts"] == []
+    assert result["interruptCount"] == 0
+    assert result["streak"] == 0
+
+
+@pytest.mark.frontend
+def test_avatar_floating_slow_continuous_mousemove_does_not_accumulate_forever(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const originalNow = Date.now;
+            window.__now = 1000;
+            Date.now = () => window.__now;
+            try {
+                const director = window.createYuiGuideDirector({ page: 'home' });
+                const lightInterrupts = [];
+                director.platformCapabilities = { windowBoundsSource: 'electron-window-bounds' };
+                director.currentSceneId = 'test_scene';
+                director.currentStep = {
+                    performance: {},
+                    interrupts: { threshold: 3, throttleMs: 0 },
+                };
+                director.interruptsEnabled = true;
+                director.cursor.hasPosition = () => true;
+                director.cursor.reactToUserMotion = () => {};
+                director.playLightResistance = (x, y, options) => {
+                    lightInterrupts.push({ x, y, options });
+                };
+
+                director.lastPointerPoint = {
+                    x: 100,
+                    y: 100,
+                    t: 1000,
+                    speed: 0,
+                };
+                let x = 100;
+                for (let index = 1; index <= 30; index += 1) {
+                    x += 20;
+                    window.__now = 1000 + index * 100;
+                    director.handleInterrupt({
+                        isTrusted: true,
+                        type: 'mousemove',
+                        clientX: x,
+                        clientY: 100,
+                        movementX: 20,
+                        movementY: 0,
+                    });
+                }
+                return {
+                    lightInterrupts,
+                    interruptCount: director.interruptCount,
+                    streak: director.interruptQualifyingMoveStreak,
+                };
+            } finally {
+                Date.now = originalNow;
+            }
+        }
+        """
+    )
+
+    assert result["lightInterrupts"] == []
+    assert result["interruptCount"] == 0
+    assert result["streak"] == 0
+
+
+@pytest.mark.frontend
+def test_avatar_floating_light_resistance_reveals_real_cursor_for_two_seconds(
     mock_page: Page,
 ):
     _bootstrap_page(
@@ -8490,16 +8805,16 @@ def test_avatar_floating_interrupt_count_reveals_real_cursor_for_three_seconds(
                 director.cursor.reactToUserMotion = () => {};
                 director.playLightResistance = (x, y, options) => {
                     lightInterrupts.push({ x, y, options });
-                    if (options && options.forceSystemCursorReveal) {
+                    if (options && options.forceSystemCursorReveal && !options.cursorRevealAlreadyRequested) {
                         director.revealSystemCursorTemporarily(2000, 'interrupt_resist_light');
                     }
                 };
 
                 director.lastPointerPoint = { x: 100, y: 100, t: 1000, speed: 0.04 };
                 [
-                    { t: 2000, x: 164 },
-                    { t: 3000, x: 228 },
-                    { t: 4000, x: 292 },
+                    { t: 2000, x: 320 },
+                    { t: 3000, x: 540 },
+                    { t: 4000, x: 760 },
                 ].forEach((sample) => {
                     window.__now = sample.t;
                     director.handleInterrupt({
@@ -8507,11 +8822,14 @@ def test_avatar_floating_interrupt_count_reveals_real_cursor_for_three_seconds(
                         type: 'mousemove',
                         clientX: sample.x,
                         clientY: 100,
-                        movementX: 64,
+                        movementX: 220,
                         movementY: 0,
                     });
                 });
                 const beforeTimer = cursorVisibility.slice();
+                const htmlInterruptCountClassBeforeTimer = document.documentElement.classList.contains('yui-interrupt-count-cursor-revealed');
+                const bodyInterruptCountClassBeforeTimer = document.body.classList.contains('yui-interrupt-count-cursor-revealed');
+                const temporaryCursorClassBeforeTimer = document.body.classList.contains('yui-resistance-cursor-reveal');
                 const activeTimer = timers[timers.length - 1];
                 activeTimer.callback();
                 return {
@@ -8519,6 +8837,9 @@ def test_avatar_floating_interrupt_count_reveals_real_cursor_for_three_seconds(
                     cursorVisibility,
                     temporaryReveals,
                     beforeTimer,
+                    htmlInterruptCountClassBeforeTimer,
+                    bodyInterruptCountClassBeforeTimer,
+                    temporaryCursorClassBeforeTimer,
                     timerDelays: timers.map((timer) => timer.delay),
                     clearedTimers: clearedTimers.length,
                 };
@@ -8535,17 +8856,131 @@ def test_avatar_floating_interrupt_count_reveals_real_cursor_for_three_seconds(
     assert len(result["lightInterrupts"]) == 1
     assert result["lightInterrupts"][0]["options"]["forceSystemCursorReveal"] is True
     assert result["lightInterrupts"][0]["options"]["suppressCursorReveal"] is True
+    assert result["lightInterrupts"][0]["options"]["cursorRevealAlreadyRequested"] is True
     expected_temporary_reveals = [{
         "reason": "interrupt_resist_light",
         "durationMs": 2000,
     }]
     assert result["temporaryReveals"] == expected_temporary_reveals
-    assert result["beforeTimer"][-1] == {"hidden": False, "reason": "interrupt_count_reveal"}
-    assert result["timerDelays"] == [3000, 2000]
-    assert result["cursorVisibility"][-1] == {
+    assert result["beforeTimer"] == [{
         "hidden": True,
         "reason": "user_cursor_reveal_suppressed",
-    }
+    }]
+    assert result["htmlInterruptCountClassBeforeTimer"] is False
+    assert result["bodyInterruptCountClassBeforeTimer"] is False
+    assert result["temporaryCursorClassBeforeTimer"] is True
+    assert result["timerDelays"] == [2000]
+    assert result["cursorVisibility"]
+    assert all(
+        entry == {
+            "hidden": True,
+            "reason": "user_cursor_reveal_suppressed",
+        }
+        for entry in result["cursorVisibility"]
+    )
+    assert result["clearedTimers"] == 0
+
+
+@pytest.mark.frontend
+def test_avatar_floating_second_light_resistance_refreshes_cursor_while_first_line_active(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const originalNow = Date.now;
+            const originalSetTimeout = window.setTimeout;
+            const originalClearTimeout = window.clearTimeout;
+            window.__now = 1000;
+            Date.now = () => window.__now;
+            const timers = [];
+            const clearedTimers = [];
+            window.setTimeout = (callback, delay) => {
+                const timer = { callback, delay };
+                timers.push(timer);
+                return timer;
+            };
+            window.clearTimeout = (timer) => {
+                clearedTimers.push(timer);
+            };
+            try {
+                const temporaryReveals = [];
+                window.YuiGuideCommon = {
+                    syncPcSystemCursorHidden: () => {},
+                    syncPcSystemCursorTemporaryReveal: (durationMs, reason) => {
+                        temporaryReveals.push({ reason, durationMs });
+                    },
+                };
+                const director = window.createYuiGuideDirector({ page: 'home' });
+                document.body.classList.add('yui-taking-over');
+                director.platformCapabilities = { windowBoundsSource: 'electron-window-bounds' };
+                director.currentSceneId = 'test_scene';
+                director.currentStep = {
+                    performance: {},
+                    interrupts: { threshold: 3, throttleMs: 0 },
+                };
+                director.interruptsEnabled = true;
+                director.cursor.hasPosition = () => true;
+                director.cursor.hasVisiblePosition = () => true;
+                director.cursor.reactToUserMotion = () => {};
+                director.revealSystemCursorTemporarily(2000, 'interrupt_resist_light');
+                director.interruptCount = 1;
+                director.resistanceController.lightResistanceActive = true;
+                director.scenePausedForResistance = true;
+
+                const playQualifyingGroup = () => {
+                    director.lastPointerPoint = { x: 100, y: 100, t: window.__now, speed: 0.04 };
+                    [
+                        { t: window.__now + 1000, x: 320 },
+                        { t: window.__now + 2000, x: 540 },
+                        { t: window.__now + 3000, x: 760 },
+                    ].forEach((sample) => {
+                        window.__now = sample.t;
+                        director.handleInterrupt({
+                            isTrusted: true,
+                            type: 'mousemove',
+                            clientX: sample.x,
+                            clientY: 100,
+                            movementX: 220,
+                            movementY: 0,
+                        });
+                    });
+                };
+
+                playQualifyingGroup();
+
+                return {
+                    activeDuringSecond: director.resistanceController.lightResistanceActive,
+                    pausedDuringSecond: director.scenePausedForResistance,
+                    interruptCount: director.interruptCount,
+                    temporaryReveals,
+                    timerDelays: timers.map((timer) => timer.delay),
+                    clearedTimers: clearedTimers.length,
+                };
+            } finally {
+                Date.now = originalNow;
+                window.setTimeout = originalSetTimeout;
+                window.clearTimeout = originalClearTimeout;
+                delete window.YuiGuideCommon;
+            }
+        }
+        """
+    )
+
+    assert result["activeDuringSecond"] is True
+    assert result["pausedDuringSecond"] is True
+    assert result["interruptCount"] == 2
+    assert result["temporaryReveals"] == [
+        {"reason": "interrupt_resist_light", "durationMs": 2000},
+        {"reason": "interrupt_resist_light", "durationMs": 2000},
+    ]
+    assert result["timerDelays"] == [2000, 2000]
     assert result["clearedTimers"] == 1
 
 
@@ -8609,7 +9044,213 @@ def test_avatar_floating_interrupt_cursor_reveal_survives_angry_exit_timeout(
 
 
 @pytest.mark.frontend
-def test_avatar_floating_acceleration_threshold_triggers_light_resistance_without_distance(
+def test_avatar_floating_angry_exit_clears_temporary_system_cursor_reveal_timer(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const originalSetTimeout = window.setTimeout;
+            const originalClearTimeout = window.clearTimeout;
+            const timers = [];
+            const clearedTimers = [];
+            window.setTimeout = (callback, delay) => {
+                const timer = { callback, delay };
+                timers.push(timer);
+                return timer;
+            };
+            window.clearTimeout = (timer) => {
+                clearedTimers.push(timer);
+            };
+            try {
+                const cursorVisibility = [];
+                window.YuiGuideCommon = {
+                    syncPcSystemCursorHidden: (hidden, reason) => {
+                        cursorVisibility.push({ hidden, reason });
+                    },
+                    syncPcSystemCursorTemporaryReveal: (durationMs, reason) => {
+                        cursorVisibility.push({ temporaryReveal: durationMs, reason });
+                    },
+                };
+                const director = window.createYuiGuideDirector({ page: 'home' });
+                document.body.classList.add('yui-taking-over');
+                director.currentSceneId = 'test_scene';
+                director.interruptCount = 3;
+                director.recordExperienceMetric = () => {};
+                director.clearSceneTimers = () => {};
+                director.disableInterrupts = () => {};
+                director.cancelActiveNarration = () => {};
+                director.beginGuideInterruptPresentation = () => {};
+                director.getStep = () => ({ performance: {} });
+                director.resolvePerformanceBubbleText = () => '';
+                director.getGuideVoiceDurationMs = () => 0;
+                director.setTutorialTakingOver = () => {};
+                director.overlay = {
+                    setAngry: () => {},
+                    hidePluginPreview: () => {},
+                    hideBubble: () => {},
+                };
+                director.appendGuideChatMessage = () => {};
+                director.applyGuideEmotion = () => {};
+                director.runAngryExitPerformance = async () => null;
+                director.speakGuideLine = async () => null;
+                director.notifyPluginDashboardNarrationFinished = () => {};
+                director.requestTermination = () => {};
+
+                director.revealSystemCursorTemporarily(2000, 'interrupt_resist_light');
+                await director.abortAsAngryExit('pointer_interrupt');
+
+                return {
+                    timerCount: timers.length,
+                    clearedTimerCount: clearedTimers.length,
+                    cursorVisibility,
+                    hasResistanceClass: document.body.classList.contains('yui-resistance-cursor-reveal'),
+                };
+            } finally {
+                window.setTimeout = originalSetTimeout;
+                window.clearTimeout = originalClearTimeout;
+                delete window.YuiGuideCommon;
+            }
+        }
+        """
+    )
+
+    assert result["timerCount"] == 1
+    assert result["clearedTimerCount"] == 1
+    assert result["cursorVisibility"] == [
+        {"temporaryReveal": 2000, "reason": "interrupt_resist_light"},
+        {"hidden": False, "reason": "interrupt_angry_exit"},
+    ]
+    assert result["hasResistanceClass"] is True
+
+
+@pytest.mark.frontend
+def test_voice_queue_speak_stays_cancelled_when_stopped_during_start_delay(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const originalSetTimeout = window.setTimeout;
+            const originalClearTimeout = window.clearTimeout;
+            const timers = [];
+            const clearedTimers = [];
+            window.setTimeout = (callback, delay) => {
+                const timer = { callback, delay };
+                timers.push(timer);
+                return timer;
+            };
+            window.clearTimeout = (timer) => {
+                clearedTimers.push(timer);
+            };
+            try {
+                const director = window.createYuiGuideDirector({ page: 'home' });
+                director.voiceQueue.resolveGuideAudioSrc = () => '';
+
+                const speakPromise = director.voiceQueue.speak('hello', {
+                    minDurationMs: 1200,
+                });
+                director.voiceQueue.stop();
+                timers[0].callback();
+                await speakPromise;
+
+                return {
+                    timerDelays: timers.map((timer) => timer.delay),
+                    clearedTimerCount: clearedTimers.length,
+                    currentFinishActive: typeof director.voiceQueue.currentFinish === 'function',
+                };
+            } finally {
+                window.setTimeout = originalSetTimeout;
+                window.clearTimeout = originalClearTimeout;
+            }
+        }
+        """
+    )
+
+    assert result["timerDelays"] == [48]
+    assert result["clearedTimerCount"] == 0
+    assert result["currentFinishActive"] is False
+
+
+@pytest.mark.frontend
+def test_avatar_floating_acceleration_below_new_threshold_does_not_trigger_light_resistance(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const originalNow = Date.now;
+            window.__now = 1000;
+            Date.now = () => window.__now;
+            try {
+                const director = window.createYuiGuideDirector({ page: 'home' });
+                const lightInterrupts = [];
+                director.platformCapabilities = { windowBoundsSource: 'electron-window-bounds' };
+                director.currentSceneId = 'test_scene';
+                director.currentStep = {
+                    performance: {},
+                    interrupts: { threshold: 3, throttleMs: 0 },
+                };
+                director.interruptsEnabled = true;
+                director.cursor.hasPosition = () => true;
+                director.cursor.reactToUserMotion = () => {};
+                director.playLightResistance = (x, y, options) => {
+                    lightInterrupts.push({ x, y, options });
+                };
+
+                director.lastPointerPoint = { x: 100, y: 100, t: 1000, speed: 0 };
+                [
+                    { t: 1001, x: 101, dx: 1 },
+                    { t: 1002, x: 103, dx: 2 },
+                    { t: 1003, x: 106, dx: 3 },
+                ].forEach((sample) => {
+                    window.__now = sample.t;
+                    director.handleInterrupt({
+                        isTrusted: true,
+                        type: 'mousemove',
+                        clientX: sample.x,
+                        clientY: 100,
+                        movementX: sample.dx,
+                        movementY: 0,
+                    });
+                });
+                return {
+                    lightInterrupts,
+                    interruptCount: director.interruptCount,
+                    streak: director.interruptQualifyingMoveStreak,
+                };
+            } finally {
+                Date.now = originalNow;
+            }
+        }
+        """
+    )
+
+    assert result["lightInterrupts"] == []
+    assert result["interruptCount"] == 0
+    assert result["streak"] == 0
+
+
+@pytest.mark.frontend
+def test_avatar_floating_small_acceleration_spikes_do_not_trigger_light_resistance(
     mock_page: Page,
 ):
     _bootstrap_page(
@@ -8645,6 +9286,72 @@ def test_avatar_floating_acceleration_threshold_triggers_light_resistance_withou
                     { t: 1001, x: 105, dx: 5 },
                     { t: 1002, x: 115, dx: 10 },
                     { t: 1003, x: 135, dx: 20 },
+                    { t: 1004, x: 160, dx: 25 },
+                ].forEach((sample) => {
+                    window.__now = sample.t;
+                    director.handleInterrupt({
+                        isTrusted: true,
+                        type: 'mousemove',
+                        clientX: sample.x,
+                        clientY: 100,
+                        movementX: sample.dx,
+                        movementY: 0,
+                    });
+                });
+                return {
+                    lightInterrupts,
+                    interruptCount: director.interruptCount,
+                    streak: director.interruptQualifyingMoveStreak,
+                };
+            } finally {
+                Date.now = originalNow;
+            }
+        }
+        """
+    )
+
+    assert result["lightInterrupts"] == []
+    assert result["interruptCount"] == 0
+    assert result["streak"] == 0
+
+
+@pytest.mark.frontend
+def test_avatar_floating_acceleration_threshold_requires_single_event_distance(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const originalNow = Date.now;
+            window.__now = 1000;
+            Date.now = () => window.__now;
+            try {
+                const director = window.createYuiGuideDirector({ page: 'home' });
+                const lightInterrupts = [];
+                director.platformCapabilities = { windowBoundsSource: 'electron-window-bounds' };
+                director.currentSceneId = 'test_scene';
+                director.currentStep = {
+                    performance: {},
+                    interrupts: { threshold: 3, throttleMs: 0 },
+                };
+                director.interruptsEnabled = true;
+                director.cursor.hasPosition = () => true;
+                director.cursor.reactToUserMotion = () => {};
+                director.playLightResistance = (x, y, options) => {
+                    lightInterrupts.push({ x, y, options });
+                };
+
+                director.lastPointerPoint = { x: 100, y: 100, t: 1000, speed: 0 };
+                [
+                    { t: 1001, x: 140, dx: 40 },
+                    { t: 1002, x: 200, dx: 60 },
+                    { t: 1003, x: 290, dx: 90 },
                 ].forEach((sample) => {
                     window.__now = sample.t;
                     director.handleInterrupt({
@@ -8667,8 +9374,8 @@ def test_avatar_floating_acceleration_threshold_triggers_light_resistance_withou
         """
     )
 
-    assert len(result["lightInterrupts"]) == 1
-    assert result["interruptCount"] == 1
+    assert result["lightInterrupts"] == []
+    assert result["interruptCount"] == 0
 
 
 @pytest.mark.frontend
@@ -8712,7 +9419,7 @@ def test_avatar_floating_third_light_resistance_enters_angry_exit(
                 const playQualifyingGroup = () => {
                     director.lastPointerPoint = { x, y: 100, t, speed: 0 };
                     for (let index = 0; index < 3; index += 1) {
-                        x += 64;
+                        x += 220;
                         t += 1000;
                         window.__now = t;
                         director.handleInterrupt({
@@ -8720,7 +9427,7 @@ def test_avatar_floating_third_light_resistance_enters_angry_exit(
                             type: 'mousemove',
                             clientX: x,
                             clientY: 100,
-                            movementX: 64,
+                            movementX: 220,
                             movementY: 0,
                         });
                     }
@@ -8827,46 +9534,59 @@ def test_avatar_floating_angry_exit_forces_angry_emotion(
     result = mock_page.evaluate(
         """
         async () => {
-            const director = window.createYuiGuideDirector({ page: 'home' });
-            const emotions = [];
-            const terminationRequests = [];
-            const originalApplyGuideEmotion = director.applyGuideEmotion.bind(director);
-            director.applyGuideEmotion = (emotion, options) => {
-                emotions.push({
-                    emotion,
-                    allowDuringInterrupt: !!(options && options.allowDuringInterrupt),
-                });
-                originalApplyGuideEmotion(emotion, options);
+            const cursorVisibility = [];
+            const previousYuiGuideCommon = window.YuiGuideCommon;
+            window.YuiGuideCommon = {
+                syncPcSystemCursorHidden: (hidden, reason) => {
+                    cursorVisibility.push({ hidden, reason });
+                },
             };
-            director.getStep = (stepId) => {
-                if (stepId === 'interrupt_angry_exit') {
-                    return {
-                        performance: {
-                            bubbleText: 'Stop now',
-                            emotion: 'happy',
-                            voiceKey: 'interrupt_angry_exit',
-                        },
-                    };
-                }
-                return null;
-            };
-            director.resolvePerformanceBubbleText = (performance) => performance && performance.bubbleText || '';
-            director.voiceQueue.speak = async () => null;
-            director.runAngryExitPerformance = async () => null;
-            director.requestTermination = (reason, tutorialReason) => {
-                terminationRequests.push({ reason, tutorialReason });
-            };
+            try {
+                const director = window.createYuiGuideDirector({ page: 'home' });
+                const emotions = [];
+                const terminationRequests = [];
+                const originalApplyGuideEmotion = director.applyGuideEmotion.bind(director);
+                director.applyGuideEmotion = (emotion, options) => {
+                    emotions.push({
+                        emotion,
+                        allowDuringInterrupt: !!(options && options.allowDuringInterrupt),
+                    });
+                    originalApplyGuideEmotion(emotion, options);
+                };
+                director.getStep = (stepId) => {
+                    if (stepId === 'interrupt_angry_exit') {
+                        return {
+                            performance: {
+                                bubbleText: 'Stop now',
+                                emotion: 'happy',
+                                voiceKey: 'interrupt_angry_exit',
+                            },
+                        };
+                    }
+                    return null;
+                };
+                director.resolvePerformanceBubbleText = (performance) => performance && performance.bubbleText || '';
+                director.voiceQueue.speak = async () => null;
+                director.runAngryExitPerformance = async () => null;
+                director.requestTermination = (reason, tutorialReason) => {
+                    terminationRequests.push({ reason, tutorialReason });
+                };
 
-            await director.abortAsAngryExit('pointer_interrupt');
+                await director.abortAsAngryExit('pointer_interrupt');
 
-            return {
-                emotions,
-                terminationRequests,
-            };
+                return {
+                    cursorVisibility,
+                    emotions,
+                    terminationRequests,
+                };
+            } finally {
+                window.YuiGuideCommon = previousYuiGuideCommon;
+            }
         }
         """
     )
 
+    assert {"hidden": False, "reason": "interrupt_angry_exit"} in result["cursorVisibility"]
     assert {"emotion": "angry", "allowDuringInterrupt": True} in result["emotions"]
     assert result["terminationRequests"] == [
         {"reason": "pointer_interrupt", "tutorialReason": "angry_exit"}
@@ -11976,7 +12696,7 @@ def test_day1_externalized_capsule_and_history_do_not_spotlight_chat_input(
             await director.playAvatarFloatingScene({
                 id: 'day1_capsule_drag_hint',
                 text: '把鼠标移到这里，长按就可以拉着聊天框到处跑啦~ 点击一下就能随时发消息给我哦！',
-                target: 'chat-input',
+                target: 'chat-capsule-input',
                 cursorAction: 'wobble',
                 cursorWobbleDurationMs: 2000,
                 spotlight: false,
@@ -11997,7 +12717,7 @@ def test_day1_externalized_capsule_and_history_do_not_spotlight_chat_input(
     )
 
     assert "spotlight:input" not in result
-    assert "cursor:input:wobble" in result
+    assert "cursor:capsule-input:wobble" in result
     assert "cursor:history:move" in result
 
 
@@ -12133,6 +12853,68 @@ def test_day1_takeover_capture_cursor_does_not_highlight_chat_capsule(
 
     assert "highlight-chat-window" not in result["events"]
     assert "compact-chat-input" not in result["persistentSpotlights"]
+
+
+@pytest.mark.frontend
+def test_day1_intro_greeting_restore_keeps_capsule_spotlight_target(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            document.body.innerHTML = `
+                <div id="react-chat-window-root">
+                    <div
+                        id="compact-chat-input"
+                        data-compact-geometry-owner="surface"
+                        data-compact-geometry-item="input"
+                        style="position:absolute; left:20px; top:20px; width:280px; height:48px;"
+                    ></div>
+                    <div
+                        id="compact-chat-capsule"
+                        data-compact-geometry-part="capsuleBody"
+                        style="position:absolute; left:80px; top:90px; width:360px; height:56px;"
+                    ></div>
+                </div>
+            `;
+        """,
+        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const persistentSpotlights = [];
+            director.overlay.setPersistentSpotlight = (target) => {
+                persistentSpotlights.push(target ? target.id : '');
+            };
+            director.overlay.activateSpotlight = () => {};
+            director.overlay.clearActionSpotlight = () => {};
+            director.overlay.clearPersistentSpotlight = () => {};
+            director.overlay.showBubble = () => {};
+            director.applyCircularFloatingButtonSpotlightHint = () => {};
+            director.appendGuideChatMessage = () => {};
+            director.applyGuideEmotion = () => {};
+            director.currentSceneId = 'day1_intro_greeting';
+            director.currentStep = {
+                performance: {
+                    bubbleText: 'hello',
+                    emotion: 'happy',
+                    cursorTarget: 'chat-capsule-input',
+                },
+                anchor: 'chat-capsule-input',
+            };
+
+            director.restoreCurrentScenePresentation({});
+
+            return { persistentSpotlights };
+        }
+        """
+    )
+
+    assert result["persistentSpotlights"] == ["compact-chat-capsule"]
 
 
 @pytest.mark.frontend

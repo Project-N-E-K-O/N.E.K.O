@@ -2284,6 +2284,10 @@
                 display: live2dContainer ? getComputedStyle(live2dContainer).display : 'undefined'
             });
 
+            if (typeof window.stopScreening === 'function') {
+                window.stopScreening();
+            }
+
             if (S.socket && S.socket.readyState === WebSocket.OPEN) {
                 S._suppressCharacterLeft = true;
                 S.socket.send(JSON.stringify({
@@ -3317,6 +3321,14 @@
          */
         var _captureScreenshotDataUrlBusy = false;
 
+        function setScreenshotCaptureSessionActive(active) {
+            try {
+                window.dispatchEvent(new CustomEvent('neko:screenshot-capture-session', {
+                    detail: { active: active === true }
+                }));
+            } catch (e) { }
+        }
+
         mod.captureScreenshotDataUrl = async function captureScreenshotDataUrl() {
             if (_captureScreenshotDataUrlBusy) {
                 console.warn('[截图] 截图流程进行中，忽略重复请求');
@@ -3326,6 +3338,12 @@
             var acquiredStream = null;
             var isCachedStream = false;
             var captureType = null;
+            var screenshotCaptureSessionActive = false;
+
+            if (!U.isMobile()) {
+                screenshotCaptureSessionActive = true;
+                setScreenshotCaptureSessionActive(true);
+            }
 
             try {
                 var dataUrl = null;
@@ -3505,6 +3523,9 @@
                     }
                 }
             } finally {
+                if (screenshotCaptureSessionActive) {
+                    setScreenshotCaptureSessionActive(false);
+                }
                 _captureScreenshotDataUrlBusy = false;
                 if (!isCachedStream && acquiredStream instanceof MediaStream) {
                     try {

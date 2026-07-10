@@ -456,7 +456,9 @@ test('VisualRuntime routes externalized chat cursor moves through settled anchor
         },
         getExternalizedChatCursorTargetKind(scene) {
             calls.push(['kind', scene.id, scene.target, scene.cursorTarget, scene.cursorAction]);
-            return 'input';
+            return scene.cursorTarget === 'chat-capsule-input' || scene.target === 'chat-capsule-input'
+                ? 'capsule-input'
+                : 'input';
         },
         setExternalizedChatCursorEffect(kind, effect, options) {
             calls.push(['effect', kind, effect, options.durationMs]);
@@ -481,14 +483,14 @@ test('VisualRuntime routes externalized chat cursor moves through settled anchor
     runtime.registerCommands(registry);
     const result = await registry.dispatch({
         command: 'cursor.move',
-        target: 'chat-input',
+        target: 'chat-capsule-input',
         durationMs: 640
     }, {
         scene: {
             id: 'day1_takeover_return_control',
             legacyScene: {
                 id: 'day1_takeover_return_control',
-                target: 'chat-input',
+                target: 'chat-capsule-input',
                 cursorTarget: 'chat-capsule-input',
                 cursorAction: 'move'
             }
@@ -498,8 +500,8 @@ test('VisualRuntime routes externalized chat cursor moves through settled anchor
 
     assert.equal(result, true);
     assert.deepEqual(calls, [
-        ['kind', 'day1_takeover_return_control', 'chat-input', 'chat-capsule-input', 'move'],
-        ['effect', 'input', 'move', 640],
+        ['kind', 'day1_takeover_return_control', 'chat-capsule-input', 'chat-capsule-input', 'move'],
+        ['effect', 'capsule-input', 'move', 640],
         ['wait', 'day1_takeover_return_control', 1140]
     ]);
 });
@@ -536,7 +538,7 @@ test('VisualRuntime waits for externalized cursor move before afterCursorMove op
             id: 'day1_takeover_return_control',
             legacyScene: {
                 id: 'day1_takeover_return_control',
-                target: 'chat-input',
+                target: 'chat-capsule-input',
                 cursorMoveDurationMs: 900
             }
         },
@@ -546,8 +548,8 @@ test('VisualRuntime waits for externalized cursor move before afterCursorMove op
     assert.equal(result, true);
     assert.deepEqual(calls, [
         ['wait', 'day1_takeover_return_control', 1400],
-        ['resolve', 'chat-input'],
-        ['operation', 'cleanup', 'chat-input']
+        ['resolve', 'chat-capsule-input'],
+        ['operation', 'cleanup', 'chat-capsule-input']
     ]);
 });
 
@@ -876,7 +878,9 @@ test('VisualRuntime routes externalized wobble through PC overlay cursor effect'
         },
         getExternalizedChatCursorTargetKind(scene) {
             calls.push(['kind', scene.id, scene.target, scene.cursorTarget, scene.cursorAction]);
-            return 'input';
+            return scene.cursorTarget === 'chat-capsule-input' || scene.target === 'chat-capsule-input'
+                ? 'capsule-input'
+                : 'input';
         },
         setExternalizedChatCursorEffect(kind, effect, options) {
             calls.push(['effect', kind, effect, options.effectDurationMs]);
@@ -898,14 +902,14 @@ test('VisualRuntime routes externalized wobble through PC overlay cursor effect'
     runtime.registerCommands(registry);
     const result = await registry.dispatch({
         command: 'cursor.wobble',
-        target: 'chat-input',
+        target: 'chat-capsule-input',
         durationMs: 2000
     }, {
         scene: {
             id: 'day1_capsule_drag_hint',
             legacyScene: {
                 id: 'day1_capsule_drag_hint',
-                target: 'chat-input',
+                target: 'chat-capsule-input',
                 cursorAction: 'wobble'
             }
         },
@@ -914,8 +918,8 @@ test('VisualRuntime routes externalized wobble through PC overlay cursor effect'
 
     assert.equal(result, true);
     assert.deepEqual(calls, [
-        ['kind', 'day1_capsule_drag_hint', 'chat-input', 'chat-input', 'wobble'],
-        ['effect', 'input', 'wobble', 2000],
+        ['kind', 'day1_capsule_drag_hint', 'chat-capsule-input', 'chat-capsule-input', 'wobble'],
+        ['effect', 'capsule-input', 'wobble', 2000],
         ['delay', 2000]
     ]);
 });

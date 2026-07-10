@@ -191,6 +191,8 @@ def _is_api_key_rejected_error(error: BaseException | str) -> bool:
         return True
     if status_code == 403:
         return has_api_key_indicator
+    # Fallback: when the error object carries no status_code attribute, fall
+    # back to substring matching against the error message text.
     if "401" in text:
         return True
     if "403" in text:

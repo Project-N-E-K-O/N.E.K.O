@@ -22,6 +22,10 @@ type RegistrySyncResult = {
   warningMessage: string | null
 }
 
+type PluginMutationOptions = {
+  refresh?: boolean
+}
+
 export const usePluginStore = defineStore('plugin', () => {
   // 状态
   const plugins = ref<PluginMeta[]>([])
@@ -33,6 +37,8 @@ export const usePluginStore = defineStore('plugin', () => {
   // 防止请求堆积：正在进行的请求
   let pendingFetchPlugins: Promise<void> | null = null
   let pendingFetchStatus: Promise<void> | null = null
+  let pendingPluginListRegistrySync: Promise<RegistrySyncResult> | null = null
+  const pluginListRegistrySynced = ref(false)
   // 请求超时自动清理（防止请求堆积）
   const REQUEST_TIMEOUT = 15000 // 15秒
   // 请求序列号，用于忽略过期响应
@@ -160,10 +166,24 @@ export const usePluginStore = defineStore('plugin', () => {
     }
 
     await fetchPlugins(true)
+    pluginListRegistrySynced.value = true
     return {
       registryRefreshed,
       warningMessage,
     }
+  }
+
+  async function ensurePluginListRegistrySynced(): Promise<RegistrySyncResult | null> {
+    if (pluginListRegistrySynced.value) {
+      return null
+    }
+    if (pendingPluginListRegistrySync) {
+      return pendingPluginListRegistrySync
+    }
+    pendingPluginListRegistrySync = syncRegistryAndFetch().finally(() => {
+      pendingPluginListRegistrySync = null
+    })
+    return pendingPluginListRegistrySync
   }
 
   async function fetchPluginStatus(pluginId?: string) {
@@ -217,31 +237,37 @@ export const usePluginStore = defineStore('plugin', () => {
     }
   }
 
-  async function start(pluginId: string) {
+  async function start(pluginId: string, options: PluginMutationOptions = {}) {
     try {
       await startPlugin(pluginId)
-      await fetchPluginStatus(pluginId)
-      await fetchPlugins(true)
+      if (options.refresh !== false) {
+        await fetchPluginStatus(pluginId)
+        await fetchPlugins(true)
+      }
     } catch (err: any) {
       throw err
     }
   }
 
-  async function stop(pluginId: string) {
+  async function stop(pluginId: string, options: PluginMutationOptions = {}) {
     try {
       await stopPlugin(pluginId)
-      await fetchPluginStatus(pluginId)
-      await fetchPlugins(true)
+      if (options.refresh !== false) {
+        await fetchPluginStatus(pluginId)
+        await fetchPlugins(true)
+      }
     } catch (err: any) {
       throw err
     }
   }
 
-  async function reload(pluginId: string) {
+  async function reload(pluginId: string, options: PluginMutationOptions = {}) {
     try {
       await reloadPlugin(pluginId)
-      await fetchPluginStatus(pluginId)
-      await fetchPlugins(true)
+      if (options.refresh !== false) {
+        await fetchPluginStatus(pluginId)
+        await fetchPlugins(true)
+      }
     } catch (err: any) {
       throw err
     }
@@ -278,11 +304,13 @@ export const usePluginStore = defineStore('plugin', () => {
     pluginsWithStatus,
     normalPlugins,
     extensions,
+    pluginListRegistrySynced,
     loading,
     error,
     // 操作
     fetchPlugins,
     syncRegistryAndFetch,
+    ensurePluginListRegistrySynced,
     fetchPluginStatus,
     start,
     stop,

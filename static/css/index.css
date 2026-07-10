@@ -29,7 +29,8 @@ body {
 /* Status 气泡框样式 - 更显眼的样式 */
 #status-toast {
     position: fixed;
-    top: 20px;
+    --neko-status-toast-crop-safe-area-top: calc(var(--neko-niri-pet-crop-offset-y, 0) * 1px);
+    top: calc(20px + var(--neko-status-toast-crop-safe-area-top));
     right: 20px;
     z-index: 99999;
     max-width: 500px;
@@ -249,7 +250,7 @@ body {
 /* 移动端响应式设计 */
 @media (max-width: 600px) {
     #status-toast {
-        top: 10px;
+        top: calc(10px + var(--neko-status-toast-crop-safe-area-top));
         right: 10px;
         left: 10px;
         max-width: none;
@@ -828,7 +829,7 @@ body.neko-game-active [id$="-lock-icon"] {
 .neko-idle-return-btn.is-cat1-walking .neko-idle-thought-bubble,
 .neko-idle-return-btn.is-cat1-stretching .neko-idle-thought-bubble,
 .neko-idle-return-btn.is-cat1-playing .neko-idle-thought-bubble,
-.neko-idle-return-btn.is-cat1-eating .neko-idle-thought-bubble,
+.neko-idle-return-btn.is-cat1-eating:not(.is-thought-bubble-popping) .neko-idle-thought-bubble,
 .neko-idle-return-btn.is-cat1-hover-paused .neko-idle-thought-bubble {
     display: none;
 }

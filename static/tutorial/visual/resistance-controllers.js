@@ -15,9 +15,9 @@
         'interrupt_resist_light_1',
         'interrupt_resist_light_3'
     ]);
-    const DEFAULT_INTERRUPT_DISTANCE = 56;
+    const DEFAULT_INTERRUPT_DISTANCE = 200;
     const DEFAULT_CURSOR_RESISTANCE_DISTANCE = 30;
-    const DEFAULT_INTERRUPT_ACCELERATION_THRESHOLD = 0.16;
+    const DEFAULT_INTERRUPT_ACCELERATION_THRESHOLD = 2;
     const DEFAULT_INTERRUPT_QUALIFYING_MOVE_STREAK = 3;
     const DEFAULT_RESISTANCE_LINES = Object.freeze([
         '喂！不要拽我啦，现在还没轮到你的回合呢！',
@@ -207,6 +207,7 @@
             call(this.callbacks, 'disableInterrupts', null);
             call(this.callbacks, 'cancelActiveNarration', null);
             call(this.callbacks, 'beginGuideInterruptPresentation', null);
+            // 修改原因：生气退出会脱离教程接管态，必须先恢复真实鼠标，避免退出台词播放时系统鼠标仍被隐藏。
             call(this.callbacks, 'syncSystemCursorHidden', null, false, 'interrupt_angry_exit');
 
             const angryStep = call(this.callbacks, 'getStep', null, 'interrupt_angry_exit') || {};
@@ -339,10 +340,11 @@
                 return;
             }
 
+            const now = Date.now();
             director.lastPointerPoint = {
                 x: x,
                 y: y,
-                t: Date.now(),
+                t: now,
                 speed: 0
             };
             director.interruptQualifyingMoveStreak = 0;
@@ -350,10 +352,17 @@
 
         handleInterrupt(event) {
             const director = this.director;
+            // 修改原因：轻对抗台词播放期间会把 scenePausedForResistance 置 true，
+            // 但用户此时连续拖动仍是同一次对抗链路的一部分；只允许该状态继续累计和刷新真实鼠标，
+            // 其他暂停场景仍保持拦截，避免污染普通教程演出。
+            const shouldAllowPausedLightResistanceInterrupt = (
+                director.scenePausedForResistance
+                && this.lightResistanceActive
+            );
             if (
                 director.destroyed
                 || director.angryExitTriggered
-                || director.scenePausedForResistance
+                || (director.scenePausedForResistance && !shouldAllowPausedLightResistanceInterrupt)
                 || !director.interruptsEnabled
                 || !event
                 || event.isTrusted === false
@@ -449,9 +458,14 @@
                 director.playCursorResistanceToUserMotion(x, y, distance, dx, dy);
             }
 
+            const exceedsDistanceThreshold = distance >= DEFAULT_INTERRUPT_DISTANCE;
+            const exceedsAccelerationThreshold = (
+                distance >= DEFAULT_INTERRUPT_DISTANCE
+                && acceleration >= DEFAULT_INTERRUPT_ACCELERATION_THRESHOLD
+            );
             if (
-                distance < DEFAULT_INTERRUPT_DISTANCE
-                && acceleration < DEFAULT_INTERRUPT_ACCELERATION_THRESHOLD
+                !exceedsDistanceThreshold
+                && !exceedsAccelerationThreshold
             ) {
                 director.interruptQualifyingMoveStreak = 0;
                 return;
@@ -478,15 +492,19 @@
                 return;
             }
 
-            if (typeof director.revealRealCursorForInterruptCount === 'function') {
-                director.revealRealCursorForInterruptCount();
+            // 修改原因：轻对抗计数成立时先刷新 2 秒真实鼠标显示；
+            // 即使上一段台词演出还在 active 保护内，第二次触发也不能只剩第一次显示的尾巴。
+            const cursorRevealAlreadyRequested = typeof director.revealSystemCursorTemporarily === 'function';
+            if (cursorRevealAlreadyRequested) {
+                director.revealSystemCursorTemporarily(2000, 'interrupt_resist_light');
             }
             director.lastPointerPoint = null;
             director.playLightResistance(x, y, {
                 motionDx: dx,
                 motionDy: dy,
                 forceSystemCursorReveal: true,
-                suppressCursorReveal: true
+                suppressCursorReveal: true,
+                cursorRevealAlreadyRequested: cursorRevealAlreadyRequested
             });
         }
 
@@ -512,7 +530,12 @@
             if (!normalizedOptions.suppressCursorReveal) {
                 director.suppressResistanceCursorReveal(normalizedOptions);
             }
-            if (typeof director.revealSystemCursorTemporarily === 'function') {
+            // 修改原因：正常进入轻对抗演出时仍由这里兜底显示真实鼠标；
+            // 已在触发点刷新过的场景跳过，避免同一次轻对抗重复发送两次 PC 临时显示事件。
+            if (
+                !normalizedOptions.cursorRevealAlreadyRequested
+                && typeof director.revealSystemCursorTemporarily === 'function'
+            ) {
                 director.revealSystemCursorTemporarily(2000, 'interrupt_resist_light');
             }
 
@@ -601,6 +624,12 @@
             director.disableInterrupts();
             director.cancelActiveNarration();
             director.beginGuideInterruptPresentation();
+            // 修改原因：生气退出会脱离教程接管态，必须先取消页面侧轻对抗临时显示 timer；
+            // 随后的 interrupt_angry_exit 可见性消息也是 PC 侧清理临时显示 timer 的跨端契约。
+            if (director.resistanceCursorTimer) {
+                window.clearTimeout(director.resistanceCursorTimer);
+                director.resistanceCursorTimer = null;
+            }
             this.syncSystemCursorHidden(false, 'interrupt_angry_exit');
 
             const angryStep = director.getStep('interrupt_angry_exit') || {};

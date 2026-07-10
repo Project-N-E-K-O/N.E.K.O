@@ -379,7 +379,7 @@ CACHE_PROVIDERS: dict[str, CacheProviderConfig] = {
     ),
     "doubao": CacheProviderConfig(
         provider_id="doubao",
-        name="豆包（字节跳动）",
+        name="豆包大模型(火山方舟)",
         base_url="https://ark.cn-beijing.volces.com/api/v3",
         base_url_pattern="ark.cn-beijing.volces.com",
         cache_mode="auto",

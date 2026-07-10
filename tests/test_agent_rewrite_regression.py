@@ -276,6 +276,16 @@ def test_standalone_agent_hud_show_hide_keeps_origin_position():
     assert "translateY(-50%) translateX(20px)" in hide_body
 
 
+def test_agent_hud_viewport_clamp_uses_layout_for_non_pixel_positions():
+    hud_source = Path("static/common-ui-hud.js").read_text(encoding="utf-8")
+
+    assert "function getAgentHudPixelCoordinate(value, fallback)" in hud_source
+    assert "normalized.endsWith('px') && Number.isFinite(numeric)" in hud_source
+    assert "const currentLeft = getAgentHudPixelCoordinate(hud.style.left, rect.left);" in hud_source
+    assert "const currentTop = getAgentHudPixelCoordinate(hud.style.top, rect.top);" in hud_source
+    assert "Number.isFinite(parseFloat(hud.style.top))" not in hud_source
+
+
 def test_agent_server_expected_event_driven_endpoints_exist():
     paths = _route_paths_from_decorators("app/agent_server.py", "app")
     for expected in {
@@ -1805,15 +1815,14 @@ def test_avatar_floating_tutorial_boot_predictor_contract():
     assert "markUserModelBootSkipped" in predictor_source
     assert "claimDirectTutorialBoot" in predictor_source
     assert "releaseDirectTutorialBoot" in predictor_source
-    assert "beginDirectTutorialLoading" in predictor_source
-    assert "clearDirectTutorialLoading" in predictor_source
-    assert "window.nekoTutorialLoadingOverlay" in predictor_source
-    assert "function isPcLoadingOverlayBridge(bridge)" in predictor_source
-    assert "window.nekoTutorialOverlay.loadingOverlay" in predictor_source
-    assert "isPcLoadingOverlayBridge(window.nekoTutorialOverlay)" in predictor_source
-    assert "window.nekoTutorialOverlay.beginLoading" in predictor_source
     assert "yuiGuidePcOverlayRunId" in predictor_source
-    assert "emotion_model_icon.png" in predictor_source
+    assert "beginDirectTutorialLoading" not in predictor_source
+    assert "clearDirectTutorialLoading" not in predictor_source
+    assert "window.nekoTutorialLoadingOverlay" not in predictor_source
+    assert "function isPcLoadingOverlayBridge(bridge)" not in predictor_source
+    assert "window.nekoTutorialOverlay.loadingOverlay" not in predictor_source
+    assert "window.nekoTutorialOverlay.beginLoading" not in predictor_source
+    assert "emotion_model_icon.png" not in predictor_source
     assert "function isTutorialBootAvailable()" in predictor_source
     assert "window.innerWidth <= 768" in predictor_source
     assert "window.innerWidth <= 768" in manager_source
@@ -1886,7 +1895,7 @@ def test_avatar_floating_direct_tutorial_boot_uses_manager_recheck_and_user_mode
     assert "window.NekoAvatarFloatingBoot.claimDirectTutorialBoot" in tutorial_source
     assert "window.NekoAvatarFloatingBoot.releaseDirectTutorialBoot" in tutorial_source
     assert "window.NekoAvatarFloatingBoot.recoverUserModelBoot" in tutorial_source
-    assert "window.NekoAvatarFloatingBoot.clearDirectTutorialLoading" in tutorial_source
+    assert "window.NekoAvatarFloatingBoot.clearDirectTutorialLoading" not in tutorial_source
     assert "getDirectAvatarFloatingTutorialBootRound()" in tutorial_source
 
     start_round_block = tutorial_source.split("async startAvatarFloatingGuideRound(day, options = {})", 1)[1].split(
@@ -1899,7 +1908,7 @@ def test_avatar_floating_direct_tutorial_boot_uses_manager_recheck_and_user_mode
     assert "await this.waitForFloatingButtons()" in start_round_block
     assert "this.claimDirectAvatarFloatingTutorialBoot(round, source);" in start_round_block
     assert "skipSourceModelFade: directTutorialBoot" in start_round_block
-    assert "this.clearDirectAvatarFloatingTutorialLoading('avatar-floating-yui-ready');" in start_round_block
+    assert "clearDirectAvatarFloatingTutorialLoading" not in start_round_block
     assert "await this.recoverUserModelAfterDirectTutorialBootFailure('avatar-floating-start-failed')" in start_round_block
     assert "this.releaseDirectAvatarFloatingTutorialBoot('avatar-floating-before-teardown', {" in start_round_block
     assert "keepUserModelBootSkipped: true" in start_round_block
@@ -1962,7 +1971,8 @@ def test_avatar_floating_direct_boot_does_not_wait_for_user_floating_buttons():
     assert "const directBootRound = this.getDirectAvatarFloatingTutorialBootRound();" in check_block
     assert "this.isDirectAvatarFloatingTutorialBoot(directBootRound)" in check_block
     assert "const round = this.getHomeAvatarFloatingGuideLaunchRound();" in check_block
-    assert "this.beginDirectAvatarFloatingTutorialLoading('startup-direct-tutorial-predicted');" in check_block
+    assert "beginDirectAvatarFloatingTutorialLoading" not in tutorial_source
+    assert "clearDirectAvatarFloatingTutorialLoading" not in tutorial_source
     assert "this.pendingTutorialStartSource = 'manual_reset';" in check_block
     assert "this.startTutorialWhenI18nReady(1500);" in check_block
     assert check_block.index("this.isDirectAvatarFloatingTutorialBoot(directBootRound)") < check_block.index(
@@ -3527,6 +3537,37 @@ def test_agent_ui_v2_keeps_agent_status_short_during_tutorial():
     assert "isTutorialAgentStatusLocked()" in status_block
     assert "shouldStabilizeTutorialText ? 'NekoClaw server ready' : (msg || '')" in status_block
     assert "s.textContent = text;" in status_block
+
+
+def test_agent_popup_state_sync_includes_pngtuber_prefix():
+    hud_source = Path("static/common-ui-hud.js").read_text(encoding="utf-8")
+    ui_v2_source = Path("static/js/agent_ui_v2.js").read_text(encoding="utf-8")
+    legacy_source = Path("static/app-agent.js").read_text(encoding="utf-8")
+
+    assert "const avatarPrefix = this && typeof this._avatarPrefix === 'string'" in hud_source
+    assert "statusDiv.id = `${avatarPrefix}-agent-status`;" in hud_source
+
+    for suffix in [
+        "master",
+        "keyboard",
+        "browser",
+        "user-plugin",
+        "openfang",
+        "openclaw",
+        "status",
+    ]:
+        assert f"pngtuber-agent-{suffix}" in ui_v2_source
+
+    for suffix in [
+        "master",
+        "keyboard",
+        "browser",
+        "user-plugin",
+        "openfang",
+        "openclaw",
+        "status",
+    ]:
+        assert f"pngtuber-agent-{suffix}" in legacy_source
 
 
 def test_get_model_api_config_agent_uses_agent_fields_without_custom_switch():

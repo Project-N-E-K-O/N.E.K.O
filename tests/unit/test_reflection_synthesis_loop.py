@@ -22,10 +22,45 @@ Pin 两条不变量：
 """
 from __future__ import annotations
 
+import ast
 import asyncio
+import inspect
+import textwrap
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+
+def _missing_reason_code_action_dicts(fn):
+    src = textwrap.dedent(inspect.getsource(fn))
+    tree = ast.parse(src)
+    missing: list[tuple[int, list[str]]] = []
+
+    class Visitor(ast.NodeVisitor):
+        def visit_Dict(self, node: ast.Dict) -> None:
+            keys = [
+                key.value if isinstance(key, ast.Constant) else None
+                for key in node.keys
+            ]
+            if "action" in keys:
+                action_idx = keys.index("action")
+                action_value = node.values[action_idx]
+                action_values: list[str] = []
+                if isinstance(action_value, ast.Constant):
+                    action_values.append(str(action_value.value))
+                elif isinstance(action_value, ast.IfExp):
+                    for branch in (action_value.body, action_value.orelse):
+                        if isinstance(branch, ast.Constant):
+                            action_values.append(str(branch.value))
+                if (
+                    any(value in {"pass", "chat"} for value in action_values)
+                    and "reason_code" not in keys
+                ):
+                    missing.append((node.lineno, action_values))
+            self.generic_visit(node)
+
+    Visitor().visit(tree)
+    return missing
 
 
 @pytest.mark.unit
@@ -198,6 +233,137 @@ def test_proactive_chat_handler_no_longer_posts_reflect():
         # 因为这个直觉负担，加括号杜绝同类困惑）
         f"匹配到: {(post_to_reflect.group(0) if post_to_reflect else '')!r}"
     )
+
+
+@pytest.mark.unit
+def test_proactive_pass_chat_responses_carry_reason_code():
+    """Proactive pass/chat responses expose a stable machine reason.
+
+    The endpoint is intentionally too heavy for a full runtime call here, so keep
+    this as a source-level contract: any direct response dict with
+    ``action == pass/chat`` in the proactive delivery path must also carry
+    ``reason_code``.
+    """
+    import main_routers.system_router as system_router
+
+    missing = []
+    for fn in (
+        system_router.proactive_chat,
+        system_router._maybe_deliver_mini_game_invite,
+    ):
+        for line, action_values in _missing_reason_code_action_dicts(fn):
+            missing.append((fn.__name__, line, action_values))
+
+    assert not missing, (
+        "proactive pass/chat response dicts must include reason_code; "
+        f"missing={missing!r}"
+    )
+
+
+@pytest.mark.unit
+def test_proactive_reason_code_body_helpers_preserve_shape():
+    import main_routers.system_router as system_router
+
+    pass_body = system_router._proactive_pass_body(
+        system_router.PROACTIVE_REASON_PASS_SOURCE_EMPTY,
+        message="no source",
+    )
+    assert pass_body == {
+        "success": True,
+        "reason_code": system_router.PROACTIVE_REASON_PASS_SOURCE_EMPTY,
+        "stage": system_router.PROACTIVE_STAGE_SOURCE_SELECTION,
+        "action": "pass",
+        "message": "no source",
+    }
+
+    chat_body = system_router._proactive_chat_body(message="delivered")
+    assert chat_body["success"] is True
+    assert chat_body["action"] == "chat"
+    assert chat_body["reason_code"] == system_router.PROACTIVE_REASON_CHAT_DELIVERED
+    assert chat_body["stage"] == system_router.PROACTIVE_STAGE_DELIVERY
+    assert chat_body["message"] == "delivered"
+
+    error_body = system_router._proactive_error_body(
+        system_router.PROACTIVE_REASON_ERROR_TIMEOUT,
+        error="timeout",
+    )
+    assert error_body["success"] is False
+    assert error_body["reason_code"] == system_router.PROACTIVE_REASON_ERROR_TIMEOUT
+    assert error_body["stage"] == system_router.PROACTIVE_STAGE_RUNTIME_ERROR
+
+    source_error_body = system_router._proactive_pass_body(
+        system_router.PROACTIVE_REASON_ERROR_SOURCE_FETCH_FAILED,
+        success=False,
+        error="all source fetches failed",
+    )
+    assert source_error_body["success"] is False
+    assert source_error_body["action"] == "pass"
+    assert source_error_body["reason_code"] == (
+        system_router.PROACTIVE_REASON_ERROR_SOURCE_FETCH_FAILED
+    )
+    assert source_error_body["stage"] == system_router.PROACTIVE_STAGE_SOURCE_SELECTION
+
+    old_pass_body = {"success": True, "action": "pass", "message": "legacy"}
+    assert system_router._ensure_proactive_reason_code(old_pass_body) == {
+        "success": True,
+        "action": "pass",
+        "message": "legacy",
+        "reason_code": system_router.PROACTIVE_REASON_PASS_UNSPECIFIED,
+        "stage": system_router.PROACTIVE_STAGE_UNKNOWN,
+    }
+
+
+@pytest.mark.unit
+def test_proactive_reason_codes_have_stage_mapping():
+    import main_routers.system_router as system_router
+
+    known_stages = {
+        system_router.PROACTIVE_STAGE_ENTRY_GUARD,
+        system_router.PROACTIVE_STAGE_ACTIVITY_GATE,
+        system_router.PROACTIVE_STAGE_SOURCE_SELECTION,
+        system_router.PROACTIVE_STAGE_MODEL_DECISION,
+        system_router.PROACTIVE_STAGE_GENERATION,
+        system_router.PROACTIVE_STAGE_DEDUP,
+        system_router.PROACTIVE_STAGE_DELIVERY,
+        system_router.PROACTIVE_STAGE_RUNTIME_ERROR,
+        system_router.PROACTIVE_STAGE_UNKNOWN,
+    }
+    reason_codes = [
+        value
+        for name, value in vars(system_router).items()
+        if name.startswith("PROACTIVE_REASON_") and isinstance(value, str)
+    ]
+
+    assert reason_codes
+    for reason_code in reason_codes:
+        stage = system_router._proactive_stage_for_reason(reason_code)
+        assert stage in known_stages, reason_code
+        assert stage != system_router.PROACTIVE_STAGE_UNKNOWN or reason_code == (
+            system_router.PROACTIVE_REASON_PASS_UNSPECIFIED
+        )
+
+
+@pytest.mark.unit
+def test_proactive_phase2_abort_reasons_stay_specific():
+    import inspect
+    import main_routers.system_router as system_router
+
+    src = inspect.getsource(system_router.proactive_chat)
+    assert "abort_reason_code" in src
+    assert "PROACTIVE_REASON_DELIVERY_PREEMPTED" in src
+    assert "PROACTIVE_REASON_PASS_MODEL_PASS" in src
+    assert "final_abort_reason_code = abort_reason_code or PROACTIVE_REASON_PASS_GENERATION_EMPTY" in src
+
+
+@pytest.mark.unit
+def test_end_proactive_rewrites_body_after_reason_stage_fallback():
+    import inspect
+    import main_routers.system_router as system_router
+
+    src = inspect.getsource(system_router.proactive_chat)
+    assert "body = _ensure_proactive_reason_code(body)" in src
+    assert "body.setdefault('next_schedule_fixed_mode', _next_schedule_fixed_mode)" in src
+    assert "if 'next_schedule_fixed_mode' in body:\n                return resp" not in src
 
 
 @pytest.mark.unit

@@ -44,8 +44,11 @@ describe('App', () => {
     window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'true');
     delete window.__NEKO_REACT_CHAT_ASSET_VERSION__;
     delete (window as Window & { NekoGameSystem?: unknown }).NekoGameSystem;
+    delete (window as Window & { live2dManager?: unknown }).live2dManager;
+    delete (window as Window & { __nekoDesktopCompactLayout?: unknown }).__nekoDesktopCompactLayout;
     resetCompactToolWheelDetentAudioForTests();
     document.body.style.pointerEvents = '';
+    document.body.classList.remove('electron-chat-window');
     document.body.classList.remove('yui-guide-chat-buttons-disabled');
     document.body.classList.remove('yui-guide-standalone-input-shield-active');
   });
@@ -4638,6 +4641,17 @@ describe('App', () => {
     expect(actionButton.querySelector('img')).toHaveClass('compact-input-tool-toggle-icon');
   });
 
+  it('exposes compact capsule inline tool regions before entering input state', () => {
+    const { container } = render(<App chatSurfaceMode="compact" compactChatState="default" />);
+
+    expect(container.querySelector('[data-compact-geometry-part="capsuleBody"]')).not.toBeNull();
+    expect(container.querySelector('[data-compact-geometry-part="capsuleBody"]')).toHaveAttribute('data-compact-geometry-hit-scope', 'children');
+    expect(container.querySelector('.compact-chat-capsule-button')).toHaveAttribute('data-compact-hit-region-id', 'capsule:text');
+    expect(container.querySelector('.compact-chat-capsule-button')).toHaveAttribute('data-compact-hit-region-kind', 'capsule-text');
+    expect(container.querySelector('.compact-input-tool-toggle')).toHaveAttribute('data-compact-hit-region-id', 'input:tool-toggle');
+    expect(container.querySelector('.compact-input-tool-toggle')).toHaveAttribute('data-compact-hit-region-kind', 'input-tool-toggle');
+  });
+
   it('keeps the compact chat surface visible while voice mode hides the composer input', () => {
     const { container } = render(
       <App chatSurfaceMode="compact" compactChatState="input" composerHidden />,
@@ -4717,6 +4731,39 @@ describe('App', () => {
 
     expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'default');
     expect(document.body.querySelector('.compact-input-tool-fan')).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+    expect(onCompactChatStateChange).not.toHaveBeenCalledWith('input');
+  });
+
+  it('opens compact input tools from the default capsule hover ring without entering input state', () => {
+    const onCompactChatStateChange = vi.fn();
+    const { container } = render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="default"
+        onCompactChatStateChange={onCompactChatStateChange}
+      />,
+    );
+
+    const actionButton = screen.getByRole('button', { name: '更多工具' });
+    const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    vi.spyOn(actionButton, 'getBoundingClientRect').mockReturnValue({
+      left: 100,
+      top: 40,
+      right: 148,
+      bottom: 88,
+      width: 48,
+      height: 48,
+      x: 100,
+      y: 40,
+      toJSON: () => ({}),
+    });
+
+    expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
+
+    fireEvent.pointerMove(window, { clientX: 124, clientY: 64, pointerType: 'mouse' });
+
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'default');
+    expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
     expect(onCompactChatStateChange).not.toHaveBeenCalledWith('input');
   });
 
@@ -5173,6 +5220,90 @@ describe('App', () => {
     }
   });
 
+  it('sizes compact avatar tool manager against the desktop work area when the carrier is small', async () => {
+    const originalInnerWidth = window.innerWidth;
+    const originalInnerHeight = window.innerHeight;
+    const desktopWindow = window as typeof window & {
+      __nekoDesktopCompactLayout?: {
+        windowBounds: { x: number; y: number; width: number; height: number };
+        workArea: { x: number; y: number; width: number; height: number };
+      } | null;
+    };
+    const originalDesktopLayout = desktopWindow.__nekoDesktopCompactLayout;
+    const hadElectronChatWindowClass = document.body.classList.contains('electron-chat-window');
+
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 393 });
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 74 });
+    document.body.classList.add('electron-chat-window');
+    desktopWindow.__nekoDesktopCompactLayout = {
+      windowBounds: { x: 976, y: 485, width: 393, height: 74 },
+      workArea: { x: 0, y: 0, width: 1706, height: 1066 },
+    };
+
+    try {
+      const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
+
+      await openCompactInputTools();
+      fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
+
+      const editButton = container.querySelector('.avatar-tool-quickbar-edit') as HTMLButtonElement;
+      expect(editButton).not.toBeNull();
+      Object.defineProperty(editButton, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({
+          left: 310,
+          top: 20,
+          right: 356,
+          bottom: 66,
+          width: 46,
+          height: 46,
+          x: 310,
+          y: 20,
+          toJSON: () => ({}),
+        }),
+      });
+
+      fireEvent.click(editButton);
+
+      const dialog = screen.getByRole('dialog', { name: 'Manage tools' });
+      expect(dialog).toHaveClass('is-positioned');
+      expect(dialog).toHaveClass('is-desktop-compact-layout');
+      expect(dialog).toHaveAttribute('data-compact-geometry-item', 'avatarToolManager');
+      expect(dialog).toHaveStyle({
+        '--avatar-tool-manager-left': '-24px',
+        '--avatar-tool-manager-top': '-473px',
+        '--avatar-tool-manager-width': '380px',
+        '--avatar-tool-manager-height': '600px',
+      });
+
+      desktopWindow.__nekoDesktopCompactLayout = {
+        windowBounds: { x: 0, y: 0, width: 1706, height: 1066 },
+        workArea: { x: 0, y: 0, width: 1706, height: 1066 },
+      };
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko:desktop-compact-layout-change', {
+          detail: desktopWindow.__nekoDesktopCompactLayout,
+        }));
+      });
+
+      await waitFor(() => {
+        expect(dialog).toHaveStyle({
+          '--avatar-tool-manager-left': '12px',
+          '--avatar-tool-manager-top': '12px',
+        });
+      });
+    } finally {
+      if (hadElectronChatWindowClass) {
+        document.body.classList.add('electron-chat-window');
+      } else {
+        document.body.classList.remove('electron-chat-window');
+      }
+      desktopWindow.__nekoDesktopCompactLayout = originalDesktopLayout;
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalInnerWidth });
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: originalInnerHeight });
+    }
+  });
+
   it('adds the React chat asset version to compact avatar tool images when provided by the host template', async () => {
     window.__NEKO_REACT_CHAT_ASSET_VERSION__ = 'asset 1';
     const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
@@ -5381,6 +5512,62 @@ describe('App', () => {
       expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
     } finally {
       window.matchMedia = originalMatchMedia;
+    }
+  });
+
+  it('opens compact input tools on hover when Electron reports an empty pointer type', () => {
+    render(<App chatSurfaceMode="compact" compactChatState="input" />);
+
+    const actionButton = document.body.querySelector('.compact-input-tool-toggle') as HTMLButtonElement;
+    const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    expect(actionButton).not.toBeNull();
+    expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
+
+    fireEvent.pointerEnter(actionButton, { pointerType: '' });
+
+    expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+  });
+
+  it('keeps compact input tools interactive when desktop hover open requests repeat', async () => {
+    vi.useFakeTimers();
+    try {
+      const { rerender } = render(
+        <App
+          chatSurfaceMode="compact"
+          compactChatState="input"
+          compactToolFanOpenRequest={{
+            id: 'desktop-hover-open-1',
+            open: true,
+            reason: 'desktop-compact-tool-toggle-cursor-poll',
+          }}
+        />,
+      );
+
+      const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-interactive', 'false');
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(230);
+      });
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-interactive', 'true');
+
+      rerender(
+        <App
+          chatSurfaceMode="compact"
+          compactChatState="input"
+          compactToolFanOpenRequest={{
+            id: 'desktop-hover-open-2',
+            open: true,
+            reason: 'desktop-compact-tool-toggle-hover-keepalive',
+          }}
+        />,
+      );
+
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-interactive', 'true');
+    } finally {
+      vi.useRealTimers();
     }
   });
 
@@ -8974,6 +9161,7 @@ describe('App', () => {
       fireEvent.pointerMove(window, { clientX: 20, clientY: 20 });
 
       await act(async () => {
+        await vi.advanceTimersByTimeAsync(16);
         await vi.advanceTimersByTimeAsync(220);
       });
 

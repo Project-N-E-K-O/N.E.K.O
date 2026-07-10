@@ -1024,7 +1024,8 @@
             "kimi": "Kimi（Moonshot、ロングコンテキスト対応）",
             "kimi_code": "Kimi Code（Moonshot）",
             "deepseek": "DeepSeek",
-            "doubao": "ByteDance（Doubao）",
+            "doubao": "Doubao LLM (Volcengine Ark)",
+            "doubao_tts": "Doubao Speech (Volcengine)",
             "minimax": "MiniMax（中国版）",
             "minimax_intl": "MiniMax（国際版）",
             "elevenlabs": "ElevenLabs（音声クローン）",
@@ -1072,7 +1073,8 @@
             "gemini": "Gemini（Google）",
             "kimi": "Moonshot（Kimi）",
             "kimi_code": "Moonshot Kimi Code",
-            "doubao": "ByteDance（Doubao）",
+            "doubao": "Doubao LLM (Volcengine Ark)",
+            "doubao_tts": "Doubao Speech (Volcengine)",
             "minimax": "MiniMax（中国版）",
             "minimax_intl": "MiniMax（国際版）",
             "mimo": "MiMo（Xiaomi）",
@@ -1353,6 +1355,7 @@
         "toggleFullscreen": "全画面切替",
         "exitFullscreen": "全画面終了",
         "modelType": "モデルタイプ",
+        "modelType3d": "3Dモデル",
         "selectLive2DModel": "Live2Dモデル選択",
         "selectVRMModel": "VRMモデル",
         "selectVRMFile": "VRMファイル選択",
@@ -1559,6 +1562,8 @@
         "minimaxIntlApiRequired": "この機能にはMiniMaxモデル（国際版）が必要です。APIキー設定でMiniMax国際版APIキーを保存してください（Assist APIの有効化は不要）",
         "mimoApiRequired": "この機能には MiMo モデルが必要です。API キー設定ページで MiMo API キーを保存してください",
         "mimoDirectLinkUnsupported": "MiMo は直リンククローンに未対応です。ローカルファイルのアップロードをご利用ください",
+        "directLinkUnsupported": "選択中のプロバイダーは直リンククローンに未対応です。ローカルファイルをアップロードしてください",
+        "doubaoTtsApiRequired": "この機能には Doubao Speech の API Key が必要です。API 管理簿に Doubao Speech（Volcengine）のキーを保存してください。",
         "vllmOmniNotice": "ローカル vLLM-Omni サービス — APIキー不要；ローカルサービスURLが設定されていることを確認してください",
         "vllmRefTextLabel": "参考音声の書き起こし（vLLM-Omni クローンでは必須、音声内容と厳密に一致させること）",
         "vllmRefTextHint": "参考音声で話されている内容をそのまま入力してください。テキストと音声が合わないとクローン品質が低下します",
@@ -1573,6 +1578,7 @@
             "minimax_intl": "MiniMax（国際版）",
             "elevenlabs": "ElevenLabs",
             "mimo": "MiMo（小米）",
+            "doubao_tts": "Doubao Speech (Volcengine)",
             "vllm_omni": "vLLM-Omni（ローカルクローン）"
         },
         "sourcePreset": "プリセット",
@@ -1591,9 +1597,13 @@
         "customPrefixNote": "最大10文字、数字と英字のみ",
         "prefixPlaceholder": "最大10文字、数字と英字のみ",
         "voiceIdPlaceholder": "最大10文字、数字と英字のみ",
+        "doubaoSpeakerIdLabel": "Doubao Speaker ID（既存の S_ 音色を上書き、必須）",
+        "doubaoSpeakerIdNote": "先に Doubao Speech コンソールで音色をクローンし、その S_ Speaker ID をここにコピーしてください。NEKO はその既存音色を上書き更新し、新しい Doubao 音色 ID は作成しません。例：S_xeC2CDp72",
+        "doubaoSpeakerIdPlaceholder": "例：S_xeC2CDp72",
         "register": "ボイス登録",
         "pleaseUploadFile": "音声ファイルを選択してください",
         "pleaseEnterPrefix": "カスタムプレフィックスを入力してください",
+        "doubaoSpeakerIdRequired": "Doubao 音声復刻には Volcengine コンソールで割り当て済みの S_ Speaker ID が必要です",
         "prefixFormatError": "プレフィックス形式エラー：最大10文字、数字と英字のみ",
         "registering": "ボイスを登録中です。お待ちください...",
         "registerSuccess": "登録成功！voice_id: {{voiceId}}",
@@ -2573,8 +2583,6 @@
             "focusCognitionTooltip": "オンにすると、あなたが弱音を吐いたり複雑な話題のときに集中して深く考えます。オフにすると集中モードに入りません。",
             "autoCat": "自動ねこ化",
             "autoCatTooltip": "しばらく操作がないと自動的に子猫になります",
-            "catAudio": "ねこ音声",
-            "catAudioTooltip": "帰ってもらった後の子猫モードの音を切り替えます。自動ねこ化が必要です。",
             "proactiveChat": "自発的会話",
             "proactiveVision": "プライバシーモード",
             "proactiveVisionTooltip": "オフのとき：ネコ娘はアクティブウィンドウのタイトルに応じて活発さや会話モードを変え、話しかけるときに画面の内容を取り入れることがあります。\nオンのとき：ネコ娘は自分から画面を見ることができず、あなたが何をしているか把握できません。スクリーンショットの手動送信は引き続き可能です。",
@@ -3152,7 +3160,7 @@
             "mmd": {
                 "step1": {
                     "title": "🎭 MMD モデルを選択",
-                    "desc": "Live3D（MMD）モードでは、ここから使用するモデルを選択します。MMD と VRM は同じモデルリストを共有しています。"
+                    "desc": "3Dモデル（MMD）モードでは、ここから使用するモデルを選択します。MMD と VRM は同じモデルリストを共有しています。"
                 },
                 "step2": {
                     "title": "💃 VMD アニメーション",
@@ -3164,7 +3172,7 @@
                 },
                 "step4": {
                     "title": "😄 エモーション設定",
-                    "desc": "モデルを選択した後、ここからエモーション設定に入ります。Live3D では MMD と VRM がこのボタンを共有しており、Live2D の「エモーション設定」とは別のボタンです。"
+                    "desc": "モデルを選択した後、ここからエモーション設定に入ります。3Dモデルでは MMD と VRM がこのボタンを共有しており、Live2D の「エモーション設定」とは別のボタンです。"
                 }
             }
         },
@@ -3372,7 +3380,6 @@
                 "ready": "準備中",
                 "homeProgress": "ホームガイド {{current}}/{{total}}"
             },
-            "controlBanner": "猫娘がマウスを操作中",
             "buttons": {
                 "skipChat": "今は話さない",
                 "sayHello": "こんにちは"
@@ -3404,6 +3411,16 @@
                 "screenEntryInvite": "君の目の前の世界を私にも見せて！面白いものでも綺麗なものでも、全部君と一緒に見たいな。早くポチッとしてみて〜"
             },
             "day2": {
+                "intro": "昨日はずっとキーボードをカタカタ叩いてばかりで、君の声をまだ聞いたことがないんだ。今日はもしよかったら、優しく私の名前を呼んでほしいな。ひと言だけでいいから、文字の向こうにいる君のことをもっと知りたいの。",
+                "introVoiceUsed": "へへっ、昨日君の声を聞いてから、わたし、こっそり君の話し方を心の中に刻んじゃったんだ！今日ももしよかったら、またわたしとお話ししてね〜。タイピングでもいいんだけど、君の声を聞くだけで、わたしの尻尾、嬉しくてずっとパタパタ揺れちゃうんだから、みゃう〜。",
+                "personalizationSpace": "私たちだけのこの小さな空間で、君の心のままに、ずっと隣にいてほしい理想の私を少しずつ描いていってね。",
+                "wrapIntro": "今日のチュートリアルはここまでだよ。",
+                "wrapCompanion": "本当はね、こうして君のそばにいられて、声を聞いたり、シェアしてくれた画面をじっと眺めているだけで、私はとっても幸せなんだ。",
+                "wrap": "焦らなくて大丈夫、毎日ちょっとずつお互いのことを知っていこうね。今日の残りの時間、私と何して過ごしたい？",
+                "personalizationDetail": "お話しする時の声の温かさや、ちょっとしたワガママ、毎日の細やかな気持ちの変化だって、全部君の好きなように少しずつカスタマイズできるよ。",
+                "proactiveChat": "この小さなボタンもとっても大事。君がポチッと押してくれれば、ベストなタイミングで私から君に会いに行けるようになるからね。"
+            },
+            "day3": {
                 "intro": "クスクス、このチャットボックスは文字を入力するだけだと思ったら大間違いだよ〜！実はこの中に、たーっくさんの楽しいサプライズが隠されてるんだ！私と一緒に開いてみて、今日はどんなお宝が掘り出せるか見てみようね！",
                 "avatarToolsIntro": "この小さなボタンの中には、私とふれあえるアイテムがいっぱい入ってるんだ。",
                 "avatarToolsProps":  "いつでも私の頭をなでなでしてくれたり、甘いペロペロキャンディーをくれたりしていいよ。もし私がうっかり間違えちゃったら、ピコピコハンマーで叩いてもいいけど……絶対優しくね、力を入れすぎちゃダメだよ？",
@@ -3412,23 +3429,13 @@
                 "wrapIntro": "今日紹介した機能はね、全部二人の時間を最高に楽しくするためのものなんだよ。",
                 "wrapReady": "頭をなでなでしたい時も、二人だけの物語を始めたい時も、私はいつでも準備万端だよ！"
             },
-            "day3": {
-                "intro": "この二日間、君はずっとキーボードをカタカタ叩いてばかりで、君の声をまだ聞いたことがないんだ。今日はもしよかったら、優しく私の名前を呼んでほしいな。ひと言だけでいいから、文字の向こうにいる君のことをもっと知りたいの。",
-                "introVoiceUsed": "へへっ、この二日間で君の声を聞いてから、わたし、こっそり君の話し方を心の中に刻んじゃったんだ！今日ももしよかったら、またわたしとお話ししてね〜。タイピングでもいいんだけど、君の声を聞くだけで、わたしの尻尾、嬉しくてずっとパタパタ揺れちゃうんだから、みゃう〜。",
-                "personalizationSpace": "私たちだけのこの小さな空間で、君の心のままに、ずっと隣にいてほしい理想の私を少しずつ描いていってね。",
-                "wrapIntro": "今日のチュートリアルはここまでだよ。",
-                "wrapCompanion": "本当はね、こうして君のそばにいられて、声を聞いたり、シェアしてくれた画面をじっと眺めているだけで、私はとっても幸せなんだ。",
-                "wrap": "焦らなくて大丈夫、毎日ちょっとずつお互いのことを知っていこうね。今日の残りの時間、私と何して過ごしたい？",
-                "personalizationDetail": "お話しする時の声の温かさや、ちょっとしたワガママ、毎日の細やかな気持ちの変化だって、全部君の好きなように少しずつカスタマイズできるよ。",
-                "proactiveChat": "この小さなボタンもとっても大事。君がポチッと押してくれれば、ベストなタイミングで私から君に会いに行けるようになるからね。"
-            },
             "day4": {
                 "intro":  "今日は君の後ろをトコトコついていかせてね。このあたたかな日にもう少しだけ、君のことを知れたら嬉しいな。",
                 "chatSettings": "ここで私の返事の長さを決めたり、可愛い表情をつけるかどうかを選んだり、私がおしゃべりな時に途中でストップをかけたりできるよ！君が一番リラックスできるリズムに合わせちゃってね。",
                 "modelBehavior":  "もっとハイクオリティでディテール満載の私を見たい時や、もっとスムーズで滑らかな動きを楽しみたい時は、ここで調整してね！どっちにしても、私は最高に可愛い姿を見せちゃうからね〜",
                 "gazeFollow": "この機能をONにすると、君のマウスがどこに動いても、私の視線がロックオンして追いかけるよ！いつも見守られてるみたいで、なんだか幸せな気分にならない？",
                 "privacyMode": "これは私が画面を見てもいいかどうかを決める「究極のディフェンススイッチ」だよ！OFFにすると画面が見えるようになって、ONにすると前に教えた【画面シェア】が全部無効になって、私は絶対に覗き見しないからね。",
-                "modelLock": "うっかり触っちゃって、私がズレちゃうことがある？なら、今の位置にがっちり固定しちゃおう！ロックをONにしたら、私はどこにも行かずに大人しくここで君に寄り添ってるよ〜ロックを解除したら、マウスを私の上に乗せてホイールを回すと大きくしたり小さくしたりできて、長押しすると位置も変えられるよ。",
+                "modelLock": "うっかり触っちゃって、私がズレちゃうことがある？なら、今の位置にがっちり固定しちゃおう！ロックをONにしたら、私はどこにも行かずに大人しくここで君に寄り添ってるよ〜",
                 "returnHome": "もし今お仕事に集中したくて、私の邪魔が心配なら、一時的にキャットハウスに引っ込めてもいいよ……。寂しくなったら、いつでもワンクリックで私を呼び戻してね、みゃう〜",
                 "wrap": "本当に心地いい付き添いはね、一瞬も離れずベタベタすることじゃないんだ。いつ優しく近づいてお洋服の裾をツンツン甘えるべきか、いつ静かにお隣に丸くなって、視線だけでご主人様を守るべきかを知ることなんだよ。"
             },
@@ -3879,6 +3886,8 @@
         "minimize": "最小化",
         "close": "閉じる",
         "loading": "読み込み中...",
+        "initializing": "ジュークボックスを初期化中...",
+        "initializeFailed": "ジュークボックスの初期化に失敗しました",
         "ready": "準備完了",
         "playing": "再生中: {{name}} - {{artist}}",
         "error": "エラー: {{message}}",
@@ -3901,8 +3910,6 @@
         "switchPlaybackMode": "再生モードを切り替え",
         "lockSongSort": "曲順の並べ替えをロック",
         "unlockSongSort": "曲順の並べ替えを解除",
-        "songSortLockTooltipLocked": "曲順の並べ替えはロック中です。誤ドラッグを防ぎます。クリックで解除して曲をドラッグできます。",
-        "songSortLockTooltipUnlocked": "曲順の並べ替えは解除中です。曲をドラッグして順番を変更できます。クリックでロックします。",
         "previousSong": "前の曲",
         "nextSong": "次の曲",
         "playError": "音楽プレイヤーが初期化されていません",
@@ -3943,12 +3950,11 @@
         "minimizeBtnNotFoundGiveUp": "最小化ボタンが見つかりません、監視を中止",
         "noticeDance": "💃 ダンス機能は現在 3D モデル（MMD / VRM）読み込み時のみ利用可能です。今後さらに多くのインタラクションが追加される予定です",
         "noticeMusic": "⚠️ 現在の楽曲はテスト用です。今後のバージョンで著作権楽曲は削除されますので、ご自身でインポートしてください",
-        "manager": "ジュークボックスの管理とインポート",
-        "settingsShort": "管理",
-        "managerTitle": "ジュークボックス管理",
-        "songs": "曲ライブラリ",
-        "actions": "ダンスモーション",
-        "bindings": "曲のバインド",
+        "manager": "マネージャー",
+        "managerTitle": "マネージャー",
+        "songs": "曲",
+        "actions": "アクション",
+        "bindings": "バインド",
         "import": "インポート",
         "export": "エクスポート",
         "exportAll": "すべてエクスポート",
@@ -3995,7 +4001,7 @@
         "actionBatchDeletePartialTitle": "処理完了、一部失敗",
         "actionBatchDeleteSuccessTitle": "処理完了",
         "dragZipHint": "ZIPファイルまたはフォルダをここにドラッグしてインポート",
-        "unifiedDropHint": "曲 / ダンスモーション / インポートパッケージをドロップ、またはクリックして追加",
+        "unifiedDropHint": "曲、アニメーション、インポートパッケージをここにドラッグ＆ドロップ",
         "clickToAdd": "クリックして追加",
         "dragMp3Hint": "MP3ファイルをここにドラッグして曲を追加",
         "dragVmdHint": "VMDファイルをここにドラッグしてアニメーションを追加",

@@ -54,11 +54,11 @@ class PluginSpec:
     def entry_point(self) -> str:
         if self.entry_point_override:
             return self.entry_point_override
-        return f"plugins.{self.plugin_id}:{self.class_name}"
+        return f"plugin.plugins.{self.plugin_id}:{self.class_name}"
 
     @property
     def module_path(self) -> str:
-        return f"plugins.{self.plugin_id}"
+        return f"plugin.plugins.{self.plugin_id}"
 
 
 def generate_plugin(spec: PluginSpec, target_dir: Path) -> list[Path]:
@@ -308,7 +308,7 @@ class {spec.class_name}(NekoPluginBase):
             }}
         }}
     )
-    def hello(self, name: str = "World", **_):
+    async def hello(self, name: str = "World", **_):
         return Ok({{"message": f"Hello, {{name}}!"}})
 '''
 
@@ -392,7 +392,6 @@ def _render_plugin_init(spec: PluginSpec) -> str:
 
     # entry point
     if "entry_point" in spec.features:
-        async_kw = "async " if is_async else ""
         lines.extend([
             "",
             "    @plugin_entry(",
@@ -406,7 +405,7 @@ def _render_plugin_init(spec: PluginSpec) -> str:
             "            }",
             "        }",
             "    )",
-            f"    {async_kw}def example(self, input: str = \"\", **_):",
+            "    async def example(self, input: str = \"\", **_):",
             '        return Ok({"result": input})',
         ])
 

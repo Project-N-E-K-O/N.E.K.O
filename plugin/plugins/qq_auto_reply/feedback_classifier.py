@@ -34,7 +34,7 @@ class QQFeedbackClassifier:
         if not normalized:
             return "chat"
         candidates = cls._normalize_labels(labels or cls.default_labels())
-        matched: list[tuple[int, str]] = []
+        matched: list[tuple[int, str, bool]] = []  # (priority, label_id, is_blacklist)
         for label in candidates:
             label_id = str(label.get("id") or "").strip()
             priority = int(label.get("priority") or 0)
@@ -53,11 +53,22 @@ class QQFeedbackClassifier:
                 except re.error:
                     continue
             if matched_label:
-                matched.append((priority, label_id))
+                is_blacklist = priority < 0
+                matched.append((priority, label_id, is_blacklist))
         if not matched:
             return "chat"
-        matched.sort(key=lambda item: item[0], reverse=True)
-        return matched[0][1]
+        # 正优先级优先于负优先级（黑名单）
+        positive = [(p, lid) for p, lid, bl in matched if not bl]
+        if positive:
+            positive.sort(key=lambda item: item[0], reverse=True)
+            return positive[0][1]
+        # 全部是负优先级 → 黑名单
+        return "blacklist"
+
+    @classmethod
+    def is_blacklisted(cls, text: str, labels: list[dict[str, Any]] | None = None) -> bool:
+        """检测消息是否命中黑名单（优先级为负数的标签）"""
+        return cls.classify(text, labels) == "blacklist"
 
     @staticmethod
     def _normalize_labels(labels: list[dict[str, Any]]) -> list[dict[str, Any]]:
