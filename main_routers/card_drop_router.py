@@ -21,11 +21,11 @@ import os
 import secrets
 import time
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import httpx
 from fastapi import APIRouter, Body, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
 logger = logging.getLogger("neko.card_drop")
 
@@ -33,6 +33,7 @@ router = APIRouter(prefix="/api/card-drop", tags=["card-drop"])
 
 _HTTP_TIMEOUT_SEC = 60.0
 _DEFAULT_SOCIAL_BASE_URL = "http://localhost:8080"
+_SOCIAL_SESSION_FILENAME = "social_session.json"
 
 def _social_base_url() -> str:
     """Return the cloud base URL, falling back to the local dev default."""
@@ -73,6 +74,47 @@ def _relay(r: httpx.Response):
     return r.json()
 
 
+def _origin_port(parsed) -> int | None:
+    if parsed.port:
+        return parsed.port
+    if parsed.scheme == "http":
+        return 80
+    if parsed.scheme == "https":
+        return 443
+    return None
+
+
+def _same_originish(a: str, b: str) -> bool:
+    try:
+        pa = urlparse(a)
+        pb = urlparse(b)
+    except Exception:  # noqa: BLE001
+        return False
+    if pa.scheme != pb.scheme or _origin_port(pa) != _origin_port(pb):
+        return False
+    ha = (pa.hostname or "").lower()
+    hb = (pb.hostname or "").lower()
+    if ha == hb:
+        return True
+    loopbacks = {"localhost", "127.0.0.1", "::1"}
+    return ha in loopbacks and hb in loopbacks
+
+
+def _sync_cors_headers(request: Request) -> dict[str, str] | None:
+    origin = (request.headers.get("origin") or "").strip().rstrip("/")
+    if not origin:
+        return {}
+    if not _same_originish(origin, _social_base_url()):
+        return None
+    return {
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": "content-type",
+        "Access-Control-Max-Age": "600",
+        "Vary": "Origin",
+    }
+
+
 # ---- 社区账号登录：JWT 存本地 community_auth.json；draw 时带 Authorization ----
 _AUTH_FILENAME = "community_auth.json"
 
@@ -84,6 +126,11 @@ def _auth_path() -> Path | None:
     except Exception as exc:  # noqa: BLE001
         logger.debug("card_drop: auth path resolve failed: %s", exc)
         return None
+
+
+def _social_session_path() -> Path | None:
+    p = _auth_path()
+    return (p.parent / _SOCIAL_SESSION_FILENAME) if p else None
 
 
 def _load_auth() -> dict | None:
@@ -107,11 +154,35 @@ def _save_auth(data: dict) -> None:
         logger.warning("card_drop: save auth failed: %s", exc)
 
 
+def _save_social_session(base: str, access: str | None, refresh: str | None) -> None:
+    if not access:
+        return
+    p = _social_session_path()
+    if not p:
+        return
+    data = {
+        "baseUrl": (base or _social_base_url()).strip().rstrip("/"),
+        "token": access,
+    }
+    if refresh:
+        data["refresh_token"] = refresh
+    try:
+        p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError as exc:
+        logger.warning("card_drop: save social session failed: %s", exc)
+
+
 def _clear_auth() -> None:
     p = _auth_path()
     if p and p.exists():
         try:
             p.unlink()
+        except OSError:
+            pass
+    sp = _social_session_path()
+    if sp and sp.exists():
+        try:
+            sp.unlink()
         except OSError:
             pass
 
@@ -156,6 +227,7 @@ async def _store_session(base: str, access: str | None, refresh: str | None, use
         "user": {"display_name": user.get("display_name"), "email": user.get("email")},
         "bind": bind,
     })
+    _save_social_session(base, access, refresh)
     return bind
 
 
@@ -286,6 +358,59 @@ async def auth_status_endpoint():
             "bind": bind,
         }
     return {"logged_in": False, "user": None, "bind": None}
+
+
+@router.options("/sync-session", summary="社区网页登录态同步预检")
+async def sync_session_options(request: Request):
+    cors = _sync_cors_headers(request)
+    if cors is None:
+        return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
+    return JSONResponse({"ok": True}, headers=cors)
+
+
+@router.post("/sync-session", summary="同步社区网页登录态到本地 NEKO / PC 掉券引擎")
+async def sync_session_endpoint(request: Request, payload: dict = Body(...)):
+    cors = _sync_cors_headers(request)
+    if cors is None:
+        return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
+
+    base = (payload.get("base_url") or payload.get("baseUrl") or _social_base_url() or "").strip().rstrip("/")
+    if not _same_originish(base, _social_base_url()):
+        return JSONResponse({"detail": "base_url_not_allowed"}, status_code=400, headers=cors)
+
+    access = (payload.get("access_token") or payload.get("accessToken") or "").strip()
+    refresh = (payload.get("refresh_token") or payload.get("refreshToken") or "").strip() or None
+    if not access:
+        return JSONResponse({"detail": "missing_access_token"}, status_code=400, headers=cors)
+
+    try:
+        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SEC) as client:
+            r = await client.get(
+                f"{base}/api/users/me",
+                headers={"Authorization": f"Bearer {access}"},
+            )
+    except (httpx.HTTPError, OSError) as exc:
+        return JSONResponse({"detail": f"cloud_unreachable: {exc}"}, status_code=502, headers=cors)
+    if r.status_code >= 400:
+        try:
+            detail = r.json().get("detail") or f"http_{r.status_code}"
+        except Exception:  # noqa: BLE001
+            detail = f"http_{r.status_code}"
+        return JSONResponse({"detail": detail}, status_code=r.status_code, headers=cors)
+
+    try:
+        user = (r.json() or {}).get("user") or {}
+    except ValueError:
+        user = {}
+    bind = await _store_session(base, access, refresh, user)
+    return JSONResponse(
+        {
+            "ok": True,
+            "user": {"display_name": user.get("display_name"), "email": user.get("email")},
+            "bind": bind,
+        },
+        headers=cors,
+    )
 
 
 @router.post("/login", summary="邮箱密码登录社区账号（存 JWT + 迁移游客卡）")

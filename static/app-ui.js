@@ -4847,10 +4847,55 @@ if (S.isRecording) {
             console.log('Agent工具按钮被点击，显示弹出框');
         });
 
+        const SOCIAL_OPEN_DEDUPE_MS = 1200;
+        const SOCIAL_OPEN_RELEASE_DELAY_MS = 800;
+
+        function getSocialOpenState() {
+            if (!window.__nekoSocialOpenState || typeof window.__nekoSocialOpenState !== 'object') {
+                window.__nekoSocialOpenState = {
+                    inFlight: false,
+                    lastStartedAt: 0,
+                    releaseTimer: null
+                };
+            }
+            return window.__nekoSocialOpenState;
+        }
+
+        function shouldIgnoreSocialOpenRequest() {
+            const now = Date.now();
+            const state = getSocialOpenState();
+            if (state.inFlight || (now - (state.lastStartedAt || 0)) < SOCIAL_OPEN_DEDUPE_MS) {
+                console.debug('[social] duplicate open request ignored');
+                return true;
+            }
+            if (state.releaseTimer) {
+                clearTimeout(state.releaseTimer);
+                state.releaseTimer = null;
+            }
+            state.inFlight = true;
+            state.lastStartedAt = now;
+            return false;
+        }
+
+        function releaseSocialOpenRequest() {
+            const state = getSocialOpenState();
+            if (state.releaseTimer) {
+                clearTimeout(state.releaseTimer);
+            }
+            state.releaseTimer = setTimeout(() => {
+                const latestState = getSocialOpenState();
+                latestState.inFlight = false;
+                latestState.releaseTimer = null;
+            }, SOCIAL_OPEN_RELEASE_DELAY_MS);
+        }
+
         // 猫娘网络（社交平台）按钮：占用原 screen 槽位。
         // 从 /api/system/social/config 拿云端 base URL，从 /api/system/client-id 拿 device 身份，
         // 然后在 Electron 内交给系统浏览器打开，避免被 setWindowOpenHandler 拦成桌面 BrowserWindow。
         window.addEventListener('live2d-social-click', async () => {
+            if (shouldIgnoreSocialOpenRequest()) {
+                return;
+            }
             try {
                 const cfgRes = await fetch('/api/system/social/config');
                 if (!cfgRes.ok) {
@@ -4904,6 +4949,8 @@ if (S.isRecording) {
                         4000
                     );
                 }
+            } finally {
+                releaseSocialOpenRequest();
             }
         });
 

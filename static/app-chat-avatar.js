@@ -15,6 +15,9 @@
     let cachedPreview = null;
     let cachedCharacterReference = null;
     let pendingCharacterReference = null;
+    let characterReferenceRetryTimer = null;
+    let characterReferenceRetryAttempts = 0;
+    let characterReferenceRetryCacheKey = '';
     let autoCaptureTimer = null;
     let lastScheduledCacheKey = '';
     // 多窗口模式：由 IPC 从 Pet 窗口注入的头像（/chat 页面无本地模型）
@@ -34,6 +37,9 @@
         cropMode: 'portrait',
         includeDataUrl: true
     };
+    const CHARACTER_REFERENCE_RETRY_LIMIT = 30;
+    const CHARACTER_REFERENCE_RETRY_BASE_MS = 1200;
+    const CHARACTER_REFERENCE_RETRY_MAX_MS = 8000;
 
     function translateLabel(key, fallback) {
         if (typeof window.safeT === 'function') {
@@ -370,6 +376,108 @@
         return getCurrentModelCacheKey() + ':card-forge-character-reference:v1';
     }
 
+    function getActiveLanlanName() {
+        return (typeof lanlan_config !== 'undefined' && lanlan_config.lanlan_name)
+            ? lanlan_config.lanlan_name
+            : '';
+    }
+
+    function hasUsableCachedCharacterReference() {
+        var cacheKey = getCharacterReferenceCacheKey();
+        return !!(
+            cachedCharacterReference &&
+            cachedCharacterReference.cacheKey === cacheKey &&
+            isRasterImageDataUrl(cachedCharacterReference.dataUrl)
+        );
+    }
+
+    function ensureCharacterReferenceRetryCacheKey(cacheKey) {
+        if (characterReferenceRetryCacheKey === cacheKey) return;
+        characterReferenceRetryCacheKey = cacheKey || '';
+        characterReferenceRetryAttempts = 0;
+        if (characterReferenceRetryTimer) {
+            clearTimeout(characterReferenceRetryTimer);
+            characterReferenceRetryTimer = null;
+        }
+    }
+
+    function postCharacterReferenceToCardForge(characterReferenceDataUrl) {
+        if (!characterReferenceDataUrl) return Promise.resolve(false);
+        var _nekoName = getActiveLanlanName();
+        var referenceBody = { characterReferenceDataUrl: characterReferenceDataUrl };
+        if (_nekoName) referenceBody.name = _nekoName;
+        return fetch('/card-forge/active-character', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(referenceBody)
+        }).then(function () {
+            return true;
+        }).catch(function (err) {
+            console.warn('[chat-avatar] card-forge character reference sync failed:', err);
+            return false;
+        });
+    }
+
+    function queueCharacterReferenceRetry(reason) {
+        var modelCacheKey = getCurrentModelCacheKey();
+        if (!modelCacheKey || modelCacheKey.endsWith(':')) return;
+        var cacheKey = getCharacterReferenceCacheKey();
+        ensureCharacterReferenceRetryCacheKey(cacheKey);
+        if (characterReferenceRetryAttempts >= CHARACTER_REFERENCE_RETRY_LIMIT) {
+            console.warn('[chat-avatar] card-forge character reference sync gave up:', reason || 'retry-limit');
+            return;
+        }
+        if (characterReferenceRetryTimer) return;
+        var delay = Math.min(
+            CHARACTER_REFERENCE_RETRY_MAX_MS,
+            CHARACTER_REFERENCE_RETRY_BASE_MS * Math.max(1, characterReferenceRetryAttempts)
+        );
+        characterReferenceRetryTimer = setTimeout(function () {
+            characterReferenceRetryTimer = null;
+            syncCharacterReferenceToCardForge(reason || 'retry');
+        }, delay);
+    }
+
+    function syncCharacterReferenceToCardForge(reason) {
+        var modelCacheKey = getCurrentModelCacheKey();
+        if (!modelCacheKey || modelCacheKey.endsWith(':')) return Promise.resolve(false);
+        var cacheKey = getCharacterReferenceCacheKey();
+        ensureCharacterReferenceRetryCacheKey(cacheKey);
+        characterReferenceRetryAttempts += 1;
+        return captureCharacterReferenceDataUrl()
+            .then(function (characterReferenceDataUrl) {
+                if (!characterReferenceDataUrl) {
+                    queueCharacterReferenceRetry(reason || 'empty-capture');
+                    return false;
+                }
+                return postCharacterReferenceToCardForge(characterReferenceDataUrl)
+                    .then(function (posted) {
+                        if (posted) {
+                            characterReferenceRetryAttempts = 0;
+                            if (characterReferenceRetryTimer) {
+                                clearTimeout(characterReferenceRetryTimer);
+                                characterReferenceRetryTimer = null;
+                            }
+                            return true;
+                        }
+                        queueCharacterReferenceRetry(reason || 'post-failed');
+                        return false;
+                    });
+            });
+    }
+
+    function scheduleCharacterReferenceSync(reason) {
+        var modelCacheKey = getCurrentModelCacheKey();
+        if (!modelCacheKey || modelCacheKey.endsWith(':')) return;
+        var cacheKey = getCharacterReferenceCacheKey();
+        ensureCharacterReferenceRetryCacheKey(cacheKey);
+        if (characterReferenceRetryTimer) return;
+        characterReferenceRetryTimer = setTimeout(function () {
+            characterReferenceRetryTimer = null;
+            syncCharacterReferenceToCardForge(reason || 'scheduled');
+        }, hasUsableCachedCharacterReference() ? 0 : 240);
+    }
+
     function rememberCharacterReferenceResult(result, cacheKey) {
         var dataUrl = result && result.dataUrl ? result.dataUrl : '';
         if (isRasterImageDataUrl(dataUrl)) {
@@ -510,9 +618,7 @@
      * 仍然走一次 name-only 同步。
      */
     function syncAvatarToCardForge(dataUrl) {
-        var _nekoName = (typeof lanlan_config !== 'undefined' && lanlan_config.lanlan_name)
-            ? lanlan_config.lanlan_name
-            : '';
+        var _nekoName = getActiveLanlanName();
         if (!dataUrl && !_nekoName) return;
         var body = {};
         if (dataUrl) body.dataUrl = dataUrl;
@@ -523,16 +629,7 @@
             body: JSON.stringify(body)
         }).catch(function () { /* card-forge 未运行时静默失败 */ });
 
-        captureCharacterReferenceDataUrl().then(function (characterReferenceDataUrl) {
-            if (!characterReferenceDataUrl) return;
-            var referenceBody = { characterReferenceDataUrl: characterReferenceDataUrl };
-            if (_nekoName) referenceBody.name = _nekoName;
-            fetch('/card-forge/active-character', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(referenceBody)
-            }).catch(function () { /* card-forge 未运行时静默失败 */ });
-        });
+        scheduleCharacterReferenceSync('avatar-sync');
     }
 
     function applyPreviewResult(result, cacheKey) {
@@ -1182,6 +1279,7 @@
             return;
         }
         if (hasUsableCachedPreview()) {
+            scheduleCharacterReferenceSync(reason || 'cached-preview');
             return;
         }
         if (lastScheduledCacheKey === cacheKey && isCapturing) {
@@ -1214,6 +1312,7 @@
     function handleModelLoaded(reason) {
         var newCacheKey = getCurrentModelCacheKey();
         if (cachedPreview && cachedPreview.dataUrl && cachedPreview.cacheKey === newCacheKey) {
+            scheduleCharacterReferenceSync(reason || 'cached-avatar-model-loaded');
             return;
         }
         invalidateCachedPreview();
