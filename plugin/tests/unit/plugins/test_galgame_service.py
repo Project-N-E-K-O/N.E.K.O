@@ -837,6 +837,41 @@ def test_status_payload_snapshot_fast_path_skips_json_copy(monkeypatch: pytest.M
     assert payload["primary_diagnosis"]["title"]
 
 
+def test_status_payload_exposes_developer_managed_dialogue_library_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = galgame_service.build_config({})
+    state = _status_state(
+        ocr_reader_runtime={
+            "status": "running",
+            "effective_process_name": "SenrenBanka.exe",
+            "effective_window_title": "千恋＊万花",
+        }
+    )
+    _patch_status_dependencies(monkeypatch)
+
+    payload = galgame_service.build_status_payload(
+        state,
+        config=config,
+        state_is_snapshot=True,
+    )
+
+    library_status = payload["dialogue_library_status"]
+
+    assert library_status["source"] == "developer_builtin"
+    assert library_status["managed_by"] == "developer"
+    assert library_status["editable"] is False
+    assert library_status["active_game_id"] == "senren_banka"
+    assert library_status["total_line_count"] >= 1
+    active_pack = next(
+        pack
+        for pack in library_status["packs"]
+        if pack["game_id"] == library_status["active_game_id"]
+    )
+    assert active_pack["source"] == "developer_builtin"
+    assert active_pack["matches_target"] is True
+
+
 def test_status_payload_exposes_vision_classifier_runtime(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

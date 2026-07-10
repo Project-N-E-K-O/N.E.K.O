@@ -287,10 +287,13 @@ try {
 // 创建Agent弹出框内容
 window.AgentHUD._createAgentPopupContent = function (popup) {
     popup.style.gap = '0';
+    const avatarPrefix = this && typeof this._avatarPrefix === 'string' && this._avatarPrefix
+        ? this._avatarPrefix
+        : 'live2d';
 
     // 添加状态显示栏 - Fluent Design
     const statusDiv = document.createElement('div');
-    statusDiv.id = 'live2d-agent-status';
+    statusDiv.id = `${avatarPrefix}-agent-status`;
     Object.assign(statusDiv.style, {
         fontSize: '12px',
         color: 'var(--neko-popup-accent, #2a7bc4)',

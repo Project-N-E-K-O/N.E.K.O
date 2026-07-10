@@ -63,7 +63,9 @@ from ..context_builder.builder import (
     _looks_like_game_dialogue_context_line,
     _looks_like_ocr_overlay_text,
 )
+from ..dialogue_library import built_in_dialogue_library_status
 from ..dxcam_support import inspect_dxcam_installation
+from ..ocr_text_normalize import _normalize_window_title
 from ..reader import expand_bridge_root, normalize_text, read_session_json
 from plugin.plugins._shared.rapidocr.rapidocr_support import (
     DEFAULT_RAPIDOCR_ENGINE_TYPE,
@@ -2558,6 +2560,20 @@ def _build_status_payload_unchecked(
         "memory_reader_runtime": copy_for_payload(state.memory_reader_runtime),
         "memory_reader_target": copy_for_payload(getattr(state, "memory_reader_target", {})),
         "ocr_reader_runtime": ocr_runtime,
+        "dialogue_library_status": built_in_dialogue_library_status(
+            process_name=str(
+                ocr_runtime_obj.get("effective_process_name")
+                or ocr_runtime_obj.get("process_name")
+                or ""
+            ),
+            normalized_title=_normalize_window_title(
+                str(
+                    ocr_runtime_obj.get("effective_window_title")
+                    or ocr_runtime_obj.get("window_title")
+                    or ""
+                )
+            ),
+        ),
         "screen_type": str(getattr(state, "screen_type", "") or ""),
         "screen_ui_elements": copy_for_payload(getattr(state, "screen_ui_elements", [])),
         "screen_confidence": float(getattr(state, "screen_confidence", 0.0) or 0.0),
