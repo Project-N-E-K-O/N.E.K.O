@@ -4733,6 +4733,8 @@
             return !!(screenButton && screenButton.classList.contains('active'));
         }
 
+        let screenSharingStartedByVoice = false;
+
         async function startScreenSharingFromVoiceButton() {
             if (isScreenSharingActive()) {
                 return;
@@ -4742,10 +4744,17 @@
                 return;
             }
             await window.startScreenSharing();
+            // startScreenSharing handles user cancellation internally, so a
+            // resolved Promise alone does not prove capture actually started.
+            screenSharingStartedByVoice = isScreenSharingActive();
         }
 
         async function stopScreenSharingFromVoiceButton() {
+            if (!screenSharingStartedByVoice) {
+                return;
+            }
             if (!isScreenSharingActive()) {
+                screenSharingStartedByVoice = false;
                 return;
             }
             if (typeof window.stopScreenSharing !== 'function') {
@@ -4753,6 +4762,7 @@
                 return;
             }
             await window.stopScreenSharing();
+            screenSharingStartedByVoice = false;
         }
 
         // 「语音时自动共享屏幕」开关：默认关（隐私安全）——只想开麦的用户不会被静默录屏
@@ -4813,12 +4823,12 @@ if (S.isRecording) {
                     await startScreenSharingFromVoiceButton();
                 }
             } else {
+                // 只清理由本次语音流程自动开启的共享；用户之后即使关掉了自动共享
+                // 设置，也仍需释放此前由语音开启的采集。
+                await stopScreenSharingFromVoiceButton();
                 if (!S.isRecording) {
-                    // 默认关时不替用户停掉他自己用屏幕按钮开的共享（麦/屏互不联动）。
-                    if (voiceAutoScreenEnabled()) await stopScreenSharingFromVoiceButton();
                     return;
                 }
-                if (voiceAutoScreenEnabled()) await stopScreenSharingFromVoiceButton();
                 if (typeof window.stopMicCapture === 'function') {
                     await window.stopMicCapture();
                 }
@@ -4836,6 +4846,7 @@ if (S.isRecording) {
             } else {
                 if (typeof window.stopScreenSharing === 'function') {
                     await window.stopScreenSharing();
+                    screenSharingStartedByVoice = false;
                 } else {
                     console.error('stopScreenSharing function not found');
                 }

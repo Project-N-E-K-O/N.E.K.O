@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import main_routers.card_drop_router as C
+import main_logic.card_forge_facts as F
 from main_logic.card_forge_facts import ActiveNekoContext, build_forge_facts_payload
 
 
@@ -36,6 +37,99 @@ def test_packaging_manifests_collect_shared_card_forge_module():
     include = "--include-package=main_logic"
     assert include in desktop
     assert include in linux
+
+
+class _FakeConfigManager:
+    def __init__(self, memory_dir: Path, active: str, prompts: dict[str, str]):
+        self.memory_dir = memory_dir
+        self._active = active
+        self._prompts = prompts
+
+    def get_character_data(self):
+        return ("Master", self._active, None, None, None, self._prompts)
+
+
+def test_facts_context_uses_only_validated_active_character(tmp_path):
+    manager = _FakeConfigManager(
+        tmp_path,
+        "Active",
+        {"Active": "active prompt", "Other": "other prompt"},
+    )
+
+    context = F._build_context(
+        manager,
+        character_override="Other",
+        runtime_character_hint="Other",
+    )
+
+    assert context.lanlan_name == "Active"
+    assert context.facts_path == tmp_path / "Active" / "facts.json"
+    assert context.lanlan_prompt == "active prompt"
+    assert context.source == "neko-config"
+
+
+def test_facts_context_fails_closed_without_valid_active_character(tmp_path, monkeypatch):
+    monkeypatch.setenv("NEKO_FACTS_JSON", str(tmp_path / "debug-facts.json"))
+    manager = _FakeConfigManager(tmp_path, "../Other", {"Other": "other prompt"})
+
+    context = F._build_context(manager, runtime_character_hint="Other")
+
+    assert context.lanlan_name == ""
+    assert context.facts_path is None
+    assert context.lanlan_prompt == ""
+    assert context.source == "unresolved"
+
+
+def test_facts_selector_normalizes_malformed_importance():
+    facts, stats = F._select_forge_facts_with_stats(
+        [{"id": "dirty", "text": "safe", "importance": "unknown"}],
+        min_importance=0,
+        limit=5,
+    )
+
+    assert stats["filteredCount"] == 1
+    assert facts[0]["importance"] == 0
+
+
+@pytest.mark.asyncio
+async def test_facts_url_failure_log_does_not_expose_credentials(monkeypatch, caplog):
+    class FakeResponse:
+        status_code = 503
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url):
+            return FakeResponse()
+
+    monkeypatch.setattr(F.httpx, "AsyncClient", FakeAsyncClient)
+    caplog.set_level("WARNING", logger="neko.card_forge_facts")
+
+    assert await F._fetch_facts_from_url(
+        "https://user:password@example.com/facts?api_key=top-secret"
+    ) is None
+    assert "configured URL returned 503" in caplog.text
+    assert "password" not in caplog.text
+    assert "top-secret" not in caplog.text
+
+
+def test_card_face_lookup_rejects_path_traversal(tmp_path, monkeypatch):
+    server = importlib.import_module("local_server.card_forge_server.server")
+    card_faces = tmp_path / "card_faces"
+    card_faces.mkdir()
+    (card_faces / "Lanlan.png").write_bytes(b"valid")
+    (tmp_path / "secret.png").write_bytes(b"secret")
+    monkeypatch.setattr(server, "_card_face_dirs", lambda: [card_faces])
+
+    assert server._find_card_face_path("Lanlan") == card_faces / "Lanlan.png"
+    assert server._find_card_face_path("../secret") is None
 
 
 @pytest.mark.asyncio
@@ -109,8 +203,8 @@ def test_social_session_prefers_electron_user_data_and_clear_removes_legacy(tmp_
     monkeypatch.setattr(C, "_auth_path", lambda: legacy_auth)
     monkeypatch.setenv("NEKO_USER_DATA_DIR", str(electron_root))
 
-    C._save_auth({"access_token": "token-a"})
-    C._save_social_session("https://community.example", "token-a", "refresh-a")
+    assert C._save_auth({"access_token": "token-a"})
+    assert C._save_social_session("https://community.example", "token-a", "refresh-a")
 
     electron_session = electron_root / "social_session.json"
     assert json.loads(electron_session.read_text(encoding="utf-8")) == {
@@ -121,7 +215,7 @@ def test_social_session_prefers_electron_user_data_and_clear_removes_legacy(tmp_
     legacy_session = legacy_auth.parent / "social_session.json"
     legacy_session.write_text("{}", encoding="utf-8")
 
-    C._clear_auth()
+    assert C._clear_auth()
 
     assert not legacy_auth.exists()
     assert not electron_session.exists()
@@ -360,6 +454,76 @@ async def test_recoverable_bind_error_still_persists_validated_login(tmp_path, m
     assert bind == {"bound": False, "error": "client_not_registered"}
     assert json.loads(auth.read_text(encoding="utf-8"))["access_token"] == "new-token"
     assert json.loads(session.read_text(encoding="utf-8"))["token"] == "new-token"
+
+
+@pytest.mark.asyncio
+async def test_store_session_reports_partial_local_save_failure(tmp_path, monkeypatch):
+    auth = tmp_path / "community_auth.json"
+    session = tmp_path / "social_session.json"
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+    monkeypatch.setattr(C, "_social_session_path", lambda: session)
+    monkeypatch.setattr(C, "_get_client_id", lambda: None)
+    original_write = C._write_private_json
+
+    def fail_social_write(path, data):
+        if path == session:
+            raise OSError("disk full")
+        original_write(path, data)
+
+    monkeypatch.setattr(C, "_write_private_json", fail_social_write)
+
+    bind = await C._store_session(
+        "https://community.example",
+        "new-token",
+        "new-refresh",
+        {"display_name": "New User", "email": "new@example.com"},
+    )
+
+    assert bind == {
+        "bound": False,
+        "error": "client_not_registered",
+        "local_save_failed": True,
+    }
+    assert json.loads(auth.read_text(encoding="utf-8"))["bind"] == bind
+    assert not session.exists()
+
+
+def test_sync_session_clear_reports_local_delete_failure(client, tmp_path, monkeypatch):
+    auth = tmp_path / "community_auth.json"
+    auth.write_text('{"access_token":"token-a"}', encoding="utf-8")
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+    monkeypatch.setattr(C, "_social_session_path", lambda: None)
+    monkeypatch.setattr(C, "_legacy_social_session_path", lambda: None)
+    monkeypatch.setattr(C, "_access_token", lambda: "token-a")
+    monkeypatch.setattr(
+        Path,
+        "unlink",
+        lambda self, *args, **kwargs: (_ for _ in ()).throw(OSError("busy")),
+    )
+
+    response = client.post(
+        "/api/card-drop/sync-session",
+        headers={"Origin": "https://community.example"},
+        json={
+            "clear": True,
+            "base_url": "https://community.example",
+            "access_token": "token-a",
+            "sync_ticket": _issue_sync_ticket(client),
+        },
+    )
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "local_clear_failed", "cleared": False}
+    assert auth.exists()
+
+
+def test_local_logout_reports_local_delete_failure(client, monkeypatch):
+    monkeypatch.setattr(C, "_clear_auth", lambda: False)
+
+    response = client.post("/api/card-drop/logout")
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "local_clear_failed"}
 
 
 def test_facts_requires_trusted_origin_and_matching_local_session(client, monkeypatch):

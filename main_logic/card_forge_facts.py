@@ -83,28 +83,25 @@ def _build_context(
 ) -> ActiveNekoContext:
     master_name, current_lanlan, *_rest = config_manager.get_character_data()
     master = str(master_name or "").strip()
-    active_lanlan = str(current_lanlan or "").strip()
+    active_lanlan = _safe_character_segment(str(current_lanlan or ""))
     known_names = _known_character_names(config_manager)
-    runtime_hint = _safe_character_segment(runtime_character_hint)
-    debug_override = _safe_character_segment(character_override)
-    if known_names is None:
-        runtime_hint = None
-        debug_override = None
-    elif known_names:
-        if runtime_hint and runtime_hint not in known_names:
-            runtime_hint = None
-        if debug_override and debug_override not in known_names:
-            debug_override = None
-    lanlan = runtime_hint or debug_override or active_lanlan
+    # Browser-provided hints and debug overrides must never select another role's
+    # memory.  Only the current character returned by the trusted config manager
+    # may determine the facts directory, and it must also exist in the prompt map.
+    lanlan = (
+        active_lanlan
+        if active_lanlan and known_names and active_lanlan in known_names
+        else ""
+    )
 
     direct_facts = os.environ.get("NEKO_FACTS_JSON", "").strip()
     memory_dir = _resolve_memory_dir(config_manager)
-    if direct_facts:
+    if direct_facts and lanlan:
         facts_path = Path(direct_facts)
         source = "env-facts-json"
-    elif memory_dir and _safe_character_segment(lanlan):
+    elif memory_dir and lanlan:
         facts_path = memory_dir / lanlan / "facts.json"
-        source = "runtime-character-hint" if runtime_hint else "neko-config"
+        source = "neko-config"
     else:
         facts_path = None
         source = "unresolved"
@@ -153,7 +150,7 @@ async def _fetch_facts_from_url(url: str) -> list[dict[str, Any]] | None:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(url)
         if response.status_code != 200:
-            logger.warning("forge-facts: URL %s returned %s", url[:80], response.status_code)
+            logger.warning("forge-facts: configured URL returned %s", response.status_code)
             return None
         data = response.json()
         if isinstance(data, list):
@@ -161,7 +158,7 @@ async def _fetch_facts_from_url(url: str) -> list[dict[str, Any]] | None:
         if isinstance(data, dict) and isinstance(data.get("facts"), list):
             return [item for item in data["facts"] if isinstance(item, dict)]
     except (httpx.HTTPError, json.JSONDecodeError, ValueError):
-        logger.exception("forge-facts: URL fetch failed for %s", url[:80])
+        logger.exception("forge-facts: configured URL fetch failed")
     return None
 
 
@@ -193,12 +190,15 @@ def _fact_memory_datetime(item: dict[str, Any]) -> datetime | None:
     )
 
 
-def _importance_weight(item: dict[str, Any]) -> float:
+def _safe_importance(value: Any) -> int:
     try:
-        importance = max(0, int(item.get("importance") or 0))
-    except (TypeError, ValueError):
-        importance = 0
-    return 1.0 + importance
+        return int(value or 0)
+    except (OverflowError, TypeError, ValueError):
+        return 0
+
+
+def _importance_weight(item: dict[str, Any]) -> float:
+    return 1.0 + max(0, _safe_importance(item.get("importance")))
 
 
 def _weighted_pick(items: list[dict[str, Any]], count: int) -> list[dict[str, Any]]:
@@ -269,10 +269,7 @@ def _select_forge_facts_with_stats(
         if not include_absorbed and item.get("absorbed"):
             absorbed_count += 1
             continue
-        try:
-            importance = int(item.get("importance") or 0)
-        except (TypeError, ValueError):
-            importance = 0
+        importance = _safe_importance(item.get("importance"))
         if importance < min_importance:
             low_importance_count += 1
             continue
@@ -387,7 +384,7 @@ def _select_forge_facts_with_stats(
         {
             "id": str(item.get("id") or item.get("_forge_fid") or ""),
             "text": str(item.get("text", "")),
-            "importance": int(item.get("importance") or 0),
+            "importance": _safe_importance(item.get("importance")),
             "entity": str(item.get("entity", "")),
             "tags": item.get("tags") if isinstance(item.get("tags"), list) else [],
             "created_at": item.get("created_at"),

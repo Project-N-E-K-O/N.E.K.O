@@ -264,22 +264,24 @@ def _write_private_json(path: Path, data: dict) -> None:
             pass
 
 
-def _save_auth(data: dict) -> None:
+def _save_auth(data: dict) -> bool:
     p = _auth_path()
     if not p:
-        return
+        return False
     try:
         _write_private_json(p, data)
     except OSError as exc:
         logger.warning("card_drop: save auth failed: %s", exc)
+        return False
+    return True
 
 
-def _save_social_session(base: str, access: str | None, refresh: str | None) -> None:
+def _save_social_session(base: str, access: str | None, refresh: str | None) -> bool:
     if not access:
-        return
+        return False
     p = _social_session_path()
     if not p:
-        return
+        return False
     data = {
         "baseUrl": (base or _social_base_url()).strip().rstrip("/"),
         "token": access,
@@ -290,22 +292,35 @@ def _save_social_session(base: str, access: str | None, refresh: str | None) -> 
         _write_private_json(p, data)
     except OSError as exc:
         logger.warning("card_drop: save social session failed: %s", exc)
+        return False
+    return True
 
 
-def _clear_auth() -> None:
-    p = _auth_path()
-    if p and p.exists():
+def _clear_auth() -> bool:
+    auth_path = _auth_path()
+    paths = ([auth_path] if auth_path is not None else []) + _social_session_paths()
+    paths = list(dict.fromkeys(paths))
+    if auth_path is None:
+        logger.warning("card_drop: cannot resolve auth path while clearing credentials")
+    success = auth_path is not None
+    for path in paths:
         try:
-            p.unlink()
-        except OSError:
-            pass
-    for sp in _social_session_paths():
-        if not sp.exists():
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            success = False
+            logger.warning("card_drop: clear credential failed for %s: %s", path, exc)
+    for path in paths:
+        try:
+            path.lstat()
+        except FileNotFoundError:
             continue
-        try:
-            sp.unlink()
-        except OSError:
-            pass
+        except OSError as exc:
+            success = False
+            logger.warning("card_drop: cannot verify credential clear for %s: %s", path, exc)
+        else:
+            success = False
+            logger.warning("card_drop: credential still exists after clear: %s", path)
+    return success
 
 
 def _access_token() -> str | None:
@@ -357,8 +372,14 @@ async def _store_session(base: str, access: str | None, refresh: str | None, use
         "user": {"display_name": user.get("display_name"), "email": user.get("email")},
         "bind": bind,
     }
-    _save_auth(auth_payload)
-    _save_social_session(base, access, refresh)
+    auth_saved = _save_auth(auth_payload)
+    social_saved = _save_social_session(base, access, refresh)
+    if not (auth_saved and social_saved):
+        bind["local_save_failed"] = True
+        # If auth was written before the Electron session failed, persist the
+        # partial-success marker there as well so auth-status can surface it.
+        if auth_saved:
+            _save_auth(auth_payload)
     return bind
 
 
@@ -550,7 +571,12 @@ async def sync_session_endpoint(request: Request, payload: dict = Body(...)):
             return JSONResponse(
                 {"detail": "invalid_sync_ticket"}, status_code=403, headers=cors
             )
-        _clear_auth()
+        if not _clear_auth():
+            return JSONResponse(
+                {"detail": "local_clear_failed", "cleared": False},
+                status_code=500,
+                headers=cors,
+            )
         return JSONResponse({"ok": True, "cleared": True}, headers=cors)
 
     access = (payload.get("access_token") or payload.get("accessToken") or "").strip()
@@ -689,7 +715,8 @@ async def register_endpoint(payload: dict = Body(...)):
 
 @router.post("/logout", summary="登出（清本地 JWT）")
 async def logout_endpoint():
-    _clear_auth()
+    if not _clear_auth():
+        raise HTTPException(status_code=500, detail="local_clear_failed")
     return {"logged_in": False}
 
 

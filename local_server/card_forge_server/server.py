@@ -36,6 +36,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from main_logic.card_forge_facts import (  # noqa: E402
+    _safe_character_segment,
     build_forge_facts_payload,
     resolve_active_neko_context,
 )
@@ -206,12 +207,13 @@ def _card_face_dirs() -> list[Path]:
 
 
 def _find_card_face_path(name: str) -> Path | None:
-    if not name:
+    safe_name = _safe_character_segment(name)
+    if not safe_name:
         return None
     suffixes = (".png", ".jpg", ".jpeg", ".webp")
     for base_dir in _card_face_dirs():
         for suffix in suffixes:
-            path = base_dir / f"{name}{suffix}"
+            path = base_dir / f"{safe_name}{suffix}"
             if path.is_file():
                 return path
     return None
