@@ -153,6 +153,24 @@
 
 **请求体：** 包含音频文件的 `multipart/form-data`。
 
+### `POST /api/characters/voice_design`
+
+根据文字描述创建并保存可复用音色。支持的服务商由 TTS provider registry 决定；暂不支持 vLLM-Omni。
+
+**请求体：**
+
+```json
+{
+  "provider": "cosyvoice",
+  "prefix": "aria01",
+  "voice_prompt": "温暖清澈的年轻成人声音",
+  "ref_language": "en",
+  "i18n_language": "zh-CN"
+}
+```
+
+**响应：** `{ "voice_id": "<服务商音色 ID>", "provider": "cosyvoice", "source": "design" }`
+
 ## 麦克风
 
 ### `POST /api/characters/set_microphone`

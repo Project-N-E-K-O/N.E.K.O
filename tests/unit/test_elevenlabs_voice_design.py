@@ -75,6 +75,8 @@ def test_registry_declares_design_for_cosyvoice():
     assert cosy is not None and "design" in cosy.capabilities and "clone" in cosy.capabilities
     meta = {m["key"]: m for m in reg.ui_metadata()}
     assert "design" in meta["cosyvoice"]["capabilities"]
+    assert "cosyvoice_intl" in meta["cosyvoice"]["aliases"]
+    assert reg.get("cosyvoice_intl") is cosy
 
 
 @pytest.mark.unit
@@ -88,6 +90,8 @@ def test_registry_declares_design_for_minimax_and_mimo():
     assert mimo is not None and "design" in mimo.capabilities and "clone" in mimo.capabilities
     meta = {m["key"]: m for m in reg.ui_metadata()}
     assert "design" in meta["minimax"]["capabilities"]
+    assert "minimax_intl" in meta["minimax"]["aliases"]
+    assert reg.get("minimax_intl") is minimax
     assert "design" in meta["mimo"]["capabilities"]
 
 
@@ -373,7 +377,7 @@ async def test_cosyvoice_design_endpoint_saves_source_design(monkeypatch):
                 "provider_label": "Alibaba Bailian CosyVoice",
             }
 
-        def save_voice_for_api_key(self, storage_key, voice_id, voice_data):
+        async def asave_voice_for_api_key(self, storage_key, voice_id, voice_data):
             saved["storage_key"] = storage_key
             saved["voice_id"] = voice_id
             saved["voice_data"] = voice_data
@@ -424,7 +428,7 @@ async def test_cosyvoice_intl_design_endpoint_uses_intl_runtime(monkeypatch):
                 "provider_label": "Alibaba Intl CosyVoice",
             }
 
-        def save_voice_for_api_key(self, storage_key, voice_id, voice_data):
+        async def asave_voice_for_api_key(self, storage_key, voice_id, voice_data):
             saved["storage_key"] = storage_key
             saved["voice_id"] = voice_id
             saved["voice_data"] = voice_data
@@ -466,7 +470,7 @@ async def test_minimax_design_endpoint_saves_source_design(monkeypatch):
             assert provider == "minimax_intl"
             return "minimax-intl-key"
 
-        def save_voice_for_api_key(self, storage_key, voice_id, voice_data):
+        async def asave_voice_for_api_key(self, storage_key, voice_id, voice_data):
             saved["storage_key"] = storage_key
             saved["voice_id"] = voice_id
             saved["voice_data"] = voice_data
@@ -496,6 +500,114 @@ async def test_minimax_design_endpoint_saves_source_design(monkeypatch):
     assert saved["voice_data"]["provider"] == "minimax_intl"
     assert saved["voice_data"]["source"] == "design"
     assert saved["voice_data"]["minimax_base_url"] == "https://api.minimax.io"
+
+
+@pytest.mark.unit
+async def test_elevenlabs_design_endpoint_saves_source_design(monkeypatch):
+    from main_routers import characters_router as cr
+
+    saved = {}
+
+    class _CM:
+        def get_tts_api_key(self, provider):
+            assert provider == "elevenlabs"
+            return "elevenlabs-key"
+
+        async def asave_voice_for_api_key(self, storage_key, voice_id, voice_data):
+            saved.update(storage_key=storage_key, voice_id=voice_id, voice_data=voice_data)
+
+    async def fake_base_url(_cm):
+        return "https://api.elevenlabs.io"
+
+    async def fake_previews(**kwargs):
+        assert kwargs["voice_description"] == "a warm and clear young adult voice"
+        return [{"generated_voice_id": "generated-1"}]
+
+    async def fake_create(**kwargs):
+        assert kwargs["generated_voice_id"] == "generated-1"
+        return "eleven:designed-1"
+
+    monkeypatch.setattr(cr, "get_config_manager", lambda: _CM())
+    monkeypatch.setattr(cr, "_get_elevenlabs_base_url", fake_base_url)
+    monkeypatch.setattr(cr, "_elevenlabs_design_previews", fake_previews)
+    monkeypatch.setattr(cr, "_elevenlabs_create_voice_from_preview", fake_create)
+
+    response = await cr.voice_design(_JsonRequest({
+        "provider": "elevenlabs",
+        "prefix": "aria",
+        "voice_prompt": "a warm and clear young adult voice",
+        "ref_language": "en",
+    }))
+    body = json.loads(response.body)
+
+    assert response.status_code == 200
+    assert body == {
+        "voice_id": "eleven:designed-1",
+        "message": "ElevenLabs voice design succeeded",
+        "provider": "elevenlabs",
+        "source": "design",
+    }
+    assert saved["voice_data"]["source"] == "design"
+    assert saved["voice_data"]["provider"] == "elevenlabs"
+
+
+@pytest.mark.unit
+async def test_mimo_design_endpoint_saves_source_design(monkeypatch):
+    from main_routers import characters_router as cr
+
+    saved = {}
+    validated = {}
+
+    class _CM:
+        def get_tts_api_key(self, provider):
+            assert provider == "mimo"
+            return "mimo-api-key"
+
+        def get_core_config(self):
+            return {"assistApi": "free"}
+
+        async def asave_voice_for_api_key(self, storage_key, voice_id, voice_data):
+            saved.update(storage_key=storage_key, voice_id=voice_id, voice_data=voice_data)
+
+    class _MimoClient:
+        def __init__(self, *, api_key, base_url=None):
+            assert api_key == "mimo-api-key"
+            assert base_url is None
+
+        async def validate_design_prompt(self, prompt, *, sample_text):
+            validated.update(prompt=prompt, sample_text=sample_text)
+
+    monkeypatch.setattr(cr, "get_config_manager", lambda: _CM())
+    monkeypatch.setattr(cr, "MimoVoiceCloneClient", _MimoClient)
+
+    response = await cr.voice_design(_JsonRequest({
+        "provider": "mimo",
+        "prefix": "aria",
+        "voice_prompt": "a bright, energetic young adult voice",
+        "ref_language": "en",
+    }))
+    body = json.loads(response.body)
+
+    assert response.status_code == 200
+    assert body["provider"] == "mimo"
+    assert body["source"] == "design"
+    assert body["voice_id"].startswith("mimo-design-aria-")
+    assert validated["sample_text"] == cr.VOICE_PREVIEW_TEXTS["en"]
+    assert saved["voice_data"]["design_prompt"] == "a bright, energetic young adult voice"
+
+
+@pytest.mark.unit
+async def test_voice_design_endpoint_requires_prompt():
+    from main_routers import characters_router as cr
+
+    response = await cr.voice_design(_JsonRequest({
+        "provider": "cosyvoice",
+        "prefix": "aria",
+    }))
+    body = json.loads(response.body)
+
+    assert response.status_code == 400
+    assert body["code"] == "VOICE_DESIGN_PROMPT_REQUIRED"
 
 
 @pytest.mark.unit

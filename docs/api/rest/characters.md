@@ -153,6 +153,24 @@ Clone a voice from audio samples.
 
 **Body:** `multipart/form-data` with audio file(s).
 
+### `POST /api/characters/voice_design`
+
+Create and save a reusable voice from a text description. Supported providers are determined by the TTS provider registry; vLLM-Omni is not supported.
+
+**Body:**
+
+```json
+{
+  "provider": "cosyvoice",
+  "prefix": "aria01",
+  "voice_prompt": "A warm, clear young adult voice",
+  "ref_language": "en",
+  "i18n_language": "en"
+}
+```
+
+**Response:** `{ "voice_id": "<provider voice id>", "provider": "cosyvoice", "source": "design" }`
+
 ## Microphone
 
 ### `POST /api/characters/set_microphone`

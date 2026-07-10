@@ -3086,6 +3086,15 @@ class ConfigManager:
         voice_storage[api_key][voice_id] = voice_data
         self.save_voice_storage(voice_storage)
 
+    async def asave_voice_for_api_key(self, api_key: str, voice_id: str, voice_data: dict):
+        """Async counterpart for request handlers that persist a registered voice."""
+        return await asyncio.to_thread(
+            self.save_voice_for_api_key,
+            api_key,
+            voice_id,
+            voice_data,
+        )
+
     def voice_id_exists_in_any_storage(self, voice_id: str) -> bool:
         """Whether voice_id appears under any bucket of voice_storage.json.
 

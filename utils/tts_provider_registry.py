@@ -243,6 +243,12 @@ class TTSProvider:
     # the catalog elsewhere (see design doc §3 ``preset_catalog``).
     preset_catalog: "PresetCatalog | None" = None
 
+    # Alternate provider ids that share this provider's implementation and
+    # capabilities (for example the international endpoint variant). Aliases
+    # keep source support declared once while preserving provider-specific
+    # runtime configuration in the router/worker.
+    aliases: frozenset[str] = frozenset()
+
     # ── Declarative UI / probe metadata (single source of truth for frontend) ──
     # Whether this provider appears only in the TTS model dropdown and never
     # pollutes the LLM-role dropdowns (conversation/summary/.../agent).
@@ -282,7 +288,10 @@ def register(provider: TTSProvider) -> None:
 def get(key: str | None) -> TTSProvider | None:
     if not key:
         return None
-    return _REGISTRY.get(key)
+    provider = _REGISTRY.get(key)
+    if provider is not None:
+        return provider
+    return next((item for item in _REGISTRY.values() if key in item.aliases), None)
 
 
 def all_providers() -> list[TTSProvider]:
@@ -418,6 +427,7 @@ def ui_metadata() -> list[dict[str, Any]]:
     return [
         {
             "key": p.key,
+            "aliases": sorted(p.aliases),
             "kind": p.kind,
             "capabilities": sorted(p.capabilities),
             "tts_dropdown_only": p.tts_dropdown_only,

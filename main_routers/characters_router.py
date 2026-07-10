@@ -755,16 +755,6 @@ def _get_voice_preview_language(request: Request, language: object = None, i18n_
     return "zh-CN"
 
 
-def _get_voice_preview_text(voice_data: object, preview_language: str) -> str:
-    """Pick the spoken line for a voice preview.
-
-    Keep this aligned with VoiceClone's historical behavior: every saved voice,
-    including Voice Design voices, previews with the localized template from
-    ``config/prompts/prompts_voice.py``.
-    """
-    return _loc(VOICE_PREVIEW_TEXTS, preview_language)
-
-
 def _is_free_preset_voice_id(voice_id: object) -> bool:
     """Check whether this is a runtime free preset voice."""
     normalized = str(voice_id or "").strip()
@@ -1550,14 +1540,6 @@ COSYVOICE_VOICE_DESIGN_PROMPT_MAX = 500
 COSYVOICE_VOICE_DESIGN_PREFIX_MAX = 10
 COSYVOICE_VOICE_DESIGN_PREFIX_PATTERN = re.compile(r"^[A-Za-z0-9]+$")
 COSYVOICE_VOICE_DESIGN_DEFAULT_MEDIA_TYPE = "audio/wav"
-VOICE_DESIGN_SUPPORTED_PROVIDERS = frozenset({
-    "cosyvoice",
-    "cosyvoice_intl",
-    "minimax",
-    "minimax_intl",
-    "elevenlabs",
-    "mimo",
-})
 # ElevenLabs voice-design previews require a ``text`` between 100 and 1000 chars to
 # synthesize audible samples. ``auto_generate_text`` only returns generated voice ids
 # (no audio), which would yield empty/unplayable previews — so we always pass a fixed
@@ -1615,6 +1597,16 @@ def _voice_design_preview_language(raw_language: object = None, ref_language: ob
 
 def _voice_design_preview_text(raw_language: object = None, ref_language: object = None) -> str:
     return _loc(VOICE_PREVIEW_TEXTS, _voice_design_preview_language(raw_language, ref_language))
+
+
+def _provider_supports_voice_design(provider: str) -> bool:
+    """Read Voice Design support from the TTS provider registry."""
+    from utils import tts_provider_registry
+
+    import main_logic.tts_client  # noqa: F401 - ensures provider registration
+
+    provider_meta = tts_provider_registry.get(provider)
+    return bool(provider_meta and "design" in provider_meta.capabilities)
 
 
 def _first_nested_value(payload: object, names: set[str]) -> object:
@@ -4824,7 +4816,7 @@ async def get_voice_preview(
         logger.info(f"正在为音色 {voice_id} 生成预览音频...")
 
         preview_language = _get_voice_preview_language(request, language, i18n_language)
-        text = _get_voice_preview_text(voice_data, preview_language)
+        text = _loc(VOICE_PREVIEW_TEXTS, preview_language)
 
         # hosted/local provider 的预制音色（如选中 MiMo 时的预制声线）经 native_voices
         # 通道露给前端会渲染试听按钮，但其试听需走该 provider 自己的合成路径（尚未接）。
@@ -6179,7 +6171,7 @@ async def voice_design(request: Request):
     ref_language = str(data.get('ref_language') or 'ch').strip().lower()
     request_language = data.get('i18n_language') or data.get('language')
 
-    if provider not in VOICE_DESIGN_SUPPORTED_PROVIDERS:
+    if not _provider_supports_voice_design(provider):
         return JSONResponse({
             'error': 'VOICE_DESIGN_PROVIDER_UNSUPPORTED',
             'code': 'VOICE_DESIGN_PROVIDER_UNSUPPORTED',
@@ -6395,7 +6387,7 @@ async def voice_design(request: Request):
         voice_data['request_id'] = request_id
 
     try:
-        _config_manager.save_voice_for_api_key(storage_key, voice_id, voice_data)
+        await _config_manager.asave_voice_for_api_key(storage_key, voice_id, voice_data)
     except Exception as save_error:
         logger.error(f"保存 {provider_label} voice design 到音色库失败: {save_error}")
         return JSONResponse({

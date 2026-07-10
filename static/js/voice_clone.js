@@ -5,7 +5,6 @@ const VOICE_DESIGN_PREFIX_MAX_LENGTH = 10;
 const ELEVENLABS_VOICE_DESIGN_DESC_MIN_LENGTH = 20;
 const ELEVENLABS_VOICE_DESIGN_DESC_MAX_LENGTH = 1000;
 const VOICE_DESIGN_PREFIX_PATTERN = /^[A-Za-z0-9]+$/;
-const VOICE_PREVIEW_CACHE_VERSION = 3;
 let workshopReferenceFile = null;
 let workshopReferenceAudioUrl = '';
 let providerTouchedByUser = false;
@@ -39,6 +38,7 @@ const voiceCloneProviderRestrictionState = {
     loadingPromise: null,
     isMainlandChinaUser: false,
     apiKeyRegistry: {},
+    ttsProviders: {},
 };
 const voiceCloneApiConfigState = {
     loaded: false,
@@ -440,8 +440,11 @@ function parseVoiceRegisterError(errorObj) {
     let displayError = errorMsg;
     let shouldFlash = false;
 
-    if (errorCode === 'PREFIX_INVALID' || errorCode === 'VOICE_DESIGN_PREFIX_INVALID') {
-        displayError = window.t ? window.t('voice.prefixShouldBeEnglishLetterAndNumber') : '前缀必须是 1-10 个字符，只能包含英文字母和数字，不能包含下划线或空格';
+    if (errorCode === 'PREFIX_INVALID') {
+        displayError = window.t ? window.t('voice.prefixShouldBeEnglishLetterAndNumber') : '前缀应为英文字母和数字';
+        shouldFlash = true;
+    } else if (errorCode === 'VOICE_DESIGN_PREFIX_INVALID') {
+        displayError = window.t ? window.t('voice.designPrefixInvalid') : '前缀必须是 1-10 个字符，只能包含英文字母和数字，不能包含下划线或空格';
         shouldFlash = true;
     } else if (errorCode === 'INVALID_API_KEY') {
         displayError = window.t ? window.t('voice.invalidApiKeyProvided') : '提供的API密钥无效';
@@ -449,7 +452,7 @@ function parseVoiceRegisterError(errorObj) {
     } else {
         const lowerMsg = errorMsg.toLowerCase();
         if (lowerMsg.includes('prefix should be') && lowerMsg.includes('english letter and number')) {
-            displayError = window.t ? window.t('voice.prefixShouldBeEnglishLetterAndNumber') : '前缀必须是 1-10 个字符，只能包含英文字母和数字，不能包含下划线或空格';
+            displayError = window.t ? window.t('voice.prefixShouldBeEnglishLetterAndNumber') : '前缀应为英文字母和数字';
             shouldFlash = true;
         } else if (lowerMsg.includes('invalid api-key provided')) {
             displayError = window.t ? window.t('voice.invalidApiKeyProvided') : '提供的API密钥无效';
@@ -582,11 +585,22 @@ async function loadVoiceCloneProviderRestrictionState() {
             fetchVoiceCloneLoaderJson('/api/config/api_providers').catch(() => null)
         ]);
         let apiKeyRegistry = {};
+        const ttsProviders = {};
         if (providersData && providersData.success) {
             apiKeyRegistry = providersData.api_key_registry || {};
+            if (Array.isArray(providersData.tts_providers)) {
+                providersData.tts_providers.forEach(meta => {
+                    if (!meta || !meta.key) return;
+                    ttsProviders[meta.key] = meta;
+                    (meta.aliases || []).forEach(alias => {
+                        ttsProviders[alias] = meta;
+                    });
+                });
+            }
         }
         voiceCloneProviderRestrictionState.isMainlandChinaUser = !!isMainlandChinaUser;
         voiceCloneProviderRestrictionState.apiKeyRegistry = apiKeyRegistry;
+        voiceCloneProviderRestrictionState.ttsProviders = ttsProviders;
         voiceCloneProviderRestrictionState.loaded = true;
         return voiceCloneProviderRestrictionState;
     })().finally(() => {
@@ -882,6 +896,9 @@ async function initVoiceCloneProviderRestrictions() {
         suppressProviderTouchedTracking = true;
         providerSelect.dispatchEvent(new Event('change'));
         suppressProviderTouchedTracking = false;
+    }
+    if (providerSelect && typeof updateVoiceSourceForProvider === 'function') {
+        updateVoiceSourceForProvider(providerSelect.value);
     }
     return voiceCloneProviderRestrictionState;
 }
@@ -1300,7 +1317,8 @@ let currentCloneMethod = 'file';
 let currentVoiceSource = 'clone';
 
 function isVoiceDesignSupportedProvider(provider) {
-    return ['cosyvoice', 'cosyvoice_intl', 'minimax', 'minimax_intl', 'elevenlabs', 'mimo'].includes(provider);
+    const meta = voiceCloneProviderRestrictionState.ttsProviders[provider];
+    return !!(meta && Array.isArray(meta.capabilities) && meta.capabilities.includes('design'));
 }
 
 function isVoiceDesignLanguageSupportedProvider(provider) {
@@ -1670,7 +1688,7 @@ async function registerVoice() {
             return;
         }
         if (prefix.length > VOICE_DESIGN_PREFIX_MAX_LENGTH || !VOICE_DESIGN_PREFIX_PATTERN.test(prefix)) {
-            resultDiv.textContent = window.t ? window.t('voice.prefixShouldBeEnglishLetterAndNumber') : '前缀必须是 1-10 个字符，只能包含英文字母和数字，不能包含下划线或空格';
+            resultDiv.textContent = window.t ? window.t('voice.designPrefixInvalid') : '前缀必须是 1-10 个字符，只能包含英文字母和数字，不能包含下划线或空格';
             resultDiv.className = 'result error';
             return;
         }
@@ -1946,7 +1964,7 @@ async function playPreview(voiceId, btn, options = {}) {
                 const cachedData = JSON.parse(cachedPreview);
                 if (
                     cachedData
-                    && cachedData.version === VOICE_PREVIEW_CACHE_VERSION
+                    && cachedData.version === 2
                     && cachedData.language === previewLanguage
                     && typeof cachedData.audioSrc === 'string'
                     && cachedData.audioSrc
@@ -1960,14 +1978,13 @@ async function playPreview(voiceId, btn, options = {}) {
 
         if (!audioSrc) {
             // 如果本地没有缓存，则从服务器获取
-            // TTS 合成耗时按音色类型分两档：克隆/设计音色需要服务端实时合成，
-            // 耗时远超普通预制音色，用 30s 超时；预制音色沿用 5s，避免用户干等。
+            // 保留 Voice Clone 原有的 voice-id 判定；Voice Design 仅通过
+            // source/design id 追加到同一实时合成超时档位。
             const voiceSource = String(options.source || '').trim().toLowerCase();
-            const isRealtimeRegisteredVoice = ['clone', 'design'].includes(voiceSource)
-                || (
-                    typeof voiceId === 'string'
-                    && (voiceId.includes('-clone-') || voiceId.includes('-design-'))
-                );
+            const isCloneVoice = typeof voiceId === 'string' && voiceId.includes('-clone-');
+            const isDesignVoice = voiceSource === 'design'
+                || (typeof voiceId === 'string' && voiceId.includes('-design-'));
+            const isRealtimeRegisteredVoice = isCloneVoice || isDesignVoice;
             const ttsTimeoutMs = isRealtimeRegisteredVoice ? 30_000 : 5_000;
             const ttsMaxAttempts = isRealtimeRegisteredVoice ? 2 : 3;
             let lastTtsError = null;
@@ -1984,7 +2001,7 @@ async function playPreview(voiceId, btn, options = {}) {
                     if (response.ok || response.status < 500 || attempt >= ttsMaxAttempts) break;
                     lastTtsError = new Error(`API returned ${response.status}`);
                 } catch (error) {
-                    lastTtsError = (error && error.name === 'AbortError')
+                    lastTtsError = (voiceSource === 'design' && error && error.name === 'AbortError')
                         ? new Error(window.t ? window.t('voice.previewTimeout') : '试听生成超时，请稍后重试')
                         : error;
                     if (attempt >= ttsMaxAttempts) break;
@@ -2010,7 +2027,7 @@ async function playPreview(voiceId, btn, options = {}) {
                 // 保存到 localStorage
                 try {
                     localStorage.setItem(storageKey, JSON.stringify({
-                        version: VOICE_PREVIEW_CACHE_VERSION,
+                        version: 2,
                         language: previewLanguage,
                         audioSrc
                     }));

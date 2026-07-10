@@ -135,6 +135,27 @@ def _has_nested_key(data: dict, dotted_key: str) -> bool:
 
 
 @pytest.mark.unit
+def test_locale_json_objects_do_not_contain_duplicate_keys():
+    duplicates: list[str] = []
+
+    for locale_path in sorted(LOCALES_DIR.glob("*.json")):
+        def reject_duplicates(pairs, *, locale_name=locale_path.name):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    duplicates.append(f"{locale_name}: {key}")
+                result[key] = value
+            return result
+
+        json.loads(
+            locale_path.read_text(encoding="utf-8"),
+            object_pairs_hook=reject_duplicates,
+        )
+
+    assert duplicates == []
+
+
+@pytest.mark.unit
 def test_tutorial_prompt_locale_keys_exist_in_all_locales():
     missing_by_locale: dict[str, list[str]] = {}
 

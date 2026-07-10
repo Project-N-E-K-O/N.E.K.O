@@ -18,6 +18,13 @@ VOICE_CLONE_API_PROVIDERS_RESPONSE = {
         "elevenlabs": {"config_field": "assistApiKeyElevenlabs", "restricted": True},
         "mimo": {"config_field": "assistApiKeyMimo", "restricted": False},
     },
+    "tts_providers": [
+        {"key": "cosyvoice", "aliases": ["cosyvoice_intl"], "capabilities": ["clone", "design"]},
+        {"key": "minimax", "aliases": ["minimax_intl"], "capabilities": ["clone", "design"]},
+        {"key": "elevenlabs", "aliases": [], "capabilities": ["clone", "design"]},
+        {"key": "mimo", "aliases": [], "capabilities": ["clone", "design", "preset"]},
+        {"key": "vllm_omni", "aliases": [], "capabilities": ["clone", "preset"]},
+    ],
 }
 
 
@@ -57,10 +64,19 @@ def route_voice_clone_region_dependencies(page: Page, steam_language_payload: di
 def test_voice_preview_treats_design_voices_as_realtime_synthesis():
     source = VOICE_CLONE_SCRIPT.read_text(encoding="utf-8")
 
-    assert "const VOICE_PREVIEW_CACHE_VERSION = 3;" in source
-    assert "['clone', 'design'].includes(voiceSource)" in source
+    assert "cachedData.version === 2" in source
+    assert "version: 2" in source
+    assert "const isCloneVoice = typeof voiceId === 'string' && voiceId.includes('-clone-');" in source
+    assert "const isDesignVoice = voiceSource === 'design'" in source
     assert "voiceId.includes('-design-')" in source
     assert "window.t ? window.t('voice.previewTimeout')" in source
+
+
+def test_voice_design_capabilities_come_from_provider_metadata():
+    source = VOICE_CLONE_SCRIPT.read_text(encoding="utf-8")
+
+    assert "meta.capabilities.includes('design')" in source
+    assert "['cosyvoice', 'cosyvoice_intl', 'minimax'" not in source
 
 
 @pytest.mark.frontend
@@ -116,6 +132,98 @@ def test_voice_clone_form_validation(mock_page: Page, running_server: str):
     # Don't upload a file — just verify the form state is correct
     # The actual registration requires a real API key and audio file,
     # so we only test UI interaction here
+
+
+@pytest.mark.frontend
+def test_voice_clone_file_submit_preserves_existing_payload(mock_page: Page, running_server: str):
+    captured = {}
+    try:
+        route_voice_clone_region_dependencies(
+            mock_page,
+            {
+                "success": True,
+                "steam_language": "schinese",
+                "i18n_language": "zh-CN",
+                "ip_country": "CN",
+                "is_mainland_china": True,
+            },
+        )
+
+        def handle_voice_clone(route):
+            captured["body"] = (route.request.post_data_buffer or b"").decode("latin-1")
+            route.fulfill(
+                status=400,
+                content_type="application/json",
+                body=json.dumps({"error": "test stop"}),
+            )
+
+        mock_page.route("**/api/characters/voice_clone", handle_voice_clone)
+        mock_page.goto(f"{running_server}/voice_clone")
+        mock_page.wait_for_load_state("domcontentloaded")
+        mock_page.fill("#prefix", "clone01")
+        mock_page.set_input_files(
+            "#audioFile",
+            {"name": "sample.wav", "mimeType": "audio/wav", "buffer": b"RIFFtest"},
+        )
+        mock_page.locator(".register-voice-btn").click()
+        expect(mock_page.locator("#result")).to_contain_text("test stop")
+
+        body = captured["body"]
+        assert 'name="prefix"\r\n\r\nclone01' in body
+        assert 'name="ref_language"\r\n\r\nch' in body
+        assert 'name="provider"\r\n\r\ncosyvoice' in body
+        assert 'name="file"; filename="sample.wav"' in body
+        assert "voice_prompt" not in body
+    finally:
+        mock_page.unroute("**/api/config/steam_language")
+        mock_page.unroute("**/api/config/api_providers")
+        mock_page.unroute("**/api/config/core_api")
+        mock_page.unroute("**/api/characters/voice_clone")
+
+
+@pytest.mark.frontend
+def test_voice_clone_direct_submit_preserves_existing_payload(mock_page: Page, running_server: str):
+    captured = {}
+    try:
+        route_voice_clone_region_dependencies(
+            mock_page,
+            {
+                "success": True,
+                "steam_language": "schinese",
+                "i18n_language": "zh-CN",
+                "ip_country": "CN",
+                "is_mainland_china": True,
+            },
+        )
+
+        def handle_voice_clone_direct(route):
+            captured["body"] = route.request.post_data_json
+            route.fulfill(
+                status=400,
+                content_type="application/json",
+                body=json.dumps({"error": "test stop"}),
+            )
+
+        mock_page.route("**/api/characters/voice_clone_direct", handle_voice_clone_direct)
+        mock_page.goto(f"{running_server}/voice_clone")
+        mock_page.wait_for_load_state("domcontentloaded")
+        mock_page.locator("#btnDirectLinkClone").click()
+        mock_page.fill("#prefix", "clone02")
+        mock_page.fill("#directLinkUrl", "https://example.com/sample.wav")
+        mock_page.locator(".register-voice-btn").click()
+        expect(mock_page.locator("#result")).to_contain_text("test stop")
+
+        assert captured["body"] == {
+            "direct_link": "https://example.com/sample.wav",
+            "ref_language": "ch",
+            "prefix": "clone02",
+            "provider": "cosyvoice",
+        }
+    finally:
+        mock_page.unroute("**/api/config/steam_language")
+        mock_page.unroute("**/api/config/api_providers")
+        mock_page.unroute("**/api/config/core_api")
+        mock_page.unroute("**/api/characters/voice_clone_direct")
 
 
 @pytest.mark.frontend
