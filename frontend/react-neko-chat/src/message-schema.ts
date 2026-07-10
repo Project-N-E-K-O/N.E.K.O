@@ -390,6 +390,41 @@ export function parseChatMessage(input: unknown): ChatMessage {
   return chatMessageSchema.parse(input);
 }
 
+const parsedCallbackCaches = new Map<string, WeakMap<object, unknown>>();
+
+function stabilizeParsedCallbackIdentities(
+  input: Record<string, unknown> | undefined,
+  parsed: ChatWindowSchemaProps,
+): ChatWindowSchemaProps {
+  if (!input) return parsed;
+
+  const parsedRecord = parsed as Record<string, unknown>;
+  Object.entries(input).forEach(([key, rawValue]) => {
+    const parsedValue = parsedRecord[key];
+    if (typeof rawValue !== 'function' || typeof parsedValue !== 'function') return;
+
+    let callbackCache = parsedCallbackCaches.get(key);
+    if (!callbackCache) {
+      callbackCache = new WeakMap<object, unknown>();
+      parsedCallbackCaches.set(key, callbackCache);
+    }
+
+    const cachedCallback = callbackCache.get(rawValue);
+    if (typeof cachedCallback === 'function') {
+      parsedRecord[key] = cachedCallback;
+      return;
+    }
+
+    // z.function() returns a new validating wrapper on every parse. Reuse that
+    // wrapper for the same host callback so ordinary message renders do not
+    // look like callback changes to React effects.
+    callbackCache.set(rawValue, parsedValue);
+  });
+
+  return parsed;
+}
+
 export function parseChatWindowProps<T extends Record<string, unknown> | undefined>(input: T) {
-  return chatWindowPropsSchema.parse(input ?? {}) as ChatWindowSchemaProps;
+  const parsed = chatWindowPropsSchema.parse(input ?? {}) as ChatWindowSchemaProps;
+  return stabilizeParsedCallbackIdentities(input, parsed);
 }

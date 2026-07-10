@@ -739,6 +739,13 @@
     class YuiGuideOverlay {
         constructor(doc) {
             this.document = doc || document;
+            const hostWindow = this.document && this.document.defaultView
+                ? this.document.defaultView
+                : window;
+            this.lifecycleEpoch = Number(
+                hostWindow && hostWindow.__NEKO_YUI_GUIDE_OVERLAY_LIFECYCLE_EPOCH__
+            ) || 0;
+            this.destroyed = false;
             this.root = null;
             this.stage = null;
             this.controlBanner = null;
@@ -942,7 +949,22 @@
             return this.overlayRenderer.shouldSuppressDom();
         }
 
+        isTutorialLifecycleCurrent() {
+            const hostWindow = this.document && this.document.defaultView
+                ? this.document.defaultView
+                : window;
+            const currentEpoch = Number(
+                hostWindow && hostWindow.__NEKO_YUI_GUIDE_OVERLAY_LIFECYCLE_EPOCH__
+            ) || 0;
+            return currentEpoch === this.lifecycleEpoch;
+        }
+
         ensureRoot() {
+            if (!this.isTutorialLifecycleCurrent()) {
+                this.root = null;
+                this.stage = null;
+                return null;
+            }
             if (this.root && this.root.isConnected) {
                 return this.root;
             }
@@ -1183,7 +1205,7 @@
             if (!this.takingOverActive) {
                 return;
             }
-            this.ensureRoot();
+            if (!this.ensureRoot()) return;
             if (this.controlBannerEmphasisTimer) {
                 window.clearTimeout(this.controlBannerEmphasisTimer);
                 this.controlBannerEmphasisTimer = null;
@@ -1423,7 +1445,7 @@
                 return null;
             }
 
-            this.ensureRoot();
+            if (!this.ensureRoot()) return null;
             if (this.extraSpotlightEntries[normalizedIndex]) {
                 return this.extraSpotlightEntries[normalizedIndex];
             }
@@ -1461,7 +1483,7 @@
         }
 
         setExtraSpotlights(elements) {
-            this.ensureRoot();
+            if (!this.ensureRoot()) return;
             if (this.clearIfSpotlightSuppressed()) {
                 return;
             }
@@ -1471,7 +1493,7 @@
         }
 
         clearExtraSpotlights() {
-            this.ensureRoot();
+            if (!this.ensureRoot()) return;
             this.spotlightState.clearExtra();
             this.extraSpotlightEntries.forEach((entry) => {
                 if (!entry) {
@@ -1559,7 +1581,7 @@
                 return;
             }
 
-            this.ensureRoot();
+            if (!this.ensureRoot()) return;
 
             if (this.backdrop) {
                 this.syncBackdropViewport();
@@ -1625,7 +1647,7 @@
         }
 
         setTakingOver(active) {
-            this.ensureRoot();
+            if (!this.ensureRoot()) return;
             this.takingOverActive = active === true;
             if (!this.takingOverActive) {
                 if (this.controlBannerEmphasisTimer) {
@@ -1643,13 +1665,13 @@
         }
 
         setInteractionShieldSuppressed(active) {
-            this.ensureRoot();
+            if (!this.ensureRoot()) return;
             this.interactionShieldSuppressed = active === true;
             this.syncInteractionShield();
         }
 
         setTutorialInputShieldActive(active) {
-            this.ensureRoot();
+            if (!this.ensureRoot()) return;
             this.tutorialInputShieldActive = active === true;
             if (this.document.body) {
                 this.document.body.classList.toggle('yui-guide-input-shield-active', this.tutorialInputShieldActive);
@@ -1678,7 +1700,7 @@
         }
 
         setInteractionShieldEnabled(active) {
-            this.ensureRoot();
+            if (!this.ensureRoot()) return;
             if (!this.interactionShield) {
                 return;
             }
@@ -1696,7 +1718,7 @@
         }
 
         setAngry(active) {
-            this.ensureRoot();
+            if (!this.ensureRoot()) return;
             this.root.classList.toggle('is-angry', !!active);
             if (this.bubble) {
                 this.bubble.classList.toggle('is-angry', !!active);
@@ -1704,7 +1726,7 @@
         }
 
         clearBubblePlacement() {
-            this.ensureRoot();
+            if (!this.ensureRoot()) return;
 
             if (!this.bubble) {
                 return;
@@ -1728,7 +1750,7 @@
         }
 
         positionBubble(anchorRect, options) {
-            this.ensureRoot();
+            if (!this.ensureRoot()) return;
             this.clearBubblePlacement();
 
             const normalizedOptions = options || {};
@@ -1796,7 +1818,7 @@
         }
 
         showBubble(text, options) {
-            this.ensureRoot();
+            if (!this.ensureRoot()) return;
             this.ensureBubbleHeader();
 
             const normalizedOptions = options || {};
@@ -1824,7 +1846,7 @@
         }
 
         hideBubble() {
-            this.ensureRoot();
+            if (!this.ensureRoot()) return;
             this.bubble.hidden = true;
             this.bubble.classList.remove('is-visible');
             this.clearBubblePlacement();
@@ -1833,7 +1855,7 @@
         }
 
         showPluginPreview(items, options) {
-            this.ensureRoot();
+            if (!this.ensureRoot()) return;
 
             const previewItems = Array.isArray(items) && items.length > 0 ? items : [
                 'WebSearch',
@@ -1864,7 +1886,7 @@
         }
 
         hidePluginPreview() {
-            this.ensureRoot();
+            if (!this.ensureRoot()) return;
             this.preview.hidden = true;
             this.preview.classList.remove('is-visible');
             this.previewList.innerHTML = '';
@@ -1879,7 +1901,7 @@
         }
 
         setPersistentSpotlight(element) {
-            this.ensureRoot();
+            if (!this.ensureRoot()) return;
             if (this.clearIfSpotlightSuppressed()) {
                 return;
             }
@@ -1889,7 +1911,7 @@
         }
 
         activateSpotlight(element) {
-            this.ensureRoot();
+            if (!this.ensureRoot()) return;
             if (this.clearIfSpotlightSuppressed()) {
                 return;
             }
@@ -1899,7 +1921,7 @@
         }
 
         activateSecondarySpotlight(element) {
-            this.ensureRoot();
+            if (!this.ensureRoot()) return;
             if (this.clearIfSpotlightSuppressed()) {
                 return;
             }
@@ -1909,14 +1931,14 @@
         }
 
         clearActionSpotlight() {
-            this.ensureRoot();
+            if (!this.ensureRoot()) return;
             this.spotlightState.clearAction();
             this.refreshSpotlight();
             this.syncSpotlightTracking();
         }
 
         clearPersistentSpotlight() {
-            this.ensureRoot();
+            if (!this.ensureRoot()) return;
             this.spotlightState.clearPersistent();
             this.refreshSpotlight();
             this.syncSpotlightTracking();
@@ -1927,7 +1949,7 @@
                 options
                 && options.preservePcOverlaySpotlights === true
             );
-            this.ensureRoot();
+            if (!this.ensureRoot()) return;
             this.stopSpotlightTracking();
             this.spotlightState.clearAll();
             if (this.isPcOverlayActive() && !preservePcOverlaySpotlights) {
@@ -2017,7 +2039,7 @@
         }
 
         showCursorAt(x, y) {
-            this.ensureRoot();
+            if (!this.ensureRoot()) return;
             this.updateSuppressedCursorMotion();
             const previous = this.cursorPosition;
             const glideDurationMs = this.getSmoothCursorShowDurationMs(x, y);
@@ -2298,6 +2320,10 @@
         }
 
         destroy() {
+            if (this.destroyed) {
+                return;
+            }
+            this.destroyed = true;
             this.overlayRenderer.clear();
             this.document.body.classList.remove('yui-taking-over');
             this.document.body.classList.remove('yui-guide-input-shield-active');
@@ -2353,6 +2379,14 @@
             this.extraSpotlightElements = [];
             this.extraSpotlightEntries = [];
             this.highlightedElements = new Set();
+            const hostWindow = this.document && this.document.defaultView
+                ? this.document.defaultView
+                : window;
+            if (hostWindow) {
+                hostWindow.__NEKO_YUI_GUIDE_OVERLAY_LIFECYCLE_EPOCH__ = (
+                    Number(hostWindow.__NEKO_YUI_GUIDE_OVERLAY_LIFECYCLE_EPOCH__) || 0
+                ) + 1;
+            }
         }
     }
 
