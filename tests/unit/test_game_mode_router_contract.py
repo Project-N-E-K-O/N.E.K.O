@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from pathlib import Path
 
@@ -7,13 +8,20 @@ from fastapi.testclient import TestClient
 import pytest
 
 import main_routers.game_mode_router as game_mode_router_module
+from main_routers.system_router import _shared as system_router_shared
 from main_routers.game_mode_router import router
 
 
-def _client() -> TestClient:
+def _client(*, secure: bool = True) -> TestClient:
     app = FastAPI()
     app.include_router(router)
-    return TestClient(app)
+    client = TestClient(app)
+    if secure:
+        client.headers.update({
+            "Origin": "http://testserver",
+            "X-CSRF-Token": system_router_shared.AUTOSTART_CSRF_TOKEN,
+        })
+    return client
 
 
 def test_game_mode_beta_http_state_enable_manual_restore_and_disable_flow(monkeypatch):
@@ -146,8 +154,56 @@ async def test_game_mode_broadcast_failures_are_logged_and_isolated(monkeypatch,
     monkeypatch.setattr(game_mode_router_module, "get_session_manager", lambda: {"pet-a": Session()})
     caplog.clear()
     with caplog.at_level(logging.WARNING, logger=game_mode_router_module.__name__):
-        assert await game_mode_router_module.broadcast_game_mode_event({"type": "test"}) == 0
+        assert await game_mode_router_module.broadcast_game_mode_event({"type": "test"}) == 1
+        for _ in range(3):
+            await asyncio.sleep(0)
     assert "broadcast failed for session 'pet-a'" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_game_mode_broadcast_schedules_slow_sockets_without_waiting(monkeypatch):
+    release = asyncio.Event()
+
+    class SlowWebSocket:
+        client_state = "CONNECTED"
+
+        async def send_json(self, _payload):
+            await release.wait()
+
+    class Session:
+        websocket = SlowWebSocket()
+
+    monkeypatch.setattr(game_mode_router_module, "get_session_manager", lambda: {"pet-a": Session()})
+    delivered = await asyncio.wait_for(
+        game_mode_router_module.broadcast_game_mode_event({"type": "test"}),
+        timeout=0.1,
+    )
+    assert delivered == 1
+    release.set()
+    for _ in range(3):
+        await asyncio.sleep(0)
+
+
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        ("/api/game-mode-beta/enabled", {"enabled": True}),
+        ("/api/game-mode-beta/manual-restore", {}),
+        ("/api/game-mode-beta/settings", {"auto_cat_on_game": True}),
+        ("/api/game-mode-beta/windows/register", {"pet_instance_id": "pet-a"}),
+        ("/api/game-mode-beta/windows/unregister", {"pet_instance_id": "pet-a"}),
+        ("/api/game-mode-beta/ack", {"cycle_id": "cycle", "pet_instance_id": "pet-a"}),
+        ("/api/game-mode-beta/deep-sleep-ack", {"cycle_id": "cycle", "pet_instance_id": "pet-a"}),
+        ("/api/game-mode-beta/reset-candidate", {}),
+        ("/api/game-mode-beta/debug/trigger", {}),
+    ],
+)
+def test_game_mode_mutations_require_local_csrf(monkeypatch, path, payload):
+    monkeypatch.setenv("NEKO_GAME_MODE_DEBUG", "1")
+    with _client(secure=False) as client:
+        response = client.post(path, json=payload)
+    assert response.status_code == 403
+    assert response.json()["error_code"] == "csrf_validation_failed"
 
 
 def test_game_mode_beta_settings_endpoint_has_independent_exact_contract():

@@ -121,6 +121,27 @@
         };
     }
 
+    async function getMutationHeaders() {
+        const headers = { 'Content-Type': 'application/json' };
+        const security = window.nekoLocalMutationSecurity;
+        if (!security) return headers;
+        try {
+            if (typeof security.peekCachedToken === 'function') {
+                const token = security.peekCachedToken();
+                if (token) {
+                    headers['X-CSRF-Token'] = token;
+                    return headers;
+                }
+            }
+            if (typeof security.getMutationHeaders === 'function') {
+                Object.assign(headers, await security.getMutationHeaders());
+            }
+        } catch (error) {
+            console.warn('[GameModeBeta] mutation security headers unavailable:', error);
+        }
+        return headers;
+    }
+
     async function refreshSettings() {
         try {
             const response = await fetch(API_SETTINGS, { cache: 'no-store' });
@@ -139,7 +160,7 @@
         try {
             const response = await fetch(API_SETTINGS, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: await getMutationHeaders(),
                 body: JSON.stringify(next),
             });
             if (!response.ok) throw new Error('HTTP ' + response.status);
@@ -156,7 +177,7 @@
     async function postJson(url, payload, options) {
         const response = await fetch(url, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: await getMutationHeaders(),
             body: JSON.stringify(payload || {}),
             keepalive: !!(options && options.keepalive),
         });
@@ -261,7 +282,7 @@
         try {
             const response = await fetch(API_ENABLED, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: await getMutationHeaders(),
                 body: JSON.stringify({ enabled: next }),
             });
             const data = await response.json().catch(function () { return null; });
@@ -497,7 +518,7 @@
                 : {};
             const response = await fetch(API_MANUAL_RESTORE, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: await getMutationHeaders(),
                 body: JSON.stringify(payload),
             });
             if (response.ok) {
