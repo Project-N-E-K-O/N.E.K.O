@@ -200,9 +200,10 @@ export function AuthCard({
             {loginState?.qrcode_image ? (
               <Stack>
                 {/* hosted-ui strips data: URLs from img src, so the QR code uses a CSS background image. */}
-                <div
+                <button
+                  type="button"
                   onClick={onLogin}
-                  role="button"
+                  aria-label={t("panel.auth.refreshHint")}
                   title={t("panel.auth.refreshHint")}
                   style={{
                     width: "180px",
@@ -210,6 +211,7 @@ export function AuthCard({
                     boxSizing: "border-box",
                     padding: "8px",
                     borderRadius: "8px",
+                    border: "none",
                     cursor: "pointer",
                     backgroundColor: "#ffffff",
                     backgroundImage: `url("${loginState.qrcode_image}")`,
