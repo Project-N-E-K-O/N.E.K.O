@@ -22,7 +22,7 @@ test('day4 model lock spotlight uses a scene-scoped lock icon safe area', () => 
     assert.match(sharedButtonsSource, /window\.getNekoYuiGuideLockIconMaxTop = getNekoYuiGuideLockIconMaxTop;/);
 
     [
-        'live2d-ui-buttons.js',
+        'live2d/live2d-ui-buttons.js',
         'vrm-ui-buttons.js',
         'mmd-ui-buttons.js',
         'pngtuber-core.js'

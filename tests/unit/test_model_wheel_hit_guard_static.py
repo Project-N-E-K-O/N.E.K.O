@@ -3,7 +3,7 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-LIVE2D_INTERACTION = PROJECT_ROOT / "static" / "live2d-interaction.js"
+LIVE2D_INTERACTION = PROJECT_ROOT / "static" / "live2d" / "live2d-interaction.js"
 VRM_INTERACTION = PROJECT_ROOT / "static" / "vrm-interaction.js"
 
 

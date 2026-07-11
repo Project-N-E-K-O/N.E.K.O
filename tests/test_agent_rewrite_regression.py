@@ -810,7 +810,7 @@ def test_yui_asset_version_includes_avatar_performance_runtime():
 def test_yui_wakeup_delegates_action_boundary_to_avatar_stage():
     source = Path("static/tutorial/yui-guide/wakeup.js").read_text(encoding="utf-8")
     avatar_source = Path("static/tutorial/avatar/yui-stage.js").read_text(encoding="utf-8")
-    live2d_source = Path("static/live2d-model.js").read_text(encoding="utf-8")
+    live2d_source = Path("static/live2d/live2d-model.js").read_text(encoding="utf-8")
     style_source = Path("static/css/yui-guide.css").read_text(encoding="utf-8")
     yui_model = json.loads(Path("static/yui-origin/yui-origin.model3.json").read_text(encoding="utf-8"))
     yui_display_info = json.loads(Path("static/yui-origin/yui-origin.cdi3.json").read_text(encoding="utf-8"))
@@ -1185,9 +1185,9 @@ def test_pages_router_static_asset_version_tracks_tutorial_runtime_modules():
     assert "static/css/tutorial-styles.css" in tracked_paths
     assert "static/libs/driver.min.js" in tracked_paths
     assert "static/libs/driver.min.css" in tracked_paths
-    assert "static/live2d-init.js" in tracked_paths
+    assert "static/live2d/live2d-init.js" in tracked_paths
     assert "static/app-interpage.js" in tracked_paths
-    assert "static/live2d-interaction.js" in tracked_paths
+    assert "static/live2d/live2d-interaction.js" in tracked_paths
 
 
 @pytest.mark.asyncio
@@ -1430,8 +1430,8 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     avatar_reload_source = Path("static/tutorial/avatar/reload-controller.js").read_text(encoding="utf-8")
     interpage_source = Path("static/app-interpage.js").read_text(encoding="utf-8")
     app_ui_source = Path("static/app-ui.js").read_text(encoding="utf-8")
-    live2d_init_source = Path("static/live2d-init.js").read_text(encoding="utf-8")
-    live2d_model_source = Path("static/live2d-model.js").read_text(encoding="utf-8")
+    live2d_init_source = Path("static/live2d/live2d-init.js").read_text(encoding="utf-8")
+    live2d_model_source = Path("static/live2d/live2d-model.js").read_text(encoding="utf-8")
     round_prelude_source = Path("static/tutorial/core/round-prelude-controller.js").read_text(encoding="utf-8")
     visual_runtime_source = Path("static/tutorial/core/visual-runtime.js").read_text(encoding="utf-8")
     resistance_source = Path("static/tutorial/visual/resistance-controllers.js").read_text(encoding="utf-8")
@@ -1825,7 +1825,7 @@ def test_avatar_floating_tutorial_boot_predictor_loads_before_user_model_init():
 
     predictor_script = "/static/tutorial/core/avatar-floating-boot-predictor.js"
     assert predictor_script in index_source
-    assert index_source.index(predictor_script) < index_source.index("/static/live2d-init.js")
+    assert index_source.index(predictor_script) < index_source.index("/static/live2d/live2d-init.js")
     assert index_source.index(predictor_script) < index_source.index("/static/vrm-init.js")
     assert index_source.index(predictor_script) < index_source.index("/static/mmd-init.js")
     assert "static/tutorial/core/avatar-floating-boot-predictor.js" in pages_router_source
@@ -1881,7 +1881,7 @@ def test_avatar_floating_tutorial_boot_predictor_contract():
 
 def test_avatar_model_initializers_skip_user_model_when_tutorial_boot_is_predicted():
     index_source = Path("static/js/index.js").read_text(encoding="utf-8")
-    live2d_init_source = Path("static/live2d-init.js").read_text(encoding="utf-8")
+    live2d_init_source = Path("static/live2d/live2d-init.js").read_text(encoding="utf-8")
     vrm_init_source = Path("static/vrm-init.js").read_text(encoding="utf-8")
     mmd_init_source = Path("static/mmd-init.js").read_text(encoding="utf-8")
 
