@@ -561,7 +561,10 @@ def _word_aliases(word: DrawingGuessWord) -> set[str]:
 
 _TEXT_NORMALIZER_RE = re.compile(r"[\s\W_]+", re.UNICODE)
 _CJK_CHAR_RE = re.compile(r"[\u3400-\u9fff\uf900-\ufaff]")
-_CJK_ALIAS_PREFIX_CHARS = frozenset("是像猜画畫答为為只条條个個张張")
+# 修饰前缀（小大白老）加入白名单：是小猫咪吗/小白兔/大乌龟属正确猜词。
+# 词表内真正危险的单字复合前缀是 火/列/动/单/電/公/月（火车≠车、月球≠球），
+# 与修饰词集合不相交；热狗（热）继续被拦。改词表时需复查这一不相交性。
+_CJK_ALIAS_PREFIX_CHARS = frozenset("是像猜画畫答为為只条條个個张張小大白老")
 _CJK_ALIAS_SUFFIX_CHARS = frozenset("吗嗎吧呢呀啊喵嘛么麼")
 _USER_GUESS_INTENT_RE = re.compile(
     r"(?:"

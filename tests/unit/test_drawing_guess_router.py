@@ -455,6 +455,16 @@ def test_alias_boundary_covers_cyrillic_word_characters():
 
 
 @pytest.mark.unit
+def test_cjk_modifier_prefixes_accept_correct_guesses_without_compound_false_hits():
+    assert dgr._matches_word("是小猫咪吗？", dgr._WORD_BY_ID["cat"])
+    assert dgr._matches_word("小白兔", dgr._WORD_BY_ID["rabbit"])
+    assert dgr._matches_word("大乌龟", dgr._WORD_BY_ID["turtle"])
+    assert not dgr._matches_word("热狗", dgr._WORD_BY_ID["dog"])
+    assert not dgr._matches_word("是火车吗", dgr._WORD_BY_ID["car"])
+    assert not dgr._matches_word("月球", dgr._WORD_BY_ID["ball"])
+
+
+@pytest.mark.unit
 def test_word_matching_accepts_synonyms_and_multilingual_variants():
     assert dgr._matches_word("bunny?", dgr._WORD_BY_ID["rabbit"])
     assert dgr._matches_word("\u6708\u7403", dgr._WORD_BY_ID["moon"])
