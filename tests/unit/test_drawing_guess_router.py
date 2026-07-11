@@ -258,7 +258,7 @@ def test_guess_feedback_chat_knows_latest_guess_was_rejected():
     assert "香蕉" not in payload_raw
     assert "backend has already judged your latest guess wrong" in payload["premise"]
     assert "never insist" in system_prompt
-    assert "do not make a new candidate guess" in system_prompt
+    assert "may naturally make a new candidate guess" in system_prompt
 
 
 @pytest.mark.unit
@@ -1827,6 +1827,64 @@ async def test_ai_guess_feedback_plain_chat_does_not_trigger_retry(monkeypatch):
     assert result["source"] == "persona_model"
     assert session["phase"] == "ai_guess_feedback"
     assert session["ai_guess_attempts"] == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_ai_guess_feedback_persona_chat_guess_is_formally_judged(monkeypatch):
+    await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-feedback-chat-guess",
+        "i18n_language": "zh-CN",
+    }))
+    session = dgr._drawing_guess_sessions["YUI:dg-feedback-chat-guess"]
+    session["phase"] = "ai_guess_feedback"
+    session["user_word_id"] = "dog"
+    session["ai_guess_attempts"] = 1
+
+    async def fake_intent(**kwargs):
+        assert kwargs["user_text"] == "会吃骨头的"
+        return {"intent": "chat", "guess_text": "", "confidence": 0.9}
+
+    async def fake_persona_line(**kwargs):
+        assert kwargs["event"] == "guess_feedback_chat"
+        return "喵呜~那是小狗吗？"
+
+    async def fail_vision_guess(**_kwargs):
+        raise AssertionError("a guess already present in the chat line must be judged directly")
+
+    async def fake_game_line(**kwargs):
+        assert kwargs["event"] == "ai_guess_attempt"
+        assert kwargs["details"]["guess_label"] == "狗"
+        return "喵呜~那是小狗吗？", "persona_model"
+
+    async def no_evaluation(**_kwargs):
+        return None, None
+
+    async def no_memory(**_kwargs):
+        return None
+
+    monkeypatch.setattr(dgr, "_classify_game_input_intent", fake_intent)
+    monkeypatch.setattr(dgr, "_generate_persona_chat_line", fake_persona_line)
+    monkeypatch.setattr(dgr, "_generate_vision_guess", fail_vision_guess)
+    monkeypatch.setattr(dgr, "_generate_persona_game_line", fake_game_line)
+    monkeypatch.setattr(dgr, "_generate_summary_evaluation", no_evaluation)
+    monkeypatch.setattr(dgr, "_maybe_write_drawing_guess_memory_summary", no_memory)
+
+    result = await dgr.drawing_guess_input(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-feedback-chat-guess",
+        "i18n_language": "zh-CN",
+        "text": "会吃骨头的",
+        "image_data_url": "data:image/png;base64,not-used",
+    }))
+
+    assert result["kind"] == "ai_guess"
+    assert result["guess"]["id"] == "dog"
+    assert result["correct"] is True
+    assert result["source"] == "persona_chat_guess"
+    assert result["state"]["phase"] == "summary"
+    assert session["ai_guess_attempts"] == 2
 
 
 @pytest.mark.unit

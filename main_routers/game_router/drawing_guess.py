@@ -2128,7 +2128,7 @@ def _build_drawing_guess_chat_prompts(
             "- If the user is only chatting, respond as a companion and do not force the conversation back to guessing.\n"
             "- In ai_guess_feedback, you are the guesser and the user is the drawer. Treat public_details.last_character_guess_was_correct as authoritative.\n"
             "- If the latest guess was wrong, acknowledge that it was rejected; never insist that last_character_guess_label is what the drawing really is.\n"
-            "- In guess_feedback_chat, do not make a new candidate guess or ask whether the drawing is a new object. Formal guesses must go through the game guess flow so the backend can judge them.\n"
+            "- In guess_feedback_chat, you may naturally make a new candidate guess. Any explicit candidate guess in your reply will be passed to the backend for formal judgement.\n"
         ),
     )
     public_details = _drawing_guess_chat_public_details(session, locale, event)
@@ -3171,6 +3171,22 @@ async def _handle_drawing_guess_input_payload_locked(
             )
             source = "persona_model" if line else "fallback"
             line = line or _localized_line(locale, "chat_fallback")
+            if phase == "ai_guess_feedback":
+                chat_guess = _extract_user_guess_word(line)
+                if chat_guess is not None:
+                    return await _run_drawing_guess_vision_turn(
+                        session=session,
+                        locale=locale,
+                        lanlan_name=lanlan_name,
+                        image_data_url="",
+                        user_hint="",
+                        proposed_guess={
+                            "word": chat_guess,
+                            "confidence": 1.0,
+                            "message": line,
+                            "source": "persona_chat_guess",
+                        },
+                    )
             _append_game_chat(session, "assistant", line, kind="chat_reply")
             return {
                 "ok": True,
@@ -3542,6 +3558,7 @@ async def _run_drawing_guess_vision_turn(
     user_hint: str,
     settle_on_miss: bool = False,
     live_preview: bool = False,
+    proposed_guess: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     # The raw data URL is intentionally not logged or persisted.
     if user_hint:
@@ -3556,20 +3573,22 @@ async def _run_drawing_guess_vision_turn(
         session["ai_guess_attempts"] = min(attempts, MAX_AI_GUESS_ATTEMPTS)
         guess_session = session
 
-    model_guess = await _generate_vision_guess(
-        session=guess_session,
-        locale=locale,
-        lanlan_name=lanlan_name,
-        image_data_url=image_data_url,
-        user_hint=user_hint,
-    )
+    model_guess = proposed_guess
     if model_guess is None:
-        model_guess = await _generate_text_context_guess(
+        model_guess = await _generate_vision_guess(
             session=guess_session,
             locale=locale,
             lanlan_name=lanlan_name,
+            image_data_url=image_data_url,
             user_hint=user_hint,
         )
+        if model_guess is None:
+            model_guess = await _generate_text_context_guess(
+                session=guess_session,
+                locale=locale,
+                lanlan_name=lanlan_name,
+                user_hint=user_hint,
+            )
     source = str(model_guess.get("source") or "model_guess") if model_guess else "fallback_static"
     if model_guess:
         guessed_word = model_guess["word"]
