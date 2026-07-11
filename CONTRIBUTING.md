@@ -46,7 +46,7 @@ uv sync
 # Start services
 uv run python app/memory_server.py
 uv run python app/main_server.py
-# Optional: uv run python app/agent_server.py
+# Optional: uv run python -m app.agent_server
 ```
 
 Visit `http://localhost:48911` to configure API keys and start using.
@@ -128,7 +128,7 @@ uv sync
 # 启动服务
 uv run python app/memory_server.py
 uv run python app/main_server.py
-# 可选：uv run python app/agent_server.py
+# 可选：uv run python -m app.agent_server
 ```
 
 访问 `http://localhost:48911` 配置 API Key 后即可使用。
