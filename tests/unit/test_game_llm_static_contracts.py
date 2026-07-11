@@ -10,6 +10,7 @@ from config.prompts.prompts_soccer import (
     get_soccer_system_prompt,
 )
 from main_routers import game_router
+from main_routers.game_router import runtime as gr_runtime
 from scripts import check_no_temperature
 
 
@@ -19,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[2]
 @pytest.mark.unit
 def test_game_llm_paths_do_not_send_temperature_kwarg():
     assert check_no_temperature.main([
-        "main_routers/game_router.py",
+        "main_routers/game_router",
         "main_logic/omni_offline_client.py",
     ]) == 0
 
@@ -147,7 +148,7 @@ def test_pregame_prompt_must_not_be_format_called():
 
 @pytest.mark.unit
 def test_build_game_prompt_uses_requested_language():
-    prompt = game_router._build_game_prompt(
+    prompt = gr_runtime._build_game_prompt(
         "soccer",
         "Lan",
         "likes soccer",

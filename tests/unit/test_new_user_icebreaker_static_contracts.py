@@ -20,7 +20,7 @@ UNIVERSAL_TUTORIAL_MANAGER_PATH = ROOT / "static" / "tutorial" / "core" / "unive
 APP_INTERPAGE_PATH = ROOT / "static" / "app-interpage.js"
 INDEX_TEMPLATE_PATH = ROOT / "templates" / "index.html"
 WEBSOCKET_ROUTER_PATH = ROOT / "main_routers" / "websocket_router.py"
-GAME_ROUTER_PATH = ROOT / "main_routers" / "game_router.py"
+GAME_ROUTER_DIR = ROOT / "main_routers" / "game_router"
 ICEBREAKER_ROUTER_PATH = ROOT / "main_routers" / "icebreaker_router.py"
 ICEBREAKER_PROMPTS_PATH = ROOT / "config" / "prompts" / "prompts_icebreaker.py"
 ICEBREAKER_FREE_TEXT_UTILS_PATH = ROOT / "utils" / "icebreaker_free_text.py"
@@ -418,7 +418,7 @@ def test_icebreaker_runtime_wires_choice_prompt_and_project_tts():
 def test_icebreaker_context_append_does_not_touch_shared_websocket_router():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
     websocket_router = WEBSOCKET_ROUTER_PATH.read_text(encoding="utf-8")
-    game_router = GAME_ROUTER_PATH.read_text(encoding="utf-8")
+    game_router = "".join(q.read_text(encoding="utf-8") for q in sorted(GAME_ROUTER_DIR.glob("*.py")))
     icebreaker_router = ICEBREAKER_ROUTER_PATH.read_text(encoding="utf-8")
 
     assert "appendLlmContext(role, messageText" in runtime
@@ -443,7 +443,7 @@ def test_icebreaker_context_append_does_not_touch_shared_websocket_router():
 
 
 def test_icebreaker_route_is_separate_from_game_route_active_state():
-    game_router = GAME_ROUTER_PATH.read_text(encoding="utf-8")
+    game_router = "".join(q.read_text(encoding="utf-8") for q in sorted(GAME_ROUTER_DIR.glob("*.py")))
     icebreaker_router = ICEBREAKER_ROUTER_PATH.read_text(encoding="utf-8")
     window_open_guard = game_router.split("mgr_for_ws = get_session_manager().get(lanlan_name)", 1)[1].split(
         "else:",

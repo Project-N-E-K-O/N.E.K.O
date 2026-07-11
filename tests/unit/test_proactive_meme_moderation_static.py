@@ -2,7 +2,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-SYSTEM_ROUTER = ROOT / "main_routers" / "system_router.py"
+SYSTEM_ROUTER = ROOT / "main_routers" / "system_router" / "proactive_chat_flow.py"
 
 
 def _system_router_source() -> str:

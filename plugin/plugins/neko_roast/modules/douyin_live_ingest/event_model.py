@@ -187,6 +187,10 @@ def safe_payload(payload: Any) -> dict[str, Any]:
     for key in ("event_type", "type"):
         if key in raw:
             safe[key] = safe_event_type(raw.get(key))
+    if "event_type" not in safe and "type" in safe:
+        canonical_type = normalize_event_type(safe.get("type"))
+        if canonical_type in {"gift", "guard", "super_chat"}:
+            safe["event_type"] = canonical_type
     safe.update({key: safe_int(raw.get(key)) for key in _INT_FIELDS if key in raw})
     for key in ("uid", "user_id", "open_id"):
         if key in raw:
