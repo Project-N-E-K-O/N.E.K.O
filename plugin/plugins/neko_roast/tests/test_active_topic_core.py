@@ -16,6 +16,8 @@ from plugin.plugins.neko_roast.core import (
     active_topic_rules,
     active_topic_trending_source,
     danmaku_text_rules,
+    live_content,
+    live_content_active_catalog,
 )
 from plugin.plugins.neko_roast.core.active_topic_selector import ActiveTopicSelector
 
@@ -27,6 +29,23 @@ def test_active_topic_slice_imports_without_later_material_or_content_slices() -
 
     assert runtime_api.RuntimeActiveTopicApiMixin
     assert active_topic_rules._active_topic_material_profile("pick A or B")
+
+
+def test_active_content_slice_imports_without_host_catalog() -> None:
+    assert live_content.active_engagement_fallback_topic_candidates()
+    assert live_content.idle_hosting_beat_candidates() == []
+
+
+def test_active_content_order_includes_every_defined_candidate_once() -> None:
+    defined_keys = [
+        item["key"]
+        for item in live_content_active_catalog._ALL_FALLBACK_TOPIC_CANDIDATES
+    ]
+    ordered_keys = list(live_content_active_catalog._FALLBACK_TOPIC_CANDIDATE_KEYS)
+
+    assert len(defined_keys) == len(set(defined_keys))
+    assert len(ordered_keys) == len(set(ordered_keys))
+    assert set(ordered_keys) == set(defined_keys)
 
 
 @pytest.mark.parametrize("title", ("about", "table", "cable", "stable"))
@@ -65,13 +84,6 @@ def test_explicit_material_family_does_not_drift_to_stance_pack(
     assert active_topic_pack.active_topic_pack(material) == expected_pack
 
 
-def test_explicit_ab_marker_remains_a_choice_vote() -> None:
-    assert (
-        active_topic_material_family.host_material_family({"title": "A/B vote"})
-        == "choice_vote"
-    )
-
-
 def test_inferred_food_family_does_not_drift_to_stance_pack() -> None:
     material = {
         "title": "late-night drink prompt",
@@ -106,11 +118,18 @@ def test_mention_parsers_share_punctuation_and_symbol_boundaries(text: str) -> N
     assert danmaku_text_rules.is_viewer_to_viewer_mention_text(text) is False
 
 
+def test_explicit_ab_marker_remains_a_choice_vote() -> None:
+    assert (
+        active_topic_material_family.host_material_family({"title": "A/B vote"})
+        == "choice_vote"
+    )
+
+
 @pytest.mark.parametrize(
     "provider_candidates",
     ([], [{}], [{"source": "custom"}]),
 )
-def test_invalid_runtime_fallback_uses_core_default(
+def test_invalid_runtime_fallback_uses_valid_default(
     provider_candidates: list[dict[str, str]],
 ) -> None:
     runtime = SimpleNamespace(
@@ -121,7 +140,7 @@ def test_invalid_runtime_fallback_uses_core_default(
     candidates = selector.runtime_fallback_topic_candidates()
 
     assert candidates
-    assert candidates[0]["key"] == "fallback:room-mood"
+    assert all(candidates[0].get(field) for field in ("key", "title", "hint"))
 
 
 def test_anonymous_repeats_do_not_form_a_live_thread() -> None:
@@ -178,7 +197,7 @@ async def test_empty_or_exhausted_candidates_refresh_cache(
     topic = await selector.select_topic()
 
     assert clears == [True]
-    assert topic["key"] == "fallback:room-mood"
+    assert all(topic.get(field) for field in ("key", "title", "hint"))
 
 
 def test_anonymous_recent_danmaku_flood_is_rejected() -> None:
