@@ -76,20 +76,26 @@ class GameModeSettingsStore:
         return Path(get_config_manager().get_runtime_config_path("game_mode_beta_settings.json"))
 
     def load_settings(self) -> dict[str, Any]:
-        path = self._resolve_path()
         try:
+            path = self._resolve_path()
             with path.open("r", encoding="utf-8") as handle:
                 raw = json.load(handle)
-        except (FileNotFoundError, OSError, ValueError, TypeError):
+        except FileNotFoundError:
+            return {}
+        except Exception as exc:
+            logger.warning("[GameModeBeta] failed to load settings: %s", exc)
             return {}
         return raw if isinstance(raw, dict) else {}
 
     def save(self, payload: dict[str, Any]) -> None:
         from utils.file_utils import atomic_write_json
 
-        path = self._resolve_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_json(path, payload, ensure_ascii=False, indent=2)
+        try:
+            path = self._resolve_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_json(path, payload, ensure_ascii=False, indent=2)
+        except Exception as exc:
+            logger.warning("[GameModeBeta] failed to persist settings: %s", exc)
 
 
 def _remember_metric_error(metric: str, error: Any) -> str:

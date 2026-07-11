@@ -1,7 +1,12 @@
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
+import logging
 from pathlib import Path
 
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+import pytest
+
+import main_routers.game_mode_router as game_mode_router_module
 from main_routers.game_mode_router import router
 
 
@@ -117,6 +122,32 @@ def test_game_mode_beta_router_is_registered_on_main_app():
 
     assert "from main_routers.game_mode_router import router as game_mode_router" in source
     assert "app.include_router(game_mode_router)" in source
+
+
+@pytest.mark.asyncio
+async def test_game_mode_broadcast_failures_are_logged_and_isolated(monkeypatch, caplog):
+    def unavailable_session_manager():
+        raise RuntimeError("session manager unavailable")
+
+    monkeypatch.setattr(game_mode_router_module, "get_session_manager", unavailable_session_manager)
+    with caplog.at_level(logging.WARNING, logger=game_mode_router_module.__name__):
+        assert await game_mode_router_module.broadcast_game_mode_event({"type": "test"}) == 0
+    assert "session manager unavailable" in caplog.text
+
+    class FailingWebSocket:
+        client_state = "CONNECTED"
+
+        async def send_json(self, _payload):
+            raise RuntimeError("socket closed")
+
+    class Session:
+        websocket = FailingWebSocket()
+
+    monkeypatch.setattr(game_mode_router_module, "get_session_manager", lambda: {"pet-a": Session()})
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger=game_mode_router_module.__name__):
+        assert await game_mode_router_module.broadcast_game_mode_event({"type": "test"}) == 0
+    assert "broadcast failed for session 'pet-a'" in caplog.text
 
 
 def test_game_mode_beta_settings_endpoint_has_independent_exact_contract():

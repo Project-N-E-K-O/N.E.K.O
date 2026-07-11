@@ -241,3 +241,21 @@ test('failed model restore keeps the pet protected for another click', async () 
   assert.equal(harness.win.nekoGameModeBeta.getState().autoSwitched, true);
   assert.equal(harness.calls.some((call) => call.url === '/api/game-mode-beta/manual-restore'), false);
 });
+
+test('disabling game mode clears cancelled model load protection', async () => {
+  const harness = createHarness({ invalidateLoad: true });
+  await flush();
+  harness.win.nekoGameModeBeta.handleAutoSwitchEvent({
+    type: 'game_mode_auto_switch',
+    source: 'game_mode_auto',
+    cycle_id: 'cycle-disable',
+    trigger_source: 'game_semantic',
+    reason: 'exact_game',
+  });
+  await flush();
+
+  assert.equal(harness.win.vrmManager._nekoGameModeReloadRequired, true);
+  await harness.win.nekoGameModeBeta.setEnabled(false);
+  assert.equal(harness.win.vrmManager._nekoGameModeReloadRequired, false);
+  assert.equal(harness.win.vrmManager._nekoGameModeLoadCancelReason, '');
+});

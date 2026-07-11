@@ -298,6 +298,12 @@
             && !clientState.alreadyCatWhenTriggered
             && !clientState.manualOverride
             && isCatFormActive();
+        [window.live2dManager, window.vrmManager, window.mmdManager].forEach(function (manager) {
+            if (!manager) return;
+            manager._nekoGameModeReloadRequired = false;
+            manager._nekoGameModeLoadCancelReason = '';
+        });
+        clientState.modelLoadInvalidated = false;
         clientState.restoringFromDisable = true;
         try {
             if (shouldRestore) {

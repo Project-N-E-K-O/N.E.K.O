@@ -7,6 +7,7 @@
 """HTTP API for Game Mode Beta resource protection."""
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any
 
@@ -16,6 +17,7 @@ from main_logic.game_mode_resource_protection import protector
 from main_routers.shared_state import get_session_manager
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 async def broadcast_game_mode_event(payload: dict[str, Any]) -> int:
@@ -23,6 +25,7 @@ async def broadcast_game_mode_event(payload: dict[str, Any]) -> int:
     try:
         session_manager = get_session_manager()
     except Exception:
+        logger.warning("[GameModeBeta] broadcast skipped: session manager unavailable", exc_info=True)
         return 0
 
     for name in list(session_manager.keys()):
@@ -38,6 +41,7 @@ async def broadcast_game_mode_event(payload: dict[str, Any]) -> int:
             await ws.send_json(payload)
             delivered += 1
         except Exception:
+            logger.warning("[GameModeBeta] broadcast failed for session %r", name, exc_info=True)
             continue
     return delivered
 

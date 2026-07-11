@@ -392,6 +392,16 @@ function showWidgetModeMutationFailure(error) {
     }
 }
 
+function showGameModeBetaMutationFailure(error) {
+    console.warn('[GameModeBeta] settings mutation failed:', error);
+    const message = window.t
+        ? window.t('settings.gameModeBeta.toggleFailed')
+        : '游戏模式切换失败，请稍后重试。';
+    if (typeof window.showStatusToast === 'function') {
+        window.showStatusToast(message, 3000);
+    }
+}
+
 let widgetModeMutationQueue = Promise.resolve();
 
 function queueWidgetModeMutation(operation) {
@@ -501,16 +511,34 @@ function createGameModeBetaDetailPanel(manager, prefix, mainToggleItem) {
         syncing = false;
     };
 
+    const persistSettings = function (settings) {
+        const api = window.nekoGameModeBeta;
+        if (!api || typeof api.setSettings !== 'function') {
+            render();
+            return;
+        }
+        void Promise.resolve()
+            .then(function () { return api.setSettings(settings); })
+            .then(function (ok) {
+                render();
+                if (!ok) showGameModeBetaMutationFailure(new Error('settings update rejected'));
+            })
+            .catch(function (error) {
+                render();
+                showGameModeBetaMutationFailure(error);
+            });
+    };
+
     autoCheckbox.addEventListener('change', function () {
         if (syncing || autoCheckbox.disabled || !window.nekoGameModeBeta) return;
-        void window.nekoGameModeBeta.setSettings({ auto_cat_on_game: autoCheckbox.checked }).then(render);
+        persistSettings({ auto_cat_on_game: autoCheckbox.checked });
     });
     Object.keys(modeButtons).forEach(function (mode) {
         modeButtons[mode].addEventListener('click', function (event) {
             event.preventDefault();
             event.stopPropagation();
             if (modeButtons[mode].disabled || !window.nekoGameModeBeta) return;
-            void window.nekoGameModeBeta.setSettings({ game_trigger_mode: mode }).then(render);
+            persistSettings({ game_trigger_mode: mode });
         });
     });
     window.addEventListener('neko:game-mode-beta-state', render);
@@ -2712,10 +2740,17 @@ function createSettingsToggleItem(manager, prefix, toggle) {
             }
         } else if (toggle.id === 'game-mode-beta') {
             if (window.nekoGameModeBeta && typeof window.nekoGameModeBeta.setEnabled === 'function') {
-                void window.nekoGameModeBeta.setEnabled(isChecked).then(function (ok) {
-                    if (!ok) checkbox.checked = !isChecked;
-                    updateStyle();
-                });
+                void Promise.resolve()
+                    .then(function () { return window.nekoGameModeBeta.setEnabled(isChecked); })
+                    .then(function (ok) {
+                        if (!ok) checkbox.checked = !isChecked;
+                        updateStyle();
+                    })
+                    .catch(function (error) {
+                        checkbox.checked = !isChecked;
+                        updateStyle();
+                        showGameModeBetaMutationFailure(error);
+                    });
             }
         }
     };

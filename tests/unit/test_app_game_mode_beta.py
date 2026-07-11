@@ -7,6 +7,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 APP_GAME_MODE_BETA_PATH = PROJECT_ROOT / "static" / "app-game-mode-beta.js"
+AVATAR_UI_POPUP_PATH = PROJECT_ROOT / "static" / "avatar-ui-popup.js"
 INDEX_TEMPLATE_PATH = PROJECT_ROOT / "templates" / "index.html"
 CHAT_TEMPLATE_PATH = PROJECT_ROOT / "templates" / "chat.html"
 
@@ -299,3 +300,33 @@ def test_app_game_mode_beta_is_home_only_and_versioned():
     assert '/static/app-game-mode-beta.js?v={{ static_asset_version }}' in index_source
     assert '/static/app-game-mode-beta.js?v={{ static_asset_version }}' not in chat_source
     assert APP_GAME_MODE_BETA_PATH in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
+
+
+def test_disabling_game_mode_clears_model_reload_markers_before_restore_event():
+    source = APP_GAME_MODE_BETA_PATH.read_text(encoding="utf-8")
+    block = source.split("function handleDisabledRestore()", 1)[1].split("function metricLabel", 1)[0]
+
+    assert "manager._nekoGameModeReloadRequired = false;" in block
+    assert "manager._nekoGameModeLoadCancelReason = '';" in block
+    assert "clientState.modelLoadInvalidated = false;" in block
+    assert block.index("clientState.modelLoadInvalidated = false;") < block.index("live2d-return-click")
+
+
+def test_game_mode_settings_rejections_restore_ui_and_notify_user():
+    source = AVATAR_UI_POPUP_PATH.read_text(encoding="utf-8")
+    detail_block = source.split("function createGameModeBetaDetailPanel", 1)[1].split(
+        "function createAdvancedSettingsSidePanel", 1
+    )[0]
+    toggle_block = source.split("function createSettingsToggleItem", 1)[1].split(
+        "const refreshDependentToggles", 1
+    )[0]
+
+    assert "function showGameModeBetaMutationFailure" in source
+    assert "settings.gameModeBeta.toggleFailed" in source
+    assert "window.showStatusToast(message, 3000);" in source
+    assert "persistSettings({ auto_cat_on_game: autoCheckbox.checked });" in detail_block
+    assert "persistSettings({ game_trigger_mode: mode });" in detail_block
+    assert ".catch(function (error)" in detail_block
+    assert "checkbox.checked = !isChecked;" in toggle_block
+    assert ".catch(function (error)" in toggle_block
+    assert "showGameModeBetaMutationFailure(error);" in toggle_block
