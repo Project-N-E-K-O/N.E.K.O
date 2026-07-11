@@ -266,7 +266,10 @@ def test_drawing_guess_static_route_contract():
     assert "var completedRoute = !!options.finalSummary || state.phase === 'summary' || state.phase === 'final_summary';" in script
     assert "reason: completedRoute ? 'drawing_guess_game_over' : 'drawing_guess_abandoned'" in script
     assert "roundCompleted: completedRoute" in script
-    assert "beginRoundFlow();\n    renderFinalSummary();\n    showExitConfirm();\n  }" in script
+    assert "function renderFinalSummary() {\n    // 最终结算是回合终态" in script
+    assert "beginRoundFlow();\n    stopCountdown();" in script
+    assert "if (state.phase !== 'ai_drawing') return;" in script
+    assert "function finishGame() {\n    renderFinalSummary();\n    showExitConfirm();\n  }" in script
     assert "return endRoute(false, { finalSummary: true }).finally(showExitConfirm);" not in script
     assert 'id="voice-route-button" class="dg-voice-button"' in html
     assert "function handleVoiceRouteButton" in script

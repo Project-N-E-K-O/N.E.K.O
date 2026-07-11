@@ -2516,6 +2516,9 @@
       })
       .then(function (res) {
         ensureCurrentRoundFlow(flowToken);
+        // final_summary/ended 等终态优先于迟到的绘图结果。token 是异步代次护栏，
+        // phase 再兜住任何未经过 beginRoundFlow 的终态入口，避免结算页被拉回猜测流程。
+        if (state.phase !== 'ai_drawing') return;
         if (!res || !res.ok) throw new Error((res && res.reason) || 'ai_draw_failed');
         if (res.skipped && res.reason === 'not_ai_drawing') {
           return;
@@ -2824,6 +2827,9 @@
   }
 
   function renderFinalSummary() {
+    // 最终结算是回合终态：无论从结束按钮还是 route end 进入，都统一作废仍在途的
+    // round-start / ai-draw / vision-guess / timeout 回调。
+    beginRoundFlow();
     stopCountdown();
     stopThinkingEventMessage();
     stopDrawPickAnimation();
@@ -4217,9 +4223,6 @@
   }
 
   function finishGame() {
-    // 作废仍在途的本轮异步链（round-start/vision-guess/timeout 结算），
-    // 避免迟到回调把页面从 final_summary 拽回游戏相位
-    beginRoundFlow();
     renderFinalSummary();
     showExitConfirm();
   }
