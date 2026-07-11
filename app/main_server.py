@@ -1529,6 +1529,7 @@ _MAIN_LIMITED_MODE_ALLOWED_PAGE_PATHS = {
     "/live2d_parameter_editor",
     "/soccer_demo",
     "/badminton_demo",
+    "/drawing_guess_demo",
     "/live2d_emotion_manager",
     "/vrm_emotion_manager",
     "/mmd_emotion_manager",

@@ -1517,6 +1517,9 @@
     state.nekoVoiceInFlight = true;
     post(ROUTE_API + '/speak', routePayload({
       line: item.line,
+      // 与 soccer/badminton 的 speak 一致：机器生成输出必须用后端
+      // closed-route guard 认识的 source，route 关闭后的迟到请求才会被跳过
+      source: 'game-llm-result',
       request_id: item.requestId,
       mirror_text: false,
       emit_turn_end: true,
@@ -2511,6 +2514,9 @@
         if (err && err.staleRoundFlow) return;
         setPhase('tutorial');
         showPlaceholder();
+        // 教程层是唯一的开始入口；回退到 tutorial 相位时必须一并还原，
+        // 否则 round 启动失败后没有任何可见的重试控件
+        if (els.tutorialOverlay) els.tutorialOverlay.hidden = false;
         addMessage('drawingGuess.messages.roundFailed', 'Round failed: {{reason}}', { reason: readableRequestError(err) });
       })
       .finally(updateControls);
