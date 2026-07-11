@@ -3281,12 +3281,16 @@ async def _run_backup_compress(lanlan_name: str, snapshot: list, detailed: bool)
 
 
 async def _on_compress_done(lanlan_name: str, snapshot: list, ok: bool, detailed: bool):
-    """update_history 压缩结束回调（recent.py 注入）。
-    ok=True（主路径压成功）→ cancel 在跑的后台兜底 + 清退避；
-    ok=False（主路径压失败）→ 起一个受保护的后台兜底压缩（若无在跑、未被退避挡）。
+    """Compression-finished callback for update_history (injected into recent.py).
 
-    本回调只 spawn / cancel task，不 await 后台 LLM——它可能在 _get_settle_lock
-    内被调（/renew、/settle），绝不能阻塞。"""
+    ok=True (main-path compression succeeded) → cancel any running backup task +
+    clear the backoff counter; ok=False (main-path compression failed) → spawn a
+    protected best-effort backup compression (unless one is in flight or the
+    failure backoff blocks it).
+
+    This callback only spawns / cancels tasks and never awaits the background
+    LLM — it may be invoked while _get_settle_lock is held (/renew, /settle)
+    and must not block."""
     if ok:
         task = compress_backup_tasks.get(lanlan_name)
         if task is not None and not task.done():
