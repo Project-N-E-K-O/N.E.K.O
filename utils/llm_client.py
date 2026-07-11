@@ -35,30 +35,43 @@ import ssl
 import threading
 import weakref
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Union
+from typing import TYPE_CHECKING, Any, AsyncIterator
 from urllib.parse import urlparse
 
-from openai import AsyncOpenAI, DefaultAsyncHttpxClient, DefaultHttpxClient, OpenAI
+if TYPE_CHECKING:
+    from openai import AsyncOpenAI, OpenAI
 
-try:
-    import anthropic as _anthropic
-    from anthropic import Anthropic, AsyncAnthropic
-except Exception:  # pragma: no cover - anthropic may be absent in minimal installs
-    _anthropic = None  # type: ignore
-    Anthropic = None  # type: ignore
-    AsyncAnthropic = None  # type: ignore
+# openai / anthropic SDK 一律惰性 import（构造点函数内 import + 下方 retry accessor）：
+# 两者合计 ~0.7s 且大头是 pydantic 模型类构建（CPU-bound，frozen 下同样存在），而本模块
+# 经 app/__init__→runtime_bindings→language_utils 坐在 merged 启动串行 import 链最前端，
+# 顶层 import 会把这笔钱记到每次启动的端口就绪路径上（#1496 曾优化过、后被 openai 2.x
+# types 变重静默吃回）。首次真实使用由 utils.module_warmup 在 ready 后后台预热兜底。
 
-_ANTHROPIC_RETRY_EXCEPTION_TYPES = tuple(
-    exc_type
-    for exc_type in (
-        getattr(_anthropic, "APIConnectionError", None),
-        getattr(_anthropic, "APITimeoutError", None),
-        getattr(_anthropic, "AuthenticationError", None),
-        getattr(_anthropic, "InternalServerError", None),
-        getattr(_anthropic, "RateLimitError", None),
-    )
-    if isinstance(exc_type, type)
-)
+# 惰性缓存：None = 尚未构建。构建时机是首次 LLM 调用/异常处理，彼时 SDK 必已随
+# client 构造加载，函数内 import 只是 sys.modules 字典查找。
+_ANTHROPIC_RETRY_EXCEPTION_TYPES: tuple[type[BaseException], ...] | None = None
+_OPENAI_RETRY_EXCEPTION_TYPES: tuple[type[BaseException], ...] | None = None
+
+# 测试接缝：单测 monkeypatch 这两个模块属性注入 fake SDK 类（见
+# test_llm_client_response_safety）。生产路径保持 None，ChatAnthropic 构造时
+# 惰性 import 真 SDK——属性存在但为 None，不承担 import 成本。
+Anthropic: Any = None
+AsyncAnthropic: Any = None
+
+
+def openai_retry_error_types() -> tuple[type[BaseException], ...]:
+    """Return OpenAI SDK error classes that should follow the chat retry path."""
+    global _OPENAI_RETRY_EXCEPTION_TYPES
+    if _OPENAI_RETRY_EXCEPTION_TYPES is None:
+        from openai import APIConnectionError, InternalServerError, RateLimitError
+
+        _OPENAI_RETRY_EXCEPTION_TYPES = (APIConnectionError, InternalServerError, RateLimitError)
+    return _OPENAI_RETRY_EXCEPTION_TYPES
+
+
+def chat_retry_error_types() -> tuple[type[BaseException], ...]:
+    """Return the union of OpenAI + Anthropic transient error classes for shared retry loops."""
+    return (*openai_retry_error_types(), *anthropic_retry_error_types())
 
 
 # ────────────────────────────────────────────────────────────────
@@ -581,6 +594,8 @@ class ChatOpenAI:
             client_kw["timeout"] = _timeout
         if default_headers:
             client_kw["default_headers"] = default_headers
+        from openai import AsyncOpenAI, DefaultAsyncHttpxClient, DefaultHttpxClient, OpenAI
+
         ssl_context = _get_default_ssl_context()
         client_kw["http_client"] = DefaultAsyncHttpxClient(verify=ssl_context)
         self._aclient = AsyncOpenAI(**client_kw)
@@ -977,6 +992,23 @@ def _merge_anthropic_usage(target: dict[str, Any], usage: Any) -> None:
 
 def anthropic_retry_error_types() -> tuple[type[BaseException], ...]:
     """Return Anthropic SDK error classes that should follow the chat retry path."""
+    global _ANTHROPIC_RETRY_EXCEPTION_TYPES
+    if _ANTHROPIC_RETRY_EXCEPTION_TYPES is None:
+        try:
+            import anthropic as _anthropic
+        except Exception:  # pragma: no cover - anthropic may be absent in minimal installs
+            _anthropic = None
+        _ANTHROPIC_RETRY_EXCEPTION_TYPES = tuple(
+            exc_type
+            for exc_type in (
+                getattr(_anthropic, "APIConnectionError", None),
+                getattr(_anthropic, "APITimeoutError", None),
+                getattr(_anthropic, "AuthenticationError", None),
+                getattr(_anthropic, "InternalServerError", None),
+                getattr(_anthropic, "RateLimitError", None),
+            )
+            if isinstance(exc_type, type)
+        )
     return _ANTHROPIC_RETRY_EXCEPTION_TYPES
 
 
@@ -1362,8 +1394,12 @@ class ChatAnthropic:
         tool_choice: str | dict | None = None,
         **_kwargs: Any,
     ):
-        if Anthropic is None or AsyncAnthropic is None:
-            raise RuntimeError("anthropic package is required for Anthropic-compatible providers")
+        anthropic_cls, async_anthropic_cls = Anthropic, AsyncAnthropic
+        if anthropic_cls is None or async_anthropic_cls is None:
+            try:
+                from anthropic import Anthropic as anthropic_cls, AsyncAnthropic as async_anthropic_cls
+            except Exception as exc:
+                raise RuntimeError("anthropic package is required for Anthropic-compatible providers") from exc
         self.model = model
         self.base_url = _normalize_anthropic_sdk_base_url(base_url)
         self.temperature = temperature
@@ -1385,8 +1421,8 @@ class ChatAnthropic:
         if default_headers:
             client_kw["default_headers"] = default_headers
 
-        self._client = Anthropic(**client_kw)
-        self._aclient = AsyncAnthropic(**client_kw)
+        self._client = anthropic_cls(**client_kw)
+        self._aclient = async_anthropic_cls(**client_kw)
         self._client_finalizer = weakref.finalize(
             self,
             _close_chat_clients_best_effort,
@@ -1769,6 +1805,8 @@ class OpenAIEmbeddings:
         api_key: str | None = None,
         **_kwargs: Any,
     ):
+        from openai import AsyncOpenAI, OpenAI
+
         self.model = model
         _api_key = api_key or "sk-placeholder"
         self._client = OpenAI(base_url=base_url, api_key=_api_key)

@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-import main_routers.characters_router as characters_router
+import main_routers.characters_router.voice_registry as characters_router
 from utils.config_manager import ensure_default_yui_voice_for_free_api, get_reserved
 
 

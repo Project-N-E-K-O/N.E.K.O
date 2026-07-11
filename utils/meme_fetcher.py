@@ -18,7 +18,6 @@ import httpx
 import random
 import re
 from typing import List, Dict, Any, Optional, Union
-from bs4 import BeautifulSoup
 import sys
 import os
 import jmespath
@@ -245,6 +244,7 @@ class MemeFetcher:
                 return []
 
             # BS4 解析放线程池，避免阻塞 event loop
+            from bs4 import BeautifulSoup
             soup = await asyncio.to_thread(BeautifulSoup, html, 'lxml')
 
             # Imgflip 的搜索结果
@@ -551,6 +551,7 @@ class DoutubFetcher:
             # BS4 + DOTALL 正则 + JSON 解析整体放线程池，full HTML 上的 .*?
             # 全文扫描在 event loop 里能阻塞百毫秒级。
             def _parse_html_blob(_html: str) -> tuple:
+                from bs4 import BeautifulSoup
                 _soup = BeautifulSoup(_html, 'lxml')
                 # 三种框架的 SSR 注入格式按优先级尝试：Next.js → Nuxt.js → 通用 INITIAL_STATE。
                 # 任一格式 JSON 解析失败都静默吞异常（页面脚本可能被压缩/截断/混淆），
@@ -791,6 +792,7 @@ class DoutupkFetcher:
                 return []
 
             # BS4 解析放线程池
+            from bs4 import BeautifulSoup
             soup = await asyncio.to_thread(BeautifulSoup, html, 'lxml')
             results: List[Dict[str, Any]] = []
 
@@ -988,6 +990,7 @@ class FabiaoqingFetcher:
                 return []
 
             # BS4 解析放线程池
+            from bs4 import BeautifulSoup
             soup = await asyncio.to_thread(BeautifulSoup, html, 'lxml')
             results = []
 

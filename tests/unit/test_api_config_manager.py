@@ -525,7 +525,7 @@ class TestAssistFollowsCore:
     @pytest.mark.asyncio
     async def test_get_core_config_api_defaults_empty_assist_to_free_for_free_core(self, monkeypatch):
         """API 管理页读取旧配置时，core=free + assistApi='' 应回填 assist=free。"""
-        from main_routers import config_router
+        from main_routers.config_router import core_config as config_router
 
         async def fake_read_json_async(_path):
             return {
@@ -539,7 +539,10 @@ class TestAssistFollowsCore:
                 return 'core_config.json'
 
         monkeypatch.setattr(config_router, 'read_json_async', fake_read_json_async)
-        monkeypatch.setattr(config_router, 'get_config_manager', lambda: FakeConfigManager())
+        # NOTE: get_core_config_api 内部是函数内 ``from utils.config_manager
+        # import get_config_manager``，模块级 patch 从来打不进去（历史上就是
+        # no-op，靠上面的 read_json_async patch 拦截真实路径的读取）。拆包后
+        # core_config 模块不再有模块级 get_config_manager，故删除该死 patch。
 
         response = await config_router.get_core_config_api()
 
@@ -553,7 +556,7 @@ class TestAssistFollowsCore:
     async def test_get_core_config_api_returns_kimi_code_key(self, monkeypatch):
         """GET must echo back assistApiKeyKimiCode; otherwise the frontend reads
         an empty value and a re-save overwrites the stored secret."""
-        from main_routers import config_router
+        from main_routers.config_router import core_config as config_router
 
         async def fake_read_json_async(_path):
             return {
@@ -568,7 +571,10 @@ class TestAssistFollowsCore:
                 return 'core_config.json'
 
         monkeypatch.setattr(config_router, 'read_json_async', fake_read_json_async)
-        monkeypatch.setattr(config_router, 'get_config_manager', lambda: FakeConfigManager())
+        # NOTE: get_core_config_api 内部是函数内 ``from utils.config_manager
+        # import get_config_manager``，模块级 patch 从来打不进去（历史上就是
+        # no-op，靠上面的 read_json_async patch 拦截真实路径的读取）。拆包后
+        # core_config 模块不再有模块级 get_config_manager，故删除该死 patch。
 
         response = await config_router.get_core_config_api()
 
@@ -1765,7 +1771,7 @@ class TestGptsovitsEnabledSaveMigration:
         """Stub out the heavy post-save side effects of update_core_config so the
         test exercises only the persisted-config logic."""
         import asyncio
-        from main_routers import config_router
+        from main_routers.config_router import core_config as config_router
 
         async def _noop(*args, **kwargs):
             return None
