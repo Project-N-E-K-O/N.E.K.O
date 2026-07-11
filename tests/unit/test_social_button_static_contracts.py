@@ -38,9 +38,12 @@ def test_social_browser_fallback_preopens_popup_before_async_fetches():
     listener_end = source.index("// 睡觉按钮（请她离开）", listener_start)
     listener = source[listener_start:listener_end]
 
-    assert "popupRef = window.open('about:blank', '_blank', 'noopener,noreferrer');" in listener
-    assert listener.index("popupRef = window.open('about:blank', '_blank', 'noopener,noreferrer');") < listener.index(
+    preopen = "popupRef = window.open('about:blank', '_blank');"
+    assert preopen in listener
+    assert listener.index(preopen) < listener.index(
         "const cfgRes = await fetch('/api/system/social/config');"
     )
+    assert "popupRef.opener = null;" in listener
+    assert listener.index("popupRef.opener = null;") < listener.index("popupRef.location.replace(url);")
     assert "popupRef.location.replace(url);" in listener
     assert "closePopup();" in listener

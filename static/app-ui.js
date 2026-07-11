@@ -4922,7 +4922,9 @@ if (S.isRecording) {
             };
             try {
                 if (!useExternal) {
-                    popupRef = window.open('about:blank', '_blank', 'noopener,noreferrer');
+                    // 这里必须先保留 WindowProxy，异步拿到配置/票据后才能导航预开的 tab。
+                    // Chromium 在 windowFeatures 里指定 noopener 时可能直接返回 null。
+                    popupRef = window.open('about:blank', '_blank');
                     if (!popupRef) {
                         if (typeof window.showStatusToast === 'function') {
                             window.showStatusToast(
@@ -4995,6 +4997,8 @@ if (S.isRecording) {
                     await window.electronShell.openExternal(url);
                     return;
                 }
+                // about:blank 仍与 opener 同源，可在跨站导航前主动切断反向引用。
+                popupRef.opener = null;
                 popupRef.location.replace(url);
                 try { popupRef.focus && popupRef.focus(); } catch (_) { /* ignore */ }
                 popupRef = null;
