@@ -1,5 +1,10 @@
 const pluginId = 'wechat_integration';
 const RUNS_URL = '/runs';
+const RUN_POLL_DELAY_MS = 500;
+
+function delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
 
 async function callPlugin(entry, args = {}) {
     const resp = await fetch(RUNS_URL, {
@@ -15,7 +20,10 @@ async function callPlugin(entry, args = {}) {
     const deadline = Date.now() + 25000;
     while (Date.now() < deadline) {
         const poll = await fetch(`${RUNS_URL}/${runId}`);
-        if (!poll.ok) continue;
+        if (!poll.ok) {
+            await delay(RUN_POLL_DELAY_MS);
+            continue;
+        }
         const rec = await poll.json();
         if (rec.status === 'succeeded') {
             const exp = await fetch(`${RUNS_URL}/${runId}/export`);
@@ -32,6 +40,7 @@ async function callPlugin(entry, args = {}) {
         if (['failed', 'canceled', 'timeout'].includes(rec.status)) {
             throw new Error(rec.error?.message || rec.message || rec.status);
         }
+        await delay(RUN_POLL_DELAY_MS);
     }
     throw new Error('调用超时');
 }
@@ -40,6 +49,7 @@ let state = {
     settings: { baseUrl: 'https://ilinkai.weixin.qq.com', botType: '3' },
     dashboard: null,
     pollingTimer: null,
+    loginPollInFlight: false,
     isLoggedIn: false,
     qrcodeSessionActive: false,
     autoReplyRunning: false,
@@ -219,15 +229,21 @@ function startPolling() {
     if (state.pollingTimer) return;
     state.pollingTimer = setInterval(async () => {
         if (!state.qrcodeSessionActive || state.isLoggedIn) { stopPolling(); return; }
+        if (state.loginPollInFlight) return;
+        state.loginPollInFlight = true;
         try {
             const payload = await callPlugin('poll_login_status', {});
             applyDashboardState(payload);
         } catch (e) { /* ignore poll errors */ }
+        finally {
+            state.loginPollInFlight = false;
+        }
     }, 3000);
 }
 
 function stopPolling() {
     if (state.pollingTimer) { clearInterval(state.pollingTimer); state.pollingTimer = null; }
+    state.loginPollInFlight = false;
 }
 
 // ---- Actions ----
