@@ -31,7 +31,7 @@ class NekoRoastPlugin(NekoPluginBase):
             "developer_lookup_bili_user",
             self.developer_lookup_bili_user,
             name="查询 B站用户基础资料",
-            description="开发者模式开启时使用。当用户要求查询 B站 UID、B站空间链接或运行猫娘锐评内置测试案例时使用。内置测试案例传 target='__demo__'。只查询 UID、昵称和头像，不输出锐评。",
+            description="开发者模式开启时使用。当用户要求查询 B站 UID、B站空间链接或运行弹幕锐评内置测试案例时使用。内置测试案例传 target='__demo__'。只查询 UID、昵称和头像，不输出锐评。",
             input_schema={
                 "type": "object",
                 "properties": {
@@ -46,8 +46,8 @@ class NekoRoastPlugin(NekoPluginBase):
         self.register_dynamic_entry(
             "developer_roast_by_bili_url",
             self.developer_roast_by_bili_url,
-            name="查询 B站用户并猫娘锐评",
-            description="开发者模式开启时使用。当用户要求查询并锐评 B站 UID、B站空间链接或运行猫娘锐评内置测试案例时使用。内置测试案例传 target='__demo__'。会查询 UID、昵称和头像，并让猫猫按当前人设输出锐评。",
+            name="查询 B站用户并弹幕锐评",
+            description="开发者模式开启时使用。当用户要求查询并锐评 B站 UID、B站空间链接或运行弹幕锐评内置测试案例时使用。内置测试案例传 target='__demo__'。会查询 UID、昵称和头像，并让猫猫按当前人设输出锐评。",
             input_schema={
                 "type": "object",
                 "properties": {
@@ -61,7 +61,7 @@ class NekoRoastPlugin(NekoPluginBase):
             timeout=30.0,
         )
         self._sync_developer_entries()
-        await self.runtime.inject_instructions()
+        await self.runtime.sync_live_instructions()
         await self.runtime.sync_developer_mode(announce=False)
         return Ok({"status": "ready"})
 
@@ -71,6 +71,10 @@ class NekoRoastPlugin(NekoPluginBase):
             await self.runtime.stop()
         return Ok({"status": "stopped"})
 
+    async def _on_command_loop_start(self) -> None:
+        if self.runtime is not None:
+            self.runtime._start_idle_hosting_loop()
+
     @lifecycle(id="config_change")
     async def on_config_change(self, **_):
         if self.runtime is None:
@@ -78,7 +82,7 @@ class NekoRoastPlugin(NekoPluginBase):
         runtime = self.runtime
         await runtime.reload_config()
         self._sync_developer_entries()
-        await runtime.inject_instructions(force=True)
+        await runtime.sync_live_instructions()
         await runtime.sync_developer_mode(announce=False)
         return Ok({"status": "reloaded"})
 
@@ -97,16 +101,36 @@ class NekoRoastPlugin(NekoPluginBase):
                 self.disable_entry(entry_id)
 
 
-    @ui.context(id="dashboard", title=tr("panel.title", default="猫娘锐评"))
+    @ui.context(id="dashboard", title=tr("panel.title", default="NEKO Live"))
     async def get_dashboard_ui_context(self) -> dict[str, Any]:
         return await self._runtime().dashboard_state()
 
     @ui.action(id="update_config", label=tr("actions.update_config.label", default="保存设置"), group="control", order=10, refresh_context=True)
     @plugin_entry(
         id="update_config",
-        name=tr("entries.update_config.name", default="更新猫娘锐评设置"),
-        description=tr("entries.update_config.description", default="更新猫娘锐评的直播模式、开关和安全门设置。"),
-        input_schema={"type": "object", "properties": {}},
+        name=tr("entries.update_config.name", default="更新 NEKO Live 设置"),
+        description=tr("entries.update_config.description", default="更新 NEKO Live 的直播模式、开关和安全门设置。"),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "live_platform": {"type": "string"},
+                "live_room_ref": {"type": "string"},
+                "live_room_id": {"type": "integer"},
+                "live_enabled": {"type": "boolean"},
+                "live_mode": {"type": "string"},
+                "dry_run": {"type": "boolean"},
+                "developer_tools_enabled": {"type": "boolean"},
+                "rate_limit_seconds": {"type": "number"},
+                "queue_limit": {"type": "integer"},
+                "roast_strength": {"type": "string"},
+                "activity_level": {"type": "string"},
+                "roast_once_per_uid": {"type": "boolean"},
+                "stream_theme": {"type": "string"},
+                "stream_goal": {"type": "string"},
+                "stream_columns": {"type": "string"},
+                "stream_avoid_topics": {"type": "string"},
+            },
+        },
     )
     async def update_config_entry(self, **kwargs):
         runtime = self._runtime()
@@ -115,7 +139,7 @@ class NekoRoastPlugin(NekoPluginBase):
         self._sync_developer_entries()
         if "developer_tools_enabled" in kwargs:
             await runtime.sync_developer_mode(
-                announce=bool(config.developer_tools_enabled and not previous_developer_mode)
+                announce=bool(config.developer_tools_enabled and not previous_developer_mode),
             )
         return Ok({"config": config.to_dict()})
 
@@ -174,17 +198,25 @@ class NekoRoastPlugin(NekoPluginBase):
     @plugin_entry(
         id="set_live_room",
         name=tr("entries.set_live_room.name", default="设置直播间"),
-        description=tr("entries.set_live_room.description", default="设置猫娘锐评要监听的 B站直播间 ID。"),
+        description=tr("entries.set_live_room.description", default="设置当前平台下 NEKO Live 要监听的直播间目标。"),
         input_schema={
             "type": "object",
-            "properties": {"room_id": {"type": "string", "description": "房号或直播间链接"}},
+            "properties": {"room_id": {"type": "string", "description": "直播间目标或链接"}},
             "required": ["room_id"],
         },
     )
     async def set_live_room(self, room_id="", **_):
         try:
             config = await self._runtime().set_live_room(room_id)
-            return Ok({"room_id": config.live_room_id, "connection": self._runtime().live_connection_snapshot()})
+            connection = self._runtime().live_connection_snapshot()
+            return Ok(
+                {
+                    "platform": config.live_platform,
+                    "room_ref": config.live_room_ref,
+                    "room_id": config.live_room_id,
+                    "connection": connection,
+                }
+            )
         except (TypeError, ValueError) as exc:
             return Err(SdkError(str(exc)))
 
@@ -192,10 +224,10 @@ class NekoRoastPlugin(NekoPluginBase):
     @plugin_entry(
         id="lookup_live_room",
         name=tr("entries.lookup_live_room.name", default="查询直播间状态"),
-        description=tr("entries.lookup_live_room.description", default="按 B站直播间 ID 查询标题、主播和开播状态。"),
+        description=tr("entries.lookup_live_room.description", default="按当前平台的直播间目标查询标题、主播和开播状态。"),
         input_schema={
             "type": "object",
-            "properties": {"room_id": {"type": "string", "description": "房号或直播间链接"}},
+            "properties": {"room_id": {"type": "string", "description": "直播间目标或链接"}},
             "required": ["room_id"],
         },
     )
@@ -210,8 +242,8 @@ class NekoRoastPlugin(NekoPluginBase):
     @plugin_entry(
         id="connect_live_room",
         name=tr("entries.connect_live_room.name", default="开始监听直播间"),
-        description=tr("entries.connect_live_room.description", default="开启猫娘锐评直播接收状态。v0.1 不复制旧弹幕插件的 WebSocket 实现。"),
-        input_schema={"type": "object", "properties": {"room_id": {"type": "string", "description": "房号或直播间链接（留空用已配置房间）"}}},
+        description=tr("entries.connect_live_room.description", default="开启 NEKO Live 直播接收状态。v0.1 不复制旧弹幕插件的 WebSocket 实现。"),
+        input_schema={"type": "object", "properties": {"room_id": {"type": "string", "description": "直播间目标或链接（留空用已配置房间）"}}},
     )
     async def connect_live_room(self, room_id="", **_):
         try:
@@ -224,7 +256,7 @@ class NekoRoastPlugin(NekoPluginBase):
     @plugin_entry(
         id="disconnect_live_room",
         name=tr("entries.disconnect_live_room.name", default="停止监听直播间"),
-        description=tr("entries.disconnect_live_room.description", default="停止猫娘锐评直播接收状态。"),
+        description=tr("entries.disconnect_live_room.description", default="停止 NEKO Live 直播接收状态。"),
     )
     async def disconnect_live_room(self, **_):
         connection = await self._runtime().disconnect_live_room()
@@ -266,13 +298,13 @@ class NekoRoastPlugin(NekoPluginBase):
     @plugin_entry(
         id="douyin_cookie_import",
         name=tr("entries.douyin_cookie_import.name", default="导入抖音 Cookie"),
-        description=tr("entries.douyin_cookie_import.description", default="手动导入浏览器 Cookie，并加密保存供只读抖音直播输入使用。"),
+        description=tr("entries.douyin_cookie_import.description", default="手动导入浏览器 Cookie 并加密保存，用于抖音直播只读接入。"),
         input_schema={
             "type": "object",
             "properties": {
-                "cookie": {"type": "string"},
-                "uid": {"type": "string"},
-                "nickname": {"type": "string"},
+                "cookie": {"type": "string", "description": "浏览器复制的 Cookie header"},
+                "uid": {"type": "string", "description": "可选账号标识，只用于本地状态展示"},
+                "nickname": {"type": "string", "description": "可选昵称，只用于本地状态展示"},
             },
             "required": ["cookie"],
         },
@@ -287,7 +319,7 @@ class NekoRoastPlugin(NekoPluginBase):
     @plugin_entry(
         id="douyin_cookie_status",
         name=tr("entries.douyin_cookie_status.name", default="检查抖音 Cookie 状态"),
-        description=tr("entries.douyin_cookie_status.description", default="读取本地加密凭据状态，不返回原始 Cookie。"),
+        description=tr("entries.douyin_cookie_status.description", default="读取本地加密保存的抖音 Cookie 状态，不回传原始 Cookie。"),
     )
     async def douyin_cookie_status(self, **_):
         try:
@@ -295,19 +327,19 @@ class NekoRoastPlugin(NekoPluginBase):
         except Exception as exc:
             return Err(SdkError(str(exc)))
 
-    @ui.action(id="douyin_cookie_validate", label=tr("actions.douyin_cookie_validate.label", default="验证抖音 Cookie"), group="auth", order=70, refresh_context=True)
+    @ui.action(id="douyin_cookie_validate", label=tr("actions.douyin_cookie_validate.label", default="校验抖音 Cookie"), group="auth", order=70, refresh_context=True)
     @plugin_entry(
         id="douyin_cookie_validate",
-        name=tr("entries.douyin_cookie_validate.name", default="验证抖音 Cookie"),
-        description=tr("entries.douyin_cookie_validate.description", default="验证本地 Cookie 能否读取直播间元数据，不返回原始 Cookie。"),
+        name=tr("entries.douyin_cookie_validate.name", default="校验抖音 Cookie"),
+        description=tr("entries.douyin_cookie_validate.description", default="使用当前抖音直播间目标手动校验本地 Cookie 是否仍可读取房间元数据，不回传原始 Cookie。"),
         input_schema={
             "type": "object",
-            "properties": {"room_ref": {"type": "string"}},
+            "properties": {"room_ref": {"type": "string", "description": "抖音直播间 URL 或标识；留空使用当前配置。"}},
         },
     )
     async def douyin_cookie_validate(self, room_ref="", **_):
         try:
-            return Ok(await self._runtime().douyin_cookie_validate(room_ref))
+            return Ok(await self._runtime().douyin_cookie_validate(room_ref=room_ref))
         except Exception as exc:
             return Err(SdkError(str(exc)))
 
@@ -324,7 +356,7 @@ class NekoRoastPlugin(NekoPluginBase):
             return Err(SdkError(str(exc)))
 
     @ui.action(id="pause_roast", label=tr("actions.pause.label", default="一键暂停"), group="safety", order=20, refresh_context=True)
-    @plugin_entry(id="pause_roast", name=tr("entries.pause_roast.name", default="暂停锐评"), description=tr("entries.pause_roast.description", default="立即暂停猫娘锐评输出。"))
+    @plugin_entry(id="pause_roast", name=tr("entries.pause_roast.name", default="暂停锐评"), description=tr("entries.pause_roast.description", default="立即暂停弹幕锐评输出。"))
     async def pause_roast(self, **_):
         self._runtime().pause()
         return Ok({"status": "paused"})
@@ -433,10 +465,84 @@ class NekoRoastPlugin(NekoPluginBase):
         result = await self._runtime().handle_live_payload(kwargs)
         return Ok(result.to_public_dict())
 
+    @plugin_entry(
+        id="submit_manual_live_event",
+        name=tr("entries.submit_manual_live_event.name", default="Submit manual live event"),
+        description=tr(
+            "entries.submit_manual_live_event.description",
+            default="Submit a developer-only manual live simulation event through the live pipeline.",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "uid": {"type": "string"},
+                "nickname": {"type": "string"},
+                "avatar_url": {"type": "string"},
+                "danmaku_text": {"type": "string"},
+                "target_lanlan": {"type": "string"},
+            },
+            "required": ["uid"],
+        },
+    )
+    async def submit_manual_live_event(self, **kwargs):
+        runtime = self._runtime()
+        if not runtime.config.developer_tools_enabled:
+            return Err(SdkError("developer mode is disabled"))
+        result = await runtime.handle_manual_event(**kwargs)
+        return Ok(result.to_public_dict())
+
     @ui.action(id="clear_sandbox_data", label=tr("actions.clear_sandbox_data.label", default="清空沙盒记录"), group="developer", order=30, refresh_context=True)
     @plugin_entry(id="clear_sandbox_data", name=tr("entries.clear_sandbox_data.name", default="清空沙盒记录"), description=tr("entries.clear_sandbox_data.description", default="清空开发者沙盒的临时记录和头像预览缓存，不影响观众档案。"))
     async def clear_sandbox_data(self, **_):
         return Ok({"cleared": self._runtime().clear_sandbox_data()})
+
+    @plugin_entry(id="clear_viewer_profiles", name=tr("entries.clear_viewer_profiles.name", default="清空观众档案"), description=tr("entries.clear_viewer_profiles.description", default="清空观众档案，用于下一场受控直播测试前重置首评状态。"))
+    async def clear_viewer_profiles(self, **_):
+        runtime = self._runtime()
+        if not runtime.config.developer_tools_enabled:
+            return Err(SdkError("developer mode is disabled"))
+        try:
+            return Ok({"cleared": await runtime.clear_viewer_profiles()})
+        except PermissionError as exc:
+            return Err(SdkError(str(exc)))
+
+    @plugin_entry(
+        id="delete_viewer_profile",
+        name=tr("entries.delete_viewer_profile.name", default="Delete viewer profile"),
+        description=tr("entries.delete_viewer_profile.description", default="Delete one viewer profile by UID, including first-appearance state for controlled testing."),
+        input_schema={
+            "type": "object",
+            "properties": {"uid": {"type": "string"}},
+            "required": ["uid"],
+        },
+    )
+    async def delete_viewer_profile(self, uid="", **_):
+        runtime = self._runtime()
+        if not runtime.config.developer_tools_enabled:
+            return Err(SdkError("developer mode is disabled"))
+        try:
+            return Ok({"result": await runtime.delete_viewer_profile(uid)})
+        except (PermissionError, ValueError) as exc:
+            return Err(SdkError(str(exc)))
+
+    @plugin_entry(
+        id="reset_viewer_impression",
+        name=tr("entries.reset_viewer_impression.name", default="Reset viewer impression"),
+        description=tr("entries.reset_viewer_impression.description", default="Clear one viewer's impression memory by UID while preserving first-appearance roast state."),
+        input_schema={
+            "type": "object",
+            "properties": {"uid": {"type": "string"}},
+            "required": ["uid"],
+        },
+    )
+    async def reset_viewer_impression(self, uid="", **_):
+        runtime = self._runtime()
+        if not runtime.config.developer_tools_enabled:
+            return Err(SdkError("developer mode is disabled"))
+        try:
+            return Ok({"result": await runtime.reset_viewer_impression(uid)})
+        except (PermissionError, ValueError) as exc:
+            return Err(SdkError(str(exc)))
 
     async def developer_lookup_bili_user(self, **kwargs):
         return await self._developer_lookup_bili_user_impl(**kwargs)
