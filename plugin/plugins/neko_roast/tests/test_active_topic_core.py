@@ -158,7 +158,11 @@ def test_anonymous_recent_danmaku_flood_is_rejected() -> None:
         "@Alice @neko?",
         "@Alice @neko👋",
         "@Alice @neko好可爱",
+        "@Alice @nekoかわいい",
+        "@Alice @nekoカワイイ",
+        "@Alice @nekoちゃん何してるの",
         "@Alice @猫猫，今天播什么",
+        "@Alice @猫猫ちゃん",
         "@Alice @猫猫✨今天播什么",
     ),
 )
