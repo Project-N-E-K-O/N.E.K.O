@@ -188,7 +188,13 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
       roast_once_per_uid: configForm.values.roast_once_per_uid,
       ...advancedConfigPatch(),
     }
-    const payload = Object.keys(patch).length ? { ...patch } : fullPayload
+    const payload = Object.keys(patch).length
+      ? {
+          ...patch,
+          live_room_ref: liveRoomRef,
+          live_room_id: livePlatform === "bilibili" ? liveRoomRef : 0,
+        }
+      : fullPayload
     try {
       await props.api.call("update_config", payload)
       await props.api.refresh()
