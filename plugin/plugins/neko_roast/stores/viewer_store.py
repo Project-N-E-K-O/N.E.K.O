@@ -135,13 +135,18 @@ class ViewerStore:
                 return profiles
         return {}
 
-    async def _save_all(self, profiles: dict[str, dict[str, Any]]) -> bool:
+    async def _save_all(
+        self,
+        profiles: dict[str, dict[str, Any]],
+        *,
+        allow_fallback: bool = True,
+    ) -> bool:
         file, custom = self._resolve_file()
         if await asyncio.to_thread(self._write_json, file, profiles):
             self._active_fallback_file = None
             return True
         # 自定义目录写失败 → 回退默认目录（只告警一次，避免刷屏）。
-        if custom:
+        if custom and allow_fallback:
             fallback = self._default_dir() / _STORE_FILE
             if await asyncio.to_thread(self._write_json, fallback, profiles):
                 self._active_fallback_file = fallback
@@ -253,21 +258,21 @@ class ViewerStore:
             await self._save_all(profiles)
             return profile
 
-    async def mark_roasted(self, uid: str, output: str) -> None:
+    async def mark_roasted(self, uid: str, output: str) -> bool:
         async with self._lock:
-            await self._mark_roasted_locked(uid, output)
+            return await self._mark_roasted_locked(uid, output)
 
-    async def _mark_roasted_locked(self, uid: str, output: str) -> None:
+    async def _mark_roasted_locked(self, uid: str, output: str) -> bool:
         profiles = await self._load_all()
         safe_uid = _safe_profile_uid(uid)
         if not safe_uid:
-            return
+            return False
         item = _safe_profile_item(profiles.get(safe_uid) or {"uid": safe_uid}, fallback_uid=safe_uid)
         item["roast_count"] = public_int(item.get("roast_count"), default=0, minimum=0) + 1
         item["last_roast_at"] = utc_now_iso()
         item["last_result"] = _safe_profile_text(output)
         profiles[safe_uid] = _safe_profile_item(item, fallback_uid=safe_uid)
-        await self._save_all(profiles)
+        return await self._save_all(profiles)
 
     async def has_roasted(self, uid: str) -> bool:
         profiles = await self._load_all()
@@ -289,7 +294,7 @@ class ViewerStore:
         async with self._lock:
             profiles = await self._load_all()
             cleared = len(profiles)
-            persisted = await self._save_all({})
+            persisted = await self._save_all({}, allow_fallback=False)
             file, _custom = self._resolve_file()
             if self._active_fallback_file is not None:
                 file = self._active_fallback_file
@@ -307,7 +312,7 @@ class ViewerStore:
             profiles = await self._load_all()
             found = key in profiles
             profiles.pop(key, None)
-            persisted = await self._save_all(profiles)
+            persisted = await self._save_all(profiles, allow_fallback=False)
             file, _custom = self._resolve_file()
             if self._active_fallback_file is not None:
                 file = self._active_fallback_file
@@ -345,7 +350,7 @@ class ViewerStore:
                     else:
                         item[field] = ""
                 profiles[key] = item
-                persisted = await self._save_all(profiles)
+                persisted = await self._save_all(profiles, allow_fallback=False)
             file, _custom = self._resolve_file()
             if self._active_fallback_file is not None:
                 file = self._active_fallback_file
