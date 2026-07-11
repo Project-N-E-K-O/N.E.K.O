@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from . import active_topic_mentions
 
-
 def is_reaction_only(dense_lowered: str) -> bool:
     reaction_markers = (
         "\u54c8\u54c8",
