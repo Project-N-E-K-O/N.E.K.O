@@ -47,3 +47,32 @@ def test_patched_panel_saves_include_current_room_reference() -> None:
     for panel_name in ("panel.tsx", "panel_compat.tsx"):
         source = (root / "ui" / panel_name).read_text(encoding="utf-8")
         assert expected in source
+
+
+def test_patched_panel_saves_ignore_unhydrated_room_sentinel() -> None:
+    root = Path(__file__).resolve().parents[1]
+    expected_room_priority = (
+        'normalizedRoomRef(configForm.values.live_room_ref) ||\n'
+        '          normalizedRoomRef(config.live_room_ref) ||\n'
+        '          normalizedRoomRef(config.live_room_id) ||\n'
+        '          normalizedRoomRef(configForm.values.live_room_id)'
+    )
+
+    for panel_name in ("panel.tsx", "panel_compat.tsx"):
+        source = (root / "ui" / panel_name).read_text(encoding="utf-8")
+        assert 'return roomRef === "0" ? "" : roomRef' in source
+        assert expected_room_priority in source
+
+
+def test_platform_switch_preserves_persisted_room_target() -> None:
+    root = Path(__file__).resolve().parents[1]
+    safe_switch = 'saveConfig({ live_platform: next, live_enabled: false })'
+    destructive_switch = (
+        'saveConfig({ live_platform: next, live_room_ref: "", '
+        'live_room_id: 0, live_enabled: false })'
+    )
+
+    for panel_name in ("panel.tsx", "panel_compat.tsx"):
+        source = (root / "ui" / panel_name).read_text(encoding="utf-8")
+        assert safe_switch in source
+        assert destructive_switch not in source
