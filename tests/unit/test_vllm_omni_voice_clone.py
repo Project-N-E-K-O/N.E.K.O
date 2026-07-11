@@ -469,7 +469,7 @@ def test_vllm_omni_preview_success(monkeypatch):
     nest_asyncio.apply()
     import types as _types
     from main_routers.characters_router import get_voice_preview
-    import main_routers.characters_router as _cr
+    import main_routers.characters_router.voice_preview as _cr
 
     voice_id = "vllm-omni-clone-ch-abc123def456"
     sample_pcm = (np.arange(1600, dtype=np.int16)).tobytes()
@@ -524,7 +524,7 @@ def test_vllm_omni_preview_server_error(monkeypatch):
     nest_asyncio.apply()
     import types as _types
     from main_routers.characters_router import get_voice_preview
-    import main_routers.characters_router as _cr
+    import main_routers.characters_router.voice_preview as _cr
 
     voice_id = "vllm-omni-clone-ch-err123"
     sample_pcm = (np.arange(1600, dtype=np.int16)).tobytes()
@@ -570,7 +570,7 @@ def test_vllm_omni_preview_no_audio_frames(monkeypatch):
     nest_asyncio.apply()
     import types as _types
     from main_routers.characters_router import get_voice_preview
-    import main_routers.characters_router as _cr
+    import main_routers.characters_router.voice_preview as _cr
 
     voice_id = "vllm-omni-clone-ch-empty"
     sample_pcm = (np.arange(1600, dtype=np.int16)).tobytes()
