@@ -129,6 +129,8 @@ jobs:
         # background pre-import after ready. `# noqa: STARTUP_LAZY_IMPORT`
         # opts out with justification.
         run: python scripts/check_startup_import_lazy.py
+
+  python-conventions:
     name: Python conventions (i18n-sync + docs + api-trailing-slash×2 + module-layering + docstring-cjk)
     runs-on: ubuntu-latest
     timeout-minutes: 10
