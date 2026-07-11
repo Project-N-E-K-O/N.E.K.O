@@ -191,7 +191,10 @@ def _event_type(item: dict[str, Any]) -> str:
         event_type = _EVENT_ALIASES.get(method_token, "")
         if event_type:
             return event_type
-    raw = _first(item, "event_type", "eventType", "type", "msg_type", "msgType")
+    raw_keys = ("event_type", "eventType", "type")
+    if not method_token:
+        raw_keys += ("msg_type", "msgType")
+    raw = _first(item, *raw_keys)
     if isinstance(raw, int) and not isinstance(raw, bool):
         token = str(raw)
     elif isinstance(raw, str):
