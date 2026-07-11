@@ -146,6 +146,13 @@ function liveStateTone(state: string): "success" | "warning" | "danger" | "defau
   return "default"
 }
 
+function recentResultTone(status: string): "success" | "warning" | "danger" | "default" {
+  if (status === "pushed") return "success"
+  if (status === "failed") return "danger"
+  if (status === "skipped") return "warning"
+  return "default"
+}
+
 function speechExplanationTone(summary: string): "success" | "warning" | "danger" | "default" {
   if (summary === "ready" || summary === "recently_spoke") return "success"
   if (summary === "cannot_stream" || summary === "failed") return "danger"
@@ -651,9 +658,10 @@ function AuthCard({
             {loginState?.qrcode_image ? (
               <Stack>
                 {/* hosted-ui strips data: URLs from img src, so the QR code uses a CSS background image. */}
-                <div
+                <button
+                  type="button"
                   onClick={onLogin}
-                  role="button"
+                  aria-label={t("panel.auth.refreshHint")}
                   title={t("panel.auth.refreshHint")}
                   style={{
                     width: "180px",
@@ -661,6 +669,7 @@ function AuthCard({
                     boxSizing: "border-box",
                     padding: "8px",
                     borderRadius: "8px",
+                    border: "none",
                     cursor: "pointer",
                     backgroundColor: "#ffffff",
                     backgroundImage: `url("${loginState.qrcode_image}")`,
@@ -839,7 +848,7 @@ function RecentResultsTable({ t, results }: { t: PanelTranslator; results: any[]
               const signal = String(row.event_signal || "unknown")
               return <StatusBadge tone={eventSignalTone(signal)} label={eventSignalLabel(signal, t)} />
             } },
-            { key: "status", label: t("panel.columns.status"), render: (row: any) => <StatusBadge tone={row.status === "pushed" ? "success" : "warning"} label={String(row.status || "-")} /> },
+            { key: "status", label: t("panel.columns.status"), render: (row: any) => <StatusBadge tone={recentResultTone(String(row.status || ""))} label={String(row.status || "-")} /> },
             { key: "response_latency_ms", label: t("panel.columns.responseLatency"), render: (row: any) => formatLatencyMs(row.response_latency_ms) },
             { key: "reason", label: t("panel.columns.reason"), render: (row: any) => row.reason || row.output || "-" },
           ]}
@@ -1023,14 +1032,21 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
 
   async function saveConfig(patch: Record<string, any> = {}) {
     const livePlatform = String(patch.live_platform ?? config.live_platform ?? configForm.values.live_platform ?? "bilibili")
-    const rawLiveRoomRef = patch.live_room_ref ?? (
-      configForm.values.live_room_ref ||
-      configForm.values.live_room_id ||
-      config.live_room_ref ||
-      config.live_room_id ||
-      ""
-    )
-    const liveRoomRef = String(rawLiveRoomRef).trim()
+    const normalizedRoomRef = (value: unknown) => {
+      const roomRef = String(value ?? "").trim()
+      return roomRef === "0" ? "" : roomRef
+    }
+    const hasPatchedPlatform = Object.prototype.hasOwnProperty.call(patch, "live_platform")
+    const hasPatchedRoomRef = Object.prototype.hasOwnProperty.call(patch, "live_room_ref")
+    const hasPatchedRoomId = Object.prototype.hasOwnProperty.call(patch, "live_room_id")
+    const liveRoomRef = hasPatchedRoomRef || hasPatchedRoomId
+      ? normalizedRoomRef(hasPatchedRoomRef ? patch.live_room_ref : patch.live_room_id)
+      : (
+          normalizedRoomRef(configForm.values.live_room_ref) ||
+          normalizedRoomRef(config.live_room_ref) ||
+          normalizedRoomRef(config.live_room_id) ||
+          normalizedRoomRef(configForm.values.live_room_id)
+        )
     const fullPayload = {
       live_platform: livePlatform,
       live_room_ref: liveRoomRef,
@@ -1043,12 +1059,15 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
       roast_once_per_uid: configForm.values.roast_once_per_uid,
       ...advancedConfigPatch(),
     }
-    const payload = Object.keys(patch).length
-      ? {
+    const patchedPayload = hasPatchedPlatform && !hasPatchedRoomRef && !hasPatchedRoomId
+      ? patch
+      : {
           ...patch,
           live_room_ref: liveRoomRef,
           live_room_id: livePlatform === "bilibili" ? liveRoomRef : 0,
         }
+    const payload = Object.keys(patch).length
+      ? patchedPayload
       : fullPayload
     try {
       await props.api.call("update_config", payload)
@@ -1066,7 +1085,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
     configForm.setField("live_room_id", "")
     configForm.setField("live_enabled", false)
     setLiveRoomResult(null)
-    saveConfig({ live_platform: next, live_room_ref: "", live_room_id: 0, live_enabled: false })
+    saveConfig({ live_platform: next, live_enabled: false })
   }
 
   async function lookupLiveRoom() {
@@ -1160,7 +1179,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
     try {
       const result = unwrapActionResult(await props.api.call("douyin_cookie_status"))
       setDouyinAuthState(result)
-      if (result.logged_in) toast.success(t("panel.douyinAuth.cookieReady"))
+      if (result.logged_in || result.has_cookie) toast.success(t("panel.douyinAuth.cookieReady"))
       else toast.info(t("panel.douyinAuth.cookieMissing"))
       await props.api.refresh()
     } catch (err) {
@@ -1408,7 +1427,13 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   const reconnectState = connection && typeof connection.reconnect === "object" ? connection.reconnect : null
   const connectionLastError = String(connection.last_error || "")
 
-  const started = !!(connection.connected || config.live_enabled)
+  const connectionState = String(connection.state || "")
+  const started = !!(
+    connection.connected ||
+    connection.listening ||
+    connectionState === "connected" ||
+    connectionState === "receiving"
+  )
   const modules = Array.isArray(safeState.modules) ? safeState.modules : []
 
   // Main live-room console.
@@ -1475,6 +1500,15 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
         <Stack>
           <Field label={t("panel.fields.streamTheme")}>
             <Input value={configForm.values.stream_theme} onChange={(value) => configForm.setField("stream_theme", value)} />
+          </Field>
+          <Field label={t("panel.fields.streamGoal")}>
+            <Input value={configForm.values.stream_goal} onChange={(value) => configForm.setField("stream_goal", value)} />
+          </Field>
+          <Field label={t("panel.fields.streamColumns")}>
+            <Input value={configForm.values.stream_columns} onChange={(value) => configForm.setField("stream_columns", value)} />
+          </Field>
+          <Field label={t("panel.fields.streamAvoidTopics")}>
+            <Input value={configForm.values.stream_avoid_topics} onChange={(value) => configForm.setField("stream_avoid_topics", value)} />
           </Field>
           <Grid cols={3}>
             <Button tone="success" onClick={() => saveConfig(advancedConfigPatch())}>{t("panel.actions.save")}</Button>

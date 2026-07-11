@@ -48,7 +48,7 @@ class DouyinTransportStartRequest:
     """Private inputs used by the connector without exposing them publicly."""
 
     room_ref: str
-    cookie: str
+    cookie: str = field(repr=False)
     connection_plan: Any
     emit: Callable[[DouyinTransportEvent], Any] | None = None
     on_state: Callable[[DouyinTransportState], Any] | None = None

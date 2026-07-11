@@ -63,7 +63,7 @@ uv run python app/memory_server.py
 uv run python app/main_server.py
 
 # ターミナル 3 -- エージェントサーバー（オプション）
-uv run python app/agent_server.py
+uv run python -m app.agent_server
 ```
 
 補足:

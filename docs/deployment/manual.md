@@ -66,7 +66,7 @@ uv run python app/memory_server.py
 uv run python app/main_server.py
 
 # Terminal 3 — Agent server (optional)
-uv run python app/agent_server.py
+uv run python -m app.agent_server
 ```
 
 Notes:
