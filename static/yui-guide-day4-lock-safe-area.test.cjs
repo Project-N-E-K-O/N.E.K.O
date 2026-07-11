@@ -24,7 +24,7 @@ test('day4 model lock spotlight uses a scene-scoped lock icon safe area', () => 
     [
         'live2d/live2d-ui-buttons.js',
         'vrm-ui-buttons.js',
-        'mmd-ui-buttons.js',
+        'mmd/mmd-ui-buttons.js',
         'pngtuber-core.js'
     ].forEach((fileName) => {
         assert.match(
@@ -35,7 +35,7 @@ test('day4 model lock spotlight uses a scene-scoped lock icon safe area', () => 
     });
 
     assert.match(readStatic('vrm-ui-buttons.js'), /_updateFloatingButtonsPositionNow/);
-    assert.match(readStatic('mmd-ui-buttons.js'), /_updateFloatingButtonsPositionNow/);
+    assert.match(readStatic('mmd/mmd-ui-buttons.js'), /_updateFloatingButtonsPositionNow/);
     assert.match(readStatic('vrm-ui-buttons.js'), /const minLockY = Math\.min\(20, maxLockY\);[\s\S]*const boundedLockY = Math\.max\(minLockY, Math\.min\(lockTargetY, maxLockY\)\);/);
-    assert.match(readStatic('mmd-ui-buttons.js'), /const minLockY = Math\.min\(20, maxLockY\);[\s\S]*const boundedLockY = Math\.max\(minLockY, Math\.min\(lockTargetY, maxLockY\)\);/);
+    assert.match(readStatic('mmd/mmd-ui-buttons.js'), /const minLockY = Math\.min\(20, maxLockY\);[\s\S]*const boundedLockY = Math\.max\(minLockY, Math\.min\(lockTargetY, maxLockY\)\);/);
 });

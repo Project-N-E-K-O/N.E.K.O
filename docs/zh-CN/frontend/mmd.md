@@ -28,7 +28,7 @@ N.E.K.O. 使用 Three.js 及其 MMD 加载器渲染 MMD（MikuMikuDance）模型
 
 ## 渲染与静态模块
 
-查看器由 `static/` 下的 `mmd-*.js` 模块组成：
+查看器由 `static/mmd/` 下的 `mmd-*.js` 模块组成：
 
 | 模块 | 用途 |
 |------|------|

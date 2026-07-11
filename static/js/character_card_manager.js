@@ -9277,12 +9277,12 @@ async function ensureMmdModulesLoaded() {
     }
 
     const mmdModules = [
-        '/static/mmd-core.js',
-        '/static/mmd-animation.js',
-        '/static/mmd-expression.js',
-        '/static/mmd-interaction.js',
-        '/static/mmd-cursor-follow.js',
-        '/static/mmd-manager.js'
+        '/static/mmd/mmd-core.js',
+        '/static/mmd/mmd-animation.js',
+        '/static/mmd/mmd-expression.js',
+        '/static/mmd/mmd-interaction.js',
+        '/static/mmd/mmd-cursor-follow.js',
+        '/static/mmd/mmd-manager.js'
     ];
 
     for (const moduleSrc of mmdModules) {
