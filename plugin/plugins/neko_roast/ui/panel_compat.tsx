@@ -1,3 +1,6 @@
+// Main-branch compatibility entry. Generated from the modular panel sources.
+// Keep ui/panel.tsx and sibling modules as the authored source of truth.
+
 import {
   Alert,
   Button,
@@ -23,45 +26,897 @@ import {
   useState,
   useToast,
 } from "@neko/plugin-ui"
-import type { PluginSurfaceProps } from "@neko/plugin-ui"
-import {
-  AuthCard,
-  AvatarPreview,
-  ComingSoonSection,
-  ModuleHealthBadge,
-  ModuleOverviewCard,
-  ModuleRenderBoundary,
-  StatusBadgeRow,
-  ToggleSwitch,
-  unwrapActionResult,
-} from "./panel_components"
-import type { DashboardState, RoastConfig } from "./panel_state"
-import { configDefaults, presetViewer, sandboxDefaults } from "./panel_state"
-import {
-  activeTopicIntentLabel,
-  activeTopicReplyAffordanceLabel,
-  activeTopicShapeLabel,
-  activeTopicSourceLabel,
-  eventSignalLabel,
-  eventSignalTone,
-  formatAgeSec,
-  formatLatencyMs,
-  idleHostBeatShapeLabel,
-  interactionRoute,
-  interactionRouteLabel,
-  interactionRouteTone,
-  labelFallback,
-  latestEventLabel,
-  liveStateTone,
-  liveStatusTone,
-  panelText,
-  soloReadinessItemTone,
-  soloReadinessTone,
-  speechExplanationTone,
-  statusTone,
-} from "./panel_helpers"
-import { LiveExplainSection, RecentResultsTable, ViewerProfilesTable } from "./panel_data_sections"
 
+type PluginSurfaceProps<TState = any> = {
+  state?: TState
+  t: (key: string) => string
+  api: {
+    call: (action: string, payload?: any) => Promise<any>
+    refresh: () => Promise<any>
+  }
+  [key: string]: any
+}
+
+type PanelTranslator = (key: string) => string
+type DynamicLabel = (group: string, keyPrefix: string, value: string) => string
+
+/* bundled source: ui/panel_state.ts */
+type RoastConfig = {
+  live_platform?: string
+  live_room_ref?: string
+  live_room_id?: number
+  live_enabled?: boolean
+  developer_tools_enabled?: boolean
+  live_mode?: string
+  activity_level?: string
+  roast_strength?: string
+  roast_once_per_uid?: boolean
+  rate_limit_seconds?: number
+  queue_limit?: number
+  safety_auto_stop_enabled?: boolean
+  dry_run?: boolean
+  viewer_store_dir?: string
+  stream_theme?: string
+  stream_goal?: string
+  stream_columns?: string
+  stream_avoid_topics?: string
+}
+
+type DashboardState = {
+  config?: RoastConfig
+  live_connection?: Record<string, any>
+  store_enabled?: boolean
+  viewer_store?: Record<string, any>
+  safety?: Record<string, any>
+  live_status?: Record<string, any>
+  live_state?: Record<string, any>
+  live_director_status?: Record<string, any>
+  solo_test_readiness?: Record<string, any>
+  modules?: Array<Record<string, any>>
+  recent_profiles?: Array<Record<string, any>>
+  recent_results?: Array<Record<string, any>>
+  recent_sandbox_results?: Array<Record<string, any>>
+  recent_audit?: Array<Record<string, any>>
+  speech_explanation?: Record<string, any>
+  live_explain?: Record<string, any>
+  idle_hosting_status?: Record<string, any>
+  active_engagement_status?: Record<string, any>
+  health_rows?: Array<Record<string, any>>
+}
+
+const configDefaults = {
+  live_platform: "bilibili",
+  live_room_ref: "",
+  live_room_id: "0",
+  douyin_cookie: "",
+  douyin_uid: "",
+  douyin_nickname: "",
+  live_enabled: false,
+  developer_tools_enabled: false,
+  live_mode: "co_stream",
+  activity_level: "standard",
+  roast_strength: "normal",
+  roast_once_per_uid: true,
+  rate_limit_seconds: "20",
+  queue_limit: "5",
+  safety_auto_stop_enabled: true,
+  dry_run: false,
+  viewer_store_dir: "",
+  stream_theme: "",
+  stream_goal: "",
+  stream_columns: "",
+  stream_avoid_topics: "",
+}
+
+const sandboxDefaults = {
+  target: "",
+  uid: "",
+  nickname: "",
+  avatar_url: "",
+  danmaku_text: "",
+}
+
+const presetViewer = {
+  uid: "9000000000000001",
+  nickname: "Demo viewer",
+  danmaku_text: "First time here, can you roast my avatar?",
+}
+
+/* bundled source: ui/panel_helpers.ts */
+/* Pure panel formatting helpers. Keep this file free of React state and host actions. */
+
+function statusTone(status: string): "success" | "warning" | "danger" | "default" {
+  if (status === "running") return "success"
+  if (status === "paused" || status === "degraded" || status === "disconnected") return "warning"
+  if (status === "tripped") return "danger"
+  return "default"
+}
+
+function liveStatusTone(summary: string): "success" | "warning" | "danger" | "default" {
+  if (summary === "ready_to_stream") return "success"
+  if (summary === "test_only" || summary === "temporarily_not_speaking") return "warning"
+  if (summary === "cannot_stream") return "danger"
+  return "default"
+}
+
+function liveStateTone(state: string): "success" | "warning" | "danger" | "default" {
+  if (state === "engaged" || state === "warmup") return "success"
+  if (state === "quiet" || state === "idle" || state === "paused") return "warning"
+  if (state === "blocked") return "danger"
+  return "default"
+}
+
+function speechExplanationTone(summary: string): "success" | "warning" | "danger" | "default" {
+  if (summary === "ready" || summary === "recently_spoke") return "success"
+  if (summary === "cannot_stream" || summary === "failed") return "danger"
+  if (summary === "test_only" || summary === "temporarily_not_speaking" || summary === "waiting_for_activity" || summary === "recently_skipped") return "warning"
+  return "default"
+}
+
+function soloReadinessTone(ready: boolean, summary: string): "success" | "warning" | "danger" | "default" {
+  if (ready) return "success"
+  if (summary === "not_solo_stream") return "default"
+  return "warning"
+}
+
+function soloReadinessItemTone(status: string): "success" | "warning" | "danger" | "default" {
+  if (status === "observed") return "success"
+  if (status === "ready") return "success"
+  if (status === "warning") return "warning"
+  if (status === "blocked") return "warning"
+  return "default"
+}
+
+function panelText(t: (key: string) => string, key: string, fallback: string): string {
+  const value = t(key)
+  if (!value || value === key || value.startsWith("panel.") || value.startsWith("entries.")) return fallback
+  return value
+}
+
+function labelFallback(group: string, value: string): string {
+  const labels: Record<string, Record<string, string>> = {
+    liveStatusSummary: {
+      ready_to_stream: "可以开播",
+      test_only: "当前只能测试",
+      temporarily_not_speaking: "暂时不会说话",
+      cannot_stream: "不能开播",
+    },
+    liveStatusReason: {
+      ready: "开播检查已就绪。",
+      dry_run: "测试模式已开启，不会真实输出。",
+      manual_paused: "猫猫已暂停。",
+      room_not_configured: "还没有配置直播间。",
+      live_disabled: "NEKO Live 尚未启用。",
+      live_ingest_disconnected: "直播接收还没有连接。",
+      cooldown: "猫猫正在等待冷却结束。",
+      safety_tripped: "安全门已停止输出。",
+      safety_degraded: "安全门处于降级状态。",
+      output_channel_unavailable: "输出通道当前不可用。",
+      all_ready: "所有检查都已就绪。",
+    },
+    liveModeRole: {
+      co_stream: "人猫同播",
+      solo_stream: "猫猫独播",
+    },
+    liveModeRoleHint: {
+      companion: "人猫同播：NEKO 是搭档，低打断补位。",
+      solo_host: "猫猫独播：NEKO 正在独自接待观众。",
+    },
+    liveState: {
+      engaged: "互动中",
+      warmup: "开场中",
+      quiet: "安静中",
+      idle: "冷场中",
+      paused: "已暂停",
+      blocked: "被阻断",
+    },
+    liveStateReason: {
+      recent_activity: "最近有互动，优先接话。",
+      solo_stream_warmup: "猫猫独播刚开始，适合开场接待。",
+      quiet_activity_gap: "直播间已经安静了一小会。",
+      low_activity: "互动较少。",
+      no_recent_activity: "最近没有新的互动。",
+      manual_paused: "猫猫已暂停。",
+      blocked_by_live_status: "当前开播状态还不允许输出。",
+    },
+    idleHostingCandidate: {
+      true: "适合冷场陪播",
+      false: "还没到冷场陪播时机",
+    },
+    idleHostingEligible: {
+      true: "可以补位",
+      false: "暂不能补位",
+    },
+    idleHostingReason: {
+      eligible: "猫猫独播处于冷场状态，可以准备补位。",
+      not_candidate: "还不是候选时机。",
+      minimum_interval: "正在等待最小间隔。",
+      auto_disabled: "多次失败后已自动停用。",
+      solo_idle_ready: "猫猫独播已进入冷场候选，可以准备补位。",
+    },
+    speechSummary: {
+      ready: "NEKO 现在可以说话",
+      test_only: "当前只能测试",
+      temporarily_not_speaking: "NEKO 暂时不会说话",
+      cannot_stream: "NEKO 还不能开播",
+      waiting_for_activity: "正在等合适的开口时机",
+      recently_spoke: "NEKO 刚刚说过话",
+      recently_skipped: "最近事件没有输出",
+      failed: "最近输出失败",
+      waiting: "正在等待合适时机",
+    },
+    speechReason: {
+      ready: "开播检查已就绪。",
+      dry_run: "测试模式已开启，不会真实输出。",
+      manual_paused: "NEKO 被手动暂停了。",
+      room_not_configured: "还没有配置直播间。",
+      live_ingest_disconnected: "直播接收还没有连接。",
+      cooldown: "NEKO 正在等待冷却结束。",
+      safety_tripped: "安全门已停止输出。",
+      safety_degraded: "安全门处于降级状态。",
+      output_channel_unavailable: "输出通道当前不可用。",
+      solo_stream_warmup: "猫猫独播刚开始，可以先说一句开场话。",
+      idle_hosting_candidate: "猫猫独播已空闲，可以进入冷场陪播。",
+      quiet_activity_gap: "直播间已经安静了一小会。",
+      no_recent_activity: "最近没有新的互动。",
+      waiting_for_viewer_or_idle_slot: "正在等待观众接话或冷场补位时机。",
+      recent_output: "NEKO 刚刚已经输出过。",
+      recently_skipped: "最近事件被策略跳过。",
+      failed: "最近输出链路失败。",
+      "dispatcher.dry_run": "Dispatcher 以 dry_run 完成。",
+    },
+    liveDirectorAction: {
+      none: "暂无",
+      warmup_hosting: "开场接待",
+      active_engagement: "主动营业",
+      idle_hosting: "冷场陪播",
+    },
+    liveDirectorReason: {
+      waiting_for_viewer: "正在等待观众互动。",
+      companion_mode: "人猫同播不自动抢话。",
+      paused: "猫猫已暂停。",
+      blocked: "直播输出被阻断。",
+      recent_activity: "最近互动足够，猫猫应该接话而不是强行抛话题。",
+      solo_quiet: "猫猫独播较安静，可以轻主动营业。",
+      solo_warmup: "猫猫独播刚开始，可以先开场接待。",
+      solo_idle: "猫猫独播已冷场，可以冷场陪播。",
+      solo_idle_ready: "猫猫独播已冷场，可以冷场陪播。",
+      minimum_interval: "正在等待最小间隔。",
+      recent_danmaku_output: "猫猫刚接过弹幕，主动营业先等一下。",
+      not_candidate: "还不是候选时机。",
+      auto_disabled: "多次失败后已自动停用。",
+      active_engagement_not_ready: "主动营业暂未就绪。",
+      warmup_hosting_not_ready: "开场接待暂时还没准备好。",
+      idle_hosting_not_ready: "冷场陪播暂未就绪。",
+    },
+    activeEngagementCandidate: {
+      true: "适合轻主动营业",
+      false: "现在不适合主动营业",
+    },
+    activeEngagementReason: {
+      eligible: "猫猫独播处于安静状态，可以抛一个小话题。",
+      deferred: "主动营业暂缓，先验证接弹幕和冷场陪播。",
+      not_solo_stream: "主动营业 v0 只服务猫猫独播。",
+      paused: "猫猫已暂停。",
+      blocked: "直播输出被阻断。",
+      not_quiet: "主动营业等待安静状态，不在热聊或完全冷场时触发。",
+      cooldown: "输出冷却还在生效。",
+      minimum_interval: "主动营业正在等待最小间隔。",
+      live_status_not_ready: "当前直播状态还不能输出。",
+    },
+    warmupHostingCandidate: {
+      true: "适合开场",
+      false: "开场已过",
+    },
+    soloReadinessSummary: {
+      ready_for_test: "可以开始测试独播",
+      ready_for_live_test: "可以开始真实独播测试",
+      ready: "独播检查已就绪",
+      not_solo_stream: "请先切到猫猫独播",
+      live_not_ready: "直播间还没准备好",
+    },
+    soloReadinessStatus: {
+      ready: "可用",
+      blocked: "等待",
+      observed: "已触发",
+    },
+    soloReadinessItem: {
+      preflight: "开播检查",
+      warmup_hosting: "开场接待",
+      avatar_roast: "首次出场锐评",
+      danmaku_response: "后续弹幕接话",
+      active_engagement: "轻主动营业",
+      idle_hosting: "冷场陪播",
+      pacing_control: "节奏控制",
+    },
+    safety: {
+      running: "运行中",
+      paused: "已暂停",
+      tripped: "已急停",
+      degraded: "降级中",
+      unknown: "未知",
+    },
+  }
+  return labels[group]?.[value] || value.replace(/_/g, " ")
+}
+
+function formatLatencyMs(value: any): string {
+  const ms = Number(value)
+  if (!Number.isFinite(ms) || ms < 0) return "-"
+  if (ms < 10000) return `${(ms / 1000).toFixed(1)}s`
+  return `${Math.round(ms / 1000)}s`
+}
+
+function formatAgeSec(value: any): string {
+  if (value === null || value === undefined) return "-"
+  const seconds = Number(value)
+  if (!Number.isFinite(seconds) || seconds < 0) return "-"
+  return `${seconds.toFixed(1)}s`
+}
+
+function interactionRoute(result: any): string {
+  const responseModule = String((result && result.response_module) || "")
+  if (responseModule) return responseModule
+  const source = String((result && result.event && result.event.source) || "")
+  if (source === "warmup_hosting") return "warmup_hosting"
+  if (source === "idle_hosting") return "idle_hosting"
+  if (source === "active_engagement") return "active_engagement"
+  const steps = Array.isArray(result && result.steps) ? result.steps : []
+  const routeStep = [...steps].reverse().find((step: any) => {
+    const id = String((step && step.id) || "")
+    return id === "danmaku_response" || id === "avatar_roast" || id === "live_support_events" || id === "warmup_hosting" || id === "idle_hosting" || id === "active_engagement"
+  })
+  if (routeStep && routeStep.id) return String(routeStep.id)
+  return source || "-"
+}
+
+function interactionRouteTone(route: string): "success" | "warning" | "danger" | "default" {
+  if (route === "avatar_roast" || route === "danmaku_response" || route === "live_support_events") return "success"
+  if (route === "warmup_hosting" || route === "idle_hosting") return "warning"
+  if (route === "active_engagement") return "default"
+  return "default"
+}
+
+function interactionRouteLabel(route: string, t: (key: string) => string): string {
+  if (route === "avatar_roast") return panelText(t, "panel.interaction.module.avatarRoast.title", "首次出场锐评")
+  if (route === "danmaku_response") return panelText(t, "panel.interaction.module.danmakuResponse.title", "后续弹幕接话")
+  if (route === "live_support_events") return panelText(t, "panel.interaction.module.liveSupportEvents.title", "礼物/SC/上舰致谢")
+  if (route === "warmup_hosting") return panelText(t, "panel.interaction.module.warmupHosting.title", "开场接待")
+  if (route === "idle_hosting") return panelText(t, "panel.interaction.module.idleHosting.title", "冷场陪播")
+  if (route === "active_engagement") return panelText(t, "panel.interaction.module.activeEngagement.title", "主动营业")
+  return route
+}
+
+function activeTopicIntentLabel(value: any, t: (key: string) => string): string {
+  const intent = String(value || "").trim()
+  if (!intent) return ""
+  if (intent === "quick_vote") return panelText(t, "panel.activeEngagementIntent.quickVote", "Quick vote")
+  if (intent === "agree_or_pushback") return panelText(t, "panel.activeEngagementIntent.agreeOrPushback", "Agree or push back")
+  if (intent === "tease_back") return panelText(t, "panel.activeEngagementIntent.teaseBack", "Tease back")
+  if (intent === "tiny_answer") return panelText(t, "panel.activeEngagementIntent.tinyAnswer", "Tiny answer")
+  if (intent === "quick_reply") return panelText(t, "panel.activeEngagementIntent.quickReply", "Quick reply")
+  return intent
+}
+
+function activeTopicSourceLabel(value: any, t: (key: string) => string): string {
+  const source = String(value || "").trim()
+  if (!source) return ""
+  if (source === "fallback") return panelText(t, "panel.activeEngagementSource.fallback", "Built-in topic")
+  if (source === "bili_trending") return panelText(t, "panel.activeEngagementSource.biliTrending", "Bili trending")
+  if (source === "recent_danmaku") return panelText(t, "panel.activeEngagementSource.recentDanmaku", "Recent danmaku")
+  return source.replace(/_/g, " ")
+}
+
+function activeTopicShapeLabel(value: any, t: (key: string) => string): string {
+  const shape = String(value || "").trim()
+  if (!shape) return ""
+  if (shape === "either_or") return panelText(t, "panel.activeEngagementShape.eitherOr", "A/B choice")
+  if (shape === "light_stance") return panelText(t, "panel.activeEngagementShape.lightStance", "Light stance")
+  if (shape === "tiny_tease") return panelText(t, "panel.activeEngagementShape.tinyTease", "Tiny tease")
+  if (shape === "small_challenge") return panelText(t, "panel.activeEngagementShape.smallChallenge", "Small challenge")
+  return shape
+}
+
+function activeTopicReplyAffordanceLabel(value: any, t: (key: string) => string): string {
+  const affordance = String(value || "").trim().toLowerCase()
+  if (!affordance) return ""
+  if (affordance === "viewer can answer with one side") return panelText(t, "panel.activeEngagementReplyAffordance.oneSide", "Viewer picks one side")
+  if (affordance === "viewer can agree or push back") return panelText(t, "panel.activeEngagementReplyAffordance.agreeOrPushback", "Viewer agrees or pushes back")
+  if (affordance === "viewer can tease neko back") return panelText(t, "panel.activeEngagementReplyAffordance.teaseBack", "Viewer teases NEKO back")
+  if (affordance === "viewer can answer in a few words") return panelText(t, "panel.activeEngagementReplyAffordance.fewWords", "Viewer answers in a few words")
+  if (affordance === "viewer can reply quickly") return panelText(t, "panel.activeEngagementReplyAffordance.quickReply", "Viewer replies quickly")
+  return String(value || "")
+}
+
+function idleHostBeatShapeLabel(value: any, t: (key: string) => string): string {
+  const shape = String(value || "").trim()
+  if (!shape) return ""
+  if (shape === "soft_observation") return panelText(t, "panel.idleHostingBeatShape.softObservation", "Soft observation")
+  if (shape === "tiny_choice") return panelText(t, "panel.idleHostingBeatShape.tinyChoice", "Tiny choice")
+  if (shape === "light_tease") return panelText(t, "panel.idleHostingBeatShape.lightTease", "Light tease")
+  if (shape === "small_mood") return panelText(t, "panel.idleHostingBeatShape.smallMood", "Small mood")
+  return shape.replace(/_/g, " ")
+}
+
+function eventSignalTone(signal: string): "success" | "warning" | "danger" | "default" {
+  if (signal === "gift_signal") return "warning"
+  if (signal === "super_chat_signal") return "success"
+  if (signal === "danmaku_signal") return "default"
+  return "default"
+}
+
+function eventSignalLabel(signal: string, t: (key: string) => string): string {
+  if (signal === "gift_signal") return t("panel.eventSignal.gift_signal")
+  if (signal === "super_chat_signal") return t("panel.eventSignal.super_chat_signal")
+  if (signal === "danmaku_signal") return t("panel.eventSignal.danmaku_signal")
+  return t("panel.eventSignal.unknown")
+}
+
+function latestEventLabel(result: any): string {
+  const event = (result && result.event) || {}
+  const identity = (result && result.identity) || {}
+  const who = String(identity.nickname || event.nickname || event.uid || "-")
+  const text = String(event.danmaku_text || "").trim()
+  if (text) return `${who}: ${text}`
+  return who
+}
+
+/* bundled source: ui/panel_components.tsx */
+function ModuleHealthBadge({ module, t }: { module: any; t: PanelTranslator }) {
+  if (module && module.degraded) return <StatusBadge tone="danger" label={t("panel.modules.degraded")} />
+  const on = !!(module && module.enabled)
+  const reserved = !!(module && module.status && module.status.reserved)
+  return (
+    <StatusBadge
+      tone={on ? "success" : (reserved ? "default" : "warning")}
+      label={on ? t("panel.modules.online") : (reserved ? t("panel.modules.soon") : t("panel.modules.off"))}
+    />
+  )
+}
+
+function ModuleRenderBoundary({
+  title,
+  render,
+  t,
+}: {
+  title: any
+  render: () => any
+  t: PanelTranslator
+}) {
+  try {
+    return render()
+  } catch (err) {
+    const msg = err && (err as any).message ? String((err as any).message) : ""
+    return (
+      <Card title={title}>
+        <Stack gap={8}>
+          <StatusBadge tone="danger" label={t("panel.modules.degraded")} />
+          <Alert tone="danger">{t("panel.modules.renderError")}</Alert>
+          {msg ? <Text>{msg}</Text> : null}
+        </Stack>
+      </Card>
+    )
+  }
+}
+
+function ToggleSwitch(props: {
+  checked: boolean
+  label?: any
+  disabled?: boolean
+  tone?: string
+  onChange: (value: boolean) => void
+}) {
+  const checked = !!props.checked
+  const disabled = !!props.disabled
+  // Use host theme variables so dark mode follows the shell.
+  const onColor = props.tone === "success" ? "var(--success)" : "var(--primary)"
+  const onGlow = props.tone === "success" ? "0 0 0 2px rgba(103, 194, 58, 0.18)" : "0 0 0 2px rgba(64, 158, 255, 0.18)"
+  const trackColor = disabled ? "var(--border)" : checked ? onColor : "var(--muted)"
+  const labelColor = disabled ? "var(--muted)" : "var(--text)"
+
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked ? "true" : "false"}
+      disabled={disabled}
+      onClick={() => {
+        if (!disabled) {
+          props.onChange(!checked)
+        }
+      }}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: "8px",
+        minHeight: "32px",
+        padding: "0",
+        border: "0",
+        background: "transparent",
+        color: labelColor,
+        cursor: disabled ? "not-allowed" : "pointer",
+        opacity: disabled ? 0.68 : 1,
+      }}
+    >
+      <span
+        aria-hidden="true"
+        style={{
+          position: "relative",
+          width: "42px",
+          height: "24px",
+          borderRadius: "999px",
+          background: trackColor,
+          transition: "background 160ms ease",
+          boxShadow: checked ? onGlow : "inset 0 0 0 1px rgba(148, 163, 184, 0.45)",
+          flex: "0 0 auto",
+        }}
+      >
+        <span
+          style={{
+            position: "absolute",
+            top: "2px",
+            left: "2px",
+            width: "20px",
+            height: "20px",
+            borderRadius: "50%",
+            background: "#ffffff",
+            transform: checked ? "translateX(18px)" : "translateX(0)",
+            transition: "transform 160ms ease",
+            boxShadow: "0 1px 3px rgba(17, 24, 39, 0.32)",
+          }}
+        />
+      </span>
+      {props.label ? <span>{props.label}</span> : null}
+    </button>
+  )
+}
+
+function AvatarPreview(props: { src?: string; alt: any }) {
+  if (!props.src) {
+    return (
+      <div
+        style={{
+          width: "72px",
+          height: "72px",
+          borderRadius: "8px",
+          border: "1px solid var(--border)",
+          background: "var(--surface)",
+        }}
+      />
+    )
+  }
+
+  return (
+    <img
+      src={props.src}
+      alt={props.alt}
+      style={{
+        width: "72px",
+        height: "72px",
+        borderRadius: "8px",
+        objectFit: "cover",
+        border: "1px solid var(--border)",
+        background: "var(--surface)",
+      }}
+    />
+  )
+}
+
+function unwrapActionResult(envelope: any): Record<string, any> {
+  if (envelope && typeof envelope === "object") {
+    if (envelope.result && typeof envelope.result === "object") return envelope.result
+    return envelope
+  }
+  return {}
+}
+
+function AuthCard({
+  t,
+  loginState,
+  loginLoggedIn,
+  loginName,
+  loginUid,
+  onLogin,
+  onLoginCheck,
+  onLogout,
+}: {
+  t: PanelTranslator
+  loginState: any
+  loginLoggedIn: boolean
+  loginName: string
+  loginUid: string
+  onLogin: () => void
+  onLoginCheck: () => void
+  onLogout: () => void
+}) {
+  return (
+    <Card title={t("panel.auth.title")}>
+      <Stack>
+        <Text>
+          {loginLoggedIn
+            ? t("panel.auth.loggedIn") + (loginName ? ": " + loginName : "") + (loginUid ? " (UID " + loginUid + ")" : "")
+            : t("panel.auth.loggedOut")}
+        </Text>
+        {loginLoggedIn ? (
+          <Grid cols={2}>
+            <Button tone="info" onClick={onLoginCheck}>{t("panel.actions.biliLoginCheck")}</Button>
+            <Button tone="danger" onClick={onLogout}>{t("panel.actions.biliLogout")}</Button>
+          </Grid>
+        ) : (
+          <Stack>
+            <Grid cols={2}>
+              <Button tone="info" onClick={onLogin}>{t("panel.actions.biliLogin")}</Button>
+              <Button tone="success" onClick={onLoginCheck}>{t("panel.actions.biliLoginCheck")}</Button>
+            </Grid>
+            {loginState?.qrcode_image ? (
+              <Stack>
+                {/* hosted-ui strips data: URLs from img src, so the QR code uses a CSS background image. */}
+                <div
+                  onClick={onLogin}
+                  role="button"
+                  title={t("panel.auth.refreshHint")}
+                  style={{
+                    width: "180px",
+                    height: "180px",
+                    boxSizing: "border-box",
+                    padding: "8px",
+                    borderRadius: "8px",
+                    cursor: "pointer",
+                    backgroundColor: "#ffffff",
+                    backgroundImage: `url("${loginState.qrcode_image}")`,
+                    backgroundRepeat: "no-repeat",
+                    backgroundPosition: "center",
+                    backgroundSize: "contain",
+                    backgroundOrigin: "content-box",
+                  }}
+                />
+                <Text>{t("panel.auth.scanHint")}</Text>
+                <Text>{t("panel.auth.refreshHint")}</Text>
+              </Stack>
+            ) : null}
+            {loginState?.message ? <Text>{loginState.message}</Text> : null}
+          </Stack>
+        )}
+      </Stack>
+    </Card>
+  )
+}
+
+function StatusBadgeRow({
+  items,
+  t,
+}: {
+  items: Array<{ key: string; tone?: "success" | "warning" | "danger" | "default" }>
+  t: PanelTranslator
+}) {
+  return (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+      {items.map((item) => (
+        <span key={item.key}>
+          <StatusBadge tone={item.tone || "default"} label={t(item.key)} />
+        </span>
+      ))}
+    </div>
+  )
+}
+
+function ModuleOverviewCard({ modules, t }: { modules: Array<Record<string, any>>; t: PanelTranslator }) {
+  return (
+    <Card title={t("panel.tabs.modules")}>
+      {modules.length ? (
+        <DataTable
+          data={modules.map((item: any, index: number) => ({ ...item, id: item.id || String(index) }))}
+          rowKey="id"
+          columns={[
+            { key: "title", label: t("panel.modules.name"), render: (row: any) => row.title || row.id || "-" },
+            { key: "status", label: t("panel.modules.status"), render: (row: any) => <ModuleHealthBadge module={row} t={t} /> },
+            { key: "id", label: "ID", render: (row: any) => row.id || "-" },
+          ]}
+        />
+      ) : (
+        <Text>{t("panel.modules.empty")}</Text>
+      )}
+    </Card>
+  )
+}
+
+function ComingSoonSection({ title, desc, t }: { title: any; desc: any; t: PanelTranslator }) {
+  return (
+    <Stack>
+      <div style={{ opacity: 0.7 }}>
+        <Card>
+          <Stack gap={10}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px" }}>
+              <span style={{ color: "var(--text)", fontSize: "15px", fontWeight: 720 }}>{title}</span>
+              <StatusBadge tone="info" label={t("panel.modules.soon")} />
+            </div>
+            <Text>{desc}</Text>
+          </Stack>
+        </Card>
+      </div>
+    </Stack>
+  )
+}
+
+/* bundled source: ui/panel_data_sections.tsx */
+function LiveExplainSection({
+  t,
+  dynamicLabel,
+  liveExplain,
+  speechSummary,
+  speechReason,
+}: {
+  t: PanelTranslator
+  dynamicLabel: DynamicLabel
+  liveExplain: any
+  speechSummary: string
+  speechReason: string
+}) {
+  const explainSummary = String(liveExplain.summary || speechSummary || "waiting")
+  const explainReason = String(liveExplain.reason || speechReason || "")
+  const explainTraceId = String(liveExplain.trace_id || "")
+  const explainTimeline = Array.isArray(liveExplain.timeline) ? liveExplain.timeline : []
+  const explainChain = Array.isArray(liveExplain.chain) ? liveExplain.chain : []
+  const explainSelection = liveExplain.selection || {}
+  const explainViewerMemory = liveExplain.viewer_memory || {}
+  const explainLatest = liveExplain.latest_result || {}
+  const explainThemes = Array.isArray(explainSelection.theme_keys) ? explainSelection.theme_keys.join(", ") : "-"
+  const explainTopTags = Array.isArray(explainViewerMemory.top_preference_tags)
+    ? explainViewerMemory.top_preference_tags.map((item: any) => `${item.tag}:${item.count}`).join(", ")
+    : "-"
+  const explainTopTopics = Array.isArray(explainViewerMemory.top_favorite_topics)
+    ? explainViewerMemory.top_favorite_topics.map((item: any) => `${item.tag}:${item.count}`).join(", ")
+    : "-"
+  const explainTopJokes = Array.isArray(explainViewerMemory.top_running_jokes)
+    ? explainViewerMemory.top_running_jokes.map((item: any) => `${item.tag}:${item.count}`).join(", ")
+    : "-"
+
+  return (
+    <Card title={t("panel.explain.title")}>
+      <Stack>
+        <Grid cols={4}>
+          <StatCard
+            label={t("panel.explain.summary")}
+            value={<StatusBadge tone={speechExplanationTone(explainSummary)} label={dynamicLabel("speechSummary", "panel.speechExplanation.summary", explainSummary)} />}
+          />
+          <StatCard label={t("panel.columns.reason")} value={dynamicLabel("speechReason", "panel.speechExplanation.reason", explainReason)} />
+          <StatCard label={t("panel.explain.topicThemes")} value={explainThemes || "-"} />
+          <StatCard label={t("panel.explain.trace")} value={explainTraceId || "-"} />
+        </Grid>
+        <Grid cols={3}>
+          <StatCard label={t("panel.explain.viewerMemory")} value={`${Number(explainViewerMemory.profiles_with_impressions || explainViewerMemory.profiles_with_preferences || 0)}/${Number(explainViewerMemory.profile_count || 0)}`} />
+          <StatCard label={t("panel.columns.preferenceTags")} value={explainTopTags || "-"} />
+          <StatCard label={t("panel.explain.latestResult")} value={`${String(explainLatest.status || "-")} / ${formatLatencyMs(explainLatest.latency_ms)}`} />
+        </Grid>
+        <Grid cols={2}>
+          <StatCard label={t("panel.columns.favoriteTopics")} value={explainTopTopics || "-"} />
+          <StatCard label={t("panel.columns.runningJokes")} value={explainTopJokes || "-"} />
+        </Grid>
+        {explainChain.length ? (
+          <DataTable
+            data={explainChain.map((item: any, index: number) => ({ ...item, row_id: item.id || String(index) }))}
+            rowKey="row_id"
+            columns={[
+              { key: "stage", label: t("panel.explain.stage"), render: (row: any) => row.stage || row.id || "-" },
+              { key: "status", label: t("panel.columns.status"), render: (row: any) => <StatusBadge tone={row.status === "failed" ? "danger" : row.status === "blocked" ? "warning" : row.status === "healthy" ? "success" : "default"} label={String(row.status || "-")} /> },
+              { key: "last_outcome", label: t("panel.columns.message"), render: (row: any) => row.last_outcome || "-" },
+              { key: "last_skip_reason", label: t("panel.columns.detail"), render: (row: any) => row.last_skip_reason || "-" },
+            ]}
+          />
+        ) : null}
+        {explainTimeline.length ? (
+          <DataTable
+            data={explainTimeline.map((item: any, index: number) => ({ ...item, row_id: `${item.trace_id || "trace"}-${index}` }))}
+            rowKey="row_id"
+            columns={[
+              { key: "stage", label: t("panel.explain.stage"), render: (row: any) => row.stage || "-" },
+              { key: "status", label: t("panel.columns.status"), render: (row: any) => <StatusBadge tone={row.status === "failed" ? "danger" : row.status === "skipped" ? "warning" : row.status === "ok" ? "success" : "default"} label={String(row.status || "-")} /> },
+              { key: "route", label: t("panel.columns.responseModule"), render: (row: any) => row.route || "-" },
+              { key: "reason", label: t("panel.columns.detail"), render: (row: any) => row.reason || "-" },
+            ]}
+          />
+        ) : null}
+      </Stack>
+    </Card>
+  )
+}
+
+function RecentResultsTable({ t, results }: { t: PanelTranslator; results: any[] }) {
+  return (
+    <Card title={t("panel.recent.title")}>
+      {results.length ? (
+        <DataTable
+          data={results.map((item, index) => ({ ...item, id: `${item.created_at || index}-${index}` }))}
+          rowKey="id"
+          columns={[
+            { key: "uid", label: "UID", render: (row: any) => row.identity?.uid || row.event?.uid || "-" },
+            { key: "nickname", label: t("panel.columns.nickname"), render: (row: any) => row.identity?.nickname || row.event?.nickname || "-" },
+            { key: "response_module", label: t("panel.columns.responseModule"), render: (row: any) => {
+              const route = interactionRoute(row)
+              return <StatusBadge tone={interactionRouteTone(route)} label={interactionRouteLabel(route, t)} />
+            } },
+            { key: "event_signal", label: t("panel.columns.eventSignal"), render: (row: any) => {
+              const signal = String(row.event_signal || "unknown")
+              return <StatusBadge tone={eventSignalTone(signal)} label={eventSignalLabel(signal, t)} />
+            } },
+            { key: "status", label: t("panel.columns.status"), render: (row: any) => <StatusBadge tone={row.status === "pushed" ? "success" : "warning"} label={String(row.status || "-")} /> },
+            { key: "response_latency_ms", label: t("panel.columns.responseLatency"), render: (row: any) => formatLatencyMs(row.response_latency_ms) },
+            { key: "reason", label: t("panel.columns.reason"), render: (row: any) => row.reason || row.output || "-" },
+          ]}
+        />
+      ) : (
+        <Text>{t("panel.empty.results")}</Text>
+      )}
+    </Card>
+  )
+}
+
+function ViewerProfilesTable({
+  t,
+  profiles,
+}: {
+  t: PanelTranslator
+  profiles: any[]
+}) {
+  return (
+    <Card title={t("panel.profiles.title")}>
+      {profiles.length ? (
+        <DataTable
+          data={profiles.map((item, index) => ({ ...item, id: item.uid || String(index) }))}
+          rowKey="id"
+          columns={[
+            { key: "uid", label: "UID" },
+            { key: "nickname", label: t("panel.columns.nickname") },
+            { key: "roast_count", label: t("panel.columns.roastCount") },
+            { key: "danmaku_count", label: t("panel.columns.danmakuCount"), render: (row: any) => row.danmaku_count || 0 },
+            { key: "viewer_stage", label: t("panel.columns.viewerStage"), render: (row: any) => profileBadge("viewerStage", row.viewer_stage, t) },
+            { key: "profile_confidence", label: t("panel.columns.profileConfidence"), render: (row: any) => profileBadge("profileConfidence", row.profile_confidence, t) },
+            { key: "profile_freshness", label: t("panel.columns.profileFreshness"), render: (row: any) => profileBadge("profileFreshness", row.profile_freshness, t) },
+            { key: "top_preference_tags", label: t("panel.columns.preferenceTags"), render: (row: any) => Array.isArray(row.top_preference_tags) ? row.top_preference_tags.map((item: any) => `${item.tag}:${item.count}`).join(", ") : "-" },
+            { key: "top_favorite_topics", label: t("panel.columns.favoriteTopics"), render: (row: any) => Array.isArray(row.top_favorite_topics) ? row.top_favorite_topics.map((item: any) => `${item.tag}:${item.count}`).join(", ") : "-" },
+            { key: "top_running_jokes", label: t("panel.columns.runningJokes"), render: (row: any) => Array.isArray(row.top_running_jokes) ? row.top_running_jokes.map((item: any) => `${item.tag}:${item.count}`).join(", ") : "-" },
+            { key: "profile_summary", label: t("panel.columns.latestSummary"), render: (row: any) => row.impression_summary || row.profile_summary || row.last_interaction_summary || "-" },
+            { key: "avoid_guidance", label: t("panel.columns.avoidGuidance"), render: (row: any) => row.avoid_guidance || "-" },
+            { key: "reply_guidance", label: t("panel.columns.replyGuidance"), render: (row: any) => row.reply_guidance || "-" },
+            { key: "last_seen_at", label: t("panel.columns.lastSeen") },
+          ]}
+        />
+      ) : (
+        <Text>{t("panel.empty.profiles")}</Text>
+      )}
+    </Card>
+  )
+}
+
+function profileBadge(group: "viewerStage" | "profileConfidence" | "profileFreshness", value: any, t: PanelTranslator) {
+  const key = String(value || "none")
+  return <StatusBadge tone={profileTone(group, key)} label={profileLabel(group, key, t)} />
+}
+
+function profileLabel(group: string, key: string, t: PanelTranslator): string {
+  const text = t(`panel.${group}.${key}`)
+  return text && text !== `panel.${group}.${key}` ? text : key || "-"
+}
+
+function profileTone(group: string, key: string): "success" | "warning" | "danger" | "default" {
+  if (group === "viewerStage") {
+    if (key === "familiar_viewer" || key === "regular_viewer") return "success"
+    if (key === "returning_viewer") return "warning"
+    return "default"
+  }
+  if (group === "profileConfidence") {
+    if (key === "high") return "success"
+    if (key === "medium") return "warning"
+    if (key === "low") return "danger"
+    return "default"
+  }
+  if (key === "fresh" || key === "warm") return "success"
+  if (key === "stale") return "warning"
+  if (key === "old") return "danger"
+  return "default"
+}
+
+/* bundled source: ui/panel.tsx */
 export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>) {
   const { state, t } = props
   const safeState = state || {}

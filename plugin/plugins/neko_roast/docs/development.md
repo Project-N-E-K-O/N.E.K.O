@@ -469,7 +469,7 @@ Hosted UI action 会补 `_ctx.lanlan_name`，插件进程复用 `ctx._current_la
 
 ## UI 约定
 
-Hosted UI 位于 `ui/panel.tsx`。外壳 = **生命周期-域导航**（薄外壳 + 模块贡献），完整契约见 `docs/ui-architecture.md`。
+Hosted UI 的可维护源码位于 `ui/panel.tsx` 及其 sibling modules，主分支兼容入口为 `ui/panel_compat.tsx`。外壳 = **生命周期-域导航**（薄外壳 + 模块贡献），完整契约见 `docs/ui-architecture.md`。
 
 界面分为**六个一级页**（+ `开发者沙盒` 按开发者模式条件追加），id / 顺序固定（契约测试 `test_panel_uses_six_top_level_tabs_in_order` 锁住）：
 

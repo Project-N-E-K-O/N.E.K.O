@@ -77,6 +77,9 @@ LIVE + 多模块 + 多人写 ⇒ **任何单个模块失败都不能搞砸直播
 
 ## 6. 约束（宿主 hosted-ui，写 UI 前必读）
 
+- `ui/panel.tsx` 与 `panel_components.tsx`、`panel_data_sections.tsx`、`panel_helpers.ts`、`panel_state.ts` 是可维护源码；主分支宿主当前通过 `plugin.toml` 加载单文件兼容入口 `ui/panel_compat.tsx`。兼容入口只负责内联这些模块，不拥有独立行为。修改源码时必须同步重建兼容入口，并用 diff 确认两者行为一致；不要只改 bundle。
 - 组件来自 `@neko/plugin-ui`（`Card/Stack/Grid/Field/Input/Select/Tabs/Text/StatCard/StatusBadge/DataTable/Alert/Button` + `useState/useEffect/useForm/useToast`；**无 sidebar、无 useRef**）。`ToggleSwitch`/`AvatarPreview` 是 panel 内本地组件。
 - 宿主 runtime（`frontend/plugin-manager/.../ui-kit/runtime.js`）：`isSafeUrl` **会剥 `<img src>` 里的 `data:` URL**（用 CSS `background-image` 绕过）；`createElement` 无 NS，**SVG 渲不了**；但**支持数组子元素**（`normalizeChild` 递归展平）和 `key`/`on*` 事件。
 - 改 `panel.tsx`/`i18n` **运行时转译、不用 rebuild**，重开面板即生效。**新 UI 文案必须 8 locale 同步。**
+
+UI 只读取宿主投影的 dashboard state，并通过声明权限内的 action/config API 写入；不直接读取凭据或 store 文件，也不绕过 runtime、pipeline、`safety_guard` 或 `neko_dispatcher`。验证至少运行完整插件测试、插件 CLI check、8 locale key-set 对齐检查和 `git diff --check`。若兼容入口无法加载，回滚 `plugin.toml` 的 panel entry 到上一可用版本；后端直播、store 和输出链路不受影响。

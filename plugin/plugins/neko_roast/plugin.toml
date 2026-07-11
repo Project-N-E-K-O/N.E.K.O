@@ -1,9 +1,19 @@
 [plugin]
 id = "neko_roast"
-name = "猫娘锐评"
-description = "直播时对新观众的 B站昵称和头像进行猫娘人设锐评。"
-short_description = "首次弹幕触发头像与昵称锐评。"
-keywords = ["bilibili", "danmaku", "avatar", "roast", "直播", "锐评", "头像", "观众"]
+name = "NEKO Live"
+description = "NEKO 的直播互动中心：连接支持的平台直播互动，承载弹幕、观众档案与锐评流程。"
+short_description = "NEKO 的直播互动中心。"
+keywords = [
+    "bilibili",
+    "danmaku",
+    "avatar",
+    "roast",
+    "neko_live",
+    "live_center",
+    "直播互动",
+    "弹幕锐评",
+    "观众",
+]
 passive = true
 version = "0.1.0"
 entry = "plugin.plugins.neko_roast:NekoRoastPlugin"
@@ -24,38 +34,48 @@ enabled = true
 
 [[plugin.ui.panel]]
 id = "main"
-title = "猫娘锐评"
-entry = "ui/panel.tsx"
+title = "NEKO Live"
+entry = "ui/panel_compat.tsx"
 context = "dashboard"
-permissions = ["state:read", "config:read", "action:call"]
+permissions = [
+    "state:read",
+    "config:read",
+    "action:call",
+]
 
 [[plugin.ui.guide]]
 id = "quickstart"
 title = "快速开始"
 entry = "docs/quickstart.md"
 mode = "markdown"
-permissions = ["state:read"]
+permissions = [
+    "state:read",
+]
 
 [[plugin.ui.guide]]
 id = "development"
 title = "开发文档"
 entry = "docs/development.md"
 mode = "markdown"
-permissions = ["state:read"]
+permissions = [
+    "state:read",
+]
+
+[plugin.store]
+enabled = true
 
 [plugin_runtime]
 enabled = true
 auto_start = false
 
-[plugin.store]
-enabled = true
-
 [neko_roast]
+live_platform = "bilibili"
+live_room_ref = ""
 live_room_id = 0
 live_mode = "co_stream"
 live_enabled = false
 developer_tools_enabled = false
-dry_run = true
+dry_run = false
 roast_once_per_uid = true
 roast_strength = "normal"
 co_stream_output_policy = "auto_low_interrupt"
@@ -70,3 +90,8 @@ safety_pipeline_failure_limit = 3
 safety_output_failure_limit = 2
 safety_queue_overflow_limit = 3
 viewer_store_dir = ""
+activity_level = "standard"
+stream_theme = ""
+stream_goal = ""
+stream_columns = ""
+stream_avoid_topics = ""

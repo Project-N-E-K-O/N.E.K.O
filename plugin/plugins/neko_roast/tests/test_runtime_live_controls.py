@@ -158,6 +158,9 @@ async def test_connect_live_room_switches_active_room_without_double_start(runti
     assert runtime.bili_live_ingest.started == [100, 200]
     assert runtime.bili_live_ingest.stopped == 1
     assert runtime.bili_live_ingest.room_id == 200
+    persisted = runtime.plugin.config.updates[-1]["neko_roast"]
+    assert persisted["live_room_ref"] == "200"
+    assert persisted["live_room_id"] == 200
 
 
 @pytest.mark.asyncio

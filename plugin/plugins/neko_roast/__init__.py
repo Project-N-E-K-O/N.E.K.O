@@ -262,6 +262,67 @@ class NekoRoastPlugin(NekoPluginBase):
         except Exception as exc:
             return Err(SdkError(str(exc)))
 
+    @ui.action(id="douyin_cookie_import", label=tr("actions.douyin_cookie_import.label", default="导入抖音 Cookie"), group="auth", order=50, refresh_context=True)
+    @plugin_entry(
+        id="douyin_cookie_import",
+        name=tr("entries.douyin_cookie_import.name", default="导入抖音 Cookie"),
+        description=tr("entries.douyin_cookie_import.description", default="手动导入浏览器 Cookie，并加密保存供只读抖音直播输入使用。"),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "cookie": {"type": "string"},
+                "uid": {"type": "string"},
+                "nickname": {"type": "string"},
+            },
+            "required": ["cookie"],
+        },
+    )
+    async def douyin_cookie_import(self, cookie="", uid="", nickname="", **_):
+        try:
+            return Ok(await self._runtime().douyin_cookie_import(cookie, uid=uid, nickname=nickname))
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
+
+    @ui.action(id="douyin_cookie_status", label=tr("actions.douyin_cookie_status.label", default="检查抖音 Cookie"), group="auth", order=60, refresh_context=True)
+    @plugin_entry(
+        id="douyin_cookie_status",
+        name=tr("entries.douyin_cookie_status.name", default="检查抖音 Cookie 状态"),
+        description=tr("entries.douyin_cookie_status.description", default="读取本地加密凭据状态，不返回原始 Cookie。"),
+    )
+    async def douyin_cookie_status(self, **_):
+        try:
+            return Ok(await self._runtime().douyin_cookie_status())
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
+
+    @ui.action(id="douyin_cookie_validate", label=tr("actions.douyin_cookie_validate.label", default="验证抖音 Cookie"), group="auth", order=70, refresh_context=True)
+    @plugin_entry(
+        id="douyin_cookie_validate",
+        name=tr("entries.douyin_cookie_validate.name", default="验证抖音 Cookie"),
+        description=tr("entries.douyin_cookie_validate.description", default="验证本地 Cookie 能否读取直播间元数据，不返回原始 Cookie。"),
+        input_schema={
+            "type": "object",
+            "properties": {"room_ref": {"type": "string"}},
+        },
+    )
+    async def douyin_cookie_validate(self, room_ref="", **_):
+        try:
+            return Ok(await self._runtime().douyin_cookie_validate(room_ref))
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
+
+    @ui.action(id="douyin_cookie_delete", label=tr("actions.douyin_cookie_delete.label", default="删除抖音 Cookie"), group="auth", order=80, refresh_context=True)
+    @plugin_entry(
+        id="douyin_cookie_delete",
+        name=tr("entries.douyin_cookie_delete.name", default="删除抖音 Cookie"),
+        description=tr("entries.douyin_cookie_delete.description", default="删除本地加密保存的抖音 Cookie 和密钥。"),
+    )
+    async def douyin_cookie_delete(self, **_):
+        try:
+            return Ok(await self._runtime().douyin_cookie_delete())
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
+
     @ui.action(id="pause_roast", label=tr("actions.pause.label", default="一键暂停"), group="safety", order=20, refresh_context=True)
     @plugin_entry(id="pause_roast", name=tr("entries.pause_roast.name", default="暂停锐评"), description=tr("entries.pause_roast.description", default="立即暂停猫娘锐评输出。"))
     async def pause_roast(self, **_):
@@ -279,6 +340,45 @@ class NekoRoastPlugin(NekoPluginBase):
     async def clear_queue(self, **_):
         self._runtime().clear_queue()
         return Ok({"status": "cleared"})
+
+    @ui.action(id="trigger_idle_hosting", label=tr("entries.trigger_idle_hosting.name", default="触发空闲营业"), group="hosting", order=10, refresh_context=True)
+    @plugin_entry(
+        id="trigger_idle_hosting",
+        name=tr("entries.trigger_idle_hosting.name", default="触发空闲营业"),
+        description=tr("entries.trigger_idle_hosting.description", default="猫猫独播空闲时手动触发一次营业。"),
+    )
+    async def trigger_idle_hosting(self, **_):
+        try:
+            result = await self._runtime().trigger_idle_hosting()
+            return Ok(result.to_public_dict())
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
+
+    @ui.action(id="trigger_warmup_hosting", label=tr("panel.actions.triggerWarmupHosting", default="触发开场营业"), group="hosting", order=20, refresh_context=True)
+    @plugin_entry(
+        id="trigger_warmup_hosting",
+        name=tr("entries.trigger_warmup_hosting.name", default="触发开场营业"),
+        description=tr("entries.trigger_warmup_hosting.description", default="猫猫独播刚开始时手动触发一次开场话题。"),
+    )
+    async def trigger_warmup_hosting(self, **_):
+        try:
+            result = await self._runtime().trigger_warmup_hosting()
+            return Ok(result.to_public_dict())
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
+
+    @ui.action(id="trigger_active_engagement", label=tr("panel.actions.triggerActiveEngagement", default="触发主动营业"), group="hosting", order=30, refresh_context=True)
+    @plugin_entry(
+        id="trigger_active_engagement",
+        name=tr("entries.trigger_active_engagement.name", default="触发主动营业"),
+        description=tr("entries.trigger_active_engagement.description", default="猫猫独播冷场时手动触发一次主动互动。"),
+    )
+    async def trigger_active_engagement(self, **_):
+        try:
+            result = await self._runtime().trigger_active_engagement()
+            return Ok(result.to_public_dict())
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
 
     @ui.action(id="submit_viewer_event", label=tr("panel.actions.submitSandbox", default="发射模拟弹幕"), group="developer", order=20, refresh_context=True)
     @plugin_entry(
