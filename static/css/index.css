@@ -618,6 +618,64 @@ body.neko-game-active [id$="-lock-icon"] {
     transform-origin: center center;
 }
 
+.neko-idle-return-button-container[data-neko-goodbye-idle-appearance="ball"] > .neko-idle-return-btn {
+    --neko-idle-return-size: clamp(56px, 8vw, 72px);
+    border-radius: 999px;
+    background: transparent;
+    box-shadow:
+        0 0 8px rgba(68, 183, 254, 0.6),
+        0 0 18px rgba(68, 183, 254, 0.18);
+    animation: nekoGoodbyeIdleBallBreathing 2000ms ease-in-out infinite;
+}
+
+.neko-idle-return-button-container[data-neko-goodbye-idle-appearance="ball"] > .neko-idle-return-btn::after {
+    content: "";
+    position: absolute;
+    inset: -28%;
+    border-radius: inherit;
+    background: radial-gradient(circle, rgba(68, 183, 254, 0.18) 0%, rgba(68, 183, 254, 0) 70%);
+    pointer-events: none;
+    z-index: -1;
+}
+
+.neko-idle-return-button-container[data-neko-goodbye-idle-appearance="ball"] .neko-idle-return-art {
+    display: block !important;
+    width: 100% !important;
+    min-width: 100%;
+    max-width: 100%;
+    height: 100% !important;
+    top: 0;
+    object-fit: contain;
+    transform: none !important;
+    filter: drop-shadow(0 0 6px rgba(68, 183, 254, 0.28));
+}
+
+.neko-idle-return-button-container[data-neko-goodbye-idle-appearance="ball"] .neko-idle-return-art-next,
+.neko-idle-return-button-container[data-neko-goodbye-idle-appearance="ball"] span[class~="neko-idle-thought-bubble"] {
+    display: none !important;
+}
+
+@keyframes nekoGoodbyeIdleBallBreathing {
+    0%, 100% {
+        transform: scale(0.985);
+        box-shadow:
+            0 0 8px rgba(68, 183, 254, 0.6),
+            0 0 18px rgba(68, 183, 254, 0.18);
+    }
+    50% {
+        transform: scale(1.035);
+        box-shadow:
+            0 0 16px rgba(68, 183, 254, 1),
+            0 0 30px rgba(68, 183, 254, 0.28);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .neko-idle-return-button-container[data-neko-goodbye-idle-appearance="ball"] > .neko-idle-return-btn {
+        animation: none;
+    }
+}
+
 .neko-idle-return-btn.is-cat1-playing > .neko-idle-return-art,
 .neko-idle-return-art[data-neko-cat1-play-finishing="true"] {
     width: 175% !important;
