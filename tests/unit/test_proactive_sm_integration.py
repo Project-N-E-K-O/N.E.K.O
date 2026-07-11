@@ -1125,7 +1125,7 @@ def test_start_session_seeds_topic_hooks_with_full_global_locale():
     normalized_source = re.sub(r"\s+", " ", source)
 
     assert "topic_language_seed = normalize_language_code(get_global_language_full(), format='full')" in normalized_source
-    assert "self.user_language = normalize_language_code(topic_language_seed, format='short')" in normalized_source
+    assert "self.user_language = topic_language_seed" in normalized_source
     assert "self._conversation_turn_language = topic_language_seed" in normalized_source
     assert "self._conversation_turn_language or topic_language_seed or self.user_language" in normalized_source
     assert "self._conversation_turn_language = normalized_lang" in normalized_source
