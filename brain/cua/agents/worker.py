@@ -16,8 +16,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import ast
+import re
 import textwrap
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 from brain.cua.agents.grounding import ACI
 from utils.logger_config import get_module_logger
@@ -32,6 +34,49 @@ from brain.cua.utils.common_utils import (
 )
 
 logger = get_module_logger(__name__, "Agent")
+
+
+def _safe_eval_agent_call(code_string: str, agent: Any) -> Any:
+    """安全地执行 agent.method() 调用，替代不安全的 eval()。
+
+    使用 AST 解析验证代码仅为 agent 对象上的方法调用，
+    参数通过 ast.literal_eval 安全解析（仅允许字面量），
+    防止 LLM 生成的恶意代码执行任意 Python 表达式。
+    """
+    if code_string is None:
+        raise ValueError("code_string is None, cannot evaluate")
+
+    code_string = code_string.strip()
+    if not code_string:
+        raise ValueError("code_string is empty")
+
+    # 使用 AST 解析，仅接受 agent.xxx() 形式的调用
+    tree = ast.parse(code_string, mode="eval")
+    node = tree.body
+    if not isinstance(node, ast.Call):
+        raise ValueError(f"Expected a function call, got {type(node).__name__}")
+
+    func = node.func
+    if not (
+        isinstance(func, ast.Attribute)
+        and isinstance(func.value, ast.Name)
+        and func.value.id == "agent"
+    ):
+        raise ValueError("Only agent.method() calls are allowed")
+
+    method_name = func.attr
+    method = getattr(agent, method_name, None)
+    if method is None or not callable(method):
+        raise AttributeError(f"agent has no callable method '{method_name}'")
+
+    # 安全解析参数：仅允许字面量（数字、字符串、布尔、None、元组、列表、字典）
+    args = [ast.literal_eval(arg) for arg in node.args]
+    kwargs = {
+        kw.arg: ast.literal_eval(kw.value)
+        for kw in node.keywords
+        if kw.arg is not None
+    }
+    return method(*args, **kwargs)
 
 
 class Worker(BaseModule):
@@ -202,11 +247,11 @@ class Worker(BaseModule):
             plan_code = parse_single_code_from_string(plan.split("Grounded Action")[-1])
             plan_code = sanitize_code(plan_code)
             plan_code = extract_first_agent_function(plan_code)
-            exec_code = eval(plan_code)
+            exec_code = _safe_eval_agent_call(plan_code, agent)
         except Exception as e:
             logger.error("Error in parsing plan code: %s", e)
             plan_code = "agent.wait(1.0)"
-            exec_code = eval(plan_code)
+            exec_code = _safe_eval_agent_call(plan_code, agent)
 
         executor_info = {
             "full_plan": full_plan,

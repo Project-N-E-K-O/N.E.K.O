@@ -388,6 +388,50 @@ def _extract_raw_llm_text(resp: Any) -> Tuple[str, Optional[str]]:
     return str(resp or ""), None
 
 
+# ─── Restricted OS proxy for CUA exec sandbox ──────────────────────────
+
+
+class _RestrictedOS:
+    """受限 os 模块代理，仅暴露安全的只读操作。
+
+    防止 LLM 生成的代码通过 os.system()、os.popen() 等执行任意系统命令。
+    仅允许路径查询、环境变量读取和平台信息访问。
+    """
+
+    _ALLOWED_ATTRS = frozenset({
+        "path", "sep", "linesep", "name", "environ",
+        "getcwd", "listdir", "curdir", "pardir", "extsep",
+    })
+
+    class _RestrictedPath:
+        """os.path 的受限子集，仅允许只读操作。"""
+        _ALLOWED = frozenset({
+            "join", "split", "splitext", "basename", "dirname",
+            "exists", "isfile", "isdir", "isabs", "abspath",
+            "normpath", "relpath", "commonpath", "sep", "altsep",
+            "expanduser", "expandvars",
+        })
+
+        def __getattr__(self, name):
+            if name not in self._ALLOWED:
+                raise AttributeError(
+                    f"os.path.{name} is not allowed in CUA sandbox"
+                )
+            return getattr(os.path, name)
+
+    def __init__(self):
+        self.path = _RestrictedOS._RestrictedPath()
+
+    def __getattr__(self, name):
+        if name.startswith("_"):
+            raise AttributeError(f"'{name}' is not accessible")
+        if name not in self._ALLOWED_ATTRS:
+            raise AttributeError(
+                f"os.{name} is not allowed in CUA sandbox"
+            )
+        return getattr(os, name)
+
+
 # ─── Coordinate-scaling proxy ───────────────────────────────────────────
 
 
@@ -1192,7 +1236,7 @@ class ComputerUseAdapter:
                         cancel_event=self._cancel_event,
                     )
                     exec_env["time"] = self._make_cancellable_time_module()
-                    exec_env["os"] = os
+                    exec_env["os"] = _RestrictedOS()
                     exec(code, exec_env)
                     self._interruptible_sleep(0.3)
                 except InterruptedError:

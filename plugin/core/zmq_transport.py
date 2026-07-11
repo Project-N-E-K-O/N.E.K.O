@@ -5,8 +5,9 @@ Replaces ``multiprocessing.Queue`` with a pair of ZMQ PUSH/PULL sockets:
 * **Downlink** (host → child): commands, plugin-to-plugin responses
 * **Uplink** (child → host): results, status, messages, plugin-to-plugin requests
 
-All messages are serialised with :mod:`pickle` (same as ``mp.Queue``) and
-carry a *channel tag* so the receiver can demux.
+All messages are serialised with :mod:`json` (replacing the previous
+``pickle``-based scheme for security — pickle deserialisation can execute
+arbitrary code) and carry a *channel tag* so the receiver can demux.
 
 Channel tags
 ~~~~~~~~~~~~
@@ -19,12 +20,15 @@ Channel tags
 """
 from __future__ import annotations
 
-import pickle
+import json
+import logging
 import threading
 from typing import Any, Optional, Tuple
 
 import zmq
 import zmq.asyncio
+
+logger = logging.getLogger(__name__)
 
 # ── Channel constants ──────────────────────────────────────────────
 CH_CMD = "cmd"
@@ -35,6 +39,44 @@ CH_COMM = "comm"
 CH_RESP = "resp"
 
 _LINGER_MS = 1000
+
+
+# ── JSON serialisation helpers ──────────────────────────────────────
+
+class _SafeJSONEncoder(json.JSONEncoder):
+    """JSON encoder that falls back to ``str()`` for non-serialisable types.
+
+    This ensures that unexpected objects (e.g. ``datetime``, custom classes)
+    do not crash the transport, while logging a warning so developers can
+    identify and fix the root cause.
+    """
+
+    def default(self, o):  # noqa: D401
+        logger.warning(
+            "ZMQ transport: falling back to str() for non-JSON type %s",
+            type(o).__name__,
+        )
+        return str(o)
+
+
+def _serialize_msg(channel: str, msg: Any) -> bytes:
+    """Serialise ``(channel, msg)`` as JSON bytes.
+
+    Replaces ``pickle.dumps`` to eliminate arbitrary-code-execution risk
+    from deserialised ZMQ payloads.
+    """
+    return json.dumps(
+        [channel, msg], cls=_SafeJSONEncoder, ensure_ascii=False
+    ).encode("utf-8")
+
+
+def _deserialize_msg(raw: bytes) -> Tuple[str, Any]:
+    """Deserialise JSON bytes to ``(channel, msg)`` tuple.
+
+    Replaces ``pickle.loads`` to eliminate arbitrary-code-execution risk.
+    """
+    result = json.loads(raw.decode("utf-8"))
+    return result[0], result[1]
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -74,11 +116,11 @@ class HostTransport:
 
     async def send_command(self, msg: dict) -> None:
         """Send a command on the downlink."""
-        await self._dl_sock.send(pickle.dumps((CH_CMD, msg)))
+        await self._dl_sock.send(_serialize_msg(CH_CMD, msg))
 
     async def send_response(self, msg: dict) -> None:
         """Send a plugin-to-plugin response on the downlink."""
-        await self._dl_sock.send(pickle.dumps((CH_RESP, msg)))
+        await self._dl_sock.send(_serialize_msg(CH_RESP, msg))
 
     # ── recv helper ──────────────────────────────────────────────
 
@@ -86,7 +128,7 @@ class HostTransport:
         """Receive one ``(channel, payload)`` from the uplink, or *None* on timeout."""
         if await self._ul_sock.poll(timeout=timeout_ms):
             raw = await self._ul_sock.recv()
-            return pickle.loads(raw)  # type: ignore[return-value]
+            return _deserialize_msg(raw)
         return None
 
     # ── lifecycle ────────────────────────────────────────────────
@@ -146,20 +188,20 @@ class ChildTransport:
         """Receive ``(channel, payload)`` from the downlink, or *None* on timeout."""
         if await self._dl_sock.poll(timeout=timeout_ms):
             raw = await self._dl_sock.recv()
-            return pickle.loads(raw)  # type: ignore[return-value]
+            return _deserialize_msg(raw)
         return None
 
     # ── uplink (thread-safe, any thread) ─────────────────────────
 
     def send_uplink(self, channel: str, msg: Any, *, timeout: float = 10.0) -> None:
         """Thread-safe blocking send on the uplink."""
-        data = pickle.dumps((channel, msg))
+        data = _serialize_msg(channel, msg)
         with self._ul_lock:
             self._ul_sock.send(data)
 
     def send_uplink_nowait(self, channel: str, msg: Any) -> None:
         """Thread-safe non-blocking send on the uplink."""
-        data = pickle.dumps((channel, msg))
+        data = _serialize_msg(channel, msg)
         with self._ul_lock:
             self._ul_sock.send(data, zmq.NOBLOCK)
 
