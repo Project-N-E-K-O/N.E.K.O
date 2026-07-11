@@ -358,7 +358,7 @@ async def test_successful_trending_candidate_clears_rejected_sibling_skip_reason
 
 
 @pytest.mark.asyncio
-async def test_cached_trending_candidate_clears_recent_skip_reason() -> None:
+async def test_cached_trending_candidate_preserves_recent_skip_reason() -> None:
     cached = [
         {"source": "bili_trending", "key": "bili:BV2", "title": "weather mood"}
     ]
@@ -374,11 +374,11 @@ async def test_cached_trending_candidate_clears_recent_skip_reason() -> None:
 
     assert candidates == cached
     assert candidates is not cached
-    assert selector._active_engagement_recent_topic_skip_reason == ""
+    assert selector._active_engagement_recent_topic_skip_reason == "single_viewer_flood"
 
 
 @pytest.mark.asyncio
-async def test_trending_aggregation_does_not_restore_recent_skip_reason(
+async def test_trending_aggregation_preserves_recent_skip_reason(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     selector = SimpleNamespace(_active_engagement_recent_topic_skip_reason="")
@@ -393,7 +393,6 @@ async def test_trending_aggregation_does_not_restore_recent_skip_reason(
         return []
 
     async def trending(_selector: object) -> list[dict[str, str]]:
-        selector._active_engagement_recent_topic_skip_reason = ""
         return [trending_candidate]
 
     monkeypatch.setattr(
@@ -409,4 +408,53 @@ async def test_trending_aggregation_does_not_restore_recent_skip_reason(
     candidates = await active_topic_sources.topic_candidates(selector)
 
     assert candidates == [trending_candidate]
-    assert selector._active_engagement_recent_topic_skip_reason == ""
+    assert selector._active_engagement_recent_topic_skip_reason == "single_viewer_flood"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "existing_reason",
+    (
+        "single_viewer_flood",
+        "stale_recent_danmaku",
+        "avatar_roast_context",
+        "non_output_danmaku",
+        "filtered_direct_request",
+        "filtered_reaction",
+        "filtered_runtime_feedback",
+        "viewer_to_viewer_mention",
+        "recent_danmaku_source_streak",
+        "low_confidence_topic",
+    ),
+)
+async def test_successful_trending_preserves_existing_skip_reason(
+    existing_reason: str,
+) -> None:
+    async def fetcher(*_args: object, **_kwargs: object) -> dict[str, object]:
+        return {
+            "videos": [
+                {"title": "ordinary title", "bvid": "BV1"},
+                {"title": "weather mood", "bvid": "BV2"},
+            ]
+        }
+
+    selector = SimpleNamespace(
+        _active_engagement_topic_cache=[],
+        _active_engagement_topic_cache_at=0.0,
+        _active_engagement_topic_fetcher=fetcher,
+        _active_engagement_recent_topic_skip_reason=existing_reason,
+        _runtime=SimpleNamespace(
+            _compact_context_text=lambda text, limit: text[:limit]
+        ),
+        is_meaningful_topic_text=lambda _text: True,
+        material_profile=lambda text: {"fun_axis": "mood"}
+        if text == "weather mood"
+        else {},
+    )
+
+    candidates = await active_topic_trending_source.bili_trending_topic_candidates(
+        selector
+    )
+
+    assert [candidate["key"] for candidate in candidates] == ["bili:BV2"]
+    assert selector._active_engagement_recent_topic_skip_reason == existing_reason
