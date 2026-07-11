@@ -153,7 +153,7 @@ def test_pngtuber_mouth_flap_does_not_restart_layered_motion_timeline():
         source.index("        startSpeakingMouthAnimation()")
     ]
     start_block = source[
-        source.index("startSpeakingMouthAnimation()"):
+        source.index("        startSpeakingMouthAnimation()"):
         source.index("        stopSpeakingMouthAnimation()")
     ]
 
