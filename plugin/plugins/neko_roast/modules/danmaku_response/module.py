@@ -653,6 +653,21 @@ class DanmakuResponseModule(BaseModule):
             "这点",
             "那点",
         )
+        object_target_suffixes = (
+            "表现",
+            "操作",
+            "水平",
+            "技术",
+            "能力",
+            "实力",
+            "手法",
+            "玩法",
+            "意识",
+            "风格",
+            "演技",
+            "唱功",
+            "画技",
+        )
         object_phrase = re.compile(
             r"^(?:(?:这|那|哪|某|一|两|几|每)(?:个|篇|段|部|条|首|本|张|件|场|种|份|则|道|句|款|项|幅|集|期|档|季|章|封|套|支|些|点)?)?"
             r"(?:(?:文章|作文|内容|视频|直播|作品|文案|帖子|评论|问题|事情|东西|表现|歌曲?|电影|电视剧|剧集|综艺|小说|故事|笑话|节目|游戏|功能|代码|设计|照片|图片|方案|产品|软件|应用))+$"
@@ -669,6 +684,10 @@ class DanmakuResponseModule(BaseModule):
             return (
                 normalized in blocked
                 or normalized.startswith(generic_prefixes)
+                or any(
+                    len(normalized) > len(suffix) and normalized.endswith(suffix)
+                    for suffix in object_target_suffixes
+                )
                 or object_phrase.fullmatch(normalized) is not None
                 or object_measure_phrase.fullmatch(normalized) is not None
                 or object_relation_phrase.search(normalized) is not None

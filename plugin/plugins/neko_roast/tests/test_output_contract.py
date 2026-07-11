@@ -151,6 +151,8 @@ def test_generic_chinese_roast_targets_are_rejected():
         "锐评 @小明 的 技术",
         "锐评 小明 操作",
         "锐评 @小明 技术",
+        "锐评 小明操作",
+        "锐评 @小明技术",
     ):
         assert DanmakuResponseModule._target_roast_nickname(request) == ""
 
@@ -184,6 +186,8 @@ def test_generic_chinese_roast_targets_are_rejected():
         "锐评 @小明 的 技术",
         "锐评 小明 操作",
         "锐评 @小明 技术",
+        "锐评 小明操作",
+        "锐评 @小明技术",
     ):
         profile = DanmakuResponseModule._danmaku_profile(request)
         assert profile["kind"] != "target_roast_request"
@@ -192,6 +196,29 @@ def test_generic_chinese_roast_targets_are_rejected():
     assert DanmakuResponseModule._target_roast_nickname("锐评 @小明") == "小明"
     assert DanmakuResponseModule._target_roast_nickname("锐评 小明！") == "小明"
     assert DanmakuResponseModule._target_roast_nickname("锐评 @小明？") == "小明"
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    (
+        "表现",
+        "操作",
+        "水平",
+        "技术",
+        "能力",
+        "实力",
+        "手法",
+        "玩法",
+        "意识",
+        "风格",
+        "演技",
+        "唱功",
+        "画技",
+    ),
+)
+def test_unspaced_object_suffixes_are_not_viewer_targets(suffix: str) -> None:
+    assert DanmakuResponseModule._target_roast_nickname(f"锐评 小明{suffix}") == ""
+    assert DanmakuResponseModule._target_roast_nickname(f"锐评 @小明{suffix}") == ""
 
 
 def test_later_neko_mention_wins_over_earlier_viewer_mention() -> None:
