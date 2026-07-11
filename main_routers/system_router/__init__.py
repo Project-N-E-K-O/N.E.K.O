@@ -295,7 +295,7 @@ from .break_reminders import (  # noqa: F401
     _deliver_break_reminder_via_llm,
 )
 from .proactive_chat_flow import (  # noqa: F401
-    _PROACTIVE_LLM_RETRY_ERROR_TYPES,
+    _proactive_llm_retry_error_types,
     _safe_fire_proactive_done,
     _PHASE1_FETCH_PER_SOURCE,
     _PHASE1_TOTAL_TOPIC_TARGET,
