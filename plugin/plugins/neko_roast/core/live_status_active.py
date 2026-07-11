@@ -70,6 +70,9 @@ def active_engagement_status(
         elif recent_danmaku_cooldown > 0.0:
             cooldown_remaining = recent_danmaku_cooldown
             eligible = False
+        elif host_output_cooldown > 0.0:
+            cooldown_remaining = host_output_cooldown
+            eligible = False
         else:
             eligible = True
     elif cooldown_remaining > 0.0:
