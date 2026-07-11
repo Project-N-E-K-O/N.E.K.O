@@ -70,6 +70,6 @@ def _pack_for_family(family: str) -> str:
         return "micro_challenge"
     if family == "object_scene":
         return "room_observation"
-    if family == "room_mood":
+    if family in {"room_mood", "mood"}:
         return "room_mood"
     return family
