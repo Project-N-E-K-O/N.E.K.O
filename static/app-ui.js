@@ -3543,7 +3543,12 @@
                     clearTimeout(art.__nekoIdleHoverTimer);
                     art.__nekoIdleHoverTimer = 0;
                 }
+                // 必须同时递增 token 并清掉 hover tier，否则挂起中的 gif 时长 promise
+                // 仍能通过 token/tier 校验，把猫图写回来盖掉球图
+                art.__nekoIdleHoverToken = (art.__nekoIdleHoverToken || 0) + 1;
                 delete art.__nekoIdleHoverSrc;
+                delete art.__nekoIdleHoverTier;
+                delete art.__nekoIdleHoverStartedAt;
                 delete art.__nekoIdleTransitionTo;
             }
             if (button && typeof button.querySelectorAll === 'function') {
@@ -3552,6 +3557,7 @@
             return;
         }
 
+        const savedCatTier = normalizeRestorableNekoIdleReturnTier(button && button.dataset.nekoGoodbyeIdleCatTier);
         const restoredTier = getRestorableNekoIdleReturnTier(button && button.dataset.nekoGoodbyeIdleCatTier);
         if (button) {
             button.setAttribute('data-neko-idle-tier', restoredTier);
@@ -3559,7 +3565,11 @@
         }
         container.setAttribute('data-neko-idle-tier', restoredTier);
         if (art && art.dataset.nekoGoodbyeIdleCatSrc) {
-            art.src = art.dataset.nekoGoodbyeIdleCatSrc;
+            // 快照 src 只对进球形态时的 tier 有效；球形态期间 tier 推进过就不能回写，
+            // 保留 avatar 侧监听器已按当前 tier 重画的图，避免图与 data-neko-idle-tier 不一致
+            if (savedCatTier === restoredTier) {
+                art.src = art.dataset.nekoGoodbyeIdleCatSrc;
+            }
             delete art.dataset.nekoGoodbyeIdleCatSrc;
         }
         if (art) {
