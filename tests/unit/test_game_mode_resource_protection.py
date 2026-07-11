@@ -1005,6 +1005,30 @@ async def test_semantic_fuse_does_not_disable_legacy_pressure_protection():
 
 
 @pytest.mark.asyncio
+async def test_semantic_errors_are_ignored_until_game_semantic_mode_is_enabled():
+    protector = GameModeResourceProtector(sampler=normal_sample)
+
+    for _ in range(3):
+        await protector.record_semantic_error()
+    assert protector.snapshot()["semantic_error_count"] == 0
+    assert protector.snapshot()["semantic_fuse_enabled"] is True
+
+    await protector.set_enabled(True)
+    try:
+        for _ in range(3):
+            await protector.record_semantic_error()
+        assert protector.snapshot()["semantic_error_count"] == 0
+        assert protector.snapshot()["semantic_fuse_enabled"] is True
+
+        await protector.set_settings(auto_cat_on_game=True, game_trigger_mode="instant")
+        for _ in range(3):
+            await protector.record_semantic_error()
+        assert protector.snapshot()["semantic_fuse_enabled"] is False
+    finally:
+        await protector.set_enabled(False)
+
+
+@pytest.mark.asyncio
 async def test_disabling_auto_cat_subfeature_does_not_restore_active_protection_cycle():
     events = []
 

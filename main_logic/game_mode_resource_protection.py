@@ -538,6 +538,8 @@ class GameModeResourceProtector:
 
     async def record_semantic_error(self) -> dict[str, Any]:
         async with self._lock:
+            if not self._state.get("enabled") or not self._settings.get("auto_cat_on_game"):
+                return self.snapshot()
             count = int(self._state.get("semantic_error_count") or 0) + 1
             self._state["semantic_error_count"] = count
             self._clear_game_candidate_locked()
