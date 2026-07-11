@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from plugin.plugins.neko_roast.core.contracts import ViewerEvent, ViewerIdentity
+from plugin.plugins.neko_roast.core.contracts import LiveEvent, ViewerEvent, ViewerIdentity
 from plugin.plugins.neko_roast.core.runtime import RoastRuntime
 
 
@@ -226,6 +227,7 @@ async def _build_sim_runtime(tmp_path: Path) -> RoastRuntime:
         runtime.active_engagement,
         runtime.warmup_hosting,
         runtime.live_events,
+        runtime.live_support_events,
     ):
         if hasattr(module, "ctx"):
             module.ctx = runtime
@@ -239,6 +241,14 @@ async def _build_sim_runtime(tmp_path: Path) -> RoastRuntime:
     runtime.safety_guard.set_connected(True)
     runtime.safety_guard.resume()
     runtime._live_listener_started_at = 0.0
+    runtime.live_room_context = {"room_ref": "1817654314", "live_status": "live"}
+
+    async def no_wait(_seconds: float) -> None:
+        return None
+
+    runtime.live_events._sleep = no_wait
+    await runtime.live_events.setup(runtime)
+    await runtime.live_support_events.setup(runtime)
     return runtime
 
 
@@ -247,7 +257,11 @@ async def _run_solo_stream_simulation(runtime: RoastRuntime) -> None:
     runtime._live_state_now = lambda: clock["t"]
     runtime._idle_hosting_now = lambda: clock["t"]
     runtime._active_engagement_now = lambda: clock["t"]
+    runtime.live_events._now = lambda: clock["t"]
     runtime.pipeline._now = lambda: clock["t"]
+    runtime._age_sec = lambda value: (
+        max(0.0, clock["t"] - float(value)) if value else None
+    )
     runtime._iso_age_sec = lambda value: _sim_age(clock, value)
 
     def stamp_latest(t: float) -> None:
@@ -260,16 +274,32 @@ async def _run_solo_stream_simulation(runtime: RoastRuntime) -> None:
 
     async def send(t: float, uid: str, nickname: str, text: str, event_type: str = "danmaku") -> None:
         clock["t"] = float(t)
-        await runtime.handle_live_payload(
-            {
-                "uid": uid,
-                "nickname": nickname,
-                "danmaku_text": text,
-                "event_type": event_type,
-                "seen_at": f"sim:{float(t)}",
-            }
+        before = len(runtime.recent_results)
+        payload = {
+            "uid": uid,
+            "nickname": nickname,
+            "danmaku_text": text,
+            "event_type": event_type,
+            "seen_at": f"sim:{float(t)}",
+        }
+        normalized = runtime.bili_live_ingest.normalize(payload)
+        runtime.event_bus.publish(
+            event_type,
+            LiveEvent(type=event_type, uid=uid, payload=payload, raw=normalized),
         )
-        stamp_latest(t)
+        runtime.event_bus._last_publish_at = clock["t"]
+        await asyncio.sleep(0)
+        pending = [
+            *runtime.live_events._tasks,
+            *runtime.live_support_events._tasks,
+        ]
+        if pending:
+            await asyncio.gather(*pending)
+        if event_type == "danmaku":
+            runtime._last_live_danmaku_seen_at = clock["t"]
+            runtime._last_live_danmaku_seen_type = "live_danmaku"
+        if len(runtime.recent_results) > before:
+            stamp_latest(t)
 
     async def host(t: float, kind: str) -> None:
         clock["t"] = float(t)
@@ -374,22 +404,23 @@ async def test_solo_stream_realistic_simulation_keeps_routes_and_quality_stable(
         "想听什么",
     )
 
-    assert statuses == {"pushed": 17}
-    assert routes["warmup_hosting"] == 0
+    assert statuses == {"pushed": 23, "skipped": 2}
+    assert routes["warmup_hosting"] == 1
     assert routes["avatar_roast"] == 9
-    assert routes["danmaku_response"] == 6
-    assert routes["idle_hosting"] == 0
-    assert routes["active_engagement"] == 0
+    assert routes["danmaku_response"] == 5
+    assert routes["idle_hosting"] == 5
+    assert routes["active_engagement"] == 3
     assert routes["live_support_events"] == 2
     assert repeated_avatar == []
     assert live_by_uid["u01"] == ["avatar_roast", "danmaku_response", "danmaku_response"]
+    assert live_by_uid["u02"] == ["danmaku_response"]
     assert live_by_uid["u06"] == ["avatar_roast", "danmaku_response"]
     assert all(len(output) <= 28 for output in outputs)
     assert not any(token in output for output in outputs for token in forbidden)
     assert not any(token in output.casefold() for output in outputs for token in generic_host_bait)
     assert len(outputs) - len(set(outputs)) <= 3
     assert runtime.plugin.pushed_messages == []
-    assert len(runtime.dispatcher.outputs) == 17
+    assert len(runtime.dispatcher.outputs) == 23
 
 
 @pytest.mark.asyncio
