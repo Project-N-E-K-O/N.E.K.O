@@ -15,6 +15,7 @@
 
 
 import asyncio
+import contextlib
 import functools
 import json
 import re
@@ -570,6 +571,26 @@ def _with_dialog_slop(method):
     return _wrapper
 
 
+@contextlib.contextmanager
+def _suspend_dialog_slop():
+    """Clear the dialog-slop context var for the duration of a tool handler.
+
+    ``_with_dialog_slop`` arms ``_dialog_slop_lang`` for the *whole* dialog turn,
+    but the tool loop awaits tool handlers inside that turn. A plugin/agent tool
+    that makes its own ``utils.llm_client`` call in the same task (or a task it
+    spawns) would otherwise inherit the armed language and have its non-dialog
+    assistant few-shot / agent history slop-rewritten. Suspending the var to
+    ``None`` around the await restores the "non-dialog call → no-op" invariant,
+    then re-arms it for the continuing dialog tool loop. Sync CM around an async
+    body: enter/exit only touch the context var, which is valid across the
+    in-between ``await`` because it runs in the same task context."""
+    token = set_dialog_slop_lang(None)
+    try:
+        yield
+    finally:
+        reset_dialog_slop_lang(token)
+
+
 def _slop_reduced_for_genai(messages):
     """Apply dialog slop reduction to a COPY of ``messages`` for the native
     Gemini (``genai`` SDK) path, which builds its ``contents`` outside
@@ -914,7 +935,10 @@ class OmniOfflineClient:
                 )
             else:
                 try:
-                    result = await handler(tool_call)
+                    # Suspend dialog-slop so a nested LLM call the handler makes
+                    # is treated as a non-dialog call (no-op), not the cat's turn.
+                    with _suspend_dialog_slop():
+                        result = await handler(tool_call)
                 except Exception as e:
                     logger.exception("OmniOfflineClient: on_tool_call '%s' raised", c.name)
                     result = ToolResult(
@@ -1551,7 +1575,10 @@ class OmniOfflineClient:
                         raw_arguments=tc_raw,
                     )
                     try:
-                        result = await self.on_tool_call(tool_call)
+                        # Suspend dialog-slop so a nested LLM call the handler
+                        # makes is a non-dialog call (no-op), not the cat's turn.
+                        with _suspend_dialog_slop():
+                            result = await self.on_tool_call(tool_call)
                     except Exception as e:
                         logger.exception("OmniOfflineClient(genai): on_tool_call '%s' raised", tc_name)
                         result = ToolResult(

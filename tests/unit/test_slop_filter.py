@@ -309,3 +309,41 @@ def test_resolve_dialog_slop_lang_skips_traditional_chinese(monkeypatch):
     assert sf.resolve_dialog_slop_lang(lambda: "zh-CN") == "zh"     # Simplified → apply
     assert sf.resolve_dialog_slop_lang(lambda: "zh-TW") is None     # Traditional → skip
     assert sf.resolve_dialog_slop_lang(lambda: "zh-Hant") is None
+
+
+# ---------------------------------------------------------------------------
+# dialog-slop is suspended around tool handlers so a nested LLM call the handler
+# makes (plugin / agent) is treated as a non-dialog call → no-op
+# ---------------------------------------------------------------------------
+
+def test_suspend_dialog_slop_hides_lang_from_nested_tool_calls():
+    import asyncio
+    from utils.llm_client import peek_dialog_slop_lang
+    from main_logic.omni_offline_client import _suspend_dialog_slop
+
+    async def _run():
+        token = set_dialog_slop_lang("en")  # arm as a dialog turn would
+        try:
+            assert peek_dialog_slop_lang() == "en"
+            with _suspend_dialog_slop():
+                # the tool handler (same task) must see a non-dialog call
+                assert peek_dialog_slop_lang() is None
+                # …and any task it spawns for a nested LLM call inherits None
+                assert await asyncio.create_task(_peek()) is None
+            assert peek_dialog_slop_lang() == "en"  # re-armed for the tool loop
+            # restored even if the handler raised
+            try:
+                with _suspend_dialog_slop():
+                    raise RuntimeError("boom")
+            except RuntimeError:
+                pass
+            assert peek_dialog_slop_lang() == "en"
+        finally:
+            reset_dialog_slop_lang(token)
+        assert peek_dialog_slop_lang() is None
+
+    async def _peek():
+        from utils.llm_client import peek_dialog_slop_lang as _p
+        return _p()
+
+    asyncio.run(_run())
