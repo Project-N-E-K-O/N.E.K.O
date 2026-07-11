@@ -1,4 +1,4 @@
-# 直播中心 UI 与模块贡献架构基线
+# NEKO Live UI 与模块贡献架构基线
 
 > 配套 `development.md`（已落地设计）/ `live-center-roadmap.md`（路线）。本文记录**面板 UI、模块贡献模型、兜底契约**这三件多人开发要共享的架构决定，供后续每个模块作者照此填。更新：2026-06-18。
 
@@ -7,6 +7,8 @@
 N.E.K.O 是一只**桌面 AI 猫娘**；neko_roast 让她去给主播**当直播搭子**（真身是覆盖直播全生命周期的「直播中心」，见 development.md/roadmap §1）。由此定调：
 
 - **猫开口才是产品，面板只是遥控器**——面板退到背景，优先「控制 + 监看」，别精装修。
+- **直播时主播不会盯着面板**——面板优先服务开播前检查、少量关键控制、紧急暂停/恢复、以及事后复盘；不要把直播中的核心体验设计成需要主播持续读面板。
+- **后续 UI 要先减噪再加诊断**——首屏只保留「能不能开播」「为什么安静」「接下来会做什么」「安全控制」；链路追踪、模块清单、健康行、详细诊断应放到次级页或开发者视图。
 - **用户多是电脑小白；场景是 LIVE 直播**（不可重来、当众）。所以第一性原则是**全程可信赖**：宁可漏评，不可崩坏输出 / 不可一个模块炸了搞砸全场。可靠性 > 功能多 > 界面炫。
 
 ## 1. UI 结构：生命周期-域导航（外壳）+ 模块贡献
@@ -17,7 +19,7 @@ N.E.K.O 是一只**桌面 AI 猫娘**；neko_roast 让她去给主播**当直播
 |---|---|---|---|---|
 | 控制台 | `console` | 开播 | 账号登录 + 房号 + 查询/连接 + 状态总览四格 + 模式 + dry_run 速开关（已折入原「直播间配置」） | 锐评 feed |
 | 直播间互动 | `interaction` | 直播间互动 + 互动产出 | **弹幕锐评功能卡**(卡头 3 态徽章 + 绿色功能开关绑 `live_enabled`；强度 pill；同人去重) + 礼物/SC/进场占位卡 + 平台参数说明条 | P3 礼物/SC/进场 handler 注册为模块、占位卡转真卡 |
-| 观众 | `viewers` | 身份/档案 | 直播总结 + 观众档案 | P4 贡献榜/观看时长/记忆 |
+| 观众 | `viewers` | 身份/档案 | 直播总结 + 链路解释 + 安全画像档案（熟悉度 / 画像置信度 / 偏好标签 / 回复建议） | P4 贡献榜/观看时长/可控画像管理 |
 | 私信 | `dm` | 私信 | 占位页（即将上线） | `bili_dm_ingest` 模块 |
 | 自动化 | `automation` | 自动化 | 占位页（即将上线） | `automation_ops` 模块 |
 | ⚙设置 | `settings` | 平台 | 「节奏与安全」(dry_run/急停/冷却/队列) + **「档案存储」**(当前只读展示默认目录，自定义入口暂时屏蔽) + 高级状态 + 模块总览表 + 开发者开关 | 自定义目录待配置持久化修复后恢复 |
@@ -64,7 +66,7 @@ LIVE + 多模块 + 多人写 ⇒ **任何单个模块失败都不能搞砸直播
 
 1. **注册层**：`ModuleRegistry.setup_all/teardown_all` 逐模块 try/except——坏模块标 `degraded` + 记 audit，**其余照常起停**；`snapshot()` 对 `status()/config_schema()` 也守卫。（已实现，见 `core/module_registry.py` + `tests/test_module_registry.py`）
 3. **输出层**：`neko_dispatcher` 是唯一出口；**不确定时宁可沉默，不要崩坏输出**（dry_run / 限流 / 急停 / 队列 已在守）。
-4. **UI 层**：渲染器对每个模块贡献包错误边界，单模块 schema/渲染抛错 → 降级卡，整盘面板照常。**已落地**：`panel.tsx` 的 `safeModuleCard(key, title, render)` 用 try/catch 包住每张互动模块卡的同步渲染（hosted-ui runtime 无 class 组件 / `componentDidCatch`），抛错降级成带 `panel.modules.renderError` 文案的降级卡；`config_schema` 守卫亦在。契约 `test_panel_wraps_module_cards_in_error_boundary`。
+4. **UI 层**：渲染器对每个模块贡献包错误边界，单模块 schema/渲染抛错 → 降级卡，整盘面板照常。**已落地**：`panel_components.tsx` 的 `ModuleRenderBoundary` 用 try/catch 包住每张互动模块卡的同步渲染（hosted-ui runtime 无 class 组件 / `componentDidCatch`），抛错降级成带 `panel.modules.renderError` 文案的降级卡；`config_schema` 守卫亦在。契约 `test_panel_wraps_module_cards_in_error_boundary`。
 5. **操作层**：永远在手边的一键急停 + 「安不安全」状态灯 + 自动急停（小白兜底）。
 
 **契约**：模块声明贡献的**同时必须声明安全降级行为**；平台保证隔离。降级在 UI 以 `degraded` 徽章可见。
@@ -73,13 +75,13 @@ LIVE + 多模块 + 多人写 ⇒ **任何单个模块失败都不能搞砸直播
 
 - **P0 外壳 + 兜底**（部分已落地）：生命周期导航 ✓、`registry` 隔离 ✓、`config_schema` 契约 + 面板 mini 渲染器 ✓、弹幕锐评功能卡样例 ✓。
 - **P1 随 P3 落地**：P3 handler 注册为模块 + 声明各自 schema（礼物/SC/进场），白嫖渲染器；~~EventBus 订阅隔离（兜底②）~~ ✅（已落地，见 §4 层②，handler 只差订阅 + 产出端）；integer/`show_if` 渲染补全。
-- **P2 回迁/演进**：tab 命名收敛到生命周期 ✓（6 项 `console/interaction/viewers/dm/automation/settings` + 条件 `dev`；原 live-room 折入 console、data→viewers、advanced→settings）；UI error boundary ✓（`safeModuleCard`，见 §4）；模块 `on_enable/on_disable` 生命周期钩子 ✓（隔离调用，地基，待接 per-module 启停真实调用方）；**剩** config 命名空间化、`show_if` 真实接逻辑。
+- **P2 回迁/演进**：tab 命名收敛到生命周期 ✓（6 项 `console/interaction/viewers/dm/automation/settings` + 条件 `dev`；原 live-room 折入 console、data→viewers、advanced→settings）；UI error boundary ✓（`ModuleRenderBoundary`，见 §4）；模块 `on_enable/on_disable` 生命周期钩子 ✓（隔离调用，地基，待接 per-module 启停真实调用方）；**剩** config 命名空间化、`show_if` 真实接逻辑。
 
 ## 6. 约束（宿主 hosted-ui，写 UI 前必读）
 
 - `ui/panel.tsx` 与 `panel_components.tsx`、`panel_data_sections.tsx`、`panel_helpers.ts`、`panel_state.ts` 是可维护源码；主分支宿主当前通过 `plugin.toml` 加载单文件兼容入口 `ui/panel_compat.tsx`。兼容入口只负责内联这些模块，不拥有独立行为。修改源码时必须同步重建兼容入口，并用 diff 确认两者行为一致；不要只改 bundle。
-- 组件来自 `@neko/plugin-ui`（`Card/Stack/Grid/Field/Input/Select/Tabs/Text/StatCard/StatusBadge/DataTable/Alert/Button` + `useState/useEffect/useForm/useToast`；**无 sidebar、无 useRef**）。`ToggleSwitch`/`AvatarPreview` 是 panel 内本地组件。
+- 组件来自 `@neko/plugin-ui`（`Card/Stack/Grid/Field/Input/Select/Tabs/Text/StatCard/StatusBadge/DataTable/Alert/Button` + `useState/useEffect/useForm/useToast`；**无 sidebar、无 useRef**）。面板本地展示组件集中在 `ui/panel_components.tsx`，状态类型与默认表单值集中在 `ui/panel_state.ts`。
 - 宿主 runtime（`frontend/plugin-manager/.../ui-kit/runtime.js`）：`isSafeUrl` **会剥 `<img src>` 里的 `data:` URL**（用 CSS `background-image` 绕过）；`createElement` 无 NS，**SVG 渲不了**；但**支持数组子元素**（`normalizeChild` 递归展平）和 `key`/`on*` 事件。
-- 改 `panel.tsx`/`i18n` **运行时转译、不用 rebuild**，重开面板即生效。**新 UI 文案必须 8 locale 同步。**
+- 改 `panel.tsx`/`i18n` **运行时转译、不用 rebuild**，但提交 / 导出前必须同步生成 `panel_compat.tsx`，因为 manifest 入口使用单文件兼容版以支持主分支插件中心。`panel_compat.tsx` 必须是**完整功能面板**的单文件内联版本：允许保留 `@neko/plugin-ui` import 和 hooks，但不得包含相对 import、`window.NekoUiKit` 或 `__modules` linker 包装；不要为了兼容把它替换成只剩状态概览的最小 fallback 壳。**新 UI 文案必须 8 locale 同步。**
 
 UI 只读取宿主投影的 dashboard state，并通过声明权限内的 action/config API 写入；不直接读取凭据或 store 文件，也不绕过 runtime、pipeline、`safety_guard` 或 `neko_dispatcher`。验证至少运行完整插件测试、插件 CLI check、8 locale key-set 对齐检查和 `git diff --check`。若兼容入口无法加载，回滚 `plugin.toml` 的 panel entry 到上一可用版本；后端直播、store 和输出链路不受影响。

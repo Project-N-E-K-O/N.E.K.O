@@ -61,6 +61,15 @@ permissions = [
     "state:read",
 ]
 
+[[plugin.ui.guide]]
+id = "solo_stream_test"
+title = "猫猫独播体验指南"
+entry = "docs/solo-stream-test-guide.md"
+mode = "markdown"
+permissions = [
+    "state:read",
+]
+
 [plugin.store]
 enabled = true
 
