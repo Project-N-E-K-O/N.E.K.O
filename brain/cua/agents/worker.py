@@ -39,9 +39,9 @@ logger = get_module_logger(__name__, "Agent")
 def _safe_eval_agent_call(code_string: str, agent: Any) -> Any:
     """安全地执行 agent.method() 调用，替代不安全的 eval()。
 
-    使用 AST 解析验证代码仅为 agent 对象上的方法调用，
+    使用 AST 解析验证代码仅为 agent 对象上标记了 ``@agent_action`` 的方法调用，
     参数通过 ast.literal_eval 安全解析（仅允许字面量），
-    防止 LLM 生成的恶意代码执行任意 Python 表达式。
+    防止 LLM 生成的恶意代码执行任意 Python 表达式或调用非公开接口。
     """
     if code_string is None:
         raise ValueError("code_string is None, cannot evaluate")
@@ -65,16 +65,32 @@ def _safe_eval_agent_call(code_string: str, agent: Any) -> Any:
         raise ValueError("Only agent.method() calls are allowed")
 
     method_name = func.attr
+
+    # 拒绝双下划线名称（如 __init__、__setattr__ 等）
+    if method_name.startswith("_"):
+        raise ValueError(f"Dunder method '{method_name}' is not allowed")
+
     method = getattr(agent, method_name, None)
     if method is None or not callable(method):
         raise AttributeError(f"agent has no callable method '{method_name}'")
 
+    # 仅允许通过 @agent_action 标记的公开动作方法
+    if not getattr(method, "is_agent_action", False):
+        raise ValueError(
+            f"agent.{method_name} is not a permitted action "
+            f"(missing @agent_action marker)"
+        )
+
     # 安全解析参数：仅允许字面量（数字、字符串、布尔、None、元组、列表、字典）
     args = [ast.literal_eval(arg) for arg in node.args]
+
+    # 显式拒绝 **kwargs 解包（kw.arg is None 表示 **expr 形式）
+    if any(kw.arg is None for kw in node.keywords):
+        raise ValueError("Keyword unpacking (**kwargs) is not allowed")
+
     kwargs = {
         kw.arg: ast.literal_eval(kw.value)
         for kw in node.keywords
-        if kw.arg is not None
     }
     return method(*args, **kwargs)
 

@@ -390,12 +390,14 @@ def _extract_raw_llm_text(resp: Any) -> Tuple[str, Optional[str]]:
 
 # ─── Restricted OS proxy for CUA exec sandbox ──────────────────────────
 
+from types import MappingProxyType
+
 
 class _RestrictedOS:
     """受限 os 模块代理，仅暴露安全的只读操作。
 
     防止 LLM 生成的代码通过 os.system()、os.popen() 等执行任意系统命令。
-    仅允许路径查询、环境变量读取和平台信息访问。
+    仅允许路径查询、环境变量只读快照和平台信息访问。
     """
 
     _ALLOWED_ATTRS = frozenset({
@@ -421,6 +423,8 @@ class _RestrictedOS:
 
     def __init__(self):
         self.path = _RestrictedOS._RestrictedPath()
+        # 返回不可变的环境变量快照，防止 LLM 代码修改真实进程环境
+        self.environ = MappingProxyType(dict(os.environ))
 
     def __getattr__(self, name):
         if name.startswith("_"):
@@ -430,6 +434,65 @@ class _RestrictedOS:
                 f"os.{name} is not allowed in CUA sandbox"
             )
         return getattr(os, name)
+
+
+# ─── Restricted builtins for CUA exec sandbox ─────────────────────────
+
+# 仅允许的安全内置函数，移除 __import__、open、exec、eval、compile、
+# globals、locals、vars、dir、getattr、setattr、delattr、type、super 等
+# 危险内置，防止 LLM 代码绕过 _RestrictedOS 代理。
+_SAFE_BUILTINS = {
+    "abs": abs,
+    "all": all,
+    "any": any,
+    "ascii": ascii,
+    "bin": bin,
+    "bool": bool,
+    "bytearray": bytearray,
+    "bytes": bytes,
+    "callable": callable,
+    "chr": chr,
+    "complex": complex,
+    "dict": dict,
+    "divmod": divmod,
+    "enumerate": enumerate,
+    "filter": filter,
+    "float": float,
+    "format": format,
+    "frozenset": frozenset,
+    "hash": hash,
+    "hex": hex,
+    "id": id,
+    "int": int,
+    "isinstance": isinstance,
+    "issubclass": issubclass,
+    "iter": iter,
+    "len": len,
+    "list": list,
+    "map": map,
+    "max": max,
+    "min": min,
+    "next": next,
+    "oct": oct,
+    "ord": ord,
+    "pow": pow,
+    "print": print,
+    "range": range,
+    "repr": repr,
+    "reversed": reversed,
+    "round": round,
+    "set": set,
+    "slice": slice,
+    "sorted": sorted,
+    "str": str,
+    "sum": sum,
+    "tuple": tuple,
+    "type": type,
+    "zip": zip,
+    "True": True,
+    "False": False,
+    "None": None,
+}
 
 
 # ─── Coordinate-scaling proxy ───────────────────────────────────────────
@@ -1228,7 +1291,7 @@ class ComputerUseAdapter:
 
                 # ── Execute pyautogui code ───────────────────────────
                 try:
-                    exec_env: dict = {"__builtins__": __builtins__}
+                    exec_env: dict = {"__builtins__": _SAFE_BUILTINS}
                     exec_env["pyautogui"] = _ScaledPyAutoGUI(
                         pyautogui,
                         self.screen_width,

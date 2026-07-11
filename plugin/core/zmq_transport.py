@@ -43,15 +43,25 @@ _LINGER_MS = 1000
 
 # ── JSON serialisation helpers ──────────────────────────────────────
 
-class _SafeJSONEncoder(json.JSONEncoder):
-    """JSON encoder that falls back to ``str()`` for non-serialisable types.
+import base64
 
-    This ensures that unexpected objects (e.g. ``datetime``, custom classes)
-    do not crash the transport, while logging a warning so developers can
-    identify and fix the root cause.
+# 类型标记前缀，用于在 JSON 中无损传输 bytes
+_BYTES_MARKER = "__bytes_b64__"
+
+
+class _SafeJSONEncoder(json.JSONEncoder):
+    """JSON encoder that handles ``bytes`` via base64 and falls back to ``str()``
+    for other non-serialisable types.
+
+    - ``bytes`` / ``bytearray`` → ``{"__bytes_b64__": "<base64>"}`` (lossless, reversible)
+    - Other unsupported types → ``str()`` with a warning (lossy, last resort)
     """
 
     def default(self, o):  # noqa: D401
+        if isinstance(o, (bytes, bytearray)):
+            return {
+                _BYTES_MARKER: base64.b64encode(bytes(o)).decode("ascii")
+            }
         logger.warning(
             "ZMQ transport: falling back to str() for non-JSON type %s",
             type(o).__name__,
@@ -59,11 +69,26 @@ class _SafeJSONEncoder(json.JSONEncoder):
         return str(o)
 
 
+def _restore_bytes(obj: Any) -> Any:
+    """递归恢复 ``_restore_bytes`` 标记的 bytes 值。
+
+    遍历 dict/list 结构，将 ``{"__bytes_b64__": "..."}`` 还原为原始 ``bytes``。
+    """
+    if isinstance(obj, dict):
+        if _BYTES_MARKER in obj and len(obj) == 1:
+            return base64.b64decode(obj[_BYTES_MARKER])
+        return {k: _restore_bytes(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_restore_bytes(item) for item in obj]
+    return obj
+
+
 def _serialize_msg(channel: str, msg: Any) -> bytes:
     """Serialise ``(channel, msg)`` as JSON bytes.
 
     Replaces ``pickle.dumps`` to eliminate arbitrary-code-execution risk
-    from deserialised ZMQ payloads.
+    from deserialised ZMQ payloads. ``bytes`` values are preserved via
+    base64 encoding with a type marker.
     """
     return json.dumps(
         [channel, msg], cls=_SafeJSONEncoder, ensure_ascii=False
@@ -74,9 +99,10 @@ def _deserialize_msg(raw: bytes) -> Tuple[str, Any]:
     """Deserialise JSON bytes to ``(channel, msg)`` tuple.
 
     Replaces ``pickle.loads`` to eliminate arbitrary-code-execution risk.
+    ``bytes`` values encoded with base64 markers are restored to original form.
     """
     result = json.loads(raw.decode("utf-8"))
-    return result[0], result[1]
+    return result[0], _restore_bytes(result[1])
 
 
 # ═══════════════════════════════════════════════════════════════════
