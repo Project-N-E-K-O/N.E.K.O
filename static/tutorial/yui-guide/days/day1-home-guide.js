@@ -17,9 +17,10 @@
         intro_basic: '这里有一个神奇的按钮.mp3',
         intro_greeting_reply: '微风、阳光，还有刚刚.mp3',
         takeover_capture_cursor: '超级魔法开关出现！只.mp3',
-        interrupt_resist_light_1: '喂！不要拽我啦，现在.mp3',
-        interrupt_resist_light_3: '等一下啦！还没结束呢.mp3',
-        interrupt_angry_exit: '人类！你真的很没礼貌.mp3',
+        interrupt_resist_light_1: '喵！现在是人家的教学.mp3',
+        interrupt_resist_light_2: '真是的，又在乱动鼠标.mp3',
+        interrupt_resist_light_3: '最后警告一次喵！你要.mp3',
+        interrupt_angry_exit: '人家已经忍你很久了！.mp3',
         takeover_return_control: '好啦好啦，不霸占你的.mp3',
         day1_capsule_drag_hint: '把鼠标移到这里，长按.mp3',
         day1_history_handle: '戳一下聊天框上面的【.mp3',
@@ -29,8 +30,7 @@
 
     const zhAudioFileNames = Object.freeze({
         intro_basic: '这里有一个神奇的小按.mp3',
-        takeover_capture_cursor: '超级魔法开关出现！只.mp3',
-        interrupt_resist_light_1: '喂！不要拽我啦，现在.mp3'
+        takeover_capture_cursor: '超级魔法开关出现！只.mp3'
     });
 
     function audioFilesForKey(key) {
@@ -46,6 +46,7 @@
         intro_greeting_reply: audioFilesForKey('intro_greeting_reply'),
         takeover_capture_cursor: audioFilesForKey('takeover_capture_cursor'),
         interrupt_resist_light_1: audioFilesForKey('interrupt_resist_light_1'),
+        interrupt_resist_light_2: audioFilesForKey('interrupt_resist_light_2'),
         interrupt_resist_light_3: audioFilesForKey('interrupt_resist_light_3'),
         interrupt_angry_exit: audioFilesForKey('interrupt_angry_exit'),
         takeover_return_control: audioFilesForKey('takeover_return_control'),
