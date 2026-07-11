@@ -35,7 +35,7 @@ body at all"). Any caller passing ``temperature=...`` defeats this contract.
 
 Scope
 -----
-This check runs over ``app/memory_server.py`` + ``memory/`` + ``utils/`` only.
+This check runs over ``app/memory_server/`` + ``memory/`` + ``utils/`` only.
 Other parts of the codebase (``brain/``, ``main_routers/``, plugin-specific LLM
 adapters, testbench harnesses) have their own temperature semantics and are
 explicitly out of scope. Pass paths explicitly to scan elsewhere.
@@ -73,7 +73,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Default scope: only the memory subsystem and the helpers it relies on.
 # See module docstring for rationale.
-DEFAULT_PATHS: list[str] = ["app/memory_server.py", "memory", "utils"]
+DEFAULT_PATHS: list[str] = ["app/memory_server", "memory", "utils"]
 
 # Mirrors check_no_loguru.py for consistency.
 EXCLUDE_DIRS = {
@@ -183,7 +183,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "paths",
         nargs="*",
-        help="Files/directories to scan (default: app/memory_server.py + memory/ + utils/).",
+        help="Files/directories to scan (default: app/memory_server/ + memory/ + utils/).",
     )
     args = parser.parse_args(argv)
 

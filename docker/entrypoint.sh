@@ -914,13 +914,15 @@ start_services() {
     # PR #2265: agent_server 拆成包（app/agent_server/），存在性检查落在包的
     # __main__.py 上；启动命令对包用 python -m（直跑 __main__.py 会丢 repo
     # 根的 sys.path，config 等顶层包会 import 不到）。
-    local services=("app/memory_server.py" "app/main_server.py" "app/agent_server/__main__.py")
+    # PR #2264: memory_server 同样包化（app/memory_server/），走同一机制；
+    # 其 __main__.py 顶部另带 sys.path bootstrap，文件直跑亦等价，但统一用 -m。
+    local services=("app/memory_server/__main__.py" "app/main_server.py" "app/agent_server/__main__.py")
 
     for service in "${services[@]}"; do
         if [ ! -f "$service" ]; then
             echo "❌ Service file $service not found!"
             # 对关键服务直接失败
-            if [[ "$service" == "app/main_server.py" ]] || [[ "$service" == "app/memory_server.py" ]]; then
+            if [[ "$service" == "app/main_server.py" ]] || [[ "$service" == "app/memory_server/__main__.py" ]]; then
                 return 1
             fi
             continue
@@ -930,6 +932,8 @@ start_services() {
         # 启动服务并记录PID（以 neko 用户运行，使用 venv 的 Python）
         if [[ "$service" == "app/agent_server/__main__.py" ]]; then
             runuser -u neko -- "$VENV_PYTHON" -m app.agent_server &
+        elif [[ "$service" == "app/memory_server/__main__.py" ]]; then
+            runuser -u neko -- "$VENV_PYTHON" -m app.memory_server &
         else
             runuser -u neko -- "$VENV_PYTHON" "$service" &
         fi
