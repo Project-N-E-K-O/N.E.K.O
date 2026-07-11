@@ -217,7 +217,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'ZH_010',
             "name": 'voice husky enough to drip water',
-            "find": '(?:他的?|她的?|它的?|你的?|我的?)?(?:声音|嗓音|嗓子)(?:沙哑|低沉|喑哑|低哑)得(?:仿佛|像)?(?:能|快要|都要)?(?:滴出水|掐出水|拧出水)(?:来)?',
+            "find": '(?:声音|嗓音|嗓子)(?:沙哑|低沉|喑哑|低哑)得(?:仿佛|像)?(?:能|快要|都要)?(?:滴出水|掐出水|拧出水)(?:来)?',
             "replace": [
                 '嗓音哑得人发软',
                 '声音低下去，黏糊糊的',
@@ -827,7 +827,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'EN_012',
             "name": 'voice dripping with X',
-            "find": r"\b(his|her|their|my|your)\s+voice\s+(?:dripping|laced|thick|heavy|laden)\s+with\s+(\w+(?: \w+){0,2})\b",
+            "find": r"\b(his|her|their|my|your)\s+voice\s+(?:dripping|laced|thick|heavy|laden)\s+with\s+(\w+(?:\s+\w+){0,2}?)(?=\s*[.,;:!?]|\s+(?:as|when|while|because|since|before|after|until|though|although|if|unless|and|but|or|nor|so|yet|then|that|which|who|whose|where)\b|\s*$)",
             "replace": [
                 r"\1 voice thick with \2",
                 r"\1 voice heavy with \2",
@@ -846,20 +846,20 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'EN_013',
             "name": 'sound echoed through the room',
-            "find": r"\b(?:[Tt]he\s+|[Hh]er\s+|[Hh]is\s+|[Tt]heir\s+|[Mm]y\s+|[Yy]our\s+)?(scream|screams|cry|cries|shout|shouts|laughter|voice|voices|words|sound|sounds|gunshot|shot|shots|bang|crack|footsteps|silence|sob|sobs|wail|moan|whisper|whispers|growl|roar|boom|note|notes|melody|music|thunder|knock|clang|clatter)\s+echoed\s+(?:through(?:out)?|across|around|off)\s+the\s+(?:\w+\s+){0,2}\w+\b",
+            "find": r"\b(scream|screams|cry|cries|shout|shouts|laughter|voice|voices|words|sound|sounds|gunshot|shot|shots|bang|crack|footsteps|silence|sob|sobs|wail|moan|whisper|whispers|growl|roar|boom|note|notes|melody|music|thunder|knock|clang|clatter)\s+echoed\s+(?:through(?:out)?|across|around|off)\s+the\s+(?:\w+\s+){0,2}\w+\b",
             "replace": [
-                r"the \1 carried through the space",
-                r"the \1 filled the room",
-                r"the \1 bounced off the walls",
-                r"the \1 rang out",
-                r"the \1 traveled the length of the room",
-                r"the \1 hung in the air",
-                r"the \1 spread through the building",
-                r"the \1 reached every corner",
-                r"the \1 cut through the quiet",
-                r"the \1 rolled outward",
-                r"the \1 sounded loud in the emptiness",
-                r"the \1 carried, then faded",
+                r"\1 carried through the space",
+                r"\1 filled the room",
+                r"\1 bounced off the walls",
+                r"\1 rang out",
+                r"\1 traveled the length of the room",
+                r"\1 hung in the air",
+                r"\1 spread through the building",
+                r"\1 reached every corner",
+                r"\1 cut through the quiet",
+                r"\1 rolled outward",
+                r"\1 sounded loud in the emptiness",
+                r"\1 carried, then faded",
             ],
         },
         {
@@ -960,7 +960,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'EN_019',
             "name": 'vice-like / iron grip',
-            "find": r"\b(?:[Aa]|[Aa]n|[Hh]is|[Hh]er|[Tt]heir|[Mm]y|[Yy]our)\s+(?:vice|vise|vice-like|vise-like|iron|crushing|bruising|bone-crushing)(?:\s*-?\s*like)?\s+grip\b(?=\s*[.,;:!?]|\s*$)",
+            "find": r"\b(?:[Aa]|[Aa]n)\s+(?:vice|vise|vice-like|vise-like|iron|crushing|bruising|bone-crushing)(?:\s*-?\s*like)?\s+grip\b(?=\s*[.,;:!?]|\s*$)",
             "replace": [
                 "a grip that wouldn't give",
                 'a hold hard enough to bruise',
@@ -1120,7 +1120,7 @@ SLOP_RULES: dict[str, list[dict]] = {
                 'the world held its place',
                 'each second stretched thin',
                 'the moment refused to move on',
-                'everything around them went still',
+                'everything went still',
                 'the clock might as well have stopped',
                 'the next second took forever to arrive',
                 'the room hung suspended',
@@ -1150,7 +1150,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'EN_029',
             "name": '(eyes) darkened with desire/emotion',
-            "find": r"\b(his|her|their|my|your)\s+(?:eyes|gaze)\s+(?:darkened|clouded|softened|hardened)\s+with\s+(\w+(?: \w+){0,2})\b",
+            "find": r"\b(his|her|their|my|your)\s+(?:eyes|gaze)\s+(?:darkened|clouded|softened|hardened)\s+with\s+(\w+(?:\s+\w+){0,2}?)(?=\s*[.,;:!?]|\s+(?:as|when|while|because|since|before|after|until|though|although|if|unless|and|but|or|nor|so|yet|then|that|which|who|whose|where)\b|\s*$)",
             "replace": [
                 r"\2 changed \1 eyes",
                 r"\1 gaze shifted with \2",
@@ -1221,7 +1221,7 @@ SLOP_RULES: dict[str, list[dict]] = {
                 '鼓動がずんと',
                 '心臓が低く',
                 '胸の音が太く',
-                '鼓動が一度跳ねて',
+                '鼓動が一度どくんと',
                 '胸が重たく',
             ],
         },
@@ -1895,7 +1895,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'KO_016',
             "name": '손끝이 떨리다 (fingertips tremble)',
-            "find": r"손(?:끝|가락|길)이\s*(?:미세하게\s*|가늘게\s*|살짝\s*)?떨(?:렸|려)(?:다|어|왔다)",
+            "find": r"손(?:끝|가락|길)이\s*(?:미세하게\s*|가늘게\s*|살짝\s*)?떨(?:렸|려)(?:다|어요|어|왔다)",
             "replace": [
                 '손끝이 가늘게 떨려 왔다',
                 '손가락에 힘이 들어가지 않았다',
@@ -2242,18 +2242,18 @@ SLOP_RULES: dict[str, list[dict]] = {
             "name": 'el corazón le latía/martilleaba con fuerza',
             "find": r"\b[Ee]l coraz[oó]n le (?:lat[ií]a|martilleaba|golpeaba|palpitaba|retumbaba)(?: con fuerza| con violencia| desbocado| acelerado)?(?:\s+en\s+el\s+pecho)?\b",
             "replace": [
-                'el pulso se le disparó',
-                'sintió el corazón a punto de salírsele del pecho',
-                'se le aceleró el pulso',
-                'el corazón se le puso a mil',
-                'notó cómo se le encogía el pecho',
+                'el pulso se le desbocaba',
+                'sentía el corazón a punto de salírsele del pecho',
+                'se le aceleraba el pulso',
+                'el corazón se le iba a mil',
+                'notaba cómo se le encogía el pecho',
                 'el corazón le iba a reventar',
-                'se le subió el corazón a la garganta',
-                'sintió un vuelco en el pecho',
+                'se le subía el corazón a la garganta',
+                'el pecho le daba un vuelco tras otro',
                 'el pecho le subía y bajaba sin control',
-                'se le aceleró todo por dentro',
-                'el corazón se le agitó',
-                'notó el latido tamborileando en las sienes',
+                'se le aceleraba todo por dentro',
+                'el corazón se le agitaba',
+                'notaba el latido tamborileándole en las sienes',
             ],
         },
         {
@@ -2487,7 +2487,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'ES_014',
             "name": 'se le formó un nudo en la garganta',
-            "find": r"\b(?:se le )?(?:form[oó]|hizo|apret[oó]|atravesaba|cerr[oó]) un nudo en la garganta\b",
+            "find": r"\b(?:se le )?(?:form[oó]|hizo|apret[oó]|cerr[oó]) un nudo en la garganta\b",
             "flags": re.IGNORECASE,
             "replace": [
                 'sintió la garganta cerrada',
@@ -2565,7 +2565,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'PT_002',
             "name": 'prender a respiração',
-            "find": r"\b(prendeu|prendia|segurou)\s+a\s+respiração\b",
+            "find": r"\b(prendeu|segurou)\s+a\s+respiração\b",
             "replace": [
                 'ficou sem ar no meio do caminho',
                 'travou o próprio fôlego sem aviso',
@@ -2619,7 +2619,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'PT_005',
             "name": 'um sorriso curvou/brincou em seus lábios',
-            "find": r"\bum\s+(?:meio\s+)?(sorriso|sorrisinho)\s+(?:curvou|brincou\s+em|brincava\s+em|se\s+formou\s+em|despontou\s+em|surgiu\s+em|assomou\s+a)\s+(?:os\s+)?(?:seus|teus)?\s*lábios\b",
+            "find": r"\bum\s+(?:meio\s+)?(sorriso|sorrisinho)\s+(?:curvou|brincou\s+em|se\s+formou\s+em|despontou\s+em|surgiu\s+em|assomou\s+a)\s+(?:os\s+)?(?:seus|teus)?\s*lábios\b",
             "replace": [
                 r"deixou escapar um \1 que ninguém planeou",
                 r"não conteve um \1",
@@ -2691,7 +2691,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'PT_009',
             "name": 'morder o lábio inferior',
-            "find": r"\b(mordeu|mordia|mordiscou)\s+o\s+lábio\s+inferior\b",
+            "find": r"\b(mordeu|mordiscou)\s+o\s+lábio\s+inferior\b",
             "replace": [
                 'prendeu o lábio entre os dentes',
                 'deu uma beliscada no lábio sem pensar',
@@ -2709,7 +2709,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'PT_010',
             "name": 'o ar ficou denso/tensionou',
-            "find": r"\bo\s+ar\s+(?:(?:ficou|tornou-se|se\s+tornou|estava)\s+(?:denso|pesado|espesso|elétrico|tenso))\b",
+            "find": r"\bo\s+ar\s+(?:(?:ficou|tornou-se|se\s+tornou)\s+(?:denso|pesado|espesso|elétrico|tenso))\b",
             "replace": [
                 'ficou difícil de respirar no meio daquilo',
                 'o silêncio engrossou na sala',
