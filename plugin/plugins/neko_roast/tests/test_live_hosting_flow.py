@@ -27,11 +27,11 @@ from plugin.plugins.neko_roast.modules.active_engagement import ActiveEngagement
 from plugin.plugins.neko_roast.modules.warmup_hosting import WarmupHostingModule
 
 
-def test_hosting_modules_import_without_active_topic_slice():
+def test_hosting_modules_import_with_host_content_catalog():
     assert ActiveEngagementModule.id == "active_engagement"
     assert WarmupHostingModule.id == "warmup_hosting"
     assert live_hosting_director.LiveHostingDirector is not None
-    assert idle_hosting_beat_candidates() == []
+    assert idle_hosting_beat_candidates()
 
 
 def test_live_material_safety_rejects_unsafe_or_malformed_text():
