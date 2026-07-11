@@ -709,6 +709,8 @@ async def shutdown_event_handler():
         from utils.token_tracker import TokenTracker
         TokenTracker.get_instance().save()
     except Exception:
+        # Best-effort final flush — the shutdown path must never fail on
+        # tracker IO, and the periodic save loop already persisted recent data.
         pass
     # P2 vector worker: kick off stop() as a task before we touch the
     # reload lock so its bounded 2s wait overlaps with manager cleanup
