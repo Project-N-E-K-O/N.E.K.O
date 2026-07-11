@@ -4698,6 +4698,17 @@
         return window.__nekoGoodbyeIdleAppearance === 'ball';
     }
 
+    function readAutoGoodbyeVisualTier() {
+        try {
+            if (window.nekoAutoGoodbye && typeof window.nekoAutoGoodbye.getState === 'function') {
+                var state = window.nekoAutoGoodbye.getState();
+                var tier = state && state.visualTier;
+                return typeof tier === 'string' ? tier : IDLE_DOCK_TIER_NONE;
+            }
+        } catch (_) {}
+        return IDLE_DOCK_TIER_NONE;
+    }
+
     function getVisibleReturnButtonContainer() {
         if (isElectronChatWindow()) return null;
         return document.querySelector('[id$="-return-button-container"][data-neko-return-visible="true"]');
@@ -7099,12 +7110,31 @@
         window.addEventListener('neko:goodbye-idle-appearance', function (event) {
             var detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
             var mode = detail && typeof detail.mode === 'string' ? detail.mode : '';
-            if (mode !== 'ball') return;
-            idleDockTier = IDLE_DOCK_TIER_NONE;
+            if (mode === 'ball') {
+                idleDockTier = IDLE_DOCK_TIER_NONE;
+            } else {
+                // 切回 cat 不会再有 visual-tier 事件补发，须按当前 tier 立即恢复贴靠状态
+                var currentTier = readAutoGoodbyeVisualTier();
+                idleDockTier = currentTier === IDLE_DOCK_TIER_CAT2 || currentTier === IDLE_DOCK_TIER_CAT3
+                    ? currentTier
+                    : IDLE_DOCK_TIER_NONE;
+            }
+
+            var overlay = getOverlay();
+            if (!overlay || overlay.hidden || isElectronChatWindow()) return;
+
+            if (isIdleDockTierActive()) {
+                if (!idleDockActive) {
+                    enterIdleDock();
+                }
+                return;
+            }
+
             if (hasIdleDockPendingOrActive()) {
                 exitIdleDock({});
                 return;
             }
+
             clearIdleDockState();
         });
         window.addEventListener('neko:idle-return-ball-state', function (event) {
