@@ -155,9 +155,21 @@ import httpx
 
 
 # Re-exports from the package submodules. Everything the old single-file
-# module defined at top level stays importable/patchable as
-# ``main_logic.core.<name>``. State-carrying objects (the notice queue/lock,
-# the ``_proactive_expected_sid`` ContextVar, ``_notified_legacy_voices``) are
+# module defined at top level stays importable as ``main_logic.core.<name>``.
+#
+# Rebind/monkeypatch semantics: rebinding a facade attribute only affects
+# consumers whose code lives in THIS module -- i.e. ``LLMSessionManager``,
+# which is why the class stays here and every historical
+# ``monkeypatch.setattr("main_logic.core.<attr>", ...)`` site keeps working.
+# Code moved into a submodule reads its own module globals, so to stub a
+# symbol as seen by a moved helper (e.g. ``_loc`` inside ``callback_render``),
+# patch that submodule directly -- same contract as
+# ``main_routers/system_router`` (#2148). No such patch site exists today
+# (the old module early-bound those names from ``config.prompts.prompts_sys``
+# anyway, so rebinding them on the source module never propagated either).
+#
+# State-carrying objects (the notice queue/lock, the
+# ``_proactive_expected_sid`` ContextVar, ``_notified_legacy_voices``) are
 # re-exported by reference; their single owner is the defining submodule.
 # ``notices._prominent_notice_seq`` is intentionally NOT re-exported: the
 # owner rebinds that int on every enqueue, so a facade snapshot would go
