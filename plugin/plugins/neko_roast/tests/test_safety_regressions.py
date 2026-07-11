@@ -225,8 +225,11 @@ async def test_pipeline_once_per_uid_gate_is_atomic_for_concurrent_events():
     assert ctx.dispatcher.calls == 1
 
 
+@pytest.mark.parametrize("failure_mode", ("returns_false", "raises"))
 @pytest.mark.asyncio
-async def test_pipeline_mark_roasted_failure_keeps_success_result():
+async def test_pipeline_mark_roasted_failure_keeps_success_result(
+    failure_mode: str,
+):
     class Audit:
         def __init__(self):
             self.records = []
@@ -266,7 +269,9 @@ async def test_pipeline_mark_roasted_failure_keeps_success_result():
             return False
 
         async def mark_roasted(self, _uid, _output):
-            raise OSError("disk full")
+            if failure_mode == "raises":
+                raise OSError("disk full")
+            return False
 
     class Dispatcher:
         async def push_roast(self, _request):

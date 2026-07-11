@@ -33,7 +33,7 @@ async def test_clear_profiles_resets_current_store_file(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_clear_profiles_resets_active_fallback_store(tmp_path, monkeypatch):
+async def test_clear_profiles_rejects_active_fallback_store(tmp_path, monkeypatch):
     custom = tmp_path / "custom_here"
     default = tmp_path / "default"
     store = ViewerStore(_FakePlugin(default), audit=None, dir_provider=lambda: str(custom))
@@ -47,14 +47,19 @@ async def test_clear_profiles_resets_active_fallback_store(tmp_path, monkeypatch
     monkeypatch.setattr(store, "_write_json", _fail_custom)
 
     await store.upsert_identity(ViewerIdentity(uid="8", nickname="fallback viewer"))
-    assert (default / "viewer_profiles.json").exists()
+    fallback_file = default / "viewer_profiles.json"
+    assert fallback_file.exists()
 
     result = await store.clear_profiles()
 
-    assert result["cleared"] == 1
-    assert result["path"] == str(default / "viewer_profiles.json")
-    assert await store.recent_profiles() == []
-    assert json.loads((default / "viewer_profiles.json").read_text(encoding="utf-8")) == {}
+    assert result["cleared"] == 0
+    assert result["applied"] is False
+    assert result["path"] == str(fallback_file)
+    assert fallback_file.exists()
+    restarted = ViewerStore(
+        _FakePlugin(default), audit=None, dir_provider=lambda: str(custom)
+    )
+    assert (await restarted.recent_profiles())[0]["uid"] == "8"
 
 
 @pytest.mark.asyncio

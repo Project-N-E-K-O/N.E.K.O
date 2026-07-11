@@ -12,6 +12,7 @@ _MAX_TEXT = 240
 _MAX_DEPTH = 4
 _ALLOWED_LEVELS = {"debug", "info", "warning", "error"}
 _SENSITIVE_AUTH_RE = re.compile(r"\bauthorization\s*:\s*(?:bearer|basic)?\s*[^\s;,]+", re.IGNORECASE)
+_SENSITIVE_COOKIE_HEADER_RE = re.compile(r"\bcookie\s*:\s*[^\r\n]*", re.IGNORECASE)
 _SENSITIVE_KEY_RE = re.compile(
     r"^(?:authorization|cookie|token|access_token|refresh_token|signature|webcast_sign|ttwid|"
     r"odin_tt|sessionid|sessdata|bili_jct|dedeuserid|buvid3|x-tt-token)$",
@@ -52,7 +53,7 @@ class AuditStore:
 
 
 def _safe_level(value: Any) -> str:
-    text = _safe_text(value)
+    text = _safe_text(value).lower()
     return text if text in _ALLOWED_LEVELS else "info"
 
 
@@ -102,7 +103,8 @@ def _safe_public_value(value: Any, *, depth: int) -> Any:
 def _safe_text(value: Any) -> str:
     if not isinstance(value, str):
         return ""
-    text = " ".join(value.replace("\r", " ").replace("\n", " ").split())
+    text = _SENSITIVE_COOKIE_HEADER_RE.sub("[redacted]", value)
+    text = " ".join(text.replace("\r", " ").replace("\n", " ").split())
     if not text:
         return ""
     text = _SENSITIVE_AUTH_RE.sub("[redacted]", text)

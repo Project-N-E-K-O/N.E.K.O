@@ -394,7 +394,36 @@ def test_idle_hosting_avoids_recent_active_engagement_material_family(runtime: R
     assert beat["idle_stage"] == "settle"
 
 @pytest.mark.asyncio
-async def test_active_engagement_avoids_recent_spent_output_family(runtime: RoastRuntime) -> None:
+async def test_active_engagement_avoids_recent_spent_output_family(
+    runtime: RoastRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidates = [
+        {
+            "source": "fallback",
+            "key": "topic:spent-object-scene",
+            "title": "keyboard takes one tiny nap",
+            "hint": "Use one tiny object-scene line.",
+            "family": "object_scene",
+            "fun_axis": "tease",
+            "reply_affordance": "viewer can tease NEKO back",
+        },
+        {
+            "source": "fallback",
+            "key": "topic:fresh-room-mood",
+            "title": "room mood gets one tiny stamp",
+            "hint": "Use one tiny room-mood line.",
+            "family": "room_mood",
+            "fun_axis": "mood",
+            "reply_affordance": "viewer can answer with one mood word",
+        },
+    ]
+    monkeypatch.setattr(
+        runtime,
+        "_active_engagement_fallback_topic_candidates",
+        lambda: list(candidates),
+    )
+
     async def fetch_topics(limit: int = 6) -> dict:
         return {"success": True, "videos": []}
 
@@ -416,7 +445,8 @@ async def test_active_engagement_avoids_recent_spent_output_family(runtime: Roas
     topic = await runtime._select_active_engagement_topic()
 
     assert "object_scene" in runtime._recent_spent_output_families()
-    assert topic["family"] != "object_scene"
+    assert topic["key"] == "topic:fresh-room-mood"
+    assert topic["family"] == "room_mood"
     assert topic["recent_topic_skip_reason"] == "recent_spent_output_family"
 
 def test_active_engagement_fallback_topics_do_not_use_room_silence_as_material(runtime: RoastRuntime) -> None:
