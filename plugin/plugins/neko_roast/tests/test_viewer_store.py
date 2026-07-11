@@ -192,6 +192,83 @@ async def test_profile_management_reports_failed_persistence(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
+async def test_records_viewer_preferences_without_persisting_raw_danmaku(tmp_path):
+    store = ViewerStore(_FakePlugin(tmp_path), audit=None)
+    identity = ViewerIdentity(uid="1001", nickname="技术姥爷")
+
+    profile = await store.record_live_danmaku(
+        identity, "这个 AI 插件怎么配置？token=must-not-leak"
+    )
+
+    assert profile.danmaku_count == 1
+    assert profile.preference_tags["tech_ai"] == 1
+    assert profile.preference_tags["questions"] == 1
+    assert profile.favorite_topics["tech_ai"] == 1
+    assert profile.running_jokes["short_helper_mode"] == 1
+    assert profile.interaction_style == "question"
+    assert "answer first" in profile.response_preference
+    assert "answer before teasing" in profile.avoid_guidance
+    assert "likes tech/AI" in profile.impression_summary
+
+    raw = (tmp_path / "viewer_profiles.json").read_text(encoding="utf-8")
+    assert "这个 AI 插件怎么配置" not in raw
+    assert "must-not-leak" not in raw
+
+    recent = await store.recent_profiles()
+    item = next(p for p in recent if p["uid"] == "1001")
+    assert item["danmaku_count"] == 1
+    assert item["preference_tags"]["tech_ai"] == 1
+    assert item["favorite_topics"]["tech_ai"] == 1
+    assert item["running_jokes"]["short_helper_mode"] == 1
+    assert item["last_interaction_summary"] == "likes tech/AI, often asks questions"
+    assert item["impression_summary"]
+    assert item["avoid_guidance"] == "answer before teasing; do not dodge the question"
+
+
+@pytest.mark.asyncio
+async def test_recent_profiles_include_derived_viewer_profile_guidance(tmp_path):
+    store = ViewerStore(_FakePlugin(tmp_path), audit=None)
+    identity = ViewerIdentity(uid="1001", nickname="技术姥爷")
+
+    await store.record_live_danmaku(identity, "这个 AI 插件怎么配置？")
+    await store.record_live_danmaku(identity, "AI 模型和插件还能怎么调？")
+    await store.record_live_danmaku(identity, "有没有代码示例？")
+    await store.record_live_danmaku(identity, "这个配置为什么不生效？")
+
+    recent = await store.recent_profiles()
+    item = next(p for p in recent if p["uid"] == "1001")
+
+    assert item["viewer_stage"] == "returning_viewer"
+    assert item["profile_confidence"] == "medium"
+    assert item["reply_guidance"] == "answer first, then add one light follow-up"
+    assert item["profile_summary"].startswith("likes tech/AI, often asks questions")
+    assert item["impression_summary"].startswith("likes tech/AI, often asks questions")
+    assert item["avoid_guidance"] == "answer before teasing; do not dodge the question"
+    tags = {tag["tag"]: tag["count"] for tag in item["top_preference_tags"]}
+    assert tags["question"] == 4
+    assert tags["questions"] == 3
+    assert tags["tech_ai"] == 4
+    favorite_topics = {tag["tag"]: tag["count"] for tag in item["top_favorite_topics"]}
+    assert favorite_topics["tech_ai"] == 4
+    running_jokes = {tag["tag"]: tag["count"] for tag in item["top_running_jokes"]}
+    assert running_jokes["short_helper_mode"] == 4
+
+    raw = json.loads((tmp_path / "viewer_profiles.json").read_text(encoding="utf-8"))
+    stored = raw["1001"]
+    assert stored["favorite_topics"]["tech_ai"] == 4
+    assert stored["running_jokes"]["short_helper_mode"] == 4
+    assert stored["impression_summary"].startswith("likes tech/AI, often asks questions")
+    assert stored["avoid_guidance"] == "answer before teasing; do not dodge the question"
+    assert "viewer_stage" not in stored
+    assert "profile_confidence" not in stored
+    assert "top_preference_tags" not in stored
+    assert "top_favorite_topics" not in stored
+    assert "top_running_jokes" not in stored
+    assert "reply_guidance" not in stored
+    assert "profile_summary" not in stored
+
+
+@pytest.mark.asyncio
 async def test_profile_management_rejects_fallback_only_persistence(
     tmp_path, monkeypatch
 ):
