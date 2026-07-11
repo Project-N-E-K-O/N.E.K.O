@@ -316,6 +316,39 @@ def test_explicit_event_type_wins_over_gift_field_inference() -> None:
     assert support_event_type(event) == ""
 
 
+@pytest.mark.parametrize(
+    ("type_value", "expected_type"),
+    [
+        ("gift", "gift"),
+        ("guard", "guard"),
+        ("sc", "super_chat"),
+        ("super_chat", "super_chat"),
+    ],
+)
+def test_type_alias_is_canonicalized_for_support_routing(
+    type_value, expected_type
+) -> None:
+    module = DouyinLiveIngestModule()
+    module.ctx = SimpleNamespace(config=SimpleNamespace(live_mode="co_stream"))
+
+    event = module.normalize({"type": type_value, "uid": "viewer-token-42"})
+
+    assert event.raw["event_type"] == expected_type
+    assert support_event_type(event) == expected_type
+
+
+def test_explicit_event_type_wins_over_support_type_alias() -> None:
+    module = DouyinLiveIngestModule()
+    module.ctx = SimpleNamespace(config=SimpleNamespace(live_mode="co_stream"))
+
+    event = module.normalize(
+        {"event_type": "chat", "type": "gift", "gift_name": "rose"}
+    )
+
+    assert event.raw["event_type"] == "chat"
+    assert support_event_type(event) == ""
+
+
 def test_platform_uid_accepts_opaque_ids_but_rejects_credential_shapes() -> None:
     assert platform_uid("signature-viewer") == "douyin:signature-viewer"
     assert platform_uid("sessionid=secret") == ""
