@@ -118,29 +118,30 @@ def test_local_cosyvoice_audio_keeps_connection_source_id_across_rotation(monkey
     )
     thread.start()
 
-    assert response_queue.get(timeout=5.0) == ("__ready__", True)
-    # Give the initial source-less receive loop a chance to process its eager PCM.
-    time.sleep(0.05)
-    assert response_queue.empty()
+    try:
+        assert response_queue.get(timeout=5.0) == ("__ready__", True)
+        # Give the initial source-less receive loop a chance to process its eager PCM.
+        time.sleep(0.05)
+        assert response_queue.empty()
 
-    request_queue.put(("old-speech", "旧回合"))
-    first_audio = _wait_for_items(
-        response_queue,
-        lambda item: isinstance(item, tuple) and item[0] == "__audio__",
-        1,
-    )
-    assert first_audio[0][1] == "old-speech"
-    assert isinstance(first_audio[0][2], bytes)
+        request_queue.put(("old-speech", "旧回合"))
+        first_audio = _wait_for_items(
+            response_queue,
+            lambda item: isinstance(item, tuple) and item[0] == "__audio__",
+            1,
+        )
+        assert first_audio[0][1] == "old-speech"
+        assert isinstance(first_audio[0][2], bytes)
 
-    request_queue.put(("new-speech", "新回合"))
-    rotated_audio = _wait_for_items(
-        response_queue,
-        lambda item: isinstance(item, tuple) and item[0] == "__audio__",
-        2,
-    )
-    assert [item[1] for item in rotated_audio] == ["old-speech", "new-speech"]
-    assert all(isinstance(item[2], bytes) for item in rotated_audio)
-
-    request_queue.put((TTS_SHUTDOWN_SENTINEL, None))
-    thread.join(timeout=5.0)
-    assert not thread.is_alive()
+        request_queue.put(("new-speech", "新回合"))
+        rotated_audio = _wait_for_items(
+            response_queue,
+            lambda item: isinstance(item, tuple) and item[0] == "__audio__",
+            2,
+        )
+        assert [item[1] for item in rotated_audio] == ["old-speech", "new-speech"]
+        assert all(isinstance(item[2], bytes) for item in rotated_audio)
+    finally:
+        request_queue.put((TTS_SHUTDOWN_SENTINEL, None))
+        thread.join(timeout=5.0)
+        assert not thread.is_alive()
