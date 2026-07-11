@@ -19,11 +19,9 @@
 - [主动营业内容目录](modules/active_content_catalogs.md)：静态 fallback 话题目录、公共访问器以及 host 目录未落地时的降级边界。
 - [AI/IDE 开发规则](../AGENTS.md)：面向 IDE agent、自动化 reviewer 和贡献者的硬性维护规则。
 
-- [Host content catalogs](modules/host_content_catalogs.md): static idle-hosting beats, data fallback, and the shared content facade.
-
-- [Live status helpers](modules/live_status_helpers.md): pure readiness, timing, hosting-state, and director projections.
-
-- [Viewer and security stores](modules/viewer_stores.md): viewer profiles, audit redaction, and encrypted credential namespaces.
+- [宿主内容目录](modules/host_content_catalogs.md)：静态 idle-hosting beat、数据回退与共享素材接口。
+- [直播状态助手](modules/live_status_helpers.md)：连接与活跃状态的就绪度、计时、主持状态判定、导播下一步投影与主题上下文投影，纯计算无副作用。
+- [观众与安全存储](modules/viewer_stores.md)：观众档案、审计脱敏与加密凭据命名空间。
 
 ## Canonical Source
 

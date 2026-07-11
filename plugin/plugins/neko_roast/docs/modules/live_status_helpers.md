@@ -14,7 +14,7 @@ The live status helpers turn connection state, recent activity, cooldowns, and s
 - `core/live_status_readiness.py` owns solo-test readiness and speech explanations.
 - `core/live_host_theme.py` owns the small theme projection used by status consumers.
 
-The helpers accept configuration-like objects and plain dictionaries, then return plain dictionaries with stable summary, reason, eligibility, cooldown, and next-action fields. They do not mutate their inputs.
+The status-projection helpers accept configuration-like objects and plain dictionaries, then return plain dictionaries with stable summary, reason, eligibility, cooldown, and next-action fields. The timing helpers instead return scalars or tuples (for example a minimum interval in seconds, a live-state threshold range, or an optional recent-output age). None of them mutate their inputs.
 
 ## Pipeline, Safety, And Data
 
