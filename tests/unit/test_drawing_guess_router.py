@@ -496,6 +496,8 @@ def test_user_guess_extraction_uses_alias_boundaries():
 @pytest.mark.parametrize("text", [
     "\u4e0d\u662f\u732b\u5427\uff1f",
     "\u4e0d\u662f\u4e00\u53ea\u732b\u5427\uff1f",
+    "\u8fd9\u4e0d\u50cf\u662f\u732b\u5427\uff1f",
+    "\u9019\u4e0d\u50cf\u662f\u4e00\u96bb\u8c93\u5427\uff1f",
     "not cat?",
     "is not cat",
     "isn't cat",
