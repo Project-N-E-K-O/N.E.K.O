@@ -8,6 +8,7 @@ TEASE_FALLBACK_TOPIC_CANDIDATES: tuple[dict[str, Any], ...] = (
     {
         "source": "fallback",
         "key": "fallback:keyboard-busy",
+        "family": "tease",
         "live_column": "NEKO tiny verdict",
         "title": "\u952e\u76d8\u4eca\u5929\u50cf\u5728\u5077\u5077\u6253\u76f9",
         "fun_axis": "tease",
@@ -18,6 +19,7 @@ TEASE_FALLBACK_TOPIC_CANDIDATES: tuple[dict[str, Any], ...] = (
     {
         "source": "fallback",
         "key": "fallback:screen-staring-back",
+        "family": "tease",
         "live_column": "NEKO tiny verdict",
         "title": "\u76ef\u5c4f\u5e55\u4e45\u4e86\uff0c\u732b\u732b\u6000\u7591\u5c4f\u5e55\u4e5f\u5728\u76ef\u56de\u6765",
         "fun_axis": "tease",
@@ -28,6 +30,7 @@ TEASE_FALLBACK_TOPIC_CANDIDATES: tuple[dict[str, Any], ...] = (
     {
         "source": "fallback",
         "key": "fallback:serious-hosting",
+        "family": "tease",
         "live_column": "NEKO self-roast",
         "title": "\u732b\u732b\u6b63\u5728\u52aa\u529b\u50cf\u4e2a\u6b63\u7ecf\u4e3b\u64ad\uff0c\u5148\u522b\u7b11",
         "fun_axis": "tease",
