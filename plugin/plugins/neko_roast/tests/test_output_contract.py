@@ -1,7 +1,11 @@
 import pytest
 
 from plugin.plugins.neko_roast.adapters.neko_dispatcher import _coalesce_key_for_request
-from plugin.plugins.neko_roast.core import danmaku_text_rules
+from plugin.plugins.neko_roast.core import (
+    danmaku_text_rules,
+    live_output_policy,
+    live_reply_policy,
+)
 from plugin.plugins.neko_roast.core.contracts import (
     InteractionRequest,
     ViewerEvent,
@@ -212,3 +216,10 @@ def test_complete_english_greeting_words_are_preserved(text: str) -> None:
     dense = "".join(text.split())
 
     assert DanmakuResponseModule._looks_like_greeting(text, dense) is True
+
+
+@pytest.mark.parametrize("policy_module", (live_output_policy, live_reply_policy))
+def test_compatibility_policy_facade_exports_are_explicit(policy_module) -> None:
+    assert policy_module.__all__
+    assert len(policy_module.__all__) == len(set(policy_module.__all__))
+    assert all(hasattr(policy_module, name) for name in policy_module.__all__)
