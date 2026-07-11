@@ -31,7 +31,7 @@ Optionally, start the agent server for background task execution:
 
 ```bash
 # Terminal 3 — Agent server (optional)
-uv run python app/agent_server.py
+uv run python -m app.agent_server
 ```
 
 ## Configure API keys

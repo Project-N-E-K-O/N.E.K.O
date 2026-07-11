@@ -910,10 +910,13 @@ start_services() {
         VENV_PYTHON="python3"
     fi
     
-    # PR #1265: 4 个 server 入口搬进 app/ 子包；这里跟着改成 app/<name>.py。
-    # memory_server 已包化（app/memory_server/），入口是包内 __main__.py，
-    # 其顶部自带 sys.path bootstrap，文件直跑与 `-m` 等价。
-    local services=("app/memory_server/__main__.py" "app/main_server.py" "app/agent_server.py")
+    # PR #1265: 4 个 server 入口搬进 app/ 子包；这里跟着改成 app/<name>.py
+    # PR #2265: agent_server 拆成包（app/agent_server/），存在性检查落在包的
+    # __main__.py 上；启动命令对包用 python -m（直跑 __main__.py 会丢 repo
+    # 根的 sys.path，config 等顶层包会 import 不到）。
+    # PR #2264: memory_server 同样包化（app/memory_server/），走同一机制；
+    # 其 __main__.py 顶部另带 sys.path bootstrap，文件直跑亦等价，但统一用 -m。
+    local services=("app/memory_server/__main__.py" "app/main_server.py" "app/agent_server/__main__.py")
 
     for service in "${services[@]}"; do
         if [ ! -f "$service" ]; then
@@ -927,7 +930,13 @@ start_services() {
 
         echo "   Starting $service as neko user..."
         # 启动服务并记录PID（以 neko 用户运行，使用 venv 的 Python）
-        runuser -u neko -- "$VENV_PYTHON" "$service" &
+        if [[ "$service" == "app/agent_server/__main__.py" ]]; then
+            runuser -u neko -- "$VENV_PYTHON" -m app.agent_server &
+        elif [[ "$service" == "app/memory_server/__main__.py" ]]; then
+            runuser -u neko -- "$VENV_PYTHON" -m app.memory_server &
+        else
+            runuser -u neko -- "$VENV_PYTHON" "$service" &
+        fi
         local pid=$!
         PIDS+=("$pid")
         echo "     Started $service with PID: $pid (running as neko)"

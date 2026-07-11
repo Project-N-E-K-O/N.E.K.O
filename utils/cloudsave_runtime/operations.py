@@ -1018,13 +1018,28 @@ def import_local_cloudsave_snapshot(
         )
         runtime_targets[Path(config_manager.get_runtime_config_path("user_preferences.json"))] = preferences_stage_path
 
+        memory_entries: list[tuple[str, str, Path]] = []
         for relative_path, staged_path in staged_entries.items():
             if not relative_path.startswith("memory/"):
                 continue
             parts = Path(relative_path).parts
-            if len(parts) != 3:
+            # manifest key 是不可信输入：三段结构之外，还要挡住 '..'/'.' 段
+            # （"memory/../x" 的 parts 恰好三段）和白名单外的叶子文件名。
+            if (
+                len(parts) != 3
+                or Path(relative_path).is_absolute()
+                or any(part in ("..", ".") for part in parts)
+                or parts[2] not in MANAGED_MEMORY_FILENAMES
+            ):
                 raise ValueError(f"unsupported cloudsave memory path: {relative_path}")
             _, character_name, filename = parts
+            memory_entries.append((character_name, filename, staged_path))
+
+        memory_name_audit = audit_cloudsave_character_names(
+            sorted({character_name for character_name, _, _ in memory_entries})
+        )
+        _raise_for_name_audit(memory_name_audit, context="import memory")
+        for character_name, filename, staged_path in memory_entries:
             if character_name in tombstone_names:
                 continue
             runtime_targets[Path(config_manager.memory_dir) / character_name / filename] = staged_path

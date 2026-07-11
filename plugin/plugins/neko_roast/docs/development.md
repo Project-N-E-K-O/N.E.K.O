@@ -548,3 +548,20 @@ uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast
 开发者模式是直播语境上的第二层上下文：先注入 `NEKO_ROAST_CONTEXT_INSTRUCTIONS`，再按开关注入 `NEKO_ROAST_DEVELOPER_INSTRUCTIONS`。退出开发者模式只发送 `NEKO_ROAST_DEVELOPER_RESTORE_INSTRUCTIONS`，不要误发完整插件关闭恢复语境。
 
 维护时不要只给字段说明。需要保留“猫猫是直播间同播伙伴，不是后台系统或插件播报员”的场景，让模型把弹幕当作直播现场互动来接话。即时事件提示词可以包含 UID、昵称、弹幕、强度、直播模式等结构化字段，但输出要求必须强调自然短句、不要复述字段、不要解释流程。
+## Douyin Live Bridge
+
+The Douyin live input path is a read-only provider bridge owned by `modules/douyin_live_ingest`. `modules/live_bridge` owns the provider-neutral localhost WebSocket transport and bundled-process lifecycle, while `core/runtime_douyin_auth.py` owns encrypted cookie import, validation, status, and deletion through the `douyin` credential namespace. `modules/douyin_identity` projects only sanitized stable identity fields.
+
+Room references are limited to supported `live.douyin.com` URLs or bounded room tokens. The local transport accepts only loopback WebSocket endpoints, bounds message size and timeouts, uses ping/pong deadlines to detect half-open connections, and maps external bridge payloads through `bridge_adapter.py` and `event_model.py`. Process cleanup and port readiness probes run off the async runtime thread. Windows stale cleanup is limited to the exact PID recorded by this plugin for the bundled executable; it never scans and kills every matching executable. Routable events are published to EventBus and continue through the normal pipeline, `safety_guard`, and `neko_dispatcher`; status-only events update module status without producing NEKO output.
+
+Cookies are encrypted by `CredentialStore` and never enter event payloads, public status, audit detail, logs, or UI. Event normalization retains only bounded public identity, room, text, and support-event fields. Opaque UIDs are accepted by shape rather than rejected for incidental words such as `token` or `signature`; credential-shaped values still fail the UID character contract. `ViewerEvent.source` remains `live_danmaku` for every provider event because it is the pipeline, permission, and connection source; gift, guard, and super-chat routing is carried by sanitized `raw.event_type`. Missing bridge executables, invalid rooms, unavailable metadata, exhausted retries, and absent credentials degrade to sanitized `unsupported`, `disconnected`, or logged-out status instead of bypassing the pipeline.
+
+Focused validation:
+
+```powershell
+uv run pytest plugin/plugins/neko_roast/tests/test_douyin_bridge.py -q
+uv run pytest plugin/plugins/neko_roast/tests -q --maxfail=1
+uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast
+```
+
+The bundled bridge metadata is Windows-only and does not include a fallback network client. To roll back, unregister `douyin_live_ingest` and `douyin_identity`, stop the local bridge supervisor, and leave the encrypted `douyin_credential.*` files unused. Bili ingest, EventBus, pipeline, safety, dispatcher, and viewer stores remain unchanged.

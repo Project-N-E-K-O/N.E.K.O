@@ -300,10 +300,14 @@ def _apply_bundle_to_local_cloudsave(
     managed_relative_paths = {"manifest.json", *(str(path) for path in manifest_files.keys())}
     payload_relative_paths = sorted(path for path in managed_relative_paths if path != "manifest.json")
 
+    # manifest 里的 files key 与 zip 条目名同属不可信输入，staging 内的读写
+    # 拼接统一走 _resolve_safe_archive_target 约束在各自 stage 根内。
+    staged_source_paths: dict[str, Path] = {}
     for relative_path in managed_relative_paths:
-        staged_file = stage_cloudsave_root / relative_path
+        staged_file = _resolve_safe_archive_target(stage_cloudsave_root, relative_path)
         if not staged_file.is_file():
             raise FileNotFoundError(f"remote cloudsave bundle is missing {relative_path}")
+        staged_source_paths[relative_path] = staged_file
 
     if preserve_newer_local and _local_cloudsave_snapshot_is_newer_or_equal(config_manager, stage_manifest):
         return {
@@ -321,7 +325,10 @@ def _apply_bundle_to_local_cloudsave(
             operation="steam_remote_download",
             stage=f"apply_copy_start:{relative_path}",
         )
-        atomic_copy_file(stage_cloudsave_root / relative_path, stage_replacement_root / relative_path)
+        atomic_copy_file(
+            staged_source_paths[relative_path],
+            _resolve_safe_archive_target(stage_replacement_root, relative_path),
+        )
         assert_deadline_not_exceeded(
             deadline_monotonic,
             operation="steam_remote_download",

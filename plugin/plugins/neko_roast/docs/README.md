@@ -20,6 +20,8 @@
 - [AI/IDE 开发规则](../AGENTS.md)：面向 IDE agent、自动化 reviewer 和贡献者的硬性维护规则。
 
 - [宿主内容目录](modules/host_content_catalogs.md)：静态 idle-hosting beat、数据回退与共享素材接口。
+- [直播状态助手](modules/live_status_helpers.md)：连接与活跃状态的就绪度、计时、主持状态判定、导播下一步投影与主题上下文投影，纯计算无副作用。
+- [观众与安全存储](modules/viewer_stores.md)：观众档案、审计脱敏与加密凭据命名空间。
 
 ## Canonical Source
 
