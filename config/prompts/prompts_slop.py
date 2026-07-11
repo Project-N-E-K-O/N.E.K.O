@@ -65,7 +65,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'ZH_002',
             "name": 'corner of mouth curling into a smile/smirk',
-            "find": '嘴角(?:微微|轻轻|缓缓)?(?:勾起|扬起|上扬|挑起|噙着|带着)(?:了)?一(?:抹|丝|缕|道)?(?:弧度|笑意|坏笑|微笑|笑容|冷笑|浅笑)',
+            "find": '(?:(?:他|她|它|我|你)的)?嘴角(?:微微|轻轻|缓缓)?(?:勾起|扬起|上扬|挑起|噙着|带着)(?:了)?一(?:抹|丝|缕|道)?(?:弧度|笑意|坏笑|微笑|笑容|冷笑|浅笑)',
             "replace": [
                 '唇边松开一点笑',
                 '笑意爬上了眼睛',
@@ -103,7 +103,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'ZH_004',
             "name": 'breath catching / quickening',
-            "find": '呼吸(?:不由得|不由自主地|猛地|骤然)?(?:一窒|一滞|一顿|急促起来|微乱|乱了|变得急促|变得粗重|变得凌乱)',
+            "find": '(?:(?:他|她|它|我|你)的)?呼吸(?:不由得|不由自主地|猛地|骤然)?(?:一窒|一滞|一顿|急促起来|微乱|乱了|变得急促|变得粗重|变得凌乱)',
             "replace": [
                 '呼吸卡了一下',
                 '气息乱了半拍',
@@ -198,7 +198,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'ZH_009',
             "name": 'fingertips trembling slightly',
-            "find": '指尖(?:不由得|忍不住|微微|轻轻|止不住地?)?(?:轻轻地?|微微地?)?(?:颤抖|发颤|战栗|哆嗦|抖动)(?:了起来|起来|着)?',
+            "find": '(?:(?:他|她|它|我|你)的)?指尖(?:不由得|忍不住|微微|轻轻|止不住地?)?(?:轻轻地?|微微地?)?(?:颤抖|发颤|战栗|哆嗦|抖动)(?:了起来|起来|着)?',
             "replace": [
                 '指尖不听话地抖着',
                 '手指尖泄了一点慌乱',
@@ -255,7 +255,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'ZH_012',
             "name": 'scent lingering at the tip of the nose',
-            "find": r"鼻尖(?:萦绕|环绕|缭绕|弥漫|残留|萦回)着([^，。、！？\s]{1,10}?)(?:的)?(?:气息|味道|香气|气味|清香)",
+            "find": r"(?:(?:他|她|它|我|你)的)?鼻尖(?:萦绕|环绕|缭绕|弥漫|残留|萦回)着([^，。、！？\s]{1,10}?)(?:的)?(?:气息|味道|香气|气味|清香)",
             "replace": [
                 r"鼻端散不去\1的味道",
                 r"\1的气息一直黏在鼻尖",
@@ -388,7 +388,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'ZH_019',
             "name": 'body stiffening / freezing',
-            "find": '(?:身子|身体|身形|整个人|动作)(?:猛地|骤然|瞬间|一下子)?(?:僵|顿|怔)(?:住|了一下|在原地|在了原地)',
+            "find": '(?:(?:他|她|它|我|你)的)?(?:身子|身体|身形|整个人|动作)(?:猛地|骤然|瞬间|一下子)?(?:僵|顿|怔)(?:住|了一下|在原地|在了原地)',
             "replace": [
                 '整个人僵在了那儿',
                 '动作硬生生卡住',
@@ -407,7 +407,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'ZH_020',
             "name": 'throat bobbing / swallowing hard (喉结滚动 / 咽了口口水)',
-            "find": '(?:喉结|喉头)(?:不自觉地?|不由得|微微|轻轻)?(?:上下)?(?:滚动|滑动|动了动|耸动)(?:了一下|了)?',
+            "find": '(?:(?:他|她|它|我|你)的)?(?:喉结|喉头)(?:不自觉地?|不由得|微微|轻轻)?(?:上下)?(?:滚动|滑动|动了动|耸动)(?:了一下|了)?',
             "replace": [
                 '喉头紧了紧',
                 '咽喉处动了一下',
@@ -464,7 +464,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'ZH_023',
             "name": 'pupils contracting suddenly (瞳孔骤缩/猛地一缩)',
-            "find": '瞳孔(?:猛地|骤然|蓦地|微微|不可察觉地)?(?:一缩|骤缩|收缩|紧缩|放大)(?:了一下|了)?',
+            "find": '瞳孔(?:猛地|骤然|蓦地|微微|不可察觉地)?(?:一缩|骤缩|收缩|紧缩)(?:了一下|了)?',
             "replace": [
                 '眼神猛地一凝',
                 '瞳仁倏地缩紧',
@@ -472,7 +472,7 @@ SLOP_RULES: dict[str, list[dict]] = {
                 '眼底一震',
                 '瞳孔不受控制地颤了颤',
                 '眸光霎时绷紧',
-                '眼睛瞬间睁大',
+                '瞳孔霎时缩成一点',
                 '黑瞳里掠过一道惊',
                 '目光骤然收紧成一点',
                 '眼仁里的镇定碎了一瞬',
@@ -502,7 +502,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'ZH_025',
             "name": 'subconsciously clenching fists (手指收紧/攥紧拳头)',
-            "find": '(?:(?:手指|手|指节|双手)(?:不自觉地?|不由得|缓缓|猛地|悄悄)(?:收紧|攥紧|握紧|捏紧|蜷缩)|(?:手指|拳头|双手|指节)(?:不自觉地?|不由得|缓缓|猛地|悄悄)?(?:攥紧|攥成拳|蜷缩))(?:了)?',
+            "find": '(?:(?:他|她|它|我|你)的)?(?:(?:手指|手|指节|双手)(?:不自觉地?|不由得|缓缓|猛地|悄悄)(?:收紧|攥紧|握紧|捏紧|蜷缩)|(?:手指|拳头|双手|指节)(?:不自觉地?|不由得|缓缓|猛地|悄悄)?(?:攥紧|攥成拳|蜷缩))(?:了)?',
             "replace": [
                 '指节悄悄攥得发白',
                 '手在身侧握成了拳',
@@ -578,20 +578,20 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'ZH_029',
             "name": 'deeply gazing into the eyes (深深地凝视/对视)',
-            "find": '(?:深深地?|深情地?|定定地?|直直地?)(?:凝视|注视|望|盯|看)着(?:他|她|它|我|你)?(?:的)?(?:双眼|眼睛|眼眸|眸子)',
+            "find": '(?:深深地?|深情地?|定定地?|直直地?)(?:凝视|注视|望|盯|看)着((?:他|她|它|我|你)的?)?(?:双眼|眼睛|眼眸|眸子)',
             "replace": [
-                '目光锁在那双眼睛上，挪不开',
-                '直勾勾地望进对方眼里',
-                '视线缠在那双眸子上',
-                '定定地看着，眼神里全是话',
-                '一眨不眨地盯着那双眼',
-                '目光沉进对方的眼底',
-                '盯着那双眼睛，久久没动',
-                '眼神黏在对方脸上下不来',
-                '凝着那双眸子，呼吸都轻了',
-                '把视线钉在对方眼里',
-                '对上那双眼，便再没移开',
-                '望进眼里，像要看穿什么',
+                r'目光锁在\1眼睛上，挪不开',
+                r'直勾勾地望进\1眼里',
+                r'视线缠在\1眸子上',
+                r'定定地看着\1眼睛，眼神里全是话',
+                r'一眨不眨地盯着\1双眼',
+                r'目光沉进\1眼底',
+                r'盯着\1眼睛，久久没动',
+                r'视线黏在\1眼睛上下不来',
+                r'凝着\1眸子，呼吸都轻了',
+                r'把视线钉在\1眼里',
+                r'对上\1双眼，便再没移开',
+                r'望进\1眼里，像要看穿什么',
             ],
         },
         {
@@ -887,7 +887,7 @@ SLOP_RULES: dict[str, list[dict]] = {
             "find": r"\b[Tt]he\s+air\s+(?:crackled|hummed|buzzed|was\s+thick|grew\s+thick|hung\s+heavy|was\s+charged)\s+with\s+(tension|anticipation|electricity|menace|unease|expectation|hostility|longing|grief|magic|dread|danger)(?:\s+between\s+(?:them|us))?\b",
             "replace": [
                 r"the \1 in the room was hard to miss",
-                r"you could feel the \1 settle over everything",
+                r"the \1 settled over everything",
                 r"the room went tight with \1",
                 r"\1 pressed in from every side",
                 r"the silence filled up with \1",
@@ -960,7 +960,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'EN_019',
             "name": 'vice-like / iron grip',
-            "find": r"\b(?:[Aa]|[Aa]n)\s+(?:vice|vise|vice-like|vise-like|iron|crushing|bruising|bone-crushing)(?:\s*-?\s*like)?\s+grip\b(?=\s*[.,;:!?]|\s*$)",
+            "find": r"(?<!in )(?<!into )(?<!with )(?<!within )(?<!from )\b(?:[Aa]|[Aa]n)\s+(?:vice|vise|vice-like|vise-like|iron|crushing|bruising|bone-crushing)(?:\s*-?\s*like)?\s+grip\b(?=\s*[.,;:!?]|\s*$)",
             "replace": [
                 "a grip that wouldn't give",
                 'a hold hard enough to bruise',
@@ -2531,7 +2531,7 @@ SLOP_RULES: dict[str, list[dict]] = {
                 'sus ojos se encontraron',
                 'se sostuvieron la mirada',
                 'se miraron de frente',
-                'los ojos de ambos chocaron',
+                'los ojos chocaron de golpe',
                 'se buscaron con la mirada',
                 'sus miradas se enredaron un segundo',
                 'no pudo apartar los ojos de esa mirada',
