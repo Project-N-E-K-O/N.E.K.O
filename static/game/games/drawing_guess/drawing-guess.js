@@ -2552,7 +2552,8 @@
     return !state.debugRotateRounds && state.debugRoundMode === 'ai';
   }
 
-  function continueAfterAiDrawingHalf(res) {
+  function continueAfterAiDrawingHalf(res, flowToken) {
+    if (!isCurrentRoundFlow(flowToken)) return;
     if (shouldStayOnDebugAiRound()) {
       stopCountdown();
       addEventMessage(
@@ -2560,6 +2561,7 @@
         'Debug: keeping Neko round, preparing the next word.'
       );
       setTimeout(function () {
+        if (!isCurrentRoundFlow(flowToken)) return;
         startDebugAiRound(true);
       }, 450);
       return;
@@ -2568,20 +2570,24 @@
   }
 
   function handleGuessTimeout() {
+    var flowToken = state.roundFlowToken;
     post(ROUND_API + '/timeout', roundPayload(), 10000).then(function (res) {
+      if (!isCurrentRoundFlow(flowToken)) return;
       if (res && res.ok) {
         addNekoMessage(res.message || t('drawingGuess.messages.guessTimeout', 'Time is up. The answer was {{answer}}.', {
           answer: res.answer ? res.answer.label : ''
         }));
         state.aiAnswerLabel = res.answer ? String(res.answer.label || '') : '';
         addEventMessage('drawingGuess.messages.answerReveal', 'Answer: {{answer}}', { answer: res.answer ? res.answer.label : '' });
-        continueAfterAiDrawingHalf(res);
+        continueAfterAiDrawingHalf(res, flowToken);
       }
     }).catch(function () {});
   }
 
   function submitUserGuess(text) {
+    var flowToken = state.roundFlowToken;
     return post(ROUND_API + '/input', roundPayload({ text: text }), 10000).then(function (res) {
+      if (!isCurrentRoundFlow(flowToken)) return;
       if (!res || !res.ok) {
         addMessage('drawingGuess.messages.inputFailed', 'Input failed.');
         return;
@@ -2593,9 +2599,10 @@
         addEventMessage('drawingGuess.messages.answerReveal', 'Answer: {{answer}}', {
           answer: res.answer ? res.answer.label : ''
         });
-        continueAfterAiDrawingHalf(res);
+        continueAfterAiDrawingHalf(res, flowToken);
       }
     }).finally(function () {
+      if (!isCurrentRoundFlow(flowToken)) return;
       stopThinkingEventMessage();
       updateControls();
     });
