@@ -9,7 +9,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 APP_BUTTONS_PATH = REPO_ROOT / "static" / "app-buttons.js"
 APP_AUDIO_CAPTURE_PATH = REPO_ROOT / "static" / "app-audio-capture.js"
 APP_WEBSOCKET_PATH = REPO_ROOT / "static" / "app-websocket.js"
-CORE_PATH = REPO_ROOT / "main_logic" / "core.py"
+CORE_PACKAGE_PATH = REPO_ROOT / "main_logic" / "core"
 CROSS_SERVER_PATH = REPO_ROOT / "main_logic" / "cross_server.py"
 INDEX_TEMPLATE_PATH = REPO_ROOT / "templates" / "index.html"
 INTAKE_PATH = REPO_ROOT / "static" / "avatar-drop-intake.js"
@@ -21,6 +21,12 @@ WEBSOCKET_ROUTER_PATH = REPO_ROOT / "main_routers" / "websocket_router.py"
 
 def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
+
+
+def _read_package(path: Path) -> str:
+    """Concatenated source of every module in a package directory (the
+    ``main_logic.core`` package equivalent of the old single-file read)."""
+    return "\n".join(p.read_text(encoding="utf-8") for p in sorted(path.glob("*.py")))
 
 
 def _js_function_block(source: str, function_name: str) -> str:
@@ -216,7 +222,7 @@ def test_avatar_drop_scripts_and_backend_routes_are_wired():
 
 @pytest.mark.unit
 def test_avatar_drop_image_and_memory_override_are_routed_as_text_session_inputs():
-    core_source = _read(CORE_PATH)
+    core_source = _read_package(CORE_PACKAGE_PATH)
     cross_server_source = _read(CROSS_SERVER_PATH)
     offline_source = _read(OMNI_OFFLINE_PATH)
     websocket_source = _read(WEBSOCKET_ROUTER_PATH)
