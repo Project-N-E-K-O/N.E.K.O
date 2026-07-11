@@ -104,7 +104,7 @@ npm start
 - 后半段明显变长。
 - 经常不知道在回应谁。
 - 主动营业无聊、换皮复读。
-- monitor 连续出现 `long_reply` / `reply_repeat` / `generic_host_prompt`。
+- Dashboard、recent results、`live_explain` 或 backend log 的人工复核连续发现 `long_reply` / `reply_repeat` / `generic_host_prompt`；这些是复核分类，不依赖独立 monitor 输出。
 - 猫猫抢其他插件或非直播场景发言。
 
 ## 关停
