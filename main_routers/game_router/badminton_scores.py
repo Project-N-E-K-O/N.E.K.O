@@ -56,7 +56,9 @@ _badminton_recent_score_sessions: Dict[tuple[str, str], dict] = {}
 _BADMINTON_SCORES_DB_PATH: Path | None = None
 
 
-_BADMINTON_LEGACY_SCORES_DB_PATH = Path(__file__).resolve().with_name("badminton_scores.db")
+# Existing installs created this DB next to the former main_routers/game_router.py,
+# i.e. in main_routers/ — keep the legacy lookup anchored there, not in this package.
+_BADMINTON_LEGACY_SCORES_DB_PATH = Path(__file__).resolve().parent.parent / "badminton_scores.db"
 
 
 def _is_badminton_game_type(game_type: Any) -> bool:

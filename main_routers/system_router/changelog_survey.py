@@ -51,7 +51,9 @@ async def get_changelog(since: str = "", lang: str = ""):
         except (ValueError, AttributeError):
             return (0,)
 
-    changelog_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "changelog")
+    # __file__ is one level deeper than the former main_routers/system_router.py,
+    # so climb three dirs (not two) to reach the repo root.
+    changelog_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "config", "changelog")
     entries: list[dict] = []
     since_ver = _parse_ver(since) if since else (0,)
 
@@ -124,7 +126,9 @@ def _load_survey_for_version(version: str, lang: str) -> dict | None:
     touch changelog's language fallback. The whole file is swapped per locale
     (question ids must stay identical across locales — answers are reported by id).
     """
-    surveys_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "surveys")
+    # Same three-level climb as _load_changelog above (package is one dir deeper
+    # than the former monolithic module).
+    surveys_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "config", "surveys")
     base_file = os.path.join(surveys_dir, f"{version}.json")
     if not os.path.isfile(base_file):
         return None
