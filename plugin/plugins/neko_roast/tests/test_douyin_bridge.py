@@ -125,6 +125,30 @@ def test_bridge_adapter_maps_support_event_aliases(
     assert payloads[0]["event_type"] == expected_type
 
 
+@pytest.mark.parametrize(
+    ("fallback_field", "fallback_value", "expected_type"),
+    [
+        ("giftName", "rose", "gift"),
+        ("content", "hello", "danmaku"),
+    ],
+)
+def test_unknown_bridge_method_uses_payload_fallbacks(
+    fallback_field, fallback_value, expected_type
+) -> None:
+    adapter = DouyinLiveBridgeAdapter()
+
+    payloads = adapter.map_message(
+        {
+            "method": "WebcastNewMessage",
+            fallback_field: fallback_value,
+        },
+        room_ref="123456",
+    )
+
+    assert len(payloads) == 1
+    assert payloads[0]["event_type"] == expected_type
+
+
 def test_bridge_support_events_reach_bus_without_gift_fallback() -> None:
     adapter = DouyinLiveBridgeAdapter()
     bus = _Bus()
