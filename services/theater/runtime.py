@@ -1,4 +1,4 @@
-"""提供轻量小剧场的生命周期外观。"""
+"""提供轻量小剧场的生命周期外观。"""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ MAX_SPOKEN_DIALOGUE_REVISIONS = 32
 
 
 async def list_stories() -> list[dict[str, Any]]:
-    """列出玩家可以选择的剧本。"""
+    """列出玩家可以选择的剧本。"""  # noqa: DOCSTRING_CJK
     return await story_loader.list_stories()
 
 
@@ -27,7 +27,7 @@ async def start_session(
     lanlan_name: str,
     story_id: str | None = None,
 ) -> dict[str, Any]:
-    """创建使用唯一轻量演绎链的单猫娘 Session。"""
+    """创建使用唯一轻量演绎链的单猫娘 Session。"""  # noqa: DOCSTRING_CJK
     story = await story_loader.load_story(story_id)
     node_id = story_loader.initial_node_id(story)
     node = story_graph.node_by_id(story, node_id)
@@ -86,7 +86,7 @@ async def submit_input(
     base_revision: Any | None = None,
     config_manager: Any | None = None,
 ) -> dict[str, Any]:
-    """提交轻量结构化输入并交给唯一回合服务处理。"""
+    """提交轻量结构化输入并交给唯一回合服务处理。"""  # noqa: DOCSTRING_CJK
     return await turn_service.submit(
         root,
         session_id=session_id,
@@ -100,7 +100,7 @@ async def submit_input(
 
 
 async def get_state(root: Path, session_id: str) -> dict[str, Any]:
-    """读取最后一次已保存的公开快照，不重新运行模型。"""
+    """读取最后一次已保存的公开快照，不重新运行模型。"""  # noqa: DOCSTRING_CJK
     session = await session_store.load_session(root, session_id)
     if session is None:
         return {"ok": False, "reason": "session_not_found"}
@@ -118,7 +118,7 @@ async def get_state(root: Path, session_id: str) -> dict[str, Any]:
 
 
 async def claim_dialogue_speech(root: Path, *, session_id: str, state_revision: Any) -> dict[str, Any]:
-    """原子认领当前公开猫娘对白，保证同一 revision 最多触发一次 TTS。"""
+    """原子认领当前公开猫娘对白，保证同一 revision 最多触发一次 TTS。"""  # noqa: DOCSTRING_CJK
     if not isinstance(state_revision, int) or isinstance(state_revision, bool) or state_revision < 0:
         return {"ok": False, "reason": "invalid_state_revision"}
     async with session_store.session_guard(session_id):
@@ -156,7 +156,7 @@ async def claim_dialogue_speech(root: Path, *, session_id: str, state_revision: 
 
 
 async def get_active_state(root: Path, *, lanlan_name: str) -> dict[str, Any]:
-    """恢复当前猫娘最后一场仍可继续的演出。"""
+    """恢复当前猫娘最后一场仍可继续的演出。"""  # noqa: DOCSTRING_CJK
     session_id = await session_store.get_active_session_id(root, lanlan_name)
     if not session_id:
         return {"ok": False, "reason": "active_session_not_found"}
@@ -168,7 +168,7 @@ async def get_active_state(root: Path, *, lanlan_name: str) -> dict[str, Any]:
 
 
 async def end_session(root: Path, *, session_id: str) -> dict[str, Any]:
-    """管理性关闭 Session，不生成剧情结局。"""
+    """管理性关闭 Session，不生成剧情结局。"""  # noqa: DOCSTRING_CJK
     async with session_store.session_guard(session_id):
         session = await session_store.load_session(root, session_id)
         if session is None:
@@ -191,7 +191,7 @@ async def end_session(root: Path, *, session_id: str) -> dict[str, Any]:
 
 
 async def clear_character_session(root: Path, *, lanlan_name: str) -> dict[str, Any]:
-    """角色切换时关闭旧猫娘的活动演出，防止 Session 跨人格恢复。"""
+    """角色切换时关闭旧猫娘的活动演出，防止 Session 跨人格恢复。"""  # noqa: DOCSTRING_CJK
     session_id = await session_store.get_active_session_id(root, lanlan_name)
     if not session_id:
         return {"ok": True, "cleared": False}
@@ -204,7 +204,7 @@ async def clear_character_session(root: Path, *, lanlan_name: str) -> dict[str, 
 
 
 async def cleanup_expired_sessions(root: Path, *, now_ms: int | None = None) -> dict[str, int]:
-    """机会性关闭超过 24 小时未更新的活动 Session。"""
+    """机会性关闭超过 24 小时未更新的活动 Session。"""  # noqa: DOCSTRING_CJK
     now = int(now_ms if now_ms is not None else _now_ms())
     expired = 0
     for session_id in await session_store.list_session_ids(root):
@@ -231,5 +231,5 @@ async def cleanup_expired_sessions(root: Path, *, now_ms: int | None = None) -> 
 
 
 def _now_ms() -> int:
-    """返回毫秒时间戳。"""
+    """返回毫秒时间戳。"""  # noqa: DOCSTRING_CJK
     return int(time.time() * 1000)

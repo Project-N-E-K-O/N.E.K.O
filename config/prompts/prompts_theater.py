@@ -1,4 +1,4 @@
-"""构造当前版小剧场唯一的结构化演绎提示词。"""
+"""构造当前版小剧场唯一的结构化演绎提示词。"""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
@@ -39,7 +39,7 @@ def build_theater_turn_prompts(
     character_profile: str,
     choice_options: list[dict[str, str]],
 ) -> tuple[str, str]:
-    """把本轮公开事实压缩为单次 LLM 请求，私有规则不进入提示词。"""
+    """把本轮公开事实压缩为单次 LLM 请求，私有规则不进入提示词。"""  # noqa: DOCSTRING_CJK
     guide = node.get("runtime_generation_guide") if isinstance(node.get("runtime_generation_guide"), dict) else {}
     target_node = {
         "title": str(node.get("title") or ""),

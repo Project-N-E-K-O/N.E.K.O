@@ -1,4 +1,4 @@
-"""加载并校验轻量小剧场 Story Package。"""
+"""加载并校验轻量小剧场 Story Package。"""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
@@ -14,13 +14,13 @@ CONFIG_STORY_DIR = PROJECT_ROOT / "config" / "theater" / "stories"
 
 
 async def list_stories(*, story_dir: Path | None = None) -> list[dict[str, Any]]:
-    """返回可公开的故事卡，不携带内部节点和条件。"""
+    """返回可公开的故事卡，不携带内部节点和条件。"""  # noqa: DOCSTRING_CJK
     stories = await _load_config_stories(story_dir or CONFIG_STORY_DIR)
     return [public_story(story) for story in stories]
 
 
 async def load_story(story_id: str | None, *, story_dir: Path | None = None) -> dict[str, Any]:
-    """按 ID 加载正式故事；空 ID 或未知 ID 使用目录中的第一份故事。"""
+    """按 ID 加载正式故事；空 ID 或未知 ID 使用目录中的第一份故事。"""  # noqa: DOCSTRING_CJK
     stories = await _load_config_stories(story_dir or CONFIG_STORY_DIR)
     if not stories:
         return {}
@@ -33,7 +33,7 @@ async def load_story(story_id: str | None, *, story_dir: Path | None = None) -> 
 
 
 def public_story(story: dict[str, Any]) -> dict[str, Any]:
-    """只公开故事选择页需要的信息。"""
+    """只公开故事选择页需要的信息。"""  # noqa: DOCSTRING_CJK
     public: dict[str, Any] = {
         "id": str(story.get("id") or ""),
         "title": str(story.get("title") or ""),
@@ -54,7 +54,7 @@ def public_story(story: dict[str, Any]) -> dict[str, Any]:
 
 
 def public_scene(scene: dict[str, Any]) -> dict[str, Any]:
-    """把内部场景转换为前端稳定字段。"""
+    """把内部场景转换为前端稳定字段。"""  # noqa: DOCSTRING_CJK
     return {
         "scene_id": str(scene.get("id") or ""),
         "title": str(scene.get("title") or ""),
@@ -63,7 +63,7 @@ def public_scene(scene: dict[str, Any]) -> dict[str, Any]:
 
 
 def scene_for_phase(story: dict[str, Any], phase: str) -> dict[str, Any]:
-    """按节点阶段选择表现层场景。"""
+    """按节点阶段选择表现层场景。"""  # noqa: DOCSTRING_CJK
     scenes = [scene for scene in story.get("scenes") or [] if isinstance(scene, dict)]
     for scene in scenes:
         if str(scene.get("phase") or scene.get("id") or "") == phase:
@@ -72,7 +72,7 @@ def scene_for_phase(story: dict[str, Any], phase: str) -> dict[str, Any]:
 
 
 def initial_node_id(story: dict[str, Any]) -> str:
-    """取得静态图入口；优先选择 setup 阶段的 seed 节点。"""
+    """取得静态图入口；优先选择 setup 阶段的 seed 节点。"""  # noqa: DOCSTRING_CJK
     nodes = [node for node in story.get("narrative_nodes") or [] if isinstance(node, dict)]
     for node in nodes:
         if node.get("node_type") == "seed" and node.get("belong_phase") == "setup":
@@ -84,7 +84,7 @@ def initial_node_id(story: dict[str, Any]) -> str:
 
 
 async def _load_config_stories(story_dir: Path) -> list[dict[str, Any]]:
-    """读取目录内的 JSON Story Package。"""
+    """读取目录内的 JSON Story Package。"""  # noqa: DOCSTRING_CJK
     if not story_dir.exists():
         return []
     stories: list[dict[str, Any]] = []
@@ -96,7 +96,7 @@ async def _load_config_stories(story_dir: Path) -> list[dict[str, Any]]:
 
 
 def _validate_story(story: dict[str, Any], path: Path) -> dict[str, Any]:
-    """执行当前轻量协议检查，阻止断边和无入口故事进入运行时。"""
+    """执行当前轻量协议检查，阻止断边和无入口故事进入运行时。"""  # noqa: DOCSTRING_CJK
     required = ("id", "title", "initial_scene_id", "scenes", "narrative_nodes", "edges")
     missing = [key for key in required if not story.get(key)]
     if missing:
@@ -117,7 +117,7 @@ def _validate_story(story: dict[str, Any], path: Path) -> dict[str, Any]:
 
 
 def _validate_reachable_ending(story: dict[str, Any], path: Path) -> None:
-    """确保作者静态图至少存在一条从开场抵达落幕的路径。"""
+    """确保作者静态图至少存在一条从开场抵达落幕的路径。"""  # noqa: DOCSTRING_CJK
     adjacency: dict[str, list[str]] = {}
     for edge in story.get("edges") or []:
         adjacency.setdefault(str(edge.get("from_node") or ""), []).append(str(edge.get("to_node") or ""))

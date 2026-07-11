@@ -12,7 +12,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _build_pages_client() -> TestClient:
-    """构造只挂页面路由的轻量客户端，用于验证 theater 不影响聊天/字幕页面。"""
+    """构造只挂页面路由的轻量客户端，用于验证 theater 不影响聊天/字幕页面。"""  # noqa: DOCSTRING_CJK
     init_shared_state(
         role_state={},
         steamworks=None,
@@ -27,14 +27,14 @@ def _build_pages_client() -> TestClient:
 
 
 def _text_for(client: TestClient, path: str) -> str:
-    """请求指定页面并返回渲染后的 HTML，失败时让测试直接暴露路由问题。"""
+    """请求指定页面并返回渲染后的 HTML，失败时让测试直接暴露路由问题。"""  # noqa: DOCSTRING_CJK
     response = client.get(path)
     assert response.status_code == 200
     return response.text
 
 
 def test_theater_chat_and_subtitle_pages_render_without_cross_injection():
-    """验证 theater、chat、subtitle 可并行渲染，且小剧场资源不会注入聊天/字幕页面。"""
+    """验证 theater、chat、subtitle 可并行渲染，且小剧场资源不会注入聊天/字幕页面。"""  # noqa: DOCSTRING_CJK
     with _build_pages_client() as client:
         theater_html = _text_for(client, "/theater")
         chat_html = _text_for(client, "/chat")

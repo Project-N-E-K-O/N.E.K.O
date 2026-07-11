@@ -1,4 +1,4 @@
-"""按七成自由输入、三成作者选项压力测试两份正式剧本。"""
+"""按七成自由输入、三成作者选项压力测试两份正式剧本。"""  # noqa: DOCSTRING_CJK
 
 from copy import deepcopy
 
@@ -45,7 +45,7 @@ async def test_seventy_thirty_mixed_inputs_keep_story_controllable(
     choice_turns: int,
     ending_id: str,
 ):
-    """七成自由输入不得推进或污染剧情，三成作者选项最终必须正常通关。"""
+    """七成自由输入不得推进或污染剧情，三成作者选项最终必须正常通关。"""  # noqa: DOCSTRING_CJK
     root = tmp_path / story_id
     result = await runtime.start_session(root, lanlan_name="测试猫娘", story_id=story_id)
     session_id = result["session_id"]

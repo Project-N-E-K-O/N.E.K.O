@@ -11,12 +11,12 @@ PC_PROJECT_CANDIDATES = (
 
 
 def _read_project_file(path: str) -> str:
-    """读取 N.E.K.O 仓库文件，集中处理 UTF-8 文本读取。"""
+    """读取 N.E.K.O 仓库文件，集中处理 UTF-8 文本读取。"""  # noqa: DOCSTRING_CJK
     return (PROJECT_ROOT / path).read_text(encoding="utf-8")
 
 
 def _pc_project_root() -> Path:
-    """定位同机的 N.E.K.O.-PC 项目，兼容子目录和同级目录两种开发布局。"""
+    """定位同机的 N.E.K.O.-PC 项目，兼容子目录和同级目录两种开发布局。"""  # noqa: DOCSTRING_CJK
     for candidate in PC_PROJECT_CANDIDATES:
         if candidate.exists():
             return candidate
@@ -24,12 +24,12 @@ def _pc_project_root() -> Path:
 
 
 def _read_pc_file(path: str) -> str:
-    """读取 N.E.K.O.-PC 文件，供 theater 桌面窗口契约测试使用。"""
+    """读取 N.E.K.O.-PC 文件，供 theater 桌面窗口契约测试使用。"""  # noqa: DOCSTRING_CJK
     return (_pc_project_root() / path).read_text(encoding="utf-8")
 
 
 def test_theater_page_uses_shared_window_control_surface():
-    """小剧场页面必须复用通用窗口按钮，避免单独实现一套桌面 chrome。"""
+    """小剧场页面必须复用通用窗口按钮，避免单独实现一套桌面 chrome。"""  # noqa: DOCSTRING_CJK
     template = _read_project_file("templates/theater.html")
 
     assert "/static/css/window_controls.css?v={{ static_asset_version }}" in template
@@ -41,7 +41,7 @@ def test_theater_page_uses_shared_window_control_surface():
 
 
 def test_pc_child_windows_expose_host_controls_for_theater_window():
-    """PC 同源子窗口需要暴露宿主窗口能力，保证 theater 的标题栏按钮能落到 Electron。"""
+    """PC 同源子窗口需要暴露宿主窗口能力，保证 theater 的标题栏按钮能落到 Electron。"""  # noqa: DOCSTRING_CJK
     preload_child = _read_pc_file("src/preload-child.js")
     preload_common = _read_pc_file("src/preload-common.js")
     window_manager = _read_pc_file("src/window-manager.js")

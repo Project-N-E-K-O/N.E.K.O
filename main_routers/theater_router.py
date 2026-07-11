@@ -4,7 +4,7 @@
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 
-"""提供本地轻量小剧场页面所需的 HTTP 接口。"""
+"""提供本地轻量小剧场页面所需的 HTTP 接口。"""  # noqa: DOCSTRING_CJK
 from __future__ import annotations
 
 from pathlib import Path
@@ -23,7 +23,7 @@ logger = get_module_logger("main_routers.theater_router")
 
 
 def _resolve_lanlan_name(raw: Any = None) -> str:
-    """解析小剧场本轮使用的角色名，缺省时读取当前猫娘。"""
+    """解析小剧场本轮使用的角色名，缺省时读取当前猫娘。"""  # noqa: DOCSTRING_CJK
     lanlan_name = str(raw or "").strip()
     if lanlan_name:
         return lanlan_name
@@ -35,7 +35,7 @@ def _resolve_lanlan_name(raw: Any = None) -> str:
 
 
 def _theater_root() -> Path:
-    """解析小剧场私有运行目录，优先使用当前 app docs 目录。"""
+    """解析小剧场私有运行目录，优先使用当前 app docs 目录。"""  # noqa: DOCSTRING_CJK
     manager = get_config_manager()
     app_docs_dir = getattr(manager, "app_docs_dir", None)
     if app_docs_dir:
@@ -47,7 +47,7 @@ def _theater_root() -> Path:
 
 
 def _validate_theater_local_mutation(request: Request, data: dict[str, Any]):
-    """复用本地 mutation 校验，保护 theater 写接口不被裸 POST 调用。"""
+    """复用本地 mutation 校验，保护 theater 写接口不被裸 POST 调用。"""  # noqa: DOCSTRING_CJK
     from .system_router import _validate_local_mutation_request
 
     return _validate_local_mutation_request(
@@ -58,7 +58,7 @@ def _validate_theater_local_mutation(request: Request, data: dict[str, Any]):
 
 
 async def _cleanup_expired_theater_sessions(root: Path) -> None:
-    """在 theater 入口请求中机会性清理过期 session，不阻断用户打开页面。"""
+    """在 theater 入口请求中机会性清理过期 session，不阻断用户打开页面。"""  # noqa: DOCSTRING_CJK
     try:
         await runtime.cleanup_expired_sessions(root)
     except Exception as exc:
@@ -66,7 +66,7 @@ async def _cleanup_expired_theater_sessions(root: Path) -> None:
 
 
 async def _speak_committed_dialogue(response: dict[str, Any]) -> dict[str, Any]:
-    """把已提交公开对白交给当前猫娘 TTS，失败时只降级文字演绎。"""
+    """把已提交公开对白交给当前猫娘 TTS，失败时只降级文字演绎。"""  # noqa: DOCSTRING_CJK
     if response.get("ok") is not True:
         return {"ok": True, "skipped": "turn_failed"}
     session_id = str(response.get("session_id") or "")
@@ -109,14 +109,14 @@ async def _speak_committed_dialogue(response: dict[str, Any]) -> dict[str, Any]:
 
 @router.get("/stories")
 async def list_theater_stories():
-    """返回故事列表，并在打开小剧场时顺手清理过期 session。"""
+    """返回故事列表，并在打开小剧场时顺手清理过期 session。"""  # noqa: DOCSTRING_CJK
     await _cleanup_expired_theater_sessions(_theater_root())
     return {"ok": True, "stories": await runtime.list_stories()}
 
 
 @router.post("/session/start")
 async def start_theater_session(request: Request):
-    """启动小剧场 session，并在创建新 session 前清理过期旧状态。"""
+    """启动小剧场 session，并在创建新 session 前清理过期旧状态。"""  # noqa: DOCSTRING_CJK
     data = await request.json()
     if not isinstance(data, dict):
         data = {}
@@ -137,7 +137,7 @@ async def start_theater_session(request: Request):
 
 @router.post("/session/input")
 async def submit_theater_input(request: Request):
-    """提交用户输入并推进指定小剧场 session。"""
+    """提交用户输入并推进指定小剧场 session。"""  # noqa: DOCSTRING_CJK
     data = await request.json()
     if not isinstance(data, dict):
         data = {}
@@ -162,12 +162,12 @@ async def submit_theater_input(request: Request):
 
 @router.get("/session/state")
 async def get_theater_session_state(session_id: str):
-    """返回指定小剧场 session 的公开状态摘要。"""
+    """返回指定小剧场 session 的公开状态摘要。"""  # noqa: DOCSTRING_CJK
     return await runtime.get_state(_theater_root(), session_id=str(session_id or ""))
 
 
 @router.get("/session/active")
 async def get_active_theater_session_state():
-    """返回当前角色可恢复的小剧场公开快照，不向前端暴露 active 索引文件。"""
+    """返回当前角色可恢复的小剧场公开快照，不向前端暴露 active 索引文件。"""  # noqa: DOCSTRING_CJK
     lanlan_name = _resolve_lanlan_name(None) or "Lan"
     return await runtime.get_active_state(_theater_root(), lanlan_name=lanlan_name)

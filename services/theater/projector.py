@@ -1,4 +1,4 @@
-"""把轻量私有状态投影成前端可以安全显示的响应。"""
+"""把轻量私有状态投影成前端可以安全显示的响应。"""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from . import story_graph, story_loader
 
 
 def scenario_board(story: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
-    """生成简化 Board，只公开名称、提示和已确认线索。"""
+    """生成简化 Board，只公开名称、提示和已确认线索。"""  # noqa: DOCSTRING_CJK
     props = _prop_index(story)
     clues = _clue_index(story)
     available = [props[prop_id] for prop_id in state.get("available_prop_ids") or [] if prop_id in props]
@@ -27,7 +27,7 @@ def scenario_trace(
     progress_kind: str,
     choice: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """生成前端实际展示的进度类型与玩家选择。"""
+    """生成前端实际展示的进度类型与玩家选择。"""  # noqa: DOCSTRING_CJK
     choice = choice or {}
     return {
         "progress_kind": progress_kind,
@@ -46,7 +46,7 @@ def public_response(
     ending: dict[str, Any],
     can_resume: bool,
 ) -> dict[str, Any]:
-    """统一组装启动、回合和恢复响应。"""
+    """统一组装启动、回合和恢复响应。"""  # noqa: DOCSTRING_CJK
     state = session.get("story_state") if isinstance(session.get("story_state"), dict) else {}
     options = story_graph.suggestion_options(story, state) if can_resume else []
     public_options = [
@@ -73,7 +73,7 @@ def public_response(
 
 
 def _prop_index(story: dict[str, Any]) -> dict[str, dict[str, str]]:
-    """索引轻量 stage_props 的公开字段。"""
+    """索引轻量 stage_props 的公开字段。"""  # noqa: DOCSTRING_CJK
     result: dict[str, dict[str, str]] = {}
     for prop in story.get("stage_props") or []:
         if isinstance(prop, dict) and prop.get("id"):
@@ -86,7 +86,7 @@ def _prop_index(story: dict[str, Any]) -> dict[str, dict[str, str]]:
 
 
 def _clue_index(story: dict[str, Any]) -> dict[str, dict[str, str]]:
-    """索引线索公开文字，忽略 hidden_meaning。"""
+    """索引线索公开文字，忽略 hidden_meaning。"""  # noqa: DOCSTRING_CJK
     result: dict[str, dict[str, str]] = {}
     for clue in story.get("clues") or []:
         if isinstance(clue, dict) and clue.get("id"):

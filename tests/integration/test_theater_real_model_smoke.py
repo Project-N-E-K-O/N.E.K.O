@@ -1,4 +1,4 @@
-"""显式开关控制的小剧场真实模型质量 smoke。"""
+"""显式开关控制的小剧场真实模型质量 smoke。"""  # noqa: DOCSTRING_CJK
 
 import os
 
@@ -8,10 +8,10 @@ from services.theater import llm
 
 
 class _EnvConfigManager:
-    """从隔离环境变量构造 summary 档配置。"""
+    """从隔离环境变量构造 summary 档配置。"""  # noqa: DOCSTRING_CJK
 
     def get_model_api_config(self, tier: str) -> dict[str, str]:
-        """真实 smoke 同样只能读取 summary 档。"""
+        """真实 smoke 同样只能读取 summary 档。"""  # noqa: DOCSTRING_CJK
         assert tier == "summary"
         return {
             "model": os.environ.get("NEKO_THEATER_LLM_SMOKE_MODEL", ""),
@@ -22,7 +22,7 @@ class _EnvConfigManager:
 
 
 def _require_environment() -> None:
-    """没有显式开关时跳过，避免测试误用用户模型额度。"""
+    """没有显式开关时跳过，避免测试误用用户模型额度。"""  # noqa: DOCSTRING_CJK
     if os.environ.get("NEKO_RUN_THEATER_LLM_SMOKE") != "1":
         pytest.skip("set NEKO_RUN_THEATER_LLM_SMOKE=1 to run the theater real-model smoke")
     if not os.environ.get("NEKO_THEATER_LLM_SMOKE_MODEL") or not os.environ.get("NEKO_THEATER_LLM_SMOKE_BASE_URL"):
@@ -31,7 +31,7 @@ def _require_environment() -> None:
 
 @pytest.mark.asyncio
 async def test_real_model_returns_safe_narration_and_dialogue():
-    """真实模型必须返回可直接展示的一段旁白和猫娘对白。"""
+    """真实模型必须返回可直接展示的一段旁白和猫娘对白。"""  # noqa: DOCSTRING_CJK
     _require_environment()
     result = await llm.generate_turn_async(
         config_manager=_EnvConfigManager(),

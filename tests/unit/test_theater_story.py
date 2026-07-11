@@ -1,4 +1,4 @@
-"""验证轻量 Story、Graph 和 Rules 的确定性边界。"""
+"""验证轻量 Story、Graph 和 Rules 的确定性边界。"""  # noqa: DOCSTRING_CJK
 
 from pathlib import Path
 
@@ -9,7 +9,7 @@ from services.theater import rules, story_graph, story_loader
 
 @pytest.mark.asyncio
 async def test_story_list_only_contains_original_json_stories():
-    """故事列表只展示两份正式 JSON，不再混入代码内测试故事。"""
+    """故事列表只展示两份正式 JSON，不再混入代码内测试故事。"""  # noqa: DOCSTRING_CJK
     stories = await story_loader.list_stories()
     assert [story["id"] for story in stories] == [
         "always_like_you_story",
@@ -34,7 +34,7 @@ async def test_story_list_only_contains_original_json_stories():
 
 @pytest.mark.asyncio
 async def test_tape_story_keeps_action_and_dialogue_choices_separate():
-    """正式短篇开场同时提供行动和对白，前端不再猜测选项语义。"""
+    """正式短篇开场同时提供行动和对白，前端不再猜测选项语义。"""  # noqa: DOCSTRING_CJK
     story = await story_loader.load_story("tape_for_tomorrow_story")
     state = rules.initial_state(story, initial_node_id=story_loader.initial_node_id(story))
     rules.apply_node(story, state, story_graph.current_node(story, state))
@@ -44,7 +44,7 @@ async def test_tape_story_keeps_action_and_dialogue_choices_separate():
 
 @pytest.mark.asyncio
 async def test_tape_story_has_bounded_world_and_reachable_ending():
-    """新剧本必须保持校园记忆边界，并存在完整可达结局。"""
+    """新剧本必须保持校园记忆边界，并存在完整可达结局。"""  # noqa: DOCSTRING_CJK
     story = await story_loader.load_story("tape_for_tomorrow_story")
     restrictions = "".join(story.get("restrictions") or [])
     assert "2013年校园记忆" in restrictions
@@ -76,7 +76,7 @@ async def test_tape_story_has_bounded_world_and_reachable_ending():
 
 @pytest.mark.asyncio
 async def test_long_romance_story_has_twenty_plus_playable_rounds():
-    """都市爱情剧本必须连续提供二十轮以上选项，并抵达作者正式结局。"""
+    """都市爱情剧本必须连续提供二十轮以上选项，并抵达作者正式结局。"""  # noqa: DOCSTRING_CJK
     story = await story_loader.load_story("always_like_you_story")
     restrictions = "".join(story.get("restrictions") or [])
     assert "当代都市爱情" in restrictions
@@ -106,7 +106,7 @@ async def test_long_romance_story_has_twenty_plus_playable_rounds():
 
 @pytest.mark.asyncio
 async def test_loader_accepts_a_future_light_story(tmp_path: Path):
-    """旧剧本删除后，作者仍可按轻量协议新增独立 Story JSON。"""
+    """旧剧本删除后，作者仍可按轻量协议新增独立 Story JSON。"""  # noqa: DOCSTRING_CJK
     story_path = tmp_path / "future.json"
     story_path.write_text(
         '{"id":"future","title":"新故事","initial_scene_id":"setup",'
@@ -121,7 +121,7 @@ async def test_loader_accepts_a_future_light_story(tmp_path: Path):
 
 
 def test_scene_notes_never_become_authoritative_facts():
-    """自由互动笔记只帮助对话承接，不得污染权威事实。"""
+    """自由互动笔记只帮助对话承接，不得污染权威事实。"""  # noqa: DOCSTRING_CJK
     state = {"scene_notes": [], "narrative_facts": []}
     rules.append_scene_note(state, "我从口袋里拿出一根猫草")
     assert state["scene_notes"] == ["我从口袋里拿出一根猫草"]
@@ -130,7 +130,7 @@ def test_scene_notes_never_become_authoritative_facts():
 
 @pytest.mark.asyncio
 async def test_loader_rejects_unknown_edge_reference(tmp_path: Path):
-    """轻量编译检查必须阻止引用不存在节点的边。"""
+    """轻量编译检查必须阻止引用不存在节点的边。"""  # noqa: DOCSTRING_CJK
     story_path = tmp_path / "broken.json"
     story_path.write_text(
         '{"id":"broken","title":"坏故事","initial_scene_id":"setup","scenes":[{"id":"setup","phase":"setup"}],'

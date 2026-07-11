@@ -1,4 +1,4 @@
-"""验证轻量页面只保留当前版用户能力。"""
+"""验证轻量页面只保留当前版用户能力。"""  # noqa: DOCSTRING_CJK
 
 import json
 import re
@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_frontend_keeps_action_dialogue_and_structured_turns():
-    """页面必须区分行动与对白，并提交稳定 Choice 和 revision。"""
+    """页面必须区分行动与对白，并提交稳定 Choice 和 revision。"""  # noqa: DOCSTRING_CJK
     html = (ROOT / "templates" / "theater.html").read_text(encoding="utf-8")
     script = (ROOT / "static" / "js" / "theater.js").read_text(encoding="utf-8")
     assert 'id="theater-action-choices"' in html
@@ -20,7 +20,7 @@ def test_frontend_keeps_action_dialogue_and_structured_turns():
 
 
 def test_frontend_renders_story_identity_before_start():
-    """棕色舞台内必须渲染剧本背景、玩家身份和猫娘身份，并随故事预览更新。"""
+    """棕色舞台内必须渲染剧本背景、玩家身份和猫娘身份，并随故事预览更新。"""  # noqa: DOCSTRING_CJK
     html = (ROOT / "templates" / "theater.html").read_text(encoding="utf-8")
     script = (ROOT / "static" / "js" / "theater.js").read_text(encoding="utf-8")
     for element_id in (
@@ -43,7 +43,7 @@ def test_frontend_renders_story_identity_before_start():
 
 
 def test_frontend_uses_brown_stage_with_galaxy_video():
-    """舞台不显示英文副标题，并使用静音循环视频呈现金色银河背景。"""
+    """舞台不显示英文副标题，并使用静音循环视频呈现金色银河背景。"""  # noqa: DOCSTRING_CJK
     html = (ROOT / "templates" / "theater.html").read_text(encoding="utf-8")
     script = (ROOT / "static" / "js" / "theater.js").read_text(encoding="utf-8")
     styles = (ROOT / "static" / "css" / "theater.css").read_text(encoding="utf-8")
@@ -59,7 +59,7 @@ def test_frontend_uses_brown_stage_with_galaxy_video():
 
 
 def test_frontend_can_collapse_stage_for_more_performance_space():
-    """舞台右下角必须可折叠，并通过公开属性驱动紧凑布局和无障碍状态。"""
+    """舞台右下角必须可折叠，并通过公开属性驱动紧凑布局和无障碍状态。"""  # noqa: DOCSTRING_CJK
     html = (ROOT / "templates" / "theater.html").read_text(encoding="utf-8")
     script = (ROOT / "static" / "js" / "theater.js").read_text(encoding="utf-8")
     styles = (ROOT / "static" / "css" / "theater.css").read_text(encoding="utf-8")
@@ -73,7 +73,7 @@ def test_frontend_can_collapse_stage_for_more_performance_space():
 
 
 def test_frontend_right_aligns_adaptive_player_turns():
-    """推荐选项与自由输入必须共用右对齐、自适应宽度且区别于猫娘对白的玩家气泡。"""
+    """推荐选项与自由输入必须共用右对齐、自适应宽度且区别于猫娘对白的玩家气泡。"""  # noqa: DOCSTRING_CJK
     script = (ROOT / "static" / "js" / "theater.js").read_text(encoding="utf-8")
     styles = (ROOT / "static" / "css" / "theater.css").read_text(encoding="utf-8")
     assert "user: 'user'" in script
@@ -88,7 +88,7 @@ def test_frontend_right_aligns_adaptive_player_turns():
 
 
 def test_frontend_separates_turn_trace_from_performance_log():
-    """演绎日志占用剩余空间，回合摘要固定在其下方，不能依靠易溢出的多行 Grid。"""
+    """演绎日志占用剩余空间，回合摘要固定在其下方，不能依靠易溢出的多行 Grid。"""  # noqa: DOCSTRING_CJK
     styles = (ROOT / "static" / "css" / "theater.css").read_text(encoding="utf-8")
     performance_rule = re.search(r"\.theater-performance-column\s*\{([^}]+)\}", styles)
     trace_rule = re.search(r"\.theater-trace-panel\s*\{([^}]+)\}", styles)
@@ -99,7 +99,7 @@ def test_frontend_separates_turn_trace_from_performance_log():
 
 
 def test_frontend_removes_deferred_features():
-    """当前轻量页面不再包含模式、随机事件、Evidence 和记忆候选入口。"""
+    """当前轻量页面不再包含模式、随机事件、Evidence 和记忆候选入口。"""  # noqa: DOCSTRING_CJK
     html = (ROOT / "templates" / "theater.html").read_text(encoding="utf-8")
     script = (ROOT / "static" / "js" / "theater.js").read_text(encoding="utf-8")
     for removed in ("theater-performance-mode", "theater-random-events", "theater-board-evidence", "theater-memory-candidate"):
@@ -109,7 +109,7 @@ def test_frontend_removes_deferred_features():
 
 
 def test_frontend_restores_and_reuses_frozen_retry_body():
-    """刷新恢复和网络重试继续使用服务端快照及同一序列化请求。"""
+    """刷新恢复和网络重试继续使用服务端快照及同一序列化请求。"""  # noqa: DOCSTRING_CJK
     script = (ROOT / "static" / "js" / "theater.js").read_text(encoding="utf-8")
     assert "restoreActiveSession" in script
     assert "const serializedBody" in script
@@ -117,7 +117,7 @@ def test_frontend_restores_and_reuses_frozen_retry_body():
 
 
 def test_locale_files_remain_valid_json():
-    """八个 locale 必须合法、key 一致并覆盖脚本使用的 theater 文案。"""
+    """八个 locale 必须合法、key 一致并覆盖脚本使用的 theater 文案。"""  # noqa: DOCSTRING_CJK
     key_sets = []
     for locale in ("en", "es", "ja", "ko", "pt", "ru", "zh-CN", "zh-TW"):
         payload = json.loads((ROOT / "static" / "locales" / f"{locale}.json").read_text(encoding="utf-8"))

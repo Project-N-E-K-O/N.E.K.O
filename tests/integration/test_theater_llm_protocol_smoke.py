@@ -1,4 +1,4 @@
-"""小剧场单次演绎的 OpenAI-compatible 协议纵向测试。"""
+"""小剧场单次演绎的 OpenAI-compatible 协议纵向测试。"""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
@@ -14,13 +14,13 @@ from services.theater import llm
 
 
 class _ProtocolConfigManager:
-    """把 summary 档指向进程内兼容服务器。"""
+    """把 summary 档指向进程内兼容服务器。"""  # noqa: DOCSTRING_CJK
 
     def __init__(self, base_url: str) -> None:
         self.base_url = base_url
 
     def get_model_api_config(self, tier: str) -> dict[str, str]:
-        """轻量小剧场只允许读取一次 summary 档配置。"""
+        """轻量小剧场只允许读取一次 summary 档配置。"""  # noqa: DOCSTRING_CJK
         assert tier == "summary"
         return {
             "model": "theater-light-smoke",
@@ -32,11 +32,11 @@ class _ProtocolConfigManager:
 
 @contextmanager
 def _compatible_server() -> Iterator[tuple[str, list[dict[str, Any]]]]:
-    """启动本地模型服务器并记录实际 wire 请求。"""
+    """启动本地模型服务器并记录实际 wire 请求。"""  # noqa: DOCSTRING_CJK
     requests: list[dict[str, Any]] = []
 
     class _Handler(BaseHTTPRequestHandler):
-        """返回固定的旁白与猫娘对白 JSON。"""
+        """返回固定的旁白与猫娘对白 JSON。"""  # noqa: DOCSTRING_CJK
 
         def do_POST(self) -> None:  # noqa: N802 - 标准库要求此方法名
             length = int(self.headers.get("Content-Length") or 0)
@@ -58,7 +58,7 @@ def _compatible_server() -> Iterator[tuple[str, list[dict[str, Any]]]]:
             self.wfile.write(encoded)
 
         def log_message(self, _format: str, *_args: Any) -> None:
-            """关闭测试服务器访问日志。"""
+            """关闭测试服务器访问日志。"""  # noqa: DOCSTRING_CJK
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -73,7 +73,7 @@ def _compatible_server() -> Iterator[tuple[str, list[dict[str, Any]]]]:
 
 @pytest.mark.asyncio
 async def test_single_turn_uses_one_model_request():
-    """一次剧情演绎只产生一个兼容协议请求。"""
+    """一次剧情演绎只产生一个兼容协议请求。"""  # noqa: DOCSTRING_CJK
     with _compatible_server() as (base_url, requests):
         result = await llm.generate_turn_async(
             config_manager=_ProtocolConfigManager(base_url),

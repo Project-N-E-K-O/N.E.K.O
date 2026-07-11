@@ -1,17 +1,17 @@
-"""小剧场轻量页面的真实 Chromium smoke。"""
+"""小剧场轻量页面的真实 Chromium smoke。"""  # noqa: DOCSTRING_CJK
 
 import pytest
 from playwright.sync_api import Page, expect
 
 
 def _open_theater_page(page: Page, running_server: str) -> None:
-    """打开真实页面并等待故事列表加载完成。"""
+    """打开真实页面并等待故事列表加载完成。"""  # noqa: DOCSTRING_CJK
     page.goto(f"{running_server}/theater", wait_until="domcontentloaded")
     page.wait_for_function("() => document.querySelectorAll('#theater-story-select option').length >= 1")
 
 
 def _leave_active_session(page: Page) -> None:
-    """通过正式离场协议清理上一条测试可能留下的活动演出。"""
+    """通过正式离场协议清理上一条测试可能留下的活动演出。"""  # noqa: DOCSTRING_CJK
     if page.locator("#theater-end-btn").is_enabled():
         page.locator("#theater-end-btn").click()
         expect(page.locator("#theater-story-select")).to_be_enabled(timeout=8000)
@@ -19,7 +19,7 @@ def _leave_active_session(page: Page) -> None:
 
 @pytest.mark.frontend
 def test_light_theater_supports_roleplay_and_static_choice(mock_page: Page, running_server: str):
-    """自由输入先得到回应，静态 Choice 随后仍能推进剧情。"""
+    """自由输入先得到回应，静态 Choice 随后仍能推进剧情。"""  # noqa: DOCSTRING_CJK
     _open_theater_page(mock_page, running_server)
     _leave_active_session(mock_page)
     # 先切换短篇再切回长篇，验证未开演时顶部身份卡会跟随剧本实时更新。
@@ -106,7 +106,7 @@ def test_light_theater_supports_roleplay_and_static_choice(mock_page: Page, runn
 
 @pytest.mark.frontend
 def test_light_theater_restores_after_reload(mock_page: Page, running_server: str):
-    """刷新后只读取服务端公开快照，不重新创建 Session。"""
+    """刷新后只读取服务端公开快照，不重新创建 Session。"""  # noqa: DOCSTRING_CJK
     _open_theater_page(mock_page, running_server)
     _leave_active_session(mock_page)
     mock_page.locator("#theater-start-btn").click()
@@ -124,7 +124,7 @@ def test_light_theater_restores_after_reload(mock_page: Page, running_server: st
 @pytest.mark.frontend
 @pytest.mark.parametrize("path", ["/chat", "/subtitle"])
 def test_theater_assets_do_not_inject_other_pages(mock_page: Page, running_server: str, path: str):
-    """小剧场资源保持独立，不污染聊天和字幕页面。"""
+    """小剧场资源保持独立，不污染聊天和字幕页面。"""  # noqa: DOCSTRING_CJK
     mock_page.goto(f"{running_server}{path}", wait_until="domcontentloaded")
     assert mock_page.locator("[data-theater-app]").count() == 0
     assert "/static/js/theater.js" not in mock_page.content()

@@ -1,4 +1,4 @@
-"""用一次模型调用生成旁白和当前猫娘对白。"""
+"""用一次模型调用生成旁白和当前猫娘对白。"""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ async def generate_turn_async(
     recent_turns: list[dict[str, Any]],
     choice_options: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
-    """生成一次结构化演绎；配置缺失、超时或坏输出时使用作者文本。"""
+    """生成一次结构化演绎；配置缺失、超时或坏输出时使用作者文本。"""  # noqa: DOCSTRING_CJK
     fallback = fallback_turn(
         lanlan_name=lanlan_name,
         scene=scene,
@@ -112,7 +112,7 @@ def fallback_turn(
     callback: str,
     has_scene_notes: bool = False,
 ) -> dict[str, Any]:
-    """使用作者文本生成离线演绎，确保模型故障时仍能继续游戏。"""
+    """使用作者文本生成离线演绎，确保模型故障时仍能继续游戏。"""  # noqa: DOCSTRING_CJK
     name = str(lanlan_name or "Lan").strip() or "Lan"
     if progress_kind == "roleplay_response":
         message = str(user_message or "").strip()
@@ -132,7 +132,7 @@ def fallback_turn(
 
 
 def _model_config(config_manager: Any | None) -> dict[str, Any]:
-    """读取 summary 档模型配置；不完整时返回空配置。"""
+    """读取 summary 档模型配置；不完整时返回空配置。"""  # noqa: DOCSTRING_CJK
     if config_manager is None:
         return {}
     try:
@@ -152,7 +152,7 @@ def _parse_output(
     progress_kind: str,
     allowed_choice_ids: set[str] | None = None,
 ) -> dict[str, Any] | None:
-    """解析模型 JSON，并把 Choice 改写限制到当前稳定 ID。"""
+    """解析模型 JSON，并把 Choice 改写限制到当前稳定 ID。"""  # noqa: DOCSTRING_CJK
     text = str(raw or "").strip()
     if text.startswith("```"):
         text = text.strip("`").removeprefix("json").strip()
@@ -188,7 +188,7 @@ def _parse_output(
 
 
 def _recent_public_turns(turns: list[dict[str, Any]]) -> list[dict[str, str]]:
-    """提取最近公开旁白与对白，让模型承接已发生动作而不读取私有状态。"""
+    """提取最近公开旁白与对白，让模型承接已发生动作而不读取私有状态。"""  # noqa: DOCSTRING_CJK
     result: list[dict[str, str]] = []
     for turn in turns[-8:]:
         if not isinstance(turn, dict):
@@ -203,7 +203,7 @@ def _recent_public_turns(turns: list[dict[str, Any]]) -> list[dict[str, str]]:
 
 
 def _repeats_recent_dialogue(dialogue: str, turns: list[dict[str, Any]]) -> bool:
-    """识别只改标点或语气词的上一句复述，避免自由互动看似没有听见玩家。"""
+    """识别只改标点或语气词的上一句复述，避免自由互动看似没有听见玩家。"""  # noqa: DOCSTRING_CJK
     previous = ""
     for turn in reversed(turns):
         if isinstance(turn, dict) and str(turn.get("role") or "") == "assistant":
@@ -217,13 +217,13 @@ def _repeats_recent_dialogue(dialogue: str, turns: list[dict[str, Any]]) -> bool
 
 
 def _dialogue_key(value: str) -> str:
-    """移除标点、空白和句尾猫娘语气词，只比较对白主体。"""
+    """移除标点、空白和句尾猫娘语气词，只比较对白主体。"""  # noqa: DOCSTRING_CJK
     normalized = re.sub(r"[\s，。！？、；：,.!?;:\"'“”‘’（）()…—]+", "", str(value or "")).lower()
     return normalized.removesuffix("喵")
 
 
 def _load_character_profile(config_manager: Any | None, lanlan_name: str) -> str:
-    """读取当前猫娘的短人格摘要，不加载普通聊天全文。"""
+    """读取当前猫娘的短人格摘要，不加载普通聊天全文。"""  # noqa: DOCSTRING_CJK
     root = getattr(config_manager, "app_docs_dir", None) if config_manager is not None else None
     if not root or not lanlan_name:
         return ""

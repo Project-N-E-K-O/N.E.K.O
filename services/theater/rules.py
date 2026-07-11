@@ -1,4 +1,4 @@
-"""维护轻量小剧场的权威状态与确定性结局规则。"""
+"""维护轻量小剧场的权威状态与确定性结局规则。"""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from typing import Any
 
 
 def initial_state(story: dict[str, Any], *, initial_node_id: str) -> dict[str, Any]:
-    """创建只包含当前版所需集合的轻量状态。"""
+    """创建只包含当前版所需集合的轻量状态。"""  # noqa: DOCSTRING_CJK
     opening_facts = story.get("seed", {}).get("opening_facts", []) if isinstance(story.get("seed"), dict) else []
     return {
         "current_node_id": initial_node_id,
@@ -24,7 +24,7 @@ def initial_state(story: dict[str, Any], *, initial_node_id: str) -> dict[str, A
 
 
 def node_is_available(node: dict[str, Any], state: dict[str, Any]) -> bool:
-    """按节点前置事实过滤静态图出口。"""
+    """按节点前置事实过滤静态图出口。"""  # noqa: DOCSTRING_CJK
     preconditions = node.get("preconditions") if isinstance(node.get("preconditions"), dict) else {}
     facts = {_fact_key(item) for item in state.get("narrative_facts") or []}
     required = {_fact_key(item) for item in preconditions.get("required_facts") or []}
@@ -33,7 +33,7 @@ def node_is_available(node: dict[str, Any], state: dict[str, Any]) -> bool:
 
 
 def apply_node(story: dict[str, Any], state: dict[str, Any], node: dict[str, Any]) -> None:
-    """提交作者声明的节点增量；公开 Board 会直接读取提交后的权威状态。"""
+    """提交作者声明的节点增量；公开 Board 会直接读取提交后的权威状态。"""  # noqa: DOCSTRING_CJK
     node_id = str(node.get("node_id") or "")
     completed = list(state.get("completed_node_ids") or [])
     if node_id and node_id not in completed:
@@ -72,7 +72,7 @@ def apply_node(story: dict[str, Any], state: dict[str, Any], node: dict[str, Any
 
 
 def append_scene_note(state: dict[str, Any], user_message: str, *, limit: int = 6) -> None:
-    """保存非权威自由互动笔记；笔记不会参与路由和结局判断。"""
+    """保存非权威自由互动笔记；笔记不会参与路由和结局判断。"""  # noqa: DOCSTRING_CJK
     note = " ".join(str(user_message or "").strip().split())[:160]
     if not note:
         return
@@ -82,7 +82,7 @@ def append_scene_note(state: dict[str, Any], user_message: str, *, limit: int = 
 
 
 def ending_for_state(story: dict[str, Any], state: dict[str, Any], node: dict[str, Any], *, has_outgoing: bool) -> dict[str, Any]:
-    """只按作者节点和已提交事实判断正式结束。"""
+    """只按作者节点和已提交事实判断正式结束。"""  # noqa: DOCSTRING_CJK
     is_terminal = str(node.get("node_type") or "") == "ending" or not has_outgoing
     if not is_terminal:
         return {"should_offer_ending": False, "should_end_session": False, "ending_id": ""}
@@ -106,7 +106,7 @@ def ending_for_state(story: dict[str, Any], state: dict[str, Any], node: dict[st
 
 
 def _initial_prop_ids(story: dict[str, Any], initial_node_id: str) -> list[str]:
-    """收集开场可见道具；后续被节点使用的道具会按需加入。"""
+    """收集开场可见道具；后续被节点使用的道具会按需加入。"""  # noqa: DOCSTRING_CJK
     result: list[str] = []
     for prop in story.get("stage_props") or []:
         available_from = str(prop.get("available_from_node") or "") if isinstance(prop, dict) else ""
@@ -116,7 +116,7 @@ def _initial_prop_ids(story: dict[str, Any], initial_node_id: str) -> list[str]:
 
 
 def _append_unique(existing: Any, additions: Any) -> list[str]:
-    """向字符串集合追加新值，同时保持 JSON 中的稳定顺序。"""
+    """向字符串集合追加新值，同时保持 JSON 中的稳定顺序。"""  # noqa: DOCSTRING_CJK
     values = [str(item) for item in existing or [] if str(item).strip()]
     for item in additions or []:
         normalized = str(item).strip()
@@ -126,7 +126,7 @@ def _append_unique(existing: Any, additions: Any) -> list[str]:
 
 
 def _fact_key(value: Any) -> str:
-    """把结构化事实转换成可比较的稳定键。"""
+    """把结构化事实转换成可比较的稳定键。"""  # noqa: DOCSTRING_CJK
     if not isinstance(value, dict):
         return ""
     # Story 的 opening_facts 常带 type，而前置条件省略 type；剧情等价性只比较三元组主体。

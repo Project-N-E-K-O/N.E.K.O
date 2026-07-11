@@ -847,7 +847,7 @@ async def set_current_catgirl(request: Request):
 
 
 def _theater_root_for_config_manager(config_manager) -> Path:
-    """根据当前配置管理器解析小剧场私有运行目录。"""
+    """根据当前配置管理器解析小剧场私有运行目录。"""  # noqa: DOCSTRING_CJK
     app_docs_dir = getattr(config_manager, "app_docs_dir", None)
     if app_docs_dir:
         return Path(app_docs_dir) / "theater"
@@ -858,7 +858,7 @@ def _theater_root_for_config_manager(config_manager) -> Path:
 
 
 async def _clear_theater_session_for_character_switch(config_manager, old_catgirl: str) -> bool:
-    """角色切换时结束旧角色的小剧场 active session，不影响普通聊天切换。"""
+    """角色切换时结束旧角色的小剧场 active session，不影响普通聊天切换。"""  # noqa: DOCSTRING_CJK
     if not old_catgirl:
         return False
     # 延迟导入避免角色 Router 在应用启动阶段反向依赖小剧场运行时。

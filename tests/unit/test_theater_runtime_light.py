@@ -1,4 +1,4 @@
-"""验证轻量 Runtime 的启动、推进、自由对话和事务能力。"""
+"""验证轻量 Runtime 的启动、推进、自由对话和事务能力。"""  # noqa: DOCSTRING_CJK
 
 import asyncio
 import json
@@ -10,7 +10,7 @@ from services.theater import runtime, session_store
 
 @pytest.mark.asyncio
 async def test_choice_roleplay_restore_and_exit(tmp_path):
-    """一场演出可以推进、自由回应、恢复并主动离场。"""
+    """一场演出可以推进、自由回应、恢复并主动离场。"""  # noqa: DOCSTRING_CJK
     root = tmp_path / "theater"
     started = await runtime.start_session(root, lanlan_name="测试猫娘")
     assert started["ok"] is True
@@ -57,7 +57,7 @@ async def test_choice_roleplay_restore_and_exit(tmp_path):
 
 @pytest.mark.asyncio
 async def test_idempotency_and_revision_conflict(tmp_path):
-    """重复请求回放首次结果，旧 revision 不得覆盖新状态。"""
+    """重复请求回放首次结果，旧 revision 不得覆盖新状态。"""  # noqa: DOCSTRING_CJK
     root = tmp_path / "theater"
     started = await runtime.start_session(root, lanlan_name="测试猫娘")
     option = started["suggestion_options"][0]
@@ -85,7 +85,7 @@ async def test_idempotency_and_revision_conflict(tmp_path):
 
 @pytest.mark.asyncio
 async def test_dialogue_speech_claims_each_revision_once(tmp_path):
-    """TTS 只能取得已提交的公开猫娘对白，同一 revision 的重试不得重复播报。"""
+    """TTS 只能取得已提交的公开猫娘对白，同一 revision 的重试不得重复播报。"""  # noqa: DOCSTRING_CJK
     root = tmp_path / "theater"
     started = await runtime.start_session(root, lanlan_name="测试猫娘")
     first = await runtime.claim_dialogue_speech(
@@ -112,7 +112,7 @@ async def test_dialogue_speech_claims_each_revision_once(tmp_path):
 
 @pytest.mark.asyncio
 async def test_concurrent_turns_only_commit_one_revision(tmp_path):
-    """同一 revision 的并发回合只有一个可以提交。"""
+    """同一 revision 的并发回合只有一个可以提交。"""  # noqa: DOCSTRING_CJK
     root = tmp_path / "theater"
     started = await runtime.start_session(root, lanlan_name="测试猫娘")
 
@@ -133,7 +133,7 @@ async def test_concurrent_turns_only_commit_one_revision(tmp_path):
 
 @pytest.mark.asyncio
 async def test_active_session_restores_after_memory_index_reset(tmp_path):
-    """进程内索引清空后仍可从文件恢复当前演出。"""
+    """进程内索引清空后仍可从文件恢复当前演出。"""  # noqa: DOCSTRING_CJK
     root = tmp_path / "theater"
     started = await runtime.start_session(root, lanlan_name="测试猫娘")
     session_store.reset_active_sessions_for_tests()
@@ -144,7 +144,7 @@ async def test_active_session_restores_after_memory_index_reset(tmp_path):
 
 @pytest.mark.asyncio
 async def test_free_input_never_submits_even_when_it_repeats_choice_label(tmp_path):
-    """自由输入即使逐字复述按钮也只能演绎，权威推进必须提交 choice_id。"""
+    """自由输入即使逐字复述按钮也只能演绎，权威推进必须提交 choice_id。"""  # noqa: DOCSTRING_CJK
     root = tmp_path / "theater"
     started = await runtime.start_session(root, lanlan_name="测试猫娘", story_id="tape_for_tomorrow_story")
     choice_ids = [item["choice_id"] for item in started["suggestion_options"]]
@@ -162,12 +162,12 @@ async def test_free_input_never_submits_even_when_it_repeats_choice_label(tmp_pa
 
 @pytest.mark.asyncio
 async def test_free_dialogue_rewrites_choice_label_without_changing_target(monkeypatch, tmp_path):
-    """自由对话可以更新按钮表达，但点击后仍进入作者原定节点并清除旧覆盖。"""
+    """自由对话可以更新按钮表达，但点击后仍进入作者原定节点并清除旧覆盖。"""  # noqa: DOCSTRING_CJK
     root = tmp_path / "theater"
     started = await runtime.start_session(root, lanlan_name="测试猫娘", story_id="always_like_you_story")
 
     async def _fake_performance(**kwargs):
-        """用可控演绎复现“承认保留照片后按钮应承接”的真实问题。"""
+        """用可控演绎复现“承认保留照片后按钮应承接”的真实问题。"""  # noqa: DOCSTRING_CJK
         if kwargs["progress_kind"] == "roleplay_response":
             current = kwargs["choice_options"][0]
             return {
@@ -226,7 +226,7 @@ async def test_free_dialogue_rewrites_choice_label_without_changing_target(monke
 
 @pytest.mark.asyncio
 async def test_legacy_session_is_rejected_and_active_index_is_cleared(tmp_path):
-    """没有轻量协议版本的旧 Session 不得恢复，活动索引也不能继续阻塞角色。"""
+    """没有轻量协议版本的旧 Session 不得恢复，活动索引也不能继续阻塞角色。"""  # noqa: DOCSTRING_CJK
     root = tmp_path / "theater"
     session_id = "theater_00000000-0000-0000-0000-000000000001"
     path = session_store.session_path(root, session_id)
@@ -251,7 +251,7 @@ async def test_legacy_session_is_rejected_and_active_index_is_cleared(tmp_path):
 
 @pytest.mark.asyncio
 async def test_tape_story_completes_through_structured_runtime(tmp_path):
-    """新剧本通过真实 Runtime 连续推进后必须回到现实并正式落幕。"""
+    """新剧本通过真实 Runtime 连续推进后必须回到现实并正式落幕。"""  # noqa: DOCSTRING_CJK
     root = tmp_path / "theater"
     result = await runtime.start_session(root, lanlan_name="测试猫娘", story_id="tape_for_tomorrow_story")
     path = [
@@ -281,7 +281,7 @@ async def test_tape_story_completes_through_structured_runtime(tmp_path):
 
 @pytest.mark.asyncio
 async def test_long_romance_story_completes_after_twenty_eight_runtime_turns(tmp_path):
-    """二十八回合都市爱情主线必须通过 Runtime 连续提交并正常落幕。"""
+    """二十八回合都市爱情主线必须通过 Runtime 连续提交并正常落幕。"""  # noqa: DOCSTRING_CJK
     root = tmp_path / "theater"
     result = await runtime.start_session(root, lanlan_name="测试猫娘", story_id="always_like_you_story")
 

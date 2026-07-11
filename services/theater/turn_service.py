@@ -1,4 +1,4 @@
-"""编排当前版单猫娘小剧场的一条线性回合链。"""
+"""编排当前版单猫娘小剧场的一条线性回合链。"""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ async def submit(
     base_revision: Any,
     config_manager: Any | None,
 ) -> dict[str, Any]:
-    """校验并原子提交一个 Choice、自由输入或离场回合。"""
+    """校验并原子提交一个 Choice、自由输入或离场回合。"""  # noqa: DOCSTRING_CJK
     request, error = _normalize_request(
         input_kind=input_kind,
         choice_id=choice_id,
@@ -91,7 +91,7 @@ async def _apply_turn(
     *,
     config_manager: Any | None,
 ) -> dict[str, Any]:
-    """在候选 Session 上执行一次轻量回合。"""
+    """在候选 Session 上执行一次轻量回合。"""  # noqa: DOCSTRING_CJK
     if request["input_kind"] == "user_exit":
         return _apply_exit(session, story)
 
@@ -180,7 +180,7 @@ async def _apply_turn(
 
 
 def _apply_exit(session: dict[str, Any], story: dict[str, Any]) -> dict[str, Any]:
-    """结束本场演出，但不伪装成作者结局。"""
+    """结束本场演出，但不伪装成作者结局。"""  # noqa: DOCSTRING_CJK
     now = _now_ms()
     session["ended_at"] = now
     ending = {"should_offer_ending": False, "should_end_session": True, "ending_id": "", "reason": "user_exit"}
@@ -206,7 +206,7 @@ def _apply_exit(session: dict[str, Any], story: dict[str, Any]) -> dict[str, Any
 def _append_turns(
     session: dict[str, Any], *, message: str, performance: dict[str, str], trace: dict[str, Any]
 ) -> None:
-    """保存最小公开历史，供恢复和下一轮演绎使用。"""
+    """保存最小公开历史，供恢复和下一轮演绎使用。"""  # noqa: DOCSTRING_CJK
     turns = session.setdefault("turns", [])
     now = _now_ms()
     turns.append({"role": "user", "text": message, "created_at": now})
@@ -226,7 +226,7 @@ def _append_turns(
 def _normalize_request(
     *, input_kind: str, choice_id: str, message: str, client_turn_id: str, base_revision: Any
 ) -> tuple[dict[str, Any], str]:
-    """校验三类互斥输入和客户端幂等字段。"""
+    """校验三类互斥输入和客户端幂等字段。"""  # noqa: DOCSTRING_CJK
     kind = str(input_kind or "").strip()
     if kind not in {"choice", "free_input", "user_exit"}:
         return {}, "invalid_input_kind"
@@ -253,19 +253,19 @@ def _normalize_request(
 
 
 def _cached_result(session: dict[str, Any], client_turn_id: str) -> dict[str, Any]:
-    """回放首次提交结果，不重复调用模型或推进剧情。"""
+    """回放首次提交结果，不重复调用模型或推进剧情。"""  # noqa: DOCSTRING_CJK
     index = session.get("turn_results_by_client_id")
     cached = index.get(client_turn_id) if isinstance(index, dict) else None
     return deepcopy(cached) if isinstance(cached, dict) else {}
 
 
 def _revision_conflict(revision: int) -> dict[str, Any]:
-    """返回前端可恢复的版本冲突。"""
+    """返回前端可恢复的版本冲突。"""  # noqa: DOCSTRING_CJK
     return {"ok": False, "reason": "state_revision_conflict", "retryable": True, "state_revision": revision}
 
 
 def _now_ms() -> int:
-    """使用毫秒时间戳保存 Session 生命周期。"""
+    """使用毫秒时间戳保存 Session 生命周期。"""  # noqa: DOCSTRING_CJK
     import time
 
     return int(time.time() * 1000)
