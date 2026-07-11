@@ -25,13 +25,26 @@ def is_viewer_to_viewer_mention_text(text: str) -> bool:
         name = "".join(target).strip()
         if not name:
             continue
-        if is_neko_mention_target(name, lowered_aliases):
+        remainder = part.strip()[len(target) :]
+        allow_alias_continuation = not (
+            remainder and remainder[0].isspace()
+        )
+        if is_neko_mention_target(
+            name,
+            lowered_aliases,
+            allow_alias_continuation=allow_alias_continuation,
+        ):
             return False
         saw_non_neko_target = True
     return saw_non_neko_target
 
 
-def is_neko_mention_target(name: str, lowered_aliases: set[str]) -> bool:
+def is_neko_mention_target(
+    name: str,
+    lowered_aliases: set[str],
+    *,
+    allow_alias_continuation: bool = True,
+) -> bool:
     lowered_name = str(name or "").strip().lower()
     if not lowered_name:
         return False
@@ -85,6 +98,8 @@ def is_neko_mention_target(name: str, lowered_aliases: set[str]) -> bool:
         rest = lowered_name[len(alias) :].lstrip("_-")
         if not rest:
             return True
+        if not allow_alias_continuation:
+            continue
         if "\u3040" <= rest[0] <= "\u30ff" or "\u3400" <= rest[0] <= "\u9fff":
             return True
         if rest.startswith(live_address_prefixes):
