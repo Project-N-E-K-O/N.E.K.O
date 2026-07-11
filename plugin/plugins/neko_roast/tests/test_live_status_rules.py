@@ -127,6 +127,39 @@ def test_idle_takeover_streak_preserves_action_during_host_output_cooldown():
     assert director["reason"] == "idle_hosting_streak"
 
 
+def test_idle_takeover_streak_preserves_action_during_live_status_cooldown():
+    active = active_engagement_status(
+        config=SimpleNamespace(live_mode="solo_stream", activity_level="standard"),
+        live_status={"summary": "ready_to_stream", "cooldown_remaining": 25.0},
+        live_state={"state": "idle", "mode": "solo_stream"},
+        now=120.0,
+        last_attempt_at=0.0,
+        min_interval_seconds=60.0,
+        recent_danmaku_output_age=None,
+        recent_danmaku_wait_seconds=45.0,
+        idle_hosting_wait_remaining=None,
+        idle_grace_seconds=30.0,
+        idle_takeover_streak=3,
+        recent_hosting_output_age=None,
+        host_output_cooldown_seconds=90.0,
+    )
+
+    director = live_director_status(
+        config=SimpleNamespace(live_mode="solo_stream"),
+        live_status={"summary": "ready_to_stream"},
+        live_state={"state": "idle", "mode": "solo_stream"},
+        idle_hosting_status={"eligible": False, "reason": "cooldown"},
+        active_engagement_status=active,
+    )
+
+    assert active["reason"] == "idle_hosting_streak"
+    assert active["eligible"] is False
+    assert active["cooldown_remaining"] == 25.0
+    assert director["next_auto_action"] == "active_engagement"
+    assert director["eligible"] is False
+    assert director["reason"] == "idle_hosting_streak"
+
+
 def test_idle_takeover_streak_preserves_action_during_minimum_interval():
     active = active_engagement_status(
         config=SimpleNamespace(live_mode="solo_stream", activity_level="standard"),

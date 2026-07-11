@@ -61,11 +61,16 @@ def active_engagement_status(
         reason = "not_quiet"
     elif live_status.get("summary") not in {"ready_to_stream", "test_only"}:
         reason = str(live_status.get("reason") or "live_status_not_ready")
-    elif float(live_status.get("cooldown_remaining") or 0.0) > 0.0:
-        reason = "cooldown"
     elif idle_takeover_candidate:
         reason = "idle_hosting_streak"
-        if cooldown_remaining > 0.0:
+        live_status_cooldown = round(
+            max(0.0, float(live_status.get("cooldown_remaining") or 0.0)),
+            1,
+        )
+        if live_status_cooldown > 0.0:
+            cooldown_remaining = live_status_cooldown
+            eligible = False
+        elif cooldown_remaining > 0.0:
             eligible = False
         elif recent_danmaku_cooldown > 0.0:
             cooldown_remaining = recent_danmaku_cooldown
@@ -75,6 +80,8 @@ def active_engagement_status(
             eligible = False
         else:
             eligible = True
+    elif float(live_status.get("cooldown_remaining") or 0.0) > 0.0:
+        reason = "cooldown"
     elif cooldown_remaining > 0.0:
         reason = "minimum_interval"
         eligible = False
