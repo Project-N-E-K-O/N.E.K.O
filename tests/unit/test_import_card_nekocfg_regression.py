@@ -82,6 +82,7 @@ async def test_nekocfg_import_does_not_raise_unbound_local():
         )
 
     body = json.loads(bytes(response.body).decode("utf-8"))
+    assert response.status_code == 200, (response.status_code, body)
     # Before the fix this raised UnboundLocalError('imported_card_character_data')
     # instead of returning any response at all.
     assert body.get("success") is True, body
@@ -128,6 +129,7 @@ async def test_nekocfg_import_does_not_restore_pngtuber_avatar_config():
         )
 
     body = json.loads(bytes(response.body).decode("utf-8"))
+    assert response.status_code == 200, (response.status_code, body)
     assert body.get("success") is True, body
     saved_characters = config_manager.asave_characters.await_args.args[0]
     saved = saved_characters["猫娘"]["手工猫娘"]
