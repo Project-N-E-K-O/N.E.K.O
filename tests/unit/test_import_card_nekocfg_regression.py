@@ -66,9 +66,7 @@ async def test_nekocfg_import_does_not_raise_unbound_local():
     config_manager.aload_characters = AsyncMock(return_value={"猫娘": {}})
     config_manager.asave_characters = AsyncMock()
     config_manager.ensure_card_faces_directory = MagicMock()
-    config_manager.card_face_meta_path = MagicMock(
-        side_effect=AssertionError("meta write should be mocked out")
-    )
+    config_manager.card_face_meta_path = MagicMock(return_value="unused-meta-path")
 
     with patch.object(characters_router, "get_config_manager", return_value=config_manager), \
          patch.object(characters_router, "get_initialize_character_data", return_value=None), \
@@ -78,7 +76,6 @@ async def test_nekocfg_import_does_not_raise_unbound_local():
              new=AsyncMock(return_value=(True, None)),
          ), \
          patch.object(characters_router, "_write_card_meta", new=MagicMock()):
-        config_manager.card_face_meta_path = MagicMock(return_value="unused-meta-path")
         response = await characters_router.import_character_card(
             zip_file=_FakeUpload("card.nekocfg", payload),
             card_image=None,
