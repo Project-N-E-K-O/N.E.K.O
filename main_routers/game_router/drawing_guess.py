@@ -638,11 +638,12 @@ def _cjk_boundary_ok(text: str, start: int, end: int) -> bool:
 def _alias_is_negated(text: str, start: int, end: int) -> bool:
     prefix = text[:start]
     suffix = text[end:].lstrip()
+    compact_suffix = re.sub(r"\s+", "", suffix)
     return bool(
         _CJK_ALIAS_NEGATION_RE.search(prefix)
         or _SPACED_ALIAS_NEGATION_RE.search(prefix)
         or any(
-            suffix.startswith(_fold_guess_text(marker))
+            compact_suffix.startswith(re.sub(r"\s+", "", _fold_guess_text(marker)))
             for marker in _ALIAS_NEGATION_SUFFIXES
         )
     )
