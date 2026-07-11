@@ -628,7 +628,13 @@ def _contains_alias_with_guess_boundary(text: Any, alias: Any) -> bool:
     if not spaced_alias:
         return False
     spaced_text = _spaced_guess_text(text)
-    return bool(re.search(rf"(?<![a-z0-9]){re.escape(spaced_alias)}(?![a-z0-9])", spaced_text))
+    # 词符类含西里尔：俄语与拉丁语同为空格分词，кот 不应命中 скот 内部。
+    # 假名/谚文是粘着语（助词直接贴词干），一刀切边界会挡掉正常猜词，
+    # 留给独立 follow-up 做助词白名单。
+    return bool(re.search(
+        rf"(?<![a-z0-9Ѐ-ӿ]){re.escape(spaced_alias)}(?![a-z0-9Ѐ-ӿ])",
+        spaced_text,
+    ))
 
 
 def _matches_word(text: Any, word: DrawingGuessWord) -> bool:

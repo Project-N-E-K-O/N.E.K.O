@@ -448,6 +448,13 @@ def test_vision_guess_payload_parser_requires_word_boundaries():
 
 
 @pytest.mark.unit
+def test_alias_boundary_covers_cyrillic_word_characters():
+    assert dgr._contains_alias_with_guess_boundary("это кот?", "кот") is True
+    assert dgr._contains_alias_with_guess_boundary("скот?", "кот") is False
+    assert dgr._contains_alias_with_guess_boundary("КОТ", "кот") is True
+
+
+@pytest.mark.unit
 def test_word_matching_accepts_synonyms_and_multilingual_variants():
     assert dgr._matches_word("bunny?", dgr._WORD_BY_ID["rabbit"])
     assert dgr._matches_word("\u6708\u7403", dgr._WORD_BY_ID["moon"])

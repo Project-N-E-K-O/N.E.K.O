@@ -2144,8 +2144,11 @@
     if (output.type === 'game_external_input') {
       var inputText = externalInputText(output);
       var requestId = String(output.request_id || '');
-      if (inputText && requestId !== state.lastExternalInputRequestId) {
-        state.lastExternalInputRequestId = requestId;
+      // 后端允许无 request_id 的外部输入（按文本去重）；空 id 恒等于初始
+      // 空串会把这类转写全部吞掉，退化用文本作去重键
+      var externalInputKey = requestId || ('text:' + inputText);
+      if (inputText && externalInputKey !== state.lastExternalInputRequestId) {
+        state.lastExternalInputRequestId = externalInputKey;
         addUserMessage(inputText);
       }
       return;
@@ -2458,6 +2461,9 @@
     hideExitConfirm(false);
     stopCountdown();
     resetCanvas();
+    // 上一轮画布可能已发布到 route state，立即推 clear（内部只在有过发布时
+    // 才发请求），避免下一次 drain 心跳前的外部语音把旧画布喂给视觉猜测
+    pushCanvasContextForRoute(true);
     state.roundNumber += 1;
     state.currentRoundSummarySaved = false;
     state.aiSvg = '';
