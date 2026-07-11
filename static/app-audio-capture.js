@@ -2218,6 +2218,44 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     minHeight: '80px'
                 });
                 panelBody.appendChild(screenSourceList);
+                var shareToggleButton = document.createElement('button');
+                shareToggleButton.type = 'button';
+                shareToggleButton.dataset.nekoScreenShareAction = 'toggle';
+                Object.assign(shareToggleButton.style, {
+                    width: '100%',
+                    padding: '9px 12px',
+                    marginTop: '4px',
+                    border: 'none',
+                    borderRadius: '6px',
+                    background: '#4f8cff',
+                    color: '#fff',
+                    cursor: 'pointer',
+                    fontSize: '13px',
+                    fontWeight: '600'
+                });
+                function updateShareToggleLabel() {
+                    var active = !!(S.dom.screenButton && S.dom.screenButton.classList.contains('active'));
+                    shareToggleButton.textContent = active
+                        ? (window.t ? window.t('buttons.stopShare') : 'Stop Sharing')
+                        : screenButtonLabel;
+                }
+                shareToggleButton.addEventListener('click', async function (event) {
+                    event.stopPropagation();
+                    var active = !!(S.dom.screenButton && S.dom.screenButton.classList.contains('active'));
+                    shareToggleButton.disabled = true;
+                    try {
+                        if (active && typeof window.stopScreenSharing === 'function') {
+                            await window.stopScreenSharing();
+                        } else if (!active && typeof window.startScreenSharing === 'function') {
+                            await window.startScreenSharing();
+                        }
+                    } finally {
+                        shareToggleButton.disabled = false;
+                        updateShareToggleLabel();
+                    }
+                });
+                updateShareToggleLabel();
+                panelBody.appendChild(shareToggleButton);
                 positionMicSubwindow(panel);
                 if (typeof window.renderFloatingScreenSourceList === 'function') {
                     await window.renderFloatingScreenSourceList(screenSourceList, { requireVisible: false });

@@ -335,6 +335,17 @@ def test_floating_mic_popup_keeps_speaker_volume_without_microphone_devices():
     assert "listBody.appendChild(noMicItem);" in render
 
 
+def test_floating_mic_popup_exposes_screen_share_start_and_stop_action():
+    source = _read(APP_AUDIO_CAPTURE_PATH)
+    screen_panel = _js_function_block(source, "openScreenSourceSubwindow")
+
+    assert "shareToggleButton.dataset.nekoScreenShareAction = 'toggle';" in screen_panel
+    assert "window.startScreenSharing" in screen_panel
+    assert "window.stopScreenSharing" in screen_panel
+    assert "window.t('buttons.stopShare')" in screen_panel
+    assert "panelBody.appendChild(shareToggleButton);" in screen_panel
+
+
 def test_outer_voice_start_failure_clears_pending_flags_before_composer_restore():
     source = _read(APP_BUTTONS_PATH)
     start_flow = _mic_button_start_flow(source)
