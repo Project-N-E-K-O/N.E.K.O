@@ -984,7 +984,12 @@ async def get_voice_preview(
         except Exception as e:
             logger.warning("DashScope 预览地域 URL 读取失败，回退到默认地域: %s", e, exc_info=True)
             tts_api_config = {}
-        preview_base_url = cosyvoice_base_url or tts_api_config.get('base_url', '')
+        preview_base_url = (
+            (tts_api_config or {}).get('ttsModelUrl')
+            or (tts_api_config or {}).get('TTS_MODEL_URL')
+            or cosyvoice_base_url
+            or ''
+        )
 
         from utils.api_config_loader import get_cosyvoice_clone_model
         clone_model = (
