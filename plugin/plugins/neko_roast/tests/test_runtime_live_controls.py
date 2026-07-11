@@ -1519,8 +1519,9 @@ async def test_live_state_moves_from_warmup_to_idle_when_no_viewer_activity(runt
     runtime.config.live_enabled = True
     runtime.config.dry_run = True
     runtime.config.live_mode = "solo_stream"
+    runtime._live_state_now = lambda: 1000.0
     await runtime.bili_live_ingest.start_listening(123)
-    runtime._live_listener_started_at = runtime._live_state_now() - 240.0
+    runtime._live_listener_started_at = 760.0
     runtime.safety_guard.set_connected(True)
     runtime.record_result(
         InteractionResult(
