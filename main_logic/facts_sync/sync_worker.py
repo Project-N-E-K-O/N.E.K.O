@@ -80,16 +80,28 @@ def _append_jsonl(path: Path, record: dict) -> None:
 
 
 def _get_client_id() -> str | None:
-    """Read ``client_id`` from the same cloudsave local state used by M1-j."""
+    """Return a persisted ``client_id`` from the cloudsave local state.
+
+    ``load_cloudsave_local_state`` builds an in-memory default UUID when the
+    file is missing. Persist that default before any upload; otherwise a fresh
+    profile can sync facts under an ID that the next load will never reuse.
+    """
     try:
         cm = get_config_manager()
+        needs_persist = not cm.cloudsave_local_state_path.exists()
         state = cm.load_cloudsave_local_state()
-        if isinstance(state, dict):
+        cid = state.get("client_id") if isinstance(state, dict) else None
+        if not isinstance(cid, str) or not cid:
+            state = cm.build_default_cloudsave_local_state()
             cid = state.get("client_id")
-            if isinstance(cid, str) and cid:
-                return cid
+            needs_persist = True
+        if not isinstance(cid, str) or not cid:
+            return None
+        if needs_persist:
+            cm.save_cloudsave_local_state(state)
+        return cid
     except Exception as exc:  # noqa: BLE001
-        logger.warning("facts_sync: failed to load client_id: %s", exc)
+        logger.warning("facts_sync: failed to load or persist client_id: %s", exc)
     return None
 
 
