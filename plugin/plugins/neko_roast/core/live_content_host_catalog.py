@@ -74,6 +74,7 @@ _REQUIRED_IDLE_HOSTING_SHAPES = frozenset(
 _REQUIRED_IDLE_HOSTING_AXES = frozenset(
     item["fun_axis"] for item in _ALL_IDLE_HOSTING_BEATS
 )
+_MIN_IDLE_HOSTING_CATALOG_SIZE = len(_IDLE_HOSTING_BEAT_KEYS)
 
 
 def load_idle_hosting_beat_catalog(path: str | Path = DEFAULT_IDLE_HOSTING_BEAT_CATALOG_PATH) -> tuple[dict[str, Any], ...]:
@@ -108,7 +109,8 @@ def _is_complete_idle_hosting_beat_catalog(beats: list[dict[str, Any]]) -> bool:
     shapes = {_safe_str(beat.get("shape")) for beat in beats}
     axes = {_safe_str(beat.get("fun_axis")) for beat in beats}
     return (
-        _REQUIRED_IDLE_HOSTING_STAGES <= stages
+        len(beats) >= _MIN_IDLE_HOSTING_CATALOG_SIZE
+        and _REQUIRED_IDLE_HOSTING_STAGES <= stages
         and _REQUIRED_IDLE_HOSTING_SHAPES <= shapes
         and _REQUIRED_IDLE_HOSTING_AXES <= axes
     )

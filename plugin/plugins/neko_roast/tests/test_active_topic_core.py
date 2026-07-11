@@ -86,6 +86,33 @@ def test_truncated_valid_host_catalog_rejects_entire_file(tmp_path: Path) -> Non
     assert live_content_host_catalog.load_idle_hosting_beat_catalog(path) == ()
 
 
+def test_dimension_complete_but_key_incomplete_host_catalog_is_rejected(
+    tmp_path: Path,
+) -> None:
+    full_catalog = live_content_host_catalog.load_idle_hosting_beat_catalog(
+        live_content_host_catalog.DEFAULT_IDLE_HOSTING_BEAT_CATALOG_PATH
+    )
+    required_values = {
+        "idle_stage": live_content_host_catalog._REQUIRED_IDLE_HOSTING_STAGES,
+        "shape": live_content_host_catalog._REQUIRED_IDLE_HOSTING_SHAPES,
+        "fun_axis": live_content_host_catalog._REQUIRED_IDLE_HOSTING_AXES,
+    }
+    selected: dict[str, dict] = {}
+    for field, values in required_values.items():
+        for value in values:
+            beat = next(item for item in full_catalog if item.get(field) == value)
+            selected[beat["key"]] = beat
+
+    assert len(selected) < live_content_host_catalog._MIN_IDLE_HOSTING_CATALOG_SIZE
+    path = tmp_path / "idle_hosting_beats.json"
+    path.write_text(
+        dumps({"beats": list(selected.values())}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    assert live_content_host_catalog.load_idle_hosting_beat_catalog(path) == ()
+
+
 @pytest.mark.parametrize("title", ("about", "table", "cable", "stable"))
 def test_normal_words_containing_ab_are_not_choice_votes(title: str) -> None:
     material = {"title": title, "fun_axis": "mood"}
