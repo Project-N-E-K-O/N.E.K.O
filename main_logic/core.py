@@ -5756,7 +5756,11 @@ class LLMSessionManager:
         topic_language_seed = None
         if not getattr(self, 'user_language', None):
             topic_language_seed = normalize_language_code(get_global_language_full(), format='full')
-            self.user_language = normalize_language_code(topic_language_seed, format='short')
+            # Seed the FULL code (e.g. 'zh-TW'), consistent with set_user_language's
+            # format='full'; every consumer short-normalizes at its use site. Keeping
+            # the Hant variant here lets resolve_dialog_slop_lang skip the Simplified
+            # slop table for Traditional-Chinese sessions (the short 'zh' hid it).
+            self.user_language = topic_language_seed
             self._conversation_turn_language = topic_language_seed
         self._set_conversation_turn_language(
             self._conversation_turn_language

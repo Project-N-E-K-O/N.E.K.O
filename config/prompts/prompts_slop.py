@@ -274,7 +274,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'ZH_013',
             "name": 'a soft laugh / snort (轻笑/轻哼一声)',
-            "find": '(?:他|她|它|我|你)?(?:低低地?|轻轻地?|忍不住)?(?:轻笑|轻哼|冷笑|嗤笑|莞尔)(?:了)?一声',
+            "find": '(?:低低地?|轻轻地?|忍不住)?(?:轻笑|轻哼|冷笑|嗤笑|莞尔)(?:了)?一声',
             "replace": [
                 '笑了下，气音很轻',
                 '鼻腔里漏出半声笑',
@@ -770,7 +770,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'EN_009',
             "name": 'knuckles white / white-knuckled grip',
-            "find": r"\b(his|her|their|my|your)\s+knuckles\s+(?:turned|went|were|are)\s+white\b",
+            "find": r"\b(his|her|their|my|your)\s+knuckles\s+(?:turned|went|were|are)\s+white(?:\s+(?:around|in|at|on|against)\s+[^,.;:!?]{1,25})?\b",
             "replace": [
                 r"\1 grip went rigid",
                 r"\1 fingers locked tight",
@@ -1017,7 +1017,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'EN_022',
             "name": "letting out a breath one didn't know was held",
-            "find": r"\b(?:let|released)\s+(?:out\s+)?a\s+breath\s+(?:(?:he|she|they|I|you)\s+)?(?:did\s*n['’]?t|had\s*n['’]?t)\s+(?:know|realiz(?:e|ed)|notice[d]?)\s+(?:(?:he|she|they|I|you)\s+)?(?:was|had\s+been|were)\s+holding\b",
+            "find": r"(?<!him )(?<!her )(?<!them )\b(?:let|released)\s+(?:out\s+)?a\s+breath\s+(?:(?:he|she|they|I|you)\s+)?(?:did\s*n['’]?t|had\s*n['’]?t)\s+(?:know|realiz(?:e|ed)|notice[d]?)\s+(?:(?:he|she|they|I|you)\s+)?(?:was|had\s+been|were)\s+holding\b",
             "replace": [
                 'let out a breath at last',
                 'finally breathed again',
@@ -1648,7 +1648,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'KO_003',
             "name": '볼이 붉어지다/발그레 (cheeks flush)',
-            "find": r"(?:두\s*)?(?:볼|뺨)이\s*(?:발그레\s*)?(?:붉어졌|붉게\s*물들었|발그레해졌|달아올랐|상기됐|상기되었)(?:다|어|어요)",
+            "find": r"(?:두\s*)?(?:볼|뺨)이\s*(?:발그레\s*)?(?:붉어졌|붉게\s*물들었|발그레해졌|달아올랐|상기됐|상기되었)(?:다|어요|어)",
             "replace": [
                 '얼굴에 열이 올랐다',
                 '뺨이 화끈거렸다',
@@ -2240,7 +2240,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'ES_001',
             "name": 'el corazón le latía/martilleaba con fuerza',
-            "find": r"\b[Ee]l coraz[oó]n le (?:lat[ií]a|martilleaba|golpeaba|palpitaba|retumbaba)(?: con fuerza| con violencia| desbocado| acelerado)?\b",
+            "find": r"\b[Ee]l coraz[oó]n le (?:lat[ií]a|martilleaba|golpeaba|palpitaba|retumbaba)(?: con fuerza| con violencia| desbocado| acelerado)?(?:\s+en\s+el\s+pecho)?\b",
             "replace": [
                 'el pulso se le disparó',
                 'sintió el corazón a punto de salírsele del pecho',
@@ -2763,7 +2763,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'PT_013',
             "name": 'o coração apertou (no peito)',
-            "find": r"\b(o\s+(?:seu|teu)\s+coração|o\s+coração)\s+(?:apertou|se\s+apertou|apertou-se|encolheu|se\s+encolheu|doeu)\b",
+            "find": r"\b(o\s+(?:seu|teu)\s+coração|o\s+coração)\s+(?:apertou|se\s+apertou|apertou-se|encolheu|se\s+encolheu|doeu)(?:\s+no\s+peito)?\b",
             "replace": [
                 r"doeu alguma coisa onde fica \1",
                 r"\1 ficou pequeno de repente",
