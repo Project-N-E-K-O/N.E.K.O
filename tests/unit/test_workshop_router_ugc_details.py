@@ -4,6 +4,8 @@ from types import SimpleNamespace
 import pytest
 
 from main_routers import workshop_router
+from main_routers.workshop_router import items as wr_items
+from main_routers.workshop_router import ugc as wr_ugc
 
 
 class _FakeWorkshop:
@@ -42,7 +44,8 @@ def unsupported_ugc_steamworks():
 
 @pytest.mark.asyncio
 async def test_workshop_item_details_reports_unsupported_ugc_details(monkeypatch, unsupported_ugc_steamworks):
-    monkeypatch.setattr(workshop_router, "get_steamworks", lambda: unsupported_ugc_steamworks)
+    monkeypatch.setattr(wr_items, "get_steamworks", lambda: unsupported_ugc_steamworks)
+    monkeypatch.setattr(wr_ugc, "get_steamworks", lambda: unsupported_ugc_steamworks)
 
     response = await workshop_router.get_workshop_item_details("123456")
 
@@ -56,7 +59,8 @@ async def test_workshop_item_details_reports_unsupported_ugc_details(monkeypatch
 @pytest.mark.asyncio
 async def test_workshop_item_details_unsupported_uses_download_tuple_order(monkeypatch):
     steamworks = SimpleNamespace(Workshop=_FakeWorkshop(download_info=(25, 100, 0.25)))
-    monkeypatch.setattr(workshop_router, "get_steamworks", lambda: steamworks)
+    monkeypatch.setattr(wr_items, "get_steamworks", lambda: steamworks)
+    monkeypatch.setattr(wr_ugc, "get_steamworks", lambda: steamworks)
 
     response = await workshop_router.get_workshop_item_details("123456")
 
@@ -69,7 +73,8 @@ async def test_workshop_item_details_unsupported_uses_download_tuple_order(monke
 @pytest.mark.asyncio
 async def test_workshop_item_details_unsupported_preserves_not_found_for_unknown_id(monkeypatch):
     steamworks = SimpleNamespace(Workshop=_FakeWorkshop(item_state=0, subscribed_items=[]))
-    monkeypatch.setattr(workshop_router, "get_steamworks", lambda: steamworks)
+    monkeypatch.setattr(wr_items, "get_steamworks", lambda: steamworks)
+    monkeypatch.setattr(wr_ugc, "get_steamworks", lambda: steamworks)
 
     response = await workshop_router.get_workshop_item_details("999999")
 
@@ -87,7 +92,8 @@ async def test_workshop_item_details_unsupported_tolerates_dirty_subscribed_item
             subscribed_items=[None, "not-a-number", "123456"],
         )
     )
-    monkeypatch.setattr(workshop_router, "get_steamworks", lambda: steamworks)
+    monkeypatch.setattr(wr_items, "get_steamworks", lambda: steamworks)
+    monkeypatch.setattr(wr_ugc, "get_steamworks", lambda: steamworks)
 
     response = await workshop_router.get_workshop_item_details("123456")
 
@@ -101,8 +107,10 @@ async def test_subscribed_workshop_items_degrades_when_ugc_details_unsupported(
     monkeypatch,
     unsupported_ugc_steamworks,
 ):
-    monkeypatch.setattr(workshop_router, "get_steamworks", lambda: unsupported_ugc_steamworks)
-    monkeypatch.setattr(workshop_router, "_request_workshop_item_download", lambda *args, **kwargs: False)
+    monkeypatch.setattr(wr_items, "get_steamworks", lambda: unsupported_ugc_steamworks)
+    monkeypatch.setattr(wr_ugc, "get_steamworks", lambda: unsupported_ugc_steamworks)
+    monkeypatch.setattr(wr_ugc, "_request_workshop_item_download", lambda *args, **kwargs: False)
+    monkeypatch.setattr(wr_items, "_request_workshop_item_download", lambda *args, **kwargs: False)
 
     response = await workshop_router.get_subscribed_workshop_items()
 

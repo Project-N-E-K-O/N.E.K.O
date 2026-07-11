@@ -25,12 +25,11 @@ from utils.llm_client import (
     AIMessage,
     LLMStreamChunk,
     ThinkingStreamStripper,
-    anthropic_retry_error_types,
+    chat_retry_error_types,
     strip_thinking_segments,
     create_chat_llm,
     create_chat_llm_async,
 )
-from openai import APIConnectionError, AuthenticationError, InternalServerError, RateLimitError
 from utils.frontend_utils import calculate_text_similarity
 from utils.tokenize import count_tokens, truncate_to_tokens
 from config import (
@@ -47,13 +46,22 @@ from main_logic.tool_calling import (
 )
 from utils.llm_tool_leak_filter import ToolLeakFilter, log_tool_leak_filtered
 
-_LLM_RETRY_ERROR_TYPES = (
-    APIConnectionError,
-    AuthenticationError,
-    InternalServerError,
-    RateLimitError,
-    *anthropic_retry_error_types(),
-)
+# 惰性缓存（None = 尚未构建）：openai/anthropic SDK 已从启动 import 链移除（见
+# utils/llm_client），模块级立即展开会把两个 SDK 拉回启动关键路径。首次求值发生在
+# LLM 调用的异常处理处，彼时 SDK 必已随 client 构造加载。
+_LLM_RETRY_ERROR_TYPES: tuple[type[BaseException], ...] | None = None
+
+
+def _llm_retry_error_types() -> tuple[type[BaseException], ...]:
+    global _LLM_RETRY_ERROR_TYPES
+    if _LLM_RETRY_ERROR_TYPES is None:
+        from openai import AuthenticationError
+
+        _LLM_RETRY_ERROR_TYPES = (
+            AuthenticationError,
+            *chat_retry_error_types(),
+        )
+    return _LLM_RETRY_ERROR_TYPES
 
 # google-genai 懒加载。该 SDK import 很重（~0.6s），且在 import 时会捎带 mcp
 # （~0.5s），但 offline 路径只有用户用 native-Gemini 端点时才需要它。改成首次使用
@@ -2966,7 +2974,9 @@ class OmniOfflineClient:
                     if assistant_message_total:
                         break
 
-                except _LLM_RETRY_ERROR_TYPES as e:
+                except _llm_retry_error_types() as e:
+                    from openai import InternalServerError
+
                     error_type = type(e).__name__
                     error_str_lower = str(e).lower()
                     is_internal_error = isinstance(e, InternalServerError)
@@ -3519,7 +3529,7 @@ class OmniOfflineClient:
 
                     break  # 流正常结束，跳出 retry 循环
 
-                except _LLM_RETRY_ERROR_TYPES as e:
+                except _llm_retry_error_types() as e:
                     error_type = type(e).__name__
                     error_str_lower = str(e).lower()
                     logger.info(f"ℹ️ prompt_ephemeral 捕获到 {error_type} 错误")
