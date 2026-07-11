@@ -25,7 +25,8 @@
 
     /**
      * 当前 surface 名 —— 区分三个上下文（记忆 feedback_chat_three_contexts）：
-     *   - chat_window: chat.html follower 窗口
+     *   - chat_window: chat.html 承载的聊天窗口（Electron /chat、web /chat_full、
+     *     dev 直开 chat.html 三种入口）
      *   - index_mobile: 手机/平板视图的 index.html
      *   - index_wide: 桌面宽屏 index.html
      * 调用方任何 counter/histogram/event 都会带上这个字段。
@@ -33,7 +34,11 @@
     function _surface() {
         try {
             var p = (window.location.pathname || '').toLowerCase();
-            if (p.indexOf('chat.html') >= 0) return 'chat_window';
+            var q = p.replace(/\/+$/, '');
+            // 生产 Electron 聊天窗口与 web full 页都是服务端路由（pages_router.py 用
+            // chat.html 双服务 /chat 与 /chat_full），pathname 不含 'chat.html'——此前
+            // 只认文件名，这两个入口全部落到兜底 'index_wide'，surface 分面失真。
+            if (p.indexOf('chat.html') >= 0 || q === '/chat' || q === '/chat_full') return 'chat_window';
         } catch (_) {}
         try {
             var ua = (navigator && navigator.userAgent) || '';

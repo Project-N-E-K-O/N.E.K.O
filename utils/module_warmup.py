@@ -42,6 +42,11 @@ logger = get_module_logger(__name__)
 # 所以列了 genai 就不必单列 mcp。translatepy 的子翻译器各自有数据表，逐个列出
 # 让它们都进 sys.modules 缓存。
 MAIN_SERVER_WARMUP: tuple[str, ...] = (
+    # openai/anthropic：曾在 utils/llm_client 顶层 import、坐在 merged 启动串行链
+    # 最前端（合计 ~0.7s，大头是 pydantic 模型类构建）。改惰性后在此预热，首次真实
+    # LLM 调用（greeting 等）不等 import。
+    "openai",
+    "anthropic",
     "google.genai",
     "google.genai.types",
     "translatepy",
