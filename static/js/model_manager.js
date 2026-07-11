@@ -63,14 +63,14 @@
         // avatar-popup-common, avatar-ui-popup, avatar-ui-popup-config, avatar-ui-buttons
         // 已由 model_manager.html 静态 <script> 加载，此处不再重复加载
         const mmdModules = [
-            '/static/mmd-init.js',
-            '/static/mmd-core.js',
-            '/static/mmd-animation.js',
-            '/static/mmd-expression.js',
-            '/static/mmd-interaction.js',
-            '/static/mmd-cursor-follow.js',
-            '/static/mmd-manager.js',
-            '/static/mmd-ui-buttons.js'
+            '/static/mmd/mmd-init.js',
+            '/static/mmd/mmd-core.js',
+            '/static/mmd/mmd-animation.js',
+            '/static/mmd/mmd-expression.js',
+            '/static/mmd/mmd-interaction.js',
+            '/static/mmd/mmd-cursor-follow.js',
+            '/static/mmd/mmd-manager.js',
+            '/static/mmd/mmd-ui-buttons.js'
         ];
 
         const failedModules = [];

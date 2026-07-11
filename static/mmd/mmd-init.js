@@ -368,20 +368,20 @@
 
         // 核心模块（无相互依赖，可并行）
         const parallelModules = [
-            '/static/mmd-core.js',
-            '/static/mmd-expression.js',
-            '/static/mmd-animation.js',
-            '/static/mmd-interaction.js',
-            '/static/mmd-cursor-follow.js',
-            '/static/mmd-manager.js'
+            '/static/mmd/mmd-core.js',
+            '/static/mmd/mmd-expression.js',
+            '/static/mmd/mmd-animation.js',
+            '/static/mmd/mmd-interaction.js',
+            '/static/mmd/mmd-cursor-follow.js',
+            '/static/mmd/mmd-manager.js'
         ];
 
         // UI 模块（公共定位 → 公共 mixin → 统一配置 → buttons → debug）
         // avatar-popup-common, avatar-ui-popup, avatar-ui-popup-config, avatar-ui-buttons
         // 已由 HTML 静态 <script> 加载，此处不再重复加载
         const sequentialModules = [
-            '/static/mmd-ui-buttons.js',
-            '/static/mmd-ui-debug.js'
+            '/static/mmd/mmd-ui-buttons.js',
+            '/static/mmd/mmd-ui-debug.js'
         ];
 
         const failedModules = [];
