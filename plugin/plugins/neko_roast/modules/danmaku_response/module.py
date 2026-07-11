@@ -582,22 +582,32 @@ class DanmakuResponseModule(BaseModule):
     @staticmethod
     def _looks_like_target_roast_request(text: str, dense: str) -> bool:
         lowered = str(text or "").casefold()
-        markers = (
+        cjk_markers = (
             "\u5410\u69fd",
             "\u9510\u8bc4",
             "\u8bc4\u4ef7",
             "\u635f\u4e00\u4e0b",
             "\u635f\u635f",
             "\u8c03\u4f83",
-            "roast",
-            "rate",
         )
-        return any(marker in lowered or marker in dense for marker in markers)
+        return any(
+            marker in lowered or marker in dense for marker in cjk_markers
+        ) or re.search(r"\b(?:roast|rate)\b", lowered) is not None
 
     @staticmethod
     def _target_roast_nickname(text: str) -> str:
         cleaned = " ".join(str(text or "").replace("\uff20", "@").strip().split())
         aliases = {"neko", "\u732b\u732b", "\u5c0f\u5929", "\u732b\u5a18"}
+        english_object_targets = frozenset(
+            (
+                "article articles essay essays content video videos stream livestream "
+                "post posts comment comments question questions thing things performance "
+                "song songs movie movies show shows series novel novels story stories "
+                "joke jokes program programs game games feature features code design designs "
+                "photo photos image images plan plans product products software app apps "
+                "application applications"
+            ).split()
+        )
         blocked = {
             "",
             "\u6211",
@@ -631,6 +641,10 @@ class DanmakuResponseModule(BaseModule):
             "them",
             "him",
             "her",
+            "this",
+            "that",
+            "these",
+            "those",
         }
         generic_prefixes = (
             "这个",
@@ -683,6 +697,7 @@ class DanmakuResponseModule(BaseModule):
             normalized = value.casefold()
             return (
                 normalized in blocked
+                or normalized in english_object_targets
                 or normalized.startswith(generic_prefixes)
                 or any(
                     normalized.endswith(suffix)
@@ -717,7 +732,7 @@ class DanmakuResponseModule(BaseModule):
             ):
                 return name[:24]
         pattern = re.compile(
-            r"(?:\u5410\u69fd\u4e00\u4e0b|\u5410\u69fd|\u9510\u8bc4\u4e00\u4e0b|\u9510\u8bc4|\u8bc4\u4ef7\u4e00\u4e0b|\u8bc4\u4ef7|\u635f\u4e00\u4e0b|\u635f\u635f|\u8c03\u4f83\u4e00\u4e0b|\u8c03\u4f83|roast|rate)\s*(?:\u4e00\u4e0b|this|that)?\s*([\w\u4e00-\u9fff][\w\u4e00-\u9fff_-]{0,23})",
+            r"(?:\u5410\u69fd\u4e00\u4e0b|\u5410\u69fd|\u9510\u8bc4\u4e00\u4e0b|\u9510\u8bc4|\u8bc4\u4ef7\u4e00\u4e0b|\u8bc4\u4ef7|\u635f\u4e00\u4e0b|\u635f\u635f|\u8c03\u4f83\u4e00\u4e0b|\u8c03\u4f83|\b(?:roast|rate)\b)\s*(?:\u4e00\u4e0b|this|that)?\s*([\w\u4e00-\u9fff][\w\u4e00-\u9fff_-]{0,23})",
             re.IGNORECASE,
         )
         match = pattern.search(cleaned)
