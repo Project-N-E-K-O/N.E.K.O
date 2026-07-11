@@ -279,7 +279,11 @@ def test_anonymous_recent_danmaku_flood_is_rejected() -> None:
         "@Alice @neko?",
         "@Alice @neko👋",
         "@Alice @neko好可爱",
+        "@Alice @nekoかわいい",
+        "@Alice @nekoカワイイ",
+        "@Alice @nekoちゃん何してるの",
         "@Alice @猫猫，今天播什么",
+        "@Alice @猫猫ちゃん",
         "@Alice @猫猫✨今天播什么",
     ),
 )
@@ -343,4 +347,24 @@ async def test_successful_trending_candidate_clears_rejected_sibling_skip_reason
     )
 
     assert [candidate["key"] for candidate in candidates] == ["bili:BV2"]
+    assert selector._active_engagement_recent_topic_skip_reason == ""
+
+
+@pytest.mark.asyncio
+async def test_cached_trending_candidate_clears_recent_skip_reason() -> None:
+    cached = [
+        {"source": "bili_trending", "key": "bili:BV2", "title": "weather mood"}
+    ]
+    selector = SimpleNamespace(
+        _active_engagement_topic_cache=cached,
+        _active_engagement_topic_cache_at=float("inf"),
+        _active_engagement_recent_topic_skip_reason="single_viewer_flood",
+    )
+
+    candidates = await active_topic_trending_source.bili_trending_topic_candidates(
+        selector
+    )
+
+    assert candidates == cached
+    assert candidates is not cached
     assert selector._active_engagement_recent_topic_skip_reason == ""
