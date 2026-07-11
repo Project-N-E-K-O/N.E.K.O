@@ -1926,7 +1926,7 @@ async def test_ai_guess_feedback_hint_triggers_retry(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_ai_guess_feedback_intent_classifier_can_trigger_retry(monkeypatch):
+async def test_ai_guess_feedback_intent_classifier_retries_at_confidence_threshold(monkeypatch):
     await dgr.drawing_guess_round_start(_FakeRequest({
         "lanlan_name": "YUI",
         "session_id": "dg-feedback-soft-hint",
@@ -1940,7 +1940,11 @@ async def test_ai_guess_feedback_intent_classifier_can_trigger_retry(monkeypatch
     async def fake_intent(**kwargs):
         assert kwargs["phase"] == "ai_guess_feedback"
         assert kwargs["user_text"] == "closer to breakfast than a vehicle"
-        return {"intent": "hint", "guess_text": "", "confidence": 0.82}
+        return {
+            "intent": "hint",
+            "guess_text": "",
+            "confidence": dgr.AI_GUESS_FEEDBACK_HINT_CONFIDENCE,
+        }
 
     async def fake_vision_guess(**kwargs):
         assert kwargs["user_hint"] == "closer to breakfast than a vehicle"

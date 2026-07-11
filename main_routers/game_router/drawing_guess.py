@@ -55,6 +55,7 @@ MODEL_SVG_MAX_CAPTION_CHARS = 300
 GAME_CHAT_TIMEOUT_SECONDS = 16.0
 GAME_EVENT_LINE_TIMEOUT_SECONDS = 6.0
 INPUT_INTENT_TIMEOUT_SECONDS = 8.0
+AI_GUESS_FEEDBACK_HINT_CONFIDENCE = 0.6
 TEXT_GUESS_TIMEOUT_SECONDS = float(ROUND_AI_GUESS_SECONDS)
 VISION_GUESS_TIMEOUT_SECONDS = float(ROUND_AI_GUESS_SECONDS)
 GAME_CHAT_MAX_HISTORY_ITEMS = 16
@@ -3121,7 +3122,12 @@ async def _handle_drawing_guess_input_payload_locked(
             )
         if phase == "ai_guess_feedback" and (
             _is_ai_retry_hint(text)
-            or (feedback_intent and feedback_intent.get("intent") == "hint" and float(feedback_intent.get("confidence") or 0.0) >= 0.7)
+            or (
+                feedback_intent
+                and feedback_intent.get("intent") == "hint"
+                and float(feedback_intent.get("confidence") or 0.0)
+                >= AI_GUESS_FEEDBACK_HINT_CONFIDENCE
+            )
         ):
             return await _run_drawing_guess_vision_turn(
                 session=session,
