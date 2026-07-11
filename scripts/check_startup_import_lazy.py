@@ -183,6 +183,15 @@ def _iter_module_scope_stmts(body: list[ast.stmt]) -> Iterator[ast.stmt]:
         elif isinstance(stmt, ast.ClassDef):
             # Class bodies execute at import time too.
             yield from _iter_module_scope_stmts(stmt.body)
+        elif isinstance(stmt, ast.Match):
+            for case in stmt.cases:
+                yield from _iter_module_scope_stmts(case.body)
+        elif isinstance(stmt, ast.TryStar):
+            yield from _iter_module_scope_stmts(stmt.body)
+            for handler in stmt.handlers:
+                yield from _iter_module_scope_stmts(handler.body)
+            yield from _iter_module_scope_stmts(stmt.orelse)
+            yield from _iter_module_scope_stmts(stmt.finalbody)
 
 
 def _noqa_lines(source: str) -> set[int]:
@@ -208,8 +217,18 @@ def check_source(path: Path, source: str, tree: ast.Module) -> list[tuple[int, i
             if key is not None:
                 names = ", ".join(a.name for a in stmt.names) or "*"
                 found.append((key, f"from {stmt.module} import {names}"))
+            elif stmt.module and stmt.level == 0:
+                # `from google import genai` resolves to google.genai — match
+                # each alias against the banned list too, or namespace-package
+                # spellings slip through.
+                for alias in stmt.names:
+                    alias_key = _banned_key(f"{stmt.module}.{alias.name}")
+                    if alias_key is not None:
+                        found.append((alias_key, f"from {stmt.module} import {alias.name}"))
+        # noqa on any line of a multiline import suppresses the statement.
+        end_lineno = getattr(stmt, "end_lineno", None) or stmt.lineno
         for key, text in found:
-            if stmt.lineno in suppressed:
+            if any(ln in suppressed for ln in range(stmt.lineno, end_lineno + 1)):
                 continue
             violations.append(
                 (

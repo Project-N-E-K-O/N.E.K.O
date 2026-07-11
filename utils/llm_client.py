@@ -35,7 +35,7 @@ import ssl
 import threading
 import weakref
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, AsyncIterator, Union
+from typing import TYPE_CHECKING, Any, AsyncIterator
 from urllib.parse import urlparse
 
 if TYPE_CHECKING:
