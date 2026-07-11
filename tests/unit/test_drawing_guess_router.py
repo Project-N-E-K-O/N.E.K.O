@@ -224,6 +224,48 @@ def test_user_guessing_chat_context_gives_private_answer_without_forcing_reveal(
 
 
 @pytest.mark.unit
+def test_guess_feedback_chat_knows_latest_guess_was_rejected():
+    system_prompt, payload_raw = dgr._build_drawing_guess_chat_prompts(
+        session={
+            "phase": "ai_guess_feedback",
+            "user_word_id": "banana",
+            "last_ai_guess_word_id": "cup",
+            "last_ai_guess_correct": False,
+            "last_ai_guess_attempt": 1,
+            "game_chat_history": [],
+        },
+        locale="zh-CN",
+        lanlan_name="YUI",
+        master_name="Master",
+        lanlan_prompt="Playful companion.",
+        user_text="是吃饭用的",
+        event="guess_feedback_chat",
+        character_profile_prompt="",
+    )
+    payload = json.loads(payload_raw)
+
+    assert payload["event_roles"]["character_role"] == "guesser"
+    assert payload["event_roles"]["user_role"] == "drawer"
+    assert payload["public_details"]["character_is_guessing_user_drawing"] is True
+    assert payload["public_details"]["last_character_guess_label"] == dgr._word_label(
+        dgr._WORD_BY_ID["cup"], "zh-CN"
+    )
+    assert payload["public_details"]["last_character_guess_was_correct"] is False
+    assert payload["public_details"]["last_character_guess_attempt"] == 1
+    assert payload["public_details"]["backend_judgement_is_authoritative"] is True
+    assert payload["public_details"]["must_not_defend_rejected_guess_as_answer"] is True
+    assert "banana" not in payload_raw
+    assert "香蕉" not in payload_raw
+    assert "backend has already judged your latest guess wrong" in payload["premise"]
+    assert "never insist" in system_prompt
+
+
+@pytest.mark.unit
+def test_ai_retry_hint_recognizes_chinese_usage_clue():
+    assert dgr._is_ai_retry_hint("是吃饭用的") is True
+
+
+@pytest.mark.unit
 def test_vision_guess_prompt_keeps_character_setting_first_and_wraps_context():
     system_prompt, payload_raw = dgr._build_vision_guess_prompt_parts(
         session={"phase": "ai_guessing", "ai_guess_attempts": 1, "game_chat_history": []},
@@ -1985,6 +2027,9 @@ async def test_vision_guess_uses_model_structured_guess(monkeypatch):
     assert result["state"]["scores"]["neko"] == 1
     assert result["message"] == "I guessed banana from that curve."
     assert result["evaluation"] == "This drawing has a smug little banana curve."
+    assert session["last_ai_guess_word_id"] == "banana"
+    assert session["last_ai_guess_correct"] is True
+    assert session["last_ai_guess_attempt"] == 1
 
 
 @pytest.mark.unit

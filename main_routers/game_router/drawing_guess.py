@@ -604,7 +604,7 @@ _USER_GUESS_INTENT_RE = re.compile(
 _AI_RETRY_HINT_RE = re.compile(
     r"(?:"
     r"\b(?:hint|clue|guess\s+again|try\s+again|one\s+more|it(?:'s|\s+is)\s+(?:a|an|the|yellow|red|blue|green|round|curved|small|big|long|short|not)|it\s+has|looks?\s+like|color)\b"
-    r"|提示|线索|線索|再猜|再试|再試|再想|它是|牠是|这个是|這個是|画的是|畫的是|有点像|有點像|颜色|顏色|不是.*(?:是|像|有|颜色|顏色)|不对.*(?:是|像|有|颜色|顏色)"
+    r"|提示|线索|線索|再猜|再试|再試|再想|它是|牠是|这个是|這個是|画的是|畫的是|有点像|有點像|颜色|顏色|用来|用來|拿来|拿來|用途|是.{1,24}用的|不是.*(?:是|像|有|颜色|顏色)|不对.*(?:是|像|有|颜色|顏色)"
     r")",
     re.IGNORECASE,
 )
@@ -1369,7 +1369,7 @@ def _drawing_guess_scene_premise(event: str) -> str:
         "drawing_chat": "The user is drawing and chatting with you.",
         "guessing_chat": "The user is in their guessing turn and is chatting with you. You know your own hidden answer; if the user naturally asks for help, a nudge, or another clue, answer with a fresh indirect clue from that answer without requiring a fixed keyword. If it is ordinary conversation, chat normally.",
         "word_picking_chat": "The user already guessed your drawing and is now privately choosing their own drawing card. You may know and discuss your own revealed answer, but you must not know or mention the user's card options.",
-        "guess_feedback_chat": "The user is chatting after you guessed their drawing.",
+        "guess_feedback_chat": "You are the guesser looking at the user's drawing. The backend has already judged your latest guess wrong. Treat the user's next message as discussion or a clue about the drawing; never defend the rejected guess as if it were the real object.",
         "summary_chat": "The round is over, and the user is still chatting with you.",
     }
     return premises.get(event, "You and the user are casually playing drawing guess together.")
@@ -1393,7 +1393,7 @@ def _drawing_guess_event_roles(event: str) -> dict[str, Any]:
             },
             "role_boundary": "Do not mix up the turns: the character is done drawing for now; the next drawing belongs to the user.",
         }
-    if event.startswith("ai_guess"):
+    if event.startswith("ai_guess") or event == "guess_feedback_chat":
         return {
             "character_role": "guesser",
             "user_role": "drawer",
@@ -1454,6 +1454,15 @@ def _drawing_guess_chat_public_details(session: dict[str, Any], locale: str, eve
         details["do_not_mention_user_card_options"] = True
     if phase in {"user_drawing", "ai_guessing", "ai_guess_feedback"}:
         details["user_drawing_answer_is_hidden_from_character"] = True
+    if phase == "ai_guess_feedback":
+        last_guess_id = str(session.get("last_ai_guess_word_id") or "")
+        if last_guess_id in _WORD_BY_ID:
+            details["character_is_guessing_user_drawing"] = True
+            details["last_character_guess_label"] = _word_public(_WORD_BY_ID[last_guess_id], locale)["label"]
+            details["last_character_guess_was_correct"] = bool(session.get("last_ai_guess_correct"))
+            details["last_character_guess_attempt"] = int(session.get("last_ai_guess_attempt") or 0)
+            details["backend_judgement_is_authoritative"] = True
+            details["must_not_defend_rejected_guess_as_answer"] = not details["last_character_guess_was_correct"]
     return details
 
 
@@ -2116,6 +2125,8 @@ def _build_drawing_guess_chat_prompts(
             "- If the user asks for help, a hint, another clue, or says they are stuck, infer that naturally and generate a fresh indirect clue from character_private_answer_label; do not require any fixed keyword.\n"
             "- Do not use a fixed hint template. Vary the clue wording according to the character setting and the conversation.\n"
             "- If the user is only chatting, respond as a companion and do not force the conversation back to guessing.\n"
+            "- In ai_guess_feedback, you are the guesser and the user is the drawer. Treat public_details.last_character_guess_was_correct as authoritative.\n"
+            "- If the latest guess was wrong, acknowledge that it was rejected; never insist that last_character_guess_label is what the drawing really is.\n"
         ),
     )
     public_details = _drawing_guess_chat_public_details(session, locale, event)
@@ -2123,6 +2134,7 @@ def _build_drawing_guess_chat_prompts(
         "task": "free_in_character_reply",
         "event": event,
         "premise": _drawing_guess_scene_premise(event),
+        "event_roles": _drawing_guess_event_roles(event),
         "locale": locale,
         "phase": str(session.get("phase") or ""),
         "scores": _score_payload(session),
@@ -3602,6 +3614,10 @@ async def _run_drawing_guess_vision_turn(
         session["phase"] = "summary"
     else:
         session["phase"] = "ai_guess_feedback"
+
+    session["last_ai_guess_word_id"] = guessed_word.id
+    session["last_ai_guess_correct"] = bool(correct)
+    session["last_ai_guess_attempt"] = attempts
 
     evaluation: str | None = None
     evaluation_source: str | None = None
