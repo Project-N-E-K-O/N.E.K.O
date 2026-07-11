@@ -136,6 +136,16 @@ def _normalize_workshop_model_ref(raw_value: str) -> str:
     return str(raw_value or "").strip().replace("\\", "/")
 
 
+def _sanitize_workshop_ref_segments(segments: list[str]) -> list[str]:
+    # 工坊卡的 model 路径来自第三方物品内容，是跨信任边界输入。这里在摄入点
+    # 丢弃 '..'/'.'/盘符段，保证拼出的 model_ref 无法解析出 /workshop/{item_id}/ 之外。
+    return [
+        segment
+        for segment in segments
+        if segment and segment not in ("..", ".") and ":" not in segment
+    ]
+
+
 def _build_subscriber_workshop_model_ref(item_id: str | int, raw_model_ref: str) -> str:
     normalized_ref = _normalize_workshop_model_ref(raw_model_ref)
     normalized_item_id = str(item_id or "").strip()
@@ -145,14 +155,14 @@ def _build_subscriber_workshop_model_ref(item_id: str | int, raw_model_ref: str)
         parts = [segment for segment in normalized_ref.strip("/").split("/") if segment]
         # /workshop/{old_item_id}/...
         if parts and parts[0] == "workshop":
-            tail_parts = parts[2:] if len(parts) >= 2 else []
+            tail_parts = _sanitize_workshop_ref_segments(parts[2:] if len(parts) >= 2 else [])
             if tail_parts:
                 return f"/workshop/{normalized_item_id}/{'/'.join(tail_parts)}"
             return f"/workshop/{normalized_item_id}"
-    relative_ref = normalized_ref.strip("/")
-    if not relative_ref:
+    relative_parts = _sanitize_workshop_ref_segments(normalized_ref.split("/"))
+    if not relative_parts:
         return f"/workshop/{normalized_item_id}"
-    return f"/workshop/{normalized_item_id}/{relative_ref}"
+    return f"/workshop/{normalized_item_id}/{'/'.join(relative_parts)}"
 
 
 def _derive_workshop_model_binding(chara_data: dict) -> dict[str, str]:
