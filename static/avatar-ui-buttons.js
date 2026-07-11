@@ -516,6 +516,11 @@ function setNekoIdleCatAudioEnabled(enabled) {
 }
 
 function _getActiveNekoIdleReturnTier() {
+    // 球形态下按钮 tier 被强制为 none，此处不能再 fallback 到 visualTier，
+    // 否则重新打开猫音频开关会在呼吸球上排猫叫/睡觉声
+    if (_getNekoGoodbyeIdleAppearance() === _NEKO_GOODBYE_IDLE_APPEARANCE_BALL) {
+        return _NEKO_IDLE_TIER_NONE;
+    }
     let activeTier = _NEKO_IDLE_TIER_NONE;
     _forEachNekoIdleReturnButton((button) => {
         if (activeTier !== _NEKO_IDLE_TIER_NONE) return;
@@ -7502,6 +7507,14 @@ function _applyNekoIdleReturnPresentation(button, tier) {
         _clearNekoIdleCat1QuestionMark(button);
         _setNekoIdleCat1QuestionMarkKeyboardTarget(null);
         _stopNekoGoodbyeIdleBallCatSounds();
+        const ballArt = button.querySelector('.neko-idle-return-art');
+        if (ballArt && !ballArt.dataset.nekoGoodbyeIdleCatSrc && normalizedTier !== _NEKO_IDLE_TIER_NONE) {
+            // 先于 app-ui 存下该 tier 的规范待机图快照：此刻 DOM src 可能是
+            // hover/进食/玩耍的一次性 GIF，且下方 cancel 会抹掉瞬态标记，
+            // app-ui 侧无法再分辨；带 tier 标签供恢复猫形态时校验
+            ballArt.dataset.nekoGoodbyeIdleCatSrc = _getNekoIdleReturnAssetUrl(normalizedTier);
+            ballArt.dataset.nekoGoodbyeIdleCatSrcTier = normalizedTier;
+        }
         if (_isNekoIdleCat1PlaygroundEntryPending(button)) {
             _cancelNekoIdleCat1PlaygroundPendingEntry(button);
             _clearNekoIdleCat1PlaygroundQuestionBlockClone(button);

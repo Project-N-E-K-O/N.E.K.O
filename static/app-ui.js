@@ -3516,23 +3516,11 @@
         setGoodbyeIdleAppearanceAttributes(container, nextAppearance);
 
         if (nextAppearance === NEKO_GOODBYE_IDLE_APPEARANCE_BALL) {
-            // 必须在 clearReturnButtonBallOnlyVisualState 抹掉状态类之前判定：
-            // hover/进食/玩耍/行走/拖拽期间 art.src 是一次性 GIF，快照它会在
-            // 恢复猫形态时把按钮卡在该帧上（相关 timer/token 已被清掉不会自愈）
-            const hasTransientReturnArt = !!(
-                (art && art.__nekoIdleHoverSrc) ||
-                (button && button.classList && [
-                    'is-cat1-eating',
-                    'is-cat1-playing',
-                    'is-cat1-walking',
-                    'is-cat1-stretching',
-                    'is-drag-action',
-                    'is-drag-action-pending'
-                ].some((className) => button.classList.contains(className)))
-            );
             clearReturnButtonBallOnlyVisualState(container);
+            const previousTier = button
+                ? normalizeRestorableNekoIdleReturnTier(button.getAttribute('data-neko-idle-tier'))
+                : '';
             if (button) {
-                const previousTier = normalizeRestorableNekoIdleReturnTier(button.getAttribute('data-neko-idle-tier'));
                 button.dataset.nekoGoodbyeIdleCatTier = getRestorableNekoIdleReturnTier(
                     previousTier || button.dataset.nekoGoodbyeIdleCatTier
                 );
@@ -3540,10 +3528,14 @@
             }
             container.setAttribute('data-neko-idle-tier', 'none');
             if (art) {
+                // avatar-ui-buttons 的监听器先运行，会预存该 tier 规范待机图的快照
+                // （DOM src 此刻可能是一次性 GIF，不可信）；这里只在 avatar 侧
+                // 未预存时兜底快照当前 src。tier 标签用按钮当时的真实 tier：
+                // 标签为空（tier none）的快照在恢复时不回写
                 const currentSrc = art.getAttribute('src') || art.currentSrc || '';
-                if (currentSrc && currentSrc.indexOf(NEKO_GOODBYE_IDLE_BALL_ASSET) === -1 &&
-                    !hasTransientReturnArt && !art.dataset.nekoGoodbyeIdleCatSrc) {
+                if (currentSrc && currentSrc.indexOf(NEKO_GOODBYE_IDLE_BALL_ASSET) === -1 && !art.dataset.nekoGoodbyeIdleCatSrc) {
                     art.dataset.nekoGoodbyeIdleCatSrc = currentSrc;
+                    art.dataset.nekoGoodbyeIdleCatSrcTier = previousTier;
                 }
                 if ((art.getAttribute('src') || '') !== NEKO_GOODBYE_IDLE_BALL_ASSET) {
                     art.src = NEKO_GOODBYE_IDLE_BALL_ASSET;
@@ -3572,7 +3564,6 @@
             return;
         }
 
-        const savedCatTier = normalizeRestorableNekoIdleReturnTier(button && button.dataset.nekoGoodbyeIdleCatTier);
         const restoredTier = getRestorableNekoIdleReturnTier(button && button.dataset.nekoGoodbyeIdleCatTier);
         if (button) {
             button.setAttribute('data-neko-idle-tier', restoredTier);
@@ -3580,12 +3571,14 @@
         }
         container.setAttribute('data-neko-idle-tier', restoredTier);
         if (art && art.dataset.nekoGoodbyeIdleCatSrc) {
-            // 快照 src 只对进球形态时的 tier 有效；球形态期间 tier 推进过就不能回写，
-            // 保留 avatar 侧监听器已按当前 tier 重画的图，避免图与 data-neko-idle-tier 不一致
-            if (savedCatTier === restoredTier) {
+            // 快照的 tier 标签与恢复 tier 一致才回写；球形态期间 tier 推进过或
+            // 快照来源不明时，保留 avatar 侧监听器已按当前 tier 重画的图
+            const savedSrcTier = normalizeRestorableNekoIdleReturnTier(art.dataset.nekoGoodbyeIdleCatSrcTier);
+            if (savedSrcTier && savedSrcTier === restoredTier) {
                 art.src = art.dataset.nekoGoodbyeIdleCatSrc;
             }
             delete art.dataset.nekoGoodbyeIdleCatSrc;
+            delete art.dataset.nekoGoodbyeIdleCatSrcTier;
         }
         if (art) {
             art.setAttribute('data-neko-idle-tier', restoredTier);
