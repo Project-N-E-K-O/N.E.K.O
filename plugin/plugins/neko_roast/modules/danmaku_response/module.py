@@ -685,7 +685,7 @@ class DanmakuResponseModule(BaseModule):
                 normalized in blocked
                 or normalized.startswith(generic_prefixes)
                 or any(
-                    len(normalized) > len(suffix) and normalized.endswith(suffix)
+                    normalized.endswith(suffix)
                     for suffix in object_target_suffixes
                 )
                 or object_phrase.fullmatch(normalized) is not None

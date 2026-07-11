@@ -217,6 +217,8 @@ def test_generic_chinese_roast_targets_are_rejected():
     ),
 )
 def test_unspaced_object_suffixes_are_not_viewer_targets(suffix: str) -> None:
+    assert DanmakuResponseModule._target_roast_nickname(f"锐评 {suffix}") == ""
+    assert DanmakuResponseModule._target_roast_nickname(f"锐评 @{suffix}") == ""
     assert DanmakuResponseModule._target_roast_nickname(f"锐评 小明{suffix}") == ""
     assert DanmakuResponseModule._target_roast_nickname(f"锐评 @小明{suffix}") == ""
 
