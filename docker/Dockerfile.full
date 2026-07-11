@@ -85,10 +85,9 @@ RUN echo "deb https://mirrors.aliyun.com/debian/ bookworm main non-free non-free
 #     - portaudio19-dev: 音频输入/输出
 #     - libasound2: ALSA 音频库
 #
-# [4] OCR / Text Recognition (pytesseract / rapidocr-onnxruntime)
+# [4] OCR / Text Recognition (pytesseract / rapidocr-pillow)
 #     - pytesseract: Tesseract OCR 引擎包装（Tesseract 需单独安装或在 Windows 上自动下载）
-#     - rapidocr-onnxruntime: ONNX Runtime 驱动的 OCR（galgame 插件可选依赖）
-#     - opencv-python-headless: 图像处理（galgame 插件可选依赖，通过 --group galgame 安装）
+#     - rapidocr-pillow: ONNX Runtime 驱动的 OCR（galgame 插件可选依赖）
 #
 # [5] Local Embeddings (onnxruntime / tokenizers)
 #     - onnxruntime: 本地向量嵌入模型推理

@@ -1402,6 +1402,20 @@ html[data-theme="dark"].subtitle-window-host body.subtitle-window-host {
   border-color: #3a5a6e;
 }
 
+[data-theme="dark"] .tutorial-cascader-trigger,
+[data-theme="dark"] .tutorial-cascader-option {
+  color: #0f5f7a;
+}
+
+[data-theme="dark"] .tutorial-cascader-trigger:hover,
+[data-theme="dark"] .tutorial-cascader-trigger:focus-visible,
+[data-theme="dark"] .tutorial-cascader-trigger.is-open,
+[data-theme="dark"] .tutorial-cascader-option:hover,
+[data-theme="dark"] .tutorial-cascader-option:focus-visible,
+[data-theme="dark"] .tutorial-cascader-option.is-selected {
+  color: #075985;
+}
+
 [data-theme="dark"] .tutorial-reset-wrapper select:hover,
 [data-theme="dark"] .tutorial-reset-btn:hover {
   background: #383838;

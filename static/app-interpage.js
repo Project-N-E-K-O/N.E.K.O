@@ -156,6 +156,11 @@
         return false;
     }
 
+    function getYuiGuideBridgeMessageTimestamp(message) {
+        var timestamp = Number(message && message.timestamp);
+        return Number.isFinite(timestamp) && timestamp > 0 ? timestamp : Date.now();
+    }
+
     function shouldBypassYuiGuideMessageDedup(action, message) {
         return (message && message.bypassDedup === true)
             || action === 'yui_guide_set_chat_spotlight'
@@ -1929,6 +1934,8 @@
     var VOICE_CONFIG_SWITCH_STALE_MS = 45000;
     var _voiceConfigSwitchOps = {};
     var _voiceConfigSwitchWaiters = [];
+    var _pendingVoiceChatComposerHiddenByLanlan = {};
+    var VOICE_CHAT_COMPOSER_PENDING_STALE_MS = 30000;
 
     function getCurrentLanlanName() {
         try {
@@ -1963,6 +1970,98 @@
                 textInputArea.classList.remove('hidden');
             }
         }
+    }
+
+    function getVoiceChatComposerHiddenElectronBridge() {
+        var bridge = window.nekoElectronVoiceChatComposerHidden;
+        return bridge && typeof bridge.send === 'function' ? bridge : null;
+    }
+
+    function postVoiceChatComposerHiddenElectron(payload) {
+        var bridge = getVoiceChatComposerHiddenElectronBridge();
+        if (!bridge) return false;
+        try {
+            bridge.send(payload || {});
+            return true;
+        } catch (err) {
+            console.warn('[VoiceChat] Electron composer hidden bridge failed:', err);
+            return false;
+        }
+    }
+
+    function postVoiceChatComposerHiddenPayload(payload) {
+        postInterpageMessage(payload);
+        postVoiceChatComposerHiddenElectron(payload);
+    }
+
+    function getVoiceChatComposerHiddenMessageTimestamp(data) {
+        var timestamp = Number(data && data.timestamp);
+        return Number.isFinite(timestamp) ? timestamp : Date.now();
+    }
+
+    function prunePendingVoiceChatComposerHiddenMessages(now) {
+        now = now || Date.now();
+        Object.keys(_pendingVoiceChatComposerHiddenByLanlan).forEach(function (lanlanName) {
+            var data = _pendingVoiceChatComposerHiddenByLanlan[lanlanName];
+            if (!data || now - getVoiceChatComposerHiddenMessageTimestamp(data) > VOICE_CHAT_COMPOSER_PENDING_STALE_MS) {
+                delete _pendingVoiceChatComposerHiddenByLanlan[lanlanName];
+            }
+        });
+    }
+
+    function rememberPendingVoiceChatComposerHiddenMessage(data) {
+        if (!data || !data.lanlan_name) return false;
+        var lanlanName = String(data.lanlan_name);
+        var timestamp = getVoiceChatComposerHiddenMessageTimestamp(data);
+        prunePendingVoiceChatComposerHiddenMessages(timestamp);
+        var previous = _pendingVoiceChatComposerHiddenByLanlan[lanlanName];
+        if (!previous || timestamp >= getVoiceChatComposerHiddenMessageTimestamp(previous)) {
+            _pendingVoiceChatComposerHiddenByLanlan[lanlanName] = Object.assign({}, data, {
+                timestamp: timestamp
+            });
+        }
+        return true;
+    }
+
+    function applyVoiceComposerHiddenFromActive(active) {
+        var requestedHidden = !!active;
+        if (S) {
+            S.voiceChatActive = requestedHidden;
+        }
+        var effectiveHidden = requestedHidden || (!requestedHidden && shouldKeepVoiceComposerHidden());
+        if (S) {
+            S.voiceChatActive = effectiveHidden;
+        }
+        applyVoiceChatComposerHidden(effectiveHidden);
+        return effectiveHidden;
+    }
+
+    function isVoiceChatComposerHiddenMessageForCurrentLanlan(data) {
+        if (!data || !data.lanlan_name) return true;
+        var currentName = getCurrentLanlanName();
+        return !!currentName && data.lanlan_name === currentName;
+    }
+
+    function handleVoiceChatComposerHiddenMessage(data) {
+        if (!data || data.action !== 'voice_chat_active') return false;
+        if (data.lanlan_name && !getCurrentLanlanName()) {
+            rememberPendingVoiceChatComposerHiddenMessage(data);
+            return true;
+        }
+        if (!isVoiceChatComposerHiddenMessageForCurrentLanlan(data)) return true;
+        applyVoiceComposerHiddenFromActive(data.active);
+        return true;
+    }
+
+    function consumePendingVoiceChatComposerHiddenMessage(lanlanName) {
+        var currentName = lanlanName || getCurrentLanlanName();
+        if (!currentName) return false;
+        prunePendingVoiceChatComposerHiddenMessages(Date.now());
+        var data = _pendingVoiceChatComposerHiddenByLanlan[currentName];
+        if (!data) return false;
+        delete _pendingVoiceChatComposerHiddenByLanlan[currentName];
+        applyVoiceComposerHiddenFromActive(data.active);
+        return true;
     }
 
     function readGoodbyeChatComposerHidden() {
@@ -2215,17 +2314,9 @@
      * @param {boolean} hidden - true 表示收起输入栏；false 表示允许展开输入栏
      */
     function syncVoiceChatComposerHidden(hidden) {
-        var requestedHidden = !!hidden;
-        if (S) {
-            S.voiceChatActive = requestedHidden;
-        }
-        var effectiveHidden = requestedHidden || (!requestedHidden && shouldKeepVoiceComposerHidden());
-        if (S) {
-            S.voiceChatActive = effectiveHidden;
-        }
-        applyVoiceChatComposerHidden(effectiveHidden);
+        var effectiveHidden = applyVoiceComposerHiddenFromActive(hidden);
         // 同步给其它页面（chat.html ↔ index.html）
-        postInterpageMessage({
+        postVoiceChatComposerHiddenPayload({
             action: 'voice_chat_active',
             active: effectiveHidden,
             lanlan_name: getCurrentLanlanName(),
@@ -2893,6 +2984,18 @@
         if (!message || !message.action) {
             return false;
         }
+        if (isYuiGuideLifecycleStartAction(message.action)) {
+            openYuiGuidePcOverlayLifecycle(message);
+        }
+        if (
+            yuiGuidePcOverlayLifecycleClosed
+            && isYuiGuideLifecycleScopedAction(message.action)
+        ) {
+            return true;
+        }
+        if (!isYuiGuideMessageForCurrentLifecycle(message)) {
+            return true;
+        }
         if (
             message.action !== 'yui_guide_tutorial_lifecycle_ended'
             && isYuiGuideLifecycleScopedAction(message.action)
@@ -3157,6 +3260,19 @@
                     return;
                 }
 
+                if (isYuiGuideLifecycleStartAction(message.action)) {
+                    openYuiGuidePcOverlayLifecycle(message);
+                }
+                if (
+                    yuiGuidePcOverlayLifecycleClosed
+                    && isYuiGuideLifecycleScopedAction(message.action)
+                ) {
+                    return;
+                }
+                if (!isYuiGuideMessageForCurrentLifecycle(message)) {
+                    return;
+                }
+
                 if (
                     message.action !== 'yui_guide_tutorial_lifecycle_ended'
                     && isYuiGuideLifecycleScopedAction(message.action)
@@ -3194,17 +3310,7 @@
                     case 'voice_chat_active': {
                         // 来自另一个窗口的语音对话状态变更，同步本地 React composer 隐藏状态
                         // 校验 lanlan_name：多角色场景下避免串状态
-                        var vcCurrentName = getCurrentLanlanName();
-                        if (event.data.lanlan_name && (!vcCurrentName || event.data.lanlan_name !== vcCurrentName)) break;
-                        var vcHidden = !!event.data.active;
-                        if (S) {
-                            S.voiceChatActive = vcHidden;
-                        }
-                        var vcEffectiveHidden = vcHidden || (!vcHidden && shouldKeepVoiceComposerHidden());
-                        if (S) {
-                            S.voiceChatActive = vcEffectiveHidden;
-                        }
-                        applyVoiceChatComposerHidden(vcEffectiveHidden);
+                        handleVoiceChatComposerHiddenMessage(event.data);
                         break;
                     }
                     case 'goodbye_chat_composer_hidden': {
@@ -3254,6 +3360,12 @@
                         var cat1PlayYarnCurrentName = getCurrentLanlanName();
                         if (event.data.lanlan_name && (!cat1PlayYarnCurrentName || event.data.lanlan_name !== cat1PlayYarnCurrentName)) break;
                         dispatchIdleCat1PlayYarnVisibility(event.data);
+                        break;
+                    }
+                    case 'idle_cat1_playground_yarn_request': {
+                        var cat1PlaygroundYarnCurrentName = getCurrentLanlanName();
+                        if (event.data.lanlan_name && (!cat1PlaygroundYarnCurrentName || event.data.lanlan_name !== cat1PlaygroundYarnCurrentName)) break;
+                        dispatchIdleCat1PlaygroundYarnRequest(event.data);
                         break;
                     }
                     case 'idle_chat_pair_move_bounds': {
@@ -3838,6 +3950,21 @@
         }));
     }
 
+    function dispatchIdleCat1PlaygroundYarnRequest(detail) {
+        window.dispatchEvent(new CustomEvent('neko:idle-cat1-playground-yarn-request', {
+            detail: Object.assign({
+                action: 'idle_cat1_playground_yarn_request',
+                reason: 'cat1-playground-entry',
+                source: '',
+                trigger: 'cat1-question-mark',
+                timestamp: Date.now(),
+                via: 'broadcast-channel'
+            }, detail || {}, {
+                via: 'broadcast-channel'
+            })
+        }));
+    }
+
     function dispatchIdleChatPairMoveBounds(detail) {
         window.dispatchEvent(new CustomEvent('neko:idle-chat-pair-move-bounds', {
             detail: Object.assign({
@@ -3903,6 +4030,9 @@
     var yuiGuidePcOverlayReady = false;
     var yuiGuidePcOverlayRunIdOverride = '';
     var yuiGuidePcOverlayEndedRunId = '';
+    var yuiGuidePcOverlayLifecycleEpoch = 0;
+    var yuiGuidePcOverlayLifecycleClosed = false;
+    var yuiGuidePcOverlayLifecycleRunId = '';
     var yuiGuidePcOverlaySequence = 0;
     var yuiGuidePcOverlaySpotlights = [];
     var yuiGuidePcOverlayCursor = null;
@@ -4114,6 +4244,59 @@
         }
     }
 
+    function isYuiGuideLifecycleStartAction(action) {
+        return action === 'yui_guide_tutorial_lifecycle_started'
+            || action === 'yui_guide_tutorial_started'
+            || action === 'avatar_floating_guide_started';
+    }
+
+    function openYuiGuidePcOverlayLifecycle(message) {
+        var runId = message && typeof message.tutorialRunId === 'string'
+            ? message.tutorialRunId
+            : '';
+        if (
+            (runId && isYuiGuidePcOverlayRunEnded(runId))
+            || (yuiGuidePcOverlayLifecycleClosed && !runId)
+        ) {
+            return false;
+        }
+        if (
+            yuiGuidePcOverlayLifecycleEpoch === 0
+            || yuiGuidePcOverlayLifecycleClosed
+            || (runId && runId !== yuiGuidePcOverlayLifecycleRunId)
+        ) {
+            yuiGuidePcOverlayLifecycleEpoch += 1;
+        }
+        yuiGuidePcOverlayLifecycleClosed = false;
+        yuiGuidePcOverlayLifecycleRunId = runId || yuiGuidePcOverlayLifecycleRunId;
+        yuiGuidePcOverlayEndedRunId = '';
+        return true;
+    }
+
+    function closeYuiGuidePcOverlayLifecycle() {
+        yuiGuidePcOverlayLifecycleEpoch += 1;
+        yuiGuidePcOverlayLifecycleClosed = true;
+        yuiGuidePcOverlayLifecycleRunId = '';
+    }
+
+    function isYuiGuideMessageForCurrentLifecycle(message) {
+        if (
+            !message
+            || (
+                message.action !== 'yui_guide_tutorial_lifecycle_ended'
+                && !isYuiGuideLifecycleScopedAction(message.action)
+            )
+        ) {
+            return true;
+        }
+        var runId = typeof message.tutorialRunId === 'string'
+            ? message.tutorialRunId
+            : '';
+        return !runId
+            || !yuiGuidePcOverlayLifecycleRunId
+            || runId === yuiGuidePcOverlayLifecycleRunId;
+    }
+
     function resetYuiGuidePcOverlayRunForRetry() {
         yuiGuidePcOverlayActive = false;
         yuiGuidePcOverlayReady = false;
@@ -4124,9 +4307,15 @@
         } catch (_) {}
     }
 
-    function handleYuiGuidePcOverlayStaleResult(result, patch, attemptedRunId, retried) {
+    function handleYuiGuidePcOverlayStaleResult(result, patch, attemptedRunId, retried, attemptedLifecycleEpoch) {
         var isStaleResponse = !!(result && result.stale === true);
         var alreadyRetried = retried === true;
+        if (
+            yuiGuidePcOverlayLifecycleClosed
+            || attemptedLifecycleEpoch !== yuiGuidePcOverlayLifecycleEpoch
+        ) {
+            return;
+        }
         var attemptedCurrentRun = !!(attemptedRunId && attemptedRunId === yuiGuidePcOverlayRunIdOverride);
         var attemptedChatOwnedRun = isYuiGuideChatOwnedPcOverlayRunId(attemptedRunId);
         var storedCanonicalRunId = readStoredYuiGuidePcOverlayRunId();
@@ -4495,9 +4684,10 @@
 
     function sendYuiGuidePcOverlayPatch(patch, retried, options) {
         var host = getYuiGuidePcOverlayHost();
-        if (!host) {
+        if (!host || yuiGuidePcOverlayLifecycleClosed) {
             return false;
         }
+        var sendLifecycleEpoch = yuiGuidePcOverlayLifecycleEpoch;
         var sendOptions = options || {};
         if (isYuiGuidePcOverlayRunEnded(sendOptions.tutorialRunId)) {
             return false;
@@ -4526,8 +4716,20 @@
         if (!yuiGuidePcOverlayActive && sendOptions.skipBegin !== true && typeof host.begin === 'function') {
             try {
                 Promise.resolve(host.begin({ tutorialRunId: runId })).then(function (result) {
+                    if (
+                        yuiGuidePcOverlayLifecycleClosed
+                        || sendLifecycleEpoch !== yuiGuidePcOverlayLifecycleEpoch
+                    ) {
+                        return;
+                    }
                     if (result && result.stale === true) {
-                        handleYuiGuidePcOverlayStaleResult(result, patch, runId, retried === true);
+                        handleYuiGuidePcOverlayStaleResult(
+                            result,
+                            patch,
+                            runId,
+                            retried === true,
+                            sendLifecycleEpoch
+                        );
                         return;
                     }
                     if (result && result.ok === false) {
@@ -4535,6 +4737,9 @@
                         yuiGuidePcOverlayReady = false;
                     }
                 }).catch(function () {
+                    if (sendLifecycleEpoch !== yuiGuidePcOverlayLifecycleEpoch) {
+                        return;
+                    }
                     yuiGuidePcOverlayActive = false;
                     yuiGuidePcOverlayReady = false;
                 });
@@ -4549,8 +4754,20 @@
                 sequence: yuiGuidePcOverlaySequence,
                 payload: payload
             })).then(function (result) {
+                if (
+                    yuiGuidePcOverlayLifecycleClosed
+                    || sendLifecycleEpoch !== yuiGuidePcOverlayLifecycleEpoch
+                ) {
+                    return;
+                }
                 if (result && result.stale === true) {
-                    handleYuiGuidePcOverlayStaleResult(result, patch, runId, retried === true);
+                    handleYuiGuidePcOverlayStaleResult(
+                        result,
+                        patch,
+                        runId,
+                        retried === true,
+                        sendLifecycleEpoch
+                    );
                     return;
                 }
                 if (result && result.ok === false) {
@@ -4559,6 +4776,9 @@
                 }
                 yuiGuidePcOverlayReady = true;
             }).catch(function () {
+                if (sendLifecycleEpoch !== yuiGuidePcOverlayLifecycleEpoch) {
+                    return;
+                }
                 yuiGuidePcOverlayReady = false;
             });
             yuiGuidePcOverlayReady = true;
@@ -5312,10 +5532,16 @@
 
     function applyYuiGuideChatCursorRelay(message) {
         if (!message || typeof message !== 'object' || !isStandaloneChatPage() || !document.body) return false;
+        if (yuiGuidePcOverlayLifecycleClosed) {
+            return false;
+        }
         if (isYuiGuidePcOverlayRunEnded(message.tutorialRunId)) {
             return false;
         }
         var action = message.action || '';
+        if (!isYuiGuideMessageForCurrentLifecycle(message)) {
+            return false;
+        }
         var cursorOptions = Object.assign({}, message, {
             pcOverlayRunId: message.pcOverlayRunId || getYuiGuidePcOverlayRunIdFromMessage(message)
         });
@@ -5352,6 +5578,7 @@
         if (endedRunId) {
             yuiGuidePcOverlayEndedRunId = endedRunId;
         }
+        closeYuiGuidePcOverlayLifecycle();
         yuiGuidePcOverlayActive = false;
         yuiGuidePcOverlayReady = false;
         yuiGuidePcOverlayRunIdOverride = '';
@@ -5576,6 +5803,17 @@
         handleGoodbyeChatComposerHiddenMessage((event && event.detail) || {}, 'electron-ipc');
     });
 
+    window.addEventListener('neko:electron-voice-chat-composer-hidden', function (event) {
+        handleVoiceChatComposerHiddenMessage((event && event.detail) || {});
+    });
+
+    window.addEventListener('neko:config-injected', function (event) {
+        var detail = (event && event.detail) || {};
+        consumePendingVoiceChatComposerHiddenMessage(
+            getCurrentLanlanName() || detail.lanlan_name || ''
+        );
+    });
+
     window.addEventListener('message', function (event) {
         if (event.origin !== window.location.origin) {
             console.warn('[Security] 拒绝来自不同源的 idle_activity 消息:', event.origin);
@@ -5712,6 +5950,10 @@
     mod.cleanupPNGTuberOverlayUI = cleanupPNGTuberOverlayUI;
     mod.syncVoiceChatComposerHidden = syncVoiceChatComposerHidden;
     mod.shouldKeepVoiceComposerHidden = shouldKeepVoiceComposerHidden;
+    mod.applyVoiceComposerHiddenFromActive = applyVoiceComposerHiddenFromActive;
+    mod.postVoiceChatComposerHiddenElectron = postVoiceChatComposerHiddenElectron;
+    mod.handleVoiceChatComposerHiddenMessage = handleVoiceChatComposerHiddenMessage;
+    mod.consumePendingVoiceChatComposerHiddenMessage = consumePendingVoiceChatComposerHiddenMessage;
     mod.applyGoodbyeChatComposerHidden = applyGoodbyeChatComposerHidden;
     mod.postGoodbyeChatComposerHiddenElectron = postGoodbyeChatComposerHiddenElectron;
     mod.handleGoodbyeChatComposerHiddenMessage = handleGoodbyeChatComposerHiddenMessage;

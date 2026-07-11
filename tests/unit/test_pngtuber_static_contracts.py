@@ -140,7 +140,7 @@ def test_pngtuber_mouth_flap_does_not_restart_layered_motion_timeline():
         source.index("        startSpeakingMouthAnimation()")
     ]
     start_block = source[
-        source.index("startSpeakingMouthAnimation()"):
+        source.index("        startSpeakingMouthAnimation() {"):
         source.index("        stopSpeakingMouthAnimation()")
     ]
 
@@ -214,6 +214,109 @@ def test_layered_pngtuber_motion_requires_explicit_runtime_feature_flags():
     assert "layerMotionEnabled ? this.motionValue(layerState.xAmp, layerState.xFrq" in draw_block
     assert "layerMotionEnabled ? this.motionValue(layerState.yAmp, layerState.yFrq" in draw_block
     assert "layerMotionEnabled ? this.motionValue(layerState.wiggle_amp, layerState.wiggle_freq || layerState.rot_frq" in draw_block
+
+
+def test_layered_pngtuber_alt_one_cycles_states_without_imported_hotkeys():
+    source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
+    attach_block = source[
+        source.index("attachLayeredHotkeys()"):
+        source.index("        detachLayeredHotkeys()")
+    ]
+    handler_block = source[
+        source.index("        handleLayeredHotkey(event) {"):
+        source.index("        async setupLayeredAdapter()")
+    ]
+    cycle_hotkey_block = source[
+        source.index("        isLayeredCycleHotkey(event) {"):
+        source.index("        cycleLayeredState()")
+    ]
+    cycle_block = source[
+        source.index("        cycleLayeredState() {"):
+        source.index("        handleLayeredHotkey(event)")
+    ]
+
+    assert "this.getLayeredStateCount() <= 1" in attach_block
+    assert "this.layeredMetadata.hotkeys" not in attach_block
+    assert "isLayeredCycleHotkey(event)" in handler_block
+    assert "cycleLayeredState()" in handler_block
+    assert "event.preventDefault();" in handler_block
+    assert "event.stopPropagation();" in handler_block
+    assert "hotkeyMatchesEvent" not in handler_block
+    assert "this.layeredMetadata.hotkeys" not in handler_block
+    assert "setLayeredStateIndex(Number(matched.state_index)" not in handler_block
+    assert "event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey" in cycle_hotkey_block
+    assert "event.key === '1' || event.code === 'Digit1' || event.keyCode === 49" in cycle_hotkey_block
+    assert "this.getLayeredStateCount() <= 1" in cycle_block
+    assert "const stateCount = this.getLayeredStateCount();" in cycle_block
+    assert "this.setLayeredStateIndex((this.layeredStateIndex + 1) % stateCount" in cycle_block
+    assert "source: 'alt-one-cycle-hotkey'" in cycle_block
+
+
+def test_layered_pngtuber_alt_two_toggles_imported_asset_action():
+    source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
+    attach_block = source[
+        source.index("attachLayeredHotkeys()"):
+        source.index("        detachLayeredHotkeys()")
+    ]
+    handler_block = source[
+        source.index("        handleLayeredHotkey(event) {"):
+        source.index("        async setupLayeredAdapter()")
+    ]
+    asset_hotkey_block = source[
+        source.index("        isLayeredAssetActionHotkey(event) {"):
+        source.index("        hasLayeredAssetActions()")
+    ]
+    asset_toggle_block = source[
+        source.index("        togglePrimaryLayeredAssetAction() {"):
+        source.index("        handleLayeredHotkey(event)")
+    ]
+    render_block = source[
+        source.index("        shouldRenderLayer(layer, stateName) {"):
+        source.index("        layerStateForCurrentIndex(layer)")
+    ]
+
+    assert "hasLayeredAssetActions()" in attach_block
+    assert "isLayeredAssetActionHotkey(event)" in handler_block
+    assert "togglePrimaryLayeredAssetAction()" in handler_block
+    assert "event.key === '2' || event.code === 'Digit2' || event.keyCode === 50" in asset_hotkey_block
+    assert "this.layeredAssetVisibility.set(String(spriteId), true);" in asset_toggle_block
+    assert "this.layeredAssetVisibility.set(String(spriteId), false);" in asset_toggle_block
+    assert "this.restartLayeredAnimationLoop();" in asset_toggle_block
+    assert "source: 'alt-two-asset-hotkey'" in asset_toggle_block
+    assert "const assetVisibility = this.layeredAssetVisibility.get(String(layer.sprite_id));" in render_block
+    assert "const assetForcedVisible = assetVisibility === true;" in render_block
+    assert "if (assetVisibility === false) return false;" in render_block
+    assert "if (layer.inactive_asset_ancestor && !assetForcedVisible) return false;" in render_block
+    assert "if (layerState.visible === false && !assetForcedVisible) return false;" in render_block
+
+
+def test_layered_pngtuber_draw_order_uses_imported_effective_z_index():
+    source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
+    helper_block = source[
+        source.index("        layerDrawZIndex(layer, layerState = null) {"):
+        source.index("        drawLayeredState(stateName")
+    ]
+    draw_block = source[
+        source.index("        drawLayeredState(stateName"):
+        source.index("        showTransientImage(")
+    ]
+    debug_block = source[
+        source.index("        renderedLayerDebugInfo(stateName)"):
+        source.index("        getDebugState()")
+    ]
+
+    assert "layerState.effective_z_index" in helper_block
+    assert "layer.effective_zindex" in helper_block
+    assert "layerState.z_index" in helper_block
+    assert "layer.zindex" in helper_block
+    assert "this.fallbackLayerDrawZIndex(layer, layerState)" in helper_block
+    assert "fallbackLayerDrawZIndex(layer, layerState = null)" in helper_block
+    assert "_fallbackLayersBySpriteIdSource !== layers" in helper_block
+    assert "const layersBySpriteId = this._fallbackLayersBySpriteId;" in helper_block
+    assert "const layersBySpriteId = new Map();" not in helper_block
+    assert "currentState.z_as_relative ?? current.z_as_relative" in helper_block
+    assert "this.compareLayerDrawOrder(a, b)" in draw_block
+    assert "this.compareLayerDrawOrder(a, b)" in debug_block
 
 
 def test_layered_pngtuber_keeps_stable_breathing_without_raw_layer_motion():
@@ -395,7 +498,7 @@ def test_pngtuber_talking_hop_moves_whole_avatar_while_speaking():
         source.index("        getActiveLayoutFields()")
     ]
     start_block = source[
-        source.index("startSpeakingMouthAnimation()"):
+        source.index("        startSpeakingMouthAnimation() {"):
         source.index("        stopSpeakingMouthAnimation()")
     ]
     lip_sync_block = source[
@@ -479,3 +582,48 @@ def test_pngtuber_animation_loops_throttle_overlay_position_updates():
     assert "this.updateLockIconPosition();" not in breathing_loop_block
     assert "this.updateLockIconPosition();" not in bounce_loop_block
     assert "this.updateLockIconPosition();" not in hop_loop_block
+
+
+def test_pngtuber_floating_controls_auto_hide_like_live2d_without_touching_other_models():
+    source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
+    setup_block = source[
+        source.index("PNGTuberManager.prototype.setupFloatingButtons = function()"):
+        source.index("            window.dispatchEvent(new CustomEvent('live2d-floating-buttons-ready'));")
+    ]
+    lock_block = source[
+        source.index("        updateLockIconPosition()"):
+        source.index("        async resolveCurrentLanlanName()")
+    ]
+
+    assert "this._pngtuberFloatingControlsVisible = true;" in setup_block
+    assert "const hideFloatingControls = () => {" in setup_block
+    assert "const showFloatingControls = () => {" in setup_block
+    assert "const startHideTimer = (delay = 1000) => {" in setup_block
+    assert "const schedulePointerEvaluation = () => {" in setup_block
+    assert "this._pngtuberPointerEvaluateFrame = requestAnimationFrame(() => {" in setup_block
+    assert "if (window.isInTutorial === true) return;" in setup_block
+    assert "buttonsContainer.addEventListener('mouseenter', markControlsHover);" in setup_block
+    assert "buttonsContainer.addEventListener('mouseleave', unmarkControlsHover);" in setup_block
+    assert "lockIcon.addEventListener('mouseenter', markControlsHover);" in setup_block
+    assert "lockIcon.addEventListener('mouseleave', unmarkControlsHover);" in setup_block
+    assert "window.addEventListener('pointermove', handlePointerMove, { passive: true });" in setup_block
+    assert "window.addEventListener('focus', handleWindowFocus);" in setup_block
+    assert "window.addEventListener('blur', handleWindowBlur);" in setup_block
+    assert "document.addEventListener('mouseenter', handleDocumentMouseEnter, true);" in setup_block
+    assert "document.addEventListener('mouseleave', handleDocumentMouseLeave, true);" in setup_block
+    assert "this.image.addEventListener('pointerenter', handleImagePointerEnter);" in setup_block
+    assert "this.image.addEventListener('pointerleave', handleImagePointerLeave);" in setup_block
+    assert "this.image.addEventListener('mouseover', handleImagePointerEnter);" in setup_block
+    assert "this._lastPngtuberPointerX = null;" in setup_block
+    handle_pointer_block = setup_block[
+        setup_block.index("const handlePointerMove = (event) => {"):
+        setup_block.index("const handleImagePointerEnter = () => showFloatingControls();")
+    ]
+    assert "schedulePointerEvaluation();" in handle_pointer_block
+    assert "shouldKeepFloatingControlsVisible()" not in handle_pointer_block
+    assert "showFloatingControls();" not in handle_pointer_block
+    assert "startHideTimer();" not in handle_pointer_block
+    assert "this._pngtuberFloatingControlsVisible === false" in lock_block
+    assert "'live2d-lock-icon'" not in setup_block
+    assert "'vrm-lock-icon'" not in setup_block
+    assert "'mmd-lock-icon'" not in setup_block

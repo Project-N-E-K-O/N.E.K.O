@@ -1509,11 +1509,16 @@ def test_knowledge_map_related_object_edges_use_topic_ids() -> None:
         ]
     )
 
-    assert {
-        "from": "quadratic_vertex_form",
-        "to": "linear_function_kb",
-        "relation": "compare",
-    } in payload["edges"]
+    assert payload["edges"] == [
+        {
+            "from": "quadratic_vertex_form",
+            "to": "linear_function_kb",
+            "relation": "compare",
+            "priority": "optional",
+            "context": "explanation",
+            "confidence": 0.65,
+        }
+    ]
     assert not any(str(edge["to"]).startswith("{") for edge in payload["edges"])
 
 
@@ -1821,17 +1826,23 @@ def test_study_knowledge_map_payload_uses_topic_ids_for_object_edges() -> None:
         ]
     )
 
-    assert {
+    assert payload["edges"][0] == {
         "from": "real_number_concept",
         "to": "number_axis",
         "relation": "prerequisite",
         "required_mastery": 0.55,
-    } in payload["edges"]
-    assert {
+        "priority": "core",
+        "context": "diagnosis",
+        "confidence": 0.65,
+    }
+    assert payload["edges"][1] == {
         "from": "number_axis",
         "to": "absolute_value",
         "relation": "next",
-    } in payload["edges"]
+        "priority": "optional",
+        "context": "review",
+        "confidence": 0.65,
+    }
     assert payload["nodes"][0]["stage"] == "junior_high"
     assert payload["summary"]["stage_counts"]["junior_high"] == 1
     assert all(not edge["from"].startswith("{") for edge in payload["edges"])

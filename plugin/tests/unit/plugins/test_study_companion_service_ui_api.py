@@ -274,8 +274,22 @@ def test_ui_api_payloads_cover_open_map_and_contribution_shapes() -> None:
                 "subject": "math",
                 "chapter": "1",
                 "stage": "senior_high",
-                "prerequisites": [{"id": "topic-pre", "required_mastery": 0.7}],
-                "related": [{"topic_id": "topic-b", "relation": "similar"}],
+                "typical_misconceptions": ["Treating prerequisites as optional review."],
+                "prerequisites": [
+                    {
+                        "id": "topic-pre",
+                        "required_mastery": 0.7,
+                        "reason": "Topic A builds on the prerequisite topic.",
+                    }
+                ],
+                "related": [
+                    {
+                        "topic_id": "topic-b",
+                        "relation": "application",
+                        "reason": "Topic B applies Topic A.",
+                        "use_cases": ["learning_path"],
+                    }
+                ],
             },
             {"id": ""},
         ],
@@ -294,6 +308,16 @@ def test_ui_api_payloads_cover_open_map_and_contribution_shapes() -> None:
     assert map_payload["summary"]["stage_counts"]["senior_high"] == 1
     topic_node = next(node for node in map_payload["nodes"] if node["id"] == "topic-a")
     assert topic_node["stage"] == "senior_high"
+    assert topic_node["typical_misconceptions"] == ["Treating prerequisites as optional review."]
     assert map_payload["edges"][0]["required_mastery"] == 0.7
+    assert map_payload["edges"][0]["reason"] == "Topic A builds on the prerequisite topic."
+    assert map_payload["edges"][0]["priority"] == "core"
+    assert map_payload["edges"][0]["context"] == "diagnosis"
+    assert map_payload["edges"][0]["confidence"] == 0.8
+    assert map_payload["edges"][1]["relation"] == "application"
+    assert map_payload["edges"][1]["use_cases"] == ["learning_path"]
+    assert map_payload["edges"][1]["priority"] == "useful"
+    assert map_payload["edges"][1]["context"] == "practice"
+    assert map_payload["edges"][1]["confidence"] == 0.9
     assert contribution["preview"]["opt_in"] is True
     assert contribution["queue"] == [{"id": "q"}]

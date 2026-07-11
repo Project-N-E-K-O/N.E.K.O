@@ -127,7 +127,7 @@ DispatchResolver = Callable[
 #   'ws_handshake' — open the WebSocket and watch the handshake for auth errors
 #                    (vLLM-Omni). 'local_http' — hit the local service over HTTP
 #                    (GPT-SoVITS). 'none' — no preflight probe.
-ProbeKind = Literal["ws_handshake", "local_http", "none"]
+ProbeKind = Literal["ws_handshake", "local_http", "http_tts", "none"]
 
 
 @dataclass(frozen=True)
@@ -253,6 +253,10 @@ class TTSProvider:
     # Whether this provider appears only in the TTS model dropdown and never
     # pollutes the LLM-role dropdowns (conversation/summary/.../agent).
     tts_dropdown_only: bool = True
+    # Whether this provider should be selectable in the user-facing TTS model
+    # configuration dropdown. Clone-only hosted providers can still synthesize
+    # saved voices without asking users to configure endpoint/resource fields.
+    tts_config_visible: bool = True
     # Default endpoint / model / voice prefilled when the user first selects it.
     default_url: str = ""
     default_model: str = ""
@@ -431,6 +435,7 @@ def ui_metadata() -> list[dict[str, Any]]:
             "kind": p.kind,
             "capabilities": sorted(p.capabilities),
             "tts_dropdown_only": p.tts_dropdown_only,
+            "tts_config_visible": p.tts_config_visible,
             "default_url": p.default_url,
             "default_model": p.default_model,
             "default_voice": p.default_voice,

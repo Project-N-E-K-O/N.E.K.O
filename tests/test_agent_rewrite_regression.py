@@ -3539,6 +3539,37 @@ def test_agent_ui_v2_keeps_agent_status_short_during_tutorial():
     assert "s.textContent = text;" in status_block
 
 
+def test_agent_popup_state_sync_includes_pngtuber_prefix():
+    hud_source = Path("static/common-ui-hud.js").read_text(encoding="utf-8")
+    ui_v2_source = Path("static/js/agent_ui_v2.js").read_text(encoding="utf-8")
+    legacy_source = Path("static/app-agent.js").read_text(encoding="utf-8")
+
+    assert "const avatarPrefix = this && typeof this._avatarPrefix === 'string'" in hud_source
+    assert "statusDiv.id = `${avatarPrefix}-agent-status`;" in hud_source
+
+    for suffix in [
+        "master",
+        "keyboard",
+        "browser",
+        "user-plugin",
+        "openfang",
+        "openclaw",
+        "status",
+    ]:
+        assert f"pngtuber-agent-{suffix}" in ui_v2_source
+
+    for suffix in [
+        "master",
+        "keyboard",
+        "browser",
+        "user-plugin",
+        "openfang",
+        "openclaw",
+        "status",
+    ]:
+        assert f"pngtuber-agent-{suffix}" in legacy_source
+
+
 def test_get_model_api_config_agent_uses_agent_fields_without_custom_switch():
     manager = object.__new__(ConfigManager)
     manager.get_core_config = lambda: {

@@ -587,7 +587,7 @@ async def test_mimo_design_voice_preview_uses_voice_preview_template(monkeypatch
     ``config/prompts/prompts_voice.py``.
     """
     from starlette.requests import Request
-    from main_routers import characters_router as cr
+    from main_routers.characters_router import voice_preview as cr
 
     voice_id = "mimo-design-aria-1234"
     saved_preview_text = "Hello, this is the saved MiMo design preview template."

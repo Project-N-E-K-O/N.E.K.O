@@ -644,7 +644,8 @@
                     sceneRunId,
                     voiceKey,
                     text,
-                    narrationStartedAt
+                    narrationStartedAt,
+                    scene.petalCueBeforeAudioEndMs
                 ).catch((error) => {
                     console.warn('[YuiGuide] 悬浮窗教程每日花瓣转场失败，继续流程:', scene.id, error);
                 })

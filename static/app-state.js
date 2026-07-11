@@ -158,7 +158,7 @@
         videoSenderInterval: null,
 
         // --- 主动搭话 ---
-        proactiveChatEnabled: false,
+        proactiveChatEnabled: true,
         proactiveVisionEnabled: false,
         proactiveVisionChatEnabled: true,
         proactiveNewsChatEnabled: false,

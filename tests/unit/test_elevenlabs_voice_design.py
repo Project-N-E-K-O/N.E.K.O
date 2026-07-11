@@ -97,16 +97,16 @@ def test_registry_declares_design_for_minimax_and_mimo():
 
 @pytest.mark.unit
 def test_cosyvoice_design_language_hints_are_limited_to_zh_en():
-    from main_routers import characters_router as cr
+    from main_routers.characters_router import voice_cloning, voice_preview, voice_providers
 
-    assert cr._cosyvoice_design_language_hints("ch") == ["zh"]
-    assert cr._cosyvoice_design_language_hints("zh") == ["zh"]
-    assert cr._cosyvoice_design_language_hints("en") == ["en"]
-    assert cr._cosyvoice_design_language_hints("ru") == ["zh"]
-    assert cr._cosyvoice_design_default_preview_text("en") == cr.VOICE_PREVIEW_TEXTS["en"]
-    assert cr._cosyvoice_design_default_preview_text("ru") == cr.VOICE_PREVIEW_TEXTS["zh-CN"]
-    assert cr._voice_design_preview_text("ru", "ch") == cr.VOICE_PREVIEW_TEXTS["ru"]
-    assert cr._voice_design_preview_text(None, "en") == cr.VOICE_PREVIEW_TEXTS["en"]
+    assert voice_providers._cosyvoice_design_language_hints("ch") == ["zh"]
+    assert voice_providers._cosyvoice_design_language_hints("zh") == ["zh"]
+    assert voice_providers._cosyvoice_design_language_hints("en") == ["en"]
+    assert voice_providers._cosyvoice_design_language_hints("ru") == ["zh"]
+    assert voice_cloning._cosyvoice_design_default_preview_text("en") == voice_preview.VOICE_PREVIEW_TEXTS["en"]
+    assert voice_cloning._cosyvoice_design_default_preview_text("ru") == voice_preview.VOICE_PREVIEW_TEXTS["zh-CN"]
+    assert voice_cloning._voice_design_preview_text("ru", "ch") == voice_preview.VOICE_PREVIEW_TEXTS["ru"]
+    assert voice_cloning._voice_design_preview_text(None, "en") == voice_preview.VOICE_PREVIEW_TEXTS["en"]
 
 
 # ── router design helpers: design previews → create-from-preview ──────────────
@@ -134,7 +134,7 @@ class _FakeElevenTransport(httpx.AsyncBaseTransport):
 
 @pytest.mark.unit
 async def test_elevenlabs_design_previews_and_create(monkeypatch):
-    from main_routers import characters_router as cr
+    from main_routers.characters_router import voice_providers as cr
 
     transport = _FakeElevenTransport()
     original = httpx.AsyncClient
@@ -174,12 +174,12 @@ async def test_elevenlabs_design_previews_and_create(monkeypatch):
 
 @pytest.mark.unit
 def test_voice_design_description_validation():
-    from main_routers import characters_router as cr
-    _, too_short = cr._validate_voice_design_description("short")
+    from main_routers.characters_router import voice_providers as cr
+    _, too_short = __import__('importlib').import_module('main_routers.characters_router.voice_cloning')._validate_voice_design_description("short")
     assert too_short is not None and too_short.status_code == 400
-    desc, ok = cr._validate_voice_design_description("a warm gentle young woman voice")
+    desc, ok = __import__('importlib').import_module('main_routers.characters_router.voice_cloning')._validate_voice_design_description("a warm gentle young woman voice")
     assert ok is None and desc.startswith("a warm")
-    _, too_long = cr._validate_voice_design_description("x" * 1001)
+    _, too_long = __import__('importlib').import_module('main_routers.characters_router.voice_cloning')._validate_voice_design_description("x" * 1001)
     assert too_long is not None and too_long.status_code == 400
 
 
@@ -247,7 +247,7 @@ class _FakeMiniMaxDesignTransport(httpx.AsyncBaseTransport):
 
 @pytest.mark.unit
 async def test_cosyvoice_design_payload_and_parse(monkeypatch):
-    from main_routers import characters_router as cr
+    from main_routers.characters_router import voice_providers as cr
 
     transport = _FakeCosyVoiceDesignTransport()
     async with httpx.AsyncClient(transport=transport) as client:
@@ -284,7 +284,7 @@ async def test_cosyvoice_design_payload_and_parse(monkeypatch):
 
 @pytest.mark.unit
 async def test_cosyvoice_design_parses_preview_audio_url():
-    from main_routers import characters_router as cr
+    from main_routers.characters_router import voice_providers as cr
 
     async with httpx.AsyncClient(transport=_UrlCosyVoiceDesignTransport()) as client:
         voice_id, preview_audio, media_type, request_id = await cr._cosyvoice_design_voice(
@@ -306,7 +306,7 @@ async def test_cosyvoice_design_parses_preview_audio_url():
 
 @pytest.mark.unit
 async def test_minimax_design_payload_and_parse():
-    from main_routers import characters_router as cr
+    from main_routers.characters_router import voice_providers as cr
 
     transport = _FakeMiniMaxDesignTransport()
     async with httpx.AsyncClient(transport=transport) as client:
@@ -339,14 +339,14 @@ async def test_minimax_design_payload_and_parse():
     ],
 )
 def test_minimax_voice_design_url_preserves_provider_region(resolved_base_url, expected):
-    from main_routers import characters_router as cr
+    from main_routers.characters_router import voice_providers as cr
 
     assert cr._minimax_voice_design_url(resolved_base_url) == expected
 
 
 @pytest.mark.unit
 def test_minimax_voice_design_url_rejects_missing_resolved_base_url():
-    from main_routers import characters_router as cr
+    from main_routers.characters_router import voice_providers as cr
 
     with pytest.raises(ValueError, match="base URL is required"):
         cr._minimax_voice_design_url("")
@@ -354,7 +354,7 @@ def test_minimax_voice_design_url_rejects_missing_resolved_base_url():
 
 @pytest.mark.unit
 async def test_cosyvoice_design_network_error_is_actionable():
-    from main_routers import characters_router as cr
+    from main_routers.characters_router import voice_providers as cr
 
     async with httpx.AsyncClient(transport=_FailingCosyVoiceDesignTransport()) as client:
         with pytest.raises(cr.QwenVoiceCloneError) as exc_info:
@@ -385,7 +385,7 @@ class _JsonRequest:
 
 @pytest.mark.unit
 async def test_cosyvoice_design_endpoint_saves_source_design(monkeypatch):
-    from main_routers import characters_router as cr
+    from main_routers.characters_router import voice_cloning as cr
 
     saved = {}
 
@@ -436,7 +436,7 @@ async def test_cosyvoice_design_endpoint_saves_source_design(monkeypatch):
 
 @pytest.mark.unit
 async def test_cosyvoice_intl_design_endpoint_is_rejected():
-    from main_routers import characters_router as cr
+    from main_routers.characters_router import voice_cloning as cr
 
     response = await cr.voice_design(_JsonRequest({
         "provider": "cosyvoice_intl",
@@ -452,7 +452,7 @@ async def test_cosyvoice_intl_design_endpoint_is_rejected():
 
 @pytest.mark.unit
 async def test_minimax_design_endpoint_saves_source_design(monkeypatch):
-    from main_routers import characters_router as cr
+    from main_routers.characters_router import voice_cloning as cr
 
     saved = {}
 
@@ -495,7 +495,7 @@ async def test_minimax_design_endpoint_saves_source_design(monkeypatch):
 
 @pytest.mark.unit
 async def test_elevenlabs_design_endpoint_saves_source_design(monkeypatch):
-    from main_routers import characters_router as cr
+    from main_routers.characters_router import voice_cloning as cr
 
     saved = {}
 
@@ -550,7 +550,7 @@ async def test_elevenlabs_design_endpoint_saves_source_design(monkeypatch):
 
 @pytest.mark.unit
 async def test_mimo_design_endpoint_saves_source_design(monkeypatch):
-    from main_routers import characters_router as cr
+    from main_routers.characters_router import voice_cloning as cr
 
     saved = {}
     validated = {}
@@ -595,7 +595,7 @@ async def test_mimo_design_endpoint_saves_source_design(monkeypatch):
 
 @pytest.mark.unit
 async def test_voice_design_endpoint_requires_prompt():
-    from main_routers import characters_router as cr
+    from main_routers.characters_router import voice_cloning as cr
 
     response = await cr.voice_design(_JsonRequest({
         "provider": "cosyvoice",
@@ -609,7 +609,7 @@ async def test_voice_design_endpoint_requires_prompt():
 
 @pytest.mark.unit
 async def test_voice_design_endpoint_rejects_vllm_omni_provider():
-    from main_routers import characters_router as cr
+    from main_routers.characters_router import voice_cloning as cr
 
     response = await cr.voice_design(_JsonRequest({
         "provider": "vllm_omni",
@@ -625,7 +625,7 @@ async def test_voice_design_endpoint_rejects_vllm_omni_provider():
 
 @pytest.mark.unit
 async def test_cosyvoice_design_endpoint_rejects_underscore_prefix():
-    from main_routers import characters_router as cr
+    from main_routers.characters_router import voice_cloning as cr
 
     response = await cr.voice_design(_JsonRequest({
         "provider": "cosyvoice",

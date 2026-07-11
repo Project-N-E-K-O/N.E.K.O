@@ -2309,7 +2309,7 @@ class LLMSessionManager:
             while not self.tts_response_queue.empty():
                 try:
                     self.tts_response_queue.get_nowait()
-                except: # noqa
+                except Exception:
                     break
             try:
                 self.tts_request_queue.put(("__interrupt__", None))
@@ -2322,7 +2322,7 @@ class LLMSessionManager:
             while not self.tts_response_queue.empty():
                 try:
                     self.tts_response_queue.get_nowait()
-                except: # noqa
+                except Exception:
                     break
         async with self.tts_cache_lock:
             self.tts_pending_chunks.clear()
@@ -2978,7 +2978,7 @@ class LLMSessionManager:
                 while not self.tts_response_queue.empty():
                     try:
                         self.tts_response_queue.get_nowait()
-                    except: # noqa
+                    except Exception:
                         break
 
         # 文本模式下，无论是否使用TTS，都要发送文本到前端显示

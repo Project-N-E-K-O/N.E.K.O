@@ -1754,13 +1754,24 @@ class UniversalTutorialManager {
         });
     }
 
-    closeDay1SystrayIntroModal() {
+    closeDay1SystrayIntroModal(options = {}) {
         const existing = document.getElementById('neko-day1-systray-intro-modal');
+        const hadBodyClass = !!(document.body && document.body.classList.contains('neko-day1-systray-intro-open'));
+        const shouldNotify = options.notify !== false;
         if (existing) {
             existing.remove();
         }
         if (document.body) {
             document.body.classList.remove('neko-day1-systray-intro-open');
+        }
+        if (shouldNotify && (existing || hadBodyClass)) {
+            window.dispatchEvent(new CustomEvent('neko:day1-systray-intro-closed', {
+                detail: {
+                    source: 'day1_systray_intro',
+                    reason: 'closed',
+                    timestamp: Date.now()
+                }
+            }));
         }
     }
 
@@ -1769,7 +1780,7 @@ class UniversalTutorialManager {
             return;
         }
 
-        this.closeDay1SystrayIntroModal();
+        this.closeDay1SystrayIntroModal({ notify: false });
 
         const t = (key, fallback) => this.t(key, fallback);
         const escape = (text) => this.safeEscapeHtml(t(text.key, text.fallback));

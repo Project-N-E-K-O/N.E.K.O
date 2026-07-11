@@ -6,7 +6,7 @@
     <meta charset="UTF-8">
     <title data-i18n="voice.title">音色注册 - Project N.E.K.O.</title>
     <!-- i18next 加载器（统一处理 CDN 加载和初始化） -->
-    <script src="/static/i18n-i18next.js"></script>
+    <script src="/static/i18n-i18next.js?v={{ static_asset_version|default('0', true) }}"></script>
     <script src="/static/common_dialogs.js"></script>
     <link rel="stylesheet" href="/static/css/voice_clone.css">
     <link rel="stylesheet" href="/static/css/window_controls.css">
@@ -46,6 +46,7 @@
                         <option value="minimax_intl" data-i18n="voice.provider.minimax_intl">MiniMax（国际服）</option>
                         <option value="elevenlabs" data-i18n="voice.provider.elevenlabs">ElevenLabs</option>
                         <option value="mimo" data-i18n="voice.provider.mimo">MiMo（小米）</option>
+                        <option value="doubao_tts" data-i18n="voice.provider.doubao_tts">豆包语音(火山引擎)</option>
                         <option value="vllm_omni" data-i18n="voice.provider.vllm_omni">vLLM-Omni（本地克隆）</option>
                     </select>
                 </div>

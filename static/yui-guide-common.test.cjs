@@ -1213,6 +1213,7 @@ test('interpage consumes common tutorial geometry before chat bridge scripts run
     assert.match(appInterpageSource, /getYuiGuideChatTargetShape\(kind\)/);
     assert.match(appInterpageSource, /getYuiGuideChatTargetShape\(kind\) === 'circle'/);
     assert.match(appInterpageSource, /function shouldAlignYuiGuideChatSpotlightToCapsuleText\(kind, variant\)/);
+    // 修改原因：胶囊输入框定位走 registry 的 capsuleBody，不新增 capsule-input 的 plain-capsule 特例。
     assert.match(appInterpageSource, /function shouldAlignYuiGuideChatSpotlightToCapsuleText\(kind, variant\) \{\s*return kind === 'input' && variant === 'plain-capsule';\s*\}/);
     assert.match(appInterpageSource, /function getYuiGuideChatSpotlightSourceRect\(kind, variant, rect\)/);
     assert.match(appInterpageSource, /anchorOffsetX \* YUI_GUIDE_CHAT_CAPSULE_TEXT_ALIGNMENT_RATIO/);
@@ -1372,8 +1373,9 @@ test('interaction takeover preserves external chat spotlight clears during resis
     )[0];
 
     assert.match(spotlightBlock, /const previousKind = this\.externalizedChatSpotlightKind;/);
-    assert.match(spotlightBlock, /this\.externalizedChatSpotlightKind = typeof kind === 'string' \? kind : '';/);
-    assert.match(spotlightBlock, /\(this\.externalizedChatSpotlightKind \|\| previousKind\)/);
+    assert.match(spotlightBlock, /const normalizedKind = typeof kind === 'string' \? kind : '';/);
+    assert.match(spotlightBlock, /this\.externalizedChatSpotlightKind = normalizedKind;/);
+    assert.match(spotlightBlock, /\(this\.externalizedChatSpotlightKind \|\| previousKind \|\| previousVariant\)/);
     assert.match(spotlightBlock, /safeInvoke\(this\.isResistancePaused,\s*\[\],\s*false\) === true/);
     assert.match(spotlightBlock, /message\.preserveDuringResistance = true;/);
     assert.match(spotlightBlock, /this\.postExternalChatCommand\('yui_guide_set_chat_spotlight', message\);/);
@@ -2148,6 +2150,28 @@ test('director routes final teardown through performFullCleanup helper', () => {
     assert.doesNotMatch(destroyBlock, /this\.overlay\.hidePluginPreview\(\);\s*this\.overlay\.hideBubble\(\);\s*this\.overlay\.setAngry\(false\);\s*this\.setTutorialTakingOver\(false\);/);
 });
 
+test('tutorial teardown removes DOM overlay residue and blocks late overlay recreation', () => {
+    const overlaySource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/overlay.js'), 'utf8');
+    const ensureRootBlock = overlaySource.split('        ensureRoot() {')[1].split(
+        '        syncControlBanner() {',
+        1
+    )[0];
+    const destroyBlock = overlaySource.split('        destroy() {')[1].split(
+        '    window.YuiGuideOverlay = YuiGuideOverlay;',
+        1
+    )[0];
+
+    assert.match(overlaySource, /this\.lifecycleEpoch = Number\([\s\S]*__NEKO_YUI_GUIDE_OVERLAY_LIFECYCLE_EPOCH__/);
+    assert.match(overlaySource, /this\.destroyed = false;/);
+    assert.match(overlaySource, /isTutorialLifecycleCurrent\(\) \{[\s\S]*return currentEpoch === this\.lifecycleEpoch;/);
+    assert.match(ensureRootBlock, /if \(!this\.isTutorialLifecycleCurrent\(\)\) \{[\s\S]*this\.root = null;[\s\S]*return null;/);
+    assert.doesNotMatch(ensureRootBlock, /staleRoot|\.remove\(\)/);
+    assert.match(destroyBlock, /__NEKO_YUI_GUIDE_OVERLAY_LIFECYCLE_EPOCH__[\s\S]*\+ 1;/);
+    assert.match(destroyBlock, /if \(this\.destroyed\) \{\s*return;\s*\}[\s\S]*this\.destroyed = true;/);
+    assert.doesNotMatch(overlaySource, /^\s*this\.ensureRoot\(\);/m);
+    assert.match(overlaySource, /if \(!this\.ensureRoot\(\)\) return;/);
+});
+
 test('director routes scene and chat stream timers through scoped resources', () => {
     const source = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/director.js'), 'utf8');
     const constructorBlock = source.split('    class YuiGuideDirector {')[1].split(
@@ -2794,14 +2818,34 @@ test('external chat ignores stale guide commands after lifecycle ended', () => {
         '                switch (event.data.action) {',
         1
     )[0];
+    const lifecycleBlock = appInterpageSource.split('    function isYuiGuideLifecycleStartAction(action) {')[1].split(
+        '    function resetYuiGuidePcOverlayRunForRetry() {',
+        1
+    )[0];
+    const staleResultBlock = appInterpageSource.split('    function handleYuiGuidePcOverlayStaleResult(')[1].split(
+        '    function resolveYuiGuidePcOverlayRunIdForSend(',
+        1
+    )[0];
 
     assert.match(appInterpageSource, /var yuiGuidePcOverlayEndedRunId = '';/);
+    assert.match(appInterpageSource, /var yuiGuidePcOverlayLifecycleEpoch = 0;/);
+    assert.match(appInterpageSource, /var yuiGuidePcOverlayLifecycleClosed = false;/);
+    assert.match(appInterpageSource, /var yuiGuidePcOverlayLifecycleRunId = '';/);
     assert.match(appInterpageSource, /function isYuiGuidePcOverlayRunEnded\(runId\) \{/);
     assert.match(appInterpageSource, /function isYuiGuideLifecycleScopedAction\(action\) \{/);
+    assert.match(lifecycleBlock, /function openYuiGuidePcOverlayLifecycle\(message\) \{/);
+    assert.match(lifecycleBlock, /runId && isYuiGuidePcOverlayRunEnded\(runId\)/);
+    assert.match(lifecycleBlock, /yuiGuidePcOverlayLifecycleClosed && !runId/);
+    assert.match(lifecycleBlock, /yuiGuidePcOverlayLifecycleEpoch === 0/);
+    assert.match(lifecycleBlock, /runId && runId !== yuiGuidePcOverlayLifecycleRunId/);
+    assert.match(lifecycleBlock, /function closeYuiGuidePcOverlayLifecycle\(\) \{[\s\S]*yuiGuidePcOverlayLifecycleEpoch \+= 1;[\s\S]*yuiGuidePcOverlayLifecycleClosed = true;/);
+    assert.match(lifecycleBlock, /function isYuiGuideMessageForCurrentLifecycle\(message\) \{[\s\S]*runId === yuiGuidePcOverlayLifecycleRunId;/);
+    assert.match(lifecycleBlock, /message\.action !== 'yui_guide_tutorial_lifecycle_ended'/);
     assert.match(appInterpageSource, /case 'yui_guide_set_chat_input_locked':/);
     assert.match(appInterpageSource, /case 'yui_guide_set_chat_spotlight':/);
     assert.match(appInterpageSource, /case 'yui_guide_set_chat_cursor':/);
     assert.match(clearStateBlock, /yuiGuidePcOverlayEndedRunId = endedRunId;/);
+    assert.match(clearStateBlock, /closeYuiGuidePcOverlayLifecycle\(\);/);
     assert.match(getRunIdBlock, /isYuiGuidePcOverlayRunEnded\(yuiGuidePcOverlayRunIdOverride\)/);
     assert.match(appInterpageSource, /function readStoredYuiGuidePcOverlayRunId\(\) \{/);
     assert.match(appInterpageSource, /function syncYuiGuidePcOverlayRunIdFromStorage\(\) \{/);
@@ -2814,17 +2858,27 @@ test('external chat ignores stale guide commands after lifecycle ended', () => {
     assert.match(rememberRunIdBlock, /var storedRunId = readStoredYuiGuidePcOverlayRunId\(\);/);
     assert.match(rememberRunIdBlock, /storedRunId !== normalizedRunId[\s\S]*return storedRunId/);
     assert.match(relayHandlerBlock, /isYuiGuideLifecycleScopedAction\(message\.action\)/);
+    assert.match(relayHandlerBlock, /yuiGuidePcOverlayLifecycleClosed[\s\S]*isYuiGuideLifecycleScopedAction\(message\.action\)[\s\S]*return true;/);
+    assert.match(relayHandlerBlock, /if \(!isYuiGuideMessageForCurrentLifecycle\(message\)\) \{\s*return true;/);
     assert.match(relayHandlerBlock, /isYuiGuidePcOverlayRunEnded\(message\.tutorialRunId\)/);
     assert.match(relayHandlerBlock, /clearYuiGuidePcOverlayBridgeState\('stale-after-lifecycle-ended', message\.tutorialRunId \|\| ''\);/);
     assert.match(relayHandlerBlock, /return true;\s*\}\s*if \(message\.tutorialRunId && message\.action !== 'yui_guide_tutorial_lifecycle_ended'\) \{/);
+    assert.match(sendPatchBlock, /if \(!host \|\| yuiGuidePcOverlayLifecycleClosed\) \{/);
+    assert.match(sendPatchBlock, /var sendLifecycleEpoch = yuiGuidePcOverlayLifecycleEpoch;/);
+    assert.match(sendPatchBlock, /sendLifecycleEpoch !== yuiGuidePcOverlayLifecycleEpoch/);
     assert.match(sendPatchBlock, /if \(isYuiGuidePcOverlayRunEnded\(sendOptions\.tutorialRunId\)\) \{/);
     assert.match(sendPatchBlock, /resolveYuiGuidePcOverlayRunIdForSend\(/);
     assert.match(sendPatchBlock, /if \(!runId \|\| isYuiGuidePcOverlayRunEnded\(runId\)\) \{/);
+    assert.match(cursorRelayBlock, /if \(yuiGuidePcOverlayLifecycleClosed\) \{/);
     assert.match(cursorRelayBlock, /if \(isYuiGuidePcOverlayRunEnded\(message\.tutorialRunId\)\) \{/);
+    assert.match(cursorRelayBlock, /if \(!isYuiGuideMessageForCurrentLifecycle\(message\)\) \{/);
     assert.match(broadcastStaleGuardBlock, /isYuiGuideLifecycleScopedAction\(message\.action\)/);
+    assert.match(broadcastStaleGuardBlock, /yuiGuidePcOverlayLifecycleClosed[\s\S]*isYuiGuideLifecycleScopedAction\(message\.action\)[\s\S]*return;/);
+    assert.match(broadcastStaleGuardBlock, /if \(!isYuiGuideMessageForCurrentLifecycle\(message\)\) \{\s*return;/);
     assert.match(broadcastStaleGuardBlock, /isYuiGuidePcOverlayRunEnded\(message\.tutorialRunId\)/);
     assert.match(broadcastStaleGuardBlock, /clearYuiGuidePcOverlayBridgeState\('stale-after-lifecycle-ended', message\.tutorialRunId \|\| ''\);/);
     assert.match(broadcastStaleGuardBlock, /return;/);
+    assert.match(staleResultBlock, /attemptedLifecycleEpoch !== yuiGuidePcOverlayLifecycleEpoch/);
 });
 
 test('external chat reuses tutorial PC overlay run id for capsule spotlight and cursor patches', () => {
@@ -2907,7 +2961,7 @@ test('PC overlay bridges rotate stale run ids and replay current state', () => {
 
     assert.match(externalBridgeBlock, /window\.localStorage\.removeItem\('yuiGuidePcOverlayRunId'\)/);
     assert.match(appInterpageSource, /function getExistingYuiGuidePcOverlayRunId\(\) \{/);
-    assert.match(externalBridgeBlock, /function handleYuiGuidePcOverlayStaleResult\(result, patch, attemptedRunId, retried\)/);
+    assert.match(externalBridgeBlock, /function handleYuiGuidePcOverlayStaleResult\(result, patch, attemptedRunId, retried, attemptedLifecycleEpoch\)/);
     assert.match(externalBridgeBlock, /var isStaleResponse = !!\(result && result\.stale === true\);/);
     assert.match(externalBridgeBlock, /var attemptedCurrentRun = !!\(attemptedRunId && attemptedRunId === yuiGuidePcOverlayRunIdOverride\);/);
     assert.match(externalBridgeBlock, /var attemptedChatOwnedRun = isYuiGuideChatOwnedPcOverlayRunId\(attemptedRunId\);/);

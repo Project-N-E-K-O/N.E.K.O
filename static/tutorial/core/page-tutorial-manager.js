@@ -498,7 +498,7 @@
                     element: '#vrm-model-select-btn',
                     popover: {
                         title: this.t('tutorial.model_manager.mmd.step1.title', '选择 MMD 模型'),
-                        description: this.t('tutorial.model_manager.mmd.step1.desc', '在 Live3D（MMD）模式下从这里选择要使用的模型。MMD 与 VRM 共用同一模型列表。')
+                        description: this.t('tutorial.model_manager.mmd.step1.desc', '在 3D模型（MMD）模式下从这里选择要使用的模型。MMD 与 VRM 共用同一模型列表。')
                     }
                 },
                 {
@@ -519,7 +519,7 @@
                     element: '#live3d-emotion-config-btn',
                     popover: {
                         title: this.t('tutorial.model_manager.mmd.step4.title', '情感配置'),
-                        description: this.t('tutorial.model_manager.mmd.step4.desc', '先选好模型后，可由此进入情感配置，为不同情感设置表现（Live3D 下 MMD 与 VRM 共用此入口）。')
+                        description: this.t('tutorial.model_manager.mmd.step4.desc', '先选好模型后，可由此进入情感配置，为不同情感设置表现（3D模型下 MMD 与 VRM 共用此入口）。')
                     }
                 }
             ];

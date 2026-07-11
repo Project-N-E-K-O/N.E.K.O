@@ -22,14 +22,12 @@ import compactChatStyles from './styles.css?raw';
 
 describe('App', () => {
   const COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY = 'neko.reactChatWindow.compactExportHistoryOpen';
-  const COMPACT_HISTORY_DEFAULT_EXPERIMENT_KEY = 'neko.experiment.compactHistoryDefault';
   const COMPACT_HISTORY_HEIGHT_STORAGE_KEY = 'neko.reactChatWindow.compactHistorySlotHeight';
   const COMPACT_INPUT_TOOL_WHEEL_INDEX_STORAGE_KEY = 'neko.reactChatWindow.compactInputToolWheelIndex';
   const DEFAULT_CHAT_EMPTY_STATE_FALLBACK = getChatEmptyStateFallback('en');
   const DEFAULT_CHAT_COMPANION_EMPTY_STATE_FALLBACK = getChatCompanionEmptyStateFallback('en');
   const LOCAL_STORAGE_KEYS_TO_RESET = [
     COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY,
-    COMPACT_HISTORY_DEFAULT_EXPERIMENT_KEY,
     COMPACT_HISTORY_HEIGHT_STORAGE_KEY,
     COMPACT_INPUT_TOOL_WHEEL_INDEX_STORAGE_KEY,
     ACTIVE_AVATAR_TOOLS_STORAGE_KEY,
@@ -39,8 +37,8 @@ describe('App', () => {
     LOCAL_STORAGE_KEYS_TO_RESET.forEach(key => {
       window.localStorage.removeItem(key);
     });
-    // 历史 UI 用例需要历史区默认展开：A/B 变体默认值现改为「教程完全结束后」才异步套用，测试里直接给一个
-    // 显式持久化「开」偏好，让历史区同步展开、与实验门控解耦（实验/门控行为另有专门用例覆盖）。
+    // 历史 UI 用例需要历史区默认展开：无偏好一律折叠（「历史首启默认」A/B 已退役），测试里直接给一个
+    // 显式持久化「开」偏好，让历史区同步展开（默认折叠行为另有专门用例覆盖）。
     window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'true');
     delete window.__NEKO_REACT_CHAT_ASSET_VERSION__;
     delete (window as Window & { NekoGameSystem?: unknown }).NekoGameSystem;
@@ -658,70 +656,32 @@ describe('App', () => {
     }
   });
 
-  it('keeps compact history collapsed by default and only applies the open variant after the tutorial ends', () => {
+  it('keeps compact history collapsed by default, including after the tutorial ends (retired A/B stays retired)', () => {
     window.localStorage.removeItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY);
-    window.localStorage.setItem(COMPACT_HISTORY_DEFAULT_EXPERIMENT_KEY, 'open');
-    const message = parseChatMessage({
-      id: 'assistant-gate-1', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1,
-      blocks: [{ type: 'text', text: 'hi' }], status: 'sent',
-    });
-    const { container } = render(
-      <App chatSurfaceMode="compact" compactChatState="input" messages={[message]} />,
-    );
-    // 无显式偏好 → 初始折叠（即便 variant=open，也要等教程结束才展开）
-    expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
-    // 教程完成 → 套用 open 变体 → 展开
-    act(() => {
-      window.dispatchEvent(new Event('neko:tutorial-completed'));
-    });
-    expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
-  });
-
-  it('does not allocate the history experiment variant when starting on a full surface (keeps compact A/B clean)', () => {
-    window.localStorage.removeItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY);
-    window.localStorage.removeItem(COMPACT_HISTORY_DEFAULT_EXPERIMENT_KEY);
-    const message = parseChatMessage({
-      id: 'assistant-full-gate', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1,
-      blocks: [{ type: 'text', text: 'hi' }], status: 'sent',
-    });
-    render(<App chatSurfaceMode="full" messages={[message]} />);
-    act(() => {
-      window.dispatchEvent(new Event('neko:tutorial-completed'));
-    });
-    // full → FullChatSurface（CompactChatApp 不 mount），实验 effect 不跑：不分配 variant、不上报曝光，
-    // full-surface 用户没见过紧凑历史面板，不该进入 compact A/B 样本。
-    expect(window.localStorage.getItem(COMPACT_HISTORY_DEFAULT_EXPERIMENT_KEY)).toBeNull();
-  });
-
-  it('still reports the exposure when sessionStorage access throws (privacy mode)', () => {
-    window.localStorage.removeItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY);
-    window.localStorage.setItem(COMPACT_HISTORY_DEFAULT_EXPERIMENT_KEY, 'closed');
+    // 存量用户 localStorage 里可能残留已退役实验的 'open' 分组值——它不能再触发自动展开。
+    window.localStorage.setItem('neko.experiment.compactHistoryDefault', 'open');
     const telemetry = vi.fn(() => true);
     (window as unknown as { appTelemetry?: { counter: (n: string, v?: number, d?: Record<string, unknown>) => boolean } }).appTelemetry = { counter: telemetry };
-    // 只让 sessionStorage.getItem 抛（隐私浏览器/webview），localStorage 仍可读 cohort——
-    // 二者共享 Storage.prototype，按 this 区分。
-    const realGetItem = Storage.prototype.getItem;
-    const getItemSpy = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(function (this: Storage, key: string) {
-      if (this === window.sessionStorage) throw new DOMException('denied', 'SecurityError');
-      return realGetItem.call(this, key);
-    });
     try {
       const message = parseChatMessage({
-        id: 'assistant-privacy-exposure', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1,
+        id: 'assistant-gate-1', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1,
         blocks: [{ type: 'text', text: 'hi' }], status: 'sent',
       });
-      render(<App chatSurfaceMode="compact" compactChatState="input" messages={[message]} />);
+      const { container } = render(
+        <App chatSurfaceMode="compact" compactChatState="input" messages={[message]} />,
+      );
+      // 无显式偏好 → 折叠
+      expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
+      // 教程完成也不再套用任何变体：保持折叠、不上报曝光、不动残留分组值
       act(() => {
         window.dispatchEvent(new Event('neko:tutorial-completed'));
       });
-      // sessionStorage 去重读失败不能吞掉曝光：有 variant 的用户仍要发出 experiment_exposure。
-      expect(telemetry).toHaveBeenCalledWith('experiment_exposure', 1, expect.objectContaining({
-        experiment: 'compact_history_default',
-        variant: 'closed',
-      }));
+      expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
+      expect(telemetry).not.toHaveBeenCalled();
+      expect(window.localStorage.getItem('neko.experiment.compactHistoryDefault')).toBe('open');
     } finally {
-      getItemSpy.mockRestore();
       delete (window as unknown as { appTelemetry?: unknown }).appTelemetry;
+      window.localStorage.removeItem('neko.experiment.compactHistoryDefault');
     }
   });
 

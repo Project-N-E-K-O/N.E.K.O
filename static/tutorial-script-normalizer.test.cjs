@@ -220,6 +220,24 @@ test('normalizeTutorialScene maps petal transition to explicit channel cleanup c
 
     const petal = scene.timeline.find((event) => event.command === 'petal.play');
     assert.deepEqual(petal.clear, ['cursor', 'spotlights']);
-    assert.equal(petal.atRatio, 0.7);
+    assert.equal(petal.beforeAudioEndMs, 2600);
+    assert.equal(petal.atRatio, undefined);
     assert.equal(petal.blocking, true);
+});
+
+test('normalizeTutorialScene appends petal transition for explicit timeline scenes', () => {
+    const scene = normalizeTutorialScene({
+        id: 'day4_wrap',
+        voiceKey: 'avatar_floating_day4_wrap',
+        timeline: [
+            { at: 0, command: 'chat.message' },
+            { at: 1240, command: 'operation.run', operation: 'cleanup', blocking: true }
+        ],
+        petalTransition: true
+    });
+
+    const petalEvents = scene.timeline.filter((event) => event.command === 'petal.play');
+    assert.equal(petalEvents.length, 1);
+    assert.equal(petalEvents[0].beforeAudioEndMs, 2600);
+    assert.equal(petalEvents[0].blocking, true);
 });

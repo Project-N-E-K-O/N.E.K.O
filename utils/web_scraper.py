@@ -19,19 +19,25 @@ Supports region-based content fetching:
 - non-Chinese region: Reddit and Twitter
 Also supports fetching the active window title and search
 """
+from __future__ import annotations
+
 import asyncio
 import httpx
 from utils.external_http_client import get_external_http_client
 import random
 import re
 import platform
-from typing import Dict, List, Any, Optional, Union
+from typing import TYPE_CHECKING, Dict, List, Any, Optional, Union
 from urllib.parse import quote
 from utils.logger_config import get_module_logger
 from utils.token_tracker import set_call_type
 from utils.llm_client import SystemMessage, HumanMessage, create_chat_llm_async
-from bs4 import BeautifulSoup
 import os
+
+# bs4 惰性 import（各解析函数内首用加载，utils.module_warmup 后台预热兜底）：本模块被
+# system_router 顶层引用、坐在 main_server 启动 import 链上，顶层 bs4 会拖慢端口就绪。
+if TYPE_CHECKING:
+    from bs4 import BeautifulSoup
 from pathlib import Path
 import json
 import sys
@@ -87,15 +93,27 @@ def _fix_bilibili_api_env():
     
     # 检查是否处于打包环境 (Nuitka 会定义 __nuitka_binary_dir)
     is_compiled = "__nuitka_binary_dir" in globals() or getattr(sys, 'frozen', False)
-    
+
     try:
-        import bilibili_api
+        # 用 find_spec 定位安装路径而非 import bilibili_api：修复只需要目录位置 +
+        # mkdir/写 JSON，find_spec 不执行模块代码（毫秒级），而真 import 要 ~0.4s
+        # 且本函数在模块加载期跑、坐在 main_server 启动 import 链上。时序契约不变：
+        # 修复仍在 web_scraper import 期完成、先于 plugin/plugins/bilibili_* 的
+        # import bilibili_api（见下方调用处注释，PR #1496）。
+        import importlib.util
 
         # 1. 定位 bilibili_api 库路径
         try:
-            lib_path = os.path.dirname(bilibili_api.__file__)
-            base_path = Path(lib_path)
+            spec = importlib.util.find_spec("bilibili_api")
+            origin = spec.origin if spec else None
+            if not origin:
+                logger.info("未检测到 bilibili_api 库，跳过环境修复逻辑。")
+                return
+            base_path = Path(os.path.dirname(origin))
             logger.info(f"检测到 bilibili_api 安装路径: {base_path}")
+        except ImportError:
+            logger.info("未检测到 bilibili_api 库，跳过环境修复逻辑。")
+            return
         except Exception as e:
             logger.warning(f"无法确定 bilibili_api 安装路径，尝试跳过修复: {e}")
             return
@@ -156,8 +174,8 @@ def _fix_bilibili_api_env():
 # （磁盘级、进程无关、一次性）。除了 web_scraper 自身，plugin/plugins/bilibili_*
 # 也会直接 import bilibili_api 并依赖这些文件已就位——所以这一步必须在 import
 # 期跑（而非 lazy 到 web_scraper 的 B 站函数被调时），否则那些插件在全新环境下
-# 会踩到缺文件错误（见 PR #1496 codex review）。开销主要是首次 import bilibili_api，
-# 相对整体启动优化可忽略。
+# 会踩到缺文件错误（见 PR #1496 codex review）。现用 find_spec 免去真 import，
+# 修复本身只剩目录/文件检查，bilibili_api 的 import 由 module_warmup 后台预热。
 _fix_bilibili_api_env()
 
 # ==================================================
@@ -483,6 +501,7 @@ async def fetch_weibo_trending(limit: int = 10) -> Dict[str, Any]:
 
         html = response.text
         # BS4 解析放线程池（与 Google/Baidu/Twitter 链路一致）
+        from bs4 import BeautifulSoup
         soup = await asyncio.to_thread(BeautifulSoup, html, 'lxml')
 
         # 解析热搜列表 (td-02 class)
@@ -779,6 +798,7 @@ async def _fetch_twitter_trending_fallback(limit: int = 10) -> Dict[str, Any]:
             if response.status_code == 200:
                 # BS4 解析 + 解析器迭代统一放线程池，避免阻塞 event loop
                 def _parse_in_thread(html: str, parser, _limit: int) -> List[Dict[str, Any]]:
+                    from bs4 import BeautifulSoup
                     return parser(BeautifulSoup(html, 'lxml'), _limit)
                 trending_list = await asyncio.to_thread(
                     _parse_in_thread, response.text, source['parser'], limit
@@ -1485,8 +1505,9 @@ def parse_google_results(html_content: str, limit: int = 5) -> List[Dict[str, st
     
     try:
         from urllib.parse import urljoin, urlparse, parse_qs
+        from bs4 import BeautifulSoup
         soup = BeautifulSoup(html_content, 'lxml')
-        
+
         # 查找搜索结果容器
         # Google使用各种类名，尝试多个选择器
         result_divs = soup.find_all('div', class_='g')
@@ -1645,6 +1666,7 @@ def parse_duckduckgo_results(html_content: str, limit: int = 5) -> List[Dict[str
 
     try:
         from urllib.parse import urlparse, parse_qs
+        from bs4 import BeautifulSoup
         soup = BeautifulSoup(html_content, 'lxml')
 
         # html.duckduckgo.com 每条结果是 div.result（正常结果还带 web-result）
@@ -1788,8 +1810,9 @@ def parse_baidu_results(html_content: str, limit: int = 5) -> List[Dict[str, str
     
     try:
         from urllib.parse import urljoin
+        from bs4 import BeautifulSoup
         soup = BeautifulSoup(html_content, 'lxml')
-        
+
         # 提取搜索结果容器
         containers = soup.find_all('div', class_=lambda x: x and 'c-container' in x, limit=limit * 2)
         
@@ -2761,11 +2784,11 @@ async def fetch_twitter_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
         if not ct0:
             logger.warning("Twitter Cookie 中缺少核心字段 ct0，极大可能触发风控拦截")
         
-        # 官方 Web 客户端通用固化的 Bearer Token
-        bearer_token = os.environ.get("TWITTER_BEARER_TOKEN", "")
+        # Official Web client Bearer Token — read from env, no hardcoded fallback
+        bearer_token = os.environ.get("TWITTER_BEARER_TOKEN")
         if not bearer_token:
-            logger.warning("Falling back to hardcoded Web client Bearer Token, consider configuring TWITTER_BEARER_TOKEN")
-            bearer_token = 'AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIyU2%2FGoa3FmBNYDPz%2FzGz%2F2Rnc%2F2bGBDH%2Fc'
+            logger.warning("TWITTER_BEARER_TOKEN not configured, falling back to web scraping")
+            return await _fetch_twitter_personal_web_scraping(limit=limit, cookies=twitter_cookies)
         
         # 切换到更稳定、包含完整推文文本的 v1.1 接口
         url = f"https://api.twitter.com/1.1/statuses/home_timeline.json?tweet_mode=extended&count={limit}"

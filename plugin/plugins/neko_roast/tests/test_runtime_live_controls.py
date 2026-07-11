@@ -6,7 +6,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from plugin.plugins.neko_roast.core.contracts import LiveRoomStatus
 from plugin.plugins.neko_roast.core.runtime import RoastRuntime
+from plugin.plugins.neko_roast.core.runtime_live_listener import stop_live_listener
 
 
 class ConfigApi:
@@ -47,6 +49,7 @@ class FakeIngest:
         self.stopped = 0
         self.room_id = 0
         self.start_result = True
+        self.lookup_status = LiveRoomStatus(room_id=123, ok=True, title="configured room", live_status="live")
 
     def is_listening(self) -> bool:
         return self.room_id > 0
@@ -70,12 +73,33 @@ class FakeIngest:
             self.stopped += 1
         self.room_id = 0
 
+    async def lookup_room_status(self, room_id: int) -> LiveRoomStatus:
+        return LiveRoomStatus(
+            room_id=room_id,
+            ok=self.lookup_status.ok,
+            title=self.lookup_status.title,
+            live_status=self.lookup_status.live_status,
+        )
+
 
 @pytest.fixture
 def runtime(tmp_path: Path) -> RoastRuntime:
     rt = RoastRuntime(Plugin(tmp_path))
     rt.bili_live_ingest = FakeIngest()
     return rt
+
+
+@pytest.mark.asyncio
+async def test_lookup_other_room_does_not_replace_configured_room_context(runtime: RoastRuntime) -> None:
+    await runtime.set_live_room(123)
+    configured_context = dict(runtime.live_room_context)
+    runtime.bili_live_ingest.lookup_status.title = "preview room"
+
+    result = await runtime.lookup_live_room(999)
+
+    assert result["room_ref"] == "999"
+    assert result["title"] == "preview room"
+    assert runtime.live_room_context == configured_context
 
 
 @pytest.mark.asyncio
@@ -166,3 +190,29 @@ async def test_config_fallback_does_not_persist_ephemeral_live_enabled(runtime: 
 
     assert runtime.plugin.config.ensure_payloads == [{"neko_roast": {"dry_run": False}}]
     assert runtime.plugin.config.updates == [{"neko_roast": {"dry_run": False}}]
+
+
+@pytest.mark.asyncio
+async def test_douyin_config_update_keeps_live_room_ref(runtime: RoastRuntime) -> None:
+    runtime.config.live_platform = "douyin"
+    runtime.config.live_room_ref = "room-42"
+    runtime.config.live_enabled = True
+
+    await runtime.update_config({"live_room_ref": "room-43", "live_enabled": True})
+
+    assert runtime.live_provider.platform == "douyin"
+    assert runtime.live_provider.configured_room_ref() == "room-43"
+    assert runtime.config.live_room_ref == "room-43"
+
+
+@pytest.mark.asyncio
+async def test_stop_live_listener_defaults_to_mark_disabled(runtime: RoastRuntime) -> None:
+    runtime.config.live_enabled = True
+    runtime.live_room_context = {"live_status": "live", "title": "room"}
+    await runtime.bili_live_ingest.start_listening(100)
+
+    await stop_live_listener(runtime)
+
+    assert runtime.config.live_enabled is False
+    assert runtime.live_connection_snapshot()["connected"] is False
+    assert runtime.live_room_context == {"live_status": "unknown"}
