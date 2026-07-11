@@ -51,6 +51,33 @@ def test_active_content_order_includes_every_defined_candidate_once() -> None:
     assert len(defined_keys) == len(set(defined_keys))
     assert len(ordered_keys) == len(set(ordered_keys))
     assert set(ordered_keys) == set(defined_keys)
+    actual_keys = [
+        item["key"]
+        for item in live_content.active_engagement_fallback_topic_candidates()
+    ]
+    assert actual_keys == ordered_keys
+
+
+@pytest.mark.parametrize(
+    ("key", "expected_family"),
+    (
+        ("fallback:keyboard-busy", "tease"),
+        ("fallback:screen-staring-back", "tease"),
+        ("fallback:serious-hosting", "tease"),
+        ("fallback:tiny-brave-stance", "room_mood"),
+        ("fallback:lightstick-reflection", "room_mood"),
+    ),
+)
+def test_active_catalog_entries_keep_their_thematic_family(
+    key: str, expected_family: str
+) -> None:
+    candidate = live_content_active_catalog._FALLBACK_TOPIC_CANDIDATES_BY_KEY[key]
+
+    assert candidate["family"] == expected_family
+    assert (
+        active_topic_material_family.host_material_family(candidate)
+        == expected_family
+    )
 
 
 def test_host_content_fallback_order_includes_every_defined_beat_once() -> None:
@@ -149,6 +176,13 @@ def test_explicit_material_family_does_not_drift_to_stance_pack(
     material: dict[str, str], expected_pack: str
 ) -> None:
     assert active_topic_pack.active_topic_pack(material) == expected_pack
+
+
+def test_explicit_ab_marker_remains_a_choice_vote() -> None:
+    assert (
+        active_topic_material_family.host_material_family({"title": "A/B vote"})
+        == "choice_vote"
+    )
 
 
 def test_inferred_food_family_does_not_drift_to_stance_pack() -> None:
