@@ -23,6 +23,7 @@ def _run_node_harness(script: str) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         check=False,
+        timeout=30,
     )
 
 
