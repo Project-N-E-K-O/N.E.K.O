@@ -5,7 +5,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from main_routers import system_router as system_router_module
+from main_routers.system_router import status as system_router_module
+from main_routers.system_router import _shared as system_router_shared
 from main_routers.shared_state import init_shared_state
 from utils import storage_location_bootstrap as storage_location_bootstrap_module
 from utils.storage_migration import create_pending_storage_migration
@@ -90,11 +91,11 @@ def test_system_status_uses_runtime_config_manager_fallback_when_shared_state_is
     config_manager = _DummyConfigManager(tmp_path)
 
     with patch.object(
-        system_router_module,
+        system_router_shared,
         "get_config_manager",
         side_effect=RuntimeError("shared_state unavailable"),
     ), patch.object(
-        system_router_module,
+        system_router_shared,
         "get_runtime_config_manager",
         return_value=config_manager,
     ):
