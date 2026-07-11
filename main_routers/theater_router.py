@@ -22,11 +22,9 @@ router = APIRouter(tags=["theater"], prefix="/api/theater")
 logger = get_module_logger("main_routers.theater_router")
 
 
-def _resolve_lanlan_name(raw: Any = None) -> str:
-    """解析小剧场本轮使用的角色名，缺省时读取当前猫娘。"""  # noqa: DOCSTRING_CJK
-    lanlan_name = str(raw or "").strip()
-    if lanlan_name:
-        return lanlan_name
+def _resolve_lanlan_name(_raw: Any = None) -> str:
+    """只从服务端配置解析当前猫娘，不信任调用方传入的角色名。"""  # noqa: DOCSTRING_CJK
+    # 保留参数仅兼容现有调用位置；当前 1v1 版本必须由服务端决定入戏猫娘，避免请求体越权切换人格。
     try:
         characters = get_config_manager().load_characters()
         return str(characters.get("当前猫娘") or "").strip()

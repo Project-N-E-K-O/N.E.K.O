@@ -28,6 +28,21 @@ class _FakeSessionRegistry:
         return self.manager if lanlan_name == "测试猫娘" else None
 
 
+def test_theater_character_name_always_comes_from_current_catgirl(monkeypatch):
+    """开场请求即使伪造角色名，也只能使用配置中的当前猫娘。"""  # noqa: DOCSTRING_CJK
+    class _FakeConfigManager:
+        """提供当前猫娘配置，不读取真实用户角色文件。"""  # noqa: DOCSTRING_CJK
+
+        @staticmethod
+        def load_characters():
+            """返回测试所需的最小角色配置。"""  # noqa: DOCSTRING_CJK
+            return {"当前猫娘": "测试猫娘", "猫娘": {"测试猫娘": {}}}
+
+    monkeypatch.setattr(theater_router, "get_config_manager", lambda: _FakeConfigManager())
+
+    assert theater_router._resolve_lanlan_name("伪造猫娘") == "测试猫娘"
+
+
 @pytest.mark.asyncio
 async def test_theater_tts_bridge_does_not_mirror_chat_or_game_route(monkeypatch):
     """桥接只朗读公开对白，并关闭普通聊天镜像与 turn-end。"""  # noqa: DOCSTRING_CJK
