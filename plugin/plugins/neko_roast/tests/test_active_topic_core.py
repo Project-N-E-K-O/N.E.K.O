@@ -14,6 +14,7 @@ from plugin.plugins.neko_roast.core import (
     active_topic_pack,
     active_topic_recent_source,
     active_topic_rules,
+    active_topic_sources,
     active_topic_trending_source,
     danmaku_text_rules,
     live_content,
@@ -283,12 +284,18 @@ def test_anonymous_recent_danmaku_flood_is_rejected() -> None:
         "@Alice @nekoカワイイ",
         "@Alice @nekoちゃん何してるの",
         "@Alice @猫猫，今天播什么",
+        "@猫猫今天像小电台",
         "@Alice @猫猫ちゃん",
         "@Alice @猫猫✨今天播什么",
     ),
 )
 def test_neko_mention_wins_over_an_earlier_viewer_mention(text: str) -> None:
     assert not active_topic_mentions.is_viewer_to_viewer_mention_text(text)
+
+
+@pytest.mark.parametrize("text", ("@猫猫虫 你看这个", "@猫猫好可爱 你看这个"))
+def test_spaced_alias_prefixed_nickname_remains_viewer_to_viewer(text: str) -> None:
+    assert active_topic_mentions.is_viewer_to_viewer_mention_text(text)
 
 
 @pytest.mark.asyncio
@@ -367,4 +374,39 @@ async def test_cached_trending_candidate_clears_recent_skip_reason() -> None:
 
     assert candidates == cached
     assert candidates is not cached
+    assert selector._active_engagement_recent_topic_skip_reason == ""
+
+
+@pytest.mark.asyncio
+async def test_trending_aggregation_does_not_restore_recent_skip_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selector = SimpleNamespace(_active_engagement_recent_topic_skip_reason="")
+    trending_candidate = {
+        "source": "bili_trending",
+        "key": "bili:BV2",
+        "title": "weather mood",
+    }
+
+    def recent(_selector: object) -> list[dict[str, str]]:
+        selector._active_engagement_recent_topic_skip_reason = "single_viewer_flood"
+        return []
+
+    async def trending(_selector: object) -> list[dict[str, str]]:
+        selector._active_engagement_recent_topic_skip_reason = ""
+        return [trending_candidate]
+
+    monkeypatch.setattr(
+        active_topic_sources, "live_thread_topic_candidates", lambda _: []
+    )
+    monkeypatch.setattr(
+        active_topic_sources, "recent_danmaku_topic_candidates", recent
+    )
+    monkeypatch.setattr(
+        active_topic_sources, "bili_trending_topic_candidates", trending
+    )
+
+    candidates = await active_topic_sources.topic_candidates(selector)
+
+    assert candidates == [trending_candidate]
     assert selector._active_engagement_recent_topic_skip_reason == ""
