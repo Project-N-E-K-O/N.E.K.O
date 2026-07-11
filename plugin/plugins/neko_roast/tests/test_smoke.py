@@ -416,13 +416,17 @@ def test_panel_renders_platform_switch_and_douyin_cookie_controls():
     assert "panel.douyinAuth.manualHint" in source
 
 
-def test_panel_advanced_save_does_not_resubmit_live_target_defaults():
+def test_panel_advanced_save_resubmits_current_room_with_patch():
     root = Path(__file__).resolve().parents[1]
     source = (root / "ui" / "panel.tsx").read_text(encoding="utf-8")
     compact_source = "".join(source.split())
 
     assert "function advancedConfigPatch()" in source
-    assert "constpayload=Object.keys(patch).length?{...patch}:fullPayload" in compact_source
+    assert (
+        "constpayload=Object.keys(patch).length?{...patch,"
+        'live_room_ref:liveRoomRef,live_room_id:livePlatform==="bilibili"?liveRoomRef:0,}'
+        ":fullPayload"
+    ) in compact_source
     assert "saveConfig(advancedConfigPatch())" in source
     assert "onClick={()=>saveConfig()}" not in compact_source
 
@@ -813,3 +817,16 @@ def test_all_locales_define_live_status_summary_labels():
         data = json.loads(locale_path.read_text(encoding="utf-8"))
         missing = required_keys.difference(data)
         assert not missing, f"{locale_path.name} missing keys: {sorted(missing)}"
+
+
+def test_patched_panel_saves_include_current_room_reference() -> None:
+    root = Path(__file__).resolve().parents[1]
+    expected = (
+        "...patch,\n"
+        "          live_room_ref: liveRoomRef,\n"
+        "          live_room_id: livePlatform === \"bilibili\" ? liveRoomRef : 0,"
+    )
+
+    for panel_name in ("panel.tsx", "panel_compat.tsx"):
+        source = (root / "ui" / panel_name).read_text(encoding="utf-8")
+        assert expected in source
