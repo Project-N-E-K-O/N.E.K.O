@@ -23,5 +23,5 @@ class ViewerProfileModule(BaseModule):
     async def has_roasted(self, uid: str) -> bool:
         return await self.ctx.viewer_store.has_roasted(uid)
 
-    async def mark_roasted(self, uid: str, output: str) -> None:
-        await self.ctx.viewer_store.mark_roasted(uid, output)
+    async def mark_roasted(self, uid: str, output: str) -> bool:
+        return await self.ctx.viewer_store.mark_roasted(uid, output)

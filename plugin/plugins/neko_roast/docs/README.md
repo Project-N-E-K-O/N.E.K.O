@@ -28,9 +28,9 @@
 - [live_events](modules/live_events.md)：直播事件窗口择优、冷却期候选选择、弹幕低质过滤、主题凝练、回复技巧提示和运行期观众偏好提示。
 - [live_support_events](modules/live_support_events.md)：Gift / SC / Guard 被选中后的短句致谢 handler，复用 pipeline / safety guard / dispatcher。
 - [douyin_live_ingest](modules/douyin_live_ingest.md)：抖音只读 live provider、公开投影脱敏、内置托管 douyinLive bridge、事件归一化、bridge-only 可替换后端边界，以及未纳入 v1 的自动登录/签名边界。
-- [Host content catalogs](modules/host_content_catalogs.md): static idle-hosting beats, data fallback, and the shared content facade.
-- [Live status helpers](modules/live_status_helpers.md): pure readiness, timing, hosting-state, and director projections.
-- [Viewer and security stores](modules/viewer_stores.md): viewer profiles, audit redaction, and encrypted credential namespaces.
+- [宿主内容目录](modules/host_content_catalogs.md)：静态 idle-hosting beat、数据回退与共享素材接口。
+- [直播状态助手](modules/live_status_helpers.md)：连接与活跃状态的就绪度、计时、主持状态判定、导播下一步投影与主题上下文投影，纯计算无副作用。
+- [观众与安全存储](modules/viewer_stores.md)：观众档案、审计脱敏与加密凭据命名空间。
 
 ## Canonical Source
 
