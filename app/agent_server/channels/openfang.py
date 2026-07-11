@@ -295,16 +295,16 @@ def _patch_usage(data: dict) -> None:
     if not isinstance(usage, dict):
         return
 
-    if "prompt_tokens" not in usage:
+    # ``.get(k) is None`` covers both a missing key and an explicit JSON null.
+    # Zero prompt/completion BEFORE computing total — with the old order,
+    # ``{"prompt_tokens": null}`` reached the addition below and raised
+    # TypeError, silently skipping the patch for that chunk.
+    if usage.get("prompt_tokens") is None:
         usage["prompt_tokens"] = 0
-    if "completion_tokens" not in usage:
+    if usage.get("completion_tokens") is None:
         usage["completion_tokens"] = 0
-    if "total_tokens" not in usage:
-        usage["total_tokens"] = usage.get("prompt_tokens", 0) + usage.get("completion_tokens", 0)
-
-    for k in ("prompt_tokens", "completion_tokens", "total_tokens"):
-        if usage.get(k) is None:
-            usage[k] = 0
+    if usage.get("total_tokens") is None:
+        usage["total_tokens"] = usage["prompt_tokens"] + usage["completion_tokens"]
 
 
 def _patch_malformed_tool_calls(data: dict) -> None:

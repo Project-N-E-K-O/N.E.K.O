@@ -983,6 +983,12 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                 return
             info["result"] = res.result
             info["end_time"] = _now_iso()
+            # 兜底终态先行：下面 inner try 里 detail/delivery_mode 的解析若抛
+            # 异常会被 except 吞掉（只 debug 日志），没有这行 info["status"]
+            # 会永远停在 "running"，finally 的 task_update 只能把 running 广播
+            # 出去，HUD 卡片永久转圈。_plugin_terminal_status 算出精确终态后
+            # 会再覆盖。
+            info["status"] = "completed" if res.success else "failed"
             try:
                 run_data = res.result.get("run_data") if isinstance(res.result, dict) else None
                 run_error = res.result.get("run_error") if isinstance(res.result, dict) else None

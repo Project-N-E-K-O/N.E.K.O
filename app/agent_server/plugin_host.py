@@ -204,6 +204,11 @@ async def _start_embedded_user_plugin_server() -> None:
     started = await asyncio.to_thread(ready.wait, 10.0)
     if not started or startup_error or not getattr(server, "started", False):
         server.should_exit = True
+        # 清掉残留 handle（与 _stop_embedded_user_plugin_server 对称）：
+        # 否则函数顶部的 early-return 守卫会把死 server 当成「已在跑」，
+        # 后续任何重试路径都会静默 no-op。
+        _shared.Modules.user_plugin_http_server = None
+        _shared.Modules.user_plugin_http_task = None
         detail = str(startup_error[0]) if startup_error else "timeout or server not started"
         raise RuntimeError(f"embedded user plugin server failed: {detail}")
 

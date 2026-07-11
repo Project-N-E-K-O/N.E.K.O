@@ -66,4 +66,7 @@ async def dispatch(
         except Exception as e:
             logger.warning(f"[TaskExecutor] Failed to notify main_server: {e}")
     else:
-        logger.error(f"[TaskExecutor] ❌ MCP task failed: {result.error}")
+        # error 可能含用户/LLM 原文，logger 只记元数据，原文走 print 兜底
+        # （与本包其他通道的 exception 处理约定一致）。
+        logger.error("[TaskExecutor] ❌ MCP task failed (error_len=%d)", len(str(result.error or "")))
+        print(f"[TaskExecutor] MCP task raw error: {result.error}")
