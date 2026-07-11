@@ -172,9 +172,11 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
       const roomRef = String(value ?? "").trim()
       return roomRef === "0" ? "" : roomRef
     }
+    const hasPatchedPlatform = Object.prototype.hasOwnProperty.call(patch, "live_platform")
     const hasPatchedRoomRef = Object.prototype.hasOwnProperty.call(patch, "live_room_ref")
-    const liveRoomRef = hasPatchedRoomRef
-      ? normalizedRoomRef(patch.live_room_ref)
+    const hasPatchedRoomId = Object.prototype.hasOwnProperty.call(patch, "live_room_id")
+    const liveRoomRef = hasPatchedRoomRef || hasPatchedRoomId
+      ? normalizedRoomRef(hasPatchedRoomRef ? patch.live_room_ref : patch.live_room_id)
       : (
           normalizedRoomRef(configForm.values.live_room_ref) ||
           normalizedRoomRef(config.live_room_ref) ||
@@ -193,12 +195,15 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
       roast_once_per_uid: configForm.values.roast_once_per_uid,
       ...advancedConfigPatch(),
     }
-    const payload = Object.keys(patch).length
-      ? {
+    const patchedPayload = hasPatchedPlatform && !hasPatchedRoomRef && !hasPatchedRoomId
+      ? patch
+      : {
           ...patch,
           live_room_ref: liveRoomRef,
           live_room_id: livePlatform === "bilibili" ? liveRoomRef : 0,
         }
+    const payload = Object.keys(patch).length
+      ? patchedPayload
       : fullPayload
     try {
       await props.api.call("update_config", payload)

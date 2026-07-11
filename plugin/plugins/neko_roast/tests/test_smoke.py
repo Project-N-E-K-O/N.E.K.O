@@ -64,15 +64,16 @@ def test_patched_panel_saves_ignore_unhydrated_room_sentinel() -> None:
         assert expected_room_priority in source
 
 
-def test_platform_switch_preserves_persisted_room_target() -> None:
+def test_platform_switch_defers_room_reset_to_backend_contract() -> None:
     root = Path(__file__).resolve().parents[1]
-    safe_switch = 'saveConfig({ live_platform: next, live_enabled: false })'
-    destructive_switch = (
-        'saveConfig({ live_platform: next, live_room_ref: "", '
-        'live_room_id: 0, live_enabled: false })'
+    platform_only_switch = 'saveConfig({ live_platform: next, live_enabled: false })'
+    platform_only_payload = (
+        "const patchedPayload = hasPatchedPlatform && "
+        "!hasPatchedRoomRef && !hasPatchedRoomId\n"
+        "      ? patch"
     )
 
     for panel_name in ("panel.tsx", "panel_compat.tsx"):
         source = (root / "ui" / panel_name).read_text(encoding="utf-8")
-        assert safe_switch in source
-        assert destructive_switch not in source
+        assert platform_only_switch in source
+        assert platform_only_payload in source
