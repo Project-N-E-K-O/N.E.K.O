@@ -39,9 +39,9 @@ def _contains_secret(value: object, secret: str) -> bool:
 
 
 def test_normalize_cookie_accepts_browser_cookie_header():
-    cookie = normalize_cookie("Cookie: ttwid=abc;\n odin_tt=def ; empty")
+    cookie = normalize_cookie("Cookie: ttwid=abc;\n odin_tt=def ; extra=value")
 
-    assert cookie == "ttwid=abc; odin_tt=def; empty"
+    assert cookie == "ttwid=abc; odin_tt=def; extra=value"
 
 
 def test_normalize_cookie_rejects_non_cookie_header_lines():

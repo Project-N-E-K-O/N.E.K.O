@@ -90,9 +90,9 @@ async def test_reflection_synthesis_loop_calls_synthesize_for_each_character():
         if len(sleep_calls) >= 2:
             raise asyncio.CancelledError
 
-    with patch.object(memory_server, "reflection_engine", fake_engine), \
-         patch.object(memory_server, "_config_manager", fake_cm), \
-         patch("app.memory_server.asyncio.sleep", new=fake_sleep):
+    with patch.object(memory_server.runtime, "reflection_engine", fake_engine), \
+         patch.object(memory_server.runtime, "_config_manager", fake_cm), \
+         patch("app.memory_server.refine_loops.asyncio.sleep", new=fake_sleep):
         with pytest.raises(asyncio.CancelledError):
             await memory_server._periodic_reflection_synthesis_loop()
 
@@ -129,9 +129,9 @@ async def test_reflection_synthesis_loop_single_character_failure_does_not_abort
         if len(sleep_calls) >= 2:
             raise asyncio.CancelledError
 
-    with patch.object(memory_server, "reflection_engine", fake_engine), \
-         patch.object(memory_server, "_config_manager", fake_cm), \
-         patch("app.memory_server.asyncio.sleep", new=fake_sleep):
+    with patch.object(memory_server.runtime, "reflection_engine", fake_engine), \
+         patch.object(memory_server.runtime, "_config_manager", fake_cm), \
+         patch("app.memory_server.refine_loops.asyncio.sleep", new=fake_sleep):
         with pytest.raises(asyncio.CancelledError):
             await memory_server._periodic_reflection_synthesis_loop()
 
@@ -170,9 +170,9 @@ async def test_reflection_synthesis_loop_load_characters_failure_skips_round_doe
         if len(sleep_calls) >= 3:
             raise asyncio.CancelledError
 
-    with patch.object(memory_server, "reflection_engine", fake_engine), \
-         patch.object(memory_server, "_config_manager", fake_cm), \
-         patch("app.memory_server.asyncio.sleep", new=fake_sleep):
+    with patch.object(memory_server.runtime, "reflection_engine", fake_engine), \
+         patch.object(memory_server.runtime, "_config_manager", fake_cm), \
+         patch("app.memory_server.refine_loops.asyncio.sleep", new=fake_sleep):
         with pytest.raises(asyncio.CancelledError):
             await memory_server._periodic_reflection_synthesis_loop()
 

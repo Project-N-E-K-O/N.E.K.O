@@ -14,6 +14,7 @@ import {
   interactionRoute,
   interactionRouteLabel,
   interactionRouteTone,
+  recentResultTone,
   speechExplanationTone,
 } from "./panel_helpers"
 
@@ -120,7 +121,7 @@ export function RecentResultsTable({ t, results }: { t: PanelTranslator; results
               const signal = String(row.event_signal || "unknown")
               return <StatusBadge tone={eventSignalTone(signal)} label={eventSignalLabel(signal, t)} />
             } },
-            { key: "status", label: t("panel.columns.status"), render: (row: any) => <StatusBadge tone={row.status === "pushed" ? "success" : "warning"} label={String(row.status || "-")} /> },
+            { key: "status", label: t("panel.columns.status"), render: (row: any) => <StatusBadge tone={recentResultTone(String(row.status || ""))} label={String(row.status || "-")} /> },
             { key: "response_latency_ms", label: t("panel.columns.responseLatency"), render: (row: any) => formatLatencyMs(row.response_latency_ms) },
             { key: "reason", label: t("panel.columns.reason"), render: (row: any) => row.reason || row.output || "-" },
           ]}

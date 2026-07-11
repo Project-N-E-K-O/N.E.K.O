@@ -251,12 +251,16 @@ def safe_avatar_url(value: Any) -> str:
     url = safe_text(value)
     if not url:
         return ""
-    parsed = urlparse(url)
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+    try:
+        parsed = urlparse(url)
+        hostname = parsed.hostname
+    except ValueError:
+        return ""
+    if parsed.scheme not in {"http", "https"} or not hostname:
         return ""
     if parsed.username or parsed.password:
         return ""
-    if not is_public_hostname(parsed.hostname):
+    if not is_public_hostname(hostname):
         return ""
     return urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", ""))
 

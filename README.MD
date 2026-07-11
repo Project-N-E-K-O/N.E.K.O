@@ -507,7 +507,7 @@ build_frontend.bat
 uv run python app/memory_server.py
 uv run python app/main_server.py
 # 可选：启动 Agent 服务
-uv run python app/agent_server.py
+uv run python -m app.agent_server
 
 # 5. 访问 http://localhost:48911 配置 API Key 并开始使用
 ```
@@ -606,7 +606,7 @@ N.E.K.O/
 ├── 📁 utils/                    # 🛠️ 工具模块
 ├── 📁 app/                      # 🚀 服务器入口模块
 │   ├── main_server.py           # 🌐 主服务器
-│   ├── agent_server.py          # 🤖 AI智能体服务器
+│   ├── agent_server/            # 🤖 AI智能体服务器（包）
 │   ├── memory_server.py         # 🧠 记忆服务器
 │   └── monitor.py               # 📺 独立观看端
 └── launcher.py                  # 🎬 一键启动入口（打包入口）

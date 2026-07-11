@@ -25,7 +25,9 @@ def test_neko_roast_manifest_smoke():
     assert manifest["plugin"]["id"] == "neko_roast"
     assert manifest["plugin"]["entry"] == "plugin.plugins.neko_roast:NekoRoastPlugin"
     assert manifest["neko_roast"]["roast_strength"] == "normal"
-    assert manifest["plugin"]["ui"]["panel"][0]["entry"] == "ui/panel_compat.tsx"
+    panel_entry = manifest["plugin"]["ui"]["panel"][0]["entry"]
+    assert panel_entry == "ui/panel_compat.tsx"
+    assert (root / panel_entry).is_file()
     assert (root / "ui" / "panel.tsx").is_file()
     assert (root / "ui" / "panel_compat.tsx").is_file()
     assert (root / "ui" / "panel_data_sections.tsx").is_file()
@@ -401,7 +403,12 @@ def test_panel_renders_platform_switch_and_douyin_cookie_controls():
     assert 'configForm.setField("live_room_ref", "")' in source
     assert 'configForm.setField("live_room_id", "")' in source
     assert 'configForm.setField("live_enabled", false)' in source
-    assert 'saveConfig({live_platform:next,live_room_ref:"",live_room_id:0,live_enabled:false})' in compact_source
+    assert 'saveConfig({live_platform:next,live_enabled:false})' in compact_source
+    assert (
+        "constpatchedPayload=hasPatchedPlatform&&!hasPatchedRoomRef&&!hasPatchedRoomId"
+        "?patch:{...patch,live_room_ref:liveRoomRef,"
+        'live_room_id:livePlatform==="bilibili"?liveRoomRef:0,}'
+    ) in compact_source
     assert "panel.platform.title" in source
     assert "panel.platform.bilibili" in source
     assert "panel.platform.douyin" in source
@@ -423,10 +430,11 @@ def test_panel_advanced_save_resubmits_current_room_with_patch():
 
     assert "function advancedConfigPatch()" in source
     assert (
-        "constpayload=Object.keys(patch).length?{...patch,"
-        'live_room_ref:liveRoomRef,live_room_id:livePlatform==="bilibili"?liveRoomRef:0,}'
-        ":fullPayload"
+        "constpatchedPayload=hasPatchedPlatform&&!hasPatchedRoomRef&&!hasPatchedRoomId"
+        "?patch:{...patch,live_room_ref:liveRoomRef,"
+        'live_room_id:livePlatform==="bilibili"?liveRoomRef:0,}'
     ) in compact_source
+    assert "constpayload=Object.keys(patch).length?patchedPayload:fullPayload" in compact_source
     assert "saveConfig(advancedConfigPatch())" in source
     assert "onClick={()=>saveConfig()}" not in compact_source
 
@@ -830,3 +838,62 @@ def test_patched_panel_saves_include_current_room_reference() -> None:
     for panel_name in ("panel.tsx", "panel_compat.tsx"):
         source = (root / "ui" / panel_name).read_text(encoding="utf-8")
         assert expected in source
+
+
+def test_patched_panel_saves_ignore_unhydrated_room_sentinel() -> None:
+    root = Path(__file__).resolve().parents[1]
+    expected_room_priority = (
+        'normalizedRoomRef(configForm.values.live_room_ref) ||\n'
+        '          normalizedRoomRef(config.live_room_ref) ||\n'
+        '          normalizedRoomRef(config.live_room_id) ||\n'
+        '          normalizedRoomRef(configForm.values.live_room_id)'
+    )
+
+    for panel_name in ("panel.tsx", "panel_compat.tsx"):
+        source = (root / "ui" / panel_name).read_text(encoding="utf-8")
+        assert 'return roomRef === "0" ? "" : roomRef' in source
+        assert expected_room_priority in source
+
+
+def test_platform_switch_defers_room_reset_to_backend_contract() -> None:
+    root = Path(__file__).resolve().parents[1]
+    platform_only_switch = 'saveConfig({ live_platform: next, live_enabled: false })'
+    platform_only_payload = (
+        "const patchedPayload = hasPatchedPlatform && "
+        "!hasPatchedRoomRef && !hasPatchedRoomId\n"
+        "      ? patch"
+    )
+
+    for panel_name in ("panel.tsx", "panel_compat.tsx"):
+        source = (root / "ui" / panel_name).read_text(encoding="utf-8")
+        assert platform_only_switch in source
+        assert platform_only_payload in source
+
+
+def test_compat_panel_mirrors_live_connection_and_theme_controls() -> None:
+    root = Path(__file__).resolve().parents[1]
+
+    for panel_name in ("panel.tsx", "panel_compat.tsx"):
+        source = (root / "ui" / panel_name).read_text(encoding="utf-8")
+        assert "result.logged_in || result.has_cookie" in source
+        assert "connection.listening ||" in source
+        assert 'connectionState === "receiving"' in source
+        for field in ("streamGoal", "streamColumns", "streamAvoidTopics"):
+            assert f't("panel.fields.{field}")' in source
+
+
+def test_compat_panel_mirrors_accessible_qr_and_result_tones() -> None:
+    root = Path(__file__).resolve().parents[1]
+    components = (root / "ui" / "panel_components.tsx").read_text(encoding="utf-8")
+    sections = (root / "ui" / "panel_data_sections.tsx").read_text(encoding="utf-8")
+    helpers = (root / "ui" / "panel_helpers.ts").read_text(encoding="utf-8")
+    compat = (root / "ui" / "panel_compat.tsx").read_text(encoding="utf-8")
+
+    assert '<button\n                  type="button"\n                  onClick={onLogin}' in components
+    assert 'aria-label={t("panel.auth.refreshHint")}' in components
+    assert 'recentResultTone(String(row.status || ""))' in sections
+    for source in (helpers, compat):
+        assert 'if (status === "failed") return "danger"' in source
+        assert 'if (status === "skipped") return "warning"' in source
+    assert '<button\n                  type="button"\n                  onClick={onLogin}' in compat
+    assert 'recentResultTone(String(row.status || ""))' in compat
