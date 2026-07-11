@@ -601,6 +601,26 @@ async def test_update_config_restarts_listener_when_room_changes(runtime: RoastR
 
 
 @pytest.mark.asyncio
+async def test_update_config_force_syncs_developer_mode_only_on_transition(
+    runtime: RoastRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sync_calls: list[tuple[bool, bool]] = []
+
+    async def sync_developer_mode(*, announce: bool = False, force: bool = False) -> str:
+        sync_calls.append((announce, force))
+        return "synced"
+
+    monkeypatch.setattr(runtime, "sync_developer_mode", sync_developer_mode)
+    runtime.config.developer_tools_enabled = True
+
+    await runtime.update_config({"developer_tools_enabled": True, "dry_run": False})
+    assert sync_calls == []
+
+    await runtime.update_config({"developer_tools_enabled": False})
+    assert sync_calls == [(False, True)]
+
+
+@pytest.mark.asyncio
 async def test_update_config_normalizes_platform_alias_before_reconnect_check(runtime: RoastRuntime) -> None:
     provider = FakeLiveProvider("room-42")
     runtime.live_provider = provider
