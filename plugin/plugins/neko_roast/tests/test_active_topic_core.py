@@ -10,6 +10,7 @@ from plugin.plugins.neko_roast.core import (
     active_topic_candidate_picker,
     active_topic_live_thread_source,
     active_topic_material_family,
+    active_topic_material_profile,
     active_topic_mentions,
     active_topic_pack,
     active_topic_recent_source,
@@ -81,6 +82,20 @@ def test_inferred_food_family_does_not_drift_to_stance_pack() -> None:
 
     assert active_topic_material_family.host_material_family(material) == "food_drink"
     assert active_topic_pack.active_topic_pack(material) == "food_drink"
+
+
+@pytest.mark.parametrize("title", ("late snack", "warm drink", "饮料", "零食"))
+def test_food_markers_use_food_drink_profile_axis(title: str) -> None:
+    profile = active_topic_material_profile.active_topic_material_profile(title)
+
+    assert profile["fun_axis"] == "food_drink"
+
+
+@pytest.mark.parametrize("title", ("keyboard", "screen", "desk", "水杯"))
+def test_room_object_markers_keep_object_scene_profile_axis(title: str) -> None:
+    profile = active_topic_material_profile.active_topic_material_profile(title)
+
+    assert profile["fun_axis"] == "object_scene"
 
 
 def test_inferred_food_family_does_not_drift_to_live_column_pack() -> None:
