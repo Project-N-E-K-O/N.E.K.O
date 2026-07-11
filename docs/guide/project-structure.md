@@ -7,7 +7,7 @@ N.E.K.O/
 ├── app/                        # Server entry points
 │   ├── main_server.py          # Main server entry point (port 48911)
 │   ├── memory_server.py        # Memory server entry point (port 48912)
-│   ├── agent_server.py         # Agent server entry point (port 48915)
+│   ├── agent_server/           # Agent server package (port 48915)
 │   └── monitor.py              # Monitor service
 │
 ├── brain/                      # Agent & task execution
