@@ -23,8 +23,17 @@ mounts ``memory_server.app`` itself; this path is for standalone dev runs).
 import argparse
 import os
 import signal
+import sys
 import threading
 import time
+
+# Support direct file invocation (``python app/memory_server/__main__.py``,
+# used by docker/entrypoint.sh) where sys.path[0] is this package dir and
+# ``import app`` would otherwise fail. Three dirname hops to the repo root;
+# no-op under ``python -m app.memory_server`` (cwd already on sys.path).
+_repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if sys.path[0:1] != [_repo_root]:
+    sys.path.insert(0, _repo_root)
 
 import uvicorn
 

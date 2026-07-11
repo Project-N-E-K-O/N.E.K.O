@@ -910,14 +910,16 @@ start_services() {
         VENV_PYTHON="python3"
     fi
     
-    # PR #1265: 4 个 server 入口搬进 app/ 子包；这里跟着改成 app/<name>.py
-    local services=("app/memory_server.py" "app/main_server.py" "app/agent_server.py")
+    # PR #1265: 4 个 server 入口搬进 app/ 子包；这里跟着改成 app/<name>.py。
+    # memory_server 已包化（app/memory_server/），入口是包内 __main__.py，
+    # 其顶部自带 sys.path bootstrap，文件直跑与 `-m` 等价。
+    local services=("app/memory_server/__main__.py" "app/main_server.py" "app/agent_server.py")
 
     for service in "${services[@]}"; do
         if [ ! -f "$service" ]; then
             echo "❌ Service file $service not found!"
             # 对关键服务直接失败
-            if [[ "$service" == "app/main_server.py" ]] || [[ "$service" == "app/memory_server.py" ]]; then
+            if [[ "$service" == "app/main_server.py" ]] || [[ "$service" == "app/memory_server/__main__.py" ]]; then
                 return 1
             fi
             continue
