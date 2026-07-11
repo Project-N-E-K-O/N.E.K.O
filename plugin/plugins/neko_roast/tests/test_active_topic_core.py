@@ -114,6 +114,22 @@ def test_ambiguous_family_still_allows_live_column_pack_override() -> None:
 
 
 @pytest.mark.parametrize(
+    ("title", "live_column", "expected_pack"),
+    (
+        ("cup or keyboard", "NEKO micro poll", "micro_poll"),
+        ("keyboard looks busy", "NEKO tiny verdict", "neko_verdict"),
+    ),
+)
+def test_weak_inferred_object_scene_allows_live_column_pack_override(
+    title: str, live_column: str, expected_pack: str
+) -> None:
+    material = {"title": title, "live_column": live_column}
+
+    assert active_topic_material_family.host_material_family(material) == "object_scene"
+    assert active_topic_pack.active_topic_pack(material) == expected_pack
+
+
+@pytest.mark.parametrize(
     "text",
     (
         "@Alice @neko👋 what do you think",
