@@ -220,6 +220,43 @@ async def test_stale_session_dialogue_cannot_claim_tts(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_turn_rechecks_stale_session_after_llm_returns(monkeypatch, tmp_path):
+    """模型等待期间被新开场替换的旧 Session 不得再提交候选状态。"""  # noqa: DOCSTRING_CJK
+    root = tmp_path / "theater"
+    old_session = await runtime.start_session(root, lanlan_name="测试猫娘", client_start_id="start_old")
+    llm_entered = asyncio.Event()
+    release_llm = asyncio.Event()
+
+    async def _wait_for_replacement(**_kwargs):
+        """暂停模型结果，给另一个窗口留下替换活动 Session 的确定窗口。"""  # noqa: DOCSTRING_CJK
+        llm_entered.set()
+        await release_llm.wait()
+        return {"narration": "旧演绎不应提交。", "dialogue": "这句也不应保存喵。", "choice_rewrites": []}
+
+    monkeypatch.setattr("services.theater.llm.generate_turn_async", _wait_for_replacement)
+    pending_turn = asyncio.create_task(
+        runtime.submit_input(
+            root,
+            session_id=old_session["session_id"],
+            input_kind="free_input",
+            message="等你回应时我打开了新窗口",
+            client_turn_id="turn_waiting_llm",
+            base_revision=0,
+        )
+    )
+    await llm_entered.wait()
+    replacement = await runtime.start_session(root, lanlan_name="测试猫娘", client_start_id="start_new")
+    release_llm.set()
+
+    assert (await pending_turn) == {"ok": False, "reason": "stale_session", "skipped": True}
+    assert replacement["session_id"] != old_session["session_id"]
+    saved_old = await session_store.load_session(root, old_session["session_id"])
+    assert saved_old["state_revision"] == 0
+    assert len(saved_old["turns"]) == 1
+    assert saved_old["turns"][0]["text"] == old_session["dialogue"]["text"]
+
+
+@pytest.mark.asyncio
 async def test_concurrent_turns_only_commit_one_revision(tmp_path):
     """同一 revision 的并发回合只有一个可以提交。"""  # noqa: DOCSTRING_CJK
     root = tmp_path / "theater"

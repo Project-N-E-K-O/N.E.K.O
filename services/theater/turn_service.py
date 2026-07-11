@@ -61,6 +61,9 @@ async def submit(
         latest = await session_store.load_session(root, session_id)
         if latest is None:
             return {"ok": False, "reason": "session_not_found"}
+        if await session_store.is_stale_session(root, latest):
+            # 模型生成期间可能已有新窗口替换活动 Session，旧候选状态此时必须直接丢弃。
+            return {"ok": False, "reason": "stale_session", "skipped": True}
         if session_store.state_revision(latest) != revision:
             return _revision_conflict(session_store.state_revision(latest))
         next_revision = revision + 1
