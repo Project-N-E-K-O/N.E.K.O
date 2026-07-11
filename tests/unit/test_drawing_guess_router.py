@@ -258,6 +258,7 @@ def test_guess_feedback_chat_knows_latest_guess_was_rejected():
     assert "香蕉" not in payload_raw
     assert "backend has already judged your latest guess wrong" in payload["premise"]
     assert "never insist" in system_prompt
+    assert "do not make a new candidate guess" in system_prompt
 
 
 @pytest.mark.unit
@@ -327,7 +328,26 @@ def test_input_intent_prompt_requires_explicit_guess_word():
     assert "Do not infer a candidate answer from attributes or descriptions" in system_prompt
     assert "another clue" in system_prompt
     assert payload["rules"]["guess_text_must_be_explicitly_present_in_user_text"] is True
-    assert payload["rules"]["descriptions_without_answer_words_are_chat"] is True
+    assert payload["rules"]["description_without_answer_word_is_not_a_guess_in_user_guessing"] is True
+    assert payload["rules"]["feedback_description_of_drawn_object_is_hint"] is False
+
+
+@pytest.mark.unit
+def test_feedback_intent_prompt_treats_standalone_object_description_as_hint():
+    system_prompt, payload_raw = dgr._build_game_input_intent_prompts(
+        session={"phase": "ai_guess_feedback", "game_chat_history": []},
+        locale="zh-CN",
+        lanlan_name="YUI",
+        master_name="Master",
+        lanlan_prompt="Playful companion.",
+        user_text="会吃骨头的",
+        phase="ai_guess_feedback",
+    )
+    payload = json.loads(payload_raw)
+
+    assert "'会吃骨头的' is a hint" in system_prompt
+    assert payload["rules"]["description_without_answer_word_is_not_a_guess_in_user_guessing"] is False
+    assert payload["rules"]["feedback_description_of_drawn_object_is_hint"] is True
 
 
 @pytest.mark.unit
@@ -1934,12 +1954,12 @@ async def test_ai_guess_feedback_intent_classifier_retries_at_confidence_thresho
     }))
     session = dgr._drawing_guess_sessions["YUI:dg-feedback-soft-hint"]
     session["phase"] = "ai_guess_feedback"
-    session["user_word_id"] = "banana"
+    session["user_word_id"] = "dog"
     session["ai_guess_attempts"] = 1
 
     async def fake_intent(**kwargs):
         assert kwargs["phase"] == "ai_guess_feedback"
-        assert kwargs["user_text"] == "closer to breakfast than a vehicle"
+        assert kwargs["user_text"] == "会吃骨头的"
         return {
             "intent": "hint",
             "guess_text": "",
@@ -1947,11 +1967,11 @@ async def test_ai_guess_feedback_intent_classifier_retries_at_confidence_thresho
         }
 
     async def fake_vision_guess(**kwargs):
-        assert kwargs["user_hint"] == "closer to breakfast than a vehicle"
+        assert kwargs["user_hint"] == "会吃骨头的"
         return {
-            "word": dgr._WORD_BY_ID["banana"],
+            "word": dgr._WORD_BY_ID["dog"],
             "confidence": 0.8,
-            "message": "Breakfast clue received.",
+            "message": "那是小狗吗？",
             "source": "vision_model",
         }
 
@@ -1962,7 +1982,7 @@ async def test_ai_guess_feedback_intent_classifier_retries_at_confidence_thresho
         "lanlan_name": "YUI",
         "session_id": "dg-feedback-soft-hint",
         "i18n_language": "en",
-        "text": "closer to breakfast than a vehicle",
+        "text": "会吃骨头的",
         "image_data_url": "data:image/png;base64,not-used",
     }))
 
