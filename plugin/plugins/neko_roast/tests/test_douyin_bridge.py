@@ -373,6 +373,19 @@ def test_explicit_event_type_wins_over_support_type_alias() -> None:
     assert support_event_type(event) == ""
 
 
+@pytest.mark.parametrize("empty_event_type", [None, ""])
+def test_empty_event_type_uses_support_type_alias(empty_event_type) -> None:
+    module = DouyinLiveIngestModule()
+    module.ctx = SimpleNamespace(config=SimpleNamespace(live_mode="co_stream"))
+
+    event = module.normalize(
+        {"event_type": empty_event_type, "type": "gift", "uid": "viewer-42"}
+    )
+
+    assert event.raw["event_type"] == "gift"
+    assert support_event_type(event) == "gift"
+
+
 def test_platform_uid_accepts_opaque_ids_but_rejects_credential_shapes() -> None:
     assert platform_uid("signature-viewer") == "douyin:signature-viewer"
     assert platform_uid("sessionid=secret") == ""
@@ -420,6 +433,61 @@ async def test_bridge_port_wait_does_not_block_async_runtime(tmp_path) -> None:
 
     assert time.monotonic() - started < 0.15
     assert (await task).ok is True
+
+
+@pytest.mark.parametrize("waiter_raises", [False, True])
+@pytest.mark.asyncio
+async def test_bridge_start_failure_cleans_process_without_relocking(
+    tmp_path, waiter_raises
+) -> None:
+    executable = tmp_path / "bridge.exe"
+    executable.write_bytes(b"")
+
+    class _Process:
+        pid = 123
+
+        def __init__(self) -> None:
+            self.running = True
+            self.terminated = False
+
+        def poll(self):
+            return None if self.running else 0
+
+        def terminate(self) -> None:
+            self.terminated = True
+            self.running = False
+
+        def wait(self, timeout):
+            return 0
+
+        def kill(self) -> None:
+            self.running = False
+
+    process = _Process()
+
+    def wait_for_port(_port: int, _timeout: float) -> bool:
+        if waiter_raises:
+            raise RuntimeError("wait failed")
+        return False
+
+    supervisor = BridgeProcessSupervisor(
+        executable_path=executable,
+        args_factory=lambda port: ["--port", str(port)],
+        process_factory=lambda *_args, **_kwargs: process,
+        port_factory=lambda: 12345,
+        port_waiter=wait_for_port,
+    )
+
+    if waiter_raises:
+        with pytest.raises(RuntimeError, match="wait failed"):
+            await asyncio.wait_for(supervisor.start(), timeout=1.0)
+    else:
+        state = await asyncio.wait_for(supervisor.start(), timeout=1.0)
+        assert state.ok is False
+        assert state.last_error == "bundled bridge did not open localhost port"
+
+    assert process.terminated is True
+    assert supervisor._process is None
 
 
 def test_stale_cleanup_targets_only_recorded_owned_pid(tmp_path, monkeypatch) -> None:
