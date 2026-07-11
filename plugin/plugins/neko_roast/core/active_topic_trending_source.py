@@ -66,6 +66,8 @@ async def bili_trending_topic_candidates(selector: Any) -> list[dict[str, Any]]:
         candidates.append(candidate)
         if len(candidates) >= 6:
             break
+    if candidates:
+        selector._active_engagement_recent_topic_skip_reason = ""
     selector._active_engagement_topic_cache = candidates
     selector._active_engagement_topic_cache_at = now
     return list(candidates)
