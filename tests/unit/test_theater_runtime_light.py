@@ -173,7 +173,8 @@ async def test_active_index_memory_changes_only_after_persistence(monkeypatch, t
             "持久化失败猫娘",
             "theater_00000000-0000-0000-0000-000000000001",
         )
-    assert session_store._ACTIVE_BY_LANLAN.get("持久化失败猫娘") is None
+    cache_key = session_store._active_cache_key(root, "持久化失败猫娘")
+    assert cache_key not in session_store._ACTIVE_BY_ROOT_AND_LANLAN
 
 
 @pytest.mark.asyncio
@@ -248,6 +249,21 @@ async def test_active_session_restores_after_memory_index_reset(tmp_path):
     restored = await runtime.get_active_state(root, lanlan_name="测试猫娘")
     assert restored["ok"] is True
     assert restored["session_id"] == started["session_id"]
+
+
+@pytest.mark.asyncio
+async def test_active_session_cache_is_scoped_by_theater_root(tmp_path):
+    """同名猫娘在不同数据根中必须分别读取各自的活动 Session。"""  # noqa: DOCSTRING_CJK
+    root_a = tmp_path / "root-a"
+    root_b = tmp_path / "root-b"
+    session_a = "theater_00000000-0000-0000-0000-000000000001"
+    session_b = "theater_00000000-0000-0000-0000-000000000002"
+    await session_store.save_active_sessions(root_a, {"同名猫娘": session_a})
+    await session_store.save_active_sessions(root_b, {"同名猫娘": session_b})
+    session_store.reset_active_sessions_for_tests()
+
+    assert await session_store.get_active_session_id(root_a, "同名猫娘") == session_a
+    assert await session_store.get_active_session_id(root_b, "同名猫娘") == session_b
 
 
 @pytest.mark.asyncio

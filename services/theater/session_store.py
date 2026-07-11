@@ -12,7 +12,7 @@ from utils.file_utils import atomic_write_json_async, read_json_async
 _SESSION_ID_RE = re.compile(r"^theater_[a-f0-9-]{36}$")
 # 轻量架构只接受当前协议存档；旧重型 Session 不做高风险字段迁移。
 SESSION_SCHEMA_VERSION = 1
-_ACTIVE_BY_LANLAN: dict[str, str] = {}
+_ACTIVE_BY_ROOT_AND_LANLAN: dict[tuple[str, str], str] = {}
 _SESSION_LOCKS: dict[str, asyncio.Lock] = {}
 _ACTIVE_INDEX_LOCKS: dict[str, asyncio.Lock] = {}
 _CHARACTER_LOCKS: dict[str, asyncio.Lock] = {}
@@ -60,7 +60,7 @@ async def set_active_session(root: Path, lanlan_name: str, session_id: str) -> N
             active[lanlan_name] = session_id
             await save_active_sessions(root, active)
             # 磁盘提交成功后再更新内存，避免写失败时两份索引分叉。
-            _ACTIVE_BY_LANLAN[lanlan_name] = session_id
+            _ACTIVE_BY_ROOT_AND_LANLAN[_active_cache_key(root, lanlan_name)] = session_id
 
 
 async def clear_active_session(root: Path, lanlan_name: str, session_id: str) -> None:
@@ -71,8 +71,9 @@ async def clear_active_session(root: Path, lanlan_name: str, session_id: str) ->
             active.pop(lanlan_name, None)
             await save_active_sessions(root, active)
         # 只有磁盘状态已经保留或成功清除后，才同步移除对应内存指针。
-        if lanlan_name and _ACTIVE_BY_LANLAN.get(lanlan_name) == session_id:
-            _ACTIVE_BY_LANLAN.pop(lanlan_name, None)
+        cache_key = _active_cache_key(root, lanlan_name)
+        if lanlan_name and _ACTIVE_BY_ROOT_AND_LANLAN.get(cache_key) == session_id:
+            _ACTIVE_BY_ROOT_AND_LANLAN.pop(cache_key, None)
 
 
 async def get_active_session_id(root: Path, lanlan_name: str) -> str:
@@ -80,13 +81,14 @@ async def get_active_session_id(root: Path, lanlan_name: str) -> str:
     if not lanlan_name:
         return ""
     async with active_index_guard(root):
-        active_session_id = _ACTIVE_BY_LANLAN.get(lanlan_name)
+        cache_key = _active_cache_key(root, lanlan_name)
+        active_session_id = _ACTIVE_BY_ROOT_AND_LANLAN.get(cache_key)
         if active_session_id:
             return active_session_id
         active = await load_active_sessions(root)
         restored_session_id = str(active.get(lanlan_name) or "")
         if restored_session_id:
-            _ACTIVE_BY_LANLAN[lanlan_name] = restored_session_id
+            _ACTIVE_BY_ROOT_AND_LANLAN[cache_key] = restored_session_id
         return restored_session_id
 
 
@@ -180,9 +182,14 @@ def active_sessions_path(root: Path) -> Path:
     return root / "active_sessions.json"
 
 
+def _active_cache_key(root: Path, lanlan_name: str) -> tuple[str, str]:
+    """生成与磁盘活动索引和锁相同作用域的内存缓存键。"""  # noqa: DOCSTRING_CJK
+    return str(Path(root).resolve()), str(lanlan_name or "").strip()
+
+
 def reset_active_sessions_for_tests() -> None:
     """清空进程内 active 索引，供单元测试模拟后端重启。"""  # noqa: DOCSTRING_CJK
-    _ACTIVE_BY_LANLAN.clear()
+    _ACTIVE_BY_ROOT_AND_LANLAN.clear()
     _SESSION_LOCKS.clear()
     _ACTIVE_INDEX_LOCKS.clear()
     _CHARACTER_LOCKS.clear()
