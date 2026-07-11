@@ -110,20 +110,22 @@ function isInterruptShakeReady(reversals: Array<{ at: number; distance: number }
 }
 
 const RESISTANCE_LINES = [
-  '喂！不要拽我啦，现在还没轮到你的回合呢！',
-  '等一下啦！还没结束呢，不要这么随便打断我啦！',
+  '喵！现在是人家的教学时间，不可以乱动鼠标和键盘啦！乖乖看着人家，好不好嘛？',
+  '真是的，又在乱动鼠标和键盘！再不听话的话，人家可真的要生气了喵！',
+  '最后警告一次喵！你要是再乱动一下，人家就直接退出新手教程，不教你了！',
 ] as const
 const RESISTANCE_VOICE_KEYS = [
   'interrupt_resist_light_1',
+  'interrupt_resist_light_2',
   'interrupt_resist_light_3',
 ] as const
-const ANGRY_EXIT_LINE = '人类！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！'
+const ANGRY_EXIT_LINE = '人家已经忍你很久了！既然你就是不肯乖乖听话，那新手教程到此结束，接下来你自己慢慢研究吧，哼！'
 const GUIDE_AUDIO_FILE_NAMES = {
   takeover_plugin_preview_dashboard: '有了它们，我不光能看.mp3',
-  interrupt_resist_light_1: '喂！不要拽我啦，还没.mp3',
-  interrupt_resist_light_1_zh: '喂！不要拽我啦，现在.mp3',
-  interrupt_resist_light_3: '等一下啦！还没结束呢.mp3',
-  interrupt_angry_exit: '人类！你真的很没礼貌.mp3',
+  interrupt_resist_light_1: '喵！现在是人家的教学.mp3',
+  interrupt_resist_light_2: '真是的，又在乱动鼠标.mp3',
+  interrupt_resist_light_3: '最后警告一次喵！你要.mp3',
+  interrupt_angry_exit: '人家已经忍你很久了！.mp3',
 } as const
 const GUIDE_AUDIO_BY_KEY = {
   takeover_plugin_preview_dashboard: {
@@ -134,11 +136,18 @@ const GUIDE_AUDIO_BY_KEY = {
     ru: GUIDE_AUDIO_FILE_NAMES.takeover_plugin_preview_dashboard,
   },
   interrupt_resist_light_1: {
-    zh: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_1_zh,
+    zh: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_1,
     en: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_1,
     ja: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_1,
     ko: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_1,
     ru: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_1,
+  },
+  interrupt_resist_light_2: {
+    zh: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_2,
+    en: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_2,
+    ja: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_2,
+    ko: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_2,
+    ru: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_2,
   },
   interrupt_resist_light_3: {
     zh: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_3,
@@ -371,6 +380,8 @@ function normalizeGuideLocale(locale?: string) {
   if (current.startsWith('en')) return 'en'
   if (current.startsWith('ko')) return 'ko'
   if (current.startsWith('ru')) return 'ru'
+  if (current.startsWith('es')) return 'es'
+  if (current.startsWith('pt')) return 'pt'
   if (current.startsWith('zh')) return 'zh'
   return DEFAULT_GUIDE_LOCALE
 }
@@ -472,9 +483,10 @@ function resolveGuideAudioSrc(voiceKey?: keyof typeof GUIDE_AUDIO_BY_KEY, audioU
   }
 
   const locale = resolveGuideLocale()
+  const audioLocale = ['zh', 'en', 'ja', 'ko', 'ru'].includes(locale) ? locale : 'en'
   const files = GUIDE_AUDIO_BY_KEY[voiceKey]
-  const fileName = files[locale as keyof typeof files] || files.zh || ''
-  const fileLocale = files[locale as keyof typeof files] ? locale : DEFAULT_GUIDE_LOCALE
+  const fileName = files[audioLocale as keyof typeof files] || files.en || ''
+  const fileLocale = files[audioLocale as keyof typeof files] ? audioLocale : 'en'
   return fileName ? `${GUIDE_AUDIO_BASE_URL}${fileLocale}/${encodeURIComponent(fileName)}` : ''
 }
 
@@ -867,9 +879,9 @@ async function resolveNarrationDurationMs(payload: StartPayload) {
 }
 
 function resolveResistanceTextKey(interruptCount: number) {
-  return interruptCount >= 2
-    ? 'tutorial.yuiGuide.lines.interruptResistLight3'
-    : 'tutorial.yuiGuide.lines.interruptResistLight1'
+  if (interruptCount >= 3) return 'tutorial.yuiGuide.lines.interruptResistLight3'
+  if (interruptCount >= 2) return 'tutorial.yuiGuide.lines.interruptResistLight2'
+  return 'tutorial.yuiGuide.lines.interruptResistLight1'
 }
 
 function shouldReduceMotion() {
@@ -1688,6 +1700,8 @@ class PluginDashboardGuideRuntime {
       ja: 'スキップ',
       ko: '건너뛰기',
       ru: 'Пропустить',
+      es: 'Saltar',
+      pt: 'Pular',
     }
     const label = labelByLocale[locale] || 'Skip'
     button.textContent = label
@@ -2998,7 +3012,7 @@ class PluginDashboardGuideRuntime {
     this.interruptCount += 1
     this.cancelCursorMotion()
 
-    if (this.interruptCount >= 3) {
+    if (this.interruptCount >= 4) {
       void this.abortAsAngryExit()
       return
     }

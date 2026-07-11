@@ -9098,7 +9098,7 @@ def test_avatar_floating_light_resistance_reveals_real_cursor_for_two_seconds(
 
 
 @pytest.mark.frontend
-def test_avatar_floating_second_light_resistance_refreshes_cursor_while_first_line_active(
+def test_avatar_floating_active_light_resistance_does_not_count_continuous_shake(
     mock_page: Page,
 ):
     _bootstrap_page(
@@ -9191,13 +9191,12 @@ def test_avatar_floating_second_light_resistance_refreshes_cursor_while_first_li
 
     assert result["activeDuringSecond"] is True
     assert result["pausedDuringSecond"] is True
-    assert result["interruptCount"] == 2
+    assert result["interruptCount"] == 1
     assert result["temporaryReveals"] == [
         {"reason": "interrupt_resist_light", "durationMs": 2000},
-        {"reason": "interrupt_resist_light", "durationMs": 2000},
     ]
-    assert result["timerDelays"] == [2000, 2000]
-    assert result["clearedTimers"] == 1
+    assert result["timerDelays"] == [2000]
+    assert result["clearedTimers"] == 0
 
 
 @pytest.mark.frontend
@@ -9595,7 +9594,7 @@ def test_avatar_floating_acceleration_threshold_requires_single_event_distance(
 
 
 @pytest.mark.frontend
-def test_avatar_floating_third_light_resistance_enters_angry_exit(
+def test_avatar_floating_fourth_interrupt_enters_angry_exit_after_three_resistance_lines(
     mock_page: Page,
 ):
     _bootstrap_page(
@@ -9618,7 +9617,7 @@ def test_avatar_floating_third_light_resistance_enters_angry_exit(
                 director.currentSceneId = 'test_scene';
                 director.currentStep = {
                     performance: {},
-                    interrupts: { threshold: 3, throttleMs: 0 },
+                    interrupts: { threshold: 4, throttleMs: 0 },
                 };
                 director.interruptsEnabled = true;
                 director.cursor.hasPosition = () => true;
@@ -9653,6 +9652,7 @@ def test_avatar_floating_third_light_resistance_enters_angry_exit(
                 playQualifyingGroup();
                 playQualifyingGroup();
                 playQualifyingGroup();
+                playQualifyingGroup();
                 return {
                     lightInterruptCount: lightInterrupts.length,
                     angryExits,
@@ -9665,9 +9665,9 @@ def test_avatar_floating_third_light_resistance_enters_angry_exit(
         """
     )
 
-    assert result["lightInterruptCount"] == 2
+    assert result["lightInterruptCount"] == 3
     assert result["angryExits"] == ["pointer_interrupt"]
-    assert result["interruptCount"] == 3
+    assert result["interruptCount"] == 4
 
 
 @pytest.mark.frontend

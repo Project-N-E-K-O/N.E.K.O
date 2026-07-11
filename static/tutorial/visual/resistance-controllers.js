@@ -13,7 +13,13 @@
 
     const DEFAULT_RESISTANCE_VOICE_KEYS = Object.freeze([
         'interrupt_resist_light_1',
+        'interrupt_resist_light_2',
         'interrupt_resist_light_3'
+    ]);
+    const DEFAULT_RESISTANCE_TEXT_KEYS = Object.freeze([
+        'tutorial.yuiGuide.lines.interruptResistLight1',
+        'tutorial.yuiGuide.lines.interruptResistLight2',
+        'tutorial.yuiGuide.lines.interruptResistLight3'
     ]);
     const DEFAULT_CURSOR_RESISTANCE_DISTANCE = 30;
     const DEFAULT_INTERRUPT_SHAKE_WINDOW_MS = 1100;
@@ -23,10 +29,11 @@
     const DEFAULT_INTERRUPT_SHAKE_REQUIRED_REVERSALS = 8;
     const DEFAULT_INTERRUPT_SHAKE_REVERSE_DOT_THRESHOLD = 0;
     const DEFAULT_RESISTANCE_LINES = Object.freeze([
-        '喂！不要拽我啦，现在还没轮到你的回合呢！',
-        '等一下啦！还没结束呢，不要这么随便打断我啦！'
+        '喵！现在是人家的教学时间，不可以乱动鼠标和键盘啦！乖乖看着人家，好不好嘛？',
+        '真是的，又在乱动鼠标和键盘！再不听话的话，人家可真的要生气了喵！',
+        '最后警告一次喵！你要是再乱动一下，人家就直接退出新手教程，不教你了！'
     ]);
-    const DEFAULT_ANGRY_EXIT_TEXT = '人类！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！';
+    const DEFAULT_ANGRY_EXIT_TEXT = '人家已经忍你很久了！既然你就是不肯乖乖听话，那新手教程到此结束，接下来你自己慢慢研究吧，哼！';
     const DEFAULT_ANGRY_EXIT_VOICE_KEY = 'interrupt_angry_exit';
 
     function call(callbacks, name, fallbackValue, ...args) {
@@ -123,9 +130,7 @@
             return {
                 message: message,
                 voiceKey: this.resistanceVoiceKeys[voiceIndex] || '',
-                textKey: this.resistanceVoiceKeys[voiceIndex] === 'interrupt_resist_light_3'
-                    ? 'tutorial.yuiGuide.lines.interruptResistLight3'
-                    : 'tutorial.yuiGuide.lines.interruptResistLight1'
+                textKey: DEFAULT_RESISTANCE_TEXT_KEYS[voiceIndex] || DEFAULT_RESISTANCE_TEXT_KEYS[0]
             };
         }
 
@@ -370,9 +375,7 @@
             return {
                 message: message,
                 voiceKey: voiceKey,
-                textKey: voiceKey === 'interrupt_resist_light_3'
-                    ? 'tutorial.yuiGuide.lines.interruptResistLight3'
-                    : 'tutorial.yuiGuide.lines.interruptResistLight1'
+                textKey: DEFAULT_RESISTANCE_TEXT_KEYS[voiceIndex] || DEFAULT_RESISTANCE_TEXT_KEYS[0]
             };
         }
 
@@ -457,17 +460,11 @@
 
         handleInterrupt(event) {
             const director = this.director;
-            // 修改原因：轻对抗台词播放期间会把 scenePausedForResistance 置 true，
-            // 但用户此时连续拖动仍是同一次对抗链路的一部分；只允许该状态继续累计和刷新真实鼠标，
-            // 其他暂停场景仍保持拦截，避免污染普通教程演出。
-            const shouldAllowPausedLightResistanceInterrupt = (
-                director.scenePausedForResistance
-                && this.lightResistanceActive
-            );
             if (
                 director.destroyed
                 || director.angryExitTriggered
-                || (director.scenePausedForResistance && !shouldAllowPausedLightResistanceInterrupt)
+                || director.scenePausedForResistance
+                || this.lightResistanceActive
                 || !director.interruptsEnabled
                 || !event
                 || event.isTrusted === false

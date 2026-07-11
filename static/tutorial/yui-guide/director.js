@@ -693,7 +693,7 @@
         }),
         interrupts: Object.freeze({
             mode: 'theatrical_abort',
-            threshold: 3,
+            threshold: 4,
             throttleMs: 500,
             resetOnStepAdvance: false
         })
@@ -1033,9 +1033,10 @@
         day1_history_handle: Object.freeze({ zh: 5580, ja: 8385, en: 5460, ko: 6792, ru: 5877 }),
         day1_screen_entry: Object.freeze({ zh: 6080, ja: 7157, en: 5172, ko: 6896, ru: 6713 }),
         day1_screen_entry_invite: Object.freeze({ zh: 7440, ja: 11259, en: 11259, ko: 10475, ru: 9587 }),
-        interrupt_angry_exit: Object.freeze({ zh: 8660, ja: 11206, en: 11990, ko: 9953, ru: 10736 }),
-        interrupt_resist_light_1: Object.freeze({ zh: 3920, ja: 4989, en: 3396, ko: 5460, ru: 4101 }),
-        interrupt_resist_light_3: Object.freeze({ zh: 3500, ja: 6713, en: 4650, ko: 5825, ru: 5590 }),
+        interrupt_angry_exit: Object.freeze({ zh: 9864, ja: 11860, en: 8646, ko: 13636, ru: 9117 }),
+        interrupt_resist_light_1: Object.freeze({ zh: 7440, ja: 11624, en: 7993, ko: 10240, ru: 8464 }),
+        interrupt_resist_light_2: Object.freeze({ zh: 7176, ja: 9300, en: 8150, ko: 7863, ru: 7967 }),
+        interrupt_resist_light_3: Object.freeze({ zh: 6480, ja: 10188, en: 7393, ko: 8882, ru: 8620 }),
         intro_basic: Object.freeze({ zh: 13296, ja: 19984, en: 13166, ko: 17424, ru: 17032 }),
         intro_greeting_reply: Object.freeze({ zh: 15680, ja: 18965, en: 22596, ko: 19957, ru: 18991 }),
         takeover_capture_cursor: Object.freeze({ zh: 22580, ja: 28238, en: 24712, ko: 23040, ru: 25966 }),

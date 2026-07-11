@@ -1547,6 +1547,7 @@ test('director routes resistance interrupts through ResistanceController boundar
 
     assert.match(resistanceSource, /class ResistanceController/);
     assert.match(resistanceSource, /const DEFAULT_RESISTANCE_VOICE_KEYS = Object\.freeze\(\[/);
+    assert.match(resistanceSource, /'interrupt_resist_light_1',[\s\S]*'interrupt_resist_light_2',[\s\S]*'interrupt_resist_light_3'/);
     assert.match(source, /const ResistanceController = TutorialResistanceControllers\.ResistanceController;/);
     assert.doesNotMatch(source, /    class ResistanceController \{/);
     assert.match(constructorBlock, /this\.resistanceController = new ResistanceController\(this\);/);
@@ -1561,8 +1562,8 @@ test('director routes resistance interrupts through ResistanceController boundar
     assert.match(resistanceControllerBlock, /playLightResistance\(x,\s*y,\s*options\) \{/);
     assert.match(resistanceControllerBlock, /abortAsAngryExit\(source\) \{/);
     assert.match(resistanceControllerBlock, /destroy\(\) \{/);
-    assert.match(resistanceControllerBlock, /shouldAllowPausedLightResistanceInterrupt[\s\S]*director\.scenePausedForResistance[\s\S]*this\.lightResistanceActive/);
-    assert.match(resistanceControllerBlock, /director\.scenePausedForResistance && !shouldAllowPausedLightResistanceInterrupt/);
+    assert.match(resistanceControllerBlock, /\|\| director\.scenePausedForResistance[\s\S]*\|\| this\.lightResistanceActive/);
+    assert.doesNotMatch(resistanceControllerBlock, /shouldAllowPausedLightResistanceInterrupt/);
     assert.match(resistanceSource, /const DEFAULT_INTERRUPT_SHAKE_WINDOW_MS = 1100;/);
     assert.match(resistanceSource, /const DEFAULT_INTERRUPT_SHAKE_MIN_DISTANCE = 50;/);
     assert.match(resistanceSource, /const DEFAULT_INTERRUPT_SHAKE_REQUIRED_REVERSALS = 8;/);
@@ -1579,6 +1580,10 @@ test('director routes resistance interrupts through ResistanceController boundar
     assert.match(pluginRuntimeSource, /const DEFAULT_INTERRUPT_SHAKE_MIN_SPAN_MS = 600/);
     assert.match(pluginRuntimeSource, /const DEFAULT_INTERRUPT_SHAKE_MIN_SUSTAINED_SPEED = 1100/);
     assert.match(pluginRuntimeSource, /reversals\.slice\(1\)\.reduce\(/);
+    assert.match(pluginRuntimeSource, /'interrupt_resist_light_1',[\s\S]*'interrupt_resist_light_2',[\s\S]*'interrupt_resist_light_3'/);
+    assert.match(pluginRuntimeSource, /if \(this\.interruptCount >= 4\)/);
+    assert.match(pluginRuntimeSource, /const audioLocale = \['zh', 'en', 'ja', 'ko', 'ru'\]\.includes\(locale\) \? locale : 'en'/);
+    assert.match(source, /const fileName = hasLocaleFile \? files\[locale\] : \(files\.en \|\| ''\);/);
     assert.match(pluginRuntimeSource, /trackInterruptShakeMotion\(point:/);
     assert.match(pluginRuntimeSource, /if \(!this\.trackInterruptShakeMotion\(shakePoint\)\) \{[\s\S]*?return[\s\S]*?this\.resetInterruptShakeMotion\(\)/);
     assert.doesNotMatch(pluginRuntimeSource, /DEFAULT_INTERRUPT_ACCELERATION_STREAK/);
