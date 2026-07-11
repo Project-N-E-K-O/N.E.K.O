@@ -34,3 +34,16 @@ def test_dashboard_actions_are_exposed_plugin_entries() -> None:
 
     assert projected <= entry_ids
     assert projected <= ui_action_ids
+
+
+def test_patched_panel_saves_include_current_room_reference() -> None:
+    root = Path(__file__).resolve().parents[1]
+    expected = (
+        "...patch,\n"
+        "          live_room_ref: liveRoomRef,\n"
+        "          live_room_id: livePlatform === \"bilibili\" ? liveRoomRef : 0,"
+    )
+
+    for panel_name in ("panel.tsx", "panel_compat.tsx"):
+        source = (root / "ui" / panel_name).read_text(encoding="utf-8")
+        assert expected in source
