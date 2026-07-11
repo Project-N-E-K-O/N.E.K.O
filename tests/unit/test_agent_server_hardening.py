@@ -226,7 +226,9 @@ async def test_mcp_dispatch_failure_logs_metadata_not_raw_error(
     )
 
     assert fake_logger.error.called
-    logged = " ".join(str(a) for call in fake_logger.error.call_args_list for a in call.args)
+    # repr(call) covers positional AND keyword args, so a hypothetical
+    # ``logger.error(..., error=raw_text)`` cannot slip past the assertion.
+    logged = " ".join(repr(call) for call in fake_logger.error.call_args_list)
     assert "SECRET user text" not in logged
     assert "error_len" in logged
     # Raw text still reaches the local print fallback.
