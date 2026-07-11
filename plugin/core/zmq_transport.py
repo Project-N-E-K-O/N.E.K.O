@@ -45,22 +45,26 @@ _LINGER_MS = 1000
 
 import base64
 
-# 类型标记前缀，用于在 JSON 中无损传输 bytes
-_BYTES_MARKER = "__bytes_b64__"
+# 无歧义的双字段包装格式，防止与合法插件数据碰撞。
+# 使用传输层专属前缀 + 双键校验，碰撞概率极低。
+_TYPE_KEY = "__neko_zmq_type__"
+_DATA_KEY = "__neko_zmq_data__"
+_BYTES_TYPE = "bytes"
 
 
 class _SafeJSONEncoder(json.JSONEncoder):
     """JSON encoder that handles ``bytes`` via base64 and falls back to ``str()``
     for other non-serialisable types.
 
-    - ``bytes`` / ``bytearray`` → ``{"__bytes_b64__": "<base64>"}`` (lossless, reversible)
+    - ``bytes`` / ``bytearray`` → ``{"__neko_zmq_type__": "bytes", "__neko_zmq_data__": "<base64>"}`` (lossless, reversible, unambiguous)
     - Other unsupported types → ``str()`` with a warning (lossy, last resort)
     """
 
     def default(self, o):  # noqa: D401
         if isinstance(o, (bytes, bytearray)):
             return {
-                _BYTES_MARKER: base64.b64encode(bytes(o)).decode("ascii")
+                _TYPE_KEY: _BYTES_TYPE,
+                _DATA_KEY: base64.b64encode(bytes(o)).decode("ascii"),
             }
         logger.warning(
             "ZMQ transport: falling back to str() for non-JSON type %s",
@@ -70,13 +74,19 @@ class _SafeJSONEncoder(json.JSONEncoder):
 
 
 def _restore_bytes(obj: Any) -> Any:
-    """递归恢复 ``_restore_bytes`` 标记的 bytes 值。
+    """递归恢复传输层包装的 bytes 值。
 
-    遍历 dict/list 结构，将 ``{"__bytes_b64__": "..."}`` 还原为原始 ``bytes``。
+    遍历 dict/list 结构，将 ``{"__neko_zmq_type__": "bytes", "__neko_zmq_data__": "..."}``
+    还原为原始 ``bytes``。使用双键校验确保不会误判合法插件数据。
     """
     if isinstance(obj, dict):
-        if _BYTES_MARKER in obj and len(obj) == 1:
-            return base64.b64decode(obj[_BYTES_MARKER])
+        # 仅当同时包含两个传输层专用键且类型为 bytes 时才还原
+        if (
+            len(obj) == 2
+            and obj.get(_TYPE_KEY) == _BYTES_TYPE
+            and _DATA_KEY in obj
+        ):
+            return base64.b64decode(obj[_DATA_KEY])
         return {k: _restore_bytes(v) for k, v in obj.items()}
     if isinstance(obj, list):
         return [_restore_bytes(item) for item in obj]

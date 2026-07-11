@@ -390,18 +390,22 @@ def _extract_raw_llm_text(resp: Any) -> Tuple[str, Optional[str]]:
 
 # ─── Restricted OS proxy for CUA exec sandbox ──────────────────────────
 
-from types import MappingProxyType
-
 
 class _RestrictedOS:
     """受限 os 模块代理，仅暴露安全的只读操作。
 
     防止 LLM 生成的代码通过 os.system()、os.popen() 等执行任意系统命令。
-    仅允许路径查询、环境变量只读快照和平台信息访问。
+    仅允许路径查询和平台信息访问。
+
+    .. security-note::
+
+        ``environ`` 已从白名单中移除：pyautogui 自动化脚本不需要环境变量，
+        而进程环境中可能包含 API key、token 等机密信息，暴露给 LLM 生成
+        代码会扩大信息泄露面。
     """
 
     _ALLOWED_ATTRS = frozenset({
-        "path", "sep", "linesep", "name", "environ",
+        "path", "sep", "linesep", "name",
         "getcwd", "listdir", "curdir", "pardir", "extsep",
     })
 
@@ -423,8 +427,6 @@ class _RestrictedOS:
 
     def __init__(self):
         self.path = _RestrictedOS._RestrictedPath()
-        # 返回不可变的环境变量快照，防止 LLM 代码修改真实进程环境
-        self.environ = MappingProxyType(dict(os.environ))
 
     def __getattr__(self, name):
         if name.startswith("_"):
@@ -1290,6 +1292,17 @@ class ComputerUseAdapter:
                     continue
 
                 # ── Execute pyautogui code ───────────────────────────
+                #
+                # .. security-note::
+                #
+                #    _SAFE_BUILTINS + _RestrictedOS 构成深度防御，但不是
+                #    完整沙箱：理论上 LLM 代码可通过 Python 对象图逃逸
+                #    （如 ``().__class__.__mro__[1].__subclasses__()`` 访问
+                #    已加载类的 ``__init__.__globals__`` 取回真实 os）。
+                #    彻底修复需 AST 白名单解释器或 OS 级进程隔离，属后续
+                #    架构改造范围。当前方案已将原始的完全开放（完整 os +
+                #    完整 __builtins__）大幅收紧到需复杂 Python 内部知识
+                #    才能利用的攻击面。
                 try:
                     exec_env: dict = {"__builtins__": _SAFE_BUILTINS}
                     exec_env["pyautogui"] = _ScaledPyAutoGUI(
