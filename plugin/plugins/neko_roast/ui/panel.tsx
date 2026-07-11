@@ -315,7 +315,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
     try {
       const result = unwrapActionResult(await props.api.call("douyin_cookie_status"))
       setDouyinAuthState(result)
-      if (result.logged_in) toast.success(t("panel.douyinAuth.cookieReady"))
+      if (result.logged_in || result.has_cookie) toast.success(t("panel.douyinAuth.cookieReady"))
       else toast.info(t("panel.douyinAuth.cookieMissing"))
       await props.api.refresh()
     } catch (err) {
@@ -563,7 +563,13 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   const reconnectState = connection && typeof connection.reconnect === "object" ? connection.reconnect : null
   const connectionLastError = String(connection.last_error || "")
 
-  const started = !!(connection.connected || config.live_enabled)
+  const connectionState = String(connection.state || "")
+  const started = !!(
+    connection.connected ||
+    connection.listening ||
+    connectionState === "connected" ||
+    connectionState === "receiving"
+  )
   const modules = Array.isArray(safeState.modules) ? safeState.modules : []
 
   // Main live-room console.
@@ -630,6 +636,15 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
         <Stack>
           <Field label={t("panel.fields.streamTheme")}>
             <Input value={configForm.values.stream_theme} onChange={(value) => configForm.setField("stream_theme", value)} />
+          </Field>
+          <Field label={t("panel.fields.streamGoal")}>
+            <Input value={configForm.values.stream_goal} onChange={(value) => configForm.setField("stream_goal", value)} />
+          </Field>
+          <Field label={t("panel.fields.streamColumns")}>
+            <Input value={configForm.values.stream_columns} onChange={(value) => configForm.setField("stream_columns", value)} />
+          </Field>
+          <Field label={t("panel.fields.streamAvoidTopics")}>
+            <Input value={configForm.values.stream_avoid_topics} onChange={(value) => configForm.setField("stream_avoid_topics", value)} />
           </Field>
           <Grid cols={3}>
             <Button tone="success" onClick={() => saveConfig(advancedConfigPatch())}>{t("panel.actions.save")}</Button>

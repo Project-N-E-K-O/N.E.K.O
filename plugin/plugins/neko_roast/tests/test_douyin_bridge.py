@@ -7,12 +7,18 @@ import pytest
 from plugin.plugins.neko_roast.core.pipeline_routing import support_event_type
 from plugin.plugins.neko_roast.core.runtime_douyin_auth import normalize_cookie
 from plugin.plugins.neko_roast.core.runtime_live_input_api import RuntimeLiveInputApiMixin
-from plugin.plugins.neko_roast.modules.douyin_live_ingest.transport_event import DouyinTransportState
+from plugin.plugins.neko_roast.modules.douyin_live_ingest.transport_event import (
+    DouyinTransportStartRequest,
+    DouyinTransportState,
+)
 from plugin.plugins.neko_roast.modules.douyin_live_ingest import DouyinLiveIngestModule
 from plugin.plugins.neko_roast.modules.douyin_live_ingest.bridge_adapter import (
     DouyinLiveBridgeAdapter,
 )
-from plugin.plugins.neko_roast.modules.douyin_live_ingest.event_model import platform_uid
+from plugin.plugins.neko_roast.modules.douyin_live_ingest.event_model import (
+    platform_uid,
+    safe_avatar_url,
+)
 from plugin.plugins.neko_roast.modules.douyin_live_ingest.room_ref import (
     parse_douyin_room_ref,
 )
@@ -58,6 +64,20 @@ def test_cookie_normalization_accepts_cookie_header_only() -> None:
 
     with pytest.raises(ValueError, match="unsupported header"):
         normalize_cookie("Cookie: sessionid=abc\nAuthorization: Bearer secret")
+
+    with pytest.raises(ValueError, match="name=value pairs"):
+        normalize_cookie("Cookie: sessionid=abc; Authorization: Bearer secret")
+
+
+def test_douyin_public_inputs_reject_malformed_urls_and_redact_cookie_repr() -> None:
+    assert safe_avatar_url("https://[") == ""
+
+    request = DouyinTransportStartRequest(
+        room_ref="123456",
+        cookie="sessionid=secret",
+        connection_plan=None,
+    )
+    assert "sessionid=secret" not in repr(request)
 
 
 def test_room_reference_accepts_supported_url_and_rejects_other_hosts() -> None:
