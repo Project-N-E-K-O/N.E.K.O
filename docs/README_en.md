@@ -443,7 +443,7 @@ build_frontend.bat
 uv run python app/memory_server.py
 uv run python app/main_server.py
 # Optional: start Agent service
-uv run python app/agent_server.py
+uv run python -m app.agent_server
 
 # 5. Visit http://localhost:48911 to configure API Key and start using
 ```
