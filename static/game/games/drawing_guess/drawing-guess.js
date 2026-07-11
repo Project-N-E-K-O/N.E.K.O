@@ -67,6 +67,7 @@
     debugRoundMode: 'auto',
     debugWordCycle: null,
     roundFlowToken: 0,
+    activeRoundToken: 0,
     aiGuessDeadline: 0,
     aiGuessInFlight: false,
     chatInFlight: false,
@@ -1794,7 +1795,7 @@
       lanlan_name: state.lanlanName,
       i18n_language: currentLanguage(),
       memory_consent: state.memoryConsent,
-      client_round_token: state.roundFlowToken
+      client_round_token: state.activeRoundToken != null ? state.activeRoundToken : state.roundFlowToken
     }, extra || {});
   }
 
@@ -2468,6 +2469,11 @@
 
   function resetRoundStartState() {
     var token = beginRoundFlow();
+    // 后端 _require_session 校验的是 round/start 当时存的 token；此后前端
+    // 因终态作废等原因 bump roundFlowToken 时（如 renderFinalSummary），发给
+    // 后端的 client_round_token 必须继续用本轮实际注册的值，否则 final_summary
+    // 里的聊天 /input 会被判 stale_round_flow
+    state.activeRoundToken = token;
     hideExitReopenButton();
     hideExitConfirm(false);
     stopCountdown();
@@ -2683,16 +2689,26 @@
     });
     updateControls();
 
+    var restoreDrawPick = function () {
+      state.drawPickChoosing = false;
+      renderDrawPickOptions(state.drawPickOptions);
+      els.drawPick.classList.remove('dg-draw-pick-spread');
+      els.drawPick.classList.add('dg-draw-pick-ready', 'dg-draw-pick-revealed');
+      addMessage('drawingGuess.messages.inputFailed', 'Input failed.');
+    };
+    var flowToken = state.roundFlowToken;
     return post(ROUND_API + '/choose-word', roundPayload({ word_id: wordId }), 10000).then(function (res) {
+      // 与其它异步回合回调一致：End/换轮之后的迟到 choose-word 结果不再落地
+      if (!isCurrentRoundFlow(flowToken)) return;
       if (!res || !res.ok) {
-        state.drawPickChoosing = false;
-        renderDrawPickOptions(state.drawPickOptions);
-        els.drawPick.classList.remove('dg-draw-pick-spread');
-        els.drawPick.classList.add('dg-draw-pick-ready', 'dg-draw-pick-revealed');
-        addMessage('drawingGuess.messages.inputFailed', 'Input failed.');
+        restoreDrawPick();
         return;
       }
       beginUserDrawing(res.user_draw_answer || selected, res.draw_seconds || state.drawPickSeconds || ROUND_FALLBACK_SECONDS);
+    }).catch(function () {
+      // 超时/网络失败与 !res.ok 同样要把选词卡还给玩家，否则选词界面永久锁死
+      if (!isCurrentRoundFlow(flowToken)) return;
+      restoreDrawPick();
     }).finally(updateControls);
   }
 
