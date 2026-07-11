@@ -23,6 +23,8 @@
 
 - [Live status helpers](modules/live_status_helpers.md): pure readiness, timing, hosting-state, and director projections.
 
+- [Viewer and security stores](modules/viewer_stores.md): viewer profiles, audit redaction, and encrypted credential namespaces.
+
 ## Canonical Source
 
 同一种事实只能有一个权威来源；其他文档只链接引用，不复制规范。

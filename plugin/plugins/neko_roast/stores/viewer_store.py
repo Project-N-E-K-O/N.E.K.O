@@ -18,7 +18,12 @@ from typing import Any, Callable
 
 from ..core.contracts import ViewerIdentity, ViewerProfile, utc_now_iso
 from ..core.contracts_public import public_int, public_text
-from ..core.viewer_preferences import infer_viewer_preferences, merge_preference_counts, safe_preference_counts
+from ..core.viewer_preferences import (
+    infer_viewer_preferences,
+    merge_preference_counts,
+    safe_preference_counts,
+    viewer_profile_projection,
+)
 
 _STORE_FILE = "viewer_profiles.json"
 _MAX_PROFILE_TEXT = 240
@@ -119,14 +124,22 @@ class ViewerStore:
             if isinstance(data, dict):
                 if candidate != file:
                     self._active_fallback_file = candidate
-                return {str(k): dict(v) for k, v in data.items() if isinstance(v, dict)}
+                profiles: dict[str, dict[str, Any]] = {}
+                for key, value in data.items():
+                    if not isinstance(value, dict):
+                        continue
+                    uid = _safe_profile_uid(value.get("uid")) or _safe_profile_uid(key)
+                    if not uid:
+                        continue
+                    profiles[uid] = _safe_profile_item(value, fallback_uid=uid)
+                return profiles
         return {}
 
-    async def _save_all(self, profiles: dict[str, dict[str, Any]]) -> None:
+    async def _save_all(self, profiles: dict[str, dict[str, Any]]) -> bool:
         file, custom = self._resolve_file()
         if await asyncio.to_thread(self._write_json, file, profiles):
             self._active_fallback_file = None
-            return
+            return True
         # 自定义目录写失败 → 回退默认目录（只告警一次，避免刷屏）。
         if custom:
             fallback = self._default_dir() / _STORE_FILE
@@ -135,8 +148,9 @@ class ViewerStore:
                 if not self._fallback_warned:
                     self._audit("viewer_store_fallback", f"自定义目录不可写，已回退默认目录：{fallback.parent}")
                     self._fallback_warned = True
-                return
+                return True
         self._audit("viewer_store_save_failed", f"档案写入失败：{file}")
+        return False
 
     # ── 公共 API（行为与原 KV 版一致，仅底层换成 JSON）──────────────
 
@@ -199,7 +213,7 @@ class ViewerStore:
             avatar_url = _safe_profile_text(identity.avatar_url)
             if not uid:
                 return ViewerProfile(uid="", nickname=nickname, avatar_url=avatar_url)
-            item = dict(profiles.get(uid) or {})
+            item = _safe_profile_item(profiles.get(uid) or {"uid": uid}, fallback_uid=uid)
             inference = infer_viewer_preferences(danmaku_text)
             profile = ViewerProfile(
                 uid=uid,
@@ -245,22 +259,107 @@ class ViewerStore:
 
     async def _mark_roasted_locked(self, uid: str, output: str) -> None:
         profiles = await self._load_all()
-        item = dict(profiles.get(uid) or {"uid": uid})
-        item["roast_count"] = int(item.get("roast_count") or 0) + 1
+        safe_uid = _safe_profile_uid(uid)
+        if not safe_uid:
+            return
+        item = _safe_profile_item(profiles.get(safe_uid) or {"uid": safe_uid}, fallback_uid=safe_uid)
+        item["roast_count"] = public_int(item.get("roast_count"), default=0, minimum=0) + 1
         item["last_roast_at"] = utc_now_iso()
-        item["last_result"] = output
-        profiles[uid] = item
+        item["last_result"] = _safe_profile_text(output)
+        profiles[safe_uid] = _safe_profile_item(item, fallback_uid=safe_uid)
         await self._save_all(profiles)
 
     async def has_roasted(self, uid: str) -> bool:
         profiles = await self._load_all()
-        item = profiles.get(uid)
-        return bool(item and int(item.get("roast_count") or 0) > 0)
+        safe_uid = _safe_profile_uid(uid)
+        item = profiles.get(safe_uid)
+        return bool(item and public_int(item.get("roast_count"), default=0, minimum=0) > 0)
 
     async def recent_profiles(self, limit: int = 30) -> list[dict[str, Any]]:
         profiles = await self._load_all()
         ordered = sorted(profiles.values(), key=lambda item: str(item.get("last_seen_at") or ""), reverse=True)
-        return [dict(item) for item in ordered[:limit]]
+        result: list[dict[str, Any]] = []
+        for item in ordered[:limit]:
+            safe_item = _safe_profile_item(item, fallback_uid=item.get("uid"))
+            if safe_item:
+                result.append({**safe_item, **viewer_profile_projection(safe_item)})
+        return result
+
+    async def clear_profiles(self) -> dict[str, Any]:
+        async with self._lock:
+            profiles = await self._load_all()
+            cleared = len(profiles)
+            persisted = await self._save_all({})
+            file, _custom = self._resolve_file()
+            if self._active_fallback_file is not None:
+                file = self._active_fallback_file
+            return {
+                "cleared": cleared if persisted else 0,
+                "applied": persisted,
+                "path": str(file),
+            }
+
+    async def delete_profile(self, uid: str) -> dict[str, Any]:
+        key = _safe_profile_uid(uid)
+        if not key:
+            raise ValueError("uid is required")
+        async with self._lock:
+            profiles = await self._load_all()
+            found = key in profiles
+            profiles.pop(key, None)
+            persisted = await self._save_all(profiles)
+            file, _custom = self._resolve_file()
+            if self._active_fallback_file is not None:
+                file = self._active_fallback_file
+            return {
+                "uid": key,
+                "deleted": bool(found and persisted),
+                "applied": persisted,
+                "path": str(file),
+            }
+
+    async def reset_profile_impression(self, uid: str) -> dict[str, Any]:
+        key = _safe_profile_uid(uid)
+        if not key:
+            raise ValueError("uid is required")
+        impression_fields = (
+            "preference_tags",
+            "favorite_topics",
+            "running_jokes",
+            "interaction_style",
+            "response_preference",
+            "last_interaction_summary",
+            "impression_summary",
+            "avoid_guidance",
+            "last_interaction_at",
+        )
+        async with self._lock:
+            profiles = await self._load_all()
+            item = profiles.get(key)
+            found = isinstance(item, dict)
+            persisted = False
+            if found:
+                for field in impression_fields:
+                    if field in ("preference_tags", "favorite_topics", "running_jokes"):
+                        item[field] = {}
+                    else:
+                        item[field] = ""
+                profiles[key] = item
+                persisted = await self._save_all(profiles)
+            file, _custom = self._resolve_file()
+            if self._active_fallback_file is not None:
+                file = self._active_fallback_file
+            return {
+                "uid": key,
+                "reset": bool(found and persisted),
+                "applied": persisted,
+                "path": str(file),
+                "preserved_first_appearance": bool(
+                    found
+                    and persisted
+                    and public_int(item.get("roast_count"), default=0, minimum=0) > 0
+                ),
+            }
 
 
 def _safe_profile_uid(value: Any) -> str:
@@ -272,3 +371,29 @@ def _safe_profile_uid(value: Any) -> str:
 
 def _safe_profile_text(value: Any) -> str:
     return public_text(value, max_len=_MAX_PROFILE_TEXT)
+
+
+def _safe_profile_item(value: dict[str, Any], *, fallback_uid: Any) -> dict[str, Any]:
+    uid = _safe_profile_uid(value.get("uid")) or _safe_profile_uid(fallback_uid)
+    if not uid:
+        return {}
+    return ViewerProfile(
+        uid=uid,
+        nickname=_safe_profile_text(value.get("nickname")) or uid,
+        avatar_url=_safe_profile_text(value.get("avatar_url")),
+        first_seen_at=_safe_profile_text(value.get("first_seen_at")),
+        last_seen_at=_safe_profile_text(value.get("last_seen_at")),
+        roast_count=public_int(value.get("roast_count"), default=0, minimum=0),
+        last_roast_at=_safe_profile_text(value.get("last_roast_at")),
+        last_result=_safe_profile_text(value.get("last_result")),
+        danmaku_count=public_int(value.get("danmaku_count"), default=0, minimum=0),
+        preference_tags=safe_preference_counts(value.get("preference_tags")),
+        favorite_topics=safe_preference_counts(value.get("favorite_topics")),
+        running_jokes=safe_preference_counts(value.get("running_jokes")),
+        interaction_style=_safe_profile_text(value.get("interaction_style")),
+        response_preference=_safe_profile_text(value.get("response_preference")),
+        last_interaction_summary=_safe_profile_text(value.get("last_interaction_summary")),
+        impression_summary=_safe_profile_text(value.get("impression_summary")),
+        avoid_guidance=_safe_profile_text(value.get("avoid_guidance")),
+        last_interaction_at=_safe_profile_text(value.get("last_interaction_at")),
+    ).to_dict()

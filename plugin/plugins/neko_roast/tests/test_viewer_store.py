@@ -133,3 +133,59 @@ async def test_record_live_danmaku_without_nickname_preserves_existing_nickname(
     profile = await store.record_live_danmaku(ViewerIdentity(uid="42", nickname=""), "hello")
 
     assert profile.nickname == "known viewer"
+
+
+@pytest.mark.asyncio
+async def test_profile_management_preserves_identity_and_supports_deletion(tmp_path):
+    store = ViewerStore(_FakePlugin(tmp_path), audit=None)
+    identity = ViewerIdentity(uid="42", nickname="viewer")
+    await store.record_live_danmaku(identity, "question tutorial")
+    await store.mark_roasted("42", "result")
+
+    reset = await store.reset_profile_impression("42")
+    profile = (await store.recent_profiles())[0]
+
+    assert reset["reset"] is True
+    assert reset["preserved_first_appearance"] is True
+    assert profile["nickname"] == "viewer"
+    assert profile["roast_count"] == 1
+    assert profile["preference_tags"] == {}
+
+    deleted = await store.delete_profile("42")
+    assert deleted["deleted"] is True
+    assert await store.recent_profiles() == []
+
+
+@pytest.mark.asyncio
+async def test_clear_profiles_reports_count(tmp_path):
+    store = ViewerStore(_FakePlugin(tmp_path), audit=None)
+    await store.upsert_identity(ViewerIdentity(uid="1", nickname="one"))
+    await store.upsert_identity(ViewerIdentity(uid="2", nickname="two"))
+
+    cleared = await store.clear_profiles()
+
+    assert cleared["cleared"] == 2
+    assert cleared["applied"] is True
+    assert await store.recent_profiles() == []
+
+
+@pytest.mark.asyncio
+async def test_profile_management_reports_failed_persistence(tmp_path, monkeypatch):
+    store = ViewerStore(_FakePlugin(tmp_path), audit=None)
+    identity = ViewerIdentity(uid="42", nickname="viewer")
+    await store.record_live_danmaku(identity, "question tutorial")
+
+    monkeypatch.setattr(store, "_write_json", lambda _file, _profiles: False)
+
+    cleared = await store.clear_profiles()
+    deleted = await store.delete_profile("42")
+    reset = await store.reset_profile_impression("42")
+
+    assert cleared["cleared"] == 0
+    assert cleared["applied"] is False
+    assert deleted["deleted"] is False
+    assert deleted["applied"] is False
+    assert reset["reset"] is False
+    assert reset["applied"] is False
+    restarted = ViewerStore(_FakePlugin(tmp_path), audit=None)
+    assert (await restarted.recent_profiles())[0]["uid"] == "42"
