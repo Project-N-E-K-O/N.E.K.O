@@ -68,6 +68,7 @@
     debugWordCycle: null,
     roundFlowToken: 0,
     activeRoundToken: 0,
+    guessTimeoutRetryTimer: null,
     aiGuessDeadline: 0,
     aiGuessInFlight: false,
     chatInFlight: false,
@@ -853,6 +854,8 @@
   }
 
   function beginRoundFlow() {
+    clearTimeout(state.guessTimeoutRetryTimer);
+    state.guessTimeoutRetryTimer = null;
     state.roundFlowToken += 1;
     return state.roundFlowToken;
   }
@@ -2569,19 +2572,36 @@
     prepareUserDrawing(res.user_draw_options || res.user_draw_answer, res.draw_seconds || ROUND_FALLBACK_SECONDS);
   }
 
+  function requestGuessTimeout(flowToken, attempt) {
+    return post(ROUND_API + '/timeout', roundPayload(), 10000).then(function (res) {
+      if (!isCurrentRoundFlow(flowToken)) return;
+      if (!res || !res.ok) throw new Error((res && res.reason) || 'timeout_failed');
+      state.guessTimeoutRetryTimer = null;
+      addNekoMessage(res.message || t('drawingGuess.messages.guessTimeout', 'Time is up. The answer was {{answer}}.', {
+        answer: res.answer ? res.answer.label : ''
+      }));
+      state.aiAnswerLabel = res.answer ? String(res.answer.label || '') : '';
+      addEventMessage('drawingGuess.messages.answerReveal', 'Answer: {{answer}}', { answer: res.answer ? res.answer.label : '' });
+      continueAfterAiDrawingHalf(res, flowToken);
+    }).catch(function (err) {
+      if (!isCurrentRoundFlow(flowToken)) return;
+      if (attempt === 0) {
+        addMessage('drawingGuess.messages.roundFailed', 'Round failed: {{reason}}', {
+          reason: readableRequestError(err)
+        });
+      }
+      clearTimeout(state.guessTimeoutRetryTimer);
+      state.guessTimeoutRetryTimer = setTimeout(function () {
+        if (!isCurrentRoundFlow(flowToken)) return;
+        requestGuessTimeout(flowToken, attempt + 1);
+      }, Math.min(5000, 1000 * Math.pow(2, attempt)));
+    });
+  }
+
   function handleGuessTimeout() {
     var flowToken = state.roundFlowToken;
-    post(ROUND_API + '/timeout', roundPayload(), 10000).then(function (res) {
-      if (!isCurrentRoundFlow(flowToken)) return;
-      if (res && res.ok) {
-        addNekoMessage(res.message || t('drawingGuess.messages.guessTimeout', 'Time is up. The answer was {{answer}}.', {
-          answer: res.answer ? res.answer.label : ''
-        }));
-        state.aiAnswerLabel = res.answer ? String(res.answer.label || '') : '';
-        addEventMessage('drawingGuess.messages.answerReveal', 'Answer: {{answer}}', { answer: res.answer ? res.answer.label : '' });
-        continueAfterAiDrawingHalf(res, flowToken);
-      }
-    }).catch(function () {});
+    setPhase('loading_round');
+    requestGuessTimeout(flowToken, 0);
   }
 
   function submitUserGuess(text) {

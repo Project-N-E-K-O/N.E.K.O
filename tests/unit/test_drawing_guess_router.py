@@ -941,6 +941,36 @@ async def test_timeout_rejects_concurrent_session_request():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_user_guess_timeout_retry_returns_cached_transition(monkeypatch):
+    await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-timeout-retry",
+        "i18n_language": "en",
+    }))
+    session = dgr._drawing_guess_sessions["YUI:dg-timeout-retry"]
+    session["phase"] = "user_guessing"
+    session["ai_word_id"] = "apple"
+
+    async def fake_persona_line(**kwargs):
+        return "Time is up.", "fallback"
+
+    monkeypatch.setattr(dgr, "_generate_persona_game_line", fake_persona_line)
+    payload = {
+        "lanlan_name": "YUI",
+        "session_id": "dg-timeout-retry",
+        "i18n_language": "en",
+    }
+    first = await dgr.drawing_guess_timeout(_FakeRequest(payload))
+    retried = await dgr.drawing_guess_timeout(_FakeRequest(payload))
+
+    assert first["ok"] is True
+    assert first["phase"] == "word_picking"
+    assert retried == first
+    assert session["phase"] == "word_picking"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_choose_word_rejects_concurrent_session_request():
     start = await dgr.drawing_guess_round_start(_FakeRequest({
         "lanlan_name": "YUI",

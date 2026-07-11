@@ -3394,6 +3394,10 @@ async def _handle_drawing_guess_timeout_payload(
     locale: str,
 ) -> dict[str, Any]:
     phase = session.get("phase")
+    if phase == "word_picking":
+        cached = session.get("user_guess_timeout_result")
+        if isinstance(cached, dict):
+            return cached
     if phase == "user_guessing":
         answer = _WORD_BY_ID[str(session["ai_word_id"])]
         session["phase"] = "word_picking"
@@ -3409,7 +3413,7 @@ async def _handle_drawing_guess_timeout_payload(
             },
         )
         _append_game_chat(session, "assistant", line, kind="guess_result")
-        return {
+        result = {
             "ok": True,
             "phase": session["phase"],
             "message": line,
@@ -3419,6 +3423,8 @@ async def _handle_drawing_guess_timeout_payload(
             "draw_seconds": ROUND_DRAW_SECONDS,
             "state": _public_round_state(session, locale),
         }
+        session["user_guess_timeout_result"] = result
+        return result
     if phase == "user_drawing":
         session["phase"] = "ai_guessing"
         return {"ok": True, "phase": session["phase"], "state": _public_round_state(session, locale)}

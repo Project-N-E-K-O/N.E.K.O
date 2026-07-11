@@ -270,6 +270,9 @@ def test_drawing_guess_static_route_contract():
     assert "beginRoundFlow();\n    state.aiGuessInFlight = false;" in script
     assert "if (state.phase !== 'ai_drawing') return;" in script
     assert "function continueAfterAiDrawingHalf(res, flowToken) {\n    if (!isCurrentRoundFlow(flowToken)) return;" in script
+    assert "function requestGuessTimeout(flowToken, attempt)" in script
+    assert "state.guessTimeoutRetryTimer = setTimeout(function ()" in script
+    assert "setPhase('loading_round');\n    requestGuessTimeout(flowToken, 0);" in script
     assert "function finishGame() {\n    renderFinalSummary();\n    showExitConfirm();\n  }" in script
     assert "return endRoute(false, { finalSummary: true }).finally(showExitConfirm);" not in script
     assert 'id="voice-route-button" class="dg-voice-button"' in html
