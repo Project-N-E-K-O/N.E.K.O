@@ -1,6 +1,7 @@
 from unittest.mock import MagicMock
 
 import httpx
+import pytest
 
 from brain.openclaw_adapter import OpenClawAdapter, _resolve_qwenpaw_urls
 
@@ -15,6 +16,10 @@ def _adapter_for_protocol_test() -> OpenClawAdapter:
     adapter.console_chat_url = f"{adapter.base_url}/api/console/chat"
     adapter.api_variant = "unknown"
     adapter.auth_token = ""
+    adapter.default_sender_id = "neko_user"
+    adapter.default_channel = "console"
+    adapter.timeout = 300.0
+    adapter.http_timeout = 315.0
     adapter.last_error = None
     adapter.reload_config = lambda: None
     return adapter
@@ -104,6 +109,59 @@ def test_console_payload_uses_qwenpaw_runtime_content_types():
     assert payload["input"][0]["content"] == [
         {"type": "text", "text": "describe this image"},
         {"type": "image", "image_url": "data:image/png;base64,abc"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_v2_console_server_error_falls_back_to_legacy_process(monkeypatch):
+    adapter = _adapter_for_protocol_test()
+    adapter.api_variant = "v2"
+    responses = [
+        httpx.Response(
+            503,
+            request=httpx.Request("POST", adapter.console_chat_url),
+        ),
+        httpx.Response(
+            404,
+            request=httpx.Request("POST", adapter.responses_url),
+        ),
+        httpx.Response(
+            200,
+            text='data: {"object":"response","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"text","text":"legacy fallback"}]}]}\n\n',
+            request=httpx.Request("POST", adapter.process_url),
+        ),
+    ]
+
+    class FakeAsyncClient:
+        def __init__(self):
+            self.calls = []
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        async def post(self, url, *, json):
+            self.calls.append((url, json))
+            return responses.pop(0)
+
+    client = FakeAsyncClient()
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: client)
+
+    result = await adapter.run_instruction(
+        "do the task",
+        sender_id="user-a",
+        session_id="stable-session",
+    )
+
+    assert result["success"] is True
+    assert result["reply"] == "legacy fallback"
+    assert adapter.api_variant == "legacy"
+    assert [url for url, _ in client.calls] == [
+        adapter.console_chat_url,
+        adapter.responses_url,
+        adapter.process_url,
     ]
 
 

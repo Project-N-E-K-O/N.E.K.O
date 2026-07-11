@@ -821,34 +821,42 @@ class OpenClawAdapter:
                 trust_env=False,
             ) as client:
                 data = None
-                console_attempted = False
+                console_candidate = (self.console_chat_url, console_payload, "sse", "v2")
+                legacy_candidates = (
+                    (self.responses_url, responses_payload, "json", "legacy"),
+                    (self.process_url, process_payload, "sse", "legacy"),
+                )
+                candidates = (
+                    (console_candidate, *legacy_candidates)
+                    if self.api_variant == "v2"
+                    else (*legacy_candidates, console_candidate)
+                )
+                last_response: Optional[httpx.Response] = None
+                last_request_error: Optional[httpx.RequestError] = None
 
-                if self.api_variant == "v2":
-                    console_attempted = True
-                    console_response = await client.post(self.console_chat_url, json=console_payload)
-                    if console_response.status_code not in (404, 405):
-                        console_response.raise_for_status()
-                        data = self._parse_process_sse_payload(console_response.text)
+                for url, payload, response_format, variant in candidates:
+                    try:
+                        response = await client.post(url, json=payload)
+                    except httpx.RequestError as exc:
+                        last_request_error = exc
+                        continue
+                    last_response = response
+                    if response.is_success:
+                        data = (
+                            response.json()
+                            if response_format == "json"
+                            else self._parse_process_sse_payload(response.text)
+                        )
+                        self.api_variant = variant
+                        break
+                    if response.status_code < 500 and response.status_code not in (404, 405):
+                        response.raise_for_status()
 
                 if data is None:
-                    response = await client.post(self.responses_url, json=responses_payload)
-                    if response.status_code not in (404, 405):
-                        response.raise_for_status()
-                        data = response.json()
-                        self.api_variant = "legacy"
-                    else:
-                        process_response = await client.post(self.process_url, json=process_payload)
-                        if process_response.status_code not in (404, 405):
-                            process_response.raise_for_status()
-                            data = self._parse_process_sse_payload(process_response.text)
-                            self.api_variant = "legacy"
-                        elif not console_attempted:
-                            console_response = await client.post(self.console_chat_url, json=console_payload)
-                            console_response.raise_for_status()
-                            data = self._parse_process_sse_payload(console_response.text)
-                            self.api_variant = "v2"
-                        else:
-                            process_response.raise_for_status()
+                    if last_response is not None:
+                        last_response.raise_for_status()
+                    if last_request_error is not None:
+                        raise last_request_error
         except httpx.TimeoutException:
             self.last_error = f"OpenClaw(QwenPaw) request timed out ({self.timeout}s)"
             return {"success": False, "error": self.last_error}
