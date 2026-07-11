@@ -91,7 +91,7 @@ class _FakeElevenTransport(httpx.AsyncBaseTransport):
 
 @pytest.mark.unit
 async def test_elevenlabs_design_previews_and_create(monkeypatch):
-    from main_routers import characters_router as cr
+    from main_routers.characters_router import voice_providers as cr
 
     transport = _FakeElevenTransport()
     original = httpx.AsyncClient
@@ -131,10 +131,10 @@ async def test_elevenlabs_design_previews_and_create(monkeypatch):
 
 @pytest.mark.unit
 def test_voice_design_description_validation():
-    from main_routers import characters_router as cr
-    _, too_short = cr._validate_voice_design_description("short")
+    from main_routers.characters_router import voice_providers as cr
+    _, too_short = __import__('importlib').import_module('main_routers.characters_router.voice_cloning')._validate_voice_design_description("short")
     assert too_short is not None and too_short.status_code == 400
-    desc, ok = cr._validate_voice_design_description("a warm gentle young woman voice")
+    desc, ok = __import__('importlib').import_module('main_routers.characters_router.voice_cloning')._validate_voice_design_description("a warm gentle young woman voice")
     assert ok is None and desc.startswith("a warm")
-    _, too_long = cr._validate_voice_design_description("x" * 1001)
+    _, too_long = __import__('importlib').import_module('main_routers.characters_router.voice_cloning')._validate_voice_design_description("x" * 1001)
     assert too_long is not None and too_long.status_code == 400

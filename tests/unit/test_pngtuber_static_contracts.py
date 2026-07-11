@@ -153,7 +153,7 @@ def test_pngtuber_mouth_flap_does_not_restart_layered_motion_timeline():
         source.index("        startSpeakingMouthAnimation()")
     ]
     start_block = source[
-        source.index("        startSpeakingMouthAnimation()"):
+        source.index("        startSpeakingMouthAnimation() {"):
         source.index("        stopSpeakingMouthAnimation()")
     ]
 
@@ -768,7 +768,7 @@ def test_pngtuber_talking_hop_moves_whole_avatar_while_speaking():
         source.index("        getActiveLayoutFields()")
     ]
     start_block = source[
-        source.index("startSpeakingMouthAnimation()"):
+        source.index("        startSpeakingMouthAnimation() {"):
         source.index("        stopSpeakingMouthAnimation()")
     ]
     lip_sync_block = source[

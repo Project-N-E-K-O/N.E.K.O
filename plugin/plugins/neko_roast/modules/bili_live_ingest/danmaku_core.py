@@ -155,7 +155,6 @@ class DanmakuListener:
         credential=None,
         logger=None,
         callbacks: Dict[str, Callable] = None,
-        danmaku_max_length: int = 20,  # 弹幕最大长度限制（B站限制 20 字符）
     ):
         self.room_id = room_id
         self.real_room_id: int = room_id  # 连接后更新为真实房间号（处理短号）
@@ -167,7 +166,6 @@ class DanmakuListener:
         self._ws = None
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._buvid3_temp: str = ""  # 临时 buvid3，无凭据时从 B站首页获取
-        self._danmaku_max_length = max(1, min(100, danmaku_max_length))  # 限制范围 1-100
 
         # 连接状态
         self._connection_state = ConnectionState.DISCONNECTED
@@ -562,6 +560,22 @@ class DanmakuListener:
 
             elif cmd == "SEND_GIFT":
                 inner = data.get("data", {})
+                try:
+                    from .livedanmaku import LiveDanmaku as _LD
+                    ld = _LD.from_gift(data)
+                    await self._emit("on_event", "SEND_GIFT", ld)
+                except Exception as e:
+                    self._log(f"LiveDanmaku SEND_GIFT parse failed: {e}", "debug")
+                    await self._emit("on_event", "SEND_GIFT", {
+                        "uid": inner.get("uid", 0),
+                        "nickname": inner.get("uname", ""),
+                        "danmaku_text": f"gift {inner.get('giftName', 'gift')}",
+                        "gift_name": inner.get("giftName", "gift"),
+                        "gift_count": inner.get("num", 1),
+                        "gift_value": inner.get("total_coin", 0),
+                        "gift_coin_type": inner.get("coin_type", ""),
+                        "room_id": inner.get("room_id") or inner.get("ruid", 0),
+                    })
                 await self._emit("on_gift", {
                     "user_name": inner.get("uname", "未知"),
                     "user_id": inner.get("uid", 0),
@@ -572,16 +586,23 @@ class DanmakuListener:
                     "price": inner.get("price", 0),
                 })
 
-                try:
-                    from .livedanmaku import LiveDanmaku as _LD
-                    ld = _LD.from_gift(data)
-                    await self._emit("on_event", "SEND_GIFT", ld)
-                except Exception as e:
-                    self._log(f"LiveDanmaku SEND_GIFT parse failed: {e}", "debug")
-
             elif cmd == "SUPER_CHAT_MESSAGE":
                 inner = data.get("data", {})
                 user_info = inner.get("user_info", {})
+                try:
+                    from .livedanmaku import LiveDanmaku as _LD
+                    ld = _LD.from_sc(data)
+                    await self._emit("on_event", "SUPER_CHAT_MESSAGE", ld)
+                except Exception as e:
+                    self._log(f"LiveDanmaku SUPER_CHAT_MESSAGE parse failed: {e}", "debug")
+                    await self._emit("on_event", "SUPER_CHAT_MESSAGE", {
+                        "uid": inner.get("uid", 0),
+                        "nickname": user_info.get("uname", ""),
+                        "danmaku_text": inner.get("message", "") or "Super Chat",
+                        "gift_name": "Super Chat",
+                        "gift_value": (int(inner.get("price") or 0) * 1000) if str(inner.get("price") or "0").isdigit() else 0,
+                        "room_id": inner.get("room_id", 0),
+                    })
                 await self._emit("on_sc", {
                     "user_name": user_info.get("uname", "未知"),
                     "user_id": inner.get("uid", 0),
@@ -589,13 +610,6 @@ class DanmakuListener:
                     "price": inner.get("price", 0),
                     "start_time": inner.get("start_time", 0),
                 })
-
-                try:
-                    from .livedanmaku import LiveDanmaku as _LD
-                    ld = _LD.from_sc(data)
-                    await self._emit("on_event", "SUPER_CHAT_MESSAGE", ld)
-                except Exception as e:
-                    self._log(f"LiveDanmaku SUPER_CHAT_MESSAGE parse failed: {e}", "debug")
 
             elif cmd == "INTERACT_WORD":
                 inner = data.get("data", {})
@@ -629,9 +643,138 @@ class DanmakuListener:
                         await self._emit("on_event", cmd, ld)
                 except Exception as e:
                     self._log(f"增强协议处理 {cmd} 异常: {e}", "debug")
+            else:
+                gift_payload = self._fallback_support_gift_payload(cmd, data)
+                if gift_payload:
+                    await self._emit("on_event", "SEND_GIFT", gift_payload)
 
         except Exception as e:
             self._log(f"分发消息 {cmd} 异常: {e}", "debug")
+
+    @staticmethod
+    def _fallback_support_gift_payload(cmd: str, data: dict):
+        """Recover trusted Bilibili support packets that use a newer/unknown cmd."""
+        if not isinstance(data, dict) or str(cmd or "").split(":", 1)[0] == "DANMU_MSG":
+            return None
+        inner = data.get("data")
+        if not isinstance(inner, dict):
+            return None
+        gift_info = inner.get("gift_info") or inner.get("giftInfo") or inner.get("gift") or {}
+        if not isinstance(gift_info, dict):
+            gift_info = {}
+        command = str(cmd or "").upper()
+        explicit_gift_command = "GIFT" in command
+        official_support_command = command in {"USER_TOAST_MSG"}
+        explicit_gift_fields = any(
+            key in inner
+            for key in ("gift_id", "giftId", "giftName", "gift_name", "gift_name_str", "giftNameStr")
+        )
+        nested_gift_fields = any(
+            key in gift_info
+            for key in ("gift_id", "giftId", "giftName", "gift_name", "gift_name_str", "giftNameStr")
+        )
+        nested_gift_name_fields = any(
+            key in gift_info
+            for key in ("giftName", "gift_name", "gift_name_str", "giftNameStr")
+        )
+        text_hint = DanmakuListener._first_text(
+            inner,
+            gift_info,
+            keys=("toast_msg", "toastMsg", "message", "msg", "copy_writing", "copyWriting", "text", "content"),
+        )
+        if official_support_command and DanmakuListener._looks_like_fans_medal_activation_text(text_hint):
+            return None
+        support_hint = (
+            explicit_gift_command
+            or explicit_gift_fields
+            or (
+                official_support_command
+                and nested_gift_name_fields
+                and DanmakuListener._looks_like_gift_transfer_text(text_hint)
+            )
+        )
+        gift_name = DanmakuListener._first_text(
+            inner,
+            gift_info,
+            keys=("giftName", "gift_name", "gift_name_str", "giftNameStr"),
+        )
+        if not gift_name and explicit_gift_command:
+            gift_name = DanmakuListener._first_text(inner, gift_info, keys=("name",))
+        elif not gift_name and nested_gift_fields:
+            gift_name = DanmakuListener._first_text(gift_info, keys=("name",))
+        if not gift_name and support_hint and DanmakuListener._looks_like_fans_medal_text(text_hint):
+            gift_name = "fans medal"
+        if not gift_name or not support_hint:
+            return None
+        uid = DanmakuListener._first_int(inner, gift_info, keys=("uid", "user_id", "userId", "sender_uid", "senderUid"))
+        nickname = DanmakuListener._first_text(
+            inner,
+            gift_info,
+            keys=("uname", "user_name", "userName", "nickname", "name"),
+        )
+        count = DanmakuListener._first_int(inner, gift_info, keys=("num", "gift_num", "giftNum", "combo_num", "comboNum")) or 1
+        value = DanmakuListener._first_int(inner, gift_info, keys=("total_coin", "totalCoin", "price", "coin", "gold")) or 0
+        room_id = DanmakuListener._first_int(inner, data, keys=("room_id", "roomId", "roomid")) or 0
+        return {
+            "uid": uid,
+            "nickname": nickname,
+            "danmaku_text": f"gift {gift_name}",
+            "gift_name": gift_name,
+            "gift_count": count,
+            "gift_value": value,
+            "room_id": room_id,
+            "raw_cmd": str(cmd or ""),
+        }
+
+    @staticmethod
+    def _looks_like_fans_medal_text(text: str) -> bool:
+        cleaned = str(text or "")
+        if not cleaned:
+            return False
+        return (
+            ("粉丝团灯牌" in cleaned or "粉丝牌" in cleaned or "灯牌" in cleaned)
+            and ("赠送" in cleaned or "点亮" in cleaned or "投喂" in cleaned or "加入" in cleaned)
+        )
+
+    @staticmethod
+    def _looks_like_fans_medal_activation_text(text: str) -> bool:
+        cleaned = str(text or "")
+        return DanmakuListener._looks_like_fans_medal_text(cleaned) and (
+            "成功" in cleaned or "点亮" in cleaned or "加入粉丝团" in cleaned
+        )
+
+    @staticmethod
+    def _looks_like_gift_transfer_text(text: str) -> bool:
+        cleaned = str(text or "")
+        return bool(cleaned) and any(marker in cleaned for marker in ("赠送", "投喂"))
+
+    @staticmethod
+    def _first_text(*sources: dict, keys: tuple[str, ...]) -> str:
+        for source in sources:
+            if not isinstance(source, dict):
+                continue
+            for key in keys:
+                value = source.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        return ""
+
+    @staticmethod
+    def _first_int(*sources: dict, keys: tuple[str, ...]) -> int:
+        for source in sources:
+            if not isinstance(source, dict):
+                continue
+            for key in keys:
+                value = source.get(key)
+                if isinstance(value, bool):
+                    continue
+                try:
+                    parsed = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if parsed >= 0:
+                    return parsed
+        return 0
 
     # ── 增强协议指令处理器 ─────────────────────────────────────
 
@@ -891,7 +1034,7 @@ class DanmakuListener:
         real_room_id = await self._get_real_room_id(self.room_id)
         if self._stop_event.is_set():
             return
-        # 保存真实房间号供 send_danmaku 等接口使用
+        # 保存真实房间号供状态投影和后续协议请求使用
         self.real_room_id = real_room_id
 
         # 2. 获取所有服务器和 token
@@ -1001,91 +1144,6 @@ class DanmakuListener:
             if last_error:
                 self._log(f"所有 {len(servers)} 个服务器连接失败: {last_error}", "error")
                 raise last_error
-
-    async def send_danmaku(
-        self,
-        message: str,
-        room_id: int,
-        credential=None,
-        danmaku_max_length: int = 20,
-    ) -> dict:
-        """
-        发送弹幕到 B站直播间。
-
-        Args:
-            message: 弹幕文本
-            room_id: 直播间真实房间号
-            credential: _BiliCredential 实例（需要 bili_jct + SESSDATA）
-            danmaku_max_length: 弹幕最大长度限制（默认 20，B站限制 20 字符/秒）
-
-        Returns:
-            dict: {"success": bool, "message": str}
-        """
-        if not credential:
-            return {"success": False, "message": "未登录，无法发送弹幕"}
-
-        bili_jct = getattr(credential, "bili_jct", "")
-        sessdata = getattr(credential, "sessdata", "")
-        dedeuserid = getattr(credential, "dedeuserid", "")
-
-        if not bili_jct:
-            return {"success": False, "message": "缺少 bili_jct，无法发送弹幕"}
-
-        message = str(message).strip()
-        if not message:
-            return {"success": False, "message": "弹幕内容不能为空"}
-        max_len = danmaku_max_length or self._danmaku_max_length or 20
-        if len(message) > max_len:
-            message = message[:max_len]
-
-        try:
-            import aiohttp
-
-            url = "https://api.live.bilibili.com/msg/send"
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Referer": f"https://live.bilibili.com/{room_id}",
-                "Content-Type": "application/x-www-form-urlencoded",
-            }
-            cookies = {
-                "SESSDATA": sessdata,
-                "bili_jct": bili_jct,
-                "DedeUserID": dedeuserid,
-            }
-            # 过滤空值
-            cookies = {k: v for k, v in cookies.items() if v}
-
-            payload = {
-                "bubble": "0",
-                "msg": message,
-                "color": "16777215",
-                "mode": "1",
-                "fontsize": "25",
-                "rnd": int(time.time() * 1000000),
-                "roomid": room_id,
-                "csrf": bili_jct,
-                "csrf_token": bili_jct,
-            }
-
-            async with aiohttp.ClientSession(cookies=cookies, timeout=aiohttp.ClientTimeout(total=self._http_timeout)) as session:
-                async with session.post(
-                    url,
-                    data=payload,
-                    headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=self._http_timeout),
-                ) as resp:
-                    data = await resp.json()
-                    code = data.get("code", -1)
-                    if code == 0:
-                        self._log(f"✅ 弹幕发送成功: {message[:30]}...")
-                        return {"success": True, "message": f"弹幕发送成功: {message}"}
-                    else:
-                        msg = data.get("message", "未知错误")
-                        self._log(f"❌ 弹幕发送失败: code={code} msg={msg}", "warning")
-                        return {"success": False, "message": f"发送失败: {msg} (code={code})"}
-        except Exception as e:
-            self._log(f"❌ 弹幕发送异常: {e}", "error")
-            return {"success": False, "message": f"发送异常: {e}"}
 
     async def stop(self):
         """断开连接（可在任意时刻安全调用，包括连接建立过程中）"""

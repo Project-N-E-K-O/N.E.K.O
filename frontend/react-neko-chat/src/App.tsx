@@ -136,9 +136,9 @@ const COMPACT_SPEECH_FALLBACK_REVEAL_DELAY_MS = 700;
 const SPEECH_PLAYBACK_STATE_STORAGE_KEY = 'neko_speech_playback_state';
 const SPEECH_PLAYBACK_CHANNEL_NAME = 'neko_speech_playback_channel';
 const COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY = 'neko.reactChatWindow.compactExportHistoryOpen';
-const COMPACT_HISTORY_DEFAULT_EXPERIMENT_KEY = 'neko.experiment.compactHistoryDefault';
-// A/B 变体「套用」的兜底延迟：本次不跑教程的老用户在此延迟后若仍非教程态，就直接套用变体默认值。
-const COMPACT_HISTORY_EXPERIMENT_APPLY_FALLBACK_MS = 3000;
+// ⚠️ 'neko.experiment.compactHistoryDefault' 是已退役的「历史首启默认」A/B 分组 key（退役记录见
+// utils/token_tracker.py 的已退役实验清单）：存量用户 localStorage 里仍残留 'open'/'closed' 值，
+// 只停读写、不清理（保留取证窗口），勿把该 key 名挪作他用。
 const COMPACT_HISTORY_HEIGHT_STORAGE_KEY = 'neko.reactChatWindow.compactHistorySlotHeight';
 export const COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS = 560;
 const COMPACT_INPUT_TOOL_WHEEL_TOOL_ORDER = [
@@ -559,29 +559,10 @@ function readPersistedCompactExportHistoryOpen(): boolean {
   try {
     const persisted = window.localStorage?.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY);
     if (persisted !== null) return persisted === 'true';
-    // 无显式偏好：初始一律折叠。A/B 变体默认值（含 open 展开）改由「教程完全结束后 / 本次不跑教程的老
-    // 用户」的 effect 套用（见 applyCompactHistoryExperimentDefault）——避免教程进行中、或教程演示历史区
-    // 之前就先展开，与教学冲突。
+    // 无显式偏好：一律折叠（原「历史首启默认」A/B 已退役，closed 即最终默认；用户手动展开写入偏好后照旧恢复）。
     return false;
   } catch {
     return false;
-  }
-}
-
-// 读取（必要时分配）A/B「历史首启默认」变体：用户已有显式开/合偏好 → null（不在实验内）；否则读已分配
-// variant，没有则随机分配并持久化（稳定 cohort），返回 'open'|'closed'。
-function readCompactHistoryExperimentVariant(): 'open' | 'closed' | null {
-  if (typeof window === 'undefined') return null;
-  try {
-    if (window.localStorage?.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY) !== null) return null;
-    let variant = window.localStorage?.getItem(COMPACT_HISTORY_DEFAULT_EXPERIMENT_KEY);
-    if (variant !== 'open' && variant !== 'closed') {
-      variant = Math.random() < 0.5 ? 'open' : 'closed';
-      window.localStorage?.setItem(COMPACT_HISTORY_DEFAULT_EXPERIMENT_KEY, variant);
-    }
-    return variant === 'open' ? 'open' : 'closed';
-  } catch {
-    return null;
   }
 }
 
@@ -592,64 +573,6 @@ function persistCompactExportHistoryOpen(open: boolean) {
   } catch {
     // localStorage can be unavailable in restricted hosts; keep the in-memory state.
   }
-}
-
-// A/B「聊天历史首启默认」曝光上报。刻意从 readPersistedCompactExportHistoryOpen（useState
-// 初始化器/render 阶段）里抽出，挪到组件挂载后的 useEffect 调用：(1) telemetry 是带副作用的
-// fire-and-forget，不该在 render 阶段触发；(2) 上报走 appTelemetry→WS，挂载前 socket 多半未
-// OPEN，过早上报会被静默丢弃。仅在「用户无显式开/合偏好 + 已分配实验 variant」时上报。
-const COMPACT_HISTORY_EXPOSURE_REPORTED_SESSION_KEY = 'neko.experiment.compactHistoryDefault.exposureReported';
-// 返回 true = 「已处理完、无需重试」（成功上报 / 本会话已报过 / 不适用）；返回 false 仅当「该报但
-// appTelemetry 没投出去」(WS 未 OPEN)，调用方据此挂 socket open 重试。去重用 sessionStorage 而非
-// useRef（useRef 仅同实例有效，挡不住真实重挂载如 surface 切换）、也非 localStorage（那会「一生一次」
-// 丢后续会话曝光）；按会话粒度，跨真实重挂载 + StrictMode 双 effect 都只报一次。只有真正投出去才置
-// flag，避免「标记了却没报」永久丢曝光。
-// sessionStorage 去重是 best-effort：隐私浏览器/webview 里 localStorage 仍可能持久化 cohort，但
-// sessionStorage 访问会抛 SecurityError。读失败时必须当作「本会话还没报过」、让曝光照常投出去，
-// 绝不能把存储异常当成「已处理的曝光」——否则有 variant 的用户永远漏曝光、A/B 指标被低估（回应 Codex）。
-function readCompactHistoryExposureReportedThisSession(): boolean {
-  try {
-    return window.sessionStorage?.getItem(COMPACT_HISTORY_EXPOSURE_REPORTED_SESSION_KEY) === 'true';
-  } catch {
-    return false;
-  }
-}
-function markCompactHistoryExposureReportedThisSession(): void {
-  try {
-    window.sessionStorage?.setItem(COMPACT_HISTORY_EXPOSURE_REPORTED_SESSION_KEY, 'true');
-  } catch {
-    // 存不下就退化成「跨真实重挂载可能重复上报」，但不丢曝光——去重只是降噪。
-  }
-}
-function reportCompactHistoryExperimentExposure(): boolean {
-  if (typeof window === 'undefined') return true;
-  let variant: string | null = null;
-  try {
-    const persisted = window.localStorage?.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY);
-    if (persisted !== null) return true;
-    variant = window.localStorage?.getItem(COMPACT_HISTORY_DEFAULT_EXPERIMENT_KEY) ?? null;
-  } catch {
-    // localStorage 不可用 → 读不到 cohort、没有可上报的 variant，视为不适用。
-    return true;
-  }
-  if (variant !== 'open' && variant !== 'closed') return true;
-  if (readCompactHistoryExposureReportedThisSession()) return true;
-  let sent = false;
-  try {
-    // 必须走 counter 不是 event：event 只落本地 events.jsonl、不进 instrument.snapshot()，
-    // 永远到不了 TokenTracker 的远程上报通道（见 utils/instrument.py、utils/event_logger.py）。
-    // A/B 曝光要进远程指标必须用 counter，与 session_start / session_end 同范式。
-    sent = (window as unknown as { appTelemetry?: { counter?: (n: string, v?: number, d?: Record<string, unknown>) => boolean } })
-      .appTelemetry?.counter?.('experiment_exposure', 1, { experiment: 'compact_history_default', variant }) === true;
-  } catch {
-    // 投递本身抛错：留给调用方挂 socket open 重试。
-    return false;
-  }
-  if (sent) {
-    markCompactHistoryExposureReportedThisSession();
-    return true;
-  }
-  return false;
 }
 
 function readPersistedCompactHistorySlotHeight(): number | null {
@@ -1667,71 +1590,11 @@ function CompactChatApp({
   const [compactHistorySlotHeight, setCompactHistorySlotHeight] = useState<number | null>(readPersistedCompactHistorySlotHeight);
   const [compactHistoryResizeActive, setCompactHistoryResizeActive] = useState(false);
   const [compactHistoryResizeContentLocked, setCompactHistoryResizeContentLocked] = useState(false);
-  // 快照一次再复用：open/mounted 必须来自同一次持久化读取（readPersistedCompactExportHistoryOpen
-  // 无偏好时一律返回折叠；随机分组在 readCompactHistoryExperimentVariant 里、不在这条读取上）。
-  // 单读单源避免后续给初始化引入副作用时，两个 useState 各算一次导致 open/mounted 分裂初态。
+  // 快照一次再复用：open/mounted 必须来自同一次持久化读取，单读单源避免后续给初始化引入副作用时，
+  // 两个 useState 各算一次导致 open/mounted 分裂初态。无偏好一律折叠（「历史首启默认」A/B 已退役）。
   const [initialCompactExportHistoryOpen] = useState(readPersistedCompactExportHistoryOpen);
   const [compactExportHistoryOpen, setCompactExportHistoryOpen] = useState(initialCompactExportHistoryOpen);
   const [compactExportHistoryMounted, setCompactExportHistoryMounted] = useState(initialCompactExportHistoryOpen);
-  // A/B「历史首启默认」套用（含 open 展开 + 曝光上报）：初始一律折叠（见 readPersistedCompactExportHistoryOpen），
-  // 变体只在「教程完全结束（neko:tutorial-completed / -ended-without-completion）」或「本次不跑教程的老用户」
-  // 时套用——避免教程进行中 / 演示历史区前就展开，与教学冲突。surface 门控见下方 useEffect 开头。
-  // ref 保证整会话只套一次；曝光走 sessionStorage 去重（不可用则退化为 best-effort）+ WS 未就绪有界轮询重试。
-  const compactHistoryExperimentAppliedRef = useRef(false);
-  useEffect(() => {
-    // 仅 compact 才套用 + 计曝光：full 聊天页 / 宽屏 web index（无 surface 偏好）下用户没看到紧凑历史面板，
-    // 若只跳过 minimized，full-surface 用户 3s 兜底后会分配 variant + 上报曝光，污染 compact A/B 数据
-    // （回应 Codex）。从 full 切到 compact 时本 effect 因 deps=[chatSurfaceMode] 重跑、会正常套用。
-    if (chatSurfaceMode !== 'compact') return undefined;
-    const win = window as unknown as { isInTutorial?: boolean };
-    let exposureTimer: number | null = null;
-    let fallbackTimer = 0;
-    // 曝光重试独立于「套用」guard：已套用但本会话还没成功上报的，重新可见（minimized→compact）时要能继续
-    // 补报——否则首报失败后一旦最小化打断，曝光就永久漏掉、A/B 指标被低估。sessionStorage 保证只投一次。
-    const startExposureReporting = () => {
-      if (exposureTimer !== null) return;
-      if (reportCompactHistoryExperimentExposure()) return;
-      let tries = 0;
-      exposureTimer = window.setInterval(() => {
-        if (reportCompactHistoryExperimentExposure() || (tries += 1) >= 20) {
-          if (exposureTimer !== null) { window.clearInterval(exposureTimer); exposureTimer = null; }
-        }
-      }, 1000);
-    };
-    const applyExperimentDefault = () => {
-      if (!compactHistoryExperimentAppliedRef.current) {
-        const variant = readCompactHistoryExperimentVariant();
-        compactHistoryExperimentAppliedRef.current = true;
-        if (variant === 'open') {
-          // 用 openCompactExportHistory({persist:false}) 而非直接 set state：会清掉 close 留下的 560ms
-          // unmount 定时器（否则它会在展开后触发把 mounted 设回 false，留下 open=true 但面板不渲染），
-          // 且 persist:false 不把 A/B 自动展开写成用户偏好。
-          openCompactExportHistory({ persist: false });
-        }
-      }
-      startExposureReporting();
-    };
-    const onTutorialEnd = () => applyExperimentDefault();
-    // 教程结束的三种信号都要监听：完成 / 未完成结束 / 跳过——skip 路径只派发 neko:tutorial-skipped，
-    // 不发另外两个，否则跳过新手教程的用户永远等不到变体套用 + 曝光（回应 Codex）。
-    const tutorialEndEvents = ['neko:tutorial-completed', 'neko:tutorial-ended-without-completion', 'neko:tutorial-skipped'];
-    tutorialEndEvents.forEach((name) => window.addEventListener(name, onTutorialEnd));
-    if (compactHistoryExperimentAppliedRef.current) {
-      // 上次可见时已套用（过了教程/兜底），但曝光可能还没成功 → 重新可见时继续补报。
-      startExposureReporting();
-    } else if (win.isInTutorial !== true && !isGuideChatButtonLockActive()) {
-      // 本次不跑教程的老用户：教程启动会置 window.isInTutorial=true / body 加 guide-active 类。给它一点
-      // 时间，到时仍非教程态就直接套用；教程态则等上面的结束事件。
-      fallbackTimer = window.setTimeout(() => {
-        if (win.isInTutorial !== true && !isGuideChatButtonLockActive()) applyExperimentDefault();
-      }, COMPACT_HISTORY_EXPERIMENT_APPLY_FALLBACK_MS);
-    }
-    return () => {
-      tutorialEndEvents.forEach((name) => window.removeEventListener(name, onTutorialEnd));
-      if (fallbackTimer) window.clearTimeout(fallbackTimer);
-      if (exposureTimer !== null) window.clearInterval(exposureTimer);
-    };
-  }, [chatSurfaceMode]);
   const [compactExportHistoryClosingMessages, setCompactExportHistoryClosingMessages] = useState<ChatMessage[] | null>(null);
   const [compactExportControlsOpen, setCompactExportControlsOpen] = useState(false);
   const [compactExportPreviewOpen, setCompactExportPreviewOpen] = useState(false);
@@ -2155,7 +2018,7 @@ function CompactChatApp({
     if (!request || !request.id || request.id === lastCompactHistoryOpenRequestIdRef.current) return;
     lastCompactHistoryOpenRequestIdRef.current = request.id;
     if (request.open) {
-      // 教程演示历史区只临时展开，不写用户偏好（与 close 对称）——否则会覆盖 A/B 变体默认值。
+      // 教程演示历史区只临时展开，不写用户偏好（与 close 对称）——演示动作不该变成用户的持久化选择。
       openCompactExportHistory({ persist: false });
       return;
     }
@@ -2182,7 +2045,7 @@ function CompactChatApp({
     if (chatSurfaceMode === 'compact' && prev !== 'compact'
       && compactHistoryReopenAfterRestoreRef.current) {
       compactHistoryReopenAfterRestoreRef.current = false;
-      openCompactExportHistory({ persist: false }); // restore 重开不持久化：manual-open OPEN_KEY 本就 true（幂等），experiment-open 保持 null 不变成偏好
+      openCompactExportHistory({ persist: false }); // restore 重开不持久化：manual-open OPEN_KEY 本就 true（幂等），教程临时展开不变成偏好
     }
     // 方向性 reveal 擦除只在毛线球 minimized→compact 恢复时播（full→compact 不播）。~340ms 后复位。
     // useLayoutEffect 让首帧绘制前就挂 mask，消除 web 端首帧闪（壳侧有 opacity-0 门、Electron 看不出）。
@@ -2226,7 +2089,7 @@ function CompactChatApp({
       // 不渲染（受 isCompactSurface 门控），无副作用。正常折叠走 minimized→compact 重开、不到这里。
       if (compactHistoryReopenAfterRestoreRef.current) {
         compactHistoryReopenAfterRestoreRef.current = false;
-        openCompactExportHistory({ persist: false }); // restore 重开不持久化：manual-open OPEN_KEY 本就 true（幂等），experiment-open 保持 null 不变成偏好
+        openCompactExportHistory({ persist: false }); // restore 重开不持久化：manual-open OPEN_KEY 本就 true（幂等），教程临时展开不变成偏好
       }
     }, 600);
     return () => window.clearTimeout(t);
@@ -2242,7 +2105,7 @@ function CompactChatApp({
     setCompactCollapsing(false);
     if (compactHistoryReopenAfterRestoreRef.current) {
       compactHistoryReopenAfterRestoreRef.current = false;
-      openCompactExportHistory({ persist: false }); // restore 重开不持久化：manual-open OPEN_KEY 本就 true（幂等），experiment-open 保持 null 不变成偏好
+      openCompactExportHistory({ persist: false }); // restore 重开不持久化：manual-open OPEN_KEY 本就 true（幂等），教程临时展开不变成偏好
     }
   }, [compactMinimizeCancelSeq, openCompactExportHistory]);
   const handleCompactHistoryVisibilityToggle = useCallback(() => {

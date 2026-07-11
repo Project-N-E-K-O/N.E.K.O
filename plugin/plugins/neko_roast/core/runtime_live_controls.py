@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .contracts import RoastConfig
+from .runtime_live_input import remember_live_room_context
 
 
 def pause(runtime: Any) -> None:
@@ -174,18 +175,12 @@ async def _refresh_live_room_context(runtime: Any, room_ref: str) -> None:
     except Exception as exc:
         runtime.audit.record("live_room_context_lookup_failed", str(exc)[:200], level="warning")
         return
-    remember = getattr(runtime, "remember_live_room_context", None)
-    if callable(remember):
-        remember(status, platform=runtime.live_provider.platform, room_ref=room_ref)
-        return
-    if getattr(status, "ok", False):
-        runtime.live_room_context = {
-            "room_ref": str(room_ref or ""),
-            "room_id": int(getattr(status, "room_id", 0) or 0),
-            "title": _public_optional_text(getattr(status, "title", "")),
-            "anchor_name": _public_optional_text(getattr(status, "anchor_name", "")),
-            "live_status": _public_optional_text(getattr(status, "live_status", "")) or "unknown",
-        }
+    remember_live_room_context(
+        runtime,
+        status,
+        platform=runtime.live_provider.platform,
+        room_ref=room_ref,
+    )
 
 
 async def disconnect_live_room(runtime: Any) -> dict[str, Any]:
