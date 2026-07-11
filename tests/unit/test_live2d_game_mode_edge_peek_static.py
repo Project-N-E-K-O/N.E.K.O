@@ -17,7 +17,7 @@ def _edge_peek_source() -> str:
     return source.split("LIVE2D_GAME_MODE_EDGE_PEEK_TRIGGER_RATIO", 1)[1].split("/**", 1)[0]
 
 
-def test_live2d_game_mode_edge_peek_is_game_mode_gated_and_left_right_only():
+def test_live2d_game_mode_edge_peek_is_game_mode_gated_and_uses_six_anchors():
     source = _source(LIVE2D_INTERACTION_PATH)
     edge_peek_source = _edge_peek_source()
 
@@ -25,15 +25,18 @@ def test_live2d_game_mode_edge_peek_is_game_mode_gated_and_left_right_only():
     assert "LIVE2D_GAME_MODE_EDGE_PEEK_VISIBLE_RATIO = 0.22" in source
     assert "LIVE2D_GAME_MODE_EDGE_PEEK_VISIBLE_MIN_PX = 96" in source
     assert "LIVE2D_GAME_MODE_EDGE_PEEK_VISIBLE_MAX_PX = 180" in source
-    assert "LIVE2D_GAME_MODE_EDGE_PEEK_ROTATION_DEGREES = 10" in source
+    assert "LIVE2D_GAME_MODE_EDGE_PEEK_SIDE_ROTATION_DEGREES = 60" in source
+    assert "LIVE2D_GAME_MODE_EDGE_PEEK_CORNER_ROTATION_DEGREES = 45" in source
     assert "LIVE2D_GAME_MODE_EDGE_PEEK_HEAD_Y_RATIO = 0.24" in source
     assert "function isLive2DGameModeEdgePeekEnabled()" in source
     assert "window.nekoGameModeBeta.isEnabled()" in source
-    assert "function getLive2DGameModeEdgePeekSide(bounds, viewport)" in edge_peek_source
+    assert "function getLive2DGameModeEdgePeekAnchor(bounds, viewport)" in edge_peek_source
     assert "nearLeft" in edge_peek_source
     assert "nearRight" in edge_peek_source
-    assert "nearTop" not in edge_peek_source
-    assert "nearBottom" not in edge_peek_source
+    assert "nearTop" in edge_peek_source
+    assert "nearBottom" in edge_peek_source
+    assert "verticalEdge ? `${verticalEdge}-${side}` : side" in edge_peek_source
+    assert "'top-left', 'top-right', 'bottom-left', 'bottom-right'" in edge_peek_source
     assert "this._tryApplyLive2DGameModeEdgePeek(model)" in source
 
 
@@ -86,7 +89,8 @@ def test_live2d_game_mode_edge_peek_faces_screen_inward_and_restores_transform()
 
     assert "function getLive2DGameModeEdgePeekInwardScaleX(model, side)" in edge_peek_source
     assert "side === 'left' ? Math.abs(baseScaleX) : -Math.abs(baseScaleX)" in edge_peek_source
-    assert "side === 'left' ? LIVE2D_GAME_MODE_EDGE_PEEK_ROTATION_DEGREES" in edge_peek_source
+    assert "LIVE2D_GAME_MODE_EDGE_PEEK_SIDE_ROTATION_DEGREES" in edge_peek_source
+    assert "LIVE2D_GAME_MODE_EDGE_PEEK_CORNER_ROTATION_DEGREES" in edge_peek_source
     assert "baseScaleX" in edge_peek_source
     assert "model.scale.x = state.baseScaleX;" in full_source
     assert "model.rotation = state.baseRotation;" in full_source
@@ -98,8 +102,17 @@ def test_live2d_game_mode_edge_peek_prefers_head_anchor_and_preserves_vertical_i
     edge_peek_source = _edge_peek_source()
 
     assert "LIVE2D_GAME_MODE_EDGE_PEEK_HEAD_Y_RATIO" in edge_peek_source
-    assert "const baseHeadY = bounds.top + bounds.height * LIVE2D_GAME_MODE_EDGE_PEEK_HEAD_Y_RATIO;" in edge_peek_source
-    assert "const targetHeadY = transformedBounds.top + transformedBounds.height * LIVE2D_GAME_MODE_EDGE_PEEK_HEAD_Y_RATIO;" in edge_peek_source
+    assert "const baseHeadAnchor = getLive2DGameModeEdgePeekHeadAnchor(manager);" in edge_peek_source
+    assert "const baseBodyRect = getLive2DGameModeEdgePeekBodyRect(manager);" in edge_peek_source
+    assert "bounds.top + bounds.height * LIVE2D_GAME_MODE_EDGE_PEEK_HEAD_Y_RATIO" in edge_peek_source
+    assert "const desiredHeadX = side === 'left'" in edge_peek_source
+    assert "desiredHeadX - transformedHeadAnchor.x" in edge_peek_source
+    assert "desiredWaistX - transformedBodyRect.centerX" in edge_peek_source
+    assert "baseBodyRect.bottom - transformedBodyRect.bottom" in edge_peek_source
+    assert "transformedBounds.top + transformedBounds.height * LIVE2D_GAME_MODE_EDGE_PEEK_HEAD_Y_RATIO" in edge_peek_source
+    assert "offsetY = viewport.top + desiredHeadInsetY - transformedHeadAnchor.y;" in edge_peek_source
+    assert "offsetY = viewport.bottom + 8 - transformedBodyRect.bottom;" in edge_peek_source
+    assert "offsetY = baseBodyRect.bottom - transformedBodyRect.bottom;" in edge_peek_source
     assert "offsetY = desiredHeadY - targetHeadY;" in edge_peek_source
     assert "getLive2DGameModeEdgePeekVerticalCorrection" in edge_peek_source
 

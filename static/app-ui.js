@@ -3618,7 +3618,52 @@
 
     window.hideNekoReturnBallContainer = hideReturnBallContainer;
 
-    function positionReturnBallContainer(container, anchorRect) {
+    const NEKO_GAME_MODE_RETURN_EDGE_ANCHORS = [
+        'left',
+        'right',
+        'top-left',
+        'top-right',
+        'bottom-left',
+        'bottom-right'
+    ];
+
+    function clearGameModeReturnBallEdgeAnchor(container) {
+        if (!container) return;
+        container.removeAttribute('data-neko-game-mode-edge-anchor');
+        container.__nekoGameModeEdgeAnchor = null;
+    }
+
+    function positionGameModeReturnBallAtEdge(container, edgeAnchor) {
+        if (!container || !edgeAnchor || edgeAnchor.kind !== 'live2d-edge-peek') return false;
+        const edge = String(edgeAnchor.edge || edgeAnchor.side || '');
+        if (!NEKO_GAME_MODE_RETURN_EDGE_ANCHORS.includes(edge)) return false;
+
+        const width = Math.round(container.offsetWidth) || 64;
+        const height = Math.round(container.offsetHeight) || 64;
+        const viewportWidth = Math.max(width, Number(window.innerWidth) || 0);
+        const viewportHeight = Math.max(height, Number(window.innerHeight) || 0);
+        const hiddenX = width * 0.4;
+        const hiddenY = height * 0.4;
+        const ratio = Math.max(0, Math.min(1, Number(edgeAnchor.edgeAnchorRatio) || 0.5));
+        let left = Math.round((viewportWidth - width) / 2);
+        let top = Math.round((viewportHeight - height) * ratio);
+
+        if (edge.endsWith('left') || edge === 'left') left = Math.round(-hiddenX);
+        if (edge.endsWith('right') || edge === 'right') left = Math.round(viewportWidth - width + hiddenX);
+        if (edge.startsWith('top-')) top = Math.round(-hiddenY);
+        if (edge.startsWith('bottom-')) top = Math.round(viewportHeight - height + hiddenY);
+
+        container.setAttribute('data-neko-game-mode-edge-anchor', edge);
+        container.__nekoGameModeEdgeAnchor = Object.assign({}, edgeAnchor, { edge });
+        container.style.left = `${left}px`;
+        container.style.top = `${top}px`;
+        container.style.right = '';
+        container.style.bottom = '';
+        container.style.transform = 'none';
+        return true;
+    }
+
+    function positionReturnBallContainer(container, anchorRect, edgeAnchor = null) {
         if (!container) return;
 
         container.style.left = '';
@@ -3626,6 +3671,9 @@
         container.style.right = '';
         container.style.bottom = '';
         container.style.transform = 'none';
+
+        if (positionGameModeReturnBallAtEdge(container, edgeAnchor)) return;
+        clearGameModeReturnBallEdgeAnchor(container);
 
         if (anchorRect) {
             const containerWidth = Math.round(container.offsetWidth) || 64;
@@ -3665,7 +3713,7 @@
         container.style.visibility = 'hidden';
         container.style.pointerEvents = 'none';
         applyGoodbyeIdleAppearanceToReturnButton(container);
-        positionReturnBallContainer(container, anchorRect);
+        positionReturnBallContainer(container, anchorRect, options.edgeAnchor);
         container.style.opacity = '0';
         container.style.transform = 'translate3d(0, 8px, 0) scale(0.94)';
         container.style.transition = 'opacity 325ms cubic-bezier(0.22, 1, 0.36, 1), transform 400ms cubic-bezier(0.22, 1, 0.36, 1)';
@@ -3831,15 +3879,30 @@
     }
 
     window.addEventListener('neko:return-ball-manual-move', (event) => {
+        const detail = event && event.detail;
+        if (detail && detail.reason === 'return-ball-drag-start' && detail.container) {
+            clearGameModeReturnBallEdgeAnchor(detail.container);
+        }
         syncIdleReturnBallDesktopStateFromManualMove(event && event.detail);
     });
 
     window.addEventListener('neko:auto-goodbye:state-change', (event) => {
         const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
         if (!detail || detail.type !== 'visual-tier') return;
+        const container = getVisibleIdleReturnBallContainer();
         if (getNekoGoodbyeIdleAppearance() === NEKO_GOODBYE_IDLE_APPEARANCE_BALL) {
             syncGoodbyeIdleAppearanceForReturnButtons('goodbye-idle-appearance-visual-tier');
+            if (container && container.__nekoGameModeEdgeAnchor) {
+                requestAnimationFrame(() => {
+                    positionGameModeReturnBallAtEdge(container, container.__nekoGameModeEdgeAnchor);
+                });
+            }
             return;
+        }
+        if (container && container.__nekoGameModeEdgeAnchor) {
+            requestAnimationFrame(() => {
+                positionGameModeReturnBallAtEdge(container, container.__nekoGameModeEdgeAnchor);
+            });
         }
         scheduleIdleReturnBallDesktopBridge(
             detail.source === 'return-ball-drag-demotion' ? 'return-ball-drag-demotion' : 'visual-tier'
@@ -3855,6 +3918,10 @@
         );
     });
     window.addEventListener('resize', () => {
+        const container = getVisibleIdleReturnBallContainer();
+        if (container && container.__nekoGameModeEdgeAnchor) {
+            positionGameModeReturnBallAtEdge(container, container.__nekoGameModeEdgeAnchor);
+        }
         scheduleIdleReturnBallDesktopBridge('viewport-resize');
     });
 
@@ -4990,7 +5057,9 @@
         });
 
         // 睡觉按钮（请她离开）
-        window.addEventListener('live2d-goodbye-click', () => {
+        window.addEventListener('live2d-goodbye-click', (event) => {
+            const goodbyeDetail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+            const gameModeEdgeAnchor = goodbyeDetail.gameModeAuto === true ? goodbyeDetail.edgeAnchor : null;
             const goodbyeTransitionToken = reserveNekoModelCatTransition('model-to-cat');
             if (!goodbyeTransitionToken) {
                 console.log('[App] 模型/猫切换进行中，忽略本次请她离开点击');
@@ -5346,7 +5415,10 @@
                 }
             }
             if (useLive2dReturn && live2dReturnContainer) {
-                activeReturnButtonContainer = showReturnBallContainer(live2dReturnContainer, savedGoodbyeRect, { deferReveal: true });
+                activeReturnButtonContainer = showReturnBallContainer(live2dReturnContainer, savedGoodbyeRect, {
+                    deferReveal: true,
+                    edgeAnchor: gameModeEdgeAnchor
+                });
             } else {
                 hideReturnBallContainer(live2dReturnContainer);
             }
@@ -5539,7 +5611,13 @@
                 : getVisibleIdleReturnBallContainer();
             if (!container) return;
             if (container.style.display === 'none') {
-                showReturnBallContainer(container, returnRect);
+                if (container.__nekoGameModeEdgeAnchor) {
+                    showReturnBallContainer(container, returnRect, {
+                        edgeAnchor: container.__nekoGameModeEdgeAnchor
+                    });
+                } else {
+                    showReturnBallContainer(container, returnRect);
+                }
             }
             revealReturnBallContainer(container, 'return-ball-model-viewport-blocked');
         }

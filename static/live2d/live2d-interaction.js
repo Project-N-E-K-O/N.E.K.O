@@ -143,7 +143,8 @@ const LIVE2D_GAME_MODE_EDGE_PEEK_TRIGGER_MAX_PX = 24;
 const LIVE2D_GAME_MODE_EDGE_PEEK_VISIBLE_RATIO = 0.22;
 const LIVE2D_GAME_MODE_EDGE_PEEK_VISIBLE_MIN_PX = 96;
 const LIVE2D_GAME_MODE_EDGE_PEEK_VISIBLE_MAX_PX = 180;
-const LIVE2D_GAME_MODE_EDGE_PEEK_ROTATION_DEGREES = 10;
+const LIVE2D_GAME_MODE_EDGE_PEEK_SIDE_ROTATION_DEGREES = 60;
+const LIVE2D_GAME_MODE_EDGE_PEEK_CORNER_ROTATION_DEGREES = 45;
 const LIVE2D_GAME_MODE_EDGE_PEEK_HEAD_Y_RATIO = 0.24;
 const LIVE2D_GAME_MODE_EDGE_PEEK_VISIBLE_MARGIN_PX = 8;
 const LIVE2D_GAME_MODE_EDGE_PEEK_ANIMATION_MS = 200;
@@ -221,20 +222,58 @@ function getLive2DGameModeEdgePeekViewportIntersection(bounds, viewport) {
     };
 }
 
-function getLive2DGameModeEdgePeekSide(bounds, viewport) {
+function getLive2DGameModeEdgePeekAnchor(bounds, viewport) {
     if (!bounds || !viewport) return null;
-    const threshold = clampLive2DGameModeEdgePeekCoordinate(
+    const horizontalThreshold = clampLive2DGameModeEdgePeekCoordinate(
         bounds.width * LIVE2D_GAME_MODE_EDGE_PEEK_TRIGGER_RATIO,
         LIVE2D_GAME_MODE_EDGE_PEEK_TRIGGER_MIN_PX,
         LIVE2D_GAME_MODE_EDGE_PEEK_TRIGGER_MAX_PX
     );
-    const nearLeft = bounds.left <= threshold;
-    const nearRight = viewport.right - bounds.right <= threshold;
+    const verticalThreshold = clampLive2DGameModeEdgePeekCoordinate(
+        bounds.height * LIVE2D_GAME_MODE_EDGE_PEEK_TRIGGER_RATIO,
+        LIVE2D_GAME_MODE_EDGE_PEEK_TRIGGER_MIN_PX,
+        LIVE2D_GAME_MODE_EDGE_PEEK_TRIGGER_MAX_PX
+    );
+    const nearLeft = bounds.left <= viewport.left + horizontalThreshold;
+    const nearRight = viewport.right - bounds.right <= horizontalThreshold;
     if (!nearLeft && !nearRight) return null;
-    if (nearLeft && nearRight) {
-        return bounds.left <= viewport.right - bounds.right ? 'left' : 'right';
+    const nearTop = bounds.top <= viewport.top + verticalThreshold;
+    const nearBottom = viewport.bottom - bounds.bottom <= verticalThreshold;
+    const side = nearLeft && nearRight
+        ? (bounds.left <= viewport.right - bounds.right ? 'left' : 'right')
+        : (nearLeft ? 'left' : 'right');
+    let verticalEdge = '';
+    if (nearTop && nearBottom) {
+        verticalEdge = bounds.top + bounds.height / 2 <= viewport.top + viewport.height / 2
+            ? 'top'
+            : 'bottom';
+    } else if (nearTop) {
+        verticalEdge = 'top';
+    } else if (nearBottom) {
+        verticalEdge = 'bottom';
     }
-    return nearLeft ? 'left' : 'right';
+    return {
+        edge: verticalEdge ? `${verticalEdge}-${side}` : side,
+        side,
+        verticalEdge
+    };
+}
+
+function getLive2DGameModeEdgePeekRotationDegrees(anchor) {
+    if (!anchor || !anchor.side) return 0;
+    if (!anchor.verticalEdge) {
+        return anchor.side === 'left'
+            ? LIVE2D_GAME_MODE_EDGE_PEEK_SIDE_ROTATION_DEGREES
+            : -LIVE2D_GAME_MODE_EDGE_PEEK_SIDE_ROTATION_DEGREES;
+    }
+    if (anchor.verticalEdge === 'top') {
+        return anchor.side === 'left'
+            ? LIVE2D_GAME_MODE_EDGE_PEEK_CORNER_ROTATION_DEGREES
+            : -LIVE2D_GAME_MODE_EDGE_PEEK_CORNER_ROTATION_DEGREES;
+    }
+    return anchor.side === 'left'
+        ? LIVE2D_GAME_MODE_EDGE_PEEK_CORNER_ROTATION_DEGREES
+        : -LIVE2D_GAME_MODE_EDGE_PEEK_CORNER_ROTATION_DEGREES;
 }
 
 function getLive2DGameModeEdgePeekRevealWidth(bounds) {
@@ -245,6 +284,33 @@ function getLive2DGameModeEdgePeekRevealWidth(bounds) {
         LIVE2D_GAME_MODE_EDGE_PEEK_VISIBLE_MAX_PX
     );
     return Math.min(bounds.width, width);
+}
+
+function getLive2DGameModeEdgePeekHeadAnchor(manager) {
+    if (!manager || typeof manager.getHeadScreenAnchor !== 'function') return null;
+    try {
+        const anchor = manager.getHeadScreenAnchor();
+        const x = Number(anchor && anchor.x);
+        const y = Number(anchor && anchor.y);
+        return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
+    } catch (_) {
+        return null;
+    }
+}
+
+function getLive2DGameModeEdgePeekBodyRect(manager) {
+    if (!manager || typeof manager.getBodyScreenRectInfo !== 'function') return null;
+    try {
+        const info = manager.getBodyScreenRectInfo();
+        const rect = info && info.rect;
+        const centerX = Number(rect && (Number.isFinite(rect.centerX)
+            ? rect.centerX
+            : Number(rect.left) + Number(rect.width) * 0.5));
+        const bottom = Number(rect && rect.bottom);
+        return Number.isFinite(centerX) && Number.isFinite(bottom) ? { centerX, bottom } : null;
+    } catch (_) {
+        return null;
+    }
 }
 
 function getLive2DGameModeEdgePeekInwardScaleX(model, side) {
@@ -266,17 +332,22 @@ function getLive2DGameModeEdgePeekVerticalCorrection(bounds, viewport) {
 function getLive2DGameModeEdgePeekPlacement(model, bounds, manager = null) {
     if (!model || !bounds) return null;
     const viewport = getLive2DGameModeEdgePeekViewport(bounds, manager);
-    const side = getLive2DGameModeEdgePeekSide(bounds, viewport);
-    if (!side) return null;
+    const anchor = getLive2DGameModeEdgePeekAnchor(bounds, viewport);
+    if (!anchor) return null;
+    const { edge, side, verticalEdge } = anchor;
 
     const baseX = Number(model.x) || 0;
     const baseY = Number(model.y) || 0;
     const baseRotation = Number.isFinite(Number(model.rotation)) ? Number(model.rotation) : 0;
     const baseScaleX = model.scale && Number.isFinite(Number(model.scale.x)) ? Number(model.scale.x) : 1;
-    const targetRotationDegrees = side === 'left' ? LIVE2D_GAME_MODE_EDGE_PEEK_ROTATION_DEGREES : -LIVE2D_GAME_MODE_EDGE_PEEK_ROTATION_DEGREES;
+    const targetRotationDegrees = getLive2DGameModeEdgePeekRotationDegrees(anchor);
     const targetRotation = targetRotationDegrees * Math.PI / 180;
     const targetScaleX = getLive2DGameModeEdgePeekInwardScaleX(model, side);
-    const baseHeadY = bounds.top + bounds.height * LIVE2D_GAME_MODE_EDGE_PEEK_HEAD_Y_RATIO;
+    const baseHeadAnchor = getLive2DGameModeEdgePeekHeadAnchor(manager);
+    const baseBodyRect = getLive2DGameModeEdgePeekBodyRect(manager);
+    const baseHeadY = baseHeadAnchor
+        ? baseHeadAnchor.y
+        : bounds.top + bounds.height * LIVE2D_GAME_MODE_EDGE_PEEK_HEAD_Y_RATIO;
     const desiredHeadY = clampLive2DGameModeEdgePeekCoordinate(
         baseHeadY,
         viewport.top + LIVE2D_GAME_MODE_EDGE_PEEK_VISIBLE_MARGIN_PX,
@@ -284,12 +355,16 @@ function getLive2DGameModeEdgePeekPlacement(model, bounds, manager = null) {
     );
 
     let transformedBounds = null;
+    let transformedHeadAnchor = null;
+    let transformedBodyRect = null;
     try {
         model.x = baseX;
         model.y = baseY;
         model.rotation = targetRotation;
         if (model.scale) model.scale.x = targetScaleX;
         transformedBounds = getLive2DGameModeEdgePeekBounds(model);
+        transformedHeadAnchor = getLive2DGameModeEdgePeekHeadAnchor(manager);
+        transformedBodyRect = getLive2DGameModeEdgePeekBodyRect(manager);
     } catch (_) {
         transformedBounds = null;
     } finally {
@@ -301,11 +376,40 @@ function getLive2DGameModeEdgePeekPlacement(model, bounds, manager = null) {
     if (!transformedBounds) return null;
 
     const revealWidth = getLive2DGameModeEdgePeekRevealWidth(transformedBounds);
-    let offsetX = side === 'left'
-        ? viewport.left + revealWidth - transformedBounds.right
-        : viewport.right - revealWidth - transformedBounds.left;
-    const targetHeadY = transformedBounds.top + transformedBounds.height * LIVE2D_GAME_MODE_EDGE_PEEK_HEAD_Y_RATIO;
-    let offsetY = desiredHeadY - targetHeadY;
+    const headInset = clampLive2DGameModeEdgePeekCoordinate(revealWidth * 0.42, 48, 84);
+    const desiredHeadX = side === 'left'
+        ? viewport.left + headInset
+        : viewport.right - headInset;
+    const useHeadAnchor = verticalEdge === 'top' && !!transformedHeadAnchor;
+    const useWaistAnchor = verticalEdge !== 'top' && !!(baseBodyRect && transformedBodyRect);
+    const desiredWaistX = side === 'left' ? viewport.left - 8 : viewport.right + 8;
+    let offsetX = useHeadAnchor
+        ? desiredHeadX - transformedHeadAnchor.x
+        : (useWaistAnchor
+        ? desiredWaistX - transformedBodyRect.centerX
+        : (transformedHeadAnchor
+            ? desiredHeadX - transformedHeadAnchor.x
+            : (side === 'left'
+            ? viewport.left + revealWidth - transformedBounds.right
+            : viewport.right - revealWidth - transformedBounds.left)));
+    const targetHeadY = transformedHeadAnchor
+        ? transformedHeadAnchor.y
+        : transformedBounds.top + transformedBounds.height * LIVE2D_GAME_MODE_EDGE_PEEK_HEAD_Y_RATIO;
+    let offsetY;
+    if (useHeadAnchor) {
+        const desiredHeadInsetY = clampLive2DGameModeEdgePeekCoordinate(revealWidth * 0.32, 36, 64);
+        offsetY = viewport.top + desiredHeadInsetY - transformedHeadAnchor.y;
+    } else if (useWaistAnchor && verticalEdge === 'bottom') {
+        offsetY = viewport.bottom + 8 - transformedBodyRect.bottom;
+    } else if (useWaistAnchor) {
+        offsetY = baseBodyRect.bottom - transformedBodyRect.bottom;
+    } else if (verticalEdge === 'top') {
+        offsetY = viewport.top + revealWidth - transformedBounds.bottom;
+    } else if (verticalEdge === 'bottom') {
+        offsetY = viewport.bottom - revealWidth - transformedBounds.top;
+    } else {
+        offsetY = desiredHeadY - targetHeadY;
+    }
 
     let targetBounds = null;
     try {
@@ -343,13 +447,15 @@ function getLive2DGameModeEdgePeekPlacement(model, bounds, manager = null) {
     if (!visibleBounds) return null;
 
     return {
-        edge: side,
+        edge,
         side,
         x: baseX + offsetX,
         y: baseY + offsetY,
         rotation: targetRotation,
         rotationDegrees: targetRotationDegrees,
         scaleX: targetScaleX,
+        headAnchored: useHeadAnchor || !!transformedHeadAnchor,
+        waistAnchored: useWaistAnchor,
         revealWidth,
         visibleBounds
     };
@@ -491,6 +597,8 @@ Live2DManager.prototype._tryApplyLive2DGameModeEdgePeek = async function (model)
         peekY: target.y,
         peekRotation: target.rotation,
         peekScaleX: target.scaleX,
+        headAnchored: target.headAnchored,
+        waistAnchored: target.waistAnchored,
         visibleBounds: target.visibleBounds
     };
     if (document.body) {
@@ -554,13 +662,16 @@ function captureLive2DGameModeEdgePeekRestoreAnchor() {
     const manager = window.live2dManager;
     const state = manager && manager._live2DGameModeEdgePeekState;
     const model = state && state.active && state.model && !state.model.destroyed ? state.model : null;
-    if (!manager || !model || (state.side !== 'left' && state.side !== 'right')) return null;
+    const edge = state && String(state.edge || state.side || '');
+    const validEdges = ['left', 'right', 'top-left', 'top-right', 'bottom-left', 'bottom-right'];
+    if (!manager || !model || !validEdges.includes(edge)) return null;
     const bounds = getLive2DGameModeEdgePeekBounds(model);
     const viewport = getLive2DGameModeEdgePeekViewport(bounds, manager);
     const visibleBounds = state.visibleBounds || getLive2DGameModeEdgePeekViewportIntersection(bounds, viewport);
     if (!viewport || !visibleBounds || viewport.height <= 0) return null;
     return {
         kind: 'live2d-edge-peek',
+        edge,
         side: state.side,
         edgeAnchorRatio: clampLive2DGameModeEdgePeekCoordinate(
             visibleBounds.centerY / viewport.height,
@@ -583,17 +694,26 @@ async function restoreLive2DGameModeEdgePeekAnchor(anchor) {
     const model = manager && manager.currentModel && !manager.currentModel.destroyed
         ? manager.currentModel
         : null;
-    if (!manager || !model || (anchor.side !== 'left' && anchor.side !== 'right')) return false;
+    const edge = String(anchor.edge || anchor.side || '');
+    const validEdges = ['left', 'right', 'top-left', 'top-right', 'bottom-left', 'bottom-right'];
+    const side = edge.endsWith('left') || edge === 'left' ? 'left' : (edge.endsWith('right') || edge === 'right' ? 'right' : '');
+    if (!manager || !model || !validEdges.includes(edge) || !side) return false;
     manager.clearLive2DGameModeEdgePeek('game-mode-anchor-prepare', { restore: false });
     let bounds = getLive2DGameModeEdgePeekBounds(model);
     const viewport = getLive2DGameModeEdgePeekViewport(bounds, manager);
     if (!bounds || !viewport) return false;
-    const ratio = clampLive2DGameModeEdgePeekCoordinate(Number(anchor.edgeAnchorRatio), 0, 1);
-    const targetCenterY = viewport.top + viewport.height * ratio;
-    model.y += targetCenterY - (bounds.top + bounds.height / 2);
+    if (edge.startsWith('top-')) {
+        model.y += viewport.top - bounds.top;
+    } else if (edge.startsWith('bottom-')) {
+        model.y += viewport.bottom - bounds.bottom;
+    } else {
+        const ratio = clampLive2DGameModeEdgePeekCoordinate(Number(anchor.edgeAnchorRatio), 0, 1);
+        const targetCenterY = viewport.top + viewport.height * ratio;
+        model.y += targetCenterY - (bounds.top + bounds.height / 2);
+    }
     bounds = getLive2DGameModeEdgePeekBounds(model);
     if (!bounds) return false;
-    model.x += anchor.side === 'left'
+    model.x += side === 'left'
         ? viewport.left - bounds.left
         : viewport.right - bounds.right;
     return await manager._tryApplyLive2DGameModeEdgePeek(model);

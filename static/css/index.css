@@ -736,6 +736,38 @@ body.neko-game-active [id$="-lock-icon"] {
     --neko-idle-return-edge-transform: rotate(-60deg);
 }
 
+[data-neko-game-mode-edge-anchor$="left"] .neko-idle-return-art {
+    --neko-idle-return-facing-transform: scaleX(-1);
+}
+
+[data-neko-game-mode-edge-anchor$="right"] .neko-idle-return-art {
+    --neko-idle-return-facing-transform: scaleX(1);
+}
+
+[data-neko-game-mode-edge-anchor="left"] .neko-idle-return-art {
+    --neko-idle-return-edge-transform: rotate(60deg);
+}
+
+[data-neko-game-mode-edge-anchor="right"] .neko-idle-return-art {
+    --neko-idle-return-edge-transform: rotate(-60deg);
+}
+
+[data-neko-game-mode-edge-anchor="top-left"] .neko-idle-return-art {
+    --neko-idle-return-edge-transform: rotate(45deg);
+}
+
+[data-neko-game-mode-edge-anchor="top-right"] .neko-idle-return-art {
+    --neko-idle-return-edge-transform: rotate(-45deg);
+}
+
+[data-neko-game-mode-edge-anchor="bottom-left"] .neko-idle-return-art {
+    --neko-idle-return-edge-transform: rotate(45deg);
+}
+
+[data-neko-game-mode-edge-anchor="bottom-right"] .neko-idle-return-art {
+    --neko-idle-return-edge-transform: rotate(-45deg);
+}
+
 .neko-idle-thought-bubble {
     --neko-idle-bubble-size: clamp(52px, 9vw, 78px);
     position: absolute;

@@ -394,6 +394,7 @@
                         source: 'game_mode_auto',
                         reason: payload.trigger_source || 'game-mode-pressure',
                         cycleId: clientState.currentCycleId,
+                        edgeAnchor: clientState.restoreAnchor,
                     },
                 }));
             } catch (_) {}

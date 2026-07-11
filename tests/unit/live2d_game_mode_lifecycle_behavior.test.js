@@ -43,6 +43,7 @@ function createHarness(options = {}) {
   const calls = [];
   const pauses = [];
   const tiers = [];
+  const goodbyeEvents = [];
   let activityStarted = 0;
   let activityStopped = 0;
   let cat = false;
@@ -69,6 +70,17 @@ function createHarness(options = {}) {
     start: () => { activityStarted += 1; },
     stop: () => { activityStopped += 1; },
   };
+  const edgeAnchor = options.edgeAnchor || {
+    kind: 'live2d-edge-peek',
+    edge: 'top-left',
+    side: 'left',
+    edgeAnchorRatio: 0.1,
+  };
+  win.nekoLive2DGameModeEdgePeek = {
+    captureRestoreAnchor: () => edgeAnchor,
+    clear: () => {},
+    restoreAnchor: async () => true,
+  };
   win.showCurrentModel = async () => {
     if (options.failModelRestore) throw new Error('model restore failed');
   };
@@ -82,7 +94,8 @@ function createHarness(options = {}) {
   };
   win.t = (_key, payload) => payload && payload.defaultValue ? payload.defaultValue : _key;
   win.showStatusToast = () => {};
-  win.addEventListener('live2d-goodbye-click', () => {
+  win.addEventListener('live2d-goodbye-click', (event) => {
+    goodbyeEvents.push(event.detail || {});
     cat = true;
     win.live2dManager._goodbyeClicked = true;
   });
@@ -125,6 +138,7 @@ function createHarness(options = {}) {
     calls,
     pauses,
     tiers,
+    goodbyeEvents,
     get activityStarted() { return activityStarted; },
     get activityStopped() { return activityStopped; },
     get vrmPauseAttempts() { return vrmPauseAttempts; },
@@ -144,6 +158,14 @@ test('registered pet ACKs protection, enters deep sleep, and only click restores
   };
   harness.win.nekoGameModeBeta.handleAutoSwitchEvent(payload);
   await flush();
+
+  assert.equal(harness.goodbyeEvents[0].gameModeAuto, true);
+  assert.deepEqual(harness.goodbyeEvents[0].edgeAnchor, {
+    kind: 'live2d-edge-peek',
+    edge: 'top-left',
+    side: 'left',
+    edgeAnchorRatio: 0.1,
+  });
 
   const ack = harness.calls.find((call) => call.url === '/api/game-mode-beta/ack');
   assert.ok(ack, 'switch ACK should be sent');
