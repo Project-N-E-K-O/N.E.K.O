@@ -118,6 +118,26 @@ async def test_update_config_restarts_listener_when_room_changes(runtime: RoastR
 
 
 @pytest.mark.asyncio
+async def test_update_config_force_syncs_developer_mode_only_on_transition(
+    runtime: RoastRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sync_calls: list[tuple[bool, bool]] = []
+
+    async def sync_developer_mode(*, announce: bool = False, force: bool = False) -> str:
+        sync_calls.append((announce, force))
+        return "synced"
+
+    monkeypatch.setattr(runtime, "sync_developer_mode", sync_developer_mode)
+    runtime.config.developer_tools_enabled = True
+
+    await runtime.update_config({"developer_tools_enabled": True, "dry_run": False})
+    assert sync_calls == []
+
+    await runtime.update_config({"developer_tools_enabled": False})
+    assert sync_calls == [(False, True)]
+
+
+@pytest.mark.asyncio
 async def test_set_live_room_stops_listener_when_room_switch_fails(runtime: RoastRuntime) -> None:
     runtime.config.live_room_id = 100
     runtime.config.live_enabled = True

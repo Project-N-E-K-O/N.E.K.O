@@ -56,6 +56,11 @@ async def update_config(runtime: Any, updates: dict[str, Any]) -> RoastConfig:
     old_room_id = int(runtime.config.live_room_id or 0)
     old_platform = normalize_live_platform(getattr(runtime.config, "live_platform", "bilibili"))
     old_room_ref = str(getattr(runtime.config, "live_room_ref", "") or "").strip()
+    developer_mode_changed = (
+        "developer_tools_enabled" in clean
+        and bool(clean["developer_tools_enabled"])
+        != bool(runtime.config.developer_tools_enabled)
+    )
     if old_platform == "bilibili" and not old_room_ref and old_room_id > 0:
         old_room_ref = str(old_room_id)
     live_provider = getattr(runtime, "live_provider", None)
@@ -66,7 +71,7 @@ async def update_config(runtime: Any, updates: dict[str, Any]) -> RoastConfig:
         activate_config(runtime, RoastConfig.from_mapping(data))
         if "live_enabled" in clean:
             await runtime.sync_live_instructions(force=True)
-        if "developer_tools_enabled" in clean:
+        if developer_mode_changed:
             await runtime.sync_developer_mode(announce=False, force=True)
         await persist_config_best_effort(runtime, clean)
     await reconcile_live_listener_after_config(
