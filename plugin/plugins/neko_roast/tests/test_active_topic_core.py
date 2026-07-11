@@ -129,7 +129,6 @@ def test_weak_inferred_object_scene_allows_live_column_pack_override(
     assert active_topic_material_family.host_material_family(material) == "object_scene"
     assert active_topic_pack.active_topic_pack(material) == expected_pack
 
-
 @pytest.mark.parametrize(
     "text",
     (
