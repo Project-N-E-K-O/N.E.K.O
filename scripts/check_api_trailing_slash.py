@@ -101,7 +101,7 @@ DEFAULT_PATHS: list[str] = [
     "main_routers",
     "app/main_server.py",
     "app/memory_server.py",
-    "app/agent_server.py",
+    "app/agent_server",
     "plugin/server/routes",
 ]
 

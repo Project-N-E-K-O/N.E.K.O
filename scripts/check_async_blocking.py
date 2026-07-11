@@ -88,9 +88,9 @@ DEFAULT_PATHS = [
     # memory_server.py + its import chain (memory/ package)
     "app/memory_server.py",
     "memory",
-    # agent_server.py + its import chain (brain/ package; main_logic already
-    # in scope above)
-    "app/agent_server.py",
+    # agent_server package + its import chain (brain/ package; main_logic
+    # already in scope above)
+    "app/agent_server",
     "brain",
 ]
 # NOTE: ``plugin/`` is intentionally NOT in the default scope. Plugin code uses
