@@ -13,6 +13,7 @@ async def bili_trending_topic_candidates(selector: Any) -> list[dict[str, Any]]:
         selector._active_engagement_topic_cache
         and now - selector._active_engagement_topic_cache_at < 600.0
     ):
+        selector._active_engagement_recent_topic_skip_reason = ""
         return list(selector._active_engagement_topic_cache)
     fetcher = selector._active_engagement_topic_fetcher
     if fetcher is None:
