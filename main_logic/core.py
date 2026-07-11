@@ -2263,6 +2263,10 @@ class LLMSessionManager:
             # Drop only queued-but-unconfirmed TTS text. Already-confirmed
             # audio may still be echoed by STT shortly after an interrupt.
             self._discard_pending_ai_voice_echo()
+        # Worker providers do not expose one uniform per-speech completion
+        # event. Retire suppression state only after the pipeline has muted and
+        # drained all queued/in-flight audio, never while a turn may still emit.
+        self._speech_primary_suppressed_ids.clear()
 
     @property
     def is_tts_pipeline_ready(self) -> bool:
@@ -4250,9 +4254,6 @@ class LLMSessionManager:
                     suppressed_ids = set()
                     self._speech_primary_suppressed_ids = suppressed_ids
                 suppressed_ids.add(turn_id)
-                if len(suppressed_ids) > 64:
-                    suppressed_ids.clear()
-                    suppressed_ids.add(turn_id)
             self.state.mark_user_input_preempt()
         await self.state.fire(SessionEvent.USER_INPUT, sid=turn_id)
 
@@ -9974,6 +9975,7 @@ class LLMSessionManager:
         )
         if not tts_replaced_by_new_session:
             self._reset_tts_retry_state()
+            self._speech_primary_suppressed_ids.clear()
         
         # 重置输入缓存状态
         async with self.input_cache_lock:

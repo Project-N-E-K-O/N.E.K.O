@@ -365,6 +365,40 @@ async def test_send_speech_suppressed_primary_audio_still_delivers_taps():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_suppressed_speech_ids_are_not_discarded_at_legacy_size_limit():
+    mgr = _make_manager()
+    mgr.tts_thread = _FakeAliveThread()
+    mgr.tts_ready = True
+    speech_ids = []
+
+    for index in range(65):
+        result = await core_module.LLMSessionManager.mirror_assistant_speech(
+            mgr,
+            f"game-only voice {index}",
+            metadata=_soccer_mirror_meta({"kind": "drawing_guess"}),
+            request_id=f"req-game-only-{index}",
+            mirror_text=False,
+            emit_turn_end_after=False,
+            suppress_primary_audio=True,
+        )
+        speech_ids.append(result["speech_id"])
+
+    assert set(speech_ids).issubset(mgr._speech_primary_suppressed_ids)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_clear_tts_pipeline_retires_suppressed_speech_ids():
+    mgr = _make_manager()
+    mgr._speech_primary_suppressed_ids.update({"game-turn-1", "game-turn-2"})
+
+    await core_module.LLMSessionManager._clear_tts_pipeline(mgr)
+
+    assert mgr._speech_primary_suppressed_ids == set()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_mirror_assistant_output_can_finalize_user_reply_turn():
     mgr = _make_manager()
     event = {"kind": "user-text", "hasUserText": True}
