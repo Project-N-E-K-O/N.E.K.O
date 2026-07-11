@@ -2560,7 +2560,8 @@
             "language": "言語",
             "general": "一般設定",
             "mediaCredentials": "メディア資格情報",
-            "characterCardManager": "キャラクターカード管理"
+            "characterCardManager": "キャラクターカード管理",
+            "advancedSettings": "詳細設定"
         },
         "language": {
             "title": "言語を選択",
@@ -2574,6 +2575,27 @@
         "interval": {
             "chatIntervalBase": "最小間隔",
             "visionInterval": "感知間隔"
+        },
+        "gameModeBeta": {
+            "enabledNotice": "ゲームモード Beta を有効にしました。リソース使用率が高い状態が続くと、NEKO は負荷を抑えるため猫形態に切り替わります。一部のプラグインや視覚/OCR 機能は初回読み込みに時間がかかる場合があります。",
+            "autoSwitchNotice": "{metric} の使用率が高い状態が続いたため、リソースを抑える猫形態に切り替えました。",
+            "disabledNotice": "ゲームモード Beta を無効にしました。NEKO は通常のリソース方針に戻りました。",
+            "toggleFailed": "ゲームモードを切り替えられませんでした。しばらくしてから再試行してください。",
+            "memoryMetric": "メモリ",
+            "resourceMetric": "リソース",
+            "statusOn": "オン",
+            "statusOff": "オフ",
+            "statusOnly": "{status}",
+            "statusWithReason": "{status} · 前回: {metric} {percent} / {duration}",
+            "autoCatOnGame": "ゲーム検出時に自動で猫形態になる",
+            "triggerMode": "トリガーモード",
+            "smartMode": "スマート",
+            "instantMode": "検出時にトリガー",
+            "privacyNote": "Activity Tracker の正確なゲーム判定のみを使用します。スクリーンショット、画面ピクセルの読み取り、追加のテレメトリは行いません。",
+            "details": "詳細",
+            "switchFailed": "猫形態に切り替えられませんでした。少し待ってからゲーム検出を再確認します。",
+            "restoreFailed": "モデルを復元できないため、猫形態を維持します。猫をもう一度クリックして再試行してください。",
+            "signalUnavailable": "信頼できるゲーム検出信号を一時的に利用できません。リソース負荷の保護は引き続き有効です。"
         },
         "toggles": {
             "allowInterrupt": "割り込み許可",
