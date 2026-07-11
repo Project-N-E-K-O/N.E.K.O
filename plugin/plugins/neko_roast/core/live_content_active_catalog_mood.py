@@ -28,6 +28,7 @@ MOOD_FALLBACK_TOPIC_CANDIDATES: tuple[dict[str, Any], ...] = (
     {
         "source": "fallback",
         "key": "fallback:tiny-brave-stance",
+        "family": "room_mood",
         "live_column": "NEKO tiny verdict",
         "title": "\u732b\u732b\u89c9\u5f97\u53d1\u5446\u4e5f\u7b97\u4e00\u79cd\u4e3b\u64ad\u529b",
         "fun_axis": "mood",
@@ -48,6 +49,7 @@ MOOD_FALLBACK_TOPIC_CANDIDATES: tuple[dict[str, Any], ...] = (
     {
         "source": "fallback",
         "key": "fallback:lightstick-reflection",
+        "family": "room_mood",
         "live_column": "NEKO tiny observation",
         "title": "\u732b\u732b\u628a\u5c4f\u5e55\u53cd\u5149\u5f53\u6210\u89c2\u4f17\u5e2d\u706f\u724c",
         "fun_axis": "mood",
