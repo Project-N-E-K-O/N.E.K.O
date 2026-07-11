@@ -511,6 +511,8 @@ def test_user_guess_extraction_uses_alias_boundaries():
     "no es un gato?",
     "\u306d\u3053\u3058\u3083\u306a\u3044?",
     "\uace0\uc591\uc774\uac00 \uc544\ub2c8\uc57c?",
+    "\uace0\uc591\uc774\ub294 \uc544\ub2c8야?",
+    "\ucc45\uc740 \uc544\ub2c8야?",
     "not the cat?",
 ])
 def test_user_guess_extraction_rejects_negated_aliases(text):
