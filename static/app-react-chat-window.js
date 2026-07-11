@@ -4688,6 +4688,16 @@
         return idleDockTier === IDLE_DOCK_TIER_CAT2 || idleDockTier === IDLE_DOCK_TIER_CAT3;
     }
 
+    function isGoodbyeIdleBallAppearanceActive() {
+        // 球形态下返回控件不是猫，最小化球不该去贴靠；外观状态由 app-ui 维护
+        try {
+            if (typeof window.getNekoGoodbyeIdleAppearance === 'function') {
+                return window.getNekoGoodbyeIdleAppearance() === 'ball';
+            }
+        } catch (_) {}
+        return window.__nekoGoodbyeIdleAppearance === 'ball';
+    }
+
     function getVisibleReturnButtonContainer() {
         if (isElectronChatWindow()) return null;
         return document.querySelector('[id$="-return-button-container"][data-neko-return-visible="true"]');
@@ -7062,7 +7072,8 @@
 
             setGoodbyeComposerHidden(detail.tier !== IDLE_DOCK_TIER_NONE, detail.source || 'visual-tier');
 
-            idleDockTier = detail.tier === IDLE_DOCK_TIER_CAT2 || detail.tier === IDLE_DOCK_TIER_CAT3
+            idleDockTier = !isGoodbyeIdleBallAppearanceActive() &&
+                (detail.tier === IDLE_DOCK_TIER_CAT2 || detail.tier === IDLE_DOCK_TIER_CAT3)
                 ? detail.tier
                 : IDLE_DOCK_TIER_NONE;
 
@@ -7083,6 +7094,17 @@
                 return;
             }
 
+            clearIdleDockState();
+        });
+        window.addEventListener('neko:goodbye-idle-appearance', function (event) {
+            var detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
+            var mode = detail && typeof detail.mode === 'string' ? detail.mode : '';
+            if (mode !== 'ball') return;
+            idleDockTier = IDLE_DOCK_TIER_NONE;
+            if (hasIdleDockPendingOrActive()) {
+                exitIdleDock({});
+                return;
+            }
             clearIdleDockState();
         });
         window.addEventListener('neko:idle-return-ball-state', function (event) {

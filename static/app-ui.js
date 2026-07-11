@@ -3516,6 +3516,20 @@
         setGoodbyeIdleAppearanceAttributes(container, nextAppearance);
 
         if (nextAppearance === NEKO_GOODBYE_IDLE_APPEARANCE_BALL) {
+            // 必须在 clearReturnButtonBallOnlyVisualState 抹掉状态类之前判定：
+            // hover/进食/玩耍/行走/拖拽期间 art.src 是一次性 GIF，快照它会在
+            // 恢复猫形态时把按钮卡在该帧上（相关 timer/token 已被清掉不会自愈）
+            const hasTransientReturnArt = !!(
+                (art && art.__nekoIdleHoverSrc) ||
+                (button && button.classList && [
+                    'is-cat1-eating',
+                    'is-cat1-playing',
+                    'is-cat1-walking',
+                    'is-cat1-stretching',
+                    'is-drag-action',
+                    'is-drag-action-pending'
+                ].some((className) => button.classList.contains(className)))
+            );
             clearReturnButtonBallOnlyVisualState(container);
             if (button) {
                 const previousTier = normalizeRestorableNekoIdleReturnTier(button.getAttribute('data-neko-idle-tier'));
@@ -3527,7 +3541,8 @@
             container.setAttribute('data-neko-idle-tier', 'none');
             if (art) {
                 const currentSrc = art.getAttribute('src') || art.currentSrc || '';
-                if (currentSrc && currentSrc.indexOf(NEKO_GOODBYE_IDLE_BALL_ASSET) === -1 && !art.dataset.nekoGoodbyeIdleCatSrc) {
+                if (currentSrc && currentSrc.indexOf(NEKO_GOODBYE_IDLE_BALL_ASSET) === -1 &&
+                    !hasTransientReturnArt && !art.dataset.nekoGoodbyeIdleCatSrc) {
                     art.dataset.nekoGoodbyeIdleCatSrc = currentSrc;
                 }
                 if ((art.getAttribute('src') || '') !== NEKO_GOODBYE_IDLE_BALL_ASSET) {

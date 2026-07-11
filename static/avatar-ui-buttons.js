@@ -7499,6 +7499,8 @@ function _applyNekoIdleReturnPresentation(button, tier) {
         _setNekoGoodbyeIdleAppearanceForButton(button, _NEKO_GOODBYE_IDLE_APPEARANCE_BALL);
         button.setAttribute('data-neko-idle-tier', _NEKO_IDLE_TIER_NONE);
         _clearNekoIdleThoughtBubble(button);
+        _clearNekoIdleCat1QuestionMark(button);
+        _setNekoIdleCat1QuestionMarkKeyboardTarget(null);
         _stopNekoGoodbyeIdleBallCatSounds();
         if (_isNekoIdleCat1PlaygroundEntryPending(button)) {
             _cancelNekoIdleCat1PlaygroundPendingEntry(button);
