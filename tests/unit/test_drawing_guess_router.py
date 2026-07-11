@@ -442,6 +442,12 @@ def test_vision_guess_payload_parser_accepts_natural_language_guess():
 
 
 @pytest.mark.unit
+def test_vision_guess_payload_parser_requires_word_boundaries():
+    assert dgr._parse_vision_guess_payload("I think it is a pineapple.", "en") is None
+    assert dgr._parse_vision_guess_payload("looks like a carpet to me", "en") is None
+
+
+@pytest.mark.unit
 def test_word_matching_accepts_synonyms_and_multilingual_variants():
     assert dgr._matches_word("bunny?", dgr._WORD_BY_ID["rabbit"])
     assert dgr._matches_word("\u6708\u7403", dgr._WORD_BY_ID["moon"])

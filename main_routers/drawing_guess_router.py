@@ -2493,7 +2493,7 @@ def _parse_vision_guess_payload(raw: Any, locale: str) -> dict[str, Any] | None:
     if not text:
         return None
     for word in WORDS:
-        if _matches_word(text, word) or _normalize_guess_text(_word_label(word, locale)) in _normalize_guess_text(text):
+        if _matches_word(text, word):
             return {
                 "guess_id": word.id,
                 "confidence": 0.5,
