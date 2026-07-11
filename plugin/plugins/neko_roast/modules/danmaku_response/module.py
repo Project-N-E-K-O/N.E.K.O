@@ -653,6 +653,21 @@ class DanmakuResponseModule(BaseModule):
             "这点",
             "那点",
         )
+        object_target_suffixes = (
+            "表现",
+            "操作",
+            "水平",
+            "技术",
+            "能力",
+            "实力",
+            "手法",
+            "玩法",
+            "意识",
+            "风格",
+            "演技",
+            "唱功",
+            "画技",
+        )
         object_phrase = re.compile(
             r"^(?:(?:这|那|哪|某|一|两|几|每)(?:个|篇|段|部|条|首|本|张|件|场|种|份|则|道|句|款|项|幅|集|期|档|季|章|封|套|支|些|点)?)?"
             r"(?:(?:文章|作文|内容|视频|直播|作品|文案|帖子|评论|问题|事情|东西|表现|歌曲?|电影|电视剧|剧集|综艺|小说|故事|笑话|节目|游戏|功能|代码|设计|照片|图片|方案|产品|软件|应用))+$"
@@ -669,23 +684,36 @@ class DanmakuResponseModule(BaseModule):
             return (
                 normalized in blocked
                 or normalized.startswith(generic_prefixes)
+                or any(
+                    normalized.endswith(suffix)
+                    for suffix in object_target_suffixes
+                )
                 or object_phrase.fullmatch(normalized) is not None
                 or object_measure_phrase.fullmatch(normalized) is not None
                 or object_relation_phrase.search(normalized) is not None
             )
 
+        def has_trailing_target_context(value: str) -> bool:
+            return any(
+                ch.isalnum() or "\u4e00" <= ch <= "\u9fff"
+                for ch in str(value or "")
+            )
+
         for part in cleaned.split("@")[1:]:
+            stripped_part = part.strip()
             target = []
-            for ch in part.strip():
+            for ch in stripped_part:
                 if ch.isspace() or ch in ":：,，。.!！?？、；;|[]()（）<>《》":
                     break
                 target.append(ch)
             name = "".join(target).strip("@ \t\r\n")
             normalized_name = name.casefold()
+            remainder = stripped_part[len(target) :]
             if (
                 name
                 and normalized_name not in aliases
                 and not is_blocked_target(normalized_name)
+                and not has_trailing_target_context(remainder)
             ):
                 return name[:24]
         pattern = re.compile(
@@ -697,7 +725,9 @@ class DanmakuResponseModule(BaseModule):
             return ""
         name = match.group(1).strip("@ \t\r\n")
         normalized_name = name.casefold()
-        if is_blocked_target(normalized_name):
+        if is_blocked_target(normalized_name) or has_trailing_target_context(
+            cleaned[match.end() :]
+        ):
             return ""
         return name[:24]
 
@@ -706,10 +736,8 @@ class DanmakuResponseModule(BaseModule):
         lowered = str(text or "").casefold().strip()
         if not lowered or not dense:
             return False
-        greetings = (
-            "hi",
-            "hello",
-            "hey",
+        english_greeting = re.search(r"\b(?:hi|hello|hey)\b", lowered) is not None
+        cjk_greetings = (
             "\u4f60\u597d",
             "\u665a\u4e0a\u597d",
             "\u665a\u597d",
@@ -720,7 +748,10 @@ class DanmakuResponseModule(BaseModule):
             "\u55e8",
             "\u54c8\u55bd",
         )
-        return len(dense) <= 8 and any(marker in lowered or marker in dense for marker in greetings)
+        return len(dense) <= 8 and (
+            english_greeting
+            or any(marker in lowered or marker in dense for marker in cjk_greetings)
+        )
 
     @staticmethod
     def _looks_like_question(text: str, dense: str) -> bool:

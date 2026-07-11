@@ -1,7 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-import main_routers.system_router as system_router
+import main_routers.system_router.proactive_chat_flow as system_router
 from main_routers.system_router import (
     _open_threads_for_activity_state,
     _render_followup_topic_hooks,
@@ -11,8 +11,12 @@ from utils.llm_client import anthropic_retry_error_types
 
 
 def test_proactive_llm_retry_errors_include_anthropic_transients():
-    retry_types = system_router._PROACTIVE_LLM_RETRY_ERROR_TYPES
-    for error_type in anthropic_retry_error_types():
+    retry_types = system_router._proactive_llm_retry_error_types()
+    anthropic_types = anthropic_retry_error_types()
+    # anthropic 缺席时 accessor 兜底返回 ()，for 循环会零迭代假绿——CI/开发环境必装
+    # anthropic，空即测试环境坏了，别让本测试静默空跑。
+    assert anthropic_types, "anthropic retry error types 为空，本测试在空跑"
+    for error_type in anthropic_types:
         assert error_type in retry_types
 
 

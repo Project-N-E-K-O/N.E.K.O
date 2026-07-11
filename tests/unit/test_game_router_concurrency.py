@@ -20,9 +20,16 @@ import asyncio
 import pytest
 
 from main_routers import game_router
+from main_routers.game_router import archive as gr_archive
+from main_routers.game_router import char_info as gr_char_info
+from main_routers.game_router import pregame as gr_pregame
+from main_routers.game_router import runtime as gr_runtime
 from utils import game_route_state as grs
 
-from .game_route_test_helpers import reset_game_route_state
+from .game_route_test_helpers import (
+    gr_patch_all as _gr_patch_all,
+    reset_game_route_state,
+)
 
 
 class _FakeOmniSession:
@@ -57,15 +64,15 @@ def _activate_route(lanlan: str, game_type: str, session_id: str) -> dict:
         "game_type": game_type,
         "session_id": session_id,
         "lanlan_name": lanlan,
-        "created_at": game_router.time.time(),
-        "last_heartbeat_at": game_router.time.time(),
-        "last_activity": game_router.time.time(),
+        "created_at": gr_runtime.time.time(),
+        "last_heartbeat_at": gr_runtime.time.time(),
+        "last_activity": gr_runtime.time.time(),
         "heartbeat_enabled": True,
         "pending_outputs": [],
         "game_dialog_log": [],
         "_external_voice_seen_request_ids": None,
     }
-    game_router._game_route_states[grs._route_state_key(lanlan, game_type)] = state
+    gr_runtime._game_route_states[grs._route_state_key(lanlan, game_type)] = state
     return state
 
 
@@ -79,16 +86,13 @@ def _stub_archive_calls(monkeypatch):
     async def _ok_submit(_archive):
         return {"status": "ok"}
 
-    monkeypatch.setattr(
-        game_router, "_settle_game_context_organizer_before_archive", _no_op,
+    _gr_patch_all(monkeypatch, "_settle_game_context_organizer_before_archive", _no_op,
     )
-    monkeypatch.setattr(
-        game_router, "_cancel_game_context_organizer_before_disabled_archive", _no_op,
+    _gr_patch_all(monkeypatch, "_cancel_game_context_organizer_before_disabled_archive", _no_op,
     )
-    monkeypatch.setattr(
-        game_router, "_submit_game_archive_to_memory", _ok_submit,
+    _gr_patch_all(monkeypatch, "_submit_game_archive_to_memory", _ok_submit,
     )
-    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+    _gr_patch_all(monkeypatch, "get_session_manager", lambda: {})
 
 
 @pytest.mark.unit
@@ -101,8 +105,8 @@ async def test_b5_finalize_or_merges_close_session_request(monkeypatch):
     with reset_game_route_state():
         state = _activate_route("Lan", "soccer", "match_b5")
         fake_session = _FakeOmniSession(name="b5")
-        key = game_router._game_session_key("Lan", "soccer", "match_b5")
-        game_router._game_sessions[key] = {
+        key = gr_runtime._game_session_key("Lan", "soccer", "match_b5")
+        gr_runtime._game_sessions[key] = {
             "session": fake_session,
             "reply_chunks": [],
             "lanlan_name": "Lan",
@@ -116,10 +120,10 @@ async def test_b5_finalize_or_merges_close_session_request(monkeypatch):
         # Caller A: close_game_session=False; Caller B: True.
         results = await asyncio.wait_for(
             asyncio.gather(
-                game_router._finalize_game_route_state(
+                gr_runtime._finalize_game_route_state(
                     state, reason="A_no_close", close_game_session=False,
                 ),
-                game_router._finalize_game_route_state(
+                gr_runtime._finalize_game_route_state(
                     state, reason="B_close", close_game_session=True,
                 ),
             ),
@@ -132,7 +136,7 @@ async def test_b5_finalize_or_merges_close_session_request(monkeypatch):
 
         # The session was closed exactly once and removed from the cache.
         assert fake_session.close_calls == 1
-        assert key not in game_router._game_sessions
+        assert key not in gr_runtime._game_sessions
 
 
 @pytest.mark.unit
@@ -155,8 +159,8 @@ async def test_b5_finalize_late_close_request_after_inner_done(monkeypatch):
     with reset_game_route_state():
         state = _activate_route("Lan", "soccer", "match_b5_late")
         fake_session = _FakeOmniSession(name="b5_late")
-        key = game_router._game_session_key("Lan", "soccer", "match_b5_late")
-        game_router._game_sessions[key] = {
+        key = gr_runtime._game_session_key("Lan", "soccer", "match_b5_late")
+        gr_runtime._game_sessions[key] = {
             "session": fake_session,
             "reply_chunks": [],
             "lanlan_name": "Lan",
@@ -170,26 +174,26 @@ async def test_b5_finalize_late_close_request_after_inner_done(monkeypatch):
         # Caller A: close=False. Run to completion BEFORE B arrives so the
         # inner task has fully passed its close-site check and returned.
         result_a = await asyncio.wait_for(
-            game_router._finalize_game_route_state(
+            gr_runtime._finalize_game_route_state(
                 state, reason="A_no_close", close_game_session=False,
             ),
             timeout=5.0,
         )
         assert result_a["game_session_closed"] is False
         assert fake_session.close_calls == 0
-        assert key in game_router._game_sessions
+        assert key in gr_runtime._game_sessions
 
         # Caller B arrives late with close=True. The cached task is already
         # done; dispatcher must still honor B's close request.
         result_b = await asyncio.wait_for(
-            game_router._finalize_game_route_state(
+            gr_runtime._finalize_game_route_state(
                 state, reason="B_late_close", close_game_session=True,
             ),
             timeout=5.0,
         )
         assert result_b["game_session_closed"] is True
         assert fake_session.close_calls == 1
-        assert key not in game_router._game_sessions
+        assert key not in gr_runtime._game_sessions
 
 
 @pytest.mark.unit
@@ -214,7 +218,7 @@ async def test_b5_finalize_late_close_request_during_inner_archive(monkeypatch):
         await barrier.wait()
         return {"status": "ok"}
 
-    monkeypatch.setattr(game_router, "_submit_game_archive_to_memory", _blocked_submit)
+    _gr_patch_all(monkeypatch, "_submit_game_archive_to_memory", _blocked_submit)
 
     with reset_game_route_state():
         state = _activate_route("Lan", "soccer", "match_b5_mid")
@@ -224,12 +228,12 @@ async def test_b5_finalize_late_close_request_during_inner_archive(monkeypatch):
         # "game_not_started" / "game_memory_archive_disabled" and
         # the submit call is bypassed entirely.
         state["game_started"] = True
-        state["game_started_at"] = game_router.time.time() - 30
+        state["game_started_at"] = gr_runtime.time.time() - 30
         state["soccer_game_memory_enabled"] = True
         state["soccer_game_memory_archive_enabled"] = True
         fake_session = _FakeOmniSession(name="b5_mid")
-        key = game_router._game_session_key("Lan", "soccer", "match_b5_mid")
-        game_router._game_sessions[key] = {
+        key = gr_runtime._game_session_key("Lan", "soccer", "match_b5_mid")
+        gr_runtime._game_sessions[key] = {
             "session": fake_session,
             "reply_chunks": [],
             "lanlan_name": "Lan",
@@ -243,7 +247,7 @@ async def test_b5_finalize_late_close_request_during_inner_archive(monkeypatch):
         # Caller A spawns inner with close=False; inner parks on the barrier
         # at archive submission, BEFORE reaching the close-site check.
         task_a = asyncio.create_task(
-            game_router._finalize_game_route_state(
+            gr_runtime._finalize_game_route_state(
                 state, reason="A_no_close", close_game_session=False,
             )
         )
@@ -256,7 +260,7 @@ async def test_b5_finalize_late_close_request_during_inner_archive(monkeypatch):
         # Caller B: close=True. Dispatcher ORs the flag and awaits the
         # in-flight task.
         task_b = asyncio.create_task(
-            game_router._finalize_game_route_state(
+            gr_runtime._finalize_game_route_state(
                 state, reason="B_close", close_game_session=True,
             )
         )
@@ -274,7 +278,7 @@ async def test_b5_finalize_late_close_request_during_inner_archive(monkeypatch):
         # Exactly one close, despite the dispatcher recheck path being
         # eligible to fire.
         assert fake_session.close_calls == 1
-        assert key not in game_router._game_sessions
+        assert key not in gr_runtime._game_sessions
 
 
 @pytest.mark.unit
@@ -303,21 +307,21 @@ async def test_b1_chat_short_circuits_when_route_exit_started(monkeypatch):
                 "the route is inactive and creating a session would leak."
             )
 
-        monkeypatch.setattr(game_router, "_get_or_create_session", _explode)
+        _gr_patch_all(monkeypatch, "_get_or_create_session", _explode)
 
         # Snapshot cache state to verify nothing was inserted.
-        sessions_snapshot = dict(game_router._game_sessions)
-        create_locks_snapshot = dict(game_router._game_session_create_locks)
+        sessions_snapshot = dict(gr_runtime._game_sessions)
+        create_locks_snapshot = dict(gr_runtime._game_session_create_locks)
 
-        result = await game_router._run_game_chat(
+        result = await gr_runtime._run_game_chat(
             "soccer", "match_b1", {"kind": "free-ball", "lanlan_name": "Lan"},
         )
         assert result.get("skipped") == "route_inactive"
         assert result.get("line") == ""
 
         # Cache invariants: no new entries materialized via the slow path.
-        assert game_router._game_sessions == sessions_snapshot
-        assert game_router._game_session_create_locks == create_locks_snapshot
+        assert gr_runtime._game_sessions == sessions_snapshot
+        assert gr_runtime._game_session_create_locks == create_locks_snapshot
 
 
 @pytest.mark.unit
@@ -329,8 +333,8 @@ def test_b2_append_dialog_drops_after_exit_started():
         before_log_len = len(state["game_dialog_log"])
         before_outputs_len = len(state["pending_outputs"])
 
-        game_router._append_game_dialog(state, {"type": "user", "text": "late"})
-        game_router._append_game_output(state, {"type": "game_event"})
+        gr_runtime._append_game_dialog(state, {"type": "user", "text": "late"})
+        gr_runtime._append_game_output(state, {"type": "game_event"})
 
         assert len(state["game_dialog_log"]) == before_log_len
         assert len(state["pending_outputs"]) == before_outputs_len
@@ -346,7 +350,7 @@ async def test_b3_external_transcript_short_circuits_when_route_exiting():
         state = _activate_route("Lan", "soccer", "match_b3")
         state["_exit_flow_started"] = True
 
-        handled = await game_router._route_external_transcript_to_game(
+        handled = await gr_runtime._route_external_transcript_to_game(
             "Lan", state, "hello",
             source="external_voice_route",
             mode="voice",
@@ -371,8 +375,8 @@ async def test_b6_session_create_lock_serializes_concurrent_misses(monkeypatch):
     """
     with reset_game_route_state():
         # Drop any leftover create lock for this key from a prior run.
-        key = game_router._game_session_key("Lan", "soccer", "match_b6")
-        game_router._game_session_create_locks.pop(key, None)
+        key = gr_runtime._game_session_key("Lan", "soccer", "match_b6")
+        gr_runtime._game_session_create_locks.pop(key, None)
 
         construct_count = {"n": 0}
         connect_count = {"n": 0}
@@ -405,17 +409,15 @@ async def test_b6_session_create_lock_serializes_concurrent_misses(monkeypatch):
                 "api_type": "openai",
             }
 
-        monkeypatch.setattr(game_router, "_get_character_info", _stub_char_info)
-        monkeypatch.setattr(
-            game_router,
-            "_build_game_prompt",
+        _gr_patch_all(monkeypatch, "_get_character_info", _stub_char_info)
+        _gr_patch_all(monkeypatch, "_build_game_prompt",
             lambda *args, **kwargs: "stub_prompt",
         )
 
         results = await asyncio.wait_for(
             asyncio.gather(
-                game_router._get_or_create_session("soccer", "match_b6", "Lan"),
-                game_router._get_or_create_session("soccer", "match_b6", "Lan"),
+                gr_runtime._get_or_create_session("soccer", "match_b6", "Lan"),
+                gr_runtime._get_or_create_session("soccer", "match_b6", "Lan"),
             ),
             timeout=5.0,
         )
@@ -425,7 +427,7 @@ async def test_b6_session_create_lock_serializes_concurrent_misses(monkeypatch):
         # Both calls return the same entry (cache hit on the second).
         assert results[0] is results[1]
         # Cache contains exactly one entry for this key.
-        assert key in game_router._game_sessions
+        assert key in gr_runtime._game_sessions
 
 
 @pytest.mark.unit
@@ -448,13 +450,13 @@ async def test_b8_finalize_routes_for_character_closes_old_routes(monkeypatch):
         state_chess = _activate_route("Lan", "chess", "match_b8_chess")
         fake_session_soccer = _FakeOmniSession(name="b8_soccer")
         fake_session_chess = _FakeOmniSession(name="b8_chess")
-        soccer_key = game_router._game_session_key("Lan", "soccer", "match_b8")
-        chess_key = game_router._game_session_key("Lan", "chess", "match_b8_chess")
+        soccer_key = gr_runtime._game_session_key("Lan", "soccer", "match_b8")
+        chess_key = gr_runtime._game_session_key("Lan", "chess", "match_b8_chess")
         for key, fake in (
             (soccer_key, fake_session_soccer),
             (chess_key, fake_session_chess),
         ):
-            game_router._game_sessions[key] = {
+            gr_runtime._game_sessions[key] = {
                 "session": fake,
                 "reply_chunks": [],
                 "lanlan_name": "Lan",
@@ -465,7 +467,7 @@ async def test_b8_finalize_routes_for_character_closes_old_routes(monkeypatch):
                 "instructions": "",
             }
 
-        n = await game_router.finalize_game_routes_for_character("Lan")
+        n = await gr_runtime.finalize_game_routes_for_character("Lan")
 
         assert n == 2
         # Both routes for ``Lan`` are now inactive and their sessions closed.
@@ -475,7 +477,7 @@ async def test_b8_finalize_routes_for_character_closes_old_routes(monkeypatch):
         assert fake_session_soccer.close_calls == 1
         assert fake_session_chess.close_calls == 1
         # Calling again is a no-op (both routes already inactive).
-        n_again = await game_router.finalize_game_routes_for_character("Lan")
+        n_again = await gr_runtime.finalize_game_routes_for_character("Lan")
         assert n_again == 0
 
 
@@ -537,15 +539,13 @@ async def test_postgame_bypass_runs_chat_after_finalize(monkeypatch):
                 "api_type": "openai",
             }
 
-        monkeypatch.setattr(game_router, "_get_character_info", _stub_char_info)
-        monkeypatch.setattr(
-            game_router,
-            "_build_game_prompt",
+        _gr_patch_all(monkeypatch, "_get_character_info", _stub_char_info)
+        _gr_patch_all(monkeypatch, "_build_game_prompt",
             lambda *args, **kwargs: "stub_prompt",
         )
 
         # Without allow_postgame: short-circuits to ``route_inactive``.
-        baseline = await game_router._run_game_chat(
+        baseline = await gr_runtime._run_game_chat(
             "soccer",
             "match_postgame_bypass",
             {"kind": "postgame", "lanlan_name": "Lan"},
@@ -554,7 +554,7 @@ async def test_postgame_bypass_runs_chat_after_finalize(monkeypatch):
         assert baseline.get("line") == ""
 
         # With allow_postgame=True: bypass trips, chat runs to completion.
-        result = await game_router._run_game_chat(
+        result = await gr_runtime._run_game_chat(
             "soccer",
             "match_postgame_bypass",
             {"kind": "postgame", "lanlan_name": "Lan"},
@@ -624,10 +624,8 @@ async def test_postgame_text_bubble_closes_session_after_finalize(monkeypatch):
                 "api_type": "openai",
             }
 
-        monkeypatch.setattr(game_router, "_get_character_info", _stub_char_info)
-        monkeypatch.setattr(
-            game_router,
-            "_build_game_prompt",
+        _gr_patch_all(monkeypatch, "_get_character_info", _stub_char_info)
+        _gr_patch_all(monkeypatch, "_build_game_prompt",
             lambda *args, **kwargs: "stub_prompt",
         )
 
@@ -664,10 +662,10 @@ async def test_postgame_text_bubble_closes_session_after_finalize(monkeypatch):
         options = {"enabled": True, "max_chars": 60, "include_last_dialogues": 0}
 
         # Sanity: cache is empty before postgame runs.
-        key = game_router._game_session_key("Lan", "soccer", "match_postgame_leak")
-        assert key not in game_router._game_sessions
+        key = gr_runtime._game_session_key("Lan", "soccer", "match_postgame_leak")
+        assert key not in gr_runtime._game_sessions
 
-        result = await game_router._deliver_postgame_text_bubble(
+        result = await gr_runtime._deliver_postgame_text_bubble(
             "soccer", "match_postgame_leak", mgr, archive, options,
         )
 
@@ -681,8 +679,8 @@ async def test_postgame_text_bubble_closes_session_after_finalize(monkeypatch):
         # closed + evicted from ``_game_sessions`` after the bubble.
         assert len(constructed) == 1
         assert constructed[0].closed is True
-        assert key not in game_router._game_sessions
-        assert key not in game_router._game_session_create_locks
+        assert key not in gr_runtime._game_sessions
+        assert key not in gr_runtime._game_session_create_locks
 
 
 @pytest.mark.unit
@@ -745,10 +743,8 @@ async def test_postgame_text_bubble_identity_gates_close(monkeypatch):
                 "api_type": "openai",
             }
 
-        monkeypatch.setattr(game_router, "_get_character_info", _stub_char_info)
-        monkeypatch.setattr(
-            game_router,
-            "_build_game_prompt",
+        _gr_patch_all(monkeypatch, "_get_character_info", _stub_char_info)
+        _gr_patch_all(monkeypatch, "_build_game_prompt",
             lambda *args, **kwargs: "stub_prompt",
         )
 
@@ -764,7 +760,7 @@ async def test_postgame_text_bubble_identity_gates_close(monkeypatch):
             "instructions": "",
         }
         peer_lock = asyncio.Lock()
-        key = game_router._game_session_key(
+        key = gr_runtime._game_session_key(
             "Lan", "soccer", "match_postgame_replace",
         )
 
@@ -788,8 +784,8 @@ async def test_postgame_text_bubble_identity_gates_close(monkeypatch):
                 # Simulate the race: a peer ``/route/start`` activated
                 # for the same key and its first ``/game_chat`` built a
                 # fresh entry, replacing postgame's cache slot.
-                game_router._game_sessions[key] = peer_entry
-                game_router._game_session_create_locks[key] = peer_lock
+                gr_runtime._game_sessions[key] = peer_entry
+                gr_runtime._game_session_create_locks[key] = peer_lock
                 self.delivered = line
                 return True
 
@@ -807,7 +803,7 @@ async def test_postgame_text_bubble_identity_gates_close(monkeypatch):
         }
         options = {"enabled": True, "max_chars": 60, "include_last_dialogues": 0}
 
-        result = await game_router._deliver_postgame_text_bubble(
+        result = await gr_runtime._deliver_postgame_text_bubble(
             "soccer", "match_postgame_replace", mgr, archive, options,
         )
 
@@ -826,11 +822,11 @@ async def test_postgame_text_bubble_identity_gates_close(monkeypatch):
             "postgame finally closed the peer route's session — "
             "key-based close regressed"
         )
-        assert game_router._game_sessions.get(key) is peer_entry, (
+        assert gr_runtime._game_sessions.get(key) is peer_entry, (
             "postgame finally evicted the peer route's cache entry — "
             "key-based eviction regressed"
         )
-        assert game_router._game_session_create_locks.get(key) is peer_lock, (
+        assert gr_runtime._game_session_create_locks.get(key) is peer_lock, (
             "postgame finally evicted the peer route's create lock — "
             "key-based eviction regressed"
         )
@@ -908,10 +904,8 @@ async def test_postgame_session_isolated_from_concurrent_route_start_reuse(monke
                 "api_type": "openai",
             }
 
-        monkeypatch.setattr(game_router, "_get_character_info", _stub_char_info)
-        monkeypatch.setattr(
-            game_router,
-            "_build_game_prompt",
+        _gr_patch_all(monkeypatch, "_get_character_info", _stub_char_info)
+        _gr_patch_all(monkeypatch, "_build_game_prompt",
             lambda *args, **kwargs: "stub_prompt",
         )
 
@@ -942,7 +936,7 @@ async def test_postgame_session_isolated_from_concurrent_route_start_reuse(monke
                 # for the same user-facing key after postgame's bypass
                 # registered. Its first ``/game_chat`` resolves through
                 # ``_get_or_create_session(..., session_id=user-facing)``.
-                peer_entry_holder["entry"] = await game_router._get_or_create_session(
+                peer_entry_holder["entry"] = await gr_runtime._get_or_create_session(
                     "soccer", "match_postgame_reuse", "Lan",
                 )
                 self.delivered = line
@@ -962,11 +956,11 @@ async def test_postgame_session_isolated_from_concurrent_route_start_reuse(monke
         }
         options = {"enabled": True, "max_chars": 60, "include_last_dialogues": 0}
 
-        user_facing_key = game_router._game_session_key(
+        user_facing_key = gr_runtime._game_session_key(
             "Lan", "soccer", "match_postgame_reuse",
         )
 
-        result = await game_router._deliver_postgame_text_bubble(
+        result = await gr_runtime._deliver_postgame_text_bubble(
             "soccer", "match_postgame_reuse", mgr, archive, options,
         )
 
@@ -997,7 +991,7 @@ async def test_postgame_session_isolated_from_concurrent_route_start_reuse(monke
         )
 
         # Peer's entry remains cached at the user-facing key.
-        assert game_router._game_sessions.get(user_facing_key) is peer_entry, (
+        assert gr_runtime._game_sessions.get(user_facing_key) is peer_entry, (
             "peer route's cache entry was evicted by postgame's finally"
         )
 
@@ -1005,9 +999,9 @@ async def test_postgame_session_isolated_from_concurrent_route_start_reuse(monke
         # cleaned up. Inspecting cache: only the peer entry should remain
         # under any key matching this game_type/lanlan.
         leaked = [
-            k for k, v in game_router._game_sessions.items()
+            k for k, v in gr_runtime._game_sessions.items()
             if v is not peer_entry
-            and game_router._POSTGAME_SESSION_MARKER in k
+            and gr_runtime._POSTGAME_SESSION_MARKER in k
         ]
         assert leaked == [], (
             f"postgame entry leaked at private key(s): {leaked}"
@@ -1043,7 +1037,7 @@ async def test_b1_supersede_then_chat_does_not_revive_closed_route(monkeypatch):
         import main_logic.omni_offline_client as omni_module
         monkeypatch.setattr(omni_module, "OmniOfflineClient", _StubOmni)
 
-        result = await game_router._run_game_chat(
+        result = await gr_runtime._run_game_chat(
             "soccer", "match_old", {"kind": "free-ball", "lanlan_name": "Lan"},
         )
 
@@ -1078,12 +1072,12 @@ async def test_route_start_serializes_supersede_across_game_types_for_same_lanla
 
     async def _fake_pregame(**_kwargs):
         return (
-            game_router._default_soccer_pregame_context(initial_difficulty="lv2"),
+            gr_pregame._default_soccer_pregame_context(initial_difficulty="lv2"),
             "fallback",
             "",
         )
 
-    monkeypatch.setattr(game_router, "_build_soccer_pregame_context", _fake_pregame)
+    _gr_patch_all(monkeypatch, "_build_soccer_pregame_context", _fake_pregame)
 
     with reset_game_route_state():
         # Drop any leftover supersede / route locks so this test starts fresh.
@@ -1094,14 +1088,14 @@ async def test_route_start_serializes_supersede_across_game_types_for_same_lanla
 
         results = await asyncio.wait_for(
             asyncio.gather(
-                game_router.game_route_start(
+                gr_runtime.game_route_start(
                     "soccer",
                     _FakeRouteStartRequest({
                         "lanlan_name": "Lan",
                         "session_id": "soccer_match",
                     }),
                 ),
-                game_router.game_route_start(
+                gr_runtime.game_route_start(
                     "chess",
                     _FakeRouteStartRequest({
                         "lanlan_name": "Lan",
@@ -1118,7 +1112,7 @@ async def test_route_start_serializes_supersede_across_game_types_for_same_lanla
         # /route/start to acquire the supersede lock finalized the first.
         active_for_lan = [
             (key, state)
-            for key, state in game_router._game_route_states.items()
+            for key, state in gr_runtime._game_route_states.items()
             if key[0] == "Lan" and state.get("game_route_active")
         ]
         assert len(active_for_lan) == 1, active_for_lan
@@ -1134,14 +1128,14 @@ async def test_game_session_create_lock_evicted_with_session():
     session_id over uptime — a memory leak in long-running processes.
     """
     with reset_game_route_state():
-        key = game_router._game_session_key("Lan", "soccer", "match_evict")
+        key = gr_runtime._game_session_key("Lan", "soccer", "match_evict")
         # Drop any leftover from prior runs.
-        game_router._game_session_create_locks.pop(key, None)
+        gr_runtime._game_session_create_locks.pop(key, None)
 
         # Lazily create the lock as ``_get_or_create_session`` would.
-        create_lock = game_router._get_session_create_lock(key)
-        assert key in game_router._game_session_create_locks
-        assert create_lock is game_router._game_session_create_locks[key]
+        create_lock = gr_runtime._get_session_create_lock(key)
+        assert key in gr_runtime._game_session_create_locks
+        assert create_lock is gr_runtime._game_session_create_locks[key]
 
         # Register a session with a per-entry lock so close() goes through
         # the locked branch (mirrors the production cache shape).
@@ -1153,7 +1147,7 @@ async def test_game_session_create_lock_evicted_with_session():
                 self.closed = True
 
         session = _Closer()
-        game_router._game_sessions[key] = {
+        gr_runtime._game_sessions[key] = {
             "session": session,
             "reply_chunks": [],
             "lanlan_name": "Lan",
@@ -1164,14 +1158,14 @@ async def test_game_session_create_lock_evicted_with_session():
             "instructions": "",
         }
 
-        closed = await game_router._close_and_remove_session(
+        closed = await gr_runtime._close_and_remove_session(
             "soccer", "match_evict", "Lan",
         )
 
         assert closed is True
-        assert key not in game_router._game_sessions
+        assert key not in gr_runtime._game_sessions
         # The create lock for this evicted session must also be gone.
-        assert key not in game_router._game_session_create_locks
+        assert key not in gr_runtime._game_session_create_locks
         assert session.closed is True
 
 
@@ -1198,13 +1192,13 @@ async def test_get_or_create_session_canonical_key_mismatch_leaves_no_orphan_loc
     handles).
     """
     with reset_game_route_state():
-        raw_key = game_router._game_session_key("", "soccer", "match_canon")
-        canonical_key = game_router._game_session_key("Lan", "soccer", "match_canon")
+        raw_key = gr_runtime._game_session_key("", "soccer", "match_canon")
+        canonical_key = gr_runtime._game_session_key("Lan", "soccer", "match_canon")
         assert raw_key != canonical_key  # sanity: keys actually differ.
 
         # Drop any leftovers from earlier runs.
-        game_router._game_session_create_locks.pop(raw_key, None)
-        game_router._game_session_create_locks.pop(canonical_key, None)
+        gr_runtime._game_session_create_locks.pop(raw_key, None)
+        gr_runtime._game_session_create_locks.pop(canonical_key, None)
 
         class _StubOmni:
             def __init__(self, **kwargs):
@@ -1232,27 +1226,25 @@ async def test_get_or_create_session_canonical_key_mismatch_leaves_no_orphan_loc
                 "api_type": "openai",
             }
 
-        monkeypatch.setattr(game_router, "_get_character_info", _stub_char_info)
-        monkeypatch.setattr(
-            game_router,
-            "_build_game_prompt",
+        _gr_patch_all(monkeypatch, "_get_character_info", _stub_char_info)
+        _gr_patch_all(monkeypatch, "_build_game_prompt",
             lambda *args, **kwargs: "stub_prompt",
         )
 
         # Caller passes empty lanlan_name → triggers canonical_key != key.
-        entry = await game_router._get_or_create_session(
+        entry = await gr_runtime._get_or_create_session(
             "soccer", "match_canon", "",
         )
 
         # Session is stored under the canonical key, not the raw key.
-        assert canonical_key in game_router._game_sessions
-        assert raw_key not in game_router._game_sessions
-        assert game_router._game_sessions[canonical_key] is entry
+        assert canonical_key in gr_runtime._game_sessions
+        assert raw_key not in gr_runtime._game_sessions
+        assert gr_runtime._game_sessions[canonical_key] is entry
 
         # Critical invariant: no orphan lock under the raw key. Only the
         # canonical key may have a lock entry — and that one will be
         # evicted by ``_close_and_remove_session`` when the session ends.
-        assert raw_key not in game_router._game_session_create_locks, (
+        assert raw_key not in gr_runtime._game_session_create_locks, (
             "Raw-key create lock leaked when canonical_key != key; "
             "_close_and_remove_session would never evict it."
         )
@@ -1260,12 +1252,12 @@ async def test_get_or_create_session_canonical_key_mismatch_leaves_no_orphan_loc
         # Round-trip: closing the session via the canonical lookup must
         # still clean up the (only) lock entry, leaving the dict free of
         # any per-session entries for this case.
-        closed = await game_router._close_and_remove_session(
+        closed = await gr_runtime._close_and_remove_session(
             "soccer", "match_canon", "Lan",
         )
         assert closed is True
-        assert canonical_key not in game_router._game_session_create_locks
-        assert raw_key not in game_router._game_session_create_locks
+        assert canonical_key not in gr_runtime._game_session_create_locks
+        assert raw_key not in gr_runtime._game_session_create_locks
 
 
 @pytest.mark.unit
@@ -1306,12 +1298,12 @@ async def test_character_switch_finalize_blocks_concurrent_route_start_for_same_
 
     async def _fake_pregame(**_kwargs):
         return (
-            game_router._default_soccer_pregame_context(initial_difficulty="lv2"),
+            gr_pregame._default_soccer_pregame_context(initial_difficulty="lv2"),
             "fallback",
             "",
         )
 
-    monkeypatch.setattr(game_router, "_build_soccer_pregame_context", _fake_pregame)
+    _gr_patch_all(monkeypatch, "_build_soccer_pregame_context", _fake_pregame)
 
     with reset_game_route_state():
         # Drop any leftover supersede / route locks so this test starts
@@ -1325,8 +1317,8 @@ async def test_character_switch_finalize_blocks_concurrent_route_start_for_same_
         # ``finalize_game_routes_for_character`` is supposed to clean up.
         old_state = _activate_route("Lan", "soccer", "match_old")
         fake_session = _FakeOmniSession(name="charswitch_old")
-        old_key = game_router._game_session_key("Lan", "soccer", "match_old")
-        game_router._game_sessions[old_key] = {
+        old_key = gr_runtime._game_session_key("Lan", "soccer", "match_old")
+        gr_runtime._game_sessions[old_key] = {
             "session": fake_session,
             "reply_chunks": [],
             "lanlan_name": "Lan",
@@ -1348,7 +1340,7 @@ async def test_character_switch_finalize_blocks_concurrent_route_start_for_same_
             # Schedule finalize in the background. Post-fix, this awaits
             # the supersede lock and never returns until we release it.
             finalize_task = asyncio.create_task(
-                game_router.finalize_game_routes_for_character("Lan")
+                gr_runtime.finalize_game_routes_for_character("Lan")
             )
 
             # Yield enough times to let finalize_task run as far as it can.
@@ -1408,12 +1400,12 @@ async def test_character_switch_finalize_serializes_with_concurrent_route_start_
 
     async def _fake_pregame(**_kwargs):
         return (
-            game_router._default_soccer_pregame_context(initial_difficulty="lv2"),
+            gr_pregame._default_soccer_pregame_context(initial_difficulty="lv2"),
             "fallback",
             "",
         )
 
-    monkeypatch.setattr(game_router, "_build_soccer_pregame_context", _fake_pregame)
+    _gr_patch_all(monkeypatch, "_build_soccer_pregame_context", _fake_pregame)
 
     with reset_game_route_state():
         from utils import game_route_state as grs_mod
@@ -1425,14 +1417,14 @@ async def test_character_switch_finalize_serializes_with_concurrent_route_start_
         # before the other proceeds. No deadlock should occur.
         results = await asyncio.wait_for(
             asyncio.gather(
-                game_router.game_route_start(
+                gr_runtime.game_route_start(
                     "soccer",
                     _FakeRouteStartRequest({
                         "lanlan_name": "Lan",
                         "session_id": "match_charswitch_race",
                     }),
                 ),
-                game_router.finalize_game_routes_for_character("Lan"),
+                gr_runtime.finalize_game_routes_for_character("Lan"),
             ),
             timeout=5.0,  # If serialization is broken, deadlock surfaces here.
         )
@@ -1446,7 +1438,7 @@ async def test_character_switch_finalize_serializes_with_concurrent_route_start_
         # routes for the same character.
         active_for_lan = [
             key
-            for key, state in game_router._game_route_states.items()
+            for key, state in gr_runtime._game_route_states.items()
             if key[0] == "Lan" and state.get("game_route_active")
         ]
         assert len(active_for_lan) <= 1, active_for_lan
@@ -1465,17 +1457,16 @@ async def test_get_or_create_session_evicts_create_lock_on_build_failure(monkeyp
     that never registered.
     """
     with reset_game_route_state():
-        canonical_key = game_router._game_session_key(
+        canonical_key = gr_runtime._game_session_key(
             "Lan", "soccer", "match_build_fail",
         )
         # Drop any leftover from prior runs.
-        game_router._game_session_create_locks.pop(canonical_key, None)
+        gr_runtime._game_session_create_locks.pop(canonical_key, None)
 
         async def _explode(*_args, **_kwargs):
             raise RuntimeError("connect failed (simulated)")
 
-        monkeypatch.setattr(
-            game_router, "_build_and_register_game_session", _explode,
+        _gr_patch_all(monkeypatch, "_build_and_register_game_session", _explode,
         )
 
         def _stub_char_info(name):
@@ -1490,22 +1481,22 @@ async def test_get_or_create_session_evicts_create_lock_on_build_failure(monkeyp
                 "api_type": "openai",
             }
 
-        monkeypatch.setattr(game_router, "_get_character_info", _stub_char_info)
+        _gr_patch_all(monkeypatch, "_get_character_info", _stub_char_info)
 
         with pytest.raises(RuntimeError, match="connect failed"):
-            await game_router._get_or_create_session(
+            await gr_runtime._get_or_create_session(
                 "soccer", "match_build_fail", "Lan",
             )
 
         # Critical invariant: the per-key create lock must NOT linger
         # after a failed build, because nothing else in the lifecycle
         # would prune it.
-        assert canonical_key not in game_router._game_session_create_locks, (
+        assert canonical_key not in gr_runtime._game_session_create_locks, (
             "Failed _build_and_register_game_session leaked its create lock; "
             "_close_and_remove_session never runs for unregistered sessions."
         )
         # Sanity: nothing was inserted into _game_sessions either.
-        assert canonical_key not in game_router._game_sessions
+        assert canonical_key not in gr_runtime._game_sessions
 
 
 @pytest.mark.unit
@@ -1526,10 +1517,10 @@ async def test_get_or_create_session_keeps_create_lock_when_peer_waits(monkeypat
     seeing a fresh one).
     """
     with reset_game_route_state():
-        canonical_key = game_router._game_session_key(
+        canonical_key = gr_runtime._game_session_key(
             "Lan", "soccer", "match_peer_wait",
         )
-        game_router._game_session_create_locks.pop(canonical_key, None)
+        gr_runtime._game_session_create_locks.pop(canonical_key, None)
 
         # The build helper must NOT auto-yield before A reaches the
         # async-with body, so A wins the lock acquisition. A then yields
@@ -1540,7 +1531,7 @@ async def test_get_or_create_session_keeps_create_lock_when_peer_waits(monkeypat
 
         async def _explode_a(*_args, **_kwargs):
             captured["lock_at_A_inside"] = (
-                game_router._game_session_create_locks.get(canonical_key)
+                gr_runtime._game_session_create_locks.get(canonical_key)
             )
             a_inside_build.set()
             # Park until B has had time to register as a waiter.
@@ -1557,7 +1548,7 @@ async def test_get_or_create_session_keeps_create_lock_when_peer_waits(monkeypat
             # B's build runs after A fails; capture the lock instance
             # at this point so we can prove it was not swapped.
             captured["lock_at_B_build"] = (
-                game_router._game_session_create_locks.get(canonical_key)
+                gr_runtime._game_session_create_locks.get(canonical_key)
             )
             # Build and register a minimal entry so this path resembles
             # a successful retry.
@@ -1572,7 +1563,7 @@ async def test_get_or_create_session_keeps_create_lock_when_peer_waits(monkeypat
                 "lock": _Lock(),
                 "instructions": "",
             }
-            game_router._game_sessions[canonical_key] = entry
+            gr_runtime._game_sessions[canonical_key] = entry
             return entry
 
         class _DummySession:
@@ -1587,8 +1578,7 @@ async def test_get_or_create_session_keeps_create_lock_when_peer_waits(monkeypat
         async def _dispatch(*args, **kwargs):
             return await current_fn["fn"](*args, **kwargs)
 
-        monkeypatch.setattr(
-            game_router, "_build_and_register_game_session", _dispatch,
+        _gr_patch_all(monkeypatch, "_build_and_register_game_session", _dispatch,
         )
 
         def _stub_char_info(name):
@@ -1603,11 +1593,11 @@ async def test_get_or_create_session_keeps_create_lock_when_peer_waits(monkeypat
                 "api_type": "openai",
             }
 
-        monkeypatch.setattr(game_router, "_get_character_info", _stub_char_info)
+        _gr_patch_all(monkeypatch, "_get_character_info", _stub_char_info)
 
         async def _a_runner():
             try:
-                await game_router._get_or_create_session(
+                await gr_runtime._get_or_create_session(
                     "soccer", "match_peer_wait", "Lan",
                 )
             except RuntimeError:
@@ -1621,7 +1611,7 @@ async def test_get_or_create_session_keeps_create_lock_when_peer_waits(monkeypat
             # Wait until A is INSIDE the lock so we park as a real
             # waiter (not just sneak in before A acquires).
             await a_inside_build.wait()
-            await game_router._get_or_create_session(
+            await gr_runtime._get_or_create_session(
                 "soccer", "match_peer_wait", "Lan",
             )
 
@@ -1690,10 +1680,10 @@ async def test_partial_connect_race_does_not_orphan_session(monkeypatch):
     """
     with reset_game_route_state():
         state = _activate_route("Lan", "soccer", "match_partial_connect")
-        canonical_key = game_router._game_session_key(
+        canonical_key = gr_runtime._game_session_key(
             "Lan", "soccer", "match_partial_connect",
         )
-        game_router._game_session_create_locks.pop(canonical_key, None)
+        gr_runtime._game_session_create_locks.pop(canonical_key, None)
 
         connect_barrier = asyncio.Event()
         connect_started = asyncio.Event()
@@ -1741,17 +1731,15 @@ async def test_partial_connect_race_does_not_orphan_session(monkeypatch):
                 "api_type": "openai",
             }
 
-        monkeypatch.setattr(game_router, "_get_character_info", _stub_char_info)
-        monkeypatch.setattr(
-            game_router,
-            "_build_game_prompt",
+        _gr_patch_all(monkeypatch, "_get_character_info", _stub_char_info)
+        _gr_patch_all(monkeypatch, "_build_game_prompt",
             lambda *args, **kwargs: "stub_prompt",
         )
 
         # Thread A: drive _run_game_chat. It will block on connect()
         # until we release the barrier.
         chat_task = asyncio.create_task(
-            game_router._run_game_chat(
+            gr_runtime._run_game_chat(
                 "soccer",
                 "match_partial_connect",
                 {"kind": "free-ball", "lanlan_name": "Lan"},
@@ -1762,19 +1750,19 @@ async def test_partial_connect_race_does_not_orphan_session(monkeypatch):
         # point the route's pre-create gate has been crossed but the
         # entry isn't registered in _game_sessions yet.
         await asyncio.wait_for(connect_started.wait(), timeout=2.0)
-        assert canonical_key not in game_router._game_sessions
+        assert canonical_key not in gr_runtime._game_sessions
 
         # Thread B: simulate finalize racing in. Flip the route state
         # to inactive, then call _close_and_remove_session — which is a
         # no-op because Thread A's entry hasn't been inserted yet.
         state["_exit_flow_started"] = True
         state["game_route_active"] = False
-        no_op_close = await game_router._close_and_remove_session(
+        no_op_close = await gr_runtime._close_and_remove_session(
             "soccer", "match_partial_connect", "Lan",
         )
         # Sanity: finalize's close was indeed a no-op.
         assert no_op_close is False
-        assert canonical_key not in game_router._game_sessions
+        assert canonical_key not in gr_runtime._game_sessions
 
         # Now release the barrier so Thread A's connect returns. The
         # build then registers the entry, _run_game_chat acquires
@@ -1795,11 +1783,11 @@ async def test_partial_connect_race_does_not_orphan_session(monkeypatch):
             "Orphan OmniOfflineClient was not closed; partial-connect "
             "race leaked a session past finalize."
         )
-        assert canonical_key not in game_router._game_sessions, (
+        assert canonical_key not in gr_runtime._game_sessions, (
             "Orphan entry survived in _game_sessions after the "
             "route_inactive short-circuit."
         )
-        assert canonical_key not in game_router._game_session_create_locks
+        assert canonical_key not in gr_runtime._game_session_create_locks
         # Stream was never invoked — short-circuit fired before
         # stream_text.
         assert constructed[0].stream_calls == 0
@@ -1815,10 +1803,10 @@ async def test_build_session_cancellation_closes_half_open_client(monkeypatch):
     swallow nothing here and leak the freshly built client.
     """
     with reset_game_route_state():
-        canonical_key = game_router._game_session_key(
+        canonical_key = gr_runtime._game_session_key(
             "Lan", "soccer", "match_cancel_during_connect",
         )
-        game_router._game_session_create_locks.pop(canonical_key, None)
+        gr_runtime._game_session_create_locks.pop(canonical_key, None)
 
         connect_started = asyncio.Event()
         # Connect parks on this event forever — the test cancels the
@@ -1853,15 +1841,13 @@ async def test_build_session_cancellation_closes_half_open_client(monkeypatch):
                 "api_type": "openai",
             }
 
-        monkeypatch.setattr(game_router, "_get_character_info", _stub_char_info)
-        monkeypatch.setattr(
-            game_router,
-            "_build_game_prompt",
+        _gr_patch_all(monkeypatch, "_get_character_info", _stub_char_info)
+        _gr_patch_all(monkeypatch, "_build_game_prompt",
             lambda *args, **kwargs: "stub_prompt",
         )
 
         build_task = asyncio.create_task(
-            game_router._get_or_create_session(
+            gr_runtime._get_or_create_session(
                 "soccer", "match_cancel_during_connect", "Lan",
             )
         )
@@ -1880,8 +1866,8 @@ async def test_build_session_cancellation_closes_half_open_client(monkeypatch):
             "CancelledError must trigger the same cleanup as Exception."
         )
         # Cache state is clean: nothing was registered, lock evicted.
-        assert canonical_key not in game_router._game_sessions
-        assert canonical_key not in game_router._game_session_create_locks
+        assert canonical_key not in gr_runtime._game_sessions
+        assert canonical_key not in gr_runtime._game_session_create_locks
 
 
 @pytest.mark.unit
@@ -1911,9 +1897,9 @@ async def test_close_and_remove_session_identity_gates_pop_after_lock_wait():
     was actually closed.
     """
     with reset_game_route_state():
-        key = game_router._game_session_key("Lan", "soccer", "match_close_idgate")
-        game_router._game_sessions.pop(key, None)
-        game_router._game_session_create_locks.pop(key, None)
+        key = gr_runtime._game_session_key("Lan", "soccer", "match_close_idgate")
+        gr_runtime._game_sessions.pop(key, None)
+        gr_runtime._game_session_create_locks.pop(key, None)
 
         session_a = _FakeOmniSession(name="entry_A")
         lock_a = asyncio.Lock()
@@ -1927,7 +1913,7 @@ async def test_close_and_remove_session_identity_gates_pop_after_lock_wait():
             "lock": lock_a,
             "instructions": "",
         }
-        game_router._game_sessions[key] = entry_a
+        gr_runtime._game_sessions[key] = entry_a
 
         # A peer task holds entry_A's lock — stand-in for "another caller
         # already won the lock acquisition race". Caller A will queue
@@ -1949,7 +1935,7 @@ async def test_close_and_remove_session_identity_gates_pop_after_lock_wait():
         # Caller A: enters _close_and_remove_session, captures entry_a,
         # then awaits lock_a (parked behind the peer).
         caller_a_task = asyncio.create_task(
-            game_router._close_and_remove_session("soccer", "match_close_idgate", "Lan")
+            gr_runtime._close_and_remove_session("soccer", "match_close_idgate", "Lan")
         )
         # Spin until Caller A is waiting on the lock (i.e., it has read
         # entry and is queued — lock has waiters).
@@ -1969,9 +1955,9 @@ async def test_close_and_remove_session_identity_gates_pop_after_lock_wait():
         # same key with a NEW lock + NEW session BEFORE we release
         # lock_a. We perform these synchronously while Caller A is
         # still parked.
-        evicted = game_router._game_sessions.pop(key, None)
+        evicted = gr_runtime._game_sessions.pop(key, None)
         assert evicted is entry_a
-        game_router._game_session_create_locks.pop(key, None)
+        gr_runtime._game_session_create_locks.pop(key, None)
 
         session_b = _FakeOmniSession(name="entry_NEW")
         entry_new = {
@@ -1984,11 +1970,11 @@ async def test_close_and_remove_session_identity_gates_pop_after_lock_wait():
             "lock": asyncio.Lock(),
             "instructions": "",
         }
-        game_router._game_sessions[key] = entry_new
+        gr_runtime._game_sessions[key] = entry_new
         # Stand-in create lock for entry_NEW so the assertion below can
         # distinguish "evicted by us" from "never present".
-        entry_new_create_lock = game_router._get_session_create_lock(key)
-        assert key in game_router._game_session_create_locks
+        entry_new_create_lock = gr_runtime._get_session_create_lock(key)
+        assert key in gr_runtime._game_session_create_locks
 
         # Release the peer's hold on lock_a so Caller A wakes up.
         peer_release.set()
@@ -1999,7 +1985,7 @@ async def test_close_and_remove_session_identity_gates_pop_after_lock_wait():
         assert result is True
 
         # Identity gate held: entry_NEW is still in the cache, untouched.
-        assert game_router._game_sessions.get(key) is entry_new, (
+        assert gr_runtime._game_sessions.get(key) is entry_new, (
             "Identity gate failed: Caller A's pop evicted entry_NEW. "
             "This is the codex P1 bug — a fresh /route/start's session "
             "would now be orphaned and its session closed by us."
@@ -2010,7 +1996,7 @@ async def test_close_and_remove_session_identity_gates_pop_after_lock_wait():
             "entry_NEW."
         )
         # entry_NEW's create lock must also still be present.
-        assert game_router._game_session_create_locks.get(key) is entry_new_create_lock
+        assert gr_runtime._game_session_create_locks.get(key) is entry_new_create_lock
 
         # entry_A's session was closed (Caller A always owns its captured
         # entry's lifecycle, regardless of cache state).
@@ -2020,8 +2006,8 @@ async def test_close_and_remove_session_identity_gates_pop_after_lock_wait():
         )
 
         # Cleanup so we leave the registry clean for sibling tests.
-        game_router._game_sessions.pop(key, None)
-        game_router._game_session_create_locks.pop(key, None)
+        gr_runtime._game_sessions.pop(key, None)
+        gr_runtime._game_session_create_locks.pop(key, None)
 
 
 @pytest.mark.unit
@@ -2060,7 +2046,7 @@ async def test_postgame_uses_snapshot_not_live_route_state(monkeypatch):
         old_state["game_route_active"] = False
 
         # Snapshot captured during finalize (frozen on the OLD state).
-        snapshot = game_router._build_postgame_context_snapshot(old_state)
+        snapshot = gr_runtime._build_postgame_context_snapshot(old_state)
 
         # Now simulate the racing /route/start: peer activates a new
         # state at the SAME (lanlan, game_type) key — this REPLACES
@@ -2071,7 +2057,7 @@ async def test_postgame_uses_snapshot_not_live_route_state(monkeypatch):
         # Sanity: live reverse-lookup now returns the NEW state. This is
         # the contamination vector the snapshot defends against.
         assert (
-            game_router._find_game_route_state_for_session(
+            gr_runtime._find_game_route_state_for_session(
                 "soccer", "match_snapshot", "Lan",
             )
             is new_state
@@ -2087,7 +2073,7 @@ async def test_postgame_uses_snapshot_not_live_route_state(monkeypatch):
             captured_game_contexts.append(game_context)
             return "stub_prompt"
 
-        monkeypatch.setattr(game_router, "_build_game_prompt", _record_prompt)
+        _gr_patch_all(monkeypatch, "_build_game_prompt", _record_prompt)
 
         captured_callback = {"fn": None}
 
@@ -2124,7 +2110,7 @@ async def test_postgame_uses_snapshot_not_live_route_state(monkeypatch):
                 "api_type": "openai",
             }
 
-        monkeypatch.setattr(game_router, "_get_character_info", _stub_char_info)
+        _gr_patch_all(monkeypatch, "_get_character_info", _stub_char_info)
 
         class _StubManager:
             current_speech_id = "speech-snapshot"
@@ -2142,7 +2128,7 @@ async def test_postgame_uses_snapshot_not_live_route_state(monkeypatch):
         archive = {"lanlan_name": "Lan", "preGameContext": old_pre}
         options = {"enabled": True}
 
-        result = await game_router._deliver_postgame_text_bubble(
+        result = await gr_runtime._deliver_postgame_text_bubble(
             "soccer", "match_snapshot", _StubManager(), archive, options,
             postgame_snapshot=snapshot,
         )
@@ -2168,11 +2154,11 @@ async def test_postgame_uses_snapshot_not_live_route_state(monkeypatch):
         captured_game_contexts.clear()
         # Clear any cached postgame entry from the previous run before
         # the negative-control build.
-        for k in list(game_router._game_sessions.keys()):
-            if game_router._POSTGAME_SESSION_MARKER in k:
-                game_router._game_sessions.pop(k, None)
+        for k in list(gr_runtime._game_sessions.keys()):
+            if gr_runtime._POSTGAME_SESSION_MARKER in k:
+                gr_runtime._game_sessions.pop(k, None)
 
-        result_no_snapshot = await game_router._deliver_postgame_text_bubble(
+        result_no_snapshot = await gr_runtime._deliver_postgame_text_bubble(
             "soccer", "match_snapshot", _StubManager(), archive, options,
         )
         assert result_no_snapshot.get("ok") is True, result_no_snapshot
@@ -2214,14 +2200,12 @@ async def test_postgame_refresh_failure_returns_metadata_for_cleanup(monkeypatch
         old_state["preGameContext"] = {"summary": "snap"}
         old_state["_exit_flow_started"] = True
         old_state["game_route_active"] = False
-        snapshot = game_router._build_postgame_context_snapshot(old_state)
+        snapshot = gr_runtime._build_postgame_context_snapshot(old_state)
 
         async def _refresh_explodes(*_args, **_kwargs):
             raise RuntimeError("test refresh failed")
 
-        monkeypatch.setattr(
-            game_router,
-            "_refresh_game_session_instructions",
+        _gr_patch_all(monkeypatch, "_refresh_game_session_instructions",
             _refresh_explodes,
         )
 
@@ -2258,13 +2242,13 @@ async def test_postgame_refresh_failure_returns_metadata_for_cleanup(monkeypatch
                 "api_type": "openai",
             }
 
-        monkeypatch.setattr(game_router, "_get_character_info", _stub_char_info)
+        _gr_patch_all(monkeypatch, "_get_character_info", _stub_char_info)
 
         # Part 1: call ``_run_game_chat`` directly and assert the error
         # result carries the postgame metadata so the caller can close
         # the freshly-built client.
         event = {"lanlan_name": "Lan", "kind": "match_end"}
-        result = await game_router._run_game_chat(
+        result = await gr_runtime._run_game_chat(
             "soccer", "match_refresh_fail", event,
             allow_postgame=True, postgame_snapshot=snapshot,
         )
@@ -2287,11 +2271,11 @@ async def test_postgame_refresh_failure_returns_metadata_for_cleanup(monkeypatch
 
         # Clean up before part 2 since part 1 left a postgame entry in
         # the cache (caller never ran).
-        cache_key = game_router._game_session_key(
+        cache_key = gr_runtime._game_session_key(
             "Lan", "soccer", result["_postgame_cache_session_id"],
         )
-        game_router._game_sessions.pop(cache_key, None)
-        game_router._game_session_create_locks.pop(cache_key, None)
+        gr_runtime._game_sessions.pop(cache_key, None)
+        gr_runtime._game_session_create_locks.pop(cache_key, None)
         await leaked_session.close()
 
         # Part 2: full ``_deliver_postgame_text_bubble`` path. With the
@@ -2331,7 +2315,7 @@ async def test_postgame_refresh_failure_returns_metadata_for_cleanup(monkeypatch
                 pass
 
         archive = {"lanlan_name": "Lan", "preGameContext": {"summary": "snap"}}
-        bubble_result = await game_router._deliver_postgame_text_bubble(
+        bubble_result = await gr_runtime._deliver_postgame_text_bubble(
             "soccer", "match_refresh_fail", _StubManager(), archive,
             {"enabled": True}, postgame_snapshot=snapshot,
         )
@@ -2344,8 +2328,8 @@ async def test_postgame_refresh_failure_returns_metadata_for_cleanup(monkeypatch
             "metadata propagation is broken or finally did not reach close"
         )
         # Cache slot evicted by the bubble's finally.
-        for k in list(game_router._game_sessions.keys()):
-            assert game_router._POSTGAME_SESSION_MARKER not in k, (
+        for k in list(gr_runtime._game_sessions.keys()):
+            assert gr_runtime._POSTGAME_SESSION_MARKER not in k, (
                 f"postgame cache slot {k!r} was not evicted after "
                 f"refresh-failure cleanup"
             )
@@ -2360,11 +2344,11 @@ def test_route_session_id_only_strips_synthetic_uuid_tail():
     or with a non-uuid tail must be returned unchanged.
     """
     # 1) Synthetic id from the helper round-trips back to the original.
-    synthetic = game_router._make_postgame_session_id("real-session-42")
-    assert game_router._route_session_id(synthetic) == "real-session-42"
+    synthetic = gr_runtime._make_postgame_session_id("real-session-42")
+    assert gr_runtime._route_session_id(synthetic) == "real-session-42"
 
     # 2) Bare client id with no marker is unchanged.
-    assert game_router._route_session_id("client::regular::id") == "client::regular::id"
+    assert gr_runtime._route_session_id("client::regular::id") == "client::regular::id"
 
     # 3) Client id literally containing ``::postgame::`` but no uuid tail
     # must NOT be truncated. Pre-fix: any occurrence triggered strip.
@@ -2381,21 +2365,21 @@ def test_route_session_id_only_strips_synthetic_uuid_tail():
         "client::postgame::" + "0" * 32 + "x",               # 32 hex + extra
     ]
     for raw in benign_inputs:
-        assert game_router._route_session_id(raw) == raw, (
+        assert gr_runtime._route_session_id(raw) == raw, (
             f"_route_session_id must NOT strip benign input {raw!r}"
         )
 
     # 4) Empty / falsy inputs.
-    assert game_router._route_session_id("") == ""
-    assert game_router._route_session_id(None) == ""
+    assert gr_runtime._route_session_id("") == ""
+    assert gr_runtime._route_session_id(None) == ""
 
     # 5) An id with the marker MID-string AND a real synthetic suffix at
     # the end strips only the suffix, preserving the mid-string marker.
     base = "weird::postgame::client"
-    synth = game_router._make_postgame_session_id(base)
+    synth = gr_runtime._make_postgame_session_id(base)
     # synth = ``weird::postgame::client::postgame::<uuid_hex>`` — only the
     # final suffix shape matches; the inner ``::postgame::client`` stays.
-    assert game_router._route_session_id(synth) == base
+    assert gr_runtime._route_session_id(synth) == base
 
 
 @pytest.mark.unit
@@ -2425,7 +2409,7 @@ async def test_postgame_cleanup_runs_after_cancelled_error(monkeypatch):
         state = _activate_route("Lan", "soccer", "match_cancel")
         state["_exit_flow_started"] = True
         state["game_route_active"] = False
-        snapshot = game_router._build_postgame_context_snapshot(state)
+        snapshot = gr_runtime._build_postgame_context_snapshot(state)
 
         stream_started = asyncio.Event()
         fake_session = _FakeOmniSession(name="postgame_cancel")
@@ -2459,9 +2443,7 @@ async def test_postgame_cleanup_runs_after_cancelled_error(monkeypatch):
         async def _noop_refresh(*_args, **_kwargs):
             return None
 
-        monkeypatch.setattr(
-            game_router,
-            "_refresh_game_session_instructions",
+        _gr_patch_all(monkeypatch, "_refresh_game_session_instructions",
             _noop_refresh,
         )
 
@@ -2477,10 +2459,8 @@ async def test_postgame_cleanup_runs_after_cancelled_error(monkeypatch):
                 "api_type": "openai",
             }
 
-        monkeypatch.setattr(game_router, "_get_character_info", _stub_char_info)
-        monkeypatch.setattr(
-            game_router,
-            "_build_game_prompt",
+        _gr_patch_all(monkeypatch, "_get_character_info", _stub_char_info)
+        _gr_patch_all(monkeypatch, "_build_game_prompt",
             lambda *args, **kwargs: "stub_prompt",
         )
 
@@ -2500,7 +2480,7 @@ async def test_postgame_cleanup_runs_after_cancelled_error(monkeypatch):
         archive = {"lanlan_name": "Lan", "preGameContext": {"summary": "snap"}}
 
         async def _drive():
-            return await game_router._deliver_postgame_text_bubble(
+            return await gr_runtime._deliver_postgame_text_bubble(
                 "soccer", "match_cancel", _StubManager(), archive,
                 {"enabled": True}, postgame_snapshot=snapshot,
             )
@@ -2531,8 +2511,8 @@ async def test_postgame_cleanup_runs_after_cancelled_error(monkeypatch):
 
         # The private postgame cache slot was evicted by the bubble's
         # finally — no leftover ``::postgame::...`` keys.
-        for k in list(game_router._game_sessions.keys()):
-            assert game_router._POSTGAME_SESSION_MARKER not in k, (
+        for k in list(gr_runtime._game_sessions.keys()):
+            assert gr_runtime._POSTGAME_SESSION_MARKER not in k, (
                 f"postgame cache slot {k!r} was not evicted after "
                 f"CancelledError cleanup"
             )
@@ -2554,8 +2534,7 @@ async def test_heartbeat_sweep_rechecks_expired_inside_lock(monkeypatch):
     _stub_archive_calls(monkeypatch)
     with reset_game_route_state():
         # Make the sweep fire fast.
-        monkeypatch.setattr(
-            game_router, "_GAME_ROUTE_HEARTBEAT_SWEEP_SECONDS", 0.01
+        _gr_patch_all(monkeypatch, "_GAME_ROUTE_HEARTBEAT_SWEEP_SECONDS", 0.01
         )
 
         finalize_calls: list[dict] = []
@@ -2566,8 +2545,7 @@ async def test_heartbeat_sweep_rechecks_expired_inside_lock(monkeypatch):
             )
             return {"game_session_closed": False}
 
-        monkeypatch.setattr(
-            game_router, "_finalize_game_route_state", _track_finalize
+        _gr_patch_all(monkeypatch, "_finalize_game_route_state", _track_finalize
         )
 
         # Build an expired route — last_heartbeat_at is well past the
@@ -2576,20 +2554,20 @@ async def test_heartbeat_sweep_rechecks_expired_inside_lock(monkeypatch):
         state = _activate_route("Lan", "soccer", "match_recheck")
         state["heartbeat_timeout_seconds"] = 1.0
         # Force the lock-free expired-scan to catch this route.
-        state["last_heartbeat_at"] = game_router.time.time() - 60.0
-        state["last_activity"] = game_router.time.time() - 60.0
-        state["created_at"] = game_router.time.time() - 60.0
+        state["last_heartbeat_at"] = gr_runtime.time.time() - 60.0
+        state["last_activity"] = gr_runtime.time.time() - 60.0
+        state["created_at"] = gr_runtime.time.time() - 60.0
 
         # Pre-acquire the route lock so the sweep parks waiting for it.
         # While parked, simulate a ``/route/heartbeat`` recovery by
         # bumping ``last_heartbeat_at`` to NOW. After release, the
         # post-fix recheck inside the lock observes the recovery and
         # skips ``_finalize_game_route_state``.
-        route_lock = game_router._get_route_lock("Lan", "soccer")
+        route_lock = gr_runtime._get_route_lock("Lan", "soccer")
         await route_lock.acquire()
         try:
             sweep_task = asyncio.create_task(
-                game_router.cleanup_expired_sessions()
+                gr_runtime.cleanup_expired_sessions()
             )
             # Yield enough times for the sweep to: sleep → scan expired
             # → reach ``async with sweep_lock`` and park on our held
@@ -2606,8 +2584,8 @@ async def test_heartbeat_sweep_rechecks_expired_inside_lock(monkeypatch):
             # while sweep is parked. The lock-free expired-scan saw the
             # old value; the post-fix in-lock recheck must see the new
             # one and skip.
-            state["last_heartbeat_at"] = game_router.time.time()
-            state["last_activity"] = game_router.time.time()
+            state["last_heartbeat_at"] = gr_runtime.time.time()
+            state["last_activity"] = gr_runtime.time.time()
         finally:
             route_lock.release()
 
@@ -2651,14 +2629,14 @@ async def test_route_inactive_short_circuit_keeps_create_lock_when_peer_waits(
     """
     with reset_game_route_state():
         state = _activate_route("Lan", "soccer", "match_route_inactive_waiter")
-        key = game_router._game_session_key(
+        key = gr_runtime._game_session_key(
             "Lan", "soccer", "match_route_inactive_waiter",
         )
         # Drop any leftovers; we'll seed the cache directly so
         # _get_or_create_session cache-hits without touching the create
         # lock.
-        game_router._game_sessions.pop(key, None)
-        game_router._game_session_create_locks.pop(key, None)
+        gr_runtime._game_sessions.pop(key, None)
+        gr_runtime._game_session_create_locks.pop(key, None)
 
         fake_session = _FakeOmniSession(name="route_inactive_waiter")
         entry = {
@@ -2671,13 +2649,13 @@ async def test_route_inactive_short_circuit_keeps_create_lock_when_peer_waits(
             "lock": asyncio.Lock(),
             "instructions": "",
         }
-        game_router._game_sessions[key] = entry
+        gr_runtime._game_sessions[key] = entry
 
         # Seed the create lock with a real parked waiter. Holder owns it
         # for the duration of the _run_game_chat call so the peer task
         # cannot wake up — its future stays in ``_waiters``.
         create_lock = asyncio.Lock()
-        game_router._game_session_create_locks[key] = create_lock
+        gr_runtime._game_session_create_locks[key] = create_lock
         await create_lock.acquire()
 
         async def _peer_waiter():
@@ -2699,19 +2677,18 @@ async def test_route_inactive_short_circuit_keeps_create_lock_when_peer_waits(
         # AFTER the pre-create gate, then (b) return our pre-seeded entry.
         # This drives _run_game_chat into the post-lock route_inactive
         # branch where the under-test pop lives.
-        original_get_or_create = game_router._get_or_create_session
+        original_get_or_create = gr_runtime._get_or_create_session
 
         async def _flip_then_return(*args, **kwargs):
             state["_exit_flow_started"] = True
             return entry
 
-        monkeypatch.setattr(
-            game_router, "_get_or_create_session", _flip_then_return,
+        _gr_patch_all(monkeypatch, "_get_or_create_session", _flip_then_return,
         )
 
         try:
             result = await asyncio.wait_for(
-                game_router._run_game_chat(
+                gr_runtime._run_game_chat(
                     "soccer",
                     "match_route_inactive_waiter",
                     {"kind": "free-ball", "lanlan_name": "Lan"},
@@ -2721,25 +2698,24 @@ async def test_route_inactive_short_circuit_keeps_create_lock_when_peer_waits(
         finally:
             create_lock.release()
             await asyncio.wait_for(peer_task, timeout=1.0)
-            monkeypatch.setattr(
-                game_router, "_get_or_create_session", original_get_or_create,
+            _gr_patch_all(monkeypatch, "_get_or_create_session", original_get_or_create,
             )
 
         assert result.get("skipped") == "route_inactive"
         assert result.get("line") == ""
         # Entry was evicted from the cache (route_inactive branch fired).
-        assert key not in game_router._game_sessions
+        assert key not in gr_runtime._game_sessions
         # Orphan client closed exactly once.
         assert fake_session.close_calls == 1
         # CRITICAL invariant: the create lock is STILL in the registry
         # because a peer waiter was parked on it. Pre-fix the
         # unconditional pop would have removed it, splitting peers
         # across two lock instances.
-        assert key in game_router._game_session_create_locks, (
+        assert key in gr_runtime._game_session_create_locks, (
             "route_inactive short-circuit popped the create lock while a "
             "peer waiter was still parked on it; peers will desync onto "
             "distinct Lock instances and concurrent builds can race."
         )
         assert (
-            game_router._game_session_create_locks[key] is create_lock
+            gr_runtime._game_session_create_locks[key] is create_lock
         ), "registry must point at the SAME lock instance the waiter is on"

@@ -14,13 +14,12 @@
 
 from utils.config_manager import get_config_manager
 from utils.token_tracker import set_call_type
-from utils.llm_client import SystemMessage, HumanMessage, AIMessage, messages_to_dict, messages_from_dict, create_chat_llm
+from utils.llm_client import SystemMessage, HumanMessage, AIMessage, messages_to_dict, messages_from_dict, create_chat_llm, openai_retry_error_types
 import re
 import json
 import os
 import asyncio
 import logging
-from openai import APIConnectionError, InternalServerError, RateLimitError
 
 from config.prompts.prompts_memory import (
     get_recent_history_manager_prompt, get_detailed_recent_history_manager_prompt,
@@ -539,7 +538,7 @@ class CompressedRecentHistoryManager:
                 else:
                     print('💥 摘要failed: ', response_content)
                     retries += 1
-            except (APIConnectionError, InternalServerError, RateLimitError) as e:
+            except openai_retry_error_types() as e:
                 logger.info(f"ℹ️ 捕获到 {type(e).__name__} 错误")
                 retries += 1
                 if retries >= max_retries:
@@ -892,7 +891,7 @@ class CompressedRecentHistoryManager:
                 else:
                     print('💥 第二轮摘要failed: ', response_content)
                     retries += 1
-            except (APIConnectionError, InternalServerError, RateLimitError) as e:
+            except openai_retry_error_types() as e:
                 logger.info(f"ℹ️ 捕获到 {type(e).__name__} 错误")
                 retries += 1
                 if retries >= max_retries:
@@ -1209,7 +1208,7 @@ class CompressedRecentHistoryManager:
                 )
                 return ('patched', new_fingerprint)
 
-            except (APIConnectionError, InternalServerError, RateLimitError) as e:
+            except openai_retry_error_types() as e:
                 logger.info(f"ℹ️ 捕获到 {type(e).__name__} 错误")
                 retries += 1
                 if retries >= max_retries:
