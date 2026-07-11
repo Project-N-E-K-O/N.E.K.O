@@ -544,6 +544,7 @@ async def get_voice_preview(
                     return JSONResponse({
                         'success': False,
                         'error': f'MiMo preview generation failed: {str(exc)}',
+                        'code': 'MIMO_VOICE_PREVIEW_FAILED',
                     }, status_code=500)
 
             sample_b64 = (voice_data or {}).get('clone_sample_b64') or ''
@@ -984,12 +985,20 @@ async def get_voice_preview(
         except Exception as e:
             logger.warning("DashScope 预览地域 URL 读取失败，回退到默认地域: %s", e, exc_info=True)
             tts_api_config = {}
-        preview_base_url = (
-            (tts_api_config or {}).get('ttsModelUrl')
-            or (tts_api_config or {}).get('TTS_MODEL_URL')
-            or cosyvoice_base_url
-            or ''
-        )
+        if provider == 'cosyvoice_intl':
+            preview_base_url = (
+                cosyvoice_base_url
+                or (tts_api_config or {}).get('ttsModelUrl')
+                or (tts_api_config or {}).get('TTS_MODEL_URL')
+                or ''
+            )
+        else:
+            preview_base_url = (
+                (tts_api_config or {}).get('ttsModelUrl')
+                or (tts_api_config or {}).get('TTS_MODEL_URL')
+                or cosyvoice_base_url
+                or ''
+            )
 
         from utils.api_config_loader import get_cosyvoice_clone_model
         clone_model = (
