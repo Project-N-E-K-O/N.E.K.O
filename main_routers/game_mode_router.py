@@ -7,20 +7,34 @@
 """HTTP API for Game Mode Beta resource protection."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from main_logic.game_mode_resource_protection import protector
 from main_routers.shared_state import get_session_manager
+from main_routers.system_router import _validate_local_mutation_request
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+GAME_MODE_BROADCAST_SEND_TIMEOUT_SECONDS = 2.0
+
+
+async def _send_game_mode_event(name: str, ws: Any, payload: dict[str, Any]) -> None:
+    try:
+        async with asyncio.timeout(GAME_MODE_BROADCAST_SEND_TIMEOUT_SECONDS):
+            await ws.send_json(payload)
+    except TimeoutError:
+        logger.warning("[GameModeBeta] broadcast timed out for session %r", name)
+    except Exception:
+        logger.warning("[GameModeBeta] broadcast failed for session %r", name, exc_info=True)
 
 
 async def broadcast_game_mode_event(payload: dict[str, Any]) -> int:
+    """Schedule bounded websocket sends without holding the protector lock on I/O."""
     delivered = 0
     try:
         session_manager = get_session_manager()
@@ -38,7 +52,10 @@ async def broadcast_game_mode_event(payload: dict[str, Any]) -> int:
             state_name = str(client_state).upper()
             if client_state is not None and "CONNECTED" not in state_name:
                 continue
-            await ws.send_json(payload)
+            asyncio.create_task(
+                _send_game_mode_event(name, ws, payload),
+                name="game_mode_beta_broadcast",
+            )
             delivered += 1
         except Exception:
             logger.warning("[GameModeBeta] broadcast failed for session %r", name, exc_info=True)
@@ -47,6 +64,14 @@ async def broadcast_game_mode_event(payload: dict[str, Any]) -> int:
 
 
 protector.set_broadcaster(broadcast_game_mode_event)
+
+
+def _validate_game_mode_mutation(request: Request, payload: dict[str, Any]) -> Any:
+    return _validate_local_mutation_request(
+        request,
+        payload=payload,
+        error_defaults={"success": False},
+    )
 
 
 def _coerce_enabled_flag(value: Any) -> bool:
@@ -69,15 +94,21 @@ async def get_game_mode_beta_state() -> dict[str, Any]:
 
 
 @router.post("/api/game-mode-beta/enabled")
-async def set_game_mode_beta_enabled(payload: dict[str, Any]) -> dict[str, Any]:
+async def set_game_mode_beta_enabled(request: Request, payload: dict[str, Any]) -> Any:
+    validation_error = _validate_game_mode_mutation(request, payload)
+    if validation_error is not None:
+        return validation_error
     enabled = _coerce_enabled_flag(payload.get("enabled"))
     state = await protector.set_enabled(enabled)
     return {"success": True, "state": state}
 
 
 @router.post("/api/game-mode-beta/manual-restore")
-async def mark_game_mode_beta_manual_restore(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+async def mark_game_mode_beta_manual_restore(request: Request, payload: dict[str, Any] | None = None) -> Any:
     data = payload or {}
+    validation_error = _validate_game_mode_mutation(request, data)
+    if validation_error is not None:
+        return validation_error
     pet_instance_id = data.get("pet_instance_id")
     state = await protector.mark_manual_restore(
         str(pet_instance_id) if pet_instance_id is not None else None,
@@ -91,7 +122,10 @@ async def get_game_mode_beta_settings() -> dict[str, Any]:
 
 
 @router.post("/api/game-mode-beta/settings")
-async def set_game_mode_beta_settings(payload: dict[str, Any]) -> dict[str, Any]:
+async def set_game_mode_beta_settings(request: Request, payload: dict[str, Any]) -> Any:
+    validation_error = _validate_game_mode_mutation(request, payload)
+    if validation_error is not None:
+        return validation_error
     current = protector.settings_snapshot()
     auto_cat = payload.get("auto_cat_on_game", current["auto_cat_on_game"])
     mode = payload.get("game_trigger_mode", current["game_trigger_mode"])
@@ -106,7 +140,10 @@ async def set_game_mode_beta_settings(payload: dict[str, Any]) -> dict[str, Any]
 
 
 @router.post("/api/game-mode-beta/windows/register")
-async def register_game_mode_beta_window(payload: dict[str, Any]) -> dict[str, Any]:
+async def register_game_mode_beta_window(request: Request, payload: dict[str, Any]) -> Any:
+    validation_error = _validate_game_mode_mutation(request, payload)
+    if validation_error is not None:
+        return validation_error
     pet_instance_id = payload.get("pet_instance_id")
     if not isinstance(pet_instance_id, str) or not pet_instance_id.strip():
         raise HTTPException(status_code=400, detail="pet_instance_id required")
@@ -121,7 +158,10 @@ async def register_game_mode_beta_window(payload: dict[str, Any]) -> dict[str, A
 
 
 @router.post("/api/game-mode-beta/windows/unregister")
-async def unregister_game_mode_beta_window(payload: dict[str, Any]) -> dict[str, Any]:
+async def unregister_game_mode_beta_window(request: Request, payload: dict[str, Any]) -> Any:
+    validation_error = _validate_game_mode_mutation(request, payload)
+    if validation_error is not None:
+        return validation_error
     return {
         "success": True,
         "state": await protector.unregister_window(str(payload.get("pet_instance_id") or "")),
@@ -129,7 +169,10 @@ async def unregister_game_mode_beta_window(payload: dict[str, Any]) -> dict[str,
 
 
 @router.post("/api/game-mode-beta/ack")
-async def acknowledge_game_mode_beta_switch(payload: dict[str, Any]) -> dict[str, Any]:
+async def acknowledge_game_mode_beta_switch(request: Request, payload: dict[str, Any]) -> Any:
+    validation_error = _validate_game_mode_mutation(request, payload)
+    if validation_error is not None:
+        return validation_error
     state = await protector.acknowledge_switch(
         cycle_id=str(payload.get("cycle_id") or ""),
         pet_instance_id=str(payload.get("pet_instance_id") or ""),
@@ -139,7 +182,10 @@ async def acknowledge_game_mode_beta_switch(payload: dict[str, Any]) -> dict[str
 
 
 @router.post("/api/game-mode-beta/deep-sleep-ack")
-async def acknowledge_game_mode_beta_deep_sleep(payload: dict[str, Any]) -> dict[str, Any]:
+async def acknowledge_game_mode_beta_deep_sleep(request: Request, payload: dict[str, Any]) -> Any:
+    validation_error = _validate_game_mode_mutation(request, payload)
+    if validation_error is not None:
+        return validation_error
     state = await protector.acknowledge_deep_sleep(
         cycle_id=str(payload.get("cycle_id") or ""),
         pet_instance_id=str(payload.get("pet_instance_id") or ""),
@@ -149,17 +195,23 @@ async def acknowledge_game_mode_beta_deep_sleep(payload: dict[str, Any]) -> dict
 
 
 @router.post("/api/game-mode-beta/reset-candidate")
-async def reset_game_mode_beta_candidate(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+async def reset_game_mode_beta_candidate(request: Request, payload: dict[str, Any] | None = None) -> Any:
     data = payload or {}
+    validation_error = _validate_game_mode_mutation(request, data)
+    if validation_error is not None:
+        return validation_error
     state = await protector.reset_game_candidate(str(data.get("reason") or "external-reset"))
     return {"success": True, "state": state}
 
 
 @router.post("/api/game-mode-beta/debug/trigger")
-async def debug_trigger_game_mode_beta(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+async def debug_trigger_game_mode_beta(request: Request, payload: dict[str, Any] | None = None) -> Any:
     if os.environ.get("NEKO_GAME_MODE_DEBUG") != "1" and os.environ.get("NEKO_DEBUG") != "1":
         raise HTTPException(status_code=404, detail="debug trigger unavailable")
     data = payload or {}
+    validation_error = _validate_game_mode_mutation(request, data)
+    if validation_error is not None:
+        return validation_error
     reason = str(data.get("reason") or "debug")
     try:
         percent = float(data.get("percent", 99.0))

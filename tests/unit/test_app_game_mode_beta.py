@@ -78,6 +78,10 @@ def test_app_game_mode_beta_frontend_contracts():
           win.pngtuberManager = {{ _isInReturnState: options.initialCat === true }};
           win.showStatusToast = (message) => notices.push(message);
           win.t = (_key, payload) => payload && payload.defaultValue ? payload.defaultValue : _key;
+          win.nekoLocalMutationSecurity = {{
+            peekCachedToken: () => 'test-csrf-token',
+            getMutationHeaders: async () => ({{ 'X-CSRF-Token': 'test-csrf-token' }}),
+          }};
           win.addEventListener = EventTargetLike.prototype.addEventListener.bind(win);
           win.dispatchEvent = EventTargetLike.prototype.dispatchEvent.bind(win);
           win.removeEventListener = () => {{}};
@@ -100,7 +104,7 @@ def test_app_game_mode_beta_frontend_contracts():
 
           const responses = (options.responses || []).slice();
           win.fetch = async (url, init = {{}}) => {{
-            fetchCalls.push({{ url, method: init.method || 'GET', body: init.body || '' }});
+            fetchCalls.push({{ url, method: init.method || 'GET', body: init.body || '', headers: init.headers || {{}} }});
             const next = responses.length ? responses.shift() : {{ success: true, state: {{ enabled: true }} }};
             return {{
               ok: next.ok !== false,
@@ -274,6 +278,11 @@ def test_app_game_mode_beta_frontend_contracts():
           assert(statusUpdateCount > 0, 'visible settings toggle status should refresh');
           assert(styleUpdateCount > 0, 'visible settings toggle style should refresh');
           assert(changeCount === 0, 'programmatic toggle sync must not dispatch change as a user action');
+          const mutationCalls = restore.fetchCalls.concat(manualRestore.fetchCalls).filter((call) => call.method === 'POST');
+          assert(
+            mutationCalls.every((call) => call.headers['X-CSRF-Token'] === 'test-csrf-token'),
+            'all mutations should include the local CSRF token: ' + JSON.stringify(mutationCalls)
+          );
 
           console.log('app-game-mode-beta frontend contracts passed');
         }})().catch((error) => {{

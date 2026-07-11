@@ -488,16 +488,35 @@ def test_game_mode_metric_error_logging_is_deduplicated(caplog):
 async def test_game_mode_debug_trigger_is_env_gated(monkeypatch):
     from main_logic.game_mode_resource_protection import protector
     from main_routers.game_mode_router import debug_trigger_game_mode_beta
+    from main_routers.system_router import _shared as system_router_shared
+    from starlette.requests import Request
+
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/game-mode-beta/debug/trigger",
+            "headers": [
+                (b"origin", b"http://testserver"),
+                (b"x-csrf-token", system_router_shared.AUTOSTART_CSRF_TOKEN.encode()),
+            ],
+            "scheme": "http",
+            "server": ("testserver", 80),
+            "client": ("testclient", 50000),
+            "query_string": b"",
+        }
+    )
+    payload = {"reason": "debug", "percent": 97}
 
     monkeypatch.delenv("NEKO_GAME_MODE_DEBUG", raising=False)
     monkeypatch.delenv("NEKO_DEBUG", raising=False)
     with pytest.raises(HTTPException) as exc_info:
-        await debug_trigger_game_mode_beta({"reason": "debug", "percent": 97})
+        await debug_trigger_game_mode_beta(request, payload)
     assert exc_info.value.status_code == 404
 
     monkeypatch.setenv("NEKO_GAME_MODE_DEBUG", "1")
     try:
-        result = await debug_trigger_game_mode_beta({"reason": "debug", "percent": 97})
+        result = await debug_trigger_game_mode_beta(request, payload)
 
         assert result["success"] is True
         assert result["state"]["enabled"] is True
