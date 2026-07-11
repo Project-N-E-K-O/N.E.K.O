@@ -163,7 +163,9 @@ async def update_playtime(request: Request):
                 content={"success": False, "error": "seconds must be non-negative"},
                 status_code=400,
             )
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OverflowError):
+        # OverflowError: json.loads accepts bare Infinity/-Infinity, which
+        # int() cannot convert — treat it as invalid input, not a 500.
         return JSONResponse(
             content={"success": False, "error": "seconds must be a valid integer"},
             status_code=400,

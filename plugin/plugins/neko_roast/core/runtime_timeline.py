@@ -6,13 +6,15 @@ import time
 import uuid
 from typing import Any
 
+from .viewer_preferences import safe_text
+
 
 def new_trace_id() -> str:
     return "tr_" + uuid.uuid4().hex[:12]
 
 
 def ensure_trace_id(event: Any) -> str:
-    trace_id = _safe_text(getattr(event, "trace_id", ""), max_len=80)
+    trace_id = safe_text(getattr(event, "trace_id", ""), max_len=80)
     if not trace_id:
         trace_id = new_trace_id()
         try:
@@ -37,14 +39,53 @@ def record_timeline(
         {
             "trace_id": trace_id,
             "at": time.time(),
-            "stage": _safe_text(stage, max_len=80),
-            "status": _safe_text(status, max_len=80),
-            "reason": _safe_text(reason, max_len=160),
-            "route": _safe_text(route, max_len=80),
-            "uid": _safe_text(getattr(event, "uid", ""), max_len=80),
-            "source": _safe_text(getattr(event, "source", ""), max_len=80),
+            "stage": safe_text(stage, max_len=80),
+            "status": safe_text(status, max_len=80),
+            "reason": safe_text(reason, max_len=160),
+            "route": safe_text(route, max_len=80),
+            "uid": safe_text(getattr(event, "uid", ""), max_len=80),
+            "source": safe_text(getattr(event, "source", ""), max_len=80),
         },
     )
+
+
+def record_payload_timeline(
+    runtime: Any,
+    payload: dict[str, Any],
+    *,
+    stage: str,
+    status: str,
+    reason: str = "",
+    route: str = "",
+) -> str:
+    trace_id = safe_text(payload.get("trace_id"), max_len=80) or new_trace_id()
+    payload["trace_id"] = trace_id
+    _append(
+        runtime,
+        {
+            "trace_id": trace_id,
+            "at": time.time(),
+            "stage": safe_text(stage, max_len=80),
+            "status": safe_text(status, max_len=80),
+            "reason": safe_text(reason, max_len=160),
+            "route": safe_text(route, max_len=80),
+            "uid": safe_text(payload.get("uid"), max_len=80),
+            "source": "live_payload",
+        },
+    )
+    return trace_id
+
+
+def timeline_for_trace(runtime: Any, trace_id: str, *, limit: int = 16) -> list[dict[str, Any]]:
+    safe_trace = safe_text(trace_id, max_len=80)
+    if not safe_trace:
+        return []
+    items = [
+        dict(item)
+        for item in getattr(runtime, "runtime_timeline", [])
+        if isinstance(item, dict) and item.get("trace_id") == safe_trace
+    ]
+    return items[-limit:]
 
 
 def _append(runtime: Any, item: dict[str, Any]) -> None:
@@ -55,10 +96,3 @@ def _append(runtime: Any, item: dict[str, Any]) -> None:
         timeline.append(item)
     except Exception:
         pass
-
-
-def _safe_text(value: Any, *, max_len: int) -> str:
-    if not isinstance(value, str):
-        return ""
-    text = " ".join(value.replace("\r", " ").replace("\n", " ").split())
-    return text[:max_len]

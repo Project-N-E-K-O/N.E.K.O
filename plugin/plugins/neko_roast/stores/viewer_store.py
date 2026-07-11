@@ -17,8 +17,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ..core.contracts import ViewerIdentity, ViewerProfile, utc_now_iso
+from ..core.contracts_public import public_int, public_text
+from ..core.viewer_preferences import infer_viewer_preferences, merge_preference_counts, safe_preference_counts
 
 _STORE_FILE = "viewer_profiles.json"
+_MAX_PROFILE_TEXT = 240
 
 
 class ViewerStore:
@@ -144,29 +147,97 @@ class ViewerStore:
     async def _upsert_identity_locked(self, identity: ViewerIdentity) -> ViewerProfile:
         profiles = await self._load_all()
         now = utc_now_iso()
-        existing = profiles.get(identity.uid)
+        uid = _safe_profile_uid(identity.uid)
+        nickname = _safe_profile_text(identity.nickname)
+        avatar_url = _safe_profile_text(identity.avatar_url)
+        if not uid:
+            return ViewerProfile(uid="", nickname=nickname, avatar_url=avatar_url)
+        existing = profiles.get(uid)
         if existing:
             profile = ViewerProfile(
-                uid=identity.uid,
-                nickname=identity.nickname or str(existing.get("nickname") or identity.uid),
-                avatar_url=identity.avatar_url or str(existing.get("avatar_url") or ""),
-                first_seen_at=str(existing.get("first_seen_at") or now),
+                uid=uid,
+                nickname=nickname or _safe_profile_text(existing.get("nickname")) or uid,
+                avatar_url=avatar_url or _safe_profile_text(existing.get("avatar_url")),
+                first_seen_at=_safe_profile_text(existing.get("first_seen_at")) or now,
                 last_seen_at=now,
-                roast_count=int(existing.get("roast_count") or 0),
-                last_roast_at=str(existing.get("last_roast_at") or ""),
-                last_result=str(existing.get("last_result") or ""),
+                roast_count=public_int(existing.get("roast_count"), default=0, minimum=0),
+                last_roast_at=_safe_profile_text(existing.get("last_roast_at")),
+                last_result=_safe_profile_text(existing.get("last_result")),
+                danmaku_count=public_int(existing.get("danmaku_count"), default=0, minimum=0),
+                preference_tags=safe_preference_counts(existing.get("preference_tags")),
+                favorite_topics=safe_preference_counts(existing.get("favorite_topics")),
+                running_jokes=safe_preference_counts(existing.get("running_jokes")),
+                interaction_style=_safe_profile_text(existing.get("interaction_style")),
+                response_preference=_safe_profile_text(existing.get("response_preference")),
+                last_interaction_summary=_safe_profile_text(existing.get("last_interaction_summary")),
+                impression_summary=_safe_profile_text(existing.get("impression_summary")),
+                avoid_guidance=_safe_profile_text(existing.get("avoid_guidance")),
+                last_interaction_at=_safe_profile_text(existing.get("last_interaction_at")),
             )
         else:
             profile = ViewerProfile(
-                uid=identity.uid,
-                nickname=identity.nickname or identity.uid,
-                avatar_url=identity.avatar_url,
+                uid=uid,
+                nickname=nickname or uid,
+                avatar_url=avatar_url,
                 first_seen_at=now,
                 last_seen_at=now,
             )
-        profiles[identity.uid] = profile.to_dict()
+        profiles[uid] = profile.to_dict()
         await self._save_all(profiles)
         return profile
+
+    async def record_live_danmaku(
+        self,
+        identity: ViewerIdentity,
+        danmaku_text: str,
+    ) -> ViewerProfile:
+        async with self._lock:
+            profiles = await self._load_all()
+            now = utc_now_iso()
+            uid = _safe_profile_uid(identity.uid)
+            nickname = _safe_profile_text(identity.nickname)
+            avatar_url = _safe_profile_text(identity.avatar_url)
+            if not uid:
+                return ViewerProfile(uid="", nickname=nickname, avatar_url=avatar_url)
+            item = dict(profiles.get(uid) or {})
+            inference = infer_viewer_preferences(danmaku_text)
+            profile = ViewerProfile(
+                uid=uid,
+                nickname=nickname or _safe_profile_text(item.get("nickname")) or uid,
+                avatar_url=avatar_url or _safe_profile_text(item.get("avatar_url")),
+                first_seen_at=_safe_profile_text(item.get("first_seen_at")) or now,
+                last_seen_at=now,
+                roast_count=public_int(item.get("roast_count"), default=0, minimum=0),
+                last_roast_at=_safe_profile_text(item.get("last_roast_at")),
+                last_result=_safe_profile_text(item.get("last_result")),
+                danmaku_count=public_int(item.get("danmaku_count"), default=0, minimum=0) + 1,
+                preference_tags=merge_preference_counts(
+                    item.get("preference_tags"),
+                    [str(tag) for tag in inference.get("tags", []) if str(tag).strip()],
+                ),
+                favorite_topics=merge_preference_counts(
+                    item.get("favorite_topics"),
+                    [str(tag) for tag in inference.get("favorite_topics", []) if str(tag).strip()],
+                ),
+                running_jokes=merge_preference_counts(
+                    item.get("running_jokes"),
+                    [str(tag) for tag in inference.get("running_jokes", []) if str(tag).strip()],
+                ),
+                interaction_style=_safe_profile_text(inference.get("interaction_style"))
+                or _safe_profile_text(item.get("interaction_style")),
+                response_preference=_safe_profile_text(inference.get("response_preference"))
+                or _safe_profile_text(item.get("response_preference")),
+                last_interaction_summary=_safe_profile_text(inference.get("summary"))
+                or _safe_profile_text(item.get("last_interaction_summary")),
+                impression_summary=_safe_profile_text(inference.get("impression_summary"))
+                or _safe_profile_text(item.get("impression_summary")),
+                avoid_guidance=_safe_profile_text(inference.get("avoid_guidance"))
+                or _safe_profile_text(item.get("avoid_guidance")),
+                last_interaction_at=now,
+            )
+            profiles[uid] = profile.to_dict()
+            await self._save_all(profiles)
+            return profile
 
     async def mark_roasted(self, uid: str, output: str) -> None:
         async with self._lock:
@@ -190,3 +261,14 @@ class ViewerStore:
         profiles = await self._load_all()
         ordered = sorted(profiles.values(), key=lambda item: str(item.get("last_seen_at") or ""), reverse=True)
         return [dict(item) for item in ordered[:limit]]
+
+
+def _safe_profile_uid(value: Any) -> str:
+    text = public_text(value, max_len=120)
+    if "[redacted]" in text:
+        return ""
+    return text
+
+
+def _safe_profile_text(value: Any) -> str:
+    return public_text(value, max_len=_MAX_PROFILE_TEXT)
