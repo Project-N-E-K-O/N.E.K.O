@@ -9,7 +9,9 @@ import pytest
 from plugin.plugins.neko_roast.core import (
     active_topic_candidate_picker,
     active_topic_live_thread_source,
+    active_topic_material_family,
     active_topic_mentions,
+    active_topic_pack,
     active_topic_recent_source,
     active_topic_rules,
     active_topic_trending_source,
@@ -25,6 +27,69 @@ def test_active_topic_slice_imports_without_later_material_or_content_slices() -
 
     assert runtime_api.RuntimeActiveTopicApiMixin
     assert active_topic_rules._active_topic_material_profile("pick A or B")
+
+
+@pytest.mark.parametrize("title", ("about", "table", "cable", "stable"))
+def test_normal_words_containing_ab_are_not_choice_votes(title: str) -> None:
+    material = {"title": title, "fun_axis": "mood"}
+
+    assert active_topic_material_family.host_material_family(material) != "choice_vote"
+    assert active_topic_pack.active_topic_pack(material) != "micro_poll"
+
+
+def test_explicit_material_family_wins_over_title_inference() -> None:
+    material = {
+        "family": "room_mood",
+        "title": "pick one",
+        "live_column": "NEKO micro poll",
+    }
+
+    assert active_topic_material_family.host_material_family(material) == "room_mood"
+    assert active_topic_pack.active_topic_pack(material) == "room_mood"
+
+
+@pytest.mark.parametrize(
+    ("material", "expected_pack"),
+    (
+        ({"family": "room_mood", "title": "room stance check"}, "room_mood"),
+        (
+            {"family": "food_drink", "reply_affordance": "share your stance"},
+            "food_drink",
+        ),
+        ({"family": "choice_vote", "fun_axis": "stance"}, "micro_poll"),
+    ),
+)
+def test_explicit_material_family_does_not_drift_to_stance_pack(
+    material: dict[str, str], expected_pack: str
+) -> None:
+    assert active_topic_pack.active_topic_pack(material) == expected_pack
+
+
+def test_explicit_ab_marker_remains_a_choice_vote() -> None:
+    assert (
+        active_topic_material_family.host_material_family({"title": "A/B vote"})
+        == "choice_vote"
+    )
+
+
+def test_inferred_food_family_does_not_drift_to_stance_pack() -> None:
+    material = {
+        "title": "late-night drink prompt",
+        "reply_affordance": "share your stance",
+    }
+
+    assert active_topic_material_family.host_material_family(material) == "food_drink"
+    assert active_topic_pack.active_topic_pack(material) == "food_drink"
+
+
+def test_inferred_food_family_does_not_drift_to_live_column_pack() -> None:
+    material = {
+        "title": "late-night drink prompt",
+        "live_column": "NEKO tiny verdict",
+    }
+
+    assert active_topic_material_family.host_material_family(material) == "food_drink"
+    assert active_topic_pack.active_topic_pack(material) == "food_drink"
 
 
 @pytest.mark.parametrize(
