@@ -799,6 +799,34 @@ async def test_settings_and_manual_restore_cooldown_persist_but_runtime_cycle_do
         await second.set_enabled(False)
 
 
+def test_settings_store_path_resolution_failures_are_nonfatal(monkeypatch, caplog, tmp_path):
+    store = GameModeSettingsStore(tmp_path / "game-mode.json")
+
+    def fail_path_resolution():
+        raise RuntimeError("config unavailable")
+
+    monkeypatch.setattr(store, "_resolve_path", fail_path_resolution)
+    with caplog.at_level(logging.WARNING):
+        assert store.load_settings() == {}
+        store.save({"auto_cat_on_game": True})
+
+    assert "failed to load settings" in caplog.text
+    assert "failed to persist settings" in caplog.text
+
+
+def test_settings_store_atomic_write_failures_are_nonfatal(monkeypatch, caplog, tmp_path):
+    store = GameModeSettingsStore(tmp_path / "game-mode.json")
+
+    def fail_write(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("utils.file_utils.atomic_write_json", fail_write)
+    with caplog.at_level(logging.WARNING):
+        store.save({"auto_cat_on_game": True})
+
+    assert "failed to persist settings" in caplog.text
+
+
 @pytest.mark.asyncio
 async def test_new_pet_joins_active_device_cycle_without_reloading_first():
     events = []
