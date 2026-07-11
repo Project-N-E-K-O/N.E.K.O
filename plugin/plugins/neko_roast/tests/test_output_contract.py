@@ -1,4 +1,7 @@
+import pytest
+
 from plugin.plugins.neko_roast.adapters.neko_dispatcher import _coalesce_key_for_request
+from plugin.plugins.neko_roast.core import danmaku_text_rules
 from plugin.plugins.neko_roast.core.contracts import (
     InteractionRequest,
     ViewerEvent,
@@ -137,6 +140,8 @@ def test_generic_chinese_roast_targets_are_rejected():
         "锐评 小明的表现",
         "锐评 @小明的表现",
         "锐评 这期节目中的内容",
+        "锐评 小明 的 表现",
+        "锐评 @小明 的 表现",
     ):
         assert DanmakuResponseModule._target_roast_nickname(request) == ""
 
@@ -163,9 +168,35 @@ def test_generic_chinese_roast_targets_are_rejected():
         "锐评 小明的表现",
         "锐评 @小明的表现",
         "锐评 这期节目中的内容",
+        "锐评 小明 的 表现",
+        "锐评 @小明 的 表现",
     ):
         profile = DanmakuResponseModule._danmaku_profile(request)
         assert profile["kind"] != "target_roast_request"
 
     assert DanmakuResponseModule._target_roast_nickname("锐评 小明") == "小明"
     assert DanmakuResponseModule._target_roast_nickname("锐评 @小明") == "小明"
+
+
+def test_later_neko_mention_wins_over_earlier_viewer_mention() -> None:
+    assert (
+        danmaku_text_rules.is_viewer_to_viewer_mention_text(
+            "@Alice @neko 你怎么看"
+        )
+        is False
+    )
+    assert danmaku_text_rules.is_viewer_to_viewer_mention_text("@Alice @Bob") is True
+
+
+@pytest.mark.parametrize("text", ("this", "shit", "they"))
+def test_english_greeting_requires_a_complete_word(text: str) -> None:
+    dense = "".join(text.split())
+
+    assert DanmakuResponseModule._looks_like_greeting(text, dense) is False
+
+
+@pytest.mark.parametrize("text", ("hi", "hello", "hey you"))
+def test_complete_english_greeting_words_are_preserved(text: str) -> None:
+    dense = "".join(text.split())
+
+    assert DanmakuResponseModule._looks_like_greeting(text, dense) is True

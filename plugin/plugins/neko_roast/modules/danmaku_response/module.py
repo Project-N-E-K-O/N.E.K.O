@@ -674,18 +674,25 @@ class DanmakuResponseModule(BaseModule):
                 or object_relation_phrase.search(normalized) is not None
             )
 
+        def has_blocked_trailing_relation(value: str) -> bool:
+            dense = "".join(str(value or "").casefold().split())
+            return object_relation_phrase.search(dense) is not None
+
         for part in cleaned.split("@")[1:]:
+            stripped_part = part.strip()
             target = []
-            for ch in part.strip():
+            for ch in stripped_part:
                 if ch.isspace() or ch in ":：,，。.!！?？、；;|[]()（）<>《》":
                     break
                 target.append(ch)
             name = "".join(target).strip("@ \t\r\n")
             normalized_name = name.casefold()
+            remainder = stripped_part[len(target) :]
             if (
                 name
                 and normalized_name not in aliases
                 and not is_blocked_target(normalized_name)
+                and not has_blocked_trailing_relation(remainder)
             ):
                 return name[:24]
         pattern = re.compile(
@@ -697,7 +704,9 @@ class DanmakuResponseModule(BaseModule):
             return ""
         name = match.group(1).strip("@ \t\r\n")
         normalized_name = name.casefold()
-        if is_blocked_target(normalized_name):
+        if is_blocked_target(normalized_name) or has_blocked_trailing_relation(
+            cleaned[match.end() :]
+        ):
             return ""
         return name[:24]
 
@@ -706,10 +715,8 @@ class DanmakuResponseModule(BaseModule):
         lowered = str(text or "").casefold().strip()
         if not lowered or not dense:
             return False
-        greetings = (
-            "hi",
-            "hello",
-            "hey",
+        english_greeting = re.search(r"\b(?:hi|hello|hey)\b", lowered) is not None
+        cjk_greetings = (
             "\u4f60\u597d",
             "\u665a\u4e0a\u597d",
             "\u665a\u597d",
@@ -720,7 +727,10 @@ class DanmakuResponseModule(BaseModule):
             "\u55e8",
             "\u54c8\u55bd",
         )
-        return len(dense) <= 8 and any(marker in lowered or marker in dense for marker in greetings)
+        return len(dense) <= 8 and (
+            english_greeting
+            or any(marker in lowered or marker in dense for marker in cjk_greetings)
+        )
 
     @staticmethod
     def _looks_like_question(text: str, dense: str) -> bool:

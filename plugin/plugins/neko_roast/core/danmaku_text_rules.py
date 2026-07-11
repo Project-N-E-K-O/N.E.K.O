@@ -27,6 +27,7 @@ def is_viewer_to_viewer_mention_text(text: str) -> bool:
         return False
     aliases = {"neko", "\u732b\u732b", "\u5c0f\u5929", "\u732b\u5a18"}
     lowered_aliases = {alias.lower() for alias in aliases}
+    saw_viewer_mention = False
     for part in compact.split("@")[1:]:
         target = []
         for ch in part.strip():
@@ -38,8 +39,8 @@ def is_viewer_to_viewer_mention_text(text: str) -> bool:
             continue
         if _is_neko_mention_target(name, lowered_aliases):
             return False
-        return True
-    return False
+        saw_viewer_mention = True
+    return saw_viewer_mention
 
 
 def _is_neko_mention_target(name: str, lowered_aliases: set[str]) -> bool:
