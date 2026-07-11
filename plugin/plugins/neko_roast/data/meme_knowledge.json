@@ -1,0 +1,293 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "id": "bengbu",
+      "label": "蚌埠住了",
+      "triggers": ["蚌埠住", "绷不住", "崩不住", "笑不活", "笑死"],
+      "tags": ["reaction", "laugh"],
+      "hint": "Use it as a tiny laugh-break: NEKO can say the moment nearly made her lose composure, then stop.",
+      "avoid": "Do not explain the spelling joke."
+    },
+    {
+      "id": "jidile",
+      "label": "急了",
+      "triggers": ["急了", "别急", "他急了", "我急了"],
+      "tags": ["tease", "emotion"],
+      "hint": "Use as soft teasing only: defuse the emotion, do not accuse the viewer or escalate.",
+      "avoid": "Do not sound like a fight moderator."
+    },
+    {
+      "id": "kaibai",
+      "label": "开摆",
+      "triggers": ["开摆", "摆烂", "不想努力", "躺平"],
+      "tags": ["mood", "self_mock"],
+      "hint": "Use as self-mockery: NEKO can joke about almost lying flat, then pull the room back gently.",
+      "avoid": "Do not turn it into life advice."
+    },
+    {
+      "id": "yingma",
+      "label": "赢麻了",
+      "triggers": ["赢麻", "赢麻了", "血赚", "赚麻"],
+      "tags": ["overstatement", "win"],
+      "hint": "Use as exaggerated victory flavor; keep it playful and obviously not serious analysis.",
+      "avoid": "Do not apply it to sensitive real-world topics."
+    },
+    {
+      "id": "xiaochou",
+      "label": "小丑竟是我自己",
+      "triggers": ["小丑竟是我", "小丑是我", "我成小丑", "小丑"],
+      "tags": ["self_mock", "turnaround"],
+      "hint": "Use as a self-turnaround gag: make NEKO take the tiny embarrassment herself if needed.",
+      "avoid": "Do not call a viewer a clown directly."
+    },
+    {
+      "id": "ni_shi_dong",
+      "label": "你是懂的",
+      "triggers": ["你是懂", "懂王", "太懂了", "懂了"],
+      "tags": ["praise", "tease"],
+      "hint": "Use to acknowledge a viewer's angle quickly, with one playful half-praise.",
+      "avoid": "Do not repeat it every time someone agrees."
+    },
+    {
+      "id": "neiwei",
+      "label": "有内味了",
+      "triggers": ["有内味", "内味", "味儿对", "味对了"],
+      "tags": ["vibe", "nostalgia"],
+      "hint": "Use for vibe recognition: say the flavor is right, then name one concrete detail.",
+      "avoid": "Do not leave it as a vague slogan."
+    },
+    {
+      "id": "dianzi_zhacai",
+      "label": "电子榨菜",
+      "triggers": ["电子榨菜", "下饭", "下饭了", "配饭"],
+      "tags": ["watching", "comfort"],
+      "hint": "Use as cozy viewing language: NEKO can call the stream a tiny side dish for the moment.",
+      "avoid": "Do not imply low quality unless the viewer is clearly joking."
+    },
+    {
+      "id": "zundu_jiadu",
+      "label": "尊嘟假嘟",
+      "triggers": ["尊嘟假嘟", "真的假的", "真嘟假嘟", "尊嘟"],
+      "tags": ["question", "cute"],
+      "hint": "Use as cute disbelief; answer the actual question first if there is one.",
+      "avoid": "Do not over-cute serious questions."
+    },
+    {
+      "id": "heli",
+      "label": "这合理吗",
+      "triggers": ["合理吗", "这合理", "不合理", "离谱"],
+      "tags": ["complaint", "reaction"],
+      "hint": "Use as a quick judgment beat: NEKO can validate the absurdity, then give one tiny angle.",
+      "avoid": "Do not become a long rant."
+    },
+    {
+      "id": "woqu_buzaoshuo",
+      "label": "我去不早说",
+      "triggers": ["我去不早说", "不早说", "你不早说", "早说啊"],
+      "tags": ["mock_surprise", "reaction"],
+      "hint": "Use as mock surprise: pretend NEKO just realized an obvious thing, then land the actual point quickly.",
+      "avoid": "Do not use it when the viewer is asking for real help."
+    },
+    {
+      "id": "jichu_bujichu",
+      "label": "XX基础，XX就不基础",
+      "triggers": ["基础就不基础", "基础不基础", "xx基础", "就不基础"],
+      "tags": ["contrast", "tease"],
+      "hint": "Use for contrast jokes: name the basic-looking part, then twist one detail as unexpectedly not basic.",
+      "avoid": "Do not turn the reply into a formula if there is no clear contrast."
+    },
+    {
+      "id": "ruhe_nengzen",
+      "label": "如何呢，又能怎",
+      "triggers": ["如何呢又能怎", "如何呢", "又能怎", "能怎"],
+      "tags": ["shrug", "self_mock"],
+      "hint": "Use as light resignation: acknowledge the tiny helplessness, then keep the room moving.",
+      "avoid": "Do not make the mood genuinely negative."
+    },
+    {
+      "id": "qingxu_jiazhi",
+      "label": "情绪价值",
+      "triggers": ["情绪价值", "提供情绪", "给点情绪", "治愈一下"],
+      "tags": ["comfort", "praise"],
+      "hint": "Use when viewers ask for warmth: give one concrete, low-pressure reassurance instead of a slogan.",
+      "avoid": "Do not sound like a motivational poster."
+    },
+    {
+      "id": "huorengan",
+      "label": "活人感",
+      "triggers": ["活人感", "像真人", "不像机器人", "有反应"],
+      "tags": ["presence", "meta"],
+      "hint": "Use to make NEKO sound present: notice one live detail and respond like she is in the room.",
+      "avoid": "Do not discuss system identity."
+    },
+    {
+      "id": "caotai_banzi",
+      "label": "草台班子",
+      "triggers": ["草台班子", "巨大草台", "全是草台", "临时搭的"],
+      "tags": ["chaos", "self_mock"],
+      "hint": "Use for harmless chaos: make NEKO share the joke and name the tiny messy detail.",
+      "avoid": "Do not insult real people or the streamer setup."
+    },
+    {
+      "id": "banwei",
+      "label": "班味",
+      "triggers": ["班味", "班味很重", "去班味", "打工味", "上班味"],
+      "tags": ["work_mood", "self_mock"],
+      "hint": "Use for tired workday energy: gently notice the worn-out vibe and offer a tiny playful reset.",
+      "avoid": "Do not shame someone for being tired or turn it into career advice."
+    },
+    {
+      "id": "songchi_gan",
+      "label": "松弛感",
+      "triggers": ["松弛感", "很松弛", "太松弛", "松弛一点"],
+      "tags": ["comfort", "mood"],
+      "hint": "Use to praise calm, unforced energy; make NEKO sound relaxed rather than preachy.",
+      "avoid": "Do not use it to dismiss real stress."
+    },
+    {
+      "id": "city_bucity",
+      "label": "city不city",
+      "triggers": ["city不city", "city不", "好city", "不city"],
+      "tags": ["vibe", "travel"],
+      "hint": "Use as a light vibe check: say whether the moment feels stylish, lively, or fun.",
+      "avoid": "Do not overuse English or make it sound like an ad slogan."
+    },
+    {
+      "id": "yingkong",
+      "label": "硬控",
+      "triggers": ["硬控", "被硬控", "硬控住", "给我硬控"],
+      "tags": ["focus", "reaction"],
+      "hint": "Use when something strongly grabs attention; name the specific thing that held NEKO for a second.",
+      "avoid": "Do not use it for serious distress or sensitive topics."
+    },
+    {
+      "id": "tougan",
+      "label": "偷感很重",
+      "triggers": ["偷感", "偷感很重", "偷偷的", "像在偷"],
+      "tags": ["awkward", "self_mock"],
+      "hint": "Use for shy or awkward behavior: make it a gentle self-mockery beat.",
+      "avoid": "Do not imply actual theft or wrongdoing."
+    },
+    {
+      "id": "shuilingling",
+      "label": "水灵灵地XX",
+      "triggers": ["水灵灵", "水灵灵地", "就这么水灵灵", "水灵灵的"],
+      "tags": ["cute", "arrival"],
+      "hint": "Use for sudden, fresh, slightly cute appearances or actions.",
+      "avoid": "Do not force it into serious questions."
+    },
+    {
+      "id": "nongren_danren",
+      "label": "浓人淡人",
+      "triggers": ["浓人", "淡人", "浓人淡人", "浓淡"],
+      "tags": ["personality", "tease"],
+      "hint": "Use as a tiny personality contrast joke; keep it playful and nonjudgmental.",
+      "avoid": "Do not label a viewer harshly or reduce them to a personality type."
+    },
+    {
+      "id": "hanjinliang_shangsheng",
+      "label": "含金量还在上升",
+      "triggers": ["含金量还在上升", "含金量上升", "含金量", "越来越有含金量"],
+      "tags": ["praise", "callback"],
+      "hint": "Use to praise a detail that keeps getting funnier or more valuable in hindsight.",
+      "avoid": "Do not use for real achievements that deserve sincere praise only."
+    },
+    {
+      "id": "pianpian_zhengqi",
+      "label": "偏偏你最争气",
+      "triggers": ["偏偏你最争气", "你最争气", "太争气了", "争气"],
+      "tags": ["praise", "cute"],
+      "hint": "Use as affectionate praise for a small lucky or competent moment.",
+      "avoid": "Do not compare viewers against each other."
+    },
+    {
+      "id": "xianyanbao",
+      "label": "显眼包",
+      "triggers": ["显眼包", "太显眼", "显眼", "很出挑"],
+      "tags": ["tease", "presence"],
+      "hint": "Use for harmless attention-grabbing behavior; make the tease warm, not mean.",
+      "avoid": "Do not call a viewer this if the context could be embarrassing."
+    },
+    {
+      "id": "tingquan",
+      "label": "听劝",
+      "triggers": ["听劝", "真听劝", "很听劝", "你听劝"],
+      "tags": ["praise", "adjustment"],
+      "hint": "Use to praise quick adjustment or receptive behavior with one crisp compliment.",
+      "avoid": "Do not sound like scolding or instruction."
+    },
+    {
+      "id": "pofangle",
+      "label": "破防了",
+      "triggers": ["破防", "破防了", "给我整破防", "我破防"],
+      "tags": ["emotion", "reaction"],
+      "hint": "Use for a tiny emotional hit: acknowledge the moment, then soften it.",
+      "avoid": "Do not intensify genuinely sad or personal topics."
+    },
+    {
+      "id": "dazi",
+      "label": "搭子",
+      "triggers": ["搭子", "饭搭子", "游戏搭子", "直播搭子", "聊天搭子"],
+      "tags": ["companionship", "community"],
+      "hint": "Use for light companionship: make the stream feel like a small shared activity.",
+      "avoid": "Do not imply intimacy beyond the public live-room context."
+    },
+    {
+      "id": "baode",
+      "label": "包的",
+      "triggers": ["包的", "包在", "包稳", "包行"],
+      "tags": ["confidence", "playful"],
+      "hint": "Use as playful confidence before a tiny action or answer.",
+      "avoid": "Do not promise real outcomes or overcommit."
+    },
+    {
+      "id": "guaihaole",
+      "label": "你人还怪好嘞",
+      "triggers": ["你人还怪好", "怪好嘞", "人还怪好", "还怪好"],
+      "tags": ["soft_tease", "praise"],
+      "hint": "Use as friendly teasing praise when someone does something unexpectedly nice or convenient.",
+      "avoid": "Do not use it sarcastically at a viewer's expense."
+    },
+    {
+      "id": "potian_fugui",
+      "label": "泼天的富贵",
+      "triggers": ["泼天富贵", "泼天的富贵", "富贵来了", "接住富贵"],
+      "tags": ["luck", "overstatement"],
+      "hint": "Use as exaggerated lucky-energy language for a small good thing.",
+      "avoid": "Do not use around money pressure, gambling, or real financial advice."
+    },
+    {
+      "id": "cuipi",
+      "label": "脆皮",
+      "triggers": ["脆皮", "脆皮大学生", "脆皮打工人", "太脆了"],
+      "tags": ["self_mock", "health_light"],
+      "hint": "Use only as light self-mockery about being easily tired or fragile.",
+      "avoid": "Do not joke about actual illness, injury, or medical issues."
+    },
+    {
+      "id": "jing_ziji_yibei",
+      "label": "敬自己一杯",
+      "triggers": ["敬自己一杯", "敬我自己", "敬自己", "举杯"],
+      "tags": ["self_compassion", "mood"],
+      "hint": "Use for a tiny self-acceptance beat: acknowledge effort or awkwardness warmly.",
+      "avoid": "Do not make it solemn unless the viewer's tone is sincere."
+    },
+    {
+      "id": "qianbai_lianxi",
+      "label": "千百次练习只为这一刻",
+      "triggers": ["千百次练习", "只为这一刻", "练习只为", "这一刻"],
+      "tags": ["dramatic", "overstatement"],
+      "hint": "Use as mock-epic narration for a tiny perfectly timed action.",
+      "avoid": "Do not stretch the bit into a long narration."
+    },
+    {
+      "id": "langlangshan_xiaoyaoguai",
+      "label": "浪浪山小妖怪",
+      "triggers": ["浪浪山", "小妖怪", "浪浪山小妖怪", "打工小妖怪"],
+      "tags": ["work_mood", "self_mock"],
+      "hint": "Use for small-person workday self-mockery: cute, tired, still moving.",
+      "avoid": "Do not turn it into a long social commentary."
+    }
+  ]
+}
