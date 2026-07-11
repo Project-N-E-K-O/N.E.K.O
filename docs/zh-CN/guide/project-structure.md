@@ -7,7 +7,7 @@ N.E.K.O/
 ├── app/                        # 服务器进程入口
 │   ├── main_server.py          # 主服务器入口（端口 48911）
 │   ├── memory_server.py        # 记忆服务器入口（端口 48912）
-│   ├── agent_server.py         # 智能体服务器入口（端口 48915）
+│   ├── agent_server/           # 智能体服务器包（端口 48915）
 │   └── monitor.py              # 监控服务
 │
 ├── brain/                      # 智能体与任务执行
