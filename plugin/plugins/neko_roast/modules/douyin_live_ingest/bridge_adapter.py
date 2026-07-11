@@ -188,7 +188,9 @@ def _payload_from_message(item: dict[str, Any], *, room_ref: str) -> dict[str, A
 def _event_type(item: dict[str, Any]) -> str:
     token = _method_token(item)
     if token:
-        return _EVENT_ALIASES.get(token, "")
+        event_type = _EVENT_ALIASES.get(token, "")
+        if event_type:
+            return event_type
     raw = _first(item, "event_type", "eventType", "type", "msg_type", "msgType")
     if isinstance(raw, int) and not isinstance(raw, bool):
         token = str(raw)
