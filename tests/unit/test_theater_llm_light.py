@@ -1,9 +1,21 @@
 """验证单次演绎模型的结构、上下文、世界边界和安全回退。"""  # noqa: DOCSTRING_CJK
 
 import json
+from pathlib import Path
 
 from config.prompts.prompts_theater import THEATER_TURN_SYSTEM_PROMPT, build_theater_turn_prompts
 from services.theater import llm
+
+
+class _CharacterConfig:
+    """为人格文件边界测试提供最小角色配置。"""  # noqa: DOCSTRING_CJK
+
+    def __init__(self, root: Path):
+        self.app_docs_dir = root
+
+    def load_characters(self):
+        """只声明当前猫娘，其他目录都不属于可读取角色。"""  # noqa: DOCSTRING_CJK
+        return {"当前猫娘": "安全猫娘", "猫娘": {"安全猫娘": {}}}
 
 
 def test_fallback_roleplay_responds_to_user_message():
@@ -96,3 +108,24 @@ def test_model_choice_rewrites_only_accept_current_stable_ids():
         "dialogue": "我一直留着它喵。",
         "choice_rewrites": [{"choice_id": "choice_keep", "label": "收好照片，回应她刚才的坦白"}],
     }
+
+
+def test_character_profile_only_reads_current_configured_catgirl(tmp_path):
+    """人格摘要只能读取当前已配置猫娘，路径片段和其他猫娘都必须被拒绝。"""  # noqa: DOCSTRING_CJK
+    safe_path = tmp_path / "memory" / "安全猫娘" / "persona.json"
+    safe_path.parent.mkdir(parents=True)
+    safe_path.write_text(
+        json.dumps({"neko": {"facts": [{"text": "喜欢雨天散步"}]}}),
+        encoding="utf-8",
+    )
+    escaped_path = tmp_path / "private" / "persona.json"
+    escaped_path.parent.mkdir(parents=True)
+    escaped_path.write_text(
+        json.dumps({"neko": {"facts": [{"text": "不应泄露的秘密"}]}}),
+        encoding="utf-8",
+    )
+    config = _CharacterConfig(tmp_path)
+
+    assert llm._load_character_profile(config, "安全猫娘") == "喜欢雨天散步"
+    assert llm._load_character_profile(config, "../private") == ""
+    assert llm._load_character_profile(config, "其他猫娘") == ""

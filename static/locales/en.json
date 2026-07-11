@@ -2554,6 +2554,7 @@
         "ended": "Ended",
         "failed": "Something went wrong",
         "sessionUpdated": "The scene changed elsewhere. Please choose again.",
+        "sessionUpgradeRequired": "This performance was saved by an older Theater version and cannot continue safely. Please start a new performance.",
         "start": "Start",
         "send": "Send",
         "end": "End",

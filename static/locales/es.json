@@ -2554,6 +2554,7 @@
         "ended": "Finalizado",
         "failed": "Algo salió mal",
         "sessionUpdated": "La escena cambió en otra ventana. Elige de nuevo.",
+        "sessionUpgradeRequired": "Esta representación se guardó con una versión anterior del teatro y no puede continuar de forma segura. Inicia una nueva representación.",
         "start": "Iniciar",
         "send": "Enviar",
         "end": "Terminar",

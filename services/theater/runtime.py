@@ -101,9 +101,12 @@ async def submit_input(
 
 async def get_state(root: Path, session_id: str) -> dict[str, Any]:
     """读取最后一次已保存的公开快照，不重新运行模型。"""  # noqa: DOCSTRING_CJK
-    session = await session_store.load_session(root, session_id)
+    session, load_reason = await session_store.load_session_with_status(root, session_id)
     if session is None:
-        return {"ok": False, "reason": "session_not_found"}
+        result = {"ok": False, "reason": load_reason or "session_not_found"}
+        if load_reason in {"session_upgrade_required", "session_version_unsupported"}:
+            result["session_id"] = str(session_id or "")
+        return result
     snapshot = session.get("public_snapshot")
     if not isinstance(snapshot, dict):
         return {"ok": False, "reason": "session_snapshot_missing"}
@@ -161,6 +164,9 @@ async def get_active_state(root: Path, *, lanlan_name: str) -> dict[str, Any]:
     if not session_id:
         return {"ok": False, "reason": "active_session_not_found"}
     result = await get_state(root, session_id)
+    if result.get("reason") in {"session_upgrade_required", "session_version_unsupported"}:
+        # 不兼容存档必须保留文件和活动索引，由玩家看到明确提示后决定是否新开演出。
+        return result
     if result.get("ok") is not True or result.get("can_resume") is not True:
         await session_store.clear_active_session(root, lanlan_name, session_id)
         return {"ok": False, "reason": "active_session_not_found"}

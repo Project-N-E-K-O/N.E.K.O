@@ -227,7 +227,27 @@ def _load_character_profile(config_manager: Any | None, lanlan_name: str) -> str
     root = getattr(config_manager, "app_docs_dir", None) if config_manager is not None else None
     if not root or not lanlan_name:
         return ""
-    path = Path(root) / "memory" / str(lanlan_name).strip() / "persona.json"
+    name = str(lanlan_name).strip()
+    try:
+        characters = config_manager.load_characters()
+    except Exception:
+        return ""
+    catgirls = characters.get("猫娘") if isinstance(characters, dict) else None
+    current_name = str(characters.get("当前猫娘") or "").strip() if isinstance(characters, dict) else ""
+    # 当前版本只允许玩家自己的当前猫娘入戏，不能借请求参数读取其他人格目录。
+    if not isinstance(catgirls, dict) or name != current_name or name not in catgirls:
+        return ""
+    if not name or name in {".", ".."} or "/" in name or "\\" in name or "\x00" in name:
+        return ""
+    try:
+        memory_root = (Path(root) / "memory").resolve()
+        path = (memory_root / name / "persona.json").resolve()
+    except (OSError, RuntimeError):
+        # 异常符号链接或不可解析路径只禁用人格摘要，不能中断小剧场演绎。
+        return ""
+    # 配置文件也可能被手工篡改；解析真实路径后再次保证目标仍位于 memory 根目录。
+    if not path.is_relative_to(memory_root):
+        return ""
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except Exception:

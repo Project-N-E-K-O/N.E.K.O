@@ -16,6 +16,7 @@
         stateRevision: null,
         busy: false,
         inputClosed: false,
+        restoreReason: '',
     };
 
     // 统一按 ID 读取页面节点，避免业务函数重复查询表达式。
@@ -352,12 +353,20 @@
     // 先按本地指针恢复，失败后再查询当前猫娘的服务端 active Session。
     async function restoreActiveSession(preferredSessionId) {
         const preferred = String(preferredSessionId || rememberedSession() || '').trim();
+        state.restoreReason = '';
         let result = preferred
             ? await requestJson(api.state + '?session_id=' + encodeURIComponent(preferred))
             : null;
         if (!result || !result.ok || !result.can_resume || result.stale) {
-            if (preferred) forgetSession();
+            if (result && ['session_upgrade_required', 'session_version_unsupported'].includes(result.reason)) {
+                state.restoreReason = result.reason;
+            } else if (preferred) {
+                forgetSession();
+            }
             result = await requestJson(api.active);
+        }
+        if (result && ['session_upgrade_required', 'session_version_unsupported'].includes(result.reason)) {
+            state.restoreReason = result.reason;
         }
         if (!result || !result.ok || !result.can_resume) return false;
         $('theater-log').textContent = '';
@@ -384,7 +393,9 @@
             renderStoryOptions(result.stories);
             if (!await restoreActiveSession()) {
                 previewSelectedStory();
-                setStatus(t('theater.ready', '准备中'));
+                setStatus(state.restoreReason
+                    ? t('theater.sessionUpgradeRequired', '旧版演绎无法继续，请开始一场新演出。')
+                    : t('theater.ready', '准备中'));
             }
         } catch (_) {
             setStatus(t('theater.failed', '加载失败'));

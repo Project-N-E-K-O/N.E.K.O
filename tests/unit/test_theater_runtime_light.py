@@ -143,6 +143,46 @@ async def test_active_session_restores_after_memory_index_reset(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_active_session_index_serializes_updates_across_characters(monkeypatch, tmp_path):
+    """不同猫娘并发更新共享索引时必须保留双方映射。"""  # noqa: DOCSTRING_CJK
+    root = tmp_path / "theater"
+    stored: dict[str, str] = {}
+    load_count = 0
+    first_save_entered = asyncio.Event()
+    release_first_save = asyncio.Event()
+
+    async def _load_active_sessions(_root):
+        """返回当前测试索引副本，并记录并发读取次数。"""  # noqa: DOCSTRING_CJK
+        nonlocal load_count
+        load_count += 1
+        return dict(stored)
+
+    async def _save_active_sessions(_root, active):
+        """暂停第一位猫娘的写入，制造可复现的读改写竞争窗口。"""  # noqa: DOCSTRING_CJK
+        if "猫娘甲" in active and "猫娘乙" not in active:
+            first_save_entered.set()
+            await release_first_save.wait()
+        stored.clear()
+        stored.update(active)
+
+    monkeypatch.setattr(session_store, "load_active_sessions", _load_active_sessions)
+    monkeypatch.setattr(session_store, "save_active_sessions", _save_active_sessions)
+
+    first = asyncio.create_task(session_store.set_active_session(root, "猫娘甲", "theater_00000000-0000-0000-0000-000000000001"))
+    await first_save_entered.wait()
+    second = asyncio.create_task(session_store.set_active_session(root, "猫娘乙", "theater_00000000-0000-0000-0000-000000000002"))
+    await asyncio.sleep(0)
+    # 第二次读必须等待第一轮完整写入，不能在旧索引上独立计算。
+    assert load_count == 1
+    release_first_save.set()
+    await asyncio.gather(first, second)
+    assert stored == {
+        "猫娘甲": "theater_00000000-0000-0000-0000-000000000001",
+        "猫娘乙": "theater_00000000-0000-0000-0000-000000000002",
+    }
+
+
+@pytest.mark.asyncio
 async def test_free_input_never_submits_even_when_it_repeats_choice_label(tmp_path):
     """自由输入即使逐字复述按钮也只能演绎，权威推进必须提交 choice_id。"""  # noqa: DOCSTRING_CJK
     root = tmp_path / "theater"
@@ -225,8 +265,8 @@ async def test_free_dialogue_rewrites_choice_label_without_changing_target(monke
 
 
 @pytest.mark.asyncio
-async def test_legacy_session_is_rejected_and_active_index_is_cleared(tmp_path):
-    """没有轻量协议版本的旧 Session 不得恢复，活动索引也不能继续阻塞角色。"""  # noqa: DOCSTRING_CJK
+async def test_legacy_session_returns_upgrade_result_without_discarding_active_index(tmp_path):
+    """旧 Session 不得误读，但恢复接口必须明确提示升级且保留原索引。"""  # noqa: DOCSTRING_CJK
     root = tmp_path / "theater"
     session_id = "theater_00000000-0000-0000-0000-000000000001"
     path = session_store.session_path(root, session_id)
@@ -237,8 +277,12 @@ async def test_legacy_session_is_rejected_and_active_index_is_cleared(tmp_path):
     session_store.reset_active_sessions_for_tests()
 
     restored = await runtime.get_active_state(root, lanlan_name="旧猫娘")
-    assert restored == {"ok": False, "reason": "active_session_not_found"}
-    assert await session_store.load_active_sessions(root) == {}
+    assert restored == {
+        "ok": False,
+        "reason": "session_upgrade_required",
+        "session_id": session_id,
+    }
+    assert await session_store.load_active_sessions(root) == {"旧猫娘": session_id}
     assert await session_store.load_session(root, session_id) is None
 
     # 角色切换再次遇到旧索引时也只清理索引，不尝试迁移未知私有状态。

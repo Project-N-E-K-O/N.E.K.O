@@ -2554,6 +2554,7 @@
         "ended": "已结束",
         "failed": "出错了",
         "sessionUpdated": "演出状态已在其他窗口更新，请重新选择。",
+        "sessionUpgradeRequired": "这场演绎来自旧版小剧场，无法安全继续。请开始一场新演出。",
         "start": "开始",
         "send": "发送",
         "end": "结束",

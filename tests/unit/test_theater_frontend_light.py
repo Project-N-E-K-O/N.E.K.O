@@ -114,6 +114,8 @@ def test_frontend_restores_and_reuses_frozen_retry_body():
     assert "restoreActiveSession" in script
     assert "const serializedBody" in script
     assert "state_revision_conflict" in script
+    assert "session_upgrade_required" in script
+    assert "theater.sessionUpgradeRequired" in script
 
 
 def test_locale_files_remain_valid_json():

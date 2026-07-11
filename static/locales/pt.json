@@ -2554,6 +2554,7 @@
         "ended": "Encerrado",
         "failed": "Algo deu errado",
         "sessionUpdated": "A cena mudou em outra janela. Escolha novamente.",
+        "sessionUpgradeRequired": "Esta apresentação foi salva por uma versão anterior do teatro e não pode continuar com segurança. Inicie uma nova apresentação.",
         "start": "Iniciar",
         "send": "Enviar",
         "end": "Encerrar",
