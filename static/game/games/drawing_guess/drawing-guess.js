@@ -1727,7 +1727,16 @@
       return {};
     }
     var dataUrl = captureUserCanvasPng();
-    if (!dataUrl || dataUrl.length > 1800000) return {};
+    if (!dataUrl || dataUrl.length > 1800000) {
+      // 当前画布导出失败/超限时不能留着服务端旧快照，否则外部语音的
+      // 视觉猜测会拿到过期画面
+      if (state.canvasContextLastHash) {
+        state.canvasContextLastHash = '';
+        state.canvasContextLastSentAt = 0;
+        return { canvas_context_clear: true };
+      }
+      return {};
+    }
     var now = Date.now();
     var hash = canvasDataHash(dataUrl);
     if (!force && hash === state.canvasContextLastHash && now - state.canvasContextLastSentAt < 15000) {
@@ -2410,7 +2419,9 @@
   function settleAiGuessTimeout() {
     stopAiGuessSchedule();
     if (state.phase !== 'ai_guessing' && state.phase !== 'ai_guess_feedback') return;
+    var flowToken = state.roundFlowToken;
     return post(ROUND_API + '/timeout', roundPayload(), 10000).then(function (res) {
+      if (!isCurrentRoundFlow(flowToken)) return;
       if (!res || !res.ok) return;
       if (res.message) addNekoMessage(res.message);
       if (res.phase === 'summary' || (res.state && res.state.phase === 'summary')) {
@@ -2737,6 +2748,7 @@
 
   function postVisionGuess(userHint, options) {
     state.aiGuessInFlight = true;
+    var flowToken = state.roundFlowToken;
     var imageDataUrl = (options && options.image_data_url) || state.userPng;
     return post(ROUND_API + '/vision-guess', roundPayload({
       image_data_url: imageDataUrl,
@@ -2745,6 +2757,7 @@
       time_expired: !!(options && options.settle_on_miss)
     }), AI_GUESS_REQUEST_TIMEOUT_MS).then(function (res) {
       stopThinkingEventMessage();
+      if (!isCurrentRoundFlow(flowToken)) return;
       if (!res || !res.ok) {
         addMessage('drawingGuess.messages.inputFailed', 'Input failed.');
         return;
@@ -3498,6 +3511,7 @@
     ctx.restore();
     state.hasDrawn = false;
     state.history = [];
+    state.historyTrimmed = false;
     state.redo = [];
     pushHistory();
     updateControls();
@@ -3506,7 +3520,11 @@
   function pushHistory() {
     try {
       state.history.push(els.ctx.getImageData(0, 0, els.canvas.width, els.canvas.height));
-      if (state.history.length > 30) state.history.shift();
+      if (state.history.length > 30) {
+        // 截断后栈底不再是空白帧，undo 到底也不能把 hasDrawn 判回 false
+        state.history.shift();
+        state.historyTrimmed = true;
+      }
       state.redo = [];
     } catch (_) {}
     updateControls();
@@ -3521,6 +3539,10 @@
     if (state.history.length <= 1) return;
     state.redo.push(state.history.pop());
     restoreImage(state.history[state.history.length - 1]);
+    if (state.history.length <= 1 && !state.historyTrimmed) {
+      // 撤销回初始空白帧：清 hasDrawn，否则手动提交会把空白画布送去 AI 猜
+      state.hasDrawn = false;
+    }
     updateControls();
   }
 
@@ -3529,6 +3551,9 @@
     var image = state.redo.pop();
     state.history.push(image);
     restoreImage(image);
+    if (state.history.length > 1) {
+      state.hasDrawn = true;
+    }
     updateControls();
   }
 
@@ -4192,6 +4217,9 @@
   }
 
   function finishGame() {
+    // 作废仍在途的本轮异步链（round-start/vision-guess/timeout 结算），
+    // 避免迟到回调把页面从 final_summary 拽回游戏相位
+    beginRoundFlow();
     renderFinalSummary();
     showExitConfirm();
   }
