@@ -17,6 +17,7 @@ _DOUYIN_FIELDS = ("cookie", "uid", "nickname", "saved_at")
 _MAX_COOKIE_LENGTH = 32768
 _HEADER_LINE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9-]{1,63}\s*:")
 _COOKIE_PAIR_RE = re.compile(r"(?:^|[;\s])[\w.-]{2,64}=")
+_COOKIE_PART_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}=[^;\s]+$")
 _UID_RE = re.compile(r"^(?:douyin:)?[A-Za-z0-9_.-]{1,128}$")
 _SENSITIVE_TEXT_MARKERS = (
     "cookie=",
@@ -88,7 +89,7 @@ def normalize_cookie(value: Any) -> str:
     if not text:
         raise ValueError("cookie must not be empty")
     parts = [part.strip() for part in text.split(";") if part.strip()]
-    if not any("=" in part for part in parts):
+    if not parts or any(_COOKIE_PART_RE.fullmatch(part) is None for part in parts):
         raise ValueError("cookie must contain name=value pairs")
     return "; ".join(parts)
 
