@@ -1535,7 +1535,7 @@
 
     /** 请求麦克风权限并缓存设备列表 */
     async function ensureMicrophonePermission() {
-        if (micPermissionGranted && cachedMicDevices) {
+        if (micPermissionGranted && cachedMicDevices && cachedMicDevices.length > 0) {
             return cachedMicDevices;
         }
         try {
@@ -2173,7 +2173,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 positionMicSubwindow(panel);
 
                 var devices = cachedMicDevices;
-                if (!devices) {
+                if (!devices || devices.length === 0 || !micPermissionGranted) {
                     devices = await ensureMicrophonePermission();
                 }
                 listBody.innerHTML = '';

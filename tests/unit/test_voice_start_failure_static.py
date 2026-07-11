@@ -346,6 +346,16 @@ def test_floating_mic_popup_exposes_screen_share_start_and_stop_action():
     assert "panelBody.appendChild(shareToggleButton);" in screen_panel
 
 
+def test_mic_device_subwindow_retries_permission_when_device_cache_is_empty():
+    source = _read(APP_AUDIO_CAPTURE_PATH)
+    permission = _js_function_block(source, "ensureMicrophonePermission")
+    device_panel = _js_function_block(source, "openMicDeviceSubwindow")
+
+    assert "micPermissionGranted && cachedMicDevices && cachedMicDevices.length > 0" in permission
+    assert "if (!devices || devices.length === 0 || !micPermissionGranted)" in device_panel
+    assert "devices = await ensureMicrophonePermission();" in device_panel
+
+
 def test_outer_voice_start_failure_clears_pending_flags_before_composer_restore():
     source = _read(APP_BUTTONS_PATH)
     start_flow = _mic_button_start_flow(source)

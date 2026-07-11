@@ -44,13 +44,20 @@ def _social_base_url() -> str | None:
 def _get_client_id() -> str | None:
     try:
         cm = get_config_manager()
+        needs_persist = not cm.cloudsave_local_state_path.exists()
         state = cm.load_cloudsave_local_state()
-        if isinstance(state, dict):
+        cid = state.get("client_id") if isinstance(state, dict) else None
+        if not isinstance(cid, str) or not cid:
+            state = cm.build_default_cloudsave_local_state()
             cid = state.get("client_id")
-            if isinstance(cid, str) and cid:
-                return cid
+            needs_persist = True
+        if not isinstance(cid, str) or not cid:
+            return None
+        if needs_persist:
+            cm.save_cloudsave_local_state(state)
+        return cid
     except Exception as exc:  # noqa: BLE001
-        logger.warning("card_cache: read client_id failed: %s", exc)
+        logger.warning("card_cache: failed to load or persist client_id: %s", exc)
     return None
 
 
