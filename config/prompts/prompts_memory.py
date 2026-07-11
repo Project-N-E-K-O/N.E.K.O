@@ -3139,19 +3139,6 @@ RECALL_MEMORY_TOOL_NO_RESULT_LOOSEN = {
     "pt": "Nenhuma memória correspondeu a \"{query}\" nesse intervalo de tempo. Tente afrouxar o filtro e consultar novamente: apenas com time (recordar memórias daquele período) ou apenas com query (busca semântica sem limite de tempo).",
 }
 
-# 本轮首次调用 recall_memory 时立即喂给 TTS 的占位语音，填补检索 + 多轮
-# 工具调用的空窗，避免冷场。只进 TTS，不进前端气泡 / 不进对话历史。带省略号
-# 让 http_sentence normalizer 当作完整句子立即 flush 合成，不与随后的正文黏连。
-RECALL_MEMORY_TOOL_FILLER = {
-    "zh": "让我回忆一下哦……",
-    "en": "Let me recall that for a moment...",
-    "ja": "ちょっと思い出してみるね……",
-    "ko": "잠깐 떠올려 볼게……",
-    "ru": "Дай-ка вспомню…",
-    "es": "Déjame recordar un momento...",
-    "pt": "Deixa eu lembrar um pouquinho...",
-}
-
 # 召回到 N 条记忆时的总览首句；后面接渲染条目，每条按
 # ``[tier/entity] text  (事件日期, 相对标签)`` 格式（tier/entity 是英文
 # enum，不翻译；text 是原始记忆内容，按用户拍板"不翻译"；时间锚点优先
