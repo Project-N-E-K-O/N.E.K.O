@@ -13,7 +13,7 @@
    
 2. **`utils/config_manager/`** - 配置加载和管理逻辑（包，原单文件已拆分）
    - `get_core_config()` 方法：合并默认值和用户配置
-   - 第 569-728 行：完整的配置加载流程
+   - `core_config.py` 中的 `get_core_config()`：完整的配置加载流程
 
 3. **`config/api_providers.json`** - API 服务商配置
    - 各个提供商的 URL、模型名称等
