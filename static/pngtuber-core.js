@@ -603,7 +603,12 @@
             }
             const fallbackOrder = { happy: 1, sad: 2, angry: 3, surprised: 4 };
             const fallbackIndex = fallbackOrder[emotionName];
-            if (fallbackIndex !== undefined && this.getLayeredStateCount() >= 5) return fallbackIndex;
+            // The state-count fallback targets Remix's neutral/happy/sad/angry/
+            // surprised state ordering. Plus imports always expose 10 costume
+            // states that are not emotions, so skip the fallback for them —
+            // Plus models only drive emotions when they ship explicit
+            // emotion_mappings.
+            if (fallbackIndex !== undefined && !this.isLayeredPlusModel() && this.getLayeredStateCount() >= 5) return fallbackIndex;
             return null;
         }
 
@@ -612,7 +617,7 @@
             if (mappings && typeof mappings === 'object') {
                 return Object.keys(mappings).some((emotion) => !CLEAR_EMOTIONS.has(this.normalizeEmotionName(emotion)));
             }
-            return this.getLayeredStateCount() >= 5;
+            return !this.isLayeredPlusModel() && this.getLayeredStateCount() >= 5;
         }
 
         normalizedLayeredEventKey(event) {
@@ -646,6 +651,11 @@
         }
 
         layeredToggleEntriesForEvent(event) {
+            // Imported toggle keys are bare keypresses (e.g. "1".."0"). Reserved
+            // runtime shortcuts (Alt+1 cycle, Alt+2 asset action) share those base
+            // keys, so ignore modified events here — otherwise a toggle bound to
+            // "1"/"2" would swallow Alt+1/Alt+2 before the reserved checks run.
+            if (event.altKey || event.ctrlKey || event.metaKey) return [];
             const eventKey = this.normalizedLayeredEventKey(event);
             if (!eventKey) return [];
             return this.layeredToggleEntries().filter((entry) => String(entry.key || '').toLowerCase() === eventKey);
@@ -898,8 +908,13 @@
                 ? this.layeredMetadata.layers
                 : [];
             return layers.some((layer) => {
-                const state = layer.state || {};
-                return Number(layer.showBlink || 0) !== 0 || !!state.should_blink;
+                if (Number(layer.showBlink || 0) !== 0) return true;
+                // Scan every state, not just the default one: a model may only
+                // blink in a non-default state reached via Alt+1/emotion, and
+                // checking layer.state alone would leave its blink loop disabled.
+                const states = Array.isArray(layer.states) ? layer.states : [];
+                if (states.some((state) => !!(state && state.should_blink))) return true;
+                return !!(layer.state && layer.state.should_blink);
             });
         }
 
@@ -991,7 +1006,7 @@
                 && Math.abs(Number(layerState.yFrq) || 0) > 0.0001;
             const hasWiggleMotion = layerMotionEnabled
                 && Math.abs(Number(layerState.wiggle_amp) || 0) > 0.0001
-                && Math.abs(Number(layerState.wiggle_freq) || 0) > 0.0001;
+                && Math.abs(Number(layerState.wiggle_freq || layerState.rot_frq) || 0) > 0.0001;
             const hasFrameAnimation = spriteSheetEnabled && this.stateHasFrameAnimation(layerState);
             return hasXMotion || hasYMotion || hasWiggleMotion || this.stateHasRemixLayerOscillation(layerState) || hasFrameAnimation;
         }
@@ -1620,16 +1635,18 @@
             const vframes = Math.max(1, Math.floor(Number(frame.vframes) || Number(layerState.vframes) || 1));
             const rangeX = Math.abs(this.remixNumber(layerState, 'pos_x_max', 0));
             const rangeY = Math.abs(this.remixNumber(layerState, 'pos_y_max', 0));
-            if (!rangeX || !rangeY) return null;
+            // One-dimensional sheets are valid: stateHasAnimateToMouseSheet()
+            // enables sheets with only hframes > 1 or only vframes > 1 (e.g. a
+            // horizontal look sheet with just pos_x_max). Bail only when neither
+            // axis has a follow range; an axis with no range stays on frame 0.
+            if (!rangeX && !rangeY) return null;
             const rawX = Number(pointer.rawX) || 0;
             const rawY = Number(pointer.rawY) || 0;
             const dist = Math.hypot(rawX, rawY);
             const dirX = dist > 0.0001 ? rawX / dist : 0;
             const dirY = dist > 0.0001 ? rawY / dist : 0;
-            const distX = dirX * Math.min(dist, rangeX);
-            const distY = dirY * Math.min(dist, rangeY);
-            const normX = (distX / (2 * rangeX)) + 0.5;
-            const normY = (distY / (2 * rangeY)) + 0.5;
+            const normX = rangeX ? ((dirX * Math.min(dist, rangeX)) / (2 * rangeX)) + 0.5 : 0;
+            const normY = rangeY ? ((dirY * Math.min(dist, rangeY)) / (2 * rangeY)) + 0.5 : 0;
             const targetFrameX = Math.max(0, Math.min(hframes - 1, Math.floor(normX * hframes)));
             const targetFrameY = Math.max(0, Math.min(vframes - 1, Math.floor(normY * vframes)));
             const speed = Math.max(0, this.remixNumber(layerState, 'animate_to_mouse_speed', 1));

@@ -657,8 +657,11 @@ def test_pngtuber_lightweight_emotion_runtime_contract():
     assert "layeredEmotionTarget(emotionName)" in source
     assert "layeredEmotionSupported()" in source
     assert "const fallbackOrder = { happy: 1, sad: 2, angry: 3, surprised: 4 };" in source
-    assert "if (fallbackIndex !== undefined && this.getLayeredStateCount() >= 5) return fallbackIndex;" in source
-    assert "return this.getLayeredStateCount() >= 5;" in source
+    # The neutral/happy/sad/angry/surprised state-count fallback is Remix-only;
+    # Plus costume imports must not be treated as emotion states (they expose 10
+    # costumes that are not emotions) unless they ship explicit emotion_mappings.
+    assert "if (fallbackIndex !== undefined && !this.isLayeredPlusModel() && this.getLayeredStateCount() >= 5) return fallbackIndex;" in source
+    assert "return !this.isLayeredPlusModel() && this.getLayeredStateCount() >= 5;" in source
     assert "setEmotion(emotion, options = {})" in source
     assert "if (CLEAR_EMOTIONS.has(emotionName))" in set_emotion_block
     assert "if (this.isLayeredActive()) return this.setLayeredEmotion(emotionName, options);" in set_emotion_block
