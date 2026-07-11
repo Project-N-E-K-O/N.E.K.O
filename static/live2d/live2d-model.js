@@ -325,6 +325,16 @@ Live2DManager.prototype.mergeAppearanceBaselineParameters = function(model, para
 };
 
 // 加载模型
+Live2DManager.prototype.cancelActiveModelLoadForGameMode = function(reason = 'game-mode-protection') {
+    if (!this._isLoadingModel) return false;
+    this._activeLoadToken = (this._activeLoadToken || 0) + 1;
+    this._modelLoadState = 'cancelled';
+    this._isModelReadyForInteraction = false;
+    this._nekoGameModeReloadRequired = true;
+    this._nekoGameModeLoadCancelReason = reason;
+    return true;
+};
+
 Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
     const isModelManagerPage = document.body?.classList.contains('model-manager-page')
         || window.location.pathname.includes('model_manager');
@@ -368,6 +378,12 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
         }
 
         const model = await Live2DModel.from(modelPath, { autoFocus: false });
+        if (!this._isLoadTokenActive(loadToken) || this._nekoGameModeReloadRequired) {
+            try { model && model.destroy && model.destroy({ children: true }); } catch (_) {}
+            const cancelError = new Error('Live2D load cancelled by Game Mode protection.');
+            cancelError.name = 'GameModeProtectionLoadCancelled';
+            throw cancelError;
+        }
         if ((window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber' && !isModelManagerPage) {
             try { model && model.destroy && model.destroy({ children: true }); } catch (_) {}
             this._activeLoadToken = (this._activeLoadToken || 0) + 1;
@@ -385,6 +401,9 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
 
         return model;
     } catch (error) {
+        if (error && error.name === 'GameModeProtectionLoadCancelled') {
+            throw error;
+        }
         if (error && error.name === 'PNGTuberActiveLive2DSkip') {
             console.log('[Live2D] PNGTuber 模式已接管，取消 Live2D 加载且不回退默认模型');
             throw error;

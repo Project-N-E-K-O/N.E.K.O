@@ -41,6 +41,7 @@ class MMDManager {
         this._isModelReadyForInteraction = false;
         this._isInReturnState = false;
         this._activeLoadToken = 0;
+        this._modelLoadState = 'idle';
         this._headScreenAnchorProjection = null;
 
         // 事件处理器
@@ -116,6 +117,7 @@ class MMDManager {
         this._isModelReadyForInteraction = false;
         this._activeLoadToken++;
         const loadToken = this._activeLoadToken;
+        this._modelLoadState = 'loading';
 
         try {
             const modelInfo = await this.core.loadModel(modelPath, options);
@@ -168,6 +170,7 @@ class MMDManager {
 
             return modelInfo;
         } catch (error) {
+            if (this._activeLoadToken !== loadToken) return null;
             console.error('[MMD Manager] 模型加载失败:', error);
 
             // 尝试回退到默认模型
@@ -222,7 +225,20 @@ class MMDManager {
             } else {
                 throw error;
             }
+        } finally {
+            if (this._activeLoadToken === loadToken && this._modelLoadState === 'loading') {
+                this._modelLoadState = this._isModelReadyForInteraction ? 'ready' : 'idle';
+            }
         }
+    }
+
+    cancelActiveModelLoadForGameMode(reason = 'game-mode-protection') {
+        if (this._modelLoadState !== 'loading') return false;
+        this._activeLoadToken += 1;
+        this._modelLoadState = 'cancelled';
+        this._nekoGameModeReloadRequired = true;
+        this._nekoGameModeLoadCancelReason = reason;
+        return true;
     }
 
     // ═══════════════════ 动画 ═══════════════════

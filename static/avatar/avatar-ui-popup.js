@@ -376,6 +376,185 @@ function finalizePopupClosedState(popup) {
     popup._hideTimeoutId = null;
 }
 
+function createGameModeBetaDetailPanel(manager, prefix, mainToggleItem) {
+    const panel = manager._createSidePanelContainer();
+    panel.setAttribute('data-neko-sidepanel-type', 'game-mode-beta-details');
+    panel.dataset.nekoNestedSidePanel = 'true';
+    Object.assign(panel.style, {
+        width: '236px',
+        minWidth: '236px',
+        padding: '10px',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'stretch',
+        gap: '10px'
+    });
+
+    const autoRow = document.createElement('label');
+    Object.assign(autoRow.style, {
+        display: 'flex', alignItems: 'center', gap: '8px', minHeight: '28px',
+        fontSize: '12px', color: 'var(--neko-popup-text, #333)', cursor: 'pointer'
+    });
+    const autoCheckbox = document.createElement('input');
+    autoCheckbox.type = 'checkbox';
+    autoCheckbox.id = `${prefix}-game-mode-auto-cat-on-game`;
+    autoCheckbox.style.flexShrink = '0';
+    const autoLabel = document.createElement('span');
+    autoLabel.textContent = window.t
+        ? window.t('settings.gameModeBeta.autoCatOnGame')
+        : '检测到游戏时自动变猫';
+    autoLabel.setAttribute('data-i18n', 'settings.gameModeBeta.autoCatOnGame');
+    autoRow.appendChild(autoCheckbox);
+    autoRow.appendChild(autoLabel);
+    panel.appendChild(autoRow);
+
+    const modeLabel = document.createElement('div');
+    modeLabel.textContent = window.t ? window.t('settings.gameModeBeta.triggerMode') : '触发模式';
+    modeLabel.setAttribute('data-i18n', 'settings.gameModeBeta.triggerMode');
+    Object.assign(modeLabel.style, {
+        fontSize: '11px', color: 'var(--neko-popup-muted, #777)'
+    });
+    panel.appendChild(modeLabel);
+
+    const modeGroup = document.createElement('div');
+    modeGroup.setAttribute('role', 'radiogroup');
+    Object.assign(modeGroup.style, {
+        display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px', width: '100%'
+    });
+    const modeButtons = {};
+    [
+        ['smart', 'settings.gameModeBeta.smartMode', '智能判断'],
+        ['instant', 'settings.gameModeBeta.instantMode', '检测到即触发']
+    ].forEach(function (entry) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.dataset.mode = entry[0];
+        button.textContent = window.t ? window.t(entry[1]) : entry[2];
+        button.setAttribute('data-i18n', entry[1]);
+        button.setAttribute('role', 'radio');
+        Object.assign(button.style, {
+            minWidth: '0', minHeight: '30px', padding: '5px 6px', border: '1px solid var(--neko-popup-indicator-border, #ccc)',
+            borderRadius: '6px', background: 'transparent', color: 'var(--neko-popup-text, #333)',
+            fontSize: '11px', cursor: 'pointer', whiteSpace: 'normal', lineHeight: '1.25'
+        });
+        modeButtons[entry[0]] = button;
+        modeGroup.appendChild(button);
+    });
+    panel.appendChild(modeGroup);
+
+    const privacy = document.createElement('p');
+    privacy.textContent = window.t
+        ? window.t('settings.gameModeBeta.privacyNote')
+        : '只使用 Activity Tracker 的精确游戏识别结果；不截图、不读取屏幕像素，也不会上传遥测。';
+    privacy.setAttribute('data-i18n', 'settings.gameModeBeta.privacyNote');
+    Object.assign(privacy.style, {
+        margin: '0', fontSize: '10px', lineHeight: '1.45', color: 'var(--neko-popup-muted, #777)'
+    });
+    panel.appendChild(privacy);
+
+    let syncing = false;
+    const render = function () {
+        const api = window.nekoGameModeBeta;
+        const mainEnabled = !!(api && typeof api.isEnabled === 'function' && api.isEnabled());
+        const settings = api && typeof api.getSettings === 'function'
+            ? api.getSettings()
+            : { auto_cat_on_game: false, game_trigger_mode: 'smart' };
+        syncing = true;
+        autoCheckbox.checked = settings.auto_cat_on_game === true;
+        autoCheckbox.disabled = !mainEnabled;
+        autoRow.style.opacity = mainEnabled ? '1' : '0.5';
+        autoRow.style.cursor = mainEnabled ? 'pointer' : 'default';
+        Object.keys(modeButtons).forEach(function (mode) {
+            const button = modeButtons[mode];
+            const selected = settings.game_trigger_mode === mode;
+            button.disabled = !mainEnabled;
+            button.setAttribute('aria-checked', selected ? 'true' : 'false');
+            button.style.opacity = mainEnabled ? '1' : '0.5';
+            button.style.cursor = mainEnabled ? 'pointer' : 'default';
+            button.style.background = selected ? 'var(--neko-popup-selected-hover, rgba(68,183,254,0.15))' : 'transparent';
+            button.style.borderColor = selected ? 'var(--neko-popup-accent, #44b7fe)' : 'var(--neko-popup-indicator-border, #ccc)';
+        });
+        syncing = false;
+    };
+
+    autoCheckbox.addEventListener('change', function () {
+        if (syncing || autoCheckbox.disabled || !window.nekoGameModeBeta) return;
+        void window.nekoGameModeBeta.setSettings({ auto_cat_on_game: autoCheckbox.checked }).then(render);
+    });
+    Object.keys(modeButtons).forEach(function (mode) {
+        modeButtons[mode].addEventListener('click', function (event) {
+            event.preventDefault();
+            event.stopPropagation();
+            if (modeButtons[mode].disabled || !window.nekoGameModeBeta) return;
+            void window.nekoGameModeBeta.setSettings({ game_trigger_mode: mode }).then(render);
+        });
+    });
+    window.addEventListener('neko:game-mode-beta-state', render);
+    if (window.nekoGameModeBeta && typeof window.nekoGameModeBeta.refreshSettings === 'function') {
+        void window.nekoGameModeBeta.refreshSettings().then(render);
+    } else {
+        render();
+    }
+
+    panel._anchorElement = mainToggleItem;
+    return panel;
+}
+
+function createAdvancedSettingsSidePanel(manager, prefix, popup) {
+    const panel = manager._createSidePanelContainer();
+    panel.setAttribute('data-neko-sidepanel-type', 'advanced-settings');
+    Object.assign(panel.style, {
+        width: '224px', minWidth: '224px', padding: '4px', display: 'flex',
+        flexDirection: 'column', alignItems: 'stretch', gap: '0'
+    });
+    const gameModeItem = manager._createSettingsToggleItem({
+        id: 'game-mode-beta',
+        label: window.t ? window.t('settings.toggles.gameModeBeta') : 'Game Mode Beta',
+        labelKey: 'settings.toggles.gameModeBeta',
+        tooltipKey: 'settings.toggles.gameModeBetaTooltip',
+        alwaysTinted: true
+    });
+    gameModeItem.style.display = 'flex';
+    gameModeItem.style.alignItems = 'center';
+    gameModeItem.style.minWidth = '0';
+    const gameModeLabel = gameModeItem.querySelector('label');
+    if (gameModeLabel) {
+        gameModeLabel.style.flex = '1 1 auto';
+        gameModeLabel.style.minWidth = '0';
+        gameModeLabel.style.height = 'auto';
+        gameModeLabel.style.lineHeight = '1.25';
+        gameModeLabel.style.whiteSpace = 'normal';
+    }
+
+    const detailButton = document.createElement('button');
+    detailButton.type = 'button';
+    detailButton.id = `${prefix}-game-mode-beta-details`;
+    detailButton.textContent = '›';
+    detailButton.setAttribute('aria-label', window.t ? window.t('settings.gameModeBeta.details') : '详情');
+    Object.assign(detailButton.style, {
+        marginLeft: 'auto', width: '28px', height: '28px', border: '0', background: 'transparent',
+        color: 'var(--neko-popup-text, #333)', fontSize: '20px', lineHeight: '1', cursor: 'pointer', flexShrink: '0'
+    });
+    detailButton.addEventListener('click', function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (detailPanel && typeof detailPanel._expand === 'function') detailPanel._expand();
+    });
+    gameModeItem.appendChild(detailButton);
+    panel.appendChild(gameModeItem);
+
+    const detailPanel = createGameModeBetaDetailPanel(manager, prefix, gameModeItem);
+    detailPanel._anchorElement = detailButton;
+    detailPanel._popupElement = popup;
+    manager._attachSidePanelHover(detailButton, detailPanel);
+    document.body.appendChild(detailPanel);
+
+    panel._gameModeToggleItem = gameModeItem;
+    panel._gameModeDetailPanel = detailPanel;
+    document.body.appendChild(panel);
+    return panel;
+}
+
 /**
  * 创建设置弹窗内容（通用）
  */
@@ -403,6 +582,22 @@ function createSettingsPopupContent(manager, prefix, popup) {
     animSidePanel._anchorElement = animSettingsBtn;
     animSidePanel._popupElement = popup;
     manager._attachSidePanelHover(animSettingsBtn, animSidePanel);
+
+    const advancedSettingsBtn = manager._createSettingsMenuButton({
+        label: window.t ? window.t('settings.menu.advancedSettings') : '高级设置',
+        labelKey: 'settings.menu.advancedSettings'
+    });
+    advancedSettingsBtn.id = `${prefix}-advanced-settings-entry`;
+    popup.appendChild(advancedSettingsBtn);
+    const advancedSidePanel = createAdvancedSettingsSidePanel(manager, prefix, popup);
+    advancedSidePanel._anchorElement = advancedSettingsBtn;
+    advancedSidePanel._popupElement = popup;
+    manager._attachSidePanelHover(advancedSettingsBtn, advancedSidePanel);
+    advancedSettingsBtn.addEventListener('click', function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (typeof advancedSidePanel._expand === 'function') advancedSidePanel._expand();
+    });
 
     // 3. 角色设置按钮已移至分隔线下方（在 _createSettingsMenuItems 中创建）
 
@@ -1520,7 +1715,11 @@ function createSidePanelContainer(manager, prefix, options = {}) {
             return false;
         }
 
-        if (window.AvatarPopupUI && typeof window.AvatarPopupUI.positionSidePanel === 'function') {
+        if (
+            container.dataset.nekoNestedSidePanel !== 'true'
+            && window.AvatarPopupUI
+            && typeof window.AvatarPopupUI.positionSidePanel === 'function'
+        ) {
             window.AvatarPopupUI.positionSidePanel(container, anchor);
         }
         const hasPositionStyles = !!(container.style.left || container.style.right || container.style.top);
@@ -1557,7 +1756,9 @@ function createSidePanelContainer(manager, prefix, options = {}) {
         const gap = 12;
         const panelW = container.offsetWidth || rect.width || 180;
         const panelH = container.offsetHeight || rect.height || 40;
-        const placeLeft = anchorRect.left >= (window.innerWidth / 2);
+        const nestedPrefersRight = container.dataset.nekoNestedSidePanel === 'true'
+            && anchorRect.right + gap + panelW <= window.innerWidth - edgeMargin;
+        const placeLeft = !nestedPrefersRight && anchorRect.left >= (window.innerWidth / 2);
         let left = placeLeft
             ? anchorRect.left - gap - panelW
             : anchorRect.right + gap;
@@ -1681,6 +1882,8 @@ function attachSidePanelHover(manager, prefix, anchorEl, sidePanel) {
             'agent-openclaw-actions',
             'chat-settings',
             'animation-settings',
+            'advanced-settings',
+            'game-mode-beta-details',
             'interval-proactive-chat',
             'interval-proactive-vision',
             'character-settings'
@@ -2216,6 +2419,8 @@ function createSettingsToggleItem(manager, prefix, toggle) {
         checkbox.checked = window.nekoAutoGoodbye.isAutoCatEnabled();
     } else if (toggle.id === 'cat-audio' && window.nekoIdleCatAudio && typeof window.nekoIdleCatAudio.isEnabled === 'function') {
         checkbox.checked = window.nekoIdleCatAudio.isEnabled();
+    } else if (toggle.id === 'game-mode-beta' && window.nekoGameModeBeta && typeof window.nekoGameModeBeta.isEnabled === 'function') {
+        checkbox.checked = window.nekoGameModeBeta.isEnabled();
     }
 
     const indicator = document.createElement('div');
@@ -2289,6 +2494,14 @@ function createSettingsToggleItem(manager, prefix, toggle) {
     };
 
     toggleItem._nekoUpdateSettingsToggleStyle = updateStyle;
+    if (toggle.id === 'game-mode-beta') {
+        toggleItem._nekoUpdateGameModeBetaStatus = function () {
+            if (window.nekoGameModeBeta && typeof window.nekoGameModeBeta.isEnabled === 'function') {
+                checkbox.checked = window.nekoGameModeBeta.isEnabled();
+            }
+            updateStyle();
+        };
+    }
     updateStyle();
 
     toggleItem.appendChild(checkbox);
@@ -2393,6 +2606,13 @@ function createSettingsToggleItem(manager, prefix, toggle) {
         } else if (toggle.id === 'cat-audio') {
             if (window.nekoIdleCatAudio && typeof window.nekoIdleCatAudio.setEnabled === 'function') {
                 window.nekoIdleCatAudio.setEnabled(isChecked);
+            }
+        } else if (toggle.id === 'game-mode-beta') {
+            if (window.nekoGameModeBeta && typeof window.nekoGameModeBeta.setEnabled === 'function') {
+                void window.nekoGameModeBeta.setEnabled(isChecked).then(function (ok) {
+                    if (!ok) checkbox.checked = !isChecked;
+                    updateStyle();
+                });
             }
         }
     };

@@ -117,3 +117,65 @@ def test_game_mode_beta_router_is_registered_on_main_app():
 
     assert "from main_routers.game_mode_router import router as game_mode_router" in source
     assert "app.include_router(game_mode_router)" in source
+
+
+def test_game_mode_beta_settings_endpoint_has_independent_exact_contract():
+    with _client() as client:
+        original = client.get("/api/game-mode-beta/settings").json()
+        try:
+            assert set(original) == {"auto_cat_on_game", "game_trigger_mode"}
+
+            response = client.post(
+                "/api/game-mode-beta/settings",
+                json={"auto_cat_on_game": True, "game_trigger_mode": "instant"},
+            )
+            assert response.status_code == 200
+            assert response.json() == {
+                "auto_cat_on_game": True,
+                "game_trigger_mode": "instant",
+            }
+            assert client.get("/api/game-mode-beta/settings").json() == response.json()
+        finally:
+            client.post("/api/game-mode-beta/settings", json=original)
+
+
+def test_game_mode_beta_settings_endpoint_rejects_invalid_mode_and_non_boolean_toggle():
+    with _client() as client:
+        response = client.post(
+            "/api/game-mode-beta/settings",
+            json={"auto_cat_on_game": "yes", "game_trigger_mode": "guess"},
+        )
+        assert response.status_code == 400
+
+
+def test_game_mode_beta_window_registration_and_ack_contract():
+    with _client() as client:
+        try:
+            client.post("/api/game-mode-beta/enabled", json={"enabled": True})
+            registration = client.post(
+                "/api/game-mode-beta/windows/register",
+                json={
+                    "pet_instance_id": "pet-contract",
+                    "window_type": "pet",
+                    "signal_capabilities": {"exact_game": True},
+                },
+            )
+            assert registration.status_code == 200
+            assert registration.json()["join_as_cat"] is False
+
+            stale_ack = client.post(
+                "/api/game-mode-beta/ack",
+                json={
+                    "cycle_id": "stale",
+                    "pet_instance_id": "pet-contract",
+                    "status": "protected",
+                },
+            )
+            assert stale_ack.status_code == 200
+            assert stale_ack.json()["state"]["cycle_phase"] == "idle"
+        finally:
+            client.post(
+                "/api/game-mode-beta/windows/unregister",
+                json={"pet_instance_id": "pet-contract"},
+            )
+            client.post("/api/game-mode-beta/enabled", json={"enabled": False})

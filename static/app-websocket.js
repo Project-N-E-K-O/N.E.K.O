@@ -1376,6 +1376,11 @@
         // ---- onopen ----
         S.socket.onopen = function () {
             console.log(window.t('console.websocketConnected'));
+            try {
+                window.dispatchEvent(new CustomEvent('neko:websocket-connection-state', {
+                    detail: { connected: true, timestamp: Date.now() }
+                }));
+            } catch (_) {}
 
             // Warm up Agent snapshot once websocket is ready.
             Promise.all([
@@ -1600,6 +1605,14 @@
                 if (response.type === 'game_mode_auto_switch') {
                     try {
                         window.dispatchEvent(new CustomEvent('neko:game-mode-beta-auto-switch', {
+                            detail: response,
+                        }));
+                    } catch (_) {}
+                    return;
+                }
+                if (typeof response.type === 'string' && response.type.indexOf('game_mode_') === 0) {
+                    try {
+                        window.dispatchEvent(new CustomEvent('neko:game-mode-beta-message', {
                             detail: response,
                         }));
                     } catch (_) {}
@@ -3236,6 +3249,11 @@
                 return;
             }
             console.log(window.t('console.websocketClosed'));
+            try {
+                window.dispatchEvent(new CustomEvent('neko:websocket-connection-state', {
+                    detail: { connected: false, timestamp: Date.now() }
+                }));
+            } catch (_) {}
             clearAssistantLifecycleOnDisconnect('socket_close');
 
             // Clear heartbeat
