@@ -608,6 +608,13 @@ class DanmakuResponseModule(BaseModule):
                 "application applications"
             ).split()
         )
+        english_non_target_words = frozenset(
+            (
+                "a an the i me my mine you your yours he him his she her hers it its "
+                "we us our ours they them their theirs myself yourself yourselves "
+                "himself herself itself ourselves themselves who whom whose what which"
+            ).split()
+        )
         blocked = {
             "",
             "\u6211",
@@ -698,6 +705,7 @@ class DanmakuResponseModule(BaseModule):
             return (
                 normalized in blocked
                 or normalized in english_object_targets
+                or normalized in english_non_target_words
                 or normalized.startswith(generic_prefixes)
                 or any(
                     normalized.endswith(suffix)
