@@ -1312,7 +1312,9 @@
     function handleModelLoaded(reason) {
         var newCacheKey = getCurrentModelCacheKey();
         if (cachedPreview && cachedPreview.dataUrl && cachedPreview.cacheKey === newCacheKey) {
-            scheduleCharacterReferenceSync(reason || 'cached-avatar-model-loaded');
+            // 不同猫娘可能复用同一模型/cache key；即使头像无需重抓，也要把当前名称
+            // 和缓存预览重新 POST 给 Card Forge。该函数内部也会安排参考图同步。
+            syncAvatarToCardForge(cachedPreview.dataUrl);
             return;
         }
         invalidateCachedPreview();

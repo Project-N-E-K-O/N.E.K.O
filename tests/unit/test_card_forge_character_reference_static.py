@@ -26,5 +26,11 @@ def test_card_forge_character_reference_retries_independently_of_avatar_cache():
         "if (hasUsableCachedPreview()) {\n"
         "            scheduleCharacterReferenceSync(reason || 'cached-preview');"
     ) in source
-    assert "scheduleCharacterReferenceSync(reason || 'cached-avatar-model-loaded');" in source
+    assert (
+        "if (cachedPreview && cachedPreview.dataUrl && cachedPreview.cacheKey === newCacheKey) {\n"
+        "            // 不同猫娘可能复用同一模型/cache key；即使头像无需重抓，也要把当前名称\n"
+        "            // 和缓存预览重新 POST 给 Card Forge。该函数内部也会安排参考图同步。\n"
+        "            syncAvatarToCardForge(cachedPreview.dataUrl);"
+    ) in source
+    assert "scheduleCharacterReferenceSync(reason || 'cached-avatar-model-loaded');" not in source
     assert "captureCharacterReferenceDataUrl().then(function (characterReferenceDataUrl)" not in source
