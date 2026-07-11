@@ -27,6 +27,7 @@ async def start_session(
     lanlan_name: str,
     story_id: str | None = None,
     client_start_id: str = "",
+    replace_incompatible_session: bool = False,
 ) -> dict[str, Any]:
     """按角色串行创建 Session；提供开场 ID 时复用已提交结果。"""  # noqa: DOCSTRING_CJK
     normalized_start_id = str(client_start_id or "").strip()
@@ -34,9 +35,17 @@ async def start_session(
         return {"ok": False, "reason": "invalid_client_start_id"}
     normalized_name = str(lanlan_name or "Lan").strip() or "Lan"
     async with session_store.character_guard(root, normalized_name):
+        active_session_id = await session_store.get_active_session_id(root, normalized_name)
+        active_session: dict[str, Any] | None = None
+        if active_session_id:
+            active_session, active_reason = await session_store.load_session_with_status(root, active_session_id)
+            if active_reason in {"session_upgrade_required", "session_version_unsupported"}:
+                if replace_incompatible_session is not True:
+                    # 未得到玩家明确的新开场动作前，保留旧存档的活动恢复入口。
+                    return {"ok": False, "reason": active_reason, "session_id": active_session_id}
+                # 显式替换仍先完整创建新 Session，最后才原子覆盖活动索引；旧文件继续保留。
+                active_session = None
         if normalized_start_id:
-            active_session_id = await session_store.get_active_session_id(root, normalized_name)
-            active_session = await session_store.load_session(root, active_session_id) if active_session_id else None
             snapshot = active_session.get("public_snapshot") if isinstance(active_session, dict) else None
             if (
                 isinstance(active_session, dict)
@@ -164,6 +173,9 @@ async def claim_dialogue_speech(root: Path, *, session_id: str, state_revision: 
         if session is None:
             return {"ok": False, "reason": "session_not_found"}
         current_revision = session_store.state_revision(session)
+        if await session_store.is_stale_session(root, session):
+            # 新开场已经替换本 Session 时，旧对白不能中断当前猫娘的 TTS。
+            return {"ok": True, "skipped": "stale_session", "state_revision": current_revision}
         if state_revision != current_revision:
             return {
                 "ok": True,

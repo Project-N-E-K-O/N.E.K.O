@@ -132,6 +132,8 @@ async def start_theater_session(request: Request):
         story_id=data.get("story_id"),
         # 稳定开场 ID 让响应丢失后的网络重试复用同一 Session，而不是重复开场。
         client_start_id=str(data.get("client_start_id") or ""),
+        # 只有前端已经展示不兼容提示后，玩家再次点击开始才允许替换旧恢复入口。
+        replace_incompatible_session=data.get("replace_incompatible_session") is True,
     )
     await _speak_committed_dialogue(result)
     return result

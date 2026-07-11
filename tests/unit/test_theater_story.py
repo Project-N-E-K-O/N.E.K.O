@@ -76,6 +76,19 @@ async def test_tape_story_has_bounded_world_and_reachable_ending():
 
 
 @pytest.mark.asyncio
+async def test_used_prop_moves_out_of_available_props():
+    """节点使用道具后，道具只能出现在已使用区，不能同时继续显示为可用。"""  # noqa: DOCSTRING_CJK
+    story = await story_loader.load_story("tape_for_tomorrow_story")
+    state = rules.initial_state(story, initial_node_id=story_loader.initial_node_id(story))
+    rules.apply_node(story, state, story_graph.current_node(story, state))
+    rules.apply_node(story, state, story_graph.node_by_id(story, "node_ask_permission"))
+    rules.apply_node(story, state, story_graph.node_by_id(story, "node_play_tape"))
+
+    assert "prop_old_cassette" in state["used_prop_ids"]
+    assert "prop_old_cassette" not in state["available_prop_ids"]
+
+
+@pytest.mark.asyncio
 async def test_long_romance_story_has_twenty_plus_playable_rounds():
     """都市爱情剧本必须连续提供二十轮以上选项，并抵达作者正式结局。"""  # noqa: DOCSTRING_CJK
     story = await story_loader.load_story("always_like_you_story")

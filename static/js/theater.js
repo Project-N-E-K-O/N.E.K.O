@@ -420,11 +420,17 @@
         try {
             const result = await requestJson(api.start, {
                 method: 'POST',
-                body: { story_id: state.storyId, client_start_id: createClientStartId() }
+                body: {
+                    story_id: state.storyId,
+                    client_start_id: createClientStartId(),
+                    // 只有页面已展示旧版不兼容提示时，本次点击才表示玩家明确同意新开场。
+                    replace_incompatible_session: Boolean(state.restoreReason)
+                }
             });
             if (!result || !result.ok) throw new Error('start');
             $('theater-log').textContent = '';
             state.inputClosed = false;
+            state.restoreReason = '';
             applyPayload(result);
         } catch (_) {
             setStatus(t('theater.failed', '启动失败'));

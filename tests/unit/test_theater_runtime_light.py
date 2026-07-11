@@ -204,6 +204,21 @@ async def test_dialogue_speech_claims_each_revision_once(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_stale_session_dialogue_cannot_claim_tts(tmp_path):
+    """被新开场替代的旧 Session 不得抢播对白或中断当前演出。"""  # noqa: DOCSTRING_CJK
+    root = tmp_path / "theater"
+    old_session = await runtime.start_session(root, lanlan_name="测试猫娘", client_start_id="start_old")
+    await runtime.start_session(root, lanlan_name="测试猫娘", client_start_id="start_new")
+
+    claim = await runtime.claim_dialogue_speech(
+        root,
+        session_id=old_session["session_id"],
+        state_revision=0,
+    )
+    assert claim == {"ok": True, "skipped": "stale_session", "state_revision": 0}
+
+
+@pytest.mark.asyncio
 async def test_concurrent_turns_only_commit_one_revision(tmp_path):
     """同一 revision 的并发回合只有一个可以提交。"""  # noqa: DOCSTRING_CJK
     root = tmp_path / "theater"
@@ -377,6 +392,30 @@ async def test_legacy_session_returns_upgrade_result_without_discarding_active_i
     }
     assert await session_store.load_active_sessions(root) == {"旧猫娘": session_id}
     assert await session_store.load_session(root, session_id) is None
+
+    # 普通开场请求不能把旧恢复入口静默覆盖；只有玩家看到提示后的显式替换才允许新开场。
+    blocked_start = await runtime.start_session(
+        root,
+        lanlan_name="旧猫娘",
+        client_start_id="start_without_consent",
+    )
+    assert blocked_start == {
+        "ok": False,
+        "reason": "session_upgrade_required",
+        "session_id": session_id,
+    }
+    assert await session_store.load_active_sessions(root) == {"旧猫娘": session_id}
+
+    replacement = await runtime.start_session(
+        root,
+        lanlan_name="旧猫娘",
+        client_start_id="start_after_consent",
+        replace_incompatible_session=True,
+    )
+    assert replacement["ok"] is True
+    assert replacement["session_id"] != session_id
+    assert session_store.session_path(root, session_id).is_file()
+    assert await session_store.load_active_sessions(root) == {"旧猫娘": replacement["session_id"]}
 
     # 角色切换再次遇到旧索引时也只清理索引，不尝试迁移未知私有状态。
     await session_store.save_active_sessions(root, {"旧猫娘": session_id})

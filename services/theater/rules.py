@@ -65,7 +65,11 @@ def apply_node(story: dict[str, Any], state: dict[str, Any], node: dict[str, Any
     action = node.get("script_action") if isinstance(node.get("script_action"), dict) else {}
     state["clue_ids"] = _append_unique(state.get("clue_ids"), action.get("reveals_clues"))
     state["used_prop_ids"] = _append_unique(state.get("used_prop_ids"), action.get("uses_props"))
-    state["available_prop_ids"] = _append_unique(state.get("available_prop_ids"), action.get("uses_props"))
+    used_prop_ids = set(state["used_prop_ids"])
+    # 道具一旦被节点消费，就从可用区移除；公开面板不能同时显示为可用和已使用。
+    state["available_prop_ids"] = [
+        prop_id for prop_id in state.get("available_prop_ids") or [] if prop_id not in used_prop_ids
+    ]
 
     # 旧 Story 没有 flags 字段；存在时只接受作者节点中声明的稳定字符串。
     state["flags"] = _append_unique(state.get("flags"), diff.get("add_flags"))

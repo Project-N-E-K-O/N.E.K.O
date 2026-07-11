@@ -119,6 +119,7 @@ def test_frontend_restores_and_reuses_frozen_retry_body():
     assert "session_upgrade_required" in script
     assert "theater.sessionUpgradeRequired" in script
     assert "client_start_id: createClientStartId()" in script
+    assert "replace_incompatible_session: Boolean(state.restoreReason)" in script
     assert "canRetryUnknownResult" in script
     assert "body.client_turn_id || body.client_start_id" in script
 
