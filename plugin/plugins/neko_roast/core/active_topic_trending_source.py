@@ -13,7 +13,6 @@ async def bili_trending_topic_candidates(selector: Any) -> list[dict[str, Any]]:
         selector._active_engagement_topic_cache
         and now - selector._active_engagement_topic_cache_at < 600.0
     ):
-        selector._active_engagement_recent_topic_skip_reason = ""
         return list(selector._active_engagement_topic_cache)
     fetcher = selector._active_engagement_topic_fetcher
     if fetcher is None:
@@ -40,6 +39,8 @@ async def bili_trending_topic_candidates(selector: Any) -> list[dict[str, Any]]:
     if not isinstance(videos, list):
         return []
     candidates: list[dict[str, Any]] = []
+    initial_skip_reason = selector._active_engagement_recent_topic_skip_reason
+    set_transient_low_confidence_reason = False
     for item in videos:
         if not isinstance(item, dict):
             continue
@@ -56,6 +57,7 @@ async def bili_trending_topic_candidates(selector: Any) -> list[dict[str, Any]]:
                 selector._active_engagement_recent_topic_skip_reason = (
                     "low_confidence_topic"
                 )
+                set_transient_low_confidence_reason = True
             continue
         candidate = {
             "source": "bili_trending",
@@ -67,8 +69,8 @@ async def bili_trending_topic_candidates(selector: Any) -> list[dict[str, Any]]:
         candidates.append(candidate)
         if len(candidates) >= 6:
             break
-    if candidates:
-        selector._active_engagement_recent_topic_skip_reason = ""
+    if candidates and set_transient_low_confidence_reason:
+        selector._active_engagement_recent_topic_skip_reason = initial_skip_reason
     selector._active_engagement_topic_cache = candidates
     selector._active_engagement_topic_cache_at = now
     return list(candidates)
