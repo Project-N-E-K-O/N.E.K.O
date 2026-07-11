@@ -1131,10 +1131,12 @@ async def update_catgirl(name: str, request: Request):
         session_manager = get_session_manager()
         is_current_catgirl = (name == characters.get('当前猫娘', ''))
 
-        # 如果是当前活跃的猫娘，需要先通知前端，再关闭 session
+        # 如果是当前活跃的猫娘，只结束当前语音会话；voice_id 会在下方刷新到 session_manager。
         if is_current_catgirl and name in session_manager and session_manager[name].is_active:
-            logger.info(f"检测到 {name} 的voice_id已变更（{old_voice_id} -> {new_voice_id}），准备刷新...")
-            await send_reload_page_notice(session_manager[name])
+            logger.info(f"检测到 {name} 的voice_id已变更（{old_voice_id} -> {new_voice_id}），准备结束当前语音会话...")
+            notify_session_ended = getattr(session_manager[name], "send_session_ended_by_server", None)
+            if callable(notify_session_ended):
+                await notify_session_ended()
             try:
                 await session_manager[name].end_session(by_server=True)
                 session_ended = True
@@ -1142,7 +1144,7 @@ async def update_catgirl(name: str, request: Request):
             except Exception as e:
                 logger.error(f"结束session时出错: {e}")
             # 与 set_voice_id 路径对偶：清掉前一会话的失败计数 / 熔断，
-            # 否则 reload 后新 start_session 会被旧熔断静默拦截。
+            # 否则下一次 start_session 会被旧熔断静默拦截。
             session_manager[name].reset_session_start_circuit()
 
         if is_current_catgirl:

@@ -64,6 +64,9 @@ async def get_core_config_api():
         if not _assist_api_provider:
             _assist_api_provider = 'free' if _core_api_provider == 'free' else 'qwen'
         _fallback_providers = {_core_api_provider, _assist_api_provider}
+        _doubao_tts_shared_key = ''
+        if str(core_cfg.get('ttsModelProvider') or '').strip() == 'doubao_tts':
+            _doubao_tts_shared_key = core_cfg.get('ttsModelApiKey', '')
 
         def _fb(provider: str) -> str:
             """Fall back to coreApiKey only when the provider matches the user-selected coreApi/assistApi."""
@@ -84,6 +87,7 @@ async def get_core_config_api():
             "assistApiKeyKimiCode": core_cfg.get('assistApiKeyKimiCode', '') or _fb('kimi_code'),
             "assistApiKeyDeepseek": core_cfg.get('assistApiKeyDeepseek', '') or _fb('deepseek'),
             "assistApiKeyDoubao": core_cfg.get('assistApiKeyDoubao', '') or _fb('doubao'),
+            "assistApiKeyDoubaoTts": core_cfg.get('assistApiKeyDoubaoTts', '') or _doubao_tts_shared_key,
             # MiniMax / MiMo 是 assist-only TTS provider，coreApiKey 不保证兼容；
             # 不 fallback，以免把无效 key 塞进 TTS 凭证槽位导致 401。
             "assistApiKeyMinimax": core_cfg.get('assistApiKeyMinimax', ''),
@@ -234,7 +238,7 @@ async def update_core_config(request: Request):
         _api_key_fields = [
             'assistApiKeyQwen', 'assistApiKeyQwenIntl', 'assistApiKeyOpenai', 'assistApiKeyDeepseek',
             'assistApiKeyGlm', 'assistApiKeyStep', 'assistApiKeySilicon',
-            'assistApiKeyGemini', 'assistApiKeyKimi', 'assistApiKeyDoubao',
+            'assistApiKeyGemini', 'assistApiKeyKimi', 'assistApiKeyDoubao', 'assistApiKeyDoubaoTts',
             'assistApiKeyMinimax', 'assistApiKeyMinimaxIntl', 'assistApiKeyMimo',
             'assistApiKeyMimoTokenPlan', 'assistApiKeyElevenlabs', 'assistApiKeyGrok',
             'assistApiKeyClaude', 'assistApiKeyKimiCode', 'assistApiKeyOpenrouter',
@@ -290,6 +294,12 @@ async def update_core_config(request: Request):
         _incoming_tts_provider = str(data.get('ttsModelProvider', '') or '').strip()
         if _incoming_tts_provider and _incoming_tts_provider != 'gptsovits':
             core_cfg['gptsovitsEnabled'] = False
+        if _incoming_tts_provider == 'doubao_tts':
+            doubao_key = str(core_cfg.get('assistApiKeyDoubaoTts') or '').strip()
+            if doubao_key and '***' not in doubao_key:
+                core_cfg['ttsModelApiKey'] = doubao_key
+            else:
+                core_cfg['ttsModelApiKey'] = ''
         if 'ttsVoiceId' in data:
             core_cfg['ttsVoiceId'] = data['ttsVoiceId']
 
@@ -410,10 +420,11 @@ async def get_api_providers_config():
             get_assist_api_providers_for_frontend,
         )
 
-        full_config = get_config()
-        # 使用缓存加载配置（性能更好，配置更新后需要重启服务）
-        core_providers = get_core_api_providers_for_frontend()
-        assist_providers = get_assist_api_providers_for_frontend()
+        full_config = get_config(force_reload=True)
+        # API settings is an admin/config surface; prefer current provider metadata
+        # over stale in-process cache so label/keybook changes show up immediately.
+        core_providers = get_core_api_providers_for_frontend(force_reload=True)
+        assist_providers = get_assist_api_providers_for_frontend(force_reload=True)
 
         # TTS provider 的前端驱动元数据：单一源来自 utils.tts_provider_registry，
         # 避免前端把「哪些 provider 只进 TTS 下拉 / 端点可编辑 / 支持哪些声音来源 /
@@ -434,6 +445,7 @@ async def get_api_providers_config():
             "api_key_registry": full_config.get("api_key_registry", {}),
             "assist_api_providers_full": full_config.get("assist_api_providers", {}),
             "core_api_providers_full": full_config.get("core_api_providers", {}),
+            "keybook_api_providers_full": full_config.get("keybook_api_providers", {}),
             "tts_providers": tts_providers,
         }
     except Exception as e:

@@ -398,6 +398,9 @@
             )
                 ? director.getAvatarFloatingIntroExternalizedSpotlightKind(scene)
                 : '';
+            const spotlightVariant = scene && typeof scene.spotlightVariant === 'string'
+                ? scene.spotlightVariant.trim()
+                : '';
             const introChatTarget = introExternalizedChatSpotlightKind
                 ? null
                 : director.getAvatarFloatingIntroSpotlightTarget(scene);
@@ -405,7 +408,10 @@
                 if (typeof director.clearHomeSpotlightsForExternalizedChat === 'function') {
                     director.clearHomeSpotlightsForExternalizedChat();
                 }
-                director.interactionTakeover.setExternalizedChatSpotlight(introExternalizedChatSpotlightKind);
+                director.interactionTakeover.setExternalizedChatSpotlight(
+                    introExternalizedChatSpotlightKind,
+                    { variant: spotlightVariant }
+                );
                 if (typeof director.interactionTakeover.setExternalizedChatCursor === 'function') {
                     director.interactionTakeover.setExternalizedChatCursor(
                         introExternalizedChatSpotlightKind,

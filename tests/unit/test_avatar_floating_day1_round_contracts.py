@@ -19,9 +19,14 @@ REACT_APP_PATH = ROOT / "frontend" / "react-neko-chat" / "src" / "App.tsx"
 REACT_SCHEMA_PATH = ROOT / "frontend" / "react-neko-chat" / "src" / "message-schema.ts"
 REACT_HOST_PATH = ROOT / "static" / "app-react-chat-window.js"
 MANAGER_PATH = ROOT / "static" / "tutorial/core/universal-manager.js"
+PAGE_TUTORIAL_MANAGER_PATH = ROOT / "static" / "tutorial/core/page-tutorial-manager.js"
 OVERLAY_PATH = ROOT / "static" / "tutorial/yui-guide/overlay.js"
 GHOST_CURSOR_PATH = ROOT / "static" / "tutorial/visual/ghost-cursor-controller.js"
 RESISTANCE_CONTROLLER_PATH = ROOT / "static" / "tutorial/visual/resistance-controllers.js"
+SKIP_CONTROLLER_PATH = ROOT / "static" / "tutorial/core/skip-controller.js"
+YUI_GUIDE_CSS_PATH = ROOT / "static" / "css/yui-guide.css"
+TUTORIAL_STYLES_CSS_PATH = ROOT / "static" / "css/tutorial-styles.css"
+INDEX_CSS_PATH = ROOT / "static" / "css/index.css"
 
 
 EXPECTED_DAY1_SCENES = [
@@ -427,7 +432,7 @@ def test_pc_external_chat_spotlight_uses_overlay_without_dom_fallback():
         "function getYuiGuidePcOverlayHost",
         1,
     )[0]
-    update_block = source.split("function updateYuiGuideChatSpotlight(kind)", 1)[1].split(
+    update_block = source.split("function updateYuiGuideChatSpotlight(kind", 1)[1].split(
         "function applyYuiGuideChatSpotlight",
         1,
     )[0]
@@ -435,12 +440,12 @@ def test_pc_external_chat_spotlight_uses_overlay_without_dom_fallback():
     assert "isYuiGuidePcOverlayAvailable()" in spotlight_block
     assert "var pcOverlayAvailable = isYuiGuidePcOverlayAvailable();" in update_block
     assert "getYuiGuideChatSpotlightElement(!pcOverlayAvailable)" in update_block
-    assert "sendYuiGuidePcOverlayPatch({ spotlights: pcRects });" in update_block
+    assert "sendYuiGuidePcOverlayPatch({ spotlights: pcRects }, false, patchOptions);" in update_block
 
 
 def test_pc_external_chat_spotlight_reuses_last_rect_during_transient_layout_gaps():
     source = INTERPAGE_PATH.read_text(encoding="utf-8")
-    update_block = source.split("function updateYuiGuideChatSpotlight(kind)", 1)[1].split(
+    update_block = source.split("function updateYuiGuideChatSpotlight(kind", 1)[1].split(
         "function applyYuiGuideChatSpotlight",
         1,
     )[0]
@@ -454,12 +459,13 @@ def test_pc_external_chat_spotlight_reuses_last_rect_during_transient_layout_gap
         1,
     )[0]
     assert "yuiGuideChatSpotlightLastPcKind === kind" in missing_rect_block
+    assert "yuiGuideChatSpotlightLastPcVariant === yuiGuideChatSpotlightVariant" in missing_rect_block
     assert "yuiGuideChatSpotlightLastPcRects.length > 0" in missing_rect_block
     assert "spotlights: yuiGuideChatSpotlightLastPcRects.map" in missing_rect_block
     assert "spotlights: []" not in missing_rect_block
-    assert "rememberYuiGuideChatPcSpotlightRects(kind, pcRects);" in update_block
+    assert "rememberYuiGuideChatPcSpotlightRects(kind, pcRects, yuiGuideChatSpotlightVariant);" in update_block
     assert "clearYuiGuideChatPcSpotlightRects();" in apply_block
-    assert "sendYuiGuidePcOverlayPatch({ spotlights: [] });" in apply_block
+    assert "sendYuiGuidePcOverlayPatch({ spotlights: [] }, false, {" in apply_block
 
 
 def test_pc_external_chat_spotlight_preserves_highlight_during_resistance_pause():
@@ -484,11 +490,42 @@ def test_pc_external_chat_spotlight_preserves_highlight_during_resistance_pause(
     assert "message.preserveDuringResistance = true;" in takeover_block
     assert "options.preserveDuringResistance === true" in apply_block
     assert "yuiGuideChatSpotlightKind" in apply_block
-    assert "updateYuiGuideChatSpotlight(yuiGuideChatSpotlightKind);" in apply_block
+    assert "updateYuiGuideChatSpotlight(yuiGuideChatSpotlightKind, pcOverlayRunId);" in apply_block
     assert "clearYuiGuideChatSpotlightTracking();" in apply_block.split(
-        "updateYuiGuideChatSpotlight(yuiGuideChatSpotlightKind);",
+        "updateYuiGuideChatSpotlight(yuiGuideChatSpotlightKind, pcOverlayRunId);",
         1,
     )[1]
+
+
+def test_externalized_chat_spotlight_keeps_variant_pipeline_but_day1_uses_capsule_target():
+    interpage_source = INTERPAGE_PATH.read_text(encoding="utf-8")
+    takeover_source = (ROOT / "static" / "tutorial/core/interaction-takeover.js").read_text(encoding="utf-8")
+    scene_source = SCENE_ORCHESTRATOR_PATH.read_text(encoding="utf-8")
+    director_source = DIRECTOR_PATH.read_text(encoding="utf-8")
+    visual_runtime_source = (ROOT / "static" / "tutorial/core/visual-runtime.js").read_text(encoding="utf-8")
+    day1_source = DAY1_GUIDE_PATH.read_text(encoding="utf-8")
+
+    assert "target: 'chat-capsule-input'" in day1_source
+    assert "spotlightVariant: 'plain-capsule'" not in day1_source
+    assert "this.externalizedChatSpotlightVariant = '';" in takeover_source
+    assert "const previousVariant = this.externalizedChatSpotlightVariant;" in takeover_source
+    assert "variant: this.externalizedChatSpotlightVariant" in takeover_source
+    assert "preserveDuringResistance: true" in takeover_source
+    assert "variant: typeof message.variant === 'string' ? message.variant : ''" in interpage_source
+    assert "variant: typeof event.data.variant === 'string' ? event.data.variant : ''" in interpage_source
+    assert "var yuiGuideChatSpotlightVariant = '';" in interpage_source
+    assert "var yuiGuideChatSpotlightLastPcVariant = '';" in interpage_source
+    assert "toYuiGuideScreenRect({" in interpage_source
+    assert "}, kind, yuiGuideChatSpotlightVariant)" in interpage_source
+    assert "rememberYuiGuideChatPcSpotlightRects(kind, pcRects, yuiGuideChatSpotlightVariant);" in interpage_source
+    assert "yuiGuideChatSpotlightLastPcVariant === yuiGuideChatSpotlightVariant" in interpage_source
+    assert "const sceneSpotlightVariant = scene && typeof scene.spotlightVariant === 'string'" in scene_source
+    assert "variant: sceneSpotlightVariant" in scene_source
+    assert "spotlightVariant: sceneSpotlightVariant" in scene_source
+    assert "const spotlightVariant = options && typeof options.spotlightVariant === 'string'" in director_source
+    assert "variant: spotlightVariant" in director_source
+    assert "const legacySpotlightVariant = legacyScene && typeof legacyScene.spotlightVariant === 'string'" in visual_runtime_source
+    assert "variant: legacySpotlightVariant" in visual_runtime_source
 
 
 def test_external_chat_ready_replays_compact_fixed_layout_when_tutorial_is_active():
@@ -525,6 +562,161 @@ def test_pc_overlay_sequence_is_shared_between_home_and_external_chat():
     assert "sequence = nextSequence();" in overlay_source
     assert "yuiGuidePcOverlaySequence = Math.max(yuiGuidePcOverlaySequence + 1, Date.now() * 1000);" not in interpage_source
     assert "sequence = Math.max(sequence + 1, Date.now() * 1000);" not in overlay_source
+
+
+def test_pc_overlay_screen_coordinates_use_niri_virtual_origin_and_crop_safe_area():
+    interpage_source = INTERPAGE_PATH.read_text(encoding="utf-8")
+    overlay_source = OVERLAY_PATH.read_text(encoding="utf-8")
+    director_source = DIRECTOR_PATH.read_text(encoding="utf-8")
+    skip_controller_source = SKIP_CONTROLLER_PATH.read_text(encoding="utf-8")
+    page_tutorial_source = PAGE_TUTORIAL_MANAGER_PATH.read_text(encoding="utf-8")
+    yui_guide_css = YUI_GUIDE_CSS_PATH.read_text(encoding="utf-8")
+    tutorial_styles_css = TUTORIAL_STYLES_CSS_PATH.read_text(encoding="utf-8")
+    index_css = INDEX_CSS_PATH.read_text(encoding="utf-8")
+
+    assert "if (metrics && (metrics.contentBounds || metrics.bounds))" in interpage_source
+    assert "function getYuiGuideNiriPetPhysicalCropState(metrics)" in interpage_source
+    assert "function hasYuiGuideNiriPetPhysicalCropVirtualizedMetrics(metrics)" in interpage_source
+    assert "metrics.niriPetPhysicalCropMetricsVirtualized === true" in interpage_source
+    assert "metrics.niriPetPhysicalCropBounds || metrics.contentBounds || metrics.bounds" in interpage_source
+    assert "var api = typeof window !== 'undefined' ? window.__nekoNiriPetPhysicalCrop : null;" in interpage_source
+    assert "return !getYuiGuideNiriPetPhysicalCropState(metrics);" in interpage_source
+    assert "var screenBounds = cropState.virtualBounds || cropState.cropBounds;" in interpage_source
+    assert "x: Number(screenBounds.x || 0) + Number(x || 0)" in interpage_source
+    assert "y: Number(screenBounds.y || 0) + Number(y || 0)" in interpage_source
+    assert "api.toVirtualPoint({" in interpage_source
+    assert "api.toVirtualRect({" in interpage_source
+    assert "toYuiGuideNiriPetPhysicalCropVirtualPointWithState" in interpage_source
+    assert "if (cropState && cropState.metricsVirtualized) {" in interpage_source
+    assert "Number(cropState && cropState.offsetY || 0)" in interpage_source
+    assert "var viewport = shouldApplyYuiGuideVisualViewportOffset(metrics) ? (window.visualViewport || null) : null;" in interpage_source
+    assert "if (metrics && (metrics.contentBounds || metrics.bounds))" in overlay_source
+    assert "const getNiriPetPhysicalCropState = (metrics) => {" in overlay_source
+    assert "const hasNiriPetPhysicalCropVirtualizedMetrics = (metrics) => {" in overlay_source
+    assert "metrics.niriPetPhysicalCropMetricsVirtualized === true" in overlay_source
+    assert "metrics.niriPetPhysicalCropBounds || metrics.contentBounds || metrics.bounds" in overlay_source
+    assert "const api = typeof window !== 'undefined' ? window.__nekoNiriPetPhysicalCrop : null;" in overlay_source
+    assert "const shouldApplyVisualViewportOffset = (metrics) => !getNiriPetPhysicalCropState(metrics);" in overlay_source
+    assert "const screenBounds = cropState.virtualBounds || cropState.cropBounds;" in overlay_source
+    assert "x: Number(screenBounds.x || 0) + Number(x || 0)" in overlay_source
+    assert "y: Number(screenBounds.y || 0) + Number(y || 0)" in overlay_source
+    assert "api.toVirtualPoint({" in overlay_source
+    assert "api.toVirtualRect({" in overlay_source
+    assert "toNiriPetPhysicalCropVirtualPointWithState" in overlay_source
+    assert "cropState && cropState.metricsVirtualized ? {" in overlay_source
+    assert "Number(cropState && cropState.offsetY || 0)" in overlay_source
+    assert "let lastLocalSpotlightEntries = [];" in overlay_source
+    assert "window.addEventListener('neko:niri-pet-physical-crop-state-applied', refreshSpotlightsForCropState);" in overlay_source
+    assert "const viewport = shouldApplyVisualViewportOffset(metrics) ? (window.visualViewport || null) : null;" in overlay_source
+    assert "getNiriPetPhysicalCropState(metrics)" in director_source
+    assert "hasNiriPetPhysicalCropVirtualizedMetrics(metrics)" in director_source
+    assert "metrics.niriPetPhysicalCropMetricsVirtualized === true" in director_source
+    assert "metrics.niriPetPhysicalCropBounds || metrics.contentBounds || metrics.bounds" in director_source
+    assert "const api = typeof window !== 'undefined' ? window.__nekoNiriPetPhysicalCrop : null;" in director_source
+    assert "api.toVirtualPoint(point)" in director_source
+    assert "api.toLocalPoint(point)" in director_source
+    assert "toNiriPetPhysicalCropVirtualPointWithState(point, cropState)" in director_source
+    assert "toNiriPetPhysicalCropLocalPointWithState(virtualPoint, cropState)" in director_source
+    assert "if (cropState && cropState.metricsVirtualized) {" in director_source
+    assert "- Number(cropState && cropState.offsetY || 0)" in director_source
+    assert "x: point.x - Number(screenBounds.x || 0)" in director_source
+    assert "y: point.y - Number(screenBounds.y || 0)" in director_source
+    assert "x: Number(screenBounds.x || 0) + virtualPoint.x" in director_source
+    assert "y: Number(screenBounds.y || 0) + virtualPoint.y" in director_source
+    assert "--neko-tutorial-crop-safe-area-top: max(var(--neko-tutorial-safe-area-top, 0px), calc(var(--neko-niri-pet-crop-offset-y, 0) * 1px));" in skip_controller_source
+    assert "top: calc(max(${baseTop}px, env(safe-area-inset-top)) + var(--neko-tutorial-crop-safe-area-top));" in skip_controller_source
+    assert "getNiriPetPhysicalCropTopInset()" in skip_controller_source
+    assert "const offset = Number(metrics.niriPetPhysicalCropOffsetY);" in skip_controller_source
+    assert "const metricDesktopWorkAreaInset = Number(metrics.desktopWorkAreaTopInset);" in skip_controller_source
+    assert "desktopWorkAreaInset = Math.max(desktopWorkAreaInset, Math.round(metricDesktopWorkAreaInset));" in skip_controller_source
+    assert "const combinedInset = hasCropEvidence ? cropInset + desktopWorkAreaInset : nonCropDesktopInset;" in skip_controller_source
+    assert "const api = window.__nekoNiriPetPhysicalCrop;" in skip_controller_source
+    assert "getNiriPetPhysicalCropCssTopInset()" in skip_controller_source
+    assert "portalId = normalizedOptions.portalId || 'neko-tutorial-fixed-ui-root';" in skip_controller_source
+    assert "this.document.documentElement.appendChild(portal);" in skip_controller_source
+    assert "getNiriPetVisibleTopSafeInset()" in skip_controller_source
+    assert "recordVisibleInset(metrics.niriWindowTopInset);" in skip_controller_source
+    assert "recordVisibleInset(metrics.niriPetPhysicalCropVisibleTopInset);" in skip_controller_source
+    assert "getNiriFixedUiMinimumTopInset()" in skip_controller_source
+    assert "hasNiriFixedUiEvidence(metrics)" in skip_controller_source
+    assert "metrics.niriWaylandRuntime === true" in skip_controller_source
+    assert "recordVisibleInset(this.getNiriFixedUiMinimumTopInset());" in skip_controller_source
+    assert "getDesktopWorkAreaTopInset(options)" in skip_controller_source
+    assert "getCropTopInsetFromBounds(cropBounds, virtualBounds)" in skip_controller_source
+    assert "const heightReservedInset = Number.isFinite(screenHeight)" in skip_controller_source
+    assert "screenHeight - availHeight - availTop" in skip_controller_source
+    assert "const candidateInset = Math.max(" in skip_controller_source
+    assert "if (includeWorkAreaTop || hasHostMetrics) {" in skip_controller_source
+    assert "const threshold = Math.max(4, candidateInset / 2);" in skip_controller_source
+    assert "screenY <= threshold ? candidateInset : 0" in skip_controller_source
+    assert "includeWorkAreaTop: hasCropEvidence || combinedInset > 0" in skip_controller_source
+    assert "window.addEventListener('neko:niri-pet-physical-crop-state-applied', refresh);" in skip_controller_source
+    assert "root.style.setProperty('--neko-tutorial-safe-area-top', transformedInset + 'px');" in skip_controller_source
+    assert "const fixedUiInset = Math.max(visibleInset, transformedInset);" in skip_controller_source
+    assert "root.style.setProperty('--neko-tutorial-visible-safe-area-top', fixedUiInset + 'px');" in skip_controller_source
+    assert "this.applyButtonSafeAreaFrame(buttonUsesPortal ? fixedUiInset : transformedInset);" in skip_controller_source
+    assert "applyButtonSafeAreaFrame(inset)" in skip_controller_source
+    assert "button.style.setProperty(" in skip_controller_source
+    assert "'top'," in skip_controller_source
+    assert "'important'" in skip_controller_source
+    assert "applySafeAreaVariables: function (options)" in skip_controller_source
+    assert "applySkipSafeAreaVariables()" in page_tutorial_source
+    assert "this.applySkipSafeAreaVariables();" in page_tutorial_source
+    assert "window.TutorialSkipController.applySafeAreaVariables({" in page_tutorial_source
+    assert "ensureSkipSafeAreaController()" in page_tutorial_source
+    assert "controller.getButtonHost()" in page_tutorial_source
+    assert "this._skipSafeAreaController.removeEmptyFixedPortal();" in page_tutorial_source
+    assert "installSkipSafeAreaRefreshHooks()" in page_tutorial_source
+    assert "window.addEventListener('neko:niri-pet-physical-crop-state-applied', refresh);" in page_tutorial_source
+    assert "html.neko-niri-pet-physical-crop .yui-guide-overlay" in yui_guide_css
+    assert "calc(var(--neko-niri-pet-crop-offset-x, 0) * 1px)" in yui_guide_css
+    assert "calc(var(--neko-niri-pet-crop-offset-y, 0) * 1px)" in yui_guide_css
+    assert "--neko-status-toast-crop-safe-area-top: calc(var(--neko-niri-pet-crop-offset-y, 0) * 1px);" in index_css
+    assert "top: calc(20px + var(--neko-status-toast-crop-safe-area-top));" in index_css
+    assert "top: calc(10px + var(--neko-status-toast-crop-safe-area-top));" in index_css
+    yui_skip_rule = yui_guide_css.split("#neko-tutorial-skip-btn", 1)[1].split("}", 1)[0]
+    tutorial_skip_rule = tutorial_styles_css.split("#neko-tutorial-skip-btn", 1)[1].split("}", 1)[0]
+    page_skip_rule = tutorial_styles_css.split(".neko-page-tutorial-skip-btn", 1)[1].split("}", 1)[0]
+    assert "--neko-tutorial-crop-safe-area-top: max(var(--neko-tutorial-safe-area-top, 0px), calc(var(--neko-niri-pet-crop-offset-y, 0) * 1px));" in yui_skip_rule
+    assert "--neko-tutorial-crop-safe-area-top: max(var(--neko-tutorial-safe-area-top, 0px), calc(var(--neko-niri-pet-crop-offset-y, 0) * 1px));" in tutorial_skip_rule
+    assert "--neko-tutorial-crop-safe-area-top: max(var(--neko-tutorial-safe-area-top, 0px), calc(var(--neko-niri-pet-crop-offset-y, 0) * 1px));" in page_skip_rule
+    assert "top: calc(max(14px, env(safe-area-inset-top)) + var(--neko-tutorial-crop-safe-area-top));" in yui_skip_rule
+    assert "top: calc(max(14px, env(safe-area-inset-top)) + var(--neko-tutorial-crop-safe-area-top));" in tutorial_skip_rule
+    assert "top: calc(max(18px, env(safe-area-inset-top)) + var(--neko-tutorial-crop-safe-area-top));" in page_skip_rule
+    assert "top: max(14px, env(safe-area-inset-top));" not in yui_skip_rule
+    assert "top: max(14px, env(safe-area-inset-top));" not in tutorial_skip_rule
+    assert "top: 18px;" not in page_skip_rule
+    assert "const getScreenCoordinateBounds = (metrics) => (" in overlay_source
+    assert "const bounds = getScreenCoordinateBounds(metrics);" in overlay_source
+    assert "function getYuiGuideScreenCoordinateBounds(metrics)" in interpage_source
+    assert "var bounds = getYuiGuideScreenCoordinateBounds(metrics);" in interpage_source
+    assert "getGuideScreenCoordinateBounds(metrics)" in director_source
+    assert "let bounds = this.getGuideScreenCoordinateBounds(metrics);" in director_source
+    assert "- topInset" not in interpage_source
+    assert "- topInset" not in overlay_source
+    assert "usesNiriPetPhysicalCrop" not in director_source
+
+
+def test_timeline_scenes_clear_suppressed_spotlights_before_playback():
+    source = SCENE_ORCHESTRATOR_PATH.read_text(encoding="utf-8")
+    clear_block = source.split("clearSuppressedTimelineSpotlight(scene)", 1)[1].split(
+        "async playTimelineScene",
+        1,
+    )[0]
+    timeline_block = source.split("async playTimelineScene(scene, day, index, total, context)", 1)[1].split(
+        "prepareSceneNarration(scene)",
+        1,
+    )[0]
+
+    assert "scene.spotlight !== false" in clear_block
+    assert "director.overlay.clearActionSpotlight()" in clear_block
+    assert "director.overlay.clearPersistentSpotlight()" in clear_block
+    assert "director.clearExternalizedChatSpotlightOnly()" in clear_block
+    assert "director.interactionTakeover.setExternalizedChatSpotlight('')" in clear_block
+    assert "this.clearSuppressedTimelineSpotlight(scene);" in timeline_block
+    assert timeline_block.index("this.clearSuppressedTimelineSpotlight(scene);") < timeline_block.index(
+        "const timelineScene = this.normalizeSceneToTimeline(scene);"
+    )
 
 
 def test_pc_overlay_cursor_effect_is_one_shot_not_persisted_on_home_bridge():
@@ -732,11 +924,11 @@ def test_day1_chat_input_round_rect_highlight_excludes_mid_flow_cursor_scenes():
     assert "cursorAction: 'wobble'" not in greeting_scene_block
     assert "timelinePlayback: true" in greeting_scene_block
     assert "day1-intro-greeting-flow" not in greeting_scene_block
-    assert "target: 'chat-input'" in greeting_scene_block
+    assert "target: 'chat-capsule-input'" in greeting_scene_block
     assert "cursorTarget: 'chat-capsule-input'" in greeting_scene_block
     assert "cursorAction: 'move'" in greeting_scene_block
     assert "operation: 'day1-intro-greeting-performance'" in greeting_scene_block
-    assert "target: 'chat-input'" in capsule_block
+    assert "target: 'chat-capsule-input'" in capsule_block
     assert "spotlight: false" in capsule_block
     assert "cursorWobbleDurationMs: 2000" in capsule_block
     assert "target: 'chat-input'" in history_block
@@ -839,7 +1031,7 @@ def test_day1_intro_greeting_highlights_capsule_input_without_cursor_wobble():
     )[0]
 
     assert "setExternalizedChatCursor('');" not in greeting_block
-    assert "target: 'chat-input'" in greeting_block
+    assert "target: 'chat-capsule-input'" in greeting_block
     assert "cursorTarget: 'chat-capsule-input'" in greeting_block
     assert "cursorAction: 'move'" in greeting_block
     assert "operation: 'day1-intro-greeting-performance'" in greeting_block

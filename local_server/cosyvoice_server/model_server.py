@@ -15,6 +15,7 @@
 import os
 import sys
 import asyncio
+import hmac
 import json
 import uuid
 import logging
@@ -30,6 +31,12 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger("CosyVoice-Server")
 
 app = FastAPI()
+
+# Optional token authentication for the WebSocket endpoint. When the env var is
+# set, clients must pass a matching ``token`` query parameter when connecting
+# (e.g. ws://host:port/api/v1/ws/cosyvoice?token=xxx). When unset, auth is
+# skipped to preserve backward compatibility with existing clients.
+_EXPECTED_TOKEN = os.environ.get("NEKO_COSYVOICE_TOKEN")
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 COSYVOICE_PROJECT_ROOT = os.path.join(CURRENT_DIR, "CosyVoice")
 
@@ -148,6 +155,18 @@ def inference_loop(input_queue: queue.Queue, output_queue: asyncio.Queue, loop):
 
 @app.websocket("/api/v1/ws/cosyvoice")
 async def websocket_endpoint(websocket: WebSocket):
+    # Token auth (optional). When NEKO_COSYVOICE_TOKEN is configured, the client
+    # must supply a matching ``token`` query param; otherwise the connection is
+    # rejected before accept. Unset env var => no auth (backward compatible).
+    if _EXPECTED_TOKEN:
+        token = websocket.query_params.get("token", "")
+        # Guard against non-ASCII tokens: hmac.compare_digest raises TypeError
+        # on non-ASCII str. Accept the connection first so the WebSocket
+        # upgrade completes, then send the close frame with the intended code.
+        if not token.isascii() or not _EXPECTED_TOKEN.isascii() or not hmac.compare_digest(token, _EXPECTED_TOKEN):
+            await websocket.accept()
+            await websocket.close(code=4401, reason="Unauthorized")
+            return
     await websocket.accept()
     logger.info("🔗 客户端已连接 (Bistream Mode)")
 

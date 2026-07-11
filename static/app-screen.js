@@ -660,6 +660,42 @@
     }
     mod.buildStreamDataMessage = buildStreamDataMessage;
 
+    function getLiveVisionStreamBlockedReason(inputType) {
+        if (inputType !== 'screen' && inputType !== 'camera') {
+            return '';
+        }
+        if (typeof window.isNekoGoodbyeModeActive === 'function' && window.isNekoGoodbyeModeActive()) {
+            return 'goodbye_active';
+        }
+        if (!S.isRecording) {
+            return 'recording_stopped';
+        }
+        if (!S.voiceChatActive) {
+            return 'voice_session_inactive';
+        }
+        return '';
+    }
+    mod.getLiveVisionStreamBlockedReason = getLiveVisionStreamBlockedReason;
+
+    function canSendLiveVisionStreamFrame(inputType) {
+        if (inputType !== 'screen' && inputType !== 'camera') {
+            return true;
+        }
+        if (getLiveVisionStreamBlockedReason(inputType)) return false;
+        return true;
+    }
+    mod.canSendLiveVisionStreamFrame = canSendLiveVisionStreamFrame;
+
+    async function stopLiveVisionStreamIfBlocked(inputType) {
+        var blockedReason = getLiveVisionStreamBlockedReason(inputType);
+        if (!blockedReason) {
+            return false;
+        }
+        await stopScreenSharing(blockedReason === 'goodbye_active');
+        return true;
+    }
+    mod.stopLiveVisionStreamIfBlocked = stopLiveVisionStreamIfBlocked;
+
     // ======================== startScreenVideoStreaming ========================
     function startScreenVideoStreaming(stream, input_type) {
         // 更新最后使用时间并调度闲置检查
@@ -676,7 +712,10 @@
         S.videoTrack = stream.getVideoTracks()[0];
 
         // 定时抓取当前帧并编码为jpeg（使用统一的 captureCanvasFrame）
-        video.play().then(function () {
+        video.play().then(async function () {
+            if (await stopLiveVisionStreamIfBlocked(input_type)) {
+                return;
+            }
             if (video.videoWidth && video.videoHeight) {
                 var vw = video.videoWidth, vh = video.videoHeight;
                 if (vw > C.MAX_SCREENSHOT_WIDTH || vh > C.MAX_SCREENSHOT_HEIGHT) {
@@ -685,7 +724,10 @@
                 }
             }
 
-            S.videoSenderInterval = setInterval(function () {
+            S.videoSenderInterval = setInterval(async function () {
+                if (await stopLiveVisionStreamIfBlocked(input_type)) {
+                    return;
+                }
                 var frame = captureCanvasFrame(video, 0.8);
                 if (frame && frame.dataUrl && S.socket && S.socket.readyState === WebSocket.OPEN) {
                     S.socket.send(JSON.stringify(buildStreamDataMessage(frame.dataUrl, input_type)));
@@ -908,7 +950,11 @@
                 S.screenCaptureStreamLastUsed = Date.now();
                 scheduleScreenCaptureIdleCheck();
 
-                startScreenVideoStreaming(S.screenCaptureStream, isMobile() ? 'camera' : 'screen');
+                var streamInputType = isMobile() ? 'camera' : 'screen';
+                if (await stopLiveVisionStreamIfBlocked(streamInputType)) {
+                    return;
+                }
+                startScreenVideoStreaming(S.screenCaptureStream, streamInputType);
 
                 // 当用户停止共享屏幕时
                 S.screenCaptureStream.getVideoTracks()[0].onended = function () {
@@ -936,19 +982,25 @@
                 if (!backendTest) {
                     throw new Error('所有屏幕捕获方式均失败（含后端兜底）');
                 }
+                if (await stopLiveVisionStreamIfBlocked('screen')) {
+                    return;
+                }
                 console.log('[屏幕源] 进入后端 pyautogui 轮询模式');
 
                 // 立即发送第一帧
-                if (S.socket && S.socket.readyState === WebSocket.OPEN) {
+                if (canSendLiveVisionStreamFrame('screen') && S.socket && S.socket.readyState === WebSocket.OPEN) {
                     S.socket.send(JSON.stringify(buildStreamDataMessage(backendTest, 'screen')));
                 }
 
                 // 复用 videoSenderInterval，stopScreening() 可统一清理
                 S.videoSenderInterval = setInterval(async function () {
                     try {
+                        if (await stopLiveVisionStreamIfBlocked('screen')) {
+                            return;
+                        }
                         var r = await fetchBackendScreenshot();
                         var frame = r.dataUrl;
-                        if (frame && S.socket && S.socket.readyState === WebSocket.OPEN) {
+                        if (frame && canSendLiveVisionStreamFrame('screen') && S.socket && S.socket.readyState === WebSocket.OPEN) {
                             S.socket.send(JSON.stringify(buildStreamDataMessage(frame, 'screen')));
                         }
                     } catch (e) {

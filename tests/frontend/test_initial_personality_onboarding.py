@@ -556,7 +556,6 @@ def test_onboarding_waits_for_home_tutorial_storage_completion_even_if_prompt_st
         """
         () => {
             window.localStorage.setItem('neko_tutorial_home_yui_v1', 'true');
-            window.localStorage.setItem('neko_tutorial_home', 'true');
             window.dispatchEvent(new CustomEvent('neko:tutorial-skipped', {
                 detail: { page: 'home', source: 'auto' }
             }));

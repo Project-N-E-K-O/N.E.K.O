@@ -195,6 +195,7 @@ from .voice_preview import (  # noqa: F401
     get_voice_preview,
 )
 from .voice_cloning import (  # noqa: F401
+    _normalize_doubao_voice_clone_speaker_id,
     _trim_tasks,
     analyze_silence,
     trim_silence_endpoint,

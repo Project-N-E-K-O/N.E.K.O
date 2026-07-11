@@ -61,6 +61,8 @@
     var electronChatMinimizedStatePublishedAt = 0;
     var electronCat1PairMoveBoundsFrame = 0;
     var electronCat1PairMovePendingBounds = null;
+    var electronCat1PairMovePendingForce = false;
+    var electronCat1PairMovePendingReason = '';
     var ELECTRON_CHAT_MINIMIZED_STATE_HEARTBEAT_MS = 1000;
     var savedExpandedShellPosition = null; // last known full-surface desktop position
     var lastRestorableChatSurfaceMode = 'compact';
@@ -130,6 +132,20 @@
             && isElectronChatWindow()
             && body.getAttribute('data-chat-host-kind') === 'compact'
         );
+    }
+
+    function isElectronChatRuntime() {
+        var body = document.body;
+        return !!(
+            (body && body.classList.contains('neko-electron-runtime')) ||
+            window.nekoChatWindow ||
+            /Electron/i.test(navigator.userAgent || '') ||
+            (window.process && window.process.versions && window.process.versions.electron)
+        );
+    }
+
+    function isCompactOnlyElectronRuntimeChatHost() {
+        return !!(isCompactOnlyElectronChatHost() && isElectronChatRuntime());
     }
 
     function coerceChatSurfaceModeForHost(mode) {
@@ -386,6 +402,7 @@
     var COMPACT_SURFACE_VIEWPORT_PAD_X = 16;
     var COMPACT_SURFACE_VIEWPORT_PAD_TOP = 12;
     var COMPACT_SURFACE_VIEWPORT_PAD_BOTTOM = 18;
+    var COMPACT_SURFACE_ELECTRON_DEFAULT_BOTTOM_GAP = 320;
     var COMPACT_SURFACE_DEFAULT_HEIGHT = 64;
     var COMPACT_SURFACE_AVATAR_VERTICAL_RATIO = 0.72;
     var COMPACT_SURFACE_POSITION_STORAGE_KEY = 'neko.reactChatWindow.compactSurfacePosition';
@@ -990,6 +1007,44 @@
         showIdleCat1CompactMirror(detail);
     }
 
+    function getIdleCat1PlayYarnReleaseTargetRect(detail) {
+        if (!detail || typeof detail !== 'object') return null;
+        var screenTarget = normalizeCompactDesktopRect(detail.targetScreenRect);
+        if (screenTarget && !isElectronChatWindow()) {
+            var screenX = Number.isFinite(Number(window.screenX)) ? Number(window.screenX) : Number(window.screenLeft);
+            var screenY = Number.isFinite(Number(window.screenY)) ? Number(window.screenY) : Number(window.screenTop);
+            if (Number.isFinite(screenX) && Number.isFinite(screenY)) {
+                return normalizeCompactDesktopRect({
+                    left: screenTarget.left - screenX,
+                    top: screenTarget.top - screenY,
+                    width: screenTarget.width,
+                    height: screenTarget.height
+                });
+            }
+        }
+        return normalizeCompactDesktopRect(detail.targetRect);
+    }
+
+    function applyIdleCat1PlayYarnRelease(detail) {
+        if (!detail || !detail.releaseDrag) return;
+        if (dragState) {
+            stopDrag({ suppressClick: true });
+        }
+        if (isElectronChatWindow()) return;
+        var shell = getShell();
+        if (!shell || !shell.classList || !shell.classList.contains('is-minimized')) return;
+        var target = getIdleCat1PlayYarnReleaseTargetRect(detail);
+        if (!target) return;
+        var shellRect = shell.getBoundingClientRect();
+        var width = shellRect && shellRect.width > 0 ? shellRect.width : MINIMIZED_SIZE;
+        var height = shellRect && shellRect.height > 0 ? shellRect.height : MINIMIZED_SIZE;
+        applyPosition(
+            target.left + target.width / 2 - width / 2,
+            target.top + target.height / 2 - height / 2
+        );
+        syncCompactInteractionGeometry();
+    }
+
     function handleIdleCat1PlayYarnVisibility(event) {
         var detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
         var hidden = !!(detail && detail.hidden);
@@ -1003,10 +1058,17 @@
                 syncCompactInteractionGeometry();
             }
         }
+        if (!hidden) {
+            applyIdleCat1PlayYarnRelease(detail);
+        }
         var bridge = window.nekoChatWindow;
         if (bridge && typeof bridge.setCompactChatBallTemporarilyHidden === 'function') {
             try {
-                bridge.setCompactChatBallTemporarilyHidden(hidden);
+                bridge.setCompactChatBallTemporarilyHidden(hidden, {
+                    releaseDrag: !!(detail && detail.releaseDrag),
+                    targetScreenRect: detail && detail.targetScreenRect ? detail.targetScreenRect : null,
+                    releaseReason: detail && detail.releaseReason ? detail.releaseReason : ''
+                });
             } catch (_) {}
         }
     }
@@ -1295,9 +1357,12 @@
         var metrics = getCompactSurfaceMetrics();
         var viewportWidth = window.innerWidth;
         var viewportHeight = window.innerHeight;
+        var fallbackBottomGap = isCompactOnlyElectronRuntimeChatHost()
+            ? Math.max(COMPACT_SURFACE_VIEWPORT_PAD_BOTTOM, COMPACT_SURFACE_ELECTRON_DEFAULT_BOTTOM_GAP)
+            : COMPACT_SURFACE_VIEWPORT_PAD_BOTTOM;
         var fallbackTop = Math.max(
             COMPACT_SURFACE_VIEWPORT_PAD_TOP,
-            viewportHeight - metrics.height - COMPACT_SURFACE_VIEWPORT_PAD_BOTTOM
+            viewportHeight - metrics.height - fallbackBottomGap
         );
 
         if (isElectronChatWindow()) {
@@ -2615,6 +2680,8 @@
             onChoiceSelect: handleChoiceSelect,
             onCompactChatStateChange: handleCompactChatStateChange,
             onCompactMinimizeRequest: handleCompactMinimizeRequest,
+            avatarToolMenuOpenRequest: state.viewProps.avatarToolMenuOpenRequest || null,
+            compactToolFanOpenRequest: state.viewProps.compactToolFanOpenRequest || null,
             compactToolWheelRotateRequest: state.viewProps.compactToolWheelRotateRequest || null,
             compactToolWheelIndexRequest: state.viewProps.compactToolWheelIndexRequest || null,
             compactHistoryOpenRequest: state.viewProps.compactHistoryOpenRequest || null
@@ -3069,19 +3136,29 @@
     }
 
     function handleComposerScreenshot() {
+        var handled = false;
         if (typeof state.onComposerScreenshot === 'function') {
             try {
                 state.onComposerScreenshot();
+                handled = true;
             } catch (error) {
                 console.error('[ReactChatWindow] onComposerScreenshot failed:', error);
+                handled = false;
             }
         } else if (window.appButtons && typeof window.appButtons.captureScreenshotToPendingList === 'function') {
-            window.appButtons.captureScreenshotToPendingList();
+            try {
+                window.appButtons.captureScreenshotToPendingList();
+                handled = true;
+            } catch (error) {
+                console.error('[ReactChatWindow] captureScreenshotToPendingList failed:', error);
+                handled = false;
+            }
         } else {
             console.warn('[ReactChatWindow] no screenshot handler available');
         }
 
-        dispatchHostEvent('screenshot', {});
+        dispatchHostEvent('screenshot', { handled: handled });
+        return handled;
     }
 
     function handleComposerRemoveAttachment(attachmentId) {
@@ -4595,6 +4672,7 @@
     }
 
     var MINIMIZED_SIZE = 51;            // 桌面/手机：毛线球直径
+    var ELECTRON_CHAT_MINIMIZED_FALLBACK_WINDOW_SIZE = 83; // chat.html BALL fallback: 51px visible ball + transparent carrier
     var MINIMIZED_DOWN_OFFSET = 24;     // 放大后整体下移，更贴近猫 GIF
     var isMinimizeTransitioning = false;
     var activeAnimationCleanup = null; // 当前进行中动画的清理函数
@@ -4676,6 +4754,13 @@
             if (!idleDockTriggeredMinimize || idleDockActive || !isIdleDockTierActive()) return;
             var latestShell = getShell();
             if (!latestShell) return;
+            if (isMinimizeTransitioning) {
+                var pendingSurfaceMode = pendingChatSurfaceMode;
+                var pendingSurfaceCommit = pendingMinimizedSurfaceCommit;
+                cancelActiveAnimation();
+                pendingChatSurfaceMode = pendingSurfaceMode;
+                pendingMinimizedSurfaceCommit = pendingSurfaceCommit;
+            }
             minimized = true;
             latestShell.classList.remove('is-collapsing', 'is-expanding');
             latestShell.style.transform = 'none';
@@ -4685,6 +4770,12 @@
             latestShell.style.removeProperty('bottom');
             latestShell.classList.add('is-minimized');
             syncChatSurfaceModeUI();
+            commitPendingMinimizedSurfaceMode();
+            flushPendingChatSurfaceModeIfNeeded();
+            if (!minimized || getCurrentChatSurfaceMode() !== 'minimized') {
+                clearIdleDockState();
+                return;
+            }
             finishIdleDockMinimize(latestShell);
         }, 460);
     }
@@ -4769,6 +4860,20 @@
         ].join(':');
     }
 
+    function getElectronChatMinimizedScreenRect(windowRect) {
+        if (!windowRect) return null;
+        var left = Math.round(windowRect.left + Math.max(0, (windowRect.width - MINIMIZED_SIZE) / 2));
+        var top = Math.round(windowRect.top + Math.max(0, (windowRect.height - MINIMIZED_SIZE) / 2));
+        return {
+            left: left,
+            top: top,
+            width: MINIMIZED_SIZE,
+            height: MINIMIZED_SIZE,
+            right: left + MINIMIZED_SIZE,
+            bottom: top + MINIMIZED_SIZE
+        };
+    }
+
     function dispatchElectronChatMinimizedState(reason) {
         if (!isElectronChatWindow()) return;
         var bridge = window.nekoChatWindow;
@@ -4798,10 +4903,12 @@
         }
 
         bridge.getBounds().then(function (bounds) {
-            var rect = normalizeElectronWindowBoundsRect(bounds);
-            if (!rect) return;
+            var windowRect = normalizeElectronWindowBoundsRect(bounds);
+            if (!windowRect) return;
+            var yarnRect = getElectronChatMinimizedScreenRect(windowRect);
+            if (!yarnRect) return;
             var now = Date.now();
-            var signature = getElectronChatMinimizedStateSignature(true, rect);
+            var signature = getElectronChatMinimizedStateSignature(true, yarnRect);
             if (signature === electronChatMinimizedStateSignature &&
                 reason === 'poll' &&
                 now - electronChatMinimizedStatePublishedAt < ELECTRON_CHAT_MINIMIZED_STATE_HEARTBEAT_MS) {
@@ -4815,7 +4922,7 @@
                     source: 'chat-window',
                     reason: reason || 'sync',
                     minimized: true,
-                    screenRect: rect,
+                    screenRect: yarnRect,
                     timestamp: now
                 }
             }));
@@ -4862,7 +4969,7 @@
         };
     }
 
-    function electronRectToBounds(rect) {
+    function electronVisibleYarnRectToWindowBounds(rect, carrierRect) {
         if (!rect || typeof rect !== 'object') return null;
         var normalized = normalizeElectronRect({
             left: Number.isFinite(Number(rect.left)) ? rect.left : rect.x,
@@ -4871,43 +4978,78 @@
             height: rect.height
         });
         if (!normalized) return null;
+        var carrier = normalizeElectronWindowBoundsRect(carrierRect);
+        var carrierWidth = carrier && carrier.width > normalized.width
+            ? carrier.width
+            : Math.max(ELECTRON_CHAT_MINIMIZED_FALLBACK_WINDOW_SIZE, Math.round(normalized.width));
+        var carrierHeight = carrier && carrier.height > normalized.height
+            ? carrier.height
+            : Math.max(ELECTRON_CHAT_MINIMIZED_FALLBACK_WINDOW_SIZE, Math.round(normalized.height));
+        var insetX = Math.max(0, (carrierWidth - normalized.width) / 2);
+        var insetY = Math.max(0, (carrierHeight - normalized.height) / 2);
         return {
-            x: Math.round(normalized.left),
-            y: Math.round(normalized.top),
-            width: Math.round(normalized.width),
-            height: Math.round(normalized.height)
+            x: Math.round(normalized.left - insetX),
+            y: Math.round(normalized.top - insetY),
+            width: Math.round(carrierWidth),
+            height: Math.round(carrierHeight)
         };
     }
 
-    async function applyElectronCat1PairMoveBounds(bounds) {
-        if (isElectronLinuxRuntime()) return;
-        var targetBounds = electronRectToBounds(bounds);
-        if (!targetBounds) return;
+    async function applyElectronCat1PairMoveBounds(bounds, options) {
+        var force = !!(options && options.force);
+        var reason = options && typeof options.reason === 'string' && options.reason
+            ? options.reason
+            : 'cat1-pair-move';
+        if (isElectronLinuxRuntime() && !force) return;
         var bridge = getElectronIdleDockBridge();
         if (!bridge || !isElectronChatWindowCollapsed(bridge)) return;
         if (hasElectronIdleDockPendingOrActive()) return;
+        var carrierBounds = null;
+        try {
+            carrierBounds = await bridge.getBounds();
+        } catch (_) {}
+        var targetBounds = electronVisibleYarnRectToWindowBounds(bounds, carrierBounds);
+        if (!targetBounds) return;
         try {
             if (typeof bridge.idleDockCommitCollapsedBounds === 'function') {
                 await bridge.idleDockCommitCollapsedBounds(targetBounds);
             } else {
                 bridge.setBounds(targetBounds.x, targetBounds.y, targetBounds.width, targetBounds.height);
             }
-            scheduleElectronChatMinimizedState('cat1-pair-move');
+            scheduleElectronChatMinimizedState(reason);
         } catch (_) {
             // A transient desktop move failure should not break the CAT1 animation loop.
         }
     }
 
-    function scheduleElectronCat1PairMoveBounds(bounds) {
+    function scheduleElectronCat1PairMoveBounds(bounds, options) {
+        var force = !!(options && options.force);
+        var reason = options && typeof options.reason === 'string' && options.reason
+            ? options.reason
+            : (options && typeof options.source === 'string' && options.source ? options.source : 'cat1-pair-move');
         if (!isElectronChatWindow()) return;
-        if (isElectronLinuxRuntime()) return;
-        electronCat1PairMovePendingBounds = electronRectToBounds(bounds);
+        if (isElectronLinuxRuntime() && !force) return;
+        electronCat1PairMovePendingBounds = normalizeElectronRect({
+            left: bounds && Number.isFinite(Number(bounds.left)) ? bounds.left : bounds && bounds.x,
+            top: bounds && Number.isFinite(Number(bounds.top)) ? bounds.top : bounds && bounds.y,
+            width: bounds && bounds.width,
+            height: bounds && bounds.height
+        });
+        electronCat1PairMovePendingForce = electronCat1PairMovePendingForce || force;
+        electronCat1PairMovePendingReason = reason;
         if (!electronCat1PairMovePendingBounds || electronCat1PairMoveBoundsFrame) return;
         electronCat1PairMoveBoundsFrame = window.requestAnimationFrame(function () {
             var pendingBounds = electronCat1PairMovePendingBounds;
+            var pendingForce = electronCat1PairMovePendingForce;
+            var pendingReason = electronCat1PairMovePendingReason || 'cat1-pair-move';
             electronCat1PairMovePendingBounds = null;
+            electronCat1PairMovePendingForce = false;
+            electronCat1PairMovePendingReason = '';
             electronCat1PairMoveBoundsFrame = 0;
-            applyElectronCat1PairMoveBounds(pendingBounds);
+            applyElectronCat1PairMoveBounds(pendingBounds, {
+                force: pendingForce,
+                reason: pendingReason
+            });
         });
     }
 
@@ -5655,6 +5797,11 @@
         return normalized;
     }
 
+    function _handleIdleCat1PlaygroundYarnRequest(event) {
+        if (getCurrentChatSurfaceMode() === 'minimized') return;
+        setChatSurfaceMode('minimized');
+    }
+
     function cycleChatSurfaceMode() {
         return setChatSurfaceMode(getNextChatSurfaceMode(getCurrentChatSurfaceMode()));
     }
@@ -5744,20 +5891,38 @@
             shell.classList.add('is-collapsing');
             void shell.offsetHeight; // 强制 reflow
 
+            var handled = false;
+            var collapseTimer = null;
+            var collapseScaleFrame = 0;
+            var collapseScaleInnerFrame = 0;
+            function cancelCollapseScaleFrames() {
+                if (collapseScaleFrame) {
+                    window.cancelAnimationFrame(collapseScaleFrame);
+                    collapseScaleFrame = 0;
+                }
+                if (collapseScaleInnerFrame) {
+                    window.cancelAnimationFrame(collapseScaleInnerFrame);
+                    collapseScaleInnerFrame = 0;
+                }
+            }
+
             // 5. 设置目标 transform，触发动画
             //    动画期间 left/top 不动，只通过动态 origin 缩放到 target。
-            requestAnimationFrame(function () {
-                requestAnimationFrame(function () {
+            collapseScaleFrame = requestAnimationFrame(function () {
+                collapseScaleFrame = 0;
+                if (handled || !shell.classList.contains('is-collapsing') || shell.classList.contains('is-minimized')) return;
+                collapseScaleInnerFrame = requestAnimationFrame(function () {
+                    collapseScaleInnerFrame = 0;
+                    if (handled || !shell.classList.contains('is-collapsing') || shell.classList.contains('is-minimized')) return;
                     shell.style.transform = 'scale(' + sx + ', ' + sy + ')';
                 });
             });
 
             // 6. 过渡结束后切换到最终的 minimized 状态
-            var handled = false;
-            var collapseTimer = null;
             var finishCollapse = function () {
                 if (handled) return;
                 handled = true;
+                cancelCollapseScaleFrames();
                 clearTimeout(collapseTimer);
                 shell.removeEventListener('transitionend', onEnd);
                 activeAnimationCleanup = null;
@@ -5792,6 +5957,7 @@
 
             // 注册清理句柄，供 closeWindow / 下次动画调用
             activeAnimationCleanup = function () {
+                cancelCollapseScaleFrames();
                 clearTimeout(collapseTimer);
                 shell.removeEventListener('transitionend', onEnd);
                 shell.classList.remove('is-collapsing');
@@ -6927,10 +7093,14 @@
         window.addEventListener('neko:idle-chat-pair-move-bounds', function (event) {
             var detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
             if (!detail) return;
-            scheduleElectronCat1PairMoveBounds(detail.screenRect || detail.bounds);
+            scheduleElectronCat1PairMoveBounds(detail.screenRect || detail.bounds, {
+                force: !!detail.force,
+                reason: detail.reason || detail.source || 'cat1-pair-move'
+            });
         });
         window.addEventListener('neko:idle-cat1-compact-mirror-state', handleIdleCat1CompactMirrorState);
         window.addEventListener('neko:idle-cat1-play-yarn-visibility', handleIdleCat1PlayYarnVisibility);
+        window.addEventListener('neko:idle-cat1-playground-yarn-request', _handleIdleCat1PlaygroundYarnRequest);
         window.addEventListener('live2d-goodbye-click', function () {
             setGoodbyeComposerHidden(true, 'live2d-goodbye-click');
         });
@@ -7060,6 +7230,7 @@
         setOnComposerScreenshot: function (handler) {
             state.onComposerScreenshot = typeof handler === 'function' ? handler : null;
         },
+        triggerComposerScreenshot: handleComposerScreenshot,
         setOnComposerRemoveAttachment: function (handler) {
             state.onComposerRemoveAttachment = typeof handler === 'function' ? handler : null;
         },

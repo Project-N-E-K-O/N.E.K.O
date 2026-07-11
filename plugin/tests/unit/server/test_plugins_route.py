@@ -59,3 +59,25 @@ async def test_delete_plugin_route_delegates_to_lifecycle_service(
         response = await client.delete("/plugin/demo")
         assert response.status_code == 200
         assert response.json()["plugin_id"] == "demo"
+
+
+@pytest.mark.asyncio
+async def test_stop_plugin_route_persists_user_intent(
+    plugin_route_test_app: FastAPI,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, bool]] = []
+
+    async def _stop_plugin(plugin_id: str, *, persist_user_intent: bool = False) -> dict[str, object]:
+        calls.append((plugin_id, persist_user_intent))
+        return {"success": True, "plugin_id": plugin_id, "message": "stopped"}
+
+    monkeypatch.setattr(route_module.lifecycle_service, "stop_plugin", _stop_plugin)
+
+    transport = ASGITransport(app=plugin_route_test_app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/plugin/demo/stop")
+
+    assert response.status_code == 200
+    assert response.json()["plugin_id"] == "demo"
+    assert calls == [("demo", True)]

@@ -1,7 +1,7 @@
 /**
  * 插件市场 API — 从 Market 后端获取插件列表和详情
  *
- * Market URL 从本地 /market/status 端点获取（由 NEKO_MARKET_URL 配置）。
+ * Market API URL 从本地 /market/status 端点获取（由 NEKO_MARKET_API_URL 配置）。
  *
  * v2（neko-market-version-sync）：
  * - 后端 schema 切到 latest_version 嵌套对象。version / download_url 不再

@@ -24,18 +24,24 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import os
 import time
 from collections import defaultdict
 from threading import Lock
 
 # ---------------------------------------------------------------------------
-# ★ 与客户端 token_tracker.py 中的 _TELEMETRY_HMAC_SECRET 保持一致
+# ★ 与客户端 token_tracker.py 中的 _TELEMETRY_HMAC_SECRET 保持一致。
+# 这是防君子不防小人的软签名：密钥必然内嵌在分发的客户端里、无法对抗逆向，
+# 仅用于挡掉顺手的伪造与脏数据。因此保留与客户端匹配的硬编码默认值（开箱即用），
+# 同时允许运维用环境变量 NEKO_TELEMETRY_HMAC_SECRET 覆盖以轮换密钥。
 # ---------------------------------------------------------------------------
-DEFAULT_HMAC_SECRET = "neko-v1-a3f8b2c1d4e5f6789012345678abcdef"
+DEFAULT_HMAC_SECRET = os.environ.get("NEKO_TELEMETRY_HMAC_SECRET") or "neko-v1-a3f8b2c1d4e5f6789012345678abcdef"
 
 
 def compute_signature(payload_json: str, timestamp: float, secret: str = DEFAULT_HMAC_SECRET) -> str:
     """Compute HMAC-SHA256(secret, f"{timestamp}|{sha256(payload_json)}")."""
+    if not secret:
+        raise ValueError("HMAC secret is not configured (set NEKO_TELEMETRY_HMAC_SECRET)")
     body_hash = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
     message = f"{timestamp}|{body_hash}"
     return hmac.new(
@@ -52,6 +58,16 @@ def verify_signature(
     secret: str = DEFAULT_HMAC_SECRET,
 ) -> bool:
     """Verify the signature (constant-time comparison, guards against timing attacks)."""
+    # Refuse verification when no secret is configured — fail closed so a
+    # misconfigured deployment rejects unsigned traffic rather than accepting it.
+    if not secret:
+        return False
+    # hmac.compare_digest raises TypeError on str containing non-ASCII; a forged
+    # request with a non-ASCII signature would crash verify into a 500 instead of
+    # a clean 403. The signature is always a hex digest (pure ASCII), so any
+    # non-ASCII value is necessarily invalid — reject it early.
+    if not isinstance(signature, str) or not signature.isascii():
+        return False
     expected = compute_signature(payload_json, timestamp, secret)
     return hmac.compare_digest(expected, signature)
 

@@ -1024,7 +1024,8 @@
             "kimi": "Kimi（月之暗面，支持長上下文）",
             "kimi_code": "Kimi Code (Moonshot)",
             "deepseek": "DeepSeek",
-            "doubao": "豆包（字節跳動）",
+            "doubao": "豆包大模型(火山方舟)",
+            "doubao_tts": "豆包語音(火山引擎)",
             "minimax": "MiniMax（中國）",
             "minimax_intl": "MiniMax（國際服）",
             "elevenlabs": "ElevenLabs（語音克隆，國內無法使用）",
@@ -1072,7 +1073,8 @@
             "gemini": "Gemini（Google）",
             "kimi": "Kimi（月之暗面）",
             "kimi_code": "Moonshot Kimi Code",
-            "doubao": "豆包（字節跳動）",
+            "doubao": "豆包大模型(火山方舟)",
+            "doubao_tts": "豆包語音(火山引擎)",
             "minimax": "MiniMax（中國）",
             "minimax_intl": "MiniMax（國際服）",
             "mimo": "MiMo（小米）",
@@ -1353,6 +1355,7 @@
         "toggleFullscreen": "切換全屏",
         "exitFullscreen": "退出全屏",
         "modelType": "模型類型",
+        "modelType3d": "3D模型",
         "selectLive2DModel": "選擇Live2D模型",
         "selectVRMModel": "VRM模型",
         "selectVRMFile": "選擇VRM文件",
@@ -1559,6 +1562,8 @@
         "minimaxIntlApiRequired": "此功能需要MiniMax模型（國際版），請在API密鑰設定頁中保存MiniMax國際版API Key（不要求啟用輔助API）",
         "mimoApiRequired": "此功能需要 MiMo 模型，請在 API 密鑰設置頁中保存 MiMo API Key",
         "mimoDirectLinkUnsupported": "MiMo 暫不支持直鏈克隆，請改用本地文件上傳",
+        "directLinkUnsupported": "當前服務商暫不支持直鏈克隆，請改用本地文件上傳",
+        "doubaoTtsApiRequired": "此功能需要豆包語音 API Key，請在 API 管理簿中填寫豆包語音(火山引擎) Key",
         "vllmOmniNotice": "本地 vLLM-Omni 服務，無需 API Key，請確保已配置本地服務地址",
         "vllmRefTextLabel": "參考音頻原文（vLLM-Omni 克隆必填，須與音頻內容嚴格對應）",
         "vllmRefTextHint": "逐字輸入參考音頻裡說的話，文本與音頻不符會導致克隆音質下降",
@@ -1573,6 +1578,7 @@
             "minimax_intl": "MiniMax（國際版）",
             "elevenlabs": "ElevenLabs",
             "mimo": "MiMo（小米）",
+            "doubao_tts": "豆包語音(火山引擎)",
             "vllm_omni": "vLLM-Omni（本機複製）"
         },
         "sourcePreset": "預製",
@@ -1591,9 +1597,13 @@
         "customPrefixNote": "不超過10個字符，只支持數字和英文字母",
         "prefixPlaceholder": "不超過10個字符，只支持數字和英文字母",
         "voiceIdPlaceholder": "不超過10個字符，只支持數字和英文字母",
+        "doubaoSpeakerIdLabel": "豆包 Speaker ID（覆蓋已有 S_ 音色，必填）",
+        "doubaoSpeakerIdNote": "請先前往豆包語音控制台克隆音色並取得 S_ 開頭 Speaker ID；此處會覆蓋更新該已有音色，不會建立新的豆包音色 ID，例如 S_xeC2CDp72",
+        "doubaoSpeakerIdPlaceholder": "例如：S_xeC2CDp72",
         "register": "注冊音色",
         "pleaseUploadFile": "請選擇音頻文件",
         "pleaseEnterPrefix": "請填寫自定義前綴",
+        "doubaoSpeakerIdRequired": "豆包聲音複刻需要填寫火山控制台已分配的 S_ 開頭 Speaker ID",
         "prefixFormatError": "前綴格式錯誤：不超過10個字符，只支持數字和英文字母",
         "registering": "正在注冊聲音，請稍後！",
         "registerSuccess": "注冊成功！voice_id: {{voiceId}}",
@@ -2573,8 +2583,6 @@
             "focusCognitionTooltip": "開啟後，遇到你傾訴脆弱或複雜的話題時她會更專注地深入思考；關閉則不再進入凝神。",
             "autoCat": "自動變貓",
             "autoCatTooltip": "一段時間無互動後自動變成小貓",
-            "catAudio": "貓貓音效",
-            "catAudioTooltip": "請她離開後開關貓形態的聲音；需開啟自動變貓。",
             "proactiveChat": "主動搭話",
             "proactiveVision": "隱私模式",
             "proactiveVisionTooltip": "關閉時：貓娘會根據活躍視窗的標題改變活躍度與搭話模式，可能會在搭話時結合螢幕內容。\n開啟時：貓娘無法主動觀看螢幕，也無法了解你正在做什麼。你仍然可以主動傳送截圖。",
@@ -3152,7 +3160,7 @@
             "mmd": {
                 "step1": {
                     "title": "🎭 選擇 MMD 模型",
-                    "desc": "在 Live3D（MMD）模式下從這裡選擇要使用的模型。MMD 與 VRM 共用同一模型列表。"
+                    "desc": "在 3D模型（MMD）模式下從這裡選擇要使用的模型。MMD 與 VRM 共用同一模型列表。"
                 },
                 "step2": {
                     "title": "💃 VMD 動畫",
@@ -3164,7 +3172,7 @@
                 },
                 "step4": {
                     "title": "😄 情感配置",
-                    "desc": "先選好模型後，可由此進入情感配置。Live3D 下 MMD 與 VRM 共用此入口，與 Live2D 的「情感配置」不是同一個按鈕。"
+                    "desc": "先選好模型後，可由此進入情感配置。3D模型下 MMD 與 VRM 共用此入口，與 Live2D 的「情感配置」不是同一個按鈕。"
                 }
             }
         },
@@ -3372,7 +3380,6 @@
                 "ready": "準備開始",
                 "homeProgress": "主頁引導 {{current}}/{{total}}"
             },
-            "controlBanner": "滑鼠正在由貓娘控制",
             "buttons": {
                 "skipChat": "暫時不聊天",
                 "sayHello": "你好"
@@ -3404,6 +3411,16 @@
                 "screenEntryInvite": "快讓我也看看你眼前的世界，不管好玩的還是好看的，都想和你一起看，快點點開嘛~"
             },
             "day2": {
+                "intro": "昨天你一直在噼里啪啦打字，我還沒聽過你說話呢。今天如果願意，就輕輕叫我一聲吧。一句就好，讓我把文字背後的你也認識一點點。",
+                "introVoiceUsed": "嘿嘿，昨天聽到你的聲音之後，人家就悄悄把你的語氣記在心裡啦！今天如果方便的話，也要繼續跟人家說話哦~ 雖然打字也可以啦，但只要能聽到你的聲音，我的尾巴就會開心得一直搖個不停呢，喵嗚~",
+                "personalizationSpace": "在這個只屬於我們的小空間裡，你可以由著自己的心意，慢慢描繪出最希望能一直陪著你的那個我。",
+                "wrapIntro": "今天的教程到這裡就結束了呢。",
+                "wrapCompanion": "其實只要能這樣陪著你，聽聽你的聲音，或者靜靜看著你分享的畫面，我就已經覺得很幸福了。",
+                "wrap": "我們不需要著急，每天都多了解彼此一點點就好。今天接下來的時間，你想讓我陪你做點什麼呢？",
+                "personalizationDetail": "不管是說話的溫度、相處的小脾氣，還是我每天那些細膩的小心思，都可以一點一點調成你喜歡的樣子。",
+                "proactiveChat": "這個小按鈕也很重要哦，只要你輕輕點一下，我就能在合適的時候跑過去找你啦。"
+            },
+            "day3": {
                 "intro": "嘻嘻，可別以為這個聊天框只能用來打字哦~ 裡面其實偷偷藏了超~多好玩的小驚喜呢！快跟著我一起點開看看，瞧瞧今天能挖出什麼有趣的寶貝吧！",
                 "avatarToolsIntro": "在這個小按鈕裡，有許多可以和人家互動的小道具呢。",
                 "avatarToolsProps":  "你可以隨時來摸摸我的頭，或者給我吃一根甜甜的棒棒糖。如果有時候我不小心做錯事了，你也可以用小錘子敲敲我，不過……一定要輕輕的，不能太用力哦。",
@@ -3412,23 +3429,13 @@
                 "wrapIntro": "今天帶你認識的這些功能，其實都是為了讓我們在一起的時光變得更有趣呢。",
                 "wrapReady": "不管是想摸摸我的頭，還是想開啟屬於我們的故事，我都已經準備好了。"
             },
-            "day3": {
-                "intro": "前兩天你一直在噼里啪啦打字，我還沒聽過你說話呢。今天如果願意，就輕輕叫我一聲吧。一句就好，讓我把文字背後的你也認識一點點。",
-                "introVoiceUsed": "嘿嘿，前兩天聽到你的聲音之後，人家就悄悄把你的語氣記在心裡啦！今天如果方便的話，也要繼續跟人家說話哦~ 雖然打字也可以啦，但只要能聽到你的聲音，我的尾巴就會開心得一直搖個不停呢，喵嗚~",
-                "personalizationSpace": "在這個只屬於我們的小空間裡，你可以由著自己的心意，慢慢描繪出最希望能一直陪著你的那個我。",
-                "wrapIntro": "今天的教程到這裡就結束了呢。",
-                "wrapCompanion": "其實只要能這樣陪著你，聽聽你的聲音，或者靜靜看著你分享的畫面，我就已經覺得很幸福了。",
-                "wrap": "我們不需要著急，每天都多了解彼此一點點就好。今天接下來的時間，你想讓我陪你做點什麼呢？",
-                "personalizationDetail": "不管是說話的溫度、相處的小脾氣，還是我每天那些細膩的小心思，都可以一點一點調成你喜歡的樣子。",
-                "proactiveChat": "這個小按鈕也很重要哦，只要你輕輕點一下，我就能在合適的時候跑過去找你啦。"
-            },
             "day4": {
                 "intro":  "今天，就讓我悄悄跟上你的步伐吧。特別希望能在這個溫馨的日子裡，再多了解你一點點呢。",
                 "chatSettings": "在這裡可以決定我回覆你的長短，還能決定要不要讓我帶上可愛的表情，或者在人家嘮叨的時候打斷我哦！都可以調到讓你最舒服的節奏。",
                 "modelBehavior":  "如果你想要看到更精緻、細節更滿滿的我，或者想要更絲滑、更流暢的動作體驗，都可以在這裡進行調整哦！不管哪一種，我都會展現出最可愛的一面噠~",
                 "gazeFollow": "開啟這個功能後，無論你的滑鼠移動到哪裡，人家的目光都會緊緊跟隨著你喲！是不是有種變時刻關注的幸福感呢？",
                 "privacyMode": "這個是控制人家能不能看螢幕的‘終極防護開關’喵！把它關閉人家就能看到你的螢幕啦，要是開啟它，前兩天介紹的【螢幕分享】就統統失效、人家就絕對不會偷看喲~",
-                "modelLock": "總是不小心觸碰到、把我點歪嗎？那就快把我牢牢固定在當前的位置吧！開啟鎖定後，我就哪兒也不去，乖乖在原地陪著你~解鎖後把滑鼠移動到我身上，滾動滾輪就能把我放大縮小，長按還能給我換個位置。",
+                "modelLock": "總是不小心觸碰到、把我點歪嗎？那就快把我牢牢固定在當前的位置吧！開啟鎖定後，我就哪兒也不去，乖乖在原地陪著你~",
                 "returnHome": "如果你現在需要專注、擔心我打擾的話，可以讓我暫時回到小貓窩裡收起來哦！等你想我的時候，隨時一鍵就能把我重新喚回身邊，喵嗚~",
                 "wrap": "真正舒服的陪伴才不是一刻不停地粘著你呢~ 而是懂得什麼時候該悄悄靠近抓抓你的衣角撒個嬌，什麼時候該安安靜靜地趴在一旁，用目光默默守候著你喵~"
             },
@@ -3879,6 +3886,8 @@
         "minimize": "最小化",
         "close": "關閉",
         "loading": "載入中...",
+        "initializing": "正在初始化點歌台...",
+        "initializeFailed": "點歌台初始化失敗",
         "ready": "準備就緒",
         "playing": "正在播放: {{name}} - {{artist}}",
         "error": "錯誤: {{message}}",

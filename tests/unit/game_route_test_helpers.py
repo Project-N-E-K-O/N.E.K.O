@@ -7,6 +7,27 @@ from main_routers.game_router import badminton_scores as gr_scores
 from main_routers.game_router import runtime as gr_runtime
 
 
+def gr_patch_all(monkeypatch, name, value, raising=True):
+    """Patch the same object onto every submodule that holds the binding.
+
+    Restores pre-split semantics: with monolithic game_router a single
+    setattr hit the one namespace all flows resolved against; after the
+    package split, from-import snapshots live in several submodules'
+    globals, so patch them all with the same object."""
+    from main_routers.game_router import (
+        _shared, char_info, logs, memory_policy, game_context, pregame,
+        visible_events, balance, badminton_scores, archive, runtime,
+    )
+    hit = False
+    for _m in (_shared, char_info, logs, memory_policy, game_context, pregame,
+               visible_events, balance, badminton_scores, archive, runtime):
+        if hasattr(_m, name):
+            monkeypatch.setattr(_m, name, value)
+            hit = True
+    if not hit and raising:
+        raise AttributeError("no game_router submodule has %r" % name)
+
+
 @contextmanager
 def reset_game_route_state():
     sessions_snapshot = dict(gr_runtime._game_sessions)

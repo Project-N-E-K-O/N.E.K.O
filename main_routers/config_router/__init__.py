@@ -89,6 +89,7 @@ from .connectivity import (  # noqa: F401
     _classify_anthropic_error,
     _test_websocket,
     _test_vllm_omni_ws_handshake,
+    _test_doubao_tts_connectivity,
     _normalize_provider_url_candidates,
     _looks_like_anthropic_messages_url,
     _normalize_provider_type,

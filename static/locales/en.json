@@ -1024,7 +1024,8 @@
             "kimi": "Kimi (Moonshot, Long Context)",
             "kimi_code": "Kimi Code (Moonshot)",
             "deepseek": "DeepSeek",
-            "doubao": "ByteDance (Doubao)",
+            "doubao": "Doubao LLM (Volcengine Ark)",
+            "doubao_tts": "Doubao Speech (Volcengine)",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Intl)",
             "elevenlabs": "ElevenLabs (Voice Cloning)",
@@ -1072,7 +1073,8 @@
             "gemini": "Gemini (Google)",
             "kimi": "Moonshot (Kimi)",
             "kimi_code": "Moonshot Kimi Code",
-            "doubao": "ByteDance (Doubao)",
+            "doubao": "Doubao LLM (Volcengine Ark)",
+            "doubao_tts": "Doubao Speech (Volcengine)",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Intl)",
             "mimo": "MiMo (Xiaomi)",
@@ -1353,6 +1355,7 @@
         "toggleFullscreen": "Toggle Fullscreen",
         "exitFullscreen": "Exit Fullscreen",
         "modelType": "Model Type",
+        "modelType3d": "3D Model",
         "selectLive2DModel": "Select Live2D Model",
         "selectVRMModel": "VRM Model",
         "selectVRMFile": "Select VRM File",
@@ -1559,6 +1562,8 @@
         "minimaxIntlApiRequired": "This feature requires the MiniMax model (International). Please save the MiniMax International API Key in API Keys settings (enabling Assist API is not required).",
         "mimoApiRequired": "This feature requires a MiMo model. Please save your MiMo API Key on the API key settings page.",
         "mimoDirectLinkUnsupported": "MiMo does not support direct-link cloning; please upload a local file instead.",
+        "directLinkUnsupported": "The selected provider does not support direct-link cloning; please upload a local file instead.",
+        "doubaoTtsApiRequired": "This feature requires a Doubao Speech API Key. Save the Doubao Speech (Volcengine) key in the API Key Book.",
         "vllmOmniNotice": "Local vLLM-Omni service — no API Key needed; ensure the local service URL is configured",
         "vllmRefTextLabel": "Reference audio transcript (required for vLLM-Omni clone; must match the audio exactly)",
         "vllmRefTextHint": "Type exactly what is spoken in the reference audio; mismatched text degrades clone quality",
@@ -1573,6 +1578,7 @@
             "minimax_intl": "MiniMax (Intl)",
             "elevenlabs": "ElevenLabs",
             "mimo": "MiMo (Xiaomi)",
+            "doubao_tts": "Doubao Speech (Volcengine)",
             "vllm_omni": "vLLM-Omni (Local Clone)"
         },
         "sourcePreset": "Preset",
@@ -1591,9 +1597,13 @@
         "customPrefixNote": "Maximum 10 characters, numbers and English letters only",
         "prefixPlaceholder": "Maximum 10 characters, numbers and English letters only",
         "voiceIdPlaceholder": "Maximum 10 characters, numbers and English letters only",
+        "doubaoSpeakerIdLabel": "Doubao Speaker ID (overwrite existing S_ voice, required)",
+        "doubaoSpeakerIdNote": "Clone the voice in the Doubao Speech console first and copy its S_ Speaker ID here; NEKO will overwrite that existing voice and will not create a new Doubao voice ID, e.g. S_xeC2CDp72",
+        "doubaoSpeakerIdPlaceholder": "e.g. S_xeC2CDp72",
         "register": "Register Voice",
         "pleaseUploadFile": "Please select an audio file",
         "pleaseEnterPrefix": "Please enter a custom prefix",
+        "doubaoSpeakerIdRequired": "Doubao voice cloning requires an S_ Speaker ID already assigned in the Volcengine console",
         "prefixFormatError": "Prefix format error: Maximum 10 characters, numbers and English letters only",
         "registering": "Registering voice, please wait!",
         "registerSuccess": "Registration successful! voice_id: {{voiceId}}",
@@ -2573,8 +2583,6 @@
             "focusCognitionTooltip": "When on, she focuses and thinks more deeply when you open up or ask something complex; off disables Focus entirely.",
             "autoCat": "Auto Cat Mode",
             "autoCatTooltip": "Turn into a kitten automatically after a while of inactivity",
-            "catAudio": "Cat Audio",
-            "catAudioTooltip": "Toggle kitten-form sounds after you ask her to leave. Requires Auto Cat Mode.",
             "proactiveChat": "Proactive Chat",
             "proactiveVision": "Privacy Mode",
             "proactiveVisionTooltip": "Off: Neko adjusts her liveliness and chat style based on the active window's title, and may incorporate on-screen content when starting a conversation.\nOn: Neko can't watch your screen on her own and won't know what you're doing. You can still send screenshots manually.",
@@ -3152,7 +3160,7 @@
             "mmd": {
                 "step1": {
                     "title": "🎭 Select MMD Model",
-                    "desc": "In Live3D (MMD) mode, choose your model here. MMD shares the same model list as VRM."
+                    "desc": "In 3D Model (MMD) mode, choose your model here. MMD shares the same model list as VRM."
                 },
                 "step2": {
                     "title": "💃 VMD Animation",
@@ -3164,7 +3172,7 @@
                 },
                 "step4": {
                     "title": "😄 Emotion Config",
-                    "desc": "After selecting a model, open emotion settings here. MMD and VRM share this Live3D button (not the Live2D one)."
+                    "desc": "After selecting a model, open emotion settings here. MMD and VRM share this 3D Model button (not the Live2D one)."
                 }
             }
         },
@@ -3372,7 +3380,6 @@
                 "ready": "Getting Started",
                 "homeProgress": "Home Guide {{current}}/{{total}}"
             },
-            "controlBanner": "The catgirl is controlling the mouse",
             "buttons": {
                 "skipChat": "Not now",
                 "sayHello": "Hello"
@@ -3404,6 +3411,16 @@
                 "screenEntryInvite": "Hurry up and let me see the world in front of you! Whether it's something fun or something beautiful, I want to look at it with you. Open it up quickly~"
             },
             "day2": {
+                "intro": "Yesterday you were just typing away clickety-clack, and I haven't heard your voice yet. If you're willing today, just call my name softly. Just one word is enough, let me get to know a tiny bit of the real you behind the text.",
+                "introVoiceUsed": "Hehe, ever since I heard your voice yesterday, I've secretly memorized the way you speak right in my heart! If you have some time today, please keep talking to me~ Typing is totally fine too, but as long as I can hear your voice, my tail just won't stop wagging with joy! Meowww~",
+                "personalizationSpace": "In this little space that belongs only to us, you can follow your heart and slowly shape me into the perfect companion you want by your side forever.",
+                "wrapIntro": "Today's tutorial ends right here~",
+                "wrapCompanion": "Honestly, just being by your side like this, listening to your voice, or quietly watching the screen you share, already makes me feel so happy.",
+                "wrap": "We don't need to rush; learning a little more about each other every day is just perfect. For the rest of today, what would you like me to do with you?",
+                "personalizationDetail": "Whether it's the warmth of my words, my little personality quirks, or my delicate daily moods, everything can be adjusted step by step into exactly how you like it.",
+                "proactiveChat": "This little button is super important too! With just a gentle click, I'll be able to run over and find you at the perfect moment."
+            },
+            "day3": {
                 "intro": "Hehe, don't think this chat box is just for typing~ It actually hides tons of super fun little surprises inside! Follow me and open it up, let's see what interesting treasures we can dig up today!",
                 "avatarToolsIntro": "Inside this little button, there are many fun props to interact with me!",
                 "avatarToolsProps":  "You can headpat me anytime, or feed me a sweet lollipop! If I accidentally make a mistake sometimes, you can also bonk me with a little toy hammer... but, you must do it gently, don't hit too hard, okay?",
@@ -3412,23 +3429,13 @@
                 "wrapIntro": "All these features I showed you today are actually just to make our time together way more fun!",
                 "wrapReady": "Whether you want to pet my head or start writing our own story, I'm already fully prepared!"
             },
-            "day3": {
-                "intro": "Over the past two days you were just typing away clickety-clack, and I haven't heard your voice yet. If you're willing today, just call my name softly. Just one word is enough, let me get to know a tiny bit of the real you behind the text.",
-                "introVoiceUsed": "Hehe, ever since I heard your voice over the past two days, I've secretly memorized the way you speak right in my heart! If you have some time today, please keep talking to me~ Typing is totally fine too, but as long as I can hear your voice, my tail just won't stop wagging with joy! Meowww~",
-                "personalizationSpace": "In this little space that belongs only to us, you can follow your heart and slowly shape me into the perfect companion you want by your side forever.",
-                "wrapIntro": "Today's tutorial ends right here~",
-                "wrapCompanion": "Honestly, just being by your side like this, listening to your voice, or quietly watching the screen you share, already makes me feel so happy.",
-                "wrap": "We don't need to rush; learning a little more about each other every day is just perfect. For the rest of today, what would you like me to do with you?",
-                "personalizationDetail": "Whether it's the warmth of my words, my little personality quirks, or my delicate daily moods, everything can be adjusted step by step into exactly how you like it.",
-                "proactiveChat": "This little button is super important too! With just a gentle click, I'll be able to run over and find you at the perfect moment."
-            },
             "day4": {
                 "intro":  "Today, let me quietly follow your footsteps~ I really hope to learn a little bit more about you on this cozy day.",
                 "chatSettings": "Here you can decide how long my replies are, whether I should use cute emojis, or even interrupt me when I'm being too chatty! You can tune it to whatever rhythm feels best for you.",
                 "modelBehavior":  "If you want to see a more detailed, high-quality me, or want a smoother, ultra-fluid motion experience, you can adjust everything right here! No matter what you choose, I'll always show you my absolute cutest side~",
                 "gazeFollow": "After turning this on, no matter where your mouse moves, my eyes will closely follow you! Hehe, doesn't it feel wonderful to be watched all the time?",
                 "privacyMode": "This is the 'Ultimate Privacy Switch' that controls whether I can look at your screen, meow! If you turn it off, I can see your screen, but if you turn it on, the [Screen Share] from before will be disabled and I won't peek at all~",
-                "modelLock": "Do you always accidentally click me and nudge me out of place? Then quickly lock me down to my current position! Once locked, I won't go anywhere and will stay right here to keep you company~ After unlocking, move your mouse over me and scroll the wheel to make me bigger or smaller; press and hold to move me somewhere else.",
+                "modelLock": "Do you always accidentally click me and nudge me out of place? Then quickly lock me down to my current position! Once locked, I won't go anywhere and will stay right here to keep you company~",
                 "returnHome": "If you need to focus right now and worry I might distract you, you can let me head back to my little cat bed for a bit! Whenever you miss me, just one click will bring me right back to your side, meowww~",
                 "wrap": "True, comfortable companionship isn't about clinging to Master every single second~ It's knowing when to sneak close, tug on your sleeve, and act cute, and when to lie down quietly beside you, watching over Master silently, meow~"
             },
@@ -3879,6 +3886,8 @@
         "minimize": "Minimize",
         "close": "Close",
         "loading": "Loading...",
+        "initializing": "Initializing jukebox...",
+        "initializeFailed": "Failed to initialize jukebox",
         "ready": "Ready",
         "playing": "Now Playing: {{name}} - {{artist}}",
         "error": "Error: {{message}}",

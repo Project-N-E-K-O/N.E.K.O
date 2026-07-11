@@ -4,9 +4,8 @@
 
 支持的 URI：
   neko://install?url={package_url}&sha256={hash}&id={plugin_id}&version={ver}
-  neko://auth/callback?code={oauth_code}&state={state}
   neko://pair?code={one_time_code}
-  neko://open?plugin={plugin_id}
+  neko://open?plugin={plugin_id}&panel={panel}&intent={intent}
 
 使用方式：
   python -m plugin.server.market_protocol_handler "neko://install?url=..."
@@ -88,17 +87,14 @@ def handle_uri(uri: str) -> int:
         logger.error("Not a neko:// URI: {}", safe_uri)
         return 1
 
-    # netloc 是 action（如 install, auth, pair, open）
+    # netloc 是 action（如 install, pair, open）
     # 对于 neko://install?... → netloc="install", path=""
-    # 对于 neko://auth/callback?... → netloc="auth", path="/callback"
     action = parsed.netloc
     sub_path = parsed.path.lstrip("/")
     params = {k: v[0] if len(v) == 1 else v for k, v in parse_qs(parsed.query).items()}
 
     if action == "install":
         return _handle_install(params)
-    elif action == "auth" and sub_path == "callback":
-        return _handle_auth_callback(params)
     elif action == "pair":
         return _handle_pair(params)
     elif action == "open":
@@ -131,6 +127,11 @@ def _handle_install(params: dict) -> int:
     plugin_id = params.get("id", "unknown")
     version = params.get("version", "")
     payload_hash = params.get("payload_hash")
+    channel = params.get("channel")
+    published_at = params.get("published_at")
+    expected_plugin_toml_id = params.get("expected_plugin_toml_id")
+    mode = params.get("mode", "install")
+    on_conflict = params.get("on_conflict", "rename")
 
     logger.info("Protocol install: plugin={} version={} url={}", plugin_id, version, url)
 
@@ -141,6 +142,11 @@ def _handle_install(params: dict) -> int:
         plugin_id=plugin_id,
         version=version,
         payload_hash=payload_hash,
+        channel=channel,
+        published_at=published_at,
+        expected_plugin_toml_id=expected_plugin_toml_id,
+        mode=mode,
+        on_conflict=on_conflict,
     ))
 
 
@@ -150,6 +156,11 @@ async def _call_local_install(
     plugin_id: str,
     version: str,
     payload_hash: str | None,
+    channel: str | None,
+    published_at: str | None,
+    expected_plugin_toml_id: str | None,
+    mode: str,
+    on_conflict: str,
 ) -> int:
     """调用本地 Plugin Server 的 /market/install 端点。"""
     import httpx
@@ -173,8 +184,12 @@ async def _call_local_install(
                     "package_sha256": package_sha256,
                     "payload_hash": payload_hash,
                     "plugin_id": plugin_id,
+                    "expected_plugin_toml_id": expected_plugin_toml_id,
                     "version": version,
-                    "on_conflict": "rename",
+                    "channel": channel,
+                    "published_at": published_at,
+                    "mode": mode,
+                    "on_conflict": on_conflict,
                 },
             )
 
@@ -232,35 +247,6 @@ async def _call_local_install(
         return 1
 
 
-def _handle_auth_callback(params: dict) -> int:
-    """处理 neko://auth/callback — OAuth 授权回调。"""
-    code = params.get("code")
-    state = params.get("state")
-
-    if not code or not state:
-        logger.error("auth/callback requires 'code' and 'state' params")
-        return 1
-
-    logger.info("OAuth callback received: state={}", state)
-
-    # 将 code 写入临时文件，供 N.E.K.O 面板读取
-    callback_file = Path.home() / ".neko" / "oauth_callback.json"
-    callback_file.parent.mkdir(parents=True, exist_ok=True)
-
-    import time
-    callback_file.write_text(
-        json.dumps({"code": code, "state": state, "timestamp": time.time()}),
-        encoding="utf-8",
-    )
-    try:
-        callback_file.chmod(0o600)
-    except OSError as exc:
-        logger.warning("Failed to tighten OAuth callback file permissions: {}", exc)
-    logger.info("OAuth callback saved to {}", callback_file)
-    _show_notification("Market 授权成功，请返回 N.E.K.O", "N.E.K.O")
-    return 0
-
-
 def _handle_pair(params: dict) -> int:
     """处理 neko://pair — Market 配对。"""
     code = params.get("code")
@@ -278,7 +264,11 @@ def _handle_pair(params: dict) -> int:
 def _handle_open(params: dict) -> int:
     """处理 neko://open — 打开本地面板。"""
     plugin_id = params.get("plugin")
-    logger.info("Open request: plugin={}", plugin_id)
+    panel = params.get("panel")
+    intent = params.get("intent")
+    logger.info("Open request: plugin={} panel={} intent={}", plugin_id, panel, intent)
+    if intent == "login" or panel == "account":
+        _show_notification("请回到 N.E.K.O 完成账号登录同步", "N.E.K.O")
     # 可以通过 WebSocket 通知前端打开对应面板
     return 0
 

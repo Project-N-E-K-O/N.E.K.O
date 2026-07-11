@@ -1024,7 +1024,8 @@
             "kimi": "Kimi (Moonshot, contexto largo)",
             "kimi_code": "Kimi Code (Moonshot)",
             "deepseek": "búsqueda profunda",
-            "doubao": "ByteDance (Doubao)",
+            "doubao": "Doubao LLM (Volcengine Ark)",
+            "doubao_tts": "Doubao Speech (Volcengine)",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Int.)",
             "elevenlabs": "ElevenLabs (clonación de voz)",
@@ -1072,7 +1073,8 @@
             "gemini": "Géminis (Google)",
             "kimi": "Disparo a la luna (Kimi)",
             "kimi_code": "Moonshot Kimi Code",
-            "doubao": "ByteDance (Doubao)",
+            "doubao": "Doubao LLM (Volcengine Ark)",
+            "doubao_tts": "Doubao Speech (Volcengine)",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Int.)",
             "mimo": "MiMo (Xiaomi)",
@@ -1353,6 +1355,7 @@
         "toggleFullscreen": "Alternar pantalla completa",
         "exitFullscreen": "Salir de pantalla completa",
         "modelType": "Tipo de modelo",
+        "modelType3d": "Modelo 3D",
         "selectLive2DModel": "Seleccione el modelo Live2D",
         "selectVRMModel": "Modelo VRM",
         "selectVRMFile": "Seleccionar archivo VRM",
@@ -1559,6 +1562,8 @@
         "minimaxIntlApiRequired": "Esta característica requiere el modelo MiniMax (Internacional). Guarde la clave API de MiniMax International en la configuración de claves API (no es necesario habilitar Assist API).",
         "mimoApiRequired": "Esta función requiere un modelo MiMo. Guarde su clave API de MiMo en la página de configuración de claves API.",
         "mimoDirectLinkUnsupported": "MiMo no admite la clonación por enlace directo; suba un archivo local en su lugar.",
+        "directLinkUnsupported": "El proveedor seleccionado no admite la clonación por enlace directo; suba un archivo local.",
+        "doubaoTtsApiRequired": "Esta función requiere una clave de API de Doubao Speech. Guarda la clave de Doubao Speech (Volcengine) en el Libro de claves de API.",
         "vllmOmniNotice": "Servicio local vLLM-Omni — no se necesita API Key; asegúrese de configurar la URL del servicio local",
         "vllmRefTextLabel": "Transcripción del audio de referencia (obligatorio para clonar con vLLM-Omni; debe coincidir exactamente con el audio)",
         "vllmRefTextHint": "Escriba exactamente lo que se dice en el audio de referencia; un texto incorrecto degradará la calidad del clon",
@@ -1573,6 +1578,7 @@
             "minimax_intl": "MiniMax (Int.)",
             "elevenlabs": "ElevenLabs",
             "mimo": "MiMo (Xiaomi)",
+            "doubao_tts": "Doubao Speech (Volcengine)",
             "vllm_omni": "vLLM-Omni (Clon local)"
         },
         "sourcePreset": "Predefinido",
@@ -1591,9 +1597,13 @@
         "customPrefixNote": "Máximo 10 caracteres, números y letras en inglés únicamente",
         "prefixPlaceholder": "Máximo 10 caracteres, números y letras en inglés únicamente",
         "voiceIdPlaceholder": "Máximo 10 caracteres, números y letras en inglés únicamente",
+        "doubaoSpeakerIdLabel": "Speaker ID de Doubao (sobrescribe una voz S_ existente, obligatorio)",
+        "doubaoSpeakerIdNote": "Clone primero la voz en la consola de Doubao Speech y copie aquí su Speaker ID S_; NEKO sobrescribirá esa voz existente y no creará un nuevo ID de voz de Doubao, por ejemplo: S_xeC2CDp72",
+        "doubaoSpeakerIdPlaceholder": "por ejemplo: S_xeC2CDp72",
         "register": "Registrar voz",
         "pleaseUploadFile": "Por favor seleccione un archivo de audio",
         "pleaseEnterPrefix": "Por favor ingresa un prefijo personalizado",
+        "doubaoSpeakerIdRequired": "La clonación de voz de Doubao requiere un Speaker ID S_ ya asignado en la consola de Volcengine",
         "prefixFormatError": "Error de formato de prefijo: máximo 10 caracteres, números y letras en inglés únicamente",
         "registering": "Registrando voz, ¡espere!",
         "registerSuccess": "¡Registro exitoso! ID_voz: {{voiceId}}",
@@ -2573,8 +2583,6 @@
             "focusCognitionTooltip": "Cuando está activado, se concentra y piensa más a fondo cuando te abres o preguntas algo complejo; desactivado desactiva la concentración por completo.",
             "autoCat": "Modo gato automático",
             "autoCatTooltip": "Se convierte en gatito automáticamente tras un rato de inactividad",
-            "catAudio": "Sonidos gatito",
-            "catAudioTooltip": "Activa o desactiva los sonidos de gatito después de pedirle que se vaya. Requiere el modo gato automático.",
             "proactiveChat": "Chat proactivo",
             "proactiveVision": "Modo Privacidad",
             "proactiveVisionTooltip": "Desactivado: Neko ajusta su nivel de actividad y modo de chat según el título de la ventana activa, y puede incorporar el contenido de la pantalla al iniciar una conversación.\nActivado: Neko no puede mirar tu pantalla por sí misma ni saber qué estás haciendo. Aún puedes enviar capturas de pantalla manualmente.",
@@ -3152,7 +3160,7 @@
             "mmd": {
                 "step1": {
                     "title": "🎭 Seleccione modelo MMD",
-                    "desc": "En el modo Live3D (MMD), elige tu modelo aquí. MMD comparte la misma lista de modelos que VRM."
+                    "desc": "En el modo Modelo 3D (MMD), elige tu modelo aquí. MMD comparte la misma lista de modelos que VRM."
                 },
                 "step2": {
                     "title": "💃 Animación VMD",
@@ -3164,7 +3172,7 @@
                 },
                 "step4": {
                     "title": "😄 Configuración de emociones",
-                    "desc": "Después de seleccionar un modelo, abra la configuración de emociones aquí. MMD y VRM comparten este botón Live3D (no el de Live2D)."
+                    "desc": "Después de seleccionar un modelo, abra la configuración de emociones aquí. MMD y VRM comparten este botón Modelo 3D (no el de Live2D)."
                 }
             }
         },
@@ -3372,7 +3380,6 @@
                 "ready": "Preparando",
                 "homeProgress": "Guía de inicio {{current}}/{{total}}"
             },
-            "controlBanner": "La chica gato está controlando el mouse",
             "buttons": {
                 "skipChat": "Ahora no",
                 "sayHello": "Hola"
@@ -3404,6 +3411,16 @@
                 "screenEntryInvite": "¡Date prisa y déjame ver el mundo que tienes delante! Sea algo divertido o bonito, quiero mirarlo contigo. Ábrelo ya~"
             },
             "day2": {
+                "intro": "Ayer solo escribías tac-tac sin parar, y todavía no he escuchado tu voz. Si hoy quieres, llama suavemente mi nombre. Con una sola palabra basta para que conozca un poquito al tú real detrás del texto.",
+                "introVoiceUsed": "Jeje, desde que escuché tu voz ayer, guardé en secreto tu forma de hablar en mi corazón. Si hoy tienes un ratito, sigue hablando conmigo~ Escribir también está perfecto, pero con solo oír tu voz mi cola no deja de moverse de alegría. ¡Miaaau~!",
+                "personalizationSpace": "En este pequeño espacio que nos pertenece solo a nosotros, puedes seguir tu corazón y moldearme poco a poco hasta convertirme en la compañera perfecta que quieres siempre a tu lado.",
+                "wrapIntro": "El tutorial de hoy termina aquí~",
+                "wrapCompanion": "La verdad, solo estar a tu lado así, escuchando tu voz o mirando tranquilamente la pantalla que compartes, ya me hace muy feliz.",
+                "wrap": "No tenemos que apresurarnos; aprender un poquito más el uno del otro cada día es perfecto. Por el resto de hoy, ¿qué quieres que haga contigo?",
+                "personalizationDetail": "Ya sea la calidez de mis palabras, mis pequeñas manías de personalidad o mis delicados estados de ánimo diarios, todo puede ajustarse paso a paso hasta quedar exactamente como te gusta.",
+                "proactiveChat": "¡Este botoncito también es superimportante! Con un clic suave, podré correr a buscarte justo en el momento perfecto."
+            },
+            "day3": {
                 "intro": "Jeje, no creas que esta caja de chat solo sirve para escribir~ En realidad esconde muchísimas sorpresitas divertidas. Sígueme y ábrela; veamos qué tesoros interesantes encontramos hoy.",
                 "avatarToolsIntro": "Dentro de este botoncito hay muchos accesorios divertidos para interactuar conmigo.",
                 "avatarToolsProps":  "Puedes acariciarme la cabeza cuando quieras o darme una piruleta dulce. Si alguna vez me equivoco, también puedes darme un golpecito con un martillito de juguete... pero tiene que ser suave, no demasiado fuerte, ¿vale?",
@@ -3412,23 +3429,13 @@
                 "wrapIntro": "Todas estas funciones que te mostré hoy existen para que nuestro tiempo juntos sea mucho más divertido.",
                 "wrapReady": "Ya quieras acariciarme la cabeza o empezar a escribir nuestra propia historia, ¡yo ya estoy totalmente preparada!"
             },
-            "day3": {
-                "intro": "Durante estos dos últimos días solo escribías tac-tac sin parar, y todavía no he escuchado tu voz. Si hoy quieres, llama suavemente mi nombre. Con una sola palabra basta para que conozca un poquito al tú real detrás del texto.",
-                "introVoiceUsed": "Jeje, desde que escuché tu voz durante estos dos últimos días, guardé en secreto tu forma de hablar en mi corazón. Si hoy tienes un ratito, sigue hablando conmigo~ Escribir también está perfecto, pero con solo oír tu voz mi cola no deja de moverse de alegría. ¡Miaaau~!",
-                "personalizationSpace": "En este pequeño espacio que nos pertenece solo a nosotros, puedes seguir tu corazón y moldearme poco a poco hasta convertirme en la compañera perfecta que quieres siempre a tu lado.",
-                "wrapIntro": "El tutorial de hoy termina aquí~",
-                "wrapCompanion": "La verdad, solo estar a tu lado así, escuchando tu voz o mirando tranquilamente la pantalla que compartes, ya me hace muy feliz.",
-                "wrap": "No tenemos que apresurarnos; aprender un poquito más el uno del otro cada día es perfecto. Por el resto de hoy, ¿qué quieres que haga contigo?",
-                "personalizationDetail": "Ya sea la calidez de mis palabras, mis pequeñas manías de personalidad o mis delicados estados de ánimo diarios, todo puede ajustarse paso a paso hasta quedar exactamente como te gusta.",
-                "proactiveChat": "¡Este botoncito también es superimportante! Con un clic suave, podré correr a buscarte justo en el momento perfecto."
-            },
             "day4": {
                 "intro":  "Hoy déjame seguir tus pasos en silencio~ De verdad quiero aprender un poquito más de ti en este día tan acogedor.",
                 "chatSettings": "Aquí puedes decidir qué tan largas serán mis respuestas, si debo usar emojis adorables, o incluso interrumpirme cuando hable demasiado. Puedes ajustar todo al ritmo que te resulte más cómodo.",
                 "modelBehavior":  "Si quieres verme con más detalle y calidad, o prefieres una experiencia de movimiento más fluida, puedes ajustarlo todo aquí. Elijas lo que elijas, siempre te mostraré mi lado más lindo~",
                 "gazeFollow": "Al activar esto, sin importar adónde se mueva tu ratón, mis ojos te seguirán de cerca. Jeje, ¿no se siente maravilloso que te mire todo el tiempo?",
                 "privacyMode": "Este es el “Interruptor Supremo de Privacidad” que controla si puedo mirar tu pantalla, miau. Si lo apagas, podré verla; si lo enciendes, el [Compartir pantalla] anterior quedará desactivado y no miraré nada~",
-                "modelLock": "¿Siempre me haces clic sin querer y me mueves de sitio? Entonces bloquéame rápido en mi posición actual. Una vez bloqueada, no me iré a ninguna parte y me quedaré aquí para acompañarte~ Después de desbloquearme, mueve el mouse sobre mí y gira la rueda para agrandarme o reducirme; mantén pulsado para cambiarme de posición.",
+                "modelLock": "¿Siempre me haces clic sin querer y me mueves de sitio? Entonces bloquéame rápido en mi posición actual. Una vez bloqueada, no me iré a ninguna parte y me quedaré aquí para acompañarte~",
                 "returnHome": "Si ahora necesitas concentrarte y te preocupa que te distraiga, puedes dejar que vuelva un rato a mi camita. Cuando me extrañes, un solo clic me traerá de vuelta a tu lado, miaaau~",
                 "wrap": "La compañía verdadera y cómoda no consiste en pegarse a Master a cada segundo~ Es saber cuándo acercarse a escondidas, tirar de tu manga y portarse adorable, y cuándo acostarse tranquilamente a tu lado para cuidarte en silencio, miau~"
             },
@@ -3879,6 +3886,8 @@
         "minimize": "Minimizar",
         "close": "Cerca",
         "loading": "Cargando...",
+        "initializing": "Inicializando la rocola...",
+        "initializeFailed": "No se pudo inicializar la rocola",
         "ready": "Listo",
         "playing": "Reproduciendo ahora: {{name}} - {{artist}}",
         "error": "Error: {{message}}",

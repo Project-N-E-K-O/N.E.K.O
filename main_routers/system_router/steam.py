@@ -22,11 +22,85 @@ from ._shared import _get_app_root, _is_path_within_base, _validate_local_mutati
 import os
 import asyncio
 import re
+from typing import Any
 from urllib.parse import unquote
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response
 from ..shared_state import ensure_steamworks as get_steamworks
 from utils.workshop_utils import get_workshop_path
+
+
+# Progress Stat for timed achievements. Steamworks Partner must bind
+# ACH_TIME_* achievements to this stat with matching thresholds; Steam unlocks
+# them automatically when StoreStats syncs a value past the bound threshold.
+_PLAYTIME_PROGRESS_STAT = "PLAY_TIME_SECONDS"
+_PLAYTIME_PROGRESS_ACHIEVEMENTS: tuple[str, ...] = (
+    "ACH_TIME_5MIN",
+    "ACH_TIME_1HR",
+    "ACH_TIME_100HR",
+)
+
+
+async def _prepare_steam_user_stats(steamworks: Any) -> None:
+    steamworks.UserStats.RequestCurrentStats()
+    for _ in range(10):
+        steamworks.run_callbacks()
+        await asyncio.sleep(0.1)
+
+
+async def _unlock_steam_achievement(steamworks: Any, name: str) -> dict[str, Any]:
+    """Unlock one Steam achievement. Returns a status dict (no HTTP response)."""
+    await _prepare_steam_user_stats(steamworks)
+    achievement_status = steamworks.UserStats.GetAchievement(name)
+    logger.info("Achievement status: %s=%s", name, achievement_status)
+    if achievement_status:
+        return {
+            "success": True,
+            "achievement": name,
+            "newlyUnlocked": False,
+            "alreadyUnlocked": True,
+            "message": f"成就 {name} 已经解锁",
+        }
+
+    result = steamworks.UserStats.SetAchievement(name)
+    if not result:
+        logger.warning("设置成就首次尝试失败，正在重试: %s", name)
+        await asyncio.sleep(0.5)
+        steamworks.run_callbacks()
+        result = steamworks.UserStats.SetAchievement(name)
+
+    if not result:
+        logger.error("设置成就失败: %s，请确认成就ID在Steam后台已配置", name)
+        return {
+            "success": False,
+            "achievement": name,
+            "newlyUnlocked": False,
+            "alreadyUnlocked": False,
+            "error": f"设置成就失败: {name}，请确认成就ID在Steam后台已配置",
+        }
+
+    steamworks.UserStats.StoreStats()
+    steamworks.run_callbacks()
+    logger.info("成功设置成就: %s", name)
+    return {
+        "success": True,
+        "achievement": name,
+        "newlyUnlocked": True,
+        "alreadyUnlocked": False,
+        "message": f"成就 {name} 已解锁",
+    }
+
+
+def _read_progress_unlocked_achievements(steamworks: Any) -> list[str]:
+    """Read which progress-stat achievements Steam has already unlocked."""
+    unlocked: list[str] = []
+    for achievement_name in _PLAYTIME_PROGRESS_ACHIEVEMENTS:
+        try:
+            if steamworks.UserStats.GetAchievement(achievement_name):
+                unlocked.append(achievement_name)
+        except Exception as exc:
+            logger.debug("读取进度成就状态失败 %s: %s", achievement_name, exc)
+    return unlocked
 
 
 @router.post('/steam/set-achievement-status/{name}')
@@ -37,158 +111,134 @@ async def set_achievement_status(name: str, request: Request):
     - receives the achievement name as a path parameter and sets the achievement via the Steamworks API
     - first requests current stats and runs callbacks to ensure the data is loaded
     - checks the achievement's current state; if already unlocked, returns success directly
-    - if not unlocked, tries to set it; returns success if it works, otherwise waits 1 second and retries
-    - retries at most 10 times; if still failing, returns an error hinting at possible configuration issues
+    - if not unlocked, tries to set it; returns success if it works, otherwise waits and retries once
     """
     validation_error = _validate_local_mutation_request(request)
     if validation_error is not None:
         return validation_error
 
     steamworks = get_steamworks()
-    if steamworks is not None:
-        try:
-            # 先请求统计数据并运行回调，确保数据已加载
-            steamworks.UserStats.RequestCurrentStats()
-            # 运行回调等待数据加载（多次运行以确保接收到响应）
-            for _ in range(10):
-                steamworks.run_callbacks()
-                await asyncio.sleep(0.1)
-            
-            achievement_status = steamworks.UserStats.GetAchievement(name)
-            logger.info(f"Achievement status: {achievement_status}")
-            if not achievement_status:
-                result = steamworks.UserStats.SetAchievement(name)
-                if result:
-                    logger.info(f"成功设置成就: {name}")
-                    steamworks.UserStats.StoreStats()
-                    steamworks.run_callbacks()
-                    return JSONResponse(content={
-                        "success": True,
-                        "achievement": name,
-                        "newlyUnlocked": True,
-                        "alreadyUnlocked": False,
-                        "message": f"成就 {name} 已解锁",
-                    })
-                else:
-                    # 第一次失败，等待后重试一次
-                    logger.warning(f"设置成就首次尝试失败，正在重试: {name}")
-                    await asyncio.sleep(0.5)
-                    steamworks.run_callbacks()
-                    result = steamworks.UserStats.SetAchievement(name)
-                    if result:
-                        logger.info(f"成功设置成就（重试后）: {name}")
-                        steamworks.UserStats.StoreStats()
-                        steamworks.run_callbacks()
-                        return JSONResponse(content={
-                            "success": True,
-                            "achievement": name,
-                            "newlyUnlocked": True,
-                            "alreadyUnlocked": False,
-                            "message": f"成就 {name} 已解锁",
-                        })
-                    else:
-                        logger.error(f"设置成就失败: {name}，请确认成就ID在Steam后台已配置")
-                        return JSONResponse(content={"success": False, "error": f"设置成就失败: {name}，请确认成就ID在Steam后台已配置"}, status_code=500)
-            else:
-                logger.info(f"成就已解锁，无需重复设置: {name}")
-                return JSONResponse(content={
-                    "success": True,
-                    "achievement": name,
-                    "newlyUnlocked": False,
-                    "alreadyUnlocked": True,
-                    "message": f"成就 {name} 已经解锁",
-                })
-        except Exception as e:
-            logger.error(f"设置成就失败: {e}")
-            return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
-    else:
+    if steamworks is None:
         return JSONResponse(content={"success": False, "error": "Steamworks未初始化"}, status_code=503)
+
+    try:
+        result = await _unlock_steam_achievement(steamworks, name)
+        if not result.get("success"):
+            return JSONResponse(content=result, status_code=500)
+        return JSONResponse(content=result)
+    except Exception as e:
+        logger.error("设置成就失败: %s", e)
+        return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
 
 
 @router.post('/steam/update-playtime')
 async def update_playtime(request: Request):
     """
-    Update playtime statistics (PLAY_TIME_SECONDS).
+    Accumulate PLAY_TIME_SECONDS progress stat and StoreStats.
+
+    Timed achievements (ACH_TIME_*) must be bound to this Progress Stat in
+    Steamworks Partner. Steam unlocks them automatically when the synced value
+    crosses the configured threshold — this endpoint never calls SetAchievement.
     """
     validation_error = _validate_local_mutation_request(request)
     if validation_error is not None:
         return validation_error
 
     steamworks = get_steamworks()
-    if steamworks is not None:
-        try:
-            data = await request.json()
-            seconds_to_add = data.get('seconds', 10)
-
-            # 验证 seconds 参数
-            try:
-                seconds_to_add = int(seconds_to_add)
-                if seconds_to_add < 0:
-                    return JSONResponse(
-                        content={"success": False, "error": "seconds must be non-negative"},
-                        status_code=400
-                    )
-            except (ValueError, TypeError):
-                return JSONResponse(
-                    content={"success": False, "error": "seconds must be a valid integer"},
-                    status_code=400
-                )
-
-            # 注意:不需要每次都调用 RequestCurrentStats()
-            # RequestCurrentStats() 应该只在应用启动时调用一次
-            # 频繁调用可能导致性能问题和同步延迟
-            # 这里直接获取和更新统计值即可
-
-            # 获取当前游戏时长（如果统计不存在，从 0 开始）
-            try:
-                current_playtime = steamworks.UserStats.GetStatInt('PLAY_TIME_SECONDS')
-            except Exception as e:
-                logger.warning(f"获取 PLAY_TIME_SECONDS 失败，从 0 开始: {e}")
-                current_playtime = 0
-
-            # 增加时长
-            new_playtime = current_playtime + seconds_to_add
-
-            # 设置新的时长
-            try:
-                result = steamworks.UserStats.SetStat('PLAY_TIME_SECONDS', new_playtime)
-
-                if result:
-                    # 存储统计数据
-                    steamworks.UserStats.StoreStats()
-                    steamworks.run_callbacks()
-
-                    logger.debug(f"游戏时长已更新: {current_playtime}s -> {new_playtime}s (+{seconds_to_add}s)")
-
-                    return JSONResponse(content={
-                        "success": True,
-                        "totalPlayTime": new_playtime,
-                        "added": seconds_to_add
-                    })
-                else:
-                    logger.debug("SetStat 返回 False - PLAY_TIME_SECONDS 统计可能未在 Steamworks 后台配置")
-                    # 即使失败也返回成功，避免前端报错
-                    return JSONResponse(content={
-                        "success": True,
-                        "totalPlayTime": new_playtime,
-                        "added": seconds_to_add,
-                        "warning": "Steam stat not configured"
-                    })
-            except Exception as stat_error:
-                logger.warning(f"设置 Steam 统计失败: {stat_error} - 统计可能未在 Steamworks 后台配置")
-                # 即使失败也返回成功，避免前端报错
-                return JSONResponse(content={
-                    "success": True,
-                    "totalPlayTime": new_playtime,
-                    "added": seconds_to_add,
-                    "warning": "Steam stat not configured"
-                })
-
-        except Exception as e:
-            logger.error(f"更新游戏时长失败: {e}")
-            return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
-    else:
+    if steamworks is None:
         return JSONResponse(content={"success": False, "error": "Steamworks未初始化"}, status_code=503)
+
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+
+    seconds_to_add = data.get("seconds", 10)
+    try:
+        seconds_to_add = int(seconds_to_add)
+        if seconds_to_add < 0:
+            return JSONResponse(
+                content={"success": False, "error": "seconds must be non-negative"},
+                status_code=400,
+            )
+    except (ValueError, TypeError):
+        return JSONResponse(
+            content={"success": False, "error": "seconds must be a valid integer"},
+            status_code=400,
+        )
+
+    # Cap a single report to 1 hour to limit abuse / clock-jump spikes.
+    seconds_to_add = min(seconds_to_add, 3600)
+
+    try:
+        # Ensure Steam has delivered current stats before read/modify/write;
+        # otherwise GetStatInt may return 0 and StoreStats would clobber progress.
+        await _prepare_steam_user_stats(steamworks)
+
+        try:
+            current_playtime = steamworks.UserStats.GetStatInt(_PLAYTIME_PROGRESS_STAT)
+        except Exception as e:
+            logger.warning("获取 %s 失败，从 0 开始: %s", _PLAYTIME_PROGRESS_STAT, e)
+            current_playtime = 0
+
+        new_playtime = int(current_playtime) + seconds_to_add
+
+        try:
+            result = steamworks.UserStats.SetStat(_PLAYTIME_PROGRESS_STAT, new_playtime)
+        except Exception as stat_error:
+            logger.warning(
+                "设置 Steam 进度统计失败: %s - 统计可能未在 Steamworks 后台配置",
+                stat_error,
+            )
+            return JSONResponse(content={
+                "success": True,
+                "totalPlayTime": new_playtime,
+                "added": seconds_to_add,
+                "stat": _PLAYTIME_PROGRESS_STAT,
+                "warning": "Steam progress stat not configured",
+                "progressUnlocked": [],
+            })
+
+        if not result:
+            logger.debug(
+                "SetStat 返回 False - %s 统计可能未在 Steamworks 后台配置",
+                _PLAYTIME_PROGRESS_STAT,
+            )
+            return JSONResponse(content={
+                "success": True,
+                "totalPlayTime": new_playtime,
+                "added": seconds_to_add,
+                "stat": _PLAYTIME_PROGRESS_STAT,
+                "warning": "Steam progress stat not configured",
+                "progressUnlocked": [],
+            })
+
+        steamworks.UserStats.StoreStats()
+        # Give Steam a short window to apply Progress Stat → achievement unlocks.
+        for _ in range(5):
+            steamworks.run_callbacks()
+            await asyncio.sleep(0.05)
+
+        progress_unlocked = _read_progress_unlocked_achievements(steamworks)
+        logger.debug(
+            "游戏时长进度已更新: %ss -> %ss (+%ss); progressUnlocked=%s",
+            current_playtime,
+            new_playtime,
+            seconds_to_add,
+            progress_unlocked,
+        )
+        return JSONResponse(content={
+            "success": True,
+            "totalPlayTime": new_playtime,
+            "added": seconds_to_add,
+            "stat": _PLAYTIME_PROGRESS_STAT,
+            "progressUnlocked": progress_unlocked,
+        })
+    except Exception as e:
+        logger.error("更新游戏时长失败: %s", e)
+        return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
 
 
 @router.get('/steam/list-achievements')

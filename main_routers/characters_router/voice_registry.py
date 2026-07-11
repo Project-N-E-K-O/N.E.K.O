@@ -93,9 +93,9 @@ async def update_catgirl_voice_id(name: str, request: Request):
         legacy_keys=('voice_id',)
     ))
 
-    # 幂等保护：提交同值时直接返回，避免无实际变更触发 reload_page。
+    # 幂等保护：提交同值时直接返回，避免无实际变更触发会话重置。
     if old_voice_id == voice_id:
-        logger.info("猫娘 %s 的 voice_id 未变化，跳过刷新流程", name)
+        logger.info("猫娘 %s 的 voice_id 未变化，跳过会话重置流程", name)
         return {"success": True, "session_restarted": False, "voice_id_changed": False}
 
     if _is_current_catgirl_voice_session_starting(name, characters, session_manager):
@@ -122,10 +122,12 @@ async def update_catgirl_voice_id(name: str, request: Request):
     if is_current_catgirl and name in session_manager:
         # 检查是否有活跃的session
         if session_manager[name].is_active:
-            logger.info(f"检测到 {name} 的voice_id已更新（{old_voice_id} -> {voice_id}），准备刷新...")
+            logger.info(f"检测到 {name} 的voice_id已更新（{old_voice_id} -> {voice_id}），准备结束当前语音会话...")
 
-            # 1. 先发送刷新消息（WebSocket还连着）
-            await send_reload_page_notice(session_manager[name])
+            # 1. 通知前端按 session 结束路径收口，避免 Electron 为音色切换整页重载。
+            notify_session_ended = getattr(session_manager[name], "send_session_ended_by_server", None)
+            if callable(notify_session_ended):
+                await notify_session_ended()
 
             # 2. 立刻关闭session（这会断开WebSocket）
             try:
@@ -135,7 +137,7 @@ async def update_catgirl_voice_id(name: str, request: Request):
             except Exception as e:
                 logger.error(f"结束session时出错: {e}")
             # 切音色后，前一会话累计的失败计数 / 熔断不再适用：
-            # reload 页面后用户的下一次 start_session 应是全新尝试，否则
+            # 用户的下一次 start_session 应是全新尝试，否则
             # 这条 SessionManager 实例还会被旧失败计数 / 熔断继续静默拦截。
             session_manager[name].reset_session_start_circuit()
 
@@ -231,8 +233,10 @@ async def unregister_voice(name: str):
 
         if is_current_catgirl and name in session_manager:
             if session_manager[name].is_active:
-                logger.info(f"检测到 {name} 的voice_id已清空（{old_voice_id} -> ''），准备刷新...")
-                await send_reload_page_notice(session_manager[name], "音色已清除，页面即将刷新")
+                logger.info(f"检测到 {name} 的voice_id已清空（{old_voice_id} -> ''），准备结束当前语音会话...")
+                notify_session_ended = getattr(session_manager[name], "send_session_ended_by_server", None)
+                if callable(notify_session_ended):
+                    await notify_session_ended()
                 try:
                     await session_manager[name].end_session(by_server=True)
                     session_ended = True
@@ -240,7 +244,7 @@ async def unregister_voice(name: str):
                 except Exception as e:
                     logger.error(f"结束session时出错: {e}")
                 # 与 set_voice_id 路径对偶：清掉前一会话的失败计数 / 熔断，
-                # 否则 reload 后新 start_session 会被旧熔断静默拦截。
+                # 否则下一次 start_session 会被旧熔断静默拦截。
                 session_manager[name].reset_session_start_circuit()
 
         # Fast path：只刷新被编辑角色的 session_manager（voice_id），不遍历其它 N-1 个。
@@ -430,9 +434,11 @@ async def delete_voice(voice_id: str):
 
                 # 对于受影响的活跃角色，并行通知 + 结束 session（每个 end_session ≈ 1s）
                 async def _refresh_one(name):
-                    logger.info(f"检测到活跃角色 {name} 的 voice_id 已被删除，准备刷新...")
-                    # 1. 发送刷新通知
-                    await send_reload_page_notice(session_manager[name], "音色已删除，页面即将刷新")
+                    logger.info(f"检测到活跃角色 {name} 的 voice_id 已被删除，准备结束当前语音会话...")
+                    # 1. 通知前端按 session 结束路径收口，避免 Electron 为音色切换整页重载。
+                    notify_session_ended = getattr(session_manager[name], "send_session_ended_by_server", None)
+                    if callable(notify_session_ended):
+                        await notify_session_ended()
                     # 2. 结束 session
                     try:
                         await session_manager[name].end_session(by_server=True)
@@ -440,7 +446,7 @@ async def delete_voice(voice_id: str):
                     except Exception as e:
                         logger.error(f"结束受影响角色 {name} 的 session 时出错: {e}")
                     # 与 set_voice_id 路径对偶：清掉前一会话的失败计数 / 熔断，
-                    # 否则 reload 后新 start_session 会被旧熔断静默拦截。
+                    # 否则下一次 start_session 会被旧熔断静默拦截。
                     session_manager[name].reset_session_start_circuit()
 
                 if affected_active_names:

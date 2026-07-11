@@ -44,6 +44,16 @@ from utils.config_manager import (
     get_reserved,
 )
 from utils.dashscope_region import DASHSCOPE_GLOBAL_LOCK, configure_dashscope_sdk_urls
+from utils.doubao_tts import (
+    DOUBAO_TTS_DEFAULT_BASE_URL,
+    DOUBAO_TTS_DEFAULT_CONTEXT_TEXTS,
+    DOUBAO_VOICE_CLONE_RESOURCE_ID,
+    DoubaoTtsError,
+    build_doubao_tts_payload,
+    doubao_api_headers,
+    doubao_tts_url,
+    extract_doubao_audio_bytes,
+)
 from utils.voice_config import read_legacy_voice_id
 from utils.native_voice_registry import (
     get_active_realtime_native_provider_for_ui,
@@ -545,6 +555,63 @@ async def get_voice_preview(
                 return JSONResponse({
                     'success': False,
                     'error': f'MiMo 预览生成失败: {str(e)}',
+                }, status_code=500)
+
+        if provider == 'doubao_tts':
+            doubao_api_key = _config_manager.get_tts_api_key('doubao_tts')
+            if not doubao_api_key:
+                return JSONResponse({
+                    'success': False,
+                    'error': 'DOUBAO_TTS_API_KEY_MISSING',
+                    'code': 'DOUBAO_TTS_API_KEY_MISSING',
+                }, status_code=400)
+            doubao_base_url = (
+                (voice_data or {}).get('doubao_base_url')
+                or DOUBAO_TTS_DEFAULT_BASE_URL
+            )
+            doubao_resource_id = (
+                (voice_data or {}).get('doubao_resource_id')
+                or DOUBAO_VOICE_CLONE_RESOURCE_ID
+            )
+            try:
+                async with httpx.AsyncClient(timeout=60) as client:
+                    resp = await client.post(
+                        doubao_tts_url(doubao_base_url),
+                        headers=doubao_api_headers(doubao_api_key, doubao_resource_id),
+                        json=build_doubao_tts_payload(
+                            text,
+                            voice_id,
+                            context_texts=(DOUBAO_TTS_DEFAULT_CONTEXT_TEXTS,),
+                        ),
+                    )
+                if resp.status_code != 200:
+                    return JSONResponse({
+                        'success': False,
+                        'error': f'豆包语音预览失败: HTTP {resp.status_code}, {resp.text[:200]}',
+                        'code': 'DOUBAO_TTS_PREVIEW_FAILED',
+                    }, status_code=502)
+                audio_data = extract_doubao_audio_bytes(await resp.aread())
+                if not audio_data:
+                    return JSONResponse({
+                        'success': False,
+                        'error': '豆包语音预览未返回音频',
+                        'code': 'DOUBAO_TTS_PREVIEW_NO_AUDIO',
+                    }, status_code=502)
+                audio_base64 = base64.b64encode(audio_data).decode('utf-8')
+                logger.info(f"豆包语音音色 {voice_id} 预览音频生成成功，大小: {len(audio_data)} 字节")
+                return {'success': True, 'audio': audio_base64, 'mime_type': 'audio/wav'}
+            except DoubaoTtsError as e:
+                logger.error(f"豆包语音音色 {voice_id} 预览失败: {e}")
+                return JSONResponse({
+                    'success': False,
+                    'error': f'豆包语音预览失败: {str(e)}',
+                    'code': 'DOUBAO_TTS_PREVIEW_FAILED',
+                }, status_code=502)
+            except Exception as e:
+                logger.error(f"豆包语音音色 {voice_id} 预览异常: {e}")
+                return JSONResponse({
+                    'success': False,
+                    'error': f'豆包语音预览失败: {str(e)}',
                 }, status_code=500)
 
         # vLLM-Omni 克隆音色（provider=='vllm_omni'）试听：读 voice_meta 里的参考样本

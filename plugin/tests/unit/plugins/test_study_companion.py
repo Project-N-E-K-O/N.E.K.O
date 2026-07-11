@@ -573,6 +573,34 @@ async def test_start_awareness_loop_runs_async_tick_and_pushes_context(
 
 
 @pytest.mark.asyncio
+async def test_start_awareness_loop_primes_first_push_before_uptime_interval(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin = StudyCompanionPlugin(
+        _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
+    )
+    plugin._cfg = StudyConfig(
+        awareness=AwarenessConfig(
+            enabled=True,
+            snapshot_interval_seconds=60,
+            push_to_llm_mode="read",
+            os_signals_enabled=False,
+        )
+    )
+    plugin._ocr_pipeline = object()
+    monkeypatch.setattr(study_companion_module.time, "monotonic", lambda: 10.0)
+
+    plugin.start_awareness_loop()
+    try:
+        assert plugin._last_awareness_push_at == pytest.approx(-290.0)
+        assert plugin._should_push_context() is True
+    finally:
+        plugin.stop_awareness_loop()
+        await plugin._await_awareness_stop()
+
+
+@pytest.mark.asyncio
 async def test_awareness_tick_counts_unusable_snapshot_as_idle(tmp_path: Path) -> None:
     class _NoActivitySnapshot:
         status = "ok"
@@ -1481,11 +1509,16 @@ def test_knowledge_map_related_object_edges_use_topic_ids() -> None:
         ]
     )
 
-    assert {
-        "from": "quadratic_vertex_form",
-        "to": "linear_function_kb",
-        "relation": "compare",
-    } in payload["edges"]
+    assert payload["edges"] == [
+        {
+            "from": "quadratic_vertex_form",
+            "to": "linear_function_kb",
+            "relation": "compare",
+            "priority": "optional",
+            "context": "explanation",
+            "confidence": 0.65,
+        }
+    ]
     assert not any(str(edge["to"]).startswith("{") for edge in payload["edges"])
 
 
@@ -1793,17 +1826,23 @@ def test_study_knowledge_map_payload_uses_topic_ids_for_object_edges() -> None:
         ]
     )
 
-    assert {
+    assert payload["edges"][0] == {
         "from": "real_number_concept",
         "to": "number_axis",
         "relation": "prerequisite",
         "required_mastery": 0.55,
-    } in payload["edges"]
-    assert {
+        "priority": "core",
+        "context": "diagnosis",
+        "confidence": 0.65,
+    }
+    assert payload["edges"][1] == {
         "from": "number_axis",
         "to": "absolute_value",
         "relation": "next",
-    } in payload["edges"]
+        "priority": "optional",
+        "context": "review",
+        "confidence": 0.65,
+    }
     assert payload["nodes"][0]["stage"] == "junior_high"
     assert payload["summary"]["stage_counts"]["junior_high"] == 1
     assert all(not edge["from"].startswith("{") for edge in payload["edges"])

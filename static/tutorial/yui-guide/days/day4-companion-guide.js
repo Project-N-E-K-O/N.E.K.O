@@ -162,7 +162,7 @@
                     timeline: [
                         { at: 0, command: 'chat.message' },
                         { at: 0, command: 'emotion.set' },
-                        { at: 0, command: 'spotlight.show', key: 'day4_wrap', target: 'chat-input' },
+                        { at: 0, command: 'spotlight.show', key: 'day4_wrap', target: 'chat-capsule-input' },
                         {
                             at: 220,
                             command: 'cursor.move',
@@ -184,26 +184,19 @@
                             trigger: 'afterCursorMove',
                             blocking: true,
                             preserveExternalizedChatGuideTarget: true
-                        },
-                        {
-                            atRatio: 0.7,
-                            command: 'petal.play',
-                            clear: ['cursor', 'spotlights'],
-                            blocking: true
                         }
                     ],
                     textKey: 'tutorial.avatarFloating.day4.wrap',
                     voiceKey: 'avatar_floating_day4_wrap',
                     text: '真正舒服的陪伴才不是一刻不停地粘着你呢~ 而是懂得什么时候该悄悄靠近抓抓你的衣角撒个娇，什么时候该安安静静地趴在一旁，用目光默默守候着你喵~',
                     emotion: 'happy',
-                    target: 'chat-input',
+                    target: 'chat-capsule-input',
                     cursorTarget: 'chat-capsule-input',
                     cursorAction: 'move',
                     cursorMoveDurationMs: 900,
                     freezeCursorAfterMove: true,
                     operation: 'cleanup',
                     preserveExternalizedChatGuideTarget: true,
-                    spotlightVariant: 'plain-capsule',
                     petalTransition: true
                 }
             ]

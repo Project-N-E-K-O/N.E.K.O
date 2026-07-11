@@ -296,9 +296,6 @@
                 if (typeof window.checkAndToggleTaskHUD === 'function') {
                     window.checkAndToggleTaskHUD();
                 }
-                if (window.nekoAgentHud && typeof window.nekoAgentHud.show === 'function') {
-                    window.nekoAgentHud.show();
-                }
             } catch (error) {
                 console.warn('[GoodbyeResource] Agent HUD restore failed:', error);
             }
@@ -416,6 +413,44 @@
     //  2. Voice toasts & prominent notice  (app.js lines 3674-3999)
     // ================================================================
 
+    function normalizeVoiceToastMessage(message) {
+        var fallbackKey = 'app.voiceSystemPreparing';
+        var defaultFallback = '语音系统准备中...';
+
+        function usableText(value) {
+            if (typeof value !== 'string') return '';
+            var text = value.trim();
+            if (!text || text === '[object Module]' || text === '[object Object]') return '';
+            return value;
+        }
+        var fallback = defaultFallback;
+        if (typeof window.t === 'function') {
+            var translatedFallback = usableText(window.t(fallbackKey, defaultFallback));
+            if (translatedFallback && translatedFallback.trim() !== fallbackKey) {
+                fallback = translatedFallback;
+            }
+        }
+
+        var directText = usableText(message);
+        if (directText) return directText;
+
+        if (message && typeof message === 'object') {
+            if (typeof window.translateStatusMessage === 'function') {
+                var translated = usableText(window.translateStatusMessage(message));
+                if (translated) return translated;
+            }
+            var nestedText = usableText(message.message);
+            if (nestedText) return nestedText;
+            var codeText = usableText(message.code);
+            if (codeText) return codeText;
+            console.warn('[VoiceToast] Non-string message ignored:', message);
+        } else if (message !== undefined && message !== null) {
+            console.warn('[VoiceToast] Unusable message ignored:', message);
+        }
+
+        return fallback;
+    }
+
     // --- showVoicePreparingToast ---
     function showVoicePreparingToast(message) {
         // 检查是否已存在提示框，避免重复创建
@@ -485,7 +520,7 @@
         var spinner = document.createElement('div');
         spinner.style.cssText = 'width:20px;height:20px;border:3px solid rgba(255,255,255,0.3);border-top-color:white;border-radius:50%;animation:spin 1s linear infinite;';
         var msgSpan = document.createElement('span');
-        msgSpan.textContent = message;
+        msgSpan.textContent = normalizeVoiceToastMessage(message);
         toast.appendChild(spinner);
         toast.appendChild(msgSpan);
 
@@ -1475,6 +1510,13 @@
         });
     }
 
+    function keepAvatarRootContainerPassthrough(container) {
+        if (!container || !container.id || !container.style) return false;
+        if (container.id !== 'live2d-container' && container.id !== 'pngtuber-container') return false;
+        container.style.setProperty('pointer-events', 'none', 'important');
+        return true;
+    }
+
     function restoreLive2DDisplaySurface(reason) {
         const preserveAvatarCornerPeekOpacity = window.nekoYuiGuideAvatarCornerPeekActive === true;
         const preserveYuiGuidePreparing = shouldPreserveYuiGuideLive2DPreparing();
@@ -1504,7 +1546,7 @@
             } else if (!preserveAvatarCornerPeekOpacity) {
                 live2dContainer.style.removeProperty('opacity');
             }
-            live2dContainer.style.removeProperty('pointer-events');
+            keepAvatarRootContainerPassthrough(live2dContainer);
         }
 
         const live2dCanvas = document.getElementById('live2d-canvas');
@@ -2966,7 +3008,9 @@
         container.style.opacity = hasReturnRect ? '0' : '1';
         container.style.transform = hasReturnRect ? getModelCatTransitionScaleTransform() : 'none';
         if (options.clearPointerEvents) {
-            container.style.removeProperty('pointer-events');
+            if (!keepAvatarRootContainerPassthrough(container)) {
+                container.style.removeProperty('pointer-events');
+            }
         }
         return true;
     }
@@ -3482,9 +3526,20 @@
         };
     }
 
+    function isIdleCat1PlaygroundActiveForReturnBallDesktopBridge() {
+        const buttons = document.querySelectorAll('.neko-idle-return-btn');
+        for (let i = 0; i < buttons.length; i += 1) {
+            const state = buttons[i].__nekoIdleCat1PlaygroundDropState;
+            if (state && state.active && !state.released) return true;
+            if (buttons[i].__nekoIdleCat1PlaygroundPendingEntry) return true;
+        }
+        return false;
+    }
+
     function canPostIdleReturnBallDesktopState() {
         const body = document.body;
-        return !(body && body.classList && body.classList.contains('electron-chat-window'));
+        return !(body && body.classList && body.classList.contains('electron-chat-window')) &&
+            !isIdleCat1PlaygroundActiveForReturnBallDesktopBridge();
     }
 
     function postIdleReturnBallDesktopState(reason, container, overrideScreenRect) {
@@ -3571,6 +3626,31 @@
             bottom: top + h
         };
     }
+
+    function syncIdleReturnBallDesktopStateFromManualMove(detail) {
+        if (!detail || typeof detail !== 'object') return;
+        const reason = typeof detail.reason === 'string' ? detail.reason : '';
+        if (!reason || !reason.startsWith('return-ball-drag-')) return;
+        const container = detail.container || getVisibleIdleReturnBallContainer();
+        if (!container) return;
+        if (reason === 'return-ball-drag-motion') {
+            const sx = Number(detail.screenX);
+            const sy = Number(detail.screenY);
+            const width = container.offsetWidth || Number(detail.width) || 64;
+            const height = container.offsetHeight || Number(detail.height) || 64;
+            const screenRect = Number.isFinite(sx) && Number.isFinite(sy)
+                ? getReturnBallDragScreenRect(sx, sy, width, height)
+                : null;
+            scheduleIdleReturnBallDesktopDragState(container, screenRect);
+            scheduleIdleReturnBallDesktopBridge('return-ball-dragging', container);
+            return;
+        }
+        scheduleIdleReturnBallDesktopBridge(reason, container);
+    }
+
+    window.addEventListener('neko:return-ball-manual-move', (event) => {
+        syncIdleReturnBallDesktopStateFromManualMove(event && event.detail);
+    });
 
     window.addEventListener('neko:auto-goodbye:state-change', (event) => {
         const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
@@ -3759,6 +3839,25 @@
         );
     }
 
+    function isNiriPhysicalCropReturnBallDragActive() {
+        const cropApi = window.__nekoNiriPetPhysicalCrop;
+        if (!cropApi) return false;
+        try {
+            if (typeof cropApi.isActive === 'function' && cropApi.isActive()) return true;
+        } catch (_) {}
+        try {
+            const cropState = typeof cropApi.getState === 'function' ? cropApi.getState() : null;
+            if (cropState && cropState.enabled) return true;
+        } catch (_) {}
+        try {
+            if (document.documentElement &&
+                document.documentElement.classList.contains('neko-niri-pet-physical-crop')) {
+                return true;
+            }
+        } catch (_) {}
+        return false;
+    }
+
     function cleanupMultiWindowReturnBallDrag() {
         const state = multiWindowReturnBallDragState;
         if (!state) return;
@@ -3774,6 +3873,7 @@
         if (state.container) {
             state.container.removeEventListener('mousedown', state.handleMouseDown, true);
             state.container.removeEventListener('touchstart', state.handleTouchStart, true);
+            state.container.removeEventListener('click', state.handleClick, true);
         }
         document.removeEventListener('mousemove', state.handleMouseMove);
         document.removeEventListener('mouseup', state.handleMouseUp);
@@ -3786,11 +3886,16 @@
         window.removeEventListener('blur', state.handleWindowBlur);
         window.removeEventListener('pagehide', state.handlePageHide);
         document.removeEventListener('visibilitychange', state.handleVisibilityChange);
+        if (state.suppressDomClickTimer) {
+            clearTimeout(state.suppressDomClickTimer);
+            state.suppressDomClickTimer = null;
+        }
 
         if (state.container) {
             restoreSavedReturnBallStyle(state.container, state);
             resetReturnBallTemporaryStyle(state.container);
             state.container.setAttribute('data-dragging', 'false');
+            state.container.removeAttribute('data-neko-return-click-suppressed');
         }
         delete document.body.dataset.nekoBallDrag;
         multiWindowReturnBallDragState = null;
@@ -3836,12 +3941,15 @@
             savedBallStyle: null,
             savedBallWidth: 64,
             savedBallHeight: 64,
+            niriPhysicalCropDrag: false,
             viewportWaitOnResize: null,
             viewportWaitFallbackTimer: null,
             transitionCleanupTimer: null,
             dragSessionToken: 0,
             dragRecoveryTimer: null,
             lastPointerEventAt: 0,
+            suppressDomClickTimer: null,
+            handleClick: null,
             handleMouseDown: null,
             handleMouseMove: null,
             handleMouseUp: null,
@@ -3986,6 +4094,22 @@
                 container: container
             }).catch(() => {});
             dispatchClickEvent();
+        }
+
+        function setReturnBallDomClickSuppressed(suppressed, ttlMs) {
+            if (state.suppressDomClickTimer) {
+                clearTimeout(state.suppressDomClickTimer);
+                state.suppressDomClickTimer = null;
+            }
+            if (!suppressed) {
+                container.removeAttribute('data-neko-return-click-suppressed');
+                return;
+            }
+            container.setAttribute('data-neko-return-click-suppressed', 'true');
+            state.suppressDomClickTimer = setTimeout(() => {
+                state.suppressDomClickTimer = null;
+                container.removeAttribute('data-neko-return-click-suppressed');
+            }, Number.isFinite(ttlMs) ? ttlMs : 500);
         }
 
         function markDragPointerActivity() {
@@ -4156,12 +4280,15 @@
         }
 
         function beginDrag(screenX, screenY, event) {
+            if (isIdleCat1PlaygroundActiveForReturnBallDesktopBridge()) return;
             clearMultiWindowReturnBallDeferredWork(state);
             state.dragSessionToken += 1;
             const dragToken = state.dragSessionToken;
 
             const dragStarted = window.nekoPetDrag.start(screenX, screenY);
             if (dragStarted === false) {
+                container.setAttribute('data-dragging', 'false');
+                setReturnBallDomClickSuppressed(false);
                 return;
             }
 
@@ -4180,6 +4307,7 @@
             state.releaseScreenY = screenY;
             state.savedWindowW = window.innerWidth;
             state.savedWindowH = window.innerHeight;
+            state.niriPhysicalCropDrag = isNiriPhysicalCropReturnBallDragActive();
             markDragPointerActivity();
 
             const rect = container.getBoundingClientRect();
@@ -4200,52 +4328,57 @@
             const centeredLeft = Math.max(0, Math.round((MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_SIZE - state.savedBallWidth) / 2));
             const centeredTop = Math.max(0, Math.round((MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_SIZE - state.savedBallHeight) / 2));
 
-            // 先隐藏球再移动到居中位置，防止闪烁
             container.style.transition = 'none';
-            container.style.opacity = '0';
             container.style.setProperty('--neko-ball-drag-size', `${state.savedBallWidth}px`);
-
-            container.style.left = `${centeredLeft}px`;
-            container.style.top = `${centeredTop}px`;
-            container.style.right = '';
-            container.style.bottom = '';
-            container.style.transform = 'none';
             container.setAttribute('data-dragging', 'false');
+            if (state.niriPhysicalCropDrag) {
+                container.style.opacity = getSavedBallStyleValue('opacity');
+                container.style.visibility = getSavedBallStyleValue('visibility');
+                container.style.willChange = 'transform';
+            } else {
+                // 先隐藏球再移动到居中位置，防止闪烁
+                container.style.opacity = '0';
+                container.style.left = `${centeredLeft}px`;
+                container.style.top = `${centeredTop}px`;
+                container.style.right = '';
+                container.style.bottom = '';
+                container.style.transform = 'none';
 
-            document.documentElement.style.setProperty('background', 'transparent', 'important');
-            document.body.style.setProperty('background', 'transparent', 'important');
-            if (!document.getElementById('_neko-ball-drag-style')) {
-                const styleEl = document.createElement('style');
-                styleEl.id = '_neko-ball-drag-style';
-                styleEl.textContent = [
-                    'body[data-neko-ball-drag], body[data-neko-ball-drag] * { background:transparent!important; background-color:transparent!important; box-shadow:none!important; }',
-                    'body[data-neko-ball-drag] > *:not([id$="-return-button-container"]) { display:none!important; }',
-                    'body[data-neko-ball-drag] * { transition:none!important; animation:none!important; }',
-                    'body[data-neko-ball-drag] .neko-idle-return-btn { --neko-idle-return-size:var(--neko-ball-drag-size)!important; width:var(--neko-ball-drag-size)!important; height:var(--neko-ball-drag-size)!important; min-width:var(--neko-ball-drag-size)!important; min-height:var(--neko-ball-drag-size)!important; max-width:var(--neko-ball-drag-size)!important; max-height:var(--neko-ball-drag-size)!important; }',
-                    'body[data-neko-ball-drag] .neko-idle-return-art, body[data-neko-ball-drag] .neko-idle-return-art-next { width:100%!important; height:100%!important; object-fit:contain!important; object-position:center!important; }',
-                    'body[data-neko-ball-drag] .neko-idle-return-btn.is-cat1-playing > .neko-idle-return-art, body[data-neko-ball-drag] .neko-idle-return-art[data-neko-cat1-play-finishing="true"] { width:175%!important; min-width:175%!important; max-width:none!important; height:100%!important; object-fit:contain!important; object-position:center!important; }',
-                ].join('\n');
-                document.head.appendChild(styleEl);
-            }
-            document.body.dataset.nekoBallDrag = '1';
-
-            // dragStart 的 shrink 通过异步 IPC 落到主进程，不能再靠固定帧数猜测
-            // 拖拽视口已经生效；否则返回球会按临时 left/top 在原窗口左侧闪一帧。
-            waitForViewportSize(
-                dragToken,
-                MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_SIZE,
-                MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_SIZE,
-                () => {
-                    if (!state.isDragging || !isActiveDragToken(dragToken)) return;
-                    container.style.opacity = getSavedBallStyleValue('opacity');
-                    container.style.visibility = getSavedBallStyleValue('visibility');
-                    container.style.willChange = 'opacity';
-                },
-                {
-                    fallbackMs: MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_FALLBACK_MS,
-                    continueOnFallback: true
+                document.documentElement.style.setProperty('background', 'transparent', 'important');
+                document.body.style.setProperty('background', 'transparent', 'important');
+                if (!document.getElementById('_neko-ball-drag-style')) {
+                    const styleEl = document.createElement('style');
+                    styleEl.id = '_neko-ball-drag-style';
+                    styleEl.textContent = [
+                        'body[data-neko-ball-drag], body[data-neko-ball-drag] * { background:transparent!important; background-color:transparent!important; box-shadow:none!important; }',
+                        'body[data-neko-ball-drag] > *:not([id$="-return-button-container"]) { display:none!important; }',
+                        'body[data-neko-ball-drag] * { transition:none!important; animation:none!important; }',
+                        'body[data-neko-ball-drag] .neko-idle-return-btn { --neko-idle-return-size:var(--neko-ball-drag-size)!important; width:var(--neko-ball-drag-size)!important; height:var(--neko-ball-drag-size)!important; min-width:var(--neko-ball-drag-size)!important; min-height:var(--neko-ball-drag-size)!important; max-width:var(--neko-ball-drag-size)!important; max-height:var(--neko-ball-drag-size)!important; }',
+                        'body[data-neko-ball-drag] .neko-idle-return-art, body[data-neko-ball-drag] .neko-idle-return-art-next { width:100%!important; height:100%!important; object-fit:contain!important; object-position:center!important; }',
+                        'body[data-neko-ball-drag] .neko-idle-return-btn.is-cat1-playing > .neko-idle-return-art, body[data-neko-ball-drag] .neko-idle-return-art[data-neko-cat1-play-finishing="true"] { width:175%!important; min-width:175%!important; max-width:none!important; height:100%!important; object-fit:contain!important; object-position:center!important; }',
+                    ].join('\n');
+                    document.head.appendChild(styleEl);
                 }
-            );
+                document.body.dataset.nekoBallDrag = '1';
+
+                // dragStart 的 shrink 通过异步 IPC 落到主进程，不能再靠固定帧数猜测
+                // 拖拽视口已经生效；否则返回球会按临时 left/top 在原窗口左侧闪一帧。
+                waitForViewportSize(
+                    dragToken,
+                    MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_SIZE,
+                    MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_SIZE,
+                    () => {
+                        if (!state.isDragging || !isActiveDragToken(dragToken)) return;
+                        container.style.opacity = getSavedBallStyleValue('opacity');
+                        container.style.visibility = getSavedBallStyleValue('visibility');
+                        container.style.willChange = 'opacity';
+                    },
+                    {
+                        fallbackMs: MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_FALLBACK_MS,
+                        continueOnFallback: true
+                    }
+                );
+            }
             scheduleReturnBallDragRecoveryCheck();
 
             if (event) {
@@ -4254,11 +4387,24 @@
             }
         }
 
+        function sendReturnBallNativeDragMove(screenX, screenY) {
+            if (!state.niriPhysicalCropDrag ||
+                !window.nekoPetDrag ||
+                typeof window.nekoPetDrag.move !== 'function') {
+                return;
+            }
+            if (!Number.isFinite(screenX) || !Number.isFinite(screenY)) return;
+            try {
+                window.nekoPetDrag.move(screenX, screenY);
+            } catch (_) {}
+        }
+
         function updateDrag(screenX, screenY, sourcePoint = null) {
             if (!state.isDragging) return;
             markDragPointerActivity();
             state.releaseScreenX = screenX;
             state.releaseScreenY = screenY;
+            sendReturnBallNativeDragMove(screenX, screenY);
 
             const dx = screenX - state.startScreenX;
             const dy = screenY - state.startScreenY;
@@ -4304,6 +4450,7 @@
 
             const options = arguments[2] && typeof arguments[2] === 'object' ? arguments[2] : {};
             const suppressClick = options.suppressClick === true;
+            const suppressNoMoveClick = suppressClick;
             state.isDragging = false;
             state.releaseScreenX = screenX;
             state.releaseScreenY = screenY;
@@ -4311,11 +4458,13 @@
             clearReturnBallDragRecoveryTimer(state);
             clearMultiWindowReturnBallDeferredWork(state);
 
-            // 先瞬间隐藏球，防止恢复 UI 时球在 (8,8) 闪烁
             container.style.transition = 'none';
-            container.style.opacity = '0';
-            container.style.visibility = 'hidden';
-            void container.offsetWidth;
+            if (!state.niriPhysicalCropDrag) {
+                // 先瞬间隐藏球，防止恢复 UI 时球在 (8,8) 闪烁
+                container.style.opacity = '0';
+                container.style.visibility = 'hidden';
+                void container.offsetWidth;
+            }
 
             if (!state.hasMoved) {
                 container.setAttribute('data-dragging', 'true');
@@ -4333,16 +4482,16 @@
                 setPendingNativeModelViewportRestoreBounds(pendingRestoreBounds);
                 const expectedWidth = restoreBounds ? restoreBounds.width : state.savedWindowW;
                 const expectedHeight = restoreBounds ? restoreBounds.height : state.savedWindowH;
-                waitForViewportSize(dragToken, expectedWidth, expectedHeight, () => {
+                const completeNoMoveDrag = () => {
                     restoreSavedBallStyle();
                     delete document.body.dataset.nekoBallDrag;
                     container.setAttribute('data-dragging', 'false');
                     scheduleIdleReturnBallDesktopBridge(
-                        suppressClick ? 'return-ball-drag-cancel' : 'return-ball-drag-click',
+                        suppressNoMoveClick ? 'return-ball-drag-cancel' : 'return-ball-drag-click',
                         container
                     );
                     revealReturnBallDragWindow();
-                    if (suppressClick) {
+                    if (suppressNoMoveClick) {
                         window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
                             detail: {
                                 reason: 'return-ball-drag-end',
@@ -4352,9 +4501,15 @@
                             }
                         }));
                     } else {
+                        setReturnBallDomClickSuppressed(true, 500);
                         dispatchReturnBallClick();
                     }
-                }, {
+                };
+                if (state.niriPhysicalCropDrag) {
+                    completeNoMoveDrag();
+                    return;
+                }
+                waitForViewportSize(dragToken, expectedWidth, expectedHeight, completeNoMoveDrag, {
                     fallbackMs: MULTI_WINDOW_RETURN_BALL_DRAG_RESTORE_FALLBACK_MS,
                     continueOnFallback: true
                 });
@@ -4409,7 +4564,7 @@
 
             const expectedWidth = finalBounds ? finalBounds.width : state.savedWindowW;
             const expectedHeight = finalBounds ? finalBounds.height : state.savedWindowH;
-            waitForViewportSize(dragToken, expectedWidth, expectedHeight, () => {
+            const completeMovedDrag = () => {
                 if (shouldRestoreSavedBallStyle) {
                     restoreSavedBallStyle();
                     container.setAttribute('data-dragging', 'false');
@@ -4450,7 +4605,12 @@
                     container.style.transition = getSavedBallStyleValue('transition');
                     state.savedBallStyle = null;
                 }, 180);
-            }, {
+            };
+            if (state.niriPhysicalCropDrag) {
+                completeMovedDrag();
+                return;
+            }
+            waitForViewportSize(dragToken, expectedWidth, expectedHeight, completeMovedDrag, {
                 fallbackMs: MULTI_WINDOW_RETURN_BALL_DRAG_RESTORE_FALLBACK_MS,
                 continueOnFallback: true
             });
@@ -4495,6 +4655,8 @@
             if (isThoughtBubbleEventTarget(event)) return;
             const point = getTouchScreenPoint(event.touches[0]);
             if (!point) return;
+            event.preventDefault();
+            event.stopImmediatePropagation();
             beginDrag(point.x, point.y, event);
         };
         state.handleTouchMove = (event) => {
@@ -4525,9 +4687,21 @@
                 cancelActiveDrag('visibility-hidden');
             }
         };
+        state.handleClick = (event) => {
+            const isSuppressed = container.getAttribute('data-neko-return-click-suppressed') === 'true';
+            const isNativeDragActive = container.getAttribute('data-dragging') === 'true' ||
+                container.getAttribute('data-dragging') === 'pending';
+            if (!isSuppressed && !isNativeDragActive) return;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            if (!isNativeDragActive) {
+                setReturnBallDomClickSuppressed(false);
+            }
+        };
 
         container.addEventListener('mousedown', state.handleMouseDown, true);
         container.addEventListener('touchstart', state.handleTouchStart, true);
+        container.addEventListener('click', state.handleClick, true);
         document.addEventListener('mousemove', state.handleMouseMove);
         document.addEventListener('mouseup', state.handleMouseUp);
         document.addEventListener('pointermove', state.handlePointerMove, true);
@@ -4717,20 +4891,12 @@
                 window.pngtuberManager.resetAllButtons();
             }
 
-            // 保存当前锁定状态，以便"请她回来"时恢复
-            // core.setLocked() 将值写入 manager.isLocked，因此从 manager 级别读取
+            // 判断当前 PNGTuber 是否激活，告别态只锁定正在使用的 2D 图片模型。
             const pngtuberContainerForState = document.getElementById('pngtuber-container');
             const isPngtuberActiveForState = (window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber'
                 && pngtuberContainerForState
                 && pngtuberContainerForState.style.display !== 'none'
                 && !pngtuberContainerForState.classList.contains('hidden');
-
-            window._savedLockState = {
-                live2d: window.live2dManager ? window.live2dManager.isLocked : false,
-                vrm: window.vrmManager ? window.vrmManager.isLocked : false,
-                mmd: window.mmdManager ? window.mmdManager.isLocked : false,
-                pngtuber: isPngtuberActiveForState && window.pngtuberManager ? window.pngtuberManager.isLocked : false
-            };
 
             // 设置锁定状态
             if (window.live2dManager && typeof window.live2dManager.setLocked === 'function') {
@@ -5126,13 +5292,30 @@
             }
 
             // 触发原有的离开逻辑
+            const runGoodbyeResetClickIfActive = (reason) => {
+                const goodbyeStillActive = !!(
+                    (window.live2dManager && window.live2dManager._goodbyeClicked) ||
+                    (window.vrmManager && window.vrmManager._goodbyeClicked) ||
+                    (window.mmdManager && window.mmdManager._goodbyeClicked)
+                );
+                if (!goodbyeStillActive) {
+                    console.log('[App] 跳过过期的 resetSessionButton.click()：当前已不在 goodbye 状态', reason || '');
+                    return false;
+                }
+                console.log('[App] 触发 resetSessionButton.click()，当前 goodbyeClicked 状态:', window.live2dManager ? window.live2dManager._goodbyeClicked : 'undefined', 'reason:', reason || 'delayed-goodbye-reset');
+                // 语音启动会把侧栏离开按钮置为 disabled；程序化 click 需要先恢复，
+                // 后续最终按钮状态仍交给 reset handler 统一收口。
+                resetSessionButton.disabled = false;
+                resetSessionButton.click();
+                return true;
+            };
             if (resetSessionButton) {
-                setTimeout(() => {
-                    console.log('[App] 触发 resetSessionButton.click()，当前 goodbyeClicked 状态:', window.live2dManager ? window.live2dManager._goodbyeClicked : 'undefined');
-                    // 语音启动会把侧栏离开按钮置为 disabled；程序化 click 需要先恢复，
-                    // 后续最终按钮状态仍交给 reset handler 统一收口。
-                    resetSessionButton.disabled = false;
-                    resetSessionButton.click();
+                if (window._goodbyeResetClickTimerId) {
+                    clearTimeout(window._goodbyeResetClickTimerId);
+                }
+                window._goodbyeResetClickTimerId = setTimeout(() => {
+                    window._goodbyeResetClickTimerId = null;
+                    runGoodbyeResetClickIfActive('delayed-goodbye-reset');
                 }, 10);
             } else {
                 console.error('[App] resetSessionButton 未找到！');
@@ -5160,23 +5343,29 @@
                 console.log('[App] 模型正在切换为猫形态，忽略本次请她回来事件');
                 return;
             }
+            const hadPendingGoodbyeReset = !!window._goodbyeResetClickTimerId;
+            if (hadPendingGoodbyeReset) {
+                clearTimeout(window._goodbyeResetClickTimerId);
+                window._goodbyeResetClickTimerId = null;
+            }
+            if (window._goodbyeHideTimerId) {
+                clearTimeout(window._goodbyeHideTimerId);
+                window._goodbyeHideTimerId = null;
+                console.log('[App] handleReturnClick: 已取消 goodbye 延迟隐藏定时器');
+            }
             const preReturnViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel();
             if (!preReturnViewportReady.ready) {
                 console.warn('[App] 请她回来已暂缓：Pet viewport 仍处于猫形态小窗口，保留 return 状态');
                 restoreReturnBallAfterBlockedModelViewport(event);
+                if (hadPendingGoodbyeReset) {
+                    runGoodbyeResetClickIfActive('return-viewport-blocked');
+                }
                 return;
             }
             const isReturningToPngtuber = (window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber';
             if (multiWindowReturnBallDragState) {
                 multiWindowReturnBallDragState.dragSessionToken += 1;
                 clearMultiWindowReturnBallDeferredWork(multiWindowReturnBallDragState);
-            }
-
-            // 取消延迟隐藏定时器
-            if (window._goodbyeHideTimerId) {
-                clearTimeout(window._goodbyeHideTimerId);
-                window._goodbyeHideTimerId = null;
-                console.log('[App] handleReturnClick: 已取消 goodbye 延迟隐藏定时器');
             }
             // 同步 window 中的设置值到状态
             if (typeof window.focusModeEnabled !== 'undefined') {
@@ -5328,8 +5517,7 @@
                     mmdLockIcon.style.opacity = '0';
                 }
             }
-            // 恢复"请她离开"之前的锁定状态（而非强制解锁）
-            const savedLock = window._savedLockState || { live2d: false, vrm: false, mmd: false };
+            // 回来后统一清理锁定状态，不回放离开前的锁定快照，避免 UI、拖拽和穿透状态分叉。
             const pngtuberLockIcon = document.getElementById('pngtuber-lock-icon');
             if (pngtuberLockIcon) {
                 pngtuberLockIcon.style.removeProperty('display');
@@ -5337,18 +5525,17 @@
                 pngtuberLockIcon.style.removeProperty('opacity');
             }
             if (window.live2dManager && typeof window.live2dManager.setLocked === 'function') {
-                window.live2dManager.setLocked(savedLock.live2d, { updateFloatingButtons: false });
+                window.live2dManager.setLocked(false, { updateFloatingButtons: false });
             }
             if (window.vrmManager && window.vrmManager.core && typeof window.vrmManager.core.setLocked === 'function') {
-                window.vrmManager.core.setLocked(savedLock.vrm);
+                window.vrmManager.core.setLocked(false);
             }
             if (window.mmdManager && window.mmdManager.core && typeof window.mmdManager.core.setLocked === 'function') {
-                window.mmdManager.core.setLocked(savedLock.mmd);
+                window.mmdManager.core.setLocked(false);
             }
-            if (isReturningToPngtuber && window.pngtuberManager && typeof window.pngtuberManager.setLocked === 'function') {
-                window.pngtuberManager.setLocked(savedLock.pngtuber, { updateFloatingButtons: false });
+            if (window.pngtuberManager && typeof window.pngtuberManager.setLocked === 'function') {
+                window.pngtuberManager.setLocked(false, { updateFloatingButtons: false });
             }
-            window._savedLockState = null;
 
             // 恢复浮动按钮系统
             const live2dFloatingButtons = document.getElementById('live2d-floating-buttons');

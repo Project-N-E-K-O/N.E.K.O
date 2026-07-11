@@ -510,10 +510,14 @@
                     if (typeof director.clearHomeSpotlightsForExternalizedChat === 'function') {
                         director.clearHomeSpotlightsForExternalizedChat();
                     }
+                    const spotlightVariant = scene && typeof scene.spotlightVariant === 'string'
+                        ? scene.spotlightVariant.trim()
+                        : '';
                     director.interactionTakeover.setExternalizedChatSpotlight(
                         this.getExternalKind(scene && scene.persistent || '')
                         || director.getExternalizedChatTargetKind(scene && scene.persistent || '', scene)
-                        || 'avatar-tools'
+                        || 'avatar-tools',
+                        { variant: spotlightVariant }
                     );
                 }
                 await director.waitForSceneDelay(520);

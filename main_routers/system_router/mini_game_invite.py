@@ -27,6 +27,13 @@ from .proactive_history import (
     _record_proactive_chat,
     _was_invite_ever_delivered,
 )
+from .proactive_parsing import (
+    PROACTIVE_REASON_CHAT_DELIVERED,
+    PROACTIVE_REASON_DELIVERY_PREEMPTED,
+    PROACTIVE_REASON_PASS_DELIVERY_BUSY,
+    _proactive_chat_body,
+    _proactive_pass_body,
+)
 import re
 import time
 from typing import Any
@@ -440,11 +447,10 @@ async def _maybe_deliver_mini_game_invite(
         return None
 
     if not await mgr.prepare_proactive_delivery(min_idle_secs=10.0):
-        return {
-            "success": True,
-            "action": "pass",
-            "message": "mini-game invite skipped: prepare_proactive_delivery refused",
-        }
+        return _proactive_pass_body(
+            PROACTIVE_REASON_PASS_DELIVERY_BUSY,
+            message="mini-game invite skipped: prepare_proactive_delivery refused",
+        )
     proactive_sid = mgr.current_speech_id
     from main_logic.session_state import SessionEvent as _SE
     await mgr.state.fire(_SE.PROACTIVE_PHASE2)
@@ -461,11 +467,10 @@ async def _maybe_deliver_mini_game_invite(
         expected_speech_id=proactive_sid,
     )
     if not committed:
-        return {
-            "success": True,
-            "action": "pass",
-            "message": "mini-game invite skipped: user took over before delivery",
-        }
+        return _proactive_pass_body(
+            PROACTIVE_REASON_DELIVERY_PREEMPTED,
+            message="mini-game invite skipped: user took over before delivery",
+        )
     # 给本次邀请生成独立 session_id，前端按钮点击 / 文本关键词命中走 endpoint 时
     # 必须带回这个 id 给后端校验：避免 stale 邀请的延迟回应被错算成响应当前 pending。
     invite_session_id = str(uuid4())
@@ -519,17 +524,16 @@ async def _maybe_deliver_mini_game_invite(
         f"(game={game_type}, force_first={force_first}, "
         f"session_id={invite_session_id[:8]}…): {invite_text[:60]}…"
     )
-    return {
-        "success": True,
-        "action": "chat",
-        "message": "mini-game invite delivered",
-        "channel": "mini_game",
-        "game_type": game_type,
-        "force_first": force_first,
-        "lanlan_name": lanlan_name,
-        "turn_id": proactive_sid,
-        "invite_session_id": invite_session_id,
-    }
+    return _proactive_chat_body(
+        PROACTIVE_REASON_CHAT_DELIVERED,
+        message="mini-game invite delivered",
+        channel="mini_game",
+        game_type=game_type,
+        force_first=force_first,
+        lanlan_name=lanlan_name,
+        turn_id=proactive_sid,
+        invite_session_id=invite_session_id,
+    )
 
 
 def _build_mini_game_invite_options_payload(
