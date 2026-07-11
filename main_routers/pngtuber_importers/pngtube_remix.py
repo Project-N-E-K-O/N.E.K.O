@@ -1205,7 +1205,12 @@ def _has_physics_state(state: dict) -> bool:
         "scream_mesh_phys_x",
         "scream_mesh_phys_y",
     )
-    return bool(state.get("physics")) or bool(state.get("wiggle")) or _has_motion_state(state) or any(key in state for key in physics_v2_keys)
+    # `_json_safe_state()` emits every allowed key (incl. these v2 physics keys)
+    # as None for absent fields, so `key in state` is true for every serialized
+    # state. Require an actual non-None value instead, otherwise plain states with
+    # no physics would falsely advertise capabilities.physics / physics_v2 and
+    # suppress the "physics metadata absent" warning.
+    return bool(state.get("physics")) or bool(state.get("wiggle")) or _has_motion_state(state) or any(state.get(key) is not None for key in physics_v2_keys)
 
 
 def _has_motion_layers(layers: list[dict]) -> bool:
@@ -1243,7 +1248,11 @@ def _has_mesh_metadata(layers: list[dict]) -> bool:
         if (layer.get("mesh") or {}).get("valid"):
             return True
         for state in layer.get("states") or []:
-            if any(key in state for key in mesh_keys):
+            # Serialized states carry every allowed key as None (see
+            # _json_safe_state), so `key in state` is always true; require an
+            # actual value so plain states without mesh fields report
+            # mesh_metadata: false instead of unconditionally true.
+            if any(state.get(key) is not None for key in mesh_keys):
                 return True
             if (state.get("mesh") or {}).get("valid"):
                 return True

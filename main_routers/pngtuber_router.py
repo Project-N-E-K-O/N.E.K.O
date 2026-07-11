@@ -200,7 +200,18 @@ async def upload_pngtuber_model(files: list[UploadFile] = File(...)):
         elif len(upload_paths) == 1:
             model_name_seed = Path(upload_paths[0].name or "pngtuber_model").stem
         else:
-            model_name_seed = "pngtuber_model"
+            # Multi-file third-party uploads (e.g. a .save/.pngRemix plus sidecar
+            # images) carry no shared root and no model.json, but the importer will
+            # name the model after the project file. Seed from that file so the
+            # early target_dir.exists() check uses the real name instead of the
+            # placeholder, which would otherwise reject any upload whenever a folder
+            # literally named "pngtuber_model" already exists.
+            project_exts = {".save", ".pngremix", ".veadomini", ".veado"}
+            project_files = [p for p in upload_paths if p.suffix.lower() in project_exts]
+            if len(project_files) == 1:
+                model_name_seed = project_files[0].stem
+            else:
+                model_name_seed = "pngtuber_model"
     model_dir_name = _slugify_name(model_name_seed)
 
     target_dir = config_mgr.pngtuber_dir / model_dir_name
