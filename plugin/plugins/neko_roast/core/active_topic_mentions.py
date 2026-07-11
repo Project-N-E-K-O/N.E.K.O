@@ -57,6 +57,17 @@ def is_neko_mention_target(name: str, lowered_aliases: set[str]) -> bool:
         "\u64ad",
         "\u8bc4",
         "\u9510",
+        "\u559c",
+        "\u63a8",
+        "\u505a",
+        "\u5199",
+        "\u9009",
+        "\u6559\u6211",
+        "\u6559\u4f60",
+        "\u6559\u5b66",
+        "\u5531\u6b4c",
+        "\u6c42",
+        "\u7ed9\u6211",
         "\u65e9",
         "\u665a",
         "\u5462",
@@ -85,7 +96,7 @@ def is_neko_mention_target(name: str, lowered_aliases: set[str]) -> bool:
         rest = lowered_name[len(alias) :].lstrip("_-")
         if not rest:
             return True
-        if "\u4e00" <= rest[0] <= "\u9fff":
+        if alias.isascii() and "\u4e00" <= rest[0] <= "\u9fff":
             return True
         if rest.startswith(live_address_prefixes):
             return True
