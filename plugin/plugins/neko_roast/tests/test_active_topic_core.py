@@ -163,12 +163,18 @@ def test_anonymous_recent_danmaku_flood_is_rejected() -> None:
         "@Alice @nekoカワイイ",
         "@Alice @nekoちゃん何してるの",
         "@Alice @猫猫，今天播什么",
+        "@猫猫今天像小电台",
         "@Alice @猫猫ちゃん",
         "@Alice @猫猫✨今天播什么",
     ),
 )
 def test_neko_mention_wins_over_an_earlier_viewer_mention(text: str) -> None:
     assert not active_topic_mentions.is_viewer_to_viewer_mention_text(text)
+
+
+@pytest.mark.parametrize("text", ("@猫猫虫 你看这个", "@猫猫好可爱 你看这个"))
+def test_spaced_alias_prefixed_nickname_remains_viewer_to_viewer(text: str) -> None:
+    assert active_topic_mentions.is_viewer_to_viewer_mention_text(text)
 
 
 @pytest.mark.asyncio
