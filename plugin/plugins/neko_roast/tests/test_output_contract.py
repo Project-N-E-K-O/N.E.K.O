@@ -127,6 +127,32 @@ def test_english_roast_verbs_require_complete_words() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "request",
+    (
+        "roast it",
+        "rate you",
+        "roast the",
+        "rate them",
+        "roast myself",
+        "rate who",
+    ),
+)
+def test_english_pronouns_and_articles_are_not_viewer_targets(request: str) -> None:
+    assert DanmakuResponseModule._target_roast_nickname(request) == ""
+    assert DanmakuResponseModule._danmaku_profile(request)["kind"] != (
+        "target_roast_request"
+    )
+
+
+@pytest.mark.parametrize("request", ("roast Theo", "rate Youki", "roast that Alice"))
+def test_real_english_nicknames_remain_roast_targets(request: str) -> None:
+    assert DanmakuResponseModule._target_roast_nickname(request)
+    assert DanmakuResponseModule._danmaku_profile(request)["kind"] == (
+        "target_roast_request"
+    )
+
+
 def test_generic_chinese_roast_targets_are_rejected():
     placeholders = (
         "\u67d0\u4eba",
