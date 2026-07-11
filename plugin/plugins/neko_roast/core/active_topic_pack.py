@@ -27,16 +27,7 @@ def active_topic_pack(material: dict | None) -> str:
     )
     if explicit_family:
         return _pack_for_family(explicit_family)
-    if family in {
-        "food_drink",
-        "tease",
-        "host_self_test",
-        "short_callback",
-        "choice_vote",
-        "micro_challenge",
-        "object_scene",
-        "room_mood",
-    }:
+    if family in {"food_drink", "room_mood"}:
         return _pack_for_family(family)
     if family in {"tease", "host_self_test"} or any(
         marker in live_column for marker in ("verdict", "court", "award", "score")

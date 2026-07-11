@@ -186,9 +186,9 @@ def _payload_from_message(item: dict[str, Any], *, room_ref: str) -> dict[str, A
 
 
 def _event_type(item: dict[str, Any]) -> str:
-    token = _method_token(item)
-    if token:
-        event_type = _EVENT_ALIASES.get(token, "")
+    method_token = _method_token(item)
+    if method_token:
+        event_type = _EVENT_ALIASES.get(method_token, "")
         if event_type:
             return event_type
     raw = _first(item, "event_type", "eventType", "type", "msg_type", "msgType")
@@ -201,7 +201,7 @@ def _event_type(item: dict[str, Any]) -> str:
     if not token:
         # Some bridges send reduced payloads without a type field.
         token = "gift" if _gift_name(item) else ""
-    if not token:
+    if not token and not method_token:
         token = "chat" if _first(item, "text", "content", "msg", "message") else ""
     return _EVENT_ALIASES.get(token, "")
 
