@@ -31,13 +31,14 @@
     // const C = window.appConst;
 
     /**
-     * Helper: find agent checkbox across Live2D / VRM / MMD prefixes.
+     * Helper: find agent checkbox across Live2D / VRM / MMD / PNGTuber prefixes.
      * Only one model type is active at a time, so the first found wins.
      */
     function getAgentEl(suffix) {
         return document.getElementById('live2d-agent-' + suffix)
             || document.getElementById('vrm-agent-' + suffix)
-            || document.getElementById('mmd-agent-' + suffix);
+            || document.getElementById('mmd-agent-' + suffix)
+            || document.getElementById('pngtuber-agent-' + suffix);
     }
 
     // ====================================================================
@@ -231,7 +232,7 @@
     // Floating agent status helper
     // ====================================================================
     function setFloatingAgentStatus(msg, taskStatus) {
-        ['live2d-agent-status', 'vrm-agent-status', 'mmd-agent-status'].forEach(id => {
+        ['live2d-agent-status', 'vrm-agent-status', 'mmd-agent-status', 'pngtuber-agent-status'].forEach(id => {
             const statusEl = document.getElementById(id);
             if (statusEl) {
                 statusEl.textContent = msg || '';
@@ -1504,8 +1505,27 @@
     let agentTaskPollingInterval = null;
     let agentTaskTimeUpdateInterval = null;
 
+    function isGoodbyeAgentUiSuppressed() {
+        try {
+            if (typeof window.isNekoGoodbyeResourceSuspendingOrSuspended === 'function' &&
+                window.isNekoGoodbyeResourceSuspendingOrSuspended()) {
+                return true;
+            }
+            if (typeof window.isNekoGoodbyeModeActive === 'function' && window.isNekoGoodbyeModeActive()) {
+                return true;
+            }
+        } catch (_) { /* ignore */ }
+        return false;
+    }
+
     window.startAgentTaskPolling = function () {
         console.trace('[App] startAgentTaskPolling');
+        if (isGoodbyeAgentUiSuppressed()) {
+            if (window.AgentHUD && window.AgentHUD.hideAgentTaskHUD) {
+                window.AgentHUD.hideAgentTaskHUD();
+            }
+            return;
+        }
         if (window.AgentHUD && window.AgentHUD.createAgentTaskHUD) {
             window.AgentHUD.createAgentTaskHUD();
             window.AgentHUD.showAgentTaskHUD();
@@ -1551,6 +1571,9 @@
     // updateTaskRunningTimes
     // ====================================================================
     function updateTaskRunningTimes() {
+        if (isGoodbyeAgentUiSuppressed()) {
+            return;
+        }
         const taskList = document.getElementById('agent-task-list');
         if (!taskList) {
             return;
@@ -1593,6 +1616,10 @@
     // checkAndToggleTaskHUD
     // ====================================================================
     function checkAndToggleTaskHUD() {
+        if (isGoodbyeAgentUiSuppressed()) {
+            window.stopAgentTaskPolling();
+            return;
+        }
         const getEl = (ids) => {
             for (let id of ids) {
                 const el = document.getElementById(id);
@@ -1601,12 +1628,12 @@
             return null;
         };
 
-        const masterCheckbox = getEl(['live2d-agent-master', 'vrm-agent-master']);
-        const keyboardCheckbox = getEl(['live2d-agent-keyboard', 'vrm-agent-keyboard']);
-        const browserCheckbox = getEl(['live2d-agent-browser', 'vrm-agent-browser']);
-        const userPlugin = getEl(['live2d-agent-user-plugin', 'vrm-agent-user-plugin']);
-        const openclawCheckbox = getEl(['live2d-agent-openclaw', 'vrm-agent-openclaw']);
-        const openfangCheckbox = getEl(['live2d-agent-openfang', 'vrm-agent-openfang']);
+        const masterCheckbox = getEl(['live2d-agent-master', 'vrm-agent-master', 'mmd-agent-master', 'pngtuber-agent-master']);
+        const keyboardCheckbox = getEl(['live2d-agent-keyboard', 'vrm-agent-keyboard', 'mmd-agent-keyboard', 'pngtuber-agent-keyboard']);
+        const browserCheckbox = getEl(['live2d-agent-browser', 'vrm-agent-browser', 'mmd-agent-browser', 'pngtuber-agent-browser']);
+        const userPlugin = getEl(['live2d-agent-user-plugin', 'vrm-agent-user-plugin', 'mmd-agent-user-plugin', 'pngtuber-agent-user-plugin']);
+        const openclawCheckbox = getEl(['live2d-agent-openclaw', 'vrm-agent-openclaw', 'mmd-agent-openclaw', 'pngtuber-agent-openclaw']);
+        const openfangCheckbox = getEl(['live2d-agent-openfang', 'vrm-agent-openfang', 'mmd-agent-openfang', 'pngtuber-agent-openfang']);
 
         const domMaster = masterCheckbox ? masterCheckbox.checked : false;
         const domChild = (keyboardCheckbox && keyboardCheckbox.checked)
@@ -1680,11 +1707,11 @@
                 return null;
             };
 
-            const keyboardCheckbox = getEl(['live2d-agent-keyboard', 'vrm-agent-keyboard']);
-            const browserCheckbox = getEl(['live2d-agent-browser', 'vrm-agent-browser']);
-            const userPluginCheckbox = getEl(['live2d-agent-user-plugin', 'vrm-agent-user-plugin']);
-            const openclawCheckbox = getEl(['live2d-agent-openclaw', 'vrm-agent-openclaw']);
-            const openfangCheckbox = getEl(['live2d-agent-openfang', 'vrm-agent-openfang']);
+            const keyboardCheckbox = getEl(['live2d-agent-keyboard', 'vrm-agent-keyboard', 'mmd-agent-keyboard', 'pngtuber-agent-keyboard']);
+            const browserCheckbox = getEl(['live2d-agent-browser', 'vrm-agent-browser', 'mmd-agent-browser', 'pngtuber-agent-browser']);
+            const userPluginCheckbox = getEl(['live2d-agent-user-plugin', 'vrm-agent-user-plugin', 'mmd-agent-user-plugin', 'pngtuber-agent-user-plugin']);
+            const openclawCheckbox = getEl(['live2d-agent-openclaw', 'vrm-agent-openclaw', 'mmd-agent-openclaw', 'pngtuber-agent-openclaw']);
+            const openfangCheckbox = getEl(['live2d-agent-openfang', 'vrm-agent-openfang', 'mmd-agent-openfang', 'pngtuber-agent-openfang']);
 
             if (!keyboardCheckbox || !browserCheckbox) {
                 setTimeout(bindHUD, 500);

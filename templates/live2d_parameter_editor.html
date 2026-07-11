@@ -11,6 +11,8 @@
     <link rel="stylesheet" href="/static/css/live2d_parameter_editor.css">
     <link rel="stylesheet" href="/static/css/dark-mode.css">
     <script src="/static/theme-manager.js"></script>
+    <link rel="stylesheet" href="/static/libs/driver.min.css?v={{ static_asset_version|default('0', true) }}">
+    <link rel="stylesheet" href="/static/css/tutorial-styles.css?v={{ static_asset_version|default('0', true) }}">
 </head>
 
 <body>
@@ -101,13 +103,15 @@
 
 
     <!-- 通用教程管理器 -->
-    <script src="/static/tutorial/core/skip-controller.js"></script>
-    <script src="/static/tutorial/avatar/reload-controller.js"></script>
-    <script src="/static/tutorial/core/lifecycle-state-store.js"></script>
+    <script src="/static/libs/driver.min.js?v={{ static_asset_version|default('0', true) }}"></script>
+    <script src="/static/tutorial/core/skip-controller.js?v={{ static_asset_version|default('0', true) }}"></script>
+    <script src="/static/tutorial/avatar/reload-controller.js?v={{ static_asset_version|default('0', true) }}"></script>
+    <script src="/static/tutorial/core/lifecycle-state-store.js?v={{ static_asset_version|default('0', true) }}"></script>
+    <script src="/static/tutorial/core/page-tutorial-manager.js?v={{ static_asset_version|default('0', true) }}"></script>
     <script>
         document.addEventListener('DOMContentLoaded', function() {
-            if (typeof initUniversalTutorialManager === 'function') {
-                initUniversalTutorialManager();
+            if (typeof initPageTutorialManager === 'function') {
+                initPageTutorialManager();
             }
         });
     </script>

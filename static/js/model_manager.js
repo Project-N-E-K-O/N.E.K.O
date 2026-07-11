@@ -174,7 +174,14 @@ class DropdownManager {
             iconAlt: config.iconAlt || config.defaultText,
             iconAltKey: config.iconAltKey || null,  // i18n key for icon alt
             onChange: config.onChange || (() => { }),
-            getText: config.getText || ((option) => option.textContent),
+            getText: config.getText || ((option) => {
+                const key = option?.dataset?.i18n;
+                if (key && window.t && typeof window.t === 'function') {
+                    const translated = window.t(key);
+                    if (translated && translated !== key) return translated;
+                }
+                return option.textContent;
+            }),
             shouldSkipOption: config.shouldSkipOption || ((option) => {
                 const value = option.value;
                 const text = option.textContent;
@@ -2088,6 +2095,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const uploadBtn = document.getElementById('upload-btn');
     const modelUpload = document.getElementById('model-upload');
     const pngtuberModelUpload = document.getElementById('pngtuber-model-upload');
+    const pngtuberPackageUpload = document.getElementById('pngtuber-package-upload');
     const pngtuberPreviewGroup = document.getElementById('pngtuber-preview-group');
     const pngtuberBasicPreviewSection = document.getElementById('pngtuber-basic-preview-section');
     const pngtuberTalkPreviewBtn = document.getElementById('pngtuber-talk-preview-btn');
@@ -2096,6 +2104,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const pngtuberStatePreviewSelect = document.getElementById('pngtuber-state-preview-select');
     const pngtuberStatePreviewSelectBtn = document.getElementById('pngtuber-state-preview-select-btn');
     const pngtuberStatePreviewDropdown = document.getElementById('pngtuber-state-preview-dropdown');
+    let pngtuberTalkPreviewTimer = null;
     const vrmFileUpload = document.getElementById('vrm-file-upload');
     const motionFileUpload = document.getElementById('motion-file-upload');
     const expressionFileUpload = document.getElementById('expression-file-upload');
@@ -2776,6 +2785,22 @@ document.addEventListener('DOMContentLoaded', async () => {
         statusEl.textContent = isEnabled ? t('common.on', 'ON') : t('common.off', 'OFF');
     }
 
+    function updatePNGTuberTalkPreviewButtonText() {
+        if (!pngtuberTalkPreviewBtn) return;
+        const label = t('live2d.pngtuberTalkPreview', '测试说话');
+        pngtuberTalkPreviewBtn.setAttribute('data-i18n-title', 'live2d.pngtuberTalkPreview');
+        pngtuberTalkPreviewBtn.setAttribute('data-i18n-aria', 'live2d.pngtuberTalkPreview');
+        pngtuberTalkPreviewBtn.title = label;
+        pngtuberTalkPreviewBtn.setAttribute('aria-label', label);
+        const textSpan = pngtuberTalkPreviewBtn.querySelector('[data-i18n="live2d.pngtuberTalkPreview"]')
+            || pngtuberTalkPreviewBtn.querySelector('span');
+        if (textSpan) {
+            textSpan.setAttribute('data-i18n', 'live2d.pngtuberTalkPreview');
+            textSpan.textContent = label;
+            textSpan.setAttribute('data-text', label);
+        }
+    }
+
     function refreshLocalizedInteractiveTexts() {
         updateMotionPlayButtonIcon();
         updateExpressionPlayButtonLabel();
@@ -2783,6 +2808,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         updateVRMExpressionPlayButtonIcon();
         updateMMDAnimationPlayButtonIcon();
         updateMMDModelSelectButtonText();
+        updatePNGTuberTalkPreviewButtonText();
         updateMmdOutlineStatusText();
     }
 
@@ -3197,29 +3223,27 @@ document.addEventListener('DOMContentLoaded', async () => {
         dispatchModelManagerChange(modelSelect, { suppress: true });
     }
 
-    async function loadSelectedPNGTuberOption(selectedOption, options = {}) {
-        if (!selectedOption || selectedOption.dataset.modelType !== 'pngtuber') return false;
-        let pngtuberConfig = {};
-        try {
-            pngtuberConfig = JSON.parse(selectedOption.getAttribute('data-pngtuber') || '{}');
-        } catch (error) {
-            console.warn('[PNGTuber] 解析模型配置失败:', error);
-        }
-
-        const modelName = selectedOption.value || selectedOption.textContent || '';
+    async function previewPNGTuberConfig(pngtuberConfig, modelInfo = {}, options = {}) {
+        if (!pngtuberConfig || !pngtuberConfig.idle_image) return false;
+        const modelName = modelInfo.name || pngtuberConfig.name || pngtuberConfig.folder || pngtuberConfig.model_folder || '';
+        // 不在此处写 window._modelManagerCurrentAvatarType：该旗标由 switchModelDisplay() 单独维护
+        // （函数入口无条件置为当前真实 model type），保证它恒等于 currentModelType。本函数的所有
+        // 调用方都已先经过 switchModelDisplay('pngtuber')，单写入者纪律可避免旗标在非 pngtuber 页面
+        // 被误置而导致 live2d-init 静默跳过 Live2D/VRM 初始化。
         currentLive3dSubType = '';
         currentModelInfo = {
-            name: selectedOption.textContent || modelName,
-            folder: selectedOption.getAttribute('data-folder') || modelName,
-            path: selectedOption.getAttribute('data-url') || '',
-            url: selectedOption.getAttribute('data-url') || '',
+            name: modelInfo.label || modelName || t('live2d.pngtuber', 'PNGTuber'),
+            folder: modelInfo.folder || pngtuberConfig.folder || pngtuberConfig.model_folder || modelName,
+            path: modelInfo.path || pngtuberConfig.idle_image || '',
+            url: modelInfo.url || pngtuberConfig.idle_image || '',
             type: 'pngtuber',
             pngtuber: pngtuberConfig,
         };
-        rememberSelectedPNGTuberModel(selectedOption, pngtuberConfig);
 
         if (window.loadPNGTuberAvatar) {
             await window.loadPNGTuberAvatar(pngtuberConfig);
+        } else {
+            throw new Error('PNGTuber runtime not loaded');
         }
         await loadPNGTuberPreviewControls(pngtuberConfig);
         if (live2dContainer) live2dContainer.style.display = 'none';
@@ -3246,6 +3270,26 @@ document.addEventListener('DOMContentLoaded', async () => {
             console.log('已标记为未保存更改（PNGTuber模型切换），请点击 保存设置 持久化到角色配置。');
         }
         return true;
+    }
+
+    async function loadSelectedPNGTuberOption(selectedOption, options = {}) {
+        if (!selectedOption || selectedOption.dataset.modelType !== 'pngtuber') return false;
+        let pngtuberConfig = {};
+        try {
+            pngtuberConfig = JSON.parse(selectedOption.getAttribute('data-pngtuber') || '{}');
+        } catch (error) {
+            console.warn('[PNGTuber] 解析模型配置失败:', error);
+        }
+
+        const modelName = selectedOption.value || selectedOption.textContent || '';
+        rememberSelectedPNGTuberModel(selectedOption, pngtuberConfig);
+        return await previewPNGTuberConfig(pngtuberConfig, {
+            name: modelName,
+            label: selectedOption.textContent || modelName,
+            folder: selectedOption.getAttribute('data-folder') || modelName,
+            path: selectedOption.getAttribute('data-url') || '',
+            url: selectedOption.getAttribute('data-url') || '',
+        }, options);
     }
 
     function findPNGTuberOptionByConfig(pngtuberConfig) {
@@ -3319,7 +3363,14 @@ document.addEventListener('DOMContentLoaded', async () => {
             modelSelect.value = rememberedOption.value;
         }
         if (!selectedOption || selectedOption.dataset.modelType !== 'pngtuber' || !selectedOption.value) {
-            if (preferredConfig) return false;
+            if (preferredConfig) {
+                return await previewPNGTuberConfig(preferredConfig, {
+                    name: preferredConfig.name || preferredConfig.folder || preferredConfig.model_folder || '',
+                    folder: preferredConfig.folder || preferredConfig.model_folder || '',
+                    path: preferredConfig.idle_image || '',
+                    url: preferredConfig.idle_image || '',
+                }, { markDirty: false });
+            }
             selectedOption = Array.from(modelSelect.options).find(option =>
                 option.dataset.modelType === 'pngtuber' && option.value
             );
@@ -3780,8 +3831,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         const previousModelType = currentModelType;
         currentModelType = type;
         window._modelManagerCurrentAvatarType = type;
-        if (type === 'live3d' && subType) {
-            currentLive3dSubType = subType;
+        if (type === 'live3d') {
+            currentLive3dSubType = (subType === 'vrm' || subType === 'mmd') ? subType : 'mmd';
         } else if (type !== 'live3d') {
             currentLive3dSubType = '';
         }
@@ -4583,8 +4634,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                         const charactersData = await RequestHelper.fetchJson('/api/characters');
                         const catgirlConfig = charactersData['猫娘']?.[lanlanName];
                         if (vrmModelSelect) {
-                            // 使用 live3d_sub_type 决定优先匹配哪种模型，避免 PR#702 保留双模型路径后总是选到 MMD
-                            const activeSubType = String(catgirlConfig?.live3d_sub_type || '').toLowerCase();
+                            // 使用 live3d_sub_type 决定优先匹配哪种模型；新用户无配置时沿用当前入口子类型。
+                            const activeSubType = String(catgirlConfig?.live3d_sub_type || currentLive3dSubType || '').toLowerCase();
 
                             const _mmdPathSwitch = catgirlConfig && catgirlConfig.mmd
                                 ? (typeof catgirlConfig.mmd === 'string' ? catgirlConfig.mmd : catgirlConfig.mmd.model_path)
@@ -4807,8 +4858,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
-    let pngtuberTalkPreviewTimer = null;
-
     function clearPNGTuberPreviewControls() {
         if (pngtuberTalkPreviewTimer) {
             clearTimeout(pngtuberTalkPreviewTimer);
@@ -4820,6 +4869,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (pngtuberTalkPreviewBtn) {
             pngtuberTalkPreviewBtn.disabled = false;
             pngtuberTalkPreviewBtn.classList.remove('active');
+            updatePNGTuberTalkPreviewButtonText();
         }
         if (pngtuberStatePreviewSelect) {
             pngtuberStatePreviewSelect.innerHTML = `<option value="">${t('live2d.pngtuberStatePreview', '状态预览')}</option>`;
@@ -4915,7 +4965,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (currentModelType !== 'pngtuber' || !pngtuberPreviewGroup) return;
         pngtuberPreviewGroup.style.display = 'flex';
         if (pngtuberBasicPreviewSection) pngtuberBasicPreviewSection.style.display = 'flex';
-        if (pngtuberTalkPreviewBtn) pngtuberTalkPreviewBtn.disabled = false;
+        if (pngtuberTalkPreviewBtn) {
+            pngtuberTalkPreviewBtn.disabled = false;
+            updatePNGTuberTalkPreviewButtonText();
+        }
 
         const metadata = await fetchPNGTuberLayeredMetadata(pngtuberConfig || {});
         if (currentModelType !== 'pngtuber') return;
@@ -6192,9 +6245,25 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
-    // 自动选择默认 Live3D 模型（sister1.0.vrm），当角色无已配置的 VRM/MMD 模型时使用
+    // 自动选择默认 Live3D 模型，当角色无已配置的 VRM/MMD 模型时使用
     function selectDefaultLive3DModel(options = {}) {
         if (!vrmModelSelect || vrmModelSelect.options.length === 0) return false;
+        if ((options.preferredSubType || currentLive3dSubType) === 'mmd') {
+            const mmdOption = Array.from(vrmModelSelect.options).find(opt =>
+                opt.value && opt.getAttribute('data-sub-type') === 'mmd'
+            );
+            if (mmdOption) {
+                vrmModelSelect.value = mmdOption.value;
+                window._modelManagerLoadedFallbackModel = true;
+                if (options.suppressChange) {
+                    suppressModelManagerChange(() => dispatchModelManagerChange(vrmModelSelect));
+                } else {
+                    dispatchModelManagerChange(vrmModelSelect);
+                }
+                console.log('[模型管理] 自动加载默认 MMD 模型:', mmdOption.getAttribute('data-filename') || mmdOption.value);
+                return true;
+            }
+        }
         const defaultFilename = 'sister1.0.vrm';
         const matchedOption = Array.from(vrmModelSelect.options).find(opt => {
             if (!opt.value) return false;
@@ -8148,7 +8217,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 
     // 加载模型的函数
-    async function loadModel(modelName, modelInfo, steam_id) {
+    async function loadModel(modelName, modelInfo, steam_id, options = {}) {
         if (!modelName || !modelInfo) return;
 
         // 确保获取正确的steam_id，优先使用传入的，然后从modelInfo中获取
@@ -8222,7 +8291,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             // 5. Load preferences
             const preferences = await window.live2dManager.loadUserPreferences();
-            const modelPreferences = preferences.find(p => p && p.model_path === modelInfo.path) || null;
+            const storedModelPreferences = preferences.find(p => p && p.model_path === modelInfo.path) || null;
+            const preferenceOverride = options.preferencesOverride && typeof options.preferencesOverride === 'object'
+                ? options.preferencesOverride
+                : null;
+            const modelPreferences = preferenceOverride
+                ? { ...(storedModelPreferences || {}), ...preferenceOverride }
+                : storedModelPreferences;
 
             // 6. Load model FROM THE MODIFIED OBJECT
             await window.live2dManager.loadModel(modelConfig, {
@@ -8308,13 +8383,55 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             // 恢复 Live2D 待机动作（如果之前保存过）
             restoreLive2DIdleAnimation();
+            return true;
 
         } catch (error) {
             showStatus(t('live2d.modelLoadFailed', `加载模型 ${modelName} 失败`, { model: modelName }));
             console.error(error);
             setControlsDisabled(false);
+            return false;
         }
     }
+
+    function createLive2DModelRuntimePreferenceOverride(currentModel) {
+        if (!currentModel || currentModel.destroyed || !currentModelInfo || !currentModelInfo.path) return null;
+
+        const posX = Number(currentModel.x);
+        const posY = Number(currentModel.y);
+        const scaleX = Number(currentModel.scale?.x);
+        const scaleY = Number(currentModel.scale?.y);
+        if (![posX, posY, scaleX, scaleY].every(Number.isFinite)) return null;
+
+        const rendererScreen = window.live2dManager?.pixi_app?.renderer?.screen;
+        const viewportWidth = Number(rendererScreen?.width) || window.innerWidth || document.documentElement.clientWidth || 0;
+        const viewportHeight = Number(rendererScreen?.height) || window.innerHeight || document.documentElement.clientHeight || 0;
+        const preferenceOverride = {
+            model_path: currentModelInfo.path,
+            position: { x: posX, y: posY },
+            scale: { x: scaleX, y: scaleY }
+        };
+        if (Number.isFinite(viewportWidth) && Number.isFinite(viewportHeight) && viewportWidth > 0 && viewportHeight > 0) {
+            preferenceOverride.viewport = {
+                width: viewportWidth,
+                height: viewportHeight
+            };
+        }
+        return preferenceOverride;
+    }
+
+    window.reloadCurrentLive2DModelInModelManager = async function(options = {}) {
+        if (currentModelType !== 'live2d' || !currentModelInfo || !window.live2dManager) return false;
+
+        const currentModel = typeof window.live2dManager.getCurrentModel === 'function'
+            ? window.live2dManager.getCurrentModel()
+            : window.live2dManager.currentModel;
+        const preferencesOverride = options.preserveRuntimeTransform === false
+            ? null
+            : createLive2DModelRuntimePreferenceOverride(currentModel);
+        const steamId = currentModelInfo.item_id;
+
+        return await loadModel(currentModelInfo.name, currentModelInfo, steamId, { preferencesOverride });
+    };
 
     playMotionBtn.addEventListener('click', () => {
         if (!live2dModel) {
@@ -9021,10 +9138,115 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 
     // 上传模型功能
+    let pngtuberUploadChoiceMenu = null;
+    let pngtuberUploadChoiceOpeningPicker = false;
+
+    function closePNGTuberUploadChoice() {
+        const menu = pngtuberUploadChoiceMenu;
+        if (menu) {
+            pngtuberUploadChoiceMenu = null;
+            document.removeEventListener('mousedown', handlePNGTuberUploadChoiceOutsideClick, true);
+            if (menu.parentNode) {
+                menu.parentNode.removeChild(menu);
+            }
+        }
+    }
+
+    function handlePNGTuberUploadChoiceOutsideClick(event) {
+        if (!pngtuberUploadChoiceMenu) return;
+        if (pngtuberUploadChoiceMenu.contains(event.target) || uploadBtn.contains(event.target)) return;
+        closePNGTuberUploadChoice();
+    }
+
+    function handlePNGTuberUploadChoiceKeydown(event) {
+        if (event.key === 'Escape') {
+            event.preventDefault();
+            closePNGTuberUploadChoice();
+            if (uploadBtn) uploadBtn.focus();
+        }
+    }
+
+    function handlePNGTuberUploadChoiceFocusout(event) {
+        const nextTarget = event.relatedTarget;
+        if (!pngtuberUploadChoiceMenu) return;
+        if (pngtuberUploadChoiceOpeningPicker) return;
+        if (nextTarget && (pngtuberUploadChoiceMenu.contains(nextTarget) || uploadBtn.contains(nextTarget))) return;
+        closePNGTuberUploadChoice();
+    }
+
+    function createPNGTuberUploadChoiceItem(label, onSelect) {
+        const item = document.createElement('div');
+        item.className = 'dropdown-item';
+        item.setAttribute('role', 'button');
+        item.tabIndex = 0;
+        item.innerHTML = `<span class="dropdown-item-text" data-text="${label}">${label}</span>`;
+        const select = () => {
+            pngtuberUploadChoiceOpeningPicker = true;
+            try {
+                onSelect();
+            } finally {
+                setTimeout(() => {
+                    pngtuberUploadChoiceOpeningPicker = false;
+                    closePNGTuberUploadChoice();
+                }, 0);
+            }
+        };
+        item.addEventListener('click', select);
+        item.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                select();
+            }
+        });
+        return item;
+    }
+
+    function showPNGTuberUploadChoice() {
+        if (!pngtuberPackageUpload) {
+            pngtuberModelUpload.click();
+            return;
+        }
+        if (pngtuberUploadChoiceMenu) {
+            closePNGTuberUploadChoice();
+            return;
+        }
+
+        const rect = uploadBtn.getBoundingClientRect();
+        const menu = document.createElement('div');
+        menu.className = 'model-type-dropdown';
+        menu.style.display = 'block';
+        menu.style.position = 'absolute';
+        menu.style.left = `${rect.left + window.scrollX}px`;
+        menu.style.top = `${rect.bottom + window.scrollY + 4}px`;
+        menu.style.minWidth = `${Math.max(rect.width, 270)}px`;
+        menu.style.zIndex = '3000';
+        menu.addEventListener('keydown', handlePNGTuberUploadChoiceKeydown);
+        menu.addEventListener('focusout', handlePNGTuberUploadChoiceFocusout);
+        menu.appendChild(createPNGTuberUploadChoiceItem(
+            (window.t && window.t('live2d.pngtuberImportProjectFile')) || '导入工程文件',
+            () => {
+                pngtuberPackageUpload.click();
+            }
+        ));
+        menu.appendChild(createPNGTuberUploadChoiceItem(
+            (window.t && window.t('live2d.pngtuberImportFolder')) || '导入文件夹',
+            () => {
+                pngtuberModelUpload.click();
+            }
+        ));
+        document.body.appendChild(menu);
+        pngtuberUploadChoiceMenu = menu;
+        const firstItem = menu.querySelector('.dropdown-item');
+        if (firstItem) firstItem.focus({ preventScroll: true });
+        setTimeout(() => {
+            document.addEventListener('mousedown', handlePNGTuberUploadChoiceOutsideClick, true);
+        }, 0);
+    }
+
     uploadBtn.addEventListener('click', () => {
         // 根据当前模型类型选择不同的文件选择器
         if (currentModelType === 'pngtuber') {
-            pngtuberModelUpload.click();
+            showPNGTuberUploadChoice();
         } else if (currentModelType !== 'live2d') {
             vrmFileUpload.click();
         } else {
@@ -9447,56 +9669,74 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     });
 
-    if (pngtuberModelUpload) {
-        pngtuberModelUpload.addEventListener('change', async (e) => {
-            const files = Array.from(e.target.files);
-            if (files.length === 0) return;
+    async function uploadPNGTuberFiles(files) {
+        if (!files || files.length === 0) return;
 
-            uploadStatus.textContent = '正在上传PNGTuber模型...';
-            uploadStatus.style.color = '#4f8cff';
-            uploadBtn.disabled = true;
+        uploadStatus.textContent = '正在上传PNGTuber模型...';
+        uploadStatus.style.color = '#4f8cff';
+        uploadBtn.disabled = true;
 
-            try {
-                const formData = new FormData();
-                for (const file of files) {
-                    formData.append('files', file, file.webkitRelativePath || file.name);
-                }
+        try {
+            const formData = new FormData();
+            for (const file of files) {
+                formData.append('files', file, file.webkitRelativePath || file.name);
+            }
 
-                const response = await fetch('/api/model/pngtuber/upload_model', {
-                    method: 'POST',
-                    body: formData
-                });
-                const result = await response.json();
+            const response = await fetch('/api/model/pngtuber/upload_model', {
+                method: 'POST',
+                body: formData
+            });
+            const result = await response.json();
 
-                if (result.success) {
-                    uploadStatus.textContent = `✓ ${result.message}`;
-                    uploadStatus.style.color = '#28a745';
-                    await loadPNGTuberModels();
-                    if (result.folder && modelSelect) {
-                        const option = Array.from(modelSelect.options).find(opt =>
-                            opt.value === result.folder || opt.getAttribute('data-folder') === result.folder
-                        );
-                        if (option) {
-                            modelSelect.value = option.value;
-                            modelSelect.dispatchEvent(new Event('change', { bubbles: true }));
-                        } else if (result.pngtuber && window.loadPNGTuberAvatar) {
-                            await window.loadPNGTuberAvatar(result.pngtuber);
-                        }
+            if (result.success) {
+                uploadStatus.textContent = `✓ ${result.message}`;
+                uploadStatus.style.color = '#28a745';
+                await loadPNGTuberModels();
+                if (result.folder && modelSelect) {
+                    const option = Array.from(modelSelect.options).find(opt =>
+                        opt.value === result.folder || opt.getAttribute('data-folder') === result.folder
+                    );
+                    if (option) {
+                        modelSelect.value = option.value;
+                        modelSelect.dispatchEvent(new Event('change', { bubbles: true }));
+                    } else if (result.pngtuber && window.loadPNGTuberAvatar) {
+                        await window.loadPNGTuberAvatar(result.pngtuber);
                     }
-                    setTimeout(() => { uploadStatus.textContent = ''; }, 3000);
-                } else {
-                    uploadStatus.textContent = `✗ ${result.error}`;
-                    uploadStatus.style.color = '#dc3545';
-                    setTimeout(() => { uploadStatus.textContent = ''; }, 5000);
                 }
-            } catch (error) {
-                console.error('上传PNGTuber模型失败:', error);
-                uploadStatus.textContent = `✗ 上传失败: ${error.message}`;
+                setTimeout(() => { uploadStatus.textContent = ''; }, 3000);
+            } else {
+                uploadStatus.textContent = `✗ ${result.error}`;
                 uploadStatus.style.color = '#dc3545';
                 setTimeout(() => { uploadStatus.textContent = ''; }, 5000);
+            }
+        } catch (error) {
+            console.error('上传PNGTuber模型失败:', error);
+            uploadStatus.textContent = `✗ 上传失败: ${error.message}`;
+            uploadStatus.style.color = '#dc3545';
+            setTimeout(() => { uploadStatus.textContent = ''; }, 5000);
+        } finally {
+            uploadBtn.disabled = false;
+        }
+    }
+
+    if (pngtuberModelUpload) {
+        pngtuberModelUpload.addEventListener('change', async (e) => {
+            if (e.target.files.length === 0) return;
+            try {
+                await uploadPNGTuberFiles(Array.from(e.target.files));
             } finally {
-                uploadBtn.disabled = false;
                 pngtuberModelUpload.value = '';
+            }
+        });
+    }
+
+    if (pngtuberPackageUpload) {
+        pngtuberPackageUpload.addEventListener('change', async (e) => {
+            if (e.target.files.length === 0) return;
+            try {
+                await uploadPNGTuberFiles(Array.from(e.target.files));
+            } finally {
+                pngtuberPackageUpload.value = '';
             }
         });
     }
@@ -10481,17 +10721,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                     modelSelect.value = matchedOption.value;
                     await loadSelectedPNGTuberOption(matchedOption, { markDirty: false });
                 } else {
-                    currentModelInfo = {
+                    await previewPNGTuberConfig(pngtuberConfig, {
                         name: lanlanName,
                         folder: pngtuberConfig.folder || pngtuberConfig.model_folder || '',
                         path: pngtuberConfig.idle_image,
-                        type: 'pngtuber',
-                        pngtuber: pngtuberConfig,
-                    };
-                    if (window.loadPNGTuberAvatar) {
-                        await window.loadPNGTuberAvatar(pngtuberConfig);
-                    }
-                    await loadPNGTuberPreviewControls(pngtuberConfig);
+                        url: pngtuberConfig.idle_image,
+                    }, { markDirty: false });
                 }
                 showStatus(`已加载角色 ${lanlanName} 的 PNGTuber 模型`, 2000);
                 return;

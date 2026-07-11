@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
+import math
 import re
 import shutil
 import time as time_module
@@ -15,7 +17,7 @@ from typing import Protocol, runtime_checkable
 
 from fastapi import HTTPException
 
-from plugin._types.exceptions import PluginError
+from plugin._types.exceptions import PluginError, PluginLifecycleError
 from plugin.core.host import PluginProcessHost, _import_plugin_module
 from plugin.core.registry import (
     _collect_plugin_python_requirements,
@@ -28,7 +30,10 @@ from plugin.core.registry import (
     _resolve_plugin_id_conflict,
     scan_static_metadata,
 )
-from plugin.core.entry_points import normalize_plugin_entry_point
+from plugin.core.entry_points import (
+    describe_plugin_entry_directory_mismatch,
+    normalize_plugin_entry_point,
+)
 from plugin.core.state import state
 from plugin.logging_config import get_logger
 from plugin.server.domain import IO_RUNTIME_ERRORS, RUNTIME_ERRORS
@@ -43,17 +48,28 @@ from plugin.server.messaging.lifecycle_events import emit_lifecycle_event
 from plugin.server.messaging.llm_tool_registry import (
     clear_plugin_tools as clear_plugin_llm_tools,
 )
-from plugin.settings import BUILTIN_PLUGIN_CONFIG_ROOT, PLUGIN_CONFIG_ROOTS, PLUGIN_SHUTDOWN_TIMEOUT
+from plugin.settings import (
+    BUILTIN_PLUGIN_CONFIG_ROOT,
+    PLUGIN_CONFIG_ROOTS,
+    PLUGIN_SHUTDOWN_TIMEOUT,
+    PLUGIN_STARTUP_TIMEOUT,
+)
 from plugin.utils import parse_bool_config
 
 logger = get_logger("server.application.plugins.lifecycle")
 _PLUGIN_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
+_PLUGIN_STARTUP_TIMEOUT_MAX = 300.0
 plugin_registry_service = PluginRegistryService()
 
 
 @runtime_checkable
 class PluginHostContract(Protocol):
-    async def start(self, message_target_queue: object) -> None: ...
+    async def start(
+        self,
+        message_target_queue: object,
+        startup_timeout: float | None = None,
+        startup_failure: str = "warn",
+    ) -> object: ...
 
     async def shutdown(self, timeout: float = PLUGIN_SHUTDOWN_TIMEOUT) -> None: ...
 
@@ -182,6 +198,8 @@ def _set_plugin_runtime_metadata_sync(
     runtime_enabled: bool,
     runtime_auto_start: bool,
     entries_preview: list[dict[str, object]] | None = None,
+    startup_state: str | None = None,
+    startup_error: str | None = None,
 ) -> None:
     with state.acquire_plugins_write_lock():
         raw_meta = state.plugins.get(plugin_id)
@@ -191,6 +209,14 @@ def _set_plugin_runtime_metadata_sync(
         raw_meta["runtime_auto_start"] = runtime_auto_start
         if entries_preview is not None:
             raw_meta["entries_preview"] = entries_preview
+        if startup_state is not None:
+            raw_meta["runtime_startup_state"] = startup_state
+        else:
+            raw_meta.pop("runtime_startup_state", None)
+        if startup_error:
+            raw_meta["runtime_startup_error"] = startup_error
+        else:
+            raw_meta.pop("runtime_startup_error", None)
         raw_meta.pop("runtime_load_state", None)
         raw_meta.pop("runtime_load_error_type", None)
         raw_meta.pop("runtime_load_error_message", None)
@@ -318,6 +344,32 @@ def _resolve_registered_config_path_sync(plugin_meta: dict[str, object] | None) 
         return Path(config_path_obj)
 
 
+def _registered_load_failure_error(plugin_id: str, plugin_meta: dict[str, object] | None) -> ServerDomainError | None:
+    if not isinstance(plugin_meta, dict) or plugin_meta.get("runtime_load_state") != "failed":
+        return None
+
+    error_type_obj = plugin_meta.get("runtime_load_error_type")
+    error_message_obj = plugin_meta.get("runtime_load_error_message")
+    error_phase_obj = plugin_meta.get("runtime_load_error_phase")
+    error_type = str(error_type_obj or "PluginLoadFailed")
+    if error_type not in {"PluginEntryDirectoryMismatch", "SyntaxError"}:
+        return None
+
+    error_message = str(error_message_obj or "Plugin failed to load during registry refresh")
+    error_phase = str(error_phase_obj or "unknown")
+    code = "PLUGIN_ENTRY_DIRECTORY_MISMATCH" if error_type == "PluginEntryDirectoryMismatch" else "PLUGIN_LOAD_FAILED"
+    return _to_domain_error(
+        code=code,
+        message=(
+            f"Plugin '{plugin_id}' cannot be started because its entry failed during "
+            f"registry phase '{error_phase}': {error_type}: {error_message}"
+        ),
+        status_code=400,
+        plugin_id=plugin_id,
+        error_type=error_type,
+    )
+
+
 async def _cleanup_started_host(plugin_id: str, host: PluginHostContract) -> None:
     removed = await asyncio.to_thread(_pop_plugin_host_sync, plugin_id)
     target_host = host
@@ -379,6 +431,141 @@ def _emit_lifecycle_event(
     emit_lifecycle_event(event)
 
 
+def _normalize_runtime_timeout(
+    raw_value: object,
+    *,
+    plugin_id: str,
+    setting_label: str = "[plugin_runtime].timeout",
+) -> float:
+    message = (
+        f"Plugin '{plugin_id}' {setting_label} must be a number "
+        f"in range 0 < timeout <= {_PLUGIN_STARTUP_TIMEOUT_MAX:g}"
+    )
+    if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
+        raise _to_domain_error(
+            code="INVALID_PLUGIN_CONFIG",
+            message=message,
+            status_code=400,
+            plugin_id=plugin_id,
+            error_type="InvalidStartupTimeout",
+        )
+    timeout = float(raw_value)
+    if not math.isfinite(timeout) or timeout <= 0 or timeout > _PLUGIN_STARTUP_TIMEOUT_MAX:
+        raise _to_domain_error(
+            code="INVALID_PLUGIN_CONFIG",
+            message=message,
+            status_code=400,
+            plugin_id=plugin_id,
+            error_type="InvalidStartupTimeout",
+        )
+    return timeout
+
+
+def _normalize_startup_failure_policy(raw_value: object, *, plugin_id: str) -> str:
+    if raw_value is None:
+        return "warn"
+    policy = str(raw_value).strip().lower()
+    if policy in {"warn", "fail", "ignore"}:
+        return policy
+    raise _to_domain_error(
+        code="INVALID_PLUGIN_CONFIG",
+        message=f"Plugin '{plugin_id}' [plugin_runtime].startup_failure must be one of: warn, fail, ignore",
+        status_code=400,
+        plugin_id=plugin_id,
+        error_type="InvalidStartupFailurePolicy",
+    )
+
+
+def _start_method_accepts_kwarg(start_method: object, name: str) -> bool:
+    try:
+        signature = inspect.signature(start_method)
+    except (TypeError, ValueError):
+        return False
+    return (
+        name in signature.parameters
+        or any(param.kind is inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values())
+    )
+
+
+def _extract_startup_error(start_result: object) -> str | None:
+    if not isinstance(start_result, Mapping):
+        return None
+    raw_error = start_result.get("startup_error")
+    if isinstance(raw_error, str) and raw_error:
+        return raw_error
+    data = start_result.get("data")
+    if isinstance(data, Mapping):
+        raw_error = data.get("startup_error")
+        if isinstance(raw_error, str) and raw_error:
+            return raw_error
+    return None
+
+
+def _is_startup_timeout_error(exc: PluginLifecycleError) -> bool:
+    reason = str(getattr(exc, "reason", "") or "").lower()
+    return getattr(exc, "event_type", None) == "startup" and bool(
+        re.fullmatch(r"startup timed out after \d+(?:\.\d+)?(?:e[+-]?\d+)?s", reason)
+    )
+
+
+def _startup_timeout_domain_error(
+    *,
+    plugin_id: str,
+    startup_timeout: float,
+) -> ServerDomainError:
+    return _to_domain_error(
+        code="PLUGIN_START_TIMEOUT",
+        message=f"Plugin '{plugin_id}' startup timed out after {startup_timeout}s",
+        status_code=504,
+        plugin_id=plugin_id,
+        error_type="StartupTimeout",
+    )
+
+
+async def _start_host_with_timeout(
+    *,
+    plugin_id: str,
+    host_obj: PluginHostContract,
+    message_target_queue: object,
+    startup_timeout: float | None,
+    startup_failure: str,
+) -> object:
+    start_method = host_obj.start
+    kwargs: dict[str, object] = {"message_target_queue": message_target_queue}
+    if _start_method_accepts_kwarg(start_method, "startup_failure"):
+        kwargs["startup_failure"] = startup_failure
+    if startup_timeout is not None and _start_method_accepts_kwarg(start_method, "startup_timeout"):
+        kwargs["startup_timeout"] = startup_timeout
+        try:
+            return await start_method(**kwargs)
+        except PluginLifecycleError as exc:
+            if _is_startup_timeout_error(exc):
+                raise _startup_timeout_domain_error(
+                    plugin_id=plugin_id,
+                    startup_timeout=startup_timeout,
+                ) from exc
+            raise
+
+    start_coro = start_method(**kwargs)
+    if startup_timeout is None:
+        return await start_coro
+
+    try:
+        return await asyncio.wait_for(start_coro, timeout=startup_timeout)
+    except asyncio.TimeoutError as exc:
+        raise _startup_timeout_domain_error(
+            plugin_id=plugin_id,
+            startup_timeout=startup_timeout,
+        ) from exc
+    except PluginLifecycleError as exc:
+        if _is_startup_timeout_error(exc):
+            raise _startup_timeout_domain_error(
+                plugin_id=plugin_id,
+                startup_timeout=startup_timeout,
+            ) from exc
+        raise
+
+
 class PluginLifecycleService:
     async def start_plugin(
         self,
@@ -416,6 +603,9 @@ class PluginLifecycleService:
                 error_type="PluginFrozen",
             )
 
+        if persist_user_intent:
+            await asyncio.to_thread(set_runtime_override, current_plugin_id, True)
+
         if refresh_registry:
             try:
                 refresh_payload = await plugin_registry_service.refresh_plugin(current_plugin_id)
@@ -449,6 +639,9 @@ class PluginLifecycleService:
                 plugin_id=current_plugin_id,
                 error_type="ConfigNotFound",
             )
+        registered_load_error = _registered_load_failure_error(current_plugin_id, registered_meta)
+        if registered_load_error is not None:
+            raise registered_load_error
 
         host_obj: PluginHostContract | None = None
         registered_plugin_id: str | None = None
@@ -520,10 +713,26 @@ class PluginLifecycleService:
             runtime_obj = conf.get("plugin_runtime")
             enabled_value = True
             auto_start_value = True
+            startup_timeout_value: float | None = _normalize_runtime_timeout(
+                PLUGIN_STARTUP_TIMEOUT,
+                plugin_id=current_plugin_id,
+                setting_label="PLUGIN_STARTUP_TIMEOUT",
+            )
+            startup_failure_policy = "warn"
             if isinstance(runtime_obj, Mapping):
                 runtime_cfg = _normalize_mapping(runtime_obj, context=f"plugin_config[{current_plugin_id}].plugin_runtime")
                 enabled_value = parse_bool_config(runtime_cfg.get("enabled"), default=True)
                 auto_start_value = parse_bool_config(runtime_cfg.get("auto_start"), default=True)
+                if "timeout" in runtime_cfg:
+                    startup_timeout_value = _normalize_runtime_timeout(
+                        runtime_cfg.get("timeout"),
+                        plugin_id=current_plugin_id,
+                    )
+                if "startup_failure" in runtime_cfg:
+                    startup_failure_policy = _normalize_startup_failure_policy(
+                        runtime_cfg.get("startup_failure"),
+                        plugin_id=current_plugin_id,
+                    )
             if not enabled_value:
                 raise _to_domain_error(
                     code="PLUGIN_DISABLED",
@@ -568,6 +777,15 @@ class PluginLifecycleService:
                 config_path=config_path,
                 builtin_plugin_root=BUILTIN_PLUGIN_CONFIG_ROOT,
             )
+            entry_mismatch = describe_plugin_entry_directory_mismatch(entry, config_path=config_path)
+            if entry_mismatch:
+                raise _to_domain_error(
+                    code="PLUGIN_ENTRY_DIRECTORY_MISMATCH",
+                    message=entry_mismatch,
+                    status_code=400,
+                    plugin_id=current_plugin_id,
+                    error_type="PluginEntryDirectoryMismatch",
+                )
 
             resolved_id = _resolve_plugin_id_conflict(
                 current_plugin_id,
@@ -640,7 +858,15 @@ class PluginLifecycleService:
                         error_type="DependencyCheckFailed",
                     )
 
-            await host_obj.start(message_target_queue=state.message_queue)
+            startup_result = await _start_host_with_timeout(
+                plugin_id=current_plugin_id,
+                host_obj=host_obj,
+                message_target_queue=state.message_queue,
+                startup_timeout=startup_timeout_value,
+                startup_failure=startup_failure_policy,
+            )
+            startup_error = _extract_startup_error(startup_result)
+            startup_degraded = bool(startup_error) and startup_failure_policy == "warn"
 
             process_obj = getattr(created_host, "process", None)
             if process_obj is not None and hasattr(process_obj, "is_alive"):
@@ -694,6 +920,8 @@ class PluginLifecycleService:
                 runtime_enabled=True,
                 runtime_auto_start=auto_start_value,
                 entries_preview=entries_preview,
+                startup_state="degraded" if startup_degraded else "ready",
+                startup_error=startup_error if startup_degraded else None,
             )
 
             await asyncio.to_thread(_register_or_replace_host_sync, current_plugin_id, host_obj)
@@ -707,12 +935,22 @@ class PluginLifecycleService:
                 "plugin_id": current_plugin_id,
                 "message": "Plugin started successfully",
             }
+            if startup_degraded:
+                response["startup_degraded"] = True
+                response["startup_error"] = startup_error
+                response["message"] = "Plugin started with startup warning"
             if current_plugin_id != original_plugin_id:
                 response["original_plugin_id"] = original_plugin_id
-                response["message"] = (
-                    f"Plugin started successfully (renamed from '{original_plugin_id}' to "
-                    f"'{current_plugin_id}' due to ID conflict)"
-                )
+                if startup_degraded:
+                    response["message"] = (
+                        f"Plugin started with startup warning (renamed from '{original_plugin_id}' to "
+                        f"'{current_plugin_id}' due to ID conflict)"
+                    )
+                else:
+                    response["message"] = (
+                        f"Plugin started successfully (renamed from '{original_plugin_id}' to "
+                        f"'{current_plugin_id}' due to ID conflict)"
+                    )
             return response
         except ServerDomainError:
             if host_obj is not None:

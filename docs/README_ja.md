@@ -397,9 +397,25 @@ docker-compose up -d
 
 **要件**：Python 3.11（他のバージョンはサポートされていません）、[uv](https://docs.astral.sh/uv/) パッケージマネージャー、Node.js（>=20.19）
 
+> [!IMPORTANT]
+> ### ⚡⚡ 強く推奨:このリポジトリは「部分クローン」で取得してください! ⚡⚡
+> **本リポジトリは履歴の容量が大きく(`.git` で約 390 MB)あります。** 履歴に大量の旧バージョンのバイナリ資産(VRM モデル、MMD、テクスチャ、音声、ネイティブライブラリ等)が含まれているためです。通常の `git clone` では、**すでに使われていない過去のバージョンまですべてダウンロード**され、遅く・ディスクを圧迫します。
+>
+> 👉 **下記の「部分クローン」コマンドをご利用ください。** 実際に必要なファイルだけを取得するため、**初回クローンのサイズが大幅に縮小し、速度も大幅に向上**します。その後の開発・コミットには**一切影響しません**:
+>
+> ```bash
+> # ✅【推奨】部分クローン:履歴の blob は必要になったときに取得
+> git clone --filter=blob:none https://github.com/Project-N-E-K-O/N.E.K.O.git
+>
+> # ⚡【さらに高速】最新コードのみで履歴が不要なら --depth 1 を追加
+> git clone --depth 1 --filter=blob:none https://github.com/Project-N-E-K-O/N.E.K.O.git
+> ```
+>
+> ⚠️ 完全な `git clone` も使えますが、全履歴をダウンロードします。新規参加者には**非推奨**です。
+
 ```bash
-# 1. プロジェクトをクローン
-git clone https://github.com/Project-N-E-K-O/N.E.K.O.git
+# 1. プロジェクトをクローン（⚡ 上記の「部分クローン」コマンドを強く推奨。完全な履歴が必要な場合のみ --filter を外してください）
+git clone --filter=blob:none https://github.com/Project-N-E-K-O/N.E.K.O.git
 cd N.E.K.O
 
 # 2. Python依存関係をインストール

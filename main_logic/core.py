@@ -117,6 +117,7 @@ _MAGIC_COMMAND_IMAGE_DROP_REQUEST_MAX = 64
 _VOICE_PROACTIVE_ACK_GRACE_S = 0.05
 _TEXT_SESSION_INPUT_TYPES = frozenset({"text", "avatar_drop_image", "user_image"})
 _IMAGE_INPUT_TYPES = frozenset({"screen", "camera", "avatar_drop_image", "user_image"})
+_LIVE_VISION_STREAM_INPUT_TYPES = frozenset({"screen", "camera"})
 _CONTEXT_APPEND_DEDUP_TTL_SECONDS = 120.0
 _CONTEXT_APPEND_DEDUP_MAX_ENTRIES = 256
 _CONTEXT_APPEND_READY_FLUSH_MAX_PASSES = 8
@@ -1167,11 +1168,18 @@ class LLMSessionManager:
                 )
         self._activity_tracker.set_context_prompt_callback(_push_activity_context_prompt)
 
-        # activity_guess narration 的「下游消费方」门控：会话 goodbye_silent（猫娘挂机
-        # 静默）时，proactive Phase 2 一进门就 bail，narration 没人读。把 is_goodbye_silent
-        # 注入 tracker，让 20s 心跳在静默期跳过昂贵的 emotion-tier LLM 外呼（规则心跳照跑）。
-        # tracker 跨 session 长存、心跳不随 End Session 取消，否则挂机后会一直空烧 LLM。
-        self._activity_tracker.set_narration_suppressed_check(self.is_goodbye_silent)
+        # activity_guess narration 的「下游消费方」门控：narration 只喂 proactive
+        # Phase 2，Phase 2 在两种情况下都没人读 → 这次昂贵的 emotion-tier 外呼纯属空烧：
+        #   ① goodbye_silent（猫娘挂机静默）—— Phase 2 一进门就 bail；
+        #   ② 没有在线 WebSocket（普通断连 / End Session 后）—— proactive 没法送达。
+        # tracker 跨 session 长存、心跳不随 End Session 取消（break-reminder / 情境弹窗这些
+        # 规则心跳要继续跑），所以必须靠这个门控在「无消费方」时跳过 LLM；否则用户关掉页面
+        # 后整段挂机会一直空烧（cap 只是把间隔退避到 ~900s，不会停）。重连 / 退出静默后
+        # 每签名 cache 还在，narration 在该签名退避间隔走完时恢复（conv_seq 变化或间隔已
+        # 在挂起期间走完则下一 tick 立刻恢复）。
+        self._activity_tracker.set_narration_suppressed_check(
+            self._should_suppress_activity_narration
+        )
 
         # AI 当前轮文本 buffer：每个 send_lanlan_response chunk 累加，turn end
         # 时作为一个 conversation turn 发给 dispatcher。activity sink 用末尾
@@ -2193,6 +2201,30 @@ class LLMSessionManager:
         except Exception:
             return False
 
+    def _should_suppress_activity_narration(self) -> bool:
+        """Whether the activity_guess emotion-tier narration has no live consumer.
+
+        Injected into the tracker as the narration suppressed-check (see where
+        ``set_narration_suppressed_check`` is wired). The narration only feeds
+        proactive Phase 2's state_section, and Phase 2 is a no-op in two cases —
+        paying for the LLM call then is pure idle burn:
+
+          * ``is_goodbye_silent()`` — cat-mode silence; Phase 2 bails at its
+            goodbye guard.
+          * no connected WebSocket — after a plain disconnect / End Session the
+            tracker heartbeat keeps ticking (it outlives the session so the
+            rule-based break-reminder / context-prompt logic still runs), but a
+            proactive turn has no client to reach. Without this, closing the page
+            leaves the loop re-narrating at the backoff cap (~900s) all night.
+
+        Both conditions recover on their own: the per-signature narration cache
+        stays warm across the suppressed window, so reconnecting (or leaving
+        goodbye-silence) resumes narration once that signature's backoff interval
+        elapses — on the next tick if a new turn advanced conv_seq or the interval
+        already passed during the gap, otherwise after the remaining interval.
+        """
+        return self.is_goodbye_silent() or not self._has_connected_websocket()
+
     def _can_preserve_tts_ready_for_session_start(self) -> bool:
         """A live, previously-ready TTS worker will not emit __ready__ again."""
         current_key = self._build_tts_runtime_key()
@@ -2277,7 +2309,7 @@ class LLMSessionManager:
             while not self.tts_response_queue.empty():
                 try:
                     self.tts_response_queue.get_nowait()
-                except: # noqa
+                except Exception:
                     break
             try:
                 self.tts_request_queue.put(("__interrupt__", None))
@@ -2290,7 +2322,7 @@ class LLMSessionManager:
             while not self.tts_response_queue.empty():
                 try:
                     self.tts_response_queue.get_nowait()
-                except: # noqa
+                except Exception:
                     break
         async with self.tts_cache_lock:
             self.tts_pending_chunks.clear()
@@ -2946,7 +2978,7 @@ class LLMSessionManager:
                 while not self.tts_response_queue.empty():
                     try:
                         self.tts_response_queue.get_nowait()
-                    except: # noqa
+                    except Exception:
                         break
 
         # 文本模式下，无论是否使用TTS，都要发送文本到前端显示
@@ -7089,8 +7121,9 @@ class LLMSessionManager:
         visual context — the conversation model otherwise sees only the proactive
         text and can't tell what was on screen. Passing None clears any previously
         staged screenshot, so a new proactive round always discards the prior
-        cache (and may fill a fresh one). The session enforces a 2-min TTL on the
-        staged screenshot at injection time. Staging happens inside the sid-guard
+        cache (and may fill a fresh one). The session enforces a short TTL
+        (``_PROACTIVE_SCREENSHOT_TTL_SECONDS``) on the staged screenshot at
+        injection time. Staging happens inside the sid-guard
         below, so a user takeover (sid change → early return) never stages a
         screenshot for an undelivered turn.
 
@@ -7139,8 +7172,9 @@ class LLMSessionManager:
                 # （仅暂存，不作为图片写进历史），下一条用户 text 回复经 stream_text
                 # 时会把它作为前导视觉背景注入——否则对话模型只看到搭话文本，回复
                 # 时完全不知道刚才评论的屏幕长什么样。新一轮主动搭话产生即覆盖/清掉
-                # 旧缓存（没拿到截图的轮次传 None 清），session 侧再用 2 分钟 TTL
-                # 兜底过期。set_* 在 sid 校验之后，用户接管（sid 变→早 return）时
+                # 旧缓存（没拿到截图的轮次传 None 清），session 侧再用短 TTL
+                # （_PROACTIVE_SCREENSHOT_TTL_SECONDS）兜底过期。set_* 在 sid 校验之
+                # 后，用户接管（sid 变→早 return）时
                 # 绝不会为未投递的轮次暂存截图。
                 if hasattr(self.session, "set_proactive_screenshot"):
                     self.session.set_proactive_screenshot(vision_screenshot_b64)
@@ -7942,6 +7976,39 @@ class LLMSessionManager:
                 for cb in active_callbacks:
                     resolve_callback_delivery_ack(cb, delivered)
 
+            # Deep-topic teaser: now committed to opening (passed both re-gates
+            # and the preempt check), surface the frontend-only "she has a topic
+            # she'd like to bring up" bubble just before the opener streams. One
+            # bubble per batch even if several topic hooks coalesced. Failure to
+            # send is non-fatal — the opener still goes out. If the opener then
+            # fails before any committed output (API error / no-output), the
+            # teaser is retracted below so it can't dangle as an orphan.
+            topic_hint_sent = False
+            if any(
+                isinstance(cb, dict) and cb.get("channel") == "topic_hook"
+                for cb in active_callbacks
+            ):
+                topic_hint_sent = await self.send_topic_hint(turn_id=proactive_sid)
+                # send_topic_hint awaits a WS write — a NEW yield point past the
+                # last preempt check. If the user grabbed the turn during that
+                # await, abort before prompt_ephemeral (whose output would be
+                # SID-dropped yet could still ack as committed and leave the
+                # teaser/history as if the opener landed): retract the teaser and
+                # requeue, mirroring the preempt handling above.
+                async with self.lock:
+                    preempted_after_hint = (
+                        self.state.is_proactive_preempted()
+                        or self.current_speech_id != proactive_sid
+                    )
+                if preempted_after_hint:
+                    logger.info("[%s] trigger_agent_callbacks: preempted during topic hint send, aborting before prompt", self.lanlan_name)
+                    if topic_hint_sent:
+                        await self.send_cancel_topic_hint(turn_id=proactive_sid)
+                    self.pending_agent_callbacks.extend(active_callbacks)
+                    callbacks_snapshot[:] = []
+                    self.proactive_manager.release_inflight_noop()
+                    return False
+
             _sid_token = _proactive_expected_sid.set(proactive_sid)
             # Text-mode playback boundary for the pacing manager: no frontend
             # audio signal arrives for text delivery, so bracket prompt_ephemeral
@@ -7970,6 +8037,10 @@ class LLMSessionManager:
                         )
                         delivered = True
                     else:
+                        # Opener errored before any committed output — retract the
+                        # teaser so the frontend doesn't keep an orphan bubble.
+                        if topic_hint_sent:
+                            await self.send_cancel_topic_hint(turn_id=proactive_sid)
                         raise
             finally:
                 _proactive_expected_sid.reset(_sid_token)
@@ -7995,6 +8066,11 @@ class LLMSessionManager:
                 return True
             else:
                 _resolve_text_delivery_ack(False)
+                # No committed output — retract the teaser so it can't dangle
+                # while the callback is requeued for a later retry (which will
+                # send its own fresh teaser).
+                if topic_hint_sent:
+                    await self.send_cancel_topic_hint(turn_id=proactive_sid)
                 self.pending_agent_callbacks.extend(active_callbacks)
                 return False
 
@@ -9318,14 +9394,23 @@ class LLMSessionManager:
         self.sync_message_queue.put({'type': 'system', 'data': 'API server disconnected'})
         await self.cleanup(expected_session=expected_session)
     
+    def _should_drop_live_vision_stream(self, input_type: str | None) -> bool:
+        """Deliberately checked at each stream boundary; callers may enter below stream_data."""
+        return input_type in _LIVE_VISION_STREAM_INPUT_TYPES and self.is_goodbye_silent()
+
     async def stream_data(self, message: dict):  # 向Core API发送Media数据
-        if message.get("input_type") == "audio":
+        input_type = message.get("input_type")
+        if self._should_drop_live_vision_stream(input_type):
+            return
+        if input_type == "audio":
             await self._enqueue_audio_stream_data(message)
             return
         await self._stream_data_now(message)
 
     async def _stream_data_now(self, message: dict):
         input_type = message.get("input_type")
+        if self._should_drop_live_vision_stream(input_type):
+            return
         # 检查session是否就绪
         async with self.input_cache_lock:
             if not self.session_ready:
@@ -9344,6 +9429,8 @@ class LLMSessionManager:
         # 在锁外检查是否需要创建新session（不要在锁内创建session，避免死锁）
         if not self.session_ready and self._starting_session_count == 0:
             if not self.session or not self.is_active:
+                if input_type in _LIVE_VISION_STREAM_INPUT_TYPES:
+                    return
                 # Memory Server 专属冷却检查
                 if self._emit_cooldown_turn_end_if_needed():
                     return
@@ -9368,6 +9455,8 @@ class LLMSessionManager:
         """Internal method: the actual stream_data processing logic"""
         data = message.get("data")
         input_type = message.get("input_type")
+        if self._should_drop_live_vision_stream(input_type):
+            return
         # 检查session是否发生致命错误（如1011错误、Response timeout）
         if self.session and isinstance(self.session, OmniRealtimeClient):
             if hasattr(self.session, '_fatal_error_occurred') and self.session._fatal_error_occurred:
@@ -9381,6 +9470,8 @@ class LLMSessionManager:
 
         # 如果 session 不存在或不活跃，检查是否可以自动重建
         if not self.session or not self.is_active:
+            if input_type in _LIVE_VISION_STREAM_INPUT_TYPES:
+                return
             # Memory Server 专属冷却检查
             if self._emit_cooldown_turn_end_if_needed():
                 return
@@ -10130,6 +10221,59 @@ class LLMSessionManager:
         except Exception as e:
             logger.error(f"💥 WS Send Status Error: {e}")
     
+    async def send_topic_hint(self, *, turn_id: Optional[str] = None) -> bool:
+        """Show a frontend-only teaser bubble right before she opens a deep-topic hook.
+
+        Deliberately does NOT touch ``sync_message_queue`` / chat memory — the
+        teaser is pure frontend display (rendered by react-neko-chat's dedicated
+        topic-hint component) and must never enter the chat-LLM context, the
+        same isolation as :meth:`passthrough_to_chat_bubble`. The frontend
+        renders the localized copy itself; we only hand it the character name.
+        """
+        if not (
+            self.websocket
+            and hasattr(self.websocket, 'client_state')
+            and self.websocket.client_state == self.websocket.client_state.CONNECTED
+        ):
+            return False
+        try:
+            await self.websocket.send_json({
+                "type": "topic_hint",
+                "author": self.lanlan_name,
+                "turn_id": str(turn_id or ''),
+            })
+            return True
+        except WebSocketDisconnect:
+            return False
+        except Exception as e:
+            logger.warning("[%s] send_topic_hint failed: %s", self.lanlan_name, e)
+            return False
+
+    async def send_cancel_topic_hint(self, *, turn_id: Optional[str] = None) -> bool:
+        """Retract a previously sent topic-hint teaser (matched by ``turn_id``).
+
+        Used when the opener fails before any committed output, so the frontend
+        removes the dangling teaser instead of leaving an orphan bubble. Like
+        :meth:`send_topic_hint`, this stays off ``sync_message_queue`` entirely.
+        """
+        if not (
+            self.websocket
+            and hasattr(self.websocket, 'client_state')
+            and self.websocket.client_state == self.websocket.client_state.CONNECTED
+        ):
+            return False
+        try:
+            await self.websocket.send_json({
+                "type": "cancel_topic_hint",
+                "turn_id": str(turn_id or ''),
+            })
+            return True
+        except WebSocketDisconnect:
+            return False
+        except Exception as e:
+            logger.warning("[%s] send_cancel_topic_hint failed: %s", self.lanlan_name, e)
+            return False
+
     async def send_session_preparing(self, input_mode: str): # 通知前端session正在准备（静默期）
         try:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:

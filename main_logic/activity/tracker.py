@@ -68,6 +68,7 @@ from utils.activity_config import get_activity_preferences
 from main_logic.activity.activity_guess_gate import ActivityGuessGate
 from config import (
     ACTIVITY_GUESS_BACKOFF_BASE_SECONDS,
+    ACTIVITY_GUESS_BACKOFF_MULTIPLIER,
     ACTIVITY_GUESS_BACKOFF_CAP_SECONDS,
     ACTIVITY_GUESS_SIG_CACHE_SIZE,
 )
@@ -88,6 +89,13 @@ _ACTIVITY_GUESS_TICK_SECONDS = 20.0
 # The per-call minimum-interval floor + adaptive re-narrate backoff now live in
 # ActivityGuessGate (configured via ACTIVITY_GUESS_BACKOFF_* in config); see
 # main_logic/activity/activity_guess_gate.py. The old flat 30s floor is gone.
+
+# How many recent foreground windows (with dwell) to feed the activity_guess LLM
+# so its narration can describe the user's activity FLOW ("coded, then browsed,
+# now chatting"), not just the instantaneous window. Canonical app names only —
+# never window titles — see ActivityStateMachine.recent_window_trail.
+_ACTIVITY_GUESS_WINDOW_TRAIL_LIMIT = 3
+_ACTIVITY_GUESS_WINDOW_TRAIL_MAX_AGE_SECONDS = 600.0
 
 # Frontend-pushed external signals are considered fresh for this many
 # seconds. After that the tracker falls back to the local collector
@@ -277,6 +285,7 @@ class UserActivityTracker:
             base_seconds=ACTIVITY_GUESS_BACKOFF_BASE_SECONDS,
             cap_seconds=ACTIVITY_GUESS_BACKOFF_CAP_SECONDS,
             cache_size=ACTIVITY_GUESS_SIG_CACHE_SIZE,
+            backoff_multiplier=ACTIVITY_GUESS_BACKOFF_MULTIPLIER,
         )
         self._activity_guess_loop_task: asyncio.Task | None = None
         self._topic_candidate_task: asyncio.Task | None = None
@@ -951,12 +960,14 @@ class UserActivityTracker:
     ) -> None:
         """Inject the predicate that decides whether activity_guess narration has a live consumer.
 
-        ``predicate()`` returns True when narration is currently pointless — the
-        only consumer (proactive Phase 2) will bail at its ``goodbye_silent``
-        guard, so computing the emotion-tier guess just burns an LLM call with
-        nobody to read it. The 20s heartbeat keeps ticking the rule-based
-        break-reminder / context-prompt logic regardless; only the LLM
-        narration step is skipped. Pass None to clear (never suppress).
+        ``predicate()`` returns True when narration currently has no consumer —
+        the sole reader (proactive Phase 2) won't act, so computing the
+        emotion-tier guess just burns an LLM call with nobody to read it. The
+        injector owns the exact conditions (today: the catgirl is in
+        goodbye-silence, OR no client is connected to deliver a proactive turn
+        to); the tracker treats the predicate as opaque. The 20s heartbeat keeps
+        ticking the rule-based break-reminder / context-prompt logic regardless;
+        only the LLM narration step is skipped. Pass None to clear (never suppress).
         """
         self._narration_suppressed_check = predicate
 
@@ -1225,7 +1236,7 @@ class UserActivityTracker:
                 seen_conv_seq = self._conv_seq
                 user_msgs_snapshot = list(self._user_msg_buffer)
                 ai_msgs_snapshot = list(self._ai_msg_buffer)
-                signals = self._snapshot_signals_for_llm(rule_snap)
+                signals = self._snapshot_signals_for_llm(rule_snap, now=ts)
                 from main_logic.activity.llm_enrichment import call_activity_guess
                 result = await call_activity_guess(
                     snapshot_signals=signals,
@@ -1325,14 +1336,17 @@ class UserActivityTracker:
             return ext
         return self._collector.snapshot()
 
-    @staticmethod
-    def _snapshot_signals_for_llm(snap: ActivitySnapshot) -> dict:
+    def _snapshot_signals_for_llm(self, snap: ActivitySnapshot, *, now: float) -> dict:
         """Pick the structured fields worth feeding into the prompt.
 
         Trimmed deliberately — full snapshot has many cross-references
         and timing fields the LLM doesn't need. We pass what's
         observably "what is the user doing on screen + how recent is
         activity", and leave the rest as state-machine internals.
+
+        ``recent_windows`` adds a short trail of the last few foreground apps
+        (canonical names + dwell, no titles) so the narration can describe the
+        user's activity FLOW rather than only the instantaneous window.
         """
         win = snap.active_window
         return {
@@ -1342,12 +1356,33 @@ class UserActivityTracker:
                 if win and win.canonical else None
             ),
             'window_title': win.title if win else None,
+            'recent_windows': self._format_window_trail(now=now),
             'system_idle_seconds': int(snap.system_idle_seconds),
             'cpu_avg_30s': round(snap.cpu_avg_30s, 1),
             'window_switch_rate_5min': snap.window_switch_rate_5min,
             'voice_mode_active': snap.voice_mode_active,
             'time_period': snap.period,
         }
+
+    def _format_window_trail(self, *, now: float) -> str | None:
+        """One compact line of the recent foreground-app trail, or None.
+
+        Returns None for a single window (it adds nothing over ``active_window``),
+        so the line only appears when there's an actual flow to describe. App
+        names only — no titles. Example: ``VS Code 6min -> Chrome 2min -> Slack 40s``.
+        """
+        trail = self._sm.recent_window_trail(
+            now=now,
+            limit=_ACTIVITY_GUESS_WINDOW_TRAIL_LIMIT,
+            max_age_seconds=_ACTIVITY_GUESS_WINDOW_TRAIL_MAX_AGE_SECONDS,
+        )
+        if len(trail) < 2:
+            return None
+
+        def _dwell(seconds: float) -> str:
+            return f'{int(seconds)}s' if seconds < 90 else f'{int(seconds / 60)}min'
+
+        return ' -> '.join(f'{name} {_dwell(d)}' for name, d in trail)
 
     # ── internals ──────────────────────────────────────────────
 

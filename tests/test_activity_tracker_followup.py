@@ -519,6 +519,41 @@ def test_activity_state_unfinished_thread_hides_followup_count():
     assert '/1' not in out
 
 
+@pytest.mark.unit
+def test_activity_state_line_uses_localized_label_not_english_enum():
+    """Regression: the state line renders only the localized label, never
+    the bare English enum (snap.state / snap.propensity). Weak models echo
+    a leaked enum as the reply's first line, so a zh user ends up hearing
+    'focused_work' / 'restricted_screen_only'."""
+    snap = ActivitySnapshot(
+        state='focused_work', state_age_seconds=10.0, previous_state=None,
+        transitioned_recently=False, stale_returning=False,
+        propensity='restricted_screen_only', tone='concise',
+    )
+    out = format_activity_state_section(snap, lang='zh')
+    assert '专注工作中' in out
+    assert 'focused_work' not in out
+    assert 'restricted_screen_only' not in out
+
+
+@pytest.mark.unit
+def test_activity_scores_line_maps_english_state_keys_to_localized_labels():
+    """Regression: the scores line maps English state keys to localized
+    labels instead of emitting 'focused_work' raw. The keys come from the
+    emotion-tier LLM under an English contract — the subtlest leak source."""
+    snap = ActivitySnapshot(
+        state='focused_work', state_age_seconds=10.0, previous_state=None,
+        transitioned_recently=False, stale_returning=False,
+        propensity='open', tone='concise',
+        activity_scores={'focused_work': 0.7, 'chatting': 0.2, 'idle': 0.1},
+    )
+    out = format_activity_state_section(snap, lang='zh')
+    assert '专注工作中 0.7' in out
+    assert '聊天中 0.2' in out
+    assert 'focused_work' not in out
+    assert 'chatting' not in out
+
+
 # ── #1 / skip_probability ───────────────────────────────────────────
 
 
@@ -959,6 +994,29 @@ def test_activity_guess_loop_kicks_topic_candidates_before_private_bail():
     assert "await self._purge_topic_candidates_for_privacy()" not in source
     assert source.index("self._process_topic_candidates_if_ready(lang=topic_lang, now=ts)") < source.index("if rule_snap.state == 'private':")
     assert source.index("if rule_snap.state == 'private':") < source.index("if not _proactive_chat_enabled():")
+
+
+def test_activity_guess_gate_wired_with_production_backoff_knobs():
+    """config → tracker → gate wiring carries the user-tuned faster-decay
+    schedule: 4x growth per re-narration, capped at 900s (aligned with the
+    15-min away threshold)."""
+    from main_logic.activity.tracker import UserActivityTracker
+    from config import (
+        ACTIVITY_GUESS_BACKOFF_BASE_SECONDS,
+        ACTIVITY_GUESS_BACKOFF_MULTIPLIER,
+        ACTIVITY_GUESS_BACKOFF_CAP_SECONDS,
+    )
+
+    tracker = UserActivityTracker('test_lanlan')
+    gate = tracker._activity_guess_gate
+    assert gate._base == ACTIVITY_GUESS_BACKOFF_BASE_SECONDS
+    assert gate._mult == ACTIVITY_GUESS_BACKOFF_MULTIPLIER
+    assert gate._cap == max(
+        ACTIVITY_GUESS_BACKOFF_CAP_SECONDS, ACTIVITY_GUESS_BACKOFF_BASE_SECONDS,
+    )
+    # Pin the user's headline ask so a silent revert to the old 2x/600s is caught.
+    assert ACTIVITY_GUESS_BACKOFF_MULTIPLIER == 4.0
+    assert ACTIVITY_GUESS_BACKOFF_CAP_SECONDS == 900.0
 
 
 def test_narration_suppressed_check_defaults_and_injection():

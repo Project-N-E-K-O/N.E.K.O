@@ -43,10 +43,18 @@ function isYuiGuideLive2DPreparing() {
         );
 }
 
+function isYuiGuideFloatingToolbarSuppressed() {
+    return !!(
+        window.isNekoYuiGuideFloatingToolbarSuppressed
+        && window.isNekoYuiGuideFloatingToolbarSuppressed()
+    );
+}
+
 function hideYuiGuideLive2DPreparingButtonStyles(buttonsContainer) {
     if (!buttonsContainer || !buttonsContainer.style || typeof buttonsContainer.style.removeProperty !== 'function') {
         return;
     }
+    buttonsContainer.dataset.yuiGuideForcedHidden = 'true';
     buttonsContainer.style.setProperty('display', 'none', 'important');
     buttonsContainer.style.setProperty('visibility', 'hidden', 'important');
     buttonsContainer.style.setProperty('opacity', '0', 'important');
@@ -57,10 +65,15 @@ function restoreYuiGuideLive2DPreparingButtonStyles(buttonsContainer) {
     if (!buttonsContainer || !buttonsContainer.style || typeof buttonsContainer.style.removeProperty !== 'function') {
         return;
     }
-    buttonsContainer.style.removeProperty('display');
-    buttonsContainer.style.removeProperty('visibility');
-    buttonsContainer.style.removeProperty('opacity');
-    buttonsContainer.style.removeProperty('pointer-events');
+    const forcedHidden = buttonsContainer.dataset.yuiGuideForcedHidden === 'true';
+    if (!forcedHidden) {
+        return;
+    }
+    const forcedProperties = ['display', 'visibility', 'opacity', 'pointer-events'];
+    forcedProperties.forEach((property) => {
+        buttonsContainer.style.removeProperty(property);
+    });
+    delete buttonsContainer.dataset.yuiGuideForcedHidden;
 }
 
 /**
@@ -180,6 +193,17 @@ Live2DManager.prototype.setupHTMLLockIcon = function(model) {
             if (shouldSkipLive2DUiTick(this, '_x11LockIconLastTickAt', LIVE2D_X11_UI_TICK_MS)) {
                 return;
             }
+            if (isYuiGuideFloatingToolbarSuppressed()) {
+                lockIcon.dataset.yuiGuideForcedHidden = 'true';
+                lockIcon.style.visibility = 'hidden';
+                lockIcon.style.opacity = '0';
+                return;
+            }
+            if (lockIcon.dataset.yuiGuideForcedHidden === 'true') {
+                delete lockIcon.dataset.yuiGuideForcedHidden;
+                lockIcon.style.visibility = '';
+                lockIcon.style.opacity = '';
+            }
             if (!model || !model.parent) {
                 // 教程期间不隐藏锁图标，防止高亮框位置被刷到 (0,0)
                 if (lockIcon && !window.isInTutorial) lockIcon.style.display = 'none';
@@ -192,8 +216,11 @@ Live2DManager.prototype.setupHTMLLockIcon = function(model) {
             const targetX = bounds.right * 0.7 + bounds.left * 0.3;
             const targetY = bounds.top * 0.3 + bounds.bottom * 0.7;
 
+            const maxLockTop = typeof window.getNekoYuiGuideLockIconMaxTop === 'function'
+                ? window.getNekoYuiGuideLockIconMaxTop(screenHeight - 40, 40)
+                : screenHeight - 40;
             lockIcon.style.left = `${Math.max(0, Math.min(targetX, screenWidth - 40))}px`;
-            lockIcon.style.top = `${Math.max(0, Math.min(targetY, screenHeight - 40))}px`;
+            lockIcon.style.top = `${Math.max(0, Math.min(targetY, maxLockTop))}px`;
 
             const lockRect = lockIcon.getBoundingClientRect();
             let isOverlapped = false;
@@ -596,6 +623,10 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
             if (shouldSkipLive2DUiTick(this, '_x11FloatingButtonsLastTickAt', LIVE2D_X11_UI_TICK_MS)) {
                 return;
             }
+            if (isYuiGuideFloatingToolbarSuppressed()) {
+                hideYuiGuideLive2DPreparingButtonStyles(buttonsContainer);
+                return;
+            }
             if (!model || !model.parent) {
                 return;
             }
@@ -650,7 +681,7 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
         if (this.isLocked) {
             return;
         }
-        if (isYuiGuideLive2DPreparing()) {
+        if (isYuiGuideLive2DPreparing() || isYuiGuideFloatingToolbarSuppressed()) {
             hideYuiGuideLive2DPreparingButtonStyles(buttonsContainer);
             return;
         }
@@ -662,7 +693,7 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
             if (!this.isFocusing && !inTutorial) {
                 buttonsContainer.style.display = 'none';
             } else if (inTutorial) {
-                if (isYuiGuideLive2DPreparing()) {
+                if (isYuiGuideLive2DPreparing() || isYuiGuideFloatingToolbarSuppressed()) {
                     hideYuiGuideLive2DPreparingButtonStyles(buttonsContainer);
                 } else {
                     restoreYuiGuideLive2DPreparingButtonStyles(buttonsContainer);
@@ -679,10 +710,11 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
 
     this.tutorialProtectionTimer = setInterval(() => {
         if (window.isInTutorial === true) {
-            if (isYuiGuideLive2DPreparing()) {
+            if (isYuiGuideLive2DPreparing() || isYuiGuideFloatingToolbarSuppressed()) {
                 hideYuiGuideLive2DPreparingButtonStyles(buttonsContainer);
                 return;
             }
+            restoreYuiGuideLive2DPreparingButtonStyles(buttonsContainer);
             const style = window.getComputedStyle(buttonsContainer);
             if (style.display === 'none') {
                 buttonsContainer.style.setProperty('display', 'flex', 'important');

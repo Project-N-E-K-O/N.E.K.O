@@ -2,7 +2,9 @@ from pathlib import Path
 
 
 APP_CHARACTER_PATH = Path(__file__).resolve().parents[2] / "static" / "app-character.js"
+APP_INTERPAGE_PATH = Path(__file__).resolve().parents[2] / "static" / "app-interpage.js"
 APP_UI_PATH = Path(__file__).resolve().parents[2] / "static" / "app-ui.js"
+INDEX_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css" / "index.css"
 
 
 def test_character_switch_resets_avatar_lock_after_successful_model_load():
@@ -63,3 +65,51 @@ def test_app_ui_exposes_shared_return_ball_hide_helper():
     assert "window.hideNekoReturnBallContainer = hideReturnBallContainer" in source
     assert "window.hideAllNekoReturnBallContainers = function(reason = 'return-ball-hide')" in source
     assert "ensureMultiWindowReturnBallDrag(null)" in source
+
+
+def test_character_switch_does_not_restore_full_container_pointer_events():
+    character_source = APP_CHARACTER_PATH.read_text(encoding="utf-8")
+    interpage_source = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
+    app_ui_source = APP_UI_PATH.read_text(encoding="utf-8")
+    css_source = INDEX_CSS_PATH.read_text(encoding="utf-8")
+
+    live2d_css = css_source[
+        css_source.index("#live2d-container {"):
+        css_source.index("#live2d-container.minimized")
+    ]
+    assert "pointer-events: none;" in live2d_css
+    assert "#live2d-canvas" in css_source
+
+    for source in (character_source, interpage_source, app_ui_source):
+        assert "live2dContainer.style.pointerEvents = 'auto';" not in source
+        assert 'live2dContainer.style.pointerEvents = "auto";' not in source
+        assert "live2dContainer2.style.pointerEvents = 'auto';" not in source
+        assert "l2dContainer.style.pointerEvents = 'auto';" not in source
+        assert "live2dContainer.style.setProperty('pointer-events', 'auto'" not in source
+
+    assert "live2dContainer2.style.setProperty('pointer-events', 'none', 'important');" in interpage_source
+    assert "live2dCanvas2.style.pointerEvents = 'auto';" in interpage_source
+    assert "live2dCanvas.style.setProperty('pointer-events', 'auto', 'important');" in app_ui_source
+
+
+def test_character_model_switch_repeated_paths_keep_only_model_entities_interactive():
+    source = APP_CHARACTER_PATH.read_text(encoding="utf-8")
+    interpage_source = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
+
+    assert "window.pngtuberManager.image.style.pointerEvents = 'auto';" in source
+    assert "live2dCanvas2.style.pointerEvents = 'auto';" in interpage_source
+    assert "vrmCanvas.style.pointerEvents = 'auto';" in interpage_source
+    assert "vrmContainer.style.removeProperty('pointer-events');" in interpage_source
+    assert "mmdContainerShow.style.removeProperty('pointer-events');" in source
+
+    for target in (
+        "live2dContainer.style.pointerEvents = 'auto';",
+        "live2dContainer2.style.pointerEvents = 'auto';",
+        "pngtuberContainer.style.pointerEvents = 'auto';",
+        "oldPngtuberContainer.style.pointerEvents = 'auto';",
+    ):
+        assert target not in source
+        assert target not in interpage_source
+
+    assert "oldPngtuberContainer.style.pointerEvents = 'none';" in interpage_source
+    assert "clearGoodbyeStateForCharacterSwitch();" in source

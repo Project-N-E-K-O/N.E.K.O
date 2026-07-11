@@ -30,6 +30,10 @@ test('round prelude runs avatar override, visibility, delay, lifecycle and start
             calls.push(['visible', sceneId]);
             return Promise.resolve();
         },
+        waitForAvatarReady(sceneId) {
+            calls.push(['ready', sceneId]);
+            return Promise.resolve();
+        },
         sleep(delayMs) {
             calls.push(['sleep', delayMs]);
             return Promise.resolve();
@@ -54,6 +58,7 @@ test('round prelude runs avatar override, visibility, delay, lifecycle and start
         'begin',
         'reveal',
         ['visible', 'avatar_floating_day4'],
+        ['ready', 'avatar_floating_day4'],
         ['sleep', 1500],
         ['takeover', 4, 'manual'],
         ['lifecycle', true],
@@ -75,6 +80,10 @@ test('round prelude starts takeover for day one before audio activation', async 
         },
         ensureVisible() {
             calls.push('visible');
+            return Promise.resolve();
+        },
+        waitForAvatarReady() {
+            calls.push('ready');
             return Promise.resolve();
         },
         sleep() {
@@ -101,6 +110,7 @@ test('round prelude starts takeover for day one before audio activation', async 
         'begin',
         'reveal',
         'visible',
+        'ready',
         'sleep',
         'takeover',
         'lifecycle',
@@ -205,6 +215,62 @@ test('round prelude stops after visibility failure', async () => {
         'reveal'
     ]);
     assert.equal(warnings.length, 1);
+});
+
+test('round prelude continues after avatar ready wait failure', async () => {
+    const { TutorialRoundPreludeController } = require('./tutorial/core/round-prelude-controller.js');
+    const calls = [];
+    const warnings = [];
+    const controller = new TutorialRoundPreludeController({
+        beginAvatarOverride() {
+            calls.push('begin');
+        },
+        revealPrepared() {
+            calls.push('reveal');
+        },
+        ensureVisible() {
+            calls.push('visible');
+        },
+        waitForAvatarReady() {
+            calls.push('ready');
+            return Promise.reject(new Error('ready timeout'));
+        },
+        sleep(delayMs) {
+            calls.push(['sleep', delayMs]);
+            return Promise.resolve();
+        },
+        beginTakingOver(detail) {
+            calls.push(['takeover', detail.day, detail.source]);
+        },
+        setLifecycleActive(active) {
+            calls.push(['lifecycle', active]);
+        },
+        showSkipButton() {
+            calls.push('skip');
+        },
+        dispatchStarted(detail) {
+            calls.push(['started', detail.day, detail.source]);
+        },
+        warn(message) {
+            warnings.push(message);
+        }
+    });
+
+    await controller.play(1, { source: 'auto', delayMs: 20 });
+
+    assert.deepEqual(calls, [
+        'begin',
+        'reveal',
+        'visible',
+        'ready',
+        ['sleep', 20],
+        ['takeover', 1, 'auto'],
+        ['lifecycle', true],
+        'skip',
+        ['started', 1, 'auto']
+    ]);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /等待 YUI 模型视觉就绪失败/);
 });
 
 test('manager delegates avatar floating prelude to TutorialRoundPreludeController', () => {

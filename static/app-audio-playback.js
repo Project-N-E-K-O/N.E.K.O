@@ -198,8 +198,16 @@
             return 'mmd';
         }
 
+        var pngtuberContainer = document.getElementById('pngtuber-container');
+        if (pngtuberContainer && pngtuberContainer.style.display !== 'none' && !pngtuberContainer.classList.contains('hidden')) {
+            return 'pngtuber';
+        }
+
         var cfg = window.lanlan_config || {};
         var modelType = String(cfg.model_type || '').toLowerCase();
+        if (modelType === 'pngtuber') {
+            return 'pngtuber';
+        }
         if (modelType === 'live3d') {
             var subType = String(cfg.live3d_sub_type || '').toLowerCase();
             if (subType === 'vrm' || subType === 'mmd') {
@@ -662,6 +670,11 @@
                 console.log('[Audio] MMD 口型同步已停止');
             }
             S.lipSyncActive = false;
+        } else if (activeModelType === 'pngtuber' && window.pngtuberManager) {
+            if (typeof window.pngtuberManager.stopLipSync === 'function') {
+                window.pngtuberManager.stopLipSync();
+            }
+            S.lipSyncActive = false;
         } else if (window.LanLan1 && window.LanLan1.live2dModel) {
             stopLipSync(window.LanLan1.live2dModel);
         } else {
@@ -1038,6 +1051,12 @@
                                 window.mmdManager.animationModule.startLipSync(S.globalAnalyser);
                                 S.lipSyncActive = true;
                                 console.log('[Audio] MMD 口型同步已启动');
+                            }
+                        } else if (activeModelType === 'pngtuber' && window.pngtuberManager) {
+                            if (typeof window.pngtuberManager.startLipSync === 'function') {
+                                window.pngtuberManager.startLipSync(S.globalAnalyser);
+                                S.lipSyncActive = true;
+                                console.log('[Audio] PNGTuber lip sync started');
                             }
                         } else if (window.LanLan1 && window.LanLan1.live2dModel) {
                             startLipSync(window.LanLan1.live2dModel, S.globalAnalyser);

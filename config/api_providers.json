@@ -79,12 +79,12 @@
       "name": "阿里百炼（推荐）",
       "description": "推荐选择，支持Agent模式，价格适中，国内版",
       "openrouter_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-      "conversation_model": "qwen3.7-plus-2026-05-26",
-      "summary_model": "qwen3.7-plus-2026-05-26",
-      "correction_model": "qwen3.7-plus",
+      "conversation_model": "qwen3.7-plus",
+      "summary_model": "qwen3.7-plus",
+      "correction_model": "qwen3.7-plus-2026-05-26",
       "emotion_model": "qwen3.6-flash",
-      "vision_model": "qwen3.7-plus-2026-05-26",
-      "agent_model": "qwen3.7-plus"
+      "vision_model": "qwen3.7-plus",
+      "agent_model": "qwen3.7-plus-2026-05-26"
     },
     "qwen_intl": {
       "key": "qwen_intl",
@@ -202,8 +202,8 @@
     },
     "doubao": {
       "key": "doubao",
-      "name": "豆包（字节跳动）",
-      "description": "国内可用，价格适中",
+      "name": "豆包大模型(火山方舟)",
+      "description": "需提供火山方舟 API，用于豆包大模型",
       "openrouter_url": "https://ark.cn-beijing.volces.com/api/v3",
       "conversation_model": "doubao-seed-character-260628",
       "summary_model": "doubao-seed-2-0-lite-260428",
@@ -306,6 +306,20 @@
       "tts_default_voice": "default"
     }
   },
+  "keybook_api_providers": {
+    "doubao_tts": {
+      "key": "doubao_tts",
+      "name": "豆包语音(火山引擎)",
+      "description": "需提供豆包语音 API，用于豆包语音合成 / 声音复刻",
+      "openrouter_url": "https://openspeech.bytedance.com",
+      "provider_type": "tts",
+      "tts_default_model": "seed-icl-2.0",
+      "tts_default_voice": "",
+      "tts_config_visible": false,
+      "probe_kind": "http_tts",
+      "probe_sub_type": "doubao_tts"
+    }
+  },
   "default_models": {
     "router_model": "openai/gpt-4.1",
     "summary_model": "qwen-plus",
@@ -334,6 +348,7 @@
     "kimi_code": "ASSIST_API_KEY_KIMI_CODE",
     "deepseek": "ASSIST_API_KEY_DEEPSEEK",
     "doubao": "ASSIST_API_KEY_DOUBAO",
+    "doubao_tts": "ASSIST_API_KEY_DOUBAO_TTS",
     "minimax": "ASSIST_API_KEY_MINIMAX",
     "minimax_intl": "ASSIST_API_KEY_MINIMAX_INTL",
     "mimo": "ASSIST_API_KEY_MIMO",
@@ -417,6 +432,10 @@
     },
     "vllm_omni": {
       "config_field": "ttsModelApiKey",
+      "restricted": false
+    },
+    "doubao_tts": {
+      "config_field": "assistApiKeyDoubaoTts",
       "restricted": false
     }
   },

@@ -674,6 +674,7 @@
     },
     "chat": {
         "title": "채팅",
+        "topicHint": "{{author}}이(가) 하고 싶은 이야기가 있나 봐요…",
         "viewerTitle": "채팅(뷰어 모드)",
         "tooltip": "채팅 영역",
         "textInputPlaceholder": "보내려면 Enter를 누르고, 줄을 바꾸려면 Shift+Enter를 누르세요.",
@@ -1023,7 +1024,8 @@
             "kimi": "Kimi(Moonshot, 긴 컨텍스트 지원)",
             "kimi_code": "Kimi Code(Moonshot)",
             "deepseek": "DeepSeek",
-            "doubao": "ByteDance(Doubao)",
+            "doubao": "Doubao LLM (Volcengine Ark)",
+            "doubao_tts": "Doubao Speech (Volcengine)",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax(국제 서버)",
             "elevenlabs": "ElevenLabs(음성 클로닝)",
@@ -1071,7 +1073,8 @@
             "gemini": "Gemini(Google)",
             "kimi": "Moonshot(Kimi)",
             "kimi_code": "Moonshot Kimi Code",
-            "doubao": "ByteDance(Doubao)",
+            "doubao": "Doubao LLM (Volcengine Ark)",
+            "doubao_tts": "Doubao Speech (Volcengine)",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax(국제 서버)",
             "mimo": "MiMo(Xiaomi)",
@@ -1352,6 +1355,7 @@
         "toggleFullscreen": "전체 화면 전환",
         "exitFullscreen": "전체 화면 종료",
         "modelType": "모델 유형",
+        "modelType3d": "3D 모델",
         "selectLive2DModel": "Live2D 모델 선택",
         "selectVRMModel": "VRM 모델",
         "selectVRMFile": "VRM 파일 선택",
@@ -1543,7 +1547,9 @@
         "cannotDeleteBoundModel": "현재 사용 중인 모델은 삭제할 수 없습니다",
         "modelInUse": "사용 중",
         "pngtuberTalkPreview": "말하기 테스트",
-        "pngtuberStatePreview": "상태 미리보기"
+        "pngtuberStatePreview": "상태 미리보기",
+        "pngtuberImportProjectFile": "프로젝트 파일 가져오기",
+        "pngtuberImportFolder": "폴더 가져오기"
     },
     "voice": {
         "title": "음성 등록",
@@ -1556,6 +1562,14 @@
         "minimaxIntlApiRequired": "이 기능에는 MiniMax 모델(국제판)이 필요합니다. API 키 설정에서 MiniMax 국제판 API 키를 저장하세요 (Assist API 활성화 불필요).",
         "mimoApiRequired": "이 기능은 MiMo 모델이 필요합니다. API 키 설정 페이지에서 MiMo API 키를 저장하세요",
         "mimoDirectLinkUnsupported": "MiMo는 직접 링크 복제를 지원하지 않습니다. 로컬 파일 업로드를 사용하세요",
+        "directLinkUnsupported": "선택한 제공자는 직접 링크 클론을 지원하지 않습니다. 로컬 파일을 업로드하세요.",
+        "doubaoTtsApiRequired": "이 기능에는 Doubao Speech API Key가 필요합니다. API 관리부에 Doubao Speech(Volcengine) Key를 저장하세요.",
+        "vllmOmniNotice": "로컬 vLLM-Omni 서비스 — API 키 불필요; 로컬 서비스 URL이 설정되어 있는지 확인하세요",
+        "vllmRefTextLabel": "참조 오디오 전사(vLLM-Omni 클론 필수, 오디오 내용과 정확히 일치해야 함)",
+        "vllmRefTextHint": "참조 오디오에서 말하는 내용을 그대로 입력하세요. 텍스트가 오디오와 맞지 않으면 클론 품질이 저하됩니다",
+        "vllmRefTextPlaceholder": "예: 앞으로 저보다 더 잘할 수 있기를 바랍니다",
+        "vllmRefTextRequired": "참조 오디오 전사를 입력하세요(vLLM-Omni 클론 필수)",
+        "vllmRefTextTooLong": "참조 오디오 전사가 너무 깁니다. 100자 이내로 입력하세요",
         "providerLabel": "음성 복제 제공업체",
         "provider": {
             "cosyvoice": "Alibaba Bailian CosyVoice",
@@ -1563,16 +1577,33 @@
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (국제판)",
             "elevenlabs": "ElevenLabs",
-            "mimo": "MiMo (샤오미)"
+            "mimo": "MiMo (샤오미)",
+            "doubao_tts": "Doubao Speech (Volcengine)",
+            "vllm_omni": "vLLM-Omni(로컬 클론)"
+        },
+        "sourcePreset": "프리셋",
+        "sourceClone": "복제",
+        "sourceDesign": "설명 생성",
+        "providerLocal": "로컬 CosyVoice",
+        "providerFree": "무료",
+        "providerFreeApi": "무료 API",
+        "providerUnknown": "기타",
+        "nativeVoice": {
+            "qingchunshaonv": "청춘 소녀",
+            "wenrounansheng": "부드러운 남성 음성"
         },
         "selectFile": "로컬 오디오 파일 선택(8초 권장, 최대 20초, wav/mp3 형식)",
         "customPrefix": "사용자 정의 접두사(필수, 다양한 음성을 구별하는 데 사용됨)",
         "customPrefixNote": "UI : 최대 10자, 숫자, 영문만 가능",
         "prefixPlaceholder": "UI : 최대 10자, 숫자, 영문만 가능",
         "voiceIdPlaceholder": "UI : 최대 10자, 숫자, 영문만 가능",
+        "doubaoSpeakerIdLabel": "Doubao Speaker ID (기존 S_ 음색 덮어쓰기, 필수)",
+        "doubaoSpeakerIdNote": "먼저 Doubao Speech 콘솔에서 음색을 복제하고 해당 S_ Speaker ID를 여기에 복사하세요. NEKO는 기존 음색을 덮어써서 업데이트하며 새 Doubao 음색 ID를 만들지 않습니다. 예: S_xeC2CDp72",
+        "doubaoSpeakerIdPlaceholder": "예: S_xeC2CDp72",
         "register": "음성 등록",
         "pleaseUploadFile": "오디오 파일을 선택하세요.",
         "pleaseEnterPrefix": "맞춤 접두사를 입력하세요.",
+        "doubaoSpeakerIdRequired": "Doubao 음성 복제에는 Volcengine 콘솔에서 이미 할당된 S_ Speaker ID가 필요합니다",
         "prefixFormatError": "접두사 형식 오류: 최대 10자, 숫자, 영문만 가능",
         "registering": "음성을 등록하는 중입니다. 잠시 기다려 주세요!",
         "registerSuccess": "등록이 완료되었습니다! voice_id: {{voiceId}}",
@@ -1928,11 +1959,15 @@
         "gender": "성별",
         "nickname": "닉네임",
         "apiKeySettings": "API 키",
-        "masterProfile": "마스터 프로필(고유): 프로필 이름은 필수이며, 나머지는 선택 사항이며 삭제할 수 있습니다.",
-        "masterProfileTitle": "마스터 프로필",
+        "masterProfile": "내 프로필(고유): 프로필 이름은 필수이며, 나머지는 선택 항목입니다.",
+        "masterProfileTitle": "내 프로필",
         "profileName": "프로필 이름",
         "profileNameMaxHint": "최대 60자",
         "profileNameTooLong": "프로필 이름이 너무 깁니다.",
+        "profileNameUnsafeDot": "프로필 이름은 점만으로 구성되거나 점으로 끝날 수 없습니다.",
+        "profileNameDotSequence": "프로필 이름에는 연속된 점(..)을 포함할 수 없습니다.",
+        "profileNameReservedDevice": "프로필 이름에는 Windows 예약 장치 이름을 사용할 수 없습니다.",
+        "profileNameInvalid": "프로필 이름이 올바르지 않습니다.",
         "profileNameContainsSlash": "프로필 이름에 경로 구분 기호(/ 또는 \\)를 포함할 수 없습니다",
         "profileNameContainsDot": "프로필 이름에 점(.)을 포함할 수 없습니다",
         "profileNameInvalidChars": "프로필 이름에는 문자, 숫자, 공백, 밑줄, 하이픈, 괄호, 가운데점(·/・), 아포스트로피만 사용할 수 있습니다",
@@ -2013,7 +2048,7 @@
         "aiAssistApiMissing": "보조 API가 아직 설정되지 않았습니다. \"API 키 설정\"에서 먼저 설정해주세요.",
         "confirmNewCatgirl": "새로운 NEKO 확인",
         "saveChanges": "변경 사항 저장",
-        "saveMaster": "마스터 프로필 저장",
+        "saveMaster": "내 프로필 저장",
         "addMasterField": "필드 추가",
         "manageLive2D": "Live2D 모델을 관리하려면 클릭하세요.",
         "idleMotionHint": "저장 시 선택한 모션이 대기 모션으로 설정됩니다",
@@ -2021,7 +2056,7 @@
         "rename": "이름 바꾸기",
         "cancel": "취소",
         "addMasterFieldPrompt": "새 필드의 이름(키 이름)을 입력하세요.",
-        "addMasterFieldTitle": "마스터 필드 추가",
+        "addMasterFieldTitle": "내 프로필 필드 추가",
         "fieldExists": "이 필드는 이미 존재합니다.",
         "profileNameRequired": "프로필 이름이 필요합니다.",
         "profileNameRenameOnlyHint": "프로필 이름은 이름 바꾸기 버튼으로 변경하세요",
@@ -2079,10 +2114,10 @@
         "gsvDiagTimeout": "GPT-SoVITS server 응답 시간 초과 (>3s)",
         "loadFailed": "캐릭터 데이터 로드 실패",
         "renameError": "이름 변경 실패: {{error}}",
-        "renameMasterTitle": "주인 이름 변경",
+        "renameMasterTitle": "내 프로필 이름 변경",
         "renameSuccess": "이름 변경 성공",
         "autoSaveError": "설정 저장 실패",
-        "saveMasterError": "주인 설정 저장 실패",
+        "saveMasterError": "내 프로필 저장에 실패했습니다",
         "autoSaved": "설정 자동 저장됨",
         "autoSaveFailed": "자동 저장 실패, 페이지를 닫기 전에 수동으로 저장하세요",
         "unsavedNewCatgirlDraftDetected": "저장되지 않은 새 NEKO 초안이 감지되었습니다. 동기화 새로고침 전에 먼저 저장하거나 취소하세요",
@@ -2110,7 +2145,7 @@
         "generatingCard": "캐릭터 카드 생성 중...",
         "settings": "설정",
         "renamePrompt": "새 프로필 이름을 입력하세요",
-        "renameMasterPrompt": "새 마스터 프로필 이름을 입력하세요",
+        "renameMasterPrompt": "새 프로필 이름을 입력해 주세요",
         "renameTitle": "이름 변경",
         "tempSaveFailed": "임시 저장 실패: {{error}}",
         "newCatgirlSuccess": "새 캐릭터가 생성되었습니다",
@@ -2139,7 +2174,7 @@
         "cardAuthorReadonly": "이 출처의 카드는 작성자를 수정할 수 없습니다",
         "cardAuthorUpdated": "작성자가 업데이트되었습니다",
         "cardAuthorUpdateFailed": "작성자 업데이트 실패: {{error}}",
-        "saveMasterSuccess": "주인 설정 저장 성공",
+        "saveMasterSuccess": "내 프로필이 저장되었습니다",
         "editCardFace": "카드 이미지 편집",
         "cardFaceModelSettings": "카드 모델 설정",
         "cardMakerPopupBlocked": "카드 제작 페이지를 자동으로 열 수 없습니다. 브라우저의 팝업을 허용한 뒤 다시 시도하거나, 카드 영역을 클릭해 직접 열어 주세요."
@@ -3127,7 +3162,7 @@
             "mmd": {
                 "step1": {
                     "title": "🎭 MMD 모델 선택",
-                    "desc": "Live3D(MMD) 모드에서 여기에서 사용할 모델을 선택합니다. MMD와 VRM은 동일한 모델 목록을 공유합니다."
+                    "desc": "3D 모델(MMD) 모드에서 여기에서 사용할 모델을 선택합니다. MMD와 VRM은 동일한 모델 목록을 공유합니다."
                 },
                 "step2": {
                     "title": "💃 VMD 애니메이션",
@@ -3139,7 +3174,7 @@
                 },
                 "step4": {
                     "title": "😄 감정 설정",
-                    "desc": "모델을 선택한 후 여기에서 감정 설정으로 들어갑니다. Live3D에서 MMD와 VRM은 이 버튼을 공유하며, Live2D의 '감정 설정' 버튼과는 다릅니다."
+                    "desc": "모델을 선택한 후 여기에서 감정 설정으로 들어갑니다. 3D 모델에서 MMD와 VRM은 이 버튼을 공유하며, Live2D의 '감정 설정' 버튼과는 다릅니다."
                 }
             }
         },
@@ -3181,8 +3216,8 @@
         },
         "chara_manager": {
             "step1": {
-                "title": "👤 마스터 프로필",
-                "desc": "이것이 귀하의 마스터 프로필입니다. 프로필 이름은 필수이며 기타 정보는 선택사항입니다. 이는 동반자가 귀하에게 말하는 방식에 영향을 미칩니다."
+                "title": "👤 내 프로필",
+                "desc": "이것은 당신의 프로필입니다. 프로필 이름은 필수이며, 다른 정보는 선택 항목입니다. 이 정보는 Neko가 당신을 부르는 방식에 영향을 줍니다."
             },
             "step2": {
                 "title": "📝 프로필 이름 설정",
@@ -3853,6 +3888,8 @@
         "minimize": "최소화",
         "close": "닫기",
         "loading": "로드 중...",
+        "initializing": "주크박스를 초기화하는 중...",
+        "initializeFailed": "주크박스 초기화에 실패했습니다",
         "ready": "준비 완료",
         "playing": "재생 중: {{name}} - {{artist}}",
         "error": "오류: {{message}}",
@@ -4420,6 +4457,8 @@
              "yuiCheatInk": "Yui가 먹물을 던졌어",
              "yuiCheatBanana": "Yui가 바나나 껍질을 던졌어",
              "yuiCheatBananaSlip": "바나나 껍질을 밟았어",
+             "playerIcePowerup": "얼음 발동. Yui가 얼어붙었어",
+             "yuiFrozen": "Yui가 아직 얼어 있어서 샷이 늦어져",
              "nekoThinking": "Neko 생각 중",
              "nekoTurn": "Neko 차례",
              "copyNeko": "Neko 따라 하기",
@@ -4665,6 +4704,12 @@
                      "이 먹물 작전, 꽤 잘 먹혔지?"
                  ]
              },
+             "playerIceScore": [
+                 "으응, 그건 무효야. 다시 해!",
+                 "잠깐, 나 얼어 있었잖아. 다시 하자!",
+                 "얼음 도움을 너무 받았어. 한 번 더!",
+                 "치사해, 움직일 수 없었단 말이야."
+             ],
              "easterEgg": {
                  "lateNight": "이 시간에도 샷을 쳐?",
                  "xmas": "종도 달았는데 아직도 던질 거야?",

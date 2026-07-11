@@ -6,6 +6,8 @@
 <link rel="preload" as="image" href="/static/game/games/badminton/images/indoor-badminton-arena-bg-v4.jpg?v=20260618g">
 <link rel="preload" as="image" href="/static/game/games/badminton/images/miami-beach-sunset-bg-v2.webp?v=20260618b">
 <link rel="preload" as="image" href="/static/game/games/badminton/images/yui-octopus-ink-overlay.png?v={{ static_asset_version }}">
+<link rel="preload" as="image" href="/static/game/games/badminton/images/player-ice-powerup.png?v={{ static_asset_version }}">
+<link rel="preload" as="image" href="/static/game/games/badminton/images/yui-frozen-crystals.png?v={{ static_asset_version }}">
 <title>羽毛球挑战 - Badminton</title>
 <script>
   (function () {
@@ -33,6 +35,16 @@
     font-family: "PingFang SC", "Segoe UI", Arial, sans-serif;
   }
   canvas#game { display: block; position: fixed; inset: 0; z-index: 0; }
+  #yui-frozen-crystal-overlay {
+    position: fixed; left: -9999px; top: -9999px; z-index: 12;
+    width: 82px; height: auto; pointer-events: none; opacity: 0;
+    transform: translate3d(-9999px, -9999px, 0);
+    transform-origin: 50% 82%;
+    filter: drop-shadow(0 8px 10px rgba(11, 57, 73, .26));
+    transition: opacity .12s ease;
+    will-change: transform, opacity, left, top;
+  }
+  #yui-frozen-crystal-overlay[data-active="1"] { opacity: .88; }
   #aiming-canvas {
     display: block; position: fixed; inset: 0; z-index: 15;
     pointer-events: none;
@@ -645,6 +657,7 @@
 <div id="neko-vrm-container" class="neko-avatar-container" hidden><canvas id="neko-vrm-canvas"></canvas></div>
 <div id="neko-mmd-container" class="neko-avatar-container" hidden><canvas id="neko-mmd-canvas"></canvas></div>
 <div id="neko-fallback-container" class="neko-avatar-container" hidden></div>
+<img id="yui-frozen-crystal-overlay" src="/static/game/games/badminton/images/yui-frozen-crystals.png?v={{ static_asset_version }}" alt="" aria-hidden="true" data-active="0">
 <div id="player-sensei-vrm-container" hidden><canvas id="player-sensei-vrm-canvas"></canvas><canvas id="player-sensei-held-shuttle-canvas" aria-hidden="true"></canvas></div>
 <div id="neko-bubble"></div>
 <div id="assist-hint">
@@ -1093,6 +1106,14 @@
   var YUI_CHEAT_INK_DURATION_MS = 3600;
   var YUI_CHEAT_INK_VISUAL_SCALE = 0.82;
   var YUI_CHEAT_SCORE_TAUNT_GRACE_MS = 6500;
+  var PLAYER_POWERUP_ICE_RADIUS = 22;
+  var PLAYER_POWERUP_ICE_DRAW_SIZE = 12;
+  var PLAYER_POWERUP_ICE_EXPIRE_MS = 9000;
+  var PLAYER_POWERUP_ICE_FREEZE_MS = 3000;
+  var PLAYER_POWERUP_ICE_SPAWN_MIN_MS = 5200;
+  var PLAYER_POWERUP_ICE_SPAWN_MAX_MS = 9000;
+  var PLAYER_POWERUP_ICE_SPAWN_CHANCE = 0.10;
+  var YUI_FROZEN_CRYSTAL_DRAW_WIDTH = 82;
   var YUI_LIVE2D_RACKET_ANCHOR_SAMPLE_MS = 64;
   var YUI_LIVE2D_RACKET_LAYOUT_SAMPLE_MS = 240;
   var YUI_LIVE2D_RACKET_IDLE_RENDER_MS = 66;
@@ -1267,6 +1288,7 @@
   var nekoMmdContainer = document.getElementById('neko-mmd-container');
   var nekoMmdCanvas = document.getElementById('neko-mmd-canvas');
   var nekoFallbackContainer = document.getElementById('neko-fallback-container');
+  var yuiFrozenCrystalOverlay = document.getElementById('yui-frozen-crystal-overlay');
   var playerSenseiContainer = document.getElementById('player-sensei-vrm-container');
   var playerSenseiCanvas = document.getElementById('player-sensei-vrm-canvas');
   var playerSenseiHeldShuttleCanvas = document.getElementById('player-sensei-held-shuttle-canvas');
@@ -1289,9 +1311,13 @@
   var BADMINTON_RACKET_SPRITE_SRC = '/static/game/games/badminton/images/badminton-racket-sprite.svg?v=20260618a';
   var YUI_BANANA_PEEL_SPRITE_SRC = '/static/game/games/badminton/images/yui-banana-peel-sprite.png?v=20260622a';
   var YUI_CHEAT_INK_OVERLAY_SRC = badmintonAssetUrl('/static/game/games/badminton/images/yui-octopus-ink-overlay.png');
+  var PLAYER_ICE_POWERUP_SPRITE_SRC = badmintonAssetUrl('/static/game/games/badminton/images/player-ice-powerup.png');
+  var YUI_FROZEN_CRYSTAL_SPRITE_SRC = badmintonAssetUrl('/static/game/games/badminton/images/yui-frozen-crystals.png');
   var badmintonRacketSpriteImage = null;
   var yuiBananaPeelSpriteImage = null;
   var yuiInkOverlayImage = null;
+  var playerIcePowerupSpriteImage = null;
+  var yuiFrozenCrystalSpriteImage = null;
   function preloadBadmintonRacketSprite() {
     var image = new Image();
     image.decoding = 'async';
@@ -1316,6 +1342,22 @@
     image.src = YUI_CHEAT_INK_OVERLAY_SRC;
     yuiInkOverlayImage = image;
   }
+  function preloadPlayerIcePowerupSprite() {
+    var image = new Image();
+    image.decoding = 'async';
+    image.onload = function () { image.__ready = true; };
+    image.onerror = function () { image.__ready = false; };
+    image.src = PLAYER_ICE_POWERUP_SPRITE_SRC;
+    playerIcePowerupSpriteImage = image;
+  }
+  function preloadYuiFrozenCrystalSprite() {
+    var image = new Image();
+    image.decoding = 'async';
+    image.onload = function () { image.__ready = true; };
+    image.onerror = function () { image.__ready = false; };
+    image.src = YUI_FROZEN_CRYSTAL_SPRITE_SRC;
+    yuiFrozenCrystalSpriteImage = image;
+  }
   function isBadmintonRacketSpriteReady() {
     return !!(badmintonRacketSpriteImage && (
       badmintonRacketSpriteImage.__ready ||
@@ -1334,9 +1376,23 @@
       (yuiInkOverlayImage.complete && yuiInkOverlayImage.naturalWidth > 0)
     ));
   }
+  function isPlayerIcePowerupSpriteReady() {
+    return !!(playerIcePowerupSpriteImage && (
+      playerIcePowerupSpriteImage.__ready ||
+      (playerIcePowerupSpriteImage.complete && playerIcePowerupSpriteImage.naturalWidth > 0)
+    ));
+  }
+  function isYuiFrozenCrystalSpriteReady() {
+    return !!(yuiFrozenCrystalSpriteImage && (
+      yuiFrozenCrystalSpriteImage.__ready ||
+      (yuiFrozenCrystalSpriteImage.complete && yuiFrozenCrystalSpriteImage.naturalWidth > 0)
+    ));
+  }
   try { preloadBadmintonRacketSprite(); } catch (_) { badmintonRacketSpriteImage = null; }
   try { preloadYuiBananaPeelSprite(); } catch (_) { yuiBananaPeelSpriteImage = null; }
   try { preloadYuiInkOverlayImage(); } catch (_) { yuiInkOverlayImage = null; }
+  try { preloadPlayerIcePowerupSprite(); } catch (_) { playerIcePowerupSpriteImage = null; }
+  try { preloadYuiFrozenCrystalSprite(); } catch (_) { yuiFrozenCrystalSpriteImage = null; }
   window.badmintonVrmManager = window.badmintonVrmManager || null;
   window.badmintonMmdManager = window.badmintonMmdManager || null;
   window.badmintonPlayerVrmManager = window.badmintonPlayerVrmManager || null;
@@ -2824,6 +2880,7 @@
     if (kind === 'yui_cheat_item') return 0;
     if (kind === 'yui_cheat_hit') return 0;
     if (kind === 'yui_cheat_score') return 0;
+    if (kind === 'player_ice_score') return 0;
     if (/^streak_(5|10)$/.test(kind)) return 1;
     if (label.indexOf('duel') !== -1) return 1;
     if (kind === 'shot_missed' || kind === 'close_to_record') return 2;
@@ -2884,7 +2941,7 @@
   }
   function shouldInterruptVoiceAudio(event) {
     var kind = String(event && event.kind || '');
-    return kind === 'yui_cheat_item' || kind === 'yui_cheat_hit' || kind === 'yui_cheat_score';
+    return kind === 'yui_cheat_item' || kind === 'yui_cheat_hit' || kind === 'yui_cheat_score' || kind === 'player_ice_score';
   }
   function _mirrorAndSpeak(entry) {
     if (debugMode && debugVoiceMuted && !debugVoiceMode && !(entry.event && entry.event.force_voice_in_debug)) return Promise.resolve();
@@ -3077,6 +3134,20 @@
     showBubble(line, control, event);
     speakLine(line, control, event);
   }
+  function showYuiPlayerIceScoreLine() {
+    var lines = _i18nArray('lines.playerIceScore', ['唔不算嘛不算嘛重来！']);
+    var line = lines[Math.floor(Math.random() * lines.length)] || '唔不算嘛不算嘛重来！';
+    var control = { expression: 'awkward', intensity: 'high', mood: 'surprised', bubbleVariant: 'yui-cheat-score', bubblePriority: 10, bubbleHoldMs: 3800, bubbleDurationMs: 4800 };
+    var event = {
+      kind: 'player_ice_score',
+      label: 'player_ice_score',
+      item_kind: 'ice',
+      force_voice_in_debug: true,
+      voice_deadline_ms: 5200
+    };
+    showBubble(line, control, event);
+    speakLine(line, control, event);
+  }
   function renderBubbleContent(text, emote) {
     text = String(text || '').trim();
     bubble.textContent = '';
@@ -3154,7 +3225,7 @@
     var label = String(event && event.label || '');
     if (event && (event.force_voice || event.force_voice_in_debug || event.voice_always)) return true;
     if (kind === 'user_reply' || event.isUserReply || event.source === 'user_reply') return true;
-    if (kind === 'yui_cheat_item' || kind === 'yui_cheat_hit' || kind === 'yui_cheat_score') return true;
+    if (kind === 'yui_cheat_item' || kind === 'yui_cheat_hit' || kind === 'yui_cheat_score' || kind === 'player_ice_score') return true;
     if (kind === 'difficulty_ramp') return true;
     if (event && event.point_winner === 'neko' && label === 'neko_duel_shot') return true;
     if (label.indexOf('duel_difficulty_') === 0) return true;
@@ -4354,6 +4425,7 @@
     playerCourt: { x: PLAYER_START_X, y: PLAYER_START_Y, targetX: PLAYER_START_X, targetY: PLAYER_START_Y },
     playerJump: { offset: 0, velocity: 0, active: false, cooldownUntil: 0, lastSmashAt: 0 },
     playerCheatEffect: { slowUntil: 0, spinUntil: 0, spinStartedAt: 0, spinAngle: 0 },
+    playerPowerup: { items: [], freezeUntil: 0, nextIceSpawnAt: performance.now() + PLAYER_POWERUP_ICE_SPAWN_MIN_MS, seq: 0 },
     yuiCourt: { x: YUI_START_X, y: YUI_START_Y, targetX: YUI_START_X, targetY: YUI_START_Y },
     yuiCheat: { items: [], inkStartedAt: 0, inkUntil: 0, inkDuration: 0, cooldownUntil: 0, lastUsedKind: '', forcedKind: '', pendingScoreTauntKind: '', pendingScoreTauntUntil: 0, seq: 0 },
     lastTs: 0,
@@ -4450,6 +4522,14 @@
     game.playerCheatEffect.spinUntil = 0;
     game.playerCheatEffect.spinStartedAt = 0;
     game.playerCheatEffect.spinAngle = 0;
+    resetPlayerPowerups();
+  }
+  function resetPlayerPowerups() {
+    if (!game.playerPowerup) game.playerPowerup = {};
+    game.playerPowerup.items = [];
+    game.playerPowerup.freezeUntil = 0;
+    game.playerPowerup.nextIceSpawnAt = performance.now() + PLAYER_POWERUP_ICE_SPAWN_MIN_MS;
+    game.playerPowerup.seq = game.playerPowerup.seq || 0;
   }
   function markYuiCheatHit(kind) {
     if (!game.yuiCheat) resetYuiCheats();
@@ -4645,6 +4725,116 @@
     }
     game.yuiCheat.items = kept;
   }
+  function isYuiFrozen(now) {
+    var t = Number.isFinite(now) ? now : performance.now();
+    return !!(game.playerPowerup && t < (game.playerPowerup.freezeUntil || 0));
+  }
+  function getYuiFreezeState(now) {
+    var t = Number.isFinite(now) ? now : performance.now();
+    var until = game.playerPowerup ? game.playerPowerup.freezeUntil || 0 : 0;
+    return {
+      active: t < until,
+      remaining_ms: Math.max(0, Math.round(until - t))
+    };
+  }
+  function randomPlayerIcePowerupX() {
+    return PLAYER_COURT_X_MIN + PLAYER_POWERUP_ICE_RADIUS + Math.random() * Math.max(1, PLAYER_COURT_X_MAX - PLAYER_COURT_X_MIN - PLAYER_POWERUP_ICE_RADIUS * 2);
+  }
+  function buildPlayerIcePowerup(options) {
+    if (!game.playerPowerup) resetPlayerPowerups();
+    var now = performance.now();
+    var opts = options || {};
+    var x = Number.isFinite(opts.x) ? opts.x : randomPlayerIcePowerupX();
+    var y = Number.isFinite(opts.y) ? opts.y : getPlayerGroundFootY() - 8;
+    return {
+      id: ++game.playerPowerup.seq,
+      kind: 'ice',
+      x: clamp(x, PLAYER_COURT_X_MIN, PLAYER_COURT_X_MAX),
+      y: clamp(y, PLAYER_COURT_Y_MIN, BADMINTON.courtBottom - 8),
+      radius: PLAYER_POWERUP_ICE_RADIUS,
+      createdAt: now,
+      expiresAt: now + PLAYER_POWERUP_ICE_EXPIRE_MS
+    };
+  }
+  function scheduleNextPlayerIcePowerup(now) {
+    if (!game.playerPowerup) resetPlayerPowerups();
+    var delay = PLAYER_POWERUP_ICE_SPAWN_MIN_MS + Math.random() * Math.max(0, PLAYER_POWERUP_ICE_SPAWN_MAX_MS - PLAYER_POWERUP_ICE_SPAWN_MIN_MS);
+    game.playerPowerup.nextIceSpawnAt = (Number.isFinite(now) ? now : performance.now()) + delay;
+  }
+  function spawnPlayerIcePowerup(options) {
+    if (!game.playerPowerup) resetPlayerPowerups();
+    var ice = buildPlayerIcePowerup(options);
+    game.playerPowerup.items.push(ice);
+    scheduleNextPlayerIcePowerup(performance.now());
+    return ice;
+  }
+  function maybeSpawnPlayerIcePowerup(now) {
+    if (!isDuelMode() || game.state === 'game_over') return;
+    if (!game.playerPowerup) resetPlayerPowerups();
+    if ((game.playerPowerup.items || []).length > 0) return;
+    var t = Number.isFinite(now) ? now : performance.now();
+    if (t < (game.playerPowerup.nextIceSpawnAt || 0)) return;
+    if (isYuiFrozen(t) || Math.random() > PLAYER_POWERUP_ICE_SPAWN_CHANCE) {
+      scheduleNextPlayerIcePowerup(t);
+      return;
+    }
+    spawnPlayerIcePowerup();
+  }
+  function cancelPendingYuiSwingForFreeze(now) {
+    if (!game.pendingSwing || game.pendingSwing.shooter !== 'neko') return false;
+    var pendingSwing = game.pendingSwing;
+    game.pendingSwing = null;
+    if (game.ball && pendingSwing.impulse && pendingSwing.impulse.incomingBall === game.ball && !game.ball.resolved) {
+      game.state = 'in_flight';
+    } else if (isDuelMode() && game.duel.activeShooter === 'neko' && game.state === 'swinging') {
+      game.state = 'neko_thinking';
+      clearTimeout(game.duel.timer);
+      var freeze = getYuiFreezeState(now);
+      game.duel.timer = setTimeout(startNekoDuelTurn, freeze.remaining_ms + 120);
+    }
+    return true;
+  }
+  function applyYuiFreeze(item) {
+    if (!game.playerPowerup) resetPlayerPowerups();
+    var now = performance.now();
+    game.playerPowerup.freezeUntil = Math.max(game.playerPowerup.freezeUntil || 0, now + PLAYER_POWERUP_ICE_FREEZE_MS);
+    cancelPendingYuiSwingForFreeze(now);
+    showAssistHint(_i18n('toast.playerIcePowerup', '冰块生效，Yui 被冻住了'));
+    applyNekoControl({ expression: 'shock', intensity: 'medium' }, { transient: true });
+    setYuiAction('saving', 520);
+    sendGameEvent({
+      kind: 'player_powerup_hit',
+      label: 'ice_freeze_yui',
+      result: 'powerup_hit',
+      item_kind: 'ice',
+      item_id: item && item.id,
+      freeze_ms: PLAYER_POWERUP_ICE_FREEZE_MS,
+      duel: buildDuelStatePayload(),
+      voice_deadline_ms: 900
+    });
+  }
+  function updatePlayerPowerups(dt) {
+    if (!game.playerPowerup) resetPlayerPowerups();
+    var now = performance.now();
+    maybeSpawnPlayerIcePowerup(now);
+    var items = game.playerPowerup.items || [];
+    var kept = [];
+    for (var i = 0; i < items.length; i++) {
+      var item = items[i];
+      if (!item || now >= item.expiresAt) continue;
+      if (item.kind === 'ice') {
+        var dx = getPlayerX() - item.x;
+        var dy = getPlayerFootY() - item.y;
+        var dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist <= (item.radius || PLAYER_POWERUP_ICE_RADIUS)) {
+          applyYuiFreeze(item);
+          continue;
+        }
+      }
+      kept.push(item);
+    }
+    game.playerPowerup.items = kept;
+  }
   function updatePlayerCourtTarget(clientX, clientY) {
     var normX = clamp(clientX / Math.max(1, window.innerWidth), 0, 1);
     var moveBounds = getPlayerCourtMoveBounds();
@@ -4660,6 +4850,11 @@
     updatePlayerCourtTarget(lastPlayerPointer.clientX, lastPlayerPointer.clientY);
   }
   function updateYuiCourtTarget() {
+    if (isYuiFrozen()) {
+      game.yuiCourt.targetX = game.yuiCourt.x;
+      game.yuiCourt.targetY = game.yuiCourt.y;
+      return;
+    }
     var targetX = YUI_START_X;
     var targetY = YUI_START_Y;
     var ball = game.ball;
@@ -4689,11 +4884,16 @@
     var playerMoveSpeed = PLAYER_MOVE_SPEED * getPlayerMovementSpeedMultiplier();
     var yuiChaseSpeedX = isYuiChasingIncomingShuttle() ? YUI_RETURN_CHASE_SPEED : YUI_MOVE_SPEED;
     var yuiChaseSpeedY = isYuiChasingIncomingShuttle() ? YUI_RETURN_CHASE_Y_SPEED : YUI_MOVE_SPEED * 0.5;
+    if (isYuiFrozen()) {
+      yuiChaseSpeedX = 0;
+      yuiChaseSpeedY = 0;
+    }
     game.playerCourt.x = moveToward(game.playerCourt.x, game.playerCourt.targetX, playerMoveSpeed, dt);
     game.playerCourt.targetY = PLAYER_START_Y;
     game.playerCourt.y = PLAYER_START_Y;
     updatePlayerJump(dt);
     updateYuiCheats(dt);
+    updatePlayerPowerups(dt);
     game.yuiCourt.x = moveToward(game.yuiCourt.x, game.yuiCourt.targetX, yuiChaseSpeedX, dt);
     game.yuiCourt.y = moveToward(game.yuiCourt.y, game.yuiCourt.targetY, yuiChaseSpeedY, dt);
     updatePlayerAvatarPosition();
@@ -6132,6 +6332,10 @@
   }
   function maybeYuiReturnIncomingShuttle(ball) {
     if (!isDuelMode() || !ball || ball.resolved || game.pendingSwing) return false;
+    if (isYuiFrozen()) {
+      ball.scoredDuringYuiFreeze = true;
+      return false;
+    }
     if (ball.shooter !== 'player' || ball.direction !== 1 || !ball.crossedNet) return false;
     var contact = getYuiShotOrigin();
     var shuttleCourtY = getShuttleCourtY(ball, false);
@@ -6284,6 +6488,13 @@
   }
   function startNekoDuelTurn() {
     if (!isDuelMode() || game.state !== 'neko_thinking') return;
+    var freeze = getYuiFreezeState();
+    if (freeze.active) {
+      clearTimeout(game.duel.timer);
+      game.duel.timer = setTimeout(startNekoDuelTurn, freeze.remaining_ms + 120);
+      showAssistHint(_i18n('toast.yuiFrozen', 'Yui 还被冰住，出拍延后'));
+      return;
+    }
     var pendingControl = game.duel.pendingVoiceControl || null;
     if (pendingControl && pendingControl.difficulty) setDuelDifficulty(pendingControl.difficulty);
     var shot = getNekoDuelShot();
@@ -6421,6 +6632,8 @@
     recordShotHistory(game.attemptsResults[game.attemptsResults.length - 1]);
     playShotResultSound(shotType, scored);
     showYuiDuelResultEmote(scored, shotType, ball, pointWinner);
+    var playerIceScore = pointWinner === 'player' && shooter === 'player' && !!(ball && ball.scoredDuringYuiFreeze);
+    if (playerIceScore) showYuiPlayerIceScoreLine();
     var cheatScoreTauntKind = getYuiCheatScoreTauntKind(pointWinner);
     if (cheatScoreTauntKind) showYuiCheatScoreLine(cheatScoreTauntKind);
     if (shooter === 'neko' && !scored) setYuiAction('react-disappointed', 620);
@@ -8815,8 +9028,60 @@
     }
     ctx.restore();
   }
+  function drawPlayerIcePowerupSprite(x, y, size, rotation) {
+    if (!isPlayerIcePowerupSpriteReady()) return;
+    var naturalW = playerIcePowerupSpriteImage.naturalWidth || 139;
+    var naturalH = playerIcePowerupSpriteImage.naturalHeight || 127;
+    var drawW = size * 4.15;
+    var drawH = drawW * naturalH / Math.max(1, naturalW);
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(rotation || 0);
+    ctx.drawImage(playerIcePowerupSpriteImage, -drawW / 2, -drawH * 0.86, drawW, drawH);
+    ctx.restore();
+  }
+  function drawPlayerPowerupItems(now) {
+    var t = Number.isFinite(now) ? now : getBadmintonFrameNow();
+    var items = game.playerPowerup && game.playerPowerup.items ? game.playerPowerup.items : [];
+    if (!items.length) return;
+    for (var i = 0; i < items.length; i++) {
+      var item = items[i];
+      if (!item || item.kind !== 'ice') continue;
+      var age = clamp((t - item.createdAt) / 500, 0, 1);
+      var bob = Math.sin(t / 180 + item.id) * 2.2;
+      var rotation = Math.sin(t / 420 + item.id) * 0.08;
+      ctx.save();
+      ctx.globalAlpha = 0.72 + age * 0.26;
+      drawPlayerIcePowerupSprite(item.x, item.y + bob, PLAYER_POWERUP_ICE_DRAW_SIZE, rotation);
+      ctx.restore();
+    }
+  }
+  function updateYuiFrozenCrystalOverlay(now) {
+    if (!yuiFrozenCrystalOverlay) return;
+    var t = Number.isFinite(now) ? now : getBadmintonFrameNow();
+    if (!isDuelMode() || !isYuiFrozen(t) || !isYuiFrozenCrystalSpriteReady()) {
+      yuiFrozenCrystalOverlay.dataset.active = '0';
+      yuiFrozenCrystalOverlay.style.left = '-9999px';
+      yuiFrozenCrystalOverlay.style.top = '-9999px';
+      yuiFrozenCrystalOverlay.style.transform = 'translate3d(-9999px, -9999px, 0)';
+      return;
+    }
+    var drawW = Math.max(76, Math.min(260, YUI_FROZEN_CRYSTAL_DRAW_WIDTH / BASE_W * window.innerWidth));
+    var pulse = Math.sin(t / 180) * 0.035;
+    var x = getYuiX() + 10;
+    var y = getYuiY() + 73;
+    var screenX = x / BASE_W * window.innerWidth;
+    var screenY = y / BASE_H * window.innerHeight;
+    yuiFrozenCrystalOverlay.dataset.active = '1';
+    yuiFrozenCrystalOverlay.style.width = drawW + 'px';
+    yuiFrozenCrystalOverlay.style.left = screenX + 'px';
+    yuiFrozenCrystalOverlay.style.top = screenY + 'px';
+    yuiFrozenCrystalOverlay.style.transform = 'translate(-50%, -82%) scale(' + (1 + pulse).toFixed(3) + ')';
+  }
   function drawYuiCheatItems(now) {
     var t = Number.isFinite(now) ? now : getBadmintonFrameNow();
+    drawPlayerPowerupItems(t);
+    updateYuiFrozenCrystalOverlay(t);
     var items = game.yuiCheat && game.yuiCheat.items ? game.yuiCheat.items : [];
     if (!items.length) return;
     for (var i = 0; i < items.length; i++) {
@@ -9757,6 +10022,9 @@
   function debugSpawnYuiCheat(kind, options) {
     return spawnYuiCheat(kind, options || {});
   }
+  function debugSpawnPlayerIcePowerup(options) {
+    return spawnPlayerIcePowerup(options || {});
+  }
   function installBadmintonDemoApi() {
     window._bdEventListeners = badmintonEventListeners;
     var apiObject = {
@@ -9810,6 +10078,25 @@
             source: playerRacketContact.source || 'fallback'
           } : null,
           yuiCourt: Object.assign({}, game.yuiCourt),
+          playerPowerup: (function () {
+            var now = performance.now();
+            return {
+              items: (game.playerPowerup && game.playerPowerup.items ? game.playerPowerup.items : []).map(function (item) {
+                return {
+                  id: item.id,
+                  kind: item.kind,
+                  x: item.x,
+                  y: item.y,
+                  radius: item.radius,
+                  remaining_ms: Math.max(0, Math.round((item.expiresAt || 0) - now))
+                };
+              }),
+              yui_freeze: getYuiFreezeState(now),
+              next_ice_spawn_remaining_ms: game.playerPowerup ? Math.max(0, Math.round((game.playerPowerup.nextIceSpawnAt || 0) - now)) : 0,
+              sprite_ready: isPlayerIcePowerupSpriteReady(),
+              frozen_crystal_ready: isYuiFrozenCrystalSpriteReady()
+            };
+          })(),
           yuiCheat: (function () {
             var now = performance.now();
             return {
@@ -9941,6 +10228,7 @@
       _debugSetDuelScore: debugSetDuelScore,
       _debugForceNextYuiCheat: debugForceNextYuiCheat,
       _debugSpawnYuiCheat: debugSpawnYuiCheat,
+      _debugSpawnPlayerIcePowerup: debugSpawnPlayerIcePowerup,
       _debugGetYuiRacketContactPoint: function () {
         var contact = getYuiRacketContactPoint();
         return {

@@ -37,6 +37,16 @@ const statusBlockSchema = z.object({
   text: z.string(),
 });
 
+// Frontend-only "she has a topic she'd like to bring up" teaser, shown just
+// before a proactive deep-topic opener. Backend sends only the character name
+// (no LLM-context text); the dedicated TopicHintBubble renders localized copy.
+const topicHintBlockSchema = z.object({
+  type: z.literal('topic-hint'),
+  // Trim before length check so a whitespace-only author is rejected, matching
+  // the trim the bubble does at render time.
+  author: z.string().trim().min(1),
+});
+
 const buttonGroupBlockSchema = z.object({
   type: z.literal('buttons'),
   buttons: z.array(messageActionSchema),
@@ -202,6 +212,7 @@ export const messageBlockSchema = z.discriminatedUnion('type', [
   linkBlockSchema,
   statusBlockSchema,
   buttonGroupBlockSchema,
+  topicHintBlockSchema,
 ]);
 
 const turnIdSchema = z.preprocess((value) => {
@@ -360,6 +371,7 @@ export type ImageBlock = z.infer<typeof imageBlockSchema>;
 export type LinkBlock = z.infer<typeof linkBlockSchema>;
 export type StatusBlock = z.infer<typeof statusBlockSchema>;
 export type ButtonGroupBlock = z.infer<typeof buttonGroupBlockSchema>;
+export type TopicHintBlock = z.infer<typeof topicHintBlockSchema>;
 export type ComposerAttachment = z.infer<typeof composerAttachmentSchema>;
 export type ChatSurfaceMode = z.infer<typeof chatSurfaceModeSchema>;
 export type CompactChatState = z.infer<typeof compactChatStateSchema>;
@@ -378,6 +390,41 @@ export function parseChatMessage(input: unknown): ChatMessage {
   return chatMessageSchema.parse(input);
 }
 
+const parsedCallbackCaches = new Map<string, WeakMap<object, unknown>>();
+
+function stabilizeParsedCallbackIdentities(
+  input: Record<string, unknown> | undefined,
+  parsed: ChatWindowSchemaProps,
+): ChatWindowSchemaProps {
+  if (!input) return parsed;
+
+  const parsedRecord = parsed as Record<string, unknown>;
+  Object.entries(input).forEach(([key, rawValue]) => {
+    const parsedValue = parsedRecord[key];
+    if (typeof rawValue !== 'function' || typeof parsedValue !== 'function') return;
+
+    let callbackCache = parsedCallbackCaches.get(key);
+    if (!callbackCache) {
+      callbackCache = new WeakMap<object, unknown>();
+      parsedCallbackCaches.set(key, callbackCache);
+    }
+
+    const cachedCallback = callbackCache.get(rawValue);
+    if (typeof cachedCallback === 'function') {
+      parsedRecord[key] = cachedCallback;
+      return;
+    }
+
+    // z.function() returns a new validating wrapper on every parse. Reuse that
+    // wrapper for the same host callback so ordinary message renders do not
+    // look like callback changes to React effects.
+    callbackCache.set(rawValue, parsedValue);
+  });
+
+  return parsed;
+}
+
 export function parseChatWindowProps<T extends Record<string, unknown> | undefined>(input: T) {
-  return chatWindowPropsSchema.parse(input ?? {}) as ChatWindowSchemaProps;
+  const parsed = chatWindowPropsSchema.parse(input ?? {}) as ChatWindowSchemaProps;
+  return stabilizeParsedCallbackIdentities(input, parsed);
 }

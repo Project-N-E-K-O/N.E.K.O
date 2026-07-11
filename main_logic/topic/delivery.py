@@ -18,42 +18,42 @@ _session_manager_getter: _SessionManagerGetter | None = None
 _DETAIL_TEMPLATES = {
     'en': {
         'interest': 'Recent focus: {value}',
-        'online': 'Online supplement: after searching "{query}", the concrete angle is: {angle}. Use one concrete detail naturally; if it cannot fit this turn, do not trigger this hook.',
+        'online': 'Online supplement: after searching "{query}", the concrete angle is: {angle}. Use one concrete detail naturally; if it cannot fit this turn, do not raise this topic.',
         'final': 'Generate only one natural opening sentence, as if it just came to mind. Do not say "based on your recent interests" and do not make it feel like a survey.'
     },
     'es': {
         'interest': 'Lo que le importa ahora: {value}',
-        'online': 'Complemento en línea: tras buscar "{query}", el ángulo concreto es: {angle}. Usa un detalle concreto de forma natural; si no encaja en este turno, no actives este hook.',
+        'online': 'Complemento en línea: tras buscar "{query}", el ángulo concreto es: {angle}. Usa un detalle concreto de forma natural; si no encaja en este turno, no saques este tema.',
         'final': 'Genera solo una frase inicial natural, como si se te acabara de ocurrir. No digas "según tus intereses recientes" ni lo hagas sonar como una encuesta.'
     },
     'ja': {
         'interest': '最近気にしていること：{value}',
-        'online': 'オンライン補足：「{query}」で調べた具体的な角度：{angle}。具体情報を一つだけ自然に使ってください。このターンで自然に使えないなら、この hook は発火しないでください。',
+        'online': 'オンライン補足：「{query}」で調べた具体的な角度：{angle}。具体情報を一つだけ自然に使ってください。このターンで自然に使えないなら、この話題は持ち出さないでください。',
         'final': '自然な一言の切り出しだけを生成してください。ふと思い出したように短く。「最近の興味によると」のような言い方や、アンケートっぽい聞き方は避けてください。'
     },
     'ko': {
         'interest': '요즘 신경 쓰는 것: {value}',
-        'online': '온라인 보충: "{query}" 검색 후 얻은 구체적인 각도: {angle}. 구체 정보 하나를 자연스럽게 사용하세요. 이번 턴에 자연스럽지 않다면 이 hook을 발동하지 마세요.',
+        'online': '온라인 보충: "{query}" 검색 후 얻은 구체적인 각도: {angle}. 구체 정보 하나를 자연스럽게 사용하세요. 이번 턴에 자연스럽지 않다면 이 화제를 꺼내지 마세요.',
         'final': '자연스러운 첫 문장 하나만 생성하세요. 문득 떠올린 말처럼 짧게 말하세요. "최근 관심사에 따르면" 같은 표현이나 설문처럼 느껴지는 질문은 피하세요.'
     },
     'pt': {
         'interest': 'O que anda importando: {value}',
-        'online': 'Complemento online: após buscar "{query}", o ângulo concreto é: {angle}. Use um detalhe concreto com naturalidade; se não couber neste turno, não acione este hook.',
+        'online': 'Complemento online: após buscar "{query}", o ângulo concreto é: {angle}. Use um detalhe concreto com naturalidade; se não couber neste turno, não puxe este assunto.',
         'final': 'Gere apenas uma frase de abertura natural, como se tivesse acabado de lembrar. Não diga "com base nos seus interesses recentes" e não soe como um questionário.'
     },
     'ru': {
         'interest': 'Что сейчас занимает: {value}',
-        'online': 'Онлайн-дополнение: после поиска "{query}" конкретный угол такой: {angle}. Естественно используй одну конкретную деталь; если она не подходит этому ходу, не запускай этот hook.',
+        'online': 'Онлайн-дополнение: после поиска "{query}" конкретный угол такой: {angle}. Естественно используй одну конкретную деталь; если она не подходит этому ходу, не поднимай эту тему.',
         'final': 'Сгенерируй только одну естественную вступительную фразу, будто она просто пришла в голову. Не говори "судя по твоим недавним интересам" и не делай это похожим на анкету.'
     },
     'zh': {
         'interest': '最近关注：{value}',
-        'online': '联网补充：查询「{query}」后得到的具体角度：{angle}。必须自然用上其中一个具体信息；如果这轮用不上，就不要触发这个 hook。',
+        'online': '联网补充：查询「{query}」后得到的具体角度：{angle}。必须自然用上其中一个具体信息；如果这轮用不上，就不要发起这个话题。',
         'final': '请只生成一句自然开场，像随口想起来，不要说“根据你的近期兴趣”，不要像问卷。'
     },
     'zh-TW': {
         'interest': '最近關注：{value}',
-        'online': '聯網補充：查詢「{query}」後得到的具體角度：{angle}。必須自然用上其中一個具體資訊；如果這輪用不上，就不要觸發這個 hook。',
+        'online': '聯網補充：查詢「{query}」後得到的具體角度：{angle}。必須自然用上其中一個具體資訊；如果這輪用不上，就不要發起這個話題。',
         'final': '請只生成一句自然開場，像隨口想起來，不要說「根據你的近期興趣」，不要像問卷。'
     },
 }
@@ -223,12 +223,12 @@ def _topic_manager_release_gate_open(mgr: Any, lanlan_name: str) -> bool:
 def _topic_proactive_switch_open(lanlan_name: str) -> bool:
     try:
         from utils.preferences import load_global_conversation_settings
-        enabled = bool(load_global_conversation_settings().get("proactiveChatEnabled", False))
+        enabled = bool(load_global_conversation_settings().get("proactiveChatEnabled", True))
     except Exception as exc:
         logger.debug("[%s] topic hook proactive switch check failed closed: %s", lanlan_name, exc)
         return False
     if not enabled:
-        logger.info("[%s] topic hook delivery skipped: proactive chat is disabled", lanlan_name)
+        logger.debug("[%s] topic hook delivery skipped: proactive chat is disabled", lanlan_name)
     return enabled
 
 

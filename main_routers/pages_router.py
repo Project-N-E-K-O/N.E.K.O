@@ -45,6 +45,9 @@ _TUTORIAL_RUNTIME_ASSET_PATHS = tuple(sorted(
 ))
 _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/css/yui-guide.css",
+    _PROJECT_ROOT / "static/css/tutorial-styles.css",
+    _PROJECT_ROOT / "static/libs/driver.min.css",
+    _PROJECT_ROOT / "static/libs/driver.min.js",
     _PROJECT_ROOT / "static/css/index.css",
     _PROJECT_ROOT / "static/tutorial/yui-guide/days/day1-home-guide.js",
     _PROJECT_ROOT / "static/tutorial/yui-guide/days/day2-screen-voice-guide.js",
@@ -60,6 +63,7 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/tutorial/avatar/yui-stage.js",
     _PROJECT_ROOT / "static/tutorial/avatar/standin-controller.js",
     _PROJECT_ROOT / "static/tutorial/core/interaction-takeover.js",
+    _PROJECT_ROOT / "static/tutorial/core/avatar-floating-boot-predictor.js",
     _PROJECT_ROOT / "static/tutorial/core/skip-controller.js",
     _PROJECT_ROOT / "static/tutorial/avatar/reload-controller.js",
     _PROJECT_ROOT / "static/tutorial/core/round-prelude-controller.js",
@@ -67,6 +71,10 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/avatar-performance-stage.js",
     _PROJECT_ROOT / "static/live2d-interaction.js",
     _PROJECT_ROOT / "static/live2d-init.js",
+    _PROJECT_ROOT / "static/live2d-ui-buttons.js",
+    _PROJECT_ROOT / "static/vrm-ui-buttons.js",
+    _PROJECT_ROOT / "static/mmd-ui-buttons.js",
+    _PROJECT_ROOT / "static/pngtuber-core.js",
     _PROJECT_ROOT / "static/i18n-i18next.js",
     _PROJECT_ROOT / "static/app-auto-goodbye.js",
     _PROJECT_ROOT / "static/app-interpage.js",
@@ -93,6 +101,7 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat-move-3.gif",
     _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat-move-4.gif",
     _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat-move-5.gif",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat1-question-mark.png",
     _PROJECT_ROOT / "static/assets/neko-idle/cat_model_change.gif",
     _PROJECT_ROOT / "static/assets/neko-idle/chat-minimized-yarn-ball.png",
     _PROJECT_ROOT / "static/assets/neko-idle/thought-items/cloud-thought-bubble.gif",
@@ -234,7 +243,8 @@ async def live2d_parameter_editor(request: Request):
     """Live2D parameter editor page."""
     templates = get_templates()
     return templates.TemplateResponse("templates/live2d_parameter_editor.html", {
-        "request": request
+        "request": request,
+        **_static_assets_ctx(),
     })
 
 
@@ -291,7 +301,10 @@ async def mmd_emotion_manager(request: Request):
 @router.get('/voice_clone', response_class=HTMLResponse)
 async def voice_clone_page(request: Request):
     templates = get_templates()
-    return templates.TemplateResponse("templates/voice_clone.html", {"request": request})
+    return templates.TemplateResponse("templates/voice_clone.html", {
+        "request": request,
+        **_static_assets_ctx(),
+    })
 
 
 @router.get("/api_key", response_class=HTMLResponse)

@@ -48,6 +48,7 @@ from utils.api_config_loader import (
     is_livestream_active,
 )
 from utils.custom_tts_adapter import check_custom_tts_voice_allowed
+from utils.doubao_tts import DOUBAO_VOICE_STORAGE_KEY
 from utils.file_utils import atomic_write_json
 from utils.gptsovits_config import normalize_gsv_api_url
 from utils.voice_config import read_legacy_voice_id
@@ -2677,6 +2678,8 @@ class ConfigManager:
         - minimax:   ASSIST_API_KEY_MINIMAX → MINIMAX_API_KEY fallback
         - minimax_intl: ASSIST_API_KEY_MINIMAX_INTL → MINIMAX_INTL_API_KEY fallback
         - mimo: ASSIST_API_KEY_MIMO
+        - doubao_tts: ttsModelApiKey only when the active TTS provider is doubao_tts,
+          then the dedicated Doubao Speech keybook entry
         """
         if provider == 'cosyvoice':
             core_config = self.get_core_config()
@@ -2720,6 +2723,21 @@ class ConfigManager:
             key = (core_config.get(key_field) or '').strip()
             if '***' in key:
                 return None
+            return key or None
+        if provider == 'doubao_tts':
+            try:
+                raw_core_config = self.load_json_config('core_config.json', {})
+            except Exception:
+                raw_core_config = {}
+            key = ''
+            if str(raw_core_config.get('ttsModelProvider') or '').strip() == 'doubao_tts':
+                key = (raw_core_config.get('ttsModelApiKey') or '').strip()
+                if '***' in key:
+                    key = ''
+            if not key:
+                key = (raw_core_config.get('assistApiKeyDoubaoTts') or '').strip()
+                if '***' in key:
+                    key = ''
             return key or None
         return None
 
@@ -2891,13 +2909,42 @@ class ConfigManager:
                 result.append(bucket)
         return result
 
+    def _get_doubao_tts_storage_keys(self) -> list[str]:
+        voice_storage = self.load_voice_storage()
+        result = []
+        key = self.get_tts_api_key('doubao_tts')
+        if key:
+            suffix = key[-8:] if len(key) >= 8 else key
+            bucket = f'{DOUBAO_VOICE_STORAGE_KEY}{suffix}'
+            if bucket in voice_storage:
+                result.append(bucket)
+        return result
+
+    def _get_vllm_omni_storage_keys(self) -> list[str]:
+        """Return the list of voice_storage keys for vLLM-Omni cloned voices.
+
+        Dual to :meth:`_get_mimo_storage_keys`, with one key difference: vLLM-Omni
+        is a self-hosted local service with **no API key**, so cloned voices live
+        in a single fixed ``__VLLM_OMNI__`` bucket (no key suffix) instead of a
+        per-key ``__MIMO__{suffix}`` bucket. A vLLM-Omni clone is selected by
+        ``voice_meta.provider`` at dispatch (the inline reference-audio model, see
+        ``workers/vllm_omni.py``), so the bucket merges into the current-API voice
+        list regardless of which core/TTS provider is otherwise active."""
+        voice_storage = self.load_voice_storage()
+        bucket = '__VLLM_OMNI__'
+        return [bucket] if bucket in voice_storage else []
+
     @staticmethod
     def _infer_provider_from_storage_key(storage_key: str) -> str:
         """Infer the provider from a voice_storage partition key (only for legacy data compatibility)."""
         if storage_key == '__LOCAL_TTS__':
             return 'local'
+        if storage_key.startswith('__VLLM_OMNI__'):
+            return 'vllm_omni'
         if storage_key.startswith('__MIMO__'):
             return 'mimo'
+        if storage_key.startswith(DOUBAO_VOICE_STORAGE_KEY):
+            return 'doubao_tts'
         if storage_key.startswith('__ELEVENLABS__'):
             return 'elevenlabs'
         if storage_key.startswith('__MINIMAX_INTL__'):
@@ -3022,6 +3069,24 @@ class ConfigManager:
                         vdata['provider'] = 'mimo'
                     result[vid] = vdata
 
+        for doubao_key in self._get_doubao_tts_storage_keys():
+            doubao_voices = voice_storage.get(doubao_key, {})
+            for vid, vdata in doubao_voices.items():
+                if vid not in result:
+                    if isinstance(vdata, dict) and 'provider' not in vdata:
+                        vdata['provider'] = 'doubao_tts'
+                    result[vid] = vdata
+
+        # 合并 vLLM-Omni 克隆音色（dual to MiMo；vLLM-Omni 克隆走固定 __VLLM_OMNI__ 桶
+        # + voice_meta 选中，与 MiMo 同构。差异：vLLM-Omni 是本地服务无 API key，桶名固定）
+        for vllm_key in self._get_vllm_omni_storage_keys():
+            vllm_voices = voice_storage.get(vllm_key, {})
+            for vid, vdata in vllm_voices.items():
+                if vid not in result:
+                    if isinstance(vdata, dict) and 'provider' not in vdata:
+                        vdata['provider'] = 'vllm_omni'
+                    result[vid] = vdata
+
         if for_listing:
             # UI 试听列表不需要 MiMo 克隆的参考样本 base64（可达 MB）——剥掉，避免把大 blob
             # 推给前端。dispatch / preview 走 for_listing=False，仍拿到完整 voice_meta。
@@ -3136,14 +3201,16 @@ class ConfigManager:
         """Delete the given voice under the current TTS config (including standalone-provider voices)"""
         voice_storage = self.load_voice_storage()
 
-        # 先检查带前缀的独立服务商存储
+        # 先检查带前缀的独立服务商存储（含 vLLM-Omni 固定桶 __VLLM_OMNI__）
         for storage_key in list(voice_storage.keys()):
             if (
                 storage_key.startswith('__MINIMAX__')
                 or storage_key.startswith('__MINIMAX_INTL__')
                 or storage_key.startswith('__ELEVENLABS__')
                 or storage_key.startswith('__MIMO__')
+                or storage_key.startswith(DOUBAO_VOICE_STORAGE_KEY)
                 or storage_key.startswith('__COSYVOICE_INTL__')
+                or storage_key.startswith('__VLLM_OMNI__')
             ) and voice_id in voice_storage.get(storage_key, {}):
                 # 克隆身份（含 MiMo 的样本 base64）都在 voice_data 里，删除 entry 随之消失，
                 # 无旁路本地文件需清理（对偶 MiniMax/ElevenLabs）。
@@ -3811,6 +3878,7 @@ class ConfigManager:
             'ASSIST_API_KEY_KIMI_CODE': DEFAULT_CORE_API_KEY,
             'ASSIST_API_KEY_DEEPSEEK': DEFAULT_CORE_API_KEY,
             'ASSIST_API_KEY_DOUBAO': DEFAULT_CORE_API_KEY,
+            'ASSIST_API_KEY_DOUBAO_TTS': '',
             'ASSIST_API_KEY_QWEN_INTL': '',
             'ASSIST_API_KEY_MINIMAX': '',
             'ASSIST_API_KEY_MINIMAX_INTL': '',
@@ -3901,6 +3969,7 @@ class ConfigManager:
         config['ASSIST_API_KEY_KIMI_CODE'] = core_cfg.get('assistApiKeyKimiCode', '') or _fb('kimi_code')
         config['ASSIST_API_KEY_DEEPSEEK'] = core_cfg.get('assistApiKeyDeepseek', '') or _fb('deepseek')
         config['ASSIST_API_KEY_DOUBAO'] = core_cfg.get('assistApiKeyDoubao', '') or _fb('doubao')
+        config['ASSIST_API_KEY_DOUBAO_TTS'] = core_cfg.get('assistApiKeyDoubaoTts', '')
         # MiniMax / MiMo 是 assist-only TTS provider，coreApiKey 不保证兼容；
         # 不 fallback，以免把无效 key 塞进 TTS 凭证槽位导致 401，
         # 掩盖"未配置 TTS provider key"的真实提示。
@@ -4245,7 +4314,10 @@ class ConfigManager:
                 elif provider == 'follow_summary':
                     config[model_key] = config.get('SUMMARY_MODEL', '')
                 elif provider in ('follow_core', 'follow_assist'):
+                    uses_fixed_free_assist_model = provider == 'follow_assist' and assist_api_value == 'free'
                     if (
+                        not uses_fixed_free_assist_model
+                        and
                         prefix not in ('gameMain', 'gameSummary', 'omni', 'tts')
                         and isinstance(cfg_model, str)
                         and cfg_model.strip()

@@ -674,6 +674,7 @@
     },
     "chat": {
         "title": "Чат",
+        "topicHint": "Кажется, {{author}} хочет о чём-то поговорить…",
         "viewerTitle": "Чат (Режим просмотра)",
         "tooltip": "Область чата",
         "textInputPlaceholder": "Нажмите Enter для отправки, Shift+Enter для новой строки",
@@ -1023,7 +1024,8 @@
             "kimi": "Kimi (Moonshot AI, поддерживает длинный контекст)",
             "kimi_code": "Kimi Code (Moonshot)",
             "deepseek": "DeepSeek",
-            "doubao": "ByteDance (Doubao)",
+            "doubao": "Doubao LLM (Volcengine Ark)",
+            "doubao_tts": "Doubao Speech (Volcengine)",
             "minimax": "MiniMax (Китай)",
             "minimax_intl": "MiniMax (международный)",
             "elevenlabs": "ElevenLabs (клонирование голоса)",
@@ -1071,7 +1073,8 @@
             "gemini": "Gemini (Google)",
             "kimi": "Moonshot (Kimi)",
             "kimi_code": "Moonshot Kimi Code",
-            "doubao": "ByteDance (Doubao)",
+            "doubao": "Doubao LLM (Volcengine Ark)",
+            "doubao_tts": "Doubao Speech (Volcengine)",
             "minimax": "MiniMax (Китай)",
             "minimax_intl": "MiniMax (международный)",
             "mimo": "MiMo (Xiaomi)",
@@ -1352,6 +1355,7 @@
         "toggleFullscreen": "Полноэкранный режим",
         "exitFullscreen": "Выйти из полноэкранного режима",
         "modelType": "Тип модели",
+        "modelType3d": "3D-модель",
         "selectLive2DModel": "Выбрать модель Live2D",
         "selectVRMModel": "Модель VRM",
         "selectVRMFile": "Выбрать файл VRM",
@@ -1543,7 +1547,9 @@
         "cannotDeleteBoundModel": "Нельзя удалить модель, которая сейчас используется",
         "modelInUse": "Используется",
         "pngtuberTalkPreview": "Проверить речь",
-        "pngtuberStatePreview": "Предпросмотр состояния"
+        "pngtuberStatePreview": "Предпросмотр состояния",
+        "pngtuberImportProjectFile": "Импорт файла проекта",
+        "pngtuberImportFolder": "Импорт папки"
     },
     "voice": {
         "title": "Регистрация голоса",
@@ -1556,6 +1562,14 @@
         "minimaxIntlApiRequired": "Для этой функции необходима модель MiniMax (Международная). Сохраните ключ API MiniMax (Международная) в настройках API (включение Assist API не требуется).",
         "mimoApiRequired": "Для этой функции требуется модель MiMo. Сохраните ключ MiMo API на странице настроек ключей API.",
         "mimoDirectLinkUnsupported": "MiMo не поддерживает клонирование по прямой ссылке; загрузите локальный файл.",
+        "directLinkUnsupported": "Выбранный провайдер не поддерживает клонирование по прямой ссылке; загрузите локальный файл.",
+        "doubaoTtsApiRequired": "Для этой функции требуется API Key Doubao Speech. Сохраните ключ Doubao Speech (Volcengine) в книге управления API.",
+        "vllmOmniNotice": "Локальный сервис vLLM-Omni — API-ключ не нужен; убедитесь, что URL локального сервиса настроен",
+        "vllmRefTextLabel": "Транскрипция эталонного аудио (обязательно для клона vLLM-Omni; должна точно совпадать с аудио)",
+        "vllmRefTextHint": "Введите дословно то, что говорится в эталонном аудио; несовпадающий текст ухудшит качество клона",
+        "vllmRefTextPlaceholder": "напр. Надеюсь, в будущем ты сможешь делать это даже лучше меня",
+        "vllmRefTextRequired": "Введите транскрипцию эталонного аудио (обязательно для клона vLLM-Omni)",
+        "vllmRefTextTooLong": "Транскрипция эталонного аудио слишком длинная; не более 100 символов",
         "providerLabel": "Провайдер клонирования голоса",
         "provider": {
             "cosyvoice": "Alibaba Bailian CosyVoice",
@@ -1563,16 +1577,33 @@
             "minimax": "MiniMax (Китай)",
             "minimax_intl": "MiniMax (Международная)",
             "elevenlabs": "ElevenLabs",
-            "mimo": "MiMo (Xiaomi)"
+            "mimo": "MiMo (Xiaomi)",
+            "doubao_tts": "Doubao Speech (Volcengine)",
+            "vllm_omni": "vLLM-Omni (Локальный клон)"
+        },
+        "sourcePreset": "Пресет",
+        "sourceClone": "Клон",
+        "sourceDesign": "Генерация по описанию",
+        "providerLocal": "Локальный CosyVoice",
+        "providerFree": "Бесплатно",
+        "providerFreeApi": "Бесплатный API",
+        "providerUnknown": "Другое",
+        "nativeVoice": {
+            "qingchunshaonv": "Юная девушка",
+            "wenrounansheng": "Мягкий мужской голос"
         },
         "selectFile": "Выберите локальный аудиофайл (рекомендуется 15 секунд, макс. 30 секунд, формат wav/mp3)",
         "customPrefix": "Пользовательский префикс (Обязательно, для различения голосов)",
         "customPrefixNote": "Максимум 10 символов, только цифры и латинские буквы",
         "prefixPlaceholder": "Максимум 10 символов, только цифры и латинские буквы",
         "voiceIdPlaceholder": "Максимум 10 символов, только цифры и латинские буквы",
+        "doubaoSpeakerIdLabel": "Doubao Speaker ID (перезаписывает существующий голос S_, обязательно)",
+        "doubaoSpeakerIdNote": "Сначала клонируйте голос в консоли Doubao Speech и скопируйте сюда его S_ Speaker ID; NEKO перезапишет этот существующий голос и не создаст новый ID голоса Doubao, например: S_xeC2CDp72",
+        "doubaoSpeakerIdPlaceholder": "например: S_xeC2CDp72",
         "register": "Зарегистрировать голос",
         "pleaseUploadFile": "Выберите аудиофайл",
         "pleaseEnterPrefix": "Введите пользовательский префикс",
+        "doubaoSpeakerIdRequired": "Для клонирования голоса Doubao требуется S_ Speaker ID, уже назначенный в консоли Volcengine",
         "prefixFormatError": "Ошибка формата префикса: максимум 10 символов, только цифры и латинские буквы",
         "registering": "Регистрация голоса, подождите!",
         "registerSuccess": "Регистрация успешна! voice_id: {{voiceId}}",
@@ -1928,11 +1959,15 @@
         "gender": "Пол",
         "nickname": "Прозвище",
         "apiKeySettings": "API Key",
-        "masterProfile": "Профиль хозяина (Уникальный): Имя профиля обязательно, остальное необязательно.",
-        "masterProfileTitle": "Профиль хозяина",
+        "masterProfile": "Мой профиль (уникальный): имя профиля обязательно, остальное необязательно и может быть удалено.",
+        "masterProfileTitle": "Мой профиль",
         "profileName": "Имя профиля",
         "profileNameMaxHint": "Макс. 60 символов",
         "profileNameTooLong": "Имя профиля слишком длинное",
+        "profileNameUnsafeDot": "Имя профиля не может состоять только из точек или заканчиваться точкой",
+        "profileNameDotSequence": "Имя профиля не может содержать две точки подряд (..)",
+        "profileNameReservedDevice": "Имя профиля не может использовать зарезервированное имя устройства Windows",
+        "profileNameInvalid": "Недопустимое имя профиля",
         "profileNameContainsSlash": "Имя профиля не может содержать разделители пути (/ или \\)",
         "profileNameContainsDot": "Имя профиля не может содержать точки (.)",
         "profileNameInvalidChars": "Имя профиля может содержать только буквы, цифры, пробелы, подчёркивания, дефисы, скобки, средние точки (·/・) и апострофы",
@@ -2013,7 +2048,7 @@
         "aiAssistApiMissing": "API помощника ещё не настроен. Сначала настройте его в «Настройках API Key».",
         "confirmNewCatgirl": "Подтвердить нового NEKO",
         "saveChanges": "Сохранить изменения",
-        "saveMaster": "Сохранить профиль хозяина",
+        "saveMaster": "Сохранить мой профиль",
         "addMasterField": "Добавить поле",
         "manageLive2D": "Нажмите для управления моделью Live2D",
         "idleMotionHint": "При сохранении выбранное движение будет установлено как ожидающее",
@@ -2021,7 +2056,7 @@
         "rename": "Переименовать",
         "cancel": "Отмена",
         "addMasterFieldPrompt": "Введите имя нового поля",
-        "addMasterFieldTitle": "Добавить поле хозяина",
+        "addMasterFieldTitle": "Добавить поле моего профиля",
         "fieldExists": "Это поле уже существует",
         "profileNameRequired": "Имя профиля обязательно",
         "profileNameRenameOnlyHint": "Изменяйте имя профиля через кнопку «Переименовать»",
@@ -2079,10 +2114,10 @@
         "gsvDiagTimeout": "Тайм-аут ответа GPT-SoVITS server (>3 с)",
         "loadFailed": "Ошибка загрузки данных персонажа",
         "renameError": "Ошибка переименования: {{error}}",
-        "renameMasterTitle": "Переименовать хозяина",
+        "renameMasterTitle": "Переименовать мой профиль",
         "renameSuccess": "Переименование выполнено",
         "autoSaveError": "Ошибка сохранения настроек",
-        "saveMasterError": "Ошибка сохранения настроек хозяина",
+        "saveMasterError": "Не удалось сохранить мой профиль",
         "autoSaved": "Настройки автосохранены",
         "autoSaveFailed": "Автосохранение не удалось, сохраните вручную перед закрытием",
         "unsavedNewCatgirlDraftDetected": "Обнаружен несохранённый черновик нового NEKO. Перед синхронным обновлением сохраните его или отмените",
@@ -2110,7 +2145,7 @@
         "generatingCard": "Создание карточки персонажа...",
         "settings": "Настройки",
         "renamePrompt": "Введите новое имя карточки",
-        "renameMasterPrompt": "Введите новое имя профиля хозяина",
+        "renameMasterPrompt": "Введите новое имя профиля",
         "renameTitle": "Переименовать",
         "tempSaveFailed": "Ошибка временного сохранения: {{error}}",
         "newCatgirlSuccess": "Новый NEKO успешно создан",
@@ -2139,7 +2174,7 @@
         "cardAuthorReadonly": "Автор недоступен для редактирования у этого источника",
         "cardAuthorUpdated": "Автор обновлён",
         "cardAuthorUpdateFailed": "Не удалось обновить автора: {{error}}",
-        "saveMasterSuccess": "Профиль хозяина сохранён",
+        "saveMasterSuccess": "Мой профиль сохранен",
         "editCardFace": "Редактировать обложку",
         "cardFaceModelSettings": "Настройки модели карточки",
         "cardMakerPopupBlocked": "Не удалось автоматически открыть страницу редактора обложки. Разрешите всплывающие окна в браузере и повторите попытку, либо щёлкните область обложки, чтобы открыть её вручную."
@@ -3009,7 +3044,7 @@
         "systray": {
             "location": {
                 "title": "Расположение иконки в трее",
-                "desc": "Иконка N.E.K.O. в системном трее внизу справа. Нажмите для поиска N.E.K.O.",
+                "desc": "Иконка N.E.K.O находится в системном трее внизу справа. Нажмите на неё, чтобы найти N.E.K.O.",
                 "note": "Если не видите, разверните стрелку трея для скрытых иконок.",
                 "alt": "Пример расположения системного трея"
             },
@@ -3127,7 +3162,7 @@
             "mmd": {
                 "step1": {
                     "title": "🎭 Выбор модели MMD",
-                    "desc": "В режиме Live3D (MMD) выберите модель здесь. MMD и VRM используют один и тот же список моделей."
+                    "desc": "В режиме 3D-модели (MMD) выберите модель здесь. MMD и VRM используют один и тот же список моделей."
                 },
                 "step2": {
                     "title": "💃 VMD анимация",
@@ -3139,7 +3174,7 @@
                 },
                 "step4": {
                     "title": "😄 Настройка эмоций",
-                    "desc": "После выбора модели откройте настройки эмоций здесь. В Live3D MMD и VRM используют эту кнопку совместно (не кнопку Live2D)."
+                    "desc": "После выбора модели откройте настройки эмоций здесь. В режиме 3D-модели MMD и VRM используют эту кнопку совместно (не кнопку Live2D)."
                 }
             }
         },
@@ -3181,8 +3216,8 @@
         },
         "chara_manager": {
             "step1": {
-                "title": "👤 Master Profile",
-                "desc": "This is your master profile. Profile name is required, other info is optional. This affects how your Neko addresses you."
+                "title": "👤 Мой профиль",
+                "desc": "Это ваш профиль. Имя профиля обязательно, остальная информация необязательна. Это влияет на то, как Neko обращается к вам."
             },
             "step2": {
                 "title": "📝 Set Profile Name",
@@ -3853,6 +3888,8 @@
         "minimize": "Свернуть",
         "close": "Закрыть",
         "loading": "Загрузка...",
+        "initializing": "Инициализация музыкального автомата...",
+        "initializeFailed": "Не удалось инициализировать музыкальный автомат",
         "ready": "Готово",
         "playing": "Играет: {{name}} - {{artist}}",
         "error": "Ошибка: {{message}}",
@@ -4420,6 +4457,8 @@
              "yuiCheatInk": "Yui бросила чернила",
              "yuiCheatBanana": "Yui бросила банановую кожуру",
              "yuiCheatBananaSlip": "Ты наступил на банановую кожуру",
+             "playerIcePowerup": "Лед активирован. Yui заморожена",
+             "yuiFrozen": "Yui все еще заморожена, удар задержан",
              "nekoThinking": "Neko думает",
              "nekoTurn": "Ход Neko",
              "copyNeko": "Повторите Neko",
@@ -4665,6 +4704,12 @@
                      "Тактика с чернилами сработала неплохо, правда?"
                  ]
              },
+             "playerIceScore": [
+                 "Мм, это не считается. Давай заново!",
+                 "Подожди, я была заморожена. Этот розыгрыш нужно повторить!",
+                 "Лёд слишком помог. Давай ещё раз!",
+                 "Нечестно, я не могла двигаться!"
+             ],
              "easterEgg": {
                  "lateNight": "Так поздно, а вы все бьете?",
                  "xmas": "Колокольчики уже висят, а вы все бьете?",

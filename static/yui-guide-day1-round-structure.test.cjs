@@ -23,7 +23,25 @@ function getSceneBlock(source, sceneId) {
   return source.slice(start, end + '\n                }'.length);
 }
 
-test('Day1 activation stays timeline-owned while greeting uses the generic scene path', () => {
+function getBalancedBlockFrom(source, startIndex) {
+  const openBraceIndex = source.indexOf('{', startIndex);
+  assert.notStrictEqual(openBraceIndex, -1, 'expected block opening brace');
+  let depth = 0;
+  for (let index = openBraceIndex; index < source.length; index += 1) {
+    const character = source[index];
+    if (character === '{') {
+      depth += 1;
+    } else if (character === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        return source.slice(startIndex, index + 1);
+      }
+    }
+  }
+  assert.fail('expected balanced block closing brace');
+}
+
+test('Day1 activation and greeting keep timeline-owned capsule targets', () => {
   const operationRegistryBlock = operationRegistrySource.match(/registerBuiltInOperations\(\)\s*\{([\s\S]*?)\n\s*\}\n\s*\n\s*resolveTargetEntry/);
   assert.ok(operationRegistryBlock, 'expected to find built-in operation registrations');
   const activationSceneBlock = getSceneBlock(day1Source, 'day1_intro_activation');
@@ -32,13 +50,17 @@ test('Day1 activation stays timeline-owned while greeting uses the generic scene
   assert.match(activationSceneBlock, /timelinePlayback:\s*true/);
   assert.match(activationSceneBlock, /timelineAudio:\s*false/);
   assert.match(activationSceneBlock, /operation:\s*'day1-intro-activation-flow'/);
-  assert.doesNotMatch(greetingSceneBlock, /timelinePlayback:\s*true/);
+  assert.match(greetingSceneBlock, /timelinePlayback:\s*true/);
   assert.doesNotMatch(greetingSceneBlock, /timelineAudio:\s*false/);
   assert.doesNotMatch(greetingSceneBlock, /operation:\s*'day1-intro-greeting-flow'/);
-  assert.match(greetingSceneBlock, /target:\s*'chat-input'/);
+  // 修改原因：显式 timeline 的 spotlight.show 不会自动读取 cursorTarget，Day1 胶囊高亮必须直接写胶囊目标。
+  assert.match(greetingSceneBlock, /\{\s*at:\s*0,\s*command:\s*'spotlight\.show',\s*key:\s*'day1_intro_greeting',\s*target:\s*'chat-capsule-input'\s*\}/);
+  // 修改原因：scene target 也要与 timeline 保持一致，避免恢复或兼容路径重新读到普通输入框。
+  assert.match(greetingSceneBlock, /\n\s+target:\s*'chat-capsule-input',/);
   assert.match(greetingSceneBlock, /cursorTarget:\s*'chat-capsule-input'/);
   assert.match(greetingSceneBlock, /cursorAction:\s*'move'/);
   assert.match(greetingSceneBlock, /operation:\s*'day1-intro-greeting-performance'/);
+  assert.doesNotMatch(greetingSceneBlock, /spotlightVariant:\s*'plain-capsule'/);
   assert.match(operationRegistryBlock[1], /registerOperation\('day1-intro-activation-flow'/);
   assert.match(operationRegistryBlock[1], /runDay1IntroActivationFlow/);
   assert.match(operationRegistryBlock[1], /registerOperation\('day1-intro-greeting-performance'/);
@@ -51,7 +73,7 @@ test('Day1 activation stays timeline-owned while greeting uses the generic scene
 
   const introActivationMatch = directorSource.match(/async playDay1IntroActivationRoundScene\(sceneRunId\)\s*\{([\s\S]*?)\n\s*\}\n\s*\n\s*async playDay1IntroGreetingRoundScene/);
   assert.ok(introActivationMatch, 'expected to find Day1 intro activation flow');
-  assert.match(introActivationMatch[1], /waitForIntroActivationClick\(\)/);
+  assert.match(introActivationMatch[1], /waitForIntroActivationTransition\(\)/);
   assert.doesNotMatch(introActivationMatch[1], /setTutorialTakingOver\(true\)/);
 
   for (const sceneId of [
@@ -149,19 +171,45 @@ test('Day1 takeover capture click is owned by the embedded takeover sequence', (
   assert.doesNotMatch(sceneBlock, /cursorAction:\s*'click'/);
 });
 
-test('Day1 takeover capture leaves the next cursor start on the keyboard control toggle', () => {
+test('Day1 takeover capture resamples the keyboard control target before click and anchor persistence', () => {
   const sequenceMatch = directorSource.match(/async runTakeoverKeyboardControlSequence\(step, performance, runId\)\s*\{([\s\S]*?)\n\s*\}\n\s*async runPluginDashboardLaunchSequence/);
   assert.ok(sequenceMatch, 'expected to find runTakeoverKeyboardControlSequence');
   const sequenceBody = sequenceMatch[1];
-  assert.match(sequenceBody, /const keyboardToggleSpotlight = createToggleSpotlightTarget\('takeover-keyboard-toggle', keyboardToggle\);/);
+  assert.match(sequenceBody, /const refreshKeyboardToggleSpotlight = \(options\) => \{/);
+  assert.match(sequenceBody, /createToggleSpotlightTarget\('takeover-keyboard-toggle', keyboardToggle\)/);
+  assert.match(sequenceBody, /this\.replaceRetainedExtraSpotlight\(isKeyboardToggleSpotlight, refreshedSpotlight\);/);
+  assert.match(sequenceBody, /if \(normalizedOptions\.activate === true\) \{\s*this\.overlay\.activateSpotlight\(refreshedSpotlight\);/);
+  assert.match(sequenceBody, /keyboardToggleSpotlight = refreshKeyboardToggleSpotlight\(\{ activate: true \}\);/);
+  assert.match(sequenceBody, /await this\.waitForStableElementRect\(keyboardToggle,/);
+  assert.match(sequenceBody, /this\.moveCursorToTrackedElement\(\s*keyboardToggle,/);
+  assert.match(sequenceBody, /if \(!this\.isCursorAlignedWithElement\(keyboardToggle, 5\)\) \{/);
+  assert.match(sequenceBody, /keyboardToggleSpotlight = refreshKeyboardToggleSpotlight\(\);[\s\S]*const enabledKeyboardControl = await this\.runActionWithCursorClick/);
+  assert.match(sequenceBody, /this\.runActionWithCursorClick\([\s\S]*this\.setAgentFlagEnabled\('computer_use_enabled', true\)/);
   assert.match(sequenceBody, /this\.rememberAvatarFloatingSceneCursorAnchor\('day1_takeover_capture_cursor', keyboardToggleSpotlight\);/);
+});
+
+test('Day1 return control cursor start prefers the current keyboard toggle geometry', () => {
+  const resolverMatch = directorSource.match(/resolveAvatarFloatingCursorStartPoint\(scene, targets, previousSceneId\)\s*\{([\s\S]*?)\n\s*\}\n\s*async moveAvatarFloatingCursor/);
+  assert.ok(resolverMatch, 'expected to find resolveAvatarFloatingCursorStartPoint');
+  const resolverBody = resolverMatch[1];
+  const returnControlIndex = resolverBody.indexOf("if (sceneId === 'day1_takeover_return_control') {");
+  assert.notStrictEqual(returnControlIndex, -1, 'expected day1_takeover_return_control cursor start branch');
+  const returnControlBlock = getBalancedBlockFrom(resolverBody, returnControlIndex);
+  assert.match(returnControlBlock, /const keyboardToggle = this\.getAgentToggleElement\('agent-keyboard'\);/);
+  assert.match(returnControlBlock, /const keyboardRect = this\.getElementRect\(keyboardToggle\);/);
+  assert.ok(
+    returnControlBlock.indexOf('keyboardRect') < returnControlBlock.indexOf("getAvatarFloatingSceneCursorAnchor('day1_takeover_capture_cursor')"),
+    'expected current keyboard toggle geometry to be sampled before falling back to the saved anchor'
+  );
 });
 
 test('Day1 return control highlights the capsule input and keeps the petal cue', () => {
   const day1SceneBlock = getSceneBlock(day1Source, 'day1_takeover_return_control');
-  assert.match(day1SceneBlock, /target:\s*'chat-input'/);
+  // 修改原因：返还控制权时视觉焦点也应落到胶囊输入框，而不是只让光标移动到胶囊。
+  assert.match(day1SceneBlock, /target:\s*'chat-capsule-input'/);
   assert.match(day1SceneBlock, /cursorTarget:\s*'chat-capsule-input'/);
-  assert.match(day1SceneBlock, /spotlightVariant:\s*'plain-capsule'/);
+  // 修改原因：Day1 复用 Day2/Day4 的胶囊目标定位，不再依赖普通输入框的 plain-capsule 特例。
+  assert.doesNotMatch(day1SceneBlock, /spotlightVariant:\s*'plain-capsule'/);
   assert.match(day1SceneBlock, /cursorMoveDurationMs:\s*900/);
   assert.match(day1SceneBlock, /operation:\s*'cleanup'/);
   assert.doesNotMatch(day1SceneBlock, /day1-managed-scene:takeover_return_control/);
@@ -209,8 +257,11 @@ test('Day1 return control cursor moves to the capsule primary target before the 
   assert.match(directorSource, /'chat-capsule-input': 'capsule-input'/);
   assert.match(targetGeometryRegistrySource, /'chat-capsule-input': Object\.freeze\(\{[\s\S]*externalKind: 'capsule-input'[\s\S]*data-compact-geometry-part="capsuleBody"/);
   assert.match(appInterpageSource, /getYuiGuideChatTargetRegistryEntryByExternalKind\(kind\)[\s\S]*entry\.localSelectors\.some/);
-  assert.match(appInterpageSource, /function updateYuiGuideChatSpotlight\(kind\) \{[\s\S]*var pcOverlayAvailable = isYuiGuidePcOverlayAvailable\(\);/);
-  assert.match(appInterpageSource, /function updateYuiGuideChatSpotlight\(kind\) \{[\s\S]*sendYuiGuidePcOverlayPatch\(\{ spotlights: pcRects \}\);/);
+  // 修改原因：胶囊目标已有 registry 几何；这里保留普通 input 的旧 plain-capsule 逻辑，避免新增胶囊特例。
+  assert.match(appInterpageSource, /function shouldAlignYuiGuideChatSpotlightToCapsuleText\(kind, variant\) \{\s*return kind === 'input' && variant === 'plain-capsule';\s*\}/);
+  assert.match(appInterpageSource, /function getYuiGuideChatSpotlightSourceRect\(kind, variant, rect\)[\s\S]*anchorOffsetX \* YUI_GUIDE_CHAT_CAPSULE_TEXT_ALIGNMENT_RATIO[\s\S]*return \{ rect: sourceRect \};/);
+  assert.match(appInterpageSource, /function updateYuiGuideChatSpotlight\(kind,\s*pcOverlayRunId\) \{[\s\S]*var pcOverlayAvailable = isYuiGuidePcOverlayAvailable\(\);/);
+  assert.match(appInterpageSource, /function updateYuiGuideChatSpotlight\(kind,\s*pcOverlayRunId\) \{[\s\S]*var sourceRectInfo = rect \? getYuiGuideChatSpotlightSourceRect\(kind, yuiGuideChatSpotlightVariant, rect\) : null;[\s\S]*sendYuiGuidePcOverlayPatch\(\{ spotlights: pcRects \}, false, patchOptions\);/);
   assert.doesNotMatch(appInterpageSource, /function renderYuiGuideChatSpotlight/);
   assert.doesNotMatch(appInterpageSource, /function isYuiGuideInputLikeChatTarget/);
   assert.match(directorSource, /setExternalizedChatCursorEffect\(kind,\s*effect,\s*options\)[\s\S]*this\.rememberExternalizedChatCursorHandoffPoint\(normalizedKind,\s*cursorOptions\.effect\);[\s\S]*this\.interactionTakeover\.setExternalizedChatCursor\(normalizedKind,\s*cursorOptions\);/);

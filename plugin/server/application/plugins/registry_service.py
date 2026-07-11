@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from plugin.core.dependency import _topological_sort_plugins
+from plugin.core.entry_points import describe_plugin_entry_directory_mismatch
 from plugin.core.host import _import_plugin_module
 from plugin.core.registry import (
     PluginContext,
@@ -352,7 +353,22 @@ def _discover_registry_snapshot_sync(roots: tuple[Path, ...]) -> PluginDiscovery
                 )
                 continue
 
-            records.append(_build_discovery_record_from_context(ctx))
+            try:
+                records.append(_build_discovery_record_from_context(ctx))
+            except Exception as exc:
+                logger.warning(
+                    "plugin discovery payload failed for {}: err_type={}, err={}",
+                    config_path,
+                    type(exc).__name__,
+                    str(exc),
+                )
+                failures.append(
+                    PluginDiscoveryFailure(
+                        plugin_id=ctx.pid or config_path.parent.name or None,
+                        config_path=config_path,
+                        error=str(exc),
+                    )
+                )
 
     return PluginDiscoverySnapshot(
         records=records,
@@ -387,16 +403,14 @@ def _build_discovery_payload(
         )
     else:
         entries_preview: list[dict[str, object]]
-        dependency_errors: list[str] = []
-        for dep in ctx.dependencies:
-            satisfied, dep_error = _check_plugin_dependency(dep, logger, plugin_id)
-            if not satisfied:
-                dependency_errors.append(str(dep_error or "dependency check failed"))
-                break
-        if dependency_errors:
-            error_type = "DependencyCheckFailed"
-            error_message = dependency_errors[0]
-            error_phase = "dependency_check"
+        entry_mismatch = describe_plugin_entry_directory_mismatch(
+            ctx.entry,
+            config_path=ctx.toml_path,
+        )
+        if entry_mismatch:
+            error_type = "PluginEntryDirectoryMismatch"
+            error_message = entry_mismatch
+            error_phase = "entry_validation"
             entries_preview = _extract_entries_preview(
                 plugin_id,
                 cls=type("FailedPluginStub", (), {}),
@@ -404,14 +418,16 @@ def _build_discovery_payload(
                 pdata=ctx.pdata,
             )
         else:
-            missing_requirements = _find_missing_python_requirements(
-                ctx.python_requirements,
-                search_paths=ctx.python_requirement_paths,
-            )
-            if missing_requirements:
-                error_type = "MissingPythonDependencies"
-                error_message = f"Unsatisfied Python dependencies: {missing_requirements}"
-                error_phase = "python_requirements"
+            dependency_errors: list[str] = []
+            for dep in ctx.dependencies:
+                satisfied, dep_error = _check_plugin_dependency(dep, logger, plugin_id)
+                if not satisfied:
+                    dependency_errors.append(str(dep_error or "dependency check failed"))
+                    break
+            if dependency_errors:
+                error_type = "DependencyCheckFailed"
+                error_message = dependency_errors[0]
+                error_phase = "dependency_check"
                 entries_preview = _extract_entries_preview(
                     plugin_id,
                     cls=type("FailedPluginStub", (), {}),
@@ -419,41 +435,56 @@ def _build_discovery_payload(
                     pdata=ctx.pdata,
                 )
             else:
-                # The startup loader installs vendor paths on sys.path before
-                # importing each plugin's entry module; do the same here so a
-                # plugin whose [project].dependencies live only under its own
-                # vendor/ directory does not get falsely recorded as
-                # ImportError/ModuleNotFoundError during a registry refresh.
-                _ensure_python_requirement_paths(
-                    ctx.python_requirement_paths,
-                    logger,
-                    plugin_id,
+                missing_requirements = _find_missing_python_requirements(
+                    ctx.python_requirements,
+                    search_paths=ctx.python_requirement_paths,
                 )
-                try:
-                    module_path, class_name = ctx.entry.split(":", 1)
-                    module_obj = _import_plugin_module(module_path, ctx.toml_path, logger)
-                    cls_obj = getattr(module_obj, class_name)
-                    entries_preview = _extract_entries_preview(plugin_id, cls_obj, ctx.conf, ctx.pdata)
-                except (ImportError, ModuleNotFoundError) as exc:
-                    error_type = type(exc).__name__
-                    error_message = str(exc)
-                    error_phase = "import_module"
+                if missing_requirements:
+                    error_type = "MissingPythonDependencies"
+                    error_message = f"Unsatisfied Python dependencies: {missing_requirements}"
+                    error_phase = "python_requirements"
                     entries_preview = _extract_entries_preview(
                         plugin_id,
                         cls=type("FailedPluginStub", (), {}),
                         conf=ctx.conf,
                         pdata=ctx.pdata,
                     )
-                except AttributeError as exc:
-                    error_type = "AttributeError"
-                    error_message = f"Class not found for entry '{ctx.entry}': {exc}"
-                    error_phase = "import_class"
-                    entries_preview = _extract_entries_preview(
+                else:
+                    # The startup loader installs vendor paths on sys.path before
+                    # importing each plugin's entry module; do the same here so a
+                    # plugin whose [project].dependencies live only under its own
+                    # vendor/ directory does not get falsely recorded as
+                    # ImportError/ModuleNotFoundError during a registry refresh.
+                    _ensure_python_requirement_paths(
+                        ctx.python_requirement_paths,
+                        logger,
                         plugin_id,
-                        cls=type("FailedPluginStub", (), {}),
-                        conf=ctx.conf,
-                        pdata=ctx.pdata,
                     )
+                    try:
+                        module_path, class_name = ctx.entry.split(":", 1)
+                        module_obj = _import_plugin_module(module_path, ctx.toml_path, logger)
+                        cls_obj = getattr(module_obj, class_name)
+                        entries_preview = _extract_entries_preview(plugin_id, cls_obj, ctx.conf, ctx.pdata)
+                    except (ImportError, ModuleNotFoundError, SyntaxError) as exc:
+                        error_type = type(exc).__name__
+                        error_message = str(exc)
+                        error_phase = "import_module"
+                        entries_preview = _extract_entries_preview(
+                            plugin_id,
+                            cls=type("FailedPluginStub", (), {}),
+                            conf=ctx.conf,
+                            pdata=ctx.pdata,
+                        )
+                    except AttributeError as exc:
+                        error_type = "AttributeError"
+                        error_message = f"Class not found for entry '{ctx.entry}': {exc}"
+                        error_phase = "import_class"
+                        entries_preview = _extract_entries_preview(
+                            plugin_id,
+                            cls=type("FailedPluginStub", (), {}),
+                            conf=ctx.conf,
+                            pdata=ctx.pdata,
+                        )
 
     plugin_meta = _build_plugin_meta(
         plugin_id,

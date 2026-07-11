@@ -564,6 +564,224 @@ body .container-header {
     box-shadow: none;
 }
 
+.tutorial-reset-notice-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 10000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: rgba(23, 87, 122, 0.36);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    animation: tutorial-reset-notice-fade 0.18s ease-out;
+}
+
+.tutorial-reset-notice-backdrop.is-closing {
+    animation: tutorial-reset-notice-fade-out 0.16s ease-in forwards;
+}
+
+.tutorial-reset-notice-card {
+    width: min(440px, 100%);
+    overflow: hidden;
+    border: 2px solid rgba(179, 229, 252, 0.92);
+    border-radius: 20px;
+    background: #ffffff;
+    box-shadow: 0 18px 46px rgba(64, 197, 241, 0.24), 0 8px 20px rgba(23, 167, 255, 0.16);
+    font-family: 'Comic Neue', 'Source Han Sans CN', 'Noto Sans SC', sans-serif;
+    animation: tutorial-reset-notice-pop 0.22s ease-out;
+}
+
+.tutorial-reset-notice-backdrop.is-closing .tutorial-reset-notice-card {
+    animation: tutorial-reset-notice-pop-out 0.16s ease-in forwards;
+}
+
+.tutorial-reset-notice-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 18px 22px;
+    background: linear-gradient(to right, #4BD4FD, #17A7FF);
+}
+
+.tutorial-reset-notice-card[data-variant="error"] .tutorial-reset-notice-header {
+    background: linear-gradient(to right, #ff8a70, #ff4d67);
+}
+
+.tutorial-reset-notice-mark {
+    position: relative;
+    flex: 0 0 auto;
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.95);
+    box-shadow: inset 0 -3px 7px rgba(64, 197, 241, 0.18), 0 4px 12px rgba(23, 167, 255, 0.25);
+}
+
+.tutorial-reset-notice-mark::before {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 10px;
+    height: 16px;
+    border: solid #22b3ff;
+    border-width: 0 3px 3px 0;
+    transform: translate(-50%, -58%) rotate(45deg);
+}
+
+.tutorial-reset-notice-card[data-variant="error"] .tutorial-reset-notice-mark::before {
+    content: "!";
+    left: 0;
+    top: 2px;
+    width: 100%;
+    height: auto;
+    border: 0;
+    color: #ff5252;
+    font-size: 25px;
+    font-weight: 900;
+    line-height: 34px;
+    text-align: center;
+    transform: none;
+}
+
+.tutorial-reset-notice-title {
+    min-width: 0;
+    margin: 0;
+    color: #ffffff;
+    font-size: 1.18rem;
+    font-weight: 800;
+    line-height: 1.25;
+    overflow-wrap: anywhere;
+    text-shadow: 0 2px 0 rgba(34, 179, 255, 0.48);
+}
+
+.tutorial-reset-notice-body {
+    padding: 22px 24px 10px;
+}
+
+.tutorial-reset-notice-message {
+    margin: 0;
+    color: #268fb8;
+    font-size: 0.98rem;
+    font-weight: 600;
+    line-height: 1.7;
+    overflow-wrap: anywhere;
+}
+
+.tutorial-reset-notice-actions {
+    display: flex;
+    justify-content: flex-end;
+    padding: 14px 24px 24px;
+}
+
+.tutorial-reset-notice-ok {
+    min-width: 112px;
+    min-height: 42px;
+    padding: 10px 22px;
+    border: 0;
+    border-radius: 50px;
+    background: linear-gradient(135deg, #40C5F1 0%, #22b3ff 100%);
+    color: #ffffff;
+    font-size: 0.95rem;
+    font-weight: 800;
+    cursor: pointer;
+    transition: transform 0.2s ease, box-shadow 0.2s ease, opacity 0.2s ease;
+    box-shadow: 0 6px 16px rgba(64, 197, 241, 0.28);
+}
+
+.tutorial-reset-notice-ok:hover {
+    opacity: 0.95;
+    transform: translateY(-1px);
+    box-shadow: 0 8px 20px rgba(64, 197, 241, 0.34);
+}
+
+.tutorial-reset-notice-ok:active {
+    transform: translateY(1px) scale(0.98);
+}
+
+.tutorial-reset-notice-ok:focus-visible {
+    outline: 3px solid rgba(64, 197, 241, 0.32);
+    outline-offset: 3px;
+}
+
+[data-theme="dark"] .tutorial-reset-notice-backdrop {
+    background: rgba(0, 0, 0, 0.58);
+}
+
+[data-theme="dark"] .tutorial-reset-notice-card {
+    border-color: rgba(74, 163, 223, 0.45);
+    background: #2d2d2d;
+    box-shadow: 0 22px 54px rgba(0, 0, 0, 0.48), 0 8px 22px rgba(58, 159, 216, 0.16);
+}
+
+[data-theme="dark"] .tutorial-reset-notice-header {
+    background: linear-gradient(to right, #1880aa, #0a3585);
+}
+
+[data-theme="dark"] .tutorial-reset-notice-card[data-variant="error"] .tutorial-reset-notice-header {
+    background: linear-gradient(to right, #c04b42, #8f1d3a);
+}
+
+[data-theme="dark"] .tutorial-reset-notice-mark {
+    background: #252525;
+    box-shadow: inset 0 -3px 7px rgba(74, 163, 223, 0.18), 0 4px 12px rgba(0, 0, 0, 0.28);
+}
+
+[data-theme="dark"] .tutorial-reset-notice-message {
+    color: #e0e0e0;
+}
+
+[data-theme="dark"] .tutorial-reset-notice-ok {
+    color: #ffffff;
+}
+
+@keyframes tutorial-reset-notice-fade {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+@keyframes tutorial-reset-notice-fade-out {
+    from { opacity: 1; }
+    to { opacity: 0; }
+}
+
+@keyframes tutorial-reset-notice-pop {
+    from {
+        opacity: 0;
+        transform: translateY(12px) scale(0.97);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+}
+
+@keyframes tutorial-reset-notice-pop-out {
+    from {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+    to {
+        opacity: 0;
+        transform: translateY(8px) scale(0.98);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .tutorial-reset-notice-backdrop,
+    .tutorial-reset-notice-backdrop.is-closing,
+    .tutorial-reset-notice-card,
+    .tutorial-reset-notice-backdrop.is-closing .tutorial-reset-notice-card {
+        animation: none;
+    }
+
+    .tutorial-reset-notice-ok {
+        transition: none;
+    }
+}
+
 @media (max-width: 760px) {
     .tutorial-cascader-popup {
         width: 100%;
@@ -571,6 +789,22 @@ body .container-header {
 
     .tutorial-cascader-column {
         width: 50%;
+    }
+
+    .tutorial-reset-notice-backdrop {
+        padding: 18px;
+    }
+
+    .tutorial-reset-notice-header {
+        padding: 16px 18px;
+    }
+
+    .tutorial-reset-notice-body {
+        padding: 18px 18px 8px;
+    }
+
+    .tutorial-reset-notice-actions {
+        padding: 12px 18px 20px;
     }
 }
 

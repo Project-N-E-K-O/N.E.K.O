@@ -54,6 +54,19 @@
     function screenshotButton()   { return $id('screenshotButton'); }
     function chatContainer()      { return $id('chatContainer'); }
 
+    function isGoodbyeUiSuppressed() {
+        try {
+            if (typeof window.isNekoGoodbyeResourceSuspendingOrSuspended === 'function' &&
+                window.isNekoGoodbyeResourceSuspendingOrSuspended()) {
+                return true;
+            }
+            if (typeof window.isNekoGoodbyeModeActive === 'function' && window.isNekoGoodbyeModeActive()) {
+                return true;
+            }
+        } catch (_) { }
+        return false;
+    }
+
     async function releaseVoiceCaptureResources() {
         if (S.stream && typeof S.stream.getTracks === 'function') {
             S.stream.getTracks().forEach(function (track) {
@@ -583,37 +596,45 @@
         return Date.now() - latest <= NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS;
     }
 
-    function isNewUserIcebreakerPeriodActive() {
-        if (window.newUserIcebreaker && typeof window.newUserIcebreaker.getActiveSession === 'function') {
-            try {
-                if (window.newUserIcebreaker.getActiveSession()) return true;
-            } catch (_) {}
-        }
+    function isNewUserIcebreakerEntryBlocking(entry) {
+        return !!(entry && entry.completed !== true && isRecentNewUserIcebreakerEntry(entry));
+    }
 
+    function isNewUserIcebreakerStorePeriodActive() {
         var store = readNewUserIcebreakerStore();
         var days = store && typeof store.days === 'object' ? store.days : null;
         if (!days) return false;
         if (hasCompletedNewUserIcebreaker()) return false;
         for (var day = 1; day <= 7; day += 1) {
             var entry = days[String(day)];
-            if (isRecentNewUserIcebreakerEntry(entry)) {
+            if (isNewUserIcebreakerEntryBlocking(entry)) {
                 return true;
             }
         }
         return false;
     }
 
-    function isTutorialReleaseGreetingReason(reason) {
-        var normalizedReason = String(reason || '').trim().toLowerCase();
-        return normalizedReason === 'tutorial-completed' || normalizedReason === 'tutorial-skipped';
+    function isNewUserIcebreakerActiveForGreeting() {
+        if (window.newUserIcebreaker && typeof window.newUserIcebreaker.getActiveSession === 'function') {
+            try {
+                if (window.newUserIcebreaker.getActiveSession()) return true;
+            } catch (_) {}
+        }
+        try {
+            var state = window.NekoNewUserIcebreakerState;
+            if (state && typeof state.isPeriodActive === 'function') {
+                if (state.isPeriodActive()) return true;
+            }
+        } catch (_) {}
+        return isNewUserIcebreakerStorePeriodActive();
+    }
+
+    function isNewUserIcebreakerPeriodActive() {
+        return isNewUserIcebreakerActiveForGreeting();
     }
 
     function isNewUserIcebreakerBlockingGreeting(reason) {
-        var normalizedReason = String(reason || S._greetingCheckReason || '').trim().toLowerCase();
-        if (isTutorialReleaseGreetingReason(normalizedReason)) {
-            return false;
-        }
-        return isNewUserIcebreakerPeriodActive();
+        return isNewUserIcebreakerActiveForGreeting();
     }
 
     function normalizeAssistantTurnId(turnId) {
@@ -746,6 +767,26 @@
         // response_discarded / socket_close / user_activity_cancel 路径调用，
         // 等于把 marker 接进了完整的 turn 生命周期收尾。
         S.pendingTextTurnSubmitAt = 0;
+    }
+
+    function clearPendingRollbackForRequest(requestId) {
+        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.clearPendingRollbackDraft === 'function') {
+            window.reactChatWindowHost.clearPendingRollbackDraft(requestId);
+        }
+        if (requestId && window._lastSubmittedRequestId === requestId) {
+            window._lastSubmittedText = '';
+            window._lastSubmittedRequestId = '';
+        }
+    }
+
+    function isNewUserIcebreakerMirrorTurnEnd(response) {
+        var meta = response && response.meta;
+        if (!meta || typeof meta !== 'object') return false;
+        if (meta.source === 'new_user_icebreaker' || meta.kind === 'new_user_icebreaker') {
+            return true;
+        }
+        var event = meta.event;
+        return !!(event && typeof event === 'object' && event.source === 'new_user_icebreaker');
     }
 
     // turn-end / turn end agent_callback 两条路径共用的 realistic/structured
@@ -1100,6 +1141,47 @@
         });
     }
 
+    function stopAssistantTextOutputOnSessionEnd(source) {
+        S.suppressAssistantStreamUntilNextSession = true;
+        window._realisticGeminiVersion = (window._realisticGeminiVersion || 0) + 1;
+        window._realisticGeminiQueue = [];
+        window._realisticGeminiBuffer = '';
+        window._geminiTurnFullText = '';
+        window._pendingMusicCommand = '';
+        window._structuredGeminiStreaming = false;
+        window._isProcessingRealisticQueue = false;
+        window._realisticProcessingOwner = null;
+        window._geminiTurnEndSealed = true;
+
+        var currentBubbles = Array.isArray(window.currentTurnGeminiBubbles)
+            ? window.currentTurnGeminiBubbles.slice()
+            : [];
+        if (currentBubbles.length === 0 && window.currentGeminiMessage) {
+            currentBubbles = [window.currentGeminiMessage];
+        }
+        var currentBubbleIds = [];
+        currentBubbles.forEach(function (bubble) {
+            if (bubble && bubble.dataset && bubble.dataset.reactChatMessageId) {
+                currentBubbleIds.push(bubble.dataset.reactChatMessageId);
+            }
+            if (typeof window.setReactMessageStatus === 'function') {
+                try {
+                    window.setReactMessageStatus(bubble, 'assistant', 'sent');
+                } catch (_) {}
+            }
+        });
+        if (currentBubbleIds.length > 0 && typeof window._clearPendingHostMessagesByIds === 'function') {
+            window._clearPendingHostMessagesByIds(currentBubbleIds);
+        }
+
+        window.currentGeminiMessage = null;
+        window.currentTurnGeminiBubbles = [];
+        window.realisticGeminiCurrentTurnId = null;
+        logAssistantLifecycle('stopAssistantTextOutputOnSessionEnd', {
+            source: source || 'session_end'
+        });
+    }
+
     window.addEventListener('neko-assistant-turn-start', clearPendingUserActivityCancel);
     window.addEventListener('neko-assistant-speech-start', clearPendingUserActivityCancel);
     window.addEventListener('neko-assistant-speech-cancel', clearPendingUserActivityCancel);
@@ -1338,7 +1420,7 @@
                             running_count: tasks.filter(function (t) { return t.status === 'running'; }).length,
                             queued_count: tasks.filter(function (t) { return t.status === 'queued'; }).length,
                         });
-                        if (hasRunning && !window._agentTaskTimeUpdateInterval) {
+                        if (hasRunning && !window._agentTaskTimeUpdateInterval && !isGoodbyeUiSuppressed()) {
                             window._agentTaskTimeUpdateInterval = setInterval(function () {
                                 if (typeof window.updateTaskRunningTimes === 'function') window.updateTaskRunningTimes();
                             }, 1000);
@@ -1517,6 +1599,10 @@
 
                 // -------- gemini_response --------
                 if (response.type === 'gemini_response') {
+                    if (S.suppressAssistantStreamUntilNextSession) {
+                        console.log('[App] discard assistant chunk after session ended by server');
+                        return;
+                    }
                     var isNewMessage = response.isNewMessage || false;
                     if (response.metadata && response.metadata.game_route) {
                         var gameMeta = response.metadata.game_route;
@@ -1584,6 +1670,13 @@
                 } else if (response.type === 'response_discarded') {
                     clearPendingUserActivityCancel();
                     window.invalidatePendingMusicSearch();
+                    if (S.suppressAssistantStreamUntilNextSession) {
+                        logAssistantLifecycle('response_discarded_suppressed_after_session_end', {
+                            reason: response.reason,
+                            willRetry: !!response.will_retry
+                        });
+                        return;
+                    }
                     emitAssistantSpeechCancel('response_discarded');
                     S.assistantTurnId = null;
                     window._nekoAssistantTurnId = null;
@@ -1943,6 +2036,26 @@
                         detail: { active: !!response.active },
                     }));
 
+                // -------- topic_hint（深话题预告气泡，仅前端展示，不入上下文）--------
+                } else if (response.type === 'topic_hint') {
+                    if (typeof window.appendReactTopicHint === 'function') {
+                        try {
+                            window.appendReactTopicHint(response.author, response.turn_id);
+                        } catch (topicHintErr) {
+                            console.warn('[topic_hint] append failed', topicHintErr);
+                        }
+                    }
+
+                // -------- cancel_topic_hint（开场白生成失败时撤回孤儿预告气泡）--------
+                } else if (response.type === 'cancel_topic_hint') {
+                    if (typeof window.removeReactTopicHint === 'function') {
+                        try {
+                            window.removeReactTopicHint(response.turn_id);
+                        } catch (cancelHintErr) {
+                            console.warn('[cancel_topic_hint] remove failed', cancelHintErr);
+                        }
+                    }
+
                 // -------- status --------
                 } else if (response.type === 'status') {
                     var statusCode = null;
@@ -2250,7 +2363,7 @@
                     try {
                         var masterOn = !!flags.agent_enabled;
                         var anyChildOn = !!(flags.computer_use_enabled || flags.browser_use_enabled || flags.user_plugin_enabled || flags.openclaw_enabled || flags.openfang_enabled);
-                        if (masterOn && anyChildOn && typeof window.startAgentTaskPolling === 'function') {
+                        if (masterOn && anyChildOn && typeof window.startAgentTaskPolling === 'function' && !isGoodbyeUiSuppressed()) {
                             window.startAgentTaskPolling();
                         }
                         var curName2 = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
@@ -2366,7 +2479,7 @@
                             if (typeof window.AgentHUD.showAgentTaskHUD === 'function') {
                                 window.AgentHUD.showAgentTaskHUD();
                             }
-                            if (hasRunning2 && !window._agentTaskTimeUpdateInterval) {
+                            if (hasRunning2 && !window._agentTaskTimeUpdateInterval && !isGoodbyeUiSuppressed()) {
                                 window._agentTaskTimeUpdateInterval = setInterval(function () {
                                     if (typeof window.updateTaskRunningTimes === 'function') window.updateTaskRunningTimes();
                                 }, 1000);
@@ -2559,14 +2672,14 @@
 
                 // -------- system turn end (agent_callback — no proactive chat) --------
                 } else if (response.type === 'system' && response.data === 'turn end agent_callback') {
-                    if (window.reactChatWindowHost && typeof window.reactChatWindowHost.clearPendingRollbackDraft === 'function') {
-                        window.reactChatWindowHost.clearPendingRollbackDraft(response.request_id);
+                    if (S.suppressAssistantStreamUntilNextSession) {
+                        console.log('[App] discard assistant turn_end after session ended by server');
+                        clearPendingRollbackForRequest(response.request_id);
+                        clearPendingAssistantTurnStart();
+                        return;
                     }
-                    if (response.request_id && window._lastSubmittedRequestId === response.request_id) {
-                        window._lastSubmittedText = '';
-                        window._lastSubmittedRequestId = '';
-                    }
-                    console.log('[WS] turn end (agent_callback) — skipping proactive chat schedule');
+                    clearPendingRollbackForRequest(response.request_id);
+                    console.log('[WS] turn end (agent_callback) - skipping proactive chat schedule');
                     logAssistantLifecycle('ws:turn_end_agent_callback:received');
                     try {
                         flushRealisticBufferOnTurnEnd();
@@ -2598,13 +2711,13 @@
 
                 // -------- system turn end --------
                 } else if (response.type === 'system' && response.data === 'turn end') {
-                    if (window.reactChatWindowHost && typeof window.reactChatWindowHost.clearPendingRollbackDraft === 'function') {
-                        window.reactChatWindowHost.clearPendingRollbackDraft(response.request_id);
+                    if (S.suppressAssistantStreamUntilNextSession) {
+                        console.log('[App] discard assistant turn_end after session ended by server');
+                        clearPendingRollbackForRequest(response.request_id);
+                        clearPendingAssistantTurnStart();
+                        return;
                     }
-                    if (response.request_id && window._lastSubmittedRequestId === response.request_id) {
-                        window._lastSubmittedText = '';
-                        window._lastSubmittedRequestId = '';
-                    }
+                    clearPendingRollbackForRequest(response.request_id);
                     console.log(window.t('console.turnEndReceived'));
                     logAssistantLifecycle('ws:turn_end:received');
                     // Flush remaining buffer
@@ -2632,7 +2745,14 @@
 
                     // Emotion analysis & subtitle on turn completion —— 与
                     // agent_callback 路径共用 finalizeAssistantTurn；正常轮启用 music。
-                    finalizeAssistantTurn(assistantTurnId);
+                    //
+                    // 破冰 mirror TTS 的 turn_end 只表示语音播报链路结束；破冰文案
+                    // 已在 icebreaker runtime 用 subtitleBridge 精确 finalize。这里
+                    // 若再走普通聊天 finalizeAssistantTurn，会用 Gemini buffer /
+                    // 当前聊天气泡的旧文本二次翻译，覆盖破冰字幕。
+                    if (!isNewUserIcebreakerMirrorTurnEnd(response)) {
+                        finalizeAssistantTurn(assistantTurnId);
+                    }
 
                     // AI turn_end 后只 reschedule，不 reset backoff。
                     // 理由：turn_end 无法区分"用户发话引发的 turn"和"proactive 自己引发的 turn"，
@@ -2650,6 +2770,11 @@
                 } else if (response.type === 'session_preparing') {
                     console.log(window.t('console.sessionPreparingReceived'), response.input_mode);
                     if (response.input_mode !== 'text') {
+                        if (typeof window.isNekoGoodbyeModeActive === 'function'
+                                && window.isNekoGoodbyeModeActive()) {
+                            if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
+                            return;
+                        }
                         var preparingMessage = window.t ? window.t('app.voiceSystemPreparing') : '语音系统准备中，请稍候...';
                         if (typeof window.showVoicePreparingToast === 'function') window.showVoicePreparingToast(preparingMessage);
                     }
@@ -2660,6 +2785,7 @@
                             && typeof window.isNekoGoodbyeModeActive === 'function'
                             && window.isNekoGoodbyeModeActive()) {
                         console.log('[App] ignore stale audio session_started while goodbye is active');
+                        if (typeof window.stopScreening === 'function') window.stopScreening();
                         if (typeof window.cancelPendingSessionStart === 'function') {
                             window.cancelPendingSessionStart('Voice start cancelled by goodbye');
                         } else {
@@ -2700,6 +2826,7 @@
                         return;
                     }
                     console.log(window.t('console.sessionStartedReceived'), response.input_mode);
+                    S.suppressAssistantStreamUntilNextSession = false;
                     S.isTextSessionActive = response.input_mode === 'text';
                     S.voiceChatActive = response.input_mode !== 'text';
                     S.voiceStartPending = false;
@@ -2822,6 +2949,8 @@
                     S.isTextSessionActive = false;
                     S.voiceChatActive = false;
                     S.voiceStartPending = false;
+                    if (typeof window.stopScreening === 'function') window.stopScreening();
+                    stopAssistantTextOutputOnSessionEnd('session_ended_by_server');
                     clearAssistantLifecycleOnDisconnect('session_ended_by_server');
 
                     if (S.sessionStartedRejecter) {
@@ -3380,14 +3509,10 @@
         _sendGreetingCheckIfReady();
     }
 
-    function _consumeGreetingCheckForNewUserIcebreaker() {
-        if (isTutorialReleaseGreetingReason(S._greetingCheckReason)) return false;
+    function _deferGreetingCheckForNewUserIcebreaker() {
         if (!isNewUserIcebreakerBlockingGreeting(S._greetingCheckReason)) return false;
-        S._greetingCheckPending = false;
-        S._greetingCheckIsSwitch = false;
-        S._greetingCheckReason = '';
-        _resetGreetingCheckRetry(true);
-        console.log('[greeting_check] consumed by new-user icebreaker period');
+        _scheduleGreetingCheckRetry();
+        console.log('[greeting_check] deferred by active new-user icebreaker');
         return true;
     }
     function _sendGreetingCheckIfReady() {
@@ -3398,7 +3523,7 @@
         if (S._startupGreetingReleasePending) {
             return;
         }
-        if (_consumeGreetingCheckForNewUserIcebreaker()) {
+        if (_deferGreetingCheckForNewUserIcebreaker()) {
             return;
         }
         if (_isGreetingCheckBlocked()) {
@@ -3502,6 +3627,10 @@
             } catch (_) { /* noop */ }
         });
     }
+
+    window.addEventListener('neko:new-user-icebreaker-ended', function () {
+        _sendGreetingCheckIfReady();
+    });
 
     window.addEventListener(STARTUP_GREETING_RELEASE_EVENT, function (event) {
         var detail = event && event.detail ? event.detail : {};

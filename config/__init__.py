@@ -716,6 +716,7 @@ DEFAULT_CORE_CONFIG = {
     "assistApiKeyClaude": "",
     "assistApiKeyGrok": "",
     "assistApiKeyDoubao": "",
+    "assistApiKeyDoubaoTts": "",
     "mcpToken": "",
     "agentModelUrl": "",
     "agentModelId": "",
@@ -1012,8 +1013,13 @@ EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS = 30    # Stage-2 LLM rerank 后进 pro
 # LLM 把"用户在干嘛"叙述出来，只喂 proactive 搭话 prompt。这组旋钮约束「活动没
 # 实质变化时」它多久刷一次——用户在两个 app 间来回切窗口曾让它每 ~40s 烧一次
 # (静默, 无业务日志) 无限持续。详见 main_logic/activity/activity_guess_gate.py。
+# 同一活动每被重述一次，下次重述间隔就 ×MULTIPLIER 增长，封顶 CAP：30→120→480→900。
+# CAP 选 900s 对齐 AWAY_IDLE_SECONDS（state_machine.py，挂机 15min 进 away 后心跳硬 bail），
+# 这样稳定活动退避到地板时差不多也该转 away 了。消费端 get_snapshot 读 cache 无 TTL
+# 守卫，所以 CAP 放大不会让 proactive 拿到“过期”叙述（叙述只描述“在干嘛”，旧 = 仍准）。
 ACTIVITY_GUESS_BACKOFF_BASE_SECONDS = 30.0   # 两次调用之间的硬地板 + 首次重述间隔
-ACTIVITY_GUESS_BACKOFF_CAP_SECONDS = 600.0   # 活动稳定后重述间隔的封顶
+ACTIVITY_GUESS_BACKOFF_MULTIPLIER = 4.0      # 每次重述后退避间隔的增长倍数（必须 > 1）
+ACTIVITY_GUESS_BACKOFF_CAP_SECONDS = 900.0   # 活动稳定后重述间隔的封顶（对齐 AWAY_IDLE 15min）
 ACTIVITY_GUESS_SIG_CACHE_SIZE = 8            # 退避记忆的「不同活动签名」条数
 
 # ── AI-aware Stage-1 (path B) ─────────────────────────────────────────
@@ -1362,6 +1368,30 @@ LLM_OUTPUT_GUARD_MAX_TOKENS = 4096
   仍用各自的 *_MAX_TOKENS 常量，不要图省事换成本 guard。
 - 残留边界：max output < 4096 的极老/极小模型仍可能 400；这类安装可下调本常量。
   彻底鲁棒需要 per-model 上限元数据（codebase 目前不跟踪），故取保守定值。"""
+
+ICEBREAKER_FREE_TEXT_INTERPRETER_TIMEOUT_SECONDS = 20.0
+"""新用户破冰自由输入解释器 LLM timeout（秒）。用户面前的短分类/短回复调用，卡住时应快速失败。"""
+
+ICEBREAKER_FREE_TEXT_OUTPUT_MAX_TOKENS = 512
+"""新用户破冰自由输入解释器输出 token 上限。输出固定 JSON，512 只作短任务上限。"""
+
+ICEBREAKER_FREE_TEXT_ASSISTANT_LINE_MAX_TOKENS = 800
+"""破冰自由输入解释器：当前 YUI 台词输入 token 上限。"""
+
+ICEBREAKER_FREE_TEXT_USER_TEXT_MAX_TOKENS = 800
+"""破冰自由输入解释器：用户自由输入 token 上限。"""
+
+ICEBREAKER_FREE_TEXT_OPTION_LABEL_MAX_TOKENS = 200
+"""破冰自由输入解释器：单个选项文案 token 上限。"""
+
+ICEBREAKER_FREE_TEXT_HISTORY_TEXT_MAX_TOKENS = 240
+"""破冰自由输入解释器：近期自由输入记录单段文本 token 上限。"""
+
+ICEBREAKER_FREE_TEXT_HISTORY_MAX_ITEMS = 4
+"""破冰自由输入解释器：近期自由输入记录最多带入条数。"""
+
+ICEBREAKER_FREE_TEXT_REPLY_MAX_TOKENS = 240
+"""破冰自由输入解释器：模型 reply 字段清洗后的 token 上限。"""
 
 DIALOG_LLM_STREAM_TIMEOUT_SECONDS = 180
 """主对话流式 LLM client 的总请求 timeout（秒），作 hang-guard。
@@ -1749,6 +1779,19 @@ ANTI_REPEAT_FG_WINDOW = 5
 """anti-repeat 前景窗口长度（最近 N 条算"是否重复"）。
 - 用途：BM25 评分把最近 N 条当 query corpus 算 TF；新 draft 与这 5 条比。
 - 设计依据：5 条 ≈ 用户最近能感知到的复读窗口；7+ 已经记不清了。"""
+
+ANTI_REPEAT_FG_TTL_SECONDS = 600.0
+"""anti-repeat 前景窗口的时间新鲜度上限（秒）。仅作用于 FG（TF/复读判定），
+不影响 BG（DF/IDF 词频背景，仍按 ANTI_REPEAT_BG_WINDOW 条数封顶）。
+- 用途：memory/anti_repeat.py 的 score_draft / top_recent_topics 只把「最近
+  ANTI_REPEAT_FG_TTL_SECONDS 内」的输出计入前景 TF；更早的条目照旧留在 BG
+  里贡献 IDF。
+- 设计依据：修复「空闲死锁」——主动搭话在用户空闲时才触发，而所有 drop 路径
+  都不写 corpus、成功投递才写，于是空闲期 FG 窗被最近几条同话题（如屏幕解说）
+  冻结，每轮打出同样的超高 BM25 → 永远 drop → 永远无法搭话。加了 TTL 后，空闲
+  超此时长 FG 自然清空、bm25_score 命中 `not fg_docs` 返回 0，本轮放行。
+- 取值：10 分钟。防复读本就只防「刚说过、又说一遍」的 back-to-back 复读；十分钟
+  前说过的话题再提不算复读。BG（IDF 语境）不设 TTL，评分质量不受影响。"""
 
 ANTI_REPEAT_INJECT_TOP_K = 6
 """注入 system prompt 的 "最近高频 topic 词" 数量。
@@ -2448,6 +2491,7 @@ __all__ = [
     'EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS',
     'EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS',
     'ACTIVITY_GUESS_BACKOFF_BASE_SECONDS',
+    'ACTIVITY_GUESS_BACKOFF_MULTIPLIER',
     'ACTIVITY_GUESS_BACKOFF_CAP_SECONDS',
     'ACTIVITY_GUESS_SIG_CACHE_SIZE',
     'PERSONA_RENDER_MAX_TOKENS',
@@ -2473,6 +2517,14 @@ __all__ = [
     'DIALOG_LLM_STREAM_TIMEOUT_SECONDS',
     'FOCUS_THINKING_EXTRA_TOKENS',
     'LLM_OUTPUT_GUARD_MAX_TOKENS',
+    'ICEBREAKER_FREE_TEXT_INTERPRETER_TIMEOUT_SECONDS',
+    'ICEBREAKER_FREE_TEXT_OUTPUT_MAX_TOKENS',
+    'ICEBREAKER_FREE_TEXT_ASSISTANT_LINE_MAX_TOKENS',
+    'ICEBREAKER_FREE_TEXT_USER_TEXT_MAX_TOKENS',
+    'ICEBREAKER_FREE_TEXT_OPTION_LABEL_MAX_TOKENS',
+    'ICEBREAKER_FREE_TEXT_HISTORY_TEXT_MAX_TOKENS',
+    'ICEBREAKER_FREE_TEXT_HISTORY_MAX_ITEMS',
+    'ICEBREAKER_FREE_TEXT_REPLY_MAX_TOKENS',
     'MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS',
     'MEMORY_REFINE_COSINE_THRESHOLD',
     'MEMORY_REFINE_TOPK_PER_ENTRY',
@@ -2516,6 +2568,7 @@ __all__ = [
     'USER_DIRECTIVE_MAX_ACTIVE',
     'ANTI_REPEAT_BG_WINDOW',
     'ANTI_REPEAT_FG_WINDOW',
+    'ANTI_REPEAT_FG_TTL_SECONDS',
     'ANTI_REPEAT_INJECT_TOP_K',
     'ANTI_REPEAT_REGEN_THRESHOLD',
     'ANTI_REPEAT_DROP_THRESHOLD',

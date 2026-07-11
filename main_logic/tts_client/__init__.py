@@ -81,8 +81,11 @@ from .workers.vllm_omni import (
     vllm_omni_tts_worker,
     VLLM_OMNI_DEFAULT_BASE_URL,
     VLLM_OMNI_DEFAULT_MODEL,
+    _vllm_omni_normalize_ws_endpoint,
     _vllm_omni_is_selected,
     _vllm_omni_resolve,
+    _vllm_omni_clone_is_selected,
+    _vllm_omni_clone_resolve,
 )
 from .workers.mimo import (
     mimo_tts_worker,
@@ -90,6 +93,11 @@ from .workers.mimo import (
     _extract_mimo_tts_audio_bytes,
     _mimo_is_selected,
     _mimo_resolve,
+)
+from .workers.doubao import (
+    doubao_tts_worker,
+    _doubao_is_selected,
+    _doubao_resolve,
 )
 from .workers.gptsovits import (
     gptsovits_tts_worker,
@@ -142,6 +150,7 @@ __all__ = [
     "step_realtime_tts_worker", "grok_streaming_tts_worker", "qwen_realtime_tts_worker",
     "cosyvoice_vc_tts_worker", "cogtts_tts_worker", "gemini_tts_worker",
     "openai_tts_worker", "vllm_omni_tts_worker", "mimo_tts_worker",
+    "doubao_tts_worker",
     "gptsovits_tts_worker", "minimax_tts_worker", "elevenlabs_tts_worker",
     "local_cosyvoice_worker", "dummy_tts_worker",
     # provider constants
@@ -161,11 +170,14 @@ __all__ = [
     "_get_elevenlabs_options", "_elevenlabs_ws_base_url", "_gsv_should_drop_chunk",
     # provider registry adapters
     "_vllm_omni_is_selected", "_vllm_omni_resolve",
+    "_vllm_omni_clone_is_selected", "_vllm_omni_clone_resolve",
+    "_vllm_omni_normalize_ws_endpoint",
     "_gptsovits_is_selected", "_gptsovits_resolve",
     "_minimax_clone_is_selected", "_minimax_clone_resolve",
     "_elevenlabs_clone_is_selected", "_elevenlabs_clone_resolve",
     "_cosyvoice_clone_is_selected", "_cosyvoice_clone_resolve",
     "_mimo_is_selected", "_mimo_resolve",
+    "_doubao_is_selected", "_doubao_resolve",
 ]
 
 
@@ -413,7 +425,9 @@ _tts_providers.register(_tts_providers.TTSProvider(
     key='vllm_omni',
     kind='local',
     priority=20,
-    capabilities=frozenset({'preset'}),  # vLLM-Omni = 选预制音色 id，不克隆
+    # vLLM-Omni = 选预制音色 id（preset）+ 内联参考音频克隆（clone）。两种选中机制
+    # 合并在 _vllm_omni_is_selected/_vllm_omni_resolve 里分流（对偶 MiMo 的单条目双机制）。
+    capabilities=frozenset({'preset', 'clone'}),
     is_selected=_vllm_omni_is_selected,
     resolve=_vllm_omni_resolve,
     default_url=VLLM_OMNI_DEFAULT_BASE_URL,
@@ -485,4 +499,21 @@ _tts_providers.register(_tts_providers.TTSProvider(
     resolve=_mimo_resolve,
     preset_catalog=MIMO_PRESET_CATALOG,
     tts_dropdown_only=False,
+))
+
+_tts_providers.register(_tts_providers.TTSProvider(
+    key='doubao_tts',
+    kind='hosted',
+    priority=65,
+    capabilities=frozenset({'clone'}),
+    is_selected=_doubao_is_selected,
+    resolve=_doubao_resolve,
+    default_url='https://openspeech.bytedance.com',
+    default_model='seed-icl-2.0',
+    default_voice='',
+    editable_endpoint=True,
+    probe_kind='http_tts',
+    probe_sub_type='doubao_tts',
+    tts_dropdown_only=True,
+    tts_config_visible=False,
 ))

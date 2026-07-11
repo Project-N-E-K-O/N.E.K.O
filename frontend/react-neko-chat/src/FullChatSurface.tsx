@@ -30,6 +30,10 @@ import { getChatCompanionEmptyStateFallback, getChatEmptyStateFallback } from '.
 import { i18n } from './i18n';
 import { useFocusGlow } from './useFocusGlow';
 import {
+  playCompactToolWheelDetentSound,
+  useCompactToolWheelAudioPreload,
+} from './compactToolWheelAudio';
+import {
   type ChatMessage,
   type MessageAction,
   type ChatWindowSchemaProps,
@@ -112,24 +116,6 @@ const COMPACT_INPUT_TOOL_WHEEL_DETENT_RESISTANCE_START_RATIO = 0.68;
 const COMPACT_INPUT_TOOL_WHEEL_DETENT_HOLD_RATIO = 0.86;
 const COMPACT_INPUT_TOOL_WHEEL_DETENT_BREAK_RATIO = 1.16;
 const COMPACT_TOOL_WHEEL_DRAG_ANGLE_STEP_DEG = 30.82;
-const COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS = [
-  '/static/sounds/compact-tool-wheel/gear-detent-1.mp3',
-  '/static/sounds/compact-tool-wheel/gear-detent-2.mp3',
-  '/static/sounds/compact-tool-wheel/gear-detent-3.mp3',
-  '/static/sounds/compact-tool-wheel/gear-detent-4.mp3',
-] as const;
-const COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC = '/static/sounds/compact-tool-wheel/gear-rebound.mp3';
-const COMPACT_TOOL_WHEEL_PRELOAD_SOUND_SRCS = [
-  ...COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS,
-  COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC,
-] as const;
-const COMPACT_TOOL_WHEEL_REBOUND_SOUND_MIN_RATIO = 0.2;
-const COMPACT_TOOL_WHEEL_REBOUND_SOUND_MEDIUM_RATIO = 0.4;
-const COMPACT_TOOL_WHEEL_REBOUND_SOUND_STRONG_RATIO = 0.7;
-const COMPACT_TOOL_WHEEL_REBOUND_SOUND_SOFT_VOLUME = 0.38;
-const COMPACT_TOOL_WHEEL_REBOUND_SOUND_MEDIUM_VOLUME = 0.6;
-const COMPACT_TOOL_WHEEL_REBOUND_SOUND_STRONG_VOLUME = 0.85;
-const COMPACT_TOOL_WHEEL_AUDIO_PRELOAD_RETRY_DELAYS_MS = [120, 300, 700, 1500] as const;
 const COMPACT_INPUT_TOOL_FAN_ORIGIN_CLOSE_SIZE = 48;
 const COMPACT_INPUT_TOOL_FAN_INTERACTIVE_DELAY_MS = 220;
 const COMPACT_SURFACE_RESIZE_MIN_WIDTH = 430;
@@ -835,124 +821,6 @@ function playAvatarToolSound(soundPath: string) {
     }
   } catch {
     // Ignore autoplay or unsupported-audio failures; the interaction itself should continue.
-  }
-}
-
-type NekoGameAudioSystemInstance = {
-  playSfx: (keyOrAudio: unknown, options?: Record<string, unknown>) => unknown;
-  preloadSfx?: (keyOrAudio: unknown) => unknown;
-};
-
-type NekoGameAudioSystemConstructor = new (options?: Record<string, unknown>) => NekoGameAudioSystemInstance;
-
-let compactToolWheelAudioSystem: NekoGameAudioSystemInstance | null | undefined;
-
-function getCompactToolWheelAudioSystem(): NekoGameAudioSystemInstance | null {
-  if (compactToolWheelAudioSystem) {
-    return compactToolWheelAudioSystem;
-  }
-  if (typeof window === 'undefined') {
-    return null;
-  }
-  const GameAudioSystem = (window as Window & {
-    NekoGameSystem?: {
-      GameAudioSystem?: NekoGameAudioSystemConstructor;
-    };
-  }).NekoGameSystem?.GameAudioSystem;
-  if (typeof GameAudioSystem !== 'function') {
-    return null;
-  }
-  try {
-    const audioSystem = new GameAudioSystem({
-      config: {
-        audioMix: {
-          sfx: {
-            baseVolume: 0.5,
-            maxVolume: 1,
-          },
-        },
-        sfx: {},
-      },
-    });
-    if (typeof audioSystem.playSfx !== 'function') {
-      return null;
-    }
-    audioSystem.preloadSfx?.(COMPACT_TOOL_WHEEL_PRELOAD_SOUND_SRCS);
-    compactToolWheelAudioSystem = audioSystem;
-  } catch {
-    compactToolWheelAudioSystem = undefined;
-    return null;
-  }
-  return compactToolWheelAudioSystem;
-}
-
-function preloadCompactToolWheelSounds(): boolean {
-  return getCompactToolWheelAudioSystem() !== null;
-}
-
-function useCompactToolWheelAudioPreload() {
-  useEffect(() => {
-    let retryTimer: number | null = null;
-    let retryIndex = 0;
-    let cancelled = false;
-
-    const tryPreload = () => {
-      if (cancelled) return;
-      if (preloadCompactToolWheelSounds()) return;
-      if (retryIndex >= COMPACT_TOOL_WHEEL_AUDIO_PRELOAD_RETRY_DELAYS_MS.length) return;
-      const delayMs = COMPACT_TOOL_WHEEL_AUDIO_PRELOAD_RETRY_DELAYS_MS[retryIndex];
-      retryIndex += 1;
-      retryTimer = window.setTimeout(tryPreload, delayMs);
-    };
-
-    tryPreload();
-    return () => {
-      cancelled = true;
-      if (retryTimer !== null) {
-        window.clearTimeout(retryTimer);
-      }
-    };
-  }, []);
-}
-
-function playCompactToolWheelDetentSound(soundSrc: string | readonly string[] = COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS) {
-  const soundSrcs = Array.isArray(soundSrc) ? soundSrc : [soundSrc];
-  const availableSoundSrcs = soundSrcs.map(src => src.trim()).filter(Boolean);
-  if (availableSoundSrcs.length === 0) return;
-  const src = availableSoundSrcs[Math.floor(Math.random() * availableSoundSrcs.length)] ?? availableSoundSrcs[0];
-  if (!src) return;
-  const audioSystem = getCompactToolWheelAudioSystem();
-  if (!audioSystem) return;
-  try {
-    void audioSystem.playSfx({ src, preload: 'auto' });
-  } catch {
-    // Optional UI SFX must never block wheel interaction.
-  }
-}
-
-function getCompactToolWheelReboundVolume(offsetRatio: number): number | null {
-  const absOffsetRatio = Math.abs(offsetRatio);
-  if (absOffsetRatio < COMPACT_TOOL_WHEEL_REBOUND_SOUND_MIN_RATIO) return null;
-  if (absOffsetRatio < COMPACT_TOOL_WHEEL_REBOUND_SOUND_MEDIUM_RATIO) {
-    return COMPACT_TOOL_WHEEL_REBOUND_SOUND_SOFT_VOLUME;
-  }
-  return absOffsetRatio >= COMPACT_TOOL_WHEEL_REBOUND_SOUND_STRONG_RATIO
-    ? COMPACT_TOOL_WHEEL_REBOUND_SOUND_STRONG_VOLUME
-    : COMPACT_TOOL_WHEEL_REBOUND_SOUND_MEDIUM_VOLUME;
-}
-
-function playCompactToolWheelReboundSound(
-  soundSrc = COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC,
-  volume = COMPACT_TOOL_WHEEL_REBOUND_SOUND_STRONG_VOLUME,
-) {
-  const src = soundSrc.trim();
-  if (!src) return;
-  const audioSystem = getCompactToolWheelAudioSystem();
-  if (!audioSystem) return;
-  try {
-    void audioSystem.playSfx({ src, preload: 'auto' }, { volume });
-  } catch {
-    // Optional UI SFX must never block wheel interaction.
   }
 }
 
@@ -2142,8 +2010,6 @@ export default function FullChatSurface({
 
     const gap = 16;
     let frameId: number | null = null;
-    let trackingFrameId: number | null = null;
-    let disposed = false;
 
     const getDesktopPlacementSpace = (shellRect: DOMRect) => {
       const layout = (window as typeof window & {
@@ -2229,17 +2095,16 @@ export default function FullChatSurface({
       });
     };
 
-    const trackPlacement = () => {
-      if (disposed) return;
-      updatePlacement();
-      trackingFrameId = window.requestAnimationFrame(trackPlacement);
-    };
-
     schedulePlacementUpdate();
-    trackingFrameId = window.requestAnimationFrame(trackPlacement);
 
     const visualViewport = window.visualViewport;
     window.addEventListener('resize', schedulePlacementUpdate);
+    // Surface/desktop layout moves (avatar drag, window move, work-area change)
+    // have no element-level signal a ResizeObserver could catch, so listen for
+    // the host's layout-change events instead of polling every frame. Mirrors the
+    // event-driven compact placement effect in App.tsx (CompactChatApp).
+    window.addEventListener('neko:compact-surface-layout-change', schedulePlacementUpdate);
+    window.addEventListener('neko:desktop-compact-layout-change', schedulePlacementUpdate);
     visualViewport?.addEventListener('resize', schedulePlacementUpdate);
     visualViewport?.addEventListener('scroll', schedulePlacementUpdate);
 
@@ -2253,14 +2118,12 @@ export default function FullChatSurface({
     }
 
     return () => {
-      disposed = true;
       if (frameId !== null) {
         window.cancelAnimationFrame(frameId);
       }
-      if (trackingFrameId !== null) {
-        window.cancelAnimationFrame(trackingFrameId);
-      }
       window.removeEventListener('resize', schedulePlacementUpdate);
+      window.removeEventListener('neko:compact-surface-layout-change', schedulePlacementUpdate);
+      window.removeEventListener('neko:desktop-compact-layout-change', schedulePlacementUpdate);
       visualViewport?.removeEventListener('resize', schedulePlacementUpdate);
       visualViewport?.removeEventListener('scroll', schedulePlacementUpdate);
       observer?.disconnect();
@@ -2727,13 +2590,9 @@ export default function FullChatSurface({
         compactInputToolWheelSuppressClickRef.current = false;
       }, 0);
     }
-    const reboundVolume = getCompactToolWheelReboundVolume(pointerState.dragOffsetRatio);
     compactInputToolWheelPointerRef.current = null;
     setCompactInputToolWheelDragActive(false);
     setCompactInputToolWheelDragOffsetRatio(0);
-    if (reboundVolume !== null) {
-      playCompactToolWheelReboundSound(COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC, reboundVolume);
-    }
   }, []);
 
   useEffect(() => {

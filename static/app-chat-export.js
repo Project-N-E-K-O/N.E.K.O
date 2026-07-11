@@ -128,6 +128,52 @@
         }
     }
 
+    function getWindowHref(win) {
+        if (!win || win.closed) return '';
+        try {
+            return String(win.location && win.location.href || '');
+        } catch (_) {
+            return '';
+        }
+    }
+
+    function isCurrentChatWindowHandle(win) {
+        if (win === window) return true;
+        try {
+            return !!(win && win.document === document);
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function isExportPreviewShellUrl(href) {
+        if (!href) return false;
+        try {
+            var current = new URL(href, window.location.href);
+            var target = new URL(getExportPreviewShellUrl(), window.location.href);
+            return current.origin === target.origin && current.pathname === target.pathname;
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function isExportPreviewDocumentWindow(win) {
+        if (!win || win.closed || isCurrentChatWindowHandle(win)) return false;
+        try {
+            if (win.__nekoChatExportPreviewWindow === true) return true;
+            return !!(win.document && win.document.body && win.document.body.classList.contains('chat-export-window'));
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function isReusableExportPreviewWindow(win) {
+        return !!(win
+            && !win.closed
+            && !isCurrentChatWindowHandle(win)
+            && (isExportPreviewShellUrl(getWindowHref(win)) || isExportPreviewDocumentWindow(win)));
+    }
+
     function isExportPreviewShellReady(previewWindow, targetUrl) {
         if (!previewWindow || previewWindow.closed) return false;
         try {
@@ -331,7 +377,14 @@
             var snapshot = host.getState();
             var list = (snapshot && Array.isArray(snapshot.messages)) ? snapshot.messages : [];
             return list.filter(function (message) {
-                return message && message.id && Array.isArray(message.blocks);
+                if (!message || !message.id || !Array.isArray(message.blocks)) return false;
+                // Drop frontend-only topic-hint teasers: they carry no exportable
+                // text and would otherwise become blank entries in the export.
+                // Mirror isTopicHintMessage (role==='system' + all topic-hint blocks).
+                if (message.role === 'system' && message.blocks.length > 0 && message.blocks.every(function (b) {
+                    return b && b.type === 'topic-hint';
+                })) return false;
+                return true;
             });
         } catch (error) {
             logExportError('getReactMessages', error);
@@ -3064,29 +3117,57 @@
 
     async function openExportPreviewWindow() {
         var previewTitle = translateLabel('chat.exportPreviewTitle', 'Export Preview');
-        var isExistingWindow = !!(state.previewWindow && !state.previewWindow.closed);
-        var previewWindow = isExistingWindow
+        var existingPreviewWindow = isReusableExportPreviewWindow(state.previewWindow)
             ? state.previewWindow
-            : window.open(getExportPreviewShellUrl(), 'neko-chat-export-preview', buildExportWindowFeatures());
+            : null;
+        if (state.previewWindow && !existingPreviewWindow && !state.previewWindow.closed) {
+            console.warn('[ChatExport] ignoring stale export preview window handle', {
+                href: getWindowHref(state.previewWindow)
+            });
+            state.previewWindow = null;
+        }
+        var isExistingWindow = !!existingPreviewWindow;
+        var previewWindow = isExistingWindow
+            ? existingPreviewWindow
+            : window.open('', '_blank', buildExportWindowFeatures());
         if (!previewWindow) return null;
+        if (isCurrentChatWindowHandle(previewWindow)) {
+            console.warn('[ChatExport] export preview window resolved to the current chat window; aborting.');
+            if (state.previewWindow === previewWindow) state.previewWindow = null;
+            return null;
+        }
+        var returnedHref = getWindowHref(previewWindow);
+        if (returnedHref && returnedHref !== 'about:blank' && !isExportPreviewShellUrl(returnedHref)) {
+            console.warn('[ChatExport] export preview window returned unexpected handle; aborting.', {
+                href: returnedHref
+            });
+            if (state.previewWindow === previewWindow) state.previewWindow = null;
+            return null;
+        }
 
         if (isExistingWindow) {
             disposePreviewModal(false);
         }
         state.previewWindow = previewWindow;
         if (!isExistingWindow) {
-            var canRewritePreview = await waitForExportPreviewRewriteGate(previewWindow, getExportPreviewShellUrl());
-            if (!previewWindow || previewWindow.closed) return null;
-            if (!canRewritePreview) {
-                if (state.previewWindow === previewWindow) state.previewWindow = null;
-                try {
-                    previewWindow.close();
-                } catch (_) {}
-                return null;
+            var openedShellWindow = isExportPreviewShellUrl(returnedHref);
+            if (openedShellWindow) {
+                var canRewritePreview = await waitForExportPreviewRewriteGate(previewWindow, getExportPreviewShellUrl());
+                if (!previewWindow || previewWindow.closed) return null;
+                if (!canRewritePreview) {
+                    if (state.previewWindow === previewWindow) state.previewWindow = null;
+                    try {
+                        previewWindow.close();
+                    } catch (_) {}
+                    return null;
+                }
             }
         }
         try {
             if (typeof previewWindow.stop === 'function') previewWindow.stop();
+        } catch (_) {}
+        try {
+            previewWindow.__nekoChatExportPreviewWindow = true;
         } catch (_) {}
         var doc = previewWindow.document;
         doc.open();
@@ -3113,6 +3194,9 @@
             + 'html[data-theme="dark"] body.chat-export-window .chat-export-preview-body,html[data-theme="dark"] body.chat-export-window .chat-export-preview-frame{background:#0f172a;}'
             + '</style></head><body class="chat-export-window"></body></html>');
         doc.close();
+        try {
+            previewWindow.__nekoChatExportPreviewWindow = true;
+        } catch (_) {}
         applyPreviewThemeToDocument(doc);
         previewWindow.focus();
         if (!previewWindow._chatExportBeforeUnloadHandler) {

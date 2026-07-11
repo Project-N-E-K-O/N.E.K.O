@@ -629,6 +629,43 @@
         return !!(sidePanel && sidePanel.style.display === 'flex' && sidePanel.style.opacity !== '0');
     }
 
+    function collapseSettingSidePanels() {
+        document.querySelectorAll([
+            '[data-neko-sidepanel-type="chat-settings"]',
+            '[data-neko-sidepanel-type="animation-settings"]',
+            '[data-neko-sidepanel-type="character-settings"]',
+            '[data-neko-sidepanel-type="interval-proactive-chat"]',
+            '[data-neko-sidepanel-type="interval-proactive-vision"]'
+        ].join(',')).forEach(function (panel) {
+            if (!panel) return;
+            if (panel._hoverCollapseTimer) {
+                clearTimeout(panel._hoverCollapseTimer);
+                panel._hoverCollapseTimer = null;
+            }
+            if (panel._collapseTimeout) {
+                clearTimeout(panel._collapseTimeout);
+                panel._collapseTimeout = null;
+            }
+            if (panel._expandFrameId) {
+                const cancelFrame = window.cancelAnimationFrame || function () {};
+                cancelFrame(panel._expandFrameId);
+                panel._expandFrameId = null;
+            }
+            if (typeof panel._stopHoverPointerTracking === 'function') {
+                panel._stopHoverPointerTracking();
+            }
+            if (typeof panel._collapse === 'function') {
+                panel._collapse();
+                return;
+            }
+            panel.style.transition = 'none';
+            panel.style.opacity = '0';
+            panel.style.display = 'none';
+            panel.style.pointerEvents = 'none';
+            panel.style.transition = '';
+        });
+    }
+
     function getAgentSidePanelAction(toggleId, actionId) {
         if (!toggleId || !actionId) return null;
         return document.getElementById('neko-sidepanel-action-' + toggleId + '-' + actionId);
@@ -1012,6 +1049,8 @@
 
         return openSettingsPanel().then(function (opened) {
             if (!opened) return false;
+            collapseSettingSidePanels();
+            positionFloatingPopupNow('settings', prefix);
 
             var el = document.getElementById(prefix + '-menu-' + menuId);
             if (!el) {
@@ -1022,6 +1061,7 @@
             if (typeof el.scrollIntoView === 'function') {
                 el.scrollIntoView({ block: 'nearest', behavior: 'instant' });
             }
+            positionFloatingPopupNow('settings', prefix);
 
             return true;
         });

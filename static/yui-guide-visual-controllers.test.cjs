@@ -1529,3 +1529,65 @@ test('PetalTransitionController owns cue-triggered petal cleanup flow', async ()
     assert.match(petalTransitionControllerSource, /const petalSequencePromise = this\.preloadReturnPetalSequence\(\);/);
     assert.match(petalTransitionControllerSource, /await this\.playReturn\(\{/);
 });
+
+test('PetalTransitionController aligns every cue-triggered petal transition from animation duration', async () => {
+    const { PetalTransitionController } = require('./tutorial/visual/controllers.js');
+    const calls = [];
+    const director = {
+        sceneRunId: 7,
+        destroyed: false,
+        returnPetalTransitionActive: false,
+        getAvatarFloatingNarrationDurationMs() {
+            return 10000;
+        },
+        waitForSceneDelay(durationMs) {
+            calls.push(['wait', durationMs]);
+            return Promise.resolve(true);
+        },
+        cursor: {
+            hide() {
+                calls.push('cursor:hide');
+            }
+        },
+        clearExternalizedChatGuideTarget() {},
+        overlay: {
+            clearPersistentSpotlight() {},
+            clearActionSpotlight() {}
+        },
+        clearSceneExtraSpotlights() {},
+        clearRetainedExtraSpotlights() {},
+        clearAllVirtualSpotlights() {},
+        clearSpotlightGeometryHints() {},
+        clearSpotlightVariantHints() {},
+        disableInterrupts() {},
+        runReturnControlCueWavePerformance() {
+            calls.push('wave');
+            return Promise.resolve();
+        },
+        shouldReduceTutorialMotion() {
+            return false;
+        }
+    };
+    const controller = new PetalTransitionController(director);
+    controller.preloadReturnPetalSequence = () => Promise.resolve(null);
+    controller.executeReturnTransition = (options) => {
+        calls.push(['return', options.durationMs]);
+        return Promise.resolve();
+    };
+
+    await controller.playAtCue(
+        { id: 'generic_wrap' },
+        7,
+        'voice',
+        'text',
+        Date.now() - 1000,
+        3000
+    );
+
+    assert.equal(calls[1], 'wave');
+    assert.deepEqual(calls[2], ['return', 3000]);
+    assert.ok(
+        calls[0][1] >= 5950 && calls[0][1] <= 6050,
+        'petal cue should wait until narration duration minus the shared transition window'
+    );
+});

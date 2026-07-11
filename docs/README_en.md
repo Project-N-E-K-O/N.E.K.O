@@ -405,9 +405,25 @@ After container startup:
 
 **Requirements**: Python 3.11 (other versions not supported), [uv](https://docs.astral.sh/uv/) package manager, Node.js (>=20.19)
 
+> [!IMPORTANT]
+> ### ⚡⚡ Strongly recommended: clone this repo with a "partial clone"! ⚡⚡
+> **This repository has a large history (`.git` is ~390 MB)** because lots of old binary assets (VRM models, MMD, textures, audio, native libraries, etc.) are baked into history. A plain `git clone` downloads **all those long-dead historical versions** — slow and disk-heavy.
+>
+> 👉 **Use the partial-clone command below instead.** It fetches only the files you actually need, so the **initial clone is far smaller and much faster**, with **zero impact** on later development and commits:
+>
+> ```bash
+> # ✅ [Recommended] Partial clone: history blobs fetched on demand
+> git clone --filter=blob:none https://github.com/Project-N-E-K-O/N.E.K.O.git
+>
+> # ⚡ [Even faster] If you only need the latest code (no history), add --depth 1
+> git clone --depth 1 --filter=blob:none https://github.com/Project-N-E-K-O/N.E.K.O.git
+> ```
+>
+> ⚠️ A full `git clone` still works, but downloads the entire history — **not recommended** for new contributors.
+
 ```bash
-# 1. Clone the project
-git clone https://github.com/Project-N-E-K-O/N.E.K.O.git
+# 1. Clone the project (⚡ strongly prefer the partial-clone command above; drop --filter only if you truly need full history)
+git clone --filter=blob:none https://github.com/Project-N-E-K-O/N.E.K.O.git
 cd N.E.K.O
 
 # 2. Install Python dependencies

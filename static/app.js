@@ -263,7 +263,10 @@ async function waitForStorageLocationStartupBarrierInternal() {
 window.addEventListener('load', async () => {
     await waitForStorageLocationStartupBarrierInternal();
 
-    const _isChatPage = window.location.pathname === '/chat';
+    const _isChatPage = window.location.pathname === '/chat'
+        || window.location.pathname === '/chat/'
+        || window.location.pathname === '/chat_full'
+        || window.location.pathname === '/chat_full/';
 
     setTimeout(() => {
         if (_isChatPage) return;

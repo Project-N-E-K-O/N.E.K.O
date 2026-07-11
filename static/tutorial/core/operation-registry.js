@@ -107,8 +107,8 @@
                 || context.operation.indexOf('show-agent-sidepanel:') === 0
                 || context.operation.indexOf('show-settings-sidepanel:') === 0
             ), (context) => this.runPreparedNoopOperation(context.scene, context.operation));
-            this.registerOperation('day2-open-settings-personalization', () => this.runDay2OpenSettingsPersonalization());
-            this.registerOperation('day2-settings-detail', () => this.runDay2SettingsDetail());
+            this.registerOperation('day3-open-settings-personalization', () => this.runDay3OpenSettingsPersonalization());
+            this.registerOperation('day3-settings-detail', () => this.runDay3SettingsDetail());
             this.registerOperation('day4-animation-distance-showcase', (context) => (
                 this.runDay4AnimationDistanceShowcase(context.scene, context.narrationStartedAt)
             ));
@@ -361,17 +361,17 @@
         }
 
         async runPreparedNoopOperation(scene, operation) {
-            if (!operation && scene && scene.id === 'day3_galgame_games') {
+            if (!operation && scene && scene.id === 'day2_galgame_games') {
                 await this.director.tourMiniGameChoiceButtons();
             }
             return true;
         }
 
-        async runDay2OpenSettingsPersonalization() {
+        async runDay3OpenSettingsPersonalization() {
             return await this.director.openSettingsPanel();
         }
 
-        async runDay2SettingsDetail() {
+        async runDay3SettingsDetail() {
             await this.director.ensureCharacterSettingsSidePanelVisible().catch(() => null);
             return true;
         }
@@ -510,10 +510,14 @@
                     if (typeof director.clearHomeSpotlightsForExternalizedChat === 'function') {
                         director.clearHomeSpotlightsForExternalizedChat();
                     }
+                    const spotlightVariant = scene && typeof scene.spotlightVariant === 'string'
+                        ? scene.spotlightVariant.trim()
+                        : '';
                     director.interactionTakeover.setExternalizedChatSpotlight(
                         this.getExternalKind(scene && scene.persistent || '')
                         || director.getExternalizedChatTargetKind(scene && scene.persistent || '', scene)
-                        || 'avatar-tools'
+                        || 'avatar-tools',
+                        { variant: spotlightVariant }
                     );
                 }
                 await director.waitForSceneDelay(520);

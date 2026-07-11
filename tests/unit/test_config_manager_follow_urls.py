@@ -88,6 +88,37 @@ def test_follow_assist_uses_saved_model_id_for_text_tiers():
         shutil.rmtree(config_dir, ignore_errors=True)
 
 
+def test_free_follow_assist_ignores_stale_saved_model_id_for_text_tiers():
+    """Free assist has fixed model names and must not reuse stale paid provider IDs."""
+    config_dir = _make_workspace_temp_dir()
+    try:
+        cm = _manager_with_core_config(config_dir, {
+            "coreApiKey": "free-access",
+            "coreApi": "free",
+            "assistApi": "free",
+            "assistApiKey": "free-access",
+            "enableCustomApi": True,
+            "conversationModelProvider": "follow_assist",
+            "conversationModelUrl": "https://www.lanlan.tech/text/v1",
+            "conversationModelId": "deepseek-v4-pro",
+            "conversationModelApiKey": "free-access",
+            "emotionModelProvider": "follow_assist",
+            "emotionModelUrl": "https://www.lanlan.tech/text/v1",
+            "emotionModelId": "deepseek-v4-pro",
+            "emotionModelApiKey": "free-access",
+            "agentModelProvider": "follow_assist",
+            "agentModelUrl": "https://www.lanlan.tech/text/v1",
+            "agentModelId": "deepseek-v4-pro",
+            "agentModelApiKey": "free-access",
+        })
+
+        assert cm.get_model_api_config("conversation")["model"] == "free-model"
+        assert cm.get_model_api_config("emotion")["model"] == "free-mini-model"
+        assert cm.get_model_api_config("agent")["model"] == "free-agent-model"
+    finally:
+        shutil.rmtree(config_dir, ignore_errors=True)
+
+
 def test_follow_core_uses_saved_model_id_for_text_tiers():
     """follow_core keeps saved text model IDs while following URL and key."""
     config_dir = _make_workspace_temp_dir()

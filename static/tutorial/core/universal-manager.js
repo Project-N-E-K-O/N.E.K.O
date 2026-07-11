@@ -3,8 +3,22 @@
  * 支持所有页面的引导配置
  */
 
-// 新教程体系目前由 Yui Guide/7 天悬浮教程承载，旧多页面教程已下线。
-const TUTORIAL_PAGES = Object.freeze(['home']);
+// Home uses the Yui seven-day guide; non-home pages use the restored Driver.js page tutorial runtime.
+const TUTORIAL_PAGES = Object.freeze([
+    'home',
+    'model_manager',
+    'model_manager_live2d',
+    'model_manager_vrm',
+    'model_manager_mmd',
+    'model_manager_common',
+    'parameter_editor',
+    'emotion_manager',
+    'chara_manager',
+    'settings',
+    'voice_clone',
+    'steam_workshop',
+    'memory_browser',
+]);
 const TUTORIAL_STORAGE_KEY_PREFIX = 'neko_tutorial_';
 const TUTORIAL_PROMPT_FLOW_PREFIX = '[TutorialPromptFlow]';
 const TUTORIAL_YUI_LIVE2D_MODEL_NAME = 'yui-origin';
@@ -14,12 +28,13 @@ const HOME_TUTORIAL_RESET_EVENT = 'neko:home-tutorial-reset';
 const HOME_TUTORIAL_RESET_STORAGE_EVENT_KEY = 'neko_home_tutorial_reset_event';
 const HOME_TUTORIAL_RESET_CHANNEL = 'neko_tutorial_events';
 const AVATAR_FLOATING_GUIDE_STORAGE_KEY = 'neko_avatar_floating_guide_v1';
+const AVATAR_FLOATING_GUIDE_USAGE_STORAGE_KEY = 'neko_avatar_floating_guide_usage_v1';
 const AVATAR_FLOATING_GUIDE_ROUND_COUNT = 7;
 const YUI_GUIDE_CHAT_BRIDGE_QUEUE_KEY = 'neko_yui_guide_chat_bridge_queue_v1';
 const STARTUP_GREETING_RELEASE_EVENT = 'neko:startup-greeting-release';
 
 function getTutorialStorageKeyForPage(pageKey) {
-    return TUTORIAL_STORAGE_KEY_PREFIX + pageKey;
+    return TUTORIAL_STORAGE_KEY_PREFIX + (pageKey === 'home' ? 'home_yui_v1' : pageKey);
 }
 
 function getTutorialManualIntentKeyForPage(pageKey) {
@@ -27,10 +42,19 @@ function getTutorialManualIntentKeyForPage(pageKey) {
 }
 
 function getTutorialStorageKeysForPageFallback(pageKey) {
+    if (pageKey === 'model_manager') {
+        return [
+            'model_manager',
+            'model_manager_live2d',
+            'model_manager_vrm',
+            'model_manager_mmd',
+            'model_manager_common',
+        ].map(getTutorialStorageKeyForPage);
+    }
+
     if (pageKey === 'home') {
         return [
             getTutorialStorageKeyForPage('home_yui_v1'),
-            getTutorialStorageKeyForPage('home'),
         ];
     }
 
@@ -132,6 +156,30 @@ function recordAvatarFloatingGuideEndState(day, outcome, rawReason, source) {
     };
     window.avatarFloatingGuideEndState = endState;
     return endState;
+}
+
+function recordAvatarFloatingGuideUsageRoundEnd(day) {
+    const normalizedDay = normalizeOptionalAvatarFloatingGuideRound(day);
+    if (!normalizedDay) {
+        return;
+    }
+    let state = {};
+    try {
+        const raw = localStorage.getItem(AVATAR_FLOATING_GUIDE_USAGE_STORAGE_KEY);
+        state = raw ? JSON.parse(raw) : {};
+    } catch (error) {
+        console.warn('[Tutorial] 悬浮窗教程使用状态读取失败，使用空状态:', error);
+        state = {};
+    }
+    if (!state || typeof state !== 'object' || Array.isArray(state)) {
+        state = {};
+    }
+    state['day' + normalizedDay + 'EndedAt'] = Date.now();
+    try {
+        localStorage.setItem(AVATAR_FLOATING_GUIDE_USAGE_STORAGE_KEY, JSON.stringify(state));
+    } catch (error) {
+        console.warn('[Tutorial] 悬浮窗教程使用状态写入失败:', error);
+    }
 }
 
 function parseAvatarFloatingGuideDate(value) {
@@ -489,6 +537,8 @@ class UniversalTutorialManager {
     }
 
     dispatchStartupGreetingRelease(reason, detail = {}) {
+        // 放行启动问候即代表新手教程这一程不会再占屏（夭折未启动，或已结束），结束 pending 窗口。
+        this.setHomeTutorialPending(false);
         const releaseDetail = Object.assign({
             released: true,
             page: this.currentPage,
@@ -507,6 +557,8 @@ class UniversalTutorialManager {
     }
 
     clearStartupGreetingRelease(reason = 'tutorial-started') {
+        // 教程已进入运行态（isTutorialRunning/isInTutorial 已置），由运行锁接管占屏，结束 pending 窗口。
+        this.setHomeTutorialPending(false);
         try {
             const detail = window.__NEKO_STARTUP_GREETING_RELEASED__;
             if (detail && detail.released === true) {
@@ -523,6 +575,16 @@ class UniversalTutorialManager {
         } catch (error) {
             console.warn('[Tutorial] 启动问候放行状态清理失败:', error);
         }
+    }
+
+    setHomeTutorialPending(pending) {
+        // 新手教程「即将运行但尚未上锁」窗口的标志。冷启动加载 Live2D 模型与首句演出期间，
+        // isTutorialRunning / window.isInTutorial 都还没置上、后端 tutorial-prompt 仍是 observing，
+        // 选人格门控（character_personality_onboarding.js 的 isHomeTutorialInteractionLocked）靠这个旗子
+        // 提前知道教程马上要占屏，避免「上锁前的长 await 链超过选人格 15s 超时 → 选人格与新手教程并发弹出」。
+        // 仅由 dispatchStartupGreetingRelease（教程不启动/已结束）与 clearStartupGreetingRelease（教程已上锁接管）
+        // 这对 choke point 收口清除，凡是不启动的出口都必经前者，天然 deadlock-safe。
+        window.isNekoHomeTutorialPending = pending === true;
     }
 
     loadAvatarFloatingGuideState() {
@@ -626,14 +688,10 @@ class UniversalTutorialManager {
         if (state.completedRounds.includes(round) || state.skippedRounds.includes(round)) {
             return false;
         }
-        if (state.pendingRound || state.manualResetRound) {
-            return state.pendingRound === round || state.manualResetRound === round;
+        if (state.manualResetRound) {
+            return state.manualResetRound === round;
         }
-        if (state.pendingRound !== round && state.manualResetRound !== round) {
-            const today = getTodayLocalDateForAvatarFloatingGuide();
-            return state.lastAutoShownRound === round && state.lastAutoShownDate === today;
-        }
-        return true;
+        return this.getNextAvatarFloatingGuideAutoRound() === round;
     }
 
     isAvatarFloatingGuideRoundRegistered(day) {
@@ -651,7 +709,7 @@ class UniversalTutorialManager {
     getNextAvatarFloatingGuideAutoRound() {
         const state = loadAvatarFloatingGuideState();
         const today = getTodayLocalDateForAvatarFloatingGuide();
-        const pendingManualRound = state.pendingRound || state.manualResetRound;
+        const pendingManualRound = state.manualResetRound;
         if (pendingManualRound) {
             return pendingManualRound;
         }
@@ -709,6 +767,138 @@ class UniversalTutorialManager {
         return null;
     }
 
+    getAvatarFloatingBootHelper() {
+        return window.NekoAvatarFloatingBoot || null;
+    }
+
+    isDirectAvatarFloatingTutorialBoot(round) {
+        const helper = this.getAvatarFloatingBootHelper();
+        if (!helper) {
+            return false;
+        }
+        const normalizedRound = normalizeOptionalAvatarFloatingGuideRound(round);
+        const predictedRound = typeof helper.getPredictedRound === 'function'
+            ? normalizeOptionalAvatarFloatingGuideRound(helper.getPredictedRound())
+            : null;
+        const canBootDirect = typeof helper.shouldBootIntoTutorial === 'function'
+            ? helper.shouldBootIntoTutorial()
+            : !!predictedRound;
+        const skippedUserModel = typeof helper.wasUserModelBootSkipped === 'function'
+            && helper.wasUserModelBootSkipped();
+        const skippedRound = typeof helper.getSkippedUserModelBootRound === 'function'
+            ? normalizeOptionalAvatarFloatingGuideRound(helper.getSkippedUserModelBootRound())
+            : null;
+        return !!normalizedRound
+            && (
+                (canBootDirect && predictedRound === normalizedRound)
+                || (skippedUserModel && predictedRound === normalizedRound && skippedRound === normalizedRound)
+            );
+    }
+
+    getDirectAvatarFloatingTutorialBootRound() {
+        const helper = this.getAvatarFloatingBootHelper();
+        if (!helper || this.currentPage !== 'home') {
+            return null;
+        }
+        const predictedRound = typeof helper.getPredictedRound === 'function'
+            ? normalizeOptionalAvatarFloatingGuideRound(helper.getPredictedRound())
+            : null;
+        if (!predictedRound || !this.isAvatarFloatingGuideRoundRegistered(predictedRound)) {
+            return null;
+        }
+        return this.isDirectAvatarFloatingTutorialBoot(predictedRound) ? predictedRound : null;
+    }
+
+    getHomeAvatarFloatingGuideLaunchRound(options = {}) {
+        return this.getDirectAvatarFloatingTutorialBootRound()
+            || this.getHomeAvatarFloatingGuideStartRound(options);
+    }
+
+    claimDirectAvatarFloatingTutorialBoot(round, source) {
+        if (!window.NekoAvatarFloatingBoot || typeof window.NekoAvatarFloatingBoot.claimDirectTutorialBoot !== 'function') {
+            return false;
+        }
+        return window.NekoAvatarFloatingBoot.claimDirectTutorialBoot(round, source || 'avatar-floating-guide-start');
+    }
+
+    releaseDirectAvatarFloatingTutorialBoot(reason, options) {
+        if (window.NekoAvatarFloatingBoot && typeof window.NekoAvatarFloatingBoot.releaseDirectTutorialBoot === 'function') {
+            window.NekoAvatarFloatingBoot.releaseDirectTutorialBoot(reason || 'avatar-floating-guide-release', options || {});
+        }
+    }
+
+    dispatchAvatarFloatingTutorialInputRestored(reason = 'tutorial-avatar-restored') {
+        const detail = {
+            action: 'yui_guide_tutorial_input_restored',
+            reason,
+            page: this.getYuiGuidePageKey(),
+            runtimePage: this.currentPage,
+            timestamp: Date.now()
+        };
+        try {
+            window.dispatchEvent(new CustomEvent('neko:yui-guide:tutorial-input-restored', { detail }));
+        } catch (_) {}
+        try {
+            if (
+                window.nekoTutorialOverlay
+                && typeof window.nekoTutorialOverlay.relayToPet === 'function'
+            ) {
+                window.nekoTutorialOverlay.relayToPet(detail);
+            }
+        } catch (_) {}
+    }
+
+    async recoverUserModelAfterDirectTutorialBootFailure(reason) {
+        if (window.NekoAvatarFloatingBoot && typeof window.NekoAvatarFloatingBoot.recoverUserModelBoot === 'function') {
+            try {
+                return await window.NekoAvatarFloatingBoot.recoverUserModelBoot(reason || 'direct-tutorial-boot-failed');
+            } catch (error) {
+                console.warn('[Tutorial] direct tutorial boot 恢复用户模型失败:', reason || 'unknown', error);
+            }
+        }
+        if (typeof window.showCurrentModel === 'function') {
+            try {
+                await window.showCurrentModel();
+                return true;
+            } catch (error) {
+                console.warn('[Tutorial] showCurrentModel 恢复用户模型失败:', reason || 'unknown', error);
+            }
+        }
+        return false;
+    }
+
+    waitForTutorialModelHostReady(maxWaitTime = 12000) {
+        const hasHost = () => !!(
+            document.body
+            && document.getElementById('live2d-container')
+            && document.getElementById('live2d-canvas')
+        );
+        if (hasHost()) {
+            return Promise.resolve(true);
+        }
+        return new Promise((resolve) => {
+            let resolved = false;
+            const done = (result) => {
+                if (resolved) {
+                    return;
+                }
+                resolved = true;
+                clearTimeout(timer);
+                clearInterval(poller);
+                resolve(result);
+            };
+            const poller = setInterval(() => {
+                if (hasHost()) {
+                    done(true);
+                }
+            }, 50);
+            const timer = setTimeout(() => {
+                console.warn(`[Tutorial] 等待教程模型容器超时（${maxWaitTime / 1000}秒）`);
+                done(false);
+            }, maxWaitTime);
+        });
+    }
+
     async maybeStartAvatarFloatingGuideAutoRound(delayMs = 1200) {
         if (this.currentPage !== 'home' || this.isTutorialRunning || window.isInTutorial) {
             return false;
@@ -733,9 +923,7 @@ class UniversalTutorialManager {
                 return;
             }
             this.startAvatarFloatingGuideRound(round, { source: 'auto' }).then((result) => {
-                if (result !== false) {
-                    this.markAvatarFloatingGuideRoundAutoShown(round);
-                } else {
+                if (result === false) {
                     this.dispatchStartupGreetingRelease('avatar-floating-round-start-skipped', { day: round });
                 }
             }).catch((error) => {
@@ -786,6 +974,7 @@ class UniversalTutorialManager {
                 beginAvatarOverride: (overrideOptions) => this.beginTutorialAvatarOverride(overrideOptions),
                 revealPrepared: () => this.revealTutorialLive2dPrepared(),
                 ensureVisible: (sceneId, ensureOptions) => this.ensureTutorialYuiLive2dVisible(sceneId, ensureOptions),
+                waitForAvatarReady: (sceneId, _options) => this.waitForTutorialYuiLive2dVisualReady(sceneId, 12000),
                 sleep: (delayMs) => this.sleep(delayMs),
                 beginTakingOver: (detail) => {
                     const director = detail && detail.director;
@@ -1112,6 +1301,83 @@ class UniversalTutorialManager {
         }
     }
 
+    ensurePcTutorialGlobalOverlayStarted(reason = 'tutorial-started') {
+        const overlay = window.nekoTutorialOverlay;
+        if (!overlay || typeof overlay.begin !== 'function') {
+            return '';
+        }
+
+        let tutorialRunId = '';
+        try {
+            tutorialRunId = window.localStorage
+                ? (window.localStorage.getItem('yuiGuidePcOverlayRunId') || '')
+                : '';
+        } catch (_) {}
+        if (!tutorialRunId) {
+            tutorialRunId = 'yui-guide-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+            try {
+                if (window.localStorage) {
+                    window.localStorage.setItem('yuiGuidePcOverlayRunId', tutorialRunId);
+                }
+            } catch (_) {}
+        }
+
+        try {
+            const beginResult = overlay.begin({
+                tutorialRunId: tutorialRunId,
+                reason: reason
+            });
+            Promise.resolve(beginResult).then(result => {
+                if (result && result.stale === true) {
+                    try {
+                        overlay.clear({ reason: reason, tutorialRunId: tutorialRunId });
+                    } catch (_) {}
+                }
+            }).catch(() => {});
+        } catch (error) {
+            console.warn('[Tutorial] Failed to begin PC tutorial global overlay:', error);
+        }
+        return tutorialRunId;
+    }
+
+    relayYuiGuideTutorialLifecycleStarted(page, source) {
+        let tutorialRunId = this.ensurePcTutorialGlobalOverlayStarted('tutorial-lifecycle-started');
+        try {
+            tutorialRunId = tutorialRunId || (window.localStorage
+                ? (window.localStorage.getItem('yuiGuidePcOverlayRunId') || '')
+                : '');
+        } catch (_) {}
+
+        const startedMessage = {
+            action: 'yui_guide_tutorial_lifecycle_started',
+            page: page || this.currentPage,
+            source: source || this.currentTutorialStartSource || 'auto',
+            tutorialRunId: tutorialRunId,
+            timestamp: Date.now()
+        };
+
+        try {
+            if (
+                window.nekoTutorialOverlay
+                && typeof window.nekoTutorialOverlay.relayToChat === 'function'
+            ) {
+                window.nekoTutorialOverlay.relayToChat(startedMessage);
+            }
+        } catch (error) {
+            console.warn('[Tutorial] 原生转发 Yui Guide 生命周期开始到聊天窗失败:', error);
+        }
+        try {
+            if (
+                window.nekoTutorialOverlay
+                && typeof window.nekoTutorialOverlay.relayToPet === 'function'
+            ) {
+                window.nekoTutorialOverlay.relayToPet(startedMessage);
+            }
+        } catch (error) {
+            console.warn('[Tutorial] 原生转发 Yui Guide 生命周期开始到桌宠窗失败:', error);
+        }
+    }
+
     syncYuiGuideCompactChatFixedLayout(fixed, reason = 'tutorial') {
         const normalizedReason = typeof reason === 'string' && reason.trim()
             ? reason.trim()
@@ -1356,19 +1622,22 @@ class UniversalTutorialManager {
                         page: this.currentPage,
                         reason: 'prompt-flow-active',
                     });
+                    this.recoverUserModelAfterDirectTutorialBootFailure('home-auto-start-suppressed');
                     this.dispatchStartupGreetingRelease('home-auto-start-suppressed');
                     return;
                 }
                 if (this.shouldStartHomeAvatarFloatingGuideRound()) {
                     const source = this.consumeTutorialStartSource();
-                    const round = this.getHomeAvatarFloatingGuideStartRound();
+                    const round = this.getHomeAvatarFloatingGuideLaunchRound();
                     if (!round) {
                         console.warn('[Tutorial] 首页每日教程 round 未注册，跳过启动');
+                        this.recoverUserModelAfterDirectTutorialBootFailure('no-home-avatar-floating-round');
                         this.dispatchStartupGreetingRelease('no-home-avatar-floating-round');
                         return;
                     }
                     this.startAvatarFloatingGuideRound(round, { source }).then((result) => {
                         if (result === false) {
+                            this.recoverUserModelAfterDirectTutorialBootFailure('avatar-floating-round-start-skipped');
                             this.dispatchStartupGreetingRelease('avatar-floating-round-start-skipped', { day: round });
                         }
                     }).catch(error => {
@@ -1445,7 +1714,7 @@ class UniversalTutorialManager {
     }
 
     shouldStartHomeAvatarFloatingGuideRound() {
-        return !!this.getHomeAvatarFloatingGuideStartRound();
+        return !!this.getHomeAvatarFloatingGuideLaunchRound();
     }
 
     /**
@@ -1460,6 +1729,135 @@ class UniversalTutorialManager {
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
+    }
+
+    shouldShowDay1SystrayIntro(endMeta, avatarFloatingEndState) {
+        if (!endMeta || !avatarFloatingEndState) {
+            return false;
+        }
+        if (avatarFloatingEndState.day !== 1) {
+            return false;
+        }
+        return endMeta.reason === 'complete' || endMeta.reason === 'skip';
+    }
+
+    scheduleDay1SystrayIntroAfterTeardown(teardownPromise, endMeta, avatarFloatingEndState) {
+        if (!this.shouldShowDay1SystrayIntro(endMeta, avatarFloatingEndState)) {
+            return teardownPromise;
+        }
+        return Promise.resolve(teardownPromise).finally(() => {
+            try {
+                this.showDay1SystrayIntroModal(endMeta, avatarFloatingEndState);
+            } catch (error) {
+                console.warn('[Tutorial] 第一天系统托盘介绍弹窗显示失败:', error);
+            }
+        });
+    }
+
+    closeDay1SystrayIntroModal(options = {}) {
+        const existing = document.getElementById('neko-day1-systray-intro-modal');
+        const hadBodyClass = !!(document.body && document.body.classList.contains('neko-day1-systray-intro-open'));
+        const shouldNotify = options.notify !== false;
+        if (existing) {
+            existing.remove();
+        }
+        if (document.body) {
+            document.body.classList.remove('neko-day1-systray-intro-open');
+        }
+        if (shouldNotify && (existing || hadBodyClass)) {
+            window.dispatchEvent(new CustomEvent('neko:day1-systray-intro-closed', {
+                detail: {
+                    source: 'day1_systray_intro',
+                    reason: 'closed',
+                    timestamp: Date.now()
+                }
+            }));
+        }
+    }
+
+    showDay1SystrayIntroModal(endMeta, avatarFloatingEndState) {
+        if (!this.shouldShowDay1SystrayIntro(endMeta, avatarFloatingEndState) || !document.body) {
+            return;
+        }
+
+        this.closeDay1SystrayIntroModal({ notify: false });
+
+        const t = (key, fallback) => this.t(key, fallback);
+        const escape = (text) => this.safeEscapeHtml(t(text.key, text.fallback));
+        const overlay = document.createElement('div');
+        overlay.id = 'neko-day1-systray-intro-modal';
+        overlay.className = 'neko-day1-systray-intro-modal';
+        overlay.setAttribute('role', 'dialog');
+        overlay.setAttribute('aria-modal', 'true');
+        overlay.setAttribute('aria-labelledby', 'neko-day1-systray-intro-title');
+
+        // 修改原因：托盘示意图已迁移到教程静态资源目录，保持弹窗资源归属一致。
+        overlay.innerHTML = `
+            <div class="neko-day1-systray-card">
+                <button class="neko-day1-systray-close" type="button" aria-label="${this.safeEscapeHtml(t('common.close', '关闭'))}">×</button>
+                <div class="neko-day1-systray-layout">
+                    <div class="neko-day1-systray-media">
+                        <div class="neko-day1-systray-location-copy">
+                            <h2 id="neko-day1-systray-intro-title">${escape({ key: 'tutorial.systray.location.title', fallback: '📍 托盘图标位置' })}</h2>
+                            <p>${escape({ key: 'tutorial.systray.location.desc', fallback: 'N.E.K.O 的图标会出现在屏幕右下角的系统托盘里，点击一下就能找到它。' })}</p>
+                            <p class="neko-day1-systray-note">${escape({ key: 'tutorial.systray.location.note', fallback: '如果看不到，可以先展开托盘的小箭头，查看全部图标。' })}</p>
+                        </div>
+                        <img
+                            src="/static/assets/tutorial/systray/stray_intro.png"
+                            alt="${escape({ key: 'tutorial.systray.location.alt', fallback: '系统托盘位置示意图' })}"
+                        >
+                    </div>
+                    <div class="neko-day1-systray-content">
+                        <section class="neko-day1-systray-menu" aria-labelledby="neko-day1-systray-menu-title">
+                            <h3 id="neko-day1-systray-menu-title">${escape({ key: 'tutorial.systray.menu.title', fallback: '📋 托盘菜单' })}</h3>
+                            <p>${escape({ key: 'tutorial.systray.menu.desc', fallback: '右键点击系统托盘（见上一步提示）中的 N.E.K.O 图标即可打开菜单。以下是一些常用功能：' })}</p>
+                            <div class="neko-day1-systray-menu-panel">
+                                <div class="neko-day1-systray-menu-item">
+                                    <strong>${escape({ key: 'tutorial.systray.resetPosition', fallback: '重置角色位置' })}</strong>
+                                    <span>${escape({ key: 'tutorial.systray.resetPositionDesc', fallback: '猫娘跑到屏幕外时，点此恢复默认位置~' })}</span>
+                                </div>
+                                <div class="neko-day1-systray-menu-item">
+                                    <strong>${escape({ key: 'tutorial.systray.openChat', fallback: '打开对话框' })}</strong>
+                                    <span>${escape({ key: 'tutorial.systray.openChatDesc', fallback: '打开独立的对话框进行文字对话~' })}</span>
+                                </div>
+                                <div class="neko-day1-systray-menu-item">
+                                    <strong>${escape({ key: 'tutorial.systray.hotkey', fallback: '快捷键设置' })}</strong>
+                                    <span>${escape({ key: 'tutorial.systray.hotkeyDesc', fallback: '设置全局快捷键，更高效地控制 N.E.K.O~' })}</span>
+                                </div>
+                                <div class="neko-day1-systray-menu-item neko-day1-systray-menu-item--danger">
+                                    <strong>${escape({ key: 'tutorial.systray.exit', fallback: '退出' })}</strong>
+                                    <span>${escape({ key: 'tutorial.systray.exitDesc', fallback: '关闭 N.E.K.O。托盘菜单是退出应用的主要方式~' })}</span>
+                                </div>
+                            </div>
+                        </section>
+                    </div>
+                </div>
+                <div class="neko-day1-systray-actions">
+                    <button class="neko-day1-systray-primary" type="button">${this.safeEscapeHtml(t('common.confirm', '确认'))}</button>
+                </div>
+            </div>
+        `;
+
+        const close = () => this.closeDay1SystrayIntroModal();
+        overlay.addEventListener('click', (event) => {
+            if (event.target === overlay) {
+                close();
+            }
+        });
+        overlay.querySelectorAll('button').forEach((button) => {
+            button.addEventListener('click', close);
+        });
+        document.body.appendChild(overlay);
+        document.body.classList.add('neko-day1-systray-intro-open');
+
+        const primary = overlay.querySelector('.neko-day1-systray-primary');
+        if (primary && typeof primary.focus === 'function') {
+            try {
+                primary.focus({ preventScroll: true });
+            } catch (_) {
+                primary.focus();
+            }
+        }
     }
 
     /**
@@ -1726,7 +2124,7 @@ class UniversalTutorialManager {
             if (!deferRevealPrepared) {
                 live2dContainer.style.removeProperty('opacity');
             }
-            live2dContainer.style.removeProperty('pointer-events');
+            live2dContainer.style.setProperty('pointer-events', 'none', 'important');
         }
         const live2dCanvas = document.getElementById('live2d-canvas');
         if (live2dCanvas) {
@@ -1885,6 +2283,60 @@ class UniversalTutorialManager {
             return true;
         }
         return ['preparing', 'applying', 'settling'].includes(String(manager._modelLoadState || ''));
+    }
+
+    isTutorialYuiLive2dVisualReady() {
+        const manager = window.live2dManager || null;
+        if (!this.isTutorialYuiLive2dActive() || !this.hasTutorialYuiLive2dRenderableModel(manager)) {
+            return false;
+        }
+        if (manager._isLoadingModel === true) {
+            return false;
+        }
+        const state = String(manager._modelLoadState || '');
+        if (state !== 'ready') {
+            return false;
+        }
+        if (manager._isModelReadyForInteraction !== true) {
+            return false;
+        }
+        return true;
+    }
+
+    waitForTutorialYuiLive2dVisualReady(reason = '', maxWaitTime = 12000) {
+        if (this.isTutorialYuiLive2dVisualReady()) {
+            return Promise.resolve(true);
+        }
+
+        return new Promise((resolve) => {
+            let resolved = false;
+            const timeoutMs = Math.max(0, Math.floor(Number(maxWaitTime) || 0));
+            const done = (result) => {
+                if (resolved) {
+                    return;
+                }
+                resolved = true;
+                clearTimeout(timer);
+                clearInterval(poller);
+                window.removeEventListener('neko-live2d-model-ready', onReady);
+                window.removeEventListener('live2d-model-ready', onReady);
+                if (!result) {
+                    console.warn('[Tutorial] 等待 YUI Live2D 视觉就绪超时，继续启动教程:', reason || 'unknown');
+                }
+                resolve(result);
+            };
+            const checkReady = () => {
+                if (this.isTutorialYuiLive2dVisualReady()) {
+                    done(true);
+                }
+            };
+            const onReady = () => checkReady();
+            const poller = setInterval(checkReady, 100);
+            const timer = setTimeout(() => done(false), timeoutMs);
+            window.addEventListener('neko-live2d-model-ready', onReady);
+            window.addEventListener('live2d-model-ready', onReady);
+            checkReady();
+        });
     }
 
     waitForLive2dModelLoadIdle(maxWaitTime = 30000) {
@@ -2120,7 +2572,7 @@ class UniversalTutorialManager {
             } else {
                 live2dContainer.style.setProperty('opacity', '1', 'important');
             }
-            live2dContainer.style.removeProperty('pointer-events');
+            live2dContainer.style.setProperty('pointer-events', 'none', 'important');
         }
 
         const live2dCanvas = document.getElementById('live2d-canvas');
@@ -2659,20 +3111,29 @@ class UniversalTutorialManager {
 
         const activePrefix = this.getActiveAvatarFloatingModelPrefix();
         const activeLocked = snapshot[activePrefix] === true;
-        [`${activePrefix}-canvas`, `${activePrefix}-container`].forEach(elementId => {
-            const element = document.getElementById(elementId);
-            if (!element) return;
-            const pointerKey = elementId.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
-            const hasSnapshotPointerEvents = snapshot.pointerEvents
-                && Object.prototype.hasOwnProperty.call(snapshot.pointerEvents, pointerKey);
-            if (hasSnapshotPointerEvents) {
-                element.style.pointerEvents = snapshot.pointerEvents[pointerKey] || '';
+        function restoreAvatarPointerEvents(element, elementId, snapshotPointerEvents, hasSnapshotPointerEvents) {
+            const isActiveAvatarContainer = elementId === `${activePrefix}-container`;
+            if (isActiveAvatarContainer && (activePrefix === 'live2d' || activePrefix === 'pngtuber')) {
+                element.style.setProperty('pointer-events', 'none', 'important');
+                return;
+            }
+            if (hasSnapshotPointerEvents && snapshotPointerEvents) {
+                element.style.pointerEvents = snapshotPointerEvents;
                 return;
             }
             if (activePrefix === 'live2d' || activePrefix === 'pngtuber') {
                 element.style.removeProperty('pointer-events');
                 element.style.pointerEvents = activeLocked ? 'none' : 'auto';
             }
+        }
+        [`${activePrefix}-canvas`, `${activePrefix}-container`].forEach(elementId => {
+            const element = document.getElementById(elementId);
+            if (!element) return;
+            const pointerKey = elementId.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+            const hasSnapshotPointerEvents = snapshot.pointerEvents
+                && Object.prototype.hasOwnProperty.call(snapshot.pointerEvents, pointerKey);
+            const snapshotPointerEvents = hasSnapshotPointerEvents ? snapshot.pointerEvents[pointerKey] : null;
+            restoreAvatarPointerEvents(element, elementId, snapshotPointerEvents, hasSnapshotPointerEvents);
         });
         if (reason === 'tutorial-avatar-restored') {
             this._avatarFloatingModelLockSnapshot = null;
@@ -2797,7 +3258,7 @@ class UniversalTutorialManager {
             pageKeys.push(targetPage);
         }
 
-        return Array.from(new Set(pageKeys)).map(getTutorialStorageKeyForPage);
+        return Array.from(new Set(pageKeys.map(getTutorialStorageKeyForPage)));
     }
 
     getResetStorageKeysForPage(page) {
@@ -2879,7 +3340,12 @@ class UniversalTutorialManager {
             }
 
             if (this.currentPage === 'home') {
-                await this.waitForFloatingButtons();
+                const round = this.getHomeAvatarFloatingGuideLaunchRound();
+                if (round && this.isDirectAvatarFloatingTutorialBoot(round)) {
+                    await this.waitForTutorialModelHostReady();
+                } else {
+                    await this.waitForFloatingButtons();
+                }
                 this.startTutorialWhenI18nReady(delayMs);
                 return true;
             }
@@ -2916,9 +3382,18 @@ class UniversalTutorialManager {
         if (this.currentPage !== 'home') {
             throw new Error('avatar_floating_guide_requires_home');
         }
-        const buttonsReady = await this.waitForFloatingButtons();
-        if (!buttonsReady) {
-            throw new Error('floating_buttons_not_ready');
+        const directTutorialBoot = this.isDirectAvatarFloatingTutorialBoot(round);
+        if (directTutorialBoot) {
+            const hostReady = await this.waitForTutorialModelHostReady();
+            if (!hostReady) {
+                await this.recoverUserModelAfterDirectTutorialBootFailure('tutorial-model-host-not-ready');
+                throw new Error('tutorial_model_host_not_ready');
+            }
+        } else {
+            const buttonsReady = await this.waitForFloatingButtons();
+            if (!buttonsReady) {
+                throw new Error('floating_buttons_not_ready');
+            }
         }
 
         this._isDestroyed = false;
@@ -2933,6 +3408,10 @@ class UniversalTutorialManager {
             yuiGuideSceneId: 'avatar_floating_day' + round,
         }];
         this.activeAvatarFloatingGuideRound = round;
+        if (source === 'auto') {
+            // Reserve the daily auto start before long narration so refreshes cannot replay it.
+            this.markAvatarFloatingGuideRoundAutoShown(round);
+        }
         this.setAvatarFloatingGuideCurrentRound(round);
         this.snapshotAvatarFloatingModelInteractionState('avatar-floating-guide-start');
         this.isTutorialRunning = true;
@@ -2944,18 +3423,28 @@ class UniversalTutorialManager {
         this.syncYuiGuideCompactChatFixedLayout(true, 'avatar-floating-guide-start');
         this._tutorialModelPrefix = 'live2d';
         this.emitTutorialStarted('home', source);
+        if (directTutorialBoot) {
+            this.claimDirectAvatarFloatingTutorialBoot(round, source);
+        }
 
         try {
             const director = this.ensureYuiGuideDirector();
             if (!director || typeof director.playAvatarFloatingRound !== 'function') {
                 throw new Error('avatar_floating_director_unavailable');
             }
-            await this.playAvatarFloatingRoundPrelude(round, source, director);
+            await this.playAvatarFloatingRoundPrelude(round, source, director, {
+                skipSourceModelFade: directTutorialBoot
+            });
             const completed = await director.playAvatarFloatingRound(round, {
                 source,
                 surfaceReady: true,
                 revealPrepared: () => this.revealTutorialLive2dPrepared()
             });
+            if (directTutorialBoot) {
+                this.releaseDirectAvatarFloatingTutorialBoot('avatar-floating-before-teardown', {
+                    suppressPrediction: true
+                });
+            }
             if (!this._tutorialEndHandled) {
                 const endReason = completed
                     ? 'complete'
@@ -2969,8 +3458,17 @@ class UniversalTutorialManager {
             return completed;
         } catch (error) {
             console.error('[Tutorial] 悬浮窗教程启动失败:', error);
+            if (directTutorialBoot) {
+                this.releaseDirectAvatarFloatingTutorialBoot('avatar-floating-before-teardown', {
+                    keepUserModelBootSkipped: true,
+                    suppressPrediction: true
+                });
+            }
             if (!this._tutorialEndHandled) {
                 await this.requestTutorialDestroy('destroy');
+            }
+            if (directTutorialBoot) {
+                await this.recoverUserModelAfterDirectTutorialBootFailure('avatar-floating-start-failed');
             }
             throw error;
         }
@@ -2990,7 +3488,7 @@ class UniversalTutorialManager {
         }
     }
 
-    async playAvatarFloatingRoundPrelude(round, source, director) {
+    async playAvatarFloatingRoundPrelude(round, source, director, options = {}) {
         const controller = this.ensureTutorialRoundPreludeController();
         if (!controller || typeof controller.play !== 'function') {
             throw new Error('tutorial_round_prelude_controller_unavailable');
@@ -2998,7 +3496,8 @@ class UniversalTutorialManager {
         return controller.play(round, {
             source: source,
             director: director || null,
-            deferRevealPrepared: true
+            deferRevealPrepared: true,
+            skipSourceModelFade: options && options.skipSourceModelFade === true
         });
     }
 
@@ -3021,8 +3520,25 @@ class UniversalTutorialManager {
 
         const storageKey = this.getStorageKey();
         const hasSeen = localStorage.getItem(storageKey);
+        if (this.currentPage === 'home') {
+            const directBootRound = this.getDirectAvatarFloatingTutorialBootRound();
+            if (directBootRound && this.isDirectAvatarFloatingTutorialBoot(directBootRound)) {
+                const directBootState = loadAvatarFloatingGuideState();
+                if (directBootState.manualResetRound === directBootRound) {
+                    this.pendingTutorialStartSource = 'manual_reset';
+                }
+                if (!hasSeen) {
+                    this.setHomeTutorialPending(true);
+                }
+                this.startTutorialWhenI18nReady(1500);
+                return;
+            }
+        }
 
         if (!hasSeen && this.currentPage === 'home') {
+            // 新手教程即将启动：先置 pending，让选人格门控在「模型加载/首句演出尚未上锁」这段窗口里
+            // 也把教程视作占屏，避免选人格抢在新手教程之前弹出（上锁前的长 await 链可能超过选人格 15s 超时）。
+            this.setHomeTutorialPending(true);
             this.waitForFloatingButtons().then((found) => {
                 if (!found) {
                     console.warn('[Tutorial] 浮动按钮始终未出现，跳过主页引导');
@@ -3032,6 +3548,9 @@ class UniversalTutorialManager {
                 this.startTutorialWhenI18nReady(1500);
             });
         } else if (this.currentPage === 'home') {
+            // 老用户每日教程不置 pending：这里多数天根本没 round（要到 maybeStartAvatarFloatingGuideAutoRound
+            // 之后才知道），且老用户 onboarding 早已完成、选人格不会再 pending，无收益却会在无 round 日白挡门控。
+            // 首启并发的 bug 只发生在上面的新用户 Day1 分支。
             this.waitForFloatingButtons().then((found) => {
                 if (!found) {
                     this.dispatchStartupGreetingRelease('floating-buttons-not-found');
@@ -3123,7 +3642,7 @@ class UniversalTutorialManager {
         this.currentTutorialStartSource = this.consumeTutorialStartSource();
 
         if (this.currentPage === 'home') {
-            const round = this.getHomeAvatarFloatingGuideStartRound();
+            const round = this.getHomeAvatarFloatingGuideLaunchRound();
             if (!round) {
                 console.warn('[Tutorial] 首页每日教程 round 未注册，跳过启动');
                 return false;
@@ -3149,6 +3668,7 @@ class UniversalTutorialManager {
 
     emitTutorialStarted(page = this.currentPage, source = this.currentTutorialStartSource) {
         this.clearStartupGreetingRelease('tutorial-started');
+        this.relayYuiGuideTutorialLifecycleStarted(page, source);
         this.syncPcSystemCursorHidden(true, 'tutorial-started');
         window.dispatchEvent(new CustomEvent('neko:tutorial-started', {
             detail: {
@@ -3312,6 +3832,9 @@ class UniversalTutorialManager {
             );
         }
         if (avatarFloatingEndState && (endMeta.reason === 'complete' || endMeta.reason === 'skip')) {
+            if (avatarFloatingEndState.day === 1) {
+                recordAvatarFloatingGuideUsageRoundEnd(1);
+            }
             const avatarFloatingEndEventName = endMeta.reason === 'skip'
                 ? 'neko:avatar-floating-guide-skip'
                 : 'neko:avatar-floating-guide-complete';
@@ -3325,6 +3848,11 @@ class UniversalTutorialManager {
                 }
             }));
         }
+        const day1SystrayIntroPromise = this.scheduleDay1SystrayIntroAfterTeardown(
+            startupGreetingReleasePromise,
+            endMeta,
+            avatarFloatingEndState
+        );
 
         if (endMeta.reason === 'destroy') {
             window.dispatchEvent(new CustomEvent('neko:tutorial-ended-without-completion', {
@@ -3363,7 +3891,7 @@ class UniversalTutorialManager {
                 reason: endMeta.reason,
                 rawReason: endMeta.rawReason
             });
-            return startupGreetingReleasePromise;
+            return day1SystrayIntroPromise;
         }
 
         window.dispatchEvent(new CustomEvent('neko:tutorial-completed', {
@@ -3380,7 +3908,7 @@ class UniversalTutorialManager {
             reason: endMeta.reason,
             rawReason: endMeta.rawReason
         });
-        return startupGreetingReleasePromise;
+        return day1SystrayIntroPromise;
     }
 
     clearYuiGuideCompactChatFixedLayout(reason = 'tutorial-ended') {
@@ -3517,6 +4045,9 @@ class UniversalTutorialManager {
                 console.warn('[Tutorial] 拆除引导时恢复头像失败:', error);
             })
             .finally(() => {
+                this.dispatchAvatarFloatingTutorialInputRestored('tutorial-avatar-restored');
+            })
+            .finally(() => {
                 this._tutorialModelPrefix = null;
                 if (this._teardownPromise === teardownPromise) {
                     this._teardownPromise = null;
@@ -3627,6 +4158,8 @@ window.universalTutorialManager = null;
 window.__universalTutorialManagerResizeRetryBound = false;
 
 function dispatchStartupGreetingReleaseWithoutManager(reason, detail = {}) {
+    // 无管理器路径（如移动端禁用教程）同样代表新手教程不会占屏，清除 pending 兜底，避免选人格被永久挡住。
+    window.isNekoHomeTutorialPending = false;
     const releaseDetail = Object.assign({
         released: true,
         page: 'unknown',
@@ -3720,6 +4253,31 @@ async function initUniversalTutorialManager() {
  * 全局函数：重置所有引导
  * 供 HTML 按钮调用
  */
+async function showTutorialResetMessage(message, options = {}) {
+    const title = options.title || (window.t ? window.t('memory.tutorialReset', 'Tutorial') : 'Tutorial');
+    if (typeof window.showTutorialResetNotice === 'function') {
+        try {
+            await window.showTutorialResetNotice(message, Object.assign({}, options, { title }));
+            return;
+        } catch (error) {
+            console.warn('[TutorialReset] custom notice failed:', error);
+        }
+    }
+    if (typeof window.showAlert === 'function') {
+        try {
+            await window.showAlert(message, title);
+            return;
+        } catch (error) {
+            console.warn('[TutorialReset] common alert failed:', error);
+        }
+    }
+    if (typeof window.alert === 'function') {
+        window.alert(message);
+        return;
+    }
+    console.log('[TutorialReset]', message);
+}
+
 async function resetAllTutorials() {
     if (window.universalTutorialManager) {
         await window.universalTutorialManager.resetAllTutorials();
@@ -3732,7 +4290,10 @@ async function resetAllTutorials() {
         localStorage.setItem(getTutorialManualIntentKeyForPage('home'), 'true');
         dispatchHomeTutorialResetEvent('all', 'manual_all_tutorial_reset');
     }
-    alert(window.t ? window.t('memory.tutorialResetSuccess', '已重置所有引导，下次进入各页面时将重新显示引导。') : '已重置所有引导，下次进入各页面时将重新显示引导。');
+    const resetMessage = window.t
+        ? window.t('memory.tutorialResetSuccess', '已重置所有引导，下次进入各页面时将重新显示引导。')
+        : '已重置所有引导，下次进入各页面时将重新显示引导。';
+    await showTutorialResetMessage(resetMessage);
 }
 
 /**
@@ -3761,19 +4322,19 @@ async function resetTutorialForPage(pageKey) {
                 const fallbackError = window.t
                     ? window.t('memory.currentPersonalityResetFailed', '触发当前角色性格重选失败，请稍后再试。')
                     : '触发当前角色性格重选失败，请稍后再试。';
-                alert(payload && payload.error ? payload.error : fallbackError);
+                void showTutorialResetMessage(payload && payload.error ? payload.error : fallbackError, { variant: 'error' });
                 return;
             }
 
             const successMessage = window.t
                 ? window.t('memory.currentPersonalityResetSuccess', '已记录当前角色的性格重选请求，请回到主页刷新后继续。')
                 : '已记录当前角色的性格重选请求，请回到主页刷新后继续。';
-            alert(successMessage);
+            void showTutorialResetMessage(successMessage);
         }).catch(() => {
             const fallbackError = window.t
                 ? window.t('memory.currentPersonalityResetFailed', '触发当前角色性格重选失败，请稍后再试。')
                 : '触发当前角色性格重选失败，请稍后再试。';
-            alert(fallbackError);
+            void showTutorialResetMessage(fallbackError, { variant: 'error' });
         });
         return;
     }
@@ -3793,6 +4354,14 @@ async function resetTutorialForPage(pageKey) {
 
     const pageNames = {
         'home': window.t ? window.t('memory.tutorialPageHome', '主页') : '主页',
+        'model_manager': window.t ? window.t('memory.tutorialPageModelManager', '模型设置') : '模型设置',
+        'parameter_editor': window.t ? window.t('memory.tutorialPageParameterEditor', '捏脸系统') : '捏脸系统',
+        'emotion_manager': window.t ? window.t('memory.tutorialPageEmotionManager', '情感管理') : '情感管理',
+        'chara_manager': window.t ? window.t('memory.tutorialPageCharaManager', '角色管理') : '角色管理',
+        'settings': window.t ? window.t('memory.tutorialPageSettings', 'API设置') : 'API设置',
+        'voice_clone': window.t ? window.t('memory.tutorialPageVoiceClone', '语音克隆') : '语音克隆',
+        'steam_workshop': window.t ? window.t('steam.workshop', 'Steam创意工坊') : 'Steam创意工坊',
+        'memory_browser': window.t ? window.t('memory.tutorialPageMemoryBrowser', '记忆浏览') : '记忆浏览',
         'current_personality': window.t ? window.t('memory.tutorialPageCurrentPersonality', '当前角色性格') : '当前角色性格'
     };
     const pageName = pageNames[pageKey] || pageKey;
@@ -3800,7 +4369,7 @@ async function resetTutorialForPage(pageKey) {
     const message = window.t
         ? window.t('memory.tutorialPageResetSuccessWithName', { pageName: pageName, defaultValue: `已重置「${pageName}」的引导，下次进入该页面时将重新显示引导。` })
         : `已重置「${pageName}」的引导，下次进入该页面时将重新显示引导。`;
-    alert(message);
+    await showTutorialResetMessage(message);
 }
 
 /**

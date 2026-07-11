@@ -6,13 +6,15 @@
     <meta charset="UTF-8">
     <title data-i18n="voice.title">音色注册 - Project N.E.K.O.</title>
     <!-- i18next 加载器（统一处理 CDN 加载和初始化） -->
-    <script src="/static/i18n-i18next.js"></script>
+    <script src="/static/i18n-i18next.js?v={{ static_asset_version|default('0', true) }}"></script>
     <script src="/static/common_dialogs.js"></script>
     <link rel="stylesheet" href="/static/css/voice_clone.css">
     <link rel="stylesheet" href="/static/css/window_controls.css">
     <link rel="stylesheet" href="/static/css/dark-mode.css">
     <script src="/static/theme-manager.js"></script>
     <script src="/static/js/window_controls.js" defer></script>
+    <link rel="stylesheet" href="/static/libs/driver.min.css?v={{ static_asset_version|default('0', true) }}">
+    <link rel="stylesheet" href="/static/css/tutorial-styles.css?v={{ static_asset_version|default('0', true) }}">
 </head>
 <body>
     <div class="container">
@@ -44,6 +46,8 @@
                         <option value="minimax_intl" data-i18n="voice.provider.minimax_intl">MiniMax（国际服）</option>
                         <option value="elevenlabs" data-i18n="voice.provider.elevenlabs">ElevenLabs</option>
                         <option value="mimo" data-i18n="voice.provider.mimo">MiMo（小米）</option>
+                        <option value="doubao_tts" data-i18n="voice.provider.doubao_tts">豆包语音(火山引擎)</option>
+                        <option value="vllm_omni" data-i18n="voice.provider.vllm_omni">vLLM-Omni（本地克隆）</option>
                     </select>
                 </div>
                 <div id="provider-notice" class="alibaba-api-notice" style="display: none;">
@@ -119,6 +123,12 @@
                     </select>
                 </div>
 
+                <div class="field-row" id="vllmRefTextRow" style="display: none;">
+                    <label for="vllmRefText" data-i18n="voice.vllmRefTextLabel">参考音频原文（vLLM-Omni 克隆必填，须与音频内容严格对应）</label>
+                    <label class="hint" data-i18n="voice.vllmRefTextHint">逐字输入参考音频里说的话，文本与音频不符会导致克隆音质下降</label>
+                    <textarea id="vllmRefText" rows="3" data-i18n-placeholder="voice.vllmRefTextPlaceholder" placeholder="例如：希望你以后能够做的比我还好呦"></textarea>
+                </div>
+
                 <div class="field-row">
                     <label data-i18n="voice.customPrefix">自定义前缀（必填，用于区分音色）</label>
                     <input type="text" id="prefix" data-i18n-placeholder="voice.voiceIdPlaceholder"
@@ -154,6 +164,7 @@
             </div>
         </div>
     </div>
+    <script src="/static/js/voice_display_utils.js"></script>
     <script src="/static/js/voice_clone.js"></script>
     <script src="/static/js/voice_silence_remover.js"></script>
 
@@ -236,15 +247,17 @@
 
 
     <!-- 通用教程管理器 -->
-    <script src="/static/tutorial/core/skip-controller.js"></script>
-    <script src="/static/tutorial/avatar/reload-controller.js"></script>
-    <script src="/static/tutorial/core/lifecycle-state-store.js"></script>
+    <script src="/static/libs/driver.min.js?v={{ static_asset_version|default('0', true) }}"></script>
+    <script src="/static/tutorial/core/skip-controller.js?v={{ static_asset_version|default('0', true) }}"></script>
+    <script src="/static/tutorial/avatar/reload-controller.js?v={{ static_asset_version|default('0', true) }}"></script>
+    <script src="/static/tutorial/core/lifecycle-state-store.js?v={{ static_asset_version|default('0', true) }}"></script>
+    <script src="/static/tutorial/core/page-tutorial-manager.js?v={{ static_asset_version|default('0', true) }}"></script>
 
     <!-- 初始化 -->
     <script>
         document.addEventListener('DOMContentLoaded', function() {
-            if (typeof initUniversalTutorialManager === 'function') {
-                initUniversalTutorialManager();
+            if (typeof initPageTutorialManager === 'function') {
+                initPageTutorialManager();
             }
         });
     </script>

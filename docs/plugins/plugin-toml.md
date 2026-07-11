@@ -124,8 +124,12 @@ Tells the system which SDK version your plugin was written for. If the user's N.
 [plugin_runtime]
 enabled = true
 auto_start = true
+timeout = 10
+startup_failure = "warn"
 ```
 
+- `timeout` - Number of seconds to wait for startup readiness; must satisfy `0 < timeout <= 300`. Omit it to use the system default.
+- `startup_failure` - What to do if `lifecycle.startup` raises after the process is alive. Omit it to default to `warn`: `warn` keeps the plugin running and marks startup as degraded, `fail` aborts startup, and `ignore` only logs the error.
 - `enabled` — Set to `false` to temporarily disable without deleting files
 - `auto_start` — When `true`, starts automatically with N.E.K.O; otherwise start manually from the panel
 

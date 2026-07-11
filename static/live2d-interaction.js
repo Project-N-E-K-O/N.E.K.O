@@ -43,6 +43,100 @@ const EasingFunctions = {
     easeInOutQuad: t => t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t
 };
 
+function getLive2DNiriPetPhysicalCropApi() {
+    const api = typeof window !== 'undefined' ? window.__nekoNiriPetPhysicalCrop : null;
+    if (!api || typeof api !== 'object') return null;
+    try {
+        if (typeof api.isActive === 'function' && !api.isActive()) return null;
+    } catch (_) {
+        return null;
+    }
+    return api;
+}
+
+function normalizeLive2DPoint(point) {
+    if (!point || typeof point !== 'object') return null;
+    const x = Number(point.x);
+    const y = Number(point.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    return { x, y };
+}
+
+function logLive2DClickTriggerSummary(label, details = {}) {
+    const motions = Array.isArray(details.motions) ? details.motions.filter(Boolean) : [];
+    const expressions = Array.isArray(details.expressions) ? details.expressions.filter(Boolean) : [];
+    const failedMotions = Array.isArray(details.failedMotions) ? details.failedMotions.filter(Boolean) : [];
+    const failedExpressions = Array.isArray(details.failedExpressions) ? details.failedExpressions.filter(Boolean) : [];
+    const motionCount = motions.length;
+    const expressionCount = expressions.length;
+    const triggerCount = motionCount + expressionCount;
+    console.log(`[${label}] click trigger summary: triggered=${triggerCount}, motions=${motionCount}, expressions=${expressionCount}`, {
+        requestedHitArea: details.requestedHitArea || null,
+        resolvedHitArea: details.resolvedHitArea || null,
+        fallback: details.fallback || null,
+        reason: details.reason || null,
+        summaryType: details.summaryType || 'trigger_result',
+        emotion: details.emotion || null,
+        priority: details.priority ?? null,
+        durationMs: details.durationMs ?? null,
+        motionCandidates: Number.isFinite(details.motionCandidates) ? details.motionCandidates : 0,
+        expressionCandidates: Number.isFinite(details.expressionCandidates) ? details.expressionCandidates : 0,
+        motions,
+        expressions,
+        failedMotions,
+        failedExpressions
+    });
+}
+
+function getLive2DNiriPetPointerCoordinates(event) {
+    const raw = {
+        x: Number(event && event.clientX),
+        y: Number(event && event.clientY)
+    };
+    if (!Number.isFinite(raw.x) || !Number.isFinite(raw.y)) {
+        return {
+            local: { x: 0, y: 0 },
+            virtual: { x: 0, y: 0 },
+            active: false,
+            patched: false
+        };
+    }
+
+    const api = getLive2DNiriPetPhysicalCropApi();
+    if (api && typeof api.getEventCoordinates === 'function') {
+        try {
+            const coords = api.getEventCoordinates(event);
+            const local = normalizeLive2DPoint(coords && coords.local);
+            const virtual = normalizeLive2DPoint(coords && coords.virtual);
+            if (local && virtual) {
+                return {
+                    local,
+                    virtual,
+                    active: coords.active === true,
+                    patched: coords.patched === true
+                };
+            }
+        } catch (_) {}
+    }
+
+    return {
+        local: raw,
+        virtual: raw,
+        active: false,
+        patched: false
+    };
+}
+
+function isLive2DPointInRect(point, rect, padding = 0) {
+    const p = normalizeLive2DPoint(point);
+    if (!p || !rect) return false;
+    const pad = Number.isFinite(Number(padding)) ? Number(padding) : 0;
+    return p.x >= rect.left - pad &&
+        p.x <= rect.right + pad &&
+        p.y >= rect.top - pad &&
+        p.y <= rect.bottom + pad;
+}
+
 /**
  * 检测模型是否超出当前屏幕边界，并计算吸附目标位置
  * @param {PIXI.DisplayObject} model - Live2D 模型对象
@@ -296,9 +390,47 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
     let clickStartTime = 0;
     let clickStartX = 0;
     let clickStartY = 0;
+    let dragHintStartPointer = null;
+    let dragHintLastPointer = null;
+    let dragHintApproachShown = false;
     let hasMoved = false;
     const CLICK_THRESHOLD_DISTANCE = 10; // 移动距离阈值（像素）
     const CLICK_THRESHOLD_TIME = 300; // 时间阈值（毫秒）
+
+    const captureDragHintPointer = (event) => {
+        const screenX = Number(event?.screenX);
+        const screenY = Number(event?.screenY);
+        if (!Number.isFinite(screenX) || !Number.isFinite(screenY)) return null;
+        return { screenX, screenY };
+    };
+
+    const recordDragHintPointerEdgeRelease = async () => {
+        const helper = window.NekoAvatarMultiScreenDragHint;
+        if (!helper || typeof helper.recordPointerEdgeRelease !== 'function') return false;
+        if (!dragHintStartPointer || !dragHintLastPointer) return false;
+        return await helper.recordPointerEdgeRelease('live2d', {
+            startedAt: dragHintStartPointer.startedAt,
+            startScreenX: dragHintStartPointer.screenX,
+            startScreenY: dragHintStartPointer.screenY,
+            screenX: dragHintLastPointer.screenX,
+            screenY: dragHintLastPointer.screenY
+        });
+    };
+
+    const recordDragHintPointerEdgeApproach = async () => {
+        const helper = window.NekoAvatarMultiScreenDragHint;
+        if (!helper || typeof helper.recordPointerEdgeApproach !== 'function') return false;
+        if (dragHintApproachShown || !dragHintStartPointer || !dragHintLastPointer) return false;
+        const shown = await helper.recordPointerEdgeApproach('live2d', {
+            startedAt: dragHintStartPointer.startedAt,
+            startScreenX: dragHintStartPointer.screenX,
+            startScreenY: dragHintStartPointer.screenY,
+            screenX: dragHintLastPointer.screenX,
+            screenY: dragHintLastPointer.screenY
+        });
+        if (shown) dragHintApproachShown = true;
+        return shown;
+    };
 
     // 使用 avatar-ui-drag.js 中的共享工具函数（按钮 pointer-events 管理）
     const disableButtonPointerEvents = () => {
@@ -353,6 +485,12 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
         clickStartTime = Date.now();
         clickStartX = globalPos.x;
         clickStartY = globalPos.y;
+        dragHintStartPointer = captureDragHintPointer(originalEvent);
+        if (dragHintStartPointer) {
+            dragHintStartPointer.startedAt = Date.now();
+        }
+        dragHintLastPointer = dragHintStartPointer;
+        dragHintApproachShown = false;
         hasMoved = false;
         this._touchSetPointerSeq = (this._touchSetPointerSeq || 0) + 1;
         this._lastTouchPointer = { x: clickStartX, y: clickStartY, time: clickStartTime, seq: this._touchSetPointerSeq };
@@ -368,11 +506,12 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
         disableButtonPointerEvents();
     });
 
-    const onDragEnd = async () => {
+    const onDragEnd = async (event) => {
         if (this._isDraggingModel) {
             this._isDraggingModel = false;
             document.getElementById('live2d-canvas').style.cursor = '';
             restoreButtonPointerEvents();
+            dragHintLastPointer = captureDragHintPointer(event) || dragHintLastPointer;
 
             if (!this._isModelReadyForInteraction) return;
 
@@ -412,15 +551,13 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
 
             // 如果没有发生屏幕切换，检测并执行自动吸附
             if (!displaySwitched) {
+                await recordDragHintPointerEdgeRelease();
                 // 执行自动吸附检测和动画
                 const snapped = await this._checkAndPerformSnap(model);
 
                 // 如果没有执行吸附，则正常保存位置
                 if (!snapped) {
                     await this._savePositionAfterInteraction();
-                } else if (window.NekoAvatarMultiScreenDragHint &&
-                    typeof window.NekoAvatarMultiScreenDragHint.recordEdgeBounce === 'function') {
-                    window.NekoAvatarMultiScreenDragHint.recordEdgeBounce('live2d');
                 }
                 // 如果执行了吸附，_checkAndPerformSnap 内部会保存位置
             }
@@ -455,6 +592,8 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
             // 这里假设 canvas 是全屏覆盖的
             const x = event.clientX;
             const y = event.clientY;
+            dragHintLastPointer = captureDragHintPointer(event) || dragHintLastPointer;
+            void recordDragHintPointerEdgeApproach();
 
             // 检测是否移动超过阈值
             const moveDistance = Math.sqrt(
@@ -703,13 +842,18 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
         };
         const isPointerNearLock = () => {
             if (!lockIcon || lockIcon.style.display !== 'block') return false;
-            const x = this._lastMouseX;
-            const y = this._lastMouseY;
-            if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
             const rect = lockIcon.getBoundingClientRect();
             const expandPx = 8;
-            return x >= rect.left - expandPx && x <= rect.right + expandPx &&
-                y >= rect.top - expandPx && y <= rect.bottom + expandPx;
+            const localX = Number.isFinite(this._lastMouseLocalX) ? this._lastMouseLocalX : this._lastMouseX;
+            const localY = Number.isFinite(this._lastMouseLocalY) ? this._lastMouseLocalY : this._lastMouseY;
+            return isLive2DPointInRect({ x: localX, y: localY }, rect, expandPx);
+        };
+        const isPointerNearFloatingButtons = () => {
+            if (!floatingButtons || floatingButtons.style.display === 'none') return false;
+            const rect = floatingButtons.getBoundingClientRect();
+            const localX = Number.isFinite(this._lastMouseLocalX) ? this._lastMouseLocalX : this._lastMouseX;
+            const localY = Number.isFinite(this._lastMouseLocalY) ? this._lastMouseLocalY : this._lastMouseY;
+            return isLive2DPointInRect({ x: localX, y: localY }, rect, 8);
         };
 
         if (this._goodbyeClicked) return;
@@ -728,7 +872,7 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
             }
 
             // 再次检查鼠标是否在按钮区域内
-            if (this._isMouseOverButtons || isPointerNearLock() || hasOpenOverlay()) {
+            if (this._isMouseOverButtons || isPointerNearLock() || isPointerNearFloatingButtons() || hasOpenOverlay()) {
                 // 鼠标在按钮上，不隐藏，重新启动定时器
                 this._hideButtonsTimer = null;
                 startHideTimer(delay);
@@ -887,10 +1031,13 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
             return;
         }
         
-        // 使用 clientX/Y 作为全局坐标
-        const pointer = { x: event.clientX, y: event.clientY };
+        const pointerCoords = getLive2DNiriPetPointerCoordinates(event);
+        const pointer = pointerCoords.virtual;
+        const localPointer = pointerCoords.local;
         this._lastMouseX = pointer.x;
         this._lastMouseY = pointer.y;
+        this._lastMouseLocalX = localPointer.x;
+        this._lastMouseLocalY = localPointer.y;
 
         // 在拖拽期间不执行任何操作
         if ((model.interactive && model.dragging) || this._isDraggingModel) {
@@ -977,11 +1124,11 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
             let isOverUi = false;
             if (live2dLockIcon && live2dLockIcon.style.display !== 'none') {
                 const lr = live2dLockIcon.getBoundingClientRect();
-                if (pointer.x >= lr.left && pointer.x <= lr.right && pointer.y >= lr.top && pointer.y <= lr.bottom) isOverUi = true;
+                if (isLive2DPointInRect(localPointer, lr, 0)) isOverUi = true;
             }
             if (!isOverUi && live2dFloatingBtns && live2dFloatingBtns.style.display !== 'none') {
                 const br = live2dFloatingBtns.getBoundingClientRect();
-                if (pointer.x >= br.left && pointer.x <= br.right && pointer.y >= br.top && pointer.y <= br.bottom) isOverUi = true;
+                if (isLive2DPointInRect(localPointer, br, 0)) isOverUi = true;
             }
             if (isOverUi) {
                 clearStationaryFadeTimer();
@@ -1262,8 +1409,21 @@ Live2DManager.prototype._restoreClickEffectState = async function(options = {}) 
  * @param {number} duration - 效果持续时间（毫秒）
  */
 Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, priority = 1, duration = 3000) {
+    const triggerLog = {
+        emotion,
+        priority,
+        durationMs: duration,
+        motionCandidates: 0,
+        expressionCandidates: 0,
+        motions: [],
+        expressions: [],
+        failedMotions: [],
+        failedExpressions: []
+    };
     if (!this.currentModel) {
         console.warn('[ClickEffect] 无法播放：模型未加载');
+        triggerLog.reason = 'model_not_loaded';
+        logLive2DClickTriggerSummary('ClickEffect', triggerLog);
         return false;
     }
     let didPlayEffect = false;
@@ -1295,7 +1455,7 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
     this._clickEffectMotion = null;
 
     try {
-        // 1. 播放表情（如果有配置）
+        // 准备表情兜底：动作不可用或播放失败时才播放
         let expressionFiles = [];
         if (this.emotionMapping && this.emotionMapping.expressions && this.emotionMapping.expressions[emotion]) {
             expressionFiles = this.emotionMapping.expressions[emotion];
@@ -1312,32 +1472,13 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
             expressionFiles = this.fileReferences.Expressions.map(e => e.File).filter(Boolean);
         }
 
-        if (expressionFiles.length > 0) {
-            // 跳过已确认失效的 expression，避免每次点击都重复 404
-
-            if (typeof this.isExpressionFileMissing === 'function') {
-                expressionFiles = expressionFiles.filter(file => !this.isExpressionFileMissing(file));
-            }
-
-            const choiceFile = this.getRandomElement(expressionFiles);
-            if (choiceFile && typeof this.playExpression === 'function') {
-                console.log(`[ClickEffect] 播放临时表情: ${choiceFile}`);
-                const expressionPlayed = await this.playExpression(emotion, choiceFile);
-                if (!isCurrentPlayAttempt()) {
-                    // 已被新的点击接管，不要继续写共享状态
-                    return false;
-                }
-                if (expressionPlayed !== false) {
-                    didPlayEffect = true;
-                } else {
-                    console.warn(`[ClickEffect] 临时表情播放失败: ${choiceFile}`);
-                }
-            }
-        } else {
-            console.log("[ClickEffect] 没找到可用表情")
+        // 跳过已确认失效的 expression，避免每次点击都重复 404
+        if (expressionFiles.length > 0 && typeof this.isExpressionFileMissing === 'function') {
+            expressionFiles = expressionFiles.filter(file => !this.isExpressionFileMissing(file));
         }
+        triggerLog.expressionCandidates = expressionFiles.length;
 
-        // 2. 播放低优先级动作
+        // 1. 优先播放低优先级动作
         let motions = null;
         let motionGroup = emotion; // 用于 this.currentModel.motion(group, index, priority)
         if (this.fileReferences && this.fileReferences.Motions && this.fileReferences.Motions[emotion]) {
@@ -1367,6 +1508,7 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
                 motions = this.fileReferences.Motions[motionGroup];
             }
         }
+        triggerLog.motionCandidates = Array.isArray(motions) ? motions.length : 0;
 
         if (motions && motions.length > 0) {
             // 使用低优先级播放动作
@@ -1378,19 +1520,63 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
                     if (motion && typeof motion.stop === 'function') {
                         try { motion.stop(); } catch (_) {}
                     }
+                    triggerLog.reason = 'superseded_after_motion';
                     return false;
                 }
                 if (motion) {
                     console.log(`[ClickEffect] 播放临时动作: ${motionGroup}（优先级: ${priority}）`);
                     this._clickEffectMotion = motion;
+                    triggerLog.motions.push({
+                        group: motionGroup,
+                        selection: 'random',
+                        priority,
+                        candidateCount: motions.length
+                    });
                     didPlayEffect = true;
+                } else {
+                    triggerLog.failedMotions.push({
+                        group: motionGroup,
+                        selection: 'random',
+                        priority,
+                        reason: 'motion_returned_falsy'
+                    });
                 }
             } catch (motionError) {
+                triggerLog.failedMotions.push({
+                    group: motionGroup,
+                    selection: 'random',
+                    priority,
+                    reason: motionError?.message || String(motionError)
+                });
                 console.warn('[ClickEffect] 动作播放失败:', motionError);
             }
         }
 
+        // 2. 动作不可用或播放失败时，再用表情兜底
+        if (!didPlayEffect && expressionFiles.length > 0) {
+            const choiceFile = this.getRandomElement(expressionFiles);
+            if (choiceFile && typeof this.playExpression === 'function') {
+                console.log(`[ClickEffect] 播放临时表情: ${choiceFile}`);
+                const expressionPlayed = await this.playExpression(emotion, choiceFile);
+                if (!isCurrentPlayAttempt()) {
+                    // 已被新的点击接管，不要继续写共享状态
+                    triggerLog.reason = 'superseded_after_expression';
+                    return false;
+                }
+                if (expressionPlayed !== false) {
+                    triggerLog.expressions.push({ emotion, file: choiceFile, fallbackFor: 'motion' });
+                    didPlayEffect = true;
+                } else {
+                    triggerLog.failedExpressions.push({ emotion, file: choiceFile, reason: 'play_returned_false' });
+                    console.warn(`[ClickEffect] 临时表情播放失败: ${choiceFile}`);
+                }
+            }
+        } else if (!didPlayEffect) {
+            console.log("[ClickEffect] 没找到可用表情")
+        }
+
         if (!didPlayEffect) {
+            triggerLog.reason = triggerLog.reason || 'nothing_played';
             console.log('[ClickEffect] 没有可播放的点击表情或动作，保持当前状态');
             if (hadClickEffectState && previousClickEffectId && this._currentClickEffectId === previousClickEffectId) {
                 await this._restoreClickEffectState({
@@ -1404,6 +1590,7 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
 
         if (!isCurrentPlayAttempt()) {
             // 走到这里说明 await 之间被新的点击接管了；不要再注册我们自己的恢复定时器
+            triggerLog.reason = 'superseded_before_restore_timer';
             return false;
         }
 
@@ -1434,6 +1621,7 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
         return true;
 
     } catch (error) {
+        triggerLog.reason = triggerLog.reason || 'exception';
         console.error('[ClickEffect] 播放临时效果失败:', error);
         const restoreClickEffectId = clickEffectId || previousClickEffectId;
         if (restoreClickEffectId && this._currentClickEffectId === restoreClickEffectId) {
@@ -1444,6 +1632,8 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
             });
         }
         return false;
+    } finally {
+        logLive2DClickTriggerSummary('ClickEffect', triggerLog);
     }
 };
 
@@ -1880,8 +2070,9 @@ Live2DManager.prototype.setupUnloadCleanup = function () {
 Live2DManager.prototype.destroy = function () {
     console.log('[Live2D] 正在销毁 Live2DManager 实例...');
 
-    // 首先清理所有事件监听器
+    // 首先清理所有事件监听器与自适应帧率守护
     this.cleanupEventListeners();
+    this._stopIdleFpsGovernor();
 
     // 销毁当前模型
     if (this.currentModel) {
@@ -2307,23 +2498,41 @@ Live2DManager.prototype._canTriggerTouchSetArea = function(hitAreaId) {
 
 Live2DManager.prototype._playTouchSetWithFallback = async function(hitAreaId) {
     const touchSet = this._getCurrentTouchSetConfig();
+    const requestedHitArea = hitAreaId || 'default';
     if (!touchSet) {
         console.log('[TouchSet] touchSet 未配置，播放随机动画');
+        logLive2DClickTriggerSummary('TouchSet', {
+            requestedHitArea,
+            resolvedHitArea: null,
+            fallback: 'random_emotion',
+            reason: 'touch_set_not_configured',
+            summaryType: 'routing_decision'
+        });
         await this.triggerRandomEmotion();
         return false;
     }
 
-    const useBlock = hitAreaId || 'default';
+    const useBlock = requestedHitArea;
     if (this._touchSetConfigHasAnimation(touchSet[useBlock])) {
-        await this._playTouchSetAnimation(useBlock);
+        await this._playTouchSetAnimation(useBlock, { requestedHitArea });
         return true;
     }
 
     if (useBlock !== 'default' && this._touchSetConfigHasAnimation(touchSet.default)) {
-        await this._playTouchSetAnimation('default');
+        await this._playTouchSetAnimation('default', {
+            requestedHitArea,
+            fallback: 'default'
+        });
         return true;
     }
 
+    logLive2DClickTriggerSummary('TouchSet', {
+        requestedHitArea,
+        resolvedHitArea: useBlock,
+        fallback: 'random_emotion',
+        reason: 'touch_area_has_no_animation',
+        summaryType: 'routing_decision'
+    });
     await this.triggerRandomEmotion();
     return false;
 };
@@ -2415,17 +2624,31 @@ Live2DManager.prototype.setupHitAreaInteraction = function(model) {
  * 根据 touchSet 配置播放 HitArea 对应的动画
  * @param {string} hitAreaId - HitArea ID
  */
-Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId) {
+Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId, options = {}) {
+    const triggerLog = {
+        requestedHitArea: options.requestedHitArea || hitAreaId || 'default',
+        resolvedHitArea: hitAreaId || 'default',
+        fallback: options.fallback || null,
+        motionCandidates: 0,
+        expressionCandidates: 0,
+        motions: [],
+        expressions: [],
+        failedMotions: [],
+        failedExpressions: []
+    };
 
     if (this._isHandlingTouchInteraction) {
         console.log('[TouchSet] 动作正在加载中，忽略频繁连击防止状态污染');
-        return;
+        triggerLog.reason = 'busy';
+        logLive2DClickTriggerSummary('TouchSet', triggerLog);
+        return false;
     }
     this._isHandlingTouchInteraction = true;
 
     try {
         if (hitAreaId == null || !this.currentModel) {
-            return;
+            triggerLog.reason = !this.currentModel ? 'model_not_loaded' : 'missing_hit_area';
+            return false;
         }
         let faceHoldingTime = window.live2dManager.CLICK_EFFECT_DURATION;
         let AnimHoldingTime = null;
@@ -2433,11 +2656,14 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId) {
 
         if (!touchSet || !touchSet[hitAreaId]) {
             console.log(`[TouchSet] 没有找到 ${hitAreaId} 的配置`);
-            return;
+            triggerLog.reason = 'touch_area_config_not_found';
+            return false;
         }
 
         const config = touchSet[hitAreaId];
         const { motions = [], expressions = [] } = config;
+        triggerLog.motionCandidates = motions.length;
+        triggerLog.expressionCandidates = expressions.length;
 
         console.log(`[TouchSet] 播放 ${hitAreaId} 的动画:`, { motions, expressions });
 
@@ -2478,6 +2704,7 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId) {
             }
 
             if (!foundMotion) {
+                triggerLog.failedMotions.push({ name: randomMotion, reason: 'motion_not_found' });
                 console.warn(`[TouchSet] 找不到匹配的动作: ${randomMotion}`);
             } else {
                 const { motion } = { motion: foundMotion };
@@ -2544,18 +2771,41 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId) {
 
                         if (live2dModel !== this.currentModel) {
                             console.log('[TouchSet] 模型已切换，中止动作播放');
-                            return;
+                            triggerLog.reason = 'model_changed_during_motion';
+                            return false;
                         }
 
                         motionManager.stopAllMotions();
                         const result = await live2dModel.motion(groupName, 0, 3);
 
                         if (result) {
+                            triggerLog.motions.push({
+                                name: randomMotion,
+                                group: groupName,
+                                index: 0,
+                                file: motion.File,
+                                durationMs: AnimHoldingTime,
+                                priority: 3
+                            });
                             console.log(`[TouchSet] ✅ 成功下发播放指令: ${groupName}[0]`);
                         } else {
+                            triggerLog.failedMotions.push({
+                                name: randomMotion,
+                                group: groupName,
+                                index: 0,
+                                file: motion.File,
+                                reason: 'motion_returned_falsy'
+                            });
                             console.warn(`[TouchSet] ❌ 动作加载成功但引擎仍拒绝播放: ${groupName}[0]`);
                         }
                     } catch (error) {
+                        triggerLog.failedMotions.push({
+                            name: randomMotion,
+                            group: groupName,
+                            index: 0,
+                            file: motion.File,
+                            reason: error?.message || String(error)
+                        });
                         console.warn(`[TouchSet] 动作播放异常: ${groupName}[0]`, error);
                     } finally {
                         if (groupExisted) {
@@ -2581,16 +2831,32 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId) {
             }
         }
 
-        if (expressions.length > 0) {
+        if (triggerLog.motions.length === 0 && expressions.length > 0) {
             const randomExpressionName = expressions[Math.floor(Math.random() * expressions.length)];
             const faceInfo = this.fileReferences?.Expressions?.find(e => e.Name === randomExpressionName);
             if (!faceInfo || !faceInfo.File) {
+                triggerLog.failedExpressions.push({ name: randomExpressionName, reason: 'expression_file_not_found' });
                 console.warn(`[TouchSet] 表情文件不存在: ${randomExpressionName}`);
             } else {
                 console.log(`[TouchSet] 尝试播放表情: ${faceInfo.File}`);
                 try {
-                    await this.playExpression(randomExpressionName, faceInfo.File);
-                    console.log(`[TouchSet] 播放表情成功: ${randomExpressionName}, 持续时间: ${faceHoldingTime}ms`);
+                    const expressionResult = await this.playExpression(randomExpressionName, faceInfo.File);
+                    if (expressionResult !== false) {
+                        triggerLog.expressions.push({
+                            name: randomExpressionName,
+                            file: faceInfo.File,
+                            durationMs: faceHoldingTime,
+                            fallbackFor: 'motion'
+                        });
+                        console.log(`[TouchSet] 播放表情成功: ${randomExpressionName}, 持续时间: ${faceHoldingTime}ms`);
+                    } else {
+                        triggerLog.failedExpressions.push({
+                            name: randomExpressionName,
+                            file: faceInfo.File,
+                            reason: 'play_returned_false'
+                        });
+                        console.warn(`[TouchSet] 表情播放返回失败: ${randomExpressionName}`);
+                    }
 
                     clearTimeout(this.expressionTimer);
                     const holdingTime = Number.isFinite(faceHoldingTime) && faceHoldingTime > 0 ? faceHoldingTime : 3000;
@@ -2606,13 +2872,25 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId) {
                         }
                     }, holdingTime);
                 } catch (e) {
+                    triggerLog.failedExpressions.push({
+                        name: randomExpressionName,
+                        file: faceInfo.File,
+                        reason: e?.message || String(e)
+                    });
                     console.warn(`[TouchSet] 播放表情失败: ${randomExpressionName}`, e);
                 }
             }
         }
+        if (triggerLog.motions.length === 0 && triggerLog.expressions.length === 0) {
+            triggerLog.reason = triggerLog.reason || 'nothing_played';
+        }
+        return triggerLog.motions.length + triggerLog.expressions.length > 0;
     } catch (error) {
+        triggerLog.reason = triggerLog.reason || 'exception';
         console.warn(`[TouchSet] 播放动画失败:`, error);
+        return false;
     } finally {
+        logLive2DClickTriggerSummary('TouchSet', triggerLog);
         this._isHandlingTouchInteraction = false;
     }
 };

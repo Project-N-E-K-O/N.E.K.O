@@ -674,6 +674,7 @@
     },
     "chat": {
         "title": "Charlar",
+        "topicHint": "{{author}} parece tener algo de lo que quiere hablar…",
         "viewerTitle": "Chat (modo espectador)",
         "tooltip": "Área de chat",
         "textInputPlaceholder": "Presione Enter para enviar, Shift+Enter para una nueva línea",
@@ -1023,7 +1024,8 @@
             "kimi": "Kimi (Moonshot, contexto largo)",
             "kimi_code": "Kimi Code (Moonshot)",
             "deepseek": "búsqueda profunda",
-            "doubao": "ByteDance (Doubao)",
+            "doubao": "Doubao LLM (Volcengine Ark)",
+            "doubao_tts": "Doubao Speech (Volcengine)",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Int.)",
             "elevenlabs": "ElevenLabs (clonación de voz)",
@@ -1071,7 +1073,8 @@
             "gemini": "Géminis (Google)",
             "kimi": "Disparo a la luna (Kimi)",
             "kimi_code": "Moonshot Kimi Code",
-            "doubao": "ByteDance (Doubao)",
+            "doubao": "Doubao LLM (Volcengine Ark)",
+            "doubao_tts": "Doubao Speech (Volcengine)",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Int.)",
             "mimo": "MiMo (Xiaomi)",
@@ -1352,6 +1355,7 @@
         "toggleFullscreen": "Alternar pantalla completa",
         "exitFullscreen": "Salir de pantalla completa",
         "modelType": "Tipo de modelo",
+        "modelType3d": "Modelo 3D",
         "selectLive2DModel": "Seleccione el modelo Live2D",
         "selectVRMModel": "Modelo VRM",
         "selectVRMFile": "Seleccionar archivo VRM",
@@ -1543,7 +1547,9 @@
         "cannotDeleteBoundModel": "No se puede eliminar el modelo en uso",
         "modelInUse": "En uso",
         "pngtuberTalkPreview": "Probar habla",
-        "pngtuberStatePreview": "Vista previa de estado"
+        "pngtuberStatePreview": "Vista previa de estado",
+        "pngtuberImportProjectFile": "Importar archivo de proyecto",
+        "pngtuberImportFolder": "Importar carpeta"
     },
     "voice": {
         "title": "Registro de voz",
@@ -1556,6 +1562,14 @@
         "minimaxIntlApiRequired": "Esta característica requiere el modelo MiniMax (Internacional). Guarde la clave API de MiniMax International en la configuración de claves API (no es necesario habilitar Assist API).",
         "mimoApiRequired": "Esta función requiere un modelo MiMo. Guarde su clave API de MiMo en la página de configuración de claves API.",
         "mimoDirectLinkUnsupported": "MiMo no admite la clonación por enlace directo; suba un archivo local en su lugar.",
+        "directLinkUnsupported": "El proveedor seleccionado no admite la clonación por enlace directo; suba un archivo local.",
+        "doubaoTtsApiRequired": "Esta función requiere una clave de API de Doubao Speech. Guarda la clave de Doubao Speech (Volcengine) en el Libro de claves de API.",
+        "vllmOmniNotice": "Servicio local vLLM-Omni — no se necesita API Key; asegúrese de configurar la URL del servicio local",
+        "vllmRefTextLabel": "Transcripción del audio de referencia (obligatorio para clonar con vLLM-Omni; debe coincidir exactamente con el audio)",
+        "vllmRefTextHint": "Escriba exactamente lo que se dice en el audio de referencia; un texto incorrecto degradará la calidad del clon",
+        "vllmRefTextPlaceholder": "p.ej. Espero que en el futuro puedas hacerlo aún mejor que yo",
+        "vllmRefTextRequired": "Introduzca la transcripción del audio de referencia (obligatorio para clonar con vLLM-Omni)",
+        "vllmRefTextTooLong": "La transcripción del audio de referencia es demasiado larga; manténgala dentro de 100 caracteres",
         "providerLabel": "Proveedor de clonación de voz",
         "provider": {
             "cosyvoice": "Alibaba Bailian CosyVoice",
@@ -1563,16 +1577,33 @@
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Int.)",
             "elevenlabs": "ElevenLabs",
-            "mimo": "MiMo (Xiaomi)"
+            "mimo": "MiMo (Xiaomi)",
+            "doubao_tts": "Doubao Speech (Volcengine)",
+            "vllm_omni": "vLLM-Omni (Clon local)"
+        },
+        "sourcePreset": "Predefinido",
+        "sourceClone": "Clonado",
+        "sourceDesign": "Generado por descripción",
+        "providerLocal": "CosyVoice local",
+        "providerFree": "Gratis",
+        "providerFreeApi": "API gratis",
+        "providerUnknown": "Otro",
+        "nativeVoice": {
+            "qingchunshaonv": "Chica juvenil",
+            "wenrounansheng": "Voz masculina suave"
         },
         "selectFile": "Seleccione el archivo de audio local (se recomiendan 8 segundos, máximo 20 segundos, formato wav/mp3)",
         "customPrefix": "Prefijo personalizado (obligatorio, utilizado para distinguir diferentes voces)",
         "customPrefixNote": "Máximo 10 caracteres, números y letras en inglés únicamente",
         "prefixPlaceholder": "Máximo 10 caracteres, números y letras en inglés únicamente",
         "voiceIdPlaceholder": "Máximo 10 caracteres, números y letras en inglés únicamente",
+        "doubaoSpeakerIdLabel": "Speaker ID de Doubao (sobrescribe una voz S_ existente, obligatorio)",
+        "doubaoSpeakerIdNote": "Clone primero la voz en la consola de Doubao Speech y copie aquí su Speaker ID S_; NEKO sobrescribirá esa voz existente y no creará un nuevo ID de voz de Doubao, por ejemplo: S_xeC2CDp72",
+        "doubaoSpeakerIdPlaceholder": "por ejemplo: S_xeC2CDp72",
         "register": "Registrar voz",
         "pleaseUploadFile": "Por favor seleccione un archivo de audio",
         "pleaseEnterPrefix": "Por favor ingresa un prefijo personalizado",
+        "doubaoSpeakerIdRequired": "La clonación de voz de Doubao requiere un Speaker ID S_ ya asignado en la consola de Volcengine",
         "prefixFormatError": "Error de formato de prefijo: máximo 10 caracteres, números y letras en inglés únicamente",
         "registering": "Registrando voz, ¡espere!",
         "registerSuccess": "¡Registro exitoso! ID_voz: {{voiceId}}",
@@ -1928,11 +1959,15 @@
         "gender": "Género",
         "nickname": "Apodo",
         "apiKeySettings": "Clave API",
-        "masterProfile": "Perfil maestro (único): el nombre del perfil es obligatorio, otros son opcionales y se pueden eliminar.",
-        "masterProfileTitle": "Perfil de maestro",
+        "masterProfile": "Mi perfil (único): el nombre del perfil es obligatorio; lo demás es opcional y se puede eliminar.",
+        "masterProfileTitle": "Mi perfil",
         "profileName": "Nombre del perfil",
         "profileNameMaxHint": "Máximo 60 caracteres",
         "profileNameTooLong": "El nombre del perfil es demasiado largo.",
+        "profileNameUnsafeDot": "El nombre del perfil no puede estar formado solo por puntos ni terminar con un punto.",
+        "profileNameDotSequence": "El nombre del perfil no puede contener puntos consecutivos (..).",
+        "profileNameReservedDevice": "El nombre del perfil no puede usar un nombre de dispositivo reservado de Windows.",
+        "profileNameInvalid": "El nombre del perfil no es válido.",
         "profileNameContainsSlash": "El nombre del perfil no puede contener separadores de ruta (/ o \\)",
         "profileNameContainsDot": "El nombre del perfil no puede contener puntos (.)",
         "profileNameInvalidChars": "El nombre del perfil solo puede contener letras, números, espacios, guiones bajos, guiones, paréntesis, puntos centrales (·/・) y apóstrofes.",
@@ -2013,7 +2048,7 @@
         "aiAssistApiMissing": "La API de asistencia aún no está configurada. Por favor configúrala en «Ajustes de API Key» primero.",
         "confirmNewCatgirl": "Confirmar nuevo NEKO",
         "saveChanges": "Guardar cambios",
-        "saveMaster": "Guardar perfil maestro",
+        "saveMaster": "Guardar mi perfil",
         "addMasterField": "Agregar campo",
         "manageLive2D": "Haga clic para administrar el modelo Live2D",
         "idleMotionHint": "Al guardar, el movimiento seleccionado se establecerá como movimiento de espera",
@@ -2021,7 +2056,7 @@
         "rename": "Rebautizar",
         "cancel": "Cancelar",
         "addMasterFieldPrompt": "Por favor ingrese el nombre del nuevo campo (nombre de clave)",
-        "addMasterFieldTitle": "Agregar campo maestro",
+        "addMasterFieldTitle": "Agregar campo de mi perfil",
         "fieldExists": "Este campo ya existe",
         "profileNameRequired": "El nombre del perfil es obligatorio.",
         "profileNameRenameOnlyHint": "Usa el botón Renombrar para cambiar el nombre del perfil",
@@ -2079,10 +2114,10 @@
         "gsvDiagTimeout": "Tiempo de espera de GPT-SoVITS server agotado (>3s)",
         "loadFailed": "No se pudieron cargar los datos del personaje",
         "renameError": "Error al cambiar el nombre: {{error}}",
-        "renameMasterTitle": "Cambiar nombre maestro",
+        "renameMasterTitle": "Renombrar mi perfil",
         "renameSuccess": "Cambiar nombre exitosamente",
         "autoSaveError": "No se pudo guardar la configuración",
-        "saveMasterError": "No se pudo guardar la configuración maestra",
+        "saveMasterError": "No se pudo guardar mi perfil",
         "autoSaved": "Configuración guardada automáticamente",
         "autoSaveFailed": "Error al guardar automáticamente. Guárdelo manualmente antes de cerrar.",
         "unsavedNewCatgirlDraftDetected": "Se detectó un nuevo borrador NEKO no guardado. Guárdelo o cancélelo antes de sincronizar la actualización",
@@ -2110,7 +2145,7 @@
         "generatingCard": "Generando tarjeta de personaje...",
         "settings": "Configuración",
         "renamePrompt": "Ingrese un nuevo nombre de perfil",
-        "renameMasterPrompt": "Ingrese un nuevo nombre de perfil maestro",
+        "renameMasterPrompt": "Introduce un nuevo nombre de perfil",
         "renameTitle": "Cambiar nombre",
         "tempSaveFailed": "Error al guardar temporalmente: {{error}}",
         "newCatgirlSuccess": "Nuevo NEKO creado con éxito",
@@ -2139,7 +2174,7 @@
         "cardAuthorReadonly": "El autor es de solo lectura para esta fuente",
         "cardAuthorUpdated": "Autor actualizado",
         "cardAuthorUpdateFailed": "Error al actualizar el autor: {{error}}",
-        "saveMasterSuccess": "Perfil de maestro guardado correctamente",
+        "saveMasterSuccess": "Mi perfil se guardó correctamente",
         "editCardFace": "Editar cara de la tarjeta",
         "cardFaceModelSettings": "Ajustes del modelo de tarjeta",
         "cardMakerPopupBlocked": "La página del creador de tarjetas no se pudo abrir automáticamente. Permite las ventanas emergentes y vuelve a intentarlo, o haz clic en el área de la tarjeta para abrirla manualmente."
@@ -3127,7 +3162,7 @@
             "mmd": {
                 "step1": {
                     "title": "🎭 Seleccione modelo MMD",
-                    "desc": "En el modo Live3D (MMD), elige tu modelo aquí. MMD comparte la misma lista de modelos que VRM."
+                    "desc": "En el modo Modelo 3D (MMD), elige tu modelo aquí. MMD comparte la misma lista de modelos que VRM."
                 },
                 "step2": {
                     "title": "💃 Animación VMD",
@@ -3139,7 +3174,7 @@
                 },
                 "step4": {
                     "title": "😄 Configuración de emociones",
-                    "desc": "Después de seleccionar un modelo, abra la configuración de emociones aquí. MMD y VRM comparten este botón Live3D (no el de Live2D)."
+                    "desc": "Después de seleccionar un modelo, abra la configuración de emociones aquí. MMD y VRM comparten este botón Modelo 3D (no el de Live2D)."
                 }
             }
         },
@@ -3181,8 +3216,8 @@
         },
         "chara_manager": {
             "step1": {
-                "title": "👤 Perfil maestro",
-                "desc": "Este es tu perfil maestro. El nombre del perfil es obligatorio, otra información es opcional. Esto afecta la forma en que tu Neko se dirige a ti."
+                "title": "👤 Mi perfil",
+                "desc": "Este es tu perfil. El nombre del perfil es obligatorio; la demás información es opcional. Esto afecta cómo Neko se dirige a ti."
             },
             "step2": {
                 "title": "📝 Establecer nombre de perfil",
@@ -3853,6 +3888,8 @@
         "minimize": "Minimizar",
         "close": "Cerca",
         "loading": "Cargando...",
+        "initializing": "Inicializando la rocola...",
+        "initializeFailed": "No se pudo inicializar la rocola",
         "ready": "Listo",
         "playing": "Reproduciendo ahora: {{name}} - {{artist}}",
         "error": "Error: {{message}}",
@@ -4420,6 +4457,8 @@
              "yuiCheatInk": "Yui lanzó tinta",
              "yuiCheatBanana": "Yui lanzó una cáscara de banana",
              "yuiCheatBananaSlip": "Pisaste la cáscara de banana",
+             "playerIcePowerup": "Hielo activado. Yui quedó congelada",
+             "yuiFrozen": "Yui sigue congelada, golpe retrasado",
              "nekoThinking": "Neko está pensando",
              "nekoTurn": "Turno de Neko",
              "copyNeko": "Replica a Neko",
@@ -4665,6 +4704,12 @@
                      "La táctica de tinta funcionó bastante bien."
                  ]
              },
+             "playerIceScore": [
+                 "Mmm, eso no cuenta. ¡Otra vez!",
+                 "Espera, estaba congelada. ¡Ese punto se repite!",
+                 "Ese hielo ayudó demasiado. ¡Otra vez!",
+                 "No vale, no podía moverme."
+             ],
              "easterEgg": {
                  "lateNight": "¿Sigues golpeando tan tarde?",
                  "xmas": "Ya están las campanas, ¿y aún quieres golpear?",

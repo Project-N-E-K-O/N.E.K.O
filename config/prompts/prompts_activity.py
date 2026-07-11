@@ -66,6 +66,8 @@ Nested ``{lang_code: {key: str}}`` tables (resolved via
 
 from __future__ import annotations
 
+from functools import lru_cache
+
 
 # ── Old reflection follow-up memory cues ────────────────────────────
 
@@ -1201,6 +1203,123 @@ ACTIVITY_TONE_QUALITY_BARS: dict[str, dict[str, str]] = {
         "witty": "barra de qualidade: se não houver um momento realmente engraçado / que valha o comentário, não force — responda [PASS] desta vez em vez de soltar uma frase sem graça",
     },
 }
+
+
+# ── Echoable internal-label registry (proactive output leak guard) ──
+#
+# The proactive Phase 2 prompt renders tone-angle seeds and memory-cue
+# labels as "<label>：<description>" bullets / lines (full-width "：" for
+# zh/ja, half-width ": " for en/ko/ru/es/pt). The "<label>" half is an
+# internal mnemonic the model is told to *act on*, never to *speak*. Weak
+# models occasionally echo the bare label as the first line of the reply
+# (e.g. saying the angle name out loud), which the client then splits into
+# its own chat bubble.
+#
+# This registry derives that label set straight from the prompt tables so
+# it stays in lock-step as the tables are edited — no hand-maintained
+# denylist to rot. Consumed by the proactive output stripper in
+# ``main_routers/system_router.py``.
+
+_INTENT_LEAK_LABEL_MAXLEN = 40
+
+
+def _label_before_colon(line: str) -> str | None:
+    """Return the heading label before the first colon in a bullet/line.
+
+    Splits on the *earliest* colon, whether full-width (zh/ja) or half-width
+    (en/ko/ru/es/pt), so the label boundary is found regardless of which
+    colon style a line uses. Returns None when there is no colon, when
+    nothing precedes it, or when the candidate is implausibly long for a
+    label — a colon that actually lives inside the description.
+    """
+    sep_idx = -1
+    for sep in ('：', ':'):
+        idx = line.find(sep)
+        if idx > 0 and (sep_idx == -1 or idx < sep_idx):
+            sep_idx = idx
+    if sep_idx <= 0:
+        return None
+    label = line[:sep_idx].strip()
+    if label and '\n' not in label and len(label) <= _INTENT_LEAK_LABEL_MAXLEN:
+        return label
+    return None
+
+
+# Activity / propensity enum literals that are ordinary standalone English
+# words (unlike the multi-token enums such as ``focused_work`` /
+# ``restricted_screen_only``). These are EXCLUDED from the proactive leak
+# denylist: ``_strip_proactive_intent_label_leak`` drops a whole first line
+# when it matches a denied label, so denying a bare "idle" / "gaming" / "open"
+# would scrub a legitimate English reply that opens with the word. The
+# multi-token enums never occur as natural speech, so they stay denied.
+# ⚠️ Keep in sync with ``ActivityState`` / ``Propensity`` in
+# ``main_logic/activity/snapshot.py``: a newly added SINGLE-WORD state/propensity
+# must be listed here, otherwise it will (wrongly) start being stripped from
+# replies. Multi-token additions need no change — they are denied by default.
+_ACTIVITY_ENUM_COMMON_WORDS = frozenset({
+    'away', 'gaming', 'chatting', 'idle', 'transitioning', 'private',  # ActivityState
+    'open', 'closed',                                                  # Propensity
+})
+
+
+@lru_cache(maxsize=1)
+def get_proactive_intent_leak_labels() -> frozenset[str]:
+    """All internal guidance labels that must never reach spoken output.
+
+    Casefolded for case-insensitive matching. Spans every locale on
+    purpose: the leaked label and the real reply may be in different
+    languages, and matching the union is strictly safer than guessing the
+    round's locale.
+    """
+    labels: set[str] = set()
+
+    def _add_before_colon(text: str) -> None:
+        lab = _label_before_colon(text)
+        if lab:
+            labels.add(lab)
+
+    # Tone-angle seeds: "<label>：<description>" bullets.
+    for per_lang in ACTIVITY_TONE_HINTS.values():
+        for variants in per_lang.values():
+            if isinstance(variants, str):
+                variants = [variants]
+            for bullet in variants:
+                _add_before_colon(bullet)
+
+    # Tone quality bars: "<label>：<description>".
+    for per_lang in ACTIVITY_TONE_QUALITY_BARS.values():
+        for bar in per_lang.values():
+            _add_before_colon(bar)
+
+    # Memory-cue intro: opens with "<label>：…".
+    for intro in TOPIC_MEMORY_CUE_INTROS.values():
+        _add_before_colon(intro)
+
+    # Memory-cue per-item labels: bare labels, no colon.
+    for label in TOPIC_MEMORY_CUE_LABELS.values():
+        label = (label or '').strip()
+        if label:
+            labels.add(label)
+
+    # Activity state / propensity enum literals + their English labels.
+    # The activity-state section historically rendered the bare English enum
+    # keys (state line / scores line), and weak models echo them as the reply's
+    # first line. Deny every enum key + English label EXCEPT the ordinary single
+    # words in ``_ACTIVITY_ENUM_COMMON_WORDS`` (see its docstring): denying a
+    # bare "idle" / "open" would let ``_strip`` scrub a legit reply opening with
+    # the word, while multi-token forms (focused_work, "focused work") never
+    # occur as natural speech and are safe to strip. English only on purpose:
+    # the leak is always the English literal.
+    for state_key, en_label in ACTIVITY_STATE_LABELS['en'].items():
+        if state_key not in _ACTIVITY_ENUM_COMMON_WORDS:
+            labels.add(state_key)
+        if en_label not in _ACTIVITY_ENUM_COMMON_WORDS:
+            labels.add(en_label)
+    for prop_key in ACTIVITY_PROPENSITY_DIRECTIVES['en']:
+        if prop_key not in _ACTIVITY_ENUM_COMMON_WORDS:
+            labels.add(prop_key)
+
+    return frozenset(label.casefold() for label in labels if label)
 
 
 # ── Propensity directives (positive instructions, not prohibitions) ─

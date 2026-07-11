@@ -17,6 +17,8 @@
     <script src="/static/common_dialogs.js"></script>
     <link rel="stylesheet" href="/static/css/model_manager.css?v={{ static_asset_version | default('0') }}">
     <link rel="stylesheet" href="/static/css/dark-mode.css">
+    <link rel="stylesheet" href="/static/libs/driver.min.css?v={{ static_asset_version | default('0') }}">
+    <link rel="stylesheet" href="/static/css/tutorial-styles.css?v={{ static_asset_version | default('0') }}">
     <link rel="stylesheet" href="/static/css/model-profiler.css">
     <script src="/static/theme-manager.js"></script>
 </head>
@@ -37,6 +39,7 @@
         <div class="control-group">
             <input type="file" id="model-upload" webkitdirectory directory multiple style="display: none;">
             <input type="file" id="pngtuber-model-upload" webkitdirectory directory multiple style="display: none;">
+            <input type="file" id="pngtuber-package-upload" accept=".pngRemix,.pngremix,.save" style="display: none;">
             <input type="file" id="vrm-file-upload" accept=".vrm,.zip" style="display: none;">
             <input type="file" id="mmd-file-upload" accept=".pmx,.pmd,.zip" style="display: none;">
             <input type="file" id="mmd-animation-file-upload" accept=".vmd" style="display: none;">
@@ -63,12 +66,12 @@
                 </button>
                 <select id="model-type-select" class="control-select" style="display: none;">
                     <option value="live2d">Live2D</option>
-                    <option value="live3d">Live3D</option>
+                    <option value="live3d" data-i18n="live2d.modelType3d">3D Model</option>
                     <option value="pngtuber">PNGTuber</option>
                 </select>
                 <div id="model-type-dropdown" class="model-type-dropdown" style="display: none;">
                     <div class="dropdown-item" data-value="live2d"><span class="dropdown-item-text" data-text="Live2D">Live2D</span></div>
-                    <div class="dropdown-item" data-value="live3d"><span class="dropdown-item-text" data-text="Live3D">Live3D</span></div>
+                    <div class="dropdown-item" data-value="live3d"><span class="dropdown-item-text" data-text="3D Model">3D Model</span></div>
                     <div class="dropdown-item" data-value="pngtuber"><span class="dropdown-item-text" data-text="PNGTuber">PNGTuber</span></div>
                 </div>
             </div>
@@ -722,17 +725,19 @@
     </script>
 
 
-    <script src="/static/tutorial/core/skip-controller.js?v=13"></script>
-    <script src="/static/tutorial/avatar/reload-controller.js?v=13"></script>
+    <script src="/static/libs/driver.min.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/tutorial/core/skip-controller.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/tutorial/avatar/reload-controller.js?v={{ static_asset_version | default('0') }}"></script>
     <!-- 通用教程管理器 -->
-    <script src="/static/tutorial/core/lifecycle-state-store.js?v=13"></script>
+    <script src="/static/tutorial/core/lifecycle-state-store.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/tutorial/core/page-tutorial-manager.js?v={{ static_asset_version | default('0') }}"></script>
     <link rel="stylesheet" href="/static/css/touch-config.css">
     <script src="/static/touch-config.js"></script>
     <!-- 初始化 -->
     <script>
         document.addEventListener('DOMContentLoaded', function() {
-            if (typeof initUniversalTutorialManager === 'function') {
-                initUniversalTutorialManager();
+            if (typeof initPageTutorialManager === 'function') {
+                initPageTutorialManager();
             }
         });
     </script>

@@ -252,6 +252,60 @@ def _escape_inner_quotes(s: str) -> str:
     return ''.join(out)
 
 
+def _insert_missing_structural_commas(s: str) -> str:
+    """Insert a missing comma between two adjacent JSON containers.
+
+    LLMs frequently drop the separator between array / object elements, e.g.
+    ``[{"role": "user", ...} {"role": "ai", ...}]`` — ``json.loads`` then raises
+    ``Expecting ',' delimiter`` at the second ``{``. This was the single most
+    common unhandled failure observed in the memory-review (``correction`` model)
+    path, whose output is exactly an array of ``{role, content}`` objects.
+
+    Stateful scan (string + backslash aware so braces inside string values are
+    ignored). Whenever a structural close ``}`` / ``]`` is immediately followed —
+    only whitespace between — by a structural open ``{`` / ``[`` outside any
+    string, insert a ``,`` between them.
+
+    Deliberately scoped to the **close → open** boundary only: ``}{`` / ``}[`` /
+    ``]{`` / ``][`` are never valid JSON, so inserting a comma there cannot
+    silently corrupt a legitimate document (on valid input this is a no-op). The
+    riskier siblings — a missing comma after a *string* value (``"a" "b"``, where
+    the leading ``"`` might be an inner content quote rather than a real
+    terminator) — are left to fail loudly, consistent with this module's bias
+    against silent corruption.
+    """
+    out: list[str] = []
+    i = 0
+    n = len(s)
+    in_string = False
+    escape = False
+    while i < n:
+        c = s[i]
+        out.append(c)
+        if in_string:
+            if escape:
+                escape = False
+            elif c == '\\':
+                escape = True
+            elif c == '"':
+                in_string = False
+            i += 1
+            continue
+        if c == '"':
+            in_string = True
+            i += 1
+            continue
+        if c in '}]':
+            # 向前看：跳过空白后若紧跟另一个容器起始（{ 或 [）→ 缺分隔逗号
+            j = i + 1
+            while j < n and s[j].isspace():
+                j += 1
+            if j < n and s[j] in '{[':
+                out.append(',')
+        i += 1
+    return ''.join(out)
+
+
 def _try_json_loads(s: str) -> tuple[Any, bool]:
     try:
         return json.loads(s), True
@@ -397,7 +451,8 @@ def robust_json_loads(raw: str) -> Any:
 
     Handles: unquoted keys, trailing commas, ``{{ }}``, Python ``True/False/None``,
     single-quoted strings (including mixed-quote scenarios), stray hallucinated
-    chars between structural tokens (e.g. ``,결{`` → ``,{``), unescaped English
+    chars between structural tokens (e.g. ``,결{`` → ``,{``), missing commas
+    between adjacent containers (e.g. ``}{`` → ``},{``), unescaped English
     double-quotes inside string values (e.g. ``"他说"晚安"走了"``), and over-escaped
     ``---`` memo dividers in string values.
     """  # noqa: DOCSTRING_CJK
@@ -424,8 +479,13 @@ def robust_json_loads(raw: str) -> Any:
         _normalize_quotes,
         # 清掉 `,결{` 类结构 token 间幻觉污染；自身已双引号感知
         _strip_stray_chars_between_tokens,
-        # 最后才动、最激进：转义字符串值内未转义的英文双引号（qwen 等模型常犯）
+        # 转义字符串值内未转义的英文双引号（qwen 等模型常犯）
         _escape_inner_quotes,
+        # 容器元素间缺逗号 `}{`→`},{`；自身串感知，仅补结构 close→open（零歧义）。
+        # 必须排在 _escape_inner_quotes **之后**：未转义内引号会翻转串解析奇偶，
+        # 让内容里的字面 `}{` 被误判为结构边界而插入逗号（静默篡改）。先把内引号
+        # 转义干净，串边界才稳，本步的 close→open 判定才可信（Codex P2）。
+        _insert_missing_structural_commas,
     )
     s = raw
     for transform in transforms:

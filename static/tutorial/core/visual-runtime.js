@@ -181,6 +181,12 @@
                 && typeof director.isAvatarFloatingInputIntroScene === 'function'
                 && director.isAvatarFloatingInputIntroScene(legacyScene)
             );
+            const legacySpotlightVariant = legacyScene && typeof legacyScene.spotlightVariant === 'string'
+                ? legacyScene.spotlightVariant.trim()
+                : '';
+            const externalizedSpotlightOptions = {
+                variant: legacySpotlightVariant
+            };
             if (
                 isFirstDailyInputIntro
                 && typeof director.isHomeChatExternalized === 'function'
@@ -195,7 +201,10 @@
                 if (typeof director.clearHomeSpotlightsForExternalizedChat === 'function') {
                     director.clearHomeSpotlightsForExternalizedChat();
                 }
-                director.interactionTakeover.setExternalizedChatSpotlight(normalizedIntroKind);
+                director.interactionTakeover.setExternalizedChatSpotlight(
+                    normalizedIntroKind,
+                    externalizedSpotlightOptions
+                );
                 if (typeof director.interactionTakeover.setExternalizedChatCursor === 'function') {
                     const cursorOptions = typeof director.getAvatarFloatingIntroExternalizedCursorOptions === 'function'
                         ? director.getAvatarFloatingIntroExternalizedCursorOptions(legacyScene)
@@ -233,7 +242,10 @@
                     if (typeof director.clearHomeSpotlightsForExternalizedChat === 'function') {
                         director.clearHomeSpotlightsForExternalizedChat();
                     }
-                    director.interactionTakeover.setExternalizedChatSpotlight(externalizedSpotlightKind);
+                    director.interactionTakeover.setExternalizedChatSpotlight(
+                        externalizedSpotlightKind,
+                        externalizedSpotlightOptions
+                    );
                     return true;
                 }
             }
@@ -315,7 +327,8 @@
                 const cursorKind = director.getExternalizedChatCursorTargetKind(cursorScene);
                 if (cursorKind) {
                     director.setExternalizedChatCursorEffect(cursorKind, 'move', {
-                        durationMs
+                        durationMs,
+                        freezePoint: event.freezePoint === true
                     });
                     const waitMs = durationMs > 0 ? durationMs + 500 : undefined;
                     return await director.waitForExternalizedChatCursorMove(cursorScene.id || '', waitMs);
@@ -506,6 +519,9 @@
             const legacyScene = Object.assign({}, getLegacyScene(context), {
                 operation: event.operation || (getLegacyScene(context).operation || '')
             });
+            if (event.preserveExternalizedChatGuideTarget === true) {
+                legacyScene.preserveExternalizedChatGuideTarget = true;
+            }
             if (
                 event.trigger === 'afterCursorMove'
                 && typeof director.isHomeChatExternalized === 'function'
@@ -567,6 +583,14 @@
                 return false;
             }
             const legacyScene = getLegacyScene(context);
+            if (
+                legacyScene
+                && typeof legacyScene.id === 'string'
+                && legacyScene.id.indexOf('day4_') === 0
+                && typeof director.clearExternalizedChatGuideTarget === 'function'
+            ) {
+                director.clearExternalizedChatGuideTarget({ clearCursor: true });
+            }
             return await director.settingsTourFlow.play(legacyScene, {
                 sceneRunId: context ? context.sceneRunId : undefined,
                 previousSceneId: context ? context.previousSceneId : undefined,
@@ -608,7 +632,8 @@
                     context ? context.sceneRunId : 0,
                     audio.voiceKey || legacyScene.voiceKey || '',
                     audio.text || legacyScene.text || '',
-                    context ? context.narrationStartedAt : 0
+                    context ? context.narrationStartedAt : 0,
+                    event.beforeAudioEndMs
                 );
             }
             if (director && director.cursor && typeof director.cursor.hide === 'function') {
