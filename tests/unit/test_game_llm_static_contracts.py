@@ -158,6 +158,7 @@ def test_soccer_mood_rotation_only_runs_for_pure_game_fallback():
 @pytest.mark.unit
 def test_soccer_passive_guard_writes_structured_debug_events():
     html = ROOT.joinpath("templates/soccer_demo.html").read_text(encoding="utf-8")
+    router_source = ROOT.joinpath("main_routers/game_router/runtime.py").read_text(encoding="utf-8")
 
     assert "function _passiveGuardDebugLog(" in html
     assert "'passive_guard'" in html
@@ -167,8 +168,11 @@ def test_soccer_passive_guard_writes_structured_debug_events():
     assert "'passive_guard_modal'" in html
     assert "'passive_guard_teaching'" in html
     assert "'passive_guard_state_change'" in html
-    assert "payload?.category === 'passive_guard'" in html
+    assert "PASSIVE_GUARD_DEBUG_LOG_LIMIT_PER_WINDOW = 80" in html
+    assert "passiveGuardSentInWindow" in html
+    assert "const isPassiveGuardLog = payload?.category === 'passive_guard'" in html
     assert "startsWith('passive_guard_')" in html
+    assert "PASSIVE_GUARD_SIDE_CAR_TIMEOUT_MS = 7000" in html
 
     set_difficulty_block = html.split("function setDifficultyInternal(name, opts = {})", 1)[1].split(
         "function targetDifficultyForScoreDiff",
@@ -182,10 +186,23 @@ def test_soccer_passive_guard_writes_structured_debug_events():
         "function _handleSidecarAction",
         1,
     )[0]
+    exit_prompt_line_block = html.split("async function _requestExitPromptLine", 1)[1].split(
+        "async function _prepareExitPrompt",
+        1,
+    )[0]
+    passive_guard_backend_block = router_source.split('set_call_type("game_passive_guard")', 1)[1].split(
+        "async with llm:",
+        1,
+    )[0]
 
     assert "'passive_guard_state_change'" in set_difficulty_block
     assert "'passive_guard_state_change'" in set_mood_block
     assert "'passive_guard_sidecar'" in sidecar_block
+    assert "new AbortController()" in exit_prompt_line_block
+    assert "signal: controller.signal" in exit_prompt_line_block
+    assert "clearTimeout(timeoutId)" in exit_prompt_line_block
+    assert 'provider_type=char_info.get("provider_type")' in passive_guard_backend_block
+    assert 'elif action != "prepare_exit_prompt"' not in router_source
 
 
 @pytest.mark.unit

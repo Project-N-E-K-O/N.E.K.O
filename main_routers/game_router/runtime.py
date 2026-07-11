@@ -2970,7 +2970,7 @@ def _normalize_passive_guard_result(value: Any, *, stage: Any, prompt_type: str)
             exit_type = "rest"
         else:
             exit_type = "surrender"
-    elif action != "prepare_exit_prompt":
+    else:
         exit_type = "none"
 
     try:
@@ -3044,6 +3044,7 @@ async def _run_soccer_passive_guard_ai(data: Dict[str, Any], lanlan_name: str) -
         char_info["model"],
         char_info["base_url"],
         char_info["api_key"],
+        provider_type=char_info.get("provider_type"),
         max_completion_tokens=500,
         timeout=6,
     )
