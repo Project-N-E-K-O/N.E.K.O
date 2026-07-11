@@ -43,7 +43,7 @@ async def test_run_review_failed_bumps_backoff():
     fake_mgr.review_history = AsyncMock(return_value=("failed", None))
     cancel_event = asyncio.Event()  # 未置位 → 真失败
 
-    with patch.object(memory_server, "recent_history_manager", fake_mgr), \
+    with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr), \
          patch.object(memory_server.gates, "_asave_maint_state", AsyncMock()):
         await memory_server._run_review_in_background(name, snapshot, cancel_event)
 
@@ -68,7 +68,7 @@ async def test_run_review_cancelled_does_not_bump():
     cancel_event = asyncio.Event()
     cancel_event.set()  # 模拟 cancel_correction 已置位
 
-    with patch.object(memory_server, "recent_history_manager", fake_mgr), \
+    with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr), \
          patch.object(memory_server.gates, "_asave_maint_state", AsyncMock()):
         await memory_server._run_review_in_background(name, snapshot, cancel_event)
 
@@ -94,7 +94,7 @@ async def test_run_review_patched_clears_backoff():
     fake_mgr.review_history = AsyncMock(return_value=("patched", [{"type": "ai", "content": "x"}]))
     cancel_event = asyncio.Event()
 
-    with patch.object(memory_server, "recent_history_manager", fake_mgr), \
+    with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr), \
          patch.object(memory_server.gates, "_asave_maint_state", AsyncMock()):
         await memory_server._run_review_in_background(name, snapshot, cancel_event)
 
@@ -117,7 +117,7 @@ async def test_run_review_patched_save_failure_does_not_bump():
     fake_mgr.review_history = AsyncMock(return_value=("patched", [{"type": "ai", "content": "x"}]))
     cancel_event = asyncio.Event()
 
-    with patch.object(memory_server, "recent_history_manager", fake_mgr), \
+    with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr), \
          patch.object(memory_server.gates, "_asave_maint_state",
                       AsyncMock(side_effect=RuntimeError("disk full"))):
         await memory_server._run_review_in_background(name, snapshot, cancel_event)
@@ -142,7 +142,7 @@ async def test_run_review_failed_save_failure_counts_once():
     fake_mgr.review_history = AsyncMock(return_value=("failed", None))
     cancel_event = asyncio.Event()
 
-    with patch.object(memory_server, "recent_history_manager", fake_mgr), \
+    with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr), \
          patch.object(memory_server.gates, "_asave_maint_state",
                       AsyncMock(side_effect=RuntimeError("disk full"))):
         await memory_server._run_review_in_background(name, snapshot, cancel_event)
@@ -161,9 +161,9 @@ async def _drive_spawn(memory_server, name, history):
     # 被 spawn 的后台 task 真跑起来时会调 review_history——给个安全返回
     fake_mgr.review_history = AsyncMock(return_value=("white", None))
 
-    with patch.object(memory_server, "recent_history_manager", fake_mgr), \
+    with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr), \
          patch.object(memory_server.gates, "_ais_review_enabled", AsyncMock(return_value=True)), \
-         patch.object(memory_server, "_count_new_user_msgs_since_last_review", return_value=999), \
+         patch.object(memory_server.review, "_count_new_user_msgs_since_last_review", return_value=999), \
          patch.object(memory_server.gates, "_asave_maint_state", AsyncMock()):
         await memory_server.maybe_spawn_review(name)
 
@@ -239,7 +239,7 @@ async def test_failed_resets_budget_on_input_change():
     fake_mgr.review_history = AsyncMock(return_value=("failed", None))
     cancel_event = asyncio.Event()
 
-    with patch.object(memory_server, "recent_history_manager", fake_mgr), \
+    with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr), \
          patch.object(memory_server.gates, "_asave_maint_state", AsyncMock()):
         for n in (8, 10, 12):  # 三段 tail fingerprint 互不相同的输入
             await memory_server._run_review_in_background(name, _history(n), cancel_event)
@@ -265,7 +265,7 @@ async def test_run_review_exception_bumps_backoff():
     fake_mgr.review_history = AsyncMock(side_effect=RuntimeError("boom"))
     cancel_event = asyncio.Event()
 
-    with patch.object(memory_server, "recent_history_manager", fake_mgr), \
+    with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr), \
          patch.object(memory_server.gates, "_asave_maint_state", AsyncMock()):
         await memory_server._run_review_in_background(name, snapshot, cancel_event)
 
@@ -288,7 +288,7 @@ async def test_failed_same_input_accumulates_budget():
     fake_mgr.review_history = AsyncMock(return_value=("failed", None))
     cancel_event = asyncio.Event()
 
-    with patch.object(memory_server, "recent_history_manager", fake_mgr), \
+    with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr), \
          patch.object(memory_server.gates, "_asave_maint_state", AsyncMock()):
         for _ in range(3):
             await memory_server._run_review_in_background(name, same, cancel_event)

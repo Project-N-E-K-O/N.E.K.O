@@ -47,7 +47,7 @@ async def test_on_compress_done_failure_spawns_backup():
     fake_mgr = MagicMock()
     fake_mgr.compress_history = _slow_compress
 
-    with patch.object(memory_server, "recent_history_manager", fake_mgr), \
+    with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr), \
          patch.object(memory_server.gates, "_asave_maint_state", AsyncMock()):
         await memory_server._on_compress_done(name, snapshot, ok=False, detailed=False)
         task = memory_server.compress_backup_tasks.get(name)
@@ -88,7 +88,7 @@ async def test_on_compress_done_in_flight_guard():
 
     fake_mgr = MagicMock()
     fake_mgr.compress_history = AsyncMock(return_value=None)
-    with patch.object(memory_server, "recent_history_manager", fake_mgr), \
+    with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr), \
          patch.object(memory_server.gates, "_asave_maint_state", AsyncMock()):
         await memory_server._on_compress_done(name, _history(6), ok=False, detailed=False)
 
@@ -114,7 +114,7 @@ async def test_on_compress_done_deadletter_skips_spawn():
 
     fake_mgr = MagicMock()
     fake_mgr.enforce_hard_cap = AsyncMock()
-    with patch.object(memory_server, "recent_history_manager", fake_mgr), \
+    with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr), \
          patch.object(memory_server.gates, "_asave_maint_state", AsyncMock()):
         await memory_server._on_compress_done(name, snapshot, ok=False, detailed=False)
 
@@ -144,7 +144,7 @@ async def test_on_compress_done_deadletter_resets_when_input_changed():
 
     fake_mgr = MagicMock()
     fake_mgr.compress_history = _slow_compress
-    with patch.object(memory_server, "recent_history_manager", fake_mgr), \
+    with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr), \
          patch.object(memory_server.gates, "_asave_maint_state", AsyncMock()):
         await memory_server._on_compress_done(name, new_snapshot, ok=False, detailed=False)
         # 输入变了 → 复位放行，起了后台
@@ -168,7 +168,7 @@ async def test_run_backup_compress_failure_bumps_backoff():
     fake_mgr = MagicMock()
     fake_mgr.compress_history = AsyncMock(return_value=None)
     fake_mgr.enforce_hard_cap = AsyncMock()
-    with patch.object(memory_server, "recent_history_manager", fake_mgr), \
+    with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr), \
          patch.object(memory_server.gates, "_asave_maint_state", AsyncMock()):
         await memory_server._run_backup_compress(name, snapshot, False)
 
@@ -190,7 +190,7 @@ async def test_run_backup_compress_merges_and_clears_backoff():
     fake_mgr = MagicMock()
     fake_mgr.compress_history = AsyncMock(return_value=(SystemMessage(content="memo"), "memo"))
     fake_mgr.merge_backup_memo = AsyncMock(return_value="merged")
-    with patch.object(memory_server, "recent_history_manager", fake_mgr), \
+    with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr), \
          patch.object(memory_server.gates, "_asave_maint_state", AsyncMock()):
         await memory_server._run_backup_compress(name, snapshot, False)
 
