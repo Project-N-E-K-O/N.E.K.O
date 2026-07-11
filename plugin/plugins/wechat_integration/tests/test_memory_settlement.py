@@ -70,3 +70,21 @@ async def test_idle_cleanup_tracks_settlement_task_until_completion():
     await task
     await asyncio.sleep(0)
     assert plugin._settle_memory_tasks == set()
+
+
+async def test_message_loop_sleeps_after_poll_returns():
+    plugin = object.__new__(WechatIntegrationPlugin)
+    plugin._shutdown_event = asyncio.Event()
+    plugin._is_logged_in = lambda: True
+    plugin._poll_inbound_updates = AsyncMock()
+    plugin.logger = type("Logger", (), {"error": lambda *_args, **_kwargs: None})()
+
+    async def sleep_once(seconds):
+        assert seconds == 1
+        plugin._shutdown_event.set()
+
+    with patch("asyncio.sleep", new=AsyncMock(side_effect=sleep_once)) as sleep:
+        await plugin._run_message_loop()
+
+    plugin._poll_inbound_updates.assert_awaited_once()
+    sleep.assert_awaited_once_with(1)

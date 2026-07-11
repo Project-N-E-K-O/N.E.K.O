@@ -813,6 +813,8 @@ class WechatIntegrationPlugin(NekoPluginBase):
                 continue
             try:
                 await self._poll_inbound_updates()
+                if not self._shutdown_event.is_set():
+                    await asyncio.sleep(1)
             except asyncio.TimeoutError:
                 continue
             except asyncio.CancelledError:
