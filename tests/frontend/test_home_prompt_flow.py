@@ -8549,7 +8549,7 @@ def test_avatar_floating_distance_below_new_threshold_does_not_trigger_light_res
 
 
 @pytest.mark.frontend
-def test_avatar_floating_distance_threshold_triggers_light_resistance_without_speed_or_acceleration(
+def test_avatar_floating_large_straight_moves_do_not_trigger_light_resistance(
     mock_page: Page,
 ):
     _bootstrap_page(
@@ -8579,10 +8579,6 @@ def test_avatar_floating_distance_threshold_triggers_light_resistance_without_sp
                 director.playLightResistance = (x, y, options) => {
                     lightInterrupts.push({ x, y, options });
                 };
-                director.abortAsAngryExit = (source) => {
-                    throw new Error('first light interrupt should not angry-exit: ' + source);
-                };
-
                 director.lastPointerPoint = { x: 100, y: 100, t: 1000, speed: 0.04 };
                 [
                     { t: 2000, x: 320 },
@@ -8611,9 +8607,218 @@ def test_avatar_floating_distance_threshold_triggers_light_resistance_without_sp
         """
     )
 
+    assert result["lightInterrupts"] == []
+    assert result["interruptCount"] == 0
+    assert result["streak"] == 0
+
+
+@pytest.mark.frontend
+def test_avatar_floating_sustained_shake_triggers_light_resistance(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const originalNow = Date.now;
+            window.__now = 1000;
+            Date.now = () => window.__now;
+            try {
+                const director = window.createYuiGuideDirector({ page: 'home' });
+                const lightInterrupts = [];
+                director.platformCapabilities = { windowBoundsSource: 'electron-window-bounds' };
+                director.currentSceneId = 'test_scene';
+                director.currentStep = {
+                    performance: {},
+                    interrupts: { threshold: 3, throttleMs: 0 },
+                };
+                director.interruptsEnabled = true;
+                director.cursor.hasPosition = () => true;
+                director.cursor.reactToUserMotion = () => {};
+                director.playLightResistance = (x, y, options) => {
+                    lightInterrupts.push({ x, y, options });
+                };
+
+                const playShake = (samples, startAt) => {
+                    samples.forEach((x, index) => {
+                        const previousX = index > 0 ? samples[index - 1] : 0;
+                        window.__now = startAt + (index * 100);
+                        director.handleInterrupt({
+                            isTrusted: true,
+                            type: 'mousemove',
+                            clientX: x,
+                            clientY: 100,
+                            screenX: x,
+                            screenY: 100,
+                            movementX: x - previousX,
+                            movementY: 0,
+                        });
+                    });
+                };
+
+                playShake([100, 200, 100, 200, 100, 200, 100, 200], 1000);
+                const belowRaisedThreshold = {
+                    lightInterruptCount: lightInterrupts.length,
+                    interruptCount: director.interruptCount,
+                };
+                playShake([100, 220, 100, 220, 100, 220, 100, 220, 100, 220], 2000);
+                return {
+                    lightInterrupts,
+                    interruptCount: director.interruptCount,
+                    streak: director.interruptQualifyingMoveStreak,
+                    belowRaisedThreshold,
+                };
+            } finally {
+                Date.now = originalNow;
+            }
+        }
+        """
+    )
+
+    assert result["belowRaisedThreshold"] == {
+        "lightInterruptCount": 0,
+        "interruptCount": 0,
+    }
     assert len(result["lightInterrupts"]) == 1
     assert result["interruptCount"] == 1
     assert result["streak"] == 0
+
+
+@pytest.mark.frontend
+def test_avatar_floating_near_threshold_shake_uses_matching_distance_and_time_interval(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const originalNow = Date.now;
+            window.__now = 1000;
+            Date.now = () => window.__now;
+            try {
+                const director = window.createYuiGuideDirector({ page: 'home' });
+                const lightInterrupts = [];
+                director.platformCapabilities = { windowBoundsSource: 'electron-window-bounds' };
+                director.currentSceneId = 'test_scene';
+                director.currentStep = {
+                    performance: {},
+                    interrupts: { threshold: 3, throttleMs: 0 },
+                };
+                director.interruptsEnabled = true;
+                director.cursor.hasPosition = () => true;
+                director.cursor.reactToUserMotion = () => {};
+                director.playLightResistance = (x, y, options) => {
+                    lightInterrupts.push({ x, y, options });
+                };
+
+                [100, 200, 100, 200, 100, 200, 100, 200, 100, 200].forEach((x, index, samples) => {
+                    const previousX = index > 0 ? samples[index - 1] : 0;
+                    window.__now = 1000 + (index * 100);
+                    director.handleInterrupt({
+                        isTrusted: true,
+                        type: 'mousemove',
+                        clientX: x,
+                        clientY: 100,
+                        screenX: x,
+                        screenY: 100,
+                        movementX: x - previousX,
+                        movementY: 0,
+                    });
+                });
+                return {
+                    lightInterrupts,
+                    interruptCount: director.interruptCount,
+                };
+            } finally {
+                Date.now = originalNow;
+            }
+        }
+        """
+    )
+
+    assert result["lightInterrupts"] == []
+    assert result["interruptCount"] == 0
+
+
+@pytest.mark.frontend
+def test_avatar_floating_slow_shake_does_not_trigger_light_resistance(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const originalNow = Date.now;
+            window.__now = 1000;
+            Date.now = () => window.__now;
+            try {
+                const director = window.createYuiGuideDirector({ page: 'home' });
+                const lightInterrupts = [];
+                director.platformCapabilities = { windowBoundsSource: 'electron-window-bounds' };
+                director.currentSceneId = 'test_scene';
+                director.currentStep = {
+                    performance: {},
+                    interrupts: { threshold: 3, throttleMs: 0 },
+                };
+                director.interruptsEnabled = true;
+                director.cursor.hasPosition = () => true;
+                director.cursor.reactToUserMotion = () => {};
+                director.playLightResistance = (x, y, options) => {
+                    lightInterrupts.push({ x, y, options });
+                };
+
+                const samples = [
+                    { t: 1000, x: 100 },
+                    { t: 1200, x: 200 },
+                    { t: 1400, x: 100 },
+                    { t: 1600, x: 200 },
+                    { t: 1800, x: 100 },
+                    { t: 2000, x: 200 },
+                    { t: 2200, x: 100 },
+                    { t: 2400, x: 200 },
+                ];
+                samples.forEach((sample, index) => {
+                    const previousX = index > 0 ? samples[index - 1].x : 0;
+                    window.__now = sample.t;
+                    director.handleInterrupt({
+                        isTrusted: true,
+                        type: 'mousemove',
+                        clientX: sample.x,
+                        clientY: 100,
+                        screenX: sample.x,
+                        screenY: 100,
+                        movementX: sample.x - previousX,
+                        movementY: 0,
+                    });
+                });
+                return {
+                    lightInterrupts,
+                    interruptCount: director.interruptCount,
+                };
+            } finally {
+                Date.now = originalNow;
+            }
+        }
+        """
+    )
+
+    assert result["lightInterrupts"] == []
+    assert result["interruptCount"] == 0
 
 
 @pytest.mark.frontend
@@ -8810,19 +9015,30 @@ def test_avatar_floating_light_resistance_reveals_real_cursor_for_two_seconds(
                     }
                 };
 
-                director.lastPointerPoint = { x: 100, y: 100, t: 1000, speed: 0.04 };
-                [
-                    { t: 2000, x: 320 },
-                    { t: 3000, x: 540 },
-                    { t: 4000, x: 760 },
-                ].forEach((sample) => {
+                director.lastPointerPoint = { x: 0, y: 100, t: 900, speed: 0 };
+                const samples = [
+                    { t: 1000, x: 100 },
+                    { t: 1100, x: 220 },
+                    { t: 1200, x: 100 },
+                    { t: 1300, x: 220 },
+                    { t: 1400, x: 100 },
+                    { t: 1500, x: 220 },
+                    { t: 1600, x: 100 },
+                    { t: 1700, x: 220 },
+                    { t: 1800, x: 100 },
+                    { t: 1900, x: 220 },
+                ];
+                samples.forEach((sample, index) => {
+                    const previousX = index > 0 ? samples[index - 1].x : 0;
                     window.__now = sample.t;
                     director.handleInterrupt({
                         isTrusted: true,
                         type: 'mousemove',
                         clientX: sample.x,
                         clientY: 100,
-                        movementX: 220,
+                        screenX: sample.x,
+                        screenY: 100,
+                        movementX: sample.x - previousX,
                         movementY: 0,
                     });
                 });
@@ -8882,7 +9098,7 @@ def test_avatar_floating_light_resistance_reveals_real_cursor_for_two_seconds(
 
 
 @pytest.mark.frontend
-def test_avatar_floating_second_light_resistance_refreshes_cursor_while_first_line_active(
+def test_avatar_floating_active_light_resistance_does_not_count_continuous_shake(
     mock_page: Page,
 ):
     _bootstrap_page(
@@ -8935,19 +9151,19 @@ def test_avatar_floating_second_light_resistance_refreshes_cursor_while_first_li
                 director.scenePausedForResistance = true;
 
                 const playQualifyingGroup = () => {
-                    director.lastPointerPoint = { x: 100, y: 100, t: window.__now, speed: 0.04 };
-                    [
-                        { t: window.__now + 1000, x: 320 },
-                        { t: window.__now + 2000, x: 540 },
-                        { t: window.__now + 3000, x: 760 },
-                    ].forEach((sample) => {
-                        window.__now = sample.t;
+                    const startAt = window.__now;
+                    director.lastPointerPoint = { x: 0, y: 100, t: startAt, speed: 0 };
+                    const samples = [100, 220, 100, 220, 100, 220, 100, 220, 100, 220];
+                    samples.forEach((x, index) => {
+                        window.__now = startAt + ((index + 1) * 100);
                         director.handleInterrupt({
                             isTrusted: true,
                             type: 'mousemove',
-                            clientX: sample.x,
+                            clientX: x,
                             clientY: 100,
-                            movementX: 220,
+                            screenX: x,
+                            screenY: 100,
+                            movementX: x - (index > 0 ? samples[index - 1] : 0),
                             movementY: 0,
                         });
                     });
@@ -8975,13 +9191,12 @@ def test_avatar_floating_second_light_resistance_refreshes_cursor_while_first_li
 
     assert result["activeDuringSecond"] is True
     assert result["pausedDuringSecond"] is True
-    assert result["interruptCount"] == 2
+    assert result["interruptCount"] == 1
     assert result["temporaryReveals"] == [
         {"reason": "interrupt_resist_light", "durationMs": 2000},
-        {"reason": "interrupt_resist_light", "durationMs": 2000},
     ]
-    assert result["timerDelays"] == [2000, 2000]
-    assert result["clearedTimers"] == 1
+    assert result["timerDelays"] == [2000]
+    assert result["clearedTimers"] == 0
 
 
 @pytest.mark.frontend
@@ -9379,7 +9594,7 @@ def test_avatar_floating_acceleration_threshold_requires_single_event_distance(
 
 
 @pytest.mark.frontend
-def test_avatar_floating_third_light_resistance_enters_angry_exit(
+def test_avatar_floating_fourth_interrupt_enters_angry_exit_after_three_resistance_lines(
     mock_page: Page,
 ):
     _bootstrap_page(
@@ -9402,7 +9617,7 @@ def test_avatar_floating_third_light_resistance_enters_angry_exit(
                 director.currentSceneId = 'test_scene';
                 director.currentStep = {
                     performance: {},
-                    interrupts: { threshold: 3, throttleMs: 0 },
+                    interrupts: { threshold: 4, throttleMs: 0 },
                 };
                 director.interruptsEnabled = true;
                 director.cursor.hasPosition = () => true;
@@ -9414,25 +9629,27 @@ def test_avatar_floating_third_light_resistance_enters_angry_exit(
                     angryExits.push(source);
                 };
 
-                let x = 100;
                 let t = 1000;
                 const playQualifyingGroup = () => {
-                    director.lastPointerPoint = { x, y: 100, t, speed: 0 };
-                    for (let index = 0; index < 3; index += 1) {
-                        x += 220;
-                        t += 1000;
+                    const samples = [100, 220, 100, 220, 100, 220, 100, 220, 100, 220];
+                    director.lastPointerPoint = { x: 0, y: 100, t, speed: 0 };
+                    samples.forEach((sampleX, index) => {
+                        t += 100;
                         window.__now = t;
                         director.handleInterrupt({
                             isTrusted: true,
                             type: 'mousemove',
-                            clientX: x,
+                            clientX: sampleX,
                             clientY: 100,
-                            movementX: 220,
+                            screenX: sampleX,
+                            screenY: 100,
+                            movementX: sampleX - (index > 0 ? samples[index - 1] : 0),
                             movementY: 0,
                         });
-                    }
+                    });
                 };
 
+                playQualifyingGroup();
                 playQualifyingGroup();
                 playQualifyingGroup();
                 playQualifyingGroup();
@@ -9448,9 +9665,9 @@ def test_avatar_floating_third_light_resistance_enters_angry_exit(
         """
     )
 
-    assert result["lightInterruptCount"] == 2
+    assert result["lightInterruptCount"] == 3
     assert result["angryExits"] == ["pointer_interrupt"]
-    assert result["interruptCount"] == 3
+    assert result["interruptCount"] == 4
 
 
 @pytest.mark.frontend

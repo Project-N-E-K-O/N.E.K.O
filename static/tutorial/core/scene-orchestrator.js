@@ -330,7 +330,7 @@
                     preservePcOverlayCursor: shouldClearExternalizedChatCursor
                 });
             }
-            this.applyFirstDailySceneIntroCursorPrelude(scene, {
+            const introCursorPreludeApplied = this.applyFirstDailySceneIntroCursorPrelude(scene, {
                 isFirstDailyScene,
                 preserveIntroExternalizedChatGuideTarget
             });
@@ -368,6 +368,7 @@
                 isFirstDailyScene,
                 preserveExternalizedChatGuideTarget,
                 preserveIntroExternalizedChatGuideTarget,
+                introCursorPreludeApplied,
                 revealPrepared: roundContext.revealPrepared
             });
         }
@@ -421,10 +422,16 @@
                 if (typeof director.setHomePcCursorOutputSuppressedForExternalizedChat === 'function') {
                     director.setHomePcCursorOutputSuppressedForExternalizedChat(true);
                 }
-                director.interactionTakeover.setExternalizedChatCursor(introExternalizedCursorKind || 'capsule-input', {
-                    effect: '',
-                    durationMs: 0
-                });
+                const introExternalizedCursorOptions = typeof director.getAvatarFloatingIntroExternalizedCursorOptions === 'function'
+                    ? director.getAvatarFloatingIntroExternalizedCursorOptions(scene)
+                    : {
+                        effect: '',
+                        durationMs: 0
+                    };
+                director.interactionTakeover.setExternalizedChatCursor(
+                    introExternalizedCursorKind || 'capsule-input',
+                    introExternalizedCursorOptions
+                );
                 if (typeof director.hideHomeCursorForExternalizedChat === 'function') {
                     director.hideHomeCursorForExternalizedChat();
                 }
@@ -502,7 +509,10 @@
                 if (typeof director.setHomePcCursorOutputSuppressedForExternalizedChat === 'function') {
                     director.setHomePcCursorOutputSuppressedForExternalizedChat(true);
                 }
-                if (typeof director.interactionTakeover.setExternalizedChatCursor === 'function') {
+                if (
+                    !context.introCursorPreludeApplied
+                    && typeof director.interactionTakeover.setExternalizedChatCursor === 'function'
+                ) {
                     director.interactionTakeover.setExternalizedChatCursor(
                         introExternalizedChatSpotlightKind,
                         director.getAvatarFloatingIntroExternalizedCursorOptions(scene)
