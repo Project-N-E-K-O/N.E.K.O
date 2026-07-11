@@ -43,7 +43,9 @@ _LEGACY_CORRECTION_PUBLIC_KEYS = {
 
 
 def _now_iso() -> str:
-    return datetime.utcnow().isoformat() + "Z"
+    # datetime.utcnow() is deprecated since Python 3.12; the tz-aware form
+    # yields the exact same string ("+00:00" swapped back to the legacy "Z").
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _cleanup_task_registry() -> List[Dict[str, Any]]:
