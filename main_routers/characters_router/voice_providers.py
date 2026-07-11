@@ -337,7 +337,7 @@ async def _minimax_design_voice(
 
     returned_voice_id = _first_nested_value(data, {"voice_id", "voiceId"})
     if not isinstance(returned_voice_id, str) or not returned_voice_id.strip():
-        returned_voice_id = voice_id
+        raise MinimaxVoiceCloneError("MiniMax voice design did not return voice_id")
     request_id = _first_nested_value(data, {"request_id", "requestId", "trace_id", "traceId"})
     return returned_voice_id.strip(), str(request_id or "").strip() or None
 
