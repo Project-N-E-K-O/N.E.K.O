@@ -13,16 +13,43 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Memory server package.
+
+Formerly the monolithic ``app/memory_server.py`` (4.6k lines); being split by
+domain following the ``main_routers/game_router`` runtime pattern (mutable
+state co-located with its consumers). Stage 1 extracts the stateless
+dependency leaves:
+
+  - ``_shared``  — logging setup (dependency root, imports no sibling)
+  - ``rows``     — pure SQL-row / message-list extraction helpers
+  - ``gates``    — maintenance state, feature switches, idle detection and
+                   loop scheduling constants (shared by every loop/endpoint)
+
+Everything else (DI singletons, background loops, HTTP endpoints, runtime
+init) still lives in this ``__init__`` and moves out in stage 2. Top-level
+names of the old module are re-exported here so existing imports keep
+working (``launcher`` only needs ``memory_server.app``).
+
+Note for tests: ``monkeypatch.setattr`` must target the submodule that
+*owns* a symbol (e.g. ``gates._ais_powerful_memory_enabled``), not this
+package facade -- re-exports are snapshots, they do not rebind submodule
+globals. Rebindable submodule state (``gates._maint_state`` /
+``gates._last_activity_time``) is deliberately NOT re-exported: a facade
+snapshot would silently go stale after the first in-place rebind.
+"""
+
 import sys
 import os
-_repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Three dirname hops: __init__.py → memory_server/ → app/ → repo root.
+_repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Force project root to sys.path[0] — see agent_server.py top for rationale.
 if sys.path[0:1] != [_repo_root]:
     sys.path.insert(0, _repo_root)
 
-# Wire DI bindings explicitly — direct script invocation
-# (``python app/memory_server.py``) doesn't run app/__init__.py.
-# Idempotent under launcher's ``from app import memory_server`` path too.
+# Wire DI bindings explicitly — kept from the pre-package era when direct
+# script invocation (``python app/memory_server.py``) bypassed app/__init__.py.
+# Idempotent under both remaining paths (launcher's ``from app import
+# memory_server`` and standalone ``python -m app.memory_server``).
 from app.runtime_bindings import install_runtime_bindings as _install_runtime_bindings
 _install_runtime_bindings()
 
@@ -46,7 +73,6 @@ from memory.outbox import Outbox, OP_POST_TURN_SIGNALS
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse, JSONResponse
 import json
-import uvicorn
 from utils.llm_client import convert_to_messages
 from uuid import uuid4
 from config import (
@@ -66,7 +92,6 @@ from config import (
     MEMORY_RECHECK_INITIAL_DELAY_SECONDS,
     MEMORY_REFINE_CRON_INTERVAL_SECONDS,
     MEMORY_RECHECK_INTERVAL_SECONDS,
-    MEMORY_SERVER_PORT,
     USER_CONFIRM_DELTA,
     USER_FACT_NEGATE_DELTA,
     USER_FACT_REINFORCE_DELTA,
@@ -106,17 +131,54 @@ from utils.asgi_body_limit import InboundBodySizeLimitMiddleware
 from pydantic import BaseModel
 import re
 import asyncio
-import logging
-import argparse
 from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable
 from utils.frontend_utils import get_timestamp
 
-# 配置日志
-from utils.logger_config import setup_logging
-logger, log_config = setup_logging(service_name="Memory", log_level=logging.INFO)
-
 from utils.time_format import format_elapsed as _format_elapsed
+
+# ── Package submodules (stage-1 leaves) ─────────────────────────────
+# ``gates`` is consumed via module-attribute access (``gates.<name>``) so
+# monkeypatching ``gates.*`` reaches every consumer; ``rows`` helpers are
+# pure/stateless and safe to from-import. The from-imports below double as
+# the facade re-exports for the old module's top-level names.
+from ._shared import logger, log_config  # noqa: F401
+from . import gates
+from .gates import (  # noqa: F401
+    IDLE_CHECK_INTERVAL,
+    IDLE_THRESHOLD,
+    LONG_IDLE_REVIEW_BYPASS_SECONDS,
+    MIN_NEW_MSGS_FOR_REVIEW,
+    REVIEW_MIN_INTERVAL,
+    REVIEW_SKIP_HISTORY_LEN,
+    _INITIAL_DELAY_ARCHIVE,
+    _INITIAL_DELAY_AUTO_PROMOTE,
+    _INITIAL_DELAY_IDLE_MAINT,
+    _INITIAL_DELAY_PERSONA_REFINE,
+    _INITIAL_DELAY_REBUTTAL,
+    _INITIAL_DELAY_REFLECTION_REFINE,
+    _INITIAL_DELAY_REFLECTION_SYNTHESIS,
+    _INITIAL_DELAY_SIGNAL,
+    _aclear_review_clean,
+    _ais_powerful_memory_enabled,
+    _ais_review_enabled,
+    _aload_maint_state,
+    _asave_maint_state,
+    _is_idle,
+    _is_review_clean,
+    _maint_state_path,
+    _touch_activity,
+)
+from .rows import (  # noqa: F401
+    _coerce_db_ts,
+    _extract_ai_response,
+    _extract_role_tagged_messages_from_rows,
+    _extract_user_messages,
+    _extract_user_messages_from_rows,
+    _extract_user_messages_with_ts_from_rows,
+    _has_human_messages,
+    _trim_to_user_msg_bracket,
+)
 
 
 class HistoryRequest(BaseModel):
@@ -388,129 +450,6 @@ _BACKGROUND_TASKS: set[asyncio.Task] = set()
 _new_dialog_qps_counter: dict[str, int] = {}
 NEW_DIALOG_QPS_FLUSH_INTERVAL = 60
 
-# ── 空闲维护相关 ────────────────────────────────────────────────────
-_last_activity_time: datetime = datetime.now()            # 最后一次对话活动时间
-IDLE_CHECK_INTERVAL = 40             # 空闲检查轮询间隔（秒）
-IDLE_THRESHOLD = 10                  # 多少秒无活动视为空闲（匹配最低 proactive 间隔）
-REVIEW_MIN_INTERVAL = 60             # review 最短间隔（秒）。配合消息门双重限流
-REVIEW_SKIP_HISTORY_LEN = 8          # 历史不足此数的角色跳过 review
-MIN_NEW_MSGS_FOR_REVIEW = 5          # 自上次 review cutoff 起累积 ≥ N 条 user msg 才允许触发新一轮
-LONG_IDLE_REVIEW_BYPASS_SECONDS = 1800  # 距上次活动 ≥ 30 min 且有未 review 的新消息 → 绕过新消息门，
-                                        # 把"差几条不够批量"的尾巴也整理掉
-
-# ── 启动错峰 initial_delay（避免首轮全部撞 startup + interval 同一时刻） ──
-# 每个循环首次执行时间 = startup + 该 delay；之后按各自 INTERVAL 周期跑。
-# 设计原则：archive sweep 用最长 INTERVAL (3600s) 但很多用户不到 1h 就退出，
-# 必须显著前移；rebuttal/auto_promote 同 300s 间隔但不能同时跑，错开 60s；
-# IdleMaint/Signal 已经间隔短，仅给 startup tasks (cloudsave / outbox replay /
-# migration) 一点喘息空间。EmbeddingWarmupWorker 自带 30s warmup gate，不在此处。
-_INITIAL_DELAY_IDLE_MAINT = 20       # IdleMaint 首次 (原 10s startup 高频已废)
-_INITIAL_DELAY_SIGNAL = 60           # Signal extraction 首次 (原 40s)
-_INITIAL_DELAY_REBUTTAL = 100        # Rebuttal 首次 (原 300s)
-_INITIAL_DELAY_AUTO_PROMOTE = 150    # Auto-promote 首次 (原 300s, 错开 rebuttal 50s)
-_INITIAL_DELAY_ARCHIVE = 250         # Archive sweep 首次 (原 3600s, 大幅前移确保短会话用户也能跑到)
-_INITIAL_DELAY_PERSONA_REFINE = 400  # PERSONA_REFINE 首次（与 reflection refine 错峰 100s）
-_INITIAL_DELAY_REFLECTION_REFINE = 500  # REFLECTION_REFINE 首次
-_INITIAL_DELAY_REFLECTION_SYNTHESIS = 200  # REFLECTION_SYNTHESIS 首次（错过 AUTO_PROMOTE 150 与 ARCHIVE 250，给 SignalLoop 60s + 一两次实际 fact 产出留余地）
-
-# ── 持久化维护状态（跨重启保留 review_clean 标记） ──────────────────
-_maint_state: dict[str, dict] = {}   # {角色名: {"review_clean": bool, "last_review_ts": str}}
-
-
-def _maint_state_path() -> str:
-    return os.path.join(str(_config_manager.memory_dir), 'idle_maintenance_state.json')
-
-
-async def _aload_maint_state() -> None:
-    """Load maintenance state from disk at startup."""
-    from utils.file_utils import read_json_async
-    global _maint_state
-    path = _maint_state_path()
-    if not await asyncio.to_thread(os.path.exists, path):
-        _maint_state = {}
-        return
-    try:
-        data = await read_json_async(path)
-        if isinstance(data, dict):
-            _maint_state = data
-            logger.debug(f"[IdleMaint] 已加载维护状态: {len(_maint_state)} 个角色")
-            return
-    except (json.JSONDecodeError, OSError) as e:
-        logger.warning(f"[IdleMaint] 维护状态文件加载失败: {e}")
-    _maint_state = {}
-
-
-async def _asave_maint_state() -> None:
-    """Persist maintenance state to disk."""
-    from utils.file_utils import atomic_write_json_async
-    try:
-        await atomic_write_json_async(_maint_state_path(), _maint_state,
-                                      indent=2, ensure_ascii=False)
-    except Exception as e:
-        logger.warning(f"[IdleMaint] 维护状态保存失败: {e}")
-
-
-def _is_review_clean(lanlan_name: str) -> bool:
-    """Check whether the character is in the review_clean state (reviewed and no new conversation)."""
-    return _maint_state.get(lanlan_name, {}).get('review_clean', False)
-
-
-async def _aclear_review_clean(lanlan_name: str) -> None:
-    """Clear the review_clean flag when a new human message arrives."""
-    state = _maint_state.get(lanlan_name, {})
-    if state.get('review_clean'):
-        state['review_clean'] = False
-        await _asave_maint_state()
-
-
-def _has_human_messages(messages) -> bool:
-    """Check whether the message list contains user (human) messages."""
-    for m in messages:
-        if getattr(m, 'type', '') == 'human':
-            return True
-    return False
-
-
-async def _ais_review_enabled() -> bool:
-    """Check whether correction/review is enabled in config (async IO)."""
-    from utils.file_utils import read_json_async
-    try:
-        config_path = str(_config_manager.get_runtime_config_path('core_config.json'))
-        if not await asyncio.to_thread(os.path.exists, config_path):
-            return True
-        config_data = await read_json_async(config_path)
-        if isinstance(config_data, dict) and not config_data.get('recent_memory_auto_review', True):
-            return False
-    except Exception as e:
-        logger.debug(f"[IdleMaint] 读取 review 开关配置失败，默认启用: {e}")
-    return True
-
-
-async def _ais_powerful_memory_enabled() -> bool:
-    """Check whether "powerful memory" is enabled — controls all the new LLM paths introduced by the evidence RFC.
-
-    When off, only the pre-RFC base pipeline remains (Stage-1 fact extraction /
-    reflection synthesize / recent compress+review / recall reranker /
-    check_feedback for proactive-chat responses) + the time-driven promote
-    fallback. Turning it off saves ~40-50% tokens.
-
-    Persisted as the ``powerful_memory_enabled`` field in ``core_config.json``;
-    missing defaults to True (for compatibility). Re-opens read_json_async on each
-    use, no caching — same hot-reload as ``_ais_review_enabled``, takes effect
-    without a restart.
-    """
-    from utils.file_utils import read_json_async
-    try:
-        config_path = str(_config_manager.get_runtime_config_path('core_config.json'))
-        if not await asyncio.to_thread(os.path.exists, config_path):
-            return True
-        config_data = await read_json_async(config_path)
-        if isinstance(config_data, dict) and not config_data.get('powerful_memory_enabled', True):
-            return False
-    except Exception as e:
-        logger.debug(f"[Memory] 读取强力记忆开关配置失败，默认启用: {e}")
-    return True
-
 
 async def _reset_confirmed_at_for_all_characters() -> int:
     """On→off migration: reset the confirmed_at anchor of every character's confirmed reflections.
@@ -545,17 +484,6 @@ async def _reset_confirmed_at_for_all_characters() -> int:
             # 单角色失败不致命——记录后继续。最终 count 反映成功的 N 条。
             logger.warning(f"[Memory] migration {name} 重置失败（其他角色继续）: {e}")
     return total
-
-
-def _touch_activity() -> None:
-    """Record one conversation activity, refreshing the idle timer."""
-    global _last_activity_time
-    _last_activity_time = datetime.now()
-
-
-def _is_idle() -> bool:
-    """Whether the system is currently idle (more than the threshold since the last activity)."""
-    return (datetime.now() - _last_activity_time).total_seconds() >= IDLE_THRESHOLD
 
 
 def _get_settle_lock(lanlan_name: str) -> asyncio.Lock:
@@ -854,172 +782,6 @@ REBUTTAL_DRAIN_BATCH_LIMIT = 20
 REBUTTAL_SQL_ROW_LIMIT = 200
 
 
-def _coerce_db_ts(ts) -> datetime | None:
-    """Normalize the timestamp field of a SQL row into a **naive** datetime.
-
-    SQLAlchemy + SQLite return strings instead of datetimes under some driver
-    configurations; same normalization as
-    memory/timeindex.py:get_last_conversation_time. Returns None when unparseable
-    (the caller should skip the row rather than write None into the cursor).
-
-    If a TZ-aware datetime is parsed (import / migration paths write things like
-    "...+00:00"), force `replace(tzinfo=None)` to naive — every cursor / comparison
-    in this file works with naive semantics (last_b_check_ts / last_a_msg_ts /
-    facts.json `created_at` are all naive `datetime.now().isoformat()`); comparing
-    aware with naive raises TypeError, permanently muting the caller (Codex P1+P2
-    round-7/8 on PR #1408, both cases).
-    """
-    if isinstance(ts, datetime):
-        result = ts
-    elif isinstance(ts, str):
-        try:
-            result = datetime.fromisoformat(ts)
-        except ValueError:
-            try:
-                result = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S.%f")
-            except ValueError:
-                return None
-    else:
-        return None
-    if result.tzinfo is not None:
-        result = result.replace(tzinfo=None)
-    return result
-
-
-def _extract_user_messages_with_ts_from_rows(rows: list) -> list[tuple[str, datetime]]:
-    """Extract (user message text, timestamp) tuples from time_indexed SQL query results.
-
-    rows: [(timestamp, session_id, message_json), ...] (ASC ordered by ts)
-    message_json is the JSON string stored by langchain SQLChatMessageHistory.
-    content may be a str or list[{type, text}].
-
-    The returned list is sorted by ts ASC; the caller can advance the cursor based
-    on the last item's ts. The timestamp is normalized into a datetime object via
-    _coerce_db_ts (the SQL driver may return str); rows that fail parsing are
-    skipped.
-    """
-    out: list[tuple[str, datetime]] = []
-    for ts_raw, _, msg_json in rows:
-        ts = _coerce_db_ts(ts_raw)
-        if ts is None:
-            continue
-        try:
-            msg = json.loads(msg_json) if isinstance(msg_json, str) else msg_json
-            if isinstance(msg, dict) and msg.get('type') == 'human':
-                content = msg.get('data', {}).get('content', '')
-                if isinstance(content, str):
-                    if content.strip():
-                        out.append((content, ts))
-                elif isinstance(content, list):
-                    for part in content:
-                        if isinstance(part, dict) and part.get('type') == 'text':
-                            text_val = part.get('text', '')
-                            if text_val.strip():
-                                out.append((text_val, ts))
-        except (json.JSONDecodeError, TypeError):
-            continue
-    return out
-
-
-def _extract_user_messages_from_rows(rows: list) -> list[str]:
-    """Extract user message text from time_indexed SQL query results (legacy text-only view).
-
-    rows: [(timestamp, session_id, message_json), ...]
-    """
-    user_msgs = []
-    for _, _, msg_json in rows:
-        try:
-            msg = json.loads(msg_json) if isinstance(msg_json, str) else msg_json
-            if isinstance(msg, dict) and msg.get('type') == 'human':
-                content = msg.get('data', {}).get('content', '')
-                if isinstance(content, str):
-                    if content.strip():
-                        user_msgs.append(content)
-                elif isinstance(content, list):
-                    for part in content:
-                        if isinstance(part, dict) and part.get('type') == 'text':
-                            text = part.get('text', '')
-                            if text.strip():
-                                user_msgs.append(text)
-        except (json.JSONDecodeError, TypeError):
-            continue
-    return user_msgs
-
-
-def _extract_role_tagged_messages_from_rows(rows: list) -> list[dict]:
-    """Full-message extraction for Path B — keeps both user + ai types and outputs a
-    message_dict list fed directly into ``convert_to_messages``.
-
-    Differences from ``_extract_user_messages_from_rows``:
-    - accepts type ∈ {'human', 'ai'} (no longer human-only)
-    - returns [{'type': 'human'|'ai', 'data': {'content': str}}, ...] instead of a
-      plain str list, so downstream ``convert_to_messages`` can restore
-      HumanMessage/AIMessage, letting ``FactStore._format_conversation`` render by
-      type → name_mapping into the "{MASTER_NAME} | xxx" / "{LANLAN_NAME} | xxx"
-      form, from which the path B prompt judges each fact's source attribution
-      (user_observation / ai_disclosure)
-
-    Lesson from PR #1399: return list[dict] here and let the caller assemble
-    message_dicts and convert with ``convert_to_messages(message_dicts)``
-    directly — do **not** wrap with ``json.dumps`` (convert_to_messages only
-    accepts a list; a str gets silently swallowed into []).
-    """
-    out: list[dict] = []
-    for _, _, msg_json in rows:
-        try:
-            msg = json.loads(msg_json) if isinstance(msg_json, str) else msg_json
-            if not isinstance(msg, dict):
-                continue
-            msg_type = msg.get('type')
-            if msg_type not in ('human', 'ai'):
-                continue
-            content = msg.get('data', {}).get('content', '')
-            # content 归一化：内部可能是 str 或 [{type:'text', text:'...'}, ...]
-            # 后者拼回单个 str（path B prompt 不需要细粒度 part 结构，
-            # FactStore._format_conversation 把 list content 拼成 ''.join 也是
-            # 同样语义）。
-            if isinstance(content, str):
-                text = content
-            elif isinstance(content, list):
-                parts = [
-                    p.get('text', '')
-                    for p in content
-                    if isinstance(p, dict) and p.get('type') == 'text'
-                ]
-                text = ''.join(parts)
-            else:
-                continue
-            if not text.strip():
-                continue
-            out.append({'type': msg_type, 'data': {'content': text}})
-        except (json.JSONDecodeError, TypeError):
-            continue
-    return out
-
-
-def _trim_to_user_msg_bracket(message_dicts: list[dict]) -> list[dict]:
-    """Keep only the messages between the first and last human msg (inclusive).
-
-    Product thesis: guard against cheap-layer pollution. AI content **before** the
-    first user msg is a proactive probe the user never validated, and AI content
-    **after** the last user msg is a monologue the user never responded to — both
-    are cheap layers and shouldn't settle as facts. Only AI content sandwiched
-    between two user msgs implies "the user saw / acknowledged this conversation
-    context" and qualifies for path B to pick back up as an ai_disclosure fact.
-
-    No human msg at all → return [] (caller treats it as an AI-only window and
-    skips). Exactly one human msg → return that one (the bracket degenerates to a
-    single point, still legal: that msg is itself the user speaking, and path B can
-    use known_pool to see the adjacent AI context).
-    """
-    human_indices = [
-        i for i, m in enumerate(message_dicts) if m.get('type') == 'human'
-    ]
-    if not human_indices:
-        return []
-    return message_dicts[human_indices[0]:human_indices[-1] + 1]
-
-
 async def _resolve_rebuttal_start_time(name: str, now: datetime):
     """Decide the starting time for this round's rebuttal_loop query.
 
@@ -1123,7 +885,7 @@ async def _periodic_rebuttal_loop():
         # 拿到的是关闭前的旧 cursor，下一轮会把关闭期间积攒的所有 user msg
         # 整段补处理（极大 prompt + 大量 LLM 调用）。"关时不跑" 应等价于
         # "关时已 noop 处理完"——重开后从 now 重新累积，不回补。
-        if not await _ais_powerful_memory_enabled():
+        if not await gates._ais_powerful_memory_enabled():
             try:
                 character_data = await _config_manager.aload_characters()
                 catgirl_names = list(character_data.get('猫娘', {}).keys())
@@ -1339,7 +1101,7 @@ async def _periodic_auto_promote_loop():
             await asyncio.sleep(AUTO_PROMOTE_CHECK_INTERVAL)
             continue
 
-        powerful = await _ais_powerful_memory_enabled()
+        powerful = await gates._ais_powerful_memory_enabled()
 
         async def _promote_one(name: str):
             try:
@@ -1386,7 +1148,7 @@ async def _periodic_idle_maintenance_loop():
     await asyncio.sleep(_INITIAL_DELAY_IDLE_MAINT)
     while True:
         try:
-            if not _is_idle():
+            if not gates._is_idle():
                 continue
 
             try:
@@ -1399,11 +1161,11 @@ async def _periodic_idle_maintenance_loop():
             # 强力记忆开关 → 控制 1b (fact_dedup) 和 2 (persona corrections)
             # 是否跑。子任务 1 (history 压缩) 和 3 (recent.review) 是 RFC 之
             # 前的基础设施，永远跑。本轮快照一次，跨角色复用。
-            powerful_enabled = await _ais_powerful_memory_enabled()
+            powerful_enabled = await gates._ais_powerful_memory_enabled()
 
             for name in catgirl_names:
                 # 每处理一个角色前重新检查空闲，一旦变忙立即退出
-                if not _is_idle():
+                if not gates._is_idle():
                     logger.debug("[IdleMaint] 检测到新活动，中断本轮维护")
                     break
 
@@ -1439,7 +1201,7 @@ async def _periodic_idle_maintenance_loop():
                     # remains the entire dedup pipeline in that case.
                     # 强力记忆关 → 整段跳过（向量去重是 evidence-RFC 后期引入的）
                     if powerful_enabled and fact_dedup_resolver is not None:
-                        if not _is_idle():
+                        if not gates._is_idle():
                             break
                         try:
                             pending_dedup = await fact_dedup_resolver.aload_pending(name)
@@ -1462,7 +1224,7 @@ async def _periodic_idle_maintenance_loop():
                     # 但消化路径 LLM 整批审视成本高，关时不跑。queue 会累积，
                     # 等用户重开强力记忆时一次性消化。
                     if powerful_enabled:
-                        if not _is_idle():
+                        if not gates._is_idle():
                             break
                         try:
                             pending_corrections = await persona_manager.aload_pending_corrections(name)
@@ -1480,7 +1242,7 @@ async def _periodic_idle_maintenance_loop():
                     # Phase C: gate 逻辑全部集中到 maybe_spawn_review，IdleMaint
                     # 不再做单点门禁。spawn 函数内部自查 review_enabled / 历史长度
                     # / min_interval / 新消息门 / in-flight，不过门就 skip。
-                    if not _is_idle():
+                    if not gates._is_idle():
                         break
                     try:
                         await maybe_spawn_review(name)
@@ -1940,7 +1702,7 @@ def _signal_check_should_run(name: str, now: datetime) -> bool:
     last = state.get('last_check_ts')
     if last is None:
         # 未 check 过 → 走空闲分支（需要 idle）
-        return _is_idle() and state['turns_since'] > 0
+        return gates._is_idle() and state['turns_since'] > 0
     try:
         last_dt = datetime.fromisoformat(last)
     except (ValueError, TypeError):
@@ -2401,7 +2163,7 @@ async def _periodic_signal_extraction_loop():
         #
         # 关态推进 last_check_ts 到 now（同 rebuttal 处的理由）：避免重开后
         # 把关闭期间的所有 user msg 当成"积压"一次性塞进 Stage-1+Stage-2 prompt。
-        if not await _ais_powerful_memory_enabled():
+        if not await gates._ais_powerful_memory_enabled():
             try:
                 character_data = await _config_manager.aload_characters()
                 catgirl_names = list(character_data.get('猫娘', {}).keys())
@@ -2762,7 +2524,7 @@ async def _periodic_persona_refine_loop():
     await asyncio.sleep(_INITIAL_DELAY_PERSONA_REFINE)
     interval = MEMORY_REFINE_CRON_INTERVAL_SECONDS
     while True:
-        if not await _ais_powerful_memory_enabled():
+        if not await gates._ais_powerful_memory_enabled():
             await asyncio.sleep(interval)
             continue
         try:
@@ -2874,7 +2636,7 @@ async def _periodic_reflection_refine_loop():
     await asyncio.sleep(_INITIAL_DELAY_REFLECTION_REFINE)
     interval = MEMORY_REFINE_CRON_INTERVAL_SECONDS
     while True:
-        if not await _ais_powerful_memory_enabled():
+        if not await gates._ais_powerful_memory_enabled():
             await asyncio.sleep(interval)
             continue
         try:
@@ -3069,7 +2831,7 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
         except Exception as e:
             logger.warning(f"[Memory] Token tracker init failed: {e}")
 
-        await _aload_maint_state()
+        await gates._aload_maint_state()
 
         catgirl_names: list[str] = []
         try:
@@ -3318,7 +3080,7 @@ def _count_new_user_msgs_since_last_review(name: str, current_history: list) -> 
     plenty, allowed through (should re-review ASAP to rebuild the fingerprint).
     """
     from memory.recent import _find_fingerprint_position
-    fp = _maint_state.get(name, {}).get('last_reviewed_cutoff_tail')
+    fp = gates._maint_state.get(name, {}).get('last_reviewed_cutoff_tail')
     if not fp:
         return float('inf')
     cutoff_idx = _find_fingerprint_position(current_history, fp)
@@ -3350,7 +3112,7 @@ async def maybe_spawn_review(name: str) -> None:
         if existing is not None and not existing.done():
             return
         # Gate 2: review_enabled
-        if not await _ais_review_enabled():
+        if not await gates._ais_review_enabled():
             return
         # 拉 history（gate 3/5 + 后续做 snapshot 都需要）
         try:
@@ -3362,7 +3124,7 @@ async def maybe_spawn_review(name: str) -> None:
         if len(history) < REVIEW_SKIP_HISTORY_LEN:
             return
         # Gate 4: min interval
-        last_review = _maint_state.get(name, {}).get('last_review_ts')
+        last_review = gates._maint_state.get(name, {}).get('last_review_ts')
         if last_review:
             try:
                 elapsed = (datetime.now() - datetime.fromisoformat(last_review)).total_seconds()
@@ -3380,7 +3142,7 @@ async def maybe_spawn_review(name: str) -> None:
             # 长挂机 bypass：≥1 条未 review 的新消息且全局静默 ≥ 30 min →
             # 允许凑不够批量的尾巴也跑一次 review。否则用户挂机一夜回来发现
             # console 里前一晚的零散对话永远停在"差几条不够触发"。
-            idle_secs = (datetime.now() - _last_activity_time).total_seconds()
+            idle_secs = (datetime.now() - gates._last_activity_time).total_seconds()
             if not (new_msg_count >= 1 and idle_secs >= LONG_IDLE_REVIEW_BYPASS_SECONDS):
                 return
             logger.info(
@@ -3396,7 +3158,7 @@ async def maybe_spawn_review(name: str) -> None:
         # 主动给死循环续命，本闸门要能压过它（用户审计 #1：实锤的整夜无限重烧）。
         from config import MEMORY_LIVENESS_MAX_ATTEMPTS
         from memory.recent import build_review_fingerprint
-        state = _maint_state.setdefault(name, {})
+        state = gates._maint_state.setdefault(name, {})
         fail_attempts = state.get('review_fail_attempts', 0) or 0
         if fail_attempts >= MEMORY_LIVENESS_MAX_ATTEMPTS:
             cur_fp = build_review_fingerprint(history)
@@ -3410,7 +3172,7 @@ async def maybe_spawn_review(name: str) -> None:
             # 输入已变 → 旧失败计数过期，复位后放行重试
             state['review_fail_attempts'] = 0
             state['review_fail_fp'] = None
-            await _asave_maint_state()
+            await gates._asave_maint_state()
         # 全过 → spawn
         logger.info(f"[Review/spawn] {name}: 触发 review (history_len={len(history)})")
         cancel_event = asyncio.Event()
@@ -3432,13 +3194,13 @@ async def _record_review_failure(lanlan_name: str, snapshot: list) -> int:
     from drifting apart.
     """
     from memory.recent import build_review_fingerprint
-    state = _maint_state.setdefault(lanlan_name, {})
+    state = gates._maint_state.setdefault(lanlan_name, {})
     cur_fp = build_review_fingerprint(snapshot)
     if state.get('review_fail_fp') != cur_fp:
         state['review_fail_attempts'] = 0
     state['review_fail_attempts'] = (state.get('review_fail_attempts', 0) or 0) + 1
     state['review_fail_fp'] = cur_fp
-    await _asave_maint_state()
+    await gates._asave_maint_state()
     return state['review_fail_attempts']
 
 
@@ -3458,23 +3220,23 @@ async def _record_compress_backup_failure(lanlan_name: str, snapshot: list) -> i
     its own budget, matching the review-failure backoff shape.
     """
     from memory.recent import build_review_fingerprint
-    state = _maint_state.setdefault(lanlan_name, {})
+    state = gates._maint_state.setdefault(lanlan_name, {})
     cur_fp = build_review_fingerprint(snapshot)
     if state.get('compress_backup_fail_fp') != cur_fp:
         state['compress_backup_fail_attempts'] = 0
     state['compress_backup_fail_attempts'] = (state.get('compress_backup_fail_attempts', 0) or 0) + 1
     state['compress_backup_fail_fp'] = cur_fp
-    await _asave_maint_state()
+    await gates._asave_maint_state()
     return state['compress_backup_fail_attempts']
 
 
 async def _clear_compress_backup_failure(lanlan_name: str) -> None:
     """Clear the backup-compression failure backoff counter."""
-    state = _maint_state.setdefault(lanlan_name, {})
+    state = gates._maint_state.setdefault(lanlan_name, {})
     if state.get('compress_backup_fail_attempts') or state.get('compress_backup_fail_fp'):
         state['compress_backup_fail_attempts'] = 0
         state['compress_backup_fail_fp'] = None
-        await _asave_maint_state()
+        await gates._asave_maint_state()
 
 
 async def _run_backup_compress(lanlan_name: str, snapshot: list, detailed: bool):
@@ -3541,7 +3303,7 @@ async def _on_compress_done(lanlan_name: str, snapshot: list, ok: bool, detailed
     # 防 summary 模型持续故障时每轮都起一个注定失败的后台任务空烧。
     from config import MEMORY_LIVENESS_MAX_ATTEMPTS
     from memory.recent import build_review_fingerprint
-    state = _maint_state.setdefault(lanlan_name, {})
+    state = gates._maint_state.setdefault(lanlan_name, {})
     fail_attempts = state.get('compress_backup_fail_attempts', 0) or 0
     if fail_attempts >= MEMORY_LIVENESS_MAX_ATTEMPTS:
         cur_fp = build_review_fingerprint(snapshot)
@@ -3558,7 +3320,7 @@ async def _on_compress_done(lanlan_name: str, snapshot: list, ok: bool, detailed
         # 输入变了 → 旧计数过期，复位放行
         state['compress_backup_fail_attempts'] = 0
         state['compress_backup_fail_fp'] = None
-        await _asave_maint_state()
+        await gates._asave_maint_state()
     task = _spawn_background_task(_run_backup_compress(lanlan_name, list(snapshot), detailed))
     compress_backup_tasks[lanlan_name] = task
     logger.info(f"[CompressBackup] {lanlan_name} 主路径压缩失败，已起后台兜底压缩任务")
@@ -3615,7 +3377,7 @@ async def _run_review_in_background(
         else:
             status, fingerprint = ('failed', None)
 
-        state = _maint_state.setdefault(lanlan_name, {})
+        state = gates._maint_state.setdefault(lanlan_name, {})
         if status == 'patched':
             logger.info(f"✅ {lanlan_name} 的记忆整理任务完成")
             state['review_clean'] = True
@@ -3624,7 +3386,7 @@ async def _run_review_in_background(
             # 成功 → 清掉失败退避计数（Gate 6）
             state['review_fail_attempts'] = 0
             state['review_fail_fp'] = None
-            await _asave_maint_state()
+            await gates._asave_maint_state()
         elif status == 'white':
             logger.info(
                 f"⚠️ {lanlan_name} 白 review（cutoff 失配），fingerprint 清空、不刷 ts，允许立即重试"
@@ -3635,7 +3397,7 @@ async def _run_review_in_background(
             # 白 review 是 cutoff 失配（输入实际已变）而非失败，清退避计数允许立即重建锚点。
             state['review_fail_attempts'] = 0
             state['review_fail_fp'] = None
-            await _asave_maint_state()
+            await gates._asave_maint_state()
         elif cancel_event.is_set():
             # review_history 在 cancel_event 置位时也返回 ('failed', None)，但这是
             # 主动取消（cancel_correction：记忆编辑后立即生效）而非失败，不能计入
@@ -3666,37 +3428,6 @@ async def _run_review_in_background(
             correction_tasks.pop(lanlan_name, None)
         if correction_cancel_flags.get(lanlan_name) is cancel_event:
             correction_cancel_flags.pop(lanlan_name, None)
-
-def _extract_ai_response(messages: list) -> str:
-    """Extract the text of the last AI reply from the message list."""
-    for m in reversed(messages):
-        if getattr(m, 'type', '') == 'ai':
-            content = getattr(m, 'content', '')
-            if isinstance(content, str):
-                return content
-            if isinstance(content, list):
-                parts = [p.get('text', '') for p in content if isinstance(p, dict) and p.get('type') == 'text']
-                return ''.join(parts)
-    return ''
-
-
-def _extract_user_messages(messages: list) -> list[str]:
-    """Extract user message texts from the message list (skipping blanks)."""
-    user_msgs = []
-    for m in messages:
-        if getattr(m, 'type', '') == 'human':
-            content = getattr(m, 'content', '')
-            if isinstance(content, str):
-                if content.strip():
-                    user_msgs.append(content)
-            elif isinstance(content, list):
-                for part in content:
-                    if isinstance(part, dict) and part.get('type') == 'text':
-                        text = part.get('text', '').strip()
-                        if text:
-                            user_msgs.append(text)
-    return user_msgs
-
 
 # --- Reflection API（供 main_server/system_router 通过 HTTP 调用） ---
 
@@ -3732,7 +3463,7 @@ async def _safe_auto_promote(lanlan_name: str) -> None:
     merge LLM; off → time-driven.
     """
     try:
-        if await _ais_powerful_memory_enabled():
+        if await gates._ais_powerful_memory_enabled():
             await reflection_engine.aauto_promote_stale(lanlan_name)
         else:
             await reflection_engine.aauto_promote_time_driven(lanlan_name)
@@ -3812,7 +3543,7 @@ async def _run_post_turn_signals(messages: list, lanlan_name: str):
 
     # 强力记忆开关——本轮 evidence-related 路径的 gate（promote/negative-keyword/
     # corrections）。check_feedback 自身仍跑（主动搭话回应是核心 channel）。
-    powerful_enabled = await _ais_powerful_memory_enabled()
+    powerful_enabled = await gates._ais_powerful_memory_enabled()
 
     # Step 1 — per-turn Stage-1 fact extraction：只在 powerful_memory **关闭**
     # 时跑（OFF-mode baseline fallback）。ON-mode 下 fact extraction 完全交给
@@ -4007,13 +3738,13 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
     LLM waste is fully gone.
     """
     lanlan_name = validate_lanlan_name(lanlan_name)
-    _touch_activity()
+    gates._touch_activity()
     try:
         input_history = convert_to_messages(json.loads(request.input_history))
         if not input_history:
             return {"status": "cached", "count": 0}
         if _has_human_messages(input_history):
-            await _aclear_review_clean(lanlan_name)
+            await gates._aclear_review_clean(lanlan_name)
         logger.info(f"[MemoryServer] cache: {lanlan_name} +{len(input_history)} 条消息")
         uid = str(uuid4())
         async with _get_settle_lock(lanlan_name):
@@ -4033,7 +3764,7 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
 @app.post("/process/{lanlan_name}")
 async def process_conversation(request: HistoryRequest, lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
-    _touch_activity()
+    gates._touch_activity()
     # P2 vector warmup: first /process is the cheapest "frontend ready"
     # signal we have — by the time the user sends a real conversation
     # turn, greeting and prominent drain are over. notify_first_process
@@ -4054,7 +3785,7 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
         uid = str(uuid4())
         input_history = convert_to_messages(json.loads(request.input_history))
         if _has_human_messages(input_history):
-            await _aclear_review_clean(lanlan_name)
+            await gates._aclear_review_clean(lanlan_name)
         logger.info(f"[MemoryServer] 收到 {lanlan_name} 的对话历史处理请求，消息数: {len(input_history)}")
         await recent_history_manager.update_history(input_history, lanlan_name, on_compress_done=_on_compress_done)
         # 旧模块已禁用（性能不足）：
@@ -4078,7 +3809,7 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
 @app.post("/renew/{lanlan_name}")
 async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
-    _touch_activity()
+    gates._touch_activity()
     # Same warmup hint as /process: /renew is also a "user actively
     # using the app" signal, so it counts as the unblock event.
     if embedding_warmup_worker is not None:
@@ -4097,7 +3828,7 @@ async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: s
         uid = str(uuid4())
         input_history = convert_to_messages(json.loads(request.input_history))
         if _has_human_messages(input_history):
-            await _aclear_review_clean(lanlan_name)
+            await gates._aclear_review_clean(lanlan_name)
         logger.info(f"[MemoryServer] renew: 收到 {lanlan_name} 的对话历史处理请求，消息数: {len(input_history)}")
         # 首轮摘要带锁：阻塞 /new_dialog 直到摘要+时间戳写入完成
         async with _get_settle_lock(lanlan_name):
@@ -4126,13 +3857,13 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
     completes those operations.
     """
     lanlan_name = validate_lanlan_name(lanlan_name)
-    _touch_activity()
+    gates._touch_activity()
     global correction_tasks
     try:
         uid = str(uuid4())
         input_history = convert_to_messages(json.loads(request.input_history))
         if _has_human_messages(input_history):
-            await _aclear_review_clean(lanlan_name)
+            await gates._aclear_review_clean(lanlan_name)
         logger.info(f"[MemoryServer] settle: 收到 {lanlan_name} 的结算请求，消息数: {len(input_history)}")
 
         async with _get_settle_lock(lanlan_name):
@@ -4436,7 +4167,7 @@ async def cancel_correction(lanlan_name: str):
 @app.get("/new_dialog/{lanlan_name}")
 async def new_dialog(lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
-    _touch_activity()
+    gates._touch_activity()
 
     # 检查角色是否存在于配置中
     try:
@@ -4544,33 +4275,3 @@ async def last_conversation_gap(lanlan_name: str):
     except Exception as e:
         logger.exception(f"查询对话间隔失败: {e}")
         return JSONResponse({"gap_seconds": -1, "error": "server_error"}, status_code=500)
-
-if __name__ == "__main__":
-    import threading
-    import time
-    import signal
-    
-    # 解析命令行参数
-    parser = argparse.ArgumentParser(description='Memory Server')
-    parser.add_argument('--enable-shutdown', action='store_true', 
-                       help='启用响应退出请求功能（仅在终端用户环境使用）')
-    args = parser.parse_args()
-    
-    # 设置全局变量
-    enable_shutdown = args.enable_shutdown
-    
-    # 创建一个后台线程来监控关闭信号
-    def monitor_shutdown():
-        while not shutdown_event.is_set():
-            time.sleep(0.1)
-        logger.info("检测到关闭信号，正在关闭memory_server...")
-        # 发送SIGTERM信号给当前进程
-        os.kill(os.getpid(), signal.SIGTERM)
-    
-    # 只有在启用关闭功能时才启动监控线程
-    if enable_shutdown:
-        shutdown_monitor = threading.Thread(target=monitor_shutdown, daemon=True)
-        shutdown_monitor.start()
-    
-    # 启动服务器
-    uvicorn.run(app, host="127.0.0.1", port=MEMORY_SERVER_PORT)

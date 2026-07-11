@@ -61,7 +61,7 @@ async def test_cache_endpoint_writes_time_indexed_db():
     with patch.object(memory_server, "time_manager", fake_time_manager), \
          patch.object(memory_server, "recent_history_manager", fake_recent_history_manager), \
          patch.object(memory_server, "_spawn_outbox_post_turn_signals", fake_spawn_outbox), \
-         patch.object(memory_server, "_aclear_review_clean", AsyncMock(return_value=None)):
+         patch.object(memory_server.gates, "_aclear_review_clean", AsyncMock(return_value=None)):
         result = await memory_server.cache_conversation(request, "测试角色")
 
     assert result["status"] == "cached"
@@ -104,7 +104,7 @@ async def test_cache_endpoint_spawns_outbox_post_turn_signals():
     with patch.object(memory_server, "time_manager", fake_time_manager), \
          patch.object(memory_server, "recent_history_manager", fake_recent_history_manager), \
          patch.object(memory_server, "_spawn_outbox_post_turn_signals", fake_spawn_outbox), \
-         patch.object(memory_server, "_aclear_review_clean", AsyncMock(return_value=None)):
+         patch.object(memory_server.gates, "_aclear_review_clean", AsyncMock(return_value=None)):
         await memory_server.cache_conversation(request, "测试角色")
 
     fake_spawn_outbox.assert_awaited_once()
@@ -148,7 +148,7 @@ async def test_run_post_turn_signals_skips_stage1_when_powerful_memory_on():
          patch.object(memory_server, "persona_manager", fake_persona_manager), \
          patch.object(memory_server, "reflection_engine", fake_reflection_engine), \
          patch.object(memory_server, "_signal_check_record_turn", MagicMock(return_value=None)), \
-         patch.object(memory_server, "_ais_powerful_memory_enabled", AsyncMock(return_value=True)):
+         patch.object(memory_server.gates, "_ais_powerful_memory_enabled", AsyncMock(return_value=True)):
         await memory_server._run_post_turn_signals(payload_messages, "测试角色")
 
     # ON-mode 下 Stage-1 per-turn fact_extract 一定不能被调（交给 batch loop）
@@ -189,7 +189,7 @@ async def test_run_post_turn_signals_keeps_stage1_when_powerful_memory_off():
          patch.object(memory_server, "persona_manager", fake_persona_manager), \
          patch.object(memory_server, "reflection_engine", fake_reflection_engine), \
          patch.object(memory_server, "_signal_check_record_turn", MagicMock(return_value=None)), \
-         patch.object(memory_server, "_ais_powerful_memory_enabled", AsyncMock(return_value=False)):
+         patch.object(memory_server.gates, "_ais_powerful_memory_enabled", AsyncMock(return_value=False)):
         await memory_server._run_post_turn_signals(payload_messages, "测试角色")
 
     # OFF-mode 下 batch loop 不跑——per-turn Stage-1 必须 fallback
@@ -274,7 +274,7 @@ async def test_cache_endpoint_serialises_recent_and_store_under_settle_lock():
     with patch.object(memory_server, "time_manager", fake_time_manager), \
          patch.object(memory_server, "recent_history_manager", fake_recent_history_manager), \
          patch.object(memory_server, "_spawn_outbox_post_turn_signals", AsyncMock(side_effect=_fake_spawn)), \
-         patch.object(memory_server, "_aclear_review_clean", AsyncMock(return_value=None)), \
+         patch.object(memory_server.gates, "_aclear_review_clean", AsyncMock(return_value=None)), \
          patch.object(memory_server, "_get_settle_lock", MagicMock(return_value=observable_lock)):
         await memory_server.cache_conversation(request, "测试角色")
 
@@ -311,7 +311,7 @@ async def test_settle_endpoint_msgs_zero_still_runs_review():
     with patch.object(memory_server, "time_manager", fake_time_manager), \
          patch.object(memory_server, "recent_history_manager", fake_recent_history_manager), \
          patch.object(memory_server, "_spawn_outbox_post_turn_signals", fake_spawn_outbox), \
-         patch.object(memory_server, "_aclear_review_clean", AsyncMock(return_value=None)), \
+         patch.object(memory_server.gates, "_aclear_review_clean", AsyncMock(return_value=None)), \
          patch.object(memory_server, "maybe_spawn_review", fake_maybe_spawn_review):
         result = await memory_server.settle_conversation(request, "测试角色")
 

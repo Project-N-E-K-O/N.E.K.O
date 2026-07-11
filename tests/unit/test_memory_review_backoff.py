@@ -37,20 +37,20 @@ async def test_run_review_failed_bumps_backoff():
 
     name = "测试角色"
     snapshot = _history(10)
-    memory_server._maint_state.pop(name, None)
+    memory_server.gates._maint_state.pop(name, None)
 
     fake_mgr = MagicMock()
     fake_mgr.review_history = AsyncMock(return_value=("failed", None))
     cancel_event = asyncio.Event()  # 未置位 → 真失败
 
     with patch.object(memory_server, "recent_history_manager", fake_mgr), \
-         patch.object(memory_server, "_asave_maint_state", AsyncMock()):
+         patch.object(memory_server.gates, "_asave_maint_state", AsyncMock()):
         await memory_server._run_review_in_background(name, snapshot, cancel_event)
 
-    state = memory_server._maint_state[name]
+    state = memory_server.gates._maint_state[name]
     assert state["review_fail_attempts"] == 1
     assert state["review_fail_fp"] == build_review_fingerprint(snapshot)
-    memory_server._maint_state.pop(name, None)
+    memory_server.gates._maint_state.pop(name, None)
 
 
 @pytest.mark.unit
@@ -61,7 +61,7 @@ async def test_run_review_cancelled_does_not_bump():
 
     name = "测试角色"
     snapshot = _history(10)
-    memory_server._maint_state.pop(name, None)
+    memory_server.gates._maint_state.pop(name, None)
 
     fake_mgr = MagicMock()
     fake_mgr.review_history = AsyncMock(return_value=("failed", None))
@@ -69,12 +69,12 @@ async def test_run_review_cancelled_does_not_bump():
     cancel_event.set()  # 模拟 cancel_correction 已置位
 
     with patch.object(memory_server, "recent_history_manager", fake_mgr), \
-         patch.object(memory_server, "_asave_maint_state", AsyncMock()):
+         patch.object(memory_server.gates, "_asave_maint_state", AsyncMock()):
         await memory_server._run_review_in_background(name, snapshot, cancel_event)
 
-    state = memory_server._maint_state.get(name, {})
+    state = memory_server.gates._maint_state.get(name, {})
     assert state.get("review_fail_attempts", 0) == 0
-    memory_server._maint_state.pop(name, None)
+    memory_server.gates._maint_state.pop(name, None)
 
 
 @pytest.mark.unit
@@ -85,7 +85,7 @@ async def test_run_review_patched_clears_backoff():
 
     name = "测试角色"
     snapshot = _history(10)
-    memory_server._maint_state[name] = {
+    memory_server.gates._maint_state[name] = {
         "review_fail_attempts": 3,
         "review_fail_fp": [{"type": "human", "content": "stale"}],
     }
@@ -95,13 +95,13 @@ async def test_run_review_patched_clears_backoff():
     cancel_event = asyncio.Event()
 
     with patch.object(memory_server, "recent_history_manager", fake_mgr), \
-         patch.object(memory_server, "_asave_maint_state", AsyncMock()):
+         patch.object(memory_server.gates, "_asave_maint_state", AsyncMock()):
         await memory_server._run_review_in_background(name, snapshot, cancel_event)
 
-    state = memory_server._maint_state[name]
+    state = memory_server.gates._maint_state[name]
     assert state["review_fail_attempts"] == 0
     assert state["review_fail_fp"] is None
-    memory_server._maint_state.pop(name, None)
+    memory_server.gates._maint_state.pop(name, None)
 
 
 @pytest.mark.unit
@@ -112,21 +112,21 @@ async def test_run_review_patched_save_failure_does_not_bump():
 
     name = "测试角色保存抖动"
     snapshot = _history(10)
-    memory_server._maint_state.pop(name, None)
+    memory_server.gates._maint_state.pop(name, None)
     fake_mgr = MagicMock()
     fake_mgr.review_history = AsyncMock(return_value=("patched", [{"type": "ai", "content": "x"}]))
     cancel_event = asyncio.Event()
 
     with patch.object(memory_server, "recent_history_manager", fake_mgr), \
-         patch.object(memory_server, "_asave_maint_state",
+         patch.object(memory_server.gates, "_asave_maint_state",
                       AsyncMock(side_effect=RuntimeError("disk full"))):
         await memory_server._run_review_in_background(name, snapshot, cancel_event)
 
-    state = memory_server._maint_state.get(name, {})
+    state = memory_server.gates._maint_state.get(name, {})
     assert state.get("review_fail_attempts", 0) == 0, (
         "成功 review 的 save 失败被外层 except 当成 review 失败 bump 了"
     )
-    memory_server._maint_state.pop(name, None)
+    memory_server.gates._maint_state.pop(name, None)
 
 
 @pytest.mark.unit
@@ -137,21 +137,21 @@ async def test_run_review_failed_save_failure_counts_once():
 
     name = "测试角色失败保存"
     snapshot = _history(10)
-    memory_server._maint_state.pop(name, None)
+    memory_server.gates._maint_state.pop(name, None)
     fake_mgr = MagicMock()
     fake_mgr.review_history = AsyncMock(return_value=("failed", None))
     cancel_event = asyncio.Event()
 
     with patch.object(memory_server, "recent_history_manager", fake_mgr), \
-         patch.object(memory_server, "_asave_maint_state",
+         patch.object(memory_server.gates, "_asave_maint_state",
                       AsyncMock(side_effect=RuntimeError("disk full"))):
         await memory_server._run_review_in_background(name, snapshot, cancel_event)
 
     # _record_review_failure 在落盘前已把内存计数 +1；外层 except 不再重复 bump
-    assert memory_server._maint_state.get(name, {}).get("review_fail_attempts", 0) == 1, (
+    assert memory_server.gates._maint_state.get(name, {}).get("review_fail_attempts", 0) == 1, (
         "save 失败导致 _record_review_failure 抛出后被外层 except 重复计数了"
     )
-    memory_server._maint_state.pop(name, None)
+    memory_server.gates._maint_state.pop(name, None)
 
 
 async def _drive_spawn(memory_server, name, history):
@@ -162,9 +162,9 @@ async def _drive_spawn(memory_server, name, history):
     fake_mgr.review_history = AsyncMock(return_value=("white", None))
 
     with patch.object(memory_server, "recent_history_manager", fake_mgr), \
-         patch.object(memory_server, "_ais_review_enabled", AsyncMock(return_value=True)), \
+         patch.object(memory_server.gates, "_ais_review_enabled", AsyncMock(return_value=True)), \
          patch.object(memory_server, "_count_new_user_msgs_since_last_review", return_value=999), \
-         patch.object(memory_server, "_asave_maint_state", AsyncMock()):
+         patch.object(memory_server.gates, "_asave_maint_state", AsyncMock()):
         await memory_server.maybe_spawn_review(name)
 
 
@@ -179,7 +179,7 @@ async def test_gate6_skips_when_dead_lettered_and_input_unchanged():
     name = "测试角色G6"
     history = _history(12)
     memory_server.correction_tasks.pop(name, None)
-    memory_server._maint_state[name] = {
+    memory_server.gates._maint_state[name] = {
         "review_fail_attempts": MEMORY_LIVENESS_MAX_ATTEMPTS,
         "review_fail_fp": build_review_fingerprint(history),
     }
@@ -188,7 +188,7 @@ async def test_gate6_skips_when_dead_lettered_and_input_unchanged():
 
     assert name not in memory_server.correction_tasks or memory_server.correction_tasks[name] is None, \
         "dead-letter + 输入未变时不应 spawn 新 review"
-    memory_server._maint_state.pop(name, None)
+    memory_server.gates._maint_state.pop(name, None)
     memory_server.correction_tasks.pop(name, None)
 
 
@@ -203,7 +203,7 @@ async def test_gate6_resets_and_spawns_when_input_changed():
     history = _history(12)
     memory_server.correction_tasks.pop(name, None)
     # 失败 fp 是另一段输入（与当前 history tail 不同）
-    memory_server._maint_state[name] = {
+    memory_server.gates._maint_state[name] = {
         "review_fail_attempts": MEMORY_LIVENESS_MAX_ATTEMPTS,
         "review_fail_fp": [{"type": "human", "content": "完全不同的旧输入"}],
     }
@@ -211,7 +211,7 @@ async def test_gate6_resets_and_spawns_when_input_changed():
     await _drive_spawn(memory_server, name, history)
 
     # 输入已变 → 复位计数
-    assert memory_server._maint_state[name]["review_fail_attempts"] == 0
+    assert memory_server.gates._maint_state[name]["review_fail_attempts"] == 0
     # 并且确实 spawn 了（correction_tasks 落了一个 task）
     task = memory_server.correction_tasks.get(name)
     assert task is not None
@@ -222,7 +222,7 @@ async def test_gate6_resets_and_spawns_when_input_changed():
     except asyncio.CancelledError:
         # 预期内：上面刚 task.cancel()，await 必然抛 CancelledError，吞掉即可
         pass
-    memory_server._maint_state.pop(name, None)
+    memory_server.gates._maint_state.pop(name, None)
     memory_server.correction_tasks.pop(name, None)
 
 
@@ -234,20 +234,20 @@ async def test_failed_resets_budget_on_input_change():
     from memory.recent import build_review_fingerprint
 
     name = "测试角色累积"
-    memory_server._maint_state.pop(name, None)
+    memory_server.gates._maint_state.pop(name, None)
     fake_mgr = MagicMock()
     fake_mgr.review_history = AsyncMock(return_value=("failed", None))
     cancel_event = asyncio.Event()
 
     with patch.object(memory_server, "recent_history_manager", fake_mgr), \
-         patch.object(memory_server, "_asave_maint_state", AsyncMock()):
+         patch.object(memory_server.gates, "_asave_maint_state", AsyncMock()):
         for n in (8, 10, 12):  # 三段 tail fingerprint 互不相同的输入
             await memory_server._run_review_in_background(name, _history(n), cancel_event)
 
-    state = memory_server._maint_state[name]
+    state = memory_server.gates._maint_state[name]
     assert state["review_fail_attempts"] == 1, "输入每次都变应复位，不该累积到 3"
     assert state["review_fail_fp"] == build_review_fingerprint(_history(12))
-    memory_server._maint_state.pop(name, None)
+    memory_server.gates._maint_state.pop(name, None)
 
 
 @pytest.mark.unit
@@ -260,19 +260,19 @@ async def test_run_review_exception_bumps_backoff():
 
     name = "测试角色异常"
     snapshot = _history(10)
-    memory_server._maint_state.pop(name, None)
+    memory_server.gates._maint_state.pop(name, None)
     fake_mgr = MagicMock()
     fake_mgr.review_history = AsyncMock(side_effect=RuntimeError("boom"))
     cancel_event = asyncio.Event()
 
     with patch.object(memory_server, "recent_history_manager", fake_mgr), \
-         patch.object(memory_server, "_asave_maint_state", AsyncMock()):
+         patch.object(memory_server.gates, "_asave_maint_state", AsyncMock()):
         await memory_server._run_review_in_background(name, snapshot, cancel_event)
 
-    state = memory_server._maint_state[name]
+    state = memory_server.gates._maint_state[name]
     assert state["review_fail_attempts"] == 1
     assert state["review_fail_fp"] == build_review_fingerprint(snapshot)
-    memory_server._maint_state.pop(name, None)
+    memory_server.gates._maint_state.pop(name, None)
 
 
 @pytest.mark.unit
@@ -282,16 +282,16 @@ async def test_failed_same_input_accumulates_budget():
     from app import memory_server
 
     name = "测试角色累积2"
-    memory_server._maint_state.pop(name, None)
+    memory_server.gates._maint_state.pop(name, None)
     same = _history(10)
     fake_mgr = MagicMock()
     fake_mgr.review_history = AsyncMock(return_value=("failed", None))
     cancel_event = asyncio.Event()
 
     with patch.object(memory_server, "recent_history_manager", fake_mgr), \
-         patch.object(memory_server, "_asave_maint_state", AsyncMock()):
+         patch.object(memory_server.gates, "_asave_maint_state", AsyncMock()):
         for _ in range(3):
             await memory_server._run_review_in_background(name, same, cancel_event)
 
-    assert memory_server._maint_state[name]["review_fail_attempts"] == 3
-    memory_server._maint_state.pop(name, None)
+    assert memory_server.gates._maint_state[name]["review_fail_attempts"] == 3
+    memory_server.gates._maint_state.pop(name, None)

@@ -73,7 +73,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Default scope: only the memory subsystem and the helpers it relies on.
 # See module docstring for rationale.
-DEFAULT_PATHS: list[str] = ["app/memory_server.py", "memory", "utils"]
+DEFAULT_PATHS: list[str] = ["app/memory_server", "memory", "utils"]
 
 # Mirrors check_no_loguru.py for consistency.
 EXCLUDE_DIRS = {
