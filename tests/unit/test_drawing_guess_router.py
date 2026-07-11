@@ -493,6 +493,17 @@ def test_user_guess_extraction_uses_alias_boundaries():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("text", ["\u4e0d\u662f\u732b\u5427\uff1f", "not cat?", "is not cat", "isn't cat"])
+def test_user_guess_extraction_rejects_negated_aliases(text):
+    assert dgr._extract_user_guess_word(text) is None
+
+
+@pytest.mark.unit
+def test_user_guess_extraction_can_match_later_non_negated_alias():
+    assert dgr._extract_user_guess_word("not dog, I guess cat").id == "cat"
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_round_start_does_not_expose_candidates_or_hidden_ai_answer():
     result = await dgr.drawing_guess_round_start(_FakeRequest({

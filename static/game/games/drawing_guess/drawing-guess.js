@@ -2618,10 +2618,12 @@
 
   function submitFeedbackInput(text) {
     state.chatInFlight = true;
+    var flowToken = state.roundFlowToken;
     return post(ROUND_API + '/input', roundPayload({
       text: text,
       image_data_url: state.userPng
     }), AI_GUESS_REQUEST_TIMEOUT_MS).then(function (res) {
+      if (!isCurrentRoundFlow(flowToken)) return;
       if (!res || !res.ok) {
         addMessage('drawingGuess.messages.inputFailed', 'Input failed.');
         return;
@@ -2649,6 +2651,7 @@
       }
       addNekoMessage(res.message);
     }).finally(function () {
+      if (!isCurrentRoundFlow(flowToken)) return;
       state.chatInFlight = false;
       flushDeferredAiGuessWork();
       updateControls();
@@ -2775,8 +2778,8 @@
       settle_on_miss: !!(options && options.settle_on_miss),
       time_expired: !!(options && options.settle_on_miss)
     }), AI_GUESS_REQUEST_TIMEOUT_MS).then(function (res) {
-      stopThinkingEventMessage();
       if (!isCurrentRoundFlow(flowToken)) return;
+      stopThinkingEventMessage();
       if (!res || !res.ok) {
         addMessage('drawingGuess.messages.inputFailed', 'Input failed.');
         return;
@@ -2797,6 +2800,7 @@
         scheduleNextRandomAiGuess();
       }
     }).finally(function () {
+      if (!isCurrentRoundFlow(flowToken)) return;
       state.aiGuessInFlight = false;
       stopThinkingEventMessage();
       flushDeferredAiGuessWork();
@@ -2846,6 +2850,12 @@
     // 最终结算是回合终态：无论从结束按钮还是 route end 进入，都统一作废仍在途的
     // round-start / ai-draw / vision-guess / timeout 回调。
     beginRoundFlow();
+    state.aiGuessInFlight = false;
+    state.chatInFlight = false;
+    state.pendingAutoGuess = false;
+    state.pendingAutoGuessImage = '';
+    state.pendingSupplementGuess = false;
+    state.pendingSupplementImage = '';
     stopCountdown();
     stopThinkingEventMessage();
     stopDrawPickAnimation();
@@ -4090,7 +4100,7 @@
     }
     state.isDrawing = true;
     drawStrokePoint(p);
-    state.hasDrawn = true;
+    if (state.brushMode === 'brush') state.hasDrawn = true;
     configureStrokeContext();
     els.ctx.beginPath();
     els.ctx.moveTo(p.x, p.y);
@@ -4105,7 +4115,7 @@
     configureStrokeContext();
     els.ctx.lineTo(p.x, p.y);
     els.ctx.stroke();
-    state.hasDrawn = true;
+    if (state.brushMode === 'brush') state.hasDrawn = true;
   }
 
   function endStroke(event) {
@@ -4295,6 +4305,7 @@
     els.clearCanvasButton.addEventListener('click', function () {
       if (isCanvasEditablePhase()) {
         resetCanvas();
+        pushCanvasContextForRoute(true);
         addMessage('drawingGuess.messages.canvasCleared', 'Canvas cleared.');
       }
     });

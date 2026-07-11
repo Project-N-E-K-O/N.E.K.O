@@ -267,7 +267,7 @@ def test_drawing_guess_static_route_contract():
     assert "reason: completedRoute ? 'drawing_guess_game_over' : 'drawing_guess_abandoned'" in script
     assert "roundCompleted: completedRoute" in script
     assert "function renderFinalSummary() {\n    // 最终结算是回合终态" in script
-    assert "beginRoundFlow();\n    stopCountdown();" in script
+    assert "beginRoundFlow();\n    state.aiGuessInFlight = false;" in script
     assert "if (state.phase !== 'ai_drawing') return;" in script
     assert "function finishGame() {\n    renderFinalSummary();\n    showExitConfirm();\n  }" in script
     assert "return endRoute(false, { finalSummary: true }).finally(showExitConfirm);" not in script
@@ -433,6 +433,10 @@ def test_drawing_guess_static_route_contract():
     assert "state.pendingAutoGuessImage = snapshot || state.userPng || ''" in script
     assert "triggerRandomAiGuess(autoImage)" in script
     assert "flushDeferredAiGuessWork()" in script
+    assert "if (!isCurrentRoundFlow(flowToken)) return;\n      state.chatInFlight = false;" in script
+    assert "if (!isCurrentRoundFlow(flowToken)) return;\n      state.aiGuessInFlight = false;" in script
+    assert "resetCanvas();\n        pushCanvasContextForRoute(true);" in script
+    assert "if (state.brushMode === 'brush') state.hasDrawn = true;" in script
     assert "settle_on_miss: !!(options && options.settle_on_miss)" in script
     assert "ZH_PLACEHOLDER_FALLBACKS" in script
     assert "\u5148\u7ee7\u7eed\u804a\u5929\uff1b\u60f3\u8ba9\u5979\u518d\u731c\u65f6\u518d\u7ed9\u63d0\u793a" in script
