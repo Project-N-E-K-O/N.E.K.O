@@ -10484,8 +10484,11 @@ class LLMSessionManager:
                     continue
 
                 size = len(data) if isinstance(data, (bytes, bytearray)) else f"type={type(data).__name__}"
-                logger.debug(f"🎧 handler dequeued audio: {size}, qsize≈{q.qsize()}")
-                await self.send_speech(data)
+                logger.warning(
+                    "🎧 dropping legacy TTS audio without source speech_id: %s, qsize≈%s",
+                    size,
+                    q.qsize(),
+                )
                 self._discard_pending_ai_voice_echo()
             except asyncio.CancelledError:
                 logger.info("🎧 tts_response_handler cancelled")

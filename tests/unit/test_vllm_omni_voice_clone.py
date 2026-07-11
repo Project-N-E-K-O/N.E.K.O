@@ -164,7 +164,10 @@ def test_vllm_omni_worker_clone_inlines_ref_audio_and_ref_text(monkeypatch):
     _wait_for_queue_item(response_queue, lambda item: item == ("__ready__", True))
     request_queue.put(("speech-1", "你好。"))
     request_queue.put((None, None))
-    _wait_for_queue_item(response_queue, lambda item: isinstance(item, bytes))
+    _wait_for_queue_item(
+        response_queue,
+        lambda item: isinstance(item, tuple) and item[:2] == ("__audio__", "speech-1"),
+    )
 
     cfg = _config_frame(fake_ws)
     # ⚠ 字段名严格 ref_audio/ref_text，vllm-omni 用旧名 prompt_audio/prompt_text 会 500
@@ -187,7 +190,10 @@ def test_vllm_omni_worker_preset_omits_ref_fields(monkeypatch):
     _wait_for_queue_item(response_queue, lambda item: item == ("__ready__", True))
     request_queue.put(("speech-1", "你好。"))
     request_queue.put((None, None))
-    _wait_for_queue_item(response_queue, lambda item: isinstance(item, bytes))
+    _wait_for_queue_item(
+        response_queue,
+        lambda item: isinstance(item, tuple) and item[:2] == ("__audio__", "speech-1"),
+    )
 
     cfg = _config_frame(fake_ws)
     assert "ref_audio" not in cfg
@@ -215,7 +221,10 @@ def test_vllm_omni_worker_clone_id_without_ref_audio_falls_back(monkeypatch):
     _wait_for_queue_item(response_queue, lambda item: item == ("__ready__", True))
     request_queue.put(("speech-1", "你好。"))
     request_queue.put((None, None))
-    _wait_for_queue_item(response_queue, lambda item: isinstance(item, bytes))
+    _wait_for_queue_item(
+        response_queue,
+        lambda item: isinstance(item, tuple) and item[:2] == ("__audio__", "speech-1"),
+    )
 
     cfg = _config_frame(fake_ws)
     # voice 绝不能是克隆 ID，必须回退到 default

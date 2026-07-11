@@ -206,7 +206,7 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                             current_speech_id = pending_text_sid
                             text_done_sent = False
                             resampler.clear()
-                            audio_jitter.reset()
+                            audio_jitter.reset(pending_text_sid)
                             logger.info("xAI TTS last-chance reconnect on utterance end succeeded")
                         except Exception as e:
                             logger.warning(f"xAI TTS last-chance reconnect 失败，pending 丢弃: {e}")
@@ -239,7 +239,7 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                                     # 里未 flush 的残留音频，避免拼到重试音频前面（ws 原本存活、上一轮
                                     # 已 append 过的路径才会非空；走过 last-chance 的路径 buffer 已空）。
                                     resampler.clear()
-                                    audio_jitter.reset()
+                                    audio_jitter.reset(pending_text_sid)
                                     for delta in _grok_chunk_text_delta("".join(pending_text)):
                                         await ws.send(json.dumps({"type": "text.delta", "delta": delta}))
                                     logger.info("flush pending_text 重连重试成功")
@@ -301,7 +301,7 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                     current_speech_id = sid
                     text_done_sent = False
                     resampler.clear()
-                    audio_jitter.reset()  # 新轮次重置 jitter buffer 领先量
+                    audio_jitter.reset(sid)  # 新轮次重置 jitter buffer 领先量并绑定来源
 
                 if not tts_text or not tts_text.strip():
                     continue

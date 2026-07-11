@@ -14,8 +14,15 @@
 
 """Shared TTS jitter buffer semantics (qwen / step / other streaming workers)."""
 
+import queue
+
+import pytest
+
 from main_logic.tts_client._infra import (
     AudioJitterBuffer,
+    TTS_SHUTDOWN_SENTINEL,
+    _AudioQueueProxy,
+    _non_bistream_tts_main_loop,
     make_audio_jitter_buffer,
     _TTS_OUTPUT_BYTES_PER_SECOND,
 )
@@ -32,33 +39,42 @@ class _FakeQueue:
 def test_initial_head_start_holds_back_until_threshold():
     q = _FakeQueue()
     buf = AudioJitterBuffer(q, initial_buffer_bytes=10, steady_buffer_bytes=4)
+    buf.reset("speech-1")
     # 首包累计不足 initial 阈值时不放行（盖住开头 inter-chunk gap）。
     buf.append(b"abc")
     buf.append(b"def")
     assert q.items == []
     # 攒够 initial 后一次性放出累计领先量。
     buf.append(b"ghij")
-    assert q.items == [b"abcdefghij"]
+    assert q.items == [("__audio__", "speech-1", b"abcdefghij")]
 
 
 def test_steady_flush_after_started():
     q = _FakeQueue()
     buf = AudioJitterBuffer(q, initial_buffer_bytes=4, steady_buffer_bytes=4)
+    buf.reset("speech-1")
     buf.append(b"aaaa")  # 越过 initial，放行首包
-    assert q.items == [b"aaaa"]
+    assert q.items == [("__audio__", "speech-1", b"aaaa")]
     buf.append(b"bb")  # 不足 steady，缓冲
-    assert q.items == [b"aaaa"]
+    assert q.items == [("__audio__", "speech-1", b"aaaa")]
     buf.append(b"cc")  # 凑够 steady，放行
-    assert q.items == [b"aaaa", b"bbcc"]
+    assert q.items == [
+        ("__audio__", "speech-1", b"aaaa"),
+        ("__audio__", "speech-1", b"bbcc"),
+    ]
 
 
 def test_flush_drains_remainder_below_threshold():
     q = _FakeQueue()
     buf = AudioJitterBuffer(q, initial_buffer_bytes=4, steady_buffer_bytes=4)
+    buf.reset("speech-1")
     buf.append(b"aaaa")
     buf.append(b"z")  # 尾音不足 steady
     buf.flush()  # response.done 时强制放出
-    assert q.items == [b"aaaa", b"z"]
+    assert q.items == [
+        ("__audio__", "speech-1", b"aaaa"),
+        ("__audio__", "speech-1", b"z"),
+    ]
 
 
 def test_flush_during_head_start_marks_started():
@@ -66,14 +82,25 @@ def test_flush_during_head_start_marks_started():
     # 重新 head-start（否则会被下一轮 reset 静默丢弃）。
     q = _FakeQueue()
     buf = AudioJitterBuffer(q, initial_buffer_bytes=10, steady_buffer_bytes=2)
+    buf.reset("speech-1")
     buf.append(b"ab")  # 不足 initial，缓冲
     assert q.items == []
     buf.flush()  # response.done：放行短句
-    assert q.items == [b"ab"]
+    assert q.items == [("__audio__", "speech-1", b"ab")]
     assert buf.started is True
     # 晚到的 stray delta 直接走 steady（凑够 2 字节即放行），不再被 hold 400ms
     buf.append(b"cd")
-    assert q.items == [b"ab", b"cd"]
+    assert q.items == [
+        ("__audio__", "speech-1", b"ab"),
+        ("__audio__", "speech-1", b"cd"),
+    ]
+
+
+def test_missing_speech_id_drops_audio_instead_of_guessing_current_turn():
+    q = _FakeQueue()
+    buf = AudioJitterBuffer(q, initial_buffer_bytes=1, steady_buffer_bytes=1)
+    buf.append(b"old-audio")
+    assert q.items == []
 
 
 def test_flush_on_empty_buffer_does_not_mark_started():
@@ -134,3 +161,25 @@ def test_factory_generic_env_wins_over_legacy(monkeypatch):
     q = _FakeQueue()
     buf = make_audio_jitter_buffer(q, legacy_env_prefix="NEKO_QWEN_TTS")
     assert buf._initial_buffer_bytes == int(500 / 1000 * _TTS_OUTPUT_BYTES_PER_SECOND)
+
+
+@pytest.mark.asyncio
+async def test_sentence_worker_tags_raw_audio_with_source_speech_id():
+    request_queue = queue.Queue()
+    response_queue = _FakeQueue()
+    proxy = _AudioQueueProxy(response_queue)
+    request_queue.put(("old-speech", "hello."))
+    request_queue.put((None, None))
+    request_queue.put((TTS_SHUTDOWN_SENTINEL, None))
+
+    async def synthesize(_text, _speech_id):
+        proxy.put(b"old-audio")
+
+    await _non_bistream_tts_main_loop(
+        request_queue,
+        proxy,
+        synthesize,
+        label="test",
+    )
+
+    assert response_queue.items == [("__audio__", "old-speech", b"old-audio")]

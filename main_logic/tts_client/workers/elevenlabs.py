@@ -126,7 +126,7 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
         # 用共享 jitter buffer 攒首包领先量盖过开头几个字的 jitter。
         audio_jitter = make_audio_jitter_buffer(response_queue)
 
-        def _reset_session_metrics() -> None:
+        def _reset_session_metrics(speech_id: str) -> None:
             nonlocal response_finished, text_done_sent, resampler
             response_finished = asyncio.Event()
             text_done_sent = False
@@ -137,7 +137,7 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
             )
             # 在新会话开 ws、建 receive_task 之前重置（_open_ws 已先 _close_ws 停掉旧
             # receive_task），避免上一轮残留音频串入新轮次首包。
-            audio_jitter.reset()
+            audio_jitter.reset(speech_id)
 
         async def _close_ws(send_final_empty: bool = False, wait_for_final: bool = False) -> None:
             nonlocal ws, receive_task, text_done_sent
@@ -179,7 +179,7 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                 close_timeout=0.5,
                 max_size=10 * 1024 * 1024,
             )
-            _reset_session_metrics()
+            _reset_session_metrics(speech_id)
             current_speech_id = speech_id
             receive_task = asyncio.create_task(_receive_ws_messages(speech_id))
             init_payload = {

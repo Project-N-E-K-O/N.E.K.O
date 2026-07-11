@@ -1721,26 +1721,59 @@ async def test_text_first_chunk_drops_stale_pending_echo_before_new_tts(monkeypa
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_late_structured_audio_keeps_old_speech_id_after_turn_rotation():
+    mgr = _make_manager()
+    mgr.tts_response_queue = queue.Queue()
+    mgr.tts_response_queue.put(("__audio__", "old-game-turn", b"late-audio"))
+    mgr.current_speech_id = "new-chat-turn"
+    mgr.websocket = _FakeConnectedWebSocket()
+    mgr._speech_primary_suppressed_ids.add("old-game-turn")
+    tapped = []
+    delivered = asyncio.Event()
+
+    async def tap(audio, speech_id):
+        tapped.append((audio, speech_id))
+        delivered.set()
+        return True
+
+    core_module.LLMSessionManager.add_speech_tap(mgr, "game", tap)
+
+    task = asyncio.create_task(core_module.LLMSessionManager.tts_response_handler(mgr))
+    await asyncio.wait_for(delivered.wait(), timeout=1)
+    task.cancel()
+    cancelled_result = await asyncio.gather(task, return_exceptions=True)
+
+    assert isinstance(cancelled_result[0], asyncio.CancelledError)
+    assert tapped == [(b"late-audio", "old-game-turn")]
+    assert mgr.websocket.sent == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_sidless_tts_audio_discards_pending_echo(monkeypatch):
     mgr = _make_manager()
     monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
     mgr.tts_response_queue = queue.Queue()
     mgr.tts_response_queue.put(b"sidless-audio")
     mgr.current_speech_id = "new-turn"
-    send_called = asyncio.Event()
+    dropped = asyncio.Event()
 
     core_module.LLMSessionManager._remember_pending_ai_voice_echo(mgr, "new-turn", "new turn pending text")
 
     async def send_speech(audio, speech_id=None):
-        assert audio == b"sidless-audio"
-        assert speech_id is None
-        send_called.set()
-        return True
+        raise AssertionError("sidless legacy audio must never be attributed to the current turn")
 
     monkeypatch.setattr(mgr, "send_speech", send_speech)
+    original_discard = mgr._discard_pending_ai_voice_echo
+
+    def discard_pending_echo():
+        original_discard()
+        dropped.set()
+
+    monkeypatch.setattr(mgr, "_discard_pending_ai_voice_echo", discard_pending_echo)
 
     task = asyncio.create_task(core_module.LLMSessionManager.tts_response_handler(mgr))
-    await asyncio.wait_for(send_called.wait(), timeout=1)
+    await asyncio.wait_for(dropped.wait(), timeout=1)
     task.cancel()
     cancelled_result = await asyncio.gather(task, return_exceptions=True)
     assert isinstance(cancelled_result[0], asyncio.CancelledError)
