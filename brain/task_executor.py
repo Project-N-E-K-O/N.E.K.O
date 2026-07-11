@@ -28,7 +28,7 @@ from typing import Dict, Any, List, Optional, Callable, Awaitable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import uuid
-from openai import APIConnectionError, InternalServerError, RateLimitError
+from utils.llm_client import openai_retry_error_types
 import httpx
 from config import (
     USER_PLUGIN_SERVER_PORT,
@@ -1186,7 +1186,7 @@ class DirectTaskExecutor:
                 )
                 return result
 
-            except (APIConnectionError, InternalServerError, RateLimitError) as e:
+            except openai_retry_error_types() as e:
                 if attempt < max_retries - 1:
                     logger.warning("[UnifiedAssessment] Attempt %d failed: %s, retrying...", attempt + 1, e)
                     await asyncio.sleep(retry_delays[attempt])
@@ -1755,7 +1755,7 @@ class DirectTaskExecutor:
                     reason=decision.get("reason", "")
                 )
                 
-            except (APIConnectionError, InternalServerError, RateLimitError) as e:
+            except openai_retry_error_types() as e:
                 logger.info(f"ℹ️ 捕获到 {type(e).__name__} 错误")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(retry_delays[attempt])

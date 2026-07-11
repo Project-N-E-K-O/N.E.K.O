@@ -951,13 +951,26 @@ def run_merged_servers() -> int:
     if _behind_proxy:
         _proxy_kw = {"proxy_headers": True, "forwarded_allow_ips": "*"}
 
-    # 分步 import（控制峰值内存 & 提供进度反馈）
+    # 分步 import（控制峰值内存 & 提供进度反馈），逐段计时：三段 import 串行坐在
+    # 端口就绪关键路径上，回归过一次没人发现（#1496 优化后被 openai 2.x 静默吃回
+    # 3.6 倍），日志留数字才能在用户报告启动慢时定位是哪段涨了。
+    _t_import = time.perf_counter()
     print("[Merged] Importing memory_server...", flush=True)
     from app import memory_server
+    _t_memory = time.perf_counter()
+    print(f"[Merged] memory_server imported in {(_t_memory - _t_import) * 1000:.0f} ms", flush=True)
     print("[Merged] Importing agent_server...", flush=True)
     from app import agent_server
+    _t_agent = time.perf_counter()
+    print(f"[Merged] agent_server imported in {(_t_agent - _t_memory) * 1000:.0f} ms", flush=True)
     print("[Merged] Importing main_server...", flush=True)
     from app import main_server
+    _t_main = time.perf_counter()
+    print(
+        f"[Merged] main_server imported in {(_t_main - _t_agent) * 1000:.0f} ms "
+        f"(total import {(_t_main - _t_import) * 1000:.0f} ms)",
+        flush=True,
+    )
 
     _apps = [
         (memory_server.app, MEMORY_SERVER_PORT, "Memory"),
