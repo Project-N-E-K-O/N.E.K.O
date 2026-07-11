@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import unicodedata
+
 
 def is_viewer_to_viewer_mention_text(text: str) -> bool:
     compact = " ".join(str(text or "").strip().replace("\uff20", "@").split())
@@ -13,7 +15,11 @@ def is_viewer_to_viewer_mention_text(text: str) -> bool:
     for part in compact.split("@")[1:]:
         target = []
         for ch in part.strip():
-            if ch.isspace() or ch in ":：,，、;；.!?。？！\\|[]()（）<>《》":
+            if (
+                ch.isspace()
+                or ch in ":：,，、;；.!?。？！\\|[]()（）<>《》"
+                or unicodedata.category(ch).startswith("S")
+            ):
                 break
             target.append(ch)
         name = "".join(target).strip()

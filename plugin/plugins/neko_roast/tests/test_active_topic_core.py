@@ -13,6 +13,7 @@ from plugin.plugins.neko_roast.core import (
     active_topic_recent_source,
     active_topic_rules,
     active_topic_trending_source,
+    danmaku_text_rules,
 )
 from plugin.plugins.neko_roast.core.active_topic_selector import ActiveTopicSelector
 
@@ -24,6 +25,20 @@ def test_active_topic_slice_imports_without_later_material_or_content_slices() -
 
     assert runtime_api.RuntimeActiveTopicApiMixin
     assert active_topic_rules._active_topic_material_profile("pick A or B")
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "@Alice @neko👋 what do you think",
+        "@Alice @neko?",
+        "@Alice @neko✨今天播什么",
+        "@Alice @猫猫✨今天播什么",
+    ),
+)
+def test_mention_parsers_share_punctuation_and_symbol_boundaries(text: str) -> None:
+    assert active_topic_mentions.is_viewer_to_viewer_mention_text(text) is False
+    assert danmaku_text_rules.is_viewer_to_viewer_mention_text(text) is False
 
 
 @pytest.mark.parametrize(
@@ -141,8 +156,10 @@ def test_anonymous_recent_danmaku_flood_is_rejected() -> None:
     (
         "@Alice @neko what do you think",
         "@Alice @neko?",
+        "@Alice @neko👋",
         "@Alice @neko好可爱",
         "@Alice @猫猫，今天播什么",
+        "@Alice @猫猫✨今天播什么",
     ),
 )
 def test_neko_mention_wins_over_an_earlier_viewer_mention(text: str) -> None:
