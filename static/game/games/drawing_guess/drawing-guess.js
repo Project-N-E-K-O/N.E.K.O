@@ -1163,10 +1163,29 @@
     if (!appState || !Array.isArray(appState.pendingAudioChunkMetaQueue)) return;
     var speechId = String((response && (response.speech_id || response.speechId)) || '').trim();
     if (!speechId) return;
+    // suppress_primary_audio 时本 tap 是音频分片唯一的 header 入口，必须与
+    // app-websocket.js 的 audio_chunk 处理保持一致：被打断 speech 的迟到分片
+    // 要跳过，新 speech 要消费挂起的解码器重置
+    var shouldSkip = false;
+    if (appState.interruptedSpeechId && speechId === appState.interruptedSpeechId) {
+      shouldSkip = true;
+    } else if (speechId !== appState.currentPlayingSpeechId) {
+      if (appState.pendingDecoderReset) {
+        appState.decoderResetPromise = Promise.resolve(
+          typeof window.resetOggOpusDecoder === 'function' ? window.resetOggOpusDecoder() : null
+        ).then(function () {
+          appState.pendingDecoderReset = false;
+        });
+      } else {
+        appState.pendingDecoderReset = false;
+      }
+      appState.currentPlayingSpeechId = speechId;
+      appState.interruptedSpeechId = null;
+    }
     appState.pendingAudioChunkMetaQueue.push({
       speechId: speechId,
       turnId: String((response && (response.turn_id || response.turnId)) || speechId),
-      shouldSkip: false,
+      shouldSkip: shouldSkip,
       epoch: appState.incomingAudioEpoch || 0,
       receivedAt: Date.now()
     });
@@ -2420,7 +2439,13 @@
     els.tutorialOverlay.hidden = true;
     updateControls();
     startRoute().then(function (ok) {
-      if (ok) startRound();
+      if (ok) {
+        startRound();
+        return;
+      }
+      // 启动失败时教程层是唯一的开始入口，必须还回来，否则只能刷新页面
+      els.tutorialOverlay.hidden = false;
+      updateControls();
     });
   }
 
