@@ -37,7 +37,7 @@ if sys.path[0:1] != [_repo_root]:
 
 import uvicorn
 
-from app import memory_server
+from app.memory_server import runtime
 from app.memory_server._shared import logger
 from config import MEMORY_SERVER_PORT
 
@@ -48,21 +48,21 @@ if __name__ == "__main__":
                        help='启用响应退出请求功能（仅在终端用户环境使用）')
     args = parser.parse_args()
 
-    # 设置全局变量（/shutdown 端点经 `global enable_shutdown` 读同一模块属性）
-    memory_server.enable_shutdown = args.enable_shutdown
+    # 设置全局变量（/shutdown 端点经 `global enable_shutdown` 读 runtime 模块属性）
+    runtime.enable_shutdown = args.enable_shutdown
 
     # 创建一个后台线程来监控关闭信号
     def monitor_shutdown():
-        while not memory_server.shutdown_event.is_set():
+        while not runtime.shutdown_event.is_set():
             time.sleep(0.1)
         logger.info("检测到关闭信号，正在关闭memory_server...")
         # 发送SIGTERM信号给当前进程
         os.kill(os.getpid(), signal.SIGTERM)
 
     # 只有在启用关闭功能时才启动监控线程
-    if memory_server.enable_shutdown:
+    if runtime.enable_shutdown:
         shutdown_monitor = threading.Thread(target=monitor_shutdown, daemon=True)
         shutdown_monitor.start()
 
     # 启动服务器
-    uvicorn.run(memory_server.app, host="127.0.0.1", port=MEMORY_SERVER_PORT)
+    uvicorn.run(runtime.app, host="127.0.0.1", port=MEMORY_SERVER_PORT)
