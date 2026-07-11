@@ -103,7 +103,6 @@ from config.prompts.prompts_memory import (
     RECALL_MEMORY_TOOL_TIME_DESCRIPTION,
     RECALL_MEMORY_TOOL_NO_RESULT,
     RECALL_MEMORY_TOOL_NO_RESULT_LOOSEN,
-    RECALL_MEMORY_TOOL_FILLER,
     RECALL_MEMORY_TOOL_FOUND_HEADER,
 )
 
@@ -137,13 +136,6 @@ _CONTEXT_APPEND_BARE_PRIME_SOURCES = frozenset({
     "game.realtime_context",
     "game.postgame",
 })
-
-# recall 占位语音用的合成 worker-sid 后缀。仅用于在 TTS worker 层把 filler 切成
-# 一段独立 utterance（见 _emit_recall_filler_tts）；``send_speech`` 在发往前端前会
-# 把它剥掉、归一回本轮 turn sid。否则在「把 request-id 透传进音频事件」的 provider
-# （如 minimax 的 ("__audio__", sid, ...) 路径）下，filler 音频会带着合成 sid 到前端，
-# 用户打断时前端按 turn sid 匹配不到 filler chunk，barge-in 取消不掉 filler。
-_RECALL_FILLER_SID_SUFFIX = "::recall-filler"
 
 
 # 内部 item 渲染时的视觉标记。状态信息已在外层 SYSTEM_NOTIFICATION_TASK_ACTIVE
@@ -2122,67 +2114,6 @@ class LLMSessionManager:
 
         return status
 
-    async def _emit_recall_filler_tts(self, text: str, turn_sid: str) -> bool:
-        """Synthesize and play the recall filler line immediately as an **independent worker utterance**.
-
-        Key design — enqueue with a *worker-only* filler sid distinct from this
-        turn's sid, then send a ``(None, None)`` flush:
-
-        - the TTS worker treats the filler as a complete utterance and commits
-          synthesis immediately (filling the retrieval gap);
-        - when the main text later enqueues with the real turn sid, the worker sees
-          ``current_speech_id != sid``, automatically opens a new utterance and
-          resets ``text_done_sent``. If the filler reused the same turn sid, the
-          worker's ``sid is None`` branch would only set ``text_done_sent=True``
-          without switching sids, and the main text would be dropped wholesale at
-          the ``if text_done_sent: discard residual text`` check (= main text
-          silent). The separate sid exists precisely to bypass that worker
-          behavior.
-
-        Note: the worker-internal sid is only for utterance segmentation; audio
-        sent to the frontend still carries core's ``self.current_speech_id``
-        (= the turn sid), so the frontend sees one continuous turn of audio with no
-        frontend changes needed.
-
-        When not ready, simply give up on the immediate filler (return False) —
-        do **not** degrade into "stuff it into pending to flush with the main
-        text"; that was exactly the old "filler glued in front of the main text"
-        bug.
-        """
-        if not self.use_tts:
-            return False
-        async with self.tts_cache_lock:
-            if self.current_speech_id != turn_sid:
-                return False
-            if not (self.tts_ready and self.tts_thread and self.tts_thread.is_alive()):
-                return False
-            # 切到 filler 的 worker-sid 之前，先处理本轮 turn_sid 可能还在管线里的
-            # pre-tool 正文（provider 先吐 content 再进 tool_calls 时会有，见
-            # _astream_openai_with_tools 的 streamed_text_buffer）。直接 _enqueue
-            # filler_sid 会让 _enqueue_tts_text_chunk 因 sid 变化 reset stripper、丢掉
-            # turn_sid 仍 pending 的文本，且 worker 换连接也会丢 server 端缓冲，造成同轮
-            # 正文缺字（Codex P2）。所以先把 stripper pending flush 出去、并用 (None,None)
-            # 把 turn_sid utterance commit 掉（worker 发 text.done 后才换 sid，不丢内容）。
-            # 仅当本轮确有 turn_sid 文本入过队（_tts_norm_speech_id == turn_sid）才触发；
-            # 模型首动作即调 recall（无 pre-tool 文本）时跳过，行为不变。
-            if self._tts_norm_speech_id == turn_sid:
-                pre_tool = self._tts_markdown_stripper.flush()
-                if pre_tool:
-                    pre_tool = self._tts_bracket_stripper.feed(pre_tool)
-                self._tts_bracket_stripper.flush()
-                if pre_tool:
-                    self.tts_request_queue.put((turn_sid, pre_tool))
-                    self._remember_pending_ai_voice_echo(turn_sid, pre_tool)
-                # 直接放 (None,None)，不走 _request_tts_done_locked，故不置
-                # _tts_done_queued_for_turn——正文/收尾仍各自正常 flush。
-                self.tts_request_queue.put((None, None))
-            filler_sid = f"{turn_sid}{_RECALL_FILLER_SID_SUFFIX}"
-            self._enqueue_tts_text_chunk(filler_sid, text)
-            # flush 这段独立 utterance。用 filler_sid 而非 turn sid，所以**不**触碰
-            # 本轮 _tts_done_queued_for_turn——正文之后仍按正常 turn-end 流程 flush。
-            self.tts_request_queue.put((None, None))
-            return True
-
     def _remember_avatar_interaction_id(self, interaction_id: str) -> None:
         if interaction_id in self._recent_avatar_interaction_id_set:
             return
@@ -2961,13 +2892,6 @@ class LLMSessionManager:
         # 如果是新消息的第一个chunk，清空TTS队列和缓存以打断之前的语音。
         # summary epilogue 触发的 TTS-only 注入 is_first_chunk=False，不会
         # 误清掉本轮已经播放/排队的 prefix 音频。
-        #
-        # 注意：这里**不**为 recall 占位语音（filler）开例外。filler 走独立 worker
-        # sid 并在检索期间就立即 flush + 经 tts_response_handler 发往前端，正文首
-        # chunk 到达时 filler 早已送达，pending / response_queue 里不再有它，清理碰
-        # 不到。反过来，这个首包清理在某些路径（如 no-server-VAD 的 response.done
-        # 只 rotate sid、不清 TTS）是下一个唯一的打断点，若为 filler 跳过会让上一轮
-        # 残留音频漏清、与新轮重叠，破坏 barge-in（Codex P1）。故保持无条件清理。
         if is_first_chunk and self.use_tts and tts_enabled:
             async with self.tts_cache_lock:
                 self.tts_pending_chunks.clear()
@@ -4694,63 +4618,6 @@ class LLMSessionManager:
             )
             logger.debug("[recall_memory] empty-query args=%s", args_dict)
             return _loc(RECALL_MEMORY_TOOL_NO_RESULT, _lang)
-
-        # 本轮首次真正发起回忆检索时，立刻喂一段"让我回忆一下"占位语音给 TTS，
-        # 填补 hybrid_recall + 可能的多轮工具调用造成的空窗，避免猫娘那边长时间
-        # 沉默。用 current_speech_id 去重，保证一轮只播一次（模型一轮里可能连调
-        # 好几次 recall）。只进 TTS，不进前端气泡 / 不进历史；voice 模式下
-        # feed_tts_chunk 因 use_tts=False 自动 no-op。
-        cur_sid = self.current_speech_id
-        if cur_sid and self.use_tts and getattr(self, "_recall_filler_spoken_sid", None) != cur_sid:
-            try:
-                # 关键：这一轮的 TTS worker 通常在正文首个 chunk 才懒启动，而
-                # recall 发生在正文之前——若此时 worker 没起，filler 只会进
-                # tts_pending_chunks，等正文来了 worker ready 才一起 flush，导致
-                # 占位语音被粘在正文前一起播、失去"填补空窗"的意义。所以这里
-                # 主动把管线（worker 线程 + response handler 任务）拉起来，让 worker
-                # 在检索这几秒内就绪，filler 一就绪即被 handler flush 合成播放。
-                # 但 NO_RETRY_TTS_CODES（API_ARREARS / API_KEY_REJECTED 等不可恢复态）下
-                # 不要拉起：ensure_tts_pipeline_alive 直接调 _start_tts_thread，会绕过
-                # _respawn_tts_worker 的 no-retry 闸，等于同轮每次 recall 都重启一次注定
-                # 失败的 worker。此时跳过，直接走下面的早退放弃 filler。
-                if getattr(self, "_last_tts_error_code", None) not in NO_RETRY_TTS_CODES:
-                    await self.ensure_tts_pipeline_alive()
-                # 冷启动有界等待：ensure_tts_pipeline_alive 只拉起 worker/handler，
-                # 不等 __ready__。首轮 recall 紧接着 emit 时 tts_ready 可能还是 False，
-                # 导致 _emit_recall_filler_tts 直接返回 False、首轮空窗依旧。TTS 通常
-                # ~0.1s 就绪，这里给 ~1s 有界等待；超时则优雅放弃 filler（不阻塞回忆
-                # 检索主流程），由后续 recall 调用或正文兜底。
-                # 提前退出：sid 变化（用户打断）、worker 没起来/已挂、或已进入
-                # NO_RETRY_TTS_CODES 这类不可恢复错误时，TTS 不可能再 ready，别白等
-                # 满 1s——否则 TTS 确定失败时同轮每次 recall 都会吃满这段延迟。
-                if not self.tts_ready:
-                    for _ in range(20):
-                        if (
-                            self.current_speech_id != cur_sid
-                            or not (self.tts_thread and self.tts_thread.is_alive())
-                            or getattr(self, "_last_tts_error_code", None) in NO_RETRY_TTS_CODES
-                        ):
-                            break
-                        await asyncio.sleep(0.05)
-                        if self.tts_ready:
-                            break
-                # 用独立 worker-sid 把 filler 作为一段完整 utterance 立即合成出声，
-                # 既能在检索空窗里马上播，又不会让正文（同 turn sid）被 worker 当成
-                # "text_done 之后的残余文本"丢弃。详见 _emit_recall_filler_tts。
-                _filler_ok = await self._emit_recall_filler_tts(
-                    _loc(RECALL_MEMORY_TOOL_FILLER, _lang), cur_sid,
-                )
-                # 仅在真正入队成功后才标记"本轮已播过"：否则（worker 未 ready 等
-                # 返回 False）会误判已预热，本轮后续 recall 不再补发 filler，且
-                # handle_text_data 的 barge-in 守卫也会按"已预热"误跳过。
-                if _filler_ok:
-                    self._recall_filler_spoken_sid = cur_sid
-                logger.debug(
-                    "[recall_memory] filler TTS emitted=%s (sid=%s tts_ready=%s)",
-                    _filler_ok, cur_sid, self.tts_ready,
-                )
-            except Exception as _filler_err:
-                logger.debug("[recall_memory] filler TTS skipped: %s", _filler_err)
 
         # POST 到 memory_server。query 始终原样下传，不能因为带了 time 就清空
         # —— 下游路由：query + time → hybrid_recall(query, time_window=...) 做
@@ -10330,11 +10197,6 @@ class LLMSessionManager:
         try:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
                 effective_speech_id = speech_id if speech_id is not None else self.current_speech_id
-                # recall 占位语音在 worker 层用合成 sid 切分 utterance；对前端必须归一回
-                # turn sid，否则透传 request-id 的 provider 下，filler 音频带着合成 sid，
-                # 打断时前端按 turn sid 匹配不到 → barge-in 取消不掉 filler。
-                if isinstance(effective_speech_id, str) and effective_speech_id.endswith(_RECALL_FILLER_SID_SUFFIX):
-                    effective_speech_id = effective_speech_id[: -len(_RECALL_FILLER_SID_SUFFIX)]
                 await self.websocket.send_json({
                     "type": "audio_chunk",
                     "speech_id": effective_speech_id
