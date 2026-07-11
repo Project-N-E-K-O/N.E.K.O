@@ -103,6 +103,28 @@ def test_inferred_room_mood_family_does_not_drift_to_live_column_pack() -> None:
     assert active_topic_pack.active_topic_pack(material) == "room_mood"
 
 
+@pytest.mark.parametrize(
+    ("material", "expected_family"),
+    (
+        (
+            {"fun_axis": "mood", "reply_affordance": "share your stance"},
+            "room_mood",
+        ),
+        ({"fun_axis": "mood", "live_column": "NEKO micro poll"}, "room_mood"),
+        ({"family": "mood"}, "mood"),
+    ),
+)
+def test_mood_family_alias_uses_canonical_room_mood_pack(
+    material: dict[str, str],
+    expected_family: str,
+) -> None:
+    assert (
+        active_topic_material_family.host_material_family(material)
+        == expected_family
+    )
+    assert active_topic_pack.active_topic_pack(material) == "room_mood"
+
+
 def test_ambiguous_family_still_allows_live_column_pack_override() -> None:
     material = {
         "title": "plain topic",
