@@ -322,7 +322,10 @@ def test_doubao_tts_frontend_and_config_are_wired():
     settings_js = Path("static/js/api_key_settings.js").read_text(encoding="utf-8")
     voice_clone_js = Path("static/js/voice_clone.js").read_text(encoding="utf-8")
     registry_py = Path("main_logic/tts_client/__init__.py").read_text(encoding="utf-8")
-    router_py = Path("main_routers/characters_router.py").read_text(encoding="utf-8")
+    router_py = "\n".join(
+        p.read_text(encoding="utf-8")
+        for p in sorted(Path("main_routers/characters_router").glob("*.py"))
+    )
 
     assert "isTtsProviderVisibleInModelConfig" in settings_js
     assert "selectedTtsProvider === 'doubao_tts'" not in settings_js

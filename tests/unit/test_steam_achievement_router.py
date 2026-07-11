@@ -4,7 +4,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from main_routers import system_router as system_router_module
+from main_routers.system_router import steam as system_router_module
+from main_routers.system_router import _shared as system_router_shared
 
 
 class _FakeUserStats:
@@ -86,7 +87,7 @@ def client(monkeypatch: pytest.MonkeyPatch):
     async def _sleep_noop(_delay: float) -> None:
         return None
 
-    monkeypatch.setattr(system_router_module, "AUTOSTART_CSRF_TOKEN", "test-csrf-token")
+    monkeypatch.setattr(system_router_shared, "AUTOSTART_CSRF_TOKEN", "test-csrf-token")
     monkeypatch.setattr(system_router_module.asyncio, "sleep", _sleep_noop)
 
     app = FastAPI()
@@ -256,6 +257,29 @@ def test_update_playtime_rejects_negative_seconds(
         "/api/steam/update-playtime",
         headers=_auth_headers(),
         json={"seconds": -1},
+    )
+
+    assert response.status_code == 400
+    assert stats.set_stat_calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("raw_seconds", ["Infinity", "-Infinity", "NaN"])
+def test_update_playtime_rejects_non_finite_seconds(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    raw_seconds: str,
+) -> None:
+    """json.loads accepts bare Infinity/NaN; int() then raises OverflowError
+    (Infinity) or ValueError (NaN) — both must surface as 400, not 500."""
+    stats = _FakeUserStats()
+    steamworks = _FakeSteamworks(stats)
+    monkeypatch.setattr(system_router_module, "get_steamworks", lambda: steamworks)
+
+    response = client.post(
+        "/api/steam/update-playtime",
+        headers={**_auth_headers(), "Content-Type": "application/json"},
+        content=('{"seconds": %s}' % raw_seconds).encode("utf-8"),
     )
 
     assert response.status_code == 400

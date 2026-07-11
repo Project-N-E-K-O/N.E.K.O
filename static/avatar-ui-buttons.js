@@ -244,6 +244,9 @@ const _NEKO_IDLE_TIER_CAT1 = 'cat1';
 const _NEKO_IDLE_TIER_CAT2 = 'cat2';
 const _NEKO_IDLE_TIER_CAT3 = 'cat3';
 const _NEKO_IDLE_RETURN_BUTTON_SELECTOR = '#live2d-btn-return, #vrm-btn-return, #mmd-btn-return, #pngtuber-btn-return';
+const _NEKO_GOODBYE_IDLE_APPEARANCE_CAT = 'cat';
+const _NEKO_GOODBYE_IDLE_APPEARANCE_BALL = 'ball';
+const _NEKO_GOODBYE_IDLE_APPEARANCE_ATTR = 'data-neko-goodbye-idle-appearance';
 const _NEKO_IDLE_CAT_AUDIO_ENABLED_STORAGE_KEY = 'neko.idleCatAudio.enabled';
 const _NEKO_IDLE_RETURN_TRANSITION_MS = 820;
 const _NEKO_IDLE_RETURN_GIF_DURATION_FALLBACK_MS = 900;
@@ -513,6 +516,11 @@ function setNekoIdleCatAudioEnabled(enabled) {
 }
 
 function _getActiveNekoIdleReturnTier() {
+    // 球形态下按钮 tier 被强制为 none，此处不能再 fallback 到 visualTier，
+    // 否则重新打开猫音频开关会在呼吸球上排猫叫/睡觉声
+    if (_getNekoGoodbyeIdleAppearance() === _NEKO_GOODBYE_IDLE_APPEARANCE_BALL) {
+        return _NEKO_IDLE_TIER_NONE;
+    }
     let activeTier = _NEKO_IDLE_TIER_NONE;
     _forEachNekoIdleReturnButton((button) => {
         if (activeTier !== _NEKO_IDLE_TIER_NONE) return;
@@ -568,6 +576,40 @@ function _normalizeNekoIdleReturnTier(tier) {
         return tier;
     }
     return _NEKO_IDLE_TIER_CAT1;
+}
+
+function _normalizeNekoGoodbyeIdleAppearance(mode) {
+    return mode === _NEKO_GOODBYE_IDLE_APPEARANCE_BALL
+        ? _NEKO_GOODBYE_IDLE_APPEARANCE_BALL
+        : _NEKO_GOODBYE_IDLE_APPEARANCE_CAT;
+}
+
+function _getNekoGoodbyeIdleAppearance() {
+    try {
+        if (typeof window.getNekoGoodbyeIdleAppearance === 'function') {
+            return _normalizeNekoGoodbyeIdleAppearance(window.getNekoGoodbyeIdleAppearance());
+        }
+    } catch (_) {}
+    return _normalizeNekoGoodbyeIdleAppearance(window.__nekoGoodbyeIdleAppearance);
+}
+
+function _setNekoGoodbyeIdleAppearanceForButton(button, mode) {
+    if (!button) return;
+    const appearance = _normalizeNekoGoodbyeIdleAppearance(mode);
+    button.setAttribute(_NEKO_GOODBYE_IDLE_APPEARANCE_ATTR, appearance);
+    const container = button.closest('[id$="-return-button-container"]');
+    if (container) {
+        container.setAttribute(_NEKO_GOODBYE_IDLE_APPEARANCE_ATTR, appearance);
+    }
+}
+
+function _isNekoGoodbyeIdleBallButton(button) {
+    if (!button) return false;
+    const container = button.closest('[id$="-return-button-container"]');
+    const raw = (container && container.getAttribute(_NEKO_GOODBYE_IDLE_APPEARANCE_ATTR)) ||
+        button.getAttribute(_NEKO_GOODBYE_IDLE_APPEARANCE_ATTR) ||
+        _getNekoGoodbyeIdleAppearance();
+    return _normalizeNekoGoodbyeIdleAppearance(raw) === _NEKO_GOODBYE_IDLE_APPEARANCE_BALL;
 }
 
 function _isNekoNativeReturnBallDragDisabled() {
@@ -2678,7 +2720,10 @@ function _dispatchNekoIdleReturnClickFromButton(button) {
     const dispatchReturnEvent = () => {
         window.dispatchEvent(event);
     };
-    if (typeof window.playNekoModelCatTransition === 'function') {
+    if (
+        typeof window.playNekoModelCatTransition === 'function' &&
+        !_isNekoGoodbyeIdleBallButton(button)
+    ) {
         window.playNekoModelCatTransition({
             direction: 'cat-to-model',
             anchorRect: rect,
@@ -3737,6 +3782,13 @@ function _playNekoIdleCat1RapidDragSound(tier) {
 function _fadeOutNekoIdleCat1DragSound() {
     _fadeOutNekoIdleSoundAudio(_nekoIdleCat1DragSoundState, _NEKO_IDLE_CAT1_DRAG_SOUND_FADE_OUT_MS);
     _fadeOutNekoIdleSoundAudio(_nekoIdleCat1RapidDragSoundState, _NEKO_IDLE_CAT1_DRAG_SOUND_FADE_OUT_MS);
+}
+
+function _stopNekoGoodbyeIdleBallCatSounds() {
+    _syncNekoIdleSleepSoundForTier(_NEKO_IDLE_TIER_NONE);
+    _stopNekoIdleCat1AmbientSound();
+    _stopNekoIdleSoundAudio(_nekoIdleCat1DragSoundState);
+    _stopNekoIdleSoundAudio(_nekoIdleCat1RapidDragSoundState);
 }
 
 function _syncNekoIdleCat1CompactMirrorReaction(button, container, assetUrl, reason) {
@@ -7448,6 +7500,39 @@ function _finishNekoIdleHoverArtAfterPlayback(art, tier) {
 function _applyNekoIdleReturnPresentation(button, tier) {
     if (!button) return;
     const normalizedTier = _normalizeNekoIdleReturnTier(tier);
+    if (_isNekoGoodbyeIdleBallButton(button)) {
+        _setNekoGoodbyeIdleAppearanceForButton(button, _NEKO_GOODBYE_IDLE_APPEARANCE_BALL);
+        button.setAttribute('data-neko-idle-tier', _NEKO_IDLE_TIER_NONE);
+        _clearNekoIdleThoughtBubble(button);
+        _clearNekoIdleCat1QuestionMark(button);
+        _setNekoIdleCat1QuestionMarkKeyboardTarget(null);
+        _stopNekoGoodbyeIdleBallCatSounds();
+        const ballArt = button.querySelector('.neko-idle-return-art');
+        if (ballArt && !ballArt.dataset.nekoGoodbyeIdleCatSrc && normalizedTier !== _NEKO_IDLE_TIER_NONE) {
+            // 先于 app-ui 存下该 tier 的规范待机图快照：此刻 DOM src 可能是
+            // hover/进食/玩耍的一次性 GIF，且下方 cancel 会抹掉瞬态标记，
+            // app-ui 侧无法再分辨；带 tier 标签供恢复猫形态时校验
+            ballArt.dataset.nekoGoodbyeIdleCatSrc = _getNekoIdleReturnAssetUrl(normalizedTier);
+            ballArt.dataset.nekoGoodbyeIdleCatSrcTier = normalizedTier;
+        }
+        if (_isNekoIdleCat1PlaygroundEntryPending(button)) {
+            _cancelNekoIdleCat1PlaygroundPendingEntry(button);
+            _clearNekoIdleCat1PlaygroundQuestionBlockClone(button);
+        }
+        if (_isNekoIdleCat1PlaygroundDropActive(button)) {
+            _releaseNekoIdleCat1PlaygroundDropLifecycle(button, 'tier-change');
+        }
+        _cancelNekoIdleCat1EatAction(button, { restoreArt: false });
+        _cancelNekoIdleCat1PlayAction(button, { restoreArt: false });
+        _cancelNekoIdleCat1Journey(button);
+        const container = button.closest('[id$="-return-button-container"]');
+        if (container) {
+            container.setAttribute('data-neko-idle-tier', _NEKO_IDLE_TIER_NONE);
+            _clearNekoIdleCat1EdgePeekForTierExit(container);
+        }
+        return;
+    }
+    _setNekoGoodbyeIdleAppearanceForButton(button, _NEKO_GOODBYE_IDLE_APPEARANCE_CAT);
     if (_isNekoIdleCat1PlaygroundEntryPending(button) && normalizedTier !== _NEKO_IDLE_TIER_CAT1) {
         _cancelNekoIdleCat1PlaygroundPendingEntry(button);
         _clearNekoIdleCat1PlaygroundQuestionBlockClone(button);
@@ -7544,9 +7629,26 @@ function _ensureNekoIdleReturnPresentationBridge() {
         if (!detail || detail.type !== 'visual-tier') {
             return;
         }
+        if (_getNekoGoodbyeIdleAppearance() === _NEKO_GOODBYE_IDLE_APPEARANCE_BALL) {
+            _stopNekoGoodbyeIdleBallCatSounds();
+            _syncAllNekoIdleReturnButtons(detail.tier);
+            return;
+        }
         _syncNekoIdleSleepSoundForTier(detail.tier);
         _syncNekoIdleCat1AmbientSoundForTier(detail.tier);
         _syncAllNekoIdleReturnButtons(detail.tier);
+    });
+
+    window.addEventListener('neko:goodbye-idle-appearance', (event) => {
+        const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
+        const appearance = _normalizeNekoGoodbyeIdleAppearance(detail && detail.mode);
+        document.querySelectorAll(_NEKO_IDLE_RETURN_BUTTON_SELECTOR).forEach((button) => {
+            _setNekoGoodbyeIdleAppearanceForButton(button, appearance);
+        });
+        if (appearance === _NEKO_GOODBYE_IDLE_APPEARANCE_BALL) {
+            _stopNekoGoodbyeIdleBallCatSounds();
+        }
+        _syncAllNekoIdleReturnButtons(_readNekoAutoGoodbyeVisualTier());
     });
 
     window.addEventListener('resize', () => {
@@ -7733,6 +7835,11 @@ function _ensureNekoIdleReturnPresentationBridge() {
     });
 
     const currentTier = _readNekoAutoGoodbyeVisualTier();
+    if (_getNekoGoodbyeIdleAppearance() === _NEKO_GOODBYE_IDLE_APPEARANCE_BALL) {
+        _stopNekoGoodbyeIdleBallCatSounds();
+        _syncAllNekoIdleReturnButtons(currentTier);
+        return;
+    }
     _syncNekoIdleSleepSoundForTier(currentTier);
     _syncNekoIdleCat1AmbientSoundForTier(currentTier);
 }
