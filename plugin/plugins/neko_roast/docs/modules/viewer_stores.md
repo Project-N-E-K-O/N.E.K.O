@@ -34,6 +34,6 @@ Tests cover JSON persistence and fallback, profile reset/delete/clear behavior, 
 ## Limitations And Rollback
 
 - Viewer profiles are local plugin data and do not provide cross-device synchronization.
-- A configured viewer directory that cannot be written degrades to the plugin data directory and records a bounded audit warning.
+- Ordinary profile updates degrade to the plugin data directory when a configured viewer directory cannot be written. Destructive maintenance actions report `applied: false` instead of claiming fallback-only persistence while a stale configured source remains authoritative.
 - Missing or undecryptable credential files degrade to a logged-out state.
 - Rolling back the maintenance APIs leaves existing profile JSON compatible. Rolling back provider namespaces must retain the default `bili_credential.*` files; other namespace files can remain unused without exposing plaintext.
