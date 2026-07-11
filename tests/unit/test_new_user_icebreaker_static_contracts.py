@@ -481,7 +481,10 @@ def test_icebreaker_route_is_finalized_when_renderer_websocket_disconnects():
 
 
 def test_icebreaker_context_reuses_existing_session_context_paths():
-    core = (ROOT / "main_logic" / "core.py").read_text(encoding="utf-8")
+    core = "\n".join(
+        p.read_text(encoding="utf-8")
+        for p in sorted((ROOT / "main_logic" / "core").glob("*.py"))
+    )
 
     assert "pending_icebreaker_context" not in core
     assert "_icebreaker_context_request_ids" not in core
