@@ -560,7 +560,7 @@
             this.layeredStateIndex = nextIndex;
             this.drawLayeredState();
             this.restartLayeredAnimationLoop();
-            if (options.source === 'hotkey'
+            if ((options.source === 'hotkey' || options.source === 'alt-one-cycle-hotkey')
                 && previousIndex !== nextIndex
                 && this.isLayeredPlusModel()
                 && this.layeredRuntimeFeatureEnabled('costume_change_bounce')) {
