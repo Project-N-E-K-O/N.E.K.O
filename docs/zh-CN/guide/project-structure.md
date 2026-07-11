@@ -29,7 +29,7 @@ N.E.K.O/
 │       └── prompts_chara.py    # 角色系统提示词
 │
 ├── main_logic/                 # 核心业务逻辑
-│   ├── core.py                 # LLMSessionManager（中央会话处理器）
+│   ├── core/                   # LLMSessionManager 包（manager.py + 领域 mixin）
 │   ├── omni_realtime_client.py # Realtime API WebSocket 客户端
 │   ├── omni_offline_client.py  # 文本/Response API 客户端（离线回退）
 │   ├── tts_client/             # TTS 引擎适配器包（CosyVoice、GPT-SoVITS 等）
@@ -107,7 +107,7 @@ N.E.K.O/
 
 | 文件 | 行数 | 作用 |
 |------|------|------|
-| `main_logic/core.py` | ~2300 | 中央会话管理器 —— 系统的核心 |
+| `main_logic/core/` | ~10600 | 中央会话管理器包 —— 系统的核心 |
 | `utils/config_manager.py` | ~1500 | 配置加载、验证、持久化 |
 | `main_logic/tts_client/` | ~1300 | 多提供商 TTS 合成包 |
 | `brain/task_executor.py` | ~1600 | 智能体任务规划与执行 |

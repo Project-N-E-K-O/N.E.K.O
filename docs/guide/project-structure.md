@@ -29,7 +29,7 @@ N.E.K.O/
 │       └── prompts_chara.py    # Character system prompts
 │
 ├── main_logic/                 # Core business logic
-│   ├── core.py                 # LLMSessionManager (central session handler)
+│   ├── core/                   # LLMSessionManager package (manager.py + domain mixins)
 │   ├── omni_realtime_client.py # Realtime API WebSocket client
 │   ├── omni_offline_client.py  # Text/Response API client (offline fallback)
 │   ├── tts_client/             # TTS engine adapters package (CosyVoice, GPT-SoVITS, ElevenLabs, ...)
@@ -107,7 +107,7 @@ N.E.K.O/
 
 | File | Lines | Role |
 |------|-------|------|
-| `main_logic/core.py` | ~2300 | Central session manager — the heart of the system |
+| `main_logic/core/` | ~10600 | Central session manager package — the heart of the system |
 | `utils/config_manager.py` | ~1500 | Configuration loading, validation, persistence |
 | `main_logic/tts_client/` | ~1300 | TTS synthesis package with multi-provider support |
 | `brain/task_executor.py` | ~1600 | Agent task planning and execution |
