@@ -80,17 +80,29 @@ def active_topic_material_profile(title: str) -> dict[str, str]:
     if any(
         marker in dense
         for marker in (
+            "snack",
+            "drink",
+            "\u996e\u6599",
+            "\u96f6\u98df",
+        )
+    ):
+        return {
+            "preferred_shape": "tiny_tease",
+            "fun_axis": "food_drink",
+            "live_column": "NEKO room observation",
+            "reply_affordance": "viewer can answer with one small object or room detail",
+            "hint": "Turn this material into one tiny room observation; do not pretend to know details beyond the title.",
+        }
+    if any(
+        marker in dense
+        for marker in (
             "keyboard",
             "screen",
             "desk",
-            "snack",
-            "drink",
             "\u952e\u76d8",
             "\u5c4f\u5e55",
             "\u684c\u9762",
             "\u6c34\u676f",
-            "\u996e\u6599",
-            "\u96f6\u98df",
         )
     ):
         return {

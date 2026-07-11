@@ -49,7 +49,7 @@ def active_topic_pack(material: dict | None) -> str:
         marker in live_column for marker in ("observation", "patrol", "detective")
     ):
         return "room_observation"
-    if family == "room_mood" or any(
+    if any(
         marker in live_column
         for marker in ("radio", "weather", "thermometer", "filter", "mood")
     ):
