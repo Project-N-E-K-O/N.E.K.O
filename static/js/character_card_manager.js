@@ -9223,13 +9223,13 @@ async function ensureVrmModulesLoaded() {
     }
 
     const vrmModules = [
-        '/static/vrm-orientation.js',
-        '/static/vrm-core.js',
-        '/static/vrm-expression.js',
-        '/static/vrm-animation.js',
-        '/static/vrm-interaction.js',
-        '/static/vrm-cursor-follow.js',
-        '/static/vrm-manager.js'
+        '/static/vrm/vrm-orientation.js',
+        '/static/vrm/vrm-core.js',
+        '/static/vrm/vrm-expression.js',
+        '/static/vrm/vrm-animation.js',
+        '/static/vrm/vrm-interaction.js',
+        '/static/vrm/vrm-cursor-follow.js',
+        '/static/vrm/vrm-manager.js'
     ];
 
     for (const moduleSrc of vrmModules) {

@@ -4,7 +4,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 LIVE2D_INTERACTION = PROJECT_ROOT / "static" / "live2d" / "live2d-interaction.js"
-VRM_INTERACTION = PROJECT_ROOT / "static" / "vrm-interaction.js"
+VRM_INTERACTION = PROJECT_ROOT / "static" / "vrm" / "vrm-interaction.js"
 
 
 def test_live2d_wheel_zoom_requires_model_hit_before_consuming_event():

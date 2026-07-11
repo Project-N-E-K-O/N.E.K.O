@@ -9,15 +9,15 @@
         // avatar-popup-common, avatar-ui-popup, avatar-ui-popup-config, avatar-ui-buttons
         // 已由 model_manager.html 静态 <script> 加载，此处不再重复加载
         const vrmModules = [
-            '/static/vrm-orientation.js',
-            '/static/vrm-core.js',
-            '/static/vrm-expression.js',
-            '/static/vrm-animation.js',
-            '/static/vrm-interaction.js',
-            '/static/vrm-cursor-follow.js',
-            '/static/vrm-manager.js',
-            '/static/vrm-ui-buttons.js',
-            '/static/vrm-init.js'
+            '/static/vrm/vrm-orientation.js',
+            '/static/vrm/vrm-core.js',
+            '/static/vrm/vrm-expression.js',
+            '/static/vrm/vrm-animation.js',
+            '/static/vrm/vrm-interaction.js',
+            '/static/vrm/vrm-cursor-follow.js',
+            '/static/vrm/vrm-manager.js',
+            '/static/vrm/vrm-ui-buttons.js',
+            '/static/vrm/vrm-init.js'
         ];
 
         const failedModules = [];

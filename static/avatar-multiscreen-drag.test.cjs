@@ -216,7 +216,7 @@ function createScreenBridge({ onMove } = {}) {
 }
 
 test('VRM display switch uses the released drag pointer as the cross-screen target', async () => {
-    const window = createInteractionContext('vrm-interaction.js');
+    const window = createInteractionContext('vrm/vrm-interaction.js');
     const scene = createSceneLike();
     const viewport = { width: 2560, height: 1440 };
     const screenBridge = createScreenBridge({
@@ -250,7 +250,7 @@ test('VRM display switch uses the released drag pointer as the cross-screen targ
 });
 
 test('VRM display switch uses the released pointer even when the model center is still in the source window', async () => {
-    const window = createInteractionContext('vrm-interaction.js');
+    const window = createInteractionContext('vrm/vrm-interaction.js');
     const scene = createSceneLike({ minX: 2500, maxX: 2530 });
     const screenBridge = createScreenBridge();
     window.electronScreen = screenBridge.bridge;
@@ -271,7 +271,7 @@ test('VRM display switch uses the released pointer even when the model center is
 });
 
 test('VRM display switch falls back to the model center when the release pointer remains on the source display', async () => {
-    const window = createInteractionContext('vrm-interaction.js');
+    const window = createInteractionContext('vrm/vrm-interaction.js');
     const scene = createSceneLike();
     const screenBridge = createScreenBridge();
     window.electronScreen = screenBridge.bridge;

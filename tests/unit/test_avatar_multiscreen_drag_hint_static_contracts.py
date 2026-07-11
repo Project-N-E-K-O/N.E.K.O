@@ -95,7 +95,7 @@ def test_model_interactions_report_display_switch_misses_and_success():
     helper = _source("static/avatar-multiscreen-drag-hint.js")
     live2d = _source("static/live2d/live2d-interaction.js")
     mmd = _source("static/mmd/mmd-interaction.js")
-    vrm = _source("static/vrm-interaction.js")
+    vrm = _source("static/vrm/vrm-interaction.js")
 
     assert "installLive2DDisplaySwitchMissHook" in helper
     assert "window.Live2DManager" in helper
@@ -129,7 +129,7 @@ def test_model_interactions_report_display_switch_misses_and_success():
 def test_model_renderers_refresh_pixel_density_after_display_switch():
     live2d_core = _source("static/live2d/live2d-core.js")
     mmd_core = _source("static/mmd/mmd-core.js")
-    vrm_core = _source("static/vrm-core.js")
+    vrm_core = _source("static/vrm/vrm-core.js")
 
     assert "lastDevicePixelRatio = window.devicePixelRatio || 1;" in live2d_core
     assert "renderer.resolution = nextResolution;" in live2d_core
@@ -149,7 +149,7 @@ def test_multiscreen_drag_hint_script_loads_before_model_interactions():
 
     helper_index = source.index("/static/avatar-multiscreen-drag-hint.js")
     live2d_index = source.index("/static/live2d/live2d-interaction.js")
-    vrm_index = source.index("/static/vrm-init.js")
+    vrm_index = source.index("/static/vrm/vrm-init.js")
     mmd_index = source.index("/static/mmd/mmd-init.js")
 
     assert helper_index < live2d_index

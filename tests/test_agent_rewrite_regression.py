@@ -1826,7 +1826,7 @@ def test_avatar_floating_tutorial_boot_predictor_loads_before_user_model_init():
     predictor_script = "/static/tutorial/core/avatar-floating-boot-predictor.js"
     assert predictor_script in index_source
     assert index_source.index(predictor_script) < index_source.index("/static/live2d/live2d-init.js")
-    assert index_source.index(predictor_script) < index_source.index("/static/vrm-init.js")
+    assert index_source.index(predictor_script) < index_source.index("/static/vrm/vrm-init.js")
     assert index_source.index(predictor_script) < index_source.index("/static/mmd/mmd-init.js")
     assert "static/tutorial/core/avatar-floating-boot-predictor.js" in pages_router_source
 
@@ -1882,7 +1882,7 @@ def test_avatar_floating_tutorial_boot_predictor_contract():
 def test_avatar_model_initializers_skip_user_model_when_tutorial_boot_is_predicted():
     index_source = Path("static/js/index.js").read_text(encoding="utf-8")
     live2d_init_source = Path("static/live2d/live2d-init.js").read_text(encoding="utf-8")
-    vrm_init_source = Path("static/vrm-init.js").read_text(encoding="utf-8")
+    vrm_init_source = Path("static/vrm/vrm-init.js").read_text(encoding="utf-8")
     mmd_init_source = Path("static/mmd/mmd-init.js").read_text(encoding="utf-8")
 
     for source in (live2d_init_source, vrm_init_source, mmd_init_source):
