@@ -168,14 +168,19 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
 
   async function saveConfig(patch: Record<string, any> = {}) {
     const livePlatform = String(patch.live_platform ?? config.live_platform ?? configForm.values.live_platform ?? "bilibili")
-    const rawLiveRoomRef = patch.live_room_ref ?? (
-      configForm.values.live_room_ref ||
-      configForm.values.live_room_id ||
-      config.live_room_ref ||
-      config.live_room_id ||
-      ""
-    )
-    const liveRoomRef = String(rawLiveRoomRef).trim()
+    const normalizedRoomRef = (value: unknown) => {
+      const roomRef = String(value ?? "").trim()
+      return roomRef === "0" ? "" : roomRef
+    }
+    const hasPatchedRoomRef = Object.prototype.hasOwnProperty.call(patch, "live_room_ref")
+    const liveRoomRef = hasPatchedRoomRef
+      ? normalizedRoomRef(patch.live_room_ref)
+      : (
+          normalizedRoomRef(configForm.values.live_room_ref) ||
+          normalizedRoomRef(config.live_room_ref) ||
+          normalizedRoomRef(config.live_room_id) ||
+          normalizedRoomRef(configForm.values.live_room_id)
+        )
     const fullPayload = {
       live_platform: livePlatform,
       live_room_ref: liveRoomRef,
@@ -211,7 +216,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
     configForm.setField("live_room_id", "")
     configForm.setField("live_enabled", false)
     setLiveRoomResult(null)
-    saveConfig({ live_platform: next, live_room_ref: "", live_room_id: 0, live_enabled: false })
+    saveConfig({ live_platform: next, live_enabled: false })
   }
 
   async function lookupLiveRoom() {
