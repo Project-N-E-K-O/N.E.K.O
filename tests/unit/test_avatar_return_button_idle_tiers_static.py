@@ -881,6 +881,7 @@ def test_model_cat_transition_contract_is_present():
     assert "direction: 'model-to-cat'" in source
     assert "direction: 'cat-to-model'" in source
     assert "return-ball-model-cat-transition-done" in source
+
     assert "return-ball-model-cat-transition-fallback" in source
     assert "NEKO_MODEL_CAT_TRANSITION_MODEL_EXIT_WAIT_MS" not in source
     assert "dispatchClickEvent();" in source
@@ -1041,6 +1042,106 @@ def test_model_cat_transition_contract_is_present():
         source.index("requestAnimationFrame(() => {", source.index("const revealActiveReturnBall = (reason) => {"))
     ]
     assert reveal_active_block.index("restartNekoModelCatRevealArt(activeReturnButtonContainer)") < reveal_active_block.index("revealReturnBallContainer(activeReturnButtonContainer, reason)")
+
+
+def test_goodbye_idle_breathing_ball_shape_contract_is_present():
+    app_ui_source = APP_UI_PATH.read_text(encoding="utf-8")
+    avatar_source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+    css_source = INDEX_CSS_PATH.read_text(encoding="utf-8")
+
+    assert "NEKO_GOODBYE_IDLE_APPEARANCE_BALL = 'ball'" in app_ui_source
+    assert "NEKO_GOODBYE_IDLE_BALL_ASSET = '/static/icons/expand_icon_off_ball.png'" in app_ui_source
+    assert "window.getNekoGoodbyeIdleAppearance = getNekoGoodbyeIdleAppearance" in app_ui_source
+    assert "window.addEventListener('neko:goodbye-idle-appearance'" in app_ui_source
+    assert "function applyGoodbyeIdleAppearanceToReturnButton" in app_ui_source
+    assert "function getRestorableNekoIdleReturnTier(fallbackTier = '')" in app_ui_source
+    assert "appearance: appearance" in app_ui_source
+    assert "return-ball-legacy-ball" in app_ui_source
+    assert "getReturnButtonAppearance(activeReturnButtonContainer) === NEKO_GOODBYE_IDLE_APPEARANCE_BALL" in app_ui_source
+    appearance_block = _source_slice_between(
+        app_ui_source,
+        "function applyGoodbyeIdleAppearanceToReturnButton",
+        "function syncGoodbyeIdleAppearanceForReturnButtons",
+        "goodbye idle appearance application",
+    )
+    assert "chat-minimized-yarn-ball.png" not in appearance_block
+    assert "art.src = NEKO_GOODBYE_IDLE_BALL_ASSET;" in appearance_block
+    assert "art.setAttribute('aria-hidden', 'true')" in appearance_block
+    assert "art.src = art.dataset.nekoGoodbyeIdleCatSrc;" in appearance_block
+    assert "button.dataset.nekoGoodbyeIdleCatTier = getRestorableNekoIdleReturnTier(" in appearance_block
+    assert "const restoredTier = getRestorableNekoIdleReturnTier(button && button.dataset.nekoGoodbyeIdleCatTier);" in appearance_block
+    assert "if (!button.dataset.nekoGoodbyeIdleCatTier)" not in appearance_block
+    app_auto_goodbye_listener_block = _source_slice_between(
+        app_ui_source,
+        "window.addEventListener('neko:auto-goodbye:state-change'",
+        "window.addEventListener('neko:goodbye-idle-appearance'",
+        "app auto goodbye visual tier listener",
+    )
+    _assert_source_order(
+        app_auto_goodbye_listener_block,
+        "breathing ball state change sends one desktop bridge payload",
+        "if (getNekoGoodbyeIdleAppearance() === NEKO_GOODBYE_IDLE_APPEARANCE_BALL) {",
+        "syncGoodbyeIdleAppearanceForReturnButtons('goodbye-idle-appearance-visual-tier');",
+        "return;\n        }\n        scheduleIdleReturnBallDesktopBridge(",
+    )
+    dispatch_return_ball_block = _source_slice_between(
+        app_ui_source,
+        "function dispatchReturnBallClick()",
+        "function markDragPointerActivity()",
+        "desktop return ball click dispatch",
+    )
+    _assert_source_order(
+        dispatch_return_ball_block,
+        "desktop return ball skips cat smoke in ball appearance",
+        "const dispatchClickEvent = () => {",
+        "if (getReturnButtonAppearance(container) === NEKO_GOODBYE_IDLE_APPEARANCE_BALL) {",
+        "dispatchClickEvent();",
+        "return;\n            }\n            playNekoModelCatTransition({",
+        "playNekoModelCatTransition({",
+    )
+
+    assert "_NEKO_GOODBYE_IDLE_APPEARANCE_BALL = 'ball'" in avatar_source
+    assert "function _isNekoGoodbyeIdleBallButton(button)" in avatar_source
+    assert "function _stopNekoGoodbyeIdleBallCatSounds()" in avatar_source
+    assert "window.addEventListener('neko:goodbye-idle-appearance'" in avatar_source
+    dispatch_click_block = _source_slice_between(
+        avatar_source,
+        "function _dispatchNekoIdleReturnClickFromButton(button)",
+        "function _handleNekoIdleCat1PlaygroundCatClick(button, event)",
+        "return click dispatch skips cat transition in ball appearance",
+    )
+    assert "!_isNekoGoodbyeIdleBallButton(button)" in dispatch_click_block
+    auto_goodbye_listener_block = _source_slice_between(
+        avatar_source,
+        "window.addEventListener('neko:auto-goodbye:state-change'",
+        "window.addEventListener('neko:goodbye-idle-appearance'",
+        "auto goodbye visual tier listener",
+    )
+    _assert_source_order(
+        auto_goodbye_listener_block,
+        "breathing ball state change mutes cat sounds before syncing buttons",
+        "if (_getNekoGoodbyeIdleAppearance() === _NEKO_GOODBYE_IDLE_APPEARANCE_BALL) {",
+        "_stopNekoGoodbyeIdleBallCatSounds();",
+        "_syncAllNekoIdleReturnButtons(detail.tier);\n            return;",
+        "_syncNekoIdleSleepSoundForTier(detail.tier);",
+    )
+
+    assert '[data-neko-goodbye-idle-appearance="ball"]' in css_source
+    assert "nekoGoodbyeIdleBallBreathing" in css_source
+    ball_button_block = _extract_css_block(
+        css_source,
+        '.neko-idle-return-button-container[data-neko-goodbye-idle-appearance="ball"] > .neko-idle-return-btn',
+    )
+    ball_art_block = _extract_css_block(
+        css_source,
+        '.neko-idle-return-button-container[data-neko-goodbye-idle-appearance="ball"] .neko-idle-return-art',
+    )
+    assert "background: transparent;" in ball_button_block
+    assert "animation: nekoGoodbyeIdleBallBreathing 2000ms ease-in-out infinite;" in ball_button_block
+    assert "display: block !important;" in ball_art_block
+    assert "object-fit: contain;" in ball_art_block
+    assert '[data-neko-goodbye-idle-appearance="ball"] > .neko-idle-return-btn::before' not in css_source
+    assert '[data-neko-goodbye-idle-appearance="ball"] > .neko-idle-return-btn::after' in css_source
 
 
 def test_pngtuber_return_restores_pointer_events():

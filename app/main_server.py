@@ -2056,7 +2056,10 @@ async def _cancel_task_if_running(task: asyncio.Task | None, *, name: str, timeo
 
 async def _cancel_workshop_background_tasks(*, timeout: float) -> None:
     try:
-        _wr = importlib.import_module("main_routers.workshop_router")
+        # Target the ugc submodule (not the workshop_router package facade):
+        # the task handles are module globals there, and setattr on the facade
+        # would not rebind them for cancel_background_tasks / route readers.
+        _wr = importlib.import_module("main_routers.workshop_router.ugc")
     except Exception as exc:
         logger.debug("workshop task cleanup skipped: %s", exc, exc_info=True)
         return
@@ -2596,7 +2599,8 @@ def _schedule_workshop_sync(steamworks) -> None:
         if not steamworks:
             return
 
-        _wr = importlib.import_module("main_routers.workshop_router")
+        # ugc submodule, not the package facade — see _cancel_workshop_background_tasks.
+        _wr = importlib.import_module("main_routers.workshop_router.ugc")
 
         async def _warmup_only():
             try:

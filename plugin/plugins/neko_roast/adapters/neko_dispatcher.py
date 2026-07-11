@@ -112,6 +112,46 @@ class NekoDispatcher:
     def __init__(self, plugin: Any) -> None:
         self.plugin = plugin
 
+    def output_channel_status(self) -> dict[str, Any]:
+        checker = getattr(self.plugin, "output_channel_status", None)
+        if callable(checker):
+            try:
+                data = checker()
+            except Exception as exc:
+                return {
+                    "ready": False,
+                    "reason": "output_channel_unavailable",
+                    "detail": str(exc),
+                }
+            if isinstance(data, dict):
+                ready = bool(data.get("ready", data.get("ok", False)))
+                return {
+                    "ready": ready,
+                    "reason": str(
+                        data.get("reason")
+                        or ("" if ready else "output_channel_unavailable")
+                    ),
+                    "detail": str(data.get("detail") or ""),
+                }
+
+        explicit_ready = getattr(self.plugin, "output_channel_ready", None)
+        if explicit_ready is not None:
+            ready = bool(explicit_ready)
+            return {
+                "ready": ready,
+                "reason": "" if ready else "output_channel_unavailable",
+                "detail": "",
+            }
+
+        if not callable(getattr(self.plugin, "push_message", None)):
+            return {
+                "ready": False,
+                "reason": "output_channel_unavailable",
+                "detail": "plugin.push_message is unavailable",
+            }
+
+        return {"ready": True, "reason": "", "detail": ""}
+
     async def _push_context_text(self, text: str, *, description: str, result_name: str) -> str:
         target_lanlan = resolve_plugin_target_lanlan(self.plugin)
         metadata = {"description": description}

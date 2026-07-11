@@ -105,7 +105,7 @@ class TestSchemaValidation:
     async def test_endpoint_allows_empty_api_key_for_keyless_services(self):
         """Empty api_key is allowed for local/keyless services (Decision 15)."""
         with patch(
-            "main_routers.config_router._test_openai_compatible",
+            "main_routers.config_router.connectivity._test_openai_compatible",
             new_callable=AsyncMock,
             return_value={"success": True},
         ) as mock_http:
@@ -124,7 +124,7 @@ class TestSchemaValidation:
     async def test_endpoint_allows_whitespace_api_key_for_keyless_services(self):
         """Whitespace-only api_key is stripped and allowed for keyless services (Decision 15)."""
         with patch(
-            "main_routers.config_router._test_openai_compatible",
+            "main_routers.config_router.connectivity._test_openai_compatible",
             new_callable=AsyncMock,
             return_value={"success": True},
         ) as mock_http:
@@ -136,7 +136,7 @@ class TestSchemaValidation:
     async def test_endpoint_routes_to_openai_compatible_by_default(self):
         """Default provider_type routes to _test_openai_compatible (Req 1.1)."""
         with patch(
-            "main_routers.config_router._test_openai_compatible",
+            "main_routers.config_router.connectivity._test_openai_compatible",
             new_callable=AsyncMock,
             return_value={"success": True},
         ) as mock_http:
@@ -150,7 +150,7 @@ class TestSchemaValidation:
     async def test_endpoint_routes_to_websocket_when_specified(self):
         """provider_type='websocket' routes to _test_websocket (Req 1.1, 1.3)."""
         with patch(
-            "main_routers.config_router._test_websocket",
+            "main_routers.config_router.connectivity._test_websocket",
             new_callable=AsyncMock,
             return_value={"success": True},
         ) as mock_ws:
@@ -227,7 +227,7 @@ class TestSchemaValidation:
         }
 
         with patch("utils.api_config_loader.get_config", return_value=fake_config), patch(
-            "main_routers.config_router._test_openai_compatible",
+            "main_routers.config_router.connectivity._test_openai_compatible",
             side_effect=fake_test,
         ):
             req = ConnectivityTestRequest(
@@ -254,10 +254,10 @@ class TestSchemaValidation:
         }
 
         with patch("utils.api_config_loader.get_config", return_value=fake_config), patch(
-            "main_routers.config_router._test_anthropic",
+            "main_routers.config_router.connectivity._test_anthropic",
             new=AsyncMock(return_value={"success": True}),
         ) as mock_anthropic, patch(
-            "main_routers.config_router._test_openai_compatible",
+            "main_routers.config_router.connectivity._test_openai_compatible",
             new=AsyncMock(return_value={"success": True}),
         ) as mock_openai:
             req = ConnectivityTestRequest(
@@ -289,10 +289,10 @@ class TestSchemaValidation:
         }
 
         with patch("utils.api_config_loader.get_config", return_value=fake_config), patch(
-            "main_routers.config_router._test_anthropic",
+            "main_routers.config_router.connectivity._test_anthropic",
             new=AsyncMock(return_value={"success": True}),
         ) as mock_anthropic, patch(
-            "main_routers.config_router._test_openai_compatible",
+            "main_routers.config_router.connectivity._test_openai_compatible",
             new=AsyncMock(return_value={"success": True}),
         ) as mock_openai:
             req = ConnectivityTestRequest(
@@ -330,7 +330,7 @@ class TestSchemaValidation:
         }
 
         with patch("utils.api_config_loader.get_config", return_value=fake_config), patch(
-            "main_routers.config_router._test_openai_compatible",
+            "main_routers.config_router.connectivity._test_openai_compatible",
             side_effect=fake_test,
         ):
             req = ConnectivityTestRequest(
@@ -358,7 +358,7 @@ class TestSchemaValidation:
         }
 
         with patch("utils.api_config_loader.get_config", return_value=fake_config), patch(
-            "main_routers.config_router._test_openai_compatible",
+            "main_routers.config_router.connectivity._test_openai_compatible",
             new_callable=AsyncMock,
         ) as mock_http:
             req = ConnectivityTestRequest(
@@ -398,7 +398,7 @@ class TestSchemaValidation:
         }
 
         with patch("utils.api_config_loader.get_config", return_value=fake_config), patch(
-            "main_routers.config_router._test_websocket",
+            "main_routers.config_router.connectivity._test_websocket",
             side_effect=fake_test,
         ):
             req = ConnectivityTestRequest(
@@ -447,7 +447,7 @@ class TestSchemaValidation:
         }
 
         with patch("utils.api_config_loader.get_config", return_value=fake_config), patch(
-            "main_routers.config_router._test_websocket",
+            "main_routers.config_router.connectivity._test_websocket",
             side_effect=fake_test,
         ):
             result = await _auto_resolve_provider_urls_for_save(core_cfg)
@@ -493,7 +493,7 @@ class TestSchemaValidation:
         }
 
         with patch("utils.api_config_loader.get_config", return_value=fake_config), patch(
-            "main_routers.config_router._test_openai_compatible",
+            "main_routers.config_router.connectivity._test_openai_compatible",
             side_effect=fake_test,
         ):
             result = await _auto_resolve_provider_urls_for_save(core_cfg)
@@ -532,7 +532,7 @@ class TestSchemaValidation:
         }
 
         with patch("utils.api_config_loader.get_config", return_value=fake_config), patch(
-            "main_routers.config_router._test_openai_compatible",
+            "main_routers.config_router.connectivity._test_openai_compatible",
             new_callable=AsyncMock,
         ) as mock_test:
             result = await _auto_resolve_provider_urls_for_save(
@@ -575,7 +575,7 @@ class TestSchemaValidation:
         }
 
         with patch("utils.api_config_loader.get_config", return_value=fake_config), patch(
-            "main_routers.config_router._test_openai_compatible",
+            "main_routers.config_router.connectivity._test_openai_compatible",
             new_callable=AsyncMock,
             return_value={"success": False, "error": "auth_failed", "error_code": "auth_failed"},
         ):
@@ -618,7 +618,7 @@ class TestSchemaValidation:
         }
 
         with patch("utils.api_config_loader.get_config", return_value=fake_config), patch(
-            "main_routers.config_router._test_openai_compatible",
+            "main_routers.config_router.connectivity._test_openai_compatible",
             new_callable=AsyncMock,
             return_value={"success": False, "error": "auth_failed", "error_code": "auth_failed"},
         ):
@@ -663,7 +663,7 @@ class TestSchemaValidation:
         }
 
         with patch("utils.api_config_loader.get_config", return_value=fake_config), patch(
-            "main_routers.config_router._test_openai_compatible",
+            "main_routers.config_router.connectivity._test_openai_compatible",
             new_callable=AsyncMock,
         ) as mock_test:
             result = await _auto_resolve_provider_urls_for_save(core_cfg)
@@ -1106,7 +1106,7 @@ class TestConcurrency:
             return {"success": True}
 
         with patch(
-            "main_routers.config_router._test_openai_compatible",
+            "main_routers.config_router.connectivity._test_openai_compatible",
             side_effect=mock_test_openai,
         ):
             requests = [
@@ -1134,7 +1134,7 @@ class TestConcurrency:
             return {"success": True}
 
         with patch(
-            "main_routers.config_router._test_websocket",
+            "main_routers.config_router.connectivity._test_websocket",
             side_effect=mock_test_ws,
         ):
             requests = [
@@ -1165,11 +1165,11 @@ class TestConcurrency:
 
         with (
             patch(
-                "main_routers.config_router._test_openai_compatible",
+                "main_routers.config_router.connectivity._test_openai_compatible",
                 side_effect=mock_test_openai,
             ),
             patch(
-                "main_routers.config_router._test_websocket",
+                "main_routers.config_router.connectivity._test_websocket",
                 side_effect=mock_test_ws,
             ),
         ):
@@ -1205,7 +1205,7 @@ class TestConcurrency:
             return {"success": True}
 
         with patch(
-            "main_routers.config_router._test_openai_compatible",
+            "main_routers.config_router.connectivity._test_openai_compatible",
             side_effect=mock_test_openai,
         ):
             requests = [
@@ -1242,7 +1242,7 @@ class TestEndpointExceptionHandling:
     async def test_unexpected_exception_returns_unknown(self):
         """If the helper raises an unexpected exception, endpoint returns unknown."""
         with patch(
-            "main_routers.config_router._test_openai_compatible",
+            "main_routers.config_router.connectivity._test_openai_compatible",
             new_callable=AsyncMock,
             side_effect=RuntimeError("totally unexpected"),
         ):
@@ -1257,7 +1257,7 @@ class TestEndpointExceptionHandling:
     async def test_provider_type_case_insensitive(self):
         """provider_type is case-insensitive (e.g. 'WebSocket' → websocket)."""
         with patch(
-            "main_routers.config_router._test_websocket",
+            "main_routers.config_router.connectivity._test_websocket",
             new_callable=AsyncMock,
             return_value={"success": True},
         ) as mock_ws:
@@ -1273,7 +1273,7 @@ class TestEndpointExceptionHandling:
     async def test_is_free_passed_to_openai_compatible(self):
         """is_free flag is forwarded to _test_openai_compatible."""
         with patch(
-            "main_routers.config_router._test_openai_compatible",
+            "main_routers.config_router.connectivity._test_openai_compatible",
             new_callable=AsyncMock,
             return_value={"success": True},
         ) as mock_http:
@@ -1412,10 +1412,10 @@ class TestVllmOmniWsHandshake:
         _test_vllm_omni_ws_handshake instead of _test_websocket. This is the
         core contract behind the connectivity-mis-detection fix."""
         with patch(
-            "main_routers.config_router._test_vllm_omni_ws_handshake",
+            "main_routers.config_router.connectivity._test_vllm_omni_ws_handshake",
             new=AsyncMock(return_value={"success": True}),
         ) as mock_handshake, patch(
-            "main_routers.config_router._test_websocket",
+            "main_routers.config_router.connectivity._test_websocket",
             new=AsyncMock(return_value={"success": True}),
         ) as mock_realtime_ws:
             req = ConnectivityTestRequest(
@@ -1442,9 +1442,12 @@ class TestVllmOmniWsHandshake:
             })
             return {"success": True}
 
-        monkeypatch.setattr(config_router, "_test_doubao_tts_connectivity", fake_probe)
+        monkeypatch.setattr(
+            "main_routers.config_router.connectivity._test_doubao_tts_connectivity",
+            fake_probe,
+        )
         with patch(
-            "main_routers.config_router._test_openai_compatible",
+            "main_routers.config_router.connectivity._test_openai_compatible",
             new=AsyncMock(return_value={"success": False}),
         ) as mock_openai:
             req = ConnectivityTestRequest(
@@ -1471,10 +1474,10 @@ class TestVllmOmniWsHandshake:
         still routes to _test_websocket (the OpenAI Realtime path) so genuine
         Realtime providers like Qwen Realtime / Step are not hit by mistake."""
         with patch(
-            "main_routers.config_router._test_vllm_omni_ws_handshake",
+            "main_routers.config_router.connectivity._test_vllm_omni_ws_handshake",
             new=AsyncMock(return_value={"success": True}),
         ) as mock_handshake, patch(
-            "main_routers.config_router._test_websocket",
+            "main_routers.config_router.connectivity._test_websocket",
             new=AsyncMock(return_value={"success": True}),
         ) as mock_realtime_ws:
             req = ConnectivityTestRequest(
@@ -1538,10 +1541,10 @@ class TestVllmOmniWsHandshake:
         built-in provider via sub_type injection.
         (#1764 review round 6 - gating at config_router.py line ~1937-1942)"""
         with patch(
-            "main_routers.config_router._test_vllm_omni_ws_handshake",
+            "main_routers.config_router.connectivity._test_vllm_omni_ws_handshake",
             new=AsyncMock(return_value={"success": True}),
         ) as mock_handshake, patch(
-            "main_routers.config_router._test_websocket",
+            "main_routers.config_router.connectivity._test_websocket",
             new=AsyncMock(return_value={"success": True}),
         ) as mock_realtime_ws:
             # Mode 1 built-in: qwen + scope=core resolves to provider_type="websocket"
