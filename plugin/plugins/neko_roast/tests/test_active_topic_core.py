@@ -92,6 +92,27 @@ def test_inferred_food_family_does_not_drift_to_live_column_pack() -> None:
     assert active_topic_pack.active_topic_pack(material) == "food_drink"
 
 
+def test_inferred_room_mood_family_does_not_drift_to_live_column_pack() -> None:
+    material = {
+        "title": "weather mood",
+        "live_column": "NEKO micro poll",
+    }
+
+    assert active_topic_material_family.host_material_family(material) == "room_mood"
+    assert active_topic_pack.active_topic_pack(material) == "room_mood"
+
+
+def test_ambiguous_family_still_allows_live_column_pack_override() -> None:
+    material = {
+        "title": "plain topic",
+        "fun_axis": "general",
+        "live_column": "NEKO micro poll",
+    }
+
+    assert active_topic_material_family.host_material_family(material) == "general"
+    assert active_topic_pack.active_topic_pack(material) == "micro_poll"
+
+
 @pytest.mark.parametrize(
     "text",
     (
