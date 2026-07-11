@@ -2,11 +2,11 @@
 
 > 历史说明：对应测试剧本 JSON 已因内容质量不达标而删除，本文仅保留为历史设计记录，不再代表当前可运行内容。
 
-## 当前状态
+## 历史状态
 
-本文档是小剧场系统的第二条测试剧情设计，已整理为 `config/theater/stories/rainy_window_test_story.json`，用于验证小剧场页面的故事选择、更换剧场能力，以及 Story Package NSN v2 图路由。当前可以通过 `/api/theater/stories` 出现在故事列表中，也可以通过 `story_id: rainy_window_test_story` 启动。
+对应的 `config/theater/stories/rainy_window_test_story.json` 已删除。本文档只记录当时用于验证故事选择和 Story Package NSN v2 图路由的设计，不属于当前故事列表，也不能再通过 API 启动。
 
-用途：
+历史用途：
 
 1. 验证 `/theater` 页面能展示多条故事。
 2. 验证用户在开始前切换故事后，前端会更新 story summary 和 `story_id`。
@@ -41,9 +41,9 @@ rainy_window_test_story
 - 场景更偏陪伴和安抚，便于观察 Persona 回复是否随故事变化。
 - 分支由 NSN v2 节点和边约束雨夜陪伴、边界冲突和小剧场内约定。
 
-## Story Package 要求
+## 历史 Story Package 设计
 
-当前 JSON 已覆盖：
+已删除的 JSON 当时覆盖：
 
 1. `background`：限定故事只发生在小剧场内的雨夜停电情境。
 2. `theme`：不安不需要被戳破，也可以被一起守住。
@@ -54,9 +54,9 @@ rainy_window_test_story
 7. `style_settings`：中等旁白密度、短对白、柔和情绪、第三人称限制视角。
 8. `initial_state`：setup 阶段起步，结局吸引为空。
 
-## 旧 Event Pool 已删除
+## 历史 Event Pool 迁移记录
 
-`rainy_window_test_story.json` 不再携带 `event_pool`。旧事件含义已经拆进 NSN 节点：
+该 JSON 删除前的最后版本已不再携带 `event_pool`，旧事件含义当时已拆进 NSN 节点：
 
 1. `rain_lamp_search` → `node_rain_lamp_search`。
 2. `quiet_rain_promise` → `node_quiet_rain_promise`。
@@ -131,14 +131,6 @@ rainy_window_test_story
 4. `avoidance_rainy_window`：用户选择离开、独自处理或保持距离。
 5. `conflict_rainy_window`：用户嘲笑、强迫或否定猫娘的不安。
 
-## 验收点
+## 已停用的历史验收点
 
-- 故事列表中出现 `rainy_window_test_story`。
-- 下拉选择此故事后，舞台摘要变成雨窗剧情摘要。
-- 点击开始后，后端返回 `story_id: rainy_window_test_story`。
-- 初始 scene 为 `r_setup_rainy_window`。
-- 不写 ordinary memory。
-- 不暴露 Anchor、phase、scene_id 等内部机制给普通用户。
-- Story Loader 能读到 `schema_version: "2.0.0"`、`seed`、`narrative_nodes`、`edges` 和 `ending_attractors`。
-- Story Loader 确认故事不再携带旧 `event_pool`。
-- 启动后按钮来自 active node 的可达目标节点，而不是旧事件池建议。
+以下项目仅说明该测试剧本删除前曾覆盖的范围，不再作为当前版本验收入口：故事切换、雨窗摘要、初始 Scene、普通记忆隔离、内部字段隐藏、NSN v2 字段加载和图路由按钮生成。当前验收只以正式剧本及其自动化测试为准。

@@ -71,6 +71,14 @@ def scene_for_phase(story: dict[str, Any], phase: str) -> dict[str, Any]:
     return scenes[0] if scenes else {"id": phase or "setup", "phase": phase or "setup", "title": "", "text": ""}
 
 
+def scene_by_id(story: dict[str, Any], scene_id: str) -> dict[str, Any]:
+    """按稳定 ID 读取场景，不用 phase 猜测作者指定的开场。"""  # noqa: DOCSTRING_CJK
+    for scene in story.get("scenes") or []:
+        if isinstance(scene, dict) and str(scene.get("id") or "") == str(scene_id or ""):
+            return scene
+    return {}
+
+
 def initial_node_id(story: dict[str, Any]) -> str:
     """取得静态图入口；优先选择 setup 阶段的 seed 节点。"""  # noqa: DOCSTRING_CJK
     nodes = [node for node in story.get("narrative_nodes") or [] if isinstance(node, dict)]
@@ -101,6 +109,12 @@ def _validate_story(story: dict[str, Any], path: Path) -> dict[str, Any]:
     missing = [key for key in required if not story.get(key)]
     if missing:
         raise ValueError(f"Theater story {path} missing fields: {', '.join(missing)}")
+    scenes = [scene for scene in story.get("scenes") or [] if isinstance(scene, dict)]
+    scene_ids = [str(scene.get("id") or "") for scene in scenes]
+    if not scene_ids or any(not scene_id for scene_id in scene_ids) or len(scene_ids) != len(set(scene_ids)):
+        raise ValueError(f"Theater story {path} has invalid or duplicate scene ids")
+    if str(story.get("initial_scene_id") or "") not in scene_ids:
+        raise ValueError(f"Theater story {path} initial scene references unknown scene")
     nodes = [node for node in story.get("narrative_nodes") or [] if isinstance(node, dict)]
     node_ids = [str(node.get("node_id") or "") for node in nodes]
     if not node_ids or any(not node_id for node_id in node_ids) or len(node_ids) != len(set(node_ids)):

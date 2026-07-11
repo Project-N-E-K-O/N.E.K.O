@@ -56,6 +56,61 @@ async def test_choice_roleplay_restore_and_exit(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_start_uses_author_initial_scene_id(monkeypatch, tmp_path):
+    """同一 phase 有多个场景时，开场必须使用作者指定的 initial_scene_id。"""  # noqa: DOCSTRING_CJK
+    story = {
+        "id": "scene-choice",
+        "title": "场景选择测试",
+        "initial_scene_id": "scene_selected",
+        "opening_dialogue": "从指定场景开始喵。",
+        "scenes": [
+            {"id": "scene_wrong", "phase": "setup", "title": "错误场景", "text": "不应显示"},
+            {"id": "scene_selected", "phase": "setup", "title": "指定场景", "text": "正确开场"},
+        ],
+        "narrative_nodes": [
+            {"node_id": "node_start", "belong_phase": "setup", "node_type": "seed", "state_diff": {"add": []}}
+        ],
+        "edges": [],
+    }
+
+    async def _load_story(_story_id):
+        """返回包含同 phase 多场景的可控故事。"""  # noqa: DOCSTRING_CJK
+        return story
+
+    monkeypatch.setattr(runtime.story_loader, "load_story", _load_story)
+    started = await runtime.start_session(tmp_path / "theater", lanlan_name="测试猫娘")
+    assert started["scene"] == {
+        "scene_id": "scene_selected",
+        "title": "指定场景",
+        "text": "正确开场",
+    }
+
+
+@pytest.mark.asyncio
+async def test_management_end_and_expiry_keep_public_phase_consistent(tmp_path):
+    """管理结束和过期清理都必须同步内部与公开的 ended 状态。"""  # noqa: DOCSTRING_CJK
+    root = tmp_path / "theater"
+    manually_started = await runtime.start_session(root, lanlan_name="手动结束猫娘")
+    assert (await runtime.end_session(root, session_id=manually_started["session_id"]))["ok"] is True
+    manual_state = await runtime.get_state(root, manually_started["session_id"])
+    assert manual_state["phase"] == "ended"
+    assert manual_state["can_resume"] is False
+
+    expired_started = await runtime.start_session(root, lanlan_name="过期猫娘")
+    expired_session = await session_store.load_session(root, expired_started["session_id"])
+    expired_session["updated_at"] = 1
+    await session_store.save_session(root, expired_session)
+    cleanup_now = runtime.THEATER_SESSION_TTL_MS + 2
+    assert await runtime.cleanup_expired_sessions(root, now_ms=cleanup_now) == {"expired": 1}
+    expired_state = await runtime.get_state(root, expired_started["session_id"])
+    assert expired_state["phase"] == "ended"
+    assert expired_state["can_resume"] is False
+    saved_expired = await session_store.load_session(root, expired_started["session_id"])
+    assert saved_expired["phase"] == "ended"
+    assert saved_expired["updated_at"] == cleanup_now
+
+
+@pytest.mark.asyncio
 async def test_idempotency_and_revision_conflict(tmp_path):
     """重复请求回放首次结果，旧 revision 不得覆盖新状态。"""  # noqa: DOCSTRING_CJK
     root = tmp_path / "theater"
@@ -81,6 +136,44 @@ async def test_idempotency_and_revision_conflict(tmp_path):
         base_revision=0,
     )
     assert conflict == {"ok": False, "reason": "state_revision_conflict", "retryable": True, "state_revision": 1}
+
+
+@pytest.mark.asyncio
+async def test_concurrent_start_retry_reuses_one_session(tmp_path):
+    """同一开场幂等 ID 的并发请求只能创建并返回一个 Session。"""  # noqa: DOCSTRING_CJK
+    root = tmp_path / "theater"
+    results = await asyncio.gather(
+        runtime.start_session(root, lanlan_name="测试猫娘", client_start_id="start_same"),
+        runtime.start_session(root, lanlan_name="测试猫娘", client_start_id="start_same"),
+    )
+    assert results[0] == results[1]
+    assert len(await session_store.list_session_ids(root)) == 1
+    saved = await session_store.load_session(root, results[0]["session_id"])
+    assert saved["start_client_id"] == "start_same"
+
+
+@pytest.mark.asyncio
+async def test_active_index_memory_changes_only_after_persistence(monkeypatch, tmp_path):
+    """活动索引写盘失败时不能提前发布只存在于内存的新映射。"""  # noqa: DOCSTRING_CJK
+    root = tmp_path / "theater"
+
+    async def _load_active_sessions(_root):
+        """模拟空的磁盘活动索引。"""  # noqa: DOCSTRING_CJK
+        return {}
+
+    async def _save_active_sessions(_root, _active):
+        """模拟活动索引持久化失败。"""  # noqa: DOCSTRING_CJK
+        raise OSError("disk unavailable")
+
+    monkeypatch.setattr(session_store, "load_active_sessions", _load_active_sessions)
+    monkeypatch.setattr(session_store, "save_active_sessions", _save_active_sessions)
+    with pytest.raises(OSError, match="disk unavailable"):
+        await session_store.set_active_session(
+            root,
+            "持久化失败猫娘",
+            "theater_00000000-0000-0000-0000-000000000001",
+        )
+    assert session_store._ACTIVE_BY_LANLAN.get("持久化失败猫娘") is None
 
 
 @pytest.mark.asyncio
@@ -300,6 +393,7 @@ async def test_tape_story_completes_through_structured_runtime(tmp_path):
     result = await runtime.start_session(root, lanlan_name="测试猫娘", story_id="tape_for_tomorrow_story")
     path = [
         "choice_ask_permission",
+        "choice_play_tape",
         "choice_enter_memory_dialogue",
         "choice_ask_why_push_away",
         "choice_go_broadcast_room",

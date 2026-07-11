@@ -17,6 +17,8 @@ def test_frontend_keeps_action_dialogue_and_structured_turns():
     assert "body.choice_id = selected.choiceId" in script
     assert "base_revision: state.stateRevision" in script
     assert "input_kind: selected ? 'choice' : 'free_input'" in script
+    assert 'data-i18n-aria="theater.inputPlaceholder"' in html
+    assert 'aria-label="输入你想做的事"' in html
 
 
 def test_frontend_renders_story_identity_before_start():
@@ -116,6 +118,9 @@ def test_frontend_restores_and_reuses_frozen_retry_body():
     assert "state_revision_conflict" in script
     assert "session_upgrade_required" in script
     assert "theater.sessionUpgradeRequired" in script
+    assert "client_start_id: createClientStartId()" in script
+    assert "canRetryUnknownResult" in script
+    assert "body.client_turn_id || body.client_start_id" in script
 
 
 def test_locale_files_remain_valid_json():
@@ -124,6 +129,7 @@ def test_locale_files_remain_valid_json():
     for locale in ("en", "es", "ja", "ko", "pt", "ru", "zh-CN", "zh-TW"):
         payload = json.loads((ROOT / "static" / "locales" / f"{locale}.json").read_text(encoding="utf-8"))
         assert "theater" in payload
+        assert payload["settings"]["menu"]["theater"]
         key_sets.append(set(payload["theater"]))
     assert all(keys == key_sets[0] for keys in key_sets)
     script = (ROOT / "static" / "js" / "theater.js").read_text(encoding="utf-8")

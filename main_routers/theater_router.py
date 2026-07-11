@@ -130,6 +130,8 @@ async def start_theater_session(request: Request):
         root,
         lanlan_name=lanlan_name,
         story_id=data.get("story_id"),
+        # 稳定开场 ID 让响应丢失后的网络重试复用同一 Session，而不是重复开场。
+        client_start_id=str(data.get("client_start_id") or ""),
     )
     await _speak_committed_dialogue(result)
     return result

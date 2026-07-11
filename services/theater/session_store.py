@@ -15,6 +15,7 @@ SESSION_SCHEMA_VERSION = 1
 _ACTIVE_BY_LANLAN: dict[str, str] = {}
 _SESSION_LOCKS: dict[str, asyncio.Lock] = {}
 _ACTIVE_INDEX_LOCKS: dict[str, asyncio.Lock] = {}
+_CHARACTER_LOCKS: dict[str, asyncio.Lock] = {}
 
 
 @asynccontextmanager
@@ -35,6 +36,16 @@ async def active_index_guard(root: Path):
         yield
 
 
+@asynccontextmanager
+async def character_guard(root: Path, lanlan_name: str):
+    """串行保护同一猫娘的开场与活动 Session 切换。"""  # noqa: DOCSTRING_CJK
+    # 角色名与运行目录共同组成锁键，测试目录和不同用户数据根不会互相阻塞。
+    lock_key = f"{Path(root).resolve()}::{str(lanlan_name or '').strip()}"
+    lock = _CHARACTER_LOCKS.setdefault(lock_key, asyncio.Lock())
+    async with lock:
+        yield
+
+
 def state_revision(session: dict[str, Any]) -> int:
     """读取非负 revision；旧存档缺失时从零开始。"""  # noqa: DOCSTRING_CJK
     value = session.get("state_revision")
@@ -45,21 +56,23 @@ async def set_active_session(root: Path, lanlan_name: str, session_id: str) -> N
     """记录角色当前小剧场 session，并写入私有 active 索引用于重启恢复。"""  # noqa: DOCSTRING_CJK
     if lanlan_name and session_id:
         async with active_index_guard(root):
-            _ACTIVE_BY_LANLAN[lanlan_name] = session_id
             active = await load_active_sessions(root)
             active[lanlan_name] = session_id
             await save_active_sessions(root, active)
+            # 磁盘提交成功后再更新内存，避免写失败时两份索引分叉。
+            _ACTIVE_BY_LANLAN[lanlan_name] = session_id
 
 
 async def clear_active_session(root: Path, lanlan_name: str, session_id: str) -> None:
     """仅当 session 仍是当前角色 active 时清除 active 索引。"""  # noqa: DOCSTRING_CJK
     async with active_index_guard(root):
-        if lanlan_name and _ACTIVE_BY_LANLAN.get(lanlan_name) == session_id:
-            _ACTIVE_BY_LANLAN.pop(lanlan_name, None)
         active = await load_active_sessions(root)
         if lanlan_name and active.get(lanlan_name) == session_id:
             active.pop(lanlan_name, None)
             await save_active_sessions(root, active)
+        # 只有磁盘状态已经保留或成功清除后，才同步移除对应内存指针。
+        if lanlan_name and _ACTIVE_BY_LANLAN.get(lanlan_name) == session_id:
+            _ACTIVE_BY_LANLAN.pop(lanlan_name, None)
 
 
 async def get_active_session_id(root: Path, lanlan_name: str) -> str:
@@ -172,3 +185,4 @@ def reset_active_sessions_for_tests() -> None:
     _ACTIVE_BY_LANLAN.clear()
     _SESSION_LOCKS.clear()
     _ACTIVE_INDEX_LOCKS.clear()
+    _CHARACTER_LOCKS.clear()

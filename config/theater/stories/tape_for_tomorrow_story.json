@@ -162,6 +162,12 @@
       },
       "suggestions": [
         {
+          "choice_id": "choice_wait_for_permission",
+          "choice_mode": "action",
+          "label": "把手停在播放键旁，等她亲自决定",
+          "callback": "你没有碰播放键，只把手收回桌边，等猫娘自己作出决定。"
+        },
+        {
           "choice_id": "choice_ask_permission",
           "choice_mode": "dialogue",
           "label": "“如果你不想听，我们就先不按播放。”",
@@ -493,12 +499,8 @@
       "to_node": "node_ask_permission"
     },
     {
-      "from_node": "node_archive_setup",
-      "to_node": "node_play_tape"
-    },
-    {
       "from_node": "node_ask_permission",
-      "to_node": "node_memory_arrival"
+      "to_node": "node_play_tape"
     },
     {
       "from_node": "node_play_tape",

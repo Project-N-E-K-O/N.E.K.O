@@ -26,8 +26,42 @@ async def start_session(
     *,
     lanlan_name: str,
     story_id: str | None = None,
+    client_start_id: str = "",
 ) -> dict[str, Any]:
-    """创建使用唯一轻量演绎链的单猫娘 Session。"""  # noqa: DOCSTRING_CJK
+    """按角色串行创建 Session；提供开场 ID 时复用已提交结果。"""  # noqa: DOCSTRING_CJK
+    normalized_start_id = str(client_start_id or "").strip()
+    if len(normalized_start_id) > 160:
+        return {"ok": False, "reason": "invalid_client_start_id"}
+    normalized_name = str(lanlan_name or "Lan").strip() or "Lan"
+    async with session_store.character_guard(root, normalized_name):
+        if normalized_start_id:
+            active_session_id = await session_store.get_active_session_id(root, normalized_name)
+            active_session = await session_store.load_session(root, active_session_id) if active_session_id else None
+            snapshot = active_session.get("public_snapshot") if isinstance(active_session, dict) else None
+            if (
+                isinstance(active_session, dict)
+                and active_session.get("start_client_id") == normalized_start_id
+                and not active_session.get("ended_at")
+                and isinstance(snapshot, dict)
+            ):
+                # 网络重试直接复用已提交快照；TTS revision 认领会继续保证开场对白不重播。
+                return deepcopy(snapshot)
+        return await _create_session(
+            root,
+            lanlan_name=normalized_name,
+            story_id=story_id,
+            start_client_id=normalized_start_id,
+        )
+
+
+async def _create_session(
+    root: Path,
+    *,
+    lanlan_name: str,
+    story_id: str | None,
+    start_client_id: str,
+) -> dict[str, Any]:
+    """在角色锁内创建、保存并切换活动 Session。"""  # noqa: DOCSTRING_CJK
     story = await story_loader.load_story(story_id)
     node_id = story_loader.initial_node_id(story)
     node = story_graph.node_by_id(story, node_id)
@@ -40,13 +74,14 @@ async def start_session(
     # 开场节点是已经发生的作者事实，因此在返回首组选项前先提交一次。
     rules.apply_node(story, state, node)
     phase = str(node.get("belong_phase") or "setup")
-    scene = story_loader.scene_for_phase(story, phase)
+    scene = story_loader.scene_by_id(story, str(story.get("initial_scene_id") or ""))
     opening_dialogue = str(story.get("opening_dialogue") or f"{lanlan_name}已经准备好和你一起开始了喵。")
     session: dict[str, Any] = {
         "schema_version": session_store.SESSION_SCHEMA_VERSION,
         "session_id": session_id,
         "story_id": str(story.get("id") or ""),
         "lanlan_name": str(lanlan_name or "Lan"),
+        "start_client_id": start_client_id,
         "phase": phase,
         "story_state": state,
         "turns": [{"role": "assistant", "text": opening_dialogue, "narration": str(scene.get("text") or ""), "created_at": now}],
@@ -187,6 +222,7 @@ async def end_session(root: Path, *, session_id: str) -> dict[str, Any]:
             if isinstance(snapshot, dict):
                 snapshot["can_resume"] = False
                 snapshot["suggestion_options"] = []
+                snapshot["phase"] = "ended"
             await session_store.save_session(root, session)
         await session_store.clear_active_session(
             root,
@@ -222,10 +258,13 @@ async def cleanup_expired_sessions(root: Path, *, now_ms: int | None = None) -> 
             if not updated_at or now - updated_at <= THEATER_SESSION_TTL_MS:
                 continue
             session["ended_at"] = now
+            session["updated_at"] = now
+            session["phase"] = "ended"
             snapshot = session.get("public_snapshot")
             if isinstance(snapshot, dict):
                 snapshot["can_resume"] = False
                 snapshot["suggestion_options"] = []
+                snapshot["phase"] = "ended"
             await session_store.save_session(root, session)
             await session_store.clear_active_session(
                 root,

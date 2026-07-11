@@ -2549,7 +2549,7 @@
         "title": "소극장",
         "kicker": "Lanlan Theater",
         "loading": "무대를 준비하는 중...",
-        "ready": "준비 중",
+        "ready": "준비 완료",
         "running": "진행 중",
         "ended": "종료됨",
         "failed": "문제가 발생했습니다",
@@ -2596,6 +2596,7 @@
             "apiSettings": "API 설정",
             "language": "언어",
             "general": "일반",
+            "theater": "소극장",
             "mediaCredentials": "미디어 자격 증명 설정",
             "characterCardManager": "캐릭터 카드 관리"
         },

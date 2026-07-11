@@ -53,6 +53,7 @@ async def test_tape_story_has_bounded_world_and_reachable_ending():
     rules.apply_node(story, state, story_graph.current_node(story, state))
     selected_path = [
         "choice_ask_permission",
+        "choice_play_tape",
         "choice_enter_memory_dialogue",
         "choice_ask_why_push_away",
         "choice_go_broadcast_room",
@@ -81,6 +82,8 @@ async def test_long_romance_story_has_twenty_plus_playable_rounds():
     restrictions = "".join(story.get("restrictions") or [])
     assert "当代都市爱情" in restrictions
     assert "只有玩家与当前猫娘" in restrictions
+    assert "二十八个回合" in story["summary"]
+    assert "二十八个可推进回合" in "".join(story["scenario_card"]["rules"])
     state = rules.initial_state(story, initial_node_id=story_loader.initial_node_id(story))
     rules.apply_node(story, state, story_graph.current_node(story, state))
 
@@ -139,4 +142,20 @@ async def test_loader_rejects_unknown_edge_reference(tmp_path: Path):
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="unknown node"):
+        await story_loader.list_stories(story_dir=tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_loader_rejects_unknown_initial_scene_reference(tmp_path: Path):
+    """开场场景 ID 必须真实存在，不能静默回退到同 phase 的其他场景。"""  # noqa: DOCSTRING_CJK
+    story_path = tmp_path / "broken-scene.json"
+    story_path.write_text(
+        '{"id":"broken-scene","title":"坏场景","initial_scene_id":"missing",'
+        '"scenes":[{"id":"setup","phase":"setup"}],'
+        '"narrative_nodes":[{"node_id":"start","belong_phase":"setup","node_type":"seed"},'
+        '{"node_id":"end","belong_phase":"ending","node_type":"ending"}],'
+        '"edges":[{"from_node":"start","to_node":"end"}]}',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="initial scene references unknown scene"):
         await story_loader.list_stories(story_dir=tmp_path)

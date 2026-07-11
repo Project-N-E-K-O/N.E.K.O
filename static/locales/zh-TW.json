@@ -2549,7 +2549,7 @@
         "title": "小劇場",
         "kicker": "Lanlan Theater",
         "loading": "正在準備舞台...",
-        "ready": "準備中",
+        "ready": "就緒",
         "running": "演出中",
         "ended": "已結束",
         "failed": "出錯了",
@@ -2596,6 +2596,7 @@
             "apiSettings": "API設置",
             "language": "語言",
             "general": "通用設置",
+            "theater": "小劇場",
             "mediaCredentials": "媒體憑證資訊",
             "characterCardManager": "角色卡管理"
         },

@@ -2596,6 +2596,7 @@
             "apiSettings": "Настройки API",
             "language": "Язык",
             "general": "Общие",
+            "theater": "Театр",
             "mediaCredentials": "Настройка медиа-учётных данных",
             "characterCardManager": "Управление карточками персонажей"
         },

@@ -2596,6 +2596,7 @@
             "apiSettings": "API Settings",
             "language": "Language",
             "general": "General",
+            "theater": "Theater",
             "mediaCredentials": "Media Credentials",
             "characterCardManager": "Character Card Manager"
         },

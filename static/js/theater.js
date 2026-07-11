@@ -76,7 +76,10 @@
     async function requestJson(url, options) {
         const requestOptions = options || {};
         const method = requestOptions.method || 'GET';
-        // 首次发送前冻结请求体，网络重试必须复用同一个 client_turn_id。
+        const body = requestOptions.body || null;
+        // 只有 GET 或携带稳定幂等 ID 的写请求允许在结果未知时自动重发。
+        const canRetryUnknownResult = method === 'GET' || Boolean(body && (body.client_turn_id || body.client_start_id));
+        // 首次发送前冻结请求体，网络重试必须复用同一个幂等 ID。
         const serializedBody = requestOptions.body ? JSON.stringify(requestOptions.body) : undefined;
 
         async function send() {
@@ -89,10 +92,10 @@
         try {
             response = await send();
         } catch (_) {
-            if (method === 'GET') throw _;
+            if (!canRetryUnknownResult) throw _;
             response = await send();
         }
-        if (method !== 'GET' && [502, 503, 504].includes(response.status)) response = await send();
+        if (canRetryUnknownResult && [502, 503, 504].includes(response.status)) response = await send();
         if (response.status === 403 && method !== 'GET' && window.nekoLocalMutationSecurity &&
             typeof window.nekoLocalMutationSecurity.refreshToken === 'function') {
             await window.nekoLocalMutationSecurity.refreshToken();
@@ -350,6 +353,14 @@
         return 'turn_web_' + value;
     }
 
+    // 每次点击开始只生成一个稳定 ID，同一次请求的网络重试必须复用它。
+    function createClientStartId() {
+        const value = window.crypto && typeof window.crypto.randomUUID === 'function'
+            ? window.crypto.randomUUID()
+            : Math.random().toString(36).slice(2) + Date.now().toString(36);
+        return 'start_web_' + value;
+    }
+
     // 先按本地指针恢复，失败后再查询当前猫娘的服务端 active Session。
     async function restoreActiveSession(preferredSessionId) {
         const preferred = String(preferredSessionId || rememberedSession() || '').trim();
@@ -407,7 +418,10 @@
         if (state.busy) return;
         setBusy(true);
         try {
-            const result = await requestJson(api.start, { method: 'POST', body: { story_id: state.storyId } });
+            const result = await requestJson(api.start, {
+                method: 'POST',
+                body: { story_id: state.storyId, client_start_id: createClientStartId() }
+            });
             if (!result || !result.ok) throw new Error('start');
             $('theater-log').textContent = '';
             state.inputClosed = false;

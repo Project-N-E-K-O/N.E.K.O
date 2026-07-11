@@ -35,7 +35,7 @@ AUTHORITATIVE_STATE_KEYS = (
 @pytest.mark.parametrize(
     ("story_id", "choice_turns", "ending_id"),
     (
-        ("tape_for_tomorrow_story", 7, "ending_tape_for_tomorrow"),
+        ("tape_for_tomorrow_story", 8, "ending_tape_for_tomorrow"),
         ("always_like_you_story", 28, "ending_meet_again_before_evening_wind"),
     ),
 )

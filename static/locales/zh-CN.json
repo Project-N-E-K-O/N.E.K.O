@@ -2549,7 +2549,7 @@
         "title": "小剧场",
         "kicker": "Lanlan Theater",
         "loading": "正在准备舞台...",
-        "ready": "准备中",
+        "ready": "就绪",
         "running": "演出中",
         "ended": "已结束",
         "failed": "出错了",
@@ -2596,6 +2596,7 @@
             "apiSettings": "API设置",
             "language": "语言",
             "general": "通用设置",
+            "theater": "小剧场",
             "mediaCredentials": "配置媒体凭证",
             "characterCardManager": "角色卡管理"
         },
