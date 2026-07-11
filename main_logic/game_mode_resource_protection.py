@@ -217,30 +217,8 @@ def collect_resource_sample() -> MetricSample:
     return sample
 
 
-async def broadcast_game_mode_event(payload: dict[str, Any]) -> int:
-    delivered = 0
-    try:
-        from main_routers.shared_state import get_session_manager
-        session_manager = get_session_manager()
-    except Exception as exc:
-        logger.debug("[GameModeBeta] no session manager for broadcast: %s", exc)
-        return 0
-
-    for name in list(session_manager.keys()):
-        try:
-            core = session_manager.get(name)
-            ws = getattr(core, "websocket", None)
-            if ws is None or not hasattr(ws, "send_json"):
-                continue
-            client_state = getattr(ws, "client_state", None)
-            state_name = str(client_state).upper()
-            if client_state is not None and "CONNECTED" not in state_name:
-                continue
-            await ws.send_json(payload)
-            delivered += 1
-        except Exception as exc:
-            logger.debug("[GameModeBeta] broadcast to %s failed: %s", name, exc)
-    return delivered
+async def discard_game_mode_event(_payload: dict[str, Any]) -> int:
+    return 0
 
 
 class GameModeResourceProtector:
@@ -248,7 +226,7 @@ class GameModeResourceProtector:
         self,
         *,
         sampler: Sampler = collect_resource_sample,
-        broadcaster: Broadcaster = broadcast_game_mode_event,
+        broadcaster: Broadcaster = discard_game_mode_event,
         time_fn: Callable[[], float] = time.time,
         store: GameModeSettingsStore | None = None,
     ) -> None:
@@ -270,6 +248,9 @@ class GameModeResourceProtector:
             else None
         )
         self._state = self._new_state()
+
+    def set_broadcaster(self, broadcaster: Broadcaster) -> None:
+        self._broadcaster = broadcaster
 
     @staticmethod
     def _normalize_settings(raw: dict[str, Any] | None) -> dict[str, Any]:

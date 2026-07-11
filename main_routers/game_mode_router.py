@@ -13,8 +13,36 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 
 from main_logic.game_mode_resource_protection import protector
+from main_routers.shared_state import get_session_manager
 
 router = APIRouter()
+
+
+async def broadcast_game_mode_event(payload: dict[str, Any]) -> int:
+    delivered = 0
+    try:
+        session_manager = get_session_manager()
+    except Exception:
+        return 0
+
+    for name in list(session_manager.keys()):
+        try:
+            core = session_manager.get(name)
+            ws = getattr(core, "websocket", None)
+            if ws is None or not hasattr(ws, "send_json"):
+                continue
+            client_state = getattr(ws, "client_state", None)
+            state_name = str(client_state).upper()
+            if client_state is not None and "CONNECTED" not in state_name:
+                continue
+            await ws.send_json(payload)
+            delivered += 1
+        except Exception:
+            continue
+    return delivered
+
+
+protector.set_broadcaster(broadcast_game_mode_event)
 
 
 def _coerce_enabled_flag(value: Any) -> bool:
