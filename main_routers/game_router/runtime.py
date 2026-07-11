@@ -3163,7 +3163,12 @@ async def game_chat(game_type: str, request: Request):
 @router.post("/{game_type}/passive-guard")
 async def game_passive_guard(game_type: str, request: Request):
     if game_type != "soccer":
-        return {"ok": False, "reason": f"暂不支持 {game_type} 的 PassiveGuard"}
+        return {
+            "ok": False,
+            "reason": f"暂不支持 {game_type} 的 PassiveGuard",
+            "recommendedAction": "observe_more",
+            "exitPromptType": "none",
+        }
     try:
         data = await request.json()
     except Exception:

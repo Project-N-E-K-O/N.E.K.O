@@ -2659,14 +2659,19 @@
 
   const fallbackStatusState = {
     shown: new Set(),
+    hitCounts: new Map(),
   };
+  const FALLBACK_DIAGNOSTIC_REPEAT_EVERY = 20;
 
   function _recordFallbackDiagnostic(title, options = {}) {
     const cleanTitle = String(title || '小游戏流程').trim();
     const fallbackText = String(options.fallback || '已使用兜底继续运行').trim();
     const reason = String(options.reason || '').trim();
     const key = String(options.key || `${cleanTitle}:${fallbackText}:${reason}`);
-    if (!options.repeat && fallbackStatusState.shown.has(key)) return;
+    const hits = (fallbackStatusState.hitCounts.get(key) || 0) + 1;
+    fallbackStatusState.hitCounts.set(key, hits);
+    const periodicRepeat = hits > 1 && hits % FALLBACK_DIAGNOSTIC_REPEAT_EVERY === 0;
+    if (!options.repeat && fallbackStatusState.shown.has(key) && !periodicRepeat) return;
     fallbackStatusState.shown.add(key);
 
     const message = `${cleanTitle}失败，${fallbackText}${reason ? `（${reason}）` : ''}`;
@@ -2681,6 +2686,8 @@
           title: cleanTitle,
           fallback: fallbackText,
           reason,
+          diagnosticHitCount: hits,
+          periodicRepeat,
           ...options.details,
         },
         false,
@@ -3806,6 +3813,7 @@
     teachingLv3Promoted: false,
     teachingLv2Promoted: false,
     lastDifficultyChange: null,
+    sidecarGeneration: 0,
   };
 
   function _readSurrenderReminderEnabled() {
@@ -3845,6 +3853,7 @@
 
   function _resetPassiveGuardForNewGame() {
     const reminderEnabled = _readSurrenderReminderEnabled();
+    const nextSidecarGeneration = Number(passiveGuard.sidecarGeneration || 0) + 1;
     Object.assign(passiveGuard, {
       surrenderReminderEnabled: reminderEnabled,
       ordinaryDisabledForCurrentGame: !reminderEnabled,
@@ -3868,6 +3877,7 @@
       teachingLv3Promoted: false,
       teachingLv2Promoted: false,
       lastDifficultyChange: null,
+      sidecarGeneration: nextSidecarGeneration,
     });
     if (surrenderReminderToggle) surrenderReminderToggle.checked = reminderEnabled;
     _hideExitPrompt();
@@ -3984,6 +3994,11 @@
     passiveGuard.restSidecar7Called = false;
     passiveGuard.restSidecar8Called = false;
     _passiveGuardLogCounter('rest候选清零', { reason });
+  }
+
+  function _isPassiveGuardSidecarCurrent(sessionId, generation) {
+    return String(sessionId || '') === String(_llm.sessionId || '') &&
+      Number(generation || 0) === Number(passiveGuard.sidecarGeneration || 0);
   }
 
   function _isExitPromptOpen() {
@@ -4143,6 +4158,16 @@
       }
       passiveGuard.ordinaryModalShownThisGame = true;
     } else if (type === 'rest') {
+      if (!passiveGuard.surrenderReminderEnabled) {
+        passiveGuard.restDismissedThisGame = true;
+        _passiveGuardDebugLog('Modal', 'passive_guard_modal', '跳过休息窗口', {
+          action: 'skip',
+          type,
+          reason: 'surrender_reminder_disabled',
+        });
+        console.log(`[Soccer] [PassiveGuard] [Modal] 跳过休息窗口 | 原因=认输/休息提醒关闭 处理=按继续游戏`);
+        return;
+      }
       if (passiveGuard.restModalShownThisGame || passiveGuard.restDismissedThisGame) {
         _passiveGuardDebugLog('Modal', 'passive_guard_modal', '跳过休息窗口', {
           action: 'skip',
@@ -4213,8 +4238,10 @@
   }
 
   async function _requestPassiveGuardSidecar(stage, trigger = {}, extra = {}) {
+    const requestSessionId = _llm.sessionId;
+    const requestGeneration = passiveGuard.sidecarGeneration;
     const body = {
-      session_id: _llm.sessionId,
+      session_id: requestSessionId,
       ...(_llm.routeLanlanName ? { lanlan_name: _llm.routeLanlanName } : {}),
       i18n_language: _currentI18nLang(),
       currentState: SoccerDemo._snapshot(),
@@ -4247,6 +4274,20 @@
         signal: controller.signal,
       });
       const data = await resp.json().catch(() => ({}));
+      if (!_isPassiveGuardSidecarCurrent(requestSessionId, requestGeneration)) {
+        _passiveGuardDebugLog('Sidecar', 'passive_guard_sidecar', '丢弃过期 PassiveGuard sidecar 结果', {
+          action: 'discard_stale_result',
+          stage,
+          promptType: extra.promptType || '',
+          requestSessionId,
+          currentSessionId: _llm.sessionId,
+          requestGeneration,
+          currentGeneration: passiveGuard.sidecarGeneration,
+          elapsedMs: Math.round(performance.now() - started),
+        }, 'warning');
+        console.log(`[Soccer] [PassiveGuard] [Sidecar] 丢弃过期结果 | 阶段=${stage} 请求局=${requestSessionId} 当前局=${_llm.sessionId}`);
+        return { recommendedAction: 'observe_more', exitPromptType: 'none', reasonForDebug: 'stale_sidecar_result' };
+      }
       if (!resp.ok || data.ok === false) {
         _recordFallbackDiagnostic('PassiveGuard 判定', {
           fallback: '继续观察兜底',
@@ -4281,6 +4322,20 @@
       );
       return data;
     } catch (e) {
+      if (!_isPassiveGuardSidecarCurrent(requestSessionId, requestGeneration)) {
+        _passiveGuardDebugLog('Sidecar', 'passive_guard_sidecar', '丢弃过期 PassiveGuard sidecar 异常', {
+          action: 'discard_stale_error',
+          stage,
+          promptType: extra.promptType || '',
+          requestSessionId,
+          currentSessionId: _llm.sessionId,
+          requestGeneration,
+          currentGeneration: passiveGuard.sidecarGeneration,
+          elapsedMs: Math.round(performance.now() - started),
+          error: String(e),
+        }, 'warning');
+        return { recommendedAction: 'observe_more', exitPromptType: 'none', reasonForDebug: 'stale_sidecar_error' };
+      }
       _recordFallbackDiagnostic('PassiveGuard 判定', {
         fallback: '继续观察兜底',
         reason: String(e),
@@ -4510,6 +4565,10 @@
       round: state.round,
       ts: Date.now(),
     };
+    if (from === 'lv4' && to !== 'lv4') {
+      _clearOrdinaryCandidate('difficulty_left_lv4');
+      _clearRestCandidate('difficulty_left_lv4');
+    }
   };
   function _soccerGameMemoryPolicyPayload(enabled = _isGameMemoryEnabled()) {
     return {
@@ -6278,6 +6337,7 @@
   async function _endGameLLMSession(useBeacon = false, options = {}) {
     if (_llm.cleanedUp) return null;
 	    _llm.cleanedUp = true;
+      passiveGuard.sidecarGeneration = Number(passiveGuard.sidecarGeneration || 0) + 1;
 	    _stopRouteDrain();
 	    _clearVoiceArbiterPending('cleanup');
 	    _clearVoiceArbiterInFlight('cleanup');
@@ -6448,13 +6508,13 @@
   });
   exitPromptContinueButton?.addEventListener('click', () => {
     const type = passiveGuard.modalType;
+    if (exitPromptNeverAgain?.checked) {
+      _setSurrenderReminderEnabled(false, { persist: true, source: `modal_never_again_${type || 'unknown'}_continue` });
+    }
     if (type === 'rest') {
       passiveGuard.restDismissedThisGame = true;
       _clearRestCandidate('rest_continue_clicked');
     } else {
-      if (exitPromptNeverAgain?.checked) {
-        _setSurrenderReminderEnabled(false, { persist: true, source: 'modal_never_again_continue' });
-      }
       passiveGuard.ordinaryDisabledForCurrentGame = true;
       _clearOrdinaryCandidate('ordinary_continue_clicked');
     }
@@ -6464,8 +6524,8 @@
   });
   exitPromptEndButton?.addEventListener('click', () => {
     const type = passiveGuard.modalType;
-    if (type !== 'rest' && exitPromptNeverAgain?.checked) {
-      _setSurrenderReminderEnabled(false, { persist: true, source: 'modal_never_again_end' });
+    if (exitPromptNeverAgain?.checked) {
+      _setSurrenderReminderEnabled(false, { persist: true, source: `modal_never_again_${type || 'unknown'}_end` });
     }
     passiveGuard.modalLineToken++;
     _hideExitPrompt();

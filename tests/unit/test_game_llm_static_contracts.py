@@ -170,6 +170,8 @@ def test_soccer_passive_guard_writes_structured_debug_events():
     assert "'passive_guard_state_change'" in html
     assert "PASSIVE_GUARD_DEBUG_LOG_LIMIT_PER_WINDOW = 80" in html
     assert "passiveGuardSentInWindow" in html
+    assert "FALLBACK_DIAGNOSTIC_REPEAT_EVERY = 20" in html
+    assert "fallbackStatusState.hitCounts.set(key, hits)" in html
     assert "const isPassiveGuardLog = payload?.category === 'passive_guard'" in html
     assert "startsWith('passive_guard_')" in html
     assert "PASSIVE_GUARD_SIDE_CAR_TIMEOUT_MS = 7000" in html
@@ -196,13 +198,23 @@ def test_soccer_passive_guard_writes_structured_debug_events():
     )[0]
 
     assert "'passive_guard_state_change'" in set_difficulty_block
+    assert "_clearOrdinaryCandidate('difficulty_left_lv4')" in html
+    assert "_clearRestCandidate('difficulty_left_lv4')" in html
     assert "'passive_guard_state_change'" in set_mood_block
     assert "'passive_guard_sidecar'" in sidecar_block
+    assert "requestSessionId = _llm.sessionId" in sidecar_block
+    assert "requestGeneration = passiveGuard.sidecarGeneration" in sidecar_block
+    assert "discard_stale_result" in sidecar_block
+    assert "stale_sidecar_error" in sidecar_block
+    assert "passiveGuard.sidecarGeneration = Number(passiveGuard.sidecarGeneration || 0) + 1" in html
+    assert "reason: 'surrender_reminder_disabled'" in html
     assert "new AbortController()" in exit_prompt_line_block
     assert "signal: controller.signal" in exit_prompt_line_block
     assert "clearTimeout(timeoutId)" in exit_prompt_line_block
     assert 'provider_type=char_info.get("provider_type")' in passive_guard_backend_block
     assert 'elif action != "prepare_exit_prompt"' not in router_source
+    assert 'f"暂不支持 {game_type} 的 PassiveGuard"' in router_source
+    assert '"recommendedAction": "observe_more"' in router_source
 
 
 @pytest.mark.unit
