@@ -98,6 +98,35 @@ def test_generic_english_roast_targets_are_rejected():
     assert DanmakuResponseModule._target_roast_nickname("roast that Alice") == "Alice"
 
 
+@pytest.mark.parametrize(
+    "request",
+    (
+        "rate content",
+        "roast video",
+        "roast this design",
+        "rate that article",
+        "roast @software",
+    ),
+)
+def test_english_content_objects_are_not_viewer_targets(request: str) -> None:
+    assert DanmakuResponseModule._target_roast_nickname(request) == ""
+    assert DanmakuResponseModule._danmaku_profile(request)["kind"] != (
+        "target_roast_request"
+    )
+
+
+def test_english_roast_verbs_require_complete_words() -> None:
+    request = "celebrate this"
+
+    assert DanmakuResponseModule._target_roast_nickname(request) == ""
+    assert DanmakuResponseModule._looks_like_target_roast_request(
+        request, "".join(request.split())
+    ) is False
+    assert DanmakuResponseModule._danmaku_profile(request)["kind"] != (
+        "target_roast_request"
+    )
+
+
 def test_generic_chinese_roast_targets_are_rejected():
     placeholders = (
         "\u67d0\u4eba",
