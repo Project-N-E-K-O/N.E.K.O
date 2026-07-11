@@ -2264,9 +2264,9 @@ class LLMSessionManager:
             # audio may still be echoed by STT shortly after an interrupt.
             self._discard_pending_ai_voice_echo()
         # Worker providers do not expose one uniform per-speech completion
-        # event. Retire suppression state only after the pipeline has muted and
-        # drained all queued/in-flight audio, never while a turn may still emit.
-        self._speech_primary_suppressed_ids.clear()
+        # event. Keep suppression IDs across an interrupt: a worker callback
+        # may still enqueue a late __audio__ item after both best-effort drains.
+        # Genuine runtime teardown clears the set after the worker/handler stop.
 
     @property
     def is_tts_pipeline_ready(self) -> bool:

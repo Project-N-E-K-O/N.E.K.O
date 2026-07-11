@@ -388,13 +388,13 @@ async def test_suppressed_speech_ids_are_not_discarded_at_legacy_size_limit():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_clear_tts_pipeline_retires_suppressed_speech_ids():
+async def test_clear_tts_pipeline_keeps_suppressed_ids_for_late_worker_audio():
     mgr = _make_manager()
     mgr._speech_primary_suppressed_ids.update({"game-turn-1", "game-turn-2"})
 
     await core_module.LLMSessionManager._clear_tts_pipeline(mgr)
 
-    assert mgr._speech_primary_suppressed_ids == set()
+    assert mgr._speech_primary_suppressed_ids == {"game-turn-1", "game-turn-2"}
 
 
 @pytest.mark.unit

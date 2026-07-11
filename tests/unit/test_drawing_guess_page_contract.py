@@ -437,6 +437,13 @@ def test_drawing_guess_static_route_contract():
     assert "state.pendingAutoGuessImage = snapshot || state.userPng || ''" in script
     assert "triggerRandomAiGuess(autoImage)" in script
     assert "flushDeferredAiGuessWork()" in script
+    assert "continueAfterAiDrawingHalf(res, state.roundFlowToken);" in script
+    assert "if (state.routeEnding || state.phase === 'final_summary') return;" in script
+    assert "res.reason === 'session_busy'" in script
+    assert "setTimeout(retryWhenReady, 180);" in script
+    assert "speechAudioTapReady: false" in script
+    assert "response.type === 'speech_tap_ready'" in script
+    assert "suppress_primary_audio: state.speechAudioTapReady" in script
     assert "if (!isCurrentRoundFlow(flowToken)) return;\n      state.chatInFlight = false;" in script
     assert "if (!isCurrentRoundFlow(flowToken)) return;\n      state.aiGuessInFlight = false;" in script
     assert "resetCanvas();\n        pushCanvasContextForRoute(true);" in script

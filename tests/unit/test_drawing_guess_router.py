@@ -564,6 +564,7 @@ def test_user_guess_extraction_uses_alias_boundaries():
     "is not cat",
     "isn't cat",
     "I think it's not a cat?",
+    "it's not a cat?",
     "I don't think it's a cat?",
     "I do not believe this is a cat?",
     "She doesn't think it's a cat?",

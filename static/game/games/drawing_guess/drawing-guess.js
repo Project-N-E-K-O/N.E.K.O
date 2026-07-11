@@ -40,6 +40,7 @@
     nekoVoiceQueue: [],
     nekoVoiceInFlight: false,
     speechAudioSocket: null,
+    speechAudioTapReady: false,
     speechAudioReconnectTimer: null,
     speechAudioPingTimer: null,
     speechAudioManualClose: false,
@@ -1425,6 +1426,11 @@
     } catch (_) {
       return;
     }
+    if (response && response.type === 'speech_tap_ready') {
+      state.speechAudioTapReady = !!response.ok;
+      if (state.speechAudioTapReady) flushNekoVoiceQueue();
+      return;
+    }
     if (response && response.type === 'audio_chunk') {
       pushSpeechAudioHeader(response);
     }
@@ -1467,6 +1473,7 @@
     if (existing && (existing.readyState === WebSocket.OPEN || existing.readyState === WebSocket.CONNECTING)) return;
     clearSpeechAudioTimers();
     state.speechAudioManualClose = false;
+    state.speechAudioTapReady = false;
     var socket = new WebSocket(speechAudioSocketUrl());
     socket.binaryType = 'blob';
     state.speechAudioSocket = socket;
@@ -1485,6 +1492,7 @@
       if (state.speechAudioSocket === socket) {
         state.speechAudioSocket = null;
       }
+      state.speechAudioTapReady = false;
       clearSpeechAudioTimers();
       scheduleSpeechAudioReconnect();
     };
@@ -1493,6 +1501,7 @@
 
   function stopSpeechAudioSocket() {
     state.speechAudioManualClose = true;
+    state.speechAudioTapReady = false;
     clearSpeechAudioTimers();
     var socket = state.speechAudioSocket;
     state.speechAudioSocket = null;
@@ -1528,7 +1537,7 @@
       mirror_text: false,
       emit_turn_end: true,
       interrupt_audio: false,
-      suppress_primary_audio: true,
+      suppress_primary_audio: state.speechAudioTapReady,
       event: {
         kind: 'drawing_guess_neko_line',
         source: 'drawing_guess',
@@ -2105,7 +2114,7 @@
       addEventMessage('drawingGuess.messages.answerReveal', 'Answer: {{answer}}', {
         answer: res.answer ? res.answer.label : ''
       });
-      continueAfterAiDrawingHalf(res);
+      continueAfterAiDrawingHalf(res, state.roundFlowToken);
       return;
     }
     if (res.kind === 'ai_guess') {
@@ -2167,6 +2176,7 @@
       return;
     }
     if (output.type !== 'game_llm_result') return;
+    if (state.routeEnding || state.phase === 'final_summary') return;
     var result = output.result || {};
     var line = resultLine(result);
     if (line) addNekoMessage(line);
@@ -2808,6 +2818,22 @@
       if (!isCurrentRoundFlow(flowToken)) return;
       stopThinkingEventMessage();
       if (!res || !res.ok) {
+        if (res && res.reason === 'session_busy' && Number((options && options.busy_retry_count) || 0) < 3) {
+          var retryOptions = Object.assign({}, options || {}, {
+            busy_retry_count: Number((options && options.busy_retry_count) || 0) + 1
+          });
+          var retryWhenReady = function () {
+            if (!isCurrentRoundFlow(flowToken)) return;
+            if (state.phase !== 'ai_guessing' && state.phase !== 'ai_guess_feedback') return;
+            if (state.aiGuessInFlight) {
+              setTimeout(retryWhenReady, 120);
+              return;
+            }
+            postVisionGuess(userHint, retryOptions);
+          };
+          setTimeout(retryWhenReady, 180);
+          return;
+        }
         addMessage('drawingGuess.messages.inputFailed', 'Input failed.');
         return;
       }
