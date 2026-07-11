@@ -53,6 +53,8 @@ class VRMManager {
         this._initThreePromise = null;
         this._isDisposed = false;
         this._activeLoadToken = 0;
+        this._pendingModelLoadCount = 0;
+        this._isLoadingModel = false;
         this._loadState = 'idle';
         this._isModelReadyForInteraction = false;
 
@@ -1008,6 +1010,17 @@ class VRMManager {
     }
 
     async loadModel(modelUrl, options = {}) {
+        this._pendingModelLoadCount += 1;
+        this._isLoadingModel = true;
+        try {
+            return await this._loadModelImplementation(modelUrl, options);
+        } finally {
+            this._pendingModelLoadCount = Math.max(0, this._pendingModelLoadCount - 1);
+            this._isLoadingModel = this._pendingModelLoadCount > 0;
+        }
+    }
+
+    async _loadModelImplementation(modelUrl, options = {}) {
         const loadToken = ++this._activeLoadToken;
         this._loadState = 'preparing';
         this._isModelReadyForInteraction = false;

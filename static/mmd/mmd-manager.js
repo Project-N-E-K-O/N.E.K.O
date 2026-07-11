@@ -41,6 +41,8 @@ class MMDManager {
         this._isModelReadyForInteraction = false;
         this._isInReturnState = false;
         this._activeLoadToken = 0;
+        this._pendingModelLoadCount = 0;
+        this._isLoadingModel = false;
         this._modelLoadState = 'idle';
         this._headScreenAnchorProjection = null;
 
@@ -112,6 +114,17 @@ class MMDManager {
     // ═══════════════════ 模型加载 ═══════════════════
 
     async loadModel(modelPath, options = {}) {
+        this._pendingModelLoadCount += 1;
+        this._isLoadingModel = true;
+        try {
+            return await this._loadModelImplementation(modelPath, options);
+        } finally {
+            this._pendingModelLoadCount = Math.max(0, this._pendingModelLoadCount - 1);
+            this._isLoadingModel = this._pendingModelLoadCount > 0;
+        }
+    }
+
+    async _loadModelImplementation(modelPath, options = {}) {
         if (!this.core) throw new Error('MMDCore 未初始化');
 
         this._isModelReadyForInteraction = false;

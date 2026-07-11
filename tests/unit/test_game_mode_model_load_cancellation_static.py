@@ -24,3 +24,11 @@ def test_mmd_cancellation_blocks_default_model_fallback_after_token_invalidation
 
     assert cancellation_guard < fallback
     assert "this._modelLoadState = 'cancelled';" in source
+
+
+def test_vrm_and_mmd_expose_their_full_pending_load_lifecycle():
+    for filename in ("vrm-manager.js", "mmd-manager.js"):
+        source = (ROOT / "static" / filename).read_text(encoding="utf-8")
+        assert "this._pendingModelLoadCount += 1;" in source
+        assert "this._pendingModelLoadCount = Math.max(0, this._pendingModelLoadCount - 1);" in source
+        assert "this._isLoadingModel = this._pendingModelLoadCount > 0;" in source
