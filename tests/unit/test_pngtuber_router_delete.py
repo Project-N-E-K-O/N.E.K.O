@@ -442,9 +442,12 @@ def test_pngtube_remix_child_layers_inherit_parent_z_index(tmp_path):
 
     layers = pngtube_remix._prepare_layers(remix_data)
     by_name = {layer["name"]: layer for layer in layers}
+    # Under the #2130 z-order model, "zindex" keeps each sprite's own raw z while
+    # "effective_zindex" carries the parent-inherited value that drives draw order.
     assert by_name["back-hair"]["zindex"] == -1
-    assert by_name["braid"]["zindex"] == -1
-    assert [layer["name"] for layer in sorted(layers, key=lambda item: (item["zindex"], item["order"]))] == [
+    assert by_name["braid"]["zindex"] == 0
+    assert by_name["braid"]["effective_zindex"] == -1
+    assert [layer["name"] for layer in sorted(layers, key=lambda item: (item["effective_zindex"], item["order"]))] == [
         "back-hair",
         "braid",
         "face",
@@ -453,7 +456,8 @@ def test_pngtube_remix_child_layers_inherit_parent_z_index(tmp_path):
     bounds = pngtube_remix._bounds_for_layers(layers)
     metadata = pngtube_remix._metadata(remix_data, Path("relative-z.pngRemix"), tmp_path, [], layers, bounds)
     metadata_by_name = {layer["name"]: layer for layer in metadata["layers"]}
-    assert metadata_by_name["braid"]["states"][0]["z_index"] == -1
+    assert metadata_by_name["braid"]["states"][0]["z_index"] == 0
+    assert metadata_by_name["braid"]["states"][0]["effective_z_index"] == -1
 
 
 def test_pngtube_remix_root_layers_do_not_inherit_anonymous_z_index(tmp_path):

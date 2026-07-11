@@ -714,6 +714,9 @@ async def get_core_config_api():
         if not _assist_api_provider:
             _assist_api_provider = 'free' if _core_api_provider == 'free' else 'qwen'
         _fallback_providers = {_core_api_provider, _assist_api_provider}
+        _doubao_tts_shared_key = ''
+        if str(core_cfg.get('ttsModelProvider') or '').strip() == 'doubao_tts':
+            _doubao_tts_shared_key = core_cfg.get('ttsModelApiKey', '')
 
         def _fb(provider: str) -> str:
             """Fall back to coreApiKey only when the provider matches the user-selected coreApi/assistApi."""
@@ -734,6 +737,7 @@ async def get_core_config_api():
             "assistApiKeyKimiCode": core_cfg.get('assistApiKeyKimiCode', '') or _fb('kimi_code'),
             "assistApiKeyDeepseek": core_cfg.get('assistApiKeyDeepseek', '') or _fb('deepseek'),
             "assistApiKeyDoubao": core_cfg.get('assistApiKeyDoubao', '') or _fb('doubao'),
+            "assistApiKeyDoubaoTts": core_cfg.get('assistApiKeyDoubaoTts', '') or _doubao_tts_shared_key,
             # MiniMax / MiMo 是 assist-only TTS provider，coreApiKey 不保证兼容；
             # 不 fallback，以免把无效 key 塞进 TTS 凭证槽位导致 401。
             "assistApiKeyMinimax": core_cfg.get('assistApiKeyMinimax', ''),
@@ -885,7 +889,7 @@ async def update_core_config(request: Request):
         _api_key_fields = [
             'assistApiKeyQwen', 'assistApiKeyQwenIntl', 'assistApiKeyOpenai', 'assistApiKeyDeepseek',
             'assistApiKeyGlm', 'assistApiKeyStep', 'assistApiKeySilicon',
-            'assistApiKeyGemini', 'assistApiKeyKimi', 'assistApiKeyDoubao',
+            'assistApiKeyGemini', 'assistApiKeyKimi', 'assistApiKeyDoubao', 'assistApiKeyDoubaoTts',
             'assistApiKeyMinimax', 'assistApiKeyMinimaxIntl', 'assistApiKeyMimo',
             'assistApiKeyMimoTokenPlan', 'assistApiKeyElevenlabs', 'assistApiKeyGrok',
             'assistApiKeyClaude', 'assistApiKeyKimiCode', 'assistApiKeyOpenrouter',
@@ -941,6 +945,12 @@ async def update_core_config(request: Request):
         _incoming_tts_provider = str(data.get('ttsModelProvider', '') or '').strip()
         if _incoming_tts_provider and _incoming_tts_provider != 'gptsovits':
             core_cfg['gptsovitsEnabled'] = False
+        if _incoming_tts_provider == 'doubao_tts':
+            doubao_key = str(core_cfg.get('assistApiKeyDoubaoTts') or '').strip()
+            if doubao_key and '***' not in doubao_key:
+                core_cfg['ttsModelApiKey'] = doubao_key
+            else:
+                core_cfg['ttsModelApiKey'] = ''
         if 'ttsVoiceId' in data:
             core_cfg['ttsVoiceId'] = data['ttsVoiceId']
 
@@ -1062,10 +1072,11 @@ async def get_api_providers_config():
             get_assist_api_providers_for_frontend,
         )
 
-        full_config = get_config()
-        # 使用缓存加载配置（性能更好，配置更新后需要重启服务）
-        core_providers = get_core_api_providers_for_frontend()
-        assist_providers = get_assist_api_providers_for_frontend()
+        full_config = get_config(force_reload=True)
+        # API settings is an admin/config surface; prefer current provider metadata
+        # over stale in-process cache so label/keybook changes show up immediately.
+        core_providers = get_core_api_providers_for_frontend(force_reload=True)
+        assist_providers = get_assist_api_providers_for_frontend(force_reload=True)
 
         # TTS provider 的前端驱动元数据：单一源来自 utils.tts_provider_registry，
         # 避免前端把「哪些 provider 只进 TTS 下拉 / 端点可编辑 / 支持哪些声音来源 /
@@ -1086,6 +1097,7 @@ async def get_api_providers_config():
             "api_key_registry": full_config.get("api_key_registry", {}),
             "assist_api_providers_full": full_config.get("assist_api_providers", {}),
             "core_api_providers_full": full_config.get("core_api_providers", {}),
+            "keybook_api_providers_full": full_config.get("keybook_api_providers", {}),
             "tts_providers": tts_providers,
         }
     except Exception as e:
@@ -1395,11 +1407,11 @@ class ConnectivityTestRequest(BaseModel):
     api_key: Optional[str] = ""
     model: Optional[str] = ""
     provider_type: Optional[str] = "openai_compatible"
-    # Sub-type used to dispatch to a non-Realtime probe when provider_type=='websocket'.
     # Currently the only recognized value is 'vllm_omni_tts'; vLLM-Omni's WebSocket
     # speech endpoint does NOT speak the OpenAI Realtime protocol (no session.update),
     # so it requires a handshake-only probe instead of _test_websocket. (#1764 review 第六轮)
     sub_type: Optional[str] = ""
+    voice_id: Optional[str] = ""
     is_free: Optional[bool] = False
 
 
@@ -1726,6 +1738,55 @@ async def _test_vllm_omni_ws_handshake(url: str, api_key: str) -> dict:
         return {"success": False, "error": f"WebSocket连接失败: {e}", "error_code": "ws_error"}
 
 
+async def _test_doubao_tts_connectivity(url: str, api_key: str, model: str = "", voice_id: str = "") -> dict:
+    import httpx
+    from utils.doubao_tts import (
+        DoubaoTtsError,
+        build_doubao_tts_payload,
+        doubao_api_headers,
+        doubao_tts_url,
+        extract_doubao_audio_bytes,
+        DOUBAO_TTS_DEFAULT_BASE_URL,
+        DOUBAO_TTS_DEFAULT_RESOURCE_ID,
+    )
+
+    speaker = (voice_id or "").strip()
+    if not speaker:
+        return {"success": False, "error": "缺少 Voice ID", "error_code": "missing_params"}
+
+    base_url = (url or DOUBAO_TTS_DEFAULT_BASE_URL).strip()
+    resource_id = (model or DOUBAO_TTS_DEFAULT_RESOURCE_ID).strip()
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                doubao_tts_url(base_url),
+                headers=doubao_api_headers(api_key, resource_id),
+                json=build_doubao_tts_payload("测试", speaker, context_texts=()),
+            )
+        if resp.status_code in (401, 403):
+            return {"success": False, "error": "API Key无效或已过期", "error_code": "auth_failed"}
+        if resp.status_code == 429:
+            return {"success": True}
+        if resp.status_code != 200:
+            return {"success": False, "error": f"HTTP {resp.status_code}", "error_code": "unknown"}
+        if not extract_doubao_audio_bytes(resp.content):
+            return {"success": False, "error": "豆包 TTS 未返回音频数据", "error_code": "empty_response"}
+        return {"success": True}
+    except DoubaoTtsError as exc:
+        return {"success": False, "error": str(exc), "error_code": "unknown"}
+    except httpx.TimeoutException:
+        return {"success": False, "error": "请求超时（10秒）", "error_code": "timeout"}
+    except httpx.ConnectError as exc:
+        err_str = str(exc).lower()
+        if "getaddrinfo" in err_str or "name or service" in err_str or "nodename" in err_str:
+            return {"success": False, "error": "域名解析失败", "error_code": "dns_error"}
+        return {"success": False, "error": "无法连接到目标服务器", "error_code": "connection_refused"}
+    except ssl.SSLError:
+        return {"success": False, "error": "SSL证书验证失败", "error_code": "ssl_error"}
+    except Exception as exc:
+        return {"success": False, "error": str(exc), "error_code": "unknown"}
+
+
 def _normalize_provider_url_candidates(profile: dict[str, Any], primary_field: str) -> list[str]:
     """Read the provider's primary URL and candidate URLs, removing blanks and duplicates while preserving order."""
     raw_candidates: list[Any] = [profile.get(primary_field)]
@@ -1763,7 +1824,7 @@ def _looks_like_anthropic_messages_url(url: str | None) -> bool:
 
 def _normalize_provider_type(profile: dict[str, Any] | None, url: str | None = None) -> str:
     provider_type = str((profile or {}).get("provider_type") or "openai_compatible").strip().lower()
-    if provider_type not in ("openai_compatible", "anthropic", "websocket"):
+    if provider_type not in ("openai_compatible", "anthropic", "websocket", "tts"):
         return "openai_compatible"
     if provider_type == "openai_compatible" and _looks_like_anthropic_messages_url(url):
         return "anthropic"
@@ -1777,6 +1838,7 @@ async def _test_connectivity_candidates(
     provider_type: str,
     is_free: bool,
     sub_type: str = "",
+    voice_id: str = "",
 ) -> dict:
     """Probe the candidate URLs concurrently; return the first that succeeds.
 
@@ -1795,6 +1857,13 @@ async def _test_connectivity_candidates(
                 result = await _test_vllm_omni_ws_handshake(candidate_url, api_key)
             else:
                 result = await _test_websocket(candidate_url, api_key, model=model)
+        elif provider_type == "tts" and sub_type == "doubao_tts":
+            result = await _test_doubao_tts_connectivity(
+                candidate_url,
+                api_key,
+                model=model,
+                voice_id=voice_id,
+            )
         elif provider_type == "anthropic":
             result = await _test_anthropic(candidate_url, api_key, model=model, is_free=is_free)
         else:
@@ -2152,6 +2221,7 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
             provider_type,
             is_free,
             sub_type=sub_type,
+            voice_id=(req.voice_id or "").strip(),
         )
     except Exception as e:
         logger.exception("[ConnectivityTest] 未预期的异常")

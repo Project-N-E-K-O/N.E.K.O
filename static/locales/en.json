@@ -1024,7 +1024,8 @@
             "kimi": "Kimi (Moonshot, Long Context)",
             "kimi_code": "Kimi Code (Moonshot)",
             "deepseek": "DeepSeek",
-            "doubao": "ByteDance (Doubao)",
+            "doubao": "Doubao LLM (Volcengine Ark)",
+            "doubao_tts": "Doubao Speech (Volcengine)",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Intl)",
             "elevenlabs": "ElevenLabs (Voice Cloning)",
@@ -1072,7 +1073,8 @@
             "gemini": "Gemini (Google)",
             "kimi": "Moonshot (Kimi)",
             "kimi_code": "Moonshot Kimi Code",
-            "doubao": "ByteDance (Doubao)",
+            "doubao": "Doubao LLM (Volcengine Ark)",
+            "doubao_tts": "Doubao Speech (Volcengine)",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Intl)",
             "mimo": "MiMo (Xiaomi)",
@@ -1353,6 +1355,7 @@
         "toggleFullscreen": "Toggle Fullscreen",
         "exitFullscreen": "Exit Fullscreen",
         "modelType": "Model Type",
+        "modelType3d": "3D Model",
         "selectLive2DModel": "Select Live2D Model",
         "selectVRMModel": "VRM Model",
         "selectVRMFile": "Select VRM File",
@@ -1559,6 +1562,8 @@
         "minimaxIntlApiRequired": "This feature requires the MiniMax model (International). Please save the MiniMax International API Key in API Keys settings (enabling Assist API is not required).",
         "mimoApiRequired": "This feature requires a MiMo model. Please save your MiMo API Key on the API key settings page.",
         "mimoDirectLinkUnsupported": "MiMo does not support direct-link cloning; please upload a local file instead.",
+        "directLinkUnsupported": "The selected provider does not support direct-link cloning; please upload a local file instead.",
+        "doubaoTtsApiRequired": "This feature requires a Doubao Speech API Key. Save the Doubao Speech (Volcengine) key in the API Key Book.",
         "vllmOmniNotice": "Local vLLM-Omni service — no API Key needed; ensure the local service URL is configured",
         "vllmRefTextLabel": "Reference audio transcript (required for vLLM-Omni clone; must match the audio exactly)",
         "vllmRefTextHint": "Type exactly what is spoken in the reference audio; mismatched text degrades clone quality",
@@ -1573,6 +1578,7 @@
             "minimax_intl": "MiniMax (Intl)",
             "elevenlabs": "ElevenLabs",
             "mimo": "MiMo (Xiaomi)",
+            "doubao_tts": "Doubao Speech (Volcengine)",
             "vllm_omni": "vLLM-Omni (Local Clone)"
         },
         "sourcePreset": "Preset",
@@ -1591,9 +1597,13 @@
         "customPrefixNote": "Maximum 10 characters, numbers and English letters only",
         "prefixPlaceholder": "Maximum 10 characters, numbers and English letters only",
         "voiceIdPlaceholder": "Maximum 10 characters, numbers and English letters only",
+        "doubaoSpeakerIdLabel": "Doubao Speaker ID (overwrite existing S_ voice, required)",
+        "doubaoSpeakerIdNote": "Clone the voice in the Doubao Speech console first and copy its S_ Speaker ID here; NEKO will overwrite that existing voice and will not create a new Doubao voice ID, e.g. S_xeC2CDp72",
+        "doubaoSpeakerIdPlaceholder": "e.g. S_xeC2CDp72",
         "register": "Register Voice",
         "pleaseUploadFile": "Please select an audio file",
         "pleaseEnterPrefix": "Please enter a custom prefix",
+        "doubaoSpeakerIdRequired": "Doubao voice cloning requires an S_ Speaker ID already assigned in the Volcengine console",
         "prefixFormatError": "Prefix format error: Maximum 10 characters, numbers and English letters only",
         "registering": "Registering voice, please wait!",
         "registerSuccess": "Registration successful! voice_id: {{voiceId}}",
@@ -2573,8 +2583,6 @@
             "focusCognitionTooltip": "When on, she focuses and thinks more deeply when you open up or ask something complex; off disables Focus entirely.",
             "autoCat": "Auto Cat Mode",
             "autoCatTooltip": "Turn into a kitten automatically after a while of inactivity",
-            "catAudio": "Cat Audio",
-            "catAudioTooltip": "Toggle kitten-form sounds after you ask her to leave. Requires Auto Cat Mode.",
             "proactiveChat": "Proactive Chat",
             "proactiveVision": "Privacy Mode",
             "proactiveVisionTooltip": "Off: Neko adjusts her liveliness and chat style based on the active window's title, and may incorporate on-screen content when starting a conversation.\nOn: Neko can't watch your screen on her own and won't know what you're doing. You can still send screenshots manually.",
@@ -3152,7 +3160,7 @@
             "mmd": {
                 "step1": {
                     "title": "🎭 Select MMD Model",
-                    "desc": "In Live3D (MMD) mode, choose your model here. MMD shares the same model list as VRM."
+                    "desc": "In 3D Model (MMD) mode, choose your model here. MMD shares the same model list as VRM."
                 },
                 "step2": {
                     "title": "💃 VMD Animation",
@@ -3164,7 +3172,7 @@
                 },
                 "step4": {
                     "title": "😄 Emotion Config",
-                    "desc": "After selecting a model, open emotion settings here. MMD and VRM share this Live3D button (not the Live2D one)."
+                    "desc": "After selecting a model, open emotion settings here. MMD and VRM share this 3D Model button (not the Live2D one)."
                 }
             }
         },
@@ -3878,6 +3886,8 @@
         "minimize": "Minimize",
         "close": "Close",
         "loading": "Loading...",
+        "initializing": "Initializing jukebox...",
+        "initializeFailed": "Failed to initialize jukebox",
         "ready": "Ready",
         "playing": "Now Playing: {{name}} - {{artist}}",
         "error": "Error: {{message}}",

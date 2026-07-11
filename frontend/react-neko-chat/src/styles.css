@@ -4850,6 +4850,12 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   top: var(--avatar-tool-manager-top);
 }
 
+.avatar-tool-manager-dialog.is-desktop-compact-layout {
+  width: var(--avatar-tool-manager-width, 380px);
+  height: var(--avatar-tool-manager-height, 600px);
+  max-height: var(--avatar-tool-manager-max-height, 600px);
+}
+
 .avatar-tool-manager-dialog.is-dragging {
   user-select: none;
 }

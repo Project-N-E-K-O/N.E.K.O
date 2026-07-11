@@ -74,13 +74,19 @@ def test_cat1_play_action_module_is_independent_from_eat_action():
     assert "art.setAttribute(_NEKO_IDLE_CAT1_PLAY_FINISHING_ATTR, 'true');" in finish_play_block
     assert "art.removeAttribute(_NEKO_IDLE_CAT1_PLAY_FINISHING_ATTR);" in source
     assert "_setNekoIdleCat1PlayYarnHidden(state, true);" in play_block
-    assert "_setNekoIdleCat1PlayYarnHidden(state, false);" in source
+    assert "_getNekoIdleCat1PlayYarnReleasePayload(button, state" in source
+    assert "_setNekoIdleCat1PlayYarnHidden(" in source
+    assert "_NEKO_IDLE_CAT1_PLAY_YARN_RELEASE_SIZE_PX = 51" in source
     assert "data-neko-cat1-play-hidden" in source
     assert "idle_cat1_play_yarn_visibility" in source
+    assert "targetScreenRect" in source
     assert "idle_cat1_play_yarn_visibility" in interpage_source
     assert "dispatchIdleCat1PlayYarnVisibility(event.data)" in interpage_source
     assert "neko:idle-cat1-play-yarn-visibility" in chat_source
-    assert "setCompactChatBallTemporarilyHidden(hidden)" in chat_source
+    assert "setCompactChatBallTemporarilyHidden(hidden, {" in chat_source
+    assert "releaseDrag: !!(detail && detail.releaseDrag)" in chat_source
+    assert "targetScreenRect: detail && detail.targetScreenRect" in chat_source
+    assert "applyIdleCat1PlayYarnRelease(detail)" in chat_source
     assert "showCompactChatBall(" not in chat_source
     assert "hideCompactChatBall(" not in chat_source
 
@@ -107,7 +113,8 @@ def test_cat1_play_action_module_is_independent_from_eat_action():
     )[1].split("}", 1)[0]
     assert ".neko-idle-return-btn.is-cat1-stretching .neko-idle-thought-bubble" in thought_bubble_hidden_block
     assert ".neko-idle-return-btn.is-cat1-playing .neko-idle-thought-bubble" in thought_bubble_hidden_block
-    assert ".neko-idle-return-btn.is-cat1-eating .neko-idle-thought-bubble" in thought_bubble_hidden_block
+    assert ".neko-idle-return-btn.is-cat1-eating:not(.is-thought-bubble-popping) .neko-idle-thought-bubble" in thought_bubble_hidden_block
+    assert ".neko-idle-return-btn.is-cat1-eating .neko-idle-thought-bubble" not in thought_bubble_hidden_block
 
     assert 'data-neko-cat1-wide-art' in chat_source
     assert '/static/assets/neko-idle/cat-idle-cat-play-1.gif' in chat_source
@@ -348,7 +355,7 @@ def test_cat1_external_chat_position_updates_interrupt_pair_move_for_retarget():
         "window.addEventListener('neko:idle-chat-compact-surface-state'",
         1,
     )[0]
-    assert "const pairMoveFeedback = !!(detail && detail.reason === 'cat1-pair-move');" in minimized_state_block
+    assert "const pairMoveFeedback = _isNekoIdleCat1PlaygroundPairMoveFeedback(detail);" in minimized_state_block
     assert "if (pairMoveFeedback) return;" in minimized_state_block
     assert "_interruptNekoIdleCat1PairMoveForRetarget(button, currentState)" in minimized_state_block
 

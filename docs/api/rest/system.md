@@ -70,6 +70,14 @@ Generate a proactive message from the character (used for idle conversation).
 }
 ```
 
+**Response:** `action` is `chat` when a proactive line is delivered and `pass` when the
+turn is skipped. Proactive `pass`/`chat`/error responses include a stable
+machine-readable `reason_code`, such as `CHAT_DELIVERED`, `PASS_BUSY`,
+`PASS_SOURCE_EMPTY`, `PASS_DUPLICATE`, `DELIVERY_PREEMPTED`, or `ERROR_TIMEOUT`.
+They also include `stage`, a coarse process stage such as `entry_guard`,
+`activity_gate`, `source_selection`, `model_decision`, `generation`, `dedup`,
+`delivery`, or `runtime_error`.
+
 ::: info
 Proactive messages are rate-limited: maximum 10 per character per hour.
 :::

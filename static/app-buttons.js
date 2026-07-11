@@ -36,6 +36,39 @@
         rejecter(error);
     }
 
+    function getVoiceStartErrorMessage(error) {
+        var fallbackKey = 'app.sessionFailed';
+        var defaultFallback = 'Session启动失败';
+        function usableText(value) {
+            if (typeof value !== 'string') return '';
+            var text = value.trim();
+            if (!text || text === '[object Module]' || text === '[object Object]') return '';
+            return value;
+        }
+        var fallback = defaultFallback;
+        if (typeof window.t === 'function') {
+            var translatedFallback = usableText(window.t(fallbackKey, defaultFallback));
+            if (translatedFallback && translatedFallback.trim() !== fallbackKey) {
+                fallback = translatedFallback;
+            }
+        }
+
+        var message = usableText(error && error.message);
+        if (message) return message;
+        message = usableText(typeof error === 'string' ? error : '');
+        if (message) return message;
+
+        if (error && typeof error === 'object' && typeof window.translateStatusMessage === 'function') {
+            message = usableText(window.translateStatusMessage(error));
+            if (message) return message;
+        }
+
+        if (error !== undefined && error !== null) {
+            console.warn('[VoiceStart] Non-string error message ignored:', error);
+        }
+        return fallback;
+    }
+
     function isHomeTutorialInteractionLocked() {
         try {
             return typeof window.isNekoHomeTutorialInteractionLocked === 'function'
@@ -722,6 +755,14 @@
         }).filter(Boolean);
     };
 
+    function getPendingAttachmentInputType(item) {
+        var source = item && item.dataset ? String(item.dataset.source || '') : '';
+        if (source === 'user-image' || source === 'clipboard-image' || source === 'compact-history') {
+            return 'user_image';
+        }
+        return U.isMobile() ? 'camera' : 'screen';
+    }
+
     mod.syncPendingComposerAttachments = function syncPendingComposerAttachments() {
         if (window.reactChatWindowHost && typeof window.reactChatWindowHost.setComposerAttachments === 'function') {
             window.reactChatWindowHost.setComposerAttachments(mod.getPendingComposerAttachments());
@@ -774,7 +815,7 @@
 
         return mod.normalizeImageBlobForPendingList(file)
             .then(function (dataUrl) {
-                mod.addScreenshotToList(dataUrl);
+                mod.addScreenshotToList(dataUrl, null, { source: 'user-image' });
                 return dataUrl;
             });
     };
@@ -2127,6 +2168,7 @@
                 S.isSwitchingMode = false;
 
             } catch (error) {
+                var voiceStartErrorMessage = getVoiceStartErrorMessage(error);
                 var isVoiceStartCancelled = !!(error && error.voiceStartCancelled);
                 var preserveGoodbyeUi = isVoiceStartCancelled
                     && typeof window.isNekoGoodbyeModeActive === 'function'
@@ -2151,7 +2193,7 @@
                 }
 
                 if (error && error.voiceConfigSwitchTimedOut) {
-                    window.showVoicePreparingToast(error.message);
+                    window.showVoicePreparingToast(voiceStartErrorMessage);
                 } else {
                     window.hideVoicePreparingToast();
                 }
@@ -2187,9 +2229,9 @@
                 if (preserveGoodbyeUi) {
                     window.showStatusToast('', 0);
                 } else if (error && error.voiceConfigSwitchTimedOut) {
-                    window.showStatusToast(error.message, 5000);
+                    window.showStatusToast(voiceStartErrorMessage, 5000);
                 } else {
-                    window.showStatusToast(window.t ? window.t('app.startFailed', { error: error.message }) : '\u542F\u52A8\u5931\u8D25: ' + error.message, 5000);
+                    window.showStatusToast(window.t ? window.t('app.startFailed', { error: voiceStartErrorMessage }) : '\u542F\u52A8\u5931\u8D25: ' + voiceStartErrorMessage, 5000);
                 }
 
                 screenButton.classList.remove('active');
@@ -2255,6 +2297,10 @@
                 classList: live2dContainer ? live2dContainer.classList.toString() : 'undefined',
                 display: live2dContainer ? getComputedStyle(live2dContainer).display : 'undefined'
             });
+
+            if (typeof window.stopScreening === 'function') {
+                window.stopScreening();
+            }
 
             if (S.socket && S.socket.readyState === WebSocket.OPEN) {
                 S._suppressCharacterLeft = true;
@@ -2731,7 +2777,7 @@
                                 var msg = {
                                     action: 'stream_data',
                                     data: img.src,
-                                    input_type: U.isMobile() ? 'camera' : 'screen'
+                                    input_type: getPendingAttachmentInputType(screenshotItems[i])
                                 };
                                 if (text) {
                                     msg.request_id = requestId;
@@ -3289,6 +3335,14 @@
          */
         var _captureScreenshotDataUrlBusy = false;
 
+        function setScreenshotCaptureSessionActive(active) {
+            try {
+                window.dispatchEvent(new CustomEvent('neko:screenshot-capture-session', {
+                    detail: { active: active === true }
+                }));
+            } catch (e) { }
+        }
+
         mod.captureScreenshotDataUrl = async function captureScreenshotDataUrl() {
             if (_captureScreenshotDataUrlBusy) {
                 console.warn('[截图] 截图流程进行中，忽略重复请求');
@@ -3298,6 +3352,12 @@
             var acquiredStream = null;
             var isCachedStream = false;
             var captureType = null;
+            var screenshotCaptureSessionActive = false;
+
+            if (!U.isMobile()) {
+                screenshotCaptureSessionActive = true;
+                setScreenshotCaptureSessionActive(true);
+            }
 
             try {
                 var dataUrl = null;
@@ -3477,6 +3537,9 @@
                     }
                 }
             } finally {
+                if (screenshotCaptureSessionActive) {
+                    setScreenshotCaptureSessionActive(false);
+                }
                 _captureScreenshotDataUrlBusy = false;
                 if (!isCachedStream && acquiredStream instanceof MediaStream) {
                     try {
@@ -3596,7 +3659,7 @@
                     if (!blob) continue;
                     mod.normalizeImageBlobForPendingList(blob)
                         .then(function (dataUrl) {
-                            mod.addScreenshotToList(dataUrl);
+                            mod.addScreenshotToList(dataUrl, null, { source: 'clipboard-image' });
                             window.showStatusToast(
                                 window.t ? window.t('app.screenshotAdded') : '\u622A\u56FE\u5DF2\u6DFB\u52A0\uFF0C\u70B9\u51FB\u53D1\u9001\u4E00\u8D77\u53D1\u9001',
                                 3000

@@ -384,7 +384,7 @@ def test_icebreaker_runtime_wires_choice_prompt_and_project_tts():
     assert "expressionFile" not in runtime
     assert "resolveLatestEndState(detail, eventType)" in runtime
     assert "synthesizeEndStateFromEvent(eventType, normalizedDetail)" in runtime
-    assert "eventType === 'neko:tutorial-skipped'" in runtime
+    assert "eventType === 'neko:tutorial-skipped'" not in runtime
     assert "eventType === 'neko:tutorial-completed'" in runtime
     assert "normalizedDetail.day" in runtime
     assert "day = 1" not in runtime
@@ -553,9 +553,10 @@ def test_icebreaker_assistant_messages_update_compact_caption_like_normal_chat()
     interpage_runtime = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
 
     assert "function syncIcebreakerAssistantCompactCaption(role, message)" in runtime
+    assert "function finalizeIcebreakerAssistantSubtitleTranslation(role, message)" in runtime
     assert "function waitForIcebreakerChatHostMounted(host)" in runtime
     sync_block = runtime.split("function syncIcebreakerAssistantCompactCaption(role, message)", 1)[1].split(
-        "function appendChatMessage(role, text, meta)",
+        "function finalizeIcebreakerAssistantSubtitleTranslation(role, message)",
         1,
     )[0]
     assert "if (role !== 'assistant') return;" in sync_block
@@ -568,26 +569,49 @@ def test_icebreaker_assistant_messages_update_compact_caption_like_normal_chat()
     assert "openSubtitleTranslationForIcebreakerAssistantMessage()" not in sync_block
     assert "setSubtitleEnabled(true" not in sync_block
     assert "setTranslateEnabled(true" not in sync_block
-    assert "subtitleBridge" not in sync_block
-    assert "finalizeTurnWithTranslation" not in sync_block
+
+    subtitle_block = runtime.split("function finalizeIcebreakerAssistantSubtitleTranslation(role, message)", 1)[1].split(
+        "function waitForIcebreakerChatHostMounted(host)",
+        1,
+    )[0]
+    assert "if (role !== 'assistant') return;" in subtitle_block
+    assert "window.subtitleBridge" in subtitle_block
+    assert "bridge.beginTurn({ latch: false });" in subtitle_block
+    assert "bridge.finalizeTurnWithTranslation(line)" in subtitle_block
+    assert "console.warn('[NewUserIcebreaker] subtitle translation failed:'" in subtitle_block
+    assert "setSubtitleEnabled(true" not in subtitle_block
+    assert "setTranslateEnabled(true" not in subtitle_block
 
     assert "function syncIcebreakerAssistantCompactCaption(message)" in interpage_runtime
+    assert "function finalizeIcebreakerAssistantSubtitleTranslation(message)" in interpage_runtime
     assert "function waitForIcebreakerChatHostMounted(host)" in interpage_runtime
     interpage_compact_block = interpage_runtime.split(
         "function syncIcebreakerAssistantCompactCaption(message)", 1
-    )[1].split("function isIcebreakerBridgeAction", 1)[0]
+    )[1].split("function finalizeIcebreakerAssistantSubtitleTranslation(message)", 1)[0]
     assert "if (!isStandaloneChatPage() || !message || message.role !== 'assistant') return;" in interpage_compact_block
     assert "window.dispatchEvent(new CustomEvent('neko-assistant-turn-start'" in interpage_compact_block
     assert "window.dispatchEvent(new CustomEvent('neko-compact-caption-update'" in interpage_compact_block
     assert "window.dispatchEvent(new CustomEvent('neko-assistant-speech-unavailable'" not in interpage_compact_block
     assert "window.dispatchEvent(new CustomEvent('neko-assistant-turn-end'" not in interpage_compact_block
+    interpage_subtitle_block = interpage_runtime.split(
+        "function finalizeIcebreakerAssistantSubtitleTranslation(message)", 1
+    )[1].split("function waitForIcebreakerChatHostMounted(host)", 1)[0]
+    assert "if (!isStandaloneChatPage() || !message || message.role !== 'assistant') return;" in interpage_subtitle_block
+    assert "window.subtitleBridge" in interpage_subtitle_block
+    assert "bridge.beginTurn({ latch: false });" in interpage_subtitle_block
+    assert "bridge.finalizeTurnWithTranslation(line)" in interpage_subtitle_block
+    assert "setSubtitleEnabled(true" not in interpage_subtitle_block
+    assert "setTranslateEnabled(true" not in interpage_subtitle_block
     assert "return Promise.resolve(host.appendMessage(action.message)).then(function (result) {" in interpage_runtime
     assert "return waitForIcebreakerChatHostMounted(host).then(function () {" in interpage_runtime
     assert "syncIcebreakerAssistantCompactCaption(action.message);" in interpage_runtime
+    assert "finalizeIcebreakerAssistantSubtitleTranslation(action.message);" in interpage_runtime
     assert interpage_runtime.index("return Promise.resolve(host.appendMessage(action.message)).then(function (result) {") < interpage_runtime.index(
         "return waitForIcebreakerChatHostMounted(host).then(function () {"
     ) < interpage_runtime.index(
         "syncIcebreakerAssistantCompactCaption(action.message);"
+    ) < interpage_runtime.index(
+        "finalizeIcebreakerAssistantSubtitleTranslation(action.message);"
     )
     assert "icebreaker_assistant_subtitle" not in runtime
     assert "icebreaker_assistant_subtitle" not in interpage_runtime
@@ -608,28 +632,36 @@ def test_icebreaker_assistant_message_does_not_auto_open_subtitle_translation_pa
     assert "setSubtitleEnabled(true" not in start_block
     assert "setTranslateEnabled(true" not in start_block
 
-    sync_block = runtime.split("function syncIcebreakerAssistantCompactCaption(role, message)", 1)[1].split(
+    sync_block = runtime.split("function finalizeIcebreakerAssistantSubtitleTranslation(role, message)", 1)[1].split(
         "function appendChatMessage(role, text, meta)",
         1,
     )[0]
     assert "if (role !== 'assistant') return;" in sync_block
     assert "setSubtitleEnabled(true" not in sync_block
     assert "setTranslateEnabled(true" not in sync_block
-    assert "subtitleBridge" not in sync_block
-    assert "finalizeTurnWithTranslation" not in sync_block
+    assert "bridge.finalizeTurnWithTranslation(line)" in sync_block
 
     append_message_block = runtime.split("function appendChatMessage(role, text, meta)", 1)[1].split(
         "function speakViaProjectTts",
         1,
     )[0]
     assert "return appendLlmContext(role, messageText, meta || {}).then(function () {" in append_message_block
+    standalone_branch = append_message_block.split("if (!shouldRenderIcebreakerOnLocalChatHost()) {", 1)[1].split(
+        "var chatHost = null;",
+        1,
+    )[0]
+    assert "finalizeIcebreakerAssistantSubtitleTranslation(role, message);" in standalone_branch
+    assert "syncIcebreakerAssistantCompactCaption(role, message);" not in standalone_branch
     assert "return host.appendMessage(message);" in append_message_block
     assert "return waitForIcebreakerChatHostMounted(chatHost).then(function () {" in append_message_block
     assert "syncIcebreakerAssistantCompactCaption(role, message);" in append_message_block
+    assert "finalizeIcebreakerAssistantSubtitleTranslation(role, message);" in append_message_block
     assert append_message_block.index("return host.appendMessage(message);") < append_message_block.index(
         "return waitForIcebreakerChatHostMounted(chatHost).then(function () {"
     ) < append_message_block.rindex(
         "syncIcebreakerAssistantCompactCaption(role, message);"
+    ) < append_message_block.rindex(
+        "finalizeIcebreakerAssistantSubtitleTranslation(role, message);"
     )
 
 
@@ -853,13 +885,18 @@ def test_icebreaker_defers_while_home_tutorial_is_active():
 
     assert "function isIcebreakerBlockerVisible(el)" in runtime
     assert "function hasVisibleTutorialBlocker(selectors)" in runtime
+    assert "function isDay1SystrayIntroBlockingIcebreaker()" in runtime
     assert "function isTutorialBlockingIcebreaker()" in runtime
     assert "window.isInTutorial" in runtime
     assert "manager.isTutorialRunning" in runtime
     assert "manager._teardownPromise" in runtime
+    assert "neko-day1-systray-intro-open" in runtime
+    assert "#neko-day1-systray-intro-modal" in runtime
+    assert ".neko-day1-systray-intro-modal" in runtime
     assert "startFromEndStateWhenTutorialIdle" in runtime
     assert "TUTORIAL_IDLE_RETRY_MS" in runtime
     assert "if (isTutorialBlockingIcebreaker())" in runtime
+    assert "window.addEventListener('neko:day1-systray-intro-closed'" in runtime
     assert "return false;" in runtime
     assert "getEndStateTriggerDeadline(endState)" in runtime
     assert "retryCount >= TUTORIAL_IDLE_MAX_RETRIES" not in runtime
@@ -888,12 +925,64 @@ def test_icebreaker_tutorial_end_events_start_from_explicit_event_state():
     body = match.group("body")
     assert "startFromEndState(resolveLatestEndState(detail, eventType))" not in body
     assert "var endState = resolveLatestEndState(detail, eventType);" in body
+    assert "String(endState.outcome || endState.rawReason || '') !== 'complete'" in body
     assert "var pendingDay = markPendingStartFromEndState(endState);" in body
-    assert "startFromEndStateWhenTutorialIdle(endState)" in body
-    assert "clearPendingGuideEndStateDay(pendingDay)" in body
-    assert ".catch(function (error)" in body
-    assert "console.warn('[NewUserIcebreaker] deferred start failed:', error);" in body
-    assert "dispatchIcebreakerEnded('start_failed')" in body
+    assert "attemptStartFromGuideEndState(endState, pendingDay)" in body
+
+
+def test_day1_systray_intro_close_releases_icebreaker_and_desktop_passthrough():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+    manager = UNIVERSAL_TUTORIAL_MANAGER_PATH.read_text(encoding="utf-8")
+
+    assert "pendingGuideEndState = endState;" in runtime
+    assert "attemptStartFromGuideEndState(pendingGuideEndState" in runtime
+    assert "window.addEventListener('neko:day1-systray-intro-closed'" in runtime
+    assert "window.dispatchEvent(new CustomEvent('neko:day1-systray-intro-closed'" in manager
+    assert "document.body.classList.remove('neko-day1-systray-intro-open')" in manager
+
+
+def test_icebreaker_keeps_pending_start_while_day1_systray_intro_is_open():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+    match = re.search(
+        r"function startFromEndStateWhenTutorialIdle\(endState\) \{(?P<body>.*?)\n    \}",
+        runtime,
+        re.DOTALL,
+    )
+
+    assert match is not None
+    body = match.group("body")
+    assert "if (isTutorialBlockingIcebreaker())" in body
+    assert (
+        "!isDay1SystrayIntroBlockingIcebreaker() && Date.now() >= getEndStateTriggerDeadline(endState)"
+        in body
+    )
+    assert body.index("!isDay1SystrayIntroBlockingIcebreaker()") < body.index(
+        "window.setTimeout(resolve, TUTORIAL_IDLE_RETRY_MS)"
+    )
+
+
+def test_icebreaker_deferred_start_promise_cleanup_has_no_unreachable_rejection_handler():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+    match = re.search(
+        r"function attemptStartFromGuideEndState\(endState, pendingDay\) \{(?P<body>.*?)\n    \}",
+        runtime,
+        re.DOTALL,
+    )
+
+    assert match is not None
+    body = match.group("body")
+    assert "}).catch(function (error) {" in body
+    assert "}).then(function (started) {" in body
+    assert "}, function (error) {" not in body
+    assert "throw error;" not in body
+
+
+def test_yui_guide_bridge_timestamp_helper_exists_for_cursor_relay():
+    interpage = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
+
+    assert "function getYuiGuideBridgeMessageTimestamp(message)" in interpage
+    assert "timestamp: getYuiGuideBridgeMessageTimestamp(message)" in interpage
+    assert "getYuiGuideBridgeMessageTimestamp is not defined" not in interpage
 
 
 def test_icebreaker_does_not_bootstrap_from_persisted_end_state_on_cold_start():
@@ -942,13 +1031,14 @@ def test_home_tutorial_release_events_carry_current_avatar_round_end_state():
     assert "state.lastEndState" in reset_runtime
     assert "state.lastEndState" in runtime
 
-    generic_tutorial_branch = re.search(
-        r"eventType === 'neko:tutorial-skipped'.*?outcome = 'skip';",
-        runtime,
-        re.DOTALL,
-    )
-    assert generic_tutorial_branch is not None
-    assert "day = 1" not in generic_tutorial_branch.group(0)
+    assert "window.addEventListener('neko:avatar-floating-guide-skip', handleGuideEndEvent)" not in runtime
+    assert "window.addEventListener('neko:tutorial-skipped', handleGuideEndEvent)" not in runtime
+    can_start_block = runtime.split("function canStartFromEndState(endState, scripts)", 1)[1].split(
+        "function readPersistedAvatarGuideState",
+        1,
+    )[0]
+    assert "if (outcome !== 'complete') return false;" in can_start_block
+    assert "outcome !== 'skip'" not in can_start_block
 
 
 def test_avatar_floating_angry_exit_skip_event_preserves_raw_end_state():

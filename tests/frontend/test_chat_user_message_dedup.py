@@ -239,6 +239,78 @@ def test_import_image_without_mime_converts_to_jpeg_attachment(
 
 
 @pytest.mark.frontend
+def test_imported_chat_image_sends_as_user_image_when_text_session_restarts(
+    mock_page: Page,
+    running_server: str,
+):
+    mock_page.add_init_script(
+        "window.localStorage.setItem('neko_tutorial_settings', 'seen')"
+    )
+    mock_page.goto(f"{running_server}/chat", wait_until="domcontentloaded")
+    mock_page.wait_for_function(
+        "() => window.reactChatWindowHost"
+        " && window.appButtons"
+        " && window.appChat"
+        " && window.appState"
+        " && typeof window.sendTextPayload === 'function'"
+    )
+    _install_chat_send_harness(mock_page, resolve_delay_ms=0)
+
+    result = mock_page.evaluate(
+        """async () => {
+            const b64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO9Wj3sAAAAASUVORK5CYII=';
+            const bytes = Uint8Array.from(atob(b64), (char) => char.charCodeAt(0));
+            const file = new File([bytes], 'tiny-image.png', { type: 'image/png' });
+
+            await window.appButtons.importImageFilesToPendingList([file]);
+            window.appState.isTextSessionActive = false;
+            window.appState.voiceChatActive = false;
+
+            const ok = await window.sendTextPayload('', {
+                source: 'react-chat-window',
+                requestId: 'req-imported-image-only'
+            });
+
+            const state = window.reactChatWindowHost.getState();
+            return {
+                ok,
+                attachmentCount: state.composerAttachments.length,
+                message: state.messages[0] ? {
+                    status: state.messages[0].status,
+                    blocks: state.messages[0].blocks
+                } : null,
+                sentPayloads: window.__chatTest.sentPayloads
+            };
+        }"""
+    )
+
+    assert result["ok"] is True
+    assert result["attachmentCount"] == 0
+    start_sessions = [
+        payload
+        for payload in result["sentPayloads"]
+        if payload.get("action") == "start_session"
+    ]
+    assert start_sessions[-1]["input_type"] == "text"
+
+    sent_images = [
+        payload
+        for payload in result["sentPayloads"]
+        if payload.get("action") == "stream_data" and payload.get("input_type") == "user_image"
+    ]
+    unexpected_realtime_images = [
+        payload
+        for payload in result["sentPayloads"]
+        if payload.get("action") == "stream_data" and payload.get("input_type") in ("screen", "camera")
+    ]
+    assert len(sent_images) == 1
+    assert sent_images[0]["data"].startswith("data:image/jpeg;base64,")
+    assert unexpected_realtime_images == []
+    assert result["message"]["status"] == "sent"
+    assert [block["type"] for block in result["message"]["blocks"]] == ["image"]
+
+
+@pytest.mark.frontend
 def test_drop_image_on_chat_imports_pending_attachment_without_navigation(
     mock_page: Page,
     running_server: str,
@@ -632,7 +704,17 @@ def test_compact_history_drop_sends_only_dropped_image_and_restores_pending_atta
     mock_page: Page,
     running_server: str,
 ):
-    _open_react_chat_page(mock_page, running_server)
+    mock_page.add_init_script(
+        "window.localStorage.setItem('neko_tutorial_settings', 'seen')"
+    )
+    mock_page.goto(f"{running_server}/chat", wait_until="domcontentloaded")
+    mock_page.wait_for_function(
+        "() => window.reactChatWindowHost"
+        " && window.appButtons"
+        " && window.appChat"
+        " && window.appState"
+        " && typeof window.appButtons.sendCompactHistoryDropPayload === 'function'"
+    )
     _install_chat_send_harness(mock_page, resolve_delay_ms=0)
 
     result = mock_page.evaluate(
@@ -650,7 +732,7 @@ def test_compact_history_drop_sends_only_dropped_image_and_restores_pending_atta
             const dropped = makeDataUrl('#cc3355');
             window.appButtons.addScreenshotToList(existing, null, {
                 alt: 'Existing pending',
-                source: 'user'
+                source: 'user-image'
             });
             const before = window.appButtons.getPendingComposerAttachments();
 
@@ -686,7 +768,7 @@ def test_compact_history_drop_sends_only_dropped_image_and_restores_pending_atta
     sent_images = [
         payload
         for payload in result["sentPayloads"]
-        if payload.get("action") == "stream_data" and payload.get("input_type") == "screen"
+        if payload.get("action") == "stream_data" and payload.get("input_type") == "user_image"
     ]
     sent_texts = [
         payload
@@ -701,6 +783,7 @@ def test_compact_history_drop_sends_only_dropped_image_and_restores_pending_atta
         "data": "drop image text",
         "input_type": "text",
         "request_id": "req-compact-history-drop-test",
+        "source": "react-chat-window",
     }]
 
     assert result["message"]["status"] == "sent"

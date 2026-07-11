@@ -603,6 +603,9 @@ class PluginLifecycleService:
                 error_type="PluginFrozen",
             )
 
+        if persist_user_intent:
+            await asyncio.to_thread(set_runtime_override, current_plugin_id, True)
+
         if refresh_registry:
             try:
                 refresh_payload = await plugin_registry_service.refresh_plugin(current_plugin_id)

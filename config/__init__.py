@@ -716,6 +716,7 @@ DEFAULT_CORE_CONFIG = {
     "assistApiKeyClaude": "",
     "assistApiKeyGrok": "",
     "assistApiKeyDoubao": "",
+    "assistApiKeyDoubaoTts": "",
     "mcpToken": "",
     "agentModelUrl": "",
     "agentModelId": "",
@@ -1779,6 +1780,19 @@ ANTI_REPEAT_FG_WINDOW = 5
 - 用途：BM25 评分把最近 N 条当 query corpus 算 TF；新 draft 与这 5 条比。
 - 设计依据：5 条 ≈ 用户最近能感知到的复读窗口；7+ 已经记不清了。"""
 
+ANTI_REPEAT_FG_TTL_SECONDS = 600.0
+"""anti-repeat 前景窗口的时间新鲜度上限（秒）。仅作用于 FG（TF/复读判定），
+不影响 BG（DF/IDF 词频背景，仍按 ANTI_REPEAT_BG_WINDOW 条数封顶）。
+- 用途：memory/anti_repeat.py 的 score_draft / top_recent_topics 只把「最近
+  ANTI_REPEAT_FG_TTL_SECONDS 内」的输出计入前景 TF；更早的条目照旧留在 BG
+  里贡献 IDF。
+- 设计依据：修复「空闲死锁」——主动搭话在用户空闲时才触发，而所有 drop 路径
+  都不写 corpus、成功投递才写，于是空闲期 FG 窗被最近几条同话题（如屏幕解说）
+  冻结，每轮打出同样的超高 BM25 → 永远 drop → 永远无法搭话。加了 TTL 后，空闲
+  超此时长 FG 自然清空、bm25_score 命中 `not fg_docs` 返回 0，本轮放行。
+- 取值：10 分钟。防复读本就只防「刚说过、又说一遍」的 back-to-back 复读；十分钟
+  前说过的话题再提不算复读。BG（IDF 语境）不设 TTL，评分质量不受影响。"""
+
 ANTI_REPEAT_INJECT_TOP_K = 6
 """注入 system prompt 的 "最近高频 topic 词" 数量。
 - 用途：build_recent_topics_block 取 BM25 排名前 K 的 ngram。
@@ -2554,6 +2568,7 @@ __all__ = [
     'USER_DIRECTIVE_MAX_ACTIVE',
     'ANTI_REPEAT_BG_WINDOW',
     'ANTI_REPEAT_FG_WINDOW',
+    'ANTI_REPEAT_FG_TTL_SECONDS',
     'ANTI_REPEAT_INJECT_TOP_K',
     'ANTI_REPEAT_REGEN_THRESHOLD',
     'ANTI_REPEAT_DROP_THRESHOLD',

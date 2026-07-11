@@ -8,12 +8,44 @@ import asyncio
 import json
 import re
 import secrets
+import time
 from typing import Any, Dict, Optional
 import websockets
 
+from .qq_connection import QQConnectionBase
 
-class QQClient:
+
+class QQClient(QQConnectionBase):
     """OneBot 协议客户端"""
+
+    def __init__(self, *, onebot_url: str, token: str = "", logger: Any = None, message_queue_size: int = 100):
+        self._onebot_url = str(onebot_url or "").strip()
+        self.token = str(token or "")
+        self.logger = logger
+        self.ws = None
+        self._receive_task: Optional[asyncio.Task] = None
+        self._message_queue: asyncio.Queue = asyncio.Queue(maxsize=max(1, int(message_queue_size or 100)))
+        self._pending_actions: Dict[str, asyncio.Future] = {}
+        self._closing = False
+        self._sent_message_ids: Dict[str, float] = {}  # message_id → sent_at timestamp
+        self._self_id: str = ""
+        self._self_nickname: str = ""
+
+    @property
+    def onebot_url(self) -> str:
+        return self._onebot_url
+
+    @onebot_url.setter
+    def onebot_url(self, value: str) -> None:
+        self._onebot_url = str(value or "").strip()
+
+    def is_connected(self) -> bool:
+        return self.ws is not None
+
+    async def get_login_status(self) -> dict[str, Any]:
+        if self.ws and self._self_id:
+            return {"status": "online", "self_id": self._self_id, "nickname": self._self_nickname or None}
+        return {"status": "offline", "self_id": None, "nickname": None}
 
     @staticmethod
     def _looks_like_path(value: str) -> bool:
@@ -73,15 +105,57 @@ class QQClient:
                 attachments.append(attachment)
         return attachments
 
-    def __init__(self, onebot_url: str, token: Optional[str] = None, logger=None):
-        self.onebot_url = onebot_url
-        self.token = token
-        self.logger = logger
-        self.ws: Optional[websockets.WebSocketClientProtocol] = None
-        self._message_queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
-        self._receive_task: Optional[asyncio.Task] = None
-        self._closing = False
-        self._pending_actions: dict[str, asyncio.Future] = {}
+    @classmethod
+    def _extract_interaction_context(cls, raw_msg: Dict[str, Any]) -> Dict[str, Any]:
+        segments = raw_msg.get("message")
+        self_id = str(raw_msg.get("self_id") or "").strip()
+        if not isinstance(segments, list):
+            return {
+                "quoted_message_id": "",
+                "mentioned_user_ids": [],
+                "mentions_other_user": False,
+                "mentions_all": False,
+                "mentions_bot": False,
+            }
+
+        quoted_message_id = ""
+        mentioned_user_ids: list[str] = []
+        mentions_other_user = False
+        mentions_all = False
+        mentions_bot = False
+
+        for segment in segments:
+            if not isinstance(segment, dict):
+                continue
+            segment_type = str(segment.get("type") or "").strip()
+            data = segment.get("data")
+            if not isinstance(data, dict):
+                continue
+            if segment_type == "reply":
+                quoted_message_id = str(data.get("id") or data.get("message_id") or quoted_message_id).strip()
+                continue
+            if segment_type != "at":
+                continue
+            mentioned_id = str(data.get("qq") or "").strip()
+            if not mentioned_id:
+                continue
+            if mentioned_id == "all":
+                mentions_all = True
+                continue
+            mentioned_user_ids.append(mentioned_id)
+            if self_id and mentioned_id == self_id:
+                mentions_bot = True
+            else:
+                mentions_other_user = True
+
+        return {
+            "quoted_message_id": quoted_message_id,
+            "mentioned_user_ids": mentioned_user_ids,
+            "mentions_other_user": mentions_other_user,
+            "mentions_all": mentions_all,
+            "mentions_bot": mentions_bot,
+        }
+
 
     async def connect(self):
         """连接到 OneBot 服务"""
@@ -188,6 +262,14 @@ class QQClient:
                                 self.logger.info(f"Queued private message from {message.get('user_id')}")
                             else:
                                 self.logger.info(f"Queued group message from group {message.get('group_id')}, user {message.get('user_id')}")
+                elif message.get("post_type") == "notice" and message.get("notice_type") == "notify" and message.get("sub_type") == "poke":
+                    # 戳一戳事件：入队以便自动回戳
+                    try:
+                        self._message_queue.put_nowait(message)
+                    except asyncio.QueueFull:
+                        pass
+                    if self.logger:
+                        self.logger.info(f"Queued poke notice: group {message.get('group_id')}, target {message.get('target_id')}, user {message.get('user_id')}")
 
             except asyncio.CancelledError:
                 raise
@@ -214,6 +296,23 @@ class QQClient:
         try:
             raw_msg = await asyncio.wait_for(self._message_queue.get(), timeout=timeout)
 
+            # 追踪自身 QQ 号
+            self_id = raw_msg.get("self_id")
+            if self_id:
+                self._self_id = str(self_id)
+
+            # 戳一戳通知事件
+            if raw_msg.get("post_type") == "notice":
+                return {
+                    "message_type": "notice",
+                    "notice_type": raw_msg.get("sub_type", ""),
+                    "user_id": str(raw_msg.get("user_id") or ""),
+                    "group_id": str(raw_msg.get("group_id") or ""),
+                    "target_id": str(raw_msg.get("target_id") or ""),
+                    "timestamp": raw_msg.get("time"),
+                    "raw": raw_msg,
+                }
+
             msg_type = raw_msg.get("message_type")
             sender_info = raw_msg.get("sender", {})
             user_nickname = sender_info.get("nickname") or sender_info.get("card") or None
@@ -230,8 +329,21 @@ class QQClient:
             }
 
             if msg_type == "group":
+                interaction_context = self._extract_interaction_context(raw_msg)
                 result["group_id"] = str(raw_msg.get("group_id"))
-                result["is_at_bot"] = self._check_at_bot(raw_msg)
+                result["quoted_message_id"] = interaction_context["quoted_message_id"]
+                result["mentioned_user_ids"] = interaction_context["mentioned_user_ids"]
+                result["mentions_other_user"] = interaction_context["mentions_other_user"]
+                result["mentions_all"] = interaction_context["mentions_all"]
+                is_reply_to_bot = self._is_reply_to_bot_message(
+                    interaction_context["quoted_message_id"],
+                )
+                result["is_at_bot"] = (
+                    interaction_context["mentions_bot"]
+                    or interaction_context["mentions_all"]
+                    or is_reply_to_bot
+                )
+                result["is_reply_to_bot"] = is_reply_to_bot
 
             return result
         except asyncio.TimeoutError:
@@ -249,6 +361,34 @@ class QQClient:
                     if str(at_qq) == str(raw_msg.get("self_id")):
                         return True
         return False
+
+    _SENT_MSG_TTL_SECONDS = 3600  # 已发送消息 ID 缓存 1 小时
+
+    def record_sent_message_id(self, message_id: str) -> None:
+        """记录已发送的消息 ID（用于检测回复是否是回给 bot 的）"""
+        mid = str(message_id or "").strip()
+        if mid:
+            import time
+            self._sent_message_ids[mid] = time.time()
+            self._cleanup_sent_message_cache()
+
+    def _is_reply_to_bot_message(self, quoted_message_id: str) -> bool:
+        """检查被引用的消息是否是 bot 发送的"""
+        qid = str(quoted_message_id or "").strip()
+        if not qid:
+            return False
+        return qid in self._sent_message_ids
+
+    def _cleanup_sent_message_cache(self) -> None:
+        """清理过期的已发送消息 ID"""
+        import time
+        now = time.time()
+        expired = [
+            mid for mid, ts in self._sent_message_ids.items()
+            if now - ts > self._SENT_MSG_TTL_SECONDS
+        ]
+        for mid in expired:
+            del self._sent_message_ids[mid]
 
     async def call_action(self, action: str, params: Optional[Dict[str, Any]] = None, timeout: float = 10.0) -> Dict[str, Any]:
         if not self.ws:
@@ -353,19 +493,75 @@ class QQClient:
         segments.append({"type": "record", "data": {"file": str(file_uri or "")}})
         await self.send_group_message_segments(group_id, segments)
 
-    async def send_group_message_segments(self, group_id: str, segments: list[Dict[str, Any]]):
-        """发送群聊消息片段"""
+    async def send_group_message_segments(self, group_id: str, segments: list[Dict[str, Any]], *, record_sent: bool = True, keyboard: str = "") -> Optional[str]:
+        """发送群聊消息片段，返回 message_id"""
         if not self.ws:
             raise RuntimeError("Not connected to OneBot")
 
+        echo = f"send_group_{group_id}_{id(segments)}"
         payload = {
             "action": "send_group_msg",
             "params": {
                 "group_id": int(group_id),
                 "message": segments,
             },
+            "echo": echo,
         }
 
+        future: asyncio.Future = asyncio.get_event_loop().create_future()
+        self._pending_actions[echo] = future
         await self.ws.send(json.dumps(payload))
+
+        try:
+            response = await asyncio.wait_for(future, timeout=10.0)
+            message_id = str((response.get("data") or {}).get("message_id") or "")
+            if message_id and record_sent:
+                self.record_sent_message_id(message_id)
+            self._pending_actions.pop(echo, None)
+            return message_id if message_id else None
+        except asyncio.TimeoutError:
+            self._pending_actions.pop(echo, None)
+            return None
+        except Exception:
+            self._pending_actions.pop(echo, None)
+            raise
         if self.logger:
             self.logger.debug(f"Sent segmented group message to {group_id}")
+
+    async def send_group_poke(self, group_id: str, user_id: str) -> bool:
+        """发送群聊戳一戳"""
+        if not self.ws:
+            raise RuntimeError("Not connected to OneBot")
+        try:
+            payload = {
+                "action": "send_poke",
+                "params": {
+                    "group_id": int(group_id),
+                    "user_id": int(user_id),
+                },
+            }
+            await self.ws.send(json.dumps(payload))
+            if self.logger:
+                self.logger.info(f"Sent poke to user {user_id} in group {group_id}")
+            return True
+        except Exception as e:
+            if self.logger:
+                self.logger.warning(f"Failed to send poke: {e}")
+            return False
+
+    async def send_group_image(self, group_id: str, image_data: str, *, reply_message_id: str = "", at_user_id: str = "") -> Optional[str]:
+        """发送群聊图片
+
+        Args:
+            group_id: 群号
+            image_data: 图片 URL、base64 字符串（带 base64:// 前缀）或本地文件路径
+        """
+        if not self.ws:
+            raise RuntimeError("Not connected to OneBot")
+        segments: list[Dict[str, Any]] = []
+        if str(reply_message_id or "").strip():
+            segments.append({"type": "reply", "data": {"id": str(reply_message_id)}})
+        if str(at_user_id or "").strip():
+            segments.append({"type": "at", "data": {"qq": str(at_user_id)}})
+        segments.append({"type": "image", "data": {"file": str(image_data)}})
+        return await self.send_group_message_segments(group_id, segments, record_sent=False)
