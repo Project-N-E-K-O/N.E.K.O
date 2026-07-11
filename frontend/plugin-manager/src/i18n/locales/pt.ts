@@ -658,9 +658,10 @@ export default {
         takeoverSettingsPeekDetailPart1: "Seja o carinho das minhas palavras, meus pequenos traços de personalidade ou meus humores delicados do dia a dia, tudo pode ser ajustado passo a passo até ficar exatamente como você gosta.",
         takeoverSettingsPeekDetailPart2: "Este botãozinho também é superimportante! Com um clique suave, eu poderei ir te encontrar no momento perfeito.",
         takeoverReturnControl: "Tá bom, tá bom, não vou mais monopolizar seu computador! Devolvendo o controle pra você, miau! Continua cuidando bem de mim nos próximos dias, por favor!",
-        interruptResistLight1: "Ei! Não puxa, ainda não é sua vez!",
-        interruptResistLight3: "Espera um pouquinho! Ainda não acabou, não me interrompe assim sem cuidado!",
-        interruptAngryExit: "Humano! Você é supermal-educado, miau! Já que quer tanto controlar tudo sozinho, então vai brincar por conta própria com essa tela fria e sem vida! Hmph!",
+        interruptResistLight1: "Nyan! Agora é a minha vez de ensinar, então nada de mexer no mouse ou no teclado! Comporte-se e fique de olho em mim, está bem?",
+        interruptResistLight2: "Ah, fala sério! Você está mexendo no mouse e no teclado de novo! Se continuar sem me ouvir, eu vou ficar brava de verdade, nyan!",
+        interruptResistLight3: "Este é o último aviso, nyan! Se mexer mais uma vez, vou encerrar o tutorial para iniciantes e não vou ensinar mais nada!",
+        interruptAngryExit: "Eu já aguentei isso por tempo demais! Se você se recusa a obedecer, o tutorial termina aqui. Daqui para frente, descubra tudo por conta própria. Hmph!",
         introPractice: 'Agora, tenta falar comigo e vê se a gente está sincronizadinho, nya~!',
       },
     }

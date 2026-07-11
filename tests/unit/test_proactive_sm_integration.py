@@ -1096,14 +1096,21 @@ def test_submit_proactive_callback_persists_when_goodbye_silent():
     ]
 
 
+def _read_core_package_source() -> str:
+    """Concatenated source of the ``main_logic.core`` package (the equivalent
+    of reading the former single-file ``main_logic/core.py``)."""
+    package_dir = os.path.join(os.path.dirname(__file__), "../../main_logic/core")
+    parts = []
+    for name in sorted(os.listdir(package_dir)):
+        if name.endswith(".py"):
+            with open(os.path.join(package_dir, name), encoding="utf-8") as fh:
+                parts.append(fh.read())
+    return "\n".join(parts)
+
+
 def test_start_session_success_path_clears_goodbye_silent_gate():
     """Static guard for the successful start_session branch unblocking proactive."""
-    with open(
-        os.path.join(os.path.dirname(__file__), "../../main_logic/core.py"),
-        encoding="utf-8",
-    ) as fh:
-        source = fh.read()
-    normalized_source = re.sub(r"\s+", " ", source)
+    normalized_source = re.sub(r"\s+", " ", _read_core_package_source())
     success_marker = "self._session_start_circuit_open = False"
     clear_marker = "if self.is_goodbye_silent(): self.set_goodbye_silent(False)"
     notify_marker = "await self.send_session_started(input_mode)"
@@ -1117,12 +1124,7 @@ def test_start_session_success_path_clears_goodbye_silent_gate():
 
 def test_start_session_seeds_topic_hooks_with_full_global_locale():
     """Topic hooks must keep zh-TW when start_session falls back to global language."""
-    with open(
-        os.path.join(os.path.dirname(__file__), "../../main_logic/core.py"),
-        encoding="utf-8",
-    ) as fh:
-        source = fh.read()
-    normalized_source = re.sub(r"\s+", " ", source)
+    normalized_source = re.sub(r"\s+", " ", _read_core_package_source())
 
     assert "topic_language_seed = normalize_language_code(get_global_language_full(), format='full')" in normalized_source
     assert "self.user_language = topic_language_seed" in normalized_source

@@ -26,7 +26,7 @@
                 description: '用户轻微试探时的较劲反馈。'
             }),
             performance: Object.freeze({
-                bubbleText: '喂！不要拽我啦，现在还没轮到你的回合呢！',
+                bubbleText: '喵！现在是人家的教学时间，不可以乱动鼠标和键盘啦！乖乖看着人家，好不好嘛？',
                 bubbleTextKey: 'tutorial.yuiGuide.lines.interruptResistLight1',
                 voiceKey: 'interrupt_resist_light_1',
                 emotion: 'angry',
@@ -34,17 +34,19 @@
                 cursorTarget: '#${p}-container',
                 interruptible: true,
                 resistanceVoices: Object.freeze([
-                    '喂！不要拽我啦，现在还没轮到你的回合呢！',
-                    '等一下啦！还没结束呢，不要这么随便打断我啦！'
+                    '喵！现在是人家的教学时间，不可以乱动鼠标和键盘啦！乖乖看着人家，好不好嘛？',
+                    '真是的，又在乱动鼠标和键盘！再不听话的话，人家可真的要生气了喵！',
+                    '最后警告一次喵！你要是再乱动一下，人家就直接退出新手教程，不教你了！'
                 ]),
                 resistanceVoiceKeys: Object.freeze([
                     'tutorial.yuiGuide.lines.interruptResistLight1',
+                    'tutorial.yuiGuide.lines.interruptResistLight2',
                     'tutorial.yuiGuide.lines.interruptResistLight3'
                 ])
             }),
             interrupts: Object.freeze({
                 mode: 'theatrical_abort',
-                threshold: 3,
+                threshold: 4,
                 throttleMs: 500,
                 resetOnStepAdvance: false
             })
@@ -57,7 +59,7 @@
                 description: '连续有效打断达到阈值后，进入带演出的 angry exit。'
             }),
             performance: Object.freeze({
-                bubbleText: '人类！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！',
+                bubbleText: '人家已经忍你很久了！既然你就是不肯乖乖听话，那新手教程到此结束，接下来你自己慢慢研究吧，哼！',
                 bubbleTextKey: 'tutorial.yuiGuide.lines.interruptAngryExit',
                 voiceKey: 'interrupt_angry_exit',
                 emotion: 'angry',
@@ -67,7 +69,7 @@
             }),
             interrupts: Object.freeze({
                 mode: 'theatrical_abort',
-                threshold: 3,
+                threshold: 4,
                 throttleMs: 500,
                 resetOnStepAdvance: false
             })
@@ -118,7 +120,7 @@
             },
             interrupts: {
                 mode: 'ignore',
-                threshold: 3,
+                threshold: 4,
                 throttleMs: 500,
                 resetOnStepAdvance: true
             }

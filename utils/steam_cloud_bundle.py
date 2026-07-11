@@ -33,11 +33,11 @@ from uuid import uuid4
 
 from utils.cloudsave_runtime import (
     CloudsaveDeadlineExceeded,
-    _assert_deadline_not_exceeded,
-    _atomic_copy_file,
-    _create_staging_workspace,
-    _load_json_if_exists,
+    assert_deadline_not_exceeded,
+    atomic_copy_file,
+    create_staging_workspace,
     load_cloudsave_manifest,
+    load_json_if_exists,
 )
 
 
@@ -103,7 +103,7 @@ def _cloudsave_manifest_matches_local_files(config_manager, manifest_fingerprint
     manifest_fingerprint = str(manifest_fingerprint or "")
     if not manifest_fingerprint:
         return False
-    local_manifest = _load_json_if_exists(config_manager.cloudsave_manifest_path)
+    local_manifest = load_json_if_exists(config_manager.cloudsave_manifest_path)
     if not isinstance(local_manifest, dict):
         return False
     if str(local_manifest.get("fingerprint") or "") != manifest_fingerprint:
@@ -146,7 +146,7 @@ def _parse_manifest_export_time(value: object) -> datetime | None:
 
 
 def _local_cloudsave_snapshot_is_newer_or_equal(config_manager, remote_manifest_like: dict[str, Any]) -> bool:
-    local_manifest = _load_json_if_exists(config_manager.cloudsave_manifest_path)
+    local_manifest = load_json_if_exists(config_manager.cloudsave_manifest_path)
     if not isinstance(local_manifest, dict) or not isinstance(remote_manifest_like, dict):
         return False
     local_fingerprint = str(local_manifest.get("fingerprint") or "")
@@ -175,14 +175,14 @@ def _write_remote_bundle(
     if not relative_paths:
         raise FileNotFoundError("no local cloudsave snapshot is available to bundle")
 
-    _assert_deadline_not_exceeded(
+    assert_deadline_not_exceeded(
         deadline_monotonic,
         operation="steam_remote_upload",
         stage="bundle_prepare",
     )
     with zipfile.ZipFile(stage_bundle_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for relative_path in relative_paths:
-            _assert_deadline_not_exceeded(
+            assert_deadline_not_exceeded(
                 deadline_monotonic,
                 operation="steam_remote_upload",
                 stage=f"bundle_write_start:{relative_path}",
@@ -191,12 +191,12 @@ def _write_remote_bundle(
             if not source_path.is_file():
                 raise FileNotFoundError(f"cloudsave file missing while bundling: {relative_path}")
             archive.write(source_path, arcname=relative_path)
-            _assert_deadline_not_exceeded(
+            assert_deadline_not_exceeded(
                 deadline_monotonic,
                 operation="steam_remote_upload",
                 stage=f"bundle_write_done:{relative_path}",
             )
-    _assert_deadline_not_exceeded(
+    assert_deadline_not_exceeded(
         deadline_monotonic,
         operation="steam_remote_upload",
         stage="bundle_finalize",
@@ -229,14 +229,14 @@ def _extract_bundle_archive_safely(
     *,
     deadline_monotonic: float | None = None,
 ) -> None:
-    _assert_deadline_not_exceeded(
+    assert_deadline_not_exceeded(
         deadline_monotonic,
         operation="steam_remote_download",
         stage="extract_begin",
     )
     with zipfile.ZipFile(io.BytesIO(bundle_bytes), "r") as archive:
         for member in archive.infolist():
-            _assert_deadline_not_exceeded(
+            assert_deadline_not_exceeded(
                 deadline_monotonic,
                 operation="steam_remote_download",
                 stage=f"extract_start:{member.filename}",
@@ -244,7 +244,7 @@ def _extract_bundle_archive_safely(
             target_path = _resolve_safe_archive_target(stage_cloudsave_root, member.filename)
             if member.is_dir():
                 target_path.mkdir(parents=True, exist_ok=True)
-                _assert_deadline_not_exceeded(
+                assert_deadline_not_exceeded(
                     deadline_monotonic,
                     operation="steam_remote_download",
                     stage=f"extract_done:{member.filename}",
@@ -253,7 +253,7 @@ def _extract_bundle_archive_safely(
             target_path.parent.mkdir(parents=True, exist_ok=True)
             with archive.open(member, "r") as src, target_path.open("wb") as dst:
                 shutil.copyfileobj(src, dst)
-            _assert_deadline_not_exceeded(
+            assert_deadline_not_exceeded(
                 deadline_monotonic,
                 operation="steam_remote_download",
                 stage=f"extract_done:{member.filename}",
@@ -268,12 +268,12 @@ def _apply_bundle_to_local_cloudsave(
     deadline_monotonic: float | None = None,
     preserve_newer_local: bool = False,
 ) -> dict[str, Any]:
-    _assert_deadline_not_exceeded(
+    assert_deadline_not_exceeded(
         deadline_monotonic,
         operation="steam_remote_download",
         stage="apply_prepare",
     )
-    stage_root = _create_staging_workspace(config_manager, "remote-bundle")
+    stage_root = create_staging_workspace(config_manager, "remote-bundle")
     stage_root.mkdir(parents=True, exist_ok=True)
     stage_cloudsave_root = stage_root / "cloudsave"
     stage_cloudsave_root.mkdir(parents=True, exist_ok=True)
@@ -285,7 +285,7 @@ def _apply_bundle_to_local_cloudsave(
     )
 
     stage_manifest_path = stage_cloudsave_root / "manifest.json"
-    stage_manifest = _load_json_if_exists(stage_manifest_path)
+    stage_manifest = load_json_if_exists(stage_manifest_path)
     if not isinstance(stage_manifest, dict):
         raise ValueError("remote cloudsave bundle does not contain a valid manifest.json")
 
@@ -316,24 +316,24 @@ def _apply_bundle_to_local_cloudsave(
     stage_replacement_root = stage_root / "cloudsave-replacement"
     stage_replacement_root.mkdir(parents=True, exist_ok=True)
     for relative_path in payload_relative_paths:
-        _assert_deadline_not_exceeded(
+        assert_deadline_not_exceeded(
             deadline_monotonic,
             operation="steam_remote_download",
             stage=f"apply_copy_start:{relative_path}",
         )
-        _atomic_copy_file(stage_cloudsave_root / relative_path, stage_replacement_root / relative_path)
-        _assert_deadline_not_exceeded(
+        atomic_copy_file(stage_cloudsave_root / relative_path, stage_replacement_root / relative_path)
+        assert_deadline_not_exceeded(
             deadline_monotonic,
             operation="steam_remote_download",
             stage=f"apply_copy_done:{relative_path}",
         )
-    _assert_deadline_not_exceeded(
+    assert_deadline_not_exceeded(
         deadline_monotonic,
         operation="steam_remote_download",
         stage="apply_copy_manifest_start",
     )
-    _atomic_copy_file(stage_manifest_path, stage_replacement_root / "manifest.json")
-    _assert_deadline_not_exceeded(
+    atomic_copy_file(stage_manifest_path, stage_replacement_root / "manifest.json")
+    assert_deadline_not_exceeded(
         deadline_monotonic,
         operation="steam_remote_download",
         stage="apply_copy_manifest_done",
@@ -345,7 +345,7 @@ def _apply_bundle_to_local_cloudsave(
     has_existing_cloudsave_dir = target_cloudsave_dir.exists()
 
     if has_existing_cloudsave_dir:
-        _assert_deadline_not_exceeded(
+        assert_deadline_not_exceeded(
             deadline_monotonic,
             operation="steam_remote_download",
             stage="apply_swap_backup",
@@ -353,7 +353,7 @@ def _apply_bundle_to_local_cloudsave(
         os.replace(target_cloudsave_dir, backup_cloudsave_dir)
 
     try:
-        _assert_deadline_not_exceeded(
+        assert_deadline_not_exceeded(
             deadline_monotonic,
             operation="steam_remote_download",
             stage="apply_swap_live",
@@ -548,7 +548,7 @@ def download_cloudsave_bundle_from_steam(
             "platform": sys.platform,
         }
 
-    _assert_deadline_not_exceeded(
+    assert_deadline_not_exceeded(
         deadline_monotonic,
         operation="steam_remote_download",
         stage="initialize",
@@ -597,7 +597,7 @@ def download_cloudsave_bundle_from_steam(
                 "meta": meta_payload,
             }
 
-        _assert_deadline_not_exceeded(
+        assert_deadline_not_exceeded(
             deadline_monotonic,
             operation="steam_remote_download",
             stage="download_bundle",
@@ -646,7 +646,7 @@ def upload_cloudsave_bundle_to_steam(
             "platform": sys.platform,
         }
 
-    _assert_deadline_not_exceeded(
+    assert_deadline_not_exceeded(
         deadline_monotonic,
         operation="steam_remote_upload",
         stage="initialize",
@@ -669,7 +669,7 @@ def upload_cloudsave_bundle_to_steam(
         bundle_bytes = bundle_path.read_bytes()
         meta_bytes = json.dumps(bundle_payload["meta"], ensure_ascii=False, indent=2).encode("utf-8")
 
-        _assert_deadline_not_exceeded(
+        assert_deadline_not_exceeded(
             deadline_monotonic,
             operation="steam_remote_upload",
             stage="write_remote",
