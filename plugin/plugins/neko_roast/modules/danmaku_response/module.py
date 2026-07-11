@@ -632,6 +632,48 @@ class DanmakuResponseModule(BaseModule):
             "him",
             "her",
         }
+        generic_prefixes = (
+            "这个",
+            "那个",
+            "这段",
+            "那段",
+            "这里",
+            "那里",
+            "当前",
+            "本场",
+            "直播",
+            "内容",
+            "视频",
+            "东西",
+            "事情",
+            "问题",
+            "这些",
+            "那些",
+            "哪些",
+            "这点",
+            "那点",
+        )
+        object_phrase = re.compile(
+            r"^(?:(?:这|那|哪|某|一|两|几|每)(?:个|篇|段|部|条|首|本|张|件|场|种|份|则|道|句|款|项|幅|集|期|档|季|章|封|套|支|些|点)?)?"
+            r"(?:(?:文章|作文|内容|视频|直播|作品|文案|帖子|评论|问题|事情|东西|表现|歌曲?|电影|电视剧|剧集|综艺|小说|故事|笑话|节目|游戏|功能|代码|设计|照片|图片|方案|产品|软件|应用))+$"
+        )
+        object_measure_phrase = re.compile(
+            r"^(?:这|那|哪|某|一|两|几|每)(?:个|篇|段|部|条|首|本|张|件|场|种|份|则|道|句|款|项|幅|集|期|档|季|章|封|套|支|些|点)$"
+        )
+        object_relation_phrase = re.compile(
+            r"(?:的|中的)(?:(?:文章|作文|内容|视频|直播|作品|文案|帖子|评论|问题|事情|东西|表现|歌曲?|电影|电视剧|剧集|综艺|小说|故事|笑话|节目|游戏|功能|代码|设计|照片|图片|方案|产品|软件|应用))+$"
+        )
+
+        def is_blocked_target(value: str) -> bool:
+            normalized = value.casefold()
+            return (
+                normalized in blocked
+                or normalized.startswith(generic_prefixes)
+                or object_phrase.fullmatch(normalized) is not None
+                or object_measure_phrase.fullmatch(normalized) is not None
+                or object_relation_phrase.search(normalized) is not None
+            )
+
         for part in cleaned.split("@")[1:]:
             target = []
             for ch in part.strip():
@@ -639,7 +681,12 @@ class DanmakuResponseModule(BaseModule):
                     break
                 target.append(ch)
             name = "".join(target).strip("@ \t\r\n")
-            if name and name.casefold() not in aliases and name.casefold() not in blocked:
+            normalized_name = name.casefold()
+            if (
+                name
+                and normalized_name not in aliases
+                and not is_blocked_target(normalized_name)
+            ):
                 return name[:24]
         pattern = re.compile(
             r"(?:\u5410\u69fd\u4e00\u4e0b|\u5410\u69fd|\u9510\u8bc4\u4e00\u4e0b|\u9510\u8bc4|\u8bc4\u4ef7\u4e00\u4e0b|\u8bc4\u4ef7|\u635f\u4e00\u4e0b|\u635f\u635f|\u8c03\u4f83\u4e00\u4e0b|\u8c03\u4f83|roast|rate)\s*(?:\u4e00\u4e0b|this|that)?\s*([\w\u4e00-\u9fff][\w\u4e00-\u9fff_-]{0,23})",
@@ -649,7 +696,10 @@ class DanmakuResponseModule(BaseModule):
         if not match:
             return ""
         name = match.group(1).strip("@ \t\r\n")
-        return "" if name.casefold() in blocked else name[:24]
+        normalized_name = name.casefold()
+        if is_blocked_target(normalized_name):
+            return ""
+        return name[:24]
 
     @staticmethod
     def _looks_like_greeting(text: str, dense: str) -> bool:

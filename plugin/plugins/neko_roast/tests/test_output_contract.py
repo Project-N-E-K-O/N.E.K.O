@@ -109,3 +109,63 @@ def test_generic_chinese_roast_targets_are_rejected():
         assert DanmakuResponseModule._target_roast_nickname(
             f"roast @{placeholder}"
         ) == ""
+
+    for request in (
+        "评价一下这个直播",
+        "吐槽一下这个内容",
+        "锐评本场表现",
+        "损损那个视频",
+        "评价一下那篇文章",
+        "锐评一篇作文",
+        "锐评这些内容",
+        "roast @这些内容",
+        "评价那些作品",
+        "锐评哪些视频",
+        "吐槽这点内容",
+        "评价那点表现",
+        "锐评 这期节目",
+        "锐评 这集电视剧",
+        "锐评 @这档综艺",
+        "锐评 这期",
+        "锐评 那集",
+        "锐评 @这篇",
+        "锐评 @那期",
+        "锐评 文章视频",
+        "锐评 @文章视频",
+        "评价 代码设计",
+        "roast @软件应用",
+        "锐评 小明的表现",
+        "锐评 @小明的表现",
+        "锐评 这期节目中的内容",
+    ):
+        assert DanmakuResponseModule._target_roast_nickname(request) == ""
+
+    for request in (
+        "评价一下那篇文章",
+        "锐评一篇作文",
+        "锐评这些内容",
+        "roast @这些内容",
+        "评价那些作品",
+        "锐评哪些视频",
+        "吐槽这点内容",
+        "评价那点表现",
+        "锐评 这期节目",
+        "锐评 这集电视剧",
+        "锐评 @这档综艺",
+        "锐评 这期",
+        "锐评 那集",
+        "锐评 @这篇",
+        "锐评 @那期",
+        "锐评 文章视频",
+        "锐评 @文章视频",
+        "评价 代码设计",
+        "roast @软件应用",
+        "锐评 小明的表现",
+        "锐评 @小明的表现",
+        "锐评 这期节目中的内容",
+    ):
+        profile = DanmakuResponseModule._danmaku_profile(request)
+        assert profile["kind"] != "target_roast_request"
+
+    assert DanmakuResponseModule._target_roast_nickname("锐评 小明") == "小明"
+    assert DanmakuResponseModule._target_roast_nickname("锐评 @小明") == "小明"

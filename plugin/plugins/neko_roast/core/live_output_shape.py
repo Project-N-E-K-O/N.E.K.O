@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import re
 
-from .live_output_quality import needs_pretrim_quality_fallback, needs_quality_fallback, safe_fallback_reply
+from .live_output_quality import (
+    looks_like_unfulfilled_content_request,
+    needs_pretrim_quality_fallback,
+    needs_quality_fallback,
+    safe_fallback_reply,
+)
 from .live_reply_contract import (
     HOST_MODULES,
     is_longer_danmaku_reply,
@@ -97,6 +102,30 @@ def first_sentences(text: str, budget: int = 1) -> tuple[str, bool]:
     return cleaned, False
 
 
+def _preserve_fulfilled_content(text: str, shaped: str, metadata: dict | None) -> tuple[str, bool]:
+    if not looks_like_unfulfilled_content_request(shaped, metadata):
+        return shaped, shaped != text
+    if looks_like_unfulfilled_content_request(text, metadata):
+        return shaped, shaped != text
+    return text, False
+
+
+def _clip_fulfilled_content(text: str, limit: int, metadata: dict | None) -> str:
+    cleaned = str(text or "").strip()
+    starts = [0]
+    starts.extend(
+        index + 1
+        for index, char in enumerate(cleaned)
+        if char in "，,；;。.!！？?"
+    )
+    for start in starts:
+        candidate = cleaned[start:].lstrip(" ，,；;。.!！？?")
+        clipped = candidate[:limit].rstrip(" ，,、；;。.!！？?")
+        if clipped and not looks_like_unfulfilled_content_request(clipped, metadata):
+            return clipped
+    return cleaned[:limit].rstrip(" ，,、；;。.!！？?")
+
+
 def _normalize_visible_target(value: str) -> str:
     return "".join(ch for ch in str(value or "").casefold() if ch.isalnum() or "\u4e00" <= ch <= "\u9fff")
 
@@ -154,11 +183,22 @@ def shape_reply_text(text: str, metadata: dict | None) -> tuple[str, dict | None
     else:
         shaped, clipped_sentence = first_sentences(original, budget)
         shaped = shaped or original
+        shaped, clipped_sentence = _preserve_fulfilled_content(original, shaped, outgoing_metadata)
     shaped, clipped_stage_direction = strip_stage_directions(shaped)
+    pre_length_shape = shaped
+    fulfilled_before_length_clip = not looks_like_unfulfilled_content_request(
+        shaped,
+        outgoing_metadata,
+    )
     clipped_length = False
     if len(shaped) > limit:
         shaped = shaped[:limit].rstrip(" \uff0c,\u3001\uff1b;\u3002.!?\uff01\uff1f")
         clipped_length = True
+        if (
+            fulfilled_before_length_clip
+            and looks_like_unfulfilled_content_request(shaped, outgoing_metadata)
+        ):
+            shaped = _clip_fulfilled_content(pre_length_shape, limit, outgoing_metadata)
     shaped = shaped.strip()
     shaped, clipped_dangling_choice = trim_dangling_choice(shaped)
     if not used_quality_fallback and needs_quality_fallback(shaped, outgoing_metadata):
