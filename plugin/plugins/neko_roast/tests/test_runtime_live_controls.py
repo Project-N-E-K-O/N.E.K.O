@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from plugin.plugins.neko_roast.core.runtime import RoastRuntime
+from plugin.plugins.neko_roast.core.runtime_live_listener import stop_live_listener
 
 
 class ConfigApi:
@@ -179,3 +180,16 @@ async def test_douyin_config_update_keeps_live_room_ref(runtime: RoastRuntime) -
     assert runtime.live_provider.platform == "douyin"
     assert runtime.live_provider.configured_room_ref() == "room-43"
     assert runtime.config.live_room_ref == "room-43"
+
+
+@pytest.mark.asyncio
+async def test_stop_live_listener_defaults_to_mark_disabled(runtime: RoastRuntime) -> None:
+    runtime.config.live_enabled = True
+    runtime.live_room_context = {"live_status": "live", "title": "room"}
+    await runtime.bili_live_ingest.start_listening(100)
+
+    await stop_live_listener(runtime)
+
+    assert runtime.config.live_enabled is False
+    assert runtime.live_connection_snapshot()["connected"] is False
+    assert runtime.live_room_context == {"live_status": "unknown"}
