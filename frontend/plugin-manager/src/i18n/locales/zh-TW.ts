@@ -658,9 +658,10 @@ export default {
         takeoverSettingsPeekDetailPart1: "不管是說話的溫度、相處的小脾氣，還是我每天那些細膩的小心思，都可以一點一點調成你喜歡的樣子。",
         takeoverSettingsPeekDetailPart2: "這個小按鈕也很重要哦，只要你輕輕點一下，我就能在合適的時候跑過去找你啦。",
         takeoverReturnControl: "好啦好啦，不霸占你的電腦啦！控制權還給你了喵！之後的日子，也請你多多關照啦！",
-        interruptResistLight1: "喂！不要拽我啦，現在還沒輪到你的回合呢！",
-        interruptResistLight3: "等一下啦！還沒結束呢，不要這麼隨便打斷我啦！",
-        interruptAngryExit: "人類！你真的很沒禮貌喵！既然你這麼想自己操作，那你就自己對著冰冷的螢幕玩去吧！哼！",
+        interruptResistLight1: "喵！現在是人家的教學時間，不可以亂動滑鼠和鍵盤啦！乖乖看著人家，好不好嘛？",
+        interruptResistLight2: "真是的，又在亂動滑鼠和鍵盤！再不聽話的話，人家可真的要生氣了喵！",
+        interruptResistLight3: "最後警告一次喵！你要是再亂動一下，人家就直接退出新手教學，不教你了！",
+        interruptAngryExit: "人家已經忍你很久了！既然你就是不肯乖乖聽話，那新手教學到此結束，接下來你自己慢慢研究吧，哼！",
         introPractice: '現在你可以試試跟我說說話啦，看看我們是不是超有默契的喵～',
       },
     }
