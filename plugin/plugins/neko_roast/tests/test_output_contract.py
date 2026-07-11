@@ -142,6 +142,9 @@ def test_generic_chinese_roast_targets_are_rejected():
         "锐评 这期节目中的内容",
         "锐评 小明 的 表现",
         "锐评 @小明 的 表现",
+        "锐评 小明 的 操作",
+        "锐评 小明 的 水平",
+        "锐评 @小明 的 技术",
     ):
         assert DanmakuResponseModule._target_roast_nickname(request) == ""
 
@@ -170,6 +173,9 @@ def test_generic_chinese_roast_targets_are_rejected():
         "锐评 这期节目中的内容",
         "锐评 小明 的 表现",
         "锐评 @小明 的 表现",
+        "锐评 小明 的 操作",
+        "锐评 小明 的 水平",
+        "锐评 @小明 的 技术",
     ):
         profile = DanmakuResponseModule._danmaku_profile(request)
         assert profile["kind"] != "target_roast_request"

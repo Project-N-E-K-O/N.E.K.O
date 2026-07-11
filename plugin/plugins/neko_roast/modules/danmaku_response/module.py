@@ -676,7 +676,7 @@ class DanmakuResponseModule(BaseModule):
 
         def has_blocked_trailing_relation(value: str) -> bool:
             dense = "".join(str(value or "").casefold().split())
-            return object_relation_phrase.search(dense) is not None
+            return dense.startswith(("的", "中的"))
 
         for part in cleaned.split("@")[1:]:
             stripped_part = part.strip()
