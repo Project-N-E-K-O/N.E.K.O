@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from main_routers import drawing_guess_router as dgr
+from main_routers.game_router import drawing_guess as dgr
 from main_routers import game_router
 from utils.game_route_state import _game_route_states, _route_state_key
 

@@ -4281,7 +4281,7 @@ async def test_route_external_voice_transcript_to_game_llm(monkeypatch):
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_drawing_guess_voice_transcript_stays_out_of_home_chat(monkeypatch):
-    from main_routers import drawing_guess_router
+    from main_routers.game_router import drawing_guess
 
     with reset_game_route_state():
         mgr = _FakeGameRouteManager()
@@ -4308,7 +4308,7 @@ async def test_drawing_guess_voice_transcript_stays_out_of_home_chat(monkeypatch
             return {"line": "game window reply", "control": {}, "llm_source": {"provider": "fake"}}
 
         monkeypatch.setattr(
-            drawing_guess_router,
+            drawing_guess,
             "handle_external_drawing_guess_transcript",
             fake_handle_drawing_guess_transcript,
         )

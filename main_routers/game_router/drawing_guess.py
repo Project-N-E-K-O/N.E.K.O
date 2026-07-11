@@ -1958,7 +1958,7 @@ async def _call_drawing_guess_svg_model(
 
 async def _generate_model_drawing(word: DrawingGuessWord, locale: str, lanlan_name: str) -> dict[str, Any] | None:
     try:
-        from .game_router import _get_character_info
+        from . import _get_character_info
 
         char_info = _get_character_info(lanlan_name)
         model = str(char_info.get("model") or "")
@@ -2149,7 +2149,7 @@ async def _generate_persona_chat_line(
     event: str,
 ) -> str | None:
     try:
-        from .game_router import _get_character_info
+        from . import _get_character_info
         from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm_async
         from utils.token_tracker import set_call_type
 
@@ -2269,7 +2269,7 @@ async def _generate_persona_game_line(
     details: dict[str, Any] | None = None,
 ) -> tuple[str, str]:
     try:
-        from .game_router import _get_character_info
+        from . import _get_character_info
         from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm_async
         from utils.token_tracker import set_call_type
 
@@ -2440,7 +2440,7 @@ async def _classify_game_input_intent(
     phase: str,
 ) -> dict[str, Any] | None:
     try:
-        from .game_router import _get_character_info
+        from . import _get_character_info
         from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm_async
         from utils.token_tracker import set_call_type
 
@@ -2687,7 +2687,7 @@ async def _generate_text_context_guess(
     user_hint: str,
 ) -> dict[str, Any] | None:
     try:
-        from .game_router import _get_character_info
+        from . import _get_character_info
         from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm_async
         from utils.token_tracker import set_call_type
 
@@ -2799,7 +2799,7 @@ async def _generate_vision_guess(
             )
             return None
 
-        from .game_router import _get_character_info
+        from . import _get_character_info
 
         char_info = _get_character_info(lanlan_name)
 

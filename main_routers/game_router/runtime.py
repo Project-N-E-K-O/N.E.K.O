@@ -4121,7 +4121,7 @@ async def _route_external_transcript_to_game(
     llm_started_at = time.time()
     if game_type == "drawing_guess":
         try:
-            from ..drawing_guess_router import handle_external_drawing_guess_transcript
+            from .drawing_guess import handle_external_drawing_guess_transcript
 
             result = await handle_external_drawing_guess_transcript(
                 lanlan_name,
