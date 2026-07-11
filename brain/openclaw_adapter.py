@@ -231,9 +231,15 @@ class OpenClawAdapter:
                     (self.health_url, "legacy"),
                 )
                 response = None
-                checked_url = candidates[0][0]
+                response_url = candidates[0][0]
+                last_request_error: Optional[httpx.RequestError] = None
                 for checked_url, variant in candidates:
-                    response = client.get(checked_url)
+                    try:
+                        response = client.get(checked_url)
+                    except httpx.RequestError as exc:
+                        last_request_error = exc
+                        continue
+                    response_url = checked_url
                     if response.is_success:
                         if variant == "v2":
                             try:
@@ -251,12 +257,14 @@ class OpenClawAdapter:
                             "status_code": response.status_code,
                             "provider": "qwenpaw",
                         }
+                if response is None and last_request_error is not None:
+                    raise last_request_error
                 status_code = response.status_code if response is not None else 503
                 self.last_error = f"HTTP {status_code}"
                 return {
                     "enabled": True,
                     "ready": False,
-                    "reasons": [f"OpenClaw(QwenPaw) responded {status_code} ({checked_url})"],
+                    "reasons": [f"OpenClaw(QwenPaw) responded {status_code} ({response_url})"],
                     "status_code": status_code,
                     "provider": "qwenpaw",
                 }
@@ -747,6 +755,24 @@ class OpenClawAdapter:
             ],
         }
 
+    def _build_console_payload(
+        self,
+        *,
+        session_id: str,
+        user_id: str,
+        channel: str,
+        instruction: str,
+        attachments: Optional[list] = None,
+    ) -> Dict[str, Any]:
+        payload = self._build_process_payload(
+            session_id=session_id,
+            channel=channel,
+            instruction=instruction,
+            attachments=attachments,
+        )
+        payload["user_id"] = user_id
+        return payload
+
     async def run_instruction(
         self,
         instruction: str,
@@ -779,6 +805,13 @@ class OpenClawAdapter:
             instruction=instruction,
             attachments=attachments,
         )
+        console_payload = self._build_console_payload(
+            session_id=resolved_session_id,
+            user_id=sender,
+            channel=channel,
+            instruction=instruction,
+            attachments=attachments,
+        )
         timeout = httpx.Timeout(self.http_timeout, connect=min(10.0, self.http_timeout))
         try:
             async with httpx.AsyncClient(
@@ -792,7 +825,7 @@ class OpenClawAdapter:
 
                 if self.api_variant == "v2":
                     console_attempted = True
-                    console_response = await client.post(self.console_chat_url, json=responses_payload)
+                    console_response = await client.post(self.console_chat_url, json=console_payload)
                     if console_response.status_code not in (404, 405):
                         console_response.raise_for_status()
                         data = self._parse_process_sse_payload(console_response.text)
@@ -810,7 +843,7 @@ class OpenClawAdapter:
                             data = self._parse_process_sse_payload(process_response.text)
                             self.api_variant = "legacy"
                         elif not console_attempted:
-                            console_response = await client.post(self.console_chat_url, json=responses_payload)
+                            console_response = await client.post(self.console_chat_url, json=console_payload)
                             console_response.raise_for_status()
                             data = self._parse_process_sse_payload(console_response.text)
                             self.api_variant = "v2"

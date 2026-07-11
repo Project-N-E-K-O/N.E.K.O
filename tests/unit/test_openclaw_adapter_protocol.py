@@ -68,6 +68,45 @@ def test_availability_falls_back_to_legacy_health_after_version_server_error(mon
     ]
 
 
+def test_availability_falls_back_after_version_transport_error(monkeypatch):
+    adapter = _adapter_for_protocol_test()
+    client = MagicMock()
+    client.get.side_effect = (
+        httpx.ConnectTimeout(
+            "version probe timed out",
+            request=httpx.Request("GET", adapter.version_url),
+        ),
+        httpx.Response(200, json={"status": "ok"}),
+    )
+    context = MagicMock()
+    context.__enter__.return_value = client
+    monkeypatch.setattr(httpx, "Client", MagicMock(return_value=context))
+
+    result = adapter.is_available()
+
+    assert result["ready"] is True
+    assert adapter.api_variant == "legacy"
+    assert client.get.call_count == 2
+
+
+def test_console_payload_uses_qwenpaw_runtime_content_types():
+    adapter = _adapter_for_protocol_test()
+
+    payload = adapter._build_console_payload(
+        session_id="stable-session",
+        user_id="user-a",
+        channel="console",
+        instruction="describe this image",
+        attachments=[{"url": "data:image/png;base64,abc"}],
+    )
+
+    assert payload["user_id"] == "user-a"
+    assert payload["input"][0]["content"] == [
+        {"type": "text", "text": "describe this image"},
+        {"type": "image", "image_url": "data:image/png;base64,abc"},
+    ]
+
+
 def test_sse_parser_keeps_completed_response_before_trailing_usage():
     payload = "\n".join(
         (
