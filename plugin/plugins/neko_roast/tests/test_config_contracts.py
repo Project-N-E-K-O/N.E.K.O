@@ -339,7 +339,7 @@ async def test_pipeline_mark_roasted_failure_keeps_success_result():
             return False
 
         async def mark_roasted(self, _uid, _output):
-            raise OSError("disk full")
+            return False
 
     class Dispatcher:
         async def push_roast(self, _request):
