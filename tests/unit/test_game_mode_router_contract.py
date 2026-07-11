@@ -179,9 +179,11 @@ async def test_game_mode_broadcast_schedules_slow_sockets_without_waiting(monkey
         timeout=0.1,
     )
     assert delivered == 1
+    assert len(game_mode_router_module._game_mode_broadcast_tasks) == 1
     release.set()
     for _ in range(3):
         await asyncio.sleep(0)
+    assert not game_mode_router_module._game_mode_broadcast_tasks
 
 
 @pytest.mark.parametrize(

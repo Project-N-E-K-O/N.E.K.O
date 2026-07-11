@@ -21,6 +21,7 @@ from main_routers.system_router import _validate_local_mutation_request
 router = APIRouter()
 logger = logging.getLogger(__name__)
 GAME_MODE_BROADCAST_SEND_TIMEOUT_SECONDS = 2.0
+_game_mode_broadcast_tasks: set[asyncio.Task[None]] = set()
 
 
 async def _send_game_mode_event(name: str, ws: Any, payload: dict[str, Any]) -> None:
@@ -52,10 +53,12 @@ async def broadcast_game_mode_event(payload: dict[str, Any]) -> int:
             state_name = str(client_state).upper()
             if client_state is not None and "CONNECTED" not in state_name:
                 continue
-            asyncio.create_task(
+            task = asyncio.create_task(
                 _send_game_mode_event(name, ws, payload),
                 name="game_mode_beta_broadcast",
             )
+            _game_mode_broadcast_tasks.add(task)
+            task.add_done_callback(_game_mode_broadcast_tasks.discard)
             delivered += 1
         except Exception:
             logger.warning("[GameModeBeta] broadcast failed for session %r", name, exc_info=True)
