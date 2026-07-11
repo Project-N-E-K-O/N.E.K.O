@@ -10255,12 +10255,8 @@ class LLMSessionManager:
                 and effective_speech_id is not None
                 and str(effective_speech_id) in suppressed_ids
             )
-            tap_delivered = False
-            if suppress_primary:
-                tap_delivered = await self._publish_speech_taps(tts_audio, effective_speech_id)
-                delivered = tap_delivered
             if (
-                (not suppress_primary or not tap_delivered)
+                not suppress_primary
                 and self.websocket
                 and hasattr(self.websocket, 'client_state')
                 and self.websocket.client_state == self.websocket.client_state.CONNECTED
@@ -10287,7 +10283,7 @@ class LLMSessionManager:
                     logger.warning("⚠️ send_speech: WebSocket disconnected")
                 except Exception as e:
                     logger.warning("⚠️ send_speech primary WS failed; continuing speech taps: %s", e)
-            if not suppress_primary and await self._publish_speech_taps(tts_audio, effective_speech_id):
+            if await self._publish_speech_taps(tts_audio, effective_speech_id):
                 delivered = True
             if delivered:
                 logger.debug(f"🔊 send_speech OK: {len(tts_audio)} bytes, speech_id={effective_speech_id}")

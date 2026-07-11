@@ -92,6 +92,41 @@ def _clear_game_session_debug_logs():
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_speech_broadcast_waits_for_tap_reconnect(monkeypatch):
+    key = ("Lan", "drawing_guess", "speech-reconnect")
+
+    class _SpeechSocket:
+        def __init__(self):
+            self.sent = []
+
+        async def send_json(self, payload):
+            self.sent.append(payload)
+
+        async def send_bytes(self, payload):
+            self.sent.append(payload)
+
+    socket = _SpeechSocket()
+    gr_runtime._game_speech_subscribers.pop(key, None)
+    monkeypatch.setattr(gr_runtime, "_active_game_speech_subscriber_key", lambda _name: key)
+
+    async def reconnect_during_grace(_delay):
+        gr_runtime._game_speech_subscribers[key] = {socket}
+
+    monkeypatch.setattr(gr_runtime.asyncio, "sleep", reconnect_during_grace)
+    try:
+        delivered = await gr_runtime._broadcast_game_speech("Lan", b"game-audio", "speech-1")
+    finally:
+        gr_runtime._game_speech_subscribers.pop(key, None)
+
+    assert delivered is True
+    assert socket.sent == [
+        {"type": "audio_chunk", "speech_id": "speech-1"},
+        b"game-audio",
+    ]
+
+
+@pytest.mark.unit
 def test_badminton_removed_modes_are_not_public_or_scored():
     assert gr_scores._normalize_badminton_mode("shooter") == "spectator"
     assert gr_scores._normalize_badminton_mode("SHOOTER") == "spectator"

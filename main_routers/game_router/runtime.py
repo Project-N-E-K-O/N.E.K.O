@@ -187,6 +187,8 @@ _GAME_SPEECH_TAP_KEY = "game_route_speech"
 _game_speech_subscribers: Dict[tuple[str, str, str], set[WebSocket]] = {}
 _game_speech_subscribers_lock = asyncio.Lock()
 _GAME_SPEECH_WS_ROUTE_CHECK_SECONDS = 20.0
+_GAME_SPEECH_RECONNECT_GRACE_SECONDS = 0.8
+_GAME_SPEECH_RECONNECT_POLL_SECONDS = 0.05
 
 
 # 超时清理：30 分钟无活动自动销毁
@@ -310,27 +312,34 @@ async def _drop_game_speech_subscriber(key: tuple[str, str, str], websocket: Web
 async def _broadcast_game_speech(lanlan_name: str, audio: bytes, speech_id: str | None) -> bool:
     if not audio:
         return False
-    active_key = _active_game_speech_subscriber_key(lanlan_name)
-    if not active_key:
-        return False
-    async with _game_speech_subscribers_lock:
-        subscribers = list(_game_speech_subscribers.get(active_key) or [])
-    if not subscribers:
-        return False
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _GAME_SPEECH_RECONNECT_GRACE_SECONDS
+    while True:
+        active_key = _active_game_speech_subscriber_key(lanlan_name)
+        if not active_key:
+            return False
+        async with _game_speech_subscribers_lock:
+            subscribers = list(_game_speech_subscribers.get(active_key) or [])
 
-    delivered = False
-    stale: list[WebSocket] = []
-    header = {"type": "audio_chunk", "speech_id": speech_id}
-    for websocket in subscribers:
-        try:
-            await websocket.send_json(header)
-            await websocket.send_bytes(audio)
-            delivered = True
-        except Exception:
-            stale.append(websocket)
-    for websocket in stale:
-        await _drop_game_speech_subscriber(active_key, websocket)
-    return delivered
+        delivered = False
+        stale: list[WebSocket] = []
+        header = {"type": "audio_chunk", "speech_id": speech_id}
+        for websocket in subscribers:
+            try:
+                await websocket.send_json(header)
+                await websocket.send_bytes(audio)
+                delivered = True
+            except Exception:
+                stale.append(websocket)
+        for websocket in stale:
+            await _drop_game_speech_subscriber(active_key, websocket)
+        if delivered:
+            return True
+
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            return False
+        await asyncio.sleep(min(_GAME_SPEECH_RECONNECT_POLL_SECONDS, remaining))
 
 
 def _ensure_game_speech_tap(lanlan_name: str) -> bool:

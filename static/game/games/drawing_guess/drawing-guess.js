@@ -1464,7 +1464,7 @@
     state.speechAudioReconnectTimer = setTimeout(function () {
       state.speechAudioReconnectTimer = null;
       startSpeechAudioSocket();
-    }, 1200);
+    }, 400);
   }
 
   function startSpeechAudioSocket() {
