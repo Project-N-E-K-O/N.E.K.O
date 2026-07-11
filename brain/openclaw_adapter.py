@@ -251,9 +251,6 @@ class OpenClawAdapter:
                             "status_code": response.status_code,
                             "provider": "qwenpaw",
                         }
-                    if response.status_code not in (404, 405):
-                        break
-
                 status_code = response.status_code if response is not None else 503
                 self.last_error = f"HTTP {status_code}"
                 return {

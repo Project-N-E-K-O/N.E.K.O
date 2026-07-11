@@ -47,6 +47,27 @@ def test_availability_prefers_qwenpaw_v2_version_endpoint(monkeypatch):
     client.get.assert_called_once_with("http://127.0.0.1:8088/api/version")
 
 
+def test_availability_falls_back_to_legacy_health_after_version_server_error(monkeypatch):
+    adapter = _adapter_for_protocol_test()
+    client = MagicMock()
+    client.get.side_effect = (
+        httpx.Response(503, json={"detail": "not supported"}),
+        httpx.Response(200, json={"status": "ok"}),
+    )
+    context = MagicMock()
+    context.__enter__.return_value = client
+    monkeypatch.setattr(httpx, "Client", MagicMock(return_value=context))
+
+    result = adapter.is_available()
+
+    assert result["ready"] is True
+    assert adapter.api_variant == "legacy"
+    assert [call.args[0] for call in client.get.call_args_list] == [
+        "http://127.0.0.1:8088/api/version",
+        "http://127.0.0.1:8088/api/agent/health",
+    ]
+
+
 def test_sse_parser_keeps_completed_response_before_trailing_usage():
     payload = "\n".join(
         (
