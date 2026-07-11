@@ -143,18 +143,43 @@ def test_steps_registry_registers_global_resistance_steps_for_all_rounds():
     )[0]
     angry_block = source.split("interrupt_angry_exit: Object.freeze({", 1)[1]
 
-    assert "bubbleText: '喂！不要拽我啦，现在还没轮到你的回合呢！'" in resist_block
+    assert "bubbleText: '喵！现在是人家的教学时间，不可以乱动鼠标和键盘啦！乖乖看着人家，好不好嘛？'" in resist_block
     assert "voiceKey: 'interrupt_resist_light_1'" in resist_block
     assert "resistanceVoices: Object.freeze([" in resist_block
-    assert "threshold: 3" in resist_block
+    assert "真是的，又在乱动鼠标和键盘！再不听话的话，人家可真的要生气了喵！" in resist_block
+    assert "最后警告一次喵！你要是再乱动一下，人家就直接退出新手教程，不教你了！" in resist_block
+    assert "tutorial.yuiGuide.lines.interruptResistLight2" in resist_block
+    assert "tutorial.yuiGuide.lines.interruptResistLight3" in resist_block
+    assert "threshold: 4" in resist_block
     assert "resetOnStepAdvance: false" in resist_block
 
-    assert "bubbleText: '人类！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！'" in angry_block
+    assert "bubbleText: '人家已经忍你很久了！既然你就是不肯乖乖听话，那新手教程到此结束，接下来你自己慢慢研究吧，哼！'" in angry_block
     assert "voiceKey: 'interrupt_angry_exit'" in angry_block
-    assert "threshold: 3" in angry_block
+    assert "threshold: 4" in angry_block
     assert "resetOnStepAdvance: false" in angry_block
     assert "Object.keys(DEFAULT_RESISTANCE_STEP_PATCHES).forEach(function (id) {" in source
     assert "if (!steps[id]) {" in source
+
+
+def test_resistance_audio_assets_use_new_ten_character_names():
+    audio_root = ROOT / "static" / "assets" / "tutorial" / "guide-audio"
+    new_files = [
+        "喵！现在是人家的教学.mp3",
+        "真是的，又在乱动鼠标.mp3",
+        "最后警告一次喵！你要.mp3",
+        "人家已经忍你很久了！.mp3",
+    ]
+    legacy_files = [
+        "喂！不要拽我啦，现在.mp3",
+        "等一下啦！还没结束呢.mp3",
+        "人类！你真的很没礼貌.mp3",
+    ]
+
+    for locale in ["zh", "en", "ja", "ko", "ru"]:
+        for file_name in new_files:
+            assert (audio_root / locale / file_name).is_file()
+        for file_name in legacy_files:
+            assert not (audio_root / locale / file_name).exists()
 
 
 def test_day2_round_targets_compact_tool_flow_after_day_swap():
