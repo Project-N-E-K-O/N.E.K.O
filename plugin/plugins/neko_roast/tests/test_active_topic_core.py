@@ -86,6 +86,13 @@ def test_explicit_material_family_does_not_drift_to_stance_pack(
     assert active_topic_pack.active_topic_pack(material) == expected_pack
 
 
+def test_explicit_ab_marker_remains_a_choice_vote() -> None:
+    assert (
+        active_topic_material_family.host_material_family({"title": "A/B vote"})
+        == "choice_vote"
+    )
+
+
 def test_inferred_food_family_does_not_drift_to_stance_pack() -> None:
     material = {
         "title": "late-night drink prompt",
