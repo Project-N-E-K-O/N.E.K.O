@@ -12,20 +12,28 @@ def _source(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def test_live2d_game_mode_edge_peek_is_game_mode_gated_and_uses_waist_anchor():
+def _edge_peek_source() -> str:
     source = _source(LIVE2D_INTERACTION_PATH)
+    return source.split("LIVE2D_GAME_MODE_EDGE_PEEK_TRIGGER_RATIO", 1)[1].split("/**", 1)[0]
+
+
+def test_live2d_game_mode_edge_peek_is_game_mode_gated_and_left_right_only():
+    source = _source(LIVE2D_INTERACTION_PATH)
+    edge_peek_source = _edge_peek_source()
 
     assert "LIVE2D_GAME_MODE_EDGE_PEEK_TRIGGER_RATIO = 0.025" in source
-    assert "LIVE2D_GAME_MODE_EDGE_PEEK_ANGLE_DEGREES = 45" in source
-    assert "LIVE2D_GAME_MODE_EDGE_PEEK_BELT_X_RATIO = 0.5" in source
-    assert "LIVE2D_GAME_MODE_EDGE_PEEK_BELT_Y_RATIO = 0.48" in source
-    assert "LIVE2D_GAME_MODE_EDGE_PEEK_EDGE_INSET_PX = 8" in source
-    assert "LIVE2D_GAME_MODE_EDGE_PEEK_VISIBLE_MARGIN_PX = 8" in source
-    assert "function getLive2DGameModeEdgePeekSide(edge, bounds, viewportW)" in source
-    assert "side === 'left'" in source
-    assert "side === 'right'" in source
+    assert "LIVE2D_GAME_MODE_EDGE_PEEK_VISIBLE_RATIO = 0.22" in source
+    assert "LIVE2D_GAME_MODE_EDGE_PEEK_VISIBLE_MIN_PX = 96" in source
+    assert "LIVE2D_GAME_MODE_EDGE_PEEK_VISIBLE_MAX_PX = 180" in source
+    assert "LIVE2D_GAME_MODE_EDGE_PEEK_ROTATION_DEGREES = 10" in source
+    assert "LIVE2D_GAME_MODE_EDGE_PEEK_HEAD_Y_RATIO = 0.24" in source
     assert "function isLive2DGameModeEdgePeekEnabled()" in source
     assert "window.nekoGameModeBeta.isEnabled()" in source
+    assert "function getLive2DGameModeEdgePeekSide(bounds, viewport)" in edge_peek_source
+    assert "nearLeft" in edge_peek_source
+    assert "nearRight" in edge_peek_source
+    assert "nearTop" not in edge_peek_source
+    assert "nearBottom" not in edge_peek_source
     assert "this._tryApplyLive2DGameModeEdgePeek(model)" in source
 
 
@@ -39,10 +47,6 @@ def test_live2d_game_mode_edge_peek_hides_controls_without_locking_live2d():
     assert "display: none !important;" in css_source
     assert "pointer-events: none !important;" in css_source
 
-    edge_peek_source = interaction_source.split("LIVE2D_GAME_MODE_EDGE_PEEK_TRIGGER_RATIO", 1)[1]
-    edge_peek_source = edge_peek_source.split("Live2DManager.prototype.clearLive2DGameModeEdgePeek", 1)[0]
-    assert ".classList.add('neko-live2d-game-mode-edge-peek')" not in edge_peek_source
-
     full_edge_peek_source = interaction_source.split("LIVE2D_GAME_MODE_EDGE_PEEK_TRIGGER_RATIO", 1)[1]
     full_edge_peek_source = full_edge_peek_source.split("Live2DManager.prototype.setupDragAndDrop", 1)[0]
     assert ".classList.add('neko-live2d-game-mode-edge-peek')" in full_edge_peek_source
@@ -51,135 +55,151 @@ def test_live2d_game_mode_edge_peek_hides_controls_without_locking_live2d():
     assert "this.isLocked = true" not in full_edge_peek_source
 
 
-def test_live2d_game_mode_edge_peek_uses_model_transform_not_canvas_transform():
-    interaction_source = _source(LIVE2D_INTERACTION_PATH)
+def test_live2d_game_mode_edge_peek_uses_natural_offscreen_transform_not_mask_or_canvas_clip():
+    edge_peek_source = _edge_peek_source()
     css_source = _source(INDEX_CSS_PATH)
 
+    forbidden = [
+        "PIXI.Graphics",
+        "wrapper.mask",
+        "model.mask",
+        "clipPath",
+        "webkitClipPath",
+        "drawPolygon",
+        "maskPoints",
+        "createLive2DGameModeEdgePeekWrapper",
+    ]
+    for token in forbidden:
+        assert token not in edge_peek_source
+
     assert "body.neko-live2d-game-mode-edge-peek #live2d-canvas" not in css_source
-    assert "--neko-live2d-game-mode-edge-peek-x" not in interaction_source
-    assert "--neko-live2d-game-mode-edge-peek-angle" not in interaction_source
-    assert "model.rotation = placement.rotation;" in interaction_source
-    assert "model.x = placement.modelX;" in interaction_source
-    assert "model.y = placement.modelY;" in interaction_source
-    assert "baseRotation" in interaction_source
-    assert "model.rotation = state.baseRotation;" in interaction_source
-    assert "model.pivot =" not in interaction_source
-    assert "model.pivot.set" not in interaction_source
-    assert "transform-origin: var(--neko-live2d-game-mode-edge-peek-origin-x" not in css_source
-    assert "rotate(var(--neko-live2d-game-mode-edge-peek-angle" not in css_source
-    assert ".style.transform =" not in interaction_source.split("LIVE2D_GAME_MODE_EDGE_PEEK_TRIGGER_RATIO", 1)[1].split("Live2DManager.prototype.clearLive2DGameModeEdgePeek", 1)[0]
+    assert "model.x = target.x;" in edge_peek_source
+    assert "model.y = target.y;" in edge_peek_source
+    assert "model.rotation = target.rotation;" in edge_peek_source
+    assert "model.scale.x = target.scaleX;" in edge_peek_source
+    assert "getLive2DGameModeEdgePeekViewportIntersection" in edge_peek_source
 
 
-def test_live2d_game_mode_edge_peek_places_belt_after_model_rotation():
-    interaction_source = _source(LIVE2D_INTERACTION_PATH)
-    edge_peek_source = interaction_source.split("LIVE2D_GAME_MODE_EDGE_PEEK_TRIGGER_RATIO", 1)[1]
-    edge_peek_source = edge_peek_source.split("Live2DManager.prototype.clearLive2DGameModeEdgePeek", 1)[0]
+def test_live2d_game_mode_edge_peek_faces_screen_inward_and_restores_transform():
+    edge_peek_source = _edge_peek_source()
+    full_source = _source(LIVE2D_INTERACTION_PATH)
 
-    assert "function rotateLive2DGameModeEdgePeekPoint(point, origin, angleRadians)" in edge_peek_source
-    assert "const rotationOrigin = { x: model.x, y: model.y };" in edge_peek_source
-    assert "const rotatedBelt = rotateLive2DGameModeEdgePeekPoint(belt, rotationOrigin, rotation);" in edge_peek_source
-    assert "let offsetX = targetBeltX - rotatedBelt.x;" in edge_peek_source
-    assert "let offsetY = targetBeltY - rotatedBelt.y;" in edge_peek_source
-    assert "modelX: model.x + offsetX" in edge_peek_source
-    assert "modelY: model.y + offsetY" in edge_peek_source
-
-
-def test_live2d_game_mode_edge_peek_anchors_belt_at_edge_and_keeps_belt_up_visible():
-    interaction_source = _source(LIVE2D_INTERACTION_PATH)
-    edge_peek_source = interaction_source.split("LIVE2D_GAME_MODE_EDGE_PEEK_TRIGGER_RATIO", 1)[1]
-    edge_peek_source = edge_peek_source.split("Live2DManager.prototype.clearLive2DGameModeEdgePeek", 1)[0]
-
-    assert "const beltX = bounds.left + bounds.width * LIVE2D_GAME_MODE_EDGE_PEEK_BELT_X_RATIO;" in edge_peek_source
-    assert "const beltY = bounds.top + bounds.height * LIVE2D_GAME_MODE_EDGE_PEEK_BELT_Y_RATIO;" in edge_peek_source
-    assert "targetBeltX = LIVE2D_GAME_MODE_EDGE_PEEK_EDGE_INSET_PX;" in edge_peek_source
-    assert "targetBeltX = viewportW - LIVE2D_GAME_MODE_EDGE_PEEK_EDGE_INSET_PX;" in edge_peek_source
-    assert "function getLive2DGameModeEdgePeekVisibleUpperBounds(bounds, rotationOrigin, offsetX, offsetY, angleRadians)" in edge_peek_source
-    assert "function getLive2DGameModeEdgePeekVisibleUpperCorrection(visibleBounds, viewportW, viewportH)" in edge_peek_source
-    assert "const visibleUpperBounds = getLive2DGameModeEdgePeekVisibleUpperBounds(" in edge_peek_source
-    assert "const correction = getLive2DGameModeEdgePeekVisibleUpperCorrection(visibleUpperBounds, viewportW, viewportH);" in edge_peek_source
-    assert "bounds.bottom" not in edge_peek_source.split("function getLive2DGameModeEdgePeekVisibleUpperBounds", 1)[1].split("function getLive2DGameModeEdgePeekVisibleUpperCorrection", 1)[0]
-    assert "bounds.top + bounds.height * LIVE2D_GAME_MODE_EDGE_PEEK_BELT_Y_RATIO" in edge_peek_source.split("function getLive2DGameModeEdgePeekVisibleUpperBounds", 1)[1].split("function getLive2DGameModeEdgePeekVisibleUpperCorrection", 1)[0]
-    assert "getLive2DGameModeEdgePeekVisibilityCorrection" not in edge_peek_source
+    assert "function getLive2DGameModeEdgePeekInwardScaleX(model, side)" in edge_peek_source
+    assert "side === 'left' ? Math.abs(baseScaleX) : -Math.abs(baseScaleX)" in edge_peek_source
+    assert "side === 'left' ? LIVE2D_GAME_MODE_EDGE_PEEK_ROTATION_DEGREES" in edge_peek_source
+    assert "baseScaleX" in edge_peek_source
+    assert "model.scale.x = state.baseScaleX;" in full_source
+    assert "model.rotation = state.baseRotation;" in full_source
+    assert "model.x = state.baseX;" in full_source
+    assert "model.y = state.baseY;" in full_source
 
 
-def test_live2d_game_mode_edge_peek_uses_one_shot_wrapper_mask_for_waist_up_crop():
-    interaction_source = _source(LIVE2D_INTERACTION_PATH)
-    edge_peek_source = interaction_source.split("LIVE2D_GAME_MODE_EDGE_PEEK_TRIGGER_RATIO", 1)[1]
-    edge_peek_source = edge_peek_source.split("/**", 1)[0]
+def test_live2d_game_mode_edge_peek_prefers_head_anchor_and_preserves_vertical_intent():
+    edge_peek_source = _edge_peek_source()
 
-    assert "function createLive2DGameModeEdgePeekWrapper(model, bounds, placement)" in edge_peek_source
-    assert "function getLive2DGameModeEdgePeekVisibleUpperMaskPoints(bounds, rotationOrigin, offsetX, offsetY, angleRadians)" in edge_peek_source
-    assert "function applyLive2DGameModeEdgePeekCanvasClip(maskPoints)" in edge_peek_source
-    assert "function clearLive2DGameModeEdgePeekCanvasClip()" in edge_peek_source
-    assert "canvas.style.clipPath = clipPath;" in edge_peek_source
-    assert "canvas.style.webkitClipPath = clipPath;" in edge_peek_source
-    assert "canvas.style.clipPath = '';" in edge_peek_source
-    assert "canvas.style.webkitClipPath = '';" in edge_peek_source
-    assert "applyLive2DGameModeEdgePeekCanvasClip(maskPoints)" in edge_peek_source
-    assert "clearLive2DGameModeEdgePeekCanvasClip();" in edge_peek_source
-    assert "const wrapper = new PIXI.Container();" in edge_peek_source
-    assert "const mask = new PIXI.Graphics();" in edge_peek_source
-    assert "mask.beginFill(0xffffff, 1);" in edge_peek_source
-    assert "mask.drawPolygon(maskPoints.flatMap((point) => [point.x, point.y]));" in edge_peek_source
-    assert "bounds.top + bounds.height * LIVE2D_GAME_MODE_EDGE_PEEK_BELT_Y_RATIO" in edge_peek_source
-    assert "getLocalBounds" not in edge_peek_source
-    assert "const parent = model.parent && typeof model.parent.addChild === 'function' ? model.parent : null;" in edge_peek_source
-    assert "addLive2DGameModeEdgePeekChildAt(parent, wrapper" in edge_peek_source
-    assert "wrapper.addChild(model);" in edge_peek_source
-    assert "parent.addChild(mask);" in edge_peek_source
-    assert "wrapper.mask = mask;" in edge_peek_source
-    assert "model.addChild(mask)" not in edge_peek_source
-    assert "mask.x = targetX;" not in edge_peek_source
-    assert "mask.y = targetY;" not in edge_peek_source
-    assert "mask.rotation = Number.isFinite(targetRotation) ? targetRotation : 0;" not in edge_peek_source
-    assert "copyLive2DGameModeEdgePeekVector" not in edge_peek_source
-    assert "model.mask = mask;" not in edge_peek_source
-    assert "mask.visible = false" not in edge_peek_source
-    assert "baseMask" in edge_peek_source
-    assert "state.wrapper.mask = null;" in edge_peek_source
-    assert "model.mask = state.baseMask || null;" in edge_peek_source
-    assert "addLive2DGameModeEdgePeekChildAt(" in edge_peek_source
-    assert "state.wrapper.destroy({ children: false })" in edge_peek_source
-    assert "state.mask.destroy" in edge_peek_source
-    assert "mask.parent.removeChild(mask)" in edge_peek_source
-    assert "requestAnimationFrame" not in edge_peek_source
-    assert "setInterval" not in edge_peek_source
-    assert "MutationObserver" not in edge_peek_source
+    assert "LIVE2D_GAME_MODE_EDGE_PEEK_HEAD_Y_RATIO" in edge_peek_source
+    assert "const baseHeadY = bounds.top + bounds.height * LIVE2D_GAME_MODE_EDGE_PEEK_HEAD_Y_RATIO;" in edge_peek_source
+    assert "const targetHeadY = transformedBounds.top + transformedBounds.height * LIVE2D_GAME_MODE_EDGE_PEEK_HEAD_Y_RATIO;" in edge_peek_source
+    assert "offsetY = desiredHeadY - targetHeadY;" in edge_peek_source
+    assert "getLive2DGameModeEdgePeekVerticalCorrection" in edge_peek_source
 
 
-def test_live2d_game_mode_edge_peek_reports_cropped_visible_bounds():
+def test_live2d_game_mode_edge_peek_click_restores_and_drag_exits_without_click_action():
+    source = _source(LIVE2D_INTERACTION_PATH)
+    drag_source = source.split("Live2DManager.prototype.setupDragAndDrop = function", 1)[1]
+    drag_source = drag_source.split("Live2DManager.prototype.setupWheelZoom", 1)[0]
+    wheel_source = source.split("Live2DManager.prototype.setupWheelZoom = function", 1)[1]
+    wheel_source = wheel_source.split("Live2DManager.prototype.setupTouchZoom", 1)[0]
+    touch_source = source.split("Live2DManager.prototype.setupTouchZoom = function", 1)[1]
+    touch_source = touch_source.split("Live2DManager.prototype.enableMouseTracking", 1)[0]
+
+    assert "const edgePeekOnPointerDown = this.isLive2DGameModeEdgePeekActive();" in drag_source
+    assert "await this.restoreLive2DGameModeEdgePeek('click-restore');" in drag_source
+    assert "this.clearLive2DGameModeEdgePeek('drag-start', { restore: false });" in drag_source
+    assert "return; // edge peek click restores instead of triggering touch motions" in drag_source
+    assert "if (this.isLive2DGameModeEdgePeekActive()) {" in wheel_source
+    assert "return; // edge peek ignores wheel zoom" in wheel_source
+    assert "this._debouncedSnapCheck();" not in wheel_source.split("if (this.isLive2DGameModeEdgePeekActive()) {", 1)[1].split("return; // edge peek ignores wheel zoom", 1)[0]
+    assert "return; // edge peek ignores touch zoom start" in touch_source
+    assert "return; // edge peek ignores touch zoom move" in touch_source
+    assert "return; // edge peek ignores touch zoom end without saving peek state" in touch_source
+    assert "this.currentModel.scale.set(newScale);" not in touch_source.split("return; // edge peek ignores touch zoom move", 1)[0].split("const onTouchMove", 1)[1]
+    assert "await this._savePositionAfterInteraction();" not in touch_source.split("return; // edge peek ignores touch zoom end without saving peek state", 1)[0].split("const onTouchEnd", 1)[1]
+
+
+def test_live2d_game_mode_edge_peek_reports_viewport_intersection_bounds():
     core_source = _source(LIVE2D_CORE_PATH)
+    interaction_source = _source(LIVE2D_INTERACTION_PATH)
+    edge_peek_source = _edge_peek_source()
     bounds_source = core_source.split("getModelScreenBounds() {", 1)[1]
     bounds_source = bounds_source.split("const model = this.currentModel;", 1)[0]
+    viewport_source = interaction_source.split("function getLive2DGameModeEdgePeekViewport(bounds = null, manager = null)", 1)[1]
+    viewport_source = viewport_source.split("function getLive2DGameModeEdgePeekViewportIntersection", 1)[0]
 
     assert "const edgePeekState = this._live2DGameModeEdgePeekState;" in bounds_source
     assert "edgePeekState.active" in bounds_source
-    assert "Array.isArray(edgePeekState.maskPoints)" in bounds_source
-    assert "edgePeekState.maskPoints.length >= 3" in bounds_source
-    assert "const xs = points.map((point) => Number(point.x));" in bounds_source
-    assert "const ys = points.map((point) => Number(point.y));" in bounds_source
-    assert "const left = Math.min(...xs);" in bounds_source
-    assert "const right = Math.max(...xs);" in bounds_source
-    assert "const top = Math.min(...ys);" in bounds_source
-    assert "const bottom = Math.max(...ys);" in bounds_source
-    assert "centerX: left + width / 2" in bounds_source
-    assert "centerY: top + height / 2" in bounds_source
+    assert "model.getBounds()" in bounds_source
+    assert "const viewportLeft = 0;" in bounds_source
+    assert "const viewportTop = 0;" in bounds_source
+    assert "const visibleLeft = Math.max(left, viewportLeft);" in bounds_source
+    assert "const visibleRight = Math.min(right, viewportRight);" in bounds_source
+    assert "const renderer = this.pixi_app && this.pixi_app.renderer;" in bounds_source
+    assert "const screen = renderer && renderer.screen;" in bounds_source
+    assert "Number.isFinite(rendererW) && rendererW > 0" in bounds_source
+    assert "maskPoints" not in bounds_source
+    assert "drawPolygon" not in bounds_source
+    assert "const renderer = manager && manager.pixi_app && manager.pixi_app.renderer;" in edge_peek_source
+    assert "const screen = renderer && renderer.screen;" in edge_peek_source
+    assert "const viewportW = Number.isFinite(rendererW) && rendererW > 0 ? rendererW : Number(window.innerWidth);" in edge_peek_source
+    assert "const viewportH = Number.isFinite(rendererH) && rendererH > 0 ? rendererH : Number(window.innerHeight);" in edge_peek_source
+    assert "const width = Number.isFinite(viewportW) && viewportW > 0 ? viewportW : fallbackW;" in edge_peek_source
+    assert "const height = Number.isFinite(viewportH) && viewportH > 0 ? viewportH : fallbackH;" in edge_peek_source
+    assert "getLive2DGameModeEdgePeekPlacement(model, bounds, this)" in edge_peek_source
+    assert "Math.max(fallbackW" not in viewport_source
+    assert "Math.max(fallbackH" not in viewport_source
 
 
-def test_live2d_game_mode_edge_peek_is_side_aware_without_polling():
+def test_live2d_game_mode_edge_peek_normal_snap_uses_renderer_screen_bounds():
     interaction_source = _source(LIVE2D_INTERACTION_PATH)
-    edge_peek_source = interaction_source.split("LIVE2D_GAME_MODE_EDGE_PEEK_TRIGGER_RATIO", 1)[1]
-    edge_peek_source = edge_peek_source.split("Live2DManager.prototype.clearLive2DGameModeEdgePeek", 1)[0]
+    snap_source = interaction_source.split("Live2DManager.prototype._checkSnapRequired = async function", 1)[1]
+    snap_source = snap_source.split("Live2DManager.prototype._applySnapAnimation", 1)[0]
 
-    assert "const side = getLive2DGameModeEdgePeekSide(edge, bounds, viewportW);" in edge_peek_source
-    assert "targetBeltX = LIVE2D_GAME_MODE_EDGE_PEEK_EDGE_INSET_PX;" in edge_peek_source
-    assert "angle = LIVE2D_GAME_MODE_EDGE_PEEK_ANGLE_DEGREES;" in edge_peek_source
-    assert "targetBeltX = viewportW - LIVE2D_GAME_MODE_EDGE_PEEK_EDGE_INSET_PX;" in edge_peek_source
-    assert "angle = -LIVE2D_GAME_MODE_EDGE_PEEK_ANGLE_DEGREES;" in edge_peek_source
-    assert "setInterval" not in edge_peek_source
-    assert "setTimeout" not in edge_peek_source
-    assert "requestAnimationFrame" not in edge_peek_source
-    assert "MutationObserver" not in edge_peek_source
+    assert "const renderer = this.pixi_app && this.pixi_app.renderer;" in snap_source
+    assert "const rendererScreen = renderer && renderer.screen;" in snap_source
+    assert "let screenRight = Number.isFinite(rendererW) && rendererW > 0 ? rendererW : window.innerWidth;" in snap_source
+    assert "let screenBottom = Number.isFinite(rendererH) && rendererH > 0 ? rendererH : window.innerHeight;" in snap_source
+
+
+def test_live2d_game_mode_edge_peek_does_not_persist_peek_position():
+    source = _source(LIVE2D_INTERACTION_PATH)
+    edge_peek_source = _edge_peek_source()
+    drag_source = source.split("Live2DManager.prototype.setupDragAndDrop = function", 1)[1]
+    drag_source = drag_source.split("Live2DManager.prototype.setupWheelZoom", 1)[0]
+
+    assert "_savePositionAfterInteraction" not in edge_peek_source
+    assert "baseX" in edge_peek_source
+    assert "baseY" in edge_peek_source
+    assert "peekX" in edge_peek_source
+    assert "peekY" in edge_peek_source
+    assert "await this._savePositionAfterInteraction();" in drag_source
+    assert "await this._tryApplyLive2DGameModeEdgePeek(model);" in drag_source
+    assert (
+        drag_source.index("await this._savePositionAfterInteraction();")
+        < drag_source.index("await this._tryApplyLive2DGameModeEdgePeek(model);")
+    )
+
+
+def test_live2d_game_mode_edge_peek_animations_do_not_outlive_cleared_state():
+    source = _source(LIVE2D_INTERACTION_PATH)
+    edge_peek_source = _edge_peek_source()
+
+    assert "shouldContinue = null" in edge_peek_source
+    assert "typeof shouldContinue === 'function' && !shouldContinue()" in edge_peek_source
+    assert "this._live2DGameModeEdgePeekTransitionId = (this._live2DGameModeEdgePeekTransitionId || 0) + 1;" in source
+    assert "transitionId" in edge_peek_source
+    assert "activeState.transitionId === transitionId" in edge_peek_source
+    assert "const animated = await animateLive2DGameModeEdgePeekTransform(" in edge_peek_source
+    assert "if (!animated || !stillCurrent()) return false;" in edge_peek_source
 
 
 def test_live2d_game_mode_edge_peek_clears_on_disable_goodbye_reset_and_auto_cat():
@@ -191,6 +211,19 @@ def test_live2d_game_mode_edge_peek_clears_on_disable_goodbye_reset_and_auto_cat
     assert "window.addEventListener('live2d-goodbye-click', clearLive2DGameModeEdgePeekOnGoodbye)" in interaction_source
     assert "clearLive2DGameModeEdgePeek('game-mode-disabled')" in interaction_source
     assert "clearLive2DGameModeEdgePeek('live2d-goodbye')" in interaction_source
-    assert "this.clearLive2DGameModeEdgePeek('drag-start')" in interaction_source
+    assert "this.clearLive2DGameModeEdgePeek('model-reload')" in interaction_source
     assert "this.clearLive2DGameModeEdgePeek('reset-model-position')" in core_source
     assert "window.nekoLive2DGameModeEdgePeek.clear('game-mode-auto')" in game_mode_source
+    assert "let lastViewportW = window.innerWidth;" in core_source
+    assert "let lastViewportH = window.innerHeight;" in core_source
+    assert "vw === lastViewportW && vh === lastViewportH" in core_source
+    assert "this.clearLive2DGameModeEdgePeek(`viewport-changed:${reason}`);" in core_source
+
+
+def test_live2d_game_mode_edge_peek_uses_event_signal_without_polling():
+    edge_peek_source = _edge_peek_source()
+
+    assert "neko:live2d-game-mode-edge-peek-changed" in edge_peek_source
+    assert "visibleBounds" in edge_peek_source
+    assert "setInterval" not in edge_peek_source
+    assert "MutationObserver" not in edge_peek_source

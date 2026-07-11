@@ -2657,7 +2657,16 @@
             "statusOn": "On",
             "statusOff": "Off",
             "statusOnly": "{status}",
-            "statusWithReason": "{status} · Last: {metric} {percent} / {duration}"
+            "statusWithReason": "{status} · Last: {metric} {percent} / {duration}",
+            "autoCatOnGame": "Automatically become a cat when a game is detected",
+            "triggerMode": "Trigger mode",
+            "smartMode": "Smart",
+            "instantMode": "Trigger on detection",
+            "privacyNote": "Uses only Activity Tracker's exact-game result. It does not capture screenshots, read screen pixels, or add telemetry.",
+            "details": "Details",
+            "switchFailed": "Could not enter cat form. Game detection will be confirmed again after a short delay.",
+            "restoreFailed": "The model could not be restored, so cat form remains active. Click the cat again to retry.",
+            "signalUnavailable": "Reliable game detection is temporarily unavailable. Resource-pressure protection remains active."
         },
         "toggles": {
             "allowInterrupt": "Allow Interrupt",

@@ -5,7 +5,10 @@ from pathlib import Path
 import pytest
 from fastapi import HTTPException
 
-from main_logic.game_mode_resource_protection import GameModeResourceProtector
+from main_logic.game_mode_resource_protection import (
+    GameModeResourceProtector,
+    GameModeSettingsStore,
+)
 
 
 def high_cpu_sample(percent=91.0):
@@ -582,3 +585,397 @@ def test_debug_health_log_rotates_without_losing_jsonl_suffix(tmp_path, monkeypa
     payload = json.loads(lines[0])
     assert payload["game_mode_beta"]["enabled"] is False
     assert not (tmp_path / "debug_health.1").exists()
+
+
+@pytest.mark.asyncio
+async def test_exact_game_requires_three_snapshots_and_ten_seconds_before_instant_trigger():
+    now = {"value": 1000.0}
+    events = []
+
+    async def broadcaster(payload):
+        events.append(payload)
+        return 1
+
+    protector = GameModeResourceProtector(
+        sampler=normal_sample,
+        broadcaster=broadcaster,
+        time_fn=lambda: now["value"],
+    )
+    await protector.set_settings(auto_cat_on_game=True, game_trigger_mode="instant")
+    await protector.set_enabled(True)
+    try:
+        for timestamp in (1000.0, 1005.0):
+            now["value"] = timestamp
+            state = await protector.ingest_game_snapshot(exact_game=True, observed_at=timestamp)
+            assert state["cycle_phase"] == "idle"
+
+        now["value"] = 1010.0
+        state = await protector.ingest_game_snapshot(exact_game=True, observed_at=1010.0)
+
+        assert state["cycle_phase"] == "protected"
+        assert state["cycle_trigger"] == "game_semantic"
+        assert len(events) == 1
+        assert events[0]["reason"] == "exact_game"
+        assert events[0]["duration_seconds"] == 10.0
+        assert "window_title" not in json.dumps(events[0])
+        assert "process_name" not in json.dumps(events[0])
+    finally:
+        await protector.set_enabled(False)
+
+
+@pytest.mark.asyncio
+async def test_valid_non_game_snapshot_resets_exact_game_confirmation():
+    events = []
+
+    async def broadcaster(payload):
+        events.append(payload)
+        return 1
+
+    protector = GameModeResourceProtector(broadcaster=broadcaster, time_fn=lambda: 1015.0)
+    await protector.set_settings(auto_cat_on_game=True, game_trigger_mode="instant")
+    await protector.set_enabled(True)
+    try:
+        await protector.ingest_game_snapshot(exact_game=True, observed_at=1000.0)
+        await protector.ingest_game_snapshot(exact_game=True, observed_at=1005.0)
+        state = await protector.ingest_game_snapshot(exact_game=False, valid=True, observed_at=1007.0)
+        assert state["game_snapshot_count"] == 0
+
+        await protector.ingest_game_snapshot(exact_game=True, observed_at=1010.0)
+        state = await protector.ingest_game_snapshot(exact_game=True, observed_at=1015.0)
+        assert state["cycle_phase"] == "idle"
+        assert events == []
+    finally:
+        await protector.set_enabled(False)
+
+
+@pytest.mark.asyncio
+async def test_smart_game_mode_uses_70_80_90_thresholds_for_two_consecutive_samples():
+    now = {"value": 1010.0}
+    events = []
+
+    def smart_sample():
+        sample = normal_sample()
+        sample["cpu_percent"] = 71.0
+        sample["memory_percent"] = 79.0
+        sample["gpu_percent"] = 89.0
+        return sample
+
+    async def broadcaster(payload):
+        events.append(payload)
+        return 1
+
+    protector = GameModeResourceProtector(
+        sampler=smart_sample,
+        broadcaster=broadcaster,
+        time_fn=lambda: now["value"],
+    )
+    await protector.set_settings(auto_cat_on_game=True, game_trigger_mode="smart")
+    await protector.set_enabled(True)
+    try:
+        for timestamp in (1000.0, 1005.0, 1010.0):
+            now["value"] = timestamp
+            await protector.ingest_game_snapshot(exact_game=True, observed_at=timestamp)
+
+        await protector.tick_once()
+        assert events == []
+        state = await protector.tick_once()
+
+        assert len(events) == 1
+        assert events[0]["trigger_source"] == "game_semantic_smart"
+        assert events[0]["reason"] == "cpu"
+        assert state["cycle_phase"] == "protected"
+    finally:
+        await protector.set_enabled(False)
+
+
+@pytest.mark.asyncio
+async def test_registered_pet_requires_ack_then_enters_deep_sleep_after_ninety_seconds():
+    now = {"value": 1000.0}
+    events = []
+
+    async def broadcaster(payload):
+        events.append(payload)
+        return 1
+
+    protector = GameModeResourceProtector(
+        sampler=normal_sample,
+        broadcaster=broadcaster,
+        time_fn=lambda: now["value"],
+    )
+    await protector.set_enabled(True)
+    try:
+        await protector.register_window(
+            pet_instance_id="pet-a",
+            window_type="pet",
+            signal_capabilities={"exact_game": True},
+        )
+        state = await protector.debug_trigger()
+        assert state["cycle_phase"] == "switching"
+        cycle_id = state["cycle_id"]
+
+        state = await protector.acknowledge_switch(
+            cycle_id=cycle_id,
+            pet_instance_id="pet-a",
+            status="protected",
+        )
+        assert state["cycle_phase"] == "protected"
+        assert state["owned_window_count"] == 1
+        assert state["deep_sleep_due_at"] == 1090.0
+
+        now["value"] = 1090.0
+        state = await protector.tick_once()
+        assert state["cycle_phase"] == "deep_sleep"
+        deep_sleep_events = [item for item in events if item["type"] == "game_mode_deep_sleep"]
+        assert deep_sleep_events[-1]["pet_instance_ids"] == ["pet-a"]
+    finally:
+        await protector.set_enabled(False)
+
+
+@pytest.mark.asyncio
+async def test_ack_timeout_aborts_cycle_and_requires_full_reconfirmation_after_backoff():
+    now = {"value": 1000.0}
+    events = []
+
+    async def broadcaster(payload):
+        events.append(payload)
+        return 1
+
+    protector = GameModeResourceProtector(
+        sampler=normal_sample,
+        broadcaster=broadcaster,
+        time_fn=lambda: now["value"],
+    )
+    await protector.set_enabled(True)
+    try:
+        await protector.register_window(pet_instance_id="pet-a")
+        state = await protector.debug_trigger()
+        assert state["cycle_phase"] == "switching"
+
+        now["value"] = 1005.0
+        state = await protector.tick_once()
+        assert state["cycle_phase"] == "idle"
+        assert state["retry_not_before"] == 1035.0
+        assert state["trigger_reason"] is None
+        assert any(item["type"] == "game_mode_switch_failed" for item in events)
+    finally:
+        await protector.set_enabled(False)
+
+
+@pytest.mark.asyncio
+async def test_settings_and_manual_restore_cooldown_persist_but_runtime_cycle_does_not(tmp_path):
+    path = tmp_path / "game-mode.json"
+    now = {"value": 1000.0}
+
+    async def broadcaster(_payload):
+        return 1
+
+    first = GameModeResourceProtector(
+        broadcaster=broadcaster,
+        time_fn=lambda: now["value"],
+        store=GameModeSettingsStore(path),
+    )
+    await first.set_settings(auto_cat_on_game=True, game_trigger_mode="instant")
+    await first.set_enabled(True)
+    await first.debug_trigger()
+    await first.mark_manual_restore()
+    await first.set_enabled(False)
+
+    second = GameModeResourceProtector(
+        broadcaster=broadcaster,
+        time_fn=lambda: now["value"],
+        store=GameModeSettingsStore(path),
+    )
+    assert second.settings_snapshot() == {
+        "auto_cat_on_game": True,
+        "game_trigger_mode": "instant",
+    }
+    assert second.snapshot()["cycle_phase"] == "idle"
+    assert second.snapshot()["auto_switch_active"] is False
+
+    state = await second.set_enabled(True)
+    try:
+        assert state["suppressed_until"] == 1600.0
+    finally:
+        await second.set_enabled(False)
+
+
+@pytest.mark.asyncio
+async def test_new_pet_joins_active_device_cycle_without_reloading_first():
+    events = []
+
+    async def broadcaster(payload):
+        events.append(payload)
+        return 1
+
+    protector = GameModeResourceProtector(broadcaster=broadcaster, time_fn=lambda: 1000.0)
+    await protector.set_enabled(True)
+    try:
+        await protector.debug_trigger()
+        registration = await protector.register_window(
+            pet_instance_id="late-pet",
+            window_type="pet",
+            signal_capabilities={"exact_game": True},
+        )
+        assert registration["join_as_cat"] is True
+        assert registration["cycle_phase"] == "protected"
+
+        state = await protector.acknowledge_switch(
+            cycle_id=registration["cycle_id"],
+            pet_instance_id="late-pet",
+            status="protected",
+        )
+        assert state["owned_window_count"] == 1
+        assert state["auto_switch_active"] is True
+    finally:
+        await protector.set_enabled(False)
+
+
+@pytest.mark.asyncio
+async def test_already_protected_windows_do_not_leave_an_unowned_cycle_active():
+    events = []
+
+    async def broadcaster(payload):
+        events.append(payload)
+        return 1
+
+    protector = GameModeResourceProtector(broadcaster=broadcaster, time_fn=lambda: 1000.0)
+    await protector.set_enabled(True)
+    try:
+        await protector.register_window(pet_instance_id="pet-already")
+        state = await protector.debug_trigger()
+        state = await protector.acknowledge_switch(
+            cycle_id=state["cycle_id"],
+            pet_instance_id="pet-already",
+            status="already_protected",
+        )
+
+        assert state["cycle_phase"] == "idle"
+        assert state["auto_switch_active"] is False
+        assert state["owned_window_count"] == 0
+        assert state["last_event"]["type"] == "already_protected"
+        assert not any(event["type"] == "game_mode_switch_confirmed" for event in events)
+    finally:
+        await protector.set_enabled(False)
+
+
+@pytest.mark.asyncio
+async def test_mixed_window_cycle_restores_only_game_mode_owned_pet():
+    events = []
+
+    async def broadcaster(payload):
+        events.append(payload)
+        return 1
+
+    protector = GameModeResourceProtector(broadcaster=broadcaster, time_fn=lambda: 1000.0)
+    await protector.set_enabled(True)
+    try:
+        await protector.register_window(pet_instance_id="pet-owned")
+        await protector.register_window(pet_instance_id="pet-already")
+        state = await protector.debug_trigger()
+        cycle_id = state["cycle_id"]
+        await protector.acknowledge_switch(
+            cycle_id=cycle_id,
+            pet_instance_id="pet-owned",
+            status="protected",
+        )
+        state = await protector.acknowledge_switch(
+            cycle_id=cycle_id,
+            pet_instance_id="pet-already",
+            status="already_protected",
+        )
+        assert state["owned_window_count"] == 1
+
+        await protector.set_enabled(False)
+        restore = [event for event in events if event["type"] == "game_mode_restore"][-1]
+        assert restore["pet_instance_ids"] == ["pet-owned"]
+    finally:
+        if protector.snapshot()["enabled"]:
+            await protector.set_enabled(False)
+
+
+@pytest.mark.asyncio
+async def test_stale_game_signal_notifies_once_per_outage_and_clears_candidate():
+    now = {"value": 1000.0}
+    events = []
+
+    async def broadcaster(payload):
+        events.append(payload)
+        return 1
+
+    protector = GameModeResourceProtector(
+        sampler=normal_sample,
+        broadcaster=broadcaster,
+        time_fn=lambda: now["value"],
+    )
+    await protector.set_settings(auto_cat_on_game=True, game_trigger_mode="instant")
+    await protector.set_enabled(True)
+    try:
+        await protector.ingest_game_snapshot(exact_game=True, observed_at=1000.0)
+        now["value"] = 1016.0
+        state = await protector.ingest_game_snapshot(exact_game=False, valid=False, observed_at=1016.0)
+        assert state["game_snapshot_count"] == 0
+        assert len([event for event in events if event["type"] == "game_mode_semantic_signal_unavailable"]) == 1
+
+        now["value"] = 1032.0
+        await protector.ingest_game_snapshot(exact_game=False, valid=False, observed_at=1032.0)
+        assert len([event for event in events if event["type"] == "game_mode_semantic_signal_unavailable"]) == 1
+
+        await protector.ingest_game_snapshot(exact_game=True, observed_at=1040.0)
+        await protector.ingest_game_snapshot(exact_game=False, valid=False, observed_at=1056.0)
+        assert len([event for event in events if event["type"] == "game_mode_semantic_signal_unavailable"]) == 2
+    finally:
+        await protector.set_enabled(False)
+
+
+@pytest.mark.asyncio
+async def test_semantic_fuse_does_not_disable_legacy_pressure_protection():
+    events = []
+
+    async def broadcaster(payload):
+        events.append(payload)
+        return 1
+
+    protector = GameModeResourceProtector(
+        sampler=high_cpu_sample,
+        broadcaster=broadcaster,
+        time_fn=lambda: 1000.0,
+    )
+    await protector.set_settings(auto_cat_on_game=True, game_trigger_mode="instant")
+    await protector.set_enabled(True)
+    try:
+        for _ in range(3):
+            await protector.record_semantic_error()
+        assert protector.snapshot()["semantic_fuse_enabled"] is False
+
+        for _ in range(6):
+            state = await protector.tick_once()
+        assert state["cycle_phase"] == "protected"
+        auto_switches = [event for event in events if event["type"] == "game_mode_auto_switch"]
+        assert auto_switches[-1]["trigger_source"] == "resource_pressure"
+        assert auto_switches[-1]["reason"] == "cpu"
+    finally:
+        await protector.set_enabled(False)
+
+
+@pytest.mark.asyncio
+async def test_disabling_auto_cat_subfeature_does_not_restore_active_protection_cycle():
+    events = []
+
+    async def broadcaster(payload):
+        events.append(payload)
+        return 1
+
+    protector = GameModeResourceProtector(broadcaster=broadcaster, time_fn=lambda: 1000.0)
+    await protector.set_settings(auto_cat_on_game=True, game_trigger_mode="instant")
+    await protector.set_enabled(True)
+    try:
+        state = await protector.debug_trigger()
+        assert state["auto_switch_active"] is True
+
+        await protector.set_settings(auto_cat_on_game=False, game_trigger_mode="instant")
+        state = protector.snapshot()
+        assert state["auto_switch_active"] is True
+        assert state["cycle_phase"] == "protected"
+        assert not any(event["type"] == "game_mode_restore" for event in events)
+    finally:
+        await protector.set_enabled(False)

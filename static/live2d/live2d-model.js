@@ -537,6 +537,17 @@ Live2DManager.prototype.reloadModelParameters = async function(options = {}) {
     return { applied: true, parameters: effectiveParameters };
 };
 
+// 加载模型
+Live2DManager.prototype.cancelActiveModelLoadForGameMode = function(reason = 'game-mode-protection') {
+    if (!this._isLoadingModel) return false;
+    this._activeLoadToken = (this._activeLoadToken || 0) + 1;
+    this._modelLoadState = 'cancelled';
+    this._isModelReadyForInteraction = false;
+    this._nekoGameModeReloadRequired = true;
+    this._nekoGameModeLoadCancelReason = reason;
+    return true;
+};
+
 Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
     const isModelManagerPage = document.body?.classList.contains('model-manager-page')
         || window.location.pathname.includes('model_manager');
@@ -580,10 +591,15 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
         }
 
         const model = await Live2DModel.from(modelPath, { autoFocus: false });
-        if (!this._isLoadTokenActive(loadToken)) {
+        if (!this._isLoadTokenActive(loadToken) || this._nekoGameModeReloadRequired) {
             try { model && model.destroy && model.destroy({ children: true }); } catch (_) {}
-            const cancelError = new Error('Live2D load superseded by a newer model request.');
-            cancelError.name = 'LoadSuperseded';
+            const gameModeCancelled = !!this._nekoGameModeReloadRequired;
+            const cancelError = new Error(gameModeCancelled
+                ? 'Live2D load cancelled by Game Mode protection.'
+                : 'Live2D load superseded by a newer model request.');
+            cancelError.name = gameModeCancelled
+                ? 'GameModeProtectionLoadCancelled'
+                : 'LoadSuperseded';
             throw cancelError;
         }
         if ((window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber' && !isModelManagerPage) {
@@ -603,7 +619,7 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
 
         return model;
     } catch (error) {
-        if (error && error.name === 'LoadSuperseded') {
+        if (error && (error.name === 'LoadSuperseded' || error.name === 'GameModeProtectionLoadCancelled')) {
             throw error;
         }
         if (error && error.name === 'PNGTuberActiveLive2DSkip') {

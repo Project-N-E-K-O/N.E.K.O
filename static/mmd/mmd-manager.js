@@ -252,6 +252,15 @@ class MMDManager {
         }
     }
 
+    cancelActiveModelLoadForGameMode(reason = 'game-mode-protection') {
+        if (this._modelLoadState !== 'loading') return false;
+        this._activeLoadToken += 1;
+        this._modelLoadState = 'cancelled';
+        this._nekoGameModeReloadRequired = true;
+        this._nekoGameModeLoadCancelReason = reason;
+        return true;
+    }
+
     // ═══════════════════ 动画 ═══════════════════
 
     async loadAnimation(vmdPath, options = {}) {

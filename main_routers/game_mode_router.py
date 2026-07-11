@@ -44,8 +44,82 @@ async def set_game_mode_beta_enabled(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 @router.post("/api/game-mode-beta/manual-restore")
-async def mark_game_mode_beta_manual_restore() -> dict[str, Any]:
-    state = await protector.mark_manual_restore()
+async def mark_game_mode_beta_manual_restore(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    data = payload or {}
+    pet_instance_id = data.get("pet_instance_id")
+    state = await protector.mark_manual_restore(
+        str(pet_instance_id) if pet_instance_id is not None else None,
+    )
+    return {"success": True, "state": state}
+
+
+@router.get("/api/game-mode-beta/settings")
+async def get_game_mode_beta_settings() -> dict[str, Any]:
+    return protector.settings_snapshot()
+
+
+@router.post("/api/game-mode-beta/settings")
+async def set_game_mode_beta_settings(payload: dict[str, Any]) -> dict[str, Any]:
+    current = protector.settings_snapshot()
+    auto_cat = payload.get("auto_cat_on_game", current["auto_cat_on_game"])
+    mode = payload.get("game_trigger_mode", current["game_trigger_mode"])
+    if not isinstance(auto_cat, bool):
+        raise HTTPException(status_code=400, detail="auto_cat_on_game must be boolean")
+    if not isinstance(mode, str) or mode not in {"smart", "instant"}:
+        raise HTTPException(status_code=400, detail="game_trigger_mode must be 'smart' or 'instant'")
+    return await protector.set_settings(
+        auto_cat_on_game=auto_cat,
+        game_trigger_mode=mode,
+    )
+
+
+@router.post("/api/game-mode-beta/windows/register")
+async def register_game_mode_beta_window(payload: dict[str, Any]) -> dict[str, Any]:
+    pet_instance_id = payload.get("pet_instance_id")
+    if not isinstance(pet_instance_id, str) or not pet_instance_id.strip():
+        raise HTTPException(status_code=400, detail="pet_instance_id required")
+    capabilities = payload.get("signal_capabilities")
+    if capabilities is not None and not isinstance(capabilities, dict):
+        raise HTTPException(status_code=400, detail="signal_capabilities must be an object")
+    return await protector.register_window(
+        pet_instance_id=pet_instance_id,
+        window_type=str(payload.get("window_type") or "pet"),
+        signal_capabilities=capabilities,
+    )
+
+
+@router.post("/api/game-mode-beta/windows/unregister")
+async def unregister_game_mode_beta_window(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "success": True,
+        "state": await protector.unregister_window(str(payload.get("pet_instance_id") or "")),
+    }
+
+
+@router.post("/api/game-mode-beta/ack")
+async def acknowledge_game_mode_beta_switch(payload: dict[str, Any]) -> dict[str, Any]:
+    state = await protector.acknowledge_switch(
+        cycle_id=str(payload.get("cycle_id") or ""),
+        pet_instance_id=str(payload.get("pet_instance_id") or ""),
+        status=str(payload.get("status") or "failed"),
+    )
+    return {"success": True, "state": state}
+
+
+@router.post("/api/game-mode-beta/deep-sleep-ack")
+async def acknowledge_game_mode_beta_deep_sleep(payload: dict[str, Any]) -> dict[str, Any]:
+    state = await protector.acknowledge_deep_sleep(
+        cycle_id=str(payload.get("cycle_id") or ""),
+        pet_instance_id=str(payload.get("pet_instance_id") or ""),
+        success=payload.get("success") is True,
+    )
+    return {"success": True, "state": state}
+
+
+@router.post("/api/game-mode-beta/reset-candidate")
+async def reset_game_mode_beta_candidate(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    data = payload or {}
+    state = await protector.reset_game_candidate(str(data.get("reason") or "external-reset"))
     return {"success": True, "state": state}
 
 

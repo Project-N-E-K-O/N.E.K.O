@@ -360,6 +360,11 @@ class Live2DManager {
                         typeof this.clearLive2DPeek === 'function') {
                         this.clearLive2DPeek(`viewport-changed:${reason}`);
                     }
+                    if (typeof this.isLive2DGameModeEdgePeekActive === 'function' &&
+                        this.isLive2DGameModeEdgePeekActive() &&
+                        typeof this.clearLive2DGameModeEdgePeek === 'function') {
+                        this.clearLive2DGameModeEdgePeek(`viewport-changed:${reason}`);
+                    }
 
                     if (resolutionChanged) {
                         renderer.resolution = nextResolution;
@@ -4715,32 +4720,40 @@ class Live2DManager {
         }
 
         const gameModeEdgePeekState = this._live2DGameModeEdgePeekState;
-        if (gameModeEdgePeekState && gameModeEdgePeekState.active &&
-            Array.isArray(gameModeEdgePeekState.maskPoints) && gameModeEdgePeekState.maskPoints.length >= 3) {
-            const points = gameModeEdgePeekState.maskPoints.filter((point) =>
-                point &&
-                Number.isFinite(Number(point.x)) &&
-                Number.isFinite(Number(point.y))
-            );
-            if (points.length >= 3) {
-                const xs = points.map((point) => Number(point.x));
-                const ys = points.map((point) => Number(point.y));
-                const left = Math.min(...xs);
-                const right = Math.max(...xs);
-                const top = Math.min(...ys);
-                const bottom = Math.max(...ys);
-                const width = right - left;
-                const height = bottom - top;
+        if (gameModeEdgePeekState && gameModeEdgePeekState.active) {
+            const gameModeModel = gameModeEdgePeekState.model || model;
+            if (gameModeModel && !gameModeModel.destroyed && typeof gameModeModel.getBounds === 'function') {
+                const bounds = gameModeModel.getBounds();
+                const left = Number(bounds.left ?? bounds.x);
+                const top = Number(bounds.top ?? bounds.y);
+                const right = Number(bounds.right ?? (left + Number(bounds.width)));
+                const bottom = Number(bounds.bottom ?? (top + Number(bounds.height)));
+                const renderer = this.pixi_app && this.pixi_app.renderer;
+                const screen = renderer && renderer.screen;
+                const rendererW = Number(screen && screen.width);
+                const rendererH = Number(screen && screen.height);
+                const viewportRight = Math.max(0, Number.isFinite(rendererW) && rendererW > 0
+                    ? rendererW
+                    : Number(window.innerWidth) || 0);
+                const viewportBottom = Math.max(0, Number.isFinite(rendererH) && rendererH > 0
+                    ? rendererH
+                    : Number(window.innerHeight) || 0);
+                const visibleLeft = Math.max(left, 0);
+                const visibleRight = Math.min(right, viewportRight);
+                const visibleTop = Math.max(top, 0);
+                const visibleBottom = Math.min(bottom, viewportBottom);
+                const width = visibleRight - visibleLeft;
+                const height = visibleBottom - visibleTop;
                 if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
                     return {
-                        left: left,
-                        right: right,
-                        top: top,
-                        bottom: bottom,
+                        left: visibleLeft,
+                        right: visibleRight,
+                        top: visibleTop,
+                        bottom: visibleBottom,
                         width: width,
                         height: height,
-                        centerX: left + width / 2,
-                        centerY: top + height / 2
+                        centerX: visibleLeft + width / 2,
+                        centerY: visibleTop + height / 2
                     };
                 }
             }

@@ -2657,7 +2657,16 @@
             "statusOn": "开启",
             "statusOff": "关闭",
             "statusOnly": "{status}",
-            "statusWithReason": "{status} · 最近：{metric} {percent} / {duration}"
+            "statusWithReason": "{status} · 最近：{metric} {percent} / {duration}",
+            "autoCatOnGame": "检测到游戏时自动变猫",
+            "triggerMode": "触发模式",
+            "smartMode": "智能判断",
+            "instantMode": "检测到即触发",
+            "privacyNote": "只使用 Activity Tracker 的精确游戏识别结果；不截图、不读取屏幕像素，也不会上传遥测。",
+            "details": "详情",
+            "switchFailed": "切换到猫猫形态失败，稍后会重新完整确认。",
+            "restoreFailed": "模型恢复失败，仍保持猫猫形态。请再次点击猫猫重试。",
+            "signalUnavailable": "暂时无法获得可靠的游戏识别信号；资源压力保护仍然有效。"
         },
         "toggles": {
             "allowInterrupt": "允许打断",
