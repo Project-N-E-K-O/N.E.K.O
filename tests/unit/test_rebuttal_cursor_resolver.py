@@ -16,7 +16,7 @@ import pytest
 
 
 def _install_fresh_cursor_store(tmpdir: str):
-    """Replace memory_server.cursor_store with one backed by tmpdir."""
+    """Replace memory_server.runtime.cursor_store with one backed by tmpdir."""
     from memory.cursors import CursorStore
     from app import memory_server
 
@@ -25,7 +25,7 @@ def _install_fresh_cursor_store(tmpdir: str):
     with patch("memory.cursors.get_config_manager", return_value=mock_cm):
         store = CursorStore()
     store._config_manager = mock_cm
-    memory_server.cursor_store = store
+    memory_server.runtime.cursor_store = store
     return store
 
 

@@ -21,6 +21,13 @@ export function liveStateTone(state: string): "success" | "warning" | "danger" |
   return "default"
 }
 
+export function recentResultTone(status: string): "success" | "warning" | "danger" | "default" {
+  if (status === "pushed") return "success"
+  if (status === "failed") return "danger"
+  if (status === "skipped") return "warning"
+  return "default"
+}
+
 export function speechExplanationTone(summary: string): "success" | "warning" | "danger" | "default" {
   if (summary === "ready" || summary === "recently_spoke") return "success"
   if (summary === "cannot_stream" || summary === "failed") return "danger"
