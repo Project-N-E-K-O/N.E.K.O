@@ -153,7 +153,9 @@ async def dispatch_routed_request(
     if should_mark_roasted:
         session.claim_roasted(identity.uid)
         try:
-            await ctx.viewer_profile.mark_roasted(identity.uid, output)
+            persisted = await ctx.viewer_profile.mark_roasted(identity.uid, output)
+            if persisted is False:
+                raise OSError("viewer profile persistence failed")
             profile.roast_count = int(profile.roast_count or 0) + 1
             profile.last_result = output
             steps.append(PipelineStep("viewer_profile.mark_roasted", "ok"))
