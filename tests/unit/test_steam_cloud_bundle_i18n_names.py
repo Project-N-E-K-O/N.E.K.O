@@ -700,12 +700,48 @@ def test_apply_bundle_rejects_archive_entries_outside_cloudsave_root(tmp_path):
 
     stage_root = tmp_path / "staging-root"
     escaped_path = stage_root / "escaped.txt"
-    with patch("utils.steam_cloud_bundle._create_staging_workspace", return_value=stage_root):
+    with patch("utils.steam_cloud_bundle.create_staging_workspace", return_value=stage_root):
         with pytest.raises(ValueError, match="unsafe archive entry"):
             _apply_bundle_to_local_cloudsave(
                 cm,
                 malicious_bytes.getvalue(),
                 {"manifest_fingerprint": "malicious-fingerprint"},
+            )
+
+    assert not escaped_path.exists()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("hostile_key", ["../escaped.txt", "/abs/escaped.txt", "memory/../../escaped.txt"])
+def test_apply_bundle_rejects_manifest_file_keys_outside_stage_roots(hostile_key: str, tmp_path):
+    # zip 条目本身全部安全，恶意路径只藏在 manifest 的 files key 里——
+    # 复制源/替换目标的拼接必须独立于 zip 解压守卫完成根目录约束。
+    cm = _make_config_manager(tmp_path / "target")
+    bootstrap_local_cloudsave_environment(cm)
+
+    malicious_bytes = io.BytesIO()
+    with zipfile.ZipFile(malicious_bytes, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "manifest.json",
+            json.dumps(
+                {
+                    "fingerprint": "",
+                    "sequence_number": 1,
+                    "files": {hostile_key: {"sha256": "0" * 64, "size": 1}},
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+        )
+
+    stage_root = tmp_path / "staging-root"
+    escaped_path = stage_root / "escaped.txt"
+    with patch("utils.steam_cloud_bundle.create_staging_workspace", return_value=stage_root):
+        with pytest.raises(ValueError, match="unsafe archive entry"):
+            _apply_bundle_to_local_cloudsave(
+                cm,
+                malicious_bytes.getvalue(),
+                {"manifest_fingerprint": ""},
             )
 
     assert not escaped_path.exists()
@@ -734,7 +770,7 @@ def test_apply_bundle_does_not_touch_live_cloudsave_when_staging_copy_fails(tmp_
             raise OSError("simulated manifest stage copy failure")
         return _runtime_atomic_copy_file(src, dst)
 
-    with patch("utils.steam_cloud_bundle._atomic_copy_file", side_effect=_fail_on_manifest_copy):
+    with patch("utils.steam_cloud_bundle.atomic_copy_file", side_effect=_fail_on_manifest_copy):
         with pytest.raises(OSError, match="simulated manifest stage copy failure"):
             _apply_bundle_to_local_cloudsave(target_cm, bundle_path.read_bytes(), bundle_info["meta"])
 
@@ -821,7 +857,7 @@ def test_write_remote_bundle_checks_deadline_during_per_file_loop(tmp_path):
         if stage.startswith("bundle_write_start:"):
             raise CloudsaveDeadlineExceeded(operation, stage=stage)
 
-    with patch("utils.steam_cloud_bundle._assert_deadline_not_exceeded", side_effect=_raise_on_per_file_write):
+    with patch("utils.steam_cloud_bundle.assert_deadline_not_exceeded", side_effect=_raise_on_per_file_write):
         with pytest.raises(CloudsaveDeadlineExceeded):
             _write_remote_bundle(bundle_path, cm, deadline_monotonic=1.0)
 
@@ -843,7 +879,7 @@ def test_apply_bundle_checks_deadline_during_per_file_copy(tmp_path):
         if stage.startswith("apply_copy_start:"):
             raise CloudsaveDeadlineExceeded(operation, stage=stage)
 
-    with patch("utils.steam_cloud_bundle._assert_deadline_not_exceeded", side_effect=_raise_on_per_file_copy):
+    with patch("utils.steam_cloud_bundle.assert_deadline_not_exceeded", side_effect=_raise_on_per_file_copy):
         with pytest.raises(CloudsaveDeadlineExceeded):
             _apply_bundle_to_local_cloudsave(
                 target_cm,

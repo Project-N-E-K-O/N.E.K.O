@@ -11,11 +11,25 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """
 This is the main logic file, responsible for managing the entire conversation flow. When TTS is not selected, the Omni model's native speech output is used via the OpenAI-compatible interface.
 When TTS is selected, speech is synthesized through an extra TTS API. Note that the TTS API output is streamed and must interact with user input to implement interruption logic.
 The TTS part uses two queues; one would normally suffice, but Aliyun's TTS API callbacks only support synchronous functions, so a response queue was added to asynchronously send audio data to the frontend.
+
+Package layout (split from the former single-file ``main_logic/core.py``; the
+import path ``main_logic.core`` is unchanged):
+
+- ``_shared``: module-level constants, the package logger, and small pure
+  helpers shared across the package.
+- ``callback_render``: pure rendering helpers for agent-task callbacks and
+  voice-swap injection strings.
+- ``notices``: the prominent-notice buffer pool (single owner of the queue
+  state).
+- ``__init__``: ``LLMSessionManager`` itself, plus re-exports of every
+  top-level name of the old module so existing imports and test monkeypatches
+  (``main_logic.core.<attr>``) keep working unchanged -- the class's global
+  lookups read this module's namespace at call time, which is exactly what
+  tests patch.
 """
 import asyncio
 import contextvars
@@ -106,482 +120,6 @@ from config.prompts.prompts_memory import (
     RECALL_MEMORY_TOOL_FOUND_HEADER,
 )
 
-# Sentinel for `send_lanlan_response(request_id=...)` so we can tell apart
-# "caller didn't pass it (use shared field as fallback)" from "caller
-# explicitly passed None to mean 'no request id'". A normal default of
-# None collapses both into the same code path and would let recovery /
-# proactive paths accidentally bind their messages to a newer request_id.
-_REQUEST_ID_UNSET: Any = object()
-_MAGIC_COMMAND_IMAGE_DROP_REQUEST_MAX = 64
-_VOICE_PROACTIVE_ACK_GRACE_S = 0.05
-_TEXT_SESSION_INPUT_TYPES = frozenset({"text", "avatar_drop_image", "user_image"})
-_IMAGE_INPUT_TYPES = frozenset({"screen", "camera", "avatar_drop_image", "user_image"})
-_LIVE_VISION_STREAM_INPUT_TYPES = frozenset({"screen", "camera"})
-_CONTEXT_APPEND_DEDUP_TTL_SECONDS = 120.0
-_CONTEXT_APPEND_DEDUP_MAX_ENTRIES = 256
-_CONTEXT_APPEND_READY_FLUSH_MAX_PASSES = 8
-_CONTEXT_APPEND_DEFAULT_MAX_TOKENS = 1000
-_CONTEXT_APPEND_SOURCE_MAX_TOKENS = {
-    "game.icebreaker": 500,
-    "game.scripted": 1000,
-    "game.realtime_context": 1000,
-    "game.postgame": 1500,
-    "proactive.context": 1000,
-    "proactive.callback": 1000,
-    "topic.hook": 1000,
-    "topic.material": 1000,
-    "realtime.prime": 1000,
-}
-_CONTEXT_APPEND_BARE_PRIME_SOURCES = frozenset({
-    "game.realtime_context",
-    "game.postgame",
-})
-
-
-# 内部 item 渲染时的视觉标记。状态信息已在外层 SYSTEM_NOTIFICATION_TASK_ACTIVE
-# 表达，emoji 仅作快速视觉识别用。
-_STATUS_EMOJI = {
-    "completed": "✅",
-    "partial": "⚠️",
-    "blocked": "⚠️",
-    "failed": "❌",
-    "cancelled": "🚫",
-}
-
-_VOICE_ECHO_LOOKBACK_SECONDS = 20.0
-_VOICE_ECHO_LOOKBACK_CHARS = 1200
-_VOICE_ECHO_MIN_NORMALIZED_CHARS = 6
-_VOICE_ECHO_MIN_WINDOW_CHARS = 10
-_VOICE_ECHO_SIMILARITY_THRESHOLD = 0.88
-_VOICE_ECHO_NORMALIZE_RE = re.compile(r"[\W_]+", re.UNICODE)
-
-
-def _normalize_voice_echo_text(text: str) -> str:
-    return _VOICE_ECHO_NORMALIZE_RE.sub("", str(text or "").casefold())
-
-
-def _looks_like_recent_ai_echo(transcript: str, recent_ai_text: str) -> bool:
-    """Return True when STT text is probably the assistant's own recent audio.
-
-    This intentionally requires a close text match. Voice barge-in during AI
-    playback should keep flowing unless it resembles the AI text that was just
-    rendered/spoken.
-    """
-    transcript_norm = _normalize_voice_echo_text(transcript)
-    if len(transcript_norm) < _VOICE_ECHO_MIN_NORMALIZED_CHARS:
-        return False
-    recent_norm = _normalize_voice_echo_text(recent_ai_text)
-    if len(recent_norm) < _VOICE_ECHO_MIN_NORMALIZED_CHARS:
-        return False
-    if len(transcript_norm) > len(recent_norm):
-        return SequenceMatcher(None, transcript_norm, recent_norm).ratio() >= _VOICE_ECHO_SIMILARITY_THRESHOLD
-    if len(transcript_norm) < _VOICE_ECHO_MIN_WINDOW_CHARS:
-        return False
-    if transcript_norm in recent_norm:
-        return True
-
-    window_len = len(transcript_norm)
-    step = max(1, window_len // 3)
-    best = 0.0
-    last_start = len(recent_norm) - window_len
-    starts = list(range(0, last_start + 1, step))
-    if not starts or starts[-1] != last_start:
-        starts.append(last_start)
-    for start in starts:
-        candidate = recent_norm[start:start + window_len]
-        best = max(best, SequenceMatcher(None, transcript_norm, candidate).ratio())
-        if best >= _VOICE_ECHO_SIMILARITY_THRESHOLD:
-            return True
-    return False
-
-
-def _format_callback_source(cb: dict, lang: str) -> str:
-    """Render an agent_task_callback's source as user-facing text in ``lang``.
-
-    Reads ``cb["source_kind"]`` (one of SOURCE_DESCRIPTORS keys) and
-    ``cb["source_name"]`` (free-form string used as ``{name}`` slot). Falls
-    back to the ``unknown`` descriptor for missing/unrecognized kinds.
-    """
-    kind = (cb.get("source_kind") or "unknown").strip()
-    descriptor = SOURCE_DESCRIPTORS.get(kind) or SOURCE_DESCRIPTORS["unknown"]
-    name = (cb.get("source_name") or "").strip()
-    return _loc(descriptor, lang).format(name=name)
-
-
-def apply_role_placeholders(
-    text: str,
-    *,
-    lanlan_name: str = "",
-    master_name: str = "",
-) -> str:
-    """Substitute ``{MASTER_NAME}`` / ``{LANLAN_NAME}`` placeholders in
-    plugin-supplied text at the LLM-injection boundary.
-
-    Plugin authors don't know which ``LLMSessionManager`` (and therefore which
-    ``master_name`` / ``lanlan_name`` pair) the text will route to — that's a
-    host-side visibility decision. So the canonical contract is:
-
-        plugin writes ``"Report to {MASTER_NAME}…"`` →
-        host expands at the injection site, per session.
-
-    Uses ``str.replace`` rather than ``str.format`` so that other braces in
-    the text (JSON fragments, code snippets, user content containing stray
-    ``{``) don't raise ``KeyError``. Empty names short-circuit — the
-    placeholder is left in place rather than replaced with ``""``, on the
-    theory that the literal token is less misleading than an empty hole.
-
-    This is the SINGLE source of truth for the placeholder contract. New
-    plugin-text injection sites should funnel through this helper.
-    """
-    if not text:
-        return text
-    if isinstance(master_name, str) and master_name:
-        text = text.replace("{MASTER_NAME}", master_name)
-    if isinstance(lanlan_name, str) and lanlan_name:
-        text = text.replace("{LANLAN_NAME}", lanlan_name)
-    return text
-
-
-def _render_callback_inner_item(
-    cb: dict,
-    lang: str,
-    *,
-    lanlan_name: str = "",
-    master_name: str = "",
-) -> str:
-    """Render one callback as a single inline string for the LLM prompt.
-
-    Returns ``""`` when there is genuinely nothing to convey (both summary
-    and detail empty); the caller can then drop the line and rely on the
-    outer header alone to express that something happened.
-
-    Plugin-supplied ``summary``/``detail`` may contain ``{MASTER_NAME}`` /
-    ``{LANLAN_NAME}`` placeholders; see :func:`apply_role_placeholders`.
-    """
-    summary = apply_role_placeholders(
-        (cb.get("summary") or "").strip(),
-        lanlan_name=lanlan_name, master_name=master_name,
-    )
-    detail = apply_role_placeholders(
-        (cb.get("detail") or "").strip(),
-        lanlan_name=lanlan_name, master_name=master_name,
-    )
-    text = summary or detail
-    if not text:
-        return ""
-    status = cb.get("status") or "completed"
-    emoji = _STATUS_EMOJI.get(status, "•")
-    line = f"{emoji} {text}"
-    if summary and detail and detail != summary and len(detail) > len(summary):
-        label = _loc(RESULT_PARSER_PHRASES["detail_result"], lang)
-        line += f"\n{label}{detail}"
-    return line
-
-
-def _build_callback_instruction(
-    callbacks,
-    *,
-    lang: str,
-    lanlan_name: str,
-    master_name: str,
-    passive: bool = False,
-) -> str:
-    """Render a list of agent_task_callbacks into the LLM injection string.
-
-    Each callback carries an ``origin`` tag stamped by the host at the
-    EventBus → callback boundary:
-      - ``"task_result"`` — real task completion (agent_server._emit_task_result),
-        e.g. Computer Use / Browser Use / plugin entry / MCP tool result.
-      - ``"event"`` — plugin push_message stream (proactive_bridge),
-        e.g. danmaku / gift / external notification.
-
-    Plugin authors cannot set ``origin``; it is derived structurally from
-    which SDK method they called (``finish()`` vs ``push_message()``) by
-    way of the event_type the upstream producer emitted.
-
-    Two axes (origin × passive) pick one of four outer templates:
-
-    +--------------+----------------------+-----------------------------+
-    | origin       | active (proactive)   | passive                     |
-    +==============+======================+=============================+
-    | task_result  | TASK_ACTIVE          | TASK_PASSIVE                |
-    |              | ("done, report it")  | ("task result")             |
-    +--------------+----------------------+-----------------------------+
-    | event        | EVENT_ACTIVE         | EVENT_PASSIVE               |
-    |              | ("new msg, respond") | ("message")                 |
-    +--------------+----------------------+-----------------------------+
-
-    Unknown origin defaults to ``"event"`` + warning. Rationale: rather
-    have the AI naturally react than fabricate "I completed a task".
-
-    Callbacks are grouped by (passive, origin, status, source) so each
-    group can pick the right outer template and (for task_result+active)
-    slot in the right status/action phrases. Event templates ignore
-    status/action — the concept doesn't apply to passive event streams.
-    """
-    if not callbacks:
-        return ""
-    from collections import OrderedDict
-
-    grouped: "OrderedDict[tuple, list]" = OrderedDict()
-    for cb in callbacks:
-        # passive=True call = drain path; treat all as passive regardless
-        # of per-callback delivery_mode.
-        cb_passive = passive or (cb.get("delivery_mode") == "passive")
-        origin = cb.get("origin")
-        if origin not in ("task_result", "event"):
-            if origin:
-                logger.warning(
-                    "[callback_instruction] unknown origin=%r, falling back to 'event'; "
-                    "source=%s/%s",
-                    origin, cb.get("source_kind"), cb.get("source_name"),
-                )
-            origin = "event"
-        key = (
-            cb_passive,
-            origin,
-            cb.get("status") or "completed",
-            cb.get("source_kind") or "unknown",
-            (cb.get("source_name") or ""),
-        )
-        grouped.setdefault(key, []).append(cb)
-
-    parts: list[str] = []
-    for (cb_passive, origin, status, _src_kind, _src_name), cbs in grouped.items():
-        source_text = _format_callback_source(cbs[0], lang)
-        if origin == "task_result":
-            if cb_passive:
-                header = _loc(SYSTEM_NOTIFICATION_TASK_PASSIVE, lang).format(source=source_text)
-            else:
-                status_phrase = _loc(
-                    TASK_STATUS_PHRASES.get(status) or TASK_STATUS_PHRASES["completed"],
-                    lang,
-                )
-                action_phrase = _loc(
-                    TASK_ACTION_PHRASES.get(status) or TASK_ACTION_PHRASES["completed"],
-                    lang,
-                )
-                header = _loc(SYSTEM_NOTIFICATION_TASK_ACTIVE, lang).format(
-                    source=source_text,
-                    status_phrase=status_phrase,
-                    action_phrase=action_phrase,
-                    name=lanlan_name,
-                    master=master_name,
-                )
-        else:  # origin == "event"
-            if cb_passive:
-                header = _loc(SYSTEM_NOTIFICATION_EVENT_PASSIVE, lang).format(source=source_text)
-            else:
-                header = _loc(SYSTEM_NOTIFICATION_EVENT_ACTIVE, lang).format(
-                    source=source_text,
-                    name=lanlan_name,
-                    master=master_name,
-                )
-        items = [
-            _render_callback_inner_item(
-                cb, lang, lanlan_name=lanlan_name, master_name=master_name,
-            )
-            for cb in cbs
-        ]
-        items = [s for s in items if s]
-        if items:
-            parts.append(header + "\n".join(items))
-        else:
-            # No item text — outer header alone (e.g. "task X failed") still
-            # tells the AI that something happened. Strip trailing newline so
-            # the joined output is clean.
-            parts.append(header.rstrip())
-    rendered = "\n\n".join(parts)
-    # Total input budget: many callbacks accumulating must not blow up the turn.
-    from utils.tokenize import truncate_to_tokens
-    from config import AGENT_CALLBACK_TOTAL_MAX_TOKENS
-    return truncate_to_tokens(rendered, AGENT_CALLBACK_TOTAL_MAX_TOKENS)
-
-
-def _format_voice_swap_item(
-    entry: dict,
-    lang: str,
-    *,
-    lanlan_name: str = "",
-    master_name: str = "",
-) -> str:
-    """Render a single voice-mode pending_extra_replies entry to a bulleted
-    line for the hot-swap injection.
-
-    Priority: ``summary`` → ``detail`` → synthesized "{status_phrase} from
-    {source}[: error_message]" placeholder. The placeholder path matters for
-    failure callbacks whose body is empty — without it, header information
-    like "execution failed / from plugin X / Connection refused" would be
-    silently dropped (the voice-mode equivalent of the header-only branch in
-    ``_build_callback_instruction``).
-
-    Plugin-supplied ``summary``/``detail`` may contain ``{MASTER_NAME}`` /
-    ``{LANLAN_NAME}`` placeholders; see :func:`apply_role_placeholders`. The
-    synthesized placeholder fallback uses host-side localized phrases so it
-    needs no role substitution.
-
-    Returns ``""`` when the entry is genuinely empty (no body, no error, and
-    a benign ``completed`` status) — caller filters those out.
-    """
-    summary = apply_role_placeholders(
-        (entry.get("summary") or "").strip(),
-        lanlan_name=lanlan_name, master_name=master_name,
-    )
-    detail = apply_role_placeholders(
-        (entry.get("detail") or "").strip(),
-        lanlan_name=lanlan_name, master_name=master_name,
-    )
-    text = summary or detail
-    status = entry.get("status") or "completed"
-    emoji = _STATUS_EMOJI.get(status, "•")
-
-    if text:
-        return f"- {emoji} {text}"
-
-    # No body text — synthesize from header info so the failure status
-    # doesn't disappear silently.
-    error_message = (entry.get("error_message") or "").strip()
-    source_name = (entry.get("source_name") or "").strip()
-    if not error_message and not source_name and status == "completed":
-        # Truly nothing to convey; drop. (enqueue_agent_callback already
-        # filters these out, but be defensive against legacy entries.)
-        return ""
-
-    source_text = _format_callback_source(entry, lang)
-    status_phrase = _loc(
-        TASK_STATUS_PHRASES.get(status) or TASK_STATUS_PHRASES["completed"],
-        lang,
-    )
-    line = f"- {emoji} {source_text} {status_phrase}"
-    if error_message:
-        line += f"：{error_message}"
-    return line
-
-
-def _render_pending_extra_replies_by_origin(
-    entries,
-    *,
-    lang: str,
-    lanlan_name: str,
-    master_name: str,
-) -> str:
-    """Render voice-mode ``pending_extra_replies`` into the hot-swap injection
-    string, grouped by ``origin``.
-
-    Each entry should be a structured dict with at least ``origin``;
-    ``summary``/``detail``/``status``/``source_kind``/``source_name``/
-    ``error_message`` are consumed by :func:`_format_voice_swap_item`. Legacy
-    plain-string entries (pre-migration code paths) are tolerated and
-    treated as ``origin="event"`` event-stream content — the safer default,
-    since the "report the result of a previously executed task" framing on
-    what may actually be a push event is the bug this refactor fixes.
-
-    Returns a single string suitable for appending to ``final_prime_text``.
-    Order: task block first (if any), then event block — matches the original
-    single-block placement where everything followed the cache dump.
-    """
-    if not entries:
-        return ""
-
-    task_entries: list[dict] = []
-    event_entries: list[dict] = []
-    for entry in entries:
-        if isinstance(entry, dict):
-            normalized = dict(entry)
-            origin = normalized.get("origin")
-            if origin not in ("task_result", "event"):
-                normalized["origin"] = "event"  # fail-safe
-                origin = "event"
-            if origin == "task_result":
-                task_entries.append(normalized)
-            else:
-                event_entries.append(normalized)
-        elif isinstance(entry, str):
-            stripped = entry.strip()
-            if stripped:
-                event_entries.append({
-                    "origin": "event",
-                    "summary": stripped,
-                    "detail": "",
-                    "status": "completed",
-                    "source_kind": "unknown",
-                    "source_name": "",
-                    "error_message": "",
-                })
-
-    blocks: list[str] = []
-    if task_entries:
-        items = [
-            _format_voice_swap_item(e, lang, lanlan_name=lanlan_name, master_name=master_name)
-            for e in task_entries
-        ]
-        items = [s for s in items if s]
-        if items:
-            blocks.append(
-                _loc(CONTEXT_SUMMARY_TASK_HEADER, lang).format(name=lanlan_name, master=master_name)
-                + "\n".join(items)
-                + _loc(CONTEXT_SUMMARY_TASK_FOOTER, lang)
-            )
-    if event_entries:
-        items = [
-            _format_voice_swap_item(e, lang, lanlan_name=lanlan_name, master_name=master_name)
-            for e in event_entries
-        ]
-        items = [s for s in items if s]
-        if items:
-            blocks.append(
-                _loc(CONTEXT_SUMMARY_EVENT_HEADER, lang).format(name=lanlan_name, master=master_name)
-                + "\n".join(items)
-                + _loc(CONTEXT_SUMMARY_EVENT_FOOTER, lang)
-            )
-    rendered = "".join(blocks)
-    # Total input budget for the voice hot-swap injection (mirror of the
-    # text-mode cap in _build_callback_instruction). Backstop only — callers
-    # should pre-select within budget via _select_callbacks_within_token_budget
-    # so whole callbacks are never silently dropped after a successful ack.
-    from utils.tokenize import truncate_to_tokens
-    from config import AGENT_CALLBACK_TOTAL_MAX_TOKENS
-    return truncate_to_tokens(rendered, AGENT_CALLBACK_TOTAL_MAX_TOKENS)
-
-
-def _select_callbacks_within_token_budget(callbacks, total_budget):
-    """Greedily take the oldest prefix of ``callbacks`` whose cumulative
-    summary/detail token count stays within ``total_budget``.
-
-    Returns ``(selected, deferred)``. Always selects at least one item so the
-    queue makes forward progress (each item is already per-item capped at
-    enqueue). The point: a caller that acks + clears must ack/clear only the
-    *selected* items and re-queue ``deferred`` for the next turn — otherwise
-    callbacks beyond the cap would be acked as delivered but never reach the
-    model (see PR review)."""
-    from utils.tokenize import count_tokens
-    # Per-item overhead for the emoji/bullet, the per-group outer header, and the
-    # template wrapper that the renderer adds around the body. Over-counting is
-    # the SAFE direction: we select fewer, so the rendered instruction stays
-    # under budget and the builder's backstop truncation never cuts an already
-    # selected (and acked) callback.
-    _ITEM_OVERHEAD_TOKENS = 48
-    selected: list = []
-    used = 0
-    for i, cb in enumerate(callbacks):
-        if isinstance(cb, dict):
-            # Count every field the renderer may emit — body line (summary or
-            # detail) plus the error/source fallback line — not just summary.
-            t = (
-                count_tokens(cb.get("summary") or "")
-                + count_tokens(cb.get("detail") or "")
-                + count_tokens(cb.get("error_message") or "")
-                + count_tokens(cb.get("source_name") or "")
-                + _ITEM_OVERHEAD_TOKENS
-            )
-        else:
-            t = count_tokens(str(cb)) + _ITEM_OVERHEAD_TOKENS
-        if selected and used + t > total_budget:
-            return selected, list(callbacks[i:])
-        selected.append(cb)
-        used += t
-    return selected, []
-
 
 from config.prompts.prompts_avatar_interaction import (
     _normalize_avatar_interaction_payload,
@@ -615,241 +153,85 @@ import numpy as np
 import soxr
 import httpx
 
-# Setup logger for this module
-logger = get_module_logger(__name__, "Main")
 
-# 用户静默达到此阈值 → 后台 loop 主动 end_session，让下一条消息触发
-# start_session(new=False) 重新拉 /new_dialog 注入新鲜时间/长间隔提示/节日
-# 上下文，解决长挂机 session 上下文僵化（"猫娘还停留在前一晚"）的问题。
-# 周期检查间隔故意远小于阈值（粒度 ~1 min），避免静默 30:01 时还要再等
-# 一整轮。
-IDLE_SESSION_RESET_THRESHOLD_SECONDS = 1800
-IDLE_SESSION_RESET_CHECK_INTERVAL_SECONDS = 60
-
-# 前端文本会话 start_session 等 session_started 的硬超时（static/app-buttons.js
-# 的 setTimeout(..., 15000)）。start_session 去重路径等 in-flight 启动落定后给
-# 本请求补发 ack 时，等待上限绑到这个值：超过前端这个超时再补发 session_started
-# 已无意义（前端早已 reject 并发 end_session），故以它为有意义窗口的天然上界。
-FRONTEND_START_SESSION_TIMEOUT_SECONDS = 15.0
-
-# 跨模式重启时「等 in-flight 落定」的等待上限。必须明显短于前端超时：等完之后
-# 还要花几秒真正起目标模式会话（含最坏 ~12s 的 TTS 就绪等待），若把大半个 15s 都
-# 耗在等待上，重启发出的 session_started 会晚于前端 deadline，前端照样超时、甚至
-# reset 后才收到 ack 起孤儿会话（Codex P2）。取前端超时的一半，给重启留 ~7.5s 余量；
-# in-flight 没在这窗口内落定就放弃（回落 baseline：前端超时、无孤儿）。in-flight
-# （text）正常 1~3s 落定，远在窗口内。注：TTS 冷启动叠加 in-flight 贴线落定的双重
-# 最坏情形仍可能溢出 15s，此时由 start_session 末尾的连接/放弃校验与重启侧守卫兜底。
-CROSS_MODE_RESTART_WAIT_SECONDS = FRONTEND_START_SESSION_TIMEOUT_SECONDS / 2
-
-# 主动搭话（proactive）调用 prompt_ephemeral 时设置的 sid 期望值。
-# 目的：prompt_ephemeral 内部通过 on_text_delta=handle_text_data 回调 enqueue TTS，
-# 中间可能被用户输入抢占（user stream_text 清 queue + 换 current_speech_id）。
-# handle_text_data / handle_output_transcript 检查此 contextvar：若已设置且与
-# current_speech_id 不符，说明本路径生成的 chunk 已不属于当前轮次，必须丢弃
-# 以免 proactive 文本被错打上用户新 sid 混进用户回复 TTS。
-# contextvar 是 per-task 隔离，不会泄漏到用户 stream_text 所在的独立任务。
-_proactive_expected_sid: contextvars.ContextVar[str | None] = contextvars.ContextVar(
-    '_proactive_expected_sid', default=None,
+# Re-exports from the package submodules. Everything the old single-file
+# module defined at top level stays importable as ``main_logic.core.<name>``.
+#
+# Rebind/monkeypatch semantics: rebinding a facade attribute only affects
+# consumers whose code lives in THIS module -- i.e. ``LLMSessionManager``,
+# which is why the class stays here and every historical
+# ``monkeypatch.setattr("main_logic.core.<attr>", ...)`` site keeps working.
+# Code moved into a submodule reads its own module globals, so to stub a
+# symbol as seen by a moved helper (e.g. ``_loc`` inside ``callback_render``),
+# patch that submodule directly -- same contract as
+# ``main_routers/system_router`` (#2148). No such patch site exists today
+# (the old module early-bound those names from ``config.prompts.prompts_sys``
+# anyway, so rebinding them on the source module never propagated either).
+#
+# State-carrying objects (the notice queue/lock, the
+# ``_proactive_expected_sid`` ContextVar, ``_notified_legacy_voices``) are
+# re-exported by reference; their single owner is the defining submodule.
+# ``notices._prominent_notice_seq`` is intentionally NOT re-exported: the
+# owner rebinds that int on every enqueue, so a facade snapshot would go
+# stale immediately (no external reader exists).
+from ._shared import (  # noqa: F401
+    _REQUEST_ID_UNSET,
+    _MAGIC_COMMAND_IMAGE_DROP_REQUEST_MAX,
+    _VOICE_PROACTIVE_ACK_GRACE_S,
+    _TEXT_SESSION_INPUT_TYPES,
+    _IMAGE_INPUT_TYPES,
+    _LIVE_VISION_STREAM_INPUT_TYPES,
+    _CONTEXT_APPEND_DEDUP_TTL_SECONDS,
+    _CONTEXT_APPEND_DEDUP_MAX_ENTRIES,
+    _CONTEXT_APPEND_READY_FLUSH_MAX_PASSES,
+    _CONTEXT_APPEND_DEFAULT_MAX_TOKENS,
+    _CONTEXT_APPEND_SOURCE_MAX_TOKENS,
+    _CONTEXT_APPEND_BARE_PRIME_SOURCES,
+    _VOICE_ECHO_LOOKBACK_SECONDS,
+    _VOICE_ECHO_LOOKBACK_CHARS,
+    _VOICE_ECHO_MIN_NORMALIZED_CHARS,
+    _VOICE_ECHO_MIN_WINDOW_CHARS,
+    _VOICE_ECHO_SIMILARITY_THRESHOLD,
+    _VOICE_ECHO_NORMALIZE_RE,
+    _normalize_voice_echo_text,
+    _looks_like_recent_ai_echo,
+    logger,
+    IDLE_SESSION_RESET_THRESHOLD_SECONDS,
+    IDLE_SESSION_RESET_CHECK_INTERVAL_SECONDS,
+    FRONTEND_START_SESSION_TIMEOUT_SECONDS,
+    CROSS_MODE_RESTART_WAIT_SECONDS,
+    _proactive_expected_sid,
+    NO_RETRY_TTS_CODES,
+    IMMEDIATE_REPORT_TTS_CODES,
+    _STATIC_LOCALES_DIR,
+    _load_locale_messages,
+    _get_chat_locale_text,
+    _START_LLM_CONCURRENT_ABORTED,
+    ContextAppendResult,
+    _purge_closed_tool_calls,
 )
-
-# TTS 错误码：不可恢复，禁止 respawn（欠费 / API Key 无效）
-NO_RETRY_TTS_CODES = {'API_ARREARS', 'API_KEY_REJECTED', 'TTS_CONFIG_INVALID'}
-# TTS 错误码：立即上报前端，不受"第3次才通知"门槛限制（含配额——仍允许重试）
-IMMEDIATE_REPORT_TTS_CODES = NO_RETRY_TTS_CODES | {'API_QUOTA_TIME'}
-
-
-# ---------------------------------------------------------------------------
-# 重要通知缓冲池
-# 任何模块随时可以调用 enqueue_prominent_notice() 往池里推消息；
-# 前端通过 GET /api/pending-notices 拉取（返回通知列表和游标），
-# 用户全部确认后通过 POST /api/pending-notices/ack?cursor=N 只删除已展示的通知，
-# 避免 peek→ack 两次 HTTP 往返之间新入队的通知被静默清空（TOCTOU）。
-# ---------------------------------------------------------------------------
-_prominent_notice_queue: list[dict] = []
-_prominent_notice_lock = threading.Lock()
-_prominent_notice_seq: int = 0  # 单调递增，每条通知入队时分配
-_STATIC_LOCALES_DIR = Path(__file__).resolve().parents[1] / "static" / "locales"
-
-
-@lru_cache(maxsize=16)
-def _load_locale_messages(locale_code: str) -> dict:
-    try:
-        with (_STATIC_LOCALES_DIR / f"{locale_code}.json").open("r", encoding="utf-8") as f:
-            data = json.load(f)
-            return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
-
-
-def _get_chat_locale_text(language: str | None, key: str, fallback: str) -> str:
-    raw_lang = language or get_global_language()
-    try:
-        lang_full = normalize_language_code(raw_lang, format='full')
-    except Exception:
-        lang_full = raw_lang or 'en'
-    try:
-        lang_short = normalize_language_code(raw_lang, format='short')
-    except Exception:
-        lang_short = 'en'
-
-    candidates: list[str] = []
-    for candidate in (lang_full, lang_short, 'en', 'zh-CN'):
-        if candidate and candidate not in candidates:
-            candidates.append(candidate)
-
-    for locale_code in candidates:
-        cursor = _load_locale_messages(locale_code)
-        for part in ('chat', key):
-            if not isinstance(cursor, dict):
-                cursor = None
-                break
-            cursor = cursor.get(part)
-        if isinstance(cursor, str) and cursor.strip():
-            return cursor
-    return fallback
-
-
-def enqueue_prominent_notice(notice: "str | dict"):
-    """Put a prominent notice into the buffer pool, awaiting frontend pickup.
-    
-    Accepts a string (automatically wrapped as {"message": ...}) or a structured
-    dict (recommended fields: "code", "message", "message_en", "details").
-    """
-    global _prominent_notice_seq
-    if isinstance(notice, str):
-        item: dict = {"message": notice}
-    else:
-        item = dict(notice)
-    with _prominent_notice_lock:
-        _prominent_notice_seq += 1
-        item["_nid"] = _prominent_notice_seq
-        _prominent_notice_queue.append(item)
-
-
-def peek_prominent_notices() -> tuple[list[dict], int]:
-    """Return a snapshot of the buffer pool and the current cursor (for GET /pending-notices).
-
-    Returns (notices_without_internal_fields, cursor); cursor is the largest _nid in
-    this snapshot, and passing it to drain_prominent_notices(cursor) deletes exactly
-    the displayed items.
-    """
-    with _prominent_notice_lock:
-        items = list(_prominent_notice_queue)
-    cursor = items[-1]["_nid"] if items else 0
-    public = [{k: v for k, v in it.items() if k != "_nid"} for it in items]
-    return public, cursor
-
-
-def drain_prominent_notices(up_to_cursor: int) -> list[dict]:
-    """Delete notices with _nid <= up_to_cursor, keeping items enqueued afterwards.
-
-    Returns the list of deleted notices. Passing 0 or a negative number deletes nothing.
-    """
-    if up_to_cursor <= 0:
-        return []
-    with _prominent_notice_lock:
-        remaining = [it for it in _prominent_notice_queue if it.get("_nid", 0) > up_to_cursor]
-        drained = [it for it in _prominent_notice_queue if it.get("_nid", 0) <= up_to_cursor]
-        _prominent_notice_queue.clear()
-        _prominent_notice_queue.extend(remaining)
-    return drained
-
-
-# ---------------------------------------------------------------------------
-# CosyVoice 旧版音色通知去重（模块级，startup 和 LLMSessionManager 共享）
-# ---------------------------------------------------------------------------
-_notified_legacy_voices: set[str] = set()
-
-
-def enqueue_voice_migration_notice(legacy_names: list) -> None:
-    """Push the legacy CosyVoice voice notice after dedup. Called by both the main_server
-    startup path and LLMSessionManager, avoiding duplicate popups for the same character."""
-    global _notified_legacy_voices
-    if not legacy_names:
-        return
-    new_names = sorted(set(legacy_names) - _notified_legacy_voices)
-    if not new_names:
-        return
-    _notified_legacy_voices.update(new_names)
-    enqueue_prominent_notice({
-        "code": "notice.voiceMigration.legacyDetected",
-        "message": "检测到旧版 CosyVoice 音色可能已失效，建议重新克隆语音。",
-        "message_en": "Legacy CosyVoice voices detected that may no longer work. Consider re-cloning your voices.",
-        "details": {"voices": new_names},
-    })
-
-
-# Sentinel returned by start_llm_session when CAS detects a concurrent start
-# already promoted its own session.  Returning a sentinel (instead of raising)
-# keeps the loser out of the generic error path — that path calls cleanup()
-# without an expected_session guard and would otherwise tear down the winner's
-# session/websocket while also inflating session_start_failure_count.
-_START_LLM_CONCURRENT_ABORTED = object()
-
-
-@dataclass(frozen=True)
-class ContextAppendResult:
-    appended: bool
-    deduped: bool = False
-    targets: tuple[str, ...] = ()
-    reason: str | None = None
+from .callback_render import (  # noqa: F401
+    _STATUS_EMOJI,
+    _format_callback_source,
+    apply_role_placeholders,
+    _render_callback_inner_item,
+    _build_callback_instruction,
+    _format_voice_swap_item,
+    _render_pending_extra_replies_by_origin,
+    _select_callbacks_within_token_budget,
+)
+from .notices import (  # noqa: F401
+    _prominent_notice_queue,
+    _prominent_notice_lock,
+    enqueue_prominent_notice,
+    peek_prominent_notices,
+    drain_prominent_notices,
+    _notified_legacy_voices,
+    enqueue_voice_migration_notice,
+)
 
 
 # --- 一个带有定期上下文压缩+在线热切换的语音会话管理器 ---
-def _purge_closed_tool_calls(history: list, *, start: int = 0) -> int:
-    """Remove every CLOSED tool-call pair from the conversation history: an
-    assistant message (role=assistant, carrying tool_calls) plus the tool-result
-    messages immediately following it whose tool_call_id matches. Any
-    reasoning_content (the thinking model's chain, parked on that assistant
-    message for provider replay) is dropped together with it — deleting the
-    whole pair, NOT just the field, since a thinking endpoint rejects a
-    tool_calls turn whose reasoning_content went missing on replay.
-
-    Only assistant messages at index >= ``start`` are considered, so a Focus
-    exit scopes the purge to the episode's history suffix (recorded when Focus
-    was entered) and leaves closed tool calls from regular turns BEFORE Focus
-    began intact. ``start`` is clamped to [0, len].
-
-    "Closed" = every tool_call id on the assistant message is answered by a
-    following contiguous tool message. Unclosed calls (a call with no result —
-    an interrupted / in-flight turn) are kept so live state is never corrupted.
-    Plain Human / AI / System (BaseMessage) entries are never touched. Returns
-    the number of messages deleted.
-    """
-    if not history:
-        return 0
-    n = len(history)
-    start = max(0, min(int(start or 0), n))
-    remove: set[int] = set()
-    for i in range(start, n):
-        msg = history[i]
-        if not (isinstance(msg, dict) and msg.get("role") == "assistant"):
-            continue
-        tool_calls = msg.get("tool_calls") or []
-        if not tool_calls:
-            continue
-        call_ids = {tc.get("id") for tc in tool_calls if tc.get("id")}
-        if not call_ids:
-            continue
-        # execute 路径原子追加 assistant + 紧随其后的各 tool result，所以闭合的
-        # 结果消息是「连续」的；遇到非 tool 消息即停止该 assistant 的结果收集。
-        result_idx: list[int] = []
-        covered: set = set()
-        for j in range(i + 1, n):
-            rj = history[j]
-            if isinstance(rj, dict) and rj.get("role") == "tool":
-                result_idx.append(j)
-                covered.add(rj.get("tool_call_id"))
-            else:
-                break
-        if call_ids <= covered:  # 每个 call 都有结果 → 已闭合，整对删
-            remove.add(i)
-            remove.update(result_idx)
-    for idx in sorted(remove, reverse=True):
-        del history[idx]
-    return len(remove)
-
-
 class LLMSessionManager:
     def __init__(self, sync_message_queue, lanlan_name, lanlan_prompt):
         self.websocket = None
