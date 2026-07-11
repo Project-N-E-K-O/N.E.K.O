@@ -10,6 +10,8 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
+import stat
 
 import pytest
 from fastapi import FastAPI
@@ -51,6 +53,8 @@ def test_mark_persists_verifier_and_returns_challenge(pending_path):
     assert "code_verifier" in data and isinstance(data["code_verifier"], str)
     assert "code_challenge" not in data
     assert challenge == _challenge_for(data["code_verifier"])
+    if os.name != "nt":
+        assert stat.S_IMODE(pending_path.stat().st_mode) == 0o600
 
 
 @pytest.mark.unit

@@ -448,9 +448,9 @@ def _mark_steam_pending() -> tuple[str, str] | None:
     if not p:
         return None
     try:
-        p.write_text(
-            json.dumps({"ts": time.time(), "state": state, "code_verifier": verifier}),
-            encoding="utf-8",
+        _write_private_json(
+            p,
+            {"ts": time.time(), "state": state, "code_verifier": verifier},
         )
     except OSError as exc:
         logger.debug("card_drop: mark steam pending failed: %s", exc)

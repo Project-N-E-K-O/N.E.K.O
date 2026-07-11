@@ -13,6 +13,7 @@ from utils.storage_policy import save_storage_policy
 
 
 SYSTEM_STATUS_ENDPOINT = "/api/system/status"
+SYSTEM_CLIENT_ID_ENDPOINT = "/api/system/client-id"
 
 
 @pytest.fixture(autouse=True)
@@ -63,6 +64,29 @@ def _build_client(config_manager):
     app = FastAPI()
     app.include_router(system_router_module.router)
     return TestClient(app)
+
+
+@pytest.mark.unit
+def test_system_client_id_fails_closed_when_fresh_id_cannot_be_persisted(tmp_path):
+    class _UnsavableClientIdConfigManager(_DummyConfigManager):
+        cloudsave_local_state_path = tmp_path / "state" / "cloudsave_local_state.json"
+
+        def load_cloudsave_local_state(self):
+            return {"client_id": "volatile-client-id"}
+
+        def build_default_cloudsave_local_state(self):
+            raise AssertionError("loaded default already contains a client_id")
+
+        def save_cloudsave_local_state(self, _state):
+            raise OSError("disk unavailable")
+
+    with _build_client(_UnsavableClientIdConfigManager(tmp_path)) as client:
+        response = client.get(SYSTEM_CLIENT_ID_ENDPOINT)
+
+    assert response.status_code == 500
+    assert response.json()["ok"] is False
+    assert "client_id" not in response.json()
+    assert "no-store" in response.headers["Cache-Control"]
 
 
 @pytest.mark.unit
