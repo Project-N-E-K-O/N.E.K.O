@@ -11,7 +11,7 @@ from utils.llm_client import anthropic_retry_error_types
 
 
 def test_proactive_llm_retry_errors_include_anthropic_transients():
-    retry_types = system_router._PROACTIVE_LLM_RETRY_ERROR_TYPES
+    retry_types = system_router._proactive_llm_retry_error_types()
     for error_type in anthropic_retry_error_types():
         assert error_type in retry_types
 

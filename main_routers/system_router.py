@@ -54,12 +54,11 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
-from openai import APIConnectionError, InternalServerError, RateLimitError
 from utils.llm_client import (
     SystemMessage,
     HumanMessage,
     ThinkingStreamStripper,
-    anthropic_retry_error_types,
+    chat_retry_error_types,
     create_chat_llm_async,
 )
 from utils.tokenize import count_tokens
@@ -80,13 +79,20 @@ from PIL import Image
 #     the cold-start case where the first thread hop can take much longer.
 from cachetools import TTLCache
 
-_PROACTIVE_LLM_RETRY_ERROR_TYPES = (
-    asyncio.TimeoutError,
-    APIConnectionError,
-    InternalServerError,
-    RateLimitError,
-    *anthropic_retry_error_types(),
-)
+# 惰性缓存（None = 尚未构建）：openai/anthropic SDK 已从启动 import 链移除（见
+# utils/llm_client），模块级立即展开会把两个 SDK 拉回 main_server 端口就绪路径。
+# 首次求值发生在 LLM 调用的异常处理处，彼时 SDK 必已随 client 构造加载。
+_PROACTIVE_LLM_RETRY_ERROR_TYPES: tuple[type[BaseException], ...] | None = None
+
+
+def _proactive_llm_retry_error_types() -> tuple[type[BaseException], ...]:
+    global _PROACTIVE_LLM_RETRY_ERROR_TYPES
+    if _PROACTIVE_LLM_RETRY_ERROR_TYPES is None:
+        _PROACTIVE_LLM_RETRY_ERROR_TYPES = (
+            asyncio.TimeoutError,
+            *chat_retry_error_types(),
+        )
+    return _PROACTIVE_LLM_RETRY_ERROR_TYPES
 
 PROACTIVE_REASON_CHAT_DELIVERED = "CHAT_DELIVERED"
 PROACTIVE_REASON_PASS_BUSY = "PASS_BUSY"
@@ -6412,7 +6418,7 @@ async def proactive_chat(request: Request):
                         # [临时调试]
                         print(f"\n[PROACTIVE-DEBUG] LLM output [{label}]: {response.content[:500]}...\n")
                         return response.content.strip()
-                except _PROACTIVE_LLM_RETRY_ERROR_TYPES as e:
+                except _proactive_llm_retry_error_types() as e:
                     if attempt < max_retries - 1:
                         logger.warning(f"[{lanlan_name}] LLM [{label}] 调用失败 (尝试 {attempt + 1}/{max_retries}): {e}")
                         await asyncio.sleep(retry_delays[attempt])
