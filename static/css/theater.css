@@ -1,0 +1,812 @@
+:root {
+    --theater-bg: #f6f4ee;
+    --theater-ink: #241f1b;
+    --theater-muted: #6f675f;
+    --theater-panel: #fffaf0;
+    --theater-line: rgba(36, 31, 27, 0.14);
+    --theater-accent: #26726b;
+    --theater-accent-ink: #ffffff;
+    --theater-warm: #c46f34;
+    --theater-stage-light-x: 18%;
+    --theater-stage-light-y: 24%;
+}
+
+body {
+    margin: 0;
+    height: 100vh;
+    overflow: hidden;
+    min-height: 100vh;
+    color: var(--theater-ink);
+    background: var(--theater-bg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.theater-shell {
+    height: 100vh;
+    min-height: 0;
+    display: grid;
+    grid-template-rows: 38px minmax(280px, 38vh) minmax(0, 1fr);
+    transition: grid-template-rows 180ms ease;
+}
+
+/* 折叠后把舞台收成一条控制栏，将主要窗口高度归还给下方演绎区。 */
+.theater-shell[data-stage-collapsed="true"] {
+    grid-template-rows: 38px 52px minmax(0, 1fr);
+}
+
+.theater-title-bar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 0 10px 0 16px;
+    color: #fff;
+    background: #1f2725;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+    -webkit-app-region: drag;
+    user-select: none;
+}
+
+.theater-title-copy {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    min-width: 0;
+}
+
+.theater-title-copy h2 {
+    margin: 0;
+    font-size: 0.86rem;
+    font-weight: 700;
+    letter-spacing: 0;
+}
+
+.theater-window-controls .neko-window-control-btn {
+    width: 32px;
+    height: 32px;
+    min-height: 32px;
+    padding: 0;
+    border: none;
+    border-radius: 4px;
+    color: rgba(255, 255, 255, 0.9);
+    background: transparent;
+    line-height: 1;
+    transition: background 0.2s, transform 0.1s ease, opacity 0.2s ease;
+}
+
+.theater-window-controls .neko-window-control-btn:hover {
+    background: rgba(255, 255, 255, 0.2);
+    transform: translateY(-1px);
+}
+
+.theater-window-controls .neko-window-control-btn:active {
+    background: rgba(255, 255, 255, 0.3);
+    transform: translateY(1px) scale(0.95);
+    opacity: 0.9;
+}
+
+.theater-close-icon {
+    position: relative;
+    width: 14px;
+    height: 14px;
+    display: block;
+}
+
+.theater-close-icon::before,
+.theater-close-icon::after {
+    content: '';
+    position: absolute;
+    left: 6px;
+    top: 0;
+    width: 2px;
+    height: 14px;
+    border-radius: 2px;
+    background: currentColor;
+}
+
+.theater-close-icon::before {
+    transform: rotate(45deg);
+}
+
+.theater-close-icon::after {
+    transform: rotate(-45deg);
+}
+
+.theater-window-controls,
+.theater-story-intro,
+.theater-stage,
+.theater-console,
+.theater-workspace,
+.theater-input-row,
+.theater-toolbar,
+.theater-suggestions {
+    -webkit-app-region: no-drag;
+}
+
+/* 背景介绍嵌入棕色舞台，以半透明封面层集中展示故事和双方身份。 */
+.theater-story-intro {
+    min-height: 0;
+    padding: 16px 18px;
+    overflow: auto;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 12px;
+    background: rgba(22, 18, 16, 0.28);
+    backdrop-filter: blur(7px);
+}
+
+.theater-story-intro[hidden] {
+    display: none;
+}
+
+.theater-story-intro-heading {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+}
+
+.theater-story-intro-heading p,
+.theater-story-intro-heading h1,
+.theater-story-intro-brief {
+    margin: 0;
+}
+
+.theater-story-intro-heading p {
+    flex: 0 0 auto;
+    color: rgba(255, 240, 192, 0.9);
+    font-size: 0.74rem;
+    font-weight: 700;
+}
+
+.theater-story-intro-heading h1 {
+    margin: 0;
+    font-size: clamp(1.2rem, 2.6vw, 2rem);
+    line-height: 1.15;
+}
+
+.theater-story-intro-brief {
+    margin-top: 7px;
+    max-width: 980px;
+    color: rgba(255, 255, 255, 0.86);
+    font-size: 0.86rem;
+    line-height: 1.5;
+}
+
+.theater-story-intro-roles {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+    margin: 10px 0 0;
+}
+
+.theater-story-intro-roles > div {
+    padding-left: 10px;
+    border-left: 2px solid rgba(255, 240, 192, 0.42);
+}
+
+.theater-story-intro-roles dt {
+    color: rgba(255, 240, 192, 0.86);
+    font-size: 0.72rem;
+    font-weight: 700;
+}
+
+.theater-story-intro-roles dd {
+    margin: 3px 0 0;
+    color: rgba(255, 255, 255, 0.92);
+    font-size: 0.82rem;
+    line-height: 1.4;
+}
+
+.theater-story-intro-rules {
+    margin-top: 8px;
+    color: rgba(255, 255, 255, 0.78);
+    font-size: 0.78rem;
+}
+
+.theater-story-intro-rules summary {
+    cursor: pointer;
+    color: rgba(255, 240, 192, 0.86);
+}
+
+.theater-story-intro-rules ul {
+    margin: 6px 0 0;
+    padding-left: 20px;
+    line-height: 1.5;
+}
+
+.theater-stage {
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+    display: grid;
+    grid-template-rows: minmax(0, 1fr) auto;
+    gap: 14px;
+    padding: 20px clamp(20px, 6vw, 72px) 18px;
+    color: #fff;
+    background:
+        radial-gradient(circle, rgba(255, 247, 214, 0.72) 0 0.7px, transparent 1.4px) 0 0 / 34px 34px,
+        radial-gradient(circle, rgba(232, 171, 68, 0.5) 0 0.9px, transparent 1.7px) 19px 27px / 59px 59px,
+        radial-gradient(ellipse 42% 72% at 18% 34%, rgba(239, 179, 72, 0.16), transparent 72%),
+        radial-gradient(ellipse 38% 62% at 82% 68%, rgba(255, 213, 126, 0.1), transparent 74%),
+        linear-gradient(180deg, rgba(38, 22, 13, 0.12), rgba(25, 14, 9, 0.58)),
+        linear-gradient(135deg, #3b2417 0%, #754728 52%, #261711 100%);
+}
+
+/* 舞台正文固定在银河视频之上，背景层不拦截任何交互。 */
+.theater-stage > * {
+    position: relative;
+    z-index: 1;
+}
+
+/* 银河视频铺满棕色舞台；裁切边缘而不拉伸，视频加载失败时仍由舞台渐变色兜底。 */
+.theater-stage > .theater-galaxy-video {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    opacity: 0.78;
+    pointer-events: none;
+}
+
+/* 当前场景与状态收在舞台底部，和上方背景介绍形成清晰的封面—场景层级。 */
+.theater-stage-footer {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 20px;
+}
+
+/* 舞台状态与折叠按钮并排放在右下角，避免按钮覆盖已有状态信息。 */
+.theater-stage-controls {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 8px;
+}
+
+.theater-stage-toggle {
+    min-height: 36px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 11px;
+    border: 1px solid rgba(255, 240, 192, 0.42);
+    border-radius: 8px;
+    color: rgba(255, 248, 224, 0.94);
+    background: rgba(22, 14, 10, 0.48);
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.76rem;
+    white-space: nowrap;
+    backdrop-filter: blur(6px);
+    transition: background 160ms ease, border-color 160ms ease;
+}
+
+.theater-stage-toggle:hover {
+    border-color: rgba(255, 240, 192, 0.72);
+    background: rgba(22, 14, 10, 0.68);
+}
+
+.theater-stage-toggle:focus-visible {
+    outline: 2px solid rgba(255, 240, 192, 0.9);
+    outline-offset: 2px;
+}
+
+.theater-stage-toggle-icon {
+    display: inline-block;
+    font-size: 1rem;
+    line-height: 1;
+    transition: transform 180ms ease;
+}
+
+/* 紧凑舞台只保留右下角展开入口，背景介绍和场景状态恢复后仍保持原内容。 */
+.theater-shell[data-stage-collapsed="true"] .theater-stage {
+    grid-template-rows: 1fr;
+    gap: 0;
+    padding: 8px clamp(20px, 6vw, 72px);
+}
+
+.theater-shell[data-stage-collapsed="true"] .theater-story-intro,
+.theater-shell[data-stage-collapsed="true"] .theater-stage-copy,
+.theater-shell[data-stage-collapsed="true"] .theater-status {
+    display: none;
+}
+
+.theater-shell[data-stage-collapsed="true"] .theater-stage-footer {
+    align-items: center;
+    justify-content: flex-end;
+}
+
+.theater-shell[data-stage-collapsed="true"] .theater-stage-toggle-icon {
+    transform: rotate(180deg);
+}
+
+.theater-stage::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    background:
+        radial-gradient(ellipse 46% 34% at 50% 92%, rgba(255, 218, 139, 0.18), transparent 72%),
+        linear-gradient(180deg, rgba(255, 221, 151, 0.03), transparent 48%);
+}
+
+/* 银河动态已经交给视频；保留伪元素为空，避免旧动画继续叠加消耗。 */
+.theater-stage::after {
+    content: none;
+}
+
+.theater-stage-copy p {
+    margin: 0;
+    max-width: 720px;
+    line-height: 1.5;
+}
+
+.theater-status {
+    flex: 0 0 auto;
+    min-width: 96px;
+    padding: 8px 12px;
+    border: 1px solid rgba(255, 255, 255, 0.26);
+    border-radius: 8px;
+    text-align: center;
+    background: rgba(0, 0, 0, 0.18);
+}
+
+/* Ending System：用公开 ending 状态调整状态徽标，不新增文案也不影响其他页面。 */
+.theater-shell[data-ending-state="offered"] .theater-status {
+    border-color: rgba(255, 240, 192, 0.64);
+    background: rgba(255, 240, 192, 0.18);
+}
+
+.theater-shell[data-ending-state="continued"] .theater-status {
+    border-color: rgba(96, 210, 193, 0.62);
+    background: rgba(38, 114, 107, 0.28);
+}
+
+.theater-shell[data-ending-state="ended"] .theater-status {
+    border-color: rgba(196, 111, 52, 0.72);
+    background: rgba(196, 111, 52, 0.24);
+}
+
+.theater-console {
+    display: grid;
+    grid-template-rows: auto minmax(180px, 1fr) auto auto auto;
+    gap: 16px;
+    padding: 24px clamp(16px, 5vw, 64px) 32px;
+    min-height: 0;
+    overflow: hidden;
+}
+
+/* 轻量剧本工作区：公开剧本板与演出列并排，各自滚动且不改变输入区尺寸。 */
+.theater-workspace {
+    min-height: 0;
+    display: grid;
+    grid-template-columns: minmax(240px, 0.72fr) minmax(360px, 1.8fr);
+    gap: 18px;
+    overflow: hidden;
+}
+
+.theater-workspace[data-board-visible="false"] {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+.theater-performance-column {
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    overflow: hidden;
+}
+
+.theater-scenario-board {
+    min-width: 0;
+    min-height: 0;
+    padding-right: 18px;
+    overflow: auto;
+    border-right: 1px solid var(--theater-line);
+}
+
+.theater-scenario-board[hidden],
+.theater-trace-panel[hidden] {
+    display: none;
+}
+
+.theater-panel-heading {
+    min-height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 10px;
+}
+
+.theater-panel-heading h3 {
+    margin: 0;
+    font-size: 0.92rem;
+    letter-spacing: 0;
+}
+
+.theater-board-status,
+.theater-trace-action {
+    min-width: 0;
+    padding: 3px 7px;
+    overflow: hidden;
+    border: 1px solid rgba(38, 114, 107, 0.24);
+    border-radius: 4px;
+    color: var(--theater-accent);
+    font-size: 0.74rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.theater-board-status[hidden],
+.theater-trace-action[hidden] {
+    display: none;
+}
+
+.theater-board-groups {
+    display: grid;
+    gap: 14px;
+}
+
+.theater-board-group[hidden] {
+    display: none;
+}
+
+.theater-board-group h4 {
+    margin: 0 0 6px;
+    color: var(--theater-muted);
+    font-size: 0.74rem;
+    font-weight: 700;
+    letter-spacing: 0;
+}
+
+.theater-board-group ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.theater-board-group li {
+    padding: 7px 0;
+    border-bottom: 1px solid rgba(36, 31, 27, 0.08);
+    line-height: 1.4;
+}
+
+.theater-board-group li:last-child {
+    border-bottom: none;
+}
+
+.theater-board-item-title {
+    display: block;
+    font-size: 0.84rem;
+    font-weight: 650;
+}
+
+.theater-board-item-detail {
+    display: block;
+    margin-top: 2px;
+    color: var(--theater-muted);
+    font-size: 0.76rem;
+    line-height: 1.45;
+}
+
+/* 轻量公开 Trace：固定在演绎日志下方并独立限高，避免可用高度不足时压进日志内容。 */
+.theater-trace-panel {
+    position: static;
+    flex: 0 0 auto;
+    max-height: 124px;
+    padding: 10px 12px;
+    overflow: auto;
+    box-sizing: border-box;
+    border: 1px solid rgba(38, 114, 107, 0.2);
+    border-left: 3px solid var(--theater-accent);
+    border-radius: 8px;
+    background: rgba(38, 114, 107, 0.06);
+}
+
+.theater-trace-panel .theater-panel-heading {
+    margin-bottom: 4px;
+}
+
+.theater-trace-panel p {
+    margin: 0;
+    font-size: 0.86rem;
+    line-height: 1.5;
+}
+
+.theater-trace-details {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 7px;
+}
+
+.theater-trace-detail {
+    padding: 3px 7px;
+    border-radius: 4px;
+    color: var(--theater-muted);
+    font-size: 0.74rem;
+    background: rgba(255, 255, 255, 0.66);
+}
+
+.theater-toolbar,
+.theater-input-row,
+.theater-suggestions {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+/* Interactive Reading UI：行动和对白使用独立标题与按钮行，玩家不用从句式猜测选择类型。 */
+.theater-suggestions {
+    align-items: stretch;
+    flex-direction: column;
+}
+
+.theater-suggestions[hidden],
+.theater-choice-group[hidden] {
+    display: none;
+}
+
+.theater-choice-group {
+    display: grid;
+    grid-template-columns: 82px minmax(0, 1fr);
+    gap: 10px;
+    align-items: start;
+}
+
+.theater-choice-group h3 {
+    margin: 11px 0 0;
+    color: var(--theater-muted);
+    font-size: 0.78rem;
+    font-weight: 600;
+}
+
+/* Interactive Reading UI：每一组选项独立编号，避免行动和对白共用一个含混序列。 */
+.theater-choice-list {
+    counter-reset: theater-choice;
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    align-items: stretch;
+}
+
+.theater-choice-button {
+    counter-increment: theater-choice;
+    position: relative;
+    min-height: 42px;
+    padding-left: 42px;
+    text-align: left;
+}
+
+.theater-choice-button::before {
+    content: counter(theater-choice);
+    position: absolute;
+    left: 14px;
+    top: 50%;
+    width: 20px;
+    height: 20px;
+    transform: translateY(-50%);
+    border-radius: 50%;
+    color: rgba(255, 255, 255, 0.92);
+    font-size: 0.72rem;
+    line-height: 20px;
+    text-align: center;
+    background: rgba(38, 114, 107, 0.72);
+}
+
+.theater-log {
+    flex: 1 1 0;
+    min-height: 120px;
+    padding: 16px;
+    overflow: auto;
+    box-sizing: border-box;
+    border: 1px solid var(--theater-line);
+    border-radius: 8px;
+    background: var(--theater-panel);
+}
+
+.theater-turn {
+    width: fit-content;
+    max-width: 760px;
+    margin: 0 0 10px;
+    padding: 10px 12px;
+    box-sizing: border-box;
+    border-radius: 8px;
+    line-height: 1.6;
+    overflow-wrap: anywhere;
+    background: rgba(38, 114, 107, 0.09);
+}
+
+/* 玩家选择与自由发言共用右侧蓝紫气泡，宽度随正文增长并与猫娘青绿色对白明确区分。 */
+.theater-turn.user {
+    width: fit-content;
+    max-width: min(78%, 760px);
+    margin-left: auto;
+    border: 1px solid rgba(83, 99, 156, 0.3);
+    color: #3e4b7c;
+    text-align: right;
+    background: rgba(83, 99, 156, 0.14);
+}
+
+/* Phase A 演绎结构：旁白行用于承载环境和事件推进，避免和用户/猫娘对白混成同一种气泡。 */
+.theater-turn.narration {
+    color: rgba(50, 43, 38, 0.82);
+    font-style: italic;
+    background: rgba(255, 255, 255, 0.42);
+}
+
+/* Phase A 演绎结构：猫娘对白行保留角色回应的视觉重点，和旧 assistant 回退样式区分。 */
+.theater-turn.dialogue {
+    background: rgba(38, 114, 107, 0.12);
+}
+
+/* Ending System：专门展示公开落幕状态，避免只靠状态徽标表达故事是否已收束。 */
+.theater-ending-panel {
+    padding: 12px 14px;
+    border: 1px solid rgba(38, 114, 107, 0.22);
+    border-radius: 8px;
+    color: var(--theater-ink);
+    background: rgba(38, 114, 107, 0.08);
+}
+
+.theater-ending-panel[hidden] {
+    display: none;
+}
+
+.theater-ending-panel strong {
+    display: block;
+    margin: 0 0 4px;
+    font-size: 0.92rem;
+}
+
+.theater-ending-panel p {
+    margin: 0;
+    color: var(--theater-muted);
+    line-height: 1.6;
+}
+
+button,
+input,
+select {
+    min-height: 40px;
+    border-radius: 8px;
+    font: inherit;
+}
+
+button {
+    border: 1px solid var(--theater-line);
+    padding: 0 14px;
+    cursor: pointer;
+    color: var(--theater-ink);
+    background: #fff;
+}
+
+button:disabled,
+input:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+}
+
+.theater-primary,
+#theater-send-btn {
+    border-color: var(--theater-accent);
+    color: var(--theater-accent-ink);
+    background: var(--theater-accent);
+}
+
+.theater-secondary {
+    color: var(--theater-warm);
+}
+
+.theater-story-select {
+    min-width: 180px;
+    max-width: min(320px, 100%);
+    padding: 0 36px 0 12px;
+    border: 1px solid var(--theater-line);
+    color: var(--theater-ink);
+    background: #fff;
+}
+
+.theater-input-row input {
+    flex: 1 1 240px;
+    min-width: 0;
+    padding: 0 12px;
+    border: 1px solid var(--theater-line);
+    color: var(--theater-ink);
+    background: #fff;
+}
+
+@media (max-width: 640px) {
+    .theater-shell {
+        grid-template-rows: 38px minmax(250px, 43vh) minmax(0, 1fr);
+    }
+
+    /* 窄窗口纵向排列身份项，背景介绍在棕色舞台内独立滚动。 */
+    .theater-story-intro {
+        padding: 12px 14px;
+    }
+
+    .theater-story-intro-roles {
+        grid-template-columns: 1fr;
+        gap: 7px;
+    }
+
+    .theater-stage {
+        gap: 10px;
+        padding: 14px 20px 12px;
+    }
+
+    .theater-stage-footer {
+        align-items: center;
+        gap: 10px;
+    }
+
+    .theater-status {
+        min-width: 96px;
+        padding: 6px 10px;
+    }
+
+    .theater-console {
+        /* 窄窗口降低日志区最低高度与纵向间距，确保选项和输入框不会被视口底部裁切。 */
+        grid-template-rows: auto minmax(140px, 1fr) auto auto auto;
+        gap: 8px;
+        padding: 12px 20px 10px;
+    }
+
+    .theater-suggestions {
+        overflow: visible;
+    }
+
+    .theater-choice-group {
+        grid-template-columns: 1fr;
+        gap: 4px;
+    }
+
+    .theater-choice-group h3 {
+        margin-top: 0;
+    }
+
+    .theater-choice-list {
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        overscroll-behavior-x: contain;
+    }
+
+    .theater-choice-button {
+        flex: 0 0 auto;
+        white-space: nowrap;
+    }
+
+    .theater-input-row {
+        flex-wrap: nowrap;
+    }
+
+    /* 窄窗口把 Board、日志和 Trace 放入同一纵向滚动流，选项与输入区继续固定在下方。 */
+    .theater-workspace {
+        display: block;
+        overflow-x: hidden;
+        overflow-y: auto;
+    }
+
+    .theater-performance-column {
+        overflow: visible;
+    }
+
+    .theater-scenario-board {
+        padding: 0 0 10px;
+        margin-bottom: 12px;
+        overflow: visible;
+        border-right: none;
+        border-bottom: 1px solid var(--theater-line);
+    }
+
+    .theater-log {
+        flex: 0 0 150px;
+        min-height: 150px;
+    }
+}

@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title data-i18n="theater.title">小剧场 - Project N.E.K.O.</title>
+    <script src="/static/i18n-i18next.js?v={{ static_asset_version }}"></script>
+    <link rel="stylesheet" href="/static/css/theater.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/css/window_controls.css?v={{ static_asset_version }}">
+    <script src="/static/theme-manager.js?v={{ static_asset_version }}"></script>
+    <script src="/static/js/window_controls.js?v={{ static_asset_version }}" defer></script>
+    <script src="/static/app-prompt-shared.js?v={{ static_asset_version }}"></script>
+    <script src="/static/js/theater.js?v={{ static_asset_version }}" defer></script>
+</head>
+<body>
+    <main class="theater-shell" data-theater-app>
+        <header class="theater-title-bar page-title-bar">
+            <div class="theater-title-copy">
+                <h2 data-i18n="theater.title">小剧场</h2>
+            </div>
+            <div class="neko-window-controls theater-window-controls">
+                <button type="button" class="neko-window-control-btn" data-neko-window-control="minimize" data-i18n-title="common.minimize" data-i18n-aria="common.minimize" title="最小化" aria-label="最小化">
+                    <span class="neko-window-minimize-icon"></span>
+                </button>
+                <button type="button" class="neko-window-control-btn" data-neko-window-control="maximize" data-i18n-title="common.maximize" data-i18n-aria="common.maximize" title="最大化" aria-label="最大化">
+                    <span class="neko-window-maximize-icon"></span>
+                </button>
+                <button type="button" class="neko-window-control-btn theater-close-btn" data-neko-window-control="close" data-i18n-title="common.close" data-i18n-aria="common.close" title="关闭" aria-label="关闭">
+                    <span class="theater-close-icon" aria-hidden="true"></span>
+                </button>
+            </div>
+        </header>
+
+        <section class="theater-stage" id="theater-stage" aria-live="polite">
+            <!-- 银河视频只承担棕色舞台背景氛围；静音、行内播放和循环可避免干扰剧情声音与窗口交互。 -->
+            <video
+                class="theater-galaxy-video"
+                id="theater-galaxy-video"
+                src="/static/assets/theater/galaxy-flow-down-right-8s.mp4?v={{ static_asset_version }}"
+                autoplay
+                muted
+                loop
+                playsinline
+                preload="auto"
+                disablepictureinpicture
+                aria-hidden="true"
+                tabindex="-1"
+            ></video>
+
+            <!-- 背景介绍直接融入棕色舞台，不再额外占用一整行白色面板。 -->
+            <section class="theater-story-intro" id="theater-story-intro" hidden aria-labelledby="theater-story-intro-title">
+                <div class="theater-story-intro-heading">
+                    <p data-i18n="theater.storyIntroKicker">背景介绍</p>
+                    <h1 id="theater-story-intro-title"></h1>
+                </div>
+                <p class="theater-story-intro-brief" id="theater-story-intro-brief"></p>
+                <dl class="theater-story-intro-roles">
+                    <div id="theater-player-role-row" hidden>
+                        <dt data-i18n="theater.playerRoleLabel">你的身份</dt>
+                        <dd id="theater-player-role"></dd>
+                    </div>
+                    <div id="theater-catgirl-role-row" hidden>
+                        <dt data-i18n="theater.catgirlRoleLabel">猫娘身份</dt>
+                        <dd id="theater-catgirl-role"></dd>
+                    </div>
+                    <div id="theater-story-goal-row" hidden>
+                        <dt data-i18n="theater.storyGoalLabel">本剧目标</dt>
+                        <dd id="theater-story-goal"></dd>
+                    </div>
+                </dl>
+                <details class="theater-story-intro-rules" id="theater-story-rules-row" hidden>
+                    <summary data-i18n="theater.storyRulesLabel">演绎规则</summary>
+                    <ul id="theater-story-rules"></ul>
+                </details>
+            </section>
+
+            <!-- 舞台底部只保留当前场景和演出状态，避免重复展示“小剧场”大标题。 -->
+            <div class="theater-stage-footer">
+                <div class="theater-stage-copy">
+                    <p id="theater-scene-text" data-i18n="theater.loading">正在准备舞台...</p>
+                </div>
+                <!-- 状态与折叠入口收在同一区域，避免右下角按钮覆盖演出状态。 -->
+                <div class="theater-stage-controls">
+                    <div class="theater-status" id="theater-status" data-i18n="theater.ready">准备中</div>
+                    <button
+                        type="button"
+                        class="theater-stage-toggle"
+                        id="theater-stage-toggle"
+                        aria-controls="theater-story-intro theater-scene-text theater-status"
+                        aria-expanded="true"
+                        data-i18n-title="theater.collapseStage"
+                        title="折叠舞台"
+                    >
+                        <span class="theater-stage-toggle-icon" aria-hidden="true">⌃</span>
+                        <span id="theater-stage-toggle-label" data-i18n="theater.collapseStage">折叠舞台</span>
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <section class="theater-console" aria-label="Theater controls">
+            <div class="theater-toolbar">
+                <select class="theater-story-select" id="theater-story-select" data-i18n-aria="theater.storySelect" aria-label="选择剧场"></select>
+                <button type="button" class="theater-primary" id="theater-start-btn" data-i18n="theater.start">开始</button>
+                <button type="button" class="theater-secondary" id="theater-end-btn" data-i18n="theater.end" disabled>结束</button>
+            </div>
+
+            <!-- 轻量工作区只保留玩家需要的道具、线索、演出日志和本轮行动。 -->
+            <div class="theater-workspace" data-board-visible="false">
+                <aside class="theater-scenario-board" id="theater-scenario-board" hidden aria-labelledby="theater-scenario-board-title">
+                    <div class="theater-panel-heading">
+                        <h3 id="theater-scenario-board-title" data-i18n="theater.scenarioBoardTitle">剧本面板</h3>
+                        <div class="theater-board-status" id="theater-board-status"></div>
+                    </div>
+                    <div class="theater-board-groups">
+                        <section class="theater-board-group" id="theater-board-available-section" hidden>
+                            <h4 data-i18n="theater.availableProps">可用道具</h4>
+                            <ul id="theater-board-available-props"></ul>
+                        </section>
+                        <section class="theater-board-group" id="theater-board-used-section" hidden>
+                            <h4 data-i18n="theater.usedProps">已使用道具</h4>
+                            <ul id="theater-board-used-props"></ul>
+                        </section>
+                        <section class="theater-board-group" id="theater-board-clues-section" hidden>
+                            <h4 data-i18n="theater.discoveredClues">已发现线索</h4>
+                            <ul id="theater-board-clues"></ul>
+                        </section>
+                    </div>
+                </aside>
+
+                <div class="theater-performance-column">
+                    <div class="theater-log" id="theater-log"></div>
+
+                    <aside class="theater-trace-panel" id="theater-trace-panel" hidden aria-labelledby="theater-trace-title">
+                        <div class="theater-panel-heading">
+                            <h3 id="theater-trace-title" data-i18n="theater.turnTraceTitle">本轮行动</h3>
+                            <span class="theater-trace-action" id="theater-trace-action"></span>
+                        </div>
+                        <p id="theater-trace-summary"></p>
+                        <div class="theater-trace-details" id="theater-trace-details"></div>
+                    </aside>
+
+                    <aside class="theater-ending-panel" id="theater-ending-panel" hidden>
+                        <strong id="theater-ending-title" data-i18n="theater.endingTitle">落幕状态</strong>
+                        <p id="theater-ending-text"></p>
+                    </aside>
+
+                </div>
+            </div>
+
+            <!-- 互动小说选择区：作者明确区分玩家行动与玩家对白，避免两种语义混在一排按钮里。 -->
+            <section class="theater-suggestions" id="theater-suggestions" hidden>
+                <div class="theater-choice-group" id="theater-action-choice-group" hidden>
+                    <h3 data-i18n="theater.actionChoicesTitle">你可以做</h3>
+                    <div class="theater-choice-list" id="theater-action-choices"></div>
+                </div>
+                <div class="theater-choice-group" id="theater-dialogue-choice-group" hidden>
+                    <h3 data-i18n="theater.dialogueChoicesTitle">你可以说</h3>
+                    <div class="theater-choice-list" id="theater-dialogue-choices"></div>
+                </div>
+            </section>
+
+            <form class="theater-input-row" id="theater-input-form">
+                <input id="theater-input" type="text" data-i18n-placeholder="theater.inputPlaceholder" placeholder="输入你想做的事" autocomplete="off" disabled>
+                <button type="submit" id="theater-send-btn" data-i18n="theater.send" disabled>发送</button>
+            </form>
+        </section>
+    </main>
+</body>
+</html>

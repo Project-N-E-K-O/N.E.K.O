@@ -128,6 +128,8 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/js/card_maker.js",
     _PROJECT_ROOT / "static/css/model_manager.css",
     _PROJECT_ROOT / "static/js/model_manager.js",
+    _PROJECT_ROOT / "static/css/theater.css",
+    _PROJECT_ROOT / "static/js/theater.js",
     *_TUTORIAL_RUNTIME_ASSET_PATHS,
 )
 _STATIC_ASSET_CACHE_TTL = 30.0
@@ -236,6 +238,16 @@ async def get_l2d_manager(request: Request):
 async def get_model_manager(request: Request):
     """Render the model manager page."""
     return _render_model_manager(request)
+
+
+@router.get("/theater", response_class=HTMLResponse)
+async def get_theater(request: Request):
+    """Render the theater MVP page."""
+    templates = get_templates()
+    return templates.TemplateResponse("templates/theater.html", {
+        "request": request,
+        **_static_assets_ctx(),
+    })
 
 
 @router.get("/live2d_parameter_editor", response_class=HTMLResponse)

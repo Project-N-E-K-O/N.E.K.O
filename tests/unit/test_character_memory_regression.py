@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import importlib
 import json
 import os
@@ -323,6 +324,56 @@ async def test_character_management_and_recent_save_regression():
             assert not (Path(cm.memory_dir) / "测试角色").exists()
             tombstones = cm.load_character_tombstones_state().get("tombstones") or []
             assert any(entry.get("character_name") == "测试角色" for entry in tombstones)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_character_switch_clears_theater_session_for_outgoing_catgirl():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        async def _noop_any(*args, **kwargs):
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                role_state={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
+            )
+
+            characters_router_module = reload_module("main_routers.characters_router")
+            from services.theater import runtime, session_store
+
+            characters = cm.load_characters()
+            old_catgirl = characters["当前猫娘"]
+            new_catgirl = "测试切换猫娘"
+            characters["猫娘"][new_catgirl] = copy.deepcopy(characters["猫娘"][old_catgirl])
+            cm.save_characters(characters)
+
+            theater_root = Path(cm.app_docs_dir) / "theater"
+            theater_session = await runtime.start_session(theater_root, lanlan_name=old_catgirl)
+            switch_result = await characters_router_module.set_current_catgirl(
+                _DummyRequest({"catgirl_name": new_catgirl})
+            )
+
+            session = await session_store.load_session(theater_root, theater_session["session_id"])
+            active_index = await session_store.load_active_sessions(theater_root)
+            assert switch_result["success"] is True
+            assert cm.load_characters()["当前猫娘"] == new_catgirl
+            assert session["phase"] == "ended"
+            assert session["ended_at"]
+            assert active_index == {}
 
 
 @pytest.mark.unit

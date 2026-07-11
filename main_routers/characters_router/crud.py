@@ -791,6 +791,14 @@ async def set_current_catgirl(request: Request):
             # clean up if this hook misses.
             logger.warning("角色切换游戏路由收尾失败: lanlan=%s err=%s", old_catgirl, exc)
 
+        try:
+            cleared = await _clear_theater_session_for_character_switch(_config_manager, old_catgirl)
+            if cleared:
+                logger.info("角色切换：已结束旧角色 %s 的小剧场 session", old_catgirl)
+        except Exception as exc:
+            # 小剧场清理失败不能阻断角色切换；下次恢复会继续按 active 索引和过期规则收口。
+            logger.warning("角色切换小剧场 session 清理失败: lanlan=%s err=%s", old_catgirl, exc)
+
     # 通过WebSocket通知所有连接的客户端
     # 使用session_manager中的websocket，但需要确保websocket已设置
     notification_count = 0
@@ -836,6 +844,31 @@ async def set_current_catgirl(request: Request):
         logger.warning("提示：请确保前端页面已打开并建立了WebSocket连接，且已调用start_session")
 
     return {"success": True}
+
+
+def _theater_root_for_config_manager(config_manager) -> Path:
+    """根据当前配置管理器解析小剧场私有运行目录。"""
+    app_docs_dir = getattr(config_manager, "app_docs_dir", None)
+    if app_docs_dir:
+        return Path(app_docs_dir) / "theater"
+    config_dir = getattr(config_manager, "config_dir", None)
+    if config_dir:
+        return Path(config_dir).parent / "theater"
+    return Path("data") / "theater"
+
+
+async def _clear_theater_session_for_character_switch(config_manager, old_catgirl: str) -> bool:
+    """角色切换时结束旧角色的小剧场 active session，不影响普通聊天切换。"""
+    if not old_catgirl:
+        return False
+    # 延迟导入避免角色 Router 在应用启动阶段反向依赖小剧场运行时。
+    from services.theater import runtime as theater_runtime
+
+    result = await theater_runtime.clear_character_session(
+        _theater_root_for_config_manager(config_manager),
+        lanlan_name=old_catgirl,
+    )
+    return bool(result.get("cleared"))
 
 
 @router.post('/reload')

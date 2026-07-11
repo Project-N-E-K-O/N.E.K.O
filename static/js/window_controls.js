@@ -111,6 +111,19 @@
         }, 120);
     }
 
+    async function closeCurrentWindowViaHost() {
+        // Electron 子窗口优先走宿主 IPC 关闭，避免 frame:false 页面只触发浏览器兜底导航。
+        const host = window.nekoHost;
+        if (!host || typeof host.closeWindow !== 'function') return false;
+        try {
+            const result = await host.closeWindow();
+            return !!(result && result.ok);
+        } catch (error) {
+            // 宿主桥不可用或拒绝时交给浏览器式关闭兜底
+            return false;
+        }
+    }
+
     async function closeCurrentWindow() {
         try {
             if (typeof window.nekoBeforeWindowClose === 'function') {
@@ -121,6 +134,9 @@
             }
         } catch (error) {
             // 页面自定义关闭逻辑失败时回退到默认关闭
+        }
+        if (await closeCurrentWindowViaHost()) {
+            return;
         }
         defaultCloseCurrentWindow();
     }
