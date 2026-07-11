@@ -575,13 +575,23 @@ _CJK_ALIAS_NEGATION_RE = re.compile(
 )
 _SPACED_ALIAS_NEGATION_RE = re.compile(
     r"(?:"
-    r"(?:\bnot|\bno|\bis\s+not|\bisn['’]?t|\bisnt)\s+"
+    r"(?:\bnot|\bis\s+not|\bisn['’]?t|\bisnt|\bне|"
+    r"\bno(?:\s+es)?|\bnao(?:\s+e)?)\s+"
     r"|\b(?:do\s+not|don\s+t|does\s+not|doesn\s+t|did\s+not|didn\s+t)\s+"
     r"(?:think|believe|feel)\s+"
     r"(?:(?:it|this|that)\s+)?(?:(?:is|s)\s+)?"
     r")"
-    r"(?:(?:a|an|the|this|that)\s+)?$",
+    r"(?:(?:a|an|the|this|that|um|uma|o|este|esta|esse|essa|"
+    r"un|una|el|la|ese|esa)\s+)?$",
     re.IGNORECASE,
+)
+_ALIAS_NEGATION_SUFFIXES = (
+    "じゃない", "じゃなかった", "じゃありません",
+    "ではない", "ではなかった", "ではありません",
+    "이 아니야", "가 아니야", "아니야",
+    "이 아니다", "가 아니다", "아니다",
+    "이 아닙니다", "가 아닙니다", "아닙니다",
+    "이 아닌데", "가 아닌데", "아닌데",
 )
 _USER_GUESS_INTENT_RE = re.compile(
     r"(?:"
@@ -625,11 +635,16 @@ def _cjk_boundary_ok(text: str, start: int, end: int) -> bool:
     return before_ok and after_ok
 
 
-def _alias_is_negated(text: str, start: int) -> bool:
+def _alias_is_negated(text: str, start: int, end: int) -> bool:
     prefix = text[:start]
+    suffix = text[end:].lstrip()
     return bool(
         _CJK_ALIAS_NEGATION_RE.search(prefix)
         or _SPACED_ALIAS_NEGATION_RE.search(prefix)
+        or any(
+            suffix.startswith(_fold_guess_text(marker))
+            for marker in _ALIAS_NEGATION_SUFFIXES
+        )
     )
 
 
@@ -647,7 +662,7 @@ def _contains_alias_with_guess_boundary(text: Any, alias: Any) -> bool:
         start = folded_text.find(folded_alias)
         while start >= 0:
             end = start + len(folded_alias)
-            if _cjk_boundary_ok(folded_text, start, end) and not _alias_is_negated(folded_text, start):
+            if _cjk_boundary_ok(folded_text, start, end) and not _alias_is_negated(folded_text, start, end):
                 return True
             start = folded_text.find(folded_alias, start + 1)
         return False
@@ -663,7 +678,7 @@ def _contains_alias_with_guess_boundary(text: Any, alias: Any) -> bool:
         rf"(?<![a-z0-9Ѐ-ӿ]){re.escape(spaced_alias)}(?![a-z0-9Ѐ-ӿ])"
     )
     return any(
-        not _alias_is_negated(spaced_text, match.start())
+        not _alias_is_negated(spaced_text, match.start(), match.end())
         for match in alias_pattern.finditer(spaced_text)
     )
 
