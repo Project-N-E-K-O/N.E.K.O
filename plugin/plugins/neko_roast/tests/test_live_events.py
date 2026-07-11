@@ -15,6 +15,8 @@ from plugin.plugins.neko_roast.core.contracts import LiveEvent, RoastConfig
 from plugin.plugins.neko_roast.core.event_bus import EventBus
 from plugin.plugins.neko_roast.modules.bili_live_ingest.livedanmaku import LiveDanmaku
 from plugin.plugins.neko_roast.modules.live_events import LiveEventsModule
+from plugin.plugins.neko_roast.modules.live_events.room_topic import RoomTopicContext
+from plugin.plugins.neko_roast.modules.live_support_events import LiveSupportEventsModule
 
 
 def _danmaku(uid: str, text: str = "hi", guard: int = 0, user_level: int = 0, room_id: int = 1) -> LiveDanmaku:
@@ -85,6 +87,14 @@ async def _drain(hub: LiveEventsModule) -> None:
         await asyncio.gather(*tasks)
 
 
+async def _drain_support(module: LiveSupportEventsModule) -> None:
+    for _ in range(5):
+        tasks = [task for task in list(module._tasks) if not task.done()]
+        if not tasks:
+            break
+        await asyncio.gather(*tasks)
+
+
 async def test_idle_first_danmaku_roasts_immediately():
     ctx = _FakeCtx(remaining=0.0)
     hub = await _make_hub(ctx)
@@ -106,18 +116,24 @@ async def test_cooldown_window_picks_highest_score():
     hub.submit(_danmaku("2", text="总督驾到", guard=1))   # 总督 +3000
     hub.submit(_danmaku("3", text="8888"))              # guard 0
     assert hub._flush_task is not None
-    assert hub._buffered_count == 3
+    assert hub._buffered_count == 2
 
     await _drain(hub)
     assert len(ctx.payloads) == 1            # 整窗只投 1 条
     assert ctx.payloads[0]["uid"] == "2"     # 分最高的总督胜出
     assert any(
-        r["op"] == "live_event_selected" and r["detail"]["candidates"] == 3
+        r["op"] == "live_event_selected" and r["detail"]["candidates"] == 2
+        for r in ctx.audit.records
+    )
+    assert any(
+        r["op"] == "live_event_reply_skipped"
+        and r["detail"]["uid"] == "3"
+        and r["detail"]["skip_reason"] == "selection.low_value_danmaku"
         for r in ctx.audit.records
     )
 
 
-async def test_cooldown_window_allows_high_value_gift_to_beat_danmaku():
+async def test_support_gift_uses_priority_lane_without_stealing_danmaku_window():
     ctx = _FakeCtx(remaining=5.0)
     hub = await _make_hub(ctx)
 
@@ -125,26 +141,88 @@ async def test_cooldown_window_allows_high_value_gift_to_beat_danmaku():
     hub.submit(_gift("9", gift_name="醒目礼物", total_coin=200000))
     await _drain(hub)
 
-    assert len(ctx.payloads) == 1
-    assert ctx.payloads[0]["uid"] == "9"
-    assert ctx.payloads[0]["danmaku_text"] == "赠送 1 个 醒目礼物"
-    assert any(
-        r["op"] == "live_event_selected" and r["detail"]["event_type"] == "gift"
-        for r in ctx.audit.records
-    )
+    assert len(ctx.payloads) == 2
+    payloads_by_type = {payload["event_type"]: payload for payload in ctx.payloads}
+    assert payloads_by_type["gift"]["uid"] == "9"
+    assert payloads_by_type["danmaku"]["uid"] == "1"
+    selected = [r for r in ctx.audit.records if r["op"] == "live_event_selected"]
+    selected_by_type = {item["detail"]["event_type"]: item for item in selected}
+    assert selected_by_type["gift"]["detail"]["selected"]["uid"] == "9"
+    assert selected_by_type["danmaku"]["detail"]["selected"]["uid"] == "1"
 
 
-async def test_event_bus_routes_gift_events_into_live_event_window():
+async def test_event_bus_routes_gift_events_to_support_lane_without_selection_window():
     ctx = _FakeCtx(remaining=0.0)
     hub = await _make_hub(ctx)
+    support = LiveSupportEventsModule()
+    await support.setup(ctx)
 
     gift = _gift("9", gift_name="醒目礼物", total_coin=200000)
     ctx.event_bus.publish("gift", LiveEvent(type="gift", uid="9", payload={}, raw=gift))
     await _drain(hub)
+    await _drain_support(support)
 
     assert ctx.event_bus.subscriber_count("gift") == 1
     assert len(ctx.payloads) == 1
     assert ctx.payloads[0]["uid"] == "9"
+    assert ctx.payloads[0]["event_type"] == "gift"
+    assert hub._flush_task is None
+    assert support.status()["last_event_type"] == "gift"
+    assert not [record for record in ctx.audit.records if record["op"] == "live_event_selected"]
+    await support.teardown()
+
+
+def test_room_topic_accepts_dict_candidates_with_public_nickname():
+    topic = RoomTopicContext(now=lambda: 1.0)
+
+    context = topic._build_context(
+        [{"uid": "42", "nickname": "alice", "text": "怎么配置？", "score": 3.0}]
+    )
+
+    assert context["total_candidates"] == 1
+    assert context["themes"][0]["examples"][0]["nickname"] == "alice"
+
+
+async def test_rawless_live_event_reads_danmaku_fields_from_payload():
+    ctx = _FakeCtx(remaining=0.0)
+    hub = await _make_hub(ctx)
+
+    hub.submit(
+        LiveEvent(
+            type="danmaku",
+            uid="42",
+            payload={"nickname": "alice", "text": "hello envelope", "room_id": 7},
+        )
+    )
+    await _drain(hub)
+
+    assert len(ctx.payloads) == 1
+    assert ctx.payloads[0]["uid"] == "42"
+    assert ctx.payloads[0]["danmaku_text"] == "hello envelope"
+    assert ctx.payloads[0]["room_id"] == 7
+
+
+async def test_rawless_live_event_reads_support_fields_from_payload():
+    ctx = _FakeCtx(remaining=0.0)
+    support = LiveSupportEventsModule()
+    await support.setup(ctx)
+
+    ctx.event_bus.publish(
+        "gift",
+        LiveEvent(
+            type="gift",
+            uid="9",
+            payload={"nickname": "alice", "gift_name": "小心心", "gift_count": 2, "gift_value": 30},
+        ),
+    )
+    await _drain_support(support)
+
+    assert len(ctx.payloads) == 1
+    assert ctx.payloads[0]["event_type"] == "gift"
+    assert ctx.payloads[0]["gift_name"] == "小心心"
+    assert ctx.payloads[0]["gift_count"] == 2
+    assert ctx.payloads[0]["gift_value"] == 30
+    await support.teardown()
 
 
 async def test_local_cooldown_blocks_second_concurrent_roast():
