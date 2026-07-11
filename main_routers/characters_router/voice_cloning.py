@@ -925,7 +925,7 @@ async def voice_design(request: Request):
     valid_languages = ['ch', 'en', 'fr', 'de', 'ja', 'ko', 'ru']
     if ref_language not in valid_languages:
         ref_language = 'ch'
-    if provider == 'cosyvoice' and ref_language not in ('ch', 'en'):
+    if provider in ('cosyvoice', 'cosyvoice_intl') and ref_language not in ('ch', 'en'):
         ref_language = 'ch'
     preview_text = _voice_design_preview_text(request_language, ref_language)
 
@@ -1100,6 +1100,12 @@ async def voice_design(request: Request):
         await config_manager.asave_voice_for_api_key(storage_key, voice_id, voice_data)
     except Exception as save_error:
         logger.error(f"保存 {provider_label} voice design 到音色库失败: {save_error}")
+        if provider == 'mimo':
+            return JSONResponse({
+                'error': f'{provider_label} voice design save failed: {save_error}',
+                'code': 'TTS_VOICE_SAVE_FAILED',
+                'provider': provider,
+            }, status_code=500)
         return JSONResponse({
             'voice_id': voice_id,
             'message': f'{provider_label} voice design succeeded, but local save failed',
@@ -1310,10 +1316,10 @@ async def voice_clone_direct(request: Request):
     except Exception as e:
         return JSONResponse({'error': f'请求体解析失败: {e}'}, status_code=400)
 
-    direct_link = data.get('direct_link', '').strip()
-    prefix = data.get('prefix', '').strip()
-    ref_language = data.get('ref_language', 'ch').lower().strip()
-    provider = data.get('provider', 'cosyvoice').lower().strip()
+    direct_link = str(data.get('direct_link') or '').strip()
+    prefix = str(data.get('prefix') or '').strip()
+    ref_language = str(data.get('ref_language') or 'ch').lower().strip()
+    provider = str(data.get('provider') or 'cosyvoice').lower().strip()
 
     # 参数验证
     if not direct_link:
@@ -1451,7 +1457,7 @@ async def voice_clone_direct(request: Request):
             audio_md5 = hashlib.md5(audio_bytes).hexdigest()
 
             # 3. MD5 去重检查
-            existing = _config_manager.find_cosyvoice_voice_by_audio_md5(provider, audio_md5, ref_language)
+            existing = _config_manager.find_voice_by_audio_md5(storage_key, audio_md5, ref_language)
             if existing:
                 voice_id, voice_data = existing
                 logger.info(f"{provider_label} 直链 MD5 命中，复用 voice_id: {voice_id}")

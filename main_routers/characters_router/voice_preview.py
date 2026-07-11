@@ -676,16 +676,15 @@ async def get_voice_preview(
             from main_logic.tts_client._infra import _resample_audio
             clone_data_uri = _build_vllm_omni_clone_data_uri(voice_data)
             ref_text = str((voice_data or {}).get('clone_ref_text') or '').strip()
-            # base_url：优先 voice_meta 存的 vllm_omni_base_url，缺省回落
-            # preview_core_config 的 ttsModelUrl。无配置 URL 时返回 400 —— 不硬编码
-            # 任何内网端点（旧实现 fallback 到固定 IP，推到公共仓库后必失败且泄漏拓扑）。
-            base_url = str((voice_data or {}).get('vllm_omni_base_url') or '').strip()
+            # 配置优先级：先用 preview_core_config 的 ttsModelUrl，再 fallback 到
+            # voice_data 里持久化的 vllm_omni_base_url，避免历史“固定内网地址”回退。
+            base_url = str(
+                (preview_core_config or {}).get('ttsModelUrl')
+                or (preview_core_config or {}).get('TTS_MODEL_URL')
+                or ''
+            ).strip()
             if not base_url:
-                base_url = str(
-                    (preview_core_config or {}).get('ttsModelUrl')
-                    or (preview_core_config or {}).get('TTS_MODEL_URL')
-                    or ''
-                ).strip()
+                base_url = str((voice_data or {}).get('vllm_omni_base_url') or '').strip()
             if not base_url:
                 return JSONResponse({
                     'success': False,
@@ -988,7 +987,11 @@ async def get_voice_preview(
         preview_base_url = cosyvoice_base_url or tts_api_config.get('base_url', '')
 
         from utils.api_config_loader import get_cosyvoice_clone_model
-        clone_model = (voice_data or {}).get('clone_model') or get_cosyvoice_clone_model(provider)
+        clone_model = (
+            (voice_data or {}).get('design_model')
+            or (voice_data or {}).get('clone_model')
+            or get_cosyvoice_clone_model(provider)
+        )
 
         def _do_preview_synthesize():
             import dashscope
