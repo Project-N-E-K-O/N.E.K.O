@@ -153,6 +153,25 @@ def test_real_english_nicknames_remain_roast_targets(request: str) -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "text",
+    ("roast alice视频", "锐评 @alice视频", "rate Bob设计", "roast @Eve作品"),
+)
+def test_mixed_viewer_object_tokens_are_not_viewer_targets(text: str) -> None:
+    assert DanmakuResponseModule._target_roast_nickname(text) == ""
+    assert DanmakuResponseModule._danmaku_profile(text)["kind"] != (
+        "target_roast_request"
+    )
+
+
+@pytest.mark.parametrize("text", ("roast Alice猫", "锐评 @Bob君"))
+def test_mixed_script_real_nicknames_remain_roast_targets(text: str) -> None:
+    assert DanmakuResponseModule._target_roast_nickname(text)
+    assert DanmakuResponseModule._danmaku_profile(text)["kind"] == (
+        "target_roast_request"
+    )
+
+
 def test_generic_chinese_roast_targets_are_rejected():
     placeholders = (
         "\u67d0\u4eba",
