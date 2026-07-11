@@ -502,6 +502,9 @@ def test_user_guess_extraction_uses_alias_boundaries():
     "I think it's not a cat?",
     "I don't think it's a cat?",
     "I do not believe this is a cat?",
+    "She doesn't think it's a cat?",
+    "I didn't feel that is a cat?",
+    "He did not believe it is a cat?",
     "\u6211\u4e0d\u89c9\u5f97\u662f\u4e00\u53ea\u732b\u5427\uff1f",
     "not the cat?",
 ])
