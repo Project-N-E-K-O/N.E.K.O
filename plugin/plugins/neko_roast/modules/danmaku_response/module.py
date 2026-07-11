@@ -674,9 +674,11 @@ class DanmakuResponseModule(BaseModule):
                 or object_relation_phrase.search(normalized) is not None
             )
 
-        def has_blocked_trailing_relation(value: str) -> bool:
-            dense = "".join(str(value or "").casefold().split())
-            return dense.startswith(("的", "中的"))
+        def has_trailing_target_context(value: str) -> bool:
+            return any(
+                ch.isalnum() or "\u4e00" <= ch <= "\u9fff"
+                for ch in str(value or "")
+            )
 
         for part in cleaned.split("@")[1:]:
             stripped_part = part.strip()
@@ -692,7 +694,7 @@ class DanmakuResponseModule(BaseModule):
                 name
                 and normalized_name not in aliases
                 and not is_blocked_target(normalized_name)
-                and not has_blocked_trailing_relation(remainder)
+                and not has_trailing_target_context(remainder)
             ):
                 return name[:24]
         pattern = re.compile(
@@ -704,7 +706,7 @@ class DanmakuResponseModule(BaseModule):
             return ""
         name = match.group(1).strip("@ \t\r\n")
         normalized_name = name.casefold()
-        if is_blocked_target(normalized_name) or has_blocked_trailing_relation(
+        if is_blocked_target(normalized_name) or has_trailing_target_context(
             cleaned[match.end() :]
         ):
             return ""

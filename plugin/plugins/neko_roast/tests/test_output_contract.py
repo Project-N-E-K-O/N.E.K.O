@@ -145,6 +145,8 @@ def test_generic_chinese_roast_targets_are_rejected():
         "锐评 小明 的 操作",
         "锐评 小明 的 水平",
         "锐评 @小明 的 技术",
+        "锐评 小明 操作",
+        "锐评 @小明 技术",
     ):
         assert DanmakuResponseModule._target_roast_nickname(request) == ""
 
@@ -176,12 +178,16 @@ def test_generic_chinese_roast_targets_are_rejected():
         "锐评 小明 的 操作",
         "锐评 小明 的 水平",
         "锐评 @小明 的 技术",
+        "锐评 小明 操作",
+        "锐评 @小明 技术",
     ):
         profile = DanmakuResponseModule._danmaku_profile(request)
         assert profile["kind"] != "target_roast_request"
 
     assert DanmakuResponseModule._target_roast_nickname("锐评 小明") == "小明"
     assert DanmakuResponseModule._target_roast_nickname("锐评 @小明") == "小明"
+    assert DanmakuResponseModule._target_roast_nickname("锐评 小明！") == "小明"
+    assert DanmakuResponseModule._target_roast_nickname("锐评 @小明？") == "小明"
 
 
 def test_later_neko_mention_wins_over_earlier_viewer_mention() -> None:
