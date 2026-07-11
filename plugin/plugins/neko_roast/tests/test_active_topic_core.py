@@ -104,6 +104,27 @@ def test_inferred_food_family_does_not_drift_to_live_column_pack() -> None:
     assert active_topic_pack.active_topic_pack(material) == "food_drink"
 
 
+def test_inferred_room_mood_family_does_not_drift_to_live_column_pack() -> None:
+    material = {
+        "title": "weather mood",
+        "live_column": "NEKO micro poll",
+    }
+
+    assert active_topic_material_family.host_material_family(material) == "room_mood"
+    assert active_topic_pack.active_topic_pack(material) == "room_mood"
+
+
+def test_ambiguous_family_still_allows_live_column_pack_override() -> None:
+    material = {
+        "title": "plain topic",
+        "fun_axis": "general",
+        "live_column": "NEKO micro poll",
+    }
+
+    assert active_topic_material_family.host_material_family(material) == "general"
+    assert active_topic_pack.active_topic_pack(material) == "micro_poll"
+
+
 @pytest.mark.parametrize(
     "text",
     (
@@ -275,3 +296,35 @@ async def test_trending_source_preserves_first_skip_reason() -> None:
         selector._active_engagement_recent_topic_skip_reason
         == "viewer_to_viewer_mention"
     )
+
+
+@pytest.mark.asyncio
+async def test_successful_trending_candidate_clears_rejected_sibling_skip_reason() -> None:
+    async def fetcher(*_args: object, **_kwargs: object) -> dict[str, object]:
+        return {
+            "videos": [
+                {"title": "ordinary title", "bvid": "BV1"},
+                {"title": "weather mood", "bvid": "BV2"},
+            ]
+        }
+
+    selector = SimpleNamespace(
+        _active_engagement_topic_cache=[],
+        _active_engagement_topic_cache_at=0.0,
+        _active_engagement_topic_fetcher=fetcher,
+        _active_engagement_recent_topic_skip_reason="",
+        _runtime=SimpleNamespace(
+            _compact_context_text=lambda text, limit: text[:limit]
+        ),
+        is_meaningful_topic_text=lambda _text: True,
+        material_profile=lambda text: {"fun_axis": "mood"}
+        if text == "weather mood"
+        else {},
+    )
+
+    candidates = await active_topic_trending_source.bili_trending_topic_candidates(
+        selector
+    )
+
+    assert [candidate["key"] for candidate in candidates] == ["bili:BV2"]
+    assert selector._active_engagement_recent_topic_skip_reason == ""
