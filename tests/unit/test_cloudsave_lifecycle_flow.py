@@ -627,9 +627,9 @@ async def test_memory_server_continue_startup_preserves_409_blocking_payload():
 async def test_memory_server_startup_stays_limited_when_storage_barrier_is_blocking():
     from app import memory_server
 
-    with patch.object(memory_server, "_config_manager", SimpleNamespace()), \
-         patch.object(memory_server, "get_storage_startup_blocking_reason", Mock(return_value="selection_required")), \
-         patch.object(memory_server, "ensure_memory_server_runtime_initialized", AsyncMock()) as mock_ensure_runtime:
+    with patch.object(memory_server.runtime, "_config_manager", SimpleNamespace()), \
+         patch.object(memory_server.runtime, "get_storage_startup_blocking_reason", Mock(return_value="selection_required")), \
+         patch.object(memory_server.runtime, "ensure_memory_server_runtime_initialized", AsyncMock()) as mock_ensure_runtime:
         await memory_server.startup_event_handler()
 
     mock_ensure_runtime.assert_not_awaited()
@@ -640,9 +640,9 @@ async def test_memory_server_startup_stays_limited_when_storage_barrier_is_block
 async def test_memory_server_continue_startup_refuses_active_storage_barrier():
     from app import memory_server
 
-    with patch.object(memory_server, "_config_manager", SimpleNamespace()), \
-         patch.object(memory_server, "get_storage_startup_blocking_reason", Mock(return_value="migration_pending")), \
-         patch.object(memory_server, "ensure_memory_server_runtime_initialized", AsyncMock()) as mock_ensure_runtime:
+    with patch.object(memory_server.runtime, "_config_manager", SimpleNamespace()), \
+         patch.object(memory_server.runtime, "get_storage_startup_blocking_reason", Mock(return_value="migration_pending")), \
+         patch.object(memory_server.runtime, "ensure_memory_server_runtime_initialized", AsyncMock()) as mock_ensure_runtime:
         response = await memory_server.continue_storage_startup(None)
 
     assert response.status_code == 409
@@ -656,8 +656,8 @@ async def test_memory_server_continue_startup_refuses_active_storage_barrier():
 def test_memory_server_limited_mode_middleware_blocks_runtime_routes():
     from app import memory_server
 
-    with patch.object(memory_server, "_config_manager", SimpleNamespace()), \
-         patch.object(memory_server, "get_storage_startup_blocking_reason", Mock(return_value="selection_required")):
+    with patch.object(memory_server.runtime, "_config_manager", SimpleNamespace()), \
+         patch.object(memory_server.runtime, "get_storage_startup_blocking_reason", Mock(return_value="selection_required")):
         with TestClient(memory_server.app) as client:
             response = client.get("/get_settings/小满")
 
@@ -672,9 +672,9 @@ def test_memory_server_limited_mode_middleware_blocks_runtime_routes():
 def test_memory_server_limited_mode_middleware_blocks_until_runtime_init_completes():
     from app import memory_server
 
-    with patch.object(memory_server, "_config_manager", SimpleNamespace()), \
-         patch.object(memory_server, "_memory_runtime_init_completed", False), \
-         patch.object(memory_server, "get_storage_startup_blocking_reason", Mock(side_effect=["selection_required", ""])):
+    with patch.object(memory_server.runtime, "_config_manager", SimpleNamespace()), \
+         patch.object(memory_server.runtime, "_memory_runtime_init_completed", False), \
+         patch.object(memory_server.runtime, "get_storage_startup_blocking_reason", Mock(side_effect=["selection_required", ""])):
         with TestClient(memory_server.app) as client:
             response = client.get("/get_settings/小满")
 
@@ -689,16 +689,16 @@ def test_memory_server_limited_mode_middleware_blocks_until_runtime_init_complet
 def test_memory_server_block_startup_endpoint_restores_limited_mode():
     from app import memory_server
 
-    with patch.object(memory_server, "_memory_runtime_init_completed", True), \
-         patch.object(memory_server, "_memory_storage_blocked_after_init", False), \
-         patch.object(memory_server, "get_storage_startup_blocking_reason", Mock(return_value="")):
+    with patch.object(memory_server.runtime, "_memory_runtime_init_completed", True), \
+         patch.object(memory_server.runtime, "_memory_storage_blocked_after_init", False), \
+         patch.object(memory_server.runtime, "get_storage_startup_blocking_reason", Mock(return_value="")):
         with TestClient(memory_server.app) as client:
             response = client.post(
                 "/internal/storage/startup/block",
                 json={"reason": "main_failed"},
             )
             blocked_response = client.get("/get_settings/小满")
-            runtime_completed_during_block = memory_server._memory_runtime_init_completed
+            runtime_completed_during_block = memory_server.runtime._memory_runtime_init_completed
 
     assert response.status_code == 200
     payload = response.json()

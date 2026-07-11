@@ -69,7 +69,7 @@ npm start
 
 ## 现场监控
 
-当前仓库不分发独立的 PowerShell monitor script。试播时保持 NEKO Live 面板打开，每轮场景后刷新一次，并记录：
+本 monitor-tooling 切片已在 `tools/monitor_live.ps1` 分发 PowerShell monitor；它是补充证据，不替代 Dashboard、recent results、`live_explain` 和 backend log。试播时保持 NEKO Live 面板打开，每轮场景后刷新一次，并记录：
 
 - 控制台里的连接状态、最近 route / status / reason 和健康行。
 - 观众页里的 recent results、`live_explain` 时间线和回复形状字段。
@@ -104,7 +104,7 @@ npm start
 - 后半段明显变长。
 - 经常不知道在回应谁。
 - 主动营业无聊、换皮复读。
-- monitor 连续出现 `long_reply` / `reply_repeat` / `generic_host_prompt`。
+- Dashboard、recent results、`live_explain` 或 backend log 的人工复核连续发现 `long_reply` / `reply_repeat` / `generic_host_prompt`；这些是复核分类，不依赖独立 monitor 输出。
 - 猫猫抢其他插件或非直播场景发言。
 
 ## 关停
