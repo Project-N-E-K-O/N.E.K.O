@@ -95,3 +95,21 @@ async def test_mark_roasted_roundtrip(tmp_path):
     item = next(p for p in recent if p["uid"] == "7")
     assert item["roast_count"] == 1
     assert item["last_result"] == "锐评内容"
+
+
+@pytest.mark.asyncio
+async def test_record_live_danmaku_persists_count_and_preferences(tmp_path):
+    store = ViewerStore(_FakePlugin(tmp_path), audit=None)
+    identity = ViewerIdentity(uid="42", nickname="提问观众")
+
+    first = await store.record_live_danmaku(identity, "这个插件怎么配置？")
+    second = await store.record_live_danmaku(identity, "还有教程吗？")
+    await store.upsert_identity(ViewerIdentity(uid="42", nickname="新昵称"))
+
+    assert first.danmaku_count == 1
+    assert second.danmaku_count == 2
+    restarted = ViewerStore(_FakePlugin(tmp_path), audit=None)
+    item = next(profile for profile in await restarted.recent_profiles() if profile["uid"] == "42")
+    assert item["nickname"] == "新昵称"
+    assert item["danmaku_count"] == 2
+    assert item["preference_tags"].get("question", 0) >= 2

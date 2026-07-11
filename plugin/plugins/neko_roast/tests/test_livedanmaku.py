@@ -244,6 +244,60 @@ def test_enhanced_cmd_handler_table_keeps_static_handlers_callable():
     assert ld.text == "hi"
 
 
+def test_fallback_support_gift_rejects_generic_medal_or_toast_packets():
+    medal = {"data": {"uid": 9, "name": "普通勋章", "message": "勋章升级"}}
+    toast = {"data": {"uid": 9, "name": "普通提示", "message": "欢迎回来"}}
+
+    assert DanmakuListener._fallback_support_gift_payload("FANS_MEDAL_CHANGE", medal) is None
+    assert DanmakuListener._fallback_support_gift_payload("ROOM_TOAST_MESSAGE", toast) is None
+
+
+def test_fallback_support_gift_rejects_bare_nested_name():
+    packet = {
+        "data": {
+            "uid": 9,
+            "gift": {"name": "灯牌"},
+            "message": "点亮粉丝牌成功",
+        }
+    }
+
+    assert DanmakuListener._fallback_support_gift_payload("ROOM_RANK_UPDATE", packet) is None
+
+
+def test_fallback_support_gift_rejects_generic_nested_id_and_name():
+    packet = {
+        "data": {
+            "uid": 9,
+            "gift_info": {"id": 1, "name": "灯牌"},
+            "message": "点亮粉丝牌成功",
+        }
+    }
+
+    assert DanmakuListener._fallback_support_gift_payload("ROOM_RANK_UPDATE", packet) is None
+
+
+def test_fallback_support_gift_accepts_explicit_gift_evidence():
+    payload = DanmakuListener._fallback_support_gift_payload(
+        "UNKNOWN_SUPPORT_PACKET",
+        {
+            "data": {
+                "uid": 9,
+                "uname": "GiftUser",
+                "gift_id": 42,
+                "gift_name": "小心心",
+                "num": 2,
+                "total_coin": 200,
+            }
+        },
+    )
+
+    assert payload is not None
+    assert payload["uid"] == 9
+    assert payload["gift_name"] == "小心心"
+    assert payload["gift_count"] == 2
+    assert payload["gift_value"] == 200
+
+
 def test_brotli_missing_uses_supplied_log_callback(monkeypatch):
     """Decompression logging must be scoped to the listener/callback, not module state."""
     monkeypatch.setitem(sys.modules, "brotli", None)

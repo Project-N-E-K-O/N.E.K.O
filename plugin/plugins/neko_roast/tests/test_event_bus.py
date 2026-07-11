@@ -124,3 +124,41 @@ def test_super_chat_jpn_routes_to_super_chat_bus_key():
     assert live_event.type == "super_chat"
     assert live_event.uid == "42"
     assert live_event.payload["raw_type"] == "SUPER_CHAT_MESSAGE_JPN"
+
+
+def test_avatar_roast_module_imports_with_its_prompt_dependencies():
+    from plugin.plugins.neko_roast.modules.avatar_roast import AvatarRoastModule
+
+    assert AvatarRoastModule.id == "avatar_roast"
+
+
+def test_support_dedupe_keeps_send_gift_and_combo_send_distinct():
+    module = BiliLiveIngestModule()
+    common = {
+        "gift_name": "小心心",
+        "gift_count": 1,
+        "gift_value": 100,
+    }
+    send = LiveEvent(type="gift", uid="9", payload={**common, "cmd": "SEND_GIFT"}, ts=100.0)
+    combo = LiveEvent(type="gift", uid="9", payload={**common, "cmd": "COMBO_SEND"}, ts=100.1)
+    duplicate_combo = LiveEvent(type="gift", uid="9", payload={**common, "cmd": "COMBO_SEND"}, ts=100.2)
+
+    assert module._is_duplicate_support_event(send) is False
+    assert module._is_duplicate_support_event(combo) is False
+    assert module._is_duplicate_support_event(duplicate_combo) is True
+
+
+def test_support_dedupe_matches_lightweight_and_rich_super_chat():
+    module = BiliLiveIngestModule()
+    lightweight = module._to_live_event(
+        "SUPER_CHAT_MESSAGE",
+        {"user_id": 9, "user_name": "SCUser", "message": "hello", "price": 30},
+    )
+    rich = module._to_live_event(
+        "SUPER_CHAT_MESSAGE",
+        SimpleNamespace(uid=9, nickname="SCUser", text="hello", room_id=1),
+    )
+    rich.ts = lightweight.ts + 0.1
+
+    assert module._is_duplicate_support_event(lightweight) is False
+    assert module._is_duplicate_support_event(rich) is True
