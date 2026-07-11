@@ -91,3 +91,49 @@ async def test_nekocfg_import_does_not_raise_unbound_local():
     config_manager.asave_characters.assert_awaited()
     saved_characters = config_manager.asave_characters.await_args.args[0]
     assert "测试猫娘" in saved_characters["猫娘"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_nekocfg_import_does_not_restore_pngtuber_avatar_config():
+    """.nekocfg ships no model assets: a hand-crafted file carrying
+    _reserved.avatar.pngtuber must not have that config restored (the image
+    paths it references were never extracted locally)."""
+    character = {
+        "档案名": "手工猫娘",
+        "昵称": "手工猫娘",
+        "_reserved": {
+            "avatar": {
+                "model_type": "pngtuber",
+                "pngtuber": {"idle": "pngtuber/nonexistent/idle.png"},
+            }
+        },
+    }
+    payload = _xor(json.dumps(character, ensure_ascii=False).encode("utf-8"))
+
+    config_manager = MagicMock()
+    config_manager.aload_characters = AsyncMock(return_value={"猫娘": {}})
+    config_manager.asave_characters = AsyncMock()
+    config_manager.ensure_card_faces_directory = MagicMock()
+    config_manager.card_face_meta_path = MagicMock(return_value="unused-meta-path")
+
+    with patch.object(characters_router, "get_config_manager", return_value=config_manager), \
+         patch.object(characters_router, "get_initialize_character_data", return_value=None), \
+         patch.object(
+             characters_router,
+             "_mark_new_character_greeting_pending_safe",
+             new=AsyncMock(return_value=(True, None)),
+         ), \
+         patch.object(characters_router, "_write_card_meta", new=MagicMock()):
+        response = await characters_router.import_character_card(
+            zip_file=_FakeUpload("card.nekocfg", payload),
+            card_image=None,
+        )
+
+    body = json.loads(bytes(response.body).decode("utf-8"))
+    assert body.get("success") is True, body
+    saved_characters = config_manager.asave_characters.await_args.args[0]
+    saved = saved_characters["猫娘"]["手工猫娘"]
+    avatar = (saved.get("_reserved") or {}).get("avatar") or {}
+    assert avatar.get("model_type") != "pngtuber", saved
+    assert "pngtuber" not in avatar, saved
