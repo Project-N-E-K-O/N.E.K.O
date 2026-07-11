@@ -365,6 +365,31 @@ async def test_send_speech_suppressed_primary_audio_still_delivers_taps():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_send_speech_suppressed_primary_audio_falls_back_when_tap_disconnects():
+    mgr = _make_manager()
+    mgr.websocket = _FakeConnectedWebSocket()
+    mgr._speech_primary_suppressed_ids.add("game-turn")
+
+    async def disconnected_tap(_audio, _speech_id):
+        return False
+
+    core_module.LLMSessionManager.add_speech_tap(mgr, "game", disconnected_tap)
+
+    delivered = await core_module.LLMSessionManager.send_speech(
+        mgr,
+        b"audio-bytes",
+        speech_id="game-turn",
+    )
+
+    assert delivered is True
+    assert mgr.websocket.sent == [
+        {"type": "audio_chunk", "speech_id": "game-turn"},
+        b"audio-bytes",
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_suppressed_speech_ids_are_not_discarded_at_legacy_size_limit():
     mgr = _make_manager()
     mgr.tts_thread = _FakeAliveThread()
