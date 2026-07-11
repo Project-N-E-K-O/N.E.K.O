@@ -44,6 +44,11 @@ Monkeypatch compatibility notes:
 - The stdlib/third-party imports below are re-exported on purpose:
   tests patch e.g. ``utils.config_manager.sys.platform`` and
   ``utils.config_manager.Path.home`` through this module's attributes.
+- Cross-module helpers that existing tests patch through this facade
+  (``check_custom_tts_voice_allowed`` and the ``utils.api_config_loader``
+  getters) are resolved late through this facade inside the mixins, so
+  ``patch("utils.config_manager.<helper>")`` keeps intercepting those
+  call sites after the split.
 
 Run directly with ``python -m utils.config_manager`` (replaces the former
 ``python utils/config_manager.py``).

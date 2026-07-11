@@ -21,8 +21,6 @@ validation/normalization and the invalid voice_id cleanup pass.
 from copy import deepcopy
 
 from config import DEFAULT_CONFIG_DATA
-from utils.api_config_loader import get_assist_api_profiles
-from utils.custom_tts_adapter import check_custom_tts_voice_allowed
 from utils.doubao_tts import DOUBAO_VOICE_STORAGE_KEY
 from utils.native_voice_registry import (
     is_free_lanlan_app_route,
@@ -212,6 +210,11 @@ class VoiceStorageMixin:
 
     def get_cosyvoice_clone_runtime(self, provider: str = 'cosyvoice') -> dict:
         """Return the Alibaba CN/international runtime config explicitly selected on the voice-clone page."""
+        # Late-bound through the package facade so existing
+        # patch("utils.config_manager.get_assist_api_profiles") dotted-path
+        # monkeypatches keep intercepting this call site.
+        from utils.config_manager import get_assist_api_profiles
+
         normalized_provider = str(provider or 'cosyvoice').strip().lower()
         if normalized_provider not in ('cosyvoice', 'cosyvoice_intl'):
             normalized_provider = 'cosyvoice'
@@ -733,6 +736,11 @@ class VoiceStorageMixin:
              (lanlan.tech / lanlan.app) whether they are actually enabled
              (the lanlan.app overseas node does not support preset voices)
         """
+        # Late-bound through the package facade so existing
+        # patch("utils.config_manager.check_custom_tts_voice_allowed")
+        # dotted-path monkeypatches keep intercepting this call site.
+        from utils.config_manager import check_custom_tts_voice_allowed
+
         voice_id = str(voice_id or '').strip()
         if not voice_id:
             return True
@@ -769,6 +777,9 @@ class VoiceStorageMixin:
 
     def validate_voice_id_for_api_key(self, api_key: str, voice_id: str) -> bool:
         """Validate whether voice_id is valid under the given API key"""
+        # Late-bound through the package facade (see validate_voice_id).
+        from utils.config_manager import check_custom_tts_voice_allowed
+
         voice_id = str(voice_id or '').strip()
         if not voice_id:
             return True

@@ -31,13 +31,6 @@ from copy import deepcopy
 from urllib.parse import urlparse, urlunparse
 
 from config import DEFAULT_CONFIG_DATA, GEOIP_FORCE_NON_MAINLAND
-from utils.api_config_loader import (
-    get_assist_api_key_fields,
-    get_assist_api_profiles,
-    get_core_api_profiles,
-    get_livestream_config,
-    is_livestream_active,
-)
 from utils.gptsovits_config import normalize_gsv_api_url
 from utils.steam_state import get_steamworks
 
@@ -169,6 +162,11 @@ class CoreConfigMixin:
         When livestream is enabled it only takes over whitelisted free-path endpoints under
         the lanlan.tech domain (/core /text/v1 /tts); other paths go through the original region switch.
         """
+        # Late-bound through the package facade so existing
+        # patch("utils.config_manager.<helper>") dotted-path monkeypatches
+        # keep intercepting these call sites.
+        from utils.config_manager import get_livestream_config, is_livestream_active
+
         if not url or 'lanlan.tech' not in url:
             return url
 
@@ -277,6 +275,15 @@ class CoreConfigMixin:
 
     def get_core_config(self):
         """Read core config dynamically"""
+        # Late-bound through the package facade so existing
+        # patch("utils.config_manager.<helper>") dotted-path monkeypatches
+        # keep intercepting these call sites.
+        from utils.config_manager import (
+            get_assist_api_key_fields,
+            get_assist_api_profiles,
+            get_core_api_profiles,
+        )
+
         # 从 config 模块导入所有默认配置值
         from config import (
             DEFAULT_CORE_API_KEY,
@@ -859,6 +866,12 @@ class CoreConfigMixin:
                 - 'base_url': API endpoint URL
                 - 'is_custom': whether a custom API config is used
         """
+        # Late-bound through the package facade so existing
+        # patch("utils.config_manager.<helper>") dotted-path monkeypatches
+        # keep intercepting these call sites (incl. the nested provider-type
+        # resolvers and the tts_custom Qwen-profile fallback below).
+        from utils.config_manager import get_assist_api_profiles, get_core_api_profiles
+
         core_config = self.get_core_config()
         enable_custom_api = core_config.get('ENABLE_CUSTOM_API', False)
 
