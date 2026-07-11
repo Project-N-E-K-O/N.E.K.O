@@ -1442,9 +1442,12 @@ class TestVllmOmniWsHandshake:
             })
             return {"success": True}
 
-        monkeypatch.setattr(config_router, "_test_doubao_tts_connectivity", fake_probe)
+        monkeypatch.setattr(
+            "main_routers.config_router.connectivity._test_doubao_tts_connectivity",
+            fake_probe,
+        )
         with patch(
-            "main_routers.config_router._test_openai_compatible",
+            "main_routers.config_router.connectivity._test_openai_compatible",
             new=AsyncMock(return_value={"success": False}),
         ) as mock_openai:
             req = ConnectivityTestRequest(
