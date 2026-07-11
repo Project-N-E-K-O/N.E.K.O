@@ -312,15 +312,16 @@ _NON_ENGLISH_GAME_OVERLAY_SUBSTRINGS = tuple(
 _DIALOGUE_LINE_MARKERS = (":", "：", "「", "」")
 _OCR_DIALOGUE_STRONG_PUNCTUATION_RE = re.compile(r"[。！？!?…]|——|「|」|『|』|“|”")
 _OCR_DIALOGUE_WEAK_PUNCTUATION_RE = re.compile(r"[，,、：:]")
-_OCR_TRAILING_GARBAGE_AFTER_SENTENCE_RE = re.compile(r"([。！？!?…」』”\]］])\s*[号口日曰益]\s*$")
+_OCR_TRAILING_GARBAGE_AFTER_SENTENCE_RE = re.compile(r"([。！？!?…」』”\]］])\s*[号口日曰益了交0-9]{1,2}\s*$")
 _OCR_TRAILING_ORPHAN_AFTER_SENTENCE_RE = re.compile(
     r"([。！？!?…」』”\]］])\s*[义人入丁七十廿卜丿丨丶]\s*$"
 )
+_OCR_TRAILING_MIDDLE_DOT_RE = re.compile(r"(.{9,}[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff])\s*[·•]\s*$")
 _OCR_TRAILING_GARBAGE_AFTER_BRACKET_RE = re.compile(
     r"([\]］）】」』”])\s*[^。！？!?…，,、：:；;「」『』“”\[\]［］【】（）()]{1,4}\s*$"
 )
 _OCR_TRAILING_GARBAGE_AFTER_DASH_RE = re.compile(
-    r"((?:——|--|—|－|-))\s*[^。！？!?…，,、：:「」『』“”\[\]［］【】（）()]{1,4}\s*$"
+    r"((?:——|--|—|－|-|一一))\s*[^。！？!?…，,、：:「」『』“”\[\]［］【】（）()]{1,4}\s*$"
 )
 _OCR_STABILITY_IGNORED_CHARS_RE = re.compile(
     r"[\s　\-_.,，。:：;；!！?？…~～'\"“”‘’「」『』()\[\]［］【】]+"
@@ -447,6 +448,7 @@ def _clean_ocr_dialogue_text(text: str) -> str:
     cleaned = _OCR_TRAILING_GARBAGE_AFTER_SENTENCE_RE.sub(r"\1", cleaned).strip()
     if _significant_char_count(cleaned) >= 10:
         cleaned = _OCR_TRAILING_ORPHAN_AFTER_SENTENCE_RE.sub(r"\1", cleaned).strip()
+        cleaned = _OCR_TRAILING_MIDDLE_DOT_RE.sub(r"\1", cleaned).strip()
     cleaned = _OCR_TRAILING_GARBAGE_AFTER_BRACKET_RE.sub(r"\1", cleaned).strip()
     cleaned = _OCR_TRAILING_GARBAGE_AFTER_DASH_RE.sub(r"\1", cleaned).strip()
     return cleaned

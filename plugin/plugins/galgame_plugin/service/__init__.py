@@ -1534,10 +1534,11 @@ def build_primary_diagnosis(local_state: dict[str, Any]) -> dict[str, Any]:
         and ocr_background_status.get("trigger_mode") == OCR_TRIGGER_MODE_INTERVAL
         and runtime_obj.get("target_is_foreground") is False
     )
-    # rapidocr install prompt removed: rapidocr-onnxruntime is now bundled
-    # via [dependency-groups] galgame; if it's missing the dev needs to run
-    # `uv sync --group galgame`, not click an in-app install button. We still
-    # honor inspection_failed signals so a corrupt wheel surfaces a warning
+    # rapidocr install prompt removed: rapidocr-pillow now provides the
+    # rapidocr_onnxruntime runtime via [dependency-groups] galgame; if it's
+    # missing the dev needs to run `uv sync --group galgame`, not click an
+    # in-app install button. We still honor inspection_failed signals so a
+    # corrupt wheel surfaces a warning
     # instead of being silently swept under "插件运行出错".
     dependency_status = local_state.get("dependency_status")
     dependency_status_obj = dependency_status if isinstance(dependency_status, dict) else {}

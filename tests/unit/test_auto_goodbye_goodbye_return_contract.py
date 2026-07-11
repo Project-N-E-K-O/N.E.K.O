@@ -29,7 +29,7 @@ def test_auto_goodbye_reuses_existing_goodbye_base_chain():
     assert "playModelGoodbyeExit(mmdContainer, savedGoodbyeRect)" in ui_source
     assert "playModelGoodbyeExit(vrmContainer, savedGoodbyeRect)" in ui_source
     assert "container.classList.add('minimized');" in ui_source
-    assert "resetSessionButton.disabled = false;\n                    resetSessionButton.click();" in ui_source
+    assert "resetSessionButton.disabled = false;\n                resetSessionButton.click();" in ui_source
 
     reset_block = _between(
         buttons_source,

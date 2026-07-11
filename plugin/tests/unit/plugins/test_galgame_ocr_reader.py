@@ -6827,6 +6827,45 @@ def test_rapidocr_text_adapter_groups_lines_and_filters_low_confidence() -> None
     assert _rapidocr_text_from_output(output) == "雪乃Hello\n今天回家"
 
 
+def test_rapidocr_text_adapter_drops_short_low_confidence_ui_marker_line() -> None:
+    output = [
+        (
+            [[10, 20], [360, 20], [360, 42], [10, 42]],
+            "此时此刻，王生正摆了一桌宴席。",
+            0.96,
+        ),
+        (
+            [[380, 60], [398, 60], [398, 78], [380, 78]],
+            "三·",
+            0.52,
+        ),
+    ]
+
+    lines = galgame_ocr_reader._rapidocr_lines_from_output(output)
+
+    assert [text for text, _score, _box in lines] == [
+        "此时此刻，王生正摆了一桌宴席。"
+    ]
+    assert _rapidocr_text_from_output(output) == "此时此刻，王生正摆了一桌宴席。"
+
+
+def test_rapidocr_text_adapter_drops_single_ascii_ui_marker_line() -> None:
+    output = [
+        (
+            [[10, 20], [300, 20], [300, 42], [10, 42]],
+            "我抬眼一望，摇了摇头，心中暗笑。",
+            0.96,
+        ),
+        (
+            [[320, 60], [334, 60], [334, 78], [320, 78]],
+            "P",
+            0.71,
+        ),
+    ]
+
+    assert _rapidocr_text_from_output(output) == "我抬眼一望，摇了摇头，心中暗笑。"
+
+
 def test_fix_ocr_punctuation_confusion_for_cjk_dialogue() -> None:
     assert galgame_ocr_reader._fix_ocr_punctuation_confusion("这是对白.") == "这是对白。"
     assert galgame_ocr_reader._fix_ocr_punctuation_confusion("但是, 另一个") == "但是、另一个"
