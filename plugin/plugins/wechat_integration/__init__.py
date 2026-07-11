@@ -59,6 +59,7 @@ class WechatIntegrationPlugin(NekoPluginBase):
         self._context_tokens: dict[str, str] = {}
         self._running: bool = False
         self._message_task: Optional[asyncio.Task] = None
+        self._settle_memory_tasks: set[asyncio.Task] = set()
         self._shutdown_event = asyncio.Event()
         self._wechat_sessions: dict[str, dict[str, Any]] = {}  # user_id → {history, last_activity}
 
@@ -152,6 +153,17 @@ class WechatIntegrationPlugin(NekoPluginBase):
             if failures:
                 self.logger.warning(
                     "[wechat_integration] failed to settle %d active memory session(s) on shutdown",
+                    failures,
+                )
+        if self._settle_memory_tasks:
+            results = await asyncio.gather(
+                *list(self._settle_memory_tasks),
+                return_exceptions=True,
+            )
+            failures = sum(result is not True for result in results)
+            if failures:
+                self.logger.warning(
+                    "[wechat_integration] failed to settle %d pending memory session(s) on shutdown",
                     failures,
                 )
         if self.wechat_client:
@@ -612,11 +624,13 @@ class WechatIntegrationPlugin(NekoPluginBase):
         for uid in stale:
             session = self._wechat_sessions.get(uid)
             if session and session.get("memory_enabled") and session.get("history"):
-                asyncio.ensure_future(
+                task = asyncio.ensure_future(
                     self._settle_memory_session(
                         session["her_name"], reason="idle_timeout"
                     )
                 )
+                self._settle_memory_tasks.add(task)
+                task.add_done_callback(self._settle_memory_tasks.discard)
             del self._wechat_sessions[uid]
             self.logger.info(f"[wechat_integration] cleaned up stale session: {uid}")
 
