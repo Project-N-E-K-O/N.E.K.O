@@ -243,8 +243,10 @@ class BiliLiveIngestModule(BaseModule):
         if not key:
             return False
         last_seen = self._recent_support_event_keys.get(key)
+        if last_seen is not None and 0 <= now - last_seen <= SUPPORT_EVENT_DEDUPE_SECONDS:
+            return True
         self._recent_support_event_keys[key] = now
-        return last_seen is not None and (now - last_seen) <= SUPPORT_EVENT_DEDUPE_SECONDS
+        return False
 
     @staticmethod
     def _support_event_key(live_event: LiveEvent) -> str:

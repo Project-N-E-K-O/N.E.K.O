@@ -148,7 +148,7 @@ class ViewerStore:
         profiles = await self._load_all()
         now = utc_now_iso()
         uid = _safe_profile_uid(identity.uid)
-        nickname = _safe_profile_text(identity.nickname) or uid
+        nickname = _safe_profile_text(identity.nickname)
         avatar_url = _safe_profile_text(identity.avatar_url)
         if not uid:
             return ViewerProfile(uid="", nickname=nickname, avatar_url=avatar_url)
@@ -177,7 +177,7 @@ class ViewerStore:
         else:
             profile = ViewerProfile(
                 uid=uid,
-                nickname=nickname,
+                nickname=nickname or uid,
                 avatar_url=avatar_url,
                 first_seen_at=now,
                 last_seen_at=now,
@@ -195,7 +195,7 @@ class ViewerStore:
             profiles = await self._load_all()
             now = utc_now_iso()
             uid = _safe_profile_uid(identity.uid)
-            nickname = _safe_profile_text(identity.nickname) or uid
+            nickname = _safe_profile_text(identity.nickname)
             avatar_url = _safe_profile_text(identity.avatar_url)
             if not uid:
                 return ViewerProfile(uid="", nickname=nickname, avatar_url=avatar_url)

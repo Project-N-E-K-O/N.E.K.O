@@ -14,10 +14,11 @@ from plugin.plugins.neko_roast.core.runtime_active_engagement import (
 class _Pipeline:
     def __init__(self) -> None:
         self.events = []
+        self.status = "pushed"
 
     async def handle_event(self, event):
         self.events.append(event)
-        return InteractionResult(accepted=True, status="pushed", event=event)
+        return InteractionResult(accepted=True, status=self.status, event=event)
 
 
 class _Audit:
@@ -93,4 +94,18 @@ async def test_maybe_trigger_active_engagement_records_attempt_after_success():
     assert result is not None
     assert result.status == "pushed"
     assert runtime._active_engagement_last_attempt_at == 100.0
+    assert len(runtime.pipeline.events) == 1
+
+
+@pytest.mark.asyncio
+async def test_dry_run_active_engagement_records_attempt_and_respects_interval():
+    runtime = _Runtime({"candidate": True, "eligible": True, "reason": "eligible"})
+    runtime.pipeline.status = "dry_run"
+
+    result = await maybe_trigger_active_engagement(runtime)
+
+    assert result is not None
+    assert result.status == "dry_run"
+    assert runtime._active_engagement_last_attempt_at == 100.0
+    assert await maybe_trigger_active_engagement(runtime) is None
     assert len(runtime.pipeline.events) == 1

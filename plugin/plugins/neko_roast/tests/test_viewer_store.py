@@ -113,3 +113,23 @@ async def test_record_live_danmaku_persists_count_and_preferences(tmp_path):
     assert item["nickname"] == "新昵称"
     assert item["danmaku_count"] == 2
     assert item["preference_tags"].get("question", 0) >= 2
+
+
+@pytest.mark.asyncio
+async def test_upsert_identity_without_nickname_preserves_existing_nickname(tmp_path):
+    store = ViewerStore(_FakePlugin(tmp_path), audit=None)
+    await store.upsert_identity(ViewerIdentity(uid="42", nickname="known viewer"))
+
+    profile = await store.upsert_identity(ViewerIdentity(uid="42", nickname=""))
+
+    assert profile.nickname == "known viewer"
+
+
+@pytest.mark.asyncio
+async def test_record_live_danmaku_without_nickname_preserves_existing_nickname(tmp_path):
+    store = ViewerStore(_FakePlugin(tmp_path), audit=None)
+    await store.upsert_identity(ViewerIdentity(uid="42", nickname="known viewer"))
+
+    profile = await store.record_live_danmaku(ViewerIdentity(uid="42", nickname=""), "hello")
+
+    assert profile.nickname == "known viewer"

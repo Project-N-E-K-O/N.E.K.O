@@ -31,7 +31,7 @@ async def trigger_active_engagement(runtime: Any) -> InteractionResult:
         return record_active_engagement_skip(runtime, skip_event, f"active_engagement.{reason}")
     event = await active_engagement_event(runtime, live_state)
     result = await runtime.pipeline.handle_event(event)
-    if str(getattr(result, "status", "") or "") == "pushed":
+    if str(getattr(result, "status", "") or "") in {"pushed", "dry_run"}:
         runtime._active_engagement_last_attempt_at = float(runtime._active_engagement_now())
     return result
 

@@ -560,16 +560,6 @@ class DanmakuListener:
 
             elif cmd == "SEND_GIFT":
                 inner = data.get("data", {})
-                await self._emit("on_gift", {
-                    "user_name": inner.get("uname", "未知"),
-                    "user_id": inner.get("uid", 0),
-                    "gift_name": inner.get("giftName", "未知礼物"),
-                    "num": inner.get("num", 1),
-                    "coin_type": inner.get("coin_type", "silver"),
-                    "total_coin": inner.get("total_coin", 0),
-                    "price": inner.get("price", 0),
-                })
-
                 try:
                     from .livedanmaku import LiveDanmaku as _LD
                     ld = _LD.from_gift(data)
@@ -586,18 +576,19 @@ class DanmakuListener:
                         "gift_coin_type": inner.get("coin_type", ""),
                         "room_id": inner.get("room_id") or inner.get("ruid", 0),
                     })
+                await self._emit("on_gift", {
+                    "user_name": inner.get("uname", "未知"),
+                    "user_id": inner.get("uid", 0),
+                    "gift_name": inner.get("giftName", "未知礼物"),
+                    "num": inner.get("num", 1),
+                    "coin_type": inner.get("coin_type", "silver"),
+                    "total_coin": inner.get("total_coin", 0),
+                    "price": inner.get("price", 0),
+                })
 
             elif cmd == "SUPER_CHAT_MESSAGE":
                 inner = data.get("data", {})
                 user_info = inner.get("user_info", {})
-                await self._emit("on_sc", {
-                    "user_name": user_info.get("uname", "未知"),
-                    "user_id": inner.get("uid", 0),
-                    "message": inner.get("message", ""),
-                    "price": inner.get("price", 0),
-                    "start_time": inner.get("start_time", 0),
-                })
-
                 try:
                     from .livedanmaku import LiveDanmaku as _LD
                     ld = _LD.from_sc(data)
@@ -612,6 +603,13 @@ class DanmakuListener:
                         "gift_value": (int(inner.get("price") or 0) * 1000) if str(inner.get("price") or "0").isdigit() else 0,
                         "room_id": inner.get("room_id", 0),
                     })
+                await self._emit("on_sc", {
+                    "user_name": user_info.get("uname", "未知"),
+                    "user_id": inner.get("uid", 0),
+                    "message": inner.get("message", ""),
+                    "price": inner.get("price", 0),
+                    "start_time": inner.get("start_time", 0),
+                })
 
             elif cmd == "INTERACT_WORD":
                 inner = data.get("data", {})
@@ -666,6 +664,7 @@ class DanmakuListener:
             gift_info = {}
         command = str(cmd or "").upper()
         explicit_gift_command = "GIFT" in command
+        official_support_command = command in {"USER_TOAST_MSG"}
         explicit_gift_fields = any(
             key in inner
             for key in ("gift_id", "giftId", "giftName", "gift_name", "gift_name_str", "giftNameStr")
@@ -674,7 +673,26 @@ class DanmakuListener:
             key in gift_info
             for key in ("gift_id", "giftId", "giftName", "gift_name", "gift_name_str", "giftNameStr")
         )
-        support_hint = explicit_gift_command or explicit_gift_fields or nested_gift_fields
+        nested_gift_name_fields = any(
+            key in gift_info
+            for key in ("giftName", "gift_name", "gift_name_str", "giftNameStr")
+        )
+        text_hint = DanmakuListener._first_text(
+            inner,
+            gift_info,
+            keys=("toast_msg", "toastMsg", "message", "msg", "copy_writing", "copyWriting", "text", "content"),
+        )
+        if official_support_command and DanmakuListener._looks_like_fans_medal_activation_text(text_hint):
+            return None
+        support_hint = (
+            explicit_gift_command
+            or explicit_gift_fields
+            or (
+                official_support_command
+                and nested_gift_name_fields
+                and DanmakuListener._looks_like_gift_transfer_text(text_hint)
+            )
+        )
         gift_name = DanmakuListener._first_text(
             inner,
             gift_info,
@@ -684,11 +702,6 @@ class DanmakuListener:
             gift_name = DanmakuListener._first_text(inner, gift_info, keys=("name",))
         elif not gift_name and nested_gift_fields:
             gift_name = DanmakuListener._first_text(gift_info, keys=("name",))
-        text_hint = DanmakuListener._first_text(
-            inner,
-            gift_info,
-            keys=("toast_msg", "toastMsg", "message", "msg", "copy_writing", "copyWriting", "text", "content"),
-        )
         if not gift_name and support_hint and DanmakuListener._looks_like_fans_medal_text(text_hint):
             gift_name = "fans medal"
         if not gift_name or not support_hint:
@@ -722,6 +735,18 @@ class DanmakuListener:
             ("粉丝团灯牌" in cleaned or "粉丝牌" in cleaned or "灯牌" in cleaned)
             and ("赠送" in cleaned or "点亮" in cleaned or "投喂" in cleaned or "加入" in cleaned)
         )
+
+    @staticmethod
+    def _looks_like_fans_medal_activation_text(text: str) -> bool:
+        cleaned = str(text or "")
+        return DanmakuListener._looks_like_fans_medal_text(cleaned) and (
+            "成功" in cleaned or "点亮" in cleaned or "加入粉丝团" in cleaned
+        )
+
+    @staticmethod
+    def _looks_like_gift_transfer_text(text: str) -> bool:
+        cleaned = str(text or "")
+        return bool(cleaned) and any(marker in cleaned for marker in ("赠送", "投喂"))
 
     @staticmethod
     def _first_text(*sources: dict, keys: tuple[str, ...]) -> str:

@@ -162,3 +162,15 @@ def test_support_dedupe_matches_lightweight_and_rich_super_chat():
 
     assert module._is_duplicate_support_event(lightweight) is False
     assert module._is_duplicate_support_event(rich) is True
+
+
+def test_support_dedupe_duplicate_does_not_extend_window():
+    module = BiliLiveIngestModule()
+    payload = {"gift_name": "small heart", "gift_count": 1, "cmd": "SEND_GIFT"}
+    first = LiveEvent(type="gift", uid="9", payload=payload, ts=100.0)
+    duplicate = LiveEvent(type="gift", uid="9", payload=payload, ts=100.2)
+    after_window = LiveEvent(type="gift", uid="9", payload=payload, ts=100.4)
+
+    assert module._is_duplicate_support_event(first) is False
+    assert module._is_duplicate_support_event(duplicate) is True
+    assert module._is_duplicate_support_event(after_window) is False

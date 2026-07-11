@@ -135,7 +135,9 @@ async def lookup_live_room(runtime: Any, room_id: Any) -> dict[str, Any]:
     normalized = runtime.live_provider.normalize_room_ref(room_id)
     room_ref = _public_lookup_room_ref(normalized.get("room_ref") if isinstance(normalized, dict) else "")
     status = await runtime.live_provider.lookup_room_status(room_id)
-    remember_live_room_context(runtime, status, platform=runtime.live_provider.platform, room_ref=room_ref)
+    configured_room_ref = _public_lookup_room_ref(runtime.live_provider.configured_room_ref())
+    if not configured_room_ref or room_ref == configured_room_ref:
+        remember_live_room_context(runtime, status, platform=runtime.live_provider.platform, room_ref=room_ref)
     level = "info" if status.ok else "warning"
     runtime.audit.record(
         "live_room_lookup",
