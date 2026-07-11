@@ -156,13 +156,34 @@ def test_unknown_bridge_method_drops_text_only_payload() -> None:
     payloads = adapter.map_message(
         {
             "method": "WebcastResidentGuestMessage",
-            "user": {"uid": "123", "nickname": "viewer"},
-            "content": "resident guest",
+            "msgType": 1,
+            "data": {
+                "message": "resident guest",
+                "user": {"uid": "123", "nickname": "viewer"},
+            },
         },
         room_ref="room-42",
     )
 
     assert payloads == []
+
+
+def test_reduced_payload_without_method_keeps_msg_type_fallback() -> None:
+    adapter = DouyinLiveBridgeAdapter()
+
+    payloads = adapter.map_message(
+        {
+            "msgType": 1,
+            "data": {
+                "message": "hello",
+                "user": {"uid": "123", "nickname": "viewer"},
+            },
+        },
+        room_ref="room-42",
+    )
+
+    assert len(payloads) == 1
+    assert payloads[0]["event_type"] == "danmaku"
 
 
 def test_bridge_support_events_reach_bus_without_gift_fallback() -> None:
