@@ -99,7 +99,7 @@ def test_generic_english_roast_targets_are_rejected():
 
 
 @pytest.mark.parametrize(
-    "request",
+    "request_text",
     (
         "rate content",
         "roast video",
@@ -108,9 +108,9 @@ def test_generic_english_roast_targets_are_rejected():
         "roast @software",
     ),
 )
-def test_english_content_objects_are_not_viewer_targets(request: str) -> None:
-    assert DanmakuResponseModule._target_roast_nickname(request) == ""
-    assert DanmakuResponseModule._danmaku_profile(request)["kind"] != (
+def test_english_content_objects_are_not_viewer_targets(request_text: str) -> None:
+    assert DanmakuResponseModule._target_roast_nickname(request_text) == ""
+    assert DanmakuResponseModule._danmaku_profile(request_text)["kind"] != (
         "target_roast_request"
     )
 
@@ -128,7 +128,7 @@ def test_english_roast_verbs_require_complete_words() -> None:
 
 
 @pytest.mark.parametrize(
-    "request",
+    "request_text",
     (
         "roast it",
         "rate you",
@@ -138,17 +138,40 @@ def test_english_roast_verbs_require_complete_words() -> None:
         "rate who",
     ),
 )
-def test_english_pronouns_and_articles_are_not_viewer_targets(request: str) -> None:
-    assert DanmakuResponseModule._target_roast_nickname(request) == ""
-    assert DanmakuResponseModule._danmaku_profile(request)["kind"] != (
+def test_english_pronouns_and_articles_are_not_viewer_targets(
+    request_text: str,
+) -> None:
+    assert DanmakuResponseModule._target_roast_nickname(request_text) == ""
+    assert DanmakuResponseModule._danmaku_profile(request_text)["kind"] != (
         "target_roast_request"
     )
 
 
-@pytest.mark.parametrize("request", ("roast Theo", "rate Youki", "roast that Alice"))
-def test_real_english_nicknames_remain_roast_targets(request: str) -> None:
-    assert DanmakuResponseModule._target_roast_nickname(request)
-    assert DanmakuResponseModule._danmaku_profile(request)["kind"] == (
+@pytest.mark.parametrize(
+    "request_text", ("roast Theo", "rate Youki", "roast that Alice")
+)
+def test_real_english_nicknames_remain_roast_targets(request_text: str) -> None:
+    assert DanmakuResponseModule._target_roast_nickname(request_text)
+    assert DanmakuResponseModule._danmaku_profile(request_text)["kind"] == (
+        "target_roast_request"
+    )
+
+
+@pytest.mark.parametrize(
+    "text",
+    ("roast alice视频", "锐评 @alice视频", "rate Bob设计", "roast @Eve作品"),
+)
+def test_mixed_viewer_object_tokens_are_not_viewer_targets(text: str) -> None:
+    assert DanmakuResponseModule._target_roast_nickname(text) == ""
+    assert DanmakuResponseModule._danmaku_profile(text)["kind"] != (
+        "target_roast_request"
+    )
+
+
+@pytest.mark.parametrize("text", ("roast Alice猫", "锐评 @Bob君"))
+def test_mixed_script_real_nicknames_remain_roast_targets(text: str) -> None:
+    assert DanmakuResponseModule._target_roast_nickname(text)
+    assert DanmakuResponseModule._danmaku_profile(text)["kind"] == (
         "target_roast_request"
     )
 
