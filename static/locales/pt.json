@@ -2647,6 +2647,27 @@
             "disabledNotice": "O Modo de encaixe na borda Beta está desativado. O Live2D voltou ao encaixe normal nas bordas.",
             "toggleFailed": "Não foi possível alternar o Modo de encaixe na borda Beta. Tente novamente mais tarde."
         },
+        "gameModeBeta": {
+            "enabledNotice": "O modo de jogo Beta está ativo. Quando o uso de recursos permanece alto, a NEKO muda para a forma de gato para reduzir o consumo; alguns plugins e recursos de visão/OCR podem demorar mais no primeiro uso.",
+            "autoSwitchNotice": "O uso de {metric} permaneceu alto, então a NEKO mudou para a forma de gato para reduzir recursos.",
+            "disabledNotice": "O modo de jogo Beta está desativado. A NEKO voltou à política normal de recursos.",
+            "toggleFailed": "Não foi possível alternar o modo de jogo. Tente novamente mais tarde.",
+            "memoryMetric": "memória",
+            "resourceMetric": "recursos",
+            "statusOn": "Ativado",
+            "statusOff": "Desativado",
+            "statusOnly": "{status}",
+            "statusWithReason": "{status} · Último: {metric} {percent} / {duration}",
+            "autoCatOnGame": "Virar gato automaticamente ao detectar um jogo",
+            "triggerMode": "Modo de acionamento",
+            "smartMode": "Inteligente",
+            "instantMode": "Acionar ao detectar",
+            "privacyNote": "Usa apenas o resultado exato de jogo do Activity Tracker. Não captura a tela, não lê pixels nem adiciona telemetria.",
+            "details": "Detalhes",
+            "switchFailed": "Não foi possível entrar na forma de gato. A detecção do jogo será confirmada novamente após uma breve espera.",
+            "restoreFailed": "O modelo não pôde ser restaurado, então a forma de gato permanece ativa. Clique no gato novamente para tentar de novo.",
+            "signalUnavailable": "A detecção confiável de jogos está temporariamente indisponível. A proteção contra pressão de recursos continua ativa."
+        },
         "toggles": {
             "allowInterrupt": "Permitir interrupção",
             "mergeMessages": "Mesclar mensagens",

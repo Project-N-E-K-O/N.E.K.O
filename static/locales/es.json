@@ -2647,6 +2647,27 @@
             "disabledNotice": "Modo de acoplamiento al borde Beta está desactivado. Live2D vuelve al ajuste normal en los bordes.",
             "toggleFailed": "No se pudo cambiar Modo de acoplamiento al borde Beta. Inténtalo de nuevo más tarde."
         },
+        "gameModeBeta": {
+            "enabledNotice": "El modo juego Beta está activado. Si el uso de recursos permanece alto, NEKO cambiará a forma de gato para reducirlo; algunos complementos y funciones de visión/OCR pueden tardar más la primera vez.",
+            "autoSwitchNotice": "El uso de {metric} permaneció alto, por lo que NEKO cambió a forma de gato para reducir recursos.",
+            "disabledNotice": "El modo juego Beta está desactivado. NEKO ha vuelto a la política normal de recursos.",
+            "toggleFailed": "No se pudo cambiar el modo juego. Inténtalo de nuevo más tarde.",
+            "memoryMetric": "memoria",
+            "resourceMetric": "recursos",
+            "statusOn": "Activado",
+            "statusOff": "Desactivado",
+            "statusOnly": "{status}",
+            "statusWithReason": "{status} · Último: {metric} {percent} / {duration}",
+            "autoCatOnGame": "Convertirse automáticamente en gato al detectar un juego",
+            "triggerMode": "Modo de activación",
+            "smartMode": "Inteligente",
+            "instantMode": "Activar al detectar",
+            "privacyNote": "Solo usa el resultado de juego exacto de Activity Tracker. No captura pantallas, no lee píxeles ni añade telemetría.",
+            "details": "Detalles",
+            "switchFailed": "No se pudo entrar en forma de gato. La detección del juego se confirmará de nuevo tras una breve espera.",
+            "restoreFailed": "No se pudo restaurar el modelo, así que la forma de gato sigue activa. Haz clic de nuevo en el gato para reintentar.",
+            "signalUnavailable": "La detección fiable de juegos no está disponible temporalmente. La protección por presión de recursos sigue activa."
+        },
         "toggles": {
             "allowInterrupt": "Permitir interrupción",
             "mergeMessages": "Fusionar mensajes",

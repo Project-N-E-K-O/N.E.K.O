@@ -75,7 +75,7 @@ class GameModeSettingsStore:
 
         return Path(get_config_manager().get_runtime_config_path("game_mode_beta_settings.json"))
 
-    def load(self) -> dict[str, Any]:
+    def load_settings(self) -> dict[str, Any]:
         path = self._resolve_path()
         try:
             with path.open("r", encoding="utf-8") as handle:
@@ -261,7 +261,7 @@ class GameModeResourceProtector:
         self._windows: dict[str, dict[str, Any]] = {}
         self._window_acks: dict[str, dict[str, Any]] = {}
         self._deep_sleep_acks: dict[str, bool] = {}
-        persisted = self._store.load() if self._store is not None else {}
+        persisted = self._store.load_settings() if self._store is not None else {}
         self._settings = self._normalize_settings(persisted)
         raw_suppressed_until = persisted.get("suppressed_until")
         self._persisted_suppressed_until = (
