@@ -471,6 +471,7 @@
       // 动画飞入结束后再 bump；这里先缓存，避免角标抢先跳
       cachedCredits = Math.max(0, detail.active_count - 1);
     }
+    play(detail);
   }
 
   function boot() {

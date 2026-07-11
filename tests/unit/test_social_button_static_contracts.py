@@ -5,6 +5,7 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 APP_UI_PATH = PROJECT_ROOT / "static" / "app-ui.js"
+FORGE_DROP_OVERLAY_PATH = PROJECT_ROOT / "static" / "forge-drop-overlay.js"
 
 
 @pytest.mark.unit
@@ -47,3 +48,14 @@ def test_social_browser_fallback_preopens_popup_before_async_fetches():
     assert listener.index("popupRef.opener = null;") < listener.index("popupRef.location.replace(url);")
     assert "popupRef.location.replace(url);" in listener
     assert "closePopup();" in listener
+
+
+@pytest.mark.unit
+def test_credit_drop_event_plays_forge_overlay_animation():
+    source = FORGE_DROP_OVERLAY_PATH.read_text(encoding="utf-8")
+    handler_start = source.index("function onCreditDropEvent(event) {")
+    handler_end = source.index("function boot() {", handler_start)
+    handler = source[handler_start:handler_end]
+
+    assert "cachedCredits = Math.max(0, detail.active_count - 1);" in handler
+    assert "play(detail);" in handler

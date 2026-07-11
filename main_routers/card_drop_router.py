@@ -104,17 +104,25 @@ def _social_base_url() -> str:
 
 
 def _get_client_id() -> str | None:
-    """Read ``client_id`` from the same local cloudsave state as sync workers."""
+    """Return a persisted ``client_id`` from the local cloudsave state."""
     try:
         from utils.config_manager import get_config_manager
+
         cm = get_config_manager()
+        needs_persist = not cm.cloudsave_local_state_path.exists()
         state = cm.load_cloudsave_local_state()
-        if isinstance(state, dict):
+        cid = state.get("client_id") if isinstance(state, dict) else None
+        if not isinstance(cid, str) or not cid:
+            state = cm.build_default_cloudsave_local_state()
             cid = state.get("client_id")
-            if isinstance(cid, str) and cid:
-                return cid
+            needs_persist = True
+        if not isinstance(cid, str) or not cid:
+            return None
+        if needs_persist:
+            cm.save_cloudsave_local_state(state)
+        return cid
     except Exception as exc:  # noqa: BLE001
-        logger.debug("card_drop: client_id read failed: %s", exc)
+        logger.warning("card_drop: failed to load or persist client_id: %s", exc)
     return None
 
 
