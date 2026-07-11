@@ -7148,6 +7148,7 @@ async def import_character_card(
                 return JSONResponse({'success': False, 'error': f'角色卡解析失败: {str(e)}'}, status_code=400)
             if not isinstance(character_data, dict):
                 return JSONResponse({'success': False, 'error': '角色卡数据格式无效'}, status_code=400)
+            imported_card_character_data = copy.deepcopy(character_data)
             character_data = _filter_mutable_catgirl_fields(character_data)
             character_name = str(character_data.get('档案名', '')).strip()
             character_data['档案名'] = character_name
