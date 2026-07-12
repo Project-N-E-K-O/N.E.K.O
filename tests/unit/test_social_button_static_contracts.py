@@ -58,4 +58,30 @@ def test_credit_drop_event_plays_forge_overlay_animation():
     handler = source[handler_start:handler_end]
 
     assert "cachedCredits = Math.max(0, detail.active_count - 1);" in handler
-    assert "play(detail);" in handler
+    assert "play(queuedDetail);" in handler
+
+
+@pytest.mark.unit
+def test_credit_badge_uses_bounded_retry_and_low_frequency_reconciliation():
+    source = FORGE_DROP_OVERLAY_PATH.read_text(encoding="utf-8")
+
+    assert "var STARTUP_RETRY_DELAYS_MS = [2000, 10000, 30000];" in source
+    assert "startupRetryIndex >= STARTUP_RETRY_DELAYS_MS.length" in source
+    assert "var PASSIVE_REFRESH_MS = 10 * 60 * 1000;" in source
+    assert "}, PASSIVE_REFRESH_MS);" in source
+    assert "window.addEventListener('focus', requestInteractiveRefresh);" in source
+    assert "document.addEventListener('visibilitychange'" in source
+    assert "scheduleExpiryRefresh(data.credits);" in source
+    assert "earliest - now + 1000" in source
+
+
+@pytest.mark.unit
+def test_authoritative_credit_refresh_cannot_be_overwritten_by_queued_animation():
+    source = FORGE_DROP_OVERLAY_PATH.read_text(encoding="utf-8")
+
+    assert "creditStateRevision += 1;" in source
+    assert "__credit_state_revision: creditStateRevision" in source
+    assert "payloadRevision === creditStateRevision" in source
+    assert "requestRevision !== creditStateRevision" in source
+    assert "creditRefreshAfterInFlight = true;" in source
+    assert "cache: 'no-store'" in source
