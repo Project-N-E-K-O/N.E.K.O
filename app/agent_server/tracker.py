@@ -472,13 +472,29 @@ def _redact_cancelled_user_turns(messages: list, lanlan_name: Optional[str], *, 
     if not cancelled_sigs:
         return messages
 
+    # Index of the last assistant message — preserved from redaction when
+    # ``preserve_trailing_assistant`` is set (the proactive utterance).
+    # Computed up front because it must be excluded from the first-time bypass
+    # count below: on a proactive turn this trailing assistant is lanlan's own
+    # new utterance, NOT a reply to any user, so counting it would let a
+    # cancelled user turn that produced no reply masquerade as "first-time"
+    # (trailing_assistant_count == 1) and escape redaction, leaking the
+    # cancelled request into the proactive assessment.
+    keep_assistant_idx = -1
+    if preserve_trailing_assistant:
+        for i in range(len(messages) - 1, -1, -1):
+            if isinstance(messages[i], dict) and messages[i].get("role") == "assistant":
+                keep_assistant_idx = i
+                break
+
     # Precompute trailing assistant counts so we can resolve "first-time"
-    # in one O(n) sweep instead of nested scans.
+    # in one O(n) sweep instead of nested scans. The preserved proactive
+    # utterance is skipped so it never counts as a user turn's triggering reply.
     trailing_assistant_count = [0] * len(messages)
     running = 0
     for idx in range(len(messages) - 1, -1, -1):
         m = messages[idx]
-        if isinstance(m, dict) and m.get("role") == "assistant":
+        if isinstance(m, dict) and m.get("role") == "assistant" and idx != keep_assistant_idx:
             running += 1
         trailing_assistant_count[idx] = running
 
@@ -497,15 +513,6 @@ def _redact_cancelled_user_turns(messages: list, lanlan_name: Optional[str], *, 
 
     if not redact_indices:
         return messages
-
-    # Index of the last assistant message — preserved from redaction when
-    # ``preserve_trailing_assistant`` is set (the proactive utterance).
-    keep_assistant_idx = -1
-    if preserve_trailing_assistant:
-        for i in range(len(messages) - 1, -1, -1):
-            if isinstance(messages[i], dict) and messages[i].get("role") == "assistant":
-                keep_assistant_idx = i
-                break
 
     redacted: list = []
     drop_until_next_user = False

@@ -189,6 +189,28 @@ def test_redact_preserves_proactive_utterance(monkeypatch):
     assert _has_proactive(a._redact_cancelled_user_turns(msgs, "lan", preserve_trailing_assistant=True))
 
 
+def test_redact_cancelled_user_without_reply_before_proactive(monkeypatch):
+    # Codex P2: a cancelled user turn that produced NO assistant reply, followed
+    # by a proactive utterance. The trailing proactive assistant must not count as
+    # that user's "first-time" reply (trailing_assistant_count==1 bypass), else the
+    # cancelled request leaks into the proactive assessment. It must be redacted
+    # while the proactive utterance is still preserved.
+    user_msg = {"role": "user", "content": "取消了的旧请求（没产出回复）"}
+    msgs = [
+        user_msg,
+        {"role": "assistant", "content": "我帮你查下天气"},  # proactive utterance (only trailing assistant)
+    ]
+    sig = a._user_message_signature(user_msg)
+    monkeypatch.setattr(a._task_tracker, "get_cancelled_user_sigs", lambda ln: {sig})
+
+    out = a._redact_cancelled_user_turns(msgs, "lan", preserve_trailing_assistant=True)
+    # cancelled user text redacted (replaced by the system marker), not leaked
+    assert not any(m.get("role") == "user" and "取消了的旧请求" in str(m.get("content", "")) for m in out)
+    assert any(m.get("role") == "system" and m.get("content") == a.REDACTED_USER_TURN_MARKER for m in out)
+    # proactive utterance still survives for the downstream assessment
+    assert any(m.get("role") == "assistant" and "天气" in str(m.get("content", "")) for m in out)
+
+
 # ── executor uses the assistant utterance as LATEST_USER_REQUEST on proactive ─
 def test_executor_format_messages_proactive_intent():
     ex = DirectTaskExecutor(computer_use=object())
