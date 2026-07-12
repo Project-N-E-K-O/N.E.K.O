@@ -106,3 +106,61 @@ def test_successful_inference_clears_degraded_state():
     assert runtime._run_session(None, {}) == ["ok"]
     assert runtime.state is RuntimeState.READY
     assert runtime.unavailable_reason is None
+
+
+class _CoordinatedInferenceLock:
+    """Force the old lock-outside-bookkeeping race deterministically."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.failure_released = threading.Event()
+        self.success_finished = threading.Event()
+        self.runtime = None
+
+    def __enter__(self):
+        self._lock.acquire()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self._lock.release()
+        if exc_type is not None:
+            self.failure_released.set()
+            if self.runtime.state is RuntimeState.READY:
+                assert self.success_finished.wait(timeout=5)
+
+
+class _MixedSession:
+    def run(self, output_names, inputs):
+        if inputs["fail"]:
+            raise RuntimeError("first inference failed")
+        return ["ok"]
+
+
+def test_failed_then_successful_concurrent_inference_finishes_ready():
+    runtime = _Runtime(enabled=True, inference_error_limit=3)
+    runtime._session = _MixedSession()
+    runtime._state = RuntimeState.READY
+    coordinated_lock = _CoordinatedInferenceLock()
+    coordinated_lock.runtime = runtime
+    runtime._inference_lock = coordinated_lock
+
+    def fail():
+        with pytest.raises(RuntimeInferenceError):
+            runtime._run_session(None, {"fail": True})
+
+    def succeed():
+        try:
+            assert runtime._run_session(None, {"fail": False}) == ["ok"]
+        finally:
+            coordinated_lock.success_finished.set()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        failed = pool.submit(fail)
+        assert coordinated_lock.failure_released.wait(timeout=5)
+        succeeded = pool.submit(succeed)
+        failed.result(timeout=5)
+        succeeded.result(timeout=5)
+
+    assert runtime.state is RuntimeState.READY
+    assert runtime.unavailable_reason is None
+    assert runtime._session is not None
