@@ -1068,7 +1068,7 @@ class VRMManager {
         }
 
         // 加载模型
-        const result = await this.core.loadModel(modelUrl, options);
+        const result = await this.core.loadModel(modelUrl, options, loadToken);
         if (!this._isLoadTokenActive(loadToken)) {
             this._loadState = 'idle';
             return result;
@@ -1443,6 +1443,12 @@ class VRMManager {
 
         // Invalidate any in-flight loadModel() async callbacks
         ++this._activeLoadToken;
+        // 清空串行队列指针：dispose 只 bump token 不足以让下一次会话的 loadModel
+        // 立即开始——若不清空，被取代的旧 load（其 core.loadModel 可能仍挂在无超时的
+        // GLTF 网络请求上）会作为 previousLoad 把 dispose 后的新 load 堵在队列后（活性）。
+        // 清空后新 load 的 previousLoad 退回 Promise.resolve() 直接开跑；旧 load 的 core
+        // 侧 token 守卫（vrm-core.loadModel）保证它恢复时不会覆写新会话的模型（安全）。
+        this._loadModelChain = null;
         this._loadState = 'idle';
         this._isModelReadyForInteraction = false;
 

@@ -40,6 +40,53 @@ def test_vrm_load_model_is_serialized_with_entry_token():
     assert "++this._activeLoadToken" not in exclusive_body.split("async dispose()", 1)[0]
 
 
+def test_vrm_dispose_clears_load_queue_pointer():
+    # Codex P2：dispose 只 bump token 不清 _loadModelChain 时，被取代/挂死的旧 load
+    # 会作为 previousLoad 把 dispose 后的新 load 堵在队列后（活性 bug）。dispose 必须
+    # 在 bump token 后清空队列指针，新 load 的 previousLoad 才退回 Promise.resolve()。
+    source = (PROJECT_ROOT / "static/vrm/vrm-manager.js").read_text(encoding="utf-8")
+
+    dispose_body = source.split("async dispose()", 1)[1].split("\n    }\n", 1)[0]
+    assert "++this._activeLoadToken;" in dispose_body
+    assert "this._loadModelChain = null;" in dispose_body
+    # 清链必须紧跟在 token bump 之后（同一失效动作），不能漏在别处
+    assert dispose_body.index("++this._activeLoadToken;") < dispose_body.index("this._loadModelChain = null;")
+
+
+def test_vrm_core_load_is_token_guarded_across_dispose():
+    # 清链修活性会重新引入并发损坏：慢的旧 load A 恢复后 core.loadModel 无 token 守卫
+    # 会 remove/dispose/覆写新会话 B 的模型。core.loadModel 必须自带 token 守卫
+    # （与 mmd-core 对偶），manager 必须把 loadToken 传进去。
+    core_source = (PROJECT_ROOT / "static/vrm/vrm-core.js").read_text(encoding="utf-8")
+    manager_source = (PROJECT_ROOT / "static/vrm/vrm-manager.js").read_text(encoding="utf-8")
+
+    # core 接收 manager 分配的 token
+    assert "async loadModel(modelUrl, options = {}, managerLoadToken = null)" in core_source
+    assert "const loadToken = managerLoadToken !== null ? managerLoadToken : this.manager._activeLoadToken;" in core_source
+
+    load_section = core_source.split("async loadModel(modelUrl, options = {}, managerLoadToken = null)", 1)[1]
+    load_section = load_section.split("async disposeVRM(", 1)[0]
+
+    # 两道守卫：GLTF 加载后（触碰共享 scene/currentModel 前）与 scene.add 前
+    guard_count = load_section.count("this.manager._activeLoadToken !== loadToken")
+    assert guard_count >= 2, f"expected >=2 token guards in vrm-core.loadModel, found {guard_count}"
+
+    # 守卫必须在触碰共享状态之前：一道在 disposeVRM(old) 之前，二道在 scene.add 之前
+    first_guard = load_section.index("this.manager._activeLoadToken !== loadToken")
+    old_remove = load_section.index("await this.disposeVRM();")
+    scene_add = load_section.index("this.manager.scene.add(vrm.scene);")
+    second_guard = load_section.index("this.manager._activeLoadToken !== loadToken", first_guard + 1)
+    assert first_guard < old_remove, "first guard must precede old-model disposeVRM"
+    assert second_guard < scene_add, "second guard must precede scene.add of new model"
+
+    # 早退释放被取代的 VRM 资源（避免显存泄漏）
+    assert "async _disposeAbandonedVRM(vrm)" in core_source
+    assert load_section.count("this._disposeAbandonedVRM(") >= 2
+
+    # manager 把 loadToken 传进 core.loadModel
+    assert "const result = await this.core.loadModel(modelUrl, options, loadToken);" in manager_source
+
+
 def test_vrm_cleanup_ui_is_restored_and_delegates_to_mixin():
     ui_source = (PROJECT_ROOT / "static/vrm/vrm-ui-buttons.js").read_text(encoding="utf-8")
     manager_source = (PROJECT_ROOT / "static/vrm/vrm-manager.js").read_text(encoding="utf-8")
