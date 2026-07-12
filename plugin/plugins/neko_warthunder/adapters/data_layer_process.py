@@ -5,6 +5,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import time
+import ipaddress
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -39,6 +40,19 @@ def _port_from_url(base_url: str) -> str:
     if parsed.port is not None:
         return str(parsed.port)
     return "443" if parsed.scheme == "https" else "80"
+
+
+def _bind_host_from_url(base_url: str) -> str:
+    parsed = urllib.parse.urlparse(base_url)
+    host = str(parsed.hostname or "").strip().lower()
+    if host == "localhost":
+        return host
+    try:
+        if ipaddress.ip_address(host).is_loopback:
+            return host
+    except ValueError:
+        pass
+    raise ValueError("managed_data_layer_requires_loopback_url")
 
 
 def _looks_like_python(executable: str | None) -> bool:
@@ -138,7 +152,7 @@ def _load_wt_server_module(data_process_dir: Path):
         sys.path[:] = old_path
 
 
-def _spawn_embedded_data_layer(data_process_dir: Path, *, port: int) -> EmbeddedDataLayerProcess:
+def _spawn_embedded_data_layer(data_process_dir: Path, *, host: str, port: int) -> EmbeddedDataLayerProcess:
     wt_server = _load_wt_server_module(data_process_dir)
     recorder = wt_server.SessionRecorder(
         root_dir=str(data_process_dir / "records"),
@@ -161,7 +175,7 @@ def _spawn_embedded_data_layer(data_process_dir: Path, *, port: int) -> Embedded
     )
     service.start()
     try:
-        httpd = wt_server.ThreadingHTTPServer((DATA_LAYER_BIND_HOST, port), wt_server._Handler)
+        httpd = wt_server.create_http_server(host, port)
         httpd.service = service
     except Exception:
         service.stop()
@@ -294,6 +308,7 @@ class DataLayerProcessManager:
         if not script.exists():
             raise FileNotFoundError(str(script))
 
+        bind_host = _bind_host_from_url(self.config.data_layer_url)
         self._prepare_log_files()
         assert self._stdout_handle is not None
         assert self._stderr_handle is not None
@@ -303,6 +318,7 @@ class DataLayerProcessManager:
             self._python_cmd = ["embedded"]
             return _spawn_embedded_data_layer(
                 data_process_dir,
+                host=bind_host,
                 port=int(_port_from_url(self.config.data_layer_url)),
             )
 
@@ -311,7 +327,7 @@ class DataLayerProcessManager:
             *self._python_cmd,
             "wt_server.py",
             "--host",
-            DATA_LAYER_BIND_HOST,
+            bind_host,
             "--port",
             _port_from_url(self.config.data_layer_url),
         ]

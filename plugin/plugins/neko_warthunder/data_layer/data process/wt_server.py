@@ -52,6 +52,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import socket
 import sys
 import threading
 import time
@@ -779,6 +780,16 @@ class _Handler(BaseHTTPRequestHandler):
 # ---------------------------------------------------------------------------
 
 
+def create_http_server(host: str, port: int):
+    server_class = ThreadingHTTPServer
+    if ":" in host:
+        class IPv6ThreadingHTTPServer(ThreadingHTTPServer):
+            address_family = socket.AF_INET6
+
+        server_class = IPv6ThreadingHTTPServer
+    return server_class((host, port), _Handler)
+
+
 def main() -> None:
     try:
         sys.stdout.reconfigure(encoding="utf-8")
@@ -834,7 +845,7 @@ def main() -> None:
         print(f"  [录制] 已开启 -> {st['session_dir']}")
     service.start()
 
-    httpd = ThreadingHTTPServer((args.host, args.port), _Handler)
+    httpd = create_http_server(args.host, args.port)
     httpd.service = service  # type: ignore[attr-defined]
 
     print(f"战雷遥测服务已启动：http://{args.host}:{args.port}")
