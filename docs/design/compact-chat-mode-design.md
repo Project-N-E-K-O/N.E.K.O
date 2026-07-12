@@ -126,7 +126,7 @@
    - 监听 `neko:compact-surface-drag-grab`（来自 React 工具轮盘原点拖拽），非 Electron 时以事件坐标为锚启动 compact surface 本体拖拽（复用既有 startDrag/全局 mousemove/mouseup 与落点 click 守卫）。Electron 由 `preload-chat-react.js` 监听同一事件改走原生窗口拖拽。
 5. `static/app/app-buttons.js` 是发送桥之一。compact history 文本发送必须带清晰 session / request 语义，不能让已有 composer 附件在 deferred send 中被误带上。
 6. 语音模式 / `composerHidden` 下的 history drop 只保留前端拖拽、命中和收束动效；真实发送必须在 `sendCompactHistoryDropPayload` 边界跳过，不能通过改 React 拖拽 phase 或样式来伪装。
-7. `static/music_ui.js` 的音乐播放器在 compact 模式下优先挂到常驻 `.compact-music-player-mount#music-player-mount`；历史关闭或卸载不能把播放器挪回 composer fallback，但播放器视觉显隐必须跟随历史打开、closing、closed 状态，也不能被通用 `#music-player-mount` 样式撑成超过 compact surface 的横向尺寸；音量弹层展开/收起时必须刷新 compact geometry，避免浮出播放器原生矩形的滑块看得见但不可点。
+7. `static/jukebox/music_ui.js` 的音乐播放器在 compact 模式下优先挂到常驻 `.compact-music-player-mount#music-player-mount`；历史关闭或卸载不能把播放器挪回 composer fallback，但播放器视觉显隐必须跟随历史打开、closing、closed 状态，也不能被通用 `#music-player-mount` 样式撑成超过 compact surface 的横向尺寸；音量弹层展开/收起时必须刷新 compact geometry，避免浮出播放器原生矩形的滑块看得见但不可点。
 
 ### NEKO-PC 桌面壳
 

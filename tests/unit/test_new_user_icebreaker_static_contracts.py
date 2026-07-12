@@ -25,7 +25,7 @@ ICEBREAKER_ROUTER_PATH = ROOT / "main_routers" / "icebreaker_router.py"
 ICEBREAKER_PROMPTS_PATH = ROOT / "config" / "prompts" / "prompts_icebreaker.py"
 ICEBREAKER_FREE_TEXT_UTILS_PATH = ROOT / "utils" / "icebreaker_free_text.py"
 LIVE2D_CORE_PATH = ROOT / "static" / "live2d" / "live2d-core.js"
-SUBTITLE_PATH = ROOT / "static" / "subtitle.js"
+SUBTITLE_PATH = ROOT / "static" / "subtitle" / "subtitle.js"
 
 
 def assert_icebreaker_script_has_voice_keys_for_every_spoken_line(day_key: str):
