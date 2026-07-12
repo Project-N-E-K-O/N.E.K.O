@@ -2,11 +2,13 @@
 
 > 跟进 [issue #1479](https://github.com/Project-N-E-K-O/N.E.K.O/issues/1479) / [PR #1477](https://github.com/Project-N-E-K-O/N.E.K.O/pull/1477) / [PR #1530](https://github.com/Project-N-E-K-O/N.E.K.O/pull/1530) / [PR #1532](https://github.com/Project-N-E-K-O/N.E.K.O/pull/1532)。本文件覆盖 N.E.K.O. 后端所有 browser-facing 的「本地变更端点」（local mutation endpoint）所共享的 CSRF/Origin 校验合同：威胁模型边界、规则矩阵、Token 流转、前端调用约定、迁移指引。
 
-> **状态说明**：issue #1479 的三个 PR 均已合并，本文件描述的即 main 分支上的当前实现状态：
+> **状态说明**：issue #1479 的三个 PR 均已合并，本文件描述的 CSRF/Origin 校验合同即 main 上的当前实现：
 > - PR #1477（activity_signal 端点 + 临时 Origin-only gate）已合并
 > - PR #1530（Step 1：7 个端点收编 + 前端 token 注入 + `tests/unit/test_uncovered_endpoints_csrf.py` canary）已合并
 > - PR #1532（Step 2：activity_signal 从临时 Origin-only gate 收编进统一守卫 + 前端 stop-the-heartbeat 退避）已合并
 > - 本文件是 issue #1479 Step 3，随 PR #1533 落地。
+
+> ⚠️ **范围**：本文档讲的是这套 CSRF/Origin **合同**本身，不是全部端点的实时普查。§6 的清单只覆盖 #1479 三个 PR 收编的端点；合同落地后又被更多端点复用（如 `/api/card-assist/*`、`/api/game/{game_type}/realtime-context`、icebreaker / game-log 等），本文不逐一追列。要审计「某端点是否走守卫」，以代码里对 `_validate_local_mutation_request` 的调用为准。
 
 ## 1. 背景
 
@@ -203,6 +205,8 @@ if validation_error is not None:
 ---
 
 ## 6. 已接入端点清单
+
+> 本节是 issue #1479（#1477/#1530/#1532）收编的端点，**非**当前 main 全部守卫端点的完整普查；合同此后被更多端点复用（card-assist / game realtime-context / icebreaker / game-log 等）。判断某端点是否受守卫，以代码里对 `_validate_local_mutation_request` 的调用为准（另见顶部「范围」说明）。
 
 ### 6.1 PR #1477 之前（历史接入）
 
