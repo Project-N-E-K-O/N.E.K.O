@@ -118,6 +118,7 @@ window.Jukebox = {
     runtimeHost: null,
     runtimeInitPromise: null,
     isRuntimeReady: false,
+    playerHost: null,
     isOpen: false,
     isHidden: false,
     container: null,
@@ -5511,13 +5512,22 @@ window.Jukebox = {
     Jukebox.State.player = null;
     Jukebox.State.boundPlayer = null;
     Jukebox.State.audioElement = null;
+    Jukebox.State.playerHost = null;
   },
 
-  prepareForUnload: function() {
+  closeBroadcastChannel: function() {
+    try {
+      if (Jukebox._broadcastChannel) {
+        Jukebox._broadcastChannel.onmessage = null;
+        Jukebox._broadcastChannel.close();
+        Jukebox._broadcastChannel = null;
+      }
+    } catch (_) {}
+  },
+
+  cleanupUiRuntimeShell: function() {
     Jukebox.stopProgressUpdate();
-    Jukebox.destroyPlayer();
     Jukebox.hideTooltip();
-    Jukebox.destroyRuntimeHost();
 
     if (Jukebox.State.marqueeRaf) {
       cancelAnimationFrame(Jukebox.State.marqueeRaf);
@@ -5528,15 +5538,22 @@ window.Jukebox = {
     }
 
     Jukebox.stopConfigPolling();
+    Jukebox.closeBroadcastChannel();
+  },
 
-    try {
-      if (Jukebox._broadcastChannel) {
-        Jukebox._broadcastChannel.onmessage = null;
-        Jukebox._broadcastChannel.close();
-        Jukebox._broadcastChannel = null;
-      }
-    } catch (_) {}
+  prepareForUnload: function() {
+    Jukebox.cleanupUiRuntimeShell();
+    Jukebox.destroyPlayer();
+    Jukebox.destroyRuntimeHost();
+  },
 
+  hasHeadlessRuntime: function() {
+    return !!(
+      Jukebox.State.isRuntimeReady
+      && Jukebox.State.runtimeHost
+      && document.body.contains(Jukebox.State.runtimeHost)
+      && Jukebox.State.playerHost === 'runtime'
+    );
   },
 
   notifyFullClose: function(reason) {
@@ -5548,8 +5565,13 @@ window.Jukebox = {
   },
   
   close: function() {
-    Jukebox.stopPlayback();
-    Jukebox.prepareForUnload();
+    const preserveRuntime = Jukebox.hasHeadlessRuntime();
+    if (preserveRuntime) {
+      Jukebox.cleanupUiRuntimeShell();
+    } else {
+      Jukebox.stopPlayback();
+      Jukebox.prepareForUnload();
+    }
     
     // 销毁管理器面板（移除 DOM 节点 + 清理拖拽监听）
     Jukebox.SongActionManager.destroy();
@@ -5588,20 +5610,12 @@ window.Jukebox = {
     Jukebox.State.isOpen = false;
     Jukebox.State.isHidden = false;
     Jukebox.State.hasCustomWindowSize = false;
-    Jukebox.stopConfigPolling();
     Jukebox.State.configRevision = null;
 
-    // 清理 BroadcastChannel
-    try {
-      if (Jukebox._broadcastChannel) {
-        Jukebox._broadcastChannel.onmessage = null;
-        Jukebox._broadcastChannel.close();
-        Jukebox._broadcastChannel = null;
-      }
-    } catch (e) {}
-    
-    // 清空歌曲列表和元素映射，确保下次打开时重新渲染
-    Jukebox.State.songs = [];
+    if (!preserveRuntime) {
+      // 清空歌曲列表，确保完整卸载后下次打开时重新加载。
+      Jukebox.State.songs = [];
+    }
     Jukebox.State.songElements = {};
     
     const jukeboxButton = document.getElementById('jukeboxButton');
@@ -5610,7 +5624,9 @@ window.Jukebox = {
     }
     
     console.log('[Jukebox] 点歌台已关闭');
-    Jukebox.notifyFullClose('close');
+    if (!preserveRuntime) {
+      Jukebox.notifyFullClose('close');
+    }
   },
   
   destroy: function() {
@@ -7813,7 +7829,107 @@ window.Jukebox = {
   },
 
   normalizeSongQuery: function(value) {
-    return String(value || '').trim().toLowerCase();
+    return String(value || '')
+      .normalize('NFKC')
+      .trim()
+      .toLowerCase()
+      .replace(/[\s\-_/\\|·・,，.。:：;；'"\[\]【】()（）{}<>《》]+/g, '');
+  },
+
+  getSongSearchValues: function(song) {
+    const values = [
+      song && song.name,
+      song && song.artist,
+      song && song.id,
+      song && song.audio,
+      song && song.defaultAction
+    ];
+    if (song && Array.isArray(song.aliases)) {
+      values.push(...song.aliases);
+    } else if (song && song.aliases) {
+      values.push(song.aliases);
+    }
+    if (song && Array.isArray(song.boundActions)) {
+      song.boundActions.forEach(action => {
+        values.push(action && action.id, action && action.name, action && action.file);
+      });
+    }
+
+    return [...new Set(values.map(value => Jukebox.normalizeSongQuery(value)).filter(Boolean))];
+  },
+
+  getLevenshteinDistance: function(a, b, maxDistance = Infinity) {
+    if (a === b) return 0;
+    if (!a) return b.length;
+    if (!b) return a.length;
+    if (Math.abs(a.length - b.length) > maxDistance) return maxDistance + 1;
+
+    let previous = Array.from({ length: b.length + 1 }, (_, index) => index);
+    for (let i = 1; i <= a.length; i += 1) {
+      const current = [i];
+      let rowMin = current[0];
+      for (let j = 1; j <= b.length; j += 1) {
+        const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+        const value = Math.min(
+          previous[j] + 1,
+          current[j - 1] + 1,
+          previous[j - 1] + cost
+        );
+        current[j] = value;
+        rowMin = Math.min(rowMin, value);
+      }
+      if (rowMin > maxDistance) return maxDistance + 1;
+      previous = current;
+    }
+    return previous[b.length];
+  },
+
+  getBestFuzzyDistance: function(query, target) {
+    if (!query || !target || query.length < 2 || target.length < 2) return Infinity;
+
+    const maxDistance = query.length <= 3 ? 1 : Math.max(1, Math.floor(query.length * 0.3));
+    let best = Infinity;
+    const minLength = Math.max(1, query.length - maxDistance);
+    const maxLength = Math.min(target.length, query.length + maxDistance);
+
+    for (let start = 0; start < target.length; start += 1) {
+      for (let length = minLength; length <= maxLength; length += 1) {
+        if (start + length > target.length) continue;
+        const fragment = target.slice(start, start + length);
+        const distance = Jukebox.getLevenshteinDistance(query, fragment, Math.min(maxDistance, best));
+        if (distance < best) best = distance;
+      }
+    }
+
+    return best <= maxDistance ? best : Infinity;
+  },
+
+  scoreSongForQuery: function(song, normalizedQuery, index) {
+    let bestScore = -Infinity;
+    const values = Jukebox.getSongSearchValues(song);
+
+    values.forEach((value) => {
+      if (value === normalizedQuery) {
+        bestScore = Math.max(bestScore, 10000 - index);
+        return;
+      }
+      if (value.startsWith(normalizedQuery)) {
+        bestScore = Math.max(bestScore, 9000 - (value.length - normalizedQuery.length) - index);
+        return;
+      }
+      const includesIndex = value.indexOf(normalizedQuery);
+      if (includesIndex >= 0) {
+        bestScore = Math.max(bestScore, 8000 - includesIndex - (value.length - normalizedQuery.length) - index);
+        return;
+      }
+
+      const fuzzyDistance = Jukebox.getBestFuzzyDistance(normalizedQuery, value);
+      if (Number.isFinite(fuzzyDistance)) {
+        bestScore = Math.max(bestScore, 7000 - fuzzyDistance * 100 - Math.abs(value.length - normalizedQuery.length) - index);
+      }
+    });
+
+    return Number.isFinite(bestScore) ? bestScore : null;
   },
 
   findSongForQuery: function(query) {
@@ -7823,11 +7939,17 @@ window.Jukebox = {
       return songs[0] || null;
     }
 
-    return songs.find(song => Jukebox.normalizeSongQuery(song.name) === normalizedQuery)
-      || songs.find(song => Jukebox.normalizeSongQuery(song.name).includes(normalizedQuery))
-      || songs.find(song => Jukebox.normalizeSongQuery(song.artist).includes(normalizedQuery))
-      || songs.find(song => Jukebox.normalizeSongQuery(song.id).includes(normalizedQuery))
-      || null;
+    let best = null;
+    let bestScore = -Infinity;
+    songs.forEach((song, index) => {
+      const score = Jukebox.scoreSongForQuery(song, normalizedQuery, index);
+      if (score !== null && score > bestScore) {
+        best = song;
+        bestScore = score;
+      }
+    });
+
+    return best;
   },
 
   executeControl: async function(command = {}) {
@@ -8961,7 +9083,8 @@ window.Jukebox = {
       return Jukebox.State.player;
     }
 
-    const host = options.headless === true
+    const isHeadless = options.headless === true;
+    const host = isHeadless
       ? Jukebox.ensureRuntimeHost()
       : Jukebox.State.container;
 
@@ -8995,6 +9118,7 @@ window.Jukebox = {
       volume: 1,
       audio: []
     });
+    Jukebox.State.playerHost = isHeadless ? 'runtime' : 'ui';
     
     console.log('[Jukebox] APlayer已创建，音量:', Jukebox.State.player.audio.volume);
     return Jukebox.State.player;

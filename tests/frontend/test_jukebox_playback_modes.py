@@ -138,7 +138,8 @@ def setup_headless_jukebox_page(mock_page: Page) -> None:
                   songs: {
                     song1: { name: 'Song 1', artist: 'A', audio: 'songs/song1.mp3', visible: true },
                     song2: { name: 'Song 2', artist: 'B', audio: 'songs/song2.mp3', visible: true },
-                    song3: { name: 'Song 3', artist: 'C', audio: 'songs/song3.mp3', visible: true }
+                    song3: { name: 'Song 3', artist: 'C', audio: 'songs/song3.mp3', visible: true },
+                    song4: { name: '桃源恋歌', artist: 'GARNiDELiA', audio: 'songs/tougen-renka.mp3', visible: true }
                   },
                   actions: {},
                   bindings: {}
@@ -202,6 +203,96 @@ def test_jukebox_execute_control_play_headless_loads_without_ui(mock_page: Page)
         "currentSong": "song1",
         "isRuntimeReady": True,
         "playerItems": ["Song 1"],
+    }
+
+
+@pytest.mark.frontend
+def test_jukebox_execute_control_play_uses_fuzzy_matching(mock_page: Page):
+    setup_headless_jukebox_page(mock_page)
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+          const result = await window.Jukebox.executeControl({ action: 'play', query: '桃园' });
+          return {
+            result,
+            currentSong: window.Jukebox.State.currentSong && window.Jukebox.State.currentSong.id,
+            playerItems: window.__lastAPlayer.list.items.map((item) => item.name)
+          };
+        }
+        """
+    )
+
+    assert result == {
+        "result": {
+            "ok": True,
+            "action": "play",
+            "song": {"id": "song4", "name": "桃源恋歌", "artist": "GARNiDELiA"},
+        },
+        "currentSong": "song4",
+        "playerItems": ["桃源恋歌"],
+    }
+
+
+@pytest.mark.frontend
+def test_jukebox_close_preserves_headless_runtime(mock_page: Page):
+    setup_headless_jukebox_page(mock_page)
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+          const J = window.Jukebox;
+          await J.executeControl({ action: 'play', query: 'Song 1', headless: true });
+          let fullCloseEvents = 0;
+          window.addEventListener('neko:jukebox-full-close', () => { fullCloseEvents += 1; });
+
+          const wrapper = document.createElement('div');
+          wrapper.className = 'jukebox-wrapper';
+          wrapper.innerHTML = '<div class="jukebox-container"></div>';
+          document.body.appendChild(wrapper);
+          const style = document.createElement('style');
+          document.head.appendChild(style);
+
+          J.State.container = wrapper;
+          J.State.styleElement = style;
+          J.State.isOpen = true;
+          J.State.isHidden = false;
+          J._broadcastChannel = {
+            onmessage: () => {},
+            closed: false,
+            close() { this.closed = true; }
+          };
+          const channel = J._broadcastChannel;
+
+          J.close();
+
+          return {
+            fullCloseEvents,
+            hasUi: !!document.querySelector('.jukebox-wrapper'),
+            hasStyle: document.head.contains(style),
+            hasRuntimeHost: !!document.getElementById('neko-jukebox-runtime-host'),
+            isRuntimeReady: J.State.isRuntimeReady,
+            playerHost: J.State.playerHost,
+            playerDestroyed: window.__lastAPlayer.destroyed === true,
+            currentSong: J.State.currentSong && J.State.currentSong.id,
+            songCount: J.State.songs.length,
+            channelClosed: channel.closed === true
+          };
+        }
+        """
+    )
+
+    assert result == {
+        "fullCloseEvents": 0,
+        "hasUi": False,
+        "hasStyle": False,
+        "hasRuntimeHost": True,
+        "isRuntimeReady": True,
+        "playerHost": "runtime",
+        "playerDestroyed": False,
+        "currentSong": "song1",
+        "songCount": 4,
+        "channelClosed": True,
     }
 
 
