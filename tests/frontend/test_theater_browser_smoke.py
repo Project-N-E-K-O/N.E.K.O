@@ -154,6 +154,7 @@ def test_stale_input_without_active_session_reopens_start_controls(mock_page: Pa
     expect(mock_page.locator("#theater-story-select")).to_be_enabled()
     assert mock_page.evaluate("window.localStorage.getItem('neko.theater.activeSession.v1')") is None
     expect(mock_page.locator("#theater-log")).not_to_contain_text("这句不会提交到旧演出")
+    expect(mock_page.locator("#theater-input")).to_have_value("这句不会提交到旧演出")
 
     # 解除拦截并刷新，恢复真实后端中的测试 Session，再按正式离场协议清理测试状态。
     mock_page.unroute("**/api/theater/session/input")

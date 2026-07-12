@@ -140,8 +140,12 @@
     function setBusy(busy) {
         state.busy = busy;
         const active = Boolean(state.sessionId);
+        // 只有下拉框对应的故事已经由服务端加载完成，才允许发送明确的 story_id 开场。
+        const storyReady = Boolean(state.storyId && state.stories.some(function (story) {
+            return story && String(story.id || '') === state.storyId;
+        }));
         $('theater-story-select').disabled = busy || active;
-        $('theater-start-btn').disabled = busy || active;
+        $('theater-start-btn').disabled = busy || active || !storyReady;
         $('theater-end-btn').disabled = busy || !active;
         $('theater-input').disabled = busy || !active || state.inputClosed;
         $('theater-send-btn').disabled = busy || !active || state.inputClosed;
@@ -439,6 +443,8 @@
                     ? t('theater.sessionUpgradeRequired', '旧版演绎无法继续，请开始一场新演出。')
                     : t('theater.ready', '准备中'));
             }
+            // 故事列表写入 state 后重新计算按钮状态；加载前禁用，成功后才允许按所选 story_id 开场。
+            setBusy(state.busy);
         } catch (_) {
             setStatus(t('theater.failed', '加载失败'));
         }
@@ -494,6 +500,8 @@
                 if (await recoverRevisionConflict(result, selected ? '' : message)) return;
                 if (await recoverUnavailableSession(result)) {
                     if (optimistic) optimistic.remove();
+                    // 失效回合没有提交成功，保留玩家草稿供恢复后确认、修改或再次发送。
+                    if (!selected) input.value = message;
                     return;
                 }
                 throw new Error('input');

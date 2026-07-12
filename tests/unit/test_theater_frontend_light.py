@@ -134,6 +134,14 @@ def test_frontend_recovers_stale_or_cross_character_session_without_reload():
     assert "state.sessionId = '';" in script
     assert "await restoreActiveSession('')" in script
     assert "await recoverUnavailableSession(result)" in script
+    assert script.count("if (!selected) input.value = message;") >= 2
+
+
+def test_frontend_disables_start_until_selected_story_is_loaded():
+    """故事列表未完成或失败时，开始按钮不得用空 story_id 启动默认剧本。"""  # noqa: DOCSTRING_CJK
+    script = (ROOT / "static" / "js" / "theater.js").read_text(encoding="utf-8")
+    assert "const storyReady = Boolean(state.storyId" in script
+    assert "busy || active || !storyReady" in script
 
 
 def test_locale_files_remain_valid_json():
