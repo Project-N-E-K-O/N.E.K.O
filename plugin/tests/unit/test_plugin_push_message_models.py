@@ -57,3 +57,20 @@ def test_push_message_record_preserves_complete_wire_compat_surface() -> None:
     assert dumped["unsafe"] is True
     assert dumped["delivery"] == "silent"
     assert dumped["reply"] is False
+
+
+def test_push_message_record_accepts_schema_field_name_and_wire_alias() -> None:
+    required = {
+        "plugin_id": "demo",
+        "message_id": "m1",
+        "timestamp": "2026-07-12T00:00:00Z",
+    }
+
+    from_field_name = PluginPushMessage.model_validate(
+        {**required, "schema_version": "custom.field"}
+    )
+    from_alias = PluginPushMessage.model_validate({**required, "schema": "custom.alias"})
+
+    assert from_field_name.schema_version == "custom.field"
+    assert from_alias.schema_version == "custom.alias"
+    assert from_field_name.model_dump(by_alias=True)["schema"] == "custom.field"

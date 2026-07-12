@@ -606,6 +606,14 @@ def _plugin_process_runner(
                          "/ 请在普通插件中用 include_router() 挂载。"
                          "/ 通常プラグインから include_router() でマウントしてください。",
             })
+            try:
+                ctx.close()
+            except Exception as e:
+                logger.debug("[Plugin Process] Context close failed after invalid router entry: {}", e)
+            try:
+                child_transport.close()
+            except Exception:
+                pass
             return
 
         instance = cls(ctx)

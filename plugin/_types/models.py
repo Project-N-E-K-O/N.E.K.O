@@ -6,7 +6,7 @@ from __future__ import annotations
 import base64
 from typing import Any, Dict, Literal, Optional, List, Union
 
-from pydantic import BaseModel, Field, field_serializer, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
 
 from .version import SDK_VERSION
 from .plugin_types import PluginType, require_supported_plugin_type
@@ -204,6 +204,8 @@ class PluginPushMessageRequest(BaseModel):
 
 class PluginPushMessage(BaseModel):
     """插件推送消息（主进程中的完整消息记录，v2 + v1 兼容字段并存）。"""
+
+    model_config = ConfigDict(populate_by_name=True)
 
     plugin_id: str
     source: str = ""

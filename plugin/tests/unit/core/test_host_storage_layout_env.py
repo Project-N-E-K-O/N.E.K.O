@@ -77,6 +77,64 @@ class _FakeResponseSender:
 
 
 @pytest.mark.plugin_unit
+def test_plugin_router_entry_closes_context_and_transport_before_returning(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    closed: list[str] = []
+    payloads: list[dict[str, object]] = []
+    config_path = tmp_path / "demo" / "plugin.toml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text("[plugin]\nid='demo'\ntype='plugin'\n", encoding="utf-8")
+
+    class _Router(host_module.PluginRouter):
+        pass
+
+    class _Sender:
+        def put_nowait(self, payload: dict[str, object]) -> None:
+            payloads.append(payload)
+
+    class _ChildTransport:
+        def __init__(self, downlink_endpoint: str, uplink_endpoint: str) -> None:
+            del downlink_endpoint, uplink_endpoint
+
+        def channel_sender(self, channel: str) -> _Sender:
+            del channel
+            return _Sender()
+
+        def close(self) -> None:
+            closed.append("transport")
+
+    class _Context:
+        def __init__(self, **kwargs: object) -> None:
+            self.__dict__.update(kwargs)
+
+        def close(self) -> None:
+            closed.append("context")
+
+    monkeypatch.setenv("NEKO_PLUGIN_ZMQ_IPC_ENABLED", "0")
+    monkeypatch.setattr(host_module, "_setup_plugin_logger", lambda *args, **kwargs: _FakeLogger())
+    monkeypatch.setattr(host_module, "_setup_logging_interception", lambda *args, **kwargs: None)
+    monkeypatch.setattr(host_module, "_prepare_child_plugin_import_roots", lambda *args, **kwargs: None)
+    monkeypatch.setattr(host_module, "_prepare_child_current_plugin_import_root", lambda *args, **kwargs: None)
+    monkeypatch.setattr(host_module, "_prepare_child_plugin_vendor_path", lambda *args, **kwargs: None)
+    monkeypatch.setattr(host_module, "_import_plugin_module", lambda *args, **kwargs: SimpleNamespace(DemoRouter=_Router))
+    monkeypatch.setattr(host_module, "ChildTransport", _ChildTransport)
+    monkeypatch.setattr(host_module, "PluginContext", _Context)
+
+    host_module._plugin_process_runner(
+        plugin_id="demo",
+        entry_point="tests.fake:DemoRouter",
+        config_path=config_path,
+        downlink_endpoint="ipc://down",
+        uplink_endpoint="ipc://up",
+    )
+
+    assert closed == ["context", "transport"]
+    assert payloads[-1]["status"] == "error"
+
+
+@pytest.mark.plugin_unit
 def test_plugin_process_runner_sends_startup_ready_before_auto_custom_events(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
