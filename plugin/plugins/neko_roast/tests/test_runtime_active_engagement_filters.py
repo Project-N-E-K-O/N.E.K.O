@@ -1021,6 +1021,8 @@ def test_active_engagement_mention_parser_keeps_neko_directed_mentions() -> None
     assert RoastRuntime._is_viewer_to_viewer_mention_text("@\u5c0f\u5929\u5531\u6b4c") is False
     assert RoastRuntime._is_viewer_to_viewer_mention_text("@\u732b\u732b\u6c42\u63a8\u8350") is False
     assert RoastRuntime._is_viewer_to_viewer_mention_text("@\u732b\u5a18\u7ed9\u6211\u4e00\u4e2a\u63a8\u8350") is False
+    assert RoastRuntime._is_viewer_to_viewer_mention_text("@\u732b\u732b\u770b\u770b\u8fd9\u4e2a") is False
+    assert RoastRuntime._is_viewer_to_viewer_mention_text("@\u5c0f\u5929\u770b\u4e00\u4e0b") is False
     assert RoastRuntime._is_viewer_to_viewer_mention_text("@\u732b\u732b\u597d\u53ef\u7231 \u4f60\u770b\u8fd9\u4e2a") is True
     assert RoastRuntime._is_viewer_to_viewer_mention_text("@\u732b\u5a18\u6559\u5e08 \u4f60\u770b\u8fd9\u4e2a") is True
     assert RoastRuntime._is_viewer_to_viewer_mention_text("@\u732b\u732b\u6559\u7ec3 \u4f60\u770b\u8fd9\u4e2a") is True
