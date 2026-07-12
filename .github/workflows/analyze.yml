@@ -131,7 +131,7 @@ jobs:
         run: python scripts/check_startup_import_lazy.py
 
   python-conventions:
-    name: Python conventions (i18n-sync + docs + api-trailing-slash×2 + module-layering + docstring-cjk)
+    name: Python conventions (i18n-sync + docs + api-trailing-slash×2 + module-layering + docstring-cjk + core-contracts)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -185,6 +185,19 @@ jobs:
           # Same zizmor template-injection indirection as the i18n-sync step.
           BASE_REF: ${{ github.base_ref }}
         run: python scripts/check_docstring_no_cjk.py --base "origin/${BASE_REF}"
+
+      - name: Enforce main_logic/core structural contracts
+        # The LLMSessionManager mixin split (#2272) rests on contracts a
+        # comment cannot enforce: symbols that tests rebind on the
+        # main_logic.core facade must be read by manager/mixin code through
+        # the _core_facade late-binding object (a from-import snapshot lets
+        # isolation-style stubs go silently green while the real function
+        # runs), mixins hold methods only, method sets stay disjoint, and
+        # the facade keeps its layout. The patched-symbol set is harvested
+        # from tests/ by AST on every run, so new patch targets tighten the
+        # gate automatically. Not diff-based — cheap full check, runs on
+        # push and PR alike.
+        run: python scripts/check_core_contracts.py
 
       - name: Forbid relative-up markdown links inside docs/
         # docs/ ships through VitePress with itself as the deploy root;
