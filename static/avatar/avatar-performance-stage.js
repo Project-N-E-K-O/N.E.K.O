@@ -2346,9 +2346,12 @@
                     // 时间判定：超过阈值未见 override 回调推进才退回 rAF 驱动——不能
                     // 数 tick，高刷屏（120Hz+）配 30fps ticker 治理时一个模型帧间隔
                     // 就有 4+ 个 rAF。150ms 覆盖任何合法 ticker 配置的帧间隔。
+                    // 心跳起点视为已停滞：回调首次推进前由 rAF 驱动，否则 hook 注册
+                    // 成功但失活时前 150ms 无人写参，durationMs<=150 的短时间线会
+                    // 只播初始帧就被督导 finish('played')。
                     const OVERRIDE_STALL_FALLBACK_MS = 150;
                     let lastOverrideFrameCount = overrideFrameCount;
-                    let lastOverrideAdvanceAt = now();
+                    let lastOverrideAdvanceAt = now() - OVERRIDE_STALL_FALLBACK_MS;
                     const tick = () => {
                         if (settled) {
                             resolve();
