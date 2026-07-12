@@ -49,7 +49,7 @@ def set_identity(
     if not isinstance(data, dict):
         return {"ok": False, "error": "identity request failed"}
     result = dict(data)
-    result["ok"] = True
+    result.setdefault("ok", True)
     return result
 
 

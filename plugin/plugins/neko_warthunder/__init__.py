@@ -150,6 +150,7 @@ class NekoWarthunderPlugin(NekoPluginBase):
     async def startup(self, **_):
         await self._reload_config()
         data_layer_status = self.data_layer_manager.start_if_needed()
+        identity_result = self._restore_identity_to_data_layer()
         self._stop.clear()
         self._thread = threading.Thread(target=self._loop, daemon=True, name="wt-poll")
         self._thread.start()
@@ -157,7 +158,6 @@ class NekoWarthunderPlugin(NekoPluginBase):
             f"neko_warthunder started (dry_run={self.cfg.dry_run}, url={self.cfg.data_layer_url}, "
             f"data_layer={data_layer_status.get('mode')})"
         )
-        identity_result = self._restore_identity_to_data_layer()
         return Ok(
             {
                 "status": "running",
@@ -174,8 +174,8 @@ class NekoWarthunderPlugin(NekoPluginBase):
             self._thread.join(timeout=3.0)
         data_layer_status = self.data_layer_manager.stop()
         if self._instructions_injected:
-            self.dispatcher.push_context(WT_RESTORE_INSTRUCTIONS)
-            self._instructions_injected = False
+            if self.dispatcher.push_context(WT_RESTORE_INSTRUCTIONS):
+                self._instructions_injected = False
         self.logger.info("neko_warthunder shutdown")
         return Ok({"status": "shutdown", "data_layer": data_layer_status})
 
@@ -277,6 +277,8 @@ class NekoWarthunderPlugin(NekoPluginBase):
 
     def _tick(self) -> None:
         if not self.cfg.enabled:
+            if self._instructions_injected and self.dispatcher.push_context(WT_RESTORE_INSTRUCTIONS):
+                self._instructions_injected = False
             return
         new_state = self.client.poll()
         self.timeline.mark_tick()
@@ -295,7 +297,8 @@ class NekoWarthunderPlugin(NekoPluginBase):
         was_active = self._game_context_should_be_active(prev)
         is_active = self._game_context_should_be_active(cur)
         if is_active and not self._instructions_injected:
-            self.dispatcher.push_context(WT_CONTEXT_INSTRUCTIONS)
+            if not self.dispatcher.push_context(WT_CONTEXT_INSTRUCTIONS):
+                return
             self._instructions_injected = True
             self.timeline.record_stage(
                 stage="game_context_entered",
@@ -308,7 +311,8 @@ class NekoWarthunderPlugin(NekoPluginBase):
             )
             return
         if (not is_active) and self._instructions_injected and was_active:
-            self.dispatcher.push_context(WT_RESTORE_INSTRUCTIONS)
+            if not self.dispatcher.push_context(WT_RESTORE_INSTRUCTIONS):
+                return
             self._instructions_injected = False
             self.timeline.record_stage(
                 stage="game_context_exited",
@@ -675,7 +679,7 @@ class NekoWarthunderPlugin(NekoPluginBase):
             and not s.dead
         )
         runway_active = time_active and self._takeoff_gear_down_or_moving(s)
-        active = radio_active or runway_active
+        active = radio_active or time_active
         suppresses = ["low_alt_danger"] if time_active or radio_active else []
         if radio_active or runway_active:
             suppresses.append("overspeed")
@@ -790,7 +794,7 @@ class NekoWarthunderPlugin(NekoPluginBase):
     @plugin_entry(
         id="set_dialogue_intrusion_mode",
         name="设置插话策略",
-        description="选择战斗播报是否打断当前对话。死亡和 critical 安全告警始终允许穿透。",
+        description="选择战斗播报是否打断当前对话；不打断模式会在静默窗口内阻止所有事件插话。",
         input_schema={
             "type": "object",
             "properties": {

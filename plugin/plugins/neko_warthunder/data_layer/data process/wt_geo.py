@@ -60,10 +60,12 @@ def distance_m(
     return math.hypot(east, south)
 
 
-def bearing_deg(x1: float, y1: float, x2: float, y2: float) -> float:
+def bearing_deg(x1: float, y1: float, x2: float, y2: float, map_info: Any = None) -> float:
     """从点1指向点2的方位角：正北=0，顺时针，0~360。"""
-    east = x2 - x1
-    north = -(y2 - y1)  # 屏幕 y 向下为南，取反得正北分量
+    span = _world_span(map_info) if map_info is not None else None
+    scale_x, scale_y = span or (1.0, 1.0)
+    east = (x2 - x1) * scale_x
+    north = -(y2 - y1) * scale_y  # 屏幕 y 向下为南，取反得正北分量
     ang = math.degrees(math.atan2(east, north))
     return ang % 360.0
 
@@ -117,7 +119,7 @@ def grid_cell(nx: float, ny: float, map_info: Any) -> str | None:
     world_y = mn[1] + ny * span[1]
     col = int((world_x - zero[0]) // steps[0])
     row = int((world_y - zero[1]) // steps[1])
-    if not (0 <= col < len(_LETTERS)):
+    if not (0 <= col < len(_LETTERS)) or row < 0:
         return None
     return f"{_LETTERS[col]}{row + 1}"
 
@@ -225,7 +227,7 @@ def analyze_situation(map_objects: list[Any], map_info: Any) -> dict[str, Any]:
         }
         if px is not None:
             dist = distance_m(px, py, t.x, t.y, map_info)
-            brg = bearing_deg(px, py, t.x, t.y)
+            brg = bearing_deg(px, py, t.x, t.y, map_info)
             rel = relative_bearing(brg, own_heading)
             item["distance_m"] = round(dist) if dist is not None else None
             item["bearing_deg"] = round(brg, 1)
@@ -241,7 +243,7 @@ def analyze_situation(map_objects: list[Any], map_info: Any) -> dict[str, Any]:
     entries: list[dict[str, Any]] = []
     for e in enemies:
         dist = distance_m(px, py, e.x, e.y, map_info)
-        brg = bearing_deg(px, py, e.x, e.y)
+        brg = bearing_deg(px, py, e.x, e.y, map_info)
         rel = relative_bearing(brg, own_heading)
         e_type = getattr(e, "type", "unknown")
         e_icon = getattr(e, "icon", "none")

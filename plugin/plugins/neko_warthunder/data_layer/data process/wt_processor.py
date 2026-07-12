@@ -670,19 +670,24 @@ class TelemetryProcessor:
             by_mach = mach is not None and mach_thr is not None and mach >= mach_thr
             return bool(by_ias or by_mach)
 
-        def _desc() -> tuple[str, float | None]:
-            if ias is not None:
-                return f"IAS {ias:.0f} km/h", ias
-            if mach is not None:
-                return f"M {mach:.2f}", mach
-            return "", None
+        def _desc(ias_thr: Any, mach_thr: Any) -> tuple[str, float | None]:
+            parts: list[str] = []
+            value: float | None = None
+            if ias is not None and ias_thr is not None and ias >= ias_thr:
+                parts.append(f"IAS {ias:.0f} km/h")
+                value = ias
+            if mach is not None and mach_thr is not None and mach >= mach_thr:
+                parts.append(f"M {mach:.2f}")
+                if value is None:
+                    value = mach
+            return " / ".join(parts), value
 
         if _hit(ias_crit, mach_crit):
-            txt, val = _desc()
+            txt, val = _desc(ias_crit, mach_crit)
             self._add(result, "overspeed_critical", "critical",
                       f"速度过高，机体可能解体：{txt}", val)
         elif _hit(ias_warn, mach_warn):
-            txt, val = _desc()
+            txt, val = _desc(ias_warn, mach_warn)
             self._add(result, "overspeed_warn", "warning",
                       f"速度偏高，注意结构限速：{txt}", val)
 

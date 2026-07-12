@@ -17,7 +17,7 @@ from .contracts import (
     BattleState,
 )
 
-_END_STATUSES = frozenset({"win", "won", "victory", "fail", "failed", "lost", "defeat", "left", "ended", "finished"})
+_END_STATUSES = frozenset({"win", "won", "victory", "success", "fail", "failed", "lost", "defeat", "left", "ended", "finished"})
 
 _STRESS_G_THRESHOLD = 5.0
 _AIR_STRESS_WINDOW_SECONDS = 8.0

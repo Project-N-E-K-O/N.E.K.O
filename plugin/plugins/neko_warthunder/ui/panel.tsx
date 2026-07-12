@@ -219,7 +219,7 @@ const LEVEL_LABELS: Record<string, string> = {
 const SAFETY_LABELS: Record<string, string> = {
   running: "运行中",
   paused: "已暂停",
-  auto_paused: "自动暂停",
+  tripped: "自动暂停",
 }
 
 const DOMAIN_LABELS: Record<string, string> = {
@@ -298,6 +298,7 @@ const REASON_LABELS: Record<string, string> = {
 function safetyTone(status: string | undefined) {
   if (status === "running") return "success"
   if (status === "paused") return "danger"
+  if (status === "tripped") return "warning"
   return "warning"
 }
 

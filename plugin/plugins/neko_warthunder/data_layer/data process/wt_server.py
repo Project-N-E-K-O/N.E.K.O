@@ -207,6 +207,7 @@ class TelemetryService:
 
         self._running = False
         self._threads: list[threading.Thread] = []
+        self._battle_generation = 0
 
     # -- 生命周期 ----------------------------------------------------------
 
@@ -214,7 +215,7 @@ class TelemetryService:
         if self._running:
             return
         self._running = True
-        workers: list[tuple[str, Callable[[], None], bool]] = [
+        workers: list[tuple[str, Callable[..., None], bool]] = [
             ("fast", self._poll_fast, False),     # 状态探针，始终运行
             ("map", self._poll_map, True),
             ("events", self._poll_events, True),
@@ -245,11 +246,17 @@ class TelemetryService:
             t0 = time.time()
             try:
                 if (not require_battle) or self._state is ConnectionState.IN_BATTLE:
-                    fn()
                     with self._lock:
-                        meta = self._meta[name]
-                        meta["count"] += 1
-                        meta["last"] = time.time()
+                        generation = self._battle_generation
+                    if require_battle:
+                        fn(generation)
+                    else:
+                        fn()
+                    with self._lock:
+                        if (not require_battle) or generation == self._battle_generation:
+                            meta = self._meta[name]
+                            meta["count"] += 1
+                            meta["last"] = time.time()
             except Exception as exc:  # 单组异常不影响其它组与整体循环
                 print(f"[{name}] 轮询出错（已忽略）：{exc!r}", file=sys.stderr)
             elapsed = time.time() - t0
@@ -272,6 +279,8 @@ class TelemetryService:
         with self._lock:
             prev = self._state
             self._state = state
+            if state is not prev:
+                self._battle_generation += 1
             self._indicators = ind
             self._vehicle = vehicle
             self._map_info = minfo  # grid 参数随 fast 实时刷新，供态势换算
@@ -305,6 +314,7 @@ class TelemetryService:
                 # 立即重置处理器并压掉当前帧；下一帧从新载具重新建立基线。
                 self.processor.reset()
                 self._life_entry_ts = now
+                processed = None
             # 开局抑制窗口：进局前 _SPAWN_SUPPRESS_SEC 秒清空告警（保留派生量/数值），
             # 压掉 air RB 空中生成的失速/低高度等瞬态假警。
             # 阵亡待命态同样抑制告警（死车残骸/观战冻结会刷失速/乘员损失等假警）。
@@ -317,7 +327,7 @@ class TelemetryService:
         # 录制（调试开关）：按记录间隔转存一帧快照；未开启录制时近乎零开销
         self.recorder.offer_frame(self._build_record_frame)
 
-    def _poll_map(self) -> None:
+    def _poll_map(self, generation: int) -> None:
         objs = self.client.get_map_objects()
         # 态势分析依赖 map_info（由 mapimg 组维护），grid 参数基本不变可直接用缓存
         situation = analyze_situation(objs, self._map_info)
@@ -332,13 +342,15 @@ class TelemetryService:
         )
         now = time.time()
         # 阵亡待命态：地图“自身”坐标会漂到被观战者身上，敌距/接近全部失真，不再生成接近告警。
-        if self._dead:
-            prox_events = []
-        else:
-            prox_events = self.proximity.update(
-                situation.get("enemies", []), thr_air, thr_ground, now
-            )
         with self._lock:
+            if generation != self._battle_generation:
+                return
+            if self._dead:
+                prox_events = []
+            else:
+                prox_events = self.proximity.update(
+                    situation.get("enemies", []), thr_air, thr_ground, now
+                )
             self._map_objects = objs
             self._situation = situation
             self._proximity_threshold = {"vs_air": thr_air, "vs_ground": thr_ground}
@@ -348,7 +360,7 @@ class TelemetryService:
         if prox_events:
             self.recorder.write_events("proximity", list(prox_events))
 
-    def _poll_events(self) -> None:
+    def _poll_events(self, generation: int) -> None:
         # 先应用待处理的昵称设置（仅本线程改 tracker，避免与 HTTP 线程竞争）
         with self._lock:
             req = self._name_req
@@ -370,13 +382,15 @@ class TelemetryService:
         status, objectives = self.client.get_mission()
         hud = self.client.get_hud()
         chat = self.client.get_chat()
-        self.tracker.feed(hud)  # 解析击杀事件并累积战绩
-        combat = self.tracker.get_summary()
-        self.notices.feed(hud)  # 解析自机技术通知(油温过高/襟翼非对称/发动机过热)
-        notices = self.notices.get_summary()
-        self.awards.feed(hud)   # 解析战斗嘉奖(一血/双杀/三杀/连续无伤歼敌等)
-        awards = self.awards.get_summary(combat.get("player_name"))
         with self._lock:
+            if generation != self._battle_generation:
+                return
+            self.tracker.feed(hud)  # 解析击杀事件并累积战绩
+            combat = self.tracker.get_summary()
+            self.notices.feed(hud)  # 解析自机技术通知(油温过高/襟翼非对称/发动机过热)
+            notices = self.notices.get_summary()
+            self.awards.feed(hud)   # 解析战斗嘉奖(一血/双杀/三杀/连续无伤歼敌等)
+            awards = self.awards.get_summary(combat.get("player_name"))
             self._mission_status = status
             self._mission_objectives = objectives
             self._combat = combat
@@ -392,7 +406,7 @@ class TelemetryService:
         if chat:
             self.recorder.write_events("chat", list(chat))
 
-    def _poll_mapimg(self) -> None:
+    def _poll_mapimg(self, generation: int) -> None:
         # map_info 已由 fast 组实时缓存，这里只负责按 generation 拉取底图
         with self._lock:
             info = self._map_info
@@ -401,11 +415,13 @@ class TelemetryService:
             data, ext = self.client.fetch_map_image()
             if data and ext:
                 new_map = (data, ext, info.map_generation)
-                if self.save_map:
-                    self._write_map(data, ext, info.map_generation)
         with self._lock:
+            if generation != self._battle_generation:
+                return
             if new_map is not None:
                 self._map_bytes, self._map_ext, self._map_gen = new_map
+        if new_map is not None and self.save_map:
+            self._write_map(*new_map)
 
     def _detect_replay_locked(self, ind: Indicators, now: float) -> None:
         """判定本局是否为录像回放（调用方需已持锁，且仅在战局内调用）。

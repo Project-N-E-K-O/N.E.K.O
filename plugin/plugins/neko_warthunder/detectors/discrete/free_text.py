@@ -39,14 +39,6 @@ def _item_id(item: dict[str, Any], fallback: int) -> int:
         return fallback
 
 
-def _safe_code(value: Any) -> str:
-    raw = str(value or "").strip()
-    if not raw:
-        return ""
-    safe = "".join(ch for ch in raw[:48] if ch.isalnum() or ch in {"_", "-"})
-    return safe
-
-
 class FreeTextActivityDetector(DiscreteDetector):
     """Surface free-text source activity as dry-run-only safe metadata."""
 
@@ -100,11 +92,7 @@ class FreeTextActivityDetector(DiscreteDetector):
             return None
 
         self._last_ids[source] = max_id
-        latest = new_items[-1]
         payload: dict[str, Any] = {"source": source, "count": len(new_items)}
-        code = _safe_code(latest.get("code") or latest.get("type") or latest.get("kind"))
-        if code:
-            payload["latest_code"] = code
         return payload
 
     def _source_items(self, cur: BattleState, source: str) -> list[dict[str, Any]]:

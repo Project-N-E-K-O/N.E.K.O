@@ -8,6 +8,7 @@ dry_run 时短路、绝不真投。常驻场景上下文走 push_context(ai_beha
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from collections.abc import Callable
@@ -1158,7 +1159,11 @@ class NekoDispatcher:
             raise
         self._last_push_at = now
         self._last_push_priority = event.priority
-        self._last_event_push[event.event_id] = (now, event.level, recommended_reply)
+        self._last_event_push[event.event_id] = (
+            now,
+            event.level,
+            self._repeat_signature(event, recommended_reply),
+        )
         if ai_behavior == "respond" and self.plugin is not None:
             try:
                 setattr(self.plugin, "_last_battle_respond_at", now)
@@ -1220,19 +1225,27 @@ class NekoDispatcher:
     def _is_repeated_event_collapsed(self, event: BattleEvent, recommended_reply: str, now: float) -> bool:
         if event.event_id not in REPEAT_COLLAPSE_EVENT_IDS:
             return False
-        last_at, last_level, last_reply = self._last_event_push.get(event.event_id, (-1e9, "", ""))
+        last_at, last_level, last_signature = self._last_event_push.get(event.event_id, (-1e9, "", ""))
         if now - last_at >= REPEAT_COLLAPSE_SECONDS:
             return False
         if event.level == "critical" and last_level != "critical":
             return False
-        return last_reply == recommended_reply
+        return last_signature == self._repeat_signature(event, recommended_reply)
+
+    @staticmethod
+    def _repeat_signature(event: BattleEvent, recommended_reply: str) -> str:
+        if recommended_reply:
+            return recommended_reply
+        keys = ("target_type", "distance_m", "clock", "grid", "temp_c", "temp_source", "domain", "source")
+        facts = {key: event.payload.get(key) for key in keys if event.payload.get(key) is not None}
+        return json.dumps(facts, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
 
     def _is_v2_live_evidence_gated(self, event: BattleEvent) -> bool:
         if event.event_id not in V2_LIVE_EVIDENCE_GATED_EVENTS:
             return False
         return not _v2_live_verified_real_output_enabled(self.plugin)
 
-    def push_context(self, text: str) -> None:
+    def push_context(self, text: str) -> bool:
         """注入/恢复常驻场景上下文（ai_behavior='read'，不触发回复）。"""
         target_lanlan = _resolve_target_lanlan(self.plugin)
         metadata = {"plugin": "neko_warthunder", "kind": "context"}
@@ -1260,6 +1273,7 @@ class NekoDispatcher:
                     safe_summary="context/read",
                     target_lanlan=target_lanlan,
                 )
+            return True
         except Exception as exc:  # noqa: BLE001 — 上下文注入失败不致命
             if self.timeline:
                 self.timeline.record_stage(
@@ -1273,3 +1287,4 @@ class NekoDispatcher:
                 )
             if self.logger:
                 self.logger.warning(f"push_context failed: {type(exc).__name__}")
+            return False

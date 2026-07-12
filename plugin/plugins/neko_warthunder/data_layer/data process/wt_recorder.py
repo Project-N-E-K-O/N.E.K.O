@@ -43,10 +43,18 @@ def _gzip_file(path: str) -> None:
         if os.path.getsize(path) == 0:
             os.remove(path)
             return
-        with open(path, "rb") as f_in, gzip.open(path + ".gz", "wb", compresslevel=6) as f_out:
+        archive = path + ".gz"
+        tmp = f"{archive}.tmp.{threading.get_ident()}"
+        with open(path, "rb") as f_in, gzip.open(tmp, "wb", compresslevel=6) as f_out:
             shutil.copyfileobj(f_in, f_out, length=1 << 20)
+        os.replace(tmp, archive)
         os.remove(path)
     except OSError:
+        try:
+            if "tmp" in locals() and os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
         pass
 
 
@@ -81,6 +89,7 @@ class _RollingStream:
         self.seg_idx = 0
         self.count = 0
         self._bytes = 0
+        self._compression_threads: list[threading.Thread] = []
         self._fh = open(self._seg_path(), "a", encoding="utf-8", buffering=1)
 
     def _seg_path(self) -> str:
@@ -101,7 +110,9 @@ class _RollingStream:
         except Exception:
             pass
         # 后台压缩已完成的段，不阻塞调用线程（轮询线程）
-        threading.Thread(target=_gzip_file, args=(path,), daemon=True).start()
+        thread = threading.Thread(target=_gzip_file, args=(path,), daemon=True)
+        thread.start()
+        self._compression_threads.append(thread)
         self.seg_idx += 1
         self._bytes = 0
         self._fh = open(self._seg_path(), "a", encoding="utf-8", buffering=1)
@@ -112,6 +123,9 @@ class _RollingStream:
             self._fh.close()
         except Exception:
             pass
+        for thread in self._compression_threads:
+            thread.join()
+        self._compression_threads.clear()
         _gzip_file(path)  # 收尾段同步压缩（停止时一次性，可接受）
 
 
@@ -152,8 +166,15 @@ class SessionRecorder:
                 return self._status_locked()
             os.makedirs(self.root_dir, exist_ok=True)
             session = time.strftime("rec_%Y%m%d_%H%M%S")
-            d = os.path.join(self.root_dir, session)
-            os.makedirs(d, exist_ok=True)
+            suffix = 0
+            while True:
+                name = session if suffix == 0 else f"{session}_{suffix}"
+                d = os.path.join(self.root_dir, name)
+                try:
+                    os.makedirs(d, exist_ok=False)
+                    break
+                except FileExistsError:
+                    suffix += 1
             self._session_dir = d
             self._frames = _RollingStream(d, "frames", self.segment_bytes)
             self._streams = {

@@ -46,8 +46,14 @@ def _pl_over_g(s: BattleState) -> dict[str, Any]:
 
 
 def _pl_overheat(s: BattleState) -> dict[str, Any]:
-    temp = next((t for t in (s.water_temp_c, s.head_temp_c, s.turbine_temp_c, s.oil_temp_c) if t is not None), None)
-    return _drop_none({"domain": s.domain, "temp_c": temp})
+    temperatures = (
+        ("water_temp_c", s.water_temp_c),
+        ("head_temp_c", s.head_temp_c),
+        ("turbine_temp_c", s.turbine_temp_c),
+        ("oil_temp_c", s.oil_temp_c),
+    )
+    source, temp = next(((name, value) for name, value in temperatures if value is not None), (None, None))
+    return _drop_none({"domain": s.domain, "temp_c": temp, "temp_source": source})
 
 
 def _pl_low_fuel(s: BattleState) -> dict[str, Any]:

@@ -52,10 +52,13 @@ class AirSituationDetector(DiscreteDetector):
             self.reset()
             return None
 
-        situation = cur.situation if isinstance(cur.situation, dict) else {}
+        situation_valid = isinstance(cur.situation, dict)
+        situation = cur.situation if situation_valid else {}
         candidates = _air_enemy_candidates(situation)
         if not candidates:
             self._tail_hits.clear()
+            if situation_valid:
+                self._last_key = None
             return None
 
         rear = _nearest_by_distance(
@@ -66,6 +69,7 @@ class AirSituationDetector(DiscreteDetector):
         )
         if nearest is None:
             self._tail_hits.clear()
+            self._last_key = None
             return None
 
         distance = _as_float(nearest.get("distance_m")) or 0.0
@@ -122,6 +126,7 @@ class GroundTargetDetector(DiscreteDetector):
 
         nearest = _nearest_target(targets, self.distance_m)
         if nearest is None:
+            self._last_key = None
             return None
 
         key = _target_key(nearest)

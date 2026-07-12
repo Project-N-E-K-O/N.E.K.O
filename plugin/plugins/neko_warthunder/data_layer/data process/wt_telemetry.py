@@ -335,6 +335,13 @@ def _num(d: dict[str, Any], *names: str) -> float | None:
     return None
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
 def _max_engine_temp(d: dict[str, Any], base: str) -> float | None:
     """多发飞机的温度取各发动机有效值的最大。
 
@@ -486,7 +493,7 @@ def _parse_map_objects(items: Any) -> list[MapObject]:
                 faction=_classify_faction(icon, rgb),
                 color_hex=it.get("color", ""),
                 color_rgb=rgb,
-                blink=int(it.get("blink", 0) or 0),
+                blink=_safe_int(it.get("blink")),
                 x=_num(it, "x"),
                 y=_num(it, "y"),
                 dx=_num(it, "dx"),
@@ -685,7 +692,7 @@ class WarThunderClient:
         gen = data.get("map_generation")
         return MapInfo(
             valid=True,
-            map_generation=int(gen) if isinstance(gen, (int, float)) else None,
+            map_generation=_safe_int(gen) if gen is not None else None,
             grid_size=_pair(data.get("grid_size")),
             grid_steps=_pair(data.get("grid_steps")),
             grid_zero=_pair(data.get("grid_zero")),
@@ -701,7 +708,7 @@ class WarThunderClient:
         for ev in data.get("events", []) or []:
             if not isinstance(ev, dict):
                 continue
-            eid = int(ev.get("id", 0) or 0)
+            eid = _safe_int(ev.get("id"))
             self._last_evt = max(self._last_evt, eid)
             out.append(
                 HudMessage(
@@ -715,7 +722,7 @@ class WarThunderClient:
         for dm in data.get("damage", []) or []:
             if not isinstance(dm, dict):
                 continue
-            did = int(dm.get("id", 0) or 0)
+            did = _safe_int(dm.get("id"))
             self._last_dmg = max(self._last_dmg, did)
             out.append(
                 HudMessage(
@@ -800,7 +807,7 @@ class WarThunderClient:
         out: list[dict[str, Any]] = []
         for msg in data:
             if isinstance(msg, dict):
-                self._last_chat = max(self._last_chat, int(msg.get("id", 0) or 0))
+                self._last_chat = max(self._last_chat, _safe_int(msg.get("id")))
                 out.append(msg)
         return out
 
@@ -881,7 +888,7 @@ class WarThunderClient:
             if not info_data.get("valid", False):
                 return None  # 战局外
             raw_gen = info_data.get("map_generation")
-            gen = int(raw_gen) if isinstance(raw_gen, (int, float)) else None
+            gen = _safe_int(raw_gen) if raw_gen is not None else None
 
         if only_if_changed and gen is not None and gen == self._last_map_gen:
             return None  # 地图没变，跳过

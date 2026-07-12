@@ -265,7 +265,7 @@ def _kill_waits_for_combat_stress(event: BattleEvent) -> bool:
 def _event_allowed(event: BattleEvent, scenario: str) -> tuple[bool, str]:
     if not category_allowed(scenario, event.category):
         return False, f"scenario_gated({scenario})"
-    if scenario == "COMBAT_STRESS" and event.event_id in {"enemy_nearby", "ground_target_nearby"}:
+    if scenario == COMBAT_STRESS and event.event_id in {"enemy_nearby", "ground_target_nearby"}:
         domain = str(event.payload.get("domain") or "").lower()
         if event.event_id == "enemy_nearby" and domain in {"ground", "naval"}:
             return True, ""

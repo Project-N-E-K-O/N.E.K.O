@@ -53,7 +53,6 @@ SEV_LIFECYCLE = 1
 
 # 危急集合：触发 CRITICAL_RISK 的安全事件 + you_died。抢占资格 = 属此集合 且 数据层报 critical。
 CRITICAL_EVENT_IDS = frozenset({"stall_risk", "high_aoa", "over_g", "low_alt_danger", "overspeed"})
-PREEMPT_ELIGIBLE_IDS = CRITICAL_EVENT_IDS | {"you_died"}
 CRITICAL_FLAG_CODES = frozenset(
     {"stall_critical", "aoa_critical", "over_g_critical", "altitude_critical", "overspeed_critical"}
 )
@@ -103,6 +102,10 @@ EVENT_CATALOG: dict[str, EventSpec] = {
     "spawn":          EventSpec("spawn", CAT_LIFECYCLE, 5, False, -1, SEV_LIFECYCLE, SEV_LIFECYCLE),
     "battle_end":     EventSpec("battle_end", CAT_LIFECYCLE, 6, False, -1, SEV_LIFECYCLE, SEV_LIFECYCLE),
 }
+
+PREEMPT_ELIGIBLE_IDS = frozenset(
+    event_id for event_id, spec in EVENT_CATALOG.items() if spec.preempt
+)
 
 # D-B1 第 4 节门控矩阵：scenario -> 允许的事件类别集合（其余抑制）。
 SCENARIO_GATING: dict[str, frozenset[str]] = {
@@ -339,7 +342,7 @@ class BattleEvent:
 
     @property
     def preempt_eligible(self) -> bool:
-        return self.event_id in PREEMPT_ELIGIBLE_IDS and self.level == "critical"
+        return self.spec.preempt and self.level == "critical"
 
     def to_dict(self) -> dict[str, Any]:
         return {

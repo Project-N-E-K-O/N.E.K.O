@@ -117,7 +117,6 @@ class RadioCommandDetector(DiscreteDetector):
 
     def detect(self, prev: BattleState, cur: BattleState) -> BattleEvent | None:
         if not cur.is_alive():
-            self.reset()
             return None
 
         self_name = _self_name(cur)
