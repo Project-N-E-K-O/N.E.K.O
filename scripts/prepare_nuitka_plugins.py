@@ -260,13 +260,26 @@ def install_plugins(*, stage_dir: Path, destination_dir: Path) -> None:
         raise ValueError("plugin stage and destination must not contain each other")
 
     temporary_dir = destination_dir.with_name(destination_dir.name + ".staging")
+    backup_dir = destination_dir.with_name(destination_dir.name + ".old")
+    if backup_dir.exists():
+        if destination_dir.exists():
+            shutil.rmtree(backup_dir)
+        else:
+            backup_dir.replace(destination_dir)
     if temporary_dir.exists():
         shutil.rmtree(temporary_dir)
     temporary_dir.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(stage_dir, temporary_dir)
     if destination_dir.exists():
-        shutil.rmtree(destination_dir)
-    temporary_dir.replace(destination_dir)
+        destination_dir.replace(backup_dir)
+    try:
+        temporary_dir.replace(destination_dir)
+    except BaseException:
+        if backup_dir.exists() and not destination_dir.exists():
+            backup_dir.replace(destination_dir)
+        raise
+    if backup_dir.exists():
+        shutil.rmtree(backup_dir)
 
 
 def _build_parser() -> argparse.ArgumentParser:

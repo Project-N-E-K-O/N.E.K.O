@@ -6,6 +6,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+import pytest
+
 from scripts.check_nuitka_dist import _check_plugin_stage, _check_plugin_tomls
 from scripts.prepare_nuitka_plugins import install_plugins, prepare_plugins
 
@@ -142,6 +144,30 @@ def test_dist_check_matches_stage_and_allows_shared_directory(tmp_path: Path) ->
     assert "unstaged file" in issues[0]
 
 
+def test_install_plugins_restores_previous_payload_when_replace_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stage = tmp_path / "stage"
+    destination = tmp_path / "dist" / "plugin" / "plugins"
+    _write(stage / "demo" / "new.py", "new")
+    _write(destination / "demo" / "old.py", "old")
+    temporary = destination.with_name(destination.name + ".staging")
+    original_replace = Path.replace
+
+    def fail_new_payload(path: Path, target: Path) -> Path:
+        if path == temporary:
+            raise OSError("simulated interrupted replacement")
+        return original_replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", fail_new_payload)
+
+    with pytest.raises(OSError, match="simulated interrupted replacement"):
+        install_plugins(stage_dir=stage, destination_dir=destination)
+
+    assert (destination / "demo" / "old.py").read_text(encoding="utf-8") == "old"
+    assert not (destination / "demo" / "new.py").exists()
+
+
 def test_desktop_workflows_use_filtered_plugin_stage() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     workflow_paths = (
@@ -151,12 +177,14 @@ def test_desktop_workflows_use_filtered_plugin_stage() -> None:
 
     for workflow_path in workflow_paths:
         workflow = workflow_path.read_text(encoding="utf-8")
+        workflow_lines = {line.strip() for line in workflow.splitlines()}
         assert "scripts/prepare_nuitka_plugins.py prepare" in workflow
         assert "build_nuitka_launcher.py" in workflow
         assert "scripts/prepare_nuitka_plugins.py install" in workflow
         assert "--plugin-stage build/nuitka-plugins" in workflow
         assert "--include-data-dir=plugin/plugins=plugin/plugins" not in workflow
         assert 'NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=plugin.plugins"' not in workflow
+        assert "set NUITKA_OPTS=%NUITKA_OPTS% --nofollow-import-to=plugin.plugins" not in workflow_lines
         assert "--nofollow-import-to=plugin.plugins.galgame_plugin.training" in workflow
 
 
