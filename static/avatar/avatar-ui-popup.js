@@ -2687,6 +2687,16 @@ const AvatarPopupMixin = {
             return menuItem;
         };
 
+        // 引导模式下阻止关闭设置弹窗，防止用户误触打断 yui-guide 引导流程
+        // （showPopup 切换关闭与 closePopupById 两条路径共用）
+        function isTutorialGuardedSettingsClose(buttonId) {
+            if (window.isInTutorial === true && buttonId === 'settings') {
+                console.log(`[${prefix}] 引导中：阻止关闭设置弹出框`);
+                return true;
+            }
+            return false;
+        }
+
         // 新增的核心方法
         ManagerProto.showPopup = function (buttonId, popup) {
             const isVisible = popup.style.display === 'flex';
@@ -2698,11 +2708,7 @@ const AvatarPopupMixin = {
             }
 
             if (isVisible) {
-                // 引导模式下阻止关闭设置弹窗，防止用户误触打断 yui-guide 引导流程
-                if (window.isInTutorial === true && buttonId === 'settings') {
-                    console.log(`[${prefix}] 引导中：阻止关闭设置弹出框`);
-                    return;
-                }
+                if (isTutorialGuardedSettingsClose(buttonId)) return;
 
                 // 关闭弹窗
                 popup._showToken += 1;
@@ -2812,12 +2818,7 @@ const AvatarPopupMixin = {
 
         ManagerProto.closePopupById = function (buttonId) {
             if (!buttonId) return false;
-
-            // 引导模式下阻止关闭设置弹窗，防止用户误触打断 yui-guide 引导流程
-            if (window.isInTutorial === true && buttonId === 'settings') {
-                console.log(`[${prefix}] 引导中：阻止关闭设置弹出框`);
-                return false;
-            }
+            if (isTutorialGuardedSettingsClose(buttonId)) return false;
 
             const popup = document.getElementById(`${prefix}-popup-${buttonId}`);
             if (!popup || popup.style.display !== 'flex') return false;
