@@ -19,7 +19,7 @@ package() {
 
   # 1. 将所有内容（二进制+资源）安装到 /usr/lib/neko
   mkdir -p "$pkgdir/usr/lib/neko"
-  cp -r . "$pkgdir/usr/lib/neko/"
+  cp -r -p . "$pkgdir/usr/lib/neko/"
 
   # 2. 给二进制文件添加可执行权限
   chmod +x "$pkgdir/usr/lib/neko/n.e.k.o"
