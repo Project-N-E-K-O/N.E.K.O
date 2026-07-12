@@ -540,49 +540,6 @@ class MessagePlaneRpcServer:
                     items = []
             return ok_response(req_id, {"store": st.name, "topic": topic, "items": items, "light": bool(light)})
 
-        if op == "bus.get_since":
-            st = self._resolve_store(args)
-            if st is None:
-                return err_response(req_id, "invalid store")
-
-            light = bool(args.get("light", False))
-
-            topic_raw = args.get("topic")
-            topic = None
-            if topic_raw is not None:
-                topic = str(topic_raw)
-
-            after_seq = args.get("after_seq", 0)
-            limit = args.get("limit", 200)
-            try:
-                limit_i = int(limit)
-            except Exception:
-                limit_i = 200
-            if limit_i > MESSAGE_PLANE_GET_RECENT_MAX_LIMIT:
-                limit_i = MESSAGE_PLANE_GET_RECENT_MAX_LIMIT
-
-            try:
-                after_i = int(after_seq)
-            except Exception:
-                after_i = 0
-
-            items = st.get_since(topic=topic, after_seq=after_i, limit=limit_i)
-            if light:
-                try:
-                    items = [self._light_item(ev) for ev in items]
-                except Exception:
-                    items = []
-            return ok_response(
-                req_id,
-                {
-                    "store": st.name,
-                    "topic": topic,
-                    "after_seq": after_i,
-                    "items": items,
-                    "light": bool(light),
-                },
-            )
-
         if op == "bus.query":
             if validate_mode in ("warn", "strict"):
                 try:

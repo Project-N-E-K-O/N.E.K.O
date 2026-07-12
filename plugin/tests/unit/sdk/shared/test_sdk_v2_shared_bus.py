@@ -7,12 +7,17 @@ core coverage file does not exercise.
 
 from __future__ import annotations
 
+from typing import get_args
+
 import pytest
 
 from plugin.core.bus.types import BusList as CoreBusList
 from plugin.core.bus import records as core_bus_records
 from plugin.core.bus import types as core_bus_types
+from plugin.core.bus.messages import MessageClient
 from plugin.message_plane.rpc_server import MessagePlaneRpcServer
+from plugin.message_plane.protocol import RpcOp
+from plugin.message_plane.stores import TopicStore
 from plugin.sdk.shared.core.bus_context import (
     SdkBusContext,
     SdkBusConversationRecord,
@@ -61,6 +66,13 @@ def test_removed_bus_query_dsl_does_not_reappear() -> None:
     for op in removed_names[:8]:
         assert rpc_server._apply_unary_op([], op=op, params={}) is None
     assert rpc_server._eval_plan(None, {"kind": "binary", "op": "merge"}) is None
+
+
+def test_get_message_plane_all_does_not_reappear() -> None:
+    assert not hasattr(MessageClient, "get_message_plane_all")
+    assert not hasattr(SdkMessagesBus, "get_message_plane_all")
+    assert not hasattr(TopicStore, "get_since")
+    assert "bus.get_since" not in get_args(RpcOp)
 
 
 # ---------------------------------------------------------------------------

@@ -15,7 +15,6 @@ RpcOp = Literal[
     "bus.list_topics",
     "bus.publish",
     "bus.get_recent",
-    "bus.get_since",
     "bus.query",
     "bus.replay",
 ]

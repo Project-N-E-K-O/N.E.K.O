@@ -87,7 +87,7 @@ This file inventories public functions/methods under `plugin/sdk` and maps them 
 - `functions`: (none)
 - `MessageRecord`: from_raw, from_index, dump
 - `MessageList`: (none)
-- `MessageClient`: get_message_plane_all, get_sync, get_async, get, get_by_conversation
+- `MessageClient`: get_sync, get_async, get, get_by_conversation
 
 ### `plugin/sdk/bus/records.py`
 - `functions`: parse_iso_timestamp
