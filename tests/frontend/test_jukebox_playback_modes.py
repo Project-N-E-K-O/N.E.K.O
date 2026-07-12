@@ -715,11 +715,13 @@ def test_vrm_animation_seek_preserves_paused_state_and_refreshes_pose(mock_page:
           anim.currentAction = { time: 0, paused: true };
 
           const ok = anim.seekTo(3.25);
+          const pausedAfterFirstSeek = anim.currentAction.paused;
           const okPlaying = anim.seekTo(1.5, { paused: false });
 
           return {
             ok,
             okPlaying,
+            pausedAfterFirstSeek,
             actionTime: anim.currentAction.time,
             actionPaused: anim.currentAction.paused,
             cachedMeshes: anim._skinnedMeshes.length,
@@ -732,6 +734,7 @@ def test_vrm_animation_seek_preserves_paused_state_and_refreshes_pose(mock_page:
     assert result == {
         "ok": True,
         "okPlaying": True,
+        "pausedAfterFirstSeek": True,
         "actionTime": 1.5,
         "actionPaused": False,
         "cachedMeshes": 1,
