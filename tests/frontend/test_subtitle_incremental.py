@@ -7812,9 +7812,93 @@ def test_subtitle_window_native_passthrough_toggles_by_cursor_position(
 def test_subtitle_window_passthrough_poll_matches_desktop_chat_latency():
     script = (PROJECT_ROOT / "static/subtitle/subtitle-window.js").read_text(encoding="utf-8")
 
+    # The responsive cadence near the panel still matches the desktop chat passthrough
+    # poll (16ms) so interaction latency stays imperceptible where the cursor can act.
     assert "var INTERACTION_PASSTHROUGH_POLL_MS = 16;" in script
-    assert "setInterval(updateNativeInteractionPassthrough, INTERACTION_PASSTHROUGH_POLL_MS)" in script
+    # Idle backoff: while the cursor is parked away from the panel the poll relaxes so a
+    # visible subtitle doesn't drive a 60Hz bridge round-trip that never changes state.
+    assert "var INTERACTION_PASSTHROUGH_IDLE_POLL_MS = 96;" in script
+    assert "var INTERACTION_PASSTHROUGH_NEAR_MARGIN = 64;" in script
+    assert "computeNextInteractionPollDelay" in script
+    assert "scheduleInteractionPoll(computeNextInteractionPollDelay(" in script
+    # Never regress to a fixed slow poll for the responsive path.
     assert "setInterval(updateNativeInteractionPassthrough, 80)" not in script
+
+
+@pytest.mark.frontend
+def test_subtitle_window_passthrough_poll_backs_off_when_cursor_is_far(
+    mock_page: Page,
+):
+    mock_page.set_viewport_size({"width": 360, "height": 80})
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-window-host",
+        """
+        <div id="subtitle-display" data-subtitle-panel-state="clean">
+            <div id="subtitle-scroll"><span id="subtitle-text">Translated subtitle.</span></div>
+            <div id="subtitle-settings-panel" class="hidden"></div>
+        </div>
+        """,
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            window.__pollCount = 0;
+            window.__cursorPoint = { x: 20, y: 18, screenX: 120, screenY: 138 };
+            window.nekoSubtitle = {
+                getBounds: () => Promise.resolve({ x: 100, y: 120, width: 360, height: 80 }),
+                getCursorPoint: () => {
+                    window.__pollCount += 1;
+                    return Promise.resolve(window.__cursorPoint);
+                },
+                enableInteraction: () => {},
+                disableInteraction: () => {},
+                setSize: () => {},
+                changeSettings: () => {},
+                dragStart: () => {},
+                dragStop: () => {},
+            };
+            window.localStorage.setItem('subtitleInteractionPassthrough', 'true');
+            window.localStorage.setItem('subtitlePanelBounds', JSON.stringify({
+                width: 360,
+                height: 80,
+            }));
+        }
+        """
+    )
+    mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-window.js"))
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            document.dispatchEvent(new Event('DOMContentLoaded'));
+            const WINDOW_MS = 400;
+            // Cursor parked far outside the panel bounds -> relaxed idle cadence.
+            window.__cursorPoint = { x: 1880, y: 1900, screenX: 1980, screenY: 2020 };
+            window.dispatchEvent(new Event('focus'));
+            await new Promise((resolve) => setTimeout(resolve, 60));
+            window.__pollCount = 0;
+            await new Promise((resolve) => setTimeout(resolve, WINDOW_MS));
+            const farPolls = window.__pollCount;
+            // Cursor over the panel -> responsive 16ms cadence.
+            window.__cursorPoint = { x: 20, y: 18, screenX: 120, screenY: 138 };
+            window.dispatchEvent(new Event('focus'));
+            await new Promise((resolve) => setTimeout(resolve, 60));
+            window.__pollCount = 0;
+            await new Promise((resolve) => setTimeout(resolve, WINDOW_MS));
+            const nearPolls = window.__pollCount;
+            return { farPolls, nearPolls };
+        }
+        """
+    )
+
+    # Over a 400ms window: ~4 polls at the 96ms idle cadence when far, ~25 at 16ms when
+    # near. Use generous bounds to stay robust against headless timer jitter.
+    assert result["farPolls"] <= 10
+    assert result["nearPolls"] >= 12
+    assert result["nearPolls"] >= result["farPolls"] * 2
 
 
 @pytest.mark.frontend
