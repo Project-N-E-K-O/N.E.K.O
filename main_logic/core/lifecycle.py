@@ -1962,7 +1962,11 @@ class LifecycleMixin:
             # prelude，它们随后都会关闭 promoted 会话，注入内容不会再投递——把
             # promote 时移除的条目塞回队首等下一次 hot-swap。
             self._restore_undelivered_swap_extras(_removed_extras, _removed_cb_backed_ids)
-            if self.is_active and self.session and hasattr(self.session, 'handle_messages') and (not self.message_handler_task or self.message_handler_task.done()):
+            # post-promote 取消（_removed_extras 非空）不重启 listener：promoted
+            # 会话即将被 canceller 关闭，重启会让它在关闭前把已 prime 的内容
+            # 播出来，与刚塞回的队列形成双投；没有 listener，服务器响应不会被
+            # 消费播出。重启只服务 promote 前取消后"老会话失去 listener"的恢复。
+            if self.is_active and self.session and hasattr(self.session, 'handle_messages') and not _removed_extras and (not self.message_handler_task or self.message_handler_task.done()):
                 self.message_handler_task = asyncio.create_task(self.session.handle_messages())
 
         except Exception as e:

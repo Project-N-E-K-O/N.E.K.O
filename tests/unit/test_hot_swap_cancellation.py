@@ -780,6 +780,7 @@ async def test_final_swap_post_promote_cancel_restores_removed_extras():
     mgr.session = old_session
     mgr.pending_session = new_session
     mgr.is_hot_swap_imminent = True
+    mgr.is_active = True
     mgr.message_handler_task = None
 
     async def _cancelled_mid_post_promote(*args, **kwargs):
@@ -802,6 +803,10 @@ async def test_final_swap_post_promote_cancel_restores_removed_extras():
         "the handler leaves the promoted session for the canceller to close"
     assert mgr.pending_extra_replies == [extra], \
         "post-promote cancel must restore the promote-removed extras"
+    # 双投守卫：restore 之后不得给将死的 promoted 会话重启 listener——
+    # 没有 listener，服务器响应不会被消费播出，塞回的条目才是唯一投递路径。
+    assert mgr.message_handler_task is None, \
+        "no listener may be restarted on the about-to-close promoted session"
 
 
 @pytest.mark.asyncio
