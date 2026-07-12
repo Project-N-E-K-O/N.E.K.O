@@ -1012,7 +1012,11 @@ async def voice_design(request: Request):
                 base_url=base_url,
                 voice_description=voice_prompt,
             )
-            generated_voice_id = str((previews[0] or {}).get('generated_voice_id') or '').strip()
+            generated_voice_id = ''
+            for preview in previews:
+                generated_voice_id = str((preview or {}).get('generated_voice_id') or '').strip()
+                if generated_voice_id:
+                    break
             if not generated_voice_id:
                 raise ElevenLabsUpstreamError(502, "ElevenLabs did not return generated_voice_id")
             voice_id = await _elevenlabs_create_voice_from_preview(
