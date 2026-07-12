@@ -237,7 +237,11 @@ function Get-ReplyLengthWarnForRoute {
 function Test-DispatcherAckOutput {
     param([object]$Value)
     $text = "$Value".Trim()
-    return $text -match '^queued_to_neko\(' -or $text -match '^dry_run:' -or $text -match '^skipped:'
+    return $text -match '^queued_to_neko\(' `
+        -or $text -match '^dry_run\(' `
+        -or $text -match '^dry_run:' `
+        -or $text -match '^skipped_to_neko\(' `
+        -or $text -match '^skipped:'
 }
 
 function Format-IsoAge {

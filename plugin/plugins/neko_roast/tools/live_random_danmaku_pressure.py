@@ -349,6 +349,13 @@ def run(args: argparse.Namespace) -> int:
         else {}
     )
     initially_connected = bool(initial_connection.get("connected"))
+    initial_room = str(
+        initial_connection.get("room_ref")
+        or initial_connection.get("room_id")
+        or initial_config.get("live_room_ref")
+        or initial_config.get("live_room_id")
+        or ""
+    )
     write_jsonl(log_path, {"type": "initial_context", "time": now_iso(), "summary": summarize_context(initial_context)})
     print(f"[mass] log={log_path}")
     print(f"[mass] initial={json.dumps(summarize_context(initial_context), ensure_ascii=False)}")
@@ -356,10 +363,14 @@ def run(args: argparse.Namespace) -> int:
     test_config = build_test_config(args)
 
     connected_by_script = False
+    listener_replaced_by_script = False
     try:
         require_action_success("update_config", client.action("update_config", test_config))
         room = args.room or str(initial_config.get("live_room_ref") or initial_config.get("live_room_id") or "")
         if args.connect:
+            if initially_connected and room != initial_room and not initial_room:
+                raise RuntimeError("cannot safely switch a connected listener without its original room reference")
+            listener_replaced_by_script = initially_connected and room != initial_room
             connect_response = require_action_success(
                 "connect_live_room",
                 client.action("connect_live_room", {"room_id": room}),
@@ -500,8 +511,23 @@ def run(args: argparse.Namespace) -> int:
             except Exception as exc:  # noqa: BLE001
                 write_jsonl(log_path, {"type": "disconnect_error", "time": now_iso(), "error": f"{type(exc).__name__}: {exc}"})
         if args.restore:
-            client.action("update_config", restore_config)
+            require_action_success("update_config", client.action("update_config", restore_config))
             print(f"[mass] restored={json.dumps(restore_config, ensure_ascii=False)}")
+            if listener_replaced_by_script:
+                reconnect_response = require_action_success(
+                    "connect_live_room",
+                    client.action("connect_live_room", {"room_id": initial_room}),
+                )
+                write_jsonl(
+                    log_path,
+                    {
+                        "type": "restore_live_room",
+                        "time": now_iso(),
+                        "room": initial_room,
+                        "response": reconnect_response,
+                    },
+                )
+                print(f"[mass] restored listener room={initial_room}")
 
     return 0
 

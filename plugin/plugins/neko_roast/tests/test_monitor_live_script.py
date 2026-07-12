@@ -19,11 +19,15 @@ from plugin.plugins.neko_roast.tools.live_random_danmaku_pressure import (
     parse_args as parse_random_pressure_args,
     prepare_log_path as prepare_random_pressure_log,
     require_action_success,
+    run as run_random_pressure,
     submit_one,
 )
 from plugin.plugins.neko_roast.tools.live_silence_pressure import (
     compact_result as compact_silence_result,
+    parse_args as parse_silence_pressure_args,
     prepare_log_path as prepare_silence_pressure_log,
+    require_action_success as require_silence_action_success,
+    run as run_silence_pressure,
 )
 from plugin.plugins.neko_roast.tools.live_silence_pressure import summarize_context as summarize_silence_context
 
@@ -80,6 +84,117 @@ def test_random_pressure_rejects_failed_setup_action_envelope() -> None:
             "update_config",
             {"result": {"success": False, "error": "denied"}},
         )
+
+
+def test_silence_pressure_rejects_failed_setup_action_envelope() -> None:
+    with pytest.raises(RuntimeError, match="update_config failed: denied"):
+        require_silence_action_success(
+            "update_config",
+            {"result": {"success": False, "error": "denied"}},
+        )
+
+
+def test_silence_pressure_stops_before_triggers_when_safe_setup_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    actions: list[str] = []
+    update_calls = 0
+
+    class FakeClient:
+        def __init__(self, _base_url: str) -> None:
+            pass
+
+        def context(self) -> dict:
+            return {
+                "state": {
+                    "config": {"dry_run": False, "live_enabled": False},
+                    "live_connection": {"connected": False},
+                }
+            }
+
+        def action(self, action_id: str, args: dict | None = None) -> dict:
+            nonlocal update_calls
+            actions.append(action_id)
+            if action_id == "update_config":
+                update_calls += 1
+                if update_calls == 1:
+                    return {"result": {"success": False, "error": "denied"}}
+            return {"result": {"success": True}}
+
+    monkeypatch.setattr(
+        "plugin.plugins.neko_roast.tools.live_silence_pressure.HostedClient",
+        FakeClient,
+    )
+    args = parse_silence_pressure_args(
+        ["--cycles", "0", "--no-connect", "--log", str(tmp_path / "silence.jsonl")]
+    )
+
+    with pytest.raises(RuntimeError, match="update_config failed: denied"):
+        run_silence_pressure(args)
+
+    assert not {"trigger_warmup_hosting", "trigger_active_engagement", "trigger_idle_hosting"}.intersection(
+        actions
+    )
+
+
+def test_random_pressure_restores_replaced_room_listener(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    actions: list[tuple[str, dict]] = []
+    current_room = "original-room"
+
+    class FakeClient:
+        def __init__(self, _base_url: str) -> None:
+            pass
+
+        def context(self) -> dict:
+            return {
+                "state": {
+                    "config": {
+                        "live_room_ref": "original-room",
+                        "live_enabled": True,
+                        "dry_run": False,
+                    },
+                    "live_connection": {
+                        "connected": True,
+                        "room_ref": current_room,
+                    },
+                }
+            }
+
+        def action(self, action_id: str, args: dict | None = None) -> dict:
+            nonlocal current_room
+            payload = args or {}
+            actions.append((action_id, payload))
+            if action_id == "connect_live_room":
+                current_room = str(payload.get("room_id") or "")
+            return {"result": {"success": True}}
+
+    monkeypatch.setattr(
+        "plugin.plugins.neko_roast.tools.live_random_danmaku_pressure.HostedClient",
+        FakeClient,
+    )
+    args = parse_random_pressure_args(
+        [
+            "--events",
+            "0",
+            "--users",
+            "1",
+            "--concurrency",
+            "1",
+            "--room",
+            "test-room",
+            "--log",
+            str(tmp_path / "random.jsonl"),
+        ]
+    )
+
+    assert run_random_pressure(args) == 0
+    assert ("disconnect_live_room", {}) not in actions
+    assert actions[-1] == ("connect_live_room", {"room_id": "original-room"})
+    assert current_room == "original-room"
 
 
 def test_random_pressure_does_not_resubmit_after_run_is_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -399,11 +514,20 @@ def test_monitor_live_script_treats_receiving_as_connected(tmp_path: Path) -> No
     assert "live_disconnected" not in alerts_match.group(1).split(",")
 
 
-def test_monitor_live_script_does_not_treat_dispatcher_ack_as_long_reply(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "dispatcher_ack",
+    [
+        "queued_to_neko(target=none, ai_behavior=respond, visibility=none, image_part_bytes=0)",
+        "dry_run(target=none, ai_behavior=respond, visibility=none, image_part_bytes=0)",
+        "skipped_to_neko(reason=non-deliverable request with enough detail to exceed the warning limit)",
+    ],
+)
+def test_monitor_live_script_does_not_treat_dispatcher_ack_as_long_reply(
+    tmp_path: Path,
+    dispatcher_ack: str,
+) -> None:
     context = _context_with_latest_route_and_signal()
-    context["state"]["recent_results"][0]["output"] = (
-        "queued_to_neko(target=悠怡, ai_behavior=respond, visibility=none, image_part_bytes=0)"
-    )
+    context["state"]["recent_results"][0]["output"] = dispatcher_ack
 
     completed = _run_monitor(tmp_path, context)
 

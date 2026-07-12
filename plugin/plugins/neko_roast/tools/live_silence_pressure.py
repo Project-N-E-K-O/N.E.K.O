@@ -96,6 +96,16 @@ class HostedClient:
         return {"created": created, "record": record, "export": export}
 
 
+def require_action_success(action_id: str, response: dict[str, Any]) -> dict[str, Any]:
+    result = response.get("result")
+    if not isinstance(result, dict):
+        raise RuntimeError(f"{action_id} returned no plugin-entry result")
+    if result.get("success") is False:
+        reason = result.get("error") or result.get("message") or "plugin entry reported failure"
+        raise RuntimeError(f"{action_id} failed: {reason}")
+    return response
+
+
 def state_from_context(context: dict[str, Any]) -> dict[str, Any]:
     state = context.get("state")
     return state if isinstance(state, dict) else {}
@@ -269,6 +279,13 @@ def run(args: argparse.Namespace) -> int:
         else {}
     )
     initially_connected = bool(initial_connection.get("connected"))
+    initial_room = str(
+        initial_connection.get("room_ref")
+        or initial_connection.get("room_id")
+        or initial_config.get("live_room_ref")
+        or initial_config.get("live_room_id")
+        or ""
+    )
     restore_config = {key: initial_config.get(key) for key in RESTORE_KEYS if key in initial_config}
 
     write_jsonl(log_path, {"type": "initial_context", "time": now_iso(), "summary": summarize_context(initial_context)})
@@ -295,12 +312,19 @@ def run(args: argparse.Namespace) -> int:
     action_counts: dict[str, int] = {}
 
     try:
-        config_response = client.action("update_config", test_config)
+        config_response = require_action_success("update_config", client.action("update_config", test_config))
         write_jsonl(log_path, {"type": "configure", "time": now_iso(), "response": config_response})
         connected_by_script = False
+        listener_replaced_by_script = False
         if args.connect:
             room = args.room or str(initial_config.get("live_room_ref") or initial_config.get("live_room_id") or "")
-            connect_response = client.action("connect_live_room", {"room_id": room})
+            if initially_connected and room != initial_room and not initial_room:
+                raise RuntimeError("cannot safely switch a connected listener without its original room reference")
+            listener_replaced_by_script = initially_connected and room != initial_room
+            connect_response = require_action_success(
+                "connect_live_room",
+                client.action("connect_live_room", {"room_id": room}),
+            )
             connected_by_script = not initially_connected
             write_jsonl(
                 log_path,
@@ -332,8 +356,8 @@ def run(args: argparse.Namespace) -> int:
                     )
                     break
                 time.sleep(0.5)
-        client.action("resume_roast")
-        client.action("clear_queue")
+        require_action_success("resume_roast", client.action("resume_roast"))
+        require_action_success("clear_queue", client.action("clear_queue"))
 
         actions = ["trigger_warmup_hosting"]
         pattern = ["trigger_active_engagement", "trigger_idle_hosting"]
@@ -426,9 +450,27 @@ def run(args: argparse.Namespace) -> int:
                     },
                 )
         if args.restore:
-            restore_response = client.action("update_config", restore_config)
+            restore_response = require_action_success(
+                "update_config",
+                client.action("update_config", restore_config),
+            )
             write_jsonl(log_path, {"type": "restore", "time": now_iso(), "restore_config": restore_config, "response": restore_response})
             print(f"[pressure] restored={json.dumps(restore_config, ensure_ascii=False)}")
+            if "listener_replaced_by_script" in locals() and listener_replaced_by_script:
+                reconnect_response = require_action_success(
+                    "connect_live_room",
+                    client.action("connect_live_room", {"room_id": initial_room}),
+                )
+                write_jsonl(
+                    log_path,
+                    {
+                        "type": "restore_live_room",
+                        "time": now_iso(),
+                        "room": initial_room,
+                        "response": reconnect_response,
+                    },
+                )
+                print(f"[pressure] restored listener room={initial_room}")
 
     return 0
 
