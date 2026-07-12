@@ -84,6 +84,7 @@ class NotifyMixin:
                 }
                 await self.websocket.send_json(message)
         except WebSocketDisconnect:
+            # Client disconnected mid-send; this push is best-effort.
             pass
         except Exception as e:
             logger.error(f"💥 WS Send User Activity Error: {e}")
@@ -320,6 +321,7 @@ class NotifyMixin:
                 # 同步到同步服务器
                 self.sync_message_queue.put({'type': 'json', 'data': {"type": "status", "message": message}})
         except WebSocketDisconnect:
+            # Client disconnected mid-send; this push is best-effort.
             pass
         except Exception as e:
             logger.error(f"💥 WS Send Status Error: {e}")
@@ -383,6 +385,7 @@ class NotifyMixin:
                 data = json.dumps({"type": "session_preparing", "input_mode": input_mode})
                 await self.websocket.send_text(data)
         except WebSocketDisconnect:
+            # Client disconnected mid-send; this push is best-effort.
             pass
         except Exception as e:
             logger.error(f"💥 WS Send Session Preparing Error: {e}")
@@ -393,6 +396,7 @@ class NotifyMixin:
                 data = json.dumps({"type": "session_started", "input_mode": input_mode})
                 await self.websocket.send_text(data)
         except WebSocketDisconnect:
+            # Client disconnected mid-send; this push is best-effort.
             pass
         except Exception as e:
             logger.error(f"💥 WS Send Session Started Error: {e}")
@@ -404,6 +408,7 @@ class NotifyMixin:
                 data = json.dumps({"type": "session_failed", "input_mode": input_mode})
                 await self.websocket.send_text(data)
         except WebSocketDisconnect:
+            # Client disconnected mid-send; this push is best-effort.
             pass
         except Exception as e:
             logger.error(f"💥 WS Send Session Failed Error: {e}")
@@ -422,6 +427,7 @@ class NotifyMixin:
                     "turn_id": str(turn_id or ''),
                 })
         except WebSocketDisconnect:
+            # Client disconnected mid-send; this push is best-effort.
             pass
         except Exception as e:
             logger.error(f"💥 WS Send Avatar Interaction Ack Error: {e}")
@@ -433,6 +439,7 @@ class NotifyMixin:
                 data = json.dumps({"type": "session_ended_by_server", "input_mode": self.input_mode})
                 await self.websocket.send_text(data)
         except WebSocketDisconnect:
+            # Client disconnected mid-send; this push is best-effort.
             pass
         except Exception as e:
             logger.error(f"💥 WS Send Session Ended By Server Error: {e}")
