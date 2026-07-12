@@ -47,6 +47,7 @@ def _download_verified(source: str, destination: Path, expected_sha256: str) -> 
             os.replace(temporary, destination)
             return
         except AssetManifestError:
+            temporary.unlink(missing_ok=True)
             raise
         except (OSError, TimeoutError, URLError) as exc:
             last_error = exc

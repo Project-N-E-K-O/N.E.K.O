@@ -51,3 +51,16 @@ def test_source_cache_is_verified_before_install(tmp_path):
     _manifest(output, "https://example.invalid/model", "0" * 64)
     with pytest.raises(AssetManifestError, match="cache SHA-256 mismatch"):
         prepare_assets(output, source_cache=cache)
+
+
+def test_download_sha_mismatch_removes_partial_file(tmp_path):
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"corrupt model")
+    output = tmp_path / "output"
+    output.mkdir()
+    _manifest(output, source.as_uri(), "0" * 64)
+
+    with pytest.raises(AssetManifestError, match="download SHA-256 mismatch"):
+        prepare_assets(output)
+    assert not (output / "model.onnx").exists()
+    assert not (output / "model.onnx.part").exists()

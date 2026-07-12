@@ -60,12 +60,22 @@ class _BlockingPredictor(_Predictor):
         super().__init__()
         self.started = threading.Event()
         self.release = threading.Event()
+        self._active_lock = threading.Lock()
+        self._active_calls = 0
+        self.max_active_calls = 0
 
     def predict_probability(self, audio):
-        self.calls += 1
+        with self._active_lock:
+            self.calls += 1
+            self._active_calls += 1
+            self.max_active_calls = max(self.max_active_calls, self._active_calls)
         self.started.set()
-        assert self.release.wait(timeout=5)
-        return self.probability
+        try:
+            assert self.release.wait(timeout=5)
+            return self.probability
+        finally:
+            with self._active_lock:
+                self._active_calls -= 1
 
 
 @pytest.mark.asyncio
@@ -93,6 +103,7 @@ async def test_latest_candidate_coalesces_without_parallel_inference():
     assert first_result.status is EvaluationStatus.STALE
     assert second_result.status is EvaluationStatus.OK
     assert predictor.calls == 2
+    assert predictor.max_active_calls == 1
 
 
 @pytest.mark.asyncio
