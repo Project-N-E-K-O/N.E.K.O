@@ -506,6 +506,88 @@ async def test_watcher_processes_pending_change_after_transient_refresh_failure(
 
 
 @pytest.mark.asyncio
+async def test_debounced_watcher_coalesces_changes_and_refreshes_latest_state() -> None:
+    payloads = [{"message_id": "m-a", "type": "text", "source": "a"}]
+
+    class _RpcClient:
+        def __init__(self) -> None:
+            self.sync_requests = 0
+
+        @staticmethod
+        def _response() -> dict[str, object]:
+            return {
+                "ok": True,
+                "error": None,
+                "result": {"items": [{"payload": dict(payload)} for payload in payloads]},
+            }
+
+        def request(self, *, op: str, args: dict[str, object], timeout: float) -> dict[str, object]:
+            del op, args, timeout
+            self.sync_requests += 1
+            return self._response()
+
+        async def request_async(
+            self,
+            *,
+            op: str,
+            args: dict[str, object],
+            timeout: float,
+        ) -> dict[str, object]:
+            del op, args, timeout
+            return self._response()
+
+    rpc = _RpcClient()
+
+    def _request_and_wait(**kwargs: object) -> dict[str, object]:
+        return {"sub_id": "debounced-burst"} if kwargs.get("request_type") == "BUS_SUBSCRIBE" else {"ok": True}
+
+    ctx = SimpleNamespace(
+        plugin_id="demo",
+        _mp_rpc_client=rpc,
+        _plugin_comm_queue=object(),
+        _send_request_and_wait=_request_and_wait,
+    )
+    messages = MessageClient(ctx)
+    ctx.bus = SimpleNamespace(messages=messages)
+
+    snapshot = await messages.get(max_count=20)
+    watcher = snapshot.watch(ctx, debounce_ms=25)
+    changed = threading.Event()
+    callbacks: list[object] = []
+
+    @watcher.subscribe(on="add")
+    def _on_add(delta: object) -> None:
+        callbacks.append(delta)
+        changed.set()
+
+    watcher.start()
+    try:
+        payloads.append({"message_id": "m-b", "type": "text", "source": "b"})
+        core_bus_rev.dispatch_bus_change(
+            sub_id="debounced-burst",
+            bus="messages",
+            op="add",
+            delta={"message_id": "m-b", "sequence": 1},
+        )
+        payloads.append({"message_id": "m-c", "type": "text", "source": "c"})
+        core_bus_rev.dispatch_bus_change(
+            sub_id="debounced-burst",
+            bus="messages",
+            op="add",
+            delta={"message_id": "m-c", "sequence": 2},
+        )
+
+        assert await asyncio.to_thread(changed.wait, 1.0)
+        await asyncio.sleep(0.05)
+
+        assert rpc.sync_requests == 1
+        assert len(callbacks) == 1
+        assert [item.message_id for item in callbacks[0].added] == ["m-b", "m-c"]
+    finally:
+        watcher.stop()
+
+
+@pytest.mark.asyncio
 async def test_debounced_watcher_drops_timer_scheduled_before_stop_and_restart(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

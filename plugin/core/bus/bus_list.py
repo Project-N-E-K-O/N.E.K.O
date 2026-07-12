@@ -10,7 +10,6 @@ from plugin._types.bus_sort import bus_sort_key
 __all__ = [
     "_dedupe_key_from_record",
     "_get_sort_field_from_record",
-    "_cancel_timer_best_effort",
     "_build_watcher_injected_callback",
     "_infer_bus_from_plan",
     "_compute_watcher_delta",
@@ -21,7 +20,6 @@ __all__ = [
     "_build_bus_subscribe_request",
     "_extract_sub_id",
     "_build_bus_unsubscribe_request",
-    "_schedule_watcher_tick_debounced",
     "_apply_reload_inplace_basic",
     "BusListCore",
     "BusListWatcherCore",
@@ -309,112 +307,6 @@ def _extract_sub_id(res: Any) -> str | None:
 
 def _build_bus_unsubscribe_request(bus: str, sub_id: str) -> dict[str, Any]:
     return {"bus": bus, "sub_id": sub_id}
-
-
-def _cancel_timer_best_effort(timer: Any) -> None:
-    try:
-        if timer is not None:
-            timer.cancel()
-    except Exception:
-        return
-
-
-def _schedule_watcher_tick_debounced(
-    watcher: Any,
-    op: str,
-    payload: dict[str, Any] | None = None,
-) -> None:
-    generation = getattr(watcher, "_refresh_generation", None)
-    if bool(getattr(watcher, "_stopped", False)):
-        return
-    if float(getattr(watcher, "_debounce_ms", 0.0) or 0.0) <= 0:
-        watcher._tick(op, payload, generation=generation)
-        return
-
-    timer: Any = None
-    try:
-        import threading
-
-        delay = max(0.0, float(getattr(watcher, "_debounce_ms", 0.0) or 0.0) / 1000.0)
-        normalized_payload = dict(payload or {}) if isinstance(payload, dict) else None
-
-        def _is_current_generation() -> bool:
-            return (
-                not bool(getattr(watcher, "_stopped", False))
-                and getattr(watcher, "_refresh_generation", None) == generation
-            )
-
-        def _fire() -> None:
-            lock2 = getattr(watcher, "_lock", None)
-            if lock2 is not None:
-                with lock2:
-                    if (
-                        not _is_current_generation()
-                        or getattr(watcher, "_debounce_timer", None) is not timer
-                    ):
-                        return
-                    pending = getattr(watcher, "_pending_op", None)
-                    pending_payload = getattr(watcher, "_pending_payload", None)
-                    watcher._pending_op = None
-                    watcher._pending_payload = None
-                    watcher._debounce_timer = None
-            else:
-                if (
-                    not _is_current_generation()
-                    or getattr(watcher, "_debounce_timer", None) is not timer
-                ):
-                    return
-                pending = getattr(watcher, "_pending_op", None)
-                pending_payload = getattr(watcher, "_pending_payload", None)
-                watcher._pending_op = None
-                watcher._pending_payload = None
-                watcher._debounce_timer = None
-
-            with suppress(Exception):
-                watcher._tick(
-                    str(pending or "change"),
-                    pending_payload,
-                    generation=generation,
-                )
-
-        timer = threading.Timer(delay, _fire)
-        timer.daemon = True
-        lock = getattr(watcher, "_lock", None)
-        should_start = False
-        if lock is not None:
-            with lock:
-                if _is_current_generation():
-                    prev_timer = getattr(watcher, "_debounce_timer", None)
-                    watcher._pending_op = str(op)
-                    watcher._pending_payload = normalized_payload
-                    watcher._debounce_timer = timer
-                    should_start = True
-        else:
-            if _is_current_generation():
-                prev_timer = getattr(watcher, "_debounce_timer", None)
-                watcher._pending_op = str(op)
-                watcher._pending_payload = normalized_payload
-                watcher._debounce_timer = timer
-                should_start = True
-        if not should_start:
-            _cancel_timer_best_effort(timer)
-            return
-        _cancel_timer_best_effort(prev_timer)
-        timer.start()
-    except Exception:
-        lock = getattr(watcher, "_lock", None)
-        if lock is not None:
-            with lock:
-                if getattr(watcher, "_debounce_timer", None) is timer:
-                    watcher._debounce_timer = None
-                    watcher._pending_op = None
-                    watcher._pending_payload = None
-        elif getattr(watcher, "_debounce_timer", None) is timer:
-            watcher._debounce_timer = None
-            watcher._pending_op = None
-            watcher._pending_payload = None
-        with suppress(Exception):
-            watcher._tick(op, payload, generation=generation)
 
 
 def _build_watcher_injected_callback(fn: Callable[..., None]) -> Callable[[Any], None]:

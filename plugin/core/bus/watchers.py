@@ -1,16 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import nullcontext, suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Dict, Generic, List, Optional, Sequence, Tuple, TypeVar, Union, cast
 
 from plugin.core.bus.bus_list import (
     BusListWatcherCore,
-    _cancel_timer_best_effort,
     _compute_watcher_delta,
     _dispatch_watcher_callbacks,
     _infer_bus_from_plan,
-    _schedule_watcher_tick_debounced,
     _snapshot_watcher_callbacks,
 )
 
@@ -29,6 +28,14 @@ WatcherCallback = Callable[["BusListDelta[TRecord]"], None]
 
 if TYPE_CHECKING:
     from plugin.core.bus.types import BusList, BusRecord, BusReplayContext, TraceNode
+
+
+def _cancel_timer_best_effort(timer: Any) -> None:
+    try:
+        if timer is not None:
+            timer.cancel()
+    except Exception:
+        return
 
 
 @dataclass(frozen=True)
@@ -130,7 +137,68 @@ class BusListWatcher(BusListWatcherCore, Generic[TRecord]):
                 if current_task is None or current_task.done():
                     self._start_refresh_worker(loop)
                 return
-        _schedule_watcher_tick_debounced(self, op, payload)
+        self._schedule_debounced_tick(op, payload)
+
+    def _schedule_debounced_tick(self, op: str, payload: Optional[Payload] = None) -> None:
+        generation = self._refresh_generation
+        if self._stopped:
+            return
+        if self._debounce_ms <= 0:
+            self._tick(op, payload, generation=generation)
+            return
+
+        timer: Any = None
+        try:
+            import threading
+
+            delay = max(0.0, self._debounce_ms / 1000.0)
+            normalized_payload = dict(payload) if isinstance(payload, dict) else None
+
+            def _is_current_generation() -> bool:
+                return not self._stopped and self._refresh_generation == generation
+
+            def _fire() -> None:
+                with self._lock if self._lock is not None else nullcontext():
+                    if not _is_current_generation() or self._debounce_timer is not timer:
+                        return
+                    pending = self._pending_op
+                    pending_payload = self._pending_payload
+                    self._pending_op = None
+                    self._pending_payload = None
+                    self._debounce_timer = None
+
+                with suppress(Exception):
+                    self._tick(
+                        str(pending or "change"),
+                        pending_payload,
+                        generation=generation,
+                    )
+
+            timer = threading.Timer(delay, _fire)
+            timer.daemon = True
+            previous_timer: Any = None
+            should_start = False
+            with self._lock if self._lock is not None else nullcontext():
+                if _is_current_generation():
+                    previous_timer = self._debounce_timer
+                    self._pending_op = str(op)
+                    self._pending_payload = normalized_payload
+                    self._debounce_timer = timer
+                    should_start = True
+
+            if not should_start:
+                _cancel_timer_best_effort(timer)
+                return
+            _cancel_timer_best_effort(previous_timer)
+            timer.start()
+        except Exception:
+            with self._lock if self._lock is not None else nullcontext():
+                if self._debounce_timer is timer:
+                    self._debounce_timer = None
+                    self._pending_op = None
+                    self._pending_payload = None
+            with suppress(Exception):
+                self._tick(op, payload, generation=generation)
 
     def _start_refresh_worker(self, loop: asyncio.AbstractEventLoop) -> None:
         task = loop.create_task(self._run_refresh_worker(self._refresh_generation))
