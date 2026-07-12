@@ -206,6 +206,11 @@ def test_soccer_passive_guard_writes_structured_debug_events():
     assert "requestGeneration = passiveGuard.sidecarGeneration" in sidecar_block
     assert "discard_stale_result" in sidecar_block
     assert "stale_sidecar_error" in sidecar_block
+    assert "function _passiveGuardExitPromptCandidateState(promptType, stage)" in html
+    assert "skip_inactive_candidate" in html
+    assert "_passiveGuardExitPromptCandidateState(promptType, stage)" in html
+    assert "rest_streak_below_stage" in html
+    assert "ordinary_candidate_below_stage" in html
     assert "passiveGuard.sidecarGeneration = Number(passiveGuard.sidecarGeneration || 0) + 1" in html
     assert "reason: 'surrender_reminder_disabled'" in html
     assert "new AbortController()" in exit_prompt_line_block

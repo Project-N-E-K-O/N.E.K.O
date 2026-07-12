@@ -4001,6 +4001,31 @@
       Number(generation || 0) === Number(passiveGuard.sidecarGeneration || 0);
   }
 
+  function _passiveGuardExitPromptCandidateState(promptType, stage) {
+    const difficulty = DIFFICULTY[difficultyIdx]?.name || '';
+    const requiredStage = Math.max(0, Number(stage || 0));
+    const scoreLead = _scoreDiffPlayerLead();
+    if (promptType === 'rest') {
+      const streak = Number(passiveGuard.withdrawnRestGoalStreak || 0);
+      if (!_isWithdrawnStance()) return { active: false, reason: 'not_withdrawn_stance', difficulty, streak, scoreLead };
+      if (difficulty !== 'lv4') return { active: false, reason: 'left_lv4', difficulty, streak, scoreLead };
+      if (passiveGuard.restDismissedThisGame) return { active: false, reason: 'rest_dismissed_this_game', difficulty, streak, scoreLead };
+      if (passiveGuard.restModalShownThisGame) return { active: false, reason: 'rest_modal_shown_this_game', difficulty, streak, scoreLead };
+      if (streak < requiredStage) return { active: false, reason: 'rest_streak_below_stage', difficulty, streak, scoreLead };
+      return { active: true, reason: '', difficulty, streak, scoreLead };
+    }
+    const streak = Number(passiveGuard.lv4PlayerGoalStreak || 0);
+    if (_isTeachingStance()) return { active: false, reason: 'teaching_stance', difficulty, streak, scoreLead };
+    if (_isWithdrawnStance()) return { active: false, reason: 'withdrawn_stance', difficulty, streak, scoreLead };
+    if (_isPunishingLikeStance()) return { active: false, reason: 'punishing_stance', difficulty, streak, scoreLead };
+    if (difficulty !== 'lv4') return { active: false, reason: 'left_lv4', difficulty, streak, scoreLead };
+    if (!passiveGuard.surrenderReminderEnabled) return { active: false, reason: 'surrender_reminder_disabled', difficulty, streak, scoreLead };
+    if (passiveGuard.ordinaryDisabledForCurrentGame) return { active: false, reason: 'ordinary_disabled_for_current_game', difficulty, streak, scoreLead };
+    if (passiveGuard.ordinaryModalShownThisGame) return { active: false, reason: 'ordinary_modal_shown_this_game', difficulty, streak, scoreLead };
+    if (streak < requiredStage && scoreLead < 10) return { active: false, reason: 'ordinary_candidate_below_stage', difficulty, streak, scoreLead };
+    return { active: true, reason: '', difficulty, streak, scoreLead };
+  }
+
   function _isExitPromptOpen() {
     return passiveGuard.modalOpen;
   }
@@ -4382,6 +4407,19 @@
     }
     if (action === 'prepare_exit_prompt' && stage >= 8) {
       const exitType = String(result?.exitPromptType || promptType);
+      const candidate = _passiveGuardExitPromptCandidateState(promptType, stage);
+      if (!candidate.active) {
+        _passiveGuardDebugLog('Sidecar', 'passive_guard_sidecar', '跳过 PassiveGuard 弹窗，候选已失效', {
+          action: 'skip_inactive_candidate',
+          stage,
+          promptType,
+          exitPromptType: exitType,
+          reason: candidate.reason,
+          candidate,
+        });
+        console.log(`[Soccer] [PassiveGuard] [Sidecar] 跳过弹窗 | 阶段=${stage} 类型=${promptType} 原因=${candidate.reason || '候选已失效'}`);
+        return;
+      }
       if (exitType === 'rest' && promptType === 'rest') void _prepareExitPrompt('rest', 'sidecar_prepare_exit_prompt');
       else if (exitType === 'surrender' && promptType === 'surrender') void _prepareExitPrompt('surrender', 'sidecar_prepare_exit_prompt');
     }
