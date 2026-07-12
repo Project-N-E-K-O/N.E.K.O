@@ -2064,7 +2064,17 @@ def record_anthropic_usage(model: str, usage, call_type: str | None = None):
         usage_dict = _usage_to_dict(usage)
         if not usage_dict:
             return
-        prompt_tokens = int(usage_dict.get('input_tokens') or usage_dict.get('prompt_tokens') or 0)
+        if 'input_tokens' in usage_dict:
+            prompt_tokens = sum(
+                int(usage_dict.get(field) or 0)
+                for field in (
+                    'input_tokens',
+                    'cache_creation_input_tokens',
+                    'cache_read_input_tokens',
+                )
+            )
+        else:
+            prompt_tokens = int(usage_dict.get('prompt_tokens') or 0)
         completion_tokens = int(usage_dict.get('output_tokens') or usage_dict.get('completion_tokens') or 0)
         total_tokens = int(usage_dict.get('total_tokens') or (prompt_tokens + completion_tokens))
         cached_tokens = _extract_cached_tokens(usage_dict)

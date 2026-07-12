@@ -1093,6 +1093,24 @@ def _merge_anthropic_usage(target: dict[str, Any], usage: Any) -> None:
     target.update(_anthropic_usage_to_dict(usage))
 
 
+def _anthropic_usage_with_openai_aliases(usage: dict[str, Any]) -> dict[str, Any]:
+    """Expose Anthropic usage under both native and shared token field names."""
+    result = dict(usage)
+    prompt_tokens = sum(
+        int(result.get(key) or 0)
+        for key in (
+            "input_tokens",
+            "cache_creation_input_tokens",
+            "cache_read_input_tokens",
+        )
+    )
+    completion_tokens = int(result.get("output_tokens") or 0)
+    result.setdefault("prompt_tokens", prompt_tokens)
+    result.setdefault("completion_tokens", completion_tokens)
+    result.setdefault("total_tokens", prompt_tokens + completion_tokens)
+    return result
+
+
 def anthropic_retry_error_types() -> tuple[type[BaseException], ...]:
     """Return Anthropic SDK error classes that should follow the chat retry path."""
     global _ANTHROPIC_RETRY_EXCEPTION_TYPES
@@ -1200,14 +1218,25 @@ def _anthropic_text_from_blocks(blocks: list[dict]) -> str:
     return "\n".join(text_parts)
 
 
-def _anthropic_tool_use_ids_from_blocks(blocks: list[dict]) -> set[str]:
-    ids: set[str] = set()
-    for block in blocks:
-        if isinstance(block, dict) and block.get("type") == "tool_use":
-            raw_id = block.get("id")
-            if raw_id:
-                ids.add(str(raw_id))
-    return ids
+def _drop_unanswered_anthropic_tool_uses(messages: list[dict], tool_use_ids: set[str]) -> None:
+    """Remove tool_use blocks that have no matching tool_result in history."""
+    if not tool_use_ids:
+        return
+    for message in messages:
+        if message.get("role") != "assistant":
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        message["content"] = [
+            block
+            for block in content
+            if not (
+                isinstance(block, dict)
+                and block.get("type") == "tool_use"
+                and str(block.get("id") or "") in tool_use_ids
+            )
+        ] or [{"type": "text", "text": "..."}]
 
 
 def _convert_openai_tool_call_to_anthropic(tool_call: Any) -> dict[str, Any] | None:
@@ -1360,6 +1389,7 @@ def _normalize_messages_to_anthropic(messages: Any) -> tuple[str, list[dict]]:
     system_parts: list[str] = []
     anthropic_messages: list[dict] = []
     pending_tool_use_ids: set[str] = set()
+    emitted_tool_use_ids: set[str] = set()
 
     for msg in normalized:
         role = msg.get("role", "")
@@ -1394,16 +1424,31 @@ def _normalize_messages_to_anthropic(messages: Any) -> tuple[str, list[dict]]:
             role = "user"
         blocks = _convert_openai_content_to_anthropic(content)
         if role == "assistant":
-            seen_tool_use_ids = _anthropic_tool_use_ids_from_blocks(blocks)
+            seen_tool_use_ids: set[str] = set()
+            deduped_blocks: list[dict] = []
+            for block in blocks:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    tool_use_id = str(block.get("id") or "")
+                    if not tool_use_id or tool_use_id in emitted_tool_use_ids:
+                        continue
+                    emitted_tool_use_ids.add(tool_use_id)
+                    seen_tool_use_ids.add(tool_use_id)
+                deduped_blocks.append(block)
+            blocks = deduped_blocks
             for tool_call in msg.get("tool_calls") or []:
                 converted = _convert_openai_tool_call_to_anthropic(tool_call)
-                if converted and converted.get("id") not in seen_tool_use_ids:
+                converted_id = str(converted.get("id") or "") if converted else ""
+                if converted and converted_id and converted_id not in emitted_tool_use_ids:
                     blocks.append(converted)
-                    seen_tool_use_ids.add(str(converted.get("id")))
+                    emitted_tool_use_ids.add(converted_id)
+                    seen_tool_use_ids.add(converted_id)
             pending_tool_use_ids |= seen_tool_use_ids
         elif role == "user":
-            pending_tool_use_ids = set()
+            _drop_unanswered_anthropic_tool_uses(anthropic_messages, pending_tool_use_ids)
+            pending_tool_use_ids.clear()
         anthropic_messages.append({"role": role, "content": blocks or [{"type": "text", "text": "..."}]})
+
+    _drop_unanswered_anthropic_tool_uses(anthropic_messages, pending_tool_use_ids)
 
     # Enforce strict user/assistant alternation.
     fixed: list[dict] = []
@@ -1657,69 +1702,73 @@ class ChatAnthropic:
         payload = self._build_payload_for_call(messages, overrides)
         stream = self._aclient.messages.stream(**payload)
         usage_dict: dict[str, Any] = {}
-        async with stream as response_stream:
-            async for event in response_stream:
-                event_type = getattr(event, "type", "")
-                if event_type == "message_start":
-                    message = getattr(event, "message", None)
-                    _merge_anthropic_usage(usage_dict, getattr(message, "usage", None))
-                elif event_type == "content_block_start":
-                    block = getattr(event, "content_block", None)
-                    if block and getattr(block, "type", "") == "tool_use":
-                        index = int(getattr(event, "index", 0) or 0)
-                        raw_input = getattr(block, "input", None)
-                        arguments = ""
-                        if raw_input:
-                            arguments = _json.dumps(raw_input, ensure_ascii=False)
-                        yield LLMStreamChunk(
-                            content="",
-                            tool_call_deltas=[{
-                                "index": index,
-                                "id": getattr(block, "id", "") or "",
-                                "type": "function",
-                                "function": {
-                                    "name": getattr(block, "name", "") or "",
-                                    "arguments": arguments,
-                                },
-                            }],
-                        )
-                elif event_type == "content_block_delta":
-                    delta = getattr(event, "delta", None)
-                    if delta and getattr(delta, "type", "") == "text_delta":
-                        text = getattr(delta, "text", "") or ""
-                        if text:
-                            yield LLMStreamChunk(content=text)
-                    elif delta and getattr(delta, "type", "") == "input_json_delta":
-                        partial_json = getattr(delta, "partial_json", "") or ""
-                        if partial_json:
+        try:
+            async with stream as response_stream:
+                async for event in response_stream:
+                    event_type = getattr(event, "type", "")
+                    if event_type == "message_start":
+                        message = getattr(event, "message", None)
+                        _merge_anthropic_usage(usage_dict, getattr(message, "usage", None))
+                    elif event_type == "content_block_start":
+                        block = getattr(event, "content_block", None)
+                        if block and getattr(block, "type", "") == "tool_use":
+                            index = int(getattr(event, "index", 0) or 0)
+                            raw_input = getattr(block, "input", None)
+                            arguments = ""
+                            if raw_input:
+                                arguments = _json.dumps(raw_input, ensure_ascii=False)
                             yield LLMStreamChunk(
                                 content="",
                                 tool_call_deltas=[{
-                                    "index": int(getattr(event, "index", 0) or 0),
-                                    "id": "",
+                                    "index": index,
+                                    "id": getattr(block, "id", "") or "",
                                     "type": "function",
-                                    "function": {"name": "", "arguments": partial_json},
+                                    "function": {
+                                        "name": getattr(block, "name", "") or "",
+                                        "arguments": arguments,
+                                    },
                                 }],
                             )
-                elif event_type == "message_delta":
-                    finish_reason = None
-                    delta = getattr(event, "delta", None)
-                    if delta:
-                        finish_reason = getattr(delta, "stop_reason", None)
-                    _merge_anthropic_usage(usage_dict, getattr(delta, "usage", None))
-                    _merge_anthropic_usage(usage_dict, getattr(event, "usage", None))
-                    if finish_reason:
-                        mapped_reason = _anthropic_stop_reason_to_finish_reason(finish_reason)
-                        yield LLMStreamChunk(content="", finish_reason=mapped_reason)
-                elif event_type == "message_stop":
-                    message = getattr(event, "message", None)
-                    _merge_anthropic_usage(usage_dict, getattr(message, "usage", None))
+                    elif event_type == "content_block_delta":
+                        delta = getattr(event, "delta", None)
+                        if delta and getattr(delta, "type", "") == "text_delta":
+                            text = getattr(delta, "text", "") or ""
+                            if text:
+                                yield LLMStreamChunk(content=text)
+                        elif delta and getattr(delta, "type", "") == "input_json_delta":
+                            partial_json = getattr(delta, "partial_json", "") or ""
+                            if partial_json:
+                                yield LLMStreamChunk(
+                                    content="",
+                                    tool_call_deltas=[{
+                                        "index": int(getattr(event, "index", 0) or 0),
+                                        "id": "",
+                                        "type": "function",
+                                        "function": {"name": "", "arguments": partial_json},
+                                    }],
+                                )
+                    elif event_type == "message_delta":
+                        finish_reason = None
+                        delta = getattr(event, "delta", None)
+                        if delta:
+                            finish_reason = getattr(delta, "stop_reason", None)
+                        _merge_anthropic_usage(usage_dict, getattr(delta, "usage", None))
+                        _merge_anthropic_usage(usage_dict, getattr(event, "usage", None))
+                        if finish_reason:
+                            mapped_reason = _anthropic_stop_reason_to_finish_reason(finish_reason)
+                            yield LLMStreamChunk(content="", finish_reason=mapped_reason)
+                    elif event_type == "message_stop":
+                        message = getattr(event, "message", None)
+                        _merge_anthropic_usage(usage_dict, getattr(message, "usage", None))
+        finally:
+            if usage_dict:
+                _record_anthropic_token_usage(self.model, usage_dict)
         if usage_dict:
-            _record_anthropic_token_usage(self.model, usage_dict)
+            shared_usage = _anthropic_usage_with_openai_aliases(usage_dict)
             yield LLMStreamChunk(
                 content="",
-                usage_metadata=usage_dict,
-                response_metadata={"token_usage": usage_dict},
+                usage_metadata=shared_usage,
+                response_metadata={"token_usage": shared_usage},
             )
 
     async def ainvoke_raw(self, messages: Any, **overrides: Any):
