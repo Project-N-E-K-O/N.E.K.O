@@ -32,16 +32,9 @@ __all__ = [
     "_seed_key_from_params",
     "_replay_cache_key_get",
     "_replay_cache_key_unary",
-    "_replay_cache_key_binary",
     "_message_plane_replay_rpc",
     "_rebuild_records_from_plane_items",
     "_apply_reload_inplace_basic",
-    "_merge_unique_items",
-    "_intersection_unique_items",
-    "_difference_unique_items",
-    "_filter_items_by_compare",
-    "_filter_items_by_contains",
-    "_filter_items_by_regex",
     "BusListCore",
     "BusListWatcherCore",
 ]
@@ -149,135 +142,6 @@ def _apply_reload_inplace_basic(target: Any, refreshed: Any, ctx: Any) -> None:
     if hasattr(target, "plugin_id") and hasattr(refreshed, "plugin_id"):
         with suppress(Exception):
             setattr(target, "plugin_id", getattr(refreshed, "plugin_id"))
-
-
-def _merge_unique_items(
-    left_items: Sequence[Any],
-    right_items: Sequence[Any],
-    dedupe_key: Callable[[Any], tuple[str, Any]],
-) -> list[Any]:
-    merged: list[Any] = []
-    seen: set[tuple[str, Any]] = set()
-    for item in list(left_items) + list(right_items):
-        key = dedupe_key(item)
-        if key in seen:
-            continue
-        seen.add(key)
-        merged.append(item)
-    return merged
-
-
-def _intersection_unique_items(
-    left_items: Sequence[Any],
-    right_items: Sequence[Any],
-    dedupe_key: Callable[[Any], tuple[str, Any]],
-) -> list[Any]:
-    right_keys = {dedupe_key(x) for x in right_items}
-    kept: list[Any] = []
-    seen: set[tuple[str, Any]] = set()
-    for item in left_items:
-        key = dedupe_key(item)
-        if key not in right_keys:
-            continue
-        if key in seen:
-            continue
-        seen.add(key)
-        kept.append(item)
-    return kept
-
-
-def _difference_unique_items(
-    left_items: Sequence[Any],
-    right_items: Sequence[Any],
-    dedupe_key: Callable[[Any], tuple[str, Any]],
-) -> list[Any]:
-    right_keys = {dedupe_key(x) for x in right_items}
-    kept: list[Any] = []
-    seen: set[tuple[str, Any]] = set()
-    for item in left_items:
-        key = dedupe_key(item)
-        if key in right_keys:
-            continue
-        if key in seen:
-            continue
-        seen.add(key)
-        kept.append(item)
-    return kept
-
-
-def _filter_items_by_compare(
-    *,
-    items: Sequence[Any],
-    field: str,
-    target: Any,
-    cast_value: Callable[[Any], Any],
-    get_field: Callable[[Any, str], Any],
-    mode: str,
-) -> list[Any]:
-    out: list[Any] = []
-    for item in items:
-        value = cast_value(get_field(item, field))
-        try:
-            if mode == "gt" and value > target:
-                out.append(item)
-                continue
-            if mode == "ge" and value >= target:
-                out.append(item)
-                continue
-            if mode == "lt" and value < target:
-                out.append(item)
-                continue
-            if mode == "le" and value <= target:
-                out.append(item)
-                continue
-        except Exception:
-            continue
-    return out
-
-
-def _filter_items_by_contains(
-    *,
-    items: Sequence[Any],
-    field: str,
-    needle: str,
-    get_field: Callable[[Any, str], Any],
-) -> list[Any]:
-    out: list[Any] = []
-    for item in items:
-        value = get_field(item, field)
-        if value is None:
-            continue
-        try:
-            if needle in str(value):
-                out.append(item)
-        except Exception:
-            continue
-    return out
-
-
-def _filter_items_by_regex(
-    *,
-    items: Sequence[Any],
-    field: str,
-    compiled: Any,
-    get_field: Callable[[Any, str], Any],
-    strict: bool,
-    error_factory: Callable[[Exception], Exception],
-) -> list[Any]:
-    out: list[Any] = []
-    for item in items:
-        value = get_field(item, field)
-        if value is None:
-            continue
-        text = str(value)
-        try:
-            if compiled is not None and compiled.search(text) is not None:
-                out.append(item)
-        except Exception as exc:
-            if strict:
-                raise error_factory(exc)
-            continue
-    return out
 
 
 def _compute_watcher_delta(
@@ -559,10 +423,6 @@ def _replay_cache_key_get(bus: str, params: dict[str, Any]) -> tuple[str, str, A
 
 def _replay_cache_key_unary(op: str, params: dict[str, Any], child_key: Any) -> tuple[str, str, Any, Any]:
     return ("unary", str(op), _freeze_plan_value(dict(params or {})), child_key)
-
-
-def _replay_cache_key_binary(op: str, params: dict[str, Any], left_key: Any, right_key: Any) -> tuple[str, str, Any, Any, Any]:
-    return ("binary", str(op), _freeze_plan_value(dict(params or {})), left_key, right_key)
 
 
 def _message_plane_replay_rpc(
@@ -933,10 +793,6 @@ def _build_watcher_injected_callback(fn: Callable[..., None]) -> Callable[[Any],
 def _extract_unary_plan_ops(plan: Any) -> list[tuple[str, dict[str, Any]]] | None:
     if plan is None:
         return None
-    # Binary plans are not incrementally replayable in watcher local path.
-    if hasattr(plan, "left") and hasattr(plan, "right"):
-        return None
-
     ops: list[tuple[str, dict[str, Any]]] = []
     node = plan
     while hasattr(node, "child") and hasattr(node, "op"):
@@ -955,16 +811,10 @@ def _extract_unary_plan_ops(plan: Any) -> list[tuple[str, dict[str, Any]]] | Non
 def _infer_bus_from_plan(plan: Any, *, conflict_error: type[Exception]) -> str:
     if plan is None:
         return ""
-    if hasattr(plan, "params") and isinstance(getattr(plan, "params", None), dict) and not hasattr(plan, "child") and not hasattr(plan, "left"):
+    if hasattr(plan, "params") and isinstance(getattr(plan, "params", None), dict) and not hasattr(plan, "child"):
         return str(getattr(plan, "params", {}).get("bus") or "").strip()
     if hasattr(plan, "child"):
         return _infer_bus_from_plan(getattr(plan, "child", None), conflict_error=conflict_error)
-    if hasattr(plan, "left") and hasattr(plan, "right"):
-        left = _infer_bus_from_plan(getattr(plan, "left", None), conflict_error=conflict_error)
-        right = _infer_bus_from_plan(getattr(plan, "right", None), conflict_error=conflict_error)
-        if left and right and left != right:
-            raise conflict_error(f"watcher requires same bus on both sides: {left!r} vs {right!r}")
-        return left or right
     return ""
 
 
@@ -987,34 +837,6 @@ def _apply_watcher_ops_local(base_list: Any, ops: list[tuple[str, dict[str, Any]
                 cast=params.get("cast"),
                 reverse=bool(params.get("reverse", False)),
             )
-            continue
-        if op == "where_in":
-            lst = lst.where_in(str(params.get("field")), list(params.get("values") or []))
-            continue
-        if op == "where_eq":
-            lst = lst.where_eq(str(params.get("field")), params.get("value"))
-            continue
-        if op == "where_contains":
-            lst = lst.where_contains(str(params.get("field")), str(params.get("value") or ""))
-            continue
-        if op == "where_regex":
-            lst = lst.where_regex(
-                str(params.get("field")),
-                str(params.get("pattern") or ""),
-                strict=bool(params.get("strict", True)),
-            )
-            continue
-        if op == "where_gt":
-            lst = lst.where_gt(str(params.get("field")), params.get("value"), cast=params.get("cast"))
-            continue
-        if op == "where_ge":
-            lst = lst.where_ge(str(params.get("field")), params.get("value"), cast=params.get("cast"))
-            continue
-        if op == "where_lt":
-            lst = lst.where_lt(str(params.get("field")), params.get("value"), cast=params.get("cast"))
-            continue
-        if op == "where_le":
-            lst = lst.where_le(str(params.get("field")), params.get("value"), cast=params.get("cast"))
             continue
         if op == "where":
             return None

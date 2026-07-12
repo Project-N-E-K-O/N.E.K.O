@@ -89,14 +89,6 @@ class _PluginBusList(BusList[TRecord]):
         super().__init__(items, ctx=ctx, trace=trace, plan=plan, fast_mode=fast_mode)
         self.plugin_id = plugin_id
 
-    def merge(self, other: "BusList[TRecord]") -> "_PluginBusList[TRecord]":
-        merged = super().merge(other)
-        other_pid = getattr(other, "plugin_id", None)
-        if self.plugin_id != other_pid:
-            merged.plugin_id = "*"  # type: ignore[attr-defined]
-        return merged  # type: ignore[return-value]
-
-
 # ── BusRpcClientBase ───────────────────────────────────────────────────
 
 class BusRpcClientBase:

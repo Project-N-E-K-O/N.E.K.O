@@ -9,6 +9,10 @@ from __future__ import annotations
 
 import pytest
 
+from plugin.core.bus.types import BusList as CoreBusList
+from plugin.core.bus import records as core_bus_records
+from plugin.core.bus import types as core_bus_types
+from plugin.message_plane.rpc_server import MessagePlaneRpcServer
 from plugin.sdk.shared.core.bus_context import (
     SdkBusContext,
     SdkBusConversationRecord,
@@ -26,6 +30,37 @@ from plugin.sdk.shared.core.bus_context import (
     SdkMessagesBus,
     ensure_sdk_bus_context,
 )
+
+
+def test_removed_bus_query_dsl_does_not_reappear() -> None:
+    removed_names = (
+        "where_in",
+        "where_eq",
+        "where_contains",
+        "where_regex",
+        "where_gt",
+        "where_ge",
+        "where_lt",
+        "where_le",
+        "merge",
+        "__add__",
+        "intersection",
+        "intersect",
+        "__and__",
+        "difference",
+        "subtract",
+        "__sub__",
+    )
+    for bus_list_type in (CoreBusList, SdkBusList):
+        for name in removed_names:
+            assert not hasattr(bus_list_type, name)
+    assert not hasattr(core_bus_types, "BinaryNode")
+    assert not hasattr(core_bus_records, "BinaryNode")
+
+    rpc_server = object.__new__(MessagePlaneRpcServer)
+    for op in removed_names[:8]:
+        assert rpc_server._apply_unary_op([], op=op, params={}) is None
+    assert rpc_server._eval_plan(None, {"kind": "binary", "op": "merge"}) is None
 
 
 # ---------------------------------------------------------------------------
@@ -159,31 +194,9 @@ class TestSdkBusList:
         result = items.where(lambda r: r.priority == 2)
         assert len(result) == 1
 
-    def test_where_in(self) -> None:
-        items = _make_list([
-            SdkBusMessageRecord(type="t", source="a"),
-            SdkBusMessageRecord(type="t", source="b"),
-            SdkBusMessageRecord(type="t", source="c"),
-        ])
-        result = items.where_in("source", ["a", "c"])
-        assert len(result) == 2
-
     def test_limit(self) -> None:
         items = _make_list([SdkBusMessageRecord(type="t") for _ in range(5)])
         assert len(items.limit(3)) == 3
-
-    def test_add(self) -> None:
-        a = _make_list([SdkBusMessageRecord(type="t", message_id="m1")])
-        b = _make_list([SdkBusMessageRecord(type="t", message_id="m2")])
-        merged = a + b
-        assert len(merged) == 2
-
-    def test_and_intersection(self) -> None:
-        a = _make_list([SdkBusMessageRecord(type="t", message_id="m1"), SdkBusMessageRecord(type="t", message_id="m2")])
-        b = _make_list([SdkBusMessageRecord(type="t", message_id="m2")])
-        result = a & b
-        assert len(result) == 1
-        assert result[0].message_id == "m2"
 
     def test_explain(self) -> None:
         items = _make_list([])

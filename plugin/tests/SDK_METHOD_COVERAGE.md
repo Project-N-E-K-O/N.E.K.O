@@ -86,7 +86,7 @@ This file inventories public functions/methods under `plugin/sdk` and maps them 
 ### `plugin/sdk/bus/messages.py`
 - `functions`: (none)
 - `MessageRecord`: from_raw, from_index, dump
-- `MessageList`: merge
+- `MessageList`: (none)
 - `MessageClient`: get_message_plane_all, get_sync, get_async, get, get_by_conversation
 
 ### `plugin/sdk/bus/records.py`
@@ -95,7 +95,6 @@ This file inventories public functions/methods under `plugin/sdk` and maps them 
 - `TraceNode`: dump, explain
 - `GetNode`: dump
 - `UnaryNode`: dump, explain
-- `BinaryNode`: dump, explain
 
 ### `plugin/sdk/bus/rev.py`
 - `functions`: register_bus_change_listener, dispatch_bus_change
@@ -108,8 +107,7 @@ This file inventories public functions/methods under `plugin/sdk` and maps them 
 - `TraceNode`: dump, explain
 - `GetNode`: dump
 - `UnaryNode`: dump, explain
-- `BinaryNode`: dump, explain
-- `BusList`: count, size, dump, dump_records, fast_mode, trace, trace_dump, trace_tree_dump, explain, merge, sort, sorted, intersection, intersect, difference, subtract, filter, where_in, where_eq, where_contains, where_regex, where_gt, where_ge, where_lt, where_le, try_filter, where, limit, reload, reload_with, reload_with_async, watch
+- `BusList`: count, size, dump, dump_records, fast_mode, trace, trace_dump, trace_tree_dump, explain, sort, sorted, filter, try_filter, where, limit, reload, reload_with, reload_with_async, watch
 
 ### `plugin/sdk/bus/watchers.py`
 - `functions`: list_subscription

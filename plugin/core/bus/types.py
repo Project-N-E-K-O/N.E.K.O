@@ -30,15 +30,8 @@ from plugin.core.bus.bus_list import (
     BusListCore,
     _freeze_plan_value,
     _message_plane_replay_rpc,
-    _merge_unique_items,
     _rebuild_records_from_plane_items,
     _apply_reload_inplace_basic,
-    _intersection_unique_items,
-    _difference_unique_items,
-    _filter_items_by_compare,
-    _filter_items_by_contains,
-    _filter_items_by_regex,
-    _replay_cache_key_binary,
     _replay_cache_key_get,
     _replay_cache_key_unary,
     _seed_key_from_params,
@@ -292,22 +285,6 @@ class UnaryNode(TraceNode):
         return self.child.explain() + " -> " + super().explain()
 
 
-@dataclass(frozen=True)
-class BinaryNode(TraceNode):
-    left: TraceNode
-    right: TraceNode
-
-    def dump(self) -> Dict[str, Any]:
-        base = super().dump()
-        base["kind"] = "binary"
-        base["left"] = self.left.dump()
-        base["right"] = self.right.dump()
-        return base
-
-    def explain(self) -> str:
-        return f"({self.left.explain()}) {self.op} ({self.right.explain()})"
-
-
 def _collect_get_nodes_fast(node: "TraceNode") -> List["GetNode"]:
     """Module-level function to collect GetNodes from a plan tree (iterative, faster)."""
     result: List["GetNode"] = []
@@ -318,9 +295,6 @@ def _collect_get_nodes_fast(node: "TraceNode") -> List["GetNode"]:
             result.append(n)
         elif isinstance(n, UnaryNode):
             stack.append(n.child)
-        elif isinstance(n, BinaryNode):
-            stack.append(n.left)
-            stack.append(n.right)
     return result
 
 
@@ -338,18 +312,6 @@ def _serialize_plan_fast(node: "TraceNode") -> Optional[Dict[str, Any]]:
                 "op": str(node.op),
                 "params": dict(node.params or {}),
                 "child": child,
-            }
-        if isinstance(node, BinaryNode):
-            left = _serialize_plan_fast(node.left)
-            right = _serialize_plan_fast(node.right)
-            if left is None or right is None:
-                return None
-            return {
-                "kind": "binary",
-                "op": str(node.op),
-                "params": dict(node.params or {}),
-                "left": left,
-                "right": right,
             }
     except Exception:
         return None
@@ -516,14 +478,6 @@ class BusList(BusListCore, Generic[TRecord]):
         p = params if isinstance(params, dict) else {}
         return UnaryNode(op=op, params=p, at=time.time(), child=self._plan)
 
-    def _add_plan_binary(self, op: str, right: "BusList[TRecord]", params: Optional[Dict[str, Any]] = None) -> Optional[TraceNode]:
-        if self._fast_mode:
-            return None
-        if self._plan is None or right._plan is None:
-            return None
-        p = params if isinstance(params, dict) else {}
-        return BinaryNode(op=op, params=p, at=time.time(), left=self._plan, right=right._plan)
-
     def _construct(
         self,
         items: Sequence[TRecord],
@@ -548,28 +502,6 @@ class BusList(BusListCore, Generic[TRecord]):
             if getattr(self, "_ctx", None) is not None and plan is not None and not getattr(self, "_fast_mode", False):
                 out._cache_valid = False
         return out
-
-    def merge(self, other: "BusList[TRecord]") -> "BusList[TRecord]":
-        if type(self) is not type(other):
-            raise TypeError(f"Cannot merge different bus list types: {type(self).__name__} + {type(other).__name__}")
-
-        merged = cast(List[TRecord], _merge_unique_items(self._items, other._items, self._dedupe_key))
-
-        if self._is_lazy_mode() or other._is_lazy_mode():
-            left_len = len(self._items)
-            right_len = len(other._items)
-        else:
-            left_len = len(self)
-            right_len = len(other)
-
-        trace = self._add_trace("merge", {"left": left_len, "right": right_len})
-        plan = self._add_plan_binary("merge", other, {"left": left_len, "right": right_len})
-        out = self._construct(merged, trace, plan)
-        out._invalidate_cache()
-        return out
-
-    def __add__(self, other: "BusList[TRecord]") -> "BusList[TRecord]":
-        return self.merge(other)
 
     def sort(
         self,
@@ -663,58 +595,6 @@ class BusList(BusListCore, Generic[TRecord]):
         reverse: bool = False,
     ) -> "BusList[TRecord]":
         return self.sort(by=by, key=key, cast=cast, reverse=reverse)
-
-    def intersection(self, other: "BusList[TRecord]") -> "BusList[TRecord]":
-        if type(self) is not type(other):
-            raise TypeError(
-                f"Cannot intersect different bus list types: {type(self).__name__} & {type(other).__name__}"
-            )
-
-        kept = cast(List[TRecord], _intersection_unique_items(self._items, other._items, self._dedupe_key))
-
-        if self._is_lazy_mode() or other._is_lazy_mode():
-            left_len = len(self._items)
-            right_len = len(other._items)
-        else:
-            left_len = len(self)
-            right_len = len(other)
-        trace = self._add_trace("intersection", {"left": left_len, "right": right_len})
-        plan = self._add_plan_binary("intersection", other, {"left": left_len, "right": right_len})
-        out = self._construct(kept, trace, plan)
-        out._invalidate_cache()
-        return out
-
-    def intersect(self, other: "BusList[TRecord]") -> "BusList[TRecord]":
-        return self.intersection(other)
-
-    def __and__(self, other: "BusList[TRecord]") -> "BusList[TRecord]":
-        return self.intersection(other)
-
-    def difference(self, other: "BusList[TRecord]") -> "BusList[TRecord]":
-        if type(self) is not type(other):
-            raise TypeError(
-                f"Cannot diff different bus list types: {type(self).__name__} - {type(other).__name__}"
-            )
-
-        kept = cast(List[TRecord], _difference_unique_items(self._items, other._items, self._dedupe_key))
-
-        if self._is_lazy_mode() or other._is_lazy_mode():
-            left_len = len(self._items)
-            right_len = len(other._items)
-        else:
-            left_len = len(self)
-            right_len = len(other)
-        trace = self._add_trace("difference", {"left": left_len, "right": right_len})
-        plan = self._add_plan_binary("difference", other, {"left": left_len, "right": right_len})
-        out = self._construct(kept, trace, plan)
-        out._invalidate_cache()
-        return out
-
-    def subtract(self, other: "BusList[TRecord]") -> "BusList[TRecord]":
-        return self.difference(other)
-
-    def __sub__(self, other: "BusList[TRecord]") -> "BusList[TRecord]":
-        return self.difference(other)
 
     def __eq__(self, other: object) -> bool:
         if other is self:
@@ -865,168 +745,6 @@ class BusList(BusListCore, Generic[TRecord]):
         out._invalidate_cache()
         return out
 
-    def where_in(self, field: str, values: Sequence[Any]) -> "BusList[TRecord]":
-        vs = list(values)
-
-        if self._is_lazy_mode():
-            items = list(self._items)
-        else:
-            items = [item for item in self._items if self._get_field(item, field) in vs]
-        trace = self._add_trace("where_in", {"field": field, "values": vs})
-        plan = self._add_plan_unary("where_in", {"field": field, "values": vs})
-        out = self._construct(items, trace, plan)
-        out._invalidate_cache()
-        return out
-
-    def where_eq(self, field: str, value: Any) -> "BusList[TRecord]":
-        if self._is_lazy_mode():
-            items = list(self._items)
-        else:
-            items = [item for item in self._items if self._get_field(item, field) == value]
-        trace = self._add_trace("where_eq", {"field": field, "value": value})
-        plan = self._add_plan_unary("where_eq", {"field": field, "value": value})
-        out = self._construct(items, trace, plan)
-        out._invalidate_cache()
-        return out
-
-    def where_contains(self, field: str, value: str) -> "BusList[TRecord]":
-        needle = str(value)
-        if self._is_lazy_mode():
-            items = list(self._items)
-        else:
-            items = typing.cast(
-                List[TRecord],
-                _filter_items_by_contains(
-                    items=self._items,
-                    field=field,
-                    needle=needle,
-                    get_field=self._get_field,
-                ),
-            )
-        trace = self._add_trace("where_contains", {"field": field, "value": needle})
-        plan = self._add_plan_unary("where_contains", {"field": field, "value": needle})
-        out = self._construct(items, trace, plan)
-        out._invalidate_cache()
-        return out
-
-    def where_regex(self, field: str, pattern: str, *, strict: bool = True) -> "BusList[TRecord]":
-        pat = str(pattern)
-        try:
-            compiled = re.compile(pat)
-        except re.error as e:
-            if strict:
-                raise BusFilterError(f"Invalid regex for where_regex({field}): {pat!r}") from e
-            compiled = None
-
-        if self._is_lazy_mode():
-            items = list(self._items)
-        else:
-            items = typing.cast(
-                List[TRecord],
-                _filter_items_by_regex(
-                    items=self._items,
-                    field=field,
-                    compiled=compiled,
-                    get_field=self._get_field,
-                    strict=bool(strict),
-                    error_factory=lambda exc: BusFilterError(f"Regex match failed for where_regex({field})"),
-                ),
-            )
-
-        trace = self._add_trace("where_regex", {"field": field, "pattern": pat, "strict": strict})
-        plan = self._add_plan_unary("where_regex", {"field": field, "pattern": pat, "strict": strict})
-        out = self._construct(items, trace, plan)
-        out._invalidate_cache()
-        return out
-
-    def where_gt(self, field: str, value: Any, *, cast: Optional[str] = None) -> "BusList[TRecord]":
-        target = self._cast_value(value, cast)
-        if self._is_lazy_mode():
-            items = list(self._items)
-        else:
-            items = typing.cast(
-                List[TRecord],
-                _filter_items_by_compare(
-                    items=self._items,
-                    field=field,
-                    target=target,
-                    cast_value=lambda v: self._cast_value(v, cast),
-                    get_field=self._get_field,
-                    mode="gt",
-                ),
-            )
-        trace = self._add_trace("where_gt", {"field": field, "value": value, "cast": cast})
-        plan = self._add_plan_unary("where_gt", {"field": field, "value": value, "cast": cast})
-        out = self._construct(items, trace, plan)
-        out._invalidate_cache()
-        return out
-
-    def where_ge(self, field: str, value: Any, *, cast: Optional[str] = None) -> "BusList[TRecord]":
-        target = self._cast_value(value, cast)
-        if self._is_lazy_mode():
-            items = list(self._items)
-        else:
-            items = typing.cast(
-                List[TRecord],
-                _filter_items_by_compare(
-                    items=self._items,
-                    field=field,
-                    target=target,
-                    cast_value=lambda v: self._cast_value(v, cast),
-                    get_field=self._get_field,
-                    mode="ge",
-                ),
-            )
-        trace = self._add_trace("where_ge", {"field": field, "value": value, "cast": cast})
-        plan = self._add_plan_unary("where_ge", {"field": field, "value": value, "cast": cast})
-        out = self._construct(items, trace, plan)
-        out._invalidate_cache()
-        return out
-
-    def where_lt(self, field: str, value: Any, *, cast: Optional[str] = None) -> "BusList[TRecord]":
-        target = self._cast_value(value, cast)
-        if self._is_lazy_mode():
-            items = list(self._items)
-        else:
-            items = typing.cast(
-                List[TRecord],
-                _filter_items_by_compare(
-                    items=self._items,
-                    field=field,
-                    target=target,
-                    cast_value=lambda v: self._cast_value(v, cast),
-                    get_field=self._get_field,
-                    mode="lt",
-                ),
-            )
-        trace = self._add_trace("where_lt", {"field": field, "value": value, "cast": cast})
-        plan = self._add_plan_unary("where_lt", {"field": field, "value": value, "cast": cast})
-        out = self._construct(items, trace, plan)
-        out._invalidate_cache()
-        return out
-
-    def where_le(self, field: str, value: Any, *, cast: Optional[str] = None) -> "BusList[TRecord]":
-        target = self._cast_value(value, cast)
-        if self._is_lazy_mode():
-            items = list(self._items)
-        else:
-            items = typing.cast(
-                List[TRecord],
-                _filter_items_by_compare(
-                    items=self._items,
-                    field=field,
-                    target=target,
-                    cast_value=lambda v: self._cast_value(v, cast),
-                    get_field=self._get_field,
-                    mode="le",
-                ),
-            )
-        trace = self._add_trace("where_le", {"field": field, "value": value, "cast": cast})
-        plan = self._add_plan_unary("where_le", {"field": field, "value": value, "cast": cast})
-        out = self._construct(items, trace, plan)
-        out._invalidate_cache()
-        return out
-
     def try_filter(self, flt: Optional[BusFilter] = None, **kwargs: Any) -> BusFilterResult[TRecord]:
         try:
             value = self.filter(flt, strict=True, **kwargs)
@@ -1042,10 +760,10 @@ class BusList(BusListCore, Generic[TRecord]):
 
         Warning:
             - where(predicate) 由于 predicate 不可序列化/不可重放, reload()/watch() 无法重放这一步.
-            - 如果需要可重放过滤, 优先使用 where_eq/where_in/where_* 等结构化方法.
+            - 该操作不可序列化或重放；需要 reload()/watch() 时使用 filter(...).
         """
         if self._is_lazy_mode():
-            raise NonReplayableTraceError("lazy list cannot use where(predicate); use where_in/where_eq/... instead")
+            raise NonReplayableTraceError("lazy list cannot use where(predicate); use filter(...) instead")
         items = [item for item in self._items if predicate(item)]
         trace = self._add_trace(
             "where",
@@ -1102,13 +820,6 @@ class BusList(BusListCore, Generic[TRecord]):
                     return _replay_cache_key_get(bus, params)
                 if isinstance(node, UnaryNode):
                     return _replay_cache_key_unary(str(node.op), dict(node.params or {}), _cache_key(node.child))
-                if isinstance(node, BinaryNode):
-                    return _replay_cache_key_binary(
-                        str(node.op),
-                        dict(node.params or {}),
-                        _cache_key(node.left),
-                        _cache_key(node.right),
-                    )
             except Exception:
                 return ("node", id(node))
             return ("node", id(node))
@@ -1189,75 +900,9 @@ class BusList(BusListCore, Generic[TRecord]):
                     )
                     cache[key] = out
                     return out
-                if node.op == "where_in":
-                    out = base.where_in(str(node.params.get("field")), list(node.params.get("values") or []))
-                    cache[key] = out
-                    return out
-                if node.op == "where_eq":
-                    out = base.where_eq(str(node.params.get("field")), node.params.get("value"))
-                    cache[key] = out
-                    return out
-                if node.op == "where_contains":
-                    out = base.where_contains(str(node.params.get("field")), str(node.params.get("value") or ""))
-                    cache[key] = out
-                    return out
-                if node.op == "where_regex":
-                    out = base.where_regex(
-                        str(node.params.get("field")),
-                        str(node.params.get("pattern") or ""),
-                        strict=bool(node.params.get("strict", True)),
-                    )
-                    cache[key] = out
-                    return out
-                if node.op == "where_gt":
-                    out = base.where_gt(
-                        str(node.params.get("field")),
-                        node.params.get("value"),
-                        cast=node.params.get("cast"),
-                    )
-                    cache[key] = out
-                    return out
-                if node.op == "where_ge":
-                    out = base.where_ge(
-                        str(node.params.get("field")),
-                        node.params.get("value"),
-                        cast=node.params.get("cast"),
-                    )
-                    cache[key] = out
-                    return out
-                if node.op == "where_lt":
-                    out = base.where_lt(
-                        str(node.params.get("field")),
-                        node.params.get("value"),
-                        cast=node.params.get("cast"),
-                    )
-                    cache[key] = out
-                    return out
-                if node.op == "where_le":
-                    out = base.where_le(
-                        str(node.params.get("field")),
-                        node.params.get("value"),
-                        cast=node.params.get("cast"),
-                    )
-                    cache[key] = out
-                    return out
                 if node.op == "where":
-                    raise NonReplayableTraceError("reload cannot replay where(predicate); use where_in/where_eq/... instead")
+                    raise NonReplayableTraceError("reload cannot replay where(predicate); use filter(...) instead")
                 raise NonReplayableTraceError(f"Unknown unary op for reload: {node.op!r}")
-
-            if isinstance(node, BinaryNode):
-                left = _as_eager(_replay(node.left))
-                right = _as_eager(_replay(node.right))
-                if node.op == "merge":
-                    out = left + right
-                elif node.op == "intersection":
-                    out = left & right
-                elif node.op == "difference":
-                    out = left - right
-                else:
-                    raise NonReplayableTraceError(f"Unknown binary op for reload: {node.op!r}")
-                cache[key] = out
-                return out
 
             raise NonReplayableTraceError(f"Unknown plan node type: {type(node).__name__}")
         return _replay(plan)
@@ -1442,9 +1087,6 @@ class BusList(BusListCore, Generic[TRecord]):
                                     if isinstance(v, str) and v:
                                         out.add(v)
                                 out |= _collect_source_filters(node.child)
-                            elif isinstance(node, BinaryNode):
-                                out |= _collect_source_filters(node.left)
-                                out |= _collect_source_filters(node.right)
                         except Exception:
                             return out
                         return out
@@ -1697,41 +1339,11 @@ class BusList(BusListCore, Generic[TRecord]):
                                     cast=node.params.get("cast"),
                                     reverse=bool(node.params.get("reverse", False)),
                                 )
-                            if node.op == "where_in":
-                                return base.where_in(str(node.params.get("field")), list(node.params.get("values") or []))
-                            if node.op == "where_eq":
-                                return base.where_eq(str(node.params.get("field")), node.params.get("value"))
-                            if node.op == "where_contains":
-                                return base.where_contains(str(node.params.get("field")), str(node.params.get("value") or ""))
-                            if node.op == "where_regex":
-                                return base.where_regex(
-                                    str(node.params.get("field")),
-                                    str(node.params.get("pattern") or ""),
-                                    strict=bool(node.params.get("strict", True)),
-                                )
-                            if node.op == "where_gt":
-                                return base.where_gt(str(node.params.get("field")), node.params.get("value"), cast=node.params.get("cast"))
-                            if node.op == "where_ge":
-                                return base.where_ge(str(node.params.get("field")), node.params.get("value"), cast=node.params.get("cast"))
-                            if node.op == "where_lt":
-                                return base.where_lt(str(node.params.get("field")), node.params.get("value"), cast=node.params.get("cast"))
-                            if node.op == "where_le":
-                                return base.where_le(str(node.params.get("field")), node.params.get("value"), cast=node.params.get("cast"))
                             if node.op == "where":
                                 raise NonReplayableTraceError(
-                                    "incremental reload cannot replay where(predicate); use where_in/where_eq/... instead"
+                                    "incremental reload cannot replay where(predicate); use filter(...) instead"
                                 )
                             raise NonReplayableTraceError(f"Unknown unary op for incremental reload: {node.op!r}")
-                        if isinstance(node, BinaryNode):
-                            left = _replay_local(node.left)
-                            right = _replay_local(node.right)
-                            if node.op == "merge":
-                                return left + right
-                            if node.op == "intersection":
-                                return left & right
-                            if node.op == "difference":
-                                return left - right
-                            raise NonReplayableTraceError(f"Unknown binary op for incremental reload: {node.op!r}")
                         raise NonReplayableTraceError(f"Unknown plan node type: {type(node).__name__}")
 
                     refreshed = _replay_local(self._plan)

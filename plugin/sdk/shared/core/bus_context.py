@@ -610,73 +610,12 @@ class SdkBusList(Generic[TRecord]):
     def where(self, predicate: Callable[[TRecord], bool]) -> "SdkBusList[TRecord]":
         return self.filter(predicate)
 
-    def where_in(self, field: str, values: Iterable[object]) -> "SdkBusList[TRecord]":
-        raw_where_in = getattr(self._raw_list, "where_in", None)
-        if callable(raw_where_in):
-            return self._wrap_raw(raw_where_in(field, values))
-        value_set = set(values)
-        return SdkBusList(
-            [item for item in self.items if self._item_value(item, field) in value_set],
-            namespace=self._namespace,
-            record_factory=self._record_factory,
-            host_ctx=self._host_ctx,
-        )
-
     def limit(self, size: int) -> "SdkBusList[TRecord]":
         raw_limit = getattr(self._raw_list, "limit", None)
         if callable(raw_limit):
             return self._wrap_raw(raw_limit(size))
         return SdkBusList(
             list(self.items[:size]),
-            namespace=self._namespace,
-            record_factory=self._record_factory,
-            host_ctx=self._host_ctx,
-        )
-
-    @staticmethod
-    def _dedupe_key(item: object) -> str:
-        key_fn = getattr(item, "key", None)
-        if callable(key_fn):
-            return str(key_fn())
-        return str(item)
-
-    def _log_fallback_error(self, operation: str, error: Exception) -> None:
-        logger = getattr(self._host_ctx, "logger", None)
-        debug = getattr(logger, "debug", None)
-        if not callable(debug):
-            return
-        try:
-            debug(f"sdk bus fallback for {self._namespace}.{operation}: {error}")
-        except Exception:
-            return
-
-    def __add__(self, other: "SdkBusList[TRecord]") -> "SdkBusList[TRecord]":
-        raw_add = getattr(self._raw_list, "__add__", None)
-        if callable(raw_add) and getattr(other, "_raw_list", None) is not None:
-            try:
-                return self._wrap_raw(raw_add(other._raw_list))
-            except Exception as error:
-                self._log_fallback_error("__add__", error)
-        merged: dict[str, TRecord] = {}
-        for item in [*self.items, *other.items]:
-            merged[self._dedupe_key(item)] = item
-        return SdkBusList(
-            list(merged.values()),
-            namespace=self._namespace,
-            record_factory=self._record_factory,
-            host_ctx=self._host_ctx,
-        )
-
-    def __and__(self, other: "SdkBusList[TRecord]") -> "SdkBusList[TRecord]":
-        raw_and = getattr(self._raw_list, "__and__", None)
-        if callable(raw_and) and getattr(other, "_raw_list", None) is not None:
-            try:
-                return self._wrap_raw(raw_and(other._raw_list))
-            except Exception as error:
-                self._log_fallback_error("__and__", error)
-        other_keys = {self._dedupe_key(item) for item in other.items}
-        return SdkBusList(
-            [item for item in self.items if self._dedupe_key(item) in other_keys],
             namespace=self._namespace,
             record_factory=self._record_factory,
             host_ctx=self._host_ctx,

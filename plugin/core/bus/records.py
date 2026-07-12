@@ -152,23 +152,6 @@ class UnaryNode(TraceNode):
         return self.child.explain() + " -> " + super().explain()
 
 
-@dataclass(frozen=True)
-class BinaryNode(TraceNode):
-    """二元操作节点"""
-    left: TraceNode
-    right: TraceNode
-
-    def dump(self) -> Dict[str, Any]:
-        base = super().dump()
-        base["kind"] = "binary"
-        base["left"] = self.left.dump()
-        base["right"] = self.right.dump()
-        return base
-
-    def explain(self) -> str:
-        return f"({self.left.explain()}) {self.op} ({self.right.explain()})"
-
-
 def _collect_get_nodes_fast(node: "TraceNode") -> List["GetNode"]:
     """Module-level function to collect GetNodes from a plan tree (iterative, faster)."""
     result: List["GetNode"] = []
@@ -179,9 +162,6 @@ def _collect_get_nodes_fast(node: "TraceNode") -> List["GetNode"]:
             result.append(n)
         elif isinstance(n, UnaryNode):
             stack.append(n.child)
-        elif isinstance(n, BinaryNode):
-            stack.append(n.left)
-            stack.append(n.right)
     return result
 
 
@@ -199,18 +179,6 @@ def _serialize_plan_fast(node: "TraceNode") -> Optional[Dict[str, Any]]:
                 "op": str(node.op),
                 "params": dict(node.params or {}),
                 "child": child,
-            }
-        if isinstance(node, BinaryNode):
-            left = _serialize_plan_fast(node.left)
-            right = _serialize_plan_fast(node.right)
-            if left is None or right is None:
-                return None
-            return {
-                "kind": "binary",
-                "op": str(node.op),
-                "params": dict(node.params or {}),
-                "left": left,
-                "right": right,
             }
     except Exception:
         return None
