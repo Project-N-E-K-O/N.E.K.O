@@ -437,6 +437,17 @@ def test_monitor_live_script_reports_runtime_timeline_without_sensitive_fields(t
     assert "old.stage" not in completed.stdout
 
 
+def test_monitor_live_script_uses_dash_for_missing_topic_and_host_fields(tmp_path: Path) -> None:
+    context = _context_with_latest_route_and_signal()
+    context["state"]["recent_results"] = []
+
+    completed = _run_monitor(tmp_path, context)
+
+    assert completed.returncode == 0, completed.stderr
+    assert "latest_topic_pack=-" in completed.stdout
+    assert "latest_host_beat_idle_stage=-" in completed.stdout
+
+
 def test_monitor_live_script_reports_recent_event_signal_counts(tmp_path: Path) -> None:
     context = _context_with_latest_route_and_signal()
     context["state"]["recent_results"] = [
