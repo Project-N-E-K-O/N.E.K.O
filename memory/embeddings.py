@@ -71,7 +71,6 @@ from ._embeddings import lifecycle as _service_lifecycle
 from ._embeddings import hardware as _hardware
 from ._embeddings import profiles as _profiles
 from ._embeddings.schema import (
-    _MODEL_ID_DIM_RE,
     build_model_id,
     clear_embedding_fields,
     cosine_similarity as _cosine_similarity_impl,
