@@ -211,7 +211,6 @@ def test_plugin_process_runner_uses_timeout_when_reporting_crash(
 
     monkeypatch.setattr(host_module, "_setup_plugin_logger", lambda *args, **kwargs: _FakeLogger())
     monkeypatch.setattr(host_module, "_setup_logging_interception", lambda *args, **kwargs: None)
-    monkeypatch.setattr(host_module, "_check_extension_type_guard", lambda *args, **kwargs: False)
     monkeypatch.setattr(host_module, "_prepare_child_plugin_import_roots", lambda *args, **kwargs: None)
     monkeypatch.setattr(host_module, "_prepare_child_current_plugin_import_root", lambda *args, **kwargs: None)
     monkeypatch.setattr(host_module, "_prepare_child_plugin_vendor_path", lambda *args, **kwargs: None)
@@ -322,7 +321,6 @@ def test_plugin_process_runner_skips_auto_work_after_failed_startup_in_fail_mode
 
     monkeypatch.setattr(host_module, "_setup_plugin_logger", lambda *args, **kwargs: _FakeLogger())
     monkeypatch.setattr(host_module, "_setup_logging_interception", lambda *args, **kwargs: None)
-    monkeypatch.setattr(host_module, "_check_extension_type_guard", lambda *args, **kwargs: False)
     monkeypatch.setattr(host_module, "_prepare_child_plugin_import_roots", lambda *args, **kwargs: None)
     monkeypatch.setattr(host_module, "_prepare_child_current_plugin_import_root", lambda *args, **kwargs: None)
     monkeypatch.setattr(host_module, "_prepare_child_plugin_vendor_path", lambda *args, **kwargs: None)

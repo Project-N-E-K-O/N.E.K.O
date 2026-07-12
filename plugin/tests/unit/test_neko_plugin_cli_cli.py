@@ -246,13 +246,17 @@ def test_validate_plugin_dir_reports_invalid_utf8_optional_files(tmp_path: Path)
     assert any(".gitignore is not valid UTF-8" in message for message in messages)
 
 
-def test_validate_plugin_dir_rejects_removed_script_type(tmp_path: Path) -> None:
+@pytest.mark.parametrize("removed_type", ["script", "extension"])
+def test_validate_plugin_dir_rejects_removed_plugin_types(
+    tmp_path: Path,
+    removed_type: str,
+) -> None:
     plugin_dir = _make_plugin_dir(tmp_path)
     plugin_toml_path = plugin_dir / "plugin.toml"
     plugin_toml_path.write_text(
         plugin_toml_path.read_text(encoding="utf-8").replace(
             'type = "plugin"',
-            'type = "script"',
+            f'type = "{removed_type}"',
         ),
         encoding="utf-8",
     )
@@ -264,57 +268,6 @@ def test_validate_plugin_dir_rejects_removed_script_type(tmp_path: Path) -> None
         for level, message in issues
     )
 
-
-def test_validate_plugin_dir_warns_for_deprecated_extension_type(tmp_path: Path) -> None:
-    plugin_dir = _make_plugin_dir(tmp_path)
-    plugin_toml_path = plugin_dir / "plugin.toml"
-    plugin_toml_path.write_text(
-        plugin_toml_path.read_text(encoding="utf-8").replace(
-            'type = "plugin"',
-            'type = "extension"\n\n[plugin.host]\nplugin_id = "host_plugin"',
-        ),
-        encoding="utf-8",
-    )
-
-    issues = validate_plugin_dir(plugin_dir)
-
-    assert any(
-        level == "warning" and "type='extension' is deprecated" in message
-        for level, message in issues
-    )
-
-
-def test_validate_plugin_dir_accepts_loadable_legacy_extension_router_shape(
-    tmp_path: Path,
-) -> None:
-    plugin_dir = _make_plugin_dir(tmp_path)
-    plugin_toml_path = plugin_dir / "plugin.toml"
-    plugin_toml_path.write_text(
-        plugin_toml_path.read_text(encoding="utf-8").replace(
-            'type = "plugin"',
-            'type = "extension"\n\n[plugin.host]\nplugin_id = "host_plugin"',
-        ),
-        encoding="utf-8",
-    )
-    (plugin_dir / "__init__.py").write_text(
-        """from plugin.sdk.plugin import PluginRouter, plugin_entry
-
-class DemoPlugin(PluginRouter):
-    @plugin_entry(id="demo")
-    async def demo(self, **_):
-        return {"ok": True}
-""",
-        encoding="utf-8",
-    )
-
-    issues = validate_plugin_dir(plugin_dir)
-
-    assert any(
-        level == "warning" and "type='extension' is deprecated" in message
-        for level, message in issues
-    )
-    assert not any("must be decorated with @neko_plugin" in message for _level, message in issues)
-    assert not any("should inherit one of" in message for _level, message in issues)
 
 
 def test_validate_plugin_dir_warns_for_each_literal_push_message_v1_keyword(
@@ -803,7 +756,7 @@ def test_git_preflight_skips_git_binary_check_inside_existing_repo(
     init_cmd._preflight_git_request(target_dir, initialize_git=True)
 
 
-def test_interactive_handler_rejects_deprecated_extension_when_called_directly(
+def test_interactive_handler_rejects_removed_extension_when_called_directly(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:

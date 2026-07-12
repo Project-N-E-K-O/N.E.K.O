@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
 
 
@@ -18,3 +19,7 @@ def test_launcher_collects_current_plugin_sdk_tree() -> None:
         "plugin.sdk.version",
     ):
         assert f"'{removed_module}'" not in spec
+
+
+def test_removed_extension_sdk_has_no_importable_module() -> None:
+    assert importlib.util.find_spec("plugin.sdk.extension") is None

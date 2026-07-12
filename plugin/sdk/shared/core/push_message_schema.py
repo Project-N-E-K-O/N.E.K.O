@@ -154,7 +154,7 @@ def _normalize_part(p: dict[str, Any]) -> dict[str, Any]:
     ``data: bytes`` is replaced by ``binary_base64: str``.  Everything else
     is shallow-copied through unchanged.  Caller is responsible for
     ensuring ``type`` is one of the documented values; we don't reject
-    unknown types here so downstream extensions stay forward-compatible.
+    unknown types here so downstream consumers stay forward-compatible.
     """
     if not isinstance(p, dict):
         raise TypeError(f"part must be a dict, got {type(p).__name__}")

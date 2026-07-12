@@ -125,12 +125,6 @@ async def test_startup_uses_registry_refresh_then_autostart(monkeypatch: pytest.
                             "runtime_auto_start": True,
                             "runtime_load_state": "failed",
                         },
-                        "ext_plugin": {
-                            "id": "ext_plugin",
-                            "type": "extension",
-                            "runtime_enabled": True,
-                            "runtime_auto_start": True,
-                        },
                     }
                 )
             return {"success": True, "added": ["auto_plugin"], "updated": [], "removed": [], "failed": []}

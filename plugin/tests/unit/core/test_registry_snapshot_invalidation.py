@@ -132,33 +132,6 @@ def test_register_plugin_rejects_constructed_unsupported_type(plugin_type: objec
             module.state._snapshot_cache = cache_backup
 
 
-def test_register_plugin_keeps_extension_compatible_with_deprecation_warning() -> None:
-    plugin_id = "deprecated_extension_type"
-    plugins_backup = copy.deepcopy(module.state.plugins)
-    cache_backup = copy.deepcopy(module.state._snapshot_cache)
-    logger = _CaptureLogger()
-
-    try:
-        with module.state.acquire_plugins_write_lock():
-            module.state.plugins.pop(plugin_id, None)
-
-        resolved_id = module.register_plugin(
-            PluginMeta(id=plugin_id, name="Extension", type="extension"),
-            logger=logger,
-        )
-
-        assert resolved_id == plugin_id
-        with module.state.acquire_plugins_read_lock():
-            assert module.state.plugins[plugin_id]["type"] == "extension"
-        assert any("type='extension' is deprecated" in message for message in logger.warnings)
-        assert any("已弃用" in message and "非推奨" in message for message in logger.warnings)
-    finally:
-        with module.state.acquire_plugins_write_lock():
-            module.state.plugins.clear()
-            module.state.plugins.update(plugins_backup)
-        with module.state._snapshot_cache_lock:
-            module.state._snapshot_cache = cache_backup
-
 
 def test_scan_static_metadata_invalidates_handlers_snapshot_cache() -> None:
     handlers_backup = dict(module.state.event_handlers)

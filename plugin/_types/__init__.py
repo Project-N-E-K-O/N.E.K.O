@@ -66,7 +66,6 @@ from .protocols import (
 
 # 模型
 from .plugin_types import (
-    DEPRECATED_PLUGIN_TYPES,
     PluginType,
     SCAFFOLDABLE_PLUGIN_TYPES,
     SUPPORTED_PLUGIN_TYPES,
@@ -123,7 +122,6 @@ __all__ = [
     "PluginDependency",
     "PluginType",
     "SUPPORTED_PLUGIN_TYPES",
-    "DEPRECATED_PLUGIN_TYPES",
     "SCAFFOLDABLE_PLUGIN_TYPES",
     "PluginMeta",
     "HealthCheckResponse",

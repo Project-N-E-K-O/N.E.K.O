@@ -22,8 +22,6 @@ class PluginSpec:
 
     plugin_id: str
     name: str = ""
-    # Existing extensions remain loadable, but the scaffold generator only
-    # creates normal plugins and adapters.
     plugin_type: str = "plugin"
     description: str = ""
     version: str = "0.1.0"

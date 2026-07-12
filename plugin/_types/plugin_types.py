@@ -5,15 +5,10 @@ from __future__ import annotations
 from typing import Final, Literal, TypeAlias, get_args
 
 
-PluginType: TypeAlias = Literal["plugin", "extension", "adapter"]
+PluginType: TypeAlias = Literal["plugin", "adapter"]
 
-# ``extension`` remains loadable for existing installations, but new projects
-# must use a regular plugin or adapter instead.
 SUPPORTED_PLUGIN_TYPES: Final[frozenset[str]] = frozenset(get_args(PluginType))
-DEPRECATED_PLUGIN_TYPES: Final[frozenset[str]] = frozenset({"extension"})
-SCAFFOLDABLE_PLUGIN_TYPES: Final[frozenset[str]] = (
-    SUPPORTED_PLUGIN_TYPES - DEPRECATED_PLUGIN_TYPES
-)
+SCAFFOLDABLE_PLUGIN_TYPES: Final[frozenset[str]] = SUPPORTED_PLUGIN_TYPES
 
 
 def format_plugin_type_choice_error(
@@ -52,13 +47,13 @@ def format_unsupported_plugin_type(plugin_type: object, *, plugin_id: object) ->
     )
 
 
-def format_deprecated_plugin_type(plugin_type: str) -> str:
-    """Return the shared deprecation warning for a still-loadable type."""
+def format_removed_plugin_host() -> str:
+    """Return the shared diagnostic for the removed Extension host table."""
 
     return (
-        f"type='{plugin_type}' 已弃用，并将在未来的破坏性版本中移除。"
-        f" / type='{plugin_type}' is deprecated and will be removed in a future breaking release."
-        f" / type='{plugin_type}' は非推奨であり、今後の破壊的リリースで削除されます。"
+        "[plugin.host] 已随 Extension 插件类型移除。"
+        " / [plugin.host] was removed with the Extension plugin type."
+        " / [plugin.host] は Extension プラグイン型とともに削除されました。"
     )
 
 
@@ -76,12 +71,11 @@ def format_unsupported_scaffold_type(plugin_type: object) -> str:
 
 
 __all__ = [
-    "DEPRECATED_PLUGIN_TYPES",
     "PluginType",
     "SCAFFOLDABLE_PLUGIN_TYPES",
     "SUPPORTED_PLUGIN_TYPES",
-    "format_deprecated_plugin_type",
     "format_plugin_type_choice_error",
+    "format_removed_plugin_host",
     "format_unsupported_plugin_type",
     "format_unsupported_scaffold_type",
     "require_supported_plugin_type",

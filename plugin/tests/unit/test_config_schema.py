@@ -73,20 +73,22 @@ def test_plugin_models_accept_active_plugin_types(plugin_type: str) -> None:
     assert validated.plugin.type == plugin_type
 
 
-def test_plugin_meta_rejects_removed_script_type() -> None:
+@pytest.mark.parametrize("removed_type", ["script", "extension"])
+def test_plugin_meta_rejects_removed_plugin_types(removed_type: str) -> None:
     with pytest.raises(ValidationError) as exc_info:
-        PluginMeta(id="legacy_script", name="Legacy Script", type="script")
+        PluginMeta(id=f"legacy_{removed_type}", name="Legacy", type=removed_type)
 
     message = str(exc_info.value)
     assert "type" in message
     assert "必须" in message and "must be one of" in message and "必要があります" in message
 
 
-def test_plugin_config_schema_rejects_removed_script_type() -> None:
+@pytest.mark.parametrize("removed_type", ["script", "extension"])
+def test_plugin_config_schema_rejects_removed_plugin_types(removed_type: str) -> None:
     config = _base_config()
     plugin = config["plugin"]
     assert isinstance(plugin, dict)
-    plugin["type"] = "script"
+    plugin["type"] = removed_type
 
     with pytest.raises(ConfigValidationError) as exc_info:
         validate_plugin_config(config)
@@ -97,29 +99,26 @@ def test_plugin_config_schema_rejects_removed_script_type() -> None:
     assert "必要があります" in exc_info.value.message
 
 
-def test_partial_plugin_config_rejects_removed_script_type() -> None:
+@pytest.mark.parametrize("removed_type", ["script", "extension"])
+def test_partial_plugin_config_rejects_removed_plugin_types(removed_type: str) -> None:
     with pytest.raises(ConfigValidationError) as exc_info:
-        validate_plugin_config_partial({"plugin": {"type": "script"}})
+        validate_plugin_config_partial({"plugin": {"type": removed_type}})
 
     assert exc_info.value.field == "plugin.type"
 
 
-@pytest.mark.parametrize("plugin_type", ["plugin", "adapter", "extension"])
-def test_partial_plugin_config_accepts_loadable_types(plugin_type: str) -> None:
+def test_partial_plugin_config_rejects_removed_host_table() -> None:
+    with pytest.raises(ConfigValidationError) as exc_info:
+        validate_plugin_config_partial({"plugin": {"host": {"plugin_id": "owner"}}})
+
+    assert exc_info.value.field == "plugin.host"
+    assert "已随" in exc_info.value.message
+    assert "was removed" in exc_info.value.message
+    assert "削除されました" in exc_info.value.message
+
+
+@pytest.mark.parametrize("plugin_type", ["plugin", "adapter"])
+def test_partial_plugin_config_accepts_active_types(plugin_type: str) -> None:
     config = {"plugin": {"type": plugin_type}}
 
     assert validate_plugin_config_partial(config) is config
-
-
-def test_plugin_config_schema_keeps_deprecated_extension_loadable() -> None:
-    config = _base_config()
-    plugin = config["plugin"]
-    assert isinstance(plugin, dict)
-    plugin["type"] = "extension"
-    plugin["host"] = {"plugin_id": "host_plugin"}
-
-    validated = validate_plugin_config(config)
-
-    assert validated.plugin.type == "extension"
-    assert validated.plugin.host is not None
-    assert validated.plugin.host.plugin_id == "host_plugin"

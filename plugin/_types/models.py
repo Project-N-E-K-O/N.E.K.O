@@ -125,7 +125,7 @@ class PluginMeta(BaseModel):
     """插件元数据"""
     id: str
     name: str
-    type: PluginType = "plugin"  # plugin/adapter；extension 仅为弃用兼容类型
+    type: PluginType = "plugin"
     description: str = ""
     short_description: str = ""  # 简短描述（<300字符），用于 agent 两阶段插件筛选
     keywords: List[str] = Field(default_factory=list)  # 关键词正则表达式列表，用于快速匹配
@@ -139,7 +139,6 @@ class PluginMeta(BaseModel):
     input_schema: Dict[str, Any] = Field(default_factory=lambda: {"type": "object", "properties": {}})
     author: Optional[PluginAuthor] = None
     dependencies: List[PluginDependency] = Field(default_factory=list)
-    host_plugin_id: Optional[str] = None  # extension 类型的宿主插件 ID
     plugin_ui: Optional[Dict[str, Any]] = None
     i18n: Optional[Dict[str, Any]] = None
 

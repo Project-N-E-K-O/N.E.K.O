@@ -14,10 +14,9 @@ from plugin.core.python_dependencies import (
     split_host_provided_requirements,
 )
 from plugin._types.plugin_types import (
-    DEPRECATED_PLUGIN_TYPES,
     SUPPORTED_PLUGIN_TYPES,
-    format_deprecated_plugin_type,
     format_plugin_type_choice_error,
+    format_removed_plugin_host,
 )
 from plugin.sdk.shared.core.push_message_schema import (
     LEGACY_PUSH_MESSAGE_FIELD_MIGRATIONS,
@@ -129,12 +128,8 @@ def _check_plugin_toml_schema(
     plugin_type = plugin_table.get("type", "plugin")
     if not isinstance(plugin_type, str) or plugin_type not in SUPPORTED_PLUGIN_TYPES:
         issues.append(("error", format_plugin_type_choice_error("[plugin].type")))
-    if isinstance(plugin_type, str) and plugin_type in DEPRECATED_PLUGIN_TYPES:
-        issues.append(("warning", format_deprecated_plugin_type(plugin_type)))
-    if plugin_type == "extension" and "host" not in plugin_table:
-        issues.append(("error", "type='extension' requires [plugin.host]"))
-    if plugin_type != "extension" and "host" in plugin_table:
-        issues.append(("error", "[plugin.host] is only valid when [plugin].type = 'extension'"))
+    if "host" in plugin_table:
+        issues.append(("error", format_removed_plugin_host()))
 
     _check_optional_string(plugin_table, "description", "[plugin].description", issues)
     _check_optional_string(plugin_table, "short_description", "[plugin].short_description", issues)
@@ -146,7 +141,6 @@ def _check_plugin_toml_schema(
     _check_sdk_table(plugin_table.get("sdk"), issues)
     _check_store_table(plugin_table.get("store"), issues)
     _check_i18n_table(plugin_dir, plugin_table.get("i18n"), issues)
-    _check_host_table(plugin_table.get("host"), issues)
     _check_safety_table(plugin_table.get("safety"), issues)
     _check_config_profiles_table(plugin_table.get("config_profiles"), issues)
     _check_dependency_tables(plugin_table.get("dependency"), issues)
@@ -321,17 +315,6 @@ def _check_i18n_table(plugin_dir: Path, value: object, issues: list[tuple[str, s
             issues.append(("error", "[plugin.i18n].locales_dir must be a non-empty string"))
         elif not (plugin_dir / locales_dir).is_dir():
             issues.append(("warning", f"[plugin.i18n].locales_dir does not exist: {locales_dir}"))
-
-
-def _check_host_table(value: object, issues: list[tuple[str, str]]) -> None:
-    if value is None:
-        return
-    if not isinstance(value, dict):
-        issues.append(("error", "[plugin.host] must be a table"))
-        return
-    _warn_unknown_keys(value, {"plugin_id", "prefix"}, "[plugin.host]", issues)
-    _require_string(value, "plugin_id", "[plugin.host].plugin_id", issues, pattern=r"^[A-Za-z0-9_-]+$")
-    _check_optional_string(value, "prefix", "[plugin.host].prefix", issues)
 
 
 def _check_safety_table(value: object, issues: list[tuple[str, str]]) -> None:
@@ -535,27 +518,22 @@ def _check_entry_target(
         issues.append(("error", f"plugin.entry class '{class_name}' was not found in {module_path.relative_to(plugin_dir)}"))
         return
 
-    if package_type != "extension" and not _has_decorator(class_node.decorator_list, "neko_plugin"):
+    if not _has_decorator(class_node.decorator_list, "neko_plugin"):
         issues.append(("error", f"plugin.entry class '{class_name}' must be decorated with @neko_plugin"))
 
     expected_bases = {
         "plugin": {"NekoPluginBase"},
         "adapter": {"NekoAdapterPlugin"},
-        # The deprecated runtime loader injects an extension entry as a
-        # PluginRouter. Historical NekoExtensionBase/extension_entry markers
-        # are not consumed by that loader and must not be advertised as valid.
-        "extension": {"PluginRouter"},
     }.get(package_type, {"NekoPluginBase"})
     actual_bases = {_name_of(base) for base in class_node.bases}
     if expected_bases and actual_bases.isdisjoint(expected_bases):
         issues.append(("warning", f"plugin.entry class '{class_name}' should inherit one of: {', '.join(sorted(expected_bases))}"))
 
-    if package_type != "extension":
-        lifecycle_ids = _decorator_ids_in_class(class_node, "lifecycle")
-        if "startup" not in lifecycle_ids:
-            issues.append(("warning", "plugin.entry class should define @lifecycle(id=\"startup\")"))
-        if "shutdown" not in lifecycle_ids:
-            issues.append(("warning", "plugin.entry class should define @lifecycle(id=\"shutdown\")"))
+    lifecycle_ids = _decorator_ids_in_class(class_node, "lifecycle")
+    if "startup" not in lifecycle_ids:
+        issues.append(("warning", "plugin.entry class should define @lifecycle(id=\"startup\")"))
+    if "shutdown" not in lifecycle_ids:
+        issues.append(("warning", "plugin.entry class should define @lifecycle(id=\"shutdown\")"))
 
 
 def _resolve_entry_module_path(plugin_dir: Path, plugin_id: str, module_name: str) -> Path | None:
@@ -820,12 +798,6 @@ def _check_pyproject_dependency_layout(
     python_requirements = collect_project_python_requirements(pyproject_toml)
     external_requirements, _host_requirements = split_host_provided_requirements(python_requirements)
     if not external_requirements:
-        return
-    if package_type == "extension":
-        issues.append((
-            "error",
-            "extension plugins cannot declare Python runtime dependencies because they run in a host process",
-        ))
         return
     vendor_dir = plugin_dir / "vendor"
     if not vendor_dir.is_dir():
