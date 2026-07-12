@@ -2,11 +2,11 @@
 
 > 跟进 [issue #1479](https://github.com/Project-N-E-K-O/N.E.K.O/issues/1479) / [PR #1477](https://github.com/Project-N-E-K-O/N.E.K.O/pull/1477) / [PR #1530](https://github.com/Project-N-E-K-O/N.E.K.O/pull/1530) / [PR #1532](https://github.com/Project-N-E-K-O/N.E.K.O/pull/1532)。本文件覆盖 N.E.K.O. 后端所有 browser-facing 的「本地变更端点」（local mutation endpoint）所共享的 CSRF/Origin 校验合同：威胁模型边界、规则矩阵、Token 流转、前端调用约定、迁移指引。
 
-> ⚠️ **状态说明**：本文件描述的是 issue #1479 三个 PR **全部合并后**的目标状态。当前 main 分支上：
-> - PR #1477 已合并（activity_signal 端点 + 临时 Origin-only gate）
-> - PR #1530（Step 1：8 个端点收编 + 前端 token 注入 + `tests/unit/test_uncovered_endpoints_csrf.py` canary）— **尚未合并**
-> - PR #1532（Step 2：activity_signal 收编进统一守卫 + 前端 stop-the-heartbeat 退避）— **尚未合并**
-> - 本 PR #1533（Step 3：本文件）跟上面两个 PR 平行；建议 merge 顺序 `#1530 → #1532 → #1533`，否则本文件描述的部分内容（如第 6.2/6.3 节、第 8.1 节引用的测试文件）在 main 上还看不到对应代码。
+> **状态说明**：issue #1479 的三个 PR 均已合并，本文件描述的即 main 分支上的当前实现状态：
+> - PR #1477（activity_signal 端点 + 临时 Origin-only gate）已合并
+> - PR #1530（Step 1：8 个端点收编 + 前端 token 注入 + `tests/unit/test_uncovered_endpoints_csrf.py` canary）已合并
+> - PR #1532（Step 2：activity_signal 从临时 Origin-only gate 收编进统一守卫 + 前端 stop-the-heartbeat 退避）已合并
+> - 本文件是 issue #1479 Step 3，随 PR #1533 落地。
 
 ## 1. 背景
 
@@ -223,17 +223,13 @@ if validation_error is not None:
 - `POST /api/screenshot/interactive`
 - `POST /api/mini_game/invite/respond`
 
-### 6.2 PR #1530 — #1479 Step 1（**待合并**）
+### 6.2 PR #1530 — #1479 Step 1（已合并）
 
 PR #1530 把下列端点接入 `_validate_local_mutation_request`，并改造对应前端调用方注入 `X-CSRF-Token`：`POST /api/pending-notices/ack`、`/api/emotion/analysis`、`/api/steam/set-achievement-status/{name}`、`/api/steam/update-playtime`、`/api/proactive_chat`、`/api/proactive/music_played_through`、`/api/translate`、`/api/personal_dynamics`（dead-code 端点，仍接入守卫作为防御性默认；删除决定单独跟进）。
 
-> 在 #1530 合并之前，main 分支上这些端点**仍然没有 CSRF 守卫**——本节内容描述的是合并后状态，不是当前 main 的事实。
+### 6.3 PR #1532 — #1479 Step 2（已合并）
 
-### 6.3 PR #1532 — #1479 Step 2（**待合并**）
-
-PR #1532 把 `POST /api/activity_signal` 从 PR #1477 的临时 Origin-only gate 收编到统一守卫；前端 `static/app/app-activity-signal.js` 改用 `getMutationHeaders()` + 连续 6 次 csrf_validation_failed 后 stop 心跳（避免静默永久降级）。
-
-> 在 #1532 合并之前，main 分支上 activity_signal 端点**仍然走的是 PR #1477 落地的临时 Origin-only gate**（`raw_origin == "null"` 显式拒绝 + same-origin 集合检查），返回的 403 body 也仍然是 `{"success": false, "error": "origin not allowed"}` 而不是统一的 `csrf_validation_failed`。本节内容描述的是合并后状态。
+PR #1532 把 `POST /api/activity_signal` 从 PR #1477 的临时 Origin-only gate 收编到统一守卫；前端 `static/app/app-activity-signal.js` 改用 `getMutationHeaders()` + 连续 6 次 csrf_validation_failed 后 stop 心跳（避免静默永久降级）。收编后 activity_signal 与其它端点一样返回统一的 `csrf_validation_failed`，不再是 PR #1477 临时 gate 的 `{"success": false, "error": "origin not allowed"}`。
 
 ---
 
@@ -270,9 +266,7 @@ if (response.status === 403 && sec && typeof sec.refreshToken === 'function') {
 
 ### 7.2 fire-and-forget 调用（**PR #1530 引入**）
 
-参考 `static/music_ui.js` 的 `/api/proactive/music_played_through` 调用：用 async IIFE 包一层，让 `getMutationHeaders()` 能 await 但不阻塞外层事件回调。`.catch(() => {})` 仅适用于 *业务上确认失败可以丢弃* 的场景。
-
-> main 上 PR #1530 尚未合并；当前 `music_ui.js` 还在用 `Content-Type` only fetch。本节描述的是 #1530 落地后的目标实现。
+参考 `static/music_ui.js` 的 `/api/proactive/music_played_through` 调用：用 async IIFE 包一层，让 `getMutationHeaders()` 能 await 但不阻塞外层事件回调（aplayer 的 `'ended'` 回调本身不关心后端回执）。IIFE 内先把 mutation 安全头 `Object.assign` 进初始只含 `Content-Type` 的 header 集，再 `await fetch(...)`；整段 fetch 包在 `try/catch` 里，后端不可达时静默吞掉——播放体验不依赖这个回执，是*业务上确认失败可以丢弃*的场景。
 
 ### 7.3 长跑心跳（**PR #1532 引入**）
 
@@ -283,8 +277,6 @@ if (response.status === 403 && sec && typeof sec.refreshToken === 'function') {
 - `start()` early return：sticky `heartbeatStoppedDueToCsrf` 标志阻止 `visibilitychange` 自动重启；恢复需要 page reload（同时 token bootstrap 会重做）。
 - 网络异常 / 非 CSRF 响应 / 200 都会清零 csrf streak，避免间隔性失败累计触发误停。
 
-> main 上 PR #1532 尚未合并；当前 `app-activity-signal.js` 还在 raw `Content-Type` fetch + 不区分 CSRF / 非 CSRF 失败的实现，**没有** stop-the-heartbeat 安全网。在 #1532 落地之前，混版本部署的 5s 403 自旋仍是 known issue。
-
 ### 7.4 跟 attempt/backoff 状态机交互的调用（**PR #1530 引入**）
 
 参考 `static/app/app-proactive.js` 的 `/api/proactive_chat`：
@@ -292,8 +284,6 @@ if (response.status === 403 && sec && typeof sec.refreshToken === 'function') {
 - 收到 403 + csrf_validation_failed → refreshToken() + 重试一次。
 - retry 仍是 csrf-403 / 其它 403 → 都归到「server 没真正跑业务」分支：不计入 `_voiceProactiveNoResponseCount` / backoffLevel，按 baseInterval 重排。
 - 这点跟 HTTP 409（`try_start_proactive` 并发拒绝）同语义——server 在 claim 阶段早退，没消耗任何上下文资源。
-
-> main 上 PR #1530 尚未合并；当前 `app-proactive.js` 还没有 `_proactiveIsCsrfValidationFailure` helper 也不区分 csrf vs 非 csrf 的 403。本节描述的是 #1530 落地后的目标实现。
 
 ---
 
@@ -304,7 +294,7 @@ if (response.status === 403 && sec && typeof sec.refreshToken === 'function') {
 1. handler 第一行就调 `_validate_local_mutation_request(request)` 或带 `error_defaults` 的变体
 2. 失败时 return validation_error（必要时先 `_set_no_store_headers`）
 3. 前端调用方走 `getMutationHeaders()` 注入 token，必要时加 CSRF-403 retry-once
-4. 测试：参考 `tests/unit/test_uncovered_endpoints_csrf.py`（PR #1530 引入；在 #1530 merge 之前可暂参考 `tests/unit/test_tutorial_prompt_router.py` 里的 `unauthenticated_prompt_client` fixture 模式），对每个端点 parametrize 两条 canary（无 token → 403、错 token → 403）
+4. 测试：参考 `tests/unit/test_uncovered_endpoints_csrf.py`（批量 parametrize canary，脱胎于 `tests/unit/test_tutorial_prompt_router.py` 里的 `unauthenticated_prompt_client` fixture 模式），对每个端点 parametrize 两条 canary（无 token → 403、错 token → 403）
 
 ### 8.2 部署时序
 
@@ -370,7 +360,7 @@ assert resp.json().get("success") is False
 assert "no-store" in resp.headers.get("Cache-Control", "").lower()
 ```
 
-参考批量 canary 的写法：`tests/unit/test_uncovered_endpoints_csrf.py`（PR #1530 引入）parametrize 一次性覆盖 8 个端点。在 #1530 merge 之前，main 上还没有这个文件——可暂参考 `tests/unit/test_tutorial_prompt_router.py` 的 `unauthenticated_prompt_client` fixture 模式手写 canary，#1530 提取的就是这套模式。
+参考批量 canary 的写法：`tests/unit/test_uncovered_endpoints_csrf.py`（PR #1530 引入）parametrize 一次性覆盖 8 个端点；它脱胎于 `tests/unit/test_tutorial_prompt_router.py` 的 `unauthenticated_prompt_client` fixture 模式。
 
 ---
 
@@ -384,14 +374,14 @@ assert "no-store" in resp.headers.get("Cache-Control", "").lower()
 ### 前端
 - `static/app/app-prompt-shared.js` — `createLocalMutationSecurity()` / `window.nekoLocalMutationSecurity.getMutationHeaders()` / `refreshToken()`（已合并）
 - `static/tutorial/core/universal-manager.js` — 短期事件驱动调用 + CSRF-403 retry-once 的参考实现（已合并）
-- `static/app/app-activity-signal.js` — 长跑心跳 + stop-the-heartbeat 退避的参考实现（PR #1532 完整版本；main 当前是 PR #1477 的临时版本）
+- `static/app/app-activity-signal.js` — 长跑心跳 + stop-the-heartbeat 退避的参考实现（PR #1532 引入）
 - `static/app/app-proactive.js` — 与 attempt/backoff 状态机协作的参考实现（PR #1530 引入）
 
 ### 测试
 - `tests/unit/test_tutorial_prompt_router.py` — 早期 canary 模式（已合并）
 - `tests/unit/test_system_screenshot_router.py` — fixture 注入 token 的写法（已合并）
-- `tests/unit/test_activity_signal_router.py` — `_build_client(authenticated=True/False)` + custom error_defaults 断言（PR #1532 完整版本；main 当前是 PR #1477 的版本，不区分 authenticated 模式）
-- `tests/unit/test_uncovered_endpoints_csrf.py` — 批量 parametrize canary（PR #1530 引入；merge 前在 main 上不存在）
+- `tests/unit/test_activity_signal_router.py` — `_build_client(authenticated=True/False)` + custom error_defaults 断言（PR #1532 引入）
+- `tests/unit/test_uncovered_endpoints_csrf.py` — 批量 parametrize canary（PR #1530 引入）
 
 ---
 
