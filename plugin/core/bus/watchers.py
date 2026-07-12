@@ -89,10 +89,18 @@ class BusListWatcher(BusListWatcherCore, Generic[TRecord]):
         self._pending_async_refresh: tuple[str, Optional[Payload]] | None = None
         self._refresh_generation = 0
         self._stopped = True
+        try:
+            self._owner_loop: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
+        except RuntimeError:
+            self._owner_loop = None
 
     def start(self) -> "BusListWatcher[TRecord]":
         if self._unsub is not None or self._sub_id is not None:
             return self
+        try:
+            self._owner_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            pass
         self._refresh_generation += 1
         self._stopped = False
         return cast("BusListWatcher[TRecord]", super().start())
@@ -131,13 +139,27 @@ class BusListWatcher(BusListWatcherCore, Generic[TRecord]):
             except RuntimeError:
                 pass
             else:
-                normalized_payload = dict(payload) if isinstance(payload, dict) else None
-                self._pending_async_refresh = (str(op), normalized_payload)
-                current_task = self._refresh_task
-                if current_task is None or current_task.done():
-                    self._start_refresh_worker(loop)
+                self._queue_async_refresh(op, payload, self._refresh_generation)
                 return
         self._schedule_debounced_tick(op, payload)
+
+    def _queue_async_refresh(
+        self,
+        op: str,
+        payload: Optional[Payload],
+        generation: int,
+    ) -> None:
+        if self._stopped or generation != self._refresh_generation:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        normalized_payload = dict(payload) if isinstance(payload, dict) else None
+        self._pending_async_refresh = (str(op), normalized_payload)
+        current_task = self._refresh_task
+        if current_task is None or current_task.done():
+            self._start_refresh_worker(loop)
 
     def _schedule_debounced_tick(self, op: str, payload: Optional[Payload] = None) -> None:
         generation = self._refresh_generation
@@ -168,11 +190,20 @@ class BusListWatcher(BusListWatcherCore, Generic[TRecord]):
                     self._debounce_timer = None
 
                 with suppress(Exception):
-                    self._tick(
-                        str(pending or "change"),
-                        pending_payload,
-                        generation=generation,
-                    )
+                    owner_loop = self._owner_loop
+                    if owner_loop is not None and not owner_loop.is_closed():
+                        owner_loop.call_soon_threadsafe(
+                            self._queue_async_refresh,
+                            str(pending or "change"),
+                            pending_payload,
+                            generation,
+                        )
+                    else:
+                        self._tick(
+                            str(pending or "change"),
+                            pending_payload,
+                            generation=generation,
+                        )
 
             timer = threading.Timer(delay, _fire)
             timer.daemon = True

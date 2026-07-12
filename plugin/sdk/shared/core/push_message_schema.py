@@ -336,30 +336,36 @@ def translate_push_message(
             # from delivery/reply above (or defaulted).
             pass
         elif message_type == "music_play_url":
-            md_local = md or {}
-            ui_part: dict[str, Any] = {
-                "type": "ui_action",
-                "action": "media_play_url",
-            }
-            for k in ("url", "name", "artist"):
-                if k in md_local:
-                    ui_part[k] = md_local[k]
-            ui_part.setdefault("media_type", md_local.get("media_type", "audio"))
-            final_parts.append(ui_part)
-            # music_play_url renders a chat card; no AI involvement.
-            final_visibility = ["chat"]
-            final_ai_behavior = "blind"
-        elif message_type == "music_allowlist_add":
-            md_local = md or {}
-            final_parts.append(
-                {
+            if parts is None:
+                md_local = md or {}
+                ui_part: dict[str, Any] = {
                     "type": "ui_action",
-                    "action": "media_allowlist_add",
-                    "domains": list(md_local.get("domains") or []),
+                    "action": "media_play_url",
                 }
-            )
-            final_visibility = []
-            final_ai_behavior = "blind"
+                for k in ("url", "name", "artist"):
+                    if k in md_local:
+                        ui_part[k] = md_local[k]
+                ui_part.setdefault("media_type", md_local.get("media_type", "audio"))
+                final_parts.append(ui_part)
+            # music_play_url renders a chat card; no AI involvement.
+            if visibility is None:
+                final_visibility = ["chat"]
+            if ai_behavior is None:
+                final_ai_behavior = "blind"
+        elif message_type == "music_allowlist_add":
+            if parts is None:
+                md_local = md or {}
+                final_parts.append(
+                    {
+                        "type": "ui_action",
+                        "action": "media_allowlist_add",
+                        "domains": list(md_local.get("domains") or []),
+                    }
+                )
+            if visibility is None:
+                final_visibility = []
+            if ai_behavior is None:
+                final_ai_behavior = "blind"
 
     if description is not None:
         if md is None:

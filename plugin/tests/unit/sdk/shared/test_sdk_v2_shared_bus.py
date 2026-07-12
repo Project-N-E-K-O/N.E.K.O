@@ -552,12 +552,21 @@ async def test_debounced_watcher_coalesces_changes_and_refreshes_latest_state() 
 
     snapshot = await messages.get(max_count=20)
     watcher = snapshot.watch(ctx, debounce_ms=25)
+    owner_loop = asyncio.get_running_loop()
+    owner_thread_id = threading.get_ident()
     changed = threading.Event()
     callbacks: list[object] = []
+    callback_loops: list[asyncio.AbstractEventLoop | None] = []
+    callback_thread_ids: list[int] = []
 
     @watcher.subscribe(on="add")
     def _on_add(delta: object) -> None:
         callbacks.append(delta)
+        try:
+            callback_loops.append(asyncio.get_running_loop())
+        except RuntimeError:
+            callback_loops.append(None)
+        callback_thread_ids.append(threading.get_ident())
         changed.set()
 
     watcher.start()
@@ -583,6 +592,8 @@ async def test_debounced_watcher_coalesces_changes_and_refreshes_latest_state() 
         assert rpc.sync_requests == 1
         assert len(callbacks) == 1
         assert [item.message_id for item in callbacks[0].added] == ["m-b", "m-c"]
+        assert callback_loops == [owner_loop]
+        assert callback_thread_ids == [owner_thread_id]
     finally:
         watcher.stop()
 
