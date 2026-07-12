@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import ClassVar
 
 import pytest
+import plugin as plugin_root
 import plugin.sdk.plugin as plugin_api
 
 from plugin.sdk.plugin import runtime
@@ -368,17 +369,13 @@ def test_plugin_base_convenience_accessors(tmp_path, monkeypatch) -> None:
     assert base.data_path("cache", "x.json") == runtime_root / "plugins" / "demo" / "data" / "cache" / "x.json"
 
 
-def test_plugin_base_runtime_facades_are_lazy_and_cached() -> None:
+def test_plugin_base_system_info_facade_is_lazy_and_cached() -> None:
     base = _DemoPlugin(ctx=_Ctx())
 
-    memory_1 = base.memory
-    memory_2 = base.memory
     system_info_1 = base.system_info
     system_info_2 = base.system_info
 
-    assert memory_1 is memory_2
     assert system_info_1 is system_info_2
-    assert isinstance(memory_1, runtime.MemoryClient)
     assert isinstance(system_info_1, runtime.SystemInfo)
 
 
@@ -599,3 +596,17 @@ def test_plugin_init_all_contains_expected_symbols(plugin_api_module) -> None:
     assert "CallChain" not in mod.__all__
     assert "HookExecutorMixin" not in mod.__all__
     assert "EXTENDED_TYPES" not in mod.__all__
+
+
+def test_high_level_memory_client_surface_is_removed() -> None:
+    base = NekoPluginBase(ctx=_Ctx())
+
+    assert not hasattr(base, "memory")
+    assert not hasattr(plugin_root, "MemoryClient")
+    assert not hasattr(plugin_api, "MemoryClient")
+    assert not hasattr(runtime, "MemoryClient")
+
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("plugin.sdk.shared.runtime.memory")
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("plugin.core.bus.memory_client")

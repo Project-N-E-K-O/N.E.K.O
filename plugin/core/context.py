@@ -52,7 +52,7 @@ if TYPE_CHECKING:
     from plugin.core.bus.types import BusHubProtocol
     from plugin.core.bus.events import EventClient
     from plugin.core.bus.lifecycle import LifecycleClient
-    from plugin.core.bus.memory_client import MemoryClient
+    from plugin.core.bus.memory import MemoryClient
     from plugin.core.bus.messages import MessageClient
     from plugin.core.bus.conversations import ConversationClient
     # ⚠ 严禁 import loguru。logger 字段实际类型是 plugin.logging_config.PluginLoggerAdapter。
@@ -105,7 +105,7 @@ class _BusHub:
 
     @functools.cached_property
     def memory(self) -> "MemoryClient":
-        from plugin.core.bus.memory_client import MemoryClient
+        from plugin.core.bus.memory import MemoryClient
 
         return MemoryClient(self._ctx)
 

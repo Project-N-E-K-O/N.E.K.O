@@ -145,7 +145,6 @@ This file inventories public functions/methods under `plugin/sdk` and maps them 
 
 ### `plugin/sdk/memory.py`
 - `functions`: (none)
-- `MemoryClient`: get, query
 
 ### `plugin/sdk/message_plane_transport.py`
 - `functions`: format_rpc_error

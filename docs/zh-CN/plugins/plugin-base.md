@@ -284,18 +284,6 @@ self.push_message(
 
 ---
 
-## self.memory — 记忆系统
-
-**什么时候用**：你想访问 N.E.K.O 的长期记忆（用户和 AI 的历史对话、记住的事情等）。
-
-```python
-from plugin.sdk.plugin import unwrap_or
-
-result = await self.memory.query("default", "上次聊了什么话题")
-matches = unwrap_or(result, {})
-```
-
----
 
 ## self.system_info — 系统信息
 
@@ -325,5 +313,4 @@ python_env = unwrap_or(await self.system_info.get_python_env(), {})
 | `self.bus` | 读取总线快照 | 不需要 |
 | `report_status()` | 面板中显示进度 | 不需要 |
 | `push_message()` | 向聊天推送消息 | 不需要 |
-| `self.memory` | 访问记忆系统 | 不需要 |
 | `self.system_info` | 查询系统信息 | 不需要 |

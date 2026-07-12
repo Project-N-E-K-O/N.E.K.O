@@ -13,7 +13,7 @@ from plugin.sdk.plugin import (
     Ok, Err, Result, unwrap, unwrap_or,
     # 运行时辅助工具
     Plugins, PluginRouter, PluginConfig, PluginStore,
-    SystemInfo, MemoryClient,
+    SystemInfo,
     # 错误
     SdkError, TransportError,
     # 日志
@@ -42,7 +42,6 @@ class MyPlugin(NekoPluginBase):
 | `self.metadata` | `dict` | 来自 `plugin.toml` 的插件元数据 |
 | `self.bus` | `Bus` | 用于发布/订阅的事件总线 |
 | `self.plugins` | `Plugins` | 跨插件调用辅助工具 |
-| `self.memory` | `MemoryClient` | 访问宿主内存系统 |
 | `self.system_info` | `SystemInfo` | 宿主系统元数据 |
 
 ### 方法
@@ -230,17 +229,6 @@ result = await self.plugins.require_enabled("dependency_plugin")
 ```python
 unwrap_or(await self.store.set("key", {"count": 42}), None)
 value = unwrap_or(await self.store.get("key"), None)  # → {"count": 42}
-```
-
----
-
-## MemoryClient
-
-通过 `self.memory` 访问。
-
-```python
-result = await self.memory.query("default", "keyword")  # 在指定 bucket 中检索
-result = await self.memory.get("default", limit=20)      # 列出该 bucket 中的最近记录
 ```
 
 ---

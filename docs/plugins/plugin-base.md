@@ -284,18 +284,6 @@ self.push_message(
 
 ---
 
-## self.memory — Memory system
-
-**When you need it**: You want to access N.E.K.O's long-term memory (past conversations, remembered facts, etc.).
-
-```python
-from plugin.sdk.plugin import unwrap_or
-
-result = await self.memory.query("default", "what topic did we discuss last time")
-matches = unwrap_or(result, {})
-```
-
----
 
 ## self.system_info — System info
 
@@ -325,5 +313,4 @@ python_env = unwrap_or(await self.system_info.get_python_env(), {})
 | `self.bus` | Read bus snapshots | No |
 | `report_status()` | Show progress in panel | No |
 | `push_message()` | Push to chat | No |
-| `self.memory` | Access memory system | No |
 | `self.system_info` | Query system info | No |

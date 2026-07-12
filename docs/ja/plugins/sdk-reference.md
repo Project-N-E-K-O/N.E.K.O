@@ -13,7 +13,7 @@ from plugin.sdk.plugin import (
     Ok, Err, Result, unwrap, unwrap_or,
     # ランタイムヘルパー
     Plugins, PluginRouter, PluginConfig, PluginStore,
-    SystemInfo, MemoryClient,
+    SystemInfo,
     # エラー
     SdkError, TransportError,
     # ロギング
@@ -42,7 +42,6 @@ class MyPlugin(NekoPluginBase):
 | `self.metadata` | `dict` | `plugin.toml` からのプラグインメタデータ |
 | `self.bus` | `Bus` | pub/sub 用のイベントバス |
 | `self.plugins` | `Plugins` | プラグイン間呼び出しヘルパー |
-| `self.memory` | `MemoryClient` | ホストメモリシステムへのアクセス |
 | `self.system_info` | `SystemInfo` | ホストシステムのメタデータ |
 
 ### メソッド
@@ -230,17 +229,6 @@ result = await self.plugins.require_enabled("dependency_plugin")
 ```python
 unwrap_or(await self.store.set("key", {"count": 42}), None)
 value = unwrap_or(await self.store.get("key"), None)  # → {"count": 42}
-```
-
----
-
-## MemoryClient
-
-`self.memory` 経由でアクセスします。
-
-```python
-result = await self.memory.query("default", "keyword")  # バケット内を検索
-result = await self.memory.get("default", limit=20)      # バケット内の最近のレコードを一覧取得
 ```
 
 ---

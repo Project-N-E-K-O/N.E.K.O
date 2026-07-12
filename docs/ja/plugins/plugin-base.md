@@ -284,18 +284,6 @@ self.push_message(
 
 ---
 
-## self.memory — メモリシステム
-
-**必要になる場面**: N.E.K.O の長期記憶、過去の会話、記憶された事実などにアクセスしたいとき。
-
-```python
-from plugin.sdk.plugin import unwrap_or
-
-result = await self.memory.query("default", "what topic did we discuss last time")
-matches = unwrap_or(result, {})
-```
-
----
 
 ## self.system_info — システム情報
 
@@ -325,5 +313,4 @@ python_env = unwrap_or(await self.system_info.get_python_env(), {})
 | `self.bus` | バススナップショットを読む | 不要 |
 | `report_status()` | パネルに進捗表示 | 不要 |
 | `push_message()` | チャットへ送信 | 不要 |
-| `self.memory` | メモリシステムへアクセス | 不要 |
 | `self.system_info` | システム情報を取得 | 不要 |

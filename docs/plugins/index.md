@@ -51,7 +51,6 @@ The N.E.K.O. plugin system is a Python-based plugin framework built on **process
 - **Result types** — `Ok`/`Err` for type-safe error handling (no exceptions in normal flow)
 - **Hook system** — `@before_entry`, `@after_entry`, `@around_entry`, `@replace_entry` for AOP
 - **Cross-plugin calls** — `self.plugins.call_entry("other_plugin:entry_id")` for inter-plugin communication
-- **Memory client** — `self.memory` for accessing the host memory system
 - **System info** — `self.system_info` for querying host system metadata
 - **Plugin store** — `PluginStore` for persistent key-value storage
 - **Bus system** — `self.bus` for reading host state and subscribing to changes: `self.bus.messages` / `self.bus.events` / `self.bus.lifecycle` / `self.bus.conversations` / `self.bus.memory`, each exposing `.get(...)` to read a snapshot. To react to changes, watch a snapshot list and subscribe to deltas: `self.bus.events.get(...).watch(...).subscribe(on=...)`. There is no publish/emit API — the bus is read-only/reactive, not a general pub/sub bus.

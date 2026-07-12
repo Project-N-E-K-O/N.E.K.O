@@ -40,7 +40,6 @@ Use this as the source-map for plugin-system APIs before inventing an abstractio
 - S `config_dir`: Directory containing the plugin's `plugin.toml`. Use as the base for plugin-local files.
 - S `metadata`: Dict copy of plugin metadata. Use for read-only inspection of manifest-derived data.
 - A `bus`: Read/watch facade over host state. Use for observing host messages/events/memory; do not treat it as a publish bus.
-- B `memory`: `MemoryClient` for memory query/read operations. Use when the plugin explicitly integrates with memory buckets.
 - A `system_info`: `SystemInfo` facade for system/server config and Python environment inspection. Use sparingly and handle `Err`.
 
 ### `NekoPluginBase` Methods
@@ -209,8 +208,8 @@ Use this as the source-map for plugin-system APIs before inventing an abstractio
 
 ### Memory and System Info
 
-- B `MemoryClient.query(bucket_id, query, timeout=5.0)`: Queries a memory bucket. Use for semantic lookup workflows and handle missing capability.
-- B `MemoryClient.get(bucket_id, limit=20, timeout=5.0)`: Reads recent memory records from a bucket. Use for context dashboards or memory-aware behavior.
+- B `self.bus.memory.get(bucket_id, limit=20, timeout=5.0)`: Reads recent memory records from a bucket.
+- B `self.ctx.query_memory(bucket_id, query, timeout=5.0)`: Queries a memory bucket for semantic lookup workflows.
 - B `SystemInfo.get_system_config(timeout=5.0)`: Reads host system config. Use only when plugin behavior genuinely depends on global config.
 - B `SystemInfo.get_server_settings(timeout=5.0)`: Reads server settings subset. Use for diagnostics and compatibility behavior.
 - B `SystemInfo.get_python_env()`: Returns Python/OS environment info. Use in diagnostics, not normal runtime logic.

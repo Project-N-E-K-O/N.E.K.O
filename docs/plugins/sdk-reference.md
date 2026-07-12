@@ -13,7 +13,7 @@ from plugin.sdk.plugin import (
     Ok, Err, Result, unwrap, unwrap_or,
     # Runtime helpers
     Plugins, PluginRouter, PluginConfig, PluginStore,
-    SystemInfo, MemoryClient,
+    SystemInfo,
     # Errors
     SdkError, TransportError,
     # Logging
@@ -42,7 +42,6 @@ class MyPlugin(NekoPluginBase):
 | `self.metadata` | `dict` | Plugin metadata from `plugin.toml` |
 | `self.bus` | `Bus` | Event bus for pub/sub |
 | `self.plugins` | `Plugins` | Cross-plugin call helper |
-| `self.memory` | `MemoryClient` | Access to host memory system |
 | `self.system_info` | `SystemInfo` | Host system metadata |
 
 ### Methods
@@ -230,17 +229,6 @@ All `PluginStore` methods return a `Result`; unwrap with `unwrap_or(...)`.
 ```python
 unwrap_or(await self.store.set("key", {"count": 42}), None)
 value = unwrap_or(await self.store.get("key"), None)  # → {"count": 42}
-```
-
----
-
-## MemoryClient
-
-Access via `self.memory`.
-
-```python
-result = await self.memory.query("default", "keyword")  # search a bucket
-result = await self.memory.get("default", limit=20)      # list recent records in a bucket
 ```
 
 ---
