@@ -24,10 +24,19 @@ GAME_MODE_BROADCAST_SEND_TIMEOUT_SECONDS = 2.0
 _game_mode_broadcast_tasks: set[asyncio.Task[None]] = set()
 
 
-async def _send_game_mode_event(name: str, ws: Any, payload: dict[str, Any]) -> None:
+async def _send_game_mode_event(
+    name: str,
+    ws: Any,
+    websocket_lock: asyncio.Lock | None,
+    payload: dict[str, Any],
+) -> None:
     try:
         async with asyncio.timeout(GAME_MODE_BROADCAST_SEND_TIMEOUT_SECONDS):
-            await ws.send_json(payload)
+            if websocket_lock is None:
+                await ws.send_json(payload)
+            else:
+                async with websocket_lock:
+                    await ws.send_json(payload)
     except TimeoutError:
         logger.warning("[GameModeBeta] broadcast timed out for session %r", name)
     except Exception:
@@ -53,8 +62,9 @@ async def broadcast_game_mode_event(payload: dict[str, Any]) -> int:
             state_name = str(getattr(client_state, "name", client_state)).upper()
             if client_state is not None and state_name != "CONNECTED":
                 continue
+            websocket_lock = getattr(core, "websocket_lock", None)
             task = asyncio.create_task(
-                _send_game_mode_event(name, ws, payload),
+                _send_game_mode_event(name, ws, websocket_lock, payload),
                 name="game_mode_beta_broadcast",
             )
             _game_mode_broadcast_tasks.add(task)

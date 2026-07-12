@@ -204,6 +204,34 @@ async def test_game_mode_broadcast_schedules_slow_sockets_without_waiting(monkey
     assert not game_mode_router_module._game_mode_broadcast_tasks
 
 
+@pytest.mark.asyncio
+async def test_game_mode_broadcast_serializes_sends_with_session_lock(monkeypatch):
+    active_sends = 0
+    max_active_sends = 0
+
+    class LockedWebSocket:
+        client_state = "CONNECTED"
+
+        async def send_json(self, _payload):
+            nonlocal active_sends, max_active_sends
+            active_sends += 1
+            max_active_sends = max(max_active_sends, active_sends)
+            await asyncio.sleep(0.01)
+            active_sends -= 1
+
+    class Session:
+        websocket = LockedWebSocket()
+        websocket_lock = asyncio.Lock()
+
+    monkeypatch.setattr(game_mode_router_module, "get_session_manager", lambda: {"pet-a": Session()})
+    assert await game_mode_router_module.broadcast_game_mode_event({"type": "first"}) == 1
+    assert await game_mode_router_module.broadcast_game_mode_event({"type": "second"}) == 1
+    while game_mode_router_module._game_mode_broadcast_tasks:
+        await asyncio.sleep(0.01)
+
+    assert max_active_sends == 1
+
+
 @pytest.mark.parametrize(
     ("path", "payload"),
     [
