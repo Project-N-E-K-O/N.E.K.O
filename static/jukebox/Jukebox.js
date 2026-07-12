@@ -8534,9 +8534,12 @@ window.Jukebox = {
     Jukebox.updateStoppedStatus();
 
     if (nextSong) {
+      const requestId = Jukebox.State.playRequestId;
+      const fromQueue = Jukebox.State.playbackMode === 'random';
       setTimeout(() => {
         if (!Jukebox.State.isOpen && !Jukebox.State.isRuntimeReady && !window.__NEKO_JUKEBOX_STANDALONE__) return;
-        Jukebox.playSong(nextSong.id, { fromQueue: Jukebox.State.playbackMode === 'random' });
+        if (requestId !== Jukebox.State.playRequestId) return;
+        Jukebox.playSong(nextSong.id, { fromQueue, requestId });
       }, 0);
     }
   },

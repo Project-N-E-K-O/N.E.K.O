@@ -2475,6 +2475,47 @@ def test_jukebox_random_audio_end_advances_queue_and_skips_idle_restore(mock_pag
 
 
 @pytest.mark.frontend
+def test_jukebox_audio_end_queued_next_respects_request_generation(mock_page: Page):
+    setup_jukebox_page(mock_page)
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+          const J = window.Jukebox;
+          const played = [];
+          J.stopVMD = () => {};
+          J.updateStoppedStatus = () => {};
+          J.playSong = async (songId, options = {}) => {
+            played.push({ songId, requestId: options.requestId });
+            J.State.currentSong = J.State.songs.find((song) => song.id === songId) || null;
+          };
+
+          J.State.isOpen = true;
+          J.State.playbackMode = 'sequence';
+          J.State.playRequestId = 7;
+          J.State.currentSong = J.State.songs[0];
+
+          J.handleAudioEnded({ options: { loop: 'none' } });
+          J.State.playRequestId += 1;
+          await new Promise((resolve) => setTimeout(resolve, 0));
+
+          return {
+            played,
+            currentSong: J.State.currentSong && J.State.currentSong.id,
+            playRequestId: J.State.playRequestId
+          };
+        }
+        """
+    )
+
+    assert result == {
+        "played": [],
+        "currentSong": None,
+        "playRequestId": 8,
+    }
+
+
+@pytest.mark.frontend
 def test_jukebox_random_user_selected_song_resets_queue_anchor(mock_page: Page):
     setup_jukebox_page(mock_page)
 
