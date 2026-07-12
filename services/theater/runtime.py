@@ -150,8 +150,19 @@ async def _create_session(
     try:
         await session_store.set_active_session(root, str(session["lanlan_name"]), session_id)
     except Exception:
+        # 新 Session 从未成功发布给客户端，必须标记为终结；否则索引损坏重建时会把它误认成可恢复演出。
+        failed_at = _now_ms()
+        session["ended_at"] = failed_at
+        session["updated_at"] = failed_at
+        session["phase"] = "ended"
+        failed_public = session.get("public_snapshot")
+        if isinstance(failed_public, dict):
+            failed_public["can_resume"] = False
+            failed_public["suggestion_options"] = []
+            failed_public["phase"] = "ended"
+        await session_store.save_session(root, session)
         if previous_snapshot is not None:
-            # active 索引发布失败时恢复旧 Session；新文件仅作为不可达孤儿保留，不伪装成已开场。
+            # active 索引发布失败时恢复旧 Session，确保玩家仍能继续发布前的剧情。
             await session_store.save_session(root, previous_snapshot)
         raise
     return response

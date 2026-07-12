@@ -297,6 +297,31 @@ async def test_active_index_memory_changes_only_after_persistence(monkeypatch, t
 
 
 @pytest.mark.asyncio
+async def test_failed_active_publication_ends_unpublished_replacement(monkeypatch, tmp_path):
+    """新 Session 发布失败后必须终结，索引重建不能让未公开剧情复活。"""  # noqa: DOCSTRING_CJK
+    root = tmp_path / "theater"
+    original = await runtime.start_session(root, lanlan_name="测试猫娘", client_start_id="start_published")
+
+    async def _fail_active_publication(_root, _lanlan_name, _session_id):
+        """模拟新 Session 已保存但活动索引无法持久化。"""  # noqa: DOCSTRING_CJK
+        raise OSError("active index unavailable")
+
+    monkeypatch.setattr(session_store, "set_active_session", _fail_active_publication)
+    with pytest.raises(OSError, match="active index unavailable"):
+        await runtime.start_session(root, lanlan_name="测试猫娘", client_start_id="start_unpublished")
+
+    session_ids = await session_store.list_session_ids(root)
+    unpublished_id = next(session_id for session_id in session_ids if session_id != original["session_id"])
+    unpublished = await session_store.load_session(root, unpublished_id)
+    restored_original = await session_store.load_session(root, original["session_id"])
+
+    assert unpublished["phase"] == "ended"
+    assert unpublished["ended_at"]
+    assert unpublished["public_snapshot"]["can_resume"] is False
+    assert restored_original["ended_at"] is None
+
+
+@pytest.mark.asyncio
 async def test_dialogue_speech_claims_each_revision_once(tmp_path):
     """TTS 只能取得已提交的公开猫娘对白，同一 revision 的重试不得重复播报。"""  # noqa: DOCSTRING_CJK
     root = tmp_path / "theater"

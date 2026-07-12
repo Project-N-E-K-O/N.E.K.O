@@ -378,6 +378,62 @@ async def test_character_switch_clears_theater_session_for_outgoing_catgirl():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_character_switch_reloads_config_after_theater_wait():
+    """等待小剧场边界后必须合并最新角色配置，不能覆盖并发更新。"""  # noqa: DOCSTRING_CJK
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        async def _noop_any(*args, **kwargs):
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                role_state={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
+            )
+            characters_router_module = reload_module("main_routers.characters_router")
+            characters = cm.load_characters()
+            old_catgirl = characters["当前猫娘"]
+            new_catgirl = "等待后切换猫娘"
+            characters["猫娘"][new_catgirl] = copy.deepcopy(characters["猫娘"][old_catgirl])
+            cm.save_characters(characters)
+
+            async def _mutate_during_theater_wait(_config_manager, _old_catgirl, publish):
+                """在发布回调前模拟另一请求新增角色并完成写盘。"""  # noqa: DOCSTRING_CJK
+                latest = await cm.aload_characters()
+                latest["猫娘"]["并发新增猫娘"] = copy.deepcopy(latest["猫娘"][old_catgirl])
+                await cm.asave_characters(latest)
+                await publish()
+                return {"cleared": False}
+
+            # 公开 Router 包只导出接口，切换函数的全局依赖实际定义在 crud 子模块。
+            with patch(
+                "main_routers.characters_router.crud._publish_character_switch_with_theater_boundary",
+                _mutate_during_theater_wait,
+            ):
+                result = await characters_router_module.set_current_catgirl(
+                    _DummyRequest({"catgirl_name": new_catgirl})
+                )
+
+            saved = cm.load_characters()
+            assert result["success"] is True
+            assert saved["当前猫娘"] == new_catgirl
+            assert "并发新增猫娘" in saved["猫娘"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_add_catgirl_rejects_unsafe_dot_profile_name():
     with TemporaryDirectory() as td:
         cm = _make_config_manager(Path(td))

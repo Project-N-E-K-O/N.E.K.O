@@ -769,8 +769,10 @@ async def set_current_catgirl(request: Request):
                 }, status_code=400)
     async def _publish_current_catgirl() -> None:
         """只发布当前猫娘配置；小剧场事务负责决定它与旧演出的原子顺序。"""  # noqa: DOCSTRING_CJK
-        characters['当前猫娘'] = catgirl_name
-        await _config_manager.asave_characters(characters)
+        # 等待小剧场角色锁期间配置可能被其他请求更新；发布前重读，避免旧快照覆盖并发新增或修改。
+        latest_characters = await _config_manager.aload_characters()
+        latest_characters['当前猫娘'] = catgirl_name
+        await _config_manager.asave_characters(latest_characters)
 
     theater_transition = None
     if old_catgirl and old_catgirl != catgirl_name:
