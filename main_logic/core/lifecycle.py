@@ -1617,6 +1617,12 @@ class LifecycleMixin:
             # retracted_ids 看不见，塞回会绕过 _drop_pending_topic_hooks_for_voice
             # 的清扫在语音里复活被禁止的 hook；且 TopicHookPool 有自己的
             # ack/retry 簿记，丢掉 extra 不会丢内容。
+            # ⚠️前提：retraction 目前是 topic-hook 专属机制——DELIVERY_RETRACTED_KEY
+            # 的全部设置点都 gate 在 channel=="topic_hook" 或只从 topic 投递流可达
+            # （proactive.py 三处 + proactive_delivery.retract 唯一调用链
+            # topic/delivery._remove_callback_from_manager），所以排除 topic 即
+            # 杜绝"窗口期内被撤回的条目经此复活"。若未来引入非 topic 的
+            # retraction，这里必须改为可查询的撤回 ledger 而非 marker 复查。
             restored = [
                 extra for extra in injected_extras
                 if not isinstance(extra, dict)
