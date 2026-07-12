@@ -38,7 +38,6 @@ from .core import (
     MIN_ALLOWED_MAX_PROMPT_SHOWS,
     PROMPT_PENDING_GUARD_MS,
     PROMPT_FUNNEL_KEYS,
-    SCHEMA_VERSION,
     ack_prompt_token_if_needed as _ack_prompt_token_if_needed_core,
     apply_completed_state as _apply_completed_state_core,
     apply_started_state as _apply_started_state,
