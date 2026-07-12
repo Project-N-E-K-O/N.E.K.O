@@ -31,7 +31,7 @@ Raw Bilibili payloads are not exposed. `ViewerEvent.to_dict()` only projects sup
 
 - Entry/follow events are still out of scope.
 - The module only produces short thanks-style replies; it does not implement contribution rankings, reward logic, or privileged viewer treatment.
-- Support-event selection priority still comes from `live_events` / `LiveDanmaku.get_score()`.
+- Support-event selection priority comes from the provider-neutral `provider_event.event_score()` helper used by `live_events`, so Bilibili, Douyin, and other providers share the same scoring boundary.
 
 ## Testing
 

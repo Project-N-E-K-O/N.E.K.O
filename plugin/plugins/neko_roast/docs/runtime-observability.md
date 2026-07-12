@@ -276,7 +276,7 @@ Dashboard must not show raw payloads, cookies, tokens, avatar bytes, base64 imag
 
 ### ingest
 
-`bili_live_ingest` receives Bilibili live data and normalizes it into `LiveEvent`. This stage should explain whether the listener is started, stopped, errored, or receiving events.
+Provider ingest modules such as `bili_live_ingest` and `douyin_live_ingest` receive provider live data and normalize it into `LiveEvent`. Every provider projects the same lifecycle outcomes below, and this stage should explain whether its listener is started, stopped, errored, or receiving events.
 
 Expected outcomes: `received`, `published`, `failed`, `degraded`.
 
