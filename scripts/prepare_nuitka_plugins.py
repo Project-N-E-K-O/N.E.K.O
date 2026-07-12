@@ -21,8 +21,16 @@ import argparse
 import json
 import os
 import shutil
+import sys
 from dataclasses import dataclass
 from pathlib import Path
+
+# Direct execution (``python scripts/prepare_nuitka_plugins.py``) puts only
+# ``scripts/`` on sys.path.  Add the repository root before importing the
+# local plugin package; both desktop workflows intentionally use this form.
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPOSITORY_ROOT))
 
 from plugin.core.python_dependencies import load_pyproject_toml
 from plugin.neko_plugin_cli.core.build_rules import BuildRuleSet, load_build_rules, should_skip_path

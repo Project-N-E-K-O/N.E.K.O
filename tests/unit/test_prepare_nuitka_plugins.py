@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 
 from scripts.check_nuitka_dist import _check_plugin_stage, _check_plugin_tomls
 from scripts.prepare_nuitka_plugins import install_plugins, prepare_plugins
@@ -154,3 +157,23 @@ def test_desktop_workflows_use_filtered_plugin_stage() -> None:
         assert "--plugin-stage build/nuitka-plugins" in workflow
         assert "--include-data-dir=plugin/plugins=plugin/plugins" not in workflow
         assert 'NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=plugin.plugins"' not in workflow
+        assert "--nofollow-import-to=plugin.plugins.galgame_plugin.training" in workflow
+
+
+def test_prepare_helper_is_directly_executable_without_pythonpath(tmp_path: Path) -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    helper = repo_root / "scripts" / "prepare_nuitka_plugins.py"
+    env = os.environ.copy()
+    env.pop("PYTHONPATH", None)
+
+    completed = subprocess.run(
+        [sys.executable, str(helper), "--help"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "stage plugins and generate launcher" in completed.stdout

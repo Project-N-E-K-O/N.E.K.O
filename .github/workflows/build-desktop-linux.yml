@@ -316,6 +316,9 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-package-data=bilibili_api"
 
           # Exclusions
+          # galgame_plugin/training is offline-only model-training code and is
+          # not governed by a top-level plugin [tool.neko.build] rule.
+          NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=plugin.plugins.galgame_plugin.training"
           NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=audiolab"
           NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=pyrnnoise"
           NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=matplotlib"
