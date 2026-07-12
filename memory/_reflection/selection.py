@@ -137,6 +137,8 @@ def filter_followup_candidates(
                 if datetime.fromisoformat(next_eligible) > now:
                     continue
             except (ValueError, TypeError):
+                # Invalid cooldown metadata is treated as eligible, matching
+                # the legacy fail-open behavior for hand-edited data.
                 pass
         if score(reflection, now) < 0:
             continue

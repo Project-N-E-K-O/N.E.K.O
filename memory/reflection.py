@@ -66,17 +66,17 @@ from memory.persona import (
 )
 from memory.stop_names import acollect_stop_names
 from memory._reflection.ontology import (
-    ENTITY_KINDS,
-    KIND_RELATION_MAP,
-    MAX_REFLECTION_TEXT_TOKENS,
-    RELATION_TYPES,
-    TEMPORAL_SCOPES,
-    allowed_relation_types as _allowed_relation_types,
-    entity_kind as _entity_kind,
+    ENTITY_KINDS as _ONTOLOGY_ENTITY_KINDS,
+    KIND_RELATION_MAP as _ONTOLOGY_KIND_RELATION_MAP,
+    MAX_REFLECTION_TEXT_TOKENS as _ONTOLOGY_MAX_REFLECTION_TEXT_TOKENS,
+    RELATION_TYPES as _ONTOLOGY_RELATION_TYPES,
+    TEMPORAL_SCOPES as _ONTOLOGY_TEMPORAL_SCOPES,
+    allowed_relation_types as _ontology_allowed_relation_types,
+    entity_kind as _ontology_entity_kind,
     validate_reflection_ontology as _validate_reflection_ontology,
 )
 from memory._reflection.schema import (
-    REFLECTION_ARCHIVE_DAYS as _REFLECTION_ARCHIVE_DAYS,
+    REFLECTION_ARCHIVE_DAYS,
     make_archive_stamper,
     normalize_reflection,
     prepare_save_reflections,
@@ -102,6 +102,18 @@ from memory._reflection.transitions import (
     compute_merged_evidence,
     find_reflection,
 )
+
+# Compatibility re-exports: these names existed at memory.reflection before
+# the internal split. Keep object identity so existing imports and monkeypatch
+# seams continue to resolve through the facade.
+RELATION_TYPES = _ONTOLOGY_RELATION_TYPES
+ENTITY_KINDS = _ONTOLOGY_ENTITY_KINDS
+KIND_RELATION_MAP = _ONTOLOGY_KIND_RELATION_MAP
+TEMPORAL_SCOPES = _ONTOLOGY_TEMPORAL_SCOPES
+MAX_REFLECTION_TEXT_TOKENS = _ONTOLOGY_MAX_REFLECTION_TEXT_TOKENS
+_entity_kind = _ontology_entity_kind
+_allowed_relation_types = _ontology_allowed_relation_types
+_REFLECTION_ARCHIVE_DAYS = REFLECTION_ARCHIVE_DAYS
 
 if TYPE_CHECKING:
     from memory.event_log import EventLog

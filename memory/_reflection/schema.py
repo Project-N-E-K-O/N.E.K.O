@@ -86,6 +86,8 @@ def prepare_save_reflections(
                     to_archive.append(item)
                     continue
             except (ValueError, TypeError):
+                # Missing or malformed timestamps stay in the main file so
+                # archival never discards an entry whose age is unknown.
                 pass
             keep_in_main.append(item)
         elif status in ("merged", "promote_blocked"):
