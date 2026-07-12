@@ -254,29 +254,37 @@ def attr_value_chain(node: ast.Attribute):
 def def_time_facade_reads(tree: ast.Module, alias_paths: dict[str, str], attr: str):
     """(line, col) of facade reads of ``attr`` evaluated at class-creation.
 
-    Method defaults, decorators and evaluated annotations run ONCE at import
-    time; a ``_core_facade.<attr>`` there freezes the value, so later facade
-    patches no longer reach it — the read must live in the method body.
+    Method defaults, decorators, evaluated annotations and class-level
+    constant values run ONCE at import time; a ``_core_facade.<attr>`` there
+    freezes the value, so later facade patches no longer reach it — the read
+    must live in the method body.
     """
     sites = []
     for klass in (n for n in tree.body if isinstance(n, ast.ClassDef)):
-        for meth in (n for n in klass.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))):
-            a = meth.args
-            sig_nodes = list(meth.decorator_list)
-            sig_nodes += [d for d in a.defaults if d is not None]
-            sig_nodes += [d for d in a.kw_defaults if d is not None]
-            for arg in (a.posonlyargs + a.args + a.kwonlyargs
-                        + ([a.vararg] if a.vararg else []) + ([a.kwarg] if a.kwarg else [])):
-                if arg.annotation is not None:
-                    sig_nodes.append(arg.annotation)
-            if meth.returns is not None:
-                sig_nodes.append(meth.returns)
-            for sub in sig_nodes:
-                for node in ast.walk(sub):
-                    if isinstance(node, ast.Attribute) and node.attr == attr:
-                        chain = attr_value_chain(node)
-                        if chain and alias_paths.get(chain) == "main_logic.core":
-                            sites.append((node.lineno, node.col_offset))
+        def_time_nodes = []
+        for stmt in klass.body:
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                a = stmt.args
+                def_time_nodes += stmt.decorator_list
+                def_time_nodes += [d for d in a.defaults if d is not None]
+                def_time_nodes += [d for d in a.kw_defaults if d is not None]
+                for arg in (a.posonlyargs + a.args + a.kwonlyargs
+                            + ([a.vararg] if a.vararg else []) + ([a.kwarg] if a.kwarg else [])):
+                    if arg.annotation is not None:
+                        def_time_nodes.append(arg.annotation)
+                if stmt.returns is not None:
+                    def_time_nodes.append(stmt.returns)
+            elif isinstance(stmt, (ast.Assign, ast.AnnAssign)):
+                # Class-level constants (allowed in manager.py) evaluate at
+                # class creation too — a facade read there freezes the value.
+                if stmt.value is not None:
+                    def_time_nodes.append(stmt.value)
+        for sub in def_time_nodes:
+            for node in ast.walk(sub):
+                if isinstance(node, ast.Attribute) and node.attr == attr:
+                    chain = attr_value_chain(node)
+                    if chain and alias_paths.get(chain) == "main_logic.core":
+                        sites.append((node.lineno, node.col_offset))
     return sites
 
 
@@ -477,10 +485,10 @@ def run(root: Path) -> list[Violation]:
             for line, col in def_time_facade_reads(tree, alias_paths, attr):
                 violations.append(Violation(
                     path, line, col, "CORE_PATCH_ROUTING",
-                    f"'{attr}' is read from the facade inside a default/decorator/annotation — "
-                    f"that expression runs once at import and freezes the value, so facade "
-                    f"patches no longer reach it; move the {FACADE_MODULE_ALIAS}.{attr} read "
-                    f"into the method body"))
+                    f"'{attr}' is read from the facade inside a default/decorator/annotation/"
+                    f"class attribute — that expression runs once at import and freezes the "
+                    f"value, so facade patches no longer reach it; move the "
+                    f"{FACADE_MODULE_ALIAS}.{attr} read into the method body"))
     return violations
 
 
