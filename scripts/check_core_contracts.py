@@ -16,10 +16,13 @@ CORE_PATCH_ROUTING
     fail loudly, but isolation-style stubs (blocking disk/network IO) go
     silently green while calling the real function. The patched-symbol set
     is harvested from ``tests/`` by AST on every run, so the contract
-    tightens automatically as tests grow. Function-local imports from the
-    OWNER module (e.g. ``from utils.preferences import ...`` inside a
-    method) are a different, deliberate late-binding pattern and stay
-    allowed: the facade patch never targeted them.
+    tightens automatically as tests grow. Attribute reads through some other
+    imported module (``import main_logic.agent_event_bus`` + ``main_logic.
+    agent_event_bus.<attr>(...)``) are rejected the same way — they follow
+    the owner module, not the facade. Function-local imports from the OWNER
+    module (e.g. ``from utils.preferences import ...`` inside a method) are
+    a different, deliberate late-binding pattern and stay allowed: the
+    facade patch never targeted them, before or after the split.
 
 CORE_PATCH_TARGET_EXISTS
     Every patched facade attribute must actually exist at the facade top
@@ -31,11 +34,14 @@ CORE_MIXIN_SHAPE
     one ``*Mixin`` class; the class body holds only a docstring and
     methods. Instance state has a single home (``LLMSessionManager.
     __init__``), and module-level state in a mixin would sit outside the
-    facade's rebind semantics entirely.
+    facade's rebind semantics entirely. Any core module that is neither a
+    mixin, ``manager.py`` nor a registered owner submodule is rejected —
+    adding a new owner module is a conscious edit to this check.
 
 CORE_MANAGER_SHAPE
-    ``manager.py`` holds exactly one class, ``LLMSessionManager``; its only
-    method is ``__init__`` (class-level constants are allowed). New
+    ``manager.py`` holds exactly one class, ``LLMSessionManager``, and its
+    top level holds nothing but docstring/imports/that class; the class's
+    only method is ``__init__`` (class-level constants are allowed). New
     behavior belongs in a domain mixin.
 
 CORE_MIXIN_DISJOINT
@@ -46,7 +52,8 @@ CORE_MIXIN_DISJOINT
 CORE_MIXIN_BASES
     The base list of ``LLMSessionManager`` is exactly the set of ``*Mixin``
     classes defined in the package — no orphan mixin module, no missing
-    base.
+    base, and every base must be a plain name (dotted/computed bases would
+    make the exact-set comparison silently incomplete).
 
 CORE_FACADE_LAYOUT
     ``__init__.py`` defines no class at top level, and its last statement
@@ -181,7 +188,9 @@ def global_read_names(path: Path) -> set[str]:
     found: set[str] = set()
 
     def walk(tab):
-        if tab.get_type() == "function":
+        # Class scopes matter too: method defaults, decorators and evaluated
+        # annotations resolve in the class scope at class-creation time.
+        if tab.get_type() in ("function", "class"):
             for sym in tab.get_symbols():
                 if sym.is_referenced() and sym.is_global():
                     found.add(sym.get_name())
@@ -190,6 +199,43 @@ def global_read_names(path: Path) -> set[str]:
 
     walk(table)
     return found
+
+
+def module_alias_paths(tree: ast.Module) -> dict[str, str]:
+    """Module objects bound at top level: {binding: dotted module path}.
+
+    Covers plain ``import a.b`` (binds ``a``; the full dotted chain is also
+    kept as a key so ``a.b.attr`` reads match), ``import a.b as c`` and the
+    facade form ``from main_logic import core [as alias]``.
+    """
+    out: dict[str, str] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                if a.asname:
+                    out[a.asname] = a.name
+                else:
+                    root = a.name.split(".")[0]
+                    out.setdefault(root, root)
+                    out[a.name] = a.name
+        elif isinstance(node, ast.ImportFrom) and node.module == "main_logic" and node.level == 0:
+            for a in node.names:
+                if a.name == "core":
+                    out[a.asname or "core"] = "main_logic.core"
+    return out
+
+
+def attr_value_chain(node: ast.Attribute):
+    """Dotted string of an attribute node's value side, or None."""
+    parts = []
+    cur = node.value
+    while isinstance(cur, ast.Attribute):
+        parts.append(cur.attr)
+        cur = cur.value
+    if not isinstance(cur, ast.Name):
+        return None
+    parts.append(cur.id)
+    return ".".join(reversed(parts))
 
 
 def first_name_load_line(tree: ast.Module, name: str):
@@ -229,6 +275,14 @@ def run(root: Path) -> list[Violation]:
             if manager_class is None:
                 violations.append(Violation(path, 1, 0, "CORE_MANAGER_SHAPE",
                                             "manager.py must define exactly one class: LLMSessionManager"))
+            for i, node in enumerate(tree.body):
+                if i == 0 and isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant):
+                    continue  # module docstring
+                if isinstance(node, (ast.Import, ast.ImportFrom, ast.ClassDef)):
+                    continue
+                violations.append(Violation(path, node.lineno, node.col_offset, "CORE_MANAGER_SHAPE",
+                                            f"manager.py top level allows only docstring/imports/class, "
+                                            f"found {type(node).__name__}"))
             continue
         mixins = [c for c in classes if c.name.endswith("Mixin")]
         if mixins:
@@ -236,6 +290,12 @@ def run(root: Path) -> list[Violation]:
                 violations.append(Violation(path, classes[1].lineno, classes[1].col_offset, "CORE_MIXIN_SHAPE",
                                             f"{path.name} must define exactly one class (found {len(classes)})"))
             mixin_files[path] = mixins[0]
+        elif path.stem not in OWNER_SUBMODULES:
+            violations.append(Violation(path, 1, 0, "CORE_MIXIN_SHAPE",
+                                        f"unknown core module '{path.name}': every core module must either "
+                                        f"define one *Mixin class or be a registered owner submodule — add it "
+                                        f"to OWNER_SUBMODULES in scripts/check_core_contracts.py if it is a "
+                                        f"deliberate new owner module"))
 
     # -- CORE_MIXIN_SHAPE: top level and class body
     for path, klass in mixin_files.items():
@@ -287,6 +347,11 @@ def run(root: Path) -> list[Violation]:
 
     # -- CORE_MIXIN_BASES
     if manager_class is not None:
+        for b in manager_class.bases:
+            if not isinstance(b, ast.Name):
+                violations.append(Violation(manager_path, b.lineno, b.col_offset, "CORE_MIXIN_BASES",
+                                            f"non-Name base '{ast.unparse(b)}' — LLMSessionManager bases must "
+                                            f"be plain *Mixin names so this check can verify the exact set"))
         base_names = {b.id for b in manager_class.bases if isinstance(b, ast.Name)}
         mixin_names = {k.name for k in mixin_files.values()}
         for missing in sorted(mixin_names - base_names):
@@ -320,7 +385,8 @@ def run(root: Path) -> list[Violation]:
     module_info = {}
     for path in routing_files:
         tree = parse(path)
-        module_info[path] = (tree, module_level_import_bindings(tree), global_read_names(path))
+        module_info[path] = (tree, module_level_import_bindings(tree), global_read_names(path),
+                             module_alias_paths(tree))
 
     for attr, sites in sorted(targets.items()):
         strict_sites = [s for s in sites if not s[2]]
@@ -333,7 +399,7 @@ def run(root: Path) -> list[Violation]:
             continue
         if not strict_sites:
             continue  # raising=False negative guards need no routing
-        for path, (tree, imports, global_reads) in module_info.items():
+        for path, (tree, imports, global_reads, alias_paths) in module_info.items():
             if attr in imports:
                 violations.append(Violation(path, imports[attr], 0, "CORE_PATCH_ROUTING",
                                             f"'{attr}' is a test patch target on the facade but is "
@@ -347,6 +413,24 @@ def run(root: Path) -> list[Violation]:
                                             f"as a bare global — read it as {FACADE_MODULE_ALIAS}.{attr} so "
                                             f"monkeypatch.setattr(\"main_logic.core.{attr}\", ...) keeps "
                                             f"hitting this consumer"))
+            else:
+                # Attribute reads through some OTHER imported module
+                # (``import main_logic.agent_event_bus`` +
+                # ``main_logic.agent_event_bus.dispatch_text_user_message(...)``)
+                # dodge facade patches just like a from-import snapshot would.
+                # Reads through main_logic.core itself ARE the facade contract.
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.Attribute) and node.attr == attr:
+                        chain = attr_value_chain(node)
+                        if chain is None:
+                            continue
+                        resolved = alias_paths.get(chain)
+                        if resolved is not None and resolved != "main_logic.core":
+                            violations.append(Violation(
+                                path, node.lineno, node.col_offset, "CORE_PATCH_ROUTING",
+                                f"'{attr}' is a test patch target on the facade but is read here "
+                                f"through module '{resolved}' — that read follows the owner module, "
+                                f"not the facade; read it as {FACADE_MODULE_ALIAS}.{attr} instead"))
     return violations
 
 
