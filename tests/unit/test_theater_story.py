@@ -22,6 +22,9 @@ async def test_story_list_only_contains_original_json_stories():
         assert card["player_role"]
         assert card["catgirl_role"]
         assert card["primary_goal"]
+        # 故事列表必须公开作者入口，保证前端预览与 Runtime 正式开场选择同一 Scene。
+        assert public_story["initial_scene_id"]
+        assert public_story["initial_scene_id"] in {scene["scene_id"] for scene in public_story["scenes"]}
     # 空故事 ID 使用排序后的第一份正式故事，避免维护第二套默认 Story。
     story = await story_loader.load_story(None)
     assert story["id"] == "always_like_you_story"

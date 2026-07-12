@@ -38,6 +38,8 @@ def public_story(story: dict[str, Any]) -> dict[str, Any]:
         "id": str(story.get("id") or ""),
         "title": str(story.get("title") or ""),
         "summary": str(story.get("summary") or ""),
+        # 预览与正式开场必须使用同一个作者入口，不能依赖 scenes 数组的排列顺序。
+        "initial_scene_id": str(story.get("initial_scene_id") or ""),
         "scenes": [public_scene(scene) for scene in story.get("scenes") or [] if isinstance(scene, dict)],
     }
     card = story.get("scenario_card")

@@ -218,10 +218,13 @@
         intro.hidden = false;
     }
 
-    // 未开场时预览当前故事的首个 Scene 或摘要。
+    // 未开场时预览作者声明的初始 Scene；数组顺序变化时不能提前展示后续场景或剧透。
     function previewSelectedStory() {
         const story = state.stories.find(function (item) { return item.id === state.storyId; });
-        const scene = story && Array.isArray(story.scenes) ? story.scenes[0] : null;
+        const scenes = story && Array.isArray(story.scenes) ? story.scenes : [];
+        const scene = scenes.find(function (item) {
+            return item && item.scene_id === story.initial_scene_id;
+        }) || scenes[0] || null;
         $('theater-scene-text').textContent = String(scene && scene.text || story && story.summary || t('theater.ready', '准备中'));
         renderStoryIntro(story);
     }

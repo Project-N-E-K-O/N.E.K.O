@@ -44,6 +44,13 @@ def test_frontend_renders_story_identity_before_start():
     assert '>背景介绍</p>' in html
 
 
+def test_frontend_previews_authored_initial_scene():
+    """未开演预览必须按 initial_scene_id 选择场景，不能默认使用数组第一项。"""  # noqa: DOCSTRING_CJK
+    script = (ROOT / "static" / "js" / "theater.js").read_text(encoding="utf-8")
+    assert "item.scene_id === story.initial_scene_id" in script
+    assert "story.scenes[0]" not in script
+
+
 def test_frontend_uses_brown_stage_with_galaxy_video():
     """舞台不显示英文副标题，并使用静音循环视频呈现金色银河背景。"""  # noqa: DOCSTRING_CJK
     html = (ROOT / "templates" / "theater.html").read_text(encoding="utf-8")
