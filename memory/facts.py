@@ -132,6 +132,7 @@ class FactStore:
         self._facts: dict[str, list[dict]] = {}  # {lanlan_name: [fact, ...]}
         self._locks: dict[str, threading.Lock] = {}  # per-character 文件锁
         self._locks_guard = threading.Lock()  # 保护 _locks 字典本身
+        self._persist_alocks: dict[str, asyncio.Lock] = {}
 
     def _get_lock(self, name: str) -> threading.Lock:
         """Get the character-specific file lock (lazily created)"""
@@ -140,6 +141,14 @@ class FactStore:
                 if name not in self._locks:  # double-check
                     self._locks[name] = threading.Lock()
         return self._locks[name]
+
+    def _get_persist_alock(self, name: str) -> asyncio.Lock:
+        """Serialize each character's load/dedup/mutate/save fact pipeline."""
+        if name not in self._persist_alocks:
+            with self._locks_guard:
+                if name not in self._persist_alocks:
+                    self._persist_alocks[name] = asyncio.Lock()
+        return self._persist_alocks[name]
 
     # ── persistence ──────────────────────────────────────────────────
 
@@ -511,6 +520,16 @@ class FactStore:
         *,
         default_source: str = 'user_observation',
     ) -> list[dict]:
+        async with self._get_persist_alock(lanlan_name):
+            return await self._apersist_new_facts_locked(
+                lanlan_name, extracted, default_source=default_source,
+            )
+
+    async def _apersist_new_facts_locked(
+        self, lanlan_name: str, extracted: list[dict],
+        *,
+        default_source: str = 'user_observation',
+    ) -> list[dict]:
         """Dedup (SHA-256 + FTS5) + persist. importance < 5 facts are KEPT
         (RFC §3.1.3)—downstream `get_unabsorbed_facts(min_importance=5)`
         filters at read time.
@@ -664,6 +683,14 @@ class FactStore:
                 'embedding_text_sha256': None,
                 'embedding_model_id': None,
             }
+            external_import = fact.get('_external_import')
+            if isinstance(external_import, dict):
+                fact_entry['external_import'] = dict(external_import)
+                fact_entry['tags'] = ['external_import', str(external_import.get('format') or 'unknown')]
+                fact_entry['signal_processed'] = True
+                event_date = external_import.get('event_date')
+                if isinstance(event_date, str) and event_date:
+                    fact_entry['event_start_at'] = f"{event_date}T00:00:00"
             existing_facts.append(fact_entry)
             existing_hashes.add(content_hash)
             # 同步更新 hash_to_existing：若本 batch 后续还有同 text 的 fact

@@ -126,6 +126,15 @@ class HistoryRequest(BaseModel):
 class ContinueStorageStartupRequest(BaseModel):
     reason: str = ""
 
+
+class ExternalMemoryImportRequest(BaseModel):
+    character_name: str
+    source_format: str
+    imported_files: list[str]
+    candidates: list[dict]
+    warning_count: int = 0
+
+
 app = FastAPI()
 _STORAGE_LIMITED_MODE_ALLOWED_PATHS = {
     "/health",
@@ -208,6 +217,99 @@ def validate_lanlan_name(name: str) -> str:
     if result.code is not None:
         raise HTTPException(status_code=400, detail="Invalid characters in lanlan_name")
     return result.normalized
+
+
+@app.post("/internal/memory/import_external_markdown")
+async def import_external_markdown(request: ExternalMemoryImportRequest):
+    """Persist already-previewed OpenClaw/Hermes entries via live managers."""
+    name = validate_lanlan_name(request.character_name)
+    if request.source_format not in {"openclaw", "hermes"}:
+        raise HTTPException(status_code=400, detail="Invalid source_format")
+    if not request.candidates or len(request.candidates) > 1000:
+        raise HTTPException(status_code=400, detail="Invalid candidate count")
+    if fact_store is None or persona_manager is None:
+        raise HTTPException(status_code=503, detail="Memory components are not ready")
+    assert_cloudsave_writable(
+        _config_manager,
+        operation="import",
+        target=f"memory/{name}/external-markdown",
+    )
+
+    imported_at = datetime.now().astimezone().isoformat()
+    persona_entries: list[dict] = []
+    extracted_facts: list[dict] = []
+    for candidate in request.candidates:
+        if not isinstance(candidate, dict):
+            raise HTTPException(status_code=400, detail="Invalid candidate")
+        text = str(candidate.get("text") or "").strip()
+        entity = str(candidate.get("entity") or "master")
+        target = candidate.get("target")
+        source_file = str(candidate.get("source_file") or "")
+        if (
+            not text or len(text) > 8000
+            or entity not in {"master", "neko", "relationship"}
+            or target not in {"persona", "facts"}
+            or not source_file
+        ):
+            raise HTTPException(status_code=400, detail="Invalid candidate fields")
+        metadata = {
+            "format": request.source_format,
+            "file": source_file,
+            "section": str(candidate.get("source_section") or ""),
+            "event_date": candidate.get("event_date"),
+            "imported_at": imported_at,
+        }
+        if target == "persona":
+            persona_entries.append({
+                "text": text,
+                "entity": entity,
+                "source_id": f"{request.source_format}:{source_file}",
+                "external_import": metadata,
+            })
+        else:
+            extracted_facts.append({
+                "text": text,
+                "entity": entity,
+                "importance": 7,
+                "source": "user_observation",
+                "_external_import": metadata,
+            })
+
+    persona_result = await persona_manager.aimport_external_facts(name, persona_entries)
+    try:
+        new_facts = await fact_store._apersist_new_facts(
+            name, extracted_facts, default_source="user_observation",
+        )
+    except Exception:
+        logger.exception(
+            "External Markdown import stopped after persona persistence: character=%s added_persona=%s",
+            name,
+            persona_result["added"],
+        )
+        return JSONResponse(
+            status_code=500,
+            content={
+                "detail": "External memory import was only partially completed",
+                "error_code": "external_import_partial",
+                "partial_import": {
+                    "character_name": name,
+                    "added_persona": persona_result["added"],
+                    "added_facts": 0,
+                },
+            },
+        )
+    added_facts = len(new_facts)
+    skipped_facts = len(extracted_facts) - added_facts
+    return {
+        "status": "success",
+        "character_name": name,
+        "source_format": request.source_format,
+        "imported_files": request.imported_files,
+        "added_persona": persona_result["added"],
+        "added_facts": added_facts,
+        "skipped_duplicates": persona_result["skipped"] + skipped_facts,
+        "warning_count": max(0, request.warning_count),
+    }
 
 # 所有依赖 cloudsave 目录结构的初始化都推迟到 startup 钩子（见 startup_event_handler）：
 #   1. bootstrap_local_cloudsave_environment 在磁盘满/只读 FS 等场景会 raise OSError，

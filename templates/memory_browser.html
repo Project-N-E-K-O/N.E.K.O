@@ -122,6 +122,27 @@
                             </button>
                         </div>
                     </div>
+                    <div class="file-list external-memory-import-section">
+                        <div class="file-list-title" data-i18n="memory.externalImportTitle">Import External Memory</div>
+                        <div class="external-memory-import-card">
+                            <p class="external-memory-import-note" data-i18n="memory.externalImportNote">Import OpenClaw or Hermes USER.md, SOUL.md, MEMORY.md, daily memory files, or a workspace ZIP into the selected character.</p>
+                            <select id="external-memory-format" class="external-memory-format" aria-label="Source format" data-i18n-aria="memory.externalImportFormat">
+                                <option value="auto" data-i18n="memory.externalImportAuto">Auto detect</option>
+                                <option value="openclaw">OpenClaw</option>
+                                <option value="hermes">Hermes</option>
+                            </select>
+                            <div id="external-memory-target" class="external-memory-selection"></div>
+                            <input id="external-memory-files" type="file" accept=".md,.zip,text/markdown,application/zip" multiple hidden>
+                            <button type="button" class="storage-location-open-btn" id="external-memory-pick-btn">
+                                <span data-i18n="memory.externalImportPick">Choose Markdown or ZIP</span>
+                            </button>
+                            <div id="external-memory-selection" class="external-memory-selection" data-i18n="memory.externalImportNoSelection">No files selected</div>
+                            <button type="button" class="storage-location-manage-btn" id="external-memory-import-btn" disabled>
+                                <span data-i18n="memory.externalImportAction">Import into selected character</span>
+                            </button>
+                            <div id="external-memory-import-status" class="external-memory-import-status" role="status" aria-live="polite"></div>
+                        </div>
+                    </div>
                     <div class="file-list storage-location-section">
                         <div class="file-list-title" data-i18n="memory.storageLocation">存储位置</div>
                         <div class="storage-location-card-mini">

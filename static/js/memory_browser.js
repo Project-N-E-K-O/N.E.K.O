@@ -1502,6 +1502,183 @@
         }
     }
 
+    function setExternalImportStatus(message, kind) {
+        const status = document.getElementById('external-memory-import-status');
+        if (!status) return;
+        status.textContent = message || '';
+        status.className = 'external-memory-import-status' + (kind ? ' is-' + kind : '');
+    }
+
+    function updateExternalImportButton() {
+        const input = document.getElementById('external-memory-files');
+        const button = document.getElementById('external-memory-import-btn');
+        if (button) {
+            button.disabled = !(currentCatName && input && input.files && input.files.length);
+        }
+        setElementText(
+            'external-memory-target',
+            currentCatName
+                ? translate('memory.externalImportTarget', 'Target character: {{name}}', { name: currentCatName })
+                : translate('memory.externalImportSelectCharacter', 'Select a target character first.')
+        );
+    }
+
+    function bytesToBase64(buffer) {
+        const bytes = new Uint8Array(buffer);
+        const chunkSize = 0x8000;
+        let binary = '';
+        for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+            binary += String.fromCharCode.apply(null, bytes.subarray(offset, offset + chunkSize));
+        }
+        return btoa(binary);
+    }
+
+    async function buildExternalImportPayload(targetCharacter) {
+        const input = document.getElementById('external-memory-files');
+        const format = document.getElementById('external-memory-format');
+        const selected = Array.from((input && input.files) || []);
+        if (!targetCharacter) {
+            throw new Error(translate('memory.externalImportSelectCharacter', 'Select a target character first.'));
+        }
+        if (!selected.length) {
+            throw new Error(translate('memory.externalImportNoSelection', 'No files selected.'));
+        }
+        const zipFiles = selected.filter(file => /\.zip$/i.test(file.name));
+        if (zipFiles.length) {
+            if (selected.length !== 1) {
+                throw new Error(translate('memory.externalImportZipOnly', 'Choose one ZIP archive, or one or more Markdown files.'));
+            }
+            if (zipFiles[0].size > 8 * 1024 * 1024) {
+                throw new Error(translate('memory.externalImportTooLarge', 'The selected archive is too large.'));
+            }
+            return {
+                character_name: targetCharacter,
+                source_format: format ? format.value : 'auto',
+                archive_b64: bytesToBase64(await zipFiles[0].arrayBuffer())
+            };
+        }
+        const files = [];
+        let total = 0;
+        for (const file of selected) {
+            if (!/\.md$/i.test(file.name)) {
+                throw new Error(translate('memory.externalImportUnsupported', 'Only Markdown and ZIP files are supported.'));
+            }
+            total += file.size;
+            if (file.size > 2 * 1024 * 1024 || total > 8 * 1024 * 1024) {
+                throw new Error(translate('memory.externalImportTooLarge', 'The selected files are too large.'));
+            }
+            files.push({
+                path: file.webkitRelativePath || file.name,
+                content: await file.text()
+            });
+        }
+        return {
+            character_name: targetCharacter,
+            source_format: format ? format.value : 'auto',
+            files: files
+        };
+    }
+
+    function broadcastExternalMemoryEdited(characterName) {
+        if (typeof BroadcastChannel !== 'undefined') {
+            let channel = null;
+            try {
+                channel = new BroadcastChannel('neko_page_channel');
+                channel.postMessage({ action: 'memory_edited', catgirl_name: characterName });
+                return;
+            } catch (error) {
+                console.warn('[MemoryBrowser] External-memory refresh broadcast failed:', error);
+            } finally {
+                if (channel) channel.close();
+            }
+        }
+        if (window.parent && window.parent !== window) {
+            window.parent.postMessage({ type: 'memory_edited', catgirl_name: characterName }, PARENT_ORIGIN);
+        }
+    }
+
+    async function importExternalMemory() {
+        const button = document.getElementById('external-memory-import-btn');
+        if (button) button.disabled = true;
+        try {
+            const targetCharacter = currentCatName;
+            setExternalImportStatus(translate('memory.externalImportReading', 'Reading external memory...'), 'working');
+            const payload = await buildExternalImportPayload(targetCharacter);
+            const previewResponse = await fetch('/api/memory/external_import/preview', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const preview = await previewResponse.json();
+            if (!previewResponse.ok || !preview.success) {
+                throw new Error(preview.error || translate('memory.externalImportFailed', 'Import failed.'));
+            }
+            if (preview.character_name !== targetCharacter) {
+                throw new Error(translate('memory.externalImportFailed', 'Import failed.'));
+            }
+            let confirmation = translate(
+                'memory.externalImportConfirm',
+                'Import {{persona}} persona entries and {{facts}} facts into {{character}}? Suspicious content warnings: {{warnings}}.',
+                {
+                    persona: preview.counts.persona,
+                    facts: preview.counts.facts,
+                    character: targetCharacter,
+                    warnings: preview.warning_count
+                }
+            );
+            if (Array.isArray(preview.warnings) && preview.warnings.length) {
+                const warningDetails = preview.warnings.slice(0, 5).map(item => {
+                    const patterns = Array.isArray(item.patterns) ? item.patterns.join(', ') : '';
+                    return `- ${item.source_file}: ${item.text}${patterns ? ` [${patterns}]` : ''}`;
+                }).join('\n');
+                confirmation += `\n\n${warningDetails}`;
+            }
+            if (!window.confirm(confirmation)) {
+                setExternalImportStatus(translate('memory.externalImportCancelled', 'Import cancelled.'), '');
+                return;
+            }
+            payload.acknowledge_warnings = true;
+            setExternalImportStatus(translate('memory.externalImportWorking', 'Importing memory...'), 'working');
+            const commitResponse = await fetch('/api/memory/external_import/commit', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const result = await commitResponse.json();
+            if (!commitResponse.ok || !result.success) {
+                if (result.error_code === 'external_import_partial') {
+                    const partial = result.partial_import || {};
+                    throw new Error(translate(
+                        'memory.externalImportPartial',
+                        'The import stopped after {{persona}} persona entries were saved. Retry to finish; duplicates will be skipped.',
+                        { persona: partial.added_persona || 0 }
+                    ));
+                }
+                throw new Error(result.error || translate('memory.externalImportFailed', 'Import failed.'));
+            }
+            setExternalImportStatus(
+                translate(
+                    'memory.externalImportSuccess',
+                    'Imported {{persona}} persona entries and {{facts}} facts; skipped {{duplicates}} duplicates.',
+                    {
+                        persona: result.added_persona,
+                        facts: result.added_facts,
+                        duplicates: result.skipped_duplicates
+                    }
+                ),
+                result.warning_count ? 'warning' : 'success'
+            );
+            broadcastExternalMemoryEdited(result.character_name);
+        } catch (error) {
+            setExternalImportStatus(
+                String(error && error.message ? error.message : translate('memory.externalImportFailed', 'Import failed.')),
+                'error'
+            );
+        } finally {
+            updateExternalImportButton();
+        }
+    }
+
     function renderChatEdit() {
         const div = document.getElementById('memory-chat-edit');
         // 清空并使用 DOM API 渲染每一条消息，避免将未转义的用户数据插入到 HTML 中
@@ -1715,6 +1892,7 @@
         const requestId = ++memoryFileRequestId;
         currentMemoryFile = filename;
         currentCatName = catName || (li ? li.getAttribute('data-catname') : '');
+        updateExternalImportButton();
         Array.from(document.getElementById('memory-file-list').children).forEach(x => x.classList.remove('selected'));
         if (li) li.classList.add('selected');
         const editDiv = document.getElementById('memory-chat-edit');
@@ -1914,7 +2092,16 @@
             renderMemoryBrowserLimitedState(storagePanelState);
         } else {
             setReviewControlsEnabled(true);
-            loadMemoryFileList();
+            await loadMemoryFileList();
+            if (!currentCatName) {
+                try {
+                    const response = await fetch('/api/characters/current_catgirl');
+                    const current = await response.json();
+                    currentCatName = current.current_catgirl || '';
+                } catch (error) {
+                    console.warn('[MemoryBrowser] Failed to resolve external-memory target:', error);
+                }
+            }
             loadReviewConfig();
             loadPowerfulMemoryConfig();
         }
@@ -1957,6 +2144,28 @@
             refreshTutorialCascaderDayLabels();
             syncTutorialResetCascader();
         });
+
+        const externalFiles = document.getElementById('external-memory-files');
+        const externalPick = document.getElementById('external-memory-pick-btn');
+        const externalImport = document.getElementById('external-memory-import-btn');
+        if (externalPick && externalFiles) {
+            externalPick.addEventListener('click', function () { externalFiles.click(); });
+            externalFiles.addEventListener('change', function () {
+                const names = Array.from(externalFiles.files || []).map(file => file.name);
+                setElementText(
+                    'external-memory-selection',
+                    names.length
+                        ? names.join(', ')
+                        : translate('memory.externalImportNoSelection', 'No files selected')
+                );
+                setExternalImportStatus('', '');
+                updateExternalImportButton();
+            });
+        }
+        if (externalImport) {
+            externalImport.addEventListener('click', importExternalMemory);
+        }
+        updateExternalImportButton();
 
         const openStorageBtn = document.getElementById('storage-location-open-btn');
         if (openStorageBtn) {

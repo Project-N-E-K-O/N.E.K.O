@@ -27,6 +27,8 @@ enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
 import asyncio
+import base64
+import binascii
 import os
 import re
 import json
@@ -42,6 +44,11 @@ from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writa
 from utils.file_utils import atomic_write_json_async
 from utils.logger_config import get_module_logger
 from fastapi.responses import JSONResponse
+from memory.external_markdown_import import (
+    ExternalMemoryImportError,
+    build_import_candidates,
+    collect_markdown_files,
+)
 
 
 router = APIRouter(prefix="/api/memory", tags=["memory"])
@@ -727,6 +734,157 @@ def _directory_size_safe(path: Path, *, max_entries: int = 50000) -> int:
         logger.debug(f"_directory_size_safe({path}): 汇总大小时出错: {exc}")
         return -1
     return total
+
+
+def _external_import_error(message: str, status_code: int = 400) -> JSONResponse:
+    return JSONResponse({"success": False, "error": message}, status_code=status_code)
+
+
+def _decode_external_archive(raw: object) -> bytes | None:
+    if raw in (None, ""):
+        return None
+    if not isinstance(raw, str):
+        raise ExternalMemoryImportError("archive_b64 must be a base64 string")
+    value = raw.strip()
+    if value.startswith("data:") and "," in value:
+        value = value.split(",", 1)[1]
+    try:
+        return base64.b64decode(value, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ExternalMemoryImportError("archive_b64 is not valid base64") from exc
+
+
+def _prepare_external_import(payload: object) -> tuple[str, dict]:
+    if not isinstance(payload, dict):
+        raise ExternalMemoryImportError("Request body must be an object")
+    # Keep preview and commit aligned with memory_server.validate_lanlan_name.
+    validation = validate_character_name(
+        payload.get("character_name"), allow_dots=True, max_length=50,
+    )
+    if not validation.ok:
+        raise ExternalMemoryImportError("Invalid target character name")
+    archive_bytes = _decode_external_archive(payload.get("archive_b64"))
+    direct_files = payload.get("files")
+    if archive_bytes is not None and direct_files:
+        raise ExternalMemoryImportError("Choose either a ZIP archive or Markdown files, not both")
+    sources = collect_markdown_files(
+        direct_files if isinstance(direct_files, list) else None,
+        archive_bytes=archive_bytes,
+    )
+    analysis = build_import_candidates(
+        sources,
+        source_format=str(payload.get("source_format") or "auto"),
+    )
+    return validation.normalized, analysis
+
+
+@router.post('/external_import/preview')
+async def preview_external_memory_import(request: Request):
+    """Parse OpenClaw/Hermes Markdown without writing memory files."""
+    try:
+        payload = await request.json()
+        character_name, analysis = await asyncio.to_thread(_prepare_external_import, payload)
+        counts = {
+            "persona": sum(1 for item in analysis["candidates"] if item["target"] == "persona"),
+            "facts": sum(1 for item in analysis["candidates"] if item["target"] == "facts"),
+        }
+        return {
+            "success": True,
+            "character_name": character_name,
+            "source_format": analysis["source_format"],
+            "files": analysis["files"],
+            "counts": counts,
+            "candidate_count": len(analysis["candidates"]),
+            "warning_count": len(analysis["warnings"]),
+            "warnings": analysis["warnings"][:20],
+            "candidates": analysis["candidates"][:100],
+            "truncated_preview": len(analysis["candidates"]) > 100,
+        }
+    except ExternalMemoryImportError as exc:
+        return _external_import_error(str(exc))
+    except Exception as exc:
+        logger.exception("External memory preview failed")
+        return _external_import_error(f"External memory preview failed: {exc}", 500)
+
+
+@router.post('/external_import/commit')
+async def commit_external_memory_import(request: Request):
+    """Merge OpenClaw/Hermes Markdown into a character's memory stores."""
+    try:
+        payload = await request.json()
+        character_name, analysis = await asyncio.to_thread(_prepare_external_import, payload)
+        if analysis["warnings"] and payload.get("acknowledge_warnings") is not True:
+            return _external_import_error(
+                "Suspicious instruction patterns were detected; preview and acknowledge warnings before import",
+                409,
+            )
+        from config import MEMORY_SERVER_PORT
+        from utils.config_manager import get_config_manager
+        from utils.internal_http_client import get_internal_http_client
+
+        assert_cloudsave_writable(
+            get_config_manager(),
+            operation="import",
+            target=f"memory/{character_name}/external-markdown",
+        )
+        client = get_internal_http_client()
+        response = await client.post(
+            f"http://127.0.0.1:{MEMORY_SERVER_PORT}/internal/memory/import_external_markdown",
+            json={
+                "character_name": character_name,
+                "source_format": analysis["source_format"],
+                "imported_files": analysis["files"],
+                "candidates": analysis["candidates"],
+                "warning_count": len(analysis["warnings"]),
+            },
+            timeout=30.0,
+        )
+        if response.status_code != 200:
+            try:
+                upstream_error = response.json()
+                detail = upstream_error.get("detail") or upstream_error.get("error")
+            except Exception:
+                upstream_error = {}
+                detail = None
+            if upstream_error.get("error_code") == "external_import_partial":
+                return JSONResponse(
+                    {
+                        "success": False,
+                        "error": detail,
+                        "error_code": "external_import_partial",
+                        "partial_import": upstream_error.get("partial_import") or {},
+                    },
+                    status_code=500,
+                )
+            raise ExternalMemoryImportError(
+                str(detail or f"Memory service rejected the import (HTTP {response.status_code})")
+            )
+        result = response.json()
+        if result.get("status") != "success":
+            raise ExternalMemoryImportError("Memory service did not confirm the import")
+
+        logger.info(
+            "External memory import: character=%s format=%s persona=%s facts=%s duplicates=%s warnings=%s",
+            character_name,
+            result["source_format"],
+            result["added_persona"],
+            result["added_facts"],
+            result["skipped_duplicates"],
+            result["warning_count"],
+        )
+        return {
+            "success": True,
+            "need_refresh": True,
+            "memory_server_reloaded": True,
+            **result,
+        }
+    except MaintenanceModeError:
+        raise
+    except ExternalMemoryImportError as exc:
+        return _external_import_error(str(exc))
+    except Exception as exc:
+        logger.exception("External memory import failed")
+        return _external_import_error(f"External memory import failed: {exc}", 500)
 
 
 @router.get('/legacy/scan')
