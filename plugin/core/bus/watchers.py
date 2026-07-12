@@ -5,16 +5,11 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, Generic, List, Optional, 
 
 from plugin.core.bus.bus_list import (
     BusListWatcherCore,
-    _apply_watcher_ops_local,
     _compute_watcher_delta,
     _dispatch_watcher_callbacks,
-    _extract_unary_plan_ops,
     _infer_bus_from_plan,
-    _record_from_raw_by_bus,
-    _resolve_watcher_refresh,
     _schedule_watcher_tick_debounced,
     _snapshot_watcher_callbacks,
-    _try_incremental_local,
 )
 
 __all__ = [
@@ -58,7 +53,7 @@ class BusListWatcher(BusListWatcherCore, Generic[TRecord]):
         self._debounce_ms = float(debounce_ms or 0.0)
 
         if self._list._plan is None:
-            raise NonReplayableTraceError("watcher requires a replayable plan; build list via get()/filter()/where_*/sort(by=...)")
+            raise NonReplayableTraceError("watcher requires a replayable plan; build list via get()/filter()/sort(by=...)")
 
         inferred = self._infer_bus(self._list._plan)
         self._bus = str(bus).strip() if isinstance(bus, str) and bus.strip() else inferred
@@ -101,52 +96,13 @@ class BusListWatcher(BusListWatcherCore, Generic[TRecord]):
         except Exception:
             return
 
-    def _extract_plan_ops(self) -> Optional[List[Tuple[str, Payload]]]:
-        plan = getattr(self._list, "_plan", None)
-        return _extract_unary_plan_ops(plan)
-
     def _infer_bus(self, plan: "TraceNode") -> str:
         from plugin.core.bus.types import NonReplayableTraceError
 
         return _infer_bus_from_plan(plan, conflict_error=NonReplayableTraceError)
 
-    def _apply_ops_local(
-        self,
-        base_items: List[TRecord],
-        ops: List[Tuple[str, Payload]],
-    ) -> Optional["BusList[TRecord]"]:
-        try:
-            base = self._list._construct(base_items, self._list._trace, self._list._plan)
-        except Exception:
-            from plugin.core.bus.types import BusList
-
-            base = BusList(cast(List["BusRecord"], base_items))
-        return cast(Optional["BusList[TRecord]"], _apply_watcher_ops_local(base, ops))
-
-    def _record_from_raw(self, raw: Payload) -> Optional[TRecord]:
-        return cast(Optional[TRecord], _record_from_raw_by_bus(self._bus, raw))
-
-    def _try_incremental(self, op: str, payload: Optional[Payload]) -> Optional["BusList[TRecord]"]:
-        ops = self._extract_plan_ops()
-        out = _try_incremental_local(
-            op=op,
-            payload=payload,
-            bus=self._bus,
-            ops=ops,
-            current_items=list(self._list.dump_records()),
-            record_from_raw=lambda raw: self._record_from_raw(raw),
-            apply_ops_local=lambda items, op_list: self._apply_ops_local(cast(List[TRecord], items), op_list),
-            dedupe_key=lambda x: self._list._dedupe_key(cast(TRecord, x)),
-        )
-        return cast(Optional["BusList[TRecord]"], out)
-
     def _tick(self, op: str, payload: Optional[Payload] = None) -> None:
-        refreshed = _resolve_watcher_refresh(
-            op=op,
-            payload=payload,
-            try_incremental=lambda op0, payload0: self._try_incremental(op0, payload0),
-            reload_full=lambda: self._list.reload(self._ctx),
-        )
+        refreshed = self._list.reload(self._ctx)
         new_items = refreshed.dump_records()
         added_items_raw, removed_keys_raw, new_keys_raw, fired_raw, kind_raw = _compute_watcher_delta(
             op=op,

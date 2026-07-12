@@ -7,6 +7,7 @@ core coverage file does not exercise.
 
 from __future__ import annotations
 
+import inspect
 from typing import get_args
 
 import pytest
@@ -14,6 +15,10 @@ import pytest
 from plugin.core.bus.types import BusList as CoreBusList
 from plugin.core.bus import records as core_bus_records
 from plugin.core.bus import types as core_bus_types
+from plugin.core.bus import bus_list as core_bus_list_module
+from plugin.core.bus import messages as core_bus_messages
+from plugin.core.bus import rev as core_bus_rev
+from plugin.core.bus.watchers import BusListWatcher
 from plugin.core.bus.messages import MessageClient
 from plugin.message_plane.rpc_server import MessagePlaneRpcServer
 from plugin.message_plane.protocol import RpcOp
@@ -73,6 +78,36 @@ def test_get_message_plane_all_does_not_reappear() -> None:
     assert not hasattr(SdkMessagesBus, "get_message_plane_all")
     assert not hasattr(TopicStore, "get_since")
     assert "bus.get_since" not in get_args(RpcOp)
+
+
+def test_removed_bus_fast_paths_do_not_reappear() -> None:
+    assert "fast_mode" not in inspect.signature(CoreBusList).parameters
+    assert not hasattr(CoreBusList, "fast_mode")
+    assert not hasattr(CoreBusList([]), "_reload_cursor_ts")
+    for method_name in ("reload", "reload_with", "reload_with_async"):
+        assert "incremental" not in inspect.signature(getattr(CoreBusList, method_name)).parameters
+    for method_name in ("get", "get_async"):
+        assert "no_fallback" not in inspect.signature(getattr(MessageClient, method_name)).parameters
+    for name in ("_LocalMessageCache", "_LOCAL_CACHE", "_ensure_local_cache", "_try_local_cache"):
+        assert not hasattr(core_bus_messages, name)
+    for name in (
+        "_try_incremental_local",
+        "_resolve_watcher_refresh",
+        "_extract_unary_plan_ops",
+        "_apply_watcher_ops_local",
+        "_record_from_raw_by_bus",
+    ):
+        assert not hasattr(core_bus_list_module, name)
+    assert not hasattr(BusListWatcher, "_try_incremental")
+    for name in (
+        "register_bus_change_listener",
+        "_ensure_bus_rev_subscription",
+        "_get_bus_rev",
+        "_get_recent_deltas",
+        "_BUS_LATEST_REV",
+        "_BUS_RECENT_DELTAS",
+    ):
+        assert not hasattr(core_bus_rev, name)
 
 
 # ---------------------------------------------------------------------------

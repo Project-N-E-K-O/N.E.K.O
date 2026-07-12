@@ -13,14 +13,9 @@ __all__ = [
     "_cast_bus_value",
     "_cancel_timer_best_effort",
     "_build_watcher_injected_callback",
-    "_extract_unary_plan_ops",
     "_infer_bus_from_plan",
-    "_apply_watcher_ops_local",
-    "_record_from_raw_by_bus",
-    "_try_incremental_local",
     "_compute_watcher_delta",
     "_dispatch_watcher_callbacks",
-    "_resolve_watcher_refresh",
     "_snapshot_watcher_callbacks",
     "_normalize_watch_rules",
     "_register_watcher_callback",
@@ -29,7 +24,6 @@ __all__ = [
     "_build_bus_unsubscribe_request",
     "_schedule_watcher_tick_debounced",
     "_freeze_plan_value",
-    "_seed_key_from_params",
     "_replay_cache_key_get",
     "_replay_cache_key_unary",
     "_message_plane_replay_rpc",
@@ -186,23 +180,6 @@ def _dispatch_watcher_callbacks(
                 continue
 
 
-def _resolve_watcher_refresh(
-    *,
-    op: str,
-    payload: dict[str, Any] | None,
-    try_incremental: Callable[[str, dict[str, Any] | None], Any | None],
-    reload_full: Callable[[], Any],
-) -> Any:
-    refreshed = None
-    try:
-        refreshed = try_incremental(op, payload)
-    except Exception:
-        refreshed = None
-    if refreshed is None:
-        refreshed = reload_full()
-    return refreshed
-
-
 def _snapshot_watcher_callbacks(
     callbacks: list[tuple[Callable[[Any], None], tuple[str, ...]]],
     lock: Any,
@@ -235,7 +212,7 @@ def _register_watcher_callback(
 class BusListCore:
     """Low-coupling BusList methods migrated from types.py."""
 
-    def reload_with(self, ctx: Any = None, *, inplace: bool = False, incremental: bool = False) -> Any:
+    def reload_with(self, ctx: Any = None, *, inplace: bool = False) -> Any:
         raise NotImplementedError()
 
     def _dedupe_key(self, item: Any) -> tuple[str, Any]:
@@ -253,27 +230,24 @@ class BusListCore:
     def _cast_value(self, v: Any, cast: str | None) -> Any:
         return _cast_bus_value(v, cast)
 
-    def reload(self, ctx: Any = None, *, incremental: bool = False) -> Any:
-        return self.reload_with(ctx, incremental=bool(incremental))
+    def reload(self, ctx: Any = None) -> Any:
+        return self.reload_with(ctx)
 
     async def reload_with_async(
         self,
         ctx: Any = None,
         *,
         inplace: bool = False,
-        incremental: bool = False,
     ) -> Any:
         if ctx is None:
             return await asyncio.to_thread(
                 self.reload_with,
                 inplace=inplace,
-                incremental=incremental,
             )
         return await asyncio.to_thread(
             self.reload_with,
             ctx,
             inplace=inplace,
-            incremental=incremental,
         )
 
 
@@ -409,12 +383,6 @@ def _freeze_plan_value(x: Any) -> Any:
         return repr(x)
     except Exception:
         return repr(x)
-
-
-def _seed_key_from_params(bus: str, params: dict[str, Any]) -> dict[str, Any]:
-    p = dict(params)
-    p.pop("since_ts", None)
-    return {"bus": bus, "params": p}
 
 
 def _replay_cache_key_get(bus: str, params: dict[str, Any]) -> tuple[str, str, Any]:
@@ -581,64 +549,6 @@ def _get_field_from_record(item: Any, field: str) -> Any:
     return None
 
 
-def _try_incremental_local(
-    *,
-    op: str,
-    payload: dict[str, Any] | None,
-    bus: str,
-    ops: list[tuple[str, dict[str, Any]]] | None,
-    current_items: list[Any],
-    record_from_raw: Callable[[dict[str, Any]], Any | None],
-    apply_ops_local: Callable[[list[Any], list[tuple[str, dict[str, Any]]]], Any | None],
-    dedupe_key: Callable[[Any], tuple[str, Any]],
-) -> Any | None:
-    if not isinstance(payload, dict) or not payload:
-        return None
-    if ops is None:
-        return None
-
-    base_items = list(current_items)
-
-    if str(op) == "add":
-        rec_raw = payload.get("record")
-        if not isinstance(rec_raw, dict):
-            return None
-        rec = record_from_raw(rec_raw)
-        if rec is None:
-            return None
-        base_items.append(rec)
-        return apply_ops_local(base_items, ops)
-
-    if str(op) == "del":
-        rid: str | None = None
-        attr: str | None = None
-        if bus == "messages":
-            rid = payload.get("message_id") if isinstance(payload.get("message_id"), str) else None
-            attr = "message_id"
-        elif bus == "events":
-            rid = payload.get("event_id") if isinstance(payload.get("event_id"), str) else None
-            attr = "event_id"
-        elif bus == "lifecycle":
-            rid = payload.get("lifecycle_id") if isinstance(payload.get("lifecycle_id"), str) else None
-            attr = "lifecycle_id"
-
-        if not rid or not attr:
-            return None
-
-        if any(op_name == "limit" for op_name, _ in ops):
-            return None
-
-        kept: list[Any] = []
-        for x in base_items:
-            k = dedupe_key(x)
-            if k == (attr, rid):
-                continue
-            kept.append(x)
-        return apply_ops_local(kept, ops)
-
-    return None
-
-
 def _cast_bus_value(v: Any, cast: str | None) -> Any:
     if cast is None:
         return v
@@ -790,24 +700,6 @@ def _build_watcher_injected_callback(fn: Callable[..., None]) -> Callable[[Any],
     return _wrapped
 
 
-def _extract_unary_plan_ops(plan: Any) -> list[tuple[str, dict[str, Any]]] | None:
-    if plan is None:
-        return None
-    ops: list[tuple[str, dict[str, Any]]] = []
-    node = plan
-    while hasattr(node, "child") and hasattr(node, "op"):
-        params = getattr(node, "params", None)
-        ops.append((str(getattr(node, "op", "")), dict(params) if isinstance(params, dict) else {}))
-        node = getattr(node, "child", None)
-        if node is None:
-            return None
-
-    if not (hasattr(node, "params") and isinstance(getattr(node, "params", None), dict)):
-        return None
-    ops.reverse()
-    return ops
-
-
 def _infer_bus_from_plan(plan: Any, *, conflict_error: type[Exception]) -> str:
     if plan is None:
         return ""
@@ -816,50 +708,6 @@ def _infer_bus_from_plan(plan: Any, *, conflict_error: type[Exception]) -> str:
     if hasattr(plan, "child"):
         return _infer_bus_from_plan(getattr(plan, "child", None), conflict_error=conflict_error)
     return ""
-
-
-def _apply_watcher_ops_local(base_list: Any, ops: list[tuple[str, dict[str, Any]]]) -> Any | None:
-    lst = base_list
-    for op, params in ops:
-        if op == "filter":
-            p = dict(params)
-            strict = bool(p.pop("strict", True))
-            lst = lst.filter(strict=strict, **p)
-            continue
-        if op == "limit":
-            lst = lst.limit(int(params.get("n", 0)))
-            continue
-        if op == "sort":
-            if params.get("key") is not None:
-                return None
-            lst = lst.sort(
-                by=params.get("by"),
-                cast=params.get("cast"),
-                reverse=bool(params.get("reverse", False)),
-            )
-            continue
-        if op == "where":
-            return None
-    return lst
-
-
-def _record_from_raw_by_bus(bus: str, raw: dict[str, Any]) -> Any | None:
-    try:
-        if bus == "messages":
-            from plugin.core.bus.messages import MessageRecord
-
-            return MessageRecord.from_raw(raw)
-        if bus == "events":
-            from plugin.core.bus.events import EventRecord
-
-            return EventRecord.from_raw(raw)
-        if bus == "lifecycle":
-            from plugin.core.bus.lifecycle import LifecycleRecord
-
-            return LifecycleRecord.from_raw(raw)
-    except Exception:
-        return None
-    return None
 
 
 def __getattr__(name: str) -> Any:

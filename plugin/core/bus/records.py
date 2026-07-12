@@ -152,7 +152,7 @@ class UnaryNode(TraceNode):
         return self.child.explain() + " -> " + super().explain()
 
 
-def _collect_get_nodes_fast(node: "TraceNode") -> List["GetNode"]:
+def _collect_get_nodes(node: "TraceNode") -> List["GetNode"]:
     """Module-level function to collect GetNodes from a plan tree (iterative, faster)."""
     result: List["GetNode"] = []
     stack: List["TraceNode"] = [node]
@@ -165,13 +165,13 @@ def _collect_get_nodes_fast(node: "TraceNode") -> List["GetNode"]:
     return result
 
 
-def _serialize_plan_fast(node: "TraceNode") -> Optional[Dict[str, Any]]:
+def _serialize_plan(node: "TraceNode") -> Optional[Dict[str, Any]]:
     """Module-level function to serialize a plan tree to dict (iterative for common cases)."""
     try:
         if isinstance(node, GetNode):
             return {"kind": "get", "op": "get", "params": dict(node.params or {})}
         if isinstance(node, UnaryNode):
-            child = _serialize_plan_fast(node.child)
+            child = _serialize_plan(node.child)
             if child is None:
                 return None
             return {

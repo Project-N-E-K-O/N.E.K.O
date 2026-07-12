@@ -97,7 +97,7 @@ This file inventories public functions/methods under `plugin/sdk` and maps them 
 - `UnaryNode`: dump, explain
 
 ### `plugin/sdk/bus/rev.py`
-- `functions`: register_bus_change_listener, dispatch_bus_change
+- `functions`: dispatch_bus_change
 - `classes`: (none)
 
 ### `plugin/sdk/bus/types.py`
@@ -107,7 +107,7 @@ This file inventories public functions/methods under `plugin/sdk` and maps them 
 - `TraceNode`: dump, explain
 - `GetNode`: dump
 - `UnaryNode`: dump, explain
-- `BusList`: count, size, dump, dump_records, fast_mode, trace, trace_dump, trace_tree_dump, explain, sort, sorted, filter, try_filter, where, limit, reload, reload_with, reload_with_async, watch
+- `BusList`: count, size, dump, dump_records, trace, trace_dump, trace_tree_dump, explain, sort, sorted, filter, try_filter, where, limit, reload, reload_with, reload_with_async, watch
 
 ### `plugin/sdk/bus/watchers.py`
 - `functions`: list_subscription

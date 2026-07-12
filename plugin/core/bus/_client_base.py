@@ -84,9 +84,8 @@ class _PluginBusList(BusList[TRecord]):
         ctx: Optional[Any] = None,
         trace: Optional[Sequence[BusOp]] = None,
         plan: Optional[Any] = None,
-        fast_mode: bool = False,
     ):
-        super().__init__(items, ctx=ctx, trace=trace, plan=plan, fast_mode=fast_mode)
+        super().__init__(items, ctx=ctx, trace=trace, plan=plan)
         self.plugin_id = plugin_id
 
 # ── BusRpcClientBase ───────────────────────────────────────────────────
