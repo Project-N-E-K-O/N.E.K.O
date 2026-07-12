@@ -127,6 +127,43 @@ async def test_game_speech_broadcast_waits_for_tap_reconnect(monkeypatch):
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_speech_broadcast_serializes_header_and_audio_per_socket(monkeypatch):
+    key = ("Lan", "drawing_guess", "speech-serialized")
+
+    class _SpeechSocket:
+        def __init__(self):
+            self.sent = []
+
+        async def send_json(self, payload):
+            self.sent.append(payload)
+            await asyncio.sleep(0)
+
+        async def send_bytes(self, payload):
+            self.sent.append(payload)
+
+    socket = _SpeechSocket()
+    gr_runtime._game_speech_subscribers[key] = {socket}
+    gr_runtime._game_speech_subscriber_send_locks.pop(socket, None)
+    monkeypatch.setattr(gr_runtime, "_active_game_speech_subscriber_key", lambda _name: key)
+    try:
+        delivered = await asyncio.gather(
+            gr_runtime._broadcast_game_speech("Lan", b"audio-1", "speech-1"),
+            gr_runtime._broadcast_game_speech("Lan", b"audio-2", "speech-2"),
+        )
+    finally:
+        gr_runtime._game_speech_subscribers.pop(key, None)
+        gr_runtime._game_speech_subscriber_send_locks.pop(socket, None)
+
+    assert delivered == [True, True]
+    assert socket.sent == [
+        {"type": "audio_chunk", "speech_id": "speech-1"},
+        b"audio-1",
+        {"type": "audio_chunk", "speech_id": "speech-2"},
+        b"audio-2",
+    ]
+
+@pytest.mark.unit
 def test_badminton_removed_modes_are_not_public_or_scored():
     assert gr_scores._normalize_badminton_mode("shooter") == "spectator"
     assert gr_scores._normalize_badminton_mode("SHOOTER") == "spectator"
@@ -4227,7 +4264,7 @@ async def test_drawing_guess_screen_route_requests_canvas_context(monkeypatch):
 
         assert handled is True
         assert mgr.statuses == []
-        assert "last_canvas_image_data_url" not in state
+        assert state["_last_canvas_image_data_url"] == "data:image/jpeg;base64,raw-main-window-frame"
         assert [output["type"] for output in state["pending_outputs"]] == ["game_canvas_context_request"]
         assert state["pending_outputs"][0]["source"] == "external_media_hijacked_by_game"
         assert state["pending_outputs"][0]["request_id"] == "screen-1"

@@ -230,6 +230,7 @@ _SSML_TAG_PATTERN = re.compile(
 _GAME_SPEECH_TAP_KEY = "game_route_speech"
 _game_speech_subscribers: Dict[tuple[str, str, str], set[WebSocket]] = {}
 _game_speech_subscribers_lock = asyncio.Lock()
+_game_speech_subscriber_send_locks: Dict[WebSocket, asyncio.Lock] = {}
 _GAME_SPEECH_WS_ROUTE_CHECK_SECONDS = 20.0
 _GAME_SPEECH_RECONNECT_GRACE_SECONDS = 0.8
 _GAME_SPEECH_RECONNECT_POLL_SECONDS = 0.05
@@ -257,6 +258,7 @@ async def _drop_game_speech_subscriber(key: tuple[str, str, str], websocket: Web
             subscribers.discard(websocket)
             if not subscribers:
                 _game_speech_subscribers.pop(key, None)
+        _game_speech_subscriber_send_locks.pop(websocket, None)
         target_lanlan = key[0]
         has_same_lanlan_subscribers = any(
             sub_key[0] == target_lanlan and bool(subscribers_for_key)
@@ -279,14 +281,21 @@ async def _broadcast_game_speech(lanlan_name: str, audio: bytes, speech_id: str 
         if not active_key:
             return False
         async with _game_speech_subscribers_lock:
-            subscribers = list(_game_speech_subscribers.get(active_key) or [])
+            subscribers = [
+                (
+                    websocket,
+                    _game_speech_subscriber_send_locks.setdefault(websocket, asyncio.Lock()),
+                )
+                for websocket in (_game_speech_subscribers.get(active_key) or [])
+            ]
         delivered = False
         stale: list[WebSocket] = []
         header = {"type": "audio_chunk", "speech_id": speech_id}
-        for websocket in subscribers:
+        for websocket, send_lock in subscribers:
             try:
-                await websocket.send_json(header)
-                await websocket.send_bytes(audio)
+                async with send_lock:
+                    await websocket.send_json(header)
+                    await websocket.send_bytes(audio)
                 delivered = True
             except Exception:
                 stale.append(websocket)
@@ -1489,6 +1498,7 @@ async def game_route_speech_ws(game_type: str, websocket: WebSocket):
     key = _game_speech_subscriber_key(lanlan_name, game_type, session_id)
     async with _game_speech_subscribers_lock:
         _game_speech_subscribers.setdefault(key, set()).add(websocket)
+        _game_speech_subscriber_send_locks.setdefault(websocket, asyncio.Lock())
     tap_ready = _ensure_game_speech_tap(lanlan_name)
     try:
         await websocket.send_json({
@@ -1554,7 +1564,7 @@ def _store_route_canvas_context(state: dict, data: dict, game_type: str) -> None
     if data.get("canvas_context_clear"):
         state.pop("_last_canvas_image_data_url", None)
         return
-    image_data_url = str(data.get("canvas_image_data_url") or "")
+    image_data_url = str(data.get("data") or data.get("canvas_image_data_url") or "")
     if image_data_url.startswith("data:image/") and len(image_data_url) <= 1_800_000:
         state["_last_canvas_image_data_url"] = image_data_url
 

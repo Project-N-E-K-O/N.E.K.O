@@ -580,6 +580,10 @@ def test_user_guess_extraction_uses_alias_boundaries():
     "\ucc45\uc740 \uc544\ub2c8야?",
     "\uace0\uc591\uc774\ub294\uc544\ub2c8\uc57c?",
     "\ucc45\uc740\uc544\ub2c8\uc57c?",
+    "고양이지 않아?",
+    "고양이지않아?",
+    "고양이지 않습니다.",
+    "고양이지 않은데?",
     "not the cat?",
 ])
 def test_user_guess_extraction_rejects_negated_aliases(text):
