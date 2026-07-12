@@ -69,40 +69,42 @@ async def _speak_committed_dialogue(response: dict[str, Any]) -> dict[str, Any]:
         return {"ok": True, "skipped": "turn_failed"}
     session_id = str(response.get("session_id") or "")
     state_revision = response.get("state_revision")
-    claim = await runtime.claim_dialogue_speech(
+    async def _play_claimed_dialogue(claim: dict[str, Any]) -> dict[str, Any]:
+        """在 Runtime 持有角色边界期间，把已认领对白提交给现有 TTS。"""  # noqa: DOCSTRING_CJK
+        lanlan_name = str(claim.get("lanlan_name") or "")
+        manager = get_session_manager().get(lanlan_name) if lanlan_name else None
+        speak = getattr(manager, "mirror_assistant_speech", None)
+        if not callable(speak):
+            return {"ok": True, "skipped": "project_tts_unavailable"}
+
+        # 只复用现有音频管线：不镜像普通聊天文字、不发送普通聊天 turn-end，也不占用游戏 route。
+        metadata = build_mirror_meta(
+            source="theater",
+            kind="theater_dialogue",
+            session_id=session_id,
+            event={"state_revision": int(claim.get("state_revision") or 0)},
+        )
+        try:
+            return await speak(
+                str(claim.get("line") or ""),
+                metadata=metadata,
+                request_id=f"theater_tts_{session_id}_{claim.get('state_revision')}",
+                mirror_text=False,
+                emit_turn_end_after=False,
+                # 新剧场对白拥有当前播放权，进入下一轮时停止上一段尚未播完的猫娘台词。
+                interrupt_audio=True,
+            )
+        except Exception as exc:
+            logger.warning("小剧场猫娘对白 TTS 降级为纯文字: %s", exc)
+            return {"ok": True, "skipped": "project_tts_failed", "error_type": type(exc).__name__}
+
+    return await runtime.claim_dialogue_speech(
         _theater_root(),
         session_id=session_id,
         state_revision=state_revision,
+        # Runtime 会把认领、写盘和播放提交保持在同一个角色锁内，消除返回后的过期窗口。
+        play=_play_claimed_dialogue,
     )
-    if claim.get("ok") is not True or claim.get("skipped"):
-        return claim
-
-    lanlan_name = str(claim.get("lanlan_name") or "")
-    manager = get_session_manager().get(lanlan_name) if lanlan_name else None
-    speak = getattr(manager, "mirror_assistant_speech", None)
-    if not callable(speak):
-        return {"ok": True, "skipped": "project_tts_unavailable"}
-
-    # 只复用现有音频管线：不镜像普通聊天文字、不发送普通聊天 turn-end，也不占用游戏 route。
-    metadata = build_mirror_meta(
-        source="theater",
-        kind="theater_dialogue",
-        session_id=session_id,
-        event={"state_revision": int(claim.get("state_revision") or 0)},
-    )
-    try:
-        return await speak(
-            str(claim.get("line") or ""),
-            metadata=metadata,
-            request_id=f"theater_tts_{session_id}_{claim.get('state_revision')}",
-            mirror_text=False,
-            emit_turn_end_after=False,
-            # 新剧场对白拥有当前播放权，进入下一轮时停止上一段尚未播完的猫娘台词。
-            interrupt_audio=True,
-        )
-    except Exception as exc:
-        logger.warning("小剧场猫娘对白 TTS 降级为纯文字: %s", exc)
-        return {"ok": True, "skipped": "project_tts_failed", "error_type": type(exc).__name__}
 
 
 @router.get("/stories")

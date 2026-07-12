@@ -278,6 +278,41 @@ async def test_dialogue_claim_and_new_start_share_character_boundary(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_dialogue_playback_submission_holds_character_boundary(tmp_path):
+    """对白进入 TTS 管线前，新开场不能越过同一角色原子边界。"""  # noqa: DOCSTRING_CJK
+    root = tmp_path / "theater"
+    old_session = await runtime.start_session(root, lanlan_name="测试猫娘", client_start_id="start_play_old")
+    playback_entered = asyncio.Event()
+    release_playback = asyncio.Event()
+
+    async def _pause_playback(claim):
+        """暂停 TTS 提交，验证角色锁覆盖认领返回后的原竞态窗口。"""  # noqa: DOCSTRING_CJK
+        playback_entered.set()
+        await release_playback.wait()
+        return {"ok": True, "line": claim["line"], "audio_queued": True}
+
+    playback_task = asyncio.create_task(
+        runtime.claim_dialogue_speech(
+            root,
+            session_id=old_session["session_id"],
+            state_revision=0,
+            play=_pause_playback,
+        )
+    )
+    await playback_entered.wait()
+    start_task = asyncio.create_task(
+        runtime.start_session(root, lanlan_name="测试猫娘", client_start_id="start_play_new")
+    )
+    done, _pending = await asyncio.wait({start_task}, timeout=0.05)
+
+    assert not done
+    release_playback.set()
+    played, replacement = await asyncio.gather(playback_task, start_task)
+    assert played["audio_queued"] is True
+    assert replacement["session_id"] != old_session["session_id"]
+
+
+@pytest.mark.asyncio
 async def test_stale_session_dialogue_cannot_claim_tts(tmp_path):
     """被新开场替代的旧 Session 不得抢播对白或中断当前演出。"""  # noqa: DOCSTRING_CJK
     root = tmp_path / "theater"
@@ -345,6 +380,53 @@ async def test_turn_rechecks_stale_session_after_llm_returns(monkeypatch, tmp_pa
     assert saved_old["state_revision"] == 0
     assert len(saved_old["turns"]) == 1
     assert saved_old["turns"][0]["text"] == old_session["dialogue"]["text"]
+
+
+@pytest.mark.asyncio
+async def test_turn_rechecks_current_catgirl_after_llm_returns(monkeypatch, tmp_path):
+    """模型等待期间切换猫娘时，旧角色候选回合不得提交。"""  # noqa: DOCSTRING_CJK
+    root = tmp_path / "theater"
+    old_session = await runtime.start_session(root, lanlan_name="旧猫娘", client_start_id="start_old_character")
+    llm_entered = asyncio.Event()
+    release_llm = asyncio.Event()
+
+    class _MutableConfigManager:
+        """模拟角色切换先更新当前猫娘、后异步清理旧 Session 的时序。"""  # noqa: DOCSTRING_CJK
+
+        current_name = "旧猫娘"
+
+        async def aload_characters(self):
+            """返回调用时的当前猫娘配置。"""  # noqa: DOCSTRING_CJK
+            return {"当前猫娘": self.current_name}
+
+    async def _wait_for_character_switch(**_kwargs):
+        """暂停模型结果，暴露角色配置已经切换但 Session 尚未结束的窗口。"""  # noqa: DOCSTRING_CJK
+        llm_entered.set()
+        await release_llm.wait()
+        return {"narration": "旧角色结果不应提交。", "dialogue": "这句也不应播放喵。", "choice_rewrites": []}
+
+    config_manager = _MutableConfigManager()
+    monkeypatch.setattr("services.theater.llm.generate_turn_async", _wait_for_character_switch)
+    pending_turn = asyncio.create_task(
+        runtime.submit_input(
+            root,
+            session_id=old_session["session_id"],
+            input_kind="free_input",
+            message="你回应时我切换了猫娘",
+            client_turn_id="turn_waiting_character_switch",
+            base_revision=0,
+            config_manager=config_manager,
+            expected_lanlan_name="旧猫娘",
+        )
+    )
+    await llm_entered.wait()
+    config_manager.current_name = "新猫娘"
+    release_llm.set()
+
+    assert (await pending_turn) == {"ok": False, "reason": "session_character_mismatch"}
+    saved_old = await session_store.load_session(root, old_session["session_id"])
+    assert saved_old["state_revision"] == 0
+    assert len(saved_old["turns"]) == 1
 
 
 @pytest.mark.asyncio

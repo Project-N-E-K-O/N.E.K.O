@@ -67,6 +67,10 @@ async def submit(
         if response.get("ok") is not True:
             return response
 
+        if expected_name and await _current_catgirl_name(config_manager) != expected_name:
+            # 角色切换先写当前猫娘、后等待旧 Session 清理；因此模型返回后必须直接重验配置归属。
+            return {"ok": False, "reason": "session_character_mismatch"}
+
         latest = await session_store.load_session(root, session_id)
         if latest is None:
             return {"ok": False, "reason": "session_not_found"}
@@ -94,6 +98,20 @@ async def submit(
                 str(candidate.get("session_id") or ""),
             )
         return deepcopy(response)
+
+
+async def _current_catgirl_name(config_manager: Any | None) -> str:
+    """从同一配置管理器重读当前猫娘，兼容同步与异步加载接口。"""  # noqa: DOCSTRING_CJK
+    async_loader = getattr(config_manager, "aload_characters", None)
+    if callable(async_loader):
+        characters = await async_loader()
+    else:
+        sync_loader = getattr(config_manager, "load_characters", None)
+        characters = sync_loader() if callable(sync_loader) else {}
+    if not isinstance(characters, dict):
+        characters = {}
+    # Router 在没有已选角色时使用 Lan；这里保持同一归一化语义，避免默认角色被误判为切换。
+    return str(characters.get("当前猫娘") or "").strip() or "Lan"
 
 
 async def _apply_turn(

@@ -48,13 +48,15 @@ async def test_theater_tts_bridge_does_not_mirror_chat_or_game_route(monkeypatch
     """桥接只朗读公开对白，并关闭普通聊天镜像与 turn-end。"""  # noqa: DOCSTRING_CJK
     async def _claim_dialogue(*args, **kwargs):
         """模拟 Runtime 已原子认领本轮公开对白。"""  # noqa: DOCSTRING_CJK
-        return {
+        claim = {
             "ok": True,
             "line": "我会陪你把这一幕演完喵。",
             "lanlan_name": "测试猫娘",
             "session_id": "theater_test",
             "state_revision": 3,
         }
+        # 真实 Runtime 会在角色锁内调用播放器；测试同样走这条回调链而非绕过它。
+        return await kwargs["play"](claim)
 
     manager = _FakeTheaterTtsManager()
     monkeypatch.setattr(theater_router.runtime, "claim_dialogue_speech", _claim_dialogue)

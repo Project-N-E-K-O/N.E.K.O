@@ -6,7 +6,7 @@ import time
 import uuid
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from . import projector, rules, session_store, story_graph, story_loader, turn_service
 
@@ -170,8 +170,14 @@ async def get_state(root: Path, session_id: str, *, expected_lanlan_name: str = 
     return result
 
 
-async def claim_dialogue_speech(root: Path, *, session_id: str, state_revision: Any) -> dict[str, Any]:
-    """原子认领当前公开猫娘对白，保证同一 revision 最多触发一次 TTS。"""  # noqa: DOCSTRING_CJK
+async def claim_dialogue_speech(
+    root: Path,
+    *,
+    session_id: str,
+    state_revision: Any,
+    play: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]] | None = None,
+) -> dict[str, Any]:
+    """原子认领公开对白；传入播放器时在同一角色边界内提交 TTS。"""  # noqa: DOCSTRING_CJK
     if not isinstance(state_revision, int) or isinstance(state_revision, bool) or state_revision < 0:
         return {"ok": False, "reason": "invalid_state_revision"}
     async with session_store.session_guard(session_id):
@@ -208,13 +214,17 @@ async def claim_dialogue_speech(root: Path, *, session_id: str, state_revision: 
             session["spoken_dialogue_revisions"] = normalized_spoken[-MAX_SPOKEN_DIALOGUE_REVISIONS:]
             # 认领写盘和 active 校验共用角色锁；网络重试不会重播，新开场也不能中途插队。
             await session_store.save_session(root, session)
-            return {
+            claim = {
                 "ok": True,
                 "line": line,
                 "lanlan_name": str(session.get("lanlan_name") or ""),
                 "session_id": str(session.get("session_id") or session_id),
                 "state_revision": current_revision,
             }
+            if play is None:
+                return claim
+            # 播放提交保持在角色锁内：新开场或结束只能在旧对白进入 TTS 管线后切换活动 Session。
+            return await play(claim)
 
 
 async def get_active_state(root: Path, *, lanlan_name: str) -> dict[str, Any]:
