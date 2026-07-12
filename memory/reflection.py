@@ -33,7 +33,6 @@ automatically promoted to persona.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import os
 import threading
@@ -57,7 +56,6 @@ from utils.file_utils import (
     robust_json_loads,
 )
 from utils.logger_config import get_module_logger
-from utils.tokenize import count_tokens
 from utils.token_tracker import set_call_type
 from memory.persona import (
     PersonaManager,
@@ -67,6 +65,43 @@ from memory.persona import (
     _is_mentioned,
 )
 from memory.stop_names import acollect_stop_names
+from memory._reflection.ontology import (
+    ENTITY_KINDS,
+    KIND_RELATION_MAP,
+    MAX_REFLECTION_TEXT_TOKENS,
+    RELATION_TYPES,
+    TEMPORAL_SCOPES,
+    allowed_relation_types as _allowed_relation_types,
+    entity_kind as _entity_kind,
+    validate_reflection_ontology as _validate_reflection_ontology,
+)
+from memory._reflection.schema import (
+    REFLECTION_ARCHIVE_DAYS as _REFLECTION_ARCHIVE_DAYS,
+    make_archive_stamper,
+    normalize_reflection,
+    prepare_save_reflections,
+    refine_reflection_id,
+    reflection_id_from_facts as _reflection_id_from_facts,
+)
+from memory._reflection.refine import (
+    build_merge_reflection,
+    build_split_reflection,
+)
+from memory._reflection.selection import (
+    filter_active_confirmed,
+    filter_followup_candidates,
+    followup_render_key,
+    in_window,
+    record_mentions,
+    update_suppressions,
+)
+from memory._reflection.transitions import (
+    apply_batch_mark,
+    apply_mark_surfaced_handled,
+    apply_promotion_status,
+    compute_merged_evidence,
+    find_reflection,
+)
 
 if TYPE_CHECKING:
     from memory.event_log import EventLog
@@ -86,150 +121,12 @@ REFLECTION_TERMINAL_STATUSES = frozenset({
     'promoted', 'denied', 'archived', 'merged', 'promote_blocked',
 })
 
-# ── Reflection ontology (RFC memory-enhancements §3) ────────────────
-# Constrains the semantic category of each synthesized reflection so
-# same-(entity, relation_type) entries are naturally mergeable and the
-# render path can group by role-of-information instead of flat-listing.
-#
-# The schema is **kind-based, not name-based**: every entity gets mapped
-# to one of three kinds (user / character / relationship) and the
-# allowed relation_type set follows from the kind. Today we have one
-# user (`master`) and one character (`neko`) — but for future group-chat
-# extensions, every additional human plays role-kind `user` and reuses
-# the same relation set, every additional AI character plays role-kind
-# `character`, and a single shared `relationship` slot covers the
-# group-as-a-whole. New `entity` names plug in without touching
-# RELATION_TYPES or the prompt enum.
-RELATION_TYPES = {
-    # `user` kind — facts about a human participant
-    'preference':     '偏好/喜好',
-    'trait':          '性格/特征',
-    'habit':          '习惯/日常',
-    'identity':       '身份/背景',
-    'emotional':      '情感状态',
-    'boundary':       '边界/禁忌',
-    # `character` kind — AI self-model
-    'self_awareness': '自我认知',
-    'learned':        '习得行为',
-    'role_note':      '角色备注',
-    # `relationship` kind — the group as a whole (1v1 today, NvM later)
-    'dynamic':        '互动模式',
-    'milestone':      '关系里程碑',
-    'tension':        '摩擦/冲突',
-    'shared_memory': '共同记忆',
-    'agreement':     '约定/共识',
-}
-
-# Entity → kind mapping. New entity names default to `user` kind so that
-# adding "guest_alice" or "groupmate_bob" to the chat just works without
-# a schema migration. Override here only when an entity needs a non-user
-# template (i.e. another AI character, or a relationship aggregate).
-ENTITY_KINDS: dict[str, str] = {
-    'master':       'user',
-    'neko':         'character',
-    'relationship': 'relationship',
-}
-
-# Allowed relation_type set per kind. This is the actual source of truth
-# for validation; ENTITY_KINDS is the indirection that lets us add new
-# entities without expanding this table.
-KIND_RELATION_MAP: dict[str, frozenset[str]] = {
-    'user':         frozenset({'preference', 'trait', 'habit', 'identity', 'emotional', 'boundary'}),
-    'character':    frozenset({'self_awareness', 'learned', 'role_note'}),
-    'relationship': frozenset({'dynamic', 'milestone', 'tension', 'shared_memory', 'agreement'}),
-}
-
-
-def _entity_kind(entity: str) -> str:
-    """Resolve an entity name to its ontology kind.
-
-    Unknown entities default to ``user`` — the safest fallback because
-    user-kind has the richest relation set, and future group members are
-    overwhelmingly likely to be additional human participants. Existing
-    callers ignore this default by passing the canonical entity names
-    (master / neko / relationship) we already register above.
-    """
-    return ENTITY_KINDS.get(entity, 'user')
-
-
-def _allowed_relation_types(entity: str) -> frozenset[str]:
-    return KIND_RELATION_MAP.get(_entity_kind(entity), frozenset())
-
-
-# Schema v2 active temporal_scope（LLM 可输出的三档）+ 'past' 派生归档态 +
-# legacy v1 值（'current' / 'ongoing'）。validate 时全部当合法值放过，render
-# 侧 memory.temporal.is_past_for_render 把 legacy 当 pattern 兜底（保守不淡
-# 出，等慢速重判循环升 schema_version 修正）。
-# 参见 docs/design/memory-enhancements.md 和 memory/temporal.py。
-TEMPORAL_SCOPES = frozenset({
-    # v2 新增（LLM 写入只用这三档）
-    'pattern',  # 持续模式 / 性格特质，永不过时
-    'state',    # 当前持续情境，超 MEMORY_STATE_PAST_DAYS 后过时
-    'episode',  # 一次具体事件，超 MEMORY_EPISODE_PAST_DAYS 后过时
-    # 派生 + legacy 兼容
-    'past',     # 已派生 / legacy 旧数据，直接进过时 block
-    'current', 'ongoing',  # v1 legacy，render 按 pattern 兜底
-})
-
-# Soft cap on reflection text length. Beyond this, the ontology fields
-# are stripped because the text is likely a compound/multi-fact statement.
-# The reflection itself still persists unchanged so no information is lost.
-# Measured in tiktoken (o200k_base) tokens — equivalent to ~200 CJK chars or
-# ~600 English chars under the current encoding.
-from config import REFLECTION_TEXT_MAX_TOKENS as MAX_REFLECTION_TEXT_TOKENS  # noqa: E402
-
-
-def _validate_reflection_ontology(
-    entity: str,
-    relation_type: str | None,
-    temporal_scope: str | None,
-    text: str,
-) -> tuple[bool, str]:
-    """Returns (is_valid, reason). Invalid entries keep their text but
-    have relation_type/temporal_scope stripped — see caller."""
-    if relation_type is not None:
-        if relation_type not in RELATION_TYPES:
-            return False, f'unknown relation_type: {relation_type!r}'
-        allowed = _allowed_relation_types(entity)
-        if relation_type not in allowed:
-            return (
-                False,
-                f'{relation_type!r} not valid for entity {entity!r} '
-                f'(kind={_entity_kind(entity)!r})',
-            )
-    if temporal_scope is not None and temporal_scope not in TEMPORAL_SCOPES:
-        return False, f'unknown temporal_scope: {temporal_scope!r}'
-    n_tokens = count_tokens(text)
-    if n_tokens > MAX_REFLECTION_TEXT_TOKENS:
-        return False, f'text too long: {n_tokens} tokens (compound risk)'
-    return True, 'ok'
-
-
-def _reflection_id_from_facts(source_fact_ids: list[str]) -> str:
-    """Generate a deterministic reflection id from the source fact ids (the core of P1 idempotency).
-
-    Re-synthesizing the same batch of facts yields the same id, so the
-    "semi-atomic" pair save_reflections + mark_absorbed can dedup by id when
-    re-run after a kill/restart — eliminating fatal issue #3.
-
-    Takes the first 16 chars of sha256 (64 bits). Per-character reflection
-    volume is far below the birthday-collision threshold.
-    """
-    h = hashlib.sha256()
-    for fid in sorted(source_fact_ids):
-        h.update(fid.encode('utf-8'))
-        h.update(b'\x00')  # 分隔符防 "ab" + "c" 与 "a" + "bc" 冲突
-    return f"ref_{h.hexdigest()[:16]}"
 # memory-evidence-rfc §3.9.1：time-based auto-promotion 删除。
 # pending → confirmed / confirmed → promoted 改由 evidence_score 穿阈值
 # 触发（§3.1.4）。本 PR (PR-1) 只实现 pending → confirmed 的 score 驱动；
 # confirmed → promoted 的 merge-on-promote 路径在 PR-3。
 # Cooldown between proactive chat candidacy
 REFLECTION_COOLDOWN_MINUTES = 30
-# promoted/denied reflections older than this are moved to archive
-_REFLECTION_ARCHIVE_DAYS = 30
-
-
 class ReflectionEngine:
     """Synthesizes facts into reflections and manages the pending → confirmed lifecycle."""
 
@@ -426,87 +323,8 @@ class ReflectionEngine:
 
     @staticmethod
     def _normalize_reflection(entry: dict) -> dict:
-        """Fill in defaults for the new evidence/archive/promote-throttle fields in-place.
-
-        Schema extension from memory-evidence-rfc §3.2.2. Defaults do NOT
-        back-fill to "migrated" seed values — that's the migration-seed path
-        (§5.2), which goes through aapply_signal so it's also event-sourced.
-        Here we only guarantee the fields exist so downstream code
-        (`evidence_score`, `derive_status` …) doesn't KeyError on legacy data.
-
-        Also adds the `recent_mentions` / `suppress` mention-suppression fields so
-        confirmed reflections can share persona's 5h-window rate-limit
-        machinery (AI self-restraint: do not repeatedly mention the same item within 5h).
-
-        Note on token-count cache: persona entries carry a
-        `token_count` / `token_count_text_sha256` / `token_count_tokenizer`
-        cache that survives across renders because `PersonaManager._personas`
-        is a process-resident view — render-time cache writes land on the
-        same dict that the next render reads. Reflections do NOT have an
-        equivalent in-memory view; `aload_reflections` /
-        `_aload_reflections_full` always read fresh from disk, so any cache
-        writeback on a reflection entry would be garbage-collected right
-        after the render. We deliberately do NOT add the cache fields to
-        this schema — populating them would be misleading (they'd look like
-        a working cache but every render still tokenizes from scratch).
-        Reflection tokenization stays live; in typical workloads the
-        persona-side cache captures the bulk of render time anyway.
-        """
-        defaults = {
-            # Evidence counters
-            'reinforcement': 0.0,
-            'disputation': 0.0,
-            'rein_last_signal_at': None,
-            'disp_last_signal_at': None,
-            'sub_zero_days': 0,
-            'sub_zero_last_increment_date': None,
-            # user_fact reinforces combo counter (RFC §3.1.8)
-            'user_fact_reinforce_count': 0,
-            # Merge / archive 溯源
-            'absorbed_into': None,
-            # Promote 节流
-            'last_promote_attempt_at': None,
-            'promote_attempt_count': 0,
-            'promote_blocked_reason': None,
-            # AI-mention rate-limit，和 persona 同机制
-            'recent_mentions': [],
-            'suppress': False,
-            'suppressed_at': None,
-            # Ontology fields (RFC memory-enhancements §3). All optional —
-            # legacy entries and validation-stripped entries both read None.
-            'relation_type': None,
-            'subject': None,
-            'temporal_scope': None,
-            # Schema v2 (memory/temporal.py)：事件发生时间锚点，LLM 用相对
-            # 偏移输出（offset+unit），系统按 created_at 解算成 ISO 留底。
-            # 老条目缺失这些键时通过 setdefault 兜底成 None / 1，由
-            # is_past_for_render 按 pattern 处理（保守不淡出）；慢速重判
-            # 循环升 schema_version 后才会真正应用 state/episode TTL。
-            'event_when_raw': None,
-            'event_start_at': None,
-            'event_end_at': None,
-            'schema_version': 1,
-            # Vector-embedding cache (memory-enhancements P2 — see
-            # memory/embeddings.py). Reflection text is immutable in the
-            # current pipeline (synthesis writes once, callers don't
-            # rewrite text), so embeddings here only invalidate when
-            # the model_id flips. Legacy entries read None and the
-            # warmup worker fills them in on the next pass.
-            'embedding': None,
-            'embedding_text_sha256': None,
-            'embedding_model_id': None,
-            # MemoryRefineEngine cluster_hash skip 状态（Phase A-3）。
-            # cluster_hash = sha1(sorted(member_ids))；refine 跑完后所有
-            # 存活成员都 stamp 上当前 cluster 的 hash + timestamp。下次
-            # 同 cluster 再形成时，全员 hash 命中 + 未超 REVISIT_AFTER_DAYS
-            # → 直接 skip（不送 LLM）。任一成员被 merge/split/modify/discard
-            # 后新条目无 stamp，cluster member set 变化 → hash 自然 invalidate。
-            'last_refine_cluster_hash': None,
-            'last_refine_at': None,
-        }
-        for k, v in defaults.items():
-            entry.setdefault(k, v)
-        return entry
+        """Fill current schema defaults in-place (compatibility seam)."""
+        return normalize_reflection(entry)
 
     @classmethod
     def _filter_reflections(cls, data, include_archived: bool, path: str) -> list[dict]:
@@ -553,81 +371,14 @@ class ReflectionEngine:
     def _prepare_save_reflections(
         self, name: str, reflections: list[dict], all_on_disk: list[dict],
     ) -> tuple[list[dict], list[dict], list[dict]]:
-        """Pure logic: compute (merged_main, to_archive, keep_in_main).
-
-        RFC §3.11.3: `merged` and `promote_blocked` terminals stay in the
-        main file indefinitely (merged carries `absorbed_into` for trace
-        chains; promote_blocked is dead-letter awaiting manual / new-signal
-        reset). Only `promoted` and `denied` are candidates for the
-        `_REFLECTION_ARCHIVE_DAYS` age-based archival split.
-
-        CodeRabbit PR #929 fix: earlier this function only preserved
-        `promoted|denied` from `all_on_disk`, so when `_aauto_promote_stale_locked`
-        filters its active set through REFLECTION_TERMINAL_STATUSES (which
-        includes `merged`), any merged entry on disk would silently vanish
-        from the main file on save.
-        """
-        active_ids = {r['id'] for r in reflections if 'id' in r}
-        cutoff = datetime.now() - timedelta(days=_REFLECTION_ARCHIVE_DAYS)
-        keep_in_main: list[dict] = []
-        to_archive: list[dict] = []
-        for r in all_on_disk:
-            if r.get('id') in active_ids:
-                continue
-            status = r.get('status')
-            if status in ('promoted', 'denied'):
-                ts_key = (r.get('promoted_at') or r.get('denied_at')
-                          or r.get('created_at', ''))
-                try:
-                    if datetime.fromisoformat(ts_key) < cutoff:
-                        to_archive.append(r)
-                        continue
-                except (ValueError, TypeError):
-                    # 时间戳缺失/格式异常：不归档，落回 main 保守保留
-                    pass
-                keep_in_main.append(r)
-            elif status in ('merged', 'promote_blocked'):
-                # Non-archivable terminal states — must survive save cycles
-                keep_in_main.append(r)
-            # `archived` should never appear on disk already (that's a
-            # post-archive state for the shard file) — drop silently if
-            # it sneaks in here.
-        merged = reflections + keep_in_main
-        return merged, to_archive, keep_in_main
+        """Compute archive split without I/O (compatibility seam)."""
+        del name  # retained in the method signature for existing callers
+        return prepare_save_reflections(reflections, all_on_disk)
 
     @staticmethod
     def _make_archive_stamper(now_iso: str):
-        """Return a ``stamper(chunk, shard_basename)`` callback for
-        ``aappend_to_shard`` / ``append_to_shard_sync``. RFC §3.5.6:
-        "after archiving, append the fields archived_at (ISO8601) and
-        archive_shard_path (relative path string)".
-
-        We store the basename only (relative to the kind-archive dir) —
-        keeps logs short and survives memory_dir relocation.
-
-        Why a callback (chatgpt-codex / coderabbit review #934): the
-        previous "stamp after write" path mutated only the in-memory
-        list, so on-disk records lacked both fields; and in the overflow
-        case where one batch spilled into multiple shards, the single
-        returned ``shard_path`` couldn't describe per-entry locations.
-        Per-chunk stamping inside ``aappend_to_shard`` fixes both.
-
-        Coderabbit PR #934 round-3 Minor: ``archived_at`` uses direct
-        assignment (not ``setdefault``) so cross-day retries restamp
-        with the actual write date. Earlier ``setdefault`` would
-        preserve the first failed attempt's timestamp; if shard write
-        failed and ``save_reflections`` rolled the entries back into
-        main with ``archived_at`` already attached, a next-day retry
-        would update ``archive_shard_path`` to the new day's basename
-        but leave ``archived_at`` pointing at yesterday — the two
-        fields would disagree on the date. Losing the first stamp is
-        fine because the entry never landed in any shard at that point.
-        """
-        def _stamp(chunk: list[dict], shard_basename: str) -> None:
-            for e in chunk:
-                e['archived_at'] = now_iso
-                e['archive_shard_path'] = shard_basename
-        return _stamp
+        """Build the per-shard archive-stamping callback."""
+        return make_archive_stamper(now_iso)
 
     def save_reflections(self, name: str, reflections: list[dict]) -> None:
         """Save reflections, archiving stale promoted/denied entries to shards.
@@ -1144,8 +895,7 @@ class ReflectionEngine:
     def _refine_reflection_id(text: str) -> str:
         """Salted hash so split-into-N pieces get distinct ids even when
         the underlying fact set is shared."""
-        salt = datetime.now().isoformat()
-        return f"ref_{hashlib.sha1(f'{text}|{salt}'.encode('utf-8')).hexdigest()[:16]}"
+        return refine_reflection_id(text, now=datetime.now())
 
     def _build_split_reflection(
         self,
@@ -1161,26 +911,15 @@ class ReflectionEngine:
         split_count (Codex P2 #1392: the old hardcoded /2 underestimated each
         item's strength when N>2). split_count is at least 2 (the caller
         already skips when len(produce)<2)."""
-        text = str(produce_item.get('text', '')).strip()
-        rel_type = produce_item.get('relation_type') or src.get('relation_type')
-        temporal = produce_item.get('temporal_scope') or src.get('temporal_scope')
-        denom = max(int(split_count), 2)
-        return self._normalize_reflection({
-            'id': self._refine_reflection_id(text),
-            'text': text,
-            'entity': entity,
-            'status': src.get('status') or 'pending',
-            'source_fact_ids': list(src.get('source_fact_ids') or []),
-            'created_at': now.isoformat(),
-            'reinforcement': float(src.get('reinforcement', 0) or 0) / denom,
-            'relation_type': rel_type,
-            'temporal_scope': temporal,
-            'subject': src.get('subject'),
-            'event_when_raw': src.get('event_when_raw'),
-            'event_start_at': src.get('event_start_at'),
-            'event_end_at': src.get('event_end_at'),
-            'schema_version': src.get('schema_version', 2),
-        })
+        return build_split_reflection(
+            src,
+            produce_item,
+            entity,
+            now,
+            split_count=split_count,
+            id_factory=self._refine_reflection_id,
+            normalizer=self._normalize_reflection,
+        )
 
     def _build_merge_reflection(
         self,
@@ -1193,39 +932,15 @@ class ReflectionEngine:
         """Build a reflection produced by merge; merges source_fact_ids (including
         absorbed_from_fact_ids), status takes the highest (promoted > confirmed >
         pending), reinforcement takes the max."""
-        text = str(produce.get('text', '')).strip()
-        rel_type = produce.get('relation_type') or (srcs[0].get('relation_type') if srcs else None)
-        temporal = produce.get('temporal_scope') or (srcs[0].get('temporal_scope') if srcs else None)
-        combined_facts: set[str] = set(fact_source_ids)
-        for s in srcs:
-            combined_facts.update(s.get('source_fact_ids') or [])
-        status_priority = {'promoted': 3, 'confirmed': 2, 'pending': 1}
-        best_status = max(
-            (s.get('status', 'pending') for s in srcs),
-            key=lambda st: status_priority.get(st, 0),
-            default='pending',
+        return build_merge_reflection(
+            srcs,
+            fact_source_ids,
+            produce,
+            entity,
+            now,
+            id_factory=self._refine_reflection_id,
+            normalizer=self._normalize_reflection,
         )
-        max_rein = max(
-            (float(s.get('reinforcement', 0) or 0) for s in srcs),
-            default=0.0,
-        )
-        first = srcs[0] if srcs else {}
-        return self._normalize_reflection({
-            'id': self._refine_reflection_id(text),
-            'text': text,
-            'entity': entity,
-            'status': best_status,
-            'source_fact_ids': sorted(combined_facts),
-            'created_at': now.isoformat(),
-            'reinforcement': max_rein,
-            'relation_type': rel_type,
-            'temporal_scope': temporal,
-            'subject': first.get('subject'),
-            'event_when_raw': first.get('event_when_raw'),
-            'event_start_at': first.get('event_start_at'),
-            'event_end_at': first.get('event_end_at'),
-            'schema_version': first.get('schema_version', 2),
-        })
 
     async def apply_refine_actions(
         self,
@@ -1516,10 +1231,7 @@ class ReflectionEngine:
 
     @staticmethod
     def _find_reflection_in_list(reflections: list[dict], rid: str) -> dict | None:
-        for r in reflections:
-            if isinstance(r, dict) and r.get('id') == rid:
-                return r
-        return None
+        return find_reflection(reflections, rid)
 
     # Delegated to memory.evidence.compute_evidence_snapshot — shared with
     # PersonaManager so rein/disp/combo semantics stay in one place.
@@ -1866,10 +1578,7 @@ class ReflectionEngine:
 
     @staticmethod
     def _in_window(ts_str: str, cutoff: datetime) -> bool:
-        try:
-            return datetime.fromisoformat(ts_str) >= cutoff
-        except (ValueError, TypeError):
-            return False
+        return in_window(ts_str, cutoff)
 
     @classmethod
     def _apply_record_reflection_mentions(
@@ -1888,61 +1597,34 @@ class ReflectionEngine:
         ever-present master/lanlan + nicknames don't get unrelated reflections
         judged as mentioned.
         """
-        now = datetime.now()
-        now_str = now.isoformat()
-        cutoff = now - timedelta(hours=SUPPRESS_WINDOW_HOURS)
-        changed = False
-        for r in reflections:
-            if not isinstance(r, dict):
-                continue
-            if r.get('status') != 'confirmed':
-                continue
-            if not _is_mentioned(r.get('text', ''), response_text, stop_names=stop_names):
-                continue
-            mentions = r.get('recent_mentions', [])
-            mentions.append(now_str)
-            mentions = [t for t in mentions if cls._in_window(t, cutoff)]
-            r['recent_mentions'] = mentions
-            if not r.get('suppress') and len(mentions) > SUPPRESS_MENTION_LIMIT:
-                r['suppress'] = True
-                r['suppressed_at'] = now_str
-            changed = True
-        return changed
+        return record_mentions(
+            reflections,
+            response_text,
+            stop_names=stop_names,
+            now=datetime.now(),
+            window_hours=SUPPRESS_WINDOW_HOURS,
+            mention_limit=SUPPRESS_MENTION_LIMIT,
+            is_mentioned=_is_mentioned,
+            is_in_window=cls._in_window,
+        )
 
     @classmethod
     def _apply_update_reflection_suppressions(
         cls, reflections: list[dict],
     ) -> bool:
-        now = datetime.now()
-        cutoff = now - timedelta(hours=SUPPRESS_WINDOW_HOURS)
-        changed = False
-        for r in reflections:
-            if not isinstance(r, dict):
-                continue
-            mentions = r.get('recent_mentions', [])
-            cleaned = [t for t in mentions if cls._in_window(t, cutoff)]
-            if len(cleaned) != len(mentions):
-                r['recent_mentions'] = cleaned
-                changed = True
-            if r.get('suppress'):
-                suppressed_str = r.get('suppressed_at')
-                if suppressed_str:
-                    try:
-                        hours_since = (
-                            now - datetime.fromisoformat(suppressed_str)
-                        ).total_seconds() / 3600
-                        if hours_since >= SUPPRESS_COOLDOWN_HOURS:
-                            r['suppress'] = False
-                            r['suppressed_at'] = None
-                            r['recent_mentions'] = []
-                            changed = True
-                    except (ValueError, TypeError) as e:
-                        # 坏时戳（手编 / 迁移瑕疵）：suppress 冷却本轮跳过、
-                        # 下轮再评估；not raising keeps loop non-fatal.
-                        logger.debug(
-                            f"[Reflection] suppressed_at 解析失败 ({suppressed_str!r}): {e}"
-                        )
-        return changed
+        def _log_bad_timestamp(value: str, error: Exception) -> None:
+            logger.debug(
+                f"[Reflection] suppressed_at 解析失败 ({value!r}): {error}"
+            )
+
+        return update_suppressions(
+            reflections,
+            now=datetime.now(),
+            window_hours=SUPPRESS_WINDOW_HOURS,
+            cooldown_hours=SUPPRESS_COOLDOWN_HOURS,
+            on_bad_timestamp=_log_bad_timestamp,
+            is_in_window=cls._in_window,
+        )
 
     async def arecord_mentions(self, lanlan_name: str, response_text: str) -> None:
         """After the AI finishes a reply, scan confirmed reflections and accumulate
@@ -1998,18 +1680,11 @@ class ReflectionEngine:
         suppress=True: the AI just mentioned this too often within the 5h
         window; silenced by persona's same mechanism (§2.6, orthogonal).
         """
-        if now is None:
-            now = datetime.now()
-        out = []
-        for r in reflections:
-            if r.get('status') != 'confirmed':
-                continue
-            if r.get('suppress'):
-                continue
-            if evidence_score(r, now) <= 0:
-                continue
-            out.append(r)
-        return out
+        return filter_active_confirmed(
+            reflections,
+            now=now or datetime.now(),
+            score=evidence_score,
+        )
 
     def get_confirmed_reflections(self, lanlan_name: str) -> list[dict]:
         """Get all confirmed (soft persona) reflections that are still
@@ -2028,12 +1703,7 @@ class ReflectionEngine:
         Keep this local instead of importing main_logic.topic.common.clean_text:
         memory is a lower layer and should not depend on prompt-rendering code.
         """
-        text = " ".join(str(value or "").strip().split())
-        if not text:
-            return ""
-        if len(text) > 120:
-            return text[:120].rstrip() + "..."
-        return text
+        return followup_render_key(value)
 
     @staticmethod
     def _filter_followup_candidates(pending: list[dict]) -> list[dict]:
@@ -2059,45 +1729,22 @@ class ReflectionEngine:
         `REFLECTION_FOLLOWUP_WEIGHTED=False` reverts to the old "first K in
         list order" behavior (for tests / debugging).
         """
-        if not pending:
-            return []
-        now = datetime.now()
-        eligible = []
-        seen_text_keys: set[str] = set()
-        for r in pending:
-            next_eligible = r.get('next_eligible_at')
-            if next_eligible:
-                try:
-                    if datetime.fromisoformat(next_eligible) > now:
-                        continue
-                except (ValueError, TypeError):
-                    pass
-            if evidence_score(r, now) < 0:
-                continue
-            text_key = ReflectionEngine._followup_render_key(r.get('text'))
-            if not text_key:
-                continue
-            if text_key in seen_text_keys:
-                continue
-            seen_text_keys.add(text_key)
-            eligible.append(r)
         from config import (
             REFLECTION_SURFACE_TOP_K,
             REFLECTION_FOLLOWUP_WEIGHTED,
             REFLECTION_FOLLOWUP_WEIGHT_BASE,
         )
-        if (
-            not REFLECTION_FOLLOWUP_WEIGHTED
-            or len(eligible) <= REFLECTION_SURFACE_TOP_K
-        ):
-            return eligible[:REFLECTION_SURFACE_TOP_K]
         from memory.temporal import weighted_sample_no_replace
-        weights = [
-            max(evidence_score(r, now), 0.0) + REFLECTION_FOLLOWUP_WEIGHT_BASE
-            for r in eligible
-        ]
-        return weighted_sample_no_replace(
-            eligible, weights, REFLECTION_SURFACE_TOP_K,
+
+        return filter_followup_candidates(
+            pending,
+            now=datetime.now(),
+            score=evidence_score,
+            render_key=ReflectionEngine._followup_render_key,
+            weighted=REFLECTION_FOLLOWUP_WEIGHTED,
+            top_k=REFLECTION_SURFACE_TOP_K,
+            weight_base=REFLECTION_FOLLOWUP_WEIGHT_BASE,
+            sample=weighted_sample_no_replace,
         )
 
     def get_followup_topics(self, lanlan_name: str) -> list[dict]:
@@ -2312,13 +1959,9 @@ class ReflectionEngine:
     def _apply_promotion_status(
         reflections: list[dict], reflection_id: str, status: str,
     ) -> str | None:
-        now_str = datetime.now().isoformat()
-        for r in reflections:
-            if r.get('id') == reflection_id:
-                r['status'] = status
-                r[f'{status}_at'] = now_str
-                return r.get('text', '')
-        return None
+        return apply_promotion_status(
+            reflections, reflection_id, status, now=datetime.now(),
+        )
 
     def confirm_promotion(self, lanlan_name: str, reflection_id: str) -> None:
         """Mark reflection as confirmed (soft persona). Does NOT write to persona yet.
@@ -2369,14 +2012,9 @@ class ReflectionEngine:
     def _apply_mark_surfaced_handled(
         surfaced: list[dict], reflection_id: str, feedback: str,
     ) -> bool:
-        now_str = datetime.now().isoformat()
-        changed = False
-        for s in surfaced:
-            if s.get('reflection_id') == reflection_id and s.get('feedback') is None:
-                s['feedback'] = feedback
-                s['feedback_at'] = now_str
-                changed = True
-        return changed
+        return apply_mark_surfaced_handled(
+            surfaced, reflection_id, feedback, now=datetime.now(),
+        )
 
     def _mark_surfaced_handled(self, lanlan_name: str, reflection_id: str, feedback: str) -> None:
         """Mark surfaced record as handled so check_feedback won't reprocess it."""
@@ -2948,15 +2586,7 @@ class ReflectionEngine:
         is the canonical case). max represents "the strongest user assertion
         across either witness" — never invents evidence the user never gave.
         """
-        merged_rein = max(
-            float(target.get('reinforcement', 0.0) or 0.0),
-            float(reflection.get('reinforcement', 0.0) or 0.0),
-        )
-        merged_disp = max(
-            float(target.get('disputation', 0.0) or 0.0),
-            float(reflection.get('disputation', 0.0) or 0.0),
-        )
-        return merged_rein, merged_disp
+        return compute_merged_evidence(target, reflection)
 
     @staticmethod
     def _within_backoff(reflection: dict, now: datetime | None = None) -> bool:
@@ -3596,15 +3226,13 @@ class ReflectionEngine:
     def _apply_batch_mark(
         self, surfaced: list[dict], reflection_ids: list[str], feedback: str,
     ) -> bool:
-        id_set = set(reflection_ids)
-        changed = False
-        now = datetime.now().isoformat()
-        for s in surfaced:
-            if s.get('reflection_id') in id_set and s.get('feedback') in self._UPGRADABLE_FEEDBACK:
-                s['feedback'] = feedback
-                s['feedback_at'] = now
-                changed = True
-        return changed
+        return apply_batch_mark(
+            surfaced,
+            reflection_ids,
+            feedback,
+            upgradable_feedback=self._UPGRADABLE_FEEDBACK,
+            now=datetime.now(),
+        )
 
     def _batch_mark_surfaced_handled(
         self, lanlan_name: str, reflection_ids: list[str], feedback: str,
