@@ -53,6 +53,7 @@ class VRMManager {
         this._initThreePromise = null;
         this._isDisposed = false;
         this._activeLoadToken = 0;
+        this._loadModelChain = null;
         this._loadState = 'idle';
         this._isModelReadyForInteraction = false;
 
@@ -999,7 +1000,31 @@ class VRMManager {
     }
 
     async loadModel(modelUrl, options = {}) {
+        // 并发串行化：core.loadModel 内部在 移除旧模型/disposeVRM/scene.add/currentModel 赋值
+        // 之间有多个 await 悬挂点，两次调用交错执行会留下永不清理的幽灵模型，或让先发的
+        // 慢调用把后发调用已装好的新模型误销毁。loadToken 只能拦截收尾阶段，挡不住中途
+        // 副作用，因此在入口整体排队：token 入口分配（后到者胜），加载体依次独占执行，
+        // 排队期间被更新调用取代的直接跳过（连网络请求都不发起）。
         const loadToken = ++this._activeLoadToken;
+        this._loadState = 'preparing';
+        this._isModelReadyForInteraction = false;
+        const previousLoad = this._loadModelChain || Promise.resolve();
+        const currentLoad = previousLoad
+            .catch(() => {})
+            .then(() => {
+                if (!this._isLoadTokenActive(loadToken)) return null;
+                return this._loadModelExclusive(modelUrl, options, loadToken);
+            });
+        // 队列指针吞掉异常，避免悬挂 rejected promise；调用方仍通过 currentLoad 收到原始异常
+        this._loadModelChain = currentLoad.then(() => undefined, () => undefined);
+        return currentLoad;
+    }
+
+    /**
+     * loadModel 的实际加载体。只能经由 loadModel 的串行队列进入，保证同一时刻
+     * 至多一个实例在执行；loadToken 由 loadModel 在入口分配后传入。
+     */
+    async _loadModelExclusive(modelUrl, options, loadToken) {
         this._loadState = 'preparing';
         this._isModelReadyForInteraction = false;
         // 新一轮加载：取消上一轮可能还在跑的 T-pose 回退重试，避免旧重试打断新模型动画
