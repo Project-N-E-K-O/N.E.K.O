@@ -575,7 +575,11 @@ def run(root: Path) -> list[Violation]:
                 # allocated once at import and SHARED across every instance —
                 # the exact hidden mixin state this contract keeps out (same
                 # rationale as the module-level/class-body state rejections).
-                MUT = (ast.Dict, ast.List, ast.Set, ast.DictComp, ast.ListComp, ast.SetComp)
+                # GeneratorExp too: a generator default is a single-use iterator
+                # allocated once at import and shared, so a second instance sees
+                # it already exhausted — the same shared-state hazard.
+                MUT = (ast.Dict, ast.List, ast.Set, ast.DictComp, ast.ListComp,
+                       ast.SetComp, ast.GeneratorExp)
                 for dflt in [d for d in node.args.defaults if d] + [d for d in node.args.kw_defaults if d]:
                     bad = next((s for s in ast.walk(dflt) if isinstance(s, MUT)), None)
                     if bad is not None:
