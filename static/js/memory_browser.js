@@ -1627,6 +1627,21 @@
         }
     }
 
+    async function fetchExternalMemoryWithTimeout(url, options, timeoutMs) {
+        const controller = new AbortController();
+        const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+        try {
+            return await fetch(url, { ...options, signal: controller.signal });
+        } catch (error) {
+            if (error && error.name === 'AbortError') {
+                throw new Error(translate('memory.externalImportFailed', 'External-memory import failed.'));
+            }
+            throw error;
+        } finally {
+            window.clearTimeout(timeoutId);
+        }
+    }
+
     async function importExternalMemory() {
         const button = document.getElementById('external-memory-import-btn');
         if (button) button.disabled = true;
@@ -1634,11 +1649,11 @@
             const targetCharacter = currentCatName;
             setExternalImportStatus(translate('memory.externalImportReading', 'Reading external memory...'), 'working');
             const payload = await buildExternalImportPayload(targetCharacter);
-            const previewResponse = await fetch('/api/memory/external_import/preview', {
+            const previewResponse = await fetchExternalMemoryWithTimeout('/api/memory/external_import/preview', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
-            });
+            }, 60000);
             const preview = await previewResponse.json();
             if (!previewResponse.ok || !preview.success) {
                 throw new Error(preview.error || translate('memory.externalImportFailed', 'Import failed.'));
@@ -1669,11 +1684,11 @@
             }
             payload.acknowledge_warnings = true;
             setExternalImportStatus(translate('memory.externalImportWorking', 'Importing memory...'), 'working');
-            const commitResponse = await fetch('/api/memory/external_import/commit', {
+            const commitResponse = await fetchExternalMemoryWithTimeout('/api/memory/external_import/commit', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
-            });
+            }, 120000);
             const result = await commitResponse.json();
             if (!commitResponse.ok || !result.success) {
                 if (result.error_code === 'external_import_partial') {

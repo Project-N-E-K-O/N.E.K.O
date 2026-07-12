@@ -46,6 +46,7 @@ from utils.logger_config import get_module_logger
 from fastapi.responses import JSONResponse
 from memory.external_markdown_import import (
     ExternalMemoryImportError,
+    MAX_TOTAL_BYTES,
     build_import_candidates,
     collect_markdown_files,
 )
@@ -748,6 +749,9 @@ def _decode_external_archive(raw: object) -> bytes | None:
     value = raw.strip()
     if value.startswith("data:") and "," in value:
         value = value.split(",", 1)[1]
+    max_base64_chars = 4 * ((MAX_TOTAL_BYTES + 2) // 3)
+    if len(value) > max_base64_chars:
+        raise ExternalMemoryImportError("Archive upload is too large")
     try:
         return base64.b64decode(value, validate=True)
     except (binascii.Error, ValueError) as exc:

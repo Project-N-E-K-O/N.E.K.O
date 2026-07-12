@@ -43,6 +43,7 @@ from utils.language_utils import get_global_language
 from utils.llm_client import convert_to_messages
 from utils.time_format import format_elapsed as _format_elapsed
 from utils.cloudsave_runtime import assert_cloudsave_writable
+from memory.external_markdown_import import MAX_ENTRIES, MAX_ENTRY_CHARS
 
 from . import gates, post_turn, review, runtime
 from ._shared import logger, validate_lanlan_name
@@ -68,7 +69,7 @@ async def import_external_markdown(request: ExternalMemoryImportRequest):
     name = validate_lanlan_name(request.character_name)
     if request.source_format not in {"openclaw", "hermes"}:
         raise HTTPException(status_code=400, detail="Invalid source_format")
-    if not request.candidates or len(request.candidates) > 1000:
+    if not request.candidates or len(request.candidates) > MAX_ENTRIES:
         raise HTTPException(status_code=400, detail="Invalid candidate count")
     if runtime.fact_store is None or runtime.persona_manager is None:
         raise HTTPException(status_code=503, detail="Memory components are not ready")
@@ -89,7 +90,7 @@ async def import_external_markdown(request: ExternalMemoryImportRequest):
         target = candidate.get("target")
         source_file = str(candidate.get("source_file") or "")
         if (
-            not text or len(text) > 8000
+            not text or len(text) > MAX_ENTRY_CHARS
             or entity not in {"master", "neko", "relationship"}
             or target not in {"persona", "facts"}
             or not source_file
@@ -121,7 +122,10 @@ async def import_external_markdown(request: ExternalMemoryImportRequest):
     persona_result = await runtime.persona_manager.aimport_external_facts(name, persona_entries)
     try:
         new_facts = await runtime.fact_store._apersist_new_facts(
-            name, extracted_facts, default_source="user_observation",
+            name,
+            extracted_facts,
+            default_source="user_observation",
+            semantic_dedup=False,
         )
     except Exception:
         logger.exception(

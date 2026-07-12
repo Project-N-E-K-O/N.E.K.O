@@ -134,7 +134,10 @@ def collect_markdown_files(
                     raise ExternalMemoryImportError("Markdown payload is too large")
                 collected.append(MarkdownSourceFile(path, _decode_markdown(data, path)))
     else:
-        for item in files or []:
+        direct_files = list(files or [])
+        if len(direct_files) > MAX_ARCHIVE_MEMBERS:
+            raise ExternalMemoryImportError("Too many Markdown files were provided")
+        for item in direct_files:
             if not isinstance(item, dict):
                 raise ExternalMemoryImportError("Each file must be an object")
             path = _normalise_path(str(item.get("path") or item.get("name") or ""))
@@ -157,13 +160,14 @@ def collect_markdown_files(
 
 
 def detect_source_format(files: Iterable[MarkdownSourceFile], requested: str = "auto") -> str:
+    source_files = list(files)
     requested = str(requested or "auto").strip().lower()
     if requested in {"openclaw", "hermes"}:
         return requested
     if requested != "auto":
         raise ExternalMemoryImportError("source_format must be auto, openclaw, or hermes")
-    paths = [item.path.lower() for item in files]
-    contents = "\n".join(item.content[:5000] for item in files)
+    paths = [item.path.lower() for item in source_files]
+    contents = "\n".join(item.content[:5000] for item in source_files)
     if any(".hermes" in path or "/memories/" in path for path in paths) or "\n§\n" in contents:
         return "hermes"
     return "openclaw"
@@ -252,7 +256,12 @@ def split_markdown_entries(text: str, *, hermes_delimiter: bool = False) -> list
 def _candidate_text(section: str, text: str) -> str:
     text = _clean_fragment(text)
     if section and section.casefold() not in text.casefold():
-        return f"{section}: {text}"
+        prefix = f"{section}: "
+        # Fragments are capped before headings are attached. Preserve the full
+        # memory text and trim only its breadcrumb when the combined candidate
+        # would otherwise exceed the memory-server entry limit.
+        prefix = prefix[:max(0, MAX_ENTRY_CHARS - len(text))]
+        return f"{prefix}{text}"
     return text
 
 

@@ -519,16 +519,21 @@ class FactStore:
         self, lanlan_name: str, extracted: list[dict],
         *,
         default_source: str = 'user_observation',
+        semantic_dedup: bool = True,
     ) -> list[dict]:
         async with self._get_persist_alock(lanlan_name):
             return await self._apersist_new_facts_locked(
-                lanlan_name, extracted, default_source=default_source,
+                lanlan_name,
+                extracted,
+                default_source=default_source,
+                semantic_dedup=semantic_dedup,
             )
 
     async def _apersist_new_facts_locked(
         self, lanlan_name: str, extracted: list[dict],
         *,
         default_source: str = 'user_observation',
+        semantic_dedup: bool = True,
     ) -> list[dict]:
         """Dedup (SHA-256 + FTS5) + persist. importance < 5 facts are KEPT
         (RFC §3.1.3)—downstream `get_unabsorbed_facts(min_importance=5)`
@@ -538,6 +543,10 @@ class FactStore:
         ``source`` field. Path A callers pass ``'user_observation'`` (also the
         default), path B callers pass ``'ai_disclosure'`` — a source field
         explicitly emitted by the LLM wins over the default.
+
+        External migration batches may set ``semantic_dedup=False`` after
+        preview to avoid one FTS5 search per candidate while holding the
+        persistence lock. Exact SHA-256 deduplication still applies.
 
         Monotonic source upgrade: when SHA-256 hits an existing fact, normally
         skip without writing. **Sole exception**: the existing fact's source is
@@ -617,7 +626,7 @@ class FactStore:
                 continue
 
             # Stage 2: FTS5 semantic dedup (lightweight, no LLM)
-            if self._time_indexed is not None:
+            if semantic_dedup and self._time_indexed is not None:
                 similar = await self._time_indexed.asearch_facts(lanlan_name, text, 3)
                 is_dup = False
                 for fid, score in similar:

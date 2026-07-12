@@ -16,8 +16,14 @@ sys.modules[_SPEC.name] = _MODULE
 _SPEC.loader.exec_module(_MODULE)
 
 ExternalMemoryImportError = _MODULE.ExternalMemoryImportError
+MAX_ARCHIVE_MEMBERS = _MODULE.MAX_ARCHIVE_MEMBERS
+MAX_ENTRY_CHARS = _MODULE.MAX_ENTRY_CHARS
+MAX_FILE_BYTES = _MODULE.MAX_FILE_BYTES
+MAX_TOTAL_BYTES = _MODULE.MAX_TOTAL_BYTES
+MarkdownSourceFile = _MODULE.MarkdownSourceFile
 build_import_candidates = _MODULE.build_import_candidates
 collect_markdown_files = _MODULE.collect_markdown_files
+detect_source_format = _MODULE.detect_source_format
 
 
 def test_openclaw_workspace_maps_files_to_neko_layers():
@@ -118,3 +124,56 @@ def test_candidate_limit_accepts_1000_and_rejects_1001():
     ])
     with pytest.raises(ExternalMemoryImportError, match="too many entries"):
         build_import_candidates(rejected)
+
+
+def test_rejects_oversized_single_file_and_aggregate_payload():
+    with pytest.raises(ExternalMemoryImportError, match="too large"):
+        collect_markdown_files([
+            {"path": "MEMORY.md", "content": "x" * (MAX_FILE_BYTES + 1)},
+        ])
+
+    file_count = MAX_TOTAL_BYTES // MAX_FILE_BYTES + 1
+    with pytest.raises(ExternalMemoryImportError, match="too large"):
+        collect_markdown_files([
+            {
+                "path": f"workspace-{index}/MEMORY.md",
+                "content": "x" * MAX_FILE_BYTES,
+            }
+            for index in range(file_count)
+        ])
+
+
+def test_rejects_too_many_direct_files_and_zip_members():
+    too_many_files = (
+        {"path": f"ignored-{index}.txt", "content": ""}
+        for index in range(MAX_ARCHIVE_MEMBERS + 1)
+    )
+    with pytest.raises(ExternalMemoryImportError, match="Too many Markdown files"):
+        collect_markdown_files(too_many_files)
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        for index in range(MAX_ARCHIVE_MEMBERS + 1):
+            archive.writestr(f"ignored-{index}.txt", "")
+    with pytest.raises(ExternalMemoryImportError, match="too many files"):
+        collect_markdown_files(archive_bytes=buffer.getvalue())
+
+
+def test_detect_source_format_supports_one_shot_iterables():
+    sources = (
+        item
+        for item in [MarkdownSourceFile("USER.md", "first\n§\nsecond")]
+    )
+    assert detect_source_format(sources) == "hermes"
+
+
+def test_heading_breadcrumb_cannot_push_candidate_over_entry_limit():
+    sources = collect_markdown_files([
+        {
+            "path": "MEMORY.md",
+            "content": f"# {'heading-' * 40}\n\n{'x' * MAX_ENTRY_CHARS}",
+        },
+    ])
+    candidates = build_import_candidates(sources)["candidates"]
+    assert candidates
+    assert all(len(candidate["text"]) <= MAX_ENTRY_CHARS for candidate in candidates)
