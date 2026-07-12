@@ -23,7 +23,7 @@ print(f"[Build] Working from: {os.getcwd()}")
 datas = []
 binaries = []
 hiddenimports = []
-hiddenimports += collect_submodules('plugin.sdk')
+hiddenimports += collect_submodules('plugin.sdk', on_error='raise')
 
 # 收集关键包的所有内容（根据实际 import 检查）
 critical_packages = [
