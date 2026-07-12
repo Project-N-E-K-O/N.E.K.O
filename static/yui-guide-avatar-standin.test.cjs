@@ -12,8 +12,8 @@ const overlaySource = fs.readFileSync(path.join(__dirname, 'tutorial/yui-guide/o
 const live2dInteractionSource = fs.readFileSync(path.join(__dirname, 'live2d', 'live2d-interaction.js'), 'utf8');
 const live2dInitSource = fs.readFileSync(path.join(__dirname, 'live2d', 'live2d-init.js'), 'utf8');
 const live2dButtonsSource = fs.readFileSync(path.join(__dirname, 'live2d', 'live2d-ui-buttons.js'), 'utf8');
-const appUiSource = fs.readFileSync(path.join(__dirname, 'app-ui.js'), 'utf8');
-const appInterpageSource = fs.readFileSync(path.join(__dirname, 'app-interpage.js'), 'utf8');
+const appUiSource = fs.readFileSync(path.join(__dirname, 'app/app-ui.js'), 'utf8');
+const appInterpageSource = fs.readFileSync(path.join(__dirname, 'app/app-interpage.js'), 'utf8');
 const universalManagerSource = fs.readFileSync(path.join(__dirname, 'tutorial/core/universal-manager.js'), 'utf8');
 
 function loadAvatarStageContext(options) {

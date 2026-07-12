@@ -3,9 +3,9 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PNGTUBER_CORE_PATH = PROJECT_ROOT / "static" / "pngtuber-core.js"
-APP_AUDIO_PLAYBACK_PATH = PROJECT_ROOT / "static" / "app-audio-playback.js"
-APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app-interpage.js"
-APP_UI_PATH = PROJECT_ROOT / "static" / "app-ui.js"
+APP_AUDIO_PLAYBACK_PATH = PROJECT_ROOT / "static" / "app" / "app-audio-playback.js"
+APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app" / "app-interpage.js"
+APP_UI_PATH = PROJECT_ROOT / "static" / "app" / "app-ui.js"
 INDEX_CSS_PATH = PROJECT_ROOT / "static" / "css" / "index.css"
 
 

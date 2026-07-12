@@ -28,7 +28,7 @@ def test_yui_model_manager_handoff_opens_fullscreen():
 
 def test_model_manager_hide_show_cross_page_messages_are_removed():
     model_manager_source = Path("static/js/model_manager.js").read_text(encoding="utf-8")
-    interpage_source = Path("static/app-interpage.js").read_text(encoding="utf-8")
+    interpage_source = Path("static/app/app-interpage.js").read_text(encoding="utf-8")
 
     assert "hide_main_ui" not in model_manager_source
     assert "show_main_ui" not in model_manager_source

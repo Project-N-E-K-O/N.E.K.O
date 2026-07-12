@@ -2904,7 +2904,7 @@ def test_react_translate_button_tracks_external_subtitle_enabled_changes(
         """
     )
     mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/app-react-chat-window.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/app/app-react-chat-window.js"))
     mock_page.wait_for_function(
         "() => window.reactChatWindowHost && window.nekoSubtitleShared",
         timeout=5000,
@@ -2992,7 +2992,7 @@ def test_react_translate_button_accepts_initial_shared_state_without_changed_key
         """
     )
     mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/app-react-chat-window.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/app/app-react-chat-window.js"))
     mock_page.wait_for_function(
         "() => window.reactChatWindowHost && window.nekoSubtitleShared",
         timeout=5000,
@@ -3070,7 +3070,7 @@ def test_react_translate_button_direct_toggle_controls_subtitle_window(
         }
         """
     )
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/app-react-chat-window.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/app/app-react-chat-window.js"))
     mock_page.wait_for_function(
         "() => window.reactChatWindowHost && window.__lastReactChatProps === undefined",
         timeout=5000,
@@ -3146,7 +3146,7 @@ def test_react_translate_button_fallback_uses_current_view_state_after_desktop_s
         }
         """
     )
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/app-react-chat-window.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/app/app-react-chat-window.js"))
     mock_page.wait_for_function(
         "() => window.reactChatWindowHost && window.__lastReactChatProps === undefined",
         timeout=5000,

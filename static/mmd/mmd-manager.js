@@ -118,7 +118,7 @@ class MMDManager {
         const loadToken = this._activeLoadToken;
 
         try {
-            const modelInfo = await this.core.loadModel(modelPath, options);
+            const modelInfo = await this.core.loadModel(modelPath, options, loadToken);
 
             // 检查是否已被新的加载请求取代或已 dispose
             if (this._isDisposed || this._activeLoadToken !== loadToken) {
@@ -170,12 +170,19 @@ class MMDManager {
         } catch (error) {
             console.error('[MMD Manager] 模型加载失败:', error);
 
+            // 已被新的加载请求取代或已 dispose：不再回退，避免迟到的回退加载
+            // 清掉新请求装好的模型
+            if (this._isDisposed || this._activeLoadToken !== loadToken) {
+                console.log('[MMD Manager] 模型加载已被取代或已销毁，跳过回退');
+                return null;
+            }
+
             // 尝试回退到默认模型
             const defaultModelPath = MMDManager.DEFAULT_MODEL_PATH;
             if (modelPath !== defaultModelPath) {
                 console.warn('[MMD Manager] 模型加载失败，尝试回退到默认模型:', defaultModelPath);
                 try {
-                    const modelInfo = await this.core.loadModel(defaultModelPath, options);
+                    const modelInfo = await this.core.loadModel(defaultModelPath, options, loadToken);
 
                     if (this._isDisposed || this._activeLoadToken !== loadToken) {
                         console.log('[MMD Manager] 回退模型加载已被取代或已销毁');

@@ -836,7 +836,7 @@ test('target geometry registry and chat window adapter expose phase two boundari
 });
 
 test('app interpage recognizes explicit Yui guide dedup bypass messages', () => {
-    const source = fs.readFileSync(path.join(repoRoot, 'static', 'app-interpage.js'), 'utf8');
+    const source = fs.readFileSync(path.join(repoRoot, 'static', 'app/app-interpage.js'), 'utf8');
 
     assert.match(source, /function shouldBypassYuiGuideMessageDedup\(action,\s*message\)/);
     assert.match(source, /message\s*&&\s*message\.bypassDedup === true/);
@@ -848,7 +848,7 @@ test('app interpage recognizes explicit Yui guide dedup bypass messages', () => 
 });
 
 test('app interpage sends external chat pet reports through the command bus', () => {
-    const source = fs.readFileSync(path.join(repoRoot, 'static', 'app-interpage.js'), 'utf8');
+    const source = fs.readFileSync(path.join(repoRoot, 'static', 'app/app-interpage.js'), 'utf8');
     const bridgeDataBlock = source.split('    function handleYuiGuideChatBridgeData(data) {')[1].split(
         '    function drainPendingYuiGuideChatBridgeQueue',
         1
@@ -911,7 +911,7 @@ test('app interpage sends external chat pet reports through the command bus', ()
 });
 
 test('app interpage routes non-guide broadcasts through a shared interpage sender', () => {
-    const source = fs.readFileSync(path.join(repoRoot, 'static', 'app-interpage.js'), 'utf8');
+    const source = fs.readFileSync(path.join(repoRoot, 'static', 'app/app-interpage.js'), 'utf8');
     const senderBlock = source.split('    function postInterpageMessage(message, options) {')[1].split(
         '    function stopIdleChatCompactSurfaceHeartbeat',
         1
@@ -950,7 +950,7 @@ test('app interpage routes non-guide broadcasts through a shared interpage sende
 });
 
 test('app interpage routes Yui guide timers and local listeners through scoped resources', () => {
-    const source = fs.readFileSync(path.join(repoRoot, 'static', 'app-interpage.js'), 'utf8');
+    const source = fs.readFileSync(path.join(repoRoot, 'static', 'app/app-interpage.js'), 'utf8');
     const helperBlock = source.split('    function createAppInterpageScopedResources() {')[1].split(
         '    /**\n     * Returns true if this action+timestamp was already processed',
         1
@@ -1150,7 +1150,7 @@ test('resistance controller support module is loaded before the director', () =>
 test('interpage consumes common tutorial geometry before chat bridge scripts run', () => {
     const indexTemplate = fs.readFileSync(path.join(repoRoot, 'templates', 'index.html'), 'utf8');
     const chatTemplate = fs.readFileSync(path.join(repoRoot, 'templates', 'chat.html'), 'utf8');
-    const appInterpageSource = fs.readFileSync(path.join(repoRoot, 'static', 'app-interpage.js'), 'utf8');
+    const appInterpageSource = fs.readFileSync(path.join(repoRoot, 'static', 'app/app-interpage.js'), 'utf8');
 
     assert.notEqual(indexTemplate.indexOf('/static/tutorial/core/bridge-command-bus.js'), -1);
     assert.notEqual(chatTemplate.indexOf('/static/tutorial/core/bridge-command-bus.js'), -1);
@@ -1166,8 +1166,8 @@ test('interpage consumes common tutorial geometry before chat bridge scripts run
     assert.notEqual(chatTemplate.indexOf('/static/tutorial/core/timeline-engine.js'), -1);
     assert.notEqual(indexTemplate.indexOf('/static/tutorial/core/visual-runtime.js'), -1);
     assert.notEqual(chatTemplate.indexOf('/static/tutorial/core/visual-runtime.js'), -1);
-    assert.match(indexTemplate, /\/static\/app-interpage\.js\?v=\{\{\s*static_asset_version\s*\}\}/);
-    assert.match(chatTemplate, /\/static\/app-interpage\.js\?v=\{\{\s*static_asset_version\s*\}\}/);
+    assert.match(indexTemplate, /\/static\/app\/app-interpage\.js\?v=\{\{\s*static_asset_version\s*\}\}/);
+    assert.match(chatTemplate, /\/static\/app\/app-interpage\.js\?v=\{\{\s*static_asset_version\s*\}\}/);
     assert.ok(
         indexTemplate.indexOf('/static/tutorial/core/guide-helpers.js') >= 0
             && indexTemplate.indexOf('/static/tutorial/core/guide-helpers.js') < indexTemplate.indexOf('/static/tutorial/yui-guide/common.js')
@@ -1179,7 +1179,7 @@ test('interpage consumes common tutorial geometry before chat bridge scripts run
             && indexTemplate.indexOf('/static/tutorial/core/script-normalizer.js') < indexTemplate.indexOf('/static/tutorial/yui-guide/common.js')
             && indexTemplate.indexOf('/static/tutorial/core/timeline-engine.js') < indexTemplate.indexOf('/static/tutorial/yui-guide/common.js')
             && indexTemplate.indexOf('/static/tutorial/core/visual-runtime.js') < indexTemplate.indexOf('/static/tutorial/yui-guide/common.js')
-            && indexTemplate.indexOf('/static/tutorial/yui-guide/common.js') < indexTemplate.indexOf('/static/app-interpage.js'),
+            && indexTemplate.indexOf('/static/tutorial/yui-guide/common.js') < indexTemplate.indexOf('/static/app/app-interpage.js'),
         'index.html should load scoped resources and common helpers before app-interpage.js'
     );
     assert.ok(
@@ -1193,17 +1193,17 @@ test('interpage consumes common tutorial geometry before chat bridge scripts run
             && chatTemplate.indexOf('/static/tutorial/core/script-normalizer.js') < chatTemplate.indexOf('/static/tutorial/yui-guide/common.js')
             && chatTemplate.indexOf('/static/tutorial/core/timeline-engine.js') < chatTemplate.indexOf('/static/tutorial/yui-guide/common.js')
             && chatTemplate.indexOf('/static/tutorial/core/visual-runtime.js') < chatTemplate.indexOf('/static/tutorial/yui-guide/common.js')
-            && chatTemplate.indexOf('/static/tutorial/yui-guide/common.js') < chatTemplate.indexOf('/static/app-interpage.js'),
+            && chatTemplate.indexOf('/static/tutorial/yui-guide/common.js') < chatTemplate.indexOf('/static/app/app-interpage.js'),
         'chat.html should load scoped resources and common helpers before app-interpage.js'
     );
     assert.ok(
         indexTemplate.indexOf('/static/tutorial/yui-guide/common.js') >= 0
-            && indexTemplate.indexOf('/static/tutorial/yui-guide/common.js') < indexTemplate.indexOf('/static/app-interpage.js'),
+            && indexTemplate.indexOf('/static/tutorial/yui-guide/common.js') < indexTemplate.indexOf('/static/app/app-interpage.js'),
         'index.html should load tutorial/yui-guide/common.js before app-interpage.js'
     );
     assert.ok(
         chatTemplate.indexOf('/static/tutorial/yui-guide/common.js') >= 0
-            && chatTemplate.indexOf('/static/tutorial/yui-guide/common.js') < chatTemplate.indexOf('/static/app-interpage.js'),
+            && chatTemplate.indexOf('/static/tutorial/yui-guide/common.js') < chatTemplate.indexOf('/static/app/app-interpage.js'),
         'chat.html should load tutorial/yui-guide/common.js before app-interpage.js'
     );
     assert.match(appInterpageSource, /createYuiGuideTargetGeometryRegistry\(\)/);
@@ -1339,7 +1339,7 @@ test('interaction takeover delegates external chat commands to the command bus b
 });
 
 test('standalone chat guide lock uses a transparent shield instead of per-input locks', () => {
-    const source = fs.readFileSync(path.join(repoRoot, 'static', 'app-interpage.js'), 'utf8');
+    const source = fs.readFileSync(path.join(repoRoot, 'static', 'app/app-interpage.js'), 'utf8');
     const lockBlock = source.split('    function applyYuiGuideChatLockState(disabled) {')[1].split(
         '    function getReactChatWindowHost() {',
         1
@@ -2002,7 +2002,7 @@ test('day2 Galgame guide drag follows the compact tool wheel arc and holds the t
     const source = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/director.js'), 'utf8');
     const overlaySource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/overlay.js'), 'utf8');
     const day2GuideSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/days/day2-screen-voice-guide.js'), 'utf8');
-    const appInterpageSource = fs.readFileSync(path.join(repoRoot, 'static', 'app-interpage.js'), 'utf8');
+    const appInterpageSource = fs.readFileSync(path.join(repoRoot, 'static', 'app/app-interpage.js'), 'utf8');
     const sceneOrchestratorSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/scene-orchestrator.js'), 'utf8');
     const operationRegistrySource = fs.readFileSync(
         path.join(repoRoot, 'static', 'tutorial/core/operation-registry.js'),
@@ -2777,7 +2777,7 @@ test('PC global overlay cleanup clears the stored run id before the next tutoria
 
 test('PC global overlay cleanup notifies external chat windows to stop overlay relays', () => {
     const managerSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/universal-manager.js'), 'utf8');
-    const appInterpageSource = fs.readFileSync(path.join(repoRoot, 'static', 'app-interpage.js'), 'utf8');
+    const appInterpageSource = fs.readFileSync(path.join(repoRoot, 'static', 'app/app-interpage.js'), 'utf8');
     const clearOverlayBlock = managerSource.split('    clearPcTutorialGlobalOverlay(reason = ')[1].split(
         '    requestTutorialEnd(reason = ',
         1
@@ -2826,7 +2826,7 @@ test('PC global overlay cleanup notifies external chat windows to stop overlay r
 });
 
 test('external chat ignores stale guide commands after lifecycle ended', () => {
-    const appInterpageSource = fs.readFileSync(path.join(repoRoot, 'static', 'app-interpage.js'), 'utf8');
+    const appInterpageSource = fs.readFileSync(path.join(repoRoot, 'static', 'app/app-interpage.js'), 'utf8');
     const relayHandlerBlock = appInterpageSource.split('    function handleYuiGuideRelayedMessage(message) {')[1].split(
         '    function postInterpageMessage',
         1
@@ -2927,7 +2927,7 @@ test('external chat ignores stale guide commands after lifecycle ended', () => {
 });
 
 test('external chat reuses tutorial PC overlay run id for capsule spotlight and cursor patches', () => {
-    const appInterpageSource = fs.readFileSync(path.join(repoRoot, 'static', 'app-interpage.js'), 'utf8');
+    const appInterpageSource = fs.readFileSync(path.join(repoRoot, 'static', 'app/app-interpage.js'), 'utf8');
     const normalizeBridgeBlock = appInterpageSource.split('    function normalizeYuiGuideBridgeMessage(action, payload) {')[1].split(
         '    function postYuiGuideMessageToChat',
         1
@@ -2993,7 +2993,7 @@ test('external chat reuses tutorial PC overlay run id for capsule spotlight and 
 });
 
 test('PC overlay bridges rotate stale run ids and replay current state', () => {
-    const appInterpageSource = fs.readFileSync(path.join(repoRoot, 'static', 'app-interpage.js'), 'utf8');
+    const appInterpageSource = fs.readFileSync(path.join(repoRoot, 'static', 'app/app-interpage.js'), 'utf8');
     const overlaySource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/overlay.js'), 'utf8');
     const externalBridgeBlock = appInterpageSource.split('    function resetYuiGuidePcOverlayRunForRetry() {')[1].split(
         '    function createYuiGuideTargetGeometryRegistry() {',
@@ -3355,7 +3355,7 @@ test('day6 chat cursor handoff clears external ownership without hiding the PC c
     const sceneOrchestratorSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/scene-orchestrator.js'), 'utf8');
     const takeoverSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/interaction-takeover.js'), 'utf8');
     const directorSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/director.js'), 'utf8');
-    const appInterpageSource = fs.readFileSync(path.join(repoRoot, 'static', 'app-interpage.js'), 'utf8');
+    const appInterpageSource = fs.readFileSync(path.join(repoRoot, 'static', 'app/app-interpage.js'), 'utf8');
 
     const day6StatusSceneBlock = day6Source.split("id: 'day6_agent_status_master'")[1].split(
         "id: 'day6_plugin_side_panel'",

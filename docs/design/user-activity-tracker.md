@@ -83,7 +83,7 @@ for all fields.
 
 `away` deliberately keeps `open` propensity — the user explicitly
 clarified that long absences just mean "speak less often" (handled by
-the existing frontend backoff curve in `static/app-proactive.js`),
+the existing frontend backoff curve in `static/app/app-proactive.js`),
 not "don't speak". The greeting machinery in `core.py:trigger_greeting`
 uses a separate path on first reconnect.
 
@@ -127,7 +127,7 @@ Note: `competitive` used to default to `0.3` but produced negative user
 feedback (the AI vanishing during the user's longest gaming sessions
 defeats the companion product thesis). The quietness for
 `restricted_screen_only` propensity is now handled by the
-fixed-interval scheduler branch in `static/app-proactive.js` plus a
+fixed-interval scheduler branch in `static/app/app-proactive.js` plus a
 backend `[0, 0.5×baseInterval]` sleep in `proactive_chat` — see the
 `restricted_screen_only` block in `main_routers/system_router.py`. Only
 `immersive_horror` keeps the full-skip default (atmosphere is more
@@ -839,7 +839,7 @@ follow-up PR; the threat model write-up lives in issue #1023.
 
 #### Renderer client
 
-`static/app-activity-signal.js` does the 5s heartbeat in the desktop
+`static/app/app-activity-signal.js` does the 5s heartbeat in the desktop
 pet window. It reads OS signals through the Electron preload bridge
 (`window.nekoActivitySignal.read()` — exposed by the NEKO-PC sibling
 repo), normalises camelCase → snake_case, and POSTs to the endpoint

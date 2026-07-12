@@ -7,9 +7,9 @@ from main_routers import pages_router
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 AVATAR_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "avatar" / "avatar-ui-buttons.js"
-APP_UI_PATH = PROJECT_ROOT / "static" / "app-ui.js"
-APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app-interpage.js"
-APP_REACT_CHAT_WINDOW_PATH = PROJECT_ROOT / "static" / "app-react-chat-window.js"
+APP_UI_PATH = PROJECT_ROOT / "static" / "app" / "app-ui.js"
+APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app" / "app-interpage.js"
+APP_REACT_CHAT_WINDOW_PATH = PROJECT_ROOT / "static" / "app" / "app-react-chat-window.js"
 COMMON_UI_HUD_PATH = PROJECT_ROOT / "static" / "common-ui-hud.js"
 LIVE2D_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "live2d" / "live2d-ui-buttons.js"
 VRM_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "vrm" / "vrm-ui-buttons.js"
@@ -3044,7 +3044,7 @@ def test_cat1_voice_sounds_are_limited_to_non_drag_and_drag_states():
 
 def test_cat1_walk_to_minimized_chat_contract_is_present():
     source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
-    app_ui_source = (PROJECT_ROOT / "static" / "app-ui.js").read_text(encoding="utf-8")
+    app_ui_source = (PROJECT_ROOT / "static" / "app" / "app-ui.js").read_text(encoding="utf-8")
 
     assert "_NEKO_IDLE_CAT1_SUBSTATE_WALKING = 'walking-to-chat'" in source
     assert "_NEKO_IDLE_CAT1_SUBSTATE_STRETCH = 'stretch-near-chat'" in source
@@ -3168,7 +3168,7 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     assert "_isAnyNekoIdleCat1PlaygroundDropLifecycleActive()" in minimized_state_block
     assert "_isNekoIdleCat1PlaygroundPairMoveFeedback(detail)" in minimized_state_block
     assert "const pairMoveFeedback = _isNekoIdleCat1PlaygroundPairMoveFeedback(detail);" in minimized_state_block
-    react_chat_source = (PROJECT_ROOT / "static" / "app-react-chat-window.js").read_text(encoding="utf-8")
+    react_chat_source = (PROJECT_ROOT / "static" / "app" / "app-react-chat-window.js").read_text(encoding="utf-8")
     assert "async function applyElectronCat1PairMoveBounds(bounds, options)" in react_chat_source
     assert "function scheduleElectronCat1PairMoveBounds(bounds, options)" in react_chat_source
     assert "if (isElectronLinuxRuntime() && !force) return;" in react_chat_source

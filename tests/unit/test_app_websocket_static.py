@@ -1,8 +1,8 @@
 from pathlib import Path
 
 
-APP_WEBSOCKET_PATH = Path(__file__).resolve().parents[2] / "static" / "app-websocket.js"
-APP_STATE_PATH = Path(__file__).resolve().parents[2] / "static" / "app-state.js"
+APP_WEBSOCKET_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-websocket.js"
+APP_STATE_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-state.js"
 
 
 def test_response_discarded_visible_in_react_chat():
