@@ -12,19 +12,25 @@ permissions:
   contents: read
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Two parallel jobs — split for blast-radius clarity:
+# Five parallel jobs, split by concern so a failing check name points at a
+# category (expand it to see which step is red) instead of one giant title
+# enumerating every sub-check:
 #
-#   python-lint        → "the code itself is wrong" (semantic / async / leaks)
-#   python-conventions → "the project's architecture / i18n / API rules"
+#   Ruff                   → the ruff linter (its own deps: uv + ruff)
+#   Code safety            → runtime hazards in the backend (blocking-in-async,
+#                            banned imports, startup import cost)
+#   Prompts & i18n         → LLM-call discipline + localization/docstring rules
+#   API & layering         → HTTP/route + module-layer architecture rules
+#   Core package contracts → the main_logic/core mixin/facade structural gate
 #
-# When one fails, the failure name immediately tells you whether to look at the
-# code change itself or at how it intersects project conventions. Both jobs run
-# in parallel, both block merge, neither needs the other's setup.
+# All run in parallel, all block merge, each is independently re-runnable. Only
+# the diff-based steps (i18n-sync, docstring-cjk) need full history; the rest
+# run on a shallow checkout.
 # ─────────────────────────────────────────────────────────────────────────────
 
 jobs:
-  python-lint:
-    name: Python lint (ruff + async-blocking + no-loguru + no-tkinter + no-temperature + prompt-hygiene + llm-budget + startup-lazy-import)
+  ruff:
+    name: Ruff
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -39,13 +45,24 @@ jobs:
         uses: astral-sh/setup-uv@v4
 
       - name: Install ruff
-        # ruff is the only dev dep we need for the lint job; a full uv sync
-        # pulls heavy native extensions (playwright, numpy, etc.) that are
-        # unnecessary for static checks.
+        # ruff is the only dev dep we need; a full uv sync pulls heavy native
+        # extensions (playwright, numpy, etc.) unnecessary for static checks.
         run: uv tool install ruff==0.15.4
 
       - name: ruff check (incl. ASYNC210/220/221/222/251)
         run: ruff check .
+
+  code-safety:
+    name: Code safety
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
       - name: Forbid blocking calls in async def bodies
         # Custom AST checker, broader than ruff's ASYNC* rules:
@@ -88,6 +105,39 @@ jobs:
         # neko-guide.md for the rationale.
         run: python scripts/check_no_temperature.py
 
+      - name: Keep heavy SDKs off the startup import chain (lazy-import contract)
+        # Merged production mode imports the app tree serially before any port
+        # binds, so a module-scope `import openai` (etc.) slows EVERY launch,
+        # silently — reference incident: #1496 cut main_server import to ~0.6s,
+        # openai 2.x types growth quietly ate it back to ~2.1s within 6 weeks.
+        # Banned-at-module-scope list (openai/anthropic/bs4/bilibili_api/
+        # google.genai/translatepy/dashscope/...) lives in the script; the
+        # sanctioned pattern is in-function import + utils/module_warmup.py
+        # background pre-import after ready. `# noqa: STARTUP_LAZY_IMPORT`
+        # opts out with justification.
+        run: python scripts/check_startup_import_lazy.py
+
+  prompts-i18n:
+    name: Prompts & i18n
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # i18n-sync / docstring-cjk are diff-based and need full history to
+          # diff against the merge-base of origin/main. The other steps don't
+          # care, but fetch-depth: 0 has negligible cost on this repo.
+          #
+          # The checkout@v5 bump also fixes a credential-handling regression the
+          # old @v4 tripped against the runner's git 2.54 on the full-history
+          # fetch ("could not read Username", git exit 128).
+          fetch-depth: 0
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
       - name: Enforce prompt-i18n conventions (inline-EN-only + multilang-in-config)
         # Two rules in one walker:
         #   - INLINE_PROMPT_NON_EN: any string at an LLM call site or in a
@@ -117,42 +167,6 @@ jobs:
         #     opt out with `# noqa: LLM_INPUT_BUDGET`.
         # See docs/design/llm-prompt-budget.md for the full contract.
         run: python scripts/check_llm_budget.py
-
-      - name: Keep heavy SDKs off the startup import chain (lazy-import contract)
-        # Merged production mode imports the app tree serially before any port
-        # binds, so a module-scope `import openai` (etc.) slows EVERY launch,
-        # silently — reference incident: #1496 cut main_server import to ~0.6s,
-        # openai 2.x types growth quietly ate it back to ~2.1s within 6 weeks.
-        # Banned-at-module-scope list (openai/anthropic/bs4/bilibili_api/
-        # google.genai/translatepy/dashscope/...) lives in the script; the
-        # sanctioned pattern is in-function import + utils/module_warmup.py
-        # background pre-import after ready. `# noqa: STARTUP_LAZY_IMPORT`
-        # opts out with justification.
-        run: python scripts/check_startup_import_lazy.py
-
-  python-conventions:
-    name: Python conventions (i18n-sync + docs + api-trailing-slash×2 + module-layering + docstring-cjk + core-contracts)
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          # i18n-sync needs full history to diff against the merge-base of
-          # origin/main. Other steps don't care, but fetch-depth: 0 has
-          # negligible cost on this repo.
-          #
-          # The checkout@v5 bump is the actual fix here: the old @v4 tripped a
-          # credential-handling regression against the runner's git 2.54 on the
-          # full-history fetch ("could not read Username", git exit 128), which
-          # broke this job on every PR. (fetch-tags has no effect under
-          # fetch-depth: 0 — checkout fetches tags regardless — so we don't set
-          # it; the fix is purely the version bump.)
-          fetch-depth: 0
-
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
 
       - name: Verify i18n locale files move in lockstep (PR-only)
         # Diff-based: when ANY static/locales/*.json or
@@ -186,27 +200,17 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
         run: python scripts/check_docstring_no_cjk.py --base "origin/${BASE_REF}"
 
-      - name: Enforce main_logic/core structural contracts
-        # The LLMSessionManager mixin split (#2272) rests on contracts a
-        # comment cannot enforce: symbols that tests rebind on the
-        # main_logic.core facade must be read by manager/mixin code through
-        # the _core_facade late-binding object (a from-import snapshot lets
-        # isolation-style stubs go silently green while the real function
-        # runs), mixins hold methods only, method sets stay disjoint, and
-        # the facade keeps its layout. The patched-symbol set is harvested
-        # from tests/ by AST on every run, so new patch targets tighten the
-        # gate automatically. Not diff-based — cheap full check, runs on
-        # push and PR alike.
-        run: python scripts/check_core_contracts.py
+  api-layering:
+    name: API & layering
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
 
-      - name: Forbid relative-up markdown links inside docs/
-        # docs/ ships through VitePress with itself as the deploy root;
-        # any markdown link target starting with '..' resolves outside the
-        # site and breaks deploy. We've shipped this regression more than
-        # once — this check fails the build before the next attempt lands.
-        # Fix is to inline the path as code (`foo/bar.js`) instead of a
-        # link, or move the referenced content into docs/.
-        run: python scripts/check_docs_no_relative_paths.py
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
       - name: Forbid trailing-slash route paths on FastAPI decorators (backend)
         # Project convention: every backend HTTP/WebSocket endpoint is
@@ -242,3 +246,37 @@ jobs:
         # `python scripts/check_module_layering.py --show-layers` to print
         # the hierarchy. Companion unit test: tests/unit/test_module_layering.py.
         run: python scripts/check_module_layering.py
+
+      - name: Forbid relative-up markdown links inside docs/
+        # docs/ ships through VitePress with itself as the deploy root;
+        # any markdown link target starting with '..' resolves outside the
+        # site and breaks deploy. We've shipped this regression more than
+        # once — this check fails the build before the next attempt lands.
+        # Fix is to inline the path as code (`foo/bar.js`) instead of a
+        # link, or move the referenced content into docs/.
+        run: python scripts/check_docs_no_relative_paths.py
+
+  core-contracts:
+    name: Core package contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Enforce main_logic/core structural contracts
+        # The LLMSessionManager mixin split (#2272) rests on contracts a
+        # comment cannot enforce: symbols that tests rebind on the
+        # main_logic.core facade must be read by manager/mixin code through
+        # the _core_facade late-binding object (a from-import snapshot lets
+        # isolation-style stubs go silently green while the real function
+        # runs), mixins hold methods only, method sets stay disjoint, and
+        # the facade keeps its layout. The patched-symbol set is harvested
+        # from tests/ by AST on every run, so new patch targets tighten the
+        # gate automatically. Not diff-based — cheap full check, runs on
+        # push and PR alike.
+        run: python scripts/check_core_contracts.py
