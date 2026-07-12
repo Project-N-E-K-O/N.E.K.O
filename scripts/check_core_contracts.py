@@ -619,15 +619,19 @@ def run(root: Path) -> list[Violation]:
                                                 f"manager class attribute is/contains {kind} — only immutable "
                                                 f"class constants are allowed; move state into __init__ (per "
                                                 f"instance) or behavior into a mixin"))
-                # A class attribute that shares a name with a mixin method wins
-                # attribute lookup and silently removes that method from the API.
+                # A class attribute that shares a name with a mixin method (or
+                # with the manager's own __init__) wins attribute lookup and
+                # silently removes/replaces it — ``__init__ = external`` after
+                # ``def __init__`` overwrites the initializer while the method
+                # count still passes.
                 targets = node.targets if isinstance(node, ast.Assign) else [node.target]
                 for t in targets:
-                    if isinstance(t, ast.Name) and t.id in mixin_method_names:
+                    if isinstance(t, ast.Name) and (t.id in mixin_method_names or t.id == "__init__"):
+                        what = "the manager's __init__" if t.id == "__init__" else "a mixin method"
                         violations.append(Violation(manager_path, node.lineno, node.col_offset, "CORE_MANAGER_SHAPE",
-                                                    f"manager class attribute '{t.id}' shadows a mixin method of "
-                                                    f"the same name — it would win attribute lookup and drop the "
-                                                    f"method from LLMSessionManager's API"))
+                                                    f"manager class attribute '{t.id}' shadows {what} of the same "
+                                                    f"name — it would win attribute lookup and drop/replace it in "
+                                                    f"LLMSessionManager's API"))
                 continue
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "__init__":
                 continue
@@ -644,39 +648,42 @@ def run(root: Path) -> list[Violation]:
                                         "CORE_MANAGER_SHAPE", "LLMSessionManager must define __init__ here"))
 
     # -- CORE_MIXIN_DISJOINT: a method name defined in two DIFFERENT mixins is
-    #    an MRO shadowing bug. A property accessor group (@property + @x.setter
-    #    / @x.deleter) legitimately repeats the name WITHIN one mixin — Python
-    #    merges them into one descriptor — so count each name once per mixin.
-    def _is_property_accessor(fn):
+    #    an MRO shadowing bug. A property group legitimately repeats the name
+    #    WITHIN one mixin — but a VALID group is exactly one @property getter
+    #    plus optional @x.setter/@x.deleter; two plain @property (or two plain
+    #    methods) are a real shadow (Python keeps only the last).
+    def _prop_role(fn):
         for d in fn.decorator_list:
             if isinstance(d, ast.Name) and d.id == "property":
-                return True
+                return "getter"
             if isinstance(d, ast.Attribute) and d.attr in ("setter", "deleter", "getter"):
-                return True
-        return False
+                return "accessor"
+        return None  # a plain method
 
     seen: dict[str, str] = {}
     for path, klass in sorted(mixin_files.items()):
         here = f"{path.name}:{klass.name}"
-        local: dict[str, ast.AST] = {}
+        groups: dict[str, list] = {}
         for node in klass.body:
-            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            if node.name in local:
-                # Same name twice in ONE mixin: fine only for a property group.
-                if not (_is_property_accessor(local[node.name]) and _is_property_accessor(node)):
-                    violations.append(Violation(path, node.lineno, node.col_offset, "CORE_MIXIN_DISJOINT",
-                                                f"method '{node.name}' is defined twice in {here} and is not a "
-                                                f"property accessor group — the second definition shadows the "
-                                                f"first"))
-                continue
-            local[node.name] = node
-            if node.name in seen:
-                violations.append(Violation(path, node.lineno, node.col_offset, "CORE_MIXIN_DISJOINT",
-                                            f"method '{node.name}' already defined in {seen[node.name]} — "
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                groups.setdefault(node.name, []).append(node)
+        for name, defs in groups.items():
+            if len(defs) > 1:
+                roles = [_prop_role(d) for d in defs]
+                if any(r is None for r in roles) or roles.count("getter") > 1:
+                    last = defs[-1]
+                    violations.append(Violation(path, last.lineno, last.col_offset, "CORE_MIXIN_DISJOINT",
+                                                f"method '{name}' is defined {len(defs)}× in {here} and is not a "
+                                                f"valid property group (one @property getter + optional "
+                                                f"@{name}.setter/.deleter) — a later definition shadows an "
+                                                f"earlier one"))
+            if name in seen:
+                first = defs[0]
+                violations.append(Violation(path, first.lineno, first.col_offset, "CORE_MIXIN_DISJOINT",
+                                            f"method '{name}' already defined in {seen[name]} — "
                                             f"MRO would shadow one of them silently"))
             else:
-                seen[node.name] = here
+                seen[name] = here
 
     # -- CORE_MIXIN_BASES
     if manager_class is not None:
