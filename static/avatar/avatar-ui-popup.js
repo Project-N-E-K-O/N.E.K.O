@@ -2679,6 +2679,12 @@ const AvatarPopupMixin = {
             }
 
             if (isVisible) {
+                // 引导模式下阻止关闭设置弹窗，防止用户误触打断 yui-guide 引导流程
+                if (window.isInTutorial === true && buttonId === 'settings') {
+                    console.log(`[${prefix}] 引导中：阻止关闭设置弹出框`);
+                    return;
+                }
+
                 // 关闭弹窗
                 popup._showToken += 1;
                 dispatchAvatarPopupLifecycleEvent('neko-avatar-popup-closing', buttonId, popup, prefix);
@@ -2781,6 +2787,13 @@ const AvatarPopupMixin = {
 
         ManagerProto.closePopupById = function (buttonId) {
             if (!buttonId) return false;
+
+            // 引导模式下阻止关闭设置弹窗，防止用户误触打断 yui-guide 引导流程
+            if (window.isInTutorial === true && buttonId === 'settings') {
+                console.log(`[${prefix}] 引导中：阻止关闭设置弹出框`);
+                return false;
+            }
+
             const popup = document.getElementById(`${prefix}-popup-${buttonId}`);
             if (!popup || popup.style.display !== 'flex') return false;
 
