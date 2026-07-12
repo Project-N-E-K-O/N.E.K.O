@@ -220,6 +220,24 @@ async def test_stale_session_dialogue_cannot_claim_tts(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_ended_session_dialogue_cannot_claim_tts(tmp_path):
+    """角色切换结束并清空 active 索引后，旧 Session 仍不得认领对白。"""  # noqa: DOCSTRING_CJK
+    root = tmp_path / "theater"
+    started = await runtime.start_session(root, lanlan_name="旧猫娘", client_start_id="start_before_switch")
+    assert (await runtime.end_session(root, session_id=started["session_id"]))["ok"] is True
+
+    claim = await runtime.claim_dialogue_speech(
+        root,
+        session_id=started["session_id"],
+        state_revision=0,
+    )
+
+    assert claim == {"ok": True, "skipped": "stale_session", "state_revision": 0}
+    saved = await session_store.load_session(root, started["session_id"])
+    assert saved["spoken_dialogue_revisions"] == []
+
+
+@pytest.mark.asyncio
 async def test_turn_rechecks_stale_session_after_llm_returns(monkeypatch, tmp_path):
     """模型等待期间被新开场替换的旧 Session 不得再提交候选状态。"""  # noqa: DOCSTRING_CJK
     root = tmp_path / "theater"

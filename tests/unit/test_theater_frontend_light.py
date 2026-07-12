@@ -124,6 +124,18 @@ def test_frontend_restores_and_reuses_frozen_retry_body():
     assert "body.client_turn_id || body.client_start_id" in script
 
 
+def test_frontend_recovers_stale_or_cross_character_session_without_reload():
+    """Session 失效后页面必须恢复当前演出，或清空旧指针并重新开放开场。"""  # noqa: DOCSTRING_CJK
+    script = (ROOT / "static" / "js" / "theater.js").read_text(encoding="utf-8")
+    assert "function recoverUnavailableSession(result)" in script
+    assert "'stale_session'" in script
+    assert "'session_character_mismatch'" in script
+    assert "forgetSession();" in script
+    assert "state.sessionId = '';" in script
+    assert "await restoreActiveSession('')" in script
+    assert "await recoverUnavailableSession(result)" in script
+
+
 def test_locale_files_remain_valid_json():
     """八个 locale 必须合法、key 一致并覆盖脚本使用的 theater 文案。"""  # noqa: DOCSTRING_CJK
     key_sets = []

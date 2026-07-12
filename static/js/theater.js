@@ -385,6 +385,37 @@
         return true;
     }
 
+    // Session 已被替换、结束或换绑角色时，优先恢复当前活动演出；没有可恢复项则释放页面开场控件。
+    async function recoverUnavailableSession(result) {
+        const unavailableReasons = new Set([
+            'stale_session',
+            'session_character_mismatch',
+            'session_ended',
+            'session_not_found',
+        ]);
+        if (!result || !unavailableReasons.has(String(result.reason || ''))) return false;
+
+        // 先移除旧本地指针，恢复查询才能直接读取服务端当前猫娘的 active Session。
+        forgetSession();
+        state.sessionId = '';
+        state.stateRevision = null;
+        state.inputClosed = false;
+        if (await restoreActiveSession('')) {
+            setStatus(t('theater.sessionUpdated', '场景已在其他窗口推进，请重新选择。'));
+            return true;
+        }
+
+        // 当前猫娘没有活动演出时，清空旧表现并回到可选剧本、可重新开场的稳定状态。
+        $('theater-log').textContent = '';
+        renderSuggestions([]);
+        renderBoard({});
+        renderTrace(null);
+        renderEnding(null);
+        previewSelectedStory();
+        setStatus(t('theater.ready', '准备中'));
+        return true;
+    }
+
     // revision 冲突时刷新公开快照，并保留尚未成功的自由输入。
     async function recoverRevisionConflict(result, pendingText) {
         if (!result || result.reason !== 'state_revision_conflict' || !result.retryable) return false;
@@ -461,6 +492,10 @@
             const result = await requestJson(api.input, { method: 'POST', body: body });
             if (!result || !result.ok) {
                 if (await recoverRevisionConflict(result, selected ? '' : message)) return;
+                if (await recoverUnavailableSession(result)) {
+                    if (optimistic) optimistic.remove();
+                    return;
+                }
                 throw new Error('input');
             }
             applyPayload(result);
@@ -490,6 +525,10 @@
             });
             if (!result || !result.ok) {
                 if (await recoverRevisionConflict(result, '')) return;
+                if (await recoverUnavailableSession(result)) {
+                    if (optimistic) optimistic.remove();
+                    return;
+                }
                 throw new Error('exit');
             }
             applyPayload(result);

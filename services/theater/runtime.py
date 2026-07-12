@@ -179,8 +179,8 @@ async def claim_dialogue_speech(root: Path, *, session_id: str, state_revision: 
         if session is None:
             return {"ok": False, "reason": "session_not_found"}
         current_revision = session_store.state_revision(session)
-        if await session_store.is_stale_session(root, session):
-            # 新开场已经替换本 Session 时，旧对白不能中断当前猫娘的 TTS。
+        if session.get("ended_at") or await session_store.is_stale_session(root, session):
+            # 已结束或被新开场替换的 Session，旧对白都不能中断当前猫娘的 TTS。
             return {"ok": True, "skipped": "stale_session", "state_revision": current_revision}
         if state_revision != current_revision:
             return {

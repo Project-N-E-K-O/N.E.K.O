@@ -122,6 +122,49 @@ def test_light_theater_restores_after_reload(mock_page: Page, running_server: st
 
 
 @pytest.mark.frontend
+def test_stale_input_without_active_session_reopens_start_controls(mock_page: Page, running_server: str):
+    """输入时 Session 失效且无可恢复演出时，页面无需刷新即可重新开场。"""  # noqa: DOCSTRING_CJK
+    _open_theater_page(mock_page, running_server)
+    _leave_active_session(mock_page)
+    mock_page.locator("#theater-start-btn").click()
+    expect(mock_page.locator("#theater-input")).to_be_enabled(timeout=8000)
+    session_id = mock_page.evaluate("window.localStorage.getItem('neko.theater.activeSession.v1')")
+
+    # 只拦截本轮输入与恢复查询，模拟另一个窗口已经替换并清理活动 Session。
+    mock_page.route(
+        "**/api/theater/session/input",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body='{"ok":false,"reason":"stale_session","skipped":true}',
+        ),
+    )
+    mock_page.route(
+        "**/api/theater/session/active",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body='{"ok":false,"reason":"active_session_not_found"}',
+        ),
+    )
+    mock_page.locator("#theater-input").fill("这句不会提交到旧演出")
+    mock_page.locator("#theater-send-btn").click()
+
+    expect(mock_page.locator("#theater-start-btn")).to_be_enabled(timeout=8000)
+    expect(mock_page.locator("#theater-story-select")).to_be_enabled()
+    assert mock_page.evaluate("window.localStorage.getItem('neko.theater.activeSession.v1')") is None
+    expect(mock_page.locator("#theater-log")).not_to_contain_text("这句不会提交到旧演出")
+
+    # 解除拦截并刷新，恢复真实后端中的测试 Session，再按正式离场协议清理测试状态。
+    mock_page.unroute("**/api/theater/session/input")
+    mock_page.unroute("**/api/theater/session/active")
+    mock_page.reload(wait_until="domcontentloaded")
+    expect(mock_page.locator("#theater-input")).to_be_enabled(timeout=8000)
+    assert mock_page.evaluate("window.localStorage.getItem('neko.theater.activeSession.v1')") == session_id
+    _leave_active_session(mock_page)
+
+
+@pytest.mark.frontend
 @pytest.mark.parametrize("path", ["/chat", "/subtitle"])
 def test_theater_assets_do_not_inject_other_pages(mock_page: Page, running_server: str, path: str):
     """小剧场资源保持独立，不污染聊天和字幕页面。"""  # noqa: DOCSTRING_CJK
