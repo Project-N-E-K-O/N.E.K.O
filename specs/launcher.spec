@@ -168,6 +168,7 @@ add_data('data/browser_use_prompts', 'data/browser_use_prompts')
 # packaging; for local source builds add_data warns and skips silently.
 add_data('data/tiktoken_cache', 'data/tiktoken_cache')
 add_data('data/embedding_models', 'data/embedding_models')
+add_data('data/vad_models', 'data/vad_models')
 add_data('steam_appid.txt', '.')
 
 # 添加 Steam 相关的 DLL 和库文件（源文件位于 steamworks/，打包后放在根目录）
