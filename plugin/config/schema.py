@@ -10,7 +10,12 @@ import math
 from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field, field_validator, model_validator
-from plugin._types.models import PluginType
+from plugin._types.plugin_types import (
+    PluginType,
+    SUPPORTED_PLUGIN_TYPES,
+    format_plugin_type_choice_error,
+    require_supported_plugin_type,
+)
 
 _PLUGIN_RUNTIME_TIMEOUT_MAX = 300.0
 
@@ -101,6 +106,11 @@ class PluginSectionSchema(BaseModel):
     config_profiles: Optional[PluginConfigProfilesSchema] = None
     safety: Optional[PluginSafetySchema] = None
     dependencies: Optional[List[PluginDependencySchema]] = None
+
+    @field_validator("type", mode="before")
+    @classmethod
+    def validate_plugin_type(cls, value: object) -> str:
+        return require_supported_plugin_type(value)
 
     @model_validator(mode="after")
     def validate_extension_host(self) -> "PluginSectionSchema":
@@ -299,6 +309,15 @@ def validate_plugin_config_partial(
             raise ConfigValidationError(
                 message="[plugin] 段必须是一个表（table）",
                 field="plugin",
+            )
+
+        plugin_type = plugin_section.get("type")
+        if plugin_type is not None and (
+            not isinstance(plugin_type, str) or plugin_type not in SUPPORTED_PLUGIN_TYPES
+        ):
+            raise ConfigValidationError(
+                message=format_plugin_type_choice_error("plugin.type"),
+                field="plugin.type",
             )
         
         # 验证 plugin.id 格式（如果存在）

@@ -4,7 +4,7 @@ The root package is intentionally conservative: it provides namespace-level
 navigation for the primary facades plus SDK-wide constants/version metadata.
 Developer-facing APIs should normally be imported from one of:
 - `plugin.sdk.plugin`   — standard plugin development (most common)
-- `plugin.sdk.extension` — extension development (add routes to existing plugins)
+- `plugin.sdk.extension` — deprecated compatibility surface for existing extensions
 - `plugin.sdk.adapter`   — adapter development (bridge external protocols)
 
 The `shared` subpackage is an internal implementation detail and should NOT be
@@ -13,7 +13,10 @@ imported directly by plugin developers.
 
 from __future__ import annotations
 
-from . import adapter, extension, plugin
+from importlib import import_module
+from types import ModuleType
+
+from . import adapter, plugin
 from .shared.constants import (
     EVENT_META_ATTR,
     HOOK_META_ATTR,
@@ -22,6 +25,14 @@ from .shared.constants import (
     PERSIST_ATTR,
 )
 from .shared.constants import SDK_VERSION
+
+
+def __getattr__(name: str) -> ModuleType:
+    if name == "extension":
+        module = import_module(".extension", __name__)
+        globals()[name] = module
+        return module
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 __all__ = [
     "plugin",

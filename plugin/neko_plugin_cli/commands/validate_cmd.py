@@ -13,6 +13,18 @@ from plugin.core.python_dependencies import (
     find_missing_python_requirements,
     split_host_provided_requirements,
 )
+from plugin._types.plugin_types import (
+    DEPRECATED_PLUGIN_TYPES,
+    SUPPORTED_PLUGIN_TYPES,
+    format_deprecated_plugin_type,
+    format_plugin_type_choice_error,
+)
+from plugin.sdk.shared.core.push_message_schema import (
+    LEGACY_PUSH_MESSAGE_FIELD_MIGRATIONS,
+    LEGACY_PUSH_MESSAGE_POSITIONAL_FIELDS,
+    LEGACY_PUSH_MESSAGE_TRUTHY_ONLY_FIELDS,
+    format_push_message_v1_static_diagnostic,
+)
 
 from ..core.plugin_source import load_plugin_source
 from ..core.toml_utils import load_toml
@@ -115,9 +127,10 @@ def _check_plugin_toml_schema(
     _require_string(plugin_table, "entry", "[plugin].entry", issues, pattern=r"^[A-Za-z_][A-Za-z0-9_.]*:[A-Za-z_][A-Za-z0-9_]*$")
 
     plugin_type = plugin_table.get("type", "plugin")
-    _check_enum(plugin_type, "[plugin].type", {"plugin", "extension", "adapter"}, issues)
-    if plugin_type == "extension":
-        issues.append(("warning", "type='extension' is deprecated and will be removed in a future breaking release"))
+    if not isinstance(plugin_type, str) or plugin_type not in SUPPORTED_PLUGIN_TYPES:
+        issues.append(("error", format_plugin_type_choice_error("[plugin].type")))
+    if isinstance(plugin_type, str) and plugin_type in DEPRECATED_PLUGIN_TYPES:
+        issues.append(("warning", format_deprecated_plugin_type(plugin_type)))
     if plugin_type == "extension" and "host" not in plugin_table:
         issues.append(("error", "type='extension' requires [plugin.host]"))
     if plugin_type != "extension" and "host" in plugin_table:
@@ -522,23 +535,27 @@ def _check_entry_target(
         issues.append(("error", f"plugin.entry class '{class_name}' was not found in {module_path.relative_to(plugin_dir)}"))
         return
 
-    if not _has_decorator(class_node.decorator_list, "neko_plugin"):
+    if package_type != "extension" and not _has_decorator(class_node.decorator_list, "neko_plugin"):
         issues.append(("error", f"plugin.entry class '{class_name}' must be decorated with @neko_plugin"))
 
     expected_bases = {
         "plugin": {"NekoPluginBase"},
         "adapter": {"NekoAdapterPlugin"},
-        "extension": {"NekoExtensionBase"},
+        # The deprecated runtime loader injects an extension entry as a
+        # PluginRouter. Historical NekoExtensionBase/extension_entry markers
+        # are not consumed by that loader and must not be advertised as valid.
+        "extension": {"PluginRouter"},
     }.get(package_type, {"NekoPluginBase"})
     actual_bases = {_name_of(base) for base in class_node.bases}
     if expected_bases and actual_bases.isdisjoint(expected_bases):
         issues.append(("warning", f"plugin.entry class '{class_name}' should inherit one of: {', '.join(sorted(expected_bases))}"))
 
-    lifecycle_ids = _decorator_ids_in_class(class_node, "lifecycle")
-    if "startup" not in lifecycle_ids:
-        issues.append(("warning", "plugin.entry class should define @lifecycle(id=\"startup\")"))
-    if "shutdown" not in lifecycle_ids:
-        issues.append(("warning", "plugin.entry class should define @lifecycle(id=\"shutdown\")"))
+    if package_type != "extension":
+        lifecycle_ids = _decorator_ids_in_class(class_node, "lifecycle")
+        if "startup" not in lifecycle_ids:
+            issues.append(("warning", "plugin.entry class should define @lifecycle(id=\"startup\")"))
+        if "shutdown" not in lifecycle_ids:
+            issues.append(("warning", "plugin.entry class should define @lifecycle(id=\"shutdown\")"))
 
 
 def _resolve_entry_module_path(plugin_dir: Path, plugin_id: str, module_name: str) -> Path | None:
@@ -566,6 +583,7 @@ def _check_python_decorators(plugin_dir: Path, issues: list[tuple[str, str]]) ->
         tree = _parse_python_file(path, issues, label=str(relative))
         if tree is None:
             continue
+        _check_deprecated_push_message_calls(tree, relative, issues)
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
@@ -602,6 +620,85 @@ def _check_python_decorators(plugin_dir: Path, issues: list[tuple[str, str]]) ->
                     if not message_id:
                         issues.append(("error", f"@message in {relative}:{node.lineno} must declare a non-empty id"))
                     _check_schema_keyword(decorator, "input_schema", f"{relative}:{node.lineno}", issues)
+
+
+def _check_deprecated_push_message_calls(
+    tree: ast.Module,
+    relative: Path,
+    issues: list[tuple[str, str]],
+) -> None:
+    """Report explicitly-written v1 fields without executing plugin code."""
+    for node in ast.walk(tree):
+        # The SDK exposes push_message as a method. Requiring an attribute call
+        # avoids flagging an unrelated local helper named ``push_message``.
+        if (
+            not isinstance(node, ast.Call)
+            or not isinstance(node.func, ast.Attribute)
+            or node.func.attr != "push_message"
+        ):
+            continue
+        reported_fields: set[str] = set()
+
+        for index, argument in enumerate(node.args):
+            if index >= len(LEGACY_PUSH_MESSAGE_POSITIONAL_FIELDS):
+                break
+            field = LEGACY_PUSH_MESSAGE_POSITIONAL_FIELDS[index]
+            if field is None or isinstance(argument, ast.Starred):
+                continue
+            if _legacy_push_value_is_inactive(field, argument):
+                continue
+            _append_push_v1_warning(
+                field=field,
+                value_node=argument,
+                call_node=node,
+                relative=relative,
+                issues=issues,
+            )
+            reported_fields.add(field)
+
+        for keyword in node.keywords:
+            field = keyword.arg
+            if (
+                field not in LEGACY_PUSH_MESSAGE_FIELD_MIGRATIONS
+                or field in reported_fields
+                or _legacy_push_value_is_inactive(field, keyword.value)
+            ):
+                continue
+            _append_push_v1_warning(
+                field=field,
+                value_node=keyword,
+                call_node=node,
+                relative=relative,
+                issues=issues,
+            )
+
+
+def _legacy_push_value_is_inactive(field: str, value_node: ast.AST) -> bool:
+    if not isinstance(value_node, ast.Constant):
+        return False
+    if value_node.value is None:
+        return True
+    return (
+        field in LEGACY_PUSH_MESSAGE_TRUTHY_ONLY_FIELDS
+        and value_node.value is False
+    )
+
+
+def _append_push_v1_warning(
+    *,
+    field: str,
+    value_node: ast.AST,
+    call_node: ast.Call,
+    relative: Path,
+    issues: list[tuple[str, str]],
+) -> None:
+    location = f"{relative}:{getattr(value_node, 'lineno', call_node.lineno)}"
+    issues.append(
+        (
+            "warning",
+            f"{location}: {format_push_message_v1_static_diagnostic(field)}",
+        )
+    )
 
 
 def _parse_python_file(path: Path, issues: list[tuple[str, str]], *, label: str) -> ast.Module | None:

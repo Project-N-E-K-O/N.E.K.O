@@ -13,7 +13,6 @@ from typing import Any, Dict, List, Callable, Type, Optional, Iterable, cast
 from plugin.logging_config import logger
 
 _DEFAULT_LOGGER = logger
-_SUPPORTED_PLUGIN_TYPES = frozenset({"plugin", "extension", "adapter"})
 
 
 _pending_async_shutdown_tasks: set = set()
@@ -44,6 +43,12 @@ from plugin.server.infrastructure.runtime_overrides import get_runtime_override
 from plugin.core.state import state
 from plugin.core.entry_points import normalize_plugin_entry_point
 from plugin._types.models import PluginMeta, PluginAuthor, PluginDependency
+from plugin._types.plugin_types import (
+    DEPRECATED_PLUGIN_TYPES,
+    SUPPORTED_PLUGIN_TYPES,
+    format_deprecated_plugin_type,
+    format_unsupported_plugin_type,
+)
 from plugin.core.ui_manifest import normalize_plugin_ui_manifest
 from plugin.settings import (
     BUILTIN_PLUGIN_CONFIG_ROOT,
@@ -456,6 +461,14 @@ def register_plugin(
         实际注册的插件 ID（如果发生冲突，返回重命名后的 ID）
     """
     logger_ = cast(Any, _wrap_logger(logger or _DEFAULT_LOGGER))
+
+    plugin_type = getattr(plugin, "type", None)
+    plugin_id = getattr(plugin, "id", "<unknown>")
+    if not isinstance(plugin_type, str) or plugin_type not in SUPPORTED_PLUGIN_TYPES:
+        logger_.error(format_unsupported_plugin_type(plugin_type, plugin_id=plugin_id))
+        return None
+    if plugin_type in DEPRECATED_PLUGIN_TYPES:
+        logger_.warning(format_deprecated_plugin_type(plugin_type))
     
     # 准备插件数据用于哈希计算
     plugin_data = {
@@ -1053,13 +1066,8 @@ def _parse_single_plugin_config(
         )
 
     plugin_type = pdata.get("type", "plugin")
-    if plugin_type not in _SUPPORTED_PLUGIN_TYPES:
-        logger.error(
-            "Plugin {} has unsupported type={}; supported types are {}. Skipping.",
-            pid,
-            repr(plugin_type),
-            ", ".join(sorted(_SUPPORTED_PLUGIN_TYPES)),
-        )
+    if not isinstance(plugin_type, str) or plugin_type not in SUPPORTED_PLUGIN_TYPES:
+        logger.error(format_unsupported_plugin_type(plugin_type, plugin_id=pid))
         return None
     
     logger.debug("Plugin ID: {}", pid)
@@ -1941,11 +1949,6 @@ def load_plugins_from_roots(
         
         # extension 类型：不启动独立进程，只注册元数据
         if plugin_type == "extension":
-            logger.warning(
-                "Plugin {} uses deprecated type='extension'; extension support "
-                "will be removed in a future breaking release",
-                pid,
-            )
             _load_extension_plugin(ctx, logger)
             continue
         

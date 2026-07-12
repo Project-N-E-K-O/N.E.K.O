@@ -6,9 +6,10 @@ from __future__ import annotations
 import base64
 from typing import Any, Dict, Literal, Optional, List, Union
 
-from pydantic import BaseModel, Field, field_serializer, model_validator
+from pydantic import BaseModel, Field, field_serializer, field_validator, model_validator
 
 from .version import SDK_VERSION
+from .plugin_types import PluginType, require_supported_plugin_type
 
 
 # /runs (Run Protocol)
@@ -86,7 +87,6 @@ class PluginDependency(BaseModel):
         return self
 
 
-PluginType = Literal["plugin", "extension", "script", "adapter"]
 PluginUiSurfaceKind = Literal["panel", "guide", "docs"]
 PluginUiSurfaceMode = Literal["static", "hosted-tsx", "markdown", "auto"]
 PluginUiOpenIn = Literal["iframe", "new_tab", "same_tab"]
@@ -125,7 +125,7 @@ class PluginMeta(BaseModel):
     """插件元数据"""
     id: str
     name: str
-    type: PluginType = "plugin"  # 插件类型: plugin(完整插件) | extension(扩展插件) | script(脚本)
+    type: PluginType = "plugin"  # plugin/adapter；extension 仅为弃用兼容类型
     description: str = ""
     short_description: str = ""  # 简短描述（<300字符），用于 agent 两阶段插件筛选
     keywords: List[str] = Field(default_factory=list)  # 关键词正则表达式列表，用于快速匹配
@@ -143,6 +143,11 @@ class PluginMeta(BaseModel):
     plugin_ui: Optional[Dict[str, Any]] = None
     i18n: Optional[Dict[str, Any]] = None
 
+    @field_validator("type", mode="before")
+    @classmethod
+    def validate_plugin_type(cls, value: object) -> str:
+        return require_supported_plugin_type(value)
+
 
 class HealthCheckResponse(BaseModel):
     """健康检查响应"""
@@ -154,7 +159,8 @@ class HealthCheckResponse(BaseModel):
 
 
 # 插件推送消息相关模型 — v2 schema 见 plugin/sdk/shared/core/push_message_schema.py
-# 已废弃字段（message_type / content / binary_data / binary_url / unsafe / description）
+# 已废弃字段（message_type / description / content / binary_data / binary_url /
+# mime / delivery / reply / unsafe / fast_mode）
 # 在 v0.9 移除（见 docs/changelog）。模型本身不再做严格校验，host 端的
 # translate_push_message + proactive_bridge 是单一权威翻译/分发处。
 
@@ -164,8 +170,9 @@ class PluginPushMessageRequest(BaseModel):
 
     v2 字段：visibility / ai_behavior / parts。
     v1 字段（deprecated, removed in v0.9）：message_type / content /
-    binary_data / binary_url / description / unsafe。两套字段同时存在以兼容
-    旧调用方；权威翻译在 ``plugin.sdk.shared.core.push_message_schema``。
+    binary_data / binary_url / mime / description / delivery / reply / unsafe /
+    fast_mode。两套字段同时存在以兼容旧调用方；权威翻译在
+    ``plugin.sdk.shared.core.push_message_schema``。
     """
 
     plugin_id: str
@@ -173,6 +180,10 @@ class PluginPushMessageRequest(BaseModel):
     priority: int = Field(default=0, description="优先级，数字越大优先级越高")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="额外的元数据")
     target_lanlan: Optional[str] = Field(default=None, description="路由到指定 session 的角色名")
+    coalesce_key: Optional[str] = Field(
+        default=None,
+        description="可选的主动消息合并键 / Optional proactive-message coalescing key / 主動メッセージ用の任意の集約キー",
+    )
 
     # v2 schema
     visibility: Optional[List[str]] = Field(default=None, description="parts 渲染目标，'chat' 和/或 'hud'")
@@ -186,7 +197,10 @@ class PluginPushMessageRequest(BaseModel):
     binary_data: Optional[bytes] = Field(default=None, description="DEPRECATED: 用 parts=[{'type':'image',...}]")
     binary_url: Optional[str] = Field(default=None, description="DEPRECATED: 用 parts=[{...,'url':...}]")
     mime: Optional[str] = Field(default=None, description="DEPRECATED")
+    delivery: Optional[Union[str, bool]] = Field(default=None, description="DEPRECATED")
+    reply: Optional[bool] = Field(default=None, description="DEPRECATED")
     unsafe: bool = Field(default=False, description="DEPRECATED")
+    fast_mode: bool = Field(default=False, description="DEPRECATED")
 
 
 class PluginPushMessage(BaseModel):
@@ -197,6 +211,8 @@ class PluginPushMessage(BaseModel):
     priority: int = 0
     metadata: Dict[str, Any] = Field(default_factory=dict)
     target_lanlan: Optional[str] = None
+    schema_version: str = Field(default="push_message.v2", alias="schema")
+    coalesce_key: str = ""
     timestamp: str = Field(..., description="消息推送时间（ISO格式）")
     message_id: str = Field(..., description="消息唯一ID")
 
@@ -211,6 +227,10 @@ class PluginPushMessage(BaseModel):
     content: Optional[str] = None
     binary_data: Optional[bytes] = None
     binary_url: Optional[str] = None
+    mime: Optional[str] = None
+    unsafe: bool = False
+    delivery: Optional[Union[str, bool]] = None
+    reply: Optional[bool] = None
 
     @field_serializer("binary_data")
     def serialize_binary_data(self, value: Optional[bytes]) -> Optional[str]:

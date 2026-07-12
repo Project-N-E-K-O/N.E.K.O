@@ -28,7 +28,7 @@ export interface PluginDependency {
   conflicts?: string[] | boolean
 }
 
-export type PluginType = 'plugin' | 'extension' | 'script' | 'adapter'
+export type PluginType = 'plugin' | 'extension' | 'adapter'
 
 export type PluginListActionKind = 'builtin' | 'ui' | 'route' | 'url'
 

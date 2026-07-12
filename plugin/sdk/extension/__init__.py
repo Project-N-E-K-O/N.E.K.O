@@ -1,6 +1,21 @@
-"""SDK v2 extension surface."""
+"""Deprecated SDK v2 compatibility surface for existing extensions."""
 
 from __future__ import annotations
+
+import warnings
+
+warnings.warn(
+    "plugin.sdk.extension 已弃用；当前 loader 只兼容 PluginRouter + "
+    "@plugin_entry 形态的旧 Extension，新功能请使用 plugin.sdk.plugin 或 "
+    "plugin.sdk.adapter。 / plugin.sdk.extension is deprecated; the current "
+    "loader only supports the legacy PluginRouter + @plugin_entry extension "
+    "shape. Use plugin.sdk.plugin or plugin.sdk.adapter for new functionality. / "
+    "plugin.sdk.extension は非推奨です。現在の loader が対応するのは legacy "
+    "PluginRouter + @plugin_entry 形式だけです。新機能には plugin.sdk.plugin "
+    "または plugin.sdk.adapter を使用してください。",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 from . import base as _base
 from . import decorators as _decorators

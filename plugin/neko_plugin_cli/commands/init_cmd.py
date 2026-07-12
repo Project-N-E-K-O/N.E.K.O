@@ -16,6 +16,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+from plugin._types.plugin_types import (
+    SCAFFOLDABLE_PLUGIN_TYPES,
+    format_unsupported_scaffold_type,
+)
+
 from ..paths import CliDefaults
 from ..templates.generator import PluginSpec, generate_plugin, generate_repo_support_files
 from ..core.plugin_source import load_plugin_source
@@ -25,12 +30,21 @@ _PLUGIN_ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _MARKET_PLUGIN_ID_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
 _MARKET_REPO_PREFIX = "n.e.k.o_plugin_"
 _DEFAULT_NEKO_REPOSITORY = "Project-N-E-K-O/N.E.K.O"
+_SCAFFOLD_TYPE_LABELS = {
+    "plugin": "Plugin — 独立功能插件",
+    "adapter": "Adapter — 对接外部协议 (MCP 等)",
+}
 
 
 def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -> None:
     parser = subparsers.add_parser("init", help="Create a new plugin from template")
     parser.add_argument("plugin_id", nargs="?", help="Plugin ID (optional, will prompt if omitted)")
-    parser.add_argument("--type", dest="plugin_type", choices=("plugin", "adapter"), help="Plugin type")
+    parser.add_argument(
+        "--type",
+        dest="plugin_type",
+        choices=tuple(sorted(SCAFFOLDABLE_PLUGIN_TYPES)),
+        help="Plugin type",
+    )
     parser.add_argument("--name", help="Display name")
     parser.add_argument("--plugins-root", help="Plugin root directory (default: N.E.K.O/plugin/plugins)")
     parser.add_argument("--git", action="store_true", help="Initialize a git repository in the generated plugin directory")
@@ -50,7 +64,13 @@ def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -
         help="Create a ready-to-use standalone plugin repository",
     )
     repo_parser.add_argument("plugin_id", help="Plugin ID")
-    repo_parser.add_argument("--type", dest="plugin_type", choices=("plugin", "adapter"), default="plugin", help="Plugin type")
+    repo_parser.add_argument(
+        "--type",
+        dest="plugin_type",
+        choices=tuple(sorted(SCAFFOLDABLE_PLUGIN_TYPES)),
+        default="plugin",
+        help="Plugin type",
+    )
     repo_parser.add_argument("--name", help="Display name")
     repo_parser.add_argument("--plugins-root", help="Plugin root directory (default: N.E.K.O/plugin/plugins)")
     repo_parser.add_argument("--remote", help="Add a git remote named origin after git initialization")
@@ -212,21 +232,21 @@ def _handle_interactive(args: argparse.Namespace, *, defaults: CliDefaults) -> i
         plugin_type = ask_select(
             "插件类型 (Plugin Type)",
             choices=[
-                {"value": "plugin", "name": "Plugin — 独立功能插件"},
-                {"value": "adapter", "name": "Adapter — 对接外部协议 (MCP 等)"},
+                {"value": value, "name": name}
+                for value, name in _SCAFFOLD_TYPE_LABELS.items()
+                if value in SCAFFOLDABLE_PLUGIN_TYPES
             ],
             default="plugin",
         )
     if not plugin_type:
         return _cancelled()
+    if plugin_type not in SCAFFOLDABLE_PLUGIN_TYPES:
+        print(f"[FAIL] {format_unsupported_scaffold_type(plugin_type)}", file=sys.stderr)
+        return 1
 
-    # Quick start? Extensions must collect host plugin settings first.
-    if plugin_type == "extension":
-        quick_start = False
-    else:
-        quick_start = ask_confirm("快速开始? (生成 Hello World 模板，跳过高级配置)", default=True)
-        if quick_start is None:
-            return _cancelled()
+    quick_start = ask_confirm("快速开始? (生成 Hello World 模板，跳过高级配置)", default=True)
+    if quick_start is None:
+        return _cancelled()
 
     if quick_start:
         spec = PluginSpec(
@@ -269,27 +289,8 @@ def _handle_interactive(args: argparse.Namespace, *, defaults: CliDefaults) -> i
             return _cancelled()
         author_email = author_email_value
 
-    # Extension-specific: host plugin
-    host_plugin_id = ""
-    host_prefix = ""
-    if plugin_type == "extension":
-        host_plugin_id_value = ask_text("宿主插件 ID (Host Plugin ID)")
-        if host_plugin_id_value is None:
-            return _cancelled()
-        host_plugin_id = host_plugin_id_value.strip()
-        if not host_plugin_id:
-            print("[FAIL] extension type requires a host plugin ID", file=sys.stderr)
-            return 1
-        if not _PLUGIN_ID_RE.fullmatch(host_plugin_id):
-            print(f"[FAIL] invalid host plugin ID: '{host_plugin_id}'", file=sys.stderr)
-            return 1
-        host_prefix_value = ask_text("路由前缀 (Route Prefix)", default="")
-        if host_prefix_value is None:
-            return _cancelled()
-        host_prefix = host_prefix_value.strip()
-
     # Features
-    feature_choices = _get_feature_choices(plugin_type)
+    feature_choices = _get_feature_choices()
     default_features = ["lifecycle", "entry_point"]
     features = ask_checkbox(
         "选择功能 (Features)",
@@ -311,8 +312,6 @@ def _handle_interactive(args: argparse.Namespace, *, defaults: CliDefaults) -> i
         description=description,
         author_name=author_name,
         author_email=author_email,
-        host_plugin_id=host_plugin_id,
-        host_prefix=host_prefix,
         features=features,
         create_pyproject=create_pyproject,
         create_readme=not getattr(args, "no_readme", False),
@@ -359,8 +358,8 @@ def _handle_non_interactive(args: argparse.Namespace, *, defaults: CliDefaults) 
 
     plugin_type = args.plugin_type or "plugin"
     initialize_git = getattr(args, "git", False)
-    if plugin_type == "extension":
-        print("[FAIL] --type extension requires interactive setup for host plugin ID", file=sys.stderr)
+    if plugin_type not in SCAFFOLDABLE_PLUGIN_TYPES:
+        print(f"[FAIL] {format_unsupported_scaffold_type(plugin_type)}", file=sys.stderr)
         return 1
 
     spec = PluginSpec(
@@ -506,9 +505,9 @@ def _validate_plugin_id(text: str) -> bool | str:
     return True
 
 
-def _get_feature_choices(plugin_type: str) -> list[dict[str, str]]:
-    """Return feature choices appropriate for the plugin type."""
-    choices = [
+def _get_feature_choices() -> list[dict[str, str]]:
+    """Return feature choices for newly scaffoldable plugin types."""
+    return [
         {"value": "lifecycle", "name": "生命周期 (startup/shutdown)"},
         {"value": "entry_point", "name": "入口点 (plugin_entry)"},
         {"value": "timer", "name": "定时任务 (timer_interval)"},
@@ -517,13 +516,9 @@ def _get_feature_choices(plugin_type: str) -> list[dict[str, str]]:
         {"value": "cross_plugin", "name": "跨插件调用 (self.plugins)"},
         {"value": "static_ui", "name": "静态 Web UI"},
         {"value": "async_support", "name": "异步支持 (async entry points)"},
-        {"value": "bus_events", "name": "事件总线 (Bus pub/sub)"},
+        {
+            "value": "bus_events",
+            "name": "总线读取/监听 / Bus read/watch / バスの読み取り・監視",
+        },
         {"value": "settings", "name": "类型安全配置 (PluginSettings)"},
     ]
-
-    if plugin_type == "extension":
-        # Extensions don't need some features
-        skip = {"timer", "message", "static_ui"}
-        choices = [c for c in choices if c["value"] not in skip]
-
-    return choices

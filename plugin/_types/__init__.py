@@ -65,13 +65,18 @@ from .protocols import (
 )
 
 # 模型
+from .plugin_types import (
+    DEPRECATED_PLUGIN_TYPES,
+    PluginType,
+    SCAFFOLDABLE_PLUGIN_TYPES,
+    SUPPORTED_PLUGIN_TYPES,
+)
 from .models import (
     RunStatus,
     RunCreateRequest,
     RunCreateResponse,
     PluginAuthor,
     PluginDependency,
-    PluginType,
     PluginMeta,
     HealthCheckResponse,
     PluginPushMessageRequest,
@@ -117,6 +122,9 @@ __all__ = [
     "PluginAuthor",
     "PluginDependency",
     "PluginType",
+    "SUPPORTED_PLUGIN_TYPES",
+    "DEPRECATED_PLUGIN_TYPES",
+    "SCAFFOLDABLE_PLUGIN_TYPES",
     "PluginMeta",
     "HealthCheckResponse",
     "PluginPushMessageRequest",

@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import ast
+import importlib
+import warnings
 from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
 
-import plugin.sdk.extension as extension
-from plugin.sdk.extension import decorators as dec
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", DeprecationWarning)
+    import plugin.sdk.extension as extension
+    from plugin.sdk.extension import decorators as dec
 
 PACKAGE = "plugin.sdk.extension"
 ROOT = Path(__file__).resolve().parents[4] / "sdk" / "extension"
@@ -49,6 +53,11 @@ def test_extension_exports_exist() -> None:
     assert extension.__all__
     for name in extension.__all__:
         assert hasattr(extension, name)
+
+
+def test_extension_facade_emits_deprecation_warning_on_import() -> None:
+    with pytest.warns(DeprecationWarning, match="plugin.sdk.extension is deprecated"):
+        importlib.reload(extension)
 
 
 def test_extension_meta_construct() -> None:

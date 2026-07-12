@@ -10,6 +10,7 @@ from plugin.neko_plugin_cli import cli as neko_plugin_cli
 from plugin.neko_plugin_cli.commands import init_cmd
 from plugin.neko_plugin_cli.commands.validate_cmd import validate_plugin_dir
 from plugin.neko_plugin_cli.paths import CliDefaults
+from plugin.neko_plugin_cli.templates.generator import PluginSpec, generate_plugin
 
 pytestmark = pytest.mark.plugin_unit
 
@@ -283,6 +284,225 @@ def test_validate_plugin_dir_warns_for_deprecated_extension_type(tmp_path: Path)
     )
 
 
+def test_validate_plugin_dir_accepts_loadable_legacy_extension_router_shape(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    plugin_toml_path = plugin_dir / "plugin.toml"
+    plugin_toml_path.write_text(
+        plugin_toml_path.read_text(encoding="utf-8").replace(
+            'type = "plugin"',
+            'type = "extension"\n\n[plugin.host]\nplugin_id = "host_plugin"',
+        ),
+        encoding="utf-8",
+    )
+    (plugin_dir / "__init__.py").write_text(
+        """from plugin.sdk.plugin import PluginRouter, plugin_entry
+
+class DemoPlugin(PluginRouter):
+    @plugin_entry(id="demo")
+    async def demo(self, **_):
+        return {"ok": True}
+""",
+        encoding="utf-8",
+    )
+
+    issues = validate_plugin_dir(plugin_dir)
+
+    assert any(
+        level == "warning" and "type='extension' is deprecated" in message
+        for level, message in issues
+    )
+    assert not any("must be decorated with @neko_plugin" in message for _level, message in issues)
+    assert not any("should inherit one of" in message for _level, message in issues)
+
+
+def test_validate_plugin_dir_warns_for_each_literal_push_message_v1_keyword(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    (plugin_dir / "__init__.py").write_text(
+        """from plugin.sdk.plugin import neko_plugin
+
+@neko_plugin
+class DemoPlugin:
+    def emit(self):
+        self.ctx.push_message(
+            message_type="proactive_notification",
+            description="label",
+            content="payload",
+            binary_data=b"image",
+            binary_url="https://example.test/image.png",
+            mime="image/png",
+            unsafe=True,
+            fast_mode=True,
+            delivery="proactive",
+            reply=True,
+        )
+""",
+        encoding="utf-8",
+    )
+
+    issues = validate_plugin_dir(plugin_dir)
+
+    warnings = [
+        message
+        for level, message in issues
+        if level == "warning" and "push_message v1 keyword" in message
+    ]
+    expected_fields = {
+        "message_type",
+        "description",
+        "content",
+        "binary_data",
+        "binary_url",
+        "mime",
+        "unsafe",
+        "fast_mode",
+        "delivery",
+        "reply",
+    }
+    assert len(warnings) == len(expected_fields)
+    for field in expected_fields:
+        warning = next(message for message in warnings if f"'{field}'" in message)
+        path, line, detail = warning.split(":", 2)
+        assert path == "__init__.py"
+        assert line.isdigit()
+        assert "migrate to" in detail
+        assert "before removal in v0.9" in detail
+        assert "已弃用" in detail
+        assert "非推奨" in detail
+
+
+def test_validate_plugin_dir_warns_for_existing_style_push_message_call(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    (plugin_dir / "__init__.py").write_text(
+        """from plugin.sdk.plugin import neko_plugin
+
+@neko_plugin
+class DemoPlugin:
+    def emit(self):
+        self.ctx.push_message(source="demo", message_type="text", content="payload")
+""",
+        encoding="utf-8",
+    )
+
+    issues = validate_plugin_dir(plugin_dir)
+
+    warnings = [
+        message
+        for level, message in issues
+        if level == "warning" and "push_message v1 keyword" in message
+    ]
+    assert len(warnings) == 2
+    assert all(message.startswith("__init__.py:6:") for message in warnings)
+    assert any("'message_type'" in message for message in warnings)
+    assert any("'content'" in message for message in warnings)
+
+
+def test_validate_plugin_dir_ignores_push_message_v2_and_inactive_legacy_defaults(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    (plugin_dir / "__init__.py").write_text(
+        """from plugin.sdk.plugin import neko_plugin
+
+def push_message(*, visibility, ai_behavior, parts):
+    return visibility, ai_behavior, parts
+
+@neko_plugin
+class DemoPlugin:
+    def emit(self):
+        push_message(visibility=["chat"], ai_behavior="blind", parts=[])
+        self.ctx.push_message(
+            visibility=["chat"],
+            ai_behavior="blind",
+            parts=[{"type": "text", "text": "payload"}],
+            content=None,
+            unsafe=False,
+            fast_mode=False,
+        )
+""",
+        encoding="utf-8",
+    )
+
+    issues = validate_plugin_dir(plugin_dir)
+
+    assert not any("push_message v1 keyword" in message for _level, message in issues)
+
+
+def test_validate_plugin_dir_warns_for_dynamic_legacy_boolean_flags(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    (plugin_dir / "__init__.py").write_text(
+        """from plugin.sdk.plugin import neko_plugin
+
+@neko_plugin
+class DemoPlugin:
+    def emit(self, enabled):
+        self.ctx.push_message(parts=[], unsafe=enabled, fast_mode=enabled)
+""",
+        encoding="utf-8",
+    )
+
+    issues = validate_plugin_dir(plugin_dir)
+
+    warnings = [
+        message
+        for level, message in issues
+        if level == "warning" and "push_message v1 keyword" in message
+    ]
+    assert len(warnings) == 2
+    assert any("'unsafe'" in message for message in warnings)
+    assert any("'fast_mode'" in message for message in warnings)
+
+
+def test_validate_plugin_dir_ignores_unrelated_local_push_message_function(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    (plugin_dir / "__init__.py").write_text(
+        """def push_message(*, content):
+    return content
+
+push_message(content="not an SDK call")
+""",
+        encoding="utf-8",
+    )
+
+    issues = validate_plugin_dir(plugin_dir)
+
+    assert not any("push_message v1 keyword" in message for _level, message in issues)
+
+
+def test_validate_plugin_dir_warns_for_legacy_positional_push_message_fields(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    (plugin_dir / "__init__.py").write_text(
+        """def emit(ctx):
+    ctx.push_message(
+        "demo", "text", "label", 5, "payload", None, None, {}, True, True
+    )
+""",
+        encoding="utf-8",
+    )
+
+    issues = validate_plugin_dir(plugin_dir)
+
+    warnings = [
+        message
+        for level, message in issues
+        if level == "warning" and "push_message v1 keyword" in message
+    ]
+    assert len(warnings) == 5
+    for field in ("message_type", "description", "content", "unsafe", "fast_mode"):
+        assert any(f"'{field}'" in message for message in warnings)
+
+
 @pytest.mark.parametrize("unsupported_scaffold_type", ["script", "extension"])
 def test_init_rejects_removed_or_deprecated_scaffold_types(
     unsupported_scaffold_type: str,
@@ -293,6 +513,27 @@ def test_init_rejects_removed_or_deprecated_scaffold_types(
 
     assert exc_info.value.code == 2
     assert f"invalid choice: '{unsupported_scaffold_type}'" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("unsupported_scaffold_type", ["script", "extension"])
+def test_generator_rejects_removed_or_deprecated_scaffold_types(
+    tmp_path: Path,
+    unsupported_scaffold_type: str,
+) -> None:
+    target_dir = tmp_path / unsupported_scaffold_type
+
+    with pytest.raises(ValueError) as exc_info:
+        generate_plugin(
+            PluginSpec(
+                plugin_id="demo_plugin",
+                plugin_type=unsupported_scaffold_type,
+            ),
+            target_dir,
+        )
+
+    message = str(exc_info.value)
+    assert "不支持" in message and "not supported" in message and "サポートされていません" in message
+    assert not target_dir.exists()
 
 
 def test_validate_plugin_dir_accepts_startup_failure_policy(tmp_path: Path) -> None:
@@ -562,9 +803,9 @@ def test_git_preflight_skips_git_binary_check_inside_existing_repo(
     init_cmd._preflight_git_request(target_dir, initialize_git=True)
 
 
-def test_interactive_extension_cannot_skip_host_prompt_with_quick_start(
+def test_interactive_handler_rejects_deprecated_extension_when_called_directly(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     defaults = CliDefaults(
         plugin_root=tmp_path / "plugin",
@@ -588,17 +829,8 @@ def test_interactive_extension_cannot_skip_host_prompt_with_quick_start(
         no_vscode=True,
     )
 
-    def fake_ask_confirm(message: str, *, default: bool = True) -> bool:
-        assert not message.startswith("快速开始")
-        return True
-
-    text_answers = iter(["", "", "host_plugin", "/extra"])
-    monkeypatch.setattr(init_cmd, "ask_confirm", fake_ask_confirm)
-    monkeypatch.setattr(init_cmd, "ask_text", lambda *_, **__: next(text_answers))
-    monkeypatch.setattr(init_cmd, "ask_checkbox", lambda *_, **__: ["lifecycle", "entry_point"])
-
-    assert init_cmd._handle_interactive(args, defaults=defaults) == 0
-
-    plugin_toml = (defaults.plugins_root / "demo_ext" / "plugin.toml").read_text(encoding="utf-8")
-    assert "[plugin.host]" in plugin_toml
-    assert 'plugin_id = "host_plugin"' in plugin_toml
+    assert init_cmd._handle_interactive(args, defaults=defaults) == 1
+    assert not (defaults.plugins_root / "demo_ext").exists()
+    error = capsys.readouterr().err
+    assert "extension" in error
+    assert "不支持" in error and "not supported" in error and "サポートされていません" in error

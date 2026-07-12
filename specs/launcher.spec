@@ -2,7 +2,7 @@
 import sys
 import os
 import platform
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, collect_submodules
 from PyInstaller.building.build_main import Tree
 
 # 获取 spec 文件所在目录和项目根目录
@@ -21,6 +21,7 @@ print(f"[Build] Working from: {os.getcwd()}")
 datas = []
 binaries = []
 hiddenimports = []
+hiddenimports += collect_submodules('plugin.sdk')
 
 # 收集关键包的所有内容（根据实际 import 检查）
 critical_packages = [
@@ -357,11 +358,6 @@ hiddenimports += [
     'plugin.core.state',
     'plugin.runtime',
     'plugin.sdk',
-    'plugin.sdk.base',
-    'plugin.sdk.decorators',
-    'plugin.sdk.events',
-    'plugin.sdk.logger',
-    'plugin.sdk.version',
     'plugin.server',
     'plugin.server.exceptions',
     'plugin.server.lifecycle',

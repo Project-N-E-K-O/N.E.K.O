@@ -61,6 +61,45 @@ AI_BEHAVIOR_VALUES = ("respond", "read", "blind")
 DEFAULT_VISIBILITY: list[str] = []
 DEFAULT_AI_BEHAVIOR = "respond"
 
+# Canonical migration metadata shared by the runtime translator and the
+# ``neko-plugin check`` source scanner.  Keep the complete v1 keyword set here
+# so adding or removing a compatibility field cannot silently leave one of the
+# two deprecation paths behind.
+LEGACY_PUSH_MESSAGE_FIELD_MIGRATIONS = {
+    "message_type": "parts=[...] plus visibility=[...] / ai_behavior=...",
+    "description": "metadata={'description': ...}",
+    "content": "parts=[{'type': 'text', 'text': ...}]",
+    "binary_data": "parts=[{'type': 'image|audio|video', 'data': ..., 'mime': ...}]",
+    "binary_url": "parts=[{'type': 'image|audio|video', 'url': ..., 'mime': ...}]",
+    "mime": "parts=[{..., 'mime': ...}]",
+    "unsafe": "drop the field",
+    "fast_mode": "drop the field; v2 uses the standard host delivery path",
+    "delivery": "visibility=[...] + ai_behavior=...",
+    "reply": "visibility=[...] + ai_behavior=...",
+}
+
+# These bool flags retain their default/non-active value without warning. The
+# static checker ignores literal ``False``/``None`` but reports dynamic values,
+# because it cannot prove that they stay inactive at runtime.
+LEGACY_PUSH_MESSAGE_TRUTHY_ONLY_FIELDS = frozenset({"unsafe", "fast_mode"})
+
+# Legacy positional order on the host ``PluginContext.push_message`` method.
+# ``None`` marks common/non-legacy slots. The public SDK is keyword-only, but
+# the source checker still diagnoses older direct-context calls accurately.
+LEGACY_PUSH_MESSAGE_POSITIONAL_FIELDS: tuple[str | None, ...] = (
+    None,  # source
+    "message_type",
+    "description",
+    None,  # priority
+    "content",
+    "binary_data",
+    "binary_url",
+    None,  # metadata
+    "unsafe",
+    "fast_mode",
+    None,  # target_lanlan
+)
+
 # Legacy ``message_type`` literals; we still accept them on the wire for
 # the deprecation window.  Translation rules live in ``translate_push_message``.
 LEGACY_MESSAGE_TYPES = (
@@ -70,10 +109,29 @@ LEGACY_MESSAGE_TYPES = (
 )
 
 
-def _warn(field: str, replacement: str) -> None:
+def format_push_message_v1_static_diagnostic(field: str) -> str:
+    """Return the trilingual source-check warning for one legacy keyword."""
+    migration = LEGACY_PUSH_MESSAGE_FIELD_MIGRATIONS[field]
+    return (
+        f"push_message v1 keyword '{field}' is deprecated; migrate to "
+        f"{migration} before removal in {DEPRECATION_REMOVAL_VERSION} / "
+        f"push_message v1 参数 '{field}' 已弃用；请在 {DEPRECATION_REMOVAL_VERSION} "
+        f"移除前迁移为 {migration} / "
+        f"push_message v1 キーワード '{field}' は非推奨です。"
+        f"{DEPRECATION_REMOVAL_VERSION} で削除される前に {migration} へ移行してください"
+    )
+
+
+def _warn(field: str, replacement: str | None = None) -> None:
+    if replacement is None:
+        replacement = LEGACY_PUSH_MESSAGE_FIELD_MIGRATIONS[field]
     warnings.warn(
         f"push_message: '{field}' is deprecated; use {replacement}. "
-        f"Removed in {DEPRECATION_REMOVAL_VERSION}.",
+        f"Removed in {DEPRECATION_REMOVAL_VERSION}. / "
+        f"push_message 参数 '{field}' 已弃用，请改用 {replacement}；"
+        f"将在 {DEPRECATION_REMOVAL_VERSION} 移除。 / "
+        f"push_message キーワード '{field}' は非推奨です。{replacement} を使用してください。"
+        f"{DEPRECATION_REMOVAL_VERSION} で削除されます。",
         DeprecationWarning,
         stacklevel=4,
     )
@@ -139,6 +197,7 @@ def translate_push_message(
     delivery: str | bool | None = None,
     reply: bool | None = None,
     unsafe: bool | None = None,
+    fast_mode: bool | None = None,
     # ---- common ----
     source: str = "",
     metadata: dict[str, Any] | None = None,
@@ -153,7 +212,59 @@ def translate_push_message(
     item ``payload``; the caller is responsible for adding transport
     metadata (``message_id``, ``plugin_id``, ``time``, …).
     """
-    legacy_used = False
+    active_legacy_fields = {
+        "message_type": message_type is not None,
+        "description": description is not None,
+        "content": content is not None,
+        "binary_data": binary_data is not None,
+        "binary_url": binary_url is not None,
+        "mime": mime is not None,
+        "delivery": delivery is not None,
+        "reply": reply is not None,
+        "unsafe": bool(unsafe),
+        "fast_mode": bool(fast_mode),
+    }
+    legacy_used = any(active_legacy_fields.values())
+
+    # Warn for every explicitly active legacy field, even when a canonical v2
+    # field takes precedence during translation. Static and runtime diagnostics
+    # must not disagree merely because a legacy value is shadowed.
+    if message_type is not None:
+        if message_type == "proactive_notification":
+            _warn(
+                "message_type='proactive_notification'",
+                "drop the field (default behaviour) and pass parts=[...]",
+            )
+        elif message_type == "music_play_url":
+            _warn(
+                "message_type='music_play_url'",
+                "parts=[{'type': 'ui_action', 'action': 'media_play_url', "
+                "'url': ..., 'media_type': 'audio'}] with visibility=['chat']",
+            )
+        elif message_type == "music_allowlist_add":
+            _warn(
+                "message_type='music_allowlist_add'",
+                "parts=[{'type': 'ui_action', 'action': 'media_allowlist_add', "
+                "'domains': [...]}]",
+            )
+        else:
+            _warn(
+                f"message_type={message_type!r}",
+                "drop message_type and use parts + visibility/ai_behavior",
+            )
+    for field in (
+        "description",
+        "content",
+        "binary_data",
+        "binary_url",
+        "mime",
+        "delivery",
+        "reply",
+        "unsafe",
+        "fast_mode",
+    ):
+        if active_legacy_fields[field]:
+            _warn(field)
 
     # ---- visibility / ai_behavior ----
     final_visibility: list[str] = list(DEFAULT_VISIBILITY)
@@ -183,12 +294,8 @@ def translate_push_message(
                 )
             final_ai_behavior = ai_behavior
     elif delivery is not None:
-        legacy_used = True
-        _warn("delivery", "visibility=[...] + ai_behavior=...")
         final_visibility, final_ai_behavior = _delivery_to_axes(delivery)
     elif reply is not None:
-        legacy_used = True
-        _warn("reply", "visibility=[...] + ai_behavior=...")
         final_visibility, final_ai_behavior = _delivery_to_axes(bool(reply))
 
     # ---- parts ----
@@ -201,15 +308,8 @@ def translate_push_message(
             final_parts.append(_normalize_part(p))
     else:
         if content is not None:
-            legacy_used = True
-            _warn("content", "parts=[{'type': 'text', 'text': ...}]")
             final_parts.append({"type": "text", "text": str(content)})
         if binary_data is not None:
-            legacy_used = True
-            _warn(
-                "binary_data",
-                "parts=[{'type': 'image|audio|video', 'data': ..., 'mime': ...}]",
-            )
             if not isinstance(binary_data, (bytes, bytearray)):
                 raise TypeError("binary_data must be bytes/bytearray")
             final_parts.append(
@@ -220,11 +320,6 @@ def translate_push_message(
                 }
             )
         elif binary_url is not None:
-            legacy_used = True
-            _warn(
-                "binary_url",
-                "parts=[{'type': 'image|audio|video', 'url': ..., 'mime': ...}]",
-            )
             final_parts.append(
                 {
                     "type": _mime_to_part_type(mime),
@@ -232,30 +327,15 @@ def translate_push_message(
                     "mime": mime,
                 }
             )
-        # ``mime`` alone is meaningless; only warn when caller supplied it
-        # without binary_data / binary_url.
-        if mime is not None and binary_data is None and binary_url is None:
-            legacy_used = True
-            _warn("mime", "parts=[{..., 'mime': ...}]")
-
     # ---- legacy message_type ----
     md = dict(metadata) if isinstance(metadata, dict) else None
 
     if message_type is not None:
-        legacy_used = True
         if message_type == "proactive_notification":
-            _warn(
-                "message_type='proactive_notification'",
-                "drop the field (default behaviour) and pass parts=[...]",
-            )
             # No part synthesis — visibility/ai_behavior already derived
             # from delivery/reply above (or defaulted).
+            pass
         elif message_type == "music_play_url":
-            _warn(
-                "message_type='music_play_url'",
-                "parts=[{'type': 'ui_action', 'action': 'media_play_url', "
-                "'url': ..., 'media_type': 'audio'}] with visibility=['chat']",
-            )
             md_local = md or {}
             ui_part: dict[str, Any] = {
                 "type": "ui_action",
@@ -270,11 +350,6 @@ def translate_push_message(
             final_visibility = ["chat"]
             final_ai_behavior = "blind"
         elif message_type == "music_allowlist_add":
-            _warn(
-                "message_type='music_allowlist_add'",
-                "parts=[{'type': 'ui_action', 'action': 'media_allowlist_add', "
-                "'domains': [...]}]",
-            )
             md_local = md or {}
             final_parts.append(
                 {
@@ -285,22 +360,11 @@ def translate_push_message(
             )
             final_visibility = []
             final_ai_behavior = "blind"
-        else:
-            _warn(
-                f"message_type={message_type!r}",
-                "drop message_type and use parts + visibility/ai_behavior",
-            )
 
     if description is not None:
-        legacy_used = True
-        _warn("description", "metadata={'description': ...}")
         if md is None:
             md = {}
         md.setdefault("description", description)
-
-    if unsafe:
-        legacy_used = True
-        _warn("unsafe", "drop the field")
 
     payload: dict[str, Any] = {
         "schema": SCHEMA_VERSION,
@@ -328,6 +392,10 @@ __all__ = [
     "AI_BEHAVIOR_VALUES",
     "DEFAULT_VISIBILITY",
     "DEFAULT_AI_BEHAVIOR",
+    "LEGACY_PUSH_MESSAGE_FIELD_MIGRATIONS",
+    "LEGACY_PUSH_MESSAGE_POSITIONAL_FIELDS",
+    "LEGACY_PUSH_MESSAGE_TRUTHY_ONLY_FIELDS",
     "LEGACY_MESSAGE_TYPES",
+    "format_push_message_v1_static_diagnostic",
     "translate_push_message",
 ]
