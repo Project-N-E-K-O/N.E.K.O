@@ -8854,12 +8854,11 @@ const AvatarButtonMixin = {
 
             this._returnButtonDragHandlers = {
                 mouseMove: (e) => {
-                    if (!isDragging) return;
-                    if (dragPointerType === 'mouse' && e.buttons === 0) {
+                    const point = getDragPoint(e, e.clientX, e.clientY);
+                    if (isDragging && dragPointerType === 'mouse' && e.buttons === 0) {
                         handleEnd();
                         return;
                     }
-                    const point = getDragPoint(e, e.clientX, e.clientY);
                     handleMove(point.x, point.y, e);
                 },
                 mouseUp: handleEnd,
