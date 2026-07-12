@@ -33,7 +33,7 @@ from .adapters.neko_dispatcher import NekoDispatcher
 from .adapters.runtime_timeline import RuntimeTimeline, arbiter_chain_to_observe_records
 from .adapters.telemetry_client import TelemetryClient
 from .core.arbiter import Arbiter
-from .core.contracts import BattleState, WtConfig
+from .core.contracts import BattleEvent, BattleState, WtConfig
 from .core.instructions import WT_CONTEXT_INSTRUCTIONS, WT_RESTORE_INSTRUCTIONS
 from .core.safety_guard import SafetyGuard
 from .core.scenario import ScenarioResolver

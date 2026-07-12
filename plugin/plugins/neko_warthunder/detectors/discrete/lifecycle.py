@@ -154,10 +154,8 @@ class KillDetector(DiscreteDetector):
             self._last_seen_id = -1
             self._emitted_ids.clear()
         self._last_seen_id = max(self._last_seen_id, max_id)
-        newest: dict[str, Any] | None = None
+        new_kills: list[tuple[int, dict[str, Any]]] = []
         for item in feed:
-            if not isinstance(item, dict):
-                continue
             try:
                 eid = int(item.get("id"))
             except (TypeError, ValueError):
@@ -165,23 +163,18 @@ class KillDetector(DiscreteDetector):
             if eid in self._emitted_ids:
                 continue
             if item.get("is_my_kill") is True:
-                if newest is None or eid > int(newest.get("id")):
-                    newest = item
-        if newest is None:
+                new_kills.append((eid, item))
+        if not new_kills:
             return None
-        for item in feed:
-            try:
-                eid = int(item.get("id"))
-            except (TypeError, ValueError):
-                continue
-            if item.get("is_my_kill") is True:
-                self._emitted_ids.add(eid)
+        self._emitted_ids.update(eid for eid, _item in new_kills)
+        _newest_id, newest = max(new_kills, key=lambda entry: entry[0])
         return BattleEvent(
             "you_killed",
             payload={
                 "victim": newest.get("victim"),
                 "victim_vehicle": newest.get("victim_vehicle"),
                 "domain": cur.domain,
+                "kill_count": len(new_kills),
             },
             ts=cur.timestamp or 0.0,
             level="warning",
