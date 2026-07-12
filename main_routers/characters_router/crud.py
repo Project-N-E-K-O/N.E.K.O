@@ -687,6 +687,15 @@ async def rename_catgirl(old_name: str, request: Request):
                 error_message = f"{error_message}; 回滚失败: {rollback_error}"
             return JSONResponse({"success": False, "error": error_message}, status_code=500)
 
+    if is_current_catgirl:
+        try:
+            cleared = await _clear_theater_session_after_current_catgirl_rename(_config_manager, old_name)
+            if cleared:
+                logger.info("角色重命名：已结束旧名称 %s 下的小剧场 session", old_name)
+        except Exception as exc:
+            # 角色与记忆重命名已经提交，不能因附属 Theater 清理失败回滚另一套事务。
+            logger.warning("角色重命名后清理小剧场 session 失败: lanlan=%s err=%s", old_name, exc)
+
     # 数据更新+重载+卡面迁移完成后再通知前端
     if memory_server_reloaded and rename_notification_ws and rename_notification_message:
         try:
@@ -881,6 +890,18 @@ async def _publish_character_switch_with_theater_boundary(config_manager, old_ca
         old_lanlan_name=old_catgirl,
         publish=publish,
     )
+
+
+async def _clear_theater_session_after_current_catgirl_rename(config_manager, old_catgirl: str) -> bool:
+    """当前猫娘改名成功后结束旧 owner 的演出，避免留下不可恢复的 active key。"""  # noqa: DOCSTRING_CJK
+    # 延迟导入保持角色 Router 的启动依赖方向不变；清理失败由调用方记录但不回滚角色事务。
+    from services.theater import runtime as theater_runtime
+
+    result = await theater_runtime.clear_character_session(
+        _theater_root_for_config_manager(config_manager),
+        lanlan_name=old_catgirl,
+    )
+    return bool(result.get("cleared"))
 
 
 @router.post('/reload')

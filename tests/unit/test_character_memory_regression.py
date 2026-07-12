@@ -617,6 +617,15 @@ async def test_rename_catgirl_moves_runtime_and_legacy_memory_storage(monkeypatc
                 )
             assert add_result["success"] is True
 
+            # 把待改名角色设为当前猫娘并启动演出，验证改名后不会遗留旧名称的恢复入口。
+            from services.theater import runtime as theater_runtime, session_store as theater_session_store
+
+            characters = cm.load_characters()
+            characters["当前猫娘"] = "旧角色"
+            cm.save_characters(characters)
+            theater_root = Path(cm.app_docs_dir) / "theater"
+            theater_session = await theater_runtime.start_session(theater_root, lanlan_name="旧角色")
+
             old_memory_dir = Path(cm.memory_dir) / "旧角色"
             old_memory_dir.mkdir(parents=True, exist_ok=True)
             (Path(cm.project_memory_dir)).mkdir(parents=True, exist_ok=True)
@@ -651,6 +660,12 @@ async def test_rename_catgirl_moves_runtime_and_legacy_memory_storage(monkeypatc
             saved_characters = cm.load_characters()
             assert "新角色" in saved_characters.get("猫娘", {})
             assert "旧角色" not in saved_characters.get("猫娘", {})
+            saved_theater_session = await theater_session_store.load_session(
+                theater_root,
+                theater_session["session_id"],
+            )
+            assert saved_theater_session["ended_at"]
+            assert await theater_session_store.load_active_sessions(theater_root) == {}
             saved_profile = saved_characters["猫娘"]["新角色"]
             assert "我的改名记录" not in saved_profile
             rename_events = saved_profile["_reserved"]["ai_context"]["rename_events"]

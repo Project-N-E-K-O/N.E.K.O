@@ -472,6 +472,47 @@ async def test_turn_rechecks_stale_session_after_llm_returns(monkeypatch, tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_turn_commit_blocks_replacement_start_until_save_finishes(monkeypatch, tmp_path):
+    """旧回合从 stale 校验到写盘结束前，新开场不能替换 active Session。"""  # noqa: DOCSTRING_CJK
+    root = tmp_path / "theater"
+    started = await runtime.start_session(root, lanlan_name="测试猫娘", client_start_id="start_before_commit")
+    real_save_session = session_store.save_session
+    candidate_save_entered = asyncio.Event()
+    release_candidate_save = asyncio.Event()
+
+    async def _pause_candidate_save(target_root, session):
+        """只暂停 revision 1 的候选写盘，确定性暴露 stale 校验后的替换窗口。"""  # noqa: DOCSTRING_CJK
+        if session.get("session_id") == started["session_id"] and session.get("state_revision") == 1:
+            candidate_save_entered.set()
+            await release_candidate_save.wait()
+        await real_save_session(target_root, session)
+
+    monkeypatch.setattr(session_store, "save_session", _pause_candidate_save)
+    turn_task = asyncio.create_task(
+        runtime.submit_input(
+            root,
+            session_id=started["session_id"],
+            input_kind="free_input",
+            message="这轮正在提交",
+            client_turn_id="turn_atomic_commit",
+            base_revision=0,
+        )
+    )
+    await candidate_save_entered.wait()
+    start_task = asyncio.create_task(
+        runtime.start_session(root, lanlan_name="测试猫娘", client_start_id="start_after_commit")
+    )
+    done, _pending = await asyncio.wait({start_task}, timeout=0.05)
+
+    assert not done
+    release_candidate_save.set()
+    committed, replacement = await asyncio.gather(turn_task, start_task)
+    assert committed["ok"] is True
+    assert committed["state_revision"] == 1
+    assert replacement["session_id"] != started["session_id"]
+
+
+@pytest.mark.asyncio
 async def test_turn_rechecks_current_catgirl_after_llm_returns(monkeypatch, tmp_path):
     """模型等待期间切换猫娘时，旧角色候选回合不得提交。"""  # noqa: DOCSTRING_CJK
     root = tmp_path / "theater"

@@ -71,33 +71,36 @@ async def submit(
             # 角色切换先写当前猫娘、后等待旧 Session 清理；因此模型返回后必须直接重验配置归属。
             return {"ok": False, "reason": "session_character_mismatch"}
 
-        latest = await session_store.load_session(root, session_id)
-        if latest is None:
-            return {"ok": False, "reason": "session_not_found"}
-        if await session_store.is_stale_session(root, latest):
-            # 模型生成期间可能已有新窗口替换活动 Session，旧候选状态此时必须直接丢弃。
-            return {"ok": False, "reason": "stale_session", "skipped": True}
-        if session_store.state_revision(latest) != revision:
-            return _revision_conflict(session_store.state_revision(latest))
-        next_revision = revision + 1
-        candidate["state_revision"] = next_revision
-        candidate["updated_at"] = _now_ms()
-        response["state_revision"] = next_revision
-        candidate["public_snapshot"] = deepcopy(response)
-        index = candidate.setdefault("turn_results_by_client_id", {})
-        index[request["client_turn_id"]] = deepcopy(response)
-        # 字典保持提交顺序；超过上限时淘汰最早结果，旧请求仍会被 revision 校验阻止重复推进。
-        while len(index) > MAX_IDEMPOTENT_RESULTS:
-            index.pop(next(iter(index)))
-        await session_store.save_session(root, candidate)
-        if candidate.get("ended_at"):
-            # 正式结局和主动离场都清除当前角色的恢复索引。
-            await session_store.clear_active_session(
-                root,
-                str(candidate.get("lanlan_name") or ""),
-                str(candidate.get("session_id") or ""),
-            )
-        return deepcopy(response)
+        lanlan_name = str(candidate.get("lanlan_name") or "")
+        async with session_store.character_guard(root, lanlan_name):
+            # 二次校验、写盘和返回共享开场使用的角色边界，新窗口不能在中途替换 active Session。
+            latest = await session_store.load_session(root, session_id)
+            if latest is None:
+                return {"ok": False, "reason": "session_not_found"}
+            if await session_store.is_stale_session(root, latest):
+                # 模型生成期间可能已有新窗口替换活动 Session，旧候选状态此时必须直接丢弃。
+                return {"ok": False, "reason": "stale_session", "skipped": True}
+            if session_store.state_revision(latest) != revision:
+                return _revision_conflict(session_store.state_revision(latest))
+            next_revision = revision + 1
+            candidate["state_revision"] = next_revision
+            candidate["updated_at"] = _now_ms()
+            response["state_revision"] = next_revision
+            candidate["public_snapshot"] = deepcopy(response)
+            index = candidate.setdefault("turn_results_by_client_id", {})
+            index[request["client_turn_id"]] = deepcopy(response)
+            # 字典保持提交顺序；超过上限时淘汰最早结果，旧请求仍会被 revision 校验阻止重复推进。
+            while len(index) > MAX_IDEMPOTENT_RESULTS:
+                index.pop(next(iter(index)))
+            await session_store.save_session(root, candidate)
+            if candidate.get("ended_at"):
+                # 正式结局和主动离场都在同一角色边界内清除恢复索引。
+                await session_store.clear_active_session(
+                    root,
+                    lanlan_name,
+                    str(candidate.get("session_id") or ""),
+                )
+            return deepcopy(response)
 
 
 async def _current_catgirl_name(config_manager: Any | None) -> str:
