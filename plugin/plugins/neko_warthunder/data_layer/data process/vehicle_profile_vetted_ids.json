@@ -1,0 +1,42 @@
+{
+  "_README": "Runtime-confirmed /api/processed.vehicle_type ids. This file stores ids only, not telemetry samples or private raw text. Keep these profiles protected from automated Datamine alias churn.",
+  "policy": {
+    "runtime_authority": "/api/processed.vehicle_type",
+    "offline_candidate": "War Thunder Wiki /unit/<gameId>",
+    "numeric_evidence": "Datamine flightmodels"
+  },
+  "ids": [
+    {
+      "vehicle_type": "ki_61_1a_otsu_china",
+      "source": "live_indicator"
+    },
+    {
+      "vehicle_type": "ki_44_2_hei_china",
+      "source": "live_indicator"
+    },
+    {
+      "vehicle_type": "f-84g_china",
+      "source": "live_indicator"
+    },
+    {
+      "vehicle_type": "j_15t",
+      "source": "live_indicator"
+    },
+    {
+      "vehicle_type": "mirage_2000_5ei",
+      "source": "live_indicator"
+    },
+    {
+      "vehicle_type": "b_52h",
+      "source": "live_indicator"
+    },
+    {
+      "vehicle_type": "tu_95m",
+      "source": "live_indicator"
+    },
+    {
+      "vehicle_type": "hs-123a-1_china",
+      "source": "live_indicator"
+    }
+  ]
+}

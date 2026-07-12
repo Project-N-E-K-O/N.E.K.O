@@ -1,0 +1,37 @@
+[project]
+name = "neko-warthunder-plugin"
+version = "0.1.0"
+description = "Standalone N.E.K.O War Thunder catgirl copilot plugin."
+requires-python = ">=3.11,<3.12"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0,<9.0",
+]
+
+[tool.neko.build]
+exclude_dirs = [
+    ".github",
+    ".vscode",
+    "docs",
+    "tests",
+    "tools",
+    "local_samples",
+    "local_test_logs",
+    "N.E.K.O",
+    "data_layer/data process/captures",
+    "data_layer/data process/records",
+    "data_layer/data process/maps",
+]
+exclude_files = [
+    ".gitignore",
+    "README.md",
+    "PROJECT_STATUS.md",
+    "uv.lock",
+    ".runtime_state.json",
+    "data_layer/.gitignore",
+]
+exclude = [
+    "data_layer/data process/*.md",
+]
