@@ -1239,7 +1239,11 @@ def _drop_unanswered_anthropic_tool_uses(messages: list[dict], tool_use_ids: set
         ] or [{"type": "text", "text": "..."}]
 
 
-def _convert_openai_tool_call_to_anthropic(tool_call: Any) -> dict[str, Any] | None:
+def _convert_openai_tool_call_to_anthropic(
+    tool_call: Any,
+    *,
+    fallback_id: str | None = None,
+) -> dict[str, Any] | None:
     if not isinstance(tool_call, dict):
         tool_call = {
             "id": getattr(tool_call, "id", ""),
@@ -1266,7 +1270,7 @@ def _convert_openai_tool_call_to_anthropic(tool_call: Any) -> dict[str, Any] | N
         parsed_args = raw_args
     else:
         parsed_args = {}
-    tool_use_id = str(tool_call.get("id") or name)
+    tool_use_id = str(tool_call.get("id") or fallback_id or name)
     return {
         "type": "tool_use",
         "id": tool_use_id,
@@ -1357,15 +1361,25 @@ def _convert_openai_tool_choice_to_anthropic(tool_choice: Any) -> dict[str, Any]
     return None
 
 
-def _convert_openai_tool_result_to_anthropic(msg: dict) -> dict[str, Any]:
+def _convert_openai_tool_result_to_anthropic(
+    msg: dict,
+    *,
+    tool_use_id: str | None = None,
+) -> dict[str, Any]:
     blocks = _convert_openai_content_to_anthropic(msg.get("content"))
-    tool_use_id = str(msg.get("tool_call_id") or msg.get("id") or msg.get("name") or "tool_result")
+    resolved_tool_use_id = str(
+        tool_use_id
+        or msg.get("tool_call_id")
+        or msg.get("id")
+        or msg.get("name")
+        or "tool_result"
+    )
     content: str | list[dict] = _anthropic_text_from_blocks(blocks)
     if any(isinstance(block, dict) and block.get("type") != "text" for block in blocks):
         content = blocks
     return {
         "type": "tool_result",
-        "tool_use_id": tool_use_id,
+        "tool_use_id": resolved_tool_use_id,
         "content": content,
     }
 
@@ -1389,7 +1403,9 @@ def _normalize_messages_to_anthropic(messages: Any) -> tuple[str, list[dict]]:
     system_parts: list[str] = []
     anthropic_messages: list[dict] = []
     pending_tool_use_ids: set[str] = set()
+    pending_fallback_tool_uses: list[tuple[str, str]] = []
     emitted_tool_use_ids: set[str] = set()
+    fallback_tool_use_seq = 0
 
     for msg in normalized:
         role = msg.get("role", "")
@@ -1407,7 +1423,24 @@ def _normalize_messages_to_anthropic(messages: Any) -> tuple[str, list[dict]]:
                     system_parts.append(system_text)
             continue
         if role == "tool":
-            tool_use_id = str(msg.get("tool_call_id") or msg.get("id") or msg.get("name") or "tool_result")
+            explicit_tool_use_id = msg.get("tool_call_id") or msg.get("id")
+            if explicit_tool_use_id:
+                tool_use_id = str(explicit_tool_use_id)
+            else:
+                result_name = str(msg.get("name") or "")
+                fallback_match = next(
+                    (
+                        item
+                        for item in pending_fallback_tool_uses
+                        if not result_name or item[1] == result_name
+                    ),
+                    None,
+                )
+                tool_use_id = (
+                    fallback_match[0]
+                    if fallback_match
+                    else str(msg.get("name") or "tool_result")
+                )
             if tool_use_id not in pending_tool_use_ids:
                 anthropic_messages.append({
                     "role": "user",
@@ -1415,9 +1448,17 @@ def _normalize_messages_to_anthropic(messages: Any) -> tuple[str, list[dict]]:
                 })
                 continue
             pending_tool_use_ids.discard(tool_use_id)
+            pending_fallback_tool_uses = [
+                item for item in pending_fallback_tool_uses if item[0] != tool_use_id
+            ]
             anthropic_messages.append({
                 "role": "user",
-                "content": [_convert_openai_tool_result_to_anthropic(msg)],
+                "content": [
+                    _convert_openai_tool_result_to_anthropic(
+                        msg,
+                        tool_use_id=tool_use_id,
+                    )
+                ],
             })
             continue
         if role not in ("user", "assistant"):
@@ -1429,23 +1470,47 @@ def _normalize_messages_to_anthropic(messages: Any) -> tuple[str, list[dict]]:
             for block in blocks:
                 if isinstance(block, dict) and block.get("type") == "tool_use":
                     tool_use_id = str(block.get("id") or "")
-                    if not tool_use_id or tool_use_id in emitted_tool_use_ids:
+                    if not tool_use_id:
+                        fallback_tool_use_seq += 1
+                        tool_use_id = f"toolu_fallback_{fallback_tool_use_seq}"
+                        block = {**block, "id": tool_use_id}
+                        pending_fallback_tool_uses.append(
+                            (tool_use_id, str(block.get("name") or ""))
+                        )
+                    if tool_use_id in emitted_tool_use_ids:
                         continue
                     emitted_tool_use_ids.add(tool_use_id)
                     seen_tool_use_ids.add(tool_use_id)
                 deduped_blocks.append(block)
             blocks = deduped_blocks
             for tool_call in msg.get("tool_calls") or []:
-                converted = _convert_openai_tool_call_to_anthropic(tool_call)
+                raw_tool_call_id = (
+                    tool_call.get("id")
+                    if isinstance(tool_call, dict)
+                    else getattr(tool_call, "id", "")
+                )
+                fallback_id = None
+                if not raw_tool_call_id:
+                    fallback_tool_use_seq += 1
+                    fallback_id = f"toolu_fallback_{fallback_tool_use_seq}"
+                converted = _convert_openai_tool_call_to_anthropic(
+                    tool_call,
+                    fallback_id=fallback_id,
+                )
                 converted_id = str(converted.get("id") or "") if converted else ""
                 if converted and converted_id and converted_id not in emitted_tool_use_ids:
                     blocks.append(converted)
                     emitted_tool_use_ids.add(converted_id)
                     seen_tool_use_ids.add(converted_id)
+                    if fallback_id:
+                        pending_fallback_tool_uses.append(
+                            (converted_id, str(converted.get("name") or ""))
+                        )
             pending_tool_use_ids |= seen_tool_use_ids
         elif role == "user":
             _drop_unanswered_anthropic_tool_uses(anthropic_messages, pending_tool_use_ids)
             pending_tool_use_ids.clear()
+            pending_fallback_tool_uses.clear()
         anthropic_messages.append({"role": role, "content": blocks or [{"type": "text", "text": "..."}]})
 
     _drop_unanswered_anthropic_tool_uses(anthropic_messages, pending_tool_use_ids)
