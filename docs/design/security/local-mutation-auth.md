@@ -270,7 +270,7 @@ if (response.status === 403 && sec && typeof sec.refreshToken === 'function') {
 
 ### 7.2 fire-and-forget 调用（**PR #1530 引入**）
 
-参考 `static/music_ui.js` 的 `/api/proactive/music_played_through` 调用：用 async IIFE 包一层，让 `getMutationHeaders()` 能 await 但不阻塞外层事件回调。`.catch(() => {})` 仅适用于 *业务上确认失败可以丢弃* 的场景。
+参考 `static/jukebox/music_ui.js` 的 `/api/proactive/music_played_through` 调用：用 async IIFE 包一层，让 `getMutationHeaders()` 能 await 但不阻塞外层事件回调。`.catch(() => {})` 仅适用于 *业务上确认失败可以丢弃* 的场景。
 
 > main 上 PR #1530 尚未合并；当前 `music_ui.js` 还在用 `Content-Type` only fetch。本节描述的是 #1530 落地后的目标实现。
 

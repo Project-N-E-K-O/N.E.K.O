@@ -11,7 +11,7 @@ APP_INTERPAGE_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "a
 AVATAR_UI_POPUP_PATH = Path(__file__).resolve().parents[2] / "static" / "avatar" / "avatar-ui-popup.js"
 AVATAR_POPUP_COMMON_PATH = Path(__file__).resolve().parents[2] / "static" / "avatar" / "avatar-popup-common.js"
 STATIC_LOCALES_DIR = Path(__file__).resolve().parents[2] / "static" / "locales"
-MUSIC_UI_PATH = Path(__file__).resolve().parents[2] / "static" / "music_ui.js"
+MUSIC_UI_PATH = Path(__file__).resolve().parents[2] / "static" / "jukebox" / "music_ui.js"
 MUSIC_UI_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css" / "music_ui.css"
 STATIC_INDEX_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css" / "index.css"
 STATIC_DARK_MODE_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css" / "dark-mode.css"
@@ -203,7 +203,7 @@ def test_standalone_subtitle_page_initializes_theme_before_subtitle_scripts():
     source = SUBTITLE_TEMPLATE_PATH.read_text(encoding="utf-8")
 
     assert '<script src="/static/theme-manager.js"></script>' in source
-    assert source.index('/static/theme-manager.js') < source.index('/static/subtitle-shared.js')
+    assert source.index('/static/theme-manager.js') < source.index('/static/subtitle/subtitle-shared.js')
 
 
 def test_chat_surface_mode_preference_is_shared_with_electron():
