@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import nullcontext, suppress
 from dataclasses import dataclass
+import logging
 from typing import TYPE_CHECKING, Any, Callable, Dict, Generic, List, Optional, Sequence, Tuple, TypeVar, Union, cast
 
 from plugin.core.bus.bus_list import (
@@ -25,6 +26,7 @@ DedupeKey = Tuple[str, Any]
 Payload = Dict[str, Any]
 ChangeRules = Tuple[str, ...]
 WatcherCallback = Callable[["BusListDelta[TRecord]"], None]
+_logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from plugin.core.bus.types import BusList, BusRecord, BusReplayContext, TraceNode
@@ -228,8 +230,10 @@ class BusListWatcher(BusListWatcherCore, Generic[TRecord]):
                     self._debounce_timer = None
                     self._pending_op = None
                     self._pending_payload = None
-            with suppress(Exception):
+            try:
                 self._tick(op, payload, generation=generation)
+            except Exception:
+                _logger.debug("Synchronous watcher refresh failed", exc_info=True)
 
     def _start_refresh_worker(self, loop: asyncio.AbstractEventLoop) -> None:
         task = loop.create_task(self._run_refresh_worker(self._refresh_generation))
@@ -242,8 +246,10 @@ class BusListWatcher(BusListWatcherCore, Generic[TRecord]):
             self._refresh_task = None
         try:
             task.result()
-        except (asyncio.CancelledError, Exception):
+        except asyncio.CancelledError:
             pass
+        except Exception:
+            _logger.debug("Asynchronous watcher refresh failed", exc_info=True)
 
         if (
             is_current
@@ -267,7 +273,13 @@ class BusListWatcher(BusListWatcherCore, Generic[TRecord]):
         try:
             self._schedule_tick(op, delta)
         except Exception:
-            return
+            _logger.debug(
+                "Failed to schedule watcher change bus=%s op=%s sub_id=%s",
+                bus,
+                op,
+                self._sub_id,
+                exc_info=True,
+            )
 
     def _infer_bus(self, plan: "TraceNode") -> str:
         from plugin.core.bus.types import NonReplayableTraceError
