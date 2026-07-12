@@ -576,6 +576,51 @@ def test_anthropic_message_normalization_keeps_repeated_no_id_tool_calls():
     ]
 
 
+def test_anthropic_message_normalization_remaps_reused_ids_across_tool_rounds():
+    _system, messages = llm_client_module._normalize_messages_to_anthropic([
+        {"role": "user", "content": "start"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": "call_0",
+                "type": "function",
+                "function": {"name": "lookup", "arguments": "{\"q\":\"first\"}"},
+            }],
+        },
+        {"role": "tool", "tool_call_id": "call_0", "content": "first result"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": "call_0",
+                "type": "function",
+                "function": {"name": "lookup", "arguments": "{\"q\":\"second\"}"},
+            }],
+        },
+        {"role": "tool", "tool_call_id": "call_0", "content": "second result"},
+    ])
+
+    tool_uses = [
+        block
+        for message in messages
+        for block in message["content"]
+        if block.get("type") == "tool_use"
+    ]
+    tool_results = [
+        block
+        for message in messages
+        for block in message["content"]
+        if block.get("type") == "tool_result"
+    ]
+    assert [block["input"]["q"] for block in tool_uses] == ["first", "second"]
+    assert tool_uses[0]["id"] == "call_0"
+    assert tool_uses[1]["id"] != "call_0"
+    assert [block["tool_use_id"] for block in tool_results] == [
+        block["id"] for block in tool_uses
+    ]
+
+
 def test_anthropic_message_normalization_drops_unanswered_tool_use_before_user_turn():
     _system, messages = llm_client_module._normalize_messages_to_anthropic([
         {"role": "user", "content": "start"},

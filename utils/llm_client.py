@@ -1403,6 +1403,7 @@ def _normalize_messages_to_anthropic(messages: Any) -> tuple[str, list[dict]]:
     system_parts: list[str] = []
     anthropic_messages: list[dict] = []
     pending_tool_use_ids: set[str] = set()
+    pending_source_tool_use_ids: dict[str, list[str]] = {}
     pending_fallback_tool_uses: list[tuple[str, str]] = []
     emitted_tool_use_ids: set[str] = set()
     fallback_tool_use_seq = 0
@@ -1425,7 +1426,11 @@ def _normalize_messages_to_anthropic(messages: Any) -> tuple[str, list[dict]]:
         if role == "tool":
             explicit_tool_use_id = msg.get("tool_call_id") or msg.get("id")
             if explicit_tool_use_id:
-                tool_use_id = str(explicit_tool_use_id)
+                source_tool_use_id = str(explicit_tool_use_id)
+                effective_ids = pending_source_tool_use_ids.get(source_tool_use_id) or []
+                tool_use_id = effective_ids.pop(0) if effective_ids else source_tool_use_id
+                if not effective_ids:
+                    pending_source_tool_use_ids.pop(source_tool_use_id, None)
             else:
                 result_name = str(msg.get("name") or "")
                 fallback_match = next(
@@ -1469,7 +1474,8 @@ def _normalize_messages_to_anthropic(messages: Any) -> tuple[str, list[dict]]:
             deduped_blocks: list[dict] = []
             for block in blocks:
                 if isinstance(block, dict) and block.get("type") == "tool_use":
-                    tool_use_id = str(block.get("id") or "")
+                    source_tool_use_id = str(block.get("id") or "")
+                    tool_use_id = source_tool_use_id
                     if not tool_use_id:
                         fallback_tool_use_seq += 1
                         tool_use_id = f"toolu_fallback_{fallback_tool_use_seq}"
@@ -1478,7 +1484,14 @@ def _normalize_messages_to_anthropic(messages: Any) -> tuple[str, list[dict]]:
                             (tool_use_id, str(block.get("name") or ""))
                         )
                     if tool_use_id in emitted_tool_use_ids:
-                        continue
+                        fallback_tool_use_seq += 1
+                        tool_use_id = f"toolu_fallback_{fallback_tool_use_seq}"
+                        block = {**block, "id": tool_use_id}
+                    if source_tool_use_id:
+                        pending_source_tool_use_ids.setdefault(
+                            source_tool_use_id,
+                            [],
+                        ).append(tool_use_id)
                     emitted_tool_use_ids.add(tool_use_id)
                     seen_tool_use_ids.add(tool_use_id)
                 deduped_blocks.append(block)
@@ -1498,11 +1511,21 @@ def _normalize_messages_to_anthropic(messages: Any) -> tuple[str, list[dict]]:
                     fallback_id=fallback_id,
                 )
                 converted_id = str(converted.get("id") or "") if converted else ""
-                if converted and converted_id and converted_id not in emitted_tool_use_ids:
+                if converted and converted_id:
+                    source_tool_use_id = str(raw_tool_call_id or "")
+                    if converted_id in emitted_tool_use_ids:
+                        fallback_tool_use_seq += 1
+                        converted_id = f"toolu_fallback_{fallback_tool_use_seq}"
+                        converted = {**converted, "id": converted_id}
                     blocks.append(converted)
                     emitted_tool_use_ids.add(converted_id)
                     seen_tool_use_ids.add(converted_id)
-                    if fallback_id:
+                    if source_tool_use_id:
+                        pending_source_tool_use_ids.setdefault(
+                            source_tool_use_id,
+                            [],
+                        ).append(converted_id)
+                    else:
                         pending_fallback_tool_uses.append(
                             (converted_id, str(converted.get("name") or ""))
                         )
@@ -1510,6 +1533,7 @@ def _normalize_messages_to_anthropic(messages: Any) -> tuple[str, list[dict]]:
         elif role == "user":
             _drop_unanswered_anthropic_tool_uses(anthropic_messages, pending_tool_use_ids)
             pending_tool_use_ids.clear()
+            pending_source_tool_use_ids.clear()
             pending_fallback_tool_uses.clear()
         anthropic_messages.append({"role": role, "content": blocks or [{"type": "text", "text": "..."}]})
 
