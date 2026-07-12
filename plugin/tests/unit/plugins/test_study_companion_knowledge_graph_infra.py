@@ -18,7 +18,7 @@ from plugin.plugins.study_companion.knowledge_seed_validator import (
 pytestmark = pytest.mark.unit
 
 
-def test_bundled_legacy_seed_validates_with_quality_gaps() -> None:
+def test_bundled_seed_manifest_validates_all_topics() -> None:
     seed = (
         Path(__file__).resolve().parents[3]
         / "plugins"
@@ -30,7 +30,7 @@ def test_bundled_legacy_seed_validates_with_quality_gaps() -> None:
     result = validate_knowledge_seed_manifest(seed)
 
     assert result.is_valid
-    assert len(result.topics) == 457
+    assert len(result.topics) == 820
     assert result.report["schema_ready_topics"] == len(result.topics)
 
 
