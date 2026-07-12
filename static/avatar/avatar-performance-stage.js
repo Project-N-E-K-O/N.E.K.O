@@ -2240,6 +2240,7 @@
             let settled = false;
             let settleLoop = null;
             let usesTemporaryPoseOverride = false;
+            let overrideFrameCount = 0;
             const startedAt = now();
             const finish = (result, reason) => {
                 if (settled) {
@@ -2321,6 +2322,7 @@
                 if (manager && typeof manager.setTemporaryPoseOverride === 'function') {
                     usesTemporaryPoseOverride = manager.setTemporaryPoseOverride(source, (coreModel) => {
                         if (coreModel === context.coreModel) {
+                            overrideFrameCount += 1;
                             applyFrame();
                         }
                     }) === true;
@@ -2339,13 +2341,31 @@
                 }
                 await new Promise((resolve) => {
                     settleLoop = resolve;
+                    // override 注册成功不代表在被驱动：coreModel.update 包装器
+                    // （installMouthOverride）可能尚未安装或已因异常自卸载。用帧计数
+                    // 心跳判定：连续多个 rAF 都没见 override 回调推进，就退回 rAF 驱动。
+                    // 阈值取 3——live2d 30fps 治理下模型帧隔一个 rAF 推进一次，不会误判。
+                    const OVERRIDE_STALL_FALLBACK_TICKS = 3;
+                    let lastOverrideFrameCount = overrideFrameCount;
+                    let overrideStallTicks = 0;
                     const tick = () => {
                         if (settled) {
                             resolve();
                             return;
                         }
                         try {
+                            let overrideDriving = false;
                             if (usesTemporaryPoseOverride) {
+                                if (overrideFrameCount !== lastOverrideFrameCount) {
+                                    lastOverrideFrameCount = overrideFrameCount;
+                                    overrideStallTicks = 0;
+                                    overrideDriving = true;
+                                } else {
+                                    overrideStallTicks += 1;
+                                    overrideDriving = overrideStallTicks < OVERRIDE_STALL_FALLBACK_TICKS;
+                                }
+                            }
+                            if (overrideDriving) {
                                 // override 回调已在模型 update 注入点逐帧 applyFrame，
                                 // rAF 只做完成/取消督导；重复 applyFrame 会让 handoff 期
                                 // 同一帧双重混合（实际权重变成 1-(1-w)^2）偏离设计曲线。

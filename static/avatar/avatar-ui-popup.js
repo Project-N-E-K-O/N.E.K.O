@@ -1893,6 +1893,13 @@ function createIntervalControl(manager, prefix, toggle) {
         if (toggle.id === 'proactive-chat' && typeof window.resetProactiveChatBackoff === 'function') {
             window.resetProactiveChatBackoff();
         }
+        // vision 发帧 setInterval 在创建时固化了旧间隔，正在运行时重启以套用钳制值
+        // （start 自带先清理再重建 + leader/录音/手动共享条件复查，直接调用即安全重启）
+        if (toggle.id === 'proactive-vision'
+            && typeof window.startProactiveVisionDuringSpeech === 'function'
+            && window.appState && window.appState.proactiveVisionFrameTimer) {
+            window.startProactiveVisionDuringSpeech();
+        }
     }
     slider.value = currentValue;
     Object.assign(slider.style, { width: '60px', height: '4px', cursor: 'pointer', accentColor: 'var(--neko-popup-accent, #44b7fe)' });
