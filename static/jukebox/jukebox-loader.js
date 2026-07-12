@@ -21,6 +21,8 @@
         }
       },
 
+      init: function() {},
+
       getPlayer: function() {
         return null;
       },
@@ -225,14 +227,10 @@
     window.Jukebox_togglePause = facade.togglePause;
   }
 
-  if (typeof window.__nekoJukeboxToggle === 'function') {
-    ensureNativeJukeboxFacade();
-    return;
-  }
-
   var SCRIPT_ID = 'neko-jukebox-script';
   var TOAST_ID = 'neko-jukebox-loader-toast';
   var STYLE_ID = 'neko-jukebox-loader-style';
+  var REQUIRED_CONTROL_API_VERSION = 3;
   var currentScript = document.currentScript;
   var assetQuery = getAssetQuery(currentScript && currentScript.src);
   var loadPromise = null;
@@ -244,6 +242,25 @@
 
   window.__NEKO_JUKEBOX_LAZY_LOADER__ = true;
 
+  function hasRequiredControlApi(jukebox) {
+    if (!jukebox || typeof jukebox.executeControl !== 'function') return false;
+    var version = Number(jukebox.controlApiVersion || jukebox.__controlApiVersion || 0);
+    if (version >= REQUIRED_CONTROL_API_VERSION) return true;
+    return Array.isArray(jukebox.supportedControlActions)
+      && jukebox.supportedControlActions.indexOf('adjust_volume') >= 0
+      && jukebox.supportedControlActions.indexOf('set_mode') >= 0
+      && jukebox.supportedControlActions.indexOf('previous') >= 0;
+  }
+
+  function isLoadedJukebox(jukebox) {
+    return !!(
+      jukebox
+      && !jukebox.__nekoLazyFacade
+      && !jukebox.__nativeBridgeFacade
+      && hasRequiredControlApi(jukebox)
+    );
+  }
+
   function getAssetQuery(src) {
     if (!src) return '';
     try {
@@ -252,6 +269,24 @@
     } catch (_) {
       var queryIndex = src.indexOf('?');
       return queryIndex >= 0 ? src.slice(queryIndex) : '';
+    }
+  }
+
+  function buildJukeboxScriptSrc() {
+    try {
+      var url = new URL('/static/jukebox/Jukebox.js', window.location.href);
+      if (assetQuery) {
+        var inherited = new URLSearchParams(assetQuery.replace(/^\?/, ''));
+        inherited.forEach(function(value, key) {
+          url.searchParams.set(key, value);
+        });
+      }
+      url.searchParams.set('jukebox_control_api', String(REQUIRED_CONTROL_API_VERSION));
+      return url.pathname + url.search;
+    } catch (_) {
+      var query = assetQuery || '';
+      var separator = query ? '&' : '?';
+      return '/static/jukebox/Jukebox.js' + query + separator + 'jukebox_control_api=' + encodeURIComponent(String(REQUIRED_CONTROL_API_VERSION));
     }
   }
 
@@ -395,8 +430,62 @@
     hideToast(2800);
   }
 
+  function clearPendingUnload() {
+    if (unloadTimer) {
+      clearTimeout(unloadTimer);
+      unloadTimer = null;
+    }
+  }
+
+  function ensureLazyJukeboxFacade() {
+    if (!window.Jukebox && typeof window.__nekoJukeboxToggle === 'function') {
+      ensureNativeJukeboxFacade();
+    }
+    if (isLoadedJukebox(window.Jukebox)) return window.Jukebox;
+    if (window.Jukebox && window.Jukebox.__nekoLazyFacade) return window.Jukebox;
+
+    var facade = window.Jukebox || {
+      State: {
+        isOpen: false,
+        isHidden: false,
+        currentSong: null,
+        isPlaying: false,
+        isPaused: false,
+        isVMDPlaying: false
+      },
+      toggle: toggleJukebox
+    };
+    if (!facade.__nativeBridgeFacade) {
+      facade.__nekoLazyFacade = true;
+    }
+    if (typeof facade.toggle !== 'function') {
+      facade.toggle = toggleJukebox;
+    }
+    if (typeof facade.init !== 'function') {
+      facade.init = function() {};
+    }
+    facade.ensureRuntime = async function(options) {
+      var jukebox = await loadJukeboxScript();
+      initJukebox(jukebox);
+      if (!jukebox || typeof jukebox.ensureRuntime !== 'function') {
+        throw new Error('Jukebox runtime API unavailable');
+      }
+      return jukebox.ensureRuntime(options || {});
+    };
+    facade.executeControl = async function(command) {
+      var jukebox = await loadJukeboxScript();
+      initJukebox(jukebox);
+      if (!jukebox || typeof jukebox.executeControl !== 'function') {
+        throw new Error('Jukebox control API unavailable');
+      }
+      return jukebox.executeControl(command || {});
+    };
+    window.Jukebox = facade;
+    return window.Jukebox;
+  }
+
   function loadJukeboxScript() {
-    if (window.Jukebox) return Promise.resolve(window.Jukebox);
+    if (isLoadedJukebox(window.Jukebox)) return Promise.resolve(window.Jukebox);
     if (loadPromise) return loadPromise;
 
     loadPromise = new Promise(function(resolve, reject) {
@@ -405,7 +494,7 @@
 
       var script = document.createElement('script');
       script.id = SCRIPT_ID;
-      script.src = '/static/jukebox/Jukebox.js' + assetQuery;
+      script.src = buildJukeboxScriptSrc();
       script.async = true;
       script.dataset.nekoJukeboxLazy = 'true';
       script.onload = function() {
@@ -433,6 +522,22 @@
     if (typeof jukebox.init === 'function') {
       jukebox.init();
     }
+    if (typeof jukebox.executeControl === 'function' && !jukebox.__nekoLazyLoaderExecuteWrapped) {
+      var originalExecuteControl = jukebox.executeControl;
+      jukebox.executeControl = function(command) {
+        clearPendingUnload();
+        return originalExecuteControl.call(jukebox, command);
+      };
+      jukebox.__nekoLazyLoaderExecuteWrapped = true;
+    }
+    if (typeof jukebox.ensureRuntime === 'function' && !jukebox.__nekoLazyLoaderRuntimeWrapped) {
+      var originalEnsureRuntime = jukebox.ensureRuntime;
+      jukebox.ensureRuntime = function(options) {
+        clearPendingUnload();
+        return originalEnsureRuntime.call(jukebox, options);
+      };
+      jukebox.__nekoLazyLoaderRuntimeWrapped = true;
+    }
     jukebox.__nekoLazyLoaderInitialized = true;
   }
 
@@ -449,17 +554,14 @@
   }
 
   async function toggleJukebox() {
-    if (unloadTimer) {
-      clearTimeout(unloadTimer);
-      unloadTimer = null;
-    }
+    clearPendingUnload();
 
     if (toggleInFlight) {
       showInitializing();
       return;
     }
 
-    if (window.Jukebox && window.Jukebox.State) {
+    if (window.Jukebox && window.Jukebox.State && !window.Jukebox.__nekoLazyFacade) {
       showOrOpenJukebox(window.Jukebox);
       return;
     }
@@ -509,6 +611,7 @@
         window[name] = undefined;
       }
     });
+    ensureLazyJukeboxFacade();
     console.log('[JukeboxLoader] 点歌台资源已卸载');
   }
 
@@ -538,8 +641,15 @@
 
   window.addEventListener('neko:jukebox-full-close', unloadJukebox);
 
-  window.__nekoJukeboxToggle = toggleJukebox;
-  window.__nekoJukeboxToggle.__nekoJukeboxWebLoader = true;
+  if (typeof window.__nekoJukeboxToggle === 'function') {
+    ensureNativeJukeboxFacade();
+  }
+  ensureLazyJukeboxFacade();
+
+  if (typeof window.__nekoJukeboxToggle !== 'function') {
+    window.__nekoJukeboxToggle = toggleJukebox;
+    window.__nekoJukeboxToggle.__nekoJukeboxWebLoader = true;
+  }
   window.__nekoJukeboxLoader = {
     load: loadJukeboxScript,
     toggle: toggleJukebox,

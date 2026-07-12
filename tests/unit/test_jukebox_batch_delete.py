@@ -69,6 +69,63 @@ def test_config_summary_revision_is_stable_and_changes_with_songs():
     assert changed["visibleSongCount"] == 2
 
 
+@pytest.mark.asyncio
+async def test_head_file_reports_jukebox_file_existence(monkeypatch, tmp_path):
+    jukebox_dir = tmp_path / "jukebox"
+    songs_dir = jukebox_dir / "songs"
+    songs_dir.mkdir(parents=True)
+    audio_path = songs_dir / "song.mp3"
+    audio_path.write_bytes(b"audio")
+    fake = _FakeJukeboxConfig(
+        {"version": "1.0", "songs": {}, "actions": {}, "bindings": {}},
+        jukebox_dir,
+    )
+    _install_fake_config(monkeypatch, fake)
+
+    response = await jukebox_router.head_file("songs/song.mp3")
+
+    assert response.status_code == 200
+    assert response.headers["content-length"] == "5"
+    with pytest.raises(HTTPException) as exc_info:
+        await jukebox_router.head_file("songs/missing.mp3")
+    assert exc_info.value.status_code == 404
+
+
+def test_resolve_jukebox_file_prefers_user_storage_then_bundled_layouts(monkeypatch, tmp_path):
+    jukebox_dir = tmp_path / "jukebox"
+    user_songs_dir = jukebox_dir / "songs"
+    user_songs_dir.mkdir(parents=True)
+    user_song = user_songs_dir / "song_001.mp3"
+    user_song.write_bytes(b"user")
+
+    builtin_dir = tmp_path / "static" / "jukebox"
+    builtin_songs_dir = builtin_dir / "songs"
+    builtin_actions_dir = builtin_dir / "actions"
+    builtin_songs_dir.mkdir(parents=True)
+    builtin_actions_dir.mkdir(parents=True)
+    nested_song = builtin_songs_dir / "song_002.mp3"
+    nested_song.write_bytes(b"nested")
+    flat_song = builtin_dir / "song_003.mp3"
+    flat_song.write_bytes(b"flat-song")
+    flat_action = builtin_dir / "song_001.vrma"
+    flat_action.write_bytes(b"flat-action")
+
+    fake = _FakeJukeboxConfig(
+        {"version": "1.0", "songs": {}, "actions": {}, "bindings": {}},
+        jukebox_dir,
+    )
+    _install_fake_config(monkeypatch, fake)
+    monkeypatch.setattr(jukebox_router, "BUILTIN_JUKEBOX_DIR", builtin_dir)
+
+    assert jukebox_router.resolve_jukebox_file_path("songs/song_001.mp3") == user_song
+    assert jukebox_router.resolve_jukebox_file_path("songs/song_002.mp3") == nested_song
+    assert jukebox_router.resolve_jukebox_file_path("songs/song_003.mp3") == flat_song
+    assert jukebox_router.resolve_jukebox_file_path("actions/song_001.vrma") == flat_action
+    with pytest.raises(HTTPException) as exc_info:
+        jukebox_router.resolve_jukebox_file_path("../song_003.mp3")
+    assert exc_info.value.status_code == 403
+
+
 def test_save_builtin_overrides_omits_unchanged_defaults(tmp_path):
     config = _make_save_config(
         tmp_path,

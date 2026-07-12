@@ -640,7 +640,11 @@ class VRMAnimation {
 
             const mixerRoot = this._findBestMixerRoot(vrm, clip);
             const newAction = this._createAndConfigureAction(clip, mixerRoot, options);
+            if (typeof options.shouldStart === 'function' && options.shouldStart() === false) {
+                return false;
+            }
             this._playAction(newAction, options, vrm);
+            return true;
 
         } catch (error) {
             console.error('[VRM Animation] 播放失败:', error);

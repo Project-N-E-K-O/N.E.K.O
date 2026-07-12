@@ -1,5 +1,8 @@
 window.Jukebox = {
 
+  controlApiVersion: 3,
+  supportedControlActions: ['play', 'next', 'previous', 'stop', 'set_volume', 'adjust_volume', 'set_mode'],
+
 
 
   Config: {
@@ -115,6 +118,11 @@ window.Jukebox = {
     configRevision: null,
     configPollTimer: null,
     configPollInFlight: false,
+    runtimeHost: null,
+    runtimeInitPromise: null,
+    isRuntimeReady: false,
+    playerHost: null,
+    lastPlaybackReport: null,
     isOpen: false,
     isHidden: false,
     container: null,
@@ -649,8 +657,9 @@ window.Jukebox = {
       ? Jukebox.getRandomAdjacentSong(direction)
       : Jukebox.getManualAdjacentSong(direction);
     if (nextSong) {
-      Jukebox.playSong(nextSong.id, { fromQueue: Jukebox.State.playbackMode === 'random' });
+      return Jukebox.playSong(nextSong.id, { fromQueue: Jukebox.State.playbackMode === 'random' });
     }
+    return null;
   },
 
   toggleGlobalPlayPause: function() {
@@ -5401,7 +5410,7 @@ window.Jukebox = {
     }
     
     requestAnimationFrame(() => {
-      setTimeout(() => {
+      setTimeout(async () => {
         if (!Jukebox.State.isOpen || !Jukebox.State.container) {
           console.log('[Jukebox] 点歌台已关闭，取消初始化');
           return;
@@ -5409,10 +5418,15 @@ window.Jukebox = {
         console.log('[Jukebox] 准备加载歌曲，检查容器...');
         const tbody = document.getElementById('jukebox-song-list');
         console.log('[Jukebox] 歌曲列表容器:', tbody);
-        Jukebox.loadSongs();
+        await Jukebox.loadSongs();
         Jukebox.initPlayer();
         Jukebox.initVolumeSlider();
         Jukebox.updateCalibrationVisibility();
+        if (Jukebox.State.currentSong && Jukebox.State.isPaused) {
+          Jukebox.updatePausedStatus(Jukebox.State.currentSong);
+        } else if (Jukebox.State.currentSong && (Jukebox.State.isPlaying || Jukebox.State.isVMDPlaying)) {
+          Jukebox.updatePlayingStatus(Jukebox.State.currentSong);
+        }
       }, 100);
     });
     
@@ -5502,11 +5516,21 @@ window.Jukebox = {
     Jukebox.State.player = null;
     Jukebox.State.boundPlayer = null;
     Jukebox.State.audioElement = null;
+    Jukebox.State.playerHost = null;
   },
 
-  prepareForUnload: function() {
+  closeBroadcastChannel: function() {
+    try {
+      if (Jukebox._broadcastChannel) {
+        Jukebox._broadcastChannel.onmessage = null;
+        Jukebox._broadcastChannel.close();
+        Jukebox._broadcastChannel = null;
+      }
+    } catch (_) {}
+  },
+
+  cleanupUiRuntimeShell: function() {
     Jukebox.stopProgressUpdate();
-    Jukebox.destroyPlayer();
     Jukebox.hideTooltip();
 
     if (Jukebox.State.marqueeRaf) {
@@ -5518,15 +5542,22 @@ window.Jukebox = {
     }
 
     Jukebox.stopConfigPolling();
+    Jukebox.closeBroadcastChannel();
+  },
 
-    try {
-      if (Jukebox._broadcastChannel) {
-        Jukebox._broadcastChannel.onmessage = null;
-        Jukebox._broadcastChannel.close();
-        Jukebox._broadcastChannel = null;
-      }
-    } catch (_) {}
+  prepareForUnload: function() {
+    Jukebox.cleanupUiRuntimeShell();
+    Jukebox.destroyPlayer();
+    Jukebox.destroyRuntimeHost();
+  },
 
+  hasHeadlessRuntime: function() {
+    return !!(
+      Jukebox.State.isRuntimeReady
+      && Jukebox.State.runtimeHost
+      && document.body.contains(Jukebox.State.runtimeHost)
+      && Jukebox.State.playerHost === 'runtime'
+    );
   },
 
   notifyFullClose: function(reason) {
@@ -5538,8 +5569,13 @@ window.Jukebox = {
   },
   
   close: function() {
-    Jukebox.stopPlayback();
-    Jukebox.prepareForUnload();
+    const preserveRuntime = Jukebox.hasHeadlessRuntime();
+    if (preserveRuntime) {
+      Jukebox.cleanupUiRuntimeShell();
+    } else {
+      Jukebox.stopPlayback();
+      Jukebox.prepareForUnload();
+    }
     
     // 销毁管理器面板（移除 DOM 节点 + 清理拖拽监听）
     Jukebox.SongActionManager.destroy();
@@ -5578,20 +5614,12 @@ window.Jukebox = {
     Jukebox.State.isOpen = false;
     Jukebox.State.isHidden = false;
     Jukebox.State.hasCustomWindowSize = false;
-    Jukebox.stopConfigPolling();
     Jukebox.State.configRevision = null;
 
-    // 清理 BroadcastChannel
-    try {
-      if (Jukebox._broadcastChannel) {
-        Jukebox._broadcastChannel.onmessage = null;
-        Jukebox._broadcastChannel.close();
-        Jukebox._broadcastChannel = null;
-      }
-    } catch (e) {}
-    
-    // 清空歌曲列表和元素映射，确保下次打开时重新渲染
-    Jukebox.State.songs = [];
+    if (!preserveRuntime) {
+      // 清空歌曲列表，确保完整卸载后下次打开时重新加载。
+      Jukebox.State.songs = [];
+    }
     Jukebox.State.songElements = {};
     
     const jukeboxButton = document.getElementById('jukeboxButton');
@@ -5600,7 +5628,9 @@ window.Jukebox = {
     }
     
     console.log('[Jukebox] 点歌台已关闭');
-    Jukebox.notifyFullClose('close');
+    if (!preserveRuntime) {
+      Jukebox.notifyFullClose('close');
+    }
   },
   
   destroy: function() {
@@ -7745,6 +7775,464 @@ window.Jukebox = {
     Jukebox.State.configPollInFlight = false;
   },
 
+  ensureRuntimeHost: function() {
+    if (Jukebox.State.runtimeHost && document.body.contains(Jukebox.State.runtimeHost)) {
+      return Jukebox.State.runtimeHost;
+    }
+
+    const host = document.createElement('div');
+    host.id = 'neko-jukebox-runtime-host';
+    host.setAttribute('aria-hidden', 'true');
+    host.style.position = 'fixed';
+    host.style.left = '-9999px';
+    host.style.top = '-9999px';
+    host.style.width = '1px';
+    host.style.height = '1px';
+    host.style.overflow = 'hidden';
+    host.style.pointerEvents = 'none';
+    document.body.appendChild(host);
+    Jukebox.State.runtimeHost = host;
+    return host;
+  },
+
+  destroyRuntimeHost: function() {
+    if (Jukebox.State.runtimeHost) {
+      try {
+        Jukebox.State.runtimeHost.remove();
+      } catch (_) {}
+    }
+    Jukebox.State.runtimeHost = null;
+    Jukebox.State.isRuntimeReady = false;
+  },
+
+  ensureRuntime: async function(options = {}) {
+    const Jukebox = window.Jukebox || this;
+    if (Jukebox.State.runtimeInitPromise) {
+      return Jukebox.State.runtimeInitPromise;
+    }
+
+    Jukebox.State.runtimeInitPromise = (async () => {
+      Jukebox.loadPlaybackPreferences();
+      await Jukebox.loadSongData();
+      const player = Jukebox.initPlayer({ headless: options.headless === true });
+      if (!player && !Jukebox.getPlayer()) {
+        throw new Error(window.t('Jukebox.playError', '音乐播放器未初始化'));
+      }
+      Jukebox.State.isRuntimeReady = true;
+      return {
+        songCount: Jukebox.State.songs.length,
+        headless: options.headless === true
+      };
+    })();
+
+    try {
+      return await Jukebox.State.runtimeInitPromise;
+    } finally {
+      Jukebox.State.runtimeInitPromise = null;
+    }
+  },
+
+  normalizeSongQuery: function(value) {
+    return String(value || '')
+      .normalize('NFKC')
+      .trim()
+      .toLowerCase()
+      .replace(/[\s\-_/\\|·・,，.。:：;；'"\[\]【】()（）{}<>《》]+/g, '');
+  },
+
+  getSongSearchValues: function(song) {
+    const values = [
+      song && song.name,
+      song && song.artist,
+      song && song.id,
+      song && song.audio,
+      song && song.defaultAction
+    ];
+    if (song && Array.isArray(song.aliases)) {
+      values.push(...song.aliases);
+    } else if (song && song.aliases) {
+      values.push(song.aliases);
+    }
+    if (song && Array.isArray(song.boundActions)) {
+      song.boundActions.forEach(action => {
+        values.push(action && action.id, action && action.name, action && action.file);
+      });
+    }
+
+    return [...new Set(values.map(value => Jukebox.normalizeSongQuery(value)).filter(Boolean))];
+  },
+
+  getLevenshteinDistance: function(a, b, maxDistance = Infinity) {
+    if (a === b) return 0;
+    if (!a) return b.length;
+    if (!b) return a.length;
+    if (Math.abs(a.length - b.length) > maxDistance) return maxDistance + 1;
+
+    let previous = Array.from({ length: b.length + 1 }, (_, index) => index);
+    for (let i = 1; i <= a.length; i += 1) {
+      const current = [i];
+      let rowMin = current[0];
+      for (let j = 1; j <= b.length; j += 1) {
+        const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+        const value = Math.min(
+          previous[j] + 1,
+          current[j - 1] + 1,
+          previous[j - 1] + cost
+        );
+        current[j] = value;
+        rowMin = Math.min(rowMin, value);
+      }
+      if (rowMin > maxDistance) return maxDistance + 1;
+      previous = current;
+    }
+    return previous[b.length];
+  },
+
+  getBestFuzzyDistance: function(query, target) {
+    if (!query || !target || query.length < 2 || target.length < 2) return Infinity;
+
+    const maxDistance = query.length <= 3 ? 1 : Math.max(1, Math.floor(query.length * 0.3));
+    let best = Infinity;
+    const minLength = Math.max(1, query.length - maxDistance);
+    const maxLength = Math.min(target.length, query.length + maxDistance);
+
+    for (let start = 0; start < target.length; start += 1) {
+      for (let length = minLength; length <= maxLength; length += 1) {
+        if (start + length > target.length) continue;
+        const fragment = target.slice(start, start + length);
+        const distance = Jukebox.getLevenshteinDistance(query, fragment, Math.min(maxDistance, best));
+        if (distance < best) best = distance;
+      }
+    }
+
+    return best <= maxDistance ? best : Infinity;
+  },
+
+  scoreSongForQuery: function(song, normalizedQuery, index) {
+    let bestScore = -Infinity;
+    const values = Jukebox.getSongSearchValues(song);
+
+    values.forEach((value) => {
+      if (value === normalizedQuery) {
+        bestScore = Math.max(bestScore, 10000 - index);
+        return;
+      }
+      if (value.startsWith(normalizedQuery)) {
+        bestScore = Math.max(bestScore, 9000 - (value.length - normalizedQuery.length) - index);
+        return;
+      }
+      const includesIndex = value.indexOf(normalizedQuery);
+      if (includesIndex >= 0) {
+        bestScore = Math.max(bestScore, 8000 - includesIndex - (value.length - normalizedQuery.length) - index);
+        return;
+      }
+
+      const fuzzyDistance = Jukebox.getBestFuzzyDistance(normalizedQuery, value);
+      if (Number.isFinite(fuzzyDistance)) {
+        bestScore = Math.max(bestScore, 7000 - fuzzyDistance * 100 - Math.abs(value.length - normalizedQuery.length) - index);
+      }
+    });
+
+    return Number.isFinite(bestScore) ? bestScore : null;
+  },
+
+  findSongForQuery: function(query) {
+    const songs = Jukebox.State.songs || [];
+    const normalizedQuery = Jukebox.normalizeSongQuery(query);
+    if (!normalizedQuery) {
+      return songs[0] || null;
+    }
+
+    let best = null;
+    let bestScore = -Infinity;
+    songs.forEach((song, index) => {
+      const score = Jukebox.scoreSongForQuery(song, normalizedQuery, index);
+      if (score !== null && score > bestScore) {
+        best = song;
+        bestScore = score;
+      }
+    });
+
+    return best;
+  },
+
+  executeControl: async function(command = {}) {
+    const normalizedAction = String(command.action || '').trim().toLowerCase();
+
+    if (!Jukebox.supportedControlActions.includes(normalizedAction)) {
+      return {
+        ok: false,
+        action: normalizedAction,
+        message: 'unsupported_jukebox_action'
+      };
+    }
+
+    if (normalizedAction === 'stop') {
+      Jukebox.State.playRequestId += 1;
+      Jukebox.stopPlayback();
+      return { ok: true, action: 'stop' };
+    }
+
+    if (normalizedAction === 'set_mode') {
+      return Jukebox.executeSetModeControl(command.mode);
+    }
+
+    if (normalizedAction === 'set_volume') {
+      await Jukebox.ensureRuntime({ headless: command.headless !== false });
+      return Jukebox.executeSetVolumeControl(command.value);
+    }
+
+    if (normalizedAction === 'adjust_volume') {
+      await Jukebox.ensureRuntime({ headless: command.headless !== false });
+      return Jukebox.executeAdjustVolumeControl(command.value);
+    }
+
+    await Jukebox.ensureRuntime({ headless: command.headless !== false });
+
+    if (normalizedAction === 'next' || normalizedAction === 'previous') {
+      const direction = normalizedAction === 'previous' ? -1 : 1;
+      const adjacentSong = Jukebox.State.playbackMode === 'random'
+        ? Jukebox.getRandomAdjacentSong(direction)
+        : Jukebox.getManualAdjacentSong(direction);
+      if (!adjacentSong) {
+        return {
+          ok: false,
+          action: normalizedAction,
+          message: normalizedAction === 'previous' ? 'no_previous_song' : 'no_next_song'
+        };
+      }
+      return Jukebox.executePlayControl(normalizedAction, adjacentSong, { fromQueue: Jukebox.State.playbackMode === 'random' });
+    }
+
+    const song = Jukebox.findSongForQuery(command.query || '');
+    if (!song) {
+      return { ok: false, action: 'play', message: 'song_not_found' };
+    }
+
+    return Jukebox.executePlayControl('play', song);
+  },
+
+  normalizeControlVolume: function(value) {
+    if (value === null || value === undefined || value === '') return null;
+    const numberValue = Number(value);
+    if (!Number.isFinite(numberValue)) return null;
+    if (numberValue < 0 || numberValue > 100) return null;
+    return Math.max(0, Math.min(1, numberValue > 1 ? numberValue / 100 : numberValue));
+  },
+
+  normalizeControlVolumeDelta: function(value) {
+    if (value === null || value === undefined || value === '') return null;
+    const numberValue = Number(value);
+    if (!Number.isFinite(numberValue)) return null;
+    if (numberValue < -100 || numberValue > 100) return null;
+    return Math.max(-1, Math.min(1, Math.abs(numberValue) > 1 ? numberValue / 100 : numberValue));
+  },
+
+  getCurrentVolume: function() {
+    const player = Jukebox.getPlayer();
+    const playerVolume = player && player.audio ? Number(player.audio.volume) : NaN;
+    if (Number.isFinite(playerVolume)) {
+      return Math.max(0, Math.min(1, playerVolume));
+    }
+    if (Jukebox.State.isMuted) return 0;
+    const savedVolume = Number(Jukebox.State.savedVolume);
+    return Number.isFinite(savedVolume) ? Math.max(0, Math.min(1, savedVolume)) : 1;
+  },
+
+  setRuntimeVolume: function(volume) {
+    const normalizedVolume = Math.max(0, Math.min(1, Number(volume)));
+    if (!Number.isFinite(normalizedVolume)) return false;
+
+    const player = Jukebox.getPlayer();
+    if (player && typeof player.volume === 'function') {
+      player.volume(normalizedVolume);
+    } else if (player && player.audio) {
+      player.audio.volume = normalizedVolume;
+    } else {
+      return false;
+    }
+
+    const volumeSlider = document.getElementById('jukebox-volume-slider');
+    if (volumeSlider) {
+      volumeSlider.value = normalizedVolume;
+    }
+
+    if (normalizedVolume > 0) {
+      Jukebox.State.isMuted = false;
+      Jukebox.State.savedVolume = normalizedVolume;
+    } else {
+      Jukebox.State.isMuted = true;
+    }
+
+    Jukebox.updateVolumeDisplay(normalizedVolume);
+    return true;
+  },
+
+  executeSetVolumeControl: function(value) {
+    const volume = Jukebox.normalizeControlVolume(value);
+    if (volume === null) {
+      return { ok: false, action: 'set_volume', message: 'invalid_volume' };
+    }
+    if (!Jukebox.setRuntimeVolume(volume)) {
+      return { ok: false, action: 'set_volume', message: 'volume_control_unavailable' };
+    }
+    return { ok: true, action: 'set_volume', volume };
+  },
+
+  executeAdjustVolumeControl: function(value) {
+    const delta = Jukebox.normalizeControlVolumeDelta(value);
+    if (delta === null) {
+      return { ok: false, action: 'adjust_volume', message: 'invalid_volume_delta' };
+    }
+    const volume = Math.max(0, Math.min(1, Math.round((Jukebox.getCurrentVolume() + delta) * 100) / 100));
+    if (!Jukebox.setRuntimeVolume(volume)) {
+      return { ok: false, action: 'adjust_volume', message: 'volume_control_unavailable' };
+    }
+    return { ok: true, action: 'adjust_volume', volume, value: delta };
+  },
+
+  executeSetModeControl: function(mode) {
+    const normalizedMode = String(mode || '').trim().toLowerCase();
+    if (!Jukebox.getPlaybackModeOrder().includes(normalizedMode)) {
+      return { ok: false, action: 'set_mode', message: 'invalid_playback_mode' };
+    }
+    Jukebox.setPlaybackMode(normalizedMode);
+    return {
+      ok: true,
+      action: 'set_mode',
+      mode: normalizedMode
+    };
+  },
+
+  formatControlSong: function(song) {
+    return song ? { id: song.id, name: song.name, artist: song.artist } : null;
+  },
+
+  isPlaybackRequestCurrent: function(requestId) {
+    return !Number.isInteger(requestId) || requestId === Jukebox.State.playRequestId;
+  },
+
+  executePlayControl: async function(action, song, playOptions = {}) {
+    const requestId = ++Jukebox.State.playRequestId;
+    const preflight = await Jukebox.preflightSongPlayback(song);
+    if (requestId !== Jukebox.State.playRequestId) {
+      return {
+        ok: false,
+        action,
+        message: 'play_superseded',
+        song: Jukebox.formatControlSong(song)
+      };
+    }
+    if (!preflight.ok) {
+      return {
+        ok: false,
+        action,
+        message: preflight.message,
+        song: Jukebox.formatControlSong(song)
+      };
+    }
+
+    const playedSong = await Jukebox.playSong(song.id, {
+      ...playOptions,
+      actionAvailability: preflight.actionAvailability,
+      forceReplay: action === 'play',
+      requestId
+    });
+    if (!playedSong) {
+      return {
+        ok: false,
+        action,
+        message: 'play_failed',
+        song: Jukebox.formatControlSong(song)
+      };
+    }
+
+    return {
+      ok: true,
+      action,
+      song: Jukebox.formatControlSong(song),
+      actionStatus: preflight.actionAvailability.status
+    };
+  },
+
+  resolveJukeboxFileUrl: function(filePath) {
+    const rawPath = String(filePath || '').trim();
+    if (!rawPath) return '';
+    if (/^(?:https?:|data:|blob:)/i.test(rawPath)) return rawPath;
+    if (rawPath.startsWith('/api/') || rawPath.startsWith('/static/') || rawPath.startsWith('/user_')) {
+      return rawPath;
+    }
+    return '/api/jukebox/file' + '/' + rawPath.replace(/^\/+/, '');
+  },
+
+  shouldPreflightJukeboxUrl: function(url) {
+    const value = String(url || '');
+    if (!value) return false;
+    if (/^(?:data:|blob:)/i.test(value)) return false;
+    const jukeboxFilePrefix = '/api/jukebox/file' + '/';
+    if (value.startsWith(jukeboxFilePrefix) || value.startsWith('/static/') || value.startsWith('/user_')) {
+      return true;
+    }
+    try {
+      const parsed = new URL(value, window.location.href);
+      return parsed.origin === window.location.origin
+        && (
+          parsed.pathname.startsWith(jukeboxFilePrefix)
+          || parsed.pathname.startsWith('/static/')
+          || parsed.pathname.startsWith('/user_')
+        );
+    } catch (_) {
+      return false;
+    }
+  },
+
+  checkJukeboxFileAvailable: async function(url) {
+    if (!url) return false;
+    if (!Jukebox.shouldPreflightJukeboxUrl(url)) return true;
+
+    try {
+      const response = await fetch(url, { method: 'HEAD', cache: 'no-store' });
+      return !!(response && response.ok);
+    } catch (_) {
+      return false;
+    }
+  },
+
+  getActionAvailability: async function(song) {
+    const action = Jukebox.getActionForModel(song);
+    if (!action) {
+      return { ok: true, status: 'no_action', action: null, url: '' };
+    }
+
+    const url = Jukebox.resolveJukeboxFileUrl(action.file || '');
+    if (!url) {
+      return { ok: false, status: 'action_missing', action, url: '' };
+    }
+
+    const available = await Jukebox.checkJukeboxFileAvailable(url);
+    return {
+      ok: available,
+      status: available ? 'action_ready' : 'action_not_found',
+      action,
+      url
+    };
+  },
+
+  preflightSongPlayback: async function(song) {
+    const audioUrl = Jukebox.resolveJukeboxFileUrl(song && song.audio);
+    if (!audioUrl) {
+      return { ok: false, message: 'audio_missing', audioUrl: '' };
+    }
+
+    const audioAvailable = await Jukebox.checkJukeboxFileAvailable(audioUrl);
+    if (!audioAvailable) {
+      return { ok: false, message: 'audio_not_found', audioUrl };
+    }
+
+    const actionAvailability = await Jukebox.getActionAvailability(song);
+    return { ok: true, audioUrl, actionAvailability };
+  },
+
   checkConfigUpdates: async function() {
     const Jukebox = window.Jukebox || this;
     if (!Jukebox.State.isOpen || Jukebox.State.configPollInFlight) return;
@@ -7775,62 +8263,60 @@ window.Jukebox = {
     }
   },
   
+  loadSongData: async function() {
+    const Jukebox = window.Jukebox || this;
+    // 从后端API加载配置
+    const response = await fetch('/api/jukebox/config');
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const data = await response.json();
+
+    // 保存完整的配置数据
+    Jukebox.State.config = data;
+    Jukebox.State.configRevision = data.configRevision || Jukebox.State.configRevision || null;
+
+    // 将后端的歌曲对象转换为数组格式
+    const songs = data.songs || {};
+    const actions = data.actions || {};
+    const bindings = data.bindings || {};
+
+    Jukebox.State.songs = Jukebox.applySavedSongOrder(Object.entries(songs).map(([id, song]) => {
+      // 获取该歌曲绑定的动画
+      const songBindings = bindings[id] || {};
+      const boundActions = Object.keys(songBindings)
+        .filter(actionId => actions[actionId] && actions[actionId].visible !== false)
+        .map(actionId => ({
+          id: actionId,
+          ...actions[actionId]
+        })); // 过滤掉不存在或已隐藏的动画
+
+      return {
+        id: id,
+        name: song.name || '未知',
+        artist: song.artist || '未知',
+        audio: song.audio || '',
+        vmd: song.vmd || '',
+        duration: song.duration || 0,
+        visible: song.visible !== false, // 默认可见
+        defaultAction: song.defaultAction || '',
+        isBuiltin: song.isBuiltin || false, // 传递自带资源标记
+        boundActions: boundActions // 绑定的动画列表
+      };
+    }).filter(song => song.visible)); // 只显示可见的歌曲
+
+    console.log('[Jukebox]', window.t('Jukebox.songsLoaded', '歌曲列表已加载'), Jukebox.State.songs.length, '首歌曲');
+
+    Jukebox.syncRandomQueueWithSongs();
+    return Jukebox.State.songs;
+  },
+
   loadSongs: async function() {
     const Jukebox = window.Jukebox || this;
     try {
-      // 从后端API加载配置
-      const response = await fetch('/api/jukebox/config');
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-      
-      const data = await response.json();
-      
-      // 保存完整的配置数据
-      Jukebox.State.config = data;
-      Jukebox.State.configRevision = data.configRevision || Jukebox.State.configRevision || null;
-      
-      // 将后端的歌曲对象转换为数组格式
-      const songs = data.songs || {};
-      const actions = data.actions || {};
-      const bindings = data.bindings || {};
-      
-      Jukebox.State.songs = Jukebox.applySavedSongOrder(Object.entries(songs).map(([id, song]) => {
-        // 获取该歌曲绑定的动画
-        const songBindings = bindings[id] || {};
-        const boundActions = Object.keys(songBindings)
-          .filter(actionId => actions[actionId] && actions[actionId].visible !== false)
-          .map(actionId => ({
-            id: actionId,
-            ...actions[actionId]
-          })); // 过滤掉不存在或已隐藏的动画
-        
-        // 处理音频路径：自带资源使用 /static/jukebox/ 前缀
-        let audioPath = song.audio || '';
-        if (song.isBuiltin && audioPath && !audioPath.startsWith('/static/')) {
-          // 将 songs/xxx.mp3 转换为 /static/jukebox/xxx.mp3
-          audioPath = '/static/jukebox/' + audioPath.replace(/^songs\//, '');
-        }
-        
-        return {
-          id: id,
-          name: song.name || '未知',
-          artist: song.artist || '未知',
-          audio: audioPath,
-          vmd: song.vmd || '',
-          duration: song.duration || 0,
-          visible: song.visible !== false, // 默认可见
-          defaultAction: song.defaultAction || '',
-          isBuiltin: song.isBuiltin || false, // 传递自带资源标记
-          boundActions: boundActions // 绑定的动画列表
-        };
-      }).filter(song => song.visible)); // 只显示可见的歌曲
-      
-      console.log('[Jukebox]', window.t('Jukebox.songsLoaded', '歌曲列表已加载'), Jukebox.State.songs.length, '首歌曲');
-      
-      Jukebox.syncRandomQueueWithSongs();
+      await Jukebox.loadSongData();
       Jukebox.renderList();
-      
     } catch (error) {
       console.error('[Jukebox]', window.t('Jukebox.loadFailed', '加载歌曲列表失败'), error);
       Jukebox.showError(window.t('Jukebox.loadFailed', '加载歌曲列表失败') + ': ' + error.message);
@@ -7840,7 +8326,7 @@ window.Jukebox = {
   renderList: function() {
     const tbody = document.getElementById('jukebox-song-list');
     if (!tbody) {
-      console.error('[Jukebox]', window.t('Jukebox.listContainerNotFound', '歌曲列表容器不存在'));
+      console.debug('[Jukebox]', window.t('Jukebox.listContainerNotFound', '歌曲列表容器不存在'));
       return;
     }
 
@@ -8052,9 +8538,12 @@ window.Jukebox = {
     Jukebox.updateStoppedStatus();
 
     if (nextSong) {
+      const requestId = Jukebox.State.playRequestId;
+      const fromQueue = Jukebox.State.playbackMode === 'random';
       setTimeout(() => {
-        if (!Jukebox.State.isOpen && !window.__NEKO_JUKEBOX_STANDALONE__) return;
-        Jukebox.playSong(nextSong.id, { fromQueue: Jukebox.State.playbackMode === 'random' });
+        if (!Jukebox.State.isOpen && !Jukebox.State.isRuntimeReady && !window.__NEKO_JUKEBOX_STANDALONE__) return;
+        if (requestId !== Jukebox.State.playRequestId) return;
+        Jukebox.playSong(nextSong.id, { fromQueue, requestId });
       }, 0);
     }
   },
@@ -8063,22 +8552,23 @@ window.Jukebox = {
     const song = Jukebox.State.songs.find(s => s.id === songId);
     if (!song) {
       console.error('[Jukebox]', window.t('Jukebox.notFound', '找不到歌曲'), songId);
-      return;
+      return null;
     }
     
-    if (Jukebox.State.currentSong && Jukebox.State.currentSong.id === songId) {
+    const forceReplay = options.forceReplay === true;
+    if (Jukebox.State.currentSong && Jukebox.State.currentSong.id === songId && !forceReplay) {
       if (Jukebox.State.isPaused) {
         console.log('[Jukebox] 恢复暂停的歌曲:', song.name);
         Jukebox.togglePause();
-        return;
+        return song;
       }
       if (Jukebox.State.isPlaying) {
         if (options.fromQueue === true) {
-          return;
+          return song;
         }
         console.log('[Jukebox] 停止当前播放的歌曲:', song.name);
         Jukebox.stopPlayback();
-        return;
+        return song;
       }
     }
     
@@ -8092,6 +8582,12 @@ window.Jukebox = {
       Jukebox.clearRandomQueue();
     }
 
+    const requestId = Number.isInteger(options.requestId) ? options.requestId : ++Jukebox.State.playRequestId;
+    if (requestId !== Jukebox.State.playRequestId) {
+      console.log('[Jukebox] 播放请求已被新请求取代，取消播放');
+      return null;
+    }
+
     console.log('[Jukebox] 播放歌曲:', song.name);
     
     const preserveRandomQueue = Jukebox.State.playbackMode === 'random'
@@ -8101,56 +8597,59 @@ window.Jukebox = {
       );
     Jukebox.stopPlayback({ preserveRandomQueue });
     
-    const requestId = ++Jukebox.State.playRequestId;
-    
     try {
       await Jukebox.playAudio(song);
       
       if (requestId !== Jukebox.State.playRequestId) {
         console.log('[Jukebox] 播放请求已被新请求取代，取消状态更新');
-        return;
+        return null;
       }
       
-      // 根据模型类型播放对应格式的动画
-      const action = Jukebox.getActionForModel(song);
-      if (action) {
-        // 处理动画路径：自带资源直接用 /static/ 路径，用户上传的走 API
-        let actionFilePath = action.file || '';
-        let actionUrl;
-        if (action.isBuiltin && actionFilePath && !actionFilePath.startsWith('/static/')) {
-          // 将 actions/xxx.vmd 转换为 /static/jukebox/xxx.vmd
-          actionUrl = '/static/jukebox/' + actionFilePath.replace(/^actions\//, '');
-        } else {
-          actionUrl = `/api/jukebox/file/${actionFilePath}`;
-        }
+      // 根据模型类型播放对应格式的动画；动作缺失时只跳过动作，不阻断歌曲播放。
+      const actionAvailability = options.actionAvailability || await Jukebox.getActionAvailability(song);
+      if (requestId !== Jukebox.State.playRequestId) {
+        console.log('[Jukebox] 播放请求已被新请求取代，取消动画启动');
+        return null;
+      }
+      const action = actionAvailability.action;
+      if (action && actionAvailability.ok) {
+        const actionUrl = actionAvailability.url;
         console.log('[Jukebox] 播放动画:', action.name, '格式:', action.format || 'vmd', '路径:', actionUrl);
 
         const modelType = Jukebox.getModelType();
         if (modelType === 'mmd' || modelType === 'live3d') {
-          await Jukebox.playVMD(actionUrl);
+          await Jukebox.playVMD(actionUrl, { requestId });
         } else if (modelType === 'vrm') {
-          await Jukebox.playVRMA(actionUrl);
+          await Jukebox.playVRMA(actionUrl, { requestId });
         } else if (modelType === 'fbx') {
-          await Jukebox.playFBX(actionUrl);
+          await Jukebox.playFBX(actionUrl, { requestId });
         }
+      } else if (action) {
+        console.warn('[Jukebox] 动作文件不可用，跳过动作:', actionAvailability.status, action.file || action.id);
       }
       
       if (requestId !== Jukebox.State.playRequestId) {
         console.log('[Jukebox] 播放请求已被新请求取代，取消状态更新');
-        return;
+        return null;
       }
       
       Jukebox.State.currentSong = song;
       Jukebox.State.isPlaying = true;
+      Jukebox.State.lastPlaybackReport = {
+        song: Jukebox.formatControlSong(song),
+        actionStatus: actionAvailability.status
+      };
 
       Jukebox.updatePlayingStatus(song);
       Jukebox.updateCalibrationDisplay();
+      return song;
     } catch (error) {
       if (requestId !== Jukebox.State.playRequestId) {
-        return;
+        return null;
       }
       console.error('[Jukebox]', window.t('Jukebox.playFailed', '播放失败'), error);
       Jukebox.showError(window.t('Jukebox.playFailed', '播放失败') + ': ' + error.message);
+      return null;
     }
   },
   
@@ -8165,8 +8664,7 @@ window.Jukebox = {
     
     console.log('[Jukebox]', window.t('Jukebox.useAPlayer', '使用APlayer播放音频文件'));
     
-    // 将相对路径转换为API路径
-    const audioUrl = `/api/jukebox/file/${song.audio}`;
+    const audioUrl = Jukebox.resolveJukeboxFileUrl(song.audio);
     
     player.list.add([{
       name: song.name,
@@ -8189,18 +8687,21 @@ window.Jukebox = {
     console.log('[Jukebox]', window.t('Jukebox.startPlay', '开始播放音频'), song.audio);
   },
   
-  playVMD: async function(vmdPath) {
+  playVMD: async function(vmdPath, options = {}) {
+    const requestId = options.requestId;
+    if (!Jukebox.isPlaybackRequestCurrent(requestId)) return false;
+
     // 独立窗口模式：通过 IPC 桥接到 Pet 窗口执行
     if (window.__NEKO_JUKEBOX_STANDALONE__ && window.nekoJukeboxBridge) {
       window.nekoJukeboxBridge.playVMD(vmdPath);
       Jukebox.State.isVMDPlaying = true;
       console.log('[Jukebox]', window.t('Jukebox.vmdPlayed', 'VMD 动画已播放'), '(IPC)', vmdPath);
-      return;
+      return true;
     }
 
     if (!window.mmdManager || !window.mmdManager.animationModule) {
       console.warn('[Jukebox]', window.t('Jukebox.vmdNotInit', 'MMD Manager 未初始化，跳过动画'));
-      return;
+      return false;
     }
 
     try {
@@ -8213,28 +8714,34 @@ window.Jukebox = {
       Jukebox.stopVMD(true); // skipIdleRestore = true
 
       await window.mmdManager.loadAnimation(vmdPath);
+      if (!Jukebox.isPlaybackRequestCurrent(requestId)) return false;
       window.mmdManager.playAnimation('dance');
 
       Jukebox.State.isVMDPlaying = true;
 
       console.log('[Jukebox]', window.t('Jukebox.vmdPlayed', 'VMD 动画已播放'), vmdPath);
+      return true;
     } catch (error) {
       console.error('[Jukebox]', window.t('Jukebox.vmdPlayFailed', 'VMD 播放失败'), error);
+      return false;
     }
   },
   
   // 播放 VRMA 动画（VRM 模型）
-  playVRMA: async function(vrmaPath) {
+  playVRMA: async function(vrmaPath, options = {}) {
+    const requestId = options.requestId;
+    if (!Jukebox.isPlaybackRequestCurrent(requestId)) return false;
+
     // 独立窗口模式：复用 VMD 桥接通道发送到 Pet（Pet 侧根据模型类型分发）
     if (window.__NEKO_JUKEBOX_STANDALONE__ && window.nekoJukeboxBridge) {
       window.nekoJukeboxBridge.playVMD(vrmaPath);
       Jukebox.State.isVMDPlaying = true;
       console.log('[Jukebox] VRMA 动画已发送 (IPC):', vrmaPath);
-      return;
+      return true;
     }
     if (!window.vrmManager) {
       console.warn('[Jukebox] VRM Manager 未初始化，跳过动画');
-      return;
+      return false;
     }
 
     try {
@@ -8243,23 +8750,30 @@ window.Jukebox = {
       Jukebox.stopVMD(true); // 停止之前的舞蹈动画
 
       // 使用 VRMManager 播放 VRMA（manager 内部会确保 animation 模块已初始化）
-      await window.vrmManager.playVRMAAnimation(vrmaPath, {
+      const animationStarted = await window.vrmManager.playVRMAAnimation(vrmaPath, {
         loop: false,
         fadeInDuration: 0.5,
-        fadeOutDuration: 0.5
+        fadeOutDuration: 0.5,
+        shouldStart: () => Jukebox.isPlaybackRequestCurrent(requestId)
       });
+      if (animationStarted === false || !Jukebox.isPlaybackRequestCurrent(requestId)) return false;
       Jukebox.State.isVMDPlaying = true;
       console.log('[Jukebox] VRMA 动画已播放:', vrmaPath);
+      return true;
     } catch (error) {
       console.error('[Jukebox] VRMA 播放失败:', error);
+      return false;
     }
   },
   
   // 播放 FBX 动画（FBX 模型）
-  playFBX: async function(fbxPath) {
+  playFBX: async function(fbxPath, options = {}) {
+    const requestId = options.requestId;
+    if (!Jukebox.isPlaybackRequestCurrent(requestId)) return false;
+
     if (!window.fbxManager) {
       console.warn('[Jukebox] FBX Manager 未初始化，跳过动画');
-      return;
+      return false;
     }
 
     try {
@@ -8269,25 +8783,16 @@ window.Jukebox = {
       // await window.fbxManager.loadAnimation(fbxPath);
       // window.fbxManager.playAnimation();
       console.warn('[Jukebox] FBX 动画播放尚未实现');
+      return true;
     } catch (error) {
       console.error('[Jukebox] FBX 播放失败:', error);
+      return false;
     }
   },
   
   updateVolume: function(value) {
     const volume = parseFloat(value);
-    const player = Jukebox.getPlayer();
-    
-    if (player) {
-      player.volume(volume);
-    }
-
-    if (volume > 0 && Jukebox.State.isMuted) {
-      Jukebox.State.isMuted = false;
-      Jukebox.State.savedVolume = volume;
-    }
-    
-    Jukebox.updateVolumeDisplay(volume);
+    Jukebox.setRuntimeVolume(volume);
   },
   
   logVolumeChange: function(value) {
@@ -8815,34 +9320,46 @@ window.Jukebox = {
     return Jukebox.State.player;
   },
   
-  initPlayer: function() {
+  initPlayer: function(options = {}) {
     const Jukebox = window.Jukebox || this;
     if (window.music_ui && window.music_ui.getMusicPlayerInstance) {
       const existingPlayer = window.music_ui.getMusicPlayerInstance();
       if (existingPlayer) {
         console.log('[Jukebox] 使用现有的音乐播放器');
-        return;
+        return existingPlayer;
       }
       console.log('[Jukebox] music_ui 存在但播放器未初始化，创建新播放器');
     }
-    
-    if (!Jukebox.State.container) {
+
+    if (Jukebox.State.player) {
+      return Jukebox.State.player;
+    }
+
+    const isHeadless = options.headless === true;
+    const host = isHeadless
+      ? Jukebox.ensureRuntimeHost()
+      : Jukebox.State.container;
+
+    if (!host) {
       console.warn('[Jukebox] 容器不存在，取消播放器初始化');
-      return;
+      return null;
     }
     
     console.log('[Jukebox] 创建新的音乐播放器');
     
     if (typeof APlayer === 'undefined') {
       console.warn('[Jukebox] APlayer 未加载，等待加载...');
+      if (options.headless === true) {
+        return null;
+      }
       setTimeout(() => Jukebox.initPlayer(), 500);
-      return;
+      return null;
     }
     
     const playerContainer = document.createElement('div');
     playerContainer.id = 'jukebox-player';
     playerContainer.style.display = 'none';
-    Jukebox.State.container.appendChild(playerContainer);
+    host.appendChild(playerContainer);
     
     Jukebox.State.player = new APlayer({
       container: playerContainer,
@@ -8853,8 +9370,10 @@ window.Jukebox = {
       volume: 1,
       audio: []
     });
+    Jukebox.State.playerHost = isHeadless ? 'runtime' : 'ui';
     
     console.log('[Jukebox] APlayer已创建，音量:', Jukebox.State.player.audio.volume);
+    return Jukebox.State.player;
   },
   
   // 获取当前模型类型（拆分 live3d 子类型，返回 'mmd' / 'vrm' / 'live2d'）
