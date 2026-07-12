@@ -12,7 +12,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 APP_AUTO_GOODBYE_PATH = PROJECT_ROOT / "static" / "app-auto-goodbye.js"
 APP_UI_PATH = PROJECT_ROOT / "static" / "app-ui.js"
 APP_BUTTONS_PATH = PROJECT_ROOT / "static" / "app-buttons.js"
-AVATAR_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "avatar-ui-buttons.js"
+AVATAR_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "avatar" / "avatar-ui-buttons.js"
 APP_REACT_CHAT_PATH = PROJECT_ROOT / "static" / "app-react-chat-window.js"
 APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app-interpage.js"
 
