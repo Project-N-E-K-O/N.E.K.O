@@ -313,8 +313,16 @@ async def dispatch(
     lanlan_name,
     conversation_id,
     trigger_user_msg_sig,
+    proactive: bool = False,
 ) -> None:
-    """Handle an analyzer decision routed to the OpenClaw channel."""
+    """Handle an analyzer decision routed to the OpenClaw channel.
+
+    ``proactive`` marks a self-initiated turn (no triggering user). The sender
+    is forced to the default rather than resolved from the messages window,
+    since the "latest user" there is a stale prior turn — attributing the action
+    (or a proactive ``/stop``) to that user's persistent OpenClaw session would
+    be wrong in multi-user setups.
+    """
     if _shared.Modules.agent_flags.get("openclaw_enabled", False) and _shared.Modules.openclaw:
         nk_start = _now_iso()
         instruction = ""
@@ -332,7 +340,13 @@ async def dispatch(
         }
         if magic_command:
             task_params["magic_command"] = magic_command
-        nk_sender_id = _resolve_openclaw_sender_id(messages) or _shared.Modules.openclaw.default_sender_id
+        # Proactive tasks have no triggering user → force the default sender so a
+        # self-initiated action (or proactive /stop) never runs under the stale
+        # prior user's persistent OpenClaw session.
+        if proactive:
+            nk_sender_id = _shared.Modules.openclaw.default_sender_id
+        else:
+            nk_sender_id = _resolve_openclaw_sender_id(messages) or _shared.Modules.openclaw.default_sender_id
         if magic_command:
             if magic_command == "/stop":
                 cancelled_task_ids = await _cancel_openclaw_tasks_for_stop(
