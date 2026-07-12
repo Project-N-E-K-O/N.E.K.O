@@ -42,7 +42,7 @@ For normal danmaku, the same submit path also updates a short rolling context wi
 
 Low-value danmaku selection happens inside this module, not in host/core. The public pacing knob is `RoastConfig.activity_level`; there is no separate user-facing reply-selection config. Runtime status exposes the derived `reply_selection_policy` only for debugging:
 
-- `selected`: used for `standard` and `active`; skips only low-information danmaku such as bare reactions, repeated digits, or empty short noise.
+- `selected`: the base selection policy used for `standard` and `active`; it skips low-information danmaku such as bare reactions, repeated digits, or empty short noise. Queue pressure is an additional independent gate and may still produce `selection.queue_limit` before pipeline.
 - `quiet`: used for `quiet`; also skips low-priority plain danmaku below the quiet score threshold, while questions, content requests, greetings, guards, and very high-score events still pass.
 
 Skip reasons are stable observability keys:
