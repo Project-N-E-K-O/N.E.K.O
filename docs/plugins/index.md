@@ -21,10 +21,10 @@ The N.E.K.O. plugin system is a Python-based plugin framework built on **process
 │  └──────────────────────────────────────────────┘  │
 └────────────────────┬───────────────────────────────┘
                      │ ZMQ IPC
-      ┌──────────────┼──────────────┬────────────────┐
-      ▼              ▼              ▼                ▼
-  Plugin A       Plugin B      Existing Ext.    Adapter D
-  (process)      (process)     (compat only)     (process)
+      ┌──────────────┼──────────────┐
+      ▼              ▼              ▼
+  Plugin A       Plugin B       Adapter D
+  (process)      (process)      (process)
 ```
 
 ## Package types

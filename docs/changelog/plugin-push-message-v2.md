@@ -79,8 +79,8 @@ The new schema solves these by:
 | `delivery="passive"` | `ai_behavior="read"` |
 | `delivery="silent"` / `reply=False` | `visibility=["hud"], ai_behavior="blind"` |
 | `content="X"` | `parts=[{"type":"text","text":"X"}]` |
-| `binary_data=bytes, mime=...` | choose `type="image" | "audio" | "video"` from the MIME and use `parts=[{"type":...,"data":bytes,"mime":...}]` (`video` is accepted by the schema but currently warn-dropped by `main_server`) |
-| `binary_url=URL, mime=...` | choose `type="image" | "audio" | "video"` from the MIME and use `parts=[{"type":...,"url":URL,"mime":...}]` (same current `video` limitation) |
+| `binary_data=bytes, mime=...` | choose `type="image" \| "audio" \| "video"` from the MIME and use `parts=[{"type":...,"data":bytes,"mime":...}]` (`video` is accepted by the schema but currently warn-dropped by `main_server`) |
+| `binary_url=URL, mime=...` | choose `type="image" \| "audio" \| "video"` from the MIME and use `parts=[{"type":...,"url":URL,"mime":...}]` (same current `video` limitation) |
 | `message_type="music_play_url"` | `parts=[{"type":"ui_action","action":"media_play_url","url":..., "media_type":"audio"}]`, `visibility=["chat"]`, `ai_behavior="blind"` |
 | `message_type="music_allowlist_add"` | `parts=[{"type":"ui_action","action":"media_allowlist_add","domains":[...]}]`, `ai_behavior="blind"` |
 | `register_music_domains(domains)` SDK helper | **deleted** — push directly via `ui_action: media_allowlist_add` (see above) |

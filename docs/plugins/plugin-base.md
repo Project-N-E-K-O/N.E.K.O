@@ -318,7 +318,7 @@ python_env = unwrap_or(await self.system_info.get_python_env(), {})
 | `self.db` | SQLite database | `[plugin.database] enabled = true` |
 | `self.i18n` | Multi-language | `[plugin.i18n]` |
 | `self.data_path()` | Store files | No |
-| `self.bus` | Read bus snapshots | No |
+| `self.bus` | Read/watch bus snapshots | No |
 | `report_status()` | Show progress in panel | No |
 | `push_message()` | Push to chat | No |
 | `self.system_info` | Query system info | No |

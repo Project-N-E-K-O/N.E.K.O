@@ -318,7 +318,7 @@ python_env = unwrap_or(await self.system_info.get_python_env(), {})
 | `self.db` | SQLite データベース | `[plugin.database] enabled = true` |
 | `self.i18n` | 多言語対応 | `[plugin.i18n]` |
 | `self.data_path()` | ファイル保存 | 不要 |
-| `self.bus` | バススナップショットを読む | 不要 |
+| `self.bus` | バススナップショットを読み取り・監視 | 不要 |
 | `report_status()` | パネルに進捗表示 | 不要 |
 | `push_message()` | チャットへ送信 | 不要 |
 | `self.system_info` | システム情報を取得 | 不要 |

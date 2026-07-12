@@ -318,7 +318,7 @@ python_env = unwrap_or(await self.system_info.get_python_env(), {})
 | `self.db` | SQLite 数据库 | `[plugin.database] enabled = true` |
 | `self.i18n` | 多语言 | `[plugin.i18n]` |
 | `self.data_path()` | 存放文件 | 不需要 |
-| `self.bus` | 读取总线快照 | 不需要 |
+| `self.bus` | 读取/监听总线快照 | 不需要 |
 | `report_status()` | 面板中显示进度 | 不需要 |
 | `push_message()` | 向聊天推送消息 | 不需要 |
 | `self.system_info` | 查询系统信息 | 不需要 |
