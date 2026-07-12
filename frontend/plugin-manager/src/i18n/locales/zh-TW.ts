@@ -286,17 +286,13 @@ export default {
     autoStart: '自動啟動',
     manualStart: '手動啟動',
     fetchFailed: '取得外掛列表失敗',
-    extension: '擴充功能',
     pluginType: '類型',
     pluginTypeNormal: '外掛',
     hostPlugin: '宿主外掛',
-    boundExtensions: '繫結擴充功能',
     pluginsSection: '外掛',
     adaptersSection: '適配器',
-    extensionsSection: '擴充功能',
     typePlugin: '外掛',
     typeAdapter: '適配器',
-    typeExtension: '擴充功能',
     layoutList: '列表',
     layoutSingle: '單排',
     layoutDouble: '雙排',
@@ -345,13 +341,10 @@ export default {
       auto: '自動啟動',
       plugin: '外掛',
       adapter: '適配器',
-      extension: '擴充功能',
       ui: '有介面',
       entries: '有進入點',
-      host: '有宿主',
       name: '按名稱',
       id: '按 ID',
-      hostTarget: '按宿主',
       version: '按版本',
       entry: '按進入點',
       author: '按作者'
@@ -363,8 +356,6 @@ export default {
     },
     build: '構建外掛',
     delete: '刪除外掛',
-    disableExtension: '停用擴充功能',
-    enableExtension: '啟用擴充功能',
     dangerDialog: {
       title: '危險操作確認',
       warningTitle: '不可逆操作',
@@ -553,7 +544,6 @@ export default {
     loadFailed: '載入失敗',
     loading: '載入中',
     disabled: '已停用',
-    injected: '已注入',
     pending: '等待宿主'
   },
   logLevel: {
@@ -583,11 +573,6 @@ export default {
     buildFailed: '構建外掛失敗',
     deleteFailed: '刪除外掛失敗',
     pluginLoadFailed: '外掛載入失敗，目前不可啟動',
-    confirmDisableExt: '確認停用此擴充功能？宿主外掛中的擴充功能將被卸載。',
-    extensionDisabled: '擴充功能已停用',
-    extensionEnabled: '擴充功能已啟用',
-    disableExtFailed: '停用擴充功能失敗',
-    enableExtFailed: '啟用擴充功能失敗',
     requestFailed: '請求失敗',
     requestFailedWithStatus: '請求失敗 ({status})',
     badRequest: '請求參數錯誤',
@@ -696,7 +681,7 @@ export default {
       },
       pluginWorkbench: {
         title: '外掛管理工作台',
-        body: '這裡集中展示外掛、適配器和擴展，是日常管理外掛的主要頁面。'
+        body: '這裡集中展示外掛和適配器，是日常管理外掛的主要頁面。'
       },
       pluginFilters: {
         title: '篩選和搜尋',

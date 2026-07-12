@@ -28,7 +28,7 @@ export interface PluginDependency {
   conflicts?: string[] | boolean
 }
 
-export type PluginType = 'plugin' | 'extension' | 'adapter'
+export type PluginType = 'plugin' | 'adapter'
 
 export type PluginListActionKind = 'builtin' | 'ui' | 'route' | 'url'
 
@@ -136,7 +136,6 @@ export interface PluginMeta {
   author?: PluginAuthor
   dependencies?: PluginDependency[]
   input_schema?: JSONSchema
-  host_plugin_id?: string
   i18n?: Record<string, any>
   status?: string
   list_actions?: PluginListAction[]
