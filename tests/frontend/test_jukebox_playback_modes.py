@@ -433,6 +433,70 @@ def test_jukebox_play_song_skips_stale_action_start(mock_page: Page):
 
 
 @pytest.mark.frontend
+def test_jukebox_play_song_skips_stale_vrma_internal_start(mock_page: Page):
+    setup_headless_jukebox_page(mock_page)
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+          const J = window.Jukebox;
+          await J.ensureRuntime({ headless: true });
+
+          let releaseAnimation;
+          const animationStarts = [];
+          J.getModelType = () => 'vrm';
+          J.getActionAvailability = async (song) => {
+            if (song.id === 'song1') {
+              return {
+                ok: true,
+                status: 'action_ready',
+                action: { id: 'action1', name: 'Dance 1', file: 'actions/song1.vrma' },
+                url: '/api/jukebox/file/actions/song1.vrma'
+              };
+            }
+            return { ok: true, status: 'no_action', action: null, url: '' };
+          };
+          window.vrmManager = {
+            playVRMAAnimation: async (url, options = {}) => {
+              return await new Promise((resolve) => {
+                releaseAnimation = () => {
+                  const shouldStart = typeof options.shouldStart === 'function' ? options.shouldStart() : true;
+                  if (shouldStart) animationStarts.push(url);
+                  resolve(shouldStart);
+                };
+              });
+            }
+          };
+
+          const firstPromise = J.playSong('song1');
+          while (typeof releaseAnimation !== 'function') {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+          }
+          const second = await J.playSong('song2');
+          releaseAnimation();
+          const first = await firstPromise;
+
+          return {
+            first: first && first.id,
+            second: second && second.id,
+            currentSong: J.State.currentSong && J.State.currentSong.id,
+            animationStarts,
+            isVMDPlaying: J.State.isVMDPlaying
+          };
+        }
+        """
+    )
+
+    assert result == {
+        "first": None,
+        "second": "song2",
+        "currentSong": "song2",
+        "animationStarts": [],
+        "isVMDPlaying": False,
+    }
+
+
+@pytest.mark.frontend
 def test_jukebox_execute_control_play_uses_fuzzy_matching(mock_page: Page):
     setup_headless_jukebox_page(mock_page)
 

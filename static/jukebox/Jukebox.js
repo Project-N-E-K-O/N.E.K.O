@@ -8108,6 +8108,10 @@ window.Jukebox = {
     return song ? { id: song.id, name: song.name, artist: song.artist } : null;
   },
 
+  isPlaybackRequestCurrent: function(requestId) {
+    return !Number.isInteger(requestId) || requestId === Jukebox.State.playRequestId;
+  },
+
   executePlayControl: async function(action, song, playOptions = {}) {
     const requestId = ++Jukebox.State.playRequestId;
     const preflight = await Jukebox.preflightSongPlayback(song);
@@ -8614,11 +8618,11 @@ window.Jukebox = {
 
         const modelType = Jukebox.getModelType();
         if (modelType === 'mmd' || modelType === 'live3d') {
-          await Jukebox.playVMD(actionUrl);
+          await Jukebox.playVMD(actionUrl, { requestId });
         } else if (modelType === 'vrm') {
-          await Jukebox.playVRMA(actionUrl);
+          await Jukebox.playVRMA(actionUrl, { requestId });
         } else if (modelType === 'fbx') {
-          await Jukebox.playFBX(actionUrl);
+          await Jukebox.playFBX(actionUrl, { requestId });
         }
       } else if (action) {
         console.warn('[Jukebox] 动作文件不可用，跳过动作:', actionAvailability.status, action.file || action.id);
@@ -8683,18 +8687,21 @@ window.Jukebox = {
     console.log('[Jukebox]', window.t('Jukebox.startPlay', '开始播放音频'), song.audio);
   },
   
-  playVMD: async function(vmdPath) {
+  playVMD: async function(vmdPath, options = {}) {
+    const requestId = options.requestId;
+    if (!Jukebox.isPlaybackRequestCurrent(requestId)) return false;
+
     // 独立窗口模式：通过 IPC 桥接到 Pet 窗口执行
     if (window.__NEKO_JUKEBOX_STANDALONE__ && window.nekoJukeboxBridge) {
       window.nekoJukeboxBridge.playVMD(vmdPath);
       Jukebox.State.isVMDPlaying = true;
       console.log('[Jukebox]', window.t('Jukebox.vmdPlayed', 'VMD 动画已播放'), '(IPC)', vmdPath);
-      return;
+      return true;
     }
 
     if (!window.mmdManager || !window.mmdManager.animationModule) {
       console.warn('[Jukebox]', window.t('Jukebox.vmdNotInit', 'MMD Manager 未初始化，跳过动画'));
-      return;
+      return false;
     }
 
     try {
@@ -8707,28 +8714,34 @@ window.Jukebox = {
       Jukebox.stopVMD(true); // skipIdleRestore = true
 
       await window.mmdManager.loadAnimation(vmdPath);
+      if (!Jukebox.isPlaybackRequestCurrent(requestId)) return false;
       window.mmdManager.playAnimation('dance');
 
       Jukebox.State.isVMDPlaying = true;
 
       console.log('[Jukebox]', window.t('Jukebox.vmdPlayed', 'VMD 动画已播放'), vmdPath);
+      return true;
     } catch (error) {
       console.error('[Jukebox]', window.t('Jukebox.vmdPlayFailed', 'VMD 播放失败'), error);
+      return false;
     }
   },
   
   // 播放 VRMA 动画（VRM 模型）
-  playVRMA: async function(vrmaPath) {
+  playVRMA: async function(vrmaPath, options = {}) {
+    const requestId = options.requestId;
+    if (!Jukebox.isPlaybackRequestCurrent(requestId)) return false;
+
     // 独立窗口模式：复用 VMD 桥接通道发送到 Pet（Pet 侧根据模型类型分发）
     if (window.__NEKO_JUKEBOX_STANDALONE__ && window.nekoJukeboxBridge) {
       window.nekoJukeboxBridge.playVMD(vrmaPath);
       Jukebox.State.isVMDPlaying = true;
       console.log('[Jukebox] VRMA 动画已发送 (IPC):', vrmaPath);
-      return;
+      return true;
     }
     if (!window.vrmManager) {
       console.warn('[Jukebox] VRM Manager 未初始化，跳过动画');
-      return;
+      return false;
     }
 
     try {
@@ -8737,23 +8750,30 @@ window.Jukebox = {
       Jukebox.stopVMD(true); // 停止之前的舞蹈动画
 
       // 使用 VRMManager 播放 VRMA（manager 内部会确保 animation 模块已初始化）
-      await window.vrmManager.playVRMAAnimation(vrmaPath, {
+      const animationStarted = await window.vrmManager.playVRMAAnimation(vrmaPath, {
         loop: false,
         fadeInDuration: 0.5,
-        fadeOutDuration: 0.5
+        fadeOutDuration: 0.5,
+        shouldStart: () => Jukebox.isPlaybackRequestCurrent(requestId)
       });
+      if (animationStarted === false || !Jukebox.isPlaybackRequestCurrent(requestId)) return false;
       Jukebox.State.isVMDPlaying = true;
       console.log('[Jukebox] VRMA 动画已播放:', vrmaPath);
+      return true;
     } catch (error) {
       console.error('[Jukebox] VRMA 播放失败:', error);
+      return false;
     }
   },
   
   // 播放 FBX 动画（FBX 模型）
-  playFBX: async function(fbxPath) {
+  playFBX: async function(fbxPath, options = {}) {
+    const requestId = options.requestId;
+    if (!Jukebox.isPlaybackRequestCurrent(requestId)) return false;
+
     if (!window.fbxManager) {
       console.warn('[Jukebox] FBX Manager 未初始化，跳过动画');
-      return;
+      return false;
     }
 
     try {
@@ -8763,8 +8783,10 @@ window.Jukebox = {
       // await window.fbxManager.loadAnimation(fbxPath);
       // window.fbxManager.playAnimation();
       console.warn('[Jukebox] FBX 动画播放尚未实现');
+      return true;
     } catch (error) {
       console.error('[Jukebox] FBX 播放失败:', error);
+      return false;
     }
   },
   
