@@ -192,6 +192,10 @@ def test_soccer_passive_guard_writes_structured_debug_events():
         "async function _prepareExitPrompt",
         1,
     )[0]
+    external_route_input_block = html.split("if (output && output.type === 'game_external_input')", 1)[1].split(
+        "if (!output || output.type !== 'game_llm_result')",
+        1,
+    )[0]
     passive_guard_backend_block = router_source.split('set_call_type("game_passive_guard")', 1)[1].split(
         "async with llm:",
         1,
@@ -209,6 +213,9 @@ def test_soccer_passive_guard_writes_structured_debug_events():
     assert "function _passiveGuardExitPromptCandidateState(promptType, stage)" in html
     assert "skip_inactive_candidate" in html
     assert "_passiveGuardExitPromptCandidateState(promptType, stage)" in html
+    assert "function _externalGameRouteInputText(output)" in html
+    assert "_handlePassiveGuardUserSpeech(" in external_route_input_block
+    assert "_externalGameRouteInputText(output)" in external_route_input_block
     assert "rest_streak_below_stage" in html
     assert "ordinary_candidate_below_stage" in html
     assert "passiveGuard.sidecarGeneration = Number(passiveGuard.sidecarGeneration || 0) + 1" in html

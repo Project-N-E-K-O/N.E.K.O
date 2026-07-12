@@ -6297,11 +6297,17 @@
 	    }
 	  }
 
+	  function _externalGameRouteInputText(output) {
+	    const event = output.event || {};
+	    const meta = output.meta || {};
+	    return String(event.textRaw || meta.inputText || event.userVoiceText || event.userText || '').trim();
+	  }
+
 	  function _logExternalGameRouteInput(output) {
 	    const event = output.event || {};
 	    const meta = output.meta || {};
 	    const requestId = output.request_id || meta.request_id || '';
-	    const inputText = event.textRaw || meta.inputText || event.userVoiceText || event.userText || '';
+	    const inputText = _externalGameRouteInputText(output);
 	    const kind = event.kind || meta.kind || 'external-input';
 	    const inputType = event.type || (meta.hasUserSpeech ? 'user_voice' : (meta.hasUserText ? 'user_text' : 'external_input'));
 	    const round = event.round ?? meta.round ?? '?';
@@ -6342,6 +6348,10 @@
 	        }
 	        if (output && output.type === 'game_external_input') {
 	          _markUserInputForVoiceArbiter(output.source || 'external-route-input');
+	          _handlePassiveGuardUserSpeech(
+	            _externalGameRouteInputText(output),
+	            output.source || output.meta?.kind || 'external-route-input',
+	          );
 	          _logExternalGameRouteInput(output);
 	          continue;
 	        }
