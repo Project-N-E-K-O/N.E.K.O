@@ -120,13 +120,14 @@ def candidate_asset_dirs(override: Path | None = None) -> tuple[Path, ...]:
 def resolve_verified_assets(
     required_filenames: Iterable[str], override: Path | None = None
 ) -> tuple[Path, AssetManifest, dict[str, Path]]:
+    required = tuple(required_filenames)
     failures: list[str] = []
     for directory in candidate_asset_dirs(override):
         try:
             manifest = load_manifest(directory)
             paths = {
                 filename: verify_asset(directory, manifest.asset(filename))
-                for filename in required_filenames
+                for filename in required
             }
             return directory, manifest, paths
         except AssetManifestError as exc:
