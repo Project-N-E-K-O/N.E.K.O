@@ -1031,7 +1031,7 @@ uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast
 
 触碰 UI 或打包兼容入口时，还必须确认 `ui/panel_compat.tsx` 保持完整面板功能：允许 `@neko/plugin-ui` import / hooks，但不得包含相对 import、`window.NekoUiKit` 或 `__modules`。`test_hosted_ui_manifest_entry_is_main_branch_compatible` 是这条规则的 smoke gate；不要用最小 fallback 面板替代完整入口。
 
-若直播体验修复触碰 N.E.K.O 主前端播放门（例如 `static/app-audio-playback.js` 的 `voice_play_start` / `voice_play_end` 行为），必须额外运行对应主仓静态契约测试；当前播放门修复的最小回归命令是 `uv run pytest tests/unit/test_app_audio_playback_static.py -q`。
+若直播体验修复触碰 N.E.K.O 主前端播放门（例如 `static/app/app-audio-playback.js` 的 `voice_play_start` / `voice_play_end` 行为），必须额外运行对应主仓静态契约测试；当前播放门修复的最小回归命令是 `uv run pytest tests/unit/test_app_audio_playback_static.py -q`。
 
 ## 文档更新要求
 

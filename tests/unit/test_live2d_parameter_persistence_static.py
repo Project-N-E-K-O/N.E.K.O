@@ -11,7 +11,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 LIVE2D_MODEL_PATH = PROJECT_ROOT / "static" / "live2d" / "live2d-model.js"
 LIVE2D_EMOTION_PATH = PROJECT_ROOT / "static" / "live2d" / "live2d-emotion.js"
 PARAMETER_EDITOR_PATH = PROJECT_ROOT / "static" / "js" / "live2d_parameter_editor.js"
-APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app-interpage.js"
+APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app" / "app-interpage.js"
 MAO_PRO_MODEL_PATH = PROJECT_ROOT / "static" / "mao_pro" / "mao_pro.model3.json"
 
 

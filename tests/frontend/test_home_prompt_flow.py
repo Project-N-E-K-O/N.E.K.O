@@ -176,11 +176,11 @@ def _bootstrap_tutorial_prompt_page(
         script_names.append("common_dialogs.js")
     if include_autostart_provider:
         setup_js = setup_js + "\nwindow.nekoAutostartProvider = undefined;"
-        script_names.append("app-autostart-provider.js")
-    script_names.append("app-prompt-shared.js")
+        script_names.append("app/app-autostart-provider.js")
+    script_names.append("app/app-prompt-shared.js")
     script_names.append("tutorial/core/app-prompt.js")
     if include_autostart_prompt or include_autostart_provider:
-        script_names.append("app-autostart-prompt.js")
+        script_names.append("app/app-autostart-prompt.js")
     _bootstrap_page(
         mock_page,
         setup_js=setup_js,
@@ -207,7 +207,7 @@ def _bootstrap_autostart_provider_page(
         mock_page,
         setup_js=setup_js,
         fetch_js=fetch_js,
-        script_names=("app-autostart-provider.js",),
+        script_names=("app/app-autostart-provider.js",),
     )
 
 
@@ -300,7 +300,7 @@ def test_changelog_notice_preserves_leading_list_item(mock_page: Page):
             window.appState = { dom: {} };
             window.appConst = {};
         """,
-        script_names=("app-ui.js",),
+        script_names=("app/app-ui.js",),
     )
 
     mock_page.evaluate(
@@ -1380,7 +1380,7 @@ def test_home_tutorial_reset_refreshes_stale_csrf_token_once(mock_page: Page):
                 });
             }
         """,
-        script_names=("app-prompt-shared.js", "tutorial/core/universal-manager.js"),
+        script_names=("app/app-prompt-shared.js", "tutorial/core/universal-manager.js"),
     )
 
     mock_page.evaluate(
@@ -1439,7 +1439,7 @@ def test_home_tutorial_reset_without_manager_clears_versioned_home_key(mock_page
                 });
             }
         """,
-        script_names=("app-prompt-shared.js", "tutorial/core/universal-manager.js"),
+        script_names=("app/app-prompt-shared.js", "tutorial/core/universal-manager.js"),
     )
 
     mock_page.evaluate(
@@ -1496,7 +1496,7 @@ def test_home_tutorial_reset_still_clears_state_without_custom_event(mock_page: 
                 });
             }
         """,
-        script_names=("app-prompt-shared.js", "tutorial/core/universal-manager.js"),
+        script_names=("app/app-prompt-shared.js", "tutorial/core/universal-manager.js"),
     )
 
     mock_page.evaluate(
@@ -2372,7 +2372,7 @@ def test_all_tutorial_reset_without_manager_clears_versioned_home_key(mock_page:
                 });
             }
         """,
-        script_names=("app-prompt-shared.js", "tutorial/core/universal-manager.js"),
+        script_names=("app/app-prompt-shared.js", "tutorial/core/universal-manager.js"),
     )
 
     mock_page.evaluate(
@@ -2428,7 +2428,7 @@ def test_home_tutorial_reset_with_manager_clears_versioned_home_key(mock_page: P
                 });
             }
         """,
-        script_names=("app-prompt-shared.js", "tutorial/core/universal-manager.js"),
+        script_names=("app/app-prompt-shared.js", "tutorial/core/universal-manager.js"),
     )
 
     mock_page.evaluate(
@@ -2651,7 +2651,7 @@ def test_home_tutorial_feature_controller_restores_live_galgame_state_after_lega
                 return jsonResponse({ success: true });
             }
         """,
-        script_names=("app-prompt-shared.js", "tutorial/core/app-prompt.js"),
+        script_names=("app/app-prompt-shared.js", "tutorial/core/app-prompt.js"),
         init_js="() => window.appTutorialPrompt.init()",
     )
     mock_page.add_script_tag(path=str(PROJECT_ROOT / "static" / "app" / "app-react-chat-window.js"))
@@ -2762,7 +2762,7 @@ def test_home_tutorial_feature_controller_enforce_reapplies_suppression_after_ch
             window.stopProactiveVisionDuringSpeech = () => { window.stopProactiveVisionDuringSpeechCalls += 1; };
             window.releaseProactiveVisionStream = () => { window.releaseProactiveVisionStreamCalls += 1; };
         """,
-        script_names=("app-prompt-shared.js", "tutorial/core/app-prompt.js"),
+        script_names=("app/app-prompt-shared.js", "tutorial/core/app-prompt.js"),
     )
 
     mock_page.evaluate(
@@ -5968,7 +5968,7 @@ def test_externalized_chat_cursor_reports_anchor_back_to_home(mock_page: Page):
                 <div id="react-chat-window-shell" style="position:fixed; left:600px; top:400px; width:240px; height:160px;"></div>
             `;
         """,
-        script_names=("app-interpage.js",),
+        script_names=("app/app-interpage.js",),
     )
 
     result = mock_page.evaluate(
@@ -6057,7 +6057,7 @@ def test_externalized_chat_spotlight_refresh_does_not_override_active_cursor_cli
                 </div>
             `;
         """,
-        script_names=("app-interpage.js",),
+        script_names=("app/app-interpage.js",),
     )
 
     result = mock_page.evaluate(
@@ -6149,7 +6149,7 @@ def test_externalized_chat_input_cursor_without_effect_shows_without_pc_move(
                 </div>
             `;
         """,
-        script_names=("app-interpage.js",),
+        script_names=("app/app-interpage.js",),
     )
 
     result = mock_page.evaluate(
@@ -6221,7 +6221,7 @@ def test_externalized_chat_cursor_explicit_duration_overrides_handoff_speed(
                 </div>
             `;
         """,
-        script_names=("app-interpage.js",),
+        script_names=("app/app-interpage.js",),
     )
 
     result = mock_page.evaluate(
@@ -6288,7 +6288,7 @@ def test_externalized_chat_cursor_anchor_reports_after_pc_move_duration(
                 </div>
             `;
         """,
-        script_names=("app-interpage.js",),
+        script_names=("app/app-interpage.js",),
     )
 
     result = mock_page.evaluate(
@@ -7126,7 +7126,7 @@ def test_externalized_chat_spotlight_renders_compact_capsule_in_pc_overlay_only(
                 </div>
             `;
         """,
-        script_names=("app-interpage.js",),
+        script_names=("app/app-interpage.js",),
     )
 
     result = mock_page.evaluate(
@@ -7191,7 +7191,7 @@ def test_externalized_chat_input_spotlight_retries_after_capsule_layout_appears(
                 </div>
             `;
         """,
-        script_names=("app-interpage.js",),
+        script_names=("app/app-interpage.js",),
     )
 
     result = mock_page.evaluate(
@@ -7276,7 +7276,7 @@ def test_externalized_chat_capsule_spotlight_keeps_last_rect_when_target_tempora
                 </div>
             `;
         """,
-        script_names=("tutorial/yui-guide/common.js", "app-interpage.js"),
+        script_names=("tutorial/yui-guide/common.js", "app/app-interpage.js"),
     )
 
     result = mock_page.evaluate(
@@ -7372,7 +7372,7 @@ def test_externalized_chat_capsule_input_spotlight_uses_capsule_body_rect_withou
                 </div>
             `;
         """,
-        script_names=("tutorial/yui-guide/common.js", "app-interpage.js"),
+        script_names=("tutorial/yui-guide/common.js", "app/app-interpage.js"),
     )
 
     result = mock_page.evaluate(
@@ -9948,7 +9948,7 @@ def test_externalized_chat_cursor_uses_recent_handoff_anchor_for_first_smooth_mo
                 at: Date.now(),
             }));
         """,
-        script_names=("app-interpage.js",),
+        script_names=("app/app-interpage.js",),
     )
 
     result = mock_page.evaluate(
@@ -11853,7 +11853,7 @@ def test_externalized_chat_drag_without_duration_uses_default_click_drag_motion(
                 </div>
             `;
         """,
-        script_names=("app-interpage.js",),
+        script_names=("app/app-interpage.js",),
     )
 
     result = mock_page.evaluate(
@@ -11945,7 +11945,7 @@ def test_externalized_compact_tool_wheel_rotate_request_reaches_chat_host(
             };
             document.body.innerHTML = `<div id="react-chat-window-root"></div>`;
         """,
-        script_names=("app-interpage.js",),
+        script_names=("app/app-interpage.js",),
     )
 
     result = mock_page.evaluate(
@@ -11990,7 +11990,7 @@ def test_externalized_compact_tool_wheel_rotate_broadcast_reaches_chat_host(
             };
             document.body.innerHTML = `<div id="react-chat-window-root"></div>`;
         """,
-        script_names=("app-interpage.js",),
+        script_names=("app/app-interpage.js",),
     )
 
     result = mock_page.evaluate(
@@ -12034,7 +12034,7 @@ def test_externalized_compact_tool_wheel_index_request_reaches_chat_host(
             };
             document.body.innerHTML = `<div id="react-chat-window-root"></div>`;
         """,
-        script_names=("app-interpage.js",),
+        script_names=("app/app-interpage.js",),
     )
 
     result = mock_page.evaluate(
@@ -12072,7 +12072,7 @@ def test_externalized_compact_tool_wheel_rotate_retries_until_chat_host_ready(
             window.__hostRequests = [];
             document.body.innerHTML = `<div id="react-chat-window-root"></div>`;
         """,
-        script_names=("app-interpage.js",),
+        script_names=("app/app-interpage.js",),
     )
 
     result = mock_page.evaluate(
@@ -12387,7 +12387,7 @@ def test_externalized_compact_tool_fan_request_opens_fan_immediately_when_toggle
                 </div>
             `;
         """,
-        script_names=("app-interpage.js",),
+        script_names=("app/app-interpage.js",),
     )
 
     result = mock_page.evaluate(
@@ -12457,7 +12457,7 @@ def test_externalized_avatar_tool_menu_request_opens_menu_when_button_disabled(
                 </div>
             `;
         """,
-        script_names=("app-interpage.js",),
+        script_names=("app/app-interpage.js",),
     )
 
     result = mock_page.evaluate(
@@ -12500,7 +12500,7 @@ def test_externalized_avatar_tool_menu_request_replays_after_early_relay_duplica
             window.history.pushState({}, '', '/chat');
             window.__hostRequests = [];
         """,
-        script_names=("app-interpage.js",),
+        script_names=("app/app-interpage.js",),
     )
 
     result = mock_page.evaluate(
@@ -12582,7 +12582,7 @@ def test_externalized_avatar_tool_click_request_triggers_button_click_without_ho
                 </div>
             `;
         """,
-        script_names=("app-interpage.js",),
+        script_names=("app/app-interpage.js",),
     )
 
     result = mock_page.evaluate(
@@ -15183,7 +15183,7 @@ def test_fire_and_forget_json_uses_cached_csrf_token_without_awaiting_during_unl
             });
             return jsonResponse({ ok: true });
         """,
-        script_names=("app-prompt-shared.js",),
+        script_names=("app/app-prompt-shared.js",),
     )
 
     mock_page.evaluate(

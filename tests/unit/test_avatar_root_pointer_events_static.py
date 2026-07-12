@@ -2,8 +2,8 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-APP_UI_PATH = PROJECT_ROOT / "static" / "app-ui.js"
-APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app-interpage.js"
+APP_UI_PATH = PROJECT_ROOT / "static" / "app" / "app-ui.js"
+APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app" / "app-interpage.js"
 UNIVERSAL_MANAGER_PATH = PROJECT_ROOT / "static" / "tutorial" / "core" / "universal-manager.js"
 
 

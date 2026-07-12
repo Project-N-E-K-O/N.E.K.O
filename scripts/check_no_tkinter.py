@@ -69,7 +69,7 @@ What goes where (rule of thumb)
   user type the path manually — do NOT add a "tk fallback".
 * **Screenshot region selection** → Electron's `desktopCapturer` plus a
   transparent BrowserWindow overlay in the renderer. Code path is
-  already in `static/app-buttons.js::captureDesktopRegionDirectly`.
+  already in `static/app/app-buttons.js::captureDesktopRegionDirectly`.
 * **Status notifications, error dialogs, confirmation modals** →
   existing React/HTML UI in the renderer. The backend reports state via
   HTTP/WebSocket; the frontend renders it.

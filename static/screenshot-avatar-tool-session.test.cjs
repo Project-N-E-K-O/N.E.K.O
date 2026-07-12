@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 
-const source = fs.readFileSync(path.join(__dirname, 'app-buttons.js'), 'utf8');
+const source = fs.readFileSync(path.join(__dirname, 'app/app-buttons.js'), 'utf8');
 
 test('desktop screenshot lifecycle brackets capture and crop with an avatar-tool suspension session', () => {
     const start = source.indexOf('mod.captureScreenshotDataUrl = async function captureScreenshotDataUrl()');

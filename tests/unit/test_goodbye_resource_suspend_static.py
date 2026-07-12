@@ -6,9 +6,9 @@ import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-APP_AGENT_PATH = REPO_ROOT / "static" / "app-agent.js"
-APP_UI_PATH = REPO_ROOT / "static" / "app-ui.js"
-APP_WEBSOCKET_PATH = REPO_ROOT / "static" / "app-websocket.js"
+APP_AGENT_PATH = REPO_ROOT / "static" / "app" / "app-agent.js"
+APP_UI_PATH = REPO_ROOT / "static" / "app" / "app-ui.js"
+APP_WEBSOCKET_PATH = REPO_ROOT / "static" / "app" / "app-websocket.js"
 COMMON_UI_HUD_PATH = REPO_ROOT / "static" / "common-ui-hud.js"
 AGENTHUD_TEMPLATE_PATH = REPO_ROOT / "templates" / "agenthud.html"
 PNGTUBER_PATH = REPO_ROOT / "static" / "pngtuber-core.js"

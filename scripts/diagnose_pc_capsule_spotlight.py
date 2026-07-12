@@ -53,7 +53,7 @@ def _extract_function(source: str, signature: str, next_signature: str | None = 
 
 
 def run_neko_static_checks() -> list[Check]:
-    source_path = STATIC_DIR / "app-interpage.js"
+    source_path = STATIC_DIR / "app/app-interpage.js"
     source = _read(source_path)
     render_block = _extract_function(source, "function renderYuiGuideChatSpotlight(spotlight, kind, rect)", "function updateYuiGuideChatSpotlight(kind)")
     suppress_block = _extract_function(source, "function shouldSuppressYuiGuideChatLocalFx(kind)", "function getYuiGuideChatCircleSpotlightPadding")
@@ -148,7 +148,7 @@ def run_browser_probe() -> tuple[list[Check], dict[str, Any]]:
             }
             """
         )
-        page.add_script_tag(path=str(STATIC_DIR / "app-interpage.js"))
+        page.add_script_tag(path=str(STATIC_DIR / "app/app-interpage.js"))
         result = page.evaluate(
             """
             async () => {

@@ -273,7 +273,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
             # logger.debug(f"WebSocket received action: {action}") # Optional debug log
 
             # ── Telemetry dispatch（前端 counter / histogram / event 通道）──
-            # 前端 static/app-telemetry.js 通过 action="telemetry" 投递数据；
+            # 前端 static/app/app-telemetry.js 通过 action="telemetry" 投递数据；
             # 这里转交 utils.instrument，跟 Python 端发出去的走同一上报通道。
             # 早返回避免污染下面的业务 dispatch；不需要 session_manager 状态。
             if action == "telemetry":
