@@ -7821,6 +7821,12 @@ def test_subtitle_window_passthrough_poll_matches_desktop_chat_latency():
     assert "var INTERACTION_PASSTHROUGH_NEAR_MARGIN = 64;" in script
     assert "computeNextInteractionPollDelay" in script
     assert "scheduleInteractionPoll(computeNextInteractionPollDelay(" in script
+    # Proximity reuses the hit-test's page-space conversion, so the idle backoff engages
+    # for both the {screenX,screenY} and the {x,y} cursor-point shapes the bridge returns.
+    assert "cursorPointToPagePoint(point, bounds)" in script
+    # Relaxed cadence ramps in from the responsive rate rather than hard-jumping to the
+    # ceiling, so a cursor that only just left the panel stays responsive to a return.
+    assert "interactionFarStreak" in script
     # Never regress to a fixed slow poll for the responsive path.
     assert "setInterval(updateNativeInteractionPassthrough, 80)" not in script
 
@@ -7874,31 +7880,37 @@ def test_subtitle_window_passthrough_poll_backs_off_when_cursor_is_far(
         """
         async () => {
             document.dispatchEvent(new Event('DOMContentLoaded'));
-            const WINDOW_MS = 400;
+            const WINDOW_MS = 360;
+            // Settle past the 16->32->64->96ms ramp so we measure the steady cadence.
+            const SETTLE_MS = 150;
+            async function measure(cursor) {
+                window.__cursorPoint = cursor;
+                window.dispatchEvent(new Event('focus'));
+                await new Promise((resolve) => setTimeout(resolve, SETTLE_MS));
+                window.__pollCount = 0;
+                await new Promise((resolve) => setTimeout(resolve, WINDOW_MS));
+                return window.__pollCount;
+            }
             // Cursor parked far outside the panel bounds -> relaxed idle cadence.
-            window.__cursorPoint = { x: 1880, y: 1900, screenX: 1980, screenY: 2020 };
-            window.dispatchEvent(new Event('focus'));
-            await new Promise((resolve) => setTimeout(resolve, 60));
-            window.__pollCount = 0;
-            await new Promise((resolve) => setTimeout(resolve, WINDOW_MS));
-            const farPolls = window.__pollCount;
+            const farScreen = await measure({ x: 1880, y: 1900, screenX: 1980, screenY: 2020 });
             // Cursor over the panel -> responsive 16ms cadence.
-            window.__cursorPoint = { x: 20, y: 18, screenX: 120, screenY: 138 };
-            window.dispatchEvent(new Event('focus'));
-            await new Promise((resolve) => setTimeout(resolve, 60));
-            window.__pollCount = 0;
-            await new Promise((resolve) => setTimeout(resolve, WINDOW_MS));
-            const nearPolls = window.__pollCount;
-            return { farPolls, nearPolls };
+            const near = await measure({ x: 20, y: 18, screenX: 120, screenY: 138 });
+            // Cursor-point shape with only window-local {x, y} (no screen coords), far
+            // from the panel -> must still relax (idle backoff keys off page-space coords).
+            const farLocalOnly = await measure({ x: 1880, y: 1900 });
+            return { farScreen, near, farLocalOnly };
         }
         """
     )
 
-    # Over a 400ms window: ~4 polls at the 96ms idle cadence when far, ~25 at 16ms when
+    # Over a 360ms window: ~4 polls at the 96ms idle cadence when far, ~22 at 16ms when
     # near. Use generous bounds to stay robust against headless timer jitter.
-    assert result["farPolls"] <= 10
-    assert result["nearPolls"] >= 12
-    assert result["nearPolls"] >= result["farPolls"] * 2
+    assert result["farScreen"] <= 8
+    # {x, y}-only cursor must back off too, not fall through to the responsive path.
+    assert result["farLocalOnly"] <= 8
+    assert result["near"] >= 10
+    assert result["near"] >= result["farScreen"] * 2
+    assert result["near"] >= result["farLocalOnly"] * 2
 
 
 @pytest.mark.frontend

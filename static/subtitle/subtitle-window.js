@@ -8,6 +8,7 @@
     var interactionPollTimer = null;
     var nativeInteractionIgnored = false;
     var interactionPollInFlight = false;
+    var interactionFarStreak = 0;
     var desktopWindowInteractionsCleanup = null;
     var INTERACTION_PASSTHROUGH_POLL_MS = 16;
     var INTERACTION_PASSTHROUGH_IDLE_POLL_MS = 96;
@@ -287,6 +288,7 @@
     }
 
     function stopInteractionPoll() {
+        interactionFarStreak = 0;
         if (!interactionPollTimer) return;
         clearTimeout(interactionPollTimer);
         interactionPollTimer = null;
@@ -305,27 +307,41 @@
     // While the window is click-through the renderer can't rely on DOM pointer events
     // (Electron's forwarded mouse events are unreliable), so we sample the global cursor
     // over the bridge to decide hit-testing. That state can only change when the cursor
-    // is at/near the panel, so keep the responsive 16ms cadence there and back off to a
-    // relaxed cadence while the cursor is parked far away — the common idle case when a
-    // subtitle is visible but the user is working elsewhere — instead of driving a 60Hz
-    // bridge round-trip that never changes anything.
+    // is at/near the panel, so keep the responsive 16ms cadence there and relax it while
+    // the cursor is parked far away — the common idle case when a subtitle is visible but
+    // the user is working elsewhere — instead of a 60Hz bridge round-trip that never
+    // changes anything.
+    //
+    // Proximity is computed in the same page-space frame as the hit-test (via
+    // cursorPointToPagePoint), so it honors both the {screenX,screenY} and the {x,y}
+    // cursor-point shapes the bridge/stubs may return.
+    function isCursorNearPanel(bounds, point) {
+        var pagePoint = cursorPointToPagePoint(point, bounds);
+        if (!pagePoint) return true;
+        var width = bounds && Number.isFinite(Number(bounds.width))
+            ? Number(bounds.width) : window.innerWidth;
+        var height = bounds && Number.isFinite(Number(bounds.height))
+            ? Number(bounds.height) : window.innerHeight;
+        var margin = INTERACTION_PASSTHROUGH_NEAR_MARGIN;
+        return pagePoint.x >= -margin && pagePoint.x < width + margin &&
+            pagePoint.y >= -margin && pagePoint.y < height + margin;
+    }
+
+    // Ramp the relaxed cadence in from the responsive rate (16 -> 32 -> 64 -> 96ms)
+    // rather than hard-jumping to the idle ceiling the instant the cursor leaves the
+    // margin: a cursor that only just departed is the likeliest to return and click, so
+    // it stays responsive, and we settle to the ceiling only once it's clearly parked.
     function computeNextInteractionPollDelay(bounds, point) {
-        if (!bounds || !point) return INTERACTION_PASSTHROUGH_POLL_MS;
-        var screenX = Number(point.screenX);
-        var screenY = Number(point.screenY);
-        var x = Number(bounds.x);
-        var y = Number(bounds.y);
-        var width = Number(bounds.width);
-        var height = Number(bounds.height);
-        if (!Number.isFinite(screenX) || !Number.isFinite(screenY) ||
-            !Number.isFinite(x) || !Number.isFinite(y) ||
-            !Number.isFinite(width) || !Number.isFinite(height)) {
+        if (isCursorNearPanel(bounds, point)) {
+            interactionFarStreak = 0;
             return INTERACTION_PASSTHROUGH_POLL_MS;
         }
-        var margin = INTERACTION_PASSTHROUGH_NEAR_MARGIN;
-        var near = screenX >= x - margin && screenX < x + width + margin &&
-            screenY >= y - margin && screenY < y + height + margin;
-        return near ? INTERACTION_PASSTHROUGH_POLL_MS : INTERACTION_PASSTHROUGH_IDLE_POLL_MS;
+        var ramped = INTERACTION_PASSTHROUGH_POLL_MS * Math.pow(2, interactionFarStreak);
+        if (ramped < INTERACTION_PASSTHROUGH_IDLE_POLL_MS) {
+            interactionFarStreak += 1;
+            return ramped;
+        }
+        return INTERACTION_PASSTHROUGH_IDLE_POLL_MS;
     }
 
     function scheduleInteractionPoll(delayMs) {
