@@ -5,11 +5,11 @@ import asyncio
 from contextlib import suppress
 from typing import Any, Callable, Sequence, Union, cast
 
+from plugin._types.bus_sort import bus_sort_key
+
 __all__ = [
     "_dedupe_key_from_record",
-    "_sort_bus_value",
     "_get_sort_field_from_record",
-    "_cast_bus_value",
     "_cancel_timer_best_effort",
     "_build_watcher_injected_callback",
     "_infer_bus_from_plan",
@@ -54,14 +54,6 @@ def _dedupe_key_from_record(item: Any) -> tuple[str, Any]:
         return ("dump", fp)
     except Exception:
         return ("object", id(item))
-
-
-def _sort_bus_value(v: Any) -> tuple[int, Any]:
-    if v is None:
-        return (2, "")
-    if isinstance(v, (int, float)):
-        return (0, v)
-    return (1, str(v))
 
 
 def _get_sort_field_from_record(item: Any, field: str) -> Any:
@@ -174,14 +166,11 @@ class BusListCore:
     def _dedupe_key(self, item: Any) -> tuple[str, Any]:
         return _dedupe_key_from_record(item)
 
-    def _sort_value(self, v: Any) -> tuple[int, Any]:
-        return _sort_bus_value(v)
+    def _sort_key(self, v: Any, cast: str | None) -> tuple[int, object]:
+        return bus_sort_key(v, cast)
 
     def _get_sort_field(self, item: Any, field: str) -> Any:
         return _get_sort_field_from_record(item, field)
-
-    def _cast_value(self, v: Any, cast: str | None) -> Any:
-        return _cast_bus_value(v, cast)
 
     def reload(self, ctx: Any = None) -> Any:
         return self.reload_with(ctx)
@@ -320,28 +309,6 @@ def _extract_sub_id(res: Any) -> str | None:
 
 def _build_bus_unsubscribe_request(bus: str, sub_id: str) -> dict[str, Any]:
     return {"bus": bus, "sub_id": sub_id}
-
-
-def _cast_bus_value(v: Any, cast: str | None) -> Any:
-    if cast is None:
-        return v
-    c = str(cast).strip().lower()
-    if c in ("int", "i"):
-        try:
-            return int(str(v).strip())
-        except Exception:
-            return 0
-    if c in ("float", "f"):
-        try:
-            return float(str(v).strip())
-        except Exception:
-            return 0.0
-    if c in ("str", "s"):
-        try:
-            return "" if v is None else str(v)
-        except Exception:
-            return ""
-    return v
 
 
 def _cancel_timer_best_effort(timer: Any) -> None:

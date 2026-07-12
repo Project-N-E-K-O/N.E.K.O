@@ -11,6 +11,7 @@ import inspect
 from dataclasses import dataclass, field
 from typing import Any, Callable, Generic, Iterable, Mapping, Protocol, TypeVar, cast
 
+from plugin._types.bus_sort import bus_sort_key
 from plugin.sdk.shared.models import Err, Ok
 
 
@@ -639,32 +640,12 @@ class SdkBusList(Generic[TRecord]):
         else:
             fields = list(by)
 
-        def _cast_value(value: object) -> object:
-            normalized_cast = str(cast or "").strip().lower()
-            try:
-                if normalized_cast in {"int", "i"}:
-                    return int(str(value).strip())
-                if normalized_cast in {"float", "f"}:
-                    return float(str(value).strip())
-                if normalized_cast in {"str", "s"}:
-                    return "" if value is None else str(value)
-            except (TypeError, ValueError):
-                return 0 if normalized_cast in {"int", "i"} else 0.0
-            return value
-
-        def _sortable(value: object) -> tuple[int, object]:
-            if value is None:
-                return (2, "")
-            if isinstance(value, (int, float)) and not isinstance(value, bool):
-                return (0, value)
-            return (1, str(value))
-
         sort_key: Callable[[TRecord], Any]
         if key is not None:
             sort_key = key
         else:
             sort_key = lambda item: tuple(
-                _sortable(_cast_value(self._item_value(item, field)))
+                bus_sort_key(self._item_value(item, field), cast)
                 for field in fields
             )
 

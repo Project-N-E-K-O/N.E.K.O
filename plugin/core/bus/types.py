@@ -481,7 +481,7 @@ class BusList(BusListCore, Generic[TRecord]):
 
             def key_func(x: TRecord) -> Tuple[Tuple[int, Any], ...]:
                 return tuple(
-                    self._sort_value(self._cast_value(self._get_sort_field(x, f), cast))
+                    self._sort_key(self._get_sort_field(x, f), cast)
                     for f in by_fields
                 )
 

@@ -782,6 +782,46 @@ class TestSdkBusList:
 
         assert [item.priority for item in result] == [5, 3, 1]
 
+    def test_local_sort_matches_core_for_mixed_numeric_values(self) -> None:
+        records = [
+            SdkBusMessageRecord(type="false", priority=False),
+            SdkBusMessageRecord(type="zero", priority=0),
+            SdkBusMessageRecord(type="true", priority=True),
+            SdkBusMessageRecord(type="one", priority=1),
+        ]
+        core_items = CoreBusList(records)
+        sdk_items = _make_list(records)
+
+        core_sorted = core_items.sort(by="priority")
+        sdk_sorted = sdk_items.sort(by="priority")
+
+        assert [item.type for item in core_sorted] == ["false", "zero", "true", "one"]
+        assert [item.type for item in sdk_sorted] == [item.type for item in core_sorted]
+
+    @pytest.mark.parametrize(
+        ("cast", "expected"),
+        [
+            ("int", ["none", "bad", "two", "ten"]),
+            ("float", ["none", "bad", "two", "ten"]),
+            ("str", ["none", "ten", "two", "bad"]),
+        ],
+    )
+    def test_local_sort_casts_match_core(self, cast: str, expected: list[str]) -> None:
+        records = [
+            SdkBusMessageRecord(type="ten", priority="10"),
+            SdkBusMessageRecord(type="two", priority="2"),
+            SdkBusMessageRecord(type="none", priority=None),
+            SdkBusMessageRecord(type="bad", priority="bad"),
+        ]
+        core_items = CoreBusList(records)
+        sdk_items = _make_list(records)
+
+        core_sorted = core_items.sort(by="priority", cast=cast)
+        sdk_sorted = sdk_items.sort(by="priority", cast=cast)
+
+        assert [item.type for item in core_sorted] == expected
+        assert [item.type for item in sdk_sorted] == expected
+
     def test_sort_by_field_delegates_to_replayable_raw_list(self) -> None:
         class _ReplayableRawList:
             def __init__(self, records: list[dict[str, object]]) -> None:
