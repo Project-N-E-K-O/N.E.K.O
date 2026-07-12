@@ -86,6 +86,8 @@ async def _drain_task(task):
     try:
         await task
     except (asyncio.CancelledError, Exception):
+        # Best-effort teardown: the task is being cancelled on purpose, so its
+        # cancellation (or any error surfacing as it unwinds) is expected and moot.
         pass
 
 
@@ -163,6 +165,9 @@ async def test_final_swap_swallowed_cancel_still_aborts_before_promote():
             try:
                 await asyncio.sleep(0)
             except asyncio.CancelledError:
+                # Swallow it on purpose — this IS the swallow being reproduced:
+                # the cancel is consumed here so _must_cancel clears while
+                # cancelling() stays 1, mimicking wait_for/close eating the cancel.
                 pass
 
     old_session = _SwallowExternalCancelOnClose("old")
