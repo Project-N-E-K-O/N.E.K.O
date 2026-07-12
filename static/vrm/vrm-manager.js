@@ -53,7 +53,6 @@ class VRMManager {
         this._initThreePromise = null;
         this._isDisposed = false;
         this._activeLoadToken = 0;
-        this._loadModelChain = null;
         this._loadState = 'idle';
         this._isModelReadyForInteraction = false;
 
@@ -1000,31 +999,27 @@ class VRMManager {
     }
 
     async loadModel(modelUrl, options = {}) {
-        // 并发串行化：core.loadModel 内部在 移除旧模型/disposeVRM/scene.add/currentModel 赋值
-        // 之间有多个 await 悬挂点，两次调用交错执行会留下永不清理的幽灵模型，或让先发的
-        // 慢调用把后发调用已装好的新模型误销毁。loadToken 只能拦截收尾阶段，挡不住中途
-        // 副作用，因此在入口整体排队：token 入口分配（后到者胜），加载体依次独占执行，
-        // 排队期间被更新调用取代的直接跳过（连网络请求都不发起）。
+        // 并发正确性由 vrm-core.loadModel 的 token 守卫兜底，实现「后到者胜」：每次 loadModel
+        // 在入口同步 bump _activeLoadToken 取代前一轮；被取代的旧加载在 core 内触碰共享
+        // scene/currentModel 之前的守卫处 bail，不会交错改写共享状态或留下幽灵模型。
+        //
+        // 因此不再排串行队列：队列里每个 predecessor 在其 successor 入队时其实已被 token
+        // 取代，让新加载 await 它只是「空等一个已被自己取代的旧加载」——而 GLTFLoader.load
+        // 无超时/中止，慢或挂死的旧加载会无限期阻塞正常的 VRM→VRM 切换（Codex P2）。
+        // token-only 方案与 mmd-manager.loadModel 对偶；代价是快速连切时被取代的加载会各自
+        // 完成一次下载后才 bail（带宽浪费），换取活性，符合 MMD 既有取舍。
         const loadToken = ++this._activeLoadToken;
         this._loadState = 'preparing';
         this._isModelReadyForInteraction = false;
-        const previousLoad = this._loadModelChain || Promise.resolve();
-        const currentLoad = previousLoad
-            .catch(() => {})
-            .then(() => {
-                if (!this._isLoadTokenActive(loadToken)) return null;
-                return this._loadModelExclusive(modelUrl, options, loadToken);
-            });
-        // 队列指针吞掉异常，避免悬挂 rejected promise；调用方仍通过 currentLoad 收到原始异常
-        this._loadModelChain = currentLoad.then(() => undefined, () => undefined);
-        return currentLoad;
+        return this._loadModelInternal(modelUrl, options, loadToken);
     }
 
     /**
-     * loadModel 的实际加载体。只能经由 loadModel 的串行队列进入，保证同一时刻
-     * 至多一个实例在执行；loadToken 由 loadModel 在入口分配后传入。
+     * loadModel 的实际加载体。loadToken 由 loadModel 在入口分配后传入；同一时刻可能有
+     * 多个实例并发在跑（快速连切），但只有持 current token 的那个能穿过 core 的守卫改写
+     * 共享状态，被取代的实例在 core 返回 null 后一路空转到早退，不 clobber 胜出者的状态。
      */
-    async _loadModelExclusive(modelUrl, options, loadToken) {
+    async _loadModelInternal(modelUrl, options, loadToken) {
         this._loadState = 'preparing';
         this._isModelReadyForInteraction = false;
         // 新一轮加载：取消上一轮可能还在跑的 T-pose 回退重试，避免旧重试打断新模型动画
@@ -1049,7 +1044,8 @@ class VRMManager {
             if (canvas && container) {
                 const threeReady = await this.ensureThreeReady(canvasId, containerId);
                 if (!threeReady) {
-                    this._loadState = 'idle';
+                    // 仅当自己仍是当前加载时才复位状态，避免被取代的实例 clobber 胜出者
+                    if (this._isLoadTokenActive(loadToken)) this._loadState = 'idle';
                     return null;
                 }
             } else {
@@ -1070,7 +1066,8 @@ class VRMManager {
         // 加载模型
         const result = await this.core.loadModel(modelUrl, options, loadToken);
         if (!this._isLoadTokenActive(loadToken)) {
-            this._loadState = 'idle';
+            // 已被更新的加载取代：core 已在守卫处 bail 并释放本次资源，这里直接返回，
+            // 不写 _loadState——否则会 clobber 正在并发跑的胜出者的状态（无队列后新增约束）。
             return result;
         }
 
@@ -1441,14 +1438,9 @@ class VRMManager {
         console.log('[VRM Manager] 开始完整清理 VRM 资源...');
         this._isDisposed = true;
 
-        // Invalidate any in-flight loadModel() async callbacks
+        // 使在途的 loadModel 失效：bump token 后，被取代的旧 load 的 core.loadModel
+        // 恢复时会在守卫处 bail、不覆写新会话；无串行队列，无需清理队列指针。
         ++this._activeLoadToken;
-        // 清空串行队列指针：dispose 只 bump token 不足以让下一次会话的 loadModel
-        // 立即开始——若不清空，被取代的旧 load（其 core.loadModel 可能仍挂在无超时的
-        // GLTF 网络请求上）会作为 previousLoad 把 dispose 后的新 load 堵在队列后（活性）。
-        // 清空后新 load 的 previousLoad 退回 Promise.resolve() 直接开跑；旧 load 的 core
-        // 侧 token 守卫（vrm-core.loadModel）保证它恢复时不会覆写新会话的模型（安全）。
-        this._loadModelChain = null;
         this._loadState = 'idle';
         this._isModelReadyForInteraction = false;
 

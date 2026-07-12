@@ -722,7 +722,7 @@ class VRMCore {
             throw new Error(errorMsg);
         }
 
-        // 加载令牌：由 vrm-manager._loadModelExclusive 在入口分配后传入；直接调用时
+        // 加载令牌：由 vrm-manager._loadModelInternal 在入口分配后传入；直接调用时
         // 回退读当前值（等价旧行为）。core.loadModel 在多个 await（GLTF 网络加载、偏好
         // fetch、3 帧等待）之间会 remove/dispose/add 共享 scene 并覆写 currentModel，
         // manager 的串行队列在 dispose 后会被清空以保证活性，因此这些跨越 await 的共享

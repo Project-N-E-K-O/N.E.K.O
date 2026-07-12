@@ -1,13 +1,18 @@
-"""Static contracts for avatar model-load race fixes (PR #2273 review follow-up).
+"""Static contracts for avatar model-load race fixes (PR #2273/#2276 review).
 
-Covers three fixes:
-1. VRM loadModel serialization: entry-allocated token + promise queue, so two
-   overlapping core.loadModel runs can no longer interleave remove/dispose/add
-   on the shared scene (ghost orphan model / newer model disposed by stale call).
-2. VRMManager.cleanupUI restored: it was dropped in #510 while dispose() /
+Covers:
+1. VRM loadModel concurrency = token-only "last writer wins" (NO serial queue).
+   Entry-allocated token supersedes prior loads; vrm-core.loadModel bails at its
+   token guards before touching shared scene/currentModel, so overlapping loads
+   cannot interleave remove/dispose/add. A queue was tried first but removed: it
+   made a replacement load await an already-superseded predecessor, so a slow/hung
+   GLTF (no timeout) blocked ordinary VRM->VRM switches (Codex P2). Mirrors MMD.
+2. vrm-core.loadModel token guards: managerLoadToken passed in + guarded before
+   old-model removal and before scene.add, with _disposeAbandonedVRM on bail.
+3. VRMManager.cleanupUI restored: dropped in #510 while dispose() /
    app-character.js / app-interpage.js kept calling it behind typeof guards,
    leaving _returnButtonDragHandlers document listeners uncleaned on teardown.
-3. MMD load token provenance: token must be captured before the first await in
+4. MMD load token provenance: token captured before the first await in
    mmd-core.loadModel and passed from the manager, otherwise a superseded call
    (e.g. the failure-fallback path) can pass the stale check and stack a ghost
    mesh, or _clearModel a newer call's freshly loaded model.
@@ -18,39 +23,52 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_vrm_load_model_is_serialized_with_entry_token():
+def test_vrm_load_model_uses_entry_token_without_blocking_queue():
+    # 设计：token-only「后到者胜」，无串行队列（与 mmd-manager 对偶）。
+    # 队列会让新加载 await 一个已被自己取代的旧加载 → 慢/挂死的 GLTF（无超时）
+    # 无限期阻塞 VRM→VRM 切换（Codex P2）。并发正确性由 vrm-core 的 token 守卫兜底。
     source = (PROJECT_ROOT / "static/vrm/vrm-manager.js").read_text(encoding="utf-8")
 
-    # token 在入口同步分配（后到者胜），加载体经串行队列独占执行
+    # token 在入口同步分配（后到者胜），直接调用加载体，不经 promise 队列
     assert "const loadToken = ++this._activeLoadToken;" in source
-    assert "const previousLoad = this._loadModelChain || Promise.resolve();" in source
-    assert "return this._loadModelExclusive(modelUrl, options, loadToken);" in source
-    assert "async _loadModelExclusive(modelUrl, options, loadToken)" in source
+    assert "return this._loadModelInternal(modelUrl, options, loadToken);" in source
+    assert "async _loadModelInternal(modelUrl, options, loadToken)" in source
 
-    # 排队期间被更新调用取代的加载体必须整体跳过（连网络请求都不发起）
+    # 串行队列必须彻底移除：不得残留 _loadModelChain / previousLoad / 旧方法名
+    assert "_loadModelChain" not in source, "串行队列指针应已移除（会阻塞 VRM→VRM 切换）"
+    assert "previousLoad" not in source
+    assert "_loadModelExclusive" not in source
+
+    # loadModel 包装体必须极薄：bump token → 直接委派，中间不 await 任何前序加载
     wrapper = source.split("async loadModel(modelUrl, options = {})", 1)[1]
-    wrapper = wrapper.split("async _loadModelExclusive", 1)[0]
-    assert "if (!this._isLoadTokenActive(loadToken)) return null;" in wrapper
+    wrapper = wrapper.split("async _loadModelInternal", 1)[0]
+    assert "await this." not in wrapper, "loadModel 不得 await 前序加载（否则重现阻塞）"
+    assert ".then(" not in wrapper, "loadModel 不得挂 promise 链（否则重现阻塞队列）"
 
-    # 队列指针必须吞掉异常，避免下一次加载被上一次的 rejection 卡住
-    assert "this._loadModelChain = currentLoad.then(() => undefined, () => undefined);" in source
+    # 加载体内不得再自行分配 token（token 由入口分配后传入，用于守卫比对）
+    body = source.split("async _loadModelInternal", 1)[1].split("async dispose()", 1)[0]
+    assert "++this._activeLoadToken" not in body
 
-    # 加载体内不得再自行分配 token（否则队列的取代检查失效）
-    exclusive_body = source.split("async _loadModelExclusive", 1)[1]
-    assert "++this._activeLoadToken" not in exclusive_body.split("async dispose()", 1)[0]
+    # 被取代的实例在 core 返回后直接早退，不写 _loadState（避免 clobber 并发胜出者）
+    post_core = body.split(
+        "const result = await this.core.loadModel(modelUrl, options, loadToken);", 1
+    )[1]
+    superseded_branch = post_core.split(
+        "if (!this._isLoadTokenActive(loadToken)) {", 1
+    )[1].split("}", 1)[0]
+    assert "return result;" in superseded_branch
+    # 真实写入才有 this. 前缀（注释里提到 _loadState 不算）
+    assert "this._loadState" not in superseded_branch, "被取代分支不得写 _loadState（会 clobber 胜出者）"
 
 
-def test_vrm_dispose_clears_load_queue_pointer():
-    # Codex P2：dispose 只 bump token 不清 _loadModelChain 时，被取代/挂死的旧 load
-    # 会作为 previousLoad 把 dispose 后的新 load 堵在队列后（活性 bug）。dispose 必须
-    # 在 bump token 后清空队列指针，新 load 的 previousLoad 才退回 Promise.resolve()。
+def test_vrm_dispose_invalidates_without_blocking_queue():
+    # 无队列后 dispose 只需 bump token 使在途加载失效（旧 load 在 core 守卫处 bail），
+    # 不得引入任何会阻塞后续加载的队列指针。
     source = (PROJECT_ROOT / "static/vrm/vrm-manager.js").read_text(encoding="utf-8")
 
     dispose_body = source.split("async dispose()", 1)[1].split("\n    }\n", 1)[0]
     assert "++this._activeLoadToken;" in dispose_body
-    assert "this._loadModelChain = null;" in dispose_body
-    # 清链必须紧跟在 token bump 之后（同一失效动作），不能漏在别处
-    assert dispose_body.index("++this._activeLoadToken;") < dispose_body.index("this._loadModelChain = null;")
+    assert "_loadModelChain" not in dispose_body
 
 
 def test_vrm_core_load_is_token_guarded_across_dispose():
