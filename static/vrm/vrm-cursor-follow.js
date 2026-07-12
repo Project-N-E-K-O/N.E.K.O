@@ -748,7 +748,7 @@ class CursorFollowController {
                 dirWorld.normalize();
 
                 // modelForward / modelUp / modelRight
-                // 使用 _modelForwardZ 适配 VRM 0.x(-Z) 和 1.0(+Z) 的前方向差异
+                // 使用 _modelForwardZ 适配 VRM 0.x(+Z) 和 1.0(-Z) 的前方向差异
                 const modelForward = this._tempVec3B.set(0, 0, this._modelForwardZ).applyQuaternion(this._tempQuat);
                 const modelUp = this._tempVec3C.set(0, 1, 0).applyQuaternion(this._tempQuat);
                 const modelRight = this._tempVec3D.crossVectors(modelUp, modelForward).normalize();
