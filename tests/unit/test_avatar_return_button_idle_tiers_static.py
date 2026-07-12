@@ -9,7 +9,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 AVATAR_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "avatar" / "avatar-ui-buttons.js"
 APP_UI_PATH = PROJECT_ROOT / "static" / "app-ui.js"
 APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app-interpage.js"
-APP_REACT_CHAT_WINDOW_PATH = PROJECT_ROOT / "static" / "app-react-chat-window.js"
+APP_REACT_CHAT_WINDOW_PATH = PROJECT_ROOT / "static" / "app" / "app-react-chat-window.js"
 COMMON_UI_HUD_PATH = PROJECT_ROOT / "static" / "common-ui-hud.js"
 LIVE2D_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "live2d" / "live2d-ui-buttons.js"
 VRM_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "vrm" / "vrm-ui-buttons.js"
@@ -2125,9 +2125,10 @@ def test_local_return_button_drag_recovers_lost_release_without_active_timeout()
     _assert_source_order(
         mouse_move_block,
         "local return-ball lost mouseup recovery",
-        "const point = getDragPoint(e, e.clientX, e.clientY);",
-        "if (isDragging && dragPointerType === 'mouse' && e.buttons === 0) {",
+        "if (!isDragging) return;",
+        "if (dragPointerType === 'mouse' && e.buttons === 0) {",
         "handleEnd();",
+        "const point = getDragPoint(e, e.clientX, e.clientY);",
         "handleMove(point.x, point.y, e);",
     )
     _assert_source_order(
@@ -3168,7 +3169,7 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     assert "_isAnyNekoIdleCat1PlaygroundDropLifecycleActive()" in minimized_state_block
     assert "_isNekoIdleCat1PlaygroundPairMoveFeedback(detail)" in minimized_state_block
     assert "const pairMoveFeedback = _isNekoIdleCat1PlaygroundPairMoveFeedback(detail);" in minimized_state_block
-    react_chat_source = (PROJECT_ROOT / "static" / "app-react-chat-window.js").read_text(encoding="utf-8")
+    react_chat_source = (PROJECT_ROOT / "static" / "app" / "app-react-chat-window.js").read_text(encoding="utf-8")
     assert "async function applyElectronCat1PairMoveBounds(bounds, options)" in react_chat_source
     assert "function scheduleElectronCat1PairMoveBounds(bounds, options)" in react_chat_source
     assert "if (isElectronLinuxRuntime() && !force) return;" in react_chat_source
@@ -3412,9 +3413,10 @@ def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():
     _assert_source_order(
         mouse_move_block,
         "local return-ball mousemove recovers released mouse before moving",
-        "const point = getDragPoint(e, e.clientX, e.clientY);",
-        "if (isDragging && dragPointerType === 'mouse' && e.buttons === 0) {",
+        "if (!isDragging) return;",
+        "if (dragPointerType === 'mouse' && e.buttons === 0) {",
         "handleEnd();",
+        "const point = getDragPoint(e, e.clientX, e.clientY);",
         "handleMove(point.x, point.y, e);",
     )
     finish_drag_state_block = _source_slice_between(

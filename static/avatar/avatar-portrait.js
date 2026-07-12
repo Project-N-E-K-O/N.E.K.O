@@ -1664,12 +1664,8 @@
                         width: renderedSource.canvas.width,
                         height: renderedSource.canvas.height
                     },
-                    cropRectPixels: renderedSource.cropRectPixels || {
-                        x: 0,
-                        y: 0,
-                        width: renderedSource.canvas.width,
-                        height: renderedSource.canvas.height
-                    },
+                    // 与屏幕画布路径对齐：报告实际传给 drawImage 的裁剪矩形（已做目标宽高比调整）
+                    cropRectPixels: sourceCropRect,
                     sourceCanvas: renderedSource.sourceCanvas || renderedSource.canvas
                 };
 

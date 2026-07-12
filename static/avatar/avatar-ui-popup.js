@@ -1881,6 +1881,7 @@ function createIntervalControl(manager, prefix, toggle) {
     slider.step = '5';
     let currentValue = typeof window[toggle.intervalKey] !== 'undefined' ? window[toggle.intervalKey] : toggle.defaultInterval;
     if (currentValue > 120) currentValue = 120;
+    if (currentValue < minVal) currentValue = minVal;
     slider.value = currentValue;
     Object.assign(slider.style, { width: '60px', height: '4px', cursor: 'pointer', accentColor: 'var(--neko-popup-accent, #44b7fe)' });
 

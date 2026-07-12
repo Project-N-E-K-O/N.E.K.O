@@ -1236,8 +1236,8 @@ def test_react_chat_templates_use_react_asset_version_for_chat_bundle():
     react_assets = (
         "/static/react/neko-chat/neko-chat-window.css",
         "/static/react/neko-chat/neko-chat-window.iife.js",
-        "/static/app-react-chat-window.js",
-        "/static/app-chat-adapter.js",
+        "/static/app/app-react-chat-window.js",
+        "/static/app/app-chat-adapter.js",
         "/static/app-buttons.js",
     )
 
@@ -1259,8 +1259,8 @@ def test_pages_router_react_chat_asset_version_tracks_avatar_tool_icons():
         "static/icons/chat_sugar1.png",
         "static/icons/cat_claw1.png",
         "static/icons/chat_hammer1.png",
-        "static/app-react-chat-window.js",
-        "static/app-chat-adapter.js",
+        "static/app/app-react-chat-window.js",
+        "static/app/app-chat-adapter.js",
         "static/app-buttons.js",
     ):
         assert f'_PROJECT_ROOT / "{asset_path}"' in source

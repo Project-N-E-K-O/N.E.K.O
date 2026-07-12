@@ -69,7 +69,7 @@
 
 宿主和后端：
 
-1. `static/app-react-chat-window.js`
+1. `static/app/app-react-chat-window.js`
    - 接收 React 的 `onAvatarInteraction` 和 `onAvatarToolStateChange`。
    - 对外派发 `neko-react-chat-window:avatar-interaction` 和 `neko-react-chat-window:avatar-tool-state`。
 2. `static/app-buttons.js`
