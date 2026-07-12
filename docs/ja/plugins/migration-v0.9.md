@@ -55,7 +55,7 @@ from plugin.sdk.plugin import Result, Ok, Err, SdkError
 Bus は host state の read/watch facade であり、publish 可能な汎用イベントバスではありません。名前空間を 1 つ選び、結果件数を制限します。
 
 ```python
-events = await self.bus.events.get(plugin_id=self.plugin_id)
+events = await self.bus.events.get(plugin_id=self.plugin_id, max_count=50)
 events = (
     events
     .filter(priority_min=1)

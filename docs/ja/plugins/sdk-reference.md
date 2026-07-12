@@ -264,7 +264,7 @@ python_env = unwrap_or(await self.system_info.get_python_env(), {})
 async entry 内では、local list 操作より先に `get()` を await します。
 
 ```python
-events = await self.bus.events.get(plugin_id=self.plugin_id)
+events = await self.bus.events.get(plugin_id=self.plugin_id, max_count=50)
 recent = events.filter(priority_min=1).sort(by="timestamp", reverse=True).limit(20)
 
 records = await self.bus.memory.get(bucket_id="default", limit=20)

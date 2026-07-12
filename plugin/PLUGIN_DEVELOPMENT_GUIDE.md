@@ -1017,7 +1017,7 @@ def heartbeat(self, **_):
 `memory` 是只读快照。异步入口中先 `await get()`，再组合结构化过滤、排序与限量：
 
 ```python
-events = await self.bus.events.get(plugin_id=self.plugin_id)
+events = await self.bus.events.get(plugin_id=self.plugin_id, max_count=50)
 recent = events.filter(priority_min=1).sort(by="timestamp", reverse=True).limit(20)
 
 watcher = recent.watch(self.ctx)

@@ -55,7 +55,7 @@ from plugin.sdk.plugin import Result, Ok, Err, SdkError
 Bus 是宿主状态的只读/监听门面，不是可发布消息的通用事件总线。应查询一个明确的命名空间，并限制结果数量：
 
 ```python
-events = await self.bus.events.get(plugin_id=self.plugin_id)
+events = await self.bus.events.get(plugin_id=self.plugin_id, max_count=50)
 events = (
     events
     .filter(priority_min=1)

@@ -55,7 +55,7 @@ Do not add a local compatibility alias for the removed module.
 The bus is a read/watch facade over host state, not a publish/subscribe event bus. Query one namespace and keep the result bounded:
 
 ```python
-events = await self.bus.events.get(plugin_id=self.plugin_id)
+events = await self.bus.events.get(plugin_id=self.plugin_id, max_count=50)
 events = (
     events
     .filter(priority_min=1)

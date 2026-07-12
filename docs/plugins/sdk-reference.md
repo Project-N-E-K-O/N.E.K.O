@@ -264,7 +264,7 @@ The `ctx` object is injected by the host at construction time.
 Inside async entries, await `get()` before applying the local list operations:
 
 ```python
-events = await self.bus.events.get(plugin_id=self.plugin_id)
+events = await self.bus.events.get(plugin_id=self.plugin_id, max_count=50)
 recent = events.filter(priority_min=1).sort(by="timestamp", reverse=True).limit(20)
 
 records = await self.bus.memory.get(bucket_id="default", limit=20)

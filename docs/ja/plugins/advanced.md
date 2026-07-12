@@ -129,7 +129,7 @@ dep = await self.plugins.require_enabled("required_plugin")
 
 ```python
 # async entry では get() を await する
-events = await self.bus.events.get(plugin_id=self.plugin_id)
+events = await self.bus.events.get(plugin_id=self.plugin_id, max_count=50)
 recent = events.filter(priority_min=1).sort(by="timestamp", reverse=True).limit(20)
 
 # subscribe() は "add"、"del"、"change" のみ受け付ける

@@ -264,7 +264,7 @@ python_env = unwrap_or(await self.system_info.get_python_env(), {})
 在异步入口中，先 `await get()`，再使用本地列表操作：
 
 ```python
-events = await self.bus.events.get(plugin_id=self.plugin_id)
+events = await self.bus.events.get(plugin_id=self.plugin_id, max_count=50)
 recent = events.filter(priority_min=1).sort(by="timestamp", reverse=True).limit(20)
 
 records = await self.bus.memory.get(bucket_id="default", limit=20)

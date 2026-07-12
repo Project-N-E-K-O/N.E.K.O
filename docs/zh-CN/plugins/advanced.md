@@ -129,7 +129,7 @@ dep = await self.plugins.require_enabled("required_plugin")
 
 ```python
 # 在异步入口中必须 await get()
-events = await self.bus.events.get(plugin_id=self.plugin_id)
+events = await self.bus.events.get(plugin_id=self.plugin_id, max_count=50)
 recent = events.filter(priority_min=1).sort(by="timestamp", reverse=True).limit(20)
 
 # subscribe() 仅接受 "add"、"del"、"change"
