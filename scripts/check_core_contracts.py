@@ -571,6 +571,18 @@ def run(root: Path) -> list[Violation]:
                     violations.append(Violation(path, node.lineno, node.col_offset, "CORE_MIXIN_SHAPE",
                                                 "mixins must not define __init__ — instance state has a "
                                                 "single home in LLMSessionManager.__init__ (manager.py)"))
+                # A mutable-container default (``def f(self, cache={})``) is
+                # allocated once at import and SHARED across every instance —
+                # the exact hidden mixin state this contract keeps out (same
+                # rationale as the module-level/class-body state rejections).
+                MUT = (ast.Dict, ast.List, ast.Set, ast.DictComp, ast.ListComp, ast.SetComp)
+                for dflt in [d for d in node.args.defaults if d] + [d for d in node.args.kw_defaults if d]:
+                    bad = next((s for s in ast.walk(dflt) if isinstance(s, MUT)), None)
+                    if bad is not None:
+                        violations.append(Violation(path, dflt.lineno, dflt.col_offset, "CORE_MIXIN_SHAPE",
+                                                    f"mixin method '{node.name}' has a mutable default argument "
+                                                    f"— it is allocated once at import and shared across all "
+                                                    f"instances; use None and build inside the method"))
                 continue
             violations.append(Violation(path, node.lineno, node.col_offset, "CORE_MIXIN_SHAPE",
                                         f"mixin class body allows only docstring/methods, "
