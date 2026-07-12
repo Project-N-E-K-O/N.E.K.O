@@ -4,7 +4,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 LIVE2D_INTERACTION_PATH = PROJECT_ROOT / "static" / "live2d" / "live2d-interaction.js"
 LIVE2D_CORE_PATH = PROJECT_ROOT / "static" / "live2d" / "live2d-core.js"
-APP_GAME_MODE_BETA_PATH = PROJECT_ROOT / "static" / "app-game-mode-beta.js"
+APP_GAME_MODE_BETA_PATH = PROJECT_ROOT / "static" / "app" / "app-game-mode-beta.js"
 INDEX_CSS_PATH = PROJECT_ROOT / "static" / "css" / "index.css"
 
 

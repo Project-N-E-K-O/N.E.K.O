@@ -1,7 +1,7 @@
 """Shared logging facade for SDK v2.
 
 This module standardizes the logger contract and helper entrypoints used across
-`plugin`, `extension`, and `adapter` facades.
+the `plugin` and `adapter` facades.
 """
 
 from __future__ import annotations
@@ -20,7 +20,6 @@ from plugin.sdk.shared.core.types import LoggerLike
 
 SDK_COMPONENT_ROOT: Final[str] = "sdk"
 PLUGIN_COMPONENT_ROOT: Final[str] = "plugin"
-EXTENSION_COMPONENT_ROOT: Final[str] = "extension"
 ADAPTER_COMPONENT_ROOT: Final[str] = "adapter"
 
 
@@ -49,10 +48,6 @@ def get_plugin_logger(plugin_id: str, suffix: str | None = None) -> LoggerLike:
     return get_logger(build_component_name(PLUGIN_COMPONENT_ROOT, plugin_id, suffix))
 
 
-def get_extension_logger(extension_id: str, suffix: str | None = None) -> LoggerLike:
-    return get_logger(build_component_name(EXTENSION_COMPONENT_ROOT, extension_id, suffix))
-
-
 def get_adapter_logger(adapter_id: str, suffix: str | None = None) -> LoggerLike:
     return get_logger(build_component_name(ADAPTER_COMPONENT_ROOT, adapter_id, suffix))
 
@@ -62,7 +57,6 @@ __all__ = [
     "LogLevel",
     "SDK_COMPONENT_ROOT",
     "PLUGIN_COMPONENT_ROOT",
-    "EXTENSION_COMPONENT_ROOT",
     "ADAPTER_COMPONENT_ROOT",
     "build_component_name",
     "get_sdk_logger",
@@ -71,6 +65,5 @@ __all__ = [
     "intercept_standard_logging",
     "format_log_text",
     "get_plugin_logger",
-    "get_extension_logger",
     "get_adapter_logger",
 ]

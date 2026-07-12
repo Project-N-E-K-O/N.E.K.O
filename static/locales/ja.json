@@ -4781,6 +4781,19 @@
             "send": "送信",
             "voiceStatusHidden": "デバッグ STT：非表示"
         },
+        "surrenderReminder": {
+            "label": "降参リマインド"
+        },
+        "exitPrompt": {
+            "continuePlay": "続ける",
+            "endGame": "ゲーム終了",
+            "stayLonger": "もう少し一緒にいる",
+            "rest": "休む",
+            "neverAgain": "今後表示しない",
+            "neverAgainNote": "NEKO の降参や休憩の案内を自動表示しません。右上の「降参リマインド」から再び有効にできます。NEKO が落ち込んでいる時は、音声や文字でなだめられます。",
+            "surrenderFallback": "にゃ..降参にゃ...",
+            "restFallback": "にゃ...少し疲れたから、ちょっと静かにしたい。"
+        },
         "debug": {
             "mouse": "マウス：{{x}}, {{y}}",
             "playerCenter": "プレイヤー中心：{{x}}, {{y}}",

@@ -29,7 +29,7 @@ N.E.K.O/
 │       └── prompts_chara.py    # キャラクターシステムプロンプト
 │
 ├── main_logic/                 # コアビジネスロジック
-│   ├── core.py                 # LLMSessionManager（中央セッションハンドラー）
+│   ├── core/                   # LLMSessionManager パッケージ（manager.py + ドメイン別 mixin）
 │   ├── omni_realtime_client.py # Realtime API WebSocketクライアント
 │   ├── omni_offline_client.py  # テキスト/レスポンスAPIクライアント（オフラインフォールバック）
 │   ├── tts_client/             # TTSエンジンアダプターパッケージ（CosyVoice、GPT-SoVITS など）
@@ -107,7 +107,7 @@ N.E.K.O/
 
 | ファイル | 行数 | 役割 |
 |---------|------|------|
-| `main_logic/core.py` | 約2300 | 中央セッションマネージャー — システムの心臓部 |
+| `main_logic/core/` | 約10600 | 中央セッションマネージャーパッケージ — システムの心臓部 |
 | `utils/config_manager.py` | 約1500 | 設定の読み込み、検証、永続化 |
 | `main_logic/tts_client/` | 約1300 | マルチプロバイダー対応TTS合成パッケージ |
 | `brain/task_executor.py` | 約1600 | エージェントのタスク計画と実行 |

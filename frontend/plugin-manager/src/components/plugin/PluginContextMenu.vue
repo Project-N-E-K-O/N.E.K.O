@@ -177,10 +177,8 @@ function resolveActionIcon(action: ResolvedPluginListAction) {
     case 'open_guide':
       return Document
     case 'start':
-    case 'enable_extension':
       return VideoPlay
     case 'stop':
-    case 'disable_extension':
       return VideoPause
     case 'reload':
       return RefreshRight

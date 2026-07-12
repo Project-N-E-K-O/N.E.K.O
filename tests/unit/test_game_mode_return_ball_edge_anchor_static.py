@@ -2,8 +2,8 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-APP_UI_PATH = PROJECT_ROOT / "static" / "app-ui.js"
-APP_GAME_MODE_PATH = PROJECT_ROOT / "static" / "app-game-mode-beta.js"
+APP_UI_PATH = PROJECT_ROOT / "static" / "app" / "app-ui.js"
+APP_GAME_MODE_PATH = PROJECT_ROOT / "static" / "app" / "app-game-mode-beta.js"
 INDEX_CSS_PATH = PROJECT_ROOT / "static" / "css" / "index.css"
 
 

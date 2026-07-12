@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const source = fs.readFileSync(path.join(__dirname, 'app-interpage.js'), 'utf8');
+const source = fs.readFileSync(path.join(__dirname, 'app/app-interpage.js'), 'utf8');
 
 function createEventTarget() {
     const listeners = new Map();
@@ -134,7 +134,7 @@ function loadHarness() {
         localStorage: window.localStorage,
         sessionStorage: window.sessionStorage,
     };
-    vm.runInNewContext(source, context, { filename: 'app-interpage.js' });
+    vm.runInNewContext(source, context, { filename: 'app/app-interpage.js' });
     return {
         window,
         get composerHidden() {

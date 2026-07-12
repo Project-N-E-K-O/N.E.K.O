@@ -715,12 +715,20 @@ class VRMCore {
         }
     }
 
-    async loadModel(modelUrl, options = {}) {
+    async loadModel(modelUrl, options = {}, managerLoadToken = null) {
         const THREE = window.THREE;
         if (!THREE) {
             const errorMsg = window.t ? window.t('vrm.error.threeNotLoadedForModel') : 'Three.js库未加载，无法加载VRM模型';
             throw new Error(errorMsg);
         }
+
+        // 加载令牌：由 vrm-manager._loadModelInternal 在入口分配后传入；直接调用时
+        // 回退读当前值（等价旧行为）。core.loadModel 在多个 await（GLTF 网络加载、偏好
+        // fetch、3 帧等待）之间会 remove/dispose/add 共享 scene 并覆写 currentModel，
+        // manager 的串行队列在 dispose 后会被清空以保证活性，因此这些跨越 await 的共享
+        // 副作用必须自带 token 守卫，否则被取代的迟到加载会毁掉新会话已装好的模型。
+        // 与 mmd-core.loadModel 的 token 守卫对偶。
+        const loadToken = managerLoadToken !== null ? managerLoadToken : this.manager._activeLoadToken;
 
         if (!modelUrl || 
             modelUrl === 'undefined' || 
@@ -806,6 +814,16 @@ class VRMCore {
                 } else {
                     throw error;
                 }
+            }
+
+            // 加载竞态守卫（一道）：GLTF 网络加载 + 依赖导入是最长的 await；若在此期间被
+            // dispose 或新一轮 loadModel 取代（loadToken 失效），必须在触碰共享 scene/
+            // currentModel 之前退出——否则本次迟到的加载会把新会话已装好的模型 remove/
+            // disposeVRM 掉（幽灵模型损坏）。释放本次已加载但不再采用的 VRM 资源避免显存泄漏。
+            if (this.manager._activeLoadToken !== loadToken) {
+                console.log('[VRM Core] 模型加载已被取代（GLTF 加载后），跳过并释放资源');
+                await this._disposeAbandonedVRM(gltf.userData?.vrm);
+                return null;
             }
 
             if (this.manager.currentModel && this.manager.currentModel.vrm) {
@@ -984,7 +1002,18 @@ class VRMCore {
                 };
                 requestAnimationFrame(waitFrames);
             });
-            
+
+            // 加载竞态守卫（二道）：一道守卫之后经过了 applyVRM0 旋转 / 偏好 fetch / 3 帧等待
+            // 等 await，期间可能被更新的加载取代。这里是「最后一个 await 之后、任何共享 manager
+            // 写入（相机位姿 / enableFaceCamera / scene.add / currentModel）之前」的屏障——若不
+            // 在此拦截，被取代的旧加载会用它自己模型的存档相机覆写共享相机，把已经可见的新模型
+            // 顶到屏外（Codex P2）。此处到 scene.add / currentModel 全程再无 await，一道即可覆盖。
+            if (this.manager._activeLoadToken !== loadToken) {
+                console.log('[VRM Core] 模型加载已被取代（共享相机/入场前），跳过并释放资源');
+                await this._disposeAbandonedVRM(vrm);
+                return null;
+            }
+
             // 旋转设置统一在这里处理，确保只应用一次
             // 先通过检测器检测并修复方向，然后应用最终的旋转值
             const savedRotation = this.getEffectiveSavedRotation(preferences?.rotation, versionDefaultRotation);
@@ -1172,7 +1201,8 @@ class VRMCore {
                 const errorMsg = window.t ? window.t('vrm.error.sceneNotInitializedForAdd') : '场景未初始化。请先调用 initThreeJS() 初始化场景。';
                 throw new Error(errorMsg);
             }
-            
+
+            // 此处到 scene.add 之间无 await，二道守卫（3 帧等待后）已覆盖，无需重复校验。
             this.manager.scene.add(vrm.scene);
 
             // 优化材质设置（根据性能模式）
@@ -1222,6 +1252,24 @@ class VRMCore {
         } catch (error) {
             console.error('加载 VRM 模型失败:', error);
             throw error;
+        }
+    }
+
+    /**
+     * 释放一个「已加载完成但因 loadToken 失效不会被采用」的 VRM 资源。
+     * 用于 loadModel 的竞态守卫早退路径：此时 vrm 尚未写入 manager.currentModel，
+     * 不能走 disposeVRM（那依赖 currentModel），需就地 deepDispose 避免 GPU 显存泄漏。
+     */
+    async _disposeAbandonedVRM(vrm) {
+        if (!vrm || !vrm.scene) return;
+        try {
+            if (vrm.scene.parent) vrm.scene.parent.remove(vrm.scene);
+            const VRMUtils = await VRMCore._getVRMUtils();
+            if (VRMUtils && typeof VRMUtils.deepDispose === 'function') {
+                VRMUtils.deepDispose(vrm.scene);
+            }
+        } catch (e) {
+            console.warn('[VRM Core] 释放被取代的 VRM 资源失败:', e);
         }
     }
 

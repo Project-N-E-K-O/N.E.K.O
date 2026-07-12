@@ -62,7 +62,7 @@ def _recent_hosting_streak_since_viewer_activity(runtime: Any) -> int:
         event = result.get("event") if isinstance(result.get("event"), dict) else {}
         if str(event.get("source") or "") == "live_danmaku":
             return streak
-        if str(result.get("status") or "") not in {"pushed", "dry_run"}:
+        if str(result.get("status") or "") != "pushed":
             continue
         route = runtime._route_from_result(result)
         if route in {"warmup_hosting", "idle_hosting", "active_engagement"}:
@@ -98,7 +98,7 @@ def _latest_actual_output_is_idle_hosting(runtime: Any) -> bool:
     for result in reversed(list(getattr(runtime, "recent_results", []) or [])):
         if not isinstance(result, dict):
             continue
-        if str(result.get("status") or "") not in {"pushed", "dry_run"}:
+        if str(result.get("status") or "") != "pushed":
             continue
         event = result.get("event") if isinstance(result.get("event"), dict) else {}
         if str(event.get("source") or "") == "live_danmaku":

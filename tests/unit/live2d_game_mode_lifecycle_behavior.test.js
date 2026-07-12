@@ -37,7 +37,7 @@ async function flush() {
 }
 
 function createHarness(options = {}) {
-  const source = fs.readFileSync(path.resolve(__dirname, '../../static/app-game-mode-beta.js'), 'utf8');
+  const source = fs.readFileSync(path.resolve(__dirname, '../../static/app/app-game-mode-beta.js'), 'utf8');
   const win = new EventTargetLike();
   const doc = new EventTargetLike();
   const calls = [];

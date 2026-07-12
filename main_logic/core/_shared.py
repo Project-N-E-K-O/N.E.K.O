@@ -124,7 +124,7 @@ logger = get_module_logger("main_logic.core", "Main")
 IDLE_SESSION_RESET_THRESHOLD_SECONDS = 1800
 IDLE_SESSION_RESET_CHECK_INTERVAL_SECONDS = 60
 
-# 前端文本会话 start_session 等 session_started 的硬超时（static/app-buttons.js
+# 前端文本会话 start_session 等 session_started 的硬超时（static/app/app-buttons.js
 # 的 setTimeout(..., 15000)）。start_session 去重路径等 in-flight 启动落定后给
 # 本请求补发 ack 时，等待上限绑到这个值：超过前端这个超时再补发 session_started
 # 已无意义（前端早已 reject 并发 end_session），故以它为有意义窗口的天然上界。
@@ -197,7 +197,7 @@ def _get_chat_locale_text(language: str | None, key: str, fallback: str) -> str:
     return fallback
 
 
-# Sentinel returned by start_llm_session when CAS detects a concurrent start
+# Sentinel returned by _start_session_start_llm when CAS detects a concurrent start
 # already promoted its own session.  Returning a sentinel (instead of raising)
 # keeps the loser out of the generic error path — that path calls cleanup()
 # without an expected_session guard and would otherwise tear down the winner's

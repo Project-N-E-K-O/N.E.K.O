@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-APP_GAME_MODE_BETA_PATH = PROJECT_ROOT / "static" / "app-game-mode-beta.js"
+APP_GAME_MODE_BETA_PATH = PROJECT_ROOT / "static" / "app" / "app-game-mode-beta.js"
 AVATAR_UI_POPUP_PATH = PROJECT_ROOT / "static" / "avatar" / "avatar-ui-popup.js"
 INDEX_TEMPLATE_PATH = PROJECT_ROOT / "templates" / "index.html"
 CHAT_TEMPLATE_PATH = PROJECT_ROOT / "templates" / "chat.html"
@@ -127,7 +127,7 @@ def test_app_game_mode_beta_frontend_contracts():
             fetch: win.fetch,
           }};
           vm.createContext(context);
-          vm.runInContext(source, context, {{ filename: 'static/app-game-mode-beta.js' }});
+          vm.runInContext(source, context, {{ filename: 'static/app/app-game-mode-beta.js' }});
 
           return {{
             win,
@@ -307,8 +307,8 @@ def test_app_game_mode_beta_is_home_only_and_versioned():
     index_source = INDEX_TEMPLATE_PATH.read_text(encoding="utf-8")
     chat_source = CHAT_TEMPLATE_PATH.read_text(encoding="utf-8")
 
-    assert '/static/app-game-mode-beta.js?v={{ static_asset_version }}' in index_source
-    assert '/static/app-game-mode-beta.js?v={{ static_asset_version }}' not in chat_source
+    assert '/static/app/app-game-mode-beta.js?v={{ static_asset_version }}' in index_source
+    assert '/static/app/app-game-mode-beta.js?v={{ static_asset_version }}' not in chat_source
     assert APP_GAME_MODE_BETA_PATH in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
 
 

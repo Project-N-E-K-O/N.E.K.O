@@ -275,7 +275,7 @@ Live2DManager.prototype._isRuntimeManagedAppearanceParam = function(paramId, res
     } catch (_) {}
 
     try {
-        if (typeof this.getPersistentExpressionParamIds === 'function') {
+        if (this._parameterEditingMode !== true && typeof this.getPersistentExpressionParamIds === 'function') {
             const persistentParamIds = this.getPersistentExpressionParamIds();
             if (ids.some(id => persistentParamIds.has(id))) return true;
         }
@@ -322,6 +322,98 @@ Live2DManager.prototype.mergeAppearanceBaselineParameters = function(model, para
         if (!Object.prototype.hasOwnProperty.call(parameters, paramId)) continue;
         mergeAppearanceParam(paramId, parameters[paramId]);
     }
+};
+
+Live2DManager.prototype._normalizeModelPreferencePath = function(modelPath) {
+    const path = modelPath && typeof modelPath === 'object' ? modelPath.url : modelPath;
+    return typeof path === 'string' ? path.split('#')[0].split('?')[0] : '';
+};
+
+Live2DManager.prototype._findModelPreference = function(preferences, modelPath) {
+    if (!Array.isArray(preferences)) return null;
+    const normalizedPath = this._normalizeModelPreferencePath(modelPath);
+    return preferences.find((preference) => (
+        preference && this._normalizeModelPreferencePath(preference.model_path) === normalizedPath
+    )) || null;
+};
+
+Live2DManager.prototype._mergeEffectiveModelParameters = function(modelDirectoryParameters, userPreferenceParameters) {
+    return {
+        ...(modelDirectoryParameters && typeof modelDirectoryParameters === 'object' ? modelDirectoryParameters : {}),
+        ...(userPreferenceParameters && typeof userPreferenceParameters === 'object' ? userPreferenceParameters : {})
+    };
+};
+
+Live2DManager.prototype._loadModelDirectoryParameters = async function(modelName) {
+    if (!modelName) return {};
+    const response = await fetch(`/api/live2d/load_model_parameters/${encodeURIComponent(modelName)}`);
+    if (response.ok === false) {
+        throw new Error(`加载模型目录参数失败: HTTP ${response.status}`);
+    }
+    const data = await response.json();
+    return data.success && data.parameters && typeof data.parameters === 'object'
+        ? data.parameters
+        : {};
+};
+
+Live2DManager.prototype._applyEffectiveModelParameters = function(model, modelDirectoryParameters, userPreferenceParameters) {
+    const effectiveParameters = this._mergeEffectiveModelParameters(
+        modelDirectoryParameters,
+        userPreferenceParameters
+    );
+    const hasEffectiveParameters = Object.keys(effectiveParameters).length > 0;
+
+    this.effectiveModelParameters = effectiveParameters;
+    this.savedModelParameters = hasEffectiveParameters ? effectiveParameters : null;
+    this._shouldApplySavedParams = hasEffectiveParameters && this._parameterEditingMode !== true;
+
+    if (hasEffectiveParameters) {
+        this.applyModelParameters(model, effectiveParameters);
+    }
+
+    // installMouthOverride 会捕获 savedModelParameters，参数变化后必须重新安装。
+    this.installMouthOverride();
+    return effectiveParameters;
+};
+
+Live2DManager.prototype.reloadModelParameters = async function(options = {}) {
+    const model = this.currentModel;
+    if (!model || !model.internalModel || !model.internalModel.coreModel) {
+        throw new Error('当前 Live2D 模型尚未就绪');
+    }
+
+    const requestedPath = this._normalizeModelPreferencePath(options.modelPath || options.model_path);
+    const currentPath = this._normalizeModelPreferencePath(this._lastLoadedModelPath);
+    const requestedName = String(options.modelName || options.model_name || '').trim();
+
+    if ((requestedPath && requestedPath !== currentPath)
+        || (!requestedPath && requestedName && requestedName !== this.modelName)) {
+        return { applied: false, reason: 'model_mismatch' };
+    }
+
+    let modelDirectoryParameters = {};
+    try {
+        modelDirectoryParameters = await this._loadModelDirectoryParameters(this.modelName);
+    } catch (error) {
+        console.warn('[Live2D] 热刷新模型目录参数失败，将继续使用用户偏好:', error);
+    }
+
+    const preferences = await this.loadUserPreferences();
+    if (this.currentModel !== model) {
+        return { applied: false, reason: 'model_mismatch' };
+    }
+    const preference = this._findModelPreference(preferences, this._lastLoadedModelPath);
+    if (!preference || !preference.parameters || typeof preference.parameters !== 'object') {
+        throw new Error('未找到当前模型的用户偏好参数');
+    }
+    const userPreferenceParameters = preference && preference.parameters;
+    const effectiveParameters = this._applyEffectiveModelParameters(
+        model,
+        modelDirectoryParameters,
+        userPreferenceParameters
+    );
+
+    return { applied: true, parameters: effectiveParameters };
 };
 
 // 加载模型
@@ -565,7 +657,9 @@ Live2DManager.prototype._resetDerivedModelMetadata = function() {
     this.fileReferences = null;
     this.emotionMapping = null;
     this.savedModelParameters = null;
+    this.effectiveModelParameters = {};
     this._shouldApplySavedParams = false;
+    this._parameterEditingMode = false;
     this.modelName = null;
     this.modelRootPath = null;
     this._eyeBlinkParams = null;
@@ -1586,6 +1680,7 @@ Live2DManager.prototype._playIdleMotion = async function(motionManager) {
 Live2DManager.prototype._configureLoadedModel = async function(model, modelPath, options, loadToken) {
     if (!this._isLoadTokenActive(loadToken)) return;
     this._modelLoadState = 'applying';
+    this._parameterEditingMode = options.parameterEditingMode === true;
 
     // 解析模型目录名与根路径，供资源解析使用
     try {
@@ -1659,8 +1754,8 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
         this.pixi_app.view.style.opacity = '0';
     }
     
-    // 注意：用户偏好参数的应用延迟到模型目录参数加载完成后，
-    // 以确保正确的优先级顺序（模型目录参数 > 用户偏好参数）
+    // 注意：用户偏好参数会在模型目录参数加载完成后参与统一合并，
+    // 优先级顺序为：用户偏好参数 > 模型目录参数（用户偏好是权威来源）。
 
     // 添加到舞台
     this.pixi_app.stage.addChild(model);
@@ -1862,44 +1957,41 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
         }
     }
     
-    // 加载并应用模型目录中的parameters.json文件（优先级最高）
-    // 先加载参数，然后再安装口型覆盖（这样coreModel.update就能访问到savedModelParameters）
-    if (this.modelName && model.internalModel && model.internalModel.coreModel) {
+    if (this._parameterEditingMode) {
+        this._clearIdleMotionLoopTimers();
         try {
-            const response = await fetch(`/api/live2d/load_model_parameters/${encodeURIComponent(this.modelName)}`);
-            // 【重要修复】Fetch 回来后，必须检查 Token！如果用户在此期间切了模型，直接中断！
-            if (!this._isLoadTokenActive(loadToken)) return;
-
-            const data = await response.json();
-            if (!this._isLoadTokenActive(loadToken)) return;
-
-            if (data.success && data.parameters && Object.keys(data.parameters).length > 0) {
-                // 保存参数到实例变量，供定时器定期应用
-                this.savedModelParameters = data.parameters;
-                this._shouldApplySavedParams = true;
-
-                // 立即应用一次
-                this.applyModelParameters(model, data.parameters);
-            } else {
-                // 如果没有参数文件，清空保存的参数
-                this.savedModelParameters = null;
-                this._shouldApplySavedParams = false;
+            const motionManager = model.internalModel?.motionManager;
+            if (motionManager && typeof motionManager.stopAllMotions === 'function') {
+                motionManager.stopAllMotions();
+            }
+            const expressionManager = motionManager?.expressionManager;
+            if (expressionManager && typeof expressionManager.stopAllExpressions === 'function') {
+                expressionManager.stopAllExpressions();
             }
         } catch (error) {
-            console.error('加载模型参数失败:', error);
-            this.savedModelParameters = null;
-            this._shouldApplySavedParams = false;
+            console.warn('[Live2D] 参数编辑模式停止 motion/expression 失败:', error);
         }
-    } else {
-        this.savedModelParameters = null;
-        this._shouldApplySavedParams = false;
+        this._activeExpressionParamIds = null;
+        this._clearActiveMotionParamIds();
     }
-    
-    // 重新安装口型覆盖（这也包括了用户保存参数的应用逻辑）
+
+    // 用户偏好是权威来源，模型目录 parameters.json 仅作为兼容镜像。
+    let modelDirectoryParameters = {};
+    if (this.modelName && model.internalModel && model.internalModel.coreModel) {
+        try {
+            modelDirectoryParameters = await this._loadModelDirectoryParameters(this.modelName);
+        } catch (error) {
+            console.error('加载模型参数失败:', error);
+        }
+    }
+    // 无论目录参数加载成功或失败，都必须阻止过期加载继续写入当前模型。
+    if (!this._isLoadTokenActive(loadToken)) return;
+
+    const userPreferenceParameters = options.preferences && options.preferences.parameters;
     try {
-        this.installMouthOverride();
+        this._applyEffectiveModelParameters(model, modelDirectoryParameters, userPreferenceParameters);
     } catch (e) {
-        console.error('安装口型覆盖失败:', e);
+        console.error('应用有效模型参数或安装口型覆盖失败:', e);
     }
     
     // 移除原本的 setInterval 定时器逻辑，改用 installMouthOverride 中的逐帧叠加逻辑
@@ -1912,14 +2004,6 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
         console.log('已启用参数叠加模式');
     }
     
-    // 在模型目录参数加载完成后，应用用户偏好参数（如果有）
-    // 此时所有异步操作（常驻表情、模型目录参数）都已完成，
-    // 可以安全地应用用户偏好参数而不需要使用 setTimeout 延迟
-    if (options.preferences && options.preferences.parameters && model.internalModel && model.internalModel.coreModel) {
-        this.applyModelParameters(model, options.preferences.parameters);
-        console.log('已应用用户偏好参数');
-    }
-
     // 确保 PIXI ticker 正在运行（防止从VRM切换后卡住）
     // 无条件调用 start()，因为它是幂等的（如果已在运行则不会有影响）
     if (this.pixi_app && this.pixi_app.ticker) {
@@ -2018,7 +2102,7 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
         }));
     } catch (_) {}
 
-    const suppressInitialIdle = options.suppressInitialIdle === true;
+    const suppressInitialIdle = options.suppressInitialIdle === true || this._parameterEditingMode;
 
     // 模型完全可见后播放 Idle 情绪（替代原来的独立 setTimeout）
     if (!suppressInitialIdle && (hasIdleInEmotionMapping || hasIdleInFileReferences)) {
@@ -2204,6 +2288,7 @@ Live2DManager.prototype.installMouthOverride = function() {
             .map(resolveSavedParamEntry)
             .filter(entry => entry && !isRuntimeManagedSavedParam(entry))
         : [];
+    const shouldApplyPersistentExpressions = this._parameterEditingMode !== true;
     const lookAtParamIndices = {};
     for (const id of ['ParamAngleX', 'ParamAngleY', 'ParamEyeBallX', 'ParamEyeBallY']) {
         try {
@@ -2426,7 +2511,7 @@ Live2DManager.prototype.installMouthOverride = function() {
                     }
                 }
                 // 2. 写入常驻表情参数（覆盖模式，优先级最高）
-                if (this.persistentExpressionParamsByName) {
+                if (shouldApplyPersistentExpressions && this.persistentExpressionParamsByName) {
                     for (const name in this.persistentExpressionParamsByName) {
                         const params = this.persistentExpressionParamsByName[name];
                         if (Array.isArray(params)) {
@@ -2502,7 +2587,7 @@ Live2DManager.prototype.installMouthOverride = function() {
 
             // 2. 写入常驻表情参数（跳过口型参数以避免覆盖lipsync）
             // 当点击效果正在淡入淡出时，跳过常驻表情写入以避免覆盖插值
-            if (this.persistentExpressionParamsByName && !this._clickFadeState) {
+            if (shouldApplyPersistentExpressions && this.persistentExpressionParamsByName && !this._clickFadeState) {
                 for (const name in this.persistentExpressionParamsByName) {
                     const params = this.persistentExpressionParamsByName[name];
                     if (Array.isArray(params)) {
@@ -2771,7 +2856,8 @@ Live2DManager.prototype.applyModelParameters = function(model, parameters) {
                 }
                 
                 // 跳过常驻表情已设置的参数（保护去水印等功能）
-                if (persistentParamIds.has(paramId) || persistentParamIds.has(resolvedParamId)) {
+                if (this._parameterEditingMode !== true
+                    && (persistentParamIds.has(paramId) || persistentParamIds.has(resolvedParamId))) {
                     continue;
                 }
                 

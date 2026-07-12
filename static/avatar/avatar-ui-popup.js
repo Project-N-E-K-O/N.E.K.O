@@ -124,6 +124,12 @@ function injectPopupStyles(prefix) {
         .${prefix}-popup.is-positioning {
             pointer-events: none !important;
         }
+        /* 移动端宽度兜底：弹窗自然宽度超窄屏时贴边收敛（Electron Pet 小窗同受益，无副作用） */
+        @media (max-width: 768px) {
+            .${prefix}-popup {
+                max-width: calc(100vw - 32px);
+            }
+        }
         .${prefix}-popup.${prefix}-popup-settings {
             max-height: 70vh;
         }
@@ -2111,7 +2117,20 @@ function createIntervalControl(manager, prefix, toggle) {
     slider.max = '120';
     slider.step = '5';
     let currentValue = typeof window[toggle.intervalKey] !== 'undefined' ? window[toggle.intervalKey] : toggle.defaultInterval;
-    if (currentValue > 120) currentValue = 120;
+    // 后端契约接受 1..3600 秒（utils/preferences.py），预设也会写入低于 UI 默认
+    // 下限的合法值（如 frequent 预设 5s，见 main_routers/proactive_router.py）。
+    // 持久化值越出滑条默认边界时，按契约放宽边界如实显示，绝不钳制或改写运行时/
+    // 持久化配置——否则打开设置面板就会把服务端配置的值静默改回 UI 边界。
+    const numericValue = Number(currentValue);
+    if (Number.isFinite(numericValue)) {
+        if (numericValue < minVal) slider.min = Math.max(1, numericValue);
+        if (numericValue > 120) slider.max = Math.min(3600, numericValue);
+        // 契约接受任意 1..3600 整数，值不在 5s 步进格点上（如 121、47）时浏览器
+        // 会把 slider.value 吸附到最近格点，显示与滑块再度分叉；此时改用 1s 步进
+        // 让该值可被精确表示。按格点值正常保持 5s 拖动手感。
+        const sliderShownValue = Math.min(Math.max(numericValue, Number(slider.min)), Number(slider.max));
+        if ((sliderShownValue - Number(slider.min)) % 5 !== 0) slider.step = '1';
+    }
     slider.value = currentValue;
     Object.assign(slider.style, { width: '60px', height: '4px', cursor: 'pointer', accentColor: 'var(--neko-popup-accent, #44b7fe)' });
 
@@ -2923,6 +2942,16 @@ const AvatarPopupMixin = {
             return menuItem;
         };
 
+        // 引导模式下阻止关闭设置弹窗，防止用户误触打断 yui-guide 引导流程
+        // （showPopup 切换关闭与 closePopupById 两条路径共用）
+        function isTutorialGuardedSettingsClose(buttonId) {
+            if (window.isInTutorial === true && buttonId === 'settings') {
+                console.log(`[${prefix}] 引导中：阻止关闭设置弹出框`);
+                return true;
+            }
+            return false;
+        }
+
         // 新增的核心方法
         ManagerProto.showPopup = function (buttonId, popup) {
             const isVisible = popup.style.display === 'flex';
@@ -2934,6 +2963,8 @@ const AvatarPopupMixin = {
             }
 
             if (isVisible) {
+                if (isTutorialGuardedSettingsClose(buttonId)) return;
+
                 // 关闭弹窗
                 popup._showToken += 1;
                 dispatchAvatarPopupLifecycleEvent('neko-avatar-popup-closing', buttonId, popup, prefix);
@@ -2977,6 +3008,9 @@ const AvatarPopupMixin = {
                 }
 
                 this.closeAllPopupsExcept(buttonId);
+                // goodbye 隐藏路径（app-ui.js）会给弹窗 inline pointer-events:none!important，
+                // 返回路径负责成对清除；此处自愈兜底，与 display/opacity/visibility 的覆盖行为对齐
+                popup.style.removeProperty('pointer-events');
                 popup.style.display = 'flex';
                 popup.style.opacity = '0';
                 popup.style.visibility = 'visible';
@@ -3007,7 +3041,10 @@ const AvatarPopupMixin = {
                                 bottomMargin: 60,
                                 topMargin: 8,
                                 gap: 8,
-                                sidePanelWidth: (buttonId === 'settings' || buttonId === 'agent') ? 320 : 0
+                                // 移动端不为侧面板预留宽度：侧面板此时向下展开（goDown），
+                                // 右侧预留 320px 会让 opensLeft 误判把弹窗推出屏幕左缘
+                                sidePanelWidth: (buttonId === 'settings' || buttonId === 'agent')
+                                    && !(typeof window.isMobileWidth === 'function' && window.isMobileWidth()) ? 320 : 0
                             });
                             popup.dataset.opensLeft = String(!!(pos && pos.opensLeft));
                             popup.style.transform = pos && pos.opensLeft ? 'translateX(10px)' : 'translateX(-10px)';
@@ -3036,6 +3073,8 @@ const AvatarPopupMixin = {
 
         ManagerProto.closePopupById = function (buttonId) {
             if (!buttonId) return false;
+            if (isTutorialGuardedSettingsClose(buttonId)) return false;
+
             const popup = document.getElementById(`${prefix}-popup-${buttonId}`);
             if (!popup || popup.style.display !== 'flex') return false;
 

@@ -2,9 +2,9 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-APP_AUTO_GOODBYE_PATH = PROJECT_ROOT / "static" / "app-auto-goodbye.js"
-APP_UI_PATH = PROJECT_ROOT / "static" / "app-ui.js"
-APP_BUTTONS_PATH = PROJECT_ROOT / "static" / "app-buttons.js"
+APP_AUTO_GOODBYE_PATH = PROJECT_ROOT / "static" / "app" / "app-auto-goodbye.js"
+APP_UI_PATH = PROJECT_ROOT / "static" / "app" / "app-ui.js"
+APP_BUTTONS_PATH = PROJECT_ROOT / "static" / "app" / "app-buttons.js"
 
 
 def _read(path: Path) -> str:

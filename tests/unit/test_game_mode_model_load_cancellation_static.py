@@ -5,7 +5,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_game_mode_uses_explicit_cancellation_contract_for_all_model_managers():
-    app = (ROOT / "static" / "app-game-mode-beta.js").read_text(encoding="utf-8")
+    app = (ROOT / "static" / "app" / "app-game-mode-beta.js").read_text(encoding="utf-8")
     live2d = (ROOT / "static" / "live2d" / "live2d-model.js").read_text(encoding="utf-8")
     vrm = (ROOT / "static" / "vrm" / "vrm-manager.js").read_text(encoding="utf-8")
     mmd = (ROOT / "static" / "mmd" / "mmd-manager.js").read_text(encoding="utf-8")
