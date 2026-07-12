@@ -10,7 +10,7 @@ function readStatic(relativePath) {
 test('day4 model lock spotlight uses a scene-scoped lock icon safe area', () => {
     const directorSource = readStatic('tutorial/yui-guide/director.js');
     const orchestratorSource = readStatic('tutorial/core/scene-orchestrator.js');
-    const sharedButtonsSource = readStatic('avatar-ui-buttons.js');
+    const sharedButtonsSource = readStatic('avatar/avatar-ui-buttons.js');
 
     assert.match(directorSource, /const DAY4_LOCK_SPOTLIGHT_SAFE_BOTTOM_PX = 112;/);
     assert.match(directorSource, /syncDay4LockSpotlightSafeAreaForScene\(scene\) \{[\s\S]*sceneId === 'day4_model_lock'/);

@@ -10,7 +10,7 @@ on:
     branches: [main]
     paths:
       - 'plugin/**'
-      - 'static/avatar-ui-buttons.js'
+      - 'static/avatar/avatar-ui-buttons.js'
       - 'tests/unit/test_avatar_return_button_idle_tiers_static.py'
       - '.github/workflows/plugin-tests.yml'
       # Dependency changes alter the plugin test/runtime environment (e.g.
@@ -22,7 +22,7 @@ on:
     branches: [main]
     paths:
       - 'plugin/**'
-      - 'static/avatar-ui-buttons.js'
+      - 'static/avatar/avatar-ui-buttons.js'
       - 'tests/unit/test_avatar_return_button_idle_tiers_static.py'
       - '.github/workflows/plugin-tests.yml'
       - 'pyproject.toml'

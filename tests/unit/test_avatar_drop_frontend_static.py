@@ -12,10 +12,10 @@ APP_WEBSOCKET_PATH = REPO_ROOT / "static" / "app-websocket.js"
 CORE_PACKAGE_PATH = REPO_ROOT / "main_logic" / "core"
 CROSS_SERVER_PATH = REPO_ROOT / "main_logic" / "cross_server.py"
 INDEX_TEMPLATE_PATH = REPO_ROOT / "templates" / "index.html"
-INTAKE_PATH = REPO_ROOT / "static" / "avatar-drop-intake.js"
+INTAKE_PATH = REPO_ROOT / "static" / "avatar" / "avatar-drop-intake.js"
 MAIN_SERVER_PATH = REPO_ROOT / "app" / "main_server.py"
 OMNI_OFFLINE_PATH = REPO_ROOT / "main_logic" / "omni_offline_client.py"
-PARSER_PATH = REPO_ROOT / "static" / "avatar-drop-parser.js"
+PARSER_PATH = REPO_ROOT / "static" / "avatar" / "avatar-drop-parser.js"
 WEBSOCKET_ROUTER_PATH = REPO_ROOT / "main_routers" / "websocket_router.py"
 
 
@@ -214,8 +214,8 @@ def test_avatar_drop_scripts_and_backend_routes_are_wired():
     index_source = _read(INDEX_TEMPLATE_PATH)
     main_server_source = _read(MAIN_SERVER_PATH)
 
-    assert index_source.index("/static/app-buttons.js") < index_source.index("/static/avatar-drop-parser.js")
-    assert index_source.index("/static/avatar-drop-parser.js") < index_source.index("/static/avatar-drop-intake.js")
+    assert index_source.index("/static/app-buttons.js") < index_source.index("/static/avatar/avatar-drop-parser.js")
+    assert index_source.index("/static/avatar/avatar-drop-parser.js") < index_source.index("/static/avatar/avatar-drop-intake.js")
     assert "from main_routers.avatar_drop_router import router as avatar_drop_router" in main_server_source
     assert "app.include_router(avatar_drop_router)" in main_server_source
 

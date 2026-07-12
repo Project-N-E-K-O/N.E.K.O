@@ -9,7 +9,7 @@ def _source(relative_path: str) -> str:
 
 
 def test_multiscreen_drag_hint_ack_snoozes_for_three_days():
-    source = _source("static/avatar-multiscreen-drag-hint.js")
+    source = _source("static/avatar/avatar-multiscreen-drag-hint.js")
 
     assert "const SNOOZE_MS = 3 * 24 * 60 * 60 * 1000;" in source
     assert "state.snoozeUntil = now() + SNOOZE_MS;" in source
@@ -17,7 +17,7 @@ def test_multiscreen_drag_hint_ack_snoozes_for_three_days():
 
 
 def test_multiscreen_drag_hint_counts_display_switch_misses_only_on_multiple_displays():
-    source = _source("static/avatar-multiscreen-drag-hint.js")
+    source = _source("static/avatar/avatar-multiscreen-drag-hint.js")
 
     assert "const REQUIRED_MISSES = 2;" in source
     assert "const MISS_WINDOW_MS = 30 * 1000;" in source
@@ -36,7 +36,7 @@ def test_multiscreen_drag_hint_counts_display_switch_misses_only_on_multiple_dis
 
 
 def test_multiscreen_drag_hint_serializes_display_switch_miss_updates():
-    source = _source("static/avatar-multiscreen-drag-hint.js")
+    source = _source("static/avatar/avatar-multiscreen-drag-hint.js")
 
     assert "let missRecordQueue = Promise.resolve();" in source
     assert "function recordDisplaySwitchMiss(source) {" in source
@@ -47,7 +47,7 @@ def test_multiscreen_drag_hint_serializes_display_switch_miss_updates():
 
 
 def test_multiscreen_drag_hint_records_pointer_edge_release_intent():
-    source = _source("static/avatar-multiscreen-drag-hint.js")
+    source = _source("static/avatar/avatar-multiscreen-drag-hint.js")
 
     assert "const EDGE_RELEASE_THRESHOLD_PX = 180;" in source
     assert "const MIN_EDGE_DRAG_DISTANCE_PX = 48;" in source
@@ -63,7 +63,7 @@ def test_multiscreen_drag_hint_records_pointer_edge_release_intent():
 
 
 def test_multiscreen_drag_hint_can_be_disabled_or_suppressed_after_success():
-    source = _source("static/avatar-multiscreen-drag-hint.js")
+    source = _source("static/avatar/avatar-multiscreen-drag-hint.js")
 
     assert "state.never = true;" in source
     assert "state.successAt = now();" in source
@@ -74,7 +74,7 @@ def test_multiscreen_drag_hint_can_be_disabled_or_suppressed_after_success():
 
 
 def test_multiscreen_drag_hint_uses_top_center_project_popup_style():
-    source = _source("static/avatar-multiscreen-drag-hint.js")
+    source = _source("static/avatar/avatar-multiscreen-drag-hint.js")
 
     assert "left: 50%;" in source
     assert "top: calc" in source
@@ -92,7 +92,7 @@ def test_multiscreen_drag_hint_uses_top_center_project_popup_style():
 
 
 def test_model_interactions_report_display_switch_misses_and_success():
-    helper = _source("static/avatar-multiscreen-drag-hint.js")
+    helper = _source("static/avatar/avatar-multiscreen-drag-hint.js")
     live2d = _source("static/live2d/live2d-interaction.js")
     mmd = _source("static/mmd/mmd-interaction.js")
     vrm = _source("static/vrm/vrm-interaction.js")
@@ -147,7 +147,7 @@ def test_model_renderers_refresh_pixel_density_after_display_switch():
 def test_multiscreen_drag_hint_script_loads_before_model_interactions():
     source = _source("templates/index.html")
 
-    helper_index = source.index("/static/avatar-multiscreen-drag-hint.js")
+    helper_index = source.index("/static/avatar/avatar-multiscreen-drag-hint.js")
     live2d_index = source.index("/static/live2d/live2d-interaction.js")
     vrm_index = source.index("/static/vrm/vrm-init.js")
     mmd_index = source.index("/static/mmd/mmd-init.js")

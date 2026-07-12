@@ -676,7 +676,7 @@ _HOME_YUI_RUNTIME_SCRIPTS = (
     "tutorial/yui-guide/steps.js",
     "tutorial/yui-guide/overlay.js",
     "tutorial/yui-guide/page-handoff.js",
-    "avatar-performance-stage.js",
+    "avatar/avatar-performance-stage.js",
     "tutorial/avatar/yui-stage.js",
     "tutorial/yui-guide/wakeup.js",
     "tutorial/core/interaction-takeover.js",
@@ -724,7 +724,7 @@ def test_home_template_loads_yui_wakeup_before_director():
         for name in (
             "tutorial/yui-guide/overlay.js",
             "tutorial/yui-guide/page-handoff.js",
-            "avatar-performance-stage.js",
+            "avatar/avatar-performance-stage.js",
             "tutorial/avatar/yui-stage.js",
             "tutorial/yui-guide/wakeup.js",
             "tutorial/core/interaction-takeover.js",
@@ -803,8 +803,8 @@ def test_yui_avatar_stage_exposes_extracted_wakeup_action():
 def test_yui_asset_version_includes_avatar_performance_runtime():
     source = Path("main_routers/pages_router.py").read_text(encoding="utf-8")
 
-    assert 'static/avatar-performance-stage.js' in source
-    assert source.index('static/avatar-performance-stage.js') < source.index('static/tutorial/avatar/yui-stage.js')
+    assert 'static/avatar/avatar-performance-stage.js' in source
+    assert source.index('static/avatar/avatar-performance-stage.js') < source.index('static/tutorial/avatar/yui-stage.js')
 
 
 def test_yui_wakeup_delegates_action_boundary_to_avatar_stage():
@@ -954,7 +954,7 @@ def test_yui_intro_avatar_actions_respect_reduced_motion():
 def test_yui_plugin_dashboard_corner_peek_uses_adapter_and_releases_on_close():
     director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
     avatar_source = Path("static/tutorial/avatar/yui-stage.js").read_text(encoding="utf-8")
-    performance_source = Path("static/avatar-performance-stage.js").read_text(encoding="utf-8")
+    performance_source = Path("static/avatar/avatar-performance-stage.js").read_text(encoding="utf-8")
 
     assert "class Live2DAvatarCornerPeekSession" in avatar_source
     assert "startAvatarCornerPeek: startAvatarCornerPeek" in avatar_source
@@ -1028,7 +1028,7 @@ def test_yui_plugin_dashboard_corner_peek_uses_adapter_and_releases_on_close():
 def test_yui_settings_peek_second_line_triggers_panic_session_with_real_model_params():
     director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
     avatar_source = Path("static/tutorial/avatar/yui-stage.js").read_text(encoding="utf-8")
-    performance_source = Path("static/avatar-performance-stage.js").read_text(encoding="utf-8")
+    performance_source = Path("static/avatar/avatar-performance-stage.js").read_text(encoding="utf-8")
 
     assert "class Live2DSettingsPeekPanicSession" in avatar_source
     assert "playSettingsPeekPanic: playSettingsPeekPanic" in avatar_source
@@ -1071,7 +1071,7 @@ def test_yui_settings_peek_second_line_triggers_panic_session_with_real_model_pa
 def test_yui_interrupt_sessions_keep_scope_in_home_adapter_and_gate_runtime_reentry():
     director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
     avatar_source = Path("static/tutorial/avatar/yui-stage.js").read_text(encoding="utf-8")
-    performance_source = Path("static/avatar-performance-stage.js").read_text(encoding="utf-8")
+    performance_source = Path("static/avatar/avatar-performance-stage.js").read_text(encoding="utf-8")
 
     assert ": ['frame', 'params'];" in avatar_source
     assert "guideInterruptPresentationActive = true;" in director_source
