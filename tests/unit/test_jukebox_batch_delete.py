@@ -35,6 +35,13 @@ def _make_save_config(tmp_path, data, builtin_songs, builtin_actions):
     return config
 
 
+def _load_config_with_user_data(tmp_path, user_data):
+    config = object.__new__(jukebox_router.JukeboxConfig)
+    config.config_file = tmp_path / "config.json"
+    config.config_file.write_text(json.dumps(user_data), encoding="utf-8")
+    return config._load_config()
+
+
 def test_config_summary_revision_is_stable_and_changes_with_songs():
     data = {
         "version": "1.0",
@@ -102,6 +109,34 @@ def test_resolve_jukebox_file_prefers_user_storage_then_bundled_layouts(monkeypa
     with pytest.raises(HTTPException) as exc_info:
         jukebox_router.resolve_jukebox_file_path("../song_003.mp3")
     assert exc_info.value.status_code == 403
+
+
+def test_builtin_vrma_offset_migration_updates_only_old_default(tmp_path):
+    migrated = _load_config_with_user_data(
+        tmp_path,
+        {
+            "version": "1.0",
+            "builtinBindings": {
+                "song_001": {
+                    "action_003": {"offset": 0},
+                },
+            },
+        },
+    )
+    preserved = _load_config_with_user_data(
+        tmp_path,
+        {
+            "version": "1.0",
+            "builtinBindings": {
+                "song_001": {
+                    "action_003": {"offset": 9},
+                },
+            },
+        },
+    )
+
+    assert migrated["bindings"]["song_001"]["action_003"]["offset"] == 6
+    assert preserved["bindings"]["song_001"]["action_003"]["offset"] == 9
 
 
 def test_save_builtin_overrides_omits_unchanged_defaults(tmp_path):

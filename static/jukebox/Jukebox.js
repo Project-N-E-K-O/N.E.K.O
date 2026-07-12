@@ -7834,6 +7834,9 @@ window.Jukebox = {
     const rawPath = String(filePath || '').trim();
     if (!rawPath) return '';
     if (/^(?:https?:|data:|blob:)/i.test(rawPath)) return rawPath;
+    if (/^\/?static\/jukebox\//.test(rawPath)) {
+      return '/api/jukebox/file/' + rawPath.replace(/^\/?static\/jukebox\//, '');
+    }
     if (rawPath.startsWith('/api/') || rawPath.startsWith('/static/') || rawPath.startsWith('/user_')) {
       return rawPath;
     }
@@ -8753,12 +8756,13 @@ window.Jukebox = {
 
   _seekVrmAnimationToTime: function(animTime) {
     const manager = window.vrmManager;
+    const seekOptions = { paused: Jukebox.State.isPaused === true };
     if (manager && typeof manager.seekVRMAAnimation === 'function') {
-      return manager.seekVRMAAnimation(animTime);
+      return manager.seekVRMAAnimation(animTime, seekOptions);
     }
     const anim = manager?.animationModule || manager?.animation;
     if (anim && typeof anim.seekTo === 'function') {
-      return anim.seekTo(animTime);
+      return anim.seekTo(animTime, seekOptions);
     }
     console.warn('[Jukebox] VRM动画同步入口不可用，跳过 seek:', animTime);
     return false;

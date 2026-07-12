@@ -29,6 +29,7 @@ enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
 import asyncio
+import copy
 import json
 import hashlib
 import re
@@ -70,6 +71,9 @@ JUKEBOX_MEDIA_TYPES = {
     '.bvh': 'application/octet-stream',
     '.fbx': 'application/octet-stream',
     '.vrma': 'application/octet-stream'
+}
+BUILTIN_BINDING_OFFSET_MIGRATIONS = {
+    ("song_001", "action_003"): {0},
 }
 
 def check_file_size(file: UploadFile, max_size: int) -> int:
@@ -319,7 +323,10 @@ class JukeboxConfig:
 
         # 融合绑定关系：自带绑定 + 用户绑定（用户绑定优先）
         # 先加载程序内自带的绑定（从用户文档或从软件自带配置）
-        user_builtin_bindings = user_config.get("builtinBindings", {})
+        user_builtin_bindings = self._migrate_builtin_bindings(
+            user_config.get("builtinBindings", {}),
+            builtin_bindings,
+        )
         merged_bindings = {**builtin_bindings, **user_builtin_bindings}
         # 再合并用户绑定（覆盖自带绑定）
         merged_bindings = {**merged_bindings, **user_config.get("bindings", {})}
@@ -347,6 +354,23 @@ class JukeboxConfig:
             "bindings": merged_bindings,
             "md5Index": merged_md5_index
         }
+
+    @staticmethod
+    def _migrate_builtin_bindings(user_builtin_bindings: dict, builtin_bindings: dict) -> dict:
+        migrated_bindings = copy.deepcopy(user_builtin_bindings)
+        for (song_id, action_id), old_offsets in BUILTIN_BINDING_OFFSET_MIGRATIONS.items():
+            song_bindings = migrated_bindings.get(song_id)
+            if not isinstance(song_bindings, dict):
+                continue
+            binding = song_bindings.get(action_id)
+            bundled_binding = builtin_bindings.get(song_id, {}).get(action_id)
+            if not isinstance(binding, dict) or not isinstance(bundled_binding, dict):
+                continue
+            current_offset = binding.get("offset")
+            bundled_offset = bundled_binding.get("offset")
+            if current_offset in old_offsets and bundled_offset not in old_offsets:
+                binding["offset"] = bundled_offset
+        return migrated_bindings
 
     def _load_builtin_resource_defaults(self) -> tuple[dict, dict]:
         """Load bundled song/action defaults used to detect real user overrides."""

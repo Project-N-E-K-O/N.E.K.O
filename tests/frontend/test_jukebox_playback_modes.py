@@ -528,7 +528,9 @@ def test_jukebox_builtin_paths_keep_resource_directories(mock_page: Page):
           return {
             audio: song.audio,
             playerUrls,
-            vrmaCalls
+            vrmaCalls,
+            legacyStaticVrma: J.resolveJukeboxFileUrl('/static/jukebox/actions/song_001.vrma'),
+            legacyFlatVrma: J.resolveJukeboxFileUrl('static/jukebox/song_001.vrma')
           };
         }
         """
@@ -538,6 +540,8 @@ def test_jukebox_builtin_paths_keep_resource_directories(mock_page: Page):
         "audio": "songs/song_001.mp3",
         "playerUrls": ["/api/jukebox/file/songs/song_001.mp3"],
         "vrmaCalls": ["/api/jukebox/file/actions/song_001.vrma"],
+        "legacyStaticVrma": "/api/jukebox/file/actions/song_001.vrma",
+        "legacyFlatVrma": "/api/jukebox/file/song_001.vrma",
     }
 
 
@@ -575,8 +579,8 @@ def test_jukebox_vrm_progress_seek_and_calibration_sync_animation(mock_page: Pag
             }
           };
           window.vrmManager = {
-            seekVRMAAnimation(time) {
-              vrmSeekCalls.push(time);
+            seekVRMAAnimation(time, options) {
+              vrmSeekCalls.push({ time, paused: options && options.paused });
               return true;
             }
           };
@@ -600,7 +604,10 @@ def test_jukebox_vrm_progress_seek_and_calibration_sync_animation(mock_page: Pag
 
     assert result == {
         "audioSeekCalls": [50],
-        "vrmSeekCalls": [50.5, 11.5],
+        "vrmSeekCalls": [
+            {"time": 50.5, "paused": False},
+            {"time": 11.5, "paused": False},
+        ],
         "afterProgressChange": {
             "audioCurrentTime": 50,
             "isSeeking": False,
@@ -649,9 +656,11 @@ def test_vrm_animation_seek_preserves_paused_state_and_refreshes_pose(mock_page:
           anim.currentAction = { time: 0, paused: true };
 
           const ok = anim.seekTo(3.25);
+          const okPlaying = anim.seekTo(1.5, { paused: false });
 
           return {
             ok,
+            okPlaying,
             actionTime: anim.currentAction.time,
             actionPaused: anim.currentAction.paused,
             cachedMeshes: anim._skinnedMeshes.length,
@@ -663,10 +672,18 @@ def test_vrm_animation_seek_preserves_paused_state_and_refreshes_pose(mock_page:
 
     assert result == {
         "ok": True,
-        "actionTime": 3.25,
-        "actionPaused": True,
+        "okPlaying": True,
+        "actionTime": 1.5,
+        "actionPaused": False,
         "cachedMeshes": 1,
-        "events": ["mixer:0", "matrix:true", "skeleton"],
+        "events": [
+            "mixer:0",
+            "matrix:true",
+            "skeleton",
+            "mixer:0",
+            "matrix:true",
+            "skeleton",
+        ],
     }
 
 

@@ -1338,9 +1338,9 @@ class VRMManager {
         if (this.animation) return this.animation.playVRMAAnimation(url, opts);
     }
 
-    seekVRMAAnimation(timeSeconds) {
+    seekVRMAAnimation(timeSeconds, options) {
         if (this.animation && typeof this.animation.seekTo === 'function') {
-            return this.animation.seekTo(timeSeconds);
+            return this.animation.seekTo(timeSeconds, options);
         }
         return false;
     }

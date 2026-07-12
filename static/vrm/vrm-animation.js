@@ -188,13 +188,15 @@ class VRMAnimation {
         if (updateSkeletonHelper && this.debug) this._updateSkeletonHelper();
     }
 
-    seekTo(timeSeconds) {
+    seekTo(timeSeconds, options = {}) {
         const targetTime = Number(timeSeconds);
         if (!Number.isFinite(targetTime) || !this.vrmaMixer || !this.currentAction) {
             return false;
         }
 
-        const wasPaused = this.currentAction.paused === true;
+        const nextPaused = typeof options?.paused === 'boolean'
+            ? options.paused
+            : this.currentAction.paused === true;
         const seekTime = Math.max(0, targetTime);
         try {
             this.currentAction.paused = false;
@@ -202,7 +204,7 @@ class VRMAnimation {
             this.vrmaMixer.update(0);
             this._refreshPoseAfterMixerUpdate(true);
         } finally {
-            this.currentAction.paused = wasPaused;
+            this.currentAction.paused = nextPaused;
         }
         return true;
     }
