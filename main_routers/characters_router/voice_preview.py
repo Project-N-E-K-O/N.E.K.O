@@ -597,6 +597,7 @@ async def get_voice_preview(
                 return JSONResponse({
                     'success': False,
                     'error': f'MiMo 预览生成失败: {str(e)}',
+                    'code': 'MIMO_VOICE_PREVIEW_FAILED',
                 }, status_code=500)
 
         if provider == 'doubao_tts':
