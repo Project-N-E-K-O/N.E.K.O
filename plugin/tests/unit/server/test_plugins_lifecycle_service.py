@@ -311,7 +311,7 @@ async def test_start_plugin_refreshes_registry_before_loading(
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
-async def test_start_plugin_persist_user_intent_clears_stop_override_before_refresh(
+async def test_start_plugin_persist_user_intent_sets_effective_auto_start_before_refresh(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     _isolate_runtime_overrides: dict,
@@ -328,7 +328,7 @@ async def test_start_plugin_persist_user_intent_clears_stop_override_before_refr
                 "",
                 "[plugin_runtime]",
                 "enabled = true",
-                "auto_start = true",
+                "auto_start = false",
             ]
         ),
         encoding="utf-8",
@@ -338,6 +338,12 @@ async def test_start_plugin_persist_user_intent_clears_stop_override_before_refr
 
     async def _refresh_plugin(plugin_id: str) -> dict[str, object]:
         seen["override_at_refresh"] = runtime_overrides_module.get_runtime_override(plugin_id)
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins[plugin_id] = {
+                "id": plugin_id,
+                "runtime_enabled": True,
+                "runtime_auto_start": True,
+            }
         return {"success": True, "plugin_id": plugin_id}
 
     async def _list_extension_configs_for_host(_plugin_id: str) -> list[dict[str, str]]:
@@ -376,7 +382,11 @@ async def test_start_plugin_persist_user_intent_clears_stop_override_before_refr
 
         assert response["success"] is True
         assert seen["override_at_refresh"] is True
-        assert _isolate_runtime_overrides == {"demo_plugin": True}
+        assert _isolate_runtime_overrides == {
+            "demo_plugin": {"enabled": True, "auto_start": True},
+        }
+        with module.state.acquire_plugins_read_lock():
+            assert module.state.plugins["demo_plugin"]["runtime_auto_start"] is True
     finally:
         with module.state.acquire_plugins_write_lock():
             module.state.plugins.clear()
@@ -2392,8 +2402,11 @@ async def test_stop_plugin_persist_user_intent_writes_runtime_override(
 
         service = module.PluginLifecycleService()
         await service.stop_plugin("demo_plugin", persist_user_intent=True)
-        assert _isolate_runtime_overrides == {"demo_plugin": False}
+        assert _isolate_runtime_overrides == {
+            "demo_plugin": {"enabled": False, "auto_start": False},
+        }
         assert runtime_overrides_module.get_runtime_override("demo_plugin") is False
+        assert runtime_overrides_module.get_runtime_auto_start_override("demo_plugin") is False
     finally:
         with module.state.acquire_plugins_write_lock():
             module.state.plugins.clear()
@@ -2433,6 +2446,105 @@ async def test_stop_plugin_internal_call_does_not_touch_override(
         await service.stop_plugin("demo_plugin")
         assert _isolate_runtime_overrides == {"demo_plugin": True}
         assert runtime_overrides_module.get_runtime_override("demo_plugin") is True
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+            module.state.plugin_hosts.update(hosts_backup)
+        with module.state.acquire_event_handlers_write_lock():
+            module.state.event_handlers.clear()
+            module.state.event_handlers.update(handlers_backup)
+        with module.state._snapshot_cache_lock:
+            module.state._snapshot_cache = cache_backup
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_stop_plugin_can_leave_auto_start_unchanged_when_sync_is_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    _isolate_runtime_overrides: dict,
+) -> None:
+    config_path = tmp_path / "demo_plugin" / "plugin.toml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text("[plugin]\nid='demo_plugin'\n", encoding="utf-8")
+
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    hosts_backup = dict(module.state.plugin_hosts)
+    handlers_backup = dict(module.state.event_handlers)
+    cache_backup = copy.deepcopy(module.state._snapshot_cache)
+
+    try:
+        _seed_running_plugin("demo_plugin", config_path)
+        runtime_overrides_module.set_runtime_override(
+            "demo_plugin",
+            True,
+            auto_start=True,
+        )
+        monkeypatch.setattr(module, "PLUGIN_SYNC_AUTO_START_ON_TOGGLE", False)
+        monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
+
+        await module.PluginLifecycleService().stop_plugin(
+            "demo_plugin",
+            persist_user_intent=True,
+        )
+
+        assert _isolate_runtime_overrides == {
+            "demo_plugin": {"enabled": False, "auto_start": True},
+        }
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+            module.state.plugin_hosts.update(hosts_backup)
+        with module.state.acquire_event_handlers_write_lock():
+            module.state.event_handlers.clear()
+            module.state.event_handlers.update(handlers_backup)
+        with module.state._snapshot_cache_lock:
+            module.state._snapshot_cache = cache_backup
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_stop_plugin_reports_preference_write_failure_after_stopping(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "demo_plugin" / "plugin.toml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text("[plugin]\nid='demo_plugin'\n", encoding="utf-8")
+
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    hosts_backup = dict(module.state.plugin_hosts)
+    handlers_backup = dict(module.state.event_handlers)
+    cache_backup = copy.deepcopy(module.state._snapshot_cache)
+
+    try:
+        _seed_running_plugin("demo_plugin", config_path)
+        monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
+        monkeypatch.setattr(
+            module,
+            "set_runtime_override",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                runtime_overrides_module.RuntimeOverrideWriteError("disk full")
+            ),
+        )
+
+        with pytest.raises(ServerDomainError) as exc_info:
+            await module.PluginLifecycleService().stop_plugin(
+                "demo_plugin",
+                persist_user_intent=True,
+            )
+
+        assert exc_info.value.code == "PLUGIN_RUNTIME_PREFERENCE_PERSIST_FAILED"
+        assert exc_info.value.details["enabled"] is False
+        assert exc_info.value.details["runtime_state_changed"] is True
+        with module.state.acquire_plugin_hosts_read_lock():
+            assert "demo_plugin" not in module.state.plugin_hosts
     finally:
         with module.state.acquire_plugins_write_lock():
             module.state.plugins.clear()

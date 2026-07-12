@@ -41,7 +41,10 @@ from plugin.server.domain.errors import ServerDomainError
 from plugin.server.application.plugins.registry_service import PluginRegistryService
 from plugin.server.infrastructure.config_resolver import resolve_plugin_config_from_path
 from plugin.server.infrastructure.runtime_overrides import (
+    RuntimeOverridePersistenceError,
     clear_runtime_override,
+    get_runtime_auto_start_override,
+    get_runtime_override,
     set_runtime_override,
 )
 from plugin.server.messaging.lifecycle_events import emit_lifecycle_event
@@ -53,6 +56,7 @@ from plugin.settings import (
     PLUGIN_CONFIG_ROOTS,
     PLUGIN_SHUTDOWN_TIMEOUT,
     PLUGIN_STARTUP_TIMEOUT,
+    PLUGIN_SYNC_AUTO_START_ON_TOGGLE,
 )
 from plugin.utils import parse_bool_config
 
@@ -60,6 +64,36 @@ logger = get_logger("server.application.plugins.lifecycle")
 _PLUGIN_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 _PLUGIN_STARTUP_TIMEOUT_MAX = 300.0
 plugin_registry_service = PluginRegistryService()
+
+
+def _persist_user_runtime_intent(
+    plugin_id: str,
+    enabled: bool,
+    *,
+    runtime_state_changed: bool = False,
+) -> None:
+    try:
+        set_runtime_override(
+            plugin_id,
+            enabled,
+            auto_start=enabled if PLUGIN_SYNC_AUTO_START_ON_TOGGLE else None,
+        )
+    except RuntimeOverridePersistenceError as exc:
+        raise ServerDomainError(
+            code="PLUGIN_RUNTIME_PREFERENCE_PERSIST_FAILED",
+            message="PLUGIN_RUNTIME_PREFERENCE_PERSIST_FAILED",
+            status_code=500,
+            details={
+                "plugin_id": plugin_id,
+                "enabled": enabled,
+                "auto_start": (
+                    enabled if PLUGIN_SYNC_AUTO_START_ON_TOGGLE else None
+                ),
+                "error_type": type(exc).__name__,
+                "runtime_state_changed": runtime_state_changed,
+            },
+            log_level="error",
+        ) from exc
 
 
 @runtime_checkable
@@ -583,7 +617,12 @@ class PluginLifecycleService:
         if isinstance(existing_host_obj, PluginHostContract):
             if existing_host_obj.is_alive():
                 if persist_user_intent:
-                    await asyncio.to_thread(set_runtime_override, current_plugin_id, True)
+                    await asyncio.to_thread(
+                        _persist_user_runtime_intent,
+                        current_plugin_id,
+                        True,
+                        runtime_state_changed=False,
+                    )
                 _emit_lifecycle_event(event_type="plugin_start_skipped", plugin_id=current_plugin_id)
                 return {
                     "success": True,
@@ -604,7 +643,12 @@ class PluginLifecycleService:
             )
 
         if persist_user_intent:
-            await asyncio.to_thread(set_runtime_override, current_plugin_id, True)
+            await asyncio.to_thread(
+                _persist_user_runtime_intent,
+                current_plugin_id,
+                True,
+                runtime_state_changed=False,
+            )
 
         if refresh_registry:
             try:
@@ -733,6 +777,18 @@ class PluginLifecycleService:
                         runtime_cfg.get("startup_failure"),
                         plugin_id=current_plugin_id,
                     )
+            enabled_override = await asyncio.to_thread(
+                get_runtime_override,
+                current_plugin_id,
+            )
+            if enabled_override is not None:
+                enabled_value = enabled_override
+            auto_start_override = await asyncio.to_thread(
+                get_runtime_auto_start_override,
+                current_plugin_id,
+            )
+            if auto_start_override is not None:
+                auto_start_value = auto_start_override
             if not enabled_value:
                 raise _to_domain_error(
                     code="PLUGIN_DISABLED",
@@ -928,7 +984,12 @@ class PluginLifecycleService:
             registered_plugin_id = current_plugin_id
 
             if persist_user_intent:
-                await asyncio.to_thread(set_runtime_override, current_plugin_id, True)
+                await asyncio.to_thread(
+                    _persist_user_runtime_intent,
+                    current_plugin_id,
+                    True,
+                    runtime_state_changed=True,
+                )
             _emit_lifecycle_event(event_type="plugin_started", plugin_id=current_plugin_id)
             response: dict[str, object] = {
                 "success": True,
@@ -1050,7 +1111,12 @@ class PluginLifecycleService:
                     str(exc),
                 )
             if persist_user_intent:
-                await asyncio.to_thread(set_runtime_override, plugin_id, False)
+                await asyncio.to_thread(
+                    _persist_user_runtime_intent,
+                    plugin_id,
+                    False,
+                    runtime_state_changed=True,
+                )
             _emit_lifecycle_event(event_type="plugin_stopped", plugin_id=plugin_id)
             return {
                 "success": True,
