@@ -233,6 +233,206 @@ def test_jukebox_execute_control_play_headless_loads_without_ui(mock_page: Page)
 
 
 @pytest.mark.frontend
+def test_jukebox_execute_control_same_song_replays_instead_of_stopping(mock_page: Page):
+    setup_headless_jukebox_page(mock_page)
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+          const first = await window.Jukebox.executeControl({ action: 'play', query: 'Song 1' });
+          const second = await window.Jukebox.executeControl({ action: 'play', query: 'Song 1' });
+          return {
+            first,
+            second,
+            currentSong: window.Jukebox.State.currentSong && window.Jukebox.State.currentSong.id,
+            isPlaying: window.Jukebox.State.isPlaying,
+            isPaused: window.Jukebox.State.isPaused,
+            playerItems: window.__lastAPlayer.list.items.map((item) => item.name)
+          };
+        }
+        """
+    )
+
+    assert result == {
+        "first": {
+            "ok": True,
+            "action": "play",
+            "song": {"id": "song1", "name": "Song 1", "artist": "A"},
+            "actionStatus": "no_action",
+        },
+        "second": {
+            "ok": True,
+            "action": "play",
+            "song": {"id": "song1", "name": "Song 1", "artist": "A"},
+            "actionStatus": "no_action",
+        },
+        "currentSong": "song1",
+        "isPlaying": True,
+        "isPaused": False,
+        "playerItems": ["Song 1"],
+    }
+
+
+@pytest.mark.frontend
+def test_jukebox_execute_control_discards_stale_preflight_play(mock_page: Page):
+    setup_headless_jukebox_page(mock_page)
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+          const originalFetch = window.fetch;
+          let releaseSong1Head;
+          window.fetch = async (url, options = {}) => {
+            if (options.method === 'HEAD' && String(url).includes('song1.mp3')) {
+              return await new Promise((resolve) => {
+                releaseSong1Head = () => resolve({ ok: true, status: 200 });
+              });
+            }
+            return originalFetch(url, options);
+          };
+
+          const firstPromise = window.Jukebox.executeControl({ action: 'play', query: 'Song 1' });
+          while (typeof releaseSong1Head !== 'function') {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+          }
+          const second = await window.Jukebox.executeControl({ action: 'play', query: 'Song 2' });
+          releaseSong1Head();
+          const first = await firstPromise;
+
+          return {
+            first,
+            second,
+            currentSong: window.Jukebox.State.currentSong && window.Jukebox.State.currentSong.id,
+            playerItems: window.__lastAPlayer.list.items.map((item) => item.name)
+          };
+        }
+        """
+    )
+
+    assert result == {
+        "first": {
+            "ok": False,
+            "action": "play",
+            "message": "play_superseded",
+            "song": {"id": "song1", "name": "Song 1", "artist": "A"},
+        },
+        "second": {
+            "ok": True,
+            "action": "play",
+            "song": {"id": "song2", "name": "Song 2", "artist": "B"},
+            "actionStatus": "no_action",
+        },
+        "currentSong": "song2",
+        "playerItems": ["Song 2"],
+    }
+
+
+@pytest.mark.frontend
+def test_jukebox_execute_control_stop_discards_pending_play(mock_page: Page):
+    setup_headless_jukebox_page(mock_page)
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+          const originalFetch = window.fetch;
+          let releaseSong1Head;
+          window.fetch = async (url, options = {}) => {
+            if (options.method === 'HEAD' && String(url).includes('song1.mp3')) {
+              return await new Promise((resolve) => {
+                releaseSong1Head = () => resolve({ ok: true, status: 200 });
+              });
+            }
+            return originalFetch(url, options);
+          };
+
+          const playPromise = window.Jukebox.executeControl({ action: 'play', query: 'Song 1' });
+          while (typeof releaseSong1Head !== 'function') {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+          }
+          const stop = await window.Jukebox.executeControl({ action: 'stop' });
+          releaseSong1Head();
+          const play = await playPromise;
+
+          return {
+            play,
+            stop,
+            currentSong: window.Jukebox.State.currentSong && window.Jukebox.State.currentSong.id,
+            isPlaying: window.Jukebox.State.isPlaying,
+            playerItems: window.__lastAPlayer.list.items.map((item) => item.name)
+          };
+        }
+        """
+    )
+
+    assert result == {
+        "play": {
+            "ok": False,
+            "action": "play",
+            "message": "play_superseded",
+            "song": {"id": "song1", "name": "Song 1", "artist": "A"},
+        },
+        "stop": {"ok": True, "action": "stop"},
+        "currentSong": None,
+        "isPlaying": False,
+        "playerItems": [],
+    }
+
+
+@pytest.mark.frontend
+def test_jukebox_play_song_skips_stale_action_start(mock_page: Page):
+    setup_headless_jukebox_page(mock_page)
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+          const J = window.Jukebox;
+          await J.ensureRuntime({ headless: true });
+
+          let releaseAction;
+          const animationCalls = [];
+          J.getModelType = () => 'vrm';
+          J.playVRMA = async (url) => { animationCalls.push(url); };
+          J.getActionAvailability = async (song) => {
+            if (song.id === 'song1') {
+              return await new Promise((resolve) => {
+                releaseAction = () => resolve({
+                  ok: true,
+                  status: 'action_ready',
+                  action: { id: 'action1', name: 'Dance 1', file: 'actions/song1.vrma' },
+                  url: '/api/jukebox/file/actions/song1.vrma'
+                });
+              });
+            }
+            return { ok: true, status: 'no_action', action: null, url: '' };
+          };
+
+          const firstPromise = J.playSong('song1');
+          while (typeof releaseAction !== 'function') {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+          }
+          const second = await J.playSong('song2');
+          releaseAction();
+          const first = await firstPromise;
+
+          return {
+            first: first && first.id,
+            second: second && second.id,
+            currentSong: J.State.currentSong && J.State.currentSong.id,
+            animationCalls
+          };
+        }
+        """
+    )
+
+    assert result == {
+        "first": None,
+        "second": "song2",
+        "currentSong": "song2",
+        "animationCalls": [],
+    }
+
+
+@pytest.mark.frontend
 def test_jukebox_execute_control_play_uses_fuzzy_matching(mock_page: Page):
     setup_headless_jukebox_page(mock_page)
 
@@ -765,6 +965,54 @@ def test_jukebox_loader_native_mode_keeps_animation_facade(mock_page: Page):
             "cursor:dance",
             "stop",
         ],
+    }
+
+
+@pytest.mark.frontend
+def test_jukebox_loader_restores_native_facade_after_full_unload(mock_page: Page):
+    mock_page.set_content(
+        """
+        <script>
+          window.nativeToggleCount = 0;
+          window.__nekoJukeboxToggle = function() {
+            window.nativeToggleCount += 1;
+          };
+          window.t = (key, fallback) => typeof fallback === 'string' ? fallback : key;
+        </script>
+        """
+    )
+    mock_page.add_script_tag(content=JUKEBOX_LOADER_SCRIPT)
+
+    result = mock_page.evaluate(
+        """
+        () => {
+          const originalSetTimeout = window.setTimeout;
+          window.setTimeout = (handler, delay) => {
+            if (delay === 3000) {
+              handler();
+              return 1;
+            }
+            return originalSetTimeout(handler, delay);
+          };
+
+          window.__nekoJukeboxLoader.unload();
+          window.Jukebox.toggle();
+
+          return {
+            hasFacade: window.Jukebox.__nativeBridgeFacade === true,
+            hasExecuteControl: typeof window.Jukebox.executeControl === 'function',
+            nativeToggleCount: window.nativeToggleCount,
+            webLoaderToggle: !!window.__nekoJukeboxToggle.__nekoJukeboxWebLoader
+          };
+        }
+        """
+    )
+
+    assert result == {
+        "hasFacade": True,
+        "hasExecuteControl": True,
+        "nativeToggleCount": 1,
+        "webLoaderToggle": False,
     }
 
 

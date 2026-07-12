@@ -773,9 +773,16 @@ async def _handle_agent_event(event: dict):
             return
 
         elif event_type == "jukebox_control":
-            # Jukebox control is a global UI action. The frontend runtime loader
-            # decides which window can host playback without opening the panel UI.
-            targets = [mgr] if mgr else [m for _, m in _iter_session_managers()]
+            # Jukebox control mutates one local playback runtime. Unlike generic
+            # music URL playback, an unscoped command must not fan out to every
+            # connected character session.
+            if not lanlan or not mgr:
+                logger.info(
+                    "[EventBus] jukebox_control dropped: no target session for lanlan=%s",
+                    lanlan,
+                )
+                return
+            targets = [mgr]
             action = str(event.get("action") or "").strip().lower()
             payload = {
                 "type": "jukebox_control",

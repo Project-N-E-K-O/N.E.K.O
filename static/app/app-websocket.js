@@ -39,6 +39,7 @@
     let _musicPlayUrlClaimCleanupTimer = 0;
     let _musicPlayUrlCoordBeforeUnloadBound = false;
     let _musicPlayUrlBroadcastUnavailableWarned = false;
+    let _jukeboxControlQueue = Promise.resolve();
     const MUSIC_PLAY_URL_SENDER_ID = (Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
 
     // ---- DOM element shortcuts (resolved lazily / once) ----
@@ -569,17 +570,20 @@
         }
 
         var command = response.command && typeof response.command === 'object' ? response.command : response;
-        window.Jukebox.executeControl({
-            action: command.action,
-            query: command.query || '',
-            value: command.value,
-            mode: command.mode,
-            headless: true
-        }).then(function (result) {
-            console.log('[Jukebox] 点歌台控制完成:', result);
-        }).catch(function (error) {
-            console.warn('[Jukebox] 点歌台控制失败:', error);
-        });
+        var runCommand = function () {
+            return window.Jukebox.executeControl({
+                action: command.action,
+                query: command.query || '',
+                value: command.value,
+                mode: command.mode,
+                headless: true
+            }).then(function (result) {
+                console.log('[Jukebox] 点歌台控制完成:', result);
+            }).catch(function (error) {
+                console.warn('[Jukebox] 点歌台控制失败:', error);
+            });
+        };
+        _jukeboxControlQueue = _jukeboxControlQueue.then(runCommand, runCommand);
     }
 
     function readNewUserIcebreakerStore() {

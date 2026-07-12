@@ -438,6 +438,9 @@
   }
 
   function ensureLazyJukeboxFacade() {
+    if (!window.Jukebox && typeof window.__nekoJukeboxToggle === 'function') {
+      ensureNativeJukeboxFacade();
+    }
     if (isLoadedJukebox(window.Jukebox)) return window.Jukebox;
     if (window.Jukebox && window.Jukebox.__nekoLazyFacade) return window.Jukebox;
 

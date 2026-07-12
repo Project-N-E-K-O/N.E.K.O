@@ -32,6 +32,8 @@ def test_jukebox_websocket_handler_uses_canonical_query_key():
     assert "command.name" not in block
     assert "command.volume" not in block
     assert "command.delta" not in block
+    assert "let _jukeboxControlQueue = Promise.resolve();" in source
+    assert "_jukeboxControlQueue = _jukeboxControlQueue.then(runCommand, runCommand);" in block
 
 
 def test_jukebox_event_bus_uses_canonical_query_key():
@@ -49,6 +51,9 @@ def test_jukebox_event_bus_uses_canonical_query_key():
     assert 'event.get("name")' not in block
     assert 'event.get("volume")' not in block
     assert 'event.get("delta")' not in block
+    assert 'if not lanlan or not mgr:' in block
+    assert 'targets = [mgr]' in block
+    assert '_iter_session_managers()' not in block
 
 
 def test_jukebox_plugin_schema_uses_canonical_actions():
@@ -57,6 +62,7 @@ def test_jukebox_plugin_schema_uses_canonical_actions():
     assert '_VALID_ACTIONS = {"play", "next", "previous", "stop", "set_volume", "adjust_volume", "set_mode"}' in source
     assert '"enum": ["play", "next", "previous", "stop", "set_volume", "adjust_volume", "set_mode"]' in source
     assert '"enum": ["none", "sequence", "single", "random"]' in source
+    assert 'getattr(getattr(self, "ctx", None), "_current_lanlan", None)' in source
     assert '"skip"' not in source
 
 

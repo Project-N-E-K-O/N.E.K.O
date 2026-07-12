@@ -65,6 +65,10 @@ class JukeboxControllerPlugin(NekoPluginBase):
         clean_query = str(query or "").strip()
         clean_mode = str(mode or "").strip().lower()
         target_lanlan = kwargs.get("target_lanlan")
+        if not (isinstance(target_lanlan, str) and target_lanlan.strip()):
+            context_lanlan = getattr(getattr(self, "ctx", None), "_current_lanlan", None)
+            target_lanlan = context_lanlan if isinstance(context_lanlan, str) else None
+        clean_target_lanlan = target_lanlan.strip() if isinstance(target_lanlan, str) else ""
         self.ctx.push_message(
             source="jukebox_controller",
             description=f"Jukebox control: {normalized}",
@@ -87,7 +91,7 @@ class JukeboxControllerPlugin(NekoPluginBase):
                 "value": value,
                 "mode": clean_mode,
             },
-            target_lanlan=target_lanlan if isinstance(target_lanlan, str) and target_lanlan else None,
+            target_lanlan=clean_target_lanlan or None,
         )
 
         if normalized == "play":

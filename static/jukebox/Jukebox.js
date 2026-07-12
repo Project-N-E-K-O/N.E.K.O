@@ -7968,6 +7968,7 @@ window.Jukebox = {
     }
 
     if (normalizedAction === 'stop') {
+      Jukebox.State.playRequestId += 1;
       Jukebox.stopPlayback();
       return { ok: true, action: 'stop' };
     }
@@ -8108,7 +8109,16 @@ window.Jukebox = {
   },
 
   executePlayControl: async function(action, song, playOptions = {}) {
+    const requestId = ++Jukebox.State.playRequestId;
     const preflight = await Jukebox.preflightSongPlayback(song);
+    if (requestId !== Jukebox.State.playRequestId) {
+      return {
+        ok: false,
+        action,
+        message: 'play_superseded',
+        song: Jukebox.formatControlSong(song)
+      };
+    }
     if (!preflight.ok) {
       return {
         ok: false,
@@ -8120,7 +8130,9 @@ window.Jukebox = {
 
     const playedSong = await Jukebox.playSong(song.id, {
       ...playOptions,
-      actionAvailability: preflight.actionAvailability
+      actionAvailability: preflight.actionAvailability,
+      forceReplay: action === 'play',
+      requestId
     });
     if (!playedSong) {
       return {
@@ -8536,7 +8548,8 @@ window.Jukebox = {
       return null;
     }
     
-    if (Jukebox.State.currentSong && Jukebox.State.currentSong.id === songId) {
+    const forceReplay = options.forceReplay === true;
+    if (Jukebox.State.currentSong && Jukebox.State.currentSong.id === songId && !forceReplay) {
       if (Jukebox.State.isPaused) {
         console.log('[Jukebox] 恢复暂停的歌曲:', song.name);
         Jukebox.togglePause();
@@ -8562,6 +8575,12 @@ window.Jukebox = {
       Jukebox.clearRandomQueue();
     }
 
+    const requestId = Number.isInteger(options.requestId) ? options.requestId : ++Jukebox.State.playRequestId;
+    if (requestId !== Jukebox.State.playRequestId) {
+      console.log('[Jukebox] 播放请求已被新请求取代，取消播放');
+      return null;
+    }
+
     console.log('[Jukebox] 播放歌曲:', song.name);
     
     const preserveRandomQueue = Jukebox.State.playbackMode === 'random'
@@ -8570,8 +8589,6 @@ window.Jukebox = {
         && Jukebox.State.randomQueueExitSongId === songId
       );
     Jukebox.stopPlayback({ preserveRandomQueue });
-    
-    const requestId = ++Jukebox.State.playRequestId;
     
     try {
       await Jukebox.playAudio(song);
@@ -8583,6 +8600,10 @@ window.Jukebox = {
       
       // 根据模型类型播放对应格式的动画；动作缺失时只跳过动作，不阻断歌曲播放。
       const actionAvailability = options.actionAvailability || await Jukebox.getActionAvailability(song);
+      if (requestId !== Jukebox.State.playRequestId) {
+        console.log('[Jukebox] 播放请求已被新请求取代，取消动画启动');
+        return null;
+      }
       const action = actionAvailability.action;
       if (action && actionAvailability.ok) {
         const actionUrl = actionAvailability.url;
