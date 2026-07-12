@@ -157,3 +157,27 @@ def test_partial_free_intl_config_defaults_drive_fallback_aliases(monkeypatch):
     assert provider.normalize("female") == ("IntlFemale", True)
     assert provider.normalize("male") == ("IntlMale", True)
     assert provider.normalize("default") == ("IntlFemale", True)
+
+
+def test_missing_free_intl_config_preserves_gemini_fallback_aliases(monkeypatch):
+    monkeypatch.setattr(
+        gemini_provider,
+        "get_native_tts_voice_provider_config",
+        lambda _provider_key: {},
+    )
+
+    provider = gemini_provider._create_free_intl_provider()
+
+    assert provider.default_voice == "yui"
+    assert provider.normalize("default") == (
+        gemini_provider.FALLBACK_GEMINI_TTS_DEFAULT_VOICE,
+        True,
+    )
+    assert provider.normalize("female") == (
+        gemini_provider.FALLBACK_GEMINI_TTS_DEFAULT_VOICE,
+        True,
+    )
+    assert provider.normalize("male") == (
+        gemini_provider.FALLBACK_GEMINI_TTS_DEFAULT_MALE_VOICE,
+        True,
+    )

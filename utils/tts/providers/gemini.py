@@ -196,10 +196,16 @@ def _create_free_intl_provider() -> NativeVoiceProvider:
     default_male_voice = (
         cfg.get("default_male_voice") or FALLBACK_GEMINI_TTS_DEFAULT_MALE_VOICE
     )
+    alias_default_voice = (
+        cfg.get("default_voice") or FALLBACK_GEMINI_TTS_DEFAULT_VOICE
+    )
+    alias_default_male_voice = (
+        cfg.get("default_male_voice") or FALLBACK_GEMINI_TTS_DEFAULT_MALE_VOICE
+    )
     aliases_source = cfg.get("aliases") or _resolved_alias_fallback(
         _FALLBACK_FREE_INTL_VOICE_ALIASES,
-        default_voice,
-        default_male_voice,
+        alias_default_voice,
+        alias_default_male_voice,
     )
     return NativeVoiceProvider(
         key="free_intl",
