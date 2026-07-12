@@ -1884,10 +1884,15 @@ function createIntervalControl(manager, prefix, toggle) {
     // 持久化值可能低于当前 toggle 的最小值（如旧版本保存的更低间隔），
     // 不 clamp 会导致 valueDisplay 显示低值而滑块实际停在 min，二者不一致
     if (currentValue < minVal) currentValue = minVal;
-    // 钳制改变了值时同步回运行时全局，避免界面显示钳制值而调度仍按越界旧值跑；
+    // 钳制改变了值时同步回运行时全局（window.proactiveXxxInterval 经 app-state.js
+    // 的 defineProperty 桥接直写 S），避免界面显示钳制值而调度仍按越界旧值跑；
     // 不在渲染路径主动落盘，归一化后的值随下一次 saveNEKOSettings 自然持久化
     if (typeof window[toggle.intervalKey] !== 'undefined' && window[toggle.intervalKey] !== currentValue) {
         window[toggle.intervalKey] = currentValue;
+        // 已在飞的定时器仍持有旧延迟，与下方 change 处理器同款：立即重排让钳制值生效
+        if (toggle.id === 'proactive-chat' && typeof window.resetProactiveChatBackoff === 'function') {
+            window.resetProactiveChatBackoff();
+        }
     }
     slider.value = currentValue;
     Object.assign(slider.style, { width: '60px', height: '4px', cursor: 'pointer', accentColor: 'var(--neko-popup-accent, #44b7fe)' });
