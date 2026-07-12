@@ -4,6 +4,8 @@ import importlib
 import importlib.util
 from pathlib import Path
 
+from PyInstaller.utils.hooks import collect_submodules
+
 
 ROOT = Path(__file__).resolve().parents[2]
 REMOVED_ROOT_SDK_MODULES = (
@@ -29,6 +31,12 @@ def _sdk_module_names() -> list[str]:
 def test_current_sdk_modules_are_importable() -> None:
     for module_name in _sdk_module_names():
         importlib.import_module(module_name)
+
+
+def test_pyinstaller_collects_complete_sdk_tree() -> None:
+    assert sorted(collect_submodules("plugin.sdk", on_error="raise")) == (
+        _sdk_module_names()
+    )
 
 
 def test_launcher_collects_current_plugin_sdk_tree() -> None:
