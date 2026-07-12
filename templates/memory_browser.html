@@ -126,11 +126,26 @@
                         <div class="file-list-title" data-i18n="memory.externalImportTitle">Import External Memory</div>
                         <div class="external-memory-import-card">
                             <p class="external-memory-import-note" data-i18n="memory.externalImportNote">Import OpenClaw or Hermes USER.md, SOUL.md, MEMORY.md, daily memory files, or a workspace ZIP into the selected character.</p>
-                            <select id="external-memory-format" class="external-memory-format" aria-label="Source format" data-i18n-aria="memory.externalImportFormat">
-                                <option value="auto" data-i18n="memory.externalImportAuto">Auto detect</option>
-                                <option value="openclaw">OpenClaw</option>
-                                <option value="hermes">Hermes</option>
-                            </select>
+                            <div class="external-memory-format-wrapper">
+                                <select id="external-memory-format" hidden aria-hidden="true" tabindex="-1">
+                                    <option value="auto" data-i18n="memory.externalImportAuto">Auto detect</option>
+                                    <option value="openclaw">OpenClaw</option>
+                                    <option value="hermes">Hermes</option>
+                                </select>
+                                <div class="tutorial-cascader external-memory-format-cascader" id="external-memory-format-cascader">
+                                    <button type="button" class="tutorial-cascader-trigger external-memory-format-trigger" aria-haspopup="listbox" aria-expanded="false" aria-label="Source format" data-i18n-aria="memory.externalImportFormat">
+                                        <span class="external-memory-format-value">Auto detect</span>
+                                        <span class="tutorial-cascader-arrow" aria-hidden="true"></span>
+                                    </button>
+                                    <div class="tutorial-cascader-popup external-memory-format-popup" hidden>
+                                        <div class="tutorial-cascader-column external-memory-format-options" role="listbox" aria-label="Source format" data-i18n-aria="memory.externalImportFormat">
+                                            <button type="button" class="tutorial-cascader-option" data-external-memory-format="auto" data-i18n="memory.externalImportAuto">Auto detect</button>
+                                            <button type="button" class="tutorial-cascader-option" data-external-memory-format="openclaw">OpenClaw</button>
+                                            <button type="button" class="tutorial-cascader-option" data-external-memory-format="hermes">Hermes</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
                             <div id="external-memory-target" class="external-memory-selection"></div>
                             <input id="external-memory-files" type="file" accept=".md,.zip,text/markdown,application/zip" multiple hidden>
                             <button type="button" class="storage-location-open-btn" id="external-memory-pick-btn">

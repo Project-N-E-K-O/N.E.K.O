@@ -1509,6 +1509,36 @@
         status.className = 'external-memory-import-status' + (kind ? ' is-' + kind : '');
     }
 
+    function setExternalMemoryFormatOpen(open) {
+        const cascader = document.getElementById('external-memory-format-cascader');
+        if (!cascader) return;
+        const popup = cascader.querySelector('.external-memory-format-popup');
+        const trigger = cascader.querySelector('.external-memory-format-trigger');
+        if (popup) popup.hidden = !open;
+        if (trigger) {
+            trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+            trigger.classList.toggle('is-open', !!open);
+        }
+    }
+
+    function syncExternalMemoryFormatDropdown() {
+        const select = document.getElementById('external-memory-format');
+        const cascader = document.getElementById('external-memory-format-cascader');
+        if (!select || !cascader) return;
+        const selectedValue = String(select.value || 'auto');
+        const valueEl = cascader.querySelector('.external-memory-format-value');
+        if (valueEl) {
+            valueEl.textContent = selectedValue === 'auto'
+                ? translate('memory.externalImportAuto', 'Auto detect')
+                : (selectedValue === 'openclaw' ? 'OpenClaw' : 'Hermes');
+        }
+        cascader.querySelectorAll('[data-external-memory-format]').forEach(function (option) {
+            const selected = option.dataset.externalMemoryFormat === selectedValue;
+            option.classList.toggle('is-selected', selected);
+            option.setAttribute('aria-selected', selected ? 'true' : 'false');
+        });
+    }
+
     function updateExternalImportButton() {
         const input = document.getElementById('external-memory-files');
         const button = document.getElementById('external-memory-import-btn');
@@ -2138,16 +2168,52 @@
                 }
                 refreshTutorialCascaderDayLabels();
                 syncTutorialResetCascader();
+                syncExternalMemoryFormatDropdown();
             });
         }
         window.addEventListener('localechange', function () {
             refreshTutorialCascaderDayLabels();
             syncTutorialResetCascader();
+            syncExternalMemoryFormatDropdown();
         });
 
         const externalFiles = document.getElementById('external-memory-files');
         const externalPick = document.getElementById('external-memory-pick-btn');
         const externalImport = document.getElementById('external-memory-import-btn');
+        const externalFormatSelect = document.getElementById('external-memory-format');
+        const externalFormatCascader = document.getElementById('external-memory-format-cascader');
+        if (externalFormatSelect && externalFormatCascader) {
+            const externalFormatTrigger = externalFormatCascader.querySelector('.external-memory-format-trigger');
+            const externalFormatPopup = externalFormatCascader.querySelector('.external-memory-format-popup');
+            syncExternalMemoryFormatDropdown();
+            if (externalFormatTrigger) {
+                externalFormatTrigger.addEventListener('click', function () {
+                    setExternalMemoryFormatOpen(!(externalFormatPopup && !externalFormatPopup.hidden));
+                });
+            }
+            if (externalFormatPopup) {
+                externalFormatPopup.addEventListener('click', function (event) {
+                    const option = event.target.closest('[data-external-memory-format]');
+                    if (!option) return;
+                    externalFormatSelect.value = option.dataset.externalMemoryFormat || 'auto';
+                    externalFormatSelect.dispatchEvent(new Event('change', { bubbles: true }));
+                    syncExternalMemoryFormatDropdown();
+                    setExternalMemoryFormatOpen(false);
+                    if (externalFormatTrigger) externalFormatTrigger.focus();
+                });
+            }
+            document.addEventListener('click', function (event) {
+                if (!externalFormatCascader.contains(event.target)) {
+                    setExternalMemoryFormatOpen(false);
+                }
+            });
+            externalFormatCascader.addEventListener('keydown', function (event) {
+                if (event.key === 'Escape') {
+                    setExternalMemoryFormatOpen(false);
+                    if (externalFormatTrigger) externalFormatTrigger.focus();
+                }
+            });
+        }
         if (externalPick && externalFiles) {
             externalPick.addEventListener('click', function () { externalFiles.click(); });
             externalFiles.addEventListener('change', function () {

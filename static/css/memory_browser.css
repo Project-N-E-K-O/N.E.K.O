@@ -1700,14 +1700,24 @@ html.neko-window-maximized .chat-item + .chat-item:hover::before {
     overflow-wrap: anywhere;
 }
 
-.external-memory-format {
+.external-memory-format-wrapper {
+    position: relative;
+    width: 100%;
+}
+
+.external-memory-format-cascader,
+.external-memory-format-popup {
+    width: 100%;
+}
+
+.external-memory-import-card .external-memory-format-trigger {
+    justify-content: space-between;
+}
+
+.external-memory-format-options {
     width: 100%;
     box-sizing: border-box;
-    border: 1px solid #cfeaf5;
-    border-radius: 12px;
-    padding: 8px 10px;
-    background: #fff;
-    color: #3caed4;
+    border-right: 0;
 }
 
 .external-memory-import-card button {
