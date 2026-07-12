@@ -126,12 +126,32 @@ def _build_aliases(configured: dict[str, str]) -> dict[str, str]:
     }
 
 
+def _resolved_alias_fallback(
+    template: dict[str, str],
+    default_voice: str,
+    default_male_voice: str,
+) -> dict[str, str]:
+    """Point fallback gender aliases at the effective configured defaults."""
+    return {
+        alias: (
+            default_male_voice
+            if voice_id == FALLBACK_GEMINI_TTS_DEFAULT_MALE_VOICE
+            else default_voice
+        )
+        for alias, voice_id in template.items()
+    }
+
+
 def _create_provider() -> NativeVoiceProvider:
     """Always succeed — the provider must stay in the registry, otherwise downstream
     routing misclassifies built-in Gemini voices as custom. The catalog/defaults have
     already gone through the config → fallback OR chain above and are guaranteed
     non-empty here."""
-    aliases_source = _CFG.get("aliases") or _FALLBACK_GEMINI_TTS_VOICE_ALIASES
+    aliases_source = _CFG.get("aliases") or _resolved_alias_fallback(
+        _FALLBACK_GEMINI_TTS_VOICE_ALIASES,
+        GEMINI_TTS_DEFAULT_VOICE,
+        GEMINI_TTS_DEFAULT_MALE_VOICE,
+    )
     return NativeVoiceProvider(
         key="gemini",
         catalog=GEMINI_TTS_VOICE_GENDERS,
@@ -172,14 +192,21 @@ def _create_free_intl_provider() -> NativeVoiceProvider:
     yui/Gemini voices on the overseas free route to be treated as custom and misrouted
     to external TTS."""
     cfg = get_native_tts_voice_provider_config("free_intl")
+    default_voice = cfg.get("default_voice") or "yui"
+    default_male_voice = (
+        cfg.get("default_male_voice") or FALLBACK_GEMINI_TTS_DEFAULT_MALE_VOICE
+    )
+    aliases_source = cfg.get("aliases") or _resolved_alias_fallback(
+        _FALLBACK_FREE_INTL_VOICE_ALIASES,
+        default_voice,
+        default_male_voice,
+    )
     return NativeVoiceProvider(
         key="free_intl",
         catalog=cfg.get("voices") or _FALLBACK_FREE_INTL_VOICE_GENDERS,
-        aliases=_build_aliases(cfg.get("aliases") or _FALLBACK_FREE_INTL_VOICE_ALIASES),
-        default_voice=cfg.get("default_voice") or "yui",
-        default_male_voice=(
-            cfg.get("default_male_voice") or FALLBACK_GEMINI_TTS_DEFAULT_MALE_VOICE
-        ),
+        aliases=_build_aliases(aliases_source),
+        default_voice=default_voice,
+        default_male_voice=default_male_voice,
         catalog_prefix=cfg.get("catalog_prefix") or "Gemini",
         catalog_value_is_display_name=bool(
             cfg.get("catalog_value_is_display_name", False)

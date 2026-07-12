@@ -31,6 +31,32 @@ from utils.tts.native_voice_registry import (
 FALLBACK_STEPFUN_TTS_DEFAULT_VOICE = "linjiameimei"
 FALLBACK_STEPFUN_TTS_DEFAULT_MALE_VOICE = "cixingnansheng"
 
+_FALLBACK_STEPFUN_TTS_VOICE_LABELS: dict[str, str] = {
+    "elegantgentle-female": "高雅女声",
+    "livelybreezy-female": "活力女声",
+    "qingchunshaonv": "青春少女",
+    "wenrounansheng": "温柔男声",
+    "linjiameimei": "邻家妹妹",
+    "cixingnansheng": "磁性男声",
+}
+
+
+def _fallback_aliases(default_voice: str, default_male_voice: str) -> dict[str, str]:
+    return {
+        "default": default_voice,
+        "默认": default_voice,
+        "female": default_voice,
+        "woman": default_voice,
+        "女": default_voice,
+        "女声": default_voice,
+        "中文女": default_voice,
+        "male": default_male_voice,
+        "man": default_male_voice,
+        "男": default_male_voice,
+        "男声": default_male_voice,
+        "中文男": default_male_voice,
+    }
+
 
 def _load_stepfun_provider_config(provider_key: str) -> dict:
     """Read and normalize the StepFun voice provider config from api_providers.json."""
@@ -52,41 +78,70 @@ def _build_aliases(catalog: dict[str, str], configured_aliases: dict[str, str]) 
     return aliases
 
 
-def _create_provider(provider_key: str) -> NativeVoiceProvider | None:
-    """Create the NativeVoiceProvider from config; skip registration when config is missing."""
+def _create_provider(provider_key: str) -> NativeVoiceProvider:
+    """Create a provider from config, falling back to a routable built-in catalog."""
     cfg = _load_stepfun_provider_config(provider_key)
-    catalog = cfg.get('voices') or {}
-    default_voice = cfg.get('default_voice') or ''
-    default_male_voice = cfg.get('default_male_voice') or default_voice
-    if not catalog or not default_voice:
-        return None
+    configured_catalog = cfg.get('voices')
+    configured_default = cfg.get('default_voice')
+    config_is_routable = bool(
+        isinstance(configured_catalog, dict)
+        and configured_catalog
+        and isinstance(configured_default, str)
+        and configured_default in configured_catalog
+    )
+    effective_cfg = cfg if config_is_routable else {}
+    catalog = (
+        configured_catalog
+        if config_is_routable
+        else _FALLBACK_STEPFUN_TTS_VOICE_LABELS
+    )
+    default_voice = (
+        configured_default
+        if config_is_routable
+        else FALLBACK_STEPFUN_TTS_DEFAULT_VOICE
+    )
+    configured_male = effective_cfg.get('default_male_voice')
+    default_male_voice = (
+        configured_male
+        if isinstance(configured_male, str) and configured_male in catalog
+        else (
+            default_voice
+            if config_is_routable
+            else FALLBACK_STEPFUN_TTS_DEFAULT_MALE_VOICE
+        )
+    )
+    configured_aliases = effective_cfg.get('aliases')
+    aliases = (
+        configured_aliases
+        if isinstance(configured_aliases, dict) and configured_aliases
+        else _fallback_aliases(default_voice, default_male_voice)
+    )
     return NativeVoiceProvider(
         key=provider_key,
         catalog=catalog,
-        aliases=_build_aliases(catalog, cfg.get('aliases') or {}),
+        aliases=_build_aliases(catalog, aliases),
         default_voice=default_voice,
         default_male_voice=default_male_voice,
-        catalog_prefix=cfg.get('catalog_prefix') or provider_key,
-        catalog_value_is_display_name=bool(cfg.get('catalog_value_is_display_name', False)),
+        catalog_prefix=(
+            effective_cfg.get('catalog_prefix')
+            or ("免费 API" if provider_key == "free" else "StepFun")
+        ),
+        catalog_value_is_display_name=bool(
+            effective_cfg.get('catalog_value_is_display_name', True)
+        ),
     )
 
 
 _STEP_CONFIG = _load_stepfun_provider_config("step")
-STEPFUN_TTS_VOICE_LABELS: dict[str, str] = _STEP_CONFIG.get('voices') or {}
-STEPFUN_TTS_DEFAULT_VOICE = _STEP_CONFIG.get('default_voice') or FALLBACK_STEPFUN_TTS_DEFAULT_VOICE
-STEPFUN_TTS_DEFAULT_MALE_VOICE = (
-    _STEP_CONFIG.get('default_male_voice')
-    or FALLBACK_STEPFUN_TTS_DEFAULT_MALE_VOICE
-    or STEPFUN_TTS_DEFAULT_VOICE
-)
-
 STEPFUN_PROVIDER = _create_provider("step")
 FREE_STEPFUN_PROVIDER = _create_provider("free")
 
-if STEPFUN_PROVIDER is not None:
-    register_provider(STEPFUN_PROVIDER)
-if FREE_STEPFUN_PROVIDER is not None:
-    register_provider(FREE_STEPFUN_PROVIDER)
+STEPFUN_TTS_VOICE_LABELS: dict[str, str] = dict(STEPFUN_PROVIDER.catalog)
+STEPFUN_TTS_DEFAULT_VOICE = STEPFUN_PROVIDER.default_voice
+STEPFUN_TTS_DEFAULT_MALE_VOICE = STEPFUN_PROVIDER.default_male_voice
+
+register_provider(STEPFUN_PROVIDER)
+register_provider(FREE_STEPFUN_PROVIDER)
 
 
 def get_stepfun_tts_default_voice(provider_key: str = "step") -> str:

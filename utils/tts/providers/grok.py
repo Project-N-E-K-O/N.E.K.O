@@ -93,10 +93,22 @@ def _build_aliases(configured: dict[str, str]) -> dict[str, str]:
     }
 
 
+def _resolved_alias_fallback() -> dict[str, str]:
+    """Point fallback gender aliases at the effective configured defaults."""
+    return {
+        alias: (
+            GROK_TTS_DEFAULT_MALE_VOICE
+            if voice_id == FALLBACK_GROK_TTS_DEFAULT_MALE_VOICE
+            else GROK_TTS_DEFAULT_VOICE
+        )
+        for alias, voice_id in _FALLBACK_GROK_TTS_VOICE_ALIASES.items()
+    }
+
+
 def _create_provider() -> NativeVoiceProvider:
     """Always succeed — the provider must stay in the registry, otherwise downstream
     routing treats built-in voices like eve/leo as custom and routes them to cosyvoice."""
-    aliases_source = _CFG.get("aliases") or _FALLBACK_GROK_TTS_VOICE_ALIASES
+    aliases_source = _CFG.get("aliases") or _resolved_alias_fallback()
     return NativeVoiceProvider(
         key="grok",
         catalog=GROK_TTS_VOICE_GENDERS,

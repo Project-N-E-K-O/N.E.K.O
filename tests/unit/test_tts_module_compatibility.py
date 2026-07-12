@@ -1,6 +1,9 @@
 """Compatibility contracts for the TTS package migration."""
 
 import importlib
+import subprocess
+import sys
+import textwrap
 
 import pytest
 
@@ -21,14 +24,22 @@ def test_legacy_module_is_canonical_module(legacy_name: str, canonical_name: str
     assert importlib.import_module(legacy_name) is importlib.import_module(canonical_name)
 
 
-def test_native_registry_bootstraps_every_builtin_provider_once() -> None:
-    legacy = importlib.import_module("utils.native_voice_registry")
-    canonical = importlib.import_module("utils.tts.native_voice_registry")
+def test_fresh_process_native_registry_bootstraps_builtin_providers() -> None:
+    script = textwrap.dedent(
+        """
+        import importlib
 
-    assert legacy._PROVIDERS is canonical._PROVIDERS
-    assert {"gemini", "step", "free", "free_intl", "grok"} <= set(
-        canonical.list_providers()
+        legacy = importlib.import_module("utils.native_voice_registry")
+        canonical = importlib.import_module("utils.tts.native_voice_registry")
+
+        assert legacy is canonical
+        assert legacy._PROVIDERS is canonical._PROVIDERS
+        assert set(canonical.list_providers()) == {
+            "gemini", "step", "free", "free_intl", "grok"
+        }
+        """
     )
+    subprocess.run([sys.executable, "-c", script], check=True)
 
 
 def test_legacy_monkeypatch_seam_updates_canonical_module(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -46,4 +57,9 @@ def test_stepfun_legacy_public_voice_labels_remain_observable() -> None:
     canonical = importlib.import_module("utils.tts.providers.stepfun")
 
     assert legacy.STEPFUN_TTS_VOICE_LABELS is canonical.STEPFUN_TTS_VOICE_LABELS
-    assert legacy.STEPFUN_TTS_VOICE_LABELS == canonical._STEP_CONFIG.get("voices", {})
+    assert legacy.STEPFUN_TTS_VOICE_LABELS == {
+        "elegantgentle-female": "高雅女声",
+        "livelybreezy-female": "活力女声",
+        "qingchunshaonv": "青春少女",
+        "wenrounansheng": "温柔男声",
+    }
