@@ -113,6 +113,11 @@ jobs:
           uv sync --group galgame
           uv pip install --python .venv nuitka ordered-set zstandard
 
+      - name: Prepare filtered built-in plugins for Nuitka
+        shell: bash
+        run: |
+          .venv/bin/python scripts/prepare_nuitka_plugins.py prepare
+
       # --- Generate runtime config files (not tracked in git) ---
       - name: Generate default config files
         shell: bash
@@ -254,9 +259,8 @@ jobs:
           else
             echo "[WARNING] frontend/plugin-manager/dist missing; /ui will be empty in bundle."
           fi
-          if [ -d "plugin/plugins" ]; then
-            NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=plugin/plugins=plugin/plugins"
-          fi
+          # Built-in plugin data is installed from the filtered stage after
+          # compilation. Nuitka intentionally refuses to treat .py as data.
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=playwright_browsers=playwright_browsers"
           if [ -d "data/tiktoken_cache" ]; then
             NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=data/tiktoken_cache=data/tiktoken_cache"
@@ -277,6 +281,8 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-package=websockets"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=app"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=config"
+          # The generated launcher carries selective --nofollow-import-to
+          # directives derived from each plugin's [tool.neko.build] rules.
           NUITKA_OPTS="$NUITKA_OPTS --include-package=plugin"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=brain"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=main_logic"
@@ -310,7 +316,6 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-package-data=bilibili_api"
 
           # Exclusions
-          NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=plugin.plugins"
           NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=audiolab"
           NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=pyrnnoise"
           NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=matplotlib"
@@ -341,15 +346,17 @@ jobs:
           echo "$NUITKA_OPTS" | tr ' ' '\n'
           echo "======================"
 
-          .venv/bin/python -m nuitka $NUITKA_OPTS launcher.py
+          .venv/bin/python -m nuitka $NUITKA_OPTS build_nuitka_launcher.py
 
       # --- Rename Nuitka output directory ---
       - name: Rename build output
         shell: bash
         run: |
-          if [ -d "dist/launcher.dist" ]; then
-            mv dist/launcher.dist dist/Xiao8
+          if [ -d "dist/build_nuitka_launcher.dist" ]; then
+            mv dist/build_nuitka_launcher.dist dist/Xiao8
           fi
+          .venv/bin/python scripts/prepare_nuitka_plugins.py install \
+            --destination-dir dist/Xiao8/plugin/plugins
           echo "=== Build output ==="
           ls -la dist/Xiao8/ || echo "dist/Xiao8 not found!"
 
@@ -397,7 +404,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          .venv/bin/python scripts/check_nuitka_dist.py dist/Xiao8
+          .venv/bin/python scripts/check_nuitka_dist.py dist/Xiao8 --plugin-stage build/nuitka-plugins
 
       - name: Upload Python backend artifact
         uses: actions/upload-artifact@v4
