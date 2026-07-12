@@ -212,7 +212,7 @@ self.include_router(CountdownRouter(), prefix="time_")
 
 `exclude_router()` はプラグインの router リストから router を外しますが、通常のプラグインコードではライブの機能トグルとして使わないでください。エントリーポイントは host が dispatch table を構築するときに収集されるため、その後で router を外しても、すでに収集されたエントリーが自動的に呼び出せなくなるわけではありません。
 
-実行中に機能を有効化/無効化する場合は entry logic で明示的な Plugin 設定を確認し、dispatch 構造が変わるときは Plugin を再構築または再起動してください。非推奨の Extension 制御経路には依存しないでください。
+実行中に機能を有効化/無効化する場合は entry logic で明示的な Plugin 設定を確認し、dispatch 構造が変わるときは Plugin を再構築または再起動してください。削除済みの Extension 制御経路には依存しないでください。
 
 ```python
 # router リストから外すだけ

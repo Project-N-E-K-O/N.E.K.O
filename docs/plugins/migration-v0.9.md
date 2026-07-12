@@ -12,7 +12,7 @@ This page is the migration checklist for the plugin-system surface reduction. So
 | `get_message_plane_all` | Removed | Use bounded `await self.bus.messages.get(...)` queries |
 | Bus incremental/local fast paths | Removed | Use the canonical bounded, replayable read/watch pipeline |
 | High-level `self.memory` / SDK `MemoryClient` | Removed | Use `self.bus.memory.get(...)` or `await self.ctx.query_memory(...)` |
-| Extension authoring | Deprecated | Only loader-compatible `PluginRouter` + `@plugin_entry` packages still load; put new features in a normal plugin or use an adapter for a protocol bridge |
+| Extension package type, `[plugin.host]`, and `plugin.sdk.extension` | Removed, no compatibility path | Merge the Router into its owning normal Plugin, or convert the package into a standalone Plugin |
 | `push_message` v1 fields | Deprecated; removal in v0.9 | Use `parts`, `visibility`, and `ai_behavior` |
 
 ## Package types
@@ -34,7 +34,7 @@ class MyPlugin(NekoPluginBase):
         return Ok({"status": "done"})
 ```
 
-Extension is a different case: loader compatibility remains for the legacy shape whose manifest declares `[plugin.host]` and whose entry is a `PluginRouter` using `@plugin_entry`. Historical `NekoExtensionBase` / `extension_entry` / `extension_hook` metadata is not consumed by the loader. Extension is deprecated for authoring, and `neko-plugin init` must not be used to create one. Move entries into a normal plugin or its host; use `PluginRouter` only for organizing a large plugin, and use an adapter only for an external protocol boundary.
+Extension has no compatibility shim. Remove `type = "extension"` and `[plugin.host]`, then either move the Router module into its former host and call `self.include_router(router)`, or turn it into a normal `NekoPluginBase` package. Replace imports from `plugin.sdk.extension` with the corresponding public symbols from `plugin.sdk.plugin`. `PluginRouter` remains supported only for organizing code inside a normal Plugin.
 
 ## Result imports
 

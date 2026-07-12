@@ -12,7 +12,7 @@
 | `get_message_plane_all` | 已移除 | 使用有界的 `await self.bus.messages.get(...)` 查询 |
 | Bus 增量/本地 fast path | 已移除 | 使用标准的、有界且可重放的 read/watch 管线 |
 | 高层 `self.memory` / SDK `MemoryClient` | 已移除 | 使用 `self.bus.memory.get(...)` 或 `await self.ctx.query_memory(...)` |
-| Extension 新开发 | 已弃用 | 只有符合 loader contract 的 `PluginRouter` + `@plugin_entry` 旧包仍可加载；新功能使用普通 Plugin，协议桥接使用 Adapter |
+| Extension 插件类型、`[plugin.host]`、`plugin.sdk.extension` | 已移除，不提供兼容层 | 将 Router 合并进所属普通 Plugin，或把该包改造成独立 Plugin |
 | `push_message` v1 字段 | 已弃用，v0.9 移除 | 使用 `parts`、`visibility`、`ai_behavior` |
 
 ## 包类型
@@ -34,7 +34,7 @@ class MyPlugin(NekoPluginBase):
         return Ok({"status": "done"})
 ```
 
-Extension 的处理不同：加载兼容只保留给 manifest 声明 `[plugin.host]`、入口为 `PluginRouter` 且方法使用 `@plugin_entry` 的旧结构；加载器不会读取历史 `NekoExtensionBase` / `extension_entry` / `extension_hook` metadata。Extension 已不再用于新开发，也不要用 `neko-plugin init` 创建。把入口移入普通 Plugin 或原宿主；`PluginRouter` 只负责大型 Plugin 的代码组织，Adapter 只用于外部协议边界。
+Extension 没有兼容垫片。删除 `type = "extension"` 和 `[plugin.host]` 后，要么把 Router 模块移入原宿主并调用 `self.include_router(router)`，要么把它改造成普通 `NekoPluginBase` 包。从 `plugin.sdk.extension` 的导入应改为 `plugin.sdk.plugin` 中对应的公共符号。`PluginRouter` 只继续用于普通 Plugin 内部的代码组织。
 
 ## Result 导入
 

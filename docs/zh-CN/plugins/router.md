@@ -211,7 +211,7 @@ self.include_router(CountdownRouter(), prefix="time_")
 
 `exclude_router()` 会把 router 从插件的 router 列表中移除，但普通插件代码不应把它当作实时功能开关。入口点是在宿主构建 dispatch table 时收集的，之后再移除 router 不会自动让已经收集的入口不可调用。
 
-如果需要运行时启用/禁用功能，请在入口逻辑中使用明确的插件配置判断；dispatch 结构变化时重建或重启插件。不要依赖已经弃用的 Extension 控制路径。
+如果需要运行时启用/禁用功能，请在入口逻辑中使用明确的插件配置判断；dispatch 结构变化时重建或重启插件。不要依赖已经移除的 Extension 控制路径。
 
 ```python
 # 只从 router 列表移除

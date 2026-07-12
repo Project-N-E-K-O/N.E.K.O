@@ -15,7 +15,7 @@ Ask these before designing a new plugin, unless the conversation already answere
    - callable entries, background/lifecycle work, timers, message reaction, UI, storage/settings, cross-plugin calls, external service/device connection, or protocol gateway.
 5. What is out of scope for the first version?
 
-`extension` is deprecated and is not a creation option. If a request sounds like an extension, design a normal plugin, put code in the existing host plugin (using `PluginRouter` when it is large), or select an adapter only when an external protocol is being bridged.
+`extension` has been removed and is not a creation option. If a request sounds like an extension, design a normal plugin, put code in the existing owner plugin (using `PluginRouter` when it is large), or select an adapter only when an external protocol is being bridged.
 
 Keep questions in user-facing language. Use the answers to infer plugin architecture; do not ask the user to design individual entries first.
 
@@ -32,7 +32,7 @@ Ask Risk Follow-ups when answers imply:
 - persistence, database, or state ownership
 - UI permissions
 - background work, auto-start, timers, or shutdown behavior
-- migration constraints when maintaining an already-existing deprecated extension
+- migration constraints when converting a former extension into a normal plugin/router
 - adapter/gateway behavior
 - out-of-bound platform needs
 
@@ -101,7 +101,7 @@ For an adapter:
 uv run neko-plugin init <plugin_id> --type adapter --name "<Plugin Name>" --no-interactive
 ```
 
-Do not run `neko-plugin init --type extension`: Extension is deprecated and the CLI no longer scaffolds new extensions. Only the legacy `PluginRouter` + `@plugin_entry` package shape remains loader-compatible; historical facade-based packages must be converted while they are migrated.
+Do not run `neko-plugin init --type extension`: the type is rejected. Move a former Router into its owning normal plugin and mount it with `include_router()`, or convert it into a standalone normal plugin.
 
 The CLI owns the initial tree under `plugin/plugins/<plugin_id>/`. Expect at least `plugin.toml` and the entry module, and normally `__init__.py`, `pyproject.toml`, `README.md`, `tests/test_smoke.py`, `.gitignore`, and `.vscode/`. Add capability directories such as `ui/`, `static/`, `docs/`, `i18n/`, or `vendor/` only when the plugin actually needs them.
 

@@ -30,7 +30,7 @@ Useful variants:
 uv run neko-plugin init <plugin_id> --type adapter --name "<Plugin Name>" --no-interactive
 ```
 
-`--no-interactive` is suitable for normal plugins and adapters. Extension is deprecated: do not scaffold new extension packages. Existing extensions can still be loaded during the compatibility window and should be migrated rather than regenerated.
+`--no-interactive` is suitable for normal plugins and adapters. `extension` is rejected and has no compatibility window; migrate it into a normal plugin/router rather than regenerating it.
 
 ## CLI Source Map
 

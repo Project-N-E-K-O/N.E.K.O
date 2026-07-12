@@ -12,7 +12,7 @@
 | `get_message_plane_all` | 削除済み | bounded な `await self.bus.messages.get(...)` を使用 |
 | Bus の incremental/local fast path | 削除済み | 標準の bounded/replayable read/watch パイプライン |
 | 高レベル `self.memory` / SDK `MemoryClient` | 削除済み | `self.bus.memory.get(...)` または `await self.ctx.query_memory(...)` |
-| Extension の新規開発 | 非推奨 | loader-compatible な `PluginRouter` + `@plugin_entry` package のみロード可能。新機能は通常 Plugin、プロトコルブリッジは Adapter |
+| Extension package type、`[plugin.host]`、`plugin.sdk.extension` | 削除済み、互換レイヤーなし | Router を所有する通常 Plugin に統合するか、独立した Plugin に変換 |
 | `push_message` v1 フィールド | 非推奨、v0.9 で削除 | `parts`、`visibility`、`ai_behavior` |
 
 ## パッケージ種別
@@ -34,7 +34,7 @@ class MyPlugin(NekoPluginBase):
         return Ok({"status": "done"})
 ```
 
-Extension は扱いが異なります。loader compatibility は manifest に `[plugin.host]` があり、entry が `PluginRouter`、method が `@plugin_entry` を使う legacy shape に限られます。historical な `NekoExtensionBase` / `extension_entry` / `extension_hook` metadata を loader は読みません。新規 authoring には使用せず、`neko-plugin init` で作成してはいけません。entry は通常 Plugin または既存 host に移し、Adapter は外部プロトコル境界にだけ使います。
+Extension に互換 shim はありません。`type = "extension"` と `[plugin.host]` を削除し、Router module を旧 host に移して `self.include_router(router)` を呼ぶか、通常の `NekoPluginBase` package に変換します。`plugin.sdk.extension` import は `plugin.sdk.plugin` の対応する public symbol に置き換えてください。`PluginRouter` は通常 Plugin 内部のコード整理にだけ残ります。
 
 ## Result の import
 

@@ -1,6 +1,6 @@
 # Plugin System Overview
 
-The N.E.K.O. plugin system is a Python-based plugin framework built on **process isolation** and **async IPC**. New development uses two paradigms: **Plugin** for product features and **Adapter** for external protocol bridges. The old **Extension** type is deprecated; only existing `PluginRouter` + `@plugin_entry` packages matching the loader contract still load, and new ones must not be created.
+The N.E.K.O. plugin system is a Python-based plugin framework built on **process isolation** and **async IPC**. It has two package types: **Plugin** for product features and **Adapter** for external protocol bridges. The former **Extension** package type has been removed; `PluginRouter` remains available inside a normal Plugin.
 
 ## Architecture
 
@@ -11,7 +11,6 @@ The N.E.K.O. plugin system is a Python-based plugin framework built on **process
 │  │   Plugin Host (core/)                        │  │
 │  │   - Plugin lifecycle management              │  │
 │  │   - Bus system (memory, events, messages)    │  │
-│  │   - Legacy Extension compatibility           │  │
 │  │   - ZMQ IPC transport                        │  │
 │  └──────────────────────────────────────────────┘  │
 │  ┌──────────────────────────────────────────────┐  │
@@ -33,7 +32,6 @@ The N.E.K.O. plugin system is a Python-based plugin framework built on **process
 | Paradigm | Import from | Use case | How it runs |
 |----------|------------|----------|-------------|
 | **Plugin** | `plugin.sdk.plugin` | Independent features (search, reminders, etc.) | Separate process |
-| **Extension (deprecated)** | `plugin.sdk.extension` | Compatibility for an already-existing extension only | Injected into host plugin process |
 | **Adapter** | `plugin.sdk.adapter` | Bridge external protocols (MCP, NoneBot) to internal plugin calls | Separate process with gateway pipeline |
 
 ### When to use which?
@@ -42,11 +40,11 @@ The N.E.K.O. plugin system is a Python-based plugin framework built on **process
 - **"I want to add commands around an existing feature"** → use a normal **Plugin**, or add a `PluginRouter` inside the existing host when you own it
 - **"I want to accept MCP/NoneBot/external protocol calls and route them to plugins"** → use **Adapter**
 
-> Start with **Plugin**. Do not scaffold a new Extension; migrate a loader-compatible legacy router into a normal Plugin or its host, and convert older facade-based packages first.
+> Start with **Plugin**. Migrate a former Extension by merging its Router into the owning Plugin or converting it into a standalone Plugin.
 
 ## Key Features
 
-- **Process isolation** — Normal Plugins and Adapters run separately; a deprecated compatible Extension shares its host plugin process, so its crashes or side effects can affect that host
+- **Process isolation** — Plugins and Adapters run in separate processes
 - **Async support** — Both sync and async entry points
 - **Result types** — `Ok`/`Err` for type-safe error handling (no exceptions in normal flow)
 - **Hook system** — `@before_entry`, `@after_entry`, `@around_entry`, `@replace_entry` for AOP
@@ -84,6 +82,6 @@ plugin/plugins/
 - [Decorators](./decorators) — All available decorators
 - [Hosted UI](./hosted-ui) — Build TSX panels and Markdown guides
 - [Examples](./examples) — Complete working examples
-- [Advanced Topics](./advanced) — Extension compatibility, Adapters, cross-plugin calls, hooks
+- [Advanced Topics](./advanced) — Router composition, Adapters, cross-plugin calls, hooks
 - [LLM Tool Calling](./tool-calling) — Register plugin functions for the LLM to invoke during conversations
 - [Best Practices](./best-practices) — Error handling, testing, code organization

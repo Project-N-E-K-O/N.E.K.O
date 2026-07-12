@@ -1,34 +1,20 @@
 # Advanced Topics
 
-## Extensions (deprecated compatibility)
+## Router composition
 
-> Extension authoring is deprecated. Only existing packages in the loader-compatible `PluginRouter` + `@plugin_entry` shape still load; do not create or scaffold a new one. See the [v0.9 migration guide](./migration-v0.9).
-
-The compatibility loader can still inject an existing `PluginRouter` into a host process. The information below is for recognizing and migrating that legacy package shape only.
-
-For new work, use a normal Plugin. If you own the host and only need code organization, use `PluginRouter`; if you are bridging an external protocol, use an Adapter.
-
-### Recognizing an existing Extension
+The Extension package type and `plugin.sdk.extension` facade have been removed. `PluginRouter` remains supported as an internal composition tool for a normal Plugin. Define the router beside its owner and mount it explicitly:
 
 ```python
 from plugin.sdk.plugin import PluginRouter, plugin_entry, Ok
 
 
-class MyExtensionRouter(PluginRouter):
-    """Legacy router injected into an existing host plugin."""
-
-    @plugin_entry(id="extra_command", description="An extra command added by extension")
+class ExtraRouter(PluginRouter):
+    @plugin_entry(id="extra_command", description="An extra command")
     async def extra_command(self, param: str = "", **_):
-        return Ok({"extended": True, "param": param})
+        return Ok({"param": param})
 ```
 
-The manifest remains `type = "extension"`, declares `[plugin.host]`, and points `plugin.entry` at this `PluginRouter` subclass. Historical `NekoExtensionBase`, `@extension`, `@extension_entry`, and `@extension_hook` symbols remain in the deprecated facade for import compatibility, but their extension-specific metadata is not consumed by the loader. Convert entries to `@plugin_entry`; move hook behavior into the host plugin before relying on it.
-
-### How compatible Extensions work
-
-1. The host registers extensions in its configuration
-2. At startup, the host imports and injects the declared `PluginRouter`
-3. Extension entries become accessible under the host plugin's namespace
+Call `self.include_router(ExtraRouter(name="extra"))` from the owning `NekoPluginBase` constructor. A former Extension must be merged into that Plugin's source tree or converted into a standalone normal Plugin; `type = "extension"`, `[plugin.host]`, and imports from `plugin.sdk.extension` are rejected. See the [v0.9 migration guide](./migration-v0.9).
 
 ---
 

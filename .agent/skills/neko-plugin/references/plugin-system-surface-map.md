@@ -13,7 +13,6 @@ Use this as the source-map for plugin-system APIs before inventing an abstractio
 ## Import Layers
 
 - S `plugin.sdk.plugin`: Standard plugin facade. Import `NekoPluginBase`, decorators, result helpers, config/runtime helpers, i18n, settings, UI helpers, and ordinary plugin APIs from here.
-- C `plugin.sdk.extension`: Deprecated compatibility facade. Use only while maintaining an existing package with `type = "extension"` and `[plugin.host]`; never choose it for new work.
 - B `plugin.sdk.adapter`: Adapter facade. Use only for protocol gateways that translate external requests into N.E.K.O plugin calls.
 - A `@neko/plugin-ui`: Hosted TSX facade. Use inside `hosted-tsx` surfaces; full component signatures live in `hosted-ui-api.md`.
 - D `plugin.sdk.shared.*`, `plugin.core.*`, `plugin.server.*`: Implementation details. Do not import these from plugin workspace code unless the user explicitly approves platform work.
@@ -253,19 +252,6 @@ Full prop and component signatures live in `hosted-ui-api.md`; this section is t
 - S Hosted helpers `useLocalState`, `useDebounce`, `useDebouncedState`, `useForm`, `useAsync`: UI runtime helpers for persisted local widget state, debouncing, forms, and async loading.
 - S Toast/confirm helpers `showToast`, `useToast`, `useConfirm`: User feedback and confirmation helpers. Use for action outcomes and destructive confirmations.
 - A Types `Tone`, `JsonSchema`, `HostedAction`, `HostedI18n`, `DataTableColumn`, `FormState`, `AsyncState`, `RefObject`, `CommonProps`: Type hosted TSX surfaces. Import from `@neko/plugin-ui` rather than duplicating shapes.
-
-## Deprecated Extension Compatibility Facade: `plugin.sdk.extension`
-
-Do not create or scaffold a new extension. The loader-compatible legacy shape is a manifest with `[plugin.host]` whose entry class is `PluginRouter` and whose methods use `@plugin_entry`. The historical facade symbols below are listed only so old code can be diagnosed; their extension-specific metadata is not consumed by the loader.
-
-- C `NekoExtensionBase`: Historical base marker; convert the package entry to `PluginRouter` before relying on current loader compatibility.
-- C `ExtensionMeta`: Compatibility metadata model, mainly for diagnostics and migration.
-- C `@extension_entry(id=None, name=None, description="", timeout=None)`: Historical metadata marker not consumed by the current loader; convert to `@plugin_entry`.
-- C `@extension_hook(target="*", timing="before|after|around|replace", priority=0)`: Historical metadata marker not consumed by the current loader; move the behavior into the host during migration.
-- C `extension.entry(...)`, `extension.hook(...)`: Compatibility namespace aliases.
-- B `ExtensionEntryMeta`, `ExtensionHookMeta`, `EXTENSION_ENTRY_META`, `EXTENSION_HOOK_META`: Extension metadata markers. Use in tests/tooling, not normal plugin logic.
-- B `ExtensionRuntime.health()`: Runtime health helper. Use for extension diagnostics.
-- C Extension runtime re-exports `Ok`, `Err`, `Result`, errors, logging helpers, `PluginConfig`, `PluginRouter`, `MessagePlaneTransport`: Compatibility vocabulary for existing extension packages only.
 
 ## Adapter Facade: `plugin.sdk.adapter`
 

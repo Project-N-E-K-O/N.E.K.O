@@ -316,8 +316,8 @@ preserved.
 
 ## Same-Process Registration (Advanced)
 
-If code runs in the same Python process (for example, built-in functionality
-or a still-compatible **deprecated existing Extension**), it can bypass HTTP and call
+If code runs in the same Python process (for example, built-in functionality),
+it can bypass HTTP and call
 `LLMSessionManager.register_tool(...)` directly with a local callable
 as `handler`, skipping HTTP forwarding:
 
@@ -332,7 +332,7 @@ mgr.register_tool(ToolDefinition(
     description="Look up the weather in a given city",
     parameters={...},
     handler=handle_get_weather,             # in-process callable
-    metadata={"source": "my_extension"},    # source goes into metadata
+    metadata={"source": "builtin_weather"}, # source goes into metadata
 ))
 ```
 

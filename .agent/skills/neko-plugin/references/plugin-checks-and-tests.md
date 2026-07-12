@@ -29,7 +29,7 @@ What `check` validates:
 - folder/id mismatch.
 - entry module path, entry file existence, entry class existence.
 - entry class has `@neko_plugin`.
-- entry class base matches the runtime shape (`NekoPluginBase`, `NekoAdapterPlugin`, or the deprecated legacy `PluginRouter` extension shape) as a warning.
+- entry class base matches the runtime shape (`NekoPluginBase` or `NekoAdapterPlugin`) as a warning.
 - startup/shutdown lifecycle hooks as warnings.
 - Python AST syntax for plugin `.py` files outside `vendor/`, venv, and caches.
 - best-effort static warnings for active `push_message` v1 fields, including legacy positional slots; the warning identifies the file, line, v0.9 removal target, and replacement.
@@ -43,7 +43,6 @@ What `check` validates:
 - UI permission strings are recognized.
 - `requirements.txt` is rejected for packages.
 - `pyproject.toml [project].dependencies` with external packages requires `vendor/`.
-- deprecated existing extension packages cannot declare Python runtime dependencies.
 - optional support files: `README.md`, `tests/test_smoke.py`, `.vscode/*`, `.github/workflows/verify.yml`, `.gitignore`.
 
 `--strict` turns missing support files into errors. `--release` runs strict validation, plugin-local tests, package build, package inspection, and payload hash verification.
@@ -51,7 +50,7 @@ What `check` validates:
 Known blind spots:
 
 - `check` can discover decorated entries, but runtime-triggered `@plugin_entry` handlers must still be `async def`; add or run a trigger test when changing entries.
-- `check` does not cover the full decorator surface. Do not infer coverage for lifecycle, timer, message, custom event, hook, UI, deprecated extension, or adapter decorators from the `@plugin_entry` checks.
+- `check` does not cover the full decorator surface. Do not infer coverage for lifecycle, timer, message, custom event, hook, UI, or adapter decorators from the `@plugin_entry` checks.
 - `input_schema` shape is checked only when it is a literal dict, and the check is shallow; runtime parameter validation requires `params` or an inferred single model parameter.
 - Mutual-exclusion checks are static keyword-presence checks, not runtime value checks.
 - `push_message` v1 scanning is best-effort: it checks direct `.push_message(...)` calls and legacy positional slots, skips literal inactive values, and cannot prove behavior hidden behind aliases, `**kwargs`, or dynamic forwarding; an unrelated object with the same method name can still warn.

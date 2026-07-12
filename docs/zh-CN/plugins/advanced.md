@@ -1,34 +1,20 @@
 # 高级主题
 
-## Extension（已弃用兼容）
+## Router 组合
 
-> Extension 新开发已经弃用。只有符合当前 loader contract 的 `PluginRouter` + `@plugin_entry` 旧包仍可加载；不要创建或脚手架生成新的 Extension。参见 [v0.9 迁移指南](./migration-v0.9)。
-
-兼容加载器仍可把已有 `PluginRouter` 注入宿主进程。下文只用于识别和迁移这种旧包结构。
-
-新功能请使用普通 Plugin。若你维护宿主且仅需组织代码，请使用 `PluginRouter`；若要桥接外部协议，请使用 Adapter。
-
-### 识别已有 Extension
+Extension 插件类型和 `plugin.sdk.extension` 门面均已移除。`PluginRouter` 仍可作为普通 Plugin 内部的代码组织工具；Router 应与所属 Plugin 放在同一源码树并显式挂载：
 
 ```python
 from plugin.sdk.plugin import PluginRouter, plugin_entry, Ok
 
 
-class MyExtensionRouter(PluginRouter):
-    """注入已有宿主插件的旧 Router。"""
-
-    @plugin_entry(id="extra_command", description="Extension 添加的命令")
+class ExtraRouter(PluginRouter):
+    @plugin_entry(id="extra_command", description="额外命令")
     async def extra_command(self, param: str = "", **_):
-        return Ok({"extended": True, "param": param})
+        return Ok({"param": param})
 ```
 
-manifest 仍使用 `type = "extension"`，声明 `[plugin.host]`，并让 `plugin.entry` 指向这个 `PluginRouter` 子类。历史 `NekoExtensionBase`、`@extension`、`@extension_entry`、`@extension_hook` 符号只为导入兼容保留；加载器不会读取它们的 Extension 专用 metadata。请把入口改为 `@plugin_entry`，并在依赖钩子行为前把逻辑迁入宿主插件。
-
-### 兼容 Extension 的工作原理
-
-1. 宿主在其配置中注册扩展
-2. 启动时，宿主导入并注入声明的 `PluginRouter`
-3. 扩展的入口点在宿主插件的命名空间下变为可访问
+在所属 `NekoPluginBase` 的构造函数中调用 `self.include_router(ExtraRouter(name="extra"))`。原 Extension 必须合并进该 Plugin 的源码树，或改造成独立的普通 Plugin；`type = "extension"`、`[plugin.host]` 和 `plugin.sdk.extension` 导入都会被拒绝。参见 [v0.9 迁移指南](./migration-v0.9)。
 
 ---
 

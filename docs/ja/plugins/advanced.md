@@ -1,34 +1,20 @@
 # 応用トピック
 
-## Extension（非推奨の互換機能）
+## Router の構成
 
-> Extension の新規 authoring は非推奨です。現在ロードできるのは loader-compatible な `PluginRouter` + `@plugin_entry` 形式の既存 package だけで、新規作成や scaffold は禁止です。[v0.9 移行ガイド](./migration-v0.9)を参照してください。
-
-compatibility loader は既存の `PluginRouter` を host process に injection できます。以下はこの legacy package shape の識別と移行だけを目的とします。
-
-新機能には通常 Plugin を使います。host を所有しコード整理だけが必要なら `PluginRouter`、外部プロトコルをブリッジするなら Adapter を使ってください。
-
-### 既存 Extension の識別
+Extension package type と `plugin.sdk.extension` facade は削除されました。`PluginRouter` は通常 Plugin 内部の構成要素として引き続き利用できます。Router は所有する Plugin と同じ source tree に置き、明示的に mount します。
 
 ```python
 from plugin.sdk.plugin import PluginRouter, plugin_entry, Ok
 
 
-class MyExtensionRouter(PluginRouter):
-    """既存 host plugin に injection される legacy router。"""
-
-    @plugin_entry(id="extra_command", description="Extension entry")
+class ExtraRouter(PluginRouter):
+    @plugin_entry(id="extra_command", description="追加コマンド")
     async def extra_command(self, param: str = "", **_):
-        return Ok({"extended": True, "param": param})
+        return Ok({"param": param})
 ```
 
-manifest は `type = "extension"` と `[plugin.host]` を維持し、`plugin.entry` はこの `PluginRouter` subclass を指します。historical な `NekoExtensionBase`、`@extension`、`@extension_entry`、`@extension_hook` は import compatibility のためだけに残っており、その extension-specific metadata を loader は読みません。entry は `@plugin_entry` に変換し、hook behavior は依存する前に host plugin へ移してください。
-
-### 互換 Extension の仕組み
-
-1. ホストが設定で Extension を登録する
-2. 起動時に、host が宣言済み `PluginRouter` を import して injection する
-3. Extension のエントリーはホストプラグインの名前空間でアクセス可能になる
+所有する `NekoPluginBase` の constructor で `self.include_router(ExtraRouter(name="extra"))` を呼びます。旧 Extension はその Plugin の source tree に統合するか、独立した通常 Plugin に変換してください。`type = "extension"`、`[plugin.host]`、`plugin.sdk.extension` import は拒否されます。[v0.9 移行ガイド](./migration-v0.9)を参照してください。
 
 ---
 
