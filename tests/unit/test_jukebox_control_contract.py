@@ -4,7 +4,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-APP_WEBSOCKET_PATH = ROOT / "static" / "app-websocket.js"
+APP_WEBSOCKET_PATH = ROOT / "static" / "app" / "app-websocket.js"
 MAIN_SERVER_PATH = ROOT / "app" / "main_server.py"
 PLUGIN_PATH = ROOT / "plugin" / "plugins" / "jukebox_controller" / "__init__.py"
 

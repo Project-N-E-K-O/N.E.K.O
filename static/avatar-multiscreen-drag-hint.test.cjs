@@ -4,7 +4,7 @@ const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
 
-const source = fs.readFileSync(path.join(__dirname, 'avatar-multiscreen-drag-hint.js'), 'utf8');
+const source = fs.readFileSync(path.join(__dirname, 'avatar/avatar-multiscreen-drag-hint.js'), 'utf8');
 
 function createElement(tagName, ownerDocument) {
     const element = {

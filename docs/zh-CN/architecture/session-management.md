@@ -1,6 +1,6 @@
 # 会话管理
 
-`main_logic/core.py` 中的 `LLMSessionManager` 类是每个角色对话会话的中央协调器。每个角色拥有自己的管理器实例。
+`main_logic/core/` 包中的 `LLMSessionManager` 类是每个角色对话会话的中央协调器。每个角色拥有自己的管理器实例。
 
 ## 会话生命周期
 

@@ -4,10 +4,10 @@ from main_routers import pages_router
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-AVATAR_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "avatar-ui-buttons.js"
-APP_UI_PATH = PROJECT_ROOT / "static" / "app-ui.js"
-APP_REACT_CHAT_WINDOW_PATH = PROJECT_ROOT / "static" / "app-react-chat-window.js"
-APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app-interpage.js"
+AVATAR_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "avatar" / "avatar-ui-buttons.js"
+APP_UI_PATH = PROJECT_ROOT / "static" / "app" / "app-ui.js"
+APP_REACT_CHAT_WINDOW_PATH = PROJECT_ROOT / "static" / "app" / "app-react-chat-window.js"
+APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app" / "app-interpage.js"
 INDEX_CSS_PATH = PROJECT_ROOT / "static" / "css" / "index.css"
 CAT1_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat1.gif"
 CAT1_PLAY_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat-play-1.gif"

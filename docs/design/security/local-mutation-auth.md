@@ -85,7 +85,7 @@ NEKO-PC 的渲染器（[N.E.K.O.-PC 仓库](https://github.com/Project-N-E-K-O/N
 - 同源 Electron 渲染器 → 有 Origin → 必须走 token 路径
 - 「无 Origin」分支实际只覆盖 *非浏览器* 调用方：curl、Node 脚本、Electron 主进程直接发的 `net.request`，等等（默认不会带 Origin）
 
-NEKO-PC 拿 token 的路径：跟纯浏览器完全一样——同源 fetch `GET /api/config/page_config`（无 CSRF，返回 `autostart_csrf_token` 字段）→ 前端 `static/app-prompt-shared.js` 缓存 → `getMutationHeaders()` 注入。**不需要** NEKO-PC 通过 preload/IPC 暴露任何东西。
+NEKO-PC 拿 token 的路径：跟纯浏览器完全一样——同源 fetch `GET /api/config/page_config`（无 CSRF，返回 `autostart_csrf_token` 字段）→ 前端 `static/app/app-prompt-shared.js` 缓存 → `getMutationHeaders()` 注入。**不需要** NEKO-PC 通过 preload/IPC 暴露任何东西。
 
 > 实测验证建议：用 Chromium DevTools Network 或 Electron `webRequest.onBeforeSendHeaders` 观察一个真实 mutation 请求的 header dump，确认 Origin 值跟你的部署 origin 一致。如果观察到打包版有 Origin 缺失/异常的情况，那是 Chromium/Electron 版本特有 bug，比规则矩阵假设更值得 follow up。
 
@@ -148,7 +148,7 @@ AUTOSTART_CSRF_TOKEN = env('NEKO_AUTOSTART_CSRF_TOKEN') or INSTANCE_ID
   返回 { ..., autostart_csrf_token: "<token>" }
   Cache-Control: no-store
   ↓
-[static/app-prompt-shared.js: createLocalMutationSecurity]
+[static/app/app-prompt-shared.js: createLocalMutationSecurity]
   - readInitialToken(): 从 window.pageConfigReady Promise 或 fetch /api/config/page_config
   - cachedToken：模块级缓存
   - refreshToken(): 服务端返回 403 csrf_validation_failed 时重新拉
@@ -164,7 +164,7 @@ AUTOSTART_CSRF_TOKEN = env('NEKO_AUTOSTART_CSRF_TOKEN') or INSTANCE_ID
   ↓
 [业务调用方处理 403]
   - 短期请求：refreshToken() → 重试一次（参考 `tutorial/core/universal-manager.js` 的 `postTutorialPromptReset()` pattern）
-  - 长跑心跳：连续 N 次失败后停止（参考 static/app-activity-signal.js）
+  - 长跑心跳：连续 N 次失败后停止（参考 static/app/app-activity-signal.js）
 ```
 
 ### 5.1 Token 安全特性
@@ -231,7 +231,7 @@ PR #1530 把下列端点接入 `_validate_local_mutation_request`，并改造对
 
 ### 6.3 PR #1532 — #1479 Step 2（**待合并**）
 
-PR #1532 把 `POST /api/activity_signal` 从 PR #1477 的临时 Origin-only gate 收编到统一守卫；前端 `static/app-activity-signal.js` 改用 `getMutationHeaders()` + 连续 6 次 csrf_validation_failed 后 stop 心跳（避免静默永久降级）。
+PR #1532 把 `POST /api/activity_signal` 从 PR #1477 的临时 Origin-only gate 收编到统一守卫；前端 `static/app/app-activity-signal.js` 改用 `getMutationHeaders()` + 连续 6 次 csrf_validation_failed 后 stop 心跳（避免静默永久降级）。
 
 > 在 #1532 合并之前，main 分支上 activity_signal 端点**仍然走的是 PR #1477 落地的临时 Origin-only gate**（`raw_origin == "null"` 显式拒绝 + same-origin 集合检查），返回的 403 body 也仍然是 `{"success": false, "error": "origin not allowed"}` 而不是统一的 `csrf_validation_failed`。本节内容描述的是合并后状态。
 
@@ -270,13 +270,13 @@ if (response.status === 403 && sec && typeof sec.refreshToken === 'function') {
 
 ### 7.2 fire-and-forget 调用（**PR #1530 引入**）
 
-参考 `static/music_ui.js` 的 `/api/proactive/music_played_through` 调用：用 async IIFE 包一层，让 `getMutationHeaders()` 能 await 但不阻塞外层事件回调。`.catch(() => {})` 仅适用于 *业务上确认失败可以丢弃* 的场景。
+参考 `static/jukebox/music_ui.js` 的 `/api/proactive/music_played_through` 调用：用 async IIFE 包一层，让 `getMutationHeaders()` 能 await 但不阻塞外层事件回调。`.catch(() => {})` 仅适用于 *业务上确认失败可以丢弃* 的场景。
 
 > main 上 PR #1530 尚未合并；当前 `music_ui.js` 还在用 `Content-Type` only fetch。本节描述的是 #1530 落地后的目标实现。
 
 ### 7.3 长跑心跳（**PR #1532 引入**）
 
-参考 `static/app-activity-signal.js` 的 5s 心跳：
+参考 `static/app/app-activity-signal.js` 的 5s 心跳：
 
 - 加 `isCsrfValidationFailure(resp)` helper（clone body 检查 error_code），**只对真正的 csrf_validation_failed 走 refresh+retry+stop 路径**。其它 403（业务规则、反代、WAF）走 generic 失败计数，不触发停心跳。
 - 连续 `MAX_CONSECUTIVE_CSRF_FAILURES`（默认 6 ticks = 30s = 2× tracker TTL）次 csrf_validation_failed 后 `stop()` 心跳并打 console.error 排查指引。
@@ -287,7 +287,7 @@ if (response.status === 403 && sec && typeof sec.refreshToken === 'function') {
 
 ### 7.4 跟 attempt/backoff 状态机交互的调用（**PR #1530 引入**）
 
-参考 `static/app-proactive.js` 的 `/api/proactive_chat`：
+参考 `static/app/app-proactive.js` 的 `/api/proactive_chat`：
 
 - 收到 403 + csrf_validation_failed → refreshToken() + 重试一次。
 - retry 仍是 csrf-403 / 其它 403 → 都归到「server 没真正跑业务」分支：不计入 `_voiceProactiveNoResponseCount` / backoffLevel，按 baseInterval 重排。
@@ -382,10 +382,10 @@ assert "no-store" in resp.headers.get("Cache-Control", "").lower()
 - `main_routers/config_router.py` — `GET /api/config/page_config`
 
 ### 前端
-- `static/app-prompt-shared.js` — `createLocalMutationSecurity()` / `window.nekoLocalMutationSecurity.getMutationHeaders()` / `refreshToken()`（已合并）
+- `static/app/app-prompt-shared.js` — `createLocalMutationSecurity()` / `window.nekoLocalMutationSecurity.getMutationHeaders()` / `refreshToken()`（已合并）
 - `static/tutorial/core/universal-manager.js` — 短期事件驱动调用 + CSRF-403 retry-once 的参考实现（已合并）
-- `static/app-activity-signal.js` — 长跑心跳 + stop-the-heartbeat 退避的参考实现（PR #1532 完整版本；main 当前是 PR #1477 的临时版本）
-- `static/app-proactive.js` — 与 attempt/backoff 状态机协作的参考实现（PR #1530 引入）
+- `static/app/app-activity-signal.js` — 长跑心跳 + stop-the-heartbeat 退避的参考实现（PR #1532 完整版本；main 当前是 PR #1477 的临时版本）
+- `static/app/app-proactive.js` — 与 attempt/backoff 状态机协作的参考实现（PR #1530 引入）
 
 ### 测试
 - `tests/unit/test_tutorial_prompt_router.py` — 早期 canary 模式（已合并）

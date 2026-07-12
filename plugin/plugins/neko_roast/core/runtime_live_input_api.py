@@ -5,10 +5,14 @@ from __future__ import annotations
 from typing import Any
 
 from . import runtime_live_input
+from . import runtime_live_listener
 from .contracts import InteractionResult, ViewerEvent
 
 
 class RuntimeLiveInputApiMixin:
+    def _sync_douyin_listener_state(self, state: Any) -> None:
+        runtime_live_listener.sync_douyin_listener_state(self, state)
+
     def record_result(self, result: InteractionResult) -> None:
         runtime_live_input.record_result(self, result)
 

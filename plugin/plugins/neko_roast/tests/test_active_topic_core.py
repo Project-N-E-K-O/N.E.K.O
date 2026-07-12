@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections import deque
 import importlib
+from json import dumps
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -18,6 +20,9 @@ from plugin.plugins.neko_roast.core import (
     active_topic_sources,
     active_topic_trending_source,
     danmaku_text_rules,
+    live_content,
+    live_content_active_catalog,
+    live_content_host_catalog,
 )
 from plugin.plugins.neko_roast.core.active_topic_selector import ActiveTopicSelector
 
@@ -29,6 +34,112 @@ def test_active_topic_slice_imports_without_later_material_or_content_slices() -
 
     assert runtime_api.RuntimeActiveTopicApiMixin
     assert active_topic_rules._active_topic_material_profile("pick A or B")
+
+
+def test_content_catalogs_are_available_through_the_shared_facade() -> None:
+    assert live_content.active_engagement_fallback_topic_candidates()
+    assert live_content.idle_hosting_beat_candidates()
+
+
+def test_active_content_order_includes_every_defined_candidate_once() -> None:
+    defined_keys = [
+        item["key"]
+        for item in live_content_active_catalog._ALL_FALLBACK_TOPIC_CANDIDATES
+    ]
+    ordered_keys = list(live_content_active_catalog._FALLBACK_TOPIC_CANDIDATE_KEYS)
+
+    assert len(defined_keys) == len(set(defined_keys))
+    assert len(ordered_keys) == len(set(ordered_keys))
+    assert set(ordered_keys) == set(defined_keys)
+    actual_keys = [
+        item["key"]
+        for item in live_content.active_engagement_fallback_topic_candidates()
+    ]
+    assert actual_keys == ordered_keys
+
+
+@pytest.mark.parametrize(
+    ("key", "expected_family"),
+    (
+        ("fallback:keyboard-busy", "tease"),
+        ("fallback:screen-staring-back", "tease"),
+        ("fallback:serious-hosting", "tease"),
+        ("fallback:tiny-brave-stance", "room_mood"),
+        ("fallback:lightstick-reflection", "room_mood"),
+    ),
+)
+def test_active_catalog_entries_keep_their_thematic_family(
+    key: str, expected_family: str
+) -> None:
+    candidate = live_content_active_catalog._FALLBACK_TOPIC_CANDIDATES_BY_KEY[key]
+
+    assert candidate["family"] == expected_family
+    assert (
+        active_topic_material_family.host_material_family(candidate)
+        == expected_family
+    )
+
+
+def test_host_content_fallback_order_includes_every_defined_beat_once() -> None:
+    defined_keys = [
+        item["key"] for item in live_content_host_catalog._ALL_IDLE_HOSTING_BEATS
+    ]
+    ordered_keys = list(live_content_host_catalog._IDLE_HOSTING_BEAT_KEYS)
+
+    assert len(defined_keys) == len(set(defined_keys))
+    assert len(ordered_keys) == len(set(ordered_keys))
+    assert set(ordered_keys) == set(defined_keys)
+
+
+def test_partial_invalid_host_catalog_rejects_entire_file(tmp_path: Path) -> None:
+    valid = dict(live_content_host_catalog._ALL_IDLE_HOSTING_BEATS[0])
+    path = tmp_path / "idle_hosting_beats.json"
+    path.write_text(dumps({"beats": [valid, {"key": "incomplete"}]}), encoding="utf-8")
+
+    assert live_content_host_catalog.load_idle_hosting_beat_catalog(path) == ()
+
+
+def test_duplicate_host_catalog_key_rejects_entire_file(tmp_path: Path) -> None:
+    valid = dict(live_content_host_catalog._ALL_IDLE_HOSTING_BEATS[0])
+    path = tmp_path / "idle_hosting_beats.json"
+    path.write_text(dumps({"beats": [valid, valid]}), encoding="utf-8")
+
+    assert live_content_host_catalog.load_idle_hosting_beat_catalog(path) == ()
+
+
+def test_truncated_valid_host_catalog_rejects_entire_file(tmp_path: Path) -> None:
+    valid = dict(live_content.idle_hosting_beat_candidates()[0])
+    path = tmp_path / "idle_hosting_beats.json"
+    path.write_text(dumps({"beats": [valid]}), encoding="utf-8")
+
+    assert live_content_host_catalog.load_idle_hosting_beat_catalog(path) == ()
+
+
+def test_dimension_complete_but_key_incomplete_host_catalog_is_rejected(
+    tmp_path: Path,
+) -> None:
+    full_catalog = live_content_host_catalog.load_idle_hosting_beat_catalog(
+        live_content_host_catalog.DEFAULT_IDLE_HOSTING_BEAT_CATALOG_PATH
+    )
+    required_values = {
+        "idle_stage": live_content_host_catalog._REQUIRED_IDLE_HOSTING_STAGES,
+        "shape": live_content_host_catalog._REQUIRED_IDLE_HOSTING_SHAPES,
+        "fun_axis": live_content_host_catalog._REQUIRED_IDLE_HOSTING_AXES,
+    }
+    selected: dict[str, dict] = {}
+    for field, values in required_values.items():
+        for value in values:
+            beat = next(item for item in full_catalog if item.get(field) == value)
+            selected[beat["key"]] = beat
+
+    assert len(selected) < live_content_host_catalog._MIN_IDLE_HOSTING_CATALOG_SIZE
+    path = tmp_path / "idle_hosting_beats.json"
+    path.write_text(
+        dumps({"beats": list(selected.values())}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    assert live_content_host_catalog.load_idle_hosting_beat_catalog(path) == ()
 
 
 @pytest.mark.parametrize("title", ("about", "table", "cable", "stable"))
@@ -180,11 +291,18 @@ def test_mention_parsers_share_punctuation_and_symbol_boundaries(text: str) -> N
     assert danmaku_text_rules.is_viewer_to_viewer_mention_text(text) is False
 
 
+def test_explicit_ab_marker_remains_a_choice_vote() -> None:
+    assert (
+        active_topic_material_family.host_material_family({"title": "A/B vote"})
+        == "choice_vote"
+    )
+
+
 @pytest.mark.parametrize(
     "provider_candidates",
     ([], [{}], [{"source": "custom"}]),
 )
-def test_invalid_runtime_fallback_uses_core_default(
+def test_invalid_runtime_fallback_uses_valid_default(
     provider_candidates: list[dict[str, str]],
 ) -> None:
     runtime = SimpleNamespace(
@@ -195,7 +313,7 @@ def test_invalid_runtime_fallback_uses_core_default(
     candidates = selector.runtime_fallback_topic_candidates()
 
     assert candidates
-    assert candidates[0]["key"] == "fallback:room-mood"
+    assert all(candidates[0].get(field) for field in ("key", "title", "hint"))
 
 
 def test_anonymous_repeats_do_not_form_a_live_thread() -> None:
@@ -252,7 +370,7 @@ async def test_empty_or_exhausted_candidates_refresh_cache(
     topic = await selector.select_topic()
 
     assert clears == [True]
-    assert topic["key"] == "fallback:room-mood"
+    assert all(topic.get(field) for field in ("key", "title", "hint"))
 
 
 def test_anonymous_recent_danmaku_flood_is_rejected() -> None:

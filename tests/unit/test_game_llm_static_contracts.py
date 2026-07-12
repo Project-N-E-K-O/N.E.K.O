@@ -162,7 +162,7 @@ def test_build_game_prompt_uses_requested_language():
 
 @pytest.mark.unit
 def test_game_voice_stt_gate_freezes_route_session_and_restores_mic():
-    capture_js = (ROOT / "static" / "app-audio-capture.js").read_text(encoding="utf-8")
+    capture_js = (ROOT / "static" / "app" / "app-audio-capture.js").read_text(encoding="utf-8")
 
     assert "function getGameVoiceSttRouteSnapshot()" in capture_js
     assert "recognition._gameVoiceRouteSnapshot = routeSnapshot;" in capture_js
@@ -174,7 +174,7 @@ def test_game_voice_stt_gate_freezes_route_session_and_restores_mic():
 
 @pytest.mark.unit
 def test_game_voice_route_end_avoids_double_mic_restore():
-    websocket_js = (ROOT / "static" / "app-websocket.js").read_text(encoding="utf-8")
+    websocket_js = (ROOT / "static" / "app" / "app-websocket.js").read_text(encoding="utf-8")
 
     assert "window.stopGameVoiceSttGate({ restoreOrdinaryMic: false });" in websocket_js
 

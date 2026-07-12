@@ -6,8 +6,8 @@ from playwright.sync_api import Page
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-JUKEBOX_SCRIPT = (REPO_ROOT / "static" / "Jukebox.js").read_text(encoding="utf-8")
-JUKEBOX_LOADER_SCRIPT = (REPO_ROOT / "static" / "jukebox-loader.js").read_text(encoding="utf-8")
+JUKEBOX_SCRIPT = (REPO_ROOT / "static" / "jukebox" / "Jukebox.js").read_text(encoding="utf-8")
+JUKEBOX_LOADER_SCRIPT = (REPO_ROOT / "static" / "jukebox" / "jukebox-loader.js").read_text(encoding="utf-8")
 JUKEBOX_TEMPLATE = (REPO_ROOT / "templates" / "jukebox.html").read_text(encoding="utf-8")
 
 HARNESS_HTML = """
@@ -832,8 +832,8 @@ def test_jukebox_loader_reloads_stale_control_api_with_versioned_url(mock_page: 
             """,
         )
 
-    mock_page.route("**/static/jukebox-loader.js*", fulfill_loader)
-    mock_page.route("**/static/Jukebox.js*", fulfill_jukebox)
+    mock_page.route("**/static/jukebox/jukebox-loader.js*", fulfill_loader)
+    mock_page.route("**/static/jukebox/Jukebox.js*", fulfill_jukebox)
     mock_page.set_content(
         """
         <!DOCTYPE html>
@@ -855,7 +855,7 @@ def test_jukebox_loader_reloads_stale_control_api_with_versioned_url(mock_page: 
         </html>
         """
     )
-    mock_page.add_script_tag(url="http://127.0.0.1:48911/static/jukebox-loader.js?v=test-assets")
+    mock_page.add_script_tag(url="http://127.0.0.1:48911/static/jukebox/jukebox-loader.js?v=test-assets")
 
     result = mock_page.evaluate(
         """
