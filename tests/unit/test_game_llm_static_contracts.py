@@ -196,6 +196,14 @@ def test_soccer_passive_guard_writes_structured_debug_events():
         "if (!output || output.type !== 'game_llm_result')",
         1,
     )[0]
+    rest_candidate_block = html.split("if (promptType === 'rest') {", 1)[1].split(
+        "const streak = Number(passiveGuard.lv4PlayerGoalStreak",
+        1,
+    )[0]
+    withdrawn_goal_block = html.split("function _handleWithdrawnGoal", 1)[1].split(
+        "function _handleOrdinaryGoal",
+        1,
+    )[0]
     passive_guard_ai_block = router_source.split("async def _run_soccer_passive_guard_ai", 1)[1].split(
         "# ── 路由端点",
         1,
@@ -226,6 +234,19 @@ def test_soccer_passive_guard_writes_structured_debug_events():
     assert "ordinary_candidate_below_stage" in html
     assert "passiveGuard.sidecarGeneration = Number(passiveGuard.sidecarGeneration || 0) + 1" in html
     assert "reason: 'surrender_reminder_disabled'" in html
+    assert "reason: 'surrender_reminder_disabled'" in rest_candidate_block
+    assert withdrawn_goal_block.index("if (!passiveGuard.surrenderReminderEnabled)") < withdrawn_goal_block.index(
+        "passiveGuard.withdrawnRestGoalStreak++"
+    )
+    assert withdrawn_goal_block.index("if (!passiveGuard.surrenderReminderEnabled)") < withdrawn_goal_block.index(
+        "passiveGuard.restLightHintSent = true"
+    )
+    assert withdrawn_goal_block.index("if (!passiveGuard.surrenderReminderEnabled)") < withdrawn_goal_block.index(
+        "passiveGuard.restSidecar7Called = true"
+    )
+    assert withdrawn_goal_block.index("if (!passiveGuard.surrenderReminderEnabled)") < withdrawn_goal_block.index(
+        "passiveGuard.restSidecar8Called = true"
+    )
     assert "new AbortController()" in exit_prompt_line_block
     assert "signal: controller.signal" in exit_prompt_line_block
     assert "clearTimeout(timeoutId)" in exit_prompt_line_block

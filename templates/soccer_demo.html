@@ -4009,6 +4009,7 @@
       const streak = Number(passiveGuard.withdrawnRestGoalStreak || 0);
       if (!_isWithdrawnStance()) return { active: false, reason: 'not_withdrawn_stance', difficulty, streak, scoreLead };
       if (difficulty !== 'lv4') return { active: false, reason: 'left_lv4', difficulty, streak, scoreLead };
+      if (!passiveGuard.surrenderReminderEnabled) return { active: false, reason: 'surrender_reminder_disabled', difficulty, streak, scoreLead };
       if (passiveGuard.restDismissedThisGame) return { active: false, reason: 'rest_dismissed_this_game', difficulty, streak, scoreLead };
       if (passiveGuard.restModalShownThisGame) return { active: false, reason: 'rest_modal_shown_this_game', difficulty, streak, scoreLead };
       if (streak < requiredStage) return { active: false, reason: 'rest_streak_below_stage', difficulty, streak, scoreLead };
@@ -4486,7 +4487,26 @@
       _clearRestCandidate(side === 'ai' ? 'ai_goal' : 'left_lv4');
       return true;
     }
-    if (side !== 'player' || passiveGuard.restDismissedThisGame) return true;
+    if (side !== 'player') return true;
+    if (!passiveGuard.surrenderReminderEnabled) {
+      if (
+        passiveGuard.withdrawnRestGoalStreak > 0 ||
+        passiveGuard.restLightHintSent ||
+        passiveGuard.restSidecar7Called ||
+        passiveGuard.restSidecar8Called
+      ) {
+        _clearRestCandidate('surrender_reminder_disabled');
+      }
+      _passiveGuardDebugLog('Modal', 'passive_guard_modal', '休息提醒已关闭', {
+        action: 'skip',
+        type: 'rest',
+        reason: 'surrender_reminder_disabled',
+        triggerKind: kind,
+      });
+      console.log(`[Soccer] [PassiveGuard] [Modal] 休息提醒已关闭 | 处理=不累计rest候选`);
+      return true;
+    }
+    if (passiveGuard.restDismissedThisGame) return true;
     passiveGuard.withdrawnRestGoalStreak++;
     const streak = passiveGuard.withdrawnRestGoalStreak;
     _passiveGuardLogCounter('withdrawn rest进球计数', { stage: streak, reason: kind });
