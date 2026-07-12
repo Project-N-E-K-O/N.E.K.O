@@ -11,22 +11,25 @@ CORE_PATCH_ROUTING
     ``monkeypatch.setattr(core_module, "<attr>", ...)`` /
     ``patch.object(core_module, "<attr>", ...)`` (object form) must be read
     by manager/mixin code ONLY through the ``_core_facade`` late-binding
-    module object. A module-level from-import or a bare global read in a
-    mixin snapshots the value at import time: assertion-style stubs then
+    module object. A module-level from-import of the symbol's REAL binding —
+    ``from <owner_module> import <original_name>`` (the module the facade
+    re-exports it from) or ``from main_logic.core import <attr>`` (the facade
+    itself) — snapshots the value at import time: assertion-style stubs then
     fail loudly, but isolation-style stubs (blocking disk/network IO) go
-    silently green while calling the real function. The patched-symbol set
-    is harvested from ``tests/`` by AST on every run, so the contract
-    tightens automatically as tests grow. Reads through some other imported
-    module — attribute chains (``import main_logic.agent_event_bus`` /
-    ``from main_logic import agent_event_bus as bus`` + ``bus.<attr>(...)``)
-    and string getattr (``getattr(bus, "<attr>")``) — are rejected the same
-    way: they follow the owner module, not the facade. So are facade reads
-    inside method defaults/decorators/annotations and class-level constant
-    values: those evaluate once at import and freeze the value.
-    Function-local imports from the OWNER module (e.g. ``from
-    utils.preferences import ...`` inside a method) are a different,
-    deliberate late-binding pattern and stay allowed: the facade patch
-    never targeted them, before or after the split.
+    silently green while calling the real function. Matching is by SOURCE
+    MODULE + original name, so an unrelated ``from vendor import
+    get_tts_worker as vw`` (a different object that merely shares the name) is
+    NOT flagged. The patched-symbol set is harvested from ``tests/`` by AST
+    on every run, so the contract tightens automatically as tests grow. Reads
+    through the OWNER module — attribute chains (``import
+    main_logic.agent_event_bus`` / ``from main_logic import agent_event_bus
+    as bus`` + ``bus.<attr>(...)``) and string getattr (``getattr(bus,
+    "<attr>")``) — are rejected the same way. So are facade reads inside
+    method defaults/decorators/annotations and class-level constant values:
+    those evaluate once at import and freeze the value. Function-local imports
+    from the OWNER module (e.g. ``from utils.preferences import ...`` inside a
+    method) are a different, deliberate late-binding pattern and stay allowed:
+    the facade patch never targeted them, before or after the split.
 
     The patch-target harvest recognizes both positional and keyword call
     spellings, string (``"main_logic.core.X"``) and object
@@ -88,8 +91,6 @@ from __future__ import annotations
 import argparse
 import ast
 import sys
-import symtable
-import tokenize
 from pathlib import Path
 
 FACADE_MODULE_ALIAS = "_core_facade"
@@ -258,47 +259,35 @@ def facade_owner_modules(init_tree: ast.Module) -> dict[str, tuple[str, str]]:
 
 
 # ----------------------------------------------------------- module analysis
-def module_level_import_bindings(tree: ast.Module):
-    """{name: lineno} bound or aliased by top-level import statements.
+def facade_snapshot_imports(tree: ast.Module, pkg: str,
+                            facade_owners: dict[str, tuple[str, str]]) -> dict[str, int]:
+    """{facade attr: lineno} for module-level from-imports that SNAPSHOT the
+    facade's real symbol — a binding the facade patch will not reach.
 
-    For from-imports BOTH the original name and the alias are indexed:
-    ``from x import patched_symbol as _p`` still snapshots the patched
-    symbol, so the routing check must see it under its facade name.
+    A snapshot is ``from <owner_module> import <original_name> [as x]`` (the
+    real symbol, under any alias) or ``from main_logic.core import <attr>`` (the
+    facade's own copy, frozen at import). Crucially, matching is by SOURCE
+    MODULE + original name, not by name alone: an unrelated
+    ``from vendor import get_tts_worker as vw`` imports a DIFFERENT object and
+    must NOT be flagged (that was a false positive of the old name-only check).
     """
-    out = {}
+    by_owner = {(mod, orig): attr for attr, (mod, orig) in facade_owners.items()}
+    out: dict[str, int] = {}
     for node in tree.body:
-        if isinstance(node, ast.Import):
-            for a in node.names:
-                out[a.asname or a.name.split(".")[0]] = node.lineno
-        elif isinstance(node, ast.ImportFrom):
-            for a in node.names:
-                out.setdefault(a.name, node.lineno)
-                if a.asname:
-                    out.setdefault(a.asname, node.lineno)
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        src = node.module if node.level == 0 else _resolve_relative(pkg, node.level, node.module)
+        if not src:
+            continue
+        for a in node.names:
+            if a.name == "*":
+                continue
+            attr = by_owner.get((src, a.name))
+            if attr is not None:
+                out.setdefault(attr, node.lineno)          # from owner import orig_name
+            elif src == "main_logic.core" and a.name in facade_owners:
+                out.setdefault(a.name, node.lineno)         # from the facade itself
     return out
-
-
-def global_read_names(path: Path) -> set[str]:
-    """Names referenced as globals from any function scope in the module."""
-    # tokenize.open honors the PEP 263 cookie / BOM (see parse()); symtable
-    # needs text, so decode through it rather than read_text(encoding="utf-8").
-    with tokenize.open(str(path)) as f:
-        source = f.read()
-    table = symtable.symtable(source, str(path), "exec")
-    found: set[str] = set()
-
-    def walk(tab):
-        # Class scopes matter too: method defaults, decorators and evaluated
-        # annotations resolve in the class scope at class-creation time.
-        if tab.get_type() in ("function", "class"):
-            for sym in tab.get_symbols():
-                if sym.is_referenced() and sym.is_global():
-                    found.add(sym.get_name())
-        for child in tab.get_children():
-            walk(child)
-
-    walk(table)
-    return found
 
 
 def _resolve_relative(pkg: str, level: int, module) -> str | None:
@@ -464,13 +453,6 @@ def def_time_facade_reads(tree: ast.Module, alias_paths: dict[str, str], attr: s
                 if chain and resolve_chain(chain, alias_paths) == "main_logic.core":
                     sites.append((node.lineno, node.col_offset))
     return sites
-
-
-def first_name_load_line(tree: ast.Module, name: str):
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Load):
-            return node.lineno, node.col_offset
-    return 0, 0
 
 
 # ------------------------------------------------------------------- checks
@@ -768,7 +750,7 @@ def run(root: Path) -> list[Violation]:
     for path in routing_files:
         tree = parse(path)
         pkg = ".".join(path.resolve().relative_to(root.resolve()).parts[:-1])
-        module_info[path] = (tree, module_level_import_bindings(tree), global_read_names(path),
+        module_info[path] = (tree, facade_snapshot_imports(tree, pkg, facade_owners),
                              module_alias_paths(tree, pkg))
 
     for attr, sites in sorted(targets.items()):
@@ -783,20 +765,13 @@ def run(root: Path) -> list[Violation]:
         # The attr exists on the facade, so every patch of it is real (a
         # raising=False / create=True guard only waives the existence check,
         # not the routing requirement) — route ALL consumers.
-        for path, (tree, imports, global_reads, alias_paths) in module_info.items():
-            if attr in imports:
-                violations.append(Violation(path, imports[attr], 0, "CORE_PATCH_ROUTING",
-                                            f"'{attr}' is a test patch target on the facade but is "
-                                            f"from-imported here at module level — the import snapshots the "
-                                            f"value and facade patches no longer reach this module; read it "
-                                            f"as {FACADE_MODULE_ALIAS}.{attr} instead"))
-            elif attr in global_reads:
-                line, col = first_name_load_line(tree, attr)
-                violations.append(Violation(path, line, col, "CORE_PATCH_ROUTING",
-                                            f"'{attr}' is a test patch target on the facade but is read here "
-                                            f"as a bare global — read it as {FACADE_MODULE_ALIAS}.{attr} so "
-                                            f"monkeypatch.setattr(\"main_logic.core.{attr}\", ...) keeps "
-                                            f"hitting this consumer"))
+        for path, (tree, snapshot, alias_paths) in module_info.items():
+            if attr in snapshot:
+                violations.append(Violation(path, snapshot[attr], 0, "CORE_PATCH_ROUTING",
+                                            f"'{attr}' is a test patch target on the facade but its real symbol "
+                                            f"is from-imported here at module level — the import snapshots the "
+                                            f"pre-patch value and facade patches no longer reach this module; "
+                                            f"read it as {FACADE_MODULE_ALIAS}.{attr} instead"))
             # Reads through some OTHER imported module — attribute chains
             # (``bus.dispatch_...``) and string getattr (``getattr(bus,
             # "dispatch_...")``) — dodge facade patches the same way. Reads
