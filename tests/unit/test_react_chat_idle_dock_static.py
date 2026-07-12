@@ -2,7 +2,7 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-APP_REACT_CHAT_WINDOW_PATH = PROJECT_ROOT / "static" / "app-react-chat-window.js"
+APP_REACT_CHAT_WINDOW_PATH = PROJECT_ROOT / "static" / "app" / "app-react-chat-window.js"
 APP_UI_PATH = PROJECT_ROOT / "static" / "app-ui.js"
 AVATAR_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "avatar" / "avatar-ui-buttons.js"
 CHAT_TEMPLATE_PATH = PROJECT_ROOT / "templates" / "chat.html"
@@ -271,7 +271,7 @@ def test_electron_chat_loads_interpage_before_react_chat_for_desktop_cat1_sync()
     source = _read(CHAT_TEMPLATE_PATH)
 
     assert 'class="electron-chat-window subtitle-web-host"' in source
-    assert source.index('/static/app-interpage.js') < source.index('/static/app-react-chat-window.js')
+    assert source.index('/static/app-interpage.js') < source.index('/static/app/app-react-chat-window.js')
     assert '/static/app-interpage.js?v={{ static_asset_version }}' in source
 
 

@@ -62,7 +62,7 @@
         // character switch the renderer updates ``appState`` ahead of
         // ``lanlan_config`` (see ``static/app-character.js`` switch
         // sequence + the existing precedent in
-        // ``static/app-react-chat-window.js`` ~line 1442 where
+        // ``static/app/app-react-chat-window.js`` ~line 1442 where
         // CodeRabbit flagged the same lag in a prior PR). Reading
         // ``lanlan_config`` first would push a few heartbeats to the
         // *old* tracker during the switch window — 404'd by backend

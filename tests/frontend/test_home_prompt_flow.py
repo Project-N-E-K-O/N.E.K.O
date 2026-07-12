@@ -2464,7 +2464,7 @@ def test_home_tutorial_skip_restores_temporarily_disabled_galgame_mode(
         setup_js="""
             window.localStorage.setItem('neko.reactChatWindow.galgameMode', 'true');
         """,
-        script_names=("app-react-chat-window.js",),
+        script_names=("app/app-react-chat-window.js",),
     )
 
     mock_page.wait_for_function(
@@ -2510,7 +2510,7 @@ def test_home_tutorial_early_end_restores_temporarily_disabled_galgame_mode(
         setup_js="""
             window.localStorage.setItem('neko.reactChatWindow.galgameMode', 'true');
         """,
-        script_names=("app-react-chat-window.js",),
+        script_names=("app/app-react-chat-window.js",),
     )
 
     mock_page.wait_for_function(
@@ -2556,7 +2556,7 @@ def test_home_tutorial_input_lock_suppresses_galgame_options_without_tutorial_ev
         setup_js="""
             window.localStorage.setItem('neko.reactChatWindow.galgameMode', 'true');
         """,
-        script_names=("app-react-chat-window.js",),
+        script_names=("app/app-react-chat-window.js",),
     )
 
     mock_page.wait_for_function(
@@ -2654,7 +2654,7 @@ def test_home_tutorial_feature_controller_restores_live_galgame_state_after_lega
         script_names=("app-prompt-shared.js", "tutorial/core/app-prompt.js"),
         init_js="() => window.appTutorialPrompt.init()",
     )
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static" / "app-react-chat-window.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static" / "app" / "app-react-chat-window.js"))
 
     mock_page.wait_for_function(
         "() => window.reactChatWindowHost && window.reactChatWindowHost.isGalgameModeEnabled() === false",
@@ -2772,7 +2772,7 @@ def test_home_tutorial_feature_controller_enforce_reapplies_suppression_after_ch
         }
         """
     )
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static" / "app-react-chat-window.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static" / "app" / "app-react-chat-window.js"))
     mock_page.wait_for_function(
         "() => window.reactChatWindowHost && window.reactChatWindowHost.isGalgameModeEnabled() === false",
         timeout=5000,
@@ -13941,7 +13941,7 @@ def test_react_chat_close_deactivates_active_tool_cursor(mock_page: Page):
                 },
             };
         """,
-        script_names=("app-react-chat-window.js",),
+        script_names=("app/app-react-chat-window.js",),
     )
 
     mock_page.evaluate(

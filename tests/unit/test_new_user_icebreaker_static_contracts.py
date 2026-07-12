@@ -12,7 +12,7 @@ ICEBREAKER_FREE_TEXT_RUNTIME_PATH = ROOT / "static" / "tutorial" / "icebreaker" 
 SCRIPTS_PATH = ROOT / "static" / "tutorial" / "icebreaker" / "icebreaker_scripts.json"
 LOCALE_PATH = ROOT / "static" / "tutorial" / "icebreaker" / "locales" / "zh-CN.json"
 LOCALES_DIR = ROOT / "static" / "tutorial" / "icebreaker" / "locales"
-CHAT_HOST_PATH = ROOT / "static" / "app-react-chat-window.js"
+CHAT_HOST_PATH = ROOT / "static" / "app" / "app-react-chat-window.js"
 APP_WEBSOCKET_PATH = ROOT / "static" / "app-websocket.js"
 APP_PROACTIVE_PATH = ROOT / "static" / "app-proactive.js"
 APP_PROMPT_PATH = ROOT / "static" / "tutorial" / "core" / "app-prompt.js"
@@ -1497,8 +1497,8 @@ def test_react_chat_assets_use_react_chat_cache_version():
     react_chat_assets = [
         "/static/react/neko-chat/neko-chat-window.css",
         "/static/react/neko-chat/neko-chat-window.iife.js",
-        "/static/app-react-chat-window.js",
-        "/static/app-chat-adapter.js",
+        "/static/app/app-react-chat-window.js",
+        "/static/app/app-chat-adapter.js",
         "/static/app-buttons.js",
     ]
 

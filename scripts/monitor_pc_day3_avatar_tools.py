@@ -223,7 +223,7 @@ def run_monitor() -> dict[str, Any]:
             """
         )
         chat.add_script_tag(path=str(STATIC_DIR / "react" / "neko-chat" / "neko-chat-window.iife.js"))
-        _load_scripts(chat, ["app-react-chat-window.js", "app-interpage.js"])
+        _load_scripts(chat, ["app/app-react-chat-window.js", "app-interpage.js"])
 
         chat.evaluate(
             """

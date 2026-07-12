@@ -11,7 +11,7 @@ NEKO Web / 共享显示层：
 3. `static/css/subtitle.css`：字幕面板、controls、设置层、resize handle、Web host、desktop host、settings window host 的样式。
 4. `static/subtitle-settings.html`：桌面端独立设置窗口页面。
 5. `static/subtitle-settings-window.js`：桌面端独立设置窗口状态同步和设置变更传播。
-6. `static/app-react-chat-window.js`：React 对话框工具按钮，包括展开状态里的翻译按钮开关、按钮高亮同步和桌面字幕窗口桥接。
+6. `static/app/app-react-chat-window.js`：React 对话框工具按钮，包括展开状态里的翻译按钮开关、按钮高亮同步和桌面字幕窗口桥接。
 
 NEKO-PC 桌面壳（同级仓库 `/N.E.K.O.-PC`）：
 
@@ -252,7 +252,7 @@ Web 面板 resize 使用 DOM resize handle。resize 完成后更新：
 
 ## React 对话框翻译按钮
 
-React 对话框的翻译按钮由 `static/app-react-chat-window.js` 控制。普通右侧工具区和展开后的 overflow 菜单复用同一个 `translateEnabled` prop 和 `onTranslateToggle` 回调，因此它们必须表现一致。
+React 对话框的翻译按钮由 `static/app/app-react-chat-window.js` 控制。普通右侧工具区和展开后的 overflow 菜单复用同一个 `translateEnabled` prop 和 `onTranslateToggle` 回调，因此它们必须表现一致。
 
 按钮状态来源：
 
