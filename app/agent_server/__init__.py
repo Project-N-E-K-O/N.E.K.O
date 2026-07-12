@@ -293,7 +293,7 @@ async def _handle_voice_transcript_request(event: Dict[str, Any]) -> None:
 
 
 def _handle_proactive_analyze(messages, lanlan_name, lanlan_key, conversation_id) -> None:
-    """Throttled proactive-analyze path (opt-in via AGENT_PROACTIVE_ANALYZE_ENABLED).
+    """Throttled proactive-analyze path controlled by AGENT_PROACTIVE_ANALYZE_ENABLED.
 
     A proactive turn has no new user input, so the ordinary user-turn dedupe
     would drop it. Instead we let lanlan's self-initiated utterance trigger one

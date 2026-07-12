@@ -74,13 +74,39 @@ def test_assistant_fingerprint():
 
 
 # ── _handle_proactive_analyze gating ─────────────────────────────────
+def test_proactive_enabled_by_default():
+    assert a.AGENT_PROACTIVE_ANALYZE_ENABLED is True
+
+
 def test_proactive_disabled_does_not_dispatch(monkeypatch):
     _reset_state()
     calls = _patch_dispatch(monkeypatch)
-    monkeypatch.setattr(a, "AGENT_PROACTIVE_ANALYZE_ENABLED", False)  # default
+    monkeypatch.setattr(a, "AGENT_PROACTIVE_ANALYZE_ENABLED", False)
     a._handle_proactive_analyze(_proactive_msgs("我帮你查天气"), "lan", "lan", "c")
     assert calls == []
     assert a.Modules.proactive_analyze_count.get("lan", 0) == 0
+
+
+def test_agent_master_disabled_blocks_proactive_dispatch(monkeypatch):
+    """The proactive feature must never bypass the user-facing Agent master switch."""
+    calls = []
+    monkeypatch.setattr(a.Modules, "analyzer_enabled", False)
+    monkeypatch.setattr(a, "AGENT_PROACTIVE_ANALYZE_ENABLED", True)
+    monkeypatch.setattr(
+        a,
+        "_handle_proactive_analyze",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    asyncio.run(a._on_session_event({
+        "event_type": "analyze_request",
+        "messages": _proactive_msgs("我帮你查天气"),
+        "lanlan_name": "lan",
+        "conversation_id": "c",
+        "proactive": True,
+    }))
+
+    assert calls == []
 
 
 def test_proactive_enabled_dispatches_with_assistant_intent(monkeypatch):
