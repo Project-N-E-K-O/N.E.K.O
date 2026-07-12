@@ -512,7 +512,7 @@ async def proactive_chat(request: Request):
         # the next round (the backend will then inject a uniform
         # [0, 0.5*baseInterval] sleep to provide the jitter). See the
         # screen-only delay block further down and the matching
-        # ``S.proactiveFixedScheduleMode`` branch in static/app-proactive.js.
+        # ``S.proactiveFixedScheduleMode`` branch in static/app/app-proactive.js.
         _next_schedule_fixed_mode = False
 
         # Focus idle cooldown bookkeeping (read by _end_proactive via closure).

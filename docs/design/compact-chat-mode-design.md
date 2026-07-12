@@ -106,7 +106,7 @@
 主要文件：
 
 1. `static/app/app-react-chat-window.js`
-2. `static/app-buttons.js`
+2. `static/app/app-buttons.js`
 3. `templates/index.html`
 4. `templates/chat.html`
 5. `static/css/index.css`
@@ -124,7 +124,7 @@
    - 最小化 ball 的独立定位和 geometry。
    - resize session、desktop resize active 和 layout-change 事件。
    - 监听 `neko:compact-surface-drag-grab`（来自 React 工具轮盘原点拖拽），非 Electron 时以事件坐标为锚启动 compact surface 本体拖拽（复用既有 startDrag/全局 mousemove/mouseup 与落点 click 守卫）。Electron 由 `preload-chat-react.js` 监听同一事件改走原生窗口拖拽。
-5. `static/app-buttons.js` 是发送桥之一。compact history 文本发送必须带清晰 session / request 语义，不能让已有 composer 附件在 deferred send 中被误带上。
+5. `static/app/app-buttons.js` 是发送桥之一。compact history 文本发送必须带清晰 session / request 语义，不能让已有 composer 附件在 deferred send 中被误带上。
 6. 语音模式 / `composerHidden` 下的 history drop 只保留前端拖拽、命中和收束动效；真实发送必须在 `sendCompactHistoryDropPayload` 边界跳过，不能通过改 React 拖拽 phase 或样式来伪装。
 7. `static/music_ui.js` 的音乐播放器在 compact 模式下优先挂到常驻 `.compact-music-player-mount#music-player-mount`；历史关闭或卸载不能把播放器挪回 composer fallback，但播放器视觉显隐必须跟随历史打开、closing、closed 状态，也不能被通用 `#music-player-mount` 样式撑成超过 compact surface 的横向尺寸；音量弹层展开/收起时必须刷新 compact geometry，避免浮出播放器原生矩形的滑块看得见但不可点。
 
@@ -444,7 +444,7 @@ Compact 历史默认在初次启动时显示。历史列表本身由常驻展开
 4. NEKO-PC 通过 avatar bounds 判断 desktopOverAvatar，并通过 `neko:compact-history-drag-desktop-target-change` 回传给页面。
 5. drop delivery 必须携带 sessionId；事件缺失 sessionId 或 sessionId 不匹配时不能 mutate active drag。
 6. 文本发送必须 snapshot 意图，不能让拖拽期间临时恢复的 composer 附件混入历史文本发送。
-7. 语音模式下的历史拖拽不应在 React 拖拽层改动 phase 或动效；只在 `static/app-buttons.js` 的 `sendCompactHistoryDropPayload` 真实发送边界返回成功并跳过 `sendTextPayload`。
+7. 语音模式下的历史拖拽不应在 React 拖拽层改动 phase 或动效；只在 `static/app/app-buttons.js` 的 `sendCompactHistoryDropPayload` 真实发送边界返回成功并跳过 `sendTextPayload`。
 
 维护注意：
 

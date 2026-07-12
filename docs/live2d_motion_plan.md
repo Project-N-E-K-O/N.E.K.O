@@ -33,7 +33,7 @@
 | `utils/config_manager.py` | 添加 `live2d.idle_animation` 字段迁移逻辑、legacy_keys 读取兼容 |
 | `main_routers/characters_router.py` | 添加 `live2d_idle_animation` 保存处理和路径校验 |
 | `static/js/model_manager.js` | 添加动作保存逻辑、循环播放、恢复函数；动作选择器状态管理；异步令牌竞态防护；保存快照纳入 Live2D 待机动作 |
-| `static/app-interpage.js` | 添加 `restoreLive2DIdleAnimationOnMainPage()` 函数和 `_injectMotionGroupSafely()` 隔离 Helper |
+| `static/app/app-interpage.js` | 添加 `restoreLive2DIdleAnimationOnMainPage()` 函数和 `_injectMotionGroupSafely()` 隔离 Helper |
 | `static/live2d-init.js` | 添加 `onModelReady` 回调触发恢复函数、模型实例对比守卫 |
 | `static/live2d-model.js` | 添加 `onModelReady` 回调选项支持、setMouth Index 缓存、loadToken 穿透保护、coreModel 快照校验、Idle 判定去 PreviewAll、视线跟踪状态冗余消除 |
 
