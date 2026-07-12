@@ -5,8 +5,8 @@ const test = require('node:test');
 const vm = require('node:vm');
 
 const projectRoot = path.resolve(__dirname, '..', '..');
-const interactionPath = path.join(projectRoot, 'static', 'live2d-interaction.js');
-const corePath = path.join(projectRoot, 'static', 'live2d-core.js');
+const interactionPath = path.join(projectRoot, 'static', 'live2d', 'live2d-interaction.js');
+const corePath = path.join(projectRoot, 'static', 'live2d', 'live2d-core.js');
 
 function createHarness({ gameModeEnabled = true, innerWidth = 1000, innerHeight = 800 } = {}) {
     const rafQueue = [];
