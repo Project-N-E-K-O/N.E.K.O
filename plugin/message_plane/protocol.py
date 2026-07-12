@@ -16,7 +16,6 @@ RpcOp = Literal[
     "bus.publish",
     "bus.get_recent",
     "bus.query",
-    "bus.replay",
 ]
 
 
@@ -92,25 +91,6 @@ class BusQueryResult(BaseModel):
     light: bool
 
 
-class BusReplayArgs(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    store: str = Field(min_length=1, max_length=32)
-    plan: Dict[str, Any]
-    limit: Optional[int] = Field(default=None, ge=1, le=10000)
-    topic: Optional[str] = Field(default=None, max_length=128)
-    light: Optional[bool] = None
-
-
-class BusReplayResult(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    store: str
-    topic: Optional[str] = None
-    items: List[Dict[str, Any]]
-    diag: Optional[Dict[str, Any]] = None
-
-
 class IngestDeltaItem(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -178,8 +158,6 @@ def export_json_schemas() -> Dict[str, Any]:
         "bus_get_recent_result": BusGetRecentResult.model_json_schema(),
         "bus_query_args": BusQueryArgs.model_json_schema(),
         "bus_query_result": BusQueryResult.model_json_schema(),
-        "bus_replay_args": BusReplayArgs.model_json_schema(),
-        "bus_replay_result": BusReplayResult.model_json_schema(),
         "ingest_delta_batch": IngestDeltaBatch.model_json_schema(),
         "ingest_snapshot": IngestSnapshot.model_json_schema(),
     }

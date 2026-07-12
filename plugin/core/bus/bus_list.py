@@ -9,7 +9,6 @@ __all__ = [
     "_dedupe_key_from_record",
     "_sort_bus_value",
     "_get_sort_field_from_record",
-    "_get_field_from_record",
     "_cast_bus_value",
     "_cancel_timer_best_effort",
     "_build_watcher_injected_callback",
@@ -23,11 +22,6 @@ __all__ = [
     "_extract_sub_id",
     "_build_bus_unsubscribe_request",
     "_schedule_watcher_tick_debounced",
-    "_freeze_plan_value",
-    "_replay_cache_key_get",
-    "_replay_cache_key_unary",
-    "_message_plane_replay_rpc",
-    "_rebuild_records_from_plane_items",
     "_apply_reload_inplace_basic",
     "BusListCore",
     "BusListWatcherCore",
@@ -89,44 +83,6 @@ def _get_sort_field_from_record(item: Any, field: str) -> Any:
         return dumped.get(field)
     except Exception:
         return None
-
-
-def _rebuild_records_from_plane_items(bus: str, items: list[dict[str, Any]]) -> list[Any]:
-    records: list[Any] = []
-    try:
-        if bus == "messages":
-            from plugin.core.bus.messages import MessageRecord
-
-            for plane_item in items:
-                index_data = plane_item.get("index")
-                payload = plane_item.get("payload")
-                if isinstance(index_data, dict):
-                    records.append(MessageRecord.from_index(index_data, payload if isinstance(payload, dict) else None))
-                elif isinstance(payload, dict):
-                    records.append(MessageRecord.from_raw(payload))
-        elif bus == "events":
-            from plugin.core.bus.events import EventRecord
-
-            for plane_item in items:
-                index_data = plane_item.get("index")
-                payload = plane_item.get("payload")
-                if isinstance(index_data, dict):
-                    records.append(EventRecord.from_index(index_data, payload if isinstance(payload, dict) else None))
-                elif isinstance(payload, dict):
-                    records.append(EventRecord.from_raw(payload))
-        elif bus == "lifecycle":
-            from plugin.core.bus.lifecycle import LifecycleRecord
-
-            for plane_item in items:
-                index_data = plane_item.get("index")
-                payload = plane_item.get("payload")
-                if isinstance(index_data, dict):
-                    records.append(LifecycleRecord.from_index(index_data, payload if isinstance(payload, dict) else None))
-                elif isinstance(payload, dict):
-                    records.append(LifecycleRecord.from_raw(payload))
-    except Exception:
-        return []
-    return records
 
 
 def _apply_reload_inplace_basic(target: Any, refreshed: Any, ctx: Any) -> None:
@@ -224,9 +180,6 @@ class BusListCore:
     def _get_sort_field(self, item: Any, field: str) -> Any:
         return _get_sort_field_from_record(item, field)
 
-    def _get_field(self, item: Any, field: str) -> Any:
-        return _get_field_from_record(item, field)
-
     def _cast_value(self, v: Any, cast: str | None) -> Any:
         return _cast_bus_value(v, cast)
 
@@ -304,7 +257,7 @@ class BusListWatcherCore:
             res = self._ctx._send_request_and_wait(
                 method_name="bus_subscribe",
                 request_type="BUS_SUBSCRIBE",
-                request_data=_build_bus_subscribe_request(self._bus, self._list.trace_tree_dump()),
+                request_data=_build_bus_subscribe_request(self._bus),
                 timeout=5.0,
                 wrap_result=True,
             )
@@ -349,12 +302,11 @@ class BusListWatcherCore:
             self._unsub = None
 
 
-def _build_bus_subscribe_request(bus: str, plan_dump: Any) -> dict[str, Any]:
+def _build_bus_subscribe_request(bus: str) -> dict[str, Any]:
     return {
         "bus": bus,
         "rules": ["add", "del", "change"],
         "deliver": "delta",
-        "plan": plan_dump,
     }
 
 
@@ -368,185 +320,6 @@ def _extract_sub_id(res: Any) -> str | None:
 
 def _build_bus_unsubscribe_request(bus: str, sub_id: str) -> dict[str, Any]:
     return {"bus": bus, "sub_id": sub_id}
-
-
-def _freeze_plan_value(x: Any) -> Any:
-    try:
-        if isinstance(x, dict):
-            return tuple(sorted((str(k), _freeze_plan_value(v)) for k, v in x.items()))
-        if isinstance(x, (list, tuple)):
-            return tuple(_freeze_plan_value(v) for v in x)
-        if isinstance(x, set):
-            return tuple(sorted(_freeze_plan_value(v) for v in x))
-        if isinstance(x, (str, int, float, bool, type(None))):
-            return x
-        return repr(x)
-    except Exception:
-        return repr(x)
-
-
-def _replay_cache_key_get(bus: str, params: dict[str, Any]) -> tuple[str, str, Any]:
-    return ("get", str(bus), _freeze_plan_value(dict(params or {})))
-
-
-def _replay_cache_key_unary(op: str, params: dict[str, Any], child_key: Any) -> tuple[str, str, Any, Any]:
-    return ("unary", str(op), _freeze_plan_value(dict(params or {})), child_key)
-
-
-def _message_plane_replay_rpc(
-    *,
-    ctx: Any,
-    bus: str,
-    plan: Any,
-    timeout: float,
-    serialize_plan: Callable[[Any], Any],
-) -> list[dict[str, Any]] | None:
-    try:
-        import time as _time
-        import json as _json
-        import os as _os
-        import uuid as _uuid
-        import ormsgpack as _ormsgpack
-        try:
-            import zmq as _zmq
-        except Exception:
-            _zmq = None
-        if _zmq is None:
-            return None
-        from plugin.settings import MESSAGE_PLANE_ZMQ_RPC_ENDPOINT
-
-        plan_dict = serialize_plan(plan)
-        if plan_dict is None:
-            return None
-        endpoint = str(MESSAGE_PLANE_ZMQ_RPC_ENDPOINT)
-        if not endpoint:
-            return None
-
-        sock = None
-        try:
-            import threading
-            tls = getattr(ctx, "_mp_replay_tls", None)
-            if tls is None:
-                tls = threading.local()
-                setattr(ctx, "_mp_replay_tls", tls)
-            sock = getattr(tls, "sock", None)
-        except Exception:
-            try:
-                sock = getattr(ctx, "_mp_replay_sock", None)
-            except Exception:
-                sock = None
-
-        if sock is None:
-            zctx = _zmq.Context.instance()
-            sock = zctx.socket(_zmq.DEALER)
-            with suppress(Exception):
-                ident = f"mp-replay:{getattr(ctx, 'plugin_id', '')}:{int(_time.time() * 1000)}".encode("utf-8")
-                sock.setsockopt(_zmq.IDENTITY, ident)
-            with suppress(Exception):
-                sock.setsockopt(_zmq.LINGER, 0)
-            sock.connect(endpoint)
-
-            try:
-                import threading
-                tls = getattr(ctx, "_mp_replay_tls", None)
-                if tls is not None:
-                    tls.sock = sock
-                else:
-                    setattr(ctx, "_mp_replay_sock", sock)
-            except Exception:
-                with suppress(Exception):
-                    setattr(ctx, "_mp_replay_sock", sock)
-
-        req_id = f"replay:{getattr(ctx, 'plugin_id', '')}:{_uuid.uuid4()}"
-        try:
-            light_mode = str(_os.getenv("NEKO_BUSLIST_RELOAD_FULL_LIGHT", "0")).strip().lower() in (
-                "1",
-                "true",
-                "yes",
-                "on",
-            )
-        except Exception:
-            light_mode = False
-        req = {
-            "v": 1,
-            "op": "bus.replay",
-            "req_id": req_id,
-            "from_plugin": getattr(ctx, "plugin_id", ""),
-            "args": {"store": str(bus), "plan": plan_dict, "light": bool(light_mode)},
-        }
-        try:
-            raw = _ormsgpack.packb(req)
-        except Exception:
-            raw = _json.dumps(req, ensure_ascii=False).encode("utf-8")
-        try:
-            sock.send(raw, flags=0)
-        except Exception:
-            return None
-
-        deadline = _time.time() + max(0.0, float(timeout))
-        while True:
-            remaining = deadline - _time.time()
-            if remaining <= 0:
-                return None
-            try:
-                if sock.poll(timeout=int(remaining * 1000), flags=_zmq.POLLIN) == 0:
-                    continue
-            except Exception:
-                return None
-            try:
-                resp_raw = sock.recv(flags=0)
-            except Exception:
-                return None
-            resp = None
-            try:
-                resp = _ormsgpack.unpackb(resp_raw)
-            except Exception:
-                try:
-                    resp = _json.loads(resp_raw.decode("utf-8"))
-                except Exception:
-                    resp = None
-            if not isinstance(resp, dict):
-                continue
-            if resp.get("req_id") != req_id:
-                continue
-            if not resp.get("ok"):
-                return None
-            result = resp.get("result")
-            if not isinstance(result, dict):
-                return None
-            items = result.get("items")
-            if not isinstance(items, list):
-                return None
-            out: list[dict[str, Any]] = []
-            for item_entry in items:
-                if isinstance(item_entry, dict):
-                    out.append(item_entry)
-            return out
-    except Exception:
-        return None
-
-
-def _get_field_from_record(item: Any, field: str) -> Any:
-    try:
-        return getattr(item, field)
-    except Exception:
-        pass
-
-    raw = None
-    try:
-        raw = getattr(item, "raw", None)
-    except Exception:
-        raw = None
-    if isinstance(raw, dict):
-        return raw.get(field)
-
-    try:
-        dumped = item.dump()
-        if isinstance(dumped, dict):
-            return dumped.get(field)
-    except Exception:
-        return None
-    return None
 
 
 def _cast_bus_value(v: Any, cast: str | None) -> Any:
@@ -584,41 +357,46 @@ def _schedule_watcher_tick_debounced(
     op: str,
     payload: dict[str, Any] | None = None,
 ) -> None:
+    generation = getattr(watcher, "_refresh_generation", None)
+    if bool(getattr(watcher, "_stopped", False)):
+        return
     if float(getattr(watcher, "_debounce_ms", 0.0) or 0.0) <= 0:
-        watcher._tick(op, payload)
+        watcher._tick(op, payload, generation=generation)
         return
 
+    timer: Any = None
     try:
         import threading
 
         delay = max(0.0, float(getattr(watcher, "_debounce_ms", 0.0) or 0.0) / 1000.0)
         normalized_payload = dict(payload or {}) if isinstance(payload, dict) else None
 
-        lock = getattr(watcher, "_lock", None)
-        if lock is not None:
-            with lock:
-                watcher._pending_op = str(op)
-                watcher._pending_payload = normalized_payload
-                prev_timer = getattr(watcher, "_debounce_timer", None)
-                watcher._debounce_timer = None
-        else:
-            watcher._pending_op = str(op)
-            watcher._pending_payload = normalized_payload
-            prev_timer = getattr(watcher, "_debounce_timer", None)
-            watcher._debounce_timer = None
-
-        _cancel_timer_best_effort(prev_timer)
+        def _is_current_generation() -> bool:
+            return (
+                not bool(getattr(watcher, "_stopped", False))
+                and getattr(watcher, "_refresh_generation", None) == generation
+            )
 
         def _fire() -> None:
             lock2 = getattr(watcher, "_lock", None)
             if lock2 is not None:
                 with lock2:
+                    if (
+                        not _is_current_generation()
+                        or getattr(watcher, "_debounce_timer", None) is not timer
+                    ):
+                        return
                     pending = getattr(watcher, "_pending_op", None)
                     pending_payload = getattr(watcher, "_pending_payload", None)
                     watcher._pending_op = None
                     watcher._pending_payload = None
                     watcher._debounce_timer = None
             else:
+                if (
+                    not _is_current_generation()
+                    or getattr(watcher, "_debounce_timer", None) is not timer
+                ):
+                    return
                 pending = getattr(watcher, "_pending_op", None)
                 pending_payload = getattr(watcher, "_pending_payload", None)
                 watcher._pending_op = None
@@ -626,18 +404,50 @@ def _schedule_watcher_tick_debounced(
                 watcher._debounce_timer = None
 
             with suppress(Exception):
-                watcher._tick(str(pending or "change"), pending_payload)
+                watcher._tick(
+                    str(pending or "change"),
+                    pending_payload,
+                    generation=generation,
+                )
 
         timer = threading.Timer(delay, _fire)
         timer.daemon = True
+        lock = getattr(watcher, "_lock", None)
+        should_start = False
         if lock is not None:
             with lock:
-                watcher._debounce_timer = timer
+                if _is_current_generation():
+                    prev_timer = getattr(watcher, "_debounce_timer", None)
+                    watcher._pending_op = str(op)
+                    watcher._pending_payload = normalized_payload
+                    watcher._debounce_timer = timer
+                    should_start = True
         else:
-            watcher._debounce_timer = timer
+            if _is_current_generation():
+                prev_timer = getattr(watcher, "_debounce_timer", None)
+                watcher._pending_op = str(op)
+                watcher._pending_payload = normalized_payload
+                watcher._debounce_timer = timer
+                should_start = True
+        if not should_start:
+            _cancel_timer_best_effort(timer)
+            return
+        _cancel_timer_best_effort(prev_timer)
         timer.start()
     except Exception:
-        watcher._tick(op, payload)
+        lock = getattr(watcher, "_lock", None)
+        if lock is not None:
+            with lock:
+                if getattr(watcher, "_debounce_timer", None) is timer:
+                    watcher._debounce_timer = None
+                    watcher._pending_op = None
+                    watcher._pending_payload = None
+        elif getattr(watcher, "_debounce_timer", None) is timer:
+            watcher._debounce_timer = None
+            watcher._pending_op = None
+            watcher._pending_payload = None
+        with suppress(Exception):
+            watcher._tick(op, payload, generation=generation)
 
 
 def _build_watcher_injected_callback(fn: Callable[..., None]) -> Callable[[Any], None]:

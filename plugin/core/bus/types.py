@@ -5,7 +5,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import re
 import time
-import typing
 from typing import (
     Any,
     Callable,
@@ -28,12 +27,7 @@ from typing import (
 
 from plugin.core.bus.bus_list import (
     BusListCore,
-    _freeze_plan_value,
-    _message_plane_replay_rpc,
-    _rebuild_records_from_plane_items,
     _apply_reload_inplace_basic,
-    _replay_cache_key_get,
-    _replay_cache_key_unary,
 )
 
 if TYPE_CHECKING:
@@ -224,13 +218,6 @@ class NonReplayableTraceError(RuntimeError):
 
 
 @dataclass(frozen=True)
-class BusFilterResult(Generic[TRecord]):
-    ok: bool
-    value: Optional["BusList[TRecord]"] = None
-    error: Optional[Exception] = None
-
-
-@dataclass(frozen=True)
 class BusOp:
     name: str
     params: Dict[str, Any]
@@ -276,39 +263,6 @@ class UnaryNode(TraceNode):
 
     def explain(self) -> str:
         return self.child.explain() + " -> " + super().explain()
-
-
-def _collect_get_nodes(node: "TraceNode") -> List["GetNode"]:
-    """Module-level function to collect GetNodes from a plan tree (iterative, faster)."""
-    result: List["GetNode"] = []
-    stack: List["TraceNode"] = [node]
-    while stack:
-        n = stack.pop()
-        if isinstance(n, GetNode):
-            result.append(n)
-        elif isinstance(n, UnaryNode):
-            stack.append(n.child)
-    return result
-
-
-def _serialize_plan(node: "TraceNode") -> Optional[Dict[str, Any]]:
-    """Module-level function to serialize a plan tree to dict (iterative for common cases)."""
-    try:
-        if isinstance(node, GetNode):
-            return {"kind": "get", "op": "get", "params": dict(node.params or {})}
-        if isinstance(node, UnaryNode):
-            child = _serialize_plan(node.child)
-            if child is None:
-                return None
-            return {
-                "kind": "unary",
-                "op": str(node.op),
-                "params": dict(node.params or {}),
-                "child": child,
-            }
-    except Exception:
-        return None
-    return None
 
 
 class BusList(BusListCore, Generic[TRecord]):
@@ -561,16 +515,6 @@ class BusList(BusListCore, Generic[TRecord]):
         out._invalidate_cache()
         return out
 
-    def sorted(
-        self,
-        *,
-        by: Optional[Union[str, Sequence[str]]] = None,
-        key: Optional[Callable[[TRecord], Any]] = None,
-        cast: Optional[str] = None,
-        reverse: bool = False,
-    ) -> "BusList[TRecord]":
-        return self.sort(by=by, key=key, cast=cast, reverse=reverse)
-
     def __eq__(self, other: object) -> bool:
         if other is self:
             return True
@@ -720,13 +664,6 @@ class BusList(BusListCore, Generic[TRecord]):
         out._invalidate_cache()
         return out
 
-    def try_filter(self, flt: Optional[BusFilter] = None, **kwargs: Any) -> BusFilterResult[TRecord]:
-        try:
-            value = self.filter(flt, strict=True, **kwargs)
-            return BusFilterResult(ok=True, value=value, error=None)
-        except BusFilterError as e:
-            return BusFilterResult(ok=False, value=None, error=e)
-
     def where(self, predicate: Callable[[TRecord], bool]) -> "BusList[TRecord]":
         """Filter using an arbitrary Python predicate.
 
@@ -776,105 +713,40 @@ class BusList(BusListCore, Generic[TRecord]):
         return out
 
     def _replay_plan(self, ctx: BusReplayContext, plan: TraceNode) -> "BusList[TRecord]":
-        cache: Dict[Any, Any] = {}
-
         def _as_eager(lst: Any) -> Any:
             with suppress(Exception):
                 lst._ctx = None
                 lst._cache_valid = True
             return lst
 
-        def _freeze(x: Any) -> Any:
-            return _freeze_plan_value(x)
-
-        def _cache_key(node: TraceNode) -> Any:
-            try:
-                if isinstance(node, GetNode):
-                    bus = str(node.params.get("bus") or "")
-                    params = dict(node.params.get("params") or {})
-                    return _replay_cache_key_get(bus, params)
-                if isinstance(node, UnaryNode):
-                    return _replay_cache_key_unary(str(node.op), dict(node.params or {}), _cache_key(node.child))
-            except Exception:
-                return ("node", id(node))
-            return ("node", id(node))
-
         def _replay(node: TraceNode) -> "BusList[TRecord]":
-            key = _cache_key(node)
-            cached = cache.get(key)
-            if cached is not None:
-                return cached
-
-            # Push down a chain of filter(...) into the underlying GetNode when possible.
-            # This reduces IPC payload for full reload.
-            if isinstance(node, UnaryNode) and node.op == "filter":
-                filters: List[Dict[str, Any]] = []
-                cur: TraceNode = node
-                while isinstance(cur, UnaryNode) and cur.op == "filter":
-                    filters.append(dict(cur.params or {}))
-                    cur = cur.child
-
-                if isinstance(cur, GetNode):
-                    bus = str(cur.params.get("bus") or "").strip()
-                    base_params = dict(cur.params.get("params") or {})
-
-                    if bus in {"messages", "events", "lifecycle"}:
-                        # Merge the whole filter dict (method B) and let the server do filtering.
-                        merged_filter: Dict[str, Any] = {}
-                        strict_val: bool = True
-                        for fp in reversed(filters):
-                            p = dict(fp)
-                            if "strict" in p:
-                                try:
-                                    strict_val = bool(p.get("strict"))
-                                except Exception:
-                                    strict_val = strict_val
-                            _ = p.pop("strict", None)
-                            merged_filter.update({k: v for k, v in p.items() if v is not None})
-
-                        merged = dict(base_params)
-                        merged["filter"] = dict(merged_filter) if merged_filter else None
-                        merged["strict"] = bool(strict_val)
-                        out0 = _replay(GetNode(op="get", params={"bus": bus, "params": merged}, at=cur.at))
-                        cache[key] = out0
-                        return out0
-
             if isinstance(node, GetNode):
                 bus = str(node.params.get("bus") or "").strip()
                 params = dict(node.params.get("params") or {})
                 if bus == "messages":
-                    out = _as_eager(ctx.bus.messages.get(**params))
+                    return _as_eager(ctx.bus.messages.get(**params))
                 elif bus == "events":
-                    out = _as_eager(ctx.bus.events.get(**params))
+                    return _as_eager(ctx.bus.events.get(**params))
                 elif bus == "lifecycle":
-                    out = _as_eager(ctx.bus.lifecycle.get(**params))
-                else:
-                    raise NonReplayableTraceError(f"Unknown bus for reload: {bus!r}")
-                cache[key] = out
-                return out
+                    return _as_eager(ctx.bus.lifecycle.get(**params))
+                raise NonReplayableTraceError(f"Unknown bus for reload: {bus!r}")
 
             if isinstance(node, UnaryNode):
                 base = _as_eager(_replay(node.child))
                 if node.op == "filter":
                     p = dict(node.params)
                     strict = bool(p.pop("strict", True))
-                    out = base.filter(strict=strict, **p)
-                    cache[key] = out
-                    return out
+                    return base.filter(strict=strict, **p)
                 if node.op == "limit":
-                    out = base.limit(int(node.params.get("n", 0)))
-                    cache[key] = out
-                    return out
+                    return base.limit(int(node.params.get("n", 0)))
                 if node.op == "sort":
                     if node.params.get("key") is not None:
                         raise NonReplayableTraceError("reload cannot replay sort(key=callable); use sort(by=...) only")
-                    out = base.sort(
+                    return base.sort(
                         by=node.params.get("by"),
                         cast=node.params.get("cast"),
                         reverse=bool(node.params.get("reverse", False)),
                     )
-                    cache[key] = out
-                    return out
                 if node.op == "where":
                     raise NonReplayableTraceError("reload cannot replay where(predicate); use filter(...) instead")
                 raise NonReplayableTraceError(f"Unknown unary op for reload: {node.op!r}")
@@ -951,59 +823,6 @@ class BusList(BusListCore, Generic[TRecord]):
 
         if self._plan is None:
             raise NonReplayableTraceError("reload is unavailable when no replayable plan exists")
-
-
-        def _message_plane_replay(*, bus: str, plan: TraceNode, timeout: float = 1.0) -> Optional[List[Dict[str, Any]]]:
-            return _message_plane_replay_rpc(
-                ctx=ctx,
-                bus=bus,
-                plan=plan,
-                timeout=timeout,
-                serialize_plan=_serialize_plan,
-            )
-
-        # Full reload: prefer server-side replay in message_plane to avoid expensive Python-side list ops.
-        get_nodes = _collect_get_nodes(self._plan)
-        if get_nodes:
-            seed0 = get_nodes[0]
-            seed_bus = str(seed0.params.get("bus") or "").strip()
-            if seed_bus in ("messages", "events", "lifecycle"):
-                same_bus = True
-                for gn in get_nodes[1:]:
-                    if str(gn.params.get("bus") or "").strip() != seed_bus:
-                        same_bus = False
-                        break
-                if same_bus:
-                    # Timeout comes from the original GetNode when present.
-                    timeout_s = 1.0
-                    try:
-                        params0 = dict(seed0.params.get("params") or {})
-                        t0 = params0.get("timeout")
-                        if t0 is not None:
-                            timeout_s = float(t0)
-                    except Exception:
-                        timeout_s = 1.0
-
-                    items = _message_plane_replay(bus=seed_bus, plan=self._plan, timeout=timeout_s)
-                    if items is not None:
-                        recs = _rebuild_records_from_plane_items(seed_bus, cast(List[Dict[str, Any]], items))
-
-                        if inplace:
-                            refreshed_tmp = self.__class__(
-                                list(recs),
-                                ctx=ctx,
-                                trace=self._trace,
-                                plan=self._plan,
-                            )
-                            _apply_reload_inplace_basic(self, refreshed_tmp, ctx)
-                            return self
-                        out = self.__class__(
-                            list(recs),
-                            ctx=ctx,
-                            trace=self._trace,
-                            plan=self._plan,
-                        )
-                        return out
 
         refreshed = self._replay_plan(ctx, self._plan)
         if not inplace:
@@ -1106,7 +925,6 @@ __all__ = [
     "BusChangeOp",
     "BusFilter",
     "BusFilterError",
-    "BusFilterResult",
     "BusList",
     "BusListDelta",
     "BusListWatcher",

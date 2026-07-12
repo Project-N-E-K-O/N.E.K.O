@@ -169,7 +169,7 @@ class BusRpcClientBase:
             "plugin_id": plugin_id, "max_count": max_count,
             "filter": dict(filter) if isinstance(filter, dict) else None,
             "strict": bool(strict), "since_ts": since_ts,
-            "timeout": timeout, "via": "message_plane.rpc",
+            "timeout": timeout,
         }
         trace = [BusOp(name="get", params=get_params, at=time.time())]
         plan = GetNode(op="get", params={"bus": self._store_name, "params": get_params}, at=time.time())

@@ -598,17 +598,82 @@ class SdkBusList(Generic[TRecord]):
             base_filtered = self._local_filter(kwargs, strict=strict)
 
         if callable(flt):
+            # An arbitrary predicate cannot be serialized into the host replay
+            # plan. Do not retain the structured filter's raw list here:
+            # doing so would let watch() start and then silently drop the
+            # predicate on its first refresh.
             return SdkBusList(
                 [item for item in base_filtered.items if flt(item)],
                 namespace=self._namespace,
                 record_factory=self._record_factory,
                 host_ctx=self._host_ctx,
-                raw_list=getattr(base_filtered, "_raw_list", None),
             )
         return base_filtered
 
     def where(self, predicate: Callable[[TRecord], bool]) -> "SdkBusList[TRecord]":
         return self.filter(predicate)
+
+    def sort(
+        self,
+        *,
+        by: str | Iterable[str] | None = None,
+        key: Callable[[TRecord], Any] | None = None,
+        cast: str | None = None,
+        reverse: bool = False,
+    ) -> "SdkBusList[TRecord]":
+        if key is not None and by is not None:
+            raise ValueError(
+                "只能指定 'key' 或 'by' 其中一个。 / "
+                "Specify only one of 'key' or 'by'. / "
+                "'key' または 'by' のどちらか一方だけを指定してください。"
+            )
+
+        raw_sort = getattr(self._raw_list, "sort", None)
+        if callable(raw_sort) and key is None and not isinstance(self._raw_list, list):
+            return self._wrap_raw(raw_sort(by=by, cast=cast, reverse=reverse))
+
+        if by is None:
+            fields = ["timestamp", "created_at", "time"]
+        elif isinstance(by, str):
+            fields = [by]
+        else:
+            fields = list(by)
+
+        def _cast_value(value: object) -> object:
+            normalized_cast = str(cast or "").strip().lower()
+            try:
+                if normalized_cast in {"int", "i"}:
+                    return int(str(value).strip())
+                if normalized_cast in {"float", "f"}:
+                    return float(str(value).strip())
+                if normalized_cast in {"str", "s"}:
+                    return "" if value is None else str(value)
+            except (TypeError, ValueError):
+                return 0 if normalized_cast in {"int", "i"} else 0.0
+            return value
+
+        def _sortable(value: object) -> tuple[int, object]:
+            if value is None:
+                return (2, "")
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                return (0, value)
+            return (1, str(value))
+
+        sort_key: Callable[[TRecord], Any]
+        if key is not None:
+            sort_key = key
+        else:
+            sort_key = lambda item: tuple(
+                _sortable(_cast_value(self._item_value(item, field)))
+                for field in fields
+            )
+
+        return SdkBusList(
+            sorted(self.items, key=sort_key, reverse=reverse),
+            namespace=self._namespace,
+            record_factory=self._record_factory,
+            host_ctx=self._host_ctx,
+        )
 
     def limit(self, size: int) -> "SdkBusList[TRecord]":
         raw_limit = getattr(self._raw_list, "limit", None)
