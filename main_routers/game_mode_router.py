@@ -50,8 +50,8 @@ async def broadcast_game_mode_event(payload: dict[str, Any]) -> int:
             if ws is None or not hasattr(ws, "send_json"):
                 continue
             client_state = getattr(ws, "client_state", None)
-            state_name = str(client_state).upper()
-            if client_state is not None and "CONNECTED" not in state_name:
+            state_name = str(getattr(client_state, "name", client_state)).upper()
+            if client_state is not None and state_name != "CONNECTED":
                 continue
             task = asyncio.create_task(
                 _send_game_mode_event(name, ws, payload),

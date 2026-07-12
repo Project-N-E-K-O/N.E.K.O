@@ -439,6 +439,11 @@ class GameModeResourceProtector:
                 owned = sum(1 for ack in self._window_acks.values() if ack.get("status") == "protected")
                 self._state["owned_window_count"] = owned
                 self._state["auto_switch_active"] = owned > 0
+                if normalized_status == "already_protected" and owned == 0:
+                    self._state["pressure_state"] = "normal"
+                    self._state["trigger_reason"] = None
+                    self._state["last_event"] = {"type": "already_protected", "ts": self._time()}
+                    self._end_cycle_locked(preserve_last_event=True)
                 return self.snapshot()
             self._refresh_ack_counts_locked()
             expected = set(self._state.get("expected_window_ids") or [])

@@ -161,6 +161,24 @@ async def test_game_mode_broadcast_failures_are_logged_and_isolated(monkeypatch,
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("client_state", ["DISCONNECTED", "WebSocketState.DISCONNECTED"])
+async def test_game_mode_broadcast_rejects_disconnected_sockets(monkeypatch, client_state):
+    class DisconnectedWebSocket:
+        def __init__(self):
+            self.client_state = client_state
+
+        async def send_json(self, _payload):
+            raise AssertionError("disconnected websocket must not be scheduled")
+
+    class Session:
+        websocket = DisconnectedWebSocket()
+
+    monkeypatch.setattr(game_mode_router_module, "get_session_manager", lambda: {"pet-a": Session()})
+    assert await game_mode_router_module.broadcast_game_mode_event({"type": "test"}) == 0
+    assert not game_mode_router_module._game_mode_broadcast_tasks
+
+
+@pytest.mark.asyncio
 async def test_game_mode_broadcast_schedules_slow_sockets_without_waiting(monkeypatch):
     release = asyncio.Event()
 
