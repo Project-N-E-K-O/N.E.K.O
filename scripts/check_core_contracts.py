@@ -89,6 +89,7 @@ import argparse
 import ast
 import sys
 import symtable
+import tokenize
 from pathlib import Path
 
 FACADE_MODULE_ALIAS = "_core_facade"
@@ -109,7 +110,12 @@ class Violation:
 
 
 def parse(path: Path) -> ast.Module:
-    return ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    # Read BYTES, not text: ast.parse honors a PEP 263 coding cookie
+    # (gbk/shift-jis/latin-1) and strips a UTF-8 BOM. read_text(encoding="utf-8")
+    # would keep a BOM (→ SyntaxError) or raise UnicodeDecodeError on a non-UTF-8
+    # cookie — either one crashes the whole gate on a valid, importable file
+    # (BOM is realistic here: Windows + PowerShell `Out-File -Encoding utf8`).
+    return ast.parse(path.read_bytes(), filename=str(path))
 
 
 # --------------------------------------------------------------- tests scan
@@ -123,7 +129,9 @@ def collect_patch_targets(tests_dir: Path):
     for path in sorted(tests_dir.rglob("*.py")):
         try:
             tree = parse(path)
-        except SyntaxError:
+        except (SyntaxError, ValueError):
+            # Malformed/undecodable test file: skip its harvest rather than
+            # crash the gate (ValueError covers UnicodeDecodeError).
             continue
         aliases = set()        # names bound to the main_logic.core MODULE
         pkg_aliases = set()    # names bound to the main_logic PACKAGE (for ``ml.core``)
@@ -268,7 +276,11 @@ def module_level_import_bindings(tree: ast.Module):
 
 def global_read_names(path: Path) -> set[str]:
     """Names referenced as globals from any function scope in the module."""
-    table = symtable.symtable(path.read_text(encoding="utf-8"), str(path), "exec")
+    # tokenize.open honors the PEP 263 cookie / BOM (see parse()); symtable
+    # needs text, so decode through it rather than read_text(encoding="utf-8").
+    with tokenize.open(str(path)) as f:
+        source = f.read()
+    table = symtable.symtable(source, str(path), "exec")
     found: set[str] = set()
 
     def walk(tab):
