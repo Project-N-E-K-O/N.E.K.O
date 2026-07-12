@@ -26,6 +26,9 @@ def test_jukebox_websocket_handler_uses_canonical_query_key():
 
     assert "action: command.action" in block
     assert "query: command.query || ''" in block
+    assert "volume: command.volume" in block
+    assert "delta: command.delta" in block
+    assert "mode: command.mode" in block
     assert "command.song" not in block
     assert "command.name" not in block
 
@@ -39,6 +42,9 @@ def test_jukebox_event_bus_uses_canonical_query_key():
 
     assert '"action": action' in block
     assert '"query": event.get("query") or ""' in block
+    assert '"volume": event.get("volume")' in block
+    assert '"delta": event.get("delta")' in block
+    assert '"mode": event.get("mode") or ""' in block
     assert 'event.get("song")' not in block
     assert 'event.get("name")' not in block
 
@@ -46,8 +52,9 @@ def test_jukebox_event_bus_uses_canonical_query_key():
 def test_jukebox_plugin_schema_uses_canonical_actions():
     source = PLUGIN_PATH.read_text(encoding="utf-8")
 
-    assert '_VALID_ACTIONS = {"play", "next", "stop"}' in source
-    assert '"enum": ["play", "next", "stop"]' in source
+    assert '_VALID_ACTIONS = {"play", "next", "stop", "set_volume", "adjust_volume", "set_mode"}' in source
+    assert '"enum": ["play", "next", "stop", "set_volume", "adjust_volume", "set_mode"]' in source
+    assert '"enum": ["none", "sequence", "single", "random"]' in source
     assert '"skip"' not in source
 
 
@@ -73,6 +80,9 @@ def test_jukebox_proactive_bridge_uses_canonical_control_keys(monkeypatch):
                     "control": "stop",
                     "command": "next",
                     "query": "桃园",
+                    "volume": 50,
+                    "delta": -10,
+                    "mode": "random",
                     "song": "legacy-song",
                 }
             ],
@@ -86,6 +96,9 @@ def test_jukebox_proactive_bridge_uses_canonical_control_keys(monkeypatch):
             "lanlan_name": None,
             "action": "play",
             "query": "桃园",
+            "volume": 50,
+            "delta": -10,
+            "mode": "random",
             "source": "jukebox_controller",
             "timestamp": "now",
         }
@@ -111,6 +124,9 @@ def test_jukebox_proactive_bridge_uses_canonical_control_keys(monkeypatch):
     )
 
     assert metadata_only_push.events[0]["query"] is None
+    assert metadata_only_push.events[0]["volume"] is None
+    assert metadata_only_push.events[0]["delta"] is None
+    assert metadata_only_push.events[0]["mode"] is None
 
     legacy_push = _FakePushSocket()
     proactive_bridge.ProactiveBridge()._dispatch(

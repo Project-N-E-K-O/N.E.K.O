@@ -572,6 +572,9 @@
         window.Jukebox.executeControl({
             action: command.action,
             query: command.query || '',
+            volume: command.volume,
+            delta: command.delta,
+            mode: command.mode,
             headless: true
         }).then(function (result) {
             console.log('[Jukebox] 点歌台控制完成:', result);

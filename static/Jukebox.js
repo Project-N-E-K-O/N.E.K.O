@@ -7956,7 +7956,7 @@ window.Jukebox = {
   executeControl: async function(command = {}) {
     const normalizedAction = String(command.action || '').trim().toLowerCase();
 
-    if (!['play', 'next', 'stop'].includes(normalizedAction)) {
+    if (!['play', 'next', 'stop', 'set_volume', 'adjust_volume', 'set_mode'].includes(normalizedAction)) {
       return {
         ok: false,
         action: normalizedAction,
@@ -7967,6 +7967,20 @@ window.Jukebox = {
     if (normalizedAction === 'stop') {
       Jukebox.stopPlayback();
       return { ok: true, action: 'stop' };
+    }
+
+    if (normalizedAction === 'set_mode') {
+      return Jukebox.executeSetModeControl(command.mode);
+    }
+
+    if (normalizedAction === 'set_volume') {
+      await Jukebox.ensureRuntime({ headless: command.headless !== false });
+      return Jukebox.executeSetVolumeControl(command.volume);
+    }
+
+    if (normalizedAction === 'adjust_volume') {
+      await Jukebox.ensureRuntime({ headless: command.headless !== false });
+      return Jukebox.executeAdjustVolumeControl(command.delta);
     }
 
     await Jukebox.ensureRuntime({ headless: command.headless !== false });
@@ -7987,6 +8001,98 @@ window.Jukebox = {
     }
 
     return Jukebox.executePlayControl('play', song);
+  },
+
+  normalizeControlVolume: function(value) {
+    if (value === null || value === undefined || value === '') return null;
+    const numberValue = Number(value);
+    if (!Number.isFinite(numberValue)) return null;
+    if (numberValue < 0 || numberValue > 100) return null;
+    return Math.max(0, Math.min(1, numberValue > 1 ? numberValue / 100 : numberValue));
+  },
+
+  normalizeControlVolumeDelta: function(value) {
+    if (value === null || value === undefined || value === '') return null;
+    const numberValue = Number(value);
+    if (!Number.isFinite(numberValue)) return null;
+    if (numberValue < -100 || numberValue > 100) return null;
+    return Math.max(-1, Math.min(1, Math.abs(numberValue) > 1 ? numberValue / 100 : numberValue));
+  },
+
+  getCurrentVolume: function() {
+    const player = Jukebox.getPlayer();
+    const playerVolume = player && player.audio ? Number(player.audio.volume) : NaN;
+    if (Number.isFinite(playerVolume)) {
+      return Math.max(0, Math.min(1, playerVolume));
+    }
+    if (Jukebox.State.isMuted) return 0;
+    const savedVolume = Number(Jukebox.State.savedVolume);
+    return Number.isFinite(savedVolume) ? Math.max(0, Math.min(1, savedVolume)) : 1;
+  },
+
+  setRuntimeVolume: function(volume) {
+    const normalizedVolume = Math.max(0, Math.min(1, Number(volume)));
+    if (!Number.isFinite(normalizedVolume)) return false;
+
+    const player = Jukebox.getPlayer();
+    if (player && typeof player.volume === 'function') {
+      player.volume(normalizedVolume);
+    } else if (player && player.audio) {
+      player.audio.volume = normalizedVolume;
+    } else {
+      return false;
+    }
+
+    const volumeSlider = document.getElementById('jukebox-volume-slider');
+    if (volumeSlider) {
+      volumeSlider.value = normalizedVolume;
+    }
+
+    if (normalizedVolume > 0) {
+      Jukebox.State.isMuted = false;
+      Jukebox.State.savedVolume = normalizedVolume;
+    } else {
+      Jukebox.State.isMuted = true;
+    }
+
+    Jukebox.updateVolumeDisplay(normalizedVolume);
+    return true;
+  },
+
+  executeSetVolumeControl: function(value) {
+    const volume = Jukebox.normalizeControlVolume(value);
+    if (volume === null) {
+      return { ok: false, action: 'set_volume', message: 'invalid_volume' };
+    }
+    if (!Jukebox.setRuntimeVolume(volume)) {
+      return { ok: false, action: 'set_volume', message: 'volume_control_unavailable' };
+    }
+    return { ok: true, action: 'set_volume', volume };
+  },
+
+  executeAdjustVolumeControl: function(value) {
+    const delta = Jukebox.normalizeControlVolumeDelta(value);
+    if (delta === null) {
+      return { ok: false, action: 'adjust_volume', message: 'invalid_volume_delta' };
+    }
+    const volume = Math.max(0, Math.min(1, Math.round((Jukebox.getCurrentVolume() + delta) * 100) / 100));
+    if (!Jukebox.setRuntimeVolume(volume)) {
+      return { ok: false, action: 'adjust_volume', message: 'volume_control_unavailable' };
+    }
+    return { ok: true, action: 'adjust_volume', volume, delta };
+  },
+
+  executeSetModeControl: function(mode) {
+    const normalizedMode = String(mode || '').trim().toLowerCase();
+    if (!Jukebox.getPlaybackModeOrder().includes(normalizedMode)) {
+      return { ok: false, action: 'set_mode', message: 'invalid_playback_mode' };
+    }
+    Jukebox.setPlaybackMode(normalizedMode);
+    return {
+      ok: true,
+      action: 'set_mode',
+      mode: normalizedMode
+    };
   },
 
   formatControlSong: function(song) {
@@ -8631,18 +8737,7 @@ window.Jukebox = {
   
   updateVolume: function(value) {
     const volume = parseFloat(value);
-    const player = Jukebox.getPlayer();
-    
-    if (player) {
-      player.volume(volume);
-    }
-
-    if (volume > 0 && Jukebox.State.isMuted) {
-      Jukebox.State.isMuted = false;
-      Jukebox.State.savedVolume = volume;
-    }
-    
-    Jukebox.updateVolumeDisplay(volume);
+    Jukebox.setRuntimeVolume(volume);
   },
   
   logVolumeChange: function(value) {

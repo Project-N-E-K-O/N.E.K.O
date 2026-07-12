@@ -128,6 +128,25 @@ def setup_headless_jukebox_page(mock_page: Page) -> None:
     mock_page.evaluate(
         """
         () => {
+          const store = {};
+          Object.defineProperty(window, 'localStorage', {
+            configurable: true,
+            value: {
+              getItem(key) {
+                return Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null;
+              },
+              setItem(key, value) {
+                store[key] = String(value);
+              },
+              removeItem(key) {
+                delete store[key];
+              },
+              clear() {
+                Object.keys(store).forEach((key) => delete store[key]);
+              }
+            }
+          });
+          window.__jukeboxLocalStore = store;
           window.t = (key, fallback) => typeof fallback === 'string' ? fallback : key;
           window.fetch = async (url, options = {}) => {
             if (options.method === 'HEAD') {
@@ -287,6 +306,76 @@ def test_jukebox_execute_control_uses_canonical_control_keys(mock_page: Page):
             "actionStatus": "no_action",
         },
         "currentSong": "song1",
+    }
+
+
+@pytest.mark.frontend
+def test_jukebox_execute_control_sets_and_adjusts_volume_headless(mock_page: Page):
+    setup_headless_jukebox_page(mock_page)
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+          const setResult = await window.Jukebox.executeControl({ action: 'set_volume', volume: 35 });
+          const afterSet = window.__lastAPlayer.audio.volume;
+          const adjustResult = await window.Jukebox.executeControl({ action: 'adjust_volume', delta: 10 });
+          const afterAdjust = window.__lastAPlayer.audio.volume;
+          const invalidSet = await window.Jukebox.executeControl({ action: 'set_volume', volume: 130 });
+          const invalidAdjust = await window.Jukebox.executeControl({ action: 'adjust_volume', delta: 'louder' });
+          return {
+            setResult,
+            afterSet,
+            adjustResult,
+            afterAdjust,
+            invalidSet,
+            invalidAdjust,
+            hasUi: !!document.querySelector('.jukebox-wrapper'),
+            hasRuntimeHost: !!document.getElementById('neko-jukebox-runtime-host')
+          };
+        }
+        """
+    )
+
+    assert result == {
+        "setResult": {"ok": True, "action": "set_volume", "volume": 0.35},
+        "afterSet": 0.35,
+        "adjustResult": {"ok": True, "action": "adjust_volume", "volume": 0.45, "delta": 0.1},
+        "afterAdjust": 0.45,
+        "invalidSet": {"ok": False, "action": "set_volume", "message": "invalid_volume"},
+        "invalidAdjust": {"ok": False, "action": "adjust_volume", "message": "invalid_volume_delta"},
+        "hasUi": False,
+        "hasRuntimeHost": True,
+    }
+
+
+@pytest.mark.frontend
+def test_jukebox_execute_control_sets_playback_mode_without_ui(mock_page: Page):
+    setup_headless_jukebox_page(mock_page)
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+          const randomResult = await window.Jukebox.executeControl({ action: 'set_mode', mode: 'random' });
+          const invalidResult = await window.Jukebox.executeControl({ action: 'set_mode', mode: 'shuffle' });
+          return {
+            randomResult,
+            invalidResult,
+            playbackMode: window.Jukebox.State.playbackMode,
+            storedMode: window.localStorage.getItem('neko.jukebox.playbackMode'),
+            hasUi: !!document.querySelector('.jukebox-wrapper'),
+            hasRuntimeHost: !!document.getElementById('neko-jukebox-runtime-host')
+          };
+        }
+        """
+    )
+
+    assert result == {
+        "randomResult": {"ok": True, "action": "set_mode", "mode": "random"},
+        "invalidResult": {"ok": False, "action": "set_mode", "message": "invalid_playback_mode"},
+        "playbackMode": "random",
+        "storedMode": '"random"',
+        "hasUi": False,
+        "hasRuntimeHost": False,
     }
 
 

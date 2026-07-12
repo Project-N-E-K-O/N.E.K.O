@@ -782,6 +782,9 @@ async def _handle_agent_event(event: dict):
                 "command": {
                     "action": action,
                     "query": event.get("query") or "",
+                    "volume": event.get("volume"),
+                    "delta": event.get("delta"),
+                    "mode": event.get("mode") or "",
                 },
                 "source": event.get("source") or "",
             }

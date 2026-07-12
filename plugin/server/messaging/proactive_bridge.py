@@ -286,6 +286,9 @@ class ProactiveBridge:
                         "lanlan_name": target_lanlan,
                         "action": jukebox_action,
                         "query": ui.get("query"),
+                        "volume": ui.get("volume"),
+                        "delta": ui.get("delta"),
+                        "mode": ui.get("mode"),
                         "source": plugin_id,
                         "timestamp": timestamp,
                     }
