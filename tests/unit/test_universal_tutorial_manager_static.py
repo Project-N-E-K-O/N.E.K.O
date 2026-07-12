@@ -697,7 +697,7 @@ def test_tutorial_live2d_preparing_hides_model_side_controls():
     repo_root = Path(__file__).resolve().parents[2]
     css_source = (repo_root / "static/css/yui-guide.css").read_text(encoding="utf-8")
     app_ui_source = (repo_root / "static/app-ui.js").read_text(encoding="utf-8")
-    live2d_buttons_source = (repo_root / "static/live2d-ui-buttons.js").read_text(encoding="utf-8")
+    live2d_buttons_source = (repo_root / "static/live2d/live2d-ui-buttons.js").read_text(encoding="utf-8")
     manager_source = _read_manager()
     reload_controller_source = (repo_root / "static/tutorial/avatar/reload-controller.js").read_text(encoding="utf-8")
 
