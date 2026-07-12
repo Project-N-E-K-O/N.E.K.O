@@ -72,6 +72,7 @@ def test_random_pressure_defaults_to_dry_run() -> None:
     real_output_args = parse_random_pressure_args(["--real-output"])
 
     assert default_args.real_output is False
+    assert default_args.connect is False
     assert build_random_pressure_config(default_args)["dry_run"] is True
     assert real_output_args.real_output is True
     assert build_random_pressure_config(real_output_args)["dry_run"] is False
@@ -137,7 +138,7 @@ def test_silence_pressure_stops_before_triggers_when_safe_setup_is_rejected(
     )
 
 
-def test_random_pressure_restores_replaced_room_listener(
+def test_random_pressure_refuses_to_replace_existing_room_listener(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -185,14 +186,15 @@ def test_random_pressure_restores_replaced_room_listener(
             "1",
             "--room",
             "test-room",
+            "--connect",
             "--log",
             str(tmp_path / "random.jsonl"),
         ]
     )
 
-    assert run_random_pressure(args) == 0
+    with pytest.raises(RuntimeError, match="refusing to replace a listener"):
+        run_random_pressure(args)
     assert ("disconnect_live_room", {}) not in actions
-    assert actions[-1] == ("connect_live_room", {"room_id": "original-room"})
     assert current_room == "original-room"
 
 
