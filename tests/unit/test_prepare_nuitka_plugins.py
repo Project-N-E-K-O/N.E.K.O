@@ -103,6 +103,24 @@ def test_prepare_keeps_shared_plugin_runtime_directory(tmp_path: Path) -> None:
     assert (result.stage_dir / "_shared" / "helper.py").is_file()
 
 
+def test_prepare_preserves_allowed_bundled_napcat_launcher(tmp_path: Path) -> None:
+    project_root = tmp_path / "repo"
+    _write(project_root / "launcher.py", "pass\n")
+    plugin_dir = project_root / "plugin" / "plugins" / "qq_auto_reply"
+    _write(plugin_dir / "plugin.toml", '[plugin]\nid = "qq_auto_reply"\n')
+    _write(plugin_dir / "NapCat.Shell" / "launcher.bat", "@echo off\n")
+
+    result = prepare_plugins(
+        project_root=project_root,
+        plugins_root=Path("plugin/plugins"),
+        stage_dir=Path("build/nuitka-plugins"),
+        source_launcher=Path("launcher.py"),
+        generated_launcher=Path("build_nuitka_launcher.py"),
+    )
+
+    assert (result.stage_dir / "qq_auto_reply" / "NapCat.Shell" / "launcher.bat").is_file()
+
+
 def test_dist_check_matches_stage_and_allows_shared_directory(tmp_path: Path) -> None:
     stage = tmp_path / "stage"
     dist_root = tmp_path / "dist"

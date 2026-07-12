@@ -131,15 +131,6 @@ def _remove_private_runtime_artifacts(stage_dir: Path) -> list[str]:
             removed.append(path.relative_to(stage_dir).as_posix())
             path.unlink()
 
-    napcat_dir = stage_dir / "qq_auto_reply" / "NapCat.Shell"
-    if napcat_dir.exists():
-        removed.extend(
-            path.relative_to(stage_dir).as_posix()
-            for path in napcat_dir.rglob("*")
-            if path.is_file()
-        )
-        shutil.rmtree(napcat_dir)
-        napcat_dir.mkdir(parents=True, exist_ok=True)
     return removed
 
 
