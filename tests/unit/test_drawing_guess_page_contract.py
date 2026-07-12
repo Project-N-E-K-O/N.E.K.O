@@ -185,8 +185,12 @@ def test_drawing_guess_static_route_contract():
     assert 'id="model-x-control"' not in html
     assert 'id="model-y-control"' not in html
     assert 'id="model-reset-control"' in html
-    assert "/static/live2d-core.js" in html
-    assert "/static/live2d-model.js" in html
+    assert "/static/live2d/live2d-core.js" in html
+    assert "/static/app/app-state.js" in html
+    assert "/static/app/app-audio-playback.js" in html
+    assert "/static/live2d/live2d-emotion.js" in html
+    assert "/static/live2d/live2d-interaction.js" in html
+    assert "/static/live2d/live2d-model.js" in html
     assert "function setModelMood" in script
     assert "els.modelState.hidden = !shouldShowModelState;" not in script
     assert "function handleModelWheel" in script
@@ -238,8 +242,8 @@ def test_drawing_guess_static_route_contract():
     assert "fetchCharacterAvatarConfig" in script
     assert "current_live2d_model?catgirl_name=" in script
     assert "/static/pngtuber-core.js" in html
-    assert "/static/vrm-init.js" in html
-    assert "/static/mmd-init.js" in html
+    assert "/static/vrm/vrm-init.js" in html
+    assert "/static/mmd/mmd-init.js" in html
     assert '"@moeru/three-mmd"' in html
     assert "window.__DRAWING_GUESS_AVATAR_SLOT__ = true;" in html
     assert "window._cardExportPage = true;" in html
@@ -438,9 +442,15 @@ def test_drawing_guess_static_route_contract():
     assert "triggerRandomAiGuess(autoImage)" in script
     assert "flushDeferredAiGuessWork()" in script
     assert "continueAfterAiDrawingHalf(res, state.roundFlowToken);" in script
-    assert "if (state.routeEnding || state.phase === 'final_summary') return;" in script
+    assert "res.correct || res.kind === 'give_up'" in script
+    assert "function routeOutputMatchesCurrentRound" in script
+    assert "result.state.client_round_token" in script
+    assert "String(token) === String(state.activeRoundToken)" in script
+    assert "if (state.phase === 'final_summary' && result.kind !== 'chat') return;" in script
     assert "res.reason === 'session_busy'" in script
     assert "setTimeout(retryWhenReady, 180);" in script
+    assert "aiGuessTimeoutRetryTimer: null" in script
+    assert "state.aiGuessTimeoutRetryTimer = setTimeout(retryWhenReady, 180);" in script
     assert "speechAudioTapReady: false" in script
     assert "response.type === 'speech_tap_ready'" in script
     assert "suppress_primary_audio: state.speechAudioTapReady" in script

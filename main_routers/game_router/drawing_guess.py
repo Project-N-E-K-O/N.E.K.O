@@ -3281,7 +3281,38 @@ async def _handle_drawing_guess_input_payload_locked(
         }
 
     direct_answer_request = _is_direct_answer_request(text)
-    if direct_answer_request or _is_hint_request(text) or (input_intent and input_intent.get("intent") == "hint" and float(input_intent.get("confidence") or 0.0) >= 0.45):
+    if direct_answer_request:
+        _append_game_chat(session, "user", text, kind="direct_answer_request")
+        answer_label = _word_public(word, locale)["label"]
+        session["phase"] = "word_picking"
+        line, line_source = await _generate_persona_game_line(
+            session=session,
+            locale=locale,
+            lanlan_name=str(session.get("lanlan_name") or data.get("lanlan_name") or ""),
+            event="hint_request",
+            fallback=_localized_line(locale, "guess_timeout"),
+            details={
+                "character_private_answer_label": answer_label,
+                "answer_label": answer_label,
+                "generate_hint_from_answer": True,
+                "do_not_use_fixed_hint_template": True,
+                "allow_answer_reveal": True,
+            },
+        )
+        _append_game_chat(session, "assistant", line, kind="guess_result")
+        return {
+            "ok": True,
+            "handled": True,
+            "kind": "give_up",
+            "correct": False,
+            "message": line,
+            "message_source": line_source,
+            "answer": _word_public(word, locale),
+            "user_draw_options": _user_word_options_public(session, locale),
+            "draw_seconds": ROUND_DRAW_SECONDS,
+            "state": _public_round_state(session, locale),
+        }
+    if _is_hint_request(text) or (input_intent and input_intent.get("intent") == "hint" and float(input_intent.get("confidence") or 0.0) >= 0.45):
         _append_game_chat(session, "user", text, kind="hint_request")
         answer_label = _word_public(word, locale)["label"]
         hint_details = {

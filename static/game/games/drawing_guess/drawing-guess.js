@@ -70,6 +70,7 @@
     roundFlowToken: 0,
     activeRoundToken: 0,
     guessTimeoutRetryTimer: null,
+    aiGuessTimeoutRetryTimer: null,
     aiGuessDeadline: 0,
     aiGuessInFlight: false,
     chatInFlight: false,
@@ -857,6 +858,8 @@
   function beginRoundFlow() {
     clearTimeout(state.guessTimeoutRetryTimer);
     state.guessTimeoutRetryTimer = null;
+    clearTimeout(state.aiGuessTimeoutRetryTimer);
+    state.aiGuessTimeoutRetryTimer = null;
     state.roundFlowToken += 1;
     return state.roundFlowToken;
   }
@@ -1662,6 +1665,8 @@
   function stopAiGuessSchedule() {
     clearTimeout(state.aiGuessTimer);
     state.aiGuessTimer = null;
+    clearTimeout(state.aiGuessTimeoutRetryTimer);
+    state.aiGuessTimeoutRetryTimer = null;
     state.aiGuessNextAt = 0;
     state.pendingAutoGuess = false;
     state.pendingAutoGuessImage = '';
@@ -2148,6 +2153,14 @@
     return String(event.userVoiceText || event.userText || event.textRaw || (output.meta && output.meta.inputText) || '').trim();
   }
 
+  function routeOutputMatchesCurrentRound(output) {
+    var result = (output && output.result) || {};
+    var eventState = (output && output.event && output.event.currentState) || {};
+    var token = eventState.client_round_token;
+    if (token == null && result.state) token = result.state.client_round_token;
+    if (token == null) return true;
+    return String(token) === String(state.activeRoundToken);
+  }
   function handleRouteDrainOutput(output) {
     if (!output || !output.type) return;
     if (output.type === 'game_voice_stt_gate') {
@@ -2176,8 +2189,10 @@
       return;
     }
     if (output.type !== 'game_llm_result') return;
-    if (state.routeEnding || state.phase === 'final_summary') return;
     var result = output.result || {};
+    if (state.routeEnding) return;
+    if (state.phase === 'final_summary' && result.kind !== 'chat') return;
+    if (!routeOutputMatchesCurrentRound(output)) return;
     var line = resultLine(result);
     if (line) addNekoMessage(line);
     applyExternalDrawingResult(result);
@@ -2436,7 +2451,26 @@
     var flowToken = state.roundFlowToken;
     return post(ROUND_API + '/timeout', roundPayload(), 10000).then(function (res) {
       if (!isCurrentRoundFlow(flowToken)) return;
-      if (!res || !res.ok) return;
+      if (!res || !res.ok) {
+        if (res && res.reason === 'session_busy') {
+          state.pendingAiGuessTimeout = true;
+          clearTimeout(state.aiGuessTimeoutRetryTimer);
+          var retryWhenReady = function () {
+            state.aiGuessTimeoutRetryTimer = null;
+            if (!isCurrentRoundFlow(flowToken)) return;
+            if (state.phase !== 'ai_guessing' && state.phase !== 'ai_guess_feedback') return;
+            if (state.chatInFlight || state.aiGuessInFlight) {
+              state.aiGuessTimeoutRetryTimer = setTimeout(retryWhenReady, 120);
+              return;
+            }
+            state.pendingAiGuessTimeout = false;
+            settleAiGuessTimeout();
+          };
+          state.aiGuessTimeoutRetryTimer = setTimeout(retryWhenReady, 180);
+        }
+        return;
+      }
+      state.pendingAiGuessTimeout = false;
       if (res.message) addNekoMessage(res.message);
       if (res.phase === 'summary' || (res.state && res.state.phase === 'summary')) {
         renderSummary(res);
@@ -2623,7 +2657,7 @@
         return;
       }
       addNekoMessage(res.message || '');
-      if (res.correct) {
+      if (res.correct || res.kind === 'give_up') {
         stopCountdown();
         state.aiAnswerLabel = res.answer ? String(res.answer.label || '') : '';
         addEventMessage('drawingGuess.messages.answerReveal', 'Answer: {{answer}}', {

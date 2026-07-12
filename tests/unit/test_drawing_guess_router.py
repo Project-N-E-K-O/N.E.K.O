@@ -1614,9 +1614,13 @@ async def test_direct_answer_request_can_reveal_without_fixed_template(monkeypat
     }))
 
     assert result["ok"] is True
-    assert result["kind"] == "hint"
+    assert result["kind"] == "give_up"
+    assert result["correct"] is False
     assert result["message_source"] == "persona_model"
     assert result["message"] == "自己问的喔，答案是香蕉。"
+    assert result["answer"]["id"] == "banana"
+    assert result["state"]["phase"] == "word_picking"
+    assert len(result["user_draw_options"]) == dgr.USER_DRAW_OPTION_COUNT
 
 
 @pytest.mark.unit
