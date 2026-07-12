@@ -148,7 +148,7 @@ def test_entity_kind_resolves_canonical_entities():
 
 def test_reflection_facade_preserves_ontology_and_archive_exports():
     """The internal split must not remove or copy legacy facade symbols."""
-    import memory.reflection as facade
+    from memory import reflection as facade
     from memory._reflection import ontology, schema
 
     assert facade.RELATION_TYPES is ontology.RELATION_TYPES
