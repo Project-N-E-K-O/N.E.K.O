@@ -181,6 +181,29 @@ async def test_cached_nonterminal_turn_cannot_revive_stale_session(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_replaced_session_stays_ended_after_replacement_closes(tmp_path):
+    """新演出结束并清空 active 后，被替换的旧 Session 也不能重新恢复。"""  # noqa: DOCSTRING_CJK
+    root = tmp_path / "theater"
+    old_session = await runtime.start_session(root, lanlan_name="测试猫娘", client_start_id="start_replaced_old")
+    replacement = await runtime.start_session(root, lanlan_name="测试猫娘", client_start_id="start_replaced_new")
+    await runtime.end_session(root, session_id=replacement["session_id"])
+
+    restored = await runtime.get_state(root, old_session["session_id"])
+    submitted = await runtime.submit_input(
+        root,
+        session_id=old_session["session_id"],
+        input_kind="free_input",
+        message="旧演出不应复活",
+        client_turn_id="turn_replaced_old",
+        base_revision=0,
+    )
+
+    assert restored["can_resume"] is False
+    assert restored["phase"] == "ended"
+    assert submitted == {"ok": False, "reason": "session_ended"}
+
+
+@pytest.mark.asyncio
 async def test_cached_terminal_turn_remains_idempotent(tmp_path):
     """主动离场已经提交后，同一幂等 ID 重试仍返回原终局响应。"""  # noqa: DOCSTRING_CJK
     root = tmp_path / "theater"
@@ -704,6 +727,39 @@ async def test_corrupt_active_session_index_recovers_as_empty(tmp_path):
     session_id = "theater_00000000-0000-0000-0000-000000000009"
     await session_store.set_active_session(root, "测试猫娘", session_id)
     assert await session_store.load_active_sessions(root) == {"测试猫娘": session_id}
+
+
+@pytest.mark.asyncio
+async def test_corrupt_active_index_rebuilds_latest_unended_session(tmp_path):
+    """索引损坏后必须恢复最新未结束演出，并继续把被替换 Session 判为 stale。"""  # noqa: DOCSTRING_CJK
+    root = tmp_path / "theater"
+    old_session = await runtime.start_session(root, lanlan_name="测试猫娘", client_start_id="start_rebuild_old")
+    replacement = await runtime.start_session(root, lanlan_name="测试猫娘", client_start_id="start_rebuild_new")
+    path = session_store.active_sessions_path(root)
+    path.write_text('{"测试猫娘":', encoding="utf-8")
+    session_store.reset_active_sessions_for_tests()
+
+    rebuilt = await session_store.load_active_sessions(root)
+    old_saved = await session_store.load_session(root, old_session["session_id"])
+
+    assert rebuilt == {"测试猫娘": replacement["session_id"]}
+    assert old_saved["ended_at"]
+    assert await session_store.is_stale_session(root, old_saved) is True
+
+
+@pytest.mark.asyncio
+async def test_invalid_active_index_payload_rebuilds_current_session(tmp_path):
+    """合法 JSON 的错误顶层结构也必须重建，不能按空索引放行历史 Session。"""  # noqa: DOCSTRING_CJK
+    root = tmp_path / "theater"
+    started = await runtime.start_session(root, lanlan_name="测试猫娘", client_start_id="start_invalid_index")
+    path = session_store.active_sessions_path(root)
+    path.write_text("[]", encoding="utf-8")
+    session_store.reset_active_sessions_for_tests()
+
+    rebuilt = await session_store.load_active_sessions(root)
+
+    assert rebuilt == {"测试猫娘": started["session_id"]}
+    assert json.loads(path.read_text(encoding="utf-8")) == rebuilt
 
 
 @pytest.mark.asyncio

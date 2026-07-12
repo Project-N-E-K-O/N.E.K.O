@@ -143,18 +143,59 @@ async def load_active_sessions(root: Path) -> dict[str, str]:
     except FileNotFoundError:
         return {}
     except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
-        # 活动索引只是可重建指针，损坏时不能阻断普通角色切换或新演出；剧情 Session 文件保持不动。
-        logger.warning("小剧场活动索引损坏，按空索引恢复: path=%s err=%s", active_sessions_path(root), exc)
-        return {}
+        return await _recover_active_sessions(root, reason=type(exc).__name__)
     if not isinstance(data, dict):
-        return {}
+        # 合法 JSON 但顶层结构错误同样属于索引损坏，不能让历史 Session 失去 stale 依据。
+        return await _recover_active_sessions(root, reason="invalid_payload")
     active: dict[str, str] = {}
     for lanlan_name, session_id in data.items():
         lanlan = str(lanlan_name or "").strip()
         sid = str(session_id or "").strip()
         if lanlan and _SESSION_ID_RE.match(sid):
             active[lanlan] = sid
+    if len(active) != len(data):
+        # 任一非法映射都说明索引不完整，统一从 Session 真源重建，避免只恢复部分角色。
+        return await _recover_active_sessions(root, reason="invalid_mapping")
     return active
+
+
+async def _recover_active_sessions(root: Path, *, reason: str) -> dict[str, str]:
+    """从 Session 真源重建损坏活动索引，并在可写时修复磁盘文件。"""  # noqa: DOCSTRING_CJK
+    rebuilt = await _rebuild_active_sessions(root)
+    logger.warning(
+        "小剧场活动索引损坏，已从未结束 Session 重建: path=%s count=%d reason=%s",
+        active_sessions_path(root),
+        len(rebuilt),
+        reason,
+    )
+    try:
+        await save_active_sessions(root, rebuilt)
+    except OSError as write_exc:
+        # 只读或短暂 IO 故障时仍返回内存重建结果，不能让附属索引阻断普通角色切换。
+        logger.warning("小剧场活动索引重建写盘失败: path=%s err=%s", active_sessions_path(root), write_exc)
+    return rebuilt
+
+
+async def _rebuild_active_sessions(root: Path) -> dict[str, str]:
+    """按每个猫娘最新的未结束 Session 重建可恢复活动指针。"""  # noqa: DOCSTRING_CJK
+    latest_by_lanlan: dict[str, tuple[int, str]] = {}
+    for session_id in await list_session_ids(root):
+        try:
+            session = await load_session(root, session_id)
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+            # 单个 Session 损坏不应阻止其他角色恢复；损坏剧情文件本身不会被改写。
+            continue
+        if not isinstance(session, dict) or session.get("ended_at"):
+            continue
+        lanlan_name = str(session.get("lanlan_name") or "").strip()
+        if not lanlan_name:
+            continue
+        timestamp = session.get("updated_at") or session.get("started_at") or 0
+        normalized_timestamp = timestamp if isinstance(timestamp, int) and not isinstance(timestamp, bool) else 0
+        candidate = (normalized_timestamp, session_id)
+        if candidate > latest_by_lanlan.get(lanlan_name, (-1, "")):
+            latest_by_lanlan[lanlan_name] = candidate
+    return {lanlan_name: candidate[1] for lanlan_name, candidate in latest_by_lanlan.items()}
 
 
 async def save_active_sessions(root: Path, active: dict[str, str]) -> None:

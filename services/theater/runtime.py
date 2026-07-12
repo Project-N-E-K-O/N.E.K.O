@@ -64,6 +64,7 @@ async def start_session(
             lanlan_name=normalized_name,
             story_id=story_id,
             start_client_id=normalized_start_id,
+            replaced_session=active_session,
         )
 
 
@@ -86,6 +87,7 @@ async def _create_session(
     lanlan_name: str,
     story_id: str | None,
     start_client_id: str,
+    replaced_session: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """在角色锁内创建、保存并切换活动 Session。"""  # noqa: DOCSTRING_CJK
     story = await story_loader.load_story(story_id)
@@ -132,7 +134,26 @@ async def _create_session(
     )
     session["public_snapshot"] = deepcopy(response)
     await session_store.save_session(root, session)
-    await session_store.set_active_session(root, str(session["lanlan_name"]), session_id)
+    previous_snapshot = deepcopy(replaced_session) if isinstance(replaced_session, dict) else None
+    if isinstance(replaced_session, dict):
+        # 新 Session 文件先落盘，再结束旧演出；active 发布失败时可以恢复旧存档而不丢进度。
+        replaced_at = _now_ms()
+        replaced_session["ended_at"] = replaced_session.get("ended_at") or replaced_at
+        replaced_session["updated_at"] = replaced_at
+        replaced_session["phase"] = "ended"
+        replaced_public = replaced_session.get("public_snapshot")
+        if isinstance(replaced_public, dict):
+            replaced_public["can_resume"] = False
+            replaced_public["suggestion_options"] = []
+            replaced_public["phase"] = "ended"
+        await session_store.save_session(root, replaced_session)
+    try:
+        await session_store.set_active_session(root, str(session["lanlan_name"]), session_id)
+    except Exception:
+        if previous_snapshot is not None:
+            # active 索引发布失败时恢复旧 Session；新文件仅作为不可达孤儿保留，不伪装成已开场。
+            await session_store.save_session(root, previous_snapshot)
+        raise
     return response
 
 
