@@ -116,6 +116,49 @@ def test_get_plugin_config_path_returns_none_for_missing_file(monkeypatch: pytes
 
 
 @pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_start_plugin_already_running_reports_preference_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "running_plugin" / "plugin.toml"
+    host = _FakeProcessHost(
+        plugin_id="running_plugin",
+        entry_point="tests.fake:Plugin",
+        config_path=config_path,
+    )
+    hosts_backup = dict(module.state.plugin_hosts)
+
+    monkeypatch.setattr(
+        module,
+        "set_runtime_override",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            runtime_overrides_module.RuntimeOverrideWriteError("disk full")
+        ),
+    )
+
+    try:
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+            module.state.plugin_hosts["running_plugin"] = host
+
+        with pytest.raises(ServerDomainError) as exc_info:
+            await module.PluginLifecycleService().start_plugin(
+                "running_plugin",
+                persist_user_intent=True,
+            )
+
+        assert exc_info.value.code == "PLUGIN_RUNTIME_PREFERENCE_PERSIST_FAILED"
+        assert exc_info.value.details["runtime_state_changed"] is False
+        with module.state.acquire_plugin_hosts_read_lock():
+            assert module.state.plugin_hosts["running_plugin"] is host
+    finally:
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+            module.state.plugin_hosts.update(hosts_backup)
+
+
+@pytest.mark.plugin_unit
 def test_parse_single_plugin_config_warns_on_directory_id_mismatch(
     tmp_path: Path,
 ) -> None:
@@ -311,10 +354,22 @@ async def test_start_plugin_refreshes_registry_before_loading(
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
-async def test_start_plugin_persist_user_intent_sets_effective_auto_start_before_refresh(
+@pytest.mark.parametrize(
+    ("persist_fails", "refreshed_plugin_id", "resolved_plugin_id"),
+    [
+        (False, "demo_plugin", "demo_plugin"),
+        (True, "demo_plugin", "demo_plugin"),
+        (False, "refreshed_plugin", "resolved_plugin"),
+    ],
+    ids=("success", "persistence-failure", "multi-stage-id-resolution"),
+)
+async def test_start_plugin_persists_intent_after_success_and_migrates_resolved_ids(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     _isolate_runtime_overrides: dict,
+    persist_fails: bool,
+    refreshed_plugin_id: str,
+    resolved_plugin_id: str,
 ) -> None:
     config_path = tmp_path / "demo_plugin" / "plugin.toml"
     config_path.parent.mkdir(parents=True)
@@ -339,12 +394,12 @@ async def test_start_plugin_persist_user_intent_sets_effective_auto_start_before
     async def _refresh_plugin(plugin_id: str) -> dict[str, object]:
         seen["override_at_refresh"] = runtime_overrides_module.get_runtime_override(plugin_id)
         with module.state.acquire_plugins_write_lock():
-            module.state.plugins[plugin_id] = {
-                "id": plugin_id,
+            module.state.plugins[refreshed_plugin_id] = {
+                "id": refreshed_plugin_id,
                 "runtime_enabled": True,
                 "runtime_auto_start": True,
             }
-        return {"success": True, "plugin_id": plugin_id}
+        return {"success": True, "plugin_id": refreshed_plugin_id}
 
     async def _list_extension_configs_for_host(_plugin_id: str) -> list[dict[str, str]]:
         return []
@@ -360,7 +415,7 @@ async def test_start_plugin_persist_user_intent_sets_effective_auto_start_before
             "warnings": [],
         },
     )
-    monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
+    monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: resolved_plugin_id)
     monkeypatch.setattr(module, "_find_missing_python_requirements", lambda *args, **kwargs: [])
     monkeypatch.setattr(module, "PluginProcessHost", _FakeProcessHost)
     monkeypatch.setattr(module, "_import_plugin_module", lambda *args, **kwargs: SimpleNamespace(Plugin=type("Plugin", (), {})))
@@ -377,16 +432,45 @@ async def test_start_plugin_persist_user_intent_sets_effective_auto_start_before
             module.state.plugin_hosts.clear()
 
         runtime_overrides_module.set_runtime_override("demo_plugin", False)
+        if refreshed_plugin_id != "demo_plugin":
+            runtime_overrides_module.set_runtime_override(
+                refreshed_plugin_id,
+                False,
+                auto_start=False,
+            )
+
+        if persist_fails:
+            def _fail_persist(*_args, **_kwargs) -> None:
+                raise ServerDomainError(
+                    code="PLUGIN_RUNTIME_PREFERENCE_PERSIST_FAILED",
+                    message="PLUGIN_RUNTIME_PREFERENCE_PERSIST_FAILED",
+                    status_code=500,
+                    details={
+                        "error_type": "RuntimeOverrideWriteError",
+                        "runtime_state_changed": True,
+                    },
+                )
+
+            monkeypatch.setattr(module, "_persist_user_runtime_intent", _fail_persist)
 
         response = await module.PluginLifecycleService().start_plugin("demo_plugin", persist_user_intent=True)
 
         assert response["success"] is True
-        assert seen["override_at_refresh"] is True
-        assert _isolate_runtime_overrides == {
-            "demo_plugin": {"enabled": True, "auto_start": True},
-        }
-        with module.state.acquire_plugins_read_lock():
-            assert module.state.plugins["demo_plugin"]["runtime_auto_start"] is True
+        assert seen["override_at_refresh"] is False
+        if persist_fails:
+            assert _isolate_runtime_overrides == {"demo_plugin": False}
+            assert response["partial_success"] is True
+            assert response["preference_persisted"] is False
+            assert response["runtime_state_changed"] is True
+        else:
+            assert _isolate_runtime_overrides == {
+                resolved_plugin_id: {"enabled": True, "auto_start": True},
+            }
+            assert response["preference_persisted"] is True
+        assert response["plugin_id"] == resolved_plugin_id
+        if resolved_plugin_id == "demo_plugin":
+            with module.state.acquire_plugins_read_lock():
+                assert module.state.plugins["demo_plugin"]["runtime_auto_start"] is True
     finally:
         with module.state.acquire_plugins_write_lock():
             module.state.plugins.clear()
@@ -396,6 +480,71 @@ async def test_start_plugin_persist_user_intent_sets_effective_auto_start_before
             module.state.plugin_hosts.update(hosts_backup)
         with module.state._snapshot_cache_lock:
             module.state._snapshot_cache = cache_backup
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_start_plugin_refresh_failure_does_not_persist_user_intent(
+    monkeypatch: pytest.MonkeyPatch,
+    _isolate_runtime_overrides: dict,
+) -> None:
+    runtime_overrides_module.set_runtime_override(
+        "failed_plugin",
+        False,
+        auto_start=False,
+    )
+
+    async def _fail_refresh(_plugin_id: str) -> dict[str, object]:
+        raise ServerDomainError(
+            code="PLUGIN_REGISTRY_CONFLICT",
+            message="conflict",
+            status_code=409,
+        )
+
+    monkeypatch.setattr(module.plugin_registry_service, "refresh_plugin", _fail_refresh)
+
+    with pytest.raises(ServerDomainError) as exc_info:
+        await module.PluginLifecycleService().start_plugin(
+            "failed_plugin",
+            persist_user_intent=True,
+        )
+
+    assert exc_info.value.code == "PLUGIN_REGISTRY_CONFLICT"
+    assert _isolate_runtime_overrides == {
+        "failed_plugin": {"enabled": False, "auto_start": False},
+    }
+
+
+@pytest.mark.plugin_unit
+def test_persist_user_runtime_intent_migrates_resolved_plugin_preferences(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[tuple[str, ...], str, bool, bool | None]] = []
+
+    monkeypatch.setattr(module, "PLUGIN_SYNC_AUTO_START_ON_TOGGLE", True)
+    monkeypatch.setattr(
+        module,
+        "migrate_runtime_override",
+        lambda sources, target, enabled, *, auto_start=None: calls.append(
+            (tuple(sources), target, enabled, auto_start)
+        ),
+    )
+
+    module._persist_user_runtime_intent(
+        "renamed_plugin",
+        True,
+        previous_plugin_ids=("original_plugin", "intermediate_plugin"),
+        runtime_state_changed=True,
+    )
+
+    assert calls == [
+        (
+            ("original_plugin", "intermediate_plugin"),
+            "renamed_plugin",
+            True,
+            True,
+        )
+    ]
 
 
 @pytest.mark.plugin_unit
@@ -2510,7 +2659,7 @@ async def test_stop_plugin_can_leave_auto_start_unchanged_when_sync_is_disabled(
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
-async def test_stop_plugin_reports_preference_write_failure_after_stopping(
+async def test_stop_plugin_returns_partial_success_on_preference_write_failure(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -2534,15 +2683,19 @@ async def test_stop_plugin_reports_preference_write_failure_after_stopping(
             ),
         )
 
-        with pytest.raises(ServerDomainError) as exc_info:
-            await module.PluginLifecycleService().stop_plugin(
-                "demo_plugin",
-                persist_user_intent=True,
-            )
+        response = await module.PluginLifecycleService().stop_plugin(
+            "demo_plugin",
+            persist_user_intent=True,
+        )
 
-        assert exc_info.value.code == "PLUGIN_RUNTIME_PREFERENCE_PERSIST_FAILED"
-        assert exc_info.value.details["enabled"] is False
-        assert exc_info.value.details["runtime_state_changed"] is True
+        assert response["success"] is True
+        assert response["partial_success"] is True
+        assert response["preference_persisted"] is False
+        assert response["runtime_state_changed"] is True
+        assert response["preference_error"] == {
+            "code": "PLUGIN_RUNTIME_PREFERENCE_PERSIST_FAILED",
+            "error_type": "RuntimeOverrideWriteError",
+        }
         with module.state.acquire_plugin_hosts_read_lock():
             assert "demo_plugin" not in module.state.plugin_hosts
     finally:

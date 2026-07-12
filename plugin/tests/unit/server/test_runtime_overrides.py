@@ -84,12 +84,17 @@ def test_runtime_overrides_ignore_blank_plugin_id(_isolate_runtime_overrides):
 
 
 @pytest.mark.plugin_unit
-def test_coerce_overrides_rejects_invalid_entries():
-    with pytest.raises(ro.RuntimeOverrideReadError, match="invalid entry"):
-        ro._coerce_overrides({"good": True, "bad": "yes"})
-
-    with pytest.raises(ro.RuntimeOverrideReadError, match="invalid fields"):
-        ro._coerce_overrides({"bad": {"enabled": "yes"}})
+def test_coerce_overrides_skips_invalid_entries_and_keeps_valid_entries():
+    assert ro._coerce_overrides(
+        {
+            "good": True,
+            "bad_entry": "yes",
+            "bad_fields": {"enabled": "yes"},
+            "mixed": {"enabled": False, "auto_start": "yes", "legacy": True},
+        }
+    ) == {
+        "good": True,
+    }
 
 
 @pytest.mark.plugin_unit
@@ -146,6 +151,91 @@ def test_runtime_override_read_error_is_not_treated_as_empty_or_cached(monkeypat
 
     monkeypatch.setattr(ro, "_load_from_disk", lambda: {"recovered": True})
     assert ro.load_runtime_overrides() == {"recovered": True}
+
+
+@pytest.mark.plugin_unit
+def test_runtime_override_getters_fall_back_when_file_is_unreadable(monkeypatch):
+    monkeypatch.setattr(
+        ro,
+        "_load_from_disk",
+        lambda: (_ for _ in ()).throw(ro.RuntimeOverrideReadError("invalid json")),
+    )
+    ro.reset_cache_for_testing()
+
+    assert ro.get_runtime_override("demo") is None
+    assert ro.get_runtime_auto_start_override("demo") is None
+
+
+@pytest.mark.plugin_unit
+def test_tolerated_invalid_entries_cannot_be_silently_overwritten(monkeypatch):
+    saved: list[dict[str, ro.RuntimeOverride]] = []
+
+    class _ConfigManager:
+        def load_json_config(self, _filename):
+            return {
+                "valid": True,
+                "invalid": "yes",
+                "partially_invalid": {"enabled": False, "auto_start": "yes"},
+            }
+
+        def save_json_config(self, _filename, overrides):
+            saved.append(dict(overrides))
+
+    monkeypatch.setattr(config_manager_module, "get_config_manager", lambda: _ConfigManager())
+    monkeypatch.setattr(ro, "_load_from_disk", _ORIGINAL_LOAD_FROM_DISK)
+    ro.reset_cache_for_testing()
+
+    assert ro.get_runtime_override("valid") is True
+    assert ro.get_runtime_override("invalid") is None
+    assert ro.get_runtime_override("partially_invalid") is None
+    assert ro.get_runtime_auto_start_override("partially_invalid") is None
+    with pytest.raises(ro.RuntimeOverrideWriteError, match="invalid content"):
+        ro.set_runtime_override("valid", False)
+    assert saved == []
+
+
+@pytest.mark.plugin_unit
+def test_load_runtime_overrides_returns_independent_nested_snapshot(
+    _isolate_runtime_overrides,
+):
+    ro.set_runtime_override("demo", True, auto_start=True)
+
+    snapshot = ro.load_runtime_overrides()
+    assert isinstance(snapshot["demo"], dict)
+    snapshot["demo"]["auto_start"] = False
+
+    assert ro.load_runtime_overrides() == {
+        "demo": {"enabled": True, "auto_start": True},
+    }
+
+
+@pytest.mark.plugin_unit
+def test_migrate_runtime_override_commits_all_source_removals_and_target_update_once(
+    _isolate_runtime_overrides,
+    monkeypatch,
+):
+    ro.set_runtime_override("original", False, auto_start=False)
+    ro.set_runtime_override("intermediate", False, auto_start=False)
+    saved: list[dict[str, ro.RuntimeOverride]] = []
+    original_save = ro._save_to_disk
+
+    def _spy_save(overrides):
+        saved.append(dict(overrides))
+        original_save(overrides)
+
+    monkeypatch.setattr(ro, "_save_to_disk", _spy_save)
+
+    ro.migrate_runtime_override(
+        ("original", "intermediate"),
+        "renamed",
+        True,
+        auto_start=True,
+    )
+
+    assert saved == [{"renamed": {"enabled": True, "auto_start": True}}]
+    assert ro.load_runtime_overrides() == {
+        "renamed": {"enabled": True, "auto_start": True},
+    }
 
 
 @pytest.mark.plugin_unit

@@ -221,6 +221,56 @@ async def test_refresh_registry_applies_user_auto_start_override(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "load_overrides",
+    [
+        lambda: (_ for _ in ()).throw(
+            runtime_overrides.RuntimeOverrideReadError("invalid json")
+        ),
+        lambda: runtime_overrides._coerce_overrides(
+            {
+                "manifest_plugin": {
+                    "enabled": False,
+                    "auto_start": "yes",
+                }
+            }
+        ),
+    ],
+    ids=("unreadable-file", "invalid-plugin-entry"),
+)
+async def test_refresh_registry_uses_manifest_defaults_when_overrides_are_invalid(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    load_overrides,
+) -> None:
+    root = _write_plugin_fixture(tmp_path, "manifest_plugin")
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    cache_backup = copy.deepcopy(module.state._snapshot_cache)
+
+    monkeypatch.setattr(
+        runtime_overrides,
+        "_load_from_disk",
+        load_overrides,
+    )
+    runtime_overrides.reset_cache_for_testing()
+    monkeypatch.setattr(module, "PLUGIN_CONFIG_ROOTS", (root,))
+
+    try:
+        await module.PluginRegistryService().refresh_registry()
+
+        with module.state.acquire_plugins_read_lock():
+            plugin_meta = dict(module.state.plugins["manifest_plugin"])
+        assert plugin_meta["runtime_enabled"] is True
+        assert plugin_meta["runtime_auto_start"] is False
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+        with module.state._snapshot_cache_lock:
+            module.state._snapshot_cache = cache_backup
+
+
+@pytest.mark.asyncio
 async def test_refresh_plugin_returns_updated_status_for_existing_plugin(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
