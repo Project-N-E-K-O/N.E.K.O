@@ -13,6 +13,7 @@
         {
           "id": "primary_number_sense",
           "relation": "prerequisite",
+          "required_mastery": 0.55,
           "reason": "Number sense and place value anchor the later classification of rational, irrational, and real numbers.",
           "priority": "core",
           "context": "diagnosis",
@@ -120,7 +121,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -262,7 +263,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -388,7 +389,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -513,7 +514,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -639,7 +640,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -764,7 +765,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -890,7 +891,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -1032,7 +1033,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -1175,7 +1176,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -1300,7 +1301,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -1416,7 +1417,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -1532,7 +1533,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -1658,7 +1659,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -1784,7 +1785,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -1920,7 +1921,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -2046,7 +2047,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -2172,7 +2173,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -2309,7 +2310,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -2446,7 +2447,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -2571,7 +2572,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -2696,7 +2697,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -2821,7 +2822,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -2958,7 +2959,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -3084,7 +3085,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -3166,7 +3167,6 @@
       ],
       "question_types": [
         "概念辨析",
-        "综合应用",
         "综合应用"
       ],
       "examples": [
@@ -3200,7 +3200,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -3319,7 +3319,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -3448,7 +3448,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -3596,7 +3596,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -3726,7 +3726,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -3856,7 +3856,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -3987,7 +3987,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -4114,7 +4114,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -4243,7 +4243,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -4394,7 +4394,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -4544,7 +4544,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -4681,7 +4681,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -4832,7 +4832,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -4983,7 +4983,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -5120,7 +5120,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -5240,7 +5240,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -5372,7 +5372,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -5501,7 +5501,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -5649,7 +5649,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -5778,7 +5778,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -5907,7 +5907,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -6036,7 +6036,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -6177,7 +6177,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -6336,7 +6336,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -6476,7 +6476,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -6606,7 +6606,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -6746,7 +6746,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -6842,7 +6842,6 @@
       ],
       "question_types": [
         "概念辨析",
-        "综合应用",
         "综合应用"
       ],
       "examples": [
@@ -6876,7 +6875,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -6924,7 +6923,6 @@
       ],
       "question_types": [
         "概念辨析",
-        "综合应用",
         "综合应用"
       ],
       "examples": [
@@ -6958,7 +6956,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -7090,7 +7088,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -7232,7 +7230,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -7363,7 +7361,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -7494,7 +7492,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -7625,7 +7623,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -7757,7 +7755,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -7896,7 +7894,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -8026,7 +8024,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -8156,7 +8154,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -8287,7 +8285,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -8416,7 +8414,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -8546,7 +8544,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -8677,7 +8675,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -8836,7 +8834,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -8967,7 +8965,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -9097,7 +9095,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -9227,7 +9225,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -9359,7 +9357,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -9479,7 +9477,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -9609,7 +9607,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -9768,7 +9766,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -9916,7 +9914,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -10046,7 +10044,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -10176,7 +10174,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -10317,7 +10315,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -10458,7 +10456,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -10588,7 +10586,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -10760,7 +10758,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -10880,7 +10878,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -11010,7 +11008,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -11140,7 +11138,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -11281,7 +11279,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -11421,7 +11419,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -11550,7 +11548,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -11691,7 +11689,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -11820,7 +11818,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -11916,7 +11914,6 @@
       ],
       "question_types": [
         "概念辨析",
-        "综合应用",
         "综合应用"
       ],
       "examples": [
@@ -11950,7 +11947,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -12092,7 +12089,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -12220,7 +12217,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -12350,7 +12347,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -12480,7 +12477,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -12623,7 +12620,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -12752,7 +12749,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -12882,7 +12879,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -13031,7 +13028,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -13150,7 +13147,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -13270,7 +13267,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -13400,7 +13397,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -13529,7 +13526,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -13659,7 +13656,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -13789,7 +13786,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -13932,7 +13929,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -14053,7 +14050,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -14183,7 +14180,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -14315,7 +14312,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -14447,7 +14444,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -14590,7 +14587,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -14723,7 +14720,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -14835,7 +14832,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -14947,7 +14944,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -15070,7 +15067,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -15193,7 +15190,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -15282,7 +15279,6 @@
       ],
       "question_types": [
         "概念辨析",
-        "综合应用",
         "综合应用"
       ],
       "examples": [
@@ -15316,7 +15312,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -15438,7 +15434,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -15559,7 +15555,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -15659,7 +15655,6 @@
       ],
       "question_types": [
         "概念辨析",
-        "综合应用",
         "综合应用"
       ],
       "examples": [
@@ -15693,7 +15688,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -15804,7 +15799,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -15936,7 +15931,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -16067,7 +16062,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -16179,7 +16174,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -16302,7 +16297,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -16393,7 +16388,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -16516,7 +16511,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -16639,7 +16634,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -16760,7 +16755,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -16881,7 +16876,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -17002,7 +16997,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -17134,7 +17129,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -17266,7 +17261,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -17398,7 +17393,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -17558,7 +17553,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -17739,7 +17734,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -17899,7 +17894,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -18031,7 +18026,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -18163,7 +18158,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -18295,7 +18290,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -18427,7 +18422,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -18559,7 +18554,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -18725,7 +18720,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -18842,7 +18837,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -18959,7 +18954,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -19108,7 +19103,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -19257,7 +19252,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -19423,7 +19418,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -19572,7 +19567,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -19738,7 +19733,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -19887,7 +19882,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -20053,7 +20048,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -20213,7 +20208,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -20344,7 +20339,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -20504,7 +20499,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -20664,7 +20659,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -20824,7 +20819,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -20944,7 +20939,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -21061,7 +21056,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -21181,7 +21176,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -21341,7 +21336,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -21472,7 +21467,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -21603,7 +21598,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -21763,7 +21758,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -21923,7 +21918,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -22065,7 +22060,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -22225,7 +22220,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -22357,7 +22352,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -22517,7 +22512,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -22677,7 +22672,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -22795,7 +22790,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -22927,7 +22922,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -23087,7 +23082,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -23207,7 +23202,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -23338,7 +23333,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -23470,7 +23465,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -23612,7 +23607,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -23772,7 +23767,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -23932,7 +23927,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -24063,7 +24058,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -24195,7 +24190,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -24355,7 +24350,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -24515,7 +24510,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -24675,7 +24670,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -24794,7 +24789,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -24924,7 +24919,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -25084,7 +25079,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -25233,7 +25228,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -25382,7 +25377,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -25542,7 +25537,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -25702,7 +25697,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -25834,7 +25829,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -25994,7 +25989,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -26154,7 +26149,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -26285,7 +26280,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -26417,7 +26412,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -26577,7 +26572,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -26738,7 +26733,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -26900,7 +26895,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -27061,7 +27056,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -27223,7 +27218,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -27384,7 +27379,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -27545,7 +27540,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -27706,7 +27701,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
@@ -27838,7 +27833,7 @@
         "curriculum_context",
         "zhongkao_regional_style"
       ],
-      "stage": "cross_stage",
+      "stage": "junior_high",
       "aliases": []
     },
     {
