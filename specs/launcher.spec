@@ -2,12 +2,14 @@
 import sys
 import os
 import platform
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, collect_submodules
 from PyInstaller.building.build_main import Tree
 
 # 获取 spec 文件所在目录和项目根目录
 SPEC_DIR = os.path.dirname(os.path.abspath(SPEC))
 PROJECT_ROOT = os.path.dirname(SPEC_DIR)
+VERSION_INFO_PATH = os.path.join(PROJECT_ROOT, 'version_info.txt')
+ICON_PATH = os.path.join(PROJECT_ROOT, 'assets', 'icon.ico')
 
 # 切换到项目根目录，以便所有路径都是相对于根目录
 original_dir = os.getcwd()
@@ -21,6 +23,7 @@ print(f"[Build] Working from: {os.getcwd()}")
 datas = []
 binaries = []
 hiddenimports = []
+hiddenimports += collect_submodules('plugin.sdk', on_error='raise')
 
 # 收集关键包的所有内容（根据实际 import 检查）
 critical_packages = [
@@ -345,11 +348,6 @@ hiddenimports += [
     'plugin.core.state',
     'plugin.runtime',
     'plugin.sdk',
-    'plugin.sdk.base',
-    'plugin.sdk.decorators',
-    'plugin.sdk.events',
-    'plugin.sdk.logger',
-    'plugin.sdk.version',
     'plugin.server',
     'plugin.server.exceptions',
     'plugin.server.lifecycle',
@@ -391,8 +389,9 @@ exe = EXE(
     target_arch=platform.machine() if sys.platform == 'darwin' else None,  # 自动检测 macOS 架构 (arm64/x86_64)
     codesign_identity=None,
     entitlements_file=None,
-    icon='assets/icon.ico' if sys.platform == 'win32' else None,  # macOS 暂不使用图标
-    version='version_info.txt' if sys.platform == 'win32' else None,  # 添加版本信息减少误报
+    icon=ICON_PATH if sys.platform == 'win32' else None,  # macOS 暂不使用图标
+    version=VERSION_INFO_PATH if sys.platform == 'win32' and os.path.isfile(VERSION_INFO_PATH) else None,
+    # 本地 version_info.txt 未生成时保持可构建；仅跳过 Windows 版本资源。
 )
 
 # 使用 COLLECT 创建目录模式分发包
