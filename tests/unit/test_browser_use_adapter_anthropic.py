@@ -87,15 +87,28 @@ def test_build_llm_keeps_openai_path_and_protocol_in_signature(monkeypatch):
         return SimpleNamespace(kind="openai")
 
     monkeypatch.setattr(browser_use.llm, "ChatOpenAI", fake_openai)
-    adapter = _adapter({
+    shared_config = {
         "model": "gpt-test",
         "base_url": "https://openai-proxy.example/v1",
         "api_key": "sk-test",
+    }
+    adapter = _adapter({
+        **shared_config,
         "provider_type": "openai_compatible",
+    })
+    anthropic_adapter = _adapter({
+        **shared_config,
+        "provider_type": "anthropic",
     })
 
     assert adapter._build_llm().kind == "openai"
     assert captured["dont_force_structured_output"] is False
-    assert adapter._current_api_signature() == (
+    openai_signature = adapter._current_api_signature()
+    anthropic_signature = anthropic_adapter._current_api_signature()
+    assert openai_signature == (
         "openai_compatible|https://openai-proxy.example/v1|gpt-test"
     )
+    assert anthropic_signature == (
+        "anthropic|https://openai-proxy.example/v1|gpt-test"
+    )
+    assert anthropic_signature != openai_signature
