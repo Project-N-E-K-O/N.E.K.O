@@ -572,8 +572,7 @@
         window.Jukebox.executeControl({
             action: command.action,
             query: command.query || '',
-            volume: command.volume,
-            delta: command.delta,
+            value: command.value,
             mode: command.mode,
             headless: true
         }).then(function (result) {

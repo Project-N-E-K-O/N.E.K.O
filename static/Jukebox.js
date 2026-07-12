@@ -1,5 +1,8 @@
 window.Jukebox = {
 
+  controlApiVersion: 3,
+  supportedControlActions: ['play', 'next', 'previous', 'stop', 'set_volume', 'adjust_volume', 'set_mode'],
+
 
 
   Config: {
@@ -7956,7 +7959,7 @@ window.Jukebox = {
   executeControl: async function(command = {}) {
     const normalizedAction = String(command.action || '').trim().toLowerCase();
 
-    if (!['play', 'next', 'stop', 'set_volume', 'adjust_volume', 'set_mode'].includes(normalizedAction)) {
+    if (!Jukebox.supportedControlActions.includes(normalizedAction)) {
       return {
         ok: false,
         action: normalizedAction,
@@ -7975,24 +7978,29 @@ window.Jukebox = {
 
     if (normalizedAction === 'set_volume') {
       await Jukebox.ensureRuntime({ headless: command.headless !== false });
-      return Jukebox.executeSetVolumeControl(command.volume);
+      return Jukebox.executeSetVolumeControl(command.value);
     }
 
     if (normalizedAction === 'adjust_volume') {
       await Jukebox.ensureRuntime({ headless: command.headless !== false });
-      return Jukebox.executeAdjustVolumeControl(command.delta);
+      return Jukebox.executeAdjustVolumeControl(command.value);
     }
 
     await Jukebox.ensureRuntime({ headless: command.headless !== false });
 
-    if (normalizedAction === 'next') {
-      const nextSong = Jukebox.State.playbackMode === 'random'
-        ? Jukebox.getRandomAdjacentSong(1)
-        : Jukebox.getManualAdjacentSong(1);
-      if (!nextSong) {
-        return { ok: false, action: 'next', message: 'no_next_song' };
+    if (normalizedAction === 'next' || normalizedAction === 'previous') {
+      const direction = normalizedAction === 'previous' ? -1 : 1;
+      const adjacentSong = Jukebox.State.playbackMode === 'random'
+        ? Jukebox.getRandomAdjacentSong(direction)
+        : Jukebox.getManualAdjacentSong(direction);
+      if (!adjacentSong) {
+        return {
+          ok: false,
+          action: normalizedAction,
+          message: normalizedAction === 'previous' ? 'no_previous_song' : 'no_next_song'
+        };
       }
-      return Jukebox.executePlayControl('next', nextSong, { fromQueue: Jukebox.State.playbackMode === 'random' });
+      return Jukebox.executePlayControl(normalizedAction, adjacentSong, { fromQueue: Jukebox.State.playbackMode === 'random' });
     }
 
     const song = Jukebox.findSongForQuery(command.query || '');
@@ -8079,7 +8087,7 @@ window.Jukebox = {
     if (!Jukebox.setRuntimeVolume(volume)) {
       return { ok: false, action: 'adjust_volume', message: 'volume_control_unavailable' };
     }
-    return { ok: true, action: 'adjust_volume', volume, delta };
+    return { ok: true, action: 'adjust_volume', volume, value: delta };
   },
 
   executeSetModeControl: function(mode) {

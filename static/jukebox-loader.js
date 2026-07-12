@@ -230,6 +230,7 @@
   var SCRIPT_ID = 'neko-jukebox-script';
   var TOAST_ID = 'neko-jukebox-loader-toast';
   var STYLE_ID = 'neko-jukebox-loader-style';
+  var REQUIRED_CONTROL_API_VERSION = 3;
   var currentScript = document.currentScript;
   var assetQuery = getAssetQuery(currentScript && currentScript.src);
   var loadPromise = null;
@@ -241,12 +242,22 @@
 
   window.__NEKO_JUKEBOX_LAZY_LOADER__ = true;
 
+  function hasRequiredControlApi(jukebox) {
+    if (!jukebox || typeof jukebox.executeControl !== 'function') return false;
+    var version = Number(jukebox.controlApiVersion || jukebox.__controlApiVersion || 0);
+    if (version >= REQUIRED_CONTROL_API_VERSION) return true;
+    return Array.isArray(jukebox.supportedControlActions)
+      && jukebox.supportedControlActions.indexOf('adjust_volume') >= 0
+      && jukebox.supportedControlActions.indexOf('set_mode') >= 0
+      && jukebox.supportedControlActions.indexOf('previous') >= 0;
+  }
+
   function isLoadedJukebox(jukebox) {
     return !!(
       jukebox
       && !jukebox.__nekoLazyFacade
       && !jukebox.__nativeBridgeFacade
-      && typeof jukebox.executeControl === 'function'
+      && hasRequiredControlApi(jukebox)
     );
   }
 
@@ -258,6 +269,24 @@
     } catch (_) {
       var queryIndex = src.indexOf('?');
       return queryIndex >= 0 ? src.slice(queryIndex) : '';
+    }
+  }
+
+  function buildJukeboxScriptSrc() {
+    try {
+      var url = new URL('/static/Jukebox.js', window.location.href);
+      if (assetQuery) {
+        var inherited = new URLSearchParams(assetQuery.replace(/^\?/, ''));
+        inherited.forEach(function(value, key) {
+          url.searchParams.set(key, value);
+        });
+      }
+      url.searchParams.set('jukebox_control_api', String(REQUIRED_CONTROL_API_VERSION));
+      return url.pathname + url.search;
+    } catch (_) {
+      var query = assetQuery || '';
+      var separator = query ? '&' : '?';
+      return '/static/Jukebox.js' + query + separator + 'jukebox_control_api=' + encodeURIComponent(String(REQUIRED_CONTROL_API_VERSION));
     }
   }
 
@@ -462,7 +491,7 @@
 
       var script = document.createElement('script');
       script.id = SCRIPT_ID;
-      script.src = '/static/Jukebox.js' + assetQuery;
+      script.src = buildJukeboxScriptSrc();
       script.async = true;
       script.dataset.nekoJukeboxLazy = 'true';
       script.onload = function() {

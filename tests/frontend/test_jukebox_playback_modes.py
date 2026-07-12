@@ -316,12 +316,12 @@ def test_jukebox_execute_control_sets_and_adjusts_volume_headless(mock_page: Pag
     result = mock_page.evaluate(
         """
         async () => {
-          const setResult = await window.Jukebox.executeControl({ action: 'set_volume', volume: 35 });
+          const setResult = await window.Jukebox.executeControl({ action: 'set_volume', value: 35 });
           const afterSet = window.__lastAPlayer.audio.volume;
-          const adjustResult = await window.Jukebox.executeControl({ action: 'adjust_volume', delta: 10 });
+          const adjustResult = await window.Jukebox.executeControl({ action: 'adjust_volume', value: 10 });
           const afterAdjust = window.__lastAPlayer.audio.volume;
-          const invalidSet = await window.Jukebox.executeControl({ action: 'set_volume', volume: 130 });
-          const invalidAdjust = await window.Jukebox.executeControl({ action: 'adjust_volume', delta: 'louder' });
+          const invalidSet = await window.Jukebox.executeControl({ action: 'set_volume', value: 130 });
+          const invalidAdjust = await window.Jukebox.executeControl({ action: 'adjust_volume', value: 'louder' });
           return {
             setResult,
             afterSet,
@@ -339,7 +339,7 @@ def test_jukebox_execute_control_sets_and_adjusts_volume_headless(mock_page: Pag
     assert result == {
         "setResult": {"ok": True, "action": "set_volume", "volume": 0.35},
         "afterSet": 0.35,
-        "adjustResult": {"ok": True, "action": "adjust_volume", "volume": 0.45, "delta": 0.1},
+        "adjustResult": {"ok": True, "action": "adjust_volume", "volume": 0.45, "value": 0.1},
         "afterAdjust": 0.45,
         "invalidSet": {"ok": False, "action": "set_volume", "message": "invalid_volume"},
         "invalidAdjust": {"ok": False, "action": "adjust_volume", "message": "invalid_volume_delta"},
@@ -646,12 +646,14 @@ def test_jukebox_execute_control_next_and_stop_headless(mock_page: Page):
         async () => {
           await window.Jukebox.executeControl({ action: 'play', query: 'Song 1' });
           const nextResult = await window.Jukebox.executeControl({ action: 'next' });
+          const previousResult = await window.Jukebox.executeControl({ action: 'previous' });
           window.Jukebox.State.playbackMode = 'random';
           window.Jukebox.State.randomQueue = ['song1', 'song2'];
           window.Jukebox.State.randomQueueIndex = 1;
           const stopResult = await window.Jukebox.executeControl({ action: 'stop' });
           return {
             nextResult,
+            previousResult,
             stopResult,
             currentSong: window.Jukebox.State.currentSong,
             isPlaying: window.Jukebox.State.isPlaying,
@@ -667,6 +669,12 @@ def test_jukebox_execute_control_next_and_stop_headless(mock_page: Page):
         "ok": True,
         "action": "next",
         "song": {"id": "song2", "name": "Song 2", "artist": "B"},
+        "actionStatus": "no_action",
+    }
+    assert result["previousResult"] == {
+        "ok": True,
+        "action": "previous",
+        "song": {"id": "song1", "name": "Song 1", "artist": "A"},
         "actionStatus": "no_action",
     }
     assert result["stopResult"] == {"ok": True, "action": "stop"}
@@ -792,6 +800,93 @@ def test_jukebox_loader_exposes_control_on_jukebox_key_only(mock_page: Page):
         "initReturns": None,
         "loaderHasControl": False,
     }
+
+
+@pytest.mark.frontend
+def test_jukebox_loader_reloads_stale_control_api_with_versioned_url(mock_page: Page):
+    requested_urls = []
+
+    def fulfill_loader(route):
+        route.fulfill(
+            status=200,
+            content_type="application/javascript",
+            body=JUKEBOX_LOADER_SCRIPT,
+        )
+
+    def fulfill_jukebox(route):
+        requested_urls.append(route.request.url)
+        route.fulfill(
+            status=200,
+            content_type="application/javascript",
+            body="""
+              window.Jukebox = {
+                controlApiVersion: 3,
+                supportedControlActions: ['play', 'next', 'previous', 'stop', 'set_volume', 'adjust_volume', 'set_mode'],
+                init() { window.__jukeboxInitCalled = true; },
+                executeControl: async (command) => ({
+                  ok: true,
+                  action: command.action,
+                  controlApiVersion: window.Jukebox.controlApiVersion
+                })
+              };
+            """,
+        )
+
+    mock_page.route("**/static/jukebox-loader.js*", fulfill_loader)
+    mock_page.route("**/static/Jukebox.js*", fulfill_jukebox)
+    mock_page.set_content(
+        """
+        <!DOCTYPE html>
+        <html>
+        <head><base href="http://127.0.0.1:48911/"></head>
+        <body>
+          <script>
+            window.t = (key, fallback) => typeof fallback === 'string' ? fallback : key;
+            window.Jukebox = {
+              controlApiVersion: 1,
+              executeControl: async (command) => ({
+                ok: false,
+                action: command.action,
+                message: 'stale-control-api'
+              })
+            };
+          </script>
+        </body>
+        </html>
+        """
+    )
+    mock_page.add_script_tag(url="http://127.0.0.1:48911/static/jukebox-loader.js?v=test-assets")
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+          const result = await window.Jukebox.executeControl({ action: 'adjust_volume', value: 20 });
+          return {
+            result,
+            initCalled: window.__jukeboxInitCalled === true,
+            controlApiVersion: window.Jukebox.controlApiVersion,
+            supported: window.Jukebox.supportedControlActions
+          };
+        }
+        """
+    )
+
+    assert result == {
+        "result": {"ok": True, "action": "adjust_volume", "controlApiVersion": 3},
+        "initCalled": True,
+        "controlApiVersion": 3,
+        "supported": ["play", "next", "previous", "stop", "set_volume", "adjust_volume", "set_mode"],
+    }
+    assert len(requested_urls) == 1
+    assert "v=test-assets" in requested_urls[0]
+    assert "jukebox_control_api=3" in requested_urls[0]
+
+
+def test_jukebox_control_api_declares_versioned_supported_actions():
+    assert "controlApiVersion: 3" in JUKEBOX_SCRIPT
+    assert "supportedControlActions: ['play', 'next', 'previous', 'stop', 'set_volume', 'adjust_volume', 'set_mode']" in JUKEBOX_SCRIPT
+    assert "REQUIRED_CONTROL_API_VERSION = 3" in JUKEBOX_LOADER_SCRIPT
+    assert "jukebox_control_api" in JUKEBOX_LOADER_SCRIPT
 
 
 def test_jukebox_action_column_reserves_space_for_two_buttons():
