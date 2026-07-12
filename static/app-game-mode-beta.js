@@ -314,17 +314,21 @@
         }
     }
 
-    function handleDisabledRestore() {
-        const shouldRestore = clientState.autoSwitched
-            && !clientState.alreadyCatWhenTriggered
-            && !clientState.manualOverride
-            && isCatFormActive();
+    function clearModelReloadProtection() {
         [window.live2dManager, window.vrmManager, window.mmdManager].forEach(function (manager) {
             if (!manager) return;
             manager._nekoGameModeReloadRequired = false;
             manager._nekoGameModeLoadCancelReason = '';
         });
         clientState.modelLoadInvalidated = false;
+    }
+
+    function handleDisabledRestore() {
+        const shouldRestore = clientState.autoSwitched
+            && !clientState.alreadyCatWhenTriggered
+            && !clientState.manualOverride
+            && isCatFormActive();
+        clearModelReloadProtection();
         clientState.restoringFromDisable = true;
         try {
             if (shouldRestore) {
@@ -617,6 +621,7 @@
             const host = clientState.hostContract;
             if (targetIds.length && host && !targetIds.includes(host.petInstanceId)) return;
             if (clientState.autoSwitched && isCatFormActive()) {
+                clearModelReloadProtection();
                 clientState.restoringFromDisable = true;
                 try {
                     window.dispatchEvent(new CustomEvent('live2d-return-click', {
