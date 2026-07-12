@@ -167,6 +167,9 @@
         {
           "id": "pol_junior_collective_responsibility",
           "relation": "extends",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.79,
           "reason": "Practice 集体与责任 after 权利与义务; it is the next topic in the junior_high politics learning sequence.",
           "use_cases": [
             "learning_path",
@@ -434,6 +437,9 @@
         {
           "id": "pol_senior_political_participation",
           "relation": "extends",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.8,
           "reason": "Practice 人民民主与政治参与 after 市场机制与宏观调控; it is the next topic in the senior_high politics learning sequence.",
           "use_cases": [
             "learning_path",
@@ -912,6 +918,9 @@
         {
           "id": "pol_senior_culture_confidence",
           "relation": "extends",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.79,
           "reason": "Practice 文化传承与文化自信 after 唯物辩证法; it is the next topic in the senior_high politics learning sequence.",
           "use_cases": [
             "learning_path",
@@ -1494,6 +1503,9 @@
         {
           "id": "pol_senior_logical_thinking",
           "relation": "extends",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.78,
           "reason": "Practice 逻辑与思维方法 after 国际关系与中国外交; it is the next topic in the senior_high politics learning sequence.",
           "use_cases": [
             "learning_path",

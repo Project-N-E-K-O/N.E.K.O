@@ -23,7 +23,7 @@
         },
         {
           "id": "chinese_primary_sentence_expansion",
-          "relation": "prerequisite",
+          "relation": "extends",
           "reason": "Pinyin and character recognition supply the decoding base for sentence expansion and short text work.",
           "priority": "core",
           "context": "explanation",

@@ -6577,27 +6577,6 @@
             "target_subject": "math",
             "added_for": "math_core_pack_second_batch_20260626"
           }
-        },
-        {
-          "id": "college_ds_algorithm_complexity",
-          "relation": "application",
-          "reason": "二次函数开口方向 is applied through 算法复杂度分析, linking the math method to a concrete cross-topic or cross-subject problem type.",
-          "use_cases": [
-            "diagnosis",
-            "learning_path",
-            "hint_generation",
-            "practice_planning"
-          ],
-          "priority": "core",
-          "context": "practice",
-          "confidence": 0.89,
-          "metadata": {
-            "source_subject": "math",
-            "target_subject": "computer_science",
-            "added_for": "math_core_pack_second_batch_20260626",
-            "cross_subject": true,
-            "bridge_direction": "math_to_computer_science"
-          }
         }
       ],
       "typical_misconceptions": [
@@ -7189,6 +7168,28 @@
             "target_subject": "math",
             "added_for": "math_core_pack_second_batch_20260626"
           }
+        },
+        {
+          "id": "college_micro_firm_profit",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.92,
+          "reason": "Quadratic maxima model profit peaks when revenue and cost reduce to a quadratic objective; economic interpretation still checks marginal conditions and feasibility.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "economics",
+            "bridge_direction": "math_to_economics",
+            "bridge_focus": "quadratic_extrema_to_profit_maximization",
+            "cross_subject": true
+          }
         }
       ],
       "typical_misconceptions": [
@@ -7581,44 +7582,6 @@
             "learning_path",
             "hint_generation"
           ]
-        },
-        {
-          "id": "college_micro_demand_supply",
-          "relation": "confusable",
-          "reason": "Contrast 二次函数利润应用 with 需求供给模型; learners often mix their conditions, notation, or use cases.",
-          "use_cases": [
-            "diagnosis",
-            "learning_path",
-            "hint_generation",
-            "practice_planning"
-          ],
-          "priority": "core",
-          "context": "diagnosis",
-          "confidence": 0.87,
-          "metadata": {
-            "source_subject": "math",
-            "target_subject": "economics",
-            "added_for": "math_core_pack_second_batch_20260626"
-          }
-        },
-        {
-          "id": "college_micro_demand_supply",
-          "relation": "procedure_step",
-          "reason": "After 二次函数利润应用, use 需求供给模型 as the next procedural step in problem solving.",
-          "use_cases": [
-            "diagnosis",
-            "learning_path",
-            "hint_generation",
-            "practice_planning"
-          ],
-          "priority": "core",
-          "context": "practice",
-          "confidence": 0.9,
-          "metadata": {
-            "source_subject": "math",
-            "target_subject": "economics",
-            "added_for": "math_core_pack_second_batch_20260626"
-          }
         },
         {
           "id": "college_micro_elasticity",
@@ -17968,44 +17931,6 @@
         }
       ],
       "related": [
-        {
-          "id": "bio_senior_experiment_error_analysis",
-          "relation": "confusable",
-          "reason": "Contrast 复合事件概率 with 实验误差与结论评价; learners often mix their conditions, notation, or use cases.",
-          "use_cases": [
-            "diagnosis",
-            "learning_path",
-            "hint_generation",
-            "practice_planning"
-          ],
-          "priority": "core",
-          "context": "diagnosis",
-          "confidence": 0.87,
-          "metadata": {
-            "source_subject": "math",
-            "target_subject": "biology",
-            "added_for": "math_core_pack_second_batch_20260626"
-          }
-        },
-        {
-          "id": "bio_senior_experiment_error_analysis",
-          "relation": "procedure_step",
-          "reason": "After 复合事件概率, use 实验误差与结论评价 as the next procedural step in problem solving.",
-          "use_cases": [
-            "diagnosis",
-            "learning_path",
-            "hint_generation",
-            "practice_planning"
-          ],
-          "priority": "core",
-          "context": "practice",
-          "confidence": 0.9,
-          "metadata": {
-            "source_subject": "math",
-            "target_subject": "biology",
-            "added_for": "math_core_pack_second_batch_20260626"
-          }
-        },
         {
           "id": "function_graph_reading",
           "relation": "application",
@@ -29727,32 +29652,7 @@
       "chapter": "数与运算",
       "depth": 1,
       "difficulty": 0.18,
-      "prerequisites": [
-        {
-          "id": "chinese_primary_paragraph_main_idea",
-          "relation": "prerequisite",
-          "use_cases": [
-            "diagnosis",
-            "learning_path",
-            "hint_generation",
-            "practice_planning",
-            "review"
-          ],
-          "priority": "core",
-          "context": "diagnosis",
-          "confidence": 0.87,
-          "metadata": {
-            "source_subject": "math",
-            "target_subject": "chinese",
-            "added_for": "math_core_pack_third_batch_20260626",
-            "cycle_fix": "avoid_primary_math_prerequisite_cycle",
-            "cross_subject": true,
-            "bridge_direction": "math_to_chinese"
-          },
-          "reason": "Basic paragraph main-idea reading supports number-sense tasks by helping learners extract quantities, place-value words, and comparison conditions from short problem statements without creating a math prerequisite cycle.",
-          "required_mastery": 0.55
-        }
-      ],
+      "prerequisites": [],
       "related": [
         {
           "id": "real_number_concept",
@@ -42029,44 +41929,6 @@
       ],
       "related": [
         {
-          "id": "bio_senior_experiment_error_analysis",
-          "relation": "confusable",
-          "reason": "Contrast 古典概型 with 实验误差与结论评价; learners often mix their conditions, notation, or use cases.",
-          "use_cases": [
-            "diagnosis",
-            "learning_path",
-            "hint_generation",
-            "practice_planning"
-          ],
-          "priority": "core",
-          "context": "diagnosis",
-          "confidence": 0.87,
-          "metadata": {
-            "source_subject": "math",
-            "target_subject": "biology",
-            "added_for": "math_core_pack_second_batch_20260626"
-          }
-        },
-        {
-          "id": "bio_senior_experiment_error_analysis",
-          "relation": "procedure_step",
-          "reason": "After 古典概型, use 实验误差与结论评价 as the next procedural step in problem solving.",
-          "use_cases": [
-            "diagnosis",
-            "learning_path",
-            "hint_generation",
-            "practice_planning"
-          ],
-          "priority": "core",
-          "context": "practice",
-          "confidence": 0.9,
-          "metadata": {
-            "source_subject": "math",
-            "target_subject": "biology",
-            "added_for": "math_core_pack_second_batch_20260626"
-          }
-        },
-        {
           "id": "function_graph_reading",
           "relation": "application",
           "reason": "古典概型 is applied through 函数图像信息读取, linking the math method to a concrete cross-topic or cross-subject problem type.",
@@ -42159,44 +42021,6 @@
         }
       ],
       "related": [
-        {
-          "id": "college_micro_elasticity",
-          "relation": "confusable",
-          "reason": "Contrast 随机变量及分布列 with 弹性分析; learners often mix their conditions, notation, or use cases.",
-          "use_cases": [
-            "diagnosis",
-            "learning_path",
-            "hint_generation",
-            "practice_planning"
-          ],
-          "priority": "core",
-          "context": "diagnosis",
-          "confidence": 0.87,
-          "metadata": {
-            "source_subject": "math",
-            "target_subject": "economics",
-            "added_for": "math_core_pack_second_batch_20260626"
-          }
-        },
-        {
-          "id": "college_micro_elasticity",
-          "relation": "procedure_step",
-          "reason": "After 随机变量及分布列, use 弹性分析 as the next procedural step in problem solving.",
-          "use_cases": [
-            "diagnosis",
-            "learning_path",
-            "hint_generation",
-            "practice_planning"
-          ],
-          "priority": "core",
-          "context": "practice",
-          "confidence": 0.9,
-          "metadata": {
-            "source_subject": "math",
-            "target_subject": "economics",
-            "added_for": "math_core_pack_second_batch_20260626"
-          }
-        },
         {
           "id": "function_graph_reading",
           "relation": "application",
@@ -43220,7 +43044,7 @@
         },
         {
           "id": "college_derivative_definition",
-          "relation": "prerequisite",
+          "relation": "extends",
           "reason": "Master 极限概念 before 导数定义; it supplies the foundation used by later steps.",
           "use_cases": [
             "diagnosis",

@@ -199,51 +199,100 @@ def _iter_seed_files(
     manifest_path: Path,
     payload: dict[str, Any],
     issues: list[KnowledgeSeedIssue],
+    seen_paths: set[Path] | None = None,
+    manifest_stack: set[Path] | None = None,
 ) -> Iterable[Path]:
-    files = payload.get("files")
-    if not isinstance(files, list):
-        yield manifest_path
+    resolved_manifest = manifest_path.resolve()
+    shared_seen = seen_paths if seen_paths is not None else set()
+    active_manifests = manifest_stack if manifest_stack is not None else set()
+    if resolved_manifest in active_manifests:
+        issues.append(
+            KnowledgeSeedIssue(
+                "circular_manifest_reference",
+                f"manifest reference cycle includes: {resolved_manifest}",
+                str(manifest_path),
+            )
+        )
         return
-    seen_paths: set[Path] = set()
-    for item in files:
-        if isinstance(item, dict):
-            raw_path = item.get("path") or item.get("file")
-        else:
-            raw_path = item
-        child_name = str(raw_path or "").strip()
-        if not child_name:
-            issues.append(
-                KnowledgeSeedIssue(
-                    "invalid_manifest_file",
-                    "manifest file entry must include path",
-                    str(manifest_path),
-                )
+    if resolved_manifest in shared_seen:
+        issues.append(
+            KnowledgeSeedIssue(
+                "duplicate_manifest_file",
+                f"manifest references duplicate seed file: {resolved_manifest}",
+                str(manifest_path),
             )
-            continue
-        child_path = Path(child_name)
-        if not child_path.is_absolute():
-            child_path = manifest_path.parent / child_path
-        child_path = child_path.resolve()
-        if child_path in seen_paths:
-            issues.append(
-                KnowledgeSeedIssue(
-                    "duplicate_manifest_file",
-                    f"manifest references duplicate seed file: {child_name}",
-                    str(manifest_path),
+        )
+        return
+
+    shared_seen.add(resolved_manifest)
+    active_manifests.add(resolved_manifest)
+    try:
+        files = payload.get("files")
+        if not isinstance(files, list):
+            yield resolved_manifest
+            return
+        for item in files:
+            if isinstance(item, dict):
+                raw_path = item.get("path") or item.get("file")
+            else:
+                raw_path = item
+            child_name = str(raw_path or "").strip()
+            if not child_name:
+                issues.append(
+                    KnowledgeSeedIssue(
+                        "invalid_manifest_file",
+                        "manifest file entry must include path",
+                        str(manifest_path),
+                    )
                 )
-            )
-            continue
-        seen_paths.add(child_path)
-        if not child_path.is_file():
-            issues.append(
-                KnowledgeSeedIssue(
-                    "missing_manifest_file",
-                    f"manifest seed file does not exist: {child_name}",
-                    str(manifest_path),
+                continue
+            child_path = Path(child_name)
+            if not child_path.is_absolute():
+                child_path = manifest_path.parent / child_path
+            child_path = child_path.resolve()
+            if child_path in active_manifests:
+                issues.append(
+                    KnowledgeSeedIssue(
+                        "circular_manifest_reference",
+                        f"manifest reference cycle includes: {child_name}",
+                        str(manifest_path),
+                    )
                 )
-            )
-            continue
-        yield child_path
+                continue
+            if child_path in shared_seen:
+                issues.append(
+                    KnowledgeSeedIssue(
+                        "duplicate_manifest_file",
+                        f"manifest references duplicate seed file: {child_name}",
+                        str(manifest_path),
+                    )
+                )
+                continue
+            if not child_path.is_file():
+                issues.append(
+                    KnowledgeSeedIssue(
+                        "missing_manifest_file",
+                        f"manifest seed file does not exist: {child_name}",
+                        str(manifest_path),
+                    )
+                )
+                continue
+            child_payload = _read_json(child_path, issues)
+            if child_payload is None:
+                continue
+            if isinstance(child_payload.get("files"), list):
+                yield from _iter_seed_files(
+                    child_path,
+                    child_payload,
+                    issues,
+                    shared_seen,
+                    active_manifests,
+                )
+                continue
+            shared_seen.add(child_path)
+            yield child_path
+    finally:
+        active_manifests.discard(resolved_manifest)
 
 
 def _normalize_topic(
@@ -749,7 +798,7 @@ def _build_quality_report(topics: tuple[KnowledgeSeedTopic, ...]) -> dict[str, A
                     outbound[topic_id] = outbound.get(topic_id, 0) + 1
                 if target_id in inbound:
                     inbound[target_id] = inbound.get(target_id, 0) + 1
-                if field == "prerequisites" and topic_id:
+                if relation == "prerequisite" and topic_id:
                     prerequisite_edges.setdefault(topic_id, set()).add(target_id)
                 target_subject = topic_subject_by_id.get(target_id)
                 if target_subject and target_subject != subject:

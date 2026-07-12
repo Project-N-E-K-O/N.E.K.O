@@ -1692,25 +1692,6 @@
           }
         },
         {
-          "id": "quadratic_max_min",
-          "relation": "confusable",
-          "priority": "useful",
-          "context": "diagnosis",
-          "confidence": 0.8,
-          "reason": "Quadratic maximum templates can find a profit peak, but economic profit maximization still requires MR, MC, and feasibility checks.",
-          "use_cases": [
-            "diagnosis",
-            "hint_generation",
-            "review"
-          ],
-          "metadata": {
-            "source_subject": "math",
-            "target_subject": "economics",
-            "bridge": "math_to_economics",
-            "focus": "quadratic_maximum_vs_profit_rule"
-          }
-        },
-        {
           "id": "college_optimization_applications",
           "relation": "application",
           "priority": "core",

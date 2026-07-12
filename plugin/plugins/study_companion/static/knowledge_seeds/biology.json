@@ -727,12 +727,14 @@
         {
           "id": "senior_binomial_distribution",
           "relation": "application",
-          "priority": "useful",
+          "priority": "core",
           "context": "practice",
-          "confidence": 0.83,
+          "confidence": 0.94,
           "reason": "Independent offspring outcomes can be modeled as repeated Bernoulli trials in family-size questions.",
           "use_cases": [
+            "diagnosis",
             "learning_path",
+            "hint_generation",
             "practice_planning",
             "review"
           ],

@@ -188,6 +188,8 @@ def evaluate_knowledge_retrieval_queries(
     topic_subjects, topic_labels = _topic_maps(topics)
     summary = {
         "case_count": 0,
+        "passed_count": 0,
+        "failed_count": 0,
         "focus_hit_count": 0,
         "cross_subject_case_count": 0,
         "cross_subject_edge_count": 0,
@@ -238,8 +240,17 @@ def evaluate_knowledge_retrieval_queries(
         has_raw_seed = _has_raw_seed(model_context)
         focus_hit = not expected_topic_ids or focus_topic_id in expected_topic_ids
         bad_hub_absorbed = bool(expected_topic_ids) and not focus_hit
+        cross_subject_ok = not expect_cross_subject or has_cross_edge
+        case_passed = focus_hit and cross_subject_ok
+        failure_reasons: list[str] = []
+        if not focus_hit:
+            failure_reasons.append("expected focus topic was not selected")
+        if not cross_subject_ok:
+            failure_reasons.append("expected cross-subject edge was not returned")
 
         summary["case_count"] += 1
+        summary["passed_count"] += int(case_passed)
+        summary["failed_count"] += int(not case_passed)
         summary["focus_hit_count"] += int(focus_hit)
         summary["cross_subject_case_count"] += int(expect_cross_subject)
         summary["cross_subject_edge_count"] += int(expect_cross_subject and has_cross_edge)
@@ -260,6 +271,8 @@ def evaluate_knowledge_retrieval_queries(
                 "expect_cross_subject": expect_cross_subject,
                 "focus_topic_id": focus_topic_id,
                 "focus_hit": focus_hit,
+                "passed": case_passed,
+                "failure_reasons": failure_reasons,
                 "bad_hub_absorbed": bad_hub_absorbed,
                 "top_matches": _compact_matches(payload.get("matches")),
                 "subgraph_node_ids": [
@@ -331,7 +344,7 @@ def main(argv: list[str] | None = None) -> int:
         min_active_core_groups=max(1, int(args.min_active_core_groups)),
     )
     print(json.dumps(report, ensure_ascii=False, indent=2))
-    return 0
+    return 0 if int(report["summary"].get("failed_count") or 0) == 0 else 1
 
 
 if __name__ == "__main__":
