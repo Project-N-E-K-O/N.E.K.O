@@ -211,6 +211,35 @@ def test_redact_cancelled_user_without_reply_before_proactive(monkeypatch):
     assert any(m.get("role") == "assistant" and "天气" in str(m.get("content", "")) for m in out)
 
 
+def test_redact_cancelled_one_reply_turn_before_proactive(monkeypatch):
+    # Codex P2 follow-up: a cancelled user turn that DID produce its own reply,
+    # then a proactive turn. The first-time bypass (trailing_assistant_count==1)
+    # must NOT fire on a proactive analyze pass — the trigger is lanlan's own
+    # utterance, not a user re-issue — so the cancelled user AND its reply are
+    # redacted, while the proactive utterance is preserved.
+    user_msg = {"role": "user", "content": "取消了的旧请求"}
+    msgs = [
+        user_msg,
+        {"role": "assistant", "content": "旧任务回复"},   # its own reply R
+        {"role": "assistant", "content": "我帮你查下天气"},  # proactive utterance A
+    ]
+    sig = a._user_message_signature(user_msg)
+    monkeypatch.setattr(a._task_tracker, "get_cancelled_user_sigs", lambda ln: {sig})
+
+    out = a._redact_cancelled_user_turns(msgs, "lan", preserve_trailing_assistant=True)
+    # neither the cancelled user text nor its reply leak into the assessment
+    assert not any(m.get("role") == "user" and "取消了的旧请求" in str(m.get("content", "")) for m in out)
+    assert not any(m.get("role") == "assistant" and "旧任务回复" in str(m.get("content", "")) for m in out)
+    assert any(m.get("role") == "system" and m.get("content") == a.REDACTED_USER_TURN_MARKER for m in out)
+    # proactive utterance survives
+    assert any(m.get("role") == "assistant" and "天气" in str(m.get("content", "")) for m in out)
+    # sanity: the non-proactive default still applies the first-time bypass
+    # (single trailing assistant → user kept), i.e. behavior only changes on proactive
+    single = [user_msg, {"role": "assistant", "content": "刚刚的回复"}]
+    kept = a._redact_cancelled_user_turns(single, "lan")
+    assert any(m.get("role") == "user" and "取消了的旧请求" in str(m.get("content", "")) for m in kept)
+
+
 # ── executor uses the assistant utterance as LATEST_USER_REQUEST on proactive ─
 def test_executor_format_messages_proactive_intent():
     ex = DirectTaskExecutor(computer_use=object())

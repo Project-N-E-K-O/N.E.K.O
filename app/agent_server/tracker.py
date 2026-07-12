@@ -474,12 +474,6 @@ def _redact_cancelled_user_turns(messages: list, lanlan_name: Optional[str], *, 
 
     # Index of the last assistant message — preserved from redaction when
     # ``preserve_trailing_assistant`` is set (the proactive utterance).
-    # Computed up front because it must be excluded from the first-time bypass
-    # count below: on a proactive turn this trailing assistant is lanlan's own
-    # new utterance, NOT a reply to any user, so counting it would let a
-    # cancelled user turn that produced no reply masquerade as "first-time"
-    # (trailing_assistant_count == 1) and escape redaction, leaking the
-    # cancelled request into the proactive assessment.
     keep_assistant_idx = -1
     if preserve_trailing_assistant:
         for i in range(len(messages) - 1, -1, -1):
@@ -488,13 +482,12 @@ def _redact_cancelled_user_turns(messages: list, lanlan_name: Optional[str], *, 
                 break
 
     # Precompute trailing assistant counts so we can resolve "first-time"
-    # in one O(n) sweep instead of nested scans. The preserved proactive
-    # utterance is skipped so it never counts as a user turn's triggering reply.
+    # in one O(n) sweep instead of nested scans.
     trailing_assistant_count = [0] * len(messages)
     running = 0
     for idx in range(len(messages) - 1, -1, -1):
         m = messages[idx]
-        if isinstance(m, dict) and m.get("role") == "assistant" and idx != keep_assistant_idx:
+        if isinstance(m, dict) and m.get("role") == "assistant":
             running += 1
         trailing_assistant_count[idx] = running
 
@@ -507,7 +500,16 @@ def _redact_cancelled_user_turns(messages: list, lanlan_name: Optional[str], *, 
             continue
         # Exactly one trailing assistant → first-time analyze pass for this
         # user msg → bypass cancel.
-        if trailing_assistant_count[idx] == 1:
+        #
+        # DISABLED entirely on a proactive turn (``preserve_trailing_assistant``):
+        # the first-time bypass exists for the case where the user *re-issued*
+        # input and that turn's own reply triggered this analyze pass. A proactive
+        # analyze pass is triggered by lanlan's own utterance, not by any user
+        # turn, so no cancelled user turn is "first-time" here — whether it has
+        # zero trailing replies ([U(cancelled), A]) or its own one reply
+        # ([U(cancelled), R, A]), it must be redacted. The proactive utterance is
+        # preserved separately via keep_assistant_idx below.
+        if not preserve_trailing_assistant and trailing_assistant_count[idx] == 1:
             continue
         redact_indices.add(idx)
 
