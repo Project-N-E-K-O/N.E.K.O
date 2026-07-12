@@ -139,6 +139,8 @@ async def start_theater_session(request: Request):
         client_start_id=str(data.get("client_start_id") or ""),
         # 只有前端已经展示不兼容提示后，玩家再次点击开始才允许替换旧恢复入口。
         replace_incompatible_session=data.get("replace_incompatible_session") is True,
+        # Runtime 会在角色锁内重读同一配置，防止排队期间切换猫娘后仍创建旧角色 Session。
+        config_manager=get_config_manager(),
     )
     await _speak_committed_dialogue(result)
     return result

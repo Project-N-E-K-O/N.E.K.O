@@ -28,6 +28,7 @@ async def start_session(
     story_id: str | None = None,
     client_start_id: str = "",
     replace_incompatible_session: bool = False,
+    config_manager: Any | None = None,
 ) -> dict[str, Any]:
     """按角色串行创建 Session；提供开场 ID 时复用已提交结果。"""  # noqa: DOCSTRING_CJK
     normalized_start_id = str(client_start_id or "").strip()
@@ -35,6 +36,9 @@ async def start_session(
         return {"ok": False, "reason": "invalid_client_start_id"}
     normalized_name = str(lanlan_name or "Lan").strip() or "Lan"
     async with session_store.character_guard(root, normalized_name):
+        if config_manager is not None and await _current_catgirl_name(config_manager) != normalized_name:
+            # 请求等待旧角色锁期间可能已经切换猫娘；锁内重验失败时不能创建孤立的旧角色 Session。
+            return {"ok": False, "reason": "session_character_mismatch"}
         active_session_id = await session_store.get_active_session_id(root, normalized_name)
         active_session: dict[str, Any] | None = None
         if active_session_id:
@@ -61,6 +65,19 @@ async def start_session(
             story_id=story_id,
             start_client_id=normalized_start_id,
         )
+
+
+async def _current_catgirl_name(config_manager: Any) -> str:
+    """从 Router 使用的配置管理器重读当前猫娘，兼容同步与异步加载接口。"""  # noqa: DOCSTRING_CJK
+    async_loader = getattr(config_manager, "aload_characters", None)
+    if callable(async_loader):
+        characters = await async_loader()
+    else:
+        sync_loader = getattr(config_manager, "load_characters", None)
+        characters = sync_loader() if callable(sync_loader) else {}
+    if not isinstance(characters, dict):
+        characters = {}
+    return str(characters.get("当前猫娘") or "").strip() or "Lan"
 
 
 async def _create_session(

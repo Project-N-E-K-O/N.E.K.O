@@ -214,6 +214,41 @@ async def test_concurrent_start_retry_reuses_one_session(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_start_rechecks_current_catgirl_after_waiting_for_character_lock(tmp_path):
+    """开场等待旧角色锁期间切换猫娘后，不得创建旧角色 Session。"""  # noqa: DOCSTRING_CJK
+    root = tmp_path / "theater"
+
+    class _MutableConfigManager:
+        """模拟角色切换在开场请求排队期间发布新当前猫娘。"""  # noqa: DOCSTRING_CJK
+
+        current_name = "旧猫娘"
+
+        async def aload_characters(self):
+            """返回调用时已经发布的当前猫娘。"""  # noqa: DOCSTRING_CJK
+            return {"当前猫娘": self.current_name}
+
+    config_manager = _MutableConfigManager()
+    async with session_store.character_guard(root, "旧猫娘"):
+        start_task = asyncio.create_task(
+            runtime.start_session(
+                root,
+                lanlan_name="旧猫娘",
+                client_start_id="start_waiting_character_switch",
+                config_manager=config_manager,
+            )
+        )
+        # 让开场任务进入角色锁等待，再模拟切换事务在同一边界内发布新角色。
+        await asyncio.sleep(0)
+        config_manager.current_name = "新猫娘"
+
+    result = await start_task
+
+    assert result == {"ok": False, "reason": "session_character_mismatch"}
+    assert await session_store.list_session_ids(root) == []
+    assert await session_store.load_active_sessions(root) == {}
+
+
+@pytest.mark.asyncio
 async def test_active_index_memory_changes_only_after_persistence(monkeypatch, tmp_path):
     """活动索引写盘失败时不能提前发布只存在于内存的新映射。"""  # noqa: DOCSTRING_CJK
     root = tmp_path / "theater"

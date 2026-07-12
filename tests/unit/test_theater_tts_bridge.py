@@ -103,3 +103,48 @@ async def test_theater_tts_rechecks_current_catgirl_before_queue(monkeypatch):
 
     assert result == {"ok": True, "skipped": "character_changed"}
     assert manager.calls == []
+
+
+@pytest.mark.asyncio
+async def test_start_router_passes_current_config_for_locked_recheck(monkeypatch):
+    """开场 Router 必须把当前配置管理器交给 Runtime 做锁内角色重验。"""  # noqa: DOCSTRING_CJK
+    captured = {}
+
+    class _FakeConfigManager:
+        """提供开场所需的当前猫娘和数据目录。"""  # noqa: DOCSTRING_CJK
+
+        app_docs_dir = None
+        config_dir = None
+
+        @staticmethod
+        def load_characters():
+            """返回测试当前猫娘。"""  # noqa: DOCSTRING_CJK
+            return {"当前猫娘": "测试猫娘"}
+
+    async def _start_session(*args, **kwargs):
+        """记录 Router 转交给 Runtime 的开场参数。"""  # noqa: DOCSTRING_CJK
+        captured.update(kwargs)
+        return {"ok": False, "reason": "session_character_mismatch"}
+
+    async def _noop_cleanup(_root):
+        """跳过与本测试无关的过期 Session 清理。"""  # noqa: DOCSTRING_CJK
+        return None
+
+    config_manager = _FakeConfigManager()
+    monkeypatch.setattr(theater_router, "get_config_manager", lambda: config_manager)
+    monkeypatch.setattr(theater_router.runtime, "start_session", _start_session)
+    monkeypatch.setattr(theater_router, "_cleanup_expired_theater_sessions", _noop_cleanup)
+    monkeypatch.setattr(theater_router, "_validate_theater_local_mutation", lambda *_args: None)
+    monkeypatch.setattr(theater_router, "_speak_committed_dialogue", _noop_cleanup)
+
+    class _FakeRequest:
+        """提供最小合法开场 JSON。"""  # noqa: DOCSTRING_CJK
+
+        async def json(self):
+            """返回测试开场载荷。"""  # noqa: DOCSTRING_CJK
+            return {"story_id": "test_story", "client_start_id": "start_router_recheck"}
+
+    await theater_router.start_theater_session(_FakeRequest())
+
+    assert captured["lanlan_name"] == "测试猫娘"
+    assert captured["config_manager"] is config_manager
