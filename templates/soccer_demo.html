@@ -200,8 +200,31 @@
     font: 11px/1.35 Consolas, "Cascadia Mono", monospace;
     white-space: pre-wrap;
   }
-  #exit-to-start-button {
+  #game-top-controls {
     position: fixed; right: 12px; top: 12px; z-index: 35;
+    display: flex; align-items: center; gap: 8px;
+    font: 13px/1.3 "Segoe UI", "PingFang SC", sans-serif;
+  }
+  #game-top-controls[hidden] { display: none; }
+  #surrender-reminder-control {
+    display: inline-flex; align-items: center; gap: 7px;
+    min-height: 34px; padding: 6px 10px;
+    border: 1px solid rgba(255,255,255,0.24);
+    border-radius: 6px;
+    background: rgba(0,0,0,0.48);
+    color: rgba(255,255,255,0.9);
+    cursor: pointer;
+    user-select: none; -webkit-user-select: none;
+  }
+  #surrender-reminder-toggle {
+    width: 16px; height: 16px; margin: 0;
+    accent-color: #8fd3ff;
+  }
+  #surrender-reminder-control:hover {
+    background: rgba(40,40,40,0.68);
+    border-color: rgba(255,255,255,0.38);
+  }
+  #exit-to-start-button {
     padding: 7px 12px;
     border: 1px solid rgba(255,255,255,0.26);
     border-radius: 6px;
@@ -214,12 +237,104 @@
     background: rgba(40,40,40,0.72);
     border-color: rgba(255,255,255,0.42);
   }
+  #exit-to-start-button:active,
+  #surrender-reminder-control:active {
+    transform: translateY(1px);
+  }
   #exit-to-start-button:disabled,
   #soccer-start-button:disabled {
     opacity: 0.55;
     cursor: wait;
   }
   #exit-to-start-button[hidden] { display: none; }
+  #exit-prompt-overlay {
+    position: fixed; inset: 0; z-index: 80;
+    display: flex; align-items: center; justify-content: center;
+    padding: 24px;
+    background: rgba(8, 10, 14, 0.42);
+    pointer-events: auto;
+  }
+  #exit-prompt-overlay[hidden] { display: none; }
+  #exit-prompt-dialog {
+    width: min(420px, calc(100vw - 48px));
+    padding: 18px;
+    border: 1px solid rgba(255,255,255,0.22);
+    border-radius: 8px;
+    background: rgba(18, 22, 28, 0.94);
+    color: rgba(255,255,255,0.94);
+    box-shadow: 0 18px 50px rgba(0,0,0,0.34);
+    font: 14px/1.55 "Segoe UI", "PingFang SC", sans-serif;
+  }
+  #exit-prompt-line {
+    min-height: 44px;
+    margin: 0 0 14px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  #exit-prompt-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+  .exit-prompt-button {
+    min-height: 40px;
+    padding: 8px 12px;
+    border: 1px solid rgba(255,255,255,0.26);
+    border-radius: 6px;
+    background: rgba(255,255,255,0.10);
+    color: rgba(255,255,255,0.94);
+    font: 14px/1.25 "Segoe UI", "PingFang SC", sans-serif;
+    cursor: pointer;
+  }
+  .exit-prompt-button:hover {
+    background: rgba(255,255,255,0.17);
+    border-color: rgba(255,255,255,0.44);
+  }
+  .exit-prompt-button:active {
+    transform: translateY(1px);
+    background: rgba(255,255,255,0.12);
+  }
+  .exit-prompt-button.primary {
+    border-color: rgba(143,211,255,0.72);
+    background: rgba(80, 150, 205, 0.34);
+    box-shadow: 0 0 0 1px rgba(143,211,255,0.18);
+  }
+  .exit-prompt-button.primary:hover {
+    background: rgba(88, 162, 220, 0.46);
+    border-color: rgba(170,226,255,0.9);
+  }
+  .exit-prompt-button.secondary-muted {
+    position: relative;
+    color: rgba(255,255,255,0.78);
+  }
+  .exit-prompt-button.secondary-muted::after {
+    content: "";
+    position: absolute; inset: 0;
+    border-radius: inherit;
+    background: rgba(0,0,0,0.20);
+    pointer-events: none;
+  }
+  #exit-prompt-dismiss-row {
+    margin-top: 12px;
+    display: grid;
+    gap: 6px;
+  }
+  #exit-prompt-never-row {
+    display: inline-flex; align-items: center; gap: 7px;
+    color: rgba(255,255,255,0.86);
+  }
+  #exit-prompt-never-row[hidden],
+  #exit-prompt-never-note[hidden] { display: none; }
+  #exit-prompt-never-again {
+    width: 16px; height: 16px; margin: 0;
+    accent-color: #8fd3ff;
+  }
+  #exit-prompt-never-note {
+    margin: 0;
+    color: rgba(255,255,255,0.66);
+    font-size: 12px;
+    line-height: 1.45;
+  }
   #loading-overlay {
     position: fixed; inset: 0; z-index: 100;
     display: flex; align-items: center; justify-content: center;
@@ -392,7 +507,29 @@
      ``typeof window.t === 'function'`` 一次性 gate 在 i18n 异步 init 之前
      会 skip，导致非 zh locale 卡在 HTML 兜底。统一走 ``data-i18n`` 后框架
      接管两类时序。 -->
-<button id="exit-to-start-button" type="button" hidden data-i18n="soccer.exitGame.button">退出游戏</button>
+<div id="game-top-controls" hidden>
+  <label id="surrender-reminder-control">
+    <input type="checkbox" id="surrender-reminder-toggle" checked>
+    <span data-i18n="soccer.surrenderReminder.label">认输提醒</span>
+  </label>
+  <button id="exit-to-start-button" type="button" data-i18n="soccer.exitGame.button">退出游戏</button>
+</div>
+<div id="exit-prompt-overlay" hidden>
+  <div id="exit-prompt-dialog" role="dialog" aria-modal="true">
+    <p id="exit-prompt-line">喵..认输喵...</p>
+    <div id="exit-prompt-actions">
+      <button id="exit-prompt-continue" class="exit-prompt-button primary" type="button" data-i18n="soccer.exitPrompt.continuePlay">继续玩</button>
+      <button id="exit-prompt-end" class="exit-prompt-button secondary-muted" type="button" data-i18n="soccer.exitPrompt.endGame">结束游戏</button>
+    </div>
+    <div id="exit-prompt-dismiss-row">
+      <label id="exit-prompt-never-row">
+        <input type="checkbox" id="exit-prompt-never-again">
+        <span data-i18n="soccer.exitPrompt.neverAgain">不再提示</span>
+      </label>
+      <p id="exit-prompt-never-note" data-i18n="soccer.exitPrompt.neverAgainNote">以后不再自动弹出猫娘认输或休息提示。可在右上角重新开启“认输提醒”。如果猫娘情绪低落，可以用语音或文字哄哄她。</p>
+    </div>
+  </div>
+</div>
 <div id="status">loading VRM dependencies…</div>
 <div id="loading-overlay" role="status" aria-live="polite">
   <div id="loading-panel">
@@ -426,6 +563,7 @@
     const spinnerEl = () => document.getElementById('loading-spinner');
     const actionsEl = () => document.getElementById('loading-actions');
     const startButtonEl = () => document.getElementById('soccer-start-button');
+    const topControlsEl = () => document.getElementById('game-top-controls');
     const exitButtonEl = () => document.getElementById('exit-to-start-button');
     const updateText = (text) => {
       const el = textEl();
@@ -454,10 +592,10 @@
       if (button) button.disabled = !enabled;
     };
     const setExitVisible = (visible, enabled = true) => {
+      const controls = topControlsEl();
       const button = exitButtonEl();
-      if (!button) return;
-      button.hidden = !visible;
-      button.disabled = !enabled;
+      if (controls) controls.hidden = !visible;
+      if (button) button.disabled = !enabled;
     };
     const _fillFallback = (fallback, params = {}) => Object.entries(params).reduce(
       (s, [k, v]) => s.replaceAll('{' + '{' + k + '}' + '}', String(v)),
@@ -963,7 +1101,7 @@
  *     SoccerDemo.MOODS                  // ['calm','happy','angry','relaxed','sad','surprised']
  *     SoccerDemo.setMood(name)          // 切换心情；会触发 'mood-<name>' 气泡 + onEvent('mood-changed')
  *     SoccerDemo.getMood()              // 当前心情字符串
- *     SoccerDemo.enableMoodRotation(s)  // 启用随机轮换；默认 20s（页面加载后自动开启）
+ *     SoccerDemo.enableMoodRotation(s)  // 启用随机轮换；仅用于 debug 或 LLM 降级后的纯游戏兜底
  *     SoccerDemo.disableMoodRotation()  // 关闭自动轮换
  *
  *  ── 难度（4 档：max → lv2 → lv3 → lv4；当前默认由 LLM 控制）
@@ -1078,6 +1216,15 @@
     'soccer.debugControls.voiceButton': '调试语音',
     'soccer.debugControls.send': '发送',
     'soccer.debugControls.voiceStatusHidden': '调试 STT：隐藏',
+    'soccer.surrenderReminder.label': '认输提醒',
+    'soccer.exitPrompt.continuePlay': '继续玩',
+    'soccer.exitPrompt.endGame': '结束游戏',
+    'soccer.exitPrompt.stayLonger': '再陪一会',
+    'soccer.exitPrompt.rest': '休息',
+    'soccer.exitPrompt.neverAgain': '不再提示',
+    'soccer.exitPrompt.neverAgainNote': '以后不再自动弹出猫娘认输或休息提示。可在右上角重新开启“认输提醒”。如果猫娘情绪低落，可以用语音或文字哄哄她。',
+    'soccer.exitPrompt.surrenderFallback': '喵..认输喵...',
+    'soccer.exitPrompt.restFallback': '喵...有点累了，想先安静一会。',
     'soccer.exitGame.button': '退出游戏',
     'soccer.loading.initializingMiniGame': '初始化足球小游戏…',
     'soccer.startTutorial.title': '玩法说明',
@@ -1207,7 +1354,16 @@
   const moodDebugPanel = document.getElementById('mood-debug-panel');
   const moodDebugReadout = document.getElementById('mood-debug-readout');
   const startButton = document.getElementById('soccer-start-button');
+  const gameTopControls = document.getElementById('game-top-controls');
+  const surrenderReminderToggle = document.getElementById('surrender-reminder-toggle');
   const exitToStartButton = document.getElementById('exit-to-start-button');
+  const exitPromptOverlay = document.getElementById('exit-prompt-overlay');
+  const exitPromptLine = document.getElementById('exit-prompt-line');
+  const exitPromptContinueButton = document.getElementById('exit-prompt-continue');
+  const exitPromptEndButton = document.getElementById('exit-prompt-end');
+  const exitPromptNeverRow = document.getElementById('exit-prompt-never-row');
+  const exitPromptNeverNote = document.getElementById('exit-prompt-never-note');
+  const exitPromptNeverAgain = document.getElementById('exit-prompt-never-again');
   const bgmVolumeInput = document.getElementById('game-bgm-volume');
   const bgmVolumeValue = document.getElementById('game-bgm-volume-value');
   const sfxVolumeInput = document.getElementById('game-sfx-volume');
@@ -1611,7 +1767,7 @@
     console.log('[SoccerMoodDebug] 调试面板已显示 | 来源=debug_mood/localStorage');
   }
   const isGameRuntimeReady = () => window.__SoccerLoading?.isReady?.() !== false;
-  const isGameUiTarget = (target) => !!target?.closest?.('#controls, #loading-overlay, #exit-to-start-button');
+  const isGameUiTarget = (target) => !!target?.closest?.('#controls, #loading-overlay, #game-top-controls, #exit-prompt-overlay');
   const _isGameMemoryEnabled = () => gameMemoryToggle ? gameMemoryToggle.checked !== false : true;
 
   const state = {
@@ -1921,6 +2077,7 @@
       const kind = lastTouchSide === 'player' ? 'own-goal-by-player' : 'goal-scored';
       speechState.scoreAgeAccum = 0;
       speechState.lastGoalTime = performance.now();
+      _handlePassiveGuardGoal('ai', kind);
       rebalanceDifficultyForScore(kind);
       triggerScene(kind);
       emitEvent(kind, { side: 'ai', lastTouch: lastTouchSide });
@@ -1934,6 +2091,7 @@
       const kind = lastTouchSide === 'ai' ? 'own-goal-by-ai' : 'goal-conceded';
       speechState.scoreAgeAccum = 0;
       speechState.lastGoalTime = performance.now();
+      _handlePassiveGuardGoal('player', kind);
       rebalanceDifficultyForScore(kind);
       triggerScene(kind);
       emitEvent(kind, { side: 'player', lastTouch: lastTouchSide });
@@ -1974,11 +2132,22 @@
     if (i < 0 || i === difficultyIdx) return false;
     const before = DIFFICULTY[difficultyIdx].name;
     difficultyIdx = i;
+    try {
+      window.__SoccerPassiveGuardRecordDifficulty?.(before, name, opts);
+    } catch (_) { /* optional debug hook */ }
     triggerScene('diff-' + name);
     emitEvent('difficulty-changed', { difficulty: name });
     if (opts.source) {
       console.log(`[SoccerDifficulty] ${opts.source} | ${before} -> ${name} ${opts.reason || ''}`.trim());
     }
+    _passiveGuardDebugLog('State', 'passive_guard_state_change', '难度变化', {
+      field: 'difficulty',
+      before,
+      after: name,
+      source: opts.source || 'manual',
+      reason: opts.reason || '',
+      manual: opts.manual === true || !opts.source || opts.source === 'manual' || opts.source === 'difficulty-hotkey',
+    });
     soccerGameAudio.sync(opts.reason || opts.source || 'difficulty-changed');
     return true;
   }
@@ -2374,6 +2543,10 @@
   const SHOW_BUILTIN_SPEECH = false;
   const DIFFICULTY_AUTOCYCLE_ON_GOAL = false;
   const REQUEST_CONTROL_REASON = true;
+  const SURRENDER_REMINDER_STORAGE_KEY = 'neko.soccer.surrenderReminderEnabled';
+  const PASSIVE_GUARD_SIDE_CAR_TIMEOUT_MS = 7000;
+  const EXIT_PROMPT_LINE_WAIT_MS = 4200;
+  const PASSIVE_GUARD_DEBUG_LOG_LIMIT_PER_WINDOW = 80;
   const LLM_INTERCEPT_KINDS = new Set([
     'goal-scored', 'goal-conceded',
     'own-goal-by-ai', 'own-goal-by-player',
@@ -2391,6 +2564,11 @@
     'own-goal-by-player': '玩家乌龙球',
     'user-voice': '玩家语音',
     'mailbox-batch': '累积上下文',
+    'light-balance-hint': '轻量平衡提示',
+    'send-rescue-hint': '发送救场提示',
+    'passive-surrender-hint': '认输台词请求',
+    'passive-rest-hint': '休息台词请求',
+    'teaching-progress-hint': '教学进度提示',
     'steal': '猫娘抢到球',
     'stolen': '猫娘被抢断',
     'shot-miss': '射门未进',
@@ -2477,6 +2655,45 @@
   function soccerRecoverableLog(...args) {
     if (DEBUG_WARN_WITH_STACK) console.warn(...args);
     else console.log(...args);
+  }
+
+  const fallbackStatusState = {
+    shown: new Set(),
+    hitCounts: new Map(),
+  };
+  const FALLBACK_DIAGNOSTIC_REPEAT_EVERY = 20;
+
+  function _recordFallbackDiagnostic(title, options = {}) {
+    const cleanTitle = String(title || '小游戏流程').trim();
+    const fallbackText = String(options.fallback || '已使用兜底继续运行').trim();
+    const reason = String(options.reason || '').trim();
+    const key = String(options.key || `${cleanTitle}:${fallbackText}:${reason}`);
+    const hits = (fallbackStatusState.hitCounts.get(key) || 0) + 1;
+    fallbackStatusState.hitCounts.set(key, hits);
+    const periodicRepeat = hits > 1 && hits % FALLBACK_DIAGNOSTIC_REPEAT_EVERY === 0;
+    if (!options.repeat && fallbackStatusState.shown.has(key) && !periodicRepeat) return;
+    fallbackStatusState.shown.add(key);
+
+    const message = `${cleanTitle}失败，${fallbackText}${reason ? `（${reason}）` : ''}`;
+    soccerRecoverableLog(`[SoccerFallback] ${message}`, options.details || {});
+    try {
+      window.SoccerDemoDebugLog?.(
+        'warning',
+        'fallback',
+        'fallback_notice',
+        message,
+        {
+          title: cleanTitle,
+          fallback: fallbackText,
+          reason,
+          diagnosticHitCount: hits,
+          periodicRepeat,
+          ...options.details,
+        },
+        false,
+        { preserveDetails: true },
+      );
+    } catch (_) {}
   }
 
   let currentSpeechIsUserReply = false;
@@ -2648,11 +2865,21 @@
         body: JSON.stringify({ i18n_language: _currentI18nLang() }),
       });
       if (!resp.ok) {
+        _recordFallbackDiagnostic('快路径台词生成', {
+          fallback: '继续使用内建快路径',
+          reason: `HTTP ${resp.status}`,
+          key: 'quick-lines-http',
+        });
         soccerRecoverableLog(`[SoccerQuickLines] 生成失败 | HTTP ${resp.status}，继续使用内建快路径`, LINES);
         return;
       }
       const data = await resp.json();
       if (!data.ok || !data.lines || !Object.keys(data.lines).length) {
+        _recordFallbackDiagnostic('快路径台词生成', {
+          fallback: '继续使用内建快路径',
+          reason: data.error || 'empty_lines',
+          key: 'quick-lines-empty',
+        });
         soccerRecoverableLog('[SoccerQuickLines] 生成失败 | 继续使用内建快路径', data);
         return;
       }
@@ -2660,6 +2887,11 @@
       console.log(`[SoccerQuickLines] 已生成 | 角色=${data.character || '未知'} 覆盖=${Object.keys(applied).length} 缺失=${(data.missing || []).join(',') || '无'}`);
       console.log('[SoccerQuickLines] 当前快路径台词字典:', applied);
     } catch (e) {
+      _recordFallbackDiagnostic('快路径台词生成', {
+        fallback: '继续使用内建快路径',
+        reason: String(e),
+        key: 'quick-lines-request',
+      });
       soccerRecoverableLog('[SoccerQuickLines] 生成请求失败 | 继续使用内建快路径', e);
     }
   }
@@ -2798,6 +3030,13 @@
     if (!changed) return false;
     triggerScene('mood-' + name);
     emitEvent('mood-changed', { mood: name });
+    _passiveGuardDebugLog('State', 'passive_guard_state_change', '心情变化', {
+      field: 'mood',
+      after: name,
+      source: opts.source || (opts.manual ? 'manual' : 'unknown'),
+      reason: opts.reason || '',
+      manual: opts.manual === true || opts.source === 'manual',
+    });
     soccerGameAudio.sync('mood-changed');
     return true;
   };
@@ -2964,8 +3203,8 @@
     if (shouldShow) {
       moodDebugPanel.dataset.collapsed = readMoodDebugCollapsed() ? 'true' : 'false';
       disableMoodRotation({ force: true });
-    } else if (!_llm.keepMoodRotationDisabled) {
-      enableMoodRotation(20);
+    } else {
+      _syncMoodRotationPolicy('debug-panel-hidden');
     }
     if (persist) {
       try {
@@ -3165,8 +3404,7 @@
   };
   updateMoodDebugPanel();
 
-  // 默认开启 20s 心情轮换；debug_mood 测试模式下保持手动控制。
-  if (!moodDebugMode) enableMoodRotation(20);
+  // 正常 LLM 模式下不自动轮换心情；随机轮换仅保留给 debug 和纯游戏兜底。
 
   // ═══════════════════════════════════════════════════════════════════════════
   //  LLM 接入（A+B 双簧模式）
@@ -3180,7 +3418,7 @@
     preGameContextSource: '',
     preGameContextError: '',
     pendingOpeningLine: '',
-    keepMoodRotationDisabled: false,
+    moodRotationFallbackEnabled: false,
     pending: false,
     cleanedUp: true,
     pendingItems: [],
@@ -3234,6 +3472,40 @@
     },
   };
 
+  function _shouldUsePureGameMoodRotationFallback() {
+    const source = String(_llm.preGameContextSource || '').trim().toLowerCase();
+    const error = String(_llm.preGameContextError || '').trim();
+    return source === 'fallback' || !!error;
+  }
+  function _syncMoodRotationPolicy(reason = 'policy') {
+    _llm.moodRotationFallbackEnabled = _shouldUsePureGameMoodRotationFallback();
+    if (moodDebugMode) {
+      SoccerDemo.disableMoodRotation({ force: true });
+    } else if (_llm.moodRotationFallbackEnabled) {
+      SoccerDemo.enableMoodRotation(20);
+    } else {
+      SoccerDemo.disableMoodRotation();
+    }
+    try {
+      window.SoccerDemoDebugLog?.(
+        'info',
+        'game_state',
+        'mood_rotation_policy',
+        '足球小游戏随机心情策略',
+        {
+          enabled: _llm.moodRotationFallbackEnabled,
+          reason,
+          preGameContextSource: _llm.preGameContextSource || '',
+          preGameContextError: _llm.preGameContextError || '',
+        },
+      );
+      console.log(
+        `[SoccerMoodRotation] ${_llm.moodRotationFallbackEnabled ? 'enabled' : 'disabled'} | ` +
+        `reason=${reason} source=${_llm.preGameContextSource || '-'} error=${_llm.preGameContextError || '-'}`
+      );
+    } catch (_) {}
+  }
+
   const _soccerDebugConsole = {
     warn: console.warn.bind(console),
     error: console.error.bind(console),
@@ -3241,6 +3513,7 @@
   const _soccerDebugLogState = {
     lastWindowStart: 0,
     sentInWindow: 0,
+    passiveGuardSentInWindow: 0,
   };
   const _soccerSpeechPlaybackLogState = {
     lastSignature: '',
@@ -3293,9 +3566,17 @@
     if (now - _soccerDebugLogState.lastWindowStart > 60000) {
       _soccerDebugLogState.lastWindowStart = now;
       _soccerDebugLogState.sentInWindow = 0;
+      _soccerDebugLogState.passiveGuardSentInWindow = 0;
     }
-    if (_soccerDebugLogState.sentInWindow >= 120) return;
-    _soccerDebugLogState.sentInWindow += 1;
+    const isPassiveGuardLog = payload?.category === 'passive_guard'
+      || String(payload?.event || '').startsWith('passive_guard_');
+    if (isPassiveGuardLog) {
+      if (_soccerDebugLogState.passiveGuardSentInWindow >= PASSIVE_GUARD_DEBUG_LOG_LIMIT_PER_WINDOW) return;
+      _soccerDebugLogState.passiveGuardSentInWindow += 1;
+    } else {
+      if (_soccerDebugLogState.sentInWindow >= 120) return;
+      _soccerDebugLogState.sentInWindow += 1;
+    }
     const logPayload = {
       session_id: _llm.sessionId,
       game_type: 'soccer',
@@ -3508,6 +3789,883 @@
 
   const SPEECH_PLAYBACK_STATE_KEY = 'neko_speech_playback_state';
   const SPEECH_PLAYBACK_CHANNEL_NAME = 'neko_speech_playback_channel';
+
+  const passiveGuard = {
+    surrenderReminderEnabled: true,
+    ordinaryDisabledForCurrentGame: false,
+    ordinaryModalShownThisGame: false,
+    restModalShownThisGame: false,
+    restDismissedThisGame: false,
+    modalOpen: false,
+    modalType: '',
+    modalLineToken: 0,
+    lv4PlayerGoalStreak: 0,
+    withdrawnRestGoalStreak: 0,
+    ordinaryLightHintSent: false,
+    ordinarySidecar7Called: false,
+    ordinarySidecar8Called: false,
+    ordinaryRescueSent: false,
+    restLightHintSent: false,
+    restSidecar7Called: false,
+    restSidecar8Called: false,
+    teachingLv4PlayerGoalStreak: 0,
+    teachingLv3GoalWindow: [],
+    teachingLv3Promoted: false,
+    teachingLv2Promoted: false,
+    lastDifficultyChange: null,
+    sidecarGeneration: 0,
+  };
+
+  function _readSurrenderReminderEnabled() {
+    try {
+      const raw = window.localStorage?.getItem(SURRENDER_REMINDER_STORAGE_KEY);
+      return raw == null ? true : raw !== 'false';
+    } catch (_) {
+      return true;
+    }
+  }
+
+  function _writeSurrenderReminderEnabled(enabled) {
+    try {
+      window.localStorage?.setItem(SURRENDER_REMINDER_STORAGE_KEY, enabled ? 'true' : 'false');
+    } catch (_) { /* noop */ }
+  }
+
+  function _setSurrenderReminderEnabled(enabled, { persist = true, source = 'ui' } = {}) {
+    const next = enabled !== false;
+    passiveGuard.surrenderReminderEnabled = next;
+    if (surrenderReminderToggle) surrenderReminderToggle.checked = next;
+    if (persist) _writeSurrenderReminderEnabled(next);
+    if (next) {
+      passiveGuard.ordinaryDisabledForCurrentGame = false;
+      passiveGuard.ordinaryModalShownThisGame = false;
+    } else {
+      passiveGuard.ordinaryDisabledForCurrentGame = true;
+    }
+    _passiveGuardDebugLog('Modal', 'passive_guard_modal', '设置认输提醒', {
+      action: 'set_surrender_reminder',
+      enabled: next,
+      source,
+      persist,
+    });
+    console.log(`[Soccer] [PassiveGuard] [Modal] 设置认输提醒 | 来源=${source} 开启=${next ? '是' : '否'} 本场普通功能=${passiveGuard.ordinaryDisabledForCurrentGame ? '停用' : '启用'}`);
+  }
+
+  function _resetPassiveGuardForNewGame() {
+    const reminderEnabled = _readSurrenderReminderEnabled();
+    const nextSidecarGeneration = Number(passiveGuard.sidecarGeneration || 0) + 1;
+    Object.assign(passiveGuard, {
+      surrenderReminderEnabled: reminderEnabled,
+      ordinaryDisabledForCurrentGame: !reminderEnabled,
+      ordinaryModalShownThisGame: false,
+      restModalShownThisGame: false,
+      restDismissedThisGame: false,
+      modalOpen: false,
+      modalType: '',
+      modalLineToken: 0,
+      lv4PlayerGoalStreak: 0,
+      withdrawnRestGoalStreak: 0,
+      ordinaryLightHintSent: false,
+      ordinarySidecar7Called: false,
+      ordinarySidecar8Called: false,
+      ordinaryRescueSent: false,
+      restLightHintSent: false,
+      restSidecar7Called: false,
+      restSidecar8Called: false,
+      teachingLv4PlayerGoalStreak: 0,
+      teachingLv3GoalWindow: [],
+      teachingLv3Promoted: false,
+      teachingLv2Promoted: false,
+      lastDifficultyChange: null,
+      sidecarGeneration: nextSidecarGeneration,
+    });
+    if (surrenderReminderToggle) surrenderReminderToggle.checked = reminderEnabled;
+    _hideExitPrompt();
+    _passiveGuardDebugLog('Counter', 'passive_guard_counter', '新局重置', {
+      reason: 'new_game_reset',
+      reminderEnabled,
+    });
+    console.log(`[Soccer] [PassiveGuard] [Counter] 新局重置 | 认输提醒=${reminderEnabled ? '开启' : '关闭'}`);
+  }
+
+  function _pregameStance() {
+    return String(_llm.preGameContext?.gameStance || 'neutral_play');
+  }
+
+  function _isTeachingStance() {
+    return _pregameStance() === 'teaching';
+  }
+
+  function _isWithdrawnStance() {
+    return _pregameStance() === 'withdrawn';
+  }
+
+  function _isPunishingLikeStance() {
+    return _pregameStance() === 'punishing';
+  }
+
+  function _scoreDiffPlayerLead() {
+    return Number(state.score.player || 0) - Number(state.score.ai || 0);
+  }
+
+  function _currentPassiveSnapshot() {
+    return {
+      reminderEnabled: passiveGuard.surrenderReminderEnabled,
+      ordinaryDisabledForCurrentGame: passiveGuard.ordinaryDisabledForCurrentGame,
+      ordinaryModalShownThisGame: passiveGuard.ordinaryModalShownThisGame,
+      restModalShownThisGame: passiveGuard.restModalShownThisGame,
+      lv4PlayerGoalStreak: passiveGuard.lv4PlayerGoalStreak,
+      withdrawnRestGoalStreak: passiveGuard.withdrawnRestGoalStreak,
+      teachingLv4PlayerGoalStreak: passiveGuard.teachingLv4PlayerGoalStreak,
+      teachingLv3GoalWindow: passiveGuard.teachingLv3GoalWindow.slice(-5),
+      lastDifficultyChange: passiveGuard.lastDifficultyChange,
+    };
+  }
+
+  function _passiveGuardDebugLog(section, event, message, details = {}, level = 'info') {
+    soccerSessionDebugLog(level, 'passive_guard', event, message, {
+      section,
+      round: state.round,
+      score: {
+        player: state.score.player,
+        ai: state.score.ai,
+        diffPlayerLead: _scoreDiffPlayerLead(),
+      },
+      mood: moodKey,
+      difficulty: DIFFICULTY[difficultyIdx]?.name || '',
+      passiveGuard: _currentPassiveSnapshot(),
+      ...details,
+    }, false, { preserveDetails: true });
+  }
+
+  function _passiveGuardLogCounter(reason, extra = {}) {
+    _passiveGuardDebugLog('Counter', 'passive_guard_counter', reason, {
+      reason,
+      stage: extra.stage || '',
+      triggerReason: extra.reason || '',
+    });
+    console.log(
+      `[Soccer] [PassiveGuard] [Counter] ${reason} | 回合=${state.round} 比分=${state.score.player}:${state.score.ai} ` +
+      `难度=${DIFFICULTY[difficultyIdx]?.name || '未知'} 普通连续=${passiveGuard.lv4PlayerGoalStreak} ` +
+      `rest连续=${passiveGuard.withdrawnRestGoalStreak} teaching连续=${passiveGuard.teachingLv4PlayerGoalStreak} ` +
+      `阶段=${extra.stage || '无'} 原因=${extra.reason || '无'}`
+    );
+  }
+
+  function _makePassiveHintItem(kind, textRaw, priority = 7) {
+    const snapshot = SoccerDemo._snapshot();
+    return {
+      type: 'game_event',
+      kind,
+      label: eventLabel(kind),
+      textRaw,
+      mood: snapshot.mood,
+      priority,
+      builtinFallback: '',
+      snapshot,
+      round: snapshot.round,
+      ts: performance.now(),
+    };
+  }
+
+  function _sendPassiveHint(kind, textRaw, priority = 7) {
+    _passiveGuardDebugLog('Hint', 'passive_guard_hint', '发送 PassiveGuard 提示', {
+      kind,
+      label: eventLabel(kind),
+      priority,
+      textLength: String(textRaw || '').length,
+    });
+    console.log(`[Soccer] [PassiveGuard] [Hint] 发送提示 | 类型=${eventLabel(kind)}(${kind}) 回合=${state.round} 比分=${state.score.player}:${state.score.ai} 难度=${DIFFICULTY[difficultyIdx]?.name || '未知'} 目标=${textRaw}`);
+    _enqueueLLMItem(_makePassiveHintItem(kind, textRaw, priority));
+  }
+
+  function _clearOrdinaryCandidate(reason) {
+    passiveGuard.lv4PlayerGoalStreak = 0;
+    passiveGuard.ordinaryLightHintSent = false;
+    passiveGuard.ordinarySidecar7Called = false;
+    passiveGuard.ordinarySidecar8Called = false;
+    passiveGuard.ordinaryRescueSent = false;
+    _passiveGuardLogCounter('普通候选清零', { reason });
+  }
+
+  function _clearRestCandidate(reason) {
+    passiveGuard.withdrawnRestGoalStreak = 0;
+    passiveGuard.restLightHintSent = false;
+    passiveGuard.restSidecar7Called = false;
+    passiveGuard.restSidecar8Called = false;
+    _passiveGuardLogCounter('rest候选清零', { reason });
+  }
+
+  function _isPassiveGuardSidecarCurrent(sessionId, generation) {
+    return String(sessionId || '') === String(_llm.sessionId || '') &&
+      Number(generation || 0) === Number(passiveGuard.sidecarGeneration || 0);
+  }
+
+  function _passiveGuardExitPromptCandidateState(promptType, stage, options = {}) {
+    const difficulty = DIFFICULTY[difficultyIdx]?.name || '';
+    const requiredStage = Math.max(0, Number(stage || 0));
+    const allowPreparedModal = options.allowPreparedModal === true;
+    const scoreLead = _scoreDiffPlayerLead();
+    if (promptType === 'rest') {
+      const streak = Number(passiveGuard.withdrawnRestGoalStreak || 0);
+      if (!_isWithdrawnStance()) return { active: false, reason: 'not_withdrawn_stance', difficulty, streak, scoreLead };
+      if (difficulty !== 'lv4') return { active: false, reason: 'left_lv4', difficulty, streak, scoreLead };
+      if (!passiveGuard.surrenderReminderEnabled) return { active: false, reason: 'surrender_reminder_disabled', difficulty, streak, scoreLead };
+      if (passiveGuard.restDismissedThisGame) return { active: false, reason: 'rest_dismissed_this_game', difficulty, streak, scoreLead };
+      if (passiveGuard.restModalShownThisGame && !allowPreparedModal) return { active: false, reason: 'rest_modal_shown_this_game', difficulty, streak, scoreLead };
+      if (streak < requiredStage) return { active: false, reason: 'rest_streak_below_stage', difficulty, streak, scoreLead };
+      return { active: true, reason: '', difficulty, streak, scoreLead };
+    }
+    const streak = Number(passiveGuard.lv4PlayerGoalStreak || 0);
+    if (_isTeachingStance()) return { active: false, reason: 'teaching_stance', difficulty, streak, scoreLead };
+    if (_isWithdrawnStance()) return { active: false, reason: 'withdrawn_stance', difficulty, streak, scoreLead };
+    if (_isPunishingLikeStance()) return { active: false, reason: 'punishing_stance', difficulty, streak, scoreLead };
+    if (difficulty !== 'lv4') return { active: false, reason: 'left_lv4', difficulty, streak, scoreLead };
+    if (!passiveGuard.surrenderReminderEnabled) return { active: false, reason: 'surrender_reminder_disabled', difficulty, streak, scoreLead };
+    if (passiveGuard.ordinaryDisabledForCurrentGame) return { active: false, reason: 'ordinary_disabled_for_current_game', difficulty, streak, scoreLead };
+    if (passiveGuard.ordinaryModalShownThisGame && !allowPreparedModal) return { active: false, reason: 'ordinary_modal_shown_this_game', difficulty, streak, scoreLead };
+    if (streak < requiredStage && scoreLead < 10) return { active: false, reason: 'ordinary_candidate_below_stage', difficulty, streak, scoreLead };
+    return { active: true, reason: '', difficulty, streak, scoreLead };
+  }
+
+  function _isExitPromptOpen() {
+    return passiveGuard.modalOpen;
+  }
+
+  function _setExitPromptButtons(type) {
+    const isRest = type === 'rest';
+    if (exitPromptContinueButton) {
+      exitPromptContinueButton.textContent = isRest
+        ? _i18n('exitPrompt.stayLonger', '再陪一会')
+        : _i18n('exitPrompt.continuePlay', '继续玩');
+      exitPromptContinueButton.classList.toggle('primary', !isRest);
+    }
+    if (exitPromptEndButton) {
+      exitPromptEndButton.textContent = isRest
+        ? _i18n('exitPrompt.rest', '休息')
+        : _i18n('exitPrompt.endGame', '结束游戏');
+      exitPromptEndButton.classList.toggle('secondary-muted', !isRest);
+    }
+    if (exitPromptNeverRow) exitPromptNeverRow.hidden = isRest;
+    if (exitPromptNeverNote) exitPromptNeverNote.hidden = isRest;
+    if (exitPromptNeverAgain) exitPromptNeverAgain.checked = false;
+  }
+
+  function _showExitPrompt(type, line, { fallback = false } = {}) {
+    if (!exitPromptOverlay || !exitPromptLine) return;
+    passiveGuard.modalOpen = true;
+    passiveGuard.modalType = type;
+    _setExitPromptButtons(type);
+    const fallbackLine = type === 'rest'
+      ? _i18n('exitPrompt.restFallback', '喵...有点累了，想先安静一会。')
+      : _i18n('exitPrompt.surrenderFallback', '喵..认输喵...');
+    exitPromptLine.textContent = line || fallbackLine;
+    exitPromptOverlay.hidden = false;
+    _passiveGuardDebugLog('Modal', 'passive_guard_modal', '显示退出提示窗口', {
+      action: 'show',
+      type,
+      fallback,
+      lineLength: String(line || '').length,
+    });
+    console.log(`[Soccer] [PassiveGuard] [Modal] 显示窗口 | 类型=${type === 'rest' ? '休息(rest)' : '认输(surrender)'} fallback=${fallback ? '是' : '否'} 回合=${state.round} 比分=${state.score.player}:${state.score.ai}`);
+  }
+
+  function _hideExitPrompt() {
+    if (passiveGuard.modalOpen) {
+      _passiveGuardDebugLog('Modal', 'passive_guard_modal', '隐藏退出提示窗口', {
+        action: 'hide',
+        type: passiveGuard.modalType || '',
+      });
+    }
+    passiveGuard.modalOpen = false;
+    passiveGuard.modalType = '';
+    if (exitPromptOverlay) exitPromptOverlay.hidden = true;
+  }
+
+  function _releasePreparedExitPrompt(type) {
+    if (type === 'rest') passiveGuard.restModalShownThisGame = false;
+    else passiveGuard.ordinaryModalShownThisGame = false;
+  }
+
+  function _deliverExitPromptLine(line, type, result = {}, meta = {}) {
+    const clean = String(line || '').trim();
+    if (!clean) return;
+    const kind = type === 'rest' ? 'passive-rest-hint' : 'passive-surrender-hint';
+    const displayMeta = {
+      kind,
+      round: state.round,
+      priority: 9,
+      voicePriority: 0,
+      itemCount: 1,
+      hasUserSpeech: false,
+      hasUserText: false,
+      ...meta,
+    };
+    SoccerDemo.say(clean, {
+      priority: 9,
+      kind: `${kind}-llm`,
+      sourceLabel: '退出提示',
+    });
+    void _mirrorGameAssistantText(clean, displayMeta, result);
+    void _enqueueGameVoice(clean, displayMeta, result, performance.now());
+    _passiveGuardDebugLog('Modal', 'passive_guard_modal', '展示退出提示台词', {
+      action: 'deliver_line',
+      type,
+      kind,
+      lineLength: clean.length,
+      fallback: !!result?.fallback,
+      reason: result?.reason || '',
+    });
+  }
+
+  async function _requestExitPromptLine(type) {
+    const snapshot = SoccerDemo._snapshot();
+    const kind = type === 'rest' ? 'passive-rest-hint' : 'passive-surrender-hint';
+    const eventPayload = {
+      kind,
+      round: snapshot.round,
+      mood: snapshot.mood,
+      textRaw: type === 'rest' ? '休息提示台词请求' : '认输提示台词请求',
+      exitPromptRequest: {
+        type,
+        instruction: type === 'rest'
+          ? '请生成一句低落/退缩场景下想休息或停下的猫娘台词，不要标题，不要控制 JSON。'
+          : '请生成一句猫娘认输或服软的短台词，不要标题，不要控制 JSON。',
+      },
+      score: snapshot.score,
+      scoreDiff: Number(snapshot.score?.ai || 0) - Number(snapshot.score?.player || 0),
+      difficulty: snapshot.difficulty,
+      aiMode: snapshot.aiMode,
+      requestControlReason: false,
+      currentState: snapshot,
+      passiveGuard: _currentPassiveSnapshot(),
+      preGameContext: _llm.preGameContext || null,
+      pendingItems: [],
+    };
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), EXIT_PROMPT_LINE_WAIT_MS);
+    try {
+      const resp = await fetch('/api/game/soccer/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+        body: JSON.stringify({
+          session_id: _llm.sessionId,
+          ...(_llm.routeLanlanName ? { lanlan_name: _llm.routeLanlanName } : {}),
+          ..._soccerGameMemoryPolicyPayload(),
+          i18n_language: _currentI18nLang(),
+          event: {
+            ...eventPayload,
+            ..._soccerGameMemoryPolicyPayload(),
+          },
+        }),
+      });
+      if (!resp.ok) return { line: '', result: { fallback: true, reason: `HTTP ${resp.status}` } };
+      const data = await resp.json().catch(() => ({}));
+      return { line: String(data.line || '').trim(), result: data };
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  async function _prepareExitPrompt(type, reason = '', { stage = 8 } = {}) {
+    if (type === 'surrender') {
+      if (!passiveGuard.surrenderReminderEnabled) {
+        passiveGuard.ordinaryDisabledForCurrentGame = true;
+        _passiveGuardDebugLog('Modal', 'passive_guard_modal', '跳过普通认输窗口', {
+          action: 'skip',
+          type,
+          reason: 'surrender_reminder_disabled',
+        });
+        console.log(`[Soccer] [PassiveGuard] [Modal] 跳过普通认输窗口 | 原因=认输提醒关闭 处理=按继续游戏`);
+        return;
+      }
+      if (passiveGuard.ordinaryDisabledForCurrentGame || passiveGuard.ordinaryModalShownThisGame) {
+        _passiveGuardDebugLog('Modal', 'passive_guard_modal', '跳过普通认输窗口', {
+          action: 'skip',
+          type,
+          reason: passiveGuard.ordinaryDisabledForCurrentGame ? 'ordinary_disabled_for_current_game' : 'ordinary_modal_shown_this_game',
+        });
+        return;
+      }
+      passiveGuard.ordinaryModalShownThisGame = true;
+    } else if (type === 'rest') {
+      if (!passiveGuard.surrenderReminderEnabled) {
+        passiveGuard.restDismissedThisGame = true;
+        _passiveGuardDebugLog('Modal', 'passive_guard_modal', '跳过休息窗口', {
+          action: 'skip',
+          type,
+          reason: 'surrender_reminder_disabled',
+        });
+        console.log(`[Soccer] [PassiveGuard] [Modal] 跳过休息窗口 | 原因=认输/休息提醒关闭 处理=按继续游戏`);
+        return;
+      }
+      if (passiveGuard.restModalShownThisGame || passiveGuard.restDismissedThisGame) {
+        _passiveGuardDebugLog('Modal', 'passive_guard_modal', '跳过休息窗口', {
+          action: 'skip',
+          type,
+          reason: passiveGuard.restDismissedThisGame ? 'rest_dismissed_this_game' : 'rest_modal_shown_this_game',
+        });
+        return;
+      }
+      passiveGuard.restModalShownThisGame = true;
+    }
+    const token = ++passiveGuard.modalLineToken;
+    const fallbackLine = type === 'rest'
+      ? _i18n('exitPrompt.restFallback', '喵...有点累了，想先安静一会。')
+      : _i18n('exitPrompt.surrenderFallback', '喵..认输喵...');
+    _passiveGuardDebugLog('Modal', 'passive_guard_modal', '准备退出提示窗口', {
+      action: 'prepare',
+      type,
+      reason,
+      waitMs: EXIT_PROMPT_LINE_WAIT_MS,
+      token,
+    });
+    console.log(`[Soccer] [PassiveGuard] [Modal] 准备窗口 | 类型=${type} 原因=${reason || '无'} 等待=${EXIT_PROMPT_LINE_WAIT_MS}ms`);
+    const linePromise = _requestExitPromptLine(type).catch((e) => ({
+      line: '',
+      result: { fallback: true, reason: String(e) },
+    }));
+    const timeoutPromise = new Promise((resolve) => setTimeout(() => resolve({ line: '', timeout: true }), EXIT_PROMPT_LINE_WAIT_MS));
+    const first = await Promise.race([linePromise, timeoutPromise]);
+    if (token !== passiveGuard.modalLineToken) return;
+    if (_llm.cleanedUp || !isGameRuntimeReady()) {
+      _releasePreparedExitPrompt(type);
+      _passiveGuardDebugLog('Modal', 'passive_guard_modal', '跳过退出提示窗口，会话已清理', {
+        action: 'skip_cleaned_up_before_show',
+        type,
+        stage,
+        cleanedUp: _llm.cleanedUp,
+      });
+      console.log(`[Soccer] [PassiveGuard] [Modal] 跳过窗口 | 类型=${type} 阶段=${stage} 原因=会话已清理`);
+      return;
+    }
+    const promptType = type === 'rest' ? 'rest' : 'surrender';
+    const candidate = _passiveGuardExitPromptCandidateState(promptType, stage, { allowPreparedModal: true });
+    if (!candidate.active) {
+      _releasePreparedExitPrompt(type);
+      _passiveGuardDebugLog('Modal', 'passive_guard_modal', '跳过退出提示窗口，候选已失效', {
+        action: 'skip_inactive_candidate_before_show',
+        type,
+        stage,
+        reason: candidate.reason,
+        candidate,
+      });
+      console.log(`[Soccer] [PassiveGuard] [Modal] 跳过窗口 | 类型=${type} 阶段=${stage} 原因=${candidate.reason || '候选已失效'}`);
+      return;
+    }
+    const firstLine = String(first?.line || '').trim();
+    if (!firstLine) {
+      _recordFallbackDiagnostic(type === 'rest' ? '休息提示台词生成' : '认输提示台词生成', {
+        fallback: '使用固定台词兜底',
+        reason: first?.timeout ? 'timeout' : (first?.result?.reason || 'empty_line'),
+        key: `exit-prompt-line:${type}:${first?.timeout ? 'timeout' : (first?.result?.reason || 'empty')}`,
+      });
+    }
+    const showedFallbackLine = !firstLine;
+    _showExitPrompt(type, firstLine, { fallback: showedFallbackLine });
+    if (firstLine) {
+      _deliverExitPromptLine(firstLine, type, first.result || {});
+    }
+    linePromise.then((late) => {
+      const lateLine = String(late?.line || '').trim();
+      if (!lateLine) return;
+      if (
+        token !== passiveGuard.modalLineToken ||
+        _llm.cleanedUp ||
+        !isGameRuntimeReady() ||
+        !passiveGuard.modalOpen ||
+        passiveGuard.modalType !== type
+      ) {
+        _passiveGuardDebugLog('Modal', 'passive_guard_modal', '丢弃迟到退出提示台词', {
+          action: 'discard_late_line',
+          type,
+          token,
+          lineLength: lateLine.length,
+          cleanedUp: _llm.cleanedUp,
+        });
+        console.log(`[Soccer] [PassiveGuard] [Modal] 丢弃迟到台词 | 类型=${type} 台词="${lateLine}"`);
+        return;
+      }
+      if (exitPromptLine && (exitPromptLine.textContent === fallbackLine || showedFallbackLine)) {
+        exitPromptLine.textContent = lateLine;
+        _deliverExitPromptLine(lateLine, type, late.result || {});
+        _passiveGuardDebugLog('Modal', 'passive_guard_modal', '迟到台词替换 fallback', {
+          action: 'replace_fallback_with_late_line',
+          type,
+          token,
+          lineLength: lateLine.length,
+        });
+        console.log(`[Soccer] [PassiveGuard] [Modal] 迟到台词替换fallback | 类型=${type}`);
+      }
+    });
+  }
+
+  async function _requestPassiveGuardSidecar(stage, trigger = {}, extra = {}) {
+    const requestSessionId = _llm.sessionId;
+    const requestGeneration = passiveGuard.sidecarGeneration;
+    const body = {
+      session_id: requestSessionId,
+      ...(_llm.routeLanlanName ? { lanlan_name: _llm.routeLanlanName } : {}),
+      i18n_language: _currentI18nLang(),
+      currentState: SoccerDemo._snapshot(),
+      preGameContext: _llm.preGameContext || null,
+      passiveGuardState: _currentPassiveSnapshot(),
+      stage,
+      trigger,
+      ...extra,
+    };
+    const started = performance.now();
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), PASSIVE_GUARD_SIDE_CAR_TIMEOUT_MS);
+    _passiveGuardDebugLog('Sidecar', 'passive_guard_sidecar', '请求 PassiveGuard sidecar', {
+      action: 'request',
+      stage,
+      promptType: extra.promptType || '',
+      triggerType: trigger.type || '',
+      triggerKind: trigger.kind || '',
+      triggerSide: trigger.side || '',
+      streak: trigger.streak || 0,
+      scoreLead: trigger.scoreLead || 0,
+      userSpeechLength: String(extra.userSpeech || '').length,
+      timeoutMs: PASSIVE_GUARD_SIDE_CAR_TIMEOUT_MS,
+    });
+    try {
+      const resp = await fetch('/api/game/soccer/passive-guard', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!_isPassiveGuardSidecarCurrent(requestSessionId, requestGeneration)) {
+        _passiveGuardDebugLog('Sidecar', 'passive_guard_sidecar', '丢弃过期 PassiveGuard sidecar 结果', {
+          action: 'discard_stale_result',
+          stage,
+          promptType: extra.promptType || '',
+          requestSessionId,
+          currentSessionId: _llm.sessionId,
+          requestGeneration,
+          currentGeneration: passiveGuard.sidecarGeneration,
+          elapsedMs: Math.round(performance.now() - started),
+        }, 'warning');
+        console.log(`[Soccer] [PassiveGuard] [Sidecar] 丢弃过期结果 | 阶段=${stage} 请求局=${requestSessionId} 当前局=${_llm.sessionId}`);
+        return { recommendedAction: 'observe_more', exitPromptType: 'none', reasonForDebug: 'stale_sidecar_result' };
+      }
+      if (!resp.ok || data.ok === false) {
+        _recordFallbackDiagnostic('PassiveGuard 判定', {
+          fallback: '继续观察兜底',
+          reason: data.reason || `HTTP ${resp.status}`,
+          key: `passive-guard:${stage}:${data.reason || resp.status}`,
+          details: { stage, promptType: extra.promptType || '', httpStatus: resp.status },
+        });
+        _passiveGuardDebugLog('Sidecar', 'passive_guard_sidecar', 'PassiveGuard sidecar 降级', {
+          action: 'degrade',
+          stage,
+          promptType: extra.promptType || '',
+          httpStatus: resp.status,
+          reason: data.reason || `HTTP ${resp.status}`,
+          elapsedMs: Math.round(performance.now() - started),
+        }, 'warning');
+        console.log(`[Soccer] [PassiveGuard] [Sidecar] 降级 | 阶段=${stage} 原因=${data.reason || resp.status}`);
+        return { recommendedAction: 'observe_more', exitPromptType: 'none', reasonForDebug: data.reason || `HTTP ${resp.status}` };
+      }
+      _passiveGuardDebugLog('Sidecar', 'passive_guard_sidecar', 'PassiveGuard sidecar 返回结果', {
+        action: 'result',
+        stage,
+        promptType: extra.promptType || '',
+        elapsedMs: Math.round(performance.now() - started),
+        classification: data.classification || '',
+        recommendedAction: data.recommendedAction || 'observe_more',
+        exitPromptType: data.exitPromptType || 'none',
+        reasonForDebug: data.reasonForDebug || '',
+      });
+      console.log(
+        `[Soccer] [PassiveGuard] [Sidecar] 结果 | 阶段=${stage} 用时=${(performance.now() - started).toFixed(0)}ms ` +
+        `分类=${data.classification || '无'} 推荐动作=${data.recommendedAction || 'observe_more'} 退出类型=${data.exitPromptType || 'none'} 原因=${data.reasonForDebug || '无'}`
+      );
+      return data;
+    } catch (e) {
+      if (!_isPassiveGuardSidecarCurrent(requestSessionId, requestGeneration)) {
+        _passiveGuardDebugLog('Sidecar', 'passive_guard_sidecar', '丢弃过期 PassiveGuard sidecar 异常', {
+          action: 'discard_stale_error',
+          stage,
+          promptType: extra.promptType || '',
+          requestSessionId,
+          currentSessionId: _llm.sessionId,
+          requestGeneration,
+          currentGeneration: passiveGuard.sidecarGeneration,
+          elapsedMs: Math.round(performance.now() - started),
+          error: String(e),
+        }, 'warning');
+        return { recommendedAction: 'observe_more', exitPromptType: 'none', reasonForDebug: 'stale_sidecar_error' };
+      }
+      _recordFallbackDiagnostic('PassiveGuard 判定', {
+        fallback: '继续观察兜底',
+        reason: String(e),
+        key: `passive-guard:${stage}:request_failed`,
+        details: { stage, promptType: extra.promptType || '' },
+      });
+      _passiveGuardDebugLog('Sidecar', 'passive_guard_sidecar', 'PassiveGuard sidecar 请求失败', {
+        action: 'request_failed',
+        stage,
+        promptType: extra.promptType || '',
+        elapsedMs: Math.round(performance.now() - started),
+        error: String(e),
+      }, 'warning');
+      console.log(`[Soccer] [PassiveGuard] [Sidecar] 降级 | 阶段=${stage} 原因=${String(e)}`);
+      return { recommendedAction: 'observe_more', exitPromptType: 'none', reasonForDebug: 'request_failed' };
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  function _handleSidecarAction(result, { stage, promptType }) {
+    const action = String(result?.recommendedAction || 'observe_more');
+    _passiveGuardDebugLog('Sidecar', 'passive_guard_sidecar', '处理 PassiveGuard sidecar 动作', {
+      action: 'handle_action',
+      stage,
+      promptType,
+      recommendedAction: action,
+      exitPromptType: String(result?.exitPromptType || ''),
+      reasonForDebug: String(result?.reasonForDebug || ''),
+    });
+    if (action === 'cancel_candidate') {
+      if (promptType === 'rest') _clearRestCandidate('sidecar_cancel_candidate');
+      else _clearOrdinaryCandidate('sidecar_cancel_candidate');
+      return;
+    }
+    if (action === 'send_rescue_hint') {
+      if (promptType === 'rest') {
+        _sendPassiveHint('send-rescue-hint', '猫娘开局状态低落，主人连续进球较多；请温和回应当前陪玩状态，不要强行认输。', 7);
+      } else if (!passiveGuard.ordinaryRescueSent) {
+        passiveGuard.ordinaryRescueSent = true;
+        _sendPassiveHint('send-rescue-hint', '玩家在 lv4 后连续进球较多；如果猫娘不是故意放弃，请自然调整状态，稍微加把劲继续玩。', 7);
+      }
+      return;
+    }
+    if (action === 'prepare_exit_prompt' && stage >= 8) {
+      const exitType = String(result?.exitPromptType || promptType);
+      const candidate = _passiveGuardExitPromptCandidateState(promptType, stage);
+      if (!candidate.active) {
+        _passiveGuardDebugLog('Sidecar', 'passive_guard_sidecar', '跳过 PassiveGuard 弹窗，候选已失效', {
+          action: 'skip_inactive_candidate',
+          stage,
+          promptType,
+          exitPromptType: exitType,
+          reason: candidate.reason,
+          candidate,
+        });
+        console.log(`[Soccer] [PassiveGuard] [Sidecar] 跳过弹窗 | 阶段=${stage} 类型=${promptType} 原因=${candidate.reason || '候选已失效'}`);
+        return;
+      }
+      if (exitType === 'rest' && promptType === 'rest') void _prepareExitPrompt('rest', 'sidecar_prepare_exit_prompt', { stage });
+      else if (exitType === 'surrender' && promptType === 'surrender') void _prepareExitPrompt('surrender', 'sidecar_prepare_exit_prompt', { stage });
+    }
+  }
+
+  function _handleTeachingGoal(side, difficulty) {
+    if (!_isTeachingStance()) return false;
+    if (side === 'ai' || difficulty !== 'lv4') {
+      passiveGuard.teachingLv4PlayerGoalStreak = 0;
+    }
+    if (side === 'player' && difficulty === 'lv4' && !passiveGuard.teachingLv3Promoted) {
+      passiveGuard.teachingLv4PlayerGoalStreak++;
+      _passiveGuardLogCounter('教学lv4进球计数', { stage: passiveGuard.teachingLv4PlayerGoalStreak, reason: 'player_goal' });
+      if (passiveGuard.teachingLv4PlayerGoalStreak >= 3) {
+        passiveGuard.teachingLv3Promoted = true;
+        passiveGuard.teachingLv4PlayerGoalStreak = 0;
+        const changed = SoccerDemo.setDifficulty('lv3', {
+          source: 'passive-guard-teaching',
+          reason: 'teaching_progress_lv4_to_lv3',
+        });
+        _sendPassiveHint('teaching-progress-hint', '主人已经连续进球，应该算是熟练了；现在规则层已把教学难度从 lv4 提升到 lv3，请自然说明并稍微认真一点。', 7);
+        _passiveGuardDebugLog('Hint', 'passive_guard_teaching', '教学升档', {
+          from: 'lv4',
+          to: 'lv3',
+          changed,
+          reason: 'teaching_progress_lv4_to_lv3',
+        });
+        console.log(`[Soccer] [PassiveGuard] [Hint] 教学升档 | lv4->lv3 changed=${changed ? '是' : '否'}`);
+      }
+      return true;
+    }
+    if (side === 'player' && difficulty === 'lv3' && !passiveGuard.teachingLv2Promoted) {
+      passiveGuard.teachingLv3GoalWindow.push('player');
+      passiveGuard.teachingLv3GoalWindow = passiveGuard.teachingLv3GoalWindow.slice(-5);
+      const playerGoals = passiveGuard.teachingLv3GoalWindow.filter(x => x === 'player').length;
+      if (playerGoals >= 3) {
+        passiveGuard.teachingLv2Promoted = true;
+        passiveGuard.teachingLv3GoalWindow = [];
+        const changed = SoccerDemo.setDifficulty('lv2', {
+          source: 'passive-guard-teaching',
+          reason: 'teaching_progress_lv3_to_lv2',
+        });
+        _sendPassiveHint('teaching-progress-hint', '主人在最近几个进球里已经能稳定得分；现在规则层已把教学难度从 lv3 提升到 lv2，请自然说明并再认真一点。', 7);
+        _passiveGuardDebugLog('Hint', 'passive_guard_teaching', '教学升档', {
+          from: 'lv3',
+          to: 'lv2',
+          changed,
+          reason: 'teaching_progress_lv3_to_lv2',
+        });
+        console.log(`[Soccer] [PassiveGuard] [Hint] 教学升档 | lv3->lv2 changed=${changed ? '是' : '否'}`);
+      }
+      return true;
+    }
+    if (side === 'ai' && difficulty === 'lv3') {
+      passiveGuard.teachingLv3GoalWindow.push('ai');
+      passiveGuard.teachingLv3GoalWindow = passiveGuard.teachingLv3GoalWindow.slice(-5);
+    }
+    return true;
+  }
+
+  function _handleWithdrawnGoal(side, difficulty, kind) {
+    if (!_isWithdrawnStance()) return false;
+    if (side === 'ai' || difficulty !== 'lv4') {
+      _clearRestCandidate(side === 'ai' ? 'ai_goal' : 'left_lv4');
+      return true;
+    }
+    if (side !== 'player') return true;
+    if (!passiveGuard.surrenderReminderEnabled) {
+      if (
+        passiveGuard.withdrawnRestGoalStreak > 0 ||
+        passiveGuard.restLightHintSent ||
+        passiveGuard.restSidecar7Called ||
+        passiveGuard.restSidecar8Called
+      ) {
+        _clearRestCandidate('surrender_reminder_disabled');
+      }
+      _passiveGuardDebugLog('Modal', 'passive_guard_modal', '休息提醒已关闭', {
+        action: 'skip',
+        type: 'rest',
+        reason: 'surrender_reminder_disabled',
+        triggerKind: kind,
+      });
+      console.log(`[Soccer] [PassiveGuard] [Modal] 休息提醒已关闭 | 处理=不累计rest候选`);
+      return true;
+    }
+    if (passiveGuard.restDismissedThisGame) return true;
+    passiveGuard.withdrawnRestGoalStreak++;
+    const streak = passiveGuard.withdrawnRestGoalStreak;
+    _passiveGuardLogCounter('withdrawn rest进球计数', { stage: streak, reason: kind });
+    if (streak >= 5 && !passiveGuard.restLightHintSent) {
+      passiveGuard.restLightHintSent = true;
+      _sendPassiveHint('light-balance-hint', '主人已经连续进球，猫娘当前开局状态低落；请根据陪玩状态自然回应，看看是否需要放慢、回应关心或调整陪玩方式。', 6);
+    }
+    if (streak >= 7 && !passiveGuard.restSidecar7Called) {
+      passiveGuard.restSidecar7Called = true;
+      void _requestPassiveGuardSidecar(7, { type: 'withdrawn_rest_streak', kind, side, streak }, { promptType: 'rest' })
+        .then((result) => _handleSidecarAction(result, { stage: 7, promptType: 'rest' }));
+    }
+    if (streak >= 8 && !passiveGuard.restSidecar8Called) {
+      passiveGuard.restSidecar8Called = true;
+      void _requestPassiveGuardSidecar(8, { type: 'withdrawn_rest_streak', kind, side, streak }, { promptType: 'rest' })
+        .then((result) => _handleSidecarAction(result, { stage: 8, promptType: 'rest' }));
+    }
+    return true;
+  }
+
+  function _handleOrdinaryGoal(side, difficulty, kind) {
+    if (_isTeachingStance() || _isWithdrawnStance() || _isPunishingLikeStance()) return;
+    if (side === 'ai' || difficulty !== 'lv4') {
+      _clearOrdinaryCandidate(side === 'ai' ? 'ai_goal' : 'left_lv4');
+      return;
+    }
+    if (side !== 'player') return;
+    passiveGuard.lv4PlayerGoalStreak++;
+    const streak = passiveGuard.lv4PlayerGoalStreak;
+    const scoreLead = _scoreDiffPlayerLead();
+    _passiveGuardLogCounter('普通lv4进球计数', { stage: streak, reason: kind });
+    if (!passiveGuard.surrenderReminderEnabled || passiveGuard.ordinaryDisabledForCurrentGame) {
+      if (streak >= 5 || scoreLead >= 10) {
+        passiveGuard.ordinaryDisabledForCurrentGame = true;
+        _passiveGuardDebugLog('Modal', 'passive_guard_modal', '普通认输提醒已关闭', {
+          action: 'skip',
+          type: 'surrender',
+          reason: 'surrender_reminder_disabled_or_current_game_disabled',
+          streak,
+          scoreLead,
+        });
+        console.log(`[Soccer] [PassiveGuard] [Modal] 普通认输提醒已关闭 | 处理=按继续游戏 分差=${scoreLead}`);
+      }
+      return;
+    }
+    if (streak >= 5 && !passiveGuard.ordinaryLightHintSent) {
+      passiveGuard.ordinaryLightHintSent = true;
+      _sendPassiveHint('light-balance-hint', '玩家在 lv4 后连续进球较多；请自然回应当前局势，不要强行把疑似摆烂解释成只是休息。', 6);
+    }
+    if (streak >= 7 && !passiveGuard.ordinarySidecar7Called) {
+      passiveGuard.ordinarySidecar7Called = true;
+      void _requestPassiveGuardSidecar(7, { type: 'ordinary_lv4_streak', kind, side, streak, scoreLead }, { promptType: 'surrender' })
+        .then((result) => _handleSidecarAction(result, { stage: 7, promptType: 'surrender' }));
+    }
+    if ((streak >= 8 || scoreLead >= 10) && !passiveGuard.ordinarySidecar8Called) {
+      passiveGuard.ordinarySidecar8Called = true;
+      void _requestPassiveGuardSidecar(8, { type: scoreLead >= 10 ? 'ordinary_score_diff' : 'ordinary_lv4_streak', kind, side, streak, scoreLead }, { promptType: 'surrender' })
+        .then((result) => _handleSidecarAction(result, { stage: 8, promptType: 'surrender' }));
+    }
+  }
+
+  function _handlePassiveGuardGoal(side, kind) {
+    const difficulty = DIFFICULTY[difficultyIdx]?.name || '';
+    if (_handleTeachingGoal(side, difficulty)) return;
+    if (_handleWithdrawnGoal(side, difficulty, kind)) return;
+    _handleOrdinaryGoal(side, difficulty, kind);
+  }
+
+  function _handlePassiveGuardUserSpeech(text, source = '') {
+    const clean = String(text || '').trim();
+    if (!clean || passiveGuard.modalOpen) return;
+    if (_isWithdrawnStance() && !passiveGuard.restDismissedThisGame && passiveGuard.withdrawnRestGoalStreak > 0) {
+      void _requestPassiveGuardSidecar('user_soothing', {
+        type: 'withdrawn_user_speech',
+        source,
+        textLength: clean.length,
+      }, {
+        promptType: 'rest',
+        userSpeech: clean.slice(0, 240),
+      }).then((result) => {
+        if (String(result?.recommendedAction || '') === 'cancel_candidate') {
+          _clearRestCandidate('user_soothing_cancelled');
+        }
+      });
+      return;
+    }
+    if (
+      !_isTeachingStance()
+      && !_isPunishingLikeStance()
+      && !passiveGuard.ordinaryDisabledForCurrentGame
+      && passiveGuard.lv4PlayerGoalStreak > 0
+    ) {
+      void _requestPassiveGuardSidecar('user_recovery', {
+        type: 'ordinary_user_speech',
+        source,
+        textLength: clean.length,
+      }, {
+        promptType: 'surrender',
+        userSpeech: clean.slice(0, 240),
+      }).then((result) => {
+        if (String(result?.recommendedAction || '') === 'cancel_candidate') {
+          _clearOrdinaryCandidate('user_recovery_cancelled');
+        }
+      });
+    }
+  }
+
+  window.__SoccerPassiveGuardRecordDifficulty = (from, to, opts = {}) => {
+    passiveGuard.lastDifficultyChange = {
+      from,
+      to,
+      source: opts.source || 'unknown',
+      reason: opts.reason || '',
+      round: state.round,
+      ts: Date.now(),
+    };
+    if (from === 'lv4' && to !== 'lv4') {
+      _clearOrdinaryCandidate('difficulty_left_lv4');
+      _clearRestCandidate('difficulty_left_lv4');
+    }
+  };
   function _soccerGameMemoryPolicyPayload(enabled = _isGameMemoryEnabled()) {
     return {
       soccerGameMemoryEnabled: enabled,
@@ -3583,9 +4741,7 @@
 
     difficultyIdx = DEFAULT_DIFFICULTY_INDEX >= 0 ? DEFAULT_DIFFICULTY_INDEX : 1;
     __setMoodBase('calm', { force: true });
-    if (moodDebugMode) SoccerDemo.disableMoodRotation({ force: true });
-    else if (_llm.keepMoodRotationDisabled) SoccerDemo.disableMoodRotation();
-    else SoccerDemo.enableMoodRotation(20);
+    _syncMoodRotationPolicy('reset-start-screen');
     for (const key of Object.keys(SPEECH_CD)) delete SPEECH_CD[key];
     Object.assign(speechState, {
       ballInOppHalfSec: 0,
@@ -3607,7 +4763,7 @@
     _llm.preGameContextSource = '';
     _llm.preGameContextError = '';
     _llm.pendingOpeningLine = '';
-    _llm.keepMoodRotationDisabled = false;
+    _llm.moodRotationFallbackEnabled = false;
     _llm.pending = false;
     _llm.cleanedUp = !active;
     _llm.pendingItems = [];
@@ -4038,11 +5194,21 @@
 	        _startRouteDrain();
 	        window.__SoccerLoading?.done('route', _i18n('loading.routeDone', '开局上下文准备完成'));
 	      } else {
+	        _recordFallbackDiagnostic('开局路由接管', {
+	          fallback: '使用本地默认继续游戏',
+	          reason: data.reason || data.error || 'route_start_failed',
+	          key: 'route-start-failed',
+	        });
 	        soccerRecoverableLog('[SoccerRoute] 接管主入口失败:', data);
 	        _startRouteDrain();
 	        window.__SoccerLoading?.done('route', _i18n('loading.routeFallback', '开局上下文使用本地默认'));
 	      }
 	    } catch (e) {
+	      _recordFallbackDiagnostic('开局路由接管', {
+	        fallback: '继续游戏',
+	        reason: String(e),
+	        key: 'route-start-request-failed',
+	      });
 	      soccerRecoverableLog('[SoccerRoute] 接管主入口请求失败:', e);
 	      _startRouteDrain();
 	      window.__SoccerLoading?.done('route', _i18n('loading.routeFailed', '开局上下文请求失败，继续游戏'));
@@ -4118,15 +5284,7 @@
     _llm.preGameContext = ctx;
     _llm.preGameContextSource = String(routeState?.pre_game_context_source || '');
     _llm.preGameContextError = String(routeState?.pre_game_context_error || '');
-    _llm.keepMoodRotationDisabled = !!(ctx && ctx.gameStance && ctx.gameStance !== 'neutral_play');
-
-    if (moodDebugMode) {
-      SoccerDemo.disableMoodRotation({ force: true });
-    } else if (_llm.keepMoodRotationDisabled) {
-      SoccerDemo.disableMoodRotation();
-    } else {
-      SoccerDemo.enableMoodRotation(20);
-    }
+    _syncMoodRotationPolicy('pregame-context');
 
     if (ctx?.initialMood && _isValidSoccerMood(ctx.initialMood)) {
       SoccerDemo.setMood(ctx.initialMood, { source: 'pregame', force: true });
@@ -4139,8 +5297,28 @@
       `[SoccerRoute] 开局上下文 | stance=${ctx?.gameStance || 'none'} ` +
       `source=${_llm.preGameContextSource || '-'} error=${_llm.preGameContextError || '-'} ` +
       `mood=${SoccerDemo.getMood()} difficulty=${SoccerDemo.getDifficulty()} ` +
-      `rotation=${_llm.keepMoodRotationDisabled ? 'disabled' : 'enabled'}`
+      `rotation=${_llm.moodRotationFallbackEnabled ? 'fallback-enabled' : 'disabled'}`
     );
+    if (_llm.preGameContextSource === 'fallback' || _llm.preGameContextError) {
+      _recordFallbackDiagnostic('开局上下文分析', {
+        fallback: '使用普通陪玩开局兜底',
+        reason: _llm.preGameContextError || _llm.preGameContextSource,
+        key: `pregame-context:${_llm.preGameContextSource}:${_llm.preGameContextError}`,
+        details: {
+          preGameContextSource: _llm.preGameContextSource,
+          preGameContextError: _llm.preGameContextError,
+        },
+      });
+    } else if (_llm.preGameContextSource === 'fallback_empty_history') {
+      _recordFallbackDiagnostic('开局近期记录读取', {
+        fallback: '使用空历史继续分析',
+        reason: _llm.preGameContextSource,
+        key: 'pregame-recent-history-empty',
+        details: {
+          preGameContextSource: _llm.preGameContextSource,
+        },
+      });
+    }
 
     const openingLine = String(ctx?.openingLine || '').trim();
     if (openingLine) {
@@ -5003,11 +6181,21 @@
           },
         }),
       });
-      if (!resp.ok) return { fallback: true, reason: `HTTP ${resp.status}` };
+      if (!resp.ok) {
+        return {
+          fallback: true,
+          reason: `HTTP ${resp.status}`,
+          fallbackNotice: { title: '游戏 LLM 响应', fallback: '使用内建台词兜底' },
+        };
+      }
       const data = await resp.json();
       if (data.error) {
         console.warn('[SoccerLLM] 错误:', data.error);
-        return { fallback: true, reason: data.error };
+        return {
+          fallback: true,
+          reason: data.error,
+          fallbackNotice: { title: '游戏 LLM 响应', fallback: '使用内建台词兜底' },
+        };
       }
       const fetchMs = performance.now() - requestStartedAt;
       const eventToResponseMs = performance.now() - eventTs;
@@ -5047,7 +6235,11 @@
       return data;
     } catch (e) {
       console.warn('[SoccerLLM] 请求失败:', e);
-      return { fallback: true, reason: '请求失败' };
+      return {
+        fallback: true,
+        reason: String(e || '请求失败'),
+        fallbackNotice: { title: '游戏 LLM 请求', fallback: '使用内建台词兜底' },
+      };
     } finally {
       _llm.pending = false;
     }
@@ -5056,6 +6248,13 @@
   async function _handleGameLLMResult(result, meta, eventTs) {
     if (_llm.cleanedUp || !isGameRuntimeReady()) return;
     if (result?.skipped) return;
+    if (result?.fallback) {
+      _recordFallbackDiagnostic(result?.fallbackNotice?.title || '游戏 LLM 响应', {
+        fallback: result?.fallbackNotice?.fallback || (meta?.builtinFallback ? '使用内建台词兜底' : '跳过本次台词'),
+        reason: result.reason || 'fallback',
+        key: `game-llm:${meta?.kind || 'unknown'}:${result.reason || 'fallback'}`,
+      });
+    }
     if (!result || !result.line) {
       if (meta?.hasUserSpeech || meta?.hasUserText || meta?.kind === 'user-voice' || meta?.kind === 'user-text') {
         _llm.voiceArbiter.waitingForUserReplyGeneration = false;
@@ -5118,7 +6317,7 @@
         const moodChanged = SoccerDemo.setMood(result.control.mood, { source: 'llm-control' });
         if (moodChanged) applied.push(`心情 ${moodLabel(beforeMood)} -> ${moodLabel(result.control.mood)}`);
         else ignored.push(`心情=${result.control.mood}（调试随机关闭）`);
-        if (!moodDebugMode && !_llm.keepMoodRotationDisabled) {
+        if (!moodDebugMode && _llm.moodRotationFallbackEnabled) {
           setTimeout(() => SoccerDemo.enableMoodRotation(20), 15000);
         }
       } else if (result.control.mood) {
@@ -5156,11 +6355,17 @@
 	    }
 	  }
 
+	  function _externalGameRouteInputText(output) {
+	    const event = output.event || {};
+	    const meta = output.meta || {};
+	    return String(event.textRaw || meta.inputText || event.userVoiceText || event.userText || '').trim();
+	  }
+
 	  function _logExternalGameRouteInput(output) {
 	    const event = output.event || {};
 	    const meta = output.meta || {};
 	    const requestId = output.request_id || meta.request_id || '';
-	    const inputText = event.textRaw || meta.inputText || event.userVoiceText || event.userText || '';
+	    const inputText = _externalGameRouteInputText(output);
 	    const kind = event.kind || meta.kind || 'external-input';
 	    const inputType = event.type || (meta.hasUserSpeech ? 'user_voice' : (meta.hasUserText ? 'user_text' : 'external_input'));
 	    const round = event.round ?? meta.round ?? '?';
@@ -5201,6 +6406,10 @@
 	        }
 	        if (output && output.type === 'game_external_input') {
 	          _markUserInputForVoiceArbiter(output.source || 'external-route-input');
+	          _handlePassiveGuardUserSpeech(
+	            _externalGameRouteInputText(output),
+	            output.source || output.meta?.kind || 'external-route-input',
+	          );
 	          _logExternalGameRouteInput(output);
 	          continue;
 	        }
@@ -5234,6 +6443,7 @@
   async function _endGameLLMSession(useBeacon = false, options = {}) {
     if (_llm.cleanedUp) return null;
 	    _llm.cleanedUp = true;
+      passiveGuard.sidecarGeneration = Number(passiveGuard.sidecarGeneration || 0) + 1;
 	    _stopRouteDrain();
 	    _clearVoiceArbiterPending('cleanup');
 	    _clearVoiceArbiterInFlight('cleanup');
@@ -5303,6 +6513,7 @@
   function _startGameFromStartScreen() {
     const started = window.__SoccerLoading?.startGame?.();
     if (!started) return;
+    _resetPassiveGuardForNewGame();
     _llm.gameStarted = true;
     _llm.gameStartedAt = performance.now();
     _llm.gameStartedAtEpochMs = Date.now();
@@ -5395,6 +6606,42 @@
 
   startButton?.addEventListener('click', _startGameFromStartScreen);
   exitToStartButton?.addEventListener('click', _endGameAndShowClosePrompt);
+  surrenderReminderToggle?.addEventListener('change', () => {
+    _setSurrenderReminderEnabled(Boolean(surrenderReminderToggle.checked), {
+      persist: true,
+      source: 'ui_toggle',
+    });
+  });
+  exitPromptContinueButton?.addEventListener('click', () => {
+    const type = passiveGuard.modalType;
+    if (exitPromptNeverAgain?.checked) {
+      _setSurrenderReminderEnabled(false, { persist: true, source: `modal_never_again_${type || 'unknown'}_continue` });
+    }
+    if (type === 'rest') {
+      passiveGuard.restDismissedThisGame = true;
+      _clearRestCandidate('rest_continue_clicked');
+    } else {
+      passiveGuard.ordinaryDisabledForCurrentGame = true;
+      _clearOrdinaryCandidate('ordinary_continue_clicked');
+    }
+    passiveGuard.modalLineToken++;
+    _hideExitPrompt();
+    console.log(`[Soccer] [PassiveGuard] [Modal] 继续游戏 | 类型=${type || '未知'} 本场普通功能=${passiveGuard.ordinaryDisabledForCurrentGame ? '停用' : '启用'}`);
+  });
+  exitPromptEndButton?.addEventListener('click', () => {
+    const type = passiveGuard.modalType;
+    if (exitPromptNeverAgain?.checked) {
+      _setSurrenderReminderEnabled(false, { persist: true, source: `modal_never_again_${type || 'unknown'}_end` });
+    }
+    passiveGuard.modalLineToken++;
+    _hideExitPrompt();
+    console.log(`[Soccer] [PassiveGuard] [Modal] 结束/休息 | 类型=${type || '未知'} 处理=复用手动退出`);
+    void _endGameAndShowClosePrompt();
+  });
+  _setSurrenderReminderEnabled(_readSurrenderReminderEnabled(), {
+    persist: false,
+    source: 'init',
+  });
   void _prepareGameForStartScreen();
 
   // 注册 onSpeak 回调：拦截高优先级事件，调用 LLM 生成台词
@@ -5408,6 +6655,7 @@
     if (!clean) return;
     const item = _makeMailboxItemFromUserSpeech(clean);
     if (!item) return;
+    _handlePassiveGuardUserSpeech(clean, source);
     _markUserInputForVoiceArbiter(source);
     console.log(`[SoccerVoice] 输入 | 来源=${source} 回合=${item.round} 分数=${JSON.stringify(item.snapshot.score)} 原文="${item.textRaw}"`);
     _setVoiceStatus(_i18n('voiceStatus.received', `已收到玩家语音：${item.textRaw}`, { text: item.textRaw }));
@@ -5542,6 +6790,12 @@
   let lastT = performance.now();
   function loop(t) {
     if (!isGameRuntimeReady()) {
+      lastT = t;
+      render();
+      requestAnimationFrame(loop);
+      return;
+    }
+    if (_isExitPromptOpen()) {
       lastT = t;
       render();
       requestAnimationFrame(loop);
