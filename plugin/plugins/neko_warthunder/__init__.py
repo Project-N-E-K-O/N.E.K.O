@@ -649,7 +649,6 @@ class NekoWarthunderPlugin(NekoPluginBase):
             self._last_status_report_at = now
         except Exception:  # noqa: BLE001
             self._last_status_report_at = now
-            pass
 
     def _telemetry_snapshot(self, s: BattleState) -> dict[str, Any]:
         return {

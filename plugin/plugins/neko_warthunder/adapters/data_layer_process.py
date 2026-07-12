@@ -344,6 +344,7 @@ class DataLayerProcessManager:
                 try:
                     handle.close()
                 except OSError:
+                    # Cleanup is best-effort; the process has already released the handle.
                     pass
         self._stdout_handle = None
         self._stderr_handle = None

@@ -341,6 +341,7 @@ def _resolve_target_lanlan(plugin: Any, event: BattleEvent | None = None) -> str
             if target:
                 return target
     except Exception:
+        # Character lookup is optional; fall through to the empty target.
         pass
 
     return ""
@@ -367,7 +368,6 @@ def _reply_style_contract(event: BattleEvent) -> str:
             return (
                 "Style: exactly one natural Chinese line; lost vehicle but note the trade gently; no slogan, no analysis."
             )
-        kill_count = 1
         try:
             kill_count = int(event.payload.get("kill_count") or 1)
         except (TypeError, ValueError):
@@ -649,7 +649,6 @@ def _domain_vocab_contract(event: BattleEvent) -> str:
 def _prompt_style_hint(event: BattleEvent) -> str:
     if event.event_id == "you_killed":
         domain = _event_domain(event)
-        kill_count = 1
         try:
             kill_count = int(event.payload.get("kill_count") or 1)
         except (TypeError, ValueError):
@@ -765,6 +764,7 @@ def _fact_line(event: BattleEvent) -> str:
         try:
             bits.append("AGL {:.0f}m".format(p["radio_altitude_m"]))
         except (ValueError, TypeError):
+            # Ignore malformed optional telemetry and keep the remaining facts.
             pass
     for key, fmt in order:
         if key == "altitude_m" and has_radio_altitude:
@@ -773,6 +773,7 @@ def _fact_line(event: BattleEvent) -> str:
             try:
                 bits.append(fmt.format(p[key]))
             except (ValueError, TypeError):
+                # Ignore malformed optional telemetry and keep the remaining facts.
                 pass
     return "、".join(bits)
 
@@ -832,6 +833,7 @@ def _proximity_fact(event_id: str, payload: dict[str, Any]) -> str:
         if distance is not None:
             detail.append("距离{:.0f}m".format(float(distance)))
     except (TypeError, ValueError):
+        # Invalid optional distance does not invalidate the proximity event.
         pass
 
     return base if not detail else f"{base}（{'，'.join(detail)}）"
@@ -851,6 +853,7 @@ def _objective_fact(event_id: str, payload: dict[str, Any]) -> str:
         if distance is not None:
             detail.append("距离{:.0f}m".format(float(distance)))
     except (TypeError, ValueError):
+        # Invalid optional distance does not invalidate the objective event.
         pass
 
     return "任务目标点接近" if not detail else f"任务目标点接近（{'，'.join(detail)}）"
@@ -1168,6 +1171,7 @@ class NekoDispatcher:
             try:
                 setattr(self.plugin, "_last_battle_respond_at", now)
             except Exception:
+                # Host objects may reject optional bookkeeping attributes.
                 pass
         if self.timeline:
             self.timeline.record_stage(
