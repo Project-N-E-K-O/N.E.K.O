@@ -314,12 +314,24 @@ def test_app_game_mode_beta_is_home_only_and_versioned():
 
 def test_disabling_game_mode_clears_model_reload_markers_before_restore_event():
     source = APP_GAME_MODE_BETA_PATH.read_text(encoding="utf-8")
+    helper = source.split("function clearModelReloadProtection()", 1)[1].split(
+        "function handleDisabledRestore", 1
+    )[0]
     block = source.split("function handleDisabledRestore()", 1)[1].split("function metricLabel", 1)[0]
 
-    assert "manager._nekoGameModeReloadRequired = false;" in block
-    assert "manager._nekoGameModeLoadCancelReason = '';" in block
-    assert "clientState.modelLoadInvalidated = false;" in block
-    assert block.index("clientState.modelLoadInvalidated = false;") < block.index("live2d-return-click")
+    assert "manager._nekoGameModeReloadRequired = false;" in helper
+    assert "manager._nekoGameModeLoadCancelReason = '';" in helper
+    assert "clientState.modelLoadInvalidated = false;" in helper
+    assert block.index("clearModelReloadProtection();") < block.index("live2d-return-click")
+
+
+def test_backend_restore_clears_model_reload_markers_before_restore_event():
+    source = APP_GAME_MODE_BETA_PATH.read_text(encoding="utf-8")
+    block = source.split("payload.type === 'game_mode_restore'", 1)[1].split(
+        "payload.type === 'game_mode_semantic_signal_unavailable'", 1
+    )[0]
+
+    assert block.index("clearModelReloadProtection();") < block.index("live2d-return-click")
 
 
 def test_game_mode_settings_rejections_restore_ui_and_notify_user():

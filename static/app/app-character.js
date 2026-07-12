@@ -323,11 +323,6 @@
      * @param {string} oldCatgirl - Name of the previous character
      */
     async function handleCatgirlSwitch(newCatgirl, oldCatgirl) {
-        try {
-            window.dispatchEvent(new CustomEvent('neko:character-switch-start', {
-                detail: { timestamp: Date.now() }
-            }));
-        } catch (_) {}
         console.log('[猫娘切换] ========== 开始切换 ==========');
         console.log('[猫娘切换] 从', oldCatgirl, '切换到', newCatgirl);
         console.log('[猫娘切换] isSwitchingCatgirl:', S.isSwitchingCatgirl);
@@ -409,6 +404,11 @@
             return;
         }
         // 确认切换到不同角色后，清空上一任的搜歌任务
+        try {
+            window.dispatchEvent(new CustomEvent('neko:character-switch-start', {
+                detail: { timestamp: Date.now() }
+            }));
+        } catch (_) {}
         window.invalidatePendingMusicSearch();
         S.isSwitchingCatgirl = true;
         _switchOldSocket = S.socket;
