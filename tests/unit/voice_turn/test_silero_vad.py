@@ -60,3 +60,11 @@ def test_activity_gate_emits_pause_once_and_resume_without_force_commit():
     assert gate.process_probabilities([0.1] * 100) is SpeechActivityEvent.NONE
     assert gate.process_probabilities([0.9]) is SpeechActivityEvent.SPEECH_RESUMED
     assert {event.value for event in SpeechActivityEvent}.isdisjoint({"force_end", "turn_complete"})
+
+
+def test_activity_gate_duration_thresholds_never_round_down():
+    gate = SileroActivityGate(_NoopVad(), SmartTurnConfig(enabled=True))
+    assert gate.process_probabilities([0.9] * 6) is SpeechActivityEvent.NONE
+    assert gate.process_probabilities([0.9]) is SpeechActivityEvent.SPEECH_STARTED
+    assert gate.process_probabilities([0.1] * 9) is SpeechActivityEvent.NONE
+    assert gate.process_probabilities([0.1]) is SpeechActivityEvent.CANDIDATE_PAUSE
