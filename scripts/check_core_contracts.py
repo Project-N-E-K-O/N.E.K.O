@@ -19,10 +19,12 @@ CORE_PATCH_ROUTING
     tightens automatically as tests grow. Attribute reads through some other
     imported module (``import main_logic.agent_event_bus`` + ``main_logic.
     agent_event_bus.<attr>(...)``) are rejected the same way — they follow
-    the owner module, not the facade. Function-local imports from the OWNER
-    module (e.g. ``from utils.preferences import ...`` inside a method) are
-    a different, deliberate late-binding pattern and stay allowed: the
-    facade patch never targeted them, before or after the split.
+    the owner module, not the facade. So are facade reads inside method
+    defaults/decorators/annotations: those evaluate once at import and
+    freeze the value. Function-local imports from the OWNER module (e.g.
+    ``from utils.preferences import ...`` inside a method) are a different,
+    deliberate late-binding pattern and stay allowed: the facade patch
+    never targeted them, before or after the split.
 
 CORE_PATCH_TARGET_EXISTS
     Every patched facade attribute must actually exist at the facade top
@@ -133,19 +135,23 @@ def collect_patch_targets(tests_dir: Path):
                 continue
             fn = node.func
             fname = fn.attr if isinstance(fn, ast.Attribute) else (fn.id if isinstance(fn, ast.Name) else "")
-            raising_false = any(
-                kw.arg == "raising" and isinstance(kw.value, ast.Constant) and kw.value.value is False
-                for kw in node.keywords)
+            kw = {k.arg: k.value for k in node.keywords if k.arg}
+            raising_false = (isinstance(kw.get("raising"), ast.Constant)
+                             and kw["raising"].value is False)
             args = node.args
-            if fname in PATCH_CALL_NAMES and args:
-                first = args[0]
+            # Positional and keyword spellings are equivalent for these APIs:
+            # setattr(target=..., name=...), patch(target=...),
+            # patch.object(target=..., attribute=...).
+            first = args[0] if args else kw.get("target")
+            second = args[1] if len(args) >= 2 else (kw.get("name") or kw.get("attribute"))
+            if fname in PATCH_CALL_NAMES and first is not None:
                 if isinstance(first, ast.Constant) and isinstance(first.value, str):
                     s = first.value
                     if s.startswith("main_logic.core.") and s.count(".") == 2:
                         add(s.rsplit(".", 1)[1], path, node, raising_false)
-            if fname in (PATCH_CALL_NAMES | {"object"}) and len(args) >= 2:
-                if is_core_ref(args[0]) and isinstance(args[1], ast.Constant) and isinstance(args[1].value, str):
-                    add(args[1].value, path, node, raising_false)
+            if fname in (PATCH_CALL_NAMES | {"object"}) and first is not None and second is not None:
+                if is_core_ref(first) and isinstance(second, ast.Constant) and isinstance(second.value, str):
+                    add(second.value, path, node, raising_false)
     return targets
 
 
@@ -170,7 +176,12 @@ def facade_top_level_names(init_tree: ast.Module) -> set[str]:
 
 # ----------------------------------------------------------- module analysis
 def module_level_import_bindings(tree: ast.Module):
-    """{name: lineno} bound by top-level import statements."""
+    """{name: lineno} bound or aliased by top-level import statements.
+
+    For from-imports BOTH the original name and the alias are indexed:
+    ``from x import patched_symbol as _p`` still snapshots the patched
+    symbol, so the routing check must see it under its facade name.
+    """
     out = {}
     for node in tree.body:
         if isinstance(node, ast.Import):
@@ -178,7 +189,9 @@ def module_level_import_bindings(tree: ast.Module):
                 out[a.asname or a.name.split(".")[0]] = node.lineno
         elif isinstance(node, ast.ImportFrom):
             for a in node.names:
-                out[a.asname or a.name] = node.lineno
+                out.setdefault(a.name, node.lineno)
+                if a.asname:
+                    out.setdefault(a.asname, node.lineno)
     return out
 
 
@@ -236,6 +249,35 @@ def attr_value_chain(node: ast.Attribute):
         return None
     parts.append(cur.id)
     return ".".join(reversed(parts))
+
+
+def def_time_facade_reads(tree: ast.Module, alias_paths: dict[str, str], attr: str):
+    """(line, col) of facade reads of ``attr`` evaluated at class-creation.
+
+    Method defaults, decorators and evaluated annotations run ONCE at import
+    time; a ``_core_facade.<attr>`` there freezes the value, so later facade
+    patches no longer reach it — the read must live in the method body.
+    """
+    sites = []
+    for klass in (n for n in tree.body if isinstance(n, ast.ClassDef)):
+        for meth in (n for n in klass.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))):
+            a = meth.args
+            sig_nodes = list(meth.decorator_list)
+            sig_nodes += [d for d in a.defaults if d is not None]
+            sig_nodes += [d for d in a.kw_defaults if d is not None]
+            for arg in (a.posonlyargs + a.args + a.kwonlyargs
+                        + ([a.vararg] if a.vararg else []) + ([a.kwarg] if a.kwarg else [])):
+                if arg.annotation is not None:
+                    sig_nodes.append(arg.annotation)
+            if meth.returns is not None:
+                sig_nodes.append(meth.returns)
+            for sub in sig_nodes:
+                for node in ast.walk(sub):
+                    if isinstance(node, ast.Attribute) and node.attr == attr:
+                        chain = attr_value_chain(node)
+                        if chain and alias_paths.get(chain) == "main_logic.core":
+                            sites.append((node.lineno, node.col_offset))
+    return sites
 
 
 def first_name_load_line(tree: ast.Module, name: str):
@@ -372,7 +414,8 @@ def run(root: Path) -> list[Violation]:
                                         f"facade only re-exports; the class lives in manager.py"))
     last = init_tree.body[-1] if init_tree.body else None
     is_manager_import = (isinstance(last, ast.ImportFrom) and last.level == 1 and last.module == "manager"
-                         and [a.name for a in last.names] == ["LLMSessionManager"])
+                         and [a.name for a in last.names] == ["LLMSessionManager"]
+                         and last.names[0].asname is None)
     if not is_manager_import:
         violations.append(Violation(init_path, getattr(last, "lineno", 1), 0, "CORE_FACADE_LAYOUT",
                                     "the last statement of __init__.py must be "
@@ -431,6 +474,13 @@ def run(root: Path) -> list[Violation]:
                                 f"'{attr}' is a test patch target on the facade but is read here "
                                 f"through module '{resolved}' — that read follows the owner module, "
                                 f"not the facade; read it as {FACADE_MODULE_ALIAS}.{attr} instead"))
+            for line, col in def_time_facade_reads(tree, alias_paths, attr):
+                violations.append(Violation(
+                    path, line, col, "CORE_PATCH_ROUTING",
+                    f"'{attr}' is read from the facade inside a default/decorator/annotation — "
+                    f"that expression runs once at import and freezes the value, so facade "
+                    f"patches no longer reach it; move the {FACADE_MODULE_ALIAS}.{attr} read "
+                    f"into the method body"))
     return violations
 
 
