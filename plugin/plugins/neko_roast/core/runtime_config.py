@@ -38,7 +38,27 @@ async def reload_config(runtime: Any) -> RoastConfig:
             f"config load failed: {type(exc).__name__}",
             level="warning",
         )
-    return activate_config(runtime, RoastConfig.from_mapping(data))
+    loaded = RoastConfig.from_mapping(data)
+    async with get_config_lock(runtime):
+        old_config = runtime.config
+        old_platform = normalize_live_platform(getattr(old_config, "live_platform", "bilibili"))
+        old_room_id = int(getattr(old_config, "live_room_id", 0) or 0)
+        old_room_ref = _configured_room_ref(old_config, old_platform)
+        old_provider = _captured_provider(runtime, old_platform)
+        was_listening = _is_listening(old_provider)
+        activate_config(runtime, loaded)
+        runtime._config_revision += 1
+        clean = _live_config_diff(old_config, runtime.config)
+        await reconcile_live_listener_after_config(
+            runtime,
+            clean,
+            old_room_id=old_room_id,
+            old_platform=old_platform,
+            old_room_ref=old_room_ref,
+            was_listening=was_listening,
+            old_provider=old_provider,
+        )
+        return runtime.config
 
 
 def get_config_lock(runtime: Any) -> asyncio.Lock:
@@ -51,38 +71,71 @@ async def update_config(runtime: Any, updates: dict[str, Any]) -> RoastConfig:
     clean = clean_config_updates(updates)
     if not clean:
         return runtime.config
-    _normalize_live_target_update(runtime, clean)
-
-    old_room_id = int(runtime.config.live_room_id or 0)
-    old_platform = normalize_live_platform(getattr(runtime.config, "live_platform", "bilibili"))
-    old_room_ref = str(getattr(runtime.config, "live_room_ref", "") or "").strip()
-    developer_mode_changed = (
-        "developer_tools_enabled" in clean
-        and bool(clean["developer_tools_enabled"])
-        != bool(runtime.config.developer_tools_enabled)
-    )
-    if old_platform == "bilibili" and not old_room_ref and old_room_id > 0:
-        old_room_ref = str(old_room_id)
-    live_provider = getattr(runtime, "live_provider", None)
-    was_listening = bool(live_provider.is_listening()) if live_provider is not None else False
     async with get_config_lock(runtime):
+        _normalize_live_target_update(runtime, clean)
+        old_room_id = int(runtime.config.live_room_id or 0)
+        old_platform = normalize_live_platform(getattr(runtime.config, "live_platform", "bilibili"))
+        old_room_ref = _configured_room_ref(runtime.config, old_platform)
+        old_provider = _captured_provider(runtime, old_platform)
+        was_listening = _is_listening(old_provider)
+        developer_mode_changed = (
+            "developer_tools_enabled" in clean
+            and bool(clean["developer_tools_enabled"])
+            != bool(runtime.config.developer_tools_enabled)
+        )
         data = runtime.config.to_dict()
         data.update(clean)
-        activate_config(runtime, RoastConfig.from_mapping(data))
+        candidate = RoastConfig.from_mapping(data)
+        if was_listening and _live_config_diff(runtime.config, candidate):
+            runtime._accepting_live_events = False
+        activate_config(runtime, candidate)
+        runtime._config_revision += 1
         if "live_enabled" in clean:
             await runtime.sync_live_instructions(force=True)
         if developer_mode_changed:
             await runtime.sync_developer_mode(announce=False, force=True)
         await persist_config_best_effort(runtime, clean)
-    await reconcile_live_listener_after_config(
-        runtime,
-        clean,
-        old_room_id=old_room_id,
-        old_platform=old_platform,
-        old_room_ref=old_room_ref,
-        was_listening=was_listening,
-    )
-    return runtime.config
+        await reconcile_live_listener_after_config(
+            runtime,
+            clean,
+            old_room_id=old_room_id,
+            old_platform=old_platform,
+            old_room_ref=old_room_ref,
+            was_listening=was_listening,
+            old_provider=old_provider,
+        )
+        return runtime.config
+
+
+def _captured_provider(runtime: Any, platform: str) -> Any:
+    router = getattr(runtime, "live_provider", None)
+    provider_for = getattr(router, "provider_for", None)
+    if callable(provider_for):
+        return provider_for(platform)
+    return router
+
+
+def _is_listening(provider: Any) -> bool:
+    checker = getattr(provider, "is_listening", None)
+    if not callable(checker):
+        return False
+    try:
+        return checker() is True
+    except Exception:
+        return False
+
+
+def _configured_room_ref(config: Any, platform: str) -> str:
+    room_ref = str(getattr(config, "live_room_ref", "") or "").strip()
+    room_id = int(getattr(config, "live_room_id", 0) or 0)
+    if platform == "bilibili" and not room_ref and room_id > 0:
+        return str(room_id)
+    return room_ref
+
+
+def _live_config_diff(old: Any, new: Any) -> dict[str, Any]:
+    keys = ("live_platform", "live_room_ref", "live_room_id", "live_enabled")
+    return {key: getattr(new, key) for key in keys if getattr(old, key) != getattr(new, key)}
 
 
 def _normalize_live_target_update(runtime: Any, clean: dict[str, Any]) -> None:

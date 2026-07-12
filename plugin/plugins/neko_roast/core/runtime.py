@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+import asyncio
 
 from ..adapters.neko_dispatcher import NekoDispatcher
 from ..stores.audit_store import AuditStore
@@ -15,67 +15,15 @@ from .runtime_auth_api import RuntimeAuthApiMixin
 from .runtime_config_api import RuntimeConfigApiMixin
 from .permission_gate import PermissionGate
 from .safety_guard import SafetyGuard
-
-try:
-    from .runtime_control_api import RuntimeControlApiMixin
-except ImportError:
-    class RuntimeControlApiMixin:
-        pass
-
-try:
-    from .runtime_developer_api import RuntimeDeveloperApiMixin
-except ImportError:
-    class RuntimeDeveloperApiMixin:
-        pass
-
-try:
-    from .runtime_instruction_api import RuntimeInstructionApiMixin
-except ImportError:
-    class RuntimeInstructionApiMixin:
-        pass
-
-try:
-    from .runtime_status_api import RuntimeStatusApiMixin
-except ImportError:
-    class RuntimeStatusApiMixin:
-        def live_status_summary(self) -> dict[str, Any]:
-            return {"summary": "test_only", "reason": "status_api_unavailable"}
-
-try:
-    from .runtime_active_engagement_api import RuntimeActiveEngagementApiMixin
-except ImportError:
-    class RuntimeActiveEngagementApiMixin:
-        pass
-
-try:
-    from .runtime_hosting_api import RuntimeHostingApiMixin
-except ImportError:
-    class RuntimeHostingApiMixin:
-        def _start_idle_hosting_loop(self) -> None:
-            return None
-
-        async def _stop_idle_hosting_loop(self) -> None:
-            return None
-
-try:
-    from .runtime_live_input_api import RuntimeLiveInputApiMixin
-except ImportError:
-    class RuntimeLiveInputApiMixin:
-        pass
-
-try:
-    from .active_topic_selector import ActiveTopicSelector
-except ImportError:
-    class ActiveTopicSelector:
-        def __init__(self, runtime: Any) -> None:
-            self.runtime = runtime
-
-try:
-    from .live_hosting_director import LiveHostingDirector
-except ImportError:
-    class LiveHostingDirector:
-        def __init__(self, runtime: Any) -> None:
-            self.runtime = runtime
+from .active_topic_selector import ActiveTopicSelector
+from .live_hosting_director import LiveHostingDirector
+from .runtime_active_engagement_api import RuntimeActiveEngagementApiMixin
+from .runtime_control_api import RuntimeControlApiMixin
+from .runtime_developer_api import RuntimeDeveloperApiMixin
+from .runtime_hosting_api import RuntimeHostingApiMixin
+from .runtime_instruction_api import RuntimeInstructionApiMixin
+from .runtime_live_input_api import RuntimeLiveInputApiMixin
+from .runtime_status_api import RuntimeStatusApiMixin
 
 
 class RoastRuntime(
@@ -127,6 +75,7 @@ class RoastRuntime(
         runtime_modules.assemble_runtime_modules(self)
 
     async def start(self) -> None:
+        self._stopping = False
         await self.reload_config()
         await self.reload_credential()
         await self.reload_douyin_credential()
@@ -135,8 +84,34 @@ class RoastRuntime(
         self.audit.record("runtime_start", "neko_roast runtime ready")
 
     async def stop(self) -> None:
-        await self._stop_idle_hosting_loop()
-        await self.restore_developer_instructions(force=True)
-        await self.restore_instructions(force=True)
-        await self.registry.teardown_all()
-        self.audit.record("runtime_stop", "neko_roast runtime stopped")
+        if self._stopping:
+            return
+        self._stopping = True
+        failures: list[str] = []
+        steps = (
+            ("idle_hosting", self._stop_idle_hosting_loop),
+            ("live_listener", lambda: self._stop_live_listener(mark_disabled=False)),
+            ("event_bus", self.event_bus.close),
+            ("modules", lambda: self.registry.teardown_all(self)),
+            ("developer_instructions", lambda: self.restore_developer_instructions(force=True)),
+            ("live_instructions", lambda: self.restore_instructions(force=True)),
+        )
+        for step, operation in steps:
+            try:
+                await operation()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                failures.append(step)
+                self.audit.record(
+                    "runtime_stop_step_failed",
+                    f"shutdown step failed: {type(exc).__name__}",
+                    level="warning",
+                    detail={"step": step},
+                )
+        self.audit.record(
+            "runtime_stop",
+            "neko_roast runtime stopped",
+            level="warning" if failures else "info",
+            detail={"failed_steps": failures},
+        )

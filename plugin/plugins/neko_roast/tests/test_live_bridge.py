@@ -183,6 +183,41 @@ async def test_live_bridge_transport_open_failure_is_sanitized():
 
 
 @pytest.mark.asyncio
+async def test_live_bridge_transport_reconnects_once_after_established_eof():
+    sockets = [
+        _FakeWebSocket([json.dumps({"text": "first"})]),
+        _FakeWebSocket([json.dumps({"text": "second"})]),
+    ]
+
+    class _SequenceConnect(_FakeConnect):
+        async def __aenter__(self):
+            return sockets.pop(0)
+
+    connect = _SequenceConnect(_FakeWebSocket([]))
+    events: list[LiveBridgeEvent] = []
+    states: list[LiveBridgeState] = []
+    transport = LiveBridgeTransport(
+        connect_factory=connect,
+        reconnect_attempts=1,
+        reconnect_sleep=lambda _delay: asyncio.sleep(0),
+    )
+
+    started = await transport.start(
+        LiveBridgeStartRequest(
+            room_ref="room-42",
+            adapter=_Adapter(),
+            emit=events.append,
+            on_state=states.append,
+        )
+    )
+    await asyncio.wait_for(transport._task, timeout=1.0)  # noqa: SLF001
+
+    assert started.safe_state() == "connected"
+    assert [event.payload["text"] for event in events] == ["first", "second"]
+    assert any(state.safe_state() == "reconnecting" for state in states)
+
+
+@pytest.mark.asyncio
 async def test_bridge_process_supervisor_starts_and_stops_bundled_executable(tmp_path: Path):
     executable = tmp_path / "douyinLive.exe"
     executable.write_bytes(b"fake exe")

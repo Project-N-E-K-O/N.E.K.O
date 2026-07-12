@@ -601,6 +601,60 @@ async def test_update_config_restarts_listener_when_room_changes(runtime: RoastR
 
 
 @pytest.mark.asyncio
+async def test_update_config_stops_captured_old_provider_before_platform_switch(
+    runtime: RoastRuntime,
+) -> None:
+    douyin = FakeLiveProvider("room-42")
+    runtime.douyin_live_ingest = douyin
+    runtime.config.live_platform = "bilibili"
+    runtime.config.live_room_ref = "100"
+    runtime.config.live_room_id = 100
+    runtime.config.live_enabled = True
+    await runtime.bili_live_ingest.start_listening(100)
+
+    await runtime.update_config(
+        {
+            "live_platform": "douyin",
+            "live_room_ref": "room-42",
+            "live_enabled": True,
+        }
+    )
+
+    assert runtime.bili_live_ingest.stopped == 1
+    assert runtime.bili_live_ingest.room_id == 0
+    assert douyin.stopped == 0
+    assert douyin.started == ["room-42"]
+    assert runtime.config.live_platform == "douyin"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_developer_mode_updates_serialize_transition_side_effects(
+    runtime: RoastRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    calls: list[bool] = []
+
+    async def sync_developer_mode(*, announce: bool = False, force: bool = False) -> str:
+        calls.append(bool(runtime.config.developer_tools_enabled))
+        if len(calls) == 1:
+            entered.set()
+            await release.wait()
+        return "synced"
+
+    monkeypatch.setattr(runtime, "sync_developer_mode", sync_developer_mode)
+    first = asyncio.create_task(runtime.update_config({"developer_tools_enabled": True}))
+    await entered.wait()
+    second = asyncio.create_task(runtime.update_config({"developer_tools_enabled": False}))
+    release.set()
+    await asyncio.gather(first, second)
+
+    assert calls == [True, False]
+    assert runtime.config.developer_tools_enabled is False
+
+
+@pytest.mark.asyncio
 async def test_update_config_force_syncs_developer_mode_only_on_transition(
     runtime: RoastRuntime, monkeypatch: pytest.MonkeyPatch
 ) -> None:

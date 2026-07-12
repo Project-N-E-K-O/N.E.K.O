@@ -15,6 +15,7 @@ async def reconcile_live_listener_after_config(
     old_platform: str = "bilibili",
     old_room_ref: str = "",
     was_listening: bool,
+    old_provider: Any = None,
 ) -> None:
     if not was_listening:
         return
@@ -31,14 +32,22 @@ async def reconcile_live_listener_after_config(
     disabled = "live_enabled" in clean and not bool(runtime.config.live_enabled)
     if not room_changed and not disabled:
         return
+    runtime._accepting_live_events = False
+    await _stop_captured_provider(old_provider or runtime.live_provider)
     if disabled or not room_ref:
-        await stop_live_listener(runtime, mark_disabled=True)
+        runtime.live_events.reset()
+        runtime.config.live_enabled = False
+        runtime.live_connection_state = "disconnected"
+        runtime.safety_guard.set_connected(False)
+        _clear_connected_room_status(runtime)
+        await runtime.restore_instructions(force=True)
         return
     if not runtime.config.live_enabled:
         runtime.live_connection_state = "disconnected"
         runtime.safety_guard.set_connected(False)
         return
     started = await start_live_listener(runtime, room_ref)
+    runtime._accepting_live_events = bool(started)
     runtime.audit.record(
         "live_reconnected" if started else "live_reconnect_failed",
         (
@@ -59,6 +68,7 @@ async def reconcile_live_listener_after_config(
 
 
 async def start_live_listener(runtime: Any, room_ref: Any) -> bool:
+    runtime._accepting_live_events = False
     started = await runtime.live_provider.start_listening(room_ref)
     if started:
         runtime.pipeline.clear_dry_run_session_state()
@@ -67,10 +77,12 @@ async def start_live_listener(runtime: Any, room_ref: Any) -> bool:
     runtime.live_connection_state = "connected" if started else "disconnected"
     runtime.config.live_enabled = bool(started)
     runtime.safety_guard.set_connected(started)
+    runtime._accepting_live_events = bool(started)
     return started
 
 
 async def stop_live_listener(runtime: Any, *, mark_disabled: bool = True) -> None:
+    runtime._accepting_live_events = False
     await runtime.live_provider.stop_listening()
     runtime.live_events.reset()
     if mark_disabled:
@@ -80,6 +92,12 @@ async def stop_live_listener(runtime: Any, *, mark_disabled: bool = True) -> Non
     runtime.live_connection_state = "disconnected"
     runtime._live_listener_started_at = 0.0
     runtime.safety_guard.set_connected(False)
+
+
+async def _stop_captured_provider(provider: Any) -> None:
+    stopper = getattr(provider, "stop_listening", None)
+    if callable(stopper):
+        await stopper()
 
 
 def sync_douyin_listener_state(runtime: Any, state: Any) -> None:

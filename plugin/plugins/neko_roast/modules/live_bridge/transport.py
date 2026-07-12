@@ -19,7 +19,7 @@ from urllib.parse import quote, urlparse, urlunparse
 from websockets.asyncio.client import connect as websockets_connect
 
 _LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
-_PUBLIC_STATES = {"disconnected", "connecting", "connected", "receiving", "unsupported"}
+_PUBLIC_STATES = {"disconnected", "connecting", "connected", "receiving", "reconnecting", "unsupported"}
 _SENSITIVE_AUTH_RE = re.compile(r"(?i)\bauthorization\b\s*[:=]\s*[^,;]+")
 _SENSITIVE_TEXT_RE = re.compile(
     r"(?i)\b(?:"
@@ -76,8 +76,16 @@ class LiveBridgeStartRequest:
 class LiveBridgeTransport:
     """Bounded local WebSocket reader for replaceable external bridge tools."""
 
-    def __init__(self, *, connect_factory: Any = None) -> None:
+    def __init__(
+        self,
+        *,
+        connect_factory: Any = None,
+        reconnect_attempts: int = 0,
+        reconnect_sleep: Any = None,
+    ) -> None:
         self._connect_factory = connect_factory or websockets_connect
+        self._reconnect_attempts = max(0, int(reconnect_attempts))
+        self._reconnect_sleep = reconnect_sleep or asyncio.sleep
         self._task: asyncio.Task[None] | None = None
 
     async def start(self, request: LiveBridgeStartRequest) -> LiveBridgeState:
@@ -132,48 +140,70 @@ class LiveBridgeTransport:
         ready: asyncio.Future[LiveBridgeState],
     ) -> None:
         adapter_id = _safe_adapter_id(request.adapter.adapter_id)
-        self._notify_state(request, LiveBridgeState(state="connecting", adapter_id=adapter_id))
-        try:
-            async with self._connect_factory(
-                url,
-                open_timeout=6,
-                ping_interval=20,
-                ping_timeout=20,
-                close_timeout=3,
-                max_size=1024 * 1024,
-                proxy=None,
-            ) as ws:
-                connected = LiveBridgeState(state="connected", adapter_id=adapter_id)
-                self._notify_state(request, connected)
-                _resolve_ready(ready, connected)
-                async for raw_message in ws:
-                    for payload in request.adapter.map_message(_json_message(raw_message), room_ref=room_ref):
-                        event = LiveBridgeEvent(payload=payload, ts=time.time())
-                        self._emit(request, event)
-                        event_type = payload.get("event_type") or payload.get("type") or "unknown"
-                        self._notify_state(
-                            request,
-                            LiveBridgeState(
-                                state="receiving",
-                                adapter_id=adapter_id,
-                                last_event_at=event.ts,
-                                last_event_type=event_type if isinstance(event_type, str) else "unknown",
-                            ),
-                        )
-            self._notify_state(request, LiveBridgeState(state="disconnected", adapter_id=adapter_id))
-        except asyncio.CancelledError:
-            state = LiveBridgeState(state="disconnected", adapter_id=adapter_id)
-            self._notify_state(request, state)
-            _resolve_ready(ready, state)
-            raise
-        except Exception as exc:
-            state = LiveBridgeState(
-                state="disconnected",
-                adapter_id=adapter_id,
-                last_error=f"external bridge failed: {type(exc).__name__}",
+        connected_once = False
+        attempt = 0
+        while True:
+            self._notify_state(
+                request,
+                LiveBridgeState(
+                    state="reconnecting" if connected_once else "connecting",
+                    adapter_id=adapter_id,
+                ),
             )
-            self._notify_state(request, state)
-            _resolve_ready(ready, state)
+            try:
+                async with self._connect_factory(
+                    url,
+                    open_timeout=6,
+                    ping_interval=20,
+                    ping_timeout=20,
+                    close_timeout=3,
+                    max_size=1024 * 1024,
+                    proxy=None,
+                ) as ws:
+                    connected = LiveBridgeState(state="connected", adapter_id=adapter_id)
+                    self._notify_state(request, connected)
+                    _resolve_ready(ready, connected)
+                    connected_once = True
+                    async for raw_message in ws:
+                        for payload in request.adapter.map_message(_json_message(raw_message), room_ref=room_ref):
+                            event = LiveBridgeEvent(payload=payload, ts=time.time())
+                            self._emit(request, event)
+                            event_type = payload.get("event_type") or payload.get("type") or "unknown"
+                            self._notify_state(
+                                request,
+                                LiveBridgeState(
+                                    state="receiving",
+                                    adapter_id=adapter_id,
+                                    last_event_at=event.ts,
+                                    last_event_type=event_type if isinstance(event_type, str) else "unknown",
+                                ),
+                            )
+                failure = LiveBridgeState(state="disconnected", adapter_id=adapter_id)
+            except asyncio.CancelledError:
+                state = LiveBridgeState(state="disconnected", adapter_id=adapter_id)
+                self._notify_state(request, state)
+                _resolve_ready(ready, state)
+                raise
+            except Exception as exc:
+                failure = LiveBridgeState(
+                    state="disconnected",
+                    adapter_id=adapter_id,
+                    last_error=f"external bridge failed: {type(exc).__name__}",
+                )
+            if not connected_once or attempt >= self._reconnect_attempts:
+                self._notify_state(request, failure)
+                _resolve_ready(ready, failure)
+                return
+            attempt += 1
+            self._notify_state(
+                request,
+                LiveBridgeState(
+                    state="reconnecting",
+                    adapter_id=adapter_id,
+                    last_error=failure.safe_error(),
+                ),
+            )
+            await self._reconnect_sleep(float(2 ** (attempt - 1)))
 
     def _emit(self, request: LiveBridgeStartRequest, event: LiveBridgeEvent) -> None:
         if request.emit is not None:

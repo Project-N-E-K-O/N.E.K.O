@@ -165,6 +165,8 @@ class DanmakuListener:
         self._stop_event = asyncio.Event()  # 用于在 await 点可靠取消连接
         self._ws = None
         self._heartbeat_task: Optional[asyncio.Task] = None
+        self._ready_event = asyncio.Event()
+        self._authenticated_in_attempt = False
         self._buvid3_temp: str = ""  # 临时 buvid3，无凭据时从 B站首页获取
 
         # 连接状态
@@ -935,6 +937,8 @@ class DanmakuListener:
                 code = result.get("code", -1)
                 if code == 0:
                     self._connection_state = ConnectionState.RECEIVING
+                    self._authenticated_in_attempt = True
+                    self._ready_event.set()
                     self._log(f"✅ 认证成功，开始接收弹幕 [{self._current_server}]")
                 else:
                     self._connection_state = ConnectionState.DISCONNECTED
@@ -973,6 +977,7 @@ class DanmakuListener:
 
         # 重置停止事件和直播结束标记
         self._stop_event.clear()
+        self._ready_event.clear()
         self._live_ended = False
         self.running = True
         self._connection_state = ConnectionState.CONNECTING
@@ -981,46 +986,58 @@ class DanmakuListener:
         max_retries = 10
         retry_delay = 5  # 初始重试间隔（秒）
 
-        while True:
-            if self._stop_event.is_set():
-                break
-            try:
-                await self._connect_once()
-            except Exception as e:
-                self._log(f"连接过程异常: {e}", "error")
-                await self._emit("on_error", e)
+        try:
+            while True:
+                if self._stop_event.is_set():
+                    break
+                self._authenticated_in_attempt = False
+                try:
+                    await self._connect_once()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    self._log(f"连接过程异常: {e}", "error")
+                    await self._emit("on_error", e)
 
-            if self._stop_event.is_set():
-                break
-            if self._live_ended:
-                self._connection_state = ConnectionState.DISCONNECTED
-                break
+                if self._stop_event.is_set():
+                    break
+                if self._live_ended:
+                    self._connection_state = ConnectionState.DISCONNECTED
+                    break
 
-            # 自动重连
-            retry_count += 1
-            if retry_count > max_retries:
-                self._log(f"重连次数超过 {max_retries} 次，停止重连", "error")
-                self._connection_state = ConnectionState.DISCONNECTED
-                break
+                # A connection that reached AUTH ready is a successful recovery.
+                # A later disconnect starts a fresh retry budget instead of consuming
+                # the failures accumulated before authentication.
+                if self._authenticated_in_attempt:
+                    retry_count = 0
+                retry_count += 1
+                if retry_count > max_retries:
+                    self._log(f"重连次数超过 {max_retries} 次，停止重连", "error")
+                    self._connection_state = ConnectionState.DISCONNECTED
+                    break
 
-            self._connection_state = ConnectionState.RECONNECTING
-            wait = min(retry_delay * retry_count, 60)
+                self._connection_state = ConnectionState.RECONNECTING
+                wait = min(retry_delay * retry_count, 60)
             # 前3次打印重连日志，之后静默
-            if retry_count <= 3:
-                self._log(f"🔄 {wait}s 后自动重连 (第{retry_count}次)...")
-            elif retry_count == 4:
-                self._log(f"🔄 持续重连中，后续重连不再打印日志（共最多{max_retries}次）")
+                if retry_count <= 3:
+                    self._log(f"🔄 {wait}s 后自动重连 (第{retry_count}次)...")
+                elif retry_count == 4:
+                    self._log(f"🔄 持续重连中，后续重连不再打印日志（共最多{max_retries}次）")
 
-            try:
-                await asyncio.wait_for(self._stop_event.wait(), timeout=wait)
-                # _stop_event 被 set，退出重连循环
-                break
-            except asyncio.TimeoutError:
-                # 超时正常，继续重连
-                pass
+                try:
+                    await asyncio.wait_for(self._stop_event.wait(), timeout=wait)
+                    break
+                except asyncio.TimeoutError:
+                    pass
+        finally:
+            self.running = False
+            self._connection_state = ConnectionState.DISCONNECTED
+            self._current_server = ""
+            self._log("弹幕监听已停止")
 
-        self.running = False
-        self._log("弹幕监听已停止")
+    async def wait_until_ready(self) -> None:
+        """Wait until Bilibili acknowledges AUTH successfully."""
+        await self._ready_event.wait()
 
     async def _connect_once(self):
         """单次 WebSocket 连接（尝试所有服务器，内部）"""
