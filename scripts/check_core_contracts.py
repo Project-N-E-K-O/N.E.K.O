@@ -623,8 +623,13 @@ def run(root: Path) -> list[Violation]:
                 # with the manager's own __init__) wins attribute lookup and
                 # silently removes/replaces it — ``__init__ = external`` after
                 # ``def __init__`` overwrites the initializer while the method
-                # count still passes.
-                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                # count still passes. An annotation-ONLY entry (``foo: int`` with
+                # no value) creates no attribute — only ``__annotations__`` — so
+                # it shadows nothing and is skipped.
+                if isinstance(node, ast.AnnAssign) and node.value is None:
+                    targets = []
+                else:
+                    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
                 for t in targets:
                     if isinstance(t, ast.Name) and (t.id in mixin_method_names or t.id == "__init__"):
                         what = "the manager's __init__" if t.id == "__init__" else "a mixin method"
