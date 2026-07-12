@@ -67,6 +67,7 @@ from .char_info import (
     _extract_request_language_full,
     _get_character_info,
     _get_current_character_info,
+    _get_game_route_summary_llm_info,
     _resolve_game_prompt_language,
 )
 from .game_context import (
