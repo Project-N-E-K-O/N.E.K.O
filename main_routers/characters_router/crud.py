@@ -758,8 +758,20 @@ async def set_current_catgirl(request: Request):
                     'success': False,
                     'error': '语音状态下无法切换角色，请先停止语音对话后再切换'
                 }, status_code=400)
-    characters['当前猫娘'] = catgirl_name
-    await _config_manager.asave_characters(characters)
+    async def _publish_current_catgirl() -> None:
+        """只发布当前猫娘配置；小剧场事务负责决定它与旧演出的原子顺序。"""  # noqa: DOCSTRING_CJK
+        characters['当前猫娘'] = catgirl_name
+        await _config_manager.asave_characters(characters)
+
+    theater_transition = None
+    if old_catgirl and old_catgirl != catgirl_name:
+        theater_transition = await _publish_character_switch_with_theater_boundary(
+            _config_manager,
+            old_catgirl,
+            _publish_current_catgirl,
+        )
+    else:
+        await _publish_current_catgirl()
     # Fast path：切换只改变 `当前猫娘` 字段，per-k 的 prompt / voice_id / thread 都不变，
     # 只需刷新 globals 即可。N=20 只猫娘时从 O(N) 降到 O(1)。
     switch_current_catgirl_fast = get_switch_current_catgirl_fast()
@@ -791,13 +803,15 @@ async def set_current_catgirl(request: Request):
             # clean up if this hook misses.
             logger.warning("角色切换游戏路由收尾失败: lanlan=%s err=%s", old_catgirl, exc)
 
-        try:
-            cleared = await _clear_theater_session_for_character_switch(_config_manager, old_catgirl)
-            if cleared:
-                logger.info("角色切换：已结束旧角色 %s 的小剧场 session", old_catgirl)
-        except Exception as exc:
-            # 小剧场清理失败不能阻断角色切换；下次恢复会继续按 active 索引和过期规则收口。
-            logger.warning("角色切换小剧场 session 清理失败: lanlan=%s err=%s", old_catgirl, exc)
+        if theater_transition and theater_transition.get("cleared"):
+            logger.info("角色切换：已结束旧角色 %s 的小剧场 session", old_catgirl)
+        elif theater_transition and theater_transition.get("cleanup_error"):
+            # 配置已经在角色锁内发布，清理失败不能重复保存；后续 TTS 仍会按当前猫娘校验拒绝旧对白。
+            logger.warning(
+                "角色切换小剧场 session 清理失败: lanlan=%s err=%s",
+                old_catgirl,
+                theater_transition["cleanup_error"],
+            )
 
     # 通过WebSocket通知所有连接的客户端
     # 使用session_manager中的websocket，但需要确保websocket已设置
@@ -857,18 +871,16 @@ def _theater_root_for_config_manager(config_manager) -> Path:
     return Path("data") / "theater"
 
 
-async def _clear_theater_session_for_character_switch(config_manager, old_catgirl: str) -> bool:
-    """角色切换时结束旧角色的小剧场 active session，不影响普通聊天切换。"""  # noqa: DOCSTRING_CJK
-    if not old_catgirl:
-        return False
+async def _publish_character_switch_with_theater_boundary(config_manager, old_catgirl: str, publish) -> dict:
+    """让当前猫娘发布与旧剧场 TTS 共享角色边界，不改变其他角色切换步骤。"""  # noqa: DOCSTRING_CJK
     # 延迟导入避免角色 Router 在应用启动阶段反向依赖小剧场运行时。
     from services.theater import runtime as theater_runtime
 
-    result = await theater_runtime.clear_character_session(
+    return await theater_runtime.publish_character_switch(
         _theater_root_for_config_manager(config_manager),
-        lanlan_name=old_catgirl,
+        old_lanlan_name=old_catgirl,
+        publish=publish,
     )
-    return bool(result.get("cleared"))
 
 
 @router.post('/reload')

@@ -313,6 +313,54 @@ async def test_dialogue_playback_submission_holds_character_boundary(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_character_publication_waits_for_dialogue_playback(tmp_path):
+    """当前猫娘配置不能在旧对白仍向 TTS 提交时提前发布。"""  # noqa: DOCSTRING_CJK
+    root = tmp_path / "theater"
+    started = await runtime.start_session(root, lanlan_name="旧猫娘", client_start_id="start_before_publish")
+    playback_entered = asyncio.Event()
+    release_playback = asyncio.Event()
+    published_names = []
+
+    async def _pause_playback(claim):
+        """暂停旧对白提交，暴露角色发布与 TTS 的竞争窗口。"""  # noqa: DOCSTRING_CJK
+        playback_entered.set()
+        await release_playback.wait()
+        return {"ok": True, "line": claim["line"], "audio_queued": True}
+
+    async def _publish_new_character():
+        """记录配置发布时点，不读写真实角色文件。"""  # noqa: DOCSTRING_CJK
+        published_names.append("新猫娘")
+
+    playback_task = asyncio.create_task(
+        runtime.claim_dialogue_speech(
+            root,
+            session_id=started["session_id"],
+            state_revision=0,
+            play=_pause_playback,
+        )
+    )
+    await playback_entered.wait()
+    switch_task = asyncio.create_task(
+        runtime.publish_character_switch(
+            root,
+            old_lanlan_name="旧猫娘",
+            publish=_publish_new_character,
+        )
+    )
+    done, _pending = await asyncio.wait({switch_task}, timeout=0.05)
+
+    assert not done
+    assert published_names == []
+    release_playback.set()
+    played, switched = await asyncio.gather(playback_task, switch_task)
+    assert played["audio_queued"] is True
+    assert switched["cleared"] is True
+    assert published_names == ["新猫娘"]
+    saved = await session_store.load_session(root, started["session_id"])
+    assert saved["ended_at"]
+
+
+@pytest.mark.asyncio
 async def test_stale_session_dialogue_cannot_claim_tts(tmp_path):
     """被新开场替代的旧 Session 不得抢播对白或中断当前演出。"""  # noqa: DOCSTRING_CJK
     root = tmp_path / "theater"
@@ -343,6 +391,29 @@ async def test_ended_session_dialogue_cannot_claim_tts(tmp_path):
     assert claim == {"ok": True, "skipped": "stale_session", "state_revision": 0}
     saved = await session_store.load_session(root, started["session_id"])
     assert saved["spoken_dialogue_revisions"] == []
+
+
+@pytest.mark.asyncio
+async def test_committed_terminal_dialogue_can_claim_tts(tmp_path):
+    """主动离场的已提交终局对白应朗读一次，不能被 ended_at 提前吞掉。"""  # noqa: DOCSTRING_CJK
+    root = tmp_path / "theater"
+    started = await runtime.start_session(root, lanlan_name="测试猫娘", client_start_id="start_terminal_tts")
+    exited = await runtime.submit_input(
+        root,
+        session_id=started["session_id"],
+        input_kind="user_exit",
+        client_turn_id="turn_terminal_tts",
+        base_revision=0,
+    )
+
+    claim = await runtime.claim_dialogue_speech(
+        root,
+        session_id=started["session_id"],
+        state_revision=exited["state_revision"],
+    )
+
+    assert claim["line"] == exited["dialogue"]["text"]
+    assert claim["state_revision"] == exited["state_revision"]
 
 
 @pytest.mark.asyncio

@@ -196,8 +196,15 @@ async def claim_dialogue_speech(
             if expected_name and str(session.get("lanlan_name") or "").strip() != expected_name:
                 # 角色已切换时不写入已朗读 revision，避免旧猫娘对白占用新角色的播放权。
                 return {"ok": True, "skipped": "character_changed", "state_revision": current_revision}
-            if session.get("ended_at") or await session_store.is_stale_session(root, session):
-                # 已结束或被新开场替换的 Session，旧对白都不能中断当前猫娘的 TTS。
+            snapshot = session.get("public_snapshot")
+            ending = snapshot.get("ending") if isinstance(snapshot, dict) else None
+            committed_terminal = bool(
+                session.get("ended_at")
+                and isinstance(ending, dict)
+                and ending.get("should_end_session") is True
+            )
+            if await session_store.is_stale_session(root, session) or (session.get("ended_at") and not committed_terminal):
+                # 新开场替换和管理性关闭都拒绝播放；只保留已提交终局快照的最后一句。
                 return {"ok": True, "skipped": "stale_session", "state_revision": current_revision}
             if state_revision != current_revision:
                 return {
@@ -205,7 +212,6 @@ async def claim_dialogue_speech(
                     "skipped": "stale_revision",
                     "state_revision": current_revision,
                 }
-            snapshot = session.get("public_snapshot")
             dialogue = snapshot.get("dialogue") if isinstance(snapshot, dict) else None
             line = str(dialogue.get("text") or "").strip() if isinstance(dialogue, dict) else ""
             if not line:
@@ -230,6 +236,55 @@ async def claim_dialogue_speech(
                 return claim
             # 播放提交保持在角色锁内：新开场或结束只能在旧对白进入 TTS 管线后切换活动 Session。
             return await play(claim)
+
+
+async def publish_character_switch(
+    root: Path,
+    *,
+    old_lanlan_name: str,
+    publish: Callable[[], Awaitable[None]],
+) -> dict[str, Any]:
+    """在小剧场角色边界内发布新当前猫娘，并结束旧角色活动 Session。"""  # noqa: DOCSTRING_CJK
+    normalized_name = str(old_lanlan_name or "").strip()
+    while True:
+        active_session_id = await session_store.get_active_session_id(root, normalized_name)
+        if not active_session_id:
+            async with session_store.character_guard(root, normalized_name):
+                # 等锁期间可能刚好创建了新 Session；出现变化时释放锁并按完整锁顺序重试。
+                if await session_store.get_active_session_id(root, normalized_name):
+                    continue
+                await publish()
+                return {"ok": True, "published": True, "cleared": False}
+
+        async with session_store.session_guard(active_session_id):
+            async with session_store.character_guard(root, normalized_name):
+                # 锁外读取的 active ID 可能已经变化，不能拿旧 Session 锁处理新的活动演出。
+                if await session_store.get_active_session_id(root, normalized_name) != active_session_id:
+                    continue
+                await publish()
+                try:
+                    session = await session_store.load_session(root, active_session_id)
+                    if session is not None:
+                        now = _now_ms()
+                        session["ended_at"] = session.get("ended_at") or now
+                        session["updated_at"] = now
+                        session["phase"] = "ended"
+                        snapshot = session.get("public_snapshot")
+                        if isinstance(snapshot, dict):
+                            snapshot["can_resume"] = False
+                            snapshot["suggestion_options"] = []
+                            snapshot["phase"] = "ended"
+                        await session_store.save_session(root, session)
+                    await session_store.clear_active_session(root, normalized_name, active_session_id)
+                except Exception as exc:
+                    # 当前猫娘已经成功发布时不能重复写配置；返回清理错误交给角色 Router 记录。
+                    return {
+                        "ok": True,
+                        "published": True,
+                        "cleared": False,
+                        "cleanup_error": type(exc).__name__,
+                    }
+                return {"ok": True, "published": True, "cleared": True, "session_id": active_session_id}
 
 
 async def get_active_state(root: Path, *, lanlan_name: str) -> dict[str, Any]:
