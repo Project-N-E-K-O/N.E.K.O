@@ -132,7 +132,6 @@ def _create_provider(provider_key: str) -> NativeVoiceProvider:
     )
 
 
-_STEP_CONFIG = _load_stepfun_provider_config("step")
 STEPFUN_PROVIDER = _create_provider("step")
 FREE_STEPFUN_PROVIDER = _create_provider("free")
 
