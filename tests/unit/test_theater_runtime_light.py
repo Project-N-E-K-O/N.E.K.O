@@ -139,6 +139,46 @@ async def test_idempotency_and_revision_conflict(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_cached_nonterminal_turn_cannot_revive_stale_session(tmp_path):
+    """旧 Session 被替换后，同一幂等 ID 也不能回放可恢复快照。"""  # noqa: DOCSTRING_CJK
+    root = tmp_path / "theater"
+    old_session = await runtime.start_session(root, lanlan_name="测试猫娘", client_start_id="start_cache_old")
+    request = dict(
+        session_id=old_session["session_id"],
+        input_kind="free_input",
+        message="这轮结果会进入幂等缓存",
+        client_turn_id="turn_cached_before_replace",
+        base_revision=0,
+    )
+    committed = await runtime.submit_input(root, **request)
+    assert committed["ok"] is True
+    await runtime.start_session(root, lanlan_name="测试猫娘", client_start_id="start_cache_new")
+
+    replay = await runtime.submit_input(root, **request)
+
+    assert replay == {"ok": False, "reason": "stale_session", "skipped": True}
+
+
+@pytest.mark.asyncio
+async def test_cached_terminal_turn_remains_idempotent(tmp_path):
+    """主动离场已经提交后，同一幂等 ID 重试仍返回原终局响应。"""  # noqa: DOCSTRING_CJK
+    root = tmp_path / "theater"
+    started = await runtime.start_session(root, lanlan_name="测试猫娘", client_start_id="start_exit_cache")
+    request = dict(
+        session_id=started["session_id"],
+        input_kind="user_exit",
+        client_turn_id="turn_exit_cached",
+        base_revision=0,
+    )
+
+    first = await runtime.submit_input(root, **request)
+    replay = await runtime.submit_input(root, **request)
+
+    assert replay == first
+    assert replay["ending"]["reason"] == "user_exit"
+
+
+@pytest.mark.asyncio
 async def test_concurrent_start_retry_reuses_one_session(tmp_path):
     """同一开场幂等 ID 的并发请求只能创建并返回一个 Session。"""  # noqa: DOCSTRING_CJK
     root = tmp_path / "theater"
@@ -202,6 +242,39 @@ async def test_dialogue_speech_claims_each_revision_once(tmp_path):
         state_revision=1,
     )
     assert stale == {"ok": True, "skipped": "stale_revision", "state_revision": 0}
+
+
+@pytest.mark.asyncio
+async def test_dialogue_claim_and_new_start_share_character_boundary(monkeypatch, tmp_path):
+    """旧对白认领写盘完成前，同猫娘新开场不能先替换 active Session。"""  # noqa: DOCSTRING_CJK
+    root = tmp_path / "theater"
+    old_session = await runtime.start_session(root, lanlan_name="测试猫娘", client_start_id="start_claim_old")
+    real_save_session = session_store.save_session
+    claim_save_entered = asyncio.Event()
+    release_claim_save = asyncio.Event()
+
+    async def _pause_claim_save(target_root, session):
+        """只暂停旧 Session 的已朗读 revision 写盘，制造 active 切换竞争窗口。"""  # noqa: DOCSTRING_CJK
+        if session.get("session_id") == old_session["session_id"] and session.get("spoken_dialogue_revisions") == [0]:
+            claim_save_entered.set()
+            await release_claim_save.wait()
+        await real_save_session(target_root, session)
+
+    monkeypatch.setattr(session_store, "save_session", _pause_claim_save)
+    claim_task = asyncio.create_task(
+        runtime.claim_dialogue_speech(root, session_id=old_session["session_id"], state_revision=0)
+    )
+    await claim_save_entered.wait()
+    start_task = asyncio.create_task(
+        runtime.start_session(root, lanlan_name="测试猫娘", client_start_id="start_claim_new")
+    )
+    done, _pending = await asyncio.wait({start_task}, timeout=0.05)
+
+    assert not done
+    release_claim_save.set()
+    claim, replacement = await asyncio.gather(claim_task, start_task)
+    assert claim["line"] == old_session["dialogue"]["text"]
+    assert replacement["session_id"] != old_session["session_id"]
 
 
 @pytest.mark.asyncio

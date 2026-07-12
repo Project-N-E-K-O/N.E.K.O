@@ -178,37 +178,43 @@ async def claim_dialogue_speech(root: Path, *, session_id: str, state_revision: 
         session = await session_store.load_session(root, session_id)
         if session is None:
             return {"ok": False, "reason": "session_not_found"}
-        current_revision = session_store.state_revision(session)
-        if session.get("ended_at") or await session_store.is_stale_session(root, session):
-            # 已结束或被新开场替换的 Session，旧对白都不能中断当前猫娘的 TTS。
-            return {"ok": True, "skipped": "stale_session", "state_revision": current_revision}
-        if state_revision != current_revision:
+        lanlan_name = str(session.get("lanlan_name") or "")
+        async with session_store.character_guard(root, lanlan_name):
+            # 等待角色锁后重新读盘，确保开场/结束转换不能夹在 active 校验与认领写盘之间。
+            session = await session_store.load_session(root, session_id)
+            if session is None:
+                return {"ok": False, "reason": "session_not_found"}
+            current_revision = session_store.state_revision(session)
+            if session.get("ended_at") or await session_store.is_stale_session(root, session):
+                # 已结束或被新开场替换的 Session，旧对白都不能中断当前猫娘的 TTS。
+                return {"ok": True, "skipped": "stale_session", "state_revision": current_revision}
+            if state_revision != current_revision:
+                return {
+                    "ok": True,
+                    "skipped": "stale_revision",
+                    "state_revision": current_revision,
+                }
+            snapshot = session.get("public_snapshot")
+            dialogue = snapshot.get("dialogue") if isinstance(snapshot, dict) else None
+            line = str(dialogue.get("text") or "").strip() if isinstance(dialogue, dict) else ""
+            if not line:
+                return {"ok": True, "skipped": "empty_dialogue", "state_revision": current_revision}
+
+            spoken = session.setdefault("spoken_dialogue_revisions", [])
+            normalized_spoken = [item for item in spoken if isinstance(item, int) and not isinstance(item, bool)]
+            if current_revision in normalized_spoken:
+                return {"ok": True, "skipped": "already_spoken", "state_revision": current_revision}
+            normalized_spoken.append(current_revision)
+            session["spoken_dialogue_revisions"] = normalized_spoken[-MAX_SPOKEN_DIALOGUE_REVISIONS:]
+            # 认领写盘和 active 校验共用角色锁；网络重试不会重播，新开场也不能中途插队。
+            await session_store.save_session(root, session)
             return {
                 "ok": True,
-                "skipped": "stale_revision",
+                "line": line,
+                "lanlan_name": str(session.get("lanlan_name") or ""),
+                "session_id": str(session.get("session_id") or session_id),
                 "state_revision": current_revision,
             }
-        snapshot = session.get("public_snapshot")
-        dialogue = snapshot.get("dialogue") if isinstance(snapshot, dict) else None
-        line = str(dialogue.get("text") or "").strip() if isinstance(dialogue, dict) else ""
-        if not line:
-            return {"ok": True, "skipped": "empty_dialogue", "state_revision": current_revision}
-
-        spoken = session.setdefault("spoken_dialogue_revisions", [])
-        normalized_spoken = [item for item in spoken if isinstance(item, int) and not isinstance(item, bool)]
-        if current_revision in normalized_spoken:
-            return {"ok": True, "skipped": "already_spoken", "state_revision": current_revision}
-        normalized_spoken.append(current_revision)
-        session["spoken_dialogue_revisions"] = normalized_spoken[-MAX_SPOKEN_DIALOGUE_REVISIONS:]
-        # 先落盘再调用外部 TTS；即使响应丢失，HTTP 重试也不会重复朗读同一句。
-        await session_store.save_session(root, session)
-        return {
-            "ok": True,
-            "line": line,
-            "lanlan_name": str(session.get("lanlan_name") or ""),
-            "session_id": str(session.get("session_id") or session_id),
-            "state_revision": current_revision,
-        }
 
 
 async def get_active_state(root: Path, *, lanlan_name: str) -> dict[str, Any]:
@@ -232,21 +238,27 @@ async def end_session(root: Path, *, session_id: str) -> dict[str, Any]:
         session = await session_store.load_session(root, session_id)
         if session is None:
             return {"ok": False, "reason": "session_not_found"}
-        if not session.get("ended_at"):
-            session["ended_at"] = _now_ms()
-            session["updated_at"] = session["ended_at"]
-            session["phase"] = "ended"
-            snapshot = session.get("public_snapshot")
-            if isinstance(snapshot, dict):
-                snapshot["can_resume"] = False
-                snapshot["suggestion_options"] = []
-                snapshot["phase"] = "ended"
-            await session_store.save_session(root, session)
-        await session_store.clear_active_session(
-            root,
-            str(session.get("lanlan_name") or ""),
-            str(session.get("session_id") or ""),
-        )
+        lanlan_name = str(session.get("lanlan_name") or "")
+        async with session_store.character_guard(root, lanlan_name):
+            # 结束转换与新开场、TTS 认领共享角色锁，避免 active 状态在中途交叉变化。
+            session = await session_store.load_session(root, session_id)
+            if session is None:
+                return {"ok": False, "reason": "session_not_found"}
+            if not session.get("ended_at"):
+                session["ended_at"] = _now_ms()
+                session["updated_at"] = session["ended_at"]
+                session["phase"] = "ended"
+                snapshot = session.get("public_snapshot")
+                if isinstance(snapshot, dict):
+                    snapshot["can_resume"] = False
+                    snapshot["suggestion_options"] = []
+                    snapshot["phase"] = "ended"
+                await session_store.save_session(root, session)
+            await session_store.clear_active_session(
+                root,
+                lanlan_name,
+                str(session.get("session_id") or ""),
+            )
     return {"ok": True, "session_id": session_id, "ended": True}
 
 

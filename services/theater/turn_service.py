@@ -45,12 +45,16 @@ async def submit(
             # Session ID 可能来自旧 localStorage；角色归属不匹配时不能读取幂等结果或继续推进。
             return {"ok": False, "reason": "session_character_mismatch"}
         cached = _cached_result(session, request["client_turn_id"])
-        if cached:
-            return cached
         if await session_store.is_stale_session(root, session):
             return {"ok": False, "reason": "stale_session", "skipped": True}
         if session.get("ended_at"):
+            ending = cached.get("ending") if isinstance(cached, dict) else None
+            if isinstance(ending, dict) and ending.get("should_end_session") is True:
+                # 已提交的主动离场/作者结局仍可幂等回放，但普通旧回合不能复活结束态 Session。
+                return cached
             return {"ok": False, "reason": "session_ended"}
+        if cached:
+            return cached
         revision = session_store.state_revision(session)
         expected = request.get("base_revision")
         if expected is not None and expected != revision:
