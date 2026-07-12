@@ -123,31 +123,22 @@ def test_cat1_play_action_module_is_independent_from_eat_action():
     assert "width:175%!important" in app_ui_source
 
 
-def test_cat1_play_action_can_replace_stretch_after_reaching_yarn():
+def test_cat1_walk_finish_keeps_legacy_probability_branch_outside_cat_mind():
     source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
 
-    assert "_NEKO_IDLE_CAT1_WALK_FINISH_PLAY_PROBABILITY = 0.25" in source
-    assert "_NEKO_IDLE_CAT1_PAIR_MOVE_PLAY_PROBABILITY = 0.05" in source
-    assert "_NEKO_IDLE_CAT1_AMBIENT_SOUND_INTERVAL_MS = 3 * 60 * 1000" in source
-    assert "_NEKO_IDLE_SLEEP_SOUND_INTERVAL_MS = 5 * 60 * 1000" in source
     finish_block = source.split("function _finishNekoIdleCat1Walk", 1)[1].split(
         "function _finishNekoIdleCat1CompactTopEdgeWalk",
         1,
     )[0]
     assert "targetKind === _NEKO_IDLE_CAT1_TARGET_KIND_MINIMIZED_SIDE" in finish_block
+    assert "CAT1_WALK_DONE_NEAR_CHAT" in finish_block
+    assert "CAT1_PLAY_YARN_WAKEUP" not in finish_block
     assert "Math.random() < _NEKO_IDLE_CAT1_WALK_FINISH_PLAY_PROBABILITY" in finish_block
     assert "_playNekoIdleCat1PlayAction(button)" in finish_block
-    assert "return;" in finish_block
     assert "_setNekoIdleCat1Substate(button, state.profile.finishingSubstate, { animate: true });" in finish_block
-    assert finish_block.index("_playNekoIdleCat1PlayAction(button)") < finish_block.index(
-        "_setNekoIdleCat1Substate(button, state.profile.finishingSubstate"
-    )
-    assert finish_block.index("_playNekoIdleCat1PlayAction(button)") < finish_block.index(
-        "_setNekoIdleCat1Classes(button, state);"
-    )
 
 
-def test_cat1_pair_move_event_can_play_instead_of_random_small_move():
+def test_cat1_pair_move_is_adapter_only_small_move_runner():
     source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
 
     play_block = source.split("function _playNekoIdleCat1PlayAction(button)", 1)[1].split(
@@ -158,15 +149,13 @@ def test_cat1_pair_move_event_can_play_instead_of_random_small_move():
     assert "journey.substate === journey.profile.finishingSubstate" in play_block
 
     pair_move_start_block = source.split("function _startNekoIdleCat1PairMove(button)", 1)[1].split(
-        "function _scheduleNekoIdleCat1PairMove",
+        "function _refreshNekoIdleCat1Observer",
         1,
     )[0]
-    assert "Math.random() < _NEKO_IDLE_CAT1_PAIR_MOVE_PLAY_PROBABILITY" in pair_move_start_block
-    assert "_playNekoIdleCat1PlayAction(button)" in pair_move_start_block
-    assert "return true;" in pair_move_start_block
-    assert pair_move_start_block.index("_playNekoIdleCat1PlayAction(button)") < pair_move_start_block.index(
-        "const plan = _getNekoIdleCat1PairMovePlan(button);"
-    )
+    assert "const isCatMindRun = catMindRunOptions.source === 'cat_mind';" in pair_move_start_block
+    assert "if (!isCatMindRun) return false;" in pair_move_start_block
+    assert "_NEKO_CAT_MIND_ACTION_IDS.CAT1_SMALL_MOVE" in pair_move_start_block
+    assert "_playNekoIdleCat1PlayAction(button)" not in pair_move_start_block
     finish_pair_move_block = source.split("function _finishNekoIdleCat1PairMove(button)", 1)[1].split(
         "function _stepNekoIdleCat1PairMove",
         1,
