@@ -363,28 +363,29 @@ def _build_user_turn_fingerprint(messages: Any) -> Optional[str]:
 
 
 def _build_assistant_turn_fingerprint(messages: Any) -> Optional[str]:
-    """Build a stable fingerprint from assistant-role message texts only.
+    """Build a stable fingerprint from the LATEST assistant utterance only.
 
     Used by the proactive-analyze path to ensure each distinct proactive
     utterance is analyzed at most once (a re-sent / duplicate proactive
     ``turn end`` carries the same assistant text → same fingerprint → skip).
-    Mirrors ``_build_user_turn_fingerprint`` but on the assistant side, since a
-    proactive turn has no new user message to key on. Returns None when the
-    window has no assistant text.
+    Keyed to the last assistant message with text — the exact utterance the
+    executor pulls the proactive intent from downstream (``_format_messages``
+    with ``proactive=True`` also walks the window in reverse to that same line).
+    Hashing the whole assistant history instead would make the key
+    history-dependent: the same line re-sent after the window gained another
+    assistant record would hash differently, slip past the dedupe, and burn a
+    second budget slot / repeat the agent action. Returns None when the window
+    has no assistant text (also the "no assistant utterance" skip signal).
     """
     if not isinstance(messages, list):
         return None
-    parts: list[str] = []
-    for m in messages:
+    for m in reversed(messages):
         if not isinstance(m, dict) or str(m.get("role") or "").lower() != "assistant":
             continue
         text = str(m.get("text") or m.get("content") or "").strip()
         if text:
-            parts.append(text)
-    if not parts:
-        return None
-    payload_bytes = "\n".join(parts).encode("utf-8", errors="ignore")
-    return hashlib.sha256(payload_bytes).hexdigest()
+            return hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()
+    return None
 
 
 def _build_analyze_event_fingerprint(event: Dict[str, Any]) -> Optional[str]:

@@ -61,6 +61,16 @@ def test_assistant_fingerprint():
     assert a._build_assistant_turn_fingerprint([{"role": "user", "content": "x"}]) is None
     # role match is case-insensitive (consistent with the executor's intent extractor)
     assert a._build_assistant_turn_fingerprint([{"role": "Assistant", "content": "hi"}]) is not None
+    # keyed to the LATEST assistant utterance only → history-independent: the same
+    # trailing line with different prior assistant records still dedupes (so a
+    # re-send after the window grew can't slip past the gate and burn a slot).
+    only = [{"role": "assistant", "content": "我帮你查下天气"}]
+    with_history = [
+        {"role": "assistant", "content": "更早的一句"},
+        {"role": "user", "content": "中间的用户话"},
+        {"role": "assistant", "content": "我帮你查下天气"},
+    ]
+    assert a._build_assistant_turn_fingerprint(only) == a._build_assistant_turn_fingerprint(with_history)
 
 
 # ── _handle_proactive_analyze gating ─────────────────────────────────
