@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import nullcontext, suppress
+from contextlib import nullcontext
 from dataclasses import dataclass
 import logging
 from typing import TYPE_CHECKING, Any, Callable, Dict, Generic, List, Optional, Sequence, Tuple, TypeVar, Union, cast
@@ -135,14 +135,16 @@ class BusListWatcher(BusListWatcherCore, Generic[TRecord]):
     def _schedule_tick(self, op: str, payload: Optional[Payload] = None) -> None:
         if self._stopped:
             return
-        if self._debounce_ms <= 0:
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                pass
-            else:
-                self._queue_async_refresh(op, payload, self._refresh_generation)
-                return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        else:
+            self._owner_loop = loop
+
+        if self._debounce_ms <= 0 and loop is not None:
+            self._queue_async_refresh(op, payload, self._refresh_generation)
+            return
         self._schedule_debounced_tick(op, payload)
 
     def _queue_async_refresh(
@@ -191,7 +193,7 @@ class BusListWatcher(BusListWatcherCore, Generic[TRecord]):
                     self._pending_payload = None
                     self._debounce_timer = None
 
-                with suppress(Exception):
+                try:
                     owner_loop = self._owner_loop
                     if owner_loop is not None and not owner_loop.is_closed():
                         owner_loop.call_soon_threadsafe(
@@ -206,6 +208,8 @@ class BusListWatcher(BusListWatcherCore, Generic[TRecord]):
                             pending_payload,
                             generation=generation,
                         )
+                except Exception:
+                    _logger.debug("Failed to dispatch debounced watcher refresh", exc_info=True)
 
             timer = threading.Timer(delay, _fire)
             timer.daemon = True

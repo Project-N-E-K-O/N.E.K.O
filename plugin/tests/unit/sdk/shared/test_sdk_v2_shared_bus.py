@@ -550,10 +550,20 @@ async def test_debounced_watcher_coalesces_changes_and_refreshes_latest_state() 
     messages = MessageClient(ctx)
     ctx.bus = SimpleNamespace(messages=messages)
 
-    snapshot = await messages.get(max_count=20)
-    watcher = snapshot.watch(ctx, debounce_ms=25)
     owner_loop = asyncio.get_running_loop()
     owner_thread_id = threading.get_ident()
+
+    async def _start_watcher_on_startup_loop() -> tuple[BusListWatcher[object], asyncio.AbstractEventLoop]:
+        snapshot = await messages.get(max_count=20)
+        watcher = snapshot.watch(ctx, debounce_ms=25)
+        startup_loop = asyncio.get_running_loop()
+        watcher.start()
+        return watcher, startup_loop
+
+    watcher, startup_loop = await asyncio.to_thread(
+        lambda: asyncio.run(_start_watcher_on_startup_loop())
+    )
+    assert startup_loop.is_closed()
     changed = threading.Event()
     callbacks: list[object] = []
     callback_loops: list[asyncio.AbstractEventLoop | None] = []
@@ -569,7 +579,6 @@ async def test_debounced_watcher_coalesces_changes_and_refreshes_latest_state() 
         callback_thread_ids.append(threading.get_ident())
         changed.set()
 
-    watcher.start()
     try:
         payloads.append({"message_id": "m-b", "type": "text", "source": "b"})
         core_bus_rev.dispatch_bus_change(
