@@ -237,6 +237,21 @@ jobs:
             --output-root data/embedding_models \
             --variant both
 
+      - name: Cache voice-turn model weights
+        uses: actions/cache@v4
+        with:
+          path: data/vad_models/*.onnx
+          key: voice-turn-models-${{ runner.os }}-silero-v6.2.1-smart-turn-v3.2-f766f81
+
+      - name: Prepare verified voice-turn assets
+        shell: bash
+        run: |
+          VENV_PYTHON=".venv/bin/python"
+          if [ -f ".venv/Scripts/python.exe" ]; then
+            VENV_PYTHON=".venv/Scripts/python.exe"
+          fi
+          $VENV_PYTHON tools/voice_eval/prepare_voice_turn_assets.py
+
       # --- Warm tiktoken o200k_base cache for offline use (PR #929) ---
       # tiktoken downloads encoding blobs (~1.5 MB each) on first use into
       # TIKTOKEN_CACHE_DIR; without warming, the bundled app would either
@@ -331,6 +346,7 @@ jobs:
           if [ -d "data/embedding_models" ]; then
             NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=data/embedding_models=data/embedding_models"
           fi
+          NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=data/vad_models=data/vad_models"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=static=static"
           # 应用内 OpenClaw 引导文档 + 图片，由 agent_router 经 /api/agent/openclaw/guide/* 提供；
           # 是纯数据目录，--include-package 不带，漏了引导页内容/图片打包后 404。
@@ -472,6 +488,7 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=playwright_browsers=playwright_browsers
           if exist "data\tiktoken_cache" set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=data/tiktoken_cache=data/tiktoken_cache
           if exist "data\embedding_models" set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=data/embedding_models=data/embedding_models
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=data/vad_models=data/vad_models
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=static=static
           rem 应用内 OpenClaw 引导文档 + 图片，由 agent_router 经 /api/agent/openclaw/guide/* 提供；
           rem 纯数据目录，漏了引导页内容/图片打包后 404。
@@ -615,6 +632,12 @@ jobs:
             echo "::error::data/tiktoken_cache empty in bundle (o200k_base would re-download at runtime)"
             missing=1
           fi
+          VENV_PYTHON=".venv/bin/python"
+          if [ -f ".venv/Scripts/python.exe" ]; then
+            VENV_PYTHON=".venv/Scripts/python.exe"
+          fi
+          $VENV_PYTHON tools/voice_eval/prepare_voice_turn_assets.py \
+            --asset-dir dist/Xiao8/data/vad_models --offline || missing=1
           [ "$missing" -eq 0 ]
 
       # --- Generic dist invariant check ---
