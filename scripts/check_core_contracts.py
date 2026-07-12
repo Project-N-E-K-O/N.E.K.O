@@ -194,8 +194,12 @@ def collect_patch_targets(tests_dir: Path):
                     s = first.value
                     if s.startswith("main_logic.core.") and s.count(".") == 2:
                         add(s.rsplit(".", 1)[1], path, node, exempt)
-            # object form: setattr(core_module, "X"), patch.object(core_module, "X")
-            is_obj_patch = fname in (PATCH_CALL_NAMES | {"object"}) or (fname == "object" and is_patch_ref(fbase))
+            # object form: setattr(core_module, "X"), patch.object(core_module, "X").
+            # ``.object`` counts only on a real patch receiver — do NOT fold
+            # "object" into the union or ``x.object(core_ref, "y")`` on any
+            # receiver would be mis-harvested (the is_patch_ref check would be
+            # dead code and could invent false patch targets).
+            is_obj_patch = fname in PATCH_CALL_NAMES or (fname == "object" and is_patch_ref(fbase))
             if is_obj_patch and first is not None and second is not None:
                 if is_core_ref(first) and isinstance(second, ast.Constant) and isinstance(second.value, str):
                     add(second.value, path, node, exempt)
