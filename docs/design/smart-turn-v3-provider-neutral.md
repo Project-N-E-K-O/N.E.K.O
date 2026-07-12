@@ -35,7 +35,7 @@ statistics.
 licenses, and SHA-256 digests. Run:
 
 ```text
-python tools/voice_eval/prepare_voice_turn_assets.py
+uv run python tools/voice_eval/prepare_voice_turn_assets.py
 ```
 
 The runtime is lazy and disabled by default. Concurrent loads are
