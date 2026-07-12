@@ -72,6 +72,7 @@ def test_monitor_live_script_redacts_recent_danmaku_topic_material(tmp_path: Pat
     latest["event"]["topic_source"] = "recent_danmaku"
     latest["event"]["topic_title"] = "private-viewer-topic"
     latest["event"]["topic_key"] = "danmaku:private-viewer-topic"
+    latest["event"]["topic_hook"] = "Make 'private-viewer-topic' into a prompt."
 
     completed = _run_monitor(tmp_path, context)
 
@@ -79,6 +80,7 @@ def test_monitor_live_script_redacts_recent_danmaku_topic_material(tmp_path: Pat
     assert "latest_topic_source=recent_danmaku" in completed.stdout
     assert "latest_topic_title=[redacted]" in completed.stdout
     assert "latest_topic_key=[redacted]" in completed.stdout
+    assert "latest_topic_hook=[redacted]" in completed.stdout
     assert "private-viewer-topic" not in completed.stdout
 
 

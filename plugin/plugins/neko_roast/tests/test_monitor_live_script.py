@@ -14,11 +14,15 @@ from plugin.plugins.neko_roast.tests.monitor_contexts import (
 )
 from plugin.plugins.neko_roast.tests.monitor_live_test_utils import _run_monitor, _run_monitor_args
 from plugin.plugins.neko_roast.tools.live_random_danmaku_pressure import (
+    HostedClient as RandomPressureHostedClient,
     build_test_config as build_random_pressure_config,
     parse_args as parse_random_pressure_args,
     prepare_log_path as prepare_random_pressure_log,
+    require_action_success,
+    submit_one,
 )
 from plugin.plugins.neko_roast.tools.live_silence_pressure import (
+    compact_result as compact_silence_result,
     prepare_log_path as prepare_silence_pressure_log,
 )
 from plugin.plugins.neko_roast.tools.live_silence_pressure import summarize_context as summarize_silence_context
@@ -68,6 +72,59 @@ def test_random_pressure_defaults_to_dry_run() -> None:
     assert build_random_pressure_config(default_args)["dry_run"] is True
     assert real_output_args.real_output is True
     assert build_random_pressure_config(real_output_args)["dry_run"] is False
+
+
+def test_random_pressure_rejects_failed_setup_action_envelope() -> None:
+    with pytest.raises(RuntimeError, match="update_config failed: denied"):
+        require_action_success(
+            "update_config",
+            {"result": {"success": False, "error": "denied"}},
+        )
+
+
+def test_random_pressure_does_not_resubmit_after_run_is_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
+    create_calls = 0
+
+    def create_entry_run(self, entry_id, args, *, timeout=45.0):
+        nonlocal create_calls
+        create_calls += 1
+        return {"run_id": "run-accepted"}, "run-accepted"
+
+    def collect_entry_run(self, created, run_id, *, timeout=45.0):
+        raise RuntimeError("poll failed")
+
+    monkeypatch.setattr(RandomPressureHostedClient, "create_entry_run", create_entry_run)
+    monkeypatch.setattr(RandomPressureHostedClient, "collect_entry_run", collect_entry_run)
+
+    result = submit_one("http://127.0.0.1:48916", 1, {"uid": "u1", "danmaku_text": "hello"})
+
+    assert create_calls == 1
+    assert result["type"] == "event_error"
+    assert result["accepted"] is True
+    assert result["run_id"] == "run-accepted"
+
+
+def test_silence_pressure_compacts_nested_action_data() -> None:
+    compact = compact_silence_result(
+        "trigger_idle_hosting",
+        {
+            "result": {
+                "success": True,
+                "data": {
+                    "accepted": True,
+                    "status": "pushed",
+                    "output": "short line",
+                    "event": {"source": "idle_hosting", "trace_id": "tr_1"},
+                },
+            }
+        },
+    )
+
+    assert compact["accepted"] is True
+    assert compact["status"] == "pushed"
+    assert compact["output"] == "short line"
+    assert compact["route"] == "idle_hosting"
+    assert compact["trace_id"] == "tr_1"
 
 
 def test_monitor_live_script_prints_live_test_help() -> None:
@@ -185,7 +242,8 @@ def test_monitor_live_script_reports_latest_route_and_signal(tmp_path: Path) -> 
     assert "latest_danmaku_reply_shape=mirror_mood_in_a_few_chars" in completed.stdout
     assert "latest_reply_length_mode=room_bridge" in completed.stdout
     assert "latest_reply_target=current_reaction" in completed.stdout
-    assert "latest_anchor_hint=鍝堝搱" in completed.stdout
+    assert "latest_anchor_hint=[redacted]" in completed.stdout
+    assert "鍝堝搱" not in completed.stdout
     assert "latest_room_theme=small_talk" in completed.stdout
     assert "latest_source=live_danmaku" in completed.stdout
     assert "latest_text=[redacted]" in completed.stdout

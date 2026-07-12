@@ -119,10 +119,25 @@ class HostedClient:
         }
         return request_json("POST", f"{self.base_url}/plugin/{PLUGIN_ID}/hosted-ui/action/{action_id}", payload)
 
-    def run_entry(self, entry_id: str, args: dict[str, Any], *, timeout: float = 45.0) -> dict[str, Any]:
+    def create_entry_run(
+        self,
+        entry_id: str,
+        args: dict[str, Any],
+        *,
+        timeout: float = 45.0,
+    ) -> tuple[dict[str, Any], str]:
         payload = {"plugin_id": PLUGIN_ID, "entry_id": entry_id, "args": args}
         created = request_json("POST", f"{self.base_url}/runs", payload, timeout=timeout)
         run_id = str(created.get("run_id") or "")
+        return created, run_id
+
+    def collect_entry_run(
+        self,
+        created: dict[str, Any],
+        run_id: str,
+        *,
+        timeout: float = 45.0,
+    ) -> dict[str, Any]:
         if not run_id:
             return {"created": created, "record": {}, "data": {}}
         deadline = time.monotonic() + timeout
@@ -134,6 +149,10 @@ class HostedClient:
             time.sleep(0.05)
         data = export_data(self.base_url, run_id)
         return {"created": created, "record": record, "data": data}
+
+    def run_entry(self, entry_id: str, args: dict[str, Any], *, timeout: float = 45.0) -> dict[str, Any]:
+        created, run_id = self.create_entry_run(entry_id, args, timeout=timeout)
+        return self.collect_entry_run(created, run_id, timeout=timeout)
 
 
 def export_data(base_url: str, run_id: str) -> dict[str, Any]:
@@ -259,19 +278,48 @@ def compact_run_result(index: int, args: dict[str, Any], response: dict[str, Any
     }
 
 
+def require_action_success(action_id: str, response: dict[str, Any]) -> dict[str, Any]:
+    result = response.get("result")
+    if not isinstance(result, dict):
+        raise RuntimeError(f"{action_id} returned no plugin-entry result")
+    if result.get("success") is False:
+        reason = result.get("error") or result.get("message") or "plugin entry reported failure"
+        raise RuntimeError(f"{action_id} failed: {reason}")
+    return response
+
+
 def submit_one(base_url: str, index: int, args: dict[str, Any]) -> dict[str, Any]:
     client = HostedClient(base_url)
     last_error = ""
+    created: dict[str, Any] = {}
+    run_id = ""
+    attempt = 0
     for attempt in range(1, 4):
         try:
-            response = client.run_entry("submit_live_event", args)
-            result = compact_run_result(index, args, response)
-            if attempt > 1:
-                result["attempts"] = attempt
-            return result
+            created, run_id = client.create_entry_run("submit_live_event", args)
+            break
         except Exception as exc:  # noqa: BLE001
             last_error = f"{type(exc).__name__}: {exc}"
             time.sleep(0.1 * attempt)
+    else:
+        return {
+            "type": "event_error",
+            "time": now_iso(),
+            "index": index,
+            "uid": args.get("uid"),
+            "nickname": args.get("nickname"),
+            "text": args.get("danmaku_text"),
+            "error": last_error,
+        }
+
+    try:
+        response = client.collect_entry_run(created, run_id)
+        result = compact_run_result(index, args, response)
+        if attempt > 1:
+            result["attempts"] = attempt
+        return result
+    except Exception as exc:  # noqa: BLE001
+        last_error = f"{type(exc).__name__}: {exc}"
     return {
         "type": "event_error",
         "time": now_iso(),
@@ -279,6 +327,9 @@ def submit_one(base_url: str, index: int, args: dict[str, Any]) -> dict[str, Any
         "uid": args.get("uid"),
         "nickname": args.get("nickname"),
         "text": args.get("danmaku_text"),
+        "run_id": run_id,
+        "accepted": bool(run_id),
+        "attempts": attempt,
         "error": last_error,
     }
 
@@ -306,10 +357,13 @@ def run(args: argparse.Namespace) -> int:
 
     connected_by_script = False
     try:
-        client.action("update_config", test_config)
+        require_action_success("update_config", client.action("update_config", test_config))
         room = args.room or str(initial_config.get("live_room_ref") or initial_config.get("live_room_id") or "")
         if args.connect:
-            connect_response = client.action("connect_live_room", {"room_id": room})
+            connect_response = require_action_success(
+                "connect_live_room",
+                client.action("connect_live_room", {"room_id": room}),
+            )
             connected_by_script = not initially_connected
             write_jsonl(log_path, {"type": "connect_live_room", "time": now_iso(), "room": room, "response": connect_response})
             deadline = time.monotonic() + args.connect_timeout
@@ -321,8 +375,10 @@ def run(args: argparse.Namespace) -> int:
                     write_jsonl(log_path, {"type": "connect_ready", "time": now_iso(), "summary": summarize_context(context)})
                     break
                 time.sleep(0.5)
-        client.action("resume_roast")
-        client.action("clear_queue")
+            else:
+                raise RuntimeError("connect_live_room did not reach connected state before timeout")
+        require_action_success("resume_roast", client.action("resume_roast"))
+        require_action_success("clear_queue", client.action("clear_queue"))
 
         rng = random.Random(args.seed)
         events = [make_event(index, rng, user_count=args.users) for index in range(1, args.events + 1)]

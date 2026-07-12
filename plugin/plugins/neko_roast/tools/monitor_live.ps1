@@ -1955,11 +1955,17 @@ function Write-Snapshot {
     if ($alerts.Count -gt 0) {
         $alertText = $alerts -join ","
     }
+    $latestAnchorHintOutput = $latestAnchorHint
+    if ($latestAnchorHintOutput -ne "-") {
+        $latestAnchorHintOutput = "[redacted]"
+    }
     $latestTopicTitleOutput = $latestTopicTitle
     $latestTopicKeyOutput = $latestTopicKey
+    $latestTopicHookOutput = $latestTopicHook
     if ("$latestTopicSource" -eq "recent_danmaku") {
         $latestTopicTitleOutput = "[redacted]"
         $latestTopicKeyOutput = "[redacted]"
+        $latestTopicHookOutput = "[redacted]"
     }
 
     $parts = @(
@@ -2008,7 +2014,7 @@ function Write-Snapshot {
         "latest_danmaku_reply_shape=$latestDanmakuReplyShape",
         "latest_reply_length_mode=$latestReplyLengthMode",
         "latest_reply_target=$latestReplyTarget",
-        "latest_anchor_hint=$latestAnchorHint",
+        "latest_anchor_hint=$latestAnchorHintOutput",
         "latest_room_theme=$latestRoomTheme",
         "latest_reply_shape_reason=$latestReplyShapeReason",
         "latest_uid=$latestUid",
@@ -2140,7 +2146,7 @@ function Write-Snapshot {
         "latest_topic_shape=$latestTopicShape",
         "latest_topic_title=$latestTopicTitleOutput",
         "latest_topic_key=$latestTopicKeyOutput",
-        "latest_topic_hook=$latestTopicHook",
+        "latest_topic_hook=$latestTopicHookOutput",
         "latest_topic_pattern=$latestTopicPattern",
         "latest_topic_intent=$latestTopicIntent",
         "latest_topic_fun_axis=$latestTopicFunAxis",

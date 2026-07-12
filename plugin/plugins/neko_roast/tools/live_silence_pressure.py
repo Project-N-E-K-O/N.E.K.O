@@ -103,7 +103,10 @@ def state_from_context(context: dict[str, Any]) -> dict[str, Any]:
 
 def result_payload(action_response: dict[str, Any]) -> dict[str, Any]:
     result = action_response.get("result")
-    return result if isinstance(result, dict) else {}
+    if not isinstance(result, dict):
+        return {}
+    data = result.get("data")
+    return data if isinstance(data, dict) else result
 
 
 def compact_result(action_id: str, action_response: dict[str, Any]) -> dict[str, Any]:
