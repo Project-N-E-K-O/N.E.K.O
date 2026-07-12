@@ -21,6 +21,7 @@ from ..core.contracts import WtConfig
 HealthCheck = Callable[[str, float], bool]
 PopenFactory = Callable[..., Any]
 SleepFn = Callable[[float], None]
+DATA_LAYER_BIND_HOST = "127.0.0.1"
 
 
 def check_data_layer_health(base_url: str, timeout: float) -> bool:
@@ -160,7 +161,7 @@ def _spawn_embedded_data_layer(data_process_dir: Path, *, port: int) -> Embedded
     )
     service.start()
     try:
-        httpd = wt_server.ThreadingHTTPServer(("0.0.0.0", port), wt_server._Handler)
+        httpd = wt_server.ThreadingHTTPServer((DATA_LAYER_BIND_HOST, port), wt_server._Handler)
         httpd.service = service
     except Exception:
         service.stop()
@@ -306,7 +307,14 @@ class DataLayerProcessManager:
             )
 
         self._python_cmd = python_prefixes[0]
-        cmd = [*self._python_cmd, "wt_server.py", "--port", _port_from_url(self.config.data_layer_url)]
+        cmd = [
+            *self._python_cmd,
+            "wt_server.py",
+            "--host",
+            DATA_LAYER_BIND_HOST,
+            "--port",
+            _port_from_url(self.config.data_layer_url),
+        ]
         kwargs: dict[str, Any] = {
             "cwd": str(data_process_dir),
             "stdout": self._stdout_handle,

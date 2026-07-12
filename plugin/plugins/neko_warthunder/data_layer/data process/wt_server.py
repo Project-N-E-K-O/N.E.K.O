@@ -82,6 +82,7 @@ from wt_telemetry import (
 )
 
 _CONTENT_TYPE_BY_EXT = {"jpg": "image/jpeg", "png": "image/png"}
+DEFAULT_BIND_HOST = "127.0.0.1"
 
 _HUD_BUFFER = 200   # HUD 事件累积上限
 _CHAT_BUFFER = 200  # 聊天累积上限
@@ -769,7 +770,7 @@ def main() -> None:
         pass
 
     parser = argparse.ArgumentParser(description="战雷遥测后台服务（分频轮询）")
-    parser.add_argument("--host", default="0.0.0.0", help="对外服务监听地址")
+    parser.add_argument("--host", default=DEFAULT_BIND_HOST, help="服务监听地址（默认仅本机）")
     parser.add_argument("--port", type=int, default=8112, help="对外服务端口（默认 8112）")
     parser.add_argument("--wt-host", default="127.0.0.1", help="游戏 8111 地址")
     parser.add_argument("--wt-port", type=int, default=WT_PORT, help="游戏遥测端口（默认 8111）")
