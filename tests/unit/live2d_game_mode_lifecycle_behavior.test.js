@@ -83,15 +83,19 @@ function createHarness(options = {}) {
   };
   win.showCurrentModel = async () => {
     if (options.failModelRestore) throw new Error('model restore failed');
+    if (options.blockModelRestore) return false;
+    return true;
   };
-  win.nekoGameModeHost = {
-    getContract: async () => ({
-      petInstanceId: 'pet-test-1',
-      windowType: 'pet',
-      signalCapabilities: { exact_game: 'supported' },
-    }),
-    onSystemResume: () => () => {},
-  };
+  if (!options.hostless) {
+    win.nekoGameModeHost = {
+      getContract: async () => ({
+        petInstanceId: 'pet-test-1',
+        windowType: 'pet',
+        signalCapabilities: { exact_game: 'supported' },
+      }),
+      onSystemResume: () => () => {},
+    };
+  }
   win.t = (_key, payload) => payload && payload.defaultValue ? payload.defaultValue : _key;
   win.showStatusToast = () => {};
   win.addEventListener('live2d-goodbye-click', (event) => {
@@ -107,7 +111,9 @@ function createHarness(options = {}) {
   async function fetch(url, init = {}) {
     calls.push({ url, init });
     let body;
-    if (url === '/api/game-mode-beta/state') body = { success: true, state: { enabled: true } };
+    if (url === '/api/game-mode-beta/state') {
+      body = { success: true, state: options.backendState || { enabled: true } };
+    }
     else if (url === '/api/game-mode-beta/windows/register') body = { cycle_active: false, join_as_cat: false };
     else if (url === '/api/game-mode-beta/settings') body = { auto_cat_on_game: false, game_trigger_mode: 'smart' };
     else body = { success: true, state: { enabled: true } };
@@ -240,6 +246,68 @@ test('failed model restore keeps the pet protected for another click', async () 
   assert.equal(harness.win.live2dManager._goodbyeClicked, true);
   assert.equal(harness.win.nekoGameModeBeta.getState().autoSwitched, true);
   assert.equal(harness.calls.some((call) => call.url === '/api/game-mode-beta/manual-restore'), false);
+});
+
+test('failed switch restores a pet that the frontend already moved into cat form', async () => {
+  const harness = createHarness();
+  await flush();
+  harness.win.nekoGameModeBeta.handleAutoSwitchEvent({
+    type: 'game_mode_auto_switch',
+    source: 'game_mode_auto',
+    cycle_id: 'cycle-ack-failed',
+    trigger_source: 'resource_pressure',
+    reason: 'cpu',
+  });
+  await flush();
+
+  harness.win.nekoGameModeBeta.handleLifecycleMessage({
+    type: 'game_mode_switch_failed',
+    source: 'game_mode_auto',
+    cycle_id: 'cycle-ack-failed',
+  });
+  await flush();
+
+  assert.equal(harness.win.live2dManager._goodbyeClicked, false);
+  assert.equal(harness.win.nekoGameModeBeta.getState().autoSwitched, false);
+  assert.equal(harness.calls.some((call) => call.url === '/api/game-mode-beta/manual-restore'), false);
+});
+
+test('blocked model reload preserves protection and skips manual restore', async () => {
+  const harness = createHarness({ invalidateLoad: true, blockModelRestore: true });
+  await flush();
+  harness.win.nekoGameModeBeta.handleAutoSwitchEvent({
+    type: 'game_mode_auto_switch',
+    source: 'game_mode_auto',
+    cycle_id: 'cycle-blocked-restore',
+    trigger_source: 'game_semantic',
+    reason: 'exact_game',
+  });
+  await flush();
+
+  harness.win.dispatchEvent(new CustomEventLike('live2d-return-click', { detail: { source: 'user' } }));
+  await flush();
+
+  assert.equal(harness.win.live2dManager._goodbyeClicked, true);
+  assert.equal(harness.win.nekoGameModeBeta.getState().autoSwitched, true);
+  assert.equal(harness.calls.some((call) => call.url === '/api/game-mode-beta/manual-restore'), false);
+});
+
+test('hostless refresh rejoins an active protected cycle', async () => {
+  const harness = createHarness({
+    hostless: true,
+    backendState: {
+      enabled: true,
+      cycle_id: 'cycle-hostless-refresh',
+      cycle_phase: 'protected',
+      trigger_reason: { metric: 'cpu' },
+    },
+  });
+  await flush();
+
+  assert.equal(harness.goodbyeEvents.length, 1);
+  assert.equal(harness.goodbyeEvents[0].reason, 'join-active-cycle');
+  assert.equal(harness.win.nekoGameModeBeta.getState().currentCycleId, 'cycle-hostless-refresh');
+  assert.equal(harness.win.nekoGameModeBeta.getState().autoSwitched, true);
 });
 
 test('disabling game mode clears cancelled model load protection', async () => {

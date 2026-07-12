@@ -269,6 +269,9 @@
             const data = await response.json();
             if (data && data.success && data.state) {
                 applyBackendState(data.state);
+                if (!window.nekoGameModeHost) {
+                    joinActiveCycle(data.state, null);
+                }
                 return data.state;
             }
         } catch (error) {
@@ -472,7 +475,8 @@
         if (!loadsSettled) return false;
         try {
             if (typeof window.showCurrentModel === 'function') {
-                await window.showCurrentModel();
+                const restored = await window.showCurrentModel();
+                if (restored === false) return false;
             }
             clientState.modelLoadInvalidated = false;
             return true;
@@ -608,6 +612,18 @@
             }
         } else if (payload.type === 'game_mode_switch_failed') {
             if (payload.cycle_id !== clientState.currentCycleId) return;
+            if (clientState.autoSwitched && isCatFormActive()) {
+                clearModelReloadProtection();
+                clientState.restoringFromDisable = true;
+                try {
+                    window.dispatchEvent(new CustomEvent('live2d-return-click', {
+                        detail: { source: 'game_mode_auto', reason: 'game-mode-switch-failed' },
+                    }));
+                } finally {
+                    clientState.restoringFromDisable = false;
+                    leaveDeepSleep();
+                }
+            }
             clientState.autoSwitched = false;
             clientState.currentCycleId = null;
             showNotice(t(
@@ -649,6 +665,36 @@
         } catch (_) {}
     }
 
+    function joinActiveCycle(registration, petInstanceId) {
+        const phase = registration && registration.cycle_phase;
+        const active = registration && (
+            registration.cycle_active === true
+            || phase === 'switching'
+            || phase === 'protected'
+            || phase === 'deep_sleep'
+        );
+        if (!active || !registration.cycle_id || registration.join_as_cat === false) return;
+        handleAutoSwitchEvent({
+            type: 'game_mode_auto_switch',
+            source: 'game_mode_auto',
+            cycle_id: registration.cycle_id,
+            trigger_source: 'join-active-cycle',
+            reason: 'active_cycle',
+            duration_seconds: 0,
+        });
+        if (phase === 'deep_sleep') {
+            void waitForCondition(isCatFormActive, 4500).then(function (ready) {
+                if (!ready) return;
+                return enterDeepSleep({
+                    type: 'game_mode_deep_sleep',
+                    source: 'game_mode_auto',
+                    cycle_id: registration.cycle_id,
+                    pet_instance_ids: petInstanceId ? [petInstanceId] : [],
+                });
+            });
+        }
+    }
+
     async function registerHostWindow() {
         if (!window.nekoGameModeHost || typeof window.nekoGameModeHost.getContract !== 'function') return null;
         try {
@@ -660,27 +706,7 @@
                 window_type: contract.windowType,
                 signal_capabilities: contract.signalCapabilities || {},
             });
-            if (registration && registration.join_as_cat && registration.cycle_id) {
-                handleAutoSwitchEvent({
-                    type: 'game_mode_auto_switch',
-                    source: 'game_mode_auto',
-                    cycle_id: registration.cycle_id,
-                    trigger_source: 'join-active-cycle',
-                    reason: 'active_cycle',
-                    duration_seconds: 0,
-                });
-                if (registration.cycle_phase === 'deep_sleep') {
-                    void waitForCondition(isCatFormActive, 4500).then(function (ready) {
-                        if (!ready) return;
-                        return enterDeepSleep({
-                            type: 'game_mode_deep_sleep',
-                            source: 'game_mode_auto',
-                            cycle_id: registration.cycle_id,
-                            pet_instance_ids: [contract.petInstanceId],
-                        });
-                    });
-                }
-            }
+            joinActiveCycle(registration, contract.petInstanceId);
             return contract;
         } catch (error) {
             console.warn('[GameModeBeta] host registration failed:', error);
