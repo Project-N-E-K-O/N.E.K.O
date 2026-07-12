@@ -41,6 +41,7 @@ import asyncio
 import pytest
 
 import main_logic.core as core_module
+from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.proactive_delivery import DELIVERY_RETRACTED_KEY
 
@@ -766,6 +767,46 @@ async def test_final_swap_cancel_after_old_close_fail_closes_instead_of_restarti
     assert mgr.is_active is False
     assert mgr.message_handler_task is None, \
         "no listener may be restarted on a closed session"
+
+
+@pytest.mark.asyncio
+async def test_final_swap_cancel_after_old_close_fail_closes_text_session_too():
+    """Same scenario for a TEXT session: OmniOfflineClient clears ``llm`` on
+    close() (it has no ws), so the dead-session fail-close must recognize it
+    instead of restarting its keep-alive listener on a closed client
+    (coderabbit follow-up on this PR)."""
+    mgr = _make_swap_manager()
+    new_session = _FakeSession("pending")
+
+    old_session = object.__new__(OmniOfflineClient)
+    old_session.llm = object()  # 活跃文本会话的标志；close 后被清空
+
+    async def _close_then_swallowed_cancel():
+        old_session.llm = None  # mirror OmniOfflineClient.close()
+        t = asyncio.current_task()
+        t.cancel()
+        try:
+            await asyncio.sleep(0)
+        except asyncio.CancelledError:
+            # Swallow on purpose: reproduces the checkpoint-only cancel path.
+            pass
+
+    old_session.close = _close_then_swallowed_cancel
+    mgr.session = old_session
+    mgr.pending_session = new_session
+    mgr.is_hot_swap_imminent = True
+    mgr.is_active = True
+    mgr.message_handler_task = None
+
+    swap_task = await _run_swap_as_final_swap_task(mgr)
+
+    assert not swap_task.cancelled()
+    assert new_session.closed
+    assert mgr.session is None, \
+        "a closed text session must be fail-closed, not kept as self.session"
+    assert mgr.is_active is False
+    assert mgr.message_handler_task is None, \
+        "no keep-alive listener may be restarted on a closed text session"
 
 
 @pytest.mark.asyncio

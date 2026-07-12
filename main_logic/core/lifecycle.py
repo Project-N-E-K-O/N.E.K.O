@@ -1582,6 +1582,21 @@ class LifecycleMixin:
         except Exception as e:
             logger.error(f"💥 Extra Reply: preparation trigger error: {e}")
 
+    @staticmethod
+    def _swap_session_is_dead(session) -> bool:
+        """[Hot-swap related] Closed/unusable session detection for the swap
+        abort handlers: a dead session must be fail-closed instead of getting
+        a listener restarted on it. Realtime clients clear ``ws`` on close();
+        offline (text) clients clear ``llm`` on close().
+        """
+        if not session:
+            return False
+        if isinstance(session, OmniRealtimeClient):
+            return not session.ws
+        if isinstance(session, OmniOfflineClient):
+            return session.llm is None
+        return False
+
     def _restore_undelivered_swap_extras(self, injected_extras: list, cb_backed_ids: set = None) -> None:
         """[Hot-swap related] Return removed-but-undelivered extras to the queue head.
 
@@ -1949,12 +1964,12 @@ class LifecycleMixin:
                     logger.debug(f"Final Swap Sequence: CancelledError 路径关闭 new_session 失败（可忽略）: {_e}")
             await self._cleanup_pending_session_resources()
             await self._reset_preparation_state(clear_main_cache=True)
-            # 镜像 except Exception 的 ws 失效 fail-close：取消若落在旧会话已
-            # close() 之后（self.session 仍指向 ws 已被 close() 清空的旧会话）
-            # 或 promote 后 ws 失效，下面的重启只会给死会话建 listener——直接
-            # fail-close 让前端重连。（pending 生命周期错误触发 reset 的场景里
-            # 旧会话仍活着（ws 非空），重启行为保留。）
-            if self.session and isinstance(self.session, OmniRealtimeClient) and not self.session.ws:
+            # 镜像 except Exception 的死会话 fail-close：取消若落在旧会话已
+            # close() 之后（realtime 的 ws / 文本 offline 的 llm 已被 close()
+            # 清空）或 promote 后连接失效，下面的重启只会给死会话建 listener
+            # ——直接 fail-close 让前端重连。（pending 生命周期错误触发 reset
+            # 的场景里旧会话仍活着，重启行为保留。）
+            if self._swap_session_is_dead(self.session):
                 self.session = None
                 self.is_active = False
             # promote 前取消→队列没动过、_removed_extras 为空，此调用 no-op。
@@ -2012,13 +2027,14 @@ class LifecycleMixin:
                 self.message_handler_task = None
                 self.is_active = False
                 return
-            # 若 self.session 的 ws 已失效（promote 后 ws invalid），清除会话状态，
-            # 防止 is_active=True + ws=None 让后续输入进入坏会话。
-            # 这是唯一"移除已发生（promote 时）且被注入的会话已死"的出口：把
+            # 若 self.session 已死（promote 后 realtime ws 失效 / 文本 offline
+            # llm 被清、或取消落在旧会话 close 之后），清除会话状态，防止
+            # is_active=True + 死连接让后续输入进入坏会话。
+            # 这也是"移除已发生（promote 时）且被注入的会话已死"的出口：把
             # promote 时真正移除的 _removed_extras 塞回队首等下一次 hot-swap。
             # promote 后会话存活的其他失败不塞回——注入内容仍在其上下文里会随
             # 下一轮回复送达，塞回会造成双投。
-            if self.session and isinstance(self.session, OmniRealtimeClient) and not self.session.ws:
+            if self._swap_session_is_dead(self.session):
                 self.session = None
                 self.is_active = False
                 self._restore_undelivered_swap_extras(_removed_extras, _removed_cb_backed_ids)
