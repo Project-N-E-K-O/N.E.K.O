@@ -2131,6 +2131,14 @@ def test_local_return_button_drag_recovers_lost_release_without_active_timeout()
         "const point = getDragPoint(e, e.clientX, e.clientY);",
         "handleMove(point.x, point.y, e, point);",
     )
+    _assert_source_contains(
+        mouse_move_block,
+        "if (dragPointerType === 'mouse' && e.buttons === 0) {\n"
+        "                        handleEnd();\n"
+        "                        return;\n"
+        "                    }",
+        "local return-ball lost mouseup recovery ends drag without moving",
+    )
     _assert_source_order(
         drag_setup,
         "local return-ball cancel recovery",
@@ -3418,6 +3426,14 @@ def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():
         "handleEnd();",
         "const point = getDragPoint(e, e.clientX, e.clientY);",
         "handleMove(point.x, point.y, e, point);",
+    )
+    _assert_source_contains(
+        mouse_move_block,
+        "if (dragPointerType === 'mouse' && e.buttons === 0) {\n"
+        "                        handleEnd();\n"
+        "                        return;\n"
+        "                    }",
+        "local return-ball mousemove ends released drag without moving",
     )
     finish_drag_state_block = _source_slice_between(
         drag_setup,
