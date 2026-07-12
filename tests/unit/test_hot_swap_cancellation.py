@@ -796,6 +796,8 @@ async def test_final_swap_post_promote_cancel_restores_removed_extras():
 
     swap_task = await _run_swap_as_final_swap_task(mgr)
 
+    assert not swap_task.cancelled(), \
+        "the handler absorbs the cancel and finishes its cleanup normally"
     assert mgr.session is new_session, \
         "the handler leaves the promoted session for the canceller to close"
     assert mgr.pending_extra_replies == [extra], \
@@ -846,6 +848,8 @@ async def test_final_swap_restore_excludes_extra_delivered_after_promote():
 
     swap_task = await _run_swap_as_final_swap_task(mgr)
 
+    assert not swap_task.cancelled(), \
+        "the handler absorbs the cancel and finishes its cleanup normally"
     assert mgr.session is new_session
     assert mgr.pending_extra_replies == [extra_kept], \
         "an extra whose callback was consumed inside the window must not be re-queued"
