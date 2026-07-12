@@ -21,6 +21,7 @@ def test_legacy_http_module_is_implementation_module(legacy_name, implementation
     assert legacy is implementation
 
 
+@pytest.mark.unit
 def test_legacy_internal_client_private_seam_is_shared(monkeypatch):
     legacy = importlib.import_module("utils.internal_http_client")
     implementation = importlib.import_module("utils.http.internal_client")
@@ -31,6 +32,7 @@ def test_legacy_internal_client_private_seam_is_shared(monkeypatch):
     assert implementation._fallback_client is sentinel
 
 
+@pytest.mark.unit
 def test_legacy_external_client_singleton_seam_is_shared(monkeypatch):
     legacy = importlib.import_module("utils.external_http_client")
     implementation = importlib.import_module("utils.http.external_client")
