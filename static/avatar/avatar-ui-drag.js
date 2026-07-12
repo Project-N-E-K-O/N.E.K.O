@@ -91,6 +91,14 @@
 })();
 
 // ===== 弹出框管理 =====
+//
+// 【加载顺序契约】本段在 Live2DManager.prototype 上定义的
+// showPopup / closePopupById / closeAllPopupsExcept / closeAllPopups / closeAllSettingsWindows
+// 会覆盖 AvatarPopupMixin（avatar-ui-popup.js，经 avatar-ui-popup-config.js 应用）装上的同名方法，
+// 所有加载 avatar-ui-drag.js 的页面都把它排在 avatar-ui-popup-config.js 之后，故本文件版本生效。
+// 保留旧版的原因：live2d 特有的引导守卫（isInTutorial 阻止关闭 settings 弹窗）与
+// settings 复选框状态同步逻辑仍内嵌在这里，尚未迁移到 mixin 的 _onPopupShow 钩子
+//（VRM 已走该架构，见 avatar-ui-popup-config.js）。迁移完成前请勿删除或调整加载顺序。
 
 // 关闭指定按钮对应的弹出框，并恢复按钮状态
 Live2DManager.prototype.closePopupById = function (buttonId) {

@@ -2238,6 +2238,7 @@
             const previousEyeBlinkSuspended = !!manager._suspendEyeBlinkOverride;
             let frameId = 0;
             let settled = false;
+            let settleLoop = null;
             let usesTemporaryPoseOverride = false;
             const startedAt = now();
             const finish = (result, reason) => {
@@ -2268,6 +2269,11 @@
                             paramCount: paramKeys.length
                         });
                     } catch (_) {}
+                }
+                // finish 可能由 override 回调（模型 update 注入点）触发，此时上面已
+                // cancel 掉待执行的 tick，必须在这里直接唤醒等待循环，否则 promise 悬挂
+                if (settleLoop) {
+                    settleLoop();
                 }
             };
             const applyFrame = () => {
@@ -2332,19 +2338,33 @@
                     return true;
                 }
                 await new Promise((resolve) => {
+                    settleLoop = resolve;
                     const tick = () => {
                         if (settled) {
                             resolve();
                             return;
                         }
                         try {
-                            applyFrame();
+                            if (usesTemporaryPoseOverride) {
+                                // override 回调已在模型 update 注入点逐帧 applyFrame，
+                                // rAF 只做完成/取消督导；重复 applyFrame 会让 handoff 期
+                                // 同一帧双重混合（实际权重变成 1-(1-w)^2）偏离设计曲线。
+                                if (context.model !== this.getModel() || context.model.destroyed) {
+                                    finish('cancelled', 'model_changed');
+                                } else if (Math.max(0, now() - startedAt) >= durationMs) {
+                                    finish('played', '');
+                                }
+                            } else {
+                                applyFrame();
+                            }
                         } catch (error) {
                             this.warn('driver pose timeline frame failed', error);
                             resolve();
                             return;
                         }
-                        frameId = window.requestAnimationFrame(tick);
+                        if (!settled) {
+                            frameId = window.requestAnimationFrame(tick);
+                        }
                     };
                     frameId = window.requestAnimationFrame(tick);
                 });

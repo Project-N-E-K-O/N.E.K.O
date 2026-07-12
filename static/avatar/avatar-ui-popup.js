@@ -1881,6 +1881,9 @@ function createIntervalControl(manager, prefix, toggle) {
     slider.step = '5';
     let currentValue = typeof window[toggle.intervalKey] !== 'undefined' ? window[toggle.intervalKey] : toggle.defaultInterval;
     if (currentValue > 120) currentValue = 120;
+    // 持久化值可能低于当前 toggle 的最小值（如旧版本保存的更低间隔），
+    // 不 clamp 会导致 valueDisplay 显示低值而滑块实际停在 min，二者不一致
+    if (currentValue < minVal) currentValue = minVal;
     slider.value = currentValue;
     Object.assign(slider.style, { width: '60px', height: '4px', cursor: 'pointer', accentColor: 'var(--neko-popup-accent, #44b7fe)' });
 
