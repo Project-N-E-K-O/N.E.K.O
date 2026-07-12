@@ -1,8 +1,8 @@
-pkgname=neko-bin
+pkgname=n.e.k.o-bin
 pkgver=0.8.3
 pkgrel=1
-provides=('neko')
-conflicts=('neko')
+provides=('n.e.k.o')
+conflicts=('n.e.k.o')
 pkgdesc="N.E.K.O., a digital life that yearns to understand, connect, and grow with us."
 arch=('x86_64')
 url="https://github.com/Project-N-E-K-O/N.E.K.O"
