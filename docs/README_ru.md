@@ -435,7 +435,7 @@ build_frontend.bat
 uv run python app/memory_server.py
 uv run python app/main_server.py
 # Опционально: запуск Agent-сервиса
-uv run python app/agent_server.py
+uv run python -m app.agent_server
 
 # 5. Перейдите на http://localhost:48911 для настройки API Key и начала работы
 ```

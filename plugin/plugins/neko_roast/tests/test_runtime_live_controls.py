@@ -118,6 +118,26 @@ async def test_update_config_restarts_listener_when_room_changes(runtime: RoastR
 
 
 @pytest.mark.asyncio
+async def test_update_config_force_syncs_developer_mode_only_on_transition(
+    runtime: RoastRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sync_calls: list[tuple[bool, bool]] = []
+
+    async def sync_developer_mode(*, announce: bool = False, force: bool = False) -> str:
+        sync_calls.append((announce, force))
+        return "synced"
+
+    monkeypatch.setattr(runtime, "sync_developer_mode", sync_developer_mode)
+    runtime.config.developer_tools_enabled = True
+
+    await runtime.update_config({"developer_tools_enabled": True, "dry_run": False})
+    assert sync_calls == []
+
+    await runtime.update_config({"developer_tools_enabled": False})
+    assert sync_calls == [(False, True)]
+
+
+@pytest.mark.asyncio
 async def test_set_live_room_stops_listener_when_room_switch_fails(runtime: RoastRuntime) -> None:
     runtime.config.live_room_id = 100
     runtime.config.live_enabled = True
@@ -158,6 +178,9 @@ async def test_connect_live_room_switches_active_room_without_double_start(runti
     assert runtime.bili_live_ingest.started == [100, 200]
     assert runtime.bili_live_ingest.stopped == 1
     assert runtime.bili_live_ingest.room_id == 200
+    persisted = runtime.plugin.config.updates[-1]["neko_roast"]
+    assert persisted["live_room_ref"] == "200"
+    assert persisted["live_room_id"] == 200
 
 
 @pytest.mark.asyncio

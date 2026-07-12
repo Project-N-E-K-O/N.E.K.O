@@ -183,10 +183,9 @@ def release_cloud_apply_lock(config_manager) -> None:
     except Exception:
         pass
     _cloud_apply_lock_file = None
-    try:
-        os.unlink(config_manager.local_state_dir / "cloud_apply.lock")
-    except Exception:
-        pass
+    # 刻意不 unlink 锁文件：unlock→unlink 窗口内其他进程可能 flock 旧 inode，
+    # 随后路径被换成新 inode 会出现双持有者。锁文件长期保留（local_state_dir
+    # 不进云存档，残留无害），acquire 每次 open("w") 复用同一路径即可。
 
 
 def _process_holds_cloud_apply_lock() -> bool:

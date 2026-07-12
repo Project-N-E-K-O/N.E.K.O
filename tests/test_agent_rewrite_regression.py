@@ -43,6 +43,40 @@ def _expected_plugin_dashboard_location(v: str = "") -> str:
     return f"{base_ui}?{urlencode({'v': v})}" if v else base_ui
 
 
+_AGENT_SERVER_PKG_DIR = Path("app/agent_server")
+
+
+def _agent_server_package_sources():
+    """Return (path, source) for every module of the app/agent_server package.
+
+    The former monolithic ``app/agent_server.py`` was split into a package
+    (facade ``__init__.py`` + domain submodules); source-scanning assertions
+    search all package files.
+    """
+    return [
+        (path, path.read_text(encoding="utf-8"))
+        for path in sorted(_AGENT_SERVER_PKG_DIR.rglob("*.py"))
+    ]
+
+
+def _agent_server_package_source_concat() -> str:
+    return "\n".join(source for _, source in _agent_server_package_sources())
+
+
+def _find_agent_server_function(func_name: str, kind=(ast.FunctionDef, ast.AsyncFunctionDef)):
+    """Locate a top-level function across the agent_server package.
+
+    Returns ``(source, node)`` of the defining module so callers can use
+    ``ast.get_source_segment``.
+    """
+    for _, source in _agent_server_package_sources():
+        tree = ast.parse(source)
+        for node in tree.body:
+            if isinstance(node, kind) and node.name == func_name:
+                return source, node
+    raise AssertionError(f"{func_name} not found in app/agent_server package")
+
+
 def _route_paths_from_decorators(py_file_path: str, target_name: str):
     source = Path(py_file_path).read_text(encoding="utf-8")
     tree = ast.parse(source)
@@ -102,7 +136,7 @@ def test_core_config_uses_agent_model_only():
 
 
 def test_agent_server_legacy_endpoints_removed():
-    paths = _route_paths_from_decorators("app/agent_server.py", "app")
+    paths = _route_paths_from_decorators("app/agent_server/__init__.py", "app")
     assert "/process" not in paths
     assert "/plan" not in paths
     assert "/analyze_and_plan" not in paths
@@ -287,7 +321,7 @@ def test_agent_hud_viewport_clamp_uses_layout_for_non_pixel_positions():
 
 
 def test_agent_server_expected_event_driven_endpoints_exist():
-    paths = _route_paths_from_decorators("app/agent_server.py", "app")
+    paths = _route_paths_from_decorators("app/agent_server/__init__.py", "app")
     for expected in {
         "/health",
         "/agent/flags",
@@ -776,7 +810,7 @@ def test_yui_asset_version_includes_avatar_performance_runtime():
 def test_yui_wakeup_delegates_action_boundary_to_avatar_stage():
     source = Path("static/tutorial/yui-guide/wakeup.js").read_text(encoding="utf-8")
     avatar_source = Path("static/tutorial/avatar/yui-stage.js").read_text(encoding="utf-8")
-    live2d_source = Path("static/live2d-model.js").read_text(encoding="utf-8")
+    live2d_source = Path("static/live2d/live2d-model.js").read_text(encoding="utf-8")
     style_source = Path("static/css/yui-guide.css").read_text(encoding="utf-8")
     yui_model = json.loads(Path("static/yui-origin/yui-origin.model3.json").read_text(encoding="utf-8"))
     yui_display_info = json.loads(Path("static/yui-origin/yui-origin.cdi3.json").read_text(encoding="utf-8"))
@@ -1151,9 +1185,9 @@ def test_pages_router_static_asset_version_tracks_tutorial_runtime_modules():
     assert "static/css/tutorial-styles.css" in tracked_paths
     assert "static/libs/driver.min.js" in tracked_paths
     assert "static/libs/driver.min.css" in tracked_paths
-    assert "static/live2d-init.js" in tracked_paths
+    assert "static/live2d/live2d-init.js" in tracked_paths
     assert "static/app-interpage.js" in tracked_paths
-    assert "static/live2d-interaction.js" in tracked_paths
+    assert "static/live2d/live2d-interaction.js" in tracked_paths
 
 
 @pytest.mark.asyncio
@@ -1396,8 +1430,8 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     avatar_reload_source = Path("static/tutorial/avatar/reload-controller.js").read_text(encoding="utf-8")
     interpage_source = Path("static/app-interpage.js").read_text(encoding="utf-8")
     app_ui_source = Path("static/app-ui.js").read_text(encoding="utf-8")
-    live2d_init_source = Path("static/live2d-init.js").read_text(encoding="utf-8")
-    live2d_model_source = Path("static/live2d-model.js").read_text(encoding="utf-8")
+    live2d_init_source = Path("static/live2d/live2d-init.js").read_text(encoding="utf-8")
+    live2d_model_source = Path("static/live2d/live2d-model.js").read_text(encoding="utf-8")
     round_prelude_source = Path("static/tutorial/core/round-prelude-controller.js").read_text(encoding="utf-8")
     visual_runtime_source = Path("static/tutorial/core/visual-runtime.js").read_text(encoding="utf-8")
     resistance_source = Path("static/tutorial/visual/resistance-controllers.js").read_text(encoding="utf-8")
@@ -1791,9 +1825,9 @@ def test_avatar_floating_tutorial_boot_predictor_loads_before_user_model_init():
 
     predictor_script = "/static/tutorial/core/avatar-floating-boot-predictor.js"
     assert predictor_script in index_source
-    assert index_source.index(predictor_script) < index_source.index("/static/live2d-init.js")
-    assert index_source.index(predictor_script) < index_source.index("/static/vrm-init.js")
-    assert index_source.index(predictor_script) < index_source.index("/static/mmd-init.js")
+    assert index_source.index(predictor_script) < index_source.index("/static/live2d/live2d-init.js")
+    assert index_source.index(predictor_script) < index_source.index("/static/vrm/vrm-init.js")
+    assert index_source.index(predictor_script) < index_source.index("/static/mmd/mmd-init.js")
     assert "static/tutorial/core/avatar-floating-boot-predictor.js" in pages_router_source
 
 
@@ -1847,9 +1881,9 @@ def test_avatar_floating_tutorial_boot_predictor_contract():
 
 def test_avatar_model_initializers_skip_user_model_when_tutorial_boot_is_predicted():
     index_source = Path("static/js/index.js").read_text(encoding="utf-8")
-    live2d_init_source = Path("static/live2d-init.js").read_text(encoding="utf-8")
-    vrm_init_source = Path("static/vrm-init.js").read_text(encoding="utf-8")
-    mmd_init_source = Path("static/mmd-init.js").read_text(encoding="utf-8")
+    live2d_init_source = Path("static/live2d/live2d-init.js").read_text(encoding="utf-8")
+    vrm_init_source = Path("static/vrm/vrm-init.js").read_text(encoding="utf-8")
+    mmd_init_source = Path("static/mmd/mmd-init.js").read_text(encoding="utf-8")
 
     for source in (live2d_init_source, vrm_init_source, mmd_init_source):
         assert "window.NekoAvatarFloatingBoot" in source
@@ -3057,19 +3091,12 @@ def test_cancel_task_records_trigger_signature_for_redact():
     """cancel_task / _cancel_openclaw_tasks_for_stop 都应把 task info 里的
     _trigger_user_fingerprint 透传到 record_completed，使 redact 能定位回
     触发的 user turn。"""
-    source = Path("app/agent_server.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-
     targets = {
         "cancel_task": ast.AsyncFunctionDef,
         "_cancel_openclaw_tasks_for_stop": ast.AsyncFunctionDef,
     }
     for name, kind in targets.items():
-        node = next(
-            (n for n in tree.body if isinstance(n, kind) and n.name == name),
-            None,
-        )
-        assert node is not None, f"{name} not found"
+        source, node = _find_agent_server_function(name, kind)
         segment = ast.get_source_segment(source, node)
         assert "_task_tracker.record_completed" in segment, (
             f"{name} should call record_completed on cancel"
@@ -3299,13 +3326,8 @@ async def test_task_executor_magic_intent_routes_to_openclaw_before_unified_asse
 
 
 def test_agent_server_openclaw_sender_id_prefers_latest_user_identity():
-    source = Path("app/agent_server.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    fn_src = None
-    for node in tree.body:
-        if isinstance(node, ast.FunctionDef) and node.name == "_resolve_openclaw_sender_id":
-            fn_src = ast.get_source_segment(source, node)
-            break
+    source, node = _find_agent_server_function("_resolve_openclaw_sender_id", ast.FunctionDef)
+    fn_src = ast.get_source_segment(source, node)
     assert fn_src is not None
 
     ns = {"AGENT_HISTORY_TURNS": 8}
@@ -3322,14 +3344,14 @@ def test_agent_server_openclaw_sender_id_prefers_latest_user_identity():
 
 
 def test_agent_server_collects_active_openclaw_tasks_for_same_sender():
-    source = Path("app/agent_server.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    fn_src = None
-    for node in tree.body:
-        if isinstance(node, ast.FunctionDef) and node.name == "_collect_active_openclaw_task_ids":
-            fn_src = ast.get_source_segment(source, node)
-            break
+    source, node = _find_agent_server_function("_collect_active_openclaw_task_ids", ast.FunctionDef)
+    fn_src = ast.get_source_segment(source, node)
     assert fn_src is not None
+
+    # channels/openclaw.py accesses the state bag as ``_shared.Modules.<attr>``
+    # (single-owner rule of the package split), so the exec namespace exposes
+    # the fake Modules through a stand-in ``_shared``.
+    import types as _types
 
     ns = {
         "Optional": __import__("typing").Optional,
@@ -3366,6 +3388,7 @@ def test_agent_server_collects_active_openclaw_tasks_for_same_sender():
             },
         ),
     }
+    ns["_shared"] = _types.SimpleNamespace(Modules=ns.pop("Modules"))
     exec(fn_src, ns)
     collector = ns["_collect_active_openclaw_task_ids"]
 
@@ -3456,7 +3479,7 @@ def test_is_free_voice_tracks_core_not_assist():
 def test_agent_gate_is_free_version_field_sources_agent_free():
     """gate / agent 命令回包的 is_free_version 字段值取 is_agent_free()（agent model 维度），
     而非 is_free_voice()（语音/core 维度）——锁住三处同源，防回退。"""
-    server = Path("app/agent_server.py").read_text(encoding="utf-8")
+    server = _agent_server_package_source_concat()
     assert '"is_free_version": cm.is_agent_free()' in server
     router = Path("main_routers/agent_router.py").read_text(encoding="utf-8")
     assert "_config_manager.is_agent_free()" in router
@@ -3471,14 +3494,7 @@ def test_main_server_mounts_card_assist_router():
 
 
 def test_agent_command_set_agent_enabled_reports_free_version_and_refreshes_capabilities():
-    source = Path("app/agent_server.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    func = None
-    for node in ast.walk(tree):
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "agent_command":
-            func = node
-            break
-    assert func is not None
+    source, func = _find_agent_server_function("agent_command", ast.AsyncFunctionDef)
     func_src = ast.get_source_segment(source, func) or ""
 
     assert 'command == "set_agent_enabled"' in func_src
@@ -3498,21 +3514,18 @@ def test_agent_command_set_agent_enabled_reports_free_version_and_refreshes_capa
 
 
 def test_agent_llm_check_marks_browser_use_unloaded_instead_of_pending():
-    source = Path("app/agent_server.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    func = None
-    for node in ast.walk(tree):
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_fire_agent_llm_connectivity_check":
-            func = node
-            break
-    assert func is not None
+    source, func = _find_agent_server_function(
+        "_fire_agent_llm_connectivity_check", ast.AsyncFunctionDef
+    )
     func_src = ast.get_source_segment(source, func) or ""
 
-    assert "adapter = Modules.computer_use" in func_src
+    # capabilities.py accesses the state bag as ``_shared.Modules.<attr>``
+    # (single-owner rule of the package split).
+    assert "adapter = _shared.Modules.computer_use" in func_src
     assert "if adapter is None:" in func_src
     assert '_set_capability("computer_use", False, "AGENT_CU_MODULE_NOT_LOADED")' in func_src
     assert '_set_capability("browser_use", False, "AGENT_CU_MODULE_NOT_LOADED")' in func_src
-    assert "bu = Modules.browser_use" in func_src
+    assert "bu = _shared.Modules.browser_use" in func_src
     assert "if bu is None:" in func_src
     assert '_set_capability("browser_use", False, "AGENT_BU_MODULE_NOT_LOADED")' in func_src
 
@@ -4037,28 +4050,14 @@ async def test_zmq_agent_to_main_push_pull(monkeypatch):
 
 def test_emit_main_event_sends_via_bridge():
     """_emit_main_event calls agent_bridge.emit_to_main when bridge is available."""
-    source = Path("app/agent_server.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    func = None
-    for node in ast.walk(tree):
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_emit_main_event":
-            func = node
-            break
-    assert func is not None, "_emit_main_event not found"
+    source, func = _find_agent_server_function("_emit_main_event", ast.AsyncFunctionDef)
     assert _contains_call(func, "emit_to_main"), \
         "_emit_main_event does not call emit_to_main"
 
 
 def test_emit_main_event_no_http_fallback():
     """_emit_main_event must NOT contain any httpx or HTTP fallback code."""
-    source = Path("app/agent_server.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    func = None
-    for node in ast.walk(tree):
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_emit_main_event":
-            func = node
-            break
-    assert func is not None
+    source, func = _find_agent_server_function("_emit_main_event", ast.AsyncFunctionDef)
     func_source = ast.get_source_segment(source, func) or ""
     assert "httpx" not in func_source, "_emit_main_event still contains httpx HTTP fallback"
     assert "http://" not in func_source, "_emit_main_event still contains HTTP URL"
@@ -4070,14 +4069,7 @@ def test_emit_main_event_no_http_fallback():
 
 def test_on_session_event_dispatches_ack_and_analyze():
     """_on_session_event creates tasks for ack emission and background analysis."""
-    source = Path("app/agent_server.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    func = None
-    for node in ast.walk(tree):
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_on_session_event":
-            func = node
-            break
-    assert func is not None, "_on_session_event not found"
+    source, func = _find_agent_server_function("_on_session_event", ast.AsyncFunctionDef)
     func_src = ast.get_source_segment(source, func) or ""
     assert "analyze_ack" in func_src, "_on_session_event does not emit analyze_ack"
     assert "_background_analyze_and_plan" in func_src, \

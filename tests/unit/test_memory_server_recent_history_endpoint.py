@@ -33,8 +33,8 @@ async def test_get_recent_history_accepts_string_content():
         ])
     )
 
-    with patch.object(memory_server, "_config_manager", fake_config), \
-         patch.object(memory_server, "recent_history_manager", fake_recent):
+    with patch.object(memory_server.runtime, "_config_manager", fake_config), \
+         patch.object(memory_server.runtime, "recent_history_manager", fake_recent):
         result = await memory_server.get_recent_history("test_char")
 
     assert "session note" in result
@@ -74,8 +74,8 @@ async def test_get_recent_history_keeps_text_part_content():
         ])
     )
 
-    with patch.object(memory_server, "_config_manager", fake_config), \
-         patch.object(memory_server, "recent_history_manager", fake_recent):
+    with patch.object(memory_server.runtime, "_config_manager", fake_config), \
+         patch.object(memory_server.runtime, "recent_history_manager", fake_recent):
         result = await memory_server.get_recent_history("test_char")
 
     assert "Master | part one\npart two" in result
@@ -107,8 +107,8 @@ async def test_get_recent_history_uses_type_as_unknown_speaker():
         ])
     )
 
-    with patch.object(memory_server, "_config_manager", fake_config), \
-         patch.object(memory_server, "recent_history_manager", fake_recent):
+    with patch.object(memory_server.runtime, "_config_manager", fake_config), \
+         patch.object(memory_server.runtime, "recent_history_manager", fake_recent):
         result = await memory_server.get_recent_history("test_char")
 
     assert "tool | tool result" in result
