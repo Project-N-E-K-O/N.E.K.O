@@ -186,7 +186,8 @@ def test_jukebox_execute_control_play_headless_loads_without_ui(mock_page: Page)
             hasRuntimeHost: !!document.getElementById('neko-jukebox-runtime-host'),
             currentSong: window.Jukebox.State.currentSong && window.Jukebox.State.currentSong.id,
             isRuntimeReady: window.Jukebox.State.isRuntimeReady,
-            playerItems: window.__lastAPlayer.list.items.map((item) => item.name)
+            playerItems: window.__lastAPlayer.list.items.map((item) => item.name),
+            playerUrls: window.__lastAPlayer.list.items.map((item) => item.url)
           };
         }
         """
@@ -203,6 +204,7 @@ def test_jukebox_execute_control_play_headless_loads_without_ui(mock_page: Page)
         "currentSong": "song1",
         "isRuntimeReady": True,
         "playerItems": ["Song 1"],
+        "playerUrls": ["/api/jukebox/file/songs/song1.mp3"],
     }
 
 
@@ -231,6 +233,70 @@ def test_jukebox_execute_control_play_uses_fuzzy_matching(mock_page: Page):
         },
         "currentSong": "song4",
         "playerItems": ["桃源恋歌"],
+    }
+
+
+@pytest.mark.frontend
+def test_jukebox_builtin_paths_keep_resource_directories(mock_page: Page):
+    setup_headless_jukebox_page(mock_page)
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+          window.fetch = async (url) => {
+            if (url === '/api/jukebox/config') {
+              return {
+                ok: true,
+                json: async () => ({
+                  configRevision: 'rev-builtin-paths',
+                  songs: {
+                    song_001: {
+                      name: '桃源恋歌',
+                      artist: 'GARNiDELiA',
+                      audio: 'songs/song_001.mp3',
+                      visible: true,
+                      isBuiltin: true,
+                      defaultAction: 'action_001'
+                    }
+                  },
+                  actions: {
+                    action_001: {
+                      name: '桃源恋歌',
+                      file: 'actions/song_001.vrma',
+                      format: 'vrma',
+                      visible: true,
+                      isBuiltin: true
+                    }
+                  },
+                  bindings: {
+                    song_001: { action_001: { offset: 0 } }
+                  }
+                })
+              };
+            }
+            throw new Error('Unexpected fetch: ' + url);
+          };
+          window.lanlan_config = { model_type: 'live3d', live3d_sub_type: 'vrm' };
+          const vrmaCalls = [];
+          window.vrmManager = {
+            playVRMAAnimation: async (url) => vrmaCalls.push(url)
+          };
+
+          await window.Jukebox.executeControl({ action: 'play', query: '桃园' });
+
+          return {
+            audio: window.Jukebox.State.songs[0].audio,
+            audioUrl: window.__lastAPlayer.list.items[0].url,
+            vrmaCalls
+          };
+        }
+        """
+    )
+
+    assert result == {
+        "audio": "songs/song_001.mp3",
+        "audioUrl": "/api/jukebox/file/songs/song_001.mp3",
+        "vrmaCalls": ["/api/jukebox/file/actions/song_001.vrma"],
     }
 
 
@@ -379,6 +445,7 @@ def test_jukebox_loader_native_mode_keeps_animation_facade(mock_page: Page):
           return {
             hasFacade: window.Jukebox.__nativeBridgeFacade === true,
             hasExecuteControl: typeof window.Jukebox.executeControl === 'function',
+            hasInit: typeof window.Jukebox.init === 'function',
             nativeToggled: window.nativeToggled,
             webLoaderToggle: !!window.__nekoJukeboxToggle.__nekoJukeboxWebLoader,
             loaderReady: !!window.__nekoJukeboxLoader,
@@ -396,6 +463,7 @@ def test_jukebox_loader_native_mode_keeps_animation_facade(mock_page: Page):
     assert result == {
         "hasFacade": True,
         "hasExecuteControl": True,
+        "hasInit": True,
         "nativeToggled": True,
         "webLoaderToggle": False,
         "loaderReady": True,
@@ -433,6 +501,8 @@ def test_jukebox_loader_exposes_control_on_jukebox_key_only(mock_page: Page):
           hasJukeboxFacade: !!window.Jukebox && window.Jukebox.__nekoLazyFacade === true,
           hasExecuteControl: typeof window.Jukebox.executeControl === 'function',
           hasEnsureRuntime: typeof window.Jukebox.ensureRuntime === 'function',
+          hasInit: typeof window.Jukebox.init === 'function',
+          initReturns: window.Jukebox.init(),
           loaderHasControl: Object.prototype.hasOwnProperty.call(window.__nekoJukeboxLoader, 'control')
         })
         """
@@ -442,6 +512,8 @@ def test_jukebox_loader_exposes_control_on_jukebox_key_only(mock_page: Page):
         "hasJukeboxFacade": True,
         "hasExecuteControl": True,
         "hasEnsureRuntime": True,
+        "hasInit": True,
+        "initReturns": None,
         "loaderHasControl": False,
     }
 

@@ -7991,6 +7991,16 @@ window.Jukebox = {
     return { ok: true, action: 'play', song: { id: song.id, name: song.name, artist: song.artist } };
   },
 
+  resolveJukeboxFileUrl: function(filePath) {
+    const rawPath = String(filePath || '').trim();
+    if (!rawPath) return '';
+    if (/^(?:https?:|data:|blob:)/i.test(rawPath)) return rawPath;
+    if (rawPath.startsWith('/api/') || rawPath.startsWith('/static/') || rawPath.startsWith('/user_')) {
+      return rawPath;
+    }
+    return '/api/jukebox/file/' + rawPath.replace(/^\/+/, '');
+  },
+
   checkConfigUpdates: async function() {
     const Jukebox = window.Jukebox || this;
     if (!Jukebox.State.isOpen || Jukebox.State.configPollInFlight) return;
@@ -8050,18 +8060,11 @@ window.Jukebox = {
           ...actions[actionId]
         })); // 过滤掉不存在或已隐藏的动画
 
-      // 处理音频路径：自带资源使用 /static/jukebox/ 前缀
-      let audioPath = song.audio || '';
-      if (song.isBuiltin && audioPath && !audioPath.startsWith('/static/')) {
-        // 将 songs/xxx.mp3 转换为 /static/jukebox/xxx.mp3
-        audioPath = '/static/jukebox/' + audioPath.replace(/^songs\//, '');
-      }
-
       return {
         id: id,
         name: song.name || '未知',
         artist: song.artist || '未知',
-        audio: audioPath,
+        audio: song.audio || '',
         vmd: song.vmd || '',
         duration: song.duration || 0,
         visible: song.visible !== false, // 默认可见
@@ -8365,15 +8368,7 @@ window.Jukebox = {
       // 根据模型类型播放对应格式的动画
       const action = Jukebox.getActionForModel(song);
       if (action) {
-        // 处理动画路径：自带资源直接用 /static/ 路径，用户上传的走 API
-        let actionFilePath = action.file || '';
-        let actionUrl;
-        if (action.isBuiltin && actionFilePath && !actionFilePath.startsWith('/static/')) {
-          // 将 actions/xxx.vmd 转换为 /static/jukebox/xxx.vmd
-          actionUrl = '/static/jukebox/' + actionFilePath.replace(/^actions\//, '');
-        } else {
-          actionUrl = `/api/jukebox/file/${actionFilePath}`;
-        }
+        const actionUrl = Jukebox.resolveJukeboxFileUrl(action.file || '');
         console.log('[Jukebox] 播放动画:', action.name, '格式:', action.format || 'vmd', '路径:', actionUrl);
 
         const modelType = Jukebox.getModelType();
@@ -8418,8 +8413,7 @@ window.Jukebox = {
     
     console.log('[Jukebox]', window.t('Jukebox.useAPlayer', '使用APlayer播放音频文件'));
     
-    // 将相对路径转换为API路径
-    const audioUrl = `/api/jukebox/file/${song.audio}`;
+    const audioUrl = Jukebox.resolveJukeboxFileUrl(song.audio);
     
     player.list.add([{
       name: song.name,

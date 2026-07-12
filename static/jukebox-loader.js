@@ -21,6 +21,8 @@
         }
       },
 
+      init: function() {},
+
       getPlayer: function() {
         return null;
       },
@@ -426,6 +428,9 @@
     }
     if (typeof facade.toggle !== 'function') {
       facade.toggle = toggleJukebox;
+    }
+    if (typeof facade.init !== 'function') {
+      facade.init = function() {};
     }
     facade.ensureRuntime = async function(options) {
       var jukebox = await loadJukeboxScript();
