@@ -405,7 +405,7 @@ def test_monitor_live_script_reports_runtime_timeline_without_sensitive_fields(t
                 "stage": "dispatcher.push",
                 "status": "skipped",
                 "route": "danmaku_response",
-                "reason": "cookie=must-not-leak",
+                "reason": "viewer said must-not-leak",
             },
         ],
     }
@@ -431,7 +431,7 @@ def test_monitor_live_script_reports_runtime_timeline_without_sensitive_fields(t
     assert "timeline_stage_2=dispatcher.push" in completed.stdout
     assert "timeline_status_2=skipped" in completed.stdout
     assert "timeline_route_2=danmaku_response" in completed.stdout
-    assert "timeline_reason_2=-" in completed.stdout
+    assert "timeline_reason_2=[redacted]" in completed.stdout
     assert "must-not-print" not in completed.stdout
     assert "must-not-leak" not in completed.stdout
     assert "old.stage" not in completed.stdout
@@ -466,7 +466,8 @@ def test_monitor_live_script_reports_recent_event_signal_counts(tmp_path: Path) 
     assert "recent_observed_signal_super_chat_signal=1" in completed.stdout
     assert "recent_observed_signal_danmaku_signal=1" in completed.stdout
     assert "recent_skipped_signal_gift_signal=1" in completed.stdout
-    assert "latest_gift_uid=douyin:actual" in completed.stdout
+    assert re.search(r"latest_gift_uid=viewer_[0-9a-f]{12}", completed.stdout)
+    assert "douyin:actual" not in completed.stdout
     assert "latest_gift_name=rose" in completed.stdout
     assert "latest_gift_count=1" in completed.stdout
     assert "latest_gift_value=10" in completed.stdout

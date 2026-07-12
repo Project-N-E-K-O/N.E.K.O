@@ -126,7 +126,7 @@ Key fields:
                     Alert name when recent pushed NEKO outputs overuse one spent-output family.
   latest_trace_id   Latest Runtime Timeline trace id from live_explain or recent result.
   timeline_stage_* / timeline_status_* / timeline_route_* / timeline_reason_*
-                    Compact privacy-safe Runtime Timeline nodes for the latest trace. Values are bounded and never include raw payloads or credentials.
+                    Compact privacy-safe Runtime Timeline nodes for the latest trace. Reasons are limited to known machine codes; unknown values are redacted.
   live_disabled     Alert name for real-output tests when the NEKO Live plugin is disabled.
   generic_host_prompt
                     Alert name for template-like "please interact / send danmaku / anyone here" output.
@@ -531,6 +531,66 @@ function Get-CompactSafeField {
         }
     }
     return $text
+}
+
+function Get-OpaqueCorrelationId {
+    param(
+        [object]$Value,
+        [string]$Default = "-"
+    )
+    $text = Get-CompactField $Value $Default
+    if ($text -eq $Default) {
+        return $text
+    }
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($text)
+        $digest = $sha256.ComputeHash($bytes)
+    } finally {
+        $sha256.Dispose()
+    }
+    $hex = [System.BitConverter]::ToString($digest).Replace("-", "").ToLowerInvariant()
+    return "viewer_" + $hex.Substring(0, 12)
+}
+
+function Get-TimelineReasonCode {
+    param(
+        [object]$Value,
+        [string]$Default = "-"
+    )
+    $reason = Get-CompactField $Value $Default
+    if ($reason -eq $Default) {
+        return $reason
+    }
+    $allowed = @(
+        "accepted",
+        "allowed",
+        "already_roasted",
+        "batch_welcome",
+        "blocked",
+        "cooldown",
+        "dispatcher.dry_run",
+        "dispatcher.failed",
+        "dispatcher.pushed",
+        "dispatcher.skipped",
+        "dry_run",
+        "live_disabled",
+        "live_ingest_disconnected",
+        "live_room_offline",
+        "manual_paused",
+        "missing_uid",
+        "normalized",
+        "ok",
+        "output_channel_unavailable",
+        "ready",
+        "room_not_configured",
+        "safety_degraded",
+        "safety_tripped"
+    )
+    if ($allowed -contains $reason) {
+        return $reason
+    }
+    return "[redacted]"
 }
 
 function Get-TimelineRows {
@@ -1587,7 +1647,7 @@ function Write-Snapshot {
         Set-Variable -Name "timelineStage$slot" -Value (Get-CompactSafeField $row.stage 80)
         Set-Variable -Name "timelineStatus$slot" -Value (Get-CompactSafeField $row.status 80)
         Set-Variable -Name "timelineRoute$slot" -Value (Get-CompactSafeField $row.route 80)
-        Set-Variable -Name "timelineReason$slot" -Value (Get-CompactSafeField $row.reason 120)
+        Set-Variable -Name "timelineReason$slot" -Value (Get-TimelineReasonCode $row.reason)
     }
     $latestTopicSource = "-"
     $latestTopicShape = "-"
@@ -1617,7 +1677,7 @@ function Write-Snapshot {
     $latestGiftValue = "-"
     if ($null -ne $latest -and $null -ne $latest.event) {
         $latestSource = Get-CompactField $latest.event.source
-        $latestUid = Get-CompactField $latest.event.uid
+        $latestUid = Get-OpaqueCorrelationId $latest.event.uid
         if (-not [string]::IsNullOrWhiteSpace("$($latest.event.danmaku_text)")) {
             $latestText = "[redacted]"
         }
@@ -1683,7 +1743,7 @@ function Write-Snapshot {
         if ($null -eq $result.event) {
             continue
         }
-        $latestGiftUid = Get-CompactField $result.event.uid
+        $latestGiftUid = Get-OpaqueCorrelationId $result.event.uid
         $latestGiftName = Get-CompactField $result.event.gift_name
         $latestGiftCount = Get-CompactField $result.event.gift_count
         $latestGiftValue = Get-CompactField $result.event.gift_value
@@ -1703,7 +1763,7 @@ function Write-Snapshot {
         if ($null -eq $event) {
             continue
         }
-        $uid = Get-CompactField $event.uid
+        $uid = Get-OpaqueCorrelationId $event.uid
         if ($uid -eq "-") {
             continue
         }

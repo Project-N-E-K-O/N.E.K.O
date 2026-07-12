@@ -1063,8 +1063,12 @@ def test_monitor_live_script_reports_repeated_avatar_roast_uid(tmp_path: Path) -
     completed = _run_monitor(tmp_path, context, "-ExpectRealOutput")
 
     assert completed.returncode == 0, completed.stderr
-    assert "latest_uid=42" in completed.stdout
-    assert "avatar_repeat_uid=42" in completed.stdout
+    latest_uid = re.search(r"latest_uid=(viewer_[0-9a-f]{12})", completed.stdout)
+    avatar_uid = re.search(r"avatar_repeat_uid=(viewer_[0-9a-f]{12})", completed.stdout)
+    assert latest_uid is not None
+    assert avatar_uid is not None
+    assert latest_uid.group(1) == avatar_uid.group(1)
+    assert "latest_uid=42" not in completed.stdout
     assert "avatar_repeat_count=2" in completed.stdout
     alerts_match = re.search(r"\balerts=([^\s]+)", completed.stdout)
     assert alerts_match is not None
