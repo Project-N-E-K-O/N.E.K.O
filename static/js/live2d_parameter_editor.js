@@ -1478,6 +1478,7 @@ if (saveBtn) {
             if (prefSuccess) {
                 markModelManagerNeedsSaveAfterParameterEdit(currentModelInfo);
                 sendMessageToMainPage('reload_model_parameters', {
+                    lanlan_name: getParameterEditorLanlanName(),
                     model_name: currentModelInfo.name,
                     model_path: currentModelInfo.path
                 });

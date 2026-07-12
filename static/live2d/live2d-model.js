@@ -1735,8 +1735,8 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
         this.pixi_app.view.style.opacity = '0';
     }
     
-    // 注意：用户偏好参数的应用延迟到模型目录参数加载完成后，
-    // 以确保正确的优先级顺序（模型目录参数 > 用户偏好参数）
+    // 注意：用户偏好参数会在模型目录参数加载完成后参与统一合并，
+    // 优先级顺序为：用户偏好参数 > 模型目录参数（用户偏好是权威来源）。
 
     // 添加到舞台
     this.pixi_app.stage.addChild(model);
@@ -1961,12 +1961,12 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
     if (this.modelName && model.internalModel && model.internalModel.coreModel) {
         try {
             modelDirectoryParameters = await this._loadModelDirectoryParameters(this.modelName);
-            // 【重要修复】Fetch 回来后，必须检查 Token！如果用户在此期间切了模型，直接中断！
-            if (!this._isLoadTokenActive(loadToken)) return;
         } catch (error) {
             console.error('加载模型参数失败:', error);
         }
     }
+    // 无论目录参数加载成功或失败，都必须阻止过期加载继续写入当前模型。
+    if (!this._isLoadTokenActive(loadToken)) return;
 
     const userPreferenceParameters = options.preferences && options.preferences.parameters;
     try {

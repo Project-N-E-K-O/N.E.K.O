@@ -290,8 +290,24 @@ def test_parameter_save_treats_preferences_as_authoritative_and_sends_one_refres
     assert "if (prefSuccess)" in save_source
     assert "if (fileSuccess)" in save_source
     assert save_source.count("sendMessageToMainPage('reload_model_parameters'") == 1
+    assert "lanlan_name: getParameterEditorLanlanName()" in save_source
     assert "model_name: currentModelInfo.name" in save_source
     assert "model_path: currentModelInfo.path" in save_source
+
+
+def test_stale_load_token_is_checked_after_directory_parameter_failure():
+    source = LIVE2D_MODEL_PATH.read_text(encoding="utf-8")
+    configure_start = source.index("Live2DManager.prototype._configureLoadedModel")
+    configure_end = source.index("Live2DManager.prototype._applyTextureQuality", configure_start)
+    configure_source = source[configure_start:configure_end]
+
+    load_index = configure_source.index("await this._loadModelDirectoryParameters(this.modelName)")
+    catch_index = configure_source.index("console.error('加载模型参数失败:'", load_index)
+    token_index = configure_source.index("if (!this._isLoadTokenActive(loadToken)) return;", load_index)
+    apply_index = configure_source.index("this._applyEffectiveModelParameters(", load_index)
+
+    assert load_index < catch_index < token_index < apply_index
+    assert "模型目录参数 > 用户偏好参数" not in configure_source
 
 
 def test_file_save_failure_with_preference_success_survives_parameter_reload():
