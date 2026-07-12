@@ -235,20 +235,28 @@ content = cache_file.read_text()
 
 ---
 
-## self.bus — 总线快照
+## self.bus — Bus 读取与监听
 
-**什么时候用**：你想读取按命名空间组织的总线快照，比如消息、事件、生命周期记录、会话和记忆记录。
+**什么时候用**：你想读取或监听按命名空间组织的宿主状态快照。该门面没有 publish/emit API。
 
 ```python
 # 读取最近事件
-recent_events = await self.bus.events.get(filter={"type": "note_created"}, max_count=20)
+recent_events = await self.bus.events.get(max_count=50)
+recent_events = recent_events.filter(type="note_created").sort(
+    by="timestamp", reverse=True,
+).limit(20)
 
 # 读取最近消息
 recent_messages = await self.bus.messages.get(max_count=20)
 
 # 读取某个 bucket 的记忆记录
 memory_records = await self.bus.memory.get(bucket_id="default", limit=20)
+
+# 语义检索是独立的 context 操作
+matches = await self.ctx.query_memory("default", "用户偏好")
 ```
+
+列表接口为 `filter` / `where`、`sort`、`limit`、`watch`。可调用形式 `filter(predicate)`、`where(predicate)` 与 `sort(key=...)` 仅处理本地快照，因此 watcher 链必须使用结构化 `filter(field=value, ...)` 与 `sort(by=...)`。只有 `messages`、`events`、`lifecycle` 支持 `watch()`；`conversations` 与 `memory` 是只读快照。watcher 只接受 `add`、`del`、`change`。
 
 ---
 

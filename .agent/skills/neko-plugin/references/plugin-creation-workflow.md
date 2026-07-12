@@ -10,12 +10,12 @@ Ask these before designing a new plugin, unless the conversation already answere
 2. What is this plugin for?
 3. Which package type fits it?
    - Plugin: an independent feature; this is the default for tools, background work, timers, UI, and ordinary external service/device integrations.
-   - Extension: adds entries or hooks to an existing plugin; requires a host plugin.
    - Adapter: bridges an external protocol/request stream into N.E.K.O plugin calls.
 4. What should the first version include?
    - callable entries, background/lifecycle work, timers, message reaction, UI, storage/settings, cross-plugin calls, external service/device connection, or protocol gateway.
-5. If this is an Extension, which host plugin does it attach to?
-6. What is out of scope for the first version?
+5. What is out of scope for the first version?
+
+`extension` is deprecated and is not a creation option. If a request sounds like an extension, design a normal plugin, put code in the existing host plugin (using `PluginRouter` when it is large), or select an adapter only when an external protocol is being bridged.
 
 Keep questions in user-facing language. Use the answers to infer plugin architecture; do not ask the user to design individual entries first.
 
@@ -32,7 +32,7 @@ Ask Risk Follow-ups when answers imply:
 - persistence, database, or state ownership
 - UI permissions
 - background work, auto-start, timers, or shutdown behavior
-- extension host behavior
+- migration constraints when maintaining an already-existing deprecated extension
 - adapter/gateway behavior
 - out-of-bound platform needs
 
@@ -55,7 +55,6 @@ Template:
 - name:
 - entry:
 - main class:
-- host plugin: <!-- Extension only -->
 
 ## Purpose
 
@@ -102,11 +101,7 @@ For an adapter:
 uv run neko-plugin init <plugin_id> --type adapter --name "<Plugin Name>" --no-interactive
 ```
 
-Extension scaffolding needs host plugin details; use the interactive CLI path or ask the required host questions before proceeding:
-
-```bash
-uv run neko-plugin init <plugin_id> --type extension --name "<Plugin Name>"
-```
+Do not run `neko-plugin init --type extension`: Extension is deprecated and the CLI no longer scaffolds new extensions. Only the legacy `PluginRouter` + `@plugin_entry` package shape remains loader-compatible; historical facade-based packages must be converted while they are migrated.
 
 The CLI owns the initial tree under `plugin/plugins/<plugin_id>/`. Expect at least `plugin.toml` and the entry module, and normally `__init__.py`, `pyproject.toml`, `README.md`, `tests/test_smoke.py`, `.gitignore`, and `.vscode/`. Add capability directories such as `ui/`, `static/`, `docs/`, `i18n/`, or `vendor/` only when the plugin actually needs them.
 

@@ -1,44 +1,34 @@
 # 応用トピック
 
-## Extension
+## Extension（非推奨の互換機能）
 
-Extension は、既存のプラグインを変更せずにルートやフックを追加します。ホストプラグインのプロセス内で実行されます（別プロセスではありません）。
+> Extension の新規 authoring は非推奨です。現在ロードできるのは loader-compatible な `PluginRouter` + `@plugin_entry` 形式の既存 package だけで、新規作成や scaffold は禁止です。[v0.9 移行ガイド](./migration-v0.9)を参照してください。
 
-### Extension を使うべき場合
+compatibility loader は既存の `PluginRouter` を host process に injection できます。以下はこの legacy package shape の識別と移行だけを目的とします。
 
-- 既存プラグインに新しいコマンドを追加したい
-- 他のプラグインのエントリーポイントにフックしたい
-- プラグイン内でモジュール化されたコード構成にしたい
+新機能には通常 Plugin を使います。host を所有しコード整理だけが必要なら `PluginRouter`、外部プロトコルをブリッジするなら Adapter を使ってください。
 
-### Extension の作成
+### 既存 Extension の識別
 
 ```python
-from plugin.sdk.extension import (
-    NekoExtensionBase, extension, extension_entry, extension_hook,
-    Ok, Err,
-)
+from plugin.sdk.plugin import PluginRouter, plugin_entry, Ok
 
-@extension
-class MyExtension(NekoExtensionBase):
-    """ホストプラグインに追加コマンドを提供します。"""
 
-    @extension_entry(id="extra_command", description="An extra command added by extension")
-    def extra_command(self, param: str = "", **_):
+class MyExtensionRouter(PluginRouter):
+    """既存 host plugin に injection される legacy router。"""
+
+    @plugin_entry(id="extra_command", description="Extension entry")
+    async def extra_command(self, param: str = "", **_):
         return Ok({"extended": True, "param": param})
-
-    @extension_hook(target="original_entry", timing="before")
-    def validate(self, *, args, **_):
-        # ホストプラグインの "original_entry" の前に実行
-        if not args.get("required_field"):
-            return Err("Missing required_field")
 ```
 
-### Extension の仕組み
+manifest は `type = "extension"` と `[plugin.host]` を維持し、`plugin.entry` はこの `PluginRouter` subclass を指します。historical な `NekoExtensionBase`、`@extension`、`@extension_entry`、`@extension_hook` は import compatibility のためだけに残っており、その extension-specific metadata を loader は読みません。entry は `@plugin_entry` に変換し、hook behavior は依存する前に host plugin へ移してください。
+
+### 互換 Extension の仕組み
 
 1. ホストが設定で Extension を登録する
-2. 起動時に、ホストが Extension を `PluginRouter` インスタンスとしてインジェクトする
+2. 起動時に、host が宣言済み `PluginRouter` を import して injection する
 3. Extension のエントリーはホストプラグインの名前空間でアクセス可能になる
-4. Extension のフックがホストのエントリーポイントをインターセプトする
 
 ---
 
@@ -147,23 +137,29 @@ exists = await self.plugins.exists("required_plugin")
 dep = await self.plugins.require_enabled("required_plugin")
 ```
 
-### イベントバス
+### Bus read と watcher
 
-`self.bus` は読み取り専用のビュー（`SdkBusContext`）で、5 つの名前空間スナップショット `messages`、`events`、`lifecycle`、`conversations`、`memory` を公開し、それぞれに `.get(...)` があります。`emit()` や `on()` メソッドは**ありません**。バスは名前空間スナップショットの読み取り専用であり、イベントを直接発行することはできません。
+`self.bus` は 5 つの readable namespace snapshot `messages`、`events`、`lifecycle`、`conversations`、`memory` を公開し、`emit()` や `on()` はありません。`watch()` を使えるのは `messages`、`events`、`lifecycle` だけで、`conversations` と `memory` は read-only snapshot です。
 
 ```python
-# 名前空間の最新スナップショットを読み取る
-events = self.bus.events.get()
+# async entry では get() を await する
+events = await self.bus.events.get(plugin_id=self.plugin_id)
+recent = events.filter(priority_min=1).sort(by="timestamp", reverse=True).limit(20)
 
-# 変更をサブスクライブする：まず get() でリストを取得し、watch() で watcher を得る。
-# watcher.subscribe(on=...) はデコレーターで、ハンドラーは SdkBusDelta を受け取る。
-watcher = self.bus.events.get().watch(self.ctx)
+# subscribe() は "add"、"del"、"change" のみ受け付ける
+watcher = recent.watch(self.ctx)
 
-@watcher.subscribe(on="some_event")
+@watcher.subscribe(on="add")
 def _handle_event(delta):
-    # delta.added / delta.removed / delta.current
-    ...
+    for event in delta.added:
+        self.logger.info(f"new event: {event.type}")
+
+watcher.start()
 ```
+
+callable の `filter(predicate)`、`where(predicate)`、`sort(key=callable)` は materialize 済み snapshot に対する local-only 変換で、`watch()` では replay できません。watcher chain では上例のように structured `filter(field=value, ...)` と `sort(by=...)` を使います。
+
+最近の memory record は `await self.bus.memory.get(bucket_id="default", limit=...)`、semantic lookup は `await self.ctx.query_memory("default", query)` を使います。旧高レベル `self.memory` / `MemoryClient` API は削除済みです。
 
 ---
 

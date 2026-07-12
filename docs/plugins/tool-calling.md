@@ -316,8 +316,8 @@ preserved.
 
 ## Same-Process Registration (Advanced)
 
-If your plugin runs in the same Python process (e.g. extension mode or
-built-in functionality), you can bypass HTTP and call
+If code runs in the same Python process (for example, built-in functionality
+or a still-compatible **deprecated existing Extension**), it can bypass HTTP and call
 `LLMSessionManager.register_tool(...)` directly with a local callable
 as `handler`, skipping HTTP forwarding:
 

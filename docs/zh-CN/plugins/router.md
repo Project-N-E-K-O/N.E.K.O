@@ -50,8 +50,7 @@ plugin/plugins/lifekit/
 ```python
 # routers/countdown.py
 
-from plugin.sdk.plugin import plugin_entry, Ok, Err, SdkError
-from plugin.sdk.shared.core.router import PluginRouter
+from plugin.sdk.plugin import PluginRouter, plugin_entry, Ok, Err, SdkError
 
 
 class CountdownRouter(PluginRouter):
@@ -212,7 +211,7 @@ self.include_router(CountdownRouter(), prefix="time_")
 
 `exclude_router()` 会把 router 从插件的 router 列表中移除，但普通插件代码不应把它当作实时功能开关。入口点是在宿主构建 dispatch table 时收集的，之后再移除 router 不会自动让已经收集的入口不可调用。
 
-如果需要运行时启用/禁用功能，请使用宿主的 extension 启用/禁用控制（`DISABLE_EXTENSION` / `ENABLE_EXTENSION`），它们会重建 dispatch table；也可以在入口逻辑里用自己的配置判断。
+如果需要运行时启用/禁用功能，请在入口逻辑中使用明确的插件配置判断；dispatch 结构变化时重建或重启插件。不要依赖已经弃用的 Extension 控制路径。
 
 ```python
 # 只从 router 列表移除
@@ -230,8 +229,7 @@ self.exclude_router("countdown")
 
 ```python
 # routers/greet.py
-from plugin.sdk.plugin import plugin_entry, Ok
-from plugin.sdk.shared.core.router import PluginRouter
+from plugin.sdk.plugin import PluginRouter, plugin_entry, Ok
 
 class GreetRouter(PluginRouter):
     def __init__(self):
@@ -243,8 +241,7 @@ class GreetRouter(PluginRouter):
 
 
 # routers/math.py
-from plugin.sdk.plugin import plugin_entry, Ok, Err, SdkError
-from plugin.sdk.shared.core.router import PluginRouter
+from plugin.sdk.plugin import PluginRouter, plugin_entry, Ok, Err, SdkError
 
 class MathRouter(PluginRouter):
     def __init__(self):

@@ -40,7 +40,7 @@ class MyPlugin(NekoPluginBase):
 | `self.plugin_id` | `str` | このプラグインの一意の識別子 |
 | `self.config_dir` | `Path` | `plugin.toml` を含むディレクトリ |
 | `self.metadata` | `dict` | `plugin.toml` からのプラグインメタデータ |
-| `self.bus` | `Bus` | pub/sub 用のイベントバス |
+| `self.bus` | `SdkBusContext` | host state の read/watch facade。publish/emit API はありません |
 | `self.plugins` | `Plugins` | プラグイン間呼び出しヘルパー |
 | `self.system_info` | `SystemInfo` | ホストシステムのメタデータ |
 
@@ -60,17 +60,19 @@ self.report_status({
 
 #### `push_message(**kwargs) -> object`
 
-ホストシステムにメッセージをプッシュします。
+v2 schema でホストシステムにメッセージをプッシュします。
 
 ```python
 self.push_message(
     source="my_feature",
-    message_type="text",        # "text" | "url" | "binary" | "binary_url"
-    description="Task complete",
-    priority=5,                 # 0-10（0=低、10=緊急）
-    content="Result text",
+    visibility=["chat"],       # []、["chat"]、["hud"]、または両方
+    ai_behavior="blind",       # "respond"、"read"、"blind"
+    parts=[{"type": "text", "text": "タスクが完了しました"}],
+    priority=5,
 )
 ```
+
+v1 field（`message_type`、`content`、`delivery`、`reply` および他の legacy alias）は非推奨で、v0.9 で削除されます。[移行ガイド](./migration-v0.9#push-message-v2)を参照してください。
 
 #### `data_path(*parts) -> Path`
 
@@ -115,7 +117,7 @@ self.register_static_ui("static")  # <plugin_dir>/static/index.html を配信
 
 #### `include_router(router, *, prefix) -> None`
 
-`PluginRouter` をマウントします（Extension で使用）。
+大規模または機能分割された通常 Plugin を整理するために `PluginRouter` を mount します。
 
 #### `run_update(**kwargs) -> object` (async)
 
@@ -254,17 +256,22 @@ python_env = unwrap_or(await self.system_info.get_python_env(), {})
 | `ctx.plugin_id` | `str` | プラグイン識別子 |
 | `ctx.config_path` | `Path` | `plugin.toml` へのパス |
 | `ctx.logger` | `Logger` | ロガーインスタンス |
-| `ctx.bus` | `Bus` | イベントバス |
+| `ctx.bus` | `SdkBusContext` | host state の read/watch facade |
 | `ctx.metadata` | `dict` | プラグインメタデータ |
 
-### メッセージタイプ
+### Bus と Memory
 
-| タイプ | 用途 |
-|--------|------|
-| `text` | プレーンテキストメッセージ |
-| `url` | URL リンク |
-| `binary` | 小さなバイナリデータ（直接送信） |
-| `binary_url` | 大きなファイル（URL で参照） |
+async entry 内では、local list 操作より先に `get()` を await します。
+
+```python
+events = await self.bus.events.get(plugin_id=self.plugin_id)
+recent = events.filter(priority_min=1).sort(by="timestamp", reverse=True).limit(20)
+
+records = await self.bus.memory.get(bucket_id="default", limit=20)
+matches = await self.ctx.query_memory("default", "ユーザーの好み")
+```
+
+list surface は `filter` / `where`、`sort`、`limit`、`watch` です。callable の `filter(predicate)`、`where(predicate)`、`sort(key=...)` は local-only です。replayable な watcher chain では structured `filter(field=value, ...)` と `sort(by=...)` を使います。`watch()` を使えるのは `messages`、`events`、`lifecycle` だけで、`conversations` と `memory` は read-only snapshot です。watcher subscription は `add`、`del`、`change` のみ受け付けます。
 
 ### 優先度レベル
 

@@ -235,20 +235,28 @@ content = cache_file.read_text()
 
 ---
 
-## self.bus — Bus snapshots
+## self.bus — Bus read/watch
 
-**When you need it**: You want to read namespaced bus snapshots such as messages, events, lifecycle records, conversations, and memory records.
+**When you need it**: You want to read or watch namespaced host-state snapshots. This facade has no publish/emit API.
 
 ```python
 # Read recent events
-recent_events = await self.bus.events.get(filter={"type": "note_created"}, max_count=20)
+recent_events = await self.bus.events.get(max_count=50)
+recent_events = recent_events.filter(type="note_created").sort(
+    by="timestamp", reverse=True,
+).limit(20)
 
 # Read recent messages
 recent_messages = await self.bus.messages.get(max_count=20)
 
 # Read memory records from a bucket
 memory_records = await self.bus.memory.get(bucket_id="default", limit=20)
+
+# Semantic lookup is a separate context operation
+matches = await self.ctx.query_memory("default", "user preferences")
 ```
+
+The list surface is `filter` / `where`, `sort`, `limit`, and `watch`. Callable `filter(predicate)`, `where(predicate)`, and `sort(key=...)` are local-only, so watcher chains must use structured `filter(field=value, ...)` and `sort(by=...)`. Only `messages`, `events`, and `lifecycle` support `watch()`; `conversations` and `memory` are read-only snapshots. Watcher subscriptions accept only `add`, `del`, or `change`.
 
 ---
 

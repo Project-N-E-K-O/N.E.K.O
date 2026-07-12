@@ -40,7 +40,7 @@ class MyPlugin(NekoPluginBase):
 | `self.plugin_id` | `str` | This plugin's unique identifier |
 | `self.config_dir` | `Path` | Directory containing `plugin.toml` |
 | `self.metadata` | `dict` | Plugin metadata from `plugin.toml` |
-| `self.bus` | `Bus` | Event bus for pub/sub |
+| `self.bus` | `SdkBusContext` | Read/watch facade over host state; it has no publish/emit API |
 | `self.plugins` | `Plugins` | Cross-plugin call helper |
 | `self.system_info` | `SystemInfo` | Host system metadata |
 
@@ -60,17 +60,19 @@ self.report_status({
 
 #### `push_message(**kwargs) -> object`
 
-Push a message to the host system.
+Push a message to the host system with the v2 schema.
 
 ```python
 self.push_message(
     source="my_feature",
-    message_type="text",        # "text" | "url" | "binary" | "binary_url"
-    description="Task complete",
-    priority=5,                 # 0-10 (0=low, 10=emergency)
-    content="Result text",
+    visibility=["chat"],       # [], ["chat"], ["hud"], or both
+    ai_behavior="blind",       # "respond", "read", or "blind"
+    parts=[{"type": "text", "text": "Task complete"}],
+    priority=5,
 )
 ```
+
+The v1 fields (`message_type`, `content`, `delivery`, `reply`, and the other legacy aliases) are deprecated and scheduled for removal in v0.9. See the [migration guide](./migration-v0.9#push-message-v2).
 
 #### `data_path(*parts) -> Path`
 
@@ -115,7 +117,7 @@ self.register_static_ui("static")  # serves <plugin_dir>/static/index.html
 
 #### `include_router(router, *, prefix) -> None`
 
-Mount a `PluginRouter` (used by extensions).
+Mount a `PluginRouter` to organize a large or feature-split normal plugin.
 
 #### `run_update(**kwargs) -> object` (async)
 
@@ -254,17 +256,22 @@ The `ctx` object is injected by the host at construction time.
 | `ctx.plugin_id` | `str` | Plugin identifier |
 | `ctx.config_path` | `Path` | Path to `plugin.toml` |
 | `ctx.logger` | `Logger` | Logger instance |
-| `ctx.bus` | `Bus` | Event bus |
+| `ctx.bus` | `SdkBusContext` | Read/watch facade over host state |
 | `ctx.metadata` | `dict` | Plugin metadata |
 
-### Message types
+### Bus and memory
 
-| Type | Use case |
-|------|----------|
-| `text` | Plain text messages |
-| `url` | URL links |
-| `binary` | Small binary data (transmitted directly) |
-| `binary_url` | Large files (referenced by URL) |
+Inside async entries, await `get()` before applying the local list operations:
+
+```python
+events = await self.bus.events.get(plugin_id=self.plugin_id)
+recent = events.filter(priority_min=1).sort(by="timestamp", reverse=True).limit(20)
+
+records = await self.bus.memory.get(bucket_id="default", limit=20)
+matches = await self.ctx.query_memory("default", "user preferences")
+```
+
+The list surface is `filter` / `where`, `sort`, `limit`, and `watch`. Callable `filter(predicate)`, `where(predicate)`, and `sort(key=...)` are local-only; replayable watcher chains must use structured `filter(field=value, ...)` and `sort(by=...)`. Only `messages`, `events`, and `lifecycle` support `watch()`; `conversations` and `memory` are read-only snapshots. Watcher subscriptions accept only `add`, `del`, or `change`.
 
 ### Priority levels
 

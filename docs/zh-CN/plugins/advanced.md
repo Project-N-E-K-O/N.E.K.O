@@ -1,44 +1,34 @@
 # 高级主题
 
-## 扩展（Extension）
+## Extension（已弃用兼容）
 
-扩展可以在不修改现有插件的情况下，为其添加路由和钩子。扩展运行在宿主插件的进程内（而非独立进程）。
+> Extension 新开发已经弃用。只有符合当前 loader contract 的 `PluginRouter` + `@plugin_entry` 旧包仍可加载；不要创建或脚手架生成新的 Extension。参见 [v0.9 迁移指南](./migration-v0.9)。
 
-### 何时使用扩展
+兼容加载器仍可把已有 `PluginRouter` 注入宿主进程。下文只用于识别和迁移这种旧包结构。
 
-- 你想为现有插件添加新命令
-- 你想钩住另一个插件的入口点
-- 你想在插件内实现模块化的代码组织
+新功能请使用普通 Plugin。若你维护宿主且仅需组织代码，请使用 `PluginRouter`；若要桥接外部协议，请使用 Adapter。
 
-### 创建扩展
+### 识别已有 Extension
 
 ```python
-from plugin.sdk.extension import (
-    NekoExtensionBase, extension, extension_entry, extension_hook,
-    Ok, Err,
-)
+from plugin.sdk.plugin import PluginRouter, plugin_entry, Ok
 
-@extension
-class MyExtension(NekoExtensionBase):
-    """为宿主插件添加额外命令。"""
 
-    @extension_entry(id="extra_command", description="An extra command added by extension")
-    def extra_command(self, param: str = "", **_):
+class MyExtensionRouter(PluginRouter):
+    """注入已有宿主插件的旧 Router。"""
+
+    @plugin_entry(id="extra_command", description="Extension 添加的命令")
+    async def extra_command(self, param: str = "", **_):
         return Ok({"extended": True, "param": param})
-
-    @extension_hook(target="original_entry", timing="before")
-    def validate(self, *, args, **_):
-        # 在宿主插件的 "original_entry" 之前运行
-        if not args.get("required_field"):
-            return Err("Missing required_field")
 ```
 
-### 扩展的工作原理
+manifest 仍使用 `type = "extension"`，声明 `[plugin.host]`，并让 `plugin.entry` 指向这个 `PluginRouter` 子类。历史 `NekoExtensionBase`、`@extension`、`@extension_entry`、`@extension_hook` 符号只为导入兼容保留；加载器不会读取它们的 Extension 专用 metadata。请把入口改为 `@plugin_entry`，并在依赖钩子行为前把逻辑迁入宿主插件。
+
+### 兼容 Extension 的工作原理
 
 1. 宿主在其配置中注册扩展
-2. 启动时，宿主将扩展作为 `PluginRouter` 实例注入
+2. 启动时，宿主导入并注入声明的 `PluginRouter`
 3. 扩展的入口点在宿主插件的命名空间下变为可访问
-4. 扩展的钩子会拦截宿主的入口点
 
 ---
 
@@ -147,23 +137,29 @@ exists = await self.plugins.exists("required_plugin")
 dep = await self.plugins.require_enabled("required_plugin")
 ```
 
-### 事件总线
+### Bus 读取与监听
 
-`self.bus` 是一个只读视图（`SdkBusContext`），暴露五个命名空间快照：`messages`、`events`、`lifecycle`、`conversations`、`memory`，每个都有 `.get(...)`。它**没有** `emit()` 或 `on()` 方法——总线只用于读取命名空间快照，不能直接发布事件。
+`self.bus` 暴露五个可读命名空间快照：`messages`、`events`、`lifecycle`、`conversations`、`memory`，且**没有** `emit()` 或 `on()` 方法。只有 `messages`、`events`、`lifecycle` 支持 `watch()`；`conversations` 与 `memory` 是只读快照。
 
 ```python
-# 读取某个命名空间的最新快照
-events = self.bus.events.get()
+# 在异步入口中必须 await get()
+events = await self.bus.events.get(plugin_id=self.plugin_id)
+recent = events.filter(priority_min=1).sort(by="timestamp", reverse=True).limit(20)
 
-# 订阅变更：先 get() 得到列表，再 watch() 得到 watcher，
-# watcher.subscribe(on=...) 是一个装饰器，处理函数收到一个 SdkBusDelta
-watcher = self.bus.events.get().watch(self.ctx)
+# subscribe() 仅接受 "add"、"del"、"change"
+watcher = recent.watch(self.ctx)
 
-@watcher.subscribe(on="some_event")
+@watcher.subscribe(on="add")
 def _handle_event(delta):
-    # delta.added / delta.removed / delta.current
-    ...
+    for event in delta.added:
+        self.logger.info(f"new event: {event.type}")
+
+watcher.start()
 ```
+
+可调用形式 `filter(predicate)`、`where(predicate)` 与 `sort(key=callable)` 只处理当前已经物化的本地快照，不能由 `watch()` 重放。需要监听的链必须像上例一样使用结构化 `filter(field=value, ...)` 与 `sort(by=...)`。
+
+最近记忆记录使用 `await self.bus.memory.get(bucket_id="default", limit=...)`，语义检索使用 `await self.ctx.query_memory("default", query)`。旧的高层 `self.memory` / `MemoryClient` 已不存在。
 
 ---
 

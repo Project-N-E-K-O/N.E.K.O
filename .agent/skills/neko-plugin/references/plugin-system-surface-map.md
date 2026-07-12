@@ -13,7 +13,7 @@ Use this as the source-map for plugin-system APIs before inventing an abstractio
 ## Import Layers
 
 - S `plugin.sdk.plugin`: Standard plugin facade. Import `NekoPluginBase`, decorators, result helpers, config/runtime helpers, i18n, settings, UI helpers, and ordinary plugin APIs from here.
-- A `plugin.sdk.extension`: Extension facade. Use only for packages with `type = "extension"` and `[plugin.host]`.
+- C `plugin.sdk.extension`: Deprecated compatibility facade. Use only while maintaining an existing package with `type = "extension"` and `[plugin.host]`; never choose it for new work.
 - B `plugin.sdk.adapter`: Adapter facade. Use only for protocol gateways that translate external requests into N.E.K.O plugin calls.
 - A `@neko/plugin-ui`: Hosted TSX facade. Use inside `hosted-tsx` surfaces; full component signatures live in `hosted-ui-api.md`.
 - D `plugin.sdk.shared.*`, `plugin.core.*`, `plugin.server.*`: Implementation details. Do not import these from plugin workspace code unless the user explicitly approves platform work.
@@ -50,7 +50,7 @@ Use this as the source-map for plugin-system APIs before inventing an abstractio
 - A `run_update(**kwargs)`: Forwards a run update to the host. Use for long-running entry progress when the host expects run status.
 - A `export_push(**kwargs)`: Pushes export artifacts through the host export channel. Prefer structured arguments; treat as async host integration.
 - A `finish(**kwargs)`: Marks the current task complete and sends structured completion data. Use for entry flows that intentionally complete a host task.
-- S `push_message(**kwargs)`: Sends plugin output to the dialog/message channel. Prefer `parts`, `visibility`, and `ai_behavior` over legacy fields.
+- S `push_message(**kwargs)`: Sends plugin output to the dialog/message channel. Use `parts`, `visibility`, and `ai_behavior`; legacy v1 fields are compatibility-only and scheduled for removal in v0.9.
 - A `include_router(router, prefix="")`: Mounts a `PluginRouter`. Use only for large or feature-split plugins, usually when the main file grows beyond about 1k lines.
 - C `exclude_router(router_or_name)`: Unmounts a router by object or name. Rarely needed outside dynamic plugin composition.
 - B `get_router(name)`: Looks up a mounted router. Use for diagnostics or dynamic router operations.
@@ -208,20 +208,20 @@ Use this as the source-map for plugin-system APIs before inventing an abstractio
 
 ### Memory and System Info
 
-- B `self.bus.memory.get(bucket_id, limit=20, timeout=5.0)`: Reads recent memory records from a bucket.
-- B `self.ctx.query_memory(bucket_id, query, timeout=5.0)`: Queries a memory bucket for semantic lookup workflows.
+- B `await self.bus.memory.get(bucket_id="default", limit=20, timeout=5.0)`: Reads recent memory records from a bucket inside an async entry; `bucket_id` is keyword-only.
+- B `await self.ctx.query_memory("default", query, timeout=5.0)`: Queries a memory bucket for semantic lookup workflows.
 - B `SystemInfo.get_system_config(timeout=5.0)`: Reads host system config. Use only when plugin behavior genuinely depends on global config.
 - B `SystemInfo.get_server_settings(timeout=5.0)`: Reads server settings subset. Use for diagnostics and compatibility behavior.
 - B `SystemInfo.get_python_env()`: Returns Python/OS environment info. Use in diagnostics, not normal runtime logic.
 
 ### Bus Read/Watch Facade
 
-- A `SdkBusContext.messages.get(...)`, `events.get(...)`, `lifecycle.get(...)`, `conversations.get(...)`, `memory.get(bucket_id, limit=20, timeout=5.0)`: Read host bus namespaces. Use for observation and context, not publishing.
+- A `self.bus.messages.get(...)`, `events.get(...)`, `lifecycle.get(...)`, `conversations.get(...)`, `memory.get(bucket_id="default", limit=20, timeout=5.0)`: Read host bus namespaces through the object returned on `self.bus`. Use for observation and context, not publishing; memory `bucket_id` is keyword-only. Do not import the internal `SdkBusContext` class.
 - A `conversations.get_by_id(conversation_id, max_count=10, timeout=5.0)`: Reads a conversation by id. Use for context-aware plugins with explicit privacy boundaries.
-- A `SdkBusList.count()`, `size()`, `dump()`, `dump_records()`, `explain()`, `trace_tree_dump()`: Inspect bus query results. Use in UI state and diagnostics.
-- A `SdkBusList.filter(...)`, `where(predicate)`, `where_in(field, values)`, `limit(size)`, `watch(...)`: Local filtering and watch setup. Use for reactive plugins with bounded data volume.
-- B `SdkBusWatcher.start()`, `stop()`, `subscribe(on=...)`: Watch bus deltas. Use only when the plugin needs live host-state observation.
-- B `SdkBusMessageRecord`, `SdkBusEventRecord`, `SdkBusLifecycleRecord`, `SdkBusConversationRecord`, `SdkBusMemoryRecord`, `SdkBusDelta`: Typed bus record/delta shapes. Use for typing and tests.
+- A Bus lists returned by `get()` expose `count()`, `size()`, `dump()`, `dump_records()`, `explain()`, and `trace_tree_dump()` for result inspection; their concrete SDK classes are internal and must not be imported.
+- A Returned bus lists expose `filter(...)`, `where(predicate)`, `sort(by=None, key=None, reverse=False)`, `limit(size)`, and `watch(...)`. Callable `filter(predicate)`, `where(predicate)`, and `sort(key=callable)` are local-only; replayable watcher chains must use structured `filter(field=value, ...)` and `sort(by=...)`. The old `where_*` helpers and set operators are removed.
+- B Watchers returned by `watch()` expose `start()`, `stop()`, and `subscribe(on="add|del|change")` for `messages`, `events`, or `lifecycle` deltas. `conversations` and `memory` are read-only snapshots; arbitrary event names are not accepted.
+- B Records and deltas returned by the bus provide typed attributes at runtime, but their concrete `SdkBus*` classes are internal. Use behavior/attribute assertions in plugin tests instead of importing from `plugin.sdk.shared`.
 
 ### LLM Tool API
 
@@ -254,16 +254,18 @@ Full prop and component signatures live in `hosted-ui-api.md`; this section is t
 - S Toast/confirm helpers `showToast`, `useToast`, `useConfirm`: User feedback and confirmation helpers. Use for action outcomes and destructive confirmations.
 - A Types `Tone`, `JsonSchema`, `HostedAction`, `HostedI18n`, `DataTableColumn`, `FormState`, `AsyncState`, `RefObject`, `CommonProps`: Type hosted TSX surfaces. Import from `@neko/plugin-ui` rather than duplicating shapes.
 
-## Extension Facade: `plugin.sdk.extension`
+## Deprecated Extension Compatibility Facade: `plugin.sdk.extension`
 
-- A `NekoExtensionBase`: Base class for extension packages. Use only when extending a host plugin via `[plugin.host]`.
-- A `ExtensionMeta`: Extension metadata model. Use mainly for typing or introspection.
-- A `@extension_entry(id=None, name=None, description="", timeout=None)`: Registers an extension-provided entry. Use when adding entries to a host plugin without modifying the host.
-- B `@extension_hook(target="*", timing="before|after|around|replace", priority=0)`: Registers extension interception. Use only for host-entry interception with narrow targets.
-- A `extension.entry(...)`, `extension.hook(...)`: Namespace aliases for extension decorators. Use for readability in extension classes.
+Do not create or scaffold a new extension. The loader-compatible legacy shape is a manifest with `[plugin.host]` whose entry class is `PluginRouter` and whose methods use `@plugin_entry`. The historical facade symbols below are listed only so old code can be diagnosed; their extension-specific metadata is not consumed by the loader.
+
+- C `NekoExtensionBase`: Historical base marker; convert the package entry to `PluginRouter` before relying on current loader compatibility.
+- C `ExtensionMeta`: Compatibility metadata model, mainly for diagnostics and migration.
+- C `@extension_entry(id=None, name=None, description="", timeout=None)`: Historical metadata marker not consumed by the current loader; convert to `@plugin_entry`.
+- C `@extension_hook(target="*", timing="before|after|around|replace", priority=0)`: Historical metadata marker not consumed by the current loader; move the behavior into the host during migration.
+- C `extension.entry(...)`, `extension.hook(...)`: Compatibility namespace aliases.
 - B `ExtensionEntryMeta`, `ExtensionHookMeta`, `EXTENSION_ENTRY_META`, `EXTENSION_HOOK_META`: Extension metadata markers. Use in tests/tooling, not normal plugin logic.
 - B `ExtensionRuntime.health()`: Runtime health helper. Use for extension diagnostics.
-- A Extension runtime re-exports `Ok`, `Err`, `Result`, errors, logging helpers, `PluginConfig`, `PluginRouter`, `MessagePlaneTransport`: Same runtime vocabulary as plugin facade. Use only inside extension packages.
+- C Extension runtime re-exports `Ok`, `Err`, `Result`, errors, logging helpers, `PluginConfig`, `PluginRouter`, `MessagePlaneTransport`: Compatibility vocabulary for existing extension packages only.
 
 ## Adapter Facade: `plugin.sdk.adapter`
 

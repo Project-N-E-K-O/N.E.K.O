@@ -1,6 +1,6 @@
 # Plugin System Overview
 
-The N.E.K.O. plugin system is a Python-based plugin framework built on **process isolation** and **async IPC**. It supports three development paradigms — **Plugin**, **Extension**, and **Adapter** — to cover different use cases from simple features to complex protocol bridging.
+The N.E.K.O. plugin system is a Python-based plugin framework built on **process isolation** and **async IPC**. New development uses two paradigms: **Plugin** for product features and **Adapter** for external protocol bridges. The old **Extension** type is deprecated; only existing `PluginRouter` + `@plugin_entry` packages matching the loader contract still load, and new ones must not be created.
 
 ## Architecture
 
@@ -11,7 +11,7 @@ The N.E.K.O. plugin system is a Python-based plugin framework built on **process
 │  │   Plugin Host (core/)                        │  │
 │  │   - Plugin lifecycle management              │  │
 │  │   - Bus system (memory, events, messages)    │  │
-│  │   - Extension injection                      │  │
+│  │   - Legacy Extension compatibility           │  │
 │  │   - ZMQ IPC transport                        │  │
 │  └──────────────────────────────────────────────┘  │
 │  ┌──────────────────────────────────────────────┐  │
@@ -24,36 +24,36 @@ The N.E.K.O. plugin system is a Python-based plugin framework built on **process
                      │ ZMQ IPC
       ┌──────────────┼──────────────┬────────────────┐
       ▼              ▼              ▼                ▼
-  Plugin A       Plugin B      Extension C      Adapter D
-  (process)      (process)     (injected)       (process)
+  Plugin A       Plugin B      Existing Ext.    Adapter D
+  (process)      (process)     (compat only)     (process)
 ```
 
-## Three Development Paradigms
+## Package types
 
 | Paradigm | Import from | Use case | How it runs |
 |----------|------------|----------|-------------|
 | **Plugin** | `plugin.sdk.plugin` | Independent features (search, reminders, etc.) | Separate process |
-| **Extension** | `plugin.sdk.extension` | Add routes/hooks to an existing plugin | Injected into host plugin process |
+| **Extension (deprecated)** | `plugin.sdk.extension` | Compatibility for an already-existing extension only | Injected into host plugin process |
 | **Adapter** | `plugin.sdk.adapter` | Bridge external protocols (MCP, NoneBot) to internal plugin calls | Separate process with gateway pipeline |
 
 ### When to use which?
 
 - **"I want to add a new standalone feature"** → use **Plugin**
-- **"I want to extend an existing plugin with extra commands"** → use **Extension**
+- **"I want to add commands around an existing feature"** → use a normal **Plugin**, or add a `PluginRouter` inside the existing host when you own it
 - **"I want to accept MCP/NoneBot/external protocol calls and route them to plugins"** → use **Adapter**
 
-> 99% of developers only need **Plugin**. Start there.
+> Start with **Plugin**. Do not scaffold a new Extension; migrate a loader-compatible legacy router into a normal Plugin or its host, and convert older facade-based packages first.
 
 ## Key Features
 
-- **Process isolation** — Each plugin runs in a separate process; crashes don't affect the host
+- **Process isolation** — Normal Plugins and Adapters run separately; a deprecated compatible Extension shares its host plugin process, so its crashes or side effects can affect that host
 - **Async support** — Both sync and async entry points
 - **Result types** — `Ok`/`Err` for type-safe error handling (no exceptions in normal flow)
 - **Hook system** — `@before_entry`, `@after_entry`, `@around_entry`, `@replace_entry` for AOP
 - **Cross-plugin calls** — `self.plugins.call_entry("other_plugin:entry_id")` for inter-plugin communication
 - **System info** — `self.system_info` for querying host system metadata
 - **Plugin store** — `PluginStore` for persistent key-value storage
-- **Bus system** — `self.bus` for reading host state and subscribing to changes: `self.bus.messages` / `self.bus.events` / `self.bus.lifecycle` / `self.bus.conversations` / `self.bus.memory`, each exposing `.get(...)` to read a snapshot. To react to changes, watch a snapshot list and subscribe to deltas: `self.bus.events.get(...).watch(...).subscribe(on=...)`. There is no publish/emit API — the bus is read-only/reactive, not a general pub/sub bus.
+- **Bus system** — `self.bus` reads host state through `messages`, `events`, `lifecycle`, `conversations`, and `memory`. Only the first three support `watch()`; `conversations` and `memory` are read-only snapshots. Replayable watcher chains use `get()` → structured `filter(field=value, ...)` → `sort(by=...)` → `limit()` → `watch()` and subscribe only to `add`, `del`, or `change` deltas. There is no publish/emit API. Use `self.bus.memory.get(...)` for recent records and `await self.ctx.query_memory(...)` for semantic lookup.
 - **Dynamic entries** — Register/unregister entry points at runtime
 - **Hosted UI** — Build interactive TSX panels and Markdown guides in the Plugin Manager
 - **Static UI** — Serve a legacy web UI from your plugin directory
@@ -79,10 +79,11 @@ plugin/plugins/
 ## Quick Links
 
 - [Quick Start](./quick-start) — Create your first plugin in 5 minutes
+- [v0.9 Migration](./migration-v0.9) — Removed surfaces and exact replacements
 - [SDK Reference](./sdk-reference) — Base classes, context API, Result types
 - [Decorators](./decorators) — All available decorators
 - [Hosted UI](./hosted-ui) — Build TSX panels and Markdown guides
 - [Examples](./examples) — Complete working examples
-- [Advanced Topics](./advanced) — Extensions, Adapters, cross-plugin calls, hooks
+- [Advanced Topics](./advanced) — Extension compatibility, Adapters, cross-plugin calls, hooks
 - [LLM Tool Calling](./tool-calling) — Register plugin functions for the LLM to invoke during conversations
 - [Best Practices](./best-practices) — Error handling, testing, code organization

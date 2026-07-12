@@ -45,7 +45,6 @@ This file is the canonical taxonomy for `plugin/tests`.
 - `test_sdk_hook_executor.py`: hook execution contracts.
 - `test_sdk_memory_system_state.py`: memory/system state access behavior.
 - `test_sdk_message_plane_transport_client.py`: message-plane transport behavior.
-- `test_sdk_method_surface_complete.py`: sdk method surface completeness.
 - `test_sdk_neko_adapter_plugin.py`: neko adapter plugin behavior.
 - `test_sdk_plugins_and_config.py`: sdk plugin/config usage paths.
 - `test_sdk_public_api_surface.py`: public API surface expectations.
@@ -85,4 +84,3 @@ This preserves pytest discovery while making ownership and review scope obvious.
 - If subject module path starts with `plugin.server.messaging`, place under `unit/server/messaging/`.
 - If a test covers multiple subsystems, place by primary entrypoint and add a header comment.
 - SDK tests must remain under `unit/sdk/` and avoid server fixture coupling.
-

@@ -15,7 +15,7 @@ Use this as the single entry point for N.E.K.O plugin work. Keep the workflow co
 - Plugin workspaces live under repository-relative `plugin/plugins/<plugin_id>/`; read `references/core-plugin-contract.md` for the canonical file tree.
 - Docs, tests, examples, indexes, and platform source are read context; platform edits require explicit user request or confirmation.
 - Create standard plugin scaffolds with `uv run neko-plugin init ...`; do not hand-create the initial plugin directory, `plugin.toml`, or entry class.
-- Prefer public SDK facades: `plugin.sdk.plugin`, `plugin.sdk.extension`, `plugin.sdk.adapter`. Do not add new `plugin.sdk.shared` imports in plugin workspace code.
+- Prefer the public `plugin.sdk.plugin` and `plugin.sdk.adapter` facades. `plugin.sdk.extension` is deprecated and exists only to maintain already-installed extensions; do not select it for new work. Do not add new `plugin.sdk.shared` imports in plugin workspace code.
 - Runtime-triggered `@plugin_entry` handlers must be `async def`; `plugin_runtime.auto_start=false` is manual-start, not disabled or import-safe.
 - Prefer Hosted TSX for new interactive plugin UI, Markdown for read-only docs, and Static only for legacy standalone pages or unsupported browser/runtime needs.
 
@@ -24,7 +24,7 @@ Use this as the single entry point for N.E.K.O plugin work. Keep the workflow co
 Choose package type from the manifest/SDK contract, not from feature vibes:
 
 - `plugin`: default independent feature. It can include entries, lifecycle/background work, timers, message handlers, UI, storage/settings, cross-plugin calls, and ordinary external API/device integrations.
-- `extension`: adds entries/hooks to an existing host plugin and requires `[plugin.host]`.
+- `extension`: deprecated compatibility type for already-existing host extensions. Do not scaffold a new extension; migrate the feature into the host as a normal plugin/router or use an adapter for an external protocol.
 - `adapter`: bridges an external protocol or request stream into N.E.K.O plugin calls. Calling an external service is not enough to make something an adapter.
 
 ## Unified Workflow
