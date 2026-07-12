@@ -1,6 +1,6 @@
 # Session Management
 
-The `LLMSessionManager` class in `main_logic/core.py` is the central coordinator for each character's conversation sessions. Each character has its own manager instance.
+The `LLMSessionManager` class in the `main_logic/core/` package is the central coordinator for each character's conversation sessions. Each character has its own manager instance.
 
 ## Session lifecycle
 

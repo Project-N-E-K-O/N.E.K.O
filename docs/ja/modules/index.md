@@ -6,7 +6,7 @@
 
 | モジュール | ファイル | 用途 |
 |-----------|---------|------|
-| [LLMSessionManager](./core) | `main_logic/core.py` | 中央セッションコーディネーター |
+| [LLMSessionManager](./core) | `main_logic/core/` | 中央セッションコーディネーター |
 | [Realtime Client](./omni-realtime) | `main_logic/omni_realtime_client.py` | Realtime API 用 WebSocket クライアント |
 | [Offline Client](./omni-offline) | `main_logic/omni_offline_client.py` | テキストベース LLM クライアント（フォールバック） |
 | [TTS Client](./tts-client) | `main_logic/tts_client/` | テキスト音声合成 |

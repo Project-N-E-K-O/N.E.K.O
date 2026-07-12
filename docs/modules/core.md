@@ -1,6 +1,6 @@
 # LLMSessionManager
 
-**File:** `main_logic/core.py` (~10400 lines)
+**Package:** `main_logic/core/` — the class is assembled in `core/manager.py` (`__init__` holds all instance state) from domain mixin modules (`context_append` / `focus` / `tts_runtime` / `turn` / `tool_calling` / `lifecycle` / `proactive` / `greeting` / `streaming` / `notify`); `core/__init__.py` re-exports every top-level symbol, so the import path `main_logic.core` is unchanged.
 
 The `LLMSessionManager` is the heart of N.E.K.O. — one instance per character, managing the entire conversation lifecycle.
 
