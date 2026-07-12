@@ -267,10 +267,7 @@ const _NEKO_CAT_IDLE_OBSERVATION_TYPES = Object.freeze({
     CAT1_STRETCH_DONE_NEAR_CHAT: 'cat1_stretch_done_near_chat',
     CAT1_COMPACT_TOP_EDGE_DONE: 'cat1_compact_top_edge_done',
     CAT1_COMPACT_TOP_EDGE_DROP: 'cat1_compact_top_edge_drop',
-    EDGE_PEEK_AFTER_DRAG: 'edge_peek_after_drag',
-    CAT1_SOCIAL_PING_WAKEUP: 'cat1_social_ping_wakeup',
-    CAT1_SMALL_MOVE_WAKEUP: 'cat1_small_move_wakeup',
-    SLEEP_FEEDBACK_WAKEUP: 'sleep_feedback_wakeup'
+    EDGE_PEEK_AFTER_DRAG: 'edge_peek_after_drag'
 });
 const _NEKO_GOODBYE_IDLE_APPEARANCE_CAT = 'cat';
 const _NEKO_GOODBYE_IDLE_APPEARANCE_BALL = 'ball';

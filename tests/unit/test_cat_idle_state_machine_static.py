@@ -163,8 +163,6 @@ def test_cat_mind_phase0_declares_first_action_and_observation_ids():
         "return_click",
         "cat1_walk_done_near_chat",
         "cat1_compact_top_edge_done",
-        "cat1_social_ping_wakeup",
-        "sleep_feedback_wakeup",
         "chat_minimized_moved_far",
         "chat_idle_docked_near_cat",
         "desktop_occlusion_or_layer_change",
@@ -1568,9 +1566,6 @@ def test_cat_mind_selector_dispatches_one_async_request_and_records_started_life
             detail: {{ type: 'thought_bubble_pop', source: 'unit-score-prime', tier: 'cat1', timestamp: now + index, detail: {{}} }}
           }}));
         }}
-        win.dispatchEvent(new CustomEventLike('neko:cat-mind:observation', {{
-          detail: {{ type: 'cat1_social_ping_wakeup', source: 'legacy-wakeup', tier: 'cat1', timestamp: now, detail: {{}} }}
-        }}));
         assert.equal(requests.length, 0);
         assert.equal(timers.length, 1);
         timers.shift()();

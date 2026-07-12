@@ -74,9 +74,6 @@
         CAT1_COMPACT_TOP_EDGE_DONE: 'cat1_compact_top_edge_done',
         CAT1_COMPACT_TOP_EDGE_DROP: 'cat1_compact_top_edge_drop',
         EDGE_PEEK_AFTER_DRAG: 'edge_peek_after_drag',
-        CAT1_SOCIAL_PING_WAKEUP: 'cat1_social_ping_wakeup',
-        CAT1_SMALL_MOVE_WAKEUP: 'cat1_small_move_wakeup',
-        SLEEP_FEEDBACK_WAKEUP: 'sleep_feedback_wakeup',
         SOCIAL_PING_DONE: 'social_ping_done',
         SOCIAL_PING_FAILED: 'social_ping_failed',
         SMALL_MOVE_DONE: 'small_move_done',
@@ -1106,11 +1103,6 @@
             type === OBSERVATION_TYPES.ACTION_INTERRUPTED_BY_RETURN ||
             type === OBSERVATION_TYPES.ACTION_INTERRUPTED_BY_TIER_CHANGE) {
             return 'action_result';
-        }
-        if (type === OBSERVATION_TYPES.CAT1_SOCIAL_PING_WAKEUP ||
-            type === OBSERVATION_TYPES.CAT1_SMALL_MOVE_WAKEUP ||
-            type === OBSERVATION_TYPES.SLEEP_FEEDBACK_WAKEUP) {
-            return 'wakeup';
         }
         if (type === OBSERVATION_TYPES.CAT1_WALK_DONE_NEAR_CHAT ||
             type === OBSERVATION_TYPES.CAT1_STRETCH_DONE_NEAR_CHAT ||

@@ -661,7 +661,7 @@ CAT2/CAT3 sleep sound timer
 ### 6.0.7 阶段 3.2：小移动、视觉间距与动作循环校准
 
 1. `cat1_small_move` 是 CAT1 的第六个正式候选，复用既有 pair move 表现而非新写一套动画。它只在已 settled near chat、非 compact top edge、无 journey / hover / drag / active action、且 provider 证明有可用移动空间时出现；球远时只保留 `near_chat_unavailable` debug reason，selector 不得启动 walk-to-chat。
-2. 旧 pair-move timer 不再拥有动作调度权；如保留时间信号，它只发送 `cat1_small_move_wakeup`，不能直接移动、不能再借旧概率启动 play。adapter 再次 dry-run 后才启动既有 pair move，并以同一个 `requestId + runId` 完成 `accepted → started → cooldown`；最终坐标、class 和 idle art 恢复后才回写 `small_move_done`。drag、return、tier change 在恢复后回写对应 interrupted result；普通条件失效才是 cancelled。
+2. 旧 pair-move timer 已删除，不保留 per-action wakeup；Cat Mind 的低频 clock 与真实 observation 统一异步提供下一轮判断机会。adapter 再次 dry-run 后才启动既有 pair move，并以同一个 `requestId + runId` 完成 `accepted → started → cooldown`；最终坐标、class 和 idle art 恢复后才回写 `small_move_done`。drag、return、tier change 在恢复后回写对应 interrupted result；普通条件失效才是 cancelled。
 3. 小移动完成反馈采用 `stimulation -8`、`energy -3`、`sleepiness +1`（内部按 `0–1` 等比保存）。它只适度满足“想动”；下一轮只按五维、动作自身 cooldown 和真实 gate 决定，不另加 recent-action 分数。
 4. 轻声回应不应成为“无聊”的默认出口：保留三分钟独立 cooldown，完成后 `social -18 / energy -1`；评分中 stimulation 仅作 `0.08` 小权重。用户 hover、点气泡、普通拖拽和快速拖拽都通过既有五维提高后续互动倾向：轻互动主要提高社交/刺激，强拖拽同时消耗精力、增加困意。玩毛线、吃和睡眠完成不统一加社交；它们各自只适度回写真实的消耗/恢复维度。这样 near-chat 可用时会形成玩耍→食欲/休息等有限循环，near-chat 不可用时允许 `stay_idle`，绝不为填满空档主动 walk-to-chat。
 5. 站位使用 24px 容器间距，右侧不再向球内偏移。计算侧目标后必须再次验证猫框与球框之间仍有此间距：视口 clamp 使任一侧重叠时改选另一侧；两侧都不可用则不启动该侧 walk 或小移动。pair move 对猫和球应用同一位移，因此会保持已验证的相对间距。
