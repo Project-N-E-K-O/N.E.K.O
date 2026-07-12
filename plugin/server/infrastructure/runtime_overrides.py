@@ -2,7 +2,7 @@
 
 Plugin manifests declare a default ``plugin_runtime.enabled`` value. The plugin
 manager UI lets users override that default at runtime via plugin start/stop and
-extension enable/disable actions. Without persistence those toggles live only in
+plugin enable/disable actions. Without persistence those toggles live only in
 :data:`plugin.core.state.state.plugins` and are lost on restart.
 
 This module persists the user-toggled subset to ``plugin_runtime_overrides.json``

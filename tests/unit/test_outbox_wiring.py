@@ -33,10 +33,10 @@ def _install_fresh_memory_state(tmpdir: str):
         ob = Outbox()
     ob._config_manager = mock_cm
 
-    memory_server.outbox = ob
-    memory_server._config_manager = mock_cm
+    memory_server.runtime.outbox = ob
+    memory_server.runtime._config_manager = mock_cm
     # Reset event-loop-bound semaphore so each test gets a fresh one
-    memory_server._replay_semaphore = None
+    memory_server.outbox_infra._replay_semaphore = None
     return ob, mock_cm
 
 
@@ -286,7 +286,7 @@ async def test_append_pending_failure_falls_back_to_in_memory(tmp_path):
 
     # 同时 patch _run_post_turn_signals 成 noop，避免真 LLM 调用
     noop = AsyncMock(return_value=None)
-    with patch("app.memory_server._run_post_turn_signals", noop):
+    with patch("app.memory_server.post_turn._run_post_turn_signals", noop):
         task = await memory_server._spawn_outbox_post_turn_signals(
             "小天", [HumanMessage(content="hi")]
         )

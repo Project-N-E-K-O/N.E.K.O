@@ -17,13 +17,17 @@
 Game Router package.
 
 Formerly the monolithic ``main_routers/game_router.py``; now split into pure
-helper domains around a single ``runtime`` module that owns the session/route
-state machine (``_game_sessions`` etc.) and all endpoints that touch it --
-mutable state and its consumers are deliberately co-located.
+helper domains plus a layered state-machine core (clean DAG):
+``runtime`` (endpoints + ``_run_game_chat``) -> ``postgame`` (delivery +
+finalize) -> ``session_pool`` (``_game_sessions`` lifecycle) ->
+``route_lifecycle`` (route-state transitions, heartbeat, organizer glue).
+Mutable containers are module-level singletons shared across the layers by
+reference (from-imports never copy them).
 
 Note for tests: ``monkeypatch.setattr`` must target the submodule that
-*consumes* a helper (for session-machine symbols that is ``runtime``), not
-this package facade -- re-exports are snapshots.
+*consumes* a helper, not this package facade -- re-exports are snapshots.
+Use ``tests/unit/game_route_test_helpers.gr_patch_all`` to hit every
+submodule holding a binding.
 
 URL convention: routes declared WITHOUT trailing slash; enforced by
 ``scripts/check_api_trailing_slash.py``.
@@ -264,41 +268,15 @@ from .archive import (  # noqa: F401
     _archive_score_text,
     _submit_game_archive_to_memory,
 )
-from .runtime import (  # noqa: F401
-    _EXTERNAL_VOICE_DEDUP_TTL_SECONDS,
-    _EXTERNAL_VOICE_DEDUP_MAX_ENTRIES,
-    _SSML_TAG_PATTERN,
-    _game_sessions,
-    _SESSION_TIMEOUT_SECONDS,
+from .route_lifecycle import (  # noqa: F401
     _GAME_ROUTE_ACTIVATION_LOG_LIMIT,
-    _SOCCER_QUICK_LINE_KEYS,
-    _BADMINTON_QUICK_LINE_KEYS,
-    _badminton_quick_lines_cache,
-    _BADMINTON_QUICK_LINES_CACHE_MAX,
-    _badminton_chat_rate_windows,
-    _BADMINTON_CHAT_RATE_WINDOW_SECONDS,
-    _BADMINTON_CHAT_RATE_MAX,
     _push_game_window_state_change,
     _GAME_ROUTE_OUTPUT_LIMIT,
     _GAME_ROUTE_HEARTBEAT_INTERVAL_SECONDS,
     _GAME_ROUTE_HEARTBEAT_TIMEOUT_SECONDS,
     _GAME_ROUTE_HIDDEN_HEARTBEAT_TIMEOUT_SECONDS,
     _GAME_ROUTE_HEARTBEAT_SWEEP_SECONDS,
-    _SESSION_CLEANUP_SWEEP_SECONDS,
-    _game_session_create_locks,
-    _get_session_create_lock,
-    _build_game_prompt,
-    _game_dialog_history_user_text,
-    _game_dialog_history_assistant_text,
-    _build_game_recent_history_messages,
-    _reset_game_session_text_history_for_turn,
-    _normalize_quick_lines,
-    _get_badminton_quick_lines_fallback,
-    _public_route_state,
-    _game_route_stale_session_response,
-    _game_route_closed_session_response,
     _detect_before_game_external_state,
-    _resolve_lanlan_name,
     _find_game_route_state_for_session,
     _build_route_state,
     _activate_game_route,
@@ -324,6 +302,26 @@ from .runtime import (  # noqa: F401
     _update_route_visibility_from_payload,
     _update_game_memory_enabled_from_payload,
     _update_route_start_state_from_payload,
+)
+from .session_pool import (  # noqa: F401
+    _game_sessions,
+    _SESSION_TIMEOUT_SECONDS,
+    _SESSION_CLEANUP_SWEEP_SECONDS,
+    _game_session_create_locks,
+    _get_session_create_lock,
+    _build_game_prompt,
+    _get_or_create_session,
+    _build_and_register_game_session,
+    _refresh_game_session_instructions,
+    _game_session_key,
+    _POSTGAME_SESSION_MARKER,
+    _POSTGAME_UUID_TAIL_RE,
+    _make_postgame_session_id,
+    _route_session_id,
+    _parse_game_session_key,
+    _close_and_remove_session,
+)
+from .postgame import (  # noqa: F401
     _POSTGAME_SKIP_REASONS,
     _POSTGAME_REALTIME_NUDGE_DELAYS,
     _POSTGAME_REALTIME_UNORGANIZED_LIMIT,
@@ -345,19 +343,31 @@ from .runtime import (  # noqa: F401
     _finalize_game_route_state,
     _build_postgame_context_snapshot,
     _finalize_game_route_state_inner,
-    _get_or_create_session,
-    _build_and_register_game_session,
-    _refresh_game_session_instructions,
+)
+from .runtime import (  # noqa: F401
+    _EXTERNAL_VOICE_DEDUP_TTL_SECONDS,
+    _EXTERNAL_VOICE_DEDUP_MAX_ENTRIES,
+    _SSML_TAG_PATTERN,
+    _SOCCER_QUICK_LINE_KEYS,
+    _BADMINTON_QUICK_LINE_KEYS,
+    _badminton_quick_lines_cache,
+    _BADMINTON_QUICK_LINES_CACHE_MAX,
+    _badminton_chat_rate_windows,
+    _BADMINTON_CHAT_RATE_WINDOW_SECONDS,
+    _BADMINTON_CHAT_RATE_MAX,
+    _game_dialog_history_user_text,
+    _game_dialog_history_assistant_text,
+    _build_game_recent_history_messages,
+    _reset_game_session_text_history_for_turn,
+    _normalize_quick_lines,
+    _get_badminton_quick_lines_fallback,
+    _public_route_state,
+    _game_route_stale_session_response,
+    _game_route_closed_session_response,
+    _resolve_lanlan_name,
     _parse_control_instructions,
-    _game_session_key,
     _strip_ssml_like_tags,
     _check_badminton_chat_rate,
-    _POSTGAME_SESSION_MARKER,
-    _POSTGAME_UUID_TAIL_RE,
-    _make_postgame_session_id,
-    _route_session_id,
-    _parse_game_session_key,
-    _close_and_remove_session,
     _run_game_chat,
     game_chat,
     game_route_start,

@@ -1,6 +1,6 @@
 # LLMSessionManager
 
-**ファイル:** `main_logic/core.py`（約10400行）
+**パッケージ:** `main_logic/core/` — クラスは `core/manager.py`（`__init__` が全インスタンス状態を保持）でドメイン別 mixin モジュール（`context_append` / `focus` / `tts_runtime` / `turn` / `tool_calling` / `lifecycle` / `proactive` / `greeting` / `streaming` / `notify`）から組み立てられます。`core/__init__.py` がすべてのトップレベルシンボルを再エクスポートするため、インポートパス `main_logic.core` は変わりません。
 
 `LLMSessionManager` は N.E.K.O. の中核であり、キャラクターごとに1つのインスタンスが会話のライフサイクル全体を管理します。
 

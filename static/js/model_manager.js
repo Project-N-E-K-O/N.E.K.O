@@ -9,15 +9,15 @@
         // avatar-popup-common, avatar-ui-popup, avatar-ui-popup-config, avatar-ui-buttons
         // 已由 model_manager.html 静态 <script> 加载，此处不再重复加载
         const vrmModules = [
-            '/static/vrm-orientation.js',
-            '/static/vrm-core.js',
-            '/static/vrm-expression.js',
-            '/static/vrm-animation.js',
-            '/static/vrm-interaction.js',
-            '/static/vrm-cursor-follow.js',
-            '/static/vrm-manager.js',
-            '/static/vrm-ui-buttons.js',
-            '/static/vrm-init.js'
+            '/static/vrm/vrm-orientation.js',
+            '/static/vrm/vrm-core.js',
+            '/static/vrm/vrm-expression.js',
+            '/static/vrm/vrm-animation.js',
+            '/static/vrm/vrm-interaction.js',
+            '/static/vrm/vrm-cursor-follow.js',
+            '/static/vrm/vrm-manager.js',
+            '/static/vrm/vrm-ui-buttons.js',
+            '/static/vrm/vrm-init.js'
         ];
 
         const failedModules = [];
@@ -63,14 +63,14 @@
         // avatar-popup-common, avatar-ui-popup, avatar-ui-popup-config, avatar-ui-buttons
         // 已由 model_manager.html 静态 <script> 加载，此处不再重复加载
         const mmdModules = [
-            '/static/mmd-init.js',
-            '/static/mmd-core.js',
-            '/static/mmd-animation.js',
-            '/static/mmd-expression.js',
-            '/static/mmd-interaction.js',
-            '/static/mmd-cursor-follow.js',
-            '/static/mmd-manager.js',
-            '/static/mmd-ui-buttons.js'
+            '/static/mmd/mmd-init.js',
+            '/static/mmd/mmd-core.js',
+            '/static/mmd/mmd-animation.js',
+            '/static/mmd/mmd-expression.js',
+            '/static/mmd/mmd-interaction.js',
+            '/static/mmd/mmd-cursor-follow.js',
+            '/static/mmd/mmd-manager.js',
+            '/static/mmd/mmd-ui-buttons.js'
         ];
 
         const failedModules = [];

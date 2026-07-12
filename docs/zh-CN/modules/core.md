@@ -1,6 +1,6 @@
 # LLMSessionManager
 
-**文件：** `main_logic/core.py`（约 10400 行）
+**包：** `main_logic/core/` —— 类在 `core/manager.py` 中组装（`__init__` 持有全部实例状态），方法按领域拆在 mixin 模块（`context_append` / `focus` / `tts_runtime` / `turn` / `tool_calling` / `lifecycle` / `proactive` / `greeting` / `streaming` / `notify`）；`core/__init__.py` 重导出全部顶层符号，导入路径 `main_logic.core` 保持不变。
 
 `LLMSessionManager` 是 N.E.K.O. 的核心——每个角色一个实例，管理整个对话生命周期。
 

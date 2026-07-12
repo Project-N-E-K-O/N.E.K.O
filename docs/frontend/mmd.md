@@ -28,7 +28,7 @@ Per-model emotion mapping overrides are stored under `/user_mmd/emotion_config` 
 
 ## Rendering & static modules
 
-The viewer is composed of `mmd-*.js` modules under `static/`:
+The viewer is composed of `mmd-*.js` modules under `static/mmd/`:
 
 | Module | Purpose |
 |--------|---------|

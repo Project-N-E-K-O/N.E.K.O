@@ -13,7 +13,7 @@ CLOUDSAVE_TEMPLATE = PROJECT_ROOT / "templates" / "cloudsave_manager.html"
 CHARA_TEMPLATE = PROJECT_ROOT / "templates" / "character_card_manager.html"
 CHARA_MANAGER_JS = PROJECT_ROOT / "static" / "js" / "character_card_manager.js"
 I18N_JS = PROJECT_ROOT / "static" / "i18n-i18next.js"
-APP_SETTINGS_JS = PROJECT_ROOT / "static" / "app-settings.js"
+APP_SETTINGS_JS = PROJECT_ROOT / "static" / "app" / "app-settings.js"
 
 
 def _get_nested_value(payload: dict, dotted_key: str):

@@ -82,6 +82,17 @@ async def stop_live_listener(runtime: Any, *, mark_disabled: bool = True) -> Non
     runtime.safety_guard.set_connected(False)
 
 
+def sync_douyin_listener_state(runtime: Any, state: Any) -> None:
+    provider = getattr(runtime, "live_provider", None)
+    if getattr(provider, "platform", "") != "douyin":
+        return
+    connected = str(state or "").strip().lower() in {"connected", "receiving"}
+    runtime.live_connection_state = "connected" if connected else "disconnected"
+    runtime.safety_guard.set_connected(connected)
+    if not connected:
+        runtime._live_listener_started_at = 0.0
+
+
 def _clear_connected_room_status(runtime: Any) -> None:
     room_context = getattr(runtime, "live_room_context", None)
     if isinstance(room_context, dict):

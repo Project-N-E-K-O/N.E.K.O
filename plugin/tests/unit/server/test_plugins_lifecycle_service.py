@@ -24,12 +24,10 @@ class _FakeProcessHost:
         plugin_id: str,
         entry_point: str,
         config_path: Path,
-        extension_configs: list | None = None,
     ) -> None:
         self.plugin_id = plugin_id
         self.entry_point = entry_point
         self.config_path = config_path
-        self.extension_configs = extension_configs
         self.process = SimpleNamespace(is_alive=lambda: True, exitcode=None)
         self.started = False
         self.stopped = False
@@ -40,14 +38,6 @@ class _FakeProcessHost:
 
     async def shutdown(self, timeout: float = module.PLUGIN_SHUTDOWN_TIMEOUT) -> None:
         self.stopped = True
-
-    async def send_extension_command(
-        self,
-        msg_type: str,
-        payload: dict[str, object],
-        timeout: float = 10.0,
-    ) -> object:
-        return {"ok": True, "type": msg_type, "payload": payload, "timeout": timeout}
 
     def is_alive(self) -> bool:
         return True
@@ -62,6 +52,7 @@ class _FakeAdapterPlugin:
 class _CaptureLogger:
     def __init__(self) -> None:
         self.messages: list[str] = []
+        self.errors: list[str] = []
 
     def info(self, *_args, **_kwargs) -> None:
         return
@@ -75,8 +66,11 @@ class _CaptureLogger:
             rendered = rendered.replace("{}", str(arg), 1)
         self.messages.append(rendered)
 
-    def error(self, *_args, **_kwargs) -> None:
-        return
+    def error(self, message, *args, **_kwargs) -> None:
+        rendered = str(message)
+        for arg in args:
+            rendered = rendered.replace("{}", str(arg), 1)
+        self.errors.append(rendered)
 
 
 @pytest.mark.plugin_unit
@@ -159,6 +153,30 @@ def test_parse_single_plugin_config_warns_on_directory_id_mismatch(
 
     assert parsed is not None
     assert any("directory name" in message and "does not match declared plugin.id" in message for message in messages)
+
+
+@pytest.mark.plugin_unit
+def test_parse_single_plugin_config_rejects_removed_script_type(tmp_path: Path) -> None:
+    plugin_dir = tmp_path / "legacy_script"
+    plugin_dir.mkdir(parents=True)
+    config_path = plugin_dir / "plugin.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "[plugin]",
+                "id = 'legacy_script'",
+                "type = 'script'",
+                "entry = 'plugin.plugins.legacy_script:Plugin'",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    logger = _CaptureLogger()
+
+    parsed = registry_module._parse_single_plugin_config(config_path, set(), logger)
+
+    assert parsed is None
+    assert any("unsupported type='script'" in message for message in logger.errors)
 
 
 @pytest.mark.plugin_unit
@@ -340,11 +358,7 @@ async def test_start_plugin_persist_user_intent_clears_stop_override_before_refr
         seen["override_at_refresh"] = runtime_overrides_module.get_runtime_override(plugin_id)
         return {"success": True, "plugin_id": plugin_id}
 
-    async def _list_extension_configs_for_host(_plugin_id: str) -> list[dict[str, str]]:
-        return []
-
     monkeypatch.setattr(module.plugin_registry_service, "refresh_plugin", _refresh_plugin)
-    monkeypatch.setattr(module.plugin_registry_service, "list_extension_configs_for_host", _list_extension_configs_for_host)
     monkeypatch.setattr(module, "_get_plugin_config_path", lambda _plugin_id: config_path)
     monkeypatch.setattr(
         module,
@@ -1737,128 +1751,6 @@ async def test_start_plugin_allows_retry_for_load_failed_plugin(
 
 
 @pytest.mark.plugin_unit
-@pytest.mark.asyncio
-async def test_start_plugin_passes_prebuilt_extension_configs_to_host(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    host_config_path = tmp_path / "host_plugin" / "plugin.toml"
-    ext_config_path = tmp_path / "demo_ext" / "plugin.toml"
-    host_config_path.parent.mkdir(parents=True, exist_ok=True)
-    ext_config_path.parent.mkdir(parents=True, exist_ok=True)
-    host_config_path.write_text(
-        "\n".join(
-            [
-                "[plugin]",
-                "id = 'host_plugin'",
-                "name = 'Host Plugin'",
-                "type = 'plugin'",
-                "entry = 'tests.fake_mcp:FakeAdapterPlugin'",
-                "",
-                "[plugin_runtime]",
-                "enabled = true",
-                "auto_start = true",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    ext_config_path.write_text(
-        "\n".join(
-            [
-                "[plugin]",
-                "id = 'demo_ext'",
-                "name = 'Demo Extension'",
-                "type = 'extension'",
-                "entry = 'tests.fake_ext:DemoExtRouter'",
-                "",
-                "[plugin.host]",
-                "plugin_id = 'host_plugin'",
-                "prefix = '/demo'",
-                "",
-                "[plugin_runtime]",
-                "enabled = true",
-                "auto_start = true",
-            ]
-        ),
-        encoding="utf-8",
-    )
-
-    plugins_backup = copy.deepcopy(module.state.plugins)
-    hosts_backup = dict(module.state.plugin_hosts)
-    handlers_backup = dict(module.state.event_handlers)
-    cache_backup = copy.deepcopy(module.state._snapshot_cache)
-
-    try:
-        with module.state.acquire_plugins_write_lock():
-            module.state.plugins.clear()
-            module.state.plugins["host_plugin"] = {
-                "id": "host_plugin",
-                "name": "Host Plugin",
-                "type": "plugin",
-                "description": "",
-                "version": "0.1.0",
-                "config_path": str(host_config_path),
-                "entry_point": "tests.fake_mcp:FakeAdapterPlugin",
-                "short_description": "keep me",
-                "keywords": ["host"],
-                "sdk_supported": ">=0.1",
-                "runtime_enabled": True,
-                "runtime_auto_start": True,
-            }
-            module.state.plugins["demo_ext"] = {
-                "id": "demo_ext",
-                "name": "Demo Extension",
-                "type": "extension",
-                "config_path": str(ext_config_path),
-                "entry_point": "tests.fake_ext:DemoExtRouter",
-                "host_plugin_id": "host_plugin",
-                "runtime_enabled": True,
-                "runtime_auto_start": False,
-            }
-        with module.state.acquire_plugin_hosts_write_lock():
-            module.state.plugin_hosts.clear()
-        with module.state.acquire_event_handlers_write_lock():
-            module.state.event_handlers.clear()
-
-        monkeypatch.setattr(module, "PluginProcessHost", _FakeProcessHost)
-        monkeypatch.setattr(module, "_import_plugin_module", lambda *args, **kwargs: SimpleNamespace(FakeAdapterPlugin=_FakeAdapterPlugin))
-        monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
-
-        service = module.PluginLifecycleService()
-        response = await service.start_plugin("host_plugin", refresh_registry=False)
-
-        assert response["success"] is True
-        with module.state.acquire_plugin_hosts_read_lock():
-            host_obj = module.state.plugin_hosts["host_plugin"]
-        assert isinstance(host_obj, _FakeProcessHost)
-        assert host_obj.extension_configs == [
-            {
-                "ext_id": "demo_ext",
-                "ext_entry": "tests.fake_ext:DemoExtRouter",
-                "prefix": "/demo",
-                "config_path": str(ext_config_path.resolve()),
-            }
-        ]
-
-        with module.state.acquire_plugins_read_lock():
-            plugin_meta = dict(module.state.plugins["host_plugin"])
-        assert plugin_meta["short_description"] == "keep me"
-        assert plugin_meta["keywords"] == ["host"]
-        assert plugin_meta["sdk_supported"] == ">=0.1"
-    finally:
-        with module.state.acquire_plugins_write_lock():
-            module.state.plugins.clear()
-            module.state.plugins.update(plugins_backup)
-        with module.state.acquire_plugin_hosts_write_lock():
-            module.state.plugin_hosts.clear()
-            module.state.plugin_hosts.update(hosts_backup)
-        with module.state.acquire_event_handlers_write_lock():
-            module.state.event_handlers.clear()
-            module.state.event_handlers.update(handlers_backup)
-        with module.state._snapshot_cache_lock:
-            module.state._snapshot_cache = cache_backup
-
-
 @pytest.mark.plugin_unit
 def test_parse_single_plugin_config_uses_resolver_effective_config_and_logs_warnings(
     monkeypatch: pytest.MonkeyPatch,
@@ -2069,218 +1961,6 @@ async def test_delete_plugin_stops_running_host_before_removing(
         with module.state.acquire_event_handlers_write_lock():
             module.state.event_handlers.clear()
             module.state.event_handlers.update(handlers_backup)
-        with module.state._snapshot_cache_lock:
-            module.state._snapshot_cache = cache_backup
-
-
-@pytest.mark.plugin_unit
-@pytest.mark.asyncio
-async def test_delete_extension_disables_runtime_when_host_is_running(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    ext_dir = tmp_path / "demo_ext"
-    config_path = ext_dir / "plugin.toml"
-    ext_dir.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(
-        "\n".join(
-            [
-                "[plugin]",
-                "id = 'demo_ext'",
-                "type = 'extension'",
-                "entry = 'tests.fake_ext:Plugin'",
-                "",
-                "[plugin.host]",
-                "plugin_id = 'host_plugin'",
-            ]
-        ),
-        encoding="utf-8",
-    )
-
-    plugins_backup = copy.deepcopy(module.state.plugins)
-    hosts_backup = dict(module.state.plugin_hosts)
-    handlers_backup = dict(module.state.event_handlers)
-    cache_backup = copy.deepcopy(module.state._snapshot_cache)
-    disabled_calls: list[str] = []
-
-    try:
-        with module.state.acquire_plugins_write_lock():
-            module.state.plugins.clear()
-            module.state.plugins["demo_ext"] = {
-                "id": "demo_ext",
-                "name": "Demo Extension",
-                "type": "extension",
-                "config_path": str(config_path),
-                "entry_point": "tests.fake_ext:Plugin",
-                "host_plugin_id": "host_plugin",
-                "runtime_enabled": True,
-            }
-        with module.state.acquire_plugin_hosts_write_lock():
-            module.state.plugin_hosts.clear()
-            module.state.plugin_hosts["host_plugin"] = _FakeProcessHost(
-                plugin_id="host_plugin",
-                entry_point="tests.fake:Host",
-                config_path=tmp_path / "host_plugin" / "plugin.toml",
-            )
-        with module.state.acquire_event_handlers_write_lock():
-            module.state.event_handlers.clear()
-
-        async def _refresh_registry() -> dict[str, object]:
-            return {"success": True}
-
-        original_disable_extension = module.PluginLifecycleService.disable_extension
-
-        async def _tracked_disable(self, ext_id: str) -> dict[str, object]:
-            disabled_calls.append(ext_id)
-            return await original_disable_extension(self, ext_id)
-
-        monkeypatch.setattr(module, "PLUGIN_CONFIG_ROOTS", (tmp_path,))
-        monkeypatch.setattr(module.PluginLifecycleService, "disable_extension", _tracked_disable)
-        monkeypatch.setattr(module.plugin_registry_service, "refresh_registry", _refresh_registry)
-        monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
-
-        service = module.PluginLifecycleService()
-        response = await service.delete_plugin("demo_ext")
-
-        assert response["success"] is True
-        assert response["host_plugin_id"] == "host_plugin"
-        assert disabled_calls == ["demo_ext"]
-        assert ext_dir.exists() is False
-        with module.state.acquire_plugins_read_lock():
-            assert "demo_ext" not in module.state.plugins
-    finally:
-        with module.state.acquire_plugins_write_lock():
-            module.state.plugins.clear()
-            module.state.plugins.update(plugins_backup)
-        with module.state.acquire_plugin_hosts_write_lock():
-            module.state.plugin_hosts.clear()
-            module.state.plugin_hosts.update(hosts_backup)
-        with module.state.acquire_event_handlers_write_lock():
-            module.state.event_handlers.clear()
-            module.state.event_handlers.update(handlers_backup)
-        with module.state._snapshot_cache_lock:
-            module.state._snapshot_cache = cache_backup
-
-
-@pytest.mark.plugin_unit
-@pytest.mark.asyncio
-async def test_delete_plugin_rejects_host_with_bound_extensions(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    host_dir = tmp_path / "host_plugin"
-    host_config_path = host_dir / "plugin.toml"
-    host_dir.mkdir(parents=True, exist_ok=True)
-    host_config_path.write_text("[plugin]\nid='host_plugin'\nentry='tests.fake:Host'\n", encoding="utf-8")
-
-    plugins_backup = copy.deepcopy(module.state.plugins)
-    hosts_backup = dict(module.state.plugin_hosts)
-    handlers_backup = dict(module.state.event_handlers)
-    cache_backup = copy.deepcopy(module.state._snapshot_cache)
-
-    try:
-        with module.state.acquire_plugins_write_lock():
-            module.state.plugins.clear()
-            module.state.plugins["host_plugin"] = {
-                "id": "host_plugin",
-                "name": "Host Plugin",
-                "type": "plugin",
-                "config_path": str(host_config_path),
-                "entry_point": "tests.fake:Host",
-            }
-            module.state.plugins["demo_ext"] = {
-                "id": "demo_ext",
-                "name": "Demo Extension",
-                "type": "extension",
-                "config_path": str(tmp_path / "demo_ext" / "plugin.toml"),
-                "entry_point": "tests.fake_ext:Plugin",
-                "host_plugin_id": "host_plugin",
-                "runtime_enabled": True,
-            }
-        with module.state.acquire_plugin_hosts_write_lock():
-            module.state.plugin_hosts.clear()
-        with module.state.acquire_event_handlers_write_lock():
-            module.state.event_handlers.clear()
-
-        monkeypatch.setattr(module, "PLUGIN_CONFIG_ROOTS", (tmp_path,))
-
-        service = module.PluginLifecycleService()
-        with pytest.raises(ServerDomainError) as exc_info:
-            await service.delete_plugin("host_plugin")
-
-        assert exc_info.value.code == "PLUGIN_DELETE_BLOCKED_BY_EXTENSIONS"
-        assert exc_info.value.status_code == 409
-        assert "demo_ext" in exc_info.value.message
-        assert host_dir.exists() is True
-    finally:
-        with module.state.acquire_plugins_write_lock():
-            module.state.plugins.clear()
-            module.state.plugins.update(plugins_backup)
-        with module.state.acquire_plugin_hosts_write_lock():
-            module.state.plugin_hosts.clear()
-            module.state.plugin_hosts.update(hosts_backup)
-        with module.state.acquire_event_handlers_write_lock():
-            module.state.event_handlers.clear()
-            module.state.event_handlers.update(handlers_backup)
-        with module.state._snapshot_cache_lock:
-            module.state._snapshot_cache = cache_backup
-
-
-def _seed_extension(config_path: Path, host_plugin_id: str = "host_plugin") -> None:
-    with module.state.acquire_plugins_write_lock():
-        module.state.plugins.clear()
-        module.state.plugins["demo_ext"] = {
-            "id": "demo_ext",
-            "name": "Demo Extension",
-            "type": "extension",
-            "config_path": str(config_path),
-            "entry_point": "tests.fake_ext:Plugin",
-            "host_plugin_id": host_plugin_id,
-            "runtime_enabled": True,
-        }
-    with module.state.acquire_plugin_hosts_write_lock():
-        module.state.plugin_hosts.clear()
-        module.state.plugin_hosts[host_plugin_id] = _FakeProcessHost(
-            plugin_id=host_plugin_id,
-            entry_point="tests.fake:Host",
-            config_path=config_path.parent.parent / host_plugin_id / "plugin.toml",
-        )
-
-
-@pytest.mark.plugin_unit
-@pytest.mark.asyncio
-async def test_disable_and_enable_extension_persist_runtime_override(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    _isolate_runtime_overrides: dict,
-) -> None:
-    config_path = tmp_path / "demo_ext" / "plugin.toml"
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text("[plugin]\nid='demo_ext'\n", encoding="utf-8")
-
-    plugins_backup = copy.deepcopy(module.state.plugins)
-    hosts_backup = dict(module.state.plugin_hosts)
-    cache_backup = copy.deepcopy(module.state._snapshot_cache)
-
-    try:
-        _seed_extension(config_path)
-        monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
-
-        service = module.PluginLifecycleService()
-        await service.disable_extension("demo_ext")
-        assert _isolate_runtime_overrides == {"demo_ext": False}
-        assert runtime_overrides_module.get_runtime_override("demo_ext") is False
-
-        await service.enable_extension("demo_ext")
-        assert _isolate_runtime_overrides == {"demo_ext": True}
-        assert runtime_overrides_module.get_runtime_override("demo_ext") is True
-    finally:
-        with module.state.acquire_plugins_write_lock():
-            module.state.plugins.clear()
-            module.state.plugins.update(plugins_backup)
-        with module.state.acquire_plugin_hosts_write_lock():
-            module.state.plugin_hosts.clear()
-            module.state.plugin_hosts.update(hosts_backup)
         with module.state._snapshot_cache_lock:
             module.state._snapshot_cache = cache_backup
 

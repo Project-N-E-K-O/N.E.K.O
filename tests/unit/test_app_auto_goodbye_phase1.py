@@ -8,8 +8,8 @@ from main_routers import pages_router
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-APP_AUTO_GOODBYE_PATH = PROJECT_ROOT / "static" / "app-auto-goodbye.js"
-APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app-interpage.js"
+APP_AUTO_GOODBYE_PATH = PROJECT_ROOT / "static" / "app" / "app-auto-goodbye.js"
+APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app" / "app-interpage.js"
 INDEX_TEMPLATE_PATH = PROJECT_ROOT / "templates" / "index.html"
 CHAT_TEMPLATE_PATH = PROJECT_ROOT / "templates" / "chat.html"
 
@@ -644,8 +644,8 @@ def test_app_auto_goodbye_only_injected_on_homepage():
     index_source = INDEX_TEMPLATE_PATH.read_text(encoding="utf-8")
     chat_source = CHAT_TEMPLATE_PATH.read_text(encoding="utf-8")
 
-    assert '/static/app-auto-goodbye.js?v={{ static_asset_version }}' in index_source
-    assert '/static/app-auto-goodbye.js?v={{ static_asset_version }}' not in chat_source
+    assert '/static/app/app-auto-goodbye.js?v={{ static_asset_version }}' in index_source
+    assert '/static/app/app-auto-goodbye.js?v={{ static_asset_version }}' not in chat_source
 
 
 def test_pages_router_static_asset_version_tracks_app_auto_goodbye():
@@ -670,7 +670,7 @@ def test_app_interpage_relays_idle_return_ball_state_to_chat_window():
 
 def test_goodbye_composer_hidden_syncs_to_chat_window():
     interpage_source = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
-    app_ui_source = (PROJECT_ROOT / "static" / "app-ui.js").read_text(encoding="utf-8")
+    app_ui_source = (PROJECT_ROOT / "static" / "app" / "app-ui.js").read_text(encoding="utf-8")
     standalone_block = interpage_source.split("function isStandaloneChatPage()", 1)[1].split(
         "function dispatchCrossWindowIdleActivity",
         1,
@@ -852,7 +852,7 @@ def test_app_interpage_initializes_goodbye_bridge_exports_with_tutorial_bridge_f
         };
 
         try {
-          vm.runInNewContext(source, context, { filename: 'static/app-interpage.js' });
+          vm.runInNewContext(source, context, { filename: 'static/app/app-interpage.js' });
         } catch (error) {
           console.error(error && (error.stack || error.message) || error);
           process.exit(1);

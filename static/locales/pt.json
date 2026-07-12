@@ -4757,6 +4757,19 @@
             "send": "Enviar",
             "voiceStatusHidden": "STT de depuração: oculto"
         },
+        "surrenderReminder": {
+            "label": "Lembrete de rendição"
+        },
+        "exitPrompt": {
+            "continuePlay": "Continuar jogando",
+            "endGame": "Encerrar jogo",
+            "stayLonger": "Ficar mais um pouco",
+            "rest": "Descansar",
+            "neverAgain": "Não lembrar de novo",
+            "neverAgainNote": "Não mostrar automaticamente avisos de rendição ou descanso da NEKO. Você pode reativar o Lembrete de rendição no canto superior direito. Se a NEKO parecer triste, você pode confortá-la por voz ou texto.",
+            "surrenderFallback": "Miau.. eu me rendo...",
+            "restFallback": "Miau... estou um pouco cansada e quero ficar quietinha por um tempo."
+        },
         "debug": {
             "mouse": "mouse: {{x}}, {{y}}",
             "playerCenter": "centro do jogador: {{x}}, {{y}}",

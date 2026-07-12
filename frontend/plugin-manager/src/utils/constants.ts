@@ -17,7 +17,6 @@ export enum PluginStatus {
   LOAD_FAILED = 'load_failed',
   LOADING = 'loading',
   DISABLED = 'disabled',
-  INJECTED = 'injected',
   PENDING = 'pending'
 }
 
@@ -46,7 +45,6 @@ export const STATUS_COLORS = {
   [PluginStatus.LOAD_FAILED]: '#F56C6C',
   [PluginStatus.LOADING]: '#409EFF',
   [PluginStatus.DISABLED]: '#909399',
-  [PluginStatus.INJECTED]: '#67C23A',
   [PluginStatus.PENDING]: '#E6A23C'
 } as const
 
@@ -58,7 +56,6 @@ export const STATUS_TEXT_KEYS = {
   [PluginStatus.LOAD_FAILED]: 'status.loadFailed',
   [PluginStatus.LOADING]: 'status.loading',
   [PluginStatus.DISABLED]: 'status.disabled',
-  [PluginStatus.INJECTED]: 'status.injected',
   [PluginStatus.PENDING]: 'status.pending'
 } as const
 

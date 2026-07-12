@@ -43,6 +43,10 @@ from plugin.server.infrastructure.runtime_overrides import get_runtime_override
 from plugin.core.state import state
 from plugin.core.entry_points import normalize_plugin_entry_point
 from plugin._types.models import PluginMeta, PluginAuthor, PluginDependency
+from plugin._types.plugin_types import (
+    SUPPORTED_PLUGIN_TYPES,
+    format_unsupported_plugin_type,
+)
 from plugin.core.ui_manifest import normalize_plugin_ui_manifest
 from plugin.settings import (
     BUILTIN_PLUGIN_CONFIG_ROOT,
@@ -455,7 +459,13 @@ def register_plugin(
         实际注册的插件 ID（如果发生冲突，返回重命名后的 ID）
     """
     logger_ = cast(Any, _wrap_logger(logger or _DEFAULT_LOGGER))
-    
+
+    plugin_type = getattr(plugin, "type", None)
+    plugin_id = getattr(plugin, "id", "<unknown>")
+    if not isinstance(plugin_type, str) or plugin_type not in SUPPORTED_PLUGIN_TYPES:
+        logger_.error(format_unsupported_plugin_type(plugin_type, plugin_id=plugin_id))
+        return None
+
     # 准备插件数据用于哈希计算
     plugin_data = {
         "id": plugin.id,
@@ -590,10 +600,9 @@ def _build_plugin_meta(
     sdk_conflicts_list: Optional[List[str]] = None,
     dependencies: Optional[List[PluginDependency]] = None,
     input_schema: Optional[Dict[str, Any]] = None,
-    host_plugin_id: Optional[str] = None,
     plugin_ui: Optional[Dict[str, Any]] = None,
 ) -> PluginMeta:
-    """统一构建 PluginMeta，消除 disabled / extension / normal 三处重复。"""
+    """统一构建 PluginMeta，消除 disabled / normal 两处重复。"""
     author_data = pdata.get("author")
     author = None
     if author_data and isinstance(author_data, dict):
@@ -635,7 +644,6 @@ def _build_plugin_meta(
         input_schema=input_schema or {"type": "object", "properties": {}},
         author=author,
         dependencies=dependencies or [],
-        host_plugin_id=host_plugin_id,
     )
     if plugin_ui is not None:
         setattr(meta, "plugin_ui", plugin_ui)
@@ -1050,6 +1058,11 @@ def _parse_single_plugin_config(
             "Plugin {}: failed to apply user config profile overlay: {}. Using base config only.",
             pid, e,
         )
+
+    plugin_type = pdata.get("type", "plugin")
+    if not isinstance(plugin_type, str) or plugin_type not in SUPPORTED_PLUGIN_TYPES:
+        logger.error(format_unsupported_plugin_type(plugin_type, plugin_id=pid))
+        return None
     
     logger.debug("Plugin ID: {}", pid)
     
@@ -1260,49 +1273,6 @@ def _prepare_plugin_import_roots(plugin_config_roots: Iterable[Path], logger: An
             continue
         sys.path.insert(0, str(project_root))
         logger.info("Added plugin import root to sys.path: {}", project_root)
-
-
-def _build_extension_map(
-    plugin_contexts: List[PluginContext],
-) -> Dict[str, List[Dict[str, str]]]:
-    """
-    构建 Extension 映射：host_plugin_id -> [extension_configs]
-    
-    Args:
-        plugin_contexts: 插件上下文列表
-    
-    Returns:
-        Extension 映射字典
-    """
-    extension_map: Dict[str, List[Dict[str, str]]] = {}
-    
-    for ctx in plugin_contexts:
-        if ctx.pdata.get("type") != "extension":
-            continue
-        
-        host_conf = ctx.pdata.get("host")
-        if not isinstance(host_conf, dict):
-            continue
-        
-        host_pid = host_conf.get("plugin_id")
-        if not host_pid:
-            continue
-        
-        # 用 ctx.enabled 而不是直接重读 conf —— 前者已包含 manifest 默认值
-        # 之上叠加的 user override（plugin_runtime_overrides.json），重读 conf
-        # 会绕过 override，导致初始 host 注入清单和 state.plugins.runtime_enabled
-        # 不一致。
-        if not ctx.enabled:
-            continue
-
-        extension_map.setdefault(host_pid, []).append({
-            "ext_id": ctx.pid,
-            "ext_entry": ctx.entry,
-            "prefix": host_conf.get("prefix", ""),
-            "config_path": str(ctx.toml_path),
-        })
-    
-    return extension_map
 
 
 def _shutdown_host_safely(host: Any, logger: Any, plugin_id: str) -> None:
@@ -1556,52 +1526,6 @@ def _register_failed_plugin(
     )
 
 
-def _load_extension_plugin(
-    ctx: PluginContext,
-    logger: Any,
-) -> None:
-    """
-    加载 Extension 类型插件（仅注册元数据，不启动独立进程）。
-    
-    Args:
-        ctx: 插件上下文
-        logger: 日志记录器
-    """
-    host_conf = ctx.pdata.get("host")
-    host_pid = host_conf.get("plugin_id") if isinstance(host_conf, dict) else None
-    
-    plugin_meta = _build_plugin_meta(
-        ctx.pid, ctx.pdata,
-        sdk_supported_str=ctx.sdk_supported_str,
-        sdk_recommended_str=ctx.sdk_recommended_str,
-        sdk_untested_str=ctx.sdk_untested_str,
-        sdk_conflicts_list=ctx.sdk_conflicts_list,
-        dependencies=ctx.dependencies,
-        host_plugin_id=host_pid,
-        plugin_ui=_extract_plugin_ui_config(ctx.conf, plugin_id=ctx.pid, logger=logger),
-    )
-    
-    resolved_id = register_plugin(
-        plugin_meta,
-        logger,
-        config_path=ctx.toml_path,
-        entry_point=ctx.entry,
-    )
-    
-    if resolved_id is not None:
-        with state.acquire_plugins_write_lock():
-            meta = state.plugins.get(resolved_id)
-            if isinstance(meta, dict):
-                meta["runtime_enabled"] = ctx.enabled
-                meta["runtime_auto_start"] = False
-                state.plugins[resolved_id] = meta
-    
-    logger.info(
-        "Extension '{}' registered (host='{}'); will be injected into host process at runtime",
-        ctx.pid, host_pid,
-    )
-
-
 def _load_adapter_plugin(
     ctx: PluginContext,
     logger: Any,
@@ -1686,7 +1610,7 @@ def _load_adapter_plugin(
     host = None
     try:
         logger.debug("Adapter {}: creating process host...", pid)
-        host = process_host_factory(pid, entry, toml_path, extension_configs=None)
+        host = process_host_factory(pid, entry, toml_path)
         logger.info(
             "Adapter {}: process host created successfully (pid: {}, alive: {})",
             pid,
@@ -1858,7 +1782,7 @@ def load_plugins_from_roots(
 ) -> None:
     """
     扫描插件配置，启动子进程，并静态扫描元数据用于注册列表。
-    process_host_factory 接收 (plugin_id, entry_point, config_path, extension_configs=None) 并返回宿主对象。
+    process_host_factory 接收 (plugin_id, entry_point, config_path) 并返回宿主对象。
     
     加载过程分为三个阶段：
     1. 收集（Collect）：扫描所有 TOML 文件，解析配置和依赖。
@@ -1898,9 +1822,6 @@ def load_plugins_from_roots(
     final_order = _topological_sort_plugins(plugin_contexts, pid_to_context, logger)
     
     # === Phase 3: Load ===
-    # 预构建 extension 映射
-    extension_map = _build_extension_map(plugin_contexts)
-    
     # 加载每个插件
     for pid in final_order:
         ctx = pid_to_context.get(pid)
@@ -1927,11 +1848,6 @@ def load_plugins_from_roots(
             continue
         # 根据插件类型分发加载逻辑
         plugin_type = pdata.get("type", "plugin")
-        
-        # extension 类型：不启动独立进程，只注册元数据
-        if plugin_type == "extension":
-            _load_extension_plugin(ctx, logger)
-            continue
         
         # 依赖检查（可通过配置禁用）
         dependency_check_failed = False
@@ -2023,10 +1939,6 @@ def load_plugins_from_roots(
         pid = resolved_pid
         if pid != original_pid:
             logger.warning("Plugin {} from {}: ID changed from '{}' to '{}' due to conflict", original_pid, toml_path, original_pid, pid)
-            # 同步 extension_map：将 original_pid 下收集的扩展迁移到新 pid
-            if original_pid in extension_map:
-                moved_exts = extension_map.pop(original_pid)
-                extension_map.setdefault(pid, []).extend(moved_exts)
 
         # 检查插件是否已注册
         if _check_plugin_already_registered(pid, toml_path, logger):
@@ -2082,8 +1994,7 @@ def load_plugins_from_roots(
         if enabled_val and auto_start_val:
             try:
                 logger.debug("Plugin {}: creating process host...", pid)
-                ext_cfgs = extension_map.get(pid)
-                host = process_host_factory(pid, entry, toml_path, extension_configs=ext_cfgs)
+                host = process_host_factory(pid, entry, toml_path)
                 logger.info(
                     "Plugin {}: process host created successfully (pid: {}, alive: {})",
                     pid,
