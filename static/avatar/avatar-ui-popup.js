@@ -124,6 +124,12 @@ function injectPopupStyles(prefix) {
         .${prefix}-popup.is-positioning {
             pointer-events: none !important;
         }
+        /* 移动端宽度兜底：弹窗自然宽度超窄屏时贴边收敛（Electron Pet 小窗同受益，无副作用） */
+        @media (max-width: 768px) {
+            .${prefix}-popup {
+                max-width: calc(100vw - 32px);
+            }
+        }
         .${prefix}-popup.${prefix}-popup-settings {
             max-height: 70vh;
         }
@@ -2741,6 +2747,9 @@ const AvatarPopupMixin = {
                 }
 
                 this.closeAllPopupsExcept(buttonId);
+                // goodbye 隐藏路径（app-ui.js）会给弹窗 inline pointer-events:none!important，
+                // 返回路径负责成对清除；此处自愈兜底，与 display/opacity/visibility 的覆盖行为对齐
+                popup.style.removeProperty('pointer-events');
                 popup.style.display = 'flex';
                 popup.style.opacity = '0';
                 popup.style.visibility = 'visible';
@@ -2771,7 +2780,10 @@ const AvatarPopupMixin = {
                                 bottomMargin: 60,
                                 topMargin: 8,
                                 gap: 8,
-                                sidePanelWidth: (buttonId === 'settings' || buttonId === 'agent') ? 320 : 0
+                                // 移动端不为侧面板预留宽度：侧面板此时向下展开（goDown），
+                                // 右侧预留 320px 会让 opensLeft 误判把弹窗推出屏幕左缘
+                                sidePanelWidth: (buttonId === 'settings' || buttonId === 'agent')
+                                    && !(typeof window.isMobileWidth === 'function' && window.isMobileWidth()) ? 320 : 0
                             });
                             popup.dataset.opensLeft = String(!!(pos && pos.opensLeft));
                             popup.style.transform = pos && pos.opensLeft ? 'translateX(10px)' : 'translateX(-10px)';
