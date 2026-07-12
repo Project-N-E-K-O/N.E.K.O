@@ -1880,7 +1880,20 @@ function createIntervalControl(manager, prefix, toggle) {
     slider.max = '120';
     slider.step = '5';
     let currentValue = typeof window[toggle.intervalKey] !== 'undefined' ? window[toggle.intervalKey] : toggle.defaultInterval;
-    if (currentValue > 120) currentValue = 120;
+    // 后端契约接受 1..3600 秒（utils/preferences.py），预设也会写入低于 UI 默认
+    // 下限的合法值（如 frequent 预设 5s，见 main_routers/proactive_router.py）。
+    // 持久化值越出滑条默认边界时，按契约放宽边界如实显示，绝不钳制或改写运行时/
+    // 持久化配置——否则打开设置面板就会把服务端配置的值静默改回 UI 边界。
+    const numericValue = Number(currentValue);
+    if (Number.isFinite(numericValue)) {
+        if (numericValue < minVal) slider.min = Math.max(1, numericValue);
+        if (numericValue > 120) slider.max = Math.min(3600, numericValue);
+        // 契约接受任意 1..3600 整数，值不在 5s 步进格点上（如 121、47）时浏览器
+        // 会把 slider.value 吸附到最近格点，显示与滑块再度分叉；此时改用 1s 步进
+        // 让该值可被精确表示。按格点值正常保持 5s 拖动手感。
+        const sliderShownValue = Math.min(Math.max(numericValue, Number(slider.min)), Number(slider.max));
+        if ((sliderShownValue - Number(slider.min)) % 5 !== 0) slider.step = '1';
+    }
     slider.value = currentValue;
     Object.assign(slider.style, { width: '60px', height: '4px', cursor: 'pointer', accentColor: 'var(--neko-popup-accent, #44b7fe)' });
 
