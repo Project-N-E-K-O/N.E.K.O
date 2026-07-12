@@ -1,0 +1,453 @@
+import json
+import shutil
+import subprocess
+import textwrap
+from pathlib import Path
+
+import pytest
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+LIVE2D_MODEL_PATH = PROJECT_ROOT / "static" / "live2d" / "live2d-model.js"
+LIVE2D_EMOTION_PATH = PROJECT_ROOT / "static" / "live2d" / "live2d-emotion.js"
+PARAMETER_EDITOR_PATH = PROJECT_ROOT / "static" / "js" / "live2d_parameter_editor.js"
+APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app-interpage.js"
+MAO_PRO_MODEL_PATH = PROJECT_ROOT / "static" / "mao_pro" / "mao_pro.model3.json"
+
+
+def _run_node_harness(script: str) -> subprocess.CompletedProcess[str]:
+    node_executable = shutil.which("node")
+    if node_executable is None:
+        pytest.skip("node not found")
+    return subprocess.run(
+        [node_executable, "-"],
+        input=script,
+        text=True,
+        capture_output=True,
+        cwd=PROJECT_ROOT,
+        timeout=10,
+        check=False,
+    )
+
+
+def _manager_harness(body: str) -> str:
+    return textwrap.dedent(
+        f"""
+        const assert = require('node:assert');
+        const fs = require('node:fs');
+        const vm = require('node:vm');
+        const context = {{
+          console: {{ log() {{}}, warn() {{}}, error() {{}}, groupCollapsed() {{}}, groupEnd() {{}} }},
+          window: {{ LIPSYNC_PARAMS: ['ParamMouthOpenY', 'ParamMouthForm'] }},
+          Live2DManager: function Live2DManager() {{}},
+          fetch: async () => {{ throw new Error('unexpected fetch'); }},
+          performance: {{ now() {{ return 0; }} }},
+          setTimeout, clearTimeout, setInterval, clearInterval,
+        }};
+        context.global = context;
+        context.window.Live2DManager = context.Live2DManager;
+        vm.createContext(context);
+        vm.runInContext(fs.readFileSync({json.dumps(str(LIVE2D_MODEL_PATH))}, 'utf8'), context);
+        vm.runInContext(fs.readFileSync({json.dumps(str(LIVE2D_EMOTION_PATH))}, 'utf8'), context);
+        {body}
+        """
+    )
+
+
+def _extract_js_function(source: str, name: str) -> str:
+    start_candidates = [
+        source.find(f"function {name}"),
+        source.find(f"async function {name}"),
+    ]
+    start = min(candidate for candidate in start_candidates if candidate >= 0)
+    signature_end = source.index(")", start)
+    brace_start = source.index("{", signature_end)
+    depth = 0
+    for index in range(brace_start, len(source)):
+        char = source[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start : index + 1]
+    raise AssertionError(f"unterminated JavaScript function: {name}")
+
+
+def test_parameter_editor_mode_suppresses_idle_and_saved_parameter_overlay():
+    model_source = LIVE2D_MODEL_PATH.read_text(encoding="utf-8")
+    editor_source = PARAMETER_EDITOR_PATH.read_text(encoding="utf-8")
+    configure_start = model_source.index("Live2DManager.prototype._configureLoadedModel")
+    configure_end = model_source.index("Live2DManager.prototype._applyTextureQuality", configure_start)
+    configure_source = model_source[configure_start:configure_end]
+
+    assert "parameterEditingMode: true" in editor_source
+    assert "dragEnabled: true" in editor_source
+    assert "wheelEnabled: true" in editor_source
+    assert "options.suppressInitialIdle === true || this._parameterEditingMode" in model_source
+    assert "hasEffectiveParameters && this._parameterEditingMode !== true" in model_source
+    assert "shouldApplyPersistentExpressions = this._parameterEditingMode !== true" in model_source
+    assert "if (!suppressInitialIdle)" in model_source
+    assert "motionManager.stopAllMotions()" in configure_source
+    assert "expressionManager.stopAllExpressions()" in configure_source
+    assert configure_source.count("this._applyEffectiveModelParameters(") == 1
+
+
+def test_parameter_editor_saves_draft_instead_of_runtime_core_values():
+    source = PARAMETER_EDITOR_PATH.read_text(encoding="utf-8")
+    save_start = source.index("if (saveBtn) {\n    saveBtn.addEventListener")
+    save_source = source[save_start : source.index("// 初始化", save_start)]
+
+    assert "currentParameters" not in source
+    assert "draftParameters[paramId] = clampedValue" in source
+    assert "draftParameters[paramId] = resetValue" in source
+    assert "buildParametersFromDraft(draftParameters" in save_source
+    assert "coreModel.getParameterValueByIndex(i)" not in save_source
+
+    build_function = _extract_js_function(source, "buildParametersFromDraft")
+    script = textwrap.dedent(
+        f"""
+        const assert = require('node:assert');
+        {build_function}
+        const draft = {{ ParamAllColor1: 0.8, ParamAllColor2: 0.6 }};
+        const runtimeCoreValues = {{ ParamAllColor1: 0.8, ParamAllColor2: 0.6 }};
+        for (let frame = 0; frame < 30; frame += 1) {{
+          runtimeCoreValues.ParamAllColor1 = frame / 100;
+          runtimeCoreValues.ParamAllColor2 = 1 - frame / 100;
+        }}
+        const saved = buildParametersFromDraft(draft, {{ ParamAllColor1: 0, ParamAllColor2: 1 }}, {{
+          _isEyeBlinkParamId() {{ return false; }},
+        }});
+        assert.deepStrictEqual(saved, {{ ParamAllColor1: 0.8, ParamAllColor2: 0.6 }});
+        assert.notStrictEqual(saved.ParamAllColor1, runtimeCoreValues.ParamAllColor1);
+        """
+    )
+    result = _run_node_harness(script)
+    assert result.returncode == 0, result.stderr
+
+
+def test_user_preference_parameters_override_model_directory_parameters():
+    script = _manager_harness(
+        """
+        const manager = new context.Live2DManager();
+        const effective = manager._mergeEffectiveModelParameters(
+          { ParamAllColor1: 0.1, ParamAllColor2: 0.2, ParamHair: 0.3 },
+          { ParamAllColor1: 0.8, ParamAllColor2: 0.9 },
+        );
+        assert.deepStrictEqual(
+          JSON.parse(JSON.stringify(effective)),
+          { ParamAllColor1: 0.8, ParamAllColor2: 0.9, ParamHair: 0.3 },
+        );
+        """
+    )
+    result = _run_node_harness(script)
+    assert result.returncode == 0, result.stderr
+
+
+def test_effective_parameter_refresh_reinstalls_overlay_with_new_values():
+    script = _manager_harness(
+        """
+        const manager = new context.Live2DManager();
+        manager._parameterEditingMode = false;
+        manager.applyModelParameters = (_model, parameters) => {
+          manager.lastApplied = { ...parameters };
+        };
+        manager.installMouthOverride = () => {
+          manager.installedSnapshot = { ...(manager.savedModelParameters || {}) };
+          manager.installCount = (manager.installCount || 0) + 1;
+        };
+        const model = { internalModel: { coreModel: {} } };
+
+        manager._applyEffectiveModelParameters(model, { ParamAllColor1: 0.2 }, {});
+        manager._applyEffectiveModelParameters(model, { ParamAllColor1: 0.2 }, { ParamAllColor1: 0.8 });
+
+        assert.strictEqual(manager.lastApplied.ParamAllColor1, 0.8);
+        assert.strictEqual(manager.installedSnapshot.ParamAllColor1, 0.8);
+        assert.strictEqual(manager.installCount, 2);
+        assert.strictEqual(manager._shouldApplySavedParams, true);
+        """
+    )
+    result = _run_node_harness(script)
+    assert result.returncode == 0, result.stderr
+
+
+def test_editing_mode_effective_parameters_override_stopped_persistent_expression_values():
+    script = _manager_harness(
+        """
+        const ids = ['ParamAllColor1'];
+        const values = [0.2];
+        const coreModel = {
+          getParameterCount() { return 1; },
+          getParameterId(index) { return ids[index]; },
+          getParameterIndex(id) { return ids.indexOf(id); },
+          setParameterValueByIndex(index, value) { values[index] = value; },
+        };
+        const manager = new context.Live2DManager();
+        manager._parameterEditingMode = true;
+        manager.initialParameters = { ParamAllColor1: 0 };
+        manager.appearanceBaselineParameters = {};
+        manager.persistentExpressionParamsByName = {
+          resident: [{ Id: 'ParamAllColor1', Value: 0.2 }],
+        };
+        manager.installMouthOverride = () => {};
+        manager._applyEffectiveModelParameters(
+          { internalModel: { coreModel } },
+          { ParamAllColor1: 0.1 },
+          { ParamAllColor1: 0.8 },
+        );
+        assert.strictEqual(values[0], 0.8);
+        assert.strictEqual(manager.appearanceBaselineParameters.ParamAllColor1, 0.8);
+        assert.strictEqual(manager._shouldApplySavedParams, false);
+        """
+    )
+    result = _run_node_harness(script)
+    assert result.returncode == 0, result.stderr
+
+
+def test_editing_mode_overlay_does_not_overwrite_slider_value_across_frames():
+    script = _manager_harness(
+        """
+        const ids = ['ParamAllColor1'];
+        const values = [0.1];
+        const coreModel = {
+          getParameterCount() { return ids.length; },
+          getParameterId(index) { return ids[index]; },
+          getParameterIndex(id) { return ids.indexOf(id); },
+          getParameterValueByIndex(index) { return values[index]; },
+          getParameterDefaultValueByIndex() { return 0; },
+          setParameterValueByIndex(index, value) { values[index] = value; },
+          setParameterValueById(id, value) { values[ids.indexOf(id)] = value; },
+          update() {},
+        };
+        const motionManager = { state: { currentPriority: 0 }, update() {} };
+        const manager = new context.Live2DManager();
+        manager.currentModel = { deltaTime: 16.66, internalModel: { coreModel, motionManager } };
+        manager._parameterEditingMode = true;
+        manager.savedModelParameters = { ParamAllColor1: 0.1 };
+        manager._shouldApplySavedParams = false;
+        manager._mouseTrackingEnabled = true;
+        manager._autoEyeBlinkEnabled = false;
+        manager.mouthValue = 0;
+        manager.persistentExpressionParamsByName = {
+          resident: [{ Id: 'ParamAllColor1', Value: 0.2 }],
+        };
+
+        manager.installMouthOverride();
+        values[0] = 0.8;
+        for (let frame = 0; frame < 30; frame += 1) {
+          motionManager.update(0.016);
+          coreModel.update();
+        }
+        assert.strictEqual(values[0], 0.8);
+        """
+    )
+    result = _run_node_harness(script)
+    assert result.returncode == 0, result.stderr
+
+
+def test_clear_expression_restores_only_active_ids_to_appearance_baseline():
+    script = _manager_harness(
+        """
+        const ids = ['ParamAllColor1', 'ParamUnrelated'];
+        const values = [0.1, 0.7];
+        const coreModel = {
+          getParameterIndex(id) { return ids.indexOf(id); },
+          getParameterId(index) { return ids[index]; },
+          setParameterValueById(id, value) { values[ids.indexOf(id)] = value; },
+          setParameterValueByIndex(index, value) { values[index] = value; },
+        };
+        let stopped = 0;
+        let persistentReplayed = 0;
+        const manager = new context.Live2DManager();
+        manager.currentModel = { internalModel: { coreModel, motionManager: {
+          expressionManager: { stopAllExpressions() { stopped += 1; } },
+        } } };
+        manager.initialParameters = { ParamAllColor1: 0, ParamUnrelated: 0 };
+        manager.motionBaselineParameters = {};
+        manager.appearanceBaselineParameters = { ParamAllColor1: 0.8, ParamUnrelated: 0.4 };
+        manager._activeExpressionParamIds = new Set(['ParamAllColor1']);
+        manager._cancelSmoothReset = () => {};
+        manager._removeManualExpressionOverride = () => {};
+        manager.applyPersistentExpressionsNative = () => { persistentReplayed += 1; };
+
+        manager.clearExpression();
+
+        assert.strictEqual(values[0], 0.8);
+        assert.strictEqual(values[1], 0.7);
+        assert.strictEqual(stopped, 1);
+        assert.strictEqual(persistentReplayed, 1);
+        """
+    )
+    result = _run_node_harness(script)
+    assert result.returncode == 0, result.stderr
+
+
+def test_parameter_save_treats_preferences_as_authoritative_and_sends_one_refresh():
+    source = PARAMETER_EDITOR_PATH.read_text(encoding="utf-8")
+    save_start = source.index("if (saveBtn) {\n    saveBtn.addEventListener")
+    save_source = source[save_start : source.index("// 初始化", save_start)]
+
+    assert "if (prefSuccess)" in save_source
+    assert "if (fileSuccess)" in save_source
+    assert save_source.count("sendMessageToMainPage('reload_model_parameters'") == 1
+    assert "lanlan_name: getParameterEditorLanlanName()" in save_source
+    assert "model_name: currentModelInfo.name" in save_source
+    assert "model_path: currentModelInfo.path" in save_source
+
+
+def test_stale_load_token_is_checked_after_directory_parameter_failure():
+    source = LIVE2D_MODEL_PATH.read_text(encoding="utf-8")
+    configure_start = source.index("Live2DManager.prototype._configureLoadedModel")
+    configure_end = source.index("Live2DManager.prototype._applyTextureQuality", configure_start)
+    configure_source = source[configure_start:configure_end]
+
+    load_index = configure_source.index("await this._loadModelDirectoryParameters(this.modelName)")
+    catch_index = configure_source.index("console.error('加载模型参数失败:'", load_index)
+    token_index = configure_source.index("if (!this._isLoadTokenActive(loadToken)) return;", load_index)
+    apply_index = configure_source.index("this._applyEffectiveModelParameters(", load_index)
+
+    assert load_index < catch_index < token_index < apply_index
+    assert "模型目录参数 > 用户偏好参数" not in configure_source
+
+
+def test_file_save_failure_with_preference_success_survives_parameter_reload():
+    editor_source = PARAMETER_EDITOR_PATH.read_text(encoding="utf-8")
+    persist_function = _extract_js_function(editor_source, "persistParameterDraft")
+    script = _manager_harness(
+        f"""
+        vm.runInContext({json.dumps(persist_function)}, context);
+        (async () => {{
+          const modelPath = '/static/mao_pro/mao_pro.model3.json';
+          let storedPreference = null;
+          const values = [0];
+          const ids = ['ParamAllColor1'];
+          const coreModel = {{
+            getParameterCount() {{ return 1; }},
+            getParameterId(index) {{ return ids[index]; }},
+            getParameterIndex(id) {{ return ids.indexOf(id); }},
+            getParameterValueByIndex(index) {{ return values[index]; }},
+            setParameterValueByIndex(index, value) {{ values[index] = value; }},
+          }};
+          const model = {{ x: 10, y: 20, scale: {{ x: 1, y: 1 }}, internalModel: {{ coreModel }} }};
+          const manager = new context.Live2DManager();
+          manager.currentModel = model;
+          manager.modelName = 'mao_pro';
+          manager._lastLoadedModelPath = modelPath;
+          manager.initialParameters = {{ ParamAllColor1: 0 }};
+          manager.appearanceBaselineParameters = {{}};
+          manager.motionBaselineParameters = {{}};
+          manager._parameterEditingMode = false;
+          manager.getPersistentExpressionParamIds = () => new Set();
+          manager.saveUserPreferences = async (path, position, scale, parameters) => {{
+            storedPreference = {{ model_path: path, position, scale, parameters: {{ ...parameters }} }};
+            return true;
+          }};
+          manager._loadModelDirectoryParameters = async () => ({{ ParamAllColor1: 0.1 }});
+          manager.loadUserPreferences = async () => [storedPreference];
+          manager.installMouthOverride = () => {{
+            manager.installedSnapshot = {{ ...(manager.savedModelParameters || {{}}) }};
+          }};
+
+          const saveResult = await context.persistParameterDraft(
+            {{ name: 'mao_pro', path: modelPath }},
+            model,
+            {{ ParamAllColor1: 0.8 }},
+            {{
+              manager,
+              fetchImpl: async () => ({{
+                ok: false,
+                status: 403,
+                async json() {{ return {{ success: false, error: 'read-only' }}; }},
+              }}),
+            }},
+          );
+          assert.strictEqual(saveResult.fileSuccess, false);
+          assert.strictEqual(saveResult.prefSuccess, true);
+          assert.strictEqual(storedPreference.parameters.ParamAllColor1, 0.8);
+
+          const totalFailure = await context.persistParameterDraft(
+            {{ name: 'mao_pro', path: modelPath }},
+            model,
+            {{ ParamAllColor1: 0.9 }},
+            {{
+              manager: {{ saveUserPreferences: async () => false }},
+              fetchImpl: async () => {{ throw new Error('read-only'); }},
+            }},
+          );
+          assert.strictEqual(totalFailure.fileSuccess, false);
+          assert.strictEqual(totalFailure.prefSuccess, false);
+
+          values[0] = 0;
+          const reloadResult = await manager.reloadModelParameters({{
+            model_name: 'mao_pro',
+            model_path: modelPath,
+          }});
+          assert.strictEqual(reloadResult.applied, true);
+          assert.strictEqual(values[0], 0.8);
+          assert.strictEqual(manager.savedModelParameters.ParamAllColor1, 0.8);
+          assert.strictEqual(manager.appearanceBaselineParameters.ParamAllColor1, 0.8);
+          assert.strictEqual(manager.installedSnapshot.ParamAllColor1, 0.8);
+        }})().catch((error) => {{ console.error(error); process.exitCode = 1; }});
+        """
+    )
+    result = _run_node_harness(script)
+    assert result.returncode == 0, result.stderr
+
+
+def test_reload_model_parameters_is_received_on_all_cross_page_channels():
+    source = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
+
+    assert "async function handleReloadModelParametersMessage" in source
+    assert "case 'reload_model_parameters':" in source
+    assert "event.data.action === 'reload_model_parameters'" in source
+    assert "event.key !== 'nekopage_message'" in source
+    assert "参数轻量热刷新失败，降级为完整模型重载" in source
+
+
+def test_all_mao_pro_motions_restore_saved_hair_colors_from_appearance_baseline():
+    model_config = json.loads(MAO_PRO_MODEL_PATH.read_text(encoding="utf-8"))
+    motion_files = {
+        motion["File"]
+        for motions in model_config["FileReferences"]["Motions"].values()
+        for motion in motions
+    }
+    assert len(motion_files) == 7
+
+    motion_paths = [MAO_PRO_MODEL_PATH.parent / relative_path for relative_path in sorted(motion_files)]
+    for motion_path in motion_paths:
+        motion = json.loads(motion_path.read_text(encoding="utf-8"))
+        parameter_ids = {
+            curve["Id"]
+            for curve in motion.get("Curves", [])
+            if curve.get("Target") == "Parameter"
+        }
+        assert {"ParamAllColor1", "ParamAllColor2"} <= parameter_ids, motion_path.name
+
+    script = _manager_harness(
+        f"""
+        const motionPaths = {json.dumps([str(path) for path in motion_paths])};
+        const ids = ['ParamAllColor1', 'ParamAllColor2'];
+        const values = [0, 0];
+        const coreModel = {{
+          getParameterIndex(id) {{ return ids.indexOf(id); }},
+          setParameterValueById(id, value) {{ values[ids.indexOf(id)] = value; }},
+        }};
+        const manager = new context.Live2DManager();
+        manager.currentModel = {{ internalModel: {{ coreModel }} }};
+        manager.initialParameters = {{ ParamAllColor1: 0, ParamAllColor2: 0 }};
+        manager.motionBaselineParameters = {{}};
+        manager.appearanceBaselineParameters = {{ ParamAllColor1: 0.8, ParamAllColor2: 0.6 }};
+
+        for (const motionPath of motionPaths) {{
+          const motion = JSON.parse(fs.readFileSync(motionPath, 'utf8'));
+          manager._trackActiveMotionParametersFromData(motion);
+          values[0] = 0;
+          values[1] = 0;
+          manager._resetActiveMotionParameters({{ preserveExpression: false }});
+          assert.strictEqual(values[0], 0.8, motionPath);
+          assert.strictEqual(values[1], 0.6, motionPath);
+        }}
+        """
+    )
+    result = _run_node_harness(script)
+    assert result.returncode == 0, result.stderr
