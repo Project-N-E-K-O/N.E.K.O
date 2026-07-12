@@ -192,6 +192,10 @@ def test_soccer_passive_guard_writes_structured_debug_events():
         "async function _prepareExitPrompt",
         1,
     )[0]
+    prepare_exit_prompt_block = html.split("async function _prepareExitPrompt", 1)[1].split(
+        "async function _requestPassiveGuardSidecar",
+        1,
+    )[0]
     external_route_input_block = html.split("if (output && output.type === 'game_external_input')", 1)[1].split(
         "if (!output || output.type !== 'game_llm_result')",
         1,
@@ -222,9 +226,18 @@ def test_soccer_passive_guard_writes_structured_debug_events():
     assert "requestGeneration = passiveGuard.sidecarGeneration" in sidecar_block
     assert "discard_stale_result" in sidecar_block
     assert "stale_sidecar_error" in sidecar_block
-    assert "function _passiveGuardExitPromptCandidateState(promptType, stage)" in html
+    assert "function _passiveGuardExitPromptCandidateState(promptType, stage, options = {})" in html
     assert "skip_inactive_candidate" in html
     assert "_passiveGuardExitPromptCandidateState(promptType, stage)" in html
+    assert "allowPreparedModal = options.allowPreparedModal === true" in html
+    assert "_passiveGuardExitPromptCandidateState(promptType, stage, { allowPreparedModal: true })" in (
+        prepare_exit_prompt_block
+    )
+    assert prepare_exit_prompt_block.index("skip_inactive_candidate_before_show") < prepare_exit_prompt_block.index(
+        "_showExitPrompt(type, firstLine"
+    )
+    assert "_prepareExitPrompt('rest', 'sidecar_prepare_exit_prompt', { stage })" in html
+    assert "_prepareExitPrompt('surrender', 'sidecar_prepare_exit_prompt', { stage })" in html
     assert "function _externalGameRouteInputText(output)" in html
     assert "_handlePassiveGuardUserSpeech(" in external_route_input_block
     assert "_externalGameRouteInputText(output)" in external_route_input_block

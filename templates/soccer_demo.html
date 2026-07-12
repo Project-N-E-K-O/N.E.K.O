@@ -4001,9 +4001,10 @@
       Number(generation || 0) === Number(passiveGuard.sidecarGeneration || 0);
   }
 
-  function _passiveGuardExitPromptCandidateState(promptType, stage) {
+  function _passiveGuardExitPromptCandidateState(promptType, stage, options = {}) {
     const difficulty = DIFFICULTY[difficultyIdx]?.name || '';
     const requiredStage = Math.max(0, Number(stage || 0));
+    const allowPreparedModal = options.allowPreparedModal === true;
     const scoreLead = _scoreDiffPlayerLead();
     if (promptType === 'rest') {
       const streak = Number(passiveGuard.withdrawnRestGoalStreak || 0);
@@ -4011,7 +4012,7 @@
       if (difficulty !== 'lv4') return { active: false, reason: 'left_lv4', difficulty, streak, scoreLead };
       if (!passiveGuard.surrenderReminderEnabled) return { active: false, reason: 'surrender_reminder_disabled', difficulty, streak, scoreLead };
       if (passiveGuard.restDismissedThisGame) return { active: false, reason: 'rest_dismissed_this_game', difficulty, streak, scoreLead };
-      if (passiveGuard.restModalShownThisGame) return { active: false, reason: 'rest_modal_shown_this_game', difficulty, streak, scoreLead };
+      if (passiveGuard.restModalShownThisGame && !allowPreparedModal) return { active: false, reason: 'rest_modal_shown_this_game', difficulty, streak, scoreLead };
       if (streak < requiredStage) return { active: false, reason: 'rest_streak_below_stage', difficulty, streak, scoreLead };
       return { active: true, reason: '', difficulty, streak, scoreLead };
     }
@@ -4022,7 +4023,7 @@
     if (difficulty !== 'lv4') return { active: false, reason: 'left_lv4', difficulty, streak, scoreLead };
     if (!passiveGuard.surrenderReminderEnabled) return { active: false, reason: 'surrender_reminder_disabled', difficulty, streak, scoreLead };
     if (passiveGuard.ordinaryDisabledForCurrentGame) return { active: false, reason: 'ordinary_disabled_for_current_game', difficulty, streak, scoreLead };
-    if (passiveGuard.ordinaryModalShownThisGame) return { active: false, reason: 'ordinary_modal_shown_this_game', difficulty, streak, scoreLead };
+    if (passiveGuard.ordinaryModalShownThisGame && !allowPreparedModal) return { active: false, reason: 'ordinary_modal_shown_this_game', difficulty, streak, scoreLead };
     if (streak < requiredStage && scoreLead < 10) return { active: false, reason: 'ordinary_candidate_below_stage', difficulty, streak, scoreLead };
     return { active: true, reason: '', difficulty, streak, scoreLead };
   }
@@ -4162,7 +4163,7 @@
     }
   }
 
-  async function _prepareExitPrompt(type, reason = '') {
+  async function _prepareExitPrompt(type, reason = '', { stage = 8 } = {}) {
     if (type === 'surrender') {
       if (!passiveGuard.surrenderReminderEnabled) {
         passiveGuard.ordinaryDisabledForCurrentGame = true;
@@ -4223,6 +4224,21 @@
     const timeoutPromise = new Promise((resolve) => setTimeout(() => resolve({ line: '', timeout: true }), EXIT_PROMPT_LINE_WAIT_MS));
     const first = await Promise.race([linePromise, timeoutPromise]);
     if (token !== passiveGuard.modalLineToken) return;
+    const promptType = type === 'rest' ? 'rest' : 'surrender';
+    const candidate = _passiveGuardExitPromptCandidateState(promptType, stage, { allowPreparedModal: true });
+    if (!candidate.active) {
+      if (type === 'rest') passiveGuard.restModalShownThisGame = false;
+      else passiveGuard.ordinaryModalShownThisGame = false;
+      _passiveGuardDebugLog('Modal', 'passive_guard_modal', '跳过退出提示窗口，候选已失效', {
+        action: 'skip_inactive_candidate_before_show',
+        type,
+        stage,
+        reason: candidate.reason,
+        candidate,
+      });
+      console.log(`[Soccer] [PassiveGuard] [Modal] 跳过窗口 | 类型=${type} 阶段=${stage} 原因=${candidate.reason || '候选已失效'}`);
+      return;
+    }
     const firstLine = String(first?.line || '').trim();
     if (!firstLine) {
       _recordFallbackDiagnostic(type === 'rest' ? '休息提示台词生成' : '认输提示台词生成', {
@@ -4421,8 +4437,8 @@
         console.log(`[Soccer] [PassiveGuard] [Sidecar] 跳过弹窗 | 阶段=${stage} 类型=${promptType} 原因=${candidate.reason || '候选已失效'}`);
         return;
       }
-      if (exitType === 'rest' && promptType === 'rest') void _prepareExitPrompt('rest', 'sidecar_prepare_exit_prompt');
-      else if (exitType === 'surrender' && promptType === 'surrender') void _prepareExitPrompt('surrender', 'sidecar_prepare_exit_prompt');
+      if (exitType === 'rest' && promptType === 'rest') void _prepareExitPrompt('rest', 'sidecar_prepare_exit_prompt', { stage });
+      else if (exitType === 'surrender' && promptType === 'surrender') void _prepareExitPrompt('surrender', 'sidecar_prepare_exit_prompt', { stage });
     }
   }
 
