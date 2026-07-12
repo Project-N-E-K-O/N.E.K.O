@@ -197,7 +197,7 @@ def _get_chat_locale_text(language: str | None, key: str, fallback: str) -> str:
     return fallback
 
 
-# Sentinel returned by start_llm_session when CAS detects a concurrent start
+# Sentinel returned by _start_session_start_llm when CAS detects a concurrent start
 # already promoted its own session.  Returning a sentinel (instead of raising)
 # keeps the loser out of the generic error path — that path calls cleanup()
 # without an expected_session guard and would otherwise tear down the winner's
