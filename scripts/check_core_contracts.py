@@ -125,19 +125,27 @@ def collect_patch_targets(tests_dir: Path):
             tree = parse(path)
         except SyntaxError:
             continue
-        aliases = set()      # names bound to the main_logic.core MODULE
-        pkg_aliases = set()  # names bound to the main_logic PACKAGE (for ``ml.core``)
+        aliases = set()        # names bound to the main_logic.core MODULE
+        pkg_aliases = set()    # names bound to the main_logic PACKAGE (for ``ml.core``)
+        patch_aliases = set()  # extra names meaning unittest.mock.patch
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for a in node.names:
                     if a.name == "main_logic.core" and a.asname:
-                        aliases.add(a.asname)
-                    elif a.name == "main_logic":
-                        pkg_aliases.add(a.asname or "main_logic")
-            elif isinstance(node, ast.ImportFrom) and node.module == "main_logic" and node.level == 0:
-                for a in node.names:
-                    if a.name == "core":
-                        aliases.add(a.asname or "core")
+                        aliases.add(a.asname)           # import main_logic.core as core_module
+                    elif a.name == "main_logic" and a.asname:
+                        pkg_aliases.add(a.asname)        # import main_logic as ml
+                    elif a.name == "main_logic" or a.name.startswith("main_logic."):
+                        pkg_aliases.add("main_logic")    # import main_logic[.core] → binds main_logic
+            elif isinstance(node, ast.ImportFrom) and node.level == 0:
+                if node.module == "main_logic":
+                    for a in node.names:
+                        if a.name == "core":
+                            aliases.add(a.asname or "core")
+                elif node.module in ("unittest.mock", "mock"):
+                    for a in node.names:
+                        if a.name == "patch" and a.asname:
+                            patch_aliases.add(a.asname)  # from unittest.mock import patch as mock_patch
 
         def is_core_ref(expr):
             if isinstance(expr, ast.Name) and expr.id in aliases:
@@ -146,17 +154,23 @@ def collect_patch_targets(tests_dir: Path):
             return (isinstance(expr, ast.Attribute) and expr.attr == "core"
                     and isinstance(expr.value, ast.Name) and expr.value.id in pkg_aliases)
 
+        def is_patch_ref(expr):  # a Name/Attribute referring to unittest.mock.patch
+            if isinstance(expr, ast.Name):
+                return expr.id == "patch" or expr.id in patch_aliases
+            return isinstance(expr, ast.Attribute) and expr.attr == "patch"
+
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
             fn = node.func
             fname = fn.attr if isinstance(fn, ast.Attribute) else (fn.id if isinstance(fn, ast.Name) else "")
+            fbase = fn.value if isinstance(fn, ast.Attribute) else None
             kw = {k.arg: k.value for k in node.keywords if k.arg}
             # A patch that need not resolve to a real facade attribute:
             #   raising=False  (pytest monkeypatch negative guard)
             #   create=True    (unittest.mock.patch / patch.object absent-name guard)
-            # Both mean "the target may not exist", so exempt from routing and
-            # from the target-exists check alike.
+            # These waive the EXISTENCE requirement (target may be absent); they
+            # do NOT waive routing when the target does exist (see run()).
             exempt = ((isinstance(kw.get("raising"), ast.Constant) and kw["raising"].value is False)
                       or (isinstance(kw.get("create"), ast.Constant) and kw["create"].value is True))
             args = node.args
@@ -165,14 +179,28 @@ def collect_patch_targets(tests_dir: Path):
             # patch.object(target=..., attribute=...).
             first = args[0] if args else kw.get("target")
             second = args[1] if len(args) >= 2 else (kw.get("name") or kw.get("attribute"))
-            if fname in PATCH_CALL_NAMES and first is not None:
+            # monkeypatch.setattr/delattr, patch("...") and aliased patch("...")
+            is_str_patch = fname in PATCH_CALL_NAMES or (isinstance(fn, ast.Name) and fn.id in patch_aliases)
+            if is_str_patch and first is not None:
                 if isinstance(first, ast.Constant) and isinstance(first.value, str):
                     s = first.value
                     if s.startswith("main_logic.core.") and s.count(".") == 2:
                         add(s.rsplit(".", 1)[1], path, node, exempt)
-            if fname in (PATCH_CALL_NAMES | {"object"}) and first is not None and second is not None:
+            # object form: setattr(core_module, "X"), patch.object(core_module, "X")
+            is_obj_patch = fname in (PATCH_CALL_NAMES | {"object"}) or (fname == "object" and is_patch_ref(fbase))
+            if is_obj_patch and first is not None and second is not None:
                 if is_core_ref(first) and isinstance(second, ast.Constant) and isinstance(second.value, str):
                     add(second.value, path, node, exempt)
+            # patch.multiple("main_logic.core", X=..., Y=...) / (core_module, X=...)
+            if fname == "multiple" and is_patch_ref(fbase) and first is not None:
+                target_is_core = (
+                    (isinstance(first, ast.Constant) and first.value == "main_logic.core")
+                    or is_core_ref(first))
+                if target_is_core:
+                    reserved = {"spec", "spec_set", "create", "autospec", "new_callable", "target"}
+                    for k in node.keywords:
+                        if k.arg and k.arg not in reserved:
+                            add(k.arg, path, node, exempt)
     return targets
 
 
@@ -235,19 +263,39 @@ def global_read_names(path: Path) -> set[str]:
     return found
 
 
-def module_alias_paths(tree: ast.Module) -> dict[str, str]:
-    """Module objects bound at top level: {binding: dotted module path}.
+def _resolve_relative(pkg: str, level: int, module) -> str | None:
+    """Absolute dotted base for a relative import in package ``pkg``.
 
-    Covers plain ``import a.b`` (binds ``a``; the full dotted chain is also
-    kept as a key so ``a.b.attr`` reads match), ``import a.b as c`` and the
-    from-import module form ``from a import b [as c]`` (binds ``b``/``c`` to
-    ``a.b`` — e.g. ``from main_logic import agent_event_bus as bus`` or the
-    facade ``from main_logic import core as _core_facade``).
+    ``from . import x`` (level 1) in ``main_logic.core`` anchors at
+    ``main_logic.core``; ``from .. import x`` (level 2) at ``main_logic``.
+    Returns None if the level escapes the top of the tree.
+    """
+    parts = pkg.split(".") if pkg else []
+    keep = len(parts) - (level - 1)
+    if keep < 0:
+        return None
+    anchor = parts[:keep]
+    if module:
+        anchor = anchor + module.split(".")
+    return ".".join(anchor)
 
-    From-imports of plain symbols (``from x import a_function``) land here too,
-    but that is harmless: the routing scan only consults this map for reads
-    spelled ``<binding>.<patched_symbol>``, and a patched module-level symbol
-    is never an attribute of another imported symbol.
+
+def module_alias_paths(tree: ast.Module, pkg: str) -> dict[str, str]:
+    """Module/name bindings at top level → ABSOLUTE dotted path.
+
+    ``pkg`` is the importing module's package (``main_logic.core``) so relative
+    imports resolve to absolute paths and compare cleanly against
+    ``main_logic.core``. Covers ``import a.b`` (binds ``a``; full chain kept
+    too), ``import a.b as c``, package aliases (``import main_logic as ml`` →
+    ``ml`` → ``main_logic``, so ``ml.core`` resolves via prefix), and both
+    absolute and relative from-imports (``from main_logic import agent_event_bus
+    as bus`` / ``from .. import agent_event_bus as bus`` → the same owner
+    module; ``from main_logic import core as _core_facade`` → ``main_logic.core``).
+
+    From-imports of plain symbols land here too, but that is harmless: the
+    routing scan only consults this map for ``<binding>.<patched_symbol>``
+    reads, and a patched module-level symbol is never an attribute of another
+    imported symbol.
     """
     out: dict[str, str] = {}
     for node in tree.body:
@@ -259,13 +307,31 @@ def module_alias_paths(tree: ast.Module) -> dict[str, str]:
                     root = a.name.split(".")[0]
                     out.setdefault(root, root)
                     out[a.name] = a.name
-        elif isinstance(node, ast.ImportFrom) and node.module is not None:
-            base = "." * node.level + node.module
+        elif isinstance(node, ast.ImportFrom):
+            base = node.module if node.level == 0 else _resolve_relative(pkg, node.level, node.module)
+            if base is None:
+                continue
             for a in node.names:
                 if a.name == "*":
                     continue
                 out[a.asname or a.name] = f"{base}.{a.name}"
     return out
+
+
+def resolve_chain(chain: str, alias_paths: dict[str, str]) -> str | None:
+    """Resolve a dotted read chain to an absolute module path, or None.
+
+    Exact binding first (``bus`` → ``main_logic.agent_event_bus``); else
+    substitute a bound prefix (``ml.agent_event_bus`` where ``ml`` →
+    ``main_logic`` yields ``main_logic.agent_event_bus``).
+    """
+    if chain in alias_paths:
+        return alias_paths[chain]
+    parts = chain.split(".")
+    if parts[0] in alias_paths:
+        rest = parts[1:]
+        return ".".join([alias_paths[parts[0]], *rest]) if rest else alias_paths[parts[0]]
+    return None
 
 
 def dotted_node_path(node):
@@ -305,7 +371,7 @@ def owner_module_reads(tree: ast.Module, alias_paths: dict[str, str], attr: str)
             chain = dotted_node_path(node.args[0])
         if chain is None:
             continue
-        resolved = alias_paths.get(chain)
+        resolved = resolve_chain(chain, alias_paths)
         if resolved is not None and resolved != "main_logic.core":
             sites.append((node.lineno, node.col_offset, resolved))
     return sites
@@ -314,14 +380,15 @@ def owner_module_reads(tree: ast.Module, alias_paths: dict[str, str], attr: str)
 def def_time_facade_reads(tree: ast.Module, alias_paths: dict[str, str], attr: str):
     """(line, col) of facade reads of ``attr`` evaluated at class-creation.
 
-    Method defaults, decorators, evaluated annotations and class-level
-    constant values run ONCE at import time; a ``_core_facade.<attr>`` there
+    Class decorators, method decorators, defaults, evaluated annotations and
+    class-level constant values run ONCE at import time; a facade read there
+    (attribute ``_core_facade.<attr>`` or ``getattr(_core_facade, "<attr>")``)
     freezes the value, so later facade patches no longer reach it — the read
     must live in the method body.
     """
     sites = []
     for klass in (n for n in tree.body if isinstance(n, ast.ClassDef)):
-        def_time_nodes = []
+        def_time_nodes = list(klass.decorator_list)  # the class's own decorators
         for stmt in klass.body:
             if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 a = stmt.args
@@ -341,10 +408,15 @@ def def_time_facade_reads(tree: ast.Module, alias_paths: dict[str, str], attr: s
                     def_time_nodes.append(stmt.value)
         for sub in def_time_nodes:
             for node in ast.walk(sub):
+                chain = None
                 if isinstance(node, ast.Attribute) and node.attr == attr:
                     chain = attr_value_chain(node)
-                    if chain and alias_paths.get(chain) == "main_logic.core":
-                        sites.append((node.lineno, node.col_offset))
+                elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                      and node.func.id == "getattr" and len(node.args) >= 2
+                      and isinstance(node.args[1], ast.Constant) and node.args[1].value == attr):
+                    chain = dotted_node_path(node.args[0])
+                if chain and resolve_chain(chain, alias_paths) == "main_logic.core":
+                    sites.append((node.lineno, node.col_offset))
     return sites
 
 
@@ -371,6 +443,16 @@ def run(root: Path) -> list[Violation]:
     violations: list[Violation] = []
     init_tree = parse(init_path)
     facade_names = facade_top_level_names(init_tree)
+
+    # -- the core package must stay flat: a subpackage would define classes the
+    #    *.py discovery below never scans, so its mixins/state escape every
+    #    shape/routing check. Reject any subdirectory carrying Python modules.
+    for sub in sorted(p for p in core_dir.iterdir() if p.is_dir() and p.name != "__pycache__"):
+        if any(sub.glob("*.py")):
+            violations.append(Violation(sub / "__init__.py", 1, 0, "CORE_MIXIN_SHAPE",
+                                        f"core subpackage '{sub.name}/' is not allowed — the core package is "
+                                        f"flat so every module is covered by the contract checks; keep new "
+                                        f"code in a top-level core/*.py mixin or owner submodule"))
 
     # -- discover mixin modules (any core/*.py defining a single *Mixin class)
     mixin_files: dict[Path, ast.ClassDef] = {}
@@ -477,6 +559,17 @@ def run(root: Path) -> list[Violation]:
 
     # -- CORE_MIXIN_BASES
     if manager_class is not None:
+        # Two files defining the same *Mixin name collapse in the set below and
+        # only one enters the real MRO; the other is silently orphaned.
+        by_name: dict[str, Path] = {}
+        for mpath, mklass in sorted(mixin_files.items()):
+            if mklass.name in by_name:
+                violations.append(Violation(mpath, mklass.lineno, mklass.col_offset, "CORE_MIXIN_BASES",
+                                            f"mixin class {mklass.name} is also defined in "
+                                            f"{by_name[mklass.name].name} — duplicate names collapse and only "
+                                            f"one enters the MRO; give each mixin a unique name"))
+            else:
+                by_name[mklass.name] = mpath
         for b in manager_class.bases:
             if not isinstance(b, ast.Name):
                 violations.append(Violation(manager_path, b.lineno, b.col_offset, "CORE_MIXIN_BASES",
@@ -498,25 +591,39 @@ def run(root: Path) -> list[Violation]:
         # (``from .focus import FocusMixin``). Without this, manager.py could
         # ``from elsewhere import FocusMixin`` and put the outside class in the
         # MRO while the package mixin sits orphaned but the set check passes.
-        relative_binds = {}
+        # Must be ``from .<sibling_module> import <Mixin>`` (level 1). A level-2+
+        # import (``from .. import ...``) escapes the core package and could bind
+        # an outside same-named class, so it does not count as core-local.
+        relative_binds = set()
         for node in parse(manager_path).body:
-            if isinstance(node, ast.ImportFrom) and node.level >= 1:
+            if isinstance(node, ast.ImportFrom) and node.level == 1 and node.module:
                 for a in node.names:
-                    relative_binds[a.asname or a.name] = node.module
+                    relative_binds.add(a.asname or a.name)
         for name in sorted(base_names & mixin_names):
             if name not in relative_binds:
                 violations.append(Violation(manager_path, manager_class.lineno, manager_class.col_offset,
                                             "CORE_MIXIN_BASES",
                                             f"base {name} matches a package mixin by name but is not bound via "
-                                            f"a package-relative import (from .<module> import {name}); the MRO "
-                                            f"may be using an outside class while the package mixin is orphaned"))
+                                            f"a core-local import (from .<module> import {name}); the MRO may be "
+                                            f"using an outside class while the package mixin is orphaned"))
 
-    # -- CORE_FACADE_LAYOUT
-    for node in init_tree.body:
+    # -- CORE_FACADE_LAYOUT: the facade only re-exports — docstring + imports.
+    #    A top-level function, assignment or executable statement would put
+    #    behavior/state in the facade (and, for a facade read of a patched
+    #    symbol, freeze it at import) — reject anything but docstring/imports.
+    for i, node in enumerate(init_tree.body):
+        if i == 0 and isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant):
+            continue  # module docstring
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            continue
         if isinstance(node, ast.ClassDef):
             violations.append(Violation(init_path, node.lineno, node.col_offset, "CORE_FACADE_LAYOUT",
                                         f"__init__.py must not define classes (found {node.name}) — the "
                                         f"facade only re-exports; the class lives in manager.py"))
+        else:
+            violations.append(Violation(init_path, node.lineno, node.col_offset, "CORE_FACADE_LAYOUT",
+                                        f"__init__.py top level allows only docstring/imports, found "
+                                        f"{type(node).__name__} — the facade only re-exports, no behavior/state"))
     last = init_tree.body[-1] if init_tree.body else None
     is_manager_import = (isinstance(last, ast.ImportFrom) and last.level == 1 and last.module == "manager"
                          and [a.name for a in last.names] == ["LLMSessionManager"]
@@ -533,11 +640,11 @@ def run(root: Path) -> list[Violation]:
     module_info = {}
     for path in routing_files:
         tree = parse(path)
+        pkg = ".".join(path.resolve().relative_to(root.resolve()).parts[:-1])
         module_info[path] = (tree, module_level_import_bindings(tree), global_read_names(path),
-                             module_alias_paths(tree))
+                             module_alias_paths(tree, pkg))
 
     for attr, sites in sorted(targets.items()):
-        strict_sites = [s for s in sites if not s[2]]
         if attr not in facade_names:
             for site_path, line, exempt in sites:
                 if not exempt:
@@ -546,8 +653,9 @@ def run(root: Path) -> list[Violation]:
                                                 f"no such name (typo? pass raising=False / create=True for "
                                                 f"intentional absent-name guards)"))
             continue
-        if not strict_sites:
-            continue  # only raising=False / create=True guards; no routing needed
+        # The attr exists on the facade, so every patch of it is real (a
+        # raising=False / create=True guard only waives the existence check,
+        # not the routing requirement) — route ALL consumers.
         for path, (tree, imports, global_reads, alias_paths) in module_info.items():
             if attr in imports:
                 violations.append(Violation(path, imports[attr], 0, "CORE_PATCH_ROUTING",
