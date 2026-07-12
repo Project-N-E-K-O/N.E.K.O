@@ -223,14 +223,17 @@ def facade_top_level_names(init_tree: ast.Module) -> set[str]:
     return names
 
 
-def facade_owner_modules(init_tree: ast.Module) -> dict[str, str]:
-    """{re-exported name: absolute owner module} from the facade's imports.
+def facade_owner_modules(init_tree: ast.Module) -> dict[str, tuple[str, str]]:
+    """{facade name: (absolute owner module, ORIGINAL symbol name)}.
 
     The facade lives at package ``main_logic.core``, so relative re-exports
     (``from ._shared import CROSS_MODE_RESTART_WAIT_SECONDS``) resolve against
-    it. Used to match owner-module reads precisely (see ``owner_module_reads``).
+    it. The original name matters for aliased re-exports
+    (``from ...bus import dispatch_text_user_message as send_text`` → facade
+    name ``send_text`` but the owner attribute is ``dispatch_text_user_message``)
+    so ``owner_module_reads`` searches the owner for the RIGHT attribute.
     """
-    out: dict[str, str] = {}
+    out: dict[str, tuple[str, str]] = {}
     for node in init_tree.body:
         if isinstance(node, ast.ImportFrom):
             base = node.module if node.level == 0 else _resolve_relative("main_logic.core", node.level, node.module)
@@ -238,7 +241,7 @@ def facade_owner_modules(init_tree: ast.Module) -> dict[str, str]:
                 continue
             for a in node.names:
                 if a.name != "*":
-                    out[a.asname or a.name] = base
+                    out[a.asname or a.name] = (base, a.name)
     return out
 
 
@@ -371,28 +374,31 @@ def attr_value_chain(node: ast.Attribute):
     return dotted_node_path(node.value)
 
 
-def owner_module_reads(tree: ast.Module, alias_paths: dict[str, str], attr: str, owner: str | None):
-    """(line, col, module) for reads of ``attr`` through its OWNER module.
+def owner_module_reads(tree: ast.Module, alias_paths: dict[str, str], owner_info):
+    """(line, col, module) for reads of the owner attribute that a facade patch
+    would miss.
 
-    The facade re-exports ``attr`` from ``owner`` (e.g. ``get_tts_worker`` from
-    ``main_logic.tts_client``); a monkeypatch of ``main_logic.core.<attr>``
-    rebinds only the facade copy, so a mixin that reads ``owner.<attr>`` (or
-    ``getattr(owner, "<attr>")``) sees the un-patched original. Matching the
-    SPECIFIC owner module — not just any non-facade module — avoids flagging a
-    coincidental same-named attribute on an unrelated object (a plain imported
-    object whose method happens to share the name). If ``owner`` is unknown
-    (attr not from-imported by the facade) nothing is flagged here.
+    ``owner_info`` is ``(owner_module, original_name)``: the facade re-exports
+    the patched symbol from ``owner_module`` under ``original_name`` (which
+    differs from the facade name only for aliased re-exports). A monkeypatch of
+    ``main_logic.core.<facade_name>`` rebinds only the facade copy, so a mixin
+    that reads ``owner_module.original_name`` (or ``getattr(...)``) sees the
+    un-patched original. Matching the SPECIFIC owner module and its ORIGINAL
+    attribute name avoids flagging a coincidental same-named attribute on an
+    unrelated object. If ``owner_info`` is unknown (attr not from-imported by
+    the facade) nothing is flagged here.
     """
-    if not owner:
+    if not owner_info:
         return []
+    owner, name = owner_info
     sites = []
     for node in ast.walk(tree):
         chain = None
-        if isinstance(node, ast.Attribute) and node.attr == attr:
+        if isinstance(node, ast.Attribute) and node.attr == name:
             chain = attr_value_chain(node)
         elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
               and node.func.id == "getattr" and len(node.args) >= 2
-              and isinstance(node.args[1], ast.Constant) and node.args[1].value == attr):
+              and isinstance(node.args[1], ast.Constant) and node.args[1].value == name):
             chain = dotted_node_path(node.args[0])
         if chain is None:
             continue
@@ -584,16 +590,21 @@ def run(root: Path) -> list[Violation]:
                 continue  # class docstring
             if isinstance(node, (ast.Assign, ast.AnnAssign)):
                 # Class-level CONSTANTS are allowed, but a mutable container
-                # literal (``CACHE = {}``) is shared state across instances and
-                # a Call (``TOKEN = open_socket()``) runs behavior at import —
-                # both are the drift this contract prevents. Recurse: a nested
-                # literal (``TOKEN = (open_socket(),)``) hides the same thing
-                # behind an immutable-looking outer Tuple.
-                MUTABLE = (ast.Dict, ast.List, ast.Set, ast.DictComp, ast.ListComp, ast.SetComp, ast.Call)
-                bad = next((s for s in ast.walk(node.value) if isinstance(s, MUTABLE)), None)
+                # literal (``CACHE = {}``) is shared state, a Call
+                # (``TOKEN = open_socket()``) runs behavior at import, and a
+                # Lambda (``extra = lambda self: ...``) is a method in disguise
+                # — all drift this contract prevents. Recurse: a nested literal
+                # (``TOKEN = (open_socket(),)``) hides it behind an outer Tuple.
+                # ``node.value`` is None for an annotation-only attr (``x: int``)
+                # — nothing to evaluate, so it is fine.
+                MUTABLE = (ast.Dict, ast.List, ast.Set, ast.DictComp, ast.ListComp,
+                           ast.SetComp, ast.GeneratorExp, ast.Call, ast.Lambda)
+                bad = None if node.value is None else \
+                    next((s for s in ast.walk(node.value) if isinstance(s, MUTABLE)), None)
                 if bad is not None:
-                    kind = "a Call (import-time behavior)" if isinstance(bad, ast.Call) \
-                        else "a mutable container (shared instance state)"
+                    kind = ("a Call (import-time behavior)" if isinstance(bad, ast.Call)
+                            else "a lambda (a method in disguise)" if isinstance(bad, ast.Lambda)
+                            else "a mutable container (shared instance state)")
                     violations.append(Violation(manager_path, node.lineno, node.col_offset, "CORE_MANAGER_SHAPE",
                                                 f"manager class attribute is/contains {kind} — only immutable "
                                                 f"class constants are allowed; move state into __init__ (per "
@@ -775,7 +786,7 @@ def run(root: Path) -> list[Violation]:
             # "dispatch_...")``) — dodge facade patches the same way. Reads
             # through main_logic.core itself ARE the facade contract and are
             # skipped inside the helper.
-            for line, col, resolved in owner_module_reads(tree, alias_paths, attr, facade_owners.get(attr)):
+            for line, col, resolved in owner_module_reads(tree, alias_paths, facade_owners.get(attr)):
                 violations.append(Violation(
                     path, line, col, "CORE_PATCH_ROUTING",
                     f"'{attr}' is a test patch target on the facade but is read here "
