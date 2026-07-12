@@ -1002,7 +1002,18 @@ class VRMCore {
                 };
                 requestAnimationFrame(waitFrames);
             });
-            
+
+            // 加载竞态守卫（二道）：一道守卫之后经过了 applyVRM0 旋转 / 偏好 fetch / 3 帧等待
+            // 等 await，期间可能被更新的加载取代。这里是「最后一个 await 之后、任何共享 manager
+            // 写入（相机位姿 / enableFaceCamera / scene.add / currentModel）之前」的屏障——若不
+            // 在此拦截，被取代的旧加载会用它自己模型的存档相机覆写共享相机，把已经可见的新模型
+            // 顶到屏外（Codex P2）。此处到 scene.add / currentModel 全程再无 await，一道即可覆盖。
+            if (this.manager._activeLoadToken !== loadToken) {
+                console.log('[VRM Core] 模型加载已被取代（共享相机/入场前），跳过并释放资源');
+                await this._disposeAbandonedVRM(vrm);
+                return null;
+            }
+
             // 旋转设置统一在这里处理，确保只应用一次
             // 先通过检测器检测并修复方向，然后应用最终的旋转值
             const savedRotation = this.getEffectiveSavedRotation(preferences?.rotation, versionDefaultRotation);
@@ -1191,14 +1202,7 @@ class VRMCore {
                 throw new Error(errorMsg);
             }
 
-            // 加载竞态守卫（二道）：一道守卫之后到这里还有偏好 fetch / 3 帧等待等 await，
-            // 期间同样可能被取代；在把模型加入共享 scene、覆写 currentModel 之前再校验一次。
-            if (this.manager._activeLoadToken !== loadToken) {
-                console.log('[VRM Core] 模型加载已被取代（入场前），跳过并释放资源');
-                await this._disposeAbandonedVRM(vrm);
-                return null;
-            }
-
+            // 此处到 scene.add 之间无 await，二道守卫（3 帧等待后）已覆盖，无需重复校验。
             this.manager.scene.add(vrm.scene);
 
             // 优化材质设置（根据性能模式）

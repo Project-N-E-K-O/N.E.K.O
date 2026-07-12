@@ -85,17 +85,33 @@ def test_vrm_core_load_is_token_guarded_across_dispose():
     load_section = core_source.split("async loadModel(modelUrl, options = {}, managerLoadToken = null)", 1)[1]
     load_section = load_section.split("async disposeVRM(", 1)[0]
 
-    # 两道守卫：GLTF 加载后（触碰共享 scene/currentModel 前）与 scene.add 前
+    # 两道守卫：GLTF 加载后（触碰共享 scene/currentModel 前）与 3 帧等待后（共享相机写入前）
     guard_count = load_section.count("this.manager._activeLoadToken !== loadToken")
     assert guard_count >= 2, f"expected >=2 token guards in vrm-core.loadModel, found {guard_count}"
 
-    # 守卫必须在触碰共享状态之前：一道在 disposeVRM(old) 之前，二道在 scene.add 之前
+    # 守卫必须在触碰共享状态之前：
+    #   一道在 disposeVRM(old) 之前；
+    #   二道在「最后一个 await（3 帧等待）之后、任何共享 manager 写入之前」——
+    #   关键是必须先于共享相机/interaction 写入（Codex P2：否则被取代的旧加载会用自己的
+    #   存档相机覆写共享相机把可见的新模型顶到屏外），scene.add 随后无 await 一并覆盖。
     first_guard = load_section.index("this.manager._activeLoadToken !== loadToken")
     old_remove = load_section.index("await this.disposeVRM();")
+    frame_wait = load_section.index("await new Promise(resolve => {")
+    face_camera = load_section.index("this.manager.interaction.enableFaceCamera = false;")
+    camera_write = load_section.index("this.manager.camera.position.set(")
     scene_add = load_section.index("this.manager.scene.add(vrm.scene);")
     second_guard = load_section.index("this.manager._activeLoadToken !== loadToken", first_guard + 1)
     assert first_guard < old_remove, "first guard must precede old-model disposeVRM"
+    assert frame_wait < second_guard, "second guard must sit AFTER the 3-frame-wait await"
+    assert second_guard < face_camera, "second guard must precede shared enableFaceCamera write"
+    assert second_guard < camera_write, "second guard must precede shared camera.position write (Codex P2)"
     assert second_guard < scene_add, "second guard must precede scene.add of new model"
+
+    # 二道守卫之后到 scene.add 之间不得再插入 await（否则又暴露一个未守卫窗口）
+    between = load_section[second_guard:scene_add]
+    assert "await " not in between.replace("await this._disposeAbandonedVRM(vrm);", ""), (
+        "二道守卫与 scene.add 之间不应有额外 await（会重现未守卫的共享写入窗口）"
+    )
 
     # 早退释放被取代的 VRM 资源（避免显存泄漏）
     assert "async _disposeAbandonedVRM(vrm)" in core_source
