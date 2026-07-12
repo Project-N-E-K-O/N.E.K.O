@@ -64,6 +64,7 @@ class ProactiveMixin:
                 if k in flags and isinstance(flags[k], bool):
                     self.agent_flags[k] = flags[k]
         except Exception:
+            # Malformed flags payload — keep the current flags.
             pass
 
     # ------------------------------------------------------------------
@@ -149,6 +150,7 @@ class ProactiveMixin:
             if ws and hasattr(ws, 'client') and ws.client:
                 is_local = ws.client.host in ('127.0.0.1', '::1', 'localhost')
         except Exception:
+            # Introspection failure just means "not local" — keep the False default.
             pass
         if is_local:
             try:
@@ -206,6 +208,7 @@ class ProactiveMixin:
                     and self.websocket.client_state != self.websocket.client_state.CONNECTED):
                 return False
         except Exception:
+            # ws state introspection failed — fall through to the remaining gates.
             pass
         if not self.session or not hasattr(self.session, '_conversation_history'):
             try:
@@ -374,6 +377,7 @@ class ProactiveMixin:
                 try:
                     await self._request_tts_done_for_turn("finish_proactive_delivery")
                 except Exception:
+                    # TTS done-signal is best-effort; the delivery itself already succeeded.
                     pass
 
             self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
@@ -383,6 +387,7 @@ class ProactiveMixin:
                         and self.websocket.client_state == self.websocket.client_state.CONNECTED):
                     await self.websocket.send_json({'type': 'system', 'data': 'turn end'})
             except Exception:
+                # Turn-end push is best-effort; the client may have gone away.
                 pass
         # proactive 原文不写 logger（隐私）；本地 print 兜底
         logger.info("[%s] Proactive stream delivered (text_len=%d)", self.lanlan_name, len(full_text or ""))
@@ -1711,6 +1716,7 @@ class ProactiveMixin:
             if len(self.pending_extra_replies) > AGENT_CALLBACK_QUEUE_MAX_ITEMS:
                 self.pending_extra_replies = self.pending_extra_replies[-AGENT_CALLBACK_QUEUE_MAX_ITEMS:]
         except Exception:
+            # Pruning is best-effort housekeeping — never let it break callback bookkeeping.
             pass
 
     def drain_agent_callbacks_for_llm(self) -> str:

@@ -100,6 +100,7 @@ class TtsRuntimeMixin:
                 self._audio_stream_queue.task_done()
                 self._audio_stream_dropped_total += 1
             except asyncio.QueueEmpty:
+                # Raced with the consumer draining the queue — nothing left to drop.
                 pass
         await self._audio_stream_queue.put(message)
         qsize = self._audio_stream_queue.qsize()
@@ -503,6 +504,7 @@ class TtsRuntimeMixin:
             try:
                 await asyncio.wait_for(handler_task_ref, timeout=2.0)
             except (asyncio.CancelledError, asyncio.TimeoutError):
+                # Cancel echo or slow exit of the superseded handler — proceed either way.
                 pass
             if self.tts_handler_task is handler_task_ref:
                 self.tts_handler_task = None
@@ -528,11 +530,13 @@ class TtsRuntimeMixin:
                     while not req_queue_ref.empty():
                         req_queue_ref.get_nowait()
                 except Exception:
+                    # Queue drained concurrently — nothing left to clear.
                     pass
                 try:
                     while not resp_queue_ref.empty():
                         resp_queue_ref.get_nowait()
                 except Exception:
+                    # Queue drained concurrently — nothing left to clear.
                     pass
 
         # 只在被拆除的 runtime 仍是当前 runtime 时才清全局 TTS 状态，
@@ -989,6 +993,7 @@ class TtsRuntimeMixin:
                 try:
                     q.put_nowait(("__handler_exit__", None))
                 except Exception:
+                    # See note above — the sentinel push is best-effort.
                     pass
                 raise
             except Exception as e:

@@ -729,6 +729,7 @@ class LifecycleMixin:
                 try:
                     await _new_dialog_task
                 except (asyncio.CancelledError, Exception):
+                    # Cancellation echo or the prefetch's own error — moot once this start attempt ends.
                     pass
 
     async def _start_session_handle_inflight(self, websocket, new, input_mode, *,
@@ -1077,6 +1078,7 @@ class LifecycleMixin:
             try:
                 await asyncio.wait_for(self.tts_handler_task, timeout=1.0)
             except (asyncio.CancelledError, asyncio.TimeoutError):
+                # Cancel echo or slow exit of the superseded handler — safe to proceed either way.
                 pass
 
         # 启动新的 TTS handler task
@@ -1256,6 +1258,7 @@ class LifecycleMixin:
             try:
                 await new_session.close()
             except Exception:
+                # Best-effort close of the half-connected session; the connect error re-raises below.
                 pass
             raise
 
@@ -1926,6 +1929,7 @@ class LifecycleMixin:
             try:
                 await asyncio.wait_for(message_handler_task_ref, timeout=3.0)
             except asyncio.CancelledError:
+                # Normal cancellation echo; the timeout case is handled separately below.
                 pass
             except asyncio.TimeoutError:
                 logger.warning("End Session: Warning: Listener task cancellation timeout.")
