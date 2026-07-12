@@ -206,7 +206,7 @@ volumes:
 查看所有可配置项，请参考：
 
 - **基础配置**: `config/__init__.py` 中的 `DEFAULT_CORE_CONFIG`
-- **运行时配置**: `utils/config_manager.py` 中的 `get_core_config()` 方法
+- **运行时配置**: `utils/config_manager/core_config.py` 中的 `get_core_config()` 方法
 - **API 提供商配置**: `config/api_providers.json`
 
 ### 所有可配置的环境变量
@@ -306,5 +306,5 @@ A: 运行 `docker exec neko python -c "from utils.config_manager import get_conf
 
 - [项目 README](../README.MD)
 - [配置系统说明](../config/__init__.py)
-- [Config Manager 源码](../utils/config_manager.py)
+- [Config Manager 源码](../utils/config_manager/)
 

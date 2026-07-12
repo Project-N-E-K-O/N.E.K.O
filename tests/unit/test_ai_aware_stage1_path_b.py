@@ -201,8 +201,8 @@ async def test_path_b_trims_to_user_bracket_before_stage1():
     fake_fact_store.aload_facts = AsyncMock(return_value=[])
     fake_fact_store.aextract_facts_with_known_pool = AsyncMock(return_value=[])
 
-    with patch.object(memory_server, 'time_manager', fake_time_manager), \
-         patch.object(memory_server, 'fact_store', fake_fact_store):
+    with patch.object(memory_server.runtime, 'time_manager', fake_time_manager), \
+         patch.object(memory_server.runtime, 'fact_store', fake_fact_store):
         await memory_server._run_path_b('悠怡', state)
 
     # 验证 Stage-1 被调，且 messages 只含 bracket 内 3 条
@@ -260,8 +260,8 @@ async def test_path_b_no_user_msg_in_window_skips_extraction():
     fake_fact_store.aload_facts = AsyncMock(return_value=[])
     fake_fact_store.aextract_facts_with_known_pool = AsyncMock(return_value=[])
 
-    with patch.object(memory_server, 'time_manager', fake_time_manager), \
-         patch.object(memory_server, 'fact_store', fake_fact_store):
+    with patch.object(memory_server.runtime, 'time_manager', fake_time_manager), \
+         patch.object(memory_server.runtime, 'fact_store', fake_fact_store):
         await memory_server._run_path_b('悠怡', state)
 
     # Stage-1 不该被调
@@ -582,8 +582,8 @@ async def test_path_b_cold_start_lookback_derived_from_constants():
     fake_fact_store.aload_facts = AsyncMock(return_value=[])
     fake_fact_store.aextract_facts_with_known_pool = AsyncMock(return_value=[])
 
-    with patch.object(memory_server, 'time_manager', fake_time_manager), \
-         patch.object(memory_server, 'fact_store', fake_fact_store):
+    with patch.object(memory_server.runtime, 'time_manager', fake_time_manager), \
+         patch.object(memory_server.runtime, 'fact_store', fake_fact_store):
         await memory_server._run_path_b('悠怡', state)
 
     # 验证 aretrieve_original_by_timeframe 被调，start_time 正好是
@@ -640,7 +640,7 @@ async def test_path_b_cold_start_uses_max_of_ticks_and_turns():
     fake_time_manager = MagicMock()
     fake_time_manager.aretrieve_original_by_timeframe = AsyncMock(return_value=[])
 
-    with patch.object(memory_server, 'time_manager', fake_time_manager):
+    with patch.object(memory_server.runtime, 'time_manager', fake_time_manager):
         await memory_server._run_path_b('悠怡', state)
 
     start_time = fake_time_manager.aretrieve_original_by_timeframe.await_args.args[1]
@@ -674,7 +674,7 @@ async def test_path_b_skips_when_a_never_ran():
     fake_time_manager = MagicMock()
     fake_time_manager.aretrieve_original_by_timeframe = AsyncMock(return_value=[])
 
-    with patch.object(memory_server, 'time_manager', fake_time_manager):
+    with patch.object(memory_server.runtime, 'time_manager', fake_time_manager):
         await memory_server._run_path_b('悠怡', state)
 
     # 无 last_a_msg_ts → B 不该读 SQL
@@ -712,8 +712,8 @@ async def test_path_b_full_window_advances_cursor_to_last_fetched_eq_last_a_msg_
     fake_fact_store.aload_facts = AsyncMock(return_value=[])
     fake_fact_store.aextract_facts_with_known_pool = AsyncMock(return_value=[])
 
-    with patch.object(memory_server, 'time_manager', fake_time_manager), \
-         patch.object(memory_server, 'fact_store', fake_fact_store):
+    with patch.object(memory_server.runtime, 'time_manager', fake_time_manager), \
+         patch.object(memory_server.runtime, 'fact_store', fake_fact_store):
         await memory_server._run_path_b('悠怡', state)
 
     # 无截断时 last fetched == last_a_msg_ts，cursor 推到此值
@@ -750,7 +750,7 @@ async def test_path_b_empty_rows_preserves_cursor_for_retry():
     # 模拟 SQL transient 失败（time_manager swallow 返 []，跟真空窗口同形态）
     fake_time_manager.aretrieve_original_by_timeframe = AsyncMock(return_value=[])
 
-    with patch.object(memory_server, 'time_manager', fake_time_manager):
+    with patch.object(memory_server.runtime, 'time_manager', fake_time_manager):
         await memory_server._run_path_b('悠怡', state)
 
     # 关键契约：cursor 必须保持原值，下次 B trigger 重试该窗口
@@ -810,8 +810,8 @@ async def test_path_b_filters_known_pool_by_window_and_caps():
         side_effect=capture_extract,
     )
 
-    with patch.object(memory_server, 'time_manager', fake_time_manager), \
-         patch.object(memory_server, 'fact_store', fake_fact_store):
+    with patch.object(memory_server.runtime, 'time_manager', fake_time_manager), \
+         patch.object(memory_server.runtime, 'fact_store', fake_fact_store):
         await memory_server._run_path_b('悠怡', state)
 
     # 1. cap 生效（最多 MAX_KNOWN_POOL_FACTS = 30 条）
@@ -863,8 +863,8 @@ async def test_path_b_truncated_window_advances_cursor_to_last_fetched_row():
     fake_fact_store.aload_facts = AsyncMock(return_value=[])
     fake_fact_store.aextract_facts_with_known_pool = AsyncMock(return_value=[])
 
-    with patch.object(memory_server, 'time_manager', fake_time_manager), \
-         patch.object(memory_server, 'fact_store', fake_fact_store):
+    with patch.object(memory_server.runtime, 'time_manager', fake_time_manager), \
+         patch.object(memory_server.runtime, 'fact_store', fake_fact_store):
         await memory_server._run_path_b('悠怡', state)
 
     assert state['last_b_check_ts'] == truncation_boundary, (
@@ -918,8 +918,8 @@ async def test_path_b_known_pool_sort_tolerates_malformed_importance():
     fake_fact_store.aload_facts = AsyncMock(return_value=dirty_facts)
     fake_fact_store.aextract_facts_with_known_pool = AsyncMock(return_value=[])
 
-    with patch.object(memory_server, 'time_manager', fake_time_manager), \
-         patch.object(memory_server, 'fact_store', fake_fact_store):
+    with patch.object(memory_server.runtime, 'time_manager', fake_time_manager), \
+         patch.object(memory_server.runtime, 'fact_store', fake_fact_store):
         # 不该抛 ValueError / TypeError
         await memory_server._run_path_b('悠怡', state)
 
@@ -1020,8 +1020,8 @@ async def test_path_b_stage1_terminal_failure_preserves_cursor():
     # Stage-1 LLM 终态失败 → 返 None（不是 []）
     fake_fact_store.aextract_facts_with_known_pool = AsyncMock(return_value=None)
 
-    with patch.object(memory_server, 'time_manager', fake_time_manager), \
-         patch.object(memory_server, 'fact_store', fake_fact_store):
+    with patch.object(memory_server.runtime, 'time_manager', fake_time_manager), \
+         patch.object(memory_server.runtime, 'fact_store', fake_fact_store):
         await memory_server._run_path_b('悠怡', state)
 
     # 关键契约：失败时 cursor 必须保持原值，下次 B trigger 重试同窗口
@@ -1064,8 +1064,8 @@ async def test_path_b_truncated_window_all_filtered_advances_to_last_fetched():
     fake_fact_store.aload_facts = AsyncMock(return_value=[])
     fake_fact_store.aextract_facts_with_known_pool = AsyncMock(return_value=[])
 
-    with patch.object(memory_server, 'time_manager', fake_time_manager), \
-         patch.object(memory_server, 'fact_store', fake_fact_store):
+    with patch.object(memory_server.runtime, 'time_manager', fake_time_manager), \
+         patch.object(memory_server.runtime, 'fact_store', fake_fact_store):
         await memory_server._run_path_b('悠怡', state)
 
     assert state['last_b_check_ts'] == truncation_boundary, (
@@ -1115,8 +1115,8 @@ async def test_path_b_known_pool_preserves_microsecond_precision_at_boundary():
     fake_fact_store.aload_facts = AsyncMock(return_value=[on_boundary_fact])
     fake_fact_store.aextract_facts_with_known_pool = AsyncMock(return_value=[])
 
-    with patch.object(memory_server, 'time_manager', fake_time_manager), \
-         patch.object(memory_server, 'fact_store', fake_fact_store):
+    with patch.object(memory_server.runtime, 'time_manager', fake_time_manager), \
+         patch.object(memory_server.runtime, 'fact_store', fake_fact_store):
         await memory_server._run_path_b('悠怡', state)
 
     fake_fact_store.aextract_facts_with_known_pool.assert_awaited_once()
@@ -1197,8 +1197,8 @@ async def test_path_b_handles_tz_aware_db_rows_without_typeerror():
     fake_fact_store.aload_facts = AsyncMock(return_value=fake_facts)
     fake_fact_store.aextract_facts_with_known_pool = AsyncMock(return_value=[])
 
-    with patch.object(memory_server, 'time_manager', fake_time_manager), \
-         patch.object(memory_server, 'fact_store', fake_fact_store):
+    with patch.object(memory_server.runtime, 'time_manager', fake_time_manager), \
+         patch.object(memory_server.runtime, 'fact_store', fake_fact_store):
         # 不该抛 TypeError
         await memory_server._run_path_b('悠怡', state)
 
@@ -1254,8 +1254,8 @@ async def test_path_b_known_pool_normalizes_tz_aware_created_at():
     fake_fact_store.aload_facts = AsyncMock(return_value=tz_aware_facts)
     fake_fact_store.aextract_facts_with_known_pool = AsyncMock(return_value=[])
 
-    with patch.object(memory_server, 'time_manager', fake_time_manager), \
-         patch.object(memory_server, 'fact_store', fake_fact_store):
+    with patch.object(memory_server.runtime, 'time_manager', fake_time_manager), \
+         patch.object(memory_server.runtime, 'fact_store', fake_fact_store):
         # 不该抛 TypeError
         await memory_server._run_path_b('悠怡', state)
 
@@ -1320,8 +1320,8 @@ async def test_path_b_known_pool_includes_just_written_a_facts_despite_clock_ske
     fake_fact_store.aload_facts = AsyncMock(return_value=all_facts)
     fake_fact_store.aextract_facts_with_known_pool = AsyncMock(return_value=[])
 
-    with patch.object(memory_server, 'time_manager', fake_time_manager), \
-         patch.object(memory_server, 'fact_store', fake_fact_store):
+    with patch.object(memory_server.runtime, 'time_manager', fake_time_manager), \
+         patch.object(memory_server.runtime, 'fact_store', fake_fact_store):
         await memory_server._run_path_b('悠怡', state)
 
     fake_fact_store.aextract_facts_with_known_pool.assert_awaited_once()
@@ -1415,8 +1415,8 @@ async def test_path_b_same_ts_cluster_overflow_advances_cursor_by_epsilon():
     fake_fact_store.aload_facts = AsyncMock(return_value=[])
     fake_fact_store.aextract_facts_with_known_pool = AsyncMock(return_value=[])
 
-    with patch.object(memory_server, 'time_manager', fake_time_manager), \
-         patch.object(memory_server, 'fact_store', fake_fact_store):
+    with patch.object(memory_server.runtime, 'time_manager', fake_time_manager), \
+         patch.object(memory_server.runtime, 'fact_store', fake_fact_store):
         await memory_server._run_path_b('悠怡', state)
 
     # 关键断言：cursor 严格 > cluster_ts，下次 BETWEEN 不会再捞同 ts 簇
@@ -1465,8 +1465,8 @@ async def test_path_b_truncated_but_diverse_ts_does_not_epsilon_bump():
     fake_fact_store.aload_facts = AsyncMock(return_value=[])
     fake_fact_store.aextract_facts_with_known_pool = AsyncMock(return_value=[])
 
-    with patch.object(memory_server, 'time_manager', fake_time_manager), \
-         patch.object(memory_server, 'fact_store', fake_fact_store):
+    with patch.object(memory_server.runtime, 'time_manager', fake_time_manager), \
+         patch.object(memory_server.runtime, 'fact_store', fake_fact_store):
         await memory_server._run_path_b('悠怡', state)
 
     # 不该 epsilon bump——cursor 必须恰好 = last fetched ts

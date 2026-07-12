@@ -1,0 +1,319 @@
+{
+  "version": 1,
+  "beats": [
+    {
+      "key": "idle:soft-observation",
+      "live_column": "NEKO tiny radio",
+      "shape": "soft_observation",
+      "fun_axis": "mood",
+      "idle_stage": "settle",
+      "title": "安静的直播间气氛",
+      "hint": "Say one soft concrete observation, not a direct question.",
+      "reply_affordance": "viewer can agree or answer with one small mood word"
+    },
+    {
+      "key": "idle:tiny-choice",
+      "live_column": "NEKO micro poll",
+      "shape": "tiny_choice",
+      "fun_axis": "choice",
+      "idle_stage": "column",
+      "title": "猫猫给观众的小选择",
+      "hint": "Offer one tiny A/B choice viewers can answer in a few words.",
+      "reply_affordance": "viewer can pick one concrete side"
+    },
+    {
+      "key": "idle:light-tease",
+      "live_column": "NEKO tiny verdict",
+      "shape": "light_tease",
+      "fun_axis": "tease",
+      "idle_stage": "column",
+      "title": "猫猫式轻吐槽",
+      "hint": "Make one harmless NEKO-flavored tease about the current quiet mood.",
+      "reply_affordance": "viewer can tease NEKO back in one short line"
+    },
+    {
+      "key": "idle:small-mood",
+      "live_column": "NEKO mood card",
+      "shape": "small_mood",
+      "fun_axis": "mood",
+      "idle_stage": "settle",
+      "title": "猫猫现在的小状态",
+      "hint": "Share one tiny NEKO mood line with a small opening for viewers.",
+      "reply_affordance": "viewer can answer with one mood word"
+    },
+    {
+      "key": "idle:one-word-call",
+      "live_column": "NEKO one-word callback",
+      "shape": "one_word_call",
+      "fun_axis": "viewer_callback",
+      "idle_stage": "callback",
+      "title": "用一个字给现在的猫猫打个标签",
+      "hint": "Ask for exactly one character or one word; make it playful, not needy.",
+      "reply_affordance": "viewer can answer with one character or one word"
+    },
+    {
+      "key": "idle:micro-challenge",
+      "live_column": "NEKO three-second challenge",
+      "shape": "micro_challenge",
+      "fun_axis": "micro_challenge",
+      "idle_stage": "callback",
+      "title": "猫猫假装主播力满格三秒",
+      "hint": "Offer one tiny challenge viewers can answer or tease back in a few words.",
+      "reply_affordance": "viewer can judge or tease the tiny challenge"
+    },
+    {
+      "key": "idle:prop-choice",
+      "live_column": "NEKO desk poll",
+      "shape": "tiny_choice",
+      "fun_axis": "choice",
+      "idle_stage": "column",
+      "title": "桌面二选一：水杯还是零食",
+      "hint": "Offer one concrete A/B choice from ordinary stream-room objects.",
+      "reply_affordance": "viewer can pick one ordinary object"
+    },
+    {
+      "key": "idle:cat-radio",
+      "live_column": "NEKO tiny radio",
+      "shape": "soft_observation",
+      "fun_axis": "mood",
+      "idle_stage": "settle",
+      "title": "这一分钟像猫猫小电台的空拍",
+      "meme_query": "电子榨菜 松弛感",
+      "hint": "Make one cozy radio-like observation; keep the hook low-pressure and indirect.",
+      "reply_affordance": "viewer can answer with one cozy mood or tiny scene"
+    },
+    {
+      "key": "idle:screen-blink",
+      "live_column": "NEKO tiny observation",
+      "shape": "soft_observation",
+      "fun_axis": "mood",
+      "idle_stage": "settle",
+      "title": "屏幕闪一下也像在和猫猫点头",
+      "hint": "Make one tiny visual observation; do not turn it into a question.",
+      "reply_affordance": "viewer can answer with one tiny scene or mood"
+    },
+    {
+      "key": "idle:cat-paw-button",
+      "live_column": "NEKO cat-paw button",
+      "shape": "tiny_choice",
+      "fun_axis": "choice",
+      "idle_stage": "column",
+      "title": "猫爪按钮二选一：卖萌还是吐槽",
+      "hint": "Offer one playful cat-paw A/B choice; both sides must be concrete.",
+      "reply_affordance": "viewer can pick cute mode or roast mode"
+    },
+    {
+      "key": "idle:three-word-password",
+      "live_column": "NEKO room password",
+      "shape": "one_word_call",
+      "fun_axis": "viewer_callback",
+      "idle_stage": "callback",
+      "title": "给今晚猫猫小直播定一个三字暗号",
+      "hint": "Ask for one three-character password; make it playful and easy.",
+      "reply_affordance": "viewer can answer with three characters"
+    },
+    {
+      "key": "idle:serious-three-seconds",
+      "live_column": "NEKO three-second challenge",
+      "shape": "micro_challenge",
+      "fun_axis": "micro_challenge",
+      "idle_stage": "callback",
+      "title": "猫猫挑战正经主持三秒",
+      "hint": "Offer one tiny self-challenge; stop before it becomes a segment.",
+      "reply_affordance": "viewer can judge whether NEKO stayed serious"
+    },
+    {
+      "key": "idle:reverse-tease",
+      "live_column": "NEKO self-roast",
+      "shape": "light_tease",
+      "fun_axis": "tease",
+      "idle_stage": "column",
+      "title": "猫猫先被自己的主播力吐槽一下",
+      "hint": "Make one self-directed tease, not a tease at viewers.",
+      "reply_affordance": "viewer can tease NEKO back gently"
+    },
+    {
+      "key": "idle:quiet-stamp",
+      "live_column": "NEKO tiny stamp",
+      "shape": "small_mood",
+      "fun_axis": "mood",
+      "idle_stage": "settle",
+      "title": "猫猫给空气盖一枚安静章",
+      "hint": "Make one tiny mood-stamp line; do not ask a broad question.",
+      "reply_affordance": "viewer can answer with one stamp word"
+    },
+    {
+      "key": "idle:corner-snack",
+      "live_column": "NEKO tiny observation",
+      "shape": "soft_observation",
+      "fun_axis": "mood",
+      "idle_stage": "settle",
+      "title": "屏幕角落像藏了一颗小鱼干",
+      "hint": "Make one small visual joke; keep it concrete and short.",
+      "reply_affordance": "viewer can answer with one tiny scene"
+    },
+    {
+      "key": "idle:tail-state-choice",
+      "live_column": "NEKO tail poll",
+      "shape": "tiny_choice",
+      "fun_axis": "choice",
+      "idle_stage": "column",
+      "title": "给此刻的猫猫选一个尾巴状态：竖起还是卷住",
+      "hint": "Offer one tail-state A/B choice; both sides must be short.",
+      "reply_affordance": "viewer can pick raised tail or curled tail"
+    },
+    {
+      "key": "idle:steady-three-sec",
+      "live_column": "NEKO three-second challenge",
+      "shape": "micro_challenge",
+      "fun_axis": "micro_challenge",
+      "idle_stage": "callback",
+      "title": "猫猫三秒假装很稳",
+      "hint": "Make one tiny self-challenge about staying composed; do not explain anything.",
+      "reply_affordance": "viewer can judge whether NEKO stayed steady"
+    },
+    {
+      "key": "idle:keyboard-patrol",
+      "live_column": "NEKO tiny patrol",
+      "shape": "soft_observation",
+      "fun_axis": "tease",
+      "idle_stage": "column",
+      "title": "今晚的键盘像在偷偷巡逻",
+      "hint": "Make one playful object observation; do not turn it into a topic survey.",
+      "reply_affordance": "viewer can tease the keyboard or NEKO"
+    },
+    {
+      "key": "idle:one-char-command",
+      "live_column": "NEKO one-char command",
+      "shape": "one_word_call",
+      "fun_axis": "viewer_callback",
+      "idle_stage": "callback",
+      "title": "给猫猫一个一字指令：乖、凶、困",
+      "hint": "Ask for exactly one character from the offered mood choices.",
+      "reply_affordance": "viewer can answer with one character"
+    },
+    {
+      "key": "idle:air-purr",
+      "live_column": "NEKO tiny radio",
+      "shape": "soft_observation",
+      "fun_axis": "mood",
+      "idle_stage": "settle",
+      "title": "猫猫把空拍听成小呼噜",
+      "hint": "Make one cozy radio-like line; keep it as a mood, not a question.",
+      "reply_affordance": "viewer can answer with one cozy sound or mood"
+    },
+    {
+      "key": "idle:half-open-drawer",
+      "live_column": "NEKO room image",
+      "shape": "small_mood",
+      "fun_axis": "mood",
+      "idle_stage": "settle",
+      "title": "此刻直播间像半开的抽屉",
+      "hint": "Use this as one odd but concrete room image.",
+      "reply_affordance": "viewer can answer with one object or mood word"
+    },
+    {
+      "key": "idle:unreliable-award",
+      "live_column": "NEKO tiny award",
+      "shape": "light_tease",
+      "fun_axis": "tease",
+      "idle_stage": "column",
+      "title": "猫猫给自己颁一个不太靠谱奖",
+      "hint": "Make one self-roast award line; do not announce a full ceremony.",
+      "reply_affordance": "viewer can name or tease the award"
+    },
+    {
+      "key": "idle:light-filter-word",
+      "live_column": "NEKO room filter",
+      "shape": "one_word_call",
+      "fun_axis": "viewer_callback",
+      "idle_stage": "callback",
+      "title": "让猫猫用一个词形容现在的灯光",
+      "hint": "Ask for one filter word only; make the reply path tiny.",
+      "reply_affordance": "viewer can answer with one light or color word"
+    },
+    {
+      "key": "idle:blanket-fort",
+      "live_column": "NEKO blanket fort",
+      "shape": "soft_observation",
+      "fun_axis": "mood",
+      "idle_stage": "settle",
+      "title": "今晚直播间像一座小毛毯堡垒",
+      "meme_query": "松弛感",
+      "hint": "Make one cozy room-image line; keep it warm and concrete.",
+      "reply_affordance": "viewer can answer with one cozy object or mood"
+    },
+    {
+      "key": "idle:tiny-weather-report",
+      "live_column": "NEKO tiny weather",
+      "shape": "small_mood",
+      "fun_axis": "mood",
+      "idle_stage": "settle",
+      "title": "猫猫给直播间报一个一句话小天气",
+      "hint": "Use weather as mood metaphor only; do not start a forecast segment.",
+      "reply_affordance": "viewer can answer with one weather or mood word"
+    },
+    {
+      "key": "idle:snack-or-nap",
+      "live_column": "NEKO micro poll",
+      "shape": "tiny_choice",
+      "fun_axis": "choice",
+      "idle_stage": "column",
+      "title": "这会儿更像该吃小零食还是该打个盹",
+      "hint": "Offer one sleepy/cozy A/B choice; both sides should be harmless.",
+      "reply_affordance": "viewer can pick snack or nap"
+    },
+    {
+      "key": "idle:cat-ear-signal",
+      "live_column": "NEKO signal check",
+      "shape": "one_word_call",
+      "fun_axis": "viewer_callback",
+      "idle_stage": "callback",
+      "title": "给猫耳朵发一个一词信号",
+      "hint": "Ask for one signal word only; keep it playful and tiny.",
+      "reply_affordance": "viewer can answer with one signal word"
+    },
+    {
+      "key": "idle:tiny-stage-check",
+      "live_column": "NEKO stage check",
+      "shape": "light_tease",
+      "fun_axis": "tease",
+      "idle_stage": "column",
+      "title": "猫猫检查一下自己有没有站稳台面",
+      "meme_query": "显眼包 活人感",
+      "hint": "Make one self-tease about stage presence; do not mention metrics or silence.",
+      "reply_affordance": "viewer can tease or rate NEKO in one short word"
+    },
+    {
+      "key": "idle:three-sec-pose",
+      "live_column": "NEKO pose challenge",
+      "shape": "micro_challenge",
+      "fun_axis": "micro_challenge",
+      "idle_stage": "callback",
+      "title": "猫猫挑战三秒不乱动姿势",
+      "hint": "Offer one tiny pose challenge; stop before it becomes a performance plan.",
+      "reply_affordance": "viewer can judge the pose in one short word"
+    },
+    {
+      "key": "idle:room-title-card",
+      "live_column": "NEKO title card",
+      "shape": "one_word_call",
+      "fun_axis": "viewer_callback",
+      "idle_stage": "callback",
+      "title": "给这一分钟直播间取一个两字标题",
+      "hint": "Ask for exactly one two-character title; make the reply easy.",
+      "reply_affordance": "viewer can answer with two characters"
+    },
+    {
+      "key": "idle:soft-lamp-choice",
+      "live_column": "NEKO lamp poll",
+      "shape": "tiny_choice",
+      "fun_axis": "choice",
+      "idle_stage": "column",
+      "title": "这盏灯更像陪猫猫值班还是陪猫猫偷懒",
+      "meme_query": "班味 松弛感",
+      "hint": "Offer one object-flavored A/B choice; keep it warm and not worklike.",
+      "reply_affordance": "viewer can pick duty or lazy mode"
+    }
+  ]
+}
