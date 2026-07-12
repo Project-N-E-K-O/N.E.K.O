@@ -35,7 +35,7 @@ Key fields:
   director_action    Next automatic live action expected from NEKO.
   latest_route       Latest handled module, such as avatar_roast, danmaku_response, live_support_events, warmup_hosting, idle_hosting, or active_engagement.
   latest_uid / avatar_repeat_uid
-                    Latest viewer UID and repeated avatar-roast UID, useful for catching repeated first-appearance roasts.
+                    Opaque viewer correlation IDs for the latest event and repeated avatar roast; raw platform UIDs are never printed.
   latest_output_len  Length of latest result output from hosted-ui context; useful when backend log is missing.
   latest_reply_length_mode / latest_reply_target / latest_anchor_hint / latest_room_theme
                     Danmaku-response review fields: whether the reply used default, expanded, or room_bridge length; what it targeted; the current-message anchor; and the safe room-theme label.
@@ -76,7 +76,7 @@ Key fields:
   recent_skipped_signal_*
                     Recent skipped event-signal counts, useful for confirming gift/SC were seen but did not trigger AI.
   latest_gift_uid / latest_gift_value
-                    Latest observed gift signal summary; gift signal-only events may have no gift name or avatar.
+                    Latest observed gift signal summary using an opaque viewer correlation ID; gift signal-only events may have no gift name or avatar.
   recent_topic_skip_*
                     Recent active-topic material skip reason counts: single-viewer flood, stale danmaku, avatar-roast context, or non-output danmaku.
   recent_topic_source_*
