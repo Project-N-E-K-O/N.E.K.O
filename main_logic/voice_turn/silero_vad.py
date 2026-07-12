@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from threading import Lock
 from typing import Any, Iterable
@@ -72,8 +73,12 @@ class SileroActivityGate:
         self._vad = vad
         self._config = config
         window_ms = 1000 * SileroVad.WINDOW_SAMPLES / SileroVad.SAMPLE_RATE
-        self._minimum_speech_windows = max(1, round(config.minimum_speech_ms / window_ms))
-        self._candidate_silence_windows = max(1, round(config.candidate_silence_ms / window_ms))
+        self._minimum_speech_windows = max(
+            1, math.ceil(config.minimum_speech_ms / window_ms)
+        )
+        self._candidate_silence_windows = max(
+            1, math.ceil(config.candidate_silence_ms / window_ms)
+        )
         self.reset()
 
     def reset(self) -> None:
