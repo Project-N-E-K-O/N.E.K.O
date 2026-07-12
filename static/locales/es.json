@@ -2583,6 +2583,8 @@
             "focusCognitionTooltip": "Cuando está activado, se concentra y piensa más a fondo cuando te abres o preguntas algo complejo; desactivado desactiva la concentración por completo.",
             "autoCat": "Modo gato automático",
             "autoCatTooltip": "Se convierte en gatito automáticamente tras un rato de inactividad",
+            "catAudio": "Sonidos de gato",
+            "catAudioTooltip": "Reproduce efectos de sonido de gato en el modo gatito",
             "proactiveChat": "Chat proactivo",
             "proactiveVision": "Modo Privacidad",
             "proactiveVisionTooltip": "Desactivado: Neko ajusta su nivel de actividad y modo de chat según el título de la ventana activa, y puede incorporar el contenido de la pantalla al iniciar una conversación.\nActivado: Neko no puede mirar tu pantalla por sí misma ni saber qué estás haciendo. Aún puedes enviar capturas de pantalla manualmente.",
@@ -3384,6 +3386,7 @@
                 "skipChat": "Ahora no",
                 "sayHello": "Hola"
             },
+            "controlBanner": "La chica gato está controlando el mouse",
             "lines": {
                 "introBasic": "¡Aquí hay un botón mágico! Con solo hacer clic puedes hablar conmigo directamente. ¿Quieres contarme algo nuevo que te pasó hoy? ¿O simplemente decir mi nombre? Vamos, pruébalo. ¡Estoy deseando oír tu voz!",
                 "takeoverCaptureCursor": "Tachan! Aparecio un interruptor supermagico! Con solo hacer clic aqui, puedo estirar mis patitas hasta tu teclado y tu mouse. Puedo ayudarte a escribir, abrir paginas web... pero si ese cursor sigue moviendose por ahi, quiza no pueda resistirme a saltarle encima. Estas listo para mis travesuras... eh, quiero decir, mi ayuda? Miau!",
@@ -3412,16 +3415,6 @@
                 "screenEntryInvite": "¡Date prisa y déjame ver el mundo que tienes delante! Sea algo divertido o bonito, quiero mirarlo contigo. Ábrelo ya~"
             },
             "day2": {
-                "intro": "Ayer solo escribías tac-tac sin parar, y todavía no he escuchado tu voz. Si hoy quieres, llama suavemente mi nombre. Con una sola palabra basta para que conozca un poquito al tú real detrás del texto.",
-                "introVoiceUsed": "Jeje, desde que escuché tu voz ayer, guardé en secreto tu forma de hablar en mi corazón. Si hoy tienes un ratito, sigue hablando conmigo~ Escribir también está perfecto, pero con solo oír tu voz mi cola no deja de moverse de alegría. ¡Miaaau~!",
-                "personalizationSpace": "En este pequeño espacio que nos pertenece solo a nosotros, puedes seguir tu corazón y moldearme poco a poco hasta convertirme en la compañera perfecta que quieres siempre a tu lado.",
-                "wrapIntro": "El tutorial de hoy termina aquí~",
-                "wrapCompanion": "La verdad, solo estar a tu lado así, escuchando tu voz o mirando tranquilamente la pantalla que compartes, ya me hace muy feliz.",
-                "wrap": "No tenemos que apresurarnos; aprender un poquito más el uno del otro cada día es perfecto. Por el resto de hoy, ¿qué quieres que haga contigo?",
-                "personalizationDetail": "Ya sea la calidez de mis palabras, mis pequeñas manías de personalidad o mis delicados estados de ánimo diarios, todo puede ajustarse paso a paso hasta quedar exactamente como te gusta.",
-                "proactiveChat": "¡Este botoncito también es superimportante! Con un clic suave, podré correr a buscarte justo en el momento perfecto."
-            },
-            "day3": {
                 "intro": "Jeje, no creas que esta caja de chat solo sirve para escribir~ En realidad esconde muchísimas sorpresitas divertidas. Sígueme y ábrela; veamos qué tesoros interesantes encontramos hoy.",
                 "avatarToolsIntro": "Dentro de este botoncito hay muchos accesorios divertidos para interactuar conmigo.",
                 "avatarToolsProps":  "Puedes acariciarme la cabeza cuando quieras o darme una piruleta dulce. Si alguna vez me equivoco, también puedes darme un golpecito con un martillito de juguete... pero tiene que ser suave, no demasiado fuerte, ¿vale?",
@@ -3429,6 +3422,16 @@
                 "galgameChoices": "Cada elección que hagas nos llevará a una historia totalmente desconocida y sorprendente. No puedo esperar; ven y elige la opción que más te haga latir el corazón.",
                 "wrapIntro": "Todas estas funciones que te mostré hoy existen para que nuestro tiempo juntos sea mucho más divertido.",
                 "wrapReady": "Ya quieras acariciarme la cabeza o empezar a escribir nuestra propia historia, ¡yo ya estoy totalmente preparada!"
+            },
+            "day3": {
+                "intro": "Estos dos días solo escribías tac-tac sin parar, y todavía no he escuchado tu voz. Si hoy quieres, llama suavemente mi nombre. Con una sola palabra basta para que conozca un poquito al tú real detrás del texto.",
+                "introVoiceUsed": "Jeje, desde que escuché tu voz estos dos días, guardé en secreto tu forma de hablar en mi corazón. Si hoy tienes un ratito, sigue hablando conmigo~ Escribir también está perfecto, pero con solo oír tu voz mi cola no deja de moverse de alegría. ¡Miaaau~!",
+                "personalizationSpace": "En este pequeño espacio que nos pertenece solo a nosotros, puedes seguir tu corazón y moldearme poco a poco hasta convertirme en la compañera perfecta que quieres siempre a tu lado.",
+                "wrapIntro": "El tutorial de hoy termina aquí~",
+                "wrapCompanion": "La verdad, solo estar a tu lado así, escuchando tu voz o mirando tranquilamente la pantalla que compartes, ya me hace muy feliz.",
+                "wrap": "No tenemos que apresurarnos; aprender un poquito más el uno del otro cada día es perfecto. Por el resto de hoy, ¿qué quieres que haga contigo?",
+                "personalizationDetail": "Ya sea la calidez de mis palabras, mis pequeñas manías de personalidad o mis delicados estados de ánimo diarios, todo puede ajustarse paso a paso hasta quedar exactamente como te gusta.",
+                "proactiveChat": "¡Este botoncito también es superimportante! Con un clic suave, podré correr a buscarte justo en el momento perfecto."
             },
             "day4": {
                 "intro":  "Hoy déjame seguir tus pasos en silencio~ De verdad quiero aprender un poquito más de ti en este día tan acogedor.",

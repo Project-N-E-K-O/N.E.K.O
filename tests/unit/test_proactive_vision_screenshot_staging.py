@@ -122,6 +122,11 @@ def _make_offline_for_stream(*, vision_model: str = "vm") -> tuple[OmniOfflineCl
     c._proactive_image_to_inject = None
     c._proactive_image_staged_at = 0.0
     c._proactive_image_history_len = 0
+    # stream_text 在到达 astream stub 前会读 self.llm.max_completion_tokens（focus
+    # overrides / summary-budget bump），且 self.llm is None 会被当成「client 已 close」
+    # 提前 break。astream 本身被 stub，llm 只当占位，给个可读写 max_completion_tokens
+    # 的轻量对象即可。
+    c.llm = SimpleNamespace(max_completion_tokens=2000)
     c.model = "m"
     c.vision_model = vision_model
     c.max_response_rerolls = 0

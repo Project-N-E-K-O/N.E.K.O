@@ -965,7 +965,7 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
         '.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"] '
         '.compact-input-tool-toggle:hover'
     ) in styles
-    assert "--compact-chat-minimize-ball-size: 41px;" in styles
+    assert "--compact-chat-minimize-ball-size: 46px;" in styles
     assert "--compact-chat-minimize-ball-inset: 2px;" in styles
     assert "--compact-chat-minimize-ball-gap: 8px;" in styles
     assert "--compact-chat-minimize-ball-slot: calc(" in styles
@@ -1041,12 +1041,14 @@ def test_compact_tool_fan_labels_are_plain_noninteractive_tags():
     tooltip_block = css_block(
         styles,
         ".compact-input-tool-fan .compact-input-tool-tooltip {",
-        ".compact-input-tool-fan .compact-input-tool-item:hover,",
+        ".compact-input-tool-fan button.compact-input-tool-item:not(:disabled):focus-within,",
     )
     visible_block = css_block(
         styles,
-        '.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item:hover > .compact-input-tool-tooltip,\n'
-        '.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item:focus-within > .compact-input-tool-tooltip {',
+        '.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] button.compact-input-tool-item:not(:disabled)[data-compact-tool-pointer-hovered="true"] > .compact-input-tool-tooltip,\n'
+        '.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] button.compact-input-tool-item:not(:disabled):focus-visible > .compact-input-tool-tooltip,\n'
+        '.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item-avatar[data-compact-tool-pointer-hovered="true"]:has(> .composer-emoji-btn:not(:disabled)) > .compact-input-tool-tooltip,\n'
+        '.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item-avatar:has(> .composer-emoji-btn:not(:disabled):focus-visible) > .compact-input-tool-tooltip {',
         ".compact-input-tool-fan .compact-input-tool-item > img,",
     )
     dark_tooltip_block = css_block(
@@ -1243,14 +1245,14 @@ def test_compact_geometry_snapshot_separates_base_surface_from_extra_islands():
 def test_externalized_chat_input_spotlight_uses_pc_overlay_rounded_rect_radius():
     script = (Path(__file__).resolve().parents[2] / "static" / "app" / "app-interpage.js").read_text(encoding="utf-8")
 
-    rect_block = script.split("function buildYuiGuidePcOverlayRect(kind, rect, index)", 1)[1].split(
-        "function dispatchCrossWindowIdleActivity",
+    rect_block = script.split("function updateYuiGuideChatSpotlight(kind, pcOverlayRunId)", 1)[1].split(
+        "function applyYuiGuideChatSpotlight",
         1,
     )[0]
 
     assert (
         "var radius = kind === 'window' ? 26 : Math.min(34, Math.max(18, "
-        "Math.round((rect.height + padding * 2) / 2)));"
+        "Math.round((sourceRect.height + padding * 2) / 2)));"
     ) in rect_block
 
 
@@ -2289,10 +2291,10 @@ def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regi
     assert "aria-hidden={compactMusicPlayerVisibility === 'open' ? undefined : true}" in app_source
     assert 'data-compact-geometry-item="musicPlayer"' in app_source
     assert 'data-compact-geometry-hit-scope="children"' in app_source
-    assert "function getPreferredMusicMountTarget()" in music_ui_source
+    assert "function getPreferredMusicMountTarget(" in music_ui_source
     assert "function getCompactMusicMountTarget()" in music_ui_source
     assert "document.querySelector('[data-music-player-mount=\"compact-surface\"]')" in music_ui_source
-    assert "document.getElementById('music-player-mount')" in music_ui_source
+    assert "document.querySelectorAll('#music-player-mount')" in music_ui_source
     assert "document.getElementById(MUSIC_CONFIG.dom.containerId)" in music_ui_source
     assert "mutation.type === 'attributes' && isMusicMountMutationTarget(mutation.target)" in music_ui_source
     assert "function isCompactMusicGeometryMutationTarget(node)" in music_ui_source

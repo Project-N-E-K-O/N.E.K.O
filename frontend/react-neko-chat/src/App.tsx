@@ -6870,6 +6870,8 @@ function CompactChatApp({
             role="group"
             aria-label={choicePrompt.source === 'mini_game_invite'
               ? i18n('chat.miniGameInviteOptionsAriaLabel', 'Mini-game invite options')
+              : choicePrompt.source === 'new_user_icebreaker'
+                ? i18n('chat.newUserIcebreakerOptionsAriaLabel', 'New user icebreaker options')
               : galgameToggleButtonLabel}
           >
             {choicePrompt.options.slice(0, 3).map((option, index) => (

@@ -651,6 +651,10 @@ async def test_inline_focus_is_privacy_independent(monkeypatch):
     # weight tweak can't silently break it — to isolate that wiring from the bar.
     keyword_full = config.FOCUS_SIGNAL_WEIGHTS["keyword"]
     _patch_charge(monkeypatch, enter=max(0.0, keyword_full - 0.1))
+    # Per-user 凝神 switch defaults on when unset — stub it so this test doesn't
+    # read the dev machine's real user_preferences.json (where the user may have
+    # focusCognitionEnabled off, which would gate the inline path before scoring).
+    _stub_user_focus_setting(monkeypatch, enabled=None)
     mgr = _bare_mgr()
     assert await mgr._focus_inline_decision("好累，一个人，没意思，撑不住了") is True
     assert mgr.state.mode is CognitionMode.FOCUS
@@ -660,6 +664,10 @@ async def test_idle_thinking_is_read_only(monkeypatch):
     # _focus_idle_thinking reports whether we're in Focus WITHOUT mutating the
     # charge — the decay is deferred to the post-turn cooldown.
     _patch_charge(monkeypatch, enter=1.0)
+    # Per-user 凝神 switch defaults on when unset — stub it so this test doesn't
+    # read the dev machine's real user_preferences.json (focusCognitionEnabled
+    # off there would force the idle read to return False before checking mode).
+    _stub_user_focus_setting(monkeypatch, enabled=None)
     mgr = _bare_mgr()
     await mgr.state.update_focus(1.0)  # FOCUS
     charge_before = mgr.state.snapshot()["focus_charge"]
