@@ -107,3 +107,46 @@ async def test_close_invalidates_late_result_and_releases_runtime():
     assert result.status is EvaluationStatus.STALE
     assert coordinator.state is CoordinatorState.CLOSED
     assert predictor.closed is True
+
+
+@pytest.mark.asyncio
+async def test_reset_during_inflight_evaluation_is_stale():
+    predictor = _BlockingPredictor()
+    coordinator = TurnCoordinator(predictor, SmartTurnConfig(enabled=True))
+    task = asyncio.create_task(coordinator.evaluate(_pcm()))
+    await asyncio.to_thread(predictor.started.wait, 2)
+    await coordinator.reset()
+    predictor.release.set()
+    result = await task
+    assert result.status is EvaluationStatus.STALE
+    assert coordinator.generation == 1
+    assert coordinator.state is CoordinatorState.IDLE
+
+
+@pytest.mark.asyncio
+async def test_empty_audio_is_unavailable_not_incomplete():
+    coordinator = TurnCoordinator(_Predictor(), SmartTurnConfig(enabled=True))
+    result = await coordinator.evaluate(b"")
+    assert result.status is EvaluationStatus.UNAVAILABLE
+    assert result.decision is None
+
+
+@pytest.mark.asyncio
+async def test_buffered_audio_evaluation_uses_bounded_buffer():
+    predictor = _Predictor(0.8)
+    coordinator = TurnCoordinator(predictor, SmartTurnConfig(enabled=True))
+    coordinator.push_audio(_pcm())
+    result = await coordinator.evaluate_buffered()
+    assert result.status is EvaluationStatus.OK
+    assert result.decision is TurnDecision.COMPLETE
+    assert predictor.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_close_is_idempotent():
+    predictor = _Predictor()
+    coordinator = TurnCoordinator(predictor, SmartTurnConfig(enabled=True))
+    await coordinator.close()
+    await coordinator.close()
+    assert coordinator.state is CoordinatorState.CLOSED
+    assert predictor.closed is True

@@ -245,12 +245,7 @@ jobs:
 
       - name: Prepare verified voice-turn assets
         shell: bash
-        run: |
-          VENV_PYTHON=".venv/bin/python"
-          if [ -f ".venv/Scripts/python.exe" ]; then
-            VENV_PYTHON=".venv/Scripts/python.exe"
-          fi
-          $VENV_PYTHON tools/voice_eval/prepare_voice_turn_assets.py
+        run: uv run --no-sync python tools/voice_eval/prepare_voice_turn_assets.py
 
       # --- Warm tiktoken o200k_base cache for offline use (PR #929) ---
       # tiktoken downloads encoding blobs (~1.5 MB each) on first use into
@@ -632,11 +627,7 @@ jobs:
             echo "::error::data/tiktoken_cache empty in bundle (o200k_base would re-download at runtime)"
             missing=1
           fi
-          VENV_PYTHON=".venv/bin/python"
-          if [ -f ".venv/Scripts/python.exe" ]; then
-            VENV_PYTHON=".venv/Scripts/python.exe"
-          fi
-          $VENV_PYTHON tools/voice_eval/prepare_voice_turn_assets.py \
+          uv run --no-sync python tools/voice_eval/prepare_voice_turn_assets.py \
             --asset-dir dist/Xiao8/data/vad_models --offline || missing=1
           [ "$missing" -eq 0 ]
 
