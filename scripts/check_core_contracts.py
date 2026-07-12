@@ -649,15 +649,16 @@ def run(root: Path) -> list[Violation]:
 
     # -- CORE_MIXIN_DISJOINT: a method name defined in two DIFFERENT mixins is
     #    an MRO shadowing bug. A property group legitimately repeats the name
-    #    WITHIN one mixin — but a VALID group is exactly one @property getter
-    #    plus optional @x.setter/@x.deleter; two plain @property (or two plain
-    #    methods) are a real shadow (Python keeps only the last).
+    #    WITHIN one mixin, but a VALID group fills each of Python's three
+    #    property slots at most once: getter (@property / @x.getter), setter
+    #    (@x.setter), deleter (@x.deleter). Two of any slot — or any plain
+    #    method sharing the name — is a real shadow (Python keeps only the last).
     def _prop_role(fn):
         for d in fn.decorator_list:
             if isinstance(d, ast.Name) and d.id == "property":
                 return "getter"
-            if isinstance(d, ast.Attribute) and d.attr in ("setter", "deleter", "getter"):
-                return "accessor"
+            if isinstance(d, ast.Attribute) and d.attr in ("getter", "setter", "deleter"):
+                return d.attr
         return None  # a plain method
 
     seen: dict[str, str] = {}
@@ -670,13 +671,17 @@ def run(root: Path) -> list[Violation]:
         for name, defs in groups.items():
             if len(defs) > 1:
                 roles = [_prop_role(d) for d in defs]
-                if any(r is None for r in roles) or roles.count("getter") > 1:
+                valid_group = (all(r is not None for r in roles)
+                               and roles.count("getter") <= 1
+                               and roles.count("setter") <= 1
+                               and roles.count("deleter") <= 1)
+                if not valid_group:
                     last = defs[-1]
                     violations.append(Violation(path, last.lineno, last.col_offset, "CORE_MIXIN_DISJOINT",
                                                 f"method '{name}' is defined {len(defs)}× in {here} and is not a "
-                                                f"valid property group (one @property getter + optional "
-                                                f"@{name}.setter/.deleter) — a later definition shadows an "
-                                                f"earlier one"))
+                                                f"valid property group (at most one each of @property getter / "
+                                                f"@{name}.setter / @{name}.deleter) — a later definition shadows "
+                                                f"an earlier one"))
             if name in seen:
                 first = defs[0]
                 violations.append(Violation(path, first.lineno, first.col_offset, "CORE_MIXIN_DISJOINT",
