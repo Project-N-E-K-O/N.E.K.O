@@ -12,6 +12,8 @@ from . import llm, projector, rules, session_store, story_graph, story_loader
 # 模型只消费最近四轮对话，幂等缓存只服务近期网络重试，避免长剧本存档无限增长。
 MAX_RECENT_TURN_MESSAGES = 8
 MAX_IDEMPOTENT_RESULTS = 32
+# 自由演绎允许长段输入，但必须限制 Session JSON 和后续模型上下文的最坏体积。
+MAX_FREE_INPUT_CHARS = 4000
 
 
 async def submit(
@@ -274,6 +276,9 @@ def _normalize_request(
         return {}, "invalid_choice_input"
     if kind == "free_input" and (not normalized_message or normalized_choice):
         return {}, "invalid_free_input"
+    if kind == "free_input" and len(normalized_message) > MAX_FREE_INPUT_CHARS:
+        # 不静默截断玩家演绎；明确拒绝后前端可以保留原文，让玩家自行精简再提交。
+        return {}, "free_input_too_long"
     if kind == "user_exit" and (normalized_message or normalized_choice):
         return {}, "invalid_user_exit"
     return {

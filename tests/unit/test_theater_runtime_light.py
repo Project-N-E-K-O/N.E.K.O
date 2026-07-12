@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from services.theater import runtime, session_store
+from services.theater import runtime, session_store, turn_service
 
 
 @pytest.mark.asyncio
@@ -136,6 +136,27 @@ async def test_idempotency_and_revision_conflict(tmp_path):
         base_revision=0,
     )
     assert conflict == {"ok": False, "reason": "state_revision_conflict", "retryable": True, "state_revision": 1}
+
+
+@pytest.mark.asyncio
+async def test_free_input_rejects_oversized_message_before_persisting(tmp_path):
+    """超长自由输入必须在调用模型和写入 Session 前被明确拒绝。"""  # noqa: DOCSTRING_CJK
+    root = tmp_path / "theater"
+    started = await runtime.start_session(root, lanlan_name="测试猫娘", client_start_id="start_input_cap")
+
+    result = await runtime.submit_input(
+        root,
+        session_id=started["session_id"],
+        input_kind="free_input",
+        message="很" * (turn_service.MAX_FREE_INPUT_CHARS + 1),
+        client_turn_id="turn_oversized_input",
+        base_revision=0,
+    )
+
+    assert result == {"ok": False, "reason": "free_input_too_long"}
+    saved = await session_store.load_session(root, started["session_id"])
+    assert saved["state_revision"] == 0
+    assert len(saved["turns"]) == 1
 
 
 @pytest.mark.asyncio
@@ -632,6 +653,22 @@ async def test_active_session_cache_is_scoped_by_theater_root(tmp_path):
 
     assert await session_store.get_active_session_id(root_a, "同名猫娘") == session_a
     assert await session_store.get_active_session_id(root_b, "同名猫娘") == session_b
+
+
+@pytest.mark.asyncio
+async def test_corrupt_active_session_index_recovers_as_empty(tmp_path):
+    """损坏的活动索引不得阻断读取，并应能被下一次正常写入重建。"""  # noqa: DOCSTRING_CJK
+    root = tmp_path / "theater"
+    path = session_store.active_sessions_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"测试猫娘":', encoding="utf-8")
+    session_store.reset_active_sessions_for_tests()
+
+    assert await session_store.load_active_sessions(root) == {}
+
+    session_id = "theater_00000000-0000-0000-0000-000000000009"
+    await session_store.set_active_session(root, "测试猫娘", session_id)
+    assert await session_store.load_active_sessions(root) == {"测试猫娘": session_id}
 
 
 @pytest.mark.asyncio

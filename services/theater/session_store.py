@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
 from utils.file_utils import atomic_write_json_async, read_json_async
+from utils.logger_config import get_module_logger
 
 
 _SESSION_ID_RE = re.compile(r"^theater_[a-f0-9-]{36}$")
@@ -16,6 +18,7 @@ _ACTIVE_BY_ROOT_AND_LANLAN: dict[tuple[str, str], str] = {}
 _SESSION_LOCKS: dict[str, asyncio.Lock] = {}
 _ACTIVE_INDEX_LOCKS: dict[str, asyncio.Lock] = {}
 _CHARACTER_LOCKS: dict[str, asyncio.Lock] = {}
+logger = get_module_logger("services.theater.session_store")
 
 
 @asynccontextmanager
@@ -138,6 +141,10 @@ async def load_active_sessions(root: Path) -> dict[str, str]:
     try:
         data = await read_json_async(active_sessions_path(root))
     except FileNotFoundError:
+        return {}
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
+        # 活动索引只是可重建指针，损坏时不能阻断普通角色切换或新演出；剧情 Session 文件保持不动。
+        logger.warning("小剧场活动索引损坏，按空索引恢复: path=%s err=%s", active_sessions_path(root), exc)
         return {}
     if not isinstance(data, dict):
         return {}
