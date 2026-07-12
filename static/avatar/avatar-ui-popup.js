@@ -1880,26 +1880,14 @@ function createIntervalControl(manager, prefix, toggle) {
     slider.max = '120';
     slider.step = '5';
     let currentValue = typeof window[toggle.intervalKey] !== 'undefined' ? window[toggle.intervalKey] : toggle.defaultInterval;
-    if (currentValue > 120) currentValue = 120;
-    // 持久化值可能低于当前 toggle 的最小值（如旧版本保存的更低间隔），
-    // 不 clamp 会导致 valueDisplay 显示低值而滑块实际停在 min，二者不一致
-    if (currentValue < minVal) currentValue = minVal;
-    // 钳制改变了值时同步回运行时全局（window.proactiveXxxInterval 经 app-state.js
-    // 的 defineProperty 桥接直写 S），避免界面显示钳制值而调度仍按越界旧值跑；
-    // 不在渲染路径主动落盘，归一化后的值随下一次 saveNEKOSettings 自然持久化
-    if (typeof window[toggle.intervalKey] !== 'undefined' && window[toggle.intervalKey] !== currentValue) {
-        window[toggle.intervalKey] = currentValue;
-        // 已在飞的定时器仍持有旧延迟，与下方 change 处理器同款：立即重排让钳制值生效
-        if (toggle.id === 'proactive-chat' && typeof window.resetProactiveChatBackoff === 'function') {
-            window.resetProactiveChatBackoff();
-        }
-        // vision 发帧 setInterval 在创建时固化了旧间隔，正在运行时重启以套用钳制值
-        // （start 自带先清理再重建 + leader/录音/手动共享条件复查，直接调用即安全重启）
-        if (toggle.id === 'proactive-vision'
-            && typeof window.startProactiveVisionDuringSpeech === 'function'
-            && window.appState && window.appState.proactiveVisionFrameTimer) {
-            window.startProactiveVisionDuringSpeech();
-        }
+    // 后端契约接受 1..3600 秒（utils/preferences.py），预设也会写入低于 UI 默认
+    // 下限的合法值（如 frequent 预设 5s，见 main_routers/proactive_router.py）。
+    // 持久化值越出滑条默认边界时，按契约放宽边界如实显示，绝不钳制或改写运行时/
+    // 持久化配置——否则打开设置面板就会把服务端配置的值静默改回 UI 边界。
+    const numericValue = Number(currentValue);
+    if (Number.isFinite(numericValue)) {
+        if (numericValue < minVal) slider.min = Math.max(1, numericValue);
+        if (numericValue > 120) slider.max = Math.min(3600, numericValue);
     }
     slider.value = currentValue;
     Object.assign(slider.style, { width: '60px', height: '4px', cursor: 'pointer', accentColor: 'var(--neko-popup-accent, #44b7fe)' });

@@ -2342,12 +2342,13 @@
                 await new Promise((resolve) => {
                     settleLoop = resolve;
                     // override 注册成功不代表在被驱动：coreModel.update 包装器
-                    // （installMouthOverride）可能尚未安装或已因异常自卸载。用帧计数
-                    // 心跳判定：连续多个 rAF 都没见 override 回调推进，就退回 rAF 驱动。
-                    // 阈值取 3——live2d 30fps 治理下模型帧隔一个 rAF 推进一次，不会误判。
-                    const OVERRIDE_STALL_FALLBACK_TICKS = 3;
+                    // （installMouthOverride）可能尚未安装或已因异常自卸载。心跳按
+                    // 时间判定：超过阈值未见 override 回调推进才退回 rAF 驱动——不能
+                    // 数 tick，高刷屏（120Hz+）配 30fps ticker 治理时一个模型帧间隔
+                    // 就有 4+ 个 rAF。150ms 覆盖任何合法 ticker 配置的帧间隔。
+                    const OVERRIDE_STALL_FALLBACK_MS = 150;
                     let lastOverrideFrameCount = overrideFrameCount;
-                    let overrideStallTicks = 0;
+                    let lastOverrideAdvanceAt = now();
                     const tick = () => {
                         if (settled) {
                             resolve();
@@ -2358,11 +2359,10 @@
                             if (usesTemporaryPoseOverride) {
                                 if (overrideFrameCount !== lastOverrideFrameCount) {
                                     lastOverrideFrameCount = overrideFrameCount;
-                                    overrideStallTicks = 0;
+                                    lastOverrideAdvanceAt = now();
                                     overrideDriving = true;
                                 } else {
-                                    overrideStallTicks += 1;
-                                    overrideDriving = overrideStallTicks < OVERRIDE_STALL_FALLBACK_TICKS;
+                                    overrideDriving = (now() - lastOverrideAdvanceAt) < OVERRIDE_STALL_FALLBACK_MS;
                                 }
                             }
                             if (overrideDriving) {
