@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Callable, Type, Optional, Iterable, cast
 from plugin.logging_config import logger
 
 _DEFAULT_LOGGER = logger
+_SUPPORTED_PLUGIN_TYPES = frozenset({"plugin", "extension", "adapter"})
 
 
 _pending_async_shutdown_tasks: set = set()
@@ -1050,6 +1051,16 @@ def _parse_single_plugin_config(
             "Plugin {}: failed to apply user config profile overlay: {}. Using base config only.",
             pid, e,
         )
+
+    plugin_type = pdata.get("type", "plugin")
+    if plugin_type not in _SUPPORTED_PLUGIN_TYPES:
+        logger.error(
+            "Plugin {} has unsupported type={}; supported types are {}. Skipping.",
+            pid,
+            repr(plugin_type),
+            ", ".join(sorted(_SUPPORTED_PLUGIN_TYPES)),
+        )
+        return None
     
     logger.debug("Plugin ID: {}", pid)
     
@@ -1930,6 +1941,11 @@ def load_plugins_from_roots(
         
         # extension 类型：不启动独立进程，只注册元数据
         if plugin_type == "extension":
+            logger.warning(
+                "Plugin {} uses deprecated type='extension'; extension support "
+                "will be removed in a future breaking release",
+                pid,
+            )
             _load_extension_plugin(ctx, logger)
             continue
         

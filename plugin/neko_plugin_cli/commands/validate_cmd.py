@@ -115,7 +115,9 @@ def _check_plugin_toml_schema(
     _require_string(plugin_table, "entry", "[plugin].entry", issues, pattern=r"^[A-Za-z_][A-Za-z0-9_.]*:[A-Za-z_][A-Za-z0-9_]*$")
 
     plugin_type = plugin_table.get("type", "plugin")
-    _check_enum(plugin_type, "[plugin].type", {"plugin", "extension", "script", "adapter"}, issues)
+    _check_enum(plugin_type, "[plugin].type", {"plugin", "extension", "adapter"}, issues)
+    if plugin_type == "extension":
+        issues.append(("warning", "type='extension' is deprecated and will be removed in a future breaking release"))
     if plugin_type == "extension" and "host" not in plugin_table:
         issues.append(("error", "type='extension' requires [plugin.host]"))
     if plugin_type != "extension" and "host" in plugin_table:

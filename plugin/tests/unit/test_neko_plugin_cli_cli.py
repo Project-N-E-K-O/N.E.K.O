@@ -245,6 +245,56 @@ def test_validate_plugin_dir_reports_invalid_utf8_optional_files(tmp_path: Path)
     assert any(".gitignore is not valid UTF-8" in message for message in messages)
 
 
+def test_validate_plugin_dir_rejects_removed_script_type(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    plugin_toml_path = plugin_dir / "plugin.toml"
+    plugin_toml_path.write_text(
+        plugin_toml_path.read_text(encoding="utf-8").replace(
+            'type = "plugin"',
+            'type = "script"',
+        ),
+        encoding="utf-8",
+    )
+
+    issues = validate_plugin_dir(plugin_dir)
+
+    assert any(
+        level == "error" and "[plugin].type must be one of" in message
+        for level, message in issues
+    )
+
+
+def test_validate_plugin_dir_warns_for_deprecated_extension_type(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    plugin_toml_path = plugin_dir / "plugin.toml"
+    plugin_toml_path.write_text(
+        plugin_toml_path.read_text(encoding="utf-8").replace(
+            'type = "plugin"',
+            'type = "extension"\n\n[plugin.host]\nplugin_id = "host_plugin"',
+        ),
+        encoding="utf-8",
+    )
+
+    issues = validate_plugin_dir(plugin_dir)
+
+    assert any(
+        level == "warning" and "type='extension' is deprecated" in message
+        for level, message in issues
+    )
+
+
+@pytest.mark.parametrize("unsupported_scaffold_type", ["script", "extension"])
+def test_init_rejects_removed_or_deprecated_scaffold_types(
+    unsupported_scaffold_type: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        neko_plugin_cli.main(["init", "demo", "--type", unsupported_scaffold_type])
+
+    assert exc_info.value.code == 2
+    assert f"invalid choice: '{unsupported_scaffold_type}'" in capsys.readouterr().err
+
+
 def test_validate_plugin_dir_accepts_startup_failure_policy(tmp_path: Path) -> None:
     plugin_dir = _make_plugin_dir(tmp_path)
     plugin_toml_path = plugin_dir / "plugin.toml"

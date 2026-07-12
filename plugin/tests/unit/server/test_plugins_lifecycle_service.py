@@ -62,6 +62,7 @@ class _FakeAdapterPlugin:
 class _CaptureLogger:
     def __init__(self) -> None:
         self.messages: list[str] = []
+        self.errors: list[str] = []
 
     def info(self, *_args, **_kwargs) -> None:
         return
@@ -75,8 +76,11 @@ class _CaptureLogger:
             rendered = rendered.replace("{}", str(arg), 1)
         self.messages.append(rendered)
 
-    def error(self, *_args, **_kwargs) -> None:
-        return
+    def error(self, message, *args, **_kwargs) -> None:
+        rendered = str(message)
+        for arg in args:
+            rendered = rendered.replace("{}", str(arg), 1)
+        self.errors.append(rendered)
 
 
 @pytest.mark.plugin_unit
@@ -159,6 +163,30 @@ def test_parse_single_plugin_config_warns_on_directory_id_mismatch(
 
     assert parsed is not None
     assert any("directory name" in message and "does not match declared plugin.id" in message for message in messages)
+
+
+@pytest.mark.plugin_unit
+def test_parse_single_plugin_config_rejects_removed_script_type(tmp_path: Path) -> None:
+    plugin_dir = tmp_path / "legacy_script"
+    plugin_dir.mkdir(parents=True)
+    config_path = plugin_dir / "plugin.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "[plugin]",
+                "id = 'legacy_script'",
+                "type = 'script'",
+                "entry = 'plugin.plugins.legacy_script:Plugin'",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    logger = _CaptureLogger()
+
+    parsed = registry_module._parse_single_plugin_config(config_path, set(), logger)
+
+    assert parsed is None
+    assert any("unsupported type='script'" in message for message in logger.errors)
 
 
 @pytest.mark.plugin_unit

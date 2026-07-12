@@ -137,6 +137,7 @@ supported = ">=0.1.0,<0.3.0"
 |------|------|------|
 | `id` | 是 | 插件唯一标识符 |
 | `name` | 否 | 显示名称 |
+| `type` | 否 | `plugin`（默认）或 `adapter`；`script` 已移除，`extension` 已弃用 |
 | `description` | 否 | 插件描述 |
 | `version` | 否 | 插件版本 |
 | `entry` | 是 | 入口点：`模块路径:类名` |
@@ -1207,6 +1208,10 @@ class NotesPlugin(NekoPluginBase):
 ---
 
 ## 第七章：Extension 扩展开发
+
+> **已弃用：** Extension 仅为已有插件保留加载兼容，不再支持通过
+> `neko-plugin init` 创建。请将新功能实现为普通 `plugin`，或在对接外部协议时
+> 使用 `adapter`。Extension 将在后续破坏性版本中移除。
 
 ### 7.1 什么是 Extension？
 

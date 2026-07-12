@@ -30,7 +30,7 @@ _DEFAULT_NEKO_REPOSITORY = "Project-N-E-K-O/N.E.K.O"
 def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -> None:
     parser = subparsers.add_parser("init", help="Create a new plugin from template")
     parser.add_argument("plugin_id", nargs="?", help="Plugin ID (optional, will prompt if omitted)")
-    parser.add_argument("--type", dest="plugin_type", choices=("plugin", "extension", "adapter"), help="Plugin type")
+    parser.add_argument("--type", dest="plugin_type", choices=("plugin", "adapter"), help="Plugin type")
     parser.add_argument("--name", help="Display name")
     parser.add_argument("--plugins-root", help="Plugin root directory (default: N.E.K.O/plugin/plugins)")
     parser.add_argument("--git", action="store_true", help="Initialize a git repository in the generated plugin directory")
@@ -213,7 +213,6 @@ def _handle_interactive(args: argparse.Namespace, *, defaults: CliDefaults) -> i
             "插件类型 (Plugin Type)",
             choices=[
                 {"value": "plugin", "name": "Plugin — 独立功能插件"},
-                {"value": "extension", "name": "Extension — 为现有插件添加路由/钩子"},
                 {"value": "adapter", "name": "Adapter — 对接外部协议 (MCP 等)"},
             ],
             default="plugin",
