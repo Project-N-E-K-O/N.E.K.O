@@ -571,7 +571,7 @@
         var command = response.command && typeof response.command === 'object' ? response.command : response;
         window.Jukebox.executeControl({
             action: command.action,
-            query: command.query || command.song || command.name || '',
+            query: command.query || '',
             headless: true
         }).then(function (result) {
             console.log('[Jukebox] 点歌台控制完成:', result);

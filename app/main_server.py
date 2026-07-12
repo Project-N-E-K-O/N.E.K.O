@@ -781,7 +781,7 @@ async def _handle_agent_event(event: dict):
                 "type": "jukebox_control",
                 "command": {
                     "action": action,
-                    "query": event.get("query") or event.get("song") or event.get("name") or "",
+                    "query": event.get("query") or "",
                 },
                 "source": event.get("source") or "",
             }

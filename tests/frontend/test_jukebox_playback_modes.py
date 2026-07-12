@@ -129,7 +129,11 @@ def setup_headless_jukebox_page(mock_page: Page) -> None:
         """
         () => {
           window.t = (key, fallback) => typeof fallback === 'string' ? fallback : key;
-          window.fetch = async (url) => {
+          window.fetch = async (url, options = {}) => {
+            if (options.method === 'HEAD') {
+              const available = !String(url).includes('missing');
+              return { ok: available, status: available ? 200 : 404 };
+            }
             if (url === '/api/jukebox/config') {
               return {
                 ok: true,
@@ -198,6 +202,7 @@ def test_jukebox_execute_control_play_headless_loads_without_ui(mock_page: Page)
             "ok": True,
             "action": "play",
             "song": {"id": "song1", "name": "Song 1", "artist": "A"},
+            "actionStatus": "no_action",
         },
         "hasUi": False,
         "hasRuntimeHost": True,
@@ -230,9 +235,58 @@ def test_jukebox_execute_control_play_uses_fuzzy_matching(mock_page: Page):
             "ok": True,
             "action": "play",
             "song": {"id": "song4", "name": "桃源恋歌", "artist": "GARNiDELiA"},
+            "actionStatus": "no_action",
         },
         "currentSong": "song4",
         "playerItems": ["桃源恋歌"],
+    }
+
+
+@pytest.mark.frontend
+def test_jukebox_execute_control_uses_canonical_control_keys(mock_page: Page):
+    setup_headless_jukebox_page(mock_page)
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+          const skipResult = await window.Jukebox.executeControl({ action: 'skip' });
+          const cutResult = await window.Jukebox.executeControl({ action: 'cut' });
+          const commandOnlyResult = await window.Jukebox.executeControl({ command: 'stop' });
+          const legacyNameResult = await window.Jukebox.executeControl({ action: 'play', name: 'Song 2' });
+          return {
+            skipResult,
+            cutResult,
+            commandOnlyResult,
+            legacyNameResult,
+            currentSong: window.Jukebox.State.currentSong && window.Jukebox.State.currentSong.id
+          };
+        }
+        """
+    )
+
+    assert result == {
+        "skipResult": {
+            "ok": False,
+            "action": "skip",
+            "message": "unsupported_jukebox_action",
+        },
+        "cutResult": {
+            "ok": False,
+            "action": "cut",
+            "message": "unsupported_jukebox_action",
+        },
+        "commandOnlyResult": {
+            "ok": False,
+            "action": "",
+            "message": "unsupported_jukebox_action",
+        },
+        "legacyNameResult": {
+            "ok": True,
+            "action": "play",
+            "song": {"id": "song1", "name": "Song 1", "artist": "A"},
+            "actionStatus": "no_action",
+        },
+        "currentSong": "song1",
     }
 
 
@@ -243,7 +297,10 @@ def test_jukebox_builtin_paths_keep_resource_directories(mock_page: Page):
     result = mock_page.evaluate(
         """
         async () => {
-          window.fetch = async (url) => {
+          window.fetch = async (url, options = {}) => {
+            if (options.method === 'HEAD') {
+              return { ok: !String(url).includes('missing'), status: String(url).includes('missing') ? 404 : 200 };
+            }
             if (url === '/api/jukebox/config') {
               return {
                 ok: true,
@@ -297,6 +354,135 @@ def test_jukebox_builtin_paths_keep_resource_directories(mock_page: Page):
         "audio": "songs/song_001.mp3",
         "audioUrl": "/api/jukebox/file/songs/song_001.mp3",
         "vrmaCalls": ["/api/jukebox/file/actions/song_001.vrma"],
+    }
+
+
+@pytest.mark.frontend
+def test_jukebox_execute_control_does_not_play_when_audio_missing(mock_page: Page):
+    setup_headless_jukebox_page(mock_page)
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+          window.fetch = async (url, options = {}) => {
+            if (options.method === 'HEAD') {
+              return { ok: !String(url).includes('missing'), status: String(url).includes('missing') ? 404 : 200 };
+            }
+            if (url === '/api/jukebox/config') {
+              return {
+                ok: true,
+                json: async () => ({
+                  configRevision: 'rev-missing-audio',
+                  songs: {
+                    missingSong: {
+                      name: 'Missing Song',
+                      artist: 'A',
+                      audio: 'songs/missing.mp3',
+                      visible: true
+                    }
+                  },
+                  actions: {},
+                  bindings: {}
+                })
+              };
+            }
+            throw new Error('Unexpected fetch: ' + url);
+          };
+
+          const result = await window.Jukebox.executeControl({ action: 'play', query: 'Missing' });
+          return {
+            result,
+            playerItems: window.__lastAPlayer.list.items,
+            played: window.__lastAPlayer.played === true,
+            currentSong: window.Jukebox.State.currentSong
+          };
+        }
+        """
+    )
+
+    assert result == {
+        "result": {
+            "ok": False,
+            "action": "play",
+            "message": "audio_not_found",
+            "song": {"id": "missingSong", "name": "Missing Song", "artist": "A"},
+        },
+        "playerItems": [],
+        "played": False,
+        "currentSong": None,
+    }
+
+
+@pytest.mark.frontend
+def test_jukebox_execute_control_skips_missing_action_but_plays_audio(mock_page: Page):
+    setup_headless_jukebox_page(mock_page)
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+          window.fetch = async (url, options = {}) => {
+            if (options.method === 'HEAD') {
+              return { ok: !String(url).includes('missing-action'), status: String(url).includes('missing-action') ? 404 : 200 };
+            }
+            if (url === '/api/jukebox/config') {
+              return {
+                ok: true,
+                json: async () => ({
+                  configRevision: 'rev-missing-action',
+                  songs: {
+                    songWithMissingAction: {
+                      name: 'Song With Missing Action',
+                      artist: 'A',
+                      audio: 'songs/song1.mp3',
+                      visible: true,
+                      defaultAction: 'missingAction'
+                    }
+                  },
+                  actions: {
+                    missingAction: {
+                      name: 'Missing Action',
+                      file: 'actions/missing-action.vrma',
+                      format: 'vrma',
+                      visible: true
+                    }
+                  },
+                  bindings: {
+                    songWithMissingAction: { missingAction: { offset: 0 } }
+                  }
+                })
+              };
+            }
+            throw new Error('Unexpected fetch: ' + url);
+          };
+          window.lanlan_config = { model_type: 'live3d', live3d_sub_type: 'vrm' };
+          const vrmaCalls = [];
+          window.vrmManager = {
+            playVRMAAnimation: async (url) => vrmaCalls.push(url)
+          };
+
+          const result = await window.Jukebox.executeControl({ action: 'play', query: 'Missing Action' });
+          return {
+            result,
+            playerItems: window.__lastAPlayer.list.items.map((item) => item.name),
+            played: window.__lastAPlayer.played === true,
+            currentSong: window.Jukebox.State.currentSong && window.Jukebox.State.currentSong.id,
+            vrmaCalls
+          };
+        }
+        """
+    )
+
+    assert result == {
+        "result": {
+            "ok": True,
+            "action": "play",
+            "song": {"id": "songWithMissingAction", "name": "Song With Missing Action", "artist": "A"},
+            "actionStatus": "action_not_found",
+        },
+        "playerItems": ["Song With Missing Action"],
+        "played": True,
+        "currentSong": "songWithMissingAction",
+        "vrmaCalls": [],
     }
 
 
@@ -392,6 +578,7 @@ def test_jukebox_execute_control_next_and_stop_headless(mock_page: Page):
         "ok": True,
         "action": "next",
         "song": {"id": "song2", "name": "Song 2", "artist": "B"},
+        "actionStatus": "no_action",
     }
     assert result["stopResult"] == {"ok": True, "action": "stop"}
     assert result["currentSong"] is None

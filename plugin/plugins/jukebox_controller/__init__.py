@@ -7,12 +7,7 @@ from typing import Any
 from plugin.sdk.plugin import Err, NekoPluginBase, Ok, SdkError, neko_plugin, plugin_entry
 
 
-_ACTION_ALIASES = {
-    "play": "play",
-    "next": "next",
-    "skip": "next",
-    "stop": "stop",
-}
+_VALID_ACTIONS = {"play", "next", "stop"}
 
 
 @neko_plugin
@@ -31,8 +26,8 @@ class JukeboxControllerPlugin(NekoPluginBase):
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["play", "next", "skip", "stop"],
-                    "description": "控制动作：play 播放指定曲目，next/skip 切到下一首，stop 停止播放。",
+                    "enum": ["play", "next", "stop"],
+                    "description": "控制动作：play 播放指定曲目，next 切到下一首，stop 停止播放。",
                 },
                 "query": {
                     "type": "string",
@@ -44,8 +39,8 @@ class JukeboxControllerPlugin(NekoPluginBase):
         llm_result_fields=["action", "query", "message"],
     )
     async def control_jukebox(self, action: str, query: str = "", **kwargs: Any):
-        normalized = _ACTION_ALIASES.get(str(action or "").strip().lower())
-        if not normalized:
+        normalized = str(action or "").strip().lower()
+        if normalized not in _VALID_ACTIONS:
             return Err(SdkError("INVALID_ARGUMENT: unsupported jukebox action"))
 
         clean_query = str(query or "").strip()

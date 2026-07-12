@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 from dataclasses import dataclass, asdict
 
-from fastapi import APIRouter, File, Form, UploadFile, HTTPException
+from fastapi import APIRouter, File, Form, UploadFile, HTTPException, Response
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
@@ -60,6 +60,16 @@ CHUNK_SIZE = 1024 * 1024  # 1MB chunks
 # 允许的文件扩展名
 ALLOWED_AUDIO_EXTENSIONS = {'.mp3', '.wav', '.ogg', '.flac'}
 ALLOWED_ACTION_EXTENSIONS = {'.vmd', '.bvh', '.fbx', '.vrma'}
+JUKEBOX_MEDIA_TYPES = {
+    '.mp3': 'audio/mpeg',
+    '.wav': 'audio/wav',
+    '.ogg': 'audio/ogg',
+    '.flac': 'audio/flac',
+    '.vmd': 'application/octet-stream',
+    '.bvh': 'application/octet-stream',
+    '.fbx': 'application/octet-stream',
+    '.vrma': 'application/octet-stream'
+}
 
 def check_file_size(file: UploadFile, max_size: int) -> int:
     """Check file size; returns the size in bytes, raising an exception if the limit is exceeded."""
@@ -88,6 +98,53 @@ def cleanup_temp_path(path: str):
             shutil.rmtree(p, ignore_errors=True)
     except Exception as e:
         logger.warning(f"清理临时路径失败 {path}: {e}")
+
+
+def resolve_jukebox_file_path(file_path: str) -> Path:
+    """Resolve a jukebox file path from user storage or bundled resources."""
+    config_mgr = get_config_manager()
+    jukebox_config = JukeboxConfig(config_mgr)
+
+    # 去除前导斜杠，防止路径解析问题
+    file_path = file_path.lstrip('/')
+
+    # 处理 /static/jukebox/ 前缀（自带资源的特殊路径）
+    if file_path.startswith('static/jukebox/'):
+        file_path = file_path.replace('static/jukebox/', '', 1)
+
+    # 安全检查：确保路径在 jukebox 目录内
+    full_path = (jukebox_config.jukebox_dir / file_path).resolve()
+    jukebox_root = jukebox_config.jukebox_dir.resolve()
+
+    # 防止目录遍历攻击
+    try:
+        full_path.relative_to(jukebox_root)
+    except ValueError:
+        raise HTTPException(403, "访问被拒绝")
+
+    # 优先使用用户文档目录的文件
+    if full_path.exists() and full_path.is_file():
+        return full_path
+
+    # 如果用户目录不存在，尝试从软件自带目录获取
+    builtin_path = Path(__file__).parent.parent / "static" / "jukebox" / file_path
+    builtin_path = builtin_path.resolve()
+    builtin_root = (Path(__file__).parent.parent / "static" / "jukebox").resolve()
+
+    # 安全检查
+    try:
+        builtin_path.relative_to(builtin_root)
+    except ValueError:
+        raise HTTPException(403, "访问被拒绝")
+
+    if not builtin_path.exists() or not builtin_path.is_file():
+        raise HTTPException(404, "文件不存在")
+
+    return builtin_path
+
+
+def get_jukebox_media_type(target_path: Path) -> str:
+    return JUKEBOX_MEDIA_TYPES.get(target_path.suffix.lower(), 'application/octet-stream')
 
 
 def validate_extract_path(file_path: str, extract_dir: Path) -> Path:
@@ -1401,61 +1458,19 @@ async def get_file(file_path: str):
     file_path: relative path, e.g. songs/song_001.mp3 or actions/action_001.vmd
     Prefers the user documents directory; falls back to the bundled directory if absent.
     """
-    config_mgr = get_config_manager()
-    jukebox_config = JukeboxConfig(config_mgr)
-    
-    # 去除前导斜杠，防止路径解析问题
-    file_path = file_path.lstrip('/')
-    
-    # 处理 /static/jukebox/ 前缀（自带资源的特殊路径）
-    if file_path.startswith('static/jukebox/'):
-        file_path = file_path.replace('static/jukebox/', '', 1)
-    
-    # 安全检查：确保路径在 jukebox 目录内
-    full_path = (jukebox_config.jukebox_dir / file_path).resolve()
-    jukebox_root = jukebox_config.jukebox_dir.resolve()
-    
-    # 防止目录遍历攻击
-    try:
-        full_path.relative_to(jukebox_root)
-    except ValueError:
-        raise HTTPException(403, "访问被拒绝")
-    
-    # 优先使用用户文档目录的文件
-    if full_path.exists() and full_path.is_file():
-        target_path = full_path
-    else:
-        # 如果用户目录不存在，尝试从软件自带目录获取
-        builtin_path = Path(__file__).parent.parent / "static" / "jukebox" / file_path
-        builtin_path = builtin_path.resolve()
-        builtin_root = (Path(__file__).parent.parent / "static" / "jukebox").resolve()
-        
-        # 安全检查
-        try:
-            builtin_path.relative_to(builtin_root)
-        except ValueError:
-            raise HTTPException(403, "访问被拒绝")
-        
-        if not builtin_path.exists() or not builtin_path.is_file():
-            raise HTTPException(404, "文件不存在")
-        
-        target_path = builtin_path
-    
-    # 根据扩展名确定媒体类型
-    ext = target_path.suffix.lower()
-    media_types = {
-        '.mp3': 'audio/mpeg',
-        '.wav': 'audio/wav',
-        '.ogg': 'audio/ogg',
-        '.flac': 'audio/flac',
-        '.vmd': 'application/octet-stream',
-        '.bvh': 'application/octet-stream',
-        '.fbx': 'application/octet-stream',
-        '.vrma': 'application/octet-stream'
-    }
-    media_type = media_types.get(ext, 'application/octet-stream')
-    
-    return FileResponse(target_path, media_type=media_type)
+    target_path = resolve_jukebox_file_path(file_path)
+    return FileResponse(target_path, media_type=get_jukebox_media_type(target_path))
+
+
+@router.head("/file/{file_path:path}")
+async def head_file(file_path: str):
+    """Check whether a song or action file exists without streaming it."""
+    target_path = resolve_jukebox_file_path(file_path)
+    return Response(
+        status_code=200,
+        media_type=get_jukebox_media_type(target_path),
+        headers={"Content-Length": str(target_path.stat().st_size)}
+    )
 
 
 @router.post("/import")

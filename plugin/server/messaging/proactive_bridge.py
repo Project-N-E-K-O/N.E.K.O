@@ -273,7 +273,7 @@ class ProactiveBridge:
                     }
                 )
             elif action == "jukebox_control":
-                jukebox_action = ui.get("jukebox_action") or ui.get("control") or ui.get("command")
+                jukebox_action = ui.get("jukebox_action")
                 if not isinstance(jukebox_action, str) or not jukebox_action.strip():
                     logger.debug(
                         "ui_action=jukebox_control missing action; plugin={}",
@@ -285,7 +285,7 @@ class ProactiveBridge:
                         "event_type": "jukebox_control",
                         "lanlan_name": target_lanlan,
                         "action": jukebox_action,
-                        "query": ui.get("query") or ui.get("song") or metadata.get("query") or metadata.get("song"),
+                        "query": ui.get("query"),
                         "source": plugin_id,
                         "timestamp": timestamp,
                     }

@@ -119,6 +119,7 @@ window.Jukebox = {
     runtimeInitPromise: null,
     isRuntimeReady: false,
     playerHost: null,
+    lastPlaybackReport: null,
     isOpen: false,
     isHidden: false,
     container: null,
@@ -7953,8 +7954,7 @@ window.Jukebox = {
   },
 
   executeControl: async function(command = {}) {
-    const action = String(command.action || command.command || '').trim().toLowerCase();
-    const normalizedAction = action === 'skip' || action === 'cut' ? 'next' : action;
+    const normalizedAction = String(command.action || '').trim().toLowerCase();
 
     if (!['play', 'next', 'stop'].includes(normalizedAction)) {
       return {
@@ -7978,17 +7978,51 @@ window.Jukebox = {
       if (!nextSong) {
         return { ok: false, action: 'next', message: 'no_next_song' };
       }
-      await Jukebox.playSong(nextSong.id, { fromQueue: Jukebox.State.playbackMode === 'random' });
-      return { ok: true, action: 'next', song: { id: nextSong.id, name: nextSong.name, artist: nextSong.artist } };
+      return Jukebox.executePlayControl('next', nextSong, { fromQueue: Jukebox.State.playbackMode === 'random' });
     }
 
-    const song = Jukebox.findSongForQuery(command.query || command.song || command.name || '');
+    const song = Jukebox.findSongForQuery(command.query || '');
     if (!song) {
       return { ok: false, action: 'play', message: 'song_not_found' };
     }
 
-    await Jukebox.playSong(song.id);
-    return { ok: true, action: 'play', song: { id: song.id, name: song.name, artist: song.artist } };
+    return Jukebox.executePlayControl('play', song);
+  },
+
+  formatControlSong: function(song) {
+    return song ? { id: song.id, name: song.name, artist: song.artist } : null;
+  },
+
+  executePlayControl: async function(action, song, playOptions = {}) {
+    const preflight = await Jukebox.preflightSongPlayback(song);
+    if (!preflight.ok) {
+      return {
+        ok: false,
+        action,
+        message: preflight.message,
+        song: Jukebox.formatControlSong(song)
+      };
+    }
+
+    const playedSong = await Jukebox.playSong(song.id, {
+      ...playOptions,
+      actionAvailability: preflight.actionAvailability
+    });
+    if (!playedSong) {
+      return {
+        ok: false,
+        action,
+        message: 'play_failed',
+        song: Jukebox.formatControlSong(song)
+      };
+    }
+
+    return {
+      ok: true,
+      action,
+      song: Jukebox.formatControlSong(song),
+      actionStatus: preflight.actionAvailability.status
+    };
   },
 
   resolveJukeboxFileUrl: function(filePath) {
@@ -7999,6 +8033,73 @@ window.Jukebox = {
       return rawPath;
     }
     return '/api/jukebox/file/' + rawPath.replace(/^\/+/, '');
+  },
+
+  shouldPreflightJukeboxUrl: function(url) {
+    const value = String(url || '');
+    if (!value) return false;
+    if (/^(?:data:|blob:)/i.test(value)) return false;
+    if (value.startsWith('/api/jukebox/file/') || value.startsWith('/static/') || value.startsWith('/user_')) {
+      return true;
+    }
+    try {
+      const parsed = new URL(value, window.location.href);
+      return parsed.origin === window.location.origin
+        && (
+          parsed.pathname.startsWith('/api/jukebox/file/')
+          || parsed.pathname.startsWith('/static/')
+          || parsed.pathname.startsWith('/user_')
+        );
+    } catch (_) {
+      return false;
+    }
+  },
+
+  checkJukeboxFileAvailable: async function(url) {
+    if (!url) return false;
+    if (!Jukebox.shouldPreflightJukeboxUrl(url)) return true;
+
+    try {
+      const response = await fetch(url, { method: 'HEAD', cache: 'no-store' });
+      return !!(response && response.ok);
+    } catch (_) {
+      return false;
+    }
+  },
+
+  getActionAvailability: async function(song) {
+    const action = Jukebox.getActionForModel(song);
+    if (!action) {
+      return { ok: true, status: 'no_action', action: null, url: '' };
+    }
+
+    const url = Jukebox.resolveJukeboxFileUrl(action.file || '');
+    if (!url) {
+      return { ok: false, status: 'action_missing', action, url: '' };
+    }
+
+    const available = await Jukebox.checkJukeboxFileAvailable(url);
+    return {
+      ok: available,
+      status: available ? 'action_ready' : 'action_not_found',
+      action,
+      url
+    };
+  },
+
+  preflightSongPlayback: async function(song) {
+    const audioUrl = Jukebox.resolveJukeboxFileUrl(song && song.audio);
+    if (!audioUrl) {
+      return { ok: false, message: 'audio_missing', audioUrl: '' };
+    }
+
+    const audioAvailable = await Jukebox.checkJukeboxFileAvailable(audioUrl);
+    if (!audioAvailable) {
+      return { ok: false, message: 'audio_not_found', audioUrl };
+    }
+
+    const actionAvailability = await Jukebox.getActionAvailability(song);
+    return { ok: true, audioUrl, actionAvailability };
   },
 
   checkConfigUpdates: async function() {
@@ -8365,10 +8466,11 @@ window.Jukebox = {
         return null;
       }
       
-      // 根据模型类型播放对应格式的动画
-      const action = Jukebox.getActionForModel(song);
-      if (action) {
-        const actionUrl = Jukebox.resolveJukeboxFileUrl(action.file || '');
+      // 根据模型类型播放对应格式的动画；动作缺失时只跳过动作，不阻断歌曲播放。
+      const actionAvailability = options.actionAvailability || await Jukebox.getActionAvailability(song);
+      const action = actionAvailability.action;
+      if (action && actionAvailability.ok) {
+        const actionUrl = actionAvailability.url;
         console.log('[Jukebox] 播放动画:', action.name, '格式:', action.format || 'vmd', '路径:', actionUrl);
 
         const modelType = Jukebox.getModelType();
@@ -8379,6 +8481,8 @@ window.Jukebox = {
         } else if (modelType === 'fbx') {
           await Jukebox.playFBX(actionUrl);
         }
+      } else if (action) {
+        console.warn('[Jukebox] 动作文件不可用，跳过动作:', actionAvailability.status, action.file || action.id);
       }
       
       if (requestId !== Jukebox.State.playRequestId) {
@@ -8388,6 +8492,10 @@ window.Jukebox = {
       
       Jukebox.State.currentSong = song;
       Jukebox.State.isPlaying = true;
+      Jukebox.State.lastPlaybackReport = {
+        song: Jukebox.formatControlSong(song),
+        actionStatus: actionAvailability.status
+      };
 
       Jukebox.updatePlayingStatus(song);
       Jukebox.updateCalibrationDisplay();

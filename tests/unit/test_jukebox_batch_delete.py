@@ -69,6 +69,28 @@ def test_config_summary_revision_is_stable_and_changes_with_songs():
     assert changed["visibleSongCount"] == 2
 
 
+@pytest.mark.asyncio
+async def test_head_file_reports_jukebox_file_existence(monkeypatch, tmp_path):
+    jukebox_dir = tmp_path / "jukebox"
+    songs_dir = jukebox_dir / "songs"
+    songs_dir.mkdir(parents=True)
+    audio_path = songs_dir / "song.mp3"
+    audio_path.write_bytes(b"audio")
+    fake = _FakeJukeboxConfig(
+        {"version": "1.0", "songs": {}, "actions": {}, "bindings": {}},
+        jukebox_dir,
+    )
+    _install_fake_config(monkeypatch, fake)
+
+    response = await jukebox_router.head_file("songs/song.mp3")
+
+    assert response.status_code == 200
+    assert response.headers["content-length"] == "5"
+    with pytest.raises(HTTPException) as exc_info:
+        await jukebox_router.head_file("songs/missing.mp3")
+    assert exc_info.value.status_code == 404
+
+
 def test_save_builtin_overrides_omits_unchanged_defaults(tmp_path):
     config = _make_save_config(
         tmp_path,
