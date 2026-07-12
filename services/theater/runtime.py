@@ -129,6 +129,7 @@ async def submit_input(
     client_turn_id: str = "",
     base_revision: Any | None = None,
     config_manager: Any | None = None,
+    expected_lanlan_name: str = "",
 ) -> dict[str, Any]:
     """提交轻量结构化输入并交给唯一回合服务处理。"""  # noqa: DOCSTRING_CJK
     return await turn_service.submit(
@@ -140,10 +141,11 @@ async def submit_input(
         client_turn_id=client_turn_id,
         base_revision=base_revision,
         config_manager=config_manager,
+        expected_lanlan_name=expected_lanlan_name,
     )
 
 
-async def get_state(root: Path, session_id: str) -> dict[str, Any]:
+async def get_state(root: Path, session_id: str, *, expected_lanlan_name: str = "") -> dict[str, Any]:
     """读取最后一次已保存的公开快照，不重新运行模型。"""  # noqa: DOCSTRING_CJK
     session, load_reason = await session_store.load_session_with_status(root, session_id)
     if session is None:
@@ -151,6 +153,10 @@ async def get_state(root: Path, session_id: str) -> dict[str, Any]:
         if load_reason in {"session_upgrade_required", "session_version_unsupported"}:
             result["session_id"] = str(session_id or "")
         return result
+    expected_name = str(expected_lanlan_name or "").strip()
+    if expected_name and str(session.get("lanlan_name") or "").strip() != expected_name:
+        # 恢复本地 Session 指针前校验角色归属，避免切换猫娘后重新打开上一人格的私有剧情。
+        return {"ok": False, "reason": "session_character_mismatch"}
     snapshot = session.get("public_snapshot")
     if not isinstance(snapshot, dict):
         return {"ok": False, "reason": "session_snapshot_missing"}
@@ -210,7 +216,7 @@ async def get_active_state(root: Path, *, lanlan_name: str) -> dict[str, Any]:
     session_id = await session_store.get_active_session_id(root, lanlan_name)
     if not session_id:
         return {"ok": False, "reason": "active_session_not_found"}
-    result = await get_state(root, session_id)
+    result = await get_state(root, session_id, expected_lanlan_name=lanlan_name)
     if result.get("reason") in {"session_upgrade_required", "session_version_unsupported"}:
         # 不兼容存档必须保留文件和活动索引，由玩家看到明确提示后决定是否新开演出。
         return result

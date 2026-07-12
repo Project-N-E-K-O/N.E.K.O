@@ -24,6 +24,7 @@ async def submit(
     client_turn_id: str,
     base_revision: Any,
     config_manager: Any | None,
+    expected_lanlan_name: str = "",
 ) -> dict[str, Any]:
     """校验并原子提交一个 Choice、自由输入或离场回合。"""  # noqa: DOCSTRING_CJK
     request, error = _normalize_request(
@@ -39,6 +40,10 @@ async def submit(
         session = await session_store.load_session(root, session_id)
         if session is None:
             return {"ok": False, "reason": "session_not_found"}
+        expected_name = str(expected_lanlan_name or "").strip()
+        if expected_name and str(session.get("lanlan_name") or "").strip() != expected_name:
+            # Session ID 可能来自旧 localStorage；角色归属不匹配时不能读取幂等结果或继续推进。
+            return {"ok": False, "reason": "session_character_mismatch"}
         cached = _cached_result(session, request["client_turn_id"])
         if cached:
             return cached

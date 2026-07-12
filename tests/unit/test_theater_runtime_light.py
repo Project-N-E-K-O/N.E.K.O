@@ -289,6 +289,34 @@ async def test_active_session_restores_after_memory_index_reset(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_session_state_and_input_reject_another_catgirl(tmp_path):
+    """本地旧 Session ID 不能恢复或推进其他猫娘的私有演绎。"""  # noqa: DOCSTRING_CJK
+    root = tmp_path / "theater"
+    old_session = await runtime.start_session(root, lanlan_name="旧猫娘", client_start_id="start_old_catgirl")
+
+    restored = await runtime.get_state(
+        root,
+        old_session["session_id"],
+        expected_lanlan_name="当前猫娘",
+    )
+    submitted = await runtime.submit_input(
+        root,
+        session_id=old_session["session_id"],
+        input_kind="free_input",
+        message="继续上一位猫娘的剧情",
+        client_turn_id="turn_wrong_catgirl",
+        base_revision=0,
+        expected_lanlan_name="当前猫娘",
+    )
+
+    assert restored == {"ok": False, "reason": "session_character_mismatch"}
+    assert submitted == {"ok": False, "reason": "session_character_mismatch"}
+    saved = await session_store.load_session(root, old_session["session_id"])
+    assert saved["state_revision"] == 0
+    assert len(saved["turns"]) == 1
+
+
+@pytest.mark.asyncio
 async def test_active_session_cache_is_scoped_by_theater_root(tmp_path):
     """同名猫娘在不同数据根中必须分别读取各自的活动 Session。"""  # noqa: DOCSTRING_CJK
     root_a = tmp_path / "root-a"

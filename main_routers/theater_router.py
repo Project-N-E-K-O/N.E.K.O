@@ -157,6 +157,8 @@ async def submit_theater_input(request: Request):
         # 保持原始 JSON 类型，让服务层统一验证非负整数 revision。
         base_revision=data.get("base_revision"),
         config_manager=get_config_manager(),
+        # Session ID 不代表角色授权；每次输入都必须重新绑定服务端当前猫娘。
+        expected_lanlan_name=_resolve_lanlan_name(None) or "Lan",
     )
     await _speak_committed_dialogue(result)
     return result
@@ -165,7 +167,12 @@ async def submit_theater_input(request: Request):
 @router.get("/session/state")
 async def get_theater_session_state(session_id: str):
     """返回指定小剧场 session 的公开状态摘要。"""  # noqa: DOCSTRING_CJK
-    return await runtime.get_state(_theater_root(), session_id=str(session_id or ""))
+    return await runtime.get_state(
+        _theater_root(),
+        session_id=str(session_id or ""),
+        # 浏览器本地指针只能恢复当前猫娘的 Session，不能跨人格读取公开快照。
+        expected_lanlan_name=_resolve_lanlan_name(None) or "Lan",
+    )
 
 
 @router.get("/session/active")
