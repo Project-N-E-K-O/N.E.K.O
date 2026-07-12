@@ -8,9 +8,9 @@ import pytest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-LIVE2D_CORE_PATH = PROJECT_ROOT / "static" / "live2d-core.js"
-LIVE2D_MODEL_PATH = PROJECT_ROOT / "static" / "live2d-model.js"
-LIVE2D_EMOTION_PATH = PROJECT_ROOT / "static" / "live2d-emotion.js"
+LIVE2D_CORE_PATH = PROJECT_ROOT / "static" / "live2d" / "live2d-core.js"
+LIVE2D_MODEL_PATH = PROJECT_ROOT / "static" / "live2d" / "live2d-model.js"
+LIVE2D_EMOTION_PATH = PROJECT_ROOT / "static" / "live2d" / "live2d-emotion.js"
 
 
 def _run_node_harness(script: str) -> subprocess.CompletedProcess[str]:

@@ -9223,13 +9223,13 @@ async function ensureVrmModulesLoaded() {
     }
 
     const vrmModules = [
-        '/static/vrm-orientation.js',
-        '/static/vrm-core.js',
-        '/static/vrm-expression.js',
-        '/static/vrm-animation.js',
-        '/static/vrm-interaction.js',
-        '/static/vrm-cursor-follow.js',
-        '/static/vrm-manager.js'
+        '/static/vrm/vrm-orientation.js',
+        '/static/vrm/vrm-core.js',
+        '/static/vrm/vrm-expression.js',
+        '/static/vrm/vrm-animation.js',
+        '/static/vrm/vrm-interaction.js',
+        '/static/vrm/vrm-cursor-follow.js',
+        '/static/vrm/vrm-manager.js'
     ];
 
     for (const moduleSrc of vrmModules) {
@@ -9277,12 +9277,12 @@ async function ensureMmdModulesLoaded() {
     }
 
     const mmdModules = [
-        '/static/mmd-core.js',
-        '/static/mmd-animation.js',
-        '/static/mmd-expression.js',
-        '/static/mmd-interaction.js',
-        '/static/mmd-cursor-follow.js',
-        '/static/mmd-manager.js'
+        '/static/mmd/mmd-core.js',
+        '/static/mmd/mmd-animation.js',
+        '/static/mmd/mmd-expression.js',
+        '/static/mmd/mmd-interaction.js',
+        '/static/mmd/mmd-cursor-follow.js',
+        '/static/mmd/mmd-manager.js'
     ];
 
     for (const moduleSrc of mmdModules) {

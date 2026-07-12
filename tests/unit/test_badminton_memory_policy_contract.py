@@ -4,34 +4,17 @@ from pathlib import Path
 
 import pytest
 
-from .game_route_test_helpers import mark_game_started
+# gr_patch_all: single source of truth for the submodule tuple. A local copy
+# here silently loses patch coverage whenever the package grows a submodule.
+from .game_route_test_helpers import (
+    gr_patch_all as _gr_patch_all,
+    mark_game_started,
+)
 from main_routers import game_router
 from main_routers.game_router import archive as gr_archive
 from main_routers.game_router import game_context as gr_game_context
 from main_routers.game_router import memory_policy as gr_memory_policy
 from main_routers.game_router import runtime as gr_runtime
-
-
-def _gr_patch_all(monkeypatch, name, value, raising=True):
-    """Patch the same object onto every submodule that holds the binding.
-
-    Restores pre-split semantics: with monolithic game_router a single
-    setattr hit the one namespace all flows resolved against; after the
-    package split, from-import snapshots live in several submodules'
-    globals, so patch them all with the same object."""
-    from main_routers.game_router import (
-        _shared, char_info, logs, memory_policy, game_context, pregame,
-        visible_events, balance, badminton_scores, archive, runtime,
-    )
-    hit = False
-    for _m in (_shared, char_info, logs, memory_policy, game_context, pregame,
-               visible_events, balance, badminton_scores, archive, runtime):
-        if hasattr(_m, name):
-            monkeypatch.setattr(_m, name, value)
-            hit = True
-    if not hit and raising:
-        raise AttributeError("no game_router submodule has %r" % name)
-
 
 
 def _badminton_html() -> str:

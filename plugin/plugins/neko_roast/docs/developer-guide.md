@@ -4,7 +4,7 @@
 > 再按需深入下面「文档地图」里的参考文档。**不要从 `development.md` 开始**——那是开发规范和架构契约的
 > Canonical Source；本文只做上手导览，不复制完整规范。
 >
-> 更新日期：2026-06-30 · 测试基线 432 passed / 0 error
+> 更新日期：2026-06-30 · 截至该日期的测试基线 432 passed / 0 error；当前 stacked PR 结果见 PR 的 Regression Report
 
 ---
 

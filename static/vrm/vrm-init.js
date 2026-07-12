@@ -14,20 +14,20 @@
 
         // 可以并行加载的核心模块（无相互依赖）
         const parallelModules = [
-            '/static/vrm-orientation.js',
-            '/static/vrm-core.js',
-            '/static/vrm-expression.js',
-            '/static/vrm-animation.js',
-            '/static/vrm-interaction.js',
-            '/static/vrm-cursor-follow.js',
-            '/static/vrm-manager.js'
+            '/static/vrm/vrm-orientation.js',
+            '/static/vrm/vrm-core.js',
+            '/static/vrm/vrm-expression.js',
+            '/static/vrm/vrm-animation.js',
+            '/static/vrm/vrm-interaction.js',
+            '/static/vrm/vrm-cursor-follow.js',
+            '/static/vrm/vrm-manager.js'
         ];
 
         // 必须顺序加载的 UI 模块（公共定位 → 公共 mixin → 统一配置 → buttons）
         // avatar-popup-common, avatar-ui-popup, avatar-ui-popup-config, avatar-ui-buttons
         // 已由 HTML 静态 <script> 加载，此处不再重复加载
         const sequentialModules = [
-            '/static/vrm-ui-buttons.js'
+            '/static/vrm/vrm-ui-buttons.js'
         ];
 
         const failedModules = [];

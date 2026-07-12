@@ -5,7 +5,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _live2d_source() -> str:
-    return (PROJECT_ROOT / "static/live2d-interaction.js").read_text(encoding="utf-8")
+    return (PROJECT_ROOT / "static/live2d/live2d-interaction.js").read_text(encoding="utf-8")
 
 
 def _js_block(source: str, marker: str) -> str:
@@ -49,7 +49,7 @@ def test_live2d_only_display_switch_uses_edge_margin():
 
 def test_live2d_initial_snap_uses_runtime_threshold():
     source = _live2d_source()
-    model_source = (PROJECT_ROOT / "static/live2d-model.js").read_text(encoding="utf-8")
+    model_source = (PROJECT_ROOT / "static/live2d/live2d-model.js").read_text(encoding="utf-8")
 
     assert "threshold: customThreshold" in source
     assert "const margin = SNAP_CONFIG.margin;" in source

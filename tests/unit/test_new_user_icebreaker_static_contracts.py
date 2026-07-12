@@ -24,7 +24,7 @@ GAME_ROUTER_DIR = ROOT / "main_routers" / "game_router"
 ICEBREAKER_ROUTER_PATH = ROOT / "main_routers" / "icebreaker_router.py"
 ICEBREAKER_PROMPTS_PATH = ROOT / "config" / "prompts" / "prompts_icebreaker.py"
 ICEBREAKER_FREE_TEXT_UTILS_PATH = ROOT / "utils" / "icebreaker_free_text.py"
-LIVE2D_CORE_PATH = ROOT / "static" / "live2d-core.js"
+LIVE2D_CORE_PATH = ROOT / "static" / "live2d" / "live2d-core.js"
 SUBTITLE_PATH = ROOT / "static" / "subtitle.js"
 
 
