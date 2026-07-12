@@ -659,4 +659,10 @@ N.E.K.O. **默认开启匿名 Token 用量遥测**，用于跟踪版本兼容性
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=wehos/N.E.K.O.&type=Date)](https://www.star-history.com/#wehos/N.E.K.O.&Date)
+<a href="https://www.star-history.com/?type=date&repos=wehos%2FN.E.K.O.">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=wehos/N.E.K.O.&type=date&theme=dark&legend=top-left&sealed_token=Q_Usdp5kZKjJCQn1FaMa0gKy4lU8MH6dX-53VemfgDwnJ3LjGb6T18uR4nRbliWo5h6HSjoF4EfDJ6oGZsE3uV3slX0u4Z6cFQ4SQS3MSjNMPWEvXjspVBwccA_l4uzz7i7YXDZcHmYLu_HTQ634NVnve67xkhbBsCDboxEFtU88nInXkTMtsalrrluF" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=wehos/N.E.K.O.&type=date&legend=top-left&sealed_token=Q_Usdp5kZKjJCQn1FaMa0gKy4lU8MH6dX-53VemfgDwnJ3LjGb6T18uR4nRbliWo5h6HSjoF4EfDJ6oGZsE3uV3slX0u4Z6cFQ4SQS3MSjNMPWEvXjspVBwccA_l4uzz7i7YXDZcHmYLu_HTQ634NVnve67xkhbBsCDboxEFtU88nInXkTMtsalrrluF" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=wehos/N.E.K.O.&type=date&legend=top-left&sealed_token=Q_Usdp5kZKjJCQn1FaMa0gKy4lU8MH6dX-53VemfgDwnJ3LjGb6T18uR4nRbliWo5h6HSjoF4EfDJ6oGZsE3uV3slX0u4Z6cFQ4SQS3MSjNMPWEvXjspVBwccA_l4uzz7i7YXDZcHmYLu_HTQ634NVnve67xkhbBsCDboxEFtU88nInXkTMtsalrrluF" />
+ </picture>
+</a>
