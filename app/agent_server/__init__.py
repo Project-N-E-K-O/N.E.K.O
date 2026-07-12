@@ -530,6 +530,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                 lanlan_name=lanlan_name,
                 conversation_id=conversation_id,
                 trigger_user_msg_sig=trigger_user_msg_sig,
+                proactive=proactive,
             )
         elif result.execution_method == 'browser_use':
             await channels.browser_use.dispatch(

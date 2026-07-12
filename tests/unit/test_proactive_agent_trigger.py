@@ -240,6 +240,73 @@ def test_redact_cancelled_one_reply_turn_before_proactive(monkeypatch):
     assert any(m.get("role") == "user" and "取消了的旧请求" in str(m.get("content", "")) for m in kept)
 
 
+# ── proactive OpenClaw dispatch forces the default sender ────────────
+def test_proactive_openclaw_dispatch_uses_default_sender(monkeypatch):
+    # A proactive OpenClaw task has no triggering user; the latest user in the
+    # window is a stale prior turn. Its sender_id must NOT be used — otherwise a
+    # self-initiated action (or proactive /stop) runs under that user's
+    # persistent OpenClaw session in multi-user setups. Proactive → default sender.
+    from app.agent_server.channels import openclaw as oc
+
+    captured = {}
+
+    class _FakeOpenClaw:
+        default_sender_id = "DEFAULT_SENDER"
+
+        def normalize_magic_command(self, x):
+            return None  # non-magic path
+
+        def get_or_create_persistent_session_id(self, *, role_name, sender_id):
+            captured["sender_id"] = sender_id
+            return "sess-1"
+
+        async def run_instruction(self, *a, **kw):
+            return {"success": True, "reply": ""}
+
+    monkeypatch.setitem(oc._shared.Modules.agent_flags, "openclaw_enabled", True)
+    monkeypatch.setattr(oc._shared.Modules, "openclaw", _FakeOpenClaw())
+
+    async def _noop_emit(*a, **kw):
+        return None
+    monkeypatch.setattr(oc, "_emit_main_event", _noop_emit)
+    monkeypatch.setattr(oc, "_emit_task_result", _noop_emit)
+    monkeypatch.setattr(oc._task_tracker, "record_assigned", lambda *a, **kw: None)
+
+    class _Result:
+        task_id = "t1"
+        task_description = "查天气"
+        tool_args = {"instruction": "查一下天气"}
+
+    # messages carry a stale user with an explicit sender_id
+    msgs = [
+        {"role": "user", "content": "旧请求", "sender_id": "USER_A"},
+        {"role": "assistant", "content": "我帮你查下天气"},
+    ]
+
+    async def _drive():
+        await oc.dispatch(
+            _Result(), messages=msgs, lanlan_name="lan",
+            conversation_id="c", trigger_user_msg_sig=None, proactive=True,
+        )
+        await asyncio.sleep(0.02)  # let the spawned run_instruction task settle
+
+    asyncio.run(_drive())
+    assert captured.get("sender_id") == "DEFAULT_SENDER"
+
+    # sanity: a non-proactive dispatch DOES resolve the stale user's sender
+    captured.clear()
+
+    async def _drive_user():
+        await oc.dispatch(
+            _Result(), messages=msgs, lanlan_name="lan",
+            conversation_id="c", trigger_user_msg_sig=None, proactive=False,
+        )
+        await asyncio.sleep(0.02)
+
+    asyncio.run(_drive_user())
+    assert captured.get("sender_id") == "USER_A"
+
+
 # ── executor uses the assistant utterance as LATEST_USER_REQUEST on proactive ─
 def test_executor_format_messages_proactive_intent():
     ex = DirectTaskExecutor(computer_use=object())
