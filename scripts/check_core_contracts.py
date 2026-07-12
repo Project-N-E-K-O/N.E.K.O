@@ -223,6 +223,25 @@ def facade_top_level_names(init_tree: ast.Module) -> set[str]:
     return names
 
 
+def facade_owner_modules(init_tree: ast.Module) -> dict[str, str]:
+    """{re-exported name: absolute owner module} from the facade's imports.
+
+    The facade lives at package ``main_logic.core``, so relative re-exports
+    (``from ._shared import CROSS_MODE_RESTART_WAIT_SECONDS``) resolve against
+    it. Used to match owner-module reads precisely (see ``owner_module_reads``).
+    """
+    out: dict[str, str] = {}
+    for node in init_tree.body:
+        if isinstance(node, ast.ImportFrom):
+            base = node.module if node.level == 0 else _resolve_relative("main_logic.core", node.level, node.module)
+            if not base:
+                continue
+            for a in node.names:
+                if a.name != "*":
+                    out[a.asname or a.name] = base
+    return out
+
+
 # ----------------------------------------------------------- module analysis
 def module_level_import_bindings(tree: ast.Module):
     """{name: lineno} bound or aliased by top-level import statements.
@@ -293,9 +312,9 @@ def module_alias_paths(tree: ast.Module, pkg: str) -> dict[str, str]:
     module; ``from main_logic import core as _core_facade`` → ``main_logic.core``).
 
     From-imports of plain symbols land here too, but that is harmless: the
-    routing scan only consults this map for ``<binding>.<patched_symbol>``
-    reads, and a patched module-level symbol is never an attribute of another
-    imported symbol.
+    routing scan (``owner_module_reads``) only flags a ``<binding>.<attr>`` read
+    when the binding resolves to the attr's ACTUAL owner module, so a plain
+    imported object with a coincidentally same-named method never matches.
     """
     out: dict[str, str] = {}
     for node in tree.body:
@@ -352,14 +371,20 @@ def attr_value_chain(node: ast.Attribute):
     return dotted_node_path(node.value)
 
 
-def owner_module_reads(tree: ast.Module, alias_paths: dict[str, str], attr: str):
-    """(line, col, module) for reads of ``attr`` through a non-facade module.
+def owner_module_reads(tree: ast.Module, alias_paths: dict[str, str], attr: str, owner: str | None):
+    """(line, col, module) for reads of ``attr`` through its OWNER module.
 
-    Both the attribute-chain form ``mod.attr`` and the string-getattr form
-    ``getattr(mod, "attr")`` follow the owner module rather than the facade,
-    so a facade monkeypatch misses them. Reads through main_logic.core itself
-    ARE the facade contract and are skipped.
+    The facade re-exports ``attr`` from ``owner`` (e.g. ``get_tts_worker`` from
+    ``main_logic.tts_client``); a monkeypatch of ``main_logic.core.<attr>``
+    rebinds only the facade copy, so a mixin that reads ``owner.<attr>`` (or
+    ``getattr(owner, "<attr>")``) sees the un-patched original. Matching the
+    SPECIFIC owner module — not just any non-facade module — avoids flagging a
+    coincidental same-named attribute on an unrelated object (a plain imported
+    object whose method happens to share the name). If ``owner`` is unknown
+    (attr not from-imported by the facade) nothing is flagged here.
     """
+    if not owner:
+        return []
     sites = []
     for node in ast.walk(tree):
         chain = None
@@ -371,9 +396,8 @@ def owner_module_reads(tree: ast.Module, alias_paths: dict[str, str], attr: str)
             chain = dotted_node_path(node.args[0])
         if chain is None:
             continue
-        resolved = resolve_chain(chain, alias_paths)
-        if resolved is not None and resolved != "main_logic.core":
-            sites.append((node.lineno, node.col_offset, resolved))
+        if resolve_chain(chain, alias_paths) == owner:
+            sites.append((node.lineno, node.col_offset, owner))
     return sites
 
 
@@ -443,6 +467,7 @@ def run(root: Path) -> list[Violation]:
     violations: list[Violation] = []
     init_tree = parse(init_path)
     facade_names = facade_top_level_names(init_tree)
+    facade_owners = facade_owner_modules(init_tree)
 
     # -- the core package must stay flat: a subpackage would define classes the
     #    *.py discovery below never scans, so its mixins/state escape every
@@ -489,6 +514,15 @@ def run(root: Path) -> list[Violation]:
                                             f"mixin class {mixins[0].name} must have an empty base list — a "
                                             f"base would smuggle behavior into LLMSessionManager's MRO "
                                             f"outside the mixin contract"))
+            # A class decorator runs at class creation and can inject/replace
+            # methods after the AST body is counted — invisible to DISJOINT and
+            # the manager-base checks. Mixins must be plain, undecorated bags.
+            if mixins[0].decorator_list:
+                d = mixins[0].decorator_list[0]
+                violations.append(Violation(path, d.lineno, d.col_offset, "CORE_MIXIN_SHAPE",
+                                            f"mixin class {mixins[0].name} must not be decorated — a class "
+                                            f"decorator can add methods/state into the MRO uncounted by the "
+                                            f"other checks"))
             mixin_files[path] = mixins[0]
         elif path.stem not in OWNER_SUBMODULES:
             violations.append(Violation(path, 1, 0, "CORE_MIXIN_SHAPE",
@@ -530,7 +564,20 @@ def run(root: Path) -> list[Violation]:
             if i == 0 and isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant):
                 continue  # class docstring
             if isinstance(node, (ast.Assign, ast.AnnAssign)):
-                continue  # class-level constants are allowed
+                # Class-level CONSTANTS are allowed, but a mutable container
+                # literal (``CACHE = {}``) is shared state across instances and
+                # a Call (``TOKEN = open_socket()``) runs behavior at import —
+                # both are the drift this contract prevents.
+                val = node.value
+                if isinstance(val, (ast.Dict, ast.List, ast.Set, ast.DictComp,
+                                    ast.ListComp, ast.SetComp, ast.Call)):
+                    kind = "a Call (import-time behavior)" if isinstance(val, ast.Call) \
+                        else "a mutable container (shared instance state)"
+                    violations.append(Violation(manager_path, node.lineno, node.col_offset, "CORE_MANAGER_SHAPE",
+                                                f"manager class attribute is {kind} — only immutable class "
+                                                f"constants are allowed; move state into __init__ (per instance) "
+                                                f"or behavior into a mixin"))
+                continue
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "__init__":
                 continue
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -586,26 +633,31 @@ def run(root: Path) -> list[Violation]:
             violations.append(Violation(manager_path, manager_class.lineno, manager_class.col_offset,
                                         "CORE_MIXIN_BASES",
                                         f"base {extra} has no *Mixin class defined in the package"))
-        # A base name matching a package mixin is not enough: the NAME must
-        # actually be bound to the package class via a relative import
-        # (``from .focus import FocusMixin``). Without this, manager.py could
-        # ``from elsewhere import FocusMixin`` and put the outside class in the
-        # MRO while the package mixin sits orphaned but the set check passes.
-        # Must be ``from .<sibling_module> import <Mixin>`` (level 1). A level-2+
-        # import (``from .. import ...``) escapes the core package and could bind
-        # an outside same-named class, so it does not count as core-local.
-        relative_binds = set()
+        # A base name matching a package mixin is not enough: the NAME must be
+        # bound to THE module that actually defines it, i.e.
+        # ``from .<defining_module> import <Mixin>`` (level 1, module == the
+        # mixin's own file stem). Binding the same name from any other sibling
+        # (``from ._shared import FocusMixin``) or a level-2+ import
+        # (``from .. import ...``) would put a different/outside class in the
+        # MRO while the real package mixin sits orphaned, yet the set check
+        # would still pass. ``defining_stem`` comes from where the class was
+        # discovered.
+        defining_stem = {mklass.name: mpath.stem for mpath, mklass in mixin_files.items()}
+        relative_binds = {}  # bound name -> level-1 module it was imported from
         for node in parse(manager_path).body:
             if isinstance(node, ast.ImportFrom) and node.level == 1 and node.module:
                 for a in node.names:
-                    relative_binds.add(a.asname or a.name)
+                    relative_binds[a.asname or a.name] = node.module
         for name in sorted(base_names & mixin_names):
-            if name not in relative_binds:
+            want = defining_stem.get(name)
+            if relative_binds.get(name) != want:
+                got = relative_binds.get(name)
+                where = f"bound from '.{got}'" if got else "not bound via a level-1 core-local import"
                 violations.append(Violation(manager_path, manager_class.lineno, manager_class.col_offset,
                                             "CORE_MIXIN_BASES",
-                                            f"base {name} matches a package mixin by name but is not bound via "
-                                            f"a core-local import (from .<module> import {name}); the MRO may be "
-                                            f"using an outside class while the package mixin is orphaned"))
+                                            f"base {name} must be imported from its defining module "
+                                            f"(from .{want} import {name}) but is {where}; the MRO may be using "
+                                            f"a different/outside class while the package mixin is orphaned"))
 
     # -- CORE_FACADE_LAYOUT: the facade only re-exports — docstring + imports.
     #    A top-level function, assignment or executable statement would put
@@ -675,7 +727,7 @@ def run(root: Path) -> list[Violation]:
             # "dispatch_...")``) — dodge facade patches the same way. Reads
             # through main_logic.core itself ARE the facade contract and are
             # skipped inside the helper.
-            for line, col, resolved in owner_module_reads(tree, alias_paths, attr):
+            for line, col, resolved in owner_module_reads(tree, alias_paths, attr, facade_owners.get(attr)):
                 violations.append(Violation(
                     path, line, col, "CORE_PATCH_ROUTING",
                     f"'{attr}' is a test patch target on the facade but is read here "
