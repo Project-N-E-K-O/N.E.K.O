@@ -1345,6 +1345,30 @@
         }
     }
 
+    async function handleReloadModelParametersMessage(message) {
+        var manager = window.live2dManager;
+        if (!manager || typeof manager.reloadModelParameters !== 'function') {
+            await handleModelReload(message && message.lanlan_name);
+            return false;
+        }
+
+        try {
+            var result = await manager.reloadModelParameters({
+                model_name: message && message.model_name,
+                model_path: message && message.model_path
+            });
+            if (result && result.reason === 'model_mismatch') {
+                console.log('[Live2D] 忽略非当前模型的参数热刷新消息');
+                return false;
+            }
+            return !!(result && result.applied);
+        } catch (error) {
+            console.warn('[Live2D] 参数轻量热刷新失败，降级为完整模型重载:', error);
+            await handleModelReload(message && message.lanlan_name);
+            return false;
+        }
+    }
+
     /**
      * [HACK/WORKAROUND] 动态向已加载的 Live2D 模型实例注入动作组。
      * 注意：这里直接修改了 pixi-live2d-display SDK 的内部私有/只读数据结构。
@@ -3289,6 +3313,9 @@
                 switch (event.data.action) {
                     case 'reload_model':
                         await handleModelReload(event.data?.lanlan_name, event.data?.reloadOptions);
+                        break;
+                    case 'reload_model_parameters':
+                        await handleReloadModelParametersMessage(event.data);
                         break;
                     case 'catgirl_switched': {
                         // 兜底：character_card_manager 切角色后用 BroadcastChannel 通知主窗口热切换。
@@ -5772,7 +5799,11 @@
             return;
         }
 
-        if (event.data && (event.data.action === 'model_saved' || event.data.action === 'reload_model')) {
+        if (event.data && (
+            event.data.action === 'model_saved'
+            || event.data.action === 'reload_model'
+            || event.data.action === 'reload_model_parameters'
+        )) {
             // Deduplicate: same message arrives via both BC and postMessage
             if (
                 !shouldBypassYuiGuideMessageDedup(event.data.action, event.data)
@@ -5781,9 +5812,27 @@
                 console.log('[Model] 跳过重复 postMessage:', event.data.action);
                 return;
             }
+            if (event.data.action === 'reload_model_parameters') {
+                await handleReloadModelParametersMessage(event.data);
+                return;
+            }
             console.log('[Model] 通过 postMessage 收到模型重载通知');
             await handleModelReload(event.data?.lanlan_name, event.data?.reloadOptions);
         }
+    });
+
+    // 参数编辑器在 BroadcastChannel 不可用时使用 localStorage 触发跨窗口消息。
+    window.addEventListener('storage', async function (event) {
+        if (event.key !== 'nekopage_message' || !event.newValue) return;
+        var message;
+        try {
+            message = JSON.parse(event.newValue);
+        } catch (_) {
+            return;
+        }
+        if (!message || message.action !== 'reload_model_parameters') return;
+        if (isDuplicateMessage(message.action, message.timestamp)) return;
+        await handleReloadModelParametersMessage(message);
     });
 
     // 音色应用页的后备通道：没有 BroadcastChannel 时使用 postMessage 同步准备态
