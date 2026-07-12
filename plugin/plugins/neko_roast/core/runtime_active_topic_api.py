@@ -6,7 +6,6 @@ from collections import deque
 from typing import Any
 
 from .active_topic_selector import ActiveTopicSelector
-from .live_content import active_engagement_fallback_topic_candidates
 
 
 class RuntimeActiveTopicApiMixin:
@@ -30,7 +29,7 @@ class RuntimeActiveTopicApiMixin:
 
     @staticmethod
     def _active_engagement_fallback_topic_candidates() -> list[dict[str, Any]]:
-        return active_engagement_fallback_topic_candidates()
+        return ActiveTopicSelector.fallback_topic_candidates()
 
     @staticmethod
     def _active_engagement_topic_pack(material: dict[str, Any] | None) -> str:
@@ -52,7 +51,9 @@ class RuntimeActiveTopicApiMixin:
         return self.active_topic_selector.guarded_shape(shape)
 
     @staticmethod
-    def _has_active_engagement_streak(values: deque[str], value: str, count: int) -> bool:
+    def _has_active_engagement_streak(
+        values: deque[str], value: str, count: int
+    ) -> bool:
         return ActiveTopicSelector.has_streak(values, value, count)
 
     @staticmethod

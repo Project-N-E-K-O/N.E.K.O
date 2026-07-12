@@ -18,8 +18,8 @@ OpenClaw Agent adapter.
 
 In this project, "OpenClaw" is the compatibility name for the external
 QwenPaw service. The adapter keeps the existing OpenClaw-facing interface
-for N.E.K.O, while the transport is implemented with QwenPaw's RESTful
-Responses-compatible API.
+for N.E.K.O, while supporting both QwenPaw's legacy Responses-compatible API
+and its v2 console streaming API.
 """
 
 from __future__ import annotations
@@ -47,6 +47,8 @@ QWENPAW_API_PREFIX = "/api/agent"
 QWENPAW_PROCESS_ENDPOINT_PATH = f"{QWENPAW_API_PREFIX}/process"
 QWENPAW_RESPONSES_ENDPOINT_PATH = f"{QWENPAW_API_PREFIX}/compatible-mode/v1/responses"
 QWENPAW_HEALTH_ENDPOINT_PATH = f"{QWENPAW_API_PREFIX}/health"
+QWENPAW_VERSION_ENDPOINT_PATH = "/api/version"
+QWENPAW_CONSOLE_CHAT_ENDPOINT_PATH = "/api/console/chat"
 OPENCLAW_SESSION_CACHE_FILE = "openclaw_sessions.json"
 MAGIC_COMMANDS = frozenset({"/clear", "/new", "/stop", "/daemon approve"})
 MAGIC_COMMAND_REACTIONS = {
@@ -93,6 +95,8 @@ def _resolve_qwenpaw_urls(raw_url: str) -> tuple[str, str, str, str]:
         QWENPAW_PROCESS_ENDPOINT_PATH,
         QWENPAW_RESPONSES_ENDPOINT_PATH,
         QWENPAW_HEALTH_ENDPOINT_PATH,
+        QWENPAW_CONSOLE_CHAT_ENDPOINT_PATH,
+        QWENPAW_VERSION_ENDPOINT_PATH,
         QWENPAW_API_PREFIX,
         "/api",
     ):
@@ -129,6 +133,9 @@ class OpenClawAdapter:
         self.process_url = f"{DEFAULT_OPENCLAW_URL}{QWENPAW_PROCESS_ENDPOINT_PATH}"
         self.responses_url = f"{DEFAULT_OPENCLAW_URL}{QWENPAW_RESPONSES_ENDPOINT_PATH}"
         self.health_url = f"{DEFAULT_OPENCLAW_URL}{QWENPAW_HEALTH_ENDPOINT_PATH}"
+        self.version_url = f"{DEFAULT_OPENCLAW_URL}{QWENPAW_VERSION_ENDPOINT_PATH}"
+        self.console_chat_url = f"{DEFAULT_OPENCLAW_URL}{QWENPAW_CONSOLE_CHAT_ENDPOINT_PATH}"
+        self.api_variant = "unknown"
         self.timeout = DEFAULT_TIMEOUT
         self.http_timeout = max(DEFAULT_TIMEOUT + 15.0, DEFAULT_TIMEOUT)
         self.auth_token = ""
@@ -157,6 +164,8 @@ class OpenClawAdapter:
             self.base_url, self.process_url, self.responses_url, self.health_url = _resolve_qwenpaw_urls(raw_url)
         else:
             self.base_url, self.process_url, self.responses_url, self.health_url = _resolve_qwenpaw_urls(DEFAULT_OPENCLAW_URL)
+        self.version_url = f"{self.base_url}{QWENPAW_VERSION_ENDPOINT_PATH}"
+        self.console_chat_url = f"{self.base_url}{QWENPAW_CONSOLE_CHAT_ENDPOINT_PATH}"
 
         self.timeout = _normalize_timeout(
             cfg.get(
@@ -214,22 +223,49 @@ class OpenClawAdapter:
                 proxy=None,
                 trust_env=False,
             ) as client:
-                response = client.get(self.health_url)
-                if response.is_success:
-                    self.last_error = None
-                    return {
-                        "enabled": True,
-                        "ready": True,
-                        "reasons": [f"OpenClaw(QwenPaw) reachable ({self.health_url})"],
-                        "status_code": response.status_code,
-                        "provider": "qwenpaw",
-                    }
-                self.last_error = f"HTTP {response.status_code}"
+                candidates = (
+                    (self.health_url, "legacy"),
+                    (self.version_url, "v2"),
+                ) if self.api_variant == "legacy" else (
+                    (self.version_url, "v2"),
+                    (self.health_url, "legacy"),
+                )
+                response = None
+                response_url = candidates[0][0]
+                last_request_error: Optional[httpx.RequestError] = None
+                for checked_url, variant in candidates:
+                    try:
+                        response = client.get(checked_url)
+                    except httpx.RequestError as exc:
+                        last_request_error = exc
+                        continue
+                    response_url = checked_url
+                    if response.is_success:
+                        if variant == "v2":
+                            try:
+                                version_payload = response.json()
+                            except Exception:
+                                version_payload = None
+                            if not isinstance(version_payload, dict) or not version_payload.get("version"):
+                                continue
+                        self.api_variant = variant
+                        self.last_error = None
+                        return {
+                            "enabled": True,
+                            "ready": True,
+                            "reasons": [f"OpenClaw(QwenPaw) reachable ({checked_url})"],
+                            "status_code": response.status_code,
+                            "provider": "qwenpaw",
+                        }
+                if response is None and last_request_error is not None:
+                    raise last_request_error
+                status_code = response.status_code if response is not None else 503
+                self.last_error = f"HTTP {status_code}"
                 return {
                     "enabled": True,
                     "ready": False,
-                    "reasons": [f"OpenClaw(QwenPaw) responded {response.status_code} ({self.health_url})"],
-                    "status_code": response.status_code,
+                    "reasons": [f"OpenClaw(QwenPaw) responded {status_code} ({response_url})"],
+                    "status_code": status_code,
                     "provider": "qwenpaw",
                 }
         except Exception as exc:
@@ -616,6 +652,7 @@ class OpenClawAdapter:
     @staticmethod
     def _parse_process_sse_payload(raw_text: str) -> Dict[str, Any]:
         latest: Dict[str, Any] = {}
+        latest_reply: Dict[str, Any] = {}
         for line in str(raw_text or "").splitlines():
             stripped = line.strip()
             if not stripped.startswith("data:"):
@@ -629,7 +666,13 @@ class OpenClawAdapter:
                 continue
             if isinstance(parsed, dict):
                 latest = parsed
-        return latest
+                if parsed.get("object") == "response":
+                    latest_reply = parsed
+                elif parsed.get("object") == "message":
+                    latest_reply = {"message": parsed}
+                elif any(key in parsed for key in ("output", "output_text", "message")):
+                    latest_reply = parsed
+        return latest_reply or latest
 
     def _build_responses_payload(
         self,
@@ -712,6 +755,24 @@ class OpenClawAdapter:
             ],
         }
 
+    def _build_console_payload(
+        self,
+        *,
+        session_id: str,
+        user_id: str,
+        channel: str,
+        instruction: str,
+        attachments: Optional[list] = None,
+    ) -> Dict[str, Any]:
+        payload = self._build_process_payload(
+            session_id=session_id,
+            channel=channel,
+            instruction=instruction,
+            attachments=attachments,
+        )
+        payload["user_id"] = user_id
+        return payload
+
     async def run_instruction(
         self,
         instruction: str,
@@ -744,6 +805,13 @@ class OpenClawAdapter:
             instruction=instruction,
             attachments=attachments,
         )
+        console_payload = self._build_console_payload(
+            session_id=resolved_session_id,
+            user_id=sender,
+            channel=channel,
+            instruction=instruction,
+            attachments=attachments,
+        )
         timeout = httpx.Timeout(self.http_timeout, connect=min(10.0, self.http_timeout))
         try:
             async with httpx.AsyncClient(
@@ -752,14 +820,43 @@ class OpenClawAdapter:
                 proxy=None,
                 trust_env=False,
             ) as client:
-                response = await client.post(self.responses_url, json=responses_payload)
-                if response.status_code in (404, 405):
-                    process_response = await client.post(self.process_url, json=process_payload)
-                    process_response.raise_for_status()
-                    data = self._parse_process_sse_payload(process_response.text)
-                else:
-                    response.raise_for_status()
-                    data = response.json()
+                data = None
+                console_candidate = (self.console_chat_url, console_payload, "sse", "v2")
+                legacy_candidates = (
+                    (self.responses_url, responses_payload, "json", "legacy"),
+                    (self.process_url, process_payload, "sse", "legacy"),
+                )
+                candidates = (
+                    (console_candidate, *legacy_candidates)
+                    if self.api_variant == "v2"
+                    else (*legacy_candidates, console_candidate)
+                )
+                last_response: Optional[httpx.Response] = None
+                last_request_error: Optional[httpx.RequestError] = None
+
+                for url, payload, response_format, variant in candidates:
+                    try:
+                        response = await client.post(url, json=payload)
+                    except httpx.RequestError as exc:
+                        last_request_error = exc
+                        continue
+                    last_response = response
+                    if response.is_success:
+                        data = (
+                            response.json()
+                            if response_format == "json"
+                            else self._parse_process_sse_payload(response.text)
+                        )
+                        self.api_variant = variant
+                        break
+                    if response.status_code < 500 and response.status_code not in (404, 405):
+                        response.raise_for_status()
+
+                if data is None:
+                    if last_response is not None:
+                        last_response.raise_for_status()
+                    if last_request_error is not None:
+                        raise last_request_error
         except httpx.TimeoutException:
             self.last_error = f"OpenClaw(QwenPaw) request timed out ({self.timeout}s)"
             return {"success": False, "error": self.last_error}

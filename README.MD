@@ -507,7 +507,7 @@ build_frontend.bat
 uv run python app/memory_server.py
 uv run python app/main_server.py
 # 可选：启动 Agent 服务
-uv run python app/agent_server.py
+uv run python -m app.agent_server
 
 # 5. 访问 http://localhost:48911 配置 API Key 并开始使用
 ```
@@ -606,7 +606,7 @@ N.E.K.O/
 ├── 📁 utils/                    # 🛠️ 工具模块
 ├── 📁 app/                      # 🚀 服务器入口模块
 │   ├── main_server.py           # 🌐 主服务器
-│   ├── agent_server.py          # 🤖 AI智能体服务器
+│   ├── agent_server/            # 🤖 AI智能体服务器（包）
 │   ├── memory_server.py         # 🧠 记忆服务器
 │   └── monitor.py               # 📺 独立观看端
 └── launcher.py                  # 🎬 一键启动入口（打包入口）
@@ -659,4 +659,10 @@ N.E.K.O. **默认开启匿名 Token 用量遥测**，用于跟踪版本兼容性
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=wehos/N.E.K.O.&type=Date)](https://www.star-history.com/#wehos/N.E.K.O.&Date)
+<a href="https://www.star-history.com/?type=date&repos=wehos%2FN.E.K.O.">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=wehos/N.E.K.O.&type=date&theme=dark&legend=top-left&sealed_token=Q_Usdp5kZKjJCQn1FaMa0gKy4lU8MH6dX-53VemfgDwnJ3LjGb6T18uR4nRbliWo5h6HSjoF4EfDJ6oGZsE3uV3slX0u4Z6cFQ4SQS3MSjNMPWEvXjspVBwccA_l4uzz7i7YXDZcHmYLu_HTQ634NVnve67xkhbBsCDboxEFtU88nInXkTMtsalrrluF" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=wehos/N.E.K.O.&type=date&legend=top-left&sealed_token=Q_Usdp5kZKjJCQn1FaMa0gKy4lU8MH6dX-53VemfgDwnJ3LjGb6T18uR4nRbliWo5h6HSjoF4EfDJ6oGZsE3uV3slX0u4Z6cFQ4SQS3MSjNMPWEvXjspVBwccA_l4uzz7i7YXDZcHmYLu_HTQ634NVnve67xkhbBsCDboxEFtU88nInXkTMtsalrrluF" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=wehos/N.E.K.O.&type=date&legend=top-left&sealed_token=Q_Usdp5kZKjJCQn1FaMa0gKy4lU8MH6dX-53VemfgDwnJ3LjGb6T18uR4nRbliWo5h6HSjoF4EfDJ6oGZsE3uV3slX0u4Z6cFQ4SQS3MSjNMPWEvXjspVBwccA_l4uzz7i7YXDZcHmYLu_HTQ634NVnve67xkhbBsCDboxEFtU88nInXkTMtsalrrluF" />
+ </picture>
+</a>

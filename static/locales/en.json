@@ -3427,9 +3427,10 @@
                 "takeoverSettingsPeekDetailPart1": "Whether it's the warmth of my words, my little personality quirks, or my delicate daily moods, everything can be adjusted step by step into exactly how you like it.",
                 "takeoverSettingsPeekDetailPart2": "This little button is super important too! With just a gentle click, I'll be able to run over and find you at the perfect moment.",
                 "takeoverReturnControl": "Alright, alright, I won't hog your computer anymore! Giving control back to you, meow! Please keep taking good care of me in the days ahead!",
-                "interruptResistLight1": "Hey! Don't tug on me, it's not your turn yet!",
-                "interruptResistLight3": "Wait a minute! It's not over yet, don't interrupt me so carelessly!",
-                "interruptAngryExit": "Human! You are super impolite, meow! Since you want to control everything yourself so badly, go ahead and play by yourself with that cold, lifeless screen! Hmph!",
+                "interruptResistLight1": "Nyaa! It’s my turn to teach you, so no messing with the mouse or keyboard! Just behave and keep your eyes on me, okay?",
+                "interruptResistLight2": "Seriously, you’re messing with the mouse and keyboard again! If you still won’t listen, I’m really going to get mad, nyaa!",
+                "interruptResistLight3": "This is your final warning, nyaa! Mess with them one more time and I’m ending the tutorial. No more lessons for you!",
+                "interruptAngryExit": "I’ve put up with this long enough! If you refuse to behave, then this tutorial is over. You can figure out the rest on your own. Hmph!",
                 "introGreetingReply":  "A gentle breeze, warm sunshine, and you, appearing at just the right moment. Nice to meet you! I'm Lin Youyi, please take good care of me from now on, meow~! I've written down everything about this place in this novice guide! Think of it as our very first little gift for meeting each other, please accept it!",
                 "introPractice": "Now, try talking to me and see if we're perfectly in sync, nyan~!",
                 "introActivationHint": "Hang on a moment, I'll start talking soon, nyan~!"
