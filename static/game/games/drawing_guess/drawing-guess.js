@@ -7,6 +7,8 @@
   var ROUND_FALLBACK_SECONDS = 5 * 60;
   var AI_DRAW_REQUEST_TIMEOUT_MS = 70 * 1000;
   var AI_GUESS_REQUEST_TIMEOUT_MS = ROUND_FALLBACK_SECONDS * 1000 + 10000;
+  var AI_GUESS_TIMEOUT_MAX_RETRIES = 2;
+  var AI_GUESS_TIMEOUT_BUSY_MAX_POLLS = 50;
   var AI_GUESS_MIN_DELAY_MS = 10000;
   var AI_GUESS_MAX_DELAY_MS = 60000;
   var DRAW_PICK_DURATION_MS = 1450;
@@ -2445,9 +2447,10 @@
     settleAiGuessTimeout();
   }
 
-  function settleAiGuessTimeout() {
+  function settleAiGuessTimeout(attempt) {
     stopAiGuessSchedule();
     if (state.phase !== 'ai_guessing' && state.phase !== 'ai_guess_feedback') return;
+    attempt = Number(attempt || 0);
     var flowToken = state.roundFlowToken;
     return post(ROUND_API + '/timeout', roundPayload(), 10000).then(function (res) {
       if (!isCurrentRoundFlow(flowToken)) return;
@@ -2455,16 +2458,23 @@
         if (res && res.reason === 'session_busy') {
           state.pendingAiGuessTimeout = true;
           clearTimeout(state.aiGuessTimeoutRetryTimer);
+          var busyPollCount = 0;
           var retryWhenReady = function () {
             state.aiGuessTimeoutRetryTimer = null;
             if (!isCurrentRoundFlow(flowToken)) return;
             if (state.phase !== 'ai_guessing' && state.phase !== 'ai_guess_feedback') return;
             if (state.chatInFlight || state.aiGuessInFlight) {
+              busyPollCount += 1;
+              if (busyPollCount >= AI_GUESS_TIMEOUT_BUSY_MAX_POLLS) {
+                state.pendingAiGuessTimeout = false;
+                addMessage('drawingGuess.messages.roundFailed', 'Round failed: {{reason}}', { reason: 'session_busy' });
+                return;
+              }
               state.aiGuessTimeoutRetryTimer = setTimeout(retryWhenReady, 120);
               return;
             }
             state.pendingAiGuessTimeout = false;
-            settleAiGuessTimeout();
+            settleAiGuessTimeout(attempt);
           };
           state.aiGuessTimeoutRetryTimer = setTimeout(retryWhenReady, 180);
         }
@@ -2475,7 +2485,21 @@
       if (res.phase === 'summary' || (res.state && res.state.phase === 'summary')) {
         renderSummary(res);
       }
-    }).catch(function () {}).finally(updateControls);
+    }).catch(function (err) {
+      if (!isCurrentRoundFlow(flowToken)) return;
+      clearTimeout(state.aiGuessTimeoutRetryTimer);
+      if (attempt < AI_GUESS_TIMEOUT_MAX_RETRIES) {
+        state.aiGuessTimeoutRetryTimer = setTimeout(function () {
+          if (!isCurrentRoundFlow(flowToken)) return;
+          settleAiGuessTimeout(attempt + 1);
+        }, 500 * Math.pow(2, attempt));
+        return;
+      }
+      state.pendingAiGuessTimeout = false;
+      addMessage('drawingGuess.messages.roundFailed', 'Round failed: {{reason}}', {
+        reason: readableRequestError(err)
+      });
+    }).finally(updateControls);
   }
 
   function flushDeferredAiGuessWork() {

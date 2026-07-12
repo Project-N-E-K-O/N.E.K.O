@@ -455,6 +455,10 @@ def test_drawing_guess_static_route_contract():
     assert "setTimeout(retryWhenReady, 180);" in script
     assert "aiGuessTimeoutRetryTimer: null" in script
     assert "state.aiGuessTimeoutRetryTimer = setTimeout(retryWhenReady, 180);" in script
+    assert "AI_GUESS_TIMEOUT_MAX_RETRIES = 2" in script
+    assert "AI_GUESS_TIMEOUT_BUSY_MAX_POLLS = 50" in script
+    assert "if (attempt < AI_GUESS_TIMEOUT_MAX_RETRIES)" in script
+    assert "reason: readableRequestError(err)" in script
     assert "speechAudioTapReady: false" in script
     assert "response.type === 'speech_tap_ready'" in script
     assert "suppress_primary_audio: state.speechAudioTapReady" in script
