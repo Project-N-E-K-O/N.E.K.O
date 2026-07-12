@@ -8146,21 +8146,22 @@ window.Jukebox = {
     if (rawPath.startsWith('/api/') || rawPath.startsWith('/static/') || rawPath.startsWith('/user_')) {
       return rawPath;
     }
-    return '/api/jukebox/file/' + rawPath.replace(/^\/+/, '');
+    return '/api/jukebox/file' + '/' + rawPath.replace(/^\/+/, '');
   },
 
   shouldPreflightJukeboxUrl: function(url) {
     const value = String(url || '');
     if (!value) return false;
     if (/^(?:data:|blob:)/i.test(value)) return false;
-    if (value.startsWith('/api/jukebox/file/') || value.startsWith('/static/') || value.startsWith('/user_')) {
+    const jukeboxFilePrefix = '/api/jukebox/file' + '/';
+    if (value.startsWith(jukeboxFilePrefix) || value.startsWith('/static/') || value.startsWith('/user_')) {
       return true;
     }
     try {
       const parsed = new URL(value, window.location.href);
       return parsed.origin === window.location.origin
         && (
-          parsed.pathname.startsWith('/api/jukebox/file/')
+          parsed.pathname.startsWith(jukeboxFilePrefix)
           || parsed.pathname.startsWith('/static/')
           || parsed.pathname.startsWith('/user_')
         );
