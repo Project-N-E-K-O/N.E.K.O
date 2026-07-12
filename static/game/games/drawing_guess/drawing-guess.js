@@ -2672,9 +2672,13 @@
     });
   }
 
-  function submitGameChat(text) {
+  function submitGameChat(text, options) {
+    options = options || {};
     state.chatInFlight = true;
-    return post(ROUND_API + '/input', roundPayload({ text: text }), 20000).then(function (res) {
+    return post(ROUND_API + '/input', roundPayload({
+      text: text,
+      summary_chat_only: !!options.summaryChatOnly
+    }), 20000).then(function (res) {
       if (!res || !res.ok) {
         addMessage('drawingGuess.messages.inputFailed', 'Input failed.');
         return;
@@ -2690,9 +2694,11 @@
   function submitFeedbackInput(text) {
     state.chatInFlight = true;
     var flowToken = state.roundFlowToken;
+    var feedbackImage = captureUserCanvasPng();
+    if (feedbackImage) state.userPng = feedbackImage;
     return post(ROUND_API + '/input', roundPayload({
       text: text,
-      image_data_url: state.userPng
+      image_data_url: feedbackImage || state.userPng
     }), AI_GUESS_REQUEST_TIMEOUT_MS).then(function (res) {
       if (!isCurrentRoundFlow(flowToken)) return;
       if (!res || !res.ok) {
@@ -4318,8 +4324,10 @@
       submitGameChat(value);
     } else if (state.phase === 'ai_guess_feedback') {
       submitFeedbackInput(value);
-    } else if (state.phase === 'summary' || state.phase === 'final_summary') {
+    } else if (state.phase === 'summary') {
       submitGameChat(value);
+    } else if (state.phase === 'final_summary') {
+      submitGameChat(value, { summaryChatOnly: true });
     }
   }
 

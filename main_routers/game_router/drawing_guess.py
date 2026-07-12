@@ -3113,6 +3113,28 @@ async def _handle_drawing_guess_input_payload_locked(
     locale: str,
     text: str,
 ) -> dict[str, Any]:
+    if data.get("summary_chat_only"):
+        lanlan_name = str(session.get("lanlan_name") or data.get("lanlan_name") or "")
+        _append_game_chat(session, "user", text, kind="summary_chat")
+        line = await _generate_persona_chat_line(
+            session=session,
+            locale=locale,
+            lanlan_name=lanlan_name,
+            user_text=text,
+            event="summary_chat",
+        )
+        source = "persona_model" if line else "fallback"
+        line = line or _localized_line(locale, "chat_fallback")
+        _append_game_chat(session, "assistant", line, kind="chat_reply")
+        return {
+            "ok": True,
+            "handled": True,
+            "kind": "chat",
+            "message": line,
+            "source": source,
+            "state": _public_round_state(session, locale),
+        }
+
     if session.get("phase") != "user_guessing":
         phase = str(session.get("phase") or "")
         lanlan_name = str(session.get("lanlan_name") or data.get("lanlan_name") or "")
@@ -3401,6 +3423,7 @@ async def handle_external_drawing_guess_transcript(
     if round_token is not None:
         data["client_round_token"] = round_token
     phase = str(last_state.get("phase") or state.get("phase") or "")
+    data["summary_chat_only"] = phase == "final_summary"
     image_data_url = str(state.get("_last_canvas_image_data_url") or state.get("last_canvas_image_data_url") or "")
     if image_data_url and phase in {"user_drawing", "ai_guessing", "ai_guess_feedback"}:
         data["image_data_url"] = image_data_url

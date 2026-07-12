@@ -1973,6 +1973,38 @@ async def test_summary_phase_still_accepts_persona_chat(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_summary_chat_only_does_not_mutate_active_round(monkeypatch):
+    await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-summary-chat-only",
+        "i18n_language": "en",
+    }))
+    session = dgr._drawing_guess_sessions["YUI:dg-summary-chat-only"]
+    session["phase"] = "user_guessing"
+    session["ai_word_id"] = "banana"
+
+    async def fake_persona_line(**kwargs):
+        assert kwargs["event"] == "summary_chat"
+        return "We can talk about the finished game without changing the round."
+
+    monkeypatch.setattr(dgr, "_generate_persona_chat_line", fake_persona_line)
+
+    result = await dgr.drawing_guess_input(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-summary-chat-only",
+        "i18n_language": "en",
+        "text": "is it banana?",
+        "summary_chat_only": True,
+    }))
+
+    assert result["ok"] is True
+    assert result["kind"] == "chat"
+    assert result["message"] == "We can talk about the finished game without changing the round."
+    assert session["phase"] == "user_guessing"
+    assert session["user_score"] == 0
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_ai_guess_feedback_hint_triggers_retry(monkeypatch):
     await dgr.drawing_guess_round_start(_FakeRequest({
         "lanlan_name": "YUI",

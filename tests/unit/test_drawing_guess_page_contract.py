@@ -417,6 +417,10 @@ def test_drawing_guess_static_route_contract():
     assert "els.canvas.toDataURL('image/png')" in script
     assert "state.phase !== 'user_drawing'" in script
     assert "submitGameChat(value)" in script
+    assert "var feedbackImage = captureUserCanvasPng();" in script
+    assert "image_data_url: feedbackImage || state.userPng" in script
+    assert "summary_chat_only: !!options.summaryChatOnly" in script
+    assert "submitGameChat(value, { summaryChatOnly: true });" in script
     assert "addUserMessage(value)" in script
     assert "state.phase !== 'summary'" in script
     assert "startThinkingEventMessage('drawingGuess.messages.aiGuessing'" in script
