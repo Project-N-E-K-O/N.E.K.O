@@ -3,6 +3,7 @@ import json
 
 import pytest
 
+from main_logic.voice_turn import asset_manifest
 from main_logic.voice_turn.asset_manifest import (
     AssetManifestError,
     load_manifest,
@@ -51,3 +52,20 @@ def test_manifest_rejects_path_traversal_filename(tmp_path):
     (tmp_path / "manifest.json").write_text(json.dumps(raw), encoding="utf-8")
     with pytest.raises(AssetManifestError, match="must not contain a path"):
         load_manifest(tmp_path)
+
+
+def test_generator_required_filenames_survive_candidate_fallback(monkeypatch, tmp_path):
+    invalid = tmp_path / "invalid"
+    valid = tmp_path / "valid"
+    invalid.mkdir()
+    valid.mkdir()
+    content = b"model"
+    _write_manifest(invalid, digest=hashlib.sha256(content).hexdigest())
+    (valid / "model.onnx").write_bytes(content)
+    _write_manifest(valid, digest=hashlib.sha256(content).hexdigest())
+    monkeypatch.setattr(asset_manifest, "candidate_asset_dirs", lambda override: (invalid, valid))
+
+    required = (filename for filename in ("model.onnx",))
+    directory, _, paths = resolve_verified_assets(required)
+    assert directory == valid
+    assert paths == {"model.onnx": valid / "model.onnx"}

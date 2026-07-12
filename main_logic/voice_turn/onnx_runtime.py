@@ -118,26 +118,26 @@ class OnnxModelRuntime:
     def _run_session(self, output_names: Any, inputs: dict[str, Any]) -> Any:
         if not self.is_ready or self._session is None:
             raise RuntimeUnavailableError(self._reason or self._state.value)
-        try:
-            with self._inference_lock:
+        with self._inference_lock:
+            try:
                 session = self._session
                 if session is None:
                     raise RuntimeUnavailableError("runtime_closed")
                 outputs = session.run(output_names, inputs)
-        except RuntimeUnavailableError:
-            raise
-        except Exception as exc:
-            self._consecutive_errors += 1
-            if self._consecutive_errors >= self._inference_error_limit:
-                self._mark_unavailable(f"inference_circuit_open:{type(exc).__name__}")
-            else:
-                self._state = RuntimeState.DEGRADED
-                self._reason = f"inference_error:{type(exc).__name__}"
-            raise RuntimeInferenceError(str(exc)) from exc
-        self._consecutive_errors = 0
-        self._state = RuntimeState.READY
-        self._reason = None
-        return outputs
+            except RuntimeUnavailableError:
+                raise
+            except Exception as exc:
+                self._consecutive_errors += 1
+                if self._consecutive_errors >= self._inference_error_limit:
+                    self._mark_unavailable(f"inference_circuit_open:{type(exc).__name__}")
+                else:
+                    self._state = RuntimeState.DEGRADED
+                    self._reason = f"inference_error:{type(exc).__name__}"
+                raise RuntimeInferenceError(str(exc)) from exc
+            self._consecutive_errors = 0
+            self._state = RuntimeState.READY
+            self._reason = None
+            return outputs
 
     def _mark_unavailable(self, reason: str) -> None:
         self._session = None
