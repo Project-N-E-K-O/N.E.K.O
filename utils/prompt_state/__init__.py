@@ -12,12 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Compatibility alias for :mod:`utils.prompt_state.tutorial_choices`."""
+"""Persistence and state transitions for onboarding prompt flows.
 
-from __future__ import annotations
-
-import sys
-
-from utils.prompt_state import tutorial_choices as _implementation
-
-sys.modules[__name__] = _implementation
+The implementation modules live in this package.  The historical modules at
+``utils.*_prompt_state`` remain as compatibility aliases so existing imports,
+including code that patches module-private test seams, continue to work.
+"""
