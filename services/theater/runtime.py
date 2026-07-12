@@ -175,6 +175,7 @@ async def claim_dialogue_speech(
     *,
     session_id: str,
     state_revision: Any,
+    expected_lanlan_name: str = "",
     play: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     """原子认领公开对白；传入播放器时在同一角色边界内提交 TTS。"""  # noqa: DOCSTRING_CJK
@@ -191,6 +192,10 @@ async def claim_dialogue_speech(
             if session is None:
                 return {"ok": False, "reason": "session_not_found"}
             current_revision = session_store.state_revision(session)
+            expected_name = str(expected_lanlan_name or "").strip()
+            if expected_name and str(session.get("lanlan_name") or "").strip() != expected_name:
+                # 角色已切换时不写入已朗读 revision，避免旧猫娘对白占用新角色的播放权。
+                return {"ok": True, "skipped": "character_changed", "state_revision": current_revision}
             if session.get("ended_at") or await session_store.is_stale_session(root, session):
                 # 已结束或被新开场替换的 Session，旧对白都不能中断当前猫娘的 TTS。
                 return {"ok": True, "skipped": "stale_session", "state_revision": current_revision}

@@ -62,6 +62,7 @@ async def test_theater_tts_bridge_does_not_mirror_chat_or_game_route(monkeypatch
     monkeypatch.setattr(theater_router.runtime, "claim_dialogue_speech", _claim_dialogue)
     monkeypatch.setattr(theater_router, "get_session_manager", lambda: _FakeSessionRegistry(manager))
     monkeypatch.setattr(theater_router, "_theater_root", lambda: None)
+    monkeypatch.setattr(theater_router, "_resolve_lanlan_name", lambda _raw=None: "测试猫娘")
 
     result = await theater_router._speak_committed_dialogue(
         {"ok": True, "session_id": "theater_test", "state_revision": 3}
@@ -74,3 +75,31 @@ async def test_theater_tts_bridge_does_not_mirror_chat_or_game_route(monkeypatch
     assert options["emit_turn_end_after"] is False
     assert options["interrupt_audio"] is True
     assert options["metadata"]["source"] == "theater"
+
+
+@pytest.mark.asyncio
+async def test_theater_tts_rechecks_current_catgirl_before_queue(monkeypatch):
+    """认领后若当前猫娘已经切换，旧角色对白不得进入 TTS 管线。"""  # noqa: DOCSTRING_CJK
+    async def _claim_dialogue(*args, **kwargs):
+        """模拟切换前已经完成 Runtime 认领、随后进入播放回调。"""  # noqa: DOCSTRING_CJK
+        claim = {
+            "ok": True,
+            "line": "这句旧角色对白不应播放喵。",
+            "lanlan_name": "旧猫娘",
+            "session_id": "theater_old_character",
+            "state_revision": 4,
+        }
+        return await kwargs["play"](claim)
+
+    manager = _FakeTheaterTtsManager()
+    monkeypatch.setattr(theater_router.runtime, "claim_dialogue_speech", _claim_dialogue)
+    monkeypatch.setattr(theater_router, "get_session_manager", lambda: _FakeSessionRegistry(manager))
+    monkeypatch.setattr(theater_router, "_theater_root", lambda: None)
+    monkeypatch.setattr(theater_router, "_resolve_lanlan_name", lambda _raw=None: "新猫娘")
+
+    result = await theater_router._speak_committed_dialogue(
+        {"ok": True, "session_id": "theater_old_character", "state_revision": 4}
+    )
+
+    assert result == {"ok": True, "skipped": "character_changed"}
+    assert manager.calls == []

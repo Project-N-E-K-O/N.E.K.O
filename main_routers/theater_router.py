@@ -72,6 +72,9 @@ async def _speak_committed_dialogue(response: dict[str, Any]) -> dict[str, Any]:
     async def _play_claimed_dialogue(claim: dict[str, Any]) -> dict[str, Any]:
         """在 Runtime 持有角色边界期间，把已认领对白提交给现有 TTS。"""  # noqa: DOCSTRING_CJK
         lanlan_name = str(claim.get("lanlan_name") or "")
+        if (_resolve_lanlan_name(None) or "Lan") != lanlan_name:
+            # 认领后若配置中的当前猫娘已经变化，不再查找旧角色 Manager 或打断新角色音频。
+            return {"ok": True, "skipped": "character_changed"}
         manager = get_session_manager().get(lanlan_name) if lanlan_name else None
         speak = getattr(manager, "mirror_assistant_speech", None)
         if not callable(speak):
@@ -102,6 +105,8 @@ async def _speak_committed_dialogue(response: dict[str, Any]) -> dict[str, Any]:
         _theater_root(),
         session_id=session_id,
         state_revision=state_revision,
+        # 先在写入已朗读 revision 前绑定当前猫娘，阻止切换后继续认领旧角色对白。
+        expected_lanlan_name=_resolve_lanlan_name(None) or "Lan",
         # Runtime 会把认领、写盘和播放提交保持在同一个角色锁内，消除返回后的过期窗口。
         play=_play_claimed_dialogue,
     )

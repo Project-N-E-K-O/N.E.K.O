@@ -346,6 +346,24 @@ async def test_ended_session_dialogue_cannot_claim_tts(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_switched_character_dialogue_cannot_claim_tts(tmp_path):
+    """当前猫娘变化后，旧角色对白不得写入已朗读 revision。"""  # noqa: DOCSTRING_CJK
+    root = tmp_path / "theater"
+    started = await runtime.start_session(root, lanlan_name="旧猫娘", client_start_id="start_old_tts_character")
+
+    claim = await runtime.claim_dialogue_speech(
+        root,
+        session_id=started["session_id"],
+        state_revision=0,
+        expected_lanlan_name="新猫娘",
+    )
+
+    assert claim == {"ok": True, "skipped": "character_changed", "state_revision": 0}
+    saved = await session_store.load_session(root, started["session_id"])
+    assert saved["spoken_dialogue_revisions"] == []
+
+
+@pytest.mark.asyncio
 async def test_turn_rechecks_stale_session_after_llm_returns(monkeypatch, tmp_path):
     """模型等待期间被新开场替换的旧 Session 不得再提交候选状态。"""  # noqa: DOCSTRING_CJK
     root = tmp_path / "theater"
