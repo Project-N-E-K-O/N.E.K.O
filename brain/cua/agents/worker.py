@@ -37,11 +37,13 @@ logger = get_module_logger(__name__, "Agent")
 
 
 def _safe_eval_agent_call(code_string: str, agent: Any) -> Any:
-    """安全地执行 agent.method() 调用，替代不安全的 eval()。
+    """Safely execute an ``agent.method()`` call, replacing unsafe ``eval()``.
 
-    使用 AST 解析验证代码仅为 agent 对象上标记了 ``@agent_action`` 的方法调用，
-    参数通过 ast.literal_eval 安全解析（仅允许字面量），
-    防止 LLM 生成的恶意代码执行任意 Python 表达式或调用非公开接口。
+    Uses AST parsing to verify the code is solely a method call on an
+    object decorated with ``@agent_action``.  Arguments are safely
+    parsed via ``ast.literal_eval`` (literals only), preventing LLM-
+    generated malicious code from executing arbitrary Python expressions
+    or calling non-public interfaces.
     """
     if code_string is None:
         raise ValueError("code_string is None, cannot evaluate")

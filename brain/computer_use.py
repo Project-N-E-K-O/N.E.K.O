@@ -392,16 +392,18 @@ def _extract_raw_llm_text(resp: Any) -> Tuple[str, Optional[str]]:
 
 
 class _RestrictedOS:
-    """受限 os 模块代理，仅暴露安全的只读操作。
+    """Restricted os module proxy exposing only safe read-only operations.
 
-    防止 LLM 生成的代码通过 os.system()、os.popen() 等执行任意系统命令。
-    仅允许路径查询和平台信息访问。
+    Prevents LLM-generated code from executing arbitrary system commands
+    via ``os.system()``, ``os.popen()``, etc.  Only path queries and
+    platform information access are allowed.
 
     .. security-note::
 
-        ``environ`` 已从白名单中移除：pyautogui 自动化脚本不需要环境变量，
-        而进程环境中可能包含 API key、token 等机密信息，暴露给 LLM 生成
-        代码会扩大信息泄露面。
+        ``environ`` has been removed from the allowlist: pyautogui
+        automation scripts do not need environment variables, and the
+        process environment may contain API keys, tokens, and other
+        secrets that would be exposed to LLM-generated code.
     """
 
     _ALLOWED_ATTRS = frozenset({
@@ -410,7 +412,7 @@ class _RestrictedOS:
     })
 
     class _RestrictedPath:
-        """os.path 的受限子集，仅允许只读操作。"""
+        """Restricted subset of os.path, read-only operations only."""
         _ALLOWED = frozenset({
             "join", "split", "splitext", "basename", "dirname",
             "exists", "isfile", "isdir", "isabs", "abspath",
@@ -440,9 +442,10 @@ class _RestrictedOS:
 
 # ─── Restricted builtins for CUA exec sandbox ─────────────────────────
 
-# 仅允许的安全内置函数，移除 __import__、open、exec、eval、compile、
-# globals、locals、vars、dir、getattr、setattr、delattr、type、super 等
-# 危险内置，防止 LLM 代码绕过 _RestrictedOS 代理。
+# Only safe builtins are allowed; dangerous ones such as __import__,
+# open, exec, eval, compile, globals, locals, vars, dir, getattr,
+# setattr, delattr, type, super, etc. are removed to prevent LLM
+# code from bypassing the _RestrictedOS proxy.
 _SAFE_BUILTINS = {
     "abs": abs,
     "all": all,

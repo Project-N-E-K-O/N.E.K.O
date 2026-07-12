@@ -45,8 +45,9 @@ _LINGER_MS = 1000
 
 import base64
 
-# 无歧义的双字段包装格式，防止与合法插件数据碰撞。
-# 使用传输层专属前缀 + 双键校验，碰撞概率极低。
+# Unambiguous two-field wrapper format to prevent collisions with
+# legitimate plugin data.  Uses transport-private key prefix + dual-key
+# verification, making accidental matches extremely unlikely.
 _TYPE_KEY = "__neko_zmq_type__"
 _DATA_KEY = "__neko_zmq_data__"
 _BYTES_TYPE = "bytes"
@@ -74,10 +75,12 @@ class _SafeJSONEncoder(json.JSONEncoder):
 
 
 def _restore_bytes(obj: Any) -> Any:
-    """递归恢复传输层包装的 bytes 值。
+    """Recursively restore transport-wrapped ``bytes`` values.
 
-    遍历 dict/list 结构，将 ``{"__neko_zmq_type__": "bytes", "__neko_zmq_data__": "..."}``
-    还原为原始 ``bytes``。使用双键校验确保不会误判合法插件数据。
+    Traverses dict/list structures, converting dicts matching
+    ``{"__neko_zmq_type__": "bytes", "__neko_zmq_data__": "..."}``
+    back to the original ``bytes`` object.  Dual-key verification
+    ensures legitimate plugin data is never misidentified.
     """
     if isinstance(obj, dict):
         # 仅当同时包含两个传输层专用键且类型为 bytes 时才还原
