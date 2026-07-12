@@ -48,10 +48,11 @@ def _bind_host_from_url(base_url: str) -> str:
     if host == "localhost":
         return host
     try:
-        if ipaddress.ip_address(host).is_loopback:
-            return host
+        address = ipaddress.ip_address(host)
     except ValueError:
-        pass
+        address = None
+    if address is not None and address.is_loopback:
+        return host
     raise ValueError("managed_data_layer_requires_loopback_url")
 
 

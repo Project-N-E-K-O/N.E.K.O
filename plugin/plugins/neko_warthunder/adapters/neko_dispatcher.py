@@ -966,7 +966,6 @@ class NekoDispatcher:
     def push_event(self, event: BattleEvent, *, dry_run: bool) -> str:
         """把一个 BattleEvent 投给猫娘。dry_run 时只返回摘要、不真投。"""
         if dry_run:
-            text = self.build_prompt(event)
             if self.timeline:
                 self.timeline.record_stage(
                     stage="dispatcher_dry_run",
