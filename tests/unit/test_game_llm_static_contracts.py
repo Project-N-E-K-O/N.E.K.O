@@ -233,9 +233,18 @@ def test_soccer_passive_guard_writes_structured_debug_events():
     assert "_passiveGuardExitPromptCandidateState(promptType, stage, { allowPreparedModal: true })" in (
         prepare_exit_prompt_block
     )
+    assert "function _releasePreparedExitPrompt(type)" in html
+    assert prepare_exit_prompt_block.index("_llm.cleanedUp || !isGameRuntimeReady()") < prepare_exit_prompt_block.index(
+        "_showExitPrompt(type, firstLine"
+    )
+    assert prepare_exit_prompt_block.index("skip_cleaned_up_before_show") < prepare_exit_prompt_block.index(
+        "_showExitPrompt(type, firstLine"
+    )
     assert prepare_exit_prompt_block.index("skip_inactive_candidate_before_show") < prepare_exit_prompt_block.index(
         "_showExitPrompt(type, firstLine"
     )
+    assert "_llm.cleanedUp ||" in prepare_exit_prompt_block
+    assert "!isGameRuntimeReady() ||" in prepare_exit_prompt_block
     assert "_prepareExitPrompt('rest', 'sidecar_prepare_exit_prompt', { stage })" in html
     assert "_prepareExitPrompt('surrender', 'sidecar_prepare_exit_prompt', { stage })" in html
     assert "function _externalGameRouteInputText(output)" in html

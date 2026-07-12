@@ -4082,6 +4082,11 @@
     if (exitPromptOverlay) exitPromptOverlay.hidden = true;
   }
 
+  function _releasePreparedExitPrompt(type) {
+    if (type === 'rest') passiveGuard.restModalShownThisGame = false;
+    else passiveGuard.ordinaryModalShownThisGame = false;
+  }
+
   function _deliverExitPromptLine(line, type, result = {}, meta = {}) {
     const clean = String(line || '').trim();
     if (!clean) return;
@@ -4224,11 +4229,21 @@
     const timeoutPromise = new Promise((resolve) => setTimeout(() => resolve({ line: '', timeout: true }), EXIT_PROMPT_LINE_WAIT_MS));
     const first = await Promise.race([linePromise, timeoutPromise]);
     if (token !== passiveGuard.modalLineToken) return;
+    if (_llm.cleanedUp || !isGameRuntimeReady()) {
+      _releasePreparedExitPrompt(type);
+      _passiveGuardDebugLog('Modal', 'passive_guard_modal', '跳过退出提示窗口，会话已清理', {
+        action: 'skip_cleaned_up_before_show',
+        type,
+        stage,
+        cleanedUp: _llm.cleanedUp,
+      });
+      console.log(`[Soccer] [PassiveGuard] [Modal] 跳过窗口 | 类型=${type} 阶段=${stage} 原因=会话已清理`);
+      return;
+    }
     const promptType = type === 'rest' ? 'rest' : 'surrender';
     const candidate = _passiveGuardExitPromptCandidateState(promptType, stage, { allowPreparedModal: true });
     if (!candidate.active) {
-      if (type === 'rest') passiveGuard.restModalShownThisGame = false;
-      else passiveGuard.ordinaryModalShownThisGame = false;
+      _releasePreparedExitPrompt(type);
       _passiveGuardDebugLog('Modal', 'passive_guard_modal', '跳过退出提示窗口，候选已失效', {
         action: 'skip_inactive_candidate_before_show',
         type,
@@ -4255,12 +4270,19 @@
     linePromise.then((late) => {
       const lateLine = String(late?.line || '').trim();
       if (!lateLine) return;
-      if (token !== passiveGuard.modalLineToken || !passiveGuard.modalOpen || passiveGuard.modalType !== type) {
+      if (
+        token !== passiveGuard.modalLineToken ||
+        _llm.cleanedUp ||
+        !isGameRuntimeReady() ||
+        !passiveGuard.modalOpen ||
+        passiveGuard.modalType !== type
+      ) {
         _passiveGuardDebugLog('Modal', 'passive_guard_modal', '丢弃迟到退出提示台词', {
           action: 'discard_late_line',
           type,
           token,
           lineLength: lateLine.length,
+          cleanedUp: _llm.cleanedUp,
         });
         console.log(`[Soccer] [PassiveGuard] [Modal] 丢弃迟到台词 | 类型=${type} 台词="${lateLine}"`);
         return;
