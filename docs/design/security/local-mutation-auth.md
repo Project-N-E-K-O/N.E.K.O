@@ -270,7 +270,7 @@ if (response.status === 403 && sec && typeof sec.refreshToken === 'function') {
 
 ### 7.2 fire-and-forget 调用（**PR #1530 引入**）
 
-参考 `static/music_ui.js` 的 `/api/proactive/music_played_through` 调用：用 async IIFE 包一层，让 `getMutationHeaders()` 能 await 但不阻塞外层事件回调（aplayer 的 `'ended'` 回调本身不关心后端回执）。IIFE 内先把 mutation 安全头 `Object.assign` 进初始只含 `Content-Type` 的 header 集，再 `await fetch(...)`；整段 fetch 包在 `try/catch` 里，后端不可达时静默吞掉——播放体验不依赖这个回执，是*业务上确认失败可以丢弃*的场景。
+参考 `static/jukebox/music_ui.js` 的 `/api/proactive/music_played_through` 调用：用 async IIFE 包一层，让 `getMutationHeaders()` 能 await 但不阻塞外层事件回调（aplayer 的 `'ended'` 回调本身不关心后端回执）。IIFE 内先把 mutation 安全头 `Object.assign` 进初始只含 `Content-Type` 的 header 集，再 `await fetch(...)`；整段 fetch 包在 `try/catch` 里，后端不可达时静默吞掉——播放体验不依赖这个回执，是*业务上确认失败可以丢弃*的场景。
 
 ### 7.3 长跑心跳（**PR #1532 引入**）
 

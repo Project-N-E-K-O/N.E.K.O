@@ -1714,6 +1714,27 @@ AGENT_EXTERNAL_GATE_THRESHOLD = 0.2
   这 90% 的易判 case，模棱两可的全 fail-open 到准确的大评估。调高 = 更激进省钱但
   漏判风险上升。"""
 
+# ── 主动搭话触发 agent（降临层，默认关）─────────────────────────────────
+# 默认情况下 analyzer 只在「新 user 轮」跑（agent_server 按 user-turn 指纹去重，
+# assistant turn_end 无新用户输入就忽略）—— 这是 product thesis 的廉价层防护。
+# 打开下面开关后，主动搭话（猫娘自发开口）也能跑一次 analyzer，让她自己起意用
+# 工具/查信息（如「我帮你查下天气」），但严格按「每会话上限」节流，绝不频发。
+AGENT_PROACTIVE_ANALYZE_ENABLED = False
+"""主动搭话触发 agent 的总开关（默认关，实验性、显式开启）。
+- 关（默认）= 维持现状：主动搭话从不跑 analyzer，只有新 user 轮才分析。
+- 开 = 主动搭话轮也带 proactive 标过河，agent_server 走独立路径：assistant 台词
+  指纹去重 + 每会话计数上限（AGENT_PROACTIVE_ANALYZE_MAX_PER_SESSION）双重节流，
+  通过才跑一次 analyzer、把猫娘的主动台词当意图评估。
+- 上游：cross_server 在 had_user_input=False 的 turn_end 打 proactive 标；
+  agent_server 的 analyze handler 分叉。"""
+
+AGENT_PROACTIVE_ANALYZE_MAX_PER_SESSION = 2
+"""每个会话内主动搭话最多触发几次 analyzer（默认 2）。
+- 计的是「主动轮 analyzer 跑的次数」（含未派出工具的），所以同时是成本上界 ——
+  一个 session 最多 N 次主动 analyzer 调用，防频发/防廉价层污染。
+- 计数在 greeting_check（新会话起点）重置；end_all 清空。
+- 调大 = 主动能力更明显但成本/打扰风险上升；0 = 等价于关。"""
+
 PLUGIN_INPUT_DESC_MAX_TOKENS = 1000
 """_ensure_short_descriptions 输入的 plugin manifest description 上限。
 - 用途：生成 short_description 时把原始 description 截断后再送入 prompt
@@ -2558,6 +2579,8 @@ __all__ = [
     'AGENT_PLUGIN_FULL_MAX_TOKENS',
     'AGENT_EXTERNAL_GATE_ENABLED',
     'AGENT_EXTERNAL_GATE_THRESHOLD',
+    'AGENT_PROACTIVE_ANALYZE_ENABLED',
+    'AGENT_PROACTIVE_ANALYZE_MAX_PER_SESSION',
     'PLUGIN_INPUT_DESC_MAX_TOKENS',
     'COMPUTER_USE_MAX_TOKENS',
     'LLM_PING_MAX_TOKENS',

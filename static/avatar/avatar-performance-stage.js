@@ -2238,7 +2238,9 @@
             const previousEyeBlinkSuspended = !!manager._suspendEyeBlinkOverride;
             let frameId = 0;
             let settled = false;
+            let settleLoop = null;
             let usesTemporaryPoseOverride = false;
+            let overrideFrameCount = 0;
             const startedAt = now();
             const finish = (result, reason) => {
                 if (settled) {
@@ -2268,6 +2270,11 @@
                             paramCount: paramKeys.length
                         });
                     } catch (_) {}
+                }
+                // finish 可能由 override 回调（模型 update 注入点）触发，此时上面已
+                // cancel 掉待执行的 tick，必须在这里直接唤醒等待循环，否则 promise 悬挂
+                if (settleLoop) {
+                    settleLoop();
                 }
             };
             const applyFrame = () => {
@@ -2315,6 +2322,7 @@
                 if (manager && typeof manager.setTemporaryPoseOverride === 'function') {
                     usesTemporaryPoseOverride = manager.setTemporaryPoseOverride(source, (coreModel) => {
                         if (coreModel === context.coreModel) {
+                            overrideFrameCount += 1;
                             applyFrame();
                         }
                     }) === true;
@@ -2332,19 +2340,54 @@
                     return true;
                 }
                 await new Promise((resolve) => {
+                    settleLoop = resolve;
+                    // override 注册成功不代表在被驱动：coreModel.update 包装器
+                    // （installMouthOverride）可能尚未安装或已因异常自卸载。心跳按
+                    // 时间判定：超过阈值未见 override 回调推进才退回 rAF 驱动——不能
+                    // 数 tick，高刷屏（120Hz+）配 30fps ticker 治理时一个模型帧间隔
+                    // 就有 4+ 个 rAF。150ms 覆盖任何合法 ticker 配置的帧间隔。
+                    // 心跳起点视为已停滞：回调首次推进前由 rAF 驱动，否则 hook 注册
+                    // 成功但失活时前 150ms 无人写参，durationMs<=150 的短时间线会
+                    // 只播初始帧就被督导 finish('played')。
+                    const OVERRIDE_STALL_FALLBACK_MS = 150;
+                    let lastOverrideFrameCount = overrideFrameCount;
+                    let lastOverrideAdvanceAt = now() - OVERRIDE_STALL_FALLBACK_MS;
                     const tick = () => {
                         if (settled) {
                             resolve();
                             return;
                         }
                         try {
-                            applyFrame();
+                            let overrideDriving = false;
+                            if (usesTemporaryPoseOverride) {
+                                if (overrideFrameCount !== lastOverrideFrameCount) {
+                                    lastOverrideFrameCount = overrideFrameCount;
+                                    lastOverrideAdvanceAt = now();
+                                    overrideDriving = true;
+                                } else {
+                                    overrideDriving = (now() - lastOverrideAdvanceAt) < OVERRIDE_STALL_FALLBACK_MS;
+                                }
+                            }
+                            if (overrideDriving) {
+                                // override 回调已在模型 update 注入点逐帧 applyFrame，
+                                // rAF 只做完成/取消督导；重复 applyFrame 会让 handoff 期
+                                // 同一帧双重混合（实际权重变成 1-(1-w)^2）偏离设计曲线。
+                                if (context.model !== this.getModel() || context.model.destroyed) {
+                                    finish('cancelled', 'model_changed');
+                                } else if (Math.max(0, now() - startedAt) >= durationMs) {
+                                    finish('played', '');
+                                }
+                            } else {
+                                applyFrame();
+                            }
                         } catch (error) {
                             this.warn('driver pose timeline frame failed', error);
                             resolve();
                             return;
                         }
-                        frameId = window.requestAnimationFrame(tick);
+                        if (!settled) {
+                            frameId = window.requestAnimationFrame(tick);
+                        }
                     };
                     frameId = window.requestAnimationFrame(tick);
                 });

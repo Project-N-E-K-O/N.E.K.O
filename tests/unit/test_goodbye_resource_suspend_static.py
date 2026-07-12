@@ -15,7 +15,7 @@ PNGTUBER_PATH = REPO_ROOT / "static" / "pngtuber-core.js"
 PLUGIN_DASHBOARD_PATH = REPO_ROOT / "frontend" / "plugin-manager" / "src" / "views" / "Dashboard.vue"
 PLUGIN_METRICS_VIEW_PATH = REPO_ROOT / "frontend" / "plugin-manager" / "src" / "views" / "Metrics.vue"
 PLUGIN_METRICS_PATH = REPO_ROOT / "frontend" / "plugin-manager" / "src" / "stores" / "metrics.ts"
-SUBTITLE_PATH = REPO_ROOT / "static" / "subtitle.js"
+SUBTITLE_PATH = REPO_ROOT / "static" / "subtitle" / "subtitle.js"
 
 
 def _read(path: Path) -> str:

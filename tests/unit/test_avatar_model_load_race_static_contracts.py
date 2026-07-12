@@ -136,7 +136,7 @@ def test_vrm_cleanup_ui_is_restored_and_delegates_to_mixin():
     assert "this.cleanupUI();" in manager_source
 
     # mixin 的 cleanupFloatingButtons 必须清理 return 按钮的 document 级拖拽监听
-    mixin_source = (PROJECT_ROOT / "static/avatar-ui-buttons.js").read_text(encoding="utf-8")
+    mixin_source = (PROJECT_ROOT / "static/avatar/avatar-ui-buttons.js").read_text(encoding="utf-8")
     cleanup_section = mixin_source.split("ManagerPrototype.cleanupFloatingButtons = function() {", 1)[1]
     assert "this._returnButtonDragHandlers = null;" in cleanup_section
 

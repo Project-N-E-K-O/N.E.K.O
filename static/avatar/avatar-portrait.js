@@ -1664,12 +1664,9 @@
                         width: renderedSource.canvas.width,
                         height: renderedSource.canvas.height
                     },
-                    cropRectPixels: renderedSource.cropRectPixels || {
-                        x: 0,
-                        y: 0,
-                        width: renderedSource.canvas.width,
-                        height: renderedSource.canvas.height
-                    },
+                    // 上报实际传给 drawImage 的裁剪区（含目标宽高比修正），
+                    // 与下方非 renderSource 路径的 pixelCropRect 语义保持一致
+                    cropRectPixels: sourceCropRect,
                     sourceCanvas: renderedSource.sourceCanvas || renderedSource.canvas
                 };
 

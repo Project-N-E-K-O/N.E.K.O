@@ -405,7 +405,7 @@
 
       var script = document.createElement('script');
       script.id = SCRIPT_ID;
-      script.src = '/static/Jukebox.js' + assetQuery;
+      script.src = '/static/jukebox/Jukebox.js' + assetQuery;
       script.async = true;
       script.dataset.nekoJukeboxLazy = 'true';
       script.onload = function() {

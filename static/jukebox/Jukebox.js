@@ -5810,7 +5810,7 @@ window.Jukebox = {
     }
     Jukebox.updateSongSortLockControls(jukeboxContainer);
 
-    // Standalone 点歌台的桌面端拖拽/缩放统一交给 static/jukebox-standalone.js，
+    // Standalone 点歌台的桌面端拖拽/缩放统一交给 static/jukebox/jukebox-standalone.js，
     // 避免在 open() 首帧先写入旧的 app-region 热区，导致标题按钮命中缓存异常。
 
   },
