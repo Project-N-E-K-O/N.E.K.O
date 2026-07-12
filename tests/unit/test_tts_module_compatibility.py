@@ -39,3 +39,11 @@ def test_legacy_monkeypatch_seam_updates_canonical_module(monkeypatch: pytest.Mo
     monkeypatch.setattr(legacy, "GEMINI_TTS_MODEL", sentinel)
 
     assert canonical.GEMINI_TTS_MODEL is sentinel
+
+
+def test_stepfun_legacy_public_voice_labels_remain_observable() -> None:
+    legacy = importlib.import_module("utils.stepfun_tts_voices")
+    canonical = importlib.import_module("utils.tts.providers.stepfun")
+
+    assert legacy.STEPFUN_TTS_VOICE_LABELS is canonical.STEPFUN_TTS_VOICE_LABELS
+    assert legacy.STEPFUN_TTS_VOICE_LABELS == canonical._STEP_CONFIG.get("voices", {})
