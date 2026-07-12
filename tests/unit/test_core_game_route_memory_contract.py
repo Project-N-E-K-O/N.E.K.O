@@ -365,7 +365,7 @@ async def test_send_speech_suppressed_primary_audio_still_delivers_taps():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_send_speech_suppressed_primary_audio_does_not_leak_when_tap_disconnects():
+async def test_send_speech_suppressed_primary_audio_falls_back_when_tap_disconnects():
     mgr = _make_manager()
     mgr.websocket = _FakeConnectedWebSocket()
     mgr._speech_primary_suppressed_ids.add("game-turn")
@@ -381,8 +381,11 @@ async def test_send_speech_suppressed_primary_audio_does_not_leak_when_tap_disco
         speech_id="game-turn",
     )
 
-    assert delivered is False
-    assert mgr.websocket.sent == []
+    assert delivered is True
+    assert mgr.websocket.sent == [
+        {"type": "audio_chunk", "speech_id": "game-turn"},
+        b"audio-bytes",
+    ]
 
 
 @pytest.mark.unit

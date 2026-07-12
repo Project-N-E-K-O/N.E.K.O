@@ -573,6 +573,7 @@ def test_user_guess_extraction_uses_alias_boundaries():
     "\u6211\u4e0d\u89c9\u5f97\u662f\u4e00\u53ea\u732b\u5427\uff1f",
     "\u044d\u0442\u043e \u043d\u0435 \u043a\u043e\u0442?",
     "n\u00e3o \u00e9 um gato?",
+    "Será que não é um gato?",
     "no es un gato?",
     "\u306d\u3053\u3058\u3083\u306a\u3044?",
     "\uace0\uc591\uc774\uac00 \uc544\ub2c8\uc57c?",

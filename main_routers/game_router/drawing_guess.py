@@ -577,7 +577,7 @@ _CJK_ALIAS_NEGATION_RE = re.compile(
 _SPACED_ALIAS_NEGATION_RE = re.compile(
     r"(?:"
     r"(?:\bnot|\bis\s+not|\b(?:it|this|that)\s+s\s+not|\bisn['’]?t|\bisnt|\bне|"
-    r"\bno(?:\s+es)?|\bnao(?:\s+e)?)\s+"
+    r"\bno(?:\s+es)?|\bn[aã]o(?:\s+[eé])?)\s+"
     r"|\b(?:do\s+not|don\s+t|does\s+not|doesn\s+t|did\s+not|didn\s+t)\s+"
     r"(?:think|believe|feel)\s+"
     r"(?:(?:it|this|that)\s+)?(?:(?:is|s)\s+)?"

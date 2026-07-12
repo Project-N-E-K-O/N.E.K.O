@@ -804,8 +804,12 @@ class TtsRuntimeMixin:
                 and str(effective_speech_id) in self._speech_primary_suppressed_ids
             )
             delivered = False
+            tap_delivered = False
+            if suppress_primary:
+                tap_delivered = await self._publish_speech_taps(tts_audio, effective_speech_id)
+                delivered = tap_delivered
             if (
-                not suppress_primary
+                (not suppress_primary or not tap_delivered)
                 and self.websocket
                 and hasattr(self.websocket, 'client_state')
                 and self.websocket.client_state == self.websocket.client_state.CONNECTED
@@ -829,7 +833,7 @@ class TtsRuntimeMixin:
                     logger.warning("⚠️ send_speech: WebSocket disconnected")
                 except Exception as exc:
                     logger.warning("⚠️ send_speech primary WS failed; continuing speech taps: %s", exc)
-            if await self._publish_speech_taps(tts_audio, effective_speech_id):
+            if not suppress_primary and await self._publish_speech_taps(tts_audio, effective_speech_id):
                 delivered = True
             if delivered:
                 logger.debug(f"🔊 send_speech OK: {len(tts_audio)} bytes, speech_id={effective_speech_id}")
