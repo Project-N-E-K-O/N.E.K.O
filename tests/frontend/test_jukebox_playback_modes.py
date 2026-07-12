@@ -617,6 +617,65 @@ def test_jukebox_vrm_progress_seek_and_calibration_sync_animation(mock_page: Pag
 
 
 @pytest.mark.frontend
+def test_jukebox_progress_seek_uses_loaded_config_offset_before_manager_load(mock_page: Page):
+    setup_jukebox_page(mock_page)
+
+    result = mock_page.evaluate(
+        """
+        () => {
+          const J = window.Jukebox;
+          const vrmSeekCalls = [];
+          const audio = { duration: 100, currentTime: 0 };
+
+          J.getModelType = () => 'vrm';
+          J.State.config = {
+            bindings: {
+              'song-vrm': {
+                'action-vrma': { offset: 6 }
+              }
+            }
+          };
+          J.State.currentSong = {
+            id: 'song-vrm',
+            name: 'VRM Song',
+            boundActions: [{ id: 'action-vrma', name: 'Dance', format: 'vrma', fps: 60 }],
+            defaultAction: 'action-vrma'
+          };
+          J.SongActionManager.data = { bindings: {} };
+          J.State.player = {
+            audio,
+            seek(time) {
+              audio.currentTime = time;
+            }
+          };
+          window.vrmManager = {
+            seekVRMAAnimation(time, options) {
+              vrmSeekCalls.push({ time, paused: options && options.paused });
+              return true;
+            }
+          };
+
+          const slider = document.getElementById('jukebox-progress-slider');
+          slider.value = '50';
+          J._onProgressChange();
+
+          return {
+            currentOffset: J.getCurrentOffset(),
+            audioCurrentTime: audio.currentTime,
+            vrmSeekCalls
+          };
+        }
+        """
+    )
+
+    assert result == {
+        "currentOffset": 6,
+        "audioCurrentTime": 50,
+        "vrmSeekCalls": [{"time": 50.1, "paused": False}],
+    }
+
+
+@pytest.mark.frontend
 def test_vrm_animation_seek_preserves_paused_state_and_refreshes_pose(mock_page: Page):
     mock_page.set_content("<html><body></body></html>")
     mock_page.evaluate("() => { window.THREE = {}; }")

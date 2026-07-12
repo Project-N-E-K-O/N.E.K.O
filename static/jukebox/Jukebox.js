@@ -8933,9 +8933,11 @@ window.Jukebox = {
     const action = Jukebox.getActionForModel(song);
     if (!action) return 0;
 
-    // 从绑定关系中获取offset (从 SongActionManager.data 中获取)
-    const binding = Jukebox.SongActionManager.data.bindings?.[song.id]?.[action.id];
-    return binding?.offset || 0;
+    // 当前会话编辑过的值优先；普通播放路径未打开管理器时回退到 loadSongs 已加载的配置。
+    const managerBinding = Jukebox.SongActionManager.data.bindings?.[song.id]?.[action.id];
+    const configBinding = Jukebox.State.config?.bindings?.[song.id]?.[action.id];
+    const offset = managerBinding?.offset ?? configBinding?.offset ?? 0;
+    return Number.isFinite(Number(offset)) ? Number(offset) : 0;
   },
 
   // 更新校准显示值
