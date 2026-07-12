@@ -2,7 +2,7 @@ from pathlib import Path
 
 
 def test_avatar_model_manager_popup_opens_fullscreen():
-    source = Path("static/avatar-ui-popup.js").read_text(encoding="utf-8")
+    source = Path("static/avatar/avatar-ui-popup.js").read_text(encoding="utf-8")
 
     assert "function buildAvatarFullscreenWindowFeatures()" in source
     assert "screenRef.availWidth || screenRef.width" in source
