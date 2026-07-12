@@ -132,6 +132,7 @@ def test_rejects_oversized_single_file_and_aggregate_payload():
             {"path": "MEMORY.md", "content": "x" * (MAX_FILE_BYTES + 1)},
         ])
 
+    # Keep this count within MAX_ARCHIVE_MEMBERS so the total-size guard fires first.
     file_count = MAX_TOTAL_BYTES // MAX_FILE_BYTES + 1
     with pytest.raises(ExternalMemoryImportError, match="too large"):
         collect_markdown_files([
