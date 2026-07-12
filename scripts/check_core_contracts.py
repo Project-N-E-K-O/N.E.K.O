@@ -473,7 +473,9 @@ def run(root: Path) -> list[Violation]:
     #    *.py discovery below never scans, so its mixins/state escape every
     #    shape/routing check. Reject any subdirectory carrying Python modules.
     for sub in sorted(p for p in core_dir.iterdir() if p.is_dir() and p.name != "__pycache__"):
-        if any(sub.glob("*.py")):
+        # rglob, not glob: a nested tree (helpers/nested/mod.py) is still
+        # importable as main_logic.core.helpers.nested.mod and must be rejected.
+        if any(q for q in sub.rglob("*.py") if "__pycache__" not in q.parts):
             violations.append(Violation(sub / "__init__.py", 1, 0, "CORE_MIXIN_SHAPE",
                                         f"core subpackage '{sub.name}/' is not allowed — the core package is "
                                         f"flat so every module is covered by the contract checks; keep new "
@@ -492,6 +494,21 @@ def run(root: Path) -> list[Violation]:
             if manager_class is None:
                 violations.append(Violation(path, 1, 0, "CORE_MANAGER_SHAPE",
                                             "manager.py must define exactly one class: LLMSessionManager"))
+            else:
+                # A class decorator or metaclass runs at class creation and can
+                # inject/replace methods after the AST is counted — invisible to
+                # every body/base/import check below.
+                if manager_class.decorator_list:
+                    d = manager_class.decorator_list[0]
+                    violations.append(Violation(path, d.lineno, d.col_offset, "CORE_MANAGER_SHAPE",
+                                                "LLMSessionManager must not be decorated — a class decorator "
+                                                "can inject methods/state the shape checks cannot see"))
+                if manager_class.keywords:  # metaclass= or other class kwargs
+                    k = manager_class.keywords[0]
+                    violations.append(Violation(path, k.value.lineno, k.value.col_offset, "CORE_MANAGER_SHAPE",
+                                                f"LLMSessionManager must not set class keyword "
+                                                f"'{k.arg or '**kwargs'}' (metaclass/kwargs) — it can rewrite "
+                                                f"the class outside the mixin contract"))
             for i, node in enumerate(tree.body):
                 if i == 0 and isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant):
                     continue  # module docstring
@@ -558,6 +575,8 @@ def run(root: Path) -> list[Violation]:
     # -- CORE_MANAGER_SHAPE: class body is only docstring / class constants /
     #    __init__. Any other statement (extra method, nested class, class-level
     #    cache, executable logic) is behavior/state that belongs in a mixin.
+    mixin_method_names = {n.name for k in mixin_files.values() for n in k.body
+                          if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
     if manager_class is not None:
         methods = [n for n in manager_class.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
         for i, node in enumerate(manager_class.body):
@@ -567,16 +586,27 @@ def run(root: Path) -> list[Violation]:
                 # Class-level CONSTANTS are allowed, but a mutable container
                 # literal (``CACHE = {}``) is shared state across instances and
                 # a Call (``TOKEN = open_socket()``) runs behavior at import —
-                # both are the drift this contract prevents.
-                val = node.value
-                if isinstance(val, (ast.Dict, ast.List, ast.Set, ast.DictComp,
-                                    ast.ListComp, ast.SetComp, ast.Call)):
-                    kind = "a Call (import-time behavior)" if isinstance(val, ast.Call) \
+                # both are the drift this contract prevents. Recurse: a nested
+                # literal (``TOKEN = (open_socket(),)``) hides the same thing
+                # behind an immutable-looking outer Tuple.
+                MUTABLE = (ast.Dict, ast.List, ast.Set, ast.DictComp, ast.ListComp, ast.SetComp, ast.Call)
+                bad = next((s for s in ast.walk(node.value) if isinstance(s, MUTABLE)), None)
+                if bad is not None:
+                    kind = "a Call (import-time behavior)" if isinstance(bad, ast.Call) \
                         else "a mutable container (shared instance state)"
                     violations.append(Violation(manager_path, node.lineno, node.col_offset, "CORE_MANAGER_SHAPE",
-                                                f"manager class attribute is {kind} — only immutable class "
-                                                f"constants are allowed; move state into __init__ (per instance) "
-                                                f"or behavior into a mixin"))
+                                                f"manager class attribute is/contains {kind} — only immutable "
+                                                f"class constants are allowed; move state into __init__ (per "
+                                                f"instance) or behavior into a mixin"))
+                # A class attribute that shares a name with a mixin method wins
+                # attribute lookup and silently removes that method from the API.
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                for t in targets:
+                    if isinstance(t, ast.Name) and t.id in mixin_method_names:
+                        violations.append(Violation(manager_path, node.lineno, node.col_offset, "CORE_MANAGER_SHAPE",
+                                                    f"manager class attribute '{t.id}' shadows a mixin method of "
+                                                    f"the same name — it would win attribute lookup and drop the "
+                                                    f"method from LLMSessionManager's API"))
                 continue
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "__init__":
                 continue
@@ -643,21 +673,30 @@ def run(root: Path) -> list[Violation]:
         # would still pass. ``defining_stem`` comes from where the class was
         # discovered.
         defining_stem = {mklass.name: mpath.stem for mpath, mklass in mixin_files.items()}
-        relative_binds = {}  # bound name -> level-1 module it was imported from
+        # bound name -> (level-1 module, ORIGINAL imported symbol name). The
+        # original name matters: ``from .focus import OmniOfflineClient as
+        # FocusMixin`` is same-module but binds the WRONG class.
+        relative_binds = {}
         for node in parse(manager_path).body:
             if isinstance(node, ast.ImportFrom) and node.level == 1 and node.module:
                 for a in node.names:
-                    relative_binds[a.asname or a.name] = node.module
+                    relative_binds[a.asname or a.name] = (node.module, a.name)
         for name in sorted(base_names & mixin_names):
             want = defining_stem.get(name)
-            if relative_binds.get(name) != want:
+            if relative_binds.get(name) != (want, name):
                 got = relative_binds.get(name)
-                where = f"bound from '.{got}'" if got else "not bound via a level-1 core-local import"
+                if got is None:
+                    where = "not bound via a level-1 core-local import"
+                elif got[0] != want:
+                    where = f"bound from '.{got[0]}'"
+                else:
+                    where = f"bound to the different symbol '{got[1]}'"
                 violations.append(Violation(manager_path, manager_class.lineno, manager_class.col_offset,
                                             "CORE_MIXIN_BASES",
-                                            f"base {name} must be imported from its defining module "
-                                            f"(from .{want} import {name}) but is {where}; the MRO may be using "
-                                            f"a different/outside class while the package mixin is orphaned"))
+                                            f"base {name} must be imported as the class named {name} from its "
+                                            f"defining module (from .{want} import {name}) but is {where}; the "
+                                            f"MRO may be using a different/outside class while the package mixin "
+                                            f"is orphaned"))
 
     # -- CORE_FACADE_LAYOUT: the facade only re-exports — docstring + imports.
     #    A top-level function, assignment or executable statement would put
@@ -685,6 +724,15 @@ def run(root: Path) -> list[Violation]:
                                     "the last statement of __init__.py must be "
                                     "'from .manager import LLMSessionManager' so the facade namespace is "
                                     "fully populated before the class modules bind it"))
+    # An EARLIER ``.manager`` import (before the re-export block finishes) would
+    # import manager/mixins against a half-populated facade namespace, defeating
+    # the ordering contract — the manager import must appear only as the last line.
+    for node in init_tree.body[:-1]:
+        if isinstance(node, ast.ImportFrom) and node.level == 1 and node.module == "manager":
+            violations.append(Violation(init_path, node.lineno, node.col_offset, "CORE_FACADE_LAYOUT",
+                                        "'.manager' is imported before the end of __init__.py — it must appear "
+                                        "only as the final statement, after every re-export, or the mixins bind "
+                                        "the facade before it is fully populated"))
 
     # -- patch-target checks
     targets = collect_patch_targets(tests_dir)
