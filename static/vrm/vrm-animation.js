@@ -140,35 +140,7 @@ class VRMAnimation {
 
         if (this.vrmaIsPlaying && this.vrmaMixer) {
             this.vrmaMixer.update(updateDelta);
-
-            const vrm = this.manager.currentModel?.vrm;
-            if (vrm?.scene) {
-                // 检查 scene 是否变化，如果变化则重建缓存（防止僵尸引用）
-                if (this._cachedSceneUuid !== vrm.scene.uuid) {
-                    this._cacheSkinnedMeshes(vrm);
-                }
-
-                if (vrm.humanoid) {
-                    const vrmVersion = this._detectVRMVersion(vrm);
-                    if (vrmVersion === '1.0' && vrm.humanoid.autoUpdateHumanBones) {
-                        vrm.humanoid.update();
-                    } else if (vrmVersion === '0.0') {
-                        const mixerRoot = this.vrmaMixer.getRoot();
-                        const normalizedRoot = vrm.humanoid?._normalizedHumanBones?.root;
-                        if (normalizedRoot && mixerRoot === normalizedRoot) {
-                            if (vrm.humanoid.autoUpdateHumanBones !== undefined) {
-                                vrm.humanoid.update();
-                            }
-                        }
-                    }
-                }
-                vrm.scene.updateMatrixWorld(true);
-                this._skinnedMeshes.forEach(mesh => {
-                    if (mesh.skeleton) {
-                        mesh.skeleton.update();
-                    }
-                });
-            }
+            this._refreshPoseAfterMixerUpdate();
         }
         if (this.lipSyncActive && this.analyser) {
             this._updateLipSync(updateDelta);
@@ -181,6 +153,58 @@ class VRMAnimation {
                 this.manager.interaction.updateModelBoundsCache();
             }
         }
+    }
+
+    _refreshPoseAfterMixerUpdate(updateSkeletonHelper = false) {
+        const vrm = this.manager.currentModel?.vrm;
+        if (!vrm?.scene) return;
+
+        if (this._cachedSceneUuid !== vrm.scene.uuid) {
+            this._cacheSkinnedMeshes(vrm);
+        }
+
+        if (vrm.humanoid) {
+            const vrmVersion = this._detectVRMVersion(vrm);
+            if (vrmVersion === '1.0' && vrm.humanoid.autoUpdateHumanBones) {
+                vrm.humanoid.update();
+            } else if (vrmVersion === '0.0') {
+                const mixerRoot = this.vrmaMixer?.getRoot?.();
+                const normalizedRoot = vrm.humanoid?._normalizedHumanBones?.root;
+                if (normalizedRoot && mixerRoot === normalizedRoot) {
+                    if (vrm.humanoid.autoUpdateHumanBones !== undefined) {
+                        vrm.humanoid.update();
+                    }
+                }
+            }
+        }
+
+        vrm.scene.updateMatrixWorld(true);
+        this._skinnedMeshes.forEach(mesh => {
+            if (mesh.skeleton) {
+                mesh.skeleton.update();
+            }
+        });
+
+        if (updateSkeletonHelper && this.debug) this._updateSkeletonHelper();
+    }
+
+    seekTo(timeSeconds) {
+        const targetTime = Number(timeSeconds);
+        if (!Number.isFinite(targetTime) || !this.vrmaMixer || !this.currentAction) {
+            return false;
+        }
+
+        const wasPaused = this.currentAction.paused === true;
+        const seekTime = Math.max(0, targetTime);
+        try {
+            this.currentAction.paused = false;
+            this.currentAction.time = seekTime;
+            this.vrmaMixer.update(0);
+            this._refreshPoseAfterMixerUpdate(true);
+        } finally {
+            this.currentAction.paused = wasPaused;
+        }
+        return true;
     }
 
     async _initLoader() {
@@ -549,21 +573,7 @@ class VRMAnimation {
 
         this.vrmaMixer.update(0.001);
 
-        if (vrm.scene) {
-            // 检查 scene 是否变化，如果变化则重建缓存（防止僵尸引用）
-            if (this._cachedSceneUuid !== vrm.scene.uuid) {
-                this._cacheSkinnedMeshes(vrm);
-            }
-
-            vrm.scene.updateMatrixWorld(true);
-            this._skinnedMeshes.forEach(mesh => {
-                if (mesh.skeleton) {
-                    mesh.skeleton.update();
-                }
-            });
-        }
-
-        if (this.debug) this._updateSkeletonHelper();
+        this._refreshPoseAfterMixerUpdate(true);
     }
 
     /**

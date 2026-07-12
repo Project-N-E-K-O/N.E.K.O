@@ -1338,6 +1338,12 @@ class VRMManager {
         if (this.animation) return this.animation.playVRMAAnimation(url, opts);
     }
 
+    seekVRMAAnimation(timeSeconds) {
+        if (this.animation && typeof this.animation.seekTo === 'function') {
+            return this.animation.seekTo(timeSeconds);
+        }
+        return false;
+    }
 
     stopVRMAAnimation() {
         if (this.animation) this.animation.stopVRMAAnimation();

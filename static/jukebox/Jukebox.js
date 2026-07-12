@@ -7805,18 +7805,11 @@ window.Jukebox = {
             ...actions[actionId]
           })); // 过滤掉不存在或已隐藏的动画
         
-        // 处理音频路径：自带资源使用 /static/jukebox/ 前缀
-        let audioPath = song.audio || '';
-        if (song.isBuiltin && audioPath && !audioPath.startsWith('/static/')) {
-          // 将 songs/xxx.mp3 转换为 /static/jukebox/xxx.mp3
-          audioPath = '/static/jukebox/' + audioPath.replace(/^songs\//, '');
-        }
-        
         return {
           id: id,
           name: song.name || '未知',
           artist: song.artist || '未知',
-          audio: audioPath,
+          audio: song.audio || '',
           vmd: song.vmd || '',
           duration: song.duration || 0,
           visible: song.visible !== false, // 默认可见
@@ -7835,6 +7828,16 @@ window.Jukebox = {
       console.error('[Jukebox]', window.t('Jukebox.loadFailed', '加载歌曲列表失败'), error);
       Jukebox.showError(window.t('Jukebox.loadFailed', '加载歌曲列表失败') + ': ' + error.message);
     }
+  },
+
+  resolveJukeboxFileUrl: function(filePath) {
+    const rawPath = String(filePath || '').trim();
+    if (!rawPath) return '';
+    if (/^(?:https?:|data:|blob:)/i.test(rawPath)) return rawPath;
+    if (rawPath.startsWith('/api/') || rawPath.startsWith('/static/') || rawPath.startsWith('/user_')) {
+      return rawPath;
+    }
+    return '/api/jukebox/file' + '/' + rawPath.replace(/^\/+/, '');
   },
   
   renderList: function() {
@@ -8114,15 +8117,7 @@ window.Jukebox = {
       // 根据模型类型播放对应格式的动画
       const action = Jukebox.getActionForModel(song);
       if (action) {
-        // 处理动画路径：自带资源直接用 /static/ 路径，用户上传的走 API
-        let actionFilePath = action.file || '';
-        let actionUrl;
-        if (action.isBuiltin && actionFilePath && !actionFilePath.startsWith('/static/')) {
-          // 将 actions/xxx.vmd 转换为 /static/jukebox/xxx.vmd
-          actionUrl = '/static/jukebox/' + actionFilePath.replace(/^actions\//, '');
-        } else {
-          actionUrl = `/api/jukebox/file/${actionFilePath}`;
-        }
+        const actionUrl = Jukebox.resolveJukeboxFileUrl(action.file || '');
         console.log('[Jukebox] 播放动画:', action.name, '格式:', action.format || 'vmd', '路径:', actionUrl);
 
         const modelType = Jukebox.getModelType();
@@ -8165,8 +8160,7 @@ window.Jukebox = {
     
     console.log('[Jukebox]', window.t('Jukebox.useAPlayer', '使用APlayer播放音频文件'));
     
-    // 将相对路径转换为API路径
-    const audioUrl = `/api/jukebox/file/${song.audio}`;
+    const audioUrl = Jukebox.resolveJukeboxFileUrl(song.audio);
     
     player.list.add([{
       name: song.name,
@@ -8733,6 +8727,59 @@ window.Jukebox = {
     Jukebox._updateProgressDisplayFromSlider();
   },
 
+  getAnimationTimeForMusicTime: function(musicTime, offset) {
+    const song = Jukebox.State.currentSong;
+    const action = song ? Jukebox.getActionForModel(song) : null;
+    const fps = Jukebox.getAnimationFps(action);
+    const frameOffset = Number.isFinite(Number(offset)) ? Number(offset) : Jukebox.getCurrentOffset();
+    const animFrame = (Number(musicTime) || 0) * fps + frameOffset;
+    return Math.max(0, animFrame / fps);
+  },
+
+  _seekMmdAnimationToTime: function(animTime, requireClip) {
+    const anim = window.mmdManager?.animationModule;
+    if (!anim || !anim.mixer || (requireClip && !anim.currentClip)) return false;
+
+    anim.mixer.setTime(animTime);
+    const mesh = window.mmdManager.currentModel?.mesh;
+    if (typeof anim._restoreBones === 'function') anim._restoreBones(mesh);
+    if (anim.mixer.update) anim.mixer.update(0);
+    if (typeof anim._saveBones === 'function') anim._saveBones(mesh);
+    if (mesh) mesh.updateMatrixWorld(true);
+    if (anim.ikSolver) anim.ikSolver.update();
+    if (anim.grantSolver) anim.grantSolver.update();
+    return true;
+  },
+
+  _seekVrmAnimationToTime: function(animTime) {
+    const manager = window.vrmManager;
+    if (manager && typeof manager.seekVRMAAnimation === 'function') {
+      return manager.seekVRMAAnimation(animTime);
+    }
+    const anim = manager?.animationModule || manager?.animation;
+    if (anim && typeof anim.seekTo === 'function') {
+      return anim.seekTo(animTime);
+    }
+    console.warn('[Jukebox] VRM动画同步入口不可用，跳过 seek:', animTime);
+    return false;
+  },
+
+  syncCurrentAnimationToTime: function(animTime, options = {}) {
+    if (window.__NEKO_JUKEBOX_STANDALONE__) return false;
+
+    const modelType = Jukebox.getModelType();
+    if (modelType === 'mmd' || modelType === 'live3d') {
+      return Jukebox._seekMmdAnimationToTime(animTime, options.requireClipForMmd === true);
+    }
+    if (modelType === 'vrm') {
+      return Jukebox._seekVrmAnimationToTime(animTime);
+    }
+    if (modelType === 'fbx') {
+      console.log('[Jukebox] FBX动画同步:', animTime);
+    }
+    return false;
+  },
+
   _onProgressChange: function() {
     const slider = document.getElementById('jukebox-progress-slider');
     if (!slider) {
@@ -8752,28 +8799,11 @@ window.Jukebox = {
     // 同步音频
     player.seek(seekTime);
 
-    // 同步 VMD 动画（考虑 offset）—— 独立窗口无法直接操作动画模块
-    if (!window.__NEKO_JUKEBOX_STANDALONE__) {
-      const song = Jukebox.State.currentSong;
-      const action = song ? Jukebox.getActionForModel(song) : null;
-      const fps = Jukebox.getAnimationFps(action);
-      const offset = Jukebox.getCurrentOffset();
-      const animFrame = seekTime * fps + offset;
-      const animTime = Math.max(0, animFrame / fps);
-
-      const anim = window.mmdManager?.animationModule;
-      if (anim && anim.mixer && anim.currentClip) {
-        anim.mixer.setTime(animTime);
-        // 手动执行一帧更新让姿态同步
-        anim._restoreBones(window.mmdManager.currentModel?.mesh);
-        anim.mixer.update(0);
-        anim._saveBones(window.mmdManager.currentModel?.mesh);
-        const mesh = window.mmdManager.currentModel?.mesh;
-        if (mesh) mesh.updateMatrixWorld(true);
-        if (anim.ikSolver) anim.ikSolver.update();
-        if (anim.grantSolver) anim.grantSolver.update();
-      }
-    }
+    // 同步动画（考虑 offset）—— 独立窗口无法直接操作动画模块
+    Jukebox.syncCurrentAnimationToTime(
+      Jukebox.getAnimationTimeForMusicTime(seekTime),
+      { requireClipForMmd: true }
+    );
 
     Jukebox.State.isSeeking = false;
     Jukebox._updateProgressDisplay();
@@ -8986,35 +9016,12 @@ window.Jukebox = {
     // 独立窗口模式：校准需要直接访问动画模块，无法通过 IPC 操作
     if (window.__NEKO_JUKEBOX_STANDALONE__) return;
 
-    const song = Jukebox.State.currentSong;
-    const action = Jukebox.getActionForModel(song);
-    const fps = Jukebox.getAnimationFps(action);
-
     const player = Jukebox.getPlayer();
     if (!player || !player.audio) return;
 
     const musicTime = player.audio.currentTime;
-    const animFrame = musicTime * fps + offset;
-    const animTime = Math.max(0, animFrame / fps);
-
-    // 根据模型类型同步动画
-    const modelType = Jukebox.getModelType();
-    if (modelType === 'mmd' || modelType === 'live3d') {
-      const anim = window.mmdManager?.animationModule;
-      if (anim && anim.mixer) {
-        anim.mixer.setTime(animTime);
-        // 手动更新一帧确保同步
-        if (anim.mixer.update) {
-          anim.mixer.update(0);
-        }
-      }
-    } else if (modelType === 'vrm') {
-      // VRM动画同步（如果有相关API）
-      console.log('[Jukebox] VRM动画同步:', animTime, 'FPS:', fps);
-    } else if (modelType === 'fbx') {
-      // FBX动画同步
-      console.log('[Jukebox] FBX动画同步:', animTime, 'FPS:', fps);
-    }
+    const animTime = Jukebox.getAnimationTimeForMusicTime(musicTime, offset);
+    Jukebox.syncCurrentAnimationToTime(animTime);
   },
 
   // 根据模型类型获取对应格式的动画
