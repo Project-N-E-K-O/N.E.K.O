@@ -40,6 +40,9 @@ def build_theater_turn_prompts(
     choice_options: list[dict[str, str]],
 ) -> tuple[str, str]:
     """把本轮公开事实压缩为单次 LLM 请求，私有规则不进入提示词。"""  # noqa: DOCSTRING_CJK
+    # 可选剧本段落可能被作者写成 null 或其他类型；统一降级为空对象，避免在模型安全回退前中断回合。
+    seed = story.get("seed") if isinstance(story.get("seed"), dict) else {}
+    scenario_card = story.get("scenario_card") if isinstance(story.get("scenario_card"), dict) else {}
     guide = node.get("runtime_generation_guide") if isinstance(node.get("runtime_generation_guide"), dict) else {}
     target_node = {
         "title": str(node.get("title") or ""),
@@ -65,10 +68,10 @@ def build_theater_turn_prompts(
         "故事主题": str(story.get("theme") or ""),
         "不可偏移的世界边界": {
             "作者限制": story.get("restrictions") or [],
-            "禁止假设": story.get("seed", {}).get("forbidden_assumptions") or [],
-            "主线目标": story.get("scenario_card", {}).get("primary_goal") or "按作者静态剧情推进并正常结束",
+            "禁止假设": seed.get("forbidden_assumptions") or [],
+            "主线目标": scenario_card.get("primary_goal") or "按作者静态剧情推进并正常结束",
         },
-        "玩家身份": str(story.get("scenario_card", {}).get("player_role") or story.get("seed", {}).get("user_role") or "故事参与者"),
+        "玩家身份": str(scenario_card.get("player_role") or seed.get("user_role") or "故事参与者"),
         "当前场景": {"title": str(scene.get("title") or ""), "text": str(scene.get("text") or "")},
         "本轮类型": progress_kind,
         "玩家输入": user_message,

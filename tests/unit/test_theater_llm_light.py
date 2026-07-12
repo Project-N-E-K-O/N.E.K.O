@@ -77,6 +77,27 @@ def test_roleplay_prompt_hides_scripted_dialogue_to_avoid_repetition():
     assert "不要复述上一句台词" in payload["目标节点"]["roleplay_instruction"]
 
 
+def test_prompt_tolerates_invalid_optional_story_sections():
+    """可选剧本段落类型异常时应使用安全默认值，不能阻断模型回退链路。"""  # noqa: DOCSTRING_CJK
+    _, user_prompt = build_theater_turn_prompts(
+        lanlan_name="兰兰",
+        story={"background": "旧教室", "seed": None, "scenario_card": []},
+        scene={"title": "教室", "text": "窗外有蝉鸣。"},
+        node={"title": "重逢", "summary": "两人再次见面。"},
+        user_message="你好。",
+        progress_kind="roleplay_response",
+        callback="",
+        public_state={},
+        recent_turns=[],
+        character_profile="",
+        choice_options=[],
+    )
+    payload = json.loads(user_prompt.split("\n", 1)[1])
+    assert payload["玩家身份"] == "故事参与者"
+    assert payload["不可偏移的世界边界"]["禁止假设"] == []
+    assert payload["不可偏移的世界边界"]["主线目标"] == "按作者静态剧情推进并正常结束"
+
+
 def test_recent_context_includes_assistant_narration_and_dialogue():
     """最近上下文必须同时包含已发生动作和对白，避免下一轮重演动作。"""  # noqa: DOCSTRING_CJK
     turns = llm._recent_public_turns(
