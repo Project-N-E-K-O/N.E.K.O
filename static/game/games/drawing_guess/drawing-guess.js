@@ -2468,6 +2468,7 @@
               if (busyPollCount >= AI_GUESS_TIMEOUT_BUSY_MAX_POLLS) {
                 state.pendingAiGuessTimeout = false;
                 addMessage('drawingGuess.messages.roundFailed', 'Round failed: {{reason}}', { reason: 'session_busy' });
+                updateControls();
                 return;
               }
               state.aiGuessTimeoutRetryTimer = setTimeout(retryWhenReady, 120);

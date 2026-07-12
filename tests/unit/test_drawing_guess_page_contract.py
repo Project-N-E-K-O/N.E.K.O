@@ -457,6 +457,7 @@ def test_drawing_guess_static_route_contract():
     assert "state.aiGuessTimeoutRetryTimer = setTimeout(retryWhenReady, 180);" in script
     assert "AI_GUESS_TIMEOUT_MAX_RETRIES = 2" in script
     assert "AI_GUESS_TIMEOUT_BUSY_MAX_POLLS = 50" in script
+    assert "addMessage('drawingGuess.messages.roundFailed', 'Round failed: {{reason}}', { reason: 'session_busy' });\n                updateControls();" in script
     assert "if (attempt < AI_GUESS_TIMEOUT_MAX_RETRIES)" in script
     assert "reason: readableRequestError(err)" in script
     assert "speechAudioTapReady: false" in script
