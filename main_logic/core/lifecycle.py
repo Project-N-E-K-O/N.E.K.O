@@ -1582,17 +1582,25 @@ class LifecycleMixin:
         except Exception as e:
             logger.error(f"💥 Extra Reply: preparation trigger error: {e}")
 
-    def _restore_undelivered_swap_extras(self, injected_extras: list) -> None:
+    def _restore_undelivered_swap_extras(self, injected_extras: list, cb_backed_ids: set = None) -> None:
         """[Hot-swap related] Return removed-but-undelivered extras to the queue head.
 
         ``_perform_final_swap_sequence`` keeps ``pending_extra_replies``
         untouched through the prime window and removes the budget-selected
         entries only at promote success — so every pre-promote abort keeps the
-        queue intact and needs no restore. The one exit where removal has
-        already happened but the promoted session dies before speaking is the
-        post-promote ws-invalid fail-close: put the removed entries back at
-        the queue head so the next hot-swap delivers them, mirroring the
-        ``_deferred`` entries that stay queued across aborts.
+        queue intact and needs no restore. The exits where removal has already
+        happened but the promoted session dies before speaking (post-promote
+        ws-invalid fail-close, post-promote external cancellation) put the
+        removed entries back at the queue head so the next hot-swap delivers
+        them, mirroring the ``_deferred`` entries that stay queued across
+        aborts.
+
+        ``cb_backed_ids``: delivery ids whose paired callback was still in
+        ``pending_agent_callbacks`` at removal time. An id in this set whose
+        callback is GONE by restore time was consumed inside the window (a
+        successful voice delivery prunes both queues; the extras half no-ops
+        on checked-out entries) — restoring it would announce the callback a
+        second time on the next hot-swap, so it is dropped.
         """
         if not injected_extras:
             return
@@ -1624,12 +1632,22 @@ class LifecycleMixin:
             # topic/delivery._remove_callback_from_manager），所以排除 topic 即
             # 杜绝"窗口期内被撤回的条目经此复活"。若未来引入非 topic 的
             # retraction，这里必须改为可查询的撤回 ledger 而非 marker 复查。
+            # 窗口期消费检测：移除时有配对 cb、现在 cb 没了 ⇒ 被语音投递等
+            # 消费掉了，不塞回。extras-only 条目（移除时就无 cb）唯一投递者是
+            # hot-swap 本身，窗口内不可能被投递，放行。
+            current_cb_ids = {
+                cb.get("_callback_delivery_id")
+                for cb in (getattr(self, "pending_agent_callbacks", None) or [])
+                if isinstance(cb, dict) and cb.get("_callback_delivery_id")
+            }
+            consumed_ids = (cb_backed_ids or set()) - current_cb_ids
             restored = [
                 extra for extra in injected_extras
                 if not isinstance(extra, dict)
                 or (extra.get("source_kind") != "topic"
                     and extra.get("_callback_delivery_id") not in retracted_ids
-                    and extra.get("_callback_delivery_id") not in queued_ids)
+                    and extra.get("_callback_delivery_id") not in queued_ids
+                    and extra.get("_callback_delivery_id") not in consumed_ids)
             ]
             if not restored:
                 return
@@ -1677,10 +1695,13 @@ class LifecycleMixin:
             old_listener_cancel_timed_out = False  # 旧 listener 取消超时标志，供 except 块做 fail-close 决策
             # 已注入 pending_session 的 _selected 条目引用（队列原地保留，promote
             # 成功时才移除）；_removed_extras 是 promote 时真正移除掉的子集，仅
-            # 供 promote 后 ws 失效 fail-close 这一个出口塞回（那时移除已发生、
-            # 会话已死）。其余中止出口队列本来就没动，无需恢复。
+            # 供"移除已发生且被注入会话已死"的出口（ws 失效 fail-close、promote
+            # 后外部取消）塞回。其余中止出口队列本来就没动，无需恢复。
+            # _removed_cb_backed_ids：移除时配对 callback 仍在 pending_agent_callbacks
+            # 的 delivery_id——restore 用它识别"窗口期内被语音投递消费"的条目。
             _prime_selected_extras: list = []
             _removed_extras: list = []
+            _removed_cb_backed_ids: set = set()
             next_session_context_messages = getattr(self, "next_session_context_messages", []) or []
             incremental_next_session_context = next_session_context_messages[
                 self.initial_next_session_context_snapshot_len:
@@ -1851,6 +1872,20 @@ class LifecycleMixin:
                         extra for extra in self.pending_extra_replies
                         if id(extra) not in _selected_obj_ids
                     ]
+                    # 快照"此刻仍有配对 cb"的 delivery_id：restore 时该 id 的 cb
+                    # 若已消失，说明窗口期内被消费（语音投递成功会 prune 双队列，
+                    # extras 半边对已摘走条目 no-op），塞回会重复播报。
+                    _removed_ids = {
+                        extra.get("_callback_delivery_id")
+                        for extra in _removed_extras
+                        if isinstance(extra, dict) and extra.get("_callback_delivery_id")
+                    }
+                    _removed_cb_backed_ids = {
+                        cb.get("_callback_delivery_id")
+                        for cb in (getattr(self, "pending_agent_callbacks", None) or [])
+                        if isinstance(cb, dict)
+                        and cb.get("_callback_delivery_id") in _removed_ids
+                    }
             self._require_context_append_current_delivery = True
             next_context_count_at_promote = len(self._snapshot_next_session_context_messages())
             await self._apply_pending_tts_route_after_swap()
@@ -1926,7 +1961,7 @@ class LifecycleMixin:
             # promote 后取消→只可能来自外部 reset/end_session/新 start_session
             # prelude，它们随后都会关闭 promoted 会话，注入内容不会再投递——把
             # promote 时移除的条目塞回队首等下一次 hot-swap。
-            self._restore_undelivered_swap_extras(_removed_extras)
+            self._restore_undelivered_swap_extras(_removed_extras, _removed_cb_backed_ids)
             if self.is_active and self.session and hasattr(self.session, 'handle_messages') and (not self.message_handler_task or self.message_handler_task.done()):
                 self.message_handler_task = asyncio.create_task(self.session.handle_messages())
 
@@ -1982,7 +2017,7 @@ class LifecycleMixin:
             if self.session and isinstance(self.session, OmniRealtimeClient) and not self.session.ws:
                 self.session = None
                 self.is_active = False
-                self._restore_undelivered_swap_extras(_removed_extras)
+                self._restore_undelivered_swap_extras(_removed_extras, _removed_cb_backed_ids)
             if self.is_active and self.session and hasattr(self.session, 'handle_messages') and (not self.message_handler_task or self.message_handler_task.done()):
                 self.message_handler_task = asyncio.create_task(self.session.handle_messages())
         finally:

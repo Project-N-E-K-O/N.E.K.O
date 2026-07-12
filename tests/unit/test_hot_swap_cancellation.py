@@ -800,3 +800,52 @@ async def test_final_swap_post_promote_cancel_restores_removed_extras():
         "the handler leaves the promoted session for the canceller to close"
     assert mgr.pending_extra_replies == [extra], \
         "post-promote cancel must restore the promote-removed extras"
+
+
+@pytest.mark.asyncio
+async def test_final_swap_restore_excludes_extra_delivered_after_promote():
+    """greptile follow-up P1: a voice delivery can consume a callback AFTER
+    promote removed its extra (the delivery's extras prune no-ops on the
+    checked-out entry). The restore detects this via the paired callback
+    vanishing from pending_agent_callbacks inside the window and must not
+    re-queue the already-announced entry; an entry whose callback is still
+    pending restores normally."""
+    mgr = _make_swap_manager()
+    old_session = _FakeSession("old")
+    new_session = _FakeSession("pending")
+    mgr.session = old_session
+    mgr.pending_session = new_session
+    mgr.is_hot_swap_imminent = True
+    mgr.message_handler_task = None
+
+    extra_spoken = _extra_entry("id-spoken", "delivered by voice after promote")
+    extra_kept = _extra_entry("id-kept", "still undelivered")
+    mgr.pending_extra_replies = [extra_spoken, extra_kept]
+    mgr.pending_agent_callbacks = [
+        {"_callback_delivery_id": "id-spoken"},
+        {"_callback_delivery_id": "id-kept"},
+    ]
+
+    async def _voice_delivery_then_external_cancel(*args, **kwargs):
+        # 窗口期内语音投递成功消费 id-spoken：cb 侧被 prune；extras 侧因条目
+        # 已在 promote 时摘走而 no-op（正是被复活的那半边）。随后外部取消命中。
+        mgr.pending_agent_callbacks = [
+            cb for cb in mgr.pending_agent_callbacks
+            if cb.get("_callback_delivery_id") != "id-spoken"
+        ]
+        mgr.pending_extra_replies = [
+            e for e in mgr.pending_extra_replies
+            if e.get("_callback_delivery_id") != "id-spoken"
+        ]
+        t = asyncio.current_task()
+        t.cancel()
+        await asyncio.sleep(0)
+        return 0
+
+    mgr._prime_late_next_session_context_after_swap = _voice_delivery_then_external_cancel
+
+    swap_task = await _run_swap_as_final_swap_task(mgr)
+
+    assert mgr.session is new_session
+    assert mgr.pending_extra_replies == [extra_kept], \
+        "an extra whose callback was consumed inside the window must not be re-queued"
