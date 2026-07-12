@@ -61,6 +61,7 @@ async def bili_trending_topic_candidates(selector: Any) -> list[dict[str, Any]]:
             continue
         candidate = {
             "source": "bili_trending",
+            "privacy_classification": "public",
             "key": f"bili:{key}",
             "title": compact_title,
             "hint": "Use this Bilibili topic only as a small safe hook; anchor the topic first, then ask one easy reply.",

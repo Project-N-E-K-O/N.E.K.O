@@ -49,6 +49,7 @@ def live_thread_topic_candidates(selector: Any) -> list[dict[str, Any]]:
     return [
         {
             "source": "live_thread",
+            "privacy_classification": "viewer_derived",
             "key": f"thread:{term}:{_compact_key(representative)}",
             "title": title,
             "preferred_shape": "light_stance",
