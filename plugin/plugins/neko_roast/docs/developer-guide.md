@@ -71,7 +71,7 @@ neko_roast/
 - **动作调用**：`POST .../hosted-ui/action/<id>`，body `{"args":{...},"kind":"panel","surface_id":"main"}`。
 - **配置改不动时**（写竞争）：走 host 直写 `POST /plugin/neko_roast/config/hot-update`，
   body `{"config":{"neko_roast":{...}},"mode":"temporary"}`（内存热更、不落盘）。
-- ⚠️ `dry_run` 默认开启；只有主播明确进入正式输出窗口时才关掉。`dry_run=false` 连真房间猫会**真开口**。测试房 `81004`。
+- ⚠️ 产品配置中 `dry_run` 默认关闭，连接真房间后猫会**真开口**。开发者、试播人员或压力测试脚本需要无声验链时，必须先主动切到 `dry_run=true`；测试房 `81004`。压力工具仍坚持自身默认 dry-run，不能据此推断产品开关默认值。
 
 ## 6. 核心契约：加一个事件 handler（最常见的扩展）
 
