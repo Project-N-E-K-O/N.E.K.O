@@ -4,7 +4,6 @@ import re
 from pathlib import Path
 
 from plugin.plugins.neko_roast.tests.monitor_contexts import (
-    _context_from_other_checkout,
     _context_with_latency,
     _context_with_latest_route_and_signal,
     _solo_idle_context,
