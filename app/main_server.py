@@ -771,6 +771,32 @@ async def _handle_agent_event(event: dict):
             if targets:
                 logger.info("[EventBus] music_play_url broadcasted to %d sessions", len(targets))
             return
+
+        elif event_type == "jukebox_control":
+            # Jukebox control is a global UI action. The frontend runtime loader
+            # decides which window can host playback without opening the panel UI.
+            targets = [mgr] if mgr else [m for _, m in _iter_session_managers()]
+            action = str(event.get("action") or "").strip().lower()
+            payload = {
+                "type": "jukebox_control",
+                "command": {
+                    "action": action,
+                    "query": event.get("query") or event.get("song") or event.get("name") or "",
+                },
+                "source": event.get("source") or "",
+            }
+
+            async def _send_jukebox_control(target_mgr):
+                if target_mgr and target_mgr.websocket and hasattr(target_mgr.websocket, "send_json"):
+                    try:
+                        await target_mgr.websocket.send_json(payload)
+                    except Exception as e:
+                        logger.debug("[EventBus] jukebox_control broadcast failed: %s", e)
+
+            await asyncio.gather(*(_send_jukebox_control(t) for t in targets), return_exceptions=True)
+            if targets:
+                logger.info("[EventBus] jukebox_control broadcasted to %d sessions", len(targets))
+            return
         if not mgr and event_type in ("proactive_message", "task_result"):
             fallback_name, fallback_mgr = _select_fallback_session_manager()
             if fallback_mgr is not None:

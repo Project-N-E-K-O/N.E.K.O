@@ -225,11 +225,6 @@
     window.Jukebox_togglePause = facade.togglePause;
   }
 
-  if (typeof window.__nekoJukeboxToggle === 'function') {
-    ensureNativeJukeboxFacade();
-    return;
-  }
-
   var SCRIPT_ID = 'neko-jukebox-script';
   var TOAST_ID = 'neko-jukebox-loader-toast';
   var STYLE_ID = 'neko-jukebox-loader-style';
@@ -243,6 +238,15 @@
   var MIN_INITIALIZING_TOAST_MS = 650;
 
   window.__NEKO_JUKEBOX_LAZY_LOADER__ = true;
+
+  function isLoadedJukebox(jukebox) {
+    return !!(
+      jukebox
+      && !jukebox.__nekoLazyFacade
+      && !jukebox.__nativeBridgeFacade
+      && typeof jukebox.executeControl === 'function'
+    );
+  }
 
   function getAssetQuery(src) {
     if (!src) return '';
@@ -395,8 +399,56 @@
     hideToast(2800);
   }
 
+  function clearPendingUnload() {
+    if (unloadTimer) {
+      clearTimeout(unloadTimer);
+      unloadTimer = null;
+    }
+  }
+
+  function ensureLazyJukeboxFacade() {
+    if (isLoadedJukebox(window.Jukebox)) return window.Jukebox;
+    if (window.Jukebox && window.Jukebox.__nekoLazyFacade) return window.Jukebox;
+
+    var facade = window.Jukebox || {
+      State: {
+        isOpen: false,
+        isHidden: false,
+        currentSong: null,
+        isPlaying: false,
+        isPaused: false,
+        isVMDPlaying: false
+      },
+      toggle: toggleJukebox
+    };
+    if (!facade.__nativeBridgeFacade) {
+      facade.__nekoLazyFacade = true;
+    }
+    if (typeof facade.toggle !== 'function') {
+      facade.toggle = toggleJukebox;
+    }
+    facade.ensureRuntime = async function(options) {
+      var jukebox = await loadJukeboxScript();
+      initJukebox(jukebox);
+      if (!jukebox || typeof jukebox.ensureRuntime !== 'function') {
+        throw new Error('Jukebox runtime API unavailable');
+      }
+      return jukebox.ensureRuntime(options || {});
+    };
+    facade.executeControl = async function(command) {
+      var jukebox = await loadJukeboxScript();
+      initJukebox(jukebox);
+      if (!jukebox || typeof jukebox.executeControl !== 'function') {
+        throw new Error('Jukebox control API unavailable');
+      }
+      return jukebox.executeControl(command || {});
+    };
+    window.Jukebox = facade;
+    return window.Jukebox;
+  }
+
   function loadJukeboxScript() {
-    if (window.Jukebox) return Promise.resolve(window.Jukebox);
+    if (isLoadedJukebox(window.Jukebox)) return Promise.resolve(window.Jukebox);
     if (loadPromise) return loadPromise;
 
     loadPromise = new Promise(function(resolve, reject) {
@@ -433,6 +485,22 @@
     if (typeof jukebox.init === 'function') {
       jukebox.init();
     }
+    if (typeof jukebox.executeControl === 'function' && !jukebox.__nekoLazyLoaderExecuteWrapped) {
+      var originalExecuteControl = jukebox.executeControl;
+      jukebox.executeControl = function(command) {
+        clearPendingUnload();
+        return originalExecuteControl.call(jukebox, command);
+      };
+      jukebox.__nekoLazyLoaderExecuteWrapped = true;
+    }
+    if (typeof jukebox.ensureRuntime === 'function' && !jukebox.__nekoLazyLoaderRuntimeWrapped) {
+      var originalEnsureRuntime = jukebox.ensureRuntime;
+      jukebox.ensureRuntime = function(options) {
+        clearPendingUnload();
+        return originalEnsureRuntime.call(jukebox, options);
+      };
+      jukebox.__nekoLazyLoaderRuntimeWrapped = true;
+    }
     jukebox.__nekoLazyLoaderInitialized = true;
   }
 
@@ -449,17 +517,14 @@
   }
 
   async function toggleJukebox() {
-    if (unloadTimer) {
-      clearTimeout(unloadTimer);
-      unloadTimer = null;
-    }
+    clearPendingUnload();
 
     if (toggleInFlight) {
       showInitializing();
       return;
     }
 
-    if (window.Jukebox && window.Jukebox.State) {
+    if (window.Jukebox && window.Jukebox.State && !window.Jukebox.__nekoLazyFacade) {
       showOrOpenJukebox(window.Jukebox);
       return;
     }
@@ -509,6 +574,7 @@
         window[name] = undefined;
       }
     });
+    ensureLazyJukeboxFacade();
     console.log('[JukeboxLoader] 点歌台资源已卸载');
   }
 
@@ -538,8 +604,15 @@
 
   window.addEventListener('neko:jukebox-full-close', unloadJukebox);
 
-  window.__nekoJukeboxToggle = toggleJukebox;
-  window.__nekoJukeboxToggle.__nekoJukeboxWebLoader = true;
+  if (typeof window.__nekoJukeboxToggle === 'function') {
+    ensureNativeJukeboxFacade();
+  }
+  ensureLazyJukeboxFacade();
+
+  if (typeof window.__nekoJukeboxToggle !== 'function') {
+    window.__nekoJukeboxToggle = toggleJukebox;
+    window.__nekoJukeboxToggle.__nekoJukeboxWebLoader = true;
+  }
   window.__nekoJukeboxLoader = {
     load: loadJukeboxScript,
     toggle: toggleJukebox,

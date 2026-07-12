@@ -115,6 +115,9 @@ window.Jukebox = {
     configRevision: null,
     configPollTimer: null,
     configPollInFlight: false,
+    runtimeHost: null,
+    runtimeInitPromise: null,
+    isRuntimeReady: false,
     isOpen: false,
     isHidden: false,
     container: null,
@@ -649,8 +652,9 @@ window.Jukebox = {
       ? Jukebox.getRandomAdjacentSong(direction)
       : Jukebox.getManualAdjacentSong(direction);
     if (nextSong) {
-      Jukebox.playSong(nextSong.id, { fromQueue: Jukebox.State.playbackMode === 'random' });
+      return Jukebox.playSong(nextSong.id, { fromQueue: Jukebox.State.playbackMode === 'random' });
     }
+    return null;
   },
 
   toggleGlobalPlayPause: function() {
@@ -5401,7 +5405,7 @@ window.Jukebox = {
     }
     
     requestAnimationFrame(() => {
-      setTimeout(() => {
+      setTimeout(async () => {
         if (!Jukebox.State.isOpen || !Jukebox.State.container) {
           console.log('[Jukebox] 点歌台已关闭，取消初始化');
           return;
@@ -5409,10 +5413,15 @@ window.Jukebox = {
         console.log('[Jukebox] 准备加载歌曲，检查容器...');
         const tbody = document.getElementById('jukebox-song-list');
         console.log('[Jukebox] 歌曲列表容器:', tbody);
-        Jukebox.loadSongs();
+        await Jukebox.loadSongs();
         Jukebox.initPlayer();
         Jukebox.initVolumeSlider();
         Jukebox.updateCalibrationVisibility();
+        if (Jukebox.State.currentSong && Jukebox.State.isPaused) {
+          Jukebox.updatePausedStatus(Jukebox.State.currentSong);
+        } else if (Jukebox.State.currentSong && (Jukebox.State.isPlaying || Jukebox.State.isVMDPlaying)) {
+          Jukebox.updatePlayingStatus(Jukebox.State.currentSong);
+        }
       }, 100);
     });
     
@@ -5508,6 +5517,7 @@ window.Jukebox = {
     Jukebox.stopProgressUpdate();
     Jukebox.destroyPlayer();
     Jukebox.hideTooltip();
+    Jukebox.destroyRuntimeHost();
 
     if (Jukebox.State.marqueeRaf) {
       cancelAnimationFrame(Jukebox.State.marqueeRaf);
@@ -7745,6 +7755,120 @@ window.Jukebox = {
     Jukebox.State.configPollInFlight = false;
   },
 
+  ensureRuntimeHost: function() {
+    if (Jukebox.State.runtimeHost && document.body.contains(Jukebox.State.runtimeHost)) {
+      return Jukebox.State.runtimeHost;
+    }
+
+    const host = document.createElement('div');
+    host.id = 'neko-jukebox-runtime-host';
+    host.setAttribute('aria-hidden', 'true');
+    host.style.position = 'fixed';
+    host.style.left = '-9999px';
+    host.style.top = '-9999px';
+    host.style.width = '1px';
+    host.style.height = '1px';
+    host.style.overflow = 'hidden';
+    host.style.pointerEvents = 'none';
+    document.body.appendChild(host);
+    Jukebox.State.runtimeHost = host;
+    return host;
+  },
+
+  destroyRuntimeHost: function() {
+    if (Jukebox.State.runtimeHost) {
+      try {
+        Jukebox.State.runtimeHost.remove();
+      } catch (_) {}
+    }
+    Jukebox.State.runtimeHost = null;
+    Jukebox.State.isRuntimeReady = false;
+  },
+
+  ensureRuntime: async function(options = {}) {
+    const Jukebox = window.Jukebox || this;
+    if (Jukebox.State.runtimeInitPromise) {
+      return Jukebox.State.runtimeInitPromise;
+    }
+
+    Jukebox.State.runtimeInitPromise = (async () => {
+      Jukebox.loadPlaybackPreferences();
+      await Jukebox.loadSongData();
+      const player = Jukebox.initPlayer({ headless: options.headless === true });
+      if (!player && !Jukebox.getPlayer()) {
+        throw new Error(window.t('Jukebox.playError', '音乐播放器未初始化'));
+      }
+      Jukebox.State.isRuntimeReady = true;
+      return {
+        songCount: Jukebox.State.songs.length,
+        headless: options.headless === true
+      };
+    })();
+
+    try {
+      return await Jukebox.State.runtimeInitPromise;
+    } finally {
+      Jukebox.State.runtimeInitPromise = null;
+    }
+  },
+
+  normalizeSongQuery: function(value) {
+    return String(value || '').trim().toLowerCase();
+  },
+
+  findSongForQuery: function(query) {
+    const songs = Jukebox.State.songs || [];
+    const normalizedQuery = Jukebox.normalizeSongQuery(query);
+    if (!normalizedQuery) {
+      return songs[0] || null;
+    }
+
+    return songs.find(song => Jukebox.normalizeSongQuery(song.name) === normalizedQuery)
+      || songs.find(song => Jukebox.normalizeSongQuery(song.name).includes(normalizedQuery))
+      || songs.find(song => Jukebox.normalizeSongQuery(song.artist).includes(normalizedQuery))
+      || songs.find(song => Jukebox.normalizeSongQuery(song.id).includes(normalizedQuery))
+      || null;
+  },
+
+  executeControl: async function(command = {}) {
+    const action = String(command.action || command.command || '').trim().toLowerCase();
+    const normalizedAction = action === 'skip' || action === 'cut' ? 'next' : action;
+
+    if (!['play', 'next', 'stop'].includes(normalizedAction)) {
+      return {
+        ok: false,
+        action: normalizedAction,
+        message: 'unsupported_jukebox_action'
+      };
+    }
+
+    if (normalizedAction === 'stop') {
+      Jukebox.stopPlayback();
+      return { ok: true, action: 'stop' };
+    }
+
+    await Jukebox.ensureRuntime({ headless: command.headless !== false });
+
+    if (normalizedAction === 'next') {
+      const nextSong = Jukebox.State.playbackMode === 'random'
+        ? Jukebox.getRandomAdjacentSong(1)
+        : Jukebox.getManualAdjacentSong(1);
+      if (!nextSong) {
+        return { ok: false, action: 'next', message: 'no_next_song' };
+      }
+      await Jukebox.playSong(nextSong.id, { fromQueue: Jukebox.State.playbackMode === 'random' });
+      return { ok: true, action: 'next', song: { id: nextSong.id, name: nextSong.name, artist: nextSong.artist } };
+    }
+
+    const song = Jukebox.findSongForQuery(command.query || command.song || command.name || '');
+    if (!song) {
+      return { ok: false, action: 'play', message: 'song_not_found' };
+    }
+
+    await Jukebox.playSong(song.id);
+    return { ok: true, action: 'play', song: { id: song.id, name: song.name, artist: song.artist } };
+  },
+
   checkConfigUpdates: async function() {
     const Jukebox = window.Jukebox || this;
     if (!Jukebox.State.isOpen || Jukebox.State.configPollInFlight) return;
@@ -7775,62 +7899,67 @@ window.Jukebox = {
     }
   },
   
+  loadSongData: async function() {
+    const Jukebox = window.Jukebox || this;
+    // 从后端API加载配置
+    const response = await fetch('/api/jukebox/config');
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const data = await response.json();
+
+    // 保存完整的配置数据
+    Jukebox.State.config = data;
+    Jukebox.State.configRevision = data.configRevision || Jukebox.State.configRevision || null;
+
+    // 将后端的歌曲对象转换为数组格式
+    const songs = data.songs || {};
+    const actions = data.actions || {};
+    const bindings = data.bindings || {};
+
+    Jukebox.State.songs = Jukebox.applySavedSongOrder(Object.entries(songs).map(([id, song]) => {
+      // 获取该歌曲绑定的动画
+      const songBindings = bindings[id] || {};
+      const boundActions = Object.keys(songBindings)
+        .filter(actionId => actions[actionId] && actions[actionId].visible !== false)
+        .map(actionId => ({
+          id: actionId,
+          ...actions[actionId]
+        })); // 过滤掉不存在或已隐藏的动画
+
+      // 处理音频路径：自带资源使用 /static/jukebox/ 前缀
+      let audioPath = song.audio || '';
+      if (song.isBuiltin && audioPath && !audioPath.startsWith('/static/')) {
+        // 将 songs/xxx.mp3 转换为 /static/jukebox/xxx.mp3
+        audioPath = '/static/jukebox/' + audioPath.replace(/^songs\//, '');
+      }
+
+      return {
+        id: id,
+        name: song.name || '未知',
+        artist: song.artist || '未知',
+        audio: audioPath,
+        vmd: song.vmd || '',
+        duration: song.duration || 0,
+        visible: song.visible !== false, // 默认可见
+        defaultAction: song.defaultAction || '',
+        isBuiltin: song.isBuiltin || false, // 传递自带资源标记
+        boundActions: boundActions // 绑定的动画列表
+      };
+    }).filter(song => song.visible)); // 只显示可见的歌曲
+
+    console.log('[Jukebox]', window.t('Jukebox.songsLoaded', '歌曲列表已加载'), Jukebox.State.songs.length, '首歌曲');
+
+    Jukebox.syncRandomQueueWithSongs();
+    return Jukebox.State.songs;
+  },
+
   loadSongs: async function() {
     const Jukebox = window.Jukebox || this;
     try {
-      // 从后端API加载配置
-      const response = await fetch('/api/jukebox/config');
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-      
-      const data = await response.json();
-      
-      // 保存完整的配置数据
-      Jukebox.State.config = data;
-      Jukebox.State.configRevision = data.configRevision || Jukebox.State.configRevision || null;
-      
-      // 将后端的歌曲对象转换为数组格式
-      const songs = data.songs || {};
-      const actions = data.actions || {};
-      const bindings = data.bindings || {};
-      
-      Jukebox.State.songs = Jukebox.applySavedSongOrder(Object.entries(songs).map(([id, song]) => {
-        // 获取该歌曲绑定的动画
-        const songBindings = bindings[id] || {};
-        const boundActions = Object.keys(songBindings)
-          .filter(actionId => actions[actionId] && actions[actionId].visible !== false)
-          .map(actionId => ({
-            id: actionId,
-            ...actions[actionId]
-          })); // 过滤掉不存在或已隐藏的动画
-        
-        // 处理音频路径：自带资源使用 /static/jukebox/ 前缀
-        let audioPath = song.audio || '';
-        if (song.isBuiltin && audioPath && !audioPath.startsWith('/static/')) {
-          // 将 songs/xxx.mp3 转换为 /static/jukebox/xxx.mp3
-          audioPath = '/static/jukebox/' + audioPath.replace(/^songs\//, '');
-        }
-        
-        return {
-          id: id,
-          name: song.name || '未知',
-          artist: song.artist || '未知',
-          audio: audioPath,
-          vmd: song.vmd || '',
-          duration: song.duration || 0,
-          visible: song.visible !== false, // 默认可见
-          defaultAction: song.defaultAction || '',
-          isBuiltin: song.isBuiltin || false, // 传递自带资源标记
-          boundActions: boundActions // 绑定的动画列表
-        };
-      }).filter(song => song.visible)); // 只显示可见的歌曲
-      
-      console.log('[Jukebox]', window.t('Jukebox.songsLoaded', '歌曲列表已加载'), Jukebox.State.songs.length, '首歌曲');
-      
-      Jukebox.syncRandomQueueWithSongs();
+      await Jukebox.loadSongData();
       Jukebox.renderList();
-      
     } catch (error) {
       console.error('[Jukebox]', window.t('Jukebox.loadFailed', '加载歌曲列表失败'), error);
       Jukebox.showError(window.t('Jukebox.loadFailed', '加载歌曲列表失败') + ': ' + error.message);
@@ -7840,7 +7969,7 @@ window.Jukebox = {
   renderList: function() {
     const tbody = document.getElementById('jukebox-song-list');
     if (!tbody) {
-      console.error('[Jukebox]', window.t('Jukebox.listContainerNotFound', '歌曲列表容器不存在'));
+      console.debug('[Jukebox]', window.t('Jukebox.listContainerNotFound', '歌曲列表容器不存在'));
       return;
     }
 
@@ -8053,7 +8182,7 @@ window.Jukebox = {
 
     if (nextSong) {
       setTimeout(() => {
-        if (!Jukebox.State.isOpen && !window.__NEKO_JUKEBOX_STANDALONE__) return;
+        if (!Jukebox.State.isOpen && !Jukebox.State.isRuntimeReady && !window.__NEKO_JUKEBOX_STANDALONE__) return;
         Jukebox.playSong(nextSong.id, { fromQueue: Jukebox.State.playbackMode === 'random' });
       }, 0);
     }
@@ -8063,22 +8192,22 @@ window.Jukebox = {
     const song = Jukebox.State.songs.find(s => s.id === songId);
     if (!song) {
       console.error('[Jukebox]', window.t('Jukebox.notFound', '找不到歌曲'), songId);
-      return;
+      return null;
     }
     
     if (Jukebox.State.currentSong && Jukebox.State.currentSong.id === songId) {
       if (Jukebox.State.isPaused) {
         console.log('[Jukebox] 恢复暂停的歌曲:', song.name);
         Jukebox.togglePause();
-        return;
+        return song;
       }
       if (Jukebox.State.isPlaying) {
         if (options.fromQueue === true) {
-          return;
+          return song;
         }
         console.log('[Jukebox] 停止当前播放的歌曲:', song.name);
         Jukebox.stopPlayback();
-        return;
+        return song;
       }
     }
     
@@ -8108,7 +8237,7 @@ window.Jukebox = {
       
       if (requestId !== Jukebox.State.playRequestId) {
         console.log('[Jukebox] 播放请求已被新请求取代，取消状态更新');
-        return;
+        return null;
       }
       
       // 根据模型类型播放对应格式的动画
@@ -8137,7 +8266,7 @@ window.Jukebox = {
       
       if (requestId !== Jukebox.State.playRequestId) {
         console.log('[Jukebox] 播放请求已被新请求取代，取消状态更新');
-        return;
+        return null;
       }
       
       Jukebox.State.currentSong = song;
@@ -8145,12 +8274,14 @@ window.Jukebox = {
 
       Jukebox.updatePlayingStatus(song);
       Jukebox.updateCalibrationDisplay();
+      return song;
     } catch (error) {
       if (requestId !== Jukebox.State.playRequestId) {
-        return;
+        return null;
       }
       console.error('[Jukebox]', window.t('Jukebox.playFailed', '播放失败'), error);
       Jukebox.showError(window.t('Jukebox.playFailed', '播放失败') + ': ' + error.message);
+      return null;
     }
   },
   
@@ -8815,34 +8946,45 @@ window.Jukebox = {
     return Jukebox.State.player;
   },
   
-  initPlayer: function() {
+  initPlayer: function(options = {}) {
     const Jukebox = window.Jukebox || this;
     if (window.music_ui && window.music_ui.getMusicPlayerInstance) {
       const existingPlayer = window.music_ui.getMusicPlayerInstance();
       if (existingPlayer) {
         console.log('[Jukebox] 使用现有的音乐播放器');
-        return;
+        return existingPlayer;
       }
       console.log('[Jukebox] music_ui 存在但播放器未初始化，创建新播放器');
     }
-    
-    if (!Jukebox.State.container) {
+
+    if (Jukebox.State.player) {
+      return Jukebox.State.player;
+    }
+
+    const host = options.headless === true
+      ? Jukebox.ensureRuntimeHost()
+      : Jukebox.State.container;
+
+    if (!host) {
       console.warn('[Jukebox] 容器不存在，取消播放器初始化');
-      return;
+      return null;
     }
     
     console.log('[Jukebox] 创建新的音乐播放器');
     
     if (typeof APlayer === 'undefined') {
       console.warn('[Jukebox] APlayer 未加载，等待加载...');
+      if (options.headless === true) {
+        return null;
+      }
       setTimeout(() => Jukebox.initPlayer(), 500);
-      return;
+      return null;
     }
     
     const playerContainer = document.createElement('div');
     playerContainer.id = 'jukebox-player';
     playerContainer.style.display = 'none';
-    Jukebox.State.container.appendChild(playerContainer);
+    host.appendChild(playerContainer);
     
     Jukebox.State.player = new APlayer({
       container: playerContainer,
@@ -8855,6 +8997,7 @@ window.Jukebox = {
     });
     
     console.log('[Jukebox] APlayer已创建，音量:', Jukebox.State.player.audio.volume);
+    return Jukebox.State.player;
   },
   
   // 获取当前模型类型（拆分 live3d 子类型，返回 'mmd' / 'vrm' / 'live2d'）

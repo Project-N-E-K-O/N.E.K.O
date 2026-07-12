@@ -233,7 +233,7 @@ class ProactiveBridge:
 
         events_out: list[dict[str, Any]] = []
 
-        # ---- ui_action parts → legacy music_* events ----
+        # ---- ui_action parts → frontend control events ----
         for ui in _ui_action_parts(parts):
             action = ui.get("action")
             if action == "media_play_url":
@@ -268,6 +268,24 @@ class ProactiveBridge:
                         "event_type": "music_allowlist_add",
                         "lanlan_name": target_lanlan,
                         "domains": list(domains),
+                        "source": plugin_id,
+                        "timestamp": timestamp,
+                    }
+                )
+            elif action == "jukebox_control":
+                jukebox_action = ui.get("jukebox_action") or ui.get("control") or ui.get("command")
+                if not isinstance(jukebox_action, str) or not jukebox_action.strip():
+                    logger.debug(
+                        "ui_action=jukebox_control missing action; plugin={}",
+                        plugin_id,
+                    )
+                    continue
+                events_out.append(
+                    {
+                        "event_type": "jukebox_control",
+                        "lanlan_name": target_lanlan,
+                        "action": jukebox_action,
+                        "query": ui.get("query") or ui.get("song") or metadata.get("query") or metadata.get("song"),
                         "source": plugin_id,
                         "timestamp": timestamp,
                     }

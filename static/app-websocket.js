@@ -562,6 +562,24 @@
         dispatchMusicPlayUrlResponse(response, 'websocket');
     }
 
+    function handleJukeboxControlResponse(response) {
+        if (!response || !window.Jukebox || typeof window.Jukebox.executeControl !== 'function') {
+            console.log('[Jukebox] 跳过点歌台控制：当前窗口没有点歌台控制入口');
+            return;
+        }
+
+        var command = response.command && typeof response.command === 'object' ? response.command : response;
+        window.Jukebox.executeControl({
+            action: command.action,
+            query: command.query || command.song || command.name || '',
+            headless: true
+        }).then(function (result) {
+            console.log('[Jukebox] 点歌台控制完成:', result);
+        }).catch(function (error) {
+            console.warn('[Jukebox] 点歌台控制失败:', error);
+        });
+    }
+
     function readNewUserIcebreakerStore() {
         try {
             if (typeof localStorage === 'undefined') return null;
@@ -3103,6 +3121,10 @@
                 // -------- music play url --------
                 } else if (response.type === 'music_play_url') {
                     handleMusicPlayUrlResponse(response);
+
+                // -------- jukebox control --------
+                } else if (response.type === 'jukebox_control') {
+                    handleJukeboxControlResponse(response);
 
                 // -------- repetition_warning --------
                 } else if (response.type === 'repetition_warning') {

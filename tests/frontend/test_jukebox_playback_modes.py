@@ -123,6 +123,127 @@ def setup_jukebox_page(mock_page: Page) -> None:
     )
 
 
+def setup_headless_jukebox_page(mock_page: Page) -> None:
+    mock_page.set_content("<!DOCTYPE html><html><body></body></html>")
+    mock_page.evaluate(
+        """
+        () => {
+          window.t = (key, fallback) => typeof fallback === 'string' ? fallback : key;
+          window.fetch = async (url) => {
+            if (url === '/api/jukebox/config') {
+              return {
+                ok: true,
+                json: async () => ({
+                  configRevision: 'rev-headless',
+                  songs: {
+                    song1: { name: 'Song 1', artist: 'A', audio: 'songs/song1.mp3', visible: true },
+                    song2: { name: 'Song 2', artist: 'B', audio: 'songs/song2.mp3', visible: true },
+                    song3: { name: 'Song 3', artist: 'C', audio: 'songs/song3.mp3', visible: true }
+                  },
+                  actions: {},
+                  bindings: {}
+                })
+              };
+            }
+            throw new Error('Unexpected fetch: ' + url);
+          };
+          window.APlayer = class {
+            constructor(options) {
+              this.options = options;
+              this.audio = { volume: options.volume || 1, duration: 0, currentTime: 0, paused: true };
+              this.events = {};
+              this.list = {
+                items: [],
+                clear: () => { this.list.items = []; },
+                add: (items) => { this.list.items = items; }
+              };
+              window.__lastAPlayer = this;
+            }
+            on(name, handler) { this.events[name] = handler; }
+            play() { this.audio.paused = false; this.played = true; }
+            pause() { this.audio.paused = true; }
+            seek(value) { this.audio.currentTime = value; }
+            destroy() { this.destroyed = true; }
+          };
+        }
+        """
+    )
+    mock_page.add_script_tag(content=JUKEBOX_SCRIPT)
+
+
+@pytest.mark.frontend
+def test_jukebox_execute_control_play_headless_loads_without_ui(mock_page: Page):
+    setup_headless_jukebox_page(mock_page)
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+          const result = await window.Jukebox.executeControl({ action: 'play', query: 'Song' });
+          return {
+            result,
+            hasUi: !!document.querySelector('.jukebox-wrapper'),
+            hasRuntimeHost: !!document.getElementById('neko-jukebox-runtime-host'),
+            currentSong: window.Jukebox.State.currentSong && window.Jukebox.State.currentSong.id,
+            isRuntimeReady: window.Jukebox.State.isRuntimeReady,
+            playerItems: window.__lastAPlayer.list.items.map((item) => item.name)
+          };
+        }
+        """
+    )
+
+    assert result == {
+        "result": {
+            "ok": True,
+            "action": "play",
+            "song": {"id": "song1", "name": "Song 1", "artist": "A"},
+        },
+        "hasUi": False,
+        "hasRuntimeHost": True,
+        "currentSong": "song1",
+        "isRuntimeReady": True,
+        "playerItems": ["Song 1"],
+    }
+
+
+@pytest.mark.frontend
+def test_jukebox_execute_control_next_and_stop_headless(mock_page: Page):
+    setup_headless_jukebox_page(mock_page)
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+          await window.Jukebox.executeControl({ action: 'play', query: 'Song 1' });
+          const nextResult = await window.Jukebox.executeControl({ action: 'next' });
+          window.Jukebox.State.playbackMode = 'random';
+          window.Jukebox.State.randomQueue = ['song1', 'song2'];
+          window.Jukebox.State.randomQueueIndex = 1;
+          const stopResult = await window.Jukebox.executeControl({ action: 'stop' });
+          return {
+            nextResult,
+            stopResult,
+            currentSong: window.Jukebox.State.currentSong,
+            isPlaying: window.Jukebox.State.isPlaying,
+            randomQueue: window.Jukebox.State.randomQueue,
+            randomQueueIndex: window.Jukebox.State.randomQueueIndex,
+            hasRuntimeHost: !!document.getElementById('neko-jukebox-runtime-host')
+          };
+        }
+        """
+    )
+
+    assert result["nextResult"] == {
+        "ok": True,
+        "action": "next",
+        "song": {"id": "song2", "name": "Song 2", "artist": "B"},
+    }
+    assert result["stopResult"] == {"ok": True, "action": "stop"}
+    assert result["currentSong"] is None
+    assert result["isPlaying"] is False
+    assert result["randomQueue"] == []
+    assert result["randomQueueIndex"] == -1
+    assert result["hasRuntimeHost"] is True
+
+
 @pytest.mark.frontend
 def test_jukebox_loader_native_mode_keeps_animation_facade(mock_page: Page):
     mock_page.set_content(
@@ -166,9 +287,10 @@ def test_jukebox_loader_native_mode_keeps_animation_facade(mock_page: Page):
 
           return {
             hasFacade: window.Jukebox.__nativeBridgeFacade === true,
+            hasExecuteControl: typeof window.Jukebox.executeControl === 'function',
             nativeToggled: window.nativeToggled,
             webLoaderToggle: !!window.__nekoJukeboxToggle.__nekoJukeboxWebLoader,
-            lazyFlag: !!window.__NEKO_JUKEBOX_LAZY_LOADER__,
+            loaderReady: !!window.__nekoJukeboxLoader,
             state: {
               isPlaying: window.Jukebox.State.isPlaying,
               isVMDPlaying: window.Jukebox.State.isVMDPlaying,
@@ -182,9 +304,10 @@ def test_jukebox_loader_native_mode_keeps_animation_facade(mock_page: Page):
 
     assert result == {
         "hasFacade": True,
+        "hasExecuteControl": True,
         "nativeToggled": True,
         "webLoaderToggle": False,
-        "lazyFlag": False,
+        "loaderReady": True,
         "state": {
             "isPlaying": False,
             "isVMDPlaying": False,
@@ -199,6 +322,36 @@ def test_jukebox_loader_native_mode_keeps_animation_facade(mock_page: Page):
             "cursor:dance",
             "stop",
         ],
+    }
+
+
+@pytest.mark.frontend
+def test_jukebox_loader_exposes_control_on_jukebox_key_only(mock_page: Page):
+    mock_page.set_content(
+        """
+        <script>
+          window.t = (key, fallback) => typeof fallback === 'string' ? fallback : key;
+        </script>
+        """
+    )
+    mock_page.add_script_tag(content=JUKEBOX_LOADER_SCRIPT)
+
+    result = mock_page.evaluate(
+        """
+        () => ({
+          hasJukeboxFacade: !!window.Jukebox && window.Jukebox.__nekoLazyFacade === true,
+          hasExecuteControl: typeof window.Jukebox.executeControl === 'function',
+          hasEnsureRuntime: typeof window.Jukebox.ensureRuntime === 'function',
+          loaderHasControl: Object.prototype.hasOwnProperty.call(window.__nekoJukeboxLoader, 'control')
+        })
+        """
+    )
+
+    assert result == {
+        "hasJukeboxFacade": True,
+        "hasExecuteControl": True,
+        "hasEnsureRuntime": True,
+        "loaderHasControl": False,
     }
 
 

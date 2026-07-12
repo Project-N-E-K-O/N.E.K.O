@@ -1,0 +1,20 @@
+[plugin]
+id = "jukebox_controller"
+name = "点歌台控制器"
+description = "让猫娘通过本地点歌台播放指定曲目、切歌或停止播放。"
+short_description = "Control the local jukebox from chat."
+keywords = ["点歌台", "点歌", "播放", "切歌", "停止", "jukebox", "music", "song", "play", "skip", "stop"]
+version = "0.1.0"
+type = "plugin"
+entry = "plugin.plugins.jukebox_controller:JukeboxControllerPlugin"
+
+[plugin.author]
+name = "N.E.K.O Team"
+
+[plugin.sdk]
+recommended = ">=0.1.0,<0.2.0"
+supported = ">=0.1.0,<0.3.0"
+
+[plugin_runtime]
+enabled = true
+auto_start = false
