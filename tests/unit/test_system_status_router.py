@@ -5,7 +5,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from main_routers import system_router as system_router_module
+from main_routers.system_router import status as system_router_module
+from main_routers.system_router import _shared as system_router_shared
 from main_routers.shared_state import init_shared_state
 from utils import storage_location_bootstrap as storage_location_bootstrap_module
 from utils.storage_migration import create_pending_storage_migration
@@ -14,6 +15,7 @@ from utils.storage_policy import save_storage_policy
 
 SYSTEM_STATUS_ENDPOINT = "/api/system/status"
 SYSTEM_CLIENT_ID_ENDPOINT = "/api/system/client-id"
+SYSTEM_SOCIAL_CONFIG_ENDPOINT = "/api/system/social/config"
 
 
 @pytest.fixture(autouse=True)
@@ -90,6 +92,51 @@ def test_system_client_id_fails_closed_when_fresh_id_cannot_be_persisted(tmp_pat
 
 
 @pytest.mark.unit
+def test_system_client_id_persists_fresh_identity_before_returning(tmp_path):
+    class _FreshClientIdConfigManager(_DummyConfigManager):
+        cloudsave_local_state_path = tmp_path / "state" / "cloudsave_local_state.json"
+
+        def __init__(self, root):
+            super().__init__(root)
+            self.saved_states = []
+
+        def load_cloudsave_local_state(self):
+            return {"client_id": "fresh-client-id"}
+
+        def save_cloudsave_local_state(self, state):
+            self.saved_states.append(state)
+
+    config_manager = _FreshClientIdConfigManager(tmp_path)
+    with _build_client(config_manager) as client:
+        response = client.get(SYSTEM_CLIENT_ID_ENDPOINT)
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "client_id": "fresh-client-id"}
+    assert config_manager.saved_states == [{"client_id": "fresh-client-id"}]
+    assert "no-store" in response.headers["Cache-Control"]
+
+
+@pytest.mark.unit
+def test_system_social_config_trims_override_and_falls_back(monkeypatch, tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    monkeypatch.setenv("NEKO_SOCIAL_BASE_URL", "  https://social.example.test/api/  ")
+
+    with _build_client(config_manager) as client:
+        configured = client.get(SYSTEM_SOCIAL_CONFIG_ENDPOINT)
+        monkeypatch.setenv("NEKO_SOCIAL_BASE_URL", "   ")
+        fallback = client.get(SYSTEM_SOCIAL_CONFIG_ENDPOINT)
+
+    assert configured.status_code == 200
+    assert configured.json() == {
+        "ok": True,
+        "social_base_url": "https://social.example.test/api",
+        "enabled": True,
+    }
+    assert fallback.json()["social_base_url"] == "http://localhost:8080"
+    assert "no-store" in configured.headers["Cache-Control"]
+
+
+@pytest.mark.unit
 def test_system_status_reports_migration_required_when_storage_selection_is_blocking(tmp_path):
     config_manager = _DummyConfigManager(tmp_path)
 
@@ -114,11 +161,11 @@ def test_system_status_uses_runtime_config_manager_fallback_when_shared_state_is
     config_manager = _DummyConfigManager(tmp_path)
 
     with patch.object(
-        system_router_module,
+        system_router_shared,
         "get_config_manager",
         side_effect=RuntimeError("shared_state unavailable"),
     ), patch.object(
-        system_router_module,
+        system_router_shared,
         "get_runtime_config_manager",
         return_value=config_manager,
     ):

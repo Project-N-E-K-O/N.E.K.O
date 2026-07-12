@@ -14,7 +14,7 @@
 
 通用模块：
 
-1. `static/avatar-performance-stage.js`
+1. `static/avatar/avatar-performance-stage.js`
    - `AvatarPerformanceStage`
    - `AvatarPerformanceCoordinator`
    - `Live2DAvatarPerformanceDriver`
@@ -72,7 +72,7 @@ Live2D 正常链路保护：
 5. 持久化演出状态到 localStorage 或配置文件。
 6. 为某个具体 Live2D 模型臆造 motion / expression / emotion 名称。
 
-页面要接入演出，应新增或维护页面适配层，把页面已有语义翻译成通用 sequence，而不是把页面剧情塞进 `static/avatar-performance-stage.js`。
+页面要接入演出，应新增或维护页面适配层，把页面已有语义翻译成通用 sequence，而不是把页面剧情塞进 `static/avatar/avatar-performance-stage.js`。
 
 ## 导出接口
 
@@ -442,7 +442,7 @@ VRM / MMD / 其他 3D avatar 后续应作为新的 driver 接入同一套 `Avata
 
 修改本模块或首页适配层后，至少检查：
 
-1. `static/avatar-performance-stage.js` 不包含首页 step、文案、overlay 或 Yui 剧情。
+1. `static/avatar/avatar-performance-stage.js` 不包含首页 step、文案、overlay 或 Yui 剧情。
 2. `static/tutorial/avatar/yui-stage.js` 不删除首页 overlay，不改 `yui-taking-over` 或 ghost cursor 状态。
 3. 旧 `static/tutorial/yui-guide/wakeup.js` 只保留兼容桥接职责，模板加载它时不能绕过 director / adapter。
 4. `templates/index.html` 脚本顺序正确。
@@ -457,7 +457,7 @@ VRM / MMD / 其他 3D avatar 后续应作为新的 driver 接入同一套 `Avata
 
 ```powershell
 .venv\Scripts\python.exe -m pytest tests/test_agent_rewrite_regression.py tests/test_emotion_heuristic.py tests/frontend/test_yui_guide_avatar_performance_flow.py -q
-node --check static/avatar-performance-stage.js
+node --check static/avatar/avatar-performance-stage.js
 node --check static/tutorial/avatar/yui-stage.js
 node --check static/tutorial/yui-guide/director.js
 python -m py_compile main_routers/pages_router.py config/prompts/prompts_emotion.py
@@ -468,7 +468,7 @@ macOS / Linux 可使用等价命令：
 
 ```bash
 ./.venv/bin/python -m pytest tests/test_agent_rewrite_regression.py tests/test_emotion_heuristic.py tests/frontend/test_yui_guide_avatar_performance_flow.py -q
-node --check static/avatar-performance-stage.js
+node --check static/avatar/avatar-performance-stage.js
 node --check static/tutorial/avatar/yui-stage.js
 node --check static/tutorial/yui-guide/director.js
 python3 -m py_compile main_routers/pages_router.py config/prompts/prompts_emotion.py

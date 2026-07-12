@@ -243,6 +243,17 @@ class CacheProviderConfig:
     base_url_pattern: str           # 用于 substring match
     cache_mode: str                 # "session" | "auto" | "upstream"
     requires_header: bool
+    # 是否需要在请求体里打 body 级缓存标记（Anthropic 风格
+    # cache_control: {"type": "ephemeral"}）。与 requires_header 正交：
+    # provider 可以两个都不要、只要其一、或两个都要。get_cache_kwargs 据此
+    # 决定是否给 ChatOpenAI 传 enable_cache_control=True，由 _params() 消费。
+    #
+    # ⚠️ 切勿给 Anthropic 自家的 OpenAI 兼容端点（api.anthropic.com 走 OpenAI
+    # SDK，见 utils.llm_client.create_chat_llm 的 anthropic 分支）置 True：该兼容
+    # 层不支持 prompt caching，注入的 cache_control 会被静默忽略，结果是"报告开了
+    # 缓存却零命中"。需要 body 级缓存时，走原生 Messages API，或换一个明确支持该
+    # OpenAI-wire cache_control 形态的网关（Anthropic-compat / OpenRouter 等）再开。
+    requires_body_flag: bool = False
     header_name: str | None = None
     header_value: str | None = None
     min_cache_tokens: int = 1024
@@ -379,7 +390,7 @@ CACHE_PROVIDERS: dict[str, CacheProviderConfig] = {
     ),
     "doubao": CacheProviderConfig(
         provider_id="doubao",
-        name="豆包（字节跳动）",
+        name="豆包大模型(火山方舟)",
         base_url="https://ark.cn-beijing.volces.com/api/v3",
         base_url_pattern="ark.cn-beijing.volces.com",
         cache_mode="auto",
@@ -403,16 +414,28 @@ def resolve_cache_provider(base_url: str | None) -> CacheProviderConfig | None:
 def get_cache_kwargs(base_url: str | None) -> dict[str, Any]:
     """Return the cache-related kwargs needed when constructing ChatOpenAI.
 
+    Two *orthogonal* cache-engagement mechanisms, keyed off the resolved
+    provider — a provider may need neither, either, or both:
+
+      - ``requires_header`` → inject the provider's session-cache header
+        (e.g. DashScope ``x-dashscope-session-cache: enable``). Header-only
+        providers (qwen) DO NOT get ``enable_cache_control``; their caching is
+        engaged entirely by the header.
+      - ``requires_body_flag`` → set ``enable_cache_control`` so
+        ``ChatOpenAI._params`` stamps an Anthropic-style
+        ``cache_control: {"type": "ephemeral"}`` marker onto the cache
+        breakpoint message (Anthropic direct / Anthropic-compat gateways).
+
     Returns:
         {"default_headers": dict, "enable_cache_control": bool}
     """
     provider = resolve_cache_provider(base_url)
-    if provider and provider.requires_header:
-        return {
-            "default_headers": {provider.header_name: provider.header_value},
-            "enable_cache_control": True,
-        }
+    if provider is None:
+        return {"default_headers": {}, "enable_cache_control": False}
+    headers: dict[str, str] = {}
+    if provider.requires_header and provider.header_name is not None:
+        headers[provider.header_name] = provider.header_value or ""
     return {
-        "default_headers": {},
-        "enable_cache_control": False,
+        "default_headers": headers,
+        "enable_cache_control": provider.requires_body_flag,
     }

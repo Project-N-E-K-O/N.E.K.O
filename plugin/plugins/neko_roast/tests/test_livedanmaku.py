@@ -232,6 +232,34 @@ def test_preparing_marks_live_ended():
     assert seen == ["preparing"]
 
 
+def test_support_callbacks_publish_rich_event_before_lightweight_fallback():
+    for cmd, fallback_callback, payload in (
+        (
+            "SEND_GIFT",
+            "on_gift",
+            {"data": {"uid": 9, "uname": "GiftUser", "giftName": "Heart", "num": 1}},
+        ),
+        (
+            "SUPER_CHAT_MESSAGE",
+            "on_sc",
+            {"data": {"uid": 10, "user_info": {"uname": "SCUser"}, "message": "hi", "price": 30}},
+        ),
+    ):
+        seen: list[tuple[str, object]] = []
+        listener = DanmakuListener(
+            room_id=1,
+            callbacks={
+                "on_event": lambda _cmd, event: seen.append(("on_event", event)),
+                fallback_callback: lambda event, name=fallback_callback: seen.append((name, event)),
+            },
+        )
+
+        asyncio.run(listener._dispatch_message(cmd, {"cmd": cmd, **payload}))
+
+        assert [name for name, _event in seen] == ["on_event", fallback_callback]
+        assert isinstance(seen[0][1], LiveDanmaku)
+
+
 def test_enhanced_cmd_handler_table_keeps_static_handlers_callable():
     """Class-level enhanced handlers should stay callable from _CMD_HANDLERS."""
     handler = DanmakuListener._CMD_HANDLERS["SUPER_CHAT_MESSAGE_JPN"]
@@ -242,6 +270,117 @@ def test_enhanced_cmd_handler_table_keeps_static_handlers_callable():
     assert ld.uid == 9
     assert ld.nickname == "JP"
     assert ld.text == "hi"
+
+
+def test_fallback_support_gift_rejects_generic_medal_or_toast_packets():
+    medal = {"data": {"uid": 9, "name": "普通勋章", "message": "勋章升级"}}
+    toast = {"data": {"uid": 9, "name": "普通提示", "message": "欢迎回来"}}
+
+    assert DanmakuListener._fallback_support_gift_payload("FANS_MEDAL_CHANGE", medal) is None
+    assert DanmakuListener._fallback_support_gift_payload("ROOM_TOAST_MESSAGE", toast) is None
+
+
+def test_fallback_support_gift_rejects_user_toast_fans_medal_text():
+    toast = {"data": {"uid": 9, "toast_msg": "\u70b9\u4eae\u7c89\u4e1d\u724c"}}
+
+    assert DanmakuListener._fallback_support_gift_payload("USER_TOAST_MSG", toast) is None
+
+
+def test_fallback_support_gift_rejects_bare_nested_name():
+    packet = {
+        "data": {
+            "uid": 9,
+            "gift": {"name": "灯牌"},
+            "message": "点亮粉丝牌成功",
+        }
+    }
+
+    assert DanmakuListener._fallback_support_gift_payload("ROOM_RANK_UPDATE", packet) is None
+
+
+def test_fallback_support_gift_rejects_generic_nested_id_and_name():
+    packet = {
+        "data": {
+            "uid": 9,
+            "gift_info": {"id": 1, "name": "灯牌"},
+            "message": "点亮粉丝牌成功",
+        }
+    }
+
+    assert DanmakuListener._fallback_support_gift_payload("ROOM_RANK_UPDATE", packet) is None
+
+
+def test_fallback_support_gift_rejects_nested_gift_id_without_gift_evidence():
+    packet = {
+        "data": {
+            "uid": 9,
+            "gift_info": {"gift_id": 1, "name": "灯牌"},
+            "message": "点亮粉丝牌成功",
+        }
+    }
+
+    assert DanmakuListener._fallback_support_gift_payload("ROOM_RANK_UPDATE", packet) is None
+
+
+def test_fallback_support_gift_rejects_fans_medal_activation_toast():
+    packet = {
+        "data": {
+            "uid": 42,
+            "uname": "Viewer",
+            "toast_msg": "点亮粉丝牌成功",
+            "gift_info": {"gift_id": 1, "name": "灯牌"},
+        }
+    }
+
+    assert DanmakuListener._fallback_support_gift_payload("USER_TOAST_MSG", packet) is None
+
+
+def test_fallback_support_gift_rejects_generic_medal_name_even_with_transfer_text():
+    packet = {
+        "data": {
+            "uid": 42,
+            "uname": "Viewer",
+            "toast_msg": "赠送粉丝牌成功",
+            "gift_info": {"gift_id": 1, "name": "灯牌"},
+        }
+    }
+
+    assert DanmakuListener._fallback_support_gift_payload("USER_TOAST_MSG", packet) is None
+
+
+def test_fallback_support_gift_rejects_explicit_medal_gift_name():
+    packet = {
+        "data": {
+            "uid": 42,
+            "uname": "Viewer",
+            "toast_msg": "赠送粉丝牌成功",
+            "gift_info": {"gift_id": 1, "gift_name": "灯牌"},
+        }
+    }
+
+    assert DanmakuListener._fallback_support_gift_payload("USER_TOAST_MSG", packet) is None
+
+
+def test_fallback_support_gift_accepts_explicit_gift_evidence():
+    payload = DanmakuListener._fallback_support_gift_payload(
+        "UNKNOWN_SUPPORT_PACKET",
+        {
+            "data": {
+                "uid": 9,
+                "uname": "GiftUser",
+                "gift_id": 42,
+                "gift_name": "小心心",
+                "num": 2,
+                "total_coin": 200,
+            }
+        },
+    )
+
+    assert payload is not None
+    assert payload["uid"] == 9
+    assert payload["gift_name"] == "小心心"
+    assert payload["gift_count"] == 2
+    assert payload["gift_value"] == 200
 
 
 def test_brotli_missing_uses_supplied_log_callback(monkeypatch):

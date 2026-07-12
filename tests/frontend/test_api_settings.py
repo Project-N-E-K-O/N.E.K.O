@@ -743,6 +743,51 @@ def test_explicit_mimo_tts_provider_is_saved_for_runtime_routing(mock_page: Page
 
 
 @pytest.mark.frontend
+def test_doubao_tts_is_keybook_only_and_hidden_from_tts_config(mock_page: Page, running_server: str):
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector("#keyBookInput_doubao_tts", state="attached", timeout=10000)
+
+    assert mock_page.locator("#assistApiSelect option[value='doubao_tts']").count() == 0
+    assert mock_page.locator("#ttsModelProvider option[value='doubao_tts']").count() == 0
+    expect(mock_page.locator("#assistApiSelect option[value='doubao']")).to_be_attached()
+
+
+@pytest.mark.frontend
+def test_doubao_tts_keybook_saves_independent_speech_key(mock_page: Page, running_server: str):
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector("#keyBookInput_doubao_tts", state="attached", timeout=10000)
+    expect(mock_page.locator("label[data-i18n='api.keyBook.doubao_tts']")).not_to_have_text("api.keyBook.doubao_tts")
+    assert mock_page.locator("#assistApiSelect option[value='doubao_tts']").count() == 0
+    expect(mock_page.locator("#assistApiSelect option[value='doubao']")).to_be_attached()
+
+    payload = mock_page.evaluate("""
+        async () => {
+            setMaskedInput(document.getElementById('keyBookInput_vllm_omni'), '');
+            setMaskedInput(document.getElementById('keyBookInput_doubao_tts'), 'doubao-speech-key');
+
+            window.__capturedSavePayload = null;
+            window.saveApiKey = async (params) => {
+                window.__capturedSavePayload = JSON.parse(JSON.stringify(params));
+            };
+
+            const currentApiKeyDiv = document.getElementById('current-api-key');
+            if (currentApiKeyDiv) {
+                currentApiKeyDiv.dataset.hasKey = 'false';
+            }
+
+            await save_button_down({ preventDefault() {} });
+            return window.__capturedSavePayload;
+        }
+    """)
+
+    assert payload["assistApiKeyDoubaoTts"] == "doubao-speech-key"
+
+
+@pytest.mark.frontend
 def test_gptsovits_dropdown_shows_gsv_fields_and_saves_enabled(mock_page: Page, running_server: str):
     """GPT-SoVITS moved to the ttsModelProvider dropdown:
 

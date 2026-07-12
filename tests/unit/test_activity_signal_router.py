@@ -25,7 +25,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from main_routers import system_router as system_router_module
+from main_routers.system_router import activity_signal as system_router_module
+from main_routers.system_router import _shared as system_router_shared
 
 
 ACTIVITY_SIGNAL_ENDPOINT = "/api/activity_signal"
@@ -69,7 +70,7 @@ def _fixed_csrf_token(monkeypatch):
     ``test_system_screenshot_router.py`` uses.
     """
     monkeypatch.setattr(
-        system_router_module, "AUTOSTART_CSRF_TOKEN", "test-csrf-token",
+        system_router_shared, "AUTOSTART_CSRF_TOKEN", "test-csrf-token",
     )
     yield
 

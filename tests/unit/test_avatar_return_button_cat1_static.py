@@ -4,7 +4,7 @@ from main_routers import pages_router
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-AVATAR_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "avatar-ui-buttons.js"
+AVATAR_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "avatar" / "avatar-ui-buttons.js"
 APP_UI_PATH = PROJECT_ROOT / "static" / "app-ui.js"
 APP_REACT_CHAT_WINDOW_PATH = PROJECT_ROOT / "static" / "app-react-chat-window.js"
 APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app-interpage.js"
@@ -113,7 +113,8 @@ def test_cat1_play_action_module_is_independent_from_eat_action():
     )[1].split("}", 1)[0]
     assert ".neko-idle-return-btn.is-cat1-stretching .neko-idle-thought-bubble" in thought_bubble_hidden_block
     assert ".neko-idle-return-btn.is-cat1-playing .neko-idle-thought-bubble" in thought_bubble_hidden_block
-    assert ".neko-idle-return-btn.is-cat1-eating .neko-idle-thought-bubble" in thought_bubble_hidden_block
+    assert ".neko-idle-return-btn.is-cat1-eating:not(.is-thought-bubble-popping) .neko-idle-thought-bubble" in thought_bubble_hidden_block
+    assert ".neko-idle-return-btn.is-cat1-eating .neko-idle-thought-bubble" not in thought_bubble_hidden_block
 
     assert 'data-neko-cat1-wide-art' in chat_source
     assert '/static/assets/neko-idle/cat-idle-cat-play-1.gif' in chat_source
@@ -354,7 +355,7 @@ def test_cat1_external_chat_position_updates_interrupt_pair_move_for_retarget():
         "window.addEventListener('neko:idle-chat-compact-surface-state'",
         1,
     )[0]
-    assert "const pairMoveFeedback = !!(detail && detail.reason === 'cat1-pair-move');" in minimized_state_block
+    assert "const pairMoveFeedback = _isNekoIdleCat1PlaygroundPairMoveFeedback(detail);" in minimized_state_block
     assert "if (pairMoveFeedback) return;" in minimized_state_block
     assert "_interruptNekoIdleCat1PairMoveForRetarget(button, currentState)" in minimized_state_block
 

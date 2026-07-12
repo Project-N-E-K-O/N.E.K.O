@@ -2,18 +2,32 @@
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any
 
+from . import safety_guard_cooldown, safety_guard_failures
 from .contracts import RoastConfig, SafetyDecision, SafetyStatus, ViewerEvent
+from .safety_guard_types import FailureKind
 
-FailureKind = Literal["pipeline", "output"]
+
+_LIVE_CONNECTED_SOURCES = {
+    "live_danmaku",
+    "manual_live_simulation",
+    "idle_hosting",
+    "active_engagement",
+    "warmup_hosting",
+}
+
+
+def _requires_live_connection(event: ViewerEvent | None) -> bool:
+    if event is None:
+        return False
+    return event.source in _LIVE_CONNECTED_SOURCES
 
 
 @dataclass
 class SafetyGuard:
-    """Keeps live failures from leaking into the stream or spamming output."""
+    """Public safety gate facade for stream input, output, and circuit breaks."""
 
     config: RoastConfig
     audit: Any
@@ -26,6 +40,7 @@ class SafetyGuard:
     _pipeline_failures: list[float] = field(default_factory=list)
     _output_failures: list[float] = field(default_factory=list)
     _last_output_at: float = 0.0
+    _last_support_output_at: float = 0.0
 
     def update(self, config: RoastConfig) -> None:
         self.config = config
@@ -43,6 +58,7 @@ class SafetyGuard:
         self._pipeline_failures.clear()
         self._output_failures.clear()
         self._last_output_at = 0.0
+        self._last_support_output_at = 0.0
         self.clear_queue()
         self.audit.record("safety_resumed", "safety guard reset", level="info")
 
@@ -53,8 +69,10 @@ class SafetyGuard:
         self.connected = bool(connected)
 
     def before_event(self, event: ViewerEvent) -> SafetyDecision:
-        if event.source == "live_danmaku" and not self.connected:
-            return SafetyDecision(False, "disconnected", "live event source is disconnected")
+        if _requires_live_connection(event) and not self.connected:
+            return SafetyDecision(
+                False, "disconnected", "live event source is disconnected"
+            )
         if self.manual_paused:
             return SafetyDecision(False, "paused", "roast is manually paused")
         if self.auto_paused:
@@ -67,7 +85,10 @@ class SafetyGuard:
                 "safety_queue_overflow",
                 "queue limit reached",
                 level="warning",
-                detail={"queue_size": self.queue_size, "queue_limit": self.config.queue_limit},
+                detail={
+                    "queue_size": self.queue_size,
+                    "queue_limit": self.config.queue_limit,
+                },
             )
             return SafetyDecision(False, self.status(), "queue limit reached")
         self.queue_size += 1
@@ -77,60 +98,28 @@ class SafetyGuard:
         self.queue_size = max(0, self.queue_size - 1)
 
     def before_output(self, event: ViewerEvent | None = None) -> SafetyDecision:
+        if _requires_live_connection(event) and not self.connected:
+            return SafetyDecision(
+                False, "disconnected", "live output source is disconnected"
+            )
         if self.manual_paused:
             return SafetyDecision(False, "paused", "output is manually paused")
         if self.auto_paused:
             return SafetyDecision(False, "tripped", "automatic safety stop is active")
-        # 限流：直播态按 rate_limit_seconds 控制最小锐评间隔；开发者沙盒不限流（要即时调试反馈）。
-        is_sandbox = event is not None and event.source == "developer_sandbox"
-        if not is_sandbox and self.config.rate_limit_seconds > 0:
-            now = time.monotonic()
-            if (now - self._last_output_at) < self.config.rate_limit_seconds:
-                return SafetyDecision(False, self.status(), "rate limited")
-            self._last_output_at = now
+        cooldown_decision = safety_guard_cooldown.before_output_cooldown(self, event)
+        if cooldown_decision is not None:
+            return cooldown_decision
         return SafetyDecision(True, self.status(), "")
 
     def output_cooldown_remaining(self, now: float | None = None) -> float:
-        """到下一次允许投递还剩多少秒（按 rate_limit_seconds）。
-
-        限流关闭（``rate_limit_seconds <= 0``）或冷却已过返回 ``0.0``。只描述限流时序，
-        不含暂停/急停（那是 ``before_output`` 的硬闸门）。供 ``live_events`` 中枢把开窗
-        择优对齐到这段冷却：窗口在冷却结束时 flush，胜者不会反被 ``before_output`` 判限流。
-        """
-        if self.config.rate_limit_seconds <= 0:
-            return 0.0
-        current = time.monotonic() if now is None else now
-        remaining = self.config.rate_limit_seconds - (current - self._last_output_at)
-        return remaining if remaining > 0 else 0.0
+        """Return seconds until output cooldown opens; pause/trip are separate gates."""
+        return safety_guard_cooldown.output_cooldown_remaining(self, now)
 
     def record_failure(self, kind: FailureKind, message: str) -> None:
-        now = time.monotonic()
-        bucket = self._pipeline_failures if kind == "pipeline" else self._output_failures
-        bucket.append(now)
-        self._trim(bucket, now)
-        limit = (
-            self.config.safety_pipeline_failure_limit
-            if kind == "pipeline"
-            else self.config.safety_output_failure_limit
-        )
-        self.audit.record(
-            f"safety_{kind}_failure",
-            message,
-            level="error",
-            detail={"count": len(bucket), "limit": limit},
-        )
-        if self.config.safety_auto_stop_enabled and len(bucket) >= limit:
-            self.auto_paused = True
-            self.audit.record(
-                "safety_auto_stop",
-                f"automatic stop after {len(bucket)} {kind} failures",
-                level="error",
-                detail={"kind": kind, "window_seconds": self.config.safety_window_seconds},
-            )
+        safety_guard_failures.record_failure(self, kind, message)
 
     def _trim(self, bucket: list[float], now: float) -> None:
-        window = self.config.safety_window_seconds
-        bucket[:] = [item for item in bucket if now - item <= window]
+        safety_guard_failures.trim_failure_bucket(self, bucket, now)
 
     def status(self) -> SafetyStatus:
         if not self.connected:

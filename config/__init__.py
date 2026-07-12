@@ -716,6 +716,7 @@ DEFAULT_CORE_CONFIG = {
     "assistApiKeyClaude": "",
     "assistApiKeyGrok": "",
     "assistApiKeyDoubao": "",
+    "assistApiKeyDoubaoTts": "",
     "mcpToken": "",
     "agentModelUrl": "",
     "agentModelId": "",
@@ -1245,10 +1246,10 @@ MEMORY_SCHEMA_VERSION_CURRENT = 2
 - v2：新 ontology（pattern/state/episode）+ event_start_at / event_end_at。
 - 用途：背景循环找 schema_version < CURRENT 的条目慢慢重判升版本。"""
 
-# ---- Memory: slow recheck loop (memory/temporal.py + memory_server.py) ─
+# ---- Memory: slow recheck loop (memory/temporal.py + app/memory_server/) ─
 MEMORY_RECHECK_ENABLED = True
 """慢速记忆重判循环总开关。
-- 用途：app/memory_server.py _periodic_slow_memory_recheck_loop 启动门控。
+- 用途：app/memory_server/evidence_loops.py _periodic_slow_memory_recheck_loop 启动门控。
 - 关闭时老数据不会被升版本（render 兜底走 pattern 不淡出）。"""
 
 MEMORY_RECHECK_INTERVAL_SECONDS = 30

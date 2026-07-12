@@ -12,7 +12,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 APP_AUTO_GOODBYE_PATH = PROJECT_ROOT / "static" / "app-auto-goodbye.js"
 APP_UI_PATH = PROJECT_ROOT / "static" / "app-ui.js"
 APP_BUTTONS_PATH = PROJECT_ROOT / "static" / "app-buttons.js"
-AVATAR_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "avatar-ui-buttons.js"
+AVATAR_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "avatar" / "avatar-ui-buttons.js"
 APP_REACT_CHAT_PATH = PROJECT_ROOT / "static" / "app-react-chat-window.js"
 APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app-interpage.js"
 
@@ -41,6 +41,14 @@ def test_app_ui_changes_are_limited_to_return_ball_desktop_bridge_contract():
 
     assert "action: 'idle_return_ball_state'" in source
     assert "function canPostIdleReturnBallDesktopState()" in source
+    assert "function isIdleCat1PlaygroundActiveForReturnBallDesktopBridge()" in source
+    assert "__nekoIdleCat1PlaygroundDropState" in source
+    assert "__nekoIdleCat1PlaygroundPendingEntry" in source
+    bridge_start = source.index("function isIdleCat1PlaygroundActiveForReturnBallDesktopBridge()")
+    bridge_end = source.index("function canPostIdleReturnBallDesktopState()", bridge_start)
+    bridge_block = source[bridge_start:bridge_end]
+    assert "buttons[i].__nekoIdleCat1PlaygroundPendingEntry" in bridge_block
+    assert "if (isIdleCat1PlaygroundActiveForReturnBallDesktopBridge()) return;" in source
     assert "electron-chat-window" in source
     assert "function getReturnBallDragScreenRect(" in source
     assert "'return-ball-dragging'" in source

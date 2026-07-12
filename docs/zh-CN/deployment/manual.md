@@ -63,7 +63,7 @@ uv run python app/memory_server.py
 uv run python app/main_server.py
 
 # 终端 3 — 智能体服务器（可选）
-uv run python app/agent_server.py
+uv run python -m app.agent_server
 ```
 
 补充说明：
