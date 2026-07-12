@@ -320,7 +320,9 @@ def _make_fake_realtime_session(name):
         s.prime_calls.append((text, skipped))
 
     async def _close():
+        # Mirror the real client: close() clears the ws reference.
         s.closed = True
+        s.ws = None
 
     async def _handle():
         await asyncio.Event().wait()
@@ -482,6 +484,7 @@ async def test_final_swap_post_promote_ws_invalid_restores_injected_extras():
     mgr.session = old_session
     mgr.pending_session = new_session
     mgr.is_hot_swap_imminent = True
+    mgr.is_active = True  # fail-close 必须真的把它翻回 False，默认 False 会假绿
     mgr.message_handler_task = None
 
     async def _kill_new_session_ws(*args, **kwargs):
@@ -721,3 +724,79 @@ async def test_final_swap_happy_path_consumes_selected_keeps_deferred(monkeypatc
             "successful swap consumes selected extras and keeps only deferred ones"
     finally:
         await _drain_task(mgr.message_handler_task)
+
+
+@pytest.mark.asyncio
+async def test_final_swap_cancel_after_old_close_fail_closes_instead_of_restarting():
+    """Cancellation landing after step 2 closed the old session but before
+    promote leaves self.session pointing at a closed client (ws=None). The
+    CancelledError handler must fail-close instead of restarting a listener
+    on the dead session (coderabbit Major on this PR)."""
+    mgr = _make_swap_manager()
+    new_session = _FakeSession("pending")
+    old_session = _make_fake_realtime_session("old")
+
+    _orig_close = old_session.close
+
+    async def _close_then_swallowed_cancel():
+        # Step 2 closes the old session (ws cleared), then the external cancel
+        # arrives and is swallowed — the pre-promote checkpoint re-raises it.
+        await _orig_close()
+        t = asyncio.current_task()
+        t.cancel()
+        try:
+            await asyncio.sleep(0)
+        except asyncio.CancelledError:
+            # Swallow on purpose: reproduces the checkpoint-only cancel path.
+            pass
+
+    old_session.close = _close_then_swallowed_cancel
+    mgr.session = old_session
+    mgr.pending_session = new_session
+    mgr.is_hot_swap_imminent = True
+    mgr.is_active = True
+    mgr.message_handler_task = None
+
+    swap_task = await _run_swap_as_final_swap_task(mgr)
+
+    assert not swap_task.cancelled()
+    assert new_session.closed
+    assert mgr.session is None, \
+        "cancel after old close must fail-close, not keep the dead session"
+    assert mgr.is_active is False
+    assert mgr.message_handler_task is None, \
+        "no listener may be restarted on a closed session"
+
+
+@pytest.mark.asyncio
+async def test_final_swap_post_promote_cancel_restores_removed_extras():
+    """Cancellation after promote comes only from external reset/end_session/
+    start_session preludes, all of which close the promoted session next — the
+    primed content never delivers, so the promote-removed extras must go back
+    to the queue (coderabbit Major on this PR)."""
+    mgr = _make_swap_manager()
+    old_session = _FakeSession("old")
+    new_session = _FakeSession("pending")
+    mgr.session = old_session
+    mgr.pending_session = new_session
+    mgr.is_hot_swap_imminent = True
+    mgr.message_handler_task = None
+
+    async def _cancelled_mid_post_promote(*args, **kwargs):
+        # External cancel lands on the swap task during a post-promote await.
+        t = asyncio.current_task()
+        t.cancel()
+        await asyncio.sleep(0)
+        return 0
+
+    mgr._prime_late_next_session_context_after_swap = _cancelled_mid_post_promote
+
+    extra = _extra_entry("id-post-promote", "task P finished")
+    mgr.pending_extra_replies = [extra]
+
+    swap_task = await _run_swap_as_final_swap_task(mgr)
+
+    assert mgr.session is new_session, \
+        "the handler leaves the promoted session for the canceller to close"
+    assert mgr.pending_extra_replies == [extra], \
+        "post-promote cancel must restore the promote-removed extras"

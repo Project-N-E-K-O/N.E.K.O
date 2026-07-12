@@ -41,6 +41,7 @@ from ._shared import (
     IDLE_SESSION_RESET_CHECK_INTERVAL_SECONDS,
     FRONTEND_START_SESSION_TIMEOUT_SECONDS,
     _START_LLM_CONCURRENT_ABORTED,
+    _ORPHAN_SESSION_REAPER_TASKS,
 )
 from .callback_render import (
     _render_pending_extra_replies_by_origin,
@@ -1913,8 +1914,19 @@ class LifecycleMixin:
                     logger.debug(f"Final Swap Sequence: CancelledError 路径关闭 new_session 失败（可忽略）: {_e}")
             await self._cleanup_pending_session_resources()
             await self._reset_preparation_state(clear_main_cache=True)
-            # 无需恢复队列：promote 前取消→队列没动过；promote 后取消→会话存活，
-            # 注入内容仍在其上下文里会随下一轮回复送达（移除是正确的终态）。
+            # 镜像 except Exception 的 ws 失效 fail-close：取消若落在旧会话已
+            # close() 之后（self.session 仍指向 ws 已被 close() 清空的旧会话）
+            # 或 promote 后 ws 失效，下面的重启只会给死会话建 listener——直接
+            # fail-close 让前端重连。（pending 生命周期错误触发 reset 的场景里
+            # 旧会话仍活着（ws 非空），重启行为保留。）
+            if self.session and isinstance(self.session, OmniRealtimeClient) and not self.session.ws:
+                self.session = None
+                self.is_active = False
+            # promote 前取消→队列没动过、_removed_extras 为空，此调用 no-op。
+            # promote 后取消→只可能来自外部 reset/end_session/新 start_session
+            # prelude，它们随后都会关闭 promoted 会话，注入内容不会再投递——把
+            # promote 时移除的条目塞回队首等下一次 hot-swap。
+            self._restore_undelivered_swap_extras(_removed_extras)
             if self.is_active and self.session and hasattr(self.session, 'handle_messages') and (not self.message_handler_task or self.message_handler_task.done()):
                 self.message_handler_task = asyncio.create_task(self.session.handle_messages())
 
@@ -1935,6 +1947,28 @@ class LifecycleMixin:
                 # 此时无法安全判断 task.done() 并补建 listener，会留下"活跃但无监听"状态。
                 # 直接 fail-close：清除会话状态让前端重连，优于让后续输入陷入僵局。
                 # （promote 前出口，队列没动过，_selected 仍在队列无需恢复。）
+                # 旧 session 不能就地 close()（会与卡死的 recv() 并发冲突，见步骤1
+                # 注释），但裸清引用会泄漏 ws：挂分离收尸 task，等旧 listener 真正
+                # 退出后再 best-effort 关闭。listener 永不退出时与裸清引用等价
+                # （无回归），退出时 ws 得到回收。
+                _stuck_listener_task = old_main_message_handler_task
+                _orphan_old_session = old_main_session
+
+                async def _reap_old_session_after_listener_exit():
+                    if _stuck_listener_task is not None:
+                        try:
+                            await _stuck_listener_task
+                        except (asyncio.CancelledError, Exception):
+                            pass  # 收尸只关心"已退出"，退出方式无所谓
+                    if _orphan_old_session is not None:
+                        try:
+                            await _orphan_old_session.close()
+                        except Exception as _reap_err:
+                            logger.debug(f"Final Swap Sequence: 收尸关闭旧 session 失败（可忽略）: {_reap_err}")
+
+                _reaper = asyncio.create_task(_reap_old_session_after_listener_exit())
+                _ORPHAN_SESSION_REAPER_TASKS.add(_reaper)
+                _reaper.add_done_callback(_ORPHAN_SESSION_REAPER_TASKS.discard)
                 self.session = None
                 self.message_handler_task = None
                 self.is_active = False
