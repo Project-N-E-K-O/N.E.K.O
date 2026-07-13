@@ -84,13 +84,34 @@ from wt_telemetry import (
 
 _CONTENT_TYPE_BY_EXT = {"jpg": "image/jpeg", "png": "image/png"}
 DEFAULT_BIND_HOST = "127.0.0.1"
-_ALLOWED_CORS_ORIGINS = frozenset(
-    {
-        "http://127.0.0.1:48911",
-        "http://localhost:48911",
-        "http://[::1]:48911",
-    }
-)
+
+
+def _read_main_server_port() -> int:
+    """Mirror the root config's env precedence without coupling this standalone service to it."""
+    for key in ("NEKO_MAIN_SERVER_PORT", "MAIN_SERVER_PORT"):
+        raw = os.getenv(key)
+        if not raw:
+            continue
+        try:
+            port = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= port <= 65535:
+            return port
+    return 48911
+
+
+def _build_allowed_cors_origins(port: int) -> frozenset[str]:
+    return frozenset(
+        {
+            f"http://127.0.0.1:{port}",
+            f"http://localhost:{port}",
+            f"http://[::1]:{port}",
+        }
+    )
+
+
+_ALLOWED_CORS_ORIGINS = _build_allowed_cors_origins(_read_main_server_port())
 
 _HUD_BUFFER = 200   # HUD 事件累积上限
 _CHAT_BUFFER = 200  # 聊天累积上限

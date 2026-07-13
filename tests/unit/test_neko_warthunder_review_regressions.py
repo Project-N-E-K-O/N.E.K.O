@@ -46,8 +46,7 @@ def test_success_mission_emits_battle_end() -> None:
     assert event.payload["result"] == "success"
 
 
-@pytest.fixture
-def wt_server_module(monkeypatch: pytest.MonkeyPatch):
+def _load_wt_server_module(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.syspath_prepend(str(DATA_PROCESS_DIR))
     module_path = DATA_PROCESS_DIR / "wt_server.py"
     spec = importlib.util.spec_from_file_location("neko_warthunder_review_wt_server", module_path)
@@ -57,7 +56,10 @@ def wt_server_module(monkeypatch: pytest.MonkeyPatch):
     return module
 
 
-def test_data_layer_cors_only_echoes_approved_neko_origins(wt_server_module) -> None:
+def test_data_layer_cors_only_echoes_approved_neko_origins(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("NEKO_MAIN_SERVER_PORT", raising=False)
+    monkeypatch.delenv("MAIN_SERVER_PORT", raising=False)
+    wt_server_module = _load_wt_server_module(monkeypatch)
     handler = wt_server_module._Handler.__new__(wt_server_module._Handler)
     emitted: list[tuple[str, str]] = []
     handler.send_header = lambda name, value: emitted.append((name, value))
@@ -73,3 +75,41 @@ def test_data_layer_cors_only_echoes_approved_neko_origins(wt_server_module) -> 
     assert ("Access-Control-Allow-Origin", "http://localhost:48911") in emitted
     assert ("Vary", "Origin") in emitted
     assert ("Access-Control-Allow-Methods", "GET, OPTIONS") in emitted
+
+
+def test_data_layer_cors_uses_configured_main_server_port(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NEKO_MAIN_SERVER_PORT", "43102")
+    monkeypatch.setenv("MAIN_SERVER_PORT", "43103")
+    wt_server_module = _load_wt_server_module(monkeypatch)
+
+    assert wt_server_module._ALLOWED_CORS_ORIGINS == frozenset(
+        {
+            "http://127.0.0.1:43102",
+            "http://localhost:43102",
+            "http://[::1]:43102",
+        }
+    )
+
+    handler = wt_server_module._Handler.__new__(wt_server_module._Handler)
+    emitted: list[tuple[str, str]] = []
+    handler.send_header = lambda name, value: emitted.append((name, value))
+
+    handler.headers = {"Origin": "http://localhost:43102"}
+    handler._cors()
+    assert ("Access-Control-Allow-Origin", "http://localhost:43102") in emitted
+
+    emitted.clear()
+    handler.headers = {"Origin": "http://localhost:48911"}
+    handler._cors()
+    assert all(name != "Access-Control-Allow-Origin" for name, _value in emitted)
+
+
+def test_data_layer_cors_supports_legacy_main_server_port_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("NEKO_MAIN_SERVER_PORT", raising=False)
+    monkeypatch.setenv("MAIN_SERVER_PORT", "43103")
+    wt_server_module = _load_wt_server_module(monkeypatch)
+
+    assert "http://localhost:43103" in wt_server_module._ALLOWED_CORS_ORIGINS
+    assert "http://localhost:48911" not in wt_server_module._ALLOWED_CORS_ORIGINS
