@@ -414,19 +414,46 @@ async def test_update_session_is_locked_after_connect(monkeypatch):
 
 
 async def test_provider_mode_does_not_commit():
+    observed_requests: list[tuple[str, int]] = []
+
+    async def capture_provider_worker(request_queue, response_queue, api_key, config):
+        del api_key, config
+        await response_queue.put(_AsrWorkerEvent(kind="ready", generation=0))
+        while True:
+            request = await request_queue.get()
+            try:
+                observed_requests.append((request.kind, len(request.audio)))
+                if request.kind == "shutdown":
+                    await response_queue.put(
+                        _AsrWorkerEvent(kind="closed", generation=request.generation)
+                    )
+                    return
+            finally:
+                request_queue.task_done()
+
     transcripts: asyncio.Queue[str] = asyncio.Queue()
+    errors = AsyncMock()
     session = _RealtimeAsrSessionImpl(
-        worker_fn=_scripted_worker,
-        api_key="provider",
-        config=AsrSessionConfig(endpointing_mode="provider"),
+        worker_fn=capture_provider_worker,
+        api_key="",
+        config=AsrSessionConfig(
+            input_sample_rate_hz=48_000,
+            endpointing_mode="provider",
+        ),
         on_input_transcript=transcripts.put,
-        on_connection_error=AsyncMock(),
+        on_connection_error=errors,
     )
     await session.connect()
-    await session.stream_audio(b"\x00\x00" * 160)
+    await session.stream_audio(b"\x00\x00" * 480)
     await session.signal_user_activity_end()
-    await asyncio.sleep(0.05)
+
+    assert session._request_queue is not None
+    await asyncio.wait_for(session._request_queue.join(), 1)
+    audio_requests = [size for kind, size in observed_requests if kind == "audio"]
+    assert sum(audio_requests) == 160 * 2
+    assert all(kind != "commit" for kind, _ in observed_requests)
     assert transcripts.empty()
+    errors.assert_not_awaited()
     await session.close()
 
 
@@ -688,6 +715,8 @@ async def test_transcript_callback_can_close_session(monkeypatch):
 
 
 async def test_manual_mode_accepts_only_committed_utterance_finals():
+    uncommitted_finals_emitted = asyncio.Event()
+
     async def eager_final_worker(request_queue, response_queue, api_key, config):
         del api_key, config
         await response_queue.put(_AsrWorkerEvent(kind="ready", generation=0))
@@ -711,6 +740,7 @@ async def test_manual_mode_accepts_only_committed_utterance_finals():
                         utterance_id=(request.utterance_id or 0) + 100,
                     )
                 )
+                uncommitted_finals_emitted.set()
             elif request.kind == "commit":
                 await response_queue.put(
                     _AsrWorkerEvent(kind="final", text="committed", **common)
@@ -722,17 +752,21 @@ async def test_manual_mode_accepts_only_committed_utterance_finals():
                 return
 
     transcripts: asyncio.Queue[str] = asyncio.Queue()
+    errors = AsyncMock()
     session = _RealtimeAsrSessionImpl(
         worker_fn=eager_final_worker,
         api_key="",
         config=AsrSessionConfig(),
         on_input_transcript=transcripts.put,
-        on_connection_error=AsyncMock(),
+        on_connection_error=errors,
     )
     await session.connect()
     await session.stream_audio(b"\x00\x00" * 160)
-    await asyncio.sleep(0.05)
+    await asyncio.wait_for(uncommitted_finals_emitted.wait(), 1)
+    assert session._response_queue is not None
+    await asyncio.wait_for(session._response_queue.join(), 1)
     assert transcripts.empty()
+    errors.assert_not_awaited()
 
     await session.signal_user_activity_end()
     assert await asyncio.wait_for(transcripts.get(), 1) == "committed"
