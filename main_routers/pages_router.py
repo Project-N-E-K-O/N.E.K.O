@@ -144,7 +144,7 @@ _static_asset_version_cache: tuple[float, str] = (0.0, "0")
 _REACT_CHAT_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/react/neko-chat/neko-chat-window.css",
     _PROJECT_ROOT / "static/react/neko-chat/neko-chat-window.iife.js",
-    _PROJECT_ROOT / "static/app/app-react-chat-window.js",
+    *_PROJECT_ROOT.glob("static/app/app-react-chat-window/*.js"),
     _PROJECT_ROOT / "static/app/app-chat-adapter.js",
     _PROJECT_ROOT / "static/app/app-buttons.js",
     _PROJECT_ROOT / "static/icons/edit_tool_unified.png",

@@ -1497,7 +1497,11 @@ def test_react_chat_assets_use_react_chat_cache_version():
     react_chat_assets = [
         "/static/react/neko-chat/neko-chat-window.css",
         "/static/react/neko-chat/neko-chat-window.iife.js",
-        "/static/app/app-react-chat-window.js",
+        "/static/app/app-react-chat-window/bootstrap-state-and-geometry.js",
+        "/static/app/app-react-chat-window/geometry-and-messages.js",
+        "/static/app/app-react-chat-window/message-bundle-actions-and-prompts.js",
+        "/static/app/app-react-chat-window/minimize-and-idle-dock.js",
+        "/static/app/app-react-chat-window/resize-drag-and-api.js",
         "/static/app/app-chat-adapter.js",
         "/static/app/app-buttons.js",
     ]

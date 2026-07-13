@@ -43,7 +43,7 @@ The chat window is built as an IIFE library and embedded in the main page.
 - **Global**: `window.NekoChatWindow`
 - **Dev server**: `npm run dev` (port 5174)
 
-The glue layer `static/app/app-react-chat-window.js` loads and mounts the React component into the DOM.
+The glue layer `static/app/app-react-chat-window` loads and mounts the React component into the DOM.
 
 ## Plugin manager (Vue)
 
