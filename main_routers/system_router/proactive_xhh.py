@@ -16,11 +16,14 @@ dependency: proactive chat only reads the public community feed.
 
 from __future__ import annotations
 
+import asyncio
+import base64
 import hashlib
 import secrets
 import time
 from typing import Any
 
+from utils.cookies_login import load_cookies_from_file
 from utils.http.external_client import get_external_http_client
 
 
@@ -28,6 +31,7 @@ _XHH_API_BASE = "https://api.xiaoheihe.cn"
 _XHH_FEEDS_PATH = "/bbs/app/feeds"
 _XHH_WEB_LINK = "https://www.xiaoheihe.cn/app/bbs/link/{link_id}"
 _XHH_SIGNING_KEY = "AB45STUVWZEFGJ6CH01D237IXYPQRKLMN89"
+_XHH_TOKEN_PHRASES = ("唉？！云朵！", "哒哒哒哒哒，好想玩原神", "云！原！神！")
 _XHH_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -106,6 +110,53 @@ def build_xhh_request_keys(
     return f"{_av(digest[:5], _XHH_SIGNING_KEY, -4)}{checksum:02d}", request_nonce, request_time
 
 
+def build_xhh_token_id(*, timestamp: int | None = None) -> str:
+    """Build the short-lived browser token used by Xiaoheihe requests."""
+    current = int(timestamp or time.time())
+    raw = bytearray(hashlib.md5(str(current).encode()).digest())
+    for phrase in _XHH_TOKEN_PHRASES:
+        raw.extend(hashlib.md5(phrase.encode()).digest())
+    raw.append(0)
+    return base64.b64encode(bytes(raw)).decode("ascii")
+
+
+def build_xhh_request_params(
+    path: str,
+    *,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    hkey, nonce, request_time = build_xhh_request_keys(path)
+    params: dict[str, Any] = dict(extra or {})
+    params.update(
+        {
+            "os_type": "web",
+            "app": "web",
+            "client_type": "web",
+            "version": "999.0.4",
+            "web_version": "2.5",
+            "x_client_type": "web",
+            "x_app": "heybox_website",
+            "x_os_type": "Windows",
+            "device_info": "Chrome",
+            "hkey": hkey,
+            "_time": str(request_time),
+            "nonce": nonce,
+            "_notip": "true",
+        }
+    )
+    return params
+
+
+def build_xhh_cookie_header(cookies: dict[str, str]) -> str:
+    normalized = {
+        str(key).strip(): str(value).strip()
+        for key, value in (cookies or {}).items()
+        if str(key).strip() and str(value).strip()
+    }
+    normalized.setdefault("x_xhh_tokenid", build_xhh_token_id())
+    return "; ".join(f"{key}={value}" for key, value in normalized.items())
+
+
 def _plain_text(value: Any) -> str:
     return " ".join(str(value or "").split()).strip()
 
@@ -176,31 +227,19 @@ def format_xhh_feed(posts: list[dict[str, Any]]) -> str:
 
 
 async def fetch_xhh_feed_content(limit: int = 10) -> dict[str, Any]:
-    """Fetch and normalize Xiaoheihe's public feed without user credentials."""
+    """Fetch the feed, optionally using credentials saved in the credential center."""
     try:
-        hkey, nonce, request_time = build_xhh_request_keys(_XHH_FEEDS_PATH)
+        cookies = await asyncio.to_thread(load_cookies_from_file, "xhh")
+        headers = {
+            "Referer": "https://www.xiaoheihe.cn/",
+            "User-Agent": _XHH_USER_AGENT,
+        }
+        if cookies:
+            headers["Cookie"] = build_xhh_cookie_header(cookies)
         response = await get_external_http_client().get(
             f"{_XHH_API_BASE}{_XHH_FEEDS_PATH}",
-            params={
-                "pull": "1",
-                "os_type": "web",
-                "app": "web",
-                "client_type": "web",
-                "version": "999.0.4",
-                "web_version": "2.5",
-                "x_client_type": "web",
-                "x_app": "heybox_website",
-                "x_os_type": "Windows",
-                "device_info": "Chrome",
-                "hkey": hkey,
-                "_time": str(request_time),
-                "nonce": nonce,
-                "_notip": "true",
-            },
-            headers={
-                "Referer": "https://www.xiaoheihe.cn/",
-                "User-Agent": _XHH_USER_AGENT,
-            },
+            params=build_xhh_request_params(_XHH_FEEDS_PATH, extra={"pull": "1"}),
+            headers=headers,
             timeout=10.0,
         )
         response.raise_for_status()
@@ -227,7 +266,10 @@ async def fetch_xhh_feed_content(limit: int = 10) -> dict[str, Any]:
 
 
 __all__ = [
+    "build_xhh_cookie_header",
     "build_xhh_request_keys",
+    "build_xhh_request_params",
+    "build_xhh_token_id",
     "fetch_xhh_feed_content",
     "format_xhh_feed",
     "normalize_xhh_feed",

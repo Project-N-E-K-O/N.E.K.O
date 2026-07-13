@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import base64
 from unittest.mock import patch
 
 import pytest
 
 from main_routers.system_router.proactive_xhh import (
+    build_xhh_cookie_header,
     build_xhh_request_keys,
+    build_xhh_token_id,
     fetch_xhh_feed_content,
     format_xhh_feed,
     normalize_xhh_feed,
@@ -41,6 +44,18 @@ def test_build_xhh_request_keys_matches_openxhh_vector():
         timestamp=1710000000,
         nonce="0123456789ABCDEF0123456789ABCDEF",
     ) == ("TUD7U74", "0123456789ABCDEF0123456789ABCDEF", 1710000000)
+
+
+def test_build_xhh_token_and_cookie_header():
+    token = build_xhh_token_id(timestamp=1710000000)
+
+    assert len(base64.b64decode(token)) == 65
+    header = build_xhh_cookie_header(
+        {"user_heybox_id": "123", "heybox_token": "secret"}
+    )
+    assert "user_heybox_id=123" in header
+    assert "heybox_token=secret" in header
+    assert "x_xhh_tokenid=" in header
 
 
 def test_normalize_and_format_xhh_feed():
@@ -87,6 +102,9 @@ async def test_fetch_xhh_feed_uses_read_only_public_endpoint():
     with patch(
         "main_routers.system_router.proactive_xhh.get_external_http_client",
         return_value=client,
+    ), patch(
+        "main_routers.system_router.proactive_xhh.load_cookies_from_file",
+        return_value={},
     ):
         result = await fetch_xhh_feed_content(limit=1)
 
@@ -98,6 +116,26 @@ async def test_fetch_xhh_feed_uses_read_only_public_endpoint():
     assert kwargs["params"]["hkey"]
     assert kwargs["headers"]["Referer"] == "https://www.xiaoheihe.cn/"
     assert "Cookie" not in kwargs["headers"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_xhh_feed_injects_saved_credentials():
+    client = _FakeClient()
+    with patch(
+        "main_routers.system_router.proactive_xhh.get_external_http_client",
+        return_value=client,
+    ), patch(
+        "main_routers.system_router.proactive_xhh.load_cookies_from_file",
+        return_value={"user_heybox_id": "123", "heybox_token": "secret"},
+    ):
+        result = await fetch_xhh_feed_content(limit=1)
+
+    assert result["success"] is True
+    _, kwargs = client.call
+    cookie_header = kwargs["headers"]["Cookie"]
+    assert "user_heybox_id=123" in cookie_header
+    assert "heybox_token=secret" in cookie_header
+    assert "x_xhh_tokenid=" in cookie_header
 
 
 @pytest.mark.asyncio
@@ -114,6 +152,9 @@ async def test_fetch_xhh_feed_reports_empty_payload_as_source_failure():
     with patch(
         "main_routers.system_router.proactive_xhh.get_external_http_client",
         return_value=EmptyClient(),
+    ), patch(
+        "main_routers.system_router.proactive_xhh.load_cookies_from_file",
+        return_value={},
     ):
         result = await fetch_xhh_feed_content()
 

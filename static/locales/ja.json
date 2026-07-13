@@ -3709,6 +3709,7 @@
         "title": "N.E.K.O クレデンシャル制御センター",
         "header": "クレデンシャル取得センター",
         "bilibili": "ビリビリ (Bilibili)",
+        "xhh": "小黒盒",
         "douyin": "抖音 (Douyin)",
         "kuaishou": "快手 (Kuaishou)",
         "weibo": "微博 (Weibo)",
@@ -3736,6 +3737,7 @@
         "thisPlatform": "このプラットフォーム",
         "instructions": {
             "bilibili": "<b>対象：</b> <b>bilibili.com</b> にアクセスして Cookie を取得してください。",
+            "xhh": "<b>推奨：</b>下のQRコードログインを使うか、<b>xiaoheihe.cn</b> にログインしてCookieを手動入力してください。",
             "douyin": "<b>対象：</b> <b>douyin.com</b> にアクセスして Cookie を取得してください。",
             "kuaishou": "<b>対象：</b> <b>kuaishou.com</b> にアクセスして Cookie を取得してください。",
             "weibo": "<b>対象：</b> <b>weibo.com</b> にアクセスして Cookie を取得してください。",
@@ -3752,6 +3754,18 @@
             "step4": "左側の <span class=\"highlight-text\">Cookies</span> を展開し、ドメインをクリックして右側にある必要な値をコピーします。"
         },
         "fields": {
+            "user_heybox_id": {
+                "label": "user_heybox_id",
+                "desc": "小黒盒アカウントID（必須）"
+            },
+            "heybox_token": {
+                "label": "heybox_token",
+                "desc": "小黒盒ログイントークン（必須）"
+            },
+            "x_xhh_tokenid": {
+                "label": "x_xhh_tokenid",
+                "desc": "一時ブラウザトークン（任意、実行時に自動生成）"
+            },
             "SESSDATA": {
                 "label": "SESSDATA",
                 "desc": "コアIDクレデンシャル (必須)"

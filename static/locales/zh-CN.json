@@ -3709,6 +3709,7 @@
         "title": "N.E.K.O 凭证控制中心",
         "header": "凭证获取中心",
         "bilibili": "Bilibili",
+        "xhh": "小黑盒",
         "douyin": "抖音",
         "kuaishou": "快手",
         "weibo": "微博",
@@ -3736,6 +3737,7 @@
         "thisPlatform": "此平台",
         "instructions": {
             "bilibili": "<b>目标：</b>请前往 <b>bilibili.com</b>获取这些 Cookies。",
+            "xhh": "<b>推荐：</b>点击下方扫码登录；也可前往 <b>xiaoheihe.cn</b> 登录后手动填写 Cookies。",
             "douyin": "<b>目标：</b> 请前往 <b>douyin.com</b> 获取这些 Cookies。",
             "kuaishou": "<b>目标：</b> 请前往 <b>kuaishou.com</b> 获取这些 Cookies。",
             "weibo": "<b>目标：</b> 请前往 <b>weibo.com</b> 获取这些 Cookies。",
@@ -3752,6 +3754,18 @@
             "step4": "在左侧找到 <span class=\"highlight-text\">Cookies</span>，点击域名后在右侧复制对应的值。"
         },
         "fields": {
+            "user_heybox_id": {
+                "label": "user_heybox_id",
+                "desc": "小黑盒账号 ID（必填）"
+            },
+            "heybox_token": {
+                "label": "heybox_token",
+                "desc": "小黑盒登录令牌（必填）"
+            },
+            "x_xhh_tokenid": {
+                "label": "x_xhh_tokenid",
+                "desc": "临时浏览器令牌（选填，运行时可自动生成）"
+            },
             "SESSDATA": {
                 "label": "SESSDATA",
                 "desc": "核心身份凭证 (必填)"

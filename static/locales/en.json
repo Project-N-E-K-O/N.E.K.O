@@ -3709,6 +3709,7 @@
         "title": "N.E.K.O Credential Control Center",
         "header": "Credential Acquisition Center",
         "bilibili": "Bilibili",
+        "xhh": "Xiaoheihe",
         "douyin": "Douyin",
         "kuaishou": "Kuaishou",
         "weibo": "Weibo",
@@ -3736,6 +3737,7 @@
         "thisPlatform": "this platform",
         "instructions": {
             "bilibili": "<b>Target:</b> Go to <b>bilibili.com</b> to fetch these cookies.",
+            "xhh": "<b>Recommended:</b> use QR login below, or sign in at <b>xiaoheihe.cn</b> and enter the cookies manually.",
             "douyin": "<b>Target:</b> Go to <b>douyin.com</b> to fetch these cookies.",
             "kuaishou": "<b>Target:</b> Go to <b>kuaishou.com</b> to fetch these cookies.",
             "weibo": "<b>Target:</b> Go to <b>weibo.com</b> to fetch these cookies.",
@@ -3752,6 +3754,18 @@
             "step4": "Find <span class=\"highlight-text\">Cookies</span> on the left sidebar, click the domain, and copy the required values on the right."
         },
         "fields": {
+            "user_heybox_id": {
+                "label": "user_heybox_id",
+                "desc": "Xiaoheihe account ID (required)"
+            },
+            "heybox_token": {
+                "label": "heybox_token",
+                "desc": "Xiaoheihe login token (required)"
+            },
+            "x_xhh_tokenid": {
+                "label": "x_xhh_tokenid",
+                "desc": "Temporary browser token (optional; generated at runtime)"
+            },
             "SESSDATA": {
                 "label": "SESSDATA",
                 "desc": "Core identity credential (Required)"

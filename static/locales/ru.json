@@ -3709,6 +3709,7 @@
         "title": "Центр управления учетными данными N.E.K.O",
         "header": "Центр получения учетных данных",
         "bilibili": "Bilibili",
+        "xhh": "Xiaoheihe",
         "douyin": "Douyin",
         "kuaishou": "Kuaishou",
         "weibo": "Weibo",
@@ -3736,6 +3737,7 @@
         "thisPlatform": "Эта платформа",
         "instructions": {
             "bilibili": "<b>Цель:</b> Перейдите на <b>bilibili.com</b>, чтобы получить эти файлы cookie.",
+            "xhh": "<b>Рекомендуется:</b> используйте вход по QR-коду ниже или войдите на <b>xiaoheihe.cn</b> и введите cookies вручную.",
             "douyin": "<b>Цель:</b> Перейдите на <b>douyin.com</b>, чтобы получить эти файлы cookie.",
             "kuaishou": "<b>Цель:</b> Перейдите на <b>kuaishou.com</b>, чтобы получить эти файлы cookie.",
             "weibo": "<b>Цель:</b> Перейдите на <b>weibo.com</b>, чтобы получить эти файлы cookie.",
@@ -3752,6 +3754,18 @@
             "step4": "Найдите <span class=\"highlight-text\">Cookies</span> на левой боковой панели, нажмите на домен и скопируйте нужные значения справа."
         },
         "fields": {
+            "user_heybox_id": {
+                "label": "user_heybox_id",
+                "desc": "ID учетной записи Xiaoheihe (обязательно)"
+            },
+            "heybox_token": {
+                "label": "heybox_token",
+                "desc": "Токен входа Xiaoheihe (обязательно)"
+            },
+            "x_xhh_tokenid": {
+                "label": "x_xhh_tokenid",
+                "desc": "Временный токен браузера (необязательно; создается автоматически)"
+            },
             "SESSDATA": {
                 "label": "SESSDATA",
                 "desc": "Основные учетные данные личности (Обязательно)"

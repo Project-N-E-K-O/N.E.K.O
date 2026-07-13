@@ -29,6 +29,17 @@ const PLATFORM_CONFIG_DATA = {
             { key: 'buvid3', labelKey: 'cookiesLogin.fields.buvid3.label', descKey: 'cookiesLogin.fields.buvid3.desc', required: false }
         ]
     },
+    'xhh': {
+        name: '小黑盒',
+        nameKey: 'cookiesLogin.xhh',
+        theme: '#222222',
+        instructionKey: 'cookiesLogin.instructions.xhh',
+        fields: [
+            { key: 'user_heybox_id', labelKey: 'cookiesLogin.fields.user_heybox_id.label', descKey: 'cookiesLogin.fields.user_heybox_id.desc', required: true },
+            { key: 'heybox_token', labelKey: 'cookiesLogin.fields.heybox_token.label', descKey: 'cookiesLogin.fields.heybox_token.desc', required: true },
+            { key: 'x_xhh_tokenid', labelKey: 'cookiesLogin.fields.x_xhh_tokenid.label', descKey: 'cookiesLogin.fields.x_xhh_tokenid.desc', required: false }
+        ]
+    },
     'douyin': {
         name: '抖音', 
         nameKey: 'cookiesLogin.douyin', 

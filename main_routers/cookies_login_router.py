@@ -30,6 +30,7 @@ import re
 import io
 import base64
 from typing import Dict, Optional
+from urllib.parse import parse_qsl, urlparse
 
 import qrcode
 import httpx
@@ -48,6 +49,10 @@ from utils.cookies_login import (
     CONFIG_DIR
 )
 from utils.logger_config import get_module_logger
+from main_routers.system_router.proactive_xhh import (
+    build_xhh_request_params,
+    build_xhh_token_id,
+)
 
 logger = get_module_logger(__name__, "Main")
 
@@ -99,6 +104,7 @@ def validate_platform_fields(platform: str, cookies: Dict[str, str]):
     platform_validations = {
         "netease": ["MUSIC_U"],
         "bilibili": ["SESSDATA"],
+        "xhh": ["user_heybox_id", "heybox_token"],
         "douyin": ["sessionid", "ttwid"],
         "kuaishou": ["kuaishou.server.web_st", "userId"], 
         "weibo": ["SUB"],
@@ -295,12 +301,126 @@ def get_nested_value(data: dict, path: str, default=None):
     return value
 
 
+_XHH_API_BASE = "https://api.xiaoheihe.cn"
+_XHH_QR_CREATE_PATH = "/account/get_qrcode_url/"
+_XHH_QR_POLL_PATH = "/account/qr_state/"
+_XHH_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/125.0.0.0 Safari/537.36"
+    ),
+    "Referer": "https://www.xiaoheihe.cn/",
+    "Accept": "application/json, text/plain, */*",
+}
+
+
+def _render_qrcode_data_url(qrcode_url: str) -> str:
+    qr = qrcode.QRCode(
+        version=1,
+        error_correction=qrcode.constants.ERROR_CORRECT_H,
+        box_size=10,
+        border=4,
+    )
+    qr.add_data(qrcode_url)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    buffer = io.BytesIO()
+    img.save(buffer, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+
+async def _request_xhh_qr(path: str, extra_params: dict | None = None):
+    params = build_xhh_request_params(path, extra=extra_params)
+    async with httpx.AsyncClient(follow_redirects=True, trust_env=True) as client:
+        response = await client.get(
+            f"{_XHH_API_BASE}{path}",
+            params=params,
+            headers=_XHH_HEADERS,
+            timeout=10,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=502, detail="小黑盒返回了无效响应")
+    return response, payload
+
+
+async def _get_xhh_qr_code():
+    _, payload = await _request_xhh_qr(_XHH_QR_CREATE_PATH)
+    if str(payload.get("status") or "").lower() != "ok":
+        raise HTTPException(
+            status_code=502,
+            detail=str(payload.get("msg") or "小黑盒二维码获取失败"),
+        )
+    result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+    qrcode_url = str(result.get("qr_url") or "").strip()
+    parsed = urlparse(qrcode_url)
+    if not qrcode_url or not parsed.query:
+        raise HTTPException(status_code=502, detail="小黑盒二维码数据解析失败")
+    timeout = int(result.get("expire") or 180)
+    return {
+        "success": True,
+        "data": {
+            "qrcode_key": parsed.query,
+            "qrcode_url": qrcode_url,
+            "qrcode_image": _render_qrcode_data_url(qrcode_url),
+            "timeout": timeout,
+        },
+    }
+
+
+async def _poll_xhh_qr_login(qrcode_key: str):
+    state_params = dict(parse_qsl(qrcode_key, keep_blank_values=True))
+    if not state_params:
+        raise HTTPException(status_code=400, detail="小黑盒二维码状态参数无效")
+    response, payload = await _request_xhh_qr(_XHH_QR_POLL_PATH, state_params)
+    result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+    error = str(result.get("error") or "").strip()
+    message = str(result.get("error_msg") or payload.get("msg") or "等待扫码").strip()
+    if error.lower() != "ok":
+        normalized = f"{error} {message}".lower()
+        if any(marker in normalized for marker in ("expired", "expire", "过期", "失效")):
+            qr_status = "expired"
+        elif any(marker in normalized for marker in ("scanned", "已扫码", "确认")):
+            qr_status = "scanned"
+        else:
+            qr_status = "waiting"
+        return {
+            "success": False,
+            "data": {"code": error or "waiting", "status": qr_status, "message": message},
+        }
+
+    cookies = {str(key): str(value) for key, value in response.cookies.items() if value}
+    if not cookies:
+        raise HTTPException(status_code=502, detail="小黑盒扫码成功但未返回登录凭证")
+    cookies.setdefault("x_xhh_tokenid", build_xhh_token_id())
+    validate_platform_fields("xhh", cookies)
+    save_ok = await asyncio.to_thread(save_cookies_to_file, "xhh", cookies)
+    if not save_ok:
+        raise HTTPException(status_code=500, detail="小黑盒登录成功，但凭证保存失败")
+    return {
+        "success": True,
+        "data": {
+            "code": "ok",
+            "status": "success",
+            "message": str(result.get("nickname") or "登录成功"),
+            "cookies": cookies,
+            "cookie_fields": NetworkQRLoginInfo["xhh"]["cookie_fields"],
+            "cookies_count": len(cookies),
+        },
+    }
+
+
 @router.post("/get_QR", summary="获取登陆二维码")
 async def api_get_qr_code(
     platform: str = Body(..., min_length=2, max_length=20, pattern=r"^[a-zA-Z0-9_-]+$", embed=True)
 ):
     if platform not in NetworkQRLoginInfo:
         raise HTTPException(status_code=400, detail=f"不支持的平台: {platform}")
+
+    if platform == "xhh":
+        return await _get_xhh_qr_code()
     
     config = NetworkQRLoginInfo[platform]
     response_config = config.get("response", {})
@@ -380,10 +500,13 @@ async def api_get_qr_code(
 @router.post("/QRLogin", summary="二维码登陆")
 async def api_qr_login_poll(
     platform: str = Body(..., min_length=2, max_length=20, pattern=r"^[a-zA-Z0-9_-]+$", embed=True),
-    qrcode_key: str = Body(..., min_length=10, max_length=100, embed=True)
+    qrcode_key: str = Body(..., min_length=3, max_length=100, embed=True)
 ):
     if platform not in NetworkQRLoginInfo:
         raise HTTPException(status_code=400, detail=f"不支持的平台: {platform}")
+
+    if platform == "xhh":
+        return await _poll_xhh_qr_login(qrcode_key)
     
     config = NetworkQRLoginInfo[platform]
     response_config = config.get("response", {})
@@ -488,6 +611,15 @@ async def api_qr_login_poll(
 
 #存在用于直接复制后替换内容的方便示例,不需要检查NetworkQRLoginInfo["示例"]内部的东西
 NetworkQRLoginInfo = {
+    "xhh": {
+        "get": f"{_XHH_API_BASE}{_XHH_QR_CREATE_PATH}",
+        "login": f"{_XHH_API_BASE}{_XHH_QR_POLL_PATH}",
+        "timeout": 180,
+        "cookie_fields": ["user_heybox_id", "heybox_token", "x_xhh_tokenid"],
+        "headers": _XHH_HEADERS,
+        "response": {},
+        "status_codes": {},
+    },
     "bilibili": {
         "get": "https://passport.bilibili.com/x/passport-login/web/qrcode/generate",
         "login": "https://passport.bilibili.com/x/passport-login/web/qrcode/poll",
