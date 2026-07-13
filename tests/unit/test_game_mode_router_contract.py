@@ -27,6 +27,11 @@ def _client(*, secure: bool = True) -> TestClient:
 def test_game_mode_beta_http_state_enable_manual_restore_and_disable_flow(monkeypatch):
     monkeypatch.setenv("NEKO_GAME_MODE_DEBUG", "1")
 
+    async def delivered(_payload):
+        return 1
+
+    monkeypatch.setattr(game_mode_router_module.protector, "_broadcaster", delivered)
+
     with _client() as client:
         try:
             client.post("/api/game-mode-beta/enabled", json={"enabled": False})

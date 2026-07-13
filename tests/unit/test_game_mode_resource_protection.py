@@ -508,6 +508,11 @@ async def test_game_mode_debug_trigger_is_env_gated(monkeypatch):
     )
     payload = {"reason": "debug", "percent": 97}
 
+    async def delivered(_payload):
+        return 1
+
+    monkeypatch.setattr(protector, "_broadcaster", delivered)
+
     monkeypatch.delenv("NEKO_GAME_MODE_DEBUG", raising=False)
     monkeypatch.delenv("NEKO_DEBUG", raising=False)
     with pytest.raises(HTTPException) as exc_info:
@@ -776,6 +781,137 @@ async def test_ack_timeout_aborts_cycle_and_requires_full_reconfirmation_after_b
         assert state["retry_not_before"] == 1035.0
         assert state["trigger_reason"] is None
         assert any(item["type"] == "game_mode_switch_failed" for item in events)
+    finally:
+        await protector.set_enabled(False)
+
+
+@pytest.mark.asyncio
+async def test_late_pet_does_not_extend_in_flight_switch_ack_set():
+    now = {"value": 1000.0}
+
+    async def broadcaster(_payload):
+        return 1
+
+    protector = GameModeResourceProtector(
+        sampler=normal_sample,
+        broadcaster=broadcaster,
+        time_fn=lambda: now["value"],
+    )
+    await protector.set_enabled(True)
+    try:
+        await protector.register_window(pet_instance_id="pet-original")
+        state = await protector.debug_trigger()
+        assert state["cycle_phase"] == "switching"
+        assert state["expected_window_count"] == 1
+        assert state["ack_deadline"] == 1005.0
+
+        now["value"] = 1004.0
+        registration = await protector.register_window(pet_instance_id="pet-late")
+        state = protector.snapshot()
+
+        assert registration["join_as_cat"] is True
+        assert state["expected_window_count"] == 1
+        assert state["ack_deadline"] == 1005.0
+
+        state = await protector.acknowledge_switch(
+            cycle_id=state["cycle_id"],
+            pet_instance_id="pet-original",
+            status="protected",
+        )
+        assert state["cycle_phase"] == "protected"
+        assert state["owned_window_count"] == 1
+    finally:
+        await protector.set_enabled(False)
+
+
+@pytest.mark.asyncio
+async def test_unregistering_protected_pet_releases_ack_ownership():
+    async def broadcaster(_payload):
+        return 1
+
+    protector = GameModeResourceProtector(broadcaster=broadcaster, time_fn=lambda: 1000.0)
+    await protector.set_enabled(True)
+    try:
+        await protector.register_window(pet_instance_id="pet-a")
+        await protector.register_window(pet_instance_id="pet-b")
+        state = await protector.debug_trigger()
+        cycle_id = state["cycle_id"]
+        await protector.acknowledge_switch(
+            cycle_id=cycle_id,
+            pet_instance_id="pet-a",
+            status="protected",
+        )
+        state = await protector.acknowledge_switch(
+            cycle_id=cycle_id,
+            pet_instance_id="pet-b",
+            status="protected",
+        )
+        assert state["owned_window_count"] == 2
+
+        state = await protector.unregister_window("pet-a")
+        assert state["owned_window_count"] == 1
+        assert state["auto_switch_active"] is True
+
+        state = await protector.mark_manual_restore("pet-b")
+        assert state["cycle_phase"] == "idle"
+        assert state["auto_switch_active"] is False
+        assert state["owned_window_count"] == 0
+    finally:
+        await protector.set_enabled(False)
+
+
+@pytest.mark.asyncio
+async def test_unregistering_last_owned_pet_ends_protection_cycle():
+    async def broadcaster(_payload):
+        return 1
+
+    protector = GameModeResourceProtector(broadcaster=broadcaster, time_fn=lambda: 1000.0)
+    await protector.set_enabled(True)
+    try:
+        await protector.register_window(pet_instance_id="pet-only")
+        state = await protector.debug_trigger()
+        state = await protector.acknowledge_switch(
+            cycle_id=state["cycle_id"],
+            pet_instance_id="pet-only",
+            status="protected",
+        )
+        assert state["cycle_phase"] == "protected"
+
+        state = await protector.unregister_window("pet-only")
+        assert state["cycle_phase"] == "idle"
+        assert state["auto_switch_active"] is False
+        assert state["owned_window_count"] == 0
+        assert state["trigger_reason"] is None
+    finally:
+        await protector.set_enabled(False)
+
+
+@pytest.mark.asyncio
+async def test_hostless_trigger_fails_when_broadcast_delivers_to_nobody():
+    events = []
+
+    async def broadcaster(payload):
+        events.append(payload)
+        return 0
+
+    protector = GameModeResourceProtector(broadcaster=broadcaster, time_fn=lambda: 1000.0)
+    await protector.set_enabled(True)
+    try:
+        state = await protector.debug_trigger()
+
+        assert state["cycle_phase"] == "idle"
+        assert state["auto_switch_active"] is False
+        assert state["pressure_state"] == "normal"
+        assert state["retry_not_before"] == 1030.0
+        assert state["last_event"] == {
+            "type": "switch_failed",
+            "reason": "not-delivered",
+            "ts": 1000.0,
+        }
+        assert [event["type"] for event in events] == [
+            "game_mode_auto_switch",
+            "game_mode_switch_failed",
+        ]
     finally:
         await protector.set_enabled(False)
 

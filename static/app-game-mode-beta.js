@@ -301,7 +301,7 @@
                     '游戏模式 Beta（测试版）已开启。资源占用持续较高时，NEKO 会自动切换到猫猫形态以降低占用；部分插件、视觉/OCR 功能首次使用可能加载较慢。'
                 ));
             } else {
-                handleDisabledRestore();
+                await handleDisabledRestore();
                 showNotice(t(
                     'settings.gameModeBeta.disabledNotice',
                     '游戏模式 Beta（测试版）已关闭。NEKO 已恢复普通资源策略。'
@@ -326,24 +326,34 @@
         clientState.modelLoadInvalidated = false;
     }
 
-    function handleDisabledRestore() {
+    async function handleDisabledRestore() {
         const shouldRestore = clientState.autoSwitched
             && !clientState.alreadyCatWhenTriggered
             && !clientState.manualOverride
             && isCatFormActive();
-        clearModelReloadProtection();
         clientState.restoringFromDisable = true;
         try {
+            leaveDeepSleep();
             if (shouldRestore) {
-                window.dispatchEvent(new CustomEvent('live2d-return-click', {
-                    detail: {
-                        source: 'game_mode_auto',
-                        reason: 'game-mode-disabled',
-                    },
-                }));
+                const modelReady = await ensureInvalidatedModelReloaded();
+                if (modelReady) {
+                    clearModelReloadProtection();
+                    window.dispatchEvent(new CustomEvent('live2d-return-click', {
+                        detail: {
+                            source: 'game_mode_auto',
+                            reason: 'game-mode-disabled',
+                        },
+                    }));
+                } else {
+                    showNotice(t(
+                        'settings.gameModeBeta.restoreFailed',
+                        '模型恢复失败，仍保持猫猫形态。请再次点击猫猫重试。'
+                    ));
+                }
+            } else {
+                clearModelReloadProtection();
             }
         } finally {
-            leaveDeepSleep();
             clientState.restoringFromDisable = false;
             clientState.autoSwitched = false;
             clientState.alreadyCatWhenTriggered = false;
@@ -498,25 +508,29 @@
         }
     }
 
+    function keepProtectedAfterRestoreFailure() {
+        clientState.manualOverride = false;
+        clientState.autoSwitched = true;
+        try {
+            window.dispatchEvent(new CustomEvent('live2d-goodbye-click', {
+                detail: { gameModeAuto: true, source: 'game_mode_auto', reason: 'restore-failed' },
+            }));
+        } catch (_) {}
+        showNotice(t(
+            'settings.gameModeBeta.restoreFailed',
+            '模型恢复失败，仍保持猫猫形态。请再次点击猫猫重试。'
+        ));
+        dispatchState();
+    }
+
     async function notifyManualRestore() {
         if (!clientState.enabled || clientState.restoringFromDisable) return;
         if (!clientState.autoSwitched) return;
         clientState.manualOverride = true;
-        clientState.autoSwitched = false;
         leaveDeepSleep();
         const modelReady = await ensureInvalidatedModelReloaded();
         if (!modelReady) {
-            clientState.manualOverride = false;
-            clientState.autoSwitched = true;
-            try {
-                window.dispatchEvent(new CustomEvent('live2d-goodbye-click', {
-                    detail: { gameModeAuto: true, source: 'game_mode_auto', reason: 'restore-failed' },
-                }));
-            } catch (_) {}
-            showNotice(t(
-                'settings.gameModeBeta.restoreFailed',
-                '模型恢复失败，仍保持猫猫形态。请再次点击猫猫重试。'
-            ));
+            keepProtectedAfterRestoreFailure();
             return;
         }
         await restoreSavedEdgeAnchor();
@@ -529,16 +543,20 @@
                 headers: await getMutationHeaders(),
                 body: JSON.stringify(payload),
             });
-            if (response.ok) {
-                const data = await response.json().catch(function () { return null; });
-                if (data && data.success && data.state) {
-                    applyBackendState(data.state);
-                }
+            const data = await response.json().catch(function () { return null; });
+            if (!response.ok || !data || data.success !== true) {
+                throw new Error((data && (data.error || data.detail)) || ('HTTP ' + response.status));
             }
+            if (data.state) {
+                applyBackendState(data.state);
+            }
+            clientState.autoSwitched = false;
             clientState.currentCycleId = null;
             clientState.restoreAnchor = null;
+            dispatchState();
         } catch (error) {
             console.warn('[GameModeBeta] manual restore notification failed:', error);
+            keepProtectedAfterRestoreFailure();
         }
     }
 
