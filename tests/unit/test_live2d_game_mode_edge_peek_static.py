@@ -110,8 +110,11 @@ def test_live2d_game_mode_edge_peek_prefers_head_anchor_and_preserves_vertical_i
     assert "desiredWaistX - transformedBodyRect.centerX" in edge_peek_source
     assert "baseBodyRect.bottom - transformedBodyRect.bottom" in edge_peek_source
     assert "transformedBounds.top + transformedBounds.height * LIVE2D_GAME_MODE_EDGE_PEEK_HEAD_Y_RATIO" in edge_peek_source
-    assert "offsetY = viewport.top + desiredHeadInsetY - transformedHeadAnchor.y;" in edge_peek_source
-    assert "offsetY = viewport.bottom + 8 - transformedBodyRect.bottom;" in edge_peek_source
+    assert "const useHeadAnchor = !!verticalEdge && !!transformedHeadAnchor;" in edge_peek_source
+    assert "const useWaistAnchor = !verticalEdge && !!(baseBodyRect && transformedBodyRect);" in edge_peek_source
+    assert "? viewport.bottom - desiredHeadInsetY" in edge_peek_source
+    assert ": viewport.top + desiredHeadInsetY;" in edge_peek_source
+    assert "offsetY = desiredHeadYAtEdge - transformedHeadAnchor.y;" in edge_peek_source
     assert "offsetY = baseBodyRect.bottom - transformedBodyRect.bottom;" in edge_peek_source
     assert "offsetY = desiredHeadY - targetHeadY;" in edge_peek_source
     assert "getLive2DGameModeEdgePeekVerticalCorrection" in edge_peek_source

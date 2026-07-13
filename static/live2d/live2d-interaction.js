@@ -539,8 +539,8 @@ function getLive2DGameModeEdgePeekPlacement(model, bounds, manager = null) {
     const desiredHeadX = side === 'left'
         ? viewport.left + headInset
         : viewport.right - headInset;
-    const useHeadAnchor = verticalEdge === 'top' && !!transformedHeadAnchor;
-    const useWaistAnchor = verticalEdge !== 'top' && !!(baseBodyRect && transformedBodyRect);
+    const useHeadAnchor = !!verticalEdge && !!transformedHeadAnchor;
+    const useWaistAnchor = !verticalEdge && !!(baseBodyRect && transformedBodyRect);
     const desiredWaistX = side === 'left' ? viewport.left - 8 : viewport.right + 8;
     let offsetX = useHeadAnchor
         ? desiredHeadX - transformedHeadAnchor.x
@@ -557,9 +557,10 @@ function getLive2DGameModeEdgePeekPlacement(model, bounds, manager = null) {
     let offsetY;
     if (useHeadAnchor) {
         const desiredHeadInsetY = clampLive2DGameModeEdgePeekCoordinate(revealWidth * 0.32, 36, 64);
-        offsetY = viewport.top + desiredHeadInsetY - transformedHeadAnchor.y;
-    } else if (useWaistAnchor && verticalEdge === 'bottom') {
-        offsetY = viewport.bottom + 8 - transformedBodyRect.bottom;
+        const desiredHeadYAtEdge = verticalEdge === 'bottom'
+            ? viewport.bottom - desiredHeadInsetY
+            : viewport.top + desiredHeadInsetY;
+        offsetY = desiredHeadYAtEdge - transformedHeadAnchor.y;
     } else if (useWaistAnchor) {
         offsetY = baseBodyRect.bottom - transformedBodyRect.bottom;
     } else if (verticalEdge === 'top') {
