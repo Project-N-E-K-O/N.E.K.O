@@ -46,6 +46,9 @@ _TUTORIAL_RUNTIME_ASSET_PATHS = tuple(sorted(
 _AVATAR_UI_BUTTON_ASSET_PATHS = tuple(sorted(
     (_PROJECT_ROOT / "static/avatar/avatar-ui-buttons").glob("*.js")
 ))
+_CHARACTER_CARD_MANAGER_JS_PATHS = tuple(sorted(
+    (_PROJECT_ROOT / "static/js/character_card_manager").glob("*.js")
+))
 _MODEL_MANAGER_JS_PATHS = tuple(sorted(
     (_PROJECT_ROOT / "static/js/model_manager").glob("*.js")
 ))
@@ -127,7 +130,7 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/assets/neko-idle/cat3-sleep1.mp3",
     _PROJECT_ROOT / "static/assets/neko-idle/cat3-sleep2.mp3",
     _PROJECT_ROOT / "static/css/character_card_manager.css",
-    _PROJECT_ROOT / "static/js/character_card_manager.js",
+    *_CHARACTER_CARD_MANAGER_JS_PATHS,
     _PROJECT_ROOT / "static/css/character_personality_onboarding.css",
     _PROJECT_ROOT / "static/js/character_personality_onboarding.js",
     _PROJECT_ROOT / "static/css/card_maker.css",

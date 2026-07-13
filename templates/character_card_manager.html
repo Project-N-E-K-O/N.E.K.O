@@ -920,7 +920,17 @@
     <script src="/static/js/reserved_fields_utils.js"></script>
     <script src="/static/js/voice_display_utils.js"></script>
     <script src="/static/js/character_personality_onboarding.js?v={{ static_asset_version | default('0') }}"></script>
-    <script src="/static/js/character_card_manager.js?v={{ static_asset_version | default('0') }}"></script>
+    <!-- Character card manager parts share the classic-script global scope; keep this dependency order. -->
+    <script src="/static/js/character_card_manager/01-core-and-upload.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/js/character_card_manager/02-subscriptions-and-scan.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/js/character_card_manager/03-character-data-and-transfer.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/js/character_card_manager/04-card-list-and-panel.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/js/character_card_manager/05-card-form-and-actions.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/js/character_card_manager/06-workshop-card-and-upload.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/js/character_card_manager/07-model-previews.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/js/character_card_manager/08-master-profile.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/js/character_card_manager/09-card-companion.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/js/character_card_manager/10-sync-and-legacy-memory.js?v={{ static_asset_version | default('0') }}"></script>
 
     <!-- Three.js 核心库和importmap（用于VRM/MMD模型预览）-->
     <script type="importmap">

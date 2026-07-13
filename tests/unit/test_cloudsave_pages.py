@@ -42,7 +42,10 @@ async def test_cloudsave_manager_page_renders_with_or_without_character_query():
 
 @pytest.mark.unit
 def test_character_card_manager_disables_cloudsave_entry_when_provider_is_unavailable():
-    source = Path("static/js/character_card_manager.js").read_text(encoding="utf-8")
+    source = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(Path("static/js/character_card_manager").glob("*.js"))
+    )
     css_source = Path("static/css/character_card_manager.css").read_text(encoding="utf-8")
 
     assert "refreshCloudsaveManagerEntryAvailability" in source

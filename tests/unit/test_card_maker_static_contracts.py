@@ -6,7 +6,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CARD_MAKER_JS = PROJECT_ROOT / "static" / "js" / "card_maker.js"
 CARD_MAKER_CSS = PROJECT_ROOT / "static" / "css" / "card_maker.css"
-CHARACTER_CARD_MANAGER_JS = PROJECT_ROOT / "static" / "js" / "character_card_manager.js"
+CHARACTER_CARD_MANAGER_JS_DIR = PROJECT_ROOT / "static" / "js" / "character_card_manager"
 MODEL_MANAGER_JS_DIR = PROJECT_ROOT / "static" / "js" / "model_manager"
 PNGTUBER_CORE_JS = PROJECT_ROOT / "static" / "pngtuber-core.js"
 MODEL_MANAGER_TEMPLATE = PROJECT_ROOT / "templates" / "model_manager.html"
@@ -20,6 +20,36 @@ def read_model_manager_source() -> str:
         path.read_text(encoding="utf-8")
         for path in sorted(MODEL_MANAGER_JS_DIR.glob("*.js"))
     )
+
+
+def read_character_card_manager_source() -> str:
+    return "".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(CHARACTER_CARD_MANAGER_JS_DIR.glob("*.js"))
+    )
+
+
+def test_character_card_manager_parts_load_in_dependency_order():
+    part_names = [path.name for path in sorted(CHARACTER_CARD_MANAGER_JS_DIR.glob("*.js"))]
+    assert part_names == [
+        "01-core-and-upload.js",
+        "02-subscriptions-and-scan.js",
+        "03-character-data-and-transfer.js",
+        "04-card-list-and-panel.js",
+        "05-card-form-and-actions.js",
+        "06-workshop-card-and-upload.js",
+        "07-model-previews.js",
+        "08-master-profile.js",
+        "09-card-companion.js",
+        "10-sync-and-legacy-memory.js",
+    ]
+
+    template = (PROJECT_ROOT / "templates" / "character_card_manager.html").read_text(encoding="utf-8")
+    script_positions = [
+        template.index(f"/static/js/character_card_manager/{part_name}")
+        for part_name in part_names
+    ]
+    assert script_positions == sorted(script_positions)
 
 
 def test_model_manager_parts_load_in_dependency_order():
@@ -51,7 +81,7 @@ def test_model_manager_parts_load_in_dependency_order():
 
 
 def test_new_character_auto_card_maker_enables_default_face_fallback_only_for_auto_popup():
-    script = CHARACTER_CARD_MANAGER_JS.read_text(encoding="utf-8")
+    script = read_character_card_manager_source()
 
     assert "fallback_default_on_close: '1'" in script
     assert "const makerUrl = `/card_maker?${makerParams.toString()}`;" in script
