@@ -1656,10 +1656,12 @@ _SEARCH_TEXT_WS_RE = re.compile(r"\s+")
 
 
 def _sanitize_search_text(text: str) -> str:
-    """清洗不可信搜索结果文本：去掉控制/格式/私有区/代理区字符与 U+FFFD，压缩空白。
+    """Sanitize untrusted search-result text: drop control/format/private-use/
+    surrogate characters and U+FFFD, and normalize whitespace.
 
-    Baidu 页面文本节点里混有 iconfont 私有区字符（如 U+E687），编码错位时还会出现
-    U+FFFD，零宽/bidi 控制符可能被用来做注入混淆——这些都不应进入 LLM/TTS。
+    Baidu pages mix iconfont private-use glyphs (e.g. U+E687) into text nodes,
+    mis-decoded pages yield U+FFFD, and zero-width/bidi controls can be abused
+    for injection obfuscation — none of these should reach the LLM/TTS.
     """
     if not text:
         return ""

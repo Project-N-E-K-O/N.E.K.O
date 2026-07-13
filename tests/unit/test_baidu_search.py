@@ -1,11 +1,14 @@
-"""Tests for Baidu search parsing in utils/web_scraper.py。
+"""Tests for Baidu search parsing in utils/web_scraper.py.
 
-对齐 web_search 插件侧的修复（plugin/plugins/web_search/_parsing.py）：
-- 标题只认 h3 下的链接，不再取容器里第一个 <a>（卡片子链接/相关搜索词误报）；
-- javascript: 等伪协议被拒绝；
-- 标题/摘要清洗 iconfont 私有区字符、零宽字符、U+FFFD 等非法字符。
+Mirrors the web_search plugin fixes (plugin/plugins/web_search/_parsing.py):
+- titles come only from links under h3, no longer the first <a> in the
+  container (card sub-links / related-search suggestions were misreported);
+- javascript: and other pseudo-scheme links are rejected;
+- titles/abstracts are sanitized of iconfont private-use glyphs, zero-width
+  characters, U+FFFD and other illegal characters.
 
-不可见/私有区字符一律用 \\u 转义书写，避免源码里出现肉眼不可见的字面量。
+Invisible/private-use characters are written as \\u escapes only, so no
+naked-eye-invisible literals appear in the source.
 """
 import pytest
 
