@@ -453,6 +453,9 @@
     }
 
     function emitStateChange(reason, detail) {
+        // State-change carries a complete debug snapshot and is only consumed by
+        // the opt-in inspector. Keep Cat Mind's runtime independent from it.
+        if (!isDebugEnabled()) return false;
         return dispatchRuntimeEvent(EVENT_NAMES.STATE_CHANGE, {
             reason: typeof reason === 'string' ? reason : 'state-update',
             timestamp: nowMs(),

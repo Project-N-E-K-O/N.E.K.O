@@ -1089,6 +1089,7 @@ def test_cat_mind_phase1_runtime_observes_without_dispatching_actions():
 
         let now = 1000;
         const win = new EventTargetLike();
+        win.__NEKO_CAT_MIND_DEBUG__ = true;
         const context = {{
           window: win,
           CustomEvent: CustomEventLike,
