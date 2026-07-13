@@ -1708,8 +1708,12 @@
             });
         }
 
-        function clampManualPosition() {
+        function fitPanelToViewport() {
             var state = getSettings();
+            applySubtitlePanelBounds(refs.display, state.subtitlePanelBounds, {
+                host: 'web',
+                fontSize: state.subtitleFontSize
+            });
             if (!state.subtitlePanelPosition) return;
             var clamped = applyWebPanelPosition(refs, state.subtitlePanelPosition);
             if (clamped && !samePanelPosition(clamped, state.subtitlePanelPosition)) {
@@ -1726,14 +1730,14 @@
             beginTouchDrag(e);
         }
 
-        clampManualPosition();
+        fitPanelToViewport();
         refs.display.addEventListener('mousedown', onDisplayMouseDown);
         refs.display.addEventListener('touchstart', onDisplayTouchStart, { passive: false });
         document.addEventListener('touchmove', handleTouchMove, { passive: false });
         document.addEventListener('touchend', handleMouseUp);
         document.addEventListener('touchcancel', handleMouseUp);
-        window.addEventListener('resize', clampManualPosition);
-        window.addEventListener('orientationchange', clampManualPosition);
+        window.addEventListener('resize', fitPanelToViewport);
+        window.addEventListener('orientationchange', fitPanelToViewport);
 
         return function detachWebDrag() {
             handleMouseUp();
@@ -1742,8 +1746,8 @@
             document.removeEventListener('touchmove', handleTouchMove, { passive: false });
             document.removeEventListener('touchend', handleMouseUp);
             document.removeEventListener('touchcancel', handleMouseUp);
-            window.removeEventListener('resize', clampManualPosition);
-            window.removeEventListener('orientationchange', clampManualPosition);
+            window.removeEventListener('resize', fitPanelToViewport);
+            window.removeEventListener('orientationchange', fitPanelToViewport);
             document.removeEventListener('mousemove', handleMouseMove);
             document.removeEventListener('mouseup', handleMouseUp);
         };

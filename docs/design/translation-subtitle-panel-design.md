@@ -123,7 +123,7 @@ NEKO-PC 桌面壳（同级仓库 `/N.E.K.O.-PC`）：
 7. CSS 变量 `--subtitle-content-max-height`
 8. CSS 变量 `--subtitle-font-size`
 
-面板可自由缩放，但会夹紧到最小 `228px x 40px`，确保右上角三个 controls 按钮和两处角框装饰不会被挤出边界，并在按钮上下保留舒适余量。Web host 的可用宽度或高度小于面板尺寸时，实际渲染尺寸会临时收缩到可用 viewport，避免面板溢出宿主；持久化尺寸仍保留正常下限。桌面独立窗口在面板四周另保留 `6px` resize inset，因此原生窗口的最小尺寸为 `240px x 52px`。过小的历史持久化尺寸在读取时也会自动夹紧。
+面板可自由缩放，但会夹紧到最小 `228px x 40px`，确保右上角三个 controls 按钮和两处角框装饰不会被挤出边界，并在按钮上下保留舒适余量。Web host 的可用宽度或高度小于面板尺寸时，实际渲染尺寸会临时收缩到可用 viewport，避免面板溢出宿主；viewport 变化时会重新计算，因此宿主缩小后不会溢出、放大后也会恢复逻辑尺寸。持久化尺寸仍保留正常下限。桌面独立窗口在面板四周另保留 `6px` resize inset，因此原生窗口的最小尺寸为 `240px x 52px`。过小的历史持久化尺寸在读取时也会自动夹紧。
 
 当前面板基础字号由 `subtitleFontSize` 决定，默认 `26px`。`applySubtitlePanelBounds()` 会写入 `style.fontSize`、`data-subtitle-font-size` 和 `--subtitle-font-size`。`#subtitle-text` 继承面板字号；Web host 在长文本溢出时可能给 `#subtitle-text.style.fontSize` 写入临时缩小值；独立字幕窗口收到译文后会清空 `#subtitle-text.style.fontSize`，避免文本节点保留独立 inline 字号。
 

@@ -5512,6 +5512,65 @@ def test_web_subtitle_panel_minimum_does_not_overflow_a_small_viewport(
 
 
 @pytest.mark.frontend
+def test_web_subtitle_panel_reapplies_viewport_limits_after_resize(
+    mock_page: Page,
+):
+    mock_page.set_viewport_size({"width": 800, "height": 300})
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-web-host",
+        """
+        <div id="subtitle-display" class="show" style="display:flex; opacity:1; visibility:visible;"></div>
+        """,
+    )
+    mock_page.evaluate(
+        """
+        () => localStorage.setItem(
+            'subtitlePanelBounds',
+            JSON.stringify({ width: 655, height: 109 }),
+        )
+        """
+    )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.evaluate(
+        """
+        () => {
+            window.subtitleTestController = window.nekoSubtitleShared.initSubtitleUI({ host: 'web' });
+        }
+        """
+    )
+
+    def panel_size() -> dict[str, int]:
+        return mock_page.evaluate(
+            """
+            () => {
+                const rect = document.getElementById('subtitle-display').getBoundingClientRect();
+                return { width: Math.round(rect.width), height: Math.round(rect.height) };
+            }
+            """
+        )
+
+    assert panel_size() == {"width": 655, "height": 109}
+
+    mock_page.set_viewport_size({"width": 180, "height": 32})
+    mock_page.wait_for_function(
+        """
+        () => document.getElementById('subtitle-display').dataset.subtitlePanelHeight === '32'
+        """
+    )
+    assert panel_size() == {"width": 180, "height": 32}
+
+    mock_page.set_viewport_size({"width": 800, "height": 300})
+    mock_page.wait_for_function(
+        """
+        () => document.getElementById('subtitle-display').dataset.subtitlePanelHeight === '109'
+        """
+    )
+    assert panel_size() == {"width": 655, "height": 109}
+    mock_page.evaluate("() => window.subtitleTestController.destroy()")
+
+
+@pytest.mark.frontend
 def test_subtitle_boundary_resize_persists_free_panel_bounds(
     mock_page: Page,
 ):
