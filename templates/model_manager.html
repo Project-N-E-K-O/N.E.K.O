@@ -632,7 +632,16 @@
     <script src="/static/avatar/avatar-popup-common.js"></script>
     <script src="/static/avatar/avatar-ui-popup.js"></script>
     <script src="/static/avatar/avatar-ui-popup-config.js"></script>
-    <script src="/static/avatar/avatar-ui-buttons.js"></script>
+    <script src="/static/avatar/avatar-ui-buttons/00-core.js"></script>
+    <script src="/static/avatar/avatar-ui-buttons/10-idle-assets-and-question.js"></script>
+    <script src="/static/avatar/avatar-ui-buttons/20-idle-playground.js"></script>
+    <script src="/static/avatar/avatar-ui-buttons/30-idle-actions-and-audio.js"></script>
+    <script src="/static/avatar/avatar-ui-buttons/40-idle-drag-and-subactions.js"></script>
+    <script src="/static/avatar/avatar-ui-buttons/45-idle-journey-and-presentation.js"></script>
+    <script src="/static/avatar/avatar-ui-buttons/50-methods-setup.js"></script>
+    <script src="/static/avatar/avatar-ui-buttons/60-methods-buttons.js"></script>
+    <script src="/static/avatar/avatar-ui-buttons/70-methods-return.js"></script>
+    <script src="/static/avatar/avatar-ui-buttons/80-methods-state-and-cleanup.js"></script>
     <script src="/static/live2d/live2d-ui-buttons.js"></script>
     <script src="/static/avatar/avatar-ui-drag.js"></script>
     <script src="/static/live2d/live2d-init.js"></script>
@@ -666,7 +675,13 @@
     <script src="/static/avatar/avatar-portrait.js"></script>
     <script src="/static/pngtuber-core.js?v={{ static_asset_version | default('0') }}"></script>
 
-    <script src="/static/js/model_manager.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/js/model_manager/01-runtime-loaders.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/js/model_manager/02-dropdown-manager.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/js/model_manager/03-page-bridge.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/js/model_manager/04-card-face.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/js/model_manager/05-path-request-fullscreen.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/js/model_manager/06-page-controller.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/js/model_manager/07-window-lifecycle.js?v={{ static_asset_version | default('0') }}"></script>
 
     <!-- 性能分析器 -->
     <script src="/static/model-profiler.js"></script>
