@@ -784,7 +784,7 @@
         "toolFist": "고양이 발",
         "toolHammer": "망치",
         "avatarToolsButtonAriaLabel": "아바타 도구",
-        "clearCursorToolAriaLabel": "커서 복원",
+        "clearAvatarToolAriaLabel": "도구 해제",
         "avatarToolQuickbarAriaLabel": "아바타 빠른 도구",
         "avatarToolQuickbarEmpty": "빠른 도구 없음",
         "avatarToolEdit": "빠른 도구 편집",

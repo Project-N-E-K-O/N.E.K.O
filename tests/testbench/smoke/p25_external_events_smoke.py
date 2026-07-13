@@ -263,8 +263,8 @@ def _avatar_payload(
     """Build a minimum-valid avatar event payload.
 
     Uses ``fist/poke`` by default because the spec line A1 tool_id='head',
-    action_id='touch' is not in the main program's allowed set
-    (_AVATAR_INTERACTION_ALLOWED_ACTIONS = {lollipop, fist, hammer}).
+    action_id='touch' is not in the authoritative
+    ``AVATAR_INTERACTION_TOOL_CONTRACT``.
     The subagent-C brief says to test the "three kind happy path" — so
     we pick a combination the normaliser actually accepts.
     """
@@ -336,12 +336,11 @@ def check_a_happy_paths(client, mock) -> list[str]:
                    "A1c.wire_tail_is_instruction",
                    f"wire tail content != SimulationResult.instruction")
 
-        # A1d — compact avatar instruction contract.
+        # A1d — direct avatar event-fact instruction contract.
         #
-        # 2026-06 avatar prompt 收口后，运行时 prompt 不再拼入
-        # text_context / field-list / verbose requirements；这些实现细节会
-        # 带来模板化和跑题。reward_drop / easter_egg 仍应通过客观事件事实
-        # 体现，所以这里守住"奖励进入事件事实，草稿不泄露"。
+        # Avatar prompt 只发送直接事件事实，不拼入 text_context、字段列表或
+        # 回复格式要求。reward_drop / easter_egg 仍通过客观事件事实体现，
+        # 所以这里守住"奖励进入事件事实，草稿不泄露"。
         #
         # Matrix:
         #   - fist + reward_drop + text_context → 事件事实包含"奖励"，
@@ -378,11 +377,11 @@ def check_a_happy_paths(client, mock) -> list[str]:
                f"rapid+reward instruction lost repeated-touch fact; "
                f"前 400 字符: {instruction_d[:400]!r}")
         _check("输入框草稿" not in instruction_d, "A1d.no_text_context_label",
-               f"compact avatar instruction leaked text_context label: "
+               f"avatar event-fact instruction leaked text_context label: "
                f"{instruction_d[:400]!r}")
         _check("主人今天看起来心情不太好" not in instruction_d,
                "A1d.no_text_context_body",
-               f"compact avatar instruction leaked text_context body: "
+               f"avatar event-fact instruction leaked text_context body: "
                f"{instruction_d[:400]!r}")
         # 并且 wire 最后一条 instruction 必须等于 SimulationResult.instruction
         # (已由 A1c 守住 happy path, 这里对 context/reward 路径再守一次).
@@ -1427,7 +1426,7 @@ def check_h_persona_language_fallback(client, mock) -> list[str]:
 # a semantic drift would show up here + in the Literal both.
 REASON_REPRODUCED: frozenset[str] = frozenset({
     "dedupe_window_hit",   # avatar: same dedupe_key inside window (§4.7 "duplicate")
-    "invalid_payload",     # avatar: payload failed _normalize_avatar_interaction_payload
+    "invalid_payload",     # avatar: payload failed authoritative contract validation
     "empty_callbacks",     # agent_callback: no callback items
     "pass_signaled",       # proactive: LLM returned [PASS] (§4.7 "proactive_pass")
     "llm_failed",          # wire assembled but LLM call raised (§4.7 "llm_error")

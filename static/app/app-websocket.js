@@ -988,7 +988,7 @@
         })();
     }
 
-    function ensureAssistantTurnStarted(source, serverTurnId) {
+    function ensureAssistantTurnStarted(source, serverTurnId, responseMeta) {
         if (S.assistantTurnId) {
             window._nekoAssistantTurnId = S.assistantTurnId;
             clearPendingAssistantTurnStart();
@@ -1013,7 +1013,8 @@
         clearPendingAssistantTurnStart();
         emitAssistantLifecycleEvent('neko-assistant-turn-start', {
             turnId: S.assistantTurnId,
-            source: source || 'visible_gemini_bubble'
+            source: source || 'visible_gemini_bubble',
+            meta: responseMeta
         });
         logAssistantLifecycle('ensureAssistantTurnStarted:emitted', {
             source: source || 'visible_gemini_bubble',
@@ -1640,7 +1641,11 @@
                     if (!S.assistantTurnId
                             && S.assistantTurnAwaitingBubble
                             && getRenderableAssistantChunkText(response.text)) {
-                        ensureAssistantTurnStarted('gemini_response_first_chunk', response.turn_id);
+                        ensureAssistantTurnStarted(
+                            'gemini_response_first_chunk',
+                            response.turn_id,
+                            response.meta
+                        );
                     }
                     var createdVisibleBubble = false;
                     if (typeof window.appendMessage === 'function') {
@@ -1656,7 +1661,11 @@
                         }
                     }
                     if (!S.assistantTurnId && S.assistantTurnAwaitingBubble && createdVisibleBubble) {
-                        ensureAssistantTurnStarted('gemini_response_visible_bubble', response.turn_id);
+                        ensureAssistantTurnStarted(
+                            'gemini_response_visible_bubble',
+                            response.turn_id,
+                            response.meta
+                        );
                     }
                     if (response.turn_id) {
                         window.realisticGeminiCurrentTurnId = response.turn_id;
@@ -1915,7 +1924,11 @@
                         console.log(window.t('console.audioChunkHeaderReceived'), response);
                     }
                     if (!S.assistantTurnId && S.assistantTurnAwaitingBubble) {
-                        ensureAssistantTurnStarted('audio_chunk_header_fallback', response.turn_id);
+                        ensureAssistantTurnStarted(
+                            'audio_chunk_header_fallback',
+                            response.turn_id,
+                            response.meta
+                        );
                     }
                     var speechId = response.speech_id;
                     var shouldSkip = false;
@@ -2687,7 +2700,11 @@
                         console.warn('[WS] turn end agent_callback flush failed:', e3);
                     }
                     if (!S.assistantTurnId && S.assistantTurnAwaitingBubble) {
-                        ensureAssistantTurnStarted('turn_end_agent_callback_fallback');
+                        ensureAssistantTurnStarted(
+                            'turn_end_agent_callback_fallback',
+                            undefined,
+                            response.meta
+                        );
                     }
                     var agentCallbackTurnId = resolveAssistantLifecycleTurnId();
                     if (agentCallbackTurnId) {
@@ -2696,7 +2713,8 @@
                         });
                         emitAssistantLifecycleEvent('neko-assistant-turn-end', {
                             turnId: agentCallbackTurnId,
-                            source: 'turn_end_agent_callback'
+                            source: 'turn_end_agent_callback',
+                            meta: response.meta
                         });
                     } else {
                         logAssistantLifecycle('ws:turn_end_agent_callback:clear_pending');
@@ -2727,7 +2745,11 @@
                         console.warn(window.t('console.turnEndFlushFailed'), e3);
                     }
                     if (!S.assistantTurnId && S.assistantTurnAwaitingBubble) {
-                        ensureAssistantTurnStarted('turn_end_fallback');
+                        ensureAssistantTurnStarted(
+                            'turn_end_fallback',
+                            undefined,
+                            response.meta
+                        );
                     }
                     var assistantTurnId = resolveAssistantLifecycleTurnId();
                     if (assistantTurnId) {
@@ -2736,7 +2758,8 @@
                         });
                         emitAssistantLifecycleEvent('neko-assistant-turn-end', {
                             turnId: assistantTurnId,
-                            source: 'turn_end'
+                            source: 'turn_end',
+                            meta: response.meta
                         });
                     } else {
                         logAssistantLifecycle('ws:turn_end:clear_pending');

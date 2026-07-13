@@ -1139,62 +1139,50 @@
     };
     window.applyEmotion = mod.applyEmotion;
 
-    var AVATAR_INTERACTION_ALLOWED_ACTIONS = Object.freeze({
-        lollipop: Object.freeze(['offer', 'tease', 'tap_soft']),
-        fist: Object.freeze(['poke']),
-        hammer: Object.freeze(['bonk'])
-    });
-    var AVATAR_INTERACTION_ALLOWED_INTENSITIES = Object.freeze(['normal', 'rapid', 'burst', 'easter_egg']);
-    var AVATAR_INTERACTION_ALLOWED_TOUCH_ZONES = Object.freeze(['ear', 'head', 'face', 'body']);
-    var AVATAR_INTERACTION_SEED_FALLBACK_MS = 2200;
-    var AVATAR_INTERACTION_ACK_TIMEOUT_MS = 8000;
-    var AVATAR_INTERACTION_TURN_START_TIMEOUT_MS = 5000;
-    var AVATAR_INTERACTION_TURN_COMPLETION_TIMEOUT_MS = 15000;
-    var AVATAR_INTERACTION_HOST_COOLDOWN_MS = 600;
-    var AVATAR_INTERACTION_HOST_SPEAK_COOLDOWN_MS = 1500;
-    var AVATAR_INTERACTION_SEED_EMOTIONS = Object.freeze({
-        lollipop: Object.freeze({
-            offer: Object.freeze({
-                normal: 'happy'
+    var AVATAR_INTERACTION_CONTRACT = Object.freeze({
+        touchZones: Object.freeze(['ear', 'head', 'face', 'body']),
+        tools: Object.freeze({
+            lollipop: Object.freeze({
+                actions: Object.freeze({
+                    offer: Object.freeze(['normal']),
+                    tease: Object.freeze(['normal']),
+                    tap_soft: Object.freeze(['rapid', 'burst'])
+                }),
+                acceptsTouchZone: false,
+                booleanField: null
             }),
-            tease: Object.freeze({
-                normal: 'surprised'
+            fist: Object.freeze({
+                actions: Object.freeze({
+                    poke: Object.freeze(['normal', 'rapid'])
+                }),
+                acceptsTouchZone: true,
+                booleanField: Object.freeze({ input: 'rewardDrop', output: 'reward_drop' })
             }),
-            tap_soft: Object.freeze({
-                rapid: 'happy',
-                burst: 'happy'
-            })
-        }),
-        fist: Object.freeze({
-            poke: Object.freeze({
-                normal: 'happy',
-                rapid: 'surprised',
-                reward_drop: 'happy'
-            })
-        }),
-        hammer: Object.freeze({
-            bonk: Object.freeze({
-                normal: 'surprised',
-                rapid: 'angry',
-                burst: 'angry',
-                easter_egg: 'angry'
+            hammer: Object.freeze({
+                actions: Object.freeze({
+                    bonk: Object.freeze(['normal', 'rapid', 'burst', 'easter_egg'])
+                }),
+                acceptsTouchZone: true,
+                booleanField: Object.freeze({ input: 'easterEgg', output: 'easter_egg' })
             })
         })
     });
-    var avatarInteractionSeedState = {
-        interactionId: '',
-        timerId: 0,
-        previousEmotion: null,
-        seedEmotion: null
-    };
+    // The backend sends the final ack only after prompt_ephemeral has completed
+    // the visible assistant turn. Keep separate fail-safes for no reply signal
+    // and a started turn whose end event is lost, then allow a short grace period
+    // for the final ack after the matching turn ends.
+    var AVATAR_INTERACTION_RESULT_TIMEOUT_MS = 60000;
+    var AVATAR_INTERACTION_ACTIVE_TURN_TIMEOUT_MS = 600000;
+    var AVATAR_INTERACTION_FINAL_ACK_GRACE_MS = 2000;
+    var AVATAR_INTERACTION_HOST_COOLDOWN_MS = 600;
+    var AVATAR_INTERACTION_HOST_SPEAK_COOLDOWN_MS = 1500;
     var avatarInteractionTextContinuationState = {
         interactionId: '',
-        expectedTurnId: '',
         activeTurnId: '',
         phase: 'idle',
-        ackTimerId: 0,
-        turnStartTimerId: 0,
-        completionTimerId: 0,
+        resultTimerId: 0,
+        activeTurnTimerId: 0,
+        finalAckTimerId: 0,
         deferredTextSubmissions: [],
         deferredSendHandler: null,
         drainingDeferredTextSubmissions: false
@@ -1286,9 +1274,9 @@
     }
 
     function clearAvatarInteractionContinuationTimers() {
-        clearAvatarInteractionContinuationTimer('ackTimerId');
-        clearAvatarInteractionContinuationTimer('turnStartTimerId');
-        clearAvatarInteractionContinuationTimer('completionTimerId');
+        clearAvatarInteractionContinuationTimer('resultTimerId');
+        clearAvatarInteractionContinuationTimer('activeTurnTimerId');
+        clearAvatarInteractionContinuationTimer('finalAckTimerId');
     }
 
     function hasPendingAvatarInteractionContinuation() {
@@ -1357,7 +1345,6 @@
         releaseAvatarInteractionDispatchReservation();
         clearActiveAvatarInteractionDispatch();
         avatarInteractionTextContinuationState.interactionId = '';
-        avatarInteractionTextContinuationState.expectedTurnId = '';
         avatarInteractionTextContinuationState.activeTurnId = '';
         avatarInteractionTextContinuationState.phase = 'idle';
         flushDeferredTextSubmissions();
@@ -1370,65 +1357,82 @@
 
         clearAvatarInteractionContinuationTimers();
         avatarInteractionTextContinuationState.interactionId = interactionId;
-        avatarInteractionTextContinuationState.expectedTurnId = '';
         avatarInteractionTextContinuationState.activeTurnId = '';
-        avatarInteractionTextContinuationState.phase = 'awaiting_ack';
-        avatarInteractionTextContinuationState.ackTimerId = window.setTimeout(function () {
-            if (avatarInteractionTextContinuationState.phase !== 'awaiting_ack'
+        avatarInteractionTextContinuationState.phase = 'awaiting_result';
+        avatarInteractionTextContinuationState.resultTimerId = window.setTimeout(function () {
+            if (avatarInteractionTextContinuationState.phase !== 'awaiting_result'
                     || avatarInteractionTextContinuationState.interactionId !== interactionId) {
                 return;
             }
             releaseDeferredTextAfterAvatarInteraction();
-        }, AVATAR_INTERACTION_ACK_TIMEOUT_MS);
+        }, AVATAR_INTERACTION_RESULT_TIMEOUT_MS);
     }
 
-    function markAvatarInteractionAccepted(interactionId, turnId) {
-        if (!interactionId || avatarInteractionTextContinuationState.interactionId !== interactionId) {
-            return;
+    function isMatchingAvatarInteractionTurnMeta(meta) {
+        if (!meta || typeof meta !== 'object') {
+            return false;
         }
-
-        clearAvatarInteractionContinuationTimer('ackTimerId');
-        if (avatarInteractionTextContinuationState.phase === 'active_turn') {
-            return;
-        }
-
-        avatarInteractionTextContinuationState.expectedTurnId = String(turnId || '').trim();
-        avatarInteractionTextContinuationState.activeTurnId = '';
-        avatarInteractionTextContinuationState.phase = 'awaiting_turn';
-        clearAvatarInteractionContinuationTimer('turnStartTimerId');
-        avatarInteractionTextContinuationState.turnStartTimerId = window.setTimeout(function () {
-            if (avatarInteractionTextContinuationState.phase !== 'awaiting_turn'
-                    || avatarInteractionTextContinuationState.interactionId !== interactionId) {
-                return;
-            }
-            releaseDeferredTextAfterAvatarInteraction();
-        }, AVATAR_INTERACTION_TURN_START_TIMEOUT_MS);
+        return String(meta.kind || '').trim() === 'avatar_interaction'
+            && String(meta.interaction_id || '').trim()
+                === avatarInteractionTextContinuationState.interactionId;
     }
 
-    function markAvatarInteractionTurnStarted(turnId) {
+    function markAvatarInteractionTurnStarted(turnId, meta) {
         if (!hasPendingAvatarInteractionContinuation()) {
             return;
         }
         var normalizedTurnId = String(turnId || '').trim();
-        if (!normalizedTurnId || avatarInteractionTextContinuationState.phase !== 'awaiting_turn') {
+        if (!normalizedTurnId
+                || !isMatchingAvatarInteractionTurnMeta(meta)
+                || avatarInteractionTextContinuationState.phase !== 'awaiting_result') {
             return;
         }
-        if (avatarInteractionTextContinuationState.expectedTurnId
-                && avatarInteractionTextContinuationState.expectedTurnId !== normalizedTurnId) {
-            return;
-        }
-
-        clearAvatarInteractionContinuationTimer('ackTimerId');
-        clearAvatarInteractionContinuationTimer('turnStartTimerId');
+        var interactionId = avatarInteractionTextContinuationState.interactionId;
+        clearAvatarInteractionContinuationTimer('resultTimerId');
+        clearAvatarInteractionContinuationTimer('activeTurnTimerId');
         avatarInteractionTextContinuationState.activeTurnId = normalizedTurnId;
         avatarInteractionTextContinuationState.phase = 'active_turn';
-        clearAvatarInteractionContinuationTimer('completionTimerId');
-        avatarInteractionTextContinuationState.completionTimerId = window.setTimeout(function () {
-            if (avatarInteractionTextContinuationState.phase !== 'active_turn') {
+        avatarInteractionTextContinuationState.activeTurnTimerId = window.setTimeout(function () {
+            if (avatarInteractionTextContinuationState.phase !== 'active_turn'
+                    || avatarInteractionTextContinuationState.interactionId !== interactionId
+                    || avatarInteractionTextContinuationState.activeTurnId !== normalizedTurnId) {
                 return;
             }
             releaseDeferredTextAfterAvatarInteraction();
-        }, AVATAR_INTERACTION_TURN_COMPLETION_TIMEOUT_MS);
+        }, AVATAR_INTERACTION_ACTIVE_TURN_TIMEOUT_MS);
+    }
+
+    function markAvatarInteractionTurnFinished(turnId, meta) {
+        if (!hasPendingAvatarInteractionContinuation()) {
+            return;
+        }
+        var normalizedTurnId = String(turnId || '').trim();
+        if (!normalizedTurnId || !isMatchingAvatarInteractionTurnMeta(meta)) {
+            return;
+        }
+
+        // The established backend contract attaches avatar interaction meta
+        // atomically to turn end. A streamed start may therefore have no meta;
+        // let the matching end establish and finish that same turn in one step.
+        if (avatarInteractionTextContinuationState.phase === 'awaiting_result') {
+            markAvatarInteractionTurnStarted(normalizedTurnId, meta);
+        }
+        if (avatarInteractionTextContinuationState.phase !== 'active_turn'
+                || avatarInteractionTextContinuationState.activeTurnId !== normalizedTurnId) {
+            return;
+        }
+        var interactionId = avatarInteractionTextContinuationState.interactionId;
+        avatarInteractionTextContinuationState.phase = 'awaiting_final_ack';
+        clearAvatarInteractionContinuationTimer('resultTimerId');
+        clearAvatarInteractionContinuationTimer('activeTurnTimerId');
+        clearAvatarInteractionContinuationTimer('finalAckTimerId');
+        avatarInteractionTextContinuationState.finalAckTimerId = window.setTimeout(function () {
+            if (avatarInteractionTextContinuationState.phase !== 'awaiting_final_ack'
+                    || avatarInteractionTextContinuationState.interactionId !== interactionId) {
+                return;
+            }
+            releaseDeferredTextAfterAvatarInteraction();
+        }, AVATAR_INTERACTION_FINAL_ACK_GRACE_MS);
     }
 
     function bindAvatarInteractionTextContinuationLifecycle() {
@@ -1440,18 +1444,11 @@
         window.addEventListener('neko-avatar-interaction-ack', function (event) {
             var detail = event && event.detail ? event.detail : {};
             var interactionId = String(detail.interactionId || detail.interaction_id || '').trim();
-            var turnId = String(detail.turnId || detail.turn_id || '').trim();
             if (!interactionId || avatarInteractionTextContinuationState.interactionId !== interactionId) {
                 return;
             }
             if (detail.accepted === true) {
                 noteAvatarInteractionSpeakCooldown(interactionId);
-                if (String(detail.reason || '').trim() === 'delivered') {
-                    releaseDeferredTextAfterAvatarInteraction();
-                    return;
-                }
-                markAvatarInteractionAccepted(interactionId, turnId);
-                return;
             }
             releaseDeferredTextAfterAvatarInteraction();
         });
@@ -1461,7 +1458,10 @@
                 return;
             }
             var detail = event && event.detail ? event.detail : {};
-            markAvatarInteractionTurnStarted(detail.turnId || detail.turn_id || '');
+            markAvatarInteractionTurnStarted(
+                detail.turnId || detail.turn_id || '',
+                detail.meta
+            );
         });
 
         window.addEventListener('neko-assistant-turn-end', function (event) {
@@ -1470,22 +1470,7 @@
             }
             var detail = event && event.detail ? event.detail : {};
             var turnId = String(detail.turnId || detail.turn_id || '').trim();
-            if (!turnId || avatarInteractionTextContinuationState.activeTurnId !== turnId) {
-                return;
-            }
-            releaseDeferredTextAfterAvatarInteraction();
-        });
-
-        window.addEventListener('neko-assistant-speech-cancel', function (event) {
-            if (!hasPendingAvatarInteractionContinuation()) {
-                return;
-            }
-            var detail = event && event.detail ? event.detail : {};
-            var turnId = String(detail.turnId || detail.turn_id || '').trim();
-            if (!turnId || avatarInteractionTextContinuationState.activeTurnId !== turnId) {
-                return;
-            }
-            releaseDeferredTextAfterAvatarInteraction();
+            markAvatarInteractionTurnFinished(turnId, detail.meta);
         });
     }
 
@@ -1495,16 +1480,46 @@
         return text.length > 80 ? text.slice(0, 80).trimEnd() : text;
     }
 
+    function getAvatarInteractionPayloadValue(payload, snakeKey, camelKey, fallback) {
+        if (Object.prototype.hasOwnProperty.call(payload, snakeKey)
+                && payload[snakeKey] !== null
+                && payload[snakeKey] !== undefined) {
+            return payload[snakeKey];
+        }
+        if (Object.prototype.hasOwnProperty.call(payload, camelKey)
+                && payload[camelKey] !== null
+                && payload[camelKey] !== undefined) {
+            return payload[camelKey];
+        }
+        return fallback;
+    }
+
+    function parseAvatarInteractionBool(value, fallback) {
+        if (typeof value === 'boolean') return value;
+        if (typeof value === 'number') {
+            if (value === 1) return true;
+            if (value === 0) return false;
+            return !!fallback;
+        }
+        if (typeof value === 'string') {
+            var normalized = value.trim().toLowerCase();
+            if (normalized === 'true' || normalized === '1') return true;
+            if (normalized === 'false' || normalized === '0') return false;
+        }
+        return !!fallback;
+    }
+
     function normalizeAvatarInteractionPayload(payload) {
         if (!payload || typeof payload !== 'object') {
             console.warn('[AvatarInteraction] ignored invalid payload:', payload);
             return null;
         }
 
-        var toolId = String(payload.toolId || '').trim().toLowerCase();
-        var actionId = String(payload.actionId || '').trim().toLowerCase();
-        var allowedActions = AVATAR_INTERACTION_ALLOWED_ACTIONS[toolId];
-        if (!allowedActions || allowedActions.indexOf(actionId) === -1) {
+        var toolId = String(payload.tool_id || payload.toolId || '').trim().toLowerCase();
+        var actionId = String(payload.action_id || payload.actionId || '').trim().toLowerCase();
+        var toolContract = AVATAR_INTERACTION_CONTRACT.tools[toolId];
+        var allowedIntensities = toolContract && toolContract.actions[actionId];
+        if (!allowedIntensities) {
             console.warn('[AvatarInteraction] ignored unsupported tool/action:', toolId, actionId);
             return null;
         }
@@ -1514,7 +1529,7 @@
             return null;
         }
 
-        var interactionId = String(payload.interactionId || '').trim();
+        var interactionId = String(payload.interaction_id || payload.interactionId || '').trim();
         if (!interactionId) {
             console.warn('[AvatarInteraction] ignored payload without interactionId');
             return null;
@@ -1523,6 +1538,8 @@
         var timestamp = Number(payload.timestamp);
         if (!Number.isFinite(timestamp) || timestamp <= 0) {
             timestamp = Date.now();
+        } else {
+            timestamp = Math.trunc(timestamp);
         }
 
         var normalized = {
@@ -1535,9 +1552,16 @@
         };
 
         if (payload.pointer && typeof payload.pointer === 'object') {
-            var clientX = Number(payload.pointer.clientX);
-            var clientY = Number(payload.pointer.clientY);
-            if (Number.isFinite(clientX) && Number.isFinite(clientY)) {
+            var rawClientX = getAvatarInteractionPayloadValue(
+                payload.pointer, 'client_x', 'clientX', null
+            );
+            var rawClientY = getAvatarInteractionPayloadValue(
+                payload.pointer, 'client_y', 'clientY', null
+            );
+            var clientX = Number(rawClientX);
+            var clientY = Number(rawClientY);
+            if (rawClientX !== null && rawClientY !== null
+                    && Number.isFinite(clientX) && Number.isFinite(clientY)) {
                 normalized.pointer = {
                     clientX: clientX,
                     clientY: clientY
@@ -1545,127 +1569,38 @@
             }
         }
 
-        var touchZone = String(payload.touchZone || payload.touch_zone || '').trim().toLowerCase();
-        if (AVATAR_INTERACTION_ALLOWED_TOUCH_ZONES.indexOf(touchZone) !== -1) {
+        var touchZone = String(payload.touch_zone || payload.touchZone || '').trim().toLowerCase();
+        if (toolContract.acceptsTouchZone
+                && AVATAR_INTERACTION_CONTRACT.touchZones.indexOf(touchZone) !== -1) {
             normalized.touch_zone = touchZone;
         }
 
         var intensity = String(payload.intensity || '').trim().toLowerCase();
-        if (AVATAR_INTERACTION_ALLOWED_INTENSITIES.indexOf(intensity) !== -1) {
-            if (toolId === 'hammer' || intensity !== 'easter_egg') {
-                normalized.intensity = intensity;
-            }
-        }
+        normalized.intensity = allowedIntensities.indexOf(intensity) !== -1
+            ? intensity
+            : 'normal';
 
-        var textContext = sanitizeAvatarInteractionTextContext(payload.textContext);
+        var textContext = sanitizeAvatarInteractionTextContext(getAvatarInteractionPayloadValue(
+            payload, 'text_context', 'textContext', ''
+        ));
         if (textContext) {
             normalized.text_context = textContext;
         }
 
-        if (toolId === 'fist' && payload.rewardDrop === true) {
-            normalized.reward_drop = true;
+        var booleanField = toolContract.booleanField;
+        if (booleanField && parseAvatarInteractionBool(getAvatarInteractionPayloadValue(
+            payload, booleanField.output, booleanField.input, false
+        ), false)) {
+            normalized[booleanField.output] = true;
         }
 
-        if (toolId === 'hammer' && payload.easterEgg === true) {
+        if (toolId === 'hammer'
+                && (normalized.intensity === 'easter_egg' || normalized.easter_egg === true)) {
+            normalized.intensity = 'easter_egg';
             normalized.easter_egg = true;
         }
 
         return normalized;
-    }
-
-    function getCurrentAvatarEmotion() {
-        try {
-            if (window.live2dManager && typeof window.live2dManager.currentEmotion === 'string' && window.live2dManager.currentEmotion) {
-                return window.live2dManager.currentEmotion;
-            }
-            if (window.mmdManager && window.mmdManager.expression && typeof window.mmdManager.expression.currentMood === 'string' && window.mmdManager.expression.currentMood) {
-                return window.mmdManager.expression.currentMood;
-            }
-            if (window.vrmManager && window.vrmManager.expression && typeof window.vrmManager.expression.currentMood === 'string' && window.vrmManager.expression.currentMood) {
-                return window.vrmManager.expression.currentMood;
-            }
-        } catch (_error) {
-            return 'neutral';
-        }
-        return 'neutral';
-    }
-
-    function clearAvatarInteractionSeedTimer() {
-        if (avatarInteractionSeedState.timerId) {
-            window.clearTimeout(avatarInteractionSeedState.timerId);
-            avatarInteractionSeedState.timerId = 0;
-        }
-    }
-
-    function resolveAvatarInteractionSeedEmotion(payload) {
-        if (!payload || typeof payload !== 'object') {
-            return null;
-        }
-
-        var toolId = String(payload.tool_id || payload.toolId || '').trim().toLowerCase();
-        var actionId = String(payload.action_id || payload.actionId || '').trim().toLowerCase();
-        var intensity = String(payload.intensity || '').trim().toLowerCase() || 'normal';
-        var toolMap = AVATAR_INTERACTION_SEED_EMOTIONS[toolId];
-        var actionMap = toolMap && toolMap[actionId];
-        if (!actionMap) {
-            return null;
-        }
-        if (toolId === 'fist' && payload.reward_drop === true) {
-            return actionMap.reward_drop || actionMap.normal || null;
-        }
-        if (toolId === 'hammer' && payload.easter_egg === true) {
-            return actionMap.easter_egg || actionMap[intensity] || actionMap.normal || null;
-        }
-        return actionMap[intensity] || actionMap.normal || null;
-    }
-
-    function clearAvatarInteractionSeedState() {
-        clearAvatarInteractionSeedTimer();
-        avatarInteractionSeedState.interactionId = '';
-        avatarInteractionSeedState.seedEmotion = null;
-        avatarInteractionSeedState.previousEmotion = null;
-    }
-
-    function applyAvatarInteractionSeedEmotion(payload) {
-        var interactionId = String(payload && (payload.interaction_id || payload.interactionId) || '').trim();
-        var seedEmotion = resolveAvatarInteractionSeedEmotion(payload);
-        if (!interactionId || !seedEmotion || typeof window.applyEmotion !== 'function') {
-            return;
-        }
-
-        var previousEmotion = avatarInteractionSeedState.previousEmotion;
-        if (!avatarInteractionSeedState.interactionId) {
-            previousEmotion = getCurrentAvatarEmotion();
-        }
-
-        clearAvatarInteractionSeedTimer();
-        avatarInteractionSeedState.interactionId = interactionId;
-        avatarInteractionSeedState.seedEmotion = seedEmotion;
-        avatarInteractionSeedState.previousEmotion = previousEmotion || 'neutral';
-
-        window.applyEmotion(seedEmotion);
-
-        avatarInteractionSeedState.timerId = window.setTimeout(function () {
-            if (avatarInteractionSeedState.interactionId !== interactionId) {
-                return;
-            }
-            var fallbackEmotion = avatarInteractionSeedState.previousEmotion || 'neutral';
-            clearAvatarInteractionSeedState();
-            if (typeof window.applyEmotion === 'function') {
-                window.applyEmotion(fallbackEmotion);
-            }
-        }, AVATAR_INTERACTION_SEED_FALLBACK_MS);
-    }
-
-    function bindAvatarInteractionSeedLifecycle() {
-        if (mod._avatarInteractionSeedLifecycleBound) {
-            return;
-        }
-        mod._avatarInteractionSeedLifecycleBound = true;
-
-        window.addEventListener('neko-assistant-emotion-ready', function () {
-            clearAvatarInteractionSeedState();
-        });
     }
 
     async function sendAvatarInteractionPayload(payload) {
@@ -1699,7 +1634,6 @@
             }
             S.socket.send(JSON.stringify(normalized));
             setActiveAvatarInteractionDispatch(normalized.interaction_id, Date.now());
-            applyAvatarInteractionSeedEmotion(normalized);
             return true;
         } catch (error) {
             console.error('[AvatarInteraction] send failed:', error);
@@ -1712,6 +1646,8 @@
         }
     }
 
+    mod.avatarInteractionContract = AVATAR_INTERACTION_CONTRACT;
+    mod.ensureAvatarInteractionTextContinuationLifecycle = bindAvatarInteractionTextContinuationLifecycle;
     mod.normalizeAvatarInteractionPayload = normalizeAvatarInteractionPayload;
     mod.sendAvatarInteractionPayload = sendAvatarInteractionPayload;
 
@@ -1885,8 +1821,7 @@
     // ======================== init — wire up all event listeners ========================
 
     mod.init = function init() {
-        bindAvatarInteractionSeedLifecycle();
-        bindAvatarInteractionTextContinuationLifecycle();
+        mod.ensureAvatarInteractionTextContinuationLifecycle();
 
         // Cache DOM references
         var micButton            = S.dom.micButton            = document.getElementById('micButton');
@@ -2014,20 +1949,11 @@
                 ensureVoiceStartCurrent();
             }
 
-            // Deactivate tool cursor mode (lollipop/cat paw/hammer)
-            // Prefer the React host cleanup path so cursor teardown stays in one place.
-            if (window.reactChatWindowHost && typeof window.reactChatWindowHost.deactivateToolCursor === 'function') {
-                window.reactChatWindowHost.deactivateToolCursor();
+            // Deactivate the selected avatar tool (lollipop/cat paw/hammer).
+            if (window.reactChatWindowHost && typeof window.reactChatWindowHost.deactivateAvatarTool === 'function') {
+                window.reactChatWindowHost.deactivateAvatarTool();
             } else {
-                window.dispatchEvent(new CustomEvent('neko:deactivate-tool-cursor'));
-                var _body = document.body;
-                var _root = document.documentElement;
-                _root.style.setProperty('cursor', 'auto', 'important');
-                if (_body) {
-                    _body.style.setProperty('cursor', 'auto', 'important');
-                }
-                _root.classList.remove('neko-tool-cursor-active');
-                _root.style.removeProperty('--neko-chat-tool-cursor');
+                window.dispatchEvent(new CustomEvent('neko:deactivate-avatar-tool'));
             }
 
             // Hide text input area (desktop only) + React composer + IPC

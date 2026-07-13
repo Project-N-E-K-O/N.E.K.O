@@ -1,4 +1,16 @@
 import { z } from 'zod';
+import {
+  AVATAR_TOOL_DEFINITION_IDS,
+  AVATAR_TOOL_VARIANT_IDS,
+} from './avatar-tools/catalog';
+import { desktopAvatarToolContractSchema } from './avatar-tools/desktopContractSchema';
+import {
+  avatarInteractionPayloadSchema,
+  type AvatarInteractionPayload,
+} from './avatar-tools/interactionContract';
+
+export { avatarInteractionPayloadSchema };
+export type { AvatarInteractionPayload };
 
 const messageActionSchema = z.object({
   id: z.string().min(1),
@@ -134,40 +146,9 @@ const compactToolWheelIndexRequestSchema = z.object({
   reason: z.string().optional(),
 }).nullable();
 
-const avatarInteractionPayloadBaseSchema = z.object({
-  interactionId: z.string().min(1),
-  target: z.literal('avatar'),
-  pointer: z.object({
-    clientX: z.number().finite(),
-    clientY: z.number().finite(),
-  }),
-  textContext: z.string().optional(),
-  timestamp: z.number().finite(),
-  intensity: z.enum(['normal', 'rapid', 'burst', 'easter_egg']).optional(),
-});
-
-export const avatarInteractionPayloadSchema = z.discriminatedUnion('toolId', [
-  avatarInteractionPayloadBaseSchema.extend({
-    toolId: z.literal('lollipop'),
-    actionId: z.enum(['offer', 'tease', 'tap_soft']),
-  }).strict(),
-  avatarInteractionPayloadBaseSchema.extend({
-    toolId: z.literal('fist'),
-    actionId: z.enum(['poke']),
-    touchZone: z.enum(['ear', 'head', 'face', 'body']).optional(),
-    rewardDrop: z.boolean().optional(),
-  }).strict(),
-  avatarInteractionPayloadBaseSchema.extend({
-    toolId: z.literal('hammer'),
-    actionId: z.enum(['bonk']),
-    touchZone: z.enum(['ear', 'head', 'face', 'body']).optional(),
-    easterEgg: z.boolean().optional(),
-  }).strict(),
-]);
-
-const avatarToolIdSchema = z.enum(['lollipop', 'fist', 'hammer']);
-const avatarToolCursorVariantSchema = z.enum(['primary', 'secondary', 'tertiary']);
-const avatarToolImageKindSchema = z.enum(['cursor', 'icon']);
+const avatarToolIdSchema = z.enum(AVATAR_TOOL_DEFINITION_IDS);
+const avatarToolVariantIdSchema = z.enum(AVATAR_TOOL_VARIANT_IDS);
+const avatarToolImageKindSchema = z.enum(['pointer', 'icon']);
 
 const avatarToolDescriptorSchema = z.object({
   id: avatarToolIdSchema,
@@ -175,24 +156,25 @@ const avatarToolDescriptorSchema = z.object({
   iconImagePath: z.string().min(1),
   iconImagePathAlt: z.string().optional(),
   iconImagePathAlt2: z.string().optional(),
-  cursorImagePath: z.string().min(1),
-  cursorImagePathAlt: z.string().optional(),
-  cursorImagePathAlt2: z.string().optional(),
-  cursorHotspotX: z.number().finite().optional(),
-  cursorHotspotY: z.number().finite().optional(),
-  cursorNaturalWidth: z.number().finite().positive().optional(),
-  cursorNaturalHeight: z.number().finite().positive().optional(),
-  cursorDisplayWidth: z.number().finite().positive().optional(),
-  cursorDisplayHeight: z.number().finite().positive().optional(),
+  pointerImagePath: z.string().min(1),
+  pointerImagePathAlt: z.string().optional(),
+  pointerImagePathAlt2: z.string().optional(),
+  pointerHotspotX: z.number().finite().optional(),
+  pointerHotspotY: z.number().finite().optional(),
+  pointerNaturalWidth: z.number().finite().positive().optional(),
+  pointerNaturalHeight: z.number().finite().positive().optional(),
+  pointerDisplayWidth: z.number().finite().positive().optional(),
+  pointerDisplayHeight: z.number().finite().positive().optional(),
   menuIconScale: z.number().finite().positive().optional(),
 }).strict();
 
 export const avatarToolStatePayloadSchema = z.object({
   active: z.boolean(),
   toolId: avatarToolIdSchema.nullable().optional(),
-  variant: avatarToolCursorVariantSchema.optional(),
-  avatarRangeVariant: avatarToolCursorVariantSchema.optional(),
-  outsideRangeVariant: avatarToolCursorVariantSchema.optional(),
+  desktopContract: desktopAvatarToolContractSchema.optional(),
+  variant: avatarToolVariantIdSchema.optional(),
+  avatarRangeVariant: avatarToolVariantIdSchema.optional(),
+  outsideRangeVariant: avatarToolVariantIdSchema.optional(),
   imageKind: avatarToolImageKindSchema.optional(),
   withinAvatarRange: z.boolean().optional(),
   overCompactZone: z.boolean().optional(),
@@ -204,7 +186,49 @@ export const avatarToolStatePayloadSchema = z.object({
   tool: avatarToolDescriptorSchema.nullable().optional(),
   textContext: z.string().optional(),
   timestamp: z.number().finite(),
-}).strict();
+}).strict().superRefine((state, context) => {
+  const contract = state.desktopContract;
+  if (!contract) return;
+  if (state.tool !== null && state.tool !== undefined) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['tool'],
+      message: 'desktop contract state must not carry the page visual descriptor',
+    });
+  }
+  if (!state.active) {
+    if (contract.definition !== null) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['desktopContract', 'definition'],
+        message: 'inactive state must carry an inactive desktop contract',
+      });
+    }
+    if (state.toolId !== null && state.toolId !== undefined) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['toolId'],
+        message: 'inactive state must not carry a tool ID',
+      });
+    }
+    return;
+  }
+  if (contract.definition === null) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['desktopContract', 'definition'],
+      message: 'active state requires a desktop definition',
+    });
+    return;
+  }
+  if (state.toolId !== contract.definition.id) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['toolId'],
+      message: 'state and desktop contract tool IDs must match',
+    });
+  }
+});
 
 export const messageBlockSchema = z.discriminatedUnion('type', [
   textBlockSchema,
@@ -263,7 +287,7 @@ export const chatWindowPropsSchema = z.object({
   inputHint: z.string().optional(),
   rollbackDraft: z.string().optional(),
   _rollbackKey: z.string().optional(),
-  _toolCursorResetKey: z.string().optional(),
+  _avatarToolDeactivationKey: z.string().optional(),
   jukeboxButtonLabel: z.string().optional(),
   jukeboxButtonAriaLabel: z.string().optional(),
   avatarGeneratorButtonLabel: z.string().optional(),
@@ -379,7 +403,6 @@ export type GalgameOption = z.infer<typeof galgameOptionSchema>;
 export type ChoiceOption = z.infer<typeof choiceOptionSchema>;
 export type ChoicePrompt = NonNullable<z.infer<typeof choicePromptSchema>>;
 export type ChoicePromptSource = ChoicePrompt['source'];
-export type AvatarInteractionPayload = z.infer<typeof avatarInteractionPayloadSchema>;
 export type AvatarToolStatePayload = z.infer<typeof avatarToolStatePayloadSchema>;
 export type MessageBlock = z.infer<typeof messageBlockSchema>;
 export type ChatMessage = z.infer<typeof chatMessageSchema>;

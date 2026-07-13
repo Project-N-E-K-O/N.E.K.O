@@ -127,7 +127,6 @@ from config.prompts.prompts_memory import (
 
 
 from config.prompts.prompts_avatar_interaction import (
-    _normalize_avatar_interaction_payload,
     _build_avatar_interaction_instruction,
     _build_avatar_interaction_memory_meta,
 )

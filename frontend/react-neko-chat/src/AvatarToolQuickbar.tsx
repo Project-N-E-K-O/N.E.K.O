@@ -3,17 +3,17 @@ import { i18n } from './i18n';
 import {
   type AvatarToolId,
   type AvatarToolItem,
-  type CursorVariant,
+  type AvatarToolVariantId,
   resolveAvatarToolMenuIconVisual,
   withAvatarToolAssetVersion,
 } from './avatarTools';
 
 type AvatarToolQuickbarProps = {
   activeToolIds: AvatarToolId[];
-  activeCursorToolId: string | null;
+  activeAvatarToolId: string | null;
   availableTools: AvatarToolItem[];
   disabled?: boolean;
-  getToolVariant: (toolId: AvatarToolId) => CursorVariant;
+  getToolVariant: (toolId: AvatarToolId) => AvatarToolVariantId;
   onToolClick: (tool: AvatarToolItem, event: ReactMouseEvent<HTMLButtonElement>) => void;
   onEditClick: (event: ReactMouseEvent<HTMLButtonElement>) => void;
 };
@@ -24,7 +24,7 @@ function getToolLabel(tool: AvatarToolItem): string {
 
 export default function AvatarToolQuickbar({
   activeToolIds,
-  activeCursorToolId,
+  activeAvatarToolId,
   availableTools,
   disabled = false,
   getToolVariant,
@@ -47,7 +47,6 @@ export default function AvatarToolQuickbar({
       <div
         id="composer-tool-popover-compact"
         className="avatar-tool-quickbar-scroll"
-        data-avatar-tool-quickbar-compat
       >
         {activeTools.length > 0 ? activeTools.map((tool) => {
           const label = getToolLabel(tool);
@@ -55,11 +54,11 @@ export default function AvatarToolQuickbar({
           return (
             <button
               key={tool.id}
-              className={`composer-icon-button avatar-tool-quickbar-button${activeCursorToolId === tool.id ? ' is-active' : ''}`}
+              className={`composer-icon-button avatar-tool-quickbar-button${activeAvatarToolId === tool.id ? ' is-active' : ''}`}
               type="button"
               data-avatar-tool-id={tool.id}
               aria-label={label}
-              aria-pressed={activeCursorToolId === tool.id}
+              aria-pressed={activeAvatarToolId === tool.id}
               title={label}
               disabled={disabled}
               onClick={(event) => onToolClick(tool, event)}
@@ -99,5 +98,3 @@ export default function AvatarToolQuickbar({
     </div>
   );
 }
-
-export type { AvatarToolQuickbarProps };
