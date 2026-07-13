@@ -1,10 +1,22 @@
 from pathlib import Path
 
 
+MODEL_MANAGER_PART_NAMES = (
+    "runtime-loaders.js",
+    "dropdown-manager.js",
+    "page-bridge.js",
+    "card-face.js",
+    "path-request-fullscreen.js",
+    "page-controller.js",
+    "window-lifecycle.js",
+)
+
+
 def read_model_manager_source() -> str:
+    parts_dir = Path("static/js/model_manager")
     return "".join(
-        path.read_text(encoding="utf-8")
-        for path in sorted(Path("static/js/model_manager").glob("*.js"))
+        (parts_dir / part_name).read_text(encoding="utf-8")
+        for part_name in MODEL_MANAGER_PART_NAMES
     )
 
 

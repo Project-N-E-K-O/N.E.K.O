@@ -1,14 +1,14 @@
 from pathlib import Path
 
+from tests.unit.avatar_ui_buttons_source import read_avatar_ui_buttons_source
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 AVATAR_UI_BUTTONS_DIR = PROJECT_ROOT / "static" / "avatar" / "avatar-ui-buttons"
 
 
 def _read_avatar_ui_buttons_source() -> str:
-    part_paths = tuple(sorted(AVATAR_UI_BUTTONS_DIR.glob("*.js")))
-    assert part_paths, f"avatar UI button parts not found: {AVATAR_UI_BUTTONS_DIR}"
-    return "\n".join(path.read_text(encoding="utf-8") for path in part_paths)
+    return read_avatar_ui_buttons_source()
 
 
 LIVE2D_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "live2d" / "live2d-ui-buttons.js"
