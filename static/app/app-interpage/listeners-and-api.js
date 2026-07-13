@@ -18,12 +18,22 @@
     window.appInterpage = window.appInterpage || {};
     const I = window.__appInterpageParts || (window.__appInterpageParts = {});
 
-    // The former single IIFE could not receive a BroadcastChannel event until
+    // The former single IIFE could not receive cross-window relay events until
     // all hoisted lifecycle helpers were ready. Bind only in the final part to
     // preserve that ordering across parser-blocking external scripts.
     if (I.nekoBroadcastChannel && typeof I.handleNekoBroadcastMessage === 'function') {
         I.nekoBroadcastChannel.onmessage = I.handleNekoBroadcastMessage;
     }
+    I.yuiGuideInterpageResources.addEventListener(
+        window,
+        'neko:tutorial-overlay-relay',
+        I.handleYuiGuideRelayedCustomEvent
+    );
+    I.yuiGuideInterpageResources.addEventListener(
+        window,
+        'message',
+        I.handleYuiGuideRelayedWindowMessage
+    );
 
     function cleanupAppInterpageTransientResources() {
         I.clearYuiGuideChatFlushTimer();
