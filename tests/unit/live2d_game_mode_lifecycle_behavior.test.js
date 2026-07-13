@@ -33,7 +33,7 @@ function classList() {
 }
 
 async function flush() {
-  for (let i = 0; i < 8; i += 1) await Promise.resolve();
+  for (let i = 0; i < 16; i += 1) await Promise.resolve();
 }
 
 function createHarness(options = {}) {
@@ -104,9 +104,15 @@ function createHarness(options = {}) {
     win.live2dManager._goodbyeClicked = true;
   });
   win.addEventListener('live2d-return-click', () => {
+    if (options.blockReturn) return;
     cat = false;
     win.live2dManager._goodbyeClicked = false;
   });
+
+  let fakeNow = 0;
+  const contextDate = options.expireReturnWaitImmediately
+    ? { now: () => { fakeNow += 5000; return fakeNow; } }
+    : Date;
 
   async function fetch(url, init = {}) {
     calls.push({ url, init });
@@ -129,7 +135,7 @@ function createHarness(options = {}) {
     Promise,
     Number,
     Math,
-    Date,
+    Date: contextDate,
     fetch,
     setTimeout,
     clearTimeout,
@@ -202,6 +208,37 @@ test('registered pet ACKs protection, enters deep sleep, and only click restores
   assert.ok(harness.calls.some((call) => call.url === '/api/game-mode-beta/manual-restore'));
   assert.equal(harness.doc.body.classList.contains('neko-game-mode-deep-sleep'), false);
   assert.equal(harness.activityStarted, 1);
+});
+
+test('blocked return keeps manual restore ownership and skips backend ACK', async () => {
+  const harness = createHarness({
+    blockReturn: true,
+    expireReturnWaitImmediately: true,
+  });
+  await flush();
+  harness.win.nekoGameModeBeta.handleAutoSwitchEvent({
+    type: 'game_mode_auto_switch',
+    source: 'game_mode_auto',
+    cycle_id: 'cycle-blocked-return',
+    trigger_source: 'resource_pressure',
+    reason: 'cpu',
+  });
+  await flush();
+
+  harness.win.dispatchEvent(new CustomEventLike('live2d-return-click', {
+    detail: { source: 'user' },
+  }));
+  await flush();
+
+  assert.equal(
+    harness.calls.some((call) => call.url === '/api/game-mode-beta/manual-restore'),
+    false,
+  );
+  assert.equal(harness.win.nekoGameModeBeta.getState().autoSwitched, true);
+  assert.equal(
+    harness.win.nekoGameModeBeta.getState().currentCycleId,
+    'cycle-blocked-return',
+  );
 });
 
 test('deep sleep retries an idempotent throttle step once', async () => {

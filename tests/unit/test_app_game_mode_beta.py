@@ -113,10 +113,12 @@ def test_app_game_mode_beta_frontend_contracts():
             lifecycleOrder.push('goodbye');
             goodbyeEvents.push(event.detail || {{}});
           }});
-          win.addEventListener('live2d-return-click', (event) => {{
-            setCat(false);
-            lifecycleOrder.push('return');
-            returnEvents.push(event.detail || {{}});
+          ['live2d-return-click', 'vrm-return-click', 'mmd-return-click', 'pngtuber-return-click'].forEach((eventName) => {{
+            win.addEventListener(eventName, (event) => {{
+              setCat(false);
+              lifecycleOrder.push('return');
+              returnEvents.push(event.detail || {{}});
+            }});
           }});
 
           const responses = (options.responses || []).slice();
