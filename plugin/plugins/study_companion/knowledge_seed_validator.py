@@ -201,10 +201,17 @@ def _iter_seed_files(
     issues: list[KnowledgeSeedIssue],
     seen_paths: set[Path] | None = None,
     manifest_stack: set[Path] | None = None,
+    manifest_seed_paths: dict[Path, set[Path]] | None = None,
 ) -> Iterable[Path]:
     resolved_manifest = manifest_path.resolve()
     shared_seen = seen_paths if seen_paths is not None else set()
     active_manifests = manifest_stack if manifest_stack is not None else set()
+    shared_manifest_seed_paths = (
+        manifest_seed_paths if manifest_seed_paths is not None else {}
+    )
+    descendant_seed_paths = shared_manifest_seed_paths.setdefault(
+        resolved_manifest, set()
+    )
     if resolved_manifest in active_manifests:
         issues.append(
             KnowledgeSeedIssue(
@@ -229,6 +236,7 @@ def _iter_seed_files(
     try:
         files = payload.get("files")
         if not isinstance(files, list):
+            descendant_seed_paths.add(resolved_manifest)
             yield resolved_manifest
             return
         for item in files:
@@ -287,9 +295,14 @@ def _iter_seed_files(
                     issues,
                     shared_seen,
                     active_manifests,
+                    shared_manifest_seed_paths,
+                )
+                descendant_seed_paths.update(
+                    shared_manifest_seed_paths.get(child_path, set())
                 )
                 continue
             shared_seen.add(child_path)
+            descendant_seed_paths.add(child_path)
             yield child_path
     finally:
         active_manifests.discard(resolved_manifest)
@@ -1041,7 +1054,13 @@ def validate_knowledge_seed_manifest(path: Path | str) -> KnowledgeSeedValidatio
     taxonomy = _load_taxonomy(manifest_path, issues)
 
     topics: list[KnowledgeSeedTopic] = []
-    for seed_path in _iter_seed_files(manifest_path, manifest_payload, issues):
+    manifest_seed_paths: dict[Path, set[Path]] = {}
+    for seed_path in _iter_seed_files(
+        manifest_path,
+        manifest_payload,
+        issues,
+        manifest_seed_paths=manifest_seed_paths,
+    ):
         payload = _read_json(seed_path, issues)
         if payload is None:
             continue
@@ -1099,7 +1118,11 @@ def validate_knowledge_seed_manifest(path: Path | str) -> KnowledgeSeedValidatio
             if not seed_path.is_absolute():
                 seed_path = manifest_path.parent / seed_path
             expected = item.get("topic_count")
-            actual = sum(1 for topic in topics if topic.path.resolve() == seed_path.resolve())
+            resolved_seed_path = seed_path.resolve()
+            counted_paths = manifest_seed_paths.get(
+                resolved_seed_path, {resolved_seed_path}
+            )
+            actual = sum(1 for topic in topics if topic.path.resolve() in counted_paths)
             if expected != actual:
                 issues.append(
                     KnowledgeSeedIssue(

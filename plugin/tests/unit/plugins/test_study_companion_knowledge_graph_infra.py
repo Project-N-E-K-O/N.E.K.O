@@ -21,6 +21,7 @@ from plugin.plugins.study_companion.knowledge_retrieval_eval import (
     evaluate_knowledge_retrieval_queries,
 )
 from plugin.plugins.study_companion.knowledge_seed_validator import (
+    main as validate_knowledge_seed_main,
     validate_knowledge_seed_manifest,
 )
 
@@ -205,6 +206,137 @@ def test_nested_seed_manifests_are_expanded(tmp_path: Path) -> None:
 
     assert result.is_valid
     assert [topic.data["id"] for topic in result.topics] == ["color"]
+
+
+def test_nested_manifest_topic_count_includes_descendant_topics(
+    tmp_path: Path,
+) -> None:
+    seed_path = tmp_path / "seed.json"
+    child_manifest = tmp_path / "child.json"
+    root_manifest = tmp_path / "root.json"
+    seed_path.write_text(
+        json.dumps(
+            {
+                "subject": "art",
+                "topics": [
+                    {
+                        "id": "color",
+                        "name": "Color",
+                        "subject": "art",
+                        "stage": "primary",
+                        "chapter": "Basics",
+                        "unit": "Color",
+                        "prerequisites": [],
+                        "related": [],
+                        "skills": ["observe"],
+                        "question_types": ["identify"],
+                        "examples": [],
+                        "typical_misconceptions": ["tone equals hue"],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    child_manifest.write_text(
+        json.dumps({"files": [{"path": seed_path.name, "topic_count": 1}]}),
+        encoding="utf-8",
+    )
+    root_manifest.write_text(
+        json.dumps({"files": [{"path": child_manifest.name, "topic_count": 1}]}),
+        encoding="utf-8",
+    )
+
+    result = validate_knowledge_seed_manifest(root_manifest)
+
+    assert result.is_valid
+    assert [topic.data["id"] for topic in result.topics] == ["color"]
+
+
+def test_nested_manifest_reports_invalid_references(tmp_path: Path) -> None:
+    child_manifest = tmp_path / "child.json"
+    invalid_json = tmp_path / "invalid.json"
+    root_manifest = tmp_path / "root.json"
+    child_manifest.write_text(
+        json.dumps({"files": [{"path": root_manifest.name}]}),
+        encoding="utf-8",
+    )
+    invalid_json.write_text("not json", encoding="utf-8")
+    root_manifest.write_text(
+        json.dumps(
+            {
+                "files": [
+                    {"path": child_manifest.name},
+                    {"path": child_manifest.name},
+                    {"path": "missing.json"},
+                    {},
+                    {"path": invalid_json.name},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = validate_knowledge_seed_manifest(root_manifest)
+    issue_codes = {issue.code for issue in result.issues}
+
+    assert {
+        "circular_manifest_reference",
+        "duplicate_manifest_file",
+        "missing_manifest_file",
+        "invalid_manifest_file",
+        "invalid_json",
+    } <= issue_codes
+
+
+def test_bundled_seed_uses_semantic_prerequisite_and_support_relations() -> None:
+    seed = (
+        Path(__file__).resolve().parents[3]
+        / "plugins"
+        / "study_companion"
+        / "static"
+        / "knowledge_graph_seed.json"
+    )
+    result = validate_knowledge_seed_manifest(seed)
+    topics = {str(topic.data["id"]): topic.data for topic in result.topics}
+
+    sentence_expansion = topics["chinese_primary_sentence_expansion"]
+    assert any(
+        ref["id"] == "chinese_primary_pinyin_character"
+        for ref in sentence_expansion["prerequisites"]
+    )
+    assert not any(
+        ref["id"] == "chinese_primary_pinyin_character"
+        and ref.get("relation") == "prerequisite"
+        for ref in sentence_expansion["related"]
+    )
+
+    industrial_location = topics["geo_senior_industrial_location"]
+    history_ref = next(
+        ref
+        for ref in industrial_location["related"]
+        if ref["id"] == "history_junior_industrial_revolution"
+    )
+    assert history_ref["relation"] == "co_occurs"
+
+
+def test_validator_cli_formats_bundled_report(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    seed = (
+        Path(__file__).resolve().parents[3]
+        / "plugins"
+        / "study_companion"
+        / "static"
+        / "knowledge_graph_seed.json"
+    )
+
+    exit_code = validate_knowledge_seed_main([str(seed)])
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "Knowledge Seed Quality Report" in output
+    assert "validated 820 knowledge seed topics" in output
 
 
 def test_related_prerequisites_participate_in_cycle_detection(tmp_path: Path) -> None:

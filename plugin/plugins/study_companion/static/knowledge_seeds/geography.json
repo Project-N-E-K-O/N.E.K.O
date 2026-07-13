@@ -1274,7 +1274,7 @@
         },
         {
           "id": "history_junior_industrial_revolution",
-          "relation": "supports",
+          "relation": "co_occurs",
           "priority": "useful",
           "context": "explanation",
           "confidence": 0.82,

@@ -150,17 +150,7 @@
       "chapter": "语文基础",
       "depth": 1,
       "difficulty": 0.34,
-      "prerequisites": [],
-      "related": [
-        {
-          "id": "chinese_primary_paragraph_main_idea",
-          "relation": "next",
-          "reason": "Practice 段落主要内容 after 扩句缩句; it is the next topic in the primary chinese learning sequence.",
-          "use_cases": [
-            "learning_path",
-            "practice_planning"
-          ]
-        },
+      "prerequisites": [
         {
           "id": "chinese_primary_pinyin_character",
           "relation": "prerequisite",
@@ -178,6 +168,17 @@
             "target_subject": "chinese",
             "validation_batch": "chinese_ready_core_relations_2026_06_26"
           }
+        }
+      ],
+      "related": [
+        {
+          "id": "chinese_primary_paragraph_main_idea",
+          "relation": "next",
+          "reason": "Practice 段落主要内容 after 扩句缩句; it is the next topic in the primary chinese learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         },
         {
           "id": "chinese_primary_paragraph_main_idea",
