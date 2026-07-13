@@ -227,6 +227,17 @@ def test_legacy_index_aliases_are_normalized_and_user_preferences_remain_authori
         );
         assert.strictEqual(Object.keys(normalized).some((key) => key.startsWith('param_')), false);
 
+        // An index-only value cannot be tied safely to an official parameter
+        // after a model revision may have reordered its parameter table.
+        const ambiguousLegacyOnly = manager._normalizeModelParameters(
+          coreModel,
+          { param_0: 5.42, param_1: 4.57 },
+        );
+        assert.deepStrictEqual(
+          JSON.parse(JSON.stringify(ambiguousLegacyOnly)),
+          {},
+        );
+
         // Official IDs are authoritative regardless of JSON insertion order.
         const reverseOrdered = manager._normalizeModelParameters(
           coreModel,

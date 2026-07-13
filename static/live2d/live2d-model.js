@@ -322,10 +322,10 @@ Live2DManager.prototype._resolveModelParameterKey = function(coreModel, paramId)
     return idx >= 0 ? { idx, resolvedId, hasResolvedId, isIndexKey } : null;
 };
 
-// Lazy migration for legacy parameter dictionaries. Both official Cubism IDs
-// and historical param_N aliases are accepted, but each runtime index emits
-// exactly one canonical key. Official IDs always outrank legacy aliases;
-// entries of the same kind retain the historical last-write-wins behavior.
+// Lazy migration for legacy parameter dictionaries. Historical param_N keys
+// have no parameter identity, so they are only safe when the runtime cannot
+// expose an official ID for that index. Once an official ID is available,
+// discard the ambiguous alias instead of guessing across model revisions.
 Live2DManager.prototype._normalizeModelParameters = function(coreModel, parameters) {
     if (!coreModel || !parameters || typeof parameters !== 'object') return {};
 
@@ -337,7 +337,9 @@ Live2DManager.prototype._normalizeModelParameters = function(coreModel, paramete
         if (typeof value !== 'number' || !Number.isFinite(value)) continue;
         const resolved = this._resolveModelParameterKey(coreModel, paramId);
         if (!resolved) continue;
-        const canonicalKey = catalogByIndex.get(resolved.idx)?.key
+        const catalogEntry = catalogByIndex.get(resolved.idx);
+        if (resolved.isIndexKey && catalogEntry?.id) continue;
+        const canonicalKey = catalogEntry?.key
             || (resolved.hasResolvedId && resolved.resolvedId
                 ? String(resolved.resolvedId)
                 : `param_${resolved.idx}`);
