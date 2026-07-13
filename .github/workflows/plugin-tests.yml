@@ -10,7 +10,7 @@ on:
     branches: [main]
     paths:
       - 'plugin/**'
-      - 'static/avatar/avatar-ui-buttons.js'
+      - 'static/avatar/avatar-ui-buttons/**'
       - 'tests/unit/test_avatar_return_button_idle_tiers_static.py'
       - 'main_routers/card_drop_router.py'
       - 'main_logic/card_forge_facts.py'
@@ -28,7 +28,7 @@ on:
     branches: [main]
     paths:
       - 'plugin/**'
-      - 'static/avatar/avatar-ui-buttons.js'
+      - 'static/avatar/avatar-ui-buttons/**'
       - 'tests/unit/test_avatar_return_button_idle_tiers_static.py'
       - 'main_routers/card_drop_router.py'
       - 'main_logic/card_forge_facts.py'
