@@ -19,6 +19,7 @@ from typing import Literal
 
 
 AsrProviderCategory = Literal["dummy", "ws_streaming", "segmented_request"]
+AsrEndpointingMode = Literal["manual", "server_vad"]
 AsrImplementationStatus = Literal[
     "implemented",
     "planned",
@@ -28,28 +29,63 @@ AsrImplementationStatus = Literal[
 
 
 @dataclass(frozen=True, slots=True)
+class AsrCoreRoute:
+    """Bind one Core to its ASR provider, credential slot, and region."""
+
+    provider_key: str
+    credential_field: str
+    region: Literal["cn", "intl"] | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class AsrProviderMeta:
     """Architectural metadata for one ASR provider implementation."""
 
     provider_key: str
     category: AsrProviderCategory
-    canonical_sample_rate_hz: int
+    worker_input_sample_rate_hz: int
+    wire_sample_rate_hz: int
+    supported_endpointing_modes: frozenset[AsrEndpointingMode]
     implementation_status: AsrImplementationStatus
 
 
 # Business code must route through this table rather than scattering
-# ``if core_type == ...`` branches. qwen and qwen_intl intentionally share one
-# worker implementation; their regional endpoint/credential differences belong
-# to the future Alibaba worker.
-CORE_ASR_ROUTES: dict[str, str] = {
-    "qwen": "alibaba",
-    "qwen_intl": "alibaba",
-    "openai": "openai",
-    "step": "step",
-    "grok": "grok",
-    "glm": "glm",
-    "gemini": "gemini",
-    "free": "free",
+# ``if core_type == ...`` branches. qwen and qwen_intl intentionally share
+# workers/qwen.py while keeping region and credential selection explicit.
+CORE_ASR_ROUTES: dict[str, AsrCoreRoute] = {
+    "qwen": AsrCoreRoute(
+        provider_key="qwen",
+        credential_field="ASSIST_API_KEY_QWEN",
+        region="cn",
+    ),
+    "qwen_intl": AsrCoreRoute(
+        provider_key="qwen",
+        credential_field="ASSIST_API_KEY_QWEN_INTL",
+        region="intl",
+    ),
+    "openai": AsrCoreRoute(
+        provider_key="openai",
+        credential_field="ASSIST_API_KEY_OPENAI",
+    ),
+    "step": AsrCoreRoute(
+        provider_key="step",
+        credential_field="ASSIST_API_KEY_STEP",
+    ),
+    "grok": AsrCoreRoute(
+        provider_key="grok",
+        credential_field="ASSIST_API_KEY_GROK",
+    ),
+    "glm": AsrCoreRoute(
+        provider_key="glm",
+        credential_field="ASSIST_API_KEY_GLM",
+    ),
+    "gemini": AsrCoreRoute(
+        provider_key="gemini",
+        credential_field="ASSIST_API_KEY_GEMINI",
+    ),
+    # The free backend is blocked before credential resolution. An empty field
+    # makes it impossible to accidentally borrow AUDIO_API_KEY in the future.
+    "free": AsrCoreRoute(provider_key="free", credential_field=""),
 }
 
 
@@ -57,49 +93,65 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
     "dummy": AsrProviderMeta(
         provider_key="dummy",
         category="dummy",
-        canonical_sample_rate_hz=16_000,
+        worker_input_sample_rate_hz=16_000,
+        wire_sample_rate_hz=16_000,
+        supported_endpointing_modes=frozenset({"manual"}),
         implementation_status="implemented",
     ),
-    "alibaba": AsrProviderMeta(
-        provider_key="alibaba",
+    "qwen": AsrProviderMeta(
+        provider_key="qwen",
         category="ws_streaming",
-        canonical_sample_rate_hz=16_000,
-        implementation_status="planned",
+        worker_input_sample_rate_hz=16_000,
+        wire_sample_rate_hz=16_000,
+        supported_endpointing_modes=frozenset({"manual", "server_vad"}),
+        implementation_status="blocked_credentials",
     ),
     "openai": AsrProviderMeta(
         provider_key="openai",
         category="ws_streaming",
-        canonical_sample_rate_hz=16_000,
-        implementation_status="planned",
+        worker_input_sample_rate_hz=16_000,
+        wire_sample_rate_hz=24_000,
+        supported_endpointing_modes=frozenset({"manual"}),
+        implementation_status="blocked_credentials",
     ),
     "step": AsrProviderMeta(
         provider_key="step",
         category="ws_streaming",
-        canonical_sample_rate_hz=16_000,
-        implementation_status="planned",
+        worker_input_sample_rate_hz=16_000,
+        wire_sample_rate_hz=16_000,
+        supported_endpointing_modes=frozenset({"manual", "server_vad"}),
+        implementation_status="blocked_credentials",
     ),
     "grok": AsrProviderMeta(
         provider_key="grok",
         category="ws_streaming",
-        canonical_sample_rate_hz=16_000,
-        implementation_status="planned",
+        worker_input_sample_rate_hz=16_000,
+        wire_sample_rate_hz=16_000,
+        supported_endpointing_modes=frozenset({"server_vad"}),
+        implementation_status="blocked_credentials",
     ),
     "glm": AsrProviderMeta(
         provider_key="glm",
         category="segmented_request",
-        canonical_sample_rate_hz=16_000,
+        worker_input_sample_rate_hz=16_000,
+        wire_sample_rate_hz=16_000,
+        supported_endpointing_modes=frozenset({"manual"}),
         implementation_status="planned",
     ),
     "gemini": AsrProviderMeta(
         provider_key="gemini",
         category="segmented_request",
-        canonical_sample_rate_hz=16_000,
+        worker_input_sample_rate_hz=16_000,
+        wire_sample_rate_hz=16_000,
+        supported_endpointing_modes=frozenset({"manual"}),
         implementation_status="planned",
     ),
     "free": AsrProviderMeta(
         provider_key="free",
         category="segmented_request",
-        canonical_sample_rate_hz=16_000,
+        worker_input_sample_rate_hz=16_000,
+        wire_sample_rate_hz=16_000,
+        supported_endpointing_modes=frozenset({"manual"}),
         implementation_status="blocked_backend",
     ),
 }

@@ -64,7 +64,14 @@ _OMNI_ONLY_FIELDS = frozenset(
 )
 
 _RequestKind: TypeAlias = Literal["audio", "commit", "clear", "shutdown"]
-_EventKind: TypeAlias = Literal["ready", "partial", "final", "error", "closed"]
+_EventKind: TypeAlias = Literal[
+    "ready",
+    "utterance_started",
+    "partial",
+    "final",
+    "error",
+    "closed",
+]
 _UtteranceKey: TypeAlias = tuple[int, int, int]
 
 
@@ -74,7 +81,7 @@ class AsrSessionConfig:
 
     language: str = "zh"
     input_sample_rate_hz: Literal[16000, 48000] = 16000
-    endpointing_mode: Literal["provider", "manual"] = "manual"
+    endpointing_mode: Literal["manual", "server_vad"] = "manual"
 
     def __post_init__(self) -> None:
         language = str(self.language).strip()
@@ -98,9 +105,9 @@ class AsrSessionConfig:
             raise ValueError(
                 "ASR_INVALID_CONFIG: input_sample_rate_hz must be 16000 or 48000"
             )
-        if self.endpointing_mode not in ("provider", "manual"):
+        if self.endpointing_mode not in ("manual", "server_vad"):
             raise ValueError(
-                "ASR_INVALID_CONFIG: endpointing_mode must be 'provider' or 'manual'"
+                "ASR_INVALID_CONFIG: endpointing_mode must be 'manual' or 'server_vad'"
             )
         object.__setattr__(self, "language", normalized_language)
 
@@ -293,7 +300,9 @@ class _RealtimeAsrSessionImpl:
                 if self._state in (_SessionState.CLOSING, _SessionState.CLOSED):
                     raise
                 if self._state is not _SessionState.FAILED:
-                    await self._fail("ASR_WORKER_FAILED", "worker failed during connect")
+                    await self._fail(
+                        "ASR_WORKER_FAILED", "worker failed during connect"
+                    )
                 raise
 
             worker_task = self._worker_task
@@ -310,11 +319,15 @@ class _RealtimeAsrSessionImpl:
         if not isinstance(config, Mapping):
             raise TypeError("ASR_INVALID_CONFIG: session update must be a mapping")
 
-        unknown_fields = set(config) - {
-            "language",
-            "input_sample_rate_hz",
-            "endpointing_mode",
-        } - _OMNI_ONLY_FIELDS
+        unknown_fields = (
+            set(config)
+            - {
+                "language",
+                "input_sample_rate_hz",
+                "endpointing_mode",
+            }
+            - _OMNI_ONLY_FIELDS
+        )
         if unknown_fields:
             names = ", ".join(sorted(map(str, unknown_fields)))
             raise ValueError(f"ASR_INVALID_CONFIG: unknown session field(s): {names}")
@@ -327,7 +340,9 @@ class _RealtimeAsrSessionImpl:
         if not updates:
             return
         if self._state is not _SessionState.NEW:
-            raise RuntimeError("ASR_SESSION_CONFIG_LOCKED: session is already connecting")
+            raise RuntimeError(
+                "ASR_SESSION_CONFIG_LOCKED: session is already connecting"
+            )
         self._config = replace(self._config, **updates)
 
     async def stream_audio(
@@ -353,7 +368,9 @@ class _RealtimeAsrSessionImpl:
                 else self._config.input_sample_rate_hz
             )
             if effective_rate not in (16000, 48000):
-                raise ValueError("ASR_INVALID_CONFIG: sample rate must be 16000 or 48000")
+                raise ValueError(
+                    "ASR_INVALID_CONFIG: sample rate must be 16000 or 48000"
+                )
             if len(audio_chunk) > effective_rate * 2:
                 raise ValueError(
                     "ASR_AUDIO_CHUNK_TOO_LARGE: one chunk may contain at most one second"
@@ -398,10 +415,11 @@ class _RealtimeAsrSessionImpl:
                         audio=tail,
                     )
                 )
-            if self._config.endpointing_mode == "provider":
-                # Provider endpointing still needs a local activity boundary
+            if self._config.endpointing_mode == "server_vad":
+                # Server VAD still needs a local activity boundary
                 # to drain soxr's buffered 48 kHz tail. It deliberately does
-                # not send a commit or advance the provider utterance key.
+                # not send a commit or advance a worker-owned utterance ID.
+                self._utterance_has_audio = False
                 self._reset_resampler()
                 return
             await self._enqueue_request(
@@ -599,6 +617,25 @@ class _RealtimeAsrSessionImpl:
 
         if event.generation != self._generation:
             return False
+        if event.kind == "utterance_started":
+            if (
+                self._config.endpointing_mode != "server_vad"
+                or event.utterance_id is None
+            ):
+                return False
+            key = (event.generation, event.buffer_epoch, event.utterance_id)
+            async with self._operation_lock:
+                if (
+                    self._state is not _SessionState.READY
+                    or event.generation != self._generation
+                    or event.buffer_epoch != self._buffer_epoch
+                ):
+                    return False
+                # Repeated provider speech-start notifications for one item
+                # are idempotent. The worker owns provider-item -> internal-ID
+                # mapping, so no provider identifier leaks into this layer.
+                self._active_utterance_keys.add(key)
+            return False
         if event.kind == "partial":
             return False
         if event.kind == "final":
@@ -622,7 +659,7 @@ class _RealtimeAsrSessionImpl:
                     return False
                 valid_keys = (
                     self._active_utterance_keys
-                    if self._config.endpointing_mode == "provider"
+                    if self._config.endpointing_mode == "server_vad"
                     else self._committed_utterance_keys
                 )
                 if key not in valid_keys:
@@ -633,13 +670,6 @@ class _RealtimeAsrSessionImpl:
                 self._final_keys.add(key)
                 self._active_utterance_keys.discard(key)
                 self._committed_utterance_keys.discard(key)
-                if (
-                    self._config.endpointing_mode == "provider"
-                    and event.utterance_id == self._utterance_id
-                ):
-                    self._utterance_id += 1
-                    self._utterance_has_audio = False
-                    self._reset_resampler()
             assert self._callback_queue is not None
             await self._callback_queue.put(_CallbackItem(text=text))
             return False
@@ -681,7 +711,10 @@ class _RealtimeAsrSessionImpl:
         error = f"{safe_code}: {safe_message}"
         if self._ready_future is not None and not self._ready_future.done():
             self._ready_future.set_exception(RuntimeError(error))
-        if self._worker_task is not None and self._worker_task is not asyncio.current_task():
+        if (
+            self._worker_task is not None
+            and self._worker_task is not asyncio.current_task()
+        ):
             self._worker_task.cancel()
         try:
             await self._emit_connection_error_once(error)
@@ -716,7 +749,11 @@ class _RealtimeAsrSessionImpl:
                 request.buffer_epoch,
                 request.utterance_id,
             )
-            if request.kind == "audio" and key not in self._active_utterance_keys:
+            if (
+                self._config.endpointing_mode == "manual"
+                and request.kind == "audio"
+                and key not in self._active_utterance_keys
+            ):
                 self._active_utterance_keys.add(key)
                 added_active = True
             if request.kind == "commit" and key not in self._committed_utterance_keys:
@@ -784,12 +821,7 @@ class _RealtimeAsrSessionImpl:
         output = self._resampler.resample_chunk(samples)
         if len(output) == 0:
             return b""
-        return (
-            (output * 32768.0)
-            .clip(-32768, 32767)
-            .astype("<i2")
-            .tobytes()
-        )
+        return (output * 32768.0).clip(-32768, 32767).astype("<i2").tobytes()
 
     def _flush_resampler(self) -> bytes:
         if self._resampler is None:
@@ -800,12 +832,7 @@ class _RealtimeAsrSessionImpl:
         )
         if len(output) == 0:
             return b""
-        return (
-            (output * 32768.0)
-            .clip(-32768, 32767)
-            .astype("<i2")
-            .tobytes()
-        )
+        return (output * 32768.0).clip(-32768, 32767).astype("<i2").tobytes()
 
     def _reset_resampler(self) -> None:
         if self._resampler is not None:
