@@ -277,7 +277,7 @@ def client(monkeypatch):
     C._native_sync_tickets.clear()
     app = FastAPI()
     app.include_router(C.router)
-    with TestClient(app) as test_client:
+    with TestClient(app, base_url="http://localhost:48911") as test_client:
         yield test_client
     C._native_sync_tickets.clear()
 
@@ -620,10 +620,55 @@ def test_sync_session_clear_reports_local_delete_failure(client, tmp_path, monke
     assert auth.exists()
 
 
+def test_local_logout_requires_local_origin_and_single_use_ticket(client, monkeypatch):
+    clear_calls = 0
+
+    def clear_auth():
+        nonlocal clear_calls
+        clear_calls += 1
+        return True
+
+    monkeypatch.setattr(C, "_clear_auth", clear_auth)
+
+    missing_ticket = client.post("/api/card-drop/logout")
+    assert missing_ticket.status_code == 403
+    assert missing_ticket.json() == {"detail": "invalid_sync_ticket"}
+
+    ticket = _issue_sync_ticket(client)
+    denied = client.post(
+        "/api/card-drop/logout",
+        headers={"Origin": "https://evil.example"},
+        json={"sync_ticket": ticket},
+    )
+    assert denied.status_code == 403
+    assert denied.json() == {"detail": "origin_not_allowed"}
+    assert C._sync_ticket_is_valid(ticket)
+
+    allowed = client.post(
+        "/api/card-drop/logout",
+        headers={"Origin": "http://127.0.0.1:48911"},
+        json={"syncTicket": ticket},
+    )
+    assert allowed.status_code == 200
+    assert allowed.json() == {"logged_in": False}
+
+    replay = client.post(
+        "/api/card-drop/logout",
+        headers={"Origin": "http://localhost:48911"},
+        json={"sync_ticket": ticket},
+    )
+    assert replay.status_code == 403
+    assert replay.json() == {"detail": "invalid_sync_ticket"}
+    assert clear_calls == 1
+
+
 def test_local_logout_reports_local_delete_failure(client, monkeypatch):
     monkeypatch.setattr(C, "_clear_auth", lambda: False)
 
-    response = client.post("/api/card-drop/logout")
+    response = client.post(
+        "/api/card-drop/logout",
+        json={"sync_ticket": _issue_sync_ticket(client)},
+    )
 
     assert response.status_code == 500
     assert response.json() == {"detail": "local_clear_failed"}

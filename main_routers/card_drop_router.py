@@ -37,6 +37,7 @@ _SOCIAL_SESSION_FILENAME = "social_session.json"
 _BIND_OWNERSHIP_CONFLICT = "client_already_bound_to_other_user"
 _SYNC_TICKET_TTL_SEC = 5 * 60
 _SYNC_TICKET_MAX_ACTIVE = 16
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _native_sync_tickets: dict[str, float] = {}
 
 
@@ -166,8 +167,25 @@ def _same_originish(a: str, b: str) -> bool:
     hb = (pb.hostname or "").lower()
     if ha == hb:
         return True
-    loopbacks = {"localhost", "127.0.0.1", "::1"}
-    return ha in loopbacks and hb in loopbacks
+    return ha in _LOOPBACK_HOSTS and hb in _LOOPBACK_HOSTS
+
+
+def _local_mutation_origin_allowed(request: Request) -> bool:
+    """Allow native callers or browser requests from the local NEKO origin only."""
+    origin = (request.headers.get("origin") or "").strip().rstrip("/")
+    if not origin:
+        return True
+    try:
+        origin_host = (urlparse(origin).hostname or "").lower()
+        request_base = str(request.base_url).rstrip("/")
+        request_host = (urlparse(request_base).hostname or "").lower()
+    except Exception:  # noqa: BLE001
+        return False
+    return (
+        origin_host in _LOOPBACK_HOSTS
+        and request_host in _LOOPBACK_HOSTS
+        and _same_originish(origin, request_base)
+    )
 
 
 def _sync_cors_headers(request: Request) -> dict[str, str] | None:
@@ -722,7 +740,12 @@ async def register_endpoint(payload: dict = Body(...)):
 
 
 @router.post("/logout", summary="登出（清本地 JWT）")
-async def logout_endpoint():
+async def logout_endpoint(request: Request, payload: dict | None = Body(default=None)):
+    if not _local_mutation_origin_allowed(request):
+        raise HTTPException(status_code=403, detail="origin_not_allowed")
+    sync_ticket = (payload or {}).get("sync_ticket") or (payload or {}).get("syncTicket")
+    if not _consume_sync_ticket(sync_ticket):
+        raise HTTPException(status_code=403, detail="invalid_sync_ticket")
     if not _clear_auth():
         raise HTTPException(status_code=500, detail="local_clear_failed")
     return {"logged_in": False}

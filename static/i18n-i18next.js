@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 修改原因：本分支更新了 Doubao Speaker ID、Day1 托盘引导和模型类型 3D 标签文案，需要递增版本让 Docker immutable 缓存重新拉取语言包。
-    const LOCALE_VERSION = '2026-07-08-doubao-speaker-id-model-type-3d-label-i18n';
+    // 修改原因：本分支新增社交状态与错误文案，需要递增版本让 Docker immutable 缓存重新拉取语言包。
+    const LOCALE_VERSION = '2026-07-13-social-status-messages';
 
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
