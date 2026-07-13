@@ -829,7 +829,7 @@ def test_pc_overlay_cursor_effect_is_one_shot_not_persisted_on_external_chat_bri
 def test_day1_round_start_uses_avatar_floating_round_lifecycle():
     source = MANAGER_PATH.read_text(encoding="utf-8")
     start_block = source.split("async startAvatarFloatingGuideRound(day, options = {})", 1)[1].split(
-        "async waitForTutorialTeardownSettled",
+        "async waitForTutorialTeardownSettled(reason = '')",
         1,
     )[0]
 
@@ -842,7 +842,7 @@ def test_avatar_floating_round_start_keeps_tutorial_model_reload_before_first_sc
     source = MANAGER_PATH.read_text(encoding="utf-8")
     prelude_source = (ROOT / "static" / "tutorial/core/round-prelude-controller.js").read_text(encoding="utf-8")
     start_block = source.split("async startAvatarFloatingGuideRound(day, options = {})", 1)[1].split(
-        "async waitForTutorialTeardownSettled",
+        "async waitForTutorialTeardownSettled(reason = '')",
         1,
     )[0]
 
@@ -853,7 +853,7 @@ def test_avatar_floating_round_start_keeps_tutorial_model_reload_before_first_sc
     assert "this.ensureVisible(sceneId, {" in prelude_source
     assert "deferRevealPrepared" in prelude_source
     assert "director.playAvatarFloatingRound(round" in start_block
-    assert start_block.index("this.playAvatarFloatingRoundPrelude(round, source, director, {") < start_block.index(
+    assert start_block.index("this.playAvatarFloatingRoundPrelude(round, source, director,") < start_block.index(
         "director.playAvatarFloatingRound(round"
     )
 
@@ -862,7 +862,7 @@ def test_avatar_floating_round_waits_after_tutorial_model_is_visible():
     source = MANAGER_PATH.read_text(encoding="utf-8")
     prelude_source = (ROOT / "static" / "tutorial/core/round-prelude-controller.js").read_text(encoding="utf-8")
     start_block = source.split("async startAvatarFloatingGuideRound(day, options = {})", 1)[1].split(
-        "async waitForTutorialTeardownSettled",
+        "async waitForTutorialTeardownSettled(reason = '')",
         1,
     )[0]
 
@@ -873,7 +873,7 @@ def test_avatar_floating_round_waits_after_tutorial_model_is_visible():
         "await toPromise(() => this.sleep(delayMs));"
     )
     assert "deferRevealPrepared: true" in source
-    assert start_block.index("this.playAvatarFloatingRoundPrelude(round, source, director, {") < start_block.index(
+    assert start_block.index("this.playAvatarFloatingRoundPrelude(round, source, director,") < start_block.index(
         "director.playAvatarFloatingRound(round"
     )
 
@@ -881,7 +881,7 @@ def test_avatar_floating_round_waits_after_tutorial_model_is_visible():
 def test_avatar_floating_round_does_not_preheat_surface_before_playback():
     source = MANAGER_PATH.read_text(encoding="utf-8")
     start_block = source.split("async startAvatarFloatingGuideRound(day, options = {})", 1)[1].split(
-        "clearModelManagerTutorialRecheckTimer()",
+        "async waitForTutorialTeardownSettled(reason = '')",
         1,
     )[0]
 
@@ -1224,7 +1224,7 @@ def test_avatar_floating_intro_motion_reveals_prepared_tutorial_model():
     director_source = DIRECTOR_PATH.read_text(encoding="utf-8")
 
     prelude_block = manager_source.split("async playAvatarFloatingRoundPrelude(round, source, director, options = {})", 1)[1].split(
-        "async checkAndStartTutorial",
+        "async checkAndStartTutorial()",
         1,
     )[0]
     assert "deferRevealPrepared: true" in prelude_block

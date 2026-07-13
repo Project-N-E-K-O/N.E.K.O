@@ -1245,14 +1245,14 @@ def test_compact_geometry_snapshot_separates_base_surface_from_extra_islands():
 def test_externalized_chat_input_spotlight_uses_pc_overlay_rounded_rect_radius():
     script = (Path(__file__).resolve().parents[2] / "static" / "app" / "app-interpage.js").read_text(encoding="utf-8")
 
-    rect_block = script.split("function toYuiGuideScreenRect(rect, kind, variant)", 1)[1].split(
-        "function withoutTransientYuiGuideCursorEffect",
+    rect_block = script.split("function updateYuiGuideChatSpotlight(kind, pcOverlayRunId)", 1)[1].split(
+        "function applyYuiGuideChatSpotlight",
         1,
     )[0]
 
     assert (
         "var radius = kind === 'window' ? 26 : Math.min(34, Math.max(18, "
-        "Math.round((cropRect.height + 16) / 2)));"
+        "Math.round((sourceRect.height + padding * 2) / 2)));"
     ) in rect_block
 
 
@@ -2291,9 +2291,10 @@ def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regi
     assert "aria-hidden={compactMusicPlayerVisibility === 'open' ? undefined : true}" in app_source
     assert 'data-compact-geometry-item="musicPlayer"' in app_source
     assert 'data-compact-geometry-hit-scope="children"' in app_source
-    assert "function getPreferredMusicMountTarget(options = {})" in music_ui_source
+    assert "function getPreferredMusicMountTarget(" in music_ui_source
     assert "function getCompactMusicMountTarget()" in music_ui_source
     assert "document.querySelector('[data-music-player-mount=\"compact-surface\"]')" in music_ui_source
+    assert "document.querySelectorAll('#music-player-mount')" in music_ui_source
     assert "document.getElementById(MUSIC_CONFIG.dom.containerId)" in music_ui_source
     assert "mutation.type === 'attributes' && isMusicMountMutationTarget(mutation.target)" in music_ui_source
     assert "function isCompactMusicGeometryMutationTarget(node)" in music_ui_source

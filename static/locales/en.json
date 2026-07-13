@@ -2588,6 +2588,7 @@
             "autoCat": "Auto Cat Mode",
             "catAudio": "Cat Audio",
             "autoCatTooltip": "Turn into a kitten automatically after a while of inactivity",
+            "catAudioTooltip": "Play cat sound effects while in kitten mode",
             "proactiveChat": "Proactive Chat",
             "proactiveVision": "Privacy Mode",
             "proactiveVisionTooltip": "Off: Neko adjusts her liveliness and chat style based on the active window's title, and may incorporate on-screen content when starting a conversation.\nOn: Neko can't watch your screen on her own and won't know what you're doing. You can still send screenshots manually.",

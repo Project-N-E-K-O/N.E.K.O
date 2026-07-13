@@ -19,15 +19,40 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 RAPIDOCR_PILLOW_ROOT = ROOT / "deps" / "rapidocr_pillow"
 
 
+def _rapidocr_modnames() -> list[str]:
+    return [
+        name
+        for name in sys.modules
+        if name == "rapidocr_onnxruntime"
+        or name.startswith("rapidocr_onnxruntime.")
+        or name == "rapidocr_pillow"
+        or name.startswith("rapidocr_pillow.")
+    ]
+
+
 @pytest.fixture(autouse=True, scope="module")
 def _rapidocr_pillow_path() -> Iterator[None]:
     original_sys_path = list(sys.path)
     rapidocr_pillow_path = str(RAPIDOCR_PILLOW_ROOT)
+    # Purge any already-cached rapidocr_onnxruntime / rapidocr_pillow so the local
+    # deps/rapidocr_pillow fork (with its fork-only ``_pillow_cv`` submodule) is
+    # imported fresh off the inserted path. When the venv has the real
+    # rapidocr_onnxruntime installed, another test in the suite may import it first;
+    # its cached parent package then shadows the fork's submodules and
+    # ``from rapidocr_onnxruntime._pillow_cv import ...`` raises ModuleNotFoundError
+    # (order-dependent: passes in isolation, fails mid-suite). Snapshot + restore so
+    # this fixture neither leaks the fork nor drops the installed package for others.
+    purged = {name: sys.modules[name] for name in _rapidocr_modnames()}
+    for name in purged:
+        del sys.modules[name]
     sys.path.insert(0, rapidocr_pillow_path)
     try:
         yield
     finally:
         sys.path[:] = original_sys_path
+        for name in _rapidocr_modnames():
+            del sys.modules[name]
+        sys.modules.update(purged)
 
 
 def _load_verifier():

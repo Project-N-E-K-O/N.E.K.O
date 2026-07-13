@@ -121,6 +121,15 @@ jobs:
           uv sync --group galgame
           uv pip install --python .venv nuitka ordered-set zstandard
 
+      - name: Prepare filtered built-in plugins for Nuitka
+        shell: bash
+        run: |
+          VENV_PYTHON=".venv/bin/python"
+          if [ -f ".venv/Scripts/python.exe" ]; then
+            VENV_PYTHON=".venv/Scripts/python.exe"
+          fi
+          "$VENV_PYTHON" scripts/prepare_nuitka_plugins.py prepare
+
       # --- Generate runtime config files (not tracked in git) ---
       - name: Generate default config files
         shell: bash
@@ -302,9 +311,8 @@ jobs:
           else
             echo "[WARNING] frontend/plugin-manager/dist missing; /ui will be empty in bundle."
           fi
-          if [ -d "plugin/plugins" ]; then
-            NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=plugin/plugins=plugin/plugins"
-          fi
+          # Built-in plugin data is installed from the filtered stage after
+          # compilation. Nuitka intentionally refuses to treat .py as data.
           # macOS: skip bundling playwright_browsers (Chromium .app path has spaces
           # that break Nuitka's xattr call; browser will download on first run)
           if [[ "$RUNNER_OS" != "macOS" ]]; then
@@ -329,13 +337,9 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-package=websockets"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=app"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=config"
+          # The generated launcher carries selective --nofollow-import-to
+          # directives derived from each plugin's [tool.neko.build] rules.
           NUITKA_OPTS="$NUITKA_OPTS --include-package=plugin"
-          # Built-in plugins are imported at runtime via their dotted entry path
-          # (plugin.plugins.<name>:Class in each plugin.toml), so they must be
-          # compiled into the binary. Shipping them only via --include-data-dir
-          # drops the .py (Nuitka treats it as code) and every built-in plugin
-          # fails to import. Kept in sync with build_nuitka.bat.
-          NUITKA_OPTS="$NUITKA_OPTS --include-package=plugin.plugins"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=brain"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=main_logic"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=main_routers"
@@ -438,7 +442,7 @@ jobs:
           echo "$NUITKA_OPTS" | tr ' ' '\n'
           echo "======================"
 
-          .venv/bin/python -m nuitka $NUITKA_OPTS launcher.py
+          .venv/bin/python -m nuitka $NUITKA_OPTS build_nuitka_launcher.py
 
       - name: Build with Nuitka (Windows)
         if: runner.os == 'Windows'
@@ -467,7 +471,7 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=data/browser_use_prompts=data/browser_use_prompts
           if not exist "frontend\plugin-manager\dist" echo [WARNING] frontend\plugin-manager\dist missing; /ui will be empty in bundle.
           if exist "frontend\plugin-manager\dist" set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=frontend/plugin-manager/dist=frontend/plugin-manager/dist
-          if exist "plugin\plugins" set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=plugin/plugins=plugin/plugins
+          rem Built-in plugin payload is copied from the filtered stage after Nuitka.
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=playwright_browsers=playwright_browsers
           if exist "data\tiktoken_cache" set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=data/tiktoken_cache=data/tiktoken_cache
           if exist "data\embedding_models" set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=data/embedding_models=data/embedding_models
@@ -482,12 +486,10 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=websockets
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=app
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=config
+          rem The generated launcher excludes Python modules filtered by each
+          rem plugin's [tool.neko.build] rules while --include-package compiles
+          rem the remaining dynamically imported built-in modules.
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=plugin
-          rem Built-in plugins are imported at runtime via their dotted entry path
-          rem (plugin.plugins.[name]:Class in plugin.toml), so they must be compiled
-          rem into the binary; --include-data-dir alone drops the .py. Synced with
-          rem build_nuitka.bat. training/ is offline-only (torch) so carve it out.
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=plugin.plugins
           set NUITKA_OPTS=%NUITKA_OPTS% --nofollow-import-to=plugin.plugins.galgame_plugin.training
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=brain
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=main_logic
@@ -544,14 +546,14 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --windows-console-mode=force
           set NUITKA_OPTS=%NUITKA_OPTS% --assume-yes-for-downloads
 
-          .venv\Scripts\python.exe -m nuitka %NUITKA_OPTS% launcher.py
+          .venv\Scripts\python.exe -m nuitka %NUITKA_OPTS% build_nuitka_launcher.py
 
       # --- Rename Nuitka output directory ---
       - name: Rename build output
         shell: bash
         run: |
-          if [ -d "dist/launcher.dist" ]; then
-            mv dist/launcher.dist dist/Xiao8
+          if [ -d "dist/build_nuitka_launcher.dist" ]; then
+            mv dist/build_nuitka_launcher.dist dist/Xiao8
           fi
           # macOS: playwright_browsers was excluded from Nuitka (xattr bug with
           # spaces in .app paths), copy it manually into the output directory
@@ -559,6 +561,12 @@ jobs:
             cp -R playwright_browsers dist/Xiao8/playwright_browsers
             echo "Copied playwright_browsers into dist/Xiao8/"
           fi
+          VENV_PYTHON=".venv/bin/python"
+          if [ -f ".venv/Scripts/python.exe" ]; then
+            VENV_PYTHON=".venv/Scripts/python.exe"
+          fi
+          "$VENV_PYTHON" scripts/prepare_nuitka_plugins.py install \
+            --destination-dir dist/Xiao8/plugin/plugins
           echo "=== Build output ==="
           ls -la dist/Xiao8/ || echo "dist/Xiao8 not found!"
 
@@ -607,9 +615,9 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$RUNNER_OS" == "Windows" ]]; then
-            .venv/Scripts/python.exe scripts/check_nuitka_dist.py dist/Xiao8
+            .venv/Scripts/python.exe scripts/check_nuitka_dist.py dist/Xiao8 --plugin-stage build/nuitka-plugins
           else
-            .venv/bin/python scripts/check_nuitka_dist.py dist/Xiao8
+            .venv/bin/python scripts/check_nuitka_dist.py dist/Xiao8 --plugin-stage build/nuitka-plugins
           fi
 
       - name: Upload Python backend artifact

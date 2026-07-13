@@ -7,12 +7,47 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CARD_MAKER_JS = PROJECT_ROOT / "static" / "js" / "card_maker.js"
 CARD_MAKER_CSS = PROJECT_ROOT / "static" / "css" / "card_maker.css"
 CHARACTER_CARD_MANAGER_JS = PROJECT_ROOT / "static" / "js" / "character_card_manager.js"
-MODEL_MANAGER_JS = PROJECT_ROOT / "static" / "js" / "model_manager.js"
+MODEL_MANAGER_JS_DIR = PROJECT_ROOT / "static" / "js" / "model_manager"
 PNGTUBER_CORE_JS = PROJECT_ROOT / "static" / "pngtuber-core.js"
 MODEL_MANAGER_TEMPLATE = PROJECT_ROOT / "templates" / "model_manager.html"
 WINDOW_CONTROLS_JS = PROJECT_ROOT / "static" / "js" / "window_controls.js"
 CARD_MAKER_TEMPLATE = PROJECT_ROOT / "templates" / "card_maker.html"
 LOCALE_DIR = PROJECT_ROOT / "static" / "locales"
+
+
+def read_model_manager_source() -> str:
+    return "".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(MODEL_MANAGER_JS_DIR.glob("*.js"))
+    )
+
+
+def test_model_manager_parts_load_in_dependency_order():
+    part_names = [path.name for path in sorted(MODEL_MANAGER_JS_DIR.glob("*.js"))]
+    assert part_names == [
+        "01-runtime-loaders.js",
+        "02-dropdown-manager.js",
+        "03-page-bridge.js",
+        "04-card-face.js",
+        "05-path-request-fullscreen.js",
+        "06-page-controller.js",
+        "07-window-lifecycle.js",
+    ]
+
+    template = MODEL_MANAGER_TEMPLATE.read_text(encoding="utf-8")
+    script_positions = [
+        template.index(f"/static/js/model_manager/{part_name}")
+        for part_name in part_names
+    ]
+    assert script_positions == sorted(script_positions)
+
+    loaders = (MODEL_MANAGER_JS_DIR / part_names[0]).read_text(encoding="utf-8")
+    assert loaders.index("window._vrmModulesLoading = true;") < loaders.index(
+        "'/static/vrm/vrm-init.js'"
+    )
+    assert loaders.index("(async function initVRMModules()") < loaders.index(
+        "(async function initMMDModules()"
+    )
 
 
 def test_new_character_auto_card_maker_enables_default_face_fallback_only_for_auto_popup():
@@ -50,14 +85,14 @@ def test_window_controls_support_page_close_hook():
 
 
 def test_model_manager_default_card_face_fallback_uses_full_card_canvas():
-    script = MODEL_MANAGER_JS.read_text(encoding="utf-8")
+    script = read_model_manager_source()
 
     assert "captureDefaultCardFaceModelImage(state, 600, 800)" in script
     assert "800 - Math.floor(800 / 6)" not in script
 
 
 def test_model_manager_pngtuber_preview_dropdown_uses_i18n_config():
-    script = MODEL_MANAGER_JS.read_text(encoding="utf-8")
+    script = read_model_manager_source()
     start = script.index("buttonId: 'pngtuber-state-preview-select-btn'")
     end = script.index("shouldSkipOption: (option) => !option.value", start)
     config_block = script[start:end]
@@ -67,7 +102,7 @@ def test_model_manager_pngtuber_preview_dropdown_uses_i18n_config():
 
 
 def test_model_manager_pngtuber_talk_preview_keeps_i18n_after_early_load():
-    script = MODEL_MANAGER_JS.read_text(encoding="utf-8")
+    script = read_model_manager_source()
     update_block = script[
         script.index("function updatePNGTuberTalkPreviewButtonText()"):
         script.index("function refreshLocalizedInteractiveTexts()", script.index("function updatePNGTuberTalkPreviewButtonText()"))
@@ -93,7 +128,7 @@ def test_model_manager_pngtuber_talk_preview_keeps_i18n_after_early_load():
 
 
 def test_model_manager_pngtuber_card_face_prefers_visible_drawable():
-    script = MODEL_MANAGER_JS.read_text(encoding="utf-8")
+    script = read_model_manager_source()
     start = script.index("function getPNGTuberCaptureDrawable()")
     end = script.index("async function capturePNGTuberPreviewToCanvas()", start)
     capture_block = script[start:end]
@@ -104,7 +139,7 @@ def test_model_manager_pngtuber_card_face_prefers_visible_drawable():
 
 
 def test_model_manager_pngtuber_save_preserves_stored_placement():
-    script = MODEL_MANAGER_JS.read_text(encoding="utf-8")
+    script = read_model_manager_source()
     start = script.index("function mergePNGTuberConfigForSave(")
     end = script.index("async function saveModelToCharacter(", start)
     merge_block = script[start:end]
@@ -119,7 +154,7 @@ def test_model_manager_pngtuber_save_preserves_stored_placement():
 
 
 def test_model_manager_pngtuber_character_config_fallback_loads_preview():
-    script = MODEL_MANAGER_JS.read_text(encoding="utf-8")
+    script = read_model_manager_source()
     timer_decl = "let pngtuberTalkPreviewTimer = null;"
     preview_block = script[
         script.index("async function previewPNGTuberConfig("):
@@ -167,7 +202,7 @@ def test_pngtuber_model_manager_preview_does_not_auto_save():
     assert "if (isModelManagerPage()) return false;" in save_block
     assert save_block.index("if (isModelManagerPage()) return false;") < save_block.index("fetch(`/api/characters/catgirl/l2d/")
 def test_model_manager_pngtuber_upload_supports_project_file_without_removing_folder_upload():
-    script = MODEL_MANAGER_JS.read_text(encoding="utf-8")
+    script = read_model_manager_source()
     template = MODEL_MANAGER_TEMPLATE.read_text(encoding="utf-8")
 
     assert 'id="pngtuber-model-upload" webkitdirectory directory multiple' in template
@@ -211,7 +246,7 @@ def test_card_maker_rejects_remote_pngtuber_assets_before_export():
 
 
 def test_model_manager_parameter_save_restores_unsaved_and_offers_card_face():
-    script = MODEL_MANAGER_JS.read_text(encoding="utf-8")
+    script = read_model_manager_source()
     parameter_editor = (PROJECT_ROOT / "static" / "js" / "live2d_parameter_editor.js").read_text(encoding="utf-8")
 
     assert "window.localStorage" in parameter_editor

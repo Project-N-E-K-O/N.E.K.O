@@ -552,13 +552,14 @@ def test_steps_keep_default_non_home_page_registrations():
 def test_timeline_voice_key_resolution_uses_director_before_normalized_audio():
     source = SCENE_ORCHESTRATOR_PATH.read_text(encoding="utf-8")
     runtime_block = source.split("createTimelineAudioRuntime(scene, timelineScene, context)", 1)[1].split(
-        "async runLegacyScene",
+        "async playScene",
         1,
     )[0]
 
     assert "const resolveVoiceKey = (fallbackVoiceKey) => {" in runtime_block
-    assert "director.resolveAvatarFloatingSceneVoiceKey(legacyScene)" in runtime_block
-    assert "return fallbackVoiceKey || audio.voiceKey || legacyScene.voiceKey || '';" in runtime_block
+    assert "return director.resolveAvatarFloatingSceneVoiceKey(legacyScene)" in runtime_block
+    assert "|| fallbackVoiceKey" in runtime_block
+    assert "|| audio.voiceKey" in runtime_block
     assert "const resolvedVoiceKey = resolveVoiceKey(voiceKey);" in runtime_block
     assert "director.getGuideVoiceDurationMs(resolveVoiceKey(voiceKey || audio.voiceKey), '')" in runtime_block
 
@@ -593,7 +594,8 @@ def test_return_control_scene_highlights_compact_input_while_final_line_plays():
     )[0]
 
     assert "if (stepId === 'day1_intro_greeting' || stepId === 'day1_takeover_return_control')" in scene_target_block
-    assert "return this.getChatCapsuleInputTarget() || this.getChatInputTarget()" in scene_target_block
+    assert "return this.getChatCapsuleInputTarget() || this.getChatInputTarget() || this.getChatWindowTarget() || null;" in scene_target_block
+    assert "if (stepId === 'day1_takeover_return_control') {\n                this.overlay.clearPersistentSpotlight();" not in persistent_setup_block
     assert "this.overlay.setPersistentSpotlight(spotlightTarget);" in persistent_setup_block
 
 
@@ -635,28 +637,27 @@ def test_tutorial_chat_messages_match_react_assistant_message_shape():
     assert "status: 'sent'" in append_block
 
 
-def test_tutorial_chat_streams_finalize_as_sent_on_termination():
+def test_tutorial_chat_streams_finalize_as_sent_on_completion():
     source = _read_director()
 
+    # Post-#1901 each guide line streams into its own message id via
+    # updateGuideChatMessage instead of a shared activeGuideChatMessages map.
     stream_block = source.split("        streamGuideChatMessage(message, content, options) {", 1)[1].split(
         "        appendGuideChatMessage(text, options) {",
         1,
     )[0]
+    # In-place updates carry a 'streaming' status for partial text and finalize to
+    # 'sent' once the full line has played.
+    assert "this.updateGuideChatMessage(message.id, {" in stream_block
+    assert "blocks: message.blocks," in stream_block
+    assert "actions: message.actions," in stream_block
+    assert "status: 'streaming'" in stream_block
     assert "status: 'sent'" in stream_block
-    assert "this.updateGuideChatMessage(message.id" in stream_block
-
-    termination_block = source.split("        beginTerminationVisualCleanup() {", 1)[1].split(
-        "        async run",
-        1,
-    )[0]
-    destroy_block = source.split("        destroy() {", 2)[2].split(
-        "        handleGlobalClick",
-        1,
-    )[0]
-    assert "this.clearGuideChatStreamTimers();" in termination_block
-    assert "this.clearGuideChatMessages();" in termination_block
-    assert "this.clearGuideChatStreamTimers();" in destroy_block
-    assert "this.clearGuideChatMessages();" in destroy_block
+    # Zero-duration lines finalize straight to 'sent' without an animation.
+    assert "if (durationMs <= 0) {" in stream_block
+    # Termination / destroy / angry-exit halts an in-flight stream.
+    assert "this.destroyed" in stream_block
+    assert "this.terminationRequested" in stream_block
 
 
 def test_tutorial_exit_force_hides_managed_home_surfaces_before_async_panel_close():
@@ -722,43 +723,61 @@ def test_tutorial_exit_force_hides_managed_home_surfaces_before_async_panel_clos
     )
 
 
-def test_new_tutorial_chat_line_finishes_previous_stream_before_append():
+def test_new_tutorial_chat_line_streams_each_message_independently():
     source = _read_director()
 
     append_block = source.split("        appendGuideChatMessage(text, options) {", 1)[1].split(
         "        focusAndHighlightChatInput",
         1,
     )[0]
+    # Each guide line becomes its own uniquely-keyed message and is streamed
+    # independently (streamGuideChatMessage targets message.id), so appending a new
+    # line never clobbers the previous line's in-flight stream.
+    assert "id: 'yui-guide-' + createdAt" in append_block
+    assert "this.streamGuideChatMessage(message, content, streamOptions);" in append_block
     content_index = append_block.index("const content = formatGuideDebugText(")
     message_index = append_block.index("const message = {")
+    stream_index = append_block.index("this.streamGuideChatMessage(message, content, streamOptions);")
 
-    assert content_index < message_index
-    assert "this.streamGuideChatMessage(message, content, streamOptions);" in append_block
+    assert content_index < message_index < stream_index
 
 
-def test_guide_audio_playback_state_uses_guide_message_id_for_compact_capsule_clear():
+def test_guide_audio_duration_governs_compact_capsule_message_clear():
     source = _read_director()
+
+    # Post-#1901 the speech-playback state channel moved out of the director (it now
+    # lives in static/app/app-audio-playback.js). The director instead ties the
+    # compact-capsule caption lifetime to the guide line's voice duration: the retain
+    # window is seeded from getGuideVoiceDurationMs and honored when clearing.
+    constructor_block = source.split("    class YuiGuideDirector {", 1)[1].split(
+        "        async init()",
+        1,
+    )[0]
     append_block = source.split("        appendGuideChatMessage(text, options) {", 1)[1].split(
         "        focusAndHighlightChatInput",
         1,
     )[0]
     clear_block = source.split("        clearGuideChatMessages() {", 1)[1].split(
-        "        cloneGuideChatMessageWithText",
+        "        resolveGuideChatStreamDurationMs",
         1,
     )[0]
+
+    assert "this.latestGuideChatMessageRetainId = ''" in constructor_block
+    assert "const retainDurationMs = this.getGuideVoiceDurationMs(" in append_block
     assert "this.latestGuideChatMessageRetainId = message.id;" in append_block
     assert "this.latestGuideChatMessageRetainUntilMs = createdAt + retainDurationMs;" in append_block
-    assert "this.latestGuideChatMessageRetainId" in clear_block
+    # While the voice-duration retain window is still open, clearing is deferred.
     assert "this.latestGuideChatMessageRetainUntilMs > now" in clear_block
+    assert "this.clearGuideChatMessages();" in clear_block
 
 
 def test_settings_peek_copy_matches_existing_voice_audio_script():
     expected_audio_script_markers = {
         "en": ("little space", "warmth of my words"),
-        "es": ("pequeno espacio", "calidez de mis palabras"),
+        "es": ("pertenece solo a nosotros", "calidez de mis palabras"),
         "ja": ("小さな空間", "ワガママ"),
         "ko": ("우리만의", "다정함"),
-        "pt": ("espacinho", "calor das minhas palavras"),
+        "pt": ("pertence só a nós dois", "calor das minhas palavras"),
         "ru": ("крошечном пространстве", "Теплоту"),
         "zh-CN": ("小空间", "说话的温度"),
         "zh-TW": ("小空間", "說話的溫度"),
@@ -776,10 +795,13 @@ def test_settings_peek_copy_matches_existing_voice_audio_script():
 
 def test_zh_cn_intro_basic_copy_matches_step_fallback_and_voice_script():
     day1_source = _read_day1_guide()
-    match = re.search(r"textKey: 'tutorial\.yuiGuide\.lines\.introBasic',\n\s+voiceKey: 'intro_basic'", day1_source)
-    assert match is not None
-    static_intro = _read_static_locale("zh-CN")["tutorial"]["yuiGuide"]["lines"]["introBasic"]
+    # The intro-basic scene now drives its copy purely from the i18n key (no inline
+    # fallback string); the audio filename encodes the same "神奇的按钮" script theme.
+    assert "textKey: 'tutorial.yuiGuide.lines.introBasic'" in day1_source
+    assert "voiceKey: 'intro_basic'" in day1_source
+    assert "intro_basic: '这里有一个神奇的按钮.mp3'" in day1_source
 
+    static_intro = _read_static_locale("zh-CN")["tutorial"]["yuiGuide"]["lines"]["introBasic"]
     assert "神奇的按钮" in static_intro
     assert not static_intro.endswith("喵！")
     assert static_intro.endswith("啦！")

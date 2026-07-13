@@ -2588,6 +2588,7 @@
             "autoCat": "Modo gato automático",
             "catAudio": "Sonidos de gato",
             "autoCatTooltip": "Se convierte en gatito automáticamente tras un rato de inactividad",
+            "catAudioTooltip": "Reproduce efectos de sonido de gato en el modo gatito",
             "proactiveChat": "Chat proactivo",
             "proactiveVision": "Modo Privacidad",
             "proactiveVisionTooltip": "Desactivado: Neko ajusta su nivel de actividad y modo de chat según el título de la ventana activa, y puede incorporar el contenido de la pantalla al iniciar una conversación.\nActivado: Neko no puede mirar tu pantalla por sí misma ni saber qué estás haciendo. Aún puedes enviar capturas de pantalla manualmente.",

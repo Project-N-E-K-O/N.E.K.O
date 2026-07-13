@@ -2588,6 +2588,7 @@
             "autoCat": "自動變貓",
             "catAudio": "貓貓音效",
             "autoCatTooltip": "一段時間無互動後自動變成小貓",
+            "catAudioTooltip": "變貓後播放貓咪叫聲等音效",
             "proactiveChat": "主動搭話",
             "proactiveVision": "隱私模式",
             "proactiveVisionTooltip": "關閉時：貓娘會根據活躍視窗的標題改變活躍度與搭話模式，可能會在搭話時結合螢幕內容。\n開啟時：貓娘無法主動觀看螢幕，也無法了解你正在做什麼。你仍然可以主動傳送截圖。",
