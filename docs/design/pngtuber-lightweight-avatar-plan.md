@@ -175,8 +175,8 @@ PNGTuber 最终接入方式是复用现有 `#live2d-model-group / #model-select 
 - `static/js/index.js`：主页初始配置加载。
 - `static/live2d-init.js`：Live2D 自动初始化。
 - `static/pngtuber-core.js`：PNGTuber 加载、显示、拖动、保存。
-- `static/app/app-interpage.js`：模型管理器保存后的主页热重载、隐藏/显示主界面。
-- `static/app/app-ui.js`：`showLive2d()`、`showCurrentModel()`、请她离开/回来流程。
+- `static/app/app-interpage`：模型管理器保存后的主页热重载、隐藏/显示主界面。
+- `static/app/app-ui`：`showLive2d()`、`showCurrentModel()`、请她离开/回来流程。
 - `static/app/app-character.js`：角色切换流程。
 
 经验规则：每个“显示当前模型”的入口都必须同时“隐藏其他模型”。不要假设调用者已经处理过互斥。
@@ -1274,7 +1274,7 @@ PR #1779 将 PNGTuber 第三方工程导入从“简单包 + PNGTuber Plus `.sav
 
 - `static/pngtuber-core.js`：统一 PNGTuber runtime，承载 `layered_canvas_v1`、mouth flap、One Bounce、debug state。
 - `static/js/model_manager/`：模型管理页选择、预览、保存和导入后的加载链路。
-- `static/app/app-interpage.js`、`static/app/app-ui.js`、`static/live2d-init.js`：跨页面 reload 与 Live2D/PNGTuber 互斥边界。
+- `static/app/app-interpage`、`static/app/app-ui`、`static/live2d-init.js`：跨页面 reload 与 Live2D/PNGTuber 互斥边界。
 
 ### 导入数据流
 

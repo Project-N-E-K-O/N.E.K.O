@@ -1,4 +1,5 @@
 from pathlib import Path
+from tests.static_app_parts import read_js_parts
 
 import pytest
 
@@ -14,10 +15,10 @@ DAY7_GUIDE_PATH = ROOT / "static" / "tutorial/yui-guide/days/day7-graduation-gui
 STEPS_PATH = ROOT / "static" / "tutorial/yui-guide/steps.js"
 DIRECTOR_PATH = ROOT / "static" / "tutorial/yui-guide/director.js"
 SCENE_ORCHESTRATOR_PATH = ROOT / "static" / "tutorial/core/scene-orchestrator.js"
-INTERPAGE_PATH = ROOT / "static" / "app" / "app-interpage.js"
+INTERPAGE_PATH = ROOT / "static" / "app" / "app-interpage"
 REACT_APP_PATH = ROOT / "frontend" / "react-neko-chat" / "src" / "App.tsx"
 REACT_SCHEMA_PATH = ROOT / "frontend" / "react-neko-chat" / "src" / "message-schema.ts"
-REACT_HOST_PATH = ROOT / "static" / "app" / "app-react-chat-window.js"
+REACT_HOST_PATH = ROOT / "static" / "app" / "app-react-chat-window"
 MANAGER_PATH = ROOT / "static" / "tutorial/core/universal-manager.js"
 PAGE_TUTORIAL_MANAGER_PATH = ROOT / "static" / "tutorial/core/page-tutorial-manager.js"
 OVERLAY_PATH = ROOT / "static" / "tutorial/yui-guide/overlay.js"
@@ -367,10 +368,10 @@ def test_day7_round_wrap_returns_to_capsule_input_like_day2_wrap():
 
 def test_compact_chat_tutorial_bridge_exposes_new_targets_and_requests():
     director = DIRECTOR_PATH.read_text(encoding="utf-8")
-    interpage = INTERPAGE_PATH.read_text(encoding="utf-8")
+    interpage = read_js_parts(INTERPAGE_PATH)
     react_app = REACT_APP_PATH.read_text(encoding="utf-8")
     react_schema = REACT_SCHEMA_PATH.read_text(encoding="utf-8")
-    react_host = REACT_HOST_PATH.read_text(encoding="utf-8")
+    react_host = read_js_parts(REACT_HOST_PATH)
 
     for token in [
         "chat-history-handle",
@@ -392,7 +393,7 @@ def test_compact_chat_tutorial_bridge_exposes_new_targets_and_requests():
 
 
 def test_external_chat_cursor_retry_cannot_replay_stale_wobble_after_clear():
-    source = INTERPAGE_PATH.read_text(encoding="utf-8")
+    source = read_js_parts(INTERPAGE_PATH)
 
     assert "yuiGuideChatCursorRequestToken" in source
     assert "var cursorRequestToken = ++yuiGuideChatCursorRequestToken;" in source
@@ -432,7 +433,7 @@ def test_tutorial_exit_clears_externalized_guide_chat_messages():
 
 
 def test_pc_external_chat_ghost_cursor_uses_overlay_with_dom_fallback():
-    source = INTERPAGE_PATH.read_text(encoding="utf-8")
+    source = read_js_parts(INTERPAGE_PATH)
     cursor_block = source.split("function applyYuiGuideChatCursor(kind, options)", 1)[1].split(
         "function clearYuiGuideChatSpotlightTracking()",
         1,
@@ -452,7 +453,7 @@ def test_pc_external_chat_ghost_cursor_uses_overlay_with_dom_fallback():
 
 
 def test_pc_external_chat_spotlight_uses_overlay_without_dom_fallback():
-    source = INTERPAGE_PATH.read_text(encoding="utf-8")
+    source = read_js_parts(INTERPAGE_PATH)
     spotlight_block = source.split("function getYuiGuideChatSpotlightElement(createIfMissing)", 1)[1].split(
         "function getYuiGuidePcOverlayHost",
         1,
@@ -469,7 +470,7 @@ def test_pc_external_chat_spotlight_uses_overlay_without_dom_fallback():
 
 
 def test_pc_external_chat_spotlight_reuses_last_rect_during_transient_layout_gaps():
-    source = INTERPAGE_PATH.read_text(encoding="utf-8")
+    source = read_js_parts(INTERPAGE_PATH)
     update_block = source.split("function updateYuiGuideChatSpotlight(kind", 1)[1].split(
         "function applyYuiGuideChatSpotlight",
         1,
@@ -494,7 +495,7 @@ def test_pc_external_chat_spotlight_reuses_last_rect_during_transient_layout_gap
 
 
 def test_pc_external_chat_spotlight_preserves_highlight_during_resistance_pause():
-    interpage_source = INTERPAGE_PATH.read_text(encoding="utf-8")
+    interpage_source = read_js_parts(INTERPAGE_PATH)
     takeover_source = (ROOT / "static" / "tutorial/core/interaction-takeover.js").read_text(encoding="utf-8")
     director_source = DIRECTOR_PATH.read_text(encoding="utf-8")
     apply_block = interpage_source.split("function applyYuiGuideChatSpotlight(kind, options)", 1)[1].split(
@@ -523,7 +524,7 @@ def test_pc_external_chat_spotlight_preserves_highlight_during_resistance_pause(
 
 
 def test_externalized_chat_spotlight_keeps_variant_pipeline_but_day1_uses_capsule_target():
-    interpage_source = INTERPAGE_PATH.read_text(encoding="utf-8")
+    interpage_source = read_js_parts(INTERPAGE_PATH)
     takeover_source = (ROOT / "static" / "tutorial/core/interaction-takeover.js").read_text(encoding="utf-8")
     scene_source = SCENE_ORCHESTRATOR_PATH.read_text(encoding="utf-8")
     director_source = DIRECTOR_PATH.read_text(encoding="utf-8")
@@ -538,8 +539,8 @@ def test_externalized_chat_spotlight_keeps_variant_pipeline_but_day1_uses_capsul
     assert "preserveDuringResistance: true" in takeover_source
     assert "variant: typeof message.variant === 'string' ? message.variant : ''" in interpage_source
     assert "variant: typeof event.data.variant === 'string' ? event.data.variant : ''" in interpage_source
-    assert "var yuiGuideChatSpotlightVariant = '';" in interpage_source
-    assert "var yuiGuideChatSpotlightLastPcVariant = '';" in interpage_source
+    assert "yuiGuideChatSpotlightVariant = '';" in interpage_source
+    assert "yuiGuideChatSpotlightLastPcVariant = '';" in interpage_source
     assert "toYuiGuideScreenRect({" in interpage_source
     assert "}, kind, yuiGuideChatSpotlightVariant)" in interpage_source
     assert "rememberYuiGuideChatPcSpotlightRects(kind, pcRects, yuiGuideChatSpotlightVariant);" in interpage_source
@@ -572,7 +573,7 @@ def test_external_chat_ready_replays_compact_fixed_layout_when_tutorial_is_activ
 
 
 def test_pc_overlay_sequence_is_shared_between_home_and_external_chat():
-    interpage_source = INTERPAGE_PATH.read_text(encoding="utf-8")
+    interpage_source = read_js_parts(INTERPAGE_PATH)
     overlay_source = (ROOT / "static" / "tutorial/yui-guide/overlay.js").read_text(encoding="utf-8")
 
     assert "YUI_GUIDE_PC_OVERLAY_SEQUENCE_KEY = 'yuiGuidePcOverlaySequence'" in interpage_source
@@ -590,7 +591,7 @@ def test_pc_overlay_sequence_is_shared_between_home_and_external_chat():
 
 
 def test_pc_overlay_screen_coordinates_use_niri_virtual_origin_and_crop_safe_area():
-    interpage_source = INTERPAGE_PATH.read_text(encoding="utf-8")
+    interpage_source = read_js_parts(INTERPAGE_PATH)
     overlay_source = OVERLAY_PATH.read_text(encoding="utf-8")
     director_source = DIRECTOR_PATH.read_text(encoding="utf-8")
     skip_controller_source = SKIP_CONTROLLER_PATH.read_text(encoding="utf-8")
@@ -814,7 +815,7 @@ def test_externalized_resistance_restores_home_cursor_visibility_before_animatin
 
 
 def test_pc_overlay_cursor_effect_is_one_shot_not_persisted_on_external_chat_bridge():
-    source = INTERPAGE_PATH.read_text(encoding="utf-8")
+    source = read_js_parts(INTERPAGE_PATH)
     bridge_block = source.split("function sendYuiGuidePcOverlayPatch(patch, retried, options)", 1)[1].split(
         "function isYuiGuidePcCursorOnlyMode()",
         1,

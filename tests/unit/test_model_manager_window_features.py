@@ -1,4 +1,5 @@
 from pathlib import Path
+from tests.static_app_parts import read_js_parts
 
 
 MODEL_MANAGER_PART_NAMES = (
@@ -47,7 +48,7 @@ def test_yui_model_manager_handoff_opens_fullscreen():
 
 def test_model_manager_hide_show_cross_page_messages_are_removed():
     model_manager_source = read_model_manager_source()
-    interpage_source = Path("static/app/app-interpage.js").read_text(encoding="utf-8")
+    interpage_source = read_js_parts(Path("static/app/app-interpage"))
 
     assert "hide_main_ui" not in model_manager_source
     assert "show_main_ui" not in model_manager_source

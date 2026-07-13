@@ -1,4 +1,5 @@
 from pathlib import Path
+from tests.static_app_parts import read_js_parts
 
 from tests.unit.avatar_ui_buttons_source import read_avatar_ui_buttons_source
 
@@ -12,7 +13,7 @@ def _read_avatar_ui_buttons_source() -> str:
 
 
 LIVE2D_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "live2d" / "live2d-ui-buttons.js"
-APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app" / "app-interpage.js"
+APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app" / "app-interpage"
 INDEX_CSS_PATH = PROJECT_ROOT / "static" / "css" / "index.css"
 
 
@@ -58,7 +59,7 @@ def test_avatar_floating_button_rows_keep_fixed_height_when_aux_controls_toggle(
 
 
 def test_interpage_restore_keeps_floating_button_containers_in_flex_layout():
-    source = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
+    source = read_js_parts(APP_INTERPAGE_PATH)
     restore_block = _source_slice_between(
         source,
         "restoringFloatingEls.forEach(function (el) {",
@@ -72,7 +73,7 @@ def test_interpage_restore_keeps_floating_button_containers_in_flex_layout():
 
 
 def test_interpage_hide_records_css_fallback_floating_button_display_as_flex():
-    source = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
+    source = read_js_parts(APP_INTERPAGE_PATH)
     hide_block = _source_slice_between(
         source,
         "document.querySelectorAll(\n                '#live2d-floating-buttons",

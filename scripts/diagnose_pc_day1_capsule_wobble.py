@@ -35,6 +35,8 @@ def _load_playwright():
 
 
 def _read(path: Path) -> str:
+    if path.is_dir():
+        return "\n".join(_read(part_path) for part_path in sorted(path.glob("*.js")))
     return path.read_text(encoding="utf-8")
 
 
@@ -93,7 +95,7 @@ def run_static_checks(pc_repo: Path) -> list[Check]:
             "day1": _read(STATIC_DIR / "tutorial/yui-guide/days/day1-home-guide.js"),
             "director": _read(STATIC_DIR / "tutorial/yui-guide/director.js"),
             "takeover": _read(STATIC_DIR / "tutorial/core/interaction-takeover.js"),
-            "interpage": _read(STATIC_DIR / "app/app-interpage.js"),
+            "interpage": _read(STATIC_DIR / "app/app-interpage"),
             "overlay": _read(STATIC_DIR / "tutorial/yui-guide/overlay.js"),
             "pc_preload": _read(pc_repo / "src" / "preload-tutorial-global-overlay.js"),
             "pc_service": _read(pc_repo / "src" / "tutorial-global-overlay-service.js"),
@@ -398,7 +400,8 @@ def run_browser_bridge_probe() -> tuple[list[Check], dict[str, Any]]:
             }
             """
         )
-        chat.add_script_tag(path=str(STATIC_DIR / "app/app-interpage.js"))
+        for part_path in sorted((STATIC_DIR / "app/app-interpage").glob("*.js")):
+            chat.add_script_tag(path=str(part_path))
         chat_result = chat.evaluate(
             """
             async () => {

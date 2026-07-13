@@ -369,8 +369,8 @@ VRMManager.prototype.setupFloatingButtons = function() {
     });
 
     // 处理"请她离开"事件
-    // 注意：返回按钮的位置、显示、以及浮动按钮的隐藏均由 app-ui.js 统一处理，
-    // 此处仅更新内部状态标志。不能在此隐藏按钮容器，否则 app-ui.js 无法读取按钮位置。
+    // 注意：返回按钮的位置、显示、以及浮动按钮的隐藏均由 app-ui 统一处理，
+    // 此处仅更新内部状态标志。不能在此隐藏按钮容器，否则 app-ui 无法读取按钮位置。
     const goodbyeHandler = () => {
         this._isInReturnState = true;
     };
@@ -984,7 +984,7 @@ VRMManager.prototype._addReturnButtonBreathingAnimation = function () {
  * 清理 VRM UI 资源（浮动按钮、锁图标、"请她回来"按钮及其 document 级拖拽监听）。
  *
  * 历史：旧版 cleanupUI 在 #510 合并 common-ui 时被整体移除，但 vrm-manager.dispose()、
- * app-character.js、app-interpage.js 仍按约定调用它（typeof 守卫下静默跳过），导致
+ * app-character.js、app-interpage 仍按约定调用它（typeof 守卫下静默跳过），导致
  * _returnButtonDragHandlers 等 document 级监听在销毁路径上无人清理。这里恢复为委托
  * mixin 的 cleanupFloatingButtons（覆盖 RAF 循环、按钮/锁图标/返回按钮 DOM、侧边面板、
  * _uiWindowHandlers、_returnButtonDragHandlers），与 mmd-manager.cleanupUI 对偶。

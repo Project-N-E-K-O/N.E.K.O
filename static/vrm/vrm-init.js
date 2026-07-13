@@ -728,7 +728,7 @@ function _stopVrmIdleRotation() {
     _vrmIdleLastUrl = null;
 }
 
-// 暴露给外部（如 app-interpage.js 切模型时停止旧轮换��
+// 暴露给外部（如 app-interpage 切模型时停止旧轮换��
 window._stopVrmIdleRotation = _stopVrmIdleRotation;
 window._startVrmIdleRotation = _startVrmIdleRotation;
 

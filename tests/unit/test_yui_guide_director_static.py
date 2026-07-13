@@ -1,4 +1,5 @@
 from pathlib import Path
+from tests.static_app_parts import read_js_parts
 import json
 import re
 
@@ -10,7 +11,7 @@ YUI_GUIDE_STEPS_PATH = Path(__file__).resolve().parents[2] / "static" / "tutoria
 YUI_GUIDE_DAY1_PATH = Path(__file__).resolve().parents[2] / "static" / "tutorial/yui-guide/days/day1-home-guide.js"
 SCENE_ORCHESTRATOR_PATH = Path(__file__).resolve().parents[2] / "static" / "tutorial/core/scene-orchestrator.js"
 NEW_USER_ICEBREAKER_PATH = Path(__file__).resolve().parents[2] / "static" / "icebreaker/new-user-icebreaker.js"
-APP_INTERPAGE_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-interpage.js"
+APP_INTERPAGE_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-interpage"
 PLUGIN_YUI_GUIDE_RUNTIME_PATH = Path(__file__).resolve().parents[2] / "frontend" / "plugin-manager/src/yui-guide-runtime.ts"
 YUI_GUIDE_COMMON_PATH = Path(__file__).resolve().parents[2] / "static" / "tutorial/yui-guide/common.js"
 STATIC_LOCALES_DIR = Path(__file__).resolve().parents[2] / "static" / "locales"
@@ -29,7 +30,7 @@ def _read_day1_guide() -> str:
 
 
 def _read_interpage() -> str:
-    return APP_INTERPAGE_PATH.read_text(encoding="utf-8")
+    return read_js_parts(APP_INTERPAGE_PATH)
 
 
 def _read_static_locale(locale_name: str) -> dict:
@@ -469,7 +470,7 @@ def test_avatar_floating_guides_hide_real_cursor_during_takeover_and_show_banner
 
 def test_externalized_chat_clear_preserves_pc_cursor_without_stale_cache():
     director_source = _read_director()
-    app_interpage_source = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
+    app_interpage_source = read_js_parts(APP_INTERPAGE_PATH)
 
     clear_target_block = director_source.split(
         "        clearExternalizedChatGuideTarget(options) {",
@@ -479,7 +480,7 @@ def test_externalized_chat_clear_preserves_pc_cursor_without_stale_cache():
         1,
     )[0]
     cursor_clear_block = app_interpage_source.split(
-        "    function applyYuiGuideChatCursor(kind, options) {",
+        "function applyYuiGuideChatCursor(kind, options) {",
         1,
     )[1].split(
         "        if (isYuiGuidePcCursorOnlyMode()) {",

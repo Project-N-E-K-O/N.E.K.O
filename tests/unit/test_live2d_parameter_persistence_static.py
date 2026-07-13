@@ -3,6 +3,7 @@ import shutil
 import subprocess
 import textwrap
 from pathlib import Path
+from tests.static_app_parts import read_js_parts
 
 import pytest
 
@@ -11,7 +12,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 LIVE2D_MODEL_PATH = PROJECT_ROOT / "static" / "live2d" / "live2d-model.js"
 LIVE2D_EMOTION_PATH = PROJECT_ROOT / "static" / "live2d" / "live2d-emotion.js"
 PARAMETER_EDITOR_PATH = PROJECT_ROOT / "static" / "js" / "live2d_parameter_editor.js"
-APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app" / "app-interpage.js"
+APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app" / "app-interpage"
 MAO_PRO_MODEL_PATH = PROJECT_ROOT / "static" / "mao_pro" / "mao_pro.model3.json"
 
 
@@ -395,7 +396,7 @@ def test_file_save_failure_with_preference_success_survives_parameter_reload():
 
 
 def test_reload_model_parameters_is_received_on_all_cross_page_channels():
-    source = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
+    source = read_js_parts(APP_INTERPAGE_PATH)
 
     assert "async function handleReloadModelParametersMessage" in source
     assert "case 'reload_model_parameters':" in source
