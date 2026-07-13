@@ -65,6 +65,7 @@ _OMNI_ONLY_FIELDS = frozenset(
 
 _RequestKind: TypeAlias = Literal["audio", "commit", "clear", "shutdown"]
 _EventKind: TypeAlias = Literal["ready", "partial", "final", "error", "closed"]
+_UtteranceKey: TypeAlias = tuple[int, int, int]
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,7 +219,9 @@ class _RealtimeAsrSessionImpl:
         self._utterance_has_audio = False
         self._input_sample_rate_hz: int | None = None
         self._resampler: soxr.ResampleStream | None = None
-        self._final_keys: set[tuple[int, int, int]] = set()
+        self._active_utterance_keys: set[_UtteranceKey] = set()
+        self._committed_utterance_keys: set[_UtteranceKey] = set()
+        self._final_keys: set[_UtteranceKey] = set()
 
         self._request_queue: asyncio.Queue[_AsrWorkerRequest] | None = None
         self._response_queue: asyncio.Queue[_AsrWorkerEvent] | None = None
@@ -226,12 +229,14 @@ class _RealtimeAsrSessionImpl:
         self._worker_task: asyncio.Task[None] | None = None
         self._response_task: asyncio.Task[None] | None = None
         self._callback_task: asyncio.Task[None] | None = None
+        self._callback_close_waiter: asyncio.Task[Any] | None = None
         self._close_task: asyncio.Task[None] | None = None
         self._ready_future: asyncio.Future[None] | None = None
 
         self._operation_lock = asyncio.Lock()
         self._connect_lock = asyncio.Lock()
         self._closing_event = asyncio.Event()
+        self._callback_close_event = asyncio.Event()
         self._connection_error_reported = False
 
     @property
@@ -414,6 +419,9 @@ class _RealtimeAsrSessionImpl:
             self._buffer_epoch += 1
             self._utterance_id += 1
             self._utterance_has_audio = False
+            self._active_utterance_keys.clear()
+            self._committed_utterance_keys.clear()
+            self._final_keys.clear()
             self._reset_resampler()
             await self._enqueue_request(
                 _AsrWorkerRequest(
@@ -425,6 +433,11 @@ class _RealtimeAsrSessionImpl:
             )
 
     async def close(self) -> None:
+        current = asyncio.current_task()
+        if current is self._callback_task:
+            self._callback_close_waiter = current
+            self._callback_close_event.set()
+
         if self._state is _SessionState.CLOSED:
             return
 
@@ -450,6 +463,9 @@ class _RealtimeAsrSessionImpl:
     async def _close_impl(self) -> None:
         async with self._operation_lock:
             self._utterance_has_audio = False
+            self._active_utterance_keys.clear()
+            self._committed_utterance_keys.clear()
+            self._final_keys.clear()
             self._reset_resampler()
 
             if self._request_queue is not None:
@@ -477,13 +493,21 @@ class _RealtimeAsrSessionImpl:
                     self._worker_task.cancel()
 
             if self._callback_queue is not None:
-                try:
-                    await asyncio.wait_for(
-                        self._callback_queue.join(),
-                        timeout=_CALLBACK_DRAIN_TIMEOUT_SECONDS,
-                    )
-                except asyncio.TimeoutError:
+                drain_task = asyncio.create_task(self._callback_queue.join())
+                callback_close_task = asyncio.create_task(
+                    self._callback_close_event.wait()
+                )
+                done, pending = await asyncio.wait(
+                    {drain_task, callback_close_task},
+                    timeout=_CALLBACK_DRAIN_TIMEOUT_SECONDS,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if not done:
                     logger.warning("ASR callback drain timed out")
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
 
             await self._shutdown()
             self._state = _SessionState.CLOSED
@@ -502,6 +526,12 @@ class _RealtimeAsrSessionImpl:
         except asyncio.CancelledError:
             raise
         except Exception:
+            if self._state in (
+                _SessionState.CLOSING,
+                _SessionState.CLOSED,
+                _SessionState.FAILED,
+            ):
+                return
             await self._response_queue.put(
                 _AsrWorkerEvent(
                     kind="error",
@@ -543,6 +573,8 @@ class _RealtimeAsrSessionImpl:
                 logger.exception("ASR transcript callback failed")
             finally:
                 self._callback_queue.task_done()
+            if self._state is _SessionState.CLOSED:
+                return
 
     async def _handle_event(self, event: _AsrWorkerEvent) -> bool:
         if not isinstance(event, _AsrWorkerEvent):
@@ -566,28 +598,46 @@ class _RealtimeAsrSessionImpl:
         if event.kind == "partial":
             return False
         if event.kind == "final":
-            if (
-                event.buffer_epoch != self._buffer_epoch
-                or event.utterance_id is None
-            ):
+            if event.utterance_id is None:
                 return False
             text = event.text.strip()
             if not text:
                 return False
             key = (event.generation, event.buffer_epoch, event.utterance_id)
-            if key in self._final_keys:
-                logger.warning("ASR worker returned a duplicate or conflicting final")
-                return False
-            self._final_keys.add(key)
+            async with self._operation_lock:
+                if (
+                    self._state is not _SessionState.READY
+                    or event.generation != self._generation
+                    or event.buffer_epoch != self._buffer_epoch
+                ):
+                    return False
+                if key in self._final_keys:
+                    logger.warning(
+                        "ASR worker returned a duplicate or conflicting final"
+                    )
+                    return False
+                valid_keys = (
+                    self._active_utterance_keys
+                    if self._config.endpointing_mode == "provider"
+                    else self._committed_utterance_keys
+                )
+                if key not in valid_keys:
+                    logger.warning(
+                        "ASR worker returned a final for an inactive utterance"
+                    )
+                    return False
+                self._final_keys.add(key)
+                self._active_utterance_keys.discard(key)
+                self._committed_utterance_keys.discard(key)
+                if (
+                    self._config.endpointing_mode == "provider"
+                    and event.utterance_id == self._utterance_id
+                ):
+                    self._utterance_id += 1
+                    self._utterance_has_audio = False
+                    self._reset_resampler()
             assert self._callback_queue is not None
             await self._callback_queue.put(_CallbackItem(text=text))
-            if (
-                self._config.endpointing_mode == "provider"
-                and event.utterance_id == self._utterance_id
-            ):
-                self._utterance_id += 1
-                self._utterance_has_audio = False
-                self._reset_resampler()
             return False
         if event.kind == "error":
             if (
@@ -615,6 +665,9 @@ class _RealtimeAsrSessionImpl:
         self._state = _SessionState.FAILED
         self._generation += 1
         self._closing_event.set()
+        self._active_utterance_keys.clear()
+        self._committed_utterance_keys.clear()
+        self._final_keys.clear()
         safe_code = (
             error_code
             if re.fullmatch(r"ASR_[A-Z0-9_]+", error_code or "")
@@ -649,18 +702,63 @@ class _RealtimeAsrSessionImpl:
             or worker_task.done()
         ):
             raise RuntimeError("ASR_SESSION_NOT_READY: session is not ready")
+
+        key: _UtteranceKey | None = None
+        added_active = False
+        added_committed = False
+        if request.utterance_id is not None and request.kind in ("audio", "commit"):
+            key = (
+                request.generation,
+                request.buffer_epoch,
+                request.utterance_id,
+            )
+            if request.kind == "audio" and key not in self._active_utterance_keys:
+                self._active_utterance_keys.add(key)
+                added_active = True
+            if request.kind == "commit" and key not in self._committed_utterance_keys:
+                self._committed_utterance_keys.add(key)
+                added_committed = True
+
         put_task = asyncio.create_task(self._request_queue.put(request))
         closing_task = asyncio.create_task(self._closing_event.wait())
         watched: set[asyncio.Task[Any]] = {put_task, closing_task, worker_task}
-        done, _ = await asyncio.wait(watched, return_when=asyncio.FIRST_COMPLETED)
-        if put_task in done and worker_task not in done and closing_task not in done:
+        try:
+            done, _ = await asyncio.wait(watched, return_when=asyncio.FIRST_COMPLETED)
+        except BaseException:
+            put_task.cancel()
+            closing_task.cancel()
+            await asyncio.gather(put_task, closing_task, return_exceptions=True)
+            if key is not None:
+                if added_active:
+                    self._active_utterance_keys.discard(key)
+                if added_committed:
+                    self._committed_utterance_keys.discard(key)
+            raise
+
+        if put_task in done:
+            try:
+                await put_task
+            except BaseException:
+                closing_task.cancel()
+                await asyncio.gather(closing_task, return_exceptions=True)
+                if key is not None:
+                    if added_active:
+                        self._active_utterance_keys.discard(key)
+                    if added_committed:
+                        self._committed_utterance_keys.discard(key)
+                raise
             closing_task.cancel()
             await asyncio.gather(closing_task, return_exceptions=True)
-            await put_task
             return
+
         put_task.cancel()
         closing_task.cancel()
         await asyncio.gather(put_task, closing_task, return_exceptions=True)
+        if key is not None:
+            if added_active:
+                self._active_utterance_keys.discard(key)
+            if added_committed:
+                self._committed_utterance_keys.discard(key)
         raise RuntimeError("ASR_SESSION_NOT_READY: worker is no longer running")
 
     def _make_resampler(self) -> soxr.ResampleStream | None:
@@ -740,7 +838,12 @@ class _RealtimeAsrSessionImpl:
                 self._response_task,
                 self._callback_task,
             )
-            if task is not None and task is not current and not task.done()
+            if (
+                task is not None
+                and task is not current
+                and task is not self._callback_close_waiter
+                and not task.done()
+            )
         ]
         for task in tasks:
             task.cancel()

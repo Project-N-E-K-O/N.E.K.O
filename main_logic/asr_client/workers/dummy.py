@@ -169,9 +169,11 @@ async def dummy_asr_worker(
             )
         )
     finally:
+        for task in tuple(pending_emissions):
+            task.cancel()
+        if pending_emissions:
+            await asyncio.gather(*pending_emissions, return_exceptions=True)
         if not closed_sent:
             await response_queue.put(
                 _AsrWorkerEvent(kind="closed", generation=last_generation)
             )
-        if pending_emissions:
-            await asyncio.gather(*pending_emissions, return_exceptions=True)
