@@ -1216,6 +1216,13 @@ class ProactiveMixin:
         "don't interrupt" promise is unchanged.
         """
         if self.is_goodbye_silent():
+            # goodbye_silent bypasses the manager, which is where the
+            # coalesce_key would normally be applied. The enqueue path reads the
+            # key off the callback dict, so carry the arg onto it here — else a
+            # same-key proactive stream deferred during goodbye_silent would not
+            # collapse.
+            if coalesce_key:
+                callback["coalesce_key"] = coalesce_key
             self.enqueue_agent_callback(callback)
             logger.debug(
                 "[%s] goodbye_silent queued proactive callback for later delivery",
@@ -1691,32 +1698,50 @@ class ProactiveMixin:
             # trimming is unreliable).
             new_key = str(callback.get("coalesce_key") or "").strip()
             if new_key:
-                superseded_ids: set[str] = set()
+                dropped = 0
                 surviving: list[dict] = []
                 for _cb in self.pending_agent_callbacks:
                     if str(_cb.get("coalesce_key") or "").strip() == new_key:
                         resolve_callback_delivery_ack(_cb, False)
-                        _did = _cb.get("_callback_delivery_id")
-                        if _did:
-                            superseded_ids.add(_did)
+                        # Mark retracted, don't just drop: trigger_agent_callbacks
+                        # snapshots pending_agent_callbacks into a local
+                        # voice_snapshot BEFORE its await (media stream /
+                        # inject_text_and_request_response) and re-filters that
+                        # snapshot only by DELIVERY_RETRACTED_KEY. A same-key cue
+                        # arriving mid-delivery must set the flag or the captured
+                        # old cue is still spoken even though its ack was already
+                        # resolved False — mirroring ProactiveDeliveryManager's
+                        # retract() and the other mid-delivery removal paths.
+                        _cb[DELIVERY_RETRACTED_KEY] = True
+                        dropped += 1
                     else:
                         surviving.append(_cb)
-                if len(surviving) != len(self.pending_agent_callbacks):
+                if dropped:
                     logger.debug(
                         "[%s] coalesced %d queued callback(s) on key=%r (enqueue path)",
-                        self.lanlan_name,
-                        len(self.pending_agent_callbacks) - len(surviving),
-                        new_key,
+                        self.lanlan_name, dropped, new_key,
                     )
                     self.pending_agent_callbacks = surviving
-                    if superseded_ids:
-                        self.pending_extra_replies = [
-                            _extra for _extra in self.pending_extra_replies
-                            if _extra.get("_callback_delivery_id") not in superseded_ids
-                        ]
+                # Evict voice mirrors by KEY, covering the extras-only orphan:
+                # drain_agent_callbacks_for_llm clears pending_agent_callbacks on
+                # a text user turn but keeps the paired pending_extra_replies for
+                # the hot-swap path, so a superseded cue can survive as an
+                # extras-only entry whose callback half is already gone —
+                # id-matching would miss it. Matching the stamped coalesce_key
+                # collapses both the paired and the orphaned voice mirrors.
+                if self.pending_extra_replies:
+                    kept_extras = [
+                        _extra for _extra in self.pending_extra_replies
+                        if str(_extra.get("coalesce_key") or "").strip() != new_key
+                    ]
+                    if len(kept_extras) != len(self.pending_extra_replies):
+                        self.pending_extra_replies = kept_extras
             self.pending_agent_callbacks.append(callback)
             self.pending_extra_replies.append({
                 "_callback_delivery_id": delivery_id,
+                # Stamp the coalesce_key so a later same-key cue can evict this
+                # voice mirror even after its callback half is drained.
+                "coalesce_key": new_key,
                 "origin": origin,
                 "summary": summary,
                 "detail": detail,

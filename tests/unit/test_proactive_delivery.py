@@ -14,6 +14,7 @@ import pytest
 import main_logic.core as core_module
 from main_logic.proactive_delivery import (
     DELIVERY_ACK_FUTURE_KEY,
+    DELIVERY_RETRACTED_KEY,
     ProactiveDeliveryManager,
     effective_priority,
 )
@@ -331,3 +332,30 @@ def test_enqueue_coalesce_resolves_superseded_ack_false():
     mgr.enqueue_agent_callback(_passive_cb("new", coalesce_key="k"))
     assert fut.done() and fut.result is False
     assert [c["summary"] for c in mgr.pending_agent_callbacks] == ["new"]
+
+
+def test_enqueue_coalesce_marks_superseded_retracted():
+    # A superseded cue must be FLAGGED retracted, not merely dropped: a voice
+    # delivery already in flight snapshots pending_agent_callbacks before its
+    # await and re-filters that snapshot only by DELIVERY_RETRACTED_KEY. Without
+    # the flag the captured stale cue is still spoken even though its ack was
+    # resolved False.
+    mgr = _make_session_mgr()
+    old = _passive_cb("old", coalesce_key="k")
+    mgr.enqueue_agent_callback(old)
+    mgr.enqueue_agent_callback(_passive_cb("new", coalesce_key="k"))
+    assert old.get(DELIVERY_RETRACTED_KEY) is True
+    assert [c["summary"] for c in mgr.pending_agent_callbacks] == ["new"]
+
+
+def test_enqueue_coalesce_evicts_drained_extras_orphan():
+    # After a text user turn, drain_agent_callbacks_for_llm clears the callback
+    # side but KEEPS the paired voice mirror in pending_extra_replies. A later
+    # same-key cue has no callback half to match by id, so eviction must be by
+    # the stamped coalesce_key — otherwise hot-swap injects BOTH snapshots.
+    mgr = _make_session_mgr()
+    mgr.enqueue_agent_callback(_passive_cb("old snapshot", coalesce_key="gs"))
+    mgr.pending_agent_callbacks.clear()  # simulate drain (callback side only)
+    assert [r["summary"] for r in mgr.pending_extra_replies] == ["old snapshot"]
+    mgr.enqueue_agent_callback(_passive_cb("new snapshot", coalesce_key="gs"))
+    assert [r["summary"] for r in mgr.pending_extra_replies] == ["new snapshot"]
