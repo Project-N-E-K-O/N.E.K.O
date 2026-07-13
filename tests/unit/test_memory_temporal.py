@@ -565,7 +565,7 @@ async def test_followup_weighted_disabled_uses_list_order(tmp_path):
     with patch("memory.event_log.get_config_manager", return_value=cm), \
          patch("memory.facts.get_config_manager", return_value=cm), \
          patch("memory.persona.get_config_manager", return_value=cm), \
-         patch("memory.reflection.get_config_manager", return_value=cm):
+         patch("memory.reflection.manager.get_config_manager", return_value=cm):
         evl = EventLog(); evl._config_manager = cm
         fs = FactStore(); fs._config_manager = cm
         pm = PersonaManager(event_log=evl); pm._config_manager = cm
@@ -710,7 +710,7 @@ async def test_arecheck_one_legacy_reflection_skips_malformed_head(tmp_path):
     with patch("memory.event_log.get_config_manager", return_value=cm), \
          patch("memory.facts.get_config_manager", return_value=cm), \
          patch("memory.persona.get_config_manager", return_value=cm), \
-         patch("memory.reflection.get_config_manager", return_value=cm):
+         patch("memory.reflection.manager.get_config_manager", return_value=cm):
         evl = EventLog(); evl._config_manager = cm
         fs = FactStore(); fs._config_manager = cm
         pm = PersonaManager(event_log=evl); pm._config_manager = cm
@@ -773,7 +773,7 @@ async def test_arecheck_invalid_scope_bumps_attempts_and_eventually_skips(tmp_pa
     with patch("memory.event_log.get_config_manager", return_value=cm), \
          patch("memory.facts.get_config_manager", return_value=cm), \
          patch("memory.persona.get_config_manager", return_value=cm), \
-         patch("memory.reflection.get_config_manager", return_value=cm):
+         patch("memory.reflection.manager.get_config_manager", return_value=cm):
         evl = EventLog(); evl._config_manager = cm
         fs = FactStore(); fs._config_manager = cm
         pm = PersonaManager(event_log=evl); pm._config_manager = cm
@@ -845,7 +845,7 @@ async def test_followup_weighted_enabled_varies_picks(tmp_path):
     with patch("memory.event_log.get_config_manager", return_value=cm), \
          patch("memory.facts.get_config_manager", return_value=cm), \
          patch("memory.persona.get_config_manager", return_value=cm), \
-         patch("memory.reflection.get_config_manager", return_value=cm):
+         patch("memory.reflection.manager.get_config_manager", return_value=cm):
         evl = EventLog(); evl._config_manager = cm
         fs = FactStore(); fs._config_manager = cm
         pm = PersonaManager(event_log=evl); pm._config_manager = cm

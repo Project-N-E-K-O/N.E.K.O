@@ -449,7 +449,7 @@ async def test_reflection_render_does_not_pollute_cache_fields(tmp_path):
     with patch("memory.event_log.get_config_manager", return_value=cm), \
          patch("memory.facts.get_config_manager", return_value=cm), \
          patch("memory.persona.get_config_manager", return_value=cm), \
-         patch("memory.reflection.get_config_manager", return_value=cm):
+         patch("memory.reflection.manager.get_config_manager", return_value=cm):
         event_log = EventLog()
         event_log._config_manager = cm
         fs = FactStore()
