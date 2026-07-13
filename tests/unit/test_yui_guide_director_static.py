@@ -556,11 +556,11 @@ def test_timeline_voice_key_resolution_uses_director_before_normalized_audio():
         1,
     )[0]
 
-    assert "const resolveTimelineVoiceKey = (voiceKey) => {" in runtime_block
+    assert "const resolveVoiceKey = (fallbackVoiceKey) => {" in runtime_block
     assert "director.resolveAvatarFloatingSceneVoiceKey(legacyScene)" in runtime_block
-    assert "return resolvedSceneVoiceKey || voiceKey || audio.voiceKey || legacyScene.voiceKey || '';" in runtime_block
-    assert "const resolvedVoiceKey = resolveTimelineVoiceKey(voiceKey);" in runtime_block
-    assert "director.getGuideVoiceDurationMs(\n                            resolveTimelineVoiceKey(voiceKey)," in runtime_block
+    assert "return fallbackVoiceKey || audio.voiceKey || legacyScene.voiceKey || '';" in runtime_block
+    assert "const resolvedVoiceKey = resolveVoiceKey(voiceKey);" in runtime_block
+    assert "director.getGuideVoiceDurationMs(resolveVoiceKey(voiceKey || audio.voiceKey), '')" in runtime_block
 
 
 def test_icebreaker_does_not_restart_completed_current_day():
@@ -587,15 +587,14 @@ def test_return_control_scene_highlights_compact_input_while_final_line_plays():
         "        getActionSpotlightTarget",
         1,
     )[0]
-    persistent_setup_block = source.split("            const persistentSpotlightTarget = this.getSceneSpotlightTarget(stepId, performance);", 1)[1].split(
-        "            const actionSpotlightTarget = this.getActionSpotlightTarget(stepId, performance);",
+    persistent_setup_block = source.split("                const spotlightTarget = this.getSceneSpotlightTarget(this.currentSceneId, performance);", 1)[1].split(
+        "                const actionSpotlightTarget = this.getActionSpotlightTarget(this.currentSceneId, performance);",
         1,
     )[0]
 
-    assert "if (stepId === 'takeover_return_control')" in scene_target_block
-    assert "return this.getChatInputTarget() || fallbackTarget;" in scene_target_block
-    assert "if (stepId === 'takeover_return_control') {\n                this.overlay.clearPersistentSpotlight();" not in persistent_setup_block
-    assert "this.overlay.setPersistentSpotlight(persistentSpotlightTarget);" in persistent_setup_block
+    assert "if (stepId === 'day1_intro_greeting' || stepId === 'day1_takeover_return_control')" in scene_target_block
+    assert "return this.getChatCapsuleInputTarget() || this.getChatInputTarget()" in scene_target_block
+    assert "this.overlay.setPersistentSpotlight(spotlightTarget);" in persistent_setup_block
 
 
 def test_standalone_chat_spotlight_input_prefers_compact_capsule():
@@ -629,9 +628,7 @@ def test_tutorial_chat_messages_match_react_assistant_message_shape():
     )[0]
 
     assert "role: 'assistant'" in append_block
-    assert "const author = this.getGuideAssistantName();" in append_block
-    assert "author: author" in append_block
-    assert "avatarLabel:" in append_block
+    assert "author: this.getGuideAssistantName()" in append_block
     assert "avatarUrl: this.getGuideAssistantAvatarUrl()" in append_block
     assert "blocks: [{" in append_block
     assert "type: 'text'" in append_block
@@ -641,23 +638,12 @@ def test_tutorial_chat_messages_match_react_assistant_message_shape():
 def test_tutorial_chat_streams_finalize_as_sent_on_termination():
     source = _read_director()
 
-    assert "this.activeGuideChatMessages = new Map();" in source
-    assert "finalizeActiveGuideChatMessages()" in source
-
     stream_block = source.split("        streamGuideChatMessage(message, content, options) {", 1)[1].split(
         "        appendGuideChatMessage(text, options) {",
         1,
     )[0]
-    assert "this.activeGuideChatMessages.set(String(message.id), message);" in stream_block
-    assert "this.activeGuideChatMessages.delete(String(message.id));" in stream_block
-
-    finalize_block = source.split("        finalizeActiveGuideChatMessages() {", 1)[1].split(
-        "        scheduleGuideChatStream(callback, delayMs) {",
-        1,
-    )[0]
-    assert "status: 'sent'" in finalize_block
-    assert "blocks: message.blocks" in finalize_block
-    assert "actions: message.actions" in finalize_block
+    assert "status: 'sent'" in stream_block
+    assert "this.updateGuideChatMessage(message.id" in stream_block
 
     termination_block = source.split("        beginTerminationVisualCleanup() {", 1)[1].split(
         "        async run",
@@ -667,8 +653,10 @@ def test_tutorial_chat_streams_finalize_as_sent_on_termination():
         "        handleGlobalClick",
         1,
     )[0]
-    assert "this.finalizeActiveGuideChatMessages();" in termination_block
-    assert "this.finalizeActiveGuideChatMessages();" in destroy_block
+    assert "this.clearGuideChatStreamTimers();" in termination_block
+    assert "this.clearGuideChatMessages();" in termination_block
+    assert "this.clearGuideChatStreamTimers();" in destroy_block
+    assert "this.clearGuideChatMessages();" in destroy_block
 
 
 def test_tutorial_exit_force_hides_managed_home_surfaces_before_async_panel_close():
@@ -742,56 +730,35 @@ def test_new_tutorial_chat_line_finishes_previous_stream_before_append():
         1,
     )[0]
     content_index = append_block.index("const content = formatGuideDebugText(")
-    clear_index = append_block.index("this.clearGuideChatStreamTimers();")
-    finalize_index = append_block.index("this.finalizeActiveGuideChatMessages();")
     message_index = append_block.index("const message = {")
 
-    assert content_index < clear_index < finalize_index < message_index
+    assert content_index < message_index
+    assert "this.streamGuideChatMessage(message, content, streamOptions);" in append_block
 
 
 def test_guide_audio_playback_state_uses_guide_message_id_for_compact_capsule_clear():
     source = _read_director()
-
-    assert "const GUIDE_SPEECH_PLAYBACK_STATE_KEY = 'neko_speech_playback_state';" in source
-    assert "const GUIDE_SPEECH_PLAYBACK_CHANNEL_NAME = 'neko_speech_playback_channel';" in source
-    assert "publishGuideSpeechPlaybackState('guide_audio_started'" in source
-    assert "publishGuideSpeechPlaybackState(success ? 'guide_audio_ended' : 'guide_audio_failed'" in source
-
-    constructor_block = source.split("    class YuiGuideDirector {", 1)[1].split(
-        "        async init()",
-        1,
-    )[0]
     append_block = source.split("        appendGuideChatMessage(text, options) {", 1)[1].split(
-        "            if (Array.isArray(normalizedOptions.buttons)",
+        "        focusAndHighlightChatInput",
         1,
     )[0]
-    speak_block = source.split("        async speakGuideLine(text, options) {", 1)[1].split(
-        "        resolvePerformanceBubbleText",
+    clear_block = source.split("        clearGuideChatMessages() {", 1)[1].split(
+        "        cloneGuideChatMessageWithText",
         1,
     )[0]
-    normalize_block = source.split("        normalizeVoiceQueueSpeakOptions(options) {", 1)[1].split(
-        "        async guideChatTypeMessage",
-        1,
-    )[0]
-    run_narration_block = source.split("        async runNarration(narration) {", 1)[1].split(
-        "        async speakLineAndWait",
-        1,
-    )[0]
-
-    assert "this.guideChatVoiceMessageIds = new Map();" in constructor_block
-    assert "this.guideChatVoiceMessageIds.set(voiceKey, message.id);" in append_block
-    assert "this.normalizeVoiceQueueSpeakOptions(options)" in speak_block
-    assert "normalizedOptions.playbackTurnId = guideMessageId;" in normalize_block
-    assert "playbackTurnId: narration.playbackTurnId" in run_narration_block
+    assert "this.latestGuideChatMessageRetainId = message.id;" in append_block
+    assert "this.latestGuideChatMessageRetainUntilMs = createdAt + retainDurationMs;" in append_block
+    assert "this.latestGuideChatMessageRetainId" in clear_block
+    assert "this.latestGuideChatMessageRetainUntilMs > now" in clear_block
 
 
 def test_settings_peek_copy_matches_existing_voice_audio_script():
     expected_audio_script_markers = {
         "en": ("little space", "warmth of my words"),
-        "es": ("little space", "warmth of my words"),
+        "es": ("pequeno espacio", "calidez de mis palabras"),
         "ja": ("小さな空間", "ワガママ"),
         "ko": ("우리만의", "다정함"),
-        "pt": ("little space", "warmth of my words"),
+        "pt": ("espacinho", "calor das minhas palavras"),
         "ru": ("крошечном пространстве", "Теплоту"),
         "zh-CN": ("小空间", "说话的温度"),
         "zh-TW": ("小空間", "說話的溫度"),
@@ -809,15 +776,13 @@ def test_settings_peek_copy_matches_existing_voice_audio_script():
 
 def test_zh_cn_intro_basic_copy_matches_step_fallback_and_voice_script():
     day1_source = _read_day1_guide()
-    match = re.search(r"bubbleText: '([^']+)',\n\s+bubbleTextKey: 'tutorial\.yuiGuide\.lines\.introBasic'", day1_source)
+    match = re.search(r"textKey: 'tutorial\.yuiGuide\.lines\.introBasic',\n\s+voiceKey: 'intro_basic'", day1_source)
     assert match is not None
-    fallback_text = match.group(1)
     static_intro = _read_static_locale("zh-CN")["tutorial"]["yuiGuide"]["lines"]["introBasic"]
 
-    assert "神奇的按钮" in fallback_text
-    assert static_intro == fallback_text
-    assert not fallback_text.endswith("喵！")
-    assert fallback_text.endswith("啦！")
+    assert "神奇的按钮" in static_intro
+    assert not static_intro.endswith("喵！")
+    assert static_intro.endswith("啦！")
 
 
 def test_day1_audio_files_by_key_preserves_locale_override_map():

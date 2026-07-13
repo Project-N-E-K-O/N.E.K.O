@@ -574,7 +574,7 @@ async def test_followup_weighted_disabled_uses_list_order(tmp_path):
     from datetime import datetime
     now_iso = datetime.now().isoformat()
     candidates = [
-        {'id': f'r{i}', 'status': 'pending',
+        {'id': f'r{i}', 'text': f'待跟进反思 {i}', 'status': 'pending',
          'reinforcement': 0.5, 'disputation': 0.0,
          'rein_last_signal_at': now_iso, 'disp_last_signal_at': None,
          'next_eligible_at': now_iso, 'created_at': now_iso}
@@ -855,7 +855,7 @@ async def test_followup_weighted_enabled_varies_picks(tmp_path):
     now_iso = datetime.now().isoformat()
     # 8 候选 + TOP_K=3 → 加权采样至少应在 30 次中产生 ≥ 2 种 picks
     candidates = [
-        {'id': f'r{i}', 'status': 'pending',
+        {'id': f'r{i}', 'text': f'待跟进反思 {i}', 'status': 'pending',
          'reinforcement': 0.5, 'disputation': 0.0,
          'rein_last_signal_at': now_iso, 'disp_last_signal_at': None,
          'next_eligible_at': now_iso, 'created_at': now_iso}

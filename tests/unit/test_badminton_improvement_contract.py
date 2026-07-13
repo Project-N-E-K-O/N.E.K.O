@@ -2099,7 +2099,7 @@ def test_badminton_debug_voice_mode_allows_tts_when_debugging():
     assert "missing_project_voice_playback_bridge" not in mirror_section
     assert "lastVoiceRequest = speakPayload;" in mirror_section
     assert "function shouldInterruptVoiceAudio(event) {" in html
-    assert "return kind === 'yui_cheat_item' || kind === 'yui_cheat_hit' || kind === 'yui_cheat_score';" in html
+    assert "return kind === 'yui_cheat_item' || kind === 'yui_cheat_hit' || kind === 'yui_cheat_score' || kind === 'player_ice_score';" in html
     assert "interrupt_audio: shouldInterruptVoiceAudio(entry.event)," in mirror_section
     assert "function requestMirror() {" in mirror_section
     assert "function requestSpeak() {" in mirror_section

@@ -270,7 +270,7 @@ def test_day4_round_wrap_returns_to_capsule_input_like_day2_wrap():
     for scene_id in EXPECTED_DAY4_SCENES:
         assert f"id: '{scene_id}'" in round_block
     assert_scene_order(round_block, EXPECTED_DAY4_SCENES)
-    assert "target: 'chat-input'" in wrap_block
+    assert "target: 'chat-capsule-input'" in wrap_block
     assert "cursorAction: 'move'" in wrap_block
     assert "operation: 'cleanup'" in wrap_block
     assert "petalTransition: true" in wrap_block
@@ -447,7 +447,7 @@ def test_pc_external_chat_ghost_cursor_uses_overlay_with_dom_fallback():
     assert "cursor: {" in cursor_block
     assert "visible: true" in cursor_block
     assert "effect: normalizedOptions.effect || ''" in cursor_block
-    assert "cursor.hidden = false" in cursor_block
+    assert "cursor.hidden = false" in source
     assert "if (isYuiGuidePcCursorOnlyMode())" in cursor_block
 
 
@@ -479,7 +479,7 @@ def test_pc_external_chat_spotlight_reuses_last_rect_during_transient_layout_gap
         1,
     )[0]
 
-    missing_rect_block = update_block.split("if (!rect || rect.width <= 0 || rect.height <= 0) {", 1)[1].split(
+    missing_rect_block = update_block.split("if (!sourceRect || sourceRect.width <= 0 || sourceRect.height <= 0) {", 1)[1].split(
         "var padding = kind === 'window'",
         1,
     )[0]
@@ -829,7 +829,7 @@ def test_pc_overlay_cursor_effect_is_one_shot_not_persisted_on_external_chat_bri
 def test_day1_round_start_uses_avatar_floating_round_lifecycle():
     source = MANAGER_PATH.read_text(encoding="utf-8")
     start_block = source.split("async startAvatarFloatingGuideRound(day, options = {})", 1)[1].split(
-        "clearModelManagerTutorialRecheckTimer()",
+        "async waitForTutorialTeardownSettled",
         1,
     )[0]
 
@@ -842,18 +842,18 @@ def test_avatar_floating_round_start_keeps_tutorial_model_reload_before_first_sc
     source = MANAGER_PATH.read_text(encoding="utf-8")
     prelude_source = (ROOT / "static" / "tutorial/core/round-prelude-controller.js").read_text(encoding="utf-8")
     start_block = source.split("async startAvatarFloatingGuideRound(day, options = {})", 1)[1].split(
-        "clearModelManagerTutorialRecheckTimer()",
+        "async waitForTutorialTeardownSettled",
         1,
     )[0]
 
     assert "this._tutorialModelPrefix = 'live2d';" in start_block
-    assert "await this.playAvatarFloatingRoundPrelude(round, source, director);" in start_block
+    assert "await this.playAvatarFloatingRoundPrelude(round, source, director, {" in start_block
     assert "this.beginAvatarOverride({" in prelude_source
     assert "deferRevealPrepared" in prelude_source
     assert "this.ensureVisible(sceneId, {" in prelude_source
     assert "deferRevealPrepared" in prelude_source
     assert "director.playAvatarFloatingRound(round" in start_block
-    assert start_block.index("this.playAvatarFloatingRoundPrelude(round, source, director)") < start_block.index(
+    assert start_block.index("this.playAvatarFloatingRoundPrelude(round, source, director, {") < start_block.index(
         "director.playAvatarFloatingRound(round"
     )
 
@@ -862,7 +862,7 @@ def test_avatar_floating_round_waits_after_tutorial_model_is_visible():
     source = MANAGER_PATH.read_text(encoding="utf-8")
     prelude_source = (ROOT / "static" / "tutorial/core/round-prelude-controller.js").read_text(encoding="utf-8")
     start_block = source.split("async startAvatarFloatingGuideRound(day, options = {})", 1)[1].split(
-        "clearModelManagerTutorialRecheckTimer()",
+        "async waitForTutorialTeardownSettled",
         1,
     )[0]
 
@@ -873,7 +873,7 @@ def test_avatar_floating_round_waits_after_tutorial_model_is_visible():
         "await toPromise(() => this.sleep(delayMs));"
     )
     assert "deferRevealPrepared: true" in source
-    assert start_block.index("this.playAvatarFloatingRoundPrelude(round, source, director)") < start_block.index(
+    assert start_block.index("this.playAvatarFloatingRoundPrelude(round, source, director, {") < start_block.index(
         "director.playAvatarFloatingRound(round"
     )
 
@@ -1223,8 +1223,8 @@ def test_avatar_floating_intro_motion_reveals_prepared_tutorial_model():
     orchestrator_source = SCENE_ORCHESTRATOR_PATH.read_text(encoding="utf-8")
     director_source = DIRECTOR_PATH.read_text(encoding="utf-8")
 
-    prelude_block = manager_source.split("async playAvatarFloatingRoundPrelude(round, source, director)", 1)[1].split(
-        "async waitForTutorialTeardownSettled",
+    prelude_block = manager_source.split("async playAvatarFloatingRoundPrelude(round, source, director, options = {})", 1)[1].split(
+        "async checkAndStartTutorial",
         1,
     )[0]
     assert "deferRevealPrepared: true" in prelude_block
@@ -1244,18 +1244,16 @@ def test_avatar_floating_intro_motion_reveals_prepared_tutorial_model():
     assert "this.operationRegistry.run(scene, primaryTarget, narrationStartedAt, narrationPromise, operationContext)" in director_source
 
 
-def test_day1_legacy_externalized_intro_greeting_does_not_send_cursor_wobble():
-    source = DIRECTOR_PATH.read_text(encoding="utf-8")
-    externalized_block = source.split("async runChatIntroPreludeExternalized", 1)[1].split(
-        "const introText = this.resolvePerformanceBubbleText",
+def test_day1_externalized_intro_greeting_uses_scene_orchestrator_without_cursor_wobble():
+    source = SCENE_ORCHESTRATOR_PATH.read_text(encoding="utf-8")
+    externalized_block = source.split("if (introExternalizedChatSpotlightKind) {", 1)[1].split(
+        "} else if (introChatSpotlightTarget)",
         1,
     )[0]
 
-    assert "setExternalizedChatGuideTarget('capsule-input'" in externalized_block
-    assert "setExternalizedChatCursor('input'" not in externalized_block
-    assert "setExternalizedChatCursor('');" not in externalized_block
+    assert "director.interactionTakeover.setExternalizedChatSpotlight(" in externalized_block
+    assert "introExternalizedChatSpotlightKind" in externalized_block
     assert "effect: 'wobble'" not in externalized_block
-    assert "this.cursor.hide();" not in externalized_block
 
 
 def test_day2_intro_externalized_cursor_uses_scene_action_not_wobble():

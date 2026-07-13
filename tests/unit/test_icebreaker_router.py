@@ -235,9 +235,10 @@ async def test_icebreaker_context_caches_user_choice_to_recent_memory(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_icebreaker_context_cache_failure_does_not_block_context(monkeypatch, caplog):
+async def test_icebreaker_context_cache_failure_does_not_block_context(monkeypatch):
     mgr = _FakeAppendContextManager()
     memory_cache_calls = []
+    warning_calls = []
 
     async def fake_cache_memory(**kwargs):
         memory_cache_calls.append(kwargs)
@@ -246,6 +247,7 @@ async def test_icebreaker_context_cache_failure_does_not_block_context(monkeypat
     monkeypatch.setattr(icebreaker_router, "get_session_manager", lambda: {"Lan": mgr})
     monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
     monkeypatch.setattr(icebreaker_router, "_cache_icebreaker_context_memory", fake_cache_memory)
+    monkeypatch.setattr(icebreaker_router.logger, "warning", lambda *args: warning_calls.append(args))
     icebreaker_route_state.activate_icebreaker_route("Lan", "icebreaker-day1-test")
 
     result = await icebreaker_router.icebreaker_context(
@@ -266,7 +268,8 @@ async def test_icebreaker_context_cache_failure_does_not_block_context(monkeypat
         "role": "assistant",
         "text": "教程看完啦？",
     }]
-    assert "icebreaker memory cache failed" in caplog.text
+    assert warning_calls
+    assert "icebreaker memory cache failed" in warning_calls[0][0]
 
 
 @pytest.mark.asyncio
