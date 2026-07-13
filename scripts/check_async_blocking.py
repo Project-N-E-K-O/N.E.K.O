@@ -81,16 +81,16 @@ from typing import Iterable, Iterator
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_PATHS = [
-    "app/main_server.py",
+    "app/main_server",
     "main_logic",
     "main_routers",
     "utils",
-    # memory_server.py + its import chain (memory/ package)
-    "app/memory_server.py",
+    # memory_server package + its import chain (memory/ package)
+    "app/memory_server",
     "memory",
-    # agent_server.py + its import chain (brain/ package; main_logic already
-    # in scope above)
-    "app/agent_server.py",
+    # agent_server package + its import chain (brain/ package; main_logic
+    # already in scope above)
+    "app/agent_server",
     "brain",
 ]
 # NOTE: ``plugin/`` is intentionally NOT in the default scope. Plugin code uses

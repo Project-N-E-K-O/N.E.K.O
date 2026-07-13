@@ -4,7 +4,7 @@ const path = require('node:path');
 const test = require('node:test');
 
 const repoRoot = path.resolve(__dirname, '..');
-const appWebsocketSource = fs.readFileSync(path.join(repoRoot, 'static', 'app-websocket.js'), 'utf8');
+const appWebsocketSource = fs.readFileSync(path.join(repoRoot, 'static', 'app/app-websocket.js'), 'utf8');
 const universalManagerSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/universal-manager.js'), 'utf8');
 const websocketRouterSource = fs.readFileSync(path.join(repoRoot, 'main_routers/websocket_router.py'), 'utf8');
 

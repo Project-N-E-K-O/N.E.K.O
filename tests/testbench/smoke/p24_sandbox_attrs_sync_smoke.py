@@ -46,7 +46,10 @@ if isinstance(sys.stdout, io.TextIOWrapper):
 
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
-_CONFIG_MANAGER_PATH = _PROJECT_ROOT / "utils" / "config_manager.py"
+# utils/config_manager is a package (formerly a single module); the class is
+# assembled in __init__.py from per-domain *Mixin classes, so the scan reads
+# the concatenated package source and matches ConfigManager + its mixins.
+_CONFIG_MANAGER_PKG_DIR = _PROJECT_ROOT / "utils" / "config_manager"
 _SANDBOX_PATH = _PROJECT_ROOT / "tests" / "testbench" / "sandbox.py"
 
 
@@ -96,10 +99,16 @@ _SELF_ASSIGN_RE = re.compile(
 # ── AST-based introspection ─────────────────────────────────────────
 
 def _parse_tree() -> ast.Module:
-    return ast.parse(
-        _CONFIG_MANAGER_PATH.read_text(encoding="utf-8"),
-        filename=str(_CONFIG_MANAGER_PATH),
+    source = "\n".join(
+        p.read_text(encoding="utf-8")
+        for p in sorted(_CONFIG_MANAGER_PKG_DIR.glob("*.py"))
     )
+    return ast.parse(source, filename=str(_CONFIG_MANAGER_PKG_DIR))
+
+
+def _is_config_manager_class(node: ast.ClassDef) -> bool:
+    """The assembled class in __init__.py plus its per-domain mixins."""
+    return node.name == "ConfigManager" or node.name.endswith("Mixin")
 
 
 def collect_direct_assignments(tree: ast.Module) -> set[str]:
@@ -113,7 +122,7 @@ def collect_direct_assignments(tree: ast.Module) -> set[str]:
     for node in ast.walk(tree):
         if not isinstance(node, ast.ClassDef):
             continue
-        if node.name != "ConfigManager":
+        if not _is_config_manager_class(node):
             continue
         for stmt in ast.walk(node):
             if not isinstance(stmt, ast.Assign):
@@ -130,7 +139,6 @@ def collect_direct_assignments(tree: ast.Module) -> set[str]:
                 if name.startswith("_"):
                     continue
                 names.add(name)
-        break
     return names
 
 
@@ -139,7 +147,7 @@ def collect_property_names(tree: ast.Module) -> set[str]:
     method whose name ends in ``_dir`` or ``_path``."""
     names: set[str] = set()
     for node in ast.walk(tree):
-        if not isinstance(node, ast.ClassDef) or node.name != "ConfigManager":
+        if not isinstance(node, ast.ClassDef) or not _is_config_manager_class(node):
             continue
         for stmt in node.body:
             if not isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -153,7 +161,6 @@ def collect_property_names(tree: ast.Module) -> set[str]:
             )
             if decorated_as_property:
                 names.add(stmt.name)
-        break
     return names
 
 
@@ -267,7 +274,7 @@ def check_property_whitelist_grounding(tree: ast.Module,
     )
 
     for node in ast.walk(tree):
-        if not isinstance(node, ast.ClassDef) or node.name != "ConfigManager":
+        if not isinstance(node, ast.ClassDef) or not _is_config_manager_class(node):
             continue
         for stmt in node.body:
             if not isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -302,7 +309,6 @@ def check_property_whitelist_grounding(tree: ast.Module,
                     f"either add to _PATCHED_ATTRS or whitelist in "
                     f"p24_sandbox_attrs_sync_smoke.py"
                 )
-        break
     return errors
 
 

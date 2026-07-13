@@ -109,7 +109,7 @@ def _write_runtime_state(cm, *, character_name: str, recent_message: str = "你�
 
 
 def _run_launcher_phase0(cm):
-    import launcher
+    from launcher_core import runtime as launcher
 
     emitted_events = []
     with patch.object(launcher, "get_config_manager", lambda _app_name, **_kwargs: cm), patch.object(
@@ -408,7 +408,7 @@ async def test_main_server_shutdown_does_not_reexport_runtime_into_cloudsave_sna
     with patch.object(main_server, "_IS_MAIN_PROCESS", True), \
          patch.object(main_server, "_preload_task", None), \
          patch.object(main_server, "agent_event_bridge", None), \
-         patch.object(main_server, "role_state", _role_state_from_session_managers({})), \
+         patch.object(main_server.character_runtime, "role_state", _role_state_from_session_managers({})), \
          patch.object(main_server, "_run_cloudsave_manager_action", AsyncMock()) as run_cloudsave_action, \
          patch("utils.music_crawlers.close_all_crawlers", AsyncMock(return_value=None)), \
          patch("utils.token_tracker.TokenTracker.get_instance", return_value=fake_tracker):
@@ -627,9 +627,9 @@ async def test_memory_server_continue_startup_preserves_409_blocking_payload():
 async def test_memory_server_startup_stays_limited_when_storage_barrier_is_blocking():
     from app import memory_server
 
-    with patch.object(memory_server, "_config_manager", SimpleNamespace()), \
-         patch.object(memory_server, "get_storage_startup_blocking_reason", Mock(return_value="selection_required")), \
-         patch.object(memory_server, "ensure_memory_server_runtime_initialized", AsyncMock()) as mock_ensure_runtime:
+    with patch.object(memory_server.runtime, "_config_manager", SimpleNamespace()), \
+         patch.object(memory_server.runtime, "get_storage_startup_blocking_reason", Mock(return_value="selection_required")), \
+         patch.object(memory_server.runtime, "ensure_memory_server_runtime_initialized", AsyncMock()) as mock_ensure_runtime:
         await memory_server.startup_event_handler()
 
     mock_ensure_runtime.assert_not_awaited()
@@ -640,9 +640,9 @@ async def test_memory_server_startup_stays_limited_when_storage_barrier_is_block
 async def test_memory_server_continue_startup_refuses_active_storage_barrier():
     from app import memory_server
 
-    with patch.object(memory_server, "_config_manager", SimpleNamespace()), \
-         patch.object(memory_server, "get_storage_startup_blocking_reason", Mock(return_value="migration_pending")), \
-         patch.object(memory_server, "ensure_memory_server_runtime_initialized", AsyncMock()) as mock_ensure_runtime:
+    with patch.object(memory_server.runtime, "_config_manager", SimpleNamespace()), \
+         patch.object(memory_server.runtime, "get_storage_startup_blocking_reason", Mock(return_value="migration_pending")), \
+         patch.object(memory_server.runtime, "ensure_memory_server_runtime_initialized", AsyncMock()) as mock_ensure_runtime:
         response = await memory_server.continue_storage_startup(None)
 
     assert response.status_code == 409
@@ -656,8 +656,8 @@ async def test_memory_server_continue_startup_refuses_active_storage_barrier():
 def test_memory_server_limited_mode_middleware_blocks_runtime_routes():
     from app import memory_server
 
-    with patch.object(memory_server, "_config_manager", SimpleNamespace()), \
-         patch.object(memory_server, "get_storage_startup_blocking_reason", Mock(return_value="selection_required")):
+    with patch.object(memory_server.runtime, "_config_manager", SimpleNamespace()), \
+         patch.object(memory_server.runtime, "get_storage_startup_blocking_reason", Mock(return_value="selection_required")):
         with TestClient(memory_server.app) as client:
             response = client.get("/get_settings/小满")
 
@@ -672,9 +672,9 @@ def test_memory_server_limited_mode_middleware_blocks_runtime_routes():
 def test_memory_server_limited_mode_middleware_blocks_until_runtime_init_completes():
     from app import memory_server
 
-    with patch.object(memory_server, "_config_manager", SimpleNamespace()), \
-         patch.object(memory_server, "_memory_runtime_init_completed", False), \
-         patch.object(memory_server, "get_storage_startup_blocking_reason", Mock(side_effect=["selection_required", ""])):
+    with patch.object(memory_server.runtime, "_config_manager", SimpleNamespace()), \
+         patch.object(memory_server.runtime, "_memory_runtime_init_completed", False), \
+         patch.object(memory_server.runtime, "get_storage_startup_blocking_reason", Mock(side_effect=["selection_required", ""])):
         with TestClient(memory_server.app) as client:
             response = client.get("/get_settings/小满")
 
@@ -689,16 +689,16 @@ def test_memory_server_limited_mode_middleware_blocks_until_runtime_init_complet
 def test_memory_server_block_startup_endpoint_restores_limited_mode():
     from app import memory_server
 
-    with patch.object(memory_server, "_memory_runtime_init_completed", True), \
-         patch.object(memory_server, "_memory_storage_blocked_after_init", False), \
-         patch.object(memory_server, "get_storage_startup_blocking_reason", Mock(return_value="")):
+    with patch.object(memory_server.runtime, "_memory_runtime_init_completed", True), \
+         patch.object(memory_server.runtime, "_memory_storage_blocked_after_init", False), \
+         patch.object(memory_server.runtime, "get_storage_startup_blocking_reason", Mock(return_value="")):
         with TestClient(memory_server.app) as client:
             response = client.post(
                 "/internal/storage/startup/block",
                 json={"reason": "main_failed"},
             )
             blocked_response = client.get("/get_settings/小满")
-            runtime_completed_during_block = memory_server._memory_runtime_init_completed
+            runtime_completed_during_block = memory_server.runtime._memory_runtime_init_completed
 
     assert response.status_code == 200
     payload = response.json()
@@ -745,7 +745,7 @@ def test_main_server_resets_sync_shutdown_events_after_startup_rollback():
         )
     }
 
-    with patch.object(main_server, "role_state", role_state):
+    with patch.object(main_server.character_runtime, "role_state", role_state):
         # 不抛异常即视为通过；旧版会清 threading.Event，新版无状态可清。
         # 显式断言返回值为 None，未来若改成有副作用返回时能更早暴露。
         assert main_server._reset_sync_connector_shutdown_events() is None
@@ -765,7 +765,7 @@ async def test_main_server_shutdown_releases_live_sessions_then_uploads_existing
          patch.object(main_server, "_preload_task", None), \
          patch.object(main_server, "agent_event_bridge", None), \
          patch.object(main_server, "steamworks", existing_steamworks), \
-         patch.object(main_server, "role_state", _role_state_from_session_managers({"角色A": manager_with_resampler, "角色B": object(), "空槽": None})), \
+         patch.object(main_server.character_runtime, "role_state", _role_state_from_session_managers({"角色A": manager_with_resampler, "角色B": object(), "空槽": None})), \
          patch.object(main_server, "_run_cloudsave_manager_action", run_cloudsave_action), \
          patch("main_routers.characters_router.release_memory_server_character", AsyncMock(return_value=True)) as mock_release, \
          patch("utils.language_utils.aclose_translation_service", AsyncMock(return_value=None), create=True), \
@@ -796,7 +796,7 @@ async def test_main_server_shutdown_continues_when_memory_release_returns_false(
          patch.object(main_server, "_preload_task", None), \
          patch.object(main_server, "agent_event_bridge", None), \
          patch.object(main_server, "steamworks", None), \
-         patch.object(main_server, "role_state", _role_state_from_session_managers({"角色A": object(), "角色B": object()})), \
+         patch.object(main_server.character_runtime, "role_state", _role_state_from_session_managers({"角色A": object(), "角色B": object()})), \
          patch.object(main_server, "_run_cloudsave_manager_action", AsyncMock()) as run_cloudsave_action, \
          patch("main_routers.characters_router.release_memory_server_character", AsyncMock(side_effect=[True, False])) as mock_release, \
          patch("utils.language_utils.aclose_translation_service", AsyncMock(return_value=None), create=True), \
@@ -862,7 +862,7 @@ async def test_main_server_shutdown_requests_memory_server_stop_after_snapshot_u
          patch.object(main_server, "_preload_task", None), \
          patch.object(main_server, "agent_event_bridge", None), \
          patch.object(main_server, "steamworks", None), \
-         patch.object(main_server, "role_state", _role_state_from_session_managers({})), \
+         patch.object(main_server.character_runtime, "role_state", _role_state_from_session_managers({})), \
          patch.object(main_server, "_run_cloudsave_manager_action", AsyncMock()) as run_cloudsave_action, \
          patch.object(main_server, "get_start_config", Mock(return_value=start_config)), \
          patch.object(main_server, "_request_memory_server_shutdown", AsyncMock(side_effect=_fake_request_shutdown)) as mock_request_shutdown, \

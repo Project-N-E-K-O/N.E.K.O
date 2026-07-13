@@ -16,11 +16,13 @@ def gr_patch_all(monkeypatch, name, value, raising=True):
     globals, so patch them all with the same object."""
     from main_routers.game_router import (
         _shared, char_info, logs, memory_policy, game_context, pregame,
-        visible_events, balance, badminton_scores, archive, runtime,
+        visible_events, balance, badminton_scores, archive,
+        route_lifecycle, session_pool, postgame, runtime,
     )
     hit = False
     for _m in (_shared, char_info, logs, memory_policy, game_context, pregame,
-               visible_events, balance, badminton_scores, archive, runtime):
+               visible_events, balance, badminton_scores, archive,
+               route_lifecycle, session_pool, postgame, runtime):
         if hasattr(_m, name):
             monkeypatch.setattr(_m, name, value)
             hit = True

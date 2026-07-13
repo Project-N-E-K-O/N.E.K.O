@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from tests.static_app_parts import read_js_parts
+
+from tests.yui_guide_director_parts import read_director_source
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -12,20 +15,20 @@ ICEBREAKER_FREE_TEXT_RUNTIME_PATH = ROOT / "static" / "tutorial" / "icebreaker" 
 SCRIPTS_PATH = ROOT / "static" / "tutorial" / "icebreaker" / "icebreaker_scripts.json"
 LOCALE_PATH = ROOT / "static" / "tutorial" / "icebreaker" / "locales" / "zh-CN.json"
 LOCALES_DIR = ROOT / "static" / "tutorial" / "icebreaker" / "locales"
-CHAT_HOST_PATH = ROOT / "static" / "app-react-chat-window.js"
-APP_WEBSOCKET_PATH = ROOT / "static" / "app-websocket.js"
-APP_PROACTIVE_PATH = ROOT / "static" / "app-proactive.js"
+CHAT_HOST_PATH = ROOT / "static" / "app" / "app-react-chat-window"
+APP_WEBSOCKET_PATH = ROOT / "static" / "app" / "app-websocket.js"
+APP_PROACTIVE_PATH = ROOT / "static" / "app" / "app-proactive.js"
 APP_PROMPT_PATH = ROOT / "static" / "tutorial" / "core" / "app-prompt.js"
 UNIVERSAL_TUTORIAL_MANAGER_PATH = ROOT / "static" / "tutorial" / "core" / "universal-manager.js"
-APP_INTERPAGE_PATH = ROOT / "static" / "app-interpage.js"
+APP_INTERPAGE_PATH = ROOT / "static" / "app" / "app-interpage"
 INDEX_TEMPLATE_PATH = ROOT / "templates" / "index.html"
 WEBSOCKET_ROUTER_PATH = ROOT / "main_routers" / "websocket_router.py"
 GAME_ROUTER_DIR = ROOT / "main_routers" / "game_router"
 ICEBREAKER_ROUTER_PATH = ROOT / "main_routers" / "icebreaker_router.py"
 ICEBREAKER_PROMPTS_PATH = ROOT / "config" / "prompts" / "prompts_icebreaker.py"
 ICEBREAKER_FREE_TEXT_UTILS_PATH = ROOT / "utils" / "icebreaker_free_text.py"
-LIVE2D_CORE_PATH = ROOT / "static" / "live2d-core.js"
-SUBTITLE_PATH = ROOT / "static" / "subtitle.js"
+LIVE2D_CORE_PATH = ROOT / "static" / "live2d" / "live2d-core.js"
+SUBTITLE_PATH = ROOT / "static" / "subtitle" / "subtitle.js"
 
 
 def assert_icebreaker_script_has_voice_keys_for_every_spoken_line(day_key: str):
@@ -360,7 +363,7 @@ def test_day1_icebreaker_fallback_redirect_is_node_agnostic():
 
 def test_icebreaker_runtime_wires_choice_prompt_and_project_tts():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
-    chat_host = CHAT_HOST_PATH.read_text(encoding="utf-8")
+    chat_host = read_js_parts(CHAT_HOST_PATH)
     app_websocket = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
     index_html = INDEX_TEMPLATE_PATH.read_text(encoding="utf-8")
 
@@ -481,7 +484,10 @@ def test_icebreaker_route_is_finalized_when_renderer_websocket_disconnects():
 
 
 def test_icebreaker_context_reuses_existing_session_context_paths():
-    core = (ROOT / "main_logic" / "core.py").read_text(encoding="utf-8")
+    core = "\n".join(
+        p.read_text(encoding="utf-8")
+        for p in sorted((ROOT / "main_logic" / "core").glob("*.py"))
+    )
 
     assert "pending_icebreaker_context" not in core
     assert "_icebreaker_context_request_ids" not in core
@@ -550,7 +556,7 @@ def test_icebreaker_context_append_requires_successful_json_payload():
 
 def test_icebreaker_assistant_messages_update_compact_caption_like_normal_chat():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
-    interpage_runtime = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
+    interpage_runtime = read_js_parts(APP_INTERPAGE_PATH)
 
     assert "function syncIcebreakerAssistantCompactCaption(role, message)" in runtime
     assert "function finalizeIcebreakerAssistantSubtitleTranslation(role, message)" in runtime
@@ -978,7 +984,7 @@ def test_icebreaker_deferred_start_promise_cleanup_has_no_unreachable_rejection_
 
 
 def test_yui_guide_bridge_timestamp_helper_exists_for_cursor_relay():
-    interpage = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
+    interpage = read_js_parts(APP_INTERPAGE_PATH)
 
     assert "function getYuiGuideBridgeMessageTimestamp(message)" in interpage
     assert "timestamp: getYuiGuideBridgeMessageTimestamp(message)" in interpage
@@ -1079,7 +1085,7 @@ def test_avatar_floating_angry_exit_skip_event_preserves_raw_end_state():
 
 def test_icebreaker_uses_broadcast_channel_for_desktop_chat_window():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
-    interpage = (ROOT / "static" / "app-interpage.js").read_text(encoding="utf-8")
+    interpage = read_js_parts(ROOT / "static" / "app" / "app-interpage")
 
     assert "broadcastIcebreakerAppendMessage" in runtime
     assert "broadcastIcebreakerChoicePrompt" in runtime
@@ -1124,7 +1130,7 @@ def test_icebreaker_uses_broadcast_channel_for_desktop_chat_window():
 
 def test_icebreaker_desktop_bridge_has_storage_fallback():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
-    interpage = (ROOT / "static" / "app-interpage.js").read_text(encoding="utf-8")
+    interpage = read_js_parts(ROOT / "static" / "app" / "app-interpage")
 
     assert "ICEBREAKER_BRIDGE_STORAGE_KEY" in runtime
     assert "localStorage.setItem(ICEBREAKER_BRIDGE_STORAGE_KEY" in runtime
@@ -1137,7 +1143,7 @@ def test_icebreaker_desktop_bridge_has_storage_fallback():
 
 
 def test_icebreaker_source_clear_bridge_cannot_clear_non_icebreaker_prompt():
-    interpage = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
+    interpage = read_js_parts(APP_INTERPAGE_PATH)
 
     source_clear_block = interpage.split("function clearIcebreakerChoicePromptSourceFromBroadcast(source, reason)", 1)[1].split(
         "function getIcebreakerMessageText",
@@ -1161,8 +1167,8 @@ def test_icebreaker_page_exit_clears_choice_prompt_before_route_end():
 
 
 def test_yui_guide_chat_bridge_has_storage_queue_fallback():
-    director = (ROOT / "static" / "tutorial" / "yui-guide" / "director.js").read_text(encoding="utf-8")
-    interpage = (ROOT / "static" / "app-interpage.js").read_text(encoding="utf-8")
+    director = read_director_source(ROOT)
+    interpage = read_js_parts(ROOT / "static" / "app" / "app-interpage")
 
     assert "YUI_GUIDE_CHAT_BRIDGE_QUEUE_KEY" in director
     assert "enqueueYuiGuideChatBridgeMessage" in director
@@ -1182,7 +1188,7 @@ def test_yui_guide_chat_bridge_has_storage_queue_fallback():
 
 
 def test_yui_guide_native_relay_uses_defined_chat_helpers():
-    interpage = (ROOT / "static" / "app-interpage.js").read_text(encoding="utf-8")
+    interpage = read_js_parts(ROOT / "static" / "app" / "app-interpage")
     relay_block = interpage.split("function handleYuiGuideRelayedMessage(message)", 1)[1].split(
         "yuiGuideInterpageResources.addEventListener(window, 'neko:tutorial-overlay-relay'",
         1,
@@ -1371,7 +1377,7 @@ def test_home_tutorial_reset_also_resets_day1_icebreaker_state():
 
 
 def test_react_chat_fallback_sort_key_stays_after_existing_timestamped_messages():
-    chat_host = CHAT_HOST_PATH.read_text(encoding="utf-8")
+    chat_host = read_js_parts(CHAT_HOST_PATH)
 
     assert "getNextAppendSortKey" in chat_host
     assert "maxExistingSortKey" in chat_host
@@ -1494,13 +1500,17 @@ def test_react_chat_assets_use_react_chat_cache_version():
     react_chat_assets = [
         "/static/react/neko-chat/neko-chat-window.css",
         "/static/react/neko-chat/neko-chat-window.iife.js",
-        "/static/app-react-chat-window.js",
-        "/static/app-chat-adapter.js",
-        "/static/app-buttons.js",
+        "/static/app/app-react-chat-window/bootstrap-state-and-geometry.js",
+        "/static/app/app-react-chat-window/geometry-and-messages.js",
+        "/static/app/app-react-chat-window/message-bundle-actions-and-prompts.js",
+        "/static/app/app-react-chat-window/minimize-and-idle-dock.js",
+        "/static/app/app-react-chat-window/resize-drag-and-api.js",
+        "/static/app/app-chat-adapter.js",
+        "/static/app/app-buttons.js",
     ]
 
     for asset in react_chat_assets:
         assert f'{asset}?v={{{{ react_chat_asset_version }}}}' in index_html
         assert f'{asset}?v={{{{ react_chat_asset_version }}}}' in chat_html
 
-    assert pages_router.count('_PROJECT_ROOT / "static/app-interpage.js"') == 1
+    assert pages_router.count('_PROJECT_ROOT.glob("static/app/app-interpage/*.js")') == 1

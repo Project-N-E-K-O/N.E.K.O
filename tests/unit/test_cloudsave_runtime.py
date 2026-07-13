@@ -942,6 +942,47 @@ def test_local_cloudsave_round_trip_restores_runtime_truth(tmp_path):
     assert cloud_state["last_successful_import_at"]
 
 
+def _tamper_manifest_with_memory_key(cm, hostile_key: str, placement_relative_path: str) -> None:
+    placement_path = cm.cloudsave_dir / placement_relative_path
+    placement_path.parent.mkdir(parents=True, exist_ok=True)
+    placement_path.write_text("{}", encoding="utf-8")
+
+    manifest_path = Path(cm.cloudsave_manifest_path)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["files"][hostile_key] = {"sha256": "0" * 64, "size": 2}
+    # 攻击场景里 manifest 由存档作者产出，fingerprint 留空即可跳过一致性校验，
+    # 因此路径约束不能依赖 fingerprint 这道闸。
+    manifest["fingerprint"] = ""
+    atomic_write_json(manifest_path, manifest, ensure_ascii=False, indent=2)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("hostile_key", "placement_relative_path", "error_match"),
+    [
+        # parts 恰好三段的 '..' 穿越：character_name 解析成 '..'，
+        # runtime 目标会落到 memory_dir 的上一级
+        ("memory/../escape.json", "escape.json", "unsupported cloudsave memory path"),
+        # 白名单外的叶子文件名
+        ("memory/小满/evil.bin", "memory/小满/evil.bin", "unsupported cloudsave memory path"),
+        # 角色名过不了 audit（前导空格）
+        ("memory/ 小满/recent.json", "memory/ 小满/recent.json", "character name audit failed"),
+    ],
+)
+def test_import_rejects_hostile_memory_manifest_keys(tmp_path, hostile_key, placement_relative_path, error_match):
+    from utils.cloudsave_runtime import export_local_cloudsave_snapshot, import_local_cloudsave_snapshot
+
+    cm = _make_config_manager(tmp_path)
+    _write_runtime_state(cm)
+    export_local_cloudsave_snapshot(cm)
+    _tamper_manifest_with_memory_key(cm, hostile_key, placement_relative_path)
+
+    with pytest.raises(ValueError, match=error_match):
+        import_local_cloudsave_snapshot(cm)
+
+    assert not (Path(cm.memory_dir).parent / "escape.json").exists()
+
+
 @pytest.mark.unit
 def test_cloudsave_summary_marks_exported_character_as_matched(tmp_path):
     cm = _make_config_manager(tmp_path)

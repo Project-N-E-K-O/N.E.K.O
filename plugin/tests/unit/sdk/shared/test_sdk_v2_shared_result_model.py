@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import importlib
+from pathlib import Path
+
 import pytest
 
 from plugin.sdk.shared.models.result import (
@@ -18,6 +21,27 @@ from plugin.sdk.shared.models.result import (
     unwrap,
     unwrap_or,
 )
+
+
+def test_legacy_result_stack_is_removed() -> None:
+    import plugin._types as legacy_types
+
+    assert not (Path(legacy_types.__file__).parent / "result.py").exists()
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("plugin._types.result")
+    for name in (
+        "Ok",
+        "Err",
+        "Result",
+        "ResultError",
+        "safe",
+        "async_safe",
+        "try_call",
+        "try_call_async",
+        "from_optional",
+        "collect_results",
+    ):
+        assert not hasattr(legacy_types, name)
 
 
 def test_result_error_message_and_payload_shapes() -> None:

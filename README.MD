@@ -505,9 +505,9 @@ build_frontend.bat
 
 # 4. 启动服务（至少需要 main_server 和 memory_server）
 uv run python app/memory_server.py
-uv run python app/main_server.py
+uv run python -m app.main_server
 # 可选：启动 Agent 服务
-uv run python app/agent_server.py
+uv run python -m app.agent_server
 
 # 5. 访问 http://localhost:48911 配置 API Key 并开始使用
 ```
@@ -605,8 +605,8 @@ N.E.K.O/
 ├── 📁 templates/                # 📄 前端HTML模板（24个页面）
 ├── 📁 utils/                    # 🛠️ 工具模块
 ├── 📁 app/                      # 🚀 服务器入口模块
-│   ├── main_server.py           # 🌐 主服务器
-│   ├── agent_server.py          # 🤖 AI智能体服务器
+│   ├── main_server/            # 🌐 主服务器
+│   ├── agent_server/            # 🤖 AI智能体服务器（包）
 │   ├── memory_server.py         # 🧠 记忆服务器
 │   └── monitor.py               # 📺 独立观看端
 └── launcher.py                  # 🎬 一键启动入口（打包入口）
@@ -651,7 +651,7 @@ N.E.K.O. **默认开启匿名 Token 用量遥测**，用于跟踪版本兼容性
 
 > **关于"假名化设备标识"**：单向 SHA-256，不可逆、不含用户信息。同一台机器（同一 OS 安装）会复现相同标识，按 GDPR / PIPL 口径属于"假名化标识"而非"完全匿名数据"。仅用于去重 DAU 计数与版本兼容性归因。
 >
-> **关于 Steam64**：这是 Steam 客户端在你登录后向所有第三方 SDK 暴露的公开数字 ID（Steam 个人页 URL 末尾就是它）。本身不含邮箱、手机号或真实姓名，但跨会话稳定。**触发条件以代码为准**：[`app/main_server.py`](app/main_server.py) 启动时无条件调用 `initialize_steamworks()`，[`utils/token_tracker.py`](utils/token_tracker.py) 的 `_get_telemetry_steam_user_id()` 只要 SDK 起来且 `Users.GetSteamID()` 返回非零就上报，并不区分 source / release / steam 这三种 distribution 渠道。典型场景是 Steam 发行版，但源码版如果安装了 `steamworks` Python 包并保留了 `steam_appid.txt`、同时 Steam 客户端在登录态，同样会带 Steam64。**如果你不希望它被上报：(1) 最稳的 `DO_NOT_TRACK=1` 全关；(2) 退出 Steam 客户端；(3) 源码用户可在环境中卸载 `steamworks` 包或移除 `steam_appid.txt`。**
+> **关于 Steam64**：这是 Steam 客户端在你登录后向所有第三方 SDK 暴露的公开数字 ID（Steam 个人页 URL 末尾就是它）。本身不含邮箱、手机号或真实姓名，但跨会话稳定。**触发条件以代码为准**：[`app/main_server/__init__.py`](app/main_server/__init__.py) 启动时无条件调用 `initialize_steamworks()`，[`utils/token_tracker.py`](utils/token_tracker.py) 的 `_get_telemetry_steam_user_id()` 只要 SDK 起来且 `Users.GetSteamID()` 返回非零就上报，并不区分 source / release / steam 这三种 distribution 渠道。典型场景是 Steam 发行版，但源码版如果安装了 `steamworks` Python 包并保留了 `steam_appid.txt`、同时 Steam 客户端在登录态，同样会带 Steam64。**如果你不希望它被上报：(1) 最稳的 `DO_NOT_TRACK=1` 全关；(2) 退出 Steam 客户端；(3) 源码用户可在环境中卸载 `steamworks` 包或移除 `steam_appid.txt`。**
 
 完整实现与传输协议见 [`utils/token_tracker.py`](utils/token_tracker.py) 与 [`local_server/telemetry_server/README.md`](local_server/telemetry_server/README.md)：HMAC-SHA256 防篡改、±5min 时间窗防重放、滑动窗口限流（120 req/h/device）、append-only 存储；每个 server 进程最多约 1 次/60s 上报（与本地落盘节流共用同一计时器），不影响主流程性能。
 
@@ -659,4 +659,10 @@ N.E.K.O. **默认开启匿名 Token 用量遥测**，用于跟踪版本兼容性
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=wehos/N.E.K.O.&type=Date)](https://www.star-history.com/#wehos/N.E.K.O.&Date)
+<a href="https://www.star-history.com/?type=date&repos=wehos%2FN.E.K.O.">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=wehos/N.E.K.O.&type=date&theme=dark&legend=top-left&sealed_token=Q_Usdp5kZKjJCQn1FaMa0gKy4lU8MH6dX-53VemfgDwnJ3LjGb6T18uR4nRbliWo5h6HSjoF4EfDJ6oGZsE3uV3slX0u4Z6cFQ4SQS3MSjNMPWEvXjspVBwccA_l4uzz7i7YXDZcHmYLu_HTQ634NVnve67xkhbBsCDboxEFtU88nInXkTMtsalrrluF" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=wehos/N.E.K.O.&type=date&legend=top-left&sealed_token=Q_Usdp5kZKjJCQn1FaMa0gKy4lU8MH6dX-53VemfgDwnJ3LjGb6T18uR4nRbliWo5h6HSjoF4EfDJ6oGZsE3uV3slX0u4Z6cFQ4SQS3MSjNMPWEvXjspVBwccA_l4uzz7i7YXDZcHmYLu_HTQ634NVnve67xkhbBsCDboxEFtU88nInXkTMtsalrrluF" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=wehos/N.E.K.O.&type=date&legend=top-left&sealed_token=Q_Usdp5kZKjJCQn1FaMa0gKy4lU8MH6dX-53VemfgDwnJ3LjGb6T18uR4nRbliWo5h6HSjoF4EfDJ6oGZsE3uV3slX0u4Z6cFQ4SQS3MSjNMPWEvXjspVBwccA_l4uzz7i7YXDZcHmYLu_HTQ634NVnve67xkhbBsCDboxEFtU88nInXkTMtsalrrluF" />
+ </picture>
+</a>

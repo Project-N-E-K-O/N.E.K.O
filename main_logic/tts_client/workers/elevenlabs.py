@@ -23,7 +23,7 @@ import websockets
 import asyncio
 
 from functools import partial
-from utils.elevenlabs_tts_voices import ELEVENLABS_TTS_DEFAULT_MODEL, ELEVENLABS_TTS_DEFAULT_OUTPUT_FORMAT, normalize_elevenlabs_voice_id
+from utils.tts.providers.elevenlabs import ELEVENLABS_TTS_DEFAULT_MODEL, ELEVENLABS_TTS_DEFAULT_OUTPUT_FORMAT, normalize_elevenlabs_voice_id
 
 from .._infra import TTS_SHUTDOWN_SENTINEL, _resample_audio, make_audio_jitter_buffer, _enqueue_error
 from .._telemetry import _record_tts_telemetry
@@ -139,8 +139,22 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
             # receive_task），避免上一轮残留音频串入新轮次首包。
             audio_jitter.reset()
 
-        async def _close_ws(send_final_empty: bool = False, wait_for_final: bool = False) -> None:
+        async def _close_ws(
+            send_final_empty: bool = False,
+            wait_for_final: bool = False,
+            interrupt: bool = False,
+        ) -> None:
             nonlocal ws, receive_task, text_done_sent
+            if interrupt and receive_task and not receive_task.done():
+                receive_task.cancel()
+                try:
+                    await receive_task
+                except asyncio.CancelledError:
+                    # Expected during interrupt teardown.
+                    pass
+                except Exception as exc:
+                    logger.debug("ElevenLabs interrupted receive task cleanup failed: %s", exc)
+                receive_task = None
             if ws is not None:
                 if send_final_empty and not text_done_sent:
                     try:
@@ -159,11 +173,16 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                     pass
             ws = None
             if receive_task and not receive_task.done():
+                if not interrupt:
+                    audio_jitter.flush()
                 receive_task.cancel()
                 try:
                     await receive_task
-                except (asyncio.CancelledError, Exception):
+                except asyncio.CancelledError:
+                    # Expected when closing an active receive loop.
                     pass
+                except Exception as exc:
+                    logger.debug("ElevenLabs receive task cleanup failed: %s", exc)
             receive_task = None
 
         async def _open_ws(speech_id: str) -> None:
@@ -193,6 +212,7 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
             await ws.send(json.dumps(init_payload))
 
         async def _receive_ws_messages(speech_id: str) -> None:
+            cancelled = False
             try:
                 async for message in ws:
                     audio_bytes = None
@@ -267,10 +287,13 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                         exc.reason,
                     )
             except asyncio.CancelledError:
+                cancelled = True
                 raise
             except Exception as exc:
                 logger.error("ElevenLabs WS receive failed: %s", exc)
             finally:
+                if not cancelled:
+                    audio_jitter.flush()
                 response_finished.set()
 
         async def _send_text(text: str, speech_id: str, *, final: bool = False) -> None:
@@ -332,11 +355,15 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                     break
 
                 if sid == "__interrupt__":
-                    await _close_ws(send_final_empty=False, wait_for_final=False)
-                    current_speech_id = None
-                    pending_text.clear()
-                    pending_text_sid = None
-                    audio_jitter.reset()  # 打断：丢弃未放出的缓冲音频
+                    audio_jitter.begin_interrupt()
+                    try:
+                        await _close_ws(send_final_empty=False, wait_for_final=False, interrupt=True)
+                        current_speech_id = None
+                        pending_text.clear()
+                        pending_text_sid = None
+                        audio_jitter.reset()  # 打断：丢弃未放出的缓冲音频
+                    finally:
+                        audio_jitter.end_interrupt()
                     continue
 
                 if sid is None:

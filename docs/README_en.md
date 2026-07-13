@@ -441,9 +441,9 @@ build_frontend.bat
 
 # 4. Start services (main_server and memory_server required at minimum)
 uv run python app/memory_server.py
-uv run python app/main_server.py
+uv run python -m app.main_server
 # Optional: start Agent service
-uv run python app/agent_server.py
+uv run python -m app.agent_server
 
 # 5. Visit http://localhost:48911 to configure API Key and start using
 ```
@@ -531,7 +531,7 @@ N.E.K.O/
 ├── 📁 templates/                # 📄 Frontend HTML templates (24 pages)
 ├── 📁 utils/                    # 🛠️ Utility modules
 ├── 📁 app/                      # 🚀 Server entry modules
-│   ├── main_server.py           # 🌐 Main server
+│   ├── main_server/            # 🌐 Main server
 │   ├── agent_server.py          # 🤖 AI agent server
 │   ├── memory_server.py         # 🧠 Memory server
 │   └── monitor.py               # 📺 Standalone monitor view
@@ -577,7 +577,7 @@ N.E.K.O. ships with **anonymous LLM-token usage telemetry enabled by default** s
 
 > **About the pseudonymous device identifier**: one-way SHA-256, irreversible, contains no user data. The same machine (same OS install) reproduces the same identifier, so under GDPR / PIPL it counts as a *pseudonymous identifier*, not fully anonymous data. Used only for deduplicated DAU counting and version-compatibility attribution.
 >
-> **About Steam64**: this is the public numeric ID the Steam client exposes to any third-party SDK once you are signed in (the trailing number in your Steam profile URL is exactly it). It contains no email, phone number, or real name, but it is stable across sessions. **The actual trigger condition follows the code, not the distribution label**: [`app/main_server.py`](app/main_server.py) unconditionally calls `initialize_steamworks()` at startup, and `_get_telemetry_steam_user_id()` in [`utils/token_tracker.py`](utils/token_tracker.py) reports any non-zero Steam ID regardless of whether the distribution channel is `source`, `release`, or `steam`. The typical case is a Steam release build, but a source checkout that has the `steamworks` Python package installed, keeps `steam_appid.txt` in place, and runs while signed into Steam will also send Steam64. **If you do not want it sent: (1) the safest path is `DO_NOT_TRACK=1` to disable everything; (2) sign out of Steam; (3) source users can uninstall the `steamworks` package or remove `steam_appid.txt` from the working directory.**
+> **About Steam64**: this is the public numeric ID the Steam client exposes to any third-party SDK once you are signed in (the trailing number in your Steam profile URL is exactly it). It contains no email, phone number, or real name, but it is stable across sessions. **The actual trigger condition follows the code, not the distribution label**: [`app/main_server/__init__.py`](app/main_server/__init__.py) unconditionally calls `initialize_steamworks()` at startup, and `_get_telemetry_steam_user_id()` in [`utils/token_tracker.py`](utils/token_tracker.py) reports any non-zero Steam ID regardless of whether the distribution channel is `source`, `release`, or `steam`. The typical case is a Steam release build, but a source checkout that has the `steamworks` Python package installed, keeps `steam_appid.txt` in place, and runs while signed into Steam will also send Steam64. **If you do not want it sent: (1) the safest path is `DO_NOT_TRACK=1` to disable everything; (2) sign out of Steam; (3) source users can uninstall the `steamworks` package or remove `steam_appid.txt` from the working directory.**
 
 Full implementation and wire protocol live in [`utils/token_tracker.py`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/utils/token_tracker.py) and [`local_server/telemetry_server/README.md`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/local_server/telemetry_server/README.md): HMAC-SHA256 signing, ±5 min replay-protection window, sliding-window rate limit (120 req/h/device), append-only storage. Each server process reports at most ~once per 60 seconds (shares the same throttling timer as local disk-flush) — no impact on the hot path.
 

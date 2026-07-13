@@ -13,6 +13,7 @@ from ..core.archive_utils import (
     safe_archive_path,
     validate_package_type,
     validate_plugin_layout,
+    validate_plugin_manifest_types,
     verify_payload_hash,
 )
 
@@ -27,5 +28,6 @@ __all__ = [
     "safe_archive_path",
     "validate_package_type",
     "validate_plugin_layout",
+    "validate_plugin_manifest_types",
     "verify_payload_hash",
 ]

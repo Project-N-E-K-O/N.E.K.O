@@ -4600,7 +4600,7 @@ function CompactChatApp({
 
   // ── compact surface 控件「按住拖动对话框」手势 ────────────────────────────
   // 在 toggle / fan 中心 / 毛球 / 胶囊 / textarea 按下后移动超阈值 → 把 surface
-  // 拖拽交给宿主（web: app-react-chat-window.js / Electron: preload-chat-react.js）经
+  // 拖拽交给宿主（web: app-react-chat-window / Electron: preload-chat-react.js）经
   // neko:compact-surface-drag-grab 接管。
   // 点按（无移动）语义保持原样：toggle 展开/关闭，fan 原点收起，毛球折叠，胶囊进入 input，
   // textarea 正常聚焦输入。
@@ -6870,6 +6870,8 @@ function CompactChatApp({
             role="group"
             aria-label={choicePrompt.source === 'mini_game_invite'
               ? i18n('chat.miniGameInviteOptionsAriaLabel', 'Mini-game invite options')
+              : choicePrompt.source === 'new_user_icebreaker'
+                ? i18n('chat.newUserIcebreakerOptionsAriaLabel', 'New user icebreaker options')
               : galgameToggleButtonLabel}
           >
             {choicePrompt.options.slice(0, 3).map((option, index) => (
@@ -7068,7 +7070,7 @@ function CompactChatApp({
         {/* 关闭叉：overlay 整体 pointer-events:none（点击穿透到桌面/下层），唯独这个按钮 CSS 里单独开
             auto 才接得住点击；点了把当前 meme id 记进 dismissedMemeId（会话级），下一张新 meme 照常显示。
             ⚠️ data-compact-hit-region 必带：overlay 的 data-compact-geometry-hit-scope="children" 让 host
-            只把带该标记的子元素登记成 native 可交互区（见 app-react-chat-window.js collectCompactCompositeGeometryItems）。
+            只把带该标记的子元素登记成 native 可交互区（见 app-react-chat-window collectCompactCompositeGeometryItems）。
             漏了它，Electron pass-through 窗口会把按钮当穿透区、点击穿到桌面（普通浏览器窗口测不出，对齐音乐条）。 */}
         {compactMemeOverlayImageSettled ? (
           <button

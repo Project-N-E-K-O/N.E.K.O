@@ -42,7 +42,6 @@ class NekoPluginBase(_SharedNekoPluginBase):
         from .runtime import Plugins
 
         self.plugins = Plugins(self.ctx)
-        self._memory_client = None
         self._system_info_client = None
         self.i18n = self._load_plugin_i18n()
         self._static_ui_config: dict[str, Any] | None = None
@@ -123,14 +122,6 @@ class NekoPluginBase(_SharedNekoPluginBase):
     @property
     def bus(self):
         return self.ctx.bus
-
-    @property
-    def memory(self):
-        if self._memory_client is None:
-            from .runtime import MemoryClient
-
-            self._memory_client = MemoryClient(self.ctx)
-        return self._memory_client
 
     @property
     def system_info(self):

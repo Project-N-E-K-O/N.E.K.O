@@ -36,9 +36,9 @@ def _install(tmpdir):
 
     cm = _mock_cm(tmpdir)
     with patch("memory.event_log.get_config_manager", return_value=cm), \
-         patch("memory.persona.get_config_manager", return_value=cm), \
+         patch("memory.persona.manager.get_config_manager", return_value=cm), \
          patch("memory.facts.get_config_manager", return_value=cm), \
-         patch("memory.reflection.get_config_manager", return_value=cm):
+         patch("memory.reflection.manager.get_config_manager", return_value=cm):
         event_log = EventLog()
         fact_store = FactStore()
         pm = PersonaManager(event_log=event_log)

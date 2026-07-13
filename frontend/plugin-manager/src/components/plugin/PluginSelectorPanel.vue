@@ -44,7 +44,6 @@
           >
             <el-checkbox-button label="plugin">插件 ({{ pluginCount }})</el-checkbox-button>
             <el-checkbox-button label="adapter">适配器 ({{ adapterCount }})</el-checkbox-button>
-            <el-checkbox-button label="extension">扩展 ({{ extensionCount }})</el-checkbox-button>
           </el-checkbox-group>
         </div>
 
@@ -126,7 +125,7 @@ import PluginCard from '@/components/plugin/PluginCard.vue'
 import type { PluginMeta } from '@/types/api'
 
 type LayoutMode = 'list' | 'single' | 'double' | 'compact'
-type PluginGroupType = 'plugin' | 'adapter' | 'extension'
+type PluginGroupType = 'plugin' | 'adapter'
 type FilterMode = 'whitelist' | 'blacklist'
 
 type SelectablePlugin = PluginMeta & {
@@ -148,10 +147,8 @@ const props = defineProps<{
   layoutMode: LayoutMode
   pluginCount: number
   adapterCount: number
-  extensionCount: number
   filteredPurePlugins: SelectablePlugin[]
   filteredAdapters: SelectablePlugin[]
-  filteredExtensions: SelectablePlugin[]
   selectedPluginIds: string[]
 }>()
 
@@ -171,13 +168,12 @@ const { t } = useI18n()
 
 const layoutClass = computed(() => `plugin-selector-grid--${props.layoutMode}`)
 const totalFilteredCount = computed(
-  () => props.filteredPurePlugins.length + props.filteredAdapters.length + props.filteredExtensions.length
+  () => props.filteredPurePlugins.length + props.filteredAdapters.length
 )
 
 const sections = computed(() => [
   { key: 'plugin', title: '插件', items: props.filteredPurePlugins, headerClass: '' },
   { key: 'adapter', title: '适配器', items: props.filteredAdapters, headerClass: 'section-header--adapter' },
-  { key: 'extension', title: '扩展', items: props.filteredExtensions, headerClass: 'section-header--ext' },
 ])
 
 function isSelected(pluginId: string): boolean {
@@ -271,8 +267,7 @@ function isSelected(pluginId: string): boolean {
   margin-bottom: 12px;
 }
 
-.section-header--adapter,
-.section-header--ext {
+.section-header--adapter {
   margin-top: 24px;
 }
 

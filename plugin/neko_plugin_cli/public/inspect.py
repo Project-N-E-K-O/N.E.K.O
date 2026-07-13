@@ -10,6 +10,7 @@ from ..core.archive_utils import (
     read_metadata,
     validate_package_type,
     validate_plugin_layout,
+    validate_plugin_manifest_types,
     verify_payload_hash,
 )
 from ..core.inspect import PackageInspector, inspect_package
@@ -27,5 +28,6 @@ __all__ = [
     "read_metadata",
     "validate_package_type",
     "validate_plugin_layout",
+    "validate_plugin_manifest_types",
     "verify_payload_hash",
 ]

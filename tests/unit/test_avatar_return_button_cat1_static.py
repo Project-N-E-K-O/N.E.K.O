@@ -1,13 +1,21 @@
 from pathlib import Path
+from tests.static_app_parts import read_js_parts
 
 from main_routers import pages_router
+from tests.unit.avatar_ui_buttons_source import read_avatar_ui_buttons_source
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-AVATAR_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "avatar-ui-buttons.js"
-APP_UI_PATH = PROJECT_ROOT / "static" / "app-ui.js"
-APP_REACT_CHAT_WINDOW_PATH = PROJECT_ROOT / "static" / "app-react-chat-window.js"
-APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app-interpage.js"
+AVATAR_UI_BUTTONS_DIR = PROJECT_ROOT / "static" / "avatar" / "avatar-ui-buttons"
+
+
+def _read_avatar_ui_buttons_source() -> str:
+    return read_avatar_ui_buttons_source()
+
+
+APP_UI_PATH = PROJECT_ROOT / "static" / "app" / "app-ui"
+APP_REACT_CHAT_WINDOW_PATH = PROJECT_ROOT / "static" / "app" / "app-react-chat-window"
+APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app" / "app-interpage"
 INDEX_CSS_PATH = PROJECT_ROOT / "static" / "css" / "index.css"
 CAT1_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat1.gif"
 CAT1_PLAY_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat-play-1.gif"
@@ -15,7 +23,7 @@ CAT1_EAT_SOUND_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat1-v
 
 
 def test_cat1_return_button_visual_contract_is_present():
-    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+    source = _read_avatar_ui_buttons_source()
 
     assert "neko:auto-goodbye:state-change" in source
     assert "data-neko-idle-tier" in source
@@ -31,7 +39,7 @@ def test_cat1_return_button_visual_contract_is_present():
 
 
 def test_cat1_return_button_assets_are_version_tracked():
-    assert AVATAR_UI_BUTTONS_PATH in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
+    assert set(AVATAR_UI_BUTTONS_DIR.glob("*.js")) <= set(pages_router._YUI_GUIDE_ASSET_VERSION_PATHS)
     assert INDEX_CSS_PATH in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
     assert CAT1_ASSET_PATH in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
     assert CAT1_PLAY_ASSET_PATH in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
@@ -42,11 +50,11 @@ def test_cat1_return_button_assets_are_version_tracked():
 
 
 def test_cat1_play_action_module_is_independent_from_eat_action():
-    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
-    app_ui_source = APP_UI_PATH.read_text(encoding="utf-8")
+    source = _read_avatar_ui_buttons_source()
+    app_ui_source = read_js_parts(APP_UI_PATH)
     css = INDEX_CSS_PATH.read_text(encoding="utf-8")
-    chat_source = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
-    interpage_source = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
+    chat_source = read_js_parts(APP_REACT_CHAT_WINDOW_PATH)
+    interpage_source = read_js_parts(APP_INTERPAGE_PATH)
 
     assert "_NEKO_IDLE_CAT1_PLAY_ASSET_URL = '/static/assets/neko-idle/cat-idle-cat-play-1.gif'" in source
     assert "_NEKO_IDLE_CAT1_PLAY_SOUND_URL = '/static/assets/neko-idle/cat1-voice3.mp3'" in source
@@ -124,7 +132,7 @@ def test_cat1_play_action_module_is_independent_from_eat_action():
 
 
 def test_cat1_play_action_can_replace_stretch_after_reaching_yarn():
-    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+    source = _read_avatar_ui_buttons_source()
 
     assert "_NEKO_IDLE_CAT1_WALK_FINISH_PLAY_PROBABILITY = 0.25" in source
     assert "_NEKO_IDLE_CAT1_PAIR_MOVE_PLAY_PROBABILITY = 0.05" in source
@@ -148,7 +156,7 @@ def test_cat1_play_action_can_replace_stretch_after_reaching_yarn():
 
 
 def test_cat1_pair_move_event_can_play_instead_of_random_small_move():
-    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+    source = _read_avatar_ui_buttons_source()
 
     play_block = source.split("function _playNekoIdleCat1PlayAction(button)", 1)[1].split(
         "function _clearNekoIdleThoughtBubble",
@@ -175,7 +183,7 @@ def test_cat1_pair_move_event_can_play_instead_of_random_small_move():
 
 
 def test_cat1_minimized_side_target_separates_look_and_move_direction():
-    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+    source = _read_avatar_ui_buttons_source()
 
     # #1749 的“朝毛球前进、避免倒退”的取侧逻辑只用于本次走路首次决策，已抽到 forward picker。
     forward_pick_block = source.split("function _pickNekoIdleCat1ForwardSideTarget", 1)[1].split(
@@ -193,7 +201,7 @@ def test_cat1_minimized_side_target_separates_look_and_move_direction():
 
 def test_cat1_minimized_side_target_commits_approach_side_to_prevent_center_straddle():
     """Approach side must be committed with hysteresis, never re-judged each frame via catCenter vs chatCenter (which makes the cat straddle the ball center and jitter against it)."""
-    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+    source = _read_avatar_ui_buttons_source()
 
     side_target_block = source.split("function _getNekoIdleCat1SideTarget", 1)[1].split(
         "function _getNekoIdleCat1CompactTopEdgeBounds",
@@ -221,7 +229,7 @@ def test_cat1_minimized_side_target_commits_approach_side_to_prevent_center_stra
 
 def test_cat1_walk_speed_rate_relaxes_when_converging():
     """Catch-up speed rate must relax while converging, so one momentary distance spike does not pin the speed at maxRate forever."""
-    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+    source = _read_avatar_ui_buttons_source()
 
     speed_block = source.split("function _updateNekoIdleCat1WalkSpeedRate", 1)[1].split(
         "function _stepNekoIdleCat1Walk",
@@ -232,7 +240,7 @@ def test_cat1_walk_speed_rate_relaxes_when_converging():
 
 
 def test_cat1_walk_uses_resolved_target_facing_instead_of_raw_chat_side():
-    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+    source = _read_avatar_ui_buttons_source()
 
     assert "function _resolveNekoIdleCat1TargetFacing" in source
     assert "function _resolveNekoIdleCat1StretchFacing" in source
@@ -269,7 +277,7 @@ def test_cat1_walk_uses_resolved_target_facing_instead_of_raw_chat_side():
 
 
 def test_cat1_finishing_animation_rechecks_chat_target_after_settle():
-    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+    source = _read_avatar_ui_buttons_source()
 
     settle_block = source.split("function _settleNekoIdleReturnSubactionToIdle", 1)[1].split(
         "function _scheduleNekoIdleReturnSubactionSettle",
@@ -285,7 +293,7 @@ def test_cat1_finishing_animation_rechecks_chat_target_after_settle():
 
 
 def test_cat1_hover_blocked_walk_starts_immediately_after_hover_playback():
-    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+    source = _read_avatar_ui_buttons_source()
 
     walk_start_block = source.split("function _scheduleNekoIdleCat1WalkStart", 1)[1].split(
         "function _canScheduleNekoIdleCat1PairMove",
@@ -302,7 +310,7 @@ def test_cat1_hover_blocked_walk_starts_immediately_after_hover_playback():
 
 
 def test_cat1_compact_top_edge_to_minimized_side_transition_forces_walk():
-    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+    source = _read_avatar_ui_buttons_source()
 
     journey_sync_block = source.split("function _syncNekoIdleCat1Journey", 1)[1].split(
         "function _scheduleNekoIdleCat1JourneySync",
@@ -318,7 +326,7 @@ def test_cat1_compact_top_edge_to_minimized_side_transition_forces_walk():
 
 
 def test_cat1_settled_minimized_side_uses_regular_walk_delay_when_ball_moves():
-    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+    source = _read_avatar_ui_buttons_source()
 
     journey_sync_block = source.split("function _syncNekoIdleCat1Journey", 1)[1].split(
         "function _scheduleNekoIdleCat1JourneySync",
@@ -334,7 +342,7 @@ def test_cat1_settled_minimized_side_uses_regular_walk_delay_when_ball_moves():
 
 
 def test_cat1_settled_minimized_side_bypasses_small_desktop_move_filter():
-    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+    source = _read_avatar_ui_buttons_source()
 
     assert "function _isNekoIdleCat1SettledOnMinimizedSide(state, profile)" in source
     minimized_state_block = source.split("window.addEventListener('neko:idle-chat-minimized-state'", 1)[1].split(
@@ -348,7 +356,7 @@ def test_cat1_settled_minimized_side_bypasses_small_desktop_move_filter():
 
 
 def test_cat1_external_chat_position_updates_interrupt_pair_move_for_retarget():
-    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+    source = _read_avatar_ui_buttons_source()
 
     assert "function _interruptNekoIdleCat1PairMoveForRetarget" in source
     minimized_state_block = source.split("window.addEventListener('neko:idle-chat-minimized-state'", 1)[1].split(

@@ -1,44 +1,20 @@
 # Advanced Topics
 
-## Extensions
+## Router composition
 
-Extensions add routes and hooks to existing plugins without modifying them. They run inside the host plugin's process (not in a separate process).
-
-### When to use Extensions
-
-- You want to add new commands to an existing plugin
-- You want to hook into another plugin's entry points
-- You want modular code organization within a plugin
-
-### Creating an Extension
+The Extension package type and `plugin.sdk.extension` facade have been removed. `PluginRouter` remains supported as an internal composition tool for a normal Plugin. Define the router beside its owner and mount it explicitly:
 
 ```python
-from plugin.sdk.extension import (
-    NekoExtensionBase, extension, extension_entry, extension_hook,
-    Ok, Err,
-)
+from plugin.sdk.plugin import PluginRouter, plugin_entry, Ok
 
-@extension
-class MyExtension(NekoExtensionBase):
-    """Adds extra commands to a host plugin."""
 
-    @extension_entry(id="extra_command", description="An extra command added by extension")
-    def extra_command(self, param: str = "", **_):
-        return Ok({"extended": True, "param": param})
-
-    @extension_hook(target="original_entry", timing="before")
-    def validate(self, *, args, **_):
-        # Runs before the host plugin's "original_entry"
-        if not args.get("required_field"):
-            return Err("Missing required_field")
+class ExtraRouter(PluginRouter):
+    @plugin_entry(id="extra_command", description="An extra command")
+    async def extra_command(self, param: str = "", **_):
+        return Ok({"param": param})
 ```
 
-### How Extensions work
-
-1. The host registers extensions in its configuration
-2. At startup, the host injects extensions as `PluginRouter` instances
-3. Extension entries become accessible under the host plugin's namespace
-4. Extension hooks intercept the host's entry points
+Call `self.include_router(ExtraRouter(name="extra"))` from the owning `NekoPluginBase` constructor. A former Extension must be merged into that Plugin's source tree or converted into a standalone normal Plugin; `type = "extension"`, `[plugin.host]`, and imports from `plugin.sdk.extension` are rejected. See the [v0.9 migration guide](./migration-v0.9).
 
 ---
 
@@ -147,23 +123,29 @@ exists = await self.plugins.exists("required_plugin")
 dep = await self.plugins.require_enabled("required_plugin")
 ```
 
-### Event bus
+### Bus reads and watchers
 
-`self.bus` is a read-only view (`SdkBusContext`) exposing five namespace snapshots: `messages`, `events`, `lifecycle`, `conversations`, and `memory`, each with a `.get(...)`. It has **no** `emit()` or `on()` method — the bus is only for reading namespace snapshots, not for publishing events directly.
+`self.bus` exposes five readable namespace snapshots: `messages`, `events`, `lifecycle`, `conversations`, and `memory`. It has **no** `emit()` or `on()` method. Only `messages`, `events`, and `lifecycle` support `watch()`; `conversations` and `memory` are read-only snapshots.
 
 ```python
-# Read the latest snapshot of a namespace
-events = self.bus.events.get()
+# In an async entry, get() must be awaited.
+events = await self.bus.events.get(plugin_id=self.plugin_id, max_count=50)
+recent = events.filter(priority_min=1).sort(by="timestamp", reverse=True).limit(20)
 
-# Subscribe to changes: call get() to obtain the list, then watch() for a watcher.
-# watcher.subscribe(on=...) is a decorator; the handler receives an SdkBusDelta.
-watcher = self.bus.events.get().watch(self.ctx)
+# subscribe() accepts only "add", "del", or "change".
+watcher = recent.watch(self.ctx)
 
-@watcher.subscribe(on="some_event")
+@watcher.subscribe(on="add")
 def _handle_event(delta):
-    # delta.added / delta.removed / delta.current
-    ...
+    for event in delta.added:
+        self.logger.info(f"new event: {event.type}")
+
+watcher.start()
 ```
+
+Callable `filter(predicate)`, `where(predicate)`, and `sort(key=callable)` are local-only transformations. They are useful for an already-materialized snapshot, but they cannot be replayed by `watch()`; watcher chains must use structured `filter(field=value, ...)` and `sort(by=...)` operations as above.
+
+Use `await self.bus.memory.get(bucket_id="default", limit=...)` for recent memory records and `await self.ctx.query_memory("default", query)` for semantic lookup. The old high-level `self.memory` / `MemoryClient` API no longer exists.
 
 ---
 

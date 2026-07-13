@@ -1,17 +1,30 @@
 import json
 import re
 from pathlib import Path
+from tests.static_app_parts import read_js_parts
 
 
-APP_REACT_CHAT_WINDOW_PATH = Path(__file__).resolve().parents[2] / "static" / "app-react-chat-window.js"
-APP_JS_PATH = Path(__file__).resolve().parents[2] / "static" / "app.js"
-APP_BUTTONS_PATH = Path(__file__).resolve().parents[2] / "static" / "app-buttons.js"
-APP_CHAT_EXPORT_PATH = Path(__file__).resolve().parents[2] / "static" / "app-chat-export.js"
-APP_INTERPAGE_PATH = Path(__file__).resolve().parents[2] / "static" / "app-interpage.js"
-AVATAR_UI_POPUP_PATH = Path(__file__).resolve().parents[2] / "static" / "avatar-ui-popup.js"
-AVATAR_POPUP_COMMON_PATH = Path(__file__).resolve().parents[2] / "static" / "avatar-popup-common.js"
+class JavaScriptParts:
+    def __init__(self, directory: Path) -> None:
+        self.directory = directory
+
+    def read_text(self, *, encoding: str) -> str:
+        return read_js_parts(self.directory, encoding=encoding)
+
+
+APP_REACT_CHAT_WINDOW_PATH = JavaScriptParts(
+    Path(__file__).resolve().parents[2] / "static" / "app" / "app-react-chat-window"
+)
+APP_JS_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app.js"
+APP_BUTTONS_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-buttons.js"
+APP_CHAT_EXPORT_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-chat-export.js"
+APP_INTERPAGE_PATH = JavaScriptParts(
+    Path(__file__).resolve().parents[2] / "static" / "app" / "app-interpage"
+)
+AVATAR_UI_POPUP_PATH = Path(__file__).resolve().parents[2] / "static" / "avatar" / "avatar-ui-popup.js"
+AVATAR_POPUP_COMMON_PATH = Path(__file__).resolve().parents[2] / "static" / "avatar" / "avatar-popup-common.js"
 STATIC_LOCALES_DIR = Path(__file__).resolve().parents[2] / "static" / "locales"
-MUSIC_UI_PATH = Path(__file__).resolve().parents[2] / "static" / "music_ui.js"
+MUSIC_UI_PATH = Path(__file__).resolve().parents[2] / "static" / "jukebox" / "music_ui.js"
 MUSIC_UI_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css" / "music_ui.css"
 STATIC_INDEX_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css" / "index.css"
 STATIC_DARK_MODE_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css" / "dark-mode.css"
@@ -30,7 +43,7 @@ CHAT_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "chat.h
 INDEX_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "index.html"
 SUBTITLE_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "subtitle.html"
 PAGES_ROUTER_PATH = Path(__file__).resolve().parents[2] / "main_routers" / "pages_router.py"
-MAIN_SERVER_PATH = Path(__file__).resolve().parents[2] / "app" / "main_server.py"
+MAIN_SERVER_PATH = Path(__file__).resolve().parents[2] / "app" / "main_server" / "__init__.py"
 COMPACT_EXPORT_HISTORY_PANEL_PATH = (
     Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "CompactExportHistoryPanel.tsx"
 )
@@ -203,7 +216,7 @@ def test_standalone_subtitle_page_initializes_theme_before_subtitle_scripts():
     source = SUBTITLE_TEMPLATE_PATH.read_text(encoding="utf-8")
 
     assert '<script src="/static/theme-manager.js"></script>' in source
-    assert source.index('/static/theme-manager.js') < source.index('/static/subtitle-shared.js')
+    assert source.index('/static/theme-manager.js') < source.index('/static/subtitle/subtitle-shared.js')
 
 
 def test_chat_surface_mode_preference_is_shared_with_electron():
@@ -344,8 +357,28 @@ def test_chat_templates_version_react_chat_bundle_from_react_assets():
     assert 'neko-chat-window.iife.js?v={{ react_chat_asset_version }}' in chat_template
     assert 'neko-chat-window.css?v={{ react_chat_asset_version }}' in index_template
     assert 'neko-chat-window.iife.js?v={{ react_chat_asset_version }}' in index_template
-    assert 'app-interpage.js?v={{ static_asset_version }}' in chat_template
-    assert 'app-interpage.js?v={{ static_asset_version }}' in index_template
+    interpage_parts = (
+        'bootstrap-resources-and-model-reload.js',
+        'composer-voice-sync.js',
+        'cross-window-broadcast-and-bridge.js',
+        'guide-message-relay.js',
+        'guide-overlay.js',
+        'guide-targets.js',
+        'listeners-and-api.js',
+    )
+    for part_name in interpage_parts:
+        versioned_path = f'app-interpage/{part_name}?v={{{{ static_asset_version }}}}'
+        assert versioned_path in chat_template
+        assert versioned_path in index_template
+
+
+def test_static_app_part_filenames_are_semantic_not_numbered():
+    app_root = Path(__file__).resolve().parents[2] / "static" / "app"
+
+    for directory_name in ("app-react-chat-window", "app-ui", "app-interpage"):
+        part_names = [path.name for path in sorted((app_root / directory_name).glob("*.js"))]
+        assert part_names, f"no JavaScript parts found under {directory_name}"
+        assert all(not re.match(r"^\d", name) for name in part_names), part_names
 
 
 def test_web_chat_compact_endpoint_uses_index_template_with_initial_compact_surface():
@@ -487,7 +520,7 @@ def test_open_from_minimized_restores_surface_mode_before_mounting():
 def test_minimized_restore_uses_previous_real_surface_mode():
     source = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
 
-    assert "var lastRestorableChatSurfaceMode = 'compact';" in source
+    assert "lastRestorableChatSurfaceMode = 'compact';" in source
     assert "var CHAT_SURFACE_MODE_SEQUENCE = ['compact', 'minimized'];" in source
     assert "var COMPACT_CHAT_STATES = ['default', 'options', 'input'];" in source
     assert "compactChatState: 'default'," in source
@@ -759,13 +792,13 @@ def test_compact_surface_resize_handles_keep_width_in_dom_geometry_contract():
     assert "function applyCompactSurfaceResizeRequest(detail)" in script
     assert "function isDesktopHomeCompactSurfaceRoute()" in script
     assert "if (!isHomeCompactSurfaceRoute() && !isDesktopHomeCompactSurfaceRoute()) return;" in script
-    assert "var compactSurfaceDesktopResizeActive = false;" in script
+    assert "compactSurfaceDesktopResizeActive = false;" in script
     assert "if (isElectronChatWindow() && detail && detail.screenRect)" in script
     assert "compactSurfaceDesktopResizeActive = phase !== 'end';" in script
     assert "if (compactSurfaceDesktopResizeActive && isElectronChatWindow())" in script
     assert "function handleDesktopCompactLayoutChange(layout)" in script
     assert "if (baseAnchorChanged && !compactSurfaceDesktopResizeActive)" in script
-    assert "var compactSurfaceResizeSession = null;" in script
+    assert "compactSurfaceResizeSession = null;" in script
     assert "surfaceScreenRect: surfaceScreenRect" in script
     assert "function getCompactSurfaceDesktopWindowX()" in script
     assert "function getCompactSurfaceDesktopScreenRect()" in script
@@ -965,7 +998,7 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
         '.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"] '
         '.compact-input-tool-toggle:hover'
     ) in styles
-    assert "--compact-chat-minimize-ball-size: 41px;" in styles
+    assert "--compact-chat-minimize-ball-size: 46px;" in styles
     assert "--compact-chat-minimize-ball-inset: 2px;" in styles
     assert "--compact-chat-minimize-ball-gap: 8px;" in styles
     assert "--compact-chat-minimize-ball-slot: calc(" in styles
@@ -1041,12 +1074,14 @@ def test_compact_tool_fan_labels_are_plain_noninteractive_tags():
     tooltip_block = css_block(
         styles,
         ".compact-input-tool-fan .compact-input-tool-tooltip {",
-        ".compact-input-tool-fan .compact-input-tool-item:hover,",
+        ".compact-input-tool-fan button.compact-input-tool-item:not(:disabled):focus-within,",
     )
     visible_block = css_block(
         styles,
-        '.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item:hover > .compact-input-tool-tooltip,\n'
-        '.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item:focus-within > .compact-input-tool-tooltip {',
+        '.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] button.compact-input-tool-item:not(:disabled)[data-compact-tool-pointer-hovered="true"] > .compact-input-tool-tooltip,\n'
+        '.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] button.compact-input-tool-item:not(:disabled):focus-visible > .compact-input-tool-tooltip,\n'
+        '.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item-avatar[data-compact-tool-pointer-hovered="true"]:has(> .composer-emoji-btn:not(:disabled)) > .compact-input-tool-tooltip,\n'
+        '.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item-avatar:has(> .composer-emoji-btn:not(:disabled):focus-visible) > .compact-input-tool-tooltip {',
         ".compact-input-tool-fan .compact-input-tool-item > img,",
     )
     dark_tooltip_block = css_block(
@@ -1241,21 +1276,21 @@ def test_compact_geometry_snapshot_separates_base_surface_from_extra_islands():
 
 
 def test_externalized_chat_input_spotlight_uses_pc_overlay_rounded_rect_radius():
-    script = (Path(__file__).resolve().parents[2] / "static" / "app-interpage.js").read_text(encoding="utf-8")
+    script = read_js_parts(Path(__file__).resolve().parents[2] / "static" / "app" / "app-interpage")
 
-    rect_block = script.split("function buildYuiGuidePcOverlayRect(kind, rect, index)", 1)[1].split(
-        "function dispatchCrossWindowIdleActivity",
+    rect_block = script.split("function updateYuiGuideChatSpotlight(kind, pcOverlayRunId)", 1)[1].split(
+        "function applyYuiGuideChatSpotlight",
         1,
     )[0]
 
     assert (
         "var radius = kind === 'window' ? 26 : Math.min(34, Math.max(18, "
-        "Math.round((rect.height + padding * 2) / 2)));"
+        "Math.round((sourceRect.height + padding * 2) / 2)));"
     ) in rect_block
 
 
 def test_externalized_chat_input_spotlight_uses_global_overlay_only():
-    script = (Path(__file__).resolve().parents[2] / "static" / "app-interpage.js").read_text(encoding="utf-8")
+    script = read_js_parts(Path(__file__).resolve().parents[2] / "static" / "app" / "app-interpage")
 
     update_block = script.split("function updateYuiGuideChatSpotlight(kind, pcOverlayRunId)", 1)[1].split(
         "function applyYuiGuideChatSpotlight(kind, options)",
@@ -1278,7 +1313,7 @@ def test_externalized_chat_input_spotlight_uses_global_overlay_only():
 
 
 def test_yui_guide_state_messages_bypass_cross_channel_dedup_but_cursor_deltas_do_not():
-    script = (Path(__file__).resolve().parents[2] / "static" / "app-interpage.js").read_text(encoding="utf-8")
+    script = read_js_parts(Path(__file__).resolve().parents[2] / "static" / "app" / "app-interpage")
 
     bypass_block = script.split("function shouldBypassYuiGuideMessageDedup(action, message)", 1)[1].split(
         "function isMainUIHiddenByModelManager()",
@@ -1307,7 +1342,7 @@ def test_yui_guide_state_messages_bypass_cross_channel_dedup_but_cursor_deltas_d
 
 def test_yui_guide_external_compact_history_open_is_bridged_to_react_host():
     react_host = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
-    interpage = (Path(__file__).resolve().parents[2] / "static" / "app-interpage.js").read_text(encoding="utf-8")
+    interpage = read_js_parts(Path(__file__).resolve().parents[2] / "static" / "app" / "app-interpage")
 
     assert "function setCompactHistoryOpen(open, reason)" in react_host
     assert "compactHistoryOpenRequest" in react_host
@@ -1324,7 +1359,7 @@ def test_yui_guide_compact_chat_fixed_layout_is_bridged_to_standalone_chat_body(
         "function ensureYuiGuideStandaloneInteractionShield",
         1,
     )[0]
-    broadcast_block = interpage.split("nekoBroadcastChannel.onmessage = async function (event)", 1)[1].split(
+    broadcast_block = interpage.split("handleNekoBroadcastMessage = async function (event)", 1)[1].split(
         "console.log('[BroadcastChannel] 初始化失败",
         1,
     )[0]
@@ -1345,6 +1380,29 @@ def test_yui_guide_compact_chat_fixed_layout_is_bridged_to_standalone_chat_body(
     assert "applyYuiGuideCompactChatFixedLayout(event.data.fixed === true);" in broadcast_block
     assert "case 'yui_guide_set_compact_chat_fixed_layout':" in scoped_block
     assert "applyYuiGuideCompactChatFixedLayout(false);" in cleanup_block
+
+
+def test_interpage_defers_broadcast_binding_until_all_parts_are_loaded():
+    root = Path(__file__).resolve().parents[2] / "static" / "app" / "app-interpage"
+    relay_part = (root / "guide-message-relay.js").read_text(encoding="utf-8")
+    final_part = (root / "listeners-and-api.js").read_text(encoding="utf-8")
+
+    assert "I.handleNekoBroadcastMessage = async function (event)" in relay_part
+    assert "I.nekoBroadcastChannel.onmessage =" not in relay_part
+    assert "I.nekoBroadcastChannel.onmessage = I.handleNekoBroadcastMessage;" in final_part
+
+
+def test_interpage_defers_tutorial_relay_listeners_until_all_parts_are_loaded():
+    root = Path(__file__).resolve().parents[2] / "static" / "app" / "app-interpage"
+    bridge_part = (root / "cross-window-broadcast-and-bridge.js").read_text(encoding="utf-8")
+    final_part = (root / "listeners-and-api.js").read_text(encoding="utf-8")
+
+    assert "I.handleYuiGuideRelayedCustomEvent = function" in bridge_part
+    assert "I.handleYuiGuideRelayedWindowMessage = function" in bridge_part
+    assert bridge_part.count("I.handleYuiGuideRelayedCustomEvent") == 1
+    assert bridge_part.count("I.handleYuiGuideRelayedWindowMessage") == 1
+    assert "I.handleYuiGuideRelayedCustomEvent" in final_part
+    assert "I.handleYuiGuideRelayedWindowMessage" in final_part
 
 
 def test_new_user_icebreaker_choice_prompt_dispatches_host_event():
@@ -1464,7 +1522,7 @@ def test_externalized_tutorial_chat_ready_replays_input_lock():
     bridge_bus = (Path(__file__).resolve().parents[2] / "static" / "tutorial" / "core" / "bridge-command-bus.js").read_text(
         encoding="utf-8"
     )
-    interpage = (Path(__file__).resolve().parents[2] / "static" / "app-interpage.js").read_text(encoding="utf-8")
+    interpage = read_js_parts(Path(__file__).resolve().parents[2] / "static" / "app" / "app-interpage")
 
     assert "yui_guide_set_chat_input_locked: true" in bridge_bus
     bridge_replay_block = interpage.split("function handleYuiGuideChatBridgeData(data)", 1)[1].split(
@@ -1502,14 +1560,25 @@ def test_interpage_bundle_uses_static_asset_version_on_home_and_chat():
     index_template = INDEX_TEMPLATE_PATH.read_text(encoding="utf-8")
     chat_template = CHAT_TEMPLATE_PATH.read_text(encoding="utf-8")
 
-    assert '/static/app-interpage.js?v={{ static_asset_version }}' in index_template
-    assert '/static/app-interpage.js?v={{ static_asset_version }}' in chat_template
-    assert '/static/app-interpage.js?v={{ react_chat_asset_version }}' not in index_template
-    assert '/static/app-interpage.js?v={{ react_chat_asset_version }}' not in chat_template
+    for part_name in (
+        'bootstrap-resources-and-model-reload.js',
+        'composer-voice-sync.js',
+        'cross-window-broadcast-and-bridge.js',
+        'guide-message-relay.js',
+        'guide-overlay.js',
+        'guide-targets.js',
+        'listeners-and-api.js',
+    ):
+        static_path = f'/static/app/app-interpage/{part_name}?v={{{{ static_asset_version }}}}'
+        react_path = f'/static/app/app-interpage/{part_name}?v={{{{ react_chat_asset_version }}}}'
+        assert static_path in index_template
+        assert static_path in chat_template
+        assert react_path not in index_template
+        assert react_path not in chat_template
 
 
 def test_externalized_chat_input_spotlight_retries_after_message_layout():
-    script = (Path(__file__).resolve().parents[2] / "static" / "app-interpage.js").read_text(encoding="utf-8")
+    script = read_js_parts(Path(__file__).resolve().parents[2] / "static" / "app" / "app-interpage")
 
     retry_block = script.split("function scheduleYuiGuideChatInputSpotlightRetry(kind, pcOverlayRunId)", 1)[1].split(
         "function updateYuiGuideChatSpotlight(kind, pcOverlayRunId)",
@@ -1640,7 +1709,7 @@ def test_moved_drag_suppresses_trailing_release_click():
     # 时 arm，并在 document capture 阶段吞掉紧随的那一次 click。
     script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
 
-    assert "var suppressDragReleaseClick = false;" in script
+    assert "suppressDragReleaseClick = false;" in script
 
     stop_block = script.split("function stopDrag(options)", 1)[1].split(
         "function bindDragging()",
@@ -1679,7 +1748,7 @@ def test_moved_drag_suppresses_trailing_release_click():
 def test_compact_minimize_targets_inline_yarn_ball_button_center():
     script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
 
-    assert "var compactMinimizeBallTargetAnchor = null;" in script
+    assert "compactMinimizeBallTargetAnchor = null;" in script
     assert "function getCompactMinimizeBallTargetRect()" in script
     assert "root.querySelector('.compact-chat-minimize-ball')" in script
     assert "width: MINIMIZED_SIZE" in script
@@ -1785,8 +1854,8 @@ def test_compact_surface_tracking_stops_idle_raf_but_keeps_active_sessions():
         1,
     )[0]
 
-    assert "var COMPACT_SURFACE_IDLE_SETTLE_FRAME_COUNT = 3;" in script
-    assert "var compactSurfaceTrackingSettleFramesRemaining = 0;" in script
+    assert "COMPACT_SURFACE_IDLE_SETTLE_FRAME_COUNT = 3;" in script
+    assert "compactSurfaceTrackingSettleFramesRemaining = 0;" in script
     assert "function isCompactSurfaceTrackingActive()" in script
     assert "(dragState && dragState.compactSurface)" in script
     assert "compactSurfaceDesktopDragActive" in script
@@ -2289,10 +2358,10 @@ def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regi
     assert "aria-hidden={compactMusicPlayerVisibility === 'open' ? undefined : true}" in app_source
     assert 'data-compact-geometry-item="musicPlayer"' in app_source
     assert 'data-compact-geometry-hit-scope="children"' in app_source
-    assert "function getPreferredMusicMountTarget()" in music_ui_source
+    assert "function getPreferredMusicMountTarget(" in music_ui_source
     assert "function getCompactMusicMountTarget()" in music_ui_source
     assert "document.querySelector('[data-music-player-mount=\"compact-surface\"]')" in music_ui_source
-    assert "document.getElementById('music-player-mount')" in music_ui_source
+    assert "document.querySelectorAll('#music-player-mount')" in music_ui_source
     assert "document.getElementById(MUSIC_CONFIG.dom.containerId)" in music_ui_source
     assert "mutation.type === 'attributes' && isMusicMountMutationTarget(mutation.target)" in music_ui_source
     assert "function isCompactMusicGeometryMutationTarget(node)" in music_ui_source

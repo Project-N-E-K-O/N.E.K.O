@@ -1,14 +1,15 @@
 from pathlib import Path
+from tests.static_app_parts import read_js_parts
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-APP_UI_PATH = PROJECT_ROOT / "static" / "app-ui.js"
-APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app-interpage.js"
+APP_UI_PATH = PROJECT_ROOT / "static" / "app" / "app-ui"
+APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app" / "app-interpage"
 UNIVERSAL_MANAGER_PATH = PROJECT_ROOT / "static" / "tutorial" / "core" / "universal-manager.js"
 
 
 def test_live2d_restore_keeps_root_container_passthrough():
-    source = APP_UI_PATH.read_text(encoding="utf-8")
+    source = read_js_parts(APP_UI_PATH)
     helper_block = source[
         source.index("function keepAvatarRootContainerPassthrough(container)"):
         source.index("    function restoreLive2DDisplaySurface(reason)")
@@ -31,7 +32,7 @@ def test_live2d_restore_keeps_root_container_passthrough():
 
 
 def test_model_reload_live2d_restore_keeps_root_container_passthrough():
-    source = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
+    source = read_js_parts(APP_INTERPAGE_PATH)
     reload_block = source[
         source.index("var live2dContainer2 = document.getElementById('live2d-container');"):
         source.index("if (window.lanlan_config) {", source.index("var live2dContainer2 = document.getElementById('live2d-container');"))

@@ -6,7 +6,7 @@
 
 | 模块 | 文件 | 用途 |
 |------|------|------|
-| [LLMSessionManager](./core) | `main_logic/core.py` | 中央会话协调器 |
+| [LLMSessionManager](./core) | `main_logic/core/` | 中央会话协调器 |
 | [Realtime 客户端](./omni-realtime) | `main_logic/omni_realtime_client.py` | Realtime API 的 WebSocket 客户端 |
 | [Offline 客户端](./omni-offline) | `main_logic/omni_offline_client.py` | 基于文本的 LLM 客户端（备用） |
 | [TTS 客户端](./tts-client) | `main_logic/tts_client/` | 文本转语音合成 |

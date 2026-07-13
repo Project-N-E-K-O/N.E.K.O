@@ -7,7 +7,7 @@
 ```bash
 # 別々のターミナルで：
 uv run python app/memory_server.py
-uv run python app/main_server.py
+uv run python -m app.main_server
 ```
 
 ## 2. APIプロバイダーの設定

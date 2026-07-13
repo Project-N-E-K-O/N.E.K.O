@@ -31,7 +31,7 @@ from utils import capture_bridge
 
 CAPTURE_HEALTH = "/api/capture/health"
 CAPTURE_SHOT = "/api/capture/screenshot"
-APP_WEBSOCKET_JS = Path(__file__).resolve().parents[2] / "static" / "app-websocket.js"
+APP_WEBSOCKET_JS = Path(__file__).resolve().parents[2] / "static" / "app" / "app-websocket.js"
 
 
 @pytest.fixture(autouse=True)

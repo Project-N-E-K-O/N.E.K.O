@@ -5,9 +5,9 @@ N.E.K.O/
 ├── launcher.py                 # 桌面启动器（Steam/exe）
 │
 ├── app/                        # 服务器进程入口
-│   ├── main_server.py          # 主服务器入口（端口 48911）
+│   ├── main_server/           # 主服务器入口（端口 48911）
 │   ├── memory_server.py        # 记忆服务器入口（端口 48912）
-│   ├── agent_server.py         # 智能体服务器入口（端口 48915）
+│   ├── agent_server/           # 智能体服务器包（端口 48915）
 │   └── monitor.py              # 监控服务
 │
 ├── brain/                      # 智能体与任务执行
@@ -29,7 +29,7 @@ N.E.K.O/
 │       └── prompts_chara.py    # 角色系统提示词
 │
 ├── main_logic/                 # 核心业务逻辑
-│   ├── core.py                 # LLMSessionManager（中央会话处理器）
+│   ├── core/                   # LLMSessionManager 包（manager.py + 领域 mixin）
 │   ├── omni_realtime_client.py # Realtime API WebSocket 客户端
 │   ├── omni_offline_client.py  # 文本/Response API 客户端（离线回退）
 │   ├── tts_client/             # TTS 引擎适配器包（CosyVoice、GPT-SoVITS 等）
@@ -107,7 +107,7 @@ N.E.K.O/
 
 | 文件 | 行数 | 作用 |
 |------|------|------|
-| `main_logic/core.py` | ~2300 | 中央会话管理器 —— 系统的核心 |
+| `main_logic/core/` | ~10600 | 中央会话管理器包 —— 系统的核心 |
 | `utils/config_manager.py` | ~1500 | 配置加载、验证、持久化 |
 | `main_logic/tts_client/` | ~1300 | 多提供商 TTS 合成包 |
 | `brain/task_executor.py` | ~1600 | 智能体任务规划与执行 |

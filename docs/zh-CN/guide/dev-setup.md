@@ -24,14 +24,14 @@ N.E.K.O. 以多个协作服务器的形式运行。至少需要启动**主服务
 uv run python app/memory_server.py
 
 # 终端 2 — 主服务器
-uv run python app/main_server.py
+uv run python -m app.main_server
 ```
 
 可选地，启动智能体服务器以执行后台任务：
 
 ```bash
 # 终端 3 — 智能体服务器（可选）
-uv run python app/agent_server.py
+uv run python -m app.agent_server
 ```
 
 ## 配置 API 密钥

@@ -21,7 +21,7 @@ import base64
 import websockets
 import asyncio
 
-from utils.native_voice_registry import make_native_tts_resolver, register_tts_worker_resolver
+from utils.tts.native_voice_registry import make_native_tts_resolver, register_tts_worker_resolver
 
 from .._infra import TTS_SHUTDOWN_SENTINEL, _resample_audio, make_audio_jitter_buffer, _enqueue_error
 from .._telemetry import _record_tts_telemetry
@@ -63,7 +63,7 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
             voice query param only accepts canonical ids or custom 8-char ids,
             not aliases.
     """
-    from utils.grok_tts_voices import normalize_grok_tts_voice
+    from utils.tts.providers.grok import normalize_grok_tts_voice
     # 先 strip：whitespace-only 输入（如 '   '）等价于空，否则 'not voice_id'
     # 判定通不过，残留的空白会被透传到 xAI 的 voice query param 引发合成失败。
     voice_id = (voice_id or "").strip()
@@ -108,6 +108,7 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
             # xAI 实际可能发 binary frame（raw PCM）或 JSON-wrapped base64 audio.delta，
             # 文档未明确给出，两路径都保留。字段名走 'delta'（OpenAI Realtime 标准）
             # 但保留 'audio' 作为兜底，未来如果 xAI 改名也不会立刻挂。
+            cancelled = False
             try:
                 async for message in ws:
                     if isinstance(message, bytes):
@@ -150,8 +151,14 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                 # 避免 worker 每次 sid 切换主动 close 时也刷一行。
                 if e.code != 1000:
                     logger.info(f"xAI TTS WebSocket closed: code={e.code} reason={e.reason!r}")
+            except asyncio.CancelledError:
+                cancelled = True
+                raise
             except Exception as e:
                 logger.error(f"xAI TTS 接收出错: {type(e).__name__}: {e}")
+            finally:
+                if not cancelled:
+                    audio_jitter.flush()
 
         try:
             # close_timeout=0.5：上限 close handshake 等待，避免半开连接在 sid 切换
@@ -173,24 +180,31 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                     break
 
                 if sid == "__interrupt__":
-                    if ws:
-                        try:
-                            await asyncio.wait_for(ws.close(), timeout=0.5)
-                        except Exception:
-                            pass
-                        ws = None
-                    if receive_task and not receive_task.done():
-                        receive_task.cancel()
-                        try:
-                            await receive_task
-                        except asyncio.CancelledError:
-                            pass
-                        receive_task = None
-                    current_speech_id = None
-                    text_done_sent = False
-                    pending_text.clear()
-                    pending_text_sid = None
-                    audio_jitter.reset()  # 打断：丢弃未放出的缓冲音频
+                    audio_jitter.begin_interrupt()
+                    try:
+                        if receive_task and not receive_task.done():
+                            receive_task.cancel()
+                            try:
+                                await receive_task
+                            except asyncio.CancelledError:
+                                # Expected during interrupt teardown.
+                                pass
+                            except Exception as e:
+                                logger.debug(f"xAI TTS interrupted receive task cleanup failed: {e}")
+                            receive_task = None
+                        if ws:
+                            try:
+                                await asyncio.wait_for(ws.close(), timeout=0.5)
+                            except Exception as e:
+                                logger.debug(f"xAI TTS interrupted websocket close failed: {e}")
+                            ws = None
+                    finally:
+                        current_speech_id = None
+                        text_done_sent = False
+                        pending_text.clear()
+                        pending_text_sid = None
+                        audio_jitter.reset()  # 打断：丢弃未放出的缓冲音频
+                        audio_jitter.end_interrupt()
                     continue
 
                 if sid is None:
@@ -270,6 +284,7 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                             pass
                         ws = None
                     if receive_task and not receive_task.done():
+                        audio_jitter.flush()
                         receive_task.cancel()
                         try:
                             await receive_task

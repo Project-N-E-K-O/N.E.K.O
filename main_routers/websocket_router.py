@@ -70,18 +70,24 @@ def _fire_task(coro):
     return task
 
 
-async def _publish_agent_intent_restore_signal(lanlan_name: str) -> None:
+async def _publish_agent_intent_restore_signal(lanlan_name: str, *, new_session: bool = False) -> None:
     """Tell agent_server (via ZMQ) that a real client session is alive,
     so it can restore persisted agent runtime intent (analyzer_enabled +
     5 sub flags). Agent-side once-flag means duplicate signals are cheap.
     Failures (e.g. agent_server not up yet) are swallowed silently —
     the next greeting_check will retry, and the user-facing UI doesn't
-    depend on this restore succeeding."""
+    depend on this restore succeeding.
+
+    ``new_session`` is True only for a genuine new greeting (character switch or
+    a real gap, NOT a refresh/reconnect within the 15s window). agent_server uses
+    it to reset the per-session proactive-analyze budget, so a refresh can't farm
+    a fresh budget mid-conversation."""
     try:
         from main_logic.agent_event_bus import publish_session_event
         await publish_session_event({
             "event_type": "agent_intent_restore_signal",
             "lanlan_name": lanlan_name,
+            "new_session": bool(new_session),
         })
     except Exception as exc:
         logger.debug("[Greeting] agent intent restore signal publish failed: %s", exc)
@@ -89,6 +95,10 @@ async def _publish_agent_intent_restore_signal(lanlan_name: str) -> None:
 
 # 每个角色的 WS 断开时间戳（epoch），用于区分"首次连接"与"刷新/重连"
 _ws_disconnect_time: dict[str, float] = {}
+# 每个角色当前活跃的 WS 连接数（pet + /chat_full 等可并存）。用于判定
+# greeting_check 是不是"真·新会话"：并发开第二个窗口时不能算新会话（否则会重置
+# 主动搭话预算被刷新/多窗口 farm）。单事件循环内 inc/dec 无 await 间隙，天然原子。
+_ws_active_count: dict[str, int] = {}
 
 # ---- Telemetry helpers ----
 
@@ -250,6 +260,9 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
     # try-else 链的情形（SystemExit / KeyboardInterrupt 都不走 else）。
     _ws_disconnect_reason = "unknown"
     try:
+        # 计入活跃连接（finally 必减）。greeting_check 判定真·新会话时据此排除
+        # 「并发开第二个窗口」的情形。
+        _ws_active_count[lanlan_name] = _ws_active_count.get(lanlan_name, 0) + 1
         while True:
             data = await websocket.receive_text()
             # 安全检查：如果角色已被重命名或删除，lanlan_name 可能不再存在
@@ -273,7 +286,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
             # logger.debug(f"WebSocket received action: {action}") # Optional debug log
 
             # ── Telemetry dispatch（前端 counter / histogram / event 通道）──
-            # 前端 static/app-telemetry.js 通过 action="telemetry" 投递数据；
+            # 前端 static/app/app-telemetry.js 通过 action="telemetry" 投递数据；
             # 这里转交 utils.instrument，跟 Python 端发出去的走同一上报通道。
             # 早返回避免污染下面的业务 dispatch；不需要 session_manager 状态。
             if action == "telemetry":
@@ -392,12 +405,23 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
             elif action == "greeting_check":
                 # 首次连接或切换角色时，前端请求检查是否需要主动搭话
                 # is_switch=true 时始终触发；否则检查上次断开距今是否 >15s（排除刷新/重连）
+                is_switch = message.get("is_switch", False)
+                greeting_reason = str(message.get("reason") or "").strip().lower()[:64]
+                last_disconnect = _ws_disconnect_time.get(lanlan_name, 0)
+                since_disconnect = time.time() - last_disconnect if last_disconnect else float('inf')
+                # 触发问候的判定（保持原行为）：切角色 或 距上次断开 >15s。
+                new_session = bool(is_switch or since_disconnect > 15)
+                # 重置主动搭话预算用的更严判定：在上面基础上还要求本连接是该角色唯一
+                # 活跃连接，排除「并发开第二个窗口」（无断开时间戳 → since_disconnect=inf
+                # 假成新会话 → 重置预算被多窗口 farm）。本连接已在 try 起始处计数，唯一
+                # 时为 1。问候判定不受此约束，避免改动既有问候行为。
+                budget_new_session = new_session and _ws_active_count.get(lanlan_name, 1) <= 1
                 #
                 # 顺便：这也是 agent_server 启动后第一个"用户实际进入会话"的信号 ——
                 # 我们用它来触发 agent runtime intent restore (analyzer_enabled +
                 # 5 个 sub flag 上次会话的开关状态)。restore 是 fire-and-forget 的
                 # ZMQ event，agent_server 端有 once-flag 保证只跑一次。
-                _fire_task(_publish_agent_intent_restore_signal(lanlan_name))
+                _fire_task(_publish_agent_intent_restore_signal(lanlan_name, new_session=budget_new_session))
                 # A freshly-connected window (notably the separate /chat_full
                 # window, which has its own ws and misses any earlier Focus
                 # enter) must land on the current edge-glow brightness — push the
@@ -409,11 +433,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     # session): the focus glow/indicator is non-essential and must
                     # never block or break greeting_check, so swallow and move on.
                     pass
-                is_switch = message.get("is_switch", False)
-                greeting_reason = str(message.get("reason") or "").strip().lower()[:64]
-                last_disconnect = _ws_disconnect_time.get(lanlan_name, 0)
-                since_disconnect = time.time() - last_disconnect if last_disconnect else float('inf')
-                if is_switch or since_disconnect > 15:
+                if new_session:
                     if await has_new_character_greeting_pending(_config_manager, lanlan_name):
                         logger.info(f"[{lanlan_name}] greeting_check: is_switch={is_switch} since_disconnect={since_disconnect:.1f}s reason={greeting_reason or '-'} → new character greeting")
                         _fire_task(session_manager[lanlan_name].trigger_new_character_greeting())
@@ -502,6 +522,8 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
         logger.info(f"Cleaning up WebSocket resources: {websocket.client}")
         # 记录 WS 断开时间，供下次连接时判断是否为"刷新/重连"
         _ws_disconnect_time[lanlan_name] = time.time()
+        # 释放活跃连接计数（与 try 起始处的 +1 对偶）
+        _ws_active_count[lanlan_name] = max(0, _ws_active_count.get(lanlan_name, 1) - 1)
         # 释放 capture_bridge 注册并 resolve 其所有 pending futures 为错误，
         # 让 /api/capture/health 立即返回 503。
         try:

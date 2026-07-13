@@ -134,6 +134,9 @@ def _init_db(self) -> None:
             question_types TEXT NOT NULL DEFAULT '[]',
             examples TEXT NOT NULL DEFAULT '[]',
             course_family TEXT NOT NULL DEFAULT '',
+            curriculum_version TEXT NOT NULL DEFAULT '[]',
+            exam_region TEXT NOT NULL DEFAULT '[]',
+            exam_type TEXT NOT NULL DEFAULT '[]',
             aliases TEXT NOT NULL DEFAULT '[]',
             source TEXT NOT NULL DEFAULT 'runtime',
             created_at TEXT DEFAULT (datetime('now')),
@@ -346,6 +349,14 @@ def _init_db(self) -> None:
     conn.execute("UPDATE topics SET examples = '[]' WHERE examples IS NULL OR examples = ''")
     self._ensure_column(conn, "topics", "course_family", "TEXT NOT NULL DEFAULT ''")
     conn.execute("UPDATE topics SET course_family = '' WHERE course_family IS NULL")
+    for context_column in ("curriculum_version", "exam_region", "exam_type"):
+        self._ensure_column(
+            conn, "topics", context_column, "TEXT NOT NULL DEFAULT '[]'"
+        )
+        conn.execute(
+            f"UPDATE topics SET {context_column} = '[]' "
+            f"WHERE {context_column} IS NULL OR {context_column} = ''"
+        )
     self._ensure_column(conn, "topics", "aliases", "TEXT NOT NULL DEFAULT '[]'")
     conn.execute("UPDATE topics SET aliases = '[]' WHERE aliases IS NULL OR aliases = ''")
     self._ensure_column(conn, "candidate_knowledge_items", "dedupe_key", "TEXT")
