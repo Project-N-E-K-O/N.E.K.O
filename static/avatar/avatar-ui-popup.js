@@ -2753,7 +2753,7 @@ const AvatarPopupMixin = {
                 }
 
                 this.closeAllPopupsExcept(buttonId);
-                // goodbye 隐藏路径（app-ui.js）会给弹窗 inline pointer-events:none!important，
+                // goodbye 隐藏路径（app-ui）会给弹窗 inline pointer-events:none!important，
                 // 返回路径负责成对清除；此处自愈兜底，与 display/opacity/visibility 的覆盖行为对齐
                 popup.style.removeProperty('pointer-events');
                 popup.style.display = 'flex';

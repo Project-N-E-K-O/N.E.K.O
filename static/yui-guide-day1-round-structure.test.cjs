@@ -3,12 +3,13 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { readDirectorSource } = require('./yui-guide-director-test-parts.cjs');
 const test = require('node:test');
+const { readJsParts } = require('./app-part-test-utils.cjs');
 
 const repoRoot = path.resolve(__dirname, '..');
 const directorSource = readDirectorSource(path.join(repoRoot, 'static'));
 const day1Source = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/days/day1-home-guide.js'), 'utf8');
 const resetSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/avatar/floating-guide-reset.js'), 'utf8');
-const appInterpageSource = fs.readFileSync(path.join(repoRoot, 'static', 'app/app-interpage.js'), 'utf8');
+const appInterpageSource = readJsParts(path.join(repoRoot, 'static', 'app/app-interpage'));
 const sceneOrchestratorSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/scene-orchestrator.js'), 'utf8');
 const operationRegistrySource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/operation-registry.js'), 'utf8');
 const targetGeometryRegistrySource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/target-geometry-registry.js'), 'utf8');

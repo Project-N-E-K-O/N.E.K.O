@@ -2913,7 +2913,7 @@
         "playVRMAnimationFailed": "VRM アニメーション再生に失敗しました:",
         "loadLightingConfigFailed": "ライティング設定の読み込みに失敗しました:",
         "checkVoiceModeTimeout": "音声モード状態チェックがタイムアウトしました (サーバーが応答していない可能性があります)",
-        "cannotConnectToServer": "サーバーに接続できません。main_server.py が実行されていることを確認してください",
+        "cannotConnectToServer": "サーバーに接続できません。メインサーバーが実行されていることを確認してください",
         "checkVoiceModeFailed": "音声モード状態チェックに失敗しました:",
         "markedUnsavedModel": "未保存の変更としてマークされました (モデル切り替え)。キャラクター設定に保存するには [設定を保存] をクリックしてください。",
         "parameterEditorSavedNeedsModelSave": "顔パラメーターを保存しました。「設定を保存」をクリックしてキャラクター設定に同期してください。",

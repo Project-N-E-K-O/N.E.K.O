@@ -3,6 +3,7 @@ import asyncio
 import json
 import re
 from pathlib import Path
+from tests.static_app_parts import read_js_parts
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import pytest
@@ -323,7 +324,9 @@ def test_agent_hud_viewport_clamp_uses_layout_for_non_pixel_positions():
 
 
 def test_agent_server_expected_event_driven_endpoints_exist():
-    paths = _route_paths_from_decorators("app/agent_server/__init__.py", "app")
+    paths = set()
+    for module_path, _ in _agent_server_package_sources():
+        paths.update(_route_paths_from_decorators(str(module_path), "app"))
     for expected in {
         "/health",
         "/agent/flags",
@@ -1188,7 +1191,11 @@ def test_pages_router_static_asset_version_tracks_tutorial_runtime_modules():
     assert "static/libs/driver.min.js" in tracked_paths
     assert "static/libs/driver.min.css" in tracked_paths
     assert "static/live2d/live2d-init.js" in tracked_paths
-    assert "static/app/app-interpage.js" in tracked_paths
+    interpage_parts = sorted(Path("static/app/app-interpage").glob("*.js"))
+    assert interpage_parts
+    assert {
+        path.as_posix() for path in interpage_parts
+    }.issubset(tracked_paths)
     assert "static/live2d/live2d-interaction.js" in tracked_paths
 
 
@@ -1238,17 +1245,27 @@ def test_react_chat_templates_use_react_asset_version_for_chat_bundle():
     react_assets = (
         "/static/react/neko-chat/neko-chat-window.css",
         "/static/react/neko-chat/neko-chat-window.iife.js",
-        "/static/app/app-react-chat-window.js",
         "/static/app/app-chat-adapter.js",
         "/static/app/app-buttons.js",
     )
+    react_host_assets = tuple(
+        "/static/app/app-react-chat-window/" + path.name
+        for path in sorted(Path("static/app/app-react-chat-window").glob("*.js"))
+    )
+    interpage_assets = tuple(
+        "/static/app/app-interpage/" + path.name
+        for path in sorted(Path("static/app/app-interpage").glob("*.js"))
+    )
+    assert react_host_assets
+    assert interpage_assets
 
     for template_path in ("templates/index.html", "templates/chat.html"):
         source = Path(template_path).read_text(encoding="utf-8")
         assert "window.__NEKO_REACT_CHAT_ASSET_VERSION__={{ react_chat_asset_version | tojson }};" in source
-        assert "/static/app/app-interpage.js?v={{ static_asset_version }}" in source
-        assert "/static/app/app-interpage.js?v={{ react_chat_asset_version }}" not in source
-        for asset_path in react_assets:
+        for asset_path in interpage_assets:
+            assert f"{asset_path}?v={static_version}" in source
+            assert f"{asset_path}?v={react_version}" not in source
+        for asset_path in (*react_assets, *react_host_assets):
             assert f"{asset_path}?v={react_version}" in source
             assert f"{asset_path}?v={static_version}" not in source
 
@@ -1261,11 +1278,11 @@ def test_pages_router_react_chat_asset_version_tracks_avatar_tool_icons():
         "static/icons/chat_sugar1.png",
         "static/icons/cat_claw1.png",
         "static/icons/chat_hammer1.png",
-        "static/app/app-react-chat-window.js",
         "static/app/app-chat-adapter.js",
         "static/app/app-buttons.js",
     ):
         assert f'_PROJECT_ROOT / "{asset_path}"' in source
+    assert 'glob("static/app/app-react-chat-window/*.js")' in source
 
 
 def test_home_yui_guide_does_not_route_to_steam_workshop():
@@ -1430,8 +1447,8 @@ def test_character_card_manager_cloudsave_button_uses_icon_badge():
 def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     tutorial_source = Path("static/tutorial/core/universal-manager.js").read_text(encoding="utf-8")
     avatar_reload_source = Path("static/tutorial/avatar/reload-controller.js").read_text(encoding="utf-8")
-    interpage_source = Path("static/app/app-interpage.js").read_text(encoding="utf-8")
-    app_ui_source = Path("static/app/app-ui.js").read_text(encoding="utf-8")
+    interpage_source = read_js_parts(Path("static/app/app-interpage"))
+    app_ui_source = read_js_parts(Path("static/app/app-ui"))
     live2d_init_source = Path("static/live2d/live2d-init.js").read_text(encoding="utf-8")
     live2d_model_source = Path("static/live2d/live2d-model.js").read_text(encoding="utf-8")
     round_prelude_source = Path("static/tutorial/core/round-prelude-controller.js").read_text(encoding="utf-8")
@@ -1780,7 +1797,7 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
 
 
 def test_tutorial_temporary_model_reload_bootstraps_live2d_manager_without_user_model_init():
-    interpage_source = Path("static/app/app-interpage.js").read_text(encoding="utf-8")
+    interpage_source = read_js_parts(Path("static/app/app-interpage"))
     live2d_branch = interpage_source.split("if (newModelPath) {", 1)[1].split(
         "// Load the new model",
         1,
@@ -3489,7 +3506,7 @@ def test_agent_gate_is_free_version_field_sources_agent_free():
 
 
 def test_main_server_mounts_card_assist_router():
-    source = Path("app/main_server.py").read_text(encoding="utf-8")
+    source = Path("app/main_server/web_app.py").read_text(encoding="utf-8")
 
     assert "from main_routers.card_assist_router import router as card_assist_router" in source
     assert "app.include_router(card_assist_router)" in source

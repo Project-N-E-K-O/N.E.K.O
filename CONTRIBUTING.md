@@ -45,7 +45,7 @@ uv sync
 
 # Start services
 uv run python -m app.memory_server
-uv run python app/main_server.py
+uv run python -m app.main_server
 # Optional: uv run python -m app.agent_server
 ```
 
@@ -127,7 +127,7 @@ uv sync
 
 # 启动服务
 uv run python -m app.memory_server
-uv run python app/main_server.py
+uv run python -m app.main_server
 # 可选：uv run python -m app.agent_server
 ```
 

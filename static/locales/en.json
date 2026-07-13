@@ -2913,7 +2913,7 @@
         "playVRMAnimationFailed": "Failed to play VRM animation:",
         "loadLightingConfigFailed": "Failed to load lighting config:",
         "checkVoiceModeTimeout": "Check voice mode status timeout (server may not be responding)",
-        "cannotConnectToServer": "Cannot connect to server, please ensure main_server.py is running",
+        "cannotConnectToServer": "Cannot connect to server, please ensure the main server is running",
         "checkVoiceModeFailed": "Check voice mode status failed:",
         "markedUnsavedModel": "Marked as unsaved changes (model switch), please click Save Settings to persist to character config.",
         "parameterEditorSavedNeedsModelSave": "Face parameters saved. Click Save Settings to sync them to the character config.",

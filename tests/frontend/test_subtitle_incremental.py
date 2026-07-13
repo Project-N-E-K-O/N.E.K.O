@@ -7,6 +7,14 @@ from playwright.sync_api import Page
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
+def _add_script_parts(page: Page, relative_dir: str) -> None:
+    part_dir = PROJECT_ROOT / "static" / relative_dir
+    part_paths = sorted(part_dir.glob("*.js"))
+    assert part_paths, f"no JavaScript parts found under {part_dir}"
+    for part_path in part_paths:
+        page.add_script_tag(path=str(part_path))
+
+
 def test_subtitle_panel_uses_two_thicker_corner_lines_without_texture():
     css = (PROJECT_ROOT / "static/css/subtitle.css").read_text(encoding="utf-8")
 
@@ -2904,7 +2912,7 @@ def test_react_translate_button_tracks_external_subtitle_enabled_changes(
         """
     )
     mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/app/app-react-chat-window.js"))
+    _add_script_parts(mock_page, "app/app-react-chat-window")
     mock_page.wait_for_function(
         "() => window.reactChatWindowHost && window.nekoSubtitleShared",
         timeout=5000,
@@ -2992,7 +3000,7 @@ def test_react_translate_button_accepts_initial_shared_state_without_changed_key
         """
     )
     mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/app/app-react-chat-window.js"))
+    _add_script_parts(mock_page, "app/app-react-chat-window")
     mock_page.wait_for_function(
         "() => window.reactChatWindowHost && window.nekoSubtitleShared",
         timeout=5000,
@@ -3070,7 +3078,7 @@ def test_react_translate_button_direct_toggle_controls_subtitle_window(
         }
         """
     )
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/app/app-react-chat-window.js"))
+    _add_script_parts(mock_page, "app/app-react-chat-window")
     mock_page.wait_for_function(
         "() => window.reactChatWindowHost && window.__lastReactChatProps === undefined",
         timeout=5000,
@@ -3146,7 +3154,7 @@ def test_react_translate_button_fallback_uses_current_view_state_after_desktop_s
         }
         """
     )
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/app/app-react-chat-window.js"))
+    _add_script_parts(mock_page, "app/app-react-chat-window")
     mock_page.wait_for_function(
         "() => window.reactChatWindowHost && window.__lastReactChatProps === undefined",
         timeout=5000,

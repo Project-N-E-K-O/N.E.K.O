@@ -262,7 +262,8 @@ def run_monitor() -> dict[str, Any]:
             }
             """
         )
-        chat.add_script_tag(path=str(STATIC_DIR / "app/app-interpage.js"))
+        for part_path in sorted((STATIC_DIR / "app/app-interpage").glob("*.js")):
+            chat.add_script_tag(path=str(part_path))
         chat_result = chat.evaluate(
             """
             async () => {

@@ -107,7 +107,12 @@ def _install_static_routes(page: Any) -> None:
 
 def _load_scripts(page: Any, scripts: list[str]) -> None:
     for script in scripts:
-        page.add_script_tag(path=str(STATIC_DIR / script))
+        script_path = STATIC_DIR / script
+        if script_path.is_dir():
+            for part_path in sorted(script_path.glob("*.js")):
+                page.add_script_tag(path=str(part_path))
+        else:
+            page.add_script_tag(path=str(script_path))
 
 
 def run_monitor() -> dict[str, Any]:
@@ -225,7 +230,7 @@ def run_monitor() -> dict[str, Any]:
             """
         )
         chat.add_script_tag(path=str(STATIC_DIR / "react" / "neko-chat" / "neko-chat-window.iife.js"))
-        _load_scripts(chat, ["app/app-react-chat-window.js", "app/app-interpage.js"])
+        _load_scripts(chat, ["app/app-react-chat-window", "app/app-interpage"])
 
         chat.evaluate(
             """
