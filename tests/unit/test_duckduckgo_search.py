@@ -84,3 +84,19 @@ def test_parse_respects_limit():
 @pytest.mark.unit
 def test_parse_empty_html_returns_empty_list():
     assert parse_duckduckgo_results('<html><body>no results</body></html>', limit=5) == []
+
+
+@pytest.mark.unit
+def test_parse_skips_results_without_usable_url():
+    # uddg 包着非 http 目标（javascript:）→ 整条丢弃，不以空 URL 占用结果位
+    html = '''
+    <div class="result results_links web-result">
+      <div class="links_main result__body">
+        <h2 class="result__title">
+          <a class="result__a" href="//duckduckgo.com/l/?uddg=javascript%3Aalert(1)&amp;rut=x">Malicious Entry</a>
+        </h2>
+        <a class="result__snippet">Should never surface.</a>
+      </div>
+    </div>
+    '''
+    assert parse_duckduckgo_results(html, limit=5) == []

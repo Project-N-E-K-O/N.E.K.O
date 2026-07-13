@@ -1726,9 +1726,10 @@ def parse_duckduckgo_results(html_content: str, limit: int = 5) -> List[Dict[str
                     url = qs.get('uddg', [''])[0]
                 elif href.startswith('http'):
                     url = href
-            # 只接受 http(s) 绝对地址（uddg 里也可能包着 javascript: 之类）
-            if url and not url.startswith(('http://', 'https://')):
-                url = ''
+            # 只接受 http(s) 绝对地址（uddg 里也可能包着 javascript: 之类），
+            # 没有可用目标地址的整条跳过，不以空 URL 占用结果位
+            if not url.startswith(('http://', 'https://')):
+                continue
 
             # 摘要片段
             abstract = ''
@@ -1839,7 +1840,6 @@ def parse_baidu_results(html_content: str, limit: int = 5) -> List[Dict[str, str
     results = []
     
     try:
-        from urllib.parse import urljoin
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(html_content, 'lxml')
 
@@ -1853,16 +1853,12 @@ def parse_baidu_results(html_content: str, limit: int = 5) -> List[Dict[str, str
             if link:
                 title = _sanitize_search_text(link.get_text(strip=True))
                 if title and 5 < len(title) < 200:
-                    # 提取 URL（处理相对和绝对 URL）
+                    # 只接受 http(s) 绝对地址：相关搜索等站内相对链接（/s?wd=...）
+                    # 和 javascript: 伪协议都不是搜索结果，不能 urljoin 洗白
                     href = link.get('href', '')
-                    if href:
-                        # urljoin 能够自动处理绝对URL、相对URL以及以 '/' 开头的根URL
-                        url = urljoin('https://www.baidu.com', href)
-                    else:
-                        url = ''
-                    # 只接受 http(s) 跳转，拒绝 javascript: 等伪协议
-                    if url and not url.startswith(('http://', 'https://')):
+                    if not href.startswith(('http://', 'https://')):
                         continue
+                    url = href
 
                     # 提取摘要
                     abstract = ""
@@ -1887,19 +1883,11 @@ def parse_baidu_results(html_content: str, limit: int = 5) -> List[Dict[str, str
                 if link:
                     title = _sanitize_search_text(link.get_text(strip=True))
                     if title and 5 < len(title) < 200:
-                        # 提取 URL
+                        # 与主循环同口径：只接受 http(s) 绝对地址
                         href = link.get('href', '')
-                        if href:
-                            if href.startswith('/'):
-                                url = urljoin('https://www.baidu.com', href)
-                            elif not href.startswith('http'):
-                                url = urljoin('https://www.baidu.com/', href)
-                            else:
-                                url = href
-                        else:
-                            url = ''
-                        if url and not url.startswith(('http://', 'https://')):
+                        if not href.startswith(('http://', 'https://')):
                             continue
+                        url = href
 
                         results.append({
                             'title': title,

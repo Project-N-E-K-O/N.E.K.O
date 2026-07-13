@@ -38,6 +38,11 @@ _BAIDU_HTML = f"""
     <h3><a href="javascript:void(0)">点击展开更多结果内容</a></h3>
   </div>
 
+  <!-- 相关搜索：站内相对链接 —— 不能被 urljoin 洗白成结果 -->
+  <div class="c-container">
+    <h3><a href="/s?wd=%E4%BB%8A%E5%A4%A9&rn=8">今天上海的气温是多少度</a></h3>
+  </div>
+
   <div class="result c-container">
     <h3><a href="http://www.baidu.com/link?url=BBB">中国天气网权威预警发布</a></h3>
   </div>
@@ -70,6 +75,7 @@ def test_parse_baidu_rejects_unsafe_links():
     joined = ' '.join(r['title'] + r['url'] for r in results)
     assert 'javascript' not in joined
     assert '查看40天预报详情页' not in joined  # 卡片子链接不再被当成结果标题
+    assert '今天上海的气温是多少度' not in joined  # 相关搜索的站内相对链接被拒绝
     assert all(r['url'].startswith('http') for r in results)
 
 

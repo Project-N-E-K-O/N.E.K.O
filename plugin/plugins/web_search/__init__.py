@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Dict, List, Optional
 
 from plugin.sdk.plugin import (
@@ -167,10 +168,19 @@ class WebSearchPlugin(NekoPluginBase):
         self._country: Optional[str] = None
         self._is_cn: bool = False
         self._client: Optional[httpx.AsyncClient] = None
+        self._client_loop: Optional[asyncio.AbstractEventLoop] = None
 
     def _get_client(self) -> httpx.AsyncClient:
-        if self._client is None or self._client.is_closed:
+        # 宿主对 startup / 命令循环 / shutdown 分别 asyncio.run()（plugin/core/host.py），
+        # 连接池绑定在创建它的循环上：只在同一循环内复用，循环切换时丢弃重建
+        loop = asyncio.get_running_loop()
+        if (
+            self._client is None
+            or self._client.is_closed
+            or self._client_loop is not loop
+        ):
             self._client = httpx.AsyncClient(follow_redirects=True)
+            self._client_loop = loop
         return self._client
 
     @lifecycle(id="startup")
@@ -191,8 +201,15 @@ class WebSearchPlugin(NekoPluginBase):
 
     @lifecycle(id="shutdown")
     async def shutdown(self, **_):
-        if self._client is not None and not self._client.is_closed:
-            await self._client.aclose()
+        client, self._client = self._client, None
+        self._client_loop = None
+        if client is not None and not client.is_closed:
+            try:
+                await client.aclose()
+            except Exception:
+                # shutdown 运行在新的事件循环里，跨循环关闭旧连接池可能报错；
+                # 进程即将退出，尽力关闭即可
+                pass
         self.logger.info("WebSearch shutdown")
         return Ok({"status": "shutdown"})
 
