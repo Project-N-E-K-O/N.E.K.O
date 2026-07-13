@@ -16,7 +16,6 @@ var SubtitleShared = window.nekoSubtitleShared || null;
 var subtitleUiController = null;
 var webDanmakuModeSettingsCleanup = null;
 var WEB_DANMAKU_AVATAR_GAP = 12;
-var WEB_DANMAKU_VERTICAL_OFFSET_RATIO = 0.5;
 var WEB_DANMAKU_STATE_SYNC_MS = 120;
 var WEB_DANMAKU_MIN_PANEL_WIDTH = 228;
 var WEB_DANMAKU_MIN_PANEL_HEIGHT = 40;
@@ -237,8 +236,7 @@ function computeWebDanmakuLayout(avatarBounds) {
         maxLeft
     );
     var top = clampWebDanmakuNumber(
-        avatar.top - panelHeight - WEB_DANMAKU_AVATAR_GAP +
-            panelHeight * WEB_DANMAKU_VERTICAL_OFFSET_RATIO,
+        avatar.top - panelHeight - WEB_DANMAKU_AVATAR_GAP,
         0,
         maxTop
     );

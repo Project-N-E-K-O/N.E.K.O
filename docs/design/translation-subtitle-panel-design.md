@@ -229,7 +229,7 @@ Escape 行为：
 1. 当前通过 `#subtitle-danmaku-mode-btn` 提供弹幕模式开关。
 2. 控件是可交互 checkbox，外层使用 `.subtitle-settings-switch`，轨道使用 `.subtitle-settings-track`。
 3. 切换后写入 `subtitleDanmakuMode` 并传播 `{ type: 'danmakuMode', value }`。
-4. 桌面独立字幕窗口开启弹幕模式时会进入临时布局：锁定面板、开启穿透、背景透明度临时设为 `0`，并订阅头像 bounds，把字幕窗口移动到头像附近的弹幕布局。
+4. 桌面独立字幕窗口开启弹幕模式时会进入临时布局：锁定面板、开启穿透、背景透明度临时设为 `0`，并订阅头像 bounds，把字幕窗口移动到头像附近的弹幕布局；面板底边始终与头像顶部保持 `12px` 间距，模型缩放时不随面板高度向头像内部漂移。
 5. 弹幕模式渲染译文时，通过共享层按每两个逗号 / 句号 / 问号 / 感叹号等标点为一组切段，生成多条 `.subtitle-danmaku-item` 从右向左滚动；同一轨道里的文字通过 `.subtitle-danmaku-lane` 队列和固定间距排列，避免互相重叠；原始 `#subtitle-text` 仍保留完整译文用于状态和兼容链路。
 6. 关闭弹幕模式时恢复进入前的面板 bounds、锁定状态、穿透状态、不透明度和 native window bounds。
 

@@ -18,7 +18,6 @@
     var DESKTOP_MIN_PANEL_WIDTH = 228;
     var DESKTOP_MIN_PANEL_HEIGHT = 40;
     var DANMAKU_MODE_HEAD_GAP = 12;
-    var DANMAKU_MODE_VERTICAL_OFFSET_RATIO = 0.5;
     var DANMAKU_MODE_SWITCH_MASK_SETTLE_MS = 140;
     var DANMAKU_MODE_SWITCH_MASK_MAX_MS = 900;
     var activeNativeResizeState = null;
@@ -475,8 +474,7 @@
         var basePanelHeight = panelWidth / 2;
         var panelHeight = Math.max(DESKTOP_MIN_PANEL_HEIGHT, Math.round(basePanelHeight * 2 / 3));
         var panelLeft = avatar.centerX - panelWidth / 2;
-        var panelTop = avatar.top - panelHeight - DANMAKU_MODE_HEAD_GAP +
-            panelHeight * DANMAKU_MODE_VERTICAL_OFFSET_RATIO;
+        var panelTop = avatar.top - panelHeight - DANMAKU_MODE_HEAD_GAP;
         var workArea = normalized.workArea;
         if (workArea) {
             var workLeft = Number(workArea.x);
