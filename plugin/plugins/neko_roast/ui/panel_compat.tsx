@@ -6,11 +6,13 @@ import {
   Button,
   Card,
   CodeBlock,
+  ConfirmDialog,
   DataTable,
   Field,
   Grid,
   Input,
   JsonView,
+  Modal,
   Page,
   RefreshButton,
   Select,
@@ -19,6 +21,7 @@ import {
   StatusBadge,
   Tabs,
   Text,
+  Textarea,
   Toolbar,
   ToolbarGroup,
   useEffect,
@@ -27,7 +30,7 @@ import {
   useToast,
 } from "@neko/plugin-ui"
 
-type PluginSurfaceProps<TState = any> = {
+type CompatPluginSurfaceProps<TState = any> = {
   state?: TState
   t: (key: string) => string
   api: {
@@ -926,7 +929,7 @@ function profileTone(group: string, key: string): "success" | "warning" | "dange
 }
 
 /* bundled source: ui/panel.tsx */
-export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>) {
+export default function NekoRoastPanel(props: CompatPluginSurfaceProps<DashboardState>) {
   const { state, t } = props
   const safeState = state || {}
   const config = safeState.config || {}
@@ -949,6 +952,9 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   const [liveRoomResult, setLiveRoomResult] = useState<any>(null)
   const [loginState, setLoginState] = useState<any>(null)
   const [douyinAuthState, setDouyinAuthState] = useState<any>(null)
+  const [consoleDialog, setConsoleDialog] = useState<"account" | "room" | "diagnostics" | "">("")
+  const [connectPending, setConnectPending] = useState(false)
+  const [stopConfirmOpen, setStopConfirmOpen] = useState(false)
   const toast = useToast()
   const configForm = useForm({ ...configDefaults })
   const sandboxForm = useForm({ ...sandboxDefaults })
@@ -1088,11 +1094,11 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
     saveConfig({ live_platform: next, live_enabled: false })
   }
 
-  async function lookupLiveRoom() {
+  async function lookupLiveRoom(): Promise<Record<string, any> | null> {
     const roomRef = String(configForm.values.live_room_ref || configForm.values.live_room_id || "").trim()
     if (!roomRef) {
       toast.error(t("panel.messages.roomRequired"))
-      return
+      return null
     }
     try {
       const envelope = await props.api.call("lookup_live_room", { room_id: roomRef })
@@ -1104,6 +1110,30 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
       } else {
         toast.warning(result.message || t("panel.messages.roomLookupFailed"))
       }
+      return result
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err))
+      return null
+    }
+  }
+
+  async function confirmLiveRoom() {
+    const roomRef = String(configForm.values.live_room_ref || configForm.values.live_room_id || "").trim()
+    if (!roomRef) {
+      toast.error(t("panel.messages.roomRequired"))
+      return
+    }
+    if (livePlatform === "bilibili" && !/^\d+$/.test(roomRef)) {
+      toast.error(t("panel.console.roomNumeric"))
+      return
+    }
+    const lookup = await lookupLiveRoom()
+    if (!lookup?.ok) return
+    try {
+      await props.api.call("set_live_room", { room_id: roomRef })
+      await props.api.refresh()
+      setConsoleDialog("")
+      toast.success(t("panel.messages.saved"))
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err))
     }
@@ -1121,6 +1151,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
       toast.error(t("panel.messages.roomRequired"))
       return
     }
+    setConnectPending(true)
     try {
       const result = unwrapActionResult(await props.api.call("connect_live_room", { room_id: roomRef }))
       await props.api.refresh()
@@ -1132,6 +1163,8 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
       }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err))
+    } finally {
+      setConnectPending(false)
     }
   }
 
@@ -1434,278 +1467,157 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
     connectionState === "connected" ||
     connectionState === "receiving"
   )
+  const roomInputRef = String(configForm.values.live_room_ref || configForm.values.live_room_id || currentRoomRef || "").trim()
+  const roomConfigured = !!currentRoomRef
+  const interactionPaused = liveStateName === "paused" || String(safety.status || "") === "paused"
+  const connectionFailed = !started && (
+    connectionState === "error" ||
+    connectionState === "failed" ||
+    !!connectionLastError
+  )
+  const consoleState = connectPending ? "connecting" : connectionFailed ? "error" : started ? "live" : "ready"
+  const accountReady = livePlatform === "douyin" ? douyinLoggedIn : loginLoggedIn
+  const limitedConnection = livePlatform === "bilibili" && !loginLoggedIn
+  const canStart = !!roomInputRef && (livePlatform === "bilibili" || douyinLoggedIn) && !connectPending
+  const accountLabel = accountReady
+    ? (livePlatform === "douyin" ? (douyinNickname || douyinUid || t("panel.douyinAuth.cookieReady")) : (loginName || loginUid || t("panel.auth.loggedIn")))
+    : (limitedConnection ? t("panel.console.limitedConnection") : t("panel.auth.loggedOut"))
+  const consoleTone: "success" | "warning" | "danger" | "info" = consoleState === "live"
+    ? "success"
+    : consoleState === "error"
+      ? "danger"
+      : consoleState === "connecting"
+        ? "info"
+        : "warning"
   const modules = Array.isArray(safeState.modules) ? safeState.modules : []
 
-  // Main live-room console.
+  // Streamer-first console: routine live operations stay on one compact page.
   const consoleSection = (
     <Stack>
-      <Card title={t("panel.platform.title")}>
-        <Field label={t("panel.fields.platform")}>
-          <Select
-            value={livePlatform}
-            options={[
-              { value: "bilibili", label: t("panel.platform.bilibili") },
-              { value: "douyin", label: `${t("panel.platform.douyin")} ${t("panel.platform.incompleteSuffix")}` },
-            ]}
-            onChange={(value) => {
-              switchLivePlatform(String(value))
-            }}
-          />
-        </Field>
-      </Card>
-      {livePlatform === "douyin" ? (
-        <Card title={t("panel.douyinAuth.title")}>
-          <Stack>
-            <Text>
-              {douyinLoggedIn
-                ? t("panel.douyinAuth.cookieReady") + (douyinNickname ? ": " + douyinNickname : "") + (douyinUid ? " (UID " + douyinUid + ")" : "")
-                : t("panel.douyinAuth.cookieMissing")}
-            </Text>
-            {douyinSavedAt ? <Text>{t("panel.douyinAuth.savedAt")}: {douyinSavedAt}</Text> : null}
-            {douyinValidationMessage ? <Text>{douyinValidationMessage}</Text> : null}
-            {douyinValidationStatus ? <Text>{t("panel.room.liveStatus")}: {t(`panel.liveStatus.${douyinValidationStatus}`)}</Text> : null}
-            <Field label={t("panel.fields.douyinCookie")}>
-              <Input value={configForm.values.douyin_cookie} placeholder={t("panel.placeholders.douyinCookie")} onChange={(value) => configForm.setField("douyin_cookie", value)} />
-            </Field>
-            <Grid cols={2}>
-              <Field label={t("panel.fields.douyinUid")}>
-                <Input value={configForm.values.douyin_uid} onChange={(value) => configForm.setField("douyin_uid", value)} />
-              </Field>
-              <Field label={t("panel.fields.douyinNickname")}>
-                <Input value={configForm.values.douyin_nickname} onChange={(value) => configForm.setField("douyin_nickname", value)} />
-              </Field>
-            </Grid>
-            <Grid cols={4}>
-              <Button tone="success" onClick={douyinCookieImport}>{t("panel.actions.douyinCookieImport")}</Button>
-              <Button tone="info" onClick={douyinCookieStatus}>{t("panel.actions.douyinCookieStatus")}</Button>
-              <Button tone="info" onClick={douyinCookieValidate}>{t("panel.actions.douyinCookieValidate")}</Button>
-              <Button tone="danger" onClick={douyinCookieDelete}>{t("panel.actions.douyinCookieDelete")}</Button>
-            </Grid>
-            <Text>{t("panel.douyinAuth.manualHint")}</Text>
+      <Grid cols={3}>
+        <Card title={t("panel.platform.title")}>
+          <Stack gap={8}>
+            <StatusBadge tone="info" label={livePlatformLabel} />
+            <Text>{t("panel.console.platformHint")}</Text>
           </Stack>
         </Card>
-      ) : (
-        <AuthCard
-          t={t}
-          loginState={loginState}
-          loginLoggedIn={loginLoggedIn}
-          loginName={loginName}
-          loginUid={loginUid}
-          onLogin={biliLogin}
-          onLoginCheck={biliLoginCheck}
-          onLogout={biliLogout}
-        />
-      )}
-      <Card title={t("panel.streamTheme.title")}>
+        <Card title={t("panel.console.accountTitle")}>
+          <Stack gap={8}>
+            <StatusBadge tone={accountReady ? "success" : "warning"} label={accountLabel} />
+            <Button tone="default" onClick={() => { setConsoleDialog("account") }}>{t("panel.console.manage")}</Button>
+          </Stack>
+        </Card>
+        <Card title={t("panel.room.title")}>
+          <Stack gap={8}>
+            <StatusBadge tone={roomConfigured ? "success" : "warning"} label={currentRoomRef || t("panel.console.roomMissing")} />
+            <Button tone="default" onClick={() => { setConsoleDialog("room") }}>{t("panel.actions.setRoom")}</Button>
+          </Stack>
+        </Card>
+      </Grid>
+      <Card title={t("panel.console.runtimeTitle")}>
         <Stack>
-          <Field label={t("panel.fields.streamTheme")}>
-            <Input value={configForm.values.stream_theme} onChange={(value) => configForm.setField("stream_theme", value)} />
-          </Field>
-          <Field label={t("panel.fields.streamGoal")}>
-            <Input value={configForm.values.stream_goal} onChange={(value) => configForm.setField("stream_goal", value)} />
-          </Field>
-          <Field label={t("panel.fields.streamColumns")}>
-            <Input value={configForm.values.stream_columns} onChange={(value) => configForm.setField("stream_columns", value)} />
-          </Field>
-          <Field label={t("panel.fields.streamAvoidTopics")}>
-            <Input value={configForm.values.stream_avoid_topics} onChange={(value) => configForm.setField("stream_avoid_topics", value)} />
-          </Field>
-          <Grid cols={3}>
-            <Button tone="success" onClick={() => saveConfig(advancedConfigPatch())}>{t("panel.actions.save")}</Button>
-          </Grid>
-        </Stack>
-      </Card>
-      <Card title={t("panel.liveStatusSummary.title")}>
-        <Stack>
-          <Grid cols={3}>
-            <StatCard
-              label={t("panel.columns.status")}
-              value={<StatusBadge tone={liveStatusTone(liveStatusSummary)} label={dynamicLabel("liveStatusSummary", "panel.liveStatusSummary", liveStatusSummary)} />}
-            />
-            <StatCard label={t("panel.columns.reason")} value={dynamicLabel("liveStatusReason", "panel.liveStatusReason", liveStatusReason)} />
-            <StatCard label={t("panel.liveStatusSummary.cooldown")} value={`${liveStatusCooldown.toFixed(1)}s`} />
-          </Grid>
-          <Grid cols={3}>
-            <StatCard label={t("panel.fields.mode")} value={dynamicLabel("liveModeRole", "panel.liveModeRole", liveMode)} />
-            <StatCard label={t("panel.liveState.title")} value={<StatusBadge tone={liveStateTone(liveStateName)} label={dynamicLabel("liveState", "panel.liveState", liveStateName)} />} />
-            <StatCard label={t("panel.columns.reason")} value={dynamicLabel("liveStateReason", "panel.liveStateReason", liveStateReason)} />
-          </Grid>
-          <Grid cols={3}>
-            <StatCard label={t("panel.liveState.lastViewerActivityAge")} value={liveStateLastViewerActivityAge} />
-            <StatCard label={t("panel.liveState.lastOutputAge")} value={liveStateLastOutputAge} />
-            <StatCard label={t("panel.liveState.lastActivityAge")} value={liveStateLastActivityAge} />
-          </Grid>
-          <Grid cols={2}>
-            <StatCard label={t("panel.liveState.quietAfter")} value={liveStateQuietAfter} />
-            <StatCard label={t("panel.liveState.idleAfter")} value={liveStateIdleAfter} />
-          </Grid>
-          <Text>{dynamicLabel("liveModeRoleHint", "panel.liveModeRoleHint", liveModeRole)}</Text>
-          <Alert tone={liveStatusTone(liveStatusSummary)}>
-            {dynamicLabel("liveStatusSummary", "panel.liveStatusSummary", liveStatusSummary)} · {dynamicLabel("liveStatusReason", "panel.liveStatusReason", liveStatusReason)}
-          </Alert>
-          <Alert tone={idleHostingCandidate ? "success" : "info"}>
-            {dynamicLabel("idleHostingCandidate", "panel.idleHostingCandidate", idleHostingCandidate ? "true" : "false")}
-          </Alert>
-          <Grid cols={3}>
-            <StatCard
-              label={t("panel.idleHostingStatus.title")}
-              value={<StatusBadge tone={idleHostingEligible ? "success" : "warning"} label={dynamicLabel("idleHostingEligible", "panel.idleHostingStatus.eligible", idleHostingEligible ? "true" : "false")} />}
-            />
-            <StatCard label={t("panel.idleHostingStatus.cooldown")} value={`${idleHostingCooldown.toFixed(1)}s`} />
-            <StatCard label={t("panel.idleHostingStatus.minInterval")} value={`${idleHostingMinInterval.toFixed(1)}s`} />
-          </Grid>
-          <Text>{dynamicLabel("idleHostingReason", "panel.idleHostingStatus.reason", idleHostingReason)}</Text>
-          <Alert tone={speechExplanationTone(speechSummary)}>
-            {t("panel.speechExplanation.title")} · {dynamicLabel("speechSummary", "panel.speechExplanation.summary", speechSummary)} · {dynamicLabel("speechReason", "panel.speechExplanation.reason", speechReason)}
-          </Alert>
-          {speechLastStatus ? (
-            <Text>
-              {t("panel.speechExplanation.lastResult")}: {speechLastStatus}
-              {speechLastReason ? ` / ${speechLastReason}` : ""}
-              {speechLastSource ? ` / ${speechLastSource}` : ""}
-            </Text>
-          ) : null}
-        </Stack>
-      </Card>
-      <Card title={t("panel.soloTestReadiness.title")}>
-        <Stack gap={12}>
-          <Grid cols={2}>
-            <StatCard
-              label={t("panel.columns.status")}
-              value={<StatusBadge tone={soloReadinessTone(soloTestReady, soloTestSummary)} label={dynamicLabel("soloReadinessSummary", "panel.soloTestReadiness.summary", soloTestSummary)} />}
-            />
-            <StatCard label={t("panel.soloTestReadiness.profileCount")} value={soloTestProfileCount} />
-            <StatCard
-              label={t("panel.liveDirector.nextAutoAction")}
-              value={<StatusBadge tone={liveDirectorEligible ? "success" : "default"} label={dynamicLabel("liveDirectorAction", "panel.liveDirector.action", liveDirectorNextAction)} />}
-            />
-          </Grid>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "8px" }}>
-            {soloTestItems.map((item: any) => {
-              const id = String(item.id || "preflight")
-              const status = String(item.status || "blocked")
-              return (
-                <div
-                  key={id}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    gap: "8px",
-                    minHeight: "36px",
-                    padding: "8px 10px",
-                    border: "1px solid var(--border)",
-                    borderRadius: "8px",
-                    background: "var(--surface)",
-                  }}
-                >
-                  <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {dynamicLabel("soloReadinessItem", "panel.soloTestReadiness.item", id)}
-                  </span>
-                  <StatusBadge tone={soloReadinessItemTone(status)} label={dynamicLabel("soloReadinessStatus", "panel.soloTestReadiness.status", status)} />
-                </div>
-              )
-            })}
-          </div>
-        </Stack>
-      </Card>
-      <Card title={t("panel.room.title")}>
-        <Stack>
-          <Field label={roomFieldLabel}>
-            <Input
-              value={configForm.values.live_room_ref}
-              placeholder={roomPlaceholder}
-              onChange={(value) => {
-                configForm.setField("live_room_ref", value)
-                configForm.setField("live_room_id", value)
-              }}
-            />
-          </Field>
-          {liveRoomResult ? (
-            <Alert tone={roomLookupTone}>
-              {liveRoomResult.ok
-                ? t("panel.room.lookupOk") + ": " + (liveRoomResult.title || "-") + " / " + (liveRoomResult.anchor_name || "-") + " / " + liveStatusLabel
-                : (liveRoomResult.message || t("panel.room.lookupFailed"))}
-            </Alert>
-          ) : null}
-          {liveRoomResult ? (
-            <Grid cols={4}>
-              <StatCard label={t("panel.stats.room")} value={lookupRoomRef || "-"} />
-              <StatCard label={t("panel.room.titleLabel")} value={liveRoomResult.title || "-"} />
-              <StatCard label={t("panel.room.anchor")} value={liveRoomResult.anchor_name || "-"} />
-              <StatCard label={t("panel.room.liveStatus")} value={<StatusBadge tone={liveRoomResult.live_status === "live" ? "success" : "default"} label={liveStatusLabel} />} />
-            </Grid>
-          ) : null}
-          <Grid cols={5}>
-            <StatCard label={t("panel.fields.platform")} value={livePlatformLabel} />
-            <StatCard label={t("panel.stats.room")} value={currentRoomRef || "-"} />
-            <StatCard label={t("panel.stats.connection")} value={<StatusBadge tone={connection.connected ? "success" : "warning"} label={connection.connected ? t("panel.connection.connected") : t("panel.connection.disconnected")} />} />
-            <StatCard label={t("panel.stats.viewers")} value={connection.connected ? (connection.viewer_count ?? 0).toLocaleString() : "-"} />
-            <StatCard label={t("panel.stats.safety")} value={<StatusBadge tone={statusTone(String(safety.status || ""))} label={dynamicLabel("safety", "panel.safety", String(safety.status || "unknown"))} />} />
-          </Grid>
-          {livePlatform === "douyin" && (connectionPlan || connectionLastError || reconnectState) ? (
-            <Grid cols={3}>
-              <StatCard label={t("panel.columns.status")} value={<StatusBadge tone={connection.state === "receiving" || connection.state === "connected" ? "success" : "warning"} label={String(connection.state || "-")} />} />
-              <StatCard label={t("panel.columns.reason")} value={connectionLastError || String(connectionPlan?.message || "-")} />
-              <StatCard label={t("panel.stats.queue")} value={connectionMissing.length ? connectionMissing.join(", ") : "-"} />
-            </Grid>
-          ) : null}
-          {livePlatform === "douyin" && reconnectState ? (
-            <Grid cols={3}>
-              <StatCard label={t("panel.columns.status")} value={`${Number(reconnectState.retry_count || 0).toFixed(0)}/${Number(reconnectState.policy?.max_retries || 0).toFixed(0)}`} />
-              <StatCard label={t("panel.liveDirector.cooldown")} value={`${Number(reconnectState.next_delay_seconds || 0).toFixed(1)}s`} />
-              <StatCard label={t("panel.columns.reason")} value={String(reconnectState.last_reason || "-")} />
-            </Grid>
-          ) : null}
+          <StatusBadge tone={consoleTone} label={t(`panel.console.state.${consoleState}`)} />
+          <Text>
+            {consoleState === "live"
+              ? t("panel.console.liveHint")
+              : consoleState === "connecting"
+                ? t("panel.console.connectingHint")
+                : consoleState === "error"
+                  ? (connectionLastError || t("panel.console.errorHint"))
+                  : !roomInputRef
+                    ? t("panel.messages.roomRequired")
+                    : livePlatform === "douyin" && !douyinLoggedIn
+                      ? t("panel.douyinAuth.cookieMissing")
+                      : t("panel.console.readyHint")}
+          </Text>
+          {limitedConnection && !started ? <Alert tone="warning">{t("panel.console.limitedHint")}</Alert> : null}
           {started ? (
-            <Grid cols={3}>
-              <Button tone="danger" onClick={() => callSimple("disconnect_live_room")}>{t("panel.actions.stop")}</Button>
-              <Button tone="warning" onClick={() => callSimple("pause_roast")}>{t("panel.actions.pause")}</Button>
-              <Button tone="primary" onClick={() => callSimple("resume_roast")}>{t("panel.actions.resume")}</Button>
+            <Grid cols={2}>
+              <Button tone={interactionPaused ? "primary" : "warning"} onClick={() => callSimple(interactionPaused ? "resume_roast" : "pause_roast")}>
+                {interactionPaused ? t("panel.actions.resume") : t("panel.actions.pause")}
+              </Button>
+              <Button tone="danger" onClick={() => { setStopConfirmOpen(true) }}>{t("panel.actions.disconnect")}</Button>
             </Grid>
           ) : (
             <Grid cols={2}>
-              <Button tone="info" onClick={lookupLiveRoom}>{t("panel.actions.lookupRoom")}</Button>
-              <Button tone="success" onClick={connectRoom}>{t("panel.actions.start")}</Button>
+              <Button tone="default" onClick={() => { setConsoleDialog("diagnostics") }}>{t("panel.actions.showAdvanced")}</Button>
+              <Button tone="success" disabled={!canStart} onClick={connectRoom}>
+                {connectPending ? t("panel.console.state.connecting") : t("panel.actions.connect")}
+              </Button>
             </Grid>
           )}
-          <Grid cols={2}>
-            <Field label={t("panel.fields.mode")}>
-              <Select
-                value={configForm.values.live_mode}
-                options={[
-                  { value: "co_stream", label: t("panel.mode.co") },
-                  { value: "solo_stream", label: t("panel.mode.solo") },
-                ]}
-                onChange={(value) => {
-                  const next = String(value)
-                  configForm.setField("live_mode", next)
-                  saveConfig({ live_mode: next })
-                }}
-              />
-            </Field>
-            <Field label={t("panel.fields.activityLevel")}>
-              <Select
-                value={configForm.values.activity_level}
-                options={[
-                  { value: "quiet", label: t("panel.activity.quiet") },
-                  { value: "standard", label: t("panel.activity.standard") },
-                  { value: "active", label: t("panel.activity.active") },
-                ]}
-                onChange={(value) => {
-                  const next = String(value)
-                  configForm.setField("activity_level", next)
-                  saveConfig({ activity_level: next })
-                }}
-              />
-            </Field>
-          </Grid>
         </Stack>
       </Card>
+      <Card title={t("panel.console.sessionTitle")}>
+        <Stack>
+          <Grid cols={4}>
+            <StatCard label={t("panel.console.events")} value={<StatusBadge tone={started ? "success" : "default"} label={started ? t("panel.console.eventsReceiving") : t("panel.console.eventsWaiting")} />} />
+            <StatCard label={t("panel.console.autoInteraction")} value={config.live_enabled ? t("panel.console.enabled") : t("panel.console.disabled")} />
+            <StatCard label={t("panel.fields.mode")} value={dynamicLabel("liveModeRole", "panel.liveModeRole", liveMode)} />
+            <StatCard label={t("panel.console.recentActivity")} value={results.length ? t("panel.console.recentNow") : t("panel.console.recentNone")} />
+          </Grid>
+          <Text>{dynamicLabel("liveModeRoleHint", "panel.liveModeRoleHint", liveModeRole)}</Text>
+          <Button tone="default" onClick={() => { setConsoleDialog("diagnostics") }}>{t("panel.actions.showAdvanced")}</Button>
+        </Stack>
+      </Card>
+      <Modal open={consoleDialog === "account"} title={t("panel.console.accountModalTitle")} size="lg" onClose={() => { setConsoleDialog("") }} footer={<Button tone="default" onClick={() => { setConsoleDialog("") }}>{t("panel.actions.cancel")}</Button>}>
+        <Stack>
+          <Field label={t("panel.fields.platform")}>
+            <Select value={livePlatform} options={[{ value: "bilibili", label: t("panel.platform.bilibili") }, { value: "douyin", label: `${t("panel.platform.douyin")} ${t("panel.platform.incompleteSuffix")}` }]} onChange={(value) => switchLivePlatform(String(value))} />
+          </Field>
+          {livePlatform === "douyin" ? (
+            <Stack>
+              <StatusBadge tone={douyinLoggedIn ? "success" : "warning"} label={accountLabel} />
+              {douyinSavedAt ? <Text>{t("panel.douyinAuth.savedAt")}: {douyinSavedAt}</Text> : null}
+              {douyinValidationMessage ? <Text>{douyinValidationMessage}</Text> : null}
+              {douyinValidationStatus ? <Text>{t("panel.room.liveStatus")}: {t(`panel.liveStatus.${douyinValidationStatus}`)}</Text> : null}
+              <Field label={t("panel.fields.douyinCookie")}><Textarea value={configForm.values.douyin_cookie} placeholder={t("panel.placeholders.douyinCookie")} onChange={(value) => { configForm.setField("douyin_cookie", value) }} /></Field>
+              <Grid cols={2}>
+                <Field label={t("panel.fields.douyinUid")}><Input value={configForm.values.douyin_uid} onChange={(value) => { configForm.setField("douyin_uid", value) }} /></Field>
+                <Field label={t("panel.fields.douyinNickname")}><Input value={configForm.values.douyin_nickname} onChange={(value) => { configForm.setField("douyin_nickname", value) }} /></Field>
+              </Grid>
+              <Grid cols={4}>
+                <Button tone="success" onClick={douyinCookieImport}>{t("panel.actions.douyinCookieImport")}</Button>
+                <Button tone="info" onClick={douyinCookieStatus}>{t("panel.actions.douyinCookieStatus")}</Button>
+                <Button tone="info" onClick={douyinCookieValidate}>{t("panel.actions.douyinCookieValidate")}</Button>
+                <Button tone="danger" onClick={douyinCookieDelete}>{t("panel.actions.douyinCookieDelete")}</Button>
+              </Grid>
+              <Text>{t("panel.douyinAuth.manualHint")}</Text>
+            </Stack>
+          ) : (
+            <AuthCard t={t} loginState={loginState} loginLoggedIn={loginLoggedIn} loginName={loginName} loginUid={loginUid} onLogin={biliLogin} onLoginCheck={biliLoginCheck} onLogout={biliLogout} />
+          )}
+        </Stack>
+      </Modal>
+      <Modal open={consoleDialog === "room"} title={t("panel.console.roomModalTitle")} onClose={() => { setConsoleDialog("") }} footer={<Grid cols={2}><Button tone="default" onClick={() => { setConsoleDialog("") }}>{t("panel.actions.cancel")}</Button><Button tone="success" onClick={confirmLiveRoom}>{t("panel.console.confirmRoom")}</Button></Grid>}>
+        <Stack>
+          <Field label={roomFieldLabel}>
+            <Input value={configForm.values.live_room_ref} placeholder={roomPlaceholder} onChange={(value) => { configForm.setField("live_room_ref", value); configForm.setField("live_room_id", value); setLiveRoomResult(null) }} />
+          </Field>
+          {livePlatform === "bilibili" ? <Text>{t("panel.console.roomNumeric")}</Text> : null}
+          {liveRoomResult ? <Alert tone={roomLookupTone}>{liveRoomResult.ok ? t("panel.room.lookupOk") + ": " + (liveRoomResult.title || "-") + " / " + (liveRoomResult.anchor_name || "-") + " / " + liveStatusLabel : (liveRoomResult.message || t("panel.room.lookupFailed"))}</Alert> : null}
+          {liveRoomResult?.ok ? <Grid cols={3}><StatCard label={t("panel.stats.room")} value={lookupRoomRef || "-"} /><StatCard label={t("panel.room.titleLabel")} value={liveRoomResult.title || "-"} /><StatCard label={t("panel.room.anchor")} value={liveRoomResult.anchor_name || "-"} /></Grid> : null}
+        </Stack>
+      </Modal>
+      <Modal open={consoleDialog === "diagnostics"} title={t("panel.actions.showAdvanced")} size="lg" onClose={() => { setConsoleDialog("") }} footer={<Button tone="default" onClick={() => { setConsoleDialog("") }}>{t("panel.actions.cancel")}</Button>}>
+        <Stack>
+          <Grid cols={3}><StatCard label={t("panel.columns.status")} value={<StatusBadge tone={liveStatusTone(liveStatusSummary)} label={dynamicLabel("liveStatusSummary", "panel.liveStatusSummary", liveStatusSummary)} />} /><StatCard label={t("panel.columns.reason")} value={dynamicLabel("liveStatusReason", "panel.liveStatusReason", liveStatusReason)} /><StatCard label={t("panel.liveStatusSummary.cooldown")} value={`${liveStatusCooldown.toFixed(1)}s`} /></Grid>
+          <Grid cols={3}><StatCard label={t("panel.liveState.title")} value={<StatusBadge tone={liveStateTone(liveStateName)} label={dynamicLabel("liveState", "panel.liveState", liveStateName)} />} /><StatCard label={t("panel.liveState.lastViewerActivityAge")} value={liveStateLastViewerActivityAge} /><StatCard label={t("panel.liveState.lastOutputAge")} value={liveStateLastOutputAge} /></Grid>
+          <Alert tone={speechExplanationTone(speechSummary)}>{dynamicLabel("speechSummary", "panel.speechExplanation.summary", speechSummary)} / {dynamicLabel("speechReason", "panel.speechExplanation.reason", speechReason)}</Alert>
+          {connectionLastError ? <Alert tone="danger">{connectionLastError}</Alert> : null}
+          {connectionPlan?.message ? <Text>{String(connectionPlan.message)}</Text> : null}
+          {connectionMissing.length ? <Text>{connectionMissing.join(", ")}</Text> : null}
+          {reconnectState ? <Text>{Number(reconnectState.retry_count || 0).toFixed(0)}/{Number(reconnectState.policy?.max_retries || 0).toFixed(0)} / {Number(reconnectState.next_delay_seconds || 0).toFixed(1)}s / {String(reconnectState.last_reason || "-")}</Text> : null}
+          <Grid cols={3}><StatCard label={t("panel.soloTestReadiness.title")} value={<StatusBadge tone={soloReadinessTone(soloTestReady, soloTestSummary)} label={dynamicLabel("soloReadinessSummary", "panel.soloTestReadiness.summary", soloTestSummary)} />} /><StatCard label={t("panel.soloTestReadiness.profileCount")} value={soloTestProfileCount} /><StatCard label={t("panel.liveDirector.nextAutoAction")} value={<StatusBadge tone={liveDirectorEligible ? "success" : "default"} label={dynamicLabel("liveDirectorAction", "panel.liveDirector.action", liveDirectorNextAction)} />} /></Grid>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "8px" }}>
+            {soloTestItems.map((item: any) => { const id = String(item.id || "preflight"); const status = String(item.status || "blocked"); return <div key={id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px", minHeight: "36px", padding: "8px 10px", border: "1px solid var(--border)", borderRadius: "8px", background: "var(--surface)" }}><span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{dynamicLabel("soloReadinessItem", "panel.soloTestReadiness.item", id)}</span><StatusBadge tone={soloReadinessItemTone(status)} label={dynamicLabel("soloReadinessStatus", "panel.soloTestReadiness.status", status)} /></div> })}
+          </div>
+        </Stack>
+      </Modal>
+      <ConfirmDialog open={stopConfirmOpen} title={t("panel.console.stopTitle")} message={t("panel.console.stopMessage")} tone="danger" confirmLabel={t("panel.actions.disconnect")} cancelLabel={t("panel.actions.cancel")} onConfirm={() => { setStopConfirmOpen(false); callSimple("disconnect_live_room") }} onCancel={() => { setStopConfirmOpen(false) }} />
     </Stack>
   )
 
-  // Render module-declared config fields.
   const renderConfigField = (f: any, fi: number) => {
     const name = String((f && f.name) || "")
     const configKey = name as keyof RoastConfig
@@ -1998,6 +1910,19 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   const viewerStore = safeState.viewer_store || {}
   const advancedSection = (
     <Stack>
+      <Card title={t("panel.streamTheme.title")}>
+        <Stack>
+          <Grid cols={2}>
+            <Field label={t("panel.fields.liveMode")}><Select value={configForm.values.live_mode} options={[{ value: "co_stream", label: t("panel.mode.co") }, { value: "solo_stream", label: t("panel.mode.solo") }]} onChange={(value) => { const next = String(value); configForm.setField("live_mode", next); saveConfig({ live_mode: next }) }} /></Field>
+            <Field label={t("panel.fields.activityLevel")}><Select value={configForm.values.activity_level} options={[{ value: "quiet", label: t("panel.activity.quiet") }, { value: "standard", label: t("panel.activity.standard") }, { value: "active", label: t("panel.activity.active") }]} onChange={(value) => { const next = String(value); configForm.setField("activity_level", next); saveConfig({ activity_level: next }) }} /></Field>
+          </Grid>
+          <Field label={t("panel.fields.streamTheme")}><Input value={configForm.values.stream_theme} onChange={(value) => configForm.setField("stream_theme", value)} /></Field>
+          <Field label={t("panel.fields.streamGoal")}><Input value={configForm.values.stream_goal} onChange={(value) => configForm.setField("stream_goal", value)} /></Field>
+          <Field label={t("panel.fields.streamColumns")}><Input value={configForm.values.stream_columns} onChange={(value) => configForm.setField("stream_columns", value)} /></Field>
+          <Field label={t("panel.fields.streamAvoidTopics")}><Input value={configForm.values.stream_avoid_topics} onChange={(value) => configForm.setField("stream_avoid_topics", value)} /></Field>
+          <Button tone="success" onClick={() => saveConfig(advancedConfigPatch())}>{t("panel.actions.save")}</Button>
+        </Stack>
+      </Card>
       <Card title={t("panel.control.title")}>
         <Stack>
           {/* live_enabled is owned by the interaction module card; settings keep platform-level controls only. */}
@@ -2081,10 +2006,6 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
     </Stack>
   )
 
-  // Reserved tabs stay visible but clearly marked as coming soon.
-  const dmSection = <ComingSoonSection title={t("panel.tabs.dm")} desc={t("panel.dm.desc")} t={t} />
-  const automationSection = <ComingSoonSection title={t("panel.tabs.automation")} desc={t("panel.automation.desc")} t={t} />
-
   const lookupIdentity = lookupResult?.identity || null
   const lookupAvatarSrc = lookupIdentity?.avatar_preview_url || lookupIdentity?.avatar_url || lookupResult?.profile?.avatar_url || ""
   const lookupSourceLabel = !lookupIdentity
@@ -2109,8 +2030,14 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
           {!developerToolsEnabled ? <Alert tone="info">{t("panel.dev.developerModeDisabled")}</Alert> : null}
         </Stack>
       </Card>
-
-      <Card title={t("panel.dev.lookup.title")}>
+      <Tabs
+        id="developer-tools"
+        items={[
+          {
+            id: "identity",
+            label: t("panel.dev.lookup.title"),
+            content: (
+              <Card title={t("panel.dev.lookup.title")}>
         <Stack>
           <Grid cols={3}>
             <Field label={t("panel.fields.target")}>
@@ -2136,9 +2063,15 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
             </Stack>
           </Grid>
         </Stack>
-      </Card>
-
-      <Card title={t("panel.dev.emitter.title")}>
+              </Card>
+            ),
+          },
+          {
+            id: "event",
+            label: t("panel.dev.emitter.title"),
+            content: (
+              <Stack>
+                <Card title={t("panel.dev.emitter.title")}>
         <Stack>
           <Field label={t("panel.fields.danmaku")}>
             <Input value={sandboxForm.values.danmaku_text} placeholder={presetViewer.danmaku_text} onChange={(value) => sandboxForm.setField("danmaku_text", value)} />
@@ -2170,13 +2103,18 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
             <Button tone="danger" onClick={clearSandboxData}>{t("panel.actions.clearSandbox")}</Button>
           </Grid>
         </Stack>
-      </Card>
-
-      <Card title={t("panel.dev.result")}>
-        {sandboxResult ? <JsonView data={sandboxResult} /> : <Text>{t("panel.empty.sandbox")}</Text>}
-      </Card>
-
-      <Card title={t("panel.dev.recentSandbox")}>
+                </Card>
+                <Card title={t("panel.dev.result")}>
+                  {sandboxResult ? <JsonView data={sandboxResult} /> : <Text>{t("panel.empty.sandbox")}</Text>}
+                </Card>
+              </Stack>
+            ),
+          },
+          {
+            id: "results",
+            label: t("panel.dev.recentSandbox"),
+            content: (
+              <Card title={t("panel.dev.recentSandbox")}>
         {sandboxResults.length ? (
           <DataTable
             data={sandboxResults.map((item, index) => ({ ...item, id: `${item.created_at || index}-${index}` }))}
@@ -2191,19 +2129,19 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
         ) : (
           <Text>{t("panel.empty.sandboxResults")}</Text>
         )}
-      </Card>
-
+              </Card>
+            ),
+          },
+        ]}
+      />
     </Stack>
   )
 
-  // Lifecycle/domain tabs: six stable pages plus developer sandbox when dev mode is enabled.
-  // Top-level dashboard tabs.
+  // Streamer-facing tabs stay focused on the four workflows that are available today.
   const tabItems = [
     { id: "console", label: t("panel.tabs.console"), content: consoleSection },
     { id: "interaction", label: t("panel.tabs.interaction"), content: modulesSection },
     { id: "viewers", label: t("panel.tabs.viewers"), content: dataSection },
-    { id: "dm", label: t("panel.tabs.dm"), content: dmSection },
-    { id: "automation", label: t("panel.tabs.automation"), content: automationSection },
     { id: "settings", label: t("panel.tabs.settings"), content: advancedSection },
   ]
   if (developerToolsEnabled) {

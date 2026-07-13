@@ -6,7 +6,7 @@
 
 - [快速开始](quickstart.md)：主播和开发者的实际使用流程。用户可见步骤、按钮、操作顺序、运行注意事项以这里为准。
 - [猫猫独播体验指南](solo-stream-test-guide.md)：给组长、内测主播或接手开发者的 `solo_stream` 试播 runbook。只保留启动、连接、dry_run、真实输出、监控和通过标准。
-- [2026-07-07 交接说明](handoff-2026-07-07.md)：当前 `roast` 分支的短交接页。只记录接手时最容易踩的边界、下一步和验证基线。
+- [2026-07-07 交接说明](handoff-2026-07-07.md)：历史交接快照，仅用于追溯当时的边界、下一步和验证基线；不得作为当前实现或测试基线。
 
 ## 开发文档
 
@@ -17,6 +17,7 @@
 - [开发总结与路线图](live-center-roadmap.md)：阶段目标、已完成进度和下一阶段路线。只记录“做到哪、接下来做什么”，不维护详细架构规范或运行 runbook。
 - [UI 与模块贡献架构基线](ui-architecture.md)：面板 UI、模块贡献模型、`config_schema`、Hosted UI 约束和渐进组件化规则。
 - [开发日志](devlog.md)：宿主 / SDK 侧历史问题、跨层事故、迁移原因和兼容取舍。
+- [Pipeline Split](pipeline-split.md)：已完成的 pipeline 兼容拆分说明；记录 facade 与 helper 模块之间必须持续保持的契约。
 - [输出契约与弹幕回复模块](modules/output_contract.md)：普通弹幕分类、提示词、回复质量、长度整形和 dispatcher 输出边界。
 - [直播主持流程](modules/live_hosting.md)：暖场、冷场、主动营业的选择、门禁、去重和 pipeline 边界。
 - [主动话题材料](modules/active_topic_materials.md)：话题 family、profile、pack、轮换 shape 的归属、契约和降级边界。
@@ -41,7 +42,7 @@
 | 项目定位、用户入口、当前不做 | `../README.md` | 只链接，不复述完整定位 |
 | 用户/主播操作流程 | `quickstart.md` | 只给入口链接 |
 | 猫猫独播试播 runbook | `solo-stream-test-guide.md` | quickstart 只给入口链接 |
-| 当前分支交接状态 | `handoff-2026-07-07.md` | 只做短入口，不替代权威规范 |
+| 2026-07-07 历史交接状态 | `handoff-2026-07-07.md` | 仅作历史快照；当前状态以对应权威文档和代码为准 |
 | Independent Mode 产品路线、当前阶段开发分工、MVP、内测节奏 | `independent-mode-product-plan.md` | roadmap 只保留阶段指针 |
 | 新开发者阅读路径 | `developer-guide.md` | 不在 roadmap 中重复 onboarding |
 | 架构边界、模块边界、数据边界 | `development.md` | roadmap / guide 只写摘要并链接 |

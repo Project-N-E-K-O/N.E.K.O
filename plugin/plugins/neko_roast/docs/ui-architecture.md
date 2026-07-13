@@ -17,15 +17,13 @@ N.E.K.O 是一只**桌面 AI 猫娘**；neko_roast 让她去给主播**当直播
 
 | 一级页(tab) | id | 域 | 现在 | 未来落点 |
 |---|---|---|---|---|
-| 控制台 | `console` | 开播 | 账号登录 + 房号 + 查询/连接 + 状态总览四格 + 模式 + dry_run 速开关（已折入原「直播间配置」） | 锐评 feed |
+| 控制台 | `console` | 开播 | 账号登录 + 房号 + 查询/连接 + 状态总览四格 + 模式（已折入原「直播间配置」） | 锐评 feed |
 | 直播间互动 | `interaction` | 直播间互动 + 互动产出 | **弹幕锐评功能卡**(卡头 3 态徽章 + 绿色功能开关绑 `live_enabled`；强度 pill；同人去重) + 礼物/SC/进场占位卡 + 平台参数说明条 | P3 礼物/SC/进场 handler 注册为模块、占位卡转真卡 |
 | 观众 | `viewers` | 身份/档案 | 直播总结 + 链路解释 + 安全画像档案（熟悉度 / 画像置信度 / 偏好标签 / 回复建议） | P4 贡献榜/观看时长/可控画像管理 |
-| 私信 | `dm` | 私信 | 占位页（即将上线） | `bili_dm_ingest` 模块 |
-| 自动化 | `automation` | 自动化 | 占位页（即将上线） | `automation_ops` 模块 |
 | ⚙设置 | `settings` | 平台 | 「节奏与安全」(dry_run/急停/冷却/队列) + **「档案存储」**(当前只读展示默认目录，自定义入口暂时屏蔽) + 高级状态 + 模块总览表 + 开发者开关 | 自定义目录待配置持久化修复后恢复 |
-| 开发者沙盒 | `dev` | 调试 | 沙盒（**仅 dev 模式开时出现**） | — |
+| 开发者工具 | `dev` | 调试 | **仅开发者模式开启时出现**；内部再分「身份与头像查询 / 模拟直播事件 / 最近沙盒结果」三个子页，避免把全部技术表单堆在同一长页 | — |
 
-> 当前实现的 tab id 顺序：`console / interaction / viewers / dm / automation / settings`（+ `dev` 按 `developer_tools_enabled` 条件追加）。生命周期-域命名**已收敛到位**，契约测试 `test_panel_uses_six_top_level_tabs_in_order` 锁住 id / 顺序。原 `live-room` 页已折入 `console`、`data`→`viewers`、`advanced`→`settings`。
+> 当前实现的常规 tab id 顺序：`console / interaction / viewers / settings`（+ `dev` 按 `developer_tools_enabled` 条件追加）。开发者工具内部固定使用 `identity / event / results` 三个子页；原 `live-room` 页已折入 `console`、`data`→`viewers`、`advanced`→`settings`。
 
 ## 2. 模块贡献模型（多人开发 / 扩展的核心）
 

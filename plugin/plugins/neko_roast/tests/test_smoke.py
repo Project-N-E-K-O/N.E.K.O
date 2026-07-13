@@ -423,6 +423,27 @@ def test_panel_renders_platform_switch_and_douyin_cookie_controls():
     assert "panel.douyinAuth.manualHint" in source
 
 
+def test_panel_console_keeps_live_operations_compact_and_modal() -> None:
+    root = Path(__file__).resolve().parents[1]
+
+    for panel_name in ("panel.tsx", "panel_compat.tsx"):
+        source = (root / "ui" / panel_name).read_text(encoding="utf-8")
+        assert "ConfirmDialog" in source
+        assert "consoleDialog" in source
+        assert 'setConsoleDialog("account")' in source
+        assert 'setConsoleDialog("room")' in source
+        assert 'setConsoleDialog("diagnostics")' in source
+        assert 'props.api.call("set_live_room", { room_id: roomRef })' in source
+        assert 'callSimple("disconnect_live_room")' in source
+        assert 'interactionPaused ? "resume_roast" : "pause_roast"' in source
+        assert '{ id: "console", label: t("panel.tabs.console"), content: consoleSection }' in source
+        assert '{ id: "interaction", label: t("panel.tabs.interaction"), content: modulesSection }' in source
+        assert '{ id: "viewers", label: t("panel.tabs.viewers"), content: dataSection }' in source
+        assert '{ id: "settings", label: t("panel.tabs.settings"), content: advancedSection }' in source
+        assert '{ id: "dm", label: t("panel.tabs.dm")' not in source
+        assert '{ id: "automation", label: t("panel.tabs.automation")' not in source
+
+
 def test_panel_advanced_save_resubmits_current_room_with_patch():
     root = Path(__file__).resolve().parents[1]
     source = (root / "ui" / "panel.tsx").read_text(encoding="utf-8")
@@ -897,3 +918,18 @@ def test_compat_panel_mirrors_accessible_qr_and_result_tones() -> None:
         assert 'if (status === "skipped") return "warning"' in source
     assert '<button\n                  type="button"\n                  onClick={onLogin}' in compat
     assert 'recentResultTone(String(row.status || ""))' in compat
+
+
+def test_developer_tools_use_three_internal_subpages_in_both_panels() -> None:
+    root = Path(__file__).resolve().parents[1]
+
+    for panel_name in ("panel.tsx", "panel_compat.tsx"):
+        source = (root / "ui" / panel_name).read_text(encoding="utf-8")
+        developer_source = source[source.index("const developerSandbox") : source.index("const tabItems")]
+        assert developer_source.index('id: "identity"') < developer_source.index('id: "event"')
+        assert developer_source.index('id: "event"') < developer_source.index('id: "results"')
+        assert 'label: t("panel.dev.lookup.title")' in developer_source
+        assert 'label: t("panel.dev.emitter.title")' in developer_source
+        assert 'label: t("panel.dev.recentSandbox")' in developer_source
+        assert "<Tabs" in developer_source
+        assert 'id="developer-tools"' in developer_source

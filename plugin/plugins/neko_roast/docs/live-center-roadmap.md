@@ -91,7 +91,7 @@ Gift / SC / Guard 已有短句致谢 handler，但贡献榜、权益、朗读流
 | **事件中枢地基（EventBus 真订阅分发）** | 把接入与处理解耦——`bili_live_ingest` 把富模型包成 `LiveEvent` 统一信封（`contracts.LiveEvent`：type/uid/payload/source/ts/schema_version/raw）发布到 `EventBus`；`EventBus` 升级为真订阅分发（`subscribe(type,handler,owner)` / `publish`），每订阅者隔离 + 归属（owner）+ audit（`event_handler_failed`）+ 无订阅者静默丢弃。`live_events` 改为**经 bus 订阅 `"danmaku"` / `"gift"` / `"super_chat"` / `"guard"`** 的示范订阅者（`submit()` 签名不变、内部择优复用既有 pipeline 语境）。**这是「分发给其他开发者各写各事件 handler」的核心契约**（development.md「直播事件中枢（EventBus）」含第三方加 handler 配方）| 单测 +8（`test_event_bus.py`）+ 契约 +1；端到端经 bus 的 `test_live_listener_routes_rich_event_through_hub_to_pipeline` 仍绿；gift/SC/guard 接线已单测覆盖，短句致谢 handler 已由 `live_support_events` 接住 |
 | **可靠性收尾（兜底层②④收口）** | ① UI 错误边界：`panel_components.tsx` 的 `ModuleRenderBoundary` 用 try/catch 包每张互动模块卡的同步渲染（hosted-ui runtime 无 class error boundary），未来第三方模块 `config_schema`/渲染抛错只塌成一张降级卡（`panel.modules.renderError`）不黑屏整盘（兜底层④，见 ui-architecture §4）。② 模块 `on_enable/on_disable` 生命周期钩子：`ModuleRegistry.enable/disable` 隔离调用（单点失败标 degraded + audit），地基件，待接 per-module 启停真实调用方 | 当前仅完成地基、单测 +3（`test_module_registry.py`）、契约 +1（`test_panel_wraps_module_cards_in_error_boundary`）和 panel transpile；真实调用方接入及运行链路验证待完成；i18n +1 键 8×228 |
 
-历史阶段测试基线（2026-06-20；当前 stacked PR 结果见 PR 的 Regression Report）：`uv run pytest plugin/plugins/neko_roast/tests -q` → **546 passed**；CLI check **0 error**（6 条模板 warning 允许）。`Plugin Tests` workflow 已在 `roast` 分支通过，新增 `NEKO Roast gate (Windows)` 自动运行 neko_roast 测试套件与 CLI check；后续改动按 `development.md` 的协作规范拆分 Slice，不混入非本插件改动。
+历史阶段测试基线（2026-06-20；当前基线以 `development.md`「测试门禁」为准）：`uv run pytest plugin/plugins/neko_roast/tests -q` → **546 passed**；CLI check **0 error**（6 条模板 warning 允许）。`Plugin Tests` workflow 已在 `roast` 分支通过，新增 `NEKO Roast gate (Windows)` 自动运行 neko_roast 测试套件与 CLI check；后续改动按 `development.md` 的协作规范拆分 Slice，不混入非本插件改动。
 
 ---
 
@@ -301,7 +301,7 @@ Gift / SC / Guard 已有短句致谢 handler，但贡献榜、权益、朗读流
 
 ## 12. 项目成熟度与分发就绪度评估（2026-07-03）
 
-> 一次诚实的自评，供接手者判断「现在处于什么阶段、离团队级分发还差什么」。结论：**架构与可靠性产品级，测试治理和 CI gate 已进入可交付轨道，功能完成度已从 v0.1 单切片进入 Independent Mode 产品验证期**。当前不是链路地基缺口，而是 UI 模块化、真实直播验证、P4 画像治理打磨和旧插件最终退役前置清理。
+> 这是 2026-07-03 的历史自评快照，不代表当前测试数量或完成状态；当前测试基线以 `development.md`「测试门禁」为准，当前阶段状态以本路线图后续更新为准。当时的结论是：**架构与可靠性产品级，测试治理和 CI gate 已进入可交付轨道，功能完成度已从 v0.1 单切片进入 Independent Mode 产品验证期**。
 
 | 维度 | 评级 | 依据 |
 |---|---|---|
@@ -309,7 +309,7 @@ Gift / SC / Guard 已有短句致谢 handler，但贡献榜、权益、朗读流
 | 可靠性工程 | A− | 五层兜底是真功夫：`safety_guard`（滑窗失败计数→自动急停 / 队列溢出→降级 / 限流）、`pipeline`（每步审计 + `finally` 清队列）、`dispatcher`（dry_run + 头像压不进预算则降级纯文字）|
 | 代码质量 | B+ | `pipeline`/`safety_guard`/`dispatcher` 教科书级；Hosted UI 已从单一 `panel.tsx` 入口拆出 `panel_components.tsx` 与 `panel_helpers.ts`，但仍需继续控制面板复杂度 |
 | 文档 | A | 「无文档=未完成」真在执行；但偏厚、跨文档有同事实冗余 |
-| 测试 | B+ | `plugin/plugins/neko_roast/tests` 已达 546 passed；原 100KB+ 测试大文件已按 config / pipeline / runtime active engagement / monitor 主题拆分，最大测试文件约 56KB；硬骨头（真连 B站 / 视觉 / 消息面 / 面板渲染）仍主要靠真机验证 |
+| 测试 | B+ | 截至该快照，`plugin/plugins/neko_roast/tests` 为 546 passed；原 100KB+ 测试大文件已按 config / pipeline / runtime active engagement / monitor 主题拆分，最大测试文件约 56KB；硬骨头（真连 B站 / 视觉 / 消息面 / 面板渲染）仍主要靠真机验证 |
 | 工程治理 | B | `Plugin Tests` workflow 已新增 `NEKO Roast gate (Windows)`，在 `roast` 分支自动跑 neko_roast 测试套件与 CLI check；PR 评审轨迹与发布节奏仍需后续补齐 |
 | 功能完成度 | Independent Mode 验证期 | 「首评锐评」闭环已稳定，后续弹幕接话、Idle/Warmup Hosting、Active Engagement、Runtime Timeline、Gift/SC/Guard 短句致谢均已接入；下一步看真实直播验证和产品体验收口 |
 
