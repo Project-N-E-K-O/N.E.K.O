@@ -1200,6 +1200,15 @@ class ProactiveMixin:
         except Exception:
             return None
 
+    def _next_coalesce_seq(self) -> int:
+        """Monotonic per-manager submission counter shared by the manager-held
+        (submit_proactive_callback) and direct-enqueue (enqueue_agent_callback)
+        coalescing paths, so same-key newest-wins is consistent across both.
+        Lazily initialised — the core mixins have no single __init__."""
+        seq = getattr(self, "_coalesce_seq_counter", 0) + 1
+        self._coalesce_seq_counter = seq
+        return seq
+
     def submit_proactive_callback(
         self,
         callback: dict,
@@ -1215,14 +1224,18 @@ class ProactiveMixin:
         their existing direct enqueue-only path so ``delivery="passive"``'s
         "don't interrupt" promise is unchanged.
         """
+        # Persist the coalesce_key + a monotonic submission seq onto the callback
+        # up front so it survives the manager→enqueue handoff (the manager stores
+        # the key on its cue, not the callback dict) and both delivery paths order
+        # by the same clock. Without the writeback a manager-released respond cue
+        # reaches enqueue with an empty key and skips coalescing ("Manager key is
+        # lost"); without the seq the enqueue path cannot tell a late manager
+        # release of an older respond cue from a newer direct-queued read cue.
+        if coalesce_key:
+            callback["coalesce_key"] = coalesce_key
+        if str(callback.get("coalesce_key") or "").strip():
+            callback.setdefault("_coalesce_submit_seq", self._next_coalesce_seq())
         if self.is_goodbye_silent():
-            # goodbye_silent bypasses the manager, which is where the
-            # coalesce_key would normally be applied. The enqueue path reads the
-            # key off the callback dict, so carry the arg onto it here — else a
-            # same-key proactive stream deferred during goodbye_silent would not
-            # collapse.
-            if coalesce_key:
-                callback["coalesce_key"] = coalesce_key
             self.enqueue_agent_callback(callback)
             logger.debug(
                 "[%s] goodbye_silent queued proactive callback for later delivery",
@@ -1691,57 +1704,91 @@ class ProactiveMixin:
             # enqueue-only path so they don't interrupt), so without this a rapid
             # ``ai_behavior="read"`` stream reusing one key would pile up stale
             # snapshots, bounded only by the drop-oldest flood guard below. An
-            # empty key never coalesces, so no existing producer regresses. Both
-            # queues (and any delivery-ack future) must stay consistent: match on
-            # ``pending_agent_callbacks``, then evict the mirror rows by
-            # ``_callback_delivery_id`` (the two queues drift, so positional
-            # trimming is unreliable).
+            # empty key never coalesces, so no existing producer regresses.
             new_key = str(callback.get("coalesce_key") or "").strip()
             if new_key:
+                # Submission-order stamp: cues carry a monotonic seq assigned at
+                # submit_proactive_callback (manager-held respond cues) or here
+                # (direct read cues), so newest-wins holds ACROSS the manager and
+                # enqueue paths. A manager release of an OLDER respond cue must not
+                # overwrite a newer direct-queued read cue sharing the key.
+                new_seq = callback.get("_coalesce_submit_seq")
+                if not isinstance(new_seq, int):
+                    new_seq = self._next_coalesce_seq()
+                    callback["_coalesce_submit_seq"] = new_seq
+                incoming_superseded = False
                 dropped = 0
                 surviving: list[dict] = []
                 for _cb in self.pending_agent_callbacks:
-                    if str(_cb.get("coalesce_key") or "").strip() == new_key:
-                        resolve_callback_delivery_ack(_cb, False)
-                        # Mark retracted, don't just drop: trigger_agent_callbacks
+                    # isinstance guard: the queue should hold dicts, but never let
+                    # a malformed entry raise here (the broad except below would
+                    # silently drop the whole enqueue and lose this callback).
+                    if not (isinstance(_cb, dict)
+                            and str(_cb.get("coalesce_key") or "").strip() == new_key):
+                        surviving.append(_cb)
+                        continue
+                    _old_seq = _cb.get("_coalesce_submit_seq")
+                    _old_seq = _old_seq if isinstance(_old_seq, int) else -1
+                    if _old_seq > new_seq:
+                        # A newer same-key cue is already queued → the incoming one
+                        # (an older manager-released respond) loses; keep the queued.
+                        incoming_superseded = True
+                        surviving.append(_cb)
+                    else:
+                        # Incoming is newer → retract the older queued cue. Mark
+                        # retracted, don't just drop: trigger_agent_callbacks
                         # snapshots pending_agent_callbacks into a local
-                        # voice_snapshot BEFORE its await (media stream /
-                        # inject_text_and_request_response) and re-filters that
-                        # snapshot only by DELIVERY_RETRACTED_KEY. A same-key cue
-                        # arriving mid-delivery must set the flag or the captured
-                        # old cue is still spoken even though its ack was already
-                        # resolved False — mirroring ProactiveDeliveryManager's
-                        # retract() and the other mid-delivery removal paths.
+                        # voice_snapshot BEFORE its await and re-filters it only by
+                        # DELIVERY_RETRACTED_KEY, so an in-flight cue must carry the
+                        # flag or it is still spoken even though its ack was resolved
+                        # False. Mirrors retract() / _drop_pending_topic_hooks_for_voice.
+                        resolve_callback_delivery_ack(_cb, False)
                         _cb[DELIVERY_RETRACTED_KEY] = True
                         dropped += 1
-                    else:
-                        surviving.append(_cb)
                 if dropped:
                     logger.debug(
-                        "[%s] coalesced %d queued callback(s) on key=%r (enqueue path)",
-                        self.lanlan_name, dropped, new_key,
+                        "[%s] coalesced %d queued callback(s) on key=%r seq=%d (enqueue path)",
+                        self.lanlan_name, dropped, new_key, new_seq,
                     )
                     self.pending_agent_callbacks = surviving
-                # Evict voice mirrors by KEY, covering the extras-only orphan:
-                # drain_agent_callbacks_for_llm clears pending_agent_callbacks on
-                # a text user turn but keeps the paired pending_extra_replies for
+                # Evict OLDER same-key voice mirrors by key, covering the extras-only
+                # orphan: drain_agent_callbacks_for_llm clears pending_agent_callbacks
+                # on a text user turn but keeps the paired pending_extra_replies for
                 # the hot-swap path, so a superseded cue can survive as an
-                # extras-only entry whose callback half is already gone —
-                # id-matching would miss it. Matching the stamped coalesce_key
-                # collapses both the paired and the orphaned voice mirrors.
+                # extras-only entry whose callback half is gone — id-matching misses
+                # it. The isinstance guard also skips legacy plain-string extras that
+                # _render_pending_extra_replies_by_origin tolerates (calling .get()
+                # on a str would raise into the broad except and lose the enqueue).
                 if self.pending_extra_replies:
-                    kept_extras = [
-                        _extra for _extra in self.pending_extra_replies
-                        if str(_extra.get("coalesce_key") or "").strip() != new_key
-                    ]
+                    kept_extras: list = []
+                    for _extra in self.pending_extra_replies:
+                        if not (isinstance(_extra, dict)
+                                and str(_extra.get("coalesce_key") or "").strip() == new_key):
+                            kept_extras.append(_extra)
+                            continue
+                        _ex_seq = _extra.get("_coalesce_submit_seq")
+                        _ex_seq = _ex_seq if isinstance(_ex_seq, int) else -1
+                        if _ex_seq > new_seq:
+                            # A newer snapshot already mirrored → incoming loses.
+                            incoming_superseded = True
+                            kept_extras.append(_extra)
+                        # else: drop the older mirror
                     if len(kept_extras) != len(self.pending_extra_replies):
                         self.pending_extra_replies = kept_extras
+                if incoming_superseded:
+                    # A newer same-key cue already won on both queues; don't enqueue
+                    # this stale one (ack it False so any waiter unblocks).
+                    resolve_callback_delivery_ack(callback, False)
+                    callback[DELIVERY_RETRACTED_KEY] = True
+                    return
             self.pending_agent_callbacks.append(callback)
             self.pending_extra_replies.append({
                 "_callback_delivery_id": delivery_id,
-                # Stamp the coalesce_key so a later same-key cue can evict this
-                # voice mirror even after its callback half is drained.
+                # Stamp the coalesce_key + submission seq so a later same-key cue
+                # can evict this voice mirror even after its callback half is
+                # drained, and only when the incoming cue is actually newer.
                 "coalesce_key": new_key,
+                "_coalesce_submit_seq": callback.get("_coalesce_submit_seq"),
                 "origin": origin,
                 "summary": summary,
                 "detail": detail,

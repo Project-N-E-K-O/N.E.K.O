@@ -1082,12 +1082,14 @@ def test_submit_proactive_callback_persists_when_goodbye_silent():
     assert mgr.pending_agent_callbacks == [cb]
     assert cb["_callback_delivery_id"]
     # goodbye_silent bypasses the manager, so the coalesce_key arg is carried
-    # onto the callback dict for the enqueue path's coalescing.
+    # onto the callback dict (plus a submission seq) for the enqueue path.
     assert cb["coalesce_key"] == "same-source"
+    assert isinstance(cb["_coalesce_submit_seq"], int)
     assert mgr.pending_extra_replies == [
         {
             "_callback_delivery_id": cb["_callback_delivery_id"],
             "coalesce_key": "same-source",
+            "_coalesce_submit_seq": cb["_coalesce_submit_seq"],
             "origin": "event",
             "summary": "queued",
             "detail": "",

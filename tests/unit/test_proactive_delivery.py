@@ -348,6 +348,41 @@ def test_enqueue_coalesce_marks_superseded_retracted():
     assert [c["summary"] for c in mgr.pending_agent_callbacks] == ["new"]
 
 
+def test_enqueue_coalesce_older_manager_release_loses_to_newer_read():
+    # Cross-path newest-wins: a respond cue held in ProactiveDeliveryManager
+    # (submission seq stamped at submit_proactive_callback) that is RELEASED into
+    # enqueue AFTER a newer same-key read cue was direct-queued must NOT overwrite
+    # the newer read cue. The submission seq lets enqueue tell the late manager
+    # release from a genuinely newer cue.
+    mgr = _make_session_mgr()
+    # A respond cue stamped early, then held by the manager during playback.
+    respond = _passive_cb("respond held", coalesce_key="k")
+    respond["_coalesce_submit_seq"] = 1
+    # A newer read cue enqueued directly gets a later seq.
+    mgr._coalesce_seq_counter = 5  # next direct-enqueue seq = 6 > 1
+    mgr.enqueue_agent_callback(_passive_cb("newer read", coalesce_key="k"))
+    # The manager now releases the OLDER respond cue into the same queue.
+    mgr.enqueue_agent_callback(respond)
+    # Newer read cue survives; the stale respond is dropped AND retracted (so any
+    # in-flight snapshot that captured it discards it too).
+    assert [c["summary"] for c in mgr.pending_agent_callbacks] == ["newer read"]
+    assert respond.get(DELIVERY_RETRACTED_KEY) is True
+
+
+def test_enqueue_coalesce_guards_legacy_string_extra():
+    # pending_extra_replies may hold a legacy plain-string entry that the render
+    # path tolerates. A keyed enqueue must not raise on it (the broad except in
+    # enqueue_agent_callback would otherwise swallow the error and silently drop
+    # the new callback).
+    mgr = _make_session_mgr()
+    mgr.pending_extra_replies.append("legacy plain string")  # non-dict entry
+    mgr.enqueue_agent_callback(_passive_cb("fresh", coalesce_key="k"))
+    assert "fresh" in [
+        c["summary"] for c in mgr.pending_agent_callbacks
+    ]  # new callback survived, not swallowed
+    assert "legacy plain string" in mgr.pending_extra_replies  # legacy left intact
+
+
 def test_enqueue_coalesce_evicts_drained_extras_orphan():
     # After a text user turn, drain_agent_callbacks_for_llm clears the callback
     # side but KEEPS the paired voice mirror in pending_extra_replies. A later
