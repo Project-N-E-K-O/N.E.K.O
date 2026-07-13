@@ -3504,7 +3504,7 @@ def test_agent_gate_is_free_version_field_sources_agent_free():
 
 
 def test_main_server_mounts_card_assist_router():
-    source = Path("app/main_server.py").read_text(encoding="utf-8")
+    source = Path("app/main_server/web_app.py").read_text(encoding="utf-8")
 
     assert "from main_routers.card_assist_router import router as card_assist_router" in source
     assert "app.include_router(card_assist_router)" in source

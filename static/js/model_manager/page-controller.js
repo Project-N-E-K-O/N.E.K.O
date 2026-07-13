@@ -6187,7 +6187,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (error.name === 'AbortError' || error.name === 'TimeoutError') {
                 console.warn('检查语音模式状态超时（服务器可能未响应）');
             } else if (error.message && (error.message.includes('Failed to fetch') || error.message.includes('ERR_CONNECTION_REFUSED'))) {
-                console.warn('无法连接到服务器，请确保 main_server.py 正在运行');
+                console.warn('无法连接到服务器，请确保主服务器正在运行');
             } else {
                 console.warn('检查语音模式状态失败:', error);
             }
