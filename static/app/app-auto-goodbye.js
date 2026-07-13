@@ -7,6 +7,8 @@
     const CONVERSATION_GRACE_MS = 15 * 1000;
     const TICK_INTERVAL_MS = 500;
     const CAT3_DRAG_RELEASES_BEFORE_CAT2 = 2;
+    const STARTUP_DEFAULT_CAT_RETRY_MS = 200;
+    const STARTUP_DEFAULT_CAT_MAX_ATTEMPTS = 300;
 
     const TIER_NONE = 'none';
     const TIER_CAT1 = 'cat1';
@@ -69,6 +71,10 @@
         // 用户「自动变猫」开关：true=启用自动变猫（默认）。禁用时 getIdleBlockReasons 持续上报
         // 'user-disabled'，从而挡掉自动 idle 变猫；不影响已处猫态或手动请离开。init 时从 localStorage 读取。
         autoCatEnabled: true,
+        startupDefaultCatRequested: false,
+        startupDefaultCatApplied: false,
+        startupDefaultCatAttempts: 0,
+        startupDefaultCatTimerId: 0,
     };
 
     function nowMs() {
@@ -693,10 +699,54 @@
         return true;
     }
 
+    function hasStartupDefaultCatTarget() {
+        return !!document.querySelector(
+            '#live2d-btn-goodbye, #vrm-btn-goodbye, #mmd-btn-goodbye, #pngtuber-btn-goodbye'
+        );
+    }
+
+    function applyStartupDefaultCat() {
+        state.startupDefaultCatTimerId = 0;
+        if (!state.startupDefaultCatRequested || state.startupDefaultCatApplied) return;
+        if (isGoodbyeActive()) {
+            state.startupDefaultCatApplied = true;
+            return;
+        }
+        if (!hasCoreInfrastructure() || !hasStartupDefaultCatTarget()) {
+            state.startupDefaultCatAttempts += 1;
+            if (state.startupDefaultCatAttempts < STARTUP_DEFAULT_CAT_MAX_ATTEMPTS) {
+                state.startupDefaultCatTimerId = window.setTimeout(
+                    applyStartupDefaultCat,
+                    STARTUP_DEFAULT_CAT_RETRY_MS
+                );
+            }
+            return;
+        }
+        state.startupDefaultCatApplied = true;
+        window.dispatchEvent(new CustomEvent('live2d-goodbye-click', {
+            detail: {
+                startupDefaultForm: 'cat',
+                source: 'startup-default-form',
+                reason: 'startup-default-cat',
+            },
+        }));
+    }
+
+    function requestStartupDefaultCat() {
+        if (state.startupDefaultCatRequested || state.startupDefaultCatApplied) return;
+        state.startupDefaultCatRequested = true;
+        state.startupDefaultCatAttempts = 0;
+        applyStartupDefaultCat();
+    }
+
     function clearTimers(reason) {
         if (state.timerId) {
             window.clearInterval(state.timerId);
             state.timerId = 0;
+        }
+        if (state.startupDefaultCatTimerId) {
+            window.clearTimeout(state.startupDefaultCatTimerId);
+            state.startupDefaultCatTimerId = 0;
         }
         if (typeof reason === 'string' && reason) {
             state.lastReason = reason;
@@ -778,6 +828,10 @@
             }
             noteUserInteraction(source);
         });
+        window.addEventListener('neko:startup-default-form', (event) => {
+            const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+            if (detail.form === 'cat') requestStartupDefaultCat();
+        });
 
         window.addEventListener('live2d-goodbye-click', (event) => {
             const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
@@ -792,11 +846,12 @@
                 state.lastReason = typeof detail.reason === 'string' ? detail.reason : 'idle-timeout';
                 syncVisualTierFromCurrentState('goodbye-event');
             } else {
+                const isStartupDefaultCat = detail.startupDefaultForm === 'cat';
                 state.autoGoodbyeTriggered = false;
-                state.lastReason = 'manual-goodbye';
+                state.lastReason = isStartupDefaultCat ? 'startup-default-cat' : 'manual-goodbye';
                 clearDragTierMemory();
                 setVisualTier(TIER_CAT1, {
-                    source: 'manual-goodbye',
+                    source: isStartupDefaultCat ? 'startup-default-form' : 'manual-goodbye',
                     reason: state.lastReason,
                 });
             }
