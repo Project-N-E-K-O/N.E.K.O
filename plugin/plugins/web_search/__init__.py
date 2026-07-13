@@ -300,9 +300,13 @@ class WebSearchPlugin(NekoPluginBase):
 
         try:
             results = await self._do_text_search(query, max_r, timeout)
+        except SearchBlockedError as e:
+            return Err(SdkError(str(e)))
         except Exception as e:
+            # 异常文本可能带完整请求 URL（含 wd= 查询词），只回传类型名，
+            # 细节留在本地文件日志里
             self.logger.exception("Search failed (query_len={})", len(query))
-            return Err(SdkError(f"搜索失败: {e}"))
+            return Err(SdkError(f"搜索失败: {type(e).__name__}"))
 
         summary = self._build_summary(query, results)
         self.logger.info(
@@ -349,8 +353,11 @@ class WebSearchPlugin(NekoPluginBase):
 
         try:
             results = await self._do_text_search(query, max_r, timeout)
+        except SearchBlockedError as e:
+            return Err(SdkError(str(e)))
         except Exception as e:
-            return Err(SdkError(f"搜索失败: {e}"))
+            self.logger.exception("Search failed (query_len={})", len(query))
+            return Err(SdkError(f"搜索失败: {type(e).__name__}"))
 
         return Ok({
             "query": query,

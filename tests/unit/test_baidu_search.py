@@ -76,7 +76,7 @@ def test_parse_baidu_rejects_unsafe_links():
     assert 'javascript' not in joined
     assert '查看40天预报详情页' not in joined  # 卡片子链接不再被当成结果标题
     assert '今天上海的气温是多少度' not in joined  # 相关搜索的站内相对链接被拒绝
-    assert all(r['url'].startswith('http') for r in results)
+    assert all(r['url'].startswith(('http://', 'https://')) for r in results)
 
 
 @pytest.mark.unit

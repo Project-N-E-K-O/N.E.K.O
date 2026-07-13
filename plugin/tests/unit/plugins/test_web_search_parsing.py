@@ -160,7 +160,7 @@ def test_parse_baidu_sanitizes_title_and_snippet() -> None:
 
 def test_parse_baidu_urls_are_absolute_http() -> None:
     results = p.parse_baidu_html(_BAIDU_HTML, max_results=10)
-    assert all(r["url"].startswith("http") for r in results)
+    assert all(r["url"].startswith(("http://", "https://")) for r in results)
     joined = " ".join(r["title"] + r["url"] for r in results)
     assert "javascript" not in joined
     assert "查看40天预报" not in joined       # 卡片子链接没被当成结果
