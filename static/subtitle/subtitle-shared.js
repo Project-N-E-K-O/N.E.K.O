@@ -975,26 +975,34 @@
 
     function applySubtitlePanelBounds(display, bounds, options) {
         var resolved = getPanelBounds(bounds);
+        var rendered = resolved;
+        if (options && options.host === 'web') {
+            var viewportWidth = Math.max(1, Math.floor(Number(window.innerWidth) || resolved.width));
+            rendered = {
+                width: Math.min(resolved.width, viewportWidth),
+                height: resolved.height
+            };
+        }
         var fontSize = normalizeSubtitleFontSize(options && hasOwn(options, 'fontSize')
             ? options.fontSize
             : getSettings().subtitleFontSize);
         if (!display) return resolved;
-        display.dataset.subtitlePanelWidth = String(resolved.width);
-        display.dataset.subtitlePanelHeight = String(resolved.height);
-        display.style.width = resolved.width + 'px';
-        display.style.height = resolved.height + 'px';
-        display.style.minWidth = MIN_PANEL_WIDTH + 'px';
-        display.style.minHeight = MIN_PANEL_HEIGHT + 'px';
+        display.dataset.subtitlePanelWidth = String(rendered.width);
+        display.dataset.subtitlePanelHeight = String(rendered.height);
+        display.style.width = rendered.width + 'px';
+        display.style.height = rendered.height + 'px';
+        display.style.minWidth = Math.min(MIN_PANEL_WIDTH, rendered.width) + 'px';
+        display.style.minHeight = Math.min(MIN_PANEL_HEIGHT, rendered.height) + 'px';
         display.style.maxHeight = 'none';
         display.style.fontSize = fontSize + 'px';
         display.dataset.subtitleFontSize = String(fontSize);
         display.style.setProperty('--subtitle-font-size', fontSize + 'px');
-        display.style.setProperty('--subtitle-panel-width', resolved.width + 'px');
-        display.style.setProperty('--subtitle-panel-height', resolved.height + 'px');
-        applySubtitleControlScale(display, resolved);
-        display.style.setProperty('--subtitle-content-max-height', Math.max(24, resolved.height - 24) + 'px');
+        display.style.setProperty('--subtitle-panel-width', rendered.width + 'px');
+        display.style.setProperty('--subtitle-panel-height', rendered.height + 'px');
+        applySubtitleControlScale(display, rendered);
+        display.style.setProperty('--subtitle-content-max-height', Math.max(24, rendered.height - 24) + 'px');
         if (!options || options.host !== 'window') {
-            display.style.setProperty('--subtitle-max-width', resolved.width + 'px');
+            display.style.setProperty('--subtitle-max-width', rendered.width + 'px');
         }
         return resolved;
     }

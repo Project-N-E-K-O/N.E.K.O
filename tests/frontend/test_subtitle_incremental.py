@@ -5464,6 +5464,48 @@ def test_subtitle_panel_bounds_enforce_usable_minimum_without_legacy_scale_contr
 
 
 @pytest.mark.frontend
+def test_web_subtitle_panel_minimum_does_not_overflow_a_narrow_viewport(
+    mock_page: Page,
+):
+    mock_page.set_viewport_size({"width": 180, "height": 240})
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-web-host",
+        """
+        <div id="subtitle-display" class="show" style="display:flex; opacity:1; visibility:visible;"></div>
+        """,
+    )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const display = document.getElementById('subtitle-display');
+            const logical = window.nekoSubtitleShared.applySubtitlePanelBounds(
+                display,
+                { width: 80, height: 20 },
+                { host: 'web' },
+            );
+            const rect = display.getBoundingClientRect();
+            return {
+                logical,
+                datasetWidth: display.dataset.subtitlePanelWidth,
+                rectWidth: Math.round(rect.width),
+                cssMinWidth: getComputedStyle(display).minWidth,
+            };
+        }
+        """
+    )
+
+    assert result == {
+        "logical": {"width": 228, "height": 40},
+        "datasetWidth": "180",
+        "rectWidth": 180,
+        "cssMinWidth": "180px",
+    }
+
+
+@pytest.mark.frontend
 def test_subtitle_boundary_resize_persists_free_panel_bounds(
     mock_page: Page,
 ):
