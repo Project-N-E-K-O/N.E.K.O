@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -11,6 +12,13 @@ from main_routers.cookies_login_router import (
     _poll_xhh_qr_login,
     validate_platform_fields,
 )
+
+
+def test_xhh_credential_tab_is_present():
+    template = Path("templates/cookies_login.html").read_text(encoding="utf-8")
+
+    assert "switchTab('xhh', this)" in template
+    assert 'data-i18n="cookiesLogin.xhh"' in template
 
 
 def _response_with_cookies(cookies: dict[str, str]) -> httpx.Response:
