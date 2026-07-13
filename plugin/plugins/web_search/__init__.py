@@ -139,6 +139,8 @@ async def _search_baidu(
         try:
             await client.get(_BAIDU_HOME_URL, headers=headers, timeout=timeout)
         except httpx.HTTPError:
+            # Cookie 预热失败不阻断搜索本身：没拿到 Cookie 时大概率命中
+            # 安全验证页，由下方 is_baidu_blocked 显式报错，无需在此处理
             pass
 
     resp = await client.get(
