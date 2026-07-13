@@ -8,12 +8,9 @@
     <template #header>
       <div class="plugin-card-header">
         <div class="plugin-info">
-          <el-tag v-if="plugin.type === 'extension'" size="small" type="primary" effect="plain" class="type-tag">
-            {{ t('plugins.extension') }}
-          </el-tag>
           <h3 class="plugin-name">{{ displayText.name }}</h3>
           <StatusIndicator :status="plugin.status || 'stopped'" />
-          <el-tag v-if="plugin.autoStart === false && plugin.type !== 'extension'" size="small" type="warning">
+          <el-tag v-if="plugin.autoStart === false" size="small" type="warning">
             {{ t('plugins.manualStart') }}
           </el-tag>
         </div>
@@ -45,9 +42,6 @@
             :has-update="hasUpdate"
             compact
           />
-          <span v-if="plugin.type === 'extension' && plugin.host_plugin_id" class="plugin-host">
-            → {{ plugin.host_plugin_id }}
-          </span>
         </div>
         <span class="plugin-entries">{{ t('plugins.entryPoint') }}: {{ entryCount }}</span>
       </footer>
@@ -68,7 +62,7 @@ import { resolvePluginDisplayText } from '@/utils/pluginDisplay'
 import type { PluginMeta, PluginInstallSourceDetailMarket } from '@/types/api'
 
 interface Props {
-  plugin: PluginMeta & { status?: string; enabled?: boolean; autoStart?: boolean; type?: string; host_plugin_id?: string }
+  plugin: PluginMeta & { status?: string; enabled?: boolean; autoStart?: boolean; type?: string }
   isSelected?: boolean
   showMetrics?: boolean
   showSourceDetail?: boolean

@@ -13,10 +13,14 @@ APP_WEBSOCKET_PATH = PROJECT_ROOT / "static" / "app" / "app-websocket.js"
 INDEX_TEMPLATE_PATH = PROJECT_ROOT / "templates" / "index.html"
 CHAT_TEMPLATE_PATH = PROJECT_ROOT / "templates" / "chat.html"
 PAGES_ROUTER_PATH = PROJECT_ROOT / "main_routers" / "pages_router.py"
-AVATAR_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "avatar" / "avatar-ui-buttons.js"
+AVATAR_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "avatar" / "avatar-ui-buttons"
 
 
 def _read(path: Path) -> str:
+    if path.is_dir():
+        part_paths = tuple(sorted(path.glob("*.js")))
+        assert part_paths, f"avatar UI button parts not found: {path}"
+        return "\n".join(part.read_text(encoding="utf-8") for part in part_paths)
     return path.read_text(encoding="utf-8")
 
 
@@ -541,7 +545,12 @@ def test_cat1_walk_finish_resolves_one_local_tail_per_approach():
         const fs = require('node:fs');
         const vm = require('node:vm');
         const assert = require('node:assert/strict');
-        const avatarSource = fs.readFileSync({json.dumps(str(AVATAR_UI_BUTTONS_PATH))}, 'utf8');
+        const avatarPartsDir = {json.dumps(str(AVATAR_UI_BUTTONS_PATH))};
+        const avatarSource = fs.readdirSync(avatarPartsDir)
+          .filter((name) => name.endsWith('.js'))
+          .sort()
+          .map((name) => fs.readFileSync(`${{avatarPartsDir}}/${{name}}`, 'utf8'))
+          .join('\\n');
         const start = avatarSource.indexOf('function _finishNekoIdleCat1Walk');
         const end = avatarSource.indexOf('function _finishNekoIdleCat1CompactTopEdgeWalk', start);
         assert.ok(start >= 0 && end > start);
@@ -793,7 +802,12 @@ def test_cat_mind_phase2_social_ping_runner_ignores_stale_audio_callbacks():
         const fs = require('node:fs');
         const vm = require('node:vm');
         const assert = require('node:assert/strict');
-        const avatarSource = fs.readFileSync(__AVATAR_PATH__, 'utf8');
+        const avatarPartsDir = __AVATAR_PATH__;
+        const avatarSource = fs.readdirSync(avatarPartsDir)
+          .filter((name) => name.endsWith('.js'))
+          .sort()
+          .map((name) => fs.readFileSync(`${avatarPartsDir}/${name}`, 'utf8'))
+          .join('\n');
         const catMindSource = fs.readFileSync(__CAT_MIND_PATH__, 'utf8');
 
         class EventTargetLike {

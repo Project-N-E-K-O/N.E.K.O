@@ -2,11 +2,10 @@
  * 插件专属的工作台 composable —— 薄包装，复用通用 `useGridWorkbench`。
  *
  * 这里注入插件语义：
- * - groups = plugin / adapter / extension（predicate 定义）
- * - 搜索索引包含 id / name / description / type / version / host / 拼音
- * - qualifierMatchers 支持 is:running / type:adapter / has:entries / host:xxx 等
+ * - groups = plugin / adapter（predicate 定义）
+ * - 搜索索引包含 id / name / description / type / version / 拼音
+ * - qualifierMatchers 支持 is:running / type:adapter / has:entries 等
  *
- * 对外 API 与改造前保持一致，现有调用点（PluginList.vue、usePackageManager）零改动。
  */
 import { computed, toValue, type MaybeRefOrGetter, type WritableComputedRef } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -23,7 +22,7 @@ import { resolvePluginDisplayText } from '@/utils/pluginDisplay'
 
 export type PluginWorkbenchLayoutMode = LayoutMode
 export type PluginWorkbenchFilterMode = FilterMode
-export type PluginWorkbenchGroupType = 'plugin' | 'adapter' | 'extension'
+export type PluginWorkbenchGroupType = 'plugin' | 'adapter'
 
 export type PluginWorkbenchItem = PluginMeta & {
   type: PluginWorkbenchGroupType
@@ -35,11 +34,10 @@ export type PluginWorkbenchItem = PluginMeta & {
   displayShortDescription?: string
 }
 
-const PLUGIN_GROUPS: readonly PluginWorkbenchGroupType[] = ['plugin', 'adapter', 'extension']
+const PLUGIN_GROUPS: readonly PluginWorkbenchGroupType[] = ['plugin', 'adapter']
 
 function normalizePluginType(type?: string): PluginWorkbenchGroupType {
   if (type === 'adapter') return 'adapter'
-  if (type === 'extension') return 'extension'
   return 'plugin'
 }
 
@@ -58,7 +56,6 @@ function buildPluginSearchIndex(plugin: PluginWorkbenchItem): string {
     shortDescription,
     plugin.type,
     plugin.version,
-    plugin.host_plugin_id,
   ]
 
   const pinyinParts = [name, description, shortDescription].flatMap((value) => {
@@ -83,8 +80,6 @@ const pluginQualifiers: Record<string, QualifierMatcher<PluginWorkbenchItem>> = 
       case 'stopped':
       case 'crashed':
       case 'pending':
-      case 'injected':
-      case 'disabled':
       case 'load_failed':
         return (plugin.status || '').toLowerCase() === value
       case 'enabled':
@@ -101,14 +96,9 @@ const pluginQualifiers: Record<string, QualifierMatcher<PluginWorkbenchItem>> = 
         return plugin.autoStart !== false
       case 'plugin':
       case 'adapter':
-      case 'extension':
         return plugin.type === value
       case 'ui':
         return hasUi(plugin)
-      case 'hosted':
-        return !!plugin.host_plugin_id
-      case 'standalone':
-        return !plugin.host_plugin_id
       default:
         return false
     }
@@ -130,9 +120,6 @@ const pluginQualifiers: Record<string, QualifierMatcher<PluginWorkbenchItem>> = 
   },
   description(plugin, value) {
     return normalizeSearchPart(plugin.displayDescription || plugin.description).includes(value)
-  },
-  host(plugin, value) {
-    return normalizeSearchPart(plugin.host_plugin_id).includes(value)
   },
   version(plugin, value) {
     return normalizeSearchPart(plugin.version).includes(value)
@@ -173,8 +160,6 @@ const pluginQualifiers: Record<string, QualifierMatcher<PluginWorkbenchItem>> = 
       case 'entries':
       case 'entry':
         return (plugin.entries?.length || 0) > 0
-      case 'host':
-        return !!plugin.host_plugin_id
       case 'dependencies':
       case 'dependency':
         return (plugin.dependencies?.length || 0) > 0
@@ -241,11 +226,9 @@ export function usePluginWorkbench<
 
   const filteredPurePlugins = computed(() => workbench.filteredByGroup.value.get('plugin') || [])
   const filteredAdapters = computed(() => workbench.filteredByGroup.value.get('adapter') || [])
-  const filteredExtensions = computed(() => workbench.filteredByGroup.value.get('extension') || [])
 
   const pluginCount = computed(() => workbench.groupCounts.value.get('plugin') || 0)
   const adapterCount = computed(() => workbench.groupCounts.value.get('adapter') || 0)
-  const extensionCount = computed(() => workbench.groupCounts.value.get('extension') || 0)
 
   // 暴露 plugin-typed selectedTypes，屏蔽来自共享 scope 的无效 id。
   const selectedTypes: WritableComputedRef<PluginWorkbenchGroupType[]> = computed({
@@ -272,11 +255,9 @@ export function usePluginWorkbench<
     groupCounts: workbench.groupCounts,
     pluginCount,
     adapterCount,
-    extensionCount,
     filteredItems: workbench.filteredItems,
     filteredPurePlugins,
     filteredAdapters,
-    filteredExtensions,
     isSelected: workbench.isSelected,
     setSelectedPluginIds: workbench.setSelectedIds,
     togglePlugin: workbench.toggleItem,

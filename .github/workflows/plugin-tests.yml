@@ -10,8 +10,10 @@ on:
     branches: [main]
     paths:
       - 'plugin/**'
-      - 'static/avatar/avatar-ui-buttons.js'
+      - 'static/avatar/avatar-ui-buttons/**'
       - 'tests/unit/test_avatar_return_button_idle_tiers_static.py'
+      - 'tests/unit/test_plugin_sdk_packaging.py'
+      - 'specs/launcher.spec'
       - '.github/workflows/plugin-tests.yml'
       # Dependency changes alter the plugin test/runtime environment (e.g.
       # removing a dev dep plugin/tests needs) — without these a deps-only
@@ -22,8 +24,10 @@ on:
     branches: [main]
     paths:
       - 'plugin/**'
-      - 'static/avatar/avatar-ui-buttons.js'
+      - 'static/avatar/avatar-ui-buttons/**'
       - 'tests/unit/test_avatar_return_button_idle_tiers_static.py'
+      - 'tests/unit/test_plugin_sdk_packaging.py'
+      - 'specs/launcher.spec'
       - '.github/workflows/plugin-tests.yml'
       - 'pyproject.toml'
       - 'uv.lock'
@@ -63,7 +67,7 @@ jobs:
 
       - name: Install dependencies
         # Plain `uv sync` = main deps + dev group (pytest, pytest-asyncio,
-        # hypothesis). The galgame group (rapidocr + cv2, ~130 MB) is NOT
+        # hypothesis, PyInstaller). The galgame group (rapidocr + cv2, ~130 MB) is NOT
         # installed — the plugin degrades its OCR backend gracefully and the
         # affected tests mock or skip that cohort.
         run: uv sync
@@ -75,8 +79,11 @@ jobs:
         # collected too.
         run: uv run pytest plugin/tests -q
 
-      - name: Run avatar static contract tests
+      - name: Run repository contract tests
         # Keep this in a separate pytest process so plugin/tests continues to
-        # use its own pytest.ini while repo-root static contracts are still
-        # covered by CI.
-        run: uv run pytest tests/unit/test_avatar_return_button_idle_tiers_static.py -q
+        # use its own pytest.ini while repo-root contracts are still covered.
+        run: >
+          uv run pytest
+          tests/unit/test_avatar_return_button_idle_tiers_static.py
+          tests/unit/test_plugin_sdk_packaging.py
+          -q

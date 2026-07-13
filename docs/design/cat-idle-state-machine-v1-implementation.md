@@ -42,7 +42,7 @@
 | 文件 | 作用 |
 |---|---|
 | `static/app/app-auto-goodbye.js` | 猫形态进入、tier 变化、拖拽降级、return 前事件 |
-| `static/avatar/avatar-ui-buttons.js` | return ball 表现、气泡、吃、玩、睡眠声音、CAT1 journey |
+| `static/avatar/avatar-ui-buttons/*.js` | return ball 表现、气泡、吃、玩、睡眠声音、CAT1 journey（按职责拆分） |
 | `static/app/app-react-chat-window.js` | chat minimized / compact / idle-dock observation |
 | `static/app/app-interpage.js` | 跨窗口 observation 广播 |
 | `static/app/app-websocket.js` | `cat_greeting_check` 前端发送 |
@@ -58,7 +58,7 @@
 | `static/app/app-cat-mind.js` | Cat Mind、observation normalizer、selector、debug API |
 | `tests/unit/test_cat_idle_state_machine_static.py` | 静态契约测试 |
 
-Cat Mind 保持为独立模块，位于 `static/app/`；`static/avatar/avatar-ui-buttons.js` 只提供 provider、adapter 与既有 runner，不能反向承载 Cat Mind 状态或 selector。
+Cat Mind 保持为独立模块，位于 `static/app/`；`static/avatar/avatar-ui-buttons/*.js` 只提供 provider、adapter 与既有 runner，不能反向承载 Cat Mind 状态或 selector。
 
 ### 2.2 NEKO-PC
 
@@ -279,7 +279,7 @@ NEKO-PC：
 当前验证：
 
 1. `node --check static/app/app-cat-mind.js`
-2. `node --check static/avatar/avatar-ui-buttons.js`
+2. `node --check static/avatar/avatar-ui-buttons/*.js`
 3. `tests/unit/test_cat_idle_state_machine_static.py`
 4. `tests/unit/test_avatar_return_button_cat1_static.py`
 5. `tests/unit/test_avatar_return_button_idle_tiers_static.py`
@@ -604,7 +604,7 @@ CAT2/CAT3 sleep sound timer
 当前验证：
 
 1. `node --check static/app/app-cat-mind.js`
-2. `node --check static/avatar/avatar-ui-buttons.js`
+2. `node --check static/avatar/avatar-ui-buttons/*.js`
 3. `tests/unit/test_cat_idle_state_machine_static.py`，其中覆盖气泡点击只 pop、旧 ambient / sleep / pair-move timer 已删除，且旧入口不 dispatch action request / action result。
 4. `tests/unit/test_avatar_return_button_cat1_static.py`
 5. `tests/unit/test_avatar_return_button_idle_tiers_static.py`
@@ -636,7 +636,7 @@ CAT2/CAT3 sleep sound timer
 本切片只在 NEKO 网页 renderer 落地；不改 NEKO-PC，不新增桌面端动作控制或桌面 ACK。
 
 1. selector 在本轮已有合法候选时进入异步 request 流程。request 只携带 `requestId`、`actionId`、`source: "cat_mind"`、`tier`、`timestamp` 与 `{ triggerTypes, score }`；不携带 button、DOM、audio 或桌面对象。
-2. `static/avatar/avatar-ui-buttons.js` 是网页端唯一 action-request consumer。它会先再次调用已有 provider dry-run，复验 selector 的全局硬锁（包括 return、猫咪拖拽、紧凑聊天窗口拖拽、转场、独立动作 / Cat Mind 音频）以覆盖“请求已排队、runner 尚未启动”间的竞态；provider 或执行前 guard 拒绝时，只通过 `window.nekoCatMind.acknowledgeActionRequest({ status: "rejected", ... })` 清掉 pending request 并写 debug reason，不写 cooldown、不写 action result、不回退旧入口。
+2. `static/avatar/avatar-ui-buttons/*.js` 是网页端唯一 action-request consumer。它会先再次调用已有 provider dry-run，复验 selector 的全局硬锁（包括 return、猫咪拖拽、紧凑聊天窗口拖拽、转场、独立动作 / Cat Mind 音频）以覆盖“请求已排队、runner 尚未启动”间的竞态；provider 或执行前 guard 拒绝时，只通过 `window.nekoCatMind.acknowledgeActionRequest({ status: "rejected", ... })` 清掉 pending request 并写 debug reason，不写 cooldown、不写 action result、不回退旧入口。
    - 上游 CAT1 playground drop 是用户主动进入的独立长生命周期；其 events/state 不成为 Cat Mind observation、candidate、score 或 result，Cat Mind 只依赖既有 `activeIndependentAction` 硬锁静默。
 3. adapter 复用既有 eat / play / ambient / sleep runner，不新写表现。它先以 `accepted + runId` 绑定 request 与既有 runner；仅在 runner 真正 started 时以同一 `runId` 确认 `started`：eat/play 以已进入 visual active 的同步结果为证据，social/sleep 以现有 audio play success callback 为证据。只有 `started` 才写 cooldown 和 active action。
 4. runner 的既有唯一 action result 继续负责 done / failed / cancelled / interrupted；adapter 不重复发 result。adapter 启动的 result 必须是 `source: "cat_mind"`，并在 detail 透传同一 `requestId` 和 `runId`。Cat Mind 只消费匹配当前 run 的 terminal result；过期、伪造或非 terminal result 只留 debug state，不改五维或 recent events。

@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from utils.storage import policy as storage_policy_module
 from utils.storage_policy import (
     CLOUDSAVE_STRATEGY_FIXED_ANCHOR,
     StorageSelectionValidationError,
@@ -67,6 +68,17 @@ def test_validate_selected_root_rejects_anchor_reserved_state_directory(tmp_path
         validate_selected_root(config_manager, invalid_target)
 
     assert "锚点目录保留区域" in str(exc_info.value)
+
+
+@pytest.mark.unit
+def test_validate_selected_root_still_rejects_repository_paths_after_packaging(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    repository_root = Path(storage_policy_module.__file__).resolve().parents[2]
+
+    with pytest.raises(StorageSelectionValidationError) as exc_info:
+        validate_selected_root(config_manager, repository_root / "frontend")
+
+    assert exc_info.value.error_code == "selected_root_inside_project"
 
 
 @pytest.mark.unit

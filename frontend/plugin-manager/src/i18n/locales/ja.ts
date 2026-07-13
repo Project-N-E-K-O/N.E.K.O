@@ -286,17 +286,13 @@ export default {
     autoStart: '自動起動',
     manualStart: '手動起動',
     fetchFailed: 'プラグイン一覧の取得に失敗しました',
-    extension: '拡張機能',
     pluginType: 'タイプ',
     pluginTypeNormal: 'プラグイン',
     hostPlugin: 'ホストプラグイン',
-    boundExtensions: 'バインド済み拡張機能',
     pluginsSection: 'プラグイン',
     adaptersSection: 'アダプター',
-    extensionsSection: '拡張機能',
     typePlugin: 'プラグイン',
     typeAdapter: 'アダプター',
-    typeExtension: '拡張機能',
     layoutList: 'リスト',
     layoutSingle: '1列',
     layoutDouble: '2列',
@@ -345,13 +341,10 @@ export default {
       auto: '自動起動',
       plugin: 'プラグイン',
       adapter: 'アダプター',
-      extension: '拡張機能',
       ui: 'UIあり',
       entries: 'エントリーあり',
-      host: 'ホストあり',
       name: '名前で検索',
       id: 'IDで検索',
-      hostTarget: 'ホストで検索',
       version: 'バージョンで検索',
       entry: 'エントリーで検索',
       author: '作者で検索'
@@ -363,8 +356,6 @@ export default {
     },
     build: 'プラグインをパッケージ化',
     delete: 'プラグインを削除',
-    disableExtension: '拡張機能を無効化',
-    enableExtension: '拡張機能を有効化',
     dangerDialog: {
       title: '危険な操作の確認',
       warningTitle: '元に戻せない操作',
@@ -553,7 +544,6 @@ export default {
     loadFailed: '読み込み失敗',
     loading: '読み込み中',
     disabled: '無効',
-    injected: '注入済み',
     pending: 'ホスト待ち'
   },
   logLevel: {
@@ -583,11 +573,6 @@ export default {
     buildFailed: 'プラグインのパッケージ化に失敗しました',
     deleteFailed: 'プラグインの削除に失敗しました',
     pluginLoadFailed: 'プラグインの読み込みに失敗したため、起動できません。',
-    confirmDisableExt: 'この拡張機能を無効化しますか？ホストプラグインの拡張機能がアンロードされます。',
-    extensionDisabled: '拡張機能が無効化されました',
-    extensionEnabled: '拡張機能が有効化されました',
-    disableExtFailed: '拡張機能の無効化に失敗しました',
-    enableExtFailed: '拡張機能の有効化に失敗しました',
     requestFailed: 'リクエストに失敗しました',
     requestFailedWithStatus: 'リクエストに失敗しました ({status})',
     badRequest: 'リクエストパラメータが不正です',
@@ -696,7 +681,7 @@ export default {
       },
       pluginWorkbench: {
         title: 'プラグイン管理ワークベンチ',
-        body: 'ここではプラグイン、アダプター、拡張をまとめて確認できるよ。'
+        body: 'ここではプラグインとアダプターをまとめて確認できるよ。'
       },
       pluginFilters: {
         title: '検索とフィルター',

@@ -124,6 +124,12 @@ function injectPopupStyles(prefix) {
         .${prefix}-popup.is-positioning {
             pointer-events: none !important;
         }
+        /* 移动端宽度兜底：弹窗自然宽度超窄屏时贴边收敛（Electron Pet 小窗同受益，无副作用） */
+        @media (max-width: 768px) {
+            .${prefix}-popup {
+                max-width: calc(100vw - 32px);
+            }
+        }
         .${prefix}-popup.${prefix}-popup-settings {
             max-height: 70vh;
         }
@@ -2681,6 +2687,16 @@ const AvatarPopupMixin = {
             return menuItem;
         };
 
+        // 引导模式下阻止关闭设置弹窗，防止用户误触打断 yui-guide 引导流程
+        // （showPopup 切换关闭与 closePopupById 两条路径共用）
+        function isTutorialGuardedSettingsClose(buttonId) {
+            if (window.isInTutorial === true && buttonId === 'settings') {
+                console.log(`[${prefix}] 引导中：阻止关闭设置弹出框`);
+                return true;
+            }
+            return false;
+        }
+
         // 新增的核心方法
         ManagerProto.showPopup = function (buttonId, popup) {
             const isVisible = popup.style.display === 'flex';
@@ -2692,6 +2708,8 @@ const AvatarPopupMixin = {
             }
 
             if (isVisible) {
+                if (isTutorialGuardedSettingsClose(buttonId)) return;
+
                 // 关闭弹窗
                 popup._showToken += 1;
                 dispatchAvatarPopupLifecycleEvent('neko-avatar-popup-closing', buttonId, popup, prefix);
@@ -2735,6 +2753,9 @@ const AvatarPopupMixin = {
                 }
 
                 this.closeAllPopupsExcept(buttonId);
+                // goodbye 隐藏路径（app-ui.js）会给弹窗 inline pointer-events:none!important，
+                // 返回路径负责成对清除；此处自愈兜底，与 display/opacity/visibility 的覆盖行为对齐
+                popup.style.removeProperty('pointer-events');
                 popup.style.display = 'flex';
                 popup.style.opacity = '0';
                 popup.style.visibility = 'visible';
@@ -2765,7 +2786,10 @@ const AvatarPopupMixin = {
                                 bottomMargin: 60,
                                 topMargin: 8,
                                 gap: 8,
-                                sidePanelWidth: (buttonId === 'settings' || buttonId === 'agent') ? 320 : 0
+                                // 移动端不为侧面板预留宽度：侧面板此时向下展开（goDown），
+                                // 右侧预留 320px 会让 opensLeft 误判把弹窗推出屏幕左缘
+                                sidePanelWidth: (buttonId === 'settings' || buttonId === 'agent')
+                                    && !(typeof window.isMobileWidth === 'function' && window.isMobileWidth()) ? 320 : 0
                             });
                             popup.dataset.opensLeft = String(!!(pos && pos.opensLeft));
                             popup.style.transform = pos && pos.opensLeft ? 'translateX(10px)' : 'translateX(-10px)';
@@ -2794,6 +2818,8 @@ const AvatarPopupMixin = {
 
         ManagerProto.closePopupById = function (buttonId) {
             if (!buttonId) return false;
+            if (isTutorialGuardedSettingsClose(buttonId)) return false;
+
             const popup = document.getElementById(`${prefix}-popup-${buttonId}`);
             if (!popup || popup.style.display !== 'flex') return false;
 

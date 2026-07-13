@@ -40,7 +40,7 @@ defineProps<{
   selectedPluginIds: string[]
   showMetrics: boolean
   showSourceDetail?: boolean
-  variant?: 'default' | 'adapter' | 'extension'
+  variant?: 'default' | 'adapter'
 }>()
 
 defineEmits<{

@@ -10,7 +10,13 @@ import math
 from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field, field_validator, model_validator
-from plugin._types.models import PluginType
+from plugin._types.plugin_types import (
+    PluginType,
+    SUPPORTED_PLUGIN_TYPES,
+    format_plugin_type_choice_error,
+    format_removed_plugin_host,
+    require_supported_plugin_type,
+)
 
 _PLUGIN_RUNTIME_TIMEOUT_MAX = 300.0
 
@@ -52,15 +58,6 @@ class PluginSafetySchema(BaseModel):
     sync_call_in_handler: Optional[Literal["warn", "reject"]] = None
 
 
-class PluginHostSchema(BaseModel):
-    """Extension 宿主插件配置 Schema
-    
-    当 type = "extension" 时必填，声明 Extension 要注入的宿主插件。
-    """
-    plugin_id: str = Field(..., min_length=1, max_length=128, pattern=r'^[a-zA-Z0-9_-]+$')
-    prefix: str = Field(default="", max_length=64)
-
-
 class PluginDependencySchema(BaseModel):
     """插件依赖 Schema"""
     id: Optional[str] = None
@@ -95,21 +92,23 @@ class PluginSectionSchema(BaseModel):
     
     # 嵌套配置
     author: Optional[PluginAuthorSchema] = None
-    host: Optional[PluginHostSchema] = None
     sdk: Optional[PluginSdkSchema] = None
     store: Optional[PluginStoreSchema] = None
     config_profiles: Optional[PluginConfigProfilesSchema] = None
     safety: Optional[PluginSafetySchema] = None
     dependencies: Optional[List[PluginDependencySchema]] = None
 
-    @model_validator(mode="after")
-    def validate_extension_host(self) -> "PluginSectionSchema":
-        """extension 类型必须声明 host，非 extension 类型不应声明 host"""
-        if self.type == "extension" and self.host is None:
-            raise ValueError("type = 'extension' 时必须声明 [plugin.host] 段（指定宿主插件）")
-        if self.type != "extension" and self.host is not None:
-            raise ValueError("只有 type = 'extension' 的插件才能声明 [plugin.host] 段")
-        return self
+    @model_validator(mode="before")
+    @classmethod
+    def reject_removed_host_config(cls, value: object) -> object:
+        if isinstance(value, dict) and "host" in value:
+            raise ValueError(format_removed_plugin_host())
+        return value
+
+    @field_validator("type", mode="before")
+    @classmethod
+    def validate_plugin_type(cls, value: object) -> str:
+        return require_supported_plugin_type(value)
 
     @field_validator('id')
     @classmethod
@@ -300,6 +299,21 @@ def validate_plugin_config_partial(
                 message="[plugin] 段必须是一个表（table）",
                 field="plugin",
             )
+
+        plugin_type = plugin_section.get("type")
+        if plugin_type is not None and (
+            not isinstance(plugin_type, str) or plugin_type not in SUPPORTED_PLUGIN_TYPES
+        ):
+            raise ConfigValidationError(
+                message=format_plugin_type_choice_error("plugin.type"),
+                field="plugin.type",
+            )
+
+        if "host" in plugin_section:
+            raise ConfigValidationError(
+                message=format_removed_plugin_host(),
+                field="plugin.host",
+            )
         
         # 验证 plugin.id 格式（如果存在）
         plugin_id = plugin_section.get("id")
@@ -439,7 +453,6 @@ __all__ = [
     "PluginStoreSchema",
     "PluginConfigProfilesSchema",
     "PluginDependencySchema",
-    "PluginHostSchema",
     "PluginType",
     "ProfileConfigSchema",
     # 验证函数

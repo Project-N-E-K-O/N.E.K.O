@@ -127,7 +127,7 @@ def parse_legacy_voice_id(voice_id: Any) -> "VoiceConfig | None":
     # Imports are local to avoid import cycles (config / utils.* import this module
     # transitively in some paths) and to keep the data model dependency-light.
     from config import GSV_VOICE_PREFIX
-    from utils.elevenlabs_tts_voices import ELEVENLABS_TTS_VOICE_PREFIX
+    from utils.tts.providers.elevenlabs import ELEVENLABS_TTS_VOICE_PREFIX
     from utils.gptsovits_config import GSV_DISABLED_VOICE_PREFIX
 
     s = str(voice_id or "").strip()

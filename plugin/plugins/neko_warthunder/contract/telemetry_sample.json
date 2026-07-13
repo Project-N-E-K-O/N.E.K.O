@@ -1,0 +1,102 @@
+{
+  "state": "in_battle",
+  "timestamp": 1781954110.3567593,
+  "in_battle": true,
+  "replay": false,
+  "domain": "air",
+  "vehicle": {
+    "valid": true,
+    "altitude_m": 1356.0,
+    "tas_kmh": 370.0,
+    "ias_kmh": 347.0,
+    "mach": 0.31,
+    "aoa_deg": 0.7,
+    "aos_deg": 2.8,
+    "load_factor": 0.85,
+    "climb_ms": 10.3,
+    "fuel_kg": 124.0,
+    "fuel_full_kg": 415.0,
+    "engines": [
+      {
+        "index": 1,
+        "throttle_pct": 100.0,
+        "rpm": 2400.0,
+        "water_temp_c": 85.0,
+        "oil_temp_c": 79.0
+      }
+    ]
+  },
+  "indicators": {
+    "valid": true,
+    "army": "air",
+    "vehicle_type": "ki_61_1a_otsu_china",
+    "heading_deg": 143.60762
+  },
+  "processed": {
+    "flags": {
+      "overspeed_warn": true,
+      "engine_overheat": true
+    },
+    "level": "warning",
+    "vehicle_type": "ki_61_1a_otsu_china",
+    "ias_kmh": 347.0,
+    "mach": 0.31,
+    "altitude_m": 1356.0,
+    "aoa_deg": 0.7,
+    "fuel_fraction": 0.299,
+    "water_temp_c": 85.0,
+    "oil_temp_c": 79.0
+  },
+  "combat": {
+    "player_name": "Pilot",
+    "self": {
+      "name": "Pilot",
+      "source": "manual",
+      "confidence": 1.0
+    },
+    "active_players": [
+      {
+        "name": "Pilot",
+        "relation": "self"
+      },
+      {
+        "name": "Opponent",
+        "relation": "enemy"
+      }
+    ],
+    "feed": [
+      {
+        "id": 1001,
+        "is_kill": true,
+        "is_my_kill": true,
+        "is_my_death": false,
+        "involves_me": true,
+        "killer": "Pilot",
+        "victim": "Opponent"
+      }
+    ]
+  },
+  "hud_notices": {
+    "feed": [
+      {
+        "id": 2001,
+        "code": "engine_overheat",
+        "severity": "warning"
+      }
+    ]
+  },
+  "awards": {
+    "feed": [
+      {
+        "id": 3001,
+        "code": "final_blow"
+      }
+    ]
+  },
+  "mission_status": "running",
+  "meta": {
+    "fast": {
+      "age_sec": 0.1
+    }
+  }
+}

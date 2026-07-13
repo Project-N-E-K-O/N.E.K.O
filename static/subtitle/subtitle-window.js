@@ -8,8 +8,11 @@
     var interactionPollTimer = null;
     var nativeInteractionIgnored = false;
     var interactionPollInFlight = false;
+    var interactionFarStreak = 0;
     var desktopWindowInteractionsCleanup = null;
     var INTERACTION_PASSTHROUGH_POLL_MS = 16;
+    var INTERACTION_PASSTHROUGH_IDLE_POLL_MS = 96;
+    var INTERACTION_PASSTHROUGH_NEAR_MARGIN = 64;
     var DESKTOP_WINDOW_EDGE_INSET = 6;
     var DESKTOP_RESIZE_HIT_ZONE = 10;
     var DESKTOP_MIN_PANEL_WIDTH = 48;
@@ -285,8 +288,9 @@
     }
 
     function stopInteractionPoll() {
+        interactionFarStreak = 0;
         if (!interactionPollTimer) return;
-        clearInterval(interactionPollTimer);
+        clearTimeout(interactionPollTimer);
         interactionPollTimer = null;
     }
 
@@ -300,6 +304,91 @@
         return true;
     }
 
+    // While the window is click-through the renderer can't rely on DOM pointer events
+    // (Electron's forwarded mouse events are unreliable), so we sample the global cursor
+    // over the bridge to decide hit-testing. That state can only change when the cursor
+    // is at/near the panel, so keep the responsive 16ms cadence there and relax it while
+    // the cursor is parked far away — the common idle case when a subtitle is visible but
+    // the user is working elsewhere — instead of a 60Hz bridge round-trip that never
+    // changes anything.
+    //
+    // Proximity is computed in the same page-space frame as the hit-test (via
+    // cursorPointToPagePoint), so it honors both the {screenX,screenY} and the {x,y}
+    // cursor-point shapes the bridge/stubs may return.
+    function isCursorNearPanel(bounds, point) {
+        var pagePoint = cursorPointToPagePoint(point, bounds);
+        if (!pagePoint) return true;
+        var width = bounds && Number.isFinite(Number(bounds.width))
+            ? Number(bounds.width) : window.innerWidth;
+        var height = bounds && Number.isFinite(Number(bounds.height))
+            ? Number(bounds.height) : window.innerHeight;
+        var margin = INTERACTION_PASSTHROUGH_NEAR_MARGIN;
+        return pagePoint.x >= -margin && pagePoint.x < width + margin &&
+            pagePoint.y >= -margin && pagePoint.y < height + margin;
+    }
+
+    // Ramp the relaxed cadence in from the responsive rate (16 -> 32 -> 64 -> 96ms)
+    // rather than hard-jumping to the idle ceiling the instant the cursor leaves the
+    // margin: a cursor that only just departed is the likeliest to return and click, so
+    // it stays responsive, and we settle to the ceiling only once it's clearly parked.
+    function computeNextInteractionPollDelay(bounds, point) {
+        if (isCursorNearPanel(bounds, point)) {
+            interactionFarStreak = 0;
+            return INTERACTION_PASSTHROUGH_POLL_MS;
+        }
+        var ramped = INTERACTION_PASSTHROUGH_POLL_MS * Math.pow(2, interactionFarStreak);
+        if (ramped < INTERACTION_PASSTHROUGH_IDLE_POLL_MS) {
+            interactionFarStreak += 1;
+            return ramped;
+        }
+        return INTERACTION_PASSTHROUGH_IDLE_POLL_MS;
+    }
+
+    function scheduleInteractionPoll(delayMs) {
+        if (interactionPollTimer) clearTimeout(interactionPollTimer);
+        var delay = Number.isFinite(Number(delayMs))
+            ? Math.max(0, Number(delayMs))
+            : INTERACTION_PASSTHROUGH_POLL_MS;
+        interactionPollTimer = setTimeout(function() {
+            interactionPollTimer = null;
+            if (!shouldUseNativePassthrough()) {
+                setNativeInteractionIgnored(false);
+                return;
+            }
+            if (interactionPollInFlight) {
+                scheduleInteractionPoll(INTERACTION_PASSTHROUGH_POLL_MS);
+                return;
+            }
+            runInteractionPoll();
+        }, delay);
+    }
+
+    function runInteractionPoll() {
+        var api = window.nekoSubtitle;
+        if (!api || typeof api.getBounds !== 'function' || typeof api.getCursorPoint !== 'function') {
+            return;
+        }
+        interactionPollInFlight = true;
+        Promise.all([api.getBounds(), api.getCursorPoint()]).then(function(values) {
+            if (!shouldUseNativePassthrough()) {
+                setNativeInteractionIgnored(false);
+                stopInteractionPoll();
+                return;
+            }
+            setNativeInteractionIgnored(shouldIgnoreAtPoint(values[1], values[0]));
+            scheduleInteractionPoll(computeNextInteractionPollDelay(values[0], values[1]));
+        }).catch(function() {
+            setNativeInteractionIgnored(false);
+            if (shouldUseNativePassthrough()) {
+                scheduleInteractionPoll(INTERACTION_PASSTHROUGH_POLL_MS);
+            } else {
+                stopInteractionPoll();
+            }
+        }).finally(function() {
+            interactionPollInFlight = false;
+        });
+    }
+
     function updateNativeInteractionPassthrough() {
         var api = window.nekoSubtitle;
         if (!api || typeof api.getBounds !== 'function' || typeof api.getCursorPoint !== 'function') {
@@ -310,22 +399,10 @@
             setNativeInteractionIgnored(false);
             return;
         }
-        if (!interactionPollTimer) {
-            interactionPollTimer = setInterval(updateNativeInteractionPassthrough, INTERACTION_PASSTHROUGH_POLL_MS);
-        }
+        // A state or pointer event may have changed the interactive rects; re-evaluate
+        // immediately at the responsive cadence rather than waiting out a relaxed delay.
         if (interactionPollInFlight) return;
-        interactionPollInFlight = true;
-        Promise.all([api.getBounds(), api.getCursorPoint()]).then(function(values) {
-            if (!shouldUseNativePassthrough()) {
-                setNativeInteractionIgnored(false);
-                return;
-            }
-            setNativeInteractionIgnored(shouldIgnoreAtPoint(values[1], values[0]));
-        }).catch(function() {
-            setNativeInteractionIgnored(false);
-        }).finally(function() {
-            interactionPollInFlight = false;
-        });
+        runInteractionPoll();
     }
 
     function propagateSubtitleSetting(change) {

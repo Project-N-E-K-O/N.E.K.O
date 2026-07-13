@@ -10,10 +10,25 @@ import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
 
+import main_logic.omni_realtime_client as _realtime_package
+import main_logic.omni_realtime_client._gemini_support as _gemini_support
 from main_logic.omni_realtime_client import OmniRealtimeClient, TurnDetectionMode
 
 # Dummy WAV header + silence for testing audio streaming
 DUMMY_AUDIO_CHUNK = b'\x00' * 1024
+
+
+def test_realtime_package_state_reexports_follow_canonical_owner(monkeypatch):
+    sentinel_genai = object()
+    sentinel_types = object()
+
+    monkeypatch.setattr(_realtime_package, "GEMINI_AVAILABLE", False)
+    monkeypatch.setattr(_realtime_package, "genai", sentinel_genai)
+    monkeypatch.setattr(_gemini_support, "types", sentinel_types)
+
+    assert _gemini_support.GEMINI_AVAILABLE is False
+    assert _gemini_support.genai is sentinel_genai
+    assert _realtime_package.types is sentinel_types
 
 
 @pytest.mark.unit
@@ -225,7 +240,6 @@ async def test_stream_audio(realtime_client):
             # Length might chance due to downsampling in audio_processor if it was 48k -> 16k
             # But DUMMY_AUDIO_CHUNK is 1024 bytes (512 samples @ 16bit).
             # If default sample rate assumed 16k, it passes through.
-            pass 
             
     assert audio_append_found, "input_audio_buffer.append event not found"
     
@@ -473,7 +487,7 @@ async def test_connect_gemini_manual_vad_disables_automatic_activity_detection()
     fake_genai_client = MagicMock()
     fake_genai_client.aio.live.connect = MagicMock(side_effect=fake_live_connect)
 
-    with patch("main_logic.omni_realtime_client.genai") as mock_genai_module:
+    with patch("main_logic.omni_realtime_client._gemini_support.genai") as mock_genai_module:
         mock_genai_module.Client = MagicMock(return_value=fake_genai_client)
         await client.connect(instructions="You are helpful.", native_audio=True)
 
@@ -538,7 +552,7 @@ async def test_signal_user_activity_end_gemini_manual_sends_activity_end():
     fake_genai_client = MagicMock()
     fake_genai_client.aio.live.connect = MagicMock(return_value=fake_ctx)
 
-    with patch("main_logic.omni_realtime_client.genai") as mock_genai_module:
+    with patch("main_logic.omni_realtime_client._gemini_support.genai") as mock_genai_module:
         mock_genai_module.Client = MagicMock(return_value=fake_genai_client)
         await client.connect(instructions="hi", native_audio=True)
 
@@ -587,7 +601,7 @@ async def test_signal_user_activity_end_gemini_server_vad_is_noop():
     fake_genai_client = MagicMock()
     fake_genai_client.aio.live.connect = MagicMock(return_value=fake_ctx)
 
-    with patch("main_logic.omni_realtime_client.genai") as mock_genai_module:
+    with patch("main_logic.omni_realtime_client._gemini_support.genai") as mock_genai_module:
         mock_genai_module.Client = MagicMock(return_value=fake_genai_client)
         await client.connect(instructions="hi", native_audio=True)
 
@@ -618,7 +632,7 @@ async def test_gemini_connect_uses_supplied_native_voice():
     fake_genai_client = MagicMock()
     fake_genai_client.aio.live.connect = MagicMock(return_value=fake_ctx)
 
-    with patch("main_logic.omni_realtime_client.genai") as mock_genai_module:
+    with patch("main_logic.omni_realtime_client._gemini_support.genai") as mock_genai_module:
         mock_genai_module.Client = MagicMock(return_value=fake_genai_client)
         await client.connect(instructions="hi", native_audio=True)
 
@@ -806,7 +820,7 @@ async def test_connect_gemini_manual_mode_keeps_has_server_vad_false():
     fake_genai_client = MagicMock()
     fake_genai_client.aio.live.connect = MagicMock(return_value=fake_ctx)
 
-    with patch("main_logic.omni_realtime_client.genai") as mock_genai_module:
+    with patch("main_logic.omni_realtime_client._gemini_support.genai") as mock_genai_module:
         mock_genai_module.Client = MagicMock(return_value=fake_genai_client)
         await client.connect(instructions="hi", native_audio=True)
 

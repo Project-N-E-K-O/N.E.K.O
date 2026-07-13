@@ -23,7 +23,7 @@ import re
 from copy import deepcopy
 
 from config.prompts.prompts_chara import get_lanlan_prompt, is_default_prompt
-from utils.native_voice_registry import is_free_lanlan_app_route
+from utils.tts.native_voice_registry import is_free_lanlan_app_route
 from utils.persona_presets import PERSONA_OVERRIDE_FIELDS
 from utils.voice_config import read_legacy_voice_id
 

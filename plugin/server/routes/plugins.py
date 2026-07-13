@@ -30,7 +30,6 @@ async def plugin_status(plugin_id: Optional[str] = Query(default=None)) -> dict[
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 
-
 @router.get("/plugins")
 async def list_plugins(locale: Optional[str] = Query(default=None)) -> dict[str, object]:
     try:
@@ -98,23 +97,5 @@ async def reload_all_plugins_endpoint(_: str = require_admin) -> dict[str, objec
     """
     try:
         return await lifecycle_service.reload_all_plugins()
-    except ServerDomainError as error:
-        raise_http_from_domain(error, logger=logger)
-
-
-@router.post("/plugin/{ext_id}/extension/disable")
-async def disable_extension_endpoint(ext_id: str, _: str = require_admin) -> dict[str, object]:
-    """禁用 Extension：通知宿主进程卸载 Router"""
-    try:
-        return await lifecycle_service.disable_extension(ext_id)
-    except ServerDomainError as error:
-        raise_http_from_domain(error, logger=logger)
-
-
-@router.post("/plugin/{ext_id}/extension/enable")
-async def enable_extension_endpoint(ext_id: str, _: str = require_admin) -> dict[str, object]:
-    """启用 Extension：通知宿主进程重新注入 Router"""
-    try:
-        return await lifecycle_service.enable_extension(ext_id)
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)

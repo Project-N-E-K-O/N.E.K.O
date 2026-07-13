@@ -204,6 +204,11 @@ def _get_chat_locale_text(language: str | None, key: str, fallback: str) -> str:
 # session/websocket while also inflating session_start_failure_count.
 _START_LLM_CONCURRENT_ABORTED = object()
 
+# 强引用兜底：事件循环只弱引用 task，分离的收尸 task（lifecycle 的 listener
+# 取消超时 fail-close 后等旧 listener 退出再关旧 session）若无人持有可能被
+# GC 掐死在半路。add + done_callback(discard) 模式。
+_ORPHAN_SESSION_REAPER_TASKS: set = set()
+
 
 @dataclass(frozen=True)
 class ContextAppendResult:
