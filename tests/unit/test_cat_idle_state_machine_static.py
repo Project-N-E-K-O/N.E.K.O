@@ -51,12 +51,18 @@ def test_cat_mind_contract_script_loads_before_behavior_modules():
 
     assert index_source.index('/static/app/app-state.js') < index_source.index('/static/app/app-cat-mind.js')
     assert index_source.index('/static/app/app-cat-mind.js') < index_source.index('/static/app/app-cat-mind-debug.js')
-    assert index_source.index('/static/app/app-cat-mind-debug.js') < index_source.index('/static/app/app-ui.js')
+    first_app_ui_part = '/static/app/app-ui/bootstrap-goodbye-and-toasts.js'
+    last_app_ui_part = '/static/app/app-ui/wrapup-final-guards.js'
+    assert index_source.index('/static/app/app-cat-mind-debug.js') < index_source.index(first_app_ui_part)
+    assert index_source.index(first_app_ui_part) < index_source.index(last_app_ui_part)
+    assert index_source.index(last_app_ui_part) < index_source.index('/static/app/app-chat-text-utils.js')
     assert index_source.index('/static/app/app-cat-mind.js') < index_source.index('/static/app/app-websocket.js')
     assert index_source.index('/static/app/app-websocket.js') < index_source.index('/static/app/app-auto-goodbye.js')
     assert chat_source.index('/static/app/app-state.js') < chat_source.index('/static/app/app-cat-mind.js')
     assert chat_source.index('/static/app/app-cat-mind.js') < chat_source.index('/static/app/app-cat-mind-debug.js')
-    assert chat_source.index('/static/app/app-cat-mind-debug.js') < chat_source.index('/static/app/app-ui.js')
+    assert chat_source.index('/static/app/app-cat-mind-debug.js') < chat_source.index(first_app_ui_part)
+    assert chat_source.index(first_app_ui_part) < chat_source.index(last_app_ui_part)
+    assert chat_source.index(last_app_ui_part) < chat_source.index('/static/app/app-chat-text-utils.js')
 
 
 def test_cat_mind_contract_is_in_static_asset_version_inputs():
@@ -377,12 +383,9 @@ def test_cat_mind_phase3_avatar_has_one_request_adapter_and_preserves_runner_own
     assert "onStarted(run)" in adapter_block
     assert "_dispatchNekoCatMindActionResult(" not in adapter_block
 
-    request_listener_block = source.split("if (typeof window !== 'undefined')", 1)[1].split(
-        "function _getNekoIdleCat1EatActionState",
-        1,
-    )[0]
-    assert "window.addEventListener(_getNekoCatMindActionRequestEventName()" in request_listener_block
-    assert "_runNekoCatMindActionRequest(event && event.detail);" in request_listener_block
+    request_listener = "window.addEventListener(_getNekoCatMindActionRequestEventName()"
+    assert source.count(request_listener) == 1
+    assert "_runNekoCatMindActionRequest(event && event.detail);" in source
 
     result_block = source.split("function _dispatchNekoCatMindActionResult", 1)[1].split(
         "function _reportNekoCatMindStateActionResult",
@@ -1209,6 +1212,27 @@ def test_cat_mind_phase1_runtime_observes_without_dispatching_actions():
         win.nekoCatMind.reset('unit-test');
         assert.equal(win.nekoCatMind.getState().active, false);
         assert.equal(win.nekoCatMind.getRecentEvents().length, 0);
+
+        now = 3000;
+        win.dispatchEvent(new CustomEventLike('live2d-goodbye-click', {{
+          detail: {{ startupDefaultForm: 'cat', source: 'startup-default-form', reason: 'startup-default-cat' }}
+        }}));
+        state = win.nekoCatMind.getState();
+        assert.equal(state.active, true);
+        assert.equal(state.entry, 'auto');
+        assert.equal(state.fields.appetite, 0.32);
+        assert.equal(state.fields.sleepiness, 0.22);
+        assert.equal(state.fields.energy, 0.66);
+        assert.equal(state.fields.social_need, 0.32);
+        assert.equal(state.fields.stimulation_need, 0.42);
+        const startupEntry = win.nekoCatMind.getRecentEvents()[0];
+        assert.equal(startupEntry.source, 'startup-default-form');
+        assert.equal(startupEntry.detail.entry, 'auto');
+        assert.equal(startupEntry.detail.reason, 'startup-default-cat');
+        assert.equal(startupEntry.detail.startupDefaultForm, 'cat');
+        now += 1000;
+        win.dispatchEvent(new CustomEventLike('live2d-return-click'));
+        assert.equal(win.nekoCatMind.getReturnSummaryDraft().entry, 'auto');
         """
     )
 

@@ -611,7 +611,7 @@
         });
     }
 
-    // Also defined in app-interpage.js for the standalone chat bridge path.
+    // Also defined in app-interpage for the standalone chat bridge path.
     function getIcebreakerMessageText(message) {
         var blocks = message && Array.isArray(message.blocks) ? message.blocks : [];
         for (var i = 0; i < blocks.length; i++) {

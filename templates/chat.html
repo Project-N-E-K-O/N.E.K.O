@@ -465,7 +465,7 @@
     })();</script>
 
     <div id="status-toast"></div>
-    <!-- 空壳 DOM：防止 app-ui.js / app-websocket.js 中 getElementById 返回 null -->
+    <!-- 空壳 DOM：防止 app-ui / app-websocket.js 中 getElementById 返回 null -->
     <div id="live2d-container" style="display:none;"><canvas id="live2d-canvas"></canvas></div>
     <div id="vrm-container" style="display:none;"><canvas id="vrm-canvas"></canvas></div>
     <div id="subtitle-display" class="hidden" style="display:none;"><span id="subtitle-text"></span></div>
@@ -529,7 +529,7 @@
     <!-- React Chat（与 index.html 完全相同的 DOM 结构）-->
     <!-- overlay 默认 hidden（与 index.html 一致）：在 React 挂载完成、shell 已带
          data-chat-surface-mode="compact" 之前不渲染任何东西，避免先闪一帧 full 形态。
-         app-react-chat-window.js 的 openWindow() 会在 mountWindow() 之后置 hidden=false。 -->
+         app-react-chat-window 的 openWindow() 会在 mountWindow() 之后置 hidden=false。 -->
     <div id="react-chat-window-overlay" hidden>
         <div id="react-chat-window-backdrop"></div>
         <div id="react-chat-window-shell" role="dialog" aria-modal="true" aria-labelledby="react-chat-window-title">
@@ -635,7 +635,12 @@
     <script src="/static/app/app-state.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-cat-mind.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-cat-mind-debug.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app/app-ui.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-ui/bootstrap-goodbye-and-toasts.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-ui/model-display.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-ui/return-transitions.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-ui/return-window-drag.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-ui/surface-floating-controls.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-ui/wrapup-final-guards.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-chat-text-utils.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-chat.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-chat-avatar.js?v={{ static_asset_version }}"></script>
@@ -654,7 +659,13 @@
     <script src="/static/tutorial/core/timeline-engine.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/core/visual-runtime.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/yui-guide/common.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app/app-interpage.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-interpage/bootstrap-resources-and-model-reload.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-interpage/composer-voice-sync.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-interpage/cross-window-broadcast-and-bridge.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-interpage/guide-message-relay.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-interpage/guide-overlay.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-interpage/guide-targets.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-interpage/listeners-and-api.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-proactive.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-settings.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-agent.js?v={{ static_asset_version }}"></script>
@@ -668,10 +679,14 @@
     <!-- React Chat（与 index.html 相同的 bundle + 初始化器）-->
     <!-- Local-mutation CSRF helper：mini-game invite respond endpoint 等本地
          mutation 共用 window.nekoLocalMutationSecurity 拿 X-CSRF-Token；必须
-         在 app-react-chat-window.js 之前加载，与 index.html 同序。 -->
+         在 app-react-chat-window 之前加载，与 index.html 同序。 -->
     <script src="/static/game/system/game-audio-system.js?v={{ static_asset_version }}"></script>
     <script src="/static/react/neko-chat/neko-chat-window.iife.js?v={{ react_chat_asset_version }}"></script>
-    <script src="/static/app/app-react-chat-window.js?v={{ react_chat_asset_version }}"></script>
+    <script src="/static/app/app-react-chat-window/bootstrap-state-and-geometry.js?v={{ react_chat_asset_version }}"></script>
+    <script src="/static/app/app-react-chat-window/geometry-and-messages.js?v={{ react_chat_asset_version }}"></script>
+    <script src="/static/app/app-react-chat-window/message-bundle-actions-and-prompts.js?v={{ react_chat_asset_version }}"></script>
+    <script src="/static/app/app-react-chat-window/minimize-and-idle-dock.js?v={{ react_chat_asset_version }}"></script>
+    <script src="/static/app/app-react-chat-window/resize-drag-and-api.js?v={{ react_chat_asset_version }}"></script>
     <script src="/static/app/app-chat-adapter.js?v={{ react_chat_asset_version }}"></script>
     <script src="/static/app/app-chat-export.js?v={{ static_asset_version }}"></script>
 
@@ -750,7 +765,7 @@
                 });
             } catch (_) {}
         }
-        // body class 由 app-react-chat-window.js 在 toggle 时刷新；这里订阅
+        // body class 由 app-react-chat-window 在 toggle 时刷新；这里订阅
         // 主动同步事件，避免轮询 / MutationObserver 的重绘开销。
         window.addEventListener('react-chat-window:galgame-mode-change', syncWindowToMinH);
         // 附件 0↔N 切换走对称事件；setComposerAttachments 在 dedupe 后只在

@@ -6,42 +6,74 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CARD_MAKER_JS = PROJECT_ROOT / "static" / "js" / "card_maker.js"
 CARD_MAKER_CSS = PROJECT_ROOT / "static" / "css" / "card_maker.css"
-CHARACTER_CARD_MANAGER_JS = PROJECT_ROOT / "static" / "js" / "character_card_manager.js"
+CHARACTER_CARD_MANAGER_JS_DIR = PROJECT_ROOT / "static" / "js" / "character_card_manager"
 MODEL_MANAGER_JS_DIR = PROJECT_ROOT / "static" / "js" / "model_manager"
 PNGTUBER_CORE_JS = PROJECT_ROOT / "static" / "pngtuber-core.js"
 MODEL_MANAGER_TEMPLATE = PROJECT_ROOT / "templates" / "model_manager.html"
 WINDOW_CONTROLS_JS = PROJECT_ROOT / "static" / "js" / "window_controls.js"
 CARD_MAKER_TEMPLATE = PROJECT_ROOT / "templates" / "card_maker.html"
 LOCALE_DIR = PROJECT_ROOT / "static" / "locales"
+CHARACTER_CARD_MANAGER_PART_NAMES = (
+    "core-and-upload.js",
+    "subscriptions-and-scan.js",
+    "character-data-and-transfer.js",
+    "card-list-and-panel.js",
+    "card-form-and-actions.js",
+    "workshop-card-and-upload.js",
+    "model-previews.js",
+    "master-profile.js",
+    "card-companion.js",
+    "sync-and-legacy-memory.js",
+)
+MODEL_MANAGER_PART_NAMES = (
+    "runtime-loaders.js",
+    "dropdown-manager.js",
+    "page-bridge.js",
+    "card-face.js",
+    "path-request-fullscreen.js",
+    "page-controller.js",
+    "window-lifecycle.js",
+)
 
 
 def read_model_manager_source() -> str:
     return "".join(
-        path.read_text(encoding="utf-8")
-        for path in sorted(MODEL_MANAGER_JS_DIR.glob("*.js"))
+        (MODEL_MANAGER_JS_DIR / part_name).read_text(encoding="utf-8")
+        for part_name in MODEL_MANAGER_PART_NAMES
     )
 
 
-def test_model_manager_parts_load_in_dependency_order():
-    part_names = [path.name for path in sorted(MODEL_MANAGER_JS_DIR.glob("*.js"))]
-    assert part_names == [
-        "01-runtime-loaders.js",
-        "02-dropdown-manager.js",
-        "03-page-bridge.js",
-        "04-card-face.js",
-        "05-path-request-fullscreen.js",
-        "06-page-controller.js",
-        "07-window-lifecycle.js",
+def read_character_card_manager_source() -> str:
+    return "".join(
+        (CHARACTER_CARD_MANAGER_JS_DIR / part_name).read_text(encoding="utf-8")
+        for part_name in CHARACTER_CARD_MANAGER_PART_NAMES
+    )
+
+
+def test_character_card_manager_parts_load_in_dependency_order():
+    discovered_names = {path.name for path in CHARACTER_CARD_MANAGER_JS_DIR.glob("*.js")}
+    assert discovered_names == set(CHARACTER_CARD_MANAGER_PART_NAMES)
+
+    template = (PROJECT_ROOT / "templates" / "character_card_manager.html").read_text(encoding="utf-8")
+    script_positions = [
+        template.index(f"/static/js/character_card_manager/{part_name}")
+        for part_name in CHARACTER_CARD_MANAGER_PART_NAMES
     ]
+    assert script_positions == sorted(script_positions)
+
+
+def test_model_manager_parts_load_in_dependency_order():
+    discovered_names = {path.name for path in MODEL_MANAGER_JS_DIR.glob("*.js")}
+    assert discovered_names == set(MODEL_MANAGER_PART_NAMES)
 
     template = MODEL_MANAGER_TEMPLATE.read_text(encoding="utf-8")
     script_positions = [
         template.index(f"/static/js/model_manager/{part_name}")
-        for part_name in part_names
+        for part_name in MODEL_MANAGER_PART_NAMES
     ]
     assert script_positions == sorted(script_positions)
 
-    loaders = (MODEL_MANAGER_JS_DIR / part_names[0]).read_text(encoding="utf-8")
+    loaders = (MODEL_MANAGER_JS_DIR / MODEL_MANAGER_PART_NAMES[0]).read_text(encoding="utf-8")
     assert loaders.index("window._vrmModulesLoading = true;") < loaders.index(
         "'/static/vrm/vrm-init.js'"
     )
@@ -51,7 +83,7 @@ def test_model_manager_parts_load_in_dependency_order():
 
 
 def test_new_character_auto_card_maker_enables_default_face_fallback_only_for_auto_popup():
-    script = CHARACTER_CARD_MANAGER_JS.read_text(encoding="utf-8")
+    script = read_character_card_manager_source()
 
     assert "fallback_default_on_close: '1'" in script
     assert "const makerUrl = `/card_maker?${makerParams.toString()}`;" in script

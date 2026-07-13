@@ -81,7 +81,7 @@ from typing import Iterable, Iterator
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_PATHS = [
-    "app/main_server.py",
+    "app/main_server",
     "main_logic",
     "main_routers",
     "utils",

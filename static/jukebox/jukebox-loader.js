@@ -230,7 +230,15 @@
     return;
   }
 
-  var SCRIPT_ID = 'neko-jukebox-script';
+  var SCRIPT_ID_PREFIX = 'neko-jukebox-part-';
+  var SCRIPT_PATHS = [
+    '/static/jukebox/jukebox/bootstrap.js',
+    '/static/jukebox/jukebox/core.js',
+    '/static/jukebox/jukebox/manager.js',
+    '/static/jukebox/jukebox/shell.js',
+    '/static/jukebox/jukebox/transport.js',
+    '/static/jukebox/jukebox/wiring.js'
+  ];
   var TOAST_ID = 'neko-jukebox-loader-toast';
   var STYLE_ID = 'neko-jukebox-loader-style';
   var currentScript = document.currentScript;
@@ -395,34 +403,61 @@
     hideToast(2800);
   }
 
-  function loadJukeboxScript() {
-    if (window.Jukebox) return Promise.resolve(window.Jukebox);
-    if (loadPromise) return loadPromise;
+  function getJukeboxPartScriptId(scriptPath) {
+    var fileName = scriptPath.split('/').pop() || 'part';
+    return SCRIPT_ID_PREFIX + fileName.replace(/\.js$/, '');
+  }
 
-    loadPromise = new Promise(function(resolve, reject) {
-      var existingScript = document.getElementById(SCRIPT_ID);
-      if (existingScript) existingScript.remove();
+  function removeJukeboxScripts() {
+    document.querySelectorAll('script[data-neko-jukebox-part="true"]').forEach(function(script) {
+      script.remove();
+    });
+  }
 
+  function loadJukeboxPart(scriptPath) {
+    return new Promise(function(resolve, reject) {
       var script = document.createElement('script');
-      script.id = SCRIPT_ID;
-      script.src = '/static/jukebox/Jukebox.js' + assetQuery;
-      script.async = true;
+      script.id = getJukeboxPartScriptId(scriptPath);
+      script.src = scriptPath + assetQuery;
+      script.async = false;
+      script.dataset.nekoJukeboxPart = 'true';
       script.dataset.nekoJukeboxLazy = 'true';
       script.onload = function() {
-        if (window.Jukebox) {
-          console.log('[JukeboxLoader] 点歌台资源已加载');
-          resolve(window.Jukebox);
-        } else {
-          reject(new Error('Jukebox global missing after script load'));
-        }
+        resolve();
       };
       script.onerror = function() {
         script.remove();
-        loadPromise = null;
-        reject(new Error('Failed to load Jukebox.js'));
+        reject(new Error('Failed to load Jukebox part: ' + scriptPath));
       };
-      console.log('[JukeboxLoader] 按需加载点歌台资源');
       document.body.appendChild(script);
+    });
+  }
+
+  function loadJukeboxScript() {
+    if (loadPromise) return loadPromise;
+    if (window.Jukebox) return Promise.resolve(window.Jukebox);
+
+    removeJukeboxScripts();
+    console.log('[JukeboxLoader] 按需加载点歌台资源');
+    loadPromise = SCRIPT_PATHS.reduce(function(sequence, scriptPath) {
+      return sequence.then(function() {
+        return loadJukeboxPart(scriptPath);
+      });
+    }, Promise.resolve()).then(function() {
+      if (!window.Jukebox) {
+        throw new Error('Jukebox global missing after parts loaded');
+      }
+      console.log('[JukeboxLoader] 点歌台资源已加载');
+      return window.Jukebox;
+    }).catch(function(error) {
+      removeJukeboxScripts();
+      try {
+        delete window.Jukebox;
+      } catch (_) {
+        window.Jukebox = undefined;
+      }
+      loadPromise = null;
+      throw error;
     });
 
     return loadPromise;
@@ -517,8 +552,7 @@
     toggleInFlight = false;
     console.log('[JukeboxLoader] 点歌台完全关闭，准备卸载资源');
 
-    var script = document.getElementById(SCRIPT_ID);
-    if (script) script.remove();
+    removeJukeboxScripts();
 
     if (unloadTimer) clearTimeout(unloadTimer);
     unloadTimer = setTimeout(finalizeUnload, 3000);
@@ -528,7 +562,7 @@
     var jukebox = window.Jukebox;
     return {
       hasJukeboxGlobal: !!jukebox,
-      hasScriptTag: !!document.getElementById(SCRIPT_ID),
+      hasScriptTag: !!document.querySelector('script[data-neko-jukebox-part="true"]'),
       hasUi: !!document.querySelector('.jukebox-wrapper'),
       isOpen: !!(jukebox && jukebox.State && jukebox.State.isOpen),
       isHidden: !!(jukebox && jukebox.State && jukebox.State.isHidden),

@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { readDirectorSource } = require('./yui-guide-director-test-parts.cjs');
 const test = require('node:test');
 
 function readStatic(relativePath) {
@@ -17,7 +18,7 @@ function readStaticDirectory(relativePath) {
 }
 
 test('day4 model lock spotlight uses a scene-scoped lock icon safe area', () => {
-    const directorSource = readStatic('tutorial/yui-guide/director.js');
+    const directorSource = readDirectorSource(__dirname);
     const orchestratorSource = readStatic('tutorial/core/scene-orchestrator.js');
     const sharedButtonsSource = readStaticDirectory('avatar/avatar-ui-buttons');
 

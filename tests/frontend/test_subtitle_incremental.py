@@ -7,6 +7,14 @@ from playwright.sync_api import Page
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
+def _add_script_parts(page: Page, relative_dir: str) -> None:
+    part_dir = PROJECT_ROOT / "static" / relative_dir
+    part_paths = sorted(part_dir.glob("*.js"))
+    assert part_paths, f"no JavaScript parts found under {part_dir}"
+    for part_path in part_paths:
+        page.add_script_tag(path=str(part_path))
+
+
 def test_subtitle_panel_uses_two_thicker_corner_lines_without_texture():
     css = (PROJECT_ROOT / "static/css/subtitle.css").read_text(encoding="utf-8")
 
@@ -341,8 +349,8 @@ def test_subtitle_window_danmaku_mode_tracks_avatar_head_and_restores(mock_page:
     assert result["afterOn"]["settings"]["subtitlePanelLocked"] is True
     assert result["afterOn"]["settings"]["subtitleInteractionPassthrough"] is True
     assert result["afterOn"]["settings"]["subtitleOpacity"] == 0
-    assert result["afterOn"]["settings"]["subtitlePanelBounds"] == {"width": 200, "height": 67}
-    assert result["afterOn"]["nativeBounds"] == {"x": 794, "y": 249, "width": 212, "height": 79}
+    assert result["afterOn"]["settings"]["subtitlePanelBounds"] == {"width": 228, "height": 76}
+    assert result["afterOn"]["nativeBounds"] == {"x": 780, "y": 244, "width": 240, "height": 88}
     assert result["afterOn"]["panelState"] == "clean"
     assert result["afterOn"]["panelHidden"] is True
     assert result["afterOn"]["closeCount"] == 1
@@ -350,7 +358,7 @@ def test_subtitle_window_danmaku_mode_tracks_avatar_head_and_restores(mock_page:
     assert {"type": "opacity", "value": 0, "transient": True} in result["afterOn"]["changes"]
     assert {
         "type": "bounds",
-        "value": {"width": 200, "height": 67},
+        "value": {"width": 228, "height": 76},
         "transient": True,
     } in result["afterOn"]["changes"]
 
@@ -770,17 +778,17 @@ def test_web_subtitle_danmaku_mode_tracks_avatar_head_and_restores(mock_page: Pa
     assert result["afterOn"]["settings"]["subtitlePanelLocked"] is True
     assert result["afterOn"]["settings"]["subtitleInteractionPassthrough"] is True
     assert result["afterOn"]["settings"]["subtitleOpacity"] == 0
-    assert result["afterOn"]["settings"]["subtitlePanelBounds"] == {"width": 200, "height": 67}
+    assert result["afterOn"]["settings"]["subtitlePanelBounds"] == {"width": 228, "height": 76}
     assert result["afterOn"]["settings"]["subtitlePanelPosition"] == {
-        "left": 800,
-        "top": 254.5,
+        "left": 786,
+        "top": 250,
         "coordinateSpace": "viewport",
     }
     assert result["afterOn"]["style"] == {
-        "left": "800px",
-        "top": "254.5px",
-        "width": "200px",
-        "height": "67px",
+        "left": "786px",
+        "top": "250px",
+        "width": "228px",
+        "height": "76px",
     }
     assert result["afterOn"]["panelState"] == "clean"
     assert result["afterOn"]["panelHidden"] is True
@@ -2904,7 +2912,7 @@ def test_react_translate_button_tracks_external_subtitle_enabled_changes(
         """
     )
     mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/app/app-react-chat-window.js"))
+    _add_script_parts(mock_page, "app/app-react-chat-window")
     mock_page.wait_for_function(
         "() => window.reactChatWindowHost && window.nekoSubtitleShared",
         timeout=5000,
@@ -2992,7 +3000,7 @@ def test_react_translate_button_accepts_initial_shared_state_without_changed_key
         """
     )
     mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/app/app-react-chat-window.js"))
+    _add_script_parts(mock_page, "app/app-react-chat-window")
     mock_page.wait_for_function(
         "() => window.reactChatWindowHost && window.nekoSubtitleShared",
         timeout=5000,
@@ -3070,7 +3078,7 @@ def test_react_translate_button_direct_toggle_controls_subtitle_window(
         }
         """
     )
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/app/app-react-chat-window.js"))
+    _add_script_parts(mock_page, "app/app-react-chat-window")
     mock_page.wait_for_function(
         "() => window.reactChatWindowHost && window.__lastReactChatProps === undefined",
         timeout=5000,
@@ -3146,7 +3154,7 @@ def test_react_translate_button_fallback_uses_current_view_state_after_desktop_s
         }
         """
     )
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/app/app-react-chat-window.js"))
+    _add_script_parts(mock_page, "app/app-react-chat-window")
     mock_page.wait_for_function(
         "() => window.reactChatWindowHost && window.__lastReactChatProps === undefined",
         timeout=5000,
@@ -5261,6 +5269,8 @@ def test_subtitle_window_resize_closes_settings_float_before_native_resize(mock_
         "panelBounds": {"width": 260, "height": 68},
     }
     assert result["calls"][1]["type"] == "resizeStart"
+    assert result["calls"][1]["minWidth"] == 240
+    assert result["calls"][1]["minHeight"] == 52
     assert all(call["type"] != "setBounds" for call in result["calls"])
 
 
@@ -5405,15 +5415,20 @@ def test_subtitle_window_left_and_top_resize_use_native_bridge_without_carrier_b
 
 
 @pytest.mark.frontend
-def test_subtitle_panel_bounds_are_free_not_legacy_size_limited(
+def test_subtitle_panel_bounds_enforce_usable_minimum_without_legacy_scale_controls(
     mock_page: Page,
 ):
     _open_subtitle_harness(
         mock_page,
         "subtitle-web-host",
         """
-        <div id="subtitle-display" class="show" style="display:flex; opacity:1; visibility:visible; animation:none; transform:none;">
+        <div id="subtitle-display" class="show" data-subtitle-panel-state="controls" style="display:flex; opacity:1; visibility:visible; animation:none; transform:none;">
             <div id="subtitle-scroll"><span id="subtitle-text">Translated text.</span></div>
+            <div id="subtitle-panel-controls">
+                <button type="button" class="subtitle-panel-control-btn"></button>
+                <button type="button" id="subtitle-settings-btn"></button>
+                <button type="button" class="subtitle-panel-control-btn"></button>
+            </div>
         </div>
         """,
     )
@@ -5425,9 +5440,10 @@ def test_subtitle_panel_bounds_are_free_not_legacy_size_limited(
         () => {
             const shared = window.nekoSubtitleShared;
             const display = document.getElementById('subtitle-display');
-            const bounds = shared.getPanelBounds({ width: 80, height: 36 });
+            const bounds = shared.getPanelBounds({ width: 80, height: 20 });
             shared.applySubtitlePanelBounds(display, bounds, { host: 'web' });
             const rect = display.getBoundingClientRect();
+            const controlsRect = document.getElementById('subtitle-panel-controls').getBoundingClientRect();
             const style = getComputedStyle(display);
             return {
                 bounds,
@@ -5435,6 +5451,10 @@ def test_subtitle_panel_bounds_are_free_not_legacy_size_limited(
                     width: Math.round(rect.width),
                     height: Math.round(rect.height),
                 },
+                controlsContained: controlsRect.left >= rect.left
+                    && controlsRect.right <= rect.right
+                    && controlsRect.top >= rect.top
+                    && controlsRect.bottom <= rect.bottom,
                 cssMinWidth: style.minWidth,
                 legacySlider: document.querySelectorAll('#subtitle-size-slider').length,
                 legacyButtons: document.querySelectorAll('.subtitle-size-btn').length,
@@ -5443,11 +5463,119 @@ def test_subtitle_panel_bounds_are_free_not_legacy_size_limited(
         """
     )
 
-    assert result["bounds"] == {"width": 80, "height": 36}
-    assert result["rect"] == {"width": 80, "height": 36}
-    assert result["cssMinWidth"] == "0px"
+    assert result["bounds"] == {"width": 228, "height": 40}
+    assert result["rect"] == {"width": 228, "height": 40}
+    assert result["controlsContained"] is True
+    assert result["cssMinWidth"] == "228px"
     assert result["legacySlider"] == 0
     assert result["legacyButtons"] == 0
+
+
+@pytest.mark.frontend
+def test_web_subtitle_panel_minimum_does_not_overflow_a_small_viewport(
+    mock_page: Page,
+):
+    mock_page.set_viewport_size({"width": 180, "height": 32})
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-web-host",
+        """
+        <div id="subtitle-display" class="show" style="display:flex; opacity:1; visibility:visible;"></div>
+        """,
+    )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const display = document.getElementById('subtitle-display');
+            const logical = window.nekoSubtitleShared.applySubtitlePanelBounds(
+                display,
+                { width: 80, height: 20 },
+                { host: 'web' },
+            );
+            const rect = display.getBoundingClientRect();
+            return {
+                logical,
+                datasetWidth: display.dataset.subtitlePanelWidth,
+                datasetHeight: display.dataset.subtitlePanelHeight,
+                rectWidth: Math.round(rect.width),
+                rectHeight: Math.round(rect.height),
+                cssMinWidth: getComputedStyle(display).minWidth,
+                cssMinHeight: getComputedStyle(display).minHeight,
+            };
+        }
+        """
+    )
+
+    assert result == {
+        "logical": {"width": 228, "height": 40},
+        "datasetWidth": "180",
+        "datasetHeight": "32",
+        "rectWidth": 180,
+        "rectHeight": 32,
+        "cssMinWidth": "180px",
+        "cssMinHeight": "32px",
+    }
+
+
+@pytest.mark.frontend
+def test_web_subtitle_panel_reapplies_viewport_limits_after_resize(
+    mock_page: Page,
+):
+    mock_page.set_viewport_size({"width": 800, "height": 300})
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-web-host",
+        """
+        <div id="subtitle-display" class="show" style="display:flex; opacity:1; visibility:visible;"></div>
+        """,
+    )
+    mock_page.evaluate(
+        """
+        () => localStorage.setItem(
+            'subtitlePanelBounds',
+            JSON.stringify({ width: 655, height: 109 }),
+        )
+        """
+    )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.evaluate(
+        """
+        () => {
+            window.subtitleTestController = window.nekoSubtitleShared.initSubtitleUI({ host: 'web' });
+        }
+        """
+    )
+
+    def panel_size() -> dict[str, int]:
+        return mock_page.evaluate(
+            """
+            () => {
+                const rect = document.getElementById('subtitle-display').getBoundingClientRect();
+                return { width: Math.round(rect.width), height: Math.round(rect.height) };
+            }
+            """
+        )
+
+    assert panel_size() == {"width": 655, "height": 109}
+
+    mock_page.set_viewport_size({"width": 180, "height": 32})
+    mock_page.wait_for_function(
+        """
+        () => document.getElementById('subtitle-display').dataset.subtitlePanelHeight === '32'
+        """
+    )
+    assert panel_size() == {"width": 180, "height": 32}
+
+    mock_page.set_viewport_size({"width": 800, "height": 300})
+    mock_page.wait_for_function(
+        """
+        () => document.getElementById('subtitle-display').dataset.subtitlePanelHeight === '109'
+        """
+    )
+    assert panel_size() == {"width": 655, "height": 109}
+    mock_page.evaluate("() => window.subtitleTestController.destroy()")
 
 
 @pytest.mark.frontend

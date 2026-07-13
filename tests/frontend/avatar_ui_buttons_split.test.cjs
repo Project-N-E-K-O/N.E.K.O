@@ -7,16 +7,16 @@ const vm = require('node:vm');
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
 const PARTS_DIR = path.join(PROJECT_ROOT, 'static', 'avatar', 'avatar-ui-buttons');
 const PART_NAMES = [
-    '00-core.js',
-    '10-idle-assets-and-question.js',
-    '20-idle-playground.js',
-    '30-idle-actions-and-audio.js',
-    '40-idle-drag-and-subactions.js',
-    '45-idle-journey-and-presentation.js',
-    '50-methods-setup.js',
-    '60-methods-buttons.js',
-    '70-methods-return.js',
-    '80-methods-state-and-cleanup.js',
+    'core.js',
+    'idle-assets-and-question.js',
+    'idle-playground.js',
+    'idle-actions-and-audio.js',
+    'idle-drag-and-subactions.js',
+    'idle-journey-and-presentation.js',
+    'methods-setup.js',
+    'methods-buttons.js',
+    'methods-return.js',
+    'methods-state-and-cleanup.js',
 ];
 const EXPECTED_METHOD_NAMES = [
     '_addReturnButtonBreathingAnimation',
@@ -36,7 +36,7 @@ const EXPECTED_METHOD_NAMES = [
 function loadMixin() {
     const listeners = new Map();
     const document = {
-        currentScript: { src: 'http://127.0.0.1/static/avatar/avatar-ui-buttons/00-core.js?v=test' },
+        currentScript: { src: 'http://127.0.0.1/static/avatar/avatar-ui-buttons/core.js?v=test' },
         getElementById() { return null; },
         querySelectorAll() { return []; },
         addEventListener() {},
@@ -75,7 +75,7 @@ test('avatar button parts install the unchanged method contract for every backen
     const discoveredParts = fs.readdirSync(PARTS_DIR)
         .filter((name) => name.endsWith('.js'))
         .sort();
-    assert.deepEqual(discoveredParts, PART_NAMES);
+    assert.deepEqual(discoveredParts, [...PART_NAMES].sort());
 
     const { mixin } = loadMixin();
     for (const prefix of ['live2d', 'vrm', 'mmd']) {

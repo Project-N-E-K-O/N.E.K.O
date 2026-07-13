@@ -10,7 +10,7 @@ Covers:
 2. vrm-core.loadModel token guards: managerLoadToken passed in + guarded before
    old-model removal and before scene.add, with _disposeAbandonedVRM on bail.
 3. VRMManager.cleanupUI restored: dropped in #510 while dispose() /
-   app-character.js / app-interpage.js kept calling it behind typeof guards,
+   app-character.js / app-interpage kept calling it behind typeof guards,
    leaving _returnButtonDragHandlers document listeners uncleaned on teardown.
 4. MMD load token provenance: token captured before the first await in
    mmd-core.loadModel and passed from the manager, otherwise a superseded call

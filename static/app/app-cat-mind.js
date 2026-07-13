@@ -1452,7 +1452,9 @@
         }
         runtimeState = createInitialRuntimeState();
         runtimeState.active = true;
-        runtimeState.entry = eventDetail.autoGoodbye === true || eventDetail.source === 'auto-goodbye'
+        var isStartupDefaultCat = eventDetail.startupDefaultForm === 'cat';
+        runtimeState.entry = eventDetail.autoGoodbye === true ||
+            eventDetail.source === 'auto-goodbye' || isStartupDefaultCat
             ? 'auto'
             : 'manual';
         runtimeState.fields = createInitialMindFields(runtimeState.entry);
@@ -1462,13 +1464,18 @@
         startAutonomousClock(timestamp);
         observe({
             type: OBSERVATION_TYPES.CAT_ENTERED,
-            source: runtimeState.entry === 'auto' ? 'auto-goodbye' : 'manual-goodbye',
+            source: isStartupDefaultCat
+                ? 'startup-default-form'
+                : (runtimeState.entry === 'auto' ? 'auto-goodbye' : 'manual-goodbye'),
             tier: TIERS.CAT1,
             timestamp: timestamp,
             detail: {
                 entry: runtimeState.entry,
-                reason: eventDetail.reason || (runtimeState.entry === 'auto' ? 'idle-timeout' : 'manual-goodbye'),
+                reason: eventDetail.reason || (isStartupDefaultCat
+                    ? 'startup-default-cat'
+                    : (runtimeState.entry === 'auto' ? 'idle-timeout' : 'manual-goodbye')),
                 autoGoodbye: eventDetail.autoGoodbye === true,
+                startupDefaultForm: isStartupDefaultCat ? 'cat' : undefined,
             },
         });
     }
