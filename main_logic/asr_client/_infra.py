@@ -82,7 +82,7 @@ class AsrSessionConfig:
 
     language: str = "zh"
     input_sample_rate_hz: Literal[16000, 48000] = 16000
-    endpointing_mode: Literal["manual", "provider"] = "manual"
+    endpointing_mode: Literal["manual", "server_vad"] = "manual"
 
     def __post_init__(self) -> None:
         language = str(self.language).strip()
@@ -106,9 +106,9 @@ class AsrSessionConfig:
             raise ValueError(
                 "ASR_INVALID_CONFIG: input_sample_rate_hz must be 16000 or 48000"
             )
-        if self.endpointing_mode not in ("manual", "provider"):
+        if self.endpointing_mode not in ("manual", "server_vad"):
             raise ValueError(
-                "ASR_INVALID_CONFIG: endpointing_mode must be 'manual' or 'provider'"
+                "ASR_INVALID_CONFIG: endpointing_mode must be 'manual' or 'server_vad'"
             )
         object.__setattr__(self, "language", normalized_language)
 
@@ -331,6 +331,7 @@ class _RealtimeAsrSessionImpl:
             - {
                 "language",
                 "input_sample_rate_hz",
+                "endpointing_mode",
             }
             - _OMNI_ONLY_FIELDS
         )
@@ -421,8 +422,8 @@ class _RealtimeAsrSessionImpl:
                         audio=tail,
                     )
                 )
-            if self._config.endpointing_mode == "provider":
-                # Provider endpointing still needs a local activity boundary
+            if self._config.endpointing_mode == "server_vad":
+                # Server VAD still needs a local activity boundary
                 # to drain soxr's buffered 48 kHz tail. It deliberately does
                 # not send a commit or advance a worker-owned utterance ID.
                 self._utterance_has_audio = False
@@ -627,9 +628,30 @@ class _RealtimeAsrSessionImpl:
             return False
         if event.kind == "utterance_started":
             if (
-                self._config.endpointing_mode != "provider"
+                self._config.endpointing_mode != "server_vad"
                 or event.utterance_id is None
             ):
+                return False
+            key = (event.generation, event.buffer_epoch, event.utterance_id)
+            async with self._operation_lock:
+                if (
+                    self._state is not _SessionState.READY
+                    or event.generation != self._generation
+                    or event.buffer_epoch != self._buffer_epoch
+                ):
+                    return False
+                # Repeated provider speech-start notifications for one item
+                # are idempotent. The worker owns provider-item -> internal-ID
+                # mapping, so no provider identifier leaks into this layer.
+                self._active_utterance_keys.add(key)
+            return False
+        if event.kind == "partial":
+            return False
+        if event.kind == "final":
+            if event.utterance_id is None:
+                return False
+            text = event.text.strip()
+            if not text:
                 return False
             key = (event.generation, event.buffer_epoch, event.utterance_id)
             async with self._operation_lock:
@@ -667,7 +689,7 @@ class _RealtimeAsrSessionImpl:
                     return False
                 valid_keys = (
                     self._active_utterance_keys
-                    if self._config.endpointing_mode == "provider"
+                    if self._config.endpointing_mode == "server_vad"
                     else self._committed_utterance_keys
                 )
                 if key not in valid_keys:
@@ -675,16 +697,9 @@ class _RealtimeAsrSessionImpl:
                         "ASR worker returned a final for an inactive utterance"
                     )
                     return False
-                self._pending_finals[key] = text
-                ready_texts: list[str] = []
-                while (
-                    self._utterance_order
-                    and self._utterance_order[0] in self._pending_finals
-                ):
-                    ready_key = self._utterance_order.popleft()
-                    ready_texts.append(self._pending_finals.pop(ready_key))
-                    self._active_utterance_keys.discard(ready_key)
-                    self._committed_utterance_keys.discard(ready_key)
+                self._final_keys.add(key)
+                self._active_utterance_keys.discard(key)
+                self._committed_utterance_keys.discard(key)
             assert self._callback_queue is not None
             for ready_text in ready_texts:
                 if ready_text:

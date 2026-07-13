@@ -29,7 +29,7 @@ import websockets
 from .._infra import AsrSessionConfig, _AsrWorkerEvent, _AsrWorkerRequest
 
 
-_OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime?intent=transcription"
+_OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime?model=gpt-realtime-whisper"
 _OPENAI_MODEL = "gpt-realtime-whisper"
 _CLOSE_TIMEOUT_SECONDS = 0.5
 
@@ -192,15 +192,6 @@ async def openai_asr_worker(
                 }:
                     await _handle_transcript_event(event)
                     continue
-                if event_type == "conversation.item.input_audio_transcription.failed":
-                    item_id = event.get("item_id")
-                    if isinstance(item_id, str):
-                        item_keys.pop(item_id, None)
-                    await _emit_error(
-                        "ASR_OPENAI_TRANSCRIPTION_FAILED",
-                        "OpenAI failed to transcribe a committed audio item",
-                    )
-                    return
                 if event_type == "error":
                     await _emit_error(
                         "ASR_OPENAI_ERROR",
