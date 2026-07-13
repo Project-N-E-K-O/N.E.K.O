@@ -80,5 +80,22 @@ def test_parse_baidu_rejects_unsafe_links():
 
 
 @pytest.mark.unit
+def test_parse_baidu_scans_past_rejected_containers():
+    # 大量相关搜索容器排在前面时，不能因预截断漏掉后面的有效结果
+    junk = ''.join(
+        f'<div class="c-container"><h3><a href="/s?wd=related{i}">相关搜索推荐词条目{i}</a></h3></div>'
+        for i in range(10)
+    )
+    html = (
+        f'<html><body><div id="content_left">{junk}'
+        '<div class="result c-container">'
+        '<h3><a href="http://www.baidu.com/link?url=REAL">真实结果标题条目在后面</a></h3>'
+        '</div></div></body></html>'
+    )
+    results = parse_baidu_results(html, limit=3)
+    assert [r['title'] for r in results] == ['真实结果标题条目在后面']
+
+
+@pytest.mark.unit
 def test_parse_baidu_empty_html_returns_empty_list():
     assert parse_baidu_results('<html><body>no results</body></html>', limit=5) == []

@@ -1843,8 +1843,9 @@ def parse_baidu_results(html_content: str, limit: int = 5) -> List[Dict[str, str
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(html_content, 'lxml')
 
-        # 提取搜索结果容器
-        containers = soup.find_all('div', class_=lambda x: x and 'c-container' in x, limit=limit * 2)
+        # 提取搜索结果容器。不预截断列表：相关搜索/卡片等会被拒绝的容器可能
+        # 排在有效结果前面，靠下方 len(results) >= limit 提前退出即可
+        containers = soup.find_all('div', class_=lambda x: x and 'c-container' in x)
         
         for container in containers:
             # 标题只认 h3 下的链接：容器里第一个 <a> 可能是卡片子链接
