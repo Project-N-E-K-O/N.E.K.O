@@ -19,6 +19,8 @@ Covers:
 """
 from pathlib import Path
 
+from tests.unit.avatar_ui_buttons_source import read_avatar_ui_buttons_source
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -136,7 +138,7 @@ def test_vrm_cleanup_ui_is_restored_and_delegates_to_mixin():
     assert "this.cleanupUI();" in manager_source
 
     # mixin 的 cleanupFloatingButtons 必须清理 return 按钮的 document 级拖拽监听
-    mixin_source = (PROJECT_ROOT / "static/avatar/avatar-ui-buttons.js").read_text(encoding="utf-8")
+    mixin_source = read_avatar_ui_buttons_source()
     cleanup_section = mixin_source.split("ManagerPrototype.cleanupFloatingButtons = function() {", 1)[1]
     assert "this._returnButtonDragHandlers = null;" in cleanup_section
 
