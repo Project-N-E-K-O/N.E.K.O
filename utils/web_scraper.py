@@ -26,6 +26,7 @@ import httpx
 from utils.external_http_client import get_external_http_client
 import random
 import re
+import unicodedata
 import platform
 from typing import TYPE_CHECKING, Dict, List, Any, Optional, Union
 from urllib.parse import quote
@@ -1651,6 +1652,32 @@ async def search_duckduckgo(query: str, limit: int = 10) -> Dict[str, Any]:
         }
 
 
+_SEARCH_TEXT_WS_RE = re.compile(r"\s+")
+
+
+def _sanitize_search_text(text: str) -> str:
+    """Sanitize untrusted search-result text: drop control/format/private-use/
+    surrogate characters and U+FFFD, and normalize whitespace.
+
+    Baidu pages mix iconfont private-use glyphs (e.g. U+E687) into text nodes,
+    mis-decoded pages yield U+FFFD, and zero-width/bidi controls can be abused
+    for injection obfuscation — none of these should reach the LLM/TTS.
+    """
+    if not text:
+        return ""
+    kept = []
+    for ch in text:
+        if ch.isspace():
+            kept.append(" ")
+            continue
+        if ord(ch) == 0xFFFD:
+            continue
+        if unicodedata.category(ch) in ("Cc", "Cf", "Co", "Cs"):
+            continue
+        kept.append(ch)
+    return _SEARCH_TEXT_WS_RE.sub(" ", "".join(kept)).strip()
+
+
 def parse_duckduckgo_results(html_content: str, limit: int = 5) -> List[Dict[str, str]]:
     """
     Parse a DuckDuckGo HTML-endpoint search results page
@@ -1669,10 +1696,11 @@ def parse_duckduckgo_results(html_content: str, limit: int = 5) -> List[Dict[str
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(html_content, 'lxml')
 
-        # html.duckduckgo.com 每条结果是 div.result（正常结果还带 web-result）
+        # html.duckduckgo.com 每条结果是 div.result（正常结果还带 web-result）。
+        # 不预截断：广告/无效 URL 的条目可能排在前面，靠下方攒够 limit 提前退出
         result_divs = soup.find_all('div', class_='result')
 
-        for div in result_divs[:limit * 2]:
+        for div in result_divs:
             # 跳过广告（class 含 result--ad / results_links_deep 之外的 ad 变体）
             cls = div.get('class') or []
             if any('ad' in c for c in cls):
@@ -1682,7 +1710,7 @@ def parse_duckduckgo_results(html_content: str, limit: int = 5) -> List[Dict[str
             if not link:
                 continue
 
-            title = link.get_text(strip=True)
+            title = _sanitize_search_text(link.get_text(strip=True))
             if not title or not (3 < len(title) < 200):
                 continue
 
@@ -1699,12 +1727,21 @@ def parse_duckduckgo_results(html_content: str, limit: int = 5) -> List[Dict[str
                     url = qs.get('uddg', [''])[0]
                 elif href.startswith('http'):
                     url = href
+            # 只接受带真实主机名的 http(s) 绝对地址（uddg 里可能包着
+            # javascript: 或 "https://" 这种残缺目标），无效的整条跳过
+            try:
+                parsed_target = urlparse(url)
+                url_ok = parsed_target.scheme in ('http', 'https') and bool(parsed_target.hostname)
+            except ValueError:
+                url_ok = False
+            if not url_ok:
+                continue
 
             # 摘要片段
             abstract = ''
             snippet = div.find(class_='result__snippet')
             if snippet:
-                abstract = snippet.get_text(strip=True)[:200]
+                abstract = _sanitize_search_text(snippet.get_text(strip=True))[:200]
 
             results.append({
                 'title': title,
@@ -1807,36 +1844,40 @@ def parse_baidu_results(html_content: str, limit: int = 5) -> List[Dict[str, str
         Search result list; each result contains title, abstract, url
     """
     results = []
-    
+    seen_urls = set()
+
     try:
-        from urllib.parse import urljoin
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(html_content, 'lxml')
 
-        # 提取搜索结果容器
-        containers = soup.find_all('div', class_=lambda x: x and 'c-container' in x, limit=limit * 2)
+        # 提取搜索结果容器。不预截断列表：相关搜索/卡片等会被拒绝的容器可能
+        # 排在有效结果前面，靠下方 len(results) >= limit 提前退出即可
+        containers = soup.find_all('div', class_=lambda x: x and 'c-container' in x)
         
         for container in containers:
-            # 提取标题和链接
-            link = container.find('a')
+            # 标题只认 h3 下的链接：容器里第一个 <a> 可能是卡片子链接
+            # （如天气卡的"查看40天预报"）或相关搜索词，不是结果标题
+            link = container.select_one('h3 a[href]')
             if link:
-                title = link.get_text(strip=True)
+                title = _sanitize_search_text(link.get_text(strip=True))
                 if title and 5 < len(title) < 200:
-                    # 提取 URL（处理相对和绝对 URL）
+                    # 只接受 http(s) 绝对地址：相关搜索等站内相对链接（/s?wd=...）
+                    # 和 javascript: 伪协议都不是搜索结果，不能 urljoin 洗白
                     href = link.get('href', '')
-                    if href:
-                        # urljoin 能够自动处理绝对URL、相对URL以及以 '/' 开头的根URL
-                        url = urljoin('https://www.baidu.com', href)
-                    else:
-                        url = ''
-                    
+                    if not href.startswith(('http://', 'https://')):
+                        continue
+                    url = href
+                    if url in seen_urls:
+                        continue
+
                     # 提取摘要
                     abstract = ""
                     content_span = container.find('span', class_=lambda x: x and 'content-right' in x)
                     if content_span:
-                        abstract = content_span.get_text(strip=True)[:200]
-                    
+                        abstract = _sanitize_search_text(content_span.get_text(strip=True))[:200]
+
                     if not any(skip in title.lower() for skip in ['百度', '广告', 'javascript']):
+                        seen_urls.add(url)
                         results.append({
                             'title': title,
                             'abstract': abstract,
@@ -1845,31 +1886,32 @@ def parse_baidu_results(html_content: str, limit: int = 5) -> List[Dict[str, str
                         if len(results) >= limit:
                             break
         
-        # 如果没找到结果，尝试提取 h3 标题
+        # 如果没找到结果，尝试提取 h3 标题。同样不预截断：被拒绝的
+        # 相关搜索类 h3 可能排在前面，攒够 limit 条再退出
         if not results:
-            h3_links = soup.find_all('h3')
-            for h3 in h3_links[:limit]:
+            for h3 in soup.find_all('h3'):
                 link = h3.find('a')
                 if link:
-                    title = link.get_text(strip=True)
+                    title = _sanitize_search_text(link.get_text(strip=True))
                     if title and 5 < len(title) < 200:
-                        # 提取 URL
+                        # 与主循环同口径：http(s) 校验、广告关键词过滤、URL 去重
                         href = link.get('href', '')
-                        if href:
-                            if href.startswith('/'):
-                                url = urljoin('https://www.baidu.com', href)
-                            elif not href.startswith('http'):
-                                url = urljoin('https://www.baidu.com/', href)
-                            else:
-                                url = href
-                        else:
-                            url = ''
-                        
+                        if not href.startswith(('http://', 'https://')):
+                            continue
+                        url = href
+                        if url in seen_urls:
+                            continue
+                        if any(skip in title.lower() for skip in ['百度', '广告', 'javascript']):
+                            continue
+
+                        seen_urls.add(url)
                         results.append({
                             'title': title,
                             'abstract': '',
                             'url': url
                         })
+                        if len(results) >= limit:
+                            break
         
         logger.info(f"解析到 {len(results)} 条百度搜索结果")
         return results[:limit]
