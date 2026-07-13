@@ -1844,7 +1844,8 @@ def parse_baidu_results(html_content: str, limit: int = 5) -> List[Dict[str, str
         Search result list; each result contains title, abstract, url
     """
     results = []
-    
+    seen_urls = set()
+
     try:
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(html_content, 'lxml')
@@ -1866,6 +1867,8 @@ def parse_baidu_results(html_content: str, limit: int = 5) -> List[Dict[str, str
                     if not href.startswith(('http://', 'https://')):
                         continue
                     url = href
+                    if url in seen_urls:
+                        continue
 
                     # 提取摘要
                     abstract = ""
@@ -1874,6 +1877,7 @@ def parse_baidu_results(html_content: str, limit: int = 5) -> List[Dict[str, str
                         abstract = _sanitize_search_text(content_span.get_text(strip=True))[:200]
 
                     if not any(skip in title.lower() for skip in ['百度', '广告', 'javascript']):
+                        seen_urls.add(url)
                         results.append({
                             'title': title,
                             'abstract': abstract,
@@ -1890,12 +1894,17 @@ def parse_baidu_results(html_content: str, limit: int = 5) -> List[Dict[str, str
                 if link:
                     title = _sanitize_search_text(link.get_text(strip=True))
                     if title and 5 < len(title) < 200:
-                        # 与主循环同口径：只接受 http(s) 绝对地址
+                        # 与主循环同口径：http(s) 校验、广告关键词过滤、URL 去重
                         href = link.get('href', '')
                         if not href.startswith(('http://', 'https://')):
                             continue
                         url = href
+                        if url in seen_urls:
+                            continue
+                        if any(skip in title.lower() for skip in ['百度', '广告', 'javascript']):
+                            continue
 
+                        seen_urls.add(url)
                         results.append({
                             'title': title,
                             'abstract': '',

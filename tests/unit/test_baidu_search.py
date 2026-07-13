@@ -47,6 +47,11 @@ _BAIDU_HTML = f"""
     <h3><a href="http://www.baidu.com/link?url=BBB">中国天气网权威预警发布</a></h3>
   </div>
 
+  <!-- 与第一条重复的 URL —— 应被去重 -->
+  <div class="result c-container">
+    <h3><a href="http://www.baidu.com/link?url=AAA">上海气象预报站副本条目</a></h3>
+  </div>
+
 </div></body></html>
 """
 
@@ -94,6 +99,20 @@ def test_parse_baidu_scans_past_rejected_containers():
     )
     results = parse_baidu_results(html, limit=3)
     assert [r['title'] for r in results] == ['真实结果标题条目在后面']
+
+
+@pytest.mark.unit
+def test_parse_baidu_h3_fallback_filters_ads_and_dupes():
+    # 兜底 h3 路径与主循环同口径：广告关键词过滤 + URL 去重
+    html = (
+        '<html><body>'
+        '<h3><a href="http://www.baidu.com/link?url=AD">广告推广的天气站点标题</a></h3>'
+        '<h3><a href="http://www.baidu.com/link?url=DUP">正常结果标题条目甲</a></h3>'
+        '<h3><a href="http://www.baidu.com/link?url=DUP">正常结果标题条目乙</a></h3>'
+        '</body></html>'
+    )
+    results = parse_baidu_results(html, limit=5)
+    assert [r['title'] for r in results] == ['正常结果标题条目甲']
 
 
 @pytest.mark.unit
