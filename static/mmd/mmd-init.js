@@ -647,7 +647,7 @@ function _startMmdIdleRotation(urls) {
                 // loadAnimation 内部通过 _cleanupAnimation 清理旧动画，并以同步方式应用新动画第 0 帧
                 // （pose() → mixer.update(0) → updateMatrixWorld 同步完成，不跨渲染帧），
                 // 所以旧动画会一直播放到新动画加载完成那一刻，无 T-pose 闪烁。
-                // 与 model_manager/06-page-controller.js 的 _playIdleAnimation 保持一致的切换策略。
+                // 与 model_manager/page-controller.js 的 _playIdleAnimation 保持一致的切换策略。
                 await mgr.loadAnimation(url);
                 mgr.playAnimation();
                 _mmdIdleLastUrl = url;

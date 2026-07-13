@@ -985,7 +985,7 @@ fixtures/simple_pngtuber/model.json
 验证命令：
 
 ```powershell
-node --check static\js\model_manager\06-page-controller.js
+node --check static\js\model_manager\page-controller.js
 python -m py_compile main_routers\pngtuber_router.py
 python -m py_compile main_routers\pngtuber_importers\godot_variant.py main_routers\pngtuber_importers\pngtube_remix.py
 uv run pytest tests\unit\test_pngtuber_router.py tests\unit\test_pngtuber_static_contracts.py tests\unit\test_pngtuber_importers.py
@@ -1021,7 +1021,7 @@ uv run pytest tests\unit\test_pngtuber_router.py tests\unit\test_pngtuber_static
 最近一次相关自动验证基线包括：
 
 ```powershell
-node --check static\js\model_manager\06-page-controller.js
+node --check static\js\model_manager\page-controller.js
 node --check static\pngtuber-core.js
 uv run pytest tests\unit\test_pngtuber_static_contracts.py
 uv run pytest tests\unit\test_pngtube_remix_importer.py
@@ -1209,7 +1209,7 @@ PNGTuber 的“手机页面”定义必须跟项目现有 Web 口径一致：按
 推荐验证命令：
 
 ```powershell
-node --check static\js\model_manager\06-page-controller.js
+node --check static\js\model_manager\page-controller.js
 node --check static\pngtuber-core.js
 uv run pytest tests\unit\test_pngtuber_static_contracts.py
 uv run pytest tests\unit\test_pngtube_remix_importer.py
@@ -1413,7 +1413,7 @@ layers/
 ```powershell
 python -m py_compile main_routers\pngtuber_importers\godot_variant.py main_routers\pngtuber_importers\pngtube_remix.py
 node --check static\pngtuber-core.js
-node --check static\js\model_manager\06-page-controller.js
+node --check static\js\model_manager\page-controller.js
 uv run pytest tests\unit\test_pngtuber_router.py tests\unit\test_pngtuber_importers.py tests\unit\test_pngtuber_static_contracts.py
 ```
 
