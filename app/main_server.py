@@ -1738,7 +1738,10 @@ from main_routers.websocket_router import router as websocket_router # noqa
 from main_routers.workshop_router import router as workshop_router # noqa
 from main_routers.cookies_login_router import router as cookies_login_router # noqa
 from main_routers.game_router import router as game_router # noqa
-from main_routers.card_drop_router import router as card_drop_router # noqa
+from main_routers.card_drop_router import ( # noqa
+    router as card_drop_router,
+    _facts_cors_headers as _card_forge_cors_headers,
+)
 from main_routers.debug_router import router as debug_router, start_watchdog as _start_debug_health_watchdog # noqa
 from main_routers.shared_state import init_shared_state, set_steamworks_initializer # noqa
 
@@ -1758,6 +1761,13 @@ async def health():
 # /forge/facts 的 runtime_character_hint；不要求 card-forge 后端
 # 知道 NEKO 内部状态，只通过此端点把"当前 NEKO 在前台展示的猫娘"广播给它。
 _card_forge_active_character: dict = {}  # {dataUrl, characterReferenceDataUrl, name}
+
+
+def _active_character_cors_headers(request: Request) -> dict[str, str] | None:
+    """Preserve non-browser local reads; restrict browser reads to the social origin."""
+    if not (request.headers.get("origin") or "").strip():
+        return {}
+    return _card_forge_cors_headers(request)
 
 
 @app.post('/card-forge/active-character')
@@ -1784,15 +1794,26 @@ async def set_card_forge_active_character(payload: dict):
     return {"ok": True}
 
 
+@app.options('/card-forge/active-character')
+async def active_character_options(request: Request):
+    """Allow only the configured community origin to read the local snapshot."""
+    cors = _active_character_cors_headers(request)
+    if cors is None:
+        return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
+    return JSONResponse({"ok": True}, headers=cors)
+
+
 @app.get('/card-forge/active-character')
-async def get_card_forge_active_character(include_avatar: bool = False):
+async def get_card_forge_active_character(request: Request, include_avatar: bool = False):
     """Return the active character name polled by the card-forge frontend.
 
     Avatar dataUrl is omitted by default because card-forge polls this endpoint
     every few seconds and currently needs only ``name``. Future avatar consumers
     can opt in with ``?include_avatar=true``.
     """
-    from fastapi.responses import JSONResponse
+    cors = _active_character_cors_headers(request)
+    if cors is None:
+        return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
     payload: dict[str, str] = {
         'name': _card_forge_active_character.get('name', ''),
     }
@@ -1801,7 +1822,7 @@ async def get_card_forge_active_character(include_avatar: bool = False):
         payload['characterReferenceDataUrl'] = _card_forge_active_character.get(
             'characterReferenceDataUrl', ''
         )
-    return JSONResponse(payload)
+    return JSONResponse(payload, headers=cors)
 
 
 @app.post('/api/beacon/shutdown')

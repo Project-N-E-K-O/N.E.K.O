@@ -1676,11 +1676,11 @@ class OmniOfflineClient:
             if use_vision_config:
                 base_url = self.vision_base_url
                 api_key = self.vision_api_key if self.vision_api_key and self.vision_api_key != '' else None
-                provider_type = self.vision_provider_type
+                provider_type = getattr(self, "vision_provider_type", None)
             else:
                 base_url = self.base_url
                 api_key = self.api_key
-                provider_type = self.provider_type
+                provider_type = getattr(self, "provider_type", None)
 
             # 先创建新 client，成功后再原子替换，避免半切换状态。
             # max_completion_tokens 跟随当前 max_response_length 同步设置
@@ -2022,7 +2022,11 @@ class OmniOfflineClient:
         #    answering the screen-based talk anymore. History only grows by
         #    appends between staging and this read (the user hasn't been appended
         #    yet), so a length change means an intervening AI turn (Codex P2).
-        proactive_image = self._proactive_image_to_inject
+        # A few lightweight callers/tests intentionally construct the client via
+        # ``__new__`` and wire only the fields needed for one streaming turn.
+        # Treat an absent staging slot exactly like an empty slot so the optional
+        # proactive-vision feature does not break those legacy construction paths.
+        proactive_image = getattr(self, "_proactive_image_to_inject", None)
         if proactive_image:
             _expired = (
                 time.monotonic() - self._proactive_image_staged_at
@@ -2272,7 +2276,9 @@ class OmniOfflineClient:
                         # uncapped.
                         _focus_overrides = self._focus_stream_overrides(
                             thinking_on, self.model,
-                            base_max_tokens=self.llm.max_completion_tokens if self.llm else None,
+                            base_max_tokens=(
+                                getattr(getattr(self, "llm", None), "max_completion_tokens", None)
+                            ),
                         )
                         # Focus 凝神: leak-prone models (qwen3.5/3.6/3.7 hybrids)
                         # stream their chain-of-thought into ``content`` ending in
