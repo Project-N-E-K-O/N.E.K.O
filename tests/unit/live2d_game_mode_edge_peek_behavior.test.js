@@ -384,6 +384,43 @@ test('macOS top corners trigger at the current display work-area top', async () 
     }
 });
 
+test('Windows bottom corners trigger at the current display work-area bottom', async () => {
+    const cases = [
+        { edge: 'bottom-left', x: 0, scaleX: 1, rotation: 45 },
+        { edge: 'bottom-right', x: 1000, scaleX: -1, rotation: -45 }
+    ];
+
+    for (const item of cases) {
+        const harness = createHarness({
+            innerHeight: 1440,
+            platform: 'windows',
+            currentDisplay: {
+                screenX: 0,
+                screenY: 0,
+                width: 1000,
+                height: 1440,
+                workArea: { x: 0, y: 0, width: 1000, height: 1392 }
+            }
+        });
+        const manager = new harness.Live2DManager();
+        const model = createRotatingModel({ x: item.x, y: 792, scaleX: item.scaleX });
+        manager.getHeadScreenAnchor = () => model.transformPoint(150, 110);
+        manager.getBodyScreenRectInfo = () => {
+            const waist = model.transformPoint(150, 330);
+            return { rect: { centerX: waist.x, bottom: waist.y } };
+        };
+
+        const enterPromise = manager._tryApplyLive2DGameModeEdgePeek(model);
+        for (let attempt = 0; attempt < 10 && harness.rafQueue.length === 0; attempt += 1) {
+            await Promise.resolve();
+        }
+        flushNextFrame(harness);
+        assert.equal(await enterPromise, true);
+        assert.equal(manager._live2DGameModeEdgePeekState.edge, item.edge);
+        assert.equal(model.rotation, item.rotation * Math.PI / 180);
+    }
+});
+
 test('clearing during enter animation prevents stale peek writeback', async () => {
     const harness = createHarness();
     const manager = new harness.Live2DManager();
