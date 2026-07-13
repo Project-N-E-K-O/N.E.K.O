@@ -526,6 +526,10 @@
     async function notifyManualRestore() {
         if (!clientState.enabled || clientState.restoringFromDisable) return;
         if (!clientState.autoSwitched) return;
+        const returnCompleted = await waitForCondition(function () {
+            return !isCatFormActive();
+        }, 4500);
+        if (!returnCompleted) return;
         clientState.manualOverride = true;
         leaveDeepSleep();
         const modelReady = await ensureInvalidatedModelReloaded();
