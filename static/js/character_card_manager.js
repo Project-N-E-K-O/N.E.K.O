@@ -8833,7 +8833,7 @@ async function scanModels(loadSequence) {
             console.warn('触发 modelsScanned 事件失败:', e);
         }
 
-        // 如果存在 model_manager.js 中的更新函数，也尝试调用（具有容错能力）
+        // 如果存在 model_manager 分片中的更新函数，也尝试调用（具有容错能力）
         try {
             if (typeof window.updateLive2DModelDropdown === 'function') {
                 window.updateLive2DModelDropdown();

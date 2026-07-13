@@ -60,6 +60,12 @@ def test_launcher_uses_project_root_for_windows_resources() -> None:
     ) in spec
 
 
+def test_launcher_includes_omni_state_proxy_hidden_import() -> None:
+    spec = (ROOT / "specs" / "launcher.spec").read_text(encoding="utf-8")
+
+    assert "'main_logic._module_state_proxy'" in spec
+
+
 def test_removed_root_sdk_modules_are_not_importable() -> None:
     for removed_module in REMOVED_ROOT_SDK_MODULES:
         assert importlib.util.find_spec(removed_module) is None

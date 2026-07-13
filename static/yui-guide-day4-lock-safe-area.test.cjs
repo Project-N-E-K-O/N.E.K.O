@@ -7,10 +7,19 @@ function readStatic(relativePath) {
     return fs.readFileSync(path.join(__dirname, relativePath), 'utf8');
 }
 
+function readStaticDirectory(relativePath) {
+    const directory = path.join(__dirname, relativePath);
+    return fs.readdirSync(directory)
+        .filter((name) => name.endsWith('.js'))
+        .sort()
+        .map((name) => fs.readFileSync(path.join(directory, name), 'utf8'))
+        .join('\n');
+}
+
 test('day4 model lock spotlight uses a scene-scoped lock icon safe area', () => {
     const directorSource = readStatic('tutorial/yui-guide/director.js');
     const orchestratorSource = readStatic('tutorial/core/scene-orchestrator.js');
-    const sharedButtonsSource = readStatic('avatar/avatar-ui-buttons.js');
+    const sharedButtonsSource = readStaticDirectory('avatar/avatar-ui-buttons');
 
     assert.match(directorSource, /const DAY4_LOCK_SPOTLIGHT_SAFE_BOTTOM_PX = 112;/);
     assert.match(directorSource, /syncDay4LockSpotlightSafeAreaForScene\(scene\) \{[\s\S]*sceneId === 'day4_model_lock'/);

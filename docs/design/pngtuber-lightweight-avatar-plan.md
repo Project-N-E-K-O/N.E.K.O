@@ -985,7 +985,7 @@ fixtures/simple_pngtuber/model.json
 验证命令：
 
 ```powershell
-node --check static\js\model_manager.js
+node --check static\js\model_manager\06-page-controller.js
 python -m py_compile main_routers\pngtuber_router.py
 python -m py_compile main_routers\pngtuber_importers\godot_variant.py main_routers\pngtuber_importers\pngtube_remix.py
 uv run pytest tests\unit\test_pngtuber_router.py tests\unit\test_pngtuber_static_contracts.py tests\unit\test_pngtuber_importers.py
@@ -1021,7 +1021,7 @@ uv run pytest tests\unit\test_pngtuber_router.py tests\unit\test_pngtuber_static
 最近一次相关自动验证基线包括：
 
 ```powershell
-node --check static\js\model_manager.js
+node --check static\js\model_manager\06-page-controller.js
 node --check static\pngtuber-core.js
 uv run pytest tests\unit\test_pngtuber_static_contracts.py
 uv run pytest tests\unit\test_pngtube_remix_importer.py
@@ -1209,7 +1209,7 @@ PNGTuber 的“手机页面”定义必须跟项目现有 Web 口径一致：按
 推荐验证命令：
 
 ```powershell
-node --check static\js\model_manager.js
+node --check static\js\model_manager\06-page-controller.js
 node --check static\pngtuber-core.js
 uv run pytest tests\unit\test_pngtuber_static_contracts.py
 uv run pytest tests\unit\test_pngtube_remix_importer.py
@@ -1273,7 +1273,7 @@ PR #1779 将 PNGTuber 第三方工程导入从“简单包 + PNGTuber Plus `.sav
 前端运行模块：
 
 - `static/pngtuber-core.js`：统一 PNGTuber runtime，承载 `layered_canvas_v1`、mouth flap、One Bounce、debug state。
-- `static/js/model_manager.js`：模型管理页选择、预览、保存和导入后的加载链路。
+- `static/js/model_manager/`：模型管理页选择、预览、保存和导入后的加载链路。
 - `static/app/app-interpage.js`、`static/app/app-ui.js`、`static/live2d-init.js`：跨页面 reload 与 Live2D/PNGTuber 互斥边界。
 
 ### 导入数据流
@@ -1413,7 +1413,7 @@ layers/
 ```powershell
 python -m py_compile main_routers\pngtuber_importers\godot_variant.py main_routers\pngtuber_importers\pngtube_remix.py
 node --check static\pngtuber-core.js
-node --check static\js\model_manager.js
+node --check static\js\model_manager\06-page-controller.js
 uv run pytest tests\unit\test_pngtuber_router.py tests\unit\test_pngtuber_importers.py tests\unit\test_pngtuber_static_contracts.py
 ```
 

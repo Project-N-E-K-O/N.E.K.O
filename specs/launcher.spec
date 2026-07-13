@@ -280,6 +280,7 @@ hiddenimports += [
     
     # main_logic 子模块
     'main_logic',
+    'main_logic._module_state_proxy',
     'main_logic.core',
     'main_logic.cross_server',
     'main_logic.omni_offline_client',
