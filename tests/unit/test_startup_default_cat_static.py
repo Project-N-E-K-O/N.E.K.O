@@ -16,6 +16,16 @@ def test_startup_default_cat_waits_for_avatar_then_uses_the_existing_goodbye_flo
     assert "startupDefaultForm: 'cat'" in source
 
 
+def test_startup_default_cat_retry_is_deferred_and_user_actions_cancel_it():
+    source = APP_AUTO_GOODBYE.read_text(encoding="utf-8")
+
+    assert "if (!state.started)" in source
+    assert "cancelStartupDefaultCatRequest(false);" in source
+    assert "detail.startupDefaultForm !== 'cat' && state.startupDefaultCatRequested" in source
+    assert "const handleReturn = () => {\n            // Returning" in source
+    assert "cancelStartupDefaultCatRequest(true);" in source
+
+
 def test_startup_default_cat_is_cat1_and_has_a_distinct_silence_reason():
     source = APP_AUTO_GOODBYE.read_text(encoding="utf-8")
 

@@ -705,23 +705,47 @@
         );
     }
 
+    function cancelStartupDefaultCatRequest(markApplied) {
+        if (state.startupDefaultCatTimerId) {
+            window.clearTimeout(state.startupDefaultCatTimerId);
+            state.startupDefaultCatTimerId = 0;
+        }
+        state.startupDefaultCatRequested = false;
+        state.startupDefaultCatAttempts = 0;
+        if (markApplied === true) state.startupDefaultCatApplied = true;
+    }
+
+    function scheduleStartupDefaultCatRetry() {
+        state.startupDefaultCatTimerId = window.setTimeout(
+            applyStartupDefaultCat,
+            STARTUP_DEFAULT_CAT_RETRY_MS
+        );
+    }
+
     function applyStartupDefaultCat() {
         state.startupDefaultCatTimerId = 0;
         if (!state.startupDefaultCatRequested || state.startupDefaultCatApplied) return;
+        // The startup event can arrive before the storage-location barrier is released.
+        // Do not spend the avatar-readiness retry budget while app startup is still blocked.
+        if (!state.started) {
+            scheduleStartupDefaultCatRetry();
+            return;
+        }
         if (isGoodbyeActive()) {
-            state.startupDefaultCatApplied = true;
+            cancelStartupDefaultCatRequest(true);
             return;
         }
         if (!hasCoreInfrastructure() || !hasStartupDefaultCatTarget()) {
             state.startupDefaultCatAttempts += 1;
             if (state.startupDefaultCatAttempts < STARTUP_DEFAULT_CAT_MAX_ATTEMPTS) {
-                state.startupDefaultCatTimerId = window.setTimeout(
-                    applyStartupDefaultCat,
-                    STARTUP_DEFAULT_CAT_RETRY_MS
-                );
+                scheduleStartupDefaultCatRetry();
+            } else {
+                // Let a later startup-form signal start a fresh readiness attempt.
+                cancelStartupDefaultCatRequest(false);
             }
             return;
         }
+        state.startupDefaultCatRequested = false;
         state.startupDefaultCatApplied = true;
         window.dispatchEvent(new CustomEvent('live2d-goodbye-click', {
             detail: {
@@ -835,6 +859,10 @@
 
         window.addEventListener('live2d-goodbye-click', (event) => {
             const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+            if (detail.startupDefaultForm !== 'cat' && state.startupDefaultCatRequested) {
+                // A manual goodbye is a newer user choice; never let a delayed startup retry override it.
+                cancelStartupDefaultCatRequest(true);
+            }
             clearConversationGrace();
             // 记录"变成猫咪"的时刻与入口，供变回时按猫咪停留时长触发专属问候。
             // goodbye-click 只在真正进入猫咪态时派发（手动按钮 / 自动 idle-timeout），
@@ -859,6 +887,8 @@
         });
 
         const handleReturn = () => {
+            // Returning is an explicit user override of any startup request still waiting for avatar readiness.
+            cancelStartupDefaultCatRequest(true);
             // 变回猫娘前，按"作为猫咪待了多久 + 此刻所处 tier（清醒/打盹/熟睡）"
             // 请求一次专属问候。tier 必须在 setVisualTier(NONE) 清空之前读取。
             syncGoodbyeSilentState(false, 'return-click');
