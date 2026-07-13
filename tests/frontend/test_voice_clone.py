@@ -465,6 +465,73 @@ def test_voice_design_rejects_underscore_prefix_before_submit(mock_page: Page, r
 
 
 @pytest.mark.frontend
+def test_voice_design_non_cosy_provider_accepts_descriptive_prefix(mock_page: Page, running_server: str):
+    captured = {}
+    try:
+        route_voice_clone_region_dependencies(
+            mock_page,
+            {
+                "success": True,
+                "steam_language": "schinese",
+                "i18n_language": "zh-CN",
+                "ip_country": "US",
+                "is_mainland_china": False,
+            },
+        )
+        mock_page.unroute("**/api/config/core_api")
+        mock_page.route(
+            "**/api/config/core_api",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({
+                    "success": True,
+                    "enableCustomApi": False,
+                    "ttsModelUrl": "",
+                    "assistApiKeyQwen": "test-qwen-key",
+                    "assistApiKeyElevenlabs": "test-elevenlabs-key",
+                }),
+            ),
+        )
+
+        def handle_voice_design(route):
+            captured["body"] = route.request.post_data_json
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({
+                    "voice_id": "eleven-designed-1",
+                    "provider": "elevenlabs",
+                    "source": "design",
+                }),
+            )
+
+        mock_page.route("**/api/characters/voice_design", handle_voice_design)
+        mock_page.goto(f"{running_server}/voice_clone")
+        mock_page.wait_for_load_state("domcontentloaded")
+        mock_page.evaluate(
+            """() => {
+                const select = document.querySelector('#voiceProvider');
+                select.value = 'elevenlabs';
+                select.dispatchEvent(new Event('change', { bubbles: true }));
+            }"""
+        )
+        mock_page.locator("#btnVoiceSourceDesign").click()
+        mock_page.fill("#prefix", "warm_voice_name")
+        mock_page.fill("#voiceDesignPrompt", "A warm, clear and reassuring narrator voice.")
+        mock_page.locator(".register-voice-btn").click()
+
+        expect(mock_page.locator("#result")).to_contain_text("eleven-designed-1")
+        assert captured["body"]["provider"] == "elevenlabs"
+        assert captured["body"]["prefix"] == "warm_voice_name"
+    finally:
+        mock_page.unroute("**/api/config/steam_language")
+        mock_page.unroute("**/api/config/api_providers")
+        mock_page.unroute("**/api/config/core_api")
+        mock_page.unroute("**/api/characters/voice_design")
+
+
+@pytest.mark.frontend
 def test_voice_design_elevenlabs_requires_minimum_description_before_submit(mock_page: Page, running_server: str):
     called = {"voice_design": False}
     try:

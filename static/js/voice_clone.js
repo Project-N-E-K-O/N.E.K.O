@@ -1390,6 +1390,10 @@ function isVoiceDesignLanguageSupportedProvider(provider) {
     return provider === 'cosyvoice';
 }
 
+function usesCosyVoiceDesignPrefixRules(provider) {
+    return provider === 'cosyvoice' || provider === 'cosyvoice_intl';
+}
+
 function isElevenLabsProvider(provider) {
     return provider === 'elevenlabs';
 }
@@ -1763,7 +1767,10 @@ async function registerVoice() {
             resultDiv.className = 'result error';
             return;
         }
-        if (prefix.length > VOICE_DESIGN_PREFIX_MAX_LENGTH || !VOICE_DESIGN_PREFIX_PATTERN.test(prefix)) {
+        if (
+            usesCosyVoiceDesignPrefixRules(provider)
+            && (prefix.length > VOICE_DESIGN_PREFIX_MAX_LENGTH || !VOICE_DESIGN_PREFIX_PATTERN.test(prefix))
+        ) {
             resultDiv.textContent = window.t ? window.t('voice.designPrefixInvalid') : '前缀必须是 1-10 个字符，只能包含英文字母和数字，不能包含下划线或空格';
             resultDiv.className = 'result error';
             return;

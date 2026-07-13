@@ -25,6 +25,7 @@ import httpx
 import pytest
 
 from main_logic import tts_client
+from main_logic.tts_client.workers.cosyvoice import _get_enrolled_model
 
 
 # ── dispatch: a design voice routes through the ElevenLabs clone path ─────────
@@ -77,6 +78,15 @@ def test_registry_declares_design_for_cosyvoice():
     assert "design" in meta["cosyvoice"]["capabilities"]
     assert "cosyvoice_intl" not in meta["cosyvoice"]["aliases"]
     assert reg.get("cosyvoice_intl") is None
+
+
+@pytest.mark.unit
+def test_cosyvoice_worker_prefers_persisted_design_model():
+    assert _get_enrolled_model({
+        "design_model": "cosyvoice-design-model",
+        "clone_model": "cosyvoice-clone-model",
+    }) == "cosyvoice-design-model"
+    assert _get_enrolled_model({"clone_model": "cosyvoice-clone-model"}) == "cosyvoice-clone-model"
 
 
 @pytest.mark.unit

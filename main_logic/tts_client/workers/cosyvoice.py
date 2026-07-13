@@ -26,6 +26,13 @@ from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__, "Main")
 
+
+def _get_enrolled_model(voice_meta):
+    if not voice_meta:
+        return None
+    return voice_meta.get('design_model') or voice_meta.get('clone_model')
+
+
 def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
     """
     TTS multiprocess worker function for Aliyun CosyVoice TTS
@@ -46,7 +53,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
 
     # 从 voice 元数据中读取注册时使用的模型和地域 URL，缺失时回退到全局配置
     _voice_meta = _get_voice_meta(voice_id)
-    _enrolled_model = _voice_meta.get('clone_model') if _voice_meta else None
+    _enrolled_model = _get_enrolled_model(_voice_meta)
     _voice_provider = _voice_meta.get('provider') if _voice_meta else None
 
     # dashscope.api_key 和 dashscope.base_*_api_url 是模块级全局状态，同一进程内
