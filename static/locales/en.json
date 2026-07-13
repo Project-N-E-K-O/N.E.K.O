@@ -687,6 +687,7 @@
         "screenshotAriaLabel": "Take screenshot",
         "takePhoto": "Take Photo",
         "takePhotoAriaLabel": "Take photo",
+        "newUserIcebreakerOptionsAriaLabel": "New user icebreaker options",
         "screenshotsTitle": "Pending Screenshots",
         "clearAll": "Clear All",
         "screenshotAlt": "Screenshot {{index}}",
