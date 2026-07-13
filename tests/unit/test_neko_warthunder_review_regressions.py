@@ -1,0 +1,75 @@
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
+
+import pytest
+
+from plugin.plugins.neko_warthunder.core.arbiter import Arbiter
+from plugin.plugins.neko_warthunder.core.contracts import IN_FLIGHT, BattleEvent, BattleState, WtConfig
+from plugin.plugins.neko_warthunder.core.safety_guard import SafetyGuard
+from plugin.plugins.neko_warthunder.detectors.discrete.lifecycle import BattleEndDetector
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DATA_PROCESS_DIR = PROJECT_ROOT / "plugin" / "plugins" / "neko_warthunder" / "data_layer" / "data process"
+
+
+def test_coalesced_kill_bypasses_post_flush_event_cooldown() -> None:
+    config = WtConfig(global_rate_limit_seconds=0, kill_coalesce_window_seconds=6)
+    arbiter = Arbiter(SafetyGuard(config))
+
+    first = BattleEvent("you_killed", payload={"kill_count": 1}, ts=0)
+    selected, chain = arbiter.decide([first], IN_FLIGHT, now=0)
+    assert selected is None
+    assert chain[-1]["reason"] == "kill_coalescing"
+
+    selected, _chain = arbiter.decide([], IN_FLIGHT, now=6)
+    assert selected is not None
+    assert selected.event_id == "you_killed"
+
+    second = BattleEvent("you_killed", payload={"kill_count": 1}, ts=7)
+    selected, chain = arbiter.decide([second], IN_FLIGHT, now=7)
+    assert selected is None
+    assert chain[-1]["reason"] == "kill_coalescing"
+
+
+def test_success_mission_emits_battle_end() -> None:
+    detector = BattleEndDetector()
+    prev = BattleState(mission_status="running")
+    cur = BattleState(mission_status="success", timestamp=42)
+
+    event = detector.detect(prev, cur)
+
+    assert event is not None
+    assert event.event_id == "battle_end"
+    assert event.payload["result"] == "success"
+
+
+@pytest.fixture
+def wt_server_module(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.syspath_prepend(str(DATA_PROCESS_DIR))
+    module_path = DATA_PROCESS_DIR / "wt_server.py"
+    spec = importlib.util.spec_from_file_location("neko_warthunder_review_wt_server", module_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_data_layer_cors_only_echoes_approved_neko_origins(wt_server_module) -> None:
+    handler = wt_server_module._Handler.__new__(wt_server_module._Handler)
+    emitted: list[tuple[str, str]] = []
+    handler.send_header = lambda name, value: emitted.append((name, value))
+
+    handler.headers = {"Origin": "https://attacker.example"}
+    handler._cors()
+    assert ("Access-Control-Allow-Origin", "https://attacker.example") not in emitted
+    assert all(value != "*" for name, value in emitted if name == "Access-Control-Allow-Origin")
+
+    emitted.clear()
+    handler.headers = {"Origin": "http://localhost:48911"}
+    handler._cors()
+    assert ("Access-Control-Allow-Origin", "http://localhost:48911") in emitted
+    assert ("Vary", "Origin") in emitted
+    assert ("Access-Control-Allow-Methods", "GET, OPTIONS") in emitted

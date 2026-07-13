@@ -11,13 +11,12 @@ from .contracts import (
     COMBAT_STRESS,
     CRITICAL_RISK,
     DEAD,
+    END_MISSION_STATUSES,
     IN_FLIGHT,
     OUT_OF_BATTLE,
     SPAWNING,
     BattleState,
 )
-
-_END_STATUSES = frozenset({"win", "won", "victory", "success", "fail", "failed", "lost", "defeat", "left", "ended", "finished"})
 
 _STRESS_G_THRESHOLD = 5.0
 _AIR_STRESS_WINDOW_SECONDS = 8.0
@@ -66,7 +65,7 @@ class ScenarioResolver:
             self._clear_runtime_stress()
             return OUT_OF_BATTLE
 
-        if (state.mission_status or "").lower() in _END_STATUSES:
+        if (state.mission_status or "").lower() in END_MISSION_STATUSES:
             return BATTLE_ENDED
 
         if not state.in_battle:
