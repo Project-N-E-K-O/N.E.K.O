@@ -266,6 +266,7 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
             async def receive_messages_initial():
                 """Initial receive task"""
                 nonlocal _text_done_error_suppressed
+                cancelled = False
                 try:
                     async for message in ws:
                         event = json.loads(message)
@@ -305,8 +306,14 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                             response_done.set()
                 except websockets.exceptions.ConnectionClosed:
                     pass
+                except asyncio.CancelledError:
+                    cancelled = True
+                    raise
                 except Exception as e:
                     logger.error(f"消息接收出错: {e}")
+                finally:
+                    if not cancelled:
+                        audio_jitter.flush()
             
             receive_task = asyncio.create_task(receive_messages_initial())
             
@@ -323,26 +330,33 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
 
                 if sid == "__interrupt__":
                     # 打断：立即关闭连接，不发 tts.text.done、不等服务器确认
-                    if ws:
-                        try:
-                            await ws.close()
-                        except Exception:
-                            pass
-                        ws = None
-                    if receive_task and not receive_task.done():
-                        receive_task.cancel()
-                        try:
-                            await receive_task
-                        except asyncio.CancelledError:
-                            pass
-                        receive_task = None
-                    session_id = None
-                    session_ready.clear()
-                    current_speech_id = None
-                    text_done_sent = False
-                    session_created = False
-                    pending_text_buffer = ""
-                    audio_jitter.reset()  # 打断：丢弃未放出的缓冲音频
+                    audio_jitter.begin_interrupt()
+                    try:
+                        if receive_task and not receive_task.done():
+                            receive_task.cancel()
+                            try:
+                                await receive_task
+                            except asyncio.CancelledError:
+                                # Expected during interrupt teardown.
+                                pass
+                            except Exception as e:
+                                logger.debug(f"Step TTS interrupted receive task cleanup failed: {e}")
+                            receive_task = None
+                        if ws:
+                            try:
+                                await ws.close()
+                            except Exception as e:
+                                logger.debug(f"Step TTS interrupted websocket close failed: {e}")
+                            ws = None
+                    finally:
+                        session_id = None
+                        session_ready.clear()
+                        current_speech_id = None
+                        text_done_sent = False
+                        session_created = False
+                        pending_text_buffer = ""
+                        audio_jitter.reset()  # 打断：丢弃未放出的缓冲音频
+                        audio_jitter.end_interrupt()
                     continue
 
                 if sid is None:
@@ -380,6 +394,7 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         except:  # noqa: E722
                             pass
                     if receive_task and not receive_task.done():
+                        audio_jitter.flush()
                         receive_task.cancel()
                         try:
                             await receive_task
@@ -425,6 +440,7 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
 
                         async def receive_messages():
                             nonlocal _text_done_error_suppressed
+                            cancelled = False
                             try:
                                 async for message in ws:
                                     event = json.loads(message)
@@ -462,8 +478,14 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                                         response_done.set()
                             except websockets.exceptions.ConnectionClosed:
                                 pass
+                            except asyncio.CancelledError:
+                                cancelled = True
+                                raise
                             except Exception as e:
                                 logger.error(f"消息接收出错: {e}")
+                            finally:
+                                if not cancelled:
+                                    audio_jitter.flush()
                         
                         receive_task = asyncio.create_task(receive_messages())
                         
