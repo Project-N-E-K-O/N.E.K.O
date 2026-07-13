@@ -707,6 +707,22 @@
     // Backward compat
     window.addScreenshotToList = mod.addScreenshotToList;
 
+    // 按钮截图与多窗口/F4 代理回传共用同一条入列路径，保证都在裁剪完成后才压缩，
+    // 也避免独立 Chat 把全分辨率 data URL 长期留在附件列表中。
+    mod.enqueueCapturedScreenshotResult = async function enqueueCapturedScreenshotResult(result) {
+        if (!result || !result.dataUrl) return false;
+        var avatarPos = result.dataUrl === result.originalDataUrl ? result.avatarPos : null;
+        var compactDataUrl = await mod.compressScreenshotDataUrlTo720p(result.dataUrl);
+        mod.addScreenshotToList(compactDataUrl, avatarPos, { source: 'screenshot' });
+        if (typeof window.showStatusToast === 'function') {
+            window.showStatusToast(
+                window.t ? window.t('app.screenshotAdded') : '\u622A\u56FE\u5DF2\u6DFB\u52A0\uFF0C\u70B9\u51FB\u53D1\u9001\u4E00\u8D77\u53D1\u9001',
+                3000
+            );
+        }
+        return true;
+    };
+
     /**
      * Remove a screenshot item from the list with animation.
      * @param {HTMLElement} item
@@ -3076,10 +3092,39 @@
             return null;
         }
 
+        function getCropOverlayTranslations() {
+            var keys = [
+                'chat.cropTabScreenshot', 'chat.cropTabHideNeko', 'chat.cropTabCancel',
+                'chat.cropTabRecapturing', 'chat.cropToolSelect', 'chat.cropToolRect',
+                'chat.cropToolEllipse', 'chat.cropToolArrow', 'chat.cropToolPen',
+                'chat.cropToolHighlight', 'chat.cropToolText', 'chat.cropToolMosaic',
+                'chat.cropToolWatermark', 'chat.cropUndo', 'chat.cropRedo', 'chat.cropSave',
+                'chat.cropPin', 'chat.cropPinTitle',
+                'chat.pinZoomOut', 'chat.pinZoomIn', 'chat.pinClose',
+                'chat.pinRestoreSize', 'chat.pinCopy', 'chat.pinDelete',
+                'chat.cropClearSelectionTitle', 'chat.cropConfirmTitle', 'chat.cropColorRed',
+                'chat.cropColorYellow', 'chat.cropColorGreen', 'chat.cropColorBlue',
+                'chat.cropColorWhite', 'chat.cropColorBlack', 'chat.cropFontSize',
+                'chat.cropOpacity', 'chat.cropMosaicSize', 'chat.cropWatermarkText',
+                'chat.cropWatermarkDefault'
+            ];
+            var translations = {};
+            if (typeof window.t !== 'function') return translations;
+            keys.forEach(function (key) {
+                try {
+                    var value = window.t(key);
+                    if (typeof value === 'string' && value && value !== key) {
+                        translations[key] = value;
+                    }
+                } catch (e) { /* use app-crop fallback */ }
+            });
+            return translations;
+        }
+
         function isDesktopRegionCaptureUnavailable(errorLike) {
             if (!errorLike) return false;
             var code = errorLike.code || '';
-            if (code === 'ENOSYS' || code === 'UNSUPPORTED_API') return true;
+            if (code === 'ENOSYS' || code === 'UNSUPPORTED_API' || code === 'SCREEN_CAPTURE_UNAVAILABLE') return true;
             var message = String(errorLike.message || errorLike.error || errorLike.reason || '').toLowerCase();
             return message.indexOf('not implemented') !== -1
                 || message.indexOf('not supported') !== -1
@@ -3100,6 +3145,14 @@
                     success: false,
                     error: raw.error || raw.message || 'DESKTOP_REGION_CAPTURE_FAILED',
                     code: raw.code || null
+                };
+            }
+            if (raw.pinned) {
+                return {
+                    success: true,
+                    pinned: true,
+                    pinId: raw.pinId || null,
+                    captureType: raw.captureType || 'desktop-region'
                 };
             }
             if (raw.dataUrl) {
@@ -3123,9 +3176,9 @@
             var selectedSourceId = S.selectedScreenSourceId || null;
             var payload = {
                 sourceId: selectedSourceId,
-                hideNeko: true,
                 returnDataUrl: true,
-                includeOriginalDataUrl: true
+                includeOriginalDataUrl: true,
+                translations: getCropOverlayTranslations()
             };
 
             var raw = null;
@@ -3168,6 +3221,9 @@
             }
 
             console.log('[截图] 桌面框选捕获成功:', regionMethod.name, (normalized.width || 0) + 'x' + (normalized.height || 0));
+            if (normalized.pinned) {
+                return { pinned: true, pinId: normalized.pinId || null };
+            }
             return {
                 dataUrl: normalized.dataUrl,
                 originalDataUrl: normalized.originalDataUrl || normalized.dataUrl,
@@ -3370,6 +3426,24 @@
                         }
                     }
                 } else {
+                    // Electron 桌面端优先交给 PC 壳的独立截图编辑窗口。它覆盖当前显示器，
+                    // 不改变聊天框/Pet 窗口尺寸，也不会把冻结画面塞进聊天窗口内裁剪。
+                    var desktopRegionResult = await captureDesktopRegionDirectly();
+                    if (desktopRegionResult) {
+                        if (desktopRegionResult.canceled) {
+                            return null;
+                        }
+                        if (desktopRegionResult.pinned) {
+                            return null;
+                        }
+                        return {
+                            dataUrl: desktopRegionResult.dataUrl,
+                            originalDataUrl: desktopRegionResult.originalDataUrl || desktopRegionResult.dataUrl,
+                            avatarPos: desktopRegionResult.avatarPos || null
+                        };
+                    }
+
+                    // 浏览器/旧版 PC 壳没有独立编辑窗口时，macOS 仍可退回系统交互截图。
                     if (typeof window.fetchBackendInteractiveScreenshot === 'function') {
                         var interactiveBackendResult = await window.fetchBackendInteractiveScreenshot();
                         if (interactiveBackendResult && interactiveBackendResult.canceled) {
@@ -3382,18 +3456,6 @@
                                 avatarPos: null
                             };
                         }
-                    }
-
-                    var desktopRegionResult = await captureDesktopRegionDirectly();
-                    if (desktopRegionResult) {
-                        if (desktopRegionResult.canceled) {
-                            return null;
-                        }
-                        return {
-                            dataUrl: desktopRegionResult.dataUrl,
-                            originalDataUrl: desktopRegionResult.originalDataUrl || desktopRegionResult.dataUrl,
-                            avatarPos: desktopRegionResult.avatarPos || null
-                        };
                     }
 
                     var selectedSourceId = S.selectedScreenSourceId;
@@ -3553,14 +3615,8 @@
                     return;
                 }
 
-                // Capture/crop overlay keeps full resolution (crisp); cropping is done here,
-                // so compress to 720p / 0.8 right before queueing. This keeps the pending list
-                // holding only the compressed copy (low memory) and lets send pass it through
-                // without re-encoding.
-                var avatarPos = result.dataUrl === result.originalDataUrl ? result.avatarPos : null;
-                var compactDataUrl;
                 try {
-                    compactDataUrl = await mod.compressScreenshotDataUrlTo720p(result.dataUrl);
+                    await mod.enqueueCapturedScreenshotResult(result);
                 } catch (compressErr) {
                     // Compression only throws when the image can't be decoded/encoded (the 720p
                     // canvas is small enough that size limits never apply). Don't fall back to the
@@ -3571,9 +3627,6 @@
                     window.showStatusToast(window.t ? window.t('app.screenshotFailed') : '\u622A\u56FE\u5931\u8D25', 4000);
                     return false;
                 }
-
-                mod.addScreenshotToList(compactDataUrl, avatarPos);
-                window.showStatusToast(window.t ? window.t('app.screenshotAdded') : '\u622A\u56FE\u5DF2\u6DFB\u52A0\uFF0C\u70B9\u51FB\u53D1\u9001\u4E00\u8D77\u53D1\u9001', 3000);
             } catch (err) {
                 console.error(window.t('console.screenshotFailed'), err);
 
@@ -3607,6 +3660,10 @@
         // Screenshot button click
         // ----------------------------------------------------------------
         screenshotButton.addEventListener('click', mod.captureScreenshotToPendingList);
+        // F4 由 PC 主进程直接触发 React Chat 的截图入口。页面 URL 已加载并不代表
+        // app-buttons 已完成初始化；显式标记能力就绪，避免首轮 F4 误回退到旧的 Pet 路径。
+        window.__NEKO_SCREENSHOT_CAPTURE_READY__ = true;
+        window.dispatchEvent(new CustomEvent('neko:screenshot-capture-ready'));
 
         // ----------------------------------------------------------------
         // Clear all screenshots button

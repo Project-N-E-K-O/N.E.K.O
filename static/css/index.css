@@ -3048,6 +3048,20 @@ body.react-chat-window-dragging {
 .crop-tool-confirm:hover { background: rgba(52, 199, 89, 0.16); color: #4cd964; }
 .crop-tool-confirm.is-active { background: rgba(52, 199, 89, 0.16); color: #34c759; }
 
+.crop-tool-pin {
+    width: auto;
+    min-width: 48px;
+    padding: 0 10px;
+    color: #8bd8ff;
+    font-size: 13px;
+    white-space: nowrap;
+}
+
+.crop-tool-pin:hover {
+    background: rgba(68, 183, 254, 0.18);
+    color: #b9e9ff;
+}
+
 .crop-tool-cancel { color: #ff6b7a; }
 .crop-tool-cancel:hover { background: rgba(220, 53, 69, 0.18); color: #ff8a97; }
 
