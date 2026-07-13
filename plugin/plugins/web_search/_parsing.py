@@ -150,7 +150,10 @@ def parse_ddg_lite_html(html: str, max_results: int = 8) -> List[Dict[str, str]]
         if link is None:
             continue
         href = str(link.get("href", ""))
-        if not href.startswith("http"):
+        # Lite 端点的跳转链接可能是协议相对形式（//duckduckgo.com/l/?uddg=...）
+        if href.startswith("//"):
+            href = "https:" + href
+        if not href.startswith(("http://", "https://")):
             continue
 
         title = sanitize_text(link.get_text(strip=True))

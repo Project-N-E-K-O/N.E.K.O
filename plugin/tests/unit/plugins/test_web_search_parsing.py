@@ -230,8 +230,9 @@ def test_ddg_ad_filter_only_matches_yjs_wrapper() -> None:
 
 _DDG_LITE_HTML = f"""
 <html><body><table>
-  <tr><td><a href="https://duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fa">Result{_REPL} One</a></td></tr>
+  <tr><td><a href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fa">Result{_REPL} One</a></td></tr>
   <tr><td class="result-snippet">Snippet{_RLO} text</td></tr>
+  <tr><td><a href="https://duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fb">Result Two</a></td></tr>
   <tr><td><a href="/local/nav">站内导航</a></td></tr>
 </table></body></html>
 """
@@ -239,7 +240,9 @@ _DDG_LITE_HTML = f"""
 
 def test_parse_ddg_lite_sanitizes_and_skips_relative() -> None:
     results = p.parse_ddg_lite_html(_DDG_LITE_HTML, max_results=10)
-    assert len(results) == 1
-    assert results[0]["title"] == "Result One"
-    assert results[0]["url"] == "https://example.com/a"
+    # 协议相对（//duckduckgo.com/...）与绝对跳转链接都被解包，站内相对链接被拒
+    assert [(r["title"], r["url"]) for r in results] == [
+        ("Result One", "https://example.com/a"),
+        ("Result Two", "https://example.com/b"),
+    ]
     assert results[0]["snippet"] == "Snippet text"
