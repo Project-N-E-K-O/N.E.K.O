@@ -1015,12 +1015,15 @@ function getParameterRange(coreModel, index) {
         console.warn('Error getting parameter range:', e);
     }
 
-    // Validate values
+    // Validate values. Keep whether the default came from the model separate
+    // from the numeric UI fallback so reset-all never treats an invented zero
+    // as a declared model default.
     if (typeof min !== 'number' || isNaN(min)) min = -1;
     if (typeof max !== 'number' || isNaN(max)) max = 1;
-    if (defaultVal === undefined || typeof defaultVal !== 'number' || isNaN(defaultVal)) defaultVal = 0;
+    const hasDefault = typeof defaultVal === 'number' && Number.isFinite(defaultVal);
+    if (!hasDefault) defaultVal = 0;
 
-    return { min, max, default: defaultVal };
+    return { min, max, default: defaultVal, hasDefault };
 }
 
 // 更新参数UI值（不重新渲染列表）
@@ -1391,9 +1394,11 @@ if (resetAllBtn) {
                 let resetValue = parameter.defaultValue;
                 if (typeof resetValue !== 'number' || !Number.isFinite(resetValue)) {
                     const range = getParameterRange(coreModel, parameter.index);
-                    resetValue = range.default;
+                    if (range.hasDefault === true) resetValue = range.default;
                 }
                 if (typeof resetValue !== 'number' || !Number.isFinite(resetValue)) {
+                    // Unknown wrappers cannot expose the .moc3 default. Keep
+                    // the loaded value instead of fabricating a destructive 0.
                     resetValue = initialParameters[parameter.key];
                 }
                 if (typeof resetValue !== 'number' || !Number.isFinite(resetValue)) continue;

@@ -319,7 +319,39 @@ def test_parameter_editor_initializes_and_resets_through_canonical_catalog():
     assert "coreModel.getParameterId(i)" not in record_source
     assert "draftParameters = {};" in reset_source
     assert "resetValue = parameter.defaultValue" in reset_source
+    assert "range.hasDefault === true" in reset_source
     assert "initialParameters[paramId]" not in reset_source
+
+
+def test_parameter_range_marks_synthetic_zero_as_not_a_model_default():
+    source = PARAMETER_EDITOR_PATH.read_text(encoding="utf-8")
+    get_range_function = _extract_js_function(source, "getParameterRange")
+    script = textwrap.dedent(
+        f"""
+        const assert = require('node:assert');
+        {get_range_function}
+
+        const unknownDefault = getParameterRange({{}}, 0);
+        assert.deepStrictEqual(
+          unknownDefault,
+          {{ min: -1, max: 1, default: 0, hasDefault: false }},
+        );
+
+        const declaredDefault = getParameterRange({{
+          parameters: {{
+            minimumValues: [-2],
+            maximumValues: [3],
+            defaultValues: [1.25],
+          }},
+        }}, 0);
+        assert.deepStrictEqual(
+          declaredDefault,
+          {{ min: -2, max: 3, default: 1.25, hasDefault: true }},
+        );
+        """
+    )
+    result = _run_node_harness(script)
+    assert result.returncode == 0, result.stderr
 
 
 def test_effective_parameter_refresh_reinstalls_overlay_with_new_values():
