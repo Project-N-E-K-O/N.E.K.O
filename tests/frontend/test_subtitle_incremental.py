@@ -341,8 +341,8 @@ def test_subtitle_window_danmaku_mode_tracks_avatar_head_and_restores(mock_page:
     assert result["afterOn"]["settings"]["subtitlePanelLocked"] is True
     assert result["afterOn"]["settings"]["subtitleInteractionPassthrough"] is True
     assert result["afterOn"]["settings"]["subtitleOpacity"] == 0
-    assert result["afterOn"]["settings"]["subtitlePanelBounds"] == {"width": 200, "height": 67}
-    assert result["afterOn"]["nativeBounds"] == {"x": 794, "y": 249, "width": 212, "height": 79}
+    assert result["afterOn"]["settings"]["subtitlePanelBounds"] == {"width": 228, "height": 76}
+    assert result["afterOn"]["nativeBounds"] == {"x": 780, "y": 244, "width": 240, "height": 88}
     assert result["afterOn"]["panelState"] == "clean"
     assert result["afterOn"]["panelHidden"] is True
     assert result["afterOn"]["closeCount"] == 1
@@ -350,7 +350,7 @@ def test_subtitle_window_danmaku_mode_tracks_avatar_head_and_restores(mock_page:
     assert {"type": "opacity", "value": 0, "transient": True} in result["afterOn"]["changes"]
     assert {
         "type": "bounds",
-        "value": {"width": 200, "height": 67},
+        "value": {"width": 228, "height": 76},
         "transient": True,
     } in result["afterOn"]["changes"]
 
@@ -770,17 +770,17 @@ def test_web_subtitle_danmaku_mode_tracks_avatar_head_and_restores(mock_page: Pa
     assert result["afterOn"]["settings"]["subtitlePanelLocked"] is True
     assert result["afterOn"]["settings"]["subtitleInteractionPassthrough"] is True
     assert result["afterOn"]["settings"]["subtitleOpacity"] == 0
-    assert result["afterOn"]["settings"]["subtitlePanelBounds"] == {"width": 200, "height": 67}
+    assert result["afterOn"]["settings"]["subtitlePanelBounds"] == {"width": 228, "height": 76}
     assert result["afterOn"]["settings"]["subtitlePanelPosition"] == {
-        "left": 800,
-        "top": 254.5,
+        "left": 786,
+        "top": 250,
         "coordinateSpace": "viewport",
     }
     assert result["afterOn"]["style"] == {
-        "left": "800px",
-        "top": "254.5px",
-        "width": "200px",
-        "height": "67px",
+        "left": "786px",
+        "top": "250px",
+        "width": "228px",
+        "height": "76px",
     }
     assert result["afterOn"]["panelState"] == "clean"
     assert result["afterOn"]["panelHidden"] is True
@@ -5261,6 +5261,8 @@ def test_subtitle_window_resize_closes_settings_float_before_native_resize(mock_
         "panelBounds": {"width": 260, "height": 68},
     }
     assert result["calls"][1]["type"] == "resizeStart"
+    assert result["calls"][1]["minWidth"] == 240
+    assert result["calls"][1]["minHeight"] == 52
     assert all(call["type"] != "setBounds" for call in result["calls"])
 
 
@@ -5405,15 +5407,20 @@ def test_subtitle_window_left_and_top_resize_use_native_bridge_without_carrier_b
 
 
 @pytest.mark.frontend
-def test_subtitle_panel_bounds_are_free_not_legacy_size_limited(
+def test_subtitle_panel_bounds_enforce_usable_minimum_without_legacy_scale_controls(
     mock_page: Page,
 ):
     _open_subtitle_harness(
         mock_page,
         "subtitle-web-host",
         """
-        <div id="subtitle-display" class="show" style="display:flex; opacity:1; visibility:visible; animation:none; transform:none;">
+        <div id="subtitle-display" class="show" data-subtitle-panel-state="controls" style="display:flex; opacity:1; visibility:visible; animation:none; transform:none;">
             <div id="subtitle-scroll"><span id="subtitle-text">Translated text.</span></div>
+            <div id="subtitle-panel-controls">
+                <button type="button" class="subtitle-panel-control-btn"></button>
+                <button type="button" id="subtitle-settings-btn"></button>
+                <button type="button" class="subtitle-panel-control-btn"></button>
+            </div>
         </div>
         """,
     )
@@ -5425,9 +5432,10 @@ def test_subtitle_panel_bounds_are_free_not_legacy_size_limited(
         () => {
             const shared = window.nekoSubtitleShared;
             const display = document.getElementById('subtitle-display');
-            const bounds = shared.getPanelBounds({ width: 80, height: 36 });
+            const bounds = shared.getPanelBounds({ width: 80, height: 20 });
             shared.applySubtitlePanelBounds(display, bounds, { host: 'web' });
             const rect = display.getBoundingClientRect();
+            const controlsRect = document.getElementById('subtitle-panel-controls').getBoundingClientRect();
             const style = getComputedStyle(display);
             return {
                 bounds,
@@ -5435,6 +5443,10 @@ def test_subtitle_panel_bounds_are_free_not_legacy_size_limited(
                     width: Math.round(rect.width),
                     height: Math.round(rect.height),
                 },
+                controlsContained: controlsRect.left >= rect.left
+                    && controlsRect.right <= rect.right
+                    && controlsRect.top >= rect.top
+                    && controlsRect.bottom <= rect.bottom,
                 cssMinWidth: style.minWidth,
                 legacySlider: document.querySelectorAll('#subtitle-size-slider').length,
                 legacyButtons: document.querySelectorAll('.subtitle-size-btn').length,
@@ -5443,9 +5455,10 @@ def test_subtitle_panel_bounds_are_free_not_legacy_size_limited(
         """
     )
 
-    assert result["bounds"] == {"width": 80, "height": 36}
-    assert result["rect"] == {"width": 80, "height": 36}
-    assert result["cssMinWidth"] == "0px"
+    assert result["bounds"] == {"width": 228, "height": 40}
+    assert result["rect"] == {"width": 228, "height": 40}
+    assert result["controlsContained"] is True
+    assert result["cssMinWidth"] == "228px"
     assert result["legacySlider"] == 0
     assert result["legacyButtons"] == 0
 

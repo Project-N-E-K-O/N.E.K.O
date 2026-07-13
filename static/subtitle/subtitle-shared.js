@@ -15,8 +15,10 @@
     var SUBTITLE_FONT_SIZE_OPTIONS = [16, 21, 26, 34, 44];
     var DEFAULT_SUBTITLE_COLOR_SCHEME = 'default';
     var SUBTITLE_COLOR_SCHEME_OPTIONS = ['default', 'red', 'orange', 'yellow', 'green', 'blue', 'indigo', 'violet'];
-    var MIN_PANEL_WIDTH = 48;
-    var MIN_PANEL_HEIGHT = 28;
+    // Keep the three 22px controls and the corner decorations inside the panel,
+    // with comfortable vertical space around the controls.
+    var MIN_PANEL_WIDTH = 228;
+    var MIN_PANEL_HEIGHT = 40;
     var DEFAULT_TRANSLATION_LANGUAGE = 'zh';
     var DEFAULT_UI_LOCALE = 'zh-CN';
     var CONTROLS_HIDE_DELAY_MS = 600;
@@ -981,6 +983,7 @@
         display.dataset.subtitlePanelHeight = String(resolved.height);
         display.style.width = resolved.width + 'px';
         display.style.height = resolved.height + 'px';
+        display.style.minWidth = MIN_PANEL_WIDTH + 'px';
         display.style.minHeight = MIN_PANEL_HEIGHT + 'px';
         display.style.maxHeight = 'none';
         display.style.fontSize = fontSize + 'px';
