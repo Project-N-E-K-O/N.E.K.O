@@ -27,8 +27,8 @@ import re
 from urllib.parse import urlparse
 
 import httpx
-from utils.external_http_client import get_external_http_client
-from utils.elevenlabs_tts_voices import (
+from utils.http.external_client import get_external_http_client
+from utils.tts.providers.elevenlabs import (
     ELEVENLABS_TTS_DEFAULT_MODEL,
     ELEVENLABS_TTS_VOICE_PREFIX,
 )

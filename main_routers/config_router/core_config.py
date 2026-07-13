@@ -426,14 +426,14 @@ async def get_api_providers_config():
         core_providers = get_core_api_providers_for_frontend(force_reload=True)
         assist_providers = get_assist_api_providers_for_frontend(force_reload=True)
 
-        # TTS provider 的前端驱动元数据：单一源来自 utils.tts_provider_registry，
+        # TTS provider 的前端驱动元数据：单一源来自 utils.tts.provider_registry，
         # 避免前端把「哪些 provider 只进 TTS 下拉 / 端点可编辑 / 支持哪些声音来源 /
         # 用哪种连通性探测」再硬编码一遍（见 api_key_settings.js）。
         try:
-            from utils import tts_provider_registry
+            from utils.tts import provider_registry
             # 触发 worker 侧注册副作用（adapter 在 tts_client 定义 worker 后 register）
             import main_logic.tts_client  # noqa: F401
-            tts_providers = tts_provider_registry.ui_metadata()
+            tts_providers = provider_registry.ui_metadata()
         except Exception as e:
             logger.warning(f"加载 TTS provider 元数据失败: {e}")
             tts_providers = []

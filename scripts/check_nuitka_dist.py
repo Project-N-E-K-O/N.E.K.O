@@ -42,6 +42,7 @@ packaging into Electron.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import sys
 from pathlib import Path
 
@@ -114,8 +115,56 @@ def _check_plugin_tomls(dist_root: Path) -> list[str]:
         issues.append(f"no plugin subdirectories under {_PLUGIN_TOML_REQUIRED_PARENT}/")
         return issues
     for sub in plugin_subdirs:
+        if sub.name.startswith("_"):
+            continue
         if not (sub / "plugin.toml").is_file():
             issues.append(f"plugin missing plugin.toml: {sub.relative_to(dist_root).as_posix()}")
+    return issues
+
+
+def _file_digest(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file_obj:
+        for chunk in iter(lambda: file_obj.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _check_plugin_stage(dist_root: Path, stage_root: Path) -> list[str]:
+    """Require the installed plugin payload to exactly match the filtered stage."""
+
+    installed_root = dist_root / _PLUGIN_TOML_REQUIRED_PARENT
+    if not stage_root.is_dir():
+        return [f"plugin stage does not exist: {stage_root}"]
+    if not installed_root.is_dir():
+        return []  # The regular required-asset check reports this more clearly.
+
+    staged_files = {
+        path.relative_to(stage_root).as_posix(): path
+        for path in stage_root.rglob("*")
+        if path.is_file()
+    }
+    installed_files = {
+        path.relative_to(installed_root).as_posix(): path
+        for path in installed_root.rglob("*")
+        if path.is_file()
+    }
+
+    issues: list[str] = []
+    missing = sorted(staged_files.keys() - installed_files.keys())
+    unexpected = sorted(installed_files.keys() - staged_files.keys())
+    if missing:
+        issues.append(f"plugin payload missing {len(missing)} staged file(s): {missing[:5]}")
+    if unexpected:
+        issues.append(f"plugin payload contains {len(unexpected)} unstaged file(s): {unexpected[:5]}")
+
+    mismatched = [
+        relative
+        for relative in sorted(staged_files.keys() & installed_files.keys())
+        if _file_digest(staged_files[relative]) != _file_digest(installed_files[relative])
+    ]
+    if mismatched:
+        issues.append(f"plugin payload changed after staging ({len(mismatched)} file(s)): {mismatched[:5]}")
     return issues
 
 
@@ -126,6 +175,14 @@ def main(argv: list[str] | None = None) -> int:
         nargs="?",
         default="dist/Xiao8",
         help="Path to Nuitka standalone dist root (default: dist/Xiao8)",
+    )
+    parser.add_argument(
+        "--plugin-stage",
+        type=Path,
+        help=(
+            "Filtered built-in plugin stage produced by prepare_nuitka_plugins.py; "
+            "when provided, the installed plugin payload must match it exactly"
+        ),
     )
     args = parser.parse_args(argv)
 
@@ -141,6 +198,8 @@ def main(argv: list[str] | None = None) -> int:
             issues.append(problem)
 
     issues.extend(_check_plugin_tomls(dist_root))
+    if args.plugin_stage is not None:
+        issues.extend(_check_plugin_stage(dist_root, args.plugin_stage.resolve()))
 
     if issues:
         print(f"[FAIL] Nuitka dist verification failed for {dist_root}:", file=sys.stderr)

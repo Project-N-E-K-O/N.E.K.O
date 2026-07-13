@@ -59,7 +59,7 @@ def test_get_tts_worker_routes_design_voice_via_elevenlabs(monkeypatch):
 
 @pytest.mark.unit
 def test_registry_declares_design_for_elevenlabs():
-    import utils.tts_provider_registry as reg
+    from utils.tts import provider_registry as reg
     el = reg.get("elevenlabs")
     assert el is not None and "design" in el.capabilities and "clone" in el.capabilities
     # design is advertised in the UI metadata the source-first picker reads
@@ -70,7 +70,7 @@ def test_registry_declares_design_for_elevenlabs():
 @pytest.mark.unit
 def test_registry_declares_design_for_cosyvoice():
     import main_logic.tts_client  # noqa: F401 - registers providers
-    import utils.tts_provider_registry as reg
+    from utils.tts import provider_registry as reg
 
     cosy = reg.get("cosyvoice")
     assert cosy is not None and "design" in cosy.capabilities and "clone" in cosy.capabilities
@@ -92,7 +92,7 @@ def test_cosyvoice_worker_prefers_persisted_design_model():
 @pytest.mark.unit
 def test_registry_declares_design_for_minimax_and_mimo():
     import main_logic.tts_client  # noqa: F401 - registers providers
-    import utils.tts_provider_registry as reg
+    from utils.tts import provider_registry as reg
 
     minimax = reg.get("minimax")
     assert minimax is not None and "design" in minimax.capabilities and "clone" in minimax.capabilities

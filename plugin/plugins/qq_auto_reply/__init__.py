@@ -33,8 +33,8 @@ from .qq_open_plat import QQOpenPlatformConnection
 
 from utils.api_config_loader import get_free_voices
 from utils.config_manager import get_reserved
-from utils.gemini_tts_voices import normalize_gemini_tts_voice
-from utils.native_voice_registry import get_active_realtime_native_provider_for_ui
+from utils.tts.native_voice_registry import get_active_realtime_native_provider_for_ui
+from utils.tts.providers.gemini import normalize_gemini_tts_voice
 from utils.voice_clone import MimoVoiceCloneClient, MimoVoiceCloneError, MinimaxVoiceCloneClient, MinimaxVoiceCloneError
 from utils.voice_config import read_legacy_voice_id
 from .dashboard_service import QQDashboardService

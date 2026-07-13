@@ -20,7 +20,7 @@ import json
 import base64
 
 from functools import partial
-from utils.mimo_tts_voices import (
+from utils.tts.providers.mimo import (
     MIMO_TTS_MODEL,
     MIMO_TTS_VOICECLONE_MODEL,
     MIMO_TTS_VOICEDESIGN_MODEL,
@@ -36,7 +36,7 @@ from utils.logger_config import get_module_logger
 logger = get_module_logger(__name__, "Main")
 
 # Backwards-compatible alias — the URL-derivation rule now lives in the utils
-# layer (utils.mimo_tts_voices.mimo_chat_completions_url) so the clone-enrollment
+# layer (utils.tts.providers.mimo.mimo_chat_completions_url) so the clone-enrollment
 # client can share it without importing main_logic.
 _get_mimo_chat_completions_url = mimo_chat_completions_url
 
@@ -83,7 +83,7 @@ def mimo_tts_worker(request_queue, response_queue, audio_api_key, voice_id, base
     ``clone_voice`` is the cloned-voice variant: when set it is a
     ``data:audio/...;base64,...`` reference-audio URI (MiMo has no server-side
     cloned voice id — the sample is inlined per request, see
-    ``utils.mimo_tts_voices.mimo_voice_clone_data_uri``). It is passed as
+    ``utils.tts.providers.mimo.mimo_voice_clone_data_uri``). It is passed as
     ``audio.voice`` against the ``mimo-v2.5-tts-voiceclone`` model; the catalog
     ``voice_id`` is ignored in that mode.
     """

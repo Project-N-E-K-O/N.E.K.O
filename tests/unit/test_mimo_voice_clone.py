@@ -275,7 +275,7 @@ def test_get_tts_worker_routes_mimo_design_voice(monkeypatch):
 
 @pytest.mark.unit
 def test_mimo_design_payload_preserves_assistant_text_without_text_optimization():
-    from utils.mimo_tts_voices import MIMO_TTS_VOICEDESIGN_MODEL
+    from utils.tts.providers.mimo import MIMO_TTS_VOICEDESIGN_MODEL
     from utils.voice_clone import MimoVoiceCloneClient
 
     payload = MimoVoiceCloneClient(api_key="mimo-key")._build_design_payload(
@@ -448,7 +448,7 @@ def test_get_voices_merges_cosyvoice_provider_bucket_for_listing_when_main_cloud
 
 @pytest.mark.unit
 def test_registry_declares_clone_and_preset_for_mimo():
-    import utils.tts_provider_registry as reg
+    from utils.tts import provider_registry as reg
     mimo = reg.get("mimo")
     assert mimo is not None and "clone" in mimo.capabilities and "preset" in mimo.capabilities
     # clone is advertised in the UI metadata the source-first picker reads
@@ -458,7 +458,7 @@ def test_registry_declares_clone_and_preset_for_mimo():
 
 @pytest.mark.unit
 def test_mimo_chat_completions_url_maps_ws_to_https_not_plaintext():
-    from utils.mimo_tts_voices import mimo_chat_completions_url
+    from utils.tts.providers.mimo import mimo_chat_completions_url
     # ws:// must NOT downgrade to plaintext http:// (the api-key header would leak);
     # it maps to https:// just like wss://.
     assert mimo_chat_completions_url("ws://api.xiaomimimo.com/v1").startswith("https://")
@@ -504,7 +504,7 @@ async def test_mimo_validate_sample_requires_audio(monkeypatch):
 
 @pytest.mark.unit
 def test_mimo_voice_clone_data_uri_falls_back_on_blank_mime():
-    from utils.mimo_tts_voices import mimo_voice_clone_data_uri
+    from utils.tts.providers.mimo import mimo_voice_clone_data_uri
     # whitespace-only / empty mime must fall back to audio/wav, never "data:;base64,"
     assert mimo_voice_clone_data_uri(b"x", "   ").startswith("data:audio/wav;base64,")
     assert mimo_voice_clone_data_uri(b"x", "").startswith("data:audio/wav;base64,")

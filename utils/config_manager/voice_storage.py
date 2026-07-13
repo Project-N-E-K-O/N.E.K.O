@@ -23,7 +23,7 @@ from copy import deepcopy
 
 from config import DEFAULT_CONFIG_DATA
 from utils.doubao_tts import DOUBAO_VOICE_STORAGE_KEY
-from utils.native_voice_registry import (
+from utils.tts.native_voice_registry import (
     is_free_lanlan_app_route,
     is_saveable_native_voice,
 )
@@ -725,8 +725,8 @@ class VoiceStorageMixin:
         than breaking validation.
         """
         try:
-            from utils import tts_provider_registry
-            return tts_provider_registry.is_selected_preset_voice(
+            from utils.tts import provider_registry
+            return provider_registry.is_selected_preset_voice(
                 self.get_core_config() or {}, self, voice_id
             )
         except Exception:
@@ -833,7 +833,7 @@ class VoiceStorageMixin:
         dropped); callers treat it as "leave the value as-is".
         """
         from utils.voice_config import normalize_voice_id
-        from utils.native_voice_registry import (
+        from utils.tts.native_voice_registry import (
             get_active_realtime_native_provider,
             is_saveable_native_voice,
         )
@@ -864,8 +864,8 @@ class VoiceStorageMixin:
             main_logic.tts_client at startup. Degrades to None on error.
             """
             try:
-                from utils import tts_provider_registry
-                return tts_provider_registry.selected_preset_provider_key(
+                from utils.tts import provider_registry
+                return provider_registry.selected_preset_provider_key(
                     self.get_core_config() or {}, self, ref
                 )
             except Exception:
