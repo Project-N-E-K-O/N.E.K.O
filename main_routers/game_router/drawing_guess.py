@@ -616,11 +616,16 @@ _ALIAS_NEGATION_SUFFIXES = (
     "지 않습니다", "지는 않습니다", "지도 않습니다",
     "지 않은데", "지는 않은데", "지도 않은데",
 )
+_KOREAN_AFFIRMATIVE_QUESTION_SUFFIXES = frozenset(
+    unicodedata.normalize("NFKD", f"{particle}아닌가{honorific}")
+    for particle in ("", "이", "가", "은", "는", "도")
+    for honorific in ("", "요")
+)
 _USER_GUESS_INTENT_RE = re.compile(
     r"(?:"
     r"\b(?:i\s+guess|my\s+guess|is\s+(?:it|this|that)|could\s+it\s+be|maybe\s+(?:it'?s|this\s+is)|looks?\s+like|answer\s+is)\b"
     r"|我猜|猜(?:是|这个|這個)|是不是|应该是|應該是|大概是|难道是|難道是|答案是"
-    r"|答え|かな|같아|정답|palpite|será|parece|creo\s+que"
+    r"|答え|かな|같아|아닌가(?:요)?|정답|palpite|será|parece|creo\s+que"
     r")",
     re.IGNORECASE,
 )
@@ -662,12 +667,18 @@ def _alias_is_negated(text: str, start: int, end: int) -> bool:
     prefix = text[:start]
     suffix = text[end:].lstrip()
     compact_suffix = re.sub(r"\s+", "", suffix)
+    korean_affirmative_question = compact_suffix.rstrip("?？!！.") in (
+        _KOREAN_AFFIRMATIVE_QUESTION_SUFFIXES
+    )
     return bool(
         _CJK_ALIAS_NEGATION_RE.search(prefix)
         or _SPACED_ALIAS_NEGATION_RE.search(prefix)
-        or any(
-            compact_suffix.startswith(re.sub(r"\s+", "", _fold_guess_text(marker)))
-            for marker in _ALIAS_NEGATION_SUFFIXES
+        or (
+            not korean_affirmative_question
+            and any(
+                compact_suffix.startswith(re.sub(r"\s+", "", _fold_guess_text(marker)))
+                for marker in _ALIAS_NEGATION_SUFFIXES
+            )
         )
     )
 

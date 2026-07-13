@@ -638,6 +638,17 @@ def test_user_guess_extraction_rejects_negated_aliases(text):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("text", [
+    "고양이 아닌가?",
+    "고양이 아닌가요?",
+    "고양이가 아닌가?",
+    "고양이는아닌가요?",
+])
+def test_user_guess_extraction_accepts_korean_affirmative_questions(text):
+    assert dgr._extract_user_guess_word(text).id == "cat"
+
+
+@pytest.mark.unit
 def test_user_guess_extraction_can_match_later_non_negated_alias():
     assert dgr._extract_user_guess_word("not dog, I guess cat").id == "cat"
 
