@@ -42,7 +42,7 @@ permissions = [
 
 [plugin_runtime]
 enabled = true
-auto_start = true
+auto_start = false
 
 [plugin_state]
 backend = "file"
