@@ -10,7 +10,7 @@ on:
     branches: [main]
     paths:
       - 'plugin/**'
-      - 'static/avatar/avatar-ui-buttons.js'
+      - 'static/avatar/avatar-ui-buttons/**'
       - 'tests/unit/test_avatar_return_button_idle_tiers_static.py'
       - 'tests/unit/test_plugin_sdk_packaging.py'
       - 'specs/launcher.spec'
@@ -24,7 +24,7 @@ on:
     branches: [main]
     paths:
       - 'plugin/**'
-      - 'static/avatar/avatar-ui-buttons.js'
+      - 'static/avatar/avatar-ui-buttons/**'
       - 'tests/unit/test_avatar_return_button_idle_tiers_static.py'
       - 'tests/unit/test_plugin_sdk_packaging.py'
       - 'specs/launcher.spec'

@@ -9,7 +9,6 @@ from config.prompts.prompts_soccer import (
     get_soccer_quick_lines_user_prompt,
     get_soccer_system_prompt,
 )
-from main_routers import game_router
 from main_routers.game_router import runtime as gr_runtime
 from scripts import check_no_temperature
 
@@ -21,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[2]
 def test_game_llm_paths_do_not_send_temperature_kwarg():
     assert check_no_temperature.main([
         "main_routers/game_router",
-        "main_logic/omni_offline_client.py",
+        "main_logic/omni_offline_client",
     ]) == 0
 
 
@@ -323,11 +322,15 @@ def test_game_voice_route_end_avoids_double_mic_restore():
 
 @pytest.mark.unit
 def test_realtime_client_has_no_game_route_surface():
-    """omni_realtime_client.py must not carry any game-route-specific
+    """The omni_realtime_client package must not carry game-route-specific
     APIs after Phase 1 of the dialog-passthrough refactor — that logic
     belongs in main_routers/game_router.py + main_logic/core.py
     (mirror_*) + main_logic/cross_server.py (mirror_meta detection)."""
-    realtime_py = (ROOT / "main_logic" / "omni_realtime_client.py").read_text(encoding="utf-8")
+    realtime_package = ROOT / "main_logic" / "omni_realtime_client"
+    realtime_py = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(realtime_package.glob("*.py"))
+    )
 
     assert "set_game_route_stt_only" not in realtime_py
     assert "_game_route_stt_only" not in realtime_py

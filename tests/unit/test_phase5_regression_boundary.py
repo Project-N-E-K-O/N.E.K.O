@@ -12,12 +12,16 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 APP_AUTO_GOODBYE_PATH = PROJECT_ROOT / "static" / "app" / "app-auto-goodbye.js"
 APP_UI_PATH = PROJECT_ROOT / "static" / "app" / "app-ui.js"
 APP_BUTTONS_PATH = PROJECT_ROOT / "static" / "app" / "app-buttons.js"
-AVATAR_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "avatar" / "avatar-ui-buttons.js"
+AVATAR_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "avatar" / "avatar-ui-buttons"
 APP_REACT_CHAT_PATH = PROJECT_ROOT / "static" / "app" / "app-react-chat-window.js"
 APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app" / "app-interpage.js"
 
 
 def _read(path: Path) -> str:
+    if path.is_dir():
+        part_paths = tuple(sorted(path.glob("*.js")))
+        assert part_paths, f"avatar UI button parts not found: {path}"
+        return "\n".join(part.read_text(encoding="utf-8") for part in part_paths)
     return path.read_text(encoding="utf-8")
 
 

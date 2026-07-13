@@ -43,6 +43,15 @@ _TUTORIAL_RUNTIME_ASSET_PATHS = tuple(sorted(
     for pattern in ("**/*.js", "**/*.json")
     for path in (_PROJECT_ROOT / "static/tutorial").glob(pattern)
 ))
+_AVATAR_UI_BUTTON_ASSET_PATHS = tuple(sorted(
+    (_PROJECT_ROOT / "static/avatar/avatar-ui-buttons").glob("*.js")
+))
+_CHARACTER_CARD_MANAGER_JS_PATHS = tuple(sorted(
+    (_PROJECT_ROOT / "static/js/character_card_manager").glob("*.js")
+))
+_MODEL_MANAGER_JS_PATHS = tuple(sorted(
+    (_PROJECT_ROOT / "static/js/model_manager").glob("*.js")
+))
 _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/css/yui-guide.css",
     _PROJECT_ROOT / "static/css/tutorial-styles.css",
@@ -83,7 +92,7 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/common-ui-hud.js",
     _PROJECT_ROOT / "static/app/app-react-chat-window.js",
     _PROJECT_ROOT / "static/app/app-chat-export.js",
-    _PROJECT_ROOT / "static/avatar/avatar-ui-buttons.js",
+    *_AVATAR_UI_BUTTON_ASSET_PATHS,
     _PROJECT_ROOT / "static/subtitle/subtitle.js",
     _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat1.gif",
     _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat1-click.gif",
@@ -121,13 +130,13 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/assets/neko-idle/cat3-sleep1.mp3",
     _PROJECT_ROOT / "static/assets/neko-idle/cat3-sleep2.mp3",
     _PROJECT_ROOT / "static/css/character_card_manager.css",
-    _PROJECT_ROOT / "static/js/character_card_manager.js",
+    *_CHARACTER_CARD_MANAGER_JS_PATHS,
     _PROJECT_ROOT / "static/css/character_personality_onboarding.css",
     _PROJECT_ROOT / "static/js/character_personality_onboarding.js",
     _PROJECT_ROOT / "static/css/card_maker.css",
     _PROJECT_ROOT / "static/js/card_maker.js",
     _PROJECT_ROOT / "static/css/model_manager.css",
-    _PROJECT_ROOT / "static/js/model_manager.js",
+    *_MODEL_MANAGER_JS_PATHS,
     _PROJECT_ROOT / "static/libs/live2dcubismcore.min.js",
     _PROJECT_ROOT / "static/libs/live2d.min.js",
     _PROJECT_ROOT / "static/libs/pixi.min.js",

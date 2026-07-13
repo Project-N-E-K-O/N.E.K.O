@@ -1,6 +1,25 @@
 from pathlib import Path
 
 
+MODEL_MANAGER_PART_NAMES = (
+    "runtime-loaders.js",
+    "dropdown-manager.js",
+    "page-bridge.js",
+    "card-face.js",
+    "path-request-fullscreen.js",
+    "page-controller.js",
+    "window-lifecycle.js",
+)
+
+
+def read_model_manager_source() -> str:
+    parts_dir = Path("static/js/model_manager")
+    return "".join(
+        (parts_dir / part_name).read_text(encoding="utf-8")
+        for part_name in MODEL_MANAGER_PART_NAMES
+    )
+
+
 def test_avatar_model_manager_popup_opens_fullscreen():
     source = Path("static/avatar/avatar-ui-popup.js").read_text(encoding="utf-8")
 
@@ -27,7 +46,7 @@ def test_yui_model_manager_handoff_opens_fullscreen():
 
 
 def test_model_manager_hide_show_cross_page_messages_are_removed():
-    model_manager_source = Path("static/js/model_manager.js").read_text(encoding="utf-8")
+    model_manager_source = read_model_manager_source()
     interpage_source = Path("static/app/app-interpage.js").read_text(encoding="utf-8")
 
     assert "hide_main_ui" not in model_manager_source

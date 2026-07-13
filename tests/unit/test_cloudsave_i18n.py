@@ -11,7 +11,7 @@ CLOUDSAVE_JS = PROJECT_ROOT / "static" / "js" / "cloudsave_manager.js"
 CLOUDSAVE_CSS = PROJECT_ROOT / "static" / "css" / "cloudsave_manager.css"
 CLOUDSAVE_TEMPLATE = PROJECT_ROOT / "templates" / "cloudsave_manager.html"
 CHARA_TEMPLATE = PROJECT_ROOT / "templates" / "character_card_manager.html"
-CHARA_MANAGER_JS = PROJECT_ROOT / "static" / "js" / "character_card_manager.js"
+CHARA_MANAGER_JS_DIR = PROJECT_ROOT / "static" / "js" / "character_card_manager"
 I18N_JS = PROJECT_ROOT / "static" / "i18n-i18next.js"
 APP_SETTINGS_JS = PROJECT_ROOT / "static" / "app" / "app-settings.js"
 
@@ -23,6 +23,13 @@ def _get_nested_value(payload: dict, dotted_key: str):
             raise KeyError(dotted_key)
         value = value[part]
     return value
+
+
+def _read_chara_manager_script() -> str:
+    return "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(CHARA_MANAGER_JS_DIR.glob("*.js"))
+    )
 
 
 def _iter_leaf_strings(payload):
@@ -39,7 +46,13 @@ def _iter_leaf_strings(payload):
 def _extract_i18n_keys() -> set[str]:
     keys: set[str] = set()
     pattern = re.compile(r"(cloudsave\.[A-Za-z0-9_.]+|character\.[A-Za-z0-9_.]+)")
-    for path in (CLOUDSAVE_JS, CLOUDSAVE_TEMPLATE, CHARA_TEMPLATE, CHARA_MANAGER_JS):
+    paths = (
+        CLOUDSAVE_JS,
+        CLOUDSAVE_TEMPLATE,
+        CHARA_TEMPLATE,
+        *sorted(CHARA_MANAGER_JS_DIR.glob("*.js")),
+    )
+    for path in paths:
         keys.update(pattern.findall(path.read_text(encoding="utf-8")))
     # 过滤掉以点结尾的动态键前缀（如 'character.field.' + key）
     keys = {k for k in keys if not k.endswith('.')}
@@ -317,7 +330,7 @@ def test_cloudsave_group_titles_use_my_characters_copy_in_all_supported_locales(
 
 @pytest.mark.unit
 def test_chara_manager_cloudsave_window_handle_is_cached_after_open():
-    script = CHARA_MANAGER_JS.read_text(encoding="utf-8")
+    script = _read_chara_manager_script()
 
     assert "window._openedWindows[windowName] = openedWindow;" in script
     assert "if (!window._openedWindows || typeof window._openedWindows !== 'object') {" in script
@@ -325,7 +338,7 @@ def test_chara_manager_cloudsave_window_handle_is_cached_after_open():
 
 @pytest.mark.unit
 def test_chara_manager_unsaved_draft_branch_does_not_commit_cloudsave_sync_timestamp():
-    script = CHARA_MANAGER_JS.read_text(encoding="utf-8")
+    script = _read_chara_manager_script()
     match = re.search(
         r"if \(hasUnsavedNewCatgirlDraft\(\)\) \{(?P<body>.*?)\n\s*\}",
         script,
@@ -421,7 +434,7 @@ def test_cloudsave_action_labels_use_snapshot_copy_in_all_supported_locales():
 
 @pytest.mark.unit
 def test_cloudsave_popup_url_carries_current_ui_language():
-    script = CHARA_MANAGER_JS.read_text(encoding="utf-8")
+    script = _read_chara_manager_script()
 
     assert "function getCurrentUiLanguage()" in script
     assert "query.set('ui_lang', currentUiLanguage);" in script
@@ -438,7 +451,7 @@ def test_cloudsave_back_to_character_manager_replaces_history_entry():
 @pytest.mark.unit
 def test_cloudsave_download_notifies_open_character_manager_to_refresh():
     cloudsave_script = CLOUDSAVE_JS.read_text(encoding="utf-8")
-    chara_script = CHARA_MANAGER_JS.read_text(encoding="utf-8")
+    chara_script = _read_chara_manager_script()
 
     assert "const CLOUDSAVE_CHARACTER_SYNC_EVENT_KEY = 'neko_cloudsave_character_sync';" in cloudsave_script
     assert "const CLOUDSAVE_CHARACTER_SYNC_MESSAGE_TYPE = 'cloudsave_character_changed';" in cloudsave_script
