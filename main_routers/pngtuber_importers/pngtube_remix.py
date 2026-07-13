@@ -1190,7 +1190,7 @@ def _has_motion_state(state: dict) -> bool:
 
 
 def _has_physics_state(state: dict) -> bool:
-    physics_v2_keys = (
+    physics_v2_base_keys = (
         "tip_point",
         "mesh_phys_x",
         "mesh_phys_y",
@@ -1198,12 +1198,11 @@ def _has_physics_state(state: dict) -> bool:
         "chain_rot_min",
         "chain_rot_max",
         "drag_snap",
-        "mo_tip_point",
-        "mo_mesh_phys_x",
-        "mo_mesh_phys_y",
-        "scream_tip_point",
-        "scream_mesh_phys_x",
-        "scream_mesh_phys_y",
+    )
+    physics_v2_keys = tuple(
+        f"{prefix}{key}"
+        for prefix in ("", "mo_", "scream_")
+        for key in physics_v2_base_keys
     )
     # `_json_safe_state()` emits every allowed key (incl. these v2 physics keys)
     # as None for absent fields, so `key in state` is true for every serialized

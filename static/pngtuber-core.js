@@ -112,6 +112,10 @@
         normalized.mobile_scale = clampNumber(source.mobile_scale, SCALE_MIN, SCALE_MAX, Math.min(normalized.scale, 1));
         normalized.mobile_offset_x = Number.isFinite(Number(source.mobile_offset_x)) ? Number(source.mobile_offset_x) : 0;
         normalized.mobile_offset_y = Number.isFinite(Number(source.mobile_offset_y)) ? Number(source.mobile_offset_y) : 0;
+        const sourceAnchor = String(source.position_anchor || '').toLowerCase();
+        normalized.position_anchor = (sourceAnchor === 'center' || sourceAnchor === 'bottom_right')
+            ? sourceAnchor
+            : ((normalized.offset_x || normalized.offset_y || normalized.mobile_offset_x || normalized.mobile_offset_y) ? 'bottom_right' : 'center');
         normalized.mirror = !!source.mirror;
         normalized.adapter = sanitizePath(source.adapter);
         const layeredMetadata = normalizeAssetPath(source.layered_metadata || source.metadata);
@@ -655,7 +659,7 @@
             // runtime shortcuts (Alt+1 cycle, Alt+2 asset action) share those base
             // keys, so ignore modified events here — otherwise a toggle bound to
             // "1"/"2" would swallow Alt+1/Alt+2 before the reserved checks run.
-            if (event.altKey || event.ctrlKey || event.metaKey) return [];
+            if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return [];
             const eventKey = this.normalizedLayeredEventKey(event);
             if (!eventKey) return [];
             return this.layeredToggleEntries().filter((entry) => String(entry.key || '').toLowerCase() === eventKey);
@@ -947,7 +951,7 @@
             if (assetVisibility === false) return false;
             if (layer.inactive_asset_ancestor && !assetForcedVisible) return false;
             const mode = stateName === 'talking' ? 'talking' : 'idle';
-            const layerState = this.layerStateForCurrentIndex(layer);
+            const layerState = this.layerStateForRender(layer, stateName);
             if (layerState.folder) return false;
             if (layerState.visible === false && !assetForcedVisible) return false;
             if (layerState.ancestor_visible === false && !assetForcedVisible) return false;
@@ -974,6 +978,20 @@
         layerStateForCurrentIndex(layer) {
             const states = Array.isArray(layer.states) ? layer.states : [];
             return states[this.layeredStateIndex] || layer.state || {};
+        }
+
+        layerStateHasTalkingMouth(layerState) {
+            return !!(layerState && (layerState.effective_should_talk ?? layerState.should_talk));
+        }
+
+        layerStateForRender(layer, stateName = this.state || 'idle') {
+            const currentState = this.layerStateForCurrentIndex(layer);
+            if (this.isLayeredPlusModel() || this.layerStateHasTalkingMouth(currentState)) {
+                return currentState;
+            }
+            const states = Array.isArray(layer.states) ? layer.states : [];
+            const defaultState = states[0] || layer.state || {};
+            return this.layerStateHasTalkingMouth(defaultState) ? defaultState : currentState;
         }
 
         isLayeredRemixModel() {
@@ -1246,7 +1264,7 @@
             const layers = Array.isArray(this.layeredMetadata.layers) ? this.layeredMetadata.layers : [];
             return layers.some((layer) => {
                 if (!this.shouldRenderLayer(layer, stateName)) return false;
-                const layerState = this.layerStateForCurrentIndex(layer);
+                const layerState = this.layerStateForRender(layer, stateName);
                 return this.stateHasMotion(layerState)
                     || this.plusStateHasPhysics(layerState)
                     || (this.stateHasRemixPhysics(layerState)
@@ -2229,6 +2247,13 @@
                 || (Number(a.order || 0) - Number(b.order || 0));
         }
 
+        compareLayerRenderOrder(a, b, stateName) {
+            const aState = this.layerStateForRender(a, stateName);
+            const bState = this.layerStateForRender(b, stateName);
+            return (this.layerDrawZIndex(a, aState) - this.layerDrawZIndex(b, bState))
+                || (Number(a.order || 0) - Number(b.order || 0));
+        }
+
         drawLayeredState(stateName = this.state || 'idle', timestamp = performance.now()) {
             if (!this.isLayeredActive() || !this.canvasElement) return false;
             const canvas = this.canvasElement;
@@ -2244,11 +2269,11 @@
             const canvasPadding = Number(this.layeredCanvasPadding) || 0;
             layers
                 .filter((layer) => this.shouldRenderLayer(layer, stateName))
-                .sort((a, b) => this.compareLayerDrawOrder(a, b))
+                .sort((a, b) => this.compareLayerRenderOrder(a, b, stateName))
                 .forEach((layer) => {
                     const img = this.layeredImages.get(layer._imageIndex);
                     if (!img) return;
-                    const layerState = this.layerStateForCurrentIndex(layer);
+                    const layerState = this.layerStateForRender(layer, stateName);
                     const frame = this.stateFrameInfo(layer, layerState, img, timestamp);
                     const physics = this.layeredPhysicsTransform(layer, layerState, timestamp, frame);
                     const drawFrame = physics.frame === null || physics.frame === undefined
@@ -2347,7 +2372,8 @@
             if (this.container) {
                 this.container.style.pointerEvents = 'none';
             }
-            if (modelManagerPage) {
+            const centerAnchored = modelManagerPage || this.config.position_anchor === 'center';
+            if (centerAnchored) {
                 Object.assign(this.image.style, {
                     position: 'absolute',
                     left: '50%',
@@ -2358,10 +2384,21 @@
                     pointerEvents
                 });
             }
+            if (!centerAnchored) {
+                Object.assign(this.image.style, {
+                    position: 'absolute',
+                    left: 'calc(100% - 48px)',
+                    top: 'calc(100% - 18px)',
+                    right: 'auto',
+                    bottom: 'auto',
+                    transformOrigin: 'right bottom'
+                });
+                this.image.style.pointerEvents = pointerEvents;
+            }
             if (!modelManagerPage) {
                 this.image.style.pointerEvents = pointerEvents;
             }
-            const anchorTranslate = modelManagerPage
+            const anchorTranslate = centerAnchored
                 ? 'translate(-50%, -50%)'
                 : 'translate(-100%, -100%)';
             this.image.style.transform = `${anchorTranslate} translate(${renderPlacement.offsetX}px, ${renderPlacement.offsetY + bounce.y + breathing.y + talkingHop.y}px) scale(${finalScaleX}, ${finalScaleY})`;
@@ -2811,6 +2848,7 @@
                 this.config.mobile_offset_x,
                 this.config.mobile_offset_y,
                 this.config.mobile_scale,
+                this.config.position_anchor,
                 this.config.mirror
             ].join(':');
             if (saveKey === this._lastSavedPositionKey) return true;
@@ -3273,9 +3311,9 @@
             const layers = Array.isArray(this.layeredMetadata.layers) ? this.layeredMetadata.layers : [];
             return layers
                 .filter((layer) => this.shouldRenderLayer(layer, stateName))
-                .sort((a, b) => this.compareLayerDrawOrder(a, b))
+                .sort((a, b) => this.compareLayerRenderOrder(a, b, stateName))
                 .map((layer) => {
-                    const layerState = this.layerStateForCurrentIndex(layer);
+                    const layerState = this.layerStateForRender(layer, stateName);
                     const img = this.layeredImages.get(layer._imageIndex);
                     const frame = img ? this.stateFrameInfo(layer, layerState, img) : null;
                     const mesh = this.currentLayerMesh(layer, layerState);
@@ -3330,7 +3368,7 @@
             const enabledRuntimeFeatures = Object.keys(runtimeFeatures)
                 .filter((key) => key !== 'unsupported_features' && runtimeFeatures[key] === true);
             const meshLayers = layers.filter((layer) => {
-                const state = this.layerStateForCurrentIndex(layer);
+                const state = this.layerStateForRender(layer, this.state || 'idle');
                 return this.layerMeshRuntimeEnabled(layer, state);
             }).length;
             const emotionSupported = this.isLayeredActive()
