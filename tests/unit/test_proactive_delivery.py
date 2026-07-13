@@ -455,6 +455,35 @@ async def test_deliver_batch_releases_inflight_when_all_superseded():
     assert [c["summary"] for c in mgr.pending_agent_callbacks] == ["newer read"]
 
 
+def test_drain_skips_read_superseded_by_manager_held_respond():
+    # Codex scenario: a newer respond cue is submitted and PARKED in the
+    # delivery manager (playback / min-gap keeps it from releasing). If the
+    # user's next text turn arrives first, the passive drain must already see
+    # the older same-key read cue as stale — the submit-time bump of
+    # _coalesce_latest plus the drain-point pull check cover the window where
+    # release-time coalescing has not run yet.
+    mgr = _make_session_mgr()
+    old = _passive_cb("stale read", coalesce_key="k")
+    fut = _FakeAckFuture()
+    old[DELIVERY_ACK_FUTURE_KEY] = fut
+    mgr.enqueue_agent_callback(old)
+
+    class _MgrStub:  # manager holds the newer cue; never releases in this test
+        def submit(self, cb, **kw):
+            pass
+
+    mgr.proactive_manager = _MgrStub()
+    mgr.is_goodbye_silent = lambda: False
+    core_module.LLMSessionManager.submit_proactive_callback(
+        mgr, {"status": "completed", "summary": "newer respond"},
+        priority=1, coalesce_key="k",
+    )
+    out = core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr)
+    assert out == ""                      # stale read NOT injected
+    assert fut.done() and fut.result is False
+    assert mgr.pending_agent_callbacks == []  # purged, not redelivered later
+
+
 def test_enqueue_coalesce_evicts_legacy_mirror_by_delivery_id():
     # A mirror created before the coalesce_key stamp existed (legacy shape,
     # paired by _callback_delivery_id only) must still be evicted when its
