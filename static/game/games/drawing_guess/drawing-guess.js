@@ -1808,6 +1808,20 @@
     });
   }
 
+  function publishFinalSummaryRouteState() {
+    if (!state.routeActive || state.routeEnding) return Promise.resolve(false);
+    var visible = !document.hidden;
+    return post(ROUTE_API + '/route/heartbeat', routePayload({
+      visible: visible,
+      pageVisible: visible,
+      visibilityState: document.visibilityState || (visible ? 'visible' : 'hidden')
+    }), 5000).then(function (res) {
+      return !!(res && res.ok !== false);
+    }).catch(function () {
+      return false;
+    });
+  }
+
   function roundPayload(extra) {
     return Object.assign({
       session_id: state.sessionId,
@@ -2115,7 +2129,7 @@
 
   function applyExternalDrawingResult(res) {
     if (!res || !res.ok) return;
-    if (res.kind === 'guess' && res.correct) {
+    if ((res.kind === 'guess' && res.correct) || res.kind === 'give_up') {
       stopCountdown();
       state.aiAnswerLabel = res.answer ? String(res.answer.label || '') : '';
       addEventMessage('drawingGuess.messages.answerReveal', 'Answer: {{answer}}', {
@@ -2158,8 +2172,11 @@
   function routeOutputMatchesCurrentRound(output) {
     var result = (output && output.result) || {};
     var eventState = (output && output.event && output.event.currentState) || {};
-    var token = eventState.client_round_token;
-    if (token == null && result.state) token = result.state.client_round_token;
+    var resultToken = result.state && result.state.client_round_token;
+    var token = state.phase === 'final_summary' && result.kind === 'chat'
+      ? resultToken
+      : eventState.client_round_token;
+    if (token == null) token = resultToken;
     if (token == null) return true;
     return String(token) === String(state.activeRoundToken);
   }
@@ -2699,17 +2716,20 @@
 
   function submitGameChat(text, options) {
     options = options || {};
+    var flowToken = state.roundFlowToken;
     state.chatInFlight = true;
     return post(ROUND_API + '/input', roundPayload({
       text: text,
       summary_chat_only: !!options.summaryChatOnly
     }), 20000).then(function (res) {
+      if (!isCurrentRoundFlow(flowToken)) return;
       if (!res || !res.ok) {
         addMessage('drawingGuess.messages.inputFailed', 'Input failed.');
         return;
       }
       addNekoMessage(res.message);
     }).finally(function () {
+      if (!isCurrentRoundFlow(flowToken)) return;
       state.chatInFlight = false;
       flushDeferredAiGuessWork();
       updateControls();
@@ -2980,6 +3000,7 @@
     stopAiGuessSchedule();
     showSummary();
     setPhase('final_summary');
+    publishFinalSummaryRouteState();
     renderSummaryList(state.roundSummaries, true);
     setChatPlaceholder('drawingGuess.input.summaryPlaceholder', 'Chat about this round, or start another one');
   }

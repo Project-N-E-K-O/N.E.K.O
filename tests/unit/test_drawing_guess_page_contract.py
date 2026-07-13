@@ -259,6 +259,7 @@ def test_drawing_guess_static_route_contract():
     assert "ROUTE_API + '/route/heartbeat'" in script
     assert "ROUTE_API + '/route/end'" in script
     assert "function pushCanvasContextForRoute" in script
+    assert "function publishFinalSummaryRouteState" in script
     assert "canvasContextPayload(!!force)" in script
     assert "output.type === 'game_canvas_context_request'" in script
     assert "ROUND_API + '/round/start'" in script
@@ -447,10 +448,12 @@ def test_drawing_guess_static_route_contract():
     assert "flushDeferredAiGuessWork()" in script
     assert "continueAfterAiDrawingHalf(res, state.roundFlowToken);" in script
     assert "res.correct || res.kind === 'give_up'" in script
+    assert "(res.kind === 'guess' && res.correct) || res.kind === 'give_up'" in script
     assert "function routeOutputMatchesCurrentRound" in script
     assert "result.state.client_round_token" in script
     assert "String(token) === String(state.activeRoundToken)" in script
     assert "if (state.phase === 'final_summary' && result.kind !== 'chat') return;" in script
+    assert "state.phase === 'final_summary' && result.kind === 'chat'\n      ? resultToken" in script
     assert "res.reason === 'session_busy'" in script
     assert "setTimeout(retryWhenReady, 180);" in script
     assert "aiGuessTimeoutRetryTimer: null" in script
@@ -464,6 +467,7 @@ def test_drawing_guess_static_route_contract():
     assert "response.type === 'speech_tap_ready'" in script
     assert "suppress_primary_audio: state.speechAudioTapReady" in script
     assert "if (!isCurrentRoundFlow(flowToken)) return;\n      state.chatInFlight = false;" in script
+    assert "function submitGameChat(text, options) {\n    options = options || {};\n    var flowToken = state.roundFlowToken;" in script
     assert "if (!isCurrentRoundFlow(flowToken)) return;\n      state.aiGuessInFlight = false;" in script
     assert "resetCanvas();\n        pushCanvasContextForRoute(true);" in script
     assert "if (state.brushMode === 'brush') state.hasDrawn = true;" in script
@@ -502,6 +506,7 @@ def test_drawing_guess_static_route_contract():
     assert "var userTitle = summaryArtworkTitle('drawingGuess.summary.userArt'" in script
     assert "drawingGuess.summary.userDrawAnswer" not in script
     assert "function renderFinalSummary" in script
+    assert "setPhase('final_summary');\n    publishFinalSummaryRouteState();" in script
     assert "function finishGame" in script
     assert "endRoute(false, { finalSummary: true })" not in script
     assert "els.summary.classList.toggle('dg-summary-final', !!finalSummary);" in script
