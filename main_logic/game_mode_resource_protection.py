@@ -396,12 +396,6 @@ class GameModeResourceProtector:
                 "last_seen": now,
             }
             cycle_active = self._state.get("cycle_phase") in {"switching", "protected", "deep_sleep"}
-            if cycle_active and self._state.get("cycle_phase") == "switching" and window_type == "pet":
-                expected = list(self._state.get("expected_window_ids") or [])
-                if window_id not in expected:
-                    expected.append(window_id)
-                    self._state["expected_window_ids"] = expected
-                    self._state["expected_window_count"] = len(expected)
             return {
                 "cycle_active": cycle_active,
                 "cycle_id": self._state.get("cycle_id") if cycle_active else None,
@@ -414,6 +408,21 @@ class GameModeResourceProtector:
         async with self._lock:
             window_id = str(pet_instance_id or "").strip()
             self._windows.pop(window_id, None)
+            removed_ack = self._window_acks.pop(window_id, None)
+            self._deep_sleep_acks.pop(window_id, None)
+            if removed_ack and removed_ack.get("status") == "protected":
+                owned_count = sum(
+                    1 for ack in self._window_acks.values() if ack.get("status") == "protected"
+                )
+                self._state["owned_window_count"] = owned_count
+                self._state["auto_switch_active"] = owned_count > 0
+                if (
+                    owned_count == 0
+                    and self._state.get("cycle_phase") in {"protected", "deep_sleep"}
+                ):
+                    self._state["pressure_state"] = "normal"
+                    self._state["trigger_reason"] = None
+                    self._end_cycle_locked()
             return self.snapshot()
 
     async def acknowledge_switch(
@@ -713,7 +722,7 @@ class GameModeResourceProtector:
         self._deep_sleep_acks.clear()
         self._clear_game_candidate_locked()
         delivered = await self._broadcaster(payload)
-        if delivered <= 0 and expected_window_ids:
+        if delivered <= 0:
             await self._fail_switch_locked("not-delivered")
             return
         self._state["last_event"] = {"type": "auto_switch", "ts": now, "delivered": delivered}

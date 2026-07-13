@@ -64,6 +64,7 @@ def test_app_game_mode_beta_frontend_contracts():
           const notices = [];
           const goodbyeEvents = [];
           const returnEvents = [];
+          const lifecycleOrder = [];
           const queryNodes = options.queryNodes || [];
 
           doc.readyState = 'complete';
@@ -72,10 +73,24 @@ def test_app_game_mode_beta_frontend_contracts():
           doc.dispatchEvent = EventTargetLike.prototype.dispatchEvent.bind(doc);
 
           win.document = doc;
-          win.live2dManager = {{ _goodbyeClicked: options.initialCat === true }};
+          win.live2dManager = {{
+            _goodbyeClicked: options.initialCat === true,
+            _isLoadingModel: false,
+            cancelActiveModelLoadForGameMode() {{
+              if (options.invalidateModelLoad !== true) return false;
+              this._nekoGameModeReloadRequired = true;
+              this._nekoGameModeLoadCancelReason = 'game-mode-protection';
+              lifecycleOrder.push('model-invalidated');
+              return true;
+            }},
+          }};
           win.vrmManager = {{ _goodbyeClicked: options.initialCat === true }};
           win.mmdManager = {{ _goodbyeClicked: options.initialCat === true }};
           win.pngtuberManager = {{ _isInReturnState: options.initialCat === true }};
+          win.showCurrentModel = async () => {{
+            lifecycleOrder.push('model-reload');
+            return options.modelReloadSucceeds !== false;
+          }};
           win.showStatusToast = (message) => notices.push(message);
           win.t = (_key, payload) => payload && payload.defaultValue ? payload.defaultValue : _key;
           win.nekoLocalMutationSecurity = {{
@@ -95,10 +110,12 @@ def test_app_game_mode_beta_frontend_contracts():
 
           win.addEventListener('live2d-goodbye-click', (event) => {{
             setCat(true);
+            lifecycleOrder.push('goodbye');
             goodbyeEvents.push(event.detail || {{}});
           }});
           win.addEventListener('live2d-return-click', (event) => {{
             setCat(false);
+            lifecycleOrder.push('return');
             returnEvents.push(event.detail || {{}});
           }});
 
@@ -106,6 +123,7 @@ def test_app_game_mode_beta_frontend_contracts():
           win.fetch = async (url, init = {{}}) => {{
             fetchCalls.push({{ url, method: init.method || 'GET', body: init.body || '', headers: init.headers || {{}} }});
             const next = responses.length ? responses.shift() : {{ success: true, state: {{ enabled: true }} }};
+            if (next.reject) throw new Error(next.reject);
             return {{
               ok: next.ok !== false,
               status: next.status || 200,
@@ -135,10 +153,11 @@ def test_app_game_mode_beta_frontend_contracts():
             fetchCalls,
             goodbyeEvents,
             returnEvents,
+            lifecycleOrder,
             notices,
             queryNodes,
             flush() {{
-              return Promise.resolve().then(() => Promise.resolve()).then(() => Promise.resolve());
+              return new Promise((resolve) => setTimeout(resolve, 0));
             }},
             setCat,
           }};
@@ -183,6 +202,22 @@ def test_app_game_mode_beta_frontend_contracts():
           assert(restore.returnEvents.length === 1, 'disable should restore when game mode caused cat form');
           assert(restore.returnEvents[0].source === 'game_mode_auto', 'restore event should carry source');
 
+          const invalidatedDisable = createHarness({{
+            invalidateModelLoad: true,
+            responses: [
+              {{ success: true, state: {{ enabled: true }} }},
+              {{ success: true, state: {{ enabled: false }} }},
+            ],
+          }});
+          await invalidatedDisable.flush();
+          invalidatedDisable.win.nekoGameModeBeta.handleAutoSwitchEvent(autoPayload);
+          const invalidatedDisableOk = await invalidatedDisable.win.nekoGameModeBeta.setEnabled(false);
+          assert(invalidatedDisableOk === true, 'disable with an invalidated model should succeed');
+          const reloadIndex = invalidatedDisable.lifecycleOrder.indexOf('model-reload');
+          const returnIndex = invalidatedDisable.lifecycleOrder.indexOf('return');
+          assert(reloadIndex >= 0, 'disable should reload an invalidated model');
+          assert(returnIndex > reloadIndex, 'disable return must wait for invalidated model reload');
+
           const alreadyCat = createHarness({{
             initialCat: true,
             responses: [
@@ -209,6 +244,30 @@ def test_app_game_mode_beta_frontend_contracts():
           const manualCall = manualRestore.fetchCalls.find((call) => call.url === '/api/game-mode-beta/manual-restore');
           assert(manualCall && manualCall.method === 'POST', 'manual return should notify backend cooldown');
           assert(manualRestore.win.nekoGameModeBeta.getState().manualOverride === true, 'manual override should be tracked');
+
+          const retryManualRestore = createHarness({{
+            responses: [
+              {{ success: true, state: {{ enabled: true }} }},
+              {{ ok: false, status: 403, body: {{ detail: 'stale csrf' }} }},
+              {{ success: true, state: {{ enabled: true, suppressed_until: 1800 }} }},
+            ],
+          }});
+          await retryManualRestore.flush();
+          retryManualRestore.win.nekoGameModeBeta.handleAutoSwitchEvent(Object.assign({{
+            cycle_id: 'manual-retry-cycle',
+          }}, autoPayload));
+          retryManualRestore.win.dispatchEvent(new CustomEventLike('live2d-return-click'));
+          await retryManualRestore.flush();
+          assert(retryManualRestore.win.nekoGameModeBeta.getState().autoSwitched === true, 'failed POST must retain auto-switch ownership');
+          assert(retryManualRestore.win.nekoGameModeBeta.getState().manualOverride === false, 'failed POST must release the in-flight manual override');
+          assert(retryManualRestore.win.nekoGameModeBeta.getState().currentCycleId === 'manual-retry-cycle', 'failed POST must retain the cycle id');
+          assert(retryManualRestore.goodbyeEvents.length === 2, 'failed POST should return to protected cat form');
+
+          retryManualRestore.win.dispatchEvent(new CustomEventLike('live2d-return-click'));
+          await retryManualRestore.flush();
+          assert(retryManualRestore.win.nekoGameModeBeta.getState().autoSwitched === false, 'successful retry should release auto-switch ownership');
+          assert(retryManualRestore.win.nekoGameModeBeta.getState().manualOverride === true, 'successful retry should keep the manual override marker');
+          assert(retryManualRestore.win.nekoGameModeBeta.getState().currentCycleId === null, 'successful retry should clear the cycle id');
 
           const pngtuberManualRestore = createHarness({{
             responses: [
