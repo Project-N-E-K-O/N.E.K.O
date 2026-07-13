@@ -4,7 +4,7 @@ import pytest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-APP_CHAT_AVATAR_PATH = PROJECT_ROOT / "static" / "app-chat-avatar.js"
+APP_CHAT_AVATAR_PATH = PROJECT_ROOT / "static" / "app" / "app-chat-avatar.js"
 
 
 def _read(path: Path) -> str:
