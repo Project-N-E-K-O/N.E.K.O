@@ -96,6 +96,7 @@ neko-plugin = "plugin.neko_plugin_cli.cli:main"
 [tool.hatch.build.targets.wheel]
 packages = [
   "app",
+  "launcher_core",
   "brain",
   "config",
   "main_logic",
@@ -112,6 +113,7 @@ exclude = [
 [tool.hatch.build.targets.sdist]
 include = [
   "app",
+  "launcher_core",
   "brain",
   "config",
   "main_logic",

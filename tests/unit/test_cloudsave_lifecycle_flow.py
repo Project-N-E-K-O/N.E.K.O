@@ -109,7 +109,7 @@ def _write_runtime_state(cm, *, character_name: str, recent_message: str = "ф╜ах
 
 
 def _run_launcher_phase0(cm):
-    import launcher
+    from launcher_core import runtime as launcher
 
     emitted_events = []
     with patch.object(launcher, "get_config_manager", lambda _app_name, **_kwargs: cm), patch.object(
