@@ -11,6 +11,7 @@ import asyncio
 
 import pytest
 
+import main_logic.core as core_module
 from main_logic.proactive_delivery import (
     DELIVERY_ACK_FUTURE_KEY,
     ProactiveDeliveryManager,
@@ -238,3 +239,95 @@ async def test_stale_cue_dropped_by_ttl():
     mgr.on_playback_end()
     await _settle()
     assert delivered == []          # dropped as stale, never spoken
+
+
+# ── enqueue_agent_callback path (passive / ai_behavior="read") ────────────────
+# The ProactiveDeliveryManager above only governs proactive ("respond") cues.
+# Passive/read cues bypass it and land directly in pending_agent_callbacks; the
+# same OPT-IN coalesce_key semantics apply there so a rapid read-stream can
+# dedup queued snapshots by key instead of piling up until the flood guard.
+
+
+class _FakeAckFuture:
+    """Minimal delivery-ack future stand-in (no event loop needed)."""
+
+    def __init__(self):
+        self._done = False
+        self.result = None
+
+    def done(self):
+        return self._done
+
+    def set_result(self, value):
+        self._done = True
+        self.result = value
+
+
+def _make_session_mgr():
+    mgr = core_module.LLMSessionManager.__new__(core_module.LLMSessionManager)
+    mgr.lanlan_name = "Test"
+    mgr.pending_agent_callbacks = []
+    mgr.pending_extra_replies = []
+    # Identity normalizer: isolate the per-source token-budget path, which is
+    # irrelevant to coalescing and pulls in config/budget dependencies.
+    mgr._normalize_context_text_for_source = lambda _src, text: text
+    return mgr
+
+
+def _passive_cb(summary, *, coalesce_key="", **extra):
+    cb = {
+        "event": "agent_task_callback",
+        "origin": "event",
+        "summary": summary,
+        "detail": summary,
+        "status": "completed",
+        "coalesce_key": coalesce_key,
+    }
+    cb.update(extra)
+    return cb
+
+
+def test_enqueue_coalesce_same_key_newest_replaces():
+    # Same explicit key → newest collapses the older queued cue, on BOTH the
+    # LLM-inject queue and its voice-mode mirror (which drift, so the mirror is
+    # evicted by delivery_id, not by position).
+    mgr = _make_session_mgr()
+    mgr.enqueue_agent_callback(_passive_cb("old snapshot", coalesce_key="gamestate"))
+    mgr.enqueue_agent_callback(_passive_cb("new snapshot", coalesce_key="gamestate"))
+    assert [c["summary"] for c in mgr.pending_agent_callbacks] == ["new snapshot"]
+    assert [r["summary"] for r in mgr.pending_extra_replies] == ["new snapshot"]
+
+
+def test_enqueue_coalesce_empty_key_never_collapses():
+    # Unset / explicit-empty key never coalesces — the non-regression guarantee
+    # for read-cues that didn't opt in.
+    mgr = _make_session_mgr()
+    mgr.enqueue_agent_callback(_passive_cb("a"))                    # no key
+    mgr.enqueue_agent_callback(_passive_cb("b"))                    # no key
+    mgr.enqueue_agent_callback(_passive_cb("c", coalesce_key=""))   # explicit empty
+    assert [c["summary"] for c in mgr.pending_agent_callbacks] == ["a", "b", "c"]
+    assert len(mgr.pending_extra_replies) == 3
+
+
+def test_enqueue_coalesce_distinct_keys_independent():
+    # Only the matching key collapses; a different key is untouched.
+    mgr = _make_session_mgr()
+    mgr.enqueue_agent_callback(_passive_cb("x1", coalesce_key="x"))
+    mgr.enqueue_agent_callback(_passive_cb("y1", coalesce_key="y"))
+    mgr.enqueue_agent_callback(_passive_cb("x2", coalesce_key="x"))
+    assert [c["summary"] for c in mgr.pending_agent_callbacks] == ["y1", "x2"]
+    assert [r["summary"] for r in mgr.pending_extra_replies] == ["y1", "x2"]
+
+
+def test_enqueue_coalesce_resolves_superseded_ack_false():
+    # A superseded cue's delivery-ack future resolves False immediately so a
+    # waiter unblocks instead of stalling until timeout (parity with the
+    # manager path).
+    mgr = _make_session_mgr()
+    fut = _FakeAckFuture()
+    old = _passive_cb("old", coalesce_key="k")
+    old[DELIVERY_ACK_FUTURE_KEY] = fut
+    mgr.enqueue_agent_callback(old)
+    mgr.enqueue_agent_callback(_passive_cb("new", coalesce_key="k"))
+    assert fut.done() and fut.result is False
+    assert [c["summary"] for c in mgr.pending_agent_callbacks] == ["new"]

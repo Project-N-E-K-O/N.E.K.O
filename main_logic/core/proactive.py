@@ -1676,6 +1676,44 @@ class ProactiveMixin:
             # ``pending_extra_replies`` intact, so the queues legitimately
             # drift apart across user turns.
             delivery_id = callback.setdefault("_callback_delivery_id", uuid4().hex)
+            # Coalescing is OPT-IN and channel-agnostic: when a callback carries
+            # a non-empty ``coalesce_key``, the newest cue collapses any already
+            # queued cue that set the SAME key — mirroring
+            # ``ProactiveDeliveryManager.submit``'s dedup for the proactive path.
+            # Passive/read cues never reach that manager (they take this direct
+            # enqueue-only path so they don't interrupt), so without this a rapid
+            # ``ai_behavior="read"`` stream reusing one key would pile up stale
+            # snapshots, bounded only by the drop-oldest flood guard below. An
+            # empty key never coalesces, so no existing producer regresses. Both
+            # queues (and any delivery-ack future) must stay consistent: match on
+            # ``pending_agent_callbacks``, then evict the mirror rows by
+            # ``_callback_delivery_id`` (the two queues drift, so positional
+            # trimming is unreliable).
+            new_key = str(callback.get("coalesce_key") or "").strip()
+            if new_key:
+                superseded_ids: set[str] = set()
+                surviving: list[dict] = []
+                for _cb in self.pending_agent_callbacks:
+                    if str(_cb.get("coalesce_key") or "").strip() == new_key:
+                        resolve_callback_delivery_ack(_cb, False)
+                        _did = _cb.get("_callback_delivery_id")
+                        if _did:
+                            superseded_ids.add(_did)
+                    else:
+                        surviving.append(_cb)
+                if len(surviving) != len(self.pending_agent_callbacks):
+                    logger.debug(
+                        "[%s] coalesced %d queued callback(s) on key=%r (enqueue path)",
+                        self.lanlan_name,
+                        len(self.pending_agent_callbacks) - len(surviving),
+                        new_key,
+                    )
+                    self.pending_agent_callbacks = surviving
+                    if superseded_ids:
+                        self.pending_extra_replies = [
+                            _extra for _extra in self.pending_extra_replies
+                            if _extra.get("_callback_delivery_id") not in superseded_ids
+                        ]
             self.pending_agent_callbacks.append(callback)
             self.pending_extra_replies.append({
                 "_callback_delivery_id": delivery_id,
