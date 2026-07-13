@@ -181,6 +181,8 @@ let initialParameters = {};
 // 独立编辑草稿：只由用户操作更新，避免 motion/物理/呼吸的瞬时值混入保存结果。
 let draftParameters = {};
 let draftParameterIndexes = {};
+let parameterCatalog = [];
+let parameterCatalogByIndex = new Map();
 
 // 加载序列号，用于防止异步加载乱序
 let loadSeq = 0;
@@ -927,28 +929,39 @@ function recordInitialParameters() {
     }
 
     const coreModel = live2dModel.internalModel.coreModel;
+    const manager = window.live2dManager;
     initialParameters = {};
     draftParameters = {};
     draftParameterIndexes = {};
-    const effectiveParameters = window.live2dManager?.effectiveModelParameters || {};
-    const paramCount = coreModel.getParameterCount();
+    parameterCatalog = manager && typeof manager._buildModelParameterCatalog === 'function'
+        ? manager._buildModelParameterCatalog(coreModel)
+        : [];
+    if (parameterCatalog.length === 0) {
+        const paramCount = coreModel.getParameterCount();
+        parameterCatalog = Array.from({ length: paramCount }, (_, index) => ({
+            index,
+            id: '',
+            key: `param_${index}`,
+            defaultValue: undefined
+        }));
+    }
+    parameterCatalogByIndex = new Map(parameterCatalog.map(entry => [entry.index, entry]));
 
-    for (let i = 0; i < paramCount; i++) {
+    const rawEffectiveParameters = manager?.effectiveModelParameters || {};
+    const effectiveParameters = manager && typeof manager._normalizeModelParameters === 'function'
+        ? manager._normalizeModelParameters(coreModel, rawEffectiveParameters)
+        : rawEffectiveParameters;
+
+    for (const parameter of parameterCatalog) {
         try {
-            let paramId = null;
-            try {
-                paramId = coreModel.getParameterId(i);
-            } catch (e) {
-                paramId = `param_${i}`;
-            }
-            const value = coreModel.getParameterValueByIndex(i);
-            initialParameters[paramId] = value;
-            draftParameterIndexes[paramId] = i;
-            draftParameters[paramId] = Object.prototype.hasOwnProperty.call(effectiveParameters, paramId)
-                ? effectiveParameters[paramId]
+            const value = coreModel.getParameterValueByIndex(parameter.index);
+            initialParameters[parameter.key] = value;
+            draftParameterIndexes[parameter.key] = parameter.index;
+            draftParameters[parameter.key] = Object.prototype.hasOwnProperty.call(effectiveParameters, parameter.key)
+                ? effectiveParameters[parameter.key]
                 : value;
         } catch (e) {
-            console.warn(`记录参数 ${i} 失败:`, e);
+            console.warn(`记录参数 ${parameter.index} 失败:`, e);
         }
     }
 }
@@ -1081,8 +1094,9 @@ function displayParameters() {
             try {
                 const idx = coreModel.getParameterIndex(param.id);
                 if (idx >= 0) {
+                    const parameter = parameterCatalogByIndex.get(idx);
                     groupedParams[groupName].push({
-                        id: param.id,
+                        id: parameter?.key || param.id,
                         name: getParameterChineseName(param.name), // 使用中文名称
                         index: idx
                     });
@@ -1093,18 +1107,10 @@ function displayParameters() {
         }
     } else {
         // 如果没有参数信息，从模型读取所有参数
-        const paramCount = coreModel.getParameterCount();
-        for (let i = 0; i < paramCount; i++) {
+        for (const parameter of parameterCatalog) {
             try {
-                let paramId = null;
-                let paramName = null;
-                try {
-                    paramId = coreModel.getParameterId(i);
-                    paramName = paramId; // 如果没有名称，使用ID
-                } catch (e) {
-                    paramId = `param_${i}`;
-                    paramName = paramId;
-                }
+                const paramId = parameter.key;
+                const paramName = parameter.id || parameter.key;
 
                 // 只显示重要参数
                 if (!isParameterImportant(paramId, paramName)) {
@@ -1118,10 +1124,10 @@ function displayParameters() {
                 groupedParams[groupName].push({
                     id: paramId,
                     name: getParameterChineseName(paramName), // 转换为中文名称
-                    index: i
+                    index: parameter.index
                 });
             } catch (e) {
-                console.warn(`处理参数 ${i} 失败:`, e);
+                console.warn(`处理参数 ${parameter.index} 失败:`, e);
             }
         }
     }
@@ -1368,32 +1374,35 @@ if (resetAllBtn) {
         if (!live2dModel || !live2dModel.internalModel || !live2dModel.internalModel.coreModel) return;
 
         const coreModel = live2dModel.internalModel.coreModel;
-        const paramCount = coreModel.getParameterCount();
+        const manager = window.live2dManager;
+        const catalog = parameterCatalog.length > 0
+            ? parameterCatalog
+            : (manager && typeof manager._buildModelParameterCatalog === 'function'
+                ? manager._buildModelParameterCatalog(coreModel)
+                : []);
 
-        // 将所有参数重置为加载时的初始值
-        for (let i = 0; i < paramCount; i++) {
+        // 全量重建草稿，避免保留任何历史别名或本次会话中的旧键。
+        draftParameters = {};
+        draftParameterIndexes = {};
+
+        // 重置为模型在 .moc3 中声明的真正默认值，而不是页面加载时的外观。
+        for (const parameter of catalog) {
             try {
-                let paramId = null;
-                try {
-                    paramId = coreModel.getParameterId(i);
-                } catch (e) {
-                    paramId = `param_${i}`;
-                }
-
-                let resetValue = 0;
-                // 优先使用加载时记录的初始值
-                if (initialParameters && initialParameters[paramId] !== undefined) {
-                    resetValue = initialParameters[paramId];
-                } else {
-                    // 降级到使用模型定义的默认值
-                    const range = getParameterRange(coreModel, i);
+                let resetValue = parameter.defaultValue;
+                if (typeof resetValue !== 'number' || !Number.isFinite(resetValue)) {
+                    const range = getParameterRange(coreModel, parameter.index);
                     resetValue = range.default;
                 }
+                if (typeof resetValue !== 'number' || !Number.isFinite(resetValue)) {
+                    resetValue = initialParameters[parameter.key];
+                }
+                if (typeof resetValue !== 'number' || !Number.isFinite(resetValue)) continue;
 
-                coreModel.setParameterValueByIndex(i, resetValue);
-                draftParameters[paramId] = resetValue;
+                coreModel.setParameterValueByIndex(parameter.index, resetValue);
+                draftParameters[parameter.key] = resetValue;
+                draftParameterIndexes[parameter.key] = parameter.index;
             } catch (e) {
-                console.warn(`重置参数索引 ${i} 失败:`, e);
+                console.warn(`重置参数索引 ${parameter.index} 失败:`, e);
             }
         }
 
@@ -1403,10 +1412,18 @@ if (resetAllBtn) {
     });
 }
 
-function buildParametersFromDraft(parameters, parameterIndexes, manager) {
+function buildParametersFromDraft(parameters, parameterIndexes, manager, coreModel) {
+    const normalizedParameters = manager
+        && coreModel
+        && typeof manager._normalizeModelParameters === 'function'
+        ? manager._normalizeModelParameters(coreModel, parameters)
+        : parameters;
     const paramsToSave = {};
-    for (const [paramId, value] of Object.entries(parameters || {})) {
-        const index = parameterIndexes && parameterIndexes[paramId];
+    for (const [paramId, value] of Object.entries(normalizedParameters || {})) {
+        let index = parameterIndexes && parameterIndexes[paramId];
+        if (manager && coreModel && typeof manager._resolveModelParameterKey === 'function') {
+            index = manager._resolveModelParameterKey(coreModel, paramId)?.idx ?? index;
+        }
         let isEyeBlinkParam = false;
         try {
             isEyeBlinkParam = manager && typeof manager._isEyeBlinkParamId === 'function'
@@ -1465,7 +1482,13 @@ if (saveBtn) {
         showStatus(t('live2d.parameterEditor.savingParameters', '正在保存参数...'));
 
         const manager = window.live2dManager;
-        const paramsToSave = buildParametersFromDraft(draftParameters, draftParameterIndexes, manager);
+        const coreModel = live2dModel.internalModel?.coreModel;
+        const paramsToSave = buildParametersFromDraft(
+            draftParameters,
+            draftParameterIndexes,
+            manager,
+            coreModel
+        );
 
         try {
             const { fileSuccess, fileError, prefSuccess, prefError } = await persistParameterDraft(
