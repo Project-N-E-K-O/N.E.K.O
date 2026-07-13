@@ -39,7 +39,7 @@
         <div class="control-group">
             <input type="file" id="model-upload" webkitdirectory directory multiple style="display: none;">
             <input type="file" id="pngtuber-model-upload" webkitdirectory directory multiple style="display: none;">
-            <input type="file" id="pngtuber-package-upload" accept=".pngremix,.pngRemix,.save,.veadomini,.veado" multiple style="display: none;">
+            <input type="file" id="pngtuber-package-upload" accept=".pngRemix,.pngremix,.save" style="display: none;">
             <input type="file" id="vrm-file-upload" accept=".vrm,.zip" style="display: none;">
             <input type="file" id="mmd-file-upload" accept=".pmx,.pmd,.zip" style="display: none;">
             <input type="file" id="mmd-animation-file-upload" accept=".vmd" style="display: none;">
@@ -625,17 +625,26 @@
     <script src="/static/libs/live2d.min.js"></script>
     <script src="/static/libs/pixi.min.js"></script>
     <script src="/static/libs/index.min.js"></script>
-    <script src="/static/live2d-core.js"></script>
-    <script src="/static/live2d-emotion.js"></script>
-    <script src="/static/live2d-model.js"></script>
-    <script src="/static/live2d-interaction.js"></script>
-    <script src="/static/avatar-popup-common.js"></script>
-    <script src="/static/avatar-ui-popup.js"></script>
-    <script src="/static/avatar-ui-popup-config.js"></script>
-    <script src="/static/avatar-ui-buttons.js"></script>
-    <script src="/static/live2d-ui-buttons.js"></script>
-    <script src="/static/avatar-ui-drag.js"></script>
-    <script src="/static/live2d-init.js"></script>
+    <script src="/static/live2d/live2d-core.js"></script>
+    <script src="/static/live2d/live2d-emotion.js"></script>
+    <script src="/static/live2d/live2d-model.js"></script>
+    <script src="/static/live2d/live2d-interaction.js"></script>
+    <script src="/static/avatar/avatar-popup-common.js"></script>
+    <script src="/static/avatar/avatar-ui-popup.js"></script>
+    <script src="/static/avatar/avatar-ui-popup-config.js"></script>
+    <script src="/static/avatar/avatar-ui-buttons/core.js"></script>
+    <script src="/static/avatar/avatar-ui-buttons/idle-assets-and-question.js"></script>
+    <script src="/static/avatar/avatar-ui-buttons/idle-playground.js"></script>
+    <script src="/static/avatar/avatar-ui-buttons/idle-actions-and-audio.js"></script>
+    <script src="/static/avatar/avatar-ui-buttons/idle-drag-and-subactions.js"></script>
+    <script src="/static/avatar/avatar-ui-buttons/idle-journey-and-presentation.js"></script>
+    <script src="/static/avatar/avatar-ui-buttons/methods-setup.js"></script>
+    <script src="/static/avatar/avatar-ui-buttons/methods-buttons.js"></script>
+    <script src="/static/avatar/avatar-ui-buttons/methods-return.js"></script>
+    <script src="/static/avatar/avatar-ui-buttons/methods-state-and-cleanup.js"></script>
+    <script src="/static/live2d/live2d-ui-buttons.js"></script>
+    <script src="/static/avatar/avatar-ui-drag.js"></script>
+    <script src="/static/live2d/live2d-init.js"></script>
 
     <!-- Three.js 核心库和importmap（用于ES6模块导入）-->
     <!-- 
@@ -663,10 +672,16 @@
         window.dispatchEvent(new CustomEvent('three-ready'));
     </script>
     <!-- VRM模块（按顺序加载，失败不影响Live2D）-->
-    <script src="/static/avatar-portrait.js"></script>
+    <script src="/static/avatar/avatar-portrait.js"></script>
     <script src="/static/pngtuber-core.js?v={{ static_asset_version | default('0') }}"></script>
 
-    <script src="/static/js/model_manager.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/js/model_manager/runtime-loaders.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/js/model_manager/dropdown-manager.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/js/model_manager/page-bridge.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/js/model_manager/card-face.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/js/model_manager/path-request-fullscreen.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/js/model_manager/page-controller.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/js/model_manager/window-lifecycle.js?v={{ static_asset_version | default('0') }}"></script>
 
     <!-- 性能分析器 -->
     <script src="/static/model-profiler.js"></script>

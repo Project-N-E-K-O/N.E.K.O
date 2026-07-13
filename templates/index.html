@@ -318,7 +318,7 @@
     </div>
 
     <!-- 存储位置首屏哨兵需要尽早建立启动屏障，避免模型与主业务先行初始化 -->
-    <script src="/static/app-storage-location.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-storage-location.js?v={{ static_asset_version }}"></script>
 
     <!-- Live2D SDK 核心库 -->
     <script src="/static/libs/live2dcubismcore.min.js?v={{ static_asset_version }}"></script>
@@ -327,22 +327,31 @@
     <script src="/static/libs/pixi.min.js?v={{ static_asset_version }}"></script>
     <script src="/static/libs/index.min.js?v={{ static_asset_version }}"></script>
     <script src="/static/libs/ogg-opus-decoder.min.js?v={{ static_asset_version }}"></script>
-    <script src="/static/live2d-core.js?v={{ static_asset_version }}"></script>
-    <script src="/static/live2d-emotion.js?v={{ static_asset_version }}"></script>
-    <script src="/static/live2d-model.js?v={{ static_asset_version }}"></script>
-    <script src="/static/avatar-multiscreen-drag-hint.js?v={{ static_asset_version }}"></script>
-    <script src="/static/live2d-interaction.js?v={{ static_asset_version }}"></script>
-    <script src="/static/avatar-popup-common.js?v={{ static_asset_version }}"></script>
-    <script src="/static/avatar-ui-popup.js?v={{ static_asset_version }}"></script>
-    <script src="/static/avatar-ui-popup-config.js?v={{ static_asset_version }}"></script>
-    <script src="/static/avatar-ui-buttons.js?v={{ static_asset_version }}"></script>
-    <script src="/static/live2d-ui-buttons.js?v={{ static_asset_version }}"></script>
+    <script src="/static/live2d/live2d-core.js?v={{ static_asset_version }}"></script>
+    <script src="/static/live2d/live2d-emotion.js?v={{ static_asset_version }}"></script>
+    <script src="/static/live2d/live2d-model.js?v={{ static_asset_version }}"></script>
+    <script src="/static/avatar/avatar-multiscreen-drag-hint.js?v={{ static_asset_version }}"></script>
+    <script src="/static/live2d/live2d-interaction.js?v={{ static_asset_version }}"></script>
+    <script src="/static/avatar/avatar-popup-common.js?v={{ static_asset_version }}"></script>
+    <script src="/static/avatar/avatar-ui-popup.js?v={{ static_asset_version }}"></script>
+    <script src="/static/avatar/avatar-ui-popup-config.js?v={{ static_asset_version }}"></script>
+    <script src="/static/avatar/avatar-ui-buttons/core.js?v={{ static_asset_version }}"></script>
+    <script src="/static/avatar/avatar-ui-buttons/idle-assets-and-question.js?v={{ static_asset_version }}"></script>
+    <script src="/static/avatar/avatar-ui-buttons/idle-playground.js?v={{ static_asset_version }}"></script>
+    <script src="/static/avatar/avatar-ui-buttons/idle-actions-and-audio.js?v={{ static_asset_version }}"></script>
+    <script src="/static/avatar/avatar-ui-buttons/idle-drag-and-subactions.js?v={{ static_asset_version }}"></script>
+    <script src="/static/avatar/avatar-ui-buttons/idle-journey-and-presentation.js?v={{ static_asset_version }}"></script>
+    <script src="/static/avatar/avatar-ui-buttons/methods-setup.js?v={{ static_asset_version }}"></script>
+    <script src="/static/avatar/avatar-ui-buttons/methods-buttons.js?v={{ static_asset_version }}"></script>
+    <script src="/static/avatar/avatar-ui-buttons/methods-return.js?v={{ static_asset_version }}"></script>
+    <script src="/static/avatar/avatar-ui-buttons/methods-state-and-cleanup.js?v={{ static_asset_version }}"></script>
+    <script src="/static/live2d/live2d-ui-buttons.js?v={{ static_asset_version }}"></script>
     <script src="/static/pngtuber-core.js?v={{ static_asset_version }}"></script>
     <script src="/static/neko-tooltip.js?v={{ static_asset_version }}"></script>
     <script src="/static/common-ui-hud.js?v={{ static_asset_version }}"></script>
-    <script src="/static/avatar-ui-drag.js?v={{ static_asset_version }}"></script>
+    <script src="/static/avatar/avatar-ui-drag.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/core/avatar-floating-boot-predictor.js?v={{ static_asset_version }}"></script>
-    <script src="/static/live2d-init.js?v={{ static_asset_version }}"></script>
+    <script src="/static/live2d/live2d-init.js?v={{ static_asset_version }}"></script>
 
     <!-- Three.js 核心库和importmap（用于ES6模块导入）-->
     <script type="importmap">
@@ -368,31 +377,36 @@
     </script>
 
     <script type="module" src="/static/js/APlayer/main.js?v={{ static_asset_version }}"></script>
-    <script src="/static/music_ui.js?v={{ static_asset_version }}"></script>
-    <script src="/static/jukebox-loader.js?v={{ static_asset_version }}"></script>
+    <script src="/static/jukebox/music_ui.js?v={{ static_asset_version }}"></script>
+    <script src="/static/jukebox/jukebox-loader.js?v={{ static_asset_version }}"></script>
     <script src="/static/js/index.js?v={{ static_asset_version }}"></script>
     <script src="/static/common_ui.js?v={{ static_asset_version }}"></script>
-    <script src="/static/vrm-init.js?v={{ static_asset_version }}"></script>
-    <script src="/static/mmd-init.js?v={{ static_asset_version }}"></script>
-    <script src="/static/avatar-portrait.js?v={{ static_asset_version }}"></script>
+    <script src="/static/vrm/vrm-init.js?v={{ static_asset_version }}"></script>
+    <script src="/static/mmd/mmd-init.js?v={{ static_asset_version }}"></script>
+    <script src="/static/avatar/avatar-portrait.js?v={{ static_asset_version }}"></script>
     <script src="/static/achievement_manager.js?v={{ static_asset_version }}"></script>
     <script src="/static/js/agent_ui_v2.js?v={{ static_asset_version }}"></script>
     <script src="/static/ogg-opus-decoder-wrapper.js?v={{ static_asset_version }}"></script>
 
     <!-- app 解构模块 -->
-    <script src="/static/subtitle-shared.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-state.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-ui.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-chat-text-utils.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-chat.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-chat-avatar.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-chat-adapter.js?v={{ react_chat_asset_version }}"></script>
-    <script src="/static/app-audio-playback.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-spatial-audio.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-audio-capture.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-screen.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-activity-signal.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-crop.js?v={{ static_asset_version }}"></script>
+    <script src="/static/subtitle/subtitle-shared.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-state.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-ui/bootstrap-goodbye-and-toasts.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-ui/model-display.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-ui/return-transitions.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-ui/return-window-drag.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-ui/surface-floating-controls.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-ui/wrapup-final-guards.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-chat-text-utils.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-chat.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-chat-avatar.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-chat-adapter.js?v={{ react_chat_asset_version }}"></script>
+    <script src="/static/app/app-audio-playback.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-spatial-audio.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-audio-capture.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-screen.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-activity-signal.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-crop.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/core/guide-helpers.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/core/scoped-resources.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/core/bridge-command-bus.js?v={{ static_asset_version }}"></script>
@@ -403,31 +417,41 @@
     <script src="/static/tutorial/core/timeline-engine.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/core/visual-runtime.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/yui-guide/common.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-interpage.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-proactive.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-settings.js?v={{ static_asset_version }}"></script>
-    <script src="/static/avatar-reaction-bubble.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-agent.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-character.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-websocket.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-telemetry.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-buttons.js?v={{ react_chat_asset_version }}"></script>
-    <script src="/static/avatar-drop-parser.js?v={{ static_asset_version }}"></script>
-    <script src="/static/avatar-drop-intake.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-prompt-shared.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-autostart-provider.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-interpage/bootstrap-resources-and-model-reload.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-interpage/composer-voice-sync.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-interpage/cross-window-broadcast-and-bridge.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-interpage/guide-message-relay.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-interpage/guide-overlay.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-interpage/guide-targets.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-interpage/listeners-and-api.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-proactive.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-settings.js?v={{ static_asset_version }}"></script>
+    <script src="/static/avatar/avatar-reaction-bubble.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-agent.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-character.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-websocket.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-telemetry.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-buttons.js?v={{ react_chat_asset_version }}"></script>
+    <script src="/static/avatar/avatar-drop-parser.js?v={{ static_asset_version }}"></script>
+    <script src="/static/avatar/avatar-drop-intake.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-prompt-shared.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-autostart-provider.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/core/lifecycle-state-store.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/core/app-prompt.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-context-prompt.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-autostart-prompt.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-context-prompt.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-autostart-prompt.js?v={{ static_asset_version }}"></script>
     <script src="/static/js/character_personality_onboarding.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app.js?v={{ static_asset_version }}"></script>
     <script src="/static/game/system/game-audio-system.js?v={{ static_asset_version }}"></script>
     <script src="/static/react/neko-chat/neko-chat-window.iife.js?v={{ react_chat_asset_version }}"></script>
-    <script src="/static/app-react-chat-window.js?v={{ react_chat_asset_version }}"></script>
-    <script src="/static/app-chat-export.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-react-chat-window/bootstrap-state-and-geometry.js?v={{ react_chat_asset_version }}"></script>
+    <script src="/static/app/app-react-chat-window/geometry-and-messages.js?v={{ react_chat_asset_version }}"></script>
+    <script src="/static/app/app-react-chat-window/message-bundle-actions-and-prompts.js?v={{ react_chat_asset_version }}"></script>
+    <script src="/static/app/app-react-chat-window/minimize-and-idle-dock.js?v={{ react_chat_asset_version }}"></script>
+    <script src="/static/app/app-react-chat-window/resize-drag-and-api.js?v={{ react_chat_asset_version }}"></script>
+    <script src="/static/app/app-chat-export.js?v={{ static_asset_version }}"></script>
 
-    <script src="/static/subtitle.js?v={{ static_asset_version }}"></script>
+    <script src="/static/subtitle/subtitle.js?v={{ static_asset_version }}"></script>
 
     <link rel="stylesheet" href="/static/css/touch-config.css?v={{ static_asset_version }}">
     <script src="/static/touch-config.js?v={{ static_asset_version }}"></script>
@@ -443,7 +467,7 @@
     <script src="/static/tutorial/visual/overlay-renderer.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/yui-guide/overlay.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/yui-guide/page-handoff.js?v={{ static_asset_version }}"></script>
-    <script src="/static/avatar-performance-stage.js?v={{ static_asset_version }}"></script>
+    <script src="/static/avatar/avatar-performance-stage.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/avatar/yui-stage.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/yui-guide/wakeup.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/core/interaction-takeover.js?v={{ static_asset_version }}"></script>
@@ -457,7 +481,16 @@
     <script src="/static/tutorial/core/operation-registry.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/core/settings-tour-flow.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/core/scene-orchestrator.js?v={{ static_asset_version }}"></script>
-    <script src="/static/tutorial/yui-guide/director.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/director/foundation.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/director/voice-queue.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/director/emotion-bridge.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/director/cursor-anchor-store.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/director/director-core.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/director/avatar-rounds.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/director/page-flows.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/director/chat-performance.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/director/lifecycle.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/director/bootstrap.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/core/skip-controller.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/avatar/reload-controller.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/core/round-prelude-controller.js?v={{ static_asset_version }}"></script>
@@ -467,7 +500,7 @@
     <script src="/static/tutorial/icebreaker/assistant-loading.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/icebreaker/free-text-runtime.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/icebreaker/new-user-icebreaker.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-auto-goodbye.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-auto-goodbye.js?v={{ static_asset_version }}"></script>
     <script>
         document.addEventListener('DOMContentLoaded', function () {
             if (window.CharacterPersonalityOnboarding &&

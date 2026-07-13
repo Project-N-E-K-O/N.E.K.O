@@ -171,6 +171,63 @@ async def test_single_file_pngtuber_upload_uses_filename_before_default_collisio
     assert (tmp_path / "yui03" / "model.json").is_file()
 
 
+def _metadata_for_single_remix_state(tmp_path, state: dict):
+    image = Image.new("RGBA", (16, 16), (255, 0, 0, 255))
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    remix_data = {
+        "sprites_array": [
+            {
+                "sprite_id": 1,
+                "sprite_name": "state probe",
+                "img": buffer.getvalue(),
+                "states": [
+                    {
+                        "visible": True,
+                        "position": (8, 8),
+                        "scale": (1, 1),
+                        **state,
+                    }
+                ],
+            }
+        ],
+        "image_manager_data": [],
+        "settings_dict": {},
+        "input_array": [],
+    }
+
+    layers = pngtube_remix._prepare_layers(remix_data)
+    bounds = pngtube_remix._bounds_for_layers(layers)
+    return pngtube_remix._metadata(remix_data, Path("state-probe.pngRemix"), tmp_path, [], layers, bounds)
+
+
+def test_pngtube_remix_metadata_keeps_plain_serialized_state_without_physics_or_mesh(tmp_path):
+    metadata = _metadata_for_single_remix_state(tmp_path, {})
+
+    assert metadata["capabilities"]["physics"] is False
+    assert metadata["runtime_features"]["physics_v2"] is False
+    assert metadata["capabilities"]["mesh"] is False
+    assert metadata["capabilities"]["mesh_metadata"] is False
+
+
+@pytest.mark.parametrize(
+    ("state", "expected_mesh_metadata"),
+    [
+        ({"mo_chain_rot_min": -15, "mo_chain_rot_max": 15}, False),
+        ({"scream_drag_snap": True}, False),
+        ({"mo_mesh_phys_x": 60}, True),
+        ({"scream_tip_point": [0.5, 0.0]}, True),
+    ],
+)
+def test_pngtube_remix_metadata_detects_prefixed_v2_physics_fields(tmp_path, state, expected_mesh_metadata):
+    metadata = _metadata_for_single_remix_state(tmp_path, state)
+
+    assert metadata["capabilities"]["physics"] is True
+    assert metadata["runtime_features"]["physics_v2"] is True
+    assert metadata["capabilities"]["mesh_metadata"] is expected_mesh_metadata
+    assert metadata["capabilities"]["mesh"] is expected_mesh_metadata
+
+
 def test_yui03_pngremix_metadata_preserves_official_follow_fields(tmp_path):
     remix_file = PROJECT_ROOT / "yui03.pngRemix"
     if not remix_file.is_file():

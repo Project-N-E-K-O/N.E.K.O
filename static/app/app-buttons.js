@@ -1112,7 +1112,7 @@
     window.analyzeEmotion = mod.analyzeEmotion;
 
     /**
-     * Apply an emotion to the active avatar runtime.
+     * Apply an emotion to the Live2D model.
      * @param {string} emotion
      */
     mod.applyEmotion = function applyEmotion(emotion) {
