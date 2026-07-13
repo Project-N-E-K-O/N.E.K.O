@@ -65,7 +65,7 @@ def _build_pm(tmpdir: str):
 
     cm = _mock_cm(tmpdir)
     with patch("memory.event_log.get_config_manager", return_value=cm), \
-         patch("memory.persona.get_config_manager", return_value=cm):
+         patch("memory.persona.manager.get_config_manager", return_value=cm):
         event_log = EventLog()
         event_log._config_manager = cm
         pm = PersonaManager(event_log=event_log)
@@ -122,7 +122,7 @@ def test_second_call_uses_cache_sync():
     first = PersonaManager._get_cached_token_count(e)
 
     # Swap count_tokens to an exploder — cache path must not call it.
-    with patch('memory.persona.count_tokens',
+    with patch('memory.persona.rendering.count_tokens',
                side_effect=AssertionError(
                    'cache miss — count_tokens should not be called')):
         second = PersonaManager._get_cached_token_count(e)
@@ -247,7 +247,7 @@ async def test_second_render_uses_cache_async():
             'cache hit expected; acount_tokens must not be called'
         )
 
-    with patch('memory.persona.acount_tokens', side_effect=_boom):
+    with patch('memory.persona.rendering.acount_tokens', side_effect=_boom):
         kept = await PersonaManager._ascore_trim_entries(
             entries, budget=10_000, now=datetime.now(),
         )
@@ -278,7 +278,7 @@ async def test_text_change_invalidates_cache_across_renders_async():
     # Mutate m2's text — m1 stays stable so its fingerprint still matches.
     entries[1]['text'] = 'mutated and drastically longer than before' * 3
 
-    with patch('memory.persona.acount_tokens', side_effect=_counting_acount):
+    with patch('memory.persona.rendering.acount_tokens', side_effect=_counting_acount):
         await PersonaManager._ascore_trim_entries(
             entries, budget=10_000, now=datetime.now(),
         )
@@ -423,7 +423,7 @@ async def test_cache_survives_persona_save_reload_roundtrip(tmp_path):
             'cache hit expected post-reload; acount_tokens must not be called'
         )
 
-    with patch('memory.persona.acount_tokens', side_effect=_boom):
+    with patch('memory.persona.rendering.acount_tokens', side_effect=_boom):
         kept = await PersonaManager._ascore_trim_entries(
             reloaded_entries, budget=10_000, now=datetime.now(),
         )
@@ -448,7 +448,7 @@ async def test_reflection_render_does_not_pollute_cache_fields(tmp_path):
     cm = _mock_cm(str(tmp_path))
     with patch("memory.event_log.get_config_manager", return_value=cm), \
          patch("memory.facts.get_config_manager", return_value=cm), \
-         patch("memory.persona.get_config_manager", return_value=cm), \
+         patch("memory.persona.manager.get_config_manager", return_value=cm), \
          patch("memory.reflection.manager.get_config_manager", return_value=cm):
         event_log = EventLog()
         event_log._config_manager = cm
@@ -627,7 +627,7 @@ def test_tokenizer_change_invalidates_cache_sync():
     # what we already have — but the cache write path must still fire
     # and re-stamp the entry with the new identity.
     new_tid = stamped_tid + '-rolled'
-    with patch('memory.persona.tokenizer_identity', return_value=new_tid):
+    with patch('memory.persona.rendering.tokenizer_identity', return_value=new_tid):
         count_calls = {'n': 0}
 
         def _counting_count_tokens(text, *a, **kw):
@@ -635,7 +635,7 @@ def test_tokenizer_change_invalidates_cache_sync():
             return first  # deterministic — just needs to be non-zero
 
         with patch(
-            'memory.persona.count_tokens',
+            'memory.persona.rendering.count_tokens',
             side_effect=_counting_count_tokens,
         ):
             second = PersonaManager._get_cached_token_count(e)
@@ -661,10 +661,10 @@ def test_heuristic_fallback_cached_separately_from_tiktoken_sync():
 
     # ── First render: pretend we're on tiktoken ─────────────────────
     with patch(
-        'memory.persona.tokenizer_identity',
+        'memory.persona.rendering.tokenizer_identity',
         return_value='tiktoken:o200k_base',
     ), patch(
-        'memory.persona.count_tokens',
+        'memory.persona.rendering.count_tokens',
         side_effect=lambda *a, **kw: (call_log.append('tt'), tiktoken_value)[1],
     ):
         e = _entry('m1', 'packaging transition demo text')
@@ -678,10 +678,10 @@ def test_heuristic_fallback_cached_separately_from_tiktoken_sync():
     # ── Second render: packaging shipped without encoding file; we
     #    silently fell back to heuristic. Cache must miss.
     with patch(
-        'memory.persona.tokenizer_identity',
+        'memory.persona.rendering.tokenizer_identity',
         return_value='heuristic:v1',
     ), patch(
-        'memory.persona.count_tokens',
+        'memory.persona.rendering.count_tokens',
         side_effect=lambda *a, **kw: (
             call_log.append('heur'), heuristic_value,
         )[1],
@@ -720,8 +720,8 @@ async def test_tokenizer_change_invalidates_cache_async():
         call_count['n'] += 1
         return await real_acount(text, *a, **kw)
 
-    with patch('memory.persona.tokenizer_identity', return_value=new_tid), \
-         patch('memory.persona.acount_tokens', side_effect=_counting_acount):
+    with patch('memory.persona.rendering.tokenizer_identity', return_value=new_tid), \
+         patch('memory.persona.rendering.acount_tokens', side_effect=_counting_acount):
         await PersonaManager._ascore_trim_entries(
             entries, budget=10_000, now=datetime.now(),
         )
