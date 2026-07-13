@@ -9,7 +9,6 @@ from config.prompts.prompts_soccer import (
     get_soccer_quick_lines_user_prompt,
     get_soccer_system_prompt,
 )
-from main_routers import game_router
 from main_routers.game_router import runtime as gr_runtime
 from scripts import check_no_temperature
 
@@ -21,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[2]
 def test_game_llm_paths_do_not_send_temperature_kwarg():
     assert check_no_temperature.main([
         "main_routers/game_router",
-        "main_logic/omni_offline_client.py",
+        "main_logic/omni_offline_client",
     ]) == 0
 
 
