@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from yui_guide_director_parts import DIRECTOR_SCRIPT_NAMES, read_director_source
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 STATIC_DIR = PROJECT_ROOT / "static"
@@ -91,7 +93,7 @@ def run_static_checks(pc_repo: Path) -> list[Check]:
     try:
         sources = {
             "day1": _read(STATIC_DIR / "tutorial/yui-guide/days/day1-home-guide.js"),
-            "director": _read(STATIC_DIR / "tutorial/yui-guide/director.js"),
+            "director": read_director_source(STATIC_DIR),
             "takeover": _read(STATIC_DIR / "tutorial/core/interaction-takeover.js"),
             "interpage": _read(STATIC_DIR / "app/app-interpage.js"),
             "overlay": _read(STATIC_DIR / "tutorial/yui-guide/overlay.js"),
@@ -251,7 +253,7 @@ def run_browser_bridge_probe() -> tuple[list[Check], dict[str, Any]]:
             "tutorial-interrupt-controller.js",
             "tutorial/core/interaction-takeover.js",
             "tutorial/yui-guide/overlay.js",
-            "tutorial/yui-guide/director.js",
+            *DIRECTOR_SCRIPT_NAMES,
         ):
             home.add_script_tag(path=str(STATIC_DIR / script))
 

@@ -2,12 +2,13 @@ const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
+const { hasOrderedDirectorScripts, readDirectorSource } = require('./yui-guide-director-test-parts.cjs');
 const test = require('node:test');
 const vm = require('node:vm');
 
 const repoRoot = path.resolve(__dirname, '..');
 const guideAudioRoot = path.join(__dirname, 'assets', 'tutorial', 'guide-audio');
-const directorSource = fs.readFileSync(path.join(__dirname, 'tutorial/yui-guide/director.js'), 'utf8');
+const directorSource = readDirectorSource(__dirname);
 const supportedRecordedLocales = ['zh', 'ja', 'en', 'ko', 'ru'];
 const guideFiles = [
     'tutorial/yui-guide/days/day1-home-guide.js',
@@ -483,7 +484,7 @@ test('day7 round scenes are opted into timeline playback after the petal cue pat
 });
 
 test('director merges audio maps from all registered daily guides', () => {
-    const directorSource = fs.readFileSync(path.join(__dirname, 'tutorial/yui-guide/director.js'), 'utf8');
+    const directorSource = readDirectorSource(__dirname);
 
     assert.match(directorSource, /function collectGuideAudioFilesByKey\(\)/);
     assert.match(directorSource, /window\.YuiGuideDailyGuides/);

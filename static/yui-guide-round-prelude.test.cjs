@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { hasOrderedDirectorScripts, readDirectorSource } = require('./yui-guide-director-test-parts.cjs');
 const test = require('node:test');
 
 const repoRoot = path.resolve(__dirname, '..');
@@ -294,7 +295,7 @@ test('manager delegates avatar floating prelude to TutorialRoundPreludeControlle
 });
 
 test('director leaves round takeover startup to the round prelude', () => {
-    const directorSource = fs.readFileSync(path.join(__dirname, 'tutorial/yui-guide/director.js'), 'utf8');
+    const directorSource = readDirectorSource(__dirname);
     const roundBlock = directorSource.split('        async playAvatarFloatingRound(round, options) {')[1].split(
         '        disableInterrupts() {',
         1

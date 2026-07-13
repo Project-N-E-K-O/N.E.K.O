@@ -49,6 +49,9 @@ _AVATAR_UI_BUTTON_ASSET_PATHS = tuple(sorted(
 _MODEL_MANAGER_JS_PATHS = tuple(sorted(
     (_PROJECT_ROOT / "static/js/model_manager").glob("*.js")
 ))
+_YUI_GUIDE_DIRECTOR_JS_PATHS = tuple(sorted(
+    (_PROJECT_ROOT / "static/tutorial/yui-guide/director").glob("*.js")
+))
 _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/css/yui-guide.css",
     _PROJECT_ROOT / "static/css/tutorial-styles.css",
@@ -66,6 +69,7 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/tutorial/avatar/yui-standin.js",
     _PROJECT_ROOT / "static/tutorial/yui-guide/overlay.js",
     _PROJECT_ROOT / "static/tutorial/yui-guide/page-handoff.js",
+    *_YUI_GUIDE_DIRECTOR_JS_PATHS,
     _PROJECT_ROOT / "static/tutorial/avatar/yui-stage.js",
     _PROJECT_ROOT / "static/tutorial/avatar/standin-controller.js",
     _PROJECT_ROOT / "static/tutorial/core/interaction-takeover.js",

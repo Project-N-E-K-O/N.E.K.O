@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from yui_guide_director_parts import DIRECTOR_SCRIPT_NAMES
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 STATIC_DIR = PROJECT_ROOT / "static"
@@ -99,7 +101,7 @@ def run_monitor() -> dict[str, Any]:
             "tutorial-interrupt-controller.js",
             "tutorial/core/interaction-takeover.js",
             "tutorial/yui-guide/overlay.js",
-            "tutorial/yui-guide/director.js",
+            *DIRECTOR_SCRIPT_NAMES,
         ):
             page.add_script_tag(path=str(STATIC_DIR / script))
 

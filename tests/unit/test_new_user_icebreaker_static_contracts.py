@@ -4,6 +4,8 @@ import json
 import re
 from pathlib import Path
 
+from tests.yui_guide_director_parts import read_director_source
+
 
 ROOT = Path(__file__).resolve().parents[2]
 RUNTIME_PATH = ROOT / "static" / "tutorial" / "icebreaker" / "new-user-icebreaker.js"
@@ -1164,7 +1166,7 @@ def test_icebreaker_page_exit_clears_choice_prompt_before_route_end():
 
 
 def test_yui_guide_chat_bridge_has_storage_queue_fallback():
-    director = (ROOT / "static" / "tutorial" / "yui-guide" / "director.js").read_text(encoding="utf-8")
+    director = read_director_source(ROOT)
     interpage = (ROOT / "static" / "app" / "app-interpage.js").read_text(encoding="utf-8")
 
     assert "YUI_GUIDE_CHAT_BRIDGE_QUEUE_KEY" in director

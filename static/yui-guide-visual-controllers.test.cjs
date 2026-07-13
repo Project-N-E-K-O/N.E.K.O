@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { hasOrderedDirectorScripts, readDirectorSource } = require('./yui-guide-director-test-parts.cjs');
 const test = require('node:test');
 
 const repoRoot = path.resolve(__dirname, '..');
@@ -10,7 +11,7 @@ const avatarStandInControllerPath = path.join(__dirname, 'tutorial/avatar/standi
 const spotlightControllerPath = path.join(__dirname, 'tutorial/visual/spotlight-controller.js');
 const ghostCursorControllerPath = path.join(__dirname, 'tutorial/visual/ghost-cursor-controller.js');
 const petalTransitionControllerPath = path.join(__dirname, 'tutorial/visual/petal-transition-controller.js');
-const directorSource = fs.readFileSync(path.join(__dirname, 'tutorial/yui-guide/director.js'), 'utf8');
+const directorSource = readDirectorSource(__dirname);
 const controllersSource = fs.existsSync(controllersPath) ? fs.readFileSync(controllersPath, 'utf8') : '';
 const highlightControllerSource = fs.existsSync(highlightControllerPath)
     ? fs.readFileSync(highlightControllerPath, 'utf8')
@@ -160,7 +161,7 @@ test('full tutorial pages load visual controllers before the director', () => {
         const petalTransitionControllerIndex = templateSource.indexOf('/static/tutorial/visual/petal-transition-controller.js');
         const highlightControllerIndex = templateSource.indexOf('/static/tutorial/visual/highlight-controller.js');
         const controllersIndex = templateSource.indexOf('/static/tutorial/visual/controllers.js');
-        const directorIndex = templateSource.indexOf('/static/tutorial/yui-guide/director.js');
+        const directorIndex = templateSource.indexOf('/static/tutorial/yui-guide/director/bootstrap.js');
 
         assert.notEqual(avatarStandInControllerIndex, -1, templatePath + ' should load tutorial/avatar/standin-controller.js');
         assert.notEqual(spotlightControllerIndex, -1, templatePath + ' should load tutorial/visual/spotlight-controller.js');
@@ -168,7 +169,7 @@ test('full tutorial pages load visual controllers before the director', () => {
         assert.notEqual(petalTransitionControllerIndex, -1, templatePath + ' should load tutorial/visual/petal-transition-controller.js');
         assert.notEqual(highlightControllerIndex, -1, templatePath + ' should load tutorial/visual/highlight-controller.js');
         assert.notEqual(controllersIndex, -1, templatePath + ' should load tutorial/visual/controllers.js');
-        assert.notEqual(directorIndex, -1, templatePath + ' should load tutorial/yui-guide/director.js');
+        assert.notEqual(directorIndex, -1, templatePath + ' should load tutorial/yui-guide/director parts');
         assert.ok(
             avatarStandInControllerIndex < controllersIndex,
             templatePath + ' should load avatar stand-in controller before visual controllers'
