@@ -3259,6 +3259,7 @@ PROACTIVE_SOURCE_LABELS = {
     "zh": {
         "news": "热议话题",
         "video": "视频推荐",
+        "xhh": "小黑盒社区",
         "home": "首页推荐",
         "window": "窗口上下文",
         "personal": "个人动态",
@@ -3268,6 +3269,7 @@ PROACTIVE_SOURCE_LABELS = {
     "en": {
         "news": "Trending Topics",
         "video": "Video Recommendations",
+        "xhh": "Xiaoheihe Community",
         "home": "Home Recommendations",
         "window": "Window Context",
         "personal": "Personal Updates",
@@ -3277,6 +3279,7 @@ PROACTIVE_SOURCE_LABELS = {
     "ja": {
         "news": "トレンド話題",
         "video": "動画のおすすめ",
+        "xhh": "小黒盒コミュニティ",
         "home": "ホームおすすめ",
         "window": "ウィンドウコンテキスト",
         "personal": "個人の動向",
@@ -3286,6 +3289,7 @@ PROACTIVE_SOURCE_LABELS = {
     "ko": {
         "news": "화제의 토픽",
         "video": "동영상 추천",
+        "xhh": "Xiaoheihe 커뮤니티",
         "home": "홈 추천",
         "window": "창 컨텍스트",
         "personal": "개인 소식",
@@ -3295,6 +3299,7 @@ PROACTIVE_SOURCE_LABELS = {
     "ru": {
         "news": "Горячие темы",
         "video": "Видео рекомендации",
+        "xhh": "Сообщество Xiaoheihe",
         "home": "Рекомендации на главной",
         "window": "Контекст окна",
         "personal": "Личные новости",
@@ -3304,6 +3309,7 @@ PROACTIVE_SOURCE_LABELS = {
     "es": {
         "news": "Temas en tendencia",
         "video": "Recomendaciones de video",
+        "xhh": "Comunidad Xiaoheihe",
         "home": "Recomendaciones de inicio",
         "window": "Contexto de ventana",
         "personal": "Actualizaciones personales",
@@ -3313,6 +3319,7 @@ PROACTIVE_SOURCE_LABELS = {
     "pt": {
         "news": "Assuntos em alta",
         "video": "Recomendações de vídeo",
+        "xhh": "Comunidade Xiaoheihe",
         "home": "Recomendações iniciais",
         "window": "Contexto da janela",
         "personal": "Atualizações pessoais",
@@ -4779,7 +4786,7 @@ def build_proactive_action_note(
     Priority is music > meme > web, matching the frontend's usual material display
     importance.
 
-    The web sub-channel set ``{'web', 'news', 'video', 'home', 'personal', 'window'}``
+    The web sub-channel set ``{'web', 'news', 'video', 'xhh', 'home', 'personal', 'window'}``
     is kept in sync with the mode set produced by ``web_link.get('mode', 'web')`` in
     ``main_routers/system_router.py:build_proactive_response`` — missing any one of
     them sends that channel to the trailing chat fallback, where the music-first
@@ -4885,7 +4892,7 @@ def build_proactive_action_note(
         return _try_music()
     if channel == "meme":
         return _try_meme(allow_typeless_fallback=True)
-    if channel in {"web", "news", "video", "home", "personal", "window"}:
+    if channel in {"web", "news", "video", "xhh", "home", "personal", "window"}:
         return _try_web()
 
     # chat / unknown / 空 / 其它未识别通道 —— 回退探测 source_links 实际素材，

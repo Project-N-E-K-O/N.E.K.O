@@ -29,7 +29,7 @@ def _extract_links_from_raw(mode: str, raw_data: dict) -> list[dict]:
     """
     Extract a list of link info entries from raw web data.
     args:
-    - mode: data mode; supports 'news', 'video', 'home', 'personal', 'music'
+    - mode: data mode; supports 'news', 'video', 'home', 'personal', 'xhh', 'music'
     - raw_data: raw web data
     returns:
     - list[dict]: list of link info entries, each containing 'title', 'url' and 'source' fields
@@ -53,6 +53,15 @@ def _extract_links_from_raw(mode: str, raw_data: dict) -> list[dict]:
                 url = item.get('url', '')
                 if title and url:
                     links.append({'title': title, 'url': url, 'source': 'B站' if raw_data.get('region', 'china') == 'china' else 'Reddit'})
+
+        elif mode == 'xhh':
+            for post in raw_data.get('posts', []) or []:
+                if not isinstance(post, dict):
+                    continue
+                title = post.get('title', '')
+                url = post.get('url', '')
+                if title and url:
+                    links.append({'title': title, 'url': url, 'source': '小黑盒'})
         
         elif mode == 'home':
             bilibili = raw_data.get('bilibili', {})

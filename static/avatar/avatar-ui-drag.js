@@ -423,6 +423,12 @@ window.CHAT_MODE_CONFIG = [
         globalVarName: 'proactiveVideoChatEnabled'
     },
     {
+        mode: 'xhh',
+        labelKey: 'settings.toggles.proactiveXhhChat',
+        tooltipKey: 'settings.toggles.proactiveXhhChatTooltip',
+        globalVarName: 'proactiveXhhChatEnabled'
+    },
+    {
         mode: 'personal',
         labelKey: 'settings.toggles.proactivePersonalChat',
         tooltipKey: 'settings.toggles.proactivePersonalChatTooltip',

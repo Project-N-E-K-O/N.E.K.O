@@ -96,6 +96,7 @@ from .proactive_sources import (
     _should_skip_source,
     _source_hash,
 )
+from .proactive_xhh import fetch_xhh_feed_content
 import asyncio
 import json
 import random
@@ -1181,6 +1182,20 @@ async def proactive_chat(request: Request):
                 _log_video_content(lanlan_name, video_content)
                 links = _extract_links_from_raw(mode, video_content)
                 return (mode, {'formatted_content': formatted, 'raw_data': video_content, 'links': links})
+
+            elif mode == 'xhh':
+                xhh_content = await fetch_xhh_feed_content(limit=_PHASE1_FETCH_PER_SOURCE)
+                if not xhh_content['success']:
+                    raise ValueError(f"获取小黑盒社区帖子失败: {xhh_content.get('error')}")
+                links = _extract_links_from_raw(mode, xhh_content)
+                return (
+                    mode,
+                    {
+                        'formatted_content': xhh_content.get('formatted_content', ''),
+                        'raw_data': xhh_content,
+                        'links': links,
+                    },
+                )
             
             elif mode == 'window':
                 window_context_content = await fetch_window_context_content(limit=5)

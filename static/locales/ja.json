@@ -2594,6 +2594,8 @@
             "proactiveNewsChatTooltip": "トレンド話題を使用してチャット",
             "proactiveVideoChat": "動画サイト",
             "proactiveVideoChatTooltip": "動画コンテンツを使用してチャット",
+            "proactiveXhhChat": "小黒盒コミュニティ",
+            "proactiveXhhChatTooltip": "小黒盒コミュニティの公開投稿を使って話しかける",
             "proactivePersonalChat": "アクティビティ更新",
             "proactivePersonalChatTooltip": "連携しているプラットフォームの更新情報をもとに話しかける",
             "proactiveMusicChat": "音楽提案",

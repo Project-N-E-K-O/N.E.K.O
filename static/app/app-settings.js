@@ -28,6 +28,7 @@
         'proactiveVisionChatEnabled',
         'proactiveNewsChatEnabled',
         'proactiveVideoChatEnabled',
+        'proactiveXhhChatEnabled',
         'proactivePersonalChatEnabled',
         'proactiveMusicEnabled',
         'proactiveMemeEnabled',
@@ -58,6 +59,7 @@
             proactiveVisionChatEnabled: S.proactiveVisionChatEnabled,
             proactiveNewsChatEnabled: S.proactiveNewsChatEnabled,
             proactiveVideoChatEnabled: S.proactiveVideoChatEnabled,
+            proactiveXhhChatEnabled: S.proactiveXhhChatEnabled,
             proactivePersonalChatEnabled: S.proactivePersonalChatEnabled,
             proactiveMusicEnabled: S.proactiveMusicEnabled,
             proactiveMemeEnabled: S.proactiveMemeEnabled,
@@ -283,6 +285,9 @@
         const currentVideoChat = typeof window.proactiveVideoChatEnabled !== 'undefined'
             ? window.proactiveVideoChatEnabled
             : S.proactiveVideoChatEnabled;
+        const currentXhhChat = typeof window.proactiveXhhChatEnabled !== 'undefined'
+            ? window.proactiveXhhChatEnabled
+            : S.proactiveXhhChatEnabled;
         const currentMerge = typeof window.mergeMessagesEnabled !== 'undefined'
             ? window.mergeMessagesEnabled
             : S.mergeMessagesEnabled;
@@ -353,6 +358,7 @@
             proactiveVisionChatEnabled: currentVisionChat,
             proactiveNewsChatEnabled: currentNewsChat,
             proactiveVideoChatEnabled: currentVideoChat,
+            proactiveXhhChatEnabled: currentXhhChat,
             proactivePersonalChatEnabled: currentPersonalChat,
             proactiveMusicEnabled: currentMusicChat,
             proactiveMemeEnabled: currentMemeChat,
@@ -381,6 +387,7 @@
         S.proactiveVisionChatEnabled = currentVisionChat;
         S.proactiveNewsChatEnabled = currentNewsChat;
         S.proactiveVideoChatEnabled = currentVideoChat;
+        S.proactiveXhhChatEnabled = currentXhhChat;
         S.proactivePersonalChatEnabled = currentPersonalChat;
         S.proactiveMusicEnabled = currentMusicChat;
         S.proactiveMemeEnabled = currentMemeChat;
@@ -434,6 +441,7 @@
                     const hasNewFlags = settings.proactiveVisionChatEnabled !== undefined ||
                     settings.proactiveNewsChatEnabled !== undefined ||
                     settings.proactiveVideoChatEnabled !== undefined ||
+                    settings.proactiveXhhChatEnabled !== undefined ||
                     settings.proactivePersonalChatEnabled !== undefined ||
                     settings.proactiveMusicEnabled !== undefined ||
                     settings.proactiveMemeEnabled !== undefined ||
@@ -445,6 +453,7 @@
                             settings.proactiveVisionEnabled = false;
                             settings.proactiveVisionChatEnabled = false;
                             settings.proactiveNewsChatEnabled = true;
+                            settings.proactiveXhhChatEnabled = false;
                             settings.proactivePersonalChatEnabled = false;
                             settings.proactiveMusicEnabled = false;
                             settings.proactiveMemeEnabled = false;
@@ -453,6 +462,7 @@
                             // 视觉偏好为 true 或 undefined，默认启用视觉搭话
                             settings.proactiveVisionEnabled = true;
                             settings.proactiveVisionChatEnabled = true;
+                            settings.proactiveXhhChatEnabled = false;
                             settings.proactivePersonalChatEnabled = false;
                             settings.proactiveMusicEnabled = false;
                             settings.proactiveMemeEnabled = false;
@@ -473,6 +483,7 @@
                 S.proactiveVisionChatEnabled = settings.proactiveVisionChatEnabled ?? true;
                 S.proactiveNewsChatEnabled = settings.proactiveNewsChatEnabled ?? false;
                 S.proactiveVideoChatEnabled = settings.proactiveVideoChatEnabled ?? true;
+                S.proactiveXhhChatEnabled = settings.proactiveXhhChatEnabled ?? false;
                 S.proactivePersonalChatEnabled = settings.proactivePersonalChatEnabled ?? false;
                 S.proactiveMusicEnabled = settings.proactiveMusicEnabled ?? true;
                 S.proactiveMemeEnabled = settings.proactiveMemeEnabled ?? true;
@@ -539,6 +550,7 @@
                     proactiveVisionChatEnabled: S.proactiveVisionChatEnabled,
                     proactiveNewsChatEnabled: S.proactiveNewsChatEnabled,
                     proactiveVideoChatEnabled: S.proactiveVideoChatEnabled,
+                    proactiveXhhChatEnabled: S.proactiveXhhChatEnabled,
                     proactivePersonalChatEnabled: S.proactivePersonalChatEnabled,
                     mergeMessagesEnabled: S.mergeMessagesEnabled,
                     focusModeEnabled: S.focusModeEnabled,
@@ -660,6 +672,7 @@
                     window.proactiveVisionChatEnabled = S.proactiveVisionChatEnabled;
                     window.proactiveNewsChatEnabled = S.proactiveNewsChatEnabled;
                     window.proactiveVideoChatEnabled = S.proactiveVideoChatEnabled;
+                    window.proactiveXhhChatEnabled = S.proactiveXhhChatEnabled;
                     window.proactivePersonalChatEnabled = S.proactivePersonalChatEnabled;
                     window.proactiveMusicEnabled = S.proactiveMusicEnabled;
                     window.proactiveMemeEnabled = S.proactiveMemeEnabled;
@@ -766,13 +779,14 @@
         }
 
         // 如果已开启主动搭话且选择了搭话方式，立即启动定时器
-        if (S.proactiveChatEnabled && (S.proactiveVisionChatEnabled || S.proactiveNewsChatEnabled || S.proactiveVideoChatEnabled || S.proactivePersonalChatEnabled || S.proactiveMusicEnabled || S.proactiveMemeEnabled || S.proactiveMiniGameInviteEnabled)) {
+        if (S.proactiveChatEnabled && (S.proactiveVisionChatEnabled || S.proactiveNewsChatEnabled || S.proactiveVideoChatEnabled || S.proactiveXhhChatEnabled || S.proactivePersonalChatEnabled || S.proactiveMusicEnabled || S.proactiveMemeEnabled || S.proactiveMiniGameInviteEnabled)) {
             // 主动搭话启动自检
             console.log('========== 主动搭话启动自检 ==========');
             console.log('[自检] proactiveChatEnabled: ' + S.proactiveChatEnabled);
             console.log('[自检] proactiveVisionChatEnabled: ' + S.proactiveVisionChatEnabled);
             console.log('[自检] proactiveNewsChatEnabled: ' + S.proactiveNewsChatEnabled);
             console.log('[自检] proactiveVideoChatEnabled: ' + S.proactiveVideoChatEnabled);
+            console.log('[自检] proactiveXhhChatEnabled: ' + S.proactiveXhhChatEnabled);
             console.log('[自检] proactivePersonalChatEnabled: ' + S.proactivePersonalChatEnabled);
             console.log('[自检] proactiveMusicEnabled: ' + S.proactiveMusicEnabled);
             console.log('[自检] proactiveMemeEnabled: ' + S.proactiveMemeEnabled);
@@ -792,7 +806,7 @@
         } else {
             console.log('[App] 主动搭话未满足启动条件，跳过调度器启动:');
             console.log('  - proactiveChatEnabled: ' + S.proactiveChatEnabled);
-            console.log('  - 任意搭话模式启用: ' + (S.proactiveVisionChatEnabled || S.proactiveNewsChatEnabled || S.proactiveVideoChatEnabled || S.proactivePersonalChatEnabled || S.proactiveMusicEnabled || S.proactiveMemeEnabled || S.proactiveMiniGameInviteEnabled));
+            console.log('  - 任意搭话模式启用: ' + (S.proactiveVisionChatEnabled || S.proactiveNewsChatEnabled || S.proactiveVideoChatEnabled || S.proactiveXhhChatEnabled || S.proactivePersonalChatEnabled || S.proactiveMusicEnabled || S.proactiveMemeEnabled || S.proactiveMiniGameInviteEnabled));
         }
 
         // 所有步骤完成后，最后才设置初始化成功的标志
