@@ -804,12 +804,10 @@ class TtsRuntimeMixin:
                 and str(effective_speech_id) in self._speech_primary_suppressed_ids
             )
             delivered = False
-            tap_delivered = False
             if suppress_primary:
-                tap_delivered = await self._publish_speech_taps(tts_audio, effective_speech_id)
-                delivered = tap_delivered
+                delivered = await self._publish_speech_taps(tts_audio, effective_speech_id)
             if (
-                (not suppress_primary or not tap_delivered)
+                not suppress_primary
                 and self.websocket
                 and hasattr(self.websocket, 'client_state')
                 and self.websocket.client_state == self.websocket.client_state.CONNECTED
