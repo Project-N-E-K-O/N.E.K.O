@@ -114,7 +114,7 @@ async def get_system_client_id(response: Response):
     except Exception as exc:
         logger.warning("system client-id endpoint failed: %s", exc)
         return _json_no_store_response(
-            {"ok": False, "error": f"{type(exc).__name__}: {exc}"},
+            {"ok": False, "error": "internal_error"},
             status_code=500,
         )
 

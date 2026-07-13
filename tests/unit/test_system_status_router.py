@@ -86,8 +86,8 @@ def test_system_client_id_fails_closed_when_fresh_id_cannot_be_persisted(tmp_pat
         response = client.get(SYSTEM_CLIENT_ID_ENDPOINT)
 
     assert response.status_code == 500
-    assert response.json()["ok"] is False
-    assert "client_id" not in response.json()
+    assert response.json() == {"ok": False, "error": "internal_error"}
+    assert "disk unavailable" not in response.text
     assert "no-store" in response.headers["Cache-Control"]
 
 
