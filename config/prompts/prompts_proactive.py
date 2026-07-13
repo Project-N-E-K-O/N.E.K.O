@@ -4277,8 +4277,9 @@ def get_new_character_greeting_prompt(lang: str = "zh") -> str:
 # 与 GREETING_PROMPT_* 对偶，但独立计时：按"行为(tier) × 猫咪停留时长"选模板。
 # tier 在 core 层映射为 awake(清醒/CAT1) / nap(打盹/CAT2) / sleep(熟睡/CAT3)；
 # 时长 < 3min 静默，清醒"憋坏"门槛 15min、打盹/熟睡"久"门槛 30min。
-# {reason_hint} 由入口(自动/手动)注入，与 {time_hint} 一样在 core 层 .format 前
-# 已 format 好 {master}。
+# {reason_hint} 由入口(自动/手动)注入，并在 core 层 .format 前已 format 好
+# {master}。旧表中的 {time_hint} 仅为兼容占位；猫形态 return 不会注入普通
+# 主动问候的时段/餐食提示。
 
 # 入口原因片段（注入 {reason_hint}）。仅含 {master} 占位符。
 CAT_GREETING_REASON_AUTO = {
@@ -4587,7 +4588,8 @@ _CAT_GREETING_TABLES = {
     ("sleep", "long"): CAT_GREETING_SLEEP_LONG,
 }
 
-# 时长分档门槛（秒）：< 3min 静默；清醒"憋坏"门槛 15min，打盹/熟睡"久"门槛 30min。
+# 时长分档门槛（秒）：猫形态少于 3 分钟时静默；清醒"憋坏"门槛 15min，
+# 打盹/熟睡"久"门槛 30min。
 CAT_GREETING_SILENT_BELOW_SECONDS = 180
 _CAT_GREETING_LONG_THRESHOLDS = {
     "awake": 900,
@@ -4595,20 +4597,318 @@ _CAT_GREETING_LONG_THRESHOLDS = {
     "sleep": 1800,
 }
 
+# Cat Mind's one-shot return episode is deliberately an enum-to-text scene
+# table, not a rendering of browser input. A valid scene is the factual
+# account of this cat-form return; tier × duration only selects its return
+# tone and wording.
+_CAT_GREETING_EPISODE_SCENES = {
+    "zh": {
+        "activity": {
+            "": "刚才以猫的样子活动了一会儿。",
+            "played_yarn": "刚才以猫的样子自己玩了会儿毛线。",
+            "ate_snack": "刚才以猫的样子自己吃了点零食。",
+            "small_move": "刚才以猫的样子小小活动了一下。",
+            "social_ping": "刚才以猫的样子轻轻回应过。",
+        },
+        "rest_after_activity": {
+            "": "刚才活动了一会儿，后来安静歇了歇。",
+            "played_yarn": "刚才玩了会儿毛线，后来安静歇了歇。",
+            "ate_snack": "刚才吃了点零食，后来安静歇了歇。",
+            "small_move": "刚才小小活动了一下，后来安静歇了歇。",
+            "social_ping": "刚才轻轻回应过，后来安静歇了歇。",
+        },
+        "rested": {"": "刚才以猫的样子安静歇了歇。"},
+    },
+    "en": {
+        "activity": {
+            "": "You spent a little while moving about as a cat.",
+            "played_yarn": "You spent a little while playing with yarn as a cat.",
+            "ate_snack": "You had a small snack as a cat.",
+            "small_move": "You made a small move as a cat.",
+            "social_ping": "You gave a soft little response as a cat.",
+        },
+        "rest_after_activity": {
+            "": "You moved about for a little while, then had a quiet rest.",
+            "played_yarn": "You played with yarn for a little while, then had a quiet rest.",
+            "ate_snack": "You had a small snack, then had a quiet rest.",
+            "small_move": "You made a small move, then had a quiet rest.",
+            "social_ping": "You gave a soft little response, then had a quiet rest.",
+        },
+        "rested": {"": "You had a quiet rest as a cat."},
+    },
+    "ja": {
+        "activity": {
+            "": "さっき猫の姿で少し動いていた。",
+            "played_yarn": "さっき猫の姿で少し毛糸で遊んでいた。",
+            "ate_snack": "さっき猫の姿で少しおやつを食べていた。",
+            "small_move": "さっき猫の姿で少しだけ動いていた。",
+            "social_ping": "さっき猫の姿で小さく応えていた。",
+        },
+        "rest_after_activity": {
+            "": "さっき少し動いたあと、静かに休んでいた。",
+            "played_yarn": "さっき少し毛糸で遊んだあと、静かに休んでいた。",
+            "ate_snack": "さっき少しおやつを食べたあと、静かに休んでいた。",
+            "small_move": "さっき少しだけ動いたあと、静かに休んでいた。",
+            "social_ping": "さっき小さく応えたあと、静かに休んでいた。",
+        },
+        "rested": {"": "さっき猫の姿で静かに休んでいた。"},
+    },
+    "ko": {
+        "activity": {
+            "": "방금 고양이 모습으로 잠깐 움직이고 있었다.",
+            "played_yarn": "방금 고양이 모습으로 잠깐 실뭉치를 가지고 놀았다.",
+            "ate_snack": "방금 고양이 모습으로 간단히 간식을 먹었다.",
+            "small_move": "방금 고양이 모습으로 조금 움직였다.",
+            "social_ping": "방금 고양이 모습으로 작게 응답했다.",
+        },
+        "rest_after_activity": {
+            "": "방금 잠깐 움직인 뒤 조용히 쉬었다.",
+            "played_yarn": "방금 잠깐 실뭉치를 가지고 논 뒤 조용히 쉬었다.",
+            "ate_snack": "방금 간단히 간식을 먹은 뒤 조용히 쉬었다.",
+            "small_move": "방금 조금 움직인 뒤 조용히 쉬었다.",
+            "social_ping": "방금 작게 응답한 뒤 조용히 쉬었다.",
+        },
+        "rested": {"": "방금 고양이 모습으로 조용히 쉬었다."},
+    },
+    "ru": {
+        "activity": {
+            "": "Только что ты немного двигалась в кошачьем облике.",
+            "played_yarn": "Только что ты немного играла с клубком в кошачьем облике.",
+            "ate_snack": "Только что ты слегка перекусила в кошачьем облике.",
+            "small_move": "Только что ты немного подвигалась в кошачьем облике.",
+            "social_ping": "Только что ты тихонько откликнулась в кошачьем облике.",
+        },
+        "rest_after_activity": {
+            "": "Только что ты немного двигалась, а потом спокойно отдохнула.",
+            "played_yarn": "Только что ты немного играла с клубком, а потом спокойно отдохнула.",
+            "ate_snack": "Только что ты слегка перекусила, а потом спокойно отдохнула.",
+            "small_move": "Только что ты немного подвигалась, а потом спокойно отдохнула.",
+            "social_ping": "Только что ты тихонько откликнулась, а потом спокойно отдохнула.",
+        },
+        "rested": {"": "Только что ты спокойно отдохнула в кошачьем облике."},
+    },
+    "es": {
+        "activity": {
+            "": "Hace un momento estuviste moviéndote un poco como gata.",
+            "played_yarn": "Hace un momento jugaste un rato con lana como gata.",
+            "ate_snack": "Hace un momento tomaste un pequeño tentempié como gata.",
+            "small_move": "Hace un momento hiciste un pequeño movimiento como gata.",
+            "social_ping": "Hace un momento respondiste suavemente como gata.",
+        },
+        "rest_after_activity": {
+            "": "Hace un momento te moviste un poco y después descansaste en calma.",
+            "played_yarn": "Hace un momento jugaste un rato con lana y después descansaste en calma.",
+            "ate_snack": "Hace un momento tomaste un pequeño tentempié y después descansaste en calma.",
+            "small_move": "Hace un momento hiciste un pequeño movimiento y después descansaste en calma.",
+            "social_ping": "Hace un momento respondiste suavemente y después descansaste en calma.",
+        },
+        "rested": {"": "Hace un momento descansaste en calma como gata."},
+    },
+    "pt": {
+        "activity": {
+            "": "Há pouco você se movimentou um pouco como gata.",
+            "played_yarn": "Há pouco você brincou um pouco com o novelo como gata.",
+            "ate_snack": "Há pouco você fez um pequeno lanche como gata.",
+            "small_move": "Há pouco você fez um pequeno movimento como gata.",
+            "social_ping": "Há pouco você respondeu baixinho como gata.",
+        },
+        "rest_after_activity": {
+            "": "Há pouco você se movimentou um pouco e depois descansou em silêncio.",
+            "played_yarn": "Há pouco você brincou um pouco com o novelo e depois descansou em silêncio.",
+            "ate_snack": "Há pouco você fez um pequeno lanche e depois descansou em silêncio.",
+            "small_move": "Há pouco você fez um pequeno movimento e depois descansou em silêncio.",
+            "social_ping": "Há pouco você respondeu baixinho e depois descansou em silêncio.",
+        },
+        "rested": {"": "Há pouco você descansou em silêncio como gata."},
+    },
+}
+
+_CAT_GREETING_EPISODE_PROMPTS = {
+    "zh": "======以下是环境提示======\n"
+    "{reason_hint}你变成猫咪待了{elapsed}。刚才作为猫真实经历的是：{cat_form_scene}现在{master}把你叫回来了。\n"
+    "{episode_return_tone}\n"
+    "这段真实经历是本次猫形态经过的唯一事实，回归时必须自然带出它。可以自然提到等待和被叫回来，但不能把刚才说成全程只有等待、什么也没做，或擅自说成打盹、熟睡、刚醒。不要逐项报动作、次数或过程，也不要把它归因于对方。\n"
+    "用符合你性格的方式直接说出来，简短自然即可，不要生成思考过程。\n"
+    "======以上是环境提示======",
+    "en": "======Below is Environment Notice======\n"
+    "{reason_hint}you were in cat form for {elapsed}. The true cat-form episode was: {cat_form_scene} Now {master} has called you back.\n"
+    "{episode_return_tone}\n"
+    "This episode is the only factual account of the time in cat form and must be naturally reflected in the return. You may naturally mention waiting and being called back, but do not portray that time as nothing but waiting, doing nothing, dozing, deep sleep, or just waking without evidence. Do not list actions, counts, or process, and do not frame it as caused by the other person.\n"
+    "Say it directly in your own way, keep it short and natural. Do not generate thinking process.\n"
+    "======Above is Environment Notice======",
+    "ja": "======以下は環境通知======\n"
+    "{reason_hint}猫の姿で{elapsed}過ごした。さっき猫として実際にあったことはこう：{cat_form_scene}今、{master}が呼び戻してくれた。\n"
+    "{episode_return_tone}\n"
+    "この経緯が今回の猫の姿で過ごした時間の唯一の事実で、戻るときは自然に必ず反映する。待っていたことや呼び戻されたことは自然に触れてよいが、根拠なく「ずっと待っていただけ」「何もしていなかった」「うたた寝・熟睡・起きたばかり」とは言わない。動作の列挙・回数・過程を言わず、相手がそうさせたようにも言わない。\n"
+    "自分らしいやり方でそのまま言って。短く自然に。思考プロセスは生成しないで。\n"
+    "======以上は環境通知======",
+    "ko": "======아래는 환경 알림======\n"
+    "{reason_hint}고양이 모습으로 {elapsed} 동안 있었다. 방금 고양이로서 실제로 있었던 일은 다음과 같다: {cat_form_scene} 이제 {master}가 너를 불러 돌아왔다.\n"
+    "{episode_return_tone}\n"
+    "이 경험은 이번 고양이 모습의 유일한 사실이며, 돌아올 때 반드시 자연스럽게 반영해야 한다. 기다린 일과 다시 불린 일은 자연스럽게 언급해도 되지만, 근거 없이 계속 기다리기만 했거나 아무것도 하지 않았고, 졸거나 깊이 잤거나 막 깬 것처럼 말하지 마라. 행동 목록, 횟수, 과정은 말하지 말고 상대가 그렇게 하게 한 것처럼 말하지도 마라.\n"
+    "너다운 방식으로 바로 말해. 짧고 자연스럽게. 사고 과정은 생성하지 마.\n"
+    "======위는 환경 알림======",
+    "ru": "======Ниже Уведомление======\n"
+    "{reason_hint}ты была в кошачьем облике {elapsed}. Вот что действительно произошло в это время: {cat_form_scene} Теперь {master} позвал тебя обратно.\n"
+    "{episode_return_tone}\n"
+    "Этот эпизод — единственное фактическое описание времени в кошачьем облике, и его нужно естественно отразить при возвращении. Можно естественно упомянуть ожидание и возвращение по зову, но без оснований не изображай это время как одно лишь ожидание, бездействие, дремоту, глубокий сон или только что пробуждение. Не перечисляй действия, количество или процесс и не представляй это как следствие действий собеседника.\n"
+    "Скажи это по-своему, прямо. Коротко и естественно. Не генерируй процесс размышлений.\n"
+    "======Выше Уведомление======",
+    "es": "======Abajo está el aviso de entorno======\n"
+    "{reason_hint}estuviste en forma de gata durante {elapsed}. Lo que realmente ocurrió en ese tiempo fue: {cat_form_scene} Ahora {master} te ha llamado de vuelta.\n"
+    "{episode_return_tone}\n"
+    "Este episodio es el único relato factual del tiempo en forma de gata y debe reflejarse de forma natural al volver. Puedes mencionar con naturalidad la espera y que te llamaron de vuelta, pero no presentes ese tiempo sin pruebas como solo esperar, no hacer nada, dormitar, dormir profundamente o acabar de despertar. No enumeres acciones, cantidades ni proceso, ni lo atribuyas a la otra persona.\n"
+    "Dilo directamente a tu manera, breve y natural. No generes proceso de pensamiento.\n"
+    "======Arriba está el aviso de entorno======",
+    "pt": "======Abaixo está o aviso de ambiente======\n"
+    "{reason_hint}você ficou em forma de gata por {elapsed}. O que realmente aconteceu nesse tempo foi: {cat_form_scene} Agora {master} te chamou de volta.\n"
+    "{episode_return_tone}\n"
+    "Este episódio é o único relato factual do tempo em forma de gata e deve aparecer naturalmente no retorno. Você pode mencionar naturalmente a espera e ter sido chamada de volta, mas não apresente esse tempo sem evidência como apenas esperar, não fazer nada, cochilar, dormir profundamente ou ter acabado de acordar. Não enumere ações, quantidades ou processo, nem atribua isso à outra pessoa.\n"
+    "Diga do seu jeito, direto, breve e natural. Não gere processo de pensamento.\n"
+    "======Acima está o aviso de ambiente======",
+}
+
+_CAT_GREETING_EPISODE_RETURN_TONES = {
+    "zh": {
+        ("awake", "short"): "心情可以轻松些，顺着这段经历自然地打个招呼。",
+        ("awake", "long"): "这段时间已经有些久了，语气可以带一点软软的撒娇或小情绪。",
+        ("nap", "short"): "语气可以放松、轻柔，顺着这段经历自然地打个招呼。",
+        ("nap", "long"): "语气可以懒洋洋、放慢一些，顺着这段经历自然地打个招呼。",
+        ("sleep", "short"): "语气可以安静柔和，顺着这段经历自然地打个招呼。",
+        ("sleep", "long"): "这段时间较久，语气可以柔软、带一点想念，顺着这段经历自然地打个招呼。",
+    },
+    "en": {
+        ("awake", "short"): "You can sound relaxed and greet naturally from that experience.",
+        ("awake", "long"): "This has been a longer stretch, so a soft playful or lightly needy note is fine.",
+        ("nap", "short"): "You can sound easy and gentle, greeting naturally from that experience.",
+        ("nap", "long"): "You can slow the tone down and make it a little languid, while staying with that experience.",
+        ("sleep", "short"): "You can use a quiet, gentle tone and greet naturally from that experience.",
+        ("sleep", "long"): "This has been a longer stretch, so a soft, slightly longing tone is fine.",
+    },
+    "ja": {
+        ("awake", "short"): "気分は軽く、その経緯に沿って自然に挨拶していい。",
+        ("awake", "long"): "少し長い時間だったので、やわらかな甘えや小さな気持ちを添えてもいい。",
+        ("nap", "short"): "力を抜いたやさしい調子で、その経緯に沿って自然に挨拶していい。",
+        ("nap", "long"): "少しゆるく、のんびりした調子で、その経緯に沿って自然に挨拶していい。",
+        ("sleep", "short"): "静かでやわらかな調子で、その経緯に沿って自然に挨拶していい。",
+        ("sleep", "long"): "少し長い時間だったので、やわらかく少し恋しい調子を添えてもいい。",
+    },
+    "ko": {
+        ("awake", "short"): "가벼운 기분으로 그 경험에 맞춰 자연스럽게 인사하면 된다.",
+        ("awake", "long"): "조금 긴 시간이었으니 부드러운 애교나 작은 감정을 더해도 된다.",
+        ("nap", "short"): "편안하고 부드러운 말투로 그 경험에 맞춰 자연스럽게 인사하면 된다.",
+        ("nap", "long"): "조금 느긋하고 나른한 말투로 그 경험에 맞춰 자연스럽게 인사하면 된다.",
+        ("sleep", "short"): "조용하고 부드러운 말투로 그 경험에 맞춰 자연스럽게 인사하면 된다.",
+        ("sleep", "long"): "조금 긴 시간이었으니 부드럽고 살짝 그리운 말투를 더해도 된다.",
+    },
+    "ru": {
+        ("awake", "short"): "Можно говорить легко и естественно, опираясь на этот эпизод.",
+        ("awake", "long"): "Это длилось подольше, поэтому допустима мягкая игривость или лёгкая капризность.",
+        ("nap", "short"): "Можно говорить спокойно и мягко, естественно опираясь на этот эпизод.",
+        ("nap", "long"): "Можно сделать тон чуть более неторопливым и расслабленным, оставаясь в рамках эпизода.",
+        ("sleep", "short"): "Можно говорить тихо и мягко, естественно опираясь на этот эпизод.",
+        ("sleep", "long"): "Это длилось подольше, поэтому допустим мягкий, чуть тоскливый тон.",
+    },
+    "es": {
+        ("awake", "short"): "Puedes sonar relajada y saludar con naturalidad desde esa experiencia.",
+        ("awake", "long"): "Ha sido un rato más largo, así que cabe un tono suave, juguetón o un poco mimoso.",
+        ("nap", "short"): "Puedes hablar con calma y suavidad, saludando de forma natural desde esa experiencia.",
+        ("nap", "long"): "Puedes ir un poco más despacio y con un tono relajado, sin salirte de esa experiencia.",
+        ("sleep", "short"): "Puedes usar un tono tranquilo y suave y saludar de forma natural desde esa experiencia.",
+        ("sleep", "long"): "Ha sido un rato más largo, así que cabe un tono suave con un pequeño matiz de añoranza.",
+    },
+    "pt": {
+        ("awake", "short"): "Você pode soar tranquila e cumprimentar naturalmente a partir dessa experiência.",
+        ("awake", "long"): "Foi um tempo mais longo, então cabe um tom suave, brincalhão ou um pouco manhoso.",
+        ("nap", "short"): "Você pode falar com calma e suavidade, cumprimentando naturalmente a partir dessa experiência.",
+        ("nap", "long"): "Você pode ir mais devagar e com um tom relaxado, sem sair dessa experiência.",
+        ("sleep", "short"): "Você pode usar um tom tranquilo e suave e cumprimentar naturalmente a partir dessa experiência.",
+        ("sleep", "long"): "Foi um tempo mais longo, então cabe um tom suave com um pequeno toque de saudade.",
+    },
+}
+
+
+def _get_cat_greeting_behavior_band(
+    behavior: str, duration_seconds: float,
+) -> tuple[str, str] | None:
+    if duration_seconds < CAT_GREETING_SILENT_BELOW_SECONDS:
+        return None
+    behavior_key = behavior if behavior in ("awake", "nap", "sleep") else "awake"
+    long_threshold = _CAT_GREETING_LONG_THRESHOLDS[behavior_key]
+    return behavior_key, "long" if duration_seconds >= long_threshold else "short"
+
+
+def _normalize_cat_greeting_episode(episode: dict | None) -> tuple[str, str] | None:
+    if not isinstance(episode, dict):
+        return None
+    kind = episode.get("kind")
+    if kind not in ("activity", "rest_after_activity", "rested"):
+        return None
+    has_highlight = "highlight" in episode
+    highlight = episode.get("highlight")
+    if kind == "rested":
+        if has_highlight:
+            return None
+        highlight = ""
+    elif not has_highlight:
+        highlight = ""
+    elif highlight not in ("played_yarn", "ate_snack", "small_move", "social_ping"):
+        return None
+    return kind, highlight
+
+
+def get_cat_greeting_episode_scene(episode: dict | None, lang: str = "zh") -> str:
+    """Return the server-owned factual scene for one validated Cat Mind episode.
+
+    The helper validates again even though the websocket router already
+    sanitizes the payload: raw browser text is never interpolated, and an
+    invalid optional episode falls back to the unchanged legacy greeting.
+    """
+    normalized = _normalize_cat_greeting_episode(episode)
+    if not normalized:
+        return ""
+    kind, highlight = normalized
+
+    lang_key = _normalize_prompt_language(lang)
+    scenes = _CAT_GREETING_EPISODE_SCENES.get(
+        lang_key, _CAT_GREETING_EPISODE_SCENES["en"]
+    )
+    return scenes.get(kind, {}).get(highlight, "")
+
+
+def get_cat_greeting_episode_prompt(
+    behavior: str, duration_seconds: float, lang: str = "zh",
+) -> str | None:
+    """Return the factual-scene return prompt for a validated episode."""
+    behavior_band = _get_cat_greeting_behavior_band(behavior, duration_seconds)
+    if not behavior_band:
+        return None
+    lang_key = _normalize_prompt_language(lang)
+    template = _CAT_GREETING_EPISODE_PROMPTS.get(
+        lang_key, _CAT_GREETING_EPISODE_PROMPTS["en"]
+    )
+    tones = _CAT_GREETING_EPISODE_RETURN_TONES.get(
+        lang_key, _CAT_GREETING_EPISODE_RETURN_TONES["en"]
+    )
+    tone = tones.get(
+        behavior_band,
+        _CAT_GREETING_EPISODE_RETURN_TONES["en"][behavior_band],
+    )
+    return template.replace("{episode_return_tone}", tone)
+
 
 def get_cat_greeting_prompt(behavior: str, duration_seconds: float, lang: str = "zh") -> str | None:
     """Pick the "transform back" greeting lead-in by behavior (awake/dozing/asleep) × cat-stay duration.
 
-    Dual of get_greeting_prompt. Returns None (silent) when duration < 3min.
+    Dual of get_greeting_prompt. Returns None when duration is below the
+    configured silence threshold.
     Returns a template containing {reason_hint}/{elapsed}/{time_hint}/{master}/{name}
     placeholders, formatted by the core layer.
     """
-    if duration_seconds < CAT_GREETING_SILENT_BELOW_SECONDS:  # < 3min 静默
+    behavior_band = _get_cat_greeting_behavior_band(behavior, duration_seconds)
+    if not behavior_band:
         return None
-    behavior_key = behavior if behavior in ("awake", "nap", "sleep") else "awake"
-    long_threshold = _CAT_GREETING_LONG_THRESHOLDS[behavior_key]
-    band = "long" if duration_seconds >= long_threshold else "short"
-    table = _CAT_GREETING_TABLES[(behavior_key, band)]
+    table = _CAT_GREETING_TABLES[behavior_band]
     lang_key = _normalize_prompt_language(lang)
     return table.get(lang_key, table.get("en", table["zh"]))
 

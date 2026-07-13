@@ -8,6 +8,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CAT_MIND_PATH = PROJECT_ROOT / "static" / "app" / "app-cat-mind.js"
 CAT_MIND_DEBUG_PATH = PROJECT_ROOT / "static" / "app" / "app-cat-mind-debug.js"
+APP_AUTO_GOODBYE_PATH = PROJECT_ROOT / "static" / "app" / "app-auto-goodbye.js"
+APP_WEBSOCKET_PATH = PROJECT_ROOT / "static" / "app" / "app-websocket.js"
 INDEX_TEMPLATE_PATH = PROJECT_ROOT / "templates" / "index.html"
 CHAT_TEMPLATE_PATH = PROJECT_ROOT / "templates" / "chat.html"
 PAGES_ROUTER_PATH = PROJECT_ROOT / "main_routers" / "pages_router.py"
@@ -46,6 +48,8 @@ def test_cat_mind_contract_script_loads_before_behavior_modules():
     assert index_source.index('/static/app/app-state.js') < index_source.index('/static/app/app-cat-mind.js')
     assert index_source.index('/static/app/app-cat-mind.js') < index_source.index('/static/app/app-cat-mind-debug.js')
     assert index_source.index('/static/app/app-cat-mind-debug.js') < index_source.index('/static/app/app-ui.js')
+    assert index_source.index('/static/app/app-cat-mind.js') < index_source.index('/static/app/app-websocket.js')
+    assert index_source.index('/static/app/app-websocket.js') < index_source.index('/static/app/app-auto-goodbye.js')
     assert chat_source.index('/static/app/app-state.js') < chat_source.index('/static/app/app-cat-mind.js')
     assert chat_source.index('/static/app/app-cat-mind.js') < chat_source.index('/static/app/app-cat-mind-debug.js')
     assert chat_source.index('/static/app/app-cat-mind-debug.js') < chat_source.index('/static/app/app-ui.js')
@@ -101,6 +105,8 @@ def test_cat_mind_runtime_keeps_dom_free_observation_and_request_boundaries():
     for api_name in (
         "getState",
         "getRecentEvents",
+        "getReturnSummaryDraft",
+        "consumeReturnSummaryDraft",
         "getDebugSnapshot",
         "recordDecision",
         "acknowledgeActionRequest",
@@ -1031,6 +1037,13 @@ def test_cat_mind_debug_overlay_is_opt_in_and_selector_ready():
     assert "not_compact_top_edge" in source
     assert "hover_inactive" in source
     assert "五维状态（0–100）" in source
+    assert "回归经历归并（仅本地调试）" in source
+    assert "返回预览：" in source
+    assert "闭环记录（仅调试，保留最近" in source
+    assert "状态机请求" in source
+    assert "动作回执" in source
+    assert "回归摘要" in source
+    assert "问候附件" in source
     assert "阈值：" in source
     assert "本轮候选：" in source
     assert "neko:cat-mind:action-request" not in source
@@ -1117,6 +1130,8 @@ def test_cat_mind_debug_overlay_is_absent_by_default_and_renders_when_enabled():
         assert.match(panelBody.textContent, /【CAT1 吃零食】/);
         assert.match(panelBody.textContent, /理论分（基础分－冷却）/);
         assert.match(panelBody.textContent, /动作条件依据/);
+        assert.match(panelBody.textContent, /回归经历归并/);
+        assert.match(panelBody.textContent, /返回预览：当前没有可带回的经历/);
         """
     )
 
@@ -1492,11 +1507,12 @@ def test_cat_mind_phase1_pngtuber_return_click_is_observation_only():
         win.dispatchEvent(new CustomEventLike('pngtuber-return-click'));
         const state = win.nekoCatMind.getState();
         assert.equal(state.active, false);
-        assert.ok(state.returnSummaryDraft);
-        assert.equal(state.returnSummaryDraft.entry, 'manual');
+        assert.equal(state.returnSummaryDraft, null);
+        assert.equal(win.nekoCatMind.consumeReturnSummaryDraft(), null);
         assert.equal(win.nekoCatMind.getRecentEvents().length, 0);
         assert.equal(summaries.length, 1);
         assert.equal(summaries[0].source, 'pngtuber-return-click');
+        assert.equal(summaries[0].summary.entry, 'manual');
         """
     )
 
@@ -2195,6 +2211,494 @@ def test_cat_mind_mixed_user_interaction_raises_existing_cat1_action_scores():
         assert.ok(fields.social_need > 0.22);
         assert.ok(fields.stimulation_need > 0.28);
         assert.ok(fields.energy < 0.75);
+        """
+    )
+
+    result = _run_node_harness(script)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_cat_mind_phase4_return_episode_uses_only_strict_completed_chapters():
+    """The return episode is bounded local state, never a recent-event summary."""
+    script = textwrap.dedent(
+        f"""
+        const fs = require('node:fs');
+        const vm = require('node:vm');
+        const assert = require('node:assert/strict');
+        const source = fs.readFileSync({json.dumps(str(CAT_MIND_PATH))}, 'utf8');
+        class EventTargetLike {{
+          constructor() {{ this.listeners = new Map(); }}
+          addEventListener(type, handler) {{
+            if (!this.listeners.has(type)) this.listeners.set(type, []);
+            this.listeners.get(type).push(handler);
+          }}
+          dispatchEvent(event) {{
+            for (const handler of (this.listeners.get(event.type) || []).slice()) handler.call(this, event);
+            return true;
+          }}
+        }}
+        class CustomEventLike {{ constructor(type, init = {{}}) {{ this.type = type; this.detail = init.detail || {{}}; }} }}
+        let now = 1000;
+        let runNumber = 0;
+        let allowedAction = '';
+        const timers = [];
+        const requests = [];
+        const win = new EventTargetLike();
+        win.setTimeout = (callback) => {{ timers.push(callback); return timers.length; }};
+        const context = {{ window: win, CustomEvent: CustomEventLike, Date: {{ now: () => now }}, console }};
+        vm.createContext(context);
+        vm.runInContext(source, context);
+        win.NekoCatMindActionProviders = {{
+          getRuntimeGateSnapshot() {{
+            return {{ returnPending: false, dragPending: false, dragging: false, transitionActive: false,
+              activeIndependentAction: false, returnBallVisible: true, validCatRuntime: true,
+              chatSurfaceDragging: false }};
+          }},
+          dryRun(actionId) {{
+            return actionId === allowedAction
+              ? {{ allowed: true, reason: 'allowed' }}
+              : {{ allowed: false, reason: 'not_enabled_for_test' }};
+          }}
+        }};
+        win.addEventListener('neko:cat-mind:action-request', (event) => requests.push(event.detail));
+
+        function flushDecision() {{
+          assert.ok(timers.length > 0, 'expected queued Cat Mind decision');
+          timers.shift()();
+        }}
+        function observe(type, tier) {{
+          now += 10;
+          win.dispatchEvent(new CustomEventLike('neko:cat-mind:observation', {{
+            detail: {{ type, source: 'phase4-unit', tier: tier || win.nekoCatMind.getState().tier,
+              timestamp: now, detail: {{ elapsedMs: 0 }} }}
+          }}));
+          flushDecision();
+        }}
+        function start() {{
+          allowedAction = '';
+          now += 10;
+          win.dispatchEvent(new CustomEventLike('live2d-goodbye-click', {{
+            detail: {{ source: 'manual-goodbye', timestamp: now }}
+          }}));
+          flushDecision();
+        }}
+        function setTier(tier, source) {{
+          now += 10;
+          win.dispatchEvent(new CustomEventLike('neko:auto-goodbye:state-change', {{
+            detail: {{ type: 'visual-tier', tier, source: source || 'phase4-unit', timestamp: now }}
+          }}));
+          flushDecision();
+        }}
+        function beginAction(actionId) {{
+          allowedAction = actionId;
+          observe('cat_elapsed');
+          const request = requests[requests.length - 1];
+          assert.ok(request, 'expected action request');
+          assert.equal(request.actionId, actionId);
+          const runId = 'phase4-run-' + (++runNumber);
+          assert.equal(win.nekoCatMind.acknowledgeActionRequest({{
+            requestId: request.requestId, actionId, status: 'accepted', runId, timestamp: now
+          }}), true);
+          assert.equal(win.nekoCatMind.acknowledgeActionRequest({{
+            requestId: request.requestId, actionId, status: 'started', runId, timestamp: now
+          }}), true);
+          return {{ request, runId }};
+        }}
+        function finishAction(actionId, lifecycle, result, reason) {{
+          now += 10;
+          win.dispatchEvent(new CustomEventLike('neko:cat-mind:action-result', {{
+            detail: {{
+              actionId,
+              result: result || 'done',
+              source: 'cat_mind',
+              tier: win.nekoCatMind.getState().tier,
+              timestamp: now,
+              reason: reason || 'phase4-unit',
+              detail: {{ requestId: lifecycle.request.requestId, runId: lifecycle.runId }}
+            }}
+          }}));
+          allowedAction = '';
+          flushDecision();
+        }}
+        function complete(actionId) {{
+          const lifecycle = beginAction(actionId);
+          finishAction(actionId, lifecycle, 'done');
+        }}
+        function primeInteraction(count) {{
+          for (let index = 0; index < count; index += 1) observe('cat_hover_reaction');
+        }}
+        function returnSummary() {{
+          now += 10;
+          win.dispatchEvent(new CustomEventLike('live2d-return-click'));
+          const summary = win.nekoCatMind.getState().returnSummaryDraft;
+          // The mocked timer is associated with the pre-return state and would
+          // be a no-op in the browser after runtime reset. Do not let it bleed
+          // into the next independent test chapter.
+          timers.length = 0;
+          return summary;
+        }}
+        function restart() {{
+          win.nekoCatMind.reset('phase4-unit');
+          timers.length = 0;
+          start();
+        }}
+
+        // Public observations and legacy runner results cannot manufacture an
+        // episode. Only a matching Cat Mind lifecycle can write it.
+        start();
+        observe('play_done');
+        now += 10;
+        win.dispatchEvent(new CustomEventLike('neko:cat-mind:action-result', {{
+          detail: {{ actionId: 'cat1_play_yarn', result: 'done', source: 'cat1-journey',
+            tier: 'cat1', timestamp: now, detail: {{ requestId: 'legacy', runId: 'legacy' }} }}
+        }}));
+        let episodeDebug = win.nekoCatMind.getDebugSnapshot().returnEpisode;
+        assert.deepEqual(JSON.parse(JSON.stringify(episodeDebug.activeChapter.activityKinds)), []);
+        assert.equal(episodeDebug.preview, null);
+
+        // Matching terminal failures do settle their runner but never count as
+        // a completed activity. This covers all non-done terminal outcomes.
+        for (const result of ['failed', 'cancelled', 'interrupted']) {{
+          restart();
+          primeInteraction(10);
+          const lifecycle = beginAction('cat1_small_move');
+          finishAction('cat1_small_move', lifecycle, result, 'phase4-' + result);
+          episodeDebug = win.nekoCatMind.getDebugSnapshot().returnEpisode;
+          assert.deepEqual(JSON.parse(JSON.stringify(episodeDebug.activeChapter.activityKinds)), []);
+          assert.equal(episodeDebug.preview, null);
+        }}
+
+        // Repeated successful kinds stay bounded; mixed kinds deliberately
+        // remove the highlight rather than inventing a dominant action.
+        restart();
+        primeInteraction(10);
+        complete('cat1_small_move');
+        now += 80 * 1000;
+        primeInteraction(5);
+        complete('cat1_small_move');
+        episodeDebug = win.nekoCatMind.getDebugSnapshot().returnEpisode;
+        assert.deepEqual(JSON.parse(JSON.stringify(episodeDebug.activeChapter.activityKinds)), ['cat1_small_move']);
+        assert.deepEqual(JSON.parse(JSON.stringify(episodeDebug.preview)), {{ kind: 'activity', highlight: 'small_move' }});
+        complete('cat1_play_yarn');
+        episodeDebug = win.nekoCatMind.getDebugSnapshot().returnEpisode;
+        assert.deepEqual(JSON.parse(JSON.stringify(episodeDebug.activeChapter.activityKinds)), [
+          'cat1_small_move', 'cat1_play_yarn'
+        ]);
+        assert.deepEqual(JSON.parse(JSON.stringify(episodeDebug.preview)), {{ kind: 'activity' }});
+        const mixedSummary = returnSummary();
+        assert.deepEqual(JSON.parse(JSON.stringify(mixedSummary.episode)), {{ kind: 'activity' }});
+        assert.equal(Object.prototype.hasOwnProperty.call(mixedSummary, 'dominant_state'), false);
+        assert.equal(Object.prototype.hasOwnProperty.call(mixedSummary, 'events'), false);
+
+        // Window noise can push old entries out of recentEvents, but it is not
+        // part of the episode and cannot change a real completed activity.
+        start();
+        primeInteraction(10);
+        complete('cat1_small_move');
+        for (let index = 0; index < 45; index += 1) {{
+          now += 10;
+          win.dispatchEvent(new CustomEventLike('neko:idle-return-ball-state', {{
+            detail: {{ source: 'desktop-window', tier: 'cat1', timestamp: now, visible: true }}
+          }}));
+        }}
+        assert.equal(win.nekoCatMind.getState().recentEventCount, 40);
+        assert.deepEqual(JSON.parse(JSON.stringify(win.nekoCatMind.getDebugSnapshot().returnEpisode.preview)), {{
+          kind: 'activity', highlight: 'small_move'
+        }});
+        assert.deepEqual(JSON.parse(JSON.stringify(returnSummary().episode)), {{
+          kind: 'activity', highlight: 'small_move'
+        }});
+
+        // CAT2 then CAT3 feedback keeps one rest-after-activity chapter even
+        // when a presentation-only drag demotion happens afterwards.
+        start();
+        primeInteraction(10);
+        complete('cat1_small_move');
+        setTier('cat2');
+        complete('cat2_nap_feedback');
+        setTier('cat3');
+        complete('cat3_sleep_feedback');
+        setTier('cat1', 'return-ball-drag-demotion');
+        episodeDebug = win.nekoCatMind.getDebugSnapshot().returnEpisode;
+        assert.deepEqual(JSON.parse(JSON.stringify(episodeDebug.activeChapter)), {{ interactionSeen: false, activityKinds: [] }});
+        assert.deepEqual(JSON.parse(JSON.stringify(episodeDebug.lastRest)), {{
+          hadActivityBeforeRest: true, highlight: 'cat1_small_move'
+        }});
+        assert.deepEqual(JSON.parse(JSON.stringify(returnSummary().episode)), {{
+          kind: 'rest_after_activity', highlight: 'small_move'
+        }});
+
+        // A rest followed only by a later interaction must suppress the old
+        // rest. A following real sleep feedback starts a fresh, unqualified
+        // rested chapter instead of reviving the old activity relation.
+        start();
+        setTier('cat2');
+        complete('cat2_nap_feedback');
+        observe('cat_hover_reaction');
+        assert.equal(Object.prototype.hasOwnProperty.call(returnSummary(), 'episode'), false);
+
+        start();
+        setTier('cat2');
+        complete('cat2_nap_feedback');
+        observe('cat_hover_reaction');
+        setTier('cat3');
+        complete('cat3_sleep_feedback');
+        assert.deepEqual(JSON.parse(JSON.stringify(returnSummary().episode)), {{ kind: 'rested' }});
+
+        // A new activity/rest pair replaces an older pair, so only the final
+        // trustworthy natural chapter is carried back.
+        start();
+        primeInteraction(10);
+        complete('cat1_small_move');
+        setTier('cat2');
+        complete('cat2_nap_feedback');
+        setTier('cat1');
+        complete('cat1_social_ping');
+        setTier('cat3');
+        complete('cat3_sleep_feedback');
+        assert.deepEqual(JSON.parse(JSON.stringify(returnSummary().episode)), {{
+          kind: 'rest_after_activity', highlight: 'social_ping'
+        }});
+
+        // A new completed activity after rest wins immediately, even if no
+        // later sleep feedback arrives to close another rest chapter.
+        start();
+        primeInteraction(10);
+        complete('cat1_small_move');
+        setTier('cat2');
+        complete('cat2_nap_feedback');
+        setTier('cat1');
+        complete('cat1_social_ping');
+        assert.deepEqual(JSON.parse(JSON.stringify(returnSummary().episode)), {{
+          kind: 'activity', highlight: 'social_ping'
+        }});
+
+        // Interaction, tier, and presentation observations remain evidence for
+        // Cat Mind itself, but never create a return episode on their own.
+        start();
+        observe('cat_hover_reaction');
+        assert.equal(Object.prototype.hasOwnProperty.call(returnSummary(), 'episode'), false);
+        start();
+        setTier('cat2');
+        assert.equal(Object.prototype.hasOwnProperty.call(returnSummary(), 'episode'), false);
+        start();
+        now += 10;
+        win.dispatchEvent(new CustomEventLike('neko:idle-return-ball-state', {{
+          detail: {{ source: 'desktop-window', tier: 'cat1', timestamp: now, visible: true }}
+        }}));
+        flushDecision();
+        assert.equal(Object.prototype.hasOwnProperty.call(returnSummary(), 'episode'), false);
+
+        // Reset/new entry always starts with an empty local accumulator.
+        restart();
+        episodeDebug = win.nekoCatMind.getDebugSnapshot().returnEpisode;
+        assert.deepEqual(JSON.parse(JSON.stringify(episodeDebug.activeChapter)), {{ interactionSeen: false, activityKinds: [] }});
+        assert.equal(episodeDebug.lastRest, null);
+        assert.equal(episodeDebug.preview, null);
+        """
+    )
+
+    result = _run_node_harness(script)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_cat_mind_phase4_return_summary_draft_is_consumed_once():
+    script = textwrap.dedent(
+        f"""
+        const fs = require('node:fs');
+        const vm = require('node:vm');
+        const assert = require('node:assert/strict');
+        const source = fs.readFileSync({json.dumps(str(CAT_MIND_PATH))}, 'utf8');
+        class EventTargetLike {{
+          constructor() {{ this.listeners = new Map(); }}
+          addEventListener(type, handler) {{
+            if (!this.listeners.has(type)) this.listeners.set(type, []);
+            this.listeners.get(type).push(handler);
+          }}
+          dispatchEvent(event) {{
+            for (const handler of (this.listeners.get(event.type) || []).slice()) handler.call(this, event);
+            return true;
+          }}
+        }}
+        class CustomEventLike {{ constructor(type, init = {{}}) {{ this.type = type; this.detail = init.detail || {{}}; }} }}
+        let now = 1000;
+        const win = new EventTargetLike();
+        win.setInterval = () => 1;
+        win.clearInterval = () => {{}};
+        const context = {{ window: win, CustomEvent: CustomEventLike, Date: {{ now: () => now }}, console }};
+        vm.createContext(context);
+        vm.runInContext(source, context);
+        win.dispatchEvent(new CustomEventLike('live2d-goodbye-click', {{
+          detail: {{ source: 'manual-goodbye', timestamp: now }}
+        }}));
+        now += 1000;
+        win.dispatchEvent(new CustomEventLike('live2d-return-click'));
+        const beforeConsume = win.nekoCatMind.getReturnSummaryDraft();
+        assert.ok(beforeConsume);
+        const consumed = win.nekoCatMind.consumeReturnSummaryDraft();
+        assert.deepEqual(JSON.parse(JSON.stringify(consumed)), JSON.parse(JSON.stringify(beforeConsume)));
+        assert.equal(win.nekoCatMind.getReturnSummaryDraft(), null);
+        assert.equal(win.nekoCatMind.getState().returnSummaryDraft, null);
+        assert.equal(win.nekoCatMind.consumeReturnSummaryDraft(), null);
+        """
+    )
+
+    result = _run_node_harness(script)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_cat_mind_phase4_return_attaches_once_then_preserves_existing_silent_fallbacks():
+    """Load the real listener order: Cat Mind → websocket handler → auto-goodbye."""
+    script = textwrap.dedent(
+        f"""
+        const fs = require('node:fs');
+        const vm = require('node:vm');
+        const assert = require('node:assert/strict');
+        const catMindSource = fs.readFileSync({json.dumps(str(CAT_MIND_PATH))}, 'utf8');
+        const autoGoodbyeSource = fs.readFileSync({json.dumps(str(APP_AUTO_GOODBYE_PATH))}, 'utf8');
+        const websocketSource = fs.readFileSync({json.dumps(str(APP_WEBSOCKET_PATH))}, 'utf8');
+        const websocketGateStart = websocketSource.indexOf('const CAT_GREETING_SILENT_BELOW_SECONDS');
+        const websocketGateEnd = websocketSource.indexOf('\\n', websocketGateStart) + 1;
+        const websocketStart = websocketSource.indexOf("window.addEventListener('neko:cat-greeting-check'");
+        const websocketEnd = websocketSource.indexOf('// ========================  Export module', websocketStart);
+        assert.ok(websocketGateStart >= 0 && websocketGateEnd > websocketGateStart);
+        assert.ok(websocketStart >= 0 && websocketEnd > websocketStart);
+        class EventTargetLike {{
+          constructor() {{ this.listeners = new Map(); }}
+          addEventListener(type, handler) {{
+            if (!this.listeners.has(type)) this.listeners.set(type, []);
+            this.listeners.get(type).push(handler);
+          }}
+          removeEventListener() {{}}
+          dispatchEvent(event) {{
+            for (const handler of (this.listeners.get(event.type) || []).slice()) handler.call(this, event);
+            return true;
+          }}
+        }}
+        class CustomEventLike {{ constructor(type, init = {{}}) {{ this.type = type; this.detail = init.detail || {{}}; }} }}
+        let now = 1000;
+        let sendThrows = false;
+        const sentMessages = [];
+        const win = new EventTargetLike();
+        const doc = new EventTargetLike();
+        const classList = {{ contains() {{ return false; }}, add() {{}}, remove() {{}} }};
+        doc.readyState = 'complete';
+        doc.body = {{ classList }};
+        doc.getElementById = (id) => id === 'resetSessionButton' || id === 'screenButton'
+          ? {{ classList, style: {{}}, getBoundingClientRect() {{ return {{ width: 32, height: 32 }}; }} }}
+          : null;
+        doc.querySelectorAll = () => [];
+        doc.addEventListener = EventTargetLike.prototype.addEventListener.bind(doc);
+        doc.dispatchEvent = EventTargetLike.prototype.dispatchEvent.bind(doc);
+        win.document = doc;
+        win.location = {{ pathname: '/' }};
+        win.localStorage = {{ getItem() {{ return null; }}, setItem() {{}} }};
+        win.appConst = {{}};
+        win.appState = {{ socket: {{
+          readyState: 1,
+          send(payload) {{
+            if (sendThrows) throw new Error('send failed');
+            sentMessages.push(JSON.parse(payload));
+          }}
+        }} }};
+        win.live2dManager = {{ _goodbyeClicked: false }};
+        win.vrmManager = {{ _goodbyeClicked: false }};
+        win.mmdManager = {{ _goodbyeClicked: false }};
+        win._agentTaskMap = new Map();
+        win.setInterval = () => 1;
+        win.clearInterval = () => {{}};
+        win.getComputedStyle = () => ({{ display: 'block', visibility: 'visible', opacity: '1' }});
+        const context = {{
+          window: win,
+          document: doc,
+          CustomEvent: CustomEventLike,
+          WebSocket: {{ OPEN: 1 }},
+          Date: {{ now: () => now }},
+          Math,
+          Promise,
+          Map,
+          Set,
+          Array,
+          localStorage: win.localStorage,
+          navigator: {{ language: 'en-US' }},
+          console,
+        }};
+        vm.createContext(context);
+        vm.runInContext(catMindSource, context);
+        vm.runInContext(
+          'var S = window.appState;\\n' +
+          websocketSource.slice(websocketGateStart, websocketGateEnd) +
+          websocketSource.slice(websocketStart, websocketEnd),
+          context
+        );
+        vm.runInContext(autoGoodbyeSource, context);
+        const greetingEvents = [];
+        win.addEventListener('neko:cat-greeting-check', (event) => greetingEvents.push(event.detail));
+
+        function enterAndReturn(durationMs) {{
+          win.dispatchEvent(new CustomEventLike('live2d-goodbye-click', {{
+            detail: {{ source: 'manual-goodbye', timestamp: now }}
+          }}));
+          now += durationMs;
+          win.dispatchEvent(new CustomEventLike('live2d-return-click'));
+        }}
+        function catGreetingMessages() {{
+          return sentMessages.filter((message) => message && message.action === 'cat_greeting_check');
+        }}
+
+        enterAndReturn(190 * 1000);
+        let greetings = catGreetingMessages();
+        assert.equal(greetings.length, 1);
+        assert.ok(greetings[0].cat_memory_summary);
+        assert.equal(greetings[0].cat_memory_summary.entry, 'manual');
+        assert.equal(greetingEvents.length, 1);
+        assert.deepEqual(
+          JSON.parse(JSON.stringify(greetingEvents[0].catMemorySummary)),
+          JSON.parse(JSON.stringify(greetings[0].cat_memory_summary))
+        );
+        assert.equal(win.nekoCatMind.getReturnSummaryDraft(), null);
+        assert.equal(win.nekoCatMind.consumeReturnSummaryDraft(), null);
+
+        // A short return stays silent, but its one-shot draft is still
+        // consumed by this return and cannot leak to the next one.
+        now += 10;
+        enterAndReturn(1000);
+        assert.equal(catGreetingMessages().length, 1);
+        assert.equal(win.nekoCatMind.getReturnSummaryDraft(), null);
+
+        // A closed socket and a send failure keep the old silent/failure path;
+        // neither is allowed to retain a summary for the next return.
+        now += 10;
+        win.appState.socket.readyState = 0;
+        enterAndReturn(190 * 1000);
+        assert.equal(catGreetingMessages().length, 1);
+        assert.equal(win.nekoCatMind.getReturnSummaryDraft(), null);
+
+        now += 10;
+        win.appState.socket.readyState = 1;
+        sendThrows = true;
+        enterAndReturn(190 * 1000);
+        assert.equal(catGreetingMessages().length, 1);
+        assert.equal(win.nekoCatMind.getReturnSummaryDraft(), null);
+        sendThrows = false;
+
+        // If Cat Mind is unavailable, the original cat greeting event and
+        // websocket payload still work without an extra field.
+        now += 10;
+        win.nekoCatMind = null;
+        enterAndReturn(190 * 1000);
+        greetings = catGreetingMessages();
+        assert.equal(greetings.length, 2);
+        assert.equal(Object.prototype.hasOwnProperty.call(greetings[1], 'cat_memory_summary'), false);
+
+        now += 10;
+        win.nekoCatMind = {{
+          consumeReturnSummaryDraft() {{ throw new Error('consumer unavailable'); }}
+        }};
+        enterAndReturn(190 * 1000);
+        greetings = catGreetingMessages();
+        assert.equal(greetings.length, 3);
+        assert.equal(Object.prototype.hasOwnProperty.call(greetings[2], 'cat_memory_summary'), false);
         """
     )
 

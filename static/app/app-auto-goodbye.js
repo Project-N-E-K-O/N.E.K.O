@@ -809,13 +809,24 @@
             syncGoodbyeSilentState(false, 'return-click');
             if (state.goodbyeEnteredAt > 0) {
                 const durationSeconds = Math.max(0, Math.floor((nowMs() - state.goodbyeEnteredAt) / 1000));
+                let catMemorySummary = null;
                 try {
+                    const catMind = window.nekoCatMind;
+                    if (catMind && typeof catMind.consumeReturnSummaryDraft === 'function') {
+                        catMemorySummary = catMind.consumeReturnSummaryDraft();
+                    }
+                } catch (_) {}
+                try {
+                    const greetingDetail = {
+                        durationSeconds: durationSeconds,
+                        tier: state.visualTier,
+                        wasAuto: !!state.goodbyeWasAuto,
+                    };
+                    if (catMemorySummary && typeof catMemorySummary === 'object' && !Array.isArray(catMemorySummary)) {
+                        greetingDetail.catMemorySummary = catMemorySummary;
+                    }
                     window.dispatchEvent(new CustomEvent('neko:cat-greeting-check', {
-                        detail: {
-                            durationSeconds: durationSeconds,
-                            tier: state.visualTier,
-                            wasAuto: !!state.goodbyeWasAuto,
-                        },
+                        detail: greetingDetail,
                     }));
                 } catch (_) {}
             }

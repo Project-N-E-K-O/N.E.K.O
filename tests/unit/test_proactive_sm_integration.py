@@ -1677,3 +1677,126 @@ async def test_user_input_during_agent_delivery_sets_preempted():
     assert mgr.state.phase is ProactivePhase.IDLE
     assert mgr.state._preempted is False
     assert mgr.state.owner is TurnOwner.USER
+
+
+async def test_cat_greeting_episode_scene_is_request_local_and_keeps_existing_guards(monkeypatch):
+    """A return episode changes only this ephemeral cat-greeting instruction."""
+    from config.prompts import prompts_proactive
+    from config.prompts.prompts_proactive import (
+        get_cat_greeting_episode_scene,
+        get_cat_greeting_prompt,
+        get_cat_greeting_reason_hint,
+    )
+
+    # This is the real failure shape: a completed CAT1 social response can
+    # return while the visual tier is CAT2. Its scene must not be overwritten
+    # by the old CAT2 "you dozed" factual template.
+    episode = {"kind": "activity", "highlight": "social_ping"}
+    def _unexpected_time_of_day_hint(_lang):
+        raise AssertionError("cat return must not consume the general time-of-day hint")
+
+    monkeypatch.setattr(
+        prompts_proactive,
+        "get_time_of_day_hint",
+        _unexpected_time_of_day_hint,
+    )
+    session = _FakeOmniOffline(delivered=True)
+    mgr = _make_mgr(session=session)
+
+    await core_module.LLMSessionManager.trigger_cat_greeting(
+        mgr, 300, "cat2", False, episode=episode,
+    )
+
+    assert len(session.called_with) == 1
+    instruction = session.called_with[0]
+    assert get_cat_greeting_episode_scene(episode, "en") in instruction
+    assert "You gave a soft little response as a cat." in instruction
+    assert "The true cat-form episode was:" in instruction
+    # A valid episode is the actual cat-form scene, so the old cat2-only
+    # factual statement must not survive and contradict it.
+    assert "dozed for 5 minutes" not in instruction
+    assert "called you back" in instruction
+    assert "lunch" not in instruction.lower()
+    for raw_value in ("cat1_play_yarn", "requestId", "runId", "appetite", "raw text"):
+        assert raw_value not in instruction
+    assert mgr.state.phase is ProactivePhase.IDLE
+
+    # A short return remains silent even when it carries a valid episode.
+    short_session = _FakeOmniOffline(delivered=True)
+    short_mgr = _make_mgr(session=short_session)
+    await core_module.LLMSessionManager.trigger_cat_greeting(
+        short_mgr, 179, "cat1", False, episode=episode,
+    )
+    assert short_session.called_with == []
+
+    # No trustworthy chapter means the exact existing greeting path remains.
+    no_episode_session = _FakeOmniOffline(delivered=True)
+    no_episode_mgr = _make_mgr(session=no_episode_session)
+    await core_module.LLMSessionManager.trigger_cat_greeting(
+        no_episode_mgr, 300, "cat1", False,
+    )
+    assert len(no_episode_session.called_with) == 1
+    legacy = get_cat_greeting_prompt("awake", 300, "en")
+    assert legacy is not None
+    assert no_episode_session.called_with[0] == legacy.format(
+        reason_hint=get_cat_greeting_reason_hint(False, "en").format(master="Master"),
+        elapsed="5 minutes",
+        name="Test",
+        master="Master",
+        time_hint="",
+    )
+    invalid_episode_session = _FakeOmniOffline(delivered=True)
+    invalid_episode_mgr = _make_mgr(session=invalid_episode_session)
+    await core_module.LLMSessionManager.trigger_cat_greeting(
+        invalid_episode_mgr, 300, "cat1", False,
+        episode={"kind": "not-a-real-episode"},
+    )
+    assert invalid_episode_session.called_with == no_episode_session.called_with
+
+    silent_session = _FakeOmniOffline(delivered=True)
+    silent_mgr = _make_mgr(session=silent_session)
+    silent_mgr.goodbye_silent = True
+    await core_module.LLMSessionManager.trigger_cat_greeting(
+        silent_mgr, 300, "cat1", False, episode=episode,
+    )
+    assert silent_session.called_with == []
+
+    takeover_session = _FakeOmniOffline(delivered=True)
+    takeover_mgr = _make_mgr(session=takeover_session)
+    takeover_mgr._takeover_active = True
+    await core_module.LLMSessionManager.trigger_cat_greeting(
+        takeover_mgr, 300, "cat1", False, episode=episode,
+    )
+    assert takeover_session.called_with == []
+
+    voice_session = _FakeOmniOffline(delivered=True)
+    voice_mgr = _make_mgr(session=voice_session)
+    voice_mgr.is_active = True
+    voice_mgr.input_mode = "audio"
+    await core_module.LLMSessionManager.trigger_cat_greeting(
+        voice_mgr, 300, "cat1", False, episode=episode,
+    )
+    assert voice_session.called_with == []
+
+    busy_session = _FakeOmniOffline(delivered=True)
+    busy_mgr = _make_mgr(session=busy_session)
+    assert await busy_mgr.state.try_start_proactive(session=busy_session) is True
+    await core_module.LLMSessionManager.trigger_cat_greeting(
+        busy_mgr, 300, "cat1", False, episode=episode,
+    )
+    assert busy_session.called_with == []
+    await busy_mgr.state.fire(SessionEvent.PROACTIVE_DONE)
+
+    # The factual scene has no user text of its own, but its template still
+    # formats master/time fields. Empty and braced names remain safe.
+    for master_name in ("", "A{B}"):
+        name_session = _FakeOmniOffline(delivered=True)
+        name_mgr = _make_mgr(session=name_session)
+        name_mgr.master_name = master_name
+        await core_module.LLMSessionManager.trigger_cat_greeting(
+            name_mgr, 300, "cat1", False, episode=episode,
+        )
+        assert len(name_session.called_with) == 1
+        assert get_cat_greeting_episode_scene(episode, "en") in name_session.called_with[0]
+        if master_name:
+            assert master_name in name_session.called_with[0]

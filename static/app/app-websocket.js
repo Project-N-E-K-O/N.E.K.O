@@ -21,6 +21,10 @@
     const GREETING_CHECK_RETRY_MAX_MS = 5000;
     const STARTUP_GREETING_RELEASE_FALLBACK_MS = 65000;
     const STARTUP_GREETING_RELEASE_EVENT = 'neko:startup-greeting-release';
+    // Cat-form returns shorter than three minutes stay silent. This matches
+    // the backend prompt gate so a short return never sends a request that the
+    // backend would reject anyway.
+    const CAT_GREETING_SILENT_BELOW_SECONDS = 180;
     const NEW_USER_ICEBREAKER_STORAGE_KEY = 'neko.new_user_icebreaker.v1';
     const NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS = 2 * 60 * 60 * 1000;
     const MUSIC_PLAY_URL_FOLLOWER_GRACE_MS = 500;
@@ -3650,8 +3654,8 @@
             return;
         }
         var durationSeconds = Number(detail.durationSeconds) || 0;
-        if (durationSeconds < 180) {
-            return; // < 3min 静默（前端先挡一道，后端 get_cat_greeting_prompt 再挡一道）
+        if (durationSeconds < CAT_GREETING_SILENT_BELOW_SECONDS) {
+            return;
         }
         var catLang = '';
         try {
@@ -3660,13 +3664,18 @@
             if (!catLang && typeof navigator !== 'undefined' && navigator.language) catLang = navigator.language;
         } catch (_) { catLang = ''; }
         try {
-            S.socket.send(JSON.stringify({
+            var catGreetingMessage = {
                 action: 'cat_greeting_check',
                 cat_duration_seconds: durationSeconds,
                 tier: detail.tier || '',
                 was_auto: !!detail.wasAuto,
                 language: catLang
-            }));
+            };
+            if (detail.catMemorySummary && typeof detail.catMemorySummary === 'object' &&
+                !Array.isArray(detail.catMemorySummary)) {
+                catGreetingMessage.cat_memory_summary = detail.catMemorySummary;
+            }
+            S.socket.send(JSON.stringify(catGreetingMessage));
             console.log('[cat_greeting_check] sent, duration=' + durationSeconds + 's tier=' + (detail.tier || '-') + ' was_auto=' + (!!detail.wasAuto));
         } catch (e) {
             console.warn('[cat_greeting_check] send failed:', e);

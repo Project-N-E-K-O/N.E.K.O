@@ -16,6 +16,9 @@
         { id: 'cat2_nap_feedback', label: 'CAT2 打盹反馈' },
         { id: 'cat3_sleep_feedback', label: 'CAT3 睡眠反馈' },
     ]);
+    var RETURN_TRACE_LIMIT = 12;
+    var returnTrace = [];
+    var lastExecutionTraceKey = '';
 
     var REASON_LABELS = Object.freeze({
         allowed: '可执行',
@@ -199,12 +202,108 @@
         return pieces.join('；') || '-';
     }
 
+    function formatReturnEpisodePreview(episode) {
+        if (!episode || typeof episode !== 'object') return '当前没有可带回的经历';
+        var kindLabels = {
+            activity: '刚刚活动过',
+            rest_after_activity: '活动后休息过',
+            rested: '刚刚休息过',
+        };
+        var highlightLabels = {
+            played_yarn: '玩毛线',
+            ate_snack: '吃零食',
+            small_move: '小幅移动',
+            social_ping: '轻声回应',
+        };
+        var text = kindLabels[episode.kind] || '无效经历';
+        if (episode.highlight && highlightLabels[episode.highlight]) {
+            text += '（重点：' + highlightLabels[episode.highlight] + '）';
+        }
+        return text;
+    }
+
+    function addReturnTrace(label, text) {
+        returnTrace.push({ label: label || '闭环事件', text: text || '-' });
+        if (returnTrace.length > RETURN_TRACE_LIMIT) {
+            returnTrace.splice(0, returnTrace.length - RETURN_TRACE_LIMIT);
+        }
+    }
+
+    function resetReturnTrace() {
+        returnTrace = [];
+        lastExecutionTraceKey = '';
+    }
+
+    function formatExecutionTrace(execution) {
+        if (!execution || typeof execution !== 'object') return '';
+        var actionId = typeof execution.actionId === 'string' ? execution.actionId : '';
+        var state = typeof execution.state === 'string' ? execution.state : '';
+        if (!actionId || !state) return '';
+        var key = [actionId, execution.requestId || '', execution.runId || '', state, execution.reason || ''].join('|');
+        if (key === lastExecutionTraceKey) return '';
+        lastExecutionTraceKey = key;
+        var labels = {
+            accepted: 'runner 已接受',
+            started: 'runner 已开始',
+            rejected: 'runner 被拒绝',
+            result: '已收到终态回执',
+            result_before_started: '开始前收到终态回执',
+        };
+        return formatAction(actionId) + '：' + (labels[state] || state) +
+            (execution.reason ? '（' + formatReason(execution.reason) + '）' : '');
+    }
+
+    function formatActionResultTrace(detail, snapshot) {
+        var result = detail && typeof detail === 'object' ? detail : {};
+        var actionId = typeof result.actionId === 'string' ? result.actionId : '';
+        var status = typeof result.result === 'string' ? result.result : '';
+        var sourceIsCatMind = result.source === 'cat_mind';
+        var scheduler = snapshot && snapshot.scheduler ? snapshot.scheduler : {};
+        var ignored = scheduler.lastIgnoredActionResult || {};
+        var resultRequestId = result.detail && typeof result.detail.requestId === 'string'
+            ? result.detail.requestId
+            : '';
+        var ignoredMatches = ignored.actionId === actionId &&
+            (!resultRequestId || ignored.requestId === resultRequestId);
+        var labels = {
+            done: '完成',
+            failed: '失败',
+            cancelled: '取消',
+            interrupted: '打断',
+        };
+        var text = formatAction(actionId) + '：' + (labels[status] || status || '无效回执');
+        if (!sourceIsCatMind) {
+            return text + '（非状态机来源，不记入回归经历）';
+        }
+        if (ignoredMatches) {
+            return text + '（未匹配 request/run，不记入回归经历）';
+        }
+        if (status === 'done') {
+            return text + '（严格匹配；请查看当前活动段／返回预览）';
+        }
+        return text + '（按规则不记入回归经历）';
+    }
+
+    function renderReturnTrace(lines) {
+        lines.push('', '闭环记录（仅调试，保留最近 ' + RETURN_TRACE_LIMIT + ' 项）');
+        if (!returnTrace.length) {
+            lines.push('  暂无；等待状态机请求、动作回执或 return。');
+            return;
+        }
+        returnTrace.forEach(function (item) {
+            lines.push('  ' + item.label + '：' + item.text);
+        });
+    }
+
     function renderSnapshot(body, snapshot) {
         var state = snapshot && snapshot.state ? snapshot.state : {};
         var fields = state.fields || {};
         var decision = snapshot && snapshot.lastDecision;
         var scheduler = snapshot && snapshot.scheduler ? snapshot.scheduler : {};
         var clock = snapshot && snapshot.clock ? snapshot.clock : {};
+        var returnEpisode = snapshot && snapshot.returnEpisode ? snapshot.returnEpisode : {};
+        var activeChapter = returnEpisode.activeChapter || {};
+        var lastRest = returnEpisode.lastRest || null;
         var candidatesByAction = indexByAction(decision && decision.candidates);
         var scoresByAction = indexByAction(snapshot && snapshot.actionScores);
         var lines = [
@@ -227,8 +326,16 @@
             '忽略的结果：' + formatReason(scheduler.lastIgnoredActionResult && scheduler.lastIgnoredActionResult.reason),
             '自主时钟：每 ' + Math.round((Number(clock.tickIntervalMs) || 0) / 1000) + ' 秒检查一次',
             '',
-            '本轮决策：' + (decision ? formatAction(decision.outcome) : '尚未判断'),
+            '回归经历归并（仅本地调试）',
+            '当前活动段：' + (activeChapter.interactionSeen ? '有明确互动' : '无明确互动') +
+                ' ｜ 已完成动作：' + ((activeChapter.activityKinds || []).map(formatAction).join('、') || '-'),
+            '最近休息段：' + (!lastRest
+                ? '-'
+                : (lastRest.hadActivityBeforeRest ? '活动后休息' : '无活动前置的休息')),
+            '返回预览：' + formatReturnEpisodePreview(returnEpisode.preview),
         ];
+        renderReturnTrace(lines);
+        lines.push('', '本轮决策：' + (decision ? formatAction(decision.outcome) : '尚未判断'));
         if (decision) {
             lines.push('触发来源／判定原因：' + (decision.trigger || '-') + ' ／ ' + formatReason(decision.reason));
             if (decision.triggerTypes && decision.triggerTypes.length) {
@@ -269,7 +376,45 @@
             var snapshot = event && event.detail && event.detail.snapshot;
             renderSnapshot(body, snapshot || window.nekoCatMind.getDebugSnapshot());
         };
-        window.addEventListener(getContract().EVENT_NAMES.STATE_CHANGE, render);
+        var eventNames = getContract().EVENT_NAMES || {};
+        window.addEventListener(eventNames.STATE_CHANGE, function (event) {
+            var snapshot = event && event.detail && event.detail.snapshot;
+            var trace = formatExecutionTrace(snapshot && snapshot.lastDecision && snapshot.lastDecision.execution);
+            if (trace) addReturnTrace('动作执行', trace);
+            render(event);
+        });
+        window.addEventListener(eventNames.ACTION_REQUEST, function (event) {
+            var detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+            addReturnTrace('状态机请求', formatAction(detail.actionId) + '（已发给动作适配器）');
+            render();
+        });
+        window.addEventListener(eventNames.ACTION_RESULT, function (event) {
+            var detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+            addReturnTrace('动作回执', formatActionResultTrace(detail, window.nekoCatMind.getDebugSnapshot()));
+            render();
+        });
+        window.addEventListener(eventNames.RETURN_SUMMARY, function (event) {
+            var detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+            var summary = detail.summary && typeof detail.summary === 'object' ? detail.summary : {};
+            addReturnTrace('回归摘要', formatReturnEpisodePreview(summary.episode) + '（draft 已生成）');
+            render();
+        });
+        window.addEventListener('neko:cat-greeting-check', function (event) {
+            var detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+            var summary = detail.catMemorySummary && typeof detail.catMemorySummary === 'object'
+                ? detail.catMemorySummary
+                : null;
+            addReturnTrace('问候附件', summary
+                ? formatReturnEpisodePreview(summary.episode) + '（已交给 WebSocket）'
+                : '没有 episode（保留原问候）');
+            render();
+        });
+        ['live2d-goodbye-click', 'vrm-goodbye-click', 'mmd-goodbye-click', 'pngtuber-goodbye-click'].forEach(function (eventName) {
+            window.addEventListener(eventName, function () {
+                resetReturnTrace();
+                render();
+            });
+        });
         render();
         // The inspector reads a snapshot every half-second so duration and each
         // action's cooldown/score visibly advance between state transitions. The

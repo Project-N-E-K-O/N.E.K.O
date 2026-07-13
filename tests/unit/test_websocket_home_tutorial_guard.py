@@ -39,4 +39,5 @@ def test_backend_cat_greeting_check_no_longer_depends_on_tutorial_state():
     )[0]
 
     assert "_is_home_tutorial_blocking_greeting" not in cat_block
-    assert "cat_duration = float(message.get(\"cat_duration_seconds\"" in cat_block
+    assert "_normalize_cat_greeting_check(message)" in cat_block
+    assert "episode=episode" in cat_block

@@ -49,6 +49,22 @@
         STAY_IDLE: 'stay_idle',
     });
 
+    // Return memory is intentionally smaller than recentEvents. It only keeps
+    // the last trustworthy activity/rest chapter and never participates in
+    // scoring, cooldowns, providers, or desktop bridges.
+    var RETURN_EPISODE_ACTIVITY_ORDER = Object.freeze([
+        ACTION_IDS.CAT1_SOCIAL_PING,
+        ACTION_IDS.CAT1_EAT_SNACK,
+        ACTION_IDS.CAT1_SMALL_MOVE,
+        ACTION_IDS.CAT1_PLAY_YARN,
+    ]);
+    var RETURN_EPISODE_HIGHLIGHTS = Object.freeze({
+        cat1_social_ping: 'social_ping',
+        cat1_eat_snack: 'ate_snack',
+        cat1_small_move: 'small_move',
+        cat1_play_yarn: 'played_yarn',
+    });
+
     var OBSERVATION_TYPES = Object.freeze({
         CAT_ENTERED: 'cat_entered',
         CAT_ELAPSED: 'cat_elapsed',
@@ -202,6 +218,16 @@
         };
     }
 
+    function createReturnEpisodeAccumulator() {
+        return {
+            activeChapter: {
+                interactionSeen: false,
+                activityKinds: [],
+            },
+            lastRest: null,
+        };
+    }
+
     function createInitialRuntimeState() {
         return {
             active: false,
@@ -217,6 +243,7 @@
             lastChatMinimizedState: null,
             lastChatIdleDocked: false,
             returnSummaryDraft: null,
+            returnEpisodeAccumulator: createReturnEpisodeAccumulator(),
             lastDecision: null,
             scheduler: {
                 queued: false,
@@ -390,6 +417,7 @@
         return {
             state: getState(snapshotAt),
             recentEvents: getRecentEvents(),
+            returnEpisode: getReturnEpisodeDebugSnapshot(),
             lastDecision: clonePlain(runtimeState.lastDecision),
             scheduler: getSchedulerSnapshot(snapshotAt),
             clock: {
@@ -1131,6 +1159,108 @@
             type === OBSERVATION_TYPES.THOUGHT_BUBBLE_POP;
     }
 
+    function getReturnEpisodeAccumulator() {
+        if (!runtimeState.returnEpisodeAccumulator ||
+            typeof runtimeState.returnEpisodeAccumulator !== 'object') {
+            runtimeState.returnEpisodeAccumulator = createReturnEpisodeAccumulator();
+        }
+        return runtimeState.returnEpisodeAccumulator;
+    }
+
+    function resetReturnEpisodeActiveChapter(accumulator) {
+        accumulator.activeChapter = {
+            interactionSeen: false,
+            activityKinds: [],
+        };
+    }
+
+    function getReturnEpisodeActivityKinds(activeChapter) {
+        var kinds = activeChapter && Array.isArray(activeChapter.activityKinds)
+            ? activeChapter.activityKinds
+            : [];
+        return RETURN_EPISODE_ACTIVITY_ORDER.filter(function (actionId) {
+            return kinds.indexOf(actionId) !== -1;
+        });
+    }
+
+    function getReturnEpisodeHighlight(activityKinds) {
+        if (!Array.isArray(activityKinds) || activityKinds.length !== 1) {
+            return '';
+        }
+        return RETURN_EPISODE_HIGHLIGHTS[activityKinds[0]] || '';
+    }
+
+    function recordReturnEpisodeInteraction() {
+        getReturnEpisodeAccumulator().activeChapter.interactionSeen = true;
+    }
+
+    function recordReturnEpisodeActionDone(actionId) {
+        var accumulator = getReturnEpisodeAccumulator();
+        var activeChapter = accumulator.activeChapter;
+        if (RETURN_EPISODE_ACTIVITY_ORDER.indexOf(actionId) !== -1) {
+            if (activeChapter.activityKinds.indexOf(actionId) === -1) {
+                activeChapter.activityKinds.push(actionId);
+            }
+            return;
+        }
+        if (actionId !== ACTION_IDS.CAT2_NAP_FEEDBACK &&
+            actionId !== ACTION_IDS.CAT3_SLEEP_FEEDBACK) {
+            return;
+        }
+
+        var activityKinds = getReturnEpisodeActivityKinds(activeChapter);
+        if (activityKinds.length) {
+            accumulator.lastRest = {
+                hadActivityBeforeRest: true,
+                highlight: activityKinds.length === 1 ? activityKinds[0] : null,
+            };
+            resetReturnEpisodeActiveChapter(accumulator);
+            return;
+        }
+        if (activeChapter.interactionSeen || !accumulator.lastRest) {
+            accumulator.lastRest = {
+                hadActivityBeforeRest: false,
+                highlight: null,
+            };
+            resetReturnEpisodeActiveChapter(accumulator);
+        }
+    }
+
+    function buildReturnEpisode() {
+        var accumulator = getReturnEpisodeAccumulator();
+        var activeChapter = accumulator.activeChapter || {};
+        var activityKinds = getReturnEpisodeActivityKinds(activeChapter);
+        var highlight = getReturnEpisodeHighlight(activityKinds);
+        if (activityKinds.length) {
+            var activityEpisode = { kind: 'activity' };
+            if (highlight) activityEpisode.highlight = highlight;
+            return activityEpisode;
+        }
+        if (activeChapter.interactionSeen) {
+            return null;
+        }
+        var lastRest = accumulator.lastRest;
+        if (!lastRest || typeof lastRest !== 'object') {
+            return null;
+        }
+        if (lastRest.hadActivityBeforeRest === true) {
+            var restAfterActivity = { kind: 'rest_after_activity' };
+            var restHighlight = RETURN_EPISODE_HIGHLIGHTS[lastRest.highlight] || '';
+            if (restHighlight) restAfterActivity.highlight = restHighlight;
+            return restAfterActivity;
+        }
+        return { kind: 'rested' };
+    }
+
+    function getReturnEpisodeDebugSnapshot() {
+        var accumulator = getReturnEpisodeAccumulator();
+        return {
+            activeChapter: clonePlain(accumulator.activeChapter) || createReturnEpisodeAccumulator().activeChapter,
+            lastRest: clonePlain(accumulator.lastRest),
+            preview: clonePlain(buildReturnEpisode()),
+        };
+    }
+
     function adjustMind(delta) {
         Object.keys(delta || {}).forEach(function (field) {
             if (MIND_FIELDS.indexOf(field) === -1) {
@@ -1267,6 +1397,7 @@
         reduceObservation(observation);
         if (isUserInteractionObservationType(observation.type)) {
             runtimeState.clock.lastUserInteractionAt = observation.timestamp;
+            recordReturnEpisodeInteraction();
         }
         addRecentEvent(observation);
         scheduleDecision(observation);
@@ -1274,54 +1405,15 @@
         return clonePlain(observation);
     }
 
-    function getDominantStateTags() {
-        var tags = [];
-        if (runtimeState.fields.sleepiness >= 0.6) tags.push('sleepy');
-        if (runtimeState.fields.social_need >= 0.45) tags.push('wanted_attention');
-        if (runtimeState.fields.stimulation_need >= 0.45) tags.push('restless');
-        if (runtimeState.fields.appetite >= 0.45) tags.push('snack_minded');
-        if (runtimeState.fields.energy >= 0.65) tags.push('energetic');
-        return tags.slice(0, 3);
-    }
-
-    function getSummaryEventTags() {
-        var tags = [];
-        runtimeState.recentEvents.forEach(function (event) {
-            var tag = '';
-            if (event.type === OBSERVATION_TYPES.DRAG_END || event.type === OBSERVATION_TYPES.RAPID_DRAG) {
-                tag = 'dragged';
-            } else if (event.type === OBSERVATION_TYPES.THOUGHT_BUBBLE_POP) {
-                tag = 'bubble_popped';
-            } else if (event.type === OBSERVATION_TYPES.CHAT_MINIMIZED_VISIBLE ||
-                event.type === OBSERVATION_TYPES.CHAT_COMPACT_SURFACE_VISIBLE ||
-                event.type === OBSERVATION_TYPES.CHAT_IDLE_DOCKED_NEAR_CAT ||
-                event.type === OBSERVATION_TYPES.CAT1_WALK_DONE_NEAR_CHAT ||
-                event.type === OBSERVATION_TYPES.CAT1_STRETCH_DONE_NEAR_CHAT ||
-                event.type === OBSERVATION_TYPES.CAT1_COMPACT_TOP_EDGE_DONE) {
-                tag = 'near_chat';
-            } else if (event.type === OBSERVATION_TYPES.CAT1_COMPACT_TOP_EDGE_DROP ||
-                event.type === OBSERVATION_TYPES.EDGE_PEEK_AFTER_DRAG) {
-                tag = 'moved_around';
-            } else if (event.type === OBSERVATION_TYPES.TIER_CHANGED && event.tier === TIERS.CAT2) {
-                tag = 'got_sleepy';
-            } else if (event.type === OBSERVATION_TYPES.TIER_CHANGED && event.tier === TIERS.CAT3) {
-                tag = 'slept_deeply';
-            }
-            if (tag && tags.indexOf(tag) === -1) {
-                tags.push(tag);
-            }
-        });
-        return tags.slice(0, 8);
-    }
-
     function buildReturnSummaryDraft() {
-        return {
+        var summary = {
             duration_seconds: currentDurationSeconds(),
             entry: runtimeState.entry || 'manual',
             final_tier: runtimeState.tier,
-            dominant_state: getDominantStateTags(),
-            events: getSummaryEventTags(),
         };
+        var episode = buildReturnEpisode();
+        if (episode) summary.episode = episode;
+        return summary;
     }
 
     function beginCatMind(detail) {
@@ -1356,28 +1448,40 @@
         });
     }
 
+    function isCatGreetingReturnSource(source) {
+        return source === 'live2d-return-click' ||
+            source === 'vrm-return-click' ||
+            source === 'mmd-return-click';
+    }
+
     function finishCatMindReturn(source) {
         if (!runtimeState.active) {
             return;
         }
+        var returnSource = source || 'return-click';
         observe({
             type: OBSERVATION_TYPES.RETURN_CLICK,
-            source: source || 'return-click',
+            source: returnSource,
             tier: runtimeState.tier,
             timestamp: nowMs(),
             detail: {
-                reason: source || 'return-click',
+                reason: returnSource,
             },
         });
         var summary = Object.freeze(buildReturnSummaryDraft());
         clearAutonomousClock();
         runtimeState = createInitialRuntimeState();
-        runtimeState.returnSummaryDraft = summary;
+        // PNGTuber has the same return observation but no current
+        // app-auto-goodbye greeting consumer. Do not let its draft survive as
+        // stale input for a later supported avatar return.
+        if (isCatGreetingReturnSource(returnSource)) {
+            runtimeState.returnSummaryDraft = summary;
+        }
         runtimeState.lastResetReason = 'return';
         runtimeState.updatedAt = nowMs();
-        emitStateChange('return', { source: source || 'return-click' });
+        emitStateChange('return', { source: returnSource });
         dispatchRuntimeEvent(EVENT_NAMES.RETURN_SUMMARY, {
-            source: source || 'return-click',
+            source: returnSource,
             timestamp: runtimeState.updatedAt,
             summary: clonePlain(summary),
         });
@@ -1665,6 +1769,9 @@
             });
             return;
         }
+        if (result === 'done') {
+            recordReturnEpisodeActionDone(actionId);
+        }
         var type = actionResultObservationType(actionId, result, reason);
         if (!type) {
             return;
@@ -1755,6 +1862,12 @@
         return clonePlain(runtimeState.returnSummaryDraft);
     }
 
+    function consumeReturnSummaryDraft() {
+        var summary = clonePlain(runtimeState.returnSummaryDraft);
+        runtimeState.returnSummaryDraft = null;
+        return summary;
+    }
+
     window.NekoCatMindContract = Object.freeze({
         EVENT_NAMES: EVENT_NAMES,
         DEBUG_SETTING_KEY: DEBUG_SETTING_KEY,
@@ -1769,6 +1882,7 @@
         getState: getState,
         getRecentEvents: getRecentEvents,
         getReturnSummaryDraft: getReturnSummaryDraft,
+        consumeReturnSummaryDraft: consumeReturnSummaryDraft,
         getDebugSnapshot: getDebugSnapshot,
         recordDecision: recordDecision,
         acknowledgeActionRequest: acknowledgeActionRequest,
