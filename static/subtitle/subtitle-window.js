@@ -452,6 +452,7 @@
             bounds: {
                 left: left,
                 top: top,
+                bottom: isFinite(Number(bounds.bottom)) ? Number(bounds.bottom) : top + height,
                 width: width,
                 height: height,
                 centerX: isFinite(Number(bounds.centerX)) ? Number(bounds.centerX) : left + width / 2,
@@ -482,8 +483,16 @@
             var workWidth = Number(workArea.width);
             var workHeight = Number(workArea.height);
             if (isFinite(workLeft) && isFinite(workTop) && isFinite(workWidth) && isFinite(workHeight)) {
-                panelLeft = clampToRange(panelLeft, workLeft, workLeft + workWidth - panelWidth);
-                panelTop = clampToRange(panelTop, workTop, workTop + workHeight - panelHeight);
+                var minPanelLeft = workLeft + DESKTOP_WINDOW_EDGE_INSET;
+                var maxPanelLeft = workLeft + workWidth - panelWidth - DESKTOP_WINDOW_EDGE_INSET;
+                var minPanelTop = workTop + DESKTOP_WINDOW_EDGE_INSET;
+                var maxPanelTop = workTop + workHeight - panelHeight - DESKTOP_WINDOW_EDGE_INSET;
+                var fallbackPanelTop = avatar.bottom + DANMAKU_MODE_HEAD_GAP;
+                if (panelTop < minPanelTop && fallbackPanelTop <= maxPanelTop) {
+                    panelTop = fallbackPanelTop;
+                }
+                panelLeft = clampToRange(panelLeft, minPanelLeft, maxPanelLeft);
+                panelTop = clampToRange(panelTop, minPanelTop, maxPanelTop);
             }
         }
         return {

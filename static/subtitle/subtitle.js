@@ -235,11 +235,11 @@ function computeWebDanmakuLayout(avatarBounds) {
         0,
         maxLeft
     );
-    var top = clampWebDanmakuNumber(
-        avatar.top - panelHeight - WEB_DANMAKU_AVATAR_GAP,
-        0,
-        maxTop
-    );
+    var preferredTop = avatar.top - panelHeight - WEB_DANMAKU_AVATAR_GAP;
+    var fallbackTop = avatar.bottom + WEB_DANMAKU_AVATAR_GAP;
+    var top = preferredTop < 0 && fallbackTop <= maxTop
+        ? fallbackTop
+        : clampWebDanmakuNumber(preferredTop, 0, maxTop);
     return {
         subtitlePanelBounds: {
             width: panelWidth,

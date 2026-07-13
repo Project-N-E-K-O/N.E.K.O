@@ -302,6 +302,23 @@ def test_subtitle_window_danmaku_mode_tracks_avatar_head_and_restores(mock_page:
             window.__avatarBoundsHandler({
                 bounds: {
                     left: 800,
+                    top: 20,
+                    right: 1000,
+                    bottom: 420,
+                    width: 200,
+                    height: 400,
+                    centerX: 900,
+                    centerY: 220,
+                },
+                display: {
+                    workArea: { x: 0, y: 0, width: 1920, height: 1080 },
+                },
+            });
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const topEdgeNativeBounds = { ...window.__subtitleNativeBounds };
+            window.__avatarBoundsHandler({
+                bounds: {
+                    left: 800,
                     top: 300,
                     right: 1000,
                     bottom: 700,
@@ -339,7 +356,7 @@ def test_subtitle_window_danmaku_mode_tracks_avatar_head_and_restores(mock_page:
                 panelHidden: panel.classList.contains('hidden'),
                 closeCount: window.__subtitleSettingsCloseCount,
             };
-            return { afterOn, afterOff };
+            return { topEdgeNativeBounds, afterOn, afterOff };
         }
         """
     )
@@ -350,6 +367,7 @@ def test_subtitle_window_danmaku_mode_tracks_avatar_head_and_restores(mock_page:
     assert result["afterOn"]["settings"]["subtitleInteractionPassthrough"] is True
     assert result["afterOn"]["settings"]["subtitleOpacity"] == 0
     assert result["afterOn"]["settings"]["subtitlePanelBounds"] == {"width": 228, "height": 76}
+    assert result["topEdgeNativeBounds"] == {"x": 780, "y": 426, "width": 240, "height": 88}
     assert result["afterOn"]["nativeBounds"] == {"x": 780, "y": 206, "width": 240, "height": 88}
     assert result["afterOn"]["panelState"] == "clean"
     assert result["afterOn"]["panelHidden"] is True
@@ -889,6 +907,10 @@ def test_web_subtitle_danmaku_mode_tracks_each_frame_without_rerendering_text(
                     left: 800, top: 300, right: 1000, bottom: 700,
                     width: 200, height: 400, centerX: 900, centerY: 500,
                 },
+                {
+                    left: 800, top: 20, right: 1000, bottom: 420,
+                    width: 200, height: 400, centerX: 900, centerY: 220,
+                },
             ];
             window.__avatarBoundsCalls = 0;
             window.__lastAvatarBounds = null;
@@ -974,14 +996,28 @@ def test_web_subtitle_danmaku_mode_tracks_each_frame_without_rerendering_text(
                 queued: window.__rafQueue.length,
                 avatarBoundsCalls: window.__avatarBoundsCalls,
             };
+            const fourthFrame = window.__runNextRaf();
+            const afterFourthFrame = {
+                left: Number.parseFloat(display.style.left),
+                top: Number.parseFloat(display.style.top),
+                width: Number.parseFloat(display.style.width),
+                height: Number.parseFloat(display.style.height),
+                topGap: Number.parseFloat(display.style.top)
+                    - window.__lastAvatarBounds.bottom,
+                calls: window.__danmakuRenderCalls.length,
+                queued: window.__rafQueue.length,
+                avatarBoundsCalls: window.__avatarBoundsCalls,
+            };
             return {
                 afterWrite,
                 firstFrame,
                 secondFrame,
                 thirdFrame,
+                fourthFrame,
                 afterFirstFrame,
                 afterSecondFrame,
                 afterThirdFrame,
+                afterFourthFrame,
                 itemCount: document.querySelectorAll('.subtitle-danmaku-item').length,
             };
         }
@@ -992,9 +1028,11 @@ def test_web_subtitle_danmaku_mode_tracks_each_frame_without_rerendering_text(
     assert result["firstFrame"]["ran"] is True
     assert result["secondFrame"]["ran"] is True
     assert result["thirdFrame"]["ran"] is True
+    assert result["fourthFrame"]["ran"] is True
     assert result["afterFirstFrame"]["calls"] == 1
     assert result["afterSecondFrame"]["calls"] == 1
     assert result["afterThirdFrame"]["calls"] == 1
+    assert result["afterFourthFrame"]["calls"] == 1
     assert result["afterSecondFrame"]["width"] > result["afterFirstFrame"]["width"]
     assert result["afterSecondFrame"]["height"] > result["afterFirstFrame"]["height"]
     assert result["afterThirdFrame"]["left"] == result["afterFirstFrame"]["left"]
@@ -1004,8 +1042,9 @@ def test_web_subtitle_danmaku_mode_tracks_each_frame_without_rerendering_text(
     assert result["afterFirstFrame"]["bottomGap"] == 12
     assert result["afterSecondFrame"]["bottomGap"] == 12
     assert result["afterThirdFrame"]["bottomGap"] == 12
-    assert result["afterThirdFrame"]["queued"] == 1
-    assert result["afterThirdFrame"]["avatarBoundsCalls"] == 3
+    assert result["afterFourthFrame"]["topGap"] == 12
+    assert result["afterFourthFrame"]["queued"] == 1
+    assert result["afterFourthFrame"]["avatarBoundsCalls"] == 4
     assert result["itemCount"] == 3
 
 
