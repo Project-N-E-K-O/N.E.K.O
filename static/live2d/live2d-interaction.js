@@ -161,6 +161,17 @@ function isLive2DGameModeEdgePeekMacRuntime() {
     }
 }
 
+function isLive2DGameModeEdgePeekDesktopRuntime() {
+    try {
+        return isLive2DGameModeEdgePeekMacRuntime() || !!(
+            window.electronScreen &&
+            typeof window.electronScreen.getCurrentDisplay === 'function'
+        );
+    } catch (_) {
+        return false;
+    }
+}
+
 function normalizeLive2DGameModeEdgePeekRect(rect) {
     if (!rect) return null;
     const x = Number(rect.x);
@@ -174,7 +185,7 @@ function normalizeLive2DGameModeEdgePeekRect(rect) {
 }
 
 function refreshLive2DGameModeEdgePeekDisplayContext(force = false) {
-    if (!isLive2DGameModeEdgePeekMacRuntime()) {
+    if (!isLive2DGameModeEdgePeekDesktopRuntime()) {
         live2DGameModeEdgePeekDisplayContext = null;
         return Promise.resolve(null);
     }
@@ -218,7 +229,7 @@ function refreshLive2DGameModeEdgePeekDisplayContext(force = false) {
 }
 
 function getLive2DGameModeEdgePeekTriggerViewport(viewport) {
-    const context = isLive2DGameModeEdgePeekMacRuntime()
+    const context = isLive2DGameModeEdgePeekDesktopRuntime()
         ? live2DGameModeEdgePeekDisplayContext
         : null;
     if (!viewport || !context || !context.workArea) return viewport;
@@ -719,7 +730,7 @@ Live2DManager.prototype._tryApplyLive2DGameModeEdgePeek = async function (model)
         this.clearLive2DGameModeEdgePeek('game-mode-disabled');
         return false;
     }
-    if (isLive2DGameModeEdgePeekMacRuntime()) {
+    if (isLive2DGameModeEdgePeekDesktopRuntime()) {
         await refreshLive2DGameModeEdgePeekDisplayContext();
     }
     const bounds = getLive2DGameModeEdgePeekBounds(model);
@@ -881,7 +892,7 @@ if (typeof window !== 'undefined') {
     };
     window.addEventListener('neko:game-mode-beta-state', clearLive2DGameModeEdgePeekOnDisabled);
     window.addEventListener('live2d-goodbye-click', clearLive2DGameModeEdgePeekOnGoodbye);
-    if (isLive2DGameModeEdgePeekMacRuntime()) {
+    if (isLive2DGameModeEdgePeekDesktopRuntime()) {
         void refreshLive2DGameModeEdgePeekDisplayContext();
         window.addEventListener('electron-display-changed', () => {
             live2DGameModeEdgePeekDisplayContext = null;
