@@ -24,8 +24,8 @@ import wave
 import asyncio
 
 from utils.config_manager import get_config_manager
-from utils.native_voice_registry import make_native_tts_resolver, register_tts_worker_resolver
-from utils.stepfun_tts_voices import STEPFUN_TTS_DEFAULT_VOICE, get_stepfun_tts_default_voice, normalize_stepfun_tts_voice
+from utils.tts.native_voice_registry import make_native_tts_resolver, register_tts_worker_resolver
+from utils.tts.providers.stepfun import STEPFUN_TTS_DEFAULT_VOICE, get_stepfun_tts_default_voice, normalize_stepfun_tts_voice
 
 from .._infra import TTS_SHUTDOWN_SENTINEL, _resample_audio, make_audio_jitter_buffer, _enqueue_error
 from .._telemetry import _record_tts_telemetry

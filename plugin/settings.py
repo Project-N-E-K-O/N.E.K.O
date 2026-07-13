@@ -209,6 +209,15 @@ PLUGIN_TRIGGER_TIMEOUT = _get_float_env("NEKO_PLUGIN_TRIGGER_TIMEOUT", 10.0)
 # Env: NEKO_PLUGIN_STARTUP_TIMEOUT, default=10.0
 PLUGIN_STARTUP_TIMEOUT = _get_float_env("NEKO_PLUGIN_STARTUP_TIMEOUT", 10.0)
 
+# Keep the next-launch auto-start preference in sync with explicit user
+# start/stop actions from the plugin manager. Internal lifecycle operations do
+# not persist user intent and therefore do not change auto-start.
+# Env: NEKO_PLUGIN_SYNC_AUTO_START_ON_TOGGLE, default=True
+PLUGIN_SYNC_AUTO_START_ON_TOGGLE = _get_bool_env(
+    "NEKO_PLUGIN_SYNC_AUTO_START_ON_TOGGLE",
+    True,
+)
+
 # 单个插件优雅关闭的超时时间
 # Env: NEKO_PLUGIN_SHUTDOWN_TIMEOUT, default=1.5
 # 用于 ``host.shutdown``，超过后会进入更激进的终止流程。

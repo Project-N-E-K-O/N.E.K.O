@@ -89,7 +89,7 @@ from utils.file_utils import atomic_write_json  # noqa: F401
 from utils.gptsovits_config import normalize_gsv_api_url  # noqa: F401
 from utils.voice_config import read_legacy_voice_id  # noqa: F401
 from utils.logger_config import get_module_logger  # noqa: F401
-from utils.native_voice_registry import (  # noqa: F401
+from utils.tts.native_voice_registry import (  # noqa: F401
     is_free_lanlan_app_route,
     is_saveable_native_voice,
 )

@@ -39,7 +39,10 @@ except ImportError:  # pragma: no cover
 from plugin._types.events import EventHandler, EventMeta, EVENT_META_ATTR
 from plugin._types.version import SDK_VERSION
 from plugin.server.infrastructure.config_resolver import resolve_plugin_config_from_path
-from plugin.server.infrastructure.runtime_overrides import get_runtime_override
+from plugin.server.infrastructure.runtime_overrides import (
+    get_runtime_auto_start_override,
+    get_runtime_override,
+)
 from plugin.core.state import state
 from plugin.core.entry_points import normalize_plugin_entry_point
 from plugin._types.models import PluginMeta, PluginAuthor, PluginDependency
@@ -1112,6 +1115,16 @@ def _parse_single_plugin_config(
             override,
         )
         enabled_val = override
+
+    auto_start_override = get_runtime_auto_start_override(str(pid))
+    if auto_start_override is not None and auto_start_override != auto_start_val:
+        logger.info(
+            "Plugin {} runtime_auto_start overridden by user preference: {} -> {}",
+            pid,
+            auto_start_val,
+            auto_start_override,
+        )
+        auto_start_val = auto_start_override
 
     if not enabled_val:
         logger.info(

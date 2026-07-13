@@ -14,8 +14,8 @@ import websockets
 
 from utils.api_config_loader import get_free_voices
 from utils.config_manager import get_reserved
-from utils.gemini_tts_voices import normalize_gemini_tts_voice
-from utils.native_voice_registry import get_active_realtime_native_provider_for_ui
+from utils.tts.native_voice_registry import get_active_realtime_native_provider_for_ui
+from utils.tts.providers.gemini import normalize_gemini_tts_voice
 from utils.voice_clone import MimoVoiceCloneClient, MimoVoiceCloneError, MinimaxVoiceCloneClient, MinimaxVoiceCloneError
 from utils.voice_config import read_legacy_voice_id
 
@@ -65,7 +65,7 @@ class QQVoiceReplyService:
             raise RuntimeError("语音合成文本不能为空")
         try:
             from utils.config_manager import get_config_manager
-            from utils.stepfun_tts_voices import STEPFUN_TTS_DEFAULT_VOICE
+            from utils.tts.providers.stepfun import STEPFUN_TTS_DEFAULT_VOICE
             from main_logic.tts_client.workers.step import _adjust_free_tts_url, _build_step_tts_create_data
 
             config_manager = get_config_manager()

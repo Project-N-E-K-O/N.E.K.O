@@ -45,10 +45,10 @@ from utils.config_manager import get_config_manager
 from utils.audio_processor import AudioProcessor
 from utils.file_utils import atomic_write_json
 from utils.frontend_utils import calculate_text_similarity
-from utils.gemini_tts_voices import normalize_gemini_tts_voice
+from utils.tts.providers.gemini import normalize_gemini_tts_voice
 from utils.logger_config import get_module_logger
 from utils.ssl_env_diagnostics import write_ssl_diagnostic
-from utils.stepfun_tts_voices import get_stepfun_tts_default_voice
+from utils.tts.providers.stepfun import get_stepfun_tts_default_voice
 
 # Gemini Live API SDK 懒加载。该 SDK import 很重（~0.6s）且捎带 mcp（~0.5s），
 # 但只有用户真的用 Gemini Live 语音会话时才需要。改成首次连接时再 import，并由

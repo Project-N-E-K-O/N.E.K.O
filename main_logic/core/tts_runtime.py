@@ -41,7 +41,7 @@ from main_logic.tts_client import (
 )
 from utils.gptsovits_config import is_gsv_disabled_voice_id
 from utils.config_manager import _as_bool, get_reserved
-from utils.native_voice_registry import is_free_preset_voice_id, resolve_native_voice_for_routing
+from utils.tts.native_voice_registry import is_free_preset_voice_id, resolve_native_voice_for_routing
 from utils.api_config_loader import get_livestream_config
 from threading import Thread
 from queue import Queue

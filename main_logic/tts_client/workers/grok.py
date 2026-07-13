@@ -21,7 +21,7 @@ import base64
 import websockets
 import asyncio
 
-from utils.native_voice_registry import make_native_tts_resolver, register_tts_worker_resolver
+from utils.tts.native_voice_registry import make_native_tts_resolver, register_tts_worker_resolver
 
 from .._infra import TTS_SHUTDOWN_SENTINEL, _resample_audio, make_audio_jitter_buffer, _enqueue_error
 from .._telemetry import _record_tts_telemetry
@@ -63,7 +63,7 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
             voice query param only accepts canonical ids or custom 8-char ids,
             not aliases.
     """
-    from utils.grok_tts_voices import normalize_grok_tts_voice
+    from utils.tts.providers.grok import normalize_grok_tts_voice
     # 先 strip：whitespace-only 输入（如 '   '）等价于空，否则 'not voice_id'
     # 判定通不过，残留的空白会被透传到 xAI 的 voice query param 引发合成失败。
     voice_id = (voice_id or "").strip()

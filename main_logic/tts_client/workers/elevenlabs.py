@@ -23,7 +23,7 @@ import websockets
 import asyncio
 
 from functools import partial
-from utils.elevenlabs_tts_voices import ELEVENLABS_TTS_DEFAULT_MODEL, ELEVENLABS_TTS_DEFAULT_OUTPUT_FORMAT, normalize_elevenlabs_voice_id
+from utils.tts.providers.elevenlabs import ELEVENLABS_TTS_DEFAULT_MODEL, ELEVENLABS_TTS_DEFAULT_OUTPUT_FORMAT, normalize_elevenlabs_voice_id
 
 from .._infra import TTS_SHUTDOWN_SENTINEL, _resample_audio, make_audio_jitter_buffer, _enqueue_error
 from .._telemetry import _record_tts_telemetry
