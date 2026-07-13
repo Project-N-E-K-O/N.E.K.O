@@ -1727,9 +1727,14 @@ def parse_duckduckgo_results(html_content: str, limit: int = 5) -> List[Dict[str
                     url = qs.get('uddg', [''])[0]
                 elif href.startswith('http'):
                     url = href
-            # 只接受 http(s) 绝对地址（uddg 里也可能包着 javascript: 之类），
-            # 没有可用目标地址的整条跳过，不以空 URL 占用结果位
-            if not url.startswith(('http://', 'https://')):
+            # 只接受带真实主机名的 http(s) 绝对地址（uddg 里可能包着
+            # javascript: 或 "https://" 这种残缺目标），无效的整条跳过
+            try:
+                parsed_target = urlparse(url)
+                url_ok = parsed_target.scheme in ('http', 'https') and bool(parsed_target.hostname)
+            except ValueError:
+                url_ok = False
+            if not url_ok:
                 continue
 
             # 摘要片段

@@ -89,6 +89,9 @@ def test_is_http_url_accepts_http_absolute(url: str) -> None:
     "ftp://example.com/x",
     "",
     "http://",                          # 无 netloc
+    "https://@",                        # netloc 非空但 hostname 为 None
+    "http://:80",                       # 同上，只有端口
+    "http://[",                         # 非法 IPv6，urlparse 抛 ValueError
 ])
 def test_is_http_url_rejects_unsafe(url: str) -> None:
     assert not p.is_http_url(url)

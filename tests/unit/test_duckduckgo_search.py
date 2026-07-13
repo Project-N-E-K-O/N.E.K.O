@@ -116,7 +116,8 @@ def test_parse_scans_past_rejected_results():
 
 @pytest.mark.unit
 def test_parse_skips_results_without_usable_url():
-    # uddg 包着非 http 目标（javascript:）→ 整条丢弃，不以空 URL 占用结果位
+    # uddg 包着非 http 目标（javascript:）或残缺目标（裸 "https://"）
+    # → 整条丢弃，不以空/无效 URL 占用结果位
     html = '''
     <div class="result results_links web-result">
       <div class="links_main result__body">
@@ -124,6 +125,13 @@ def test_parse_skips_results_without_usable_url():
           <a class="result__a" href="//duckduckgo.com/l/?uddg=javascript%3Aalert(1)&amp;rut=x">Malicious Entry</a>
         </h2>
         <a class="result__snippet">Should never surface.</a>
+      </div>
+    </div>
+    <div class="result results_links web-result">
+      <div class="links_main result__body">
+        <h2 class="result__title">
+          <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2F&amp;rut=y">Truncated Target</a>
+        </h2>
       </div>
     </div>
     '''

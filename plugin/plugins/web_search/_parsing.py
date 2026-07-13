@@ -75,11 +75,13 @@ def decode_html(content: bytes, content_type: str = "") -> str:
 
 
 def is_http_url(url: str) -> bool:
+    # 校验 hostname 而不是 netloc："https://@"、"http://:80" 这类残缺 URL
+    # 的 netloc 非空但 hostname 为 None
     try:
         parsed = urlparse(url)
+        return parsed.scheme in ("http", "https") and bool(parsed.hostname)
     except ValueError:
         return False
-    return parsed.scheme in ("http", "https") and bool(parsed.netloc)
 
 
 def _clip(text: str, limit: int) -> str:
