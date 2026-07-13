@@ -99,7 +99,15 @@ def extract_real_url(href: str) -> str:
 
 
 def is_ddg_ad_url(url: str) -> bool:
-    return "duckduckgo.com/y.js" in url or "ad_provider=" in url
+    # 广告以 duckduckgo.com/y.js 跳转包装标记；不能看目标 URL 里是否含
+    # ad_provider= 之类的参数——正常结果自己的查询串也可能带同名参数
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return True
+    host = (parsed.hostname or "").lower()
+    is_ddg_host = host == "duckduckgo.com" or host.endswith(".duckduckgo.com")
+    return is_ddg_host and parsed.path == "/y.js"
 
 
 def parse_ddg_html(html: str, max_results: int = 8) -> List[Dict[str, str]]:

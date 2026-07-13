@@ -198,7 +198,14 @@ _DDG_HTML = f"""
   </div>
   <div class="result result--ad">
     <div class="links_main result__body">
-      <a class="result__a" href="//duckduckgo.com/y.js?ad_provider=x">Buy Now</a>
+      <a class="result__a" href="https://duckduckgo.com/y.js?ad_provider=x">Buy Now</a>
+    </div>
+  </div>
+  <!-- 正常结果：目标 URL 自己的查询串带 ad_provider= 参数，不能被当广告误杀 -->
+  <div class="result results_links web-result">
+    <div class="links_main result__body">
+      <a class="result__a"
+         href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fshop.example.com%2Fp%3Fad_provider%3Dbing&amp;rut=def">Shop Landing</a>
     </div>
   </div>
 </body></html>
@@ -207,10 +214,18 @@ _DDG_HTML = f"""
 
 def test_parse_ddg_html_decodes_uddg_and_sanitizes() -> None:
     results = p.parse_ddg_html(_DDG_HTML, max_results=10)
-    assert len(results) == 1
-    assert results[0]["title"] == "Project NEKO Official"
+    assert [r["title"] for r in results] == ["Project NEKO Official", "Shop Landing"]
     assert results[0]["url"] == "https://www.example.com/neko"
     assert results[0]["snippet"] == "A virtual desktop companion."
+    assert results[1]["url"] == "https://shop.example.com/p?ad_provider=bing"
+
+
+def test_ddg_ad_filter_only_matches_yjs_wrapper() -> None:
+    assert p.is_ddg_ad_url("https://duckduckgo.com/y.js?ad_provider=bing&u3=x")
+    assert p.is_ddg_ad_url("//duckduckgo.com/y.js?ad_provider=x")
+    # 目标 URL 带同名参数、或路径里碰巧含 y.js 字样的，都不是广告
+    assert not p.is_ddg_ad_url("https://shop.example.com/p?ad_provider=bing")
+    assert not p.is_ddg_ad_url("https://example.com/duckduckgo.com/y.js")
 
 
 _DDG_LITE_HTML = f"""
